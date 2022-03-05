@@ -13,6 +13,8 @@ except ImportError:
     pass
 
 class FRAC_RDHF(dhf.RDHF):
+    self.nopen = None
+    self.nact = None
     def __init__(self, mol, nopen=0, nact=0):
         # don't require electron number to be even since fraction occ is allowed.
         if zquatev is None:
