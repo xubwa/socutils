@@ -13,8 +13,8 @@ except ImportError:
     pass
 
 class FRAC_RDHF(dhf.RDHF):
-    self.nopen = None
-    self.nact = None
+    nopen = None
+    nact = None
     def __init__(self, mol, nopen=0, nact=0):
         # don't require electron number to be even since fraction occ is allowed.
         if zquatev is None:
@@ -34,7 +34,7 @@ class FRAC_RDHF(dhf.RDHF):
         n2c = n4c // 2
         mo_occ = numpy.zeros(n2c * 2)
         if mo_energy[n2c] > -1.999 * c**2:
-            if nopen is 0:
+            if nopen == 0:
                 mo_occ[n2c:n2c+mol.nelectron] = 1
             else:
                 mo_occ[n2c:n2c+nclose] = 1
@@ -44,7 +44,7 @@ class FRAC_RDHF(dhf.RDHF):
             mo_occ[mo_energy > -1.999 * c**2] = 1
             mo_occ[mo_energy >= lumo] = 0
         if self.verbose >= logger.INFO:
-            if nopen is 0:
+            if nopen == 0:
                 homo_ndx = mol.nelectron
             else:
                 homo_ndx = nclose + nopen

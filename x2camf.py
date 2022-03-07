@@ -1,10 +1,12 @@
 from functools import reduce
 
+import os
 import numpy
 import scipy
 
 from pyscf import gto, lib, scf
 from pyscf.lib.parameters import LIGHT_SPEED
+from pyscf.lib import chkfile
 from pyscf.x2c import x2c
 from pyscf.scf import dhf, ghf
 
@@ -20,59 +22,65 @@ class X2CAMF(x2c.X2C):
     def build(self):
         self.atom_gso_mf = {}
         xmol = self.get_xmol()[0]
-        for atom in xmol.elements:
-            atm_id = gto.elements.charge(atom)
-            spin = atm_id % 2
-            mol_atom = gto.M(verbose=xmol.verbose,atom=[[atom, [0, 0, 0]]], basis=xmol.basis, spin=spin)
-            atm_x2c = x2c.X2C(mol_atom)
-            mol_atom = atm_x2c.get_xmol(mol_atom)[0]
-            conf = gto.elements.CONFIGURATION[atm_id]
-            # generate configuration for spherical symmetry atom
-            if conf[0] % 2 == 0:
-                if conf[1] % 6 == 0:
-                    if conf[2] % 10 == 0:
-                        if conf[3] % 14 == 0:
-                            nopen = 0
-                            nact = 0
+        if os.path.isfile('amf.chk'):
+            for atom in xmol.elements:
+                mat1e = chkfile.load('amf.chk', atom)
+                assert(mat1e is not None), \
+                'chkfile to store amf integrals don\'t have the specified element, try delete amf.chk and rerun.'
+                self.atom_gso_mf[atom] = mat1e
+        else:
+            for atom in xmol.elements:
+                atm_id = gto.elements.charge(atom)
+                spin = atm_id % 2
+                mol_atom = gto.M(verbose=xmol.verbose,atom=[[atom, [0, 0, 0]]], basis=xmol.basis, spin=spin)
+                atm_x2c = x2c.X2C(mol_atom)
+                mol_atom = atm_x2c.get_xmol(mol_atom)[0]
+                conf = gto.elements.CONFIGURATION[atm_id]
+                # generate configuration for spherical symmetry atom
+                if conf[0] % 2 == 0:
+                    if conf[1] % 6 == 0:
+                        if conf[2] % 10 == 0:
+                            if conf[3] % 14 == 0:
+                                nopen = 0
+                                nact = 0
+                            else:
+                                nopen = 7
+                                nact = conf[3] % 14
                         else:
-                            nopen = 7
-                            nact = conf[3] % 14
+                            nopen = 5
+                            nact = conf[2] % 10
                     else:
-                        nopen = 5
-                        nact = conf[2] % 10
+                        nopen = 3
+                        nact = conf[1] % 6
                 else:
-                    nopen = 3
-                    nact = conf[1] % 6
-            else:
-                nopen = 1
-                nact = 1
-            from pyscf import scf
-            mf_atom = frac_dhf.FRAC_RDHF(mol_atom, nopen*2, nact)
-            mf_atom.kernel()
-            dm = mf_atom.make_rdm1()
-            nao = mol_atom.nao_2c()
-            cl = mf_atom.mo_coeff[:nao, nao:]
-            cs = mf_atom.mo_coeff[nao:, nao:]
-            x = numpy.linalg.solve(cl.T, cs.T).T
-            s = mol_atom.intor_symmetric('int1e_ovlp_spinor')
-            t = mol_atom.intor_symmetric('int1e_spsp_spinor') * .5
-            s1 = s + reduce(numpy.dot, (x.T.conj(), t, x)) * (.5 / LIGHT_SPEED**2)
-            r = x2c._get_r(s, s1)
+                    nopen = 1
+                    nact = 1
+                mf_atom = frac_dhf.FRAC_RDHF(mol_atom, nopen*2, nact)
+                mf_atom.kernel()
+                dm = mf_atom.make_rdm1()
+                nao = mol_atom.nao_2c()
+                cl = mf_atom.mo_coeff[:nao, nao:]
+                cs = mf_atom.mo_coeff[nao:, nao:]
+                x = numpy.linalg.solve(cl.T, cs.T).T
+                s = mol_atom.intor_symmetric('int1e_ovlp_spinor')
+                t = mol_atom.intor_symmetric('int1e_spsp_spinor') * .5
+                s1 = s + reduce(numpy.dot, (x.T.conj(), t, x)) * (.5 / LIGHT_SPEED**2)
+                r = x2c._get_r(s, s1)
 
-            mo2c = cl
-            dm2c = numpy.dot(mo2c * mf_atom.mo_occ[nao:], mo2c.T.conj())
+                mo2c = cl
+                dm2c = numpy.dot(mo2c * mf_atom.mo_occ[nao:], mo2c.T.conj())
 
-            vj_sf, vk_sf = somf.get_jk_sf_coulomb(mol_atom, dm, 1)
-            vj, vk = dhf.get_jk_coulomb(mol_atom, dm, 1)
-            veff_sd = (vj-vk)-(vj_sf-vk_sf)
+                vj_sf, vk_sf = somf.get_jk_sf_coulomb(mol_atom, dm, 1)
+                vj, vk = dhf.get_jk_coulomb(mol_atom, dm, 1)
+                veff_sd = (vj-vk)-(vj_sf-vk_sf)
 
-            g_ll = veff_sd[:nao, :nao]
-            g_ls = veff_sd[:nao, nao:]
-            g_sl = veff_sd[nao:, :nao]
-            g_ss = veff_sd[nao:, nao:]
-            g_so_mf = reduce(numpy.dot, (r.T.conj(), (g_ll+reduce(numpy.dot, (g_ls, x)) + reduce(numpy.dot, (x.T.conj(), g_sl))+reduce(numpy.dot, (x.T.conj(), g_ss, x))),r))
-
-            self.atom_gso_mf[atom] = g_so_mf
+                g_ll = veff_sd[:nao, :nao]
+                g_ls = veff_sd[:nao, nao:]
+                g_sl = veff_sd[nao:, :nao]
+                g_ss = veff_sd[nao:, nao:]
+                g_so_mf = reduce(numpy.dot, (r.T.conj(), (g_ll+reduce(numpy.dot, (g_ls, x)) + reduce(numpy.dot, (x.T.conj(), g_sl))+reduce(numpy.dot, (x.T.conj(), g_ss, x))),r))
+                chkfile.dump('amf.chk', atom, g_so_mf)
+                self.atom_gso_mf[atom] = g_so_mf
 
     def get_hcore(self, mol=None):
         c = LIGHT_SPEED
@@ -160,7 +168,7 @@ def x2camf_ghf(mf):
     return mf.view(X2CAMF_GSCF).add_keys(with_x2c=with_x2c)
 
 if __name__ == '__main__':
-    mol = gto.M(verbose=4,
+    mol = gto.M(verbose=3,
                 atom=[["O", (0., 0., 0.)], [1, (0., -0.757, 0.587)],
                       [1, (0., 0.757, 0.587)]],
                 basis='ccpvdz')
