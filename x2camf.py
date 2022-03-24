@@ -1,6 +1,7 @@
 from functools import reduce
 
 import os
+from turtle import shape
 import numpy
 import scipy
 
@@ -10,14 +11,16 @@ from pyscf.lib import chkfile
 from pyscf.x2c import x2c
 from pyscf.scf import dhf, ghf
 
-import somf, frac_dhf
+import somf, frac_dhf, writeInput, settings
 
 class X2CAMF(x2c.X2C):
     atom_gso_mf = None
-    def __init__(self, mol, with_gaunt=False, with_breit=False):
+    def __init__(self, mol, with_gaunt=False, with_breit=False, with_aoc=False, prog="mol"):
         x2c.X2C.__init__(self, mol)
         self.gaunt = with_gaunt
         self.breit = with_breit
+        self.aoc = with_aoc
+        self.prog = prog
 
     def build(self):
         self.atom_gso_mf = {}
@@ -30,6 +33,7 @@ class X2CAMF(x2c.X2C):
                 self.atom_gso_mf[atom] = mat1e
         else:
             for atom in xmol.elements:
+                print(atom)
                 atm_id = gto.elements.charge(atom)
                 spin = atm_id % 2
                 mol_atom = gto.M(verbose=xmol.verbose,atom=[[atom, [0, 0, 0]]], basis=xmol.basis, spin=spin)
@@ -93,33 +97,46 @@ class X2CAMF(x2c.X2C):
 
         hcore = x2c.X2C.get_hcore(self, xmol)
 
-        if self.atom_gso_mf is None:
-            self.build()
+        if(self.prog == "mol"):
+            if self.atom_gso_mf is None:
+                self.build()
 
-        atom_slices = xmol.aoslice_2c_by_atom()
-        for ia in range(xmol.natm):
-            ishl0, ishl1, c0, c1 = atom_slices[ia]
-            hcore[c0:c1, c0:c1] += self.atom_gso_mf[xmol.elements[ia]]
+            atom_slices = xmol.aoslice_2c_by_atom()
+            for ia in range(xmol.natm):
+                ishl0, ishl1, c0, c1 = atom_slices[ia]
+                hcore[c0:c1, c0:c1] += self.atom_gso_mf[xmol.elements[ia]]
 
-        if self.basis is not None:
-            s22 = xmol.intor_symmetric('int1e_ovlp_spinor')
-            s21 = mole.intor_cross('int1e_ovlp_spinor', xmol, mol)
-            c = lib.cho_solve(s22, s21)
-            hcore = reduce(numpy.dot, (c.T.conj(), hcore, c))
-        elif self.xuncontract:
-            np, nc = contr_coeff_nr.shape
-            contr_coeff = numpy.zeros((np * 2, nc * 2))
-            contr_coeff[0::2, 0::2] = contr_coeff_nr
-            contr_coeff[1::2, 1::2] = contr_coeff_nr
-            hcore = reduce(numpy.dot, (contr_coeff.T.conj(), hcore, contr_coeff))
-
+            if self.basis is not None:
+                s22 = xmol.intor_symmetric('int1e_ovlp_spinor')
+                s21 = gto.mole.intor_cross('int1e_ovlp_spinor', xmol, mol)
+                c = lib.cho_solve(s22, s21)
+                hcore = reduce(numpy.dot, (c.T.conj(), hcore, c))
+            elif self.xuncontract:
+                np, nc = contr_coeff_nr.shape
+                contr_coeff = numpy.zeros((np * 2, nc * 2))
+                contr_coeff[0::2, 0::2] = contr_coeff_nr
+                contr_coeff[1::2, 1::2] = contr_coeff_nr
+                hcore = reduce(numpy.dot, (contr_coeff.T.conj(), hcore, contr_coeff))
+        elif(self.prog == "sph_atm"):
+            writeInput.write_input(self.mol, self.gaunt, self.breit, self.aoc)
+            print(settings.AMFIEXE)
+            os.system(settings.AMFIEXE)
+            with open("amf_int","r") as ifs:
+                lines = ifs.readlines()
+            if(len(lines) != hcore.shape[0]**2):
+                print("Something went wrong. The dimension of hcore and amfi calculations do NOT match.")
+                exit()
+            else:
+                for ii in range(hcore.shape[0]):
+                    for jj in range(hcore.shape[1]):
+                        hcore[ii][jj] = hcore[ii][jj] + complex(lines[ii*hcore.shape[0]+jj])
         return hcore
 
 
 class X2CAMF_RHF(x2c.X2C_RHF):
-    def __init__(self, mol):
+    def __init__(self, mol, with_gaunt=False, with_breit=False, with_aoc=False, prog="mol"):
         x2c.X2C_RHF.__init__(self, mol)
-        self.with_x2c = X2CAMF(mol)
+        self.with_x2c = X2CAMF(mol, with_gaunt, with_breit, with_aoc, prog)
         self._keys = self._keys.union(['with_x2c'])
 
 def x2camf_ghf(mf):
