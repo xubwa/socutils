@@ -23,6 +23,7 @@ def write_input(mol, with_gaunt=False, with_breit=False, with_aoc=False):
     with open("amf_input","w") as ofs:
         ofs.write(str(len(mol.elements))+"\n")
         for atom in mol.elements:
+            atom = atom.upper()
             if(type(mol.basis) is str):
                 ofs.write(atom+"\t"+atom+":"+mol.basis+"\n")
             elif(type(mol.basis) is list):
@@ -38,14 +39,14 @@ def write_input(mol, with_gaunt=False, with_breit=False, with_aoc=False):
                 return gto.basis.load(basis_name, symb)
 
         for atom in mol.elements:
+            atom = atom.upper()
             if(type(mol.basis) is str):
                 basisAtom = mol.basis
-            elif(type(mol.basis) is list):
+            else:
                 basisAtom = mol.basis[atom]
-            
             basisUNC = gto.uncontract(load(basisAtom,atom))
             maxL = basisUNC[len(basisUNC)-1][0]
-            ofs.write(atom+":"+basisAtom+"\n"+"\n"+str(maxL+1)+"\n")
+            ofs.write(atom.upper()+":"+basisAtom+"\n"+"\n"+str(maxL+1)+"\n")
             basisList = []
             for ll in range(maxL+1):
                 basisList.append([])

@@ -11,7 +11,7 @@ from pyscf.lib import chkfile
 from pyscf.x2c import x2c
 from pyscf.scf import dhf, ghf
 
-import somf, frac_dhf, writeInput, settings
+import somf, frac_dhf, writeInput, settings, zquatev
 
 class X2CAMF(x2c.X2C):
     atom_gso_mf = None
@@ -32,8 +32,7 @@ class X2CAMF(x2c.X2C):
                 'chkfile to store amf integrals don\'t have the specified element, try delete amf.chk and rerun.'
                 self.atom_gso_mf[atom] = mat1e
         else:
-            for atom in xmol.elements:
-                print(atom)
+            for atom in set(xmol.elements):
                 atm_id = gto.elements.charge(atom)
                 spin = atm_id % 2
                 mol_atom = gto.M(verbose=xmol.verbose,atom=[[atom, [0, 0, 0]]], basis=xmol.basis, spin=spin)
@@ -60,6 +59,8 @@ class X2CAMF(x2c.X2C):
                     nopen = 1
                     nact = 1
                 mf_atom = frac_dhf.FRAC_RDHF(mol_atom, nopen*2, nact)
+                mf_atom.with_breit = self.breit
+                mf_atom.with_gaunt = self.gaunt
                 mf_atom.kernel()
                 dm = mf_atom.make_rdm1()
                 nao = mol_atom.nao_2c()
@@ -76,6 +77,16 @@ class X2CAMF(x2c.X2C):
 
                 vj_sf, vk_sf = somf.get_jk_sf_coulomb(mol_atom, dm, 1)
                 vj, vk = dhf.get_jk_coulomb(mol_atom, dm, 1)
+                opt_llll, opt_ssll, opt_ssss, opt_gaunt = mf_atom.opt
+                if self.breit:
+                    vj1, vk1 = dhf._call_veff_gaunt_breit(mol_atom, dm, 1, opt_gaunt, True)
+                    vj += vj1
+                    vk += vk1
+                elif self.gaunt:
+                    vj1, vk1 = dhf._call_veff_gaunt_breit(mol_atom, dm, 1, opt_gaunt, False)
+                    vj += vj1
+                    vk += vk1
+ 
                 veff_sd = (vj-vk)-(vj_sf-vk_sf)
 
                 g_ll = veff_sd[:nao, :nao]
@@ -134,7 +145,7 @@ class X2CAMF(x2c.X2C):
 
 
 class X2CAMF_RHF(x2c.X2C_RHF):
-    def __init__(self, mol, with_gaunt=False, with_breit=False, with_aoc=False, prog="mol"):
+    def __init__(self, mol, with_gaunt=False, with_breit=False, with_aoc=True, prog="mol"):
         x2c.X2C_RHF.__init__(self, mol)
         self.with_x2c = X2CAMF(mol, with_gaunt, with_breit, with_aoc, prog)
         self._keys = self._keys.union(['with_x2c'])
@@ -186,12 +197,24 @@ def x2camf_ghf(mf):
 
 if __name__ == '__main__':
     mol = gto.M(verbose=3,
-                atom=[["O", (0., 0., 0.)], [1, (0., -0.757, 0.587)],
-                      [1, (0., 0.757, 0.587)]],
-                basis='ccpvdz')
+                atom=[["O", (0., 0., -0.12390941)], 
+		      [1, (0., -1.42993701, 0.98326612)],
+                      [1, (0.,  1.42993701, 0.98326612)]],
+                basis='unc-ccpvdz',
+                unit = 'Bohr')
+    import os
+    os.system('rm amf.chk')
     mf = X2CAMF_RHF(mol)
     e_spinor = mf.scf()
+    os.system('rm amf.chk')
+    mf = X2CAMF_RHF(mol, with_gaunt=True, with_breit=False)
+    e_gaunt = mf.scf()
+    os.system('rm amf.chk')
+    mf = X2CAMF_RHF(mol, with_gaunt=True, with_breit=True)
+    e_breit = mf.scf()
     gmf = x2camf_ghf(scf.GHF(mol))
     e_ghf = gmf.kernel()
-    print("Energy from spinor X2CAMF:    %16.8g" % e_spinor)
+    print("Energy from spinor X2CAMF(Coulomb):    %16.8g" % e_spinor)
+    print("Energy from spinor X2CAMF(Gaunt):      %16.8g" % e_gaunt)
+    print("Energy from spinor X2CAMF(Breit):      %16.8g" % e_breit)
     print("Energy from ghf-based X2CAMF: %16.8g" % e_ghf)
