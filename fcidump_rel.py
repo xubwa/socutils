@@ -62,7 +62,7 @@ def from_x2c(mf, ncore, nact, filename = 'FCIDUMP', tol=1e-8, intor='int2e_spino
     assert mo_coeff.dtype == complex
 
     mf.with_x2c.approx = approx
-    hcore = mf.get_hcore()
+    hcore = mf.get_hcore(mf.mol)
     core_occ = numpy.zeros(len(mf.mo_energy))
     core_occ[:ncore]=1.0
     core_dm = mf.make_rdm1(mo_occ = core_occ)

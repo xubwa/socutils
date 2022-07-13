@@ -23,11 +23,12 @@ def write_input(mol, with_gaunt=False, with_breit=False, with_aoc=False):
     with open("amf_input","w") as ofs:
         ofs.write(str(len(mol.elements))+"\n")
         for atom in mol.elements:
-            atom = atom.upper()
+            ATOM = atom.upper()
             if(type(mol.basis) is str):
-                ofs.write(atom+"\t"+atom+":"+mol.basis+"\n")
-            elif(type(mol.basis) is list):
-                ofs.write(atom+"\t"+atom+":"+mol.basis[atom]+"\n")
+                ofs.write(ATOM+"\t"+ATOM+":"+mol.basis+"\n")
+            #elif(type(mol.basis) is list):
+            else:
+                ofs.write(ATOM+"\t"+ATOM+":"+mol.basis[atom]+"\n")
         ofs.write('%amfiMethod*\n')
         method = str(int(with_aoc))+"\n"+str(int(with_gaunt))+"\n"+str(int(with_breit))
         ofs.write(method)
@@ -39,7 +40,7 @@ def write_input(mol, with_gaunt=False, with_breit=False, with_aoc=False):
                 return gto.basis.load(basis_name, symb)
 
         for atom in mol.elements:
-            atom = atom.upper()
+            ATOM = atom.upper()
             if(type(mol.basis) is str):
                 basisAtom = mol.basis
             else:

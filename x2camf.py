@@ -7,7 +7,7 @@ import scipy
 
 from pyscf import gto, lib, scf
 from pyscf.lib.parameters import LIGHT_SPEED
-from pyscf.lib import chkfile
+from pyscf.lib import chkfile, logger
 from pyscf.x2c import x2c
 from pyscf.scf import dhf, ghf
 
@@ -145,10 +145,49 @@ class X2CAMF(x2c.X2C):
 
 
 class X2CAMF_RHF(x2c.X2C_RHF):
+    nopen = None
+    nact = None
     def __init__(self, mol, with_gaunt=False, with_breit=False, with_aoc=True, prog="mol"):
         x2c.X2C_RHF.__init__(self, mol)
         self.with_x2c = X2CAMF(mol, with_gaunt, with_breit, with_aoc, prog)
         self._keys = self._keys.union(['with_x2c'])
+
+class X2CAMF_RHF(x2c.X2C_RHF):
+    nopen = None
+    nact = None
+    def __init__(self, mol, nopen=0, nact=0, with_gaunt=False, with_breit=False, with_aoc=False, prog="mol"):
+        x2c.X2C_RHF.__init__(self, mol)
+        self.with_x2c = X2CAMF(mol, with_gaunt, with_breit, with_aoc, prog)
+        self._keys = self._keys.union(['with_x2c'])
+        self.nopen = nopen 
+        self.nact = nact
+
+    def get_occ(self, mo_energy=None, mo_coeff=None):
+        if mo_energy is None: mo_energy = self.mo_energy
+        mol = self.mol
+        nopen = self.nopen
+        nact = self.nact
+        nclose = mol.nelectron - nact
+        c = lib.param.LIGHT_SPEED
+        n2c = len(mo_energy)
+        mo_occ = numpy.zeros(n2c)
+
+        if nopen == 0:
+            mo_occ[:mol.nelectron] = 1
+        else:
+            mo_occ[:nclose] = 1
+            mo_occ[nclose:nclose+nopen] = 1.*nact/nopen
+
+        if self.verbose >= logger.INFO:
+            if nopen == 0:
+                homo_ndx = mol.nelectron
+            else:
+                homo_ndx = nclose + nopen
+            logger.info(self, 'HOMO %d = %.12g  LUMO %d = %.12g',
+                            homo_ndx, mo_energy[homo_ndx-1],
+                            homo_ndx+1, mo_energy[homo_ndx])
+            logger.debug(self, 'mo_energy = %s', mo_energy[:])
+        return mo_occ
 
 def x2camf_ghf(mf):
     assert isinstance(mf, ghf.GHF)
