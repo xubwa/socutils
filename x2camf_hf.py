@@ -13,16 +13,24 @@ from pyscf.scf import dhf, ghf
 
 import somf, frac_dhf, writeInput, settings, zquatev
 
+x2camf = None
+try:
+    import x2camf
+except ImportError:
+    pass
+
 class X2CAMF(x2c.X2C):
     atom_gso_mf = None
-    def __init__(self, mol, with_gaunt=False, with_breit=False, with_aoc=False, prog="mol"):
+    def __init__(self, mol, sfx2c=False, with_gaunt=False, with_breit=False, with_aoc=False, prog="mol"):
         x2c.X2C.__init__(self, mol)
+        self.sfx2c = sfx2c # this is still a spinor x2c object, only labels the flavor of soc integral.
         self.gaunt = with_gaunt
         self.breit = with_breit
         self.aoc = with_aoc
         self.prog = prog
+        self.soc_matrix = None
 
-    def build(self):
+    def initialize_x2camf(self):
         self.atom_gso_mf = {}
         xmol = self.get_xmol()[0]
         if os.path.isfile('amf.chk'):
@@ -97,38 +105,29 @@ class X2CAMF(x2c.X2C):
                 chkfile.dump('amf.chk', atom, g_so_mf)
                 self.atom_gso_mf[atom] = g_so_mf
 
-    def get_hcore(self, mol=None):
+    def get_soc_integrals(self, mol=None):
         c = LIGHT_SPEED
-
+        
         if mol is None: mol = self.mol
         if mol.has_ecp():
             raise NotImplementedError
 
         xmol, contr_coeff_nr = self.get_xmol()
+        if self.soc_matrix is not None:
+            return self.soc_matrix
 
-        hcore = x2c.X2C.get_hcore(self, xmol)
+        soc_matrix = numpy.zeros((xmol.nao_2c(), xmol.nao_2c()), dtype=complex)
 
-        if(self.prog == "mol"):
-            if self.atom_gso_mf is None:
-                self.build()
+        if(self.prog == "sph_atm"):
+            if self.sfx2c:
+                spin_free = True
+                two_c = True
+            else:
+                spin_free = False
+                two_c = False
+            soc_matrix = x2camf.amfi(self, spin_free, two_c, self.with_gaunt, self.with_breit)
 
-            atom_slices = xmol.aoslice_2c_by_atom()
-            for ia in range(xmol.natm):
-                ishl0, ishl1, c0, c1 = atom_slices[ia]
-                hcore[c0:c1, c0:c1] += self.atom_gso_mf[xmol.elements[ia]]
-
-            if self.basis is not None:
-                s22 = xmol.intor_symmetric('int1e_ovlp_spinor')
-                s21 = gto.mole.intor_cross('int1e_ovlp_spinor', xmol, mol)
-                c = lib.cho_solve(s22, s21)
-                hcore = reduce(numpy.dot, (c.T.conj(), hcore, c))
-            elif self.xuncontract:
-                np, nc = contr_coeff_nr.shape
-                contr_coeff = numpy.zeros((np * 2, nc * 2))
-                contr_coeff[0::2, 0::2] = contr_coeff_nr
-                contr_coeff[1::2, 1::2] = contr_coeff_nr
-                hcore = reduce(numpy.dot, (contr_coeff.T.conj(), hcore, contr_coeff))
-        elif(self.prog == "sph_atm"):
+        elif(self.prog == "sph_atm_legacy"): # keep this legacy interface for a sanity check.
             writeInput.write_input(self.mol, self.gaunt, self.breit, self.aoc)
             print(settings.AMFIEXE)
             os.system(settings.AMFIEXE)
@@ -140,8 +139,44 @@ class X2CAMF(x2c.X2C):
             else:
                 for ii in range(hcore.shape[0]):
                     for jj in range(hcore.shape[1]):
-                        hcore[ii][jj] = hcore[ii][jj] + complex(lines[ii*hcore.shape[0]+jj])
-        return hcore
+                        soc_matrix[ii][jj] = complex(lines[ii*hcore.shape[0]+jj])
+        else: # should fall back to the expensive way.
+            if self.atom_gso_mf is None:
+                self.initialize_x2camf()
+
+            atom_slices = xmol.aoslice_2c_by_atom()
+            for ia in range(xmol.natm):
+                ishl0, ishl1, c0, c1 = atom_slices[ia]
+                soc_matrix[c0:c1, c0:c1] += self.atom_gso_mf[xmol.elements[ia]]
+        self.soc_matrix = soc_matrix
+        return soc_matrix
+
+            
+
+    def get_hcore(self, mol=None):
+        c = LIGHT_SPEED
+
+        if mol is None: mol = self.mol
+        if mol.has_ecp():
+            raise NotImplementedError
+
+        xmol, contr_coeff_nr = self.get_xmol()
+
+        hcore = x2c.X2C.get_hcore(self, xmol)
+        soc_matrix = self.get_soc_integrals()
+        if self.basis is not None:
+            s22 = xmol.intor_symmetric('int1e_ovlp_spinor')
+            s21 = gto.mole.intor_cross('int1e_ovlp_spinor', xmol, mol)
+            c = lib.cho_solve(s22, s21)
+            soc_matrix = reduce(numpy.dot, (c.T.conj(), soc_matrix, c))
+        elif self.xuncontract:
+            np, nc = contr_coeff_nr.shape
+            contr_coeff = numpy.zeros((np * 2, nc * 2))
+            contr_coeff[0::2, 0::2] = contr_coeff_nr
+            contr_coeff[1::2, 1::2] = contr_coeff_nr
+            soc_matrix = reduce(numpy.dot, (contr_coeff.T.conj(), soc_matrix, contr_coeff))
+
+        return hcore + soc_matrix
 
 
 class X2CAMF_RHF(x2c.X2C_RHF):

@@ -10,6 +10,12 @@ from pyscf.scf import dhf, jk, _vhf
 #from pyscf.shciscf import socutils
 from pyscf.x2c import sfx2c1e
 from pyscf.x2c import x2c
+from spinor2sph import spinor2sph_soc
+x2camf  = None
+try:
+    import x2camf
+except ImportError:
+    pass
 
 def get_hxr(mol, uncontract=True):
     if (uncontract):
@@ -207,14 +213,18 @@ def print_int1e(h1, name):
                                    (h1[k, i, j].real, i + 1, j + 1))
 
 
-def get_soc_integrals(method, dm=None, pc1e=None, pc2e=None, unc=None):
-    factor = (0.5 / LIGHT_SPEED)**2
+def get_soc_integrals(method, dm=None, pc1e=None, pc2e=None, unc=None, atomic=True):
+    factor = 0.5 / (LIGHT_SPEED)**2
 
     # treat x2c and bp in seperate workflows.
     has_ecp = method.mol.has_ecp()
     mol = method.mol
 
-    if (pc1e is None and pc2e is None):
+    if pc1e is None:
+        pc1e = 'None'
+    if pc2e is None:
+        pc2e = 'None'
+    if (pc1e is 'None' and pc2e is 'None'):
         if has_ecp:
             hso1e = mol.intor('ECPso')
             print('''
@@ -225,12 +235,13 @@ def get_soc_integrals(method, dm=None, pc1e=None, pc2e=None, unc=None):
             AssertionError(
                 'No picture change effects provided, no soc effects included')
 
-    if (has_ecp or ('x2c' in pc1e or 'x2c' in pc2e)):
-        AssertionError('X2C should not be used together with ECP at any time.')
+    if (has_ecp and ('x2c' in pc1e or 'x2c' in pc2e)):
+        raise AssertionError('X2C should not be used together with ECP at any time.')
+
 
     if unc is None:
         # when there is ecp, or both pc1e and pc2e are bp, use contracted basis by default.
-        unc = 2 * sum(has_ecp) + ('bp' in pc1e) + ('bp' in pc2e) >= 2
+        unc = 2 * has_ecp + ('bp' in pc1e) + ('bp' in pc2e) < 2
 
     if dm is None:
         dm = method.make_rdm1()
@@ -256,14 +267,25 @@ def get_soc_integrals(method, dm=None, pc1e=None, pc2e=None, unc=None):
     else:
         AssertionError('pc1e=%s is not a valid option.' % pc1e)
 
-    if (pc2e == 'bp'):
-        hso -= factor * get_fso2e_bp(xmol, dm)
-    elif (pc2e == 'x2c'):
-        hso -= factor * get_fso2e_x2c(xmol, dm, unc=unc)
-    elif (pc2e == None):
-        hso += 0.0
+    if (atomic != True):
+        if (pc2e == 'bp'):
+            hso -= factor * get_fso2e_bp(xmol, dm)
+        elif (pc2e == 'x2c'):
+            hso -= factor * get_fso2e_x2c(xmol, dm, unc=unc)
+        elif (pc2e == None):
+            hso += 0.0
+        else:
+            AssertionError('pc2e=%s is not a valid option.' % pc2e)
     else:
-        AssertionError('pc2e=%s is not a valid option.' % pc2e)
+        if (pc2e == 'bp'):
+            NotImplementedError('Atomic mean-field for BP is not implemented yet, set atomic = False instead.')
+        elif (pc2e == 'x2c'):
+            if x2camf:
+                x2cobj = x2c.X2C(mol)
+                spinor = x2camf.x2camf(x2cobj, spin_free=False, two_c=False, with_gaunt=True, with_gauge=False)
+                hso -= 2. * spinor2sph_soc(xmol, spinor)[1:]
+            else:
+                AssertionError('AMF calculation requires x2camf package. Install x2camf with pip install git+https://github.com/warlocat/x2camf')
 
     # convert back to contracted basis
     for ic in range(3):
@@ -298,14 +320,14 @@ def write_gtensor_integrals(mc, atomlist=None):
     print_int1e(h1[:, ncore:ncore + ncas, ncore:ncore + ncas], 'GTensor')
 
 
-def write_soc_integrals(mc, dm=None, pc1e='bp', pc2e='bp', unc=True):
+def write_soc_integrals(mc, dm=None, pc1e='bp', pc2e='bp', unc=None, atomic=True):
     if dm is None:
         try:
             dm = mc.make_rdm1()
         except:
             dm = mc._scf.make_rdm1(mc.mo_coeff)
 
-    hso = get_soc_integrals(mc, dm=dm, pc1e=pc1e, pc2e=pc2e, unc=unc)
+    hso = get_soc_integrals(mc, dm=dm, pc1e=pc1e, pc2e=pc2e, unc=unc, atomic=atomic)
     ncore, ncas = mc.ncore, mc.ncas
     h1 = lib.einsum('xpq,pi,qj->xij', hso, mc.mo_coeff,
                     mc.mo_coeff)[:, ncore:ncore + ncas, ncore:ncore + ncas]
