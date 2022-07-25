@@ -19,7 +19,7 @@ class FRAC_RDHF(dhf.RDHF):
         # don't require electron number to be even since fraction occ is allowed.
         if zquatev is None:
             raise RuntimeError('zquatev library is required to perform Kramers-restricted DHF')
-        dhf.UHF.__init__(self, mol)
+        dhf.RDHF.__init__(self, mol)
         self.nopen = nopen
         self.nact = nact
 

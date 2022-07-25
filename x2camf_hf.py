@@ -21,7 +21,7 @@ except ImportError:
 
 class X2CAMF(x2c.X2C):
     atom_gso_mf = None
-    def __init__(self, mol, sfx2c=False, with_gaunt=False, with_breit=False, with_aoc=False, prog="mol"):
+    def __init__(self, mol, sfx2c=False, with_gaunt=False, with_breit=False, with_aoc=False, prog="sph_atm"):
         x2c.X2C.__init__(self, mol)
         self.sfx2c = sfx2c # this is still a spinor x2c object, only labels the flavor of soc integral.
         self.gaunt = with_gaunt
@@ -125,7 +125,7 @@ class X2CAMF(x2c.X2C):
             else:
                 spin_free = False
                 two_c = False
-            soc_matrix = x2camf.amfi(self, spin_free, two_c, self.with_gaunt, self.with_breit)
+            soc_matrix = x2camf.amfi(self, spin_free, two_c, self.gaunt, self.breit)
 
         elif(self.prog == "sph_atm_legacy"): # keep this legacy interface for a sanity check.
             writeInput.write_input(self.mol, self.gaunt, self.breit, self.aoc)
@@ -182,17 +182,9 @@ class X2CAMF(x2c.X2C):
 class X2CAMF_RHF(x2c.X2C_RHF):
     nopen = None
     nact = None
-    def __init__(self, mol, with_gaunt=False, with_breit=False, with_aoc=True, prog="mol"):
+    def __init__(self, mol, nopen=0, nact=0, with_gaunt=False, with_breit=False, with_aoc=False, prog="sph_atm"):
         x2c.X2C_RHF.__init__(self, mol)
-        self.with_x2c = X2CAMF(mol, with_gaunt, with_breit, with_aoc, prog)
-        self._keys = self._keys.union(['with_x2c'])
-
-class X2CAMF_RHF(x2c.X2C_RHF):
-    nopen = None
-    nact = None
-    def __init__(self, mol, nopen=0, nact=0, with_gaunt=False, with_breit=False, with_aoc=False, prog="mol"):
-        x2c.X2C_RHF.__init__(self, mol)
-        self.with_x2c = X2CAMF(mol, with_gaunt, with_breit, with_aoc, prog)
+        self.with_x2c = X2CAMF(mol, with_gaunt=with_gaunt, with_breit=with_breit, with_aoc=with_aoc, prog=prog)
         self._keys = self._keys.union(['with_x2c'])
         self.nopen = nopen 
         self.nact = nact
@@ -224,15 +216,15 @@ class X2CAMF_RHF(x2c.X2C_RHF):
             logger.debug(self, 'mo_energy = %s', mo_energy[:])
         return mo_occ
 
-def x2camf_ghf(mf):
+def x2camf_ghf(mf, *args, **kwargs):
     assert isinstance(mf, ghf.GHF)
 
     if isinstance(mf, x2c._X2C_SCF):
         if mf.with_x2c is None:
-            mf.with_x2c = X2CAMF(mf.mol)
+            mf.with_x2c = X2CAMF(mf.mol, *args, **kwargs)
             return mf
         elif not isinstance(mf.with_x2c, X2CAMF):
-            mf.with_x2c = X2CAMF(mf.mol)
+            mf.with_x2c = X2CAMF(mf.mol, *args, **kwargs)
             return mf
         else:
             return mf
@@ -249,8 +241,8 @@ def x2camf_ghf(mf):
             with_x2c : X2C object
         '''
         def __init__(self, mol, *args, **kwargs):
-            mf_class.__init__(self, mol, *args, **kwargs)
-            self.with_x2c = X2CAMF(mf.mol)
+            mf_class.__init__(self, mol)
+            self.with_x2c = X2CAMF(mf.mol, *args, **kwargs)
             self._keys = self._keys.union(['with_x2c'])
 
         def get_hcore(self, mol=None):
@@ -266,19 +258,19 @@ def x2camf_ghf(mf):
             hso[nao:, :nao] = reduce(numpy.dot, (cb, hcore, ca.conj().T))
             return hso
 
-    with_x2c = X2CAMF(mf.mol)
+    with_x2c = X2CAMF(mf.mol, *args, **kwargs)
     return mf.view(X2CAMF_GSCF).add_keys(with_x2c=with_x2c)
 
 if __name__ == '__main__':
     mol = gto.M(verbose=3,
                 atom=[["O", (0., 0., -0.12390941)], 
-		      [1, (0., -1.42993701, 0.98326612)],
+		              [1, (0., -1.42993701, 0.98326612)],
                       [1, (0.,  1.42993701, 0.98326612)]],
                 basis='unc-ccpvdz',
                 unit = 'Bohr')
     import os
     os.system('rm amf.chk')
-    mf = X2CAMF_RHF(mol)
+    mf = X2CAMF_RHF(mol, with_gaunt=False, with_breit=False)
     e_spinor = mf.scf()
     os.system('rm amf.chk')
     mf = X2CAMF_RHF(mol, with_gaunt=True, with_breit=False)
@@ -286,9 +278,9 @@ if __name__ == '__main__':
     os.system('rm amf.chk')
     mf = X2CAMF_RHF(mol, with_gaunt=True, with_breit=True)
     e_breit = mf.scf()
-    gmf = x2camf_ghf(scf.GHF(mol))
+    gmf = x2camf_ghf(scf.GHF(mol), with_gaunt=True, with_breit=True)
     e_ghf = gmf.kernel()
-    print("Energy from spinor X2CAMF(Coulomb):    %16.8g" % e_spinor)
-    print("Energy from spinor X2CAMF(Gaunt):      %16.8g" % e_gaunt)
-    print("Energy from spinor X2CAMF(Breit):      %16.8g" % e_breit)
-    print("Energy from ghf-based X2CAMF: %16.8g" % e_ghf)
+    print("Energy from spinor X2CAMF(Coulomb):    %16.10g" % e_spinor)
+    print("Energy from spinor X2CAMF(Gaunt):      %16.10g" % e_gaunt)
+    print("Energy from spinor X2CAMF(Breit):      %16.10g" % e_breit)
+    print("Energy from ghf-based X2CAMF(Breit):   %16.10g" % e_ghf)

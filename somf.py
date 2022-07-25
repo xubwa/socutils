@@ -281,17 +281,19 @@ def get_soc_integrals(method, dm=None, pc1e=None, pc2e=None, unc=None, atomic=Tr
             NotImplementedError('Atomic mean-field for BP is not implemented yet, set atomic = False instead.')
         elif (pc2e == 'x2c'):
             if x2camf:
-                x2cobj = x2c.X2C(mol)
-                spinor = x2camf.x2camf(x2cobj, spin_free=False, two_c=False, with_gaunt=True, with_gauge=False)
+                x2cobj = x2c.X2C(xmol)
+                spinor = x2camf.amfi(x2cobj, spin_free=False, two_c=False, with_gaunt=True, with_gauge=True)
+                print(xmol.nao_2c(), spinor.shape)
                 hso -= 2. * spinor2sph_soc(xmol, spinor)[1:]
             else:
                 AssertionError('AMF calculation requires x2camf package. Install x2camf with pip install git+https://github.com/warlocat/x2camf')
 
     # convert back to contracted basis
+    result = numpy.zeros((3, mol.nao_nr(), mol.nao_nr()))
     for ic in range(3):
-        hso[ic] = reduce(numpy.dot, (contr_coeff.T, hso[ic], contr_coeff))
-
-    return hso
+        result[ic] = reduce(numpy.dot, (contr_coeff.T, hso[ic], contr_coeff))
+    
+    return result
 
 
 def write_gtensor_integrals(mc, atomlist=None):
@@ -398,7 +400,7 @@ def _call_veff_sf_ssll(mol, dm, hermi=1, mf_opt=None):
     if n_dm == 1:
         vj = vj.reshape(vj.shape[1:])
         vk = vk.reshape(vk.shape[1:])
-    return dhf._jk_triu_(vj, vk, hermi)
+    return dhf._jk_triu_(mol, vj, vk, hermi)
 
 
 def _call_veff_sf_ssss(mol, dm, hermi=1, mf_opt=None):
@@ -414,7 +416,7 @@ def _call_veff_sf_ssss(mol, dm, hermi=1, mf_opt=None):
     vj, vk = _vhf.rdirect_mapdm('int2e_pp1pp2_spinor', 's8',
                                 ('ji->s2kl', 'jk->s1il'), dms, 1,
                                 mol._atm, mol._bas, mol._env, mf_opt) * c1**4
-    return dhf._jk_triu_(vj, vk, hermi)
+    return dhf._jk_triu_(mol, vj, vk, hermi)
 
 
 if __name__ == '__main__':
