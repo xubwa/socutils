@@ -9,7 +9,7 @@ from pyscf import gto, lib, scf
 from pyscf.lib.parameters import LIGHT_SPEED
 from pyscf.lib import chkfile, logger
 from pyscf.x2c import x2c
-from pyscf.scf import dhf, ghf
+from pyscf.scf import hf, dhf, ghf
 
 import somf, frac_dhf, writeInput, settings, zquatev
 
@@ -179,11 +179,11 @@ class X2CAMF(x2c.X2C):
         return hcore + soc_matrix
 
 
-class X2CAMF_RHF(x2c.X2C_RHF):
+class SCF(x2c.SCF):
     nopen = None
     nact = None
     def __init__(self, mol, nopen=0, nact=0, with_gaunt=False, with_breit=False, with_aoc=False, prog="sph_atm"):
-        x2c.X2C_RHF.__init__(self, mol)
+        hf.SCF.__init__(self, mol)
         self.with_x2c = X2CAMF(mol, with_gaunt=with_gaunt, with_breit=with_breit, with_aoc=with_aoc, prog=prog)
         self._keys = self._keys.union(['with_x2c'])
         self.nopen = nopen 
@@ -215,6 +215,34 @@ class X2CAMF_RHF(x2c.X2C_RHF):
                             homo_ndx+1, mo_energy[homo_ndx])
             logger.debug(self, 'mo_energy = %s', mo_energy[:])
         return mo_occ
+
+X2CAMF_SCF = SCF
+
+class UHF(SCF):
+    def to_ks(self, xc='HF'):
+        from pyscf.x2c import sft
+        mf = self.view(dft.UKS)
+        mf.converged = False
+        return mf
+
+X2CAMF_UHF = UHF
+
+class RHF(UHF):
+    def __init__(self, mol, nopen=0, nact=0, with_gaunt=False, with_breit=False, with_aoc=False, prog="sph_atm"):
+        super().__init__(mol)
+        if dhf.zquatev is None:
+            raise RuntimeError('zquatev library is required to perform Kramers-restricted X2C-RHF')
+
+    def _eigh(self, h, s):
+        return dhf.zquatev.solve_KR_FCSCE(self.mol, h, s)
+
+    def to_ks(self, xc='HF'):
+        from pyscf.x2c import dft
+        mf = self.view(dft.RKS)
+        mf.converged = False
+        return mf
+
+X2CAMF_RHF = RHF
 
 def x2camf_ghf(mf, *args, **kwargs):
     assert isinstance(mf, ghf.GHF)
