@@ -241,7 +241,11 @@ def get_soc_integrals(method, dm=None, pc1e=None, pc2e=None, unc=None, atomic=Tr
 
     if unc is None:
         # when there is ecp, or both pc1e and pc2e are bp, use contracted basis by default.
-        unc = 2 * has_ecp + ('bp' in pc1e) + ('bp' in pc2e) < 2
+        #unc = 2 * has_ecp + ('bp' in pc1e) + ('bp' in pc2e) < 2
+        if 'x2c' in pc1e:
+            unc = True
+        elif has_ecp or 'bp' in pc1e:
+            unc = False
 
     if dm is None:
         dm = method.make_rdm1()
@@ -253,7 +257,7 @@ def get_soc_integrals(method, dm=None, pc1e=None, pc2e=None, unc=None, atomic=Tr
         xmol, contr_coeff = method.mol, numpy.eye(method.mol.nao_nr())
 
     nb = xmol.nao_nr()
-    hso = numpy.zeros((3, nb, nb), dtype=complex)
+    hso = numpy.zeros((3, nb, nb))
 
     if (has_ecp):
         hso += mol.intor('ECPso')
