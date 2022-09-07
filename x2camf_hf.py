@@ -229,7 +229,7 @@ X2CAMF_UHF = UHF
 
 class RHF(UHF):
     def __init__(self, mol, nopen=0, nact=0, with_gaunt=False, with_breit=False, with_aoc=False, prog="sph_atm"):
-        super().__init__(mol)
+        super().__init__(mol, nopen, nact, with_gaunt, with_breit, with_aoc, prog)
         if dhf.zquatev is None:
             raise RuntimeError('zquatev library is required to perform Kramers-restricted X2C-RHF')
 
