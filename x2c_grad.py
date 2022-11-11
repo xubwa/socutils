@@ -11,7 +11,7 @@ Ref.
 JCP 135, 084114 (2011); DOI:10.1063/1.3624397
 '''
 
-def get_Asq1(A,A1):
+def get_Asq1(A, A1):
     # A = B^2
     # B = A^{1/2}
     # return B^lambda
@@ -25,7 +25,7 @@ def get_Asq1(A,A1):
             YB1Y[ii,jj] = YA1Y[ii,jj] / (math.sqrt(Aeig[ii]) + math.sqrt(Aeig[jj]))
     return reduce(numpy.dot, (Avec, YB1Y, Avec.T.conj()))
 
-def get_Asqi1(A,A1):
+def get_Asqi1(A, A1):
     # A = B^2
     # B = A^{1/2}
     # return (B^{-1})^lambda
@@ -56,11 +56,14 @@ def get_C1(C0, mo_ene, D1, S4c1=None):
         S1_mo = reduce(numpy.dot,(C0.T.conj(), S4c1, C0))
     for ii in range(size):
         for jj in range(size):
-            denominator = mo_ene[jj]-mo_ene[ii]
-            if(abs(denominator) < 1e-4):
-                U1[ii,jj] = 0.0
+            if(ii == jj):
+                U1[ii,ii] = -0.5*S1_mo[ii,ii]
             else:
-                U1[ii,jj] = (D1_mo[ii,jj] - S1_mo[ii,jj]*mo_ene[jj])/denominator
+                denominator = mo_ene[jj]-mo_ene[ii]
+                if(abs(denominator) < 1e-4):
+                    U1[ii,jj] = 0.0
+                else:
+                    U1[ii,jj] = (D1_mo[ii,jj] - S1_mo[ii,jj]*mo_ene[jj])/denominator
     return numpy.dot(C0,U1)
 
 def get_X1(C0, C1, X0):
@@ -69,7 +72,10 @@ def get_X1(C0, C1, X0):
     CL = C0[:size, size:]
     CL1 = C1[:size, size:]
     CS1 = C1[size:, size:]
-    return (CS1 - numpy.dot(X0,CL1))*scipy.linalg.inv(CL)
+    CS1 = CS1 - numpy.dot(X0,CL1)
+    # tmp = numpy.dot(CL, CL.T.conj())  
+    # return reduce(numpy.dot, (CS1, CL.T.conj(), numpy.linalg.inv(tmp)))   # numerically a little bit more stable
+    return numpy.dot(CS1,scipy.linalg.inv(CL))
 
 def get_ST1(S4c0, X0, X1=None, S4c1=None):
     size = S4c0.shape[0]//2
@@ -98,7 +104,7 @@ def get_R1(S0, ST, ST1, S1=None):
         R1 = R1 + reduce(numpy.dot, (get_Asqi1(S0,S1), Asqinv, Ssq0)) + reduce(numpy.dot, (Ssqinv0, Asqinv, get_Asq1(S0,S1)))
     return R1
 
-def get_L1(h4c0,h4c1,X0,X1):
+def get_L1(h4c0, h4c1, X0, X1):
     # Ref (30)
     size = h4c0.shape[0]//2
     hLS = h4c0[:size,size:]
@@ -114,21 +120,52 @@ def get_L1(h4c0,h4c1,X0,X1):
     return hLL1 + TX1 + TX1.T.conj() + T1X + T1X.T.conj() + X1TX + X1TX.T.conj() + XT1X
 
 
-def get_hfw1(C4c0,X0,S4c0,h4c0,mo_ene,R0,L0,h4c1,S4c1=None):
+def get_hfw1(C4c0, X0, S4c0, h4c0, mo_ene, R0, L0, h4c1, S4c1=None):
     size2c = C4c0.shape[0]//2
-    S2c0 = S4c0[:size2c, :size2c]
+    S2c0 = S4c0[:size2c,:size2c]
     ST = S2c0 + reduce(numpy.dot, (X0.T.conj(), S4c0[size2c:,size2c:], X0))
     if(S4c1 is None):
         S2c1 = None
     else:
-        S2c1 = S4c1[:size2c, :size2c]
+        S2c1 = S4c1[:size2c,:size2c]
     C4c1 = get_C1(C4c0, mo_ene, h4c1, S4c1)
     X1 = get_X1(C4c0, C4c1, X0)
-    ST1 = get_ST1(S4c0,X0,X1,S4c1)
-    R1 = get_R1(S2c0,ST,ST1,S2c1)
-    L1 = get_L1(h4c0,h4c1,X0,X1)
+    ST1 = get_ST1(S4c0, X0, X1, S4c1)
+    R1 = get_R1(S2c0, ST, ST1, S2c1)
+    L1 = get_L1(h4c0, h4c1, X0, X1)
     R1LR = reduce(numpy.dot, (R1.T.conj(), L0, R0))
     return reduce(numpy.dot, (R0.T.conj(), L1, R0)) + R1LR + R1LR.T.conj()
 
 
 
+def x2c1e_hfw1(t, v, w, s, h4c1):
+    assert (h4c1.shape[0] == 2*t.shape[0]), "The size of h4c1 does match the size of two-component integrals."
+
+    c = LIGHT_SPEED
+    nao = s.shape[0]
+    n2 = nao * 2
+    h4c = numpy.zeros((n2, n2), dtype=v.dtype)
+    m4c = numpy.zeros((n2, n2), dtype=v.dtype)
+    h4c[:nao, :nao] = v
+    h4c[:nao, nao:] = t
+    h4c[nao:, :nao] = t
+    h4c[nao:, nao:] = w * (.25 / c**2) - t
+    m4c[:nao, :nao] = s
+    m4c[nao:, nao:] = t * (.5 / c**2)
+
+    e, a = scipy.linalg.eigh(h4c, m4c)
+    cl = a[:nao, nao:]
+    cs = a[nao:, nao:]
+
+    b = numpy.dot(cl, cl.T.conj())
+    x = reduce(numpy.dot, (cs, cl.T.conj(), numpy.linalg.inv(b)))
+
+    st = s + reduce(numpy.dot, (x.T.conj(), t, x)) * (.5 / c**2)
+    tx = reduce(numpy.dot, (t, x))
+    l = h4c[:nao, :nao] + tx + tx.T.conj() + reduce(numpy.dot, (x.T.conj(), h4c[nao:, nao:], x))
+
+    sa = x2c._invsqrt(s)
+    sb = x2c._invsqrt(reduce(numpy.dot, (sa, st, sa)))
+    r = reduce(numpy.dot, (sa, sb, sa, s))
+    # hfw = reduce(numpy.dot, (r.T.conj(), l, r))
+    return get_hfw1(a, x, m4c, h4c, e, r, l, h4c1)

@@ -15,11 +15,11 @@ import somf_pt
 mol = gto.M(
     verbose = 4,
     atom = [[10,[0.0,0.0,0.0]]],
-    basis = 'cc-pvtz',
+    basis = 'sto-3g',
     symmetry = False,
     spin = 0)
 
 # X2CAMF-PT scheme
-x2cints = somf_pt.x2camf_pt(mol)
-
-
+x2cints = somf_pt.get_psoc_x2camf(mol)
+#The only non-zero value is +-6.53530056e-04
+print(x2cints)
