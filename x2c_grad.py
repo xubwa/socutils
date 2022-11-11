@@ -120,10 +120,9 @@ def get_L1(h4c0, h4c1, X0, X1):
     return hLL1 + TX1 + TX1.T.conj() + T1X + T1X.T.conj() + X1TX + X1TX.T.conj() + XT1X
 
 
-def get_hfw1(C4c0, X0, S4c0, h4c0, mo_ene, R0, L0, h4c1, S4c1=None):
+def get_hfw1(C4c0, X0, ST, S4c0, h4c0, mo_ene, R0, L0, h4c1, S4c1=None):
     size2c = C4c0.shape[0]//2
     S2c0 = S4c0[:size2c,:size2c]
-    ST = S2c0 + reduce(numpy.dot, (X0.T.conj(), S4c0[size2c:,size2c:], X0))
     if(S4c1 is None):
         S2c1 = None
     else:
@@ -136,11 +135,7 @@ def get_hfw1(C4c0, X0, S4c0, h4c0, mo_ene, R0, L0, h4c1, S4c1=None):
     R1LR = reduce(numpy.dot, (R1.T.conj(), L0, R0))
     return reduce(numpy.dot, (R0.T.conj(), L1, R0)) + R1LR + R1LR.T.conj()
 
-
-
-def x2c1e_hfw1(t, v, w, s, h4c1):
-    assert (h4c1.shape[0] == 2*t.shape[0]), "The size of h4c1 does match the size of two-component integrals."
-
+def x2c1e_hfw0(t, v, w, s):
     c = LIGHT_SPEED
     nao = s.shape[0]
     n2 = nao * 2
@@ -167,5 +162,5 @@ def x2c1e_hfw1(t, v, w, s, h4c1):
     sa = x2c._invsqrt(s)
     sb = x2c._invsqrt(reduce(numpy.dot, (sa, st, sa)))
     r = reduce(numpy.dot, (sa, sb, sa, s))
-    # hfw = reduce(numpy.dot, (r.T.conj(), l, r))
-    return get_hfw1(a, x, m4c, h4c, e, r, l, h4c1)
+    hfw = reduce(numpy.dot, (r.T.conj(), l, r))
+    return a, e, x, st, r, l, h4c, m4c
