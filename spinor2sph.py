@@ -21,9 +21,9 @@ def spinor2sph_soc(mol, spinor):
     nao_2c = ints_so.shape[0]
     naonr = nao_2c // 2
     soaa = ints_so[:naonr,:naonr]
-    sobb = ints_so[naonr:,naonr:]
+    #sobb = ints_so[naonr:,naonr:]
     soab = ints_so[:naonr,naonr:]
-    soba = ints_so[naonr:,:naonr]
+    #soba = ints_so[naonr:,:naonr]
     so_scalar = soaa.real
     so_sz = soaa.imag
     so_sy = soab.real

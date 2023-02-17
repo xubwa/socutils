@@ -2,7 +2,7 @@ import pyscf
 import x2camf
 from pyscf import gto,x2c
 # mol = gto.M(
-#     atom=[["O", (0., 0., 0.)], 
+#     atom=[["O", (0., 0., 0.)],
 #     [1, (0., -0.757, 0.587)],
 #     [1, (0., 0.757, 0.587)]],
 #     basis={"O":"unc-ccpvdz","H":"unc-ccpvdz"})
@@ -17,7 +17,7 @@ from pyscf import gto,x2c
 #             found = True
 #             breakfor atom in mol.elements:
 #         atomUnique.append(atom)
-#         indexList.append(len(atomUnique)-1)        
+#         indexList.append(len(atomUnique)-1)
 
 def write_input(mol, with_gaunt=False, with_breit=False, with_aoc=False):
     with open("amf_input","w") as ofs:

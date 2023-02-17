@@ -39,7 +39,7 @@ def sox2c_ghf(mf):
             return mf
         else:
             return mf
-        
+
     mf_class = mf.__class__
     if mf_class.__doc__ is None:
         doc = ''
@@ -73,7 +73,7 @@ if __name__ == '__main__':
     )
     mf = scf.DHF(mol)
     #e_dhf = mf.kernel()
-    #print('E(dhf)=%.12g' %e_dhf) 
+    #print('E(dhf)=%.12g' %e_dhf)
     #mf = x2camf.X2CAMF_RHF(mol)
     #e_amf = mf.kernel()
     #print('E(AMF)=%.12g', e_amf)
@@ -90,7 +90,7 @@ if __name__ == '__main__':
     x2c_spinor = x2c.RHF(mol)
     e_spinor = x2c_spinor.kernel()
     print('E(NR-GHF) = {:.12g}'.format(egf))
-    print('E(X2CAMF, from GHF) = {:.12g}'.format(eso)) 
+    print('E(X2CAMF, from GHF) = {:.12g}'.format(eso))
     print('E(SFX2C-SO) = {:.12g}'.format(esfx2c_so))
     print('E(SO1e, from GHF) = %.12g' % eso1e)
     print('E(SO1e, from spinor) = %.12g' % e_spinor)

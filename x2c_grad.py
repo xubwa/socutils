@@ -15,7 +15,7 @@ def get_Asq1(A, A1):
     # A = B^2
     # B = A^{1/2}
     # return B^lambda
-    # Ref (A3)-(A7) 
+    # Ref (A3)-(A7)
     size = A.shape[0]
     Aeig, Avec = scipy.linalg.eigh(A)
     YA1Y = reduce(numpy.dot, (Avec.T.conj(), A1, Avec))
@@ -29,7 +29,7 @@ def get_Asqi1(A, A1):
     # A = B^2
     # B = A^{1/2}
     # return (B^{-1})^lambda
-    # Ref (A3)-(A7) 
+    # Ref (A3)-(A7)
     size = A.shape[0]
     Aeig, Avec = scipy.linalg.eigh(A)
     YA1Y = reduce(numpy.dot, (Avec.T.conj(), A1, Avec))
@@ -73,7 +73,7 @@ def get_X1(C0, C1, X0):
     CL1 = C1[:size, size:]
     CS1 = C1[size:, size:]
     CS1 = CS1 - numpy.dot(X0,CL1)
-    # tmp = numpy.dot(CL, CL.T.conj())  
+    # tmp = numpy.dot(CL, CL.T.conj())
     # return reduce(numpy.dot, (CS1, CL.T.conj(), numpy.linalg.inv(tmp)))   # numerically a little bit more stable
     return numpy.dot(CS1,scipy.linalg.inv(CL))
 

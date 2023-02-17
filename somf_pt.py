@@ -30,7 +30,7 @@ Mol. Phys. 118, e1768313 (2020); DOI:10.1080/00268976.2020.1768313
 '''
 def get_psoc_x2camf(mol, gaunt=True, gauge=True):
     xmol, contr_coeff = sfx2c1e.SpinFreeX2C(mol).get_xmol()
-        
+
     c = LIGHT_SPEED
     t = xmol.intor_symmetric('int1e_spsp_spinor') * .5
     v = xmol.intor_symmetric('int1e_nuc_spinor')
@@ -48,14 +48,14 @@ def get_psoc_x2camf(mol, gaunt=True, gauge=True):
     x2cobj = x2c.X2C(mol)
     spinor = x2camf.amfi(x2cobj, spin_free=True, two_c=True, with_gaunt=gaunt, with_gauge=gauge, pt=True)
     h4c1 += spinor
-    
+
     hfw1 = x2c_grad.x2c1e_hfw1(t,v,wsf,s,h4c1)
     hfw1_sph = spinor2sph_soc(xmol, hfw1)[1:]
     # convert back to contracted basis
     result = numpy.zeros((3, mol.nao_nr(), mol.nao_nr()))
     for ic in range(3):
         result[ic] = reduce(numpy.dot, (contr_coeff.T, hfw1_sph[ic], contr_coeff))
-    
+
     return result
 
 

@@ -6,11 +6,11 @@ from pyscf import scf, gto, x2c, dft
 import x2camf_hf
 
 mol = gto.M(verbose=3,
-                atom=[["O", (0., 0., -0.12390941)], 
-		          [1, (0., -1.42993701, 0.98326612)],
-                      [1, (0.,  1.42993701, 0.98326612)]],
-                basis='unc-ccpvdz',
-                unit = 'Bohr')
+            atom=[["O", (0.,          0., -0.12390941)],
+                  [  1, (0., -1.42993701,  0.98326612)],
+                  [  1, (0.,  1.42993701,  0.98326612)]],
+            basis='unc-ccpvdz',
+            unit='Bohr')
 mf = x2c.UKS(mol)
 mf.xc = 'b3lyp'
 mf.with_x2c = x2camf_hf.X2CAMF(mol, with_gaunt=True, with_breit=True)
