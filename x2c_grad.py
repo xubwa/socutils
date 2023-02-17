@@ -101,7 +101,8 @@ def get_R1(S0, ST, ST1, S1=None):
     R1 = reduce(numpy.dot, (Ssqinv0, get_Asqi1(A, A1), Ssq0))
     if(S1 is not None):
         Asqinv = scipy.linalg.inv(scipy.linalg.sqrtm(A))
-        R1 = R1 + reduce(numpy.dot, (get_Asqi1(S0,S1), Asqinv, Ssq0)) + reduce(numpy.dot, (Ssqinv0, Asqinv, get_Asq1(S0,S1)))
+        R1 = R1 + reduce(numpy.dot, (get_Asqi1(S0,S1), Asqinv, Ssq0))\
+                + reduce(numpy.dot, (Ssqinv0, Asqinv, get_Asq1(S0,S1)))
     return R1
 
 def get_L1(h4c0, h4c1, X0, X1):
@@ -162,5 +163,5 @@ def x2c1e_hfw0(t, v, w, s):
     sa = x2c._invsqrt(s)
     sb = x2c._invsqrt(reduce(numpy.dot, (sa, st, sa)))
     r = reduce(numpy.dot, (sa, sb, sa, s))
-    hfw = reduce(numpy.dot, (r.T.conj(), l, r))
+    # hfw = reduce(numpy.dot, (r.T.conj(), l, r))
     return a, e, x, st, r, l, h4c, m4c

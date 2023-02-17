@@ -56,7 +56,7 @@ def _x2c1e_hxrmat(t, v, w, s, c):
     x = reduce(numpy.dot, (cs, cl.T.conj(), numpy.linalg.inv(b)))
 
     s1 = s + reduce(numpy.dot, (x.T.conj(), t, x)) * (.5 / c**2)
-    tx = reduce(numpy.dot, (t, x))
+    #tx = reduce(numpy.dot, (t, x))
     h1 = (h[:nao, :nao] + h[:nao, nao:].dot(x) + x.T.conj().dot(h[nao:, :nao]) +
           reduce(numpy.dot, (x.T.conj(), h[nao:, nao:], x)))
 
@@ -120,7 +120,6 @@ def get_fso2e_x2c(mol, dm, unc=True):
     gso_ll = numpy.zeros((3, nb, nb))
     gso_ls = numpy.zeros((3, nb, nb))
     gso_ss = numpy.zeros((3, nb, nb))
-    from pyscf.gto import moleintor
     nbas = mol.nbas
     max_double = mol.max_memory / 8.0 * 1.0e6
     max_basis = pow(max_double / 9., 1. / 4.)
@@ -171,24 +170,24 @@ def get_fso2e_x2c(mol, dm, unc=True):
                         shl_size[i], shl_size[j], shl_size[k], shl_size[l])
 
                     gso_ll[:, ao_loc[j]:ao_loc[j+1], ao_loc[l]:ao_loc[l+1]] \
-                      +=-2.0*lib.einsum('ilmkn,lk->imn', kint, \
+                      +=-2.0*lib.einsum('ilmkn,lk->imn', kint,
                         p_ss[ao_loc[i]:ao_loc[i+1], ao_loc[k]:ao_loc[k+1]])
                     gso_ls[:, ao_loc[i]:ao_loc[i+1], ao_loc[l]:ao_loc[l+1]] \
-                      +=-1.0*lib.einsum('imlkn,lk->imn', kint, \
+                      +=-1.0*lib.einsum('imlkn,lk->imn', kint,
                         p_ls[ao_loc[j]:ao_loc[j+1], ao_loc[k]:ao_loc[k+1]])
                     gso_ls[:, ao_loc[j]:ao_loc[j+1], ao_loc[l]:ao_loc[l+1]] \
-                      +=-1.0*lib.einsum('ilmkn,lk->imn', kint, \
+                      +=-1.0*lib.einsum('ilmkn,lk->imn', kint,
                         p_ls[ao_loc[i]:ao_loc[i+1], ao_loc[k]:ao_loc[k+1]])
                     gso_ss[:, ao_loc[i]:ao_loc[i+1], ao_loc[j]:ao_loc[j+1]] \
-                      +=-2.0*lib.einsum('imnkl,lk->imn', kint, \
+                      +=-2.0*lib.einsum('imnkl,lk->imn', kint,
                         p_ll[ao_loc[l]:ao_loc[l+1], ao_loc[k]:ao_loc[k+1]])\
-                        -2.0*lib.einsum('imnlk,lk->imn', kint, \
+                        -2.0*lib.einsum('imnlk,lk->imn', kint,
                         p_ll[ao_loc[k]:ao_loc[k+1], ao_loc[l]:ao_loc[l+1]])
                     gso_ss[:, ao_loc[i]:ao_loc[i+1], ao_loc[k]:ao_loc[k+1]] \
-                      += 2.0*lib.einsum('imlnk,lk->imn', kint, \
+                      += 2.0*lib.einsum('imlnk,lk->imn', kint,
                         p_ll[ao_loc[j]:ao_loc[j+1], ao_loc[l]:ao_loc[l+1]])
 
-                    logger.info(mol, "Time elapsed for %dth batch in %d batches is %g, cumulates time is %g.", \
+                    logger.info(mol, "Time elapsed for %dth batch in %d batches is %g, cumulates time is %g.",
                     i*nbas**3+j*nbas**2+k*nbas+l+1, nbas*4, time.process_time()-start_this, time.process_time()-start)
 
     for comp in range(0, 3):
@@ -224,11 +223,11 @@ def get_soc_integrals(method, dm=None, pc1e=None, pc2e=None, unc=None, atomic=Tr
         pc1e = 'None'
     if pc2e is None:
         pc2e = 'None'
-    if (pc1e is 'None' and pc2e is 'None'):
+    if (pc1e == 'None' and pc2e == 'None'):
         if has_ecp:
-            hso1e = mol.intor('ECPso')
+            hso = mol.intor('ECPso')
             print('''
-            WARNING: no picture change effects provided, only soecp term included. 
+            WARNING: no picture change effects provided, only soecp term included.
             Make sure you used a ecp with spin-orbit terms.
             ''')
         else:
@@ -266,17 +265,17 @@ def get_soc_integrals(method, dm=None, pc1e=None, pc2e=None, unc=None, atomic=Tr
         hso += factor * get_wso(xmol)
     elif (pc1e == 'x2c1'):
         hso += factor * get_hso1e_x2c1(xmol, unc=unc)
-    elif (pc1e == None):
+    elif (pc1e == 'None'):
         hso += 0.0
     else:
         AssertionError('pc1e=%s is not a valid option.' % pc1e)
 
-    if (atomic != True):
+    if (atomic is not True):
         if (pc2e == 'bp'):
             hso -= factor * get_fso2e_bp(xmol, dm)
         elif (pc2e == 'x2c'):
             hso -= factor * get_fso2e_x2c(xmol, dm, unc=unc)
-        elif (pc2e == None):
+        elif (pc2e == 'None'):
             hso += 0.0
         else:
             AssertionError('pc2e=%s is not a valid option.' % pc2e)
@@ -290,13 +289,14 @@ def get_soc_integrals(method, dm=None, pc1e=None, pc2e=None, unc=None, atomic=Tr
                 print(xmol.nao_2c(), spinor.shape)
                 hso -= 2. * spinor2sph_soc(xmol, spinor)[1:]
             else:
-                AssertionError('AMF calculation requires x2camf package. Install x2camf with pip install git+https://github.com/warlocat/x2camf')
+                AssertionError('AMF calculation requires x2camf package. '
+                    'Install x2camf with pip install git+https://github.com/warlocat/x2camf')
 
     # convert back to contracted basis
     result = numpy.zeros((3, mol.nao_nr(), mol.nao_nr()))
     for ic in range(3):
         result[ic] = reduce(numpy.dot, (contr_coeff.T, hso[ic], contr_coeff))
-    
+
     return result
 
 
@@ -320,7 +320,8 @@ def write_gtensor_integrals(mc, atomlist=None):
                 ishl_end = aoslice[iatom, 1]
                 jshl_end = aoslice[jatom, 1]
                 h1ao[:, iao_start: iao_end, jao_start: jao_end]\
-                    += mol.intor('cint1e_cg_irxp_sph', 3, shls_slice=[ishl_start, ishl_end, jshl_start, jshl_end]).reshape(3, iao_end-iao_start, jao_end-jao_start)
+                    += mol.intor('cint1e_cg_irxp_sph', 3,shls_slice=[ishl_start, ishl_end, jshl_start, jshl_end])\
+                       .reshape(3, iao_end-iao_start, jao_end-jao_start)
 
     h1 = lib.einsum('xpq,pi,qj->xij', h1ao, mc.mo_coeff, mc.mo_coeff)
     print_int1e(h1[:, ncore:ncore + ncas, ncore:ncore + ncas], 'GTensor')
@@ -330,7 +331,7 @@ def write_soc_integrals(mc, dm=None, pc1e='bp', pc2e='bp', unc=None, atomic=True
     if dm is None:
         try:
             dm = mc.make_rdm1()
-        except:
+        except AssertionError:
             dm = mc._scf.make_rdm1(mc.mo_coeff)
 
     hso = get_soc_integrals(mc, dm=dm, pc1e=pc1e, pc2e=pc2e, unc=unc, atomic=atomic)
@@ -432,7 +433,7 @@ if __name__ == '__main__':
     mf = scf.RHF(mol).run()
     dm = mf.make_rdm1()
     hso_jk = get_fso2e_bp(mol, dm)
-    hso_ref = socutils.get_fso2e_bp(mol, dm)
+    hso_ref = get_fso2e_bp(mol, dm)
     print(hso_jk[0])
     print(hso_ref[0])
     print(norm(hso_jk - hso_ref))
