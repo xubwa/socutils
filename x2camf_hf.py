@@ -21,7 +21,7 @@ except ImportError:
 
 class X2CAMF(x2c.X2C):
     atom_gso_mf = None
-    def __init__(self, mol, sfx2c=False, with_gaunt=False, with_breit=False, with_aoc=False, prog="sph_atm"):
+    def __init__(self, mol, sfx2c=False, with_gaunt=True, with_breit=True, with_aoc=False, prog="sph_atm"):
         x2c.X2C.__init__(self, mol)
         self.sfx2c = sfx2c # this is still a spinor x2c object, only labels the flavor of soc integral.
         self.gaunt = with_gaunt
@@ -29,6 +29,7 @@ class X2CAMF(x2c.X2C):
         self.aoc = with_aoc
         self.prog = prog
         self.soc_matrix = None
+        print(self.xuncontract)
 
     def initialize_x2camf(self):
         self.atom_gso_mf = {}
@@ -161,15 +162,15 @@ class X2CAMF(x2c.X2C):
             raise NotImplementedError
 
         xmol, contr_coeff_nr = self.get_xmol()
-
-        hcore = x2c.X2C.get_hcore(self, xmol)
+        hcore = x2c.X2C.get_hcore(self, self.mol)
         soc_matrix = self.get_soc_integrals()
-        if self.basis is not None:
-            s22 = xmol.intor_symmetric('int1e_ovlp_spinor')
-            s21 = gto.mole.intor_cross('int1e_ovlp_spinor', xmol, mol)
-            c = lib.cho_solve(s22, s21)
-            soc_matrix = reduce(numpy.dot, (c.T.conj(), soc_matrix, c))
-        elif self.xuncontract:
+        #if self.basis is not None:
+        #    print('is it here')
+        #    s22 = xmol.intor_symmetric('int1e_ovlp_spinor')
+        #    s21 = gto.mole.intor_cross('int1e_ovlp_spinor', xmol, mol)
+        #    c = lib.cho_solve(s22, s21)
+        #    soc_matrix = reduce(numpy.dot, (c.T.conj(), soc_matrix, c))
+        if self.xuncontract:
             np, nc = contr_coeff_nr.shape
             contr_coeff = numpy.zeros((np * 2, nc * 2))
             contr_coeff[0::2, 0::2] = contr_coeff_nr
@@ -294,7 +295,7 @@ if __name__ == '__main__':
                 atom=[["O", (0., 0., -0.12390941)], 
 		              [1, (0., -1.42993701, 0.98326612)],
                       [1, (0.,  1.42993701, 0.98326612)]],
-                basis='unc-ccpvdz',
+                basis='ccpvdz',
                 unit = 'Bohr')
     import os
     os.system('rm amf.chk')
