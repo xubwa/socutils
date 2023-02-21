@@ -304,16 +304,32 @@ class RHF(UHF):
 X2CAMF_RHF = RHF
 
 
-def x2camf_ghf(mf, *args, **kwargs):
+def x2camf_ghf(mf):
+    '''
+    For the given *GHF* object, generate X2C-GSCF object in GHF spin-orbital
+    basis. Note the orbital basis of X2C_GSCF is different to the X2C_RHF and
+    X2C_UHF objects. X2C_RHF and X2C_UHF use spinor basis.
+
+    Args:
+        mf : an GHF/GKS object
+
+    Returns:
+        An GHF/GKS object
+
+    Examples:
+
+    >>> mol = pyscf.M(atom='H 0 0 0; F 0 0 1', basis='ccpvdz', verbose=0)
+    >>> mf = scf.GHF(mol).x2c1e().run()
+    '''
     assert isinstance(mf, ghf.GHF)
 
     if isinstance(mf, x2c._X2C_SCF):
         if mf.with_x2c is None:
-            mf.with_x2c = SpinOrbitalX2CAMFHelper(mf.mol, *args, **kwargs)
+            mf.with_x2c = SpinOrbitalX2CAMFHelper(mf.mol)
             return mf
         elif not isinstance(mf.with_x2c, SpinOrbitalX2CAMFHelper):
-            mf.with_x2c = SpinOrbitalX2CAMFHelper(mf.mol, *args, **kwargs)
-            return mf
+            # An object associated to sfx2c1e.SpinFreeX2CHelper
+            raise NotImplementedError
         else:
             return mf
 
@@ -325,19 +341,30 @@ def x2camf_ghf(mf, *args, **kwargs):
 
     class X2CAMF_GSCF(x2c._X2C_SCF, mf_class):
         __doc__ = doc + '''
-        Attributes for spin-orbital spin-orbit mean field X2C:
+        Attributes for spin-orbital X2C with AMF correction:
             with_x2c : X2C object
         '''
 
         def __init__(self, mol, *args, **kwargs):
-            mf_class.__init__(self, mol)
-            self.with_x2c = SpinOrbitalX2CAMFHelper(mf.mol, *args, **kwargs)
+            mf_class.__init__(self, mol, *args, **kwargs)
+            self.with_x2c = SpinOrbitalX2CAMFHelper(mf.mol)
             self._keys = self._keys.union(['with_x2c'])
 
         def get_hcore(self, mol=None):
+            if mol is None: mol = self.mol
             return self.with_x2c.get_hcore(mol)
 
-    with_x2c = SpinOrbitalX2CAMFHelper(mf.mol, *args, **kwargs)
+        def dump_flags(self, verbose=None):
+            mf_class.dump_flags(self, verbose)
+            if self.with_x2c:
+                self.with_x2c.dump_flags(verbose)
+            return self
+
+        def reset(self, mol):
+            self.with_x2c.reset(mol)
+            return mf_class.reset(self, mol)
+
+    with_x2c = SpinOrbitalX2CAMFHelper(mf.mol)
     return mf.view(X2CAMF_GSCF).add_keys(with_x2c=with_x2c)
 
 
