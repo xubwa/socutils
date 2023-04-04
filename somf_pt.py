@@ -50,10 +50,10 @@ def get_psoc_x2camf(mol, gaunt=True, gauge=True):
     h4c1 += spinor
 
     hfw1 = x2c_grad.x2c1e_hfw1(t,v,wsf,s,h4c1)
-    hfw1_sph = spinor2sph_soc(xmol, hfw1)[1:]
+    hfw1_sph = spinor2sph_soc(xmol, hfw1)
     # convert back to contracted basis
-    result = numpy.zeros((3, mol.nao_nr(), mol.nao_nr()))
-    for ic in range(3):
+    result = numpy.zeros((4, mol.nao_nr(), mol.nao_nr()))
+    for ic in range(4):
         result[ic] = reduce(numpy.dot, (contr_coeff.T, hfw1_sph[ic], contr_coeff))
 
     return result
@@ -162,5 +162,5 @@ def elec_dipole_integral_spinor(mol):
 
 # In x2camf-spinor calculations, h^{X2CAMF} = h^{X2C-1e} + h^{2c,AMF}
 # h^{2c,AMF} integrals do not respond to external perturbations in the property calculations.
-# This is rigorous for geometric gradient but an approximation in electric or magnetic properties.
+# This is rigorous for geometric gradient but a convention in electric or magnetic properties.
 x2camf_dipole = x2c1e_dipole

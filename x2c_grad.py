@@ -165,3 +165,10 @@ def x2c1e_hfw0(t, v, w, s):
     r = reduce(numpy.dot, (sa, sb, sa, s))
     # hfw = reduce(numpy.dot, (r.T.conj(), l, r))
     return a, e, x, st, r, l, h4c, m4c
+
+def x2c1e_hfw1(t, v, w, s, h4c1):
+    assert (h4c1.shape[0] == 2*t.shape[0]), "The size of h4c1 does match the size of two-component integrals."
+
+    a, e, x, st, r, l, h4c, m4c = x2c1e_hfw0(t, v, w, s)
+    return get_hfw1(a, x, st, m4c, h4c, e, r, l, h4c1)
+
