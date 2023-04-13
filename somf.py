@@ -331,7 +331,7 @@ def write_soc_integrals(mc, dm=None, pc1e='bp', pc2e='bp', unc=None, atomic=True
     if dm is None:
         try:
             dm = mc.make_rdm1()
-        except AssertionError:
+        except:
             dm = mc._scf.make_rdm1(mc.mo_coeff)
 
     hso = get_soc_integrals(mc, dm=dm, pc1e=pc1e, pc2e=pc2e, unc=unc, atomic=atomic)

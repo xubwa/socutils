@@ -78,10 +78,10 @@ def from_x2c(mf, ncore, nact, filename='FCIDUMP', tol=1e-8, intor='int2e_spinor'
     #print(h1eff, energy_core)
     #reduce(numpy.dot, (mf.mo_coeff.T, mf.get_hcore(), mf.mo_coeff))[ncore:ncore+nact, ncore:ncore+nact]
 
-    if mf._eri is None:
-        eri = ao2mo.kernel(mf.mol, mo_coeff, intor=intor)
-    else:
-        eri = ao2mo.kernel(mf._eri, mo_coeff, intor=intor)
+    #if mf._eri is None:
+    eri = ao2mo.kernel(mf.mol, mo_coeff, intor=intor)
+    #else:
+    #    eri = ao2mo.kernel(mf._eri, mo_coeff, intor=intor)
     #core_occ = numpy.zeros(len(mf.mo_energy))
     #core_occ[:ncore] = 1.0
     #dm = mf.make_rdm1(mo_occ = core_occ)

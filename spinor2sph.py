@@ -29,3 +29,10 @@ def spinor2sph_soc(mol, spinor):
     so_sy = soab.real
     so_sx = soab.imag
     return numpy.array([so_scalar, so_sx, so_sy, so_sz])
+
+def spinor2sph(mol, spinor):
+    assert (spinor.shape[0] == mol.nao_2c()), "spinor integral must be of shape (nao_2c, nao_2c)"
+    c = mol.sph2spinor_coeff()
+    c2 = numpy.vstack(c)
+    ints_sph = lib.einsum('ip,pq,qj->ij', c2, spinor, c2.T.conj())
+    return ints_sph
