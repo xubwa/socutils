@@ -114,7 +114,7 @@ def get_soc_integrals(x2cobj, mol=None, prog="sph_atm", with_gaunt=False, with_b
         else:
             spin_free = False
             two_c = False
-        soc_matrix = x2camf.amfi(x2cobj, spin_free, two_c, x2cobj.gaunt, x2cobj.breit)
+        soc_matrix = x2camf.amfi(x2cobj, printLevel = x2cobj.verbose, with_gaunt = x2cobj.gaunt, with_gauge = x2cobj.breit)
     elif (x2c.prog == "sph_atm_legacy"):  # keep this legacy interface for a sanity check.
         writeInput.write_input(x2cobj.mol, x2cobj.gaunt, x2cobj.breit, x2cobj.aoc)
         print(settings.AMFIEXE)
@@ -308,7 +308,7 @@ def x2camf_ghf(mf):
     '''
     For the given *GHF* object, generate X2C-GSCF object in GHF spin-orbital
     basis. Note the orbital basis of X2C_GSCF is different to the X2C_RHF and
-    X2C_UHF objects. X2C_RHF and X2C_UHF use spinor basis.
+    X2C_UHF objects. X2C_RHF and X2C_UHF use j-adapated spinor basis.
 
     Args:
         mf : an GHF/GKS object

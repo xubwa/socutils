@@ -138,16 +138,20 @@ def get_hfw1(C4c0, X0, ST, S4c0, h4c0, mo_ene, R0, L0, h4c1, S4c1=None):
 
 def x2c1e_hfw0(t, v, w, s):
     c = LIGHT_SPEED
-    nao = s.shape[0]
+    return x2c1e_hfw0_block(v, t, t, w * (.25 / c**2) - t, s, t * (.5 / c**2))
+
+def x2c1e_hfw0_block(hLL, hSL, hLS, hSS, sLL, sSS):
+    c = LIGHT_SPEED
+    nao = hLL.shape[0]
     n2 = nao * 2
-    h4c = numpy.zeros((n2, n2), dtype=v.dtype)
-    m4c = numpy.zeros((n2, n2), dtype=v.dtype)
-    h4c[:nao, :nao] = v
-    h4c[:nao, nao:] = t
-    h4c[nao:, :nao] = t
-    h4c[nao:, nao:] = w * (.25 / c**2) - t
-    m4c[:nao, :nao] = s
-    m4c[nao:, nao:] = t * (.5 / c**2)
+    h4c = numpy.zeros((n2, n2), dtype=hLL.dtype)
+    m4c = numpy.zeros((n2, n2), dtype=hLL.dtype)
+    h4c[:nao, :nao] = hLL
+    h4c[:nao, nao:] = hLS
+    h4c[nao:, :nao] = hSL
+    h4c[nao:, nao:] = hSS
+    m4c[:nao, :nao] = sLL
+    m4c[nao:, nao:] = sSS
 
     e, a = scipy.linalg.eigh(h4c, m4c)
     cl = a[:nao, nao:]
@@ -156,13 +160,13 @@ def x2c1e_hfw0(t, v, w, s):
     b = numpy.dot(cl, cl.T.conj())
     x = reduce(numpy.dot, (cs, cl.T.conj(), numpy.linalg.inv(b)))
 
-    st = s + reduce(numpy.dot, (x.T.conj(), t, x)) * (.5 / c**2)
-    tx = reduce(numpy.dot, (t, x))
+    st = sLL + reduce(numpy.dot, (x.T.conj(), sSS, x))
+    tx = reduce(numpy.dot, (hLS, x))
     l = h4c[:nao, :nao] + tx + tx.T.conj() + reduce(numpy.dot, (x.T.conj(), h4c[nao:, nao:], x))
 
-    sa = x2c._invsqrt(s)
+    sa = x2c._invsqrt(sLL)
     sb = x2c._invsqrt(reduce(numpy.dot, (sa, st, sa)))
-    r = reduce(numpy.dot, (sa, sb, sa, s))
+    r = reduce(numpy.dot, (sa, sb, sa, sLL))
     # hfw = reduce(numpy.dot, (r.T.conj(), l, r))
     return a, e, x, st, r, l, h4c, m4c
 

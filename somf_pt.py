@@ -46,7 +46,7 @@ def get_psoc_x2camf(mol, gaunt=True, gauge=True):
     h4c1[n2c:, n2c:] = wso * (.25 / c**2)
     # Get x2camf 4c integrals and add to h4c1
     x2cobj = x2c.X2C(mol)
-    spinor = x2camf.amfi(x2cobj, spin_free=True, two_c=True, with_gaunt=gaunt, with_gauge=gauge, pt=True)
+    spinor = x2camf.amfi(x2cobj, printLevel = mol.verbose, with_gaunt=gaunt, with_gauge=gauge, pt=True)
     h4c1 += spinor
 
     hfw1 = x2c_grad.x2c1e_hfw1(t,v,wsf,s,h4c1)

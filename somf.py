@@ -285,7 +285,7 @@ def get_soc_integrals(method, dm=None, pc1e=None, pc2e=None, unc=None, atomic=Tr
         elif (pc2e == 'x2c'):
             if x2camf:
                 x2cobj = x2c.X2C(xmol)
-                spinor = x2camf.amfi(x2cobj, spin_free=False, two_c=False, with_gaunt=True, with_gauge=True)
+                spinor = x2camf.amfi(x2cobj, printLevel=x2cobj.verbose, with_gaunt=True, with_gauge=True)
                 print(xmol.nao_2c(), spinor.shape)
                 hso -= 2. * spinor2sph_soc(xmol, spinor)[1:]
             else:
