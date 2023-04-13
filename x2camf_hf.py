@@ -196,6 +196,7 @@ class SpinOrbitalX2CAMFHelper(x2c.SpinOrbitalX2CHelper):
         self.sfx2c = sfx2c  # this is still a spinor x2c object, only labels the flavor of soc integral.
         self.gaunt = with_gaunt
         self.breit = with_breit
+        print(f'gaunt:{self.gaunt}, breit:{self.breit}')
         self.aoc = with_aoc
         self.prog = prog
         self.soc_matrix = None
@@ -286,7 +287,7 @@ X2CAMF_UHF = UHF
 
 class RHF(UHF):
 
-    def __init__(self, mol, nopen=0, nact=0, with_gaunt=False, with_breit=False, with_aoc=False, prog="sph_atm"):
+    def __init__(self, mol, nopen=0, nact=0, with_gaunt=True, with_breit=True, with_aoc=False, prog="sph_atm"):
         super().__init__(mol, nopen, nact, with_gaunt, with_breit, with_aoc, prog)
         if dhf.zquatev is None:
             raise RuntimeError('zquatev library is required to perform Kramers-restricted X2C-RHF')
@@ -304,7 +305,7 @@ class RHF(UHF):
 X2CAMF_RHF = RHF
 
 
-def x2camf_ghf(mf):
+def x2camf_ghf(mf, with_gaunt=True, with_breit=True, with_aoc=False, prog="sph_atm"):
     '''
     For the given *GHF* object, generate X2C-GSCF object in GHF spin-orbital
     basis. Note the orbital basis of X2C_GSCF is different to the X2C_RHF and
@@ -325,7 +326,8 @@ def x2camf_ghf(mf):
 
     if isinstance(mf, x2c._X2C_SCF):
         if mf.with_x2c is None:
-            mf.with_x2c = SpinOrbitalX2CAMFHelper(mf.mol)
+            mf.with_x2c = SpinOrbitalX2CAMFHelper(mf.mol, with_gaunt=with_gaunt,
+                with_breit=with_breit, with_aoc=with_aoc, prog=prog)
             return mf
         elif not isinstance(mf.with_x2c, SpinOrbitalX2CAMFHelper):
             # An object associated to sfx2c1e.SpinFreeX2CHelper
@@ -347,7 +349,8 @@ def x2camf_ghf(mf):
 
         def __init__(self, mol, *args, **kwargs):
             mf_class.__init__(self, mol, *args, **kwargs)
-            self.with_x2c = SpinOrbitalX2CAMFHelper(mf.mol)
+            self.with_x2c = SpinOrbitalX2CAMFHelper(mf.mol, with_gaunt=with_gaunt,
+                with_breit=with_breit, with_aoc=with_aoc, prog=prog)
             self._keys = self._keys.union(['with_x2c'])
 
         def get_hcore(self, mol=None):
@@ -364,29 +367,29 @@ def x2camf_ghf(mf):
             self.with_x2c.reset(mol)
             return mf_class.reset(self, mol)
 
-    with_x2c = SpinOrbitalX2CAMFHelper(mf.mol)
+    with_x2c = SpinOrbitalX2CAMFHelper(mf.mol, with_gaunt=with_gaunt,
+        with_breit=with_breit, with_aoc=with_aoc, prog=prog)
     return mf.view(X2CAMF_GSCF).add_keys(with_x2c=with_x2c)
 
 
 if __name__ == '__main__':
     mol = gto.M(verbose=3,
-                atom=[["O", (0.,          0., -0.12390941)],
-                      [1,   (0., -1.42993701,  0.98326612)],
-                      [1,   (0.,  1.42993701,  0.98326612)]],
-                basis='ccpvdz',
+                atom=[["Po", (0.,          0., -0.12390941)],
+                      ['O',   (0., -1.42993701,  0.98326612)],
+                      ['O',   (0.,  1.42993701,  0.98326612)]],
+                basis='ccpvtzdk',
                 unit='Bohr')
-    os.system('rm amf.chk')
-    mf = X2CAMF_RHF(mol, with_gaunt=False, with_breit=False)
-    e_spinor = mf.scf()
-    os.system('rm amf.chk')
-    mf = X2CAMF_RHF(mol, with_gaunt=True, with_breit=False)
-    e_gaunt = mf.scf()
-    os.system('rm amf.chk')
+    #mf = X2CAMF_RHF(mol, with_gaunt=False, with_breit=False)
+    #e_spinor = mf.scf()
+    #os.system('rm amf.chk')
+    #mf = X2CAMF_RHF(mol, with_gaunt=True, with_breit=False)
+    #e_gaunt = mf.scf()
+    #os.system('rm amf.chk')
     mf = X2CAMF_RHF(mol, with_gaunt=True, with_breit=True)
     e_breit = mf.scf()
     gmf = x2camf_ghf(scf.GHF(mol), with_gaunt=True, with_breit=True)
     e_ghf = gmf.kernel()
-    print("Energy from spinor X2CAMF(Coulomb):    %16.10g" % e_spinor)
-    print("Energy from spinor X2CAMF(Gaunt):      %16.10g" % e_gaunt)
+    #print("Energy from spinor X2CAMF(Coulomb):    %16.10g" % e_spinor)
+    #print("Energy from spinor X2CAMF(Gaunt):      %16.10g" % e_gaunt)
     print("Energy from spinor X2CAMF(Breit):      %16.10g" % e_breit)
     print("Energy from ghf-based X2CAMF(Breit):   %16.10g" % e_ghf)
