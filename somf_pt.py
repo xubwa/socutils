@@ -12,52 +12,62 @@ try:
     import x2camf
 except ImportError:
     pass
-'''
-Analytic energy gradients for (sf)x2c-1e and x2camf method
 
-Ref.
-JCP 135, 084114 (2011); DOI:10.1063/1.3624397
-'''
+def get_psoc_x2camf(mol, gaunt=True, gauge=True, atm_pt=True):
+    '''
+    Perturbative treatment of spin-orbit coupling within X2CAMF scheme.
+    The SOC contributions are evaluated in a consistent way to include only first-order terms.
 
+    Ref.
+    Mol. Phys. 118, e1768313 (2020); DOI:10.1080/00268976.2020.1768313
+    Attention: The formula in the reference paper correspond to the case of atm_pt = False.
 
+    Args:
+        mol: molecule object
+        gaunt: include Gaunt integrals
+        gauge: include gauge integrals
+        atm_pt: use atomic perturbation
+        atm_pt = False:
+            The molecular one-electron 4c SO integral (Wso) and AMF two-electron 4c SO integrals are
+            treated as the perturbation together.
+        atm_pt = True:
+            The molecular one-electron 4c SO integral (Wso) is treated as the perturbation solely and
+            then augmented with the AMF pt integrals.
+        These two choices are supposed to give very similar results.
 
-'''
-Perturbative treatment of spin-orbit coupling within X2CAMF scheme.
-The SOC contributions are evaluated in a consistent way to include only first-order terms.
-
-Ref.
-Mol. Phys. 118, e1768313 (2020); DOI:10.1080/00268976.2020.1768313
-'''
-def get_psoc_x2camf(mol, gaunt=True, gauge=True):
+    Returns:
+        Perturbative SOC integrals in pauli representation
+    '''
     xmol, contr_coeff = sfx2c1e.SpinFreeX2C(mol).get_xmol()
 
     c = LIGHT_SPEED
     t = xmol.intor_symmetric('int1e_spsp_spinor') * .5
     v = xmol.intor_symmetric('int1e_nuc_spinor')
     s = xmol.intor_symmetric('int1e_ovlp_spinor')
-    w = xmol.intor_symmetric('int1e_spnucsp_spinor')
     wsf = xmol.intor_symmetric('int1e_pnucp_spinor')
-    wso = w - wsf
+    wso = xmol.intor_symmetric('int1e_spnucsp_spinor') - wsf
 
     n2c = s.shape[0]
     n4c = n2c * 2
 
     h4c1 = numpy.zeros((n4c, n4c), dtype=v.dtype)
     h4c1[n2c:, n2c:] = wso * (.25 / c**2)
-    # Get x2camf 4c integrals and add to h4c1
-    x2cobj = x2c.X2C(mol)
-    spinor = x2camf.amfi(x2cobj, printLevel = mol.verbose, with_gaunt=gaunt, with_gauge=gauge, pt=True)
-    h4c1 += spinor
 
-    hfw1 = x2c_grad.x2c1e_hfw1(t,v,wsf,s,h4c1)
+    if(atm_pt):
+        hfw1 = x2c_grad.x2c1e_hfw1(t,v,wsf,s,h4c1)
+        hfw1 += x2camf.amfi(x2c.X2C(mol), printLevel = mol.verbose,
+                            with_gaunt=gaunt, with_gauge=gauge, pt=True, int4c=False)
+    else:
+        h4c1 += x2camf.amfi(x2c.X2C(mol), printLevel = mol.verbose,
+                            with_gaunt=gaunt, with_gauge=gauge, pt=True, int4c=True)
+        hfw1 = x2c_grad.x2c1e_hfw1(t,v,wsf,s,h4c1)
+    
     hfw1_sph = spinor2sph_soc(xmol, hfw1)
     # convert back to contracted basis
     result = numpy.zeros((4, mol.nao_nr(), mol.nao_nr()))
     for ic in range(4):
         result[ic] = reduce(numpy.dot, (contr_coeff.T, hfw1_sph[ic], contr_coeff))
-
     return result
-
 
 '''
 First-order properties

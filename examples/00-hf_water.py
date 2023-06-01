@@ -5,7 +5,7 @@ import pyscf
 from pyscf import scf, gto, x2c
 import x2camf_hf
 
-mol = gto.M(verbose=3,
+mol = gto.M(verbose=0,
             atom=[["O", (0.,          0., -0.12390941)],
                   [  1, (0., -1.42993701,  0.98326612)],
                   [  1, (0.,  1.42993701,  0.98326612)]],

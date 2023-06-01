@@ -1,4 +1,4 @@
-import numpy, scipy
+import numpy, scipy, x2c_grad
 import time
 from numpy.linalg import norm
 from functools import reduce
@@ -299,6 +299,45 @@ def get_soc_integrals(method, dm=None, pc1e=None, pc2e=None, unc=None, atomic=Tr
 
     return result
 
+def get_soc_x2camf(mol, gaunt=True, gauge=True):
+    '''
+    Variational treatment of spin-orbit coupling within X2CAMF scheme.
+
+    Ref.
+    J. Chem. Phys. 148, 144108 (2018); DOI:10.1063/1.5023750
+    J. Phys. Chem. A 126, 4537 (2022); DOI:10.1021/acs.jpca.2c02181
+
+    Args:
+        mol: molecule object
+        gaunt: include Gaunt integrals
+        gauge: include gauge integrals
+
+    Returns:
+        The complete one-electron integrals (including the spin-free part)
+        in pauli representation.
+    '''
+    xmol, contr_coeff = sfx2c1e.SpinFreeX2C(mol).get_xmol()
+
+    c = LIGHT_SPEED
+    t = xmol.intor_symmetric('int1e_spsp_spinor') * .5
+    v = xmol.intor_symmetric('int1e_nuc_spinor')
+    s = xmol.intor_symmetric('int1e_ovlp_spinor')
+    w = xmol.intor_symmetric('int1e_spnucsp_spinor')
+
+    n2c = s.shape[0]
+    n4c = n2c * 2
+
+    a, e, x, st, r, l, h4c, m4c = x2c_grad.x2c1e_hfw0(t,v,w,s)
+    hfw = reduce(numpy.dot, (r.T.conj(), l, r))
+    hfw += x2camf.amfi(x2c.X2C(mol), printLevel = mol.verbose,
+                       with_gaunt=gaunt, with_gauge=gauge)
+    
+    hfw_sph = spinor2sph_soc(xmol, hfw)
+    # convert back to contracted basis
+    result = numpy.zeros((4, mol.nao_nr(), mol.nao_nr()))
+    for ic in range(4):
+        result[ic] = reduce(numpy.dot, (contr_coeff.T, hfw_sph[ic], contr_coeff))
+    return result
 
 def write_gtensor_integrals(mc, atomlist=None):
     mol = mc.mol

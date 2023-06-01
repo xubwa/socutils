@@ -144,15 +144,15 @@ def x2c1e_hfw0_block(hLL, hSL, hLS, hSS, sLL, sSS):
     c = LIGHT_SPEED
     nao = hLL.shape[0]
     n2 = nao * 2
-    h4c = numpy.zeros((n2, n2), dtype=hLL.dtype)
-    m4c = numpy.zeros((n2, n2), dtype=hLL.dtype)
+    h4c = numpy.zeros((n2, n2), dtype=numpy.cdouble)
+    m4c = numpy.zeros((n2, n2), dtype=numpy.cdouble)
     h4c[:nao, :nao] = hLL
     h4c[:nao, nao:] = hLS
     h4c[nao:, :nao] = hSL
     h4c[nao:, nao:] = hSS
     m4c[:nao, :nao] = sLL
     m4c[nao:, nao:] = sSS
-
+    
     e, a = scipy.linalg.eigh(h4c, m4c)
     cl = a[:nao, nao:]
     cs = a[nao:, nao:]
@@ -175,4 +175,3 @@ def x2c1e_hfw1(t, v, w, s, h4c1):
 
     a, e, x, st, r, l, h4c, m4c = x2c1e_hfw0(t, v, w, s)
     return get_hfw1(a, x, st, m4c, h4c, e, r, l, h4c1)
-
