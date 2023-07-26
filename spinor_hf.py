@@ -5,7 +5,21 @@ import scipy.linalg
 from pyscf import lib
 from pyscf.gto import mole
 from pyscf.lib import logger
-from pyscf.scf import hf, dhf, _vhf
+from pyscf.scf import hf, dhf, ghf, _vhf
+
+def spinor2sph(mol, spinor):
+    assert (spinor.shape[0] == mol.nao_2c()), "spinor integral must be of shape (nao_2c, nao_2c)"
+    c = mol.sph2spinor_coeff()
+    c2 = numpy.vstack(c)
+    ints_sph = lib.einsum('ip,pq,qj->ij', c2, spinor, c2.T.conj())
+    return ints_sph
+
+def sph2spinor(mol, sph):
+    assert (sph.shape[0] == mol.nao_nr() * 2), "spherical integral must be of shape (nao_nr, nao_nr)"
+    c = mol.sph2spinor_coeff()
+    c2 = numpy.vstack(c)
+    ints_spinor = lib.einsum('ip,pq,qj->ij', c2.T.conj(), sph, c2)
+    return ints_spinor
 
 def _proj_dmll(mol_nr, dm_nr, mol):
     from pyscf.scf import addons
@@ -154,17 +168,6 @@ class Spinor_SCF(hf.SCF):
 
     make_rdm1 = lib.module_method(make_rdm1, absences=['mo_coeff', 'mo_occ'])
 
-    def init_direct_scf(self, mol=None):
-        if mol is None: mol = self.mol
-        def set_vkscreen(opt, name):
-            opt._this.contents.r_vkscreen = _vhf._fpointer(name)
-        opt = _vhf.VHFOpt(mol, 'int2e_spinor', 'CVHFrkbllll_prescreen',
-                          'CVHFrkbllll_direct_scf',
-                          'CVHFrkbllll_direct_scf_dm')
-        opt.direct_scf_tol = self.direct_scf_tol
-        set_vkscreen(opt, 'CVHFrkbllll_vkscreen')
-        return opt
-
     def get_jk(self, mol=None, dm=None, hermi=1, with_j=True, with_k=True,
                omega=None):
         if mol is None: mol = self.mol
@@ -172,9 +175,12 @@ class Spinor_SCF(hf.SCF):
         t0 = (logger.process_clock(), logger.perf_counter())
         if self.direct_scf and self.opt is None:
             self.opt = self.init_direct_scf(mol)
-        vj, vk = get_jk(mol, dm, hermi, self.opt, with_j, with_k)
+        dm_sph = spinor2sph(mol, dm)
+        j_sph, k_sph = ghf.GHF.get_jk(self, mol, dm_sph)
+        j_spinor = sph2spinor(mol, j_sph)
+        k_spinor = sph2spinor(mol, k_sph)
         logger.timer(self, 'vj and vk', *t0)
-        return vj, vk
+        return j_spinor, k_spinor
 
     def get_veff(self, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
         '''Dirac-Coulomb'''
@@ -217,6 +223,7 @@ class Spinor_SCF(hf.SCF):
             The first corresponds to the internal stability
             and the second corresponds to the external stability.
         '''
+        ''' Currently using GHF stability, and GHF stability is wrong '''
         from pyscf.x2c.stability import x2chf_stability
         return x2chf_stability(self, verbose, return_status)
 
@@ -231,7 +238,7 @@ if __name__ == '__main__':
     mol.verbose = 5
     mol.output = None
 
-    mol.atom = [['He', (0, 0, 0)], ]
+    mol.atom = [['Ne', (0, 0, 0)], ]
     mol.basis = 'ccpvdz'
     mol.build(0, 0)
 
