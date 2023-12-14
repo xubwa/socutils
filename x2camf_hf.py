@@ -11,9 +11,16 @@ from pyscf.lib import chkfile, logger
 from pyscf.x2c import x2c
 from pyscf.scf import hf, dhf, ghf
 
-import somf, frac_dhf, writeInput, settings, zquatev
+import somf, frac_dhf, writeInput, settings
+import spinor_hf
+#, zquatev
 
 x2camf = None
+try:
+    import zquatev
+except ImportError:
+    pass
+
 try:
     import x2camf
 except ImportError:
@@ -229,11 +236,11 @@ class SpinOrbitalX2CAMFHelper(x2c.SpinOrbitalX2CHelper):
         return hcore + soc_matrix
 
 
-class SCF(x2c.SCF):
+class SCF(spinor_hf.JHF):
     nopen = None
     nact = None
 
-    def __init__(self, mol, nopen=0, nact=0, with_gaunt=False, with_breit=False, with_aoc=False, prog="sph_atm"):
+    def __init__(self, mol, nopen=0, nact=0, with_gaunt=True, with_breit=True, with_aoc=False, prog="sph_atm"):
         hf.SCF.__init__(self, mol)
         self.with_x2c = SpinorX2CAMFHelper(mol,
                                            with_gaunt=with_gaunt,
@@ -355,7 +362,8 @@ def x2camf_ghf(mf, with_gaunt=True, with_breit=True, with_aoc=False, prog="sph_a
 
         def get_hcore(self, mol=None):
             if mol is None: mol = self.mol
-            return self.with_x2c.get_hcore(mol)
+            hcore = self.with_x2c.get_hcore(mol)
+            return hcore
 
         def dump_flags(self, verbose=None):
             mf_class.dump_flags(self, verbose)
