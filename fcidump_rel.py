@@ -2,7 +2,7 @@ import pyscf, h5py, numpy
 from pyscf import scf, gto, ao2mo, tools, lib
 from functools import reduce
 
-TOL = 1e-16
+TOL = 1e-10
 DEFAULT_FLOAT_FORMAT = '(%16.12e, %16.12e)'
 
 
@@ -58,8 +58,8 @@ def write_head(fout, nmo, nelec, ms, orbsym=None):
     fout.write(' &END\n')
 
 def from_x2c(mf, ncore, nact, filename='FCIDUMP', tol=1e-8, intor='int2e_spinor', h1e=None, approx='1e'):
-    ncore = ncore * 2
-    nact = nact * 2
+    ncore = ncore
+    nact = nact
     mo_coeff = mf.mo_coeff[:, ncore:ncore + nact]
     mol = mf.mol
 
@@ -91,8 +91,8 @@ def from_x2c(mf, ncore, nact, filename='FCIDUMP', tol=1e-8, intor='int2e_spinor'
 
 
 def from_ghf(mf, ncore, nact, filename='FCIDUMP', tol=1e-10, intor='int2e_sph'):
-    ncore = ncore * 2
-    nact = nact * 2
+    ncore = ncore
+    nact = nact
     mo_coeff = mf.mo_coeff[:, ncore:ncore + nact]
     mol = mf.mol
 
@@ -128,8 +128,8 @@ def from_ghf(mf, ncore, nact, filename='FCIDUMP', tol=1e-10, intor='int2e_sph'):
                    nelec=sum(mf.mol.nelec)-ncore, nuc=energy_core.real, tol=tol)
 
 def from_dhf(mf, ncore, nact, filename='FCIDUMP', tol=1e-10, with_gaunt=False, with_breit=False):
-    ncore = ncore * 2
-    nact = nact * 2
+    ncore = ncore
+    nact = nact
     n4c, nmo = mf.mo_coeff.shape
     n2c = n4c // 2
     nNeg = nmo // 2
@@ -167,17 +167,16 @@ def from_dhf(mf, ncore, nact, filename='FCIDUMP', tol=1e-10, with_gaunt=False, w
 
 if __name__ == '__main__':
     mol = gto.M(atom='''
-    O   0.   0.       0.
-    H   0.   -0.757   0.587
-    H   0.   0.757    0.587
+    F   0.   0.       0.
     ''',
-                basis='unc-ccpvdz',
+                basis='ccpvdz',
                 verbose=4,
-                spin=0)
+                spin=1)
     mf_x2c = scf.X2C(mol)
+    mf_x2c.max_cycle=0
     mf_x2c.kernel()
     from_x2c(mf_x2c, 0, 5, filename='FCIDUMP_x2c_7')
-
+    exit()
     mf_dirac = scf.DHF(mol)
     mf_dirac.kernel()
     hcore = mf_dirac.get_hcore()
