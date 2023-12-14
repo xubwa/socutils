@@ -15,10 +15,15 @@ def spinor2sph(mol, spinor):
     return ints_sph
 
 def sph2spinor(mol, sph):
-    assert (sph.shape[0] == mol.nao_nr() * 2), "spherical integral must be of shape (nao_nr, nao_nr)"
+    assert (sph.shape[-1] == sph.shape[-2] == mol.nao_nr() * 2), "spherical integral must be of shape (nao_nr, nao_nr)"
     c = mol.sph2spinor_coeff()
     c2 = numpy.vstack(c)
-    ints_spinor = lib.einsum('ip,pq,qj->ij', c2.T.conj(), sph, c2)
+    if len(sph.shape) == 3:
+        ints_spinor = lib.einsum('ip,xpq,qj->xij', c2.T.conj(), sph, c2)
+    elif len(sph.shape) == 2:
+        ints_spinor = lib.einsum('ip,pq,qj->ij', c2.T.conj(), sph, c2)
+    else:
+        raise ValueError("spherical integral must be of shape (nao_nr, nao_nr) or (nao_nr, nao_nr, 3)")
     return ints_spinor
 
 def _proj_dmll(mol_nr, dm_nr, mol):
@@ -29,16 +34,24 @@ def _proj_dmll(mol_nr, dm_nr, mol):
     dm_ll = (dm_ll + dhf.time_reversal_matrix(mol, dm_ll)) * .5
     return dm_ll
 
+
 def get_jk(mol, dm, hermi=1, mf_opt=None, with_j=True, with_k=True, omega=None):
     '''non-relativistic J/K matrices (without SSO,SOO etc) in the j-adapted
     spinor basis.
     '''
-    vj, vk = _vhf.rdirect_mapdm('int2e_spinor', 's8',
-                                ('ji->s2kl', 'jk->s1il'), dm, 1,
-                                mol._atm, mol._bas, mol._env, mf_opt)
-    vj = vj.reshape(dm.shape)
-    vk = vk.reshape(dm.shape)
-    return dhf._jk_triu_(mol, vj, vk, hermi)
+    def jkbuild(mol, dm, hermi, with_j, with_k, omega=None):
+        if (not omega and
+            (self._eri is not None or mol.incore_anyway or self._is_mem_enough())):
+            if self._eri is None:
+                self._eri = mol.intor('int2e', aosym='s8')
+            return hf.dot_eri_dm(self._eri, dm, hermi, with_j, with_k)
+        else:
+            return hf.SCF.get_jk(self, mol, dm, hermi, with_j, with_k, omega)
+    dm_sph = spinor2sph(mol, dm)
+    j_sph, k_sph = ghf.get_jk(mol, dm_sph, hermi=1, jkbuild=jkbuild)
+    j_spinor = sph2spinor(mol, j_sph)
+    k_spinor = sph2spinor(mol, k_sph)
+    return j_spinor, k_spinor
 
 make_rdm1 = hf.make_rdm1
 
@@ -59,7 +72,7 @@ def init_guess_by_atom(mol):
 
 def init_guess_by_chkfile(mol, chkfile_name, project=None):
     dm = dhf.init_guess_by_chkfile(mol, chkfile_name, project)
-    n2c = dm.shape[0] // 2
+    n2c = dm.shape[0]
     return dm[:n2c,:n2c].copy()
 
 def get_init_guess(mol, key='minao'):
@@ -74,7 +87,7 @@ def get_init_guess(mol, key='minao'):
     else:
         return init_guess_by_minao(mol)
 
-def get_hcore(mol):
+def get_hcore(mol, with_soc=None):
     '''Core Hamiltonian
 
     Examples:
@@ -96,15 +109,35 @@ def get_hcore(mol):
         h+= mol.intor_symmetric('int1e_nuc_spinor')
 
     if len(mol._ecpbas) > 0:
-        h += mol.intor_symmetric('ECPspinor')
+        ecp = mol.intor('ECPscalar')
+        iden = numpy.eye(2)
+        ints_sph = mol.intor('int1e_nuc_sph')
+        ints_sph = numpy.einsum('ij,pq->ijpq', iden, ecp)
+
+        c = mol.sph2spinor_coeff()
+
+        ecp_spinor = numpy.einsum('ipa,ijpq,jqb->ab', numpy.conj(c), ints_sph,
+                                  c)
+        h += 1. * ecp_spinor
+        if with_soc is True:
+            mat_sph = mol.intor('ECPso')
+            s = .5 * lib.PauliMatrices
+            u = mol.sph2spinor_coeff()
+            mat_spinor = numpy.einsum('sxy,spq,xpi,yqj->ij', s, mat_sph, u.conj(), u)
+            h += -1.j*mat_spinor
     return h
 
 # attempt to restructure the spinor hf code structure
 # spinor hf should be parent of x2c hf using j-adapted spinor
-class Spinor_SCF(hf.SCF):
+class SpinorSCF(hf.SCF):
     '''Nonrelativistic SCF under j-adapted spinor basis'''
+
+    _keys = {'with_soc', 'with_x2c'}
+    
     def __init__(self, mol):
         hf.SCF.__init__(self, mol)
+        self.with_soc=False
+        self.with_x2c=None
 
     def build(self, mol=None):
         if self.verbose >= logger.WARN:
@@ -140,7 +173,9 @@ class Spinor_SCF(hf.SCF):
     def get_hcore(self, mol=None):
         if mol is None:
             mol = self.mol
-        return get_hcore(mol)
+        if self.with_x2c is not None:
+            return self.with_x2c.get_hcore(mol)
+        return get_hcore(mol, self.with_soc)
         
 
     def get_ovlp(self, mol=None):
@@ -230,7 +265,7 @@ class Spinor_SCF(hf.SCF):
     def nuc_grad_method(self):
         raise NotImplementedError
     
-JHF = Spinor_SCF
+JHF = SpinorSCF
 
 if __name__ == '__main__':
     from pyscf import scf
