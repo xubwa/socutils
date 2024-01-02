@@ -18,15 +18,19 @@ einsum = lib.einsum
 #einsum = np.einsum
 
 
-def makeCholERIMO(mf, mo_idx):
+def makeCholERIMO(mf, mo_idx, mf_type = 'g'):
     mol = mf.mol
     ##mol aobasis --->  UHF j-spinors
-    c = np.vstack(mol.sph2spinor_coeff())
     chol_vecs = QMCUtils.chunked_cholesky(mol, max_error=1.e-5).reshape(-1, mol.nao, mol.nao)
-    naux, norb, orbs = chol_vecs.shape[0], chol_vecs.shape[1], c.dot(mf.mo_coeff[:,mo_idx])
+    naux, norb, orbs = chol_vecs.shape[0], chol_vecs.shape[1], mf.mo_coeff[:,mo_idx]
     
+    if mf_type == 'j':
+        c = mol.sph2spinor_coeff()
+        c2 = np.vstack(c)
+        orbs = c2.dot(orbs)
     chol_mo  = lib.einsum('Lib, bj->Lij', lib.einsum('Lab,ai->Lib', chol_vecs, orbs[:norb,:].conj()), orbs[:norb, :])
     chol_mo += lib.einsum('Lib, bj->Lij', lib.einsum('Lab,ai->Lib', chol_vecs, orbs[norb:,:].conj()), orbs[norb:, :])
+
     return chol_mo
 
 
@@ -43,7 +47,7 @@ def cc_vvvv_chol(t1, t2, eris, chol):
     cholVV_twiddle = (cholVV.transpose(0,2,1)).reshape(-1,nvir)
     for i in range(nocc):
         for j in range(i):
-
+            print(i,j)
             T2nij, T2ij = t2new[i,j], t2[i,j] 
             
             T2ijAsym = T2ij - T2ij.T
@@ -51,6 +55,7 @@ def cc_vvvv_chol(t1, t2, eris, chol):
             tmp = (tmp.transpose(0,2,1)).reshape(-1, nvir)
             t2new[i,j] += tmp.T.dot(cholVV_twiddle)
             #t2new[i,j] += einsum('Pad,Pbd->ab', tmp, cholVV)
+
             
             
             tmp = -0.5*(chol2.dot(T2ijAsym)).reshape(-1,nvir,nvir)
@@ -61,6 +66,27 @@ def cc_vvvv_chol(t1, t2, eris, chol):
             t2new[i,j] +=  tmp2 - tmp2.T
 
             t2new[j,i] = t2new[i,j].T
+    return t2new
+
+
+def cc_vvvv_chol2(t1, t2, oovv, chol):
+    nocc, nvir = t1.shape
+    tau = imd.make_tau(t2, t1, t1)
+
+    tmp = einsum('ijcd, klcd->ijkl', tau, oovv)
+    t2new = einsum('ijkl,klab->ijab', tmp, tau)/8.
+
+    cholVV = chol[:,nocc:,nocc:]
+    chol2 = einsum('Pkc,ka->Pac', chol[:,:nocc,nocc:], t1)
+
+    T2asym = tau - tau.transpose(0,1,3,2)
+    for a in range(nvir):
+        int2a = einsum('Pc,Pbd->cbd', cholVV[:,a,:]-chol2[:,a,:], cholVV)        
+        t2new[:,:,a,:] += 0.5*np.einsum('ijcd,cbd->ijb',  T2asym, int2a)
+
+        int2a = einsum('Pbc,Pd->bcd', chol2, cholVV[:,a,:])        
+        t2new[:,:,a,:] += 0.5*np.einsum('ijcd,bcd->ijb',  T2asym, int2a)
+
     return t2new
 
 
@@ -84,11 +110,11 @@ def cc_Fvv_chol(t1, t2, eris, chol):
 
     #eris_vovv = np.asarray(eris.ovvv).transpose(1,0,3,2)
     #Fae += einsum('mf,amef->ae', t1, eris_vovv)
-    L = einsum('Lbi, ib->L', chol[:,nocc:, :nocc], t1)
-    Fae += einsum('L,Lab->ba', L, chol[:,nocc:,nocc:])
+    L = einsum('Lic, ic->L', chol[:,:nocc, nocc:], t1)
+    Fae += einsum('L,Lab->ab', L, chol[:,nocc:,nocc:])
 
-    Lai = einsum('Lba,ib->Lia', chol[:,nocc:,nocc:], t1)
-    Fae -= einsum('Lci, Lia->ac',  chol[:,nocc:, :nocc], Lai)
+    Lai = einsum('Lac,ic->Lai', chol[:,nocc:,nocc:], t1)
+    Fae -= einsum('Lib, Lai->ab',  chol[:,:nocc, nocc:], Lai)
 
     Fae -= 0.5*einsum('mnaf,mnef->ae', tau_tilde, eris.oovv)
     return Fae
@@ -122,14 +148,17 @@ def update_amps(cc, t1, t2, eris):
 
     tau = imd.make_tau(t2, t1, t1)
 
-    Fvv = cc_Fvv_chol(t1, t2, eris, cc.eriChol)
     Foo = imd.cc_Foo(t1, t2, eris)
     Fov = imd.cc_Fov(t1, t2, eris)
     Woooo = imd.cc_Woooo(t1, t2, eris)
-    #Wvvvv = cc_Wvvvv_chol(t1, t2, eris)
 
-    Wovvo = cc_Wovvo_chol(t1, t2, eris, cc.eriChol)
-    #Wovvo = imd.cc_Wovvo(t1, t2, eris)
+
+    ##############
+    ##first set of terms involving ovvv
+    Fvv = cc_Fvv_chol(t1, t2, eris, cc.eriChol)
+    #Fvv = imd.cc_Fvv(t1, t2, eris) #****
+    ##############
+
 
     # Move energy terms to the other side
     Fvv[np.diag_indices(nvir)] -= mo_e_v
@@ -141,11 +170,6 @@ def update_amps(cc, t1, t2, eris):
     t1new +=  einsum('imae,me->ia', t2, Fov)
     t1new += -einsum('nf,naif->ia', t1, eris.ovov)
 
-    tmp = -0.5*einsum('ijab,Pja->iPb', t2, cc.eriChol[:,:nocc, nocc:])
-    t1new += einsum('iPb,Pcb->ic', tmp, cc.eriChol[:,nocc:,nocc:])
-    tmp = 0.5*einsum('ijab,Pjb->iPa', t2, cc.eriChol[:,:nocc, nocc:])
-    t1new += einsum('iPa,Pca->ic', tmp, cc.eriChol[:,nocc:,nocc:])
-    #t1new += -0.5*einsum('imef,maef->ia', t2, eris.ovvv)
 
     t1new += -0.5*einsum('mnae,mnie->ia', t2, eris.ooov)
     t1new += fov.conj()
@@ -160,8 +184,34 @@ def update_amps(cc, t1, t2, eris):
     t2new += np.asarray(eris.oovv).conj()
     t2new += 0.5*einsum('mnab,mnij->ijab', tau, Woooo)
 
-    t2new += cc_vvvv_chol(t1, t2, eris, cc.eriChol)
-    #t2new += 0.5*einsum('ijef,abef->ijab', tau, Wvvvv)
+    ###########
+    ##all terms involving vvvv
+    t2new += cc_vvvv_chol2(t1, t2, eris.oovv, cc.eriChol)
+    #Wvvvv = imd.cc_Wvvvv(t1, t2, eris) #**
+    #t2new += 0.5*einsum('ijef,abef->ijab', tau, Wvvvv) #**
+    ###########
+
+    ##############
+    ##second set of terms involving ovvv
+
+    Wovvo = cc_Wovvo_chol(t1, t2, eris, cc.eriChol)
+    #Wovvo = imd.cc_Wovvo(t1, t2, eris)  #**
+
+
+    tmp = einsum('ic,Pca->Pia', t1, cc.eriChol[:,nocc:, nocc:].conj())
+    tmp1 = einsum('Pjb,Pia->ijab', cc.eriChol[:,:nocc,nocc:].conj(), tmp)
+    tmp = einsum('ic,Pcb->Pib', t1, cc.eriChol[:,nocc:, nocc:].conj())
+    tmp1 -= einsum('Pja,Pib->ijab', cc.eriChol[:,:nocc,nocc:].conj(), tmp)
+    t2new += (tmp1 - tmp1.transpose(1,0,2,3))
+    #tmp = einsum('ie,jeba->ijab', t1, np.array(eris.ovvv).conj()) #**
+    #t2new += (tmp - tmp.transpose(1,0,2,3))   #**
+
+    tmp = -0.5*einsum('ijab,Pja->iPb', t2, cc.eriChol[:,:nocc, nocc:])
+    t1new += einsum('iPb,Pcb->ic', tmp, cc.eriChol[:,nocc:,nocc:])
+    tmp = 0.5*einsum('ijab,Pjb->iPa', t2, cc.eriChol[:,:nocc, nocc:])
+    t1new += einsum('iPa,Pca->ic', tmp, cc.eriChol[:,nocc:,nocc:])
+    #t1new += -0.5*einsum('imef,maef->ia', t2, eris.ovvv)  #**
+    ##################
 
     tmp = einsum('imae,mbej->ijab', t2, Wovvo)
     tmp -= -einsum('ie,ma,mbje->ijab', t1, t1, eris.ovov)
@@ -169,13 +219,6 @@ def update_amps(cc, t1, t2, eris):
     tmp = tmp - tmp.transpose(0,1,3,2)
     t2new += tmp
 
-    tmp = einsum('ic,Pca->Pia', t1, cc.eriChol[:,nocc:, nocc:])
-    tmp1 = einsum('Pjb,Pia->ijab', cc.eriChol[:,:nocc,nocc:], tmp)
-    tmp = einsum('ic,Pcb->Pib', t1, cc.eriChol[:,nocc:, nocc:])
-    tmp1 -= einsum('Pja,Pib->ijab', cc.eriChol[:,:nocc,nocc:], tmp)
-    t2new += (tmp1 - tmp1.transpose(1,0,2,3))
-    #tmp = einsum('ie,jeba->ijab', t1, np.array(eris.ovvv).conj())
-    #t2new += (tmp - tmp.transpose(1,0,2,3))
 
     tmp = einsum('ma,ijmb->ijab', t1, np.asarray(eris.ooov).conj())
     t2new -= (tmp - tmp.transpose(0,1,3,2))
@@ -189,12 +232,12 @@ def update_amps(cc, t1, t2, eris):
 
 class ZCCSD(gccsd.GCCSD):
 
-    def __init__(self, mf, frozen=0, mo_coeff=None, mo_occ=None):
+    def __init__(self, mf, frozen=0, mo_coeff=None, mo_occ=None, mf_type = 'g'):
         #if frozen !
         #assert(isinstance(mf, x2c.RHF))
         ccsd.CCSD.__init__(self, mf, frozen, mo_coeff, mo_occ)
         mo_idx = ccsd.get_frozen_mask(self)
-        self.eriChol = makeCholERIMO(mf, mo_idx)
+        self.eriChol = makeCholERIMO(mf, mo_idx, mf_type)
 
     update_amps = update_amps
 
