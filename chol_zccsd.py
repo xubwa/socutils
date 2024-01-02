@@ -82,10 +82,10 @@ def cc_vvvv_chol2(t1, t2, oovv, chol):
     T2asym = tau - tau.transpose(0,1,3,2)
     for a in range(nvir):
         int2a = einsum('Pc,Pbd->cbd', cholVV[:,a,:]-chol2[:,a,:], cholVV)        
-        t2new[:,:,a,:] += 0.5*np.einsum('ijcd,cbd->ijb',  T2asym, int2a)
+        t2new[:,:,a,:] += 0.5*einsum('ijcd,cbd->ijb',  T2asym, int2a)
 
         int2a = einsum('Pbc,Pd->bcd', chol2, cholVV[:,a,:])        
-        t2new[:,:,a,:] += 0.5*np.einsum('ijcd,bcd->ijb',  T2asym, int2a)
+        t2new[:,:,a,:] += 0.5*einsum('ijcd,bcd->ijb',  T2asym, int2a)
 
     return t2new
 
