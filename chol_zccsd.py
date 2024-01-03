@@ -10,7 +10,7 @@ from pyscf.cc import gccsd
 from pyscf.cc import gintermediates as imd
 from pyscf.x2c import x2c
 from pyscf import __config__
-import QMCUtils
+import QMCUtils, chol_zccsd_t
 
 MEMORYMIN = getattr(__config__, 'cc_ccsd_memorymin', 2000)
 
@@ -247,6 +247,17 @@ class ZCCSD(gccsd.GCCSD):
             mo_coeff=self.mo_coeff
         return _make_eris_FromChol(self, mo_coeff)
 
+
+    def ccsd_t(self, t1=None, t2=None, eris=None):
+        from pyscf.cc import gccsd_t
+        if t1 is None: t1 = self.t1
+        if t2 is None: t2 = self.t2
+        #if eris is None: eris = self.ao2mo(self.mo_coeff)
+        if eris is None: eris = _make_eris_FromChol(self, self.mo_coeff)
+        #return gccsd_t.kernel(self, eris, t1, t2)
+        return chol_zccsd_t.kernel(self, eris, t1, t2, self.verbose)
+
+
 class _PhysicistsERIs(gccsd._PhysicistsERIs):
     '''<pq||rs> = <pq|rs> - <pq|sr>'''
     def __init__(self, mol=None):
@@ -314,60 +325,9 @@ def _make_eris_FromChol(mycc, mo_coeff=None):
     eris.ovvo = ovvo.transpose(0,2,1,3) - oovv.transpose(0,2,3,1)
     oovv, ovov, ovvo = 0., 0., 0.
 
-    #ovvv = einsum('Lij,Lkl->ijkl', chol_mo[:,:nocc,nocc:], chol_mo[:,nocc:,nocc:])
+    ##delete this
+    #ovvv = einsum('Lia,Lbc->iabc', chol_mo[:, :nocc, nocc:], chol_mo[:, nocc:, nocc:])
     #eris.ovvv = ovvv.transpose(0,2,1,3) - ovvv.transpose(0,2,3,1)
-    #ovvv = 0.
-    ##eris.ovvv, eris.vvvv will be using DF
-
-
-    '''
-    ###DELETE AFTER THIS
-    feri = eris.feris = lib.H5TmpFile()
-    dtype = np.result_type(eris.mo_coeff).char
-    eris.oooo = feri.create_dataset('oooo', (nocc,nocc,nocc,nocc), dtype)
-    eris.ooov = feri.create_dataset('ooov', (nocc,nocc,nocc,nvir), dtype)
-    eris.oovv = feri.create_dataset('oovv', (nocc,nocc,nvir,nvir), dtype)
-    eris.ovov = feri.create_dataset('ovov', (nocc,nvir,nocc,nvir), dtype)
-    eris.ovvo = feri.create_dataset('ovvo', (nocc,nvir,nvir,nocc), dtype)
-    eris.ovvv = feri.create_dataset('ovvv', (nocc,nvir,nvir,nvir), dtype)
-
-    max_memory = mycc.max_memory-lib.current_memory()[0]
-    blksize = min(nocc, max(2, int(max_memory*1e6/16/(nmo**3*2))))
-    max_memory = max(MEMORYMIN, max_memory)
-
-    mo = eris.mo_coeff
-    orbo = mo[:,:nocc]
-    orbv = mo[:,nocc:]
-    print(mo.shape)
-    print(orbo.shape, orbv.shape)
-
-    Fswap = Lib.H5TmpFile()
-    from pyscf import ao2mo
-    eri = ao2mo.general(mycc.mol, (orbo, mo, mo, mo), fswap, 'eri', intor='int2e_spinor',max_memory=max_memory, verbose=log)
-    #eri = ao2mo.general(mycc.mol, (orbo, orbv, orbv, orbv), intor='int2e_spinor',max_memory=max_memory, verbose=log)
-    print(np.asarray(fswap['eri']).shape)
-    for p0, p1 in lib.prange(0, nocc, blksize):
-        tmp = np.asarray(fswap['eri'][p0*nmo:p1*nmo])
-        print(p0, nmo, p1, nmo)
-        tmp = tmp.reshape(p1-p0, nmo, nmo, nmo)
-        eris.oooo[p0:p1] = (tmp[:,:nocc,:nocc,:nocc].transpose(0,2,1,3) - tmp[:,:nocc,:nocc,:nocc].transpose(0,2,3,1))
-        eris.ooov[p0:p1] = (tmp[:,:nocc,:nocc,nocc:].transpose(0,2,1,3) - tmp[:,nocc:,:nocc,:nocc].transpose(0,2,3,1))
-        eris.ovvv[p0:p1] = (tmp[:,nocc:,nocc:,nocc:].transpose(0,2,1,3) - tmp[:,nocc:,nocc:,nocc:].transpose(0,2,3,1))
-        eris.oovv[p0:p1] = (tmp[:,nocc:,:nocc,nocc:].transpose(0,2,1,3) - tmp[:,nocc:,:nocc,nocc:].transpose(0,2,3,1))
-        eris.ovov[p0:p1] = (tmp[:,:nocc,nocc:,nocc:].transpose(0,2,1,3) - tmp[:,nocc:,nocc:,:nocc].transpose(0,2,3,1))
-        eris.ovvo[p0:p1] = (tmp[:,nocc:,nocc:,:nocc].transpose(0,2,1,3) - tmp[:,:nocc,nocc:,nocc:].transpose(0,2,3,1))
-        tmp = None
-    cpu0 = log.timer_debug1('transforming ovvv', *cput0)
-
-    #eris.vvvv = feri.create_dataset('vvvv', (nvir, nvir, nvir, nvir), dtype)
-    #tril2sq = lib.square_mat_in_trilu_indices(nvir)
-    #fswap = lib.H5TmpFile()
-    #r_outcore.general(mycc.mol, (orbv, orbv, orbv, orbv), fswap, 'vvvv', max_memory=max_memory, verbose=log)
-    #for p0, p1 in lib.prange(0, nvir, blksize):
-    #    tmp = np.asarray(fswap['vvvv'][p0*nvir:p1*nvir]).reshape(p1-p0, nvir, nvir, nvir)
-    #    eris.vvvv[p0:p1] = tmp.transpose(0,2,1,3)-tmp.transpose(0,2,3,1)
-    cput0 = log.timer_debug1('transforming vvvv', *cput0)
-    '''
     return eris
 
 
