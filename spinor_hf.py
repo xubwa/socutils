@@ -1,11 +1,149 @@
 from functools import reduce
 import copy
 import numpy
+import numpy as np
 import scipy.linalg
 from pyscf import lib
 from pyscf.gto import mole
 from pyscf.lib import logger
 from pyscf.scf import hf, dhf, ghf, _vhf
+import re
+
+def symmetry_label(mol, symmetry=None):
+    if symmetry is None:
+        raise ValueError("Symmetry of orbital desired here.")
+    if 'sph' not in symmetry and 'linear' not in symmetry:
+        raise ValueError("Only spherical and linear symmetry supported for now.")
+    else:
+        labels = mol.spinor_labels()
+        irrep = dict() 
+        processed_labels = []
+        for label in labels:
+            label = label.split()
+            match = re.search(r'[a-zA-Z](.*?),(.*?)$', label[2])
+            if match:
+                #print(match.group(0), match.group(1), match.group(2))
+                full_label = match.group(0)
+                j_val = match.group(1)
+                jz_val = match.group(2)
+            processed_labels.append([full_label, j_val, jz_val])
+        if 'sph' in symmetry:
+            print(f'Spherical symmetry assigned')
+            for ilabel, label in enumerate(processed_labels):
+                full_label = label[0]
+                if irrep.get(full_label) is not None:
+                    irrep[full_label].append(ilabel)
+                else:
+                    irrep[full_label] = [ilabel]
+        elif 'linear' in symmetry:
+            print(f'Linear symmetry assigned')
+            for ilabel, label in enumerate(processed_labels):
+                full_label=label[2]
+                print(label)
+                print(full_label)
+                if irrep.get(full_label) is not None:
+                    irrep[full_label].append(ilabel)
+                else:
+                    irrep[full_label] = [ilabel]
+        return irrep
+
+def eig(mf, h, s, irrep=None):
+    '''Solve generalized eigenvalue problem, for each irrep.  The
+    eigenvalues and eigenvectors are not sorted to ascending order.
+    Instead, they are grouped based on irreps.
+    '''
+    print('symmetry adapted eigen value')
+    mol = mf.mol
+
+    if irrep is None:
+        raise ValueError("An irrep is desired as input")
+    cs = []
+    es = []
+    nmo = mf.mol.nao_2c()
+    e = np.zeros(nmo)
+    c = np.zeros((nmo, nmo), dtype=complex)
+    irrep_tag = np.empty(nmo, dtype='U10')
+    for ir in irrep:
+        ir_idx = irrep[ir]
+        hi = h[np.ix_(ir_idx, ir_idx)]
+        si = s[np.ix_(ir_idx, ir_idx)]
+        ei, ci = mf._eigh(h[np.ix_(ir_idx,ir_idx)], s[np.ix_(ir_idx,ir_idx)])
+        c[np.ix_(ir_idx,ir_idx)] = ci
+        e[ir_idx] = ei
+        irrep_tag[ir_idx] = str(ir)
+        angular_tag = None
+    # process max contributing ao
+    from scipy.linalg import sqrtm
+    s_sqrtm = sqrtm(s)
+    c_tilde = np.dot(s_sqrtm, c)
+    labels = np.array(mol.spinor_labels())
+    label_ang = np.array([re.search(r'[a-z]', label.split()[2]).group(0) for label in labels])
+    angular_tag = np.empty(nmo, dtype='U1')
+    for i in range(nmo):
+        ci = abs(c_tilde[:,i])**2
+        norm_ang = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
+        angs = np.array(['s','p', 'd', 'f', 'g'])
+        for j, label in enumerate(angs):
+            norm_ang[j] = sum(ci[np.where(label_ang == label)])
+        angular_tag[i] = angs[np.argmax(norm_ang)]
+
+    sort_idx = np.argsort(e)
+    irrep_tag = irrep_tag[sort_idx]
+    angular_tag = angular_tag[sort_idx]
+    return lib.tag_array(e[sort_idx],irrep_tag=irrep_tag),\
+           lib.tag_array(c[:,sort_idx], ang_tag=angular_tag)
+
+def get_occ_symm(mf, irrep, occup, irrep_mo=None, mo_energy=None, mo_coeff=None):
+    mol = mf.mol
+    mo_occ = np.zeros_like(mo_energy, dtype=complex)
+    ir_tag = irrep_mo
+    if ir_tag is None:
+        if mo_energy is None:
+            mo_energy = mf.mo_energy
+        ir_tag=mo_energy.irrep_tag
+
+    if mo_coeff is None and mf.mo_coeff is None:
+        for ir in irrep:
+            ir_mo = np.where(ir_tag==ir)
+            occupy = sum(occup[ir])
+            mo_occ[ir_mo[:occupy]] = 1.0+0.j
+            #mo_occ
+            return mo_occ
+    elif mo_coeff is None:
+        mo_coeff = mf.mo_coeff
+    angular_momentum = ['s', 'p', 'd', 'f']
+    n_ang = 4
+    for ir in irrep:
+        ir_mo = np.where(ir_tag==ir)[0]
+        if not ir in occup:
+            continue
+        occupy = occup[ir]
+        mo_occ[ir_mo[:occupy[0]]] = 1.0+0.j 
+        for i in range(1, min(len(occupy), n_ang+1)):
+            if occupy[i] == 0:
+                continue
+            else:
+                ang = angular_momentum[i-1]
+                indices = np.where(mo_coeff.ang_tag[ir_mo[occupy[0]:]] == ang)[0]
+                if len(indices) < occupy[i]:
+                    raise ValueError(f'Not enough mo with largest contribution from {ang} found')
+                else:
+                    mo_occ[ir_mo[occupy[0]:][indices[:occupy[i]]]] = 1.0+0.j
+    occupied = np.where(mo_occ == 1.0+0.j)[0]
+    count = [0,0,0,0]
+    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
+        if ang == 's':
+            count[0]+=1
+    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
+        if ang == 'p':
+            count[1]+=1
+    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
+        if ang == 'd':
+            count[2]+=1
+    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
+        if ang == 'f':
+            count[3]+=1
+    return mo_occ
 
 def spinor2sph(mol, spinor):
     assert (spinor.shape[0] == mol.nao_2c()), "spinor integral must be of shape (nao_2c, nao_2c)"
@@ -265,7 +403,30 @@ class SpinorSCF(hf.SCF):
     def nuc_grad_method(self):
         raise NotImplementedError
     
+
+class SymmSpinorSCF(SpinorSCF):
+    def __init__(self, mol, symmetry=None, occup=None):
+        SpinorSCF.__init__(self, mol)
+        if symmetry is 'linear' or symmetry is 'sph':
+            self.irrep_ao = symmetry_label(mol, symmetry)
+        else:
+            raise NotImplementedError
+        
+        self.occupation = occup
+        
+    def eig(self, h, s):
+        e, c = eig(self, h, s, irrep=self.irrep_ao)
+        self.irrep_mo = e.irrep_tag
+        return e, c
+    
+    def get_occ(self, mo_energy=None, mo_coeff=None):
+        if self.occupation is None or self.mo_energy is None:
+            return SpinorSCF.get_occ(self, mo_energy, mo_coeff)
+        else:
+            return get_occ_symm(self, self.irrep_ao, self.occupation)
+
 JHF = SpinorSCF
+SymmJHF = SymmSpinorSCF
 
 if __name__ == '__main__':
     from pyscf import scf
@@ -279,8 +440,10 @@ if __name__ == '__main__':
 
 ##############
 # SCF result
-    method = Spinor_SCF(mol)
+    method = SpinorSCF(mol)
     #method.init_guess = '1e'
     energy = method.scf()
     print(method.mo_energy)
+    print(method.mo_coeff[:,0])
+    print(method.mo_coeff[:,1])
     print(energy)
