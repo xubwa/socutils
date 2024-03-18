@@ -224,8 +224,17 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
     g[:, ncore:nocc] = np.dot(
         h1e_mo[:, ncore:nocc] + vhf_c[:, ncore:nocc], casdm1)
     
-    paaa = eris.paaa
-    g_dm2 = lib.einsum('puvw,tuvw->pt', paaa, casdm2)
+    if isinstance(eris, zmc_ao2mo._ERIS):
+        paaa = eris.paaa
+        g_dm2 = lib.einsum('puvw,tuvw->pt', paaa, casdm2)
+    elif isinstance(eris, zmc_ao2mo._CDERIS):
+        cd_pa = eris.cd_pa
+        cd_aa = eris.cd_aa
+        tmp = lib.einsum('Lvw,tuvw->Ltu', cd_aa, casdm2)
+        g_dm2 = lib.einsum('Lpt,Ltu->pt', cd_pa, tmp)
+        tmp.__del__()
+    else:
+        raise('eris type not recognized')
     g[:, ncore:nocc] += g_dm2
     g_orb = casscf.pack_uniq_var(g - g.T.conj())
 

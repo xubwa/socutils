@@ -159,9 +159,9 @@ class _CDERIS(lib.StreamObject):
         self.cd_vc = cd_pp[:,nocc:,:ncore].copy()
         self.cd_va = cd_pp[:,nocc:,ncore:nocc].copy()
         self.cd_vv = cd_pp[:,nocc:,nocc:].copy()
-        cd_pa = cd_pp[:,:,ncore:nocc]
+        self.cd_pa = cd_pp[:,:,ncore:nocc]
         self.aaaa = lib.einsum('ptu,pvw->tuvw', self.cd_aa, self.cd_aa) 
-        self.paaa = lib.einsum('pqt,pvw->qtvw', cd_pa, self.cd_aa)
+        #self.paaa = lib.einsum('pqt,pvw->qtvw', cd_pa, self.cd_aa)
 
 
 class _ERIS(object):
