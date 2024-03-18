@@ -57,7 +57,7 @@ def write_head(fout, nmo, nelec, ms, orbsym=None):
     fout.write('  ISYM=0,\n')
     fout.write(' &END\n')
 
-def from_x2c(mf, ncore, nact, filename='FCIDUMP', tol=1e-8, intor='int2e_spinor', h1e=None, approx='1e'):
+def from_x2c(mf, ncore, nact, filename='FCIDUMP', tol=1e-8, intor='int2e_spinor', h1e=None, approx='1e', symm=None):
     ncore = ncore
     nact = nact
     mo_coeff = mf.mo_coeff[:, ncore:ncore + nact]
@@ -65,7 +65,7 @@ def from_x2c(mf, ncore, nact, filename='FCIDUMP', tol=1e-8, intor='int2e_spinor'
 
     assert mo_coeff.dtype == complex
 
-    mf.with_x2c.approx = approx
+    #mf.with_x2c.approx = approx
     hcore = mf.get_hcore(mf.mol)
     core_occ = numpy.zeros(len(mf.mo_energy))
     core_occ[:ncore] = 1.0
@@ -79,7 +79,10 @@ def from_x2c(mf, ncore, nact, filename='FCIDUMP', tol=1e-8, intor='int2e_spinor'
     #reduce(numpy.dot, (mf.mo_coeff.T, mf.get_hcore(), mf.mo_coeff))[ncore:ncore+nact, ncore:ncore+nact]
 
     #if mf._eri is None:
-    eri = ao2mo.kernel(mf.mol, mo_coeff, intor=intor)
+    #eri = ao2mo.kernel(mf.mol, mo_coeff, intor=intor)
+    from pyscf.ao2mo import nrr_outcore
+    eri = nrr_outcore.full_iofree(mf.mol, mo_coeff, intor='int2e', motype='j-spinor')
+    print(eri.shape)
     #else:
     #    eri = ao2mo.kernel(mf._eri, mo_coeff, intor=intor)
     #core_occ = numpy.zeros(len(mf.mo_energy))
@@ -87,7 +90,7 @@ def from_x2c(mf, ncore, nact, filename='FCIDUMP', tol=1e-8, intor='int2e_spinor'
     #dm = mf.make_rdm1(mo_occ = core_occ)
     #core_energy = scf.hf.energy_elec(mf, dm=dm)
     from_integrals(filename=filename, h1e=h1eff, h2e=eri, nmo=nact,
-                   nelec=sum(mf.mol.nelec)-ncore, nuc=energy_core.real, tol=tol)
+                   nelec=sum(mf.mol.nelec)-ncore, nuc=energy_core.real, tol=tol, orbsym=symm)
 
 
 def from_ghf(mf, ncore, nact, filename='FCIDUMP', tol=1e-10, intor='int2e_sph'):

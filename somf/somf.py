@@ -1,4 +1,4 @@
-import numpy, scipy, x2c_grad
+import numpy, scipy
 import time
 from numpy.linalg import norm
 from functools import reduce
@@ -10,7 +10,8 @@ from pyscf.scf import dhf, jk, _vhf
 #from pyscf.shciscf import socutils
 from pyscf.x2c import sfx2c1e
 from pyscf.x2c import x2c
-from spinor2sph import spinor2sph_soc
+from socutils import x2c_grad
+from socutils.spinor2sph import spinor2sph_soc
 x2camf  = None
 try:
     import x2camf

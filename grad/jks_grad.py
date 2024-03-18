@@ -23,7 +23,8 @@ import numpy
 from pyscf import lib
 from pyscf.lib import logger
 from pyscf.grad import rks as rks_grad
-from pyscf.grad import ghf as ghf_grad
+from pyscf.socutils import jhf_grad
+from pyscf.socutils.spinor_hf import spinor2sph, sph2spinor
 from pyscf.dft import numint, gen_grid
 from pyscf import __config__
 
@@ -86,7 +87,7 @@ def get_veff(ks_grad, mol=None, dm=None):
     dmba = dm[nao:, :nao]
     if abs(hyb) < 1e-10:
         dms = numpy.stack((dmaa, dmbb))
-        j1 = ks_grad.get_j(mol, dms)
+        j1 = ks_grad.get_j(mol, dms.real)
         vj = numpy.zeros((3, nao*2, nao*2), dm.dtype)
         vj[:, :nao, :nao] = j1[0] + j1[1]
         vj[:, nao:, nao:] = j1[0] + j1[1]
@@ -94,7 +95,7 @@ def get_veff(ks_grad, mol=None, dm=None):
 
     else:
         dms = numpy.stack((dmaa, dmbb, dmab, dmba))
-        j1, k1 = ks_grad.get_jk(mol, dms)
+        j1, k1 = ks_grad.get_jk(mol, dms.real)
         vj = numpy.zeros((3, nao*2, nao*2), dm.dtype)
         vk = numpy.zeros((3, nao*2, nao*2), dm.dtype)
         vj[:, :nao, :nao] = j1[0] + j1[1]
@@ -300,22 +301,29 @@ def get_vxc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
     return excsum, -vmat_2c
 
 
-class Gradients(ghf_grad.Gradients):
+class Gradients(jhf_grad.Gradients):
 
     grid_response = getattr(__config__, 'grad_uks_Gradients_grid_response', False)
 
     def __init__(self, mf):
-        ghf_grad.Gradients.__init__(self, mf)
+        jhf_grad.Gradients.__init__(self, mf)
         self.grids = None
         self.grid_response = False
         self._keys = self._keys.union(['grid_response', 'grids'])
 
     def dump_flags(self, verbose=None):
-        ghf_grad.Gradients.dump_flags(self, verbose)
+        jhf_grad.Gradients.dump_flags(self, verbose)
         logger.info(self, 'grid_response = %s', self.grid_response)
         return self
 
-    get_veff = get_veff
+    def get_veff(self, mol=None, dm=None):
+        if mol is None: mol = self.mol
+        if dm is None: dm = self.base.make_rdm1()
+        dm_scalar = spinor2sph(mol, dm)
+        print(numpy.linalg.norm(dm_scalar.real))
+        print(numpy.linalg.norm(dm_scalar.imag))
+        veff_scalar = get_veff(self, mol, dm_scalar)
+        return sph2spinor(mol, veff_scalar)
 
     def extra_force(self, atom_id, envs):
         '''Hook for extra contributions in analytical gradients.
@@ -335,5 +343,5 @@ class Gradients(ghf_grad.Gradients):
 
 Grad = Gradients
 
-from pyscf import dft
-dft.gks.GKS.Gradients = dft.gks_symm.GKS.Gradients = lib.class_as_method(Gradients)
+from pyscf import socutils
+socutils.dft.Spinor_DFT.Gradients = lib.class_as_method(Gradients)

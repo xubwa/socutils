@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Author: Qiming Sun <osirpt.sun@gmail.com>
 # Author: Xubo Wang <wangxubo0201@outlook.com>
 #
 
@@ -29,6 +28,7 @@ from pyscf.lib import logger
 from pyscf.grad import rhf as rhf_grad
 
 from numpy.linalg import norm
+
 def grad_elec(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
     '''
     Electronic part of GHF/GKS gradients

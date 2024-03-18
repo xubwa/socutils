@@ -11,8 +11,8 @@ from pyscf.lib import chkfile, logger
 from pyscf.x2c import x2c
 from pyscf.scf import hf, dhf, ghf
 
-import somf, frac_dhf, writeInput, settings
-import spinor_hf
+from socutils import somf, frac_dhf, writeInput, settings
+from socutils import spinor_hf
 #, zquatev
 
 x2camf = None
@@ -241,7 +241,7 @@ class SCF(spinor_hf.JHF):
     nact = None
 
     def __init__(self, mol, nopen=0, nact=0, with_gaunt=True, with_breit=True, with_aoc=False, prog="sph_atm"):
-        hf.SCF.__init__(self, mol)
+        super().__init__(mol)
         self.with_x2c = SpinorX2CAMFHelper(mol,
                                            with_gaunt=with_gaunt,
                                            with_breit=with_breit,
@@ -375,9 +375,9 @@ def x2camf_ghf(mf, with_gaunt=True, with_breit=True, with_aoc=False, prog="sph_a
             self.with_x2c.reset(mol)
             return mf_class.reset(self, mol)
 
-    with_x2c = SpinOrbitalX2CAMFHelper(mf.mol, with_gaunt=with_gaunt,
+    mf.with_x2c = SpinOrbitalX2CAMFHelper(mf.mol, with_gaunt=with_gaunt,
         with_breit=with_breit, with_aoc=with_aoc, prog=prog)
-    return mf.view(X2CAMF_GSCF).add_keys(with_x2c=with_x2c)
+    return mf.view(X2CAMF_GSCF)
 
 
 if __name__ == '__main__':

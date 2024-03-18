@@ -8,6 +8,7 @@ from pyscf.gto import mole
 from pyscf.lib import logger
 from pyscf.scf import hf, dhf, ghf, _vhf
 import re
+from zquatev import solve_KR_FCSCE as eigkr
 
 def symmetry_label(mol, symmetry=None):
     if symmetry is None:
@@ -145,10 +146,12 @@ def get_occ_symm(mf, irrep, occup, irrep_mo=None, mo_energy=None, mo_coeff=None)
             count[3]+=1
     return mo_occ
 
+
 def spinor2sph(mol, spinor):
-    assert (spinor.shape[0] == mol.nao_2c()), "spinor integral must be of shape (nao_2c, nao_2c)"
     c = mol.sph2spinor_coeff()
     c2 = numpy.vstack(c)
+    print(c2.shape)
+    assert (spinor.shape[0] == c2.shape[1]), "spinor integral must be of shape (nao_2c, nao_2c)"
     ints_sph = lib.einsum('ip,pq,qj->ij', c2, spinor, c2.T.conj())
     return ints_sph
 
@@ -172,11 +175,8 @@ def _proj_dmll(mol_nr, dm_nr, mol):
     dm_ll = (dm_ll + dhf.time_reversal_matrix(mol, dm_ll)) * .5
     return dm_ll
 
-
+'''
 def get_jk(mol, dm, hermi=1, mf_opt=None, with_j=True, with_k=True, omega=None):
-    '''non-relativistic J/K matrices (without SSO,SOO etc) in the j-adapted
-    spinor basis.
-    '''
     def jkbuild(mol, dm, hermi, with_j, with_k, omega=None):
         if (not omega and
             (self._eri is not None or mol.incore_anyway or self._is_mem_enough())):
@@ -190,6 +190,7 @@ def get_jk(mol, dm, hermi=1, mf_opt=None, with_j=True, with_k=True, omega=None):
     j_spinor = sph2spinor(mol, j_sph)
     k_spinor = sph2spinor(mol, k_sph)
     return j_spinor, k_spinor
+'''
 
 make_rdm1 = hf.make_rdm1
 
@@ -276,6 +277,7 @@ class SpinorSCF(hf.SCF):
         hf.SCF.__init__(self, mol)
         self.with_soc=False
         self.with_x2c=None
+        self.so_contr=None
 
     def build(self, mol=None):
         if self.verbose >= logger.WARN:
@@ -302,23 +304,27 @@ class SpinorSCF(hf.SCF):
         return init_guess_by_chkfile(self.mol, chkfile, project=project)
 
     def _eigh(self, h, s):
-        e, c = scipy.linalg.eigh(h, s)
-        idx = numpy.argmax(abs(c.real), axis=0)
-        c[:,c[idx,range(len(e))].real<0] *= -1
-        return e, c
+        return eigkr(self.mol, h, s)
 
     @lib.with_doc(get_hcore.__doc__)
     def get_hcore(self, mol=None):
         if mol is None:
             mol = self.mol
         if self.with_x2c is not None:
-            return self.with_x2c.get_hcore(mol)
-        return get_hcore(mol, self.with_soc)
+            hcore = self.with_x2c.get_hcore(mol)
+        else:
+            hcore = get_hcore(mol, self.with_soc)
+        if getattr(mol, 'so_contr', None) is not None:
+            hcore = reduce(numpy.dot, (mol.so_contr.T, hcore, mol.so_contr))
+        return hcore
         
 
     def get_ovlp(self, mol=None):
         if mol is None: mol = self.mol
-        return mol.intor_symmetric('int1e_ovlp_spinor')
+        ovlp = mol.intor_symmetric('int1e_ovlp_spinor')
+        if getattr(mol, 'so_contr', None) is not None:
+            ovlp = reduce(numpy.dot, (mol.so_contr.T, ovlp, mol.so_contr))
+        return ovlp
 
     def get_occ(self, mo_energy=None, mo_coeff=None):
         if mo_energy is None: mo_energy = self.mo_energy
@@ -426,6 +432,7 @@ class SymmSpinorSCF(SpinorSCF):
             return get_occ_symm(self, self.irrep_ao, self.occupation)
 
 JHF = SpinorSCF
+SCF = SpinorSCF
 SymmJHF = SymmSpinorSCF
 
 if __name__ == '__main__':
