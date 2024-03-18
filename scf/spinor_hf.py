@@ -424,6 +424,11 @@ class SymmSpinorSCF(SpinorSCF):
         e, c = eig(self, h, s, irrep=self.irrep_ao)
         self.irrep_mo = e.irrep_tag
         return e, c
+
+    # when linear symmetry or spherical symmetry imposed,
+    # kramers symmetry is adapted outside the eigensolver
+    def _eigh(self, h, s):
+        return scipy.linalg.eigh(h, s)
     
     def get_occ(self, mo_energy=None, mo_coeff=None):
         if self.occupation is None or self.mo_energy is None:

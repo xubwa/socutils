@@ -5,7 +5,7 @@ from pyscf.gto import moleintor
 from pyscf.x2c import x2c
 import numpy,math
 import scipy.linalg
-from pyscf.socutils.x2c_grad_g import _block_diag_xyz
+from socutils.grad.x2c_grad_g import _block_diag_xyz
 from pyscf.x2c.sfx2c1e_grad import _gen_h1_s1
 
 '''

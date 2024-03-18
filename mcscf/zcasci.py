@@ -11,7 +11,7 @@ from pyscf.ao2mo import nrr_outcore
 import h5py
 from . import zcasbase
 from . import zmc_ao2mo
-from pyscf.socutils.tools import fcidump_rel
+from socutils.tools import fcidump_rel
 
 
 def h1e_for_cas(casci, mo_coeff=None, ncas=None, ncore=None):

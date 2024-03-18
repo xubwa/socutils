@@ -11,8 +11,8 @@ from pyscf.lib import chkfile, logger
 from pyscf.x2c import x2c
 from pyscf.scf import hf, dhf, ghf
 
-from socutils import somf, frac_dhf, writeInput, settings
-from socutils import spinor_hf
+from socutils.somf import somf, writeInput, settings
+from socutils.scf import frac_dhf, spinor_hf
 #, zquatev
 
 x2camf = None
