@@ -7,7 +7,7 @@ from pyscf.ao2mo import r_outcore
 from pyscf.lib import logger
 from pyscf.cc import ccsd
 from pyscf.cc import gccsd
-from pyscf.cc import gintermediates as imd
+from socutils.cc import gintermediates as imd
 from pyscf.x2c import x2c
 from pyscf import __config__
 
@@ -15,7 +15,7 @@ MEMORYMIN = getattr(__config__, 'cc_ccsd_memorymin', 2000)
 
 einsum = lib.einsum
 
-def update_amps(cc, t1, t2, eris):
+def update_amps(cc, t1, t2, eris, alg='new'):
     assert(isinstance(eris, _PhysicistsERIs))
     nocc, nvir = t1.shape
     fock = eris.fock
@@ -30,7 +30,7 @@ def update_amps(cc, t1, t2, eris):
     Foo = imd.cc_Foo(t1, t2, eris)
     Fov = imd.cc_Fov(t1, t2, eris)
     Woooo = imd.cc_Woooo(t1, t2, eris)
-    Wvvvv = imd.cc_Wvvvv(t1, t2, eris)
+    
     Wovvo = imd.cc_Wovvo(t1, t2, eris)
 
     # Move energy terms to the other side
@@ -55,7 +55,11 @@ def update_amps(cc, t1, t2, eris):
     t2new -= tmp - tmp.transpose(1,0,2,3)
     t2new += np.asarray(eris.oovv).conj()
     t2new += 0.5*einsum('mnab,mnij->ijab', tau, Woooo)
-    t2new += 0.5*einsum('ijef,abef->ijab', tau, Wvvvv)
+    if (alg == 'old'):
+        Wvvvv = imd.cc_Wvvvv(t1, t2, eris)
+        t2new += 0.5*einsum('ijef,abef->ijab', tau, Wvvvv)
+    elif (alg == 'new'):
+        t2new += imd.update_t2_vvvv(t1, t2, tau, eris)
     tmp = einsum('imae,mbej->ijab', t2, Wovvo)
     tmp -= -einsum('ie,ma,mbje->ijab', t1, t1, eris.ovov)
     tmp = tmp - tmp.transpose(1,0,2,3)
@@ -198,8 +202,7 @@ if __name__ == '__main__':
     mol.spin = 0
     mol.verbose = 4 
     mol.build()
-    import x2camf_hf
-    mf = x2camf_hf.RHF(mol).run()
+    mf = x2c.RHF(mol).run()
     mycc = ZCCSD(mf, frozen=2)
     ecc, t1, t2 = mycc.kernel()
     e_corr = mycc.ccsd_t()
