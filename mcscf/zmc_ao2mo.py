@@ -139,30 +139,41 @@ class _CDERIS(lib.StreamObject):
         moa = mo[:, ncore:nocc]
         c2 = numpy.vstack(mol.sph2spinor_coeff())
 
-        moa_sph = moa #numpy.dot(c2, moa)
-        mop_sph = mo #numpy.dot(c2, mo)
-        
-        cd_aa = np.zeros((ncd, ncas, ncas), dtype=complex)
-        cd_pa = np.zeros((ncd, nmo,  ncas), dtype=complex)
-        cd_pp = np.zeros((ncd, nmo,  nmo), dtype=complex)
-        cd_cc = np.zeros((ncd, ncas, ncore), dtype=complex)
-        for i in range(ncd):
-            chol_i = cderi[i].reshape(mol.nao, mol.nao)
-            chol_i = la.block_diag(chol_i, chol_i)
-            cd_pp[i] = reduce(np.dot, (mop_sph.T.conj(), chol_i, mop_sph))
-        self.cd_cc = cd_pp[:,:ncore,:ncore].copy()
-        self.cd_ca = cd_pp[:,:ncore,ncore:nocc].copy()
-        self.cd_cv = cd_pp[:,:ncore,nocc:].copy()
-        self.cd_ac = cd_pp[:,ncore:nocc,:ncore].copy()
-        self.cd_aa = cd_pp[:,ncore:nocc,ncore:nocc].copy()
-        self.cd_av = cd_pp[:,ncore:nocc,nocc:].copy()
-        self.cd_vc = cd_pp[:,nocc:,:ncore].copy()
-        self.cd_va = cd_pp[:,nocc:,ncore:nocc].copy()
-        self.cd_vv = cd_pp[:,nocc:,nocc:].copy()
-        self.cd_pa = cd_pp[:,:,ncore:nocc]
+        moa_sph = numpy.dot(c2, moa)
+        mop_sph = numpy.dot(c2, mo)
+        if level is 2:
+            cd_aa = np.zeros((ncd, ncas, ncas), dtype=complex)
+            cd_pa = np.zeros((ncd, nmo,  ncas), dtype=complex)
+            for i in range(ncd):
+                chol_i = cderi[i].reshape(mol.nao, mol.nao)
+                chol_i = la.block_diag(chol_i, chol_i)
+                cd_pa[i] = reduce(np.dot, (mop_sph.T.conj(), chol_i, moa_sph))
+            self.cd_pa = cd_pa
+            self.cd_aa = cd_pa[:,ncore:nocc,:].copy()
+        elif level > 2:
+            cd_aa = np.zeros((ncd, ncas, ncas), dtype=complex)
+            cd_pa = np.zeros((ncd, nmo,  ncas), dtype=complex)
+            cd_pp = np.zeros((ncd, nmo,  nmo), dtype=complex)
+            for i in range(ncd):
+                print(i)
+                chol_i = cderi[i].reshape(mol.nao, mol.nao)
+                chol_i = la.block_diag(chol_i, chol_i)
+                cd_pp[i] = reduce(np.dot, (mop_sph.T.conj(), chol_i, mop_sph))
+            self.cd_cc = cd_pp[:,:ncore,:ncore].copy()
+            self.cd_ca = cd_pp[:,:ncore,ncore:nocc].copy()
+            self.cd_cv = cd_pp[:,:ncore,nocc:].copy()
+            self.cd_ac = cd_pp[:,ncore:nocc,:ncore].copy()
+            self.cd_aa = cd_pp[:,ncore:nocc,ncore:nocc].copy()
+            self.cd_av = cd_pp[:,ncore:nocc,nocc:].copy()
+            self.cd_vc = cd_pp[:,nocc:,:ncore].copy()
+            self.cd_va = cd_pp[:,nocc:,ncore:nocc].copy()
+            self.cd_vv = cd_pp[:,nocc:,nocc:].copy()
+            self.cd_pa = cd_pp[:,:,ncore:nocc]
+            print('cd integrals saved')
         self.aaaa = lib.einsum('ptu,pvw->tuvw', self.cd_aa, self.cd_aa) 
+        #print('aaaa done')
         #self.paaa = lib.einsum('pqt,pvw->qtvw', cd_pa, self.cd_aa)
-
+        #self.aaaa = self.paaa[ncore:nocc,:,:,:]
 
 class _ERIS(object):
     def __init__(self, zcasscf, mo, method='outcore', level=1):

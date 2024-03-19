@@ -232,7 +232,7 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
         cd_aa = eris.cd_aa
         tmp = lib.einsum('Lvw,tuvw->Ltu', cd_aa, casdm2)
         g_dm2 = lib.einsum('Lpt,Ltu->pt', cd_pa, tmp)
-        tmp.__del__()
+        del tmp
     else:
         raise('eris type not recognized')
     g[:, ncore:nocc] += g_dm2
@@ -376,7 +376,6 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, conv_tol=None, conv_tol_grad=N
     cput0 = (logger.process_clock(), logger.perf_counter())
     if conv_tol is None:
         conv_tol = mc.conv_tol
-    log.debug('Start Super-CI Spinor MCSCF')
     mol = mc.mol
     #mo = form_kramers(mo_coeff)
     mo = mo_coeff
@@ -403,7 +402,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, conv_tol=None, conv_tol_grad=N
     norm_gorb = norm_gci = -1
     de, elast = e_tot, e_tot
 
-    t1m = log.timer('Initializing 1-step CASSCF', *cput0)
+    t1m = log.timer('Initializing Super-CI based MCSCF', *cput0)
     casdm1, casdm2 = mc.fcisolver.make_rdm12(fcivec, ncas, mc.nelecas)
     norm_ddm = 1e2
     casdm1_prev = casdm1_last = casdm1
