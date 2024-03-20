@@ -24,11 +24,12 @@ class SCF(spinor_hf.JHF):
     nopen = None
     nact = None
 
-    def __init__(self, mol, nopen=0, nact=0, with_gaunt=True, with_breit=True, with_aoc=False, prog="sph_atm"):
+    def __init__(self, mol, nopen=0, nact=0, with_gaunt=True, with_breit=True, with_gaunt_sd=False, with_aoc=False, prog="sph_atm"):
         super().__init__(mol)
         self.with_x2c = SpinorX2CAMFHelper(mol,
                                            with_gaunt=with_gaunt,
                                            with_breit=with_breit,
+                                           with_gaunt_sd=with_gaunt_sd,
                                            with_aoc=with_aoc,
                                            prog=prog)
         self._keys = self._keys.union(['with_x2c'])
