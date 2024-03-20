@@ -1,4 +1,4 @@
-import numpy, scipy, x2c_grad
+import numpy, scipy
 import time
 from functools import reduce
 from pyscf import gto, scf, lib
@@ -6,7 +6,9 @@ from pyscf.gto import moleintor
 from pyscf.lib.parameters import LIGHT_SPEED
 from pyscf.x2c import x2c
 from pyscf.x2c import sfx2c1e
-from spinor2sph import spinor2sph_soc
+from socutils.somf import x2c_grad
+from socutils.tools.spinor2sph import spinor2sph_soc
+
 x2camf  = None
 try:
     import x2camf

@@ -1,6 +1,13 @@
+import os
 import numpy
 from functools import reduce
+from pyscf import gto
+from pyscf.scf import dhf
 from pyscf.x2c import x2c
+from pyscf.lib import chkfile
+from pyscf.lib.parameters import LIGHT_SPEED
+from . import somf, writeInput, settings
+from socutils.scf import frac_dhf
 
 try:
     import x2camf
@@ -156,7 +163,6 @@ class SpinorX2CAMFHelper(x2c.SpinorX2CHelper):
         self.aoc = with_aoc
         self.prog = prog
         self.soc_matrix = None
-        print(self.xuncontract)
 
     def initialize_x2camf(self):
         initialize_x2camf(self)

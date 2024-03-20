@@ -1,7 +1,6 @@
 from functools import reduce
 
 import os
-from turtle import shape
 import numpy
 import scipy
 
