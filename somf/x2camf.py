@@ -109,7 +109,7 @@ def get_soc_integrals(x2cobj, mol=None, prog="sph_atm", with_gaunt=False, with_b
         else:
             spin_free = False
             two_c = False
-        soc_matrix = x2camf.amfi(x2cobj, printLevel=x2cobj.verbose, with_gaunt=x2cobj.gaunt, with_gauge=x2cobj.breit, with_gaunt_sd=x2cobj.gaunt_sd)
+        soc_matrix = x2camf.amfi(x2cobj, printLevel=x2cobj.verbose, with_gaunt=x2cobj.gaunt, with_gauge=x2cobj.breit, with_gaunt_sd=x2cobj.gaunt_sd, pcc=x2cobj.pcc)
     elif (x2c.prog == "sph_atm_legacy"):  # keep this legacy interface for a sanity check.
         writeInput.write_input(x2cobj.mol, x2cobj.gaunt, x2cobj.breit, x2cobj.aoc)
         print(settings.AMFIEXE)
@@ -155,13 +155,14 @@ def get_soc_integrals(x2cobj, mol=None, prog="sph_atm", with_gaunt=False, with_b
 class SpinorX2CAMFHelper(x2c.SpinorX2CHelper):
     atom_gso_mf = None
 
-    def __init__(self, mol, sfx2c=False, with_gaunt=True, with_breit=True, with_gaunt_sd=False, with_aoc=False, prog="sph_atm"):
+    def __init__(self, mol, sfx2c=False, with_gaunt=True, with_breit=True, with_gaunt_sd=False, with_aoc=False, with_pcc=False, prog="sph_atm"):
         x2c.X2C.__init__(self, mol)
         self.sfx2c = sfx2c  # this is still a spinor x2c object, only labels the flavor of soc integral.
         self.gaunt = with_gaunt
         self.breit = with_breit
         self.gaunt_sd = with_gaunt_sd
         self.aoc = with_aoc
+        self.pcc = with_pcc
         self.prog = prog
         self.soc_matrix = None
 
