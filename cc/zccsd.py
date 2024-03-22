@@ -3,6 +3,7 @@ import numpy as np
 from functools import reduce
 
 from pyscf import lib
+from pyscf import scf
 from pyscf.ao2mo import r_outcore
 from pyscf.lib import logger
 from pyscf.cc import ccsd
@@ -151,6 +152,7 @@ def _make_eris_outcore(mycc, mo_coeff=None):
     eris.ovov = feri.create_dataset('ovov', (nocc,nvir,nocc,nvir), dtype)
     eris.ovvo = feri.create_dataset('ovvo', (nocc,nvir,nvir,nocc), dtype)
     eris.ovvv = feri.create_dataset('ovvv', (nocc,nvir,nvir,nvir), dtype)
+    eris.vvvv = feri.create_dataset('vvvv', (nvir, nvir, nvir, nvir), dtype)
 
     max_memory = mycc.max_memory-lib.current_memory()[0]
     blksize = min(nocc, max(2, int(max_memory*1e6/16/(nmo**3*2))))
@@ -164,31 +166,77 @@ def _make_eris_outcore(mycc, mo_coeff=None):
 
     fswap = lib.H5TmpFile()
     from pyscf import ao2mo
-    eri = ao2mo.general(mycc.mol, (orbo, mo, mo, mo), fswap, 'eri', intor='int2e_spinor',max_memory=max_memory, verbose=log)
-    #eri = ao2mo.general(mycc.mol, (orbo, orbv, orbv, orbv), intor='int2e_spinor',max_memory=max_memory, verbose=log)
-    print(np.asarray(fswap['eri']).shape)
-    for p0, p1 in lib.prange(0, nocc, blksize):
-        tmp = np.asarray(fswap['eri'][p0*nmo:p1*nmo])
-        print(p0, nmo, p1, nmo)
-        tmp = tmp.reshape(p1-p0, nmo, nmo, nmo)
-        eris.oooo[p0:p1] = (tmp[:,:nocc,:nocc,:nocc].transpose(0,2,1,3) - tmp[:,:nocc,:nocc,:nocc].transpose(0,2,3,1))
-        eris.ooov[p0:p1] = (tmp[:,:nocc,:nocc,nocc:].transpose(0,2,1,3) - tmp[:,nocc:,:nocc,:nocc].transpose(0,2,3,1))
-        eris.ovvv[p0:p1] = (tmp[:,nocc:,nocc:,nocc:].transpose(0,2,1,3) - tmp[:,nocc:,nocc:,nocc:].transpose(0,2,3,1))
-        eris.oovv[p0:p1] = (tmp[:,nocc:,:nocc,nocc:].transpose(0,2,1,3) - tmp[:,nocc:,:nocc,nocc:].transpose(0,2,3,1))
-        eris.ovov[p0:p1] = (tmp[:,:nocc,nocc:,nocc:].transpose(0,2,1,3) - tmp[:,nocc:,nocc:,:nocc].transpose(0,2,3,1))
-        eris.ovvo[p0:p1] = (tmp[:,nocc:,nocc:,:nocc].transpose(0,2,1,3) - tmp[:,:nocc,nocc:,nocc:].transpose(0,2,3,1))
-        tmp = None
-    cpu0 = log.timer_debug1('transforming ovvv', *cput0)
+    mf = mycc._scf
+    mol = mycc.mol
+    def fill_eris(multip):
+        for p0, p1 in lib.prange(0, nocc, blksize):
+            tmp = multip*np.asarray(fswap['eri'][p0*nmo:p1*nmo])
+            tmp = tmp.reshape(p1-p0, nmo, nmo, nmo)
+            eris.oooo[p0:p1] += (tmp[:,:nocc,:nocc,:nocc].transpose(0,2,1,3) - tmp[:,:nocc,:nocc,:nocc].transpose(0,2,3,1))
+            eris.ooov[p0:p1] += (tmp[:,:nocc,:nocc,nocc:].transpose(0,2,1,3) - tmp[:,nocc:,:nocc,:nocc].transpose(0,2,3,1))
+            eris.ovvv[p0:p1] += (tmp[:,nocc:,nocc:,nocc:].transpose(0,2,1,3) - tmp[:,nocc:,nocc:,nocc:].transpose(0,2,3,1))
+            eris.oovv[p0:p1] += (tmp[:,nocc:,:nocc,nocc:].transpose(0,2,1,3) - tmp[:,nocc:,:nocc,nocc:].transpose(0,2,3,1))
+            eris.ovov[p0:p1] += (tmp[:,:nocc,nocc:,nocc:].transpose(0,2,1,3) - tmp[:,nocc:,nocc:,:nocc].transpose(0,2,3,1))
+            eris.ovvo[p0:p1] += (tmp[:,nocc:,nocc:,:nocc].transpose(0,2,1,3) - tmp[:,:nocc,nocc:,nocc:].transpose(0,2,3,1))
+            tmp = None
+        for p0, p1 in lib.prange(nocc, nmo, blksize):
+            tmp = multip*np.asarray(fswap['eri'][p0*nmo:p1*nmo])
+            tmp = tmp.reshape(p1-p0, nmo, nmo, nmo)
+            eris.vvvv[p0-nocc:p1-nocc] += (tmp[:,nocc:,nocc:,nocc:].transpose(0,2,1,3)-tmp[:,nocc:,nocc:,nocc:].transpose(0,2,3,1))
+            tmp = None
 
-    eris.vvvv = feri.create_dataset('vvvv', (nvir, nvir, nvir, nvir), dtype)
-    tril2sq = lib.square_mat_in_trilu_indices(nvir)
-    fswap = lib.H5TmpFile()
-    r_outcore.general(mycc.mol, (orbv, orbv, orbv, orbv), fswap, 'vvvv', max_memory=max_memory, verbose=log)
-    for p0, p1 in lib.prange(0, nvir, blksize):
-        tmp = np.asarray(fswap['vvvv'][p0*nvir:p1*nvir]).reshape(p1-p0, nvir, nvir, nvir)
-        eris.vvvv[p0:p1] = tmp.transpose(0,2,1,3)-tmp.transpose(0,2,3,1)
-    cput0 = log.timer_debug1('transforming vvvv', *cput0)
-
+    if isinstance(mf, scf.dhf.DHF):
+        c1 = 0.5 / lib.param.LIGHT_SPEED
+        nao_2c = mo.shape[0]//2
+        mo_l = mo[:nao_2c,:]
+        mo_s = mo[nao_2c:,:]
+        mos = [[mo_l,mo_l,mo_l,mo_l],#llll
+               [mo_l,mo_l,mo_s,mo_s],#llss
+               [mo_s,mo_s,mo_l,mo_l],#ssll
+               [mo_s,mo_s,mo_s,mo_s]]
+        intors = ['int2e_spinor','int2e_spsp1_spinor','int2e_spsp2_spinor','int2e_spsp1spsp2_spinor']
+        multips = [1.0, c1**2, c1**2, c1**4] 
+        for mo, intor, multip in zip(mos, intors, multips):
+            eri = ao2mo.general(mol, mo, fswap, 'eri', intor=intor, max_memory=max_memory, verbose=mycc.verbose)
+            fill_eris(multip)
+            del fswap['eri']
+        if mf.with_gaunt:
+            p = 'int2e_breit_' if mf.with_breit else 'int_2e_'
+            multips = (-c1**2,)*4 if mf.with_breit else (c1**2,)*4
+            mos = [[mo_l, mo_s, mo_s, mo_l],
+                   [mo_l, mo_s, mo_l, mo_s],
+                   [mo_s, mo_l, mo_s, mo_l],
+                   [mo_s, mo_l, mo_l, mo_s]]
+            intors = (p+'ssp1ssp2_spinor',)*4
+            for mo, intor, multip in zip(mos, intors, multips):
+                eri = ao2mo.general(mol, mo, fswap, 'eri', intor=intor, max_memory=max_memory, verbose=mycc.verbose)
+                fill_eris(multip)
+                del fswap['eri']
+    else:
+        eri = ao2mo.general(mycc.mol, (orbo, mo, mo, mo), fswap, 'eri', intor='int2e_spinor',max_memory=max_memory, verbose=mycc.verbose)
+        #eri = ao2mo.general(mycc.mol, (orbo, orbv, orbv, orbv), intor='int2e_spinor',max_memory=max_memory, verbose=log)
+        print(np.asarray(fswap['eri']).shape)
+        for p0, p1 in lib.prange(0, nocc, blksize):
+            tmp = np.asarray(fswap['eri'][p0*nmo:p1*nmo])
+            print(p0, nmo, p1, nmo)
+            tmp = tmp.reshape(p1-p0, nmo, nmo, nmo)
+            eris.oooo[p0:p1] = (tmp[:,:nocc,:nocc,:nocc].transpose(0,2,1,3) - tmp[:,:nocc,:nocc,:nocc].transpose(0,2,3,1))
+            eris.ooov[p0:p1] = (tmp[:,:nocc,:nocc,nocc:].transpose(0,2,1,3) - tmp[:,nocc:,:nocc,:nocc].transpose(0,2,3,1))
+            eris.ovvv[p0:p1] = (tmp[:,nocc:,nocc:,nocc:].transpose(0,2,1,3) - tmp[:,nocc:,nocc:,nocc:].transpose(0,2,3,1))
+            eris.oovv[p0:p1] = (tmp[:,nocc:,:nocc,nocc:].transpose(0,2,1,3) - tmp[:,nocc:,:nocc,nocc:].transpose(0,2,3,1))
+            eris.ovov[p0:p1] = (tmp[:,:nocc,nocc:,nocc:].transpose(0,2,1,3) - tmp[:,nocc:,nocc:,:nocc].transpose(0,2,3,1))
+            eris.ovvo[p0:p1] = (tmp[:,nocc:,nocc:,:nocc].transpose(0,2,1,3) - tmp[:,:nocc,nocc:,nocc:].transpose(0,2,3,1))
+            tmp = None
+        cpu0 = log.timer_debug1('transforming ovvv', *cput0)
+    
+        tril2sq = lib.square_mat_in_trilu_indices(nvir)
+        fswap = lib.H5TmpFile()
+        r_outcore.general(mycc.mol, (orbv, orbv, orbv, orbv), fswap, 'vvvv', max_memory=max_memory, verbose=mycc.verbose)
+        for p0, p1 in lib.prange(0, nvir, blksize):
+            tmp = np.asarray(fswap['vvvv'][p0*nvir:p1*nvir]).reshape(p1-p0, nvir, nvir, nvir)
+            eris.vvvv[p0:p1] = tmp.transpose(0,2,1,3)-tmp.transpose(0,2,3,1)
+        cput0 = log.timer_debug1('transforming vvvv', *cput0)
+    
     return eris
 
 if __name__ == '__main__':
