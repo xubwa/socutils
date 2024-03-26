@@ -80,9 +80,12 @@ def update_amps(cc, t1, t2, eris, alg='new'):
 
 class ZCCSD(gccsd.GCCSD):
 
-    def __init__(self, mf, frozen=0, mo_coeff=None, mo_occ=None):
+    def __init__(self, mf, frozen=0, mo_coeff=None, mo_occ=None, with_mmf=False):
         #assert(isinstance(mf, x2c.RHF))
         ccsd.CCSD.__init__(self, mf, frozen, mo_coeff, mo_occ)
+        self.with_mmf = with_mmf
+        if not isinstance(mf, scf.dhf.DHF) and self.with_mmf:
+            print('WARNING! SCF reference is not four component, with_mmf option is doing nothing')
 
     update_amps = update_amps
 
@@ -113,19 +116,44 @@ class _PhysicistsERIs(gccsd._PhysicistsERIs):
     def _common_init_(self, mycc, mo_coeff=None):
         if mo_coeff is None:
             mo_coeff = mycc.mo_coeff
-        mo_idx = ccsd.get_frozen_mask(mycc)
-        mo_coeff = mo_coeff[:,mo_idx]
-        print(mo_coeff.shape)
-        self.mo_coeff = mo_coeff
 
         dm = mycc._scf.make_rdm1(mycc.mo_coeff, mycc.mo_occ)
         vhf = mycc._scf.get_veff(mycc.mol, dm)
         fockao = mycc._scf.get_fock(vhf=vhf, dm=dm)
+        fock_ref = reduce(np.dot, (mo_coeff.conj().T, fockao, mo_coeff))
+        print(fock_ref.diagonal())
+        import scipy
+        #print(scipy.linalg.eigh(fockao, mycc._scf.get_ovlp())[0])
+        if isinstance(mycc._scf, scf.dhf.DHF) and mycc.with_mmf:
+            print('Initialize X2Cmmf Fock matrix')
+            print('X2C transformation 4c FOCK matrix')
+            n2c = fockao.shape[0]//2
+            from socutils.somf.x2c_grad import x2c1e_hfw0_block
+            ovlp = mycc._scf.get_ovlp()
+            print(fockao[0,0])
+            print(fockao[n2c,0])
+            print(fockao[0,n2c])
+            print(fockao[n2c,n2c])
+            _, _, _, _, r, l, _, _ = x2c1e_hfw0_block(fockao[:n2c,:n2c], fockao[n2c:,:n2c], fockao[:n2c,n2c:],
+                                                    fockao[n2c:,n2c:], ovlp[:n2c,:n2c], ovlp[n2c:,n2c:])
+            fock_x2c = reduce(np.dot, (r.T.conj(), l, r))
+            rinv = np.linalg.inv(r)
+            mo_l = mo_coeff[:n2c,:]
+            mo_x2c = np.dot(rinv,mo_l)
+            mo_coeff = mo_x2c
+            fockao = fock_x2c 
+
+        mo_idx = ccsd.get_frozen_mask(mycc)
+        mo_coeff = mo_coeff[:,mo_idx]
+        self.mo_coeff = mo_coeff
+
         self.fock = reduce(np.dot, (mo_coeff.conj().T, fockao, mo_coeff))
         self.e_hf = mycc._scf.energy_tot(dm=dm, vhf=vhf)
+        print(self.e_hf)
         self.nocc = mycc.nocc
         self.mol = mycc.mol
         mo_e = self.mo_energy = self.fock.diagonal().real
+        #print(mo_e)
         gap = abs(mo_e[:self.nocc,None] - mo_e[None,self.nocc:]).min()
         if gap < 1e-5:
             logger.warn(mycc, 'HOMO-LUMO gap %s too small for ZCCSD', gap)
@@ -164,13 +192,12 @@ def _make_eris_outcore(mycc, mo_coeff=None):
     print(mo.shape)
     print(orbo.shape, orbv.shape)
 
-    fswap = lib.H5TmpFile()
     from pyscf import ao2mo
     mf = mycc._scf
     mol = mycc.mol
-    def fill_eris(multip):
+    def fill_eris(ftmp, multip):
         for p0, p1 in lib.prange(0, nocc, blksize):
-            tmp = multip*np.asarray(fswap['eri'][p0*nmo:p1*nmo])
+            tmp = multip*np.asarray(ftmp['eri'][p0*nmo:p1*nmo])
             tmp = tmp.reshape(p1-p0, nmo, nmo, nmo)
             eris.oooo[p0:p1] += (tmp[:,:nocc,:nocc,:nocc].transpose(0,2,1,3) - tmp[:,:nocc,:nocc,:nocc].transpose(0,2,3,1))
             eris.ooov[p0:p1] += (tmp[:,:nocc,:nocc,nocc:].transpose(0,2,1,3) - tmp[:,nocc:,:nocc,:nocc].transpose(0,2,3,1))
@@ -180,12 +207,12 @@ def _make_eris_outcore(mycc, mo_coeff=None):
             eris.ovvo[p0:p1] += (tmp[:,nocc:,nocc:,:nocc].transpose(0,2,1,3) - tmp[:,:nocc,nocc:,nocc:].transpose(0,2,3,1))
             tmp = None
         for p0, p1 in lib.prange(nocc, nmo, blksize):
-            tmp = multip*np.asarray(fswap['eri'][p0*nmo:p1*nmo])
+            tmp = multip*np.asarray(ftmp['eri'][p0*nmo:p1*nmo])
             tmp = tmp.reshape(p1-p0, nmo, nmo, nmo)
             eris.vvvv[p0-nocc:p1-nocc] += (tmp[:,nocc:,nocc:,nocc:].transpose(0,2,1,3)-tmp[:,nocc:,nocc:,nocc:].transpose(0,2,3,1))
             tmp = None
 
-    if isinstance(mf, scf.dhf.DHF):
+    if isinstance(mf, scf.dhf.DHF) and not mycc.with_mmf:
         c1 = 0.5 / lib.param.LIGHT_SPEED
         nao_2c = mo.shape[0]//2
         mo_l = mo[:nao_2c,:]
@@ -197,24 +224,31 @@ def _make_eris_outcore(mycc, mo_coeff=None):
         intors = ['int2e_spinor','int2e_spsp1_spinor','int2e_spsp2_spinor','int2e_spsp1spsp2_spinor']
         multips = [1.0, c1**2, c1**2, c1**4] 
         for mo, intor, multip in zip(mos, intors, multips):
+            fswap = lib.H5TmpFile()
             eri = ao2mo.general(mol, mo, fswap, 'eri', intor=intor, max_memory=max_memory, verbose=mycc.verbose)
-            fill_eris(multip)
-            del fswap['eri']
+            fill_eris(fswap, multip)
+            del fswap
         if mf.with_gaunt:
-            p = 'int2e_breit_' if mf.with_breit else 'int_2e_'
-            multips = (-c1**2,)*4 if mf.with_breit else (c1**2,)*4
+            p = 'int2e_breit_' if mf.with_breit else 'int2e_'
+            multips = (c1**2,)*4 if mf.with_breit else (-c1**2,)*4
             mos = [[mo_l, mo_s, mo_s, mo_l],
                    [mo_l, mo_s, mo_l, mo_s],
                    [mo_s, mo_l, mo_s, mo_l],
                    [mo_s, mo_l, mo_l, mo_s]]
-            intors = (p+'ssp1ssp2_spinor',)*4
+            intors = [p+'ssp1sps2_spinor', p+'ssp1ssp2_spinor', p+'sps1sps2_spinor', p+'sps1ssp2_spinor']
+            #lssl,lsls,slsl,slls
             for mo, intor, multip in zip(mos, intors, multips):
-                eri = ao2mo.general(mol, mo, fswap, 'eri', intor=intor, max_memory=max_memory, verbose=mycc.verbose)
-                fill_eris(multip)
-                del fswap['eri']
+                fswap = lib.H5TmpFile()
+                eri = ao2mo.general(mol, mo, fswap, 'eri', intor=intor, aosym='s1', comp=1, max_memory=max_memory, verbose=mycc.verbose)
+                fill_eris(fswap, multip)
+                del fswap
     else:
+        fswap = lib.H5TmpFile()
         eri = ao2mo.general(mycc.mol, (orbo, mo, mo, mo), fswap, 'eri', intor='int2e_spinor',max_memory=max_memory, verbose=mycc.verbose)
+        fill_eris(fswap, 1.0)
+        del fswap
         #eri = ao2mo.general(mycc.mol, (orbo, orbv, orbv, orbv), intor='int2e_spinor',max_memory=max_memory, verbose=log)
+        '''
         print(np.asarray(fswap['eri']).shape)
         for p0, p1 in lib.prange(0, nocc, blksize):
             tmp = np.asarray(fswap['eri'][p0*nmo:p1*nmo])
@@ -228,6 +262,7 @@ def _make_eris_outcore(mycc, mo_coeff=None):
             eris.ovvo[p0:p1] = (tmp[:,nocc:,nocc:,:nocc].transpose(0,2,1,3) - tmp[:,:nocc,nocc:,nocc:].transpose(0,2,3,1))
             tmp = None
         cpu0 = log.timer_debug1('transforming ovvv', *cput0)
+        del fswap
     
         tril2sq = lib.square_mat_in_trilu_indices(nvir)
         fswap = lib.H5TmpFile()
@@ -236,6 +271,8 @@ def _make_eris_outcore(mycc, mo_coeff=None):
             tmp = np.asarray(fswap['vvvv'][p0*nvir:p1*nvir]).reshape(p1-p0, nvir, nvir, nvir)
             eris.vvvv[p0:p1] = tmp.transpose(0,2,1,3)-tmp.transpose(0,2,3,1)
         cput0 = log.timer_debug1('transforming vvvv', *cput0)
+        '''
+        del fswap
     
     return eris
 
