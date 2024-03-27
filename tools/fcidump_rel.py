@@ -159,10 +159,16 @@ def from_dhf(mf, ncore, nact, filename='FCIDUMP', tol=1e-10, with_gaunt=False, w
     eri += ao2mo.general(mf.mol, (mo_s, mo_s, mo_l, mo_l), intor='int2e_spsp1_spinor')
     eri += ao2mo.general(mf.mol, (mo_s, mo_s, mo_s, mo_s), intor='int2e_spsp1spsp2_spinor')
 
-    if with_gaunt is True:
-        assert (NotImplementedError)
-    if with_breit is True:
-        assert (NotImplementedError)
+    if mf.with_gaunt:
+        p = "int2e_breit_" if mf.with_breit else "int2e_"
+        multips = (1.0,)*4 if mf.with_breit else (-1.0,)*4
+        mos = [[mo_l, mo_s, mo_s, mo_l],
+               [mo_l, mo_s, mo_l, mo_s],
+               [mo_s, mo_l, mo_s, mo_l],
+               [mo_s, mo_l, mo_l, mo_s]]
+        intors = [p+'ssp1sps2_spinor', p+'ssp1ssp2_spinor', p+'sps1sps2_spinor', p+'sps1ssp2_spinor']
+        for mo, intor, multip in zip(mos, intors, multips):
+            eri += multip * ao2mo.general(mol, mo, intor=intor, aosym='s1', comp=1, max_memory=mf.max_memory)
 
     from_integrals(filename=filename, h1e=h1eff, h2e=eri, nmo=nact,
                    nelec=sum(mol.nelec)-ncore+nNeg, nuc=energy_core.real)
@@ -170,20 +176,22 @@ def from_dhf(mf, ncore, nact, filename='FCIDUMP', tol=1e-10, with_gaunt=False, w
 
 if __name__ == '__main__':
     mol = gto.M(atom='''
-    F   0.   0.       0.
+    Ne   0.   0.       0.
     ''',
                 basis='ccpvdz',
                 verbose=4,
-                spin=1)
+                spin=0)
     mf_x2c = scf.X2C(mol)
     mf_x2c.max_cycle=0
-    mf_x2c.kernel()
-    from_x2c(mf_x2c, 0, 5, filename='FCIDUMP_x2c_7')
-    exit()
+    #mf_x2c.kernel()
+    #from_x2c(mf_x2c, 0, 5, filename='FCIDUMP_x2c_7')
+    #exit()
     mf_dirac = scf.DHF(mol)
+    mf_dirac.with_gaunt=True
+    mf_dirac.with_breit=True
     mf_dirac.kernel()
     hcore = mf_dirac.get_hcore()
     vj, vk = mf_dirac.get_jk()
     #mo = num
     print(mf_dirac.mo_energy[mol.nao_2c():mol.nao_2c() + 14])
-    from_dhf(mf_dirac, 0, 7, filename='FCIDUMP_dhf_7')
+    from_dhf(mf_dirac, 0, 10, filename='FCIDUMP')
