@@ -80,10 +80,11 @@ def update_amps(cc, t1, t2, eris, alg='new'):
 
 class ZCCSD(gccsd.GCCSD):
 
-    def __init__(self, mf, frozen=0, mo_coeff=None, mo_occ=None, with_mmf=False):
+    def __init__(self, mf, frozen=0, mo_coeff=None, mo_occ=None, with_mmf=False, erifile=None):
         #assert(isinstance(mf, x2c.RHF))
         ccsd.CCSD.__init__(self, mf, frozen, mo_coeff, mo_occ)
         self.with_mmf = with_mmf
+        self.feri = erifile
         if not isinstance(mf, scf.dhf.DHF) and self.with_mmf:
             print('WARNING! SCF reference is not four component, with_mmf option is doing nothing')
 
@@ -93,7 +94,7 @@ class ZCCSD(gccsd.GCCSD):
         nmo = self.nmo
         if mo_coeff is None:
             mo_coeff=self.mo_coeff
-        return _make_eris_outcore(self, mo_coeff)
+        return _make_eris_outcore(self, mo_coeff, self.feri)
 
 class _PhysicistsERIs(gccsd._PhysicistsERIs):
     '''<pq||rs> = <pq|rs> - <pq|sr>'''
@@ -159,7 +160,7 @@ class _PhysicistsERIs(gccsd._PhysicistsERIs):
             logger.warn(mycc, 'HOMO-LUMO gap %s too small for ZCCSD', gap)
         return self 
 
-def _make_eris_outcore(mycc, mo_coeff=None):
+def _make_eris_outcore(mycc, mo_coeff=None, erifile=None):
     cput0 = (logger.process_clock(), logger.perf_counter())
     log = logger.Logger(mycc.stdout, mycc.verbose)
     eris = _PhysicistsERIs()
@@ -172,7 +173,21 @@ def _make_eris_outcore(mycc, mo_coeff=None):
     print(nao, nmo)
     print(nocc, nvir)
 
-    feri = eris.feris = lib.H5TmpFile()
+    if erifile is not None:
+        feri = eris.feris = lib.H5TmpFile(erifile)
+    else:
+        feri = eris.feris = lib.H5TmpFile()
+    
+    if len(feri.keys()) is not 0:
+        eris.oooo = feri['oooo']
+        eris.ooov = feri['ooov']
+        eris.oovv = feri['oovv']
+        eris.ovov = feri['ovov']
+        eris.ovvo = feri['ovvo']
+        eris.ovvv = feri['ovvv']
+        eris.vvvv = feri['vvvv']
+        return eris
+
     dtype = np.result_type(eris.mo_coeff).char
     eris.oooo = feri.create_dataset('oooo', (nocc,nocc,nocc,nocc), dtype)
     eris.ooov = feri.create_dataset('ooov', (nocc,nocc,nocc,nvir), dtype)
