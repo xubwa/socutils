@@ -10,7 +10,7 @@ from pyscf.scf import dhf, jk, _vhf
 #from pyscf.shciscf import socutils
 from pyscf.x2c import sfx2c1e
 from pyscf.x2c import x2c
-from socutils.grad import x2c_grad
+from socutils.somf import x2c_grad
 from socutils.tools.spinor2sph import spinor2sph_soc
 x2camf  = None
 try:

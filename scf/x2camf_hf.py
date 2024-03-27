@@ -10,7 +10,7 @@ from pyscf.lib import chkfile, logger
 from pyscf.x2c import x2c
 from pyscf.scf import hf, dhf, ghf
 
-from socutils.somf.x2camf import SpinorX2CAMFHelper, SpinOrbitalX2CAMFHelper
+from socutils.somf.amf import SpinorX2CAMFHelper, SpinOrbitalX2CAMFHelper
 from socutils.scf import frac_dhf, spinor_hf
 #, zquatev
 

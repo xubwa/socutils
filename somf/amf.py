@@ -6,7 +6,7 @@ from pyscf.scf import dhf
 from pyscf.x2c import x2c
 from pyscf.lib import chkfile
 from pyscf.lib.parameters import LIGHT_SPEED
-from . import somf, writeInput, settings
+from socutils.somf import somf, writeInput, settings
 from socutils.scf import frac_dhf
 
 try:
@@ -109,7 +109,8 @@ def get_soc_integrals(x2cobj, mol=None, prog="sph_atm", with_gaunt=False, with_b
         else:
             spin_free = False
             two_c = False
-        soc_matrix = x2camf.amfi(x2cobj, printLevel=x2cobj.verbose, with_gaunt=x2cobj.gaunt, with_gauge=x2cobj.breit, with_gaunt_sd=x2cobj.gaunt_sd, pcc=x2cobj.pcc)
+        soc_matrix = x2camf.amfi(x2cobj, printLevel=x2cobj.verbose, with_gaunt=x2cobj.gaunt, with_gauge=x2cobj.breit,
+                                 with_gaunt_sd=x2cobj.gaunt_sd, pcc=x2cobj.pcc, gaussian_nucelar=x2cobj.nucmod)
     elif (x2c.prog == "sph_atm_legacy"):  # keep this legacy interface for a sanity check.
         writeInput.write_input(x2cobj.mol, x2cobj.gaunt, x2cobj.breit, x2cobj.aoc)
         print(settings.AMFIEXE)
@@ -165,6 +166,10 @@ class SpinorX2CAMFHelper(x2c.SpinorX2CHelper):
         self.pcc = with_pcc
         self.prog = prog
         self.soc_matrix = None
+        if gto.mole._parse_nuc_mod(self.mol.nucmod) == 2:
+            self.gau_nuc = True
+        else:
+            self.gau_nuc = False
 
     def initialize_x2camf(self):
         initialize_x2camf(self)
