@@ -126,22 +126,27 @@ class X2CHelperBase(lib.StreamObject):
                         fudge_factor[iorb] = factor_list[factor_id][0]/Z_ia
                     elif 'P' in label[2].upper():
                         #if 2 < Z_ia:
-                        fudge_factor[iorb] = factor_list[factor_id][1]/Z_ia
+                        if True:
+                            fudge_factor[iorb] = min(Z_ia, factor_list[factor_id][1])/Z_ia
                     elif 'D' in label[2].upper():
                         #if 10 < Z_ia:
-                        fudge_factor[iorb] = factor_list[factor_id][2]/Z_ia
+                        if True:
+                            fudge_factor[iorb] = min(Z_ia, factor_list[factor_id][2])/Z_ia
                     elif 'F' in label[2].upper():
                         #if 28 < Z_ia:
-                        fudge_factor[iorb] = factor_list[factor_id][3]/Z_ia
+                        if True:
+                            fudge_factor[iorb] = min(Z_ia, factor_list[factor_id][3])/Z_ia
                     elif 'G' in label[2].upper():
                         #if 60 < Z_ia:
-                        fudge_factor[iorb] = factor_list[factor_id][4]/Z_ia
+                        if True:
+                            fudge_factor[iorb] = min(Z_ia, factor_list[factor_id][4])/Z_ia
                     elif 'H' in label[2].upper:
                         #if 110 < Z_ia:
-                        fudge_factor[iorb] = factor_list[factor_id][5]/Z_ia
+                        if True:
+                            fudge_factor[iorb] = min(Z_ia, factor_list[factor_id][5])/Z_ia
             for iorb in range(xmol.nao_2c()):
                 for jorb in range(xmol.nao_2c()):
-                    wso[iorb, jorb]*=(1.-numpy.sqrt(fudge_factor[iorb]*fudge_factor[jorb]))
+                    wso[iorb, jorb]*=(1.-min(numpy.sqrt(fudge_factor[iorb]*fudge_factor[jorb]),1.0))
             w = wsf+wso
         if 'get_xmat' in self.__dict__:
             # If the get_xmat method is overwritten by user, build the X
