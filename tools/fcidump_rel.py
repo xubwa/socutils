@@ -169,7 +169,27 @@ def from_dhf(mf, ncore, nact, filename='FCIDUMP', tol=1e-10, with_gaunt=False, w
         intors = [p+'ssp1sps2_spinor', p+'ssp1ssp2_spinor', p+'sps1sps2_spinor', p+'sps1ssp2_spinor']
         for mo, intor, multip in zip(mos, intors, multips):
             eri += multip * ao2mo.general(mol, mo, intor=intor, aosym='s1', comp=1, max_memory=mf.max_memory)
+    #ncas = nact // 2
+    #if mf.with_gaunt:
+    #    p = "int2e_breit_" if mf.with_breit else "int2e_"
+    #    g2e_lsls = ao2mo.general(
+    #        mol, (mo_l, mo_s, mo_l, mo_s), intor=p + "ssp1ssp2_spinor", aosym=1, comp=1
+    #    )
+    #    g2e_slsl = (
+    #        g2e_lsls.reshape((ncas * 2,) * 4)
+    #        .transpose(3, 2, 1, 0)
+    #        .conj()
+    #        .reshape((ncas * ncas * 4,) * 2)
+    #    )
+    #    g2e_lssl = ao2mo.general(
+    #        mol, (mo_l, mo_s, mo_s, mo_l), intor=p + "ssp1sps2_spinor", aosym=1, comp=1
+    #    )
+    #    g2e_slls = g2e_lssl.transpose(1, 0)
 
+    #    if mf.with_breit:
+    #        eri += (g2e_lsls + g2e_slsl + g2e_lssl + g2e_slls) * c1 ** 2
+    #    else:
+    #        eri -= (g2e_lsls + g2e_slsl + g2e_lssl + g2e_slls) * c1 ** 2
     from_integrals(filename=filename, h1e=h1eff, h2e=eri, nmo=nact,
                    nelec=sum(mol.nelec)-ncore+nNeg, nuc=energy_core.real)
     return
