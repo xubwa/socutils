@@ -4,6 +4,7 @@ import numpy as np
 from numpy.linalg import norm
 from pyscf.lib import logger
 from scipy.linalg import expm as expmat
+from scipy.sparse.linalg import gmres
 from functools import reduce
 
 
@@ -21,13 +22,13 @@ def arnoldi_iteration(A, Q, H, k, Adiag=None):
     Q[:, k + 1] = Q[:, k + 1] / H[k + 1, k]
 
 
-def GMRES(A, b, x0=None, hdiag=None, max_iter=20, conv=1e-4):
+def GMRES(A, b, x0=None, hdiag=None, maxiter=20, conv=1e-4):
     '''
     Solve Ax = b using GMRES algorithm.
     A being a callable function since A is usually a large matrix,
     x is the initial guess, set to 0 vector if no guess provided.
     '''
-    m, n = max_iter+1, b.shape[0]
+    m, n = maxiter+1, b.shape[0]
     data_type = b.dtype
     if hdiag is None:
         if x0 is None:
@@ -53,7 +54,7 @@ def GMRES(A, b, x0=None, hdiag=None, max_iter=20, conv=1e-4):
     H = np.zeros((m+1, m), dtype=data_type)
     Q[:, 0] = r / r_norm
 
-    for k in range(max_iter):
+    for k in range(maxiter):
         if hdiag is not None:
             arnoldi_iteration(A,Q,H,k,hdiag)
         else:
@@ -68,9 +69,33 @@ def GMRES(A, b, x0=None, hdiag=None, max_iter=20, conv=1e-4):
             print(f'Converged after {k+1} iterations with error {err:8.6f}')
             print(x)
             return x, err
-    print(f'Unconverged after {max_iter} with error {err:8.6g}')
+    print(f'Unconverged after {maxiter} with error {err:8.6g}')
     return x, err
 
+def precondition_grad(grad, xs, ys, rhos, bfgs_space=10):
+    assert len(ys) <= bfgs_space, 'size of xs greater than bfgs space size'
+    gbar = grad.copy()
+    niter = len(xs) if bfgs_space > len(xs) else bfgs_space
+    a = np.zeros(niter)
+    for ii in range(niter):
+        i = niter-ii-1
+        a[i] = np.dot(xs[i].conj(), gbar).real / rhos[i]
+        gbar = gbar - ys[i] * a[i]
+        #print(f'precond_grad, {ii}, {i}, {np.linalg.norm(gbar):.4e}, {np.linalg.norm(xs[i]):.4f} {np.linalg.norm(ys[i]):.4f}, {rhos[i]:.4f}, {a[i]:.4e}, {np.dot(xs[i].conj(), gbar).real:.4e} ')
+    print(f'{len(ys)} {len(xs)} {np.linalg.norm(gbar-grad)} bfgs precond')
+    return gbar, a
+
+
+def postprocess_x(xbar, xs, ys, rhos, a, bfgs_space=10):
+    assert len(xs) <= bfgs_space, 'size of xs greater than bfgs space size'
+    niter = len(xs) if bfgs_space > len(xs) else bfgs_space
+    xorig = xbar.copy()
+    for i in range(niter):
+        b = np.dot(ys[i].conj(), xbar).real / rhos[i]
+        #print(f'postprocess {a[i]:.4e}, {b:.4e}, {np.linalg.norm(xs[i]):.4f}')
+        xbar = xbar - xs[i] * (a[i] - b)
+    print(f'bfgs post {np.linalg.norm(xorig-xbar):.4e}, {np.linalg.norm(xorig):.4e}')
+    return xbar
 
 def rhf_superci(mf, dm0=None, conv_tol=1e-10, conv_tol_grad=None):
     mol = mf.mol
@@ -98,6 +123,15 @@ def rhf_superci(mf, dm0=None, conv_tol=1e-10, conv_tol_grad=None):
     mo_occ = mf.get_occ(mo_energy, mo_coeff)
     grad = None
 
+    xs = []
+    ys = []
+    rhos = []
+    g_prev = None
+    x_prev = None
+    rejected = False
+    bfgs = True
+    trust_radii=1.0
+    
     for cycle in range(mf.max_cycle):
         dm_last = dm
         last_hf_e = e_tot
@@ -114,14 +148,47 @@ def rhf_superci(mf, dm0=None, conv_tol=1e-10, conv_tol_grad=None):
         foo = fock[occidx[:,None], occidx]
         fvv = fock[viridx[:,None], viridx]
 
-        hdiag = (fvv.diagonal()[:,None]-foo.diagonal())*2
+        hdiag = (fvv.diagonal()[:,None]-foo.diagonal()).ravel()*2
+        n_uniq_var = hdiag.shape[0]
 
         def h(x):
             x = x.reshape(nvir, nocc)
             x2 = np.einsum('ps,sq->pq', fvv, x)
             x2 -= np.einsum('ps,rp->rs', foo, x)
             return x2.ravel() * 2
-        x, _ = GMRES(h, -g)
+        
+        def hdiag_inv(x):
+            return x/hdiag
+        from scipy.sparse.linalg import LinearOperator
+        hdiag_inv = LinearOperator((n_uniq_var,n_uniq_var), matvec=hdiag_inv)
+        hop = LinearOperator((n_uniq_var,n_uniq_var), matvec=h)
+        if cycle > 0:
+            if not rejected and norm_gorb < 0.05:
+                ys.append(g - g_prev)
+                xs.append(x_prev)
+                rhos.append(np.dot(ys[-1].conj(), xs[-1]))
+                print(rhos)
+            if len(ys) > 10:
+                ys.pop(0)
+                xs.pop(0)
+                rhos.pop(0)
+            if bfgs is True:
+                gbar, a = precondition_grad(g, xs, ys, rhos)
+                
+            else:
+                gbar = g
+            x, _ = gmres(hop, -trust_radii*gbar, maxiter=20)
+            #x, _ = davidson(hop, gbar, h_diag, max_iter=100)
+            if bfgs is True:
+                xpost = postprocess_x(x, xs, ys, rhos, a)
+                print(np.linalg.norm(xpost-x), 'xdiff')
+                x = xpost
+        else:
+            x, _ = gmres(hop, -trust_radii*g, maxiter=20)
+        g_prev = g
+        x_prev = x
+        # x, _ = GMRES(h, -g)
+
         dr = scf.hf.unpack_uniq_var(x, mo_occ)
         mo_coeff = np.dot(mo_coeff, expmat(dr))
 
@@ -171,26 +238,41 @@ def ghf_superci(mf, dm0=None, conv_tol=1e-10, conv_tol_grad=None):
     fock = mf.get_fock(h1e, s1e, vhf, dm)
     mo_energy, mo_coeff = mf.eig(fock, s1e)
     mo_occ = mf.get_occ(mo_energy, mo_coeff)
+    dm = mf.make_rdm1(mo_coeff, mo_occ)
+    vhf = mf.get_veff(mol, dm)
+    fock_ao = mf.get_fock(h1e, s1e, vhf, dm, 0)
     grad = None
 
+    xs = []
+    ys = []
+    rhos = []
+    g_prev = None
+    x_prev = None
+    rejected = False
+    bfgs = True
+    trust_radii=1.0
+    
     for cycle in range(mf.max_cycle):
         dm_last = dm
         last_hf_e = e_tot
         # start of super ci
-        fock_ao = mf.get_fock(h1e, s1e, vhf, dm, cycle)
         fock = reduce(np.dot, (mo_coeff.conj().T, fock_ao, mo_coeff))
         occidx = np.where(mo_occ==1)[0]
         viridx = np.where(mo_occ==0)[0]
         nocc = len(occidx)
         nvir = len(viridx)
-        orbv = mo_coeff[:,occidx]
+        orbo = mo_coeff[:,occidx]
         orbv = mo_coeff[:,viridx]
         g = fock[viridx[:,None], occidx].ravel()
+        norm_gorb = np.linalg.norm(g)
         foo = fock[occidx[:,None], occidx]
         fvv = fock[viridx[:,None], viridx]
-
-        hdiag = (fvv.diagonal()[:,None]-foo.diagonal())
-
+        hdiag = (fvv.diagonal()[:,None]-foo.diagonal()).ravel()
+        n_uniq_var = hdiag.shape[0]
+        def hdiag_inv(x):
+            return x/hdiag
+        from scipy.sparse.linalg import LinearOperator
+        hdiag_inv = LinearOperator((n_uniq_var,n_uniq_var), matvec=hdiag_inv)
         def h(x):
             x = x.reshape(nvir, nocc)
             # x2 = np.einsum('ps,sq->pq', fvv, x)
@@ -198,7 +280,31 @@ def ghf_superci(mf, dm0=None, conv_tol=1e-10, conv_tol_grad=None):
             x2 = np.einsum('ab,bi->ai', fvv, x)
             x2 -= np.einsum('ji,aj->ai', foo, x)
             return x2.ravel()
-        x, _ = GMRES(h, -g)
+        hop = LinearOperator((n_uniq_var,n_uniq_var), matvec=h)
+        
+        if cycle > 0:
+            if not rejected and norm_gorb < 0.05:
+                ys.append(g - g_prev)
+                xs.append(x_prev)
+                rhos.append(np.dot(ys[-1].conj(), xs[-1]).real)
+            if len(ys) > 10:
+                ys.pop(0)
+                xs.pop(0)
+                rhos.pop(0)
+            if bfgs is True:
+                gbar, a = precondition_grad(g, xs, ys, rhos)
+            else:
+                gbar = g
+            x, _ = gmres(hop, -trust_radii*gbar, maxiter=20)
+            #x, _ = davidson(hop, gbar, h_diag, max_iter=100)
+            if bfgs is True:
+                x = postprocess_x(x, xs, ys, rhos, a)
+        else:
+            x, _ = gmres(hop, -trust_radii*g, maxiter=20)
+            #print(cycle, np.linalg.norm(x), 'x0')
+        g_prev = g
+        x_prev = x
+        #x, _ = GMRES(h, -g)
         dr = scf.hf.unpack_uniq_var(x, mo_occ)
         mo_coeff = np.dot(mo_coeff, expmat(dr))
 
@@ -208,9 +314,9 @@ def ghf_superci(mf, dm0=None, conv_tol=1e-10, conv_tol_grad=None):
         dm = lib.tag_array(dm, mo_coeff=mo_coeff, mo_occ=mo_occ)
         vhf = mf.get_veff(mol, dm, dm_last, vhf)
         e_tot = mf.energy_tot(dm, h1e, vhf)
-
-        fock = mf.get_fock(h1e, s1e, vhf, dm)
-        norm_gorb = np.linalg.norm(mf.get_grad(mo_coeff, mo_occ, fock))
+        
+        fock_ao = mf.get_fock(h1e, s1e, vhf, dm)
+        norm_gorb = np.linalg.norm(mf.get_grad(mo_coeff, mo_occ, fock_ao))
         norm_ddm = norm(dm-dm_last)
         logger.info(mf, 'cycle= %d E= %.15g  delta_E= %4.3g  |g|= %4.3g  |ddm|= %4.3g',
                     cycle+1, e_tot, e_tot-last_hf_e, norm_gorb, norm_ddm)
