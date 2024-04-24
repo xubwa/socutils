@@ -5,6 +5,7 @@ from functools import reduce
 from pyscf import lib
 from pyscf import scf
 from pyscf.ao2mo import r_outcore
+from pyscf.ao2mo import nrr_outcore
 from pyscf.lib import logger
 from pyscf.cc import ccsd
 from pyscf.cc import gccsd
@@ -96,6 +97,13 @@ class ZCCSD(gccsd.GCCSD):
             mo_coeff=self.mo_coeff
         return _make_eris_outcore(self, mo_coeff, self.feri, swapfile)
 
+    def ccsd_t(self, t1=None, t2=None, eris=None, alg='vir_loop'):
+        from socutils.cc import gccsd_t
+        if t1 is None: t1 = self.t1
+        if t2 is None: t2 = self.t2
+        if eris is None: eris = self.ao2mo(self.mo_coeff)
+        return gccsd_t.kernel(self, eris, t1, t2, self.verbose, alg=alg)
+
 class _PhysicistsERIs(gccsd._PhysicistsERIs):
     '''<pq||rs> = <pq|rs> - <pq|sr>'''
     def __init__(self, mol=None):
@@ -180,6 +188,8 @@ def _make_eris_outcore(mycc, mo_coeff=None, erifile=None, swapfile=None, mod='co
         feri = eris.feris = lib.H5TmpFile()
     
     if len(feri.keys()) is not 0:
+        feri.close()
+        feri = eris.feris = lib.H5TmpFile(erifile, mode='r')
         eris.oooo = feri['oooo']
         eris.ooov = feri['ooov']
         eris.oovv = feri['oovv']
@@ -267,10 +277,22 @@ def _make_eris_outcore(mycc, mo_coeff=None, erifile=None, swapfile=None, mod='co
         del fswap
     else:
         fswap = lib.H5TmpFile()
-        eri = ao2mo.general(mycc.mol, (orbo, mo, mo, mo), fswap, 'eri', intor='int2e_spinor',max_memory=max_memory, verbose=mycc.verbose)
+        #eri = ao2mo.general(mycc.mol, (mo, mo, mo, mo), fswap, 'eri', intor='int2e_spinor',max_memory=max_memory, verbose=mycc.verbose)
+        eri = nrr_outcore.general(mycc.mol, (mo, mo, mo, mo), fswap, 'eri', intor='int2e_sph', motype='j-spinor', max_memory=max_memory, verbose=mycc.verbose)
         fill_eris(fswap, 1.0)
         del fswap
     
+    if erifile is not None: # reopen in read only mode to protect hdf5 file
+        feri.close()
+        feri = eris.feris = lib.H5TmpFile(erifile, mode='r')
+        eris.oooo = feri['oooo']
+        eris.ooov = feri['ooov']
+        eris.oovv = feri['oovv']
+        eris.ovov = feri['ovov']
+        eris.ovvo = feri['ovvo']
+        eris.ovvv = feri['ovvv']
+        eris.vvvv = feri['vvvv']
+        return eris
     return eris
 
 if __name__ == '__main__':
@@ -319,4 +341,3 @@ if __name__ == '__main__':
     print(e[3] - 0.3005716731825082)
     
     mycc.ccsd_t()
-        
