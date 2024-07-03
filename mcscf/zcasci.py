@@ -401,7 +401,7 @@ class CASCI(zcasbase.CASBase):
 
         if self.verbose >= logger.WARN:
             self.check_sanity()
-        #self.dump_flags(log)
+        self.dump_flags(log)
 
         self.e_tot, self.e_cas, self.ci = \
                 kernel(self, mo_coeff, ci0=ci0, verbose=verbose)
