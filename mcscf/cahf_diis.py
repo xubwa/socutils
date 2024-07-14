@@ -21,8 +21,13 @@ def mc_diis(mc, mo_coeff, mo_cap=None, conv_tol=None, conv_tol_grad=None, active
     ncore = mc.ncore
     ncas = mc.ncas
     nocc = ncore + ncas
-    mc_diis = scf.diis.CDIIS(mc)
-    mc_diis.Corth = mo_coeff
+    s1e = mc._scf.get_ovlp()
+
+    mc_diis = scf.diis.CDIIS()
+    #h1e = mc._scf.get_hcore()
+    #_, mc_diis.Corth = mc._scf.eig(h1e, s1e)
+    mc_diis.Corth=mo_coeff
+
 
     mo_initial = mo_coeff.copy()
     mo_initial_active = mo_initial[:,ncore:nocc]
@@ -30,7 +35,6 @@ def mc_diis(mc, mo_coeff, mo_cap=None, conv_tol=None, conv_tol_grad=None, active
     if cderi is None:
         cderi = zmcscf.chunked_cholesky(mol)
 
-    s1e = mc._scf.get_ovlp()
     imacro = 0
     conv = False
     e_last = 0.0
@@ -124,14 +128,21 @@ def mc_diis(mc, mo_coeff, mo_cap=None, conv_tol=None, conv_tol_grad=None, active
         '''
         grad = mc.pack_uniq_var(g-g.T.conj())
         grad2 = mc.pack_uniq_var(fock)
+        grad = g - g.T.conj()
+        grad[:ncore,:ncore]=0.0
+        grad[ncore:nocc,ncore:nocc]=0.0
+        grad[nocc:,nocc:] = 0.0
+        grad_ao = reduce(np.dot, (s1e, mo, grad, mo.T.conj(), s1e.T.conj()))
         fock = reduce(np.dot, (s1e, mo, fock, mo.T.conj(), s1e.T.conj()))
         #fock_diis = reduce(np.dot, (s1e, mo, vhf_c + h1e_mo + vhf_a, mo.T.conj(), s1e.T.conj()))
         def damping(f, f_prev, factor):
             return f*(1-factor) + f_prev*factor
-        if imacro > diis_start:
+        if imacro > diis_start:# and abs(e_tot - e_last) < 1e-2:
+            print('diis step')
+            #fock = mc_diis.update(fock, grad_ao)
             fock = mc_diis.update(s1e, dm1_ao, fock)
         elif imacro > 0:
-            print(damp_factor)
+            print(f'damping step with factor {damp_factor}')
             fock = damping(fock, fock_prev, damp_factor)
         log.info(f'cycle {imacro}: E = {e_tot}  dE = {e_tot - e_last}  |g|={np.linalg.norm(grad):.4g}, {np.linalg.norm(grad2):.4g}')
         if (abs(e_tot - e_last) < conv_tol) and (np.linalg.norm(grad) < conv_tol_grad):
