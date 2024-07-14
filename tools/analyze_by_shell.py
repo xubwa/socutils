@@ -41,6 +41,7 @@ def analyze(mol, mo_coeff, mo_energy):
             contribution = sum(mo_i[label_list[label]])
             if contribution > threshold:
                 print(f'{label}, {contribution:8.4f}')
+        print(sum(mo_i))
         sort_idx = np.argsort(mo_i)
         print(f'Top contributing AOs')
         for i in range(5):
