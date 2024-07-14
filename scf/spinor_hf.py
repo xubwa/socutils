@@ -101,12 +101,14 @@ def get_occ_symm(mf, irrep, occup, irrep_mo=None, mo_energy=None, mo_coeff=None)
     if ir_tag is None:
         if mo_energy is None:
             mo_energy = mf.mo_energy
-        ir_tag=mo_energy.irrep_tag
-
+        ir_tag=mf.irrep_mo
     if mo_coeff is None and mf.mo_coeff is None:
         for ir in irrep:
             ir_mo = np.where(ir_tag==ir)
-            occupy = sum(occup[ir])
+            if isinstance(occup[ir][0], int): 
+                occupy = sum(occup[ir])
+            else:
+                occupy = occup[ir][0]
             mo_occ[ir_mo[:occupy]] = 1.0+0.j
             #mo_occ
             return mo_occ
@@ -119,7 +121,10 @@ def get_occ_symm(mf, irrep, occup, irrep_mo=None, mo_energy=None, mo_coeff=None)
         if not ir in occup:
             continue
         occupy = occup[ir]
-        mo_occ[ir_mo[:occupy[0]]] = 1.0+0.j 
+        if isinstance(occup[ir][0], int): 
+            mo_occ[ir_mo[:occupy[0]]] = 1.0+0.j 
+        else:
+            mo_occ[ir_mo[occupy[0]]] = 1.0+0.j 
         for i in range(1, min(len(occupy), n_ang+1)):
             if occupy[i] == 0:
                 continue
@@ -150,7 +155,7 @@ def get_occ_symm(mf, irrep, occup, irrep_mo=None, mo_energy=None, mo_coeff=None)
 def spinor2sph(mol, spinor):
     c = mol.sph2spinor_coeff()
     c2 = numpy.vstack(c)
-    print(c2.shape)
+    #print(c2.shape)
     assert (spinor.shape[0] == c2.shape[1]), "spinor integral must be of shape (nao_2c, nao_2c)"
     ints_sph = lib.einsum('ip,pq,qj->ij', c2, spinor, c2.T.conj())
     return ints_sph
@@ -304,7 +309,7 @@ class SpinorSCF(hf.SCF):
         return init_guess_by_chkfile(self.mol, chkfile, project=project)
 
     def _eigh(self, h, s):
-        return eigkr(self.mol, h, s)
+        return eigkr(self.mol, h, s, debug=False)
 
     @lib.with_doc(get_hcore.__doc__)
     def get_hcore(self, mol=None):
@@ -419,6 +424,8 @@ class SymmSpinorSCF(SpinorSCF):
             raise NotImplementedError
         
         self.occupation = occup
+        print('occup')
+        print(self.occupation)
         
     def eig(self, h, s):
         e, c = eig(self, h, s, irrep=self.irrep_ao)
@@ -431,14 +438,14 @@ class SymmSpinorSCF(SpinorSCF):
         return scipy.linalg.eigh(h, s)
     
     def get_occ(self, mo_energy=None, mo_coeff=None):
-        if self.occupation is None or self.mo_energy is None:
+        if self.occupation is None or mo_energy is None:
             return SpinorSCF.get_occ(self, mo_energy, mo_coeff)
         else:
-            return get_occ_symm(self, self.irrep_ao, self.occupation)
+            return get_occ_symm(self, self.irrep_ao, self.occupation, mo_energy=mo_energy, mo_coeff=mo_coeff)
 
 JHF = SpinorSCF
 SCF = SpinorSCF
-SymmJHF = SymmSpinorSCF
+SymmSCF = SymmJHF = SymmSpinorSCF
 
 if __name__ == '__main__':
     from pyscf import scf
