@@ -167,7 +167,7 @@ class SpinorX2CAMFHelper(x2c.SpinorX2CHelper):
         self.pcc = with_pcc
         self.prog = prog
         self.soc_matrix = None
-        if gto.mole._parse_nuc_mod(self.mol.nucmod) == 2:
+        if mol.nucmod != {}:
             self.gau_nuc = True
         else:
             self.gau_nuc = False

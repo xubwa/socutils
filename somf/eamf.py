@@ -404,7 +404,7 @@ class SpinorEAMFX2CHelper(x2c.x2c.SpinorX2CHelper):
         self.pcc = with_pcc
         self.aoc = with_aoc
         self.amf_type = eamf # use this class to implement various flavors of approximations.
-        if gto.mole._parse_nuc_mod(self.mol.nucmod) == 2:
+        if self.nucmod != {}:
             self.gau_nuc = True
         else:
             self.gau_nuc = False
