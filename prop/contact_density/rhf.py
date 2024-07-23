@@ -4,7 +4,7 @@
 #
 
 '''
-Contact density for relativistic 2-component JHF methods.
+Contact density for SFX2C-1e method.
 (In testing)
 '''
 
@@ -18,54 +18,57 @@ warnings.warn('Module contact density is under testing')
 
 def kernel(method, cd_nuc=None, dm=None, Xresp=False):
     log = lib.logger.Logger(method.stdout, method.verbose)
-    log.info('\n******** Contact density for 2-component SCF methods (In testing) ********')
-    if Xresp:
-        log.info('Include the response of X2C transformation')
-    else:
-        log.info('Ignore the response of X2C transformation')
+    log.info('\n******** Contact density for non-relativistic methods (In testing) ********')
+    mol = method.mol
 
-    xmol, contr_coeff_nr = method.with_x2c.get_xmol(method.mol)
-    npri, ncon = contr_coeff_nr.shape
-    contr_coeff = np.zeros((npri*2,ncon*2))
-    contr_coeff[0::2,0::2] = contr_coeff_nr
-    contr_coeff[1::2,1::2] = contr_coeff_nr
-
-    c = lib.param.LIGHT_SPEED
-    n2c = xmol.nao_2c()
-    if cd_nuc is None:
-        cd_nuc = range(xmol.natm)
     if dm is None:
-        dm = method.make_rdm1()
+        dm = method.make_rdm1(ao_repr=True)
+    if not (isinstance(dm, np.ndarray) and dm.ndim == 2):
+        # UHF density matrix
+        dm = dm[0] + dm[1]
 
+    if cd_nuc is None:
+        cd_nuc = range(mol.natm)
+
+    if isinstance(method, scf.hf.SCF):
+        with_x2c = getattr(method, 'with_x2c', None)
+    else:
+        with_x2c = getattr(method._scf, 'with_x2c', None)
+    
     coords = []
     log.info('\nContact Density Results')
     for atm_id in cd_nuc:
-        coords.append(xmol.atom_coord(atm_id))
+        coords.append(mol.atom_coord(atm_id))
     
-    aoLa, aoLb = xmol.eval_gto('GTOval_spinor', coords)
-    aoSa, aoSb = xmol.eval_gto('GTOval_sp_spinor', coords)
-
-    t = xmol.intor('int1e_kin_spinor')
-    s = xmol.intor('int1e_ovlp_spinor')
-    v = xmol.intor('int1e_nuc_spinor')
-    w = xmol.intor('int1e_spnucsp_spinor')
-    from pyscf.socutils.somf import x2c_grad
-    a, e, x, st, r, l, h4c, m4c = x2c_grad.x2c1e_hfw0(t, v, w, s)
+    aoL = mol.eval_gto('GTOval', coords)
+    if with_x2c:
+        xmol, contr_coeff = with_x2c.get_xmol(mol)
+        aoL = xmol.eval_gto('GTOval', coords)
+        aoS = xmol.eval_gto('GTOval_ip', coords, comp=3)
+        t = xmol.intor('int1e_kin')
+        s = xmol.intor('int1e_ovlp')
+        v = xmol.intor('int1e_nuc')
+        w = xmol.intor('int1e_pnucp')
+        from pyscf.socutils.somf import x2c_grad
+        a, e, x, st, r, l, h4c, m4c = x2c_grad.x2c1e_hfw0(t, v, w, s)
 
     cont_den = []
     for atm_id in range(len(coords)):
-        int_4c = np.zeros((n2c*2, n2c*2), dtype=dm.dtype)
-        int_4c[:n2c,:n2c] = np.einsum('p,q->pq', aoLa[atm_id].conj(), aoLa[atm_id])
-        int_4c[:n2c,:n2c]+= np.einsum('p,q->pq', aoLb[atm_id].conj(), aoLb[atm_id])
-        int_4c[n2c:,n2c:] = np.einsum('p,q->pq', aoSa[atm_id].conj(), aoSa[atm_id]) / 4.0 / c**2
-        int_4c[n2c:,n2c:]+= np.einsum('p,q->pq', aoSb[atm_id].conj(), aoSb[atm_id]) / 4.0 / c**2
-        if Xresp:
-            int_2c = x2c_grad.get_hfw1(a, x, st, m4c, h4c, e, r, l, int_4c)
+        if not with_x2c:
+            int_2c = np.einsum('p,q->pq', aoL[atm_id].conj(), aoL[atm_id])
         else:
-            from pyscf.socutils.somf.eamf import to_2c
-            int_2c = to_2c(x, r, int_4c)
-
-        int_2c = reduce(np.dot, (contr_coeff.T.conj(), int_2c, contr_coeff))
+            c = lib.param.LIGHT_SPEED
+            n2c = xmol.nao
+            int_4c = np.zeros((n2c*2, n2c*2), dtype=dm.dtype)
+            int_4c[:n2c,:n2c] = np.einsum('p,q->pq', aoL[atm_id].conj(), aoL[atm_id])
+            for xx in range(3):
+                int_4c[n2c:,n2c:] += np.einsum('p,q->pq', aoS[xx,atm_id].conj(), aoS[xx,atm_id]) / 4.0 / c**2
+            if Xresp:
+                int_2c = x2c_grad.get_hfw1(a, x, st, m4c, h4c, e, r, l, int_4c)
+            else:
+                from pyscf.socutils.somf.eamf import to_2c
+                int_2c = to_2c(x, r, int_4c)
+            int_2c = reduce(np.dot, (contr_coeff.T.conj(), int_2c, contr_coeff))
         cont_den.append(np.einsum('ij,ji->', int_2c, dm))
         if cont_den[-1].imag > 1e-10:
             log.warn('Significant imaginary part found in contact density')
@@ -76,9 +79,8 @@ def kernel(method, cd_nuc=None, dm=None, Xresp=False):
 
 ContDen = kernel
 
-from pyscf.socutils.scf import spinor_hf
-spinor_hf.JHF.ContDen = lib.class_as_method(ContDen)
-
+from pyscf import scf
+scf.hf.RHF.ContDen = scf.rohf.ROHF.ContDen = scf.uhf.UHF.ContDen = lib.class_as_method(ContDen)
 
 if __name__ == '__main__':
     from pyscf import gto
@@ -89,8 +91,7 @@ if __name__ == '__main__':
 Au 0.0 0.0 0.0
 '''
     mol.unit = 'Bohr'
-    mol.spin = 0
-    mol.charge = 1
+    mol.spin = 1
     mol.nucmod = "g"
     mol.basis = {'Au': gto.basis.parse('''
 Au   S
@@ -181,10 +182,13 @@ Au   G
 1.20070770   1.0 0.0
 0.40528481   0.0 1.0
 ''')}
-    mol.basis = {'Au':gto.uncontracted_basis(mol.basis['Au'])} 
+    # mol.basis = {'Au':gto.uncontracted_basis(mol.basis['Au'])} 
     mol.build()
-    from pyscf.socutils.scf import x2camf_hf
-    mf = x2camf_hf.X2CAMF_RHF(mol, with_gaunt=False, with_breit=False)
-    mf.conv_tol = 1e-8
+    mf = scf.UHF(mol).sfx2c1e()
+    from pyscf import dft
+    mks = dft.UKS(mol, xc='b3lyp').sfx2c1e()
+    mf.conv_tol = 1e-10
     mf.kernel()
+    mks.kernel()
     mf.ContDen()
+    mks.ContDen()
