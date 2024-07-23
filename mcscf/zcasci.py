@@ -38,7 +38,7 @@ def h1e_for_cas(casci, mo_coeff=None, ncas=None, ncore=None):
         core_dm = numpy.dot(mo_core, mo_core.T.conj())
         corevhf = casci.get_veff(casci.mol, core_dm)
 
-        j, k = casci._scf.get_jk(casci.mol, core_dm)
+        #j, k = casci._scf.get_jk(casci.mol, core_dm)
         energy_core += numpy.einsum('ij,ji', core_dm, hcore)
         energy_core += numpy.einsum('ij,ji', core_dm, corevhf) * .5
     h1eff = reduce(numpy.dot, (mo_cas.T.conj(), hcore + corevhf, mo_cas))
@@ -133,7 +133,7 @@ def kernel(casci, mo_coeff=None, ci0=None, verbose=logger.NOTE):
     # 1e
     h1eff, energy_core = casci.get_h1eff(mo_coeff)
     log.debug('core energy = %.15g', energy_core)
-    t1 = log.timer('effective h1e in CAS space', *t1)
+    #t1 = log.timer('effective h1e in CAS space', *t1)
 
     if h1eff.shape[0] != ncas:
         raise RuntimeError('Active space size error. nmo=%d ncore=%d ncas=%d' % (mo_coeff.shape[1], casci.ncore, ncas))
@@ -419,7 +419,7 @@ class CASCI(zcasbase.CASBase):
                 log.info('CASCI not converged')
         else:
             self.converged = True
-        self._finalize()
+        #self._finalize()
         return self.e_tot, self.e_cas, self.ci
 
     def _finalize(self):

@@ -5,6 +5,7 @@ from functools import reduce
 from pyscf import lib
 from pyscf import scf
 from pyscf.ao2mo import r_outcore
+from pyscf.ao2mo import nrr_outcore
 from pyscf.lib import logger
 from pyscf.cc import ccsd
 from pyscf.cc import gccsd
@@ -90,11 +91,18 @@ class ZCCSD(gccsd.GCCSD):
 
     update_amps = update_amps
 
-    def ao2mo(self, mo_coeff=None):
+    def ao2mo(self, mo_coeff=None, swapfile=None):
         nmo = self.nmo
         if mo_coeff is None:
             mo_coeff=self.mo_coeff
-        return _make_eris_outcore(self, mo_coeff, self.feri)
+        return _make_eris_outcore(self, mo_coeff, self.feri, swapfile)
+
+    def ccsd_t(self, t1=None, t2=None, eris=None, alg='vir_loop'):
+        from socutils.cc import gccsd_t
+        if t1 is None: t1 = self.t1
+        if t2 is None: t2 = self.t2
+        if eris is None: eris = self.ao2mo(self.mo_coeff)
+        return gccsd_t.kernel(self, eris, t1, t2, self.verbose, alg=alg)
 
 class _PhysicistsERIs(gccsd._PhysicistsERIs):
     '''<pq||rs> = <pq|rs> - <pq|sr>'''
@@ -160,7 +168,7 @@ class _PhysicistsERIs(gccsd._PhysicistsERIs):
             logger.warn(mycc, 'HOMO-LUMO gap %s too small for ZCCSD', gap)
         return self 
 
-def _make_eris_outcore(mycc, mo_coeff=None, erifile=None):
+def _make_eris_outcore(mycc, mo_coeff=None, erifile=None, swapfile=None, mod='continue', transformed=[]):
     cput0 = (logger.process_clock(), logger.perf_counter())
     log = logger.Logger(mycc.stdout, mycc.verbose)
     eris = _PhysicistsERIs()
@@ -172,6 +180,7 @@ def _make_eris_outcore(mycc, mo_coeff=None, erifile=None):
     assert(eris.mo_coeff.dtype == complex)
     print(nao, nmo)
     print(nocc, nvir)
+    print(swapfile)
 
     if erifile is not None:
         feri = eris.feris = lib.H5TmpFile(erifile)
@@ -179,6 +188,8 @@ def _make_eris_outcore(mycc, mo_coeff=None, erifile=None):
         feri = eris.feris = lib.H5TmpFile()
     
     if len(feri.keys()) is not 0:
+        feri.close()
+        feri = eris.feris = lib.H5TmpFile(erifile, mode='r')
         eris.oooo = feri['oooo']
         eris.ooov = feri['ooov']
         eris.oovv = feri['oovv']
@@ -187,15 +198,15 @@ def _make_eris_outcore(mycc, mo_coeff=None, erifile=None):
         eris.ovvv = feri['ovvv']
         eris.vvvv = feri['vvvv']
         return eris
-
-    dtype = np.result_type(eris.mo_coeff).char
-    eris.oooo = feri.create_dataset('oooo', (nocc,nocc,nocc,nocc), dtype)
-    eris.ooov = feri.create_dataset('ooov', (nocc,nocc,nocc,nvir), dtype)
-    eris.oovv = feri.create_dataset('oovv', (nocc,nocc,nvir,nvir), dtype)
-    eris.ovov = feri.create_dataset('ovov', (nocc,nvir,nocc,nvir), dtype)
-    eris.ovvo = feri.create_dataset('ovvo', (nocc,nvir,nvir,nocc), dtype)
-    eris.ovvv = feri.create_dataset('ovvv', (nocc,nvir,nvir,nvir), dtype)
-    eris.vvvv = feri.create_dataset('vvvv', (nvir, nvir, nvir, nvir), dtype)
+    else:
+        dtype = np.result_type(eris.mo_coeff).char
+        eris.oooo = feri.create_dataset('oooo', (nocc,nocc,nocc,nocc), dtype)
+        eris.ooov = feri.create_dataset('ooov', (nocc,nocc,nocc,nvir), dtype)
+        eris.oovv = feri.create_dataset('oovv', (nocc,nocc,nvir,nvir), dtype)
+        eris.ovov = feri.create_dataset('ovov', (nocc,nvir,nocc,nvir), dtype)
+        eris.ovvo = feri.create_dataset('ovvo', (nocc,nvir,nvir,nocc), dtype)
+        eris.ovvv = feri.create_dataset('ovvv', (nocc,nvir,nvir,nvir), dtype)
+        eris.vvvv = feri.create_dataset('vvvv', (nvir, nvir, nvir, nvir), dtype)
 
     max_memory = mycc.max_memory-lib.current_memory()[0]
     blksize = min(nocc, max(2, int(max_memory*1e6/16/(nmo**3*2))))
@@ -236,13 +247,10 @@ def _make_eris_outcore(mycc, mo_coeff=None, erifile=None):
                [mo_l,mo_l,mo_s,mo_s],#llss
                [mo_s,mo_s,mo_l,mo_l],#ssll
                [mo_s,mo_s,mo_s,mo_s]]
-        intors = ['int2e_spinor','int2e_spsp1_spinor','int2e_spsp2_spinor','int2e_spsp1spsp2_spinor']
-        multips = [1.0, c1**2, c1**2, c1**4] 
-        for mo, intor, multip in zip(mos, intors, multips):
+        if swapfile is not None:
+            fswap = lib.H5TmpFile(swapfile)
+        else:
             fswap = lib.H5TmpFile()
-            eri = ao2mo.general(mol, mo, fswap, 'eri', intor=intor, max_memory=max_memory, verbose=mycc.verbose)
-            fill_eris(fswap, multip)
-            del fswap
         if mf.with_gaunt:
             p = 'int2e_breit_' if mf.with_breit else 'int2e_'
             multips = (c1**2,)*4 if mf.with_breit else (-c1**2,)*4
@@ -253,42 +261,38 @@ def _make_eris_outcore(mycc, mo_coeff=None, erifile=None):
             intors = [p+'ssp1sps2_spinor', p+'ssp1ssp2_spinor', p+'sps1sps2_spinor', p+'sps1ssp2_spinor']
             #lssl,lsls,slsl,slls
             for mo, intor, multip in zip(mos, intors, multips):
-                fswap = lib.H5TmpFile()
+                if swapfile is not None:
+                    fswap = lib.H5TmpFile(swapfile)
+                else:
+                    fswap = lib.H5TmpFile()
                 eri = ao2mo.general(mol, mo, fswap, 'eri', intor=intor, aosym='s1', comp=1, max_memory=max_memory, verbose=mycc.verbose)
                 fill_eris(fswap, multip)
-                del fswap
+                del fswap['eri']
+        intors = ['int2e_spinor','int2e_spsp1_spinor','int2e_spsp2_spinor','int2e_spsp1spsp2_spinor']
+        multips = [1.0, c1**2, c1**2, c1**4] 
+        for mo, intor, multip in zip(mos, intors, multips):
+            eri = ao2mo.general(mol, mo, fswap, 'eri', intor=intor, max_memory=max_memory, verbose=mycc.verbose)
+            fill_eris(fswap, multip)
+            del fswap['eri']
+        del fswap
     else:
         fswap = lib.H5TmpFile()
-        eri = ao2mo.general(mycc.mol, (orbo, mo, mo, mo), fswap, 'eri', intor='int2e_spinor',max_memory=max_memory, verbose=mycc.verbose)
+        #eri = ao2mo.general(mycc.mol, (mo, mo, mo, mo), fswap, 'eri', intor='int2e_spinor',max_memory=max_memory, verbose=mycc.verbose)
+        eri = nrr_outcore.general(mycc.mol, (mo, mo, mo, mo), fswap, 'eri', intor='int2e_sph', motype='j-spinor', max_memory=max_memory, verbose=mycc.verbose)
         fill_eris(fswap, 1.0)
         del fswap
-        #eri = ao2mo.general(mycc.mol, (orbo, orbv, orbv, orbv), intor='int2e_spinor',max_memory=max_memory, verbose=log)
-        '''
-        print(np.asarray(fswap['eri']).shape)
-        for p0, p1 in lib.prange(0, nocc, blksize):
-            tmp = np.asarray(fswap['eri'][p0*nmo:p1*nmo])
-            print(p0, nmo, p1, nmo)
-            tmp = tmp.reshape(p1-p0, nmo, nmo, nmo)
-            eris.oooo[p0:p1] = (tmp[:,:nocc,:nocc,:nocc].transpose(0,2,1,3) - tmp[:,:nocc,:nocc,:nocc].transpose(0,2,3,1))
-            eris.ooov[p0:p1] = (tmp[:,:nocc,:nocc,nocc:].transpose(0,2,1,3) - tmp[:,nocc:,:nocc,:nocc].transpose(0,2,3,1))
-            eris.ovvv[p0:p1] = (tmp[:,nocc:,nocc:,nocc:].transpose(0,2,1,3) - tmp[:,nocc:,nocc:,nocc:].transpose(0,2,3,1))
-            eris.oovv[p0:p1] = (tmp[:,nocc:,:nocc,nocc:].transpose(0,2,1,3) - tmp[:,nocc:,:nocc,nocc:].transpose(0,2,3,1))
-            eris.ovov[p0:p1] = (tmp[:,:nocc,nocc:,nocc:].transpose(0,2,1,3) - tmp[:,nocc:,nocc:,:nocc].transpose(0,2,3,1))
-            eris.ovvo[p0:p1] = (tmp[:,nocc:,nocc:,:nocc].transpose(0,2,1,3) - tmp[:,:nocc,nocc:,nocc:].transpose(0,2,3,1))
-            tmp = None
-        cpu0 = log.timer_debug1('transforming ovvv', *cput0)
-        del fswap
     
-        tril2sq = lib.square_mat_in_trilu_indices(nvir)
-        fswap = lib.H5TmpFile()
-        r_outcore.general(mycc.mol, (orbv, orbv, orbv, orbv), fswap, 'vvvv', max_memory=max_memory, verbose=mycc.verbose)
-        for p0, p1 in lib.prange(0, nvir, blksize):
-            tmp = np.asarray(fswap['vvvv'][p0*nvir:p1*nvir]).reshape(p1-p0, nvir, nvir, nvir)
-            eris.vvvv[p0:p1] = tmp.transpose(0,2,1,3)-tmp.transpose(0,2,3,1)
-        cput0 = log.timer_debug1('transforming vvvv', *cput0)
-        '''
-        del fswap
-    
+    if erifile is not None: # reopen in read only mode to protect hdf5 file
+        feri.close()
+        feri = eris.feris = lib.H5TmpFile(erifile, mode='r')
+        eris.oooo = feri['oooo']
+        eris.ooov = feri['ooov']
+        eris.oovv = feri['oovv']
+        eris.ovov = feri['ovov']
+        eris.ovvo = feri['ovvo']
+        eris.ovvv = feri['ovvv']
+        eris.vvvv = feri['vvvv']
+        return eris
     return eris
 
 if __name__ == '__main__':
@@ -337,4 +341,3 @@ if __name__ == '__main__':
     print(e[3] - 0.3005716731825082)
     
     mycc.ccsd_t()
-        

@@ -109,8 +109,9 @@ def get_soc_integrals(x2cobj, mol=None, prog="sph_atm", with_gaunt=False, with_b
         else:
             spin_free = False
             two_c = False
+        print(x2cobj.gau_nuc)
         soc_matrix = x2camf.amfi(x2cobj, printLevel=x2cobj.verbose, with_gaunt=x2cobj.gaunt, with_gauge=x2cobj.breit,
-                                 with_gaunt_sd=x2cobj.gaunt_sd, pcc=x2cobj.pcc, gaussian_nucelar=x2cobj.nucmod)
+                                 with_gaunt_sd=x2cobj.gaunt_sd, pcc=x2cobj.pcc, gaussian_nuclear=x2cobj.gau_nuc)
     elif (x2c.prog == "sph_atm_legacy"):  # keep this legacy interface for a sanity check.
         writeInput.write_input(x2cobj.mol, x2cobj.gaunt, x2cobj.breit, x2cobj.aoc)
         print(settings.AMFIEXE)
@@ -166,10 +167,11 @@ class SpinorX2CAMFHelper(x2c.SpinorX2CHelper):
         self.pcc = with_pcc
         self.prog = prog
         self.soc_matrix = None
-        if gto.mole._parse_nuc_mod(self.mol.nucmod) == 2:
+        if mol.nucmod != {}:
             self.gau_nuc = True
         else:
             self.gau_nuc = False
+        print(f'Gaussian nuclear model : {self.gau_nuc}')
 
     def initialize_x2camf(self):
         initialize_x2camf(self)
@@ -195,12 +197,19 @@ class SpinOrbitalX2CAMFHelper(x2c.SpinOrbitalX2CHelper):
     def __init__(self, mol, sfx2c=False, with_gaunt=True, with_breit=True, with_aoc=False, prog="sph_atm"):
         x2c.X2C.__init__(self, mol)
         self.sfx2c = sfx2c  # this is still a spinor x2c object, only labels the flavor of soc integral.
+        self.pcc = False
         self.gaunt = with_gaunt
+        self.gaunt_sd = False
         self.breit = with_breit
         print(f'gaunt:{self.gaunt}, breit:{self.breit}')
         self.aoc = with_aoc
         self.prog = prog
         self.soc_matrix = None
+        if gto.mole._parse_nuc_mod(self.mol.nucmod) == 2:
+            self.gau_nuc = True
+        else:
+            self.gau_nuc = False
+        self.gau_nuc = False
         print(self.xuncontract)
 
     def initialize_x2camf(self):
