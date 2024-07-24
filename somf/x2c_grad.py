@@ -5,7 +5,8 @@ from pyscf.gto import moleintor
 from pyscf.x2c import x2c
 import numpy,math
 import scipy.linalg
-from socutils.grad.x2c_grad_g import _block_diag_xyz
+from packaging import version
+from pyscf.socutils.grad.x2c_grad_g import _block_diag_xyz
 from pyscf.x2c.sfx2c1e_grad import _gen_h1_s1
 
 '''
@@ -129,13 +130,18 @@ def get_Asq1(A, A1):
     # return B^lambda
     # Ref (A3)-(A7)
     size = A.shape[0]
-    assert(scipy.linalg.ishermitian(A,atol=1e-10))
+    if version.parse(scipy.__version__) >= version.parse("1.14.0"):
+        assert(scipy.linalg.ishermitian(A,atol=1e-10))
     Aeig, Avec = scipy.linalg.eigh(A)
     YA1Y = reduce(numpy.dot, (Avec.T.conj(), A1, Avec))
     YB1Y = numpy.zeros((size,size), dtype=YA1Y.dtype)
     for ii in range(size):
         for jj in range(size):
-            YB1Y[ii,jj] = YA1Y[ii,jj] / (math.sqrt(Aeig[ii]) + math.sqrt(Aeig[jj]))
+            dominator = math.sqrt(Aeig[ii]) + math.sqrt(Aeig[jj])
+            if abs(dominator) < 1e-10:
+                YB1Y[ii,jj] = 0.0
+            else:
+                YB1Y[ii,jj] = YA1Y[ii,jj] / dominator
     return reduce(numpy.dot, (Avec, YB1Y, Avec.T.conj()))
 
 def get_Asqi1(A, A1):
@@ -144,7 +150,8 @@ def get_Asqi1(A, A1):
     # return (B^{-1})^lambda
     # Ref (A3)-(A7)
     size = A.shape[0]
-    assert(scipy.linalg.ishermitian(A,atol=1e-10))
+    if version.parse(scipy.__version__) >= version.parse("1.14.0"):
+        assert(scipy.linalg.ishermitian(A,atol=1e-10))
     Aeig, Avec = scipy.linalg.eigh(A)
     YA1Y = reduce(numpy.dot, (Avec.T.conj(), A1, Avec))
     YB1Y = numpy.zeros((size,size), dtype=YA1Y.dtype)
@@ -153,7 +160,11 @@ def get_Asqi1(A, A1):
         if(Aeig[ii] > 0.0):
             Asqieig[ii,ii] = 1.0/math.sqrt(Aeig[ii])
         for jj in range(size):
-            YB1Y[ii,jj] = YA1Y[ii,jj] / (math.sqrt(Aeig[ii]) + math.sqrt(Aeig[jj]))
+            dominator = math.sqrt(Aeig[ii]) + math.sqrt(Aeig[jj])
+            if abs(dominator) < 1e-10:
+                YB1Y[ii,jj] = 0.0
+            else:
+                YB1Y[ii,jj] = YA1Y[ii,jj] / dominator
     B1 = reduce(numpy.dot, (Avec, YB1Y, Avec.T.conj()))
     Binv = reduce(numpy.dot, (Avec, Asqieig, Avec.T.conj()))
     # Ref (A1)
@@ -165,7 +176,7 @@ def get_C1(C0, mo_ene, D1, S4c1=None):
     size = D1_mo.shape[0]
     U1 = numpy.zeros((size,size), dtype=D1_mo.dtype)
     if(S4c1 is None):
-        S1_mo = numpy.zeros((size,size))
+        S1_mo = numpy.zeros((size,size), dtype=D1_mo.dtype)
     else:
         S1_mo = reduce(numpy.dot,(C0.T.conj(), S4c1, C0))
     for ii in range(size):
@@ -174,7 +185,7 @@ def get_C1(C0, mo_ene, D1, S4c1=None):
                 U1[ii,ii] = -0.5*S1_mo[ii,ii]
             else:
                 denominator = mo_ene[jj]-mo_ene[ii]
-                if(abs(denominator) < 1e-4):
+                if(abs(denominator) < 1e-5):
                     U1[ii,jj] = 0.0
                 else:
                     U1[ii,jj] = (D1_mo[ii,jj] - S1_mo[ii,jj]*mo_ene[jj])/denominator
@@ -189,12 +200,13 @@ def get_X1(C0, C1, X0):
     CS1 = CS1 - numpy.dot(X0,CL1)
     # tmp = numpy.dot(CL, CL.T.conj())
     # return reduce(numpy.dot, (CS1, CL.T.conj(), numpy.linalg.inv(tmp)))   # numerically a little bit more stable
-    return numpy.dot(CS1,scipy.linalg.inv(CL))
+    # return numpy.dot(CS1,scipy.linalg.inv(CL))
+    return numpy.linalg.solve(CL.T, CS1.T).T
 
 def get_ST1(S4c0, X0, X1=None, S4c1=None):
     size = S4c0.shape[0]//2
     if(S4c1 is None):
-        ST1 = numpy.zeros((size,size))
+        ST1 = numpy.zeros((size,size),dtype=S4c0.dtype)
     else:
         ST1 = S4c1[:size, :size]
     if(X1 is not None):
@@ -207,21 +219,19 @@ def get_ST1(S4c0, X0, X1=None, S4c1=None):
 def get_R1(S0, ST, ST1, S1=None):
     # Ref (34)
     # A = S^{-1/2}*ST*S^{-1/2}
-    Ssqinv0 = scipy.linalg.inv(scipy.linalg.sqrtm(S0))
-    print('ST hermicity', numpy.allclose(ST, ST.T.conj()))
+    Ssq0 = scipy.linalg.sqrtm(S0)
+    Ssqinv0 = scipy.linalg.inv(Ssq0)
     A = reduce(numpy.dot, (Ssqinv0, ST, Ssqinv0))
-    print('A hermicity', scipy.linalg.ishermitian(A,atol=1e-10), numpy.allclose(A, A.T.conj()))
-    Ssq0 = scipy.linalg.inv(Ssqinv0)
+
+    # If S1 = 0, R1 is the middle term of (34)
     if S1 is None:
-        Ssqinv1 = numpy.zeros((S0.shape[0],S0.shape[0]))
-        Ssq1 = numpy.zeros((S0.shape[0],S0.shape[0]))
+        A1 = reduce(numpy.dot, (Ssqinv0, ST1, Ssqinv0))
     else:
         Ssqinv1 = get_Asqi1(S0, S1)
         Ssq1 = get_Asq1(S0, S1)
-    # If S1 = 0, R1 is the middle term of (34)
-    A1 = reduce(numpy.dot, (Ssqinv0, ST1, Ssqinv0))\
-       + reduce(numpy.dot, (Ssqinv1, ST, Ssqinv0))\
-       + reduce(numpy.dot, (Ssqinv0, ST, Ssqinv1))
+        A1 = reduce(numpy.dot, (Ssqinv0, ST1, Ssqinv0))\
+           + reduce(numpy.dot, (Ssqinv1, ST, Ssqinv0))\
+           + reduce(numpy.dot, (Ssqinv0, ST, Ssqinv1))
 
     R1 = reduce(numpy.dot, (Ssqinv0, get_Asqi1(A, A1), Ssq0))
     if(S1 is not None):
@@ -258,15 +268,10 @@ def get_hfw1(C4c0, X0, ST, S4c0, h4c0, mo_ene, R0, L0, h4c1, S4c1=None):
     ST1 = get_ST1(S4c0, X0, X1, S4c1)
     R1 = get_R1(S2c0, ST, ST1, S2c1)
     L1 = get_L1(h4c0, h4c1, X0, X1)
-    print('r1 norm', numpy.linalg.norm(R1.imag))
-    print('r1 hermicity', numpy.allclose(R1, R1.T.conj()))
-    print('l1 norm', numpy.linalg.norm(L1.imag))
-    print('l1 hermicity', numpy.allclose(L1, L1.T.conj()))
     R1LR = reduce(numpy.dot, (R1.T.conj(), L0, R0))
-    RLR1 = reduce(numpy.dot, (R0.T.conj(), L0, R1))
     RL1R = reduce(numpy.dot, (R0.T.conj(), L1, R0))
-    hfw1 = RL1R + R1LR + RLR1
-    print('hfw1 hermicity', numpy.allclose(hfw1, hfw1.T.conj()))
+    hfw1 = RL1R + R1LR + R1LR.T.conj()
+    
     return hfw1
 
 def x2c1e_hfw0(t, v, w, s):
@@ -290,8 +295,9 @@ def x2c1e_hfw0_block(hLL, hSL, hLS, hSS, sLL, sSS):
     cl = a[:nao, nao:]
     cs = a[nao:, nao:]
 
-    b = numpy.dot(cl, cl.T.conj())
-    x = reduce(numpy.dot, (cs, cl.T.conj(), numpy.linalg.inv(b)))
+    # b = numpy.dot(cl, cl.T.conj())
+    # x = reduce(numpy.dot, (cs, cl.T.conj(), numpy.linalg.inv(b)))
+    x = numpy.linalg.solve(cl.T, cs.T).T
 
     st = sLL + reduce(numpy.dot, (x.T.conj(), sSS, x))
     tx = reduce(numpy.dot, (hLS, x))
