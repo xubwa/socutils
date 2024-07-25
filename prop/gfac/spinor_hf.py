@@ -18,9 +18,8 @@ from pyscf.data.nist import G_ELECTRON, LIGHT_SPEED
 
 warnings.warn('Module G-factor is under testing')
 
-def int_gfac_4c(mol):
-    from pyscf.data.nist import G_ELECTRON as ge
-    factor = ge/8.0
+def int_gfac_4c(mol, utm = False, h4c = None, m4c_inv = None):
+    factor = G_ELECTRON/8.0
     # r_i nabla_j
     xnx, xny, xnz, ynx, yny, ynz, znx, zny, znz = mol.intor("int1e_irp", comp=9)
     n2c = mol.nao_2c()
@@ -32,18 +31,16 @@ def int_gfac_4c(mol):
         if xx == 0:
             int_4c_LS[:nao, :nao] =  factor*znx + 0.25j*(-ynz+zny)
             int_4c_LS[nao:, nao:] = -factor*znx + 0.25j*(-ynz+zny)
-            int_4c_LS[:nao, nao:] = -factor*(yny+znz) + 1.0j*factor*ynx
-            int_4c_LS[nao:, :nao] = int_4c_LS[:nao, nao:].conj()
+            int_4c_LS[:nao, nao:] = -factor*(yny+znz) - 1.0j*factor*ynx
         elif xx == 1:
             int_4c_LS[:nao, :nao] =  factor*zny + 0.25j*(-znx+xnz)
             int_4c_LS[nao:, nao:] = -factor*zny + 0.25j*(-znx+xnz)
             int_4c_LS[:nao, nao:] =  factor*xny + 1.0j*factor*(xnx+znz)
-            int_4c_LS[nao:, :nao] = int_4c_LS[:nao, nao:].conj()
         else:
             int_4c_LS[:nao, :nao] = -factor*(xnx+yny) + 0.25j*(-xny+ynx)
             int_4c_LS[nao:, nao:] = factor*(xnx+yny) + 0.25j*(-xny+ynx)
             int_4c_LS[:nao, nao:] =  factor*xnz - 1.0j*factor*ynz
-            int_4c_LS[nao:, :nao] = int_4c_LS[:nao, nao:].conj()
+        int_4c_LS[nao:, :nao] = int_4c_LS[:nao, nao:].conj()
         # transform into spinor basis
         from pyscf.socutils.scf.spinor_hf import sph2spinor
         int_4c_LS = sph2spinor(mol, int_4c_LS)
@@ -51,9 +48,21 @@ def int_gfac_4c(mol):
         int_4c[xx][:n2c, n2c:] = int_4c_LS
         int_4c[xx][n2c:, :n2c] = int_4c_LS.conj().T
 
+        # This is the unitary transformation form, which is equivalent to 
+        # the use of restricted magnetic balance condition
+        # Please see Lan Cheng, Molecular Physics, 121, e2113567, (2023)
+        # DOI: 10.1080/00268976.2022.2113567
+        if utm:
+            if h4c is None or m4c_inv is None:
+                raise ValueError('h4c and m4c_inv should be provided with utm=True')
+            utm_tau = np.zeros_like(int_4c[xx])
+            utm_tau[:n2c, n2c:] = -int_4c[xx][:n2c, n2c:]/2.0/LIGHT_SPEED**2
+            utm_tau[n2c:, :n2c] = int_4c[xx][n2c:, :n2c]/2.0/LIGHT_SPEED**2
+            int_4c[xx] += reduce(np.dot, (h4c, m4c_inv, utm_tau)) - reduce(np.dot, (utm_tau, m4c_inv, h4c))
+
     return int_4c
 
-def kernel(method, dm=None):
+def kernel(method, dm=None, utm=True):
     log = lib.logger.Logger(method.stdout, method.verbose)
     log.info('\n******** G-factor for 2-component SCF methods (In testing) ********')
     xmol, contr_coeff_nr = method.with_x2c.get_xmol(method.mol)
@@ -70,9 +79,10 @@ def kernel(method, dm=None):
     w = xmol.intor('int1e_spnucsp_spinor')
     from pyscf.socutils.somf import x2c_grad
     a, e, x, st, r, l, h4c, m4c = x2c_grad.x2c1e_hfw0(t, v, w, s)
+    m4c_inv = np.dot(a, a.T.conj())
 
     log.info('\nG-factor [1/2(L + g_e S) operator] Results')
-    int_4c = int_gfac_4c(xmol)
+    int_4c = int_gfac_4c(xmol, utm, h4c, m4c_inv)
     xyz = ['x', 'y', 'z']
     gfac = np.zeros(3)
     for xx in range(3):
@@ -108,7 +118,7 @@ def get_hcore(x2cobj, mol, B_field = [0.0, 0.0, 0.0]):
     m4c[:n2c, :n2c] = s
     m4c[n2c:, n2c:] = t * (.5 / c**2)
     
-    gfac_4c = int_gfac_4c(xmol)
+    gfac_4c = int_gfac_4c(xmol, utm = True, h4c = h4c, m4c_inv = scipy.linalg.inv(m4c))
     for i in range(3):
         h4c += B_field[i] * gfac_4c[i] / c # the factor of half was taken in the integrals
     e, a = scipy.linalg.eigh(h4c, m4c)
@@ -143,9 +153,8 @@ if __name__ == '__main__':
 C       -0.00000000     0.00000000     1.19902577
 O        0.00000000     0.00000000    -0.89955523
 '''
-    basis = {"C": "C:APVTZ-DE4", "O": "O:APVTZ-DE4"}
-    from pyscf.socutils.tools.basis_parser import genbas_parser
-    mol.basis = genbas_parser(basis)
+    from pyscf.socutils.tools.basis_parser import parse_genbas
+    mol.basis = {"C": parse_genbas("C:APVTZ-DE4"), "O": parse_genbas("O:APVTZ-DE4")}
     mol.charge = 1
     mol.spin = 1
     mol.unit = 'bohr'
@@ -167,21 +176,17 @@ O        0.00000000     0.00000000    -0.89955523
     mf = mfobj([0.0, 0.0, 0.0])
     mf.kernel()
     gfac = mf.Gfac()
-    # cfour value 0.500575228885580
-    from pyscf.data.nist import G_ELECTRON as ge
-    # from pyscf.socutils.prop.efg import spinor_hf
-    # mf.EFG()
-
+    # cfour value 0.500563438766573
     # finite difference
-    dx = 0.001
+    dx = 0.01
     mf1 = mfobj([0.0, 0.0, dx])
     mf2 = mfobj([0.0, 0.0,-dx])
+    e1 = mf1.kernel()
+    e2 = mf2.kernel()
     mf3 = mfobj([0.0, 0.0, 2*dx])
     mf4 = mfobj([0.0, 0.0,-2*dx])
     mf5 = mfobj([0.0, 0.0, 3*dx])
     mf6 = mfobj([0.0, 0.0,-3*dx])
-    e1 = mf1.kernel()
-    e2 = mf2.kernel()
     e3 = mf3.kernel()
     e4 = mf4.kernel()
     e5 = mf5.kernel()
@@ -193,6 +198,6 @@ O        0.00000000     0.00000000    -0.89955523
     print(gfacz2)
     print(gfacz4)
     print(gfacz6)
-    print((4.0*abs(gfac[2]) - ge)*10**6)
+    print((4.0*abs(gfac[2]) - G_ELECTRON)*10**6)
     
     
