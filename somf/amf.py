@@ -111,7 +111,7 @@ def get_soc_integrals(x2cobj, mol=None, prog="sph_atm", with_gaunt=False, with_b
             two_c = False
         print(x2cobj.gau_nuc)
         soc_matrix = x2camf.amfi(x2cobj, printLevel=x2cobj.verbose, with_gaunt=x2cobj.gaunt, with_gauge=x2cobj.breit,
-                                 with_gaunt_sd=x2cobj.gaunt_sd, pcc=x2cobj.pcc, gaussian_nuclear=x2cobj.gau_nuc)
+                                 with_gaunt_sd=x2cobj.gaunt_sd, pcc=x2cobj.pcc, gaussian_nuclear=x2cobj.gau_nuc, aoc=x2cobj.aoc)
     elif (x2c.prog == "sph_atm_legacy"):  # keep this legacy interface for a sanity check.
         writeInput.write_input(x2cobj.mol, x2cobj.gaunt, x2cobj.breit, x2cobj.aoc)
         print(settings.AMFIEXE)

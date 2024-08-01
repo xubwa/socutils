@@ -393,6 +393,16 @@ def eamf(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, nu
         h1e_4csf[n2c:,n2c:] = wn * (.25/c**2) - t
         x, st, r, h2c = x2c1e_hfw0_4cmat(h1e_4csf, s4c, mol=xmol)
         return to_2c(x, r, h1e_4csf)
+    elif x2cobj.amf_type == 'x2camf_axr':
+        atm_x = construct_molecular_matrix(extract_ith_integral(atm_ints, 0), atom_slices, xmol, n2c, False)
+        so_2c = construct_molecular_matrix(extract_ith_integral(atm_ints, 10), atom_slices, xmol, n2c, False)
+        r = x2cobj._get_rmat(atm_x)
+        return to_2c(atm_x, r, h1e_4c) + so_2c
+    elif x2cobj.amf_type == 'x2camf_au':
+        atm_x = construct_molecular_matrix(extract_ith_integral(atm_ints, 0), atom_slices, xmol, n2c, False)
+        atm_r = construct_molecular_matrix(extract_ith_integral(atm_ints, 1), atom_slices, xmol, n2c, False)
+        so_2c = construct_molecular_matrix(extract_ith_integral(atm_ints, 10), atom_slices, xmol, n2c, False)
+        return to_2c(atm_x, atm_r, h1e_4c) + so_2c
 
 class SpinorEAMFX2CHelper(x2c.x2c.SpinorX2CHelper):
     hcore = None
@@ -404,6 +414,7 @@ class SpinorEAMFX2CHelper(x2c.x2c.SpinorX2CHelper):
         self.pcc = with_pcc
         self.aoc = with_aoc
         self.amf_type = eamf # use this class to implement various flavors of approximations.
+        self.nucmod = mol.nucmod
         if self.nucmod != {}:
             self.gau_nuc = True
         else:
