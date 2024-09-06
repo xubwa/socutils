@@ -14,7 +14,7 @@ import warnings
 import numpy as np
 from functools import reduce
 from pyscf import lib
-from pyscf.socutils.prop.efg.rhf import _get_quad_nuc
+from socutils.prop.efg.rhf import _get_quad_nuc
 
 warnings.warn('Module EFG is under testing')
 
@@ -33,7 +33,7 @@ def kernel(method, efg_nuc=None, dm=None, Xresp=True):
     if dm is None:
         dm = method.make_rdm1()
 
-    from pyscf.socutils.somf import x2c_grad
+    from socutils.somf import x2c_grad
     t = mol.intor('int1e_kin_spinor')
     s = mol.intor('int1e_ovlp_spinor')
     v = mol.intor('int1e_nuc_spinor')
@@ -50,7 +50,7 @@ def kernel(method, efg_nuc=None, dm=None, Xresp=True):
                 if Xresp:
                     int_2c = x2c_grad.get_hfw1(a, xmat, st, m4c, h4c, e, r, l, int_4c[x,y])
                 else:
-                    from pyscf.socutils.somf.eamf import to_2c
+                    from socutils.somf.eamf import to_2c
                     int_2c = to_2c(xmat, r, int_4c[x,y])
                 int_2c = reduce(np.dot, (contr_coeff.T.conj(), int_2c, contr_coeff))
                 efg_e[x,y] = np.einsum('ij,ji->', int_2c, dm)
@@ -114,7 +114,7 @@ def _get_4cspinor_quadrupole_integrals(mol, atm_id):
 
 EFG = kernel
 
-from pyscf.socutils.scf import spinor_hf
+from socutils.scf import spinor_hf
 spinor_hf.JHF.EFG = lib.class_as_method(EFG)
 
 
@@ -132,7 +132,7 @@ H 0.  1.42993701  0.98326612
     mol.basis = 'uncccpvdz'
     mol.unit = 'Bohr'
     mol.build()
-    from pyscf.socutils.scf import x2camf_hf
+    from socutils.scf import x2camf_hf
     mf = x2camf_hf.X2CAMF_RHF(mol, with_gaunt=False, with_breit=False)
     mf.conv_tol = 1e-12
     mf.kernel()

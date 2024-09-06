@@ -52,7 +52,7 @@ def kernel(method, efg_nuc=None, dm=None, Xresp=True):
 
     if with_x2c:
         xmol, contr_coeff = with_x2c.get_xmol(mol)
-        from pyscf.socutils.somf import x2c_grad
+        from socutils.somf import x2c_grad
         t = xmol.intor('int1e_kin')
         s = xmol.intor('int1e_ovlp')
         v = xmol.intor('int1e_nuc')
@@ -72,7 +72,7 @@ def kernel(method, efg_nuc=None, dm=None, Xresp=True):
                     if Xresp:
                         h1_tmp = x2c_grad.get_hfw1(a, xmat, st, m4c, h4c, e, r, l, h1_4c[x,y])
                     else:
-                        from pyscf.socutils.somf.eamf import to_2c
+                        from socutils.somf.eamf import to_2c
                         h1_tmp = to_2c(xmat, r, h1_4c[x,y])
                     h1[x,y] = reduce(np.dot, (contr_coeff.T.conj(), h1_tmp, contr_coeff))
                     h1[y,x] = h1[x,y]

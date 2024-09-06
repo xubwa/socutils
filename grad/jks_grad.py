@@ -23,8 +23,8 @@ import numpy
 from pyscf import lib
 from pyscf.lib import logger
 from pyscf.grad import rks as rks_grad
-from pyscf.socutils import jhf_grad
-from pyscf.socutils.spinor_hf import spinor2sph, sph2spinor
+from socutils import jhf_grad
+from socutils.spinor_hf import spinor2sph, sph2spinor
 from pyscf.dft import numint, gen_grid
 from pyscf import __config__
 

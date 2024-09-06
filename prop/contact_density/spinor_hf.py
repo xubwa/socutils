@@ -49,7 +49,7 @@ def kernel(method, cd_nuc=None, dm=None, Xresp=False):
     s = xmol.intor('int1e_ovlp_spinor')
     v = xmol.intor('int1e_nuc_spinor')
     w = xmol.intor('int1e_spnucsp_spinor')
-    from pyscf.socutils.somf import x2c_grad
+    from socutils.somf import x2c_grad
     a, e, x, st, r, l, h4c, m4c = x2c_grad.x2c1e_hfw0(t, v, w, s)
 
     cont_den = []
@@ -62,7 +62,7 @@ def kernel(method, cd_nuc=None, dm=None, Xresp=False):
         if Xresp:
             int_2c = x2c_grad.get_hfw1(a, x, st, m4c, h4c, e, r, l, int_4c)
         else:
-            from pyscf.socutils.somf.eamf import to_2c
+            from socutils.somf.eamf import to_2c
             int_2c = to_2c(x, r, int_4c)
 
         int_2c = reduce(np.dot, (contr_coeff.T.conj(), int_2c, contr_coeff))
@@ -76,7 +76,7 @@ def kernel(method, cd_nuc=None, dm=None, Xresp=False):
 
 ContDen = kernel
 
-from pyscf.socutils.scf import spinor_hf
+from socutils.scf import spinor_hf
 spinor_hf.JHF.ContDen = lib.class_as_method(ContDen)
 
 
@@ -183,7 +183,7 @@ Au   G
 ''')}
     mol.basis = {'Au':gto.uncontracted_basis(mol.basis['Au'])} 
     mol.build()
-    from pyscf.socutils.scf import x2camf_hf
+    from socutils.scf import x2camf_hf
     mf = x2camf_hf.X2CAMF_RHF(mol, with_gaunt=False, with_breit=False)
     mf.conv_tol = 1e-8
     mf.kernel()

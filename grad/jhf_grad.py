@@ -2,9 +2,9 @@ import pyscf.grad.rhf as rhf_grad
 from pyscf import lib, gto
 from pyscf.lib import logger
 from pyscf.x2c.x2c import _block_diag
-from pyscf.socutils import ghf_grad
+from socutils import ghf_grad
 import numpy
-from pyscf.socutils.spinor_hf import spinor2sph, sph2spinor
+from socutils.scf.spinor_hf import spinor2sph, sph2spinor
 
 def _block_diag_xyz(mat):
     '''
@@ -125,6 +125,6 @@ class Gradients(rhf_grad.GradientsMixin):
 Grad = Gradients
 
 from pyscf import socutils
-socutils.spinor_hf.Spinor_SCF.Gradients = lib.class_as_method(Gradients)
+socutils.spinor_hf.SpinorSCF.Gradients = lib.class_as_method(Gradients)
 from pyscf import x2c
 x2c.x2c.SCF.Gradients = lib.class_as_method(Gradients)

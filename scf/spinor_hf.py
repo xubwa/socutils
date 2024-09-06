@@ -41,7 +41,7 @@ def symmetry_label(mol, symmetry=None):
             for ilabel, label in enumerate(processed_labels):
                 full_label=label[2]
                 print(label)
-                print(full_label)
+                print("full_label",full_label)
                 if irrep.get(full_label) is not None:
                     irrep[full_label].append(ilabel)
                 else:
@@ -161,7 +161,7 @@ def spinor2sph(mol, spinor):
     return ints_sph
 
 def sph2spinor(mol, sph):
-    assert (sph.shape[-1] == sph.shape[-2] == mol.nao_nr() * 2), "spherical integral must be of shape (nao_nr, nao_nr)"
+    assert (sph.shape[-1] == sph.shape[-2] == mol.nao_nr() * 2), "spherical integral must be of shape (nao_2c, nao_2c)"
     c = mol.sph2spinor_coeff()
     c2 = numpy.vstack(c)
     if len(sph.shape) == 3:

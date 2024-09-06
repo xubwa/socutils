@@ -2,7 +2,7 @@
 Obtain soc integrals for given molecule.
 '''
 from pyscf import gto
-import somf_pt, somf
+from socutils.somf import somf_pt, somf
 
 mol = gto.M(
     verbose = 4,

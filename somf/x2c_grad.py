@@ -6,7 +6,7 @@ from pyscf.x2c import x2c
 import numpy,math
 import scipy.linalg
 from packaging import version
-from pyscf.socutils.grad.x2c_grad_g import _block_diag_xyz
+from socutils.grad.x2c_grad_g import _block_diag_xyz
 from pyscf.x2c.sfx2c1e_grad import _gen_h1_s1
 
 '''
@@ -315,7 +315,7 @@ def x2c1e_hfw1(mol, h4c1, s4c1=None, t=None, v=None, s=None, w=None):
     if(t is None):
         t = mol.intor('int1e_spsp_spinor') * .5
     if(v is None):
-        v = mol.intor('int1e_rinv_spinor')
+        v = mol.intor('int1e_nuc_spinor')
     if(w is None):
         w = mol.intor('int1e_spnucsp_spinor')
     if(s is None):

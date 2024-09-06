@@ -17,16 +17,16 @@
 X2C 2-component DFT methods
 '''
 
-from pyscf.socutils import spinor_hf
+from socutils.scf import spinor_hf
 from pyscf.dft import dks
 
-class Spinor_DFT(dks.KohnShamDFT, spinor_hf.Spinor_SCF):
+class Spinor_DFT(dks.KohnShamDFT, spinor_hf.SpinorSCF):
     def __init__(self, mol, xc='LDA,VWN'):
-        spinor_hf.Spinor_SCF.__init__(self, mol)
+        spinor_hf.SpinorSCF.__init__(self, mol)
         dks.KohnShamDFT.__init__(self, xc)
 
     def dump_flags(self, verbose=None):
-        spinor_hf.Spinor_SCF.dump_flags(self, verbose)
+        spinor_hf.SpinorSCF.dump_flags(self, verbose)
         dks.KohnShamDFT.dump_flags(self, verbose)
         return self
 
@@ -37,7 +37,7 @@ class Spinor_DFT(dks.KohnShamDFT, spinor_hf.Spinor_SCF):
         The total energy and wave-function are the same as them in the input
         mean-field object.
         '''
-        mf = self.view(spinor_hf.Spinor_SCF)
+        mf = self.view(spinor_hf.SpinorSCF)
         mf.converged = False
         return mf
 

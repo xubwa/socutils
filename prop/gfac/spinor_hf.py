@@ -42,7 +42,7 @@ def int_gfac_4c(mol, utm = False, h4c = None, m4c_inv = None):
             int_4c_LS[:nao, nao:] =  factor*xnz - 1.0j*factor*ynz
         int_4c_LS[nao:, :nao] = int_4c_LS[:nao, nao:].conj()
         # transform into spinor basis
-        from pyscf.socutils.scf.spinor_hf import sph2spinor
+        from socutils.scf.spinor_hf import sph2spinor
         int_4c_LS = sph2spinor(mol, int_4c_LS)
         int_4c.append(np.zeros((n2c*2, n2c*2), dtype=complex))
         int_4c[xx][:n2c, n2c:] = int_4c_LS
@@ -77,7 +77,7 @@ def kernel(method, dm=None, utm=True):
     s = xmol.intor('int1e_ovlp_spinor')
     v = xmol.intor('int1e_nuc_spinor')
     w = xmol.intor('int1e_spnucsp_spinor')
-    from pyscf.socutils.somf import x2c_grad
+    from socutils.somf import x2c_grad
     a, e, x, st, r, l, h4c, m4c = x2c_grad.x2c1e_hfw0(t, v, w, s)
     m4c_inv = np.dot(a, a.T.conj())
 
@@ -139,7 +139,7 @@ def get_hcore(x2cobj, mol, B_field = [0.0, 0.0, 0.0]):
 
     return hcore + soc_matrix
 
-from pyscf.socutils.scf import spinor_hf
+from socutils.scf import spinor_hf
 spinor_hf.JHF.Gfac = lib.class_as_method(Gfac)
 
 
@@ -153,7 +153,7 @@ if __name__ == '__main__':
 C       -0.00000000     0.00000000     1.19902577
 O        0.00000000     0.00000000    -0.89955523
 '''
-    from pyscf.socutils.tools.basis_parser import parse_genbas
+    from socutils.tools.basis_parser import parse_genbas
     mol.basis = {"C": parse_genbas("C:APVTZ-DE4"), "O": parse_genbas("O:APVTZ-DE4")}
     mol.charge = 1
     mol.spin = 1
@@ -162,7 +162,7 @@ O        0.00000000     0.00000000    -0.89955523
     mol.build()
     irrep = {'1/2':[6], '-1/2':[5], '3/2':[1], '-3/2':[1]}
     def mfobj(B_field):
-        from pyscf.socutils.scf import spinor_hf, x2camf_hf
+        from socutils.scf import spinor_hf, x2camf_hf
         mf = spinor_hf.SymmSpinorSCF(mol, symmetry="linear", occup = irrep)
         mf.chkfile='chk.chk'
         mf.init_guess = 'chkfile'

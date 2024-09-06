@@ -43,26 +43,23 @@ def get_psoc_x2camf(mol, gaunt=True, gauge=True, atm_pt=True):
     xmol, contr_coeff = sfx2c1e.SpinFreeX2C(mol).get_xmol()
 
     c = LIGHT_SPEED
-    t = xmol.intor_symmetric('int1e_spsp_spinor') * .5
-    v = xmol.intor_symmetric('int1e_nuc_spinor')
-    s = xmol.intor_symmetric('int1e_ovlp_spinor')
-    wsf = xmol.intor_symmetric('int1e_pnucp_spinor')
-    wso = xmol.intor_symmetric('int1e_spnucsp_spinor') - wsf
+    wsf = xmol.intor('int1e_pnucp_spinor')
+    wso = xmol.intor('int1e_spnucsp_spinor') - wsf
 
-    n2c = s.shape[0]
+    n2c = wsf.shape[0]
     n4c = n2c * 2
 
-    h4c1 = numpy.zeros((n4c, n4c), dtype=v.dtype)
+    h4c1 = numpy.zeros((n4c, n4c), dtype=wso.dtype)
     h4c1[n2c:, n2c:] = wso * (.25 / c**2)
 
     if(atm_pt):
-        hfw1 = x2c_grad.x2c1e_hfw1(t,v,wsf,s,h4c1)
+        hfw1 = x2c_grad.x2c1e_hfw1(xmol,h4c1,w=wsf)
         hfw1 += x2camf.amfi(x2c.X2C(mol), printLevel = mol.verbose,
                             with_gaunt=gaunt, with_gauge=gauge, pt=True, int4c=False)
     else:
         h4c1 += x2camf.amfi(x2c.X2C(mol), printLevel = mol.verbose,
                             with_gaunt=gaunt, with_gauge=gauge, pt=True, int4c=True)
-        hfw1 = x2c_grad.x2c1e_hfw1(t,v,wsf,s,h4c1)
+        hfw1 = x2c_grad.x2c1e_hfw1(xmol,h4c1,w=wsf)
     
     hfw1_sph = spinor2sph_soc(xmol, hfw1)
     # convert back to contracted basis

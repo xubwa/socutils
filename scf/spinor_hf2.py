@@ -6,7 +6,7 @@ from pyscf.scf import hf, ghf
 import numpy as np
 from functools import reduce
 from pyscf.lib import einsum
-from pyscf.socutils import spinor_hf
+from socutils import spinor_hf
 
 def eig(obj, h, s):
     mol = obj.mol

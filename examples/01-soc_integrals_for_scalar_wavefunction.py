@@ -2,18 +2,15 @@
 Perturbative treatment of spin-orbit integrals.
 X2CAMF scheme and MMF-BP operators are available.
 '''
-from pyscf import gto, scf, mcscf
-from pyscf.x2c import x2c
-import x2camf
-import numpy
-import somf
+from pyscf import gto, scf
+from socutils.somf import somf
 mol = gto.M(
     verbose = 4,
     atom = [[36,[0.0,0.0,0.0]]],
     basis = 'cc-pvtz',
     symmetry = False,
     spin = 0)
-mfx2c = scf.RHF(mol).x2c()
+mfx2c = scf.RHF(mol).sfx2c1e()
 mfx2c.kernel()
 
 mfbp = scf.RHF(mol)

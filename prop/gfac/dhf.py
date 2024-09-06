@@ -94,7 +94,7 @@ if __name__ == '__main__':
 C       -0.00000000     0.00000000     1.19902577
 O        0.00000000     0.00000000    -0.89955523
 '''
-    from pyscf.socutils.tools.basis_parser import parse_genbas
+    from socutils.tools.basis_parser import parse_genbas
     mol.basis = "unc-aug-ccpvtz"
     mol.charge = 1
     mol.spin = 1

@@ -233,7 +233,7 @@ if __name__ == '__main__':
     
     mol = gto.M(atom='Nd 0 0 0', basis='ccpvdzdk', verbose=4, charge=6, max_memory=40000)
 
-    from pyscf.socutils import spinor_hf, x2camf_hf
+    from socutils import spinor_hf, x2camf_hf
     from pyscf.x2c import x2c
     mf = spinor_hf.SpinorSCF(mol)
 
