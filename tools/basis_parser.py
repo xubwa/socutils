@@ -52,15 +52,19 @@ def read_genbas(basis_name, filename):
         coeffs[ll] = coeffs[ll].reshape((basinfo[ll][2],basinfo[ll][1]))
     return exps, coeffs, basinfo
 
-def parse_genbas(basis, filename="GENBAS"):
+def parse_genbas(basis, filename="GENBAS", uncontract=False):
     exps, coeffs, basinfo = read_genbas(basis, filename)
     basis_pyscf = []
     for ii in range(len(basinfo)):
         basis_pyscf.append([basinfo[ii][0]])
-        for jj in range(basinfo[ii][2]):
-            basis_pyscf[ii].append([exps[ii][jj]])
-            for kk in range(basinfo[ii][1]):
-                basis_pyscf[ii][jj+1].append(coeffs[ii][jj][kk])
+        if uncontract:
+            for jj in range(basinfo[ii][2]):
+                basis_pyscf[ii].append([exps[ii][jj],1.0])
+        else:
+            for jj in range(basinfo[ii][2]):
+                basis_pyscf[ii].append([exps[ii][jj]])
+                for kk in range(basinfo[ii][1]):
+                    basis_pyscf[ii][jj+1].append(coeffs[ii][jj][kk])
     return basis_pyscf
 
 def genbas_parser(basis, filename="GENBAS"):
