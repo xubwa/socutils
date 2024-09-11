@@ -12,7 +12,7 @@ import numpy
 import numpy as np
 from scipy import linalg as la
 
-def chunked_cholesky(mol, max_error=1e-6, verbose=True, cmax=100):
+def chunked_cholesky(mol, max_error=1e-5, verbose=True, cmax=10):
     """Modified cholesky decomposition from pyscf eris.
 
     See, e.g. [Motta17]_
@@ -131,6 +131,7 @@ class _CDERIS(lib.StreamObject):
         ncas = zcasscf.ncas
         nocc = ncore+ncas
         
+        t0 = (logger.process_clock(), logger.perf_counter())
         if cderi is None:
             print('cd from init')
             cderi = chunked_cholesky(mol)
@@ -171,6 +172,8 @@ class _CDERIS(lib.StreamObject):
             self.cd_pa = cd_pp[:,:,ncore:nocc]
             print('cd integrals saved')
         self.aaaa = lib.einsum('ptu,pvw->tuvw', self.cd_aa, self.cd_aa) 
+        log = logger.Logger(sys.stdout, 5)
+        log.timer('CD integral transformation', *t0)
         #print('aaaa done')
         #self.paaa = lib.einsum('pqt,pvw->qtvw', cd_pa, self.cd_aa)
         #self.aaaa = self.paaa[ncore:nocc,:,:,:]

@@ -22,6 +22,7 @@ def kernel(method, efg_nuc=None, dm=None, Xresp=True):
     log = lib.logger.Logger(method.stdout, method.verbose)
     log.info('\n******** EFG for 2-component SCF methods (In testing) ********')
     xmol, contr_coeff_nr = method.with_x2c.get_xmol(method.mol)
+    mol = xmol
     npri, ncon = contr_coeff_nr.shape
     contr_coeff = np.zeros((npri*2,ncon*2))
     contr_coeff[0::2,0::2] = contr_coeff_nr

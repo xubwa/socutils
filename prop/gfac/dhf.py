@@ -15,12 +15,13 @@ import numpy as np
 from functools import reduce
 from pyscf import lib
 from pyscf.data.nist import G_ELECTRON, LIGHT_SPEED
+from pyscf import scf
 
 warnings.warn('Module G-factor is under testing')
 
-from spinor_hf import int_gfac_4c
+from socutils.prop.gfac.spinor_hf import int_gfac_4c
 
-def kernel(method, dm=None):
+def kernel(method, utm=False, dm=None):
     log = lib.logger.Logger(method.stdout, method.verbose)
     log.info('\n******** G-factor for 4-component SCF methods (In testing) ********')
     
@@ -43,9 +44,8 @@ def kernel(method, dm=None):
     h4c[n2c:, n2c:] = w * (.25 / c**2) - t
     m4c[:n2c, :n2c] = s
     m4c[n2c:, n2c:] = t * (.5 / c**2)
-    int_4c = int_gfac_4c(mol, utm=True, h4c=h4c, m4c_inv=scipy.linalg.inv(m4c))
+    int_4c = int_gfac_4c(mol, utm=utm, h4c=h4c, m4c_inv=scipy.linalg.inv(m4c))
 
-    # int_4c = int_gfac_4c(mol)
     xyz = ['x', 'y', 'z']
     gfac = np.zeros(3, dtype=complex)
     for xx in range(3):
@@ -98,23 +98,37 @@ O        0.00000000     0.00000000    -0.89955523
     mol.basis = "unc-aug-ccpvtz"
     mol.charge = 1
     mol.spin = 1
-    mol.unit = 'bohr'
+    mol.unit = 'B'
     mol.nucmod = 'g'
     mol.build()
     chkfile = 'chk_4c.chk'
     def mfobj(B_field):
         from pyscf.scf import dhf
         mf = dhf.DHF(mol)
+        mf.with_gaunt=False
         mf.chkfile = chkfile
         mf.init_guess = 'chkfile'
         mf.get_hcore = lambda mol = None: get_hcore(dhfobj=mf, mol=mol, B_field=B_field)
         mf.conv_tol = 1e-12
         return mf
-    mf = mfobj([0.000, 0.0, 0.00])
+    mf = mfobj([0.000, 0.000, 0.0001])
+    from socutils.prop.effective_field.dhf import EffectiveField
+    mf.kernel()
+    mf1 = scf.DHF(mol)
+    mf1.kernel(dm0=mf.make_rdm1())
+    mf1.EffectiveField()
+    gfac = mf1.Gfac()
+    print(abs(gfac)*4.-G_ELECTRON)
+    from socutils.scf import linear_dhf
+    mf2 = linear_dhf.SymmDHF(mol, symmetry='linear')
+    mf2.kernel()
+    mf2.EffectiveField()
+    mf2.Gfac()
+    exit()
     mf.with_gaunt = True
     mf.with_breit = True
     mf.kernel(dm0 = mf.init_guess_by_chkfile(chkfile))
-    gfac = mf.Gfac()
+    gfac=mf1.Gfac()
     print(gfac)
     print((4.0*abs(gfac[2]) - G_ELECTRON)*10**6)
     

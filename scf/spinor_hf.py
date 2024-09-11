@@ -283,6 +283,7 @@ class SpinorSCF(hf.SCF):
         self.with_soc=False
         self.with_x2c=None
         self.so_contr=None
+        self.new_energy_algo=False
 
     def build(self, mol=None):
         if self.verbose >= logger.WARN:
@@ -323,6 +324,21 @@ class SpinorSCF(hf.SCF):
             hcore = reduce(numpy.dot, (mol.so_contr.T, hcore, mol.so_contr))
         return hcore
         
+    def energy_tot(self, dm=None, h1e=None, vhf=None):
+        if dm is None:
+            dm=self.make_rdm1()
+        if h1e is None:
+            h1e = self.get_hcore()
+        if vhf is None:
+            vhf = self.get_veff()
+        print('new_energy_algo', self.new_energy_algo, hasattr(self.with_x2c, 'soc_matrix'))
+        if self.with_x2c is not None and hasattr(self.with_x2c, 'soc_matrix'):
+            if self.new_energy_algo:
+                return hf.energy_tot(self, dm, h1e - self.with_x2c.soc_matrix, vhf+self.with_x2c.soc_matrix)
+            else:
+                return hf.energy_tot(self, dm, h1e, vhf)
+        else:
+            return hf.energy_tot(self, dm, h1e, vhf)
 
     def get_ovlp(self, mol=None):
         if mol is None: mol = self.mol

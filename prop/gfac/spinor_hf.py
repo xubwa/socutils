@@ -18,7 +18,7 @@ from pyscf.data.nist import G_ELECTRON, LIGHT_SPEED
 
 warnings.warn('Module G-factor is under testing')
 
-def int_gfac_4c(mol, utm = False, h4c = None, m4c_inv = None):
+def int_gfac_4c(mol, utm=False, h4c=None, m4c_inv=None):
     factor = G_ELECTRON/8.0
     # r_i nabla_j
     xnx, xny, xnz, ynx, yny, ynz, znx, zny, znz = mol.intor("int1e_irp", comp=9)
@@ -81,12 +81,14 @@ def kernel(method, dm=None, utm=True):
     a, e, x, st, r, l, h4c, m4c = x2c_grad.x2c1e_hfw0(t, v, w, s)
     m4c_inv = np.dot(a, a.T.conj())
 
+    h4c = method.with_x2c.h4c
     log.info('\nG-factor [1/2(L + g_e S) operator] Results')
     int_4c = int_gfac_4c(xmol, utm, h4c, m4c_inv)
     xyz = ['x', 'y', 'z']
     gfac = np.zeros(3)
     for xx in range(3):
-        int_2c = x2c_grad.get_hfw1(a, x, st, m4c, h4c, e, r, l, int_4c[xx])
+        #int_2c = x2c_grad.get_hfw1(a, x, st, m4c, h4c, e, r, l, int_4c[xx])
+        int_2c = method.with_x2c.get_hfw1(int_4c[xx])
         int_2c = reduce(np.dot, (contr_coeff.T.conj(), int_2c, contr_coeff))
         gfac[xx] = np.einsum('ij,ji->', int_2c, dm).real
         print('G-factor for %s: %.10f' % (xyz[xx], gfac[xx]))

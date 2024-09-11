@@ -1,6 +1,6 @@
 # Author: Xubo Wang <xubo.wang@outlook.com>
 # Date: 2023/12/4
-
+import sys
 import numpy
 import numpy as np
 import time
@@ -198,6 +198,15 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
     g[:, ncore:nocc] = np.dot(
         h1e_mo[:, ncore:nocc] + vhf_c[:, ncore:nocc], casdm1)
     
+    g_new = np.zeros((nmo, nmo), dtype=complex)
+        #g[:, :ncore] = h1e_mo[:, :ncore] + vhf_ca[:, :ncore]
+        #g[:, ncore:nocc] = np.dot(
+        #h1e_mo[:, ncore:nocc] + vhf_c[:, ncore:nocc], casdm1)
+    g_new[ncore:, :ncore] = h1e_mo[ncore:, :ncore] + vhf_ca[ncore:, :ncore]
+    g_new[ncore:, ncore:nocc] = np.dot(
+        h1e_mo[:, ncore:nocc] + vhf_c[:, ncore:nocc], casdm1)[ncore:,:]
+    g_new[nocc:,ncore:nocc] = np.dot(h1e_mo[nocc:,ncore:nocc] + vhf_c[nocc:,ncore:nocc], casdm1)
+    g_new[ncore:nocc,:ncore] = np.dot(casdm1, h1e_mo[ncore:nocc, :ncore] + vhf_c[ncore:nocc,:ncore])
     if isinstance(eris, zmc_ao2mo._ERIS):
         paaa = eris.paaa
         g_dm2 = lib.einsum('puvw,tuvw->pt', paaa, casdm2)
@@ -205,52 +214,38 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
         cd_pa = eris.cd_pa
         cd_aa = eris.cd_aa
         tmp = lib.einsum('Lvw,tuvw->Ltu', cd_aa, casdm2)
-        g_dm2 = lib.einsum('Lpt,Ltu->pt', cd_pa, tmp)
+        g_dm2 = lib.einsum('Lpu,Ltu->pt', cd_pa, tmp)
         del tmp
     else:
         raise('eris type not recognized')
     g[:, ncore:nocc] += g_dm2
+    g_new[ncore:nocc,:ncore] += g_dm2.T[:,:ncore]
+    g_new[nocc:,ncore:nocc] += g_dm2[nocc:,:]
     g_orb = casscf.pack_uniq_var(g - g.T.conj())
+    #g_orb = casscf.pack_uniq_var(g_new-g_new.T.conj())
 
     fock_eff = h1e_mo + vhf_ca
+    print(norm(g_orb))
+    if (norm(g_orb)<0.00001):
+        print('level shift start')
+        print(fock_eff[ncore:nocc,ncore:nocc])
+    # compute a dynamic level shift
+        target = (fock_eff[nocc,nocc] + fock_eff[ncore-1,ncore-1])/2.0
+        active_mean = np.trace(fock_eff[ncore:nocc, ncore:nocc]) / (nocc-ncore)
+        print(active_mean, target, fock_eff[nocc,nocc], fock_eff[ncore-1,ncore-1])
+        g[ncore:nocc, ncore:nocc] += np.eye(nocc-ncore) * (target-active_mean)
+        fock_eff[ncore:nocc,ncore:nocc] += np.eye(nocc-ncore) * (target-active_mean)
+        print(fock_eff[ncore:nocc,ncore:nocc])
+    g_orb = casscf.pack_uniq_var(g - g.T.conj())
 
     # term1 h_ai,bj = (delta_ij F_ab - delta_ab F_ji)
     f_oo = fock_eff[:ncore, :ncore]
     f_vv = fock_eff[nocc:, nocc:]
     f_aa = fock_eff[ncore:nocc, ncore:nocc]
+    print(f_aa)
+     # intermediate for hessian calculation
+    g_tu = lib.einsum('tuvw,vw->tu', casdm2, f_aa)-lib.einsum('tu,vw,vw->tu', casdm1, casdm1, f_aa)
     
-    '''
-    h_diag = np.ones((nmo, nmo), dtype=complex)
-    for v_idx in range(nocc,nmo):
-        for i_idx in range(ncore):
-            h_diag[v_idx, i_idx]=fock_eff[v_idx,v_idx]-fock_eff[i_idx, i_idx]
-    #h_diag[ncore:nocc,:]=1.0
-    # term5 h_ti,uj =
-    # f_ji * (D_ut - delta_tu)
-    inter1 = np.einsum('tuvw,vw->tu',casdm2,f_aa)-casdm1*np.einsum('tu,vw,vw->tu',casdm1,casdm1,f_aa)
-    inter2 = np.einsum('tv,vu->tu', f_aa,casdm1)
-    for a_idx in range(ncore,nocc):
-        for i_idx in range(ncore):
-            h_diag[a_idx,i_idx] = fock_eff[a_idx, a_idx] - fock_eff[i_idx,i_idx]
-            #fock_eff[i_idx,i_idx]*(dm1[a_idx,a_idx]-1.)\
-            #        + fock_eff[a_idx, a_idx] - (inter1+inter2)[a_idx-ncore,a_idx-ncore]
-    # term5 continued
-    # + delta_ij(f_tu-(d_tu,vw-d_ut*d_vw)*f_vw-f_tv*d_vu)
-    # the last two term differs from molpro's expression since molpro
-    # suppose a symmetrized form of 2rdm while we don't.
-    # term 6 h_at,bu=delta_ab(d_tu,vw-d_tu*d_vw)f_vw+d_tu*f_ab
-    #term_6 = np.einsum
-    for v_idx in range(nocc,nmo):
-        for a_idx in range(ncore,nocc):
-            h_diag[v_idx, a_idx]=fock_eff[v_idx,v_idx]-fock_eff[a_idx,a_idx]#dm1[a_idx,a_idx]*fock_eff[v_idx,v_idx]+inter1[a_idx-ncore,a_idx-ncore]
-    #print('part 1', h_diag[nocc:,:ncore])
-    # print('part 2', h_diag[nocc:,ncore:nocc])
-    #h_diag[nocc:, ncore:nocc] = 1.0
-    #print('part 3', h_diag[ncore:nocc,:ncore])
-    h_diag = casscf.pack_uniq_var(h_diag)
-    h_diag[h_diag < 1.0] = 1.0
-    '''
-
     y = lib.einsum('pu,qu->pq', (h1e_mo + vhf_c)[ncore:nocc, ncore:nocc], casdm1)
     h_diag = np.ones((nmo, nmo), dtype=complex)
     for v_idx in range(nocc,nmo):
@@ -274,9 +269,22 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
         f_oo = fock_eff[:ncore, :ncore]
         f_vv = fock_eff[nocc:, nocc:]
         f_aa = fock_eff[ncore:nocc, ncore:nocc]
+        
+        # 1 - n_t - n_t f_tu
+        #f_aa_scaled = 
+        
         f_ov = fock_eff[:ncore, nocc:]
         dm1_aa = dm1[ncore:nocc, ncore:nocc]
         
+        n_tt = dm1_aa.diagonal()
+        m_tt = 1. - dm1_aa.diagonal()
+        n_tt_sqrt = np.sqrt(dm1_aa.diagonal())
+        m_tt_sqrt = np.sqrt(1. - dm1_aa.diagonal())
+
+        one = np.ones((nocc-ncore, nocc-ncore))
+        scale = one - np.einsum('ij,j->ij', one, n_tt) - np.einsum('ij,i->ij', one, n_tt)
+        f_aa_scale = scale * f_aa
+
         norm_gorb = norm(g_orb)
         # core-virtual block
         #sigma = x1 * (h_diag+h_diag.T)
@@ -286,49 +294,70 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
             - lib.einsum('ji,aj->ai', f_oo, x1[nocc:, :ncore]))
         
         # term 2 h_ai,bu = -delta_ab*f_vi*D_vu
+        #sigma[nocc:, :ncore] += lib.einsum(
+        #    'vi,vu,au->ai', fock_eff[ncore:nocc, :ncore], dm1_aa,
+        #    x1[nocc:, ncore:nocc])
         sigma[nocc:, :ncore] += lib.einsum(
-            'vi,vu,au->ai', fock_eff[ncore:nocc, :ncore], dm1_aa,
+            'ui,u,au->ai', fock_eff[ncore:nocc, :ncore], n_tt_sqrt,
             x1[nocc:, ncore:nocc])
 
         # term3 h_ai,uj = delta_ij(f_au-f_av*D_uv)
+        #sigma[nocc:, :ncore] += \
+        #   lib.einsum('au,ui->ai', fock_eff[nocc:, ncore:nocc], x1[ncore:nocc, :ncore])\
+        #    -lib.einsum('av,uv,ui->ai', fock_eff[nocc:, ncore:nocc], dm1_aa, x1[ncore:nocc, :ncore])
         sigma[nocc:, :ncore] += \
-            lib.einsum('au,ui->ai', fock_eff[nocc:, ncore:nocc], x1[ncore:nocc, :ncore])\
-            -lib.einsum('av,uv,ui->ai', fock_eff[nocc:, ncore:nocc], dm1_aa, x1[ncore:nocc, :ncore])
+           lib.einsum('au,u,ui->ai', fock_eff[nocc:, ncore:nocc], m_tt_sqrt, x1[ncore:nocc, :ncore])
         
         # core-active block
         # term5 h_ti,uj =
         # f_ji * (D_ut - delta_tu)
         #sigma[ncore:nocc,:ncore] = x1[ncore:nocc, :ncore] * h_diag[ncore:nocc, :ncore]
-        sigma[ncore:nocc, :ncore] += \
-            lib.einsum('ut,ji,uj->ti', dm1_aa, f_oo, x1[ncore:nocc, :ncore])\
-            - lib.einsum('ji,tj->ti', f_oo, x1[ncore:nocc, :ncore])
+        #sigma[ncore:nocc, :ncore] += \
+        #    lib.einsum('ut,ji,uj->ti', dm1_aa, f_oo, x1[ncore:nocc, :ncore])\
+        #    - lib.einsum('ji,tj->ti', f_oo, x1[ncore:nocc, :ncore])
         ## term5 continued
         # + delta_ij(f_tu-(d_tu,vw-d_ut*d_vw)*f_vw-f_tv*d_uv
         # the last two term differs from molpro's expression since molpro
         # suppose a symmetrized form of 2rdm while we don't.
-        sigma[ncore:nocc, :ncore] +=\
-            (lib.einsum('tu,ui->ti',fock_eff[ncore:nocc, ncore:nocc], x1[ncore:nocc, :ncore])
-            - lib.einsum('tuvw,vw,ui->ti', casdm2, f_aa, x1[ncore:nocc, :ncore])
-            + lib.einsum('ut,vw,vw,ui->ti', dm1_aa, dm1_aa, f_aa, x1[ncore:nocc, :ncore])
-            - lib.einsum('tv,uv,ui->ti', f_aa, dm1_aa, x1[ncore:nocc, :ncore]))
+        #sigma[ncore:nocc, :ncore] +=\
+        #    (lib.einsum('tu,ui->ti',fock_eff[ncore:nocc, ncore:nocc], x1[ncore:nocc, :ncore])
+        #    - lib.einsum('tuvw,vw,ui->ti', casdm2, f_aa, x1[ncore:nocc, :ncore])
+        #    + lib.einsum('ut,vw,vw,ui->ti', dm1_aa, dm1_aa, f_aa, x1[ncore:nocc, :ncore])
+        #    - lib.einsum('tv,uv,ui->ti', f_aa, dm1_aa, x1[ncore:nocc, :ncore]))
 
+        sigma[ncore:nocc, :ncore] +=\
+            lib.einsum('t,u,tu,ui->ti', m_tt_sqrt, m_tt_sqrt, f_aa_scale-g_tu, x1[ncore:nocc,:ncore])\
+            -lib.einsum('ij,tj->ti', f_oo, x1[ncore:nocc, :ncore])
+        #sigma[ncore:nocc, :ncore] +=\
+        #    (lib.einsum('tu,ui->ti',f_aa, x1[ncore:nocc, :ncore])
+        #    - lib.einsum('tu,ui->ti', g_tu, x1[ncore:nocc, :ncore])
+        #    - lib.einsum('ij,ti->tj',f_oo, x1[ncore:nocc, :ncore]))
+        
         # adjoint of term 3 h_ti,bj x_bj->sigma_ti
         sigma[ncore:nocc,:ncore] += \
-            lib.einsum('au,ai->ui', fock_eff[nocc:, ncore:nocc], x1[nocc:,:ncore]) \
-           -lib.einsum('av,uv,ai->ui', fock_eff[nocc:, ncore:nocc], dm1_aa, x1[nocc:,:ncore])
+            lib.einsum('t,at,ai->ti', m_tt_sqrt, fock_eff[nocc:,ncore:nocc], x1[nocc:,:ncore])
+        #    lib.einsum('au,ai->ui', fock_eff[nocc:, ncore:nocc], x1[nocc:,:ncore]) \
+        #   -lib.einsum('av,uv,ai->ui', fock_eff[nocc:, ncore:nocc], dm1_aa, x1[nocc:,:ncore])
 
         # virtual-active block
         # adjoint of term2
         # h_bu,ai = -delta_ab * f_vi*D_vu
-        sigma[nocc:,ncore:nocc] -= lib.einsum('vi,vu,ai->au', fock_eff[ncore:nocc, :ncore], dm1_aa, x1[nocc:,:ncore])
-
+        #sigma[nocc:,ncore:nocc] -= lib.einsum('vi,vu,ai->au', fock_eff[ncore:nocc, :ncore], dm1_aa, x1[nocc:,:ncore])
+        sigma[nocc:,ncore:nocc] -= lib.einsum('ui,u,ai->au', fock_eff[ncore:nocc, :ncore], n_tt_sqrt, x1[nocc:,:ncore])
         # term4 h_ti,bu = 0
         
         #term 6 h_at,bu=delta_ab(d_tu,vw-d_tu*d_vw)f_vw+d_tu*f_ab
         #sigma[nocc:,ncore:nocc] = x1[nocc:,ncore:nocc] * h_diag[nocc:,ncore:nocc]
-        sigma[nocc:, ncore:nocc] += lib.einsum('tuvw,vw,au->at', casdm2, f_aa, x1[nocc:, ncore:nocc])\
-            -lib.einsum('tu,vw,vw,au->at', dm1_aa, dm1_aa, f_aa, x1[nocc:, ncore:nocc])\
-            +lib.einsum('tu,ab,bu->at', dm1_aa, f_vv, x1[nocc:, ncore:nocc])
+        #sigma[nocc:, ncore:nocc] += lib.einsum('tu,au->at', g_tu, x1[nocc:, ncore:nocc])\
+        #    -lib.einsum('tu,vw,vw,au->at', dm1_aa, dm1_aa, f_aa, x1[nocc:, ncore:nocc])\
+        #    +lib.einsum('tu,ab,bu->at', dm1_aa, f_vv, x1[nocc:, ncore:nocc])
+        sigma[nocc:, ncore:nocc] += lib.einsum('tu,t,u,au->at', g_tu, n_tt_sqrt, n_tt_sqrt, x1[nocc:, ncore:nocc])\
+            +lib.einsum('ab,bu->au', f_vv, x1[nocc:, ncore:nocc])
+        
+        # normalization factor in toru's code
+        
+        #sigma[ncore:nocc, :ncore] = lib.einsum('ti,t->ti', sigma[ncore:nocc, :ncore], n_tt)
+        #sigma[nocc:, ncore:nocc] = lib.einsum('at,t->at', sigma[nocc:, ncore:nocc], m_tt)
         return casscf.pack_uniq_var(sigma)
 
     n_uniq_var = g_orb.shape[0]
@@ -367,7 +396,7 @@ from socutils.mcscf.hf_superci import precondition_grad, postprocess_x
 
 def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, conv_tol=None, conv_tol_grad=None,
                   verbose=logger.INFO, cderi=None):
-    bfgs = True
+    bfgs = False 
     log = logger.new_logger(mc, verbose)
     cput0 = (logger.process_clock(), logger.perf_counter())
     if conv_tol is None:
@@ -401,6 +430,8 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, conv_tol=None, conv_tol_grad=N
 
     t1m = log.timer('Initializing Super-CI based MCSCF', *cput0)
     casdm1, casdm2 = mc.fcisolver.make_rdm12(fcivec, ncas, mc.nelecas)
+    
+    norm_rot = 0.0
     norm_ddm = 1e2
     casdm1_prev = casdm1_last = casdm1
     t3m = t2m = log.timer('CAS DM', *t1m)
@@ -412,15 +443,21 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, conv_tol=None, conv_tol_grad=N
     g_prev = None
     x_prev = None
     rejected = False
-    trust_radii = 1.0
+    trust_radii = max_stepsize
     e_last = e_tot
     dr = None
     while not conv and imacro < mc.max_cycle_macro:
         g, h_diag, hop, precond = gen_g_hop(mc, mo, casdm1, casdm2, eris)
+        norm_gorb = norm(g)
+        print(
+            f'Iter {imacro:3d}: E = {e_tot:20.15f}  dE = {de:12.10f}' +
+            f'  norm(grad) = {norm_gorb:8.6f} step_size = {norm_rot:8.6f}'
+        )
+        t2m = log.timer('Compute gradient', *t2m)
         norm_gorb = np.linalg.norm(g)
         g_unpack = mc.unpack_uniq_var(g)
 
-        if abs(de) < conv_tol and norm_gorb < conv_tol_grad:
+        if abs(de) < conv_tol or norm_gorb < conv_tol_grad:
             conv = True
         if conv:
             break
@@ -433,35 +470,36 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, conv_tol=None, conv_tol_grad=N
                 self.niter = 0
                 self.callbacks = []
                 self.timer = (logger.process_clock(), logger.perf_counter())
+                self.log = logger.Logger(sys.stdout, verbose)
             def __call__(self, rk=None):
                 self.callbacks.append(str(rk))
                 self.niter += 1
                 if self._disp:
-                    print(f'GMRES iteration No. {self.niter} residueal = {rk:.4e}')
-                    self.timer = logger.timer('GMRES', *self.t0)
+                    self.timer = self.log.timer(f'GMRES iteration #{self.niter}, residual : {rk:.4e}', *self.timer)
         if verbose >= logger.DEBUG:
             counter = gmres_counter()
         else:
             counter = None
         t_gmres = (logger.process_clock(), logger.perf_counter())
+        BFGS_SUBSPACE=10
         if imacro > 0:
-            bfgs_on = 0.2
+            bfgs_on = 0.05
             if not rejected and norm_gorb < bfgs_on:
                 ys.append(g - g_prev)
                 xs.append(x_prev)
                 rhos.append(np.dot(ys[-1].conj(), xs[-1]).real)
-            if len(ys) > 10:
+            if len(ys) > BFGS_SUBSPACE:
                 ys.pop(0)
                 xs.pop(0)
                 rhos.pop(0)
-            if bfgs is True and norm_gorb < bfgs_on:
-                gbar, a = precondition_grad(g, xs, ys, rhos)
-            x, _ = gmres(hop, -trust_radii * gbar, M=precond, maxiter=20, callback=counter)
-            if bfgs is True and norm_gorb < bfgs_on:
-                x = postprocess_x(x, xs, ys, rhos, a)
+            if bfgs is True and norm_gorb < bfgs_on and norm_gorb > 1e-4:
+                gbar, a = precondition_grad(g, xs, ys, rhos, bfgs_space=BFGS_SUBSPACE)
+            x, _ = gmres(hop, -gbar*trust_radii, M=precond, maxiter=50, callback=counter)
+            if bfgs is True and norm_gorb < bfgs_on and norm_gorb > 1e-3:
+                x = trust_radii*postprocess_x(x, xs, ys, rhos, a, bfgs_space=BFGS_SUBSPACE)
         else:
-            x, _ = gmres(hop, -trust_radii * gbar, M=precond, maxiter=20, callback=counter)
-        log.timer('Solving Super-CI equation', *t_gmres)
+            x, _ = gmres(hop, -trust_radii * gbar, M=precond, maxiter=50, callback=counter)
+        t2m = log.timer('Solving Super-CI equation', *t_gmres)
 
         dr = mc.unpack_uniq_var(x)
         step_control=max_stepsize
@@ -470,6 +508,14 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, conv_tol=None, conv_tol_grad=N
             dr = dr*(step_control/norm(dr))
         rotation = expmat(dr)
 
+        norm_rot = np.linalg.norm(dr)
+        g_unpack = mc.unpack_uniq_var(g)
+        row, col = np.unravel_index(np.argmax(g_unpack), g_unpack.shape)
+        if mc.irrep is not None:
+            print(f'{row}, {col}, {g_unpack[row,col].real:8.6f}, {dr[row,col].real:8.6f}, {mc.irrep[row]}, {mc.irrep[col]}')
+        else:
+            print(f'{row}, {col}, {g_unpack[row,col].real:8.6f}, {dr[row,col].real:8.6f}')
+        
         #if mc.irrep is None:
         #    rotation = ensure_kramers(rotation)
         #print(np.where(abs(rotation-1.0)>0.01), rotation[abs(rotation-1.0)>0.01])
@@ -478,31 +524,40 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, conv_tol=None, conv_tol_grad=N
         # e_tot, e_cas, fcivec, _, _ = mci.kernel(mo)
         #eris = zmc_ao2mo._ERIS(mc, mo_new, level=2)
         eris = zmc_ao2mo._CDERIS(mc, mo_new, cderi=cderi)
+        t2m = log.timer('update eris', *t2m)
         mci = zmcscf._fake_h_for_fast_casci(mc, mo_new, eris)
         e_tot, e_cas, fcivec = mci.kernel(mo_new, ci0=None, verbose=verbose)
 
         # trus radius control
-        de = e_tot - e_last
+        #g_new, h_diag, hop, precondition = gen_g_hop(mc, mo_new, casdm1, casdm2, eris)
+        #dg = norm(g_new) - norm(g)
+        de = e_tot - e_last #+ dg * .1
         e2 = 0.5 * np.dot(x.T.conj(), g)
         r = de/e2
 
-        #print(f'Energy change {de:.4e}, predicted change {e2:.4e}')
-        #if de > 1e-3:
-        #    trust_radii *= 0.7
-        #    print(f'step rejected, shrink trust radius to {trust_radii:.4f}')
-        #    rejected=True
-        #    continue
-        #if r < 0.25 and de < 0.0:
-        #    trust_radii *= 0.7
-        #    print(f'r value too small, shrink the trust radius {trust_radii:.4f}')
-        #elif r > 0.75 and de < 0.0:
-        #    if trust_radii < 1.0:
-        #        trust_radii *= 1.25
-        #    print(f'r value pretty large, we can uplift the trust radius {trust_radii:.4f}')
-        #else:
-        #    print(f'normal step')
-        #if trust_radii < 1e-1:
-        #    trust_radii = 1e-1
+        print(f'Energy change {de:.4e}, predicted change {e2:.4e}')
+        '''
+        if de > 1e-3*max_stepsize:
+            trust_radii *= 0.7
+            print(f'step rejected, shrink trust radius to {trust_radii:.4f}')
+            rejected=True
+            continue
+        elif de > 0.0:
+            trust_radii *= 0.7
+            print(f'Energy rises by {de:.4e}, accept step but shrik trust radius to {trust_radii:.4f}')
+        elif r < 0.25: #and de < 0.0:
+            trust_radii *= 0.7
+            print(f'r value too small, shrink the trust radius {trust_radii:.4f}')
+        elif r > 0.75 and de < 0.0:
+            if trust_radii < 1.0:
+                trust_radii *= 1.25
+            print(f'r value pretty large, we can uplift the trust radius {trust_radii:.4f}')
+        else:
+            print(f'normal step, trust radius now is {trust_radii:.4f}')
+        if trust_radii < 1e-2*max_stepsize:
+            trust_radii = 1e-2*max_stepsize
+            rejected=False
+        '''
         #print(trust_radii)
         #dr[::2,::2] = dr[1::2,1::2]
         #dr[::2,1::2] = dr[1::2,::2]
@@ -515,10 +570,10 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, conv_tol=None, conv_tol_grad=N
             print(f'{row}, {col}, {g_unpack[row,col].real:8.6f}, {dr[row,col].real:8.6f}, {mc.irrep[row]}, {mc.irrep[col]}')
         else:
             print(f'{row}, {col}, {g_unpack[row,col].real:8.6f}, {dr[row,col].real:8.6f}')
-        print(
-            f'Iter {imacro:3d}: E = {e_tot:20.15f}  dE = {de:12.10f}' +
-            f'  norm(grad) = {norm_gorb:8.6f} step_size = {norm_rot:8.6f}'
-        )
+        #print(
+        #    f'Iter {imacro:3d}: E = {e_tot:20.15f}  dE = {de:12.10f}' +
+        #    f'  norm(grad) = {norm_gorb:8.6f} step_size = {norm_rot:8.6f}'
+        #)
         nvar = rotation.shape[0]
         for i in range(nvar):
             if abs(rotation[i,i])>1.01 or abs(rotation[i,i]) < 0.99:
@@ -554,6 +609,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, conv_tol=None, conv_tol_grad=N
         '''
         #casdm1, casdm2 = mc.fcisolver.make_rdm12(fcivec, ncas, mc.nelecas, verbose=verbose)
         imacro += 1
+        t1m = log.timer('macro iter %d'%imacro, *t1m)
         if verbose >= logger.INFO:
             mc.e_tot = e_tot
             mc.e_cas = e_cas

@@ -81,8 +81,8 @@ def precondition_grad(grad, xs, ys, rhos, bfgs_space=10):
         i = niter-ii-1
         a[i] = np.dot(xs[i].conj(), gbar).real / rhos[i]
         gbar = gbar - ys[i] * a[i]
-        #print(f'precond_grad, {ii}, {i}, {np.linalg.norm(gbar):.4e}, {np.linalg.norm(xs[i]):.4f} {np.linalg.norm(ys[i]):.4f}, {rhos[i]:.4f}, {a[i]:.4e}, {np.dot(xs[i].conj(), gbar).real:.4e} ')
-    print(f'{len(ys)} {len(xs)} {np.linalg.norm(gbar-grad)} bfgs precond')
+        print(f'precond_grad, {ii}, {i}, {np.linalg.norm(gbar):.4e}, {np.linalg.norm(xs[i]):.4e} {np.linalg.norm(ys[i]):.4e}, {rhos[i]:.4e}, {a[i]:.4e}')
+    print(f'grad: {np.linalg.norm(grad):.4e}, bfgs grad: {np.linalg.norm(gbar):.4e} change: {np.linalg.norm(gbar-grad):.4e}')
     return gbar, a
 
 
@@ -92,10 +92,10 @@ def postprocess_x(xbar, xs, ys, rhos, a, bfgs_space=10):
     xorig = xbar.copy()
     for i in range(niter):
         b = np.dot(ys[i].conj(), xbar).real / rhos[i]
-        #print(f'postprocess {a[i]:.4e}, {b:.4e}, {np.linalg.norm(xs[i]):.4f}')
+        print(f'postprocess iter {i} {a[i]:.4e}, {b:.4e}, {np.linalg.norm(xs[i]):.4f}')
         xbar = xbar - xs[i] * (a[i] - b)
     print(f'bfgs post {np.linalg.norm(xorig-xbar):.4e}, {np.linalg.norm(xorig):.4e}')
-    return xbar
+    return 0.5*xbar
 
 def rhf_superci(mf, dm0=None, conv_tol=1e-10, conv_tol_grad=None):
     mol = mf.mol

@@ -49,7 +49,8 @@ def kernel(method, dm=None, Xresp=True):
     a, e, x, st, r, l, h4c, m4c = x2c_grad.x2c1e_hfw0(t, v, w, s)
 
     if Xresp:
-        int_2c = x2c_grad.get_hfw1(a, x, st, m4c, h4c, e, r, l, int_4c)
+        int_2c = method.with_x2c.get_hfw1(int_4c)
+        #int_2c = x2c_grad.get_hfw1(a, x, st, m4c, h4c, e, r, l, int_4c)
     else:
         from socutils.somf.eamf import to_2c
         int_2c = to_2c(x, r, int_4c)
@@ -83,7 +84,8 @@ if __name__ == '__main__':
     mol.build()
 
     mf = spinor_hf.SymmJHF(mol, symmetry='linear', occup={'1/2':[4],'-1/2':[4],'3/2':[1]})
-    mf.with_x2c = amf.SpinorX2CAMFHelper(mol,with_gaunt=False,with_breit=False,with_aoc=False)
-    #mf.with_x2c = eamf.SpinorEAMFX2CHelper(mol, eamf='eamf', with_gaunt=False, with_breit=False, with_aoc=True)
+    #mf.with_x2c = amf.SpinorX2CAMFHelper(mol,with_gaunt=False,with_breit=False,with_aoc=False)
+    mf.with_x2c = eamf.SpinorEAMFX2CHelper(mol, eamf='x2camf', with_gaunt=False, with_breit=False, with_aoc=True)
+    #mf.with_x2c = eamf.SpinorEAMFX2CHelper(mol, eamf='x2camf', with_gaunt=False, with_breit=False, with_aoc=True)
     mf.kernel()
-    mf.EffectiveField(Xresp=True)
+    mf.EffectiveField(Xresp=False)

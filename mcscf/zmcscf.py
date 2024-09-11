@@ -1,11 +1,29 @@
 import scipy
 import numpy
+from functools import reduce
 from pyscf import __config__
 from pyscf.lib import logger
 
+from socutils.scf import spinor_hf
 from . import zcasbase, zcasci
 from .zmc_ao2mo import chunked_cholesky
 from .zmc_superci import mcscf_superci
+
+def eig(h, irrep=None):
+    if irrep is None:
+        e, c = scipy.linalg.eigh(h)
+    else:
+        ir_set = numpy.unique(irrep)
+        e = numpy.zeros(h.shape[1])
+        c = numpy.zeros(h.shape, dtype=complex)
+        for ir in ir_set:
+            ir_idx = numpy.where(irrep == ir)[0]
+            print(ir_idx)
+            hi = h[numpy.ix_(ir_idx, ir_idx)]
+            ei, ci = scipy.linalg.eigh(hi)
+            e[ir_idx] = ei
+            c[numpy.ix_(ir_idx,ir_idx)] = ci
+    return e, c
 
 def expmat(a):
     return scipy.linalg.expm(a)
@@ -20,6 +38,75 @@ def _fake_h_for_fast_casci(casscf, mo, eris):
     mc.get_h2eff = lambda *args: eris.aaaa
     return mc
 
+def get_fock(mc, mo_coeff=None, ci=None, eris=None, casdm1=None, verbose=None):
+    if ci is None: ci = mc.ci
+    if mo_coeff is None: mo_coeff = mc.mo_coeff
+    nmo = mo_coeff.shape[1]
+    ncore = mc.ncore
+    ncas = mc.ncas
+    nocc = ncore + ncas
+    nelecas = mc.nelecas
+
+    if casdm1 is None:
+        casdm1 = mc.fcisolver.make_rdm1(ci, ncas, nelecas)
+    dm_core = numpy.dot(mo_coeff[:,:ncore], mo_coeff[:,:ncore].conj().T)
+    mocas = mo_coeff[:,ncore:nocc]
+    dm = dm_core + reduce(numpy.dot, (mocas, casdm1, mocas.conj().T))
+    vj, vk = mc._scf.get_jk(mc.mol, dm)
+    fock = mc.get_hcore() + vj - vk
+    return fock
+
+def canonicalize(mc, mo_coeff=None, ci=None, eris=None, sort=False,     
+                 cas_natorb=False, casdm1=None, verbose=logger.NOTE):
+    log = logger.new_logger(mc, verbose)
+    if mo_coeff is None: mo_coeff = mc.mo_coeff
+    if ci is None: ci = mc.ci
+    if casdm1 is None:
+        casdm1 = mc.fcisolver.make_rdm1(ci, mc.ncas, mc.nelecas)
+    
+    ncore = mc.ncore
+    nocc = ncore + mc.ncas
+    nmo = mo_coeff.shape[1]
+    fock_ao = mc.get_fock(mo_coeff, ci, eris, casdm1, verbose)
+
+    if cas_natorb:
+        raise NotImplementedError
+    else:
+        mo_coeff1 = mo_coeff.copy()
+        log.info('Density matrix diagonal elements %s', casdm1.diagonal())
+
+    mo_energy = numpy.einsum('pi,pi->i', mo_coeff.conj(), fock_ao.dot(mo_coeff1))
+
+    irs = numpy.unique(mc.irrep)
+
+    def _diag_subfock_(idx):
+        if idx.size > 1:
+            c = mo_coeff1[:,idx]
+            fock = reduce(numpy.dot, (c.conj().T, fock_ao, c))
+            ovlp = numpy.eye(idx.size, dtype=complex)
+            w, c = eig(fock, irrep=mc.irrep[idx])
+
+            mo_coeff1[:,idx] = mo_coeff1[:,idx].dot(c)
+            mo_energy[idx] = w
+
+    mask = numpy.ones(nmo, dtype=bool)
+    frozen = getattr(mc, 'frozen', None)
+    #if frozen is not None:
+    
+    #    if isinstance(frozen, (int, numpy.integer)):
+    #        mask[:frozen] = False
+    #    else:
+    #        mask[frozen] = False
+    core_idx = numpy.where(mask[:ncore])[0]
+    vir_idx = numpy.where(mask[nocc:])[0] + nocc
+    act_idx = numpy.where(mask[ncore:nocc])[0] + ncore
+    #_diag_subfock_(core_idx)
+    #_diag_subfock_(vir_idx)
+    _diag_subfock_(act_idx)
+
+    return mo_coeff1, ci, mo_energy
+
+
 class CASSCF(zcasci.CASCI):
 
     max_cycle_macro = getattr(__config__, 'mcscf_mc1step_CASSCF_max_cycle_macro', 20)
@@ -32,8 +119,14 @@ class CASSCF(zcasci.CASCI):
         self.max_stepsize = 0.2
         self.conv_tol = 1e-8
         self.conv_tol_grad = None
+        self.freeze_pair = None
 
-    def uniq_var_indices(self, nmo, ncore, ncas, frozen, freeze_pair=None):
+    def get_fock(self, mo_coeff=None, ci=None, eris=None, casdm1=None, verbose=None):
+        return get_fock(self, mo_coeff, ci, eris, casdm1, verbose)
+
+    canonicalize = canonicalize
+
+    def uniq_var_indices(self, nmo, ncore, ncas, frozen):
         nocc = ncore + ncas
         mask = numpy.zeros((nmo,nmo),dtype=bool)
         mask[ncore:nocc,:ncore] = True
@@ -45,6 +138,14 @@ class CASSCF(zcasci.CASCI):
         #     # Allow rotation only if extra symmetry labels are the same
         #     extrasym_allowed = extrasym.reshape(-1, 1) == extrasym
         #     mask = mask * extrasym_allowed
+        if self.freeze_pair is not None:
+            freeze_pair = self.freeze_pair
+            set_i = freeze_pair[0]
+            set_j = freeze_pair[1]
+            for i in set_i:
+                for j in set_j:
+                    mask[i,j] = False
+                    mask[j,i] = False
         if frozen is not None:
             if isinstance(frozen, (int, numpy.integer)):
                 mask[:frozen] = mask[:,:frozen] = False
@@ -76,7 +177,7 @@ class CASSCF(zcasci.CASCI):
         ncore = self.ncore
         nocc = self.ncore + self.ncas
         #print(idx[nocc:, :ncore])
-        #print(idx[:ncore,nocc:])
+        #print(idx[:ncore,fnocc:])
         return self.screen_irrep(mat)[idx]
 
     # to anti symmetric matrix

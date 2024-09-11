@@ -41,5 +41,5 @@ class Spinor_DFT(dks.KohnShamDFT, spinor_hf.SpinorSCF):
         mf.converged = False
         return mf
 
-UKS = Spinor_DFT
+UKS = SpinorDFT
 

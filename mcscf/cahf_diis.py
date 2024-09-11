@@ -8,7 +8,7 @@ from pyscf.mcscf import addons
 from pyscf.lib import logger
 
 
-def mc_diis(mc, mo_coeff, mo_cap=None, conv_tol=None, conv_tol_grad=None, active_index=None, verbose=logger.INFO, subspace=None, cderi=None, diis_start=1000, damp_factor=0.5, trace_orbital=True):
+def mc_diis(mc, mo_coeff, mo_cap=None, conv_tol=None, conv_tol_grad=None, active_index=None, verbose=logger.INFO, subspace=None, cderi=None, diis_start=10, damp_factor=0.75, trace_orbital=True):
     t1m = t2m = t3m = (logger.process_clock(), logger.perf_counter())
     log= logger.new_logger(mc, verbose)
     cput0 = (logger.process_clock(), logger.perf_counter())
