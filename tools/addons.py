@@ -1,6 +1,6 @@
 import re
 # assumes only primitives
-def add_diffuse(bas, angular=[0,1,2], expand=1):
+def add_diffuse(bas, angular=[0,1,2], expand=1, multiplier=2.5):
     for ang in angular:
         prim_list = []
         for prim in bas:
@@ -8,7 +8,7 @@ def add_diffuse(bas, angular=[0,1,2], expand=1):
                 prim_list.append(prim[-1][0])
         prim_min = min(prim_list)
         for iexpand in range(expand):
-            bas.append([ang,[prim_min*(1./2.5)**(iexpand+1),1.0]])
+            bas.append([ang,[prim_min*(1./multiplier)**(iexpand+1),1.0]])
     return bas
 def construct_configuration(sph_irrep,configuration='2s1s'):
     angulars = ['s','p','d','f','g','h','i']
