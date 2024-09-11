@@ -187,6 +187,7 @@ class SpinorX2CAMFHelper(x2c.SpinorX2CHelper):
         xmol, contr_coeff_nr = self.get_xmol()
         hcore = x2c.X2C.get_hcore(self, self.mol)
         soc_matrix = self.get_soc_integrals()
+        self.soc_matrix = soc_matrix
 
         return hcore + soc_matrix
 

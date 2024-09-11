@@ -103,6 +103,8 @@ def eamf(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, nu
     h1e_4c = mf_4c.get_hcore()
     s4c = mf_4c.get_ovlp()
     print('amf_type', x2cobj.amf_type)
+    x2cobj.h4c = h1e_4c
+    x2cobj.m4c = s4c
     if x2cobj.amf_type == 'eamf':
         density_4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 11), atom_slices, xmol, n2c, True)
         density_2c = construct_molecular_matrix(extract_ith_integral(atm_ints, 12), atom_slices, xmol, n2c, False)
@@ -112,8 +114,12 @@ def eamf(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, nu
         x, st, r, h2c = x2c1e_hfw0_4cmat(fock_4c, s4c, xmol)
         mf_2c = scf.X2C(xmol)
         veff_2c = mf_2c.get_veff(dm=density_2c)
+        x2cobj.veff_2c=veff_2c
         heff = to_2c(x, r, fock_4c) - veff_2c
+        x2cobj.h4c = h1e_4c + veff_4c
+        x2cobj.soc_matrix = heff - to_2c(x, r, h1e_4c)
         return heff
+        #, density_4c, density_2c
 
         #e, a = scipy.linalg.eigh(h1e_4c, s4c)
         #test = reduce(np.dot, (a.T.conj(), veff_4c, a)).diagonal()
@@ -143,6 +149,22 @@ def eamf(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, nu
         #print(max(test[:n2c]), np.argmax(test[:n2c]))
         #print(max(test[n2c:]), np.argmax(test[n2c:]))
         #exit()
+    elif x2cobj.amf_type == 'eamf_x1e':
+        density_4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 11), atom_slices, xmol, n2c, True)
+        density_2c = construct_molecular_matrix(extract_ith_integral(atm_ints, 12), atom_slices, xmol, n2c, False)
+        vj_4c, vk_4c= mf_4c.get_jk(dm=density_4c)
+        veff_4c = vj_4c - vk_4c
+        fock_4c = h1e_4c + veff_4c
+        x, st, r, h2c = x2c1e_hfw0_4cmat(h1e_4c, s4c, xmol)
+        mf_2c = scf.X2C(xmol)
+        veff_2c = mf_2c.get_veff(dm=density_2c)
+        x2cobj.veff_2c=veff_2c
+        heff = to_2c(x, r, h1e_4c) - veff_2c
+        h1e_x2c = to_2c(x, r, h1e_4c)
+        x2cobj.h4c = h1e_4c
+        x2cobj.soc_matrix = to_2c(x, r, veff_4c) - veff_2c
+        heff = h1e_x2c + x2cobj.soc_matrix
+        return heff
     elif 'aimp_1x' in x2cobj.amf_type:
         print('aimp_1x')
         density_4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 11), atom_slices, xmol, n2c, True)
@@ -187,6 +209,7 @@ def eamf(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, nu
         pcc_matrix = x2camf.amfi(x2cobj, printLevel=x2cobj.verbose, with_gaunt=gaunt, with_gauge=breit,
                      with_gaunt_sd=x2cobj.gaunt_sd, aoc=aoc, pcc=x2cobj.pcc, gaussian_nuclear=x2cobj.gau_nuc)
         h_x2c = to_2c(x, r, h1e_4c) + pcc_matrix
+        x2cobj.soc_matrix=pcc_matrix
         return h_x2c
         e, a = scipy.linalg.eigh(h1e_4c, s4c)
         test = reduce(np.dot, (a.T.conj(), atm_jk, a)).diagonal()
@@ -246,19 +269,21 @@ def eamf(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, nu
     elif x2cobj.amf_type == 'cq_amf':
         # results{0 atm_X, 1 atm_R, 2 h1e_4c, 3 fock_4c, 4 fock_2c, 5 fock_4c_2e, 
         #         6 fock_2c_2e, 7 fock_4c_K, 8 fock_2c_K, 9 so_4c, 10 so_2c, 11 den_4c, 12 den_2c};
-        atm_fock = construct_molecular_matrix(extract_ith_integral(atm_ints, 3), atom_slices, xmol, n2c, True)
-        atm_h1e  = construct_molecular_matrix(extract_ith_integral(atm_ints, 2), atom_slices, xmol, n2c, True)
-        atm_so2c = construct_molecular_matrix(extract_ith_integral(atm_ints, 10), atom_slices, xmol, n2c, False)
-        atm_so4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 9), atom_slices, xmol, n2c, True)
-        n2c = atm_fock.shape[0]//2
-        for i in range(n2c):
-            print(atm_fock[i,i], atm_fock[i+n2c,i+n2c])
-        atm_jk = atm_fock - atm_h1e
-        print(atm_jk)
+        #atm_fock = construct_molecular_matrix(extract_ith_integral(atm_ints, 3), atom_slices, xmol, n2c, True)
+        #atm_h1e  = construct_molecular_matrix(extract_ith_integral(atm_ints, 2), atom_slices, xmol, n2c, True)
+        #atm_so2c = construct_molecular_matrix(extract_ith_integral(atm_ints, 10), atom_slices, xmol, n2c, False)
+        #atm_so4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 9), atom_slices, xmol, n2c, True)
+        #n2c = atm_fock.shape[0]//2
+        #for i in range(n2c):
+        #    print(atm_fock[i,i], atm_fock[i+n2c,i+n2c])
+        #atm_jk = atm_fock - atm_h1e
+        #print(atm_jk)
         x, st, r, h2c = x2c1e_hfw0_4cmat(h1e_4c, s4c, mol=xmol)
         soc_matrix = x2camf.amfi(x2cobj, printLevel=x2cobj.verbose, with_gaunt=gaunt, with_gauge=breit,
-                     with_gaunt_sd=x2cobj.gaunt_sd, aoc=aoc, pcc=True, gaussian_nuclear=x2cobj.gau_nuc)
+                     with_gaunt_sd=x2cobj.gaunt_sd, aoc=aoc, pcc=pcc, gaussian_nuclear=x2cobj.gau_nuc)
+        x2cobj.soc_matrix = soc_matrix
         h_x2c = to_2c(x, r, h1e_4c) + soc_matrix
+
         return h_x2c
     elif x2cobj.amf_type == '1e_amf':
         # results{0 atm_X, 1 atm_R, 2 h1e_4c, 3 fock_4c, 4 fock_2c, 5 fock_4c_2e, 
@@ -370,6 +395,7 @@ def eamf(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, nu
     elif x2cobj.amf_type == 'x2camf':
         x, st, r, h2c = x2c1e_hfw0_4cmat(h1e_4c, s4c)
         so_2c = construct_molecular_matrix(extract_ith_integral(atm_ints, 10), atom_slices, xmol, n2c, False)
+        x2cobj.soc_matrix = so_2c
         return to_2c(x, r, h1e_4c) + so_2c
     elif x2cobj.amf_type == 'x2camf_sd':
         x, st, r, h2c = x2c1e_hfw0_4cmat(h1e_4c, s4c)
@@ -397,11 +423,13 @@ def eamf(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, nu
         atm_x = construct_molecular_matrix(extract_ith_integral(atm_ints, 0), atom_slices, xmol, n2c, False)
         so_2c = construct_molecular_matrix(extract_ith_integral(atm_ints, 10), atom_slices, xmol, n2c, False)
         r = x2cobj._get_rmat(atm_x)
+        x2cobj.soc_matrix = so_2c
         return to_2c(atm_x, r, h1e_4c) + so_2c
     elif x2cobj.amf_type == 'x2camf_au':
         atm_x = construct_molecular_matrix(extract_ith_integral(atm_ints, 0), atom_slices, xmol, n2c, False)
         atm_r = construct_molecular_matrix(extract_ith_integral(atm_ints, 1), atom_slices, xmol, n2c, False)
         so_2c = construct_molecular_matrix(extract_ith_integral(atm_ints, 10), atom_slices, xmol, n2c, False)
+        x2cobj.soc_matrix = so_2c
         return to_2c(atm_x, atm_r, h1e_4c) + so_2c
 
 class SpinorEAMFX2CHelper(x2c.x2c.SpinorX2CHelper):
@@ -415,6 +443,10 @@ class SpinorEAMFX2CHelper(x2c.x2c.SpinorX2CHelper):
         self.aoc = with_aoc
         self.amf_type = eamf # use this class to implement various flavors of approximations.
         self.nucmod = mol.nucmod
+        self.h4c = None
+        self.m4c = None
+        self.veff_2c = None
+        self.soc_matrix = None
         if self.nucmod != {}:
             self.gau_nuc = True
         else:
@@ -437,7 +469,22 @@ class SpinorEAMFX2CHelper(x2c.x2c.SpinorX2CHelper):
 
     def load_hcore(self, filename='eamf.chk'):
         self.hcore = chkfile.load(filename, 'eamf_integral')
-    
+
+    def get_hfw1(self, h4c1, s4c1=None):
+        if self.h4c is None:
+            self.get_hcore()
+        n4c = self.h4c.shape[0]
+        n2c = n4c//2
+        hLL = self.h4c[:n2c,:n2c]
+        hLS = self.h4c[:n2c,n2c:]
+        hSL = self.h4c[n2c:,:n2c]
+        hSS = self.h4c[n2c:,n2c:]
+        sLL = self.m4c[:n2c,:n2c]
+        sSS = self.m4c[n2c:,n2c:]
+
+        a, e, x, st, r, l, h4c, m4c = x2c_grad.x2c1e_hfw0_block(hLL, hSL, hLS, hSS, sLL, sSS)
+        return x2c_grad.get_hfw1(a, x, st, m4c, h4c, e, r, l, h4c1, s4c1)
+
 if __name__ == '__main__':
     mol = gto.M(atom = 'Ne 0 0 0; Ar 0 0 1.8', basis='uncccpvdz', verbose=5)
     x2cobj = SpinorEAMFX2CHelper(mol, with_gaunt=True, with_breit=True)
