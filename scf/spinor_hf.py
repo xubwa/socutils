@@ -8,7 +8,7 @@ from pyscf.gto import mole
 from pyscf.lib import logger
 from pyscf.scf import hf, dhf, ghf, _vhf
 import re
-from zquatev import solve_KR_FCSCE as eigkr
+# from zquatev import solve_KR_FCSCE as eigkr
 
 def symmetry_label(mol, symmetry=None):
     if symmetry is None:
@@ -309,8 +309,8 @@ class SpinorSCF(hf.SCF):
         if chkfile is None: chkfile = self.chkfile
         return init_guess_by_chkfile(self.mol, chkfile, project=project)
 
-    def _eigh(self, h, s):
-        return eigkr(self.mol, h, s, debug=False)
+    # def _eigh(self, h, s):
+    #     return eigkr(self.mol, h, s, debug=False)
 
     @lib.with_doc(get_hcore.__doc__)
     def get_hcore(self, mol=None):

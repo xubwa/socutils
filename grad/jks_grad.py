@@ -344,4 +344,4 @@ class Gradients(jhf_grad.Gradients):
 Grad = Gradients
 
 from pyscf import socutils
-socutils.dft.Spinor_DFT.Gradients = lib.class_as_method(Gradients)
+socutils.dft.SpinorDFT.Gradients = lib.class_as_method(Gradients)

@@ -11,7 +11,7 @@ mol = gto.M(verbose=4,
                   [  1, (0.,  1.42993701,  0.98326612)]],
             basis='unc-ccpvdz',
             unit='Bohr')
-mf = socdft.Spinor_DFT(mol, xc='b3lyp')
+mf = socdft.SpinorDFT(mol, xc='b3lyp')
 mf.with_x2c = amf.SpinorX2CAMFHelper(mol,with_gaunt=False,with_breit=False)
 mf.kernel()
 

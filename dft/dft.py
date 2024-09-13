@@ -20,7 +20,7 @@ X2C 2-component DFT methods
 from socutils.scf import spinor_hf
 from pyscf.dft import dks
 
-class Spinor_DFT(dks.KohnShamDFT, spinor_hf.SpinorSCF):
+class SpinorDFT(dks.KohnShamDFT, spinor_hf.SpinorSCF):
     def __init__(self, mol, xc='LDA,VWN'):
         spinor_hf.SpinorSCF.__init__(self, mol)
         dks.KohnShamDFT.__init__(self, xc)
