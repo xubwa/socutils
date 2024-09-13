@@ -24,7 +24,7 @@ def mc_diis(mc, mo_coeff, mo_cap=None, conv_tol=None, conv_tol_grad=None, active
     s1e = mc._scf.get_ovlp()
 
     mc_diis = scf.diis.CDIIS()
-    #h1e = mc._scf.get_hcore()
+    h1e = mc._scf.get_hcore()
     #_, mc_diis.Corth = mc._scf.eig(h1e, s1e)
     mc_diis.Corth=mo_coeff
 
@@ -48,6 +48,7 @@ def mc_diis(mc, mo_coeff, mo_cap=None, conv_tol=None, conv_tol_grad=None, active
 
         mci = zmcscf._fake_h_for_fast_casci(mc, mo, eris)
         e_tot, e_cas, fcivec = mci.kernel(mo, verbose=verbose)
+        print(e_tot, e_cas)
         mc.e_tot, mc.e_cas = e_tot, e_cas
 
         casdm1, casdm2 = mc.fcisolver.make_rdm12(fcivec, ncas, mc.nelecas)
@@ -58,7 +59,7 @@ def mc_diis(mc, mo_coeff, mo_cap=None, conv_tol=None, conv_tol_grad=None, active
         dm_active[ncore:nocc, ncore:nocc] = casdm1
         dm1 = dm_core + dm_active
         dm1_ao = reduce(np.dot, (mo, dm1, mo.T.conj()))
-        h1e_mo = reduce(np.dot, (mo.T.conj(), mc.get_hcore(), mo))
+        h1e_mo = reduce(np.dot, (mo.T.conj(), h1e, mo))
         vj_c, vk_c = mc.get_jk(mc.mol,
                                        reduce(np.dot, (mo, dm_core, mo.T.conj())))
         vj_a, vk_a = mc.get_jk(mc.mol,
@@ -66,6 +67,7 @@ def mc_diis(mc, mo_coeff, mo_cap=None, conv_tol=None, conv_tol_grad=None, active
         vhf_c = reduce(np.dot, (mo.T.conj(), vj_c - vk_c, mo))
         vhf_a = reduce(np.dot, (mo.T.conj(), vj_a - vk_a, mo))
         vhf_ca = vhf_c + vhf_a
+
         g = np.zeros((nmo, nmo), dtype=complex)
         #g[:, :ncore] = h1e_mo[:, :ncore] + vhf_ca[:, :ncore]
         #g[:, ncore:nocc] = np.dot(
@@ -103,7 +105,6 @@ def mc_diis(mc, mo_coeff, mo_cap=None, conv_tol=None, conv_tol_grad=None, active
         fock[:ncore,ncore:nocc] = np.dot((h1e_mo+vhf_c)[:ncore,ncore:nocc], casdm1)
         fock[:ncore,ncore:nocc] += g_dm2[:ncore,:]
         fock[ncore:nocc,:ncore] = fock[:ncore,ncore:nocc].T.conj().copy()
-        #fock[ncore:nocc,:ncore] += g_dm2[:ncore,:].T.conj()
 
         fock[nocc:,ncore:nocc] = np.dot((h1e_mo+vhf_c)[nocc:,ncore:nocc], casdm1)
         fock[nocc:,ncore:nocc] += g_dm2[nocc:,:]
@@ -118,22 +119,43 @@ def mc_diis(mc, mo_coeff, mo_cap=None, conv_tol=None, conv_tol_grad=None, active
         fock[nocc:,nocc:] += vhf_a[nocc:,nocc:]
         fock[ncore:nocc,ncore:nocc] += g_dm2[ncore:nocc,:]
 
-        '''
-        print('block by block comparison of fock and g')
-        print(np.linalg.norm(fock[ncore:nocc,:ncore]-g[ncore:nocc,:ncore]), np.linalg.norm(g[ncore:nocc,]))
-        print(np.linalg.norm(fock[:ncore,ncore:nocc]-g[:ncore,ncore:nocc]))
-        #print(np.linalg.norm(fock[nocc:,ncore:nocc]-g[nocc:,ncore:nocc]))
-        #print(np.linalg.norm(fock[nocc:,:ncore]-g[nocc:,:ncore]))
-        print(np.linalg.norm(fock-fock.T.conj()))
-        '''
         grad = mc.pack_uniq_var(g-g.T.conj())
         grad2 = mc.pack_uniq_var(fock)
         grad = g - g.T.conj()
         grad[:ncore,:ncore]=0.0
         grad[ncore:nocc,ncore:nocc]=0.0
         grad[nocc:,nocc:] = 0.0
-        grad_ao = reduce(np.dot, (s1e, mo, grad, mo.T.conj(), s1e.T.conj()))
         fock = reduce(np.dot, (s1e, mo, fock, mo.T.conj(), s1e.T.conj()))
+
+        ################################################################################################
+        # evaluate open shell fock contribution avoid the usage of eri under mo basis.
+        occ_active = mc.nelecas / mc.ncas
+        occ_core = 1.0
+        coupling_active = (mc.nelecas - 1) / (mc.ncas - 1)
+
+        vhf_active = vhf_a / occ_active
+        fock_mo = np.zeros((nmo, nmo), dtype=complex)
+        fock_active = (h1e_mo+vhf_c) + vhf_active * coupling_active
+        fock_core = h1e_mo + vhf_c + vhf_active * occ_active
+        fock_mo = vhf_c + h1e_mo # fock_c
+        fock_mo[:ncore,:ncore] = fock_core[:ncore,:ncore] # fock_c
+        fock_mo[nocc:,nocc:] = fock_core[nocc:,nocc:] # fock_c
+        fock_mo[nocc:,:ncore] = fock_core[nocc:,:ncore] # fock_c
+        fock_mo[:ncore,nocc:] = fock_core[:ncore:,nocc:] # fock_c
+
+        fock_mo[:ncore,ncore:nocc] = fock_core[:ncore,ncore:nocc]*1.0 - fock_active[:ncore,ncore:nocc]*occ_active
+        fock_mo[ncore:nocc,:ncore] = fock_mo[:ncore,ncore:nocc].T.conj().copy()
+
+        fock_mo[nocc:,ncore:nocc] = fock_active[nocc:,ncore:nocc]*occ_active
+        fock_mo[ncore:nocc,nocc:] = fock_mo[nocc:,ncore:nocc].T.conj()
+
+        fock_mo[ncore:nocc,ncore:nocc] = fock_active[ncore:nocc,ncore:nocc]*occ_active
+        
+        fock_ao = reduce(np.dot, (s1e, mo, fock_mo, mo.T.conj(), s1e.T.conj()))
+
+        #print('difference', np.linalg.norm(fock-fock_ao))
+        #new block ends.
+        ################################################################################################
         #fock_diis = reduce(np.dot, (s1e, mo, vhf_c + h1e_mo + vhf_a, mo.T.conj(), s1e.T.conj()))
         def damping(f, f_prev, factor):
             return f*(1-factor) + f_prev*factor
