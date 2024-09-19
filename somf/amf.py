@@ -205,11 +205,10 @@ class SpinOrbitalX2CAMFHelper(x2c.SpinOrbitalX2CHelper):
         self.aoc = with_aoc
         self.prog = prog
         self.soc_matrix = None
-        if gto.mole._parse_nuc_mod(self.mol.nucmod) == 2:
+        if mol.nucmod != {}:
             self.gau_nuc = True
         else:
             self.gau_nuc = False
-        self.gau_nuc = False
         print(self.xuncontract)
 
     def initialize_x2camf(self):
@@ -217,14 +216,6 @@ class SpinOrbitalX2CAMFHelper(x2c.SpinOrbitalX2CHelper):
 
     def get_soc_integrals(self):
         so_amf = get_soc_integrals(self, self.mol, self.prog, self.gaunt, self.breit, self.sfx2c, sph=True)
-        nao = so_amf.shape[-1] // 2
-        # transform spinor orbital basis spin-orbit terms to spin orbital.
-        hso = numpy.zeros((nao * 2, nao * 2), dtype=complex)
-        ca, cb = self.mol.sph2spinor_coeff()
-        hso[:nao, :nao] = reduce(numpy.dot, (ca, so_amf, ca.conj().T))
-        hso[nao:, nao:] = reduce(numpy.dot, (cb, so_amf, cb.conj().T))
-        hso[:nao, nao:] = reduce(numpy.dot, (ca, so_amf, cb.conj().T))
-        hso[nao:, :nao] = reduce(numpy.dot, (cb, so_amf, ca.conj().T))
         return so_amf
 
     def get_hcore(self, mol=None):
