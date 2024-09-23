@@ -66,7 +66,6 @@ def condense_atom(ctr_scheme):
     return out
 
 def condense_mol(mol, mol_scheme):
-    bas_info = mol._bas
     nscalar_2c = mol.nao_2c()
     ao_spinor_list = []
     ao_slice_2c = mol.aoslice_2c_by_atom()
@@ -74,7 +73,7 @@ def condense_mol(mol, mol_scheme):
     for atom_id, atom_scheme in enumerate(mol_scheme):
         if atom_scheme == 0:
             ao_spinor_list.append(np.eye(ao_slice_2c[atom_id,3]-ao_slice_2c[atom_id,2]))
-        else: 
+        else:
             ao_spinor_list.append(condense_atom(atom_scheme))
 
         if atom_id == 0:
@@ -113,5 +112,4 @@ class Mole(gto.Mole):
         c1 = np.dot(c1, self.so_contr)
         c2 = np.dot(c2, self.so_contr)
         return c1, c2
-
-            
+         

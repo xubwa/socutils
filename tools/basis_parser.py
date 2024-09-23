@@ -1,7 +1,7 @@
 import sys
 import numpy as np
 
-def read_genbas(basis_name, filename):
+def read_genbas(basis_name, filename, so_basis=False):
     with open(filename, "r") as f:
         lines = f.readlines()
     found = False
@@ -13,19 +13,19 @@ def read_genbas(basis_name, filename):
     if not found:
         print(f"Could not find basis set for {basis_name} in {filename}.")
         sys.exit(1)
-    maxL = int(lines[index+3].split()[0]) - 1
+    max_ang = int(lines[index+3].split()[0]) - 1
     basinfo = []
     exps = []
     coeffs = []
-    for ii in range(maxL+1):
+    for ii in range(max_ang+1):
         basinfo.append([])
         basinfo[ii].append(int(lines[index+4].split()[ii]))
         basinfo[ii].append(int(lines[index+5].split()[ii]))
         basinfo[ii].append(int(lines[index+6].split()[ii]))
         exps.append(np.zeros(basinfo[ii][2]))
         coeffs.append(np.zeros(basinfo[ii][2]*basinfo[ii][1]))
-    assert len(exps) == maxL+1
-    
+    assert len(exps) == max_ang+1
+    print(basinfo)
     ll = 0
     nexp = 0
     ncoeff = 0
@@ -46,14 +46,37 @@ def read_genbas(basis_name, filename):
             nexp = 0
             ncoeff = 0
             ll += 1
-            if ll > maxL:
+            if ll > max_ang:
                 break
-    for ll in range(maxL+1):
+    for ll in range(max_ang+1):
         coeffs[ll] = coeffs[ll].reshape((basinfo[ll][2],basinfo[ll][1]))
+    if so_basis:
+        # read so_basis info from the line after title line
+        # which is index+1 line
+        raw_info = lines[index+1].split()
+
+        if len(raw_info) == 0:
+            raise ValueError("No spin-orbit basis information found.")
+
+        n_info = int(raw_info[0])
+        if len(raw_info) != 1 + 2 * n_info:
+            raise ValueError("Invalid spin-orbit basis information.")
+        so_basis_info = []
+        for l in range(max_ang+1):
+            so_basis_info.append([l,0,0, basinfo[l][1]])
+        for ii in range(n_info):
+            l = int(raw_info[2*ii+1])
+            nso = int(raw_info[2*ii+2])
+            nshared = basinfo[l][1] - nso*2
+            so_basis_info[l]=[l, nso, nso, nshared]
+        return exps, coeffs, basinfo, so_basis_info
     return exps, coeffs, basinfo
 
-def parse_genbas(basis, filename="GENBAS", uncontract=False):
-    exps, coeffs, basinfo = read_genbas(basis, filename)
+def parse_genbas(basis, filename="GENBAS", uncontract=False, so_basis=False):
+    if so_basis:
+        exps, coeffs, basinfo, so_basis_info = read_genbas(basis, filename, so_basis)
+    else:
+        exps, coeffs, basinfo = read_genbas(basis, filename)
     basis_pyscf = []
     for ii in range(len(basinfo)):
         basis_pyscf.append([basinfo[ii][0]])
@@ -65,6 +88,8 @@ def parse_genbas(basis, filename="GENBAS", uncontract=False):
                 basis_pyscf[ii].append([exps[ii][jj]])
                 for kk in range(basinfo[ii][1]):
                     basis_pyscf[ii][jj+1].append(coeffs[ii][jj][kk])
+    if so_basis:
+        return basis_pyscf, so_basis_info
     return basis_pyscf
 
 def genbas_parser(basis, filename="GENBAS"):
