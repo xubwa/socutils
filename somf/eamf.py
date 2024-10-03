@@ -454,7 +454,13 @@ class SpinorEAMFX2CHelper(x2c.x2c.SpinorX2CHelper):
         
     def eamf(self):
         print(self.gaunt,self.breit,self.pcc,self.aoc)
-        return eamf(self, self.mol.verbose, self.gaunt, self.breit, self.pcc, self.aoc, self.gau_nuc)
+        xmol, contr_coeff_nr = self.get_xmol()
+        npri, ncon = contr_coeff_nr.shape
+        contr_coeff = np.zeros((npri*2,ncon*2))
+        contr_coeff[0::2,0::2] = contr_coeff_nr
+        contr_coeff[1::2,1::2] = contr_coeff_nr
+        eamf_unc = eamf(self, self.mol.verbose, self.gaunt, self.breit, self.pcc, self.aoc, self.gau_nuc)
+        return reduce(np.dot, (contr_coeff.T, eamf_unc, contr_coeff))
     
     def get_hcore(self, mol):
         if self.hcore is None:

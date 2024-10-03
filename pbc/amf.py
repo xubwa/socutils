@@ -29,15 +29,7 @@ class PBCSpinOrbitalX2CAMFHelper(pbc_x2c1e.SpinOrbitalX2C1EHelper):
 
     def get_soc_integrals(self):
         so_amf = get_soc_integrals(self, self.cell, self.prog, self.gaunt, self.breit, self.sfx2c, sph=True)
-        nao = so_amf.shape[-1] // 2
-        # transform spinor orbital basis spin-orbit terms to spin orbital.
-        hso = numpy.zeros((nao * 2, nao * 2), dtype=complex)
-        ca, cb = self.mol.sph2spinor_coeff()
-        hso[:nao, :nao] = reduce(numpy.dot, (ca, so_amf, ca.conj().T))
-        hso[nao:, nao:] = reduce(numpy.dot, (cb, so_amf, cb.conj().T))
-        hso[:nao, nao:] = reduce(numpy.dot, (ca, so_amf, cb.conj().T))
-        hso[nao:, :nao] = reduce(numpy.dot, (cb, so_amf, ca.conj().T))
-        return hso
+        return so_amf
 
     def get_hcore(self, cell=None, kpts=None):
         if cell is None: cell = self.cell
