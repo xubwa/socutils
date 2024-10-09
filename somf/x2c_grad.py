@@ -198,10 +198,10 @@ def get_X1(C0, C1, X0):
     CL1 = C1[:size, size:]
     CS1 = C1[size:, size:]
     CS1 = CS1 - numpy.dot(X0,CL1)
-    # tmp = numpy.dot(CL, CL.T.conj())
-    # return reduce(numpy.dot, (CS1, CL.T.conj(), numpy.linalg.inv(tmp)))   # numerically a little bit more stable
+    tmp = numpy.dot(CL, CL.T.conj())
+    return reduce(numpy.dot, (CS1, CL.T.conj(), numpy.linalg.inv(tmp)))   # numerically a little bit more stable
     # return numpy.dot(CS1,scipy.linalg.inv(CL))
-    return numpy.linalg.solve(CL.T, CS1.T).T
+    # return numpy.linalg.solve(CL.T, CS1.T).T
 
 def get_ST1(S4c0, X0, X1=None, S4c1=None):
     size = S4c0.shape[0]//2

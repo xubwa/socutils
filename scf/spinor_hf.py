@@ -322,6 +322,9 @@ class SpinorSCF(hf.SCF):
         self.so_contr=None
         self.new_energy_algo=False
 
+    def density_fit(self, auxbasis=None, with_df=None, only_dfj=False):
+        return density_fit(self, auxbasis, with_df, only_dfj)
+
     def build(self, mol=None):
         if self.verbose >= logger.WARN:
             self.check_sanity()
