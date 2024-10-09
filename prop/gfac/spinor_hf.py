@@ -62,6 +62,31 @@ def int_gfac_4c(mol, utm=False, h4c=None, m4c_inv=None):
 
     return int_4c
 
+def int_gfac_2c(method, utm=True):
+    mol = method.mol
+    xmol, contr_coeff_nr = method.with_x2c.get_xmol(mol)
+    npri, ncon = contr_coeff_nr.shape
+    contr_coeff = np.zeros((npri*2,ncon*2))
+    contr_coeff[0::2,0::2] = contr_coeff_nr
+    contr_coeff[1::2,1::2] = contr_coeff_nr
+    
+    t = xmol.intor('int1e_kin_spinor')
+    s = xmol.intor('int1e_ovlp_spinor')
+    v = xmol.intor('int1e_nuc_spinor')
+    w = xmol.intor('int1e_spnucsp_spinor')
+    from socutils.somf import x2c_grad
+    a, e, x, st, r, l, h4c, m4c = x2c_grad.x2c1e_hfw0(t, v, w, s)
+    m4c_inv = np.dot(a, a.T.conj())
+
+    h4c = method.with_x2c.h4c
+    int_4c = int_gfac_4c(xmol, utm, h4c, m4c_inv)
+    int2c = []
+    for xx in range(3):
+        hfw1 = method.with_x2c.get_hfw1(int_4c[xx])
+        int2c.append[reduce(np.dot, (contr_coeff.T.conj(), hfw1, contr_coeff))]
+
+    return np.array(int2c)
+
 def kernel(method, dm=None, utm=True):
     log = lib.logger.Logger(method.stdout, method.verbose)
     log.info('\n******** G-factor for 2-component SCF methods (In testing) ********')

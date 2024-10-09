@@ -535,6 +535,9 @@ class SpinOrbitalEAMFX2CHelper(x2c.x2c.SpinOrbitalX2CHelper):
     def load_hcore(self, filename='eamf.chk'):
         self.hcore = chkfile.load(filename, 'eamf_integral')
 
+    def get_hfw1(self, h4c1, s4c1=None):
+        raise NotImplementedError('Not implemented for spin-orbital basis')
+
 
 if __name__ == '__main__':
     mol = gto.M(atom = 'Ne 0 0 0; Ar 0 0 1.8', basis='uncccpvdz', verbose=5)

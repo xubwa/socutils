@@ -4,24 +4,9 @@ from pyscf import scf
 from pyscf.data.nist import LIGHT_SPEED
 from socutils.scf import spinor_hf
 
-def mmf4c(dhf):
+def mmf4c(dhf, contr_coeff = None):
     assert(isinstance(dhf, scf.dhf.DHF))
-
-    n2c = dhf.mol.nao_2c()
-    jhf = spinor_hf.JHF(dhf.mol)
-    jhf.converged = True
-    jhf.mo_occ = dhf.mo_occ[n2c:]
-    jhf.mo_energy = dhf.mo_energy[n2c:]
-    
-    fockao_4c = dhf.get_fock()
-    ovlp_4c = dhf.get_ovlp()
-    from socutils.somf.x2c_grad import x2c1e_hfw0_block
-    _, _, _, _, r, _, _, _ = x2c1e_hfw0_block(fockao_4c[:n2c,:n2c], fockao_4c[n2c:,:n2c], fockao_4c[:n2c,n2c:],
-                                                    fockao_4c[n2c:,n2c:], ovlp_4c[:n2c,:n2c], ovlp_4c[n2c:,n2c:])
-    rinv = np.linalg.inv(r)
-    jhf.mo_coeff = np.dot(rinv, dhf.mo_coeff[:n2c, n2c:])
-    
-    return jhf
+    return mmf4c_fock(dhf.mol, dhf.mo_coeff, dhf.get_fock(), dhf.get_ovlp(), contr_coeff)
 
 def mmf4c_fock(mol, coeff4c, fockao_4c, ovlp_4c = None):
     assert(coeff4c.shape == fockao_4c.shape)
