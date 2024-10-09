@@ -96,7 +96,7 @@ def kernel(method, dm=None, utm=True):
 
 Gfac = kernel
 
-def get_hcore(x2cobj, mol, B_field = [0.0, 0.0, 0.0]):
+def get_hcore(x2cobj, mol, B_field = [0.0, 0.0, 0.0], sph = False):
     if mol.has_ecp():
         raise NotImplementedError
 
@@ -137,6 +137,17 @@ def get_hcore(x2cobj, mol, B_field = [0.0, 0.0, 0.0]):
     r = reduce(np.dot, (sa, sb, sa, m4c[:n2c, :n2c]))
     hcore = reduce(np.dot, (r.T.conj(), l, r))
     hcore = reduce(np.dot, (contr_coeff.T.conj(), hcore, contr_coeff))
+    if sph:
+        mol = x2cobj.mol
+        ca, cb = x2cobj.mol.sph2spinor_coeff()
+        nao = mol.nao_nr()
+        hso = np.zeros_like(hcore, dtype=complex)
+        hso[:nao, :nao] = reduce(np.dot, (ca, hcore, ca.conj().T))
+        hso[nao:, nao:] = reduce(np.dot, (cb, hcore, cb.conj().T))
+        hso[:nao, nao:] = reduce(np.dot, (ca, hcore, cb.conj().T))
+        hso[nao:, :nao] = reduce(np.dot, (cb, hcore, ca.conj().T))
+        hcore = hso
+
     soc_matrix = x2cobj.get_soc_integrals()
 
     return hcore + soc_matrix

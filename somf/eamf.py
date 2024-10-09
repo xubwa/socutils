@@ -490,6 +490,51 @@ class SpinorEAMFX2CHelper(x2c.x2c.SpinorX2CHelper):
 
         a, e, x, st, r, l, h4c, m4c = x2c_grad.x2c1e_hfw0_block(hLL, hSL, hLS, hSS, sLL, sSS)
         return x2c_grad.get_hfw1(a, x, st, m4c, h4c, e, r, l, h4c1, s4c1)
+class SpinOrbitalEAMFX2CHelper(x2c.x2c.SpinOrbitalX2CHelper):
+    hcore = None
+    def __init__(self, mol, eamf='eamf', with_gaunt=False, with_breit=False, with_pcc=True, with_aoc=False):
+        super().__init__(mol)
+        self.gaunt = with_gaunt
+        self.gaunt_sd = False        
+        self.breit = with_breit
+        self.pcc = with_pcc
+        self.aoc = with_aoc
+        self.amf_type = eamf # use this class to implement various flavors of approximations.
+        self.nucmod = mol.nucmod
+        self.h4c = None
+        self.m4c = None
+        self.veff_2c = None
+        self.soc_matrix = None
+        if self.nucmod != {}:
+            self.gau_nuc = True
+        else:
+            self.gau_nuc = False
+        
+    def eamf(self):
+        print(self.gaunt,self.breit,self.pcc,self.aoc)
+        xmol, contr_coeff_nr = self.get_xmol()
+        npri, ncon = contr_coeff_nr.shape
+        contr_coeff = np.zeros((npri*2,ncon*2))
+        contr_coeff[0::2,0::2] = contr_coeff_nr
+        contr_coeff[1::2,1::2] = contr_coeff_nr
+        eamf_unc = eamf(self, self.mol.verbose, self.gaunt, self.breit, self.pcc, self.aoc, self.gau_nuc)
+        eamf_spinor = reduce(np.dot, (contr_coeff.T, eamf_unc, contr_coeff))
+        return spinor2sph.spinor2sph(self.mol, eamf_spinor)
+    
+    def get_hcore(self, mol):
+        if self.hcore is None:
+            self.hcore = self.eamf()
+        return self.hcore
+
+    def save_hcore(self, filename='eamf.chk'):
+        if self.hcore is None:
+            chkfile.dump(filename, 'eamf_integral', self.eamf())
+        else:
+            chkfile.dump(filename, 'eamf_integral', self.hcore())
+
+    def load_hcore(self, filename='eamf.chk'):
+        self.hcore = chkfile.load(filename, 'eamf_integral')
+
 
 if __name__ == '__main__':
     mol = gto.M(atom = 'Ne 0 0 0; Ar 0 0 1.8', basis='uncccpvdz', verbose=5)
