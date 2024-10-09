@@ -3,12 +3,49 @@ import copy
 import numpy
 import numpy as np
 import scipy.linalg
+from pyscf import df
 from pyscf import lib
 from pyscf.gto import mole
 from pyscf.lib import logger
 from pyscf.scf import hf, dhf, ghf, _vhf
 import re
 # from zquatev import solve_KR_FCSCE as eigkr
+
+
+def density_fit(mf, auxbasis=None, with_df=None, only_dfj=False):
+    if with_df is None:
+        with_df = df.DF(mf.mol)
+    with_df.max_memory = mf.max_memory
+    with_df.auxbasis = auxbasis
+    with_df.stdout = mf.stdout
+    with_df.verbose = mf.verbose
+
+    dfmf = _DFJHF(mf, with_df, only_dfj)
+    return lib.set_class(dfmf, (_DFJHF, mf.__class__))
+
+
+class _DFJHF(df.df_jk._DFHF):
+    def get_jk(self, mol=None, dm=None, hermi=1, with_j=True, with_k=True, omega=None):
+        if dm is None: dm = self.make_rdm1()
+        dm_sph = spinor2sph(mol, dm)
+        with_dfk = with_k and self.with_df
+
+        def jkbuild(mol, dm, hermi, with_j, with_k, omega=None):
+            vj, vk = self.with_df.get_jk(dm.real, hermi, with_j, with_k, self.direct_scf_tol, omega)
+            if dm.dtype == numpy.complex128:
+                vjI, vkI = self.with_df.get_jk(dm.imag, hermi, with_j, with_k, self.direct_scf_tol, omega)
+                if with_j:
+                    vj = vj + vjI * 1j
+                if with_k:
+                    vk = vk + vkI * 1j
+            return vj, vk
+        t0 = (logger.process_clock(), logger.perf_counter())
+        j_sph, k_sph = ghf.get_jk(mol, dm_sph, hermi, with_j, with_dfk, jkbuild, omega)
+        j_spinor = sph2spinor(mol, j_sph)
+        k_spinor = sph2spinor(mol, k_sph)
+        logger.timer(self, 'vj and vk', *t0)
+        return j_spinor, k_spinor
+
 
 def symmetry_label(mol, symmetry=None):
     if symmetry is None:
@@ -17,7 +54,7 @@ def symmetry_label(mol, symmetry=None):
         raise ValueError("Only spherical and linear symmetry supported for now.")
     else:
         labels = mol.spinor_labels()
-        irrep = dict() 
+        irrep = dict()
         processed_labels = []
         for label in labels:
             label = label.split()
@@ -105,7 +142,7 @@ def get_occ_symm(mf, irrep, occup, irrep_mo=None, mo_energy=None, mo_coeff=None)
     if mo_coeff is None and mf.mo_coeff is None:
         for ir in irrep:
             ir_mo = np.where(ir_tag==ir)
-            if isinstance(occup[ir][0], int): 
+            if isinstance(occup[ir][0], int):
                 occupy = sum(occup[ir])
             else:
                 occupy = occup[ir][0]
@@ -121,10 +158,10 @@ def get_occ_symm(mf, irrep, occup, irrep_mo=None, mo_energy=None, mo_coeff=None)
         if not ir in occup:
             continue
         occupy = occup[ir]
-        if isinstance(occup[ir][0], int): 
-            mo_occ[ir_mo[:occupy[0]]] = 1.0+0.j 
+        if isinstance(occup[ir][0], int):
+            mo_occ[ir_mo[:occupy[0]]] = 1.0+0.j
         else:
-            mo_occ[ir_mo[occupy[0]]] = 1.0+0.j 
+            mo_occ[ir_mo[occupy[0]]] = 1.0+0.j
         for i in range(1, min(len(occupy), n_ang+1)):
             if occupy[i] == 0:
                 continue
@@ -277,7 +314,7 @@ class SpinorSCF(hf.SCF):
     '''Nonrelativistic SCF under j-adapted spinor basis'''
 
     _keys = {'with_soc', 'with_x2c'}
-    
+
     def __init__(self, mol):
         hf.SCF.__init__(self, mol)
         self.with_soc=False
@@ -323,7 +360,7 @@ class SpinorSCF(hf.SCF):
         if getattr(mol, 'so_contr', None) is not None:
             hcore = reduce(numpy.dot, (mol.so_contr.T, hcore, mol.so_contr))
         return hcore
-        
+
     def energy_tot(self, dm=None, h1e=None, vhf=None):
         if dm is None:
             dm=self.make_rdm1()
@@ -429,7 +466,7 @@ class SpinorSCF(hf.SCF):
 
     def nuc_grad_method(self):
         raise NotImplementedError
-    
+
 
 class SymmSpinorSCF(SpinorSCF):
     def __init__(self, mol, symmetry=None, occup=None):
@@ -438,11 +475,11 @@ class SymmSpinorSCF(SpinorSCF):
             self.irrep_ao = symmetry_label(mol, symmetry)
         else:
             raise NotImplementedError
-        
+
         self.occupation = occup
         print('occup')
         print(self.occupation)
-        
+
     def eig(self, h, s):
         e, c = eig(self, h, s, irrep=self.irrep_ao)
         self.irrep_mo = e.irrep_tag
@@ -452,7 +489,7 @@ class SymmSpinorSCF(SpinorSCF):
     # kramers symmetry is adapted outside the eigensolver
     def _eigh(self, h, s):
         return scipy.linalg.eigh(h, s)
-    
+
     def get_occ(self, mo_energy=None, mo_coeff=None):
         if self.occupation is None or mo_energy is None:
             return SpinorSCF.get_occ(self, mo_energy, mo_coeff)
@@ -473,8 +510,8 @@ if __name__ == '__main__':
     mol.basis = 'ccpvdz'
     mol.build(0, 0)
 
-##############
-# SCF result
+    ##############
+    # SCF result
     method = SpinorSCF(mol)
     #method.init_guess = '1e'
     energy = method.scf()
