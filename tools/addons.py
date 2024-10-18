@@ -65,17 +65,48 @@ def jhf2ghf_chkfile(mol, chkfile_name):
     dm_jhf = init_guess_by_chkfile(mol, chkfile_name)
     return jhf2ghf_dm(mol, dm_jhf)
 
-def jhf2dhf_dm(mol, dm_ghf):
+def jhf2dhf_dm_ll(mol, dm_jhf):
     r"""
-    Convert GHF density matrix to DHF density matrix
+    Convert JHF density matrix to DHF density matrix by put D2c as DLL.
+    This is not optimal and should be fine for light systems.
+    One should use jhf2dhf_dm when possible.
     """
-    n2c = dm_ghf.shape[0]
-    dm_dhf = np.zeros((n2c*2,n2c*2),dtype=dm_ghf.dtype)
-    dm_dhf[:n2c,:n2c] = dm_ghf
+    n2c = dm_jhf.shape[0]
+    dm_dhf = np.zeros((n2c*2,n2c*2),dtype=dm_jhf.dtype)
+    dm_dhf[:n2c,:n2c] = dm_jhf
     return dm_dhf
+
+def jhf2dhf_dm(jhf, mol = None):
+    r"""
+    Convert JHF density matrix to DHF using X2C-1e X and R.
+    
+    Caution: Uncontracted basis sets are recommended.
+    """
+    from socutils.scf.spinor_hf import SpinorSCF
+    from socutils.dft.dft import SpinorDFT
+    assert isinstance(jhf, SpinorSCF) or isinstance(jhf, SpinorDFT)
+
+    cmo_2c = jhf.mo_coeff
+    occ_2c = jhf.mo_occ
+    if mol is None:
+        mol = jhf.mol
+
+    t = mol.intor('int1e_kin_spinor')
+    v = mol.intor('int1e_nuc_spinor')
+    s = mol.intor('int1e_ovlp_spinor')
+    w = mol.intor('int1e_spnucsp_spinor')
+    from socutils.somf.x2c_grad import x2c1e_hfw0
+    a, e, x, st, r, l, h4c, m4c = x2c1e_hfw0(t, v, w, s)
+    cmo_l = np.dot(r, cmo_2c)
+    cmo_s = np.dot(x, cmo_l)
+    cmo_4c = np.vstack((cmo_l, cmo_s))
+    dm_dhf = np.einsum("pi,i,qi->pq", cmo_4c, occ_2c, cmo_4c.conj())
+    
+    return dm_dhf
+
 def ghf2dhf_chkfile(mol, chkfile_name):
     r"""
     Convert GHF chkfile to DHF density matrix
     """
     dm_jhf = ghf2jhf_chkfile(mol, chkfile_name)
-    return jhf2dhf_dm(mol, dm_jhf)
+    return jhf2dhf_dm_ll(mol, dm_jhf)

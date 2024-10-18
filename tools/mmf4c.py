@@ -6,7 +6,9 @@ from socutils.scf import spinor_hf
 
 def mmf4c(dhf, contr_coeff = None):
     assert(isinstance(dhf, scf.dhf.DHF))
-    return mmf4c_fock(dhf.mol, dhf.mo_coeff, dhf.get_fock(), dhf.get_ovlp(), contr_coeff)
+    if contr_coeff is not None:
+        raise NotImplementedError("contraction projection is not implemented yet.")
+    return mmf4c_fock(dhf.mol, dhf.mo_coeff, dhf.get_fock(), dhf.get_ovlp())
 
 def mmf4c_fock(mol, coeff4c, fockao_4c, ovlp_4c = None):
     assert(coeff4c.shape == fockao_4c.shape)

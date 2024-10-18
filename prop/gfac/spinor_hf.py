@@ -83,7 +83,7 @@ def int_gfac_2c(method, utm=True):
     int2c = []
     for xx in range(3):
         hfw1 = method.with_x2c.get_hfw1(int_4c[xx])
-        int2c.append[reduce(np.dot, (contr_coeff.T.conj(), hfw1, contr_coeff))]
+        int2c.append(reduce(np.dot, (contr_coeff.T.conj(), hfw1, contr_coeff)))
 
     return np.array(int2c)
 
