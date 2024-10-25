@@ -15,7 +15,7 @@ try:
 except ImportError:
     pass
 
-def get_psoc_x2camf(mol, gaunt=True, gauge=True, atm_pt=True):
+def get_psoc_x2camf(mol, gaunt=True, gauge=True, atm_pt=True, form="scalar"):
     '''
     Perturbative treatment of spin-orbit coupling within X2CAMF scheme.
     The SOC contributions are evaluated in a consistent way to include only first-order terms.
@@ -36,11 +36,19 @@ def get_psoc_x2camf(mol, gaunt=True, gauge=True, atm_pt=True):
             The molecular one-electron 4c SO integral (Wso) is treated as the perturbation solely and
             then augmented with the AMF pt integrals.
         These two choices are supposed to give very similar results.
+        form: what to actually return
+            "scalar": return the scalar integrals
+            "spinor": return the spinor integrals
+            "sph": return the 2c-spherical integrals
 
     Returns:
         Perturbative SOC integrals in pauli representation
     '''
-    xmol, contr_coeff = sfx2c1e.SpinFreeX2C(mol).get_xmol()
+    xmol, contr_coeff_nr = sfx2c1e.SpinFreeX2C(mol).get_xmol()
+    np, nc = contr_coeff_nr.shape
+    contr_coeff = numpy.zeros((np * 2, nc * 2))
+    contr_coeff[0::2, 0::2] = contr_coeff_nr
+    contr_coeff[1::2, 1::2] = contr_coeff_nr
 
     c = LIGHT_SPEED
     wsf = xmol.intor('int1e_pnucp_spinor')
@@ -61,12 +69,58 @@ def get_psoc_x2camf(mol, gaunt=True, gauge=True, atm_pt=True):
                             with_gaunt=gaunt, with_gauge=gauge, pt=True, int4c=True)
         hfw1 = x2c_grad.x2c1e_hfw1(xmol,h4c1,w=wsf)
     
-    hfw1_sph = spinor2sph_soc(xmol, hfw1)
-    # convert back to contracted basis
-    result = numpy.zeros((4, mol.nao_nr(), mol.nao_nr()))
-    for ic in range(4):
-        result[ic] = reduce(numpy.dot, (contr_coeff.T, hfw1_sph[ic], contr_coeff))
-    return result
+    hfw1 = reduce(numpy.dot, (contr_coeff.T, hfw1, contr_coeff))
+    if form == "spinor":
+        return hfw1
+    elif form == "sph":
+        ca, cb = mol.sph2spinor_coeff()
+        nao = mol.nao_nr()
+        hso = numpy.zeros_like(hfw1, dtype=complex)
+        hso[:nao, :nao] = reduce(numpy.dot, (ca, hfw1, ca.conj().T))
+        hso[nao:, nao:] = reduce(numpy.dot, (cb, hfw1, cb.conj().T))
+        hso[:nao, nao:] = reduce(numpy.dot, (ca, hfw1, cb.conj().T))
+        hso[nao:, :nao] = reduce(numpy.dot, (cb, hfw1, ca.conj().T))
+        hfw1 = hso
+        return hfw1
+    elif form == "scalar":
+        hfw1 = spinor2sph_soc(mol, hfw1)
+        return hfw1
+    else:
+        raise ValueError("Unknown form")
+
+
+def get_psoc_x2c1e(mol, form = "scalar"):
+    xmol, contr_coeff = sfx2c1e.SpinFreeX2C(mol).get_xmol()
+
+    c = LIGHT_SPEED
+    wsf = xmol.intor('int1e_pnucp_spinor')
+    wso = xmol.intor('int1e_spnucsp_spinor') - wsf
+
+    n2c = wsf.shape[0]
+    n4c = n2c * 2
+
+    h4c1 = numpy.zeros((n4c, n4c), dtype=wso.dtype)
+    h4c1[n2c:, n2c:] = wso * (.25 / c**2)
+    hfw1 = x2c_grad.x2c1e_hfw1(xmol,h4c1,w=wsf)
+    
+    hfw1 = reduce(numpy.dot, (contr_coeff.T, hfw1, contr_coeff))
+    if form == "spinor":
+        return hfw1
+    elif form == "sph":
+        ca, cb = mol.sph2spinor_coeff()
+        nao = mol.nao_nr()
+        hso = numpy.zeros_like(hfw1, dtype=complex)
+        hso[:nao, :nao] = reduce(numpy.dot, (ca, hfw1, ca.conj().T))
+        hso[nao:, nao:] = reduce(numpy.dot, (cb, hfw1, cb.conj().T))
+        hso[:nao, nao:] = reduce(numpy.dot, (ca, hfw1, cb.conj().T))
+        hso[nao:, :nao] = reduce(numpy.dot, (cb, hfw1, ca.conj().T))
+        hfw1 = hso
+        return hfw1
+    elif form == "scalar":
+        hfw1 = spinor2sph_soc(mol, hfw1)
+        return hfw1
+    else:
+        raise ValueError("Unknown form")
 
 '''
 First-order properties
