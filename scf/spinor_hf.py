@@ -77,8 +77,6 @@ def symmetry_label(mol, symmetry=None):
             print(f'Linear symmetry assigned')
             for ilabel, label in enumerate(processed_labels):
                 full_label=label[2]
-                print(label)
-                print("full_label",full_label)
                 if irrep.get(full_label) is not None:
                     irrep[full_label].append(ilabel)
                 else:
@@ -128,6 +126,8 @@ def eig(mf, h, s, irrep=None):
     sort_idx = np.argsort(e)
     irrep_tag = irrep_tag[sort_idx]
     angular_tag = angular_tag[sort_idx]
+    #print(irrep_tag)
+    #print(angular_tag)
     return lib.tag_array(e[sort_idx],irrep_tag=irrep_tag),\
            lib.tag_array(c[:,sort_idx], ang_tag=angular_tag)
 
@@ -153,6 +153,52 @@ def get_occ_symm(mf, irrep, occup, irrep_mo=None, mo_energy=None, mo_coeff=None)
         mo_coeff = mf.mo_coeff
     angular_momentum = ['s', 'p', 'd', 'f']
     n_ang = 4
+    '''
+    print(mo_coeff.ang_tag)
+    for ir in irrep:
+        ir_mo = np.where(ir_tag==ir)[0]
+        if not ir in occup:
+            continue
+        occupy = occup[ir]
+        if isinstance(occup[ir], int):
+            mo_occ[ir_mo[:occupy]] = 1.0+0.j
+        else:
+            mo_occ[ir_mo[occupy[0]]] = 0.0+0.j
+        for i in range(1, min(len(occupy), n_ang+1)):
+            if occupy[i] == 0:
+                continue
+            else:
+                ang = angular_momentum[i-1]
+                indices = np.where(mo_coeff.ang_tag[ir_mo] == ang)[0]
+                #print(ir_mo)
+                print(ir, ang, ir_mo[indices[:occupy[i]]])
+                if len(indices) < occupy[i]:
+                    raise ValueError(f'Not enough mo with largest contribution from {ang} found')
+                else:
+                    mo_occ[ir_mo[indices[:occupy[i]]]] = 1.0+0.j
+                    #mo_occ[ir_mo[[indices[:occupy[i]]]]] = 1.0+0.j
+    occupied = np.where(mo_occ == 1.0+0.j)[0]
+    count = [0,0,0,0]
+    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
+        if ang == 's':
+            count[0]+=1
+    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
+        if ang == 'p':
+            count[1]+=1
+    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
+        if ang == 'd':
+            count[2]+=1
+    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
+        if ang == 'f':
+            count[3]+=1
+    print(ir_tag[:92])
+    print(mo_coeff.ang_tag[:92])
+    print(occupied)
+    print(len(occupied))
+    print(ir_tag[occupied])
+    print(mo_coeff.ang_tag[occupied])
+    print(count)
+    '''
     for ir in irrep:
         ir_mo = np.where(ir_tag==ir)[0]
         if not ir in occup:
@@ -168,9 +214,13 @@ def get_occ_symm(mf, irrep, occup, irrep_mo=None, mo_energy=None, mo_coeff=None)
             else:
                 ang = angular_momentum[i-1]
                 indices = np.where(mo_coeff.ang_tag[ir_mo[occupy[0]:]] == ang)[0]
+                print(occupy[0])
+                print(mo_coeff.ang_tag[ir_mo[occupy[0]:]])
+                print(indices)
                 if len(indices) < occupy[i]:
                     raise ValueError(f'Not enough mo with largest contribution from {ang} found')
                 else:
+                    print(ir_mo[occupy[0]:][indices[:occupy[i]]])
                     mo_occ[ir_mo[occupy[0]:][indices[:occupy[i]]]] = 1.0+0.j
     occupied = np.where(mo_occ == 1.0+0.j)[0]
     count = [0,0,0,0]
@@ -186,6 +236,14 @@ def get_occ_symm(mf, irrep, occup, irrep_mo=None, mo_energy=None, mo_coeff=None)
     for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
         if ang == 'f':
             count[3]+=1
+    nelec = mol.nelectron
+    print(ir_tag[:nelec+10])
+    print(mo_coeff.ang_tag[:nelec+10])
+    print(occupied)
+    print(len(occupied))
+    print(ir_tag[occupied])
+    print(mo_coeff.ang_tag[occupied])
+    print(count)
     return mo_occ
 
 
@@ -373,10 +431,13 @@ class SpinorSCF(hf.SCF):
             vhf = self.get_veff()
         print('new_energy_algo', self.new_energy_algo, hasattr(self.with_x2c, 'soc_matrix'))
         if self.with_x2c is not None and hasattr(self.with_x2c, 'soc_matrix'):
+            energy_new = hf.energy_tot(self, dm, h1e - self.with_x2c.soc_matrix, vhf+self.with_x2c.soc_matrix)
+            energy_old = hf.energy_tot(self, dm, h1e, vhf)
+            print(f'Energy scheme 1 {energy_new:20.12g}, {energy_old:20.12g}')
             if self.new_energy_algo:
-                return hf.energy_tot(self, dm, h1e - self.with_x2c.soc_matrix, vhf+self.with_x2c.soc_matrix)
+                return energy_new
             else:
-                return hf.energy_tot(self, dm, h1e, vhf)
+                return energy_old
         else:
             return hf.energy_tot(self, dm, h1e, vhf)
 
@@ -501,7 +562,7 @@ class SymmSpinorSCF(SpinorSCF):
 
 JHF = SpinorSCF
 SCF = SpinorSCF
-SymmSCF = SymmJHF = SymmSpinorSCF
+SpinorSymmSCF = SymmSCF = SymmJHF = SymmSpinorSCF
 
 if __name__ == '__main__':
     from pyscf import scf

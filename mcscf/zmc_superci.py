@@ -8,8 +8,8 @@ from pyscf import lib, scf, gto, mcscf
 from pyscf.lib import logger
 from functools import reduce
 from scipy.linalg import expm as expmat
-from .hf_superci import GMRES
-from . import zcahf, zcasci, zmcscf, zmc_ao2mo
+#from .hf_superci import GMRES
+from socutils.mcscf import zcahf, zcasci, zmcscf, zmc_ao2mo
 from scipy.sparse.linalg import LinearOperator
 import scipy
 from numpy.linalg import norm
@@ -396,7 +396,7 @@ from socutils.mcscf.hf_superci import precondition_grad, postprocess_x
 
 def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, conv_tol=None, conv_tol_grad=None,
                   verbose=logger.INFO, cderi=None):
-    bfgs = False 
+    bfgs = False
     log = logger.new_logger(mc, verbose)
     cput0 = (logger.process_clock(), logger.perf_counter())
     if conv_tol is None:
@@ -463,6 +463,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, conv_tol=None, conv_tol_grad=N
             break
 
         gbar = g
+
         from scipy.sparse.linalg import gmres
         class gmres_counter(object):
             def __init__(self, disp=True):
@@ -476,10 +477,12 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, conv_tol=None, conv_tol_grad=N
                 self.niter += 1
                 if self._disp:
                     self.timer = self.log.timer(f'GMRES iteration #{self.niter}, residual : {rk:.4e}', *self.timer)
+
         if verbose >= logger.DEBUG:
             counter = gmres_counter()
         else:
             counter = None
+
         t_gmres = (logger.process_clock(), logger.perf_counter())
         BFGS_SUBSPACE=10
         if imacro > 0:
@@ -614,6 +617,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, conv_tol=None, conv_tol_grad=N
             mc.e_tot = e_tot
             mc.e_cas = e_cas
             mc._finalize()
+    mc.mo_coeff = mo
     return conv, e_tot, e_cas, fcivec, mo, None
 
 

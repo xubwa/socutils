@@ -8,6 +8,7 @@ import scipy.linalg
 from packaging import version
 from socutils.grad.x2c_grad_g import _block_diag_xyz
 from pyscf.x2c.sfx2c1e_grad import _gen_h1_s1
+from numpy.linalg import norm
 
 '''
 Analytical energy gradients for x2c1e method
@@ -232,7 +233,6 @@ def get_R1(S0, ST, ST1, S1=None):
         A1 = reduce(numpy.dot, (Ssqinv0, ST1, Ssqinv0))\
            + reduce(numpy.dot, (Ssqinv1, ST, Ssqinv0))\
            + reduce(numpy.dot, (Ssqinv0, ST, Ssqinv1))
-
     R1 = reduce(numpy.dot, (Ssqinv0, get_Asqi1(A, A1), Ssq0))
     if(S1 is not None):
         Asqinv = scipy.linalg.inv(scipy.linalg.sqrtm(A))
@@ -271,7 +271,7 @@ def get_hfw1(C4c0, X0, ST, S4c0, h4c0, mo_ene, R0, L0, h4c1, S4c1=None):
     R1LR = reduce(numpy.dot, (R1.T.conj(), L0, R0))
     RL1R = reduce(numpy.dot, (R0.T.conj(), L1, R0))
     hfw1 = RL1R + R1LR + R1LR.T.conj()
-    
+
     return hfw1
 
 def x2c1e_hfw0(t, v, w, s):

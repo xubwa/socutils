@@ -137,7 +137,7 @@ def first_prop_scf(dm, hfw1, eri1 = None, S1 = None):
                 prop = prop + dm[ii,jj]*hfw1[ii,jj]
     return prop
 
-def x2c1e_elec_prop(method, t, v, w, s, integralKernel, mol = None, contr_coeff = None):
+def x2c1e_elec_prop(method, t, v, w, s, integral_kernel, mol = None, contr_coeff = None):
     if(mol is None):
         mol = method.mol
     if(contr_coeff is None):
@@ -150,17 +150,21 @@ def x2c1e_elec_prop(method, t, v, w, s, integralKernel, mol = None, contr_coeff 
 
     a, e, x, st, r, l, h4c, m4c = x2c_grad.x2c1e_hfw0(t, v, w, s)
 
-    h4c1, components = integralKernel(mol)
+    h4c1, components = integral_kernel(mol)
     if components == 1:
         hfw1 = x2c_grad.get_hfw1(a, x, st, m4c, h4c, e, r, l, h4c1)
+        hfw1 = method.with_x2c.get_hfw1(h4c1)
         hfw1 = reduce(numpy.dot, (contr_coeff.T, hfw1, contr_coeff))
         return first_prop_scf(dm, hfw1)
     else:
         prop = numpy.zeros((components))
         for xx in range(components):
-            hfw1 = x2c_grad.get_hfw1(a, x, st, m4c, h4c, e, r, l, h4c1[xx])
+            #hfw1 = x2c_grad.get_hfw1(a, x, st, m4c, h4c, e, r, l, h4c1[xx])
+            hfw1 = method.with_x2c.get_hfw1(h4c1[xx])
             hfw1 = reduce(numpy.dot, (contr_coeff.T, hfw1, contr_coeff))
-            prop[xx] = first_prop_scf(dm, hfw1)
+            iprop = first_prop_scf(dm, hfw1)
+            prop[xx] = iprop.real
+            print(iprop.imag)
         return prop
 
 def sfx2c1e_dipole(method):
@@ -171,6 +175,7 @@ def sfx2c1e_dipole(method):
     w = xmol.intor_symmetric('int1e_pnucp')
     elec_dipole = x2c1e_elec_prop(method, t, v, w, s, elec_dipole_integral_scalar, xmol, contr_coeff)
     nuc_dipole, mc = nuclear_dipole(xmol)
+    print(nuc_dipole, elec_dipole)
     return nuc_dipole + elec_dipole
 
 def x2c1e_dipole(method):
@@ -181,6 +186,7 @@ def x2c1e_dipole(method):
     w = xmol.intor_symmetric('int1e_spnucsp_spinor')
     elec_dipole = x2c1e_elec_prop(method, t, v, w, s, elec_dipole_integral_spinor, xmol)
     nuc_dipole, mc = nuclear_dipole(xmol)
+    print(nuc_dipole, elec_dipole)
     return nuc_dipole + elec_dipole
 
 def nuclear_dipole(mol):
@@ -207,12 +213,14 @@ def elec_dipole_integral_scalar(mol):
     h4c1 = numpy.zeros((3, size2c*2, size2c*2), dtype=intDLL.dtype)
     for xx in range(3):
         h4c1[xx,:size2c,:size2c] = -1.0*intDLL[xx]
-        h4c1[xx,size2c:,size2c:] = -1.0*intDSS[xx]/4.0/c/c
+        h4c1[xx,size2c:,size2c:] = -1.0*intDSS[xx]*(0.5/c)**2
     return h4c1, 3
 
 def elec_dipole_integral_spinor(mol):
     c = LIGHT_SPEED
     nuc_dipole, mass_center = nuclear_dipole(mol)
+    charges = mol.atom_charges()
+    coords  = mol.atom_coords()
     with mol.with_common_orig(mass_center):
         intDLL = mol.intor_symmetric('int1e_r_spinor')
         intDSS = mol.intor_symmetric('int1e_sprsp_spinor')
@@ -220,7 +228,7 @@ def elec_dipole_integral_spinor(mol):
     h4c1 = numpy.zeros((3, size2c*2, size2c*2), dtype=intDLL.dtype)
     for xx in range(3):
         h4c1[xx,:size2c,:size2c] = -1.0*intDLL[xx]
-        h4c1[xx,size2c:,size2c:] = -1.0*intDSS[xx]/4.0/c/c
+        h4c1[xx,size2c:,size2c:] = -1.0*intDSS[xx]*(0.5/c)**2
     return h4c1, 3
 
 # In x2camf-spinor calculations, h^{X2CAMF} = h^{X2C-1e} + h^{2c,AMF}

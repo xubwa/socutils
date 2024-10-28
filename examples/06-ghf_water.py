@@ -13,12 +13,14 @@ mol = gto.M(verbose=0,
                   [  1, (0.,  1.42993701,  0.98326612)]],
             basis='unc-ccpvdz',
             unit='Bohr')
-mf = spinor_hf.JHF(mol)
+mf = spinor_hf.density_fit(spinor_hf.JHF(mol))
+mf = spinor_hf.SpinorSCF(mol)
+mf = mf.density_fit2()
 mf.with_x2c = amf.SpinorX2CAMFHelper(mol,with_gaunt=True,with_breit=True)
 e_jhf = mf.scf()
 
 # Construct GHF object with x2camf helper.
-mf = scf.GHF(mol).x2c1e()
+mf = scf.GHF(mol).x2c1e().density_fit()
 mf.with_x2c = amf.SpinOrbitalX2CAMFHelper(mol,with_gaunt=True,with_breit=True)
 e_ghf = mf.scf()
 

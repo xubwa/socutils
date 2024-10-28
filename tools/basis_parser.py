@@ -79,11 +79,11 @@ def parse_genbas(basis, filename="GENBAS", uncontract=False, so_basis=False):
         exps, coeffs, basinfo = read_genbas(basis, filename)
     basis_pyscf = []
     for ii in range(len(basinfo)):
-        basis_pyscf.append([basinfo[ii][0]])
         if uncontract:
             for jj in range(basinfo[ii][2]):
-                basis_pyscf[ii].append([exps[ii][jj],1.0])
+                basis_pyscf.append([ii,[exps[ii][jj],1.0]])
         else:
+            basis_pyscf.append([basinfo[ii][0]])
             for jj in range(basinfo[ii][2]):
                 basis_pyscf[ii].append([exps[ii][jj]])
                 for kk in range(basinfo[ii][1]):

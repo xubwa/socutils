@@ -18,7 +18,7 @@ from socutils.prop.efg.rhf import _get_quad_nuc
 
 warnings.warn('Module EFG is under testing')
 
-def kernel(method, efg_nuc=None, dm=None, Xresp=True):
+def kernel(method, efg_nuc=None, dm=None, x_response=True):
     log = lib.logger.Logger(method.stdout, method.verbose)
     log.info('\n******** EFG for 2-component SCF methods (In testing) ********')
     xmol, contr_coeff_nr = method.with_x2c.get_xmol(method.mol)
@@ -40,7 +40,8 @@ def kernel(method, efg_nuc=None, dm=None, Xresp=True):
     v = mol.intor('int1e_nuc_spinor')
     w = mol.intor('int1e_spnucsp_spinor')
     a, e, xmat, st, r, l, h4c, m4c = x2c_grad.x2c1e_hfw0(t, v, w, s)
-
+    h4c = method.with_x2c.h4c
+    m4c = method.with_x2c.m4c
     log.info('\nElectric Field Gradient Tensor Results')
     efg = []
     for i, atm_id in enumerate(efg_nuc):
@@ -48,11 +49,14 @@ def kernel(method, efg_nuc=None, dm=None, Xresp=True):
         efg_e = np.zeros((3,3), dtype=dm.dtype)
         for x in range(3):
             for y in range(x+1):
-                if Xresp:
-                    int_2c = x2c_grad.get_hfw1(a, xmat, st, m4c, h4c, e, r, l, int_4c[x,y])
-                else:
-                    from socutils.somf.eamf import to_2c
-                    int_2c = to_2c(xmat, r, int_4c[x,y])
+                #if Xresp:
+                #    #int_2c = x2c_grad.get_hfw1(a, xmat, st, m4c, h4c, e, r, l, int_4c[x,y])
+                #    int_2c = method.with_x2c.get_hfw1(int_4c[x,y], xresp=True)
+                #else:
+                #    #from socutils.somf.eamf import to_2c
+                #    #int_2c = to_2c(xmat, r, int_4c[x,y])
+                #    int_2c = method.with_x2c.get_hfw1(int_4c[x,
+                int_2c = method.with_x2c.get_hfw1(int_4c[x,y], x_response=x_response)
                 int_2c = reduce(np.dot, (contr_coeff.T.conj(), int_2c, contr_coeff))
                 efg_e[x,y] = np.einsum('ij,ji->', int_2c, dm)
                 efg_e[y,x] = efg_e[x,y]
