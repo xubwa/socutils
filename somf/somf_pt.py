@@ -90,7 +90,11 @@ def get_psoc_x2camf(mol, gaunt=True, gauge=True, atm_pt=True, form="scalar"):
 
 
 def get_psoc_x2c1e(mol, form = "scalar"):
-    xmol, contr_coeff = sfx2c1e.SpinFreeX2C(mol).get_xmol()
+    xmol, contr_coeff_nr = sfx2c1e.SpinFreeX2C(mol).get_xmol()
+    np, nc = contr_coeff_nr.shape
+    contr_coeff = numpy.zeros((np * 2, nc * 2))
+    contr_coeff[0::2, 0::2] = contr_coeff_nr
+    contr_coeff[1::2, 1::2] = contr_coeff_nr
 
     c = LIGHT_SPEED
     wsf = xmol.intor('int1e_pnucp_spinor')
