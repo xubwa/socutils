@@ -21,7 +21,7 @@ warnings.warn('Module G-factor is under testing')
 
 from socutils.prop.gfac.spinor_hf import int_gfac_4c
 
-def kernel(method, utm=False, dm=None):
+def kernel(method, utm=False, h4c_scheme='fock', dm=None, h4c_inp=None):
     log = lib.logger.Logger(method.stdout, method.verbose)
     log.info('\n******** G-factor for 4-component SCF methods (In testing) ********')
     
@@ -38,12 +38,22 @@ def kernel(method, utm=False, dm=None):
     h4c = np.zeros((n2c*2, n2c*2), dtype=v.dtype)
     m4c = np.zeros((n2c*2, n2c*2), dtype=v.dtype)
     c = LIGHT_SPEED
-    h4c[:n2c, :n2c] = v
-    h4c[:n2c, n2c:] = t
-    h4c[n2c:, :n2c] = t
-    h4c[n2c:, n2c:] = w * (.25 / c**2) - t
-    m4c[:n2c, :n2c] = s
-    m4c[n2c:, n2c:] = t * (.5 / c**2)
+    if h4c_scheme == '1e':
+        h4c[:n2c, :n2c] = v
+        h4c[:n2c, n2c:] = t
+        h4c[n2c:, :n2c] = t
+        h4c[n2c:, n2c:] = w * (.25 / c**2) - t
+        m4c[:n2c, :n2c] = s
+        m4c[n2c:, n2c:] = t * (.5 / c**2)
+    elif h4c_scheme == 'fock':
+        h4c = method.get_fock()
+        m4c = method.get_ovlp()
+    else:
+        raise ValueError
+    if h4c_inp is not None:
+        print('hehe')
+        h4c = h4c_inp
+    print('utm=', utm, h4c_scheme)
     int_4c = int_gfac_4c(mol, utm=utm, h4c=h4c, m4c_inv=scipy.linalg.inv(m4c))
 
     xyz = ['x', 'y', 'z']

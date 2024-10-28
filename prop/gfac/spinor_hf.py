@@ -87,7 +87,7 @@ def int_gfac_2c(method, utm=True):
 
     return np.array(int2c)
 
-def kernel(method, dm=None, utm=True):
+def kernel(method, dm=None, utm=True, x_response=True):
     log = lib.logger.Logger(method.stdout, method.verbose)
     log.info('\n******** G-factor for 2-component SCF methods (In testing) ********')
     xmol, contr_coeff_nr = method.with_x2c.get_xmol(method.mol)
@@ -104,6 +104,7 @@ def kernel(method, dm=None, utm=True):
     w = xmol.intor('int1e_spnucsp_spinor')
     from socutils.somf import x2c_grad
     a, e, x, st, r, l, h4c, m4c = x2c_grad.x2c1e_hfw0(t, v, w, s)
+    h1e_4c = h4c.copy()
     m4c_inv = np.dot(a, a.T.conj())
 
     h4c = method.with_x2c.h4c
@@ -113,7 +114,7 @@ def kernel(method, dm=None, utm=True):
     gfac = np.zeros(3)
     for xx in range(3):
         #int_2c = x2c_grad.get_hfw1(a, x, st, m4c, h4c, e, r, l, int_4c[xx])
-        int_2c = method.with_x2c.get_hfw1(int_4c[xx])
+        int_2c = method.with_x2c.get_hfw1(int_4c[xx], x_response=x_response)
         int_2c = reduce(np.dot, (contr_coeff.T.conj(), int_2c, contr_coeff))
         gfac[xx] = np.einsum('ij,ji->', int_2c, dm).real
         print('G-factor for %s: %.10f' % (xyz[xx], gfac[xx]))
@@ -144,8 +145,10 @@ def get_hcore(x2cobj, mol, B_field = [0.0, 0.0, 0.0], sph = False):
     h4c[n2c:, n2c:] = w * (.25 / c**2) - t
     m4c[:n2c, :n2c] = s
     m4c[n2c:, n2c:] = t * (.5 / c**2)
-    
-    gfac_4c = int_gfac_4c(xmol, utm = True, h4c = h4c, m4c_inv = scipy.linalg.inv(m4c))
+   
+    h4c = x2cobj.h4c
+    m4c = x2cobj.m4c
+    gfac_4c = int_gfac_4c(xmol, utm=True, h4c=h4c, m4c_inv=scipy.linalg.inv(m4c))
     for i in range(3):
         h4c += B_field[i] * gfac_4c[i] / c # the factor of half was taken in the integrals
     e, a = scipy.linalg.eigh(h4c, m4c)
@@ -174,6 +177,8 @@ def get_hcore(x2cobj, mol, B_field = [0.0, 0.0, 0.0], sph = False):
         hcore = hso
 
     soc_matrix = x2cobj.get_soc_integrals()
+    if x2cobj.veff_2c is not None:
+        hcore -= x2cobj.veff_2c
 
     return hcore + soc_matrix
 
@@ -187,13 +192,18 @@ if __name__ == '__main__':
     mol = gto.Mole()
     mol.verbose = 4
     mol.output = None
+#    mol.atom = '''
+#C       -0.00000000     0.00000000     1.19902577
+#O        0.00000000     0.00000000    -0.89955523
+#'''
     mol.atom = '''
 C       -0.00000000     0.00000000     1.19902577
-O        0.00000000     0.00000000    -0.89955523
+N        0.00000000     0.00000000    -0.89955523
 '''
     from socutils.tools.basis_parser import parse_genbas
-    mol.basis = {"C": parse_genbas("C:APVTZ-DE4"), "O": parse_genbas("O:APVTZ-DE4")}
-    mol.charge = 1
+    #mol.basis = {"C": parse_genbas("C:APVTZ-DE4"), "O": parse_genbas("O:APVTZ-DE4")}
+    mol.basis='uncaugccpvtz'
+    mol.charge = 0
     mol.spin = 1
     mol.unit = 'bohr'
     mol.nucmod = 'g'
@@ -205,11 +215,14 @@ O        0.00000000     0.00000000    -0.89955523
         mf.chkfile='chk.chk'
         mf.init_guess = 'chkfile'
         mf.with_x2c = x2camf_hf.SpinorX2CAMFHelper(mol, with_gaunt=True, with_breit=True)
+        from socutils.somf import eamf
+        mf.with_x2c = eamf.SpinorEAMFX2CHelper(mol, eamf='eamf', with_gaunt=True, with_breit=True)
+        mf.with_x2c.get_hcore(mol)
         mf.get_hcore = lambda mol = None: get_hcore(x2cobj=mf.with_x2c, mol=mol, B_field=B_field)
         mf.damp = 0.5
         mf.diis_start_cycle = 30
         mf.max_cycle = 100
-        mf.conv_tol = 1e-14
+        mf.conv_tol = 1e-12
         return mf
     mf = mfobj([0.0, 0.0, 0.0])
     mf.kernel()

@@ -8,7 +8,7 @@ from pyscf.mcscf import addons
 from pyscf.lib import logger
 
 
-def mc_diis(mc, mo_coeff, mo_cap=None, conv_tol=None, conv_tol_grad=None, active_index=None, verbose=logger.INFO, subspace=None, cderi=None, diis_start=10, damp_factor=0.75, trace_orbital=True):
+def mc_diis(mc, mo_coeff, mo_cap=None, conv_tol=None, conv_tol_grad=None, active_index=None, verbose=logger.INFO, subspace=None, cderi=None, diis_start=10, damp_factor=0.75, trace_orbital=True, frozen=None):
     t1m = t2m = t3m = (logger.process_clock(), logger.perf_counter())
     log= logger.new_logger(mc, verbose)
     cput0 = (logger.process_clock(), logger.perf_counter())
@@ -125,33 +125,45 @@ def mc_diis(mc, mo_coeff, mo_cap=None, conv_tol=None, conv_tol_grad=None, active
         grad[:ncore,:ncore]=0.0
         grad[ncore:nocc,ncore:nocc]=0.0
         grad[nocc:,nocc:] = 0.0
+        fock = mc.screen_irrep(fock)
+        grad = mc.screen_irrep(grad)
+        if frozen is not None:
+            fock_keep = fock[frozen, frozen]
+            grad_keep = grad[frozen, frozen]
+            fock[frozen, :] = 0.0
+            fock[:, frozen] = 0.0
+            grad[frozen, :] = 0.0
+            grad[:, frozen] = 0.0
+            fock[frozen, frozen] = fock_keep
+            grad[frozen, frozen] = grad_keep
+
         fock = reduce(np.dot, (s1e, mo, fock, mo.T.conj(), s1e.T.conj()))
 
         ################################################################################################
         # evaluate open shell fock contribution avoid the usage of eri under mo basis.
-        occ_active = mc.nelecas / mc.ncas
-        occ_core = 1.0
-        coupling_active = (mc.nelecas - 1) / (mc.ncas - 1)
+        #occ_active = mc.nelecas / mc.ncas
+        #occ_core = 1.0
+        #coupling_active = (mc.nelecas - 1) / (mc.ncas - 1)
 
-        vhf_active = vhf_a / occ_active
-        fock_mo = np.zeros((nmo, nmo), dtype=complex)
-        fock_active = (h1e_mo+vhf_c) + vhf_active * coupling_active
-        fock_core = h1e_mo + vhf_c + vhf_active * occ_active
-        fock_mo = vhf_c + h1e_mo # fock_c
-        fock_mo[:ncore,:ncore] = fock_core[:ncore,:ncore] # fock_c
-        fock_mo[nocc:,nocc:] = fock_core[nocc:,nocc:] # fock_c
-        fock_mo[nocc:,:ncore] = fock_core[nocc:,:ncore] # fock_c
-        fock_mo[:ncore,nocc:] = fock_core[:ncore:,nocc:] # fock_c
+        #vhf_active = vhf_a / occ_active
+        #fock_mo = np.zeros((nmo, nmo), dtype=complex)
+        #fock_active = (h1e_mo+vhf_c) + vhf_active * coupling_active
+        #fock_core = h1e_mo + vhf_c + vhf_active * occ_active
+        #fock_mo = vhf_c + h1e_mo # fock_c
+        #fock_mo[:ncore,:ncore] = fock_core[:ncore,:ncore] # fock_c
+        #fock_mo[nocc:,nocc:] = fock_core[nocc:,nocc:] # fock_c
+        #fock_mo[nocc:,:ncore] = fock_core[nocc:,:ncore] # fock_c
+        #fock_mo[:ncore,nocc:] = fock_core[:ncore:,nocc:] # fock_c
 
-        fock_mo[:ncore,ncore:nocc] = fock_core[:ncore,ncore:nocc]*1.0 - fock_active[:ncore,ncore:nocc]*occ_active
-        fock_mo[ncore:nocc,:ncore] = fock_mo[:ncore,ncore:nocc].T.conj().copy()
+        #fock_mo[:ncore,ncore:nocc] = fock_core[:ncore,ncore:nocc]*1.0 - fock_active[:ncore,ncore:nocc]*occ_active
+        #fock_mo[ncore:nocc,:ncore] = fock_mo[:ncore,ncore:nocc].T.conj().copy()
 
-        fock_mo[nocc:,ncore:nocc] = fock_active[nocc:,ncore:nocc]*occ_active
-        fock_mo[ncore:nocc,nocc:] = fock_mo[nocc:,ncore:nocc].T.conj()
+        #fock_mo[nocc:,ncore:nocc] = fock_active[nocc:,ncore:nocc]*occ_active
+        #fock_mo[ncore:nocc,nocc:] = fock_mo[nocc:,ncore:nocc].T.conj()
 
-        fock_mo[ncore:nocc,ncore:nocc] = fock_active[ncore:nocc,ncore:nocc]*occ_active
-        
-        fock_ao = reduce(np.dot, (s1e, mo, fock_mo, mo.T.conj(), s1e.T.conj()))
+        #fock_mo[ncore:nocc,ncore:nocc] = fock_active[ncore:nocc,ncore:nocc]*occ_active
+        #
+        #fock_ao = reduce(np.dot, (s1e, mo, fock_mo, mo.T.conj(), s1e.T.conj()))
 
         #print('difference', np.linalg.norm(fock-fock_ao))
         #new block ends.
@@ -167,11 +179,12 @@ def mc_diis(mc, mo_coeff, mo_cap=None, conv_tol=None, conv_tol_grad=None, active
             print(f'damping step with factor {damp_factor}')
             fock = damping(fock, fock_prev, damp_factor)
         log.info(f'cycle {imacro}: E = {e_tot}  dE = {e_tot - e_last}  |g|={np.linalg.norm(grad):.4g}, {np.linalg.norm(grad2):.4g}')
-        if (abs(e_tot - e_last) < conv_tol) and (np.linalg.norm(grad) < conv_tol_grad):
+        if (abs(e_tot - e_last) < conv_tol) and (np.linalg.norm(grad2) < conv_tol_grad):
             conv = True
         e_last = e_tot
         mo_energy, mo = mc._scf.eig(fock, s1e)
-        mo_unsrt = mo.copy()
+        print(mo_energy[:nocc])
+        mo_unsrt = lib.tag_array(mo.copy(), orbsym=mc._scf.irrep_mo)
         #print(mo_energy.irrep_tag)
         if active_index is not None:
             mo = addons.sort_mo(mc, mo, active_index, base=1)
@@ -218,8 +231,9 @@ def mc_diis(mc, mo_coeff, mo_cap=None, conv_tol=None, conv_tol_grad=None, active
                 print(picked_index)
             print(picked_index)
             print(mo_energy[picked_index])
-            mo = addons.sort_mo(mc, mo, picked_index, base=0)
+            mo = addons.sort_mo(mc, lib.tag_array(mo, orbsym=mc._scf.irrep_mo), picked_index, base=0)
         imacro += 1
         mc.mo_coeff = mo
+        mc.irrep = mo.orbsym 
     return mc, mo_unsrt, mo_energy
  

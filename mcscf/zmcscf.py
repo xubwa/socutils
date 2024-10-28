@@ -5,9 +5,9 @@ from pyscf import __config__
 from pyscf.lib import logger
 
 from socutils.scf import spinor_hf
-from . import zcasbase, zcasci
-from .zmc_ao2mo import chunked_cholesky
-from .zmc_superci import mcscf_superci
+from socutils.mcscf import zcasbase, zcasci
+from socutils.mcscf.zmc_ao2mo import chunked_cholesky
+#from .zmc_superci import mcscf_superci
 
 def eig(h, irrep=None):
     if irrep is None:
@@ -211,8 +211,8 @@ class CASSCF(zcasci.CASCI):
         mci = self.view(zcasci.CASCI)
         return mci.kernel(mo_coeff, ci0=ci0, verbose=verbose)
 
+    '''
     def superci(self, mo_coeff=None, ci0=None, callback=None, _kern=mcscf_superci):
-        '''
         Returns:
             Five elements, they are
             total energy,
@@ -223,7 +223,6 @@ class CASSCF(zcasci.CASCI):
 
         They are attributes of mcscf object, which can be accessed by
         .e_tot, .e_cas, .ci, .mo_coeff, .mo_energy
-        '''
         if mo_coeff is None:
             mo_coeff = self.mo_coeff
         else: # overwrite self.mo_coeff because it is needed in many methods of this class
@@ -240,3 +239,4 @@ class CASSCF(zcasci.CASCI):
         logger.note(self, 'CASSCF energy = %#.15g', self.e_tot)
         self._finalize()
         return self.e_tot, self.e_cas, self.ci, self.mo_coeff, self.mo_energy
+    '''

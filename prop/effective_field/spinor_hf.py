@@ -58,7 +58,7 @@ def kernel(method, dm=None, Xresp=True):
     int_2c = reduce(np.dot, (contr_coeff.T.conj(),int_2c, contr_coeff))
     e_eff = np.einsum('ij,ji->', int_2c, dm)
     if e_eff.imag > 1e-10:
-        log.warn('Significant imaginary part found in contact density')
+        log.warn('Significant imaginary part found in effective electric field')
     log.info(f'Effective electric field: {e_eff}')
 
     return e_eff

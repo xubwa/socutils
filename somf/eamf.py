@@ -91,6 +91,7 @@ def eamf(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, nu
         nbas = shell.shape[0]
         nshell = shell[-1] + 1
         atm_ints[atom] = x2camf.libx2camf.atm_integrals(soc_int_flavor, atom_number, nshell, nbas, verbose, shell, exp_a)
+    x2cobj.atomic_integrals = atm_ints
         # results{0 atm_X, 1 atm_R, 2 h1e_4c, 3 fock_4c, 4 fock_2c, 5 fock_4c_2e, 
         #         6 fock_2c_2e, 7 fock_4c_K, 8 fock_2c_K, 9 so_4c, 10 so_2c, 11 den_4c, 12 den_2c};
 
@@ -105,6 +106,8 @@ def eamf(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, nu
     print('amf_type', x2cobj.amf_type)
     x2cobj.h4c = h1e_4c
     x2cobj.m4c = s4c
+    density_2c = construct_molecular_matrix(extract_ith_integral(atm_ints, 12), atom_slices, xmol, n2c, False)
+    x2cobj.density_2c = density_2c
     if x2cobj.amf_type == 'eamf':
         density_4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 11), atom_slices, xmol, n2c, True)
         density_2c = construct_molecular_matrix(extract_ith_integral(atm_ints, 12), atom_slices, xmol, n2c, False)
@@ -158,7 +161,7 @@ def eamf(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, nu
         x, st, r, h2c = x2c1e_hfw0_4cmat(h1e_4c, s4c, xmol)
         mf_2c = scf.X2C(xmol)
         veff_2c = mf_2c.get_veff(dm=density_2c)
-        x2cobj.veff_2c=veff_2c
+        #x2cobj.veff_2c=veff_2c
         heff = to_2c(x, r, h1e_4c) - veff_2c
         h1e_x2c = to_2c(x, r, h1e_4c)
         x2cobj.h4c = h1e_4c
@@ -403,6 +406,8 @@ def eamf(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, nu
         so_2c = spinor2sph.spinor2spinor_sd(xmol, so_2c) 
         return to_2c(x, r, h1e_4c) + so_2c
     elif x2cobj.amf_type == '1e':
+        x2cobj.h4c = h1e_4c
+        x2cobj.m4c = s4c
         x, st, r, h2c = x2c1e_hfw0_4cmat(h1e_4c, s4c, mol=xmol)
         return to_2c(x, r, h1e_4c)
     elif x2cobj.amf_type == 'sf1e':
@@ -418,6 +423,8 @@ def eamf(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, nu
         h1e_4csf[:n2c,n2c:] = t
         h1e_4csf[n2c:,n2c:] = wn * (.25/c**2) - t
         x, st, r, h2c = x2c1e_hfw0_4cmat(h1e_4csf, s4c, mol=xmol)
+        x2cobj.h4c = h1e_4csf
+        x2cobj.m4c = s4c
         return to_2c(x, r, h1e_4csf)
     elif x2cobj.amf_type == 'x2camf_axr':
         atm_x = construct_molecular_matrix(extract_ith_integral(atm_ints, 0), atom_slices, xmol, n2c, False)
@@ -472,11 +479,16 @@ class SpinorEAMFX2CHelper(x2c.x2c.SpinorX2CHelper):
             chkfile.dump(filename, 'eamf_integral', self.eamf())
         else:
             chkfile.dump(filename, 'eamf_integral', self.hcore())
+        chkfile.dump(filename, 'soc_integral', self.soc_matrix)
 
     def load_hcore(self, filename='eamf.chk'):
         self.hcore = chkfile.load(filename, 'eamf_integral')
+        self.soc_matrix = chkfile.load(filename, 'soc_integral')
 
-    def get_hfw1(self, h4c1, s4c1=None):
+    def get_soc_integrals(self):
+        return self.soc_matrix
+
+    def get_hfw1(self, h4c1, s4c1=None, x_response=True):
         if self.h4c is None:
             self.get_hcore()
         n4c = self.h4c.shape[0]
@@ -489,7 +501,32 @@ class SpinorEAMFX2CHelper(x2c.x2c.SpinorX2CHelper):
         sSS = self.m4c[n2c:,n2c:]
 
         a, e, x, st, r, l, h4c, m4c = x2c_grad.x2c1e_hfw0_block(hLL, hSL, hLS, hSS, sLL, sSS)
-        return x2c_grad.get_hfw1(a, x, st, m4c, h4c, e, r, l, h4c1, s4c1)
+        if x_response is True:
+            hfw1 = x2c_grad.get_hfw1(a, x, st, m4c, h4c, e, r, l, h4c1, s4c1)
+        else:
+            hfw1 = to_2c(x, r, h4c1)
+        return hfw1
+    
+    def get_xr(self):
+        if self.h4c is None:
+            self.get_hcore(self.mol)
+        h4c = self.h4c
+        s4c = self.m4c
+        xmol = self.get_xmol()
+        x, st, r, h2c = x2c1e_hfw0_4cmat(h4c, s4c, xmol)
+        return x, r
+
+    def to_4c_coeff(self, c2c):
+        x, r = self.get_xr()
+        cl = np.dot(r, c2c)
+        cs = np.dot(x, cl)
+        n2c = c2c.shape[0]
+        dtype = c2c.dtype
+        c4c = np.zeros((n2c*2,n2c*2), dtype=dtype)
+        c4c[:n2c, n2c:] = cl
+        c4c[n2c:, n2c:] = cs
+        return c4c
+
 class SpinOrbitalEAMFX2CHelper(x2c.x2c.SpinOrbitalX2CHelper):
     hcore = None
     def __init__(self, mol, eamf='eamf', with_gaunt=False, with_breit=False, with_pcc=True, with_aoc=False):
