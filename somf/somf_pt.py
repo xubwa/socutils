@@ -1,13 +1,15 @@
 import numpy, scipy
 import time
 from functools import reduce
-from pyscf import gto, scf, lib
+from pyscf import gto, scf, lib, dft
 from pyscf.gto import moleintor
 from pyscf.lib.parameters import LIGHT_SPEED
 from pyscf.x2c import x2c
 from pyscf.x2c import sfx2c1e
 from socutils.somf import x2c_grad
 from socutils.tools.spinor2sph import spinor2sph_soc
+from socutils.scf.spinor_hf import sph2spinor, SpinorSCF
+from socutils.dft.dft import SpinorDFT
 
 x2camf  = None
 try:
@@ -16,7 +18,7 @@ except ImportError:
     pass
 
 def get_psoc_x2camf(mol, gaunt=True, gauge=True, atm_pt=True, form="scalar"):
-    '''
+    r'''
     Perturbative treatment of spin-orbit coupling within X2CAMF scheme.
     The SOC contributions are evaluated in a consistent way to include only first-order terms.
 
@@ -125,6 +127,105 @@ def get_psoc_x2c1e(mol, form = "scalar"):
         return hfw1
     else:
         raise ValueError("Unknown form")
+
+def get_soc_bp1e(mol, form = "scalar"):
+    nao = mol.nao_nr()
+    hfw_scalar = mol.intor("int1e_pnucxp").reshape(3,nao,nao) / 2.0 / LIGHT_SPEED**2 / 2.0 # another 2.0 for spin operator
+    if form == "scalar":
+        return hfw_scalar
+    hfw_sph = scalar2sph(mol, hfw_scalar)
+    if form == "sph":
+        return hfw_sph
+    elif form == "spinor":
+        return sph2spinor(mol, hfw_sph)
+    else:
+        raise ValueError("Unknown form")
+
+def scalar2sph(mol, ints_scalar):
+    # Construct 2c matrix using Pauli matrices
+    nao = mol.nao_nr()
+    assert ints_scalar.shape[0] == 3
+    ints_sph = numpy.zeros((nao*2,nao*2), dtype=numpy.complex128)
+    ints_sph[:nao,:nao] = 1.0j*ints_scalar[2]
+    ints_sph[nao:,nao:] = -1.0j*ints_scalar[2]
+    ints_sph[:nao,nao:] = 1.0j*ints_scalar[0] + ints_scalar[1]
+    ints_sph[nao:,:nao] = 1.0j*ints_scalar[0] - ints_scalar[1]
+    return ints_sph
+
+def _get_soc_mf_rhf(mol, dm, soo = True):
+    from pyscf.scf import jk
+    fac = 0.5*0.5 / LIGHT_SPEED**2 # another 0.5 for RHF density
+    fso_0, fso_1, fso_2 = jk.get_jk(
+        mol, [dm, dm, dm],
+        scripts=['ijkl,lk->ij', 'ijkl,jk->il', 'ijkl,li->kj'],
+        intor='cint2e_p1vxp1_sph')
+    if soo:
+        return fac * (fso_0 - 1.5*fso_1 - 1.5*fso_2)
+    else:
+        output = numpy.zeros_like(fso_0)
+        output[0] = fac*(0.5*fso_0[0] - 0.5*fso_1[0] - 0.5*fso_2[0])
+        output[1] = fac*(0.5*fso_0[1] - 0.5*fso_1[1] - 0.5*fso_2[1])
+        output[2] = fac*(fso_0[2] - 0.5*fso_1[2] - 0.5*fso_2[2])
+        return output
+    
+def _get_soc_mf_bp(mol, dmaa, dmbb, dmab, soo = True):
+    s_vec = [[[0, 0, 0.5], [0.5, -0.5j, 0]], [[0.5, 0.5j, 0], [0, 0, -0.5]]]
+    nao = mol.nao_nr()
+    dm = numpy.zeros((2*nao,2*nao), dtype=numpy.complex128)
+    dm[:nao,:nao] = dmaa
+    dm[nao:,nao:] = dmbb
+    dm[:nao,nao:] = dmab
+    dm[nao:,:nao] = dmab.conj().T
+    rp_ints = mol.intor("int2e_p1vxp1", comp=3).reshape(3,nao,nao,nao,nao)
+    soc2_ints = numpy.zeros((2*nao,2*nao,2*nao,2*nao), dtype=numpy.complex128)
+    for a1 in range(2):
+        for a2 in range(2):
+            for b1 in range(2):
+                for b2 in range(2):
+                    tmp = numpy.zeros((nao,nao,nao,nao), dtype=numpy.complex128)
+                    for k in range(3):
+                        tmp += s_vec[a1][b1][k] * rp_ints[k] if a2 == b2 else 0
+                        if soo:
+                            tmp += 2.0* s_vec[a2][b2][k] * rp_ints[k] if a1 == b1 else 0
+                    soc2_ints[a1*nao:(a1+1)*nao, b1*nao:(b1+1)*nao, a2*nao:(a2+1)*nao, b2*nao:(b2+1)*nao] = 1j* tmp / LIGHT_SPEED**2
+    soc2_ints = 0.5*(soc2_ints + soc2_ints.transpose(2,3,0,1))
+    return numpy.einsum("msnr,sm->nr", soc2_ints, dm, optimize=True) - numpy.einsum("mrns,sm->nr", soc2_ints, dm, optimize=True)
+
+
+def get_soc_mf_bp(mf, mol = None, dm = None, soo = True):
+    r'''
+    Mean-field approximated SOC integrals for Breit-Pauli Hamiltonian,
+    including the one-electron and two-electron parts.
+
+    Args:
+        mf: scf object
+        soo: include spin-other-orbit integrals
+
+    Returns:
+        Mean-field approximated SOC integrals. 
+        The format depends on the input mf object:
+            JHF: integrals in spinor basis
+            GHF: integrals in two-component spherical basis
+            RHF/UHF: integrals in scalar basis
+            ROHF: not supported
+    '''
+    if mol is None:
+        mol = mf.mol
+    if dm is None:
+        dm = mf.make_rdm1()
+    nao = mol.nao_nr()
+    
+    if isinstance(mf, scf.uhf.UHF) or isinstance(mf, dft.uks.UKS):
+        raise NotImplementedError("Unrestricted density matrix is not supported.")
+    elif isinstance(mf, scf.hf.RHF) or isinstance(mf, dft.rks.RKS):
+        return get_soc_bp1e(mol, form = "scalar") + _get_soc_mf_rhf(mol, dm, soo)
+    elif isinstance(mf, scf.ghf.GHF) or isinstance(mf, dft.gks.GKS):
+        return _get_soc_mf_bp(mol, dm[:nao,:nao], dm[nao:,nao:], dm[:nao,nao:], soo)\
+              + get_soc_bp1e(mol, form = "sph")
+    elif isinstance(mf, SpinorSCF) or isinstance(mf, SpinorDFT):
+        raise NotImplementedError("Spinor mean-field is not supported.")
+    else:
+        raise ValueError("Unknown density matrix shape.")
 
 '''
 First-order properties
