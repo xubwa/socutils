@@ -87,7 +87,7 @@ def kernel(cc, eris, t1=None, t2=None, verbose=logger.INFO, alg='vir_loop'):
             #v  -= einsum('a,bc->abc', t1[i], numpy.asarray(eris.oovv[j,k]).conj())
             #w  = einsum('ae,ebc->abc', t2[j,k], ovvv[i])
             w = einsum('ae,bce->abc', t2[j,k], ovvv[i])
-            w += einsum('bcm,am->abc', t2[i], ooov[j,k])
+            w += einsum('bcm,am->abc', t2T[i], ooov[j,k])
             v = w
             v  -= einsum('a,bc->abc', t1[i], oovv[j,k])
             w = w + w.transpose(2,0,1) + w.transpose(1,2,0)

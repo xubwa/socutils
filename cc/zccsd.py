@@ -86,6 +86,7 @@ class ZCCSD(gccsd.GCCSD):
         ccsd.CCSD.__init__(self, mf, frozen, mo_coeff, mo_occ)
         self.with_mmf = with_mmf
         self.feri = erifile
+        self.eris = None
         if not isinstance(mf, scf.dhf.DHF) and self.with_mmf:
             print('WARNING! SCF reference is not four component, with_mmf option is doing nothing')
 
@@ -95,13 +96,47 @@ class ZCCSD(gccsd.GCCSD):
         nmo = self.nmo
         if mo_coeff is None:
             mo_coeff=self.mo_coeff
-        return _make_eris_outcore(self, mo_coeff, self.feri, swapfile)
+        self.eris = _make_eris_outcore(self, mo_coeff, self.feri, swapfile)
+        return self.eris
 
-    def ccsd_t(self, t1=None, t2=None, eris=None, alg='vir_loop'):
+    def ccsd(self, t1=None, t2=None, eris=None, mbpt2=None):
+        if eris is None:
+            if self.eris is None:
+                eris = self.ao2mo(self.mo_coeff)
+                self.eris = eris
+            else:
+                eris = self.eris
+
+        if mbpt2:
+            from pyscf.mp import gmp2
+            pt = gmp2.GMP2(self._scf, self.frozen, self.mo_coeff, self.mo_occ)
+            self.e_corr, self.t2 = pt.kernel(eris=eris)
+            nocc, nvir = self.t2.shape[1:3]
+            self.t1 = np.zeros((nocc,nvir))
+            return self.e_corr, self.t1, self.t2
+
+        # Initialize orbspin so that we can attach it to t1, t2
+        if getattr(self.mo_coeff, 'orbspin', None) is None:
+            orbspin = scf.ghf.guess_orbspin(self.mo_coeff)
+            if not np.any(orbspin == -1):
+                self.mo_coeff = lib.tag_array(self.mo_coeff, orbspin=orbspin)
+
+        e_corr, self.t1, self.t2 = ccsd.CCSDBase.ccsd(self, t1, t2, eris)
+        if getattr(eris, 'orbspin', None) is not None:
+            self.t1 = lib.tag_array(self.t1, orbspin=eris.orbspin)
+            self.t2 = lib.tag_array(self.t2, orbspin=eris.orbspin)
+        return e_corr, self.t1, self.t2
+
+
+    def ccsd_t(self, t1=None, t2=None, eris=None, alg='occ_loop'):
         from socutils.cc import gccsd_t
         if t1 is None: t1 = self.t1
         if t2 is None: t2 = self.t2
-        if eris is None: eris = self.ao2mo(self.mo_coeff)
+        if eris is None:
+            if self.eris is None:
+                eris = self.ao2mo(self.mo_coeff)
+            else:
+                eris = self.eris
         return gccsd_t.kernel(self, eris, t1, t2, self.verbose, alg=alg)
 
 class _PhysicistsERIs(gccsd._PhysicistsERIs):
