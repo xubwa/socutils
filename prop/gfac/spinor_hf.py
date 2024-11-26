@@ -60,7 +60,7 @@ def int_gfac_4c(mol, utm=False, h4c=None, m4c_inv=None):
             utm_tau[n2c:, :n2c] = int_4c[xx][n2c:, :n2c]/2.0/LIGHT_SPEED**2
             int_4c[xx] += reduce(np.dot, (h4c, m4c_inv, utm_tau)) - reduce(np.dot, (utm_tau, m4c_inv, h4c))
 
-    return int_4c
+    return np.array(int_4c)
 
 def int_gfac_2c(method, utm=True):
     mol = method.mol
@@ -86,6 +86,34 @@ def int_gfac_2c(method, utm=True):
         int2c.append(reduce(np.dot, (contr_coeff.T.conj(), hfw1, contr_coeff)))
 
     return np.array(int2c)
+
+def int_gfac_2c_nr(method):
+    from socutils.scf.spinor_hf import sph2spinor
+    mol = method.mol
+    nao = mol.nao_nr()
+    
+    # r_i nabla_j
+    xnx, xny, xnz, ynx, yny, ynz, znx, zny, znz = mol.intor("int1e_irp", comp=9)
+    ovlp = mol.intor("int1e_ovlp")
+    int_2c = np.zeros((3, nao*2, nao*2), dtype=complex)
+    for xx in range(3):
+        if xx == 0:
+            int_2c[xx, :nao, nao:] = 0.5*G_ELECTRON*ovlp
+            int_2c[xx, nao:, :nao] = 0.5*G_ELECTRON*ovlp
+            int_2c[xx, :nao, :nao] = 1.0j*(ynz - zny)
+            int_2c[xx, nao:, nao:] = 1.0j*(ynz - zny)
+        elif xx == 1:
+            int_2c[xx, :nao, nao:] = -0.5j*G_ELECTRON*ovlp
+            int_2c[xx, nao:, :nao] = 0.5j*G_ELECTRON*ovlp
+            int_2c[xx, :nao, :nao] = 1.0j*(znx - xnz)
+            int_2c[xx, nao:, nao:] = 1.0j*(znx - xnz)
+        else:
+            int_2c[xx, :nao, :nao] = 0.5*G_ELECTRON*ovlp + 1.0j*(xny - ynx)
+            int_2c[xx, nao:, nao:] = -0.5*G_ELECTRON*ovlp + 1.0j*(xny - ynx)
+        
+        int_2c[xx] = sph2spinor(mol, int_2c[xx])*0.5
+
+    return np.array(int_2c)
 
 def kernel(method, dm=None, utm=True, x_response=True):
     log = lib.logger.Logger(method.stdout, method.verbose)
