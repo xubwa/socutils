@@ -26,6 +26,7 @@ import scipy
 from pyscf import lib
 from pyscf.lib import logger
 from pyscf.grad import rhf as rhf_grad
+from socutils.somf import x2c_grad
 
 from numpy.linalg import norm
 
@@ -62,12 +63,6 @@ def grad_elec(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
     for k, ia in enumerate(atmlst):
         shl0, shl1, p0, p1 = aoslices[ia]
         h1ao = hcore_deriv(ia)
-        if dm0.dtype is not numpy.complex128:
-            new_dm0 = numpy.zeros(dm0.shape, dtype=numpy.complex128)
-            new_dm0 += dm0
-            dm0 = new_dm0
-        if dm0.dtype is numpy.complex128:
-            h1ao = h1ao * (1+0.j)
 
         if h1ao.shape[-1] != dm0.shape[-1]:
             h1ao = numpy.asarray([scipy.linalg.block_diag(h1ao[i],h1ao[i]) for i in range(3)])
@@ -85,31 +80,63 @@ def grad_elec(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
         rhf_grad._write(log, mol, de, atmlst)
     return de.real
 
-def get_veff(mf_grad, mol, dm):
+def get_jk(mf_grad, mol = None, dm = None):
+    '''
+    First order derivative of HF Coulomb and exchange matrix (wrt electron coordinates)
+
+    Args:
+        mf_grad : grad.uhf.Gradients or grad.uks.Gradients object
+    '''
+    if mol is None: mol = mf_grad.mol
+    if dm is None: dm = mf_grad.base.make_rdm1()
+    nao = mol.nao_nr()
+
+    # Density matrix preprocessing
+    dms = numpy.asarray(dm)
+    out_shape = dms.shape[:-2] + (3,) + dms.shape[-2:]
+    dms = dms.reshape(-1,nao*2,nao*2)
+    nset = dms.shape[0]
+
+    vj = numpy.zeros((nset, 3, nao*2, nao*2), dm.dtype)
+    vk = numpy.zeros((nset, 3, nao*2, nao*2), dm.dtype)
+
+    dms_spin = []
+
+    for i in range(nset):
+        dmi = dms[i]
+        dmaa = dmi[:nao, :nao]
+        dmbb = dmi[nao:, nao:]
+        dmab = dmi[:nao, nao:]
+        dmba = dmi[nao:, :nao]
+        dms_spin.append((dmaa, dmbb, dmab, dmba))
+
+    dms_spin = numpy.asarray(dms_spin).reshape(-1, nao, nao)
+    j1, k1 = rhf_grad.get_jk(mol, dms_spin)
+    j1 = j1.reshape(nset, 4, 3, nao, nao)
+    k1 = k1.reshape(nset, 4, 3, nao, nao)
+ 
+    vj[:, :, :nao,:nao] = j1[:,0] + j1[:,1]
+    vj[:, :, nao:,nao:] = j1[:,0] + j1[:,1]
+    vk[:, :, :nao,:nao] = k1[:,0]
+    vk[:, :, nao:,nao:] = k1[:,1]
+    vk[:, :, :nao,nao:] = k1[:,2]
+    vk[:, :, nao:,:nao] = k1[:,3]
+
+    vj = vj.reshape(out_shape)
+    vk = vk.reshape(out_shape)
+
+    return vj, vk
+
+def get_veff(mf_grad, mol = None, dm = None):
     '''
     First order derivative of HF potential matrix (wrt electron coordinates)
 
     Args:
         mf_grad : grad.uhf.Gradients or grad.uks.Gradients object
     '''
-    nao = mol.nao_nr()
-    dmaa = dm[:nao, :nao]
-    dmbb = dm[nao:, nao:]
-    dmab = dm[:nao, nao:]
-    dmba = dm[nao:, :nao]
-    dms = numpy.stack((dmaa, dmbb, dmab, dmba))
-
-    j1, k1 = mf_grad.get_jk(mol, dms)
-    j1[0].shape
-    vj = numpy.zeros((3, nao*2, nao*2), dm.dtype)
-    vk = numpy.zeros((3, nao*2, nao*2), dm.dtype)
-
-    vj[:, :nao,:nao] = j1[0] + j1[1]
-    vj[:, nao:,nao:]=j1[0] + j1[1]
-    vk[:, :nao,:nao]=k1[0]
-    vk[:, nao:,nao:]=k1[1]
-    vk[:, :nao,nao:]=k1[2]
-    vk[:, nao:,:nao]=k1[3]
+    if mol is None: mol = mf_grad.mol
+    if dm is None: dm = mf_grad.base.make_rdm1()
+    vj, vk = get_jk(mf_grad, mol, dm)
 
     return vj - vk
 
@@ -127,6 +154,11 @@ class Gradients(rhf_grad.GradientsMixin):
         if mol is None: mol = self.mol
         if dm is None: dm = self.base.make_rdm1()
         return get_veff(self, mol, dm)
+    
+    def get_jk(self, mol=None, dm=None):
+        if mol is None: mol = self.mol
+        if dm is None: dm = self.base.make_rdm1()
+        return get_jk(self, mol, dm)
 
     def make_rdm1e(self, mo_energy=None, mo_coeff=None, mo_occ=None):
         if mo_energy is None: mo_energy = self.base.mo_energy
