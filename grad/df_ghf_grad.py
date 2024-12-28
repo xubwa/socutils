@@ -48,14 +48,14 @@ def get_jk(mf_grad, mol = None, dm = None):
     dms = dms.reshape(-1,nao*2,nao*2)
     nset = dms.shape[0]
 
-    vj = numpy.zeros((nset, 3, nao*2, nao*2), dm.dtype)
-    vk = numpy.zeros((nset, 3, nao*2, nao*2), dm.dtype)
+    vj = numpy.zeros((nset, 3, nao*2, nao*2), dms[0].dtype)
+    vk = numpy.zeros((nset, 3, nao*2, nao*2), dms[0].dtype)
     vj_aux = numpy.zeros((nset, nset, natom, 3))
     vk_aux = numpy.zeros((nset, nset, natom, 3))
 
     dms_spin = []
 
-    if not (dm.dtype == numpy.complex128):
+    if not (dms[0].dtype == numpy.complex128):
         for i in range(nset):
             dmi = dms[i]
             dmaa = dmi[:nao, :nao]
@@ -66,8 +66,8 @@ def get_jk(mf_grad, mol = None, dm = None):
 
         dms_spin = numpy.asarray(dms_spin).reshape(-1, nao, nao)
         j1, k1 = rhf_grad.get_jk(mf_grad, mol, dms_spin, hermi=0)
-        j1aux = j1.aux.reshape(nset, nset, 4, 4, natom, 3)
-        k1aux = k1.aux.reshape(nset, nset, 4, 4, natom, 3)
+        j1aux = j1.aux.reshape(nset, 4, nset, 4, natom, 3).transpose(0,2,1,3,4,5)
+        k1aux = k1.aux.reshape(nset, 4, nset, 4, natom, 3).transpose(0,2,1,3,4,5)
         j1 = j1.reshape(nset, 4, 3, nao, nao)
         k1 = k1.reshape(nset, 4, 3, nao, nao)
         
@@ -97,8 +97,8 @@ def get_jk(mf_grad, mol = None, dm = None):
 
         dms_spin = numpy.asarray(dms_spin).reshape(-1, nao, nao)
         j1, k1 = rhf_grad.get_jk(mf_grad, mol, dms_spin, hermi=0)
-        j1aux = j1.aux.reshape(nset*2, nset*2, 4, 4, natom, 3)
-        k1aux = k1.aux.reshape(nset*2, nset*2, 4, 4, natom, 3)
+        j1aux = j1.aux.reshape(2*nset, 4, 2*nset, 4, natom, 3).transpose(0,2,1,3,4,5)
+        k1aux = k1.aux.reshape(2*nset, 4, 2*nset, 4, natom, 3).transpose(0,2,1,3,4,5)
         j1 = j1.reshape(2*nset, 4, 3, nao, nao)
         k1 = k1.reshape(2*nset, 4, 3, nao, nao)
         j1r = j1[:nset]

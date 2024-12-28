@@ -101,12 +101,12 @@ def get_jk(mf_grad, mol = None, dm = None):
     dms = dms.reshape(-1,nao*2,nao*2)
     nset = dms.shape[0]
 
-    vj = numpy.zeros((nset, 3, nao*2, nao*2), dm.dtype)
-    vk = numpy.zeros((nset, 3, nao*2, nao*2), dm.dtype)
+    vj = numpy.zeros((nset, 3, nao*2, nao*2), dms[0].dtype)
+    vk = numpy.zeros((nset, 3, nao*2, nao*2), dms[0].dtype)
 
     dms_spin = []
 
-    if not (dm.dtype == numpy.complex128):
+    if not (dms[0].dtype == numpy.complex128):
         for i in range(nset):
             dmi = dms[i]
             dmaa = dmi[:nao, :nao]
