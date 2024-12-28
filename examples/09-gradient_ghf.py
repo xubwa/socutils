@@ -1,19 +1,20 @@
 from pyscf import scf, gto
 from socutils.grad import ghf_grad # for GHF.Gradients
+from socutils.grad import df_ghf_grad
 
 def mfobj(dx):
     mol = gto.Mole()
     mol.verbose = 0
-    mol.atom = [["I", (0.0, 0.0, 0.0)],
-                ["H", (0.0, 1.0, 1.0+dx)],
-                ["H", (0.0, -1.0, 2.0)]]
-    mol.basis = {"H": 'cc-pvdz', "I": 'cc-pvtz-dk'}
+    mol.atom = [["Te", (0.0, 0.0, 0.0)],
+                ["H", (0.0, 2.0, 2.0+dx)],
+                ["H", (0.0, -2.0, 2.0)]]
+    mol.basis = {"H": 'cc-pvdz', "Te": 'cc-pvtz-dk'}
     mol.charge = 0
-    mol.spin = 1
+    mol.spin = 0
     mol.unit = "Bohr"
     mol.build()
 
-    mf = scf.GHF(mol).x2c1e() #.denisty_fit() # enable density fitting
+    mf = scf.GHF(mol).x2c1e()#.density_fit() # enable density fitting
     # overwrite with_x2c to enable x2camf
     # from socutils.somf import amf
     # mf.with_x2c = amf.SpinOrbitalX2CAMFHelper(mol, with_gaunt=True, with_breit=True)

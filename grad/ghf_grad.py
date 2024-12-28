@@ -64,14 +64,14 @@ def grad_elec(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
         shl0, shl1, p0, p1 = aoslices[ia]
         h1ao = hcore_deriv(ia)
 
-        if h1ao.shape[-1] != dm0.shape[-1]:
+        if h1ao.shape[-1] == dm0.shape[-1]//2:
             h1ao = numpy.asarray([scipy.linalg.block_diag(h1ao[i],h1ao[i]) for i in range(3)])
 
         # Be careful with the contraction order when h1, vhf1, and dm0 are complex
         de[k] += numpy.einsum('xij,ji->x', h1ao, dm0)
         de[k] += numpy.einsum('xij,ji->x', vhf[:,p0:p1], dm0[:,p0:p1]) * 2
         de[k] += numpy.einsum('xij,ji->x', vhf[:,p0+nao:p1+nao], dm0[:,p0+nao:p1+nao]) * 2
-        # s1 is real
+        # s1 is real for ghf
         de[k] -= numpy.einsum('xij,ji->x', s1[:,p0:p1], dme0[:nao,p0:p1]) * 2
         de[k] -= numpy.einsum('xij,ji->x', s1[:,p0:p1], dme0[nao:,p0+nao:p1+nao]) * 2
 
@@ -80,6 +80,8 @@ def grad_elec(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
     if log.verbose >= logger.DEBUG:
         log.debug('gradients of electronic part')
         rhf_grad._write(log, mol, de, atmlst)
+
+    mf_grad.de_elec = de.real
     return de.real
 
 def get_jk(mf_grad, mol = None, dm = None):
@@ -185,6 +187,10 @@ def make_rdm1e(mo_energy, mo_coeff, mo_occ):
 class Gradients(rhf_grad.GradientsMixin):
     '''Non-relativistic generalized Hartree-Fock gradients
     '''
+    def __init__(self, method):
+        rhf_grad.GradientsMixin.__init__(self, method)
+        self.de_elec = None
+
     def get_veff(self, mol=None, dm=None):
         if mol is None: mol = self.mol
         if dm is None: dm = self.base.make_rdm1()
