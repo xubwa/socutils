@@ -67,14 +67,16 @@ def grad_elec(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
         if h1ao.shape[-1] != dm0.shape[-1]:
             h1ao = numpy.asarray([scipy.linalg.block_diag(h1ao[i],h1ao[i]) for i in range(3)])
 
-        de[k] += numpy.einsum('xij,ij->x', h1ao, dm0)
-# s1, vhf are \nabla <i|h|j>, the nuclear gradients = -\nabla
-        de[k] += numpy.einsum('xij,ij->x', vhf[:,p0:p1], dm0[p0:p1]) * 2
-        de[k] += numpy.einsum('xij,ij->x', vhf[:,p0+nao:p1+nao], dm0[p0+nao:p1+nao]) * 2
-        de[k] -= numpy.einsum('xij,ij->x', s1[:,p0:p1], dme0[p0:p1,:nao]) * 2
-        de[k] -= numpy.einsum('xij,ij->x', s1[:,p0:p1], dme0[p0+nao:p1+nao,nao:]) * 2
+        # Be careful with the contraction order when h1, vhf1, and dm0 are complex
+        de[k] += numpy.einsum('xij,ji->x', h1ao, dm0)
+        de[k] += numpy.einsum('xij,ji->x', vhf[:,p0:p1], dm0[:,p0:p1]) * 2
+        de[k] += numpy.einsum('xij,ji->x', vhf[:,p0+nao:p1+nao], dm0[:,p0+nao:p1+nao]) * 2
+        # s1 is real
+        de[k] -= numpy.einsum('xij,ji->x', s1[:,p0:p1], dme0[:nao,p0:p1]) * 2
+        de[k] -= numpy.einsum('xij,ji->x', s1[:,p0:p1], dme0[nao:,p0+nao:p1+nao]) * 2
 
-        #de[k] += mf_grad.extra_force(ia, locals())
+        # for density-fitting and dft
+        de[k] += mf_grad.extra_force(ia, locals())
     if log.verbose >= logger.DEBUG:
         log.debug('gradients of electronic part')
         rhf_grad._write(log, mol, de, atmlst)
@@ -102,25 +104,58 @@ def get_jk(mf_grad, mol = None, dm = None):
 
     dms_spin = []
 
-    for i in range(nset):
-        dmi = dms[i]
-        dmaa = dmi[:nao, :nao]
-        dmbb = dmi[nao:, nao:]
-        dmab = dmi[:nao, nao:]
-        dmba = dmi[nao:, :nao]
-        dms_spin.append((dmaa, dmbb, dmab, dmba))
+    if not (dm.dtype == numpy.complex128):
+        for i in range(nset):
+            dmi = dms[i]
+            dmaa = dmi[:nao, :nao]
+            dmbb = dmi[nao:, nao:]
+            dmab = dmi[:nao, nao:]
+            dmba = dmi[nao:, :nao]
+            dms_spin.append((dmaa, dmbb, dmab, dmba))
 
-    dms_spin = numpy.asarray(dms_spin).reshape(-1, nao, nao)
-    j1, k1 = rhf_grad.get_jk(mol, dms_spin)
-    j1 = j1.reshape(nset, 4, 3, nao, nao)
-    k1 = k1.reshape(nset, 4, 3, nao, nao)
- 
-    vj[:, :, :nao,:nao] = j1[:,0] + j1[:,1]
-    vj[:, :, nao:,nao:] = j1[:,0] + j1[:,1]
-    vk[:, :, :nao,:nao] = k1[:,0]
-    vk[:, :, nao:,nao:] = k1[:,1]
-    vk[:, :, :nao,nao:] = k1[:,2]
-    vk[:, :, nao:,:nao] = k1[:,3]
+        dms_spin = numpy.asarray(dms_spin).reshape(-1, nao, nao)
+        j1, k1 = rhf_grad.get_jk(mol, dms_spin)
+        j1 = j1.reshape(nset, 4, 3, nao, nao)
+        k1 = k1.reshape(nset, 4, 3, nao, nao)
+
+        vj[:, :, :nao,:nao] = j1[:,0] + j1[:,1]
+        vj[:, :, nao:,nao:] = j1[:,0] + j1[:,1]
+        vk[:, :, :nao,:nao] = k1[:,0]
+        vk[:, :, nao:,nao:] = k1[:,1]
+        vk[:, :, :nao,nao:] = k1[:,2]
+        vk[:, :, nao:,:nao] = k1[:,3]
+    else:
+        for i in range(nset):
+            dmi = dms[i]
+            dmaa = dmi[:nao, :nao].real
+            dmbb = dmi[nao:, nao:].real
+            dmab = dmi[:nao, nao:].real
+            dmba = dmi[nao:, :nao].real
+            dms_spin.append((dmaa, dmbb, dmab, dmba))
+        for i in range(nset):
+            dmi = dms[i]
+            dmaa = dmi[:nao, :nao].imag
+            dmbb = dmi[nao:, nao:].imag
+            dmab = dmi[:nao, nao:].imag
+            dmba = dmi[nao:, :nao].imag
+            dms_spin.append((dmaa, dmbb, dmab, dmba))
+
+        dms_spin = numpy.asarray(dms_spin).reshape(-1, nao, nao)
+        j1, k1 = rhf_grad.get_jk(mol, dms_spin)
+        j1 = j1.reshape(2*nset, 4, 3, nao, nao)
+        k1 = k1.reshape(2*nset, 4, 3, nao, nao)
+        j1r = j1[:nset]
+        j1i = j1[nset:]
+        k1r = k1[:nset]
+        k1i = k1[nset:]
+
+        # imaginary part of vj should be zero for ghf
+        vj[:, :, :nao,:nao] = j1r[:,0] + 1.j*j1i[:,0] + j1r[:,1] + 1.j*j1i[:,1]
+        vj[:, :, nao:,nao:] = j1r[:,0] + 1.j*j1i[:,0] + j1r[:,1] + 1.j*j1i[:,1]
+        vk[:, :, :nao,:nao] = k1r[:,0] + 1.j*k1i[:,0]
+        vk[:, :, nao:,nao:] = k1r[:,1] + 1.j*k1i[:,1]
+        vk[:, :, :nao,nao:] = k1r[:,2] + 1.j*k1i[:,2]
+        vk[:, :, nao:,:nao] = k1r[:,3] + 1.j*k1i[:,3]
 
     vj = vj.reshape(out_shape)
     vk = vk.reshape(out_shape)
