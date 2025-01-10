@@ -22,9 +22,9 @@ import numpy
 from pyscf import lib
 from pyscf.lib import logger
 from pyscf.grad import rks as rks_grad
-from pyscf.grad import ghf as ghf_grad
 from pyscf.dft import numint, gen_grid
 from pyscf import __config__
+from socutils.grad import ghf_grad
 
 
 def get_veff(ks_grad, mol=None, dm=None):

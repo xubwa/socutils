@@ -5,7 +5,6 @@ from pyscf.gto import moleintor
 from pyscf.x2c import x2c
 import numpy,math
 import scipy.linalg
-from packaging import version
 from socutils.grad.x2c_grad_g import _block_diag_xyz
 from pyscf.x2c.sfx2c1e_grad import _gen_h1_s1
 from numpy.linalg import norm
@@ -60,11 +59,14 @@ def hcore_grad_generator_spin_orbital(x2cobj, mol=None):
     c2 = numpy.vstack((ca, cb))
     def hcore_deriv(atm_id):
         h1, s1 = get_h1_xmol(atm_id)
-        hfw1 = x2c1e_hfw1(xmol, h1, s1)
+        hfw1 = numpy.asarray([x2c1e_hfw1(xmol, h1[i], s1[i]) for i in range(3)])   
         if contr_coeff_nr is not None:
-            contr_coeff = x2c._block_diag(contr_coeff_nr)
-            h1 = lib.einsum('ai,pi,xpq,qj,bj->xab', c2, contr_coeff, h1, contr_coeff, c2.conj())
-        return numpy.asarray(h1)
+            np, nc = contr_coeff_nr.shape
+            contr_coeff = numpy.zeros((np*2,nc*2))
+            contr_coeff[0::2,0::2] = contr_coeff_nr
+            contr_coeff[1::2,1::2] = contr_coeff_nr
+            hfw1_ctr = lib.einsum('ai,pi,xpq,qj,bj->xab', c2, contr_coeff, hfw1, contr_coeff, c2.conj())
+        return numpy.asarray(hfw1_ctr)
     return hcore_deriv
 
 def hcore_deriv_generator_spin_orbital(self, mol=None, deriv=1):
@@ -84,7 +86,7 @@ def hcore_deriv_generator_spinor(self, mol=None, deriv=1):
         raise NotImplementedError
     
 x2c.SpinorX2CHelper.hcore_deriv_generator = hcore_deriv_generator_spinor # type: ignore
-#x2c.SpinOrbitalX2CHelper.hcore_deriv_generator = hcore_deriv_generator_spin_orbital # type: ignore
+x2c.SpinOrbitalX2CHelper.hcore_deriv_generator = hcore_deriv_generator_spin_orbital # type: ignore
 
 def get_h1nuc_s1(mol):
     c = LIGHT_SPEED
@@ -131,8 +133,6 @@ def get_Asq1(A, A1):
     # return B^lambda
     # Ref (A3)-(A7)
     size = A.shape[0]
-    if version.parse(scipy.__version__) >= version.parse("1.14.0"):
-        assert(scipy.linalg.ishermitian(A,atol=1e-10))
     Aeig, Avec = scipy.linalg.eigh(A)
     YA1Y = reduce(numpy.dot, (Avec.T.conj(), A1, Avec))
     YB1Y = numpy.zeros((size,size), dtype=YA1Y.dtype)
@@ -151,8 +151,6 @@ def get_Asqi1(A, A1):
     # return (B^{-1})^lambda
     # Ref (A3)-(A7)
     size = A.shape[0]
-    if version.parse(scipy.__version__) >= version.parse("1.14.0"):
-        assert(scipy.linalg.ishermitian(A,atol=1e-10))
     Aeig, Avec = scipy.linalg.eigh(A)
     YA1Y = reduce(numpy.dot, (Avec.T.conj(), A1, Avec))
     YB1Y = numpy.zeros((size,size), dtype=YA1Y.dtype)
