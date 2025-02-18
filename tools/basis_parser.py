@@ -72,6 +72,27 @@ def read_genbas(basis_name, filename, so_basis=False):
         return exps, coeffs, basinfo, so_basis_info
     return exps, coeffs, basinfo
 
+def to_pyscf_kappa_basis(bas, so_info):
+    so_basis = []
+    for bas_n, so_n in zip(bas, so_info):
+        assert(sum(so_n[1:]) == len(bas_n[1])-1)
+        bas_np = np.asarray(bas_n[1:])
+        for ikappa, nkappa in enumerate(so_n[1:]):
+            offset = 1+sum(so_n[1:ikappa+1])
+            if nkappa == 0:
+                continue
+            if ikappa == 0:
+                kappa = so_n[0]
+            elif ikappa == 1:
+                kappa = -so_n[0]-1
+            elif ikappa == 2:
+                kappa = 0
+            else:
+                raise Exception("so basis information is problematic")
+            kappa_basis = np.hstack((bas_np[:,[0]],bas_np[:,offset:offset+nkappa])).tolist()
+            so_basis.append([so_n[0], kappa] + kappa_basis)
+    return so_basis
+
 def parse_genbas(basis, filename="GENBAS", uncontract=False, so_basis=False):
     if so_basis:
         exps, coeffs, basinfo, so_basis_info = read_genbas(basis, filename, so_basis)
@@ -89,7 +110,7 @@ def parse_genbas(basis, filename="GENBAS", uncontract=False, so_basis=False):
                 for kk in range(basinfo[ii][1]):
                     basis_pyscf[ii][jj+1].append(coeffs[ii][jj][kk])
     if so_basis:
-        return basis_pyscf, so_basis_info
+        basis_pyscf = to_pyscf_kappa_basis(basis_pyscf, so_basis_info)
     return basis_pyscf
 
 def genbas_parser(basis, filename="GENBAS"):
