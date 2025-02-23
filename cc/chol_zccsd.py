@@ -10,7 +10,8 @@ from pyscf.cc import gccsd
 from pyscf.cc import gintermediates as imd
 from pyscf.x2c import x2c
 from pyscf import __config__
-import QMCUtils, chol_zccsd_t
+import chol_zccsd_t
+from socutils.mcscf import zmc_ao2mo
 
 MEMORYMIN = getattr(__config__, 'cc_ccsd_memorymin', 2000)
 
@@ -18,11 +19,12 @@ einsum = lib.einsum
 #einsum = np.einsum
 
 
-def makeCholERIMO(mf, mo_idx, mf_type = 'g'):
+def makeCholERIMO(mf, mo_idx, mf_type='g', cderi=None):
     mol = mf.mol
     ##mol aobasis --->  UHF j-spinors
-    chol_vecs = QMCUtils.chunked_cholesky(mol, max_error=1.e-5).reshape(-1, mol.nao, mol.nao)
-    naux, norb, orbs = chol_vecs.shape[0], chol_vecs.shape[1], mf.mo_coeff[:,mo_idx]
+    if cderi=None:
+        cderi = zmc_ao2mo.chunked_cholesky(mol, max_error=1.e-5).reshape(-1, mol.nao, mol.nao)
+    naux, norb, orbs = cderi.shape[0], chol_vecs.shape[1], mf.mo_coeff[:,mo_idx]
     
     if mf_type == 'j':
         c = mol.sph2spinor_coeff()
@@ -232,12 +234,12 @@ def update_amps(cc, t1, t2, eris):
 
 class ZCCSD(gccsd.GCCSD):
 
-    def __init__(self, mf, frozen=0, mo_coeff=None, mo_occ=None, mf_type = 'g'):
+    def __init__(self, mf, frozen=0, mo_coeff=None, mo_occ=None, mf_type='g', cderi=None):
         #if frozen !
         #assert(isinstance(mf, x2c.RHF))
         ccsd.CCSD.__init__(self, mf, frozen, mo_coeff, mo_occ)
         mo_idx = ccsd.get_frozen_mask(self)
-        self.eriChol = makeCholERIMO(mf, mo_idx, mf_type)
+        self.eriChol = makeCholERIMO(mf, mo_idx, mf_type, cderi=cderi)
 
     update_amps = update_amps
 
@@ -254,8 +256,8 @@ class ZCCSD(gccsd.GCCSD):
         if t2 is None: t2 = self.t2
         #if eris is None: eris = self.ao2mo(self.mo_coeff)
         if eris is None: eris = _make_eris_FromChol(self, self.mo_coeff)
-        #return gccsd_t.kernel(self, eris, t1, t2)
-        return chol_zccsd_t.kernel(self, eris, t1, t2, self.verbose)
+        return gccsd_t.kernel(self, eris, t1, t2)
+        #return chol_zccsd_t.kernel(self, eris, t1, t2, self.verbose)
 
 
 class _PhysicistsERIs(gccsd._PhysicistsERIs):
@@ -326,8 +328,8 @@ def _make_eris_FromChol(mycc, mo_coeff=None):
     oovv, ovov, ovvo = 0., 0., 0.
 
     ##delete this
-    #ovvv = einsum('Lia,Lbc->iabc', chol_mo[:, :nocc, nocc:], chol_mo[:, nocc:, nocc:])
-    #eris.ovvv = ovvv.transpose(0,2,1,3) - ovvv.transpose(0,2,3,1)
+    ovvv = einsum('Lia,Lbc->iabc', chol_mo[:, :nocc, nocc:], chol_mo[:, nocc:, nocc:])
+    eris.ovvv = ovvv.transpose(0,2,1,3) - ovvv.transpose(0,2,3,1)
     return eris
 
 
@@ -342,12 +344,16 @@ if __name__ == '__main__':
     mol.spin = 0
     mol.verbose = 4 
     mol.build()
-    import x2camf_hf
-    mf = x2camf_hf.RHF(mol).run()
-    mycc = ZCCSD(mf, frozen=2)
+    from socutils.scf import spinor_hf
+    from socutils.somf import eamf
+    import numpy as np
+    mf = spinor_hf.SCF(mol)
+    mf.with_x2c = eamf.SpinorEAMFX2CHelper(mol, eamf='x2camf', with_gaunt=True, with_breit=True) 
+    mf.kernel()
+    mycc = ZCCSD(mf, mf_type='j')
     ecc, t1, t2 = mycc.kernel()
     e_corr = mycc.ccsd_t()
-    print(e_corr, e_corr + ecc)
+    print(e_corr, ecc)
     exit()
     e,v = mycc.ipccsd(nroots=8)
 
