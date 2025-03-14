@@ -205,6 +205,27 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
     vhf_c = reduce(np.dot, (mo.T.conj(), vj_c - vk_c, mo))
     vhf_a = reduce(np.dot, (mo.T.conj(), vj_a - vk_a, mo))
     vhf_ca = vhf_c + vhf_a
+    
+    # canonicalization begins here
+    fock_eff = h1e_mo + vhf_ca
+    fock_core = fock_eff[:ncore, :ncore]
+    fock_vir = fock_eff[nocc:, nocc:]
+    e_core, c_core = casscf._scf.eig(fock_core, np.eye(ncore, dtype=complex))
+    e_vir, c_vir = casscf._scf.eig(fock_vir, np.eye(nmo-nocc, dtype=complex))
+    mo[:,:ncore] = np.dot(mo[:,:ncore], c_core)
+    mo[:,nocc:] = np.dot(mo[:,nocc:], c_vir)
+    h1e_mo = reduce(np.dot, (mo.T.conj(), casscf.get_hcore(), mo))
+    vhf_c = reduce(np.dot, (mo.T.conj(), vj_c - vk_c, mo))
+    vhf_a = reduce(np.dot, (mo.T.conj(), vj_a - vk_a, mo))
+    vhf_ca = vhf_c + vhf_a
+    print('ecore', e_core)
+    print('evir', e_vir)
+    print(c_core)
+    print(c_vir)
+    print((h1e_mo + vhf_ca).diagonal())
+    print('canonicalization done')
+    # canonicalization ends
+
     g = np.zeros((nmo, nmo), dtype=complex)
     g[:, :ncore] = h1e_mo[:, :ncore] + vhf_ca[:, :ncore]
     g[:, ncore:nocc] = np.dot(
@@ -230,6 +251,14 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
         del tmp
     else:
         raise('eris type not recognized')
+    
+    # transform g_dm2 to canonical basis
+    c = np.eye(nmo, dtype=complex)
+    c[:ncore, :ncore] = c_core
+    c[nocc:, nocc:] = c_vir
+    g_dm2 = np.dot(c.T.conj(), g_dm2)
+    # transformation done
+
     g[:, ncore:nocc] += g_dm2
     g_new[ncore:nocc,:ncore] += g_dm2.T[:,:ncore]
     g_new[nocc:,ncore:nocc] += g_dm2[nocc:,:]
@@ -366,8 +395,7 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
     def h_diag_inv(x):
         return x/(casscf.pack_uniq_var(h_diag+h_diag.T))
     precond = LinearOperator((n_uniq_var, n_uniq_var), h_diag_inv)
-    print(g_orb)
-    return g_orb, casscf.pack_uniq_var((h_diag+h_diag.T).real), hop, precond
+    return g_orb, casscf.pack_uniq_var((h_diag+h_diag.T).real), hop, precond, mo
 
 
 def precondition_grad0(grad, xs, ys, rhos, bfgs_space=10):
@@ -468,7 +496,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
         e_tot, e_cas, fcivec = mci.kernel(mo, ci0=None, verbose=verbose)
         casdm1, casdm2 = mci.fcisolver.make_rdm12(fcivec, ncas, mc.nelecas)
 
-        g, h_diag, hop, precond = gen_g_hop(mc, mo, casdm1, casdm2, eris)
+        g, h_diag, hop, precond, mo = gen_g_hop(mc, mo, casdm1, casdm2, eris)
         norm_gorb = norm(g)
         print(f'Iter {imacro:3d}: E = {e_tot:20.15f}  dE = {de:12.10f}' +
               f'  norm(grad) = {norm_gorb:8.6f} step_size = {norm_rot:8.6f}')
