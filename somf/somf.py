@@ -437,8 +437,8 @@ def _call_veff_sf_ssll(mol, dm, hermi=1, mf_opt=None):
     c1 = .5 / lib.param.LIGHT_SPEED
     vx = _vhf.rdirect_bindm('int2e_pp1_spinor', 's4', jks, dms, 1,
                             mol._atm, mol._bas, mol._env, mf_opt) * c1**2
-    vj = numpy.zeros((n_dm,n2c*2,n2c*2), dtype=numpy.complex)
-    vk = numpy.zeros((n_dm,n2c*2,n2c*2), dtype=numpy.complex)
+    vj = numpy.zeros((n_dm,n2c*2,n2c*2), dtype=complex)
+    vk = numpy.zeros((n_dm,n2c*2,n2c*2), dtype=complex)
     vj[:,n2c:,n2c:] = vx[      :n_dm  ,:,:]
     vj[:,:n2c,:n2c] = vx[n_dm  :n_dm*2,:,:]
     vk[:,n2c:,:n2c] = vx[n_dm*2:      ,:,:]
