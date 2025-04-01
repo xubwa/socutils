@@ -32,7 +32,7 @@ import warnings
 
 from subprocess import check_call, CalledProcessError
 
-import numpy
+import numpy, h5py
 import pyscf.tools
 import pyscf.lib
 from pyscf.lib import logger
@@ -43,21 +43,22 @@ from socutils.tools import fcidump_rel
 
 # Settings
 import os
-SHCIEXE = os.popen("which Dice").read().strip()
+ZFCIEXE = os.popen("which ZFCI").read().strip()
 ZSHCIEXE = os.popen("which ZSHCI").read().strip()
-SHCISCRATCHDIR = os.path.join(os.environ['TMPDIR'], str(os.getpid()))
+SHCISCRATCHDIR = os.path.join(os.environ.get('TMPDIR', '.'), str(os.getpid()))
 SHCIRUNTIMEDIR = '.'
 MPIPREFIX = '' #'mpirun -np 2'  # change to srun for SLURM job system
 
 # remove all libraries, python or hdf5 based io is enough.
 
 def read_rdm2(filename, norb):
-    rdm2 = numpy.zeros((norb, norb, norb, norb), dtype=complex)
-    with open(filename, 'r') as f:
-        for line in f:
-            parts = line.split()
-            rdm2[tuple([int(x) - 1 for x in parts[:4]])] = complex(float(parts[4]), float(parts[5]))
-    return rdm2.transpose(0,2,1,3)
+    f = h5py.File(filename, 'r')
+    rdm2_real = numpy.array(f['rdm2_real'])
+    rdm2_imag = numpy.array(f['rdm2_imag'])
+    rdm2 = rdm2_real - 1j * rdm2_imag
+    rdm2 = rdm2.reshape(norb, norb, norb, norb)
+    rdm2 = rdm2.transpose(0,2,1,3)
+    return rdm2
 
 class SHCI(pyscf.lib.StreamObject):
     r'''SHCI program interface and object to hold SHCI program input parameters.
@@ -95,6 +96,7 @@ class SHCI(pyscf.lib.StreamObject):
 
     def __init__(self, mol=None, maxM=None, tol=None):
         self.mol = mol
+        self.wfnsym = None
         if mol is None:
             self.stdout = sys.stdout
             self.verbose = logger.NOTE
@@ -103,8 +105,8 @@ class SHCI(pyscf.lib.StreamObject):
             self.verbose = mol.verbose
         self.outputlevel = 2
 
-        self.executable = SHCIEXE
-        self.spinor_executable = ZSHCIEXE
+        self.fci_exe = ZFCIEXE
+        self.hci_exe = ZSHCIEXE
         self.scratchDirectory = SHCISCRATCHDIR
         self.mpiprefix = MPIPREFIX
 
@@ -117,7 +119,7 @@ class SHCI(pyscf.lib.StreamObject):
         # TODO: Organize into pyscf and SHCI parameters
         # Standard SHCI Input parameters
         self.dets = None
-        self.davidsonTol = 5.e-5
+        self.davidsonTol = 1.e-6
         self.epsilon2 = 1.e-7
         self.epsilon2Large = 1000.
         self.targetError = 1.e-4
@@ -134,7 +136,6 @@ class SHCI(pyscf.lib.StreamObject):
         self.nPTiter = 0
         self.DoRDM = True
         self.DoTRDM = False
-        self.DoSOC = False
         self.sweep_iter = []
         self.sweep_epsilon = []
         self.maxIter = 6
@@ -161,8 +162,6 @@ class SHCI(pyscf.lib.StreamObject):
         self.generate_schedule()
         self.returnInt = False
         self._keys = set(self.__dict__.keys())
-        self.irrep_nelec = None
-        self.useExtraSymm = False
         self.initialStates = None
 
     def generate_schedule(self):
@@ -172,7 +171,8 @@ class SHCI(pyscf.lib.StreamObject):
         log = logger.new_logger(self, verbose)
         log.info('')
         log.info('******** SHCI flags ********')
-        log.info('executable             = %s', self.executable)
+        log.info('FCI executable                = %s', self.fci_exe)
+        log.info('SHCI executable                = %s', self.hci_exe)
         log.info('mpiprefix              = %s', self.mpiprefix)
         log.info('scratchDirectory       = %s', self.scratchDirectory)
         log.info('integralFile           = %s',
@@ -208,10 +208,7 @@ class SHCI(pyscf.lib.StreamObject):
     # -----------------------------------------------------------------------------------------------
         
     def trans_rdm1(self, state_i, state_j, norb, nelec, link_index=None, **kwargs):
-        if self.DoSOC:
-            trdm1 = numpy.zeros((norb, norb), dtype=complex)
-        else:
-            trdm1 = numpy.zeros((norb, norb))
+        trdm1 = numpy.zeros((norb, norb), dtype=complex)
         # assume Dice prints only i < j transition rdm.
         if state_i > state_j:
             tmp = state_i
@@ -225,11 +222,8 @@ class SHCI(pyscf.lib.StreamObject):
             for line in f:
                 orb1 = int(line.split()[0])
                 orb2 = int(line.split()[1])
-                if self.DoSOC:
-                    val = re.split("[(,)]", line.split()[2])
-                    val = complex(float(val[1]), float(val[2]))
-                else:
-                    val  = float(line.split()[2])
+                val = re.split("[(,)]", line.split()[2])
+                val = complex(float(val[1]), float(val[2]))
                 trdm1[orb1][orb2] = val
         return trdm1
         
@@ -248,15 +242,11 @@ class SHCI(pyscf.lib.StreamObject):
         else:
             nelectrons = nelec[0] + nelec[1]
 
-        # The 2RDMs written by "SHCIrdm::saveRDM" in DICE
-        # are written as E2[i1,j2,k1,l2]
-        # and stored here as E2[i1,k1,j2,l2] (for PySCF purposes)
-        # This is NOT done with SQA in mind.
-        twopdm = read_rdm2(f'Dice_{state}_{state}.rdm2', norb)
-        onepdm = numpy.einsum('ijkk->ij', twopdm) / (nelectrons - 1)
+        twopdm = read_rdm2(os.path.join(SHCISCRATCHDIR, f'Dice_{state}_{state}.rdm2.h5'), norb)
+        onepdm = numpy.einsum('ijkk->ji', twopdm) / (nelectrons - 1)
         return onepdm, twopdm
 
-    def kernel(self, h1e, eri, norb, nelec, fciRestart=None, ecore=0, **kwargs):
+    def kernel(self, h1e, eri, norb, nelec, fciRestart=None, ecore=0, wfnsym=None,**kwargs):
         """
         Approximately solve CI problem for the specified active space.
         """
@@ -265,17 +255,21 @@ class SHCI(pyscf.lib.StreamObject):
             roots = 0
         else:
             roots = range(self.nroots)
+
         if fciRestart is None:
             fciRestart = self.restart or self._restart
 
         if 'orbsym' in kwargs:
             self.orbsym = kwargs['orbsym']
-        writeIntegralFile(self, h1e, eri.reshape(norb*norb, norb*norb), norb, nelec, ecore)
+
+        #writeIntegralFile(self, h1e, eri.reshape(norb*norb, norb*norb), norb, nelec, ecore)
         writeSHCIConfFile(self, nelec, fciRestart)
+
         if self.verbose >= logger.DEBUG1:
             inFile = os.path.join(self.runtimeDir, self.configFile)
             logger.debug1(self, 'SHCI Input conf')
             logger.debug1(self, open(inFile, 'r').read())
+
         if self.onlywriteIntegral:
             logger.info(self, 'Only write integral')
             try:
@@ -286,38 +280,43 @@ class SHCI(pyscf.lib.StreamObject):
                 else:
                     calc_e = [0.0] * self.nroots
             return calc_e, roots
+
         if self.returnInt:
             return h1e, eri
+
         executeSHCI(self)
+
         if self.verbose >= logger.DEBUG1:
             outFile = os.path.join(self.runtimeDir, self.outputFile)
             logger.debug1(self, open(outFile).read())
+
         calc_e = read_energy(self)
 
         return calc_e, roots
 
-    def approx_kernel(self, h1e, eri, norb, nelec, fciRestart=None, ecore=0, **kwargs):
-        fciRestart = True
+    # comment out approx stuff until I understand them.
+    #def approx_kernel(self, h1e, eri, norb, nelec, fciRestart=None, ecore=0, **kwargs):
+    #    fciRestart = True
 
-        if 'orbsym' in kwargs:
-            self.orbsym = kwargs['orbsym']
-        writeIntegralFile(self, h1e, eri, norb, nelec, ecore)
-        writeSHCIConfFile(self, nelec, fciRestart)
-        if self.verbose >= logger.DEBUG1:
-            inFile = os.path.join(self.runtimeDir, self.configFile)
-            logger.debug1(self, 'SHCI Input conf')
-            logger.debug1(self, open(inFile, 'r').read())
-        executeSHCI(self)
-        if self.verbose >= logger.DEBUG1:
-            outFile = os.path.join(self.runtimeDir, self.outputFile)
-            logger.debug1(self, open(outFile).read())
-        calc_e = read_energy(self)
+    #    if 'orbsym' in kwargs:
+    #        self.orbsym = kwargs['orbsym']
+    #    writeIntegralFile(self, h1e, eri, norb, nelec, ecore)
+    #    writeSHCIConfFile(self, nelec, fciRestart)
+    #    if self.verbose >= logger.DEBUG1:
+    #        inFile = os.path.join(self.runtimeDir, self.configFile)
+    #        logger.debug1(self, 'SHCI Input conf')
+    #        logger.debug1(self, open(inFile, 'r').read())
+    #    executeSHCI(self)
+    #    if self.verbose >= logger.DEBUG1:
+    #        outFile = os.path.join(self.runtimeDir, self.outputFile)
+    #        logger.debug1(self, open(outFile).read())
+    #    calc_e = read_energy(self)
 
-        if self.nroots == 1:
-            roots = 0
-        else:
-            roots = range(self.nroots)
-        return calc_e, roots
+    #    if self.nroots == 1:
+    #        roots = 0
+    #    else:
+    #        roots = range(self.nroots)
+    #    return calc_e, roots
     
     #def restart_scheduler_(self):
     #    def callback(envs):
@@ -411,9 +410,7 @@ def writeSHCIConfFile(SHCI, nelec, Restart):
 
     # Handle different cases for FCIDUMP file names/paths
     f.write(f'orbitals {os.path.join(SHCI.runtimeDir, SHCI.integralFile)}\n')
-
     f.write(f'nroots {SHCI.nroots}\n')
-
     # Variational Keyword Section
     f.write('\n#variational\n')
     if not Restart:
@@ -457,11 +454,8 @@ def writeSHCIConfFile(SHCI, nelec, Restart):
         f.write(f'prefix {SHCI.scratchDirectory}\n')
     if SHCI.DoRDM:
         f.write('DoRDM\n')
-    #if SHCI.nroots > 1 and (SHCI.DoRDM or SHCI.DoTRDM):
-    #    f.write('DoTRDM\n')
     for line in SHCI.extraline:
         f.write(f'{line}\n')
-
     f.write('\n')  # SHCI requires that there is an extra line.
     f.close()
 
@@ -476,7 +470,7 @@ def executeSHCI(SHCI):
     inFile = os.path.join(SHCI.runtimeDir, SHCI.configFile)
     outFile = os.path.join(SHCI.runtimeDir, SHCI.outputFile)
     try:
-        cmd = ' '.join((SHCI.mpiprefix, SHCI.spinor_executable, inFile))
+        cmd = ' '.join((SHCI.mpiprefix, SHCI.fci_exe, inFile))
         cmd = "%s > %s 2>&1" % (cmd, outFile)
         check_call(cmd, shell=True)
     except CalledProcessError as err:
@@ -496,31 +490,6 @@ def read_energy(SHCI):
         return calc_e[0]
     else:
         return list(calc_e)
-
-
-def SHCISCF(mf, norb, nelec, maxM=1000, tol=1.e-8, *args, **kwargs):
-    '''Shortcut function to setup CASSCF using the SHCI solver.  The SHCI
-    solver is properly initialized in this function so that the 1-step
-    algorithm can applied with SHCI-CASSCF.
-
-    Examples:
-
-    >>> mol = gto.M(atom='C 0 0 0; C 0 0 1')
-    >>> mf = scf.RHF(mol).run()
-    >>> mc = SHCISCF(mf, 4, 4)
-    >>> mc.kernel()
-    -74.414908818611522
-    '''
-
-    mc = mcscf.CASSCF(mf, norb, nelec, *args, **kwargs)
-    mc.fcisolver = SHCI(mf.mol, maxM, tol=tol)
-    #mc.callback = mc.fcisolver.restart_scheduler_() #TODO
-    if mc.chkfile == mc._scf._chkfile.name:
-        # Do not delete chkfile after mcscf
-        mc.chkfile = tempfile.mktemp(SHCISCRATCHDIR)
-        if not os.path.exists(SHCISCRATCHDIR):
-            os.makedirs(SHCISCRATCHDIR)
-    return mc
 
 
 def dryrun(mc, mo_coeff=None):
@@ -554,9 +523,9 @@ def dryrun(mc, mo_coeff=None):
     if mc.fcisolver.orbsym is not []:
         mc.fcisolver.orbsym = getattr(mo_coeff, "orbsym", [])
 
-    #mc.kernel(mo_coeff) # Works, but runs full CASCI/CASSCF
+    mc.kernel(mo_coeff) # Works, but runs full CASCI/CASSCF
     h1e, ecore = mc.get_h1eff(mo_coeff)
     h2e = mc.get_h2eff(mo_coeff)
 
-    writeIntegralFile(mc.fcisolver, h1e, h2e, mc.ncas, mc.nelecas, ecore)
+    #writeIntegralFile(mc.fcisolver, h1e, h2e, mc.ncas, mc.nelecas, ecore)
     writeSHCIConfFile(mc.fcisolver, mc.nelecas, False)
