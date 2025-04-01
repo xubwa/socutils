@@ -1,3 +1,7 @@
+#
+# Author Xubo Wang <wangxubo0201@outlook.com
+#
+
 import time
 import numpy as np
 from functools import reduce
@@ -185,6 +189,7 @@ class _PhysicistsERIs(gccsd._PhysicistsERIs):
             mo_l = mo_coeff[:n2c,:]
             mo_x2c = np.dot(rinv,mo_l)
             mo_coeff = mo_x2c
+        
             fockao = fock_x2c 
 
         mo_idx = ccsd.get_frozen_mask(mycc)
@@ -311,8 +316,13 @@ def _make_eris_outcore(mycc, mo_coeff=None, erifile=None, swapfile=None, mod='co
             del fswap['eri']
         del fswap
     else:
-        fswap = lib.H5TmpFile()
+        if swapfile is not None:
+            fswap = lib.H5TmpFile(swapfile)
+        else:
+            fswap = lib.H5TmpFile()
         #eri = ao2mo.general(mycc.mol, (mo, mo, mo, mo), fswap, 'eri', intor='int2e_spinor',max_memory=max_memory, verbose=mycc.verbose)
+        sph2spinor = np.vstack(mycc.mol.sph2spinor_coeff())
+        mog = np.dot(sph2spinor, mo)
         eri = nrr_outcore.general(mycc.mol, (mo, mo, mo, mo), fswap, 'eri', intor='int2e_sph', motype='j-spinor', max_memory=max_memory, verbose=mycc.verbose)
         fill_eris(fswap, 1.0)
         del fswap
