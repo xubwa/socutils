@@ -50,8 +50,31 @@ def kernel(cc, eris, t1=None, t2=None, verbose=logger.INFO):
     t1T = t1.T
     def get_wv(a, b, c):
 
-        tmp_dk = cholVV[b].T.dot(cholVO[c]) - cholVV[c].T.dot(cholVO[b])
-        w = einsum('dij,dk->kij', t2T[a], tmp_dk.conj())
+        bcei = numpy.asarray(eris.ovvv).conj().transpose(3,2,1,0)
+        #majk = numpy.asarray(eris.ooov).conj().transpose(2,3,0,1)
+        #bcjk = numpy.asarray(eris.oovv).conj().transpose(2,3,0,1)
+    
+        #t2T = t2.transpose(2,3,0,1)
+        #t1T = t1.T
+        #cpu1 = log.timer(f'Preprocess intermediates', *cpu1)
+        #def get_wv_abc(a, b, c):
+        #    w  = einsum('ejk,ei->ijk', t2T[a,:], bcei[b,c])
+        #    w -= einsum('im,mjk->ijk', t2T[b,c], majk[:,a])
+        #    v = w
+        #    v  += einsum('i,jk->ijk', t1T[a], bcjk[b,c])
+        #    #v += einsum('i,jk->ijk', fvo[a], t2T [b,c])
+        #    w = w + w.transpose(2,0,1) + w.transpose(1,2,0)
+        #    return w, v
+        # cholVV->v* Lv
+        # cholVO->v* Lo
+        # ovvv=0,2,1,3-0,2,3,1 the last two indices permute
+        # <bc||ei>=<bc|ei>-<cb|ei>
+        tmp_ei = cholVV[b].T.dot(cholVO[c]) - cholVV[c].T.dot(cholVO[b])
+        import numpy as np
+        #print(np.linalg.norm(tmp_ei-bcei[b,c]))
+        #print(tmp_ei)
+        #print(bcei[b,c])
+        w = einsum('ejk,ei->ijk', t2T[a], tmp_ei)
         #w  = einsum('ejk,ei->ijk', t2T[a,:], bcei[b,c])
 
         w -= einsum('im,mjk->ijk', t2T[b,c], majk[:,a])

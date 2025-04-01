@@ -10,7 +10,7 @@ from pyscf.cc import gccsd
 from pyscf.cc import gintermediates as imd
 from pyscf.x2c import x2c
 from pyscf import __config__
-import chol_zccsd_t
+from socutils.cc import chol_zccsd_t
 from socutils.mcscf import zmc_ao2mo
 
 MEMORYMIN = getattr(__config__, 'cc_ccsd_memorymin', 2000)
@@ -22,16 +22,21 @@ einsum = lib.einsum
 def makeCholERIMO(mf, mo_idx, mf_type='g', cderi=None):
     mol = mf.mol
     ##mol aobasis --->  UHF j-spinors
-    if cderi=None:
+    if cderi is None:
         cderi = zmc_ao2mo.chunked_cholesky(mol, max_error=1.e-5).reshape(-1, mol.nao, mol.nao)
-    naux, norb, orbs = cderi.shape[0], chol_vecs.shape[1], mf.mo_coeff[:,mo_idx]
+    else:
+        cderi = cderi.reshape(-1, mol.nao, mol.nao)
+    print(cderi.shape)
+    print(mo_idx)
+    print(mf.mo_coeff[:,mo_idx].shape)
+    naux, norb, orbs = cderi.shape[0], cderi.shape[1], mf.mo_coeff[:,mo_idx]
     
     if mf_type == 'j':
         c = mol.sph2spinor_coeff()
         c2 = np.vstack(c)
         orbs = c2.dot(orbs)
-    chol_mo  = lib.einsum('Lib, bj->Lij', lib.einsum('Lab,ai->Lib', chol_vecs, orbs[:norb,:].conj()), orbs[:norb, :])
-    chol_mo += lib.einsum('Lib, bj->Lij', lib.einsum('Lab,ai->Lib', chol_vecs, orbs[norb:,:].conj()), orbs[norb:, :])
+    chol_mo  = lib.einsum('Lib, bj->Lij', lib.einsum('Lab,ai->Lib', cderi, orbs[:norb,:].conj()), orbs[:norb, :])
+    chol_mo += lib.einsum('Lib, bj->Lij', lib.einsum('Lab,ai->Lib', cderi, orbs[norb:,:].conj()), orbs[norb:, :])
 
     return chol_mo
 
@@ -256,8 +261,8 @@ class ZCCSD(gccsd.GCCSD):
         if t2 is None: t2 = self.t2
         #if eris is None: eris = self.ao2mo(self.mo_coeff)
         if eris is None: eris = _make_eris_FromChol(self, self.mo_coeff)
-        return gccsd_t.kernel(self, eris, t1, t2)
-        #return chol_zccsd_t.kernel(self, eris, t1, t2, self.verbose)
+        #return gccsd_t.kernel(self, eris, t1, t2)
+        return chol_zccsd_t.kernel(self, eris, t1, t2, self.verbose)
 
 
 class _PhysicistsERIs(gccsd._PhysicistsERIs):
