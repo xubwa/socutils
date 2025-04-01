@@ -1,3 +1,7 @@
+#
+# Author: Xubo Wang <wangxubo0201@outlook.com>
+#
+
 import pyscf
 from pyscf import lib
 import numpy as np
@@ -33,7 +37,7 @@ def analyze(mol, mo_coeff, mo_energy):
         else:
             label_list[spinor_label]=[idx]
     
-    for idx in range(mol.nao*2):
+    for idx in range(mol.nao_2c()):
         mo_i = abs(mo_normalized[:,idx])**2
         threshold = 0.01
         print(f'\nMO #{idx+1} Energy={mo_energy[idx]:16.8f}\nSpinor AO with contribution greater than {threshold:.2e} ')

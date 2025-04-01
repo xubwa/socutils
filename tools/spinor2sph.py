@@ -1,3 +1,7 @@
+#
+# Author: Xubo Wang <wangxubo0201@outlook.com>
+#
+
 import numpy
 import scipy.linalg
 from pyscf import lib
@@ -35,6 +39,9 @@ def spinor2sph_soc(mol, spinor):
     return pauli_decompose(ints_so)
 
 def spinor2spinor_sd(mol, spinor):
+    r'''
+    Extract spin-dependent part of the spinor integral through pauli decomposition.
+    '''
     assert (spinor.shape[0] == mol.nao_2c()), "spinor integral must be of shape (nao_2c, nao_2c)"
 
     paulix, pauliy, pauliz = lib.PauliMatrices

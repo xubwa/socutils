@@ -1,8 +1,14 @@
-import pyscf, h5py, numpy
+#
+# Author: Xubo Wang <wangxubo0201@outlook.com>
+#
+
+import h5py, numpy
 from pyscf import scf, gto, ao2mo, tools, lib
+from pyscf.ao2mo import nrr_outcore
+
 from functools import reduce
 
-TOL = 1e-10
+TOL = 1e-16
 DEFAULT_FLOAT_FORMAT = '(%16.12e, %16.12e)'
 
 
@@ -34,6 +40,7 @@ def write_eri(fout, eri, nmo, tol=TOL, float_format=DEFAULT_FLOAT_FORMAT):
 def from_integrals(filename, h1e, h2e, nmo, nelec, nuc=0, ms=0, orbsym=None,
                    tol=TOL, float_format=DEFAULT_FLOAT_FORMAT):
     '''Convert the given 1-electron and 2-electron integrals to FCIDUMP format'''
+    print('write integrals')
     with open(filename, 'w') as fout:
         write_head(fout, nmo, nelec, ms, orbsym)
         write_eri(fout, h2e, nmo, tol=tol, float_format=float_format)
@@ -57,7 +64,7 @@ def write_head(fout, nmo, nelec, ms, orbsym=None):
     fout.write('  ISYM=0,\n')
     fout.write(' &END\n')
 
-def from_x2c(mf, ncore, nact, filename='FCIDUMP', tol=1e-8, intor='int2e_spinor', h1e=None, approx='1e', symm=None):
+def from_x2c(mf, ncore, nact, filename='FCIDUMP', tol=1e-10, intor='int2e_spinor', h1e=None, approx='1e', symm=None):
     ncore = ncore
     nact = nact
     mo_coeff = mf.mo_coeff[:, ncore:ncore + nact]
@@ -80,7 +87,6 @@ def from_x2c(mf, ncore, nact, filename='FCIDUMP', tol=1e-8, intor='int2e_spinor'
 
     #if mf._eri is None:
     #eri = ao2mo.kernel(mf.mol, mo_coeff, intor=intor)
-    from pyscf.ao2mo import nrr_outcore
     eri = nrr_outcore.full_iofree(mf.mol, mo_coeff, intor='int2e', motype='j-spinor')
     print(eri.shape)
     #else:
@@ -145,7 +151,7 @@ def from_dhf(mf, ncore, nact, filename='FCIDUMP', tol=1e-10, with_gaunt=False, w
     core_occ = numpy.zeros(len(mf.mo_energy))
     core_occ[nNeg:ncore] = 1.0
     core_dm = mf.make_rdm1(mo_occ=core_occ)
-    vj, vk = scf.dhf.get_jk_coulomb(mol, core_dm)
+    vj, vk = mf.get_jk(mol, core_dm)
     core_vhf = vj - vk
     energy_core = mf.energy_nuc()
     energy_core += numpy.einsum('ij,ji', core_dm, hcore)
