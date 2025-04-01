@@ -13,7 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Author: Qiming Sun <osirpt.sun@gmail.com>
+# Author: Xubo Wang <wangxubo0201@outlook.com>
+# Modified from original gccsd by
+# Qiming Sun <osirpt.sun@gmail.com>
 #
 
 '''
@@ -46,7 +48,6 @@ def kernel(cc, eris, t1=None, t2=None, verbose=logger.INFO, alg='vir_loop'):
         bcei = numpy.asarray(eris.ovvv).conj().transpose(3,2,1,0)
         majk = numpy.asarray(eris.ooov).conj().transpose(2,3,0,1)
         bcjk = numpy.asarray(eris.oovv).conj().transpose(2,3,0,1)
-
     
         t2T = t2.transpose(2,3,0,1)
         t1T = t1.T
