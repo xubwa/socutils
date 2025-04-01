@@ -1,10 +1,13 @@
+#
+# Author Xubo Wang <wangxubo0201@outlook.com>
+#
 # using pyscf's rhf gen_g_hop to implement a standard augmented-hessian based second-order scf
 import scipy
 from scipy import linalg as la
 import numpy as np
 from pyscf.lib import logger
 from pyscf import scf, df, lib
-from socutils import davidson
+from socutils.mcscf import davidson
 from functools import reduce
 from pyscf.ao2mo.nrr_outcore import general_iofree as ao2mo
 def gen_g_hop_ghf(mf, mo_coeff, mo_occ, cderi=None, fock_ao=None, h1e=None,

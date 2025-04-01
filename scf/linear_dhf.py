@@ -1,3 +1,7 @@
+#
+# Author: Xubo Wang <wangxubo0201@outlook.com>
+#
+
 from functools import reduce
 import numpy as np
 import scipy
@@ -20,7 +24,8 @@ def eig(mf, h, s, irrep=None):
     c = np.zeros((n4c, n4c), dtype=complex)
     irrep_tag = np.empty(n4c, dtype='U10')
     for ir in irrep:
-        ir_idx = irrep[ir]
+        ir_idx = np.asarray(irrep[ir])
+        print(ir_idx)
         ir_idx = np.hstack((ir_idx, ir_idx+n2c))
         hi = h[np.ix_(ir_idx, ir_idx)]
         si = s[np.ix_(ir_idx, ir_idx)]
@@ -31,25 +36,25 @@ def eig(mf, h, s, irrep=None):
         angular_tag = None
     # process max contributing ao
     # temporarily deprecate this feature
-    # from scipy.linalg import sqrtm
-    # s_sqrtm = sqrtm(s)
-    # c_tilde = np.dot(s_sqrtm, c)
-    # labels = np.array(mol.spinor_labels())
-    # label_ang = np.array([re.search(r'[a-z]', label.split()[2]).group(0) # for label in labels])
-    # angular_tag = np.empty(n2c, dtype='U1')
-    # for i in range(n2c):
-    #     ci = abs(c_tilde[:,i])**2
-    #     norm_ang = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
-    #     angs = np.array(['s','p', 'd', 'f', 'g'])
-    #     for j, label in enumerate(angs):
-    #         norm_ang[j] = sum(ci[np.where(label_ang == label)])
-    #     angular_tag[i] = angs[np.argmax(norm_ang)]
+    from scipy.linalg import sqrtm
+    s_sqrtm = sqrtm(s)
+    c_tilde = np.dot(s_sqrtm, c)
+    labels = np.array(mol.spinor_labels())
+    label_ang = np.array([re.search(r'[a-z]', label.split()[2]).group(0) for label in labels])
+    angular_tag = np.empty(n2c*2, dtype='U1')
+    for i in range(n2c*2):
+        ci = abs(c_tilde[:,i])**2
+        norm_ang = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
+        angs = np.array(['s','p', 'd', 'f', 'g'])
+        for j, label in enumerate(angs):
+            norm_ang[j] = sum(ci[np.where(label_ang == label)])
+        angular_tag[i] = angs[np.argmax(norm_ang)]
 
     sort_idx = np.argsort(e)
     irrep_tag = irrep_tag[sort_idx]
-    #angular_tag = angular_tag[sort_idx]
-    return lib.tag_array(e[sort_idx],irrep_tag=irrep_tag), c[:,sort_idx]
-           # lib.tag_array(c[:,sort_idx], ang_tag=angular_tag)
+    angular_tag = angular_tag[sort_idx]
+    return lib.tag_array(e[sort_idx],irrep_tag=irrep_tag),\
+           lib.tag_array(c[:,sort_idx], ang_tag=angular_tag)
 
 def get_occ_symm(mf, irrep, occup, irrep_mo=None, mo_energy=None, mo_coeff=None):
     mol = mf.mol
@@ -121,6 +126,7 @@ def get_occ_symm(mf, irrep, occup, irrep_mo=None, mo_energy=None, mo_coeff=None)
 class SymmDHF(dhf.DHF):
     def __init__(self, mol, symmetry=None, occup=None):
         dhf.DHF.__init__(self, mol)
+        self.symmetry = symmetry
         if symmetry is 'linear':
             self.irrep_ao = symmetry_label(mol, symmetry)
         self.occupation = occup

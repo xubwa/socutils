@@ -1,3 +1,7 @@
+#
+# Author Xubo Wang <wangxubo0201@outlook.com>
+#
+
 '''
 Fraction-occupation Dirac Hartree-Fock.
 '''
@@ -19,7 +23,7 @@ class FRAC_RDHF(dhf.RDHF):
         # don't require electron number to be even since fraction occ is allowed.
         if zquatev is None:
             raise RuntimeError('zquatev library is required to perform Kramers-restricted DHF')
-        dhf.RDHF.__init__(self, mol)
+        dhf.DHF.__init__(self, mol)
         self.nopen = nopen
         self.nact = nact
 

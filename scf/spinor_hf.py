@@ -1,3 +1,7 @@
+#
+# Author: Xubo Wang <wangxubo0201@outlook.com>
+#
+
 from functools import reduce
 import copy
 import numpy
@@ -9,7 +13,7 @@ from pyscf.gto import mole
 from pyscf.lib import logger
 from pyscf.scf import hf, dhf, ghf, _vhf
 import re
-# from zquatev import solve_KR_FCSCE as eigkr
+#from zquatev import solve_KR_FCSCE as eigkr
 
 
 def density_fit(mf, auxbasis=None, with_df=None, only_dfj=False):
@@ -31,6 +35,7 @@ class _DFJHF(df.df_jk._DFHF):
         with_dfk = with_k and self.with_df
 
         def jkbuild(mol, dm, hermi, with_j, with_k, omega=None):
+            print('density fitted jk build')
             vj, vk = self.with_df.get_jk(dm.real, hermi, with_j, with_k, self.direct_scf_tol, omega)
             if dm.dtype == numpy.complex128:
                 vjI, vkI = self.with_df.get_jk(dm.imag, hermi, with_j, with_k, self.direct_scf_tol, omega)
@@ -407,8 +412,8 @@ class SpinorSCF(hf.SCF):
         if chkfile is None: chkfile = self.chkfile
         return init_guess_by_chkfile(self.mol, chkfile, project=project)
 
-    # def _eigh(self, h, s):
-    #     return eigkr(self.mol, h, s, debug=False)
+    #def _eigh(self, h, s):
+    #    return eigkr(self.mol, h, s, debug=False)
 
     @lib.with_doc(get_hcore.__doc__)
     def get_hcore(self, mol=None):
@@ -430,16 +435,16 @@ class SpinorSCF(hf.SCF):
         if vhf is None:
             vhf = self.get_veff()
         print('new_energy_algo', self.new_energy_algo, hasattr(self.with_x2c, 'soc_matrix'))
-        if self.with_x2c is not None and hasattr(self.with_x2c, 'soc_matrix'):
-            energy_new = hf.energy_tot(self, dm, h1e - self.with_x2c.soc_matrix, vhf+self.with_x2c.soc_matrix)
-            energy_old = hf.energy_tot(self, dm, h1e, vhf)
-            print(f'Energy scheme 1 {energy_new:20.12g}, {energy_old:20.12g}')
-            if self.new_energy_algo:
-                return energy_new
-            else:
-                return energy_old
-        else:
-            return hf.energy_tot(self, dm, h1e, vhf)
+        #if self.with_x2c is not None and hasattr(self.with_x2c, 'soc_matrix'):
+        #    energy_new = hf.energy_tot(self, dm, h1e - self.with_x2c.soc_matrix, vhf+self.with_x2c.soc_matrix)
+        #    energy_old = hf.energy_tot(self, dm, h1e, vhf)
+        #    print(f'Energy scheme 1 {energy_new:20.12g}, {energy_old:20.12g}')
+        #    if self.new_energy_algo:
+        #        return energy_new
+        #    else:
+        #        return energy_old
+        #else:
+        return hf.energy_tot(self, dm, h1e, vhf)
 
     def get_ovlp(self, mol=None):
         if mol is None: mol = self.mol
@@ -535,6 +540,7 @@ class SpinorSCF(hf.SCF):
 class SymmSpinorSCF(SpinorSCF):
     def __init__(self, mol, symmetry=None, occup=None):
         SpinorSCF.__init__(self, mol)
+        self.symmetry = symmetry
         if symmetry is 'linear' or symmetry is 'sph':
             self.irrep_ao = symmetry_label(mol, symmetry)
         else:
