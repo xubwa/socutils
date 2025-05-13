@@ -12,17 +12,14 @@ import warnings, scipy
 import numpy as np
 from functools import reduce
 from pyscf import lib
+from pyscf.x2c.x2c import _decontract_spinor
 from socutils.prop.hfc.dhf import int_hfc_4c, au2MHz
 
 warnings.warn('Module HFC is under testing')
 
 def int_hfc_2c(method, atm_id, utm=True):
     mol = method.mol
-    xmol, contr_coeff_nr = method.with_x2c.get_xmol(mol)
-    npri, ncon = contr_coeff_nr.shape
-    contr_coeff = np.zeros((npri*2,ncon*2))
-    contr_coeff[0::2,0::2] = contr_coeff_nr
-    contr_coeff[1::2,1::2] = contr_coeff_nr
+    xmol, contr_coeff = _decontract_spinor(method.mol, method.with_x2c.xuncontract)
     
     t = xmol.intor('int1e_kin_spinor')
     s = xmol.intor('int1e_ovlp_spinor')

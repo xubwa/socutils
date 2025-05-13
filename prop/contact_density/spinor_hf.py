@@ -12,6 +12,7 @@ import warnings
 from functools import reduce
 import numpy as np
 from pyscf import lib
+from pyscf.x2c.x2c import _decontract_spinior
 
 warnings.warn('Module contact density is under testing')
 
@@ -24,11 +25,7 @@ def kernel(method, cd_nuc=None, dm=None, Xresp=False):
     else:
         log.info('Ignore the response of X2C transformation')
 
-    xmol, contr_coeff_nr = method.with_x2c.get_xmol(method.mol)
-    npri, ncon = contr_coeff_nr.shape
-    contr_coeff = np.zeros((npri*2,ncon*2))
-    contr_coeff[0::2,0::2] = contr_coeff_nr
-    contr_coeff[1::2,1::2] = contr_coeff_nr
+    xmol, contr_coeff = _decontract_spinor(method.mol, method.with_x2c.xuncontract)
 
     c = lib.param.LIGHT_SPEED
     n2c = xmol.nao_2c()

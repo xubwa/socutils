@@ -14,19 +14,20 @@ import warnings
 import numpy as np
 from functools import reduce
 from pyscf import lib
+from pyscf.x2c.x2c import _decontract_spinor
 from socutils.prop.efg.rhf import _get_quad_nuc
+from socutils.tools.timer import Timer
 
 warnings.warn('Module EFG is under testing')
 
 def kernel(method, efg_nuc=None, dm=None, x_response=True):
     log = lib.logger.Logger(method.stdout, method.verbose)
     log.info('\n******** EFG for 2-component SCF methods (In testing) ********')
+    timeit = Timer()
     xmol, contr_coeff_nr = method.with_x2c.get_xmol(method.mol)
+    xmol, contr_coeff = _decontract_spinor(method.mol, method.with_x2c.xuncontract)
     mol = xmol
     npri, ncon = contr_coeff_nr.shape
-    contr_coeff = np.zeros((npri*2,ncon*2))
-    contr_coeff[0::2,0::2] = contr_coeff_nr
-    contr_coeff[1::2,1::2] = contr_coeff_nr
     if efg_nuc is None:
         efg_nuc = range(mol.natm)
 
@@ -34,18 +35,26 @@ def kernel(method, efg_nuc=None, dm=None, x_response=True):
     if dm is None:
         dm = method.make_rdm1()
 
+    timeit.accumulate()
     from socutils.somf import x2c_grad
     t = mol.intor('int1e_kin_spinor')
+    timeit.accumulate()
     s = mol.intor('int1e_ovlp_spinor')
+    timeit.accumulate()
     v = mol.intor('int1e_nuc_spinor')
+    timeit.accumulate()
     w = mol.intor('int1e_spnucsp_spinor')
+    timeit.accumulate()
     a, e, xmat, st, r, l, h4c, m4c = x2c_grad.x2c1e_hfw0(t, v, w, s)
+    timeit.accumulate()
     h4c = method.with_x2c.h4c
     m4c = method.with_x2c.m4c
     log.info('\nElectric Field Gradient Tensor Results')
     efg = []
+    timeit.accumulate('zeroth order h4c and m4c')
     for i, atm_id in enumerate(efg_nuc):
         int_4c = _get_4cspinor_quadrupole_integrals(mol, atm_id)
+        timeit.accumulate('quadrupole integral')
         efg_e = np.zeros((3,3), dtype=dm.dtype)
         for x in range(3):
             for y in range(x+1):
@@ -60,7 +69,7 @@ def kernel(method, efg_nuc=None, dm=None, x_response=True):
                 int_2c = reduce(np.dot, (contr_coeff.T.conj(), int_2c, contr_coeff))
                 efg_e[x,y] = np.einsum('ij,ji->', int_2c, dm)
                 efg_e[y,x] = efg_e[x,y]
-
+        timeit.accumulate('transform efg integral')
         efg_nuc = _get_quad_nuc(mol, atm_id)
         v = efg_nuc - efg_e
         efg.append(v)
