@@ -255,7 +255,6 @@ def get_occ_symm(mf, irrep, occup, irrep_mo=None, mo_energy=None, mo_coeff=None)
 def spinor2sph(mol, spinor):
     c = mol.sph2spinor_coeff()
     c2 = numpy.vstack(c)
-    #print(c2.shape)
     assert (spinor.shape[0] == c2.shape[1]), "spinor integral must be of shape (nao_2c, nao_2c)"
     ints_sph = lib.einsum('ip,pq,qj->ij', c2, spinor, c2.T.conj())
     return ints_sph
@@ -493,9 +492,9 @@ class SpinorSCF(hf.SCF):
         if mol is None: mol = self.mol
         if dm is None: dm = self.make_rdm1()
         if self.direct_scf:
-            ddm = numpy.array(dm, copy=False) - numpy.array(dm_last, copy=False)
+            ddm = numpy.array(dm) - numpy.array(dm_last)
             vj, vk = self.get_jk(mol, ddm, hermi=hermi)
-            return numpy.array(vhf_last, copy=False) + vj - vk
+            return numpy.array(vhf_last) + vj - vk
         else:
             vj, vk = self.get_jk(mol, dm, hermi=hermi)
             return vj - vk
