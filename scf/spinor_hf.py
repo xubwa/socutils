@@ -13,6 +13,11 @@ from pyscf.gto import mole
 from pyscf.lib import logger
 from pyscf.scf import hf, dhf, ghf, _vhf
 import re
+try:
+    import zquatev
+except ImportError:
+    zquatev = None
+        
 #from zquatev import solve_KR_FCSCE as eigkr
 
 
@@ -35,7 +40,6 @@ class _DFJHF(df.df_jk._DFHF):
         with_dfk = with_k and self.with_df
 
         def jkbuild(mol, dm, hermi, with_j, with_k, omega=None):
-            print('density fitted jk build')
             vj, vk = self.with_df.get_jk(dm.real, hermi, with_j, with_k, self.direct_scf_tol, omega)
             if dm.dtype == numpy.complex128:
                 vjI, vkI = self.with_df.get_jk(dm.imag, hermi, with_j, with_k, self.direct_scf_tol, omega)
@@ -46,10 +50,19 @@ class _DFJHF(df.df_jk._DFHF):
             return vj, vk
         t0 = (logger.process_clock(), logger.perf_counter())
         j_sph, k_sph = ghf.get_jk(mol, dm_sph, hermi, with_j, with_dfk, jkbuild, omega)
-        j_spinor = sph2spinor(mol, j_sph)
-        k_spinor = sph2spinor(mol, k_sph)
+        if with_j:
+            j_spinor = sph2spinor(mol, j_sph)
+        if with_dfk:
+            k_spinor = sph2spinor(mol, k_sph)
         logger.timer(self, 'vj and vk', *t0)
-        return j_spinor, k_spinor
+        if with_j and with_dfk:
+            return j_spinor, k_spinor
+        elif with_j:
+            return j_spinor, None
+        elif with_dfk:
+            return None, k_spinor
+        else:
+            raise ValueError("Either with_j or with_k must be True.")
 
 
 def symmetry_label(mol, symmetry=None):
@@ -564,6 +577,20 @@ class SymmSpinorSCF(SpinorSCF):
             return SpinorSCF.get_occ(self, mo_energy, mo_coeff)
         else:
             return get_occ_symm(self, self.irrep_ao, self.occupation, mo_energy=mo_energy, mo_coeff=mo_coeff)
+        
+class KRHF(SpinorSCF):
+   def __init__(self, mol):
+       super().__init__(mol)
+       if zquatev is None:
+           raise RuntimeError('zquatev library is required to perform Kramers-restricted JHF')
+   def _eigh(self, h, s):
+       return dhf.zquatev.solve_KR_FCSCE(self.mol, h, s)
+   def to_ks(self, xc='HF'):
+       from pyscf.x2c import dft
+       mf = self.view(dft.RKS)
+       mf.converged = False
+       return mf
+
 
 JHF = SpinorSCF
 SCF = SpinorSCF

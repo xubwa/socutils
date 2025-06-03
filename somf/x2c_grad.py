@@ -236,6 +236,10 @@ def get_R1(S0, ST, ST1, S1=None):
         Asqinv = scipy.linalg.inv(scipy.linalg.sqrtm(A))
         R1 = R1 + reduce(numpy.dot, (Ssqinv1, Asqinv, Ssq0))\
                 + reduce(numpy.dot, (Ssqinv0, Asqinv, Ssq1))
+    # sqrtm will return complex256 when the input is complex128
+    # it will break the other parts of the code
+    if R1.dtype == numpy.complex256:
+        R1 = R1.astype(numpy.complex128)
     return R1
 
 def get_L1(h4c0, h4c1, X0, X1):

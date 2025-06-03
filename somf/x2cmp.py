@@ -864,10 +864,10 @@ def eamf(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, nu
         h_x2c = to_2c(x, r, h1e_4c)
     elif x2cobj.amf_type == 'sf1e':
         from pyscf.lib.parameters import LIGHT_SPEED as c
-        t = mol.intor('int1e_spsp_spinor') * 0.5
-        vn = mol.intor('int1e_nuc_spinor')
-        wn = mol.intor('int1e_pnucp_spinor')
-        n2c = mol.nao_2c()
+        t = xmol.intor('int1e_spsp_spinor') * 0.5
+        vn = xmol.intor('int1e_nuc_spinor')
+        wn = xmol.intor('int1e_pnucp_spinor')
+        n2c = xmol.nao_2c()
         n4c = n2c * 2
         h1e_4csf = np.empty((n4c, n4c), np.complex128)
         h1e_4csf[:n2c,:n2c] = vn
@@ -1080,8 +1080,24 @@ class SpinOrbitalEAMFX2CHelper(x2c.x2c.SpinOrbitalX2CHelper):
     def load_hcore(self, filename='eamf.chk'):
         self.hcore = chkfile.load(filename, 'eamf_integral')
 
-    def get_hfw1(self, h4c1, s4c1=None):
-        raise NotImplementedError('Not implemented for spin-orbital basis')
+    def get_hfw1(self, h4c1, s4c1=None, x_response=True):
+        if self.h4c is None:
+            self.get_hcore(self.mol)
+        n4c = self.h4c.shape[0]
+        n2c = n4c//2
+        hLL = self.h4c[:n2c,:n2c]
+        hLS = self.h4c[:n2c,n2c:]
+        hSL = self.h4c[n2c:,:n2c]
+        hSS = self.h4c[n2c:,n2c:]
+        sLL = self.m4c[:n2c,:n2c]
+        sSS = self.m4c[n2c:,n2c:]
+
+        a, e, x, st, r, l, h4c, m4c = x2c_grad.x2c1e_hfw0_block(hLL, hSL, hLS, hSS, sLL, sSS)
+        if x_response is True:
+            hfw1 = x2c_grad.get_hfw1(a, x, st, m4c, h4c, e, r, l, h4c1, s4c1)
+        else:
+            hfw1 = to_2c(x, r, h4c1)
+        return hfw1
 
 
 if __name__ == '__main__':

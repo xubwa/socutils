@@ -57,6 +57,9 @@ def orbital(mol, coeff, outfile_amplitude='orbValue.cub', outfile_angle='orbPhas
     orb_on_grid = numpy.empty(ngrids)
     for ip0, ip1 in lib.prange(0, ngrids, blksize):
         ao = mol.eval_gto(GTOval, coords[ip0:ip1])
+        print(ao.shape)
+        print(coeff.shape)
+
         orb_on_grid[ip0:ip1] = numpy.dot(ao, coeff)
     orb_on_grid = orb_on_grid.reshape(cc.nx,cc.ny,cc.nz)
     amp_on_grid = numpy.abs(orb_on_grid)
@@ -65,3 +68,49 @@ def orbital(mol, coeff, outfile_amplitude='orbValue.cub', outfile_angle='orbPhas
     cc.write(amp_on_grid, outfile_amplitude, comment='Amplitude of orbital value in real space (1/Bohr^3)')
     cc.write(ang_on_grid, outfile_angle, comment='Phase angle from -pi to pi of complex orbital vallues')
     return orb_on_grid
+
+def density(mol, coeff, outfile='density.cub',
+            nx=80, ny=80, nz=80, resolution=RESOLUTION, margin=BOX_MARGIN):
+    """Calculate density value on real space grid and write out in cube format.
+
+    Args:
+        mol : Mole
+            Molecule to calculate the electron density for.
+        
+        coeff : 1D array
+            coeff coefficient.
+
+    Kwargs:
+        outfile : str
+            Name of Cube file to be written.
+        nx : int
+            Number of grid point divisions in x direction.
+            Note this is function of the molecule's size; a larger molecule
+            will have a coarser representation than a smaller one for the
+            same value. Conflicts to keyword resolution.
+        ny : int
+            Number of grid point divisions in y direction.
+        nz : int
+            Number of grid point divisions in z direction.
+        resolution: float
+            Resolution of the mesh grid in the cube box. If resolution is
+            given in the input, the input nx/ny/nz have no effects.  The value
+            of nx/ny/nz will be determined by the resolution and the cube box
+            size.
+    """
+    cc = Cube(mol, nx, ny, nz, resolution, margin)
+
+    GTOval = 'GTOval_spinor'
+
+    # Compute density on the .cube grid
+    coords = cc.get_coords()
+    ngrids = cc.get_ngrids()
+    blksize = min(8000, ngrids)
+    orb_on_grid = numpy.zeros((2, ngrids), dtype=numpy.complex128)
+    for ip0, ip1 in lib.prange(0, ngrids, blksize):
+        ao = mol.eval_gto(GTOval, coords[ip0:ip1])
+        orb_on_grid[:,ip0:ip1] = numpy.dot(ao, coeff)
+    den_on_grid = numpy.einsum("ip,ip->p", orb_on_grid.conj(), orb_on_grid).real
+    den_on_grid = den_on_grid.reshape(cc.nx,cc.ny,cc.nz)
+    cc.write(den_on_grid, outfile, comment='Density value in real space (1/Bohr^3)')
+    return den_on_grid

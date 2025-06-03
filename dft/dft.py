@@ -63,3 +63,24 @@ class SymmDFT(dks.KohnShamDFT, spinor_hf.SymmSpinorSCF):
         mf = self.view(spinor_hf.SpinorSCF)
         mf.converged = False
         return mf
+
+class KRDFT(dks.KohnShamDFT, spinor_hf.KRHF):
+    def __init__(self, mol, xc='LDA,VWN'):
+        spinor_hf.KRHF.__init__(self, mol)
+        dks.KohnShamDFT.__init__(self, xc)
+
+    def dump_flags(self, verbose=None):
+        spinor_hf.KRHF.dump_flags(self, verbose)
+        dks.KohnShamDFT.dump_flags(self, verbose)
+        return self
+
+    def to_hf(self):
+        '''Convert the input mean-field object to an X2C-HF object.
+
+        Note this conversion only changes the class of the mean-field object.
+        The total energy and wave-function are the same as them in the input
+        mean-field object.
+        '''
+        mf = self.view(spinor_hf.KRHF)
+        mf.converged = False
+        return mf

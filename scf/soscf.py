@@ -126,7 +126,7 @@ def aughess(mf, mo_coeff=None, conv_tol=1e-9, conv_tol_grad=None):
         logger.info(mf, 'cycle= %d E= %.15g  delta_E= %4.3g  |g|= %4.3g',
                     cycle+1, e_tot, e_tot-last_hf_e, norm_gorb)
         x, e, eall = davidson.davidson(hop, g, hdiag, mmax=5)
-        from socutils.hf_superci import GMRES
+        from socutils.mcscf.hf_superci import GMRES
         #x, _ = GMRES(hop, -g, -g/hdiag,  hdiag=hdiag)
         dr = scf.hf.unpack_uniq_var(x, mo_occ)
         mo_coeff = np.dot(mo_coeff, expmat(dr))
