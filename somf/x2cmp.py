@@ -15,6 +15,7 @@ from x2camf.x2camf import construct_molecular_matrix, pcc_k, _amf
 from x2camf import libx2camf
 
 LIGHT_SPEED = lib.param.LIGHT_SPEED
+
 def build_prim(mol):
     bas = mol._bas
     env = mol._env
@@ -96,7 +97,7 @@ def extract_ith_integral(atm_integrals, idx):
         out[key] = value[idx]
     return out
 
-def eamf_screen(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, nucmod=None):
+def x2cmp_screen(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, nucmod=None):
     mol = x2cobj.mol
     if nucmod is None:
         nucmod = mol.nucmod
@@ -114,7 +115,7 @@ def eamf_screen(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=Fa
     atm_ints = {}
 
     mol_ref = mol.copy()
-    mol_ref.basis='dyallv3z'
+    mol_ref.basis='dyallv2z'
     mol_ref.build()
 
     for atom in uniq_atoms:
@@ -129,9 +130,9 @@ def eamf_screen(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=Fa
         for bas in raw_bas_ref:
             ang = bas[0]
             if min_bas_ref[ang] < 0.0:
-                min_bas_ref[ang] = 1.1*bas[-1][0]
+                min_bas_ref[ang] = 1.*bas[-1][0]
             if bas[-1][0] < min_bas_ref[ang]:
-                min_bas_ref[ang] = 1.1*bas[-1][0]
+                min_bas_ref[ang] = 1.*bas[-1][0]
         print(min_bas_ref)
         # screen raw_bas based on smallest primitive in each ang mom
         def to_prim(bas):
@@ -171,7 +172,6 @@ def eamf_screen(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=Fa
                 i += 1
             else:
                 j += 1
-        print(refill)
         print(f'Atom {atom} n2c {n2c} n2c_screen {n2c_screen}')
         shell = []
         exp_a = []
@@ -233,7 +233,14 @@ def eamf_screen(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=Fa
         soc_matrix = construct_molecular_matrix(extract_ith_integral(atm_ints, 13), atom_slices, xmol, n2c, False)
         h_x2c += soc_matrix
         x2cobj.soc_matrix = soc_matrix
-    elif x2cobj.amf_type == 'screen_atom1e':
+    elif 'screenH' in x2cobj.amf_type:
+        '''
+        screen the matrix element of H4c.
+        {i} denotes the set of basis functions that are not diffuse.
+        {j} denotes the set of basis functions that are diffuse.
+        keep H_ii block and H_jj block of the H4c.
+        H_ij block is set to 0.
+        '''
         # results{0 atm_X, 1 atm_R, 2 h1e_4c, 3 fock_4c, 4 fock_2c, 5 fock_4c_2e, 
         #         6 fock_2c_2e, 7 fock_4c_K, 8 fock_2c_K, 9 so_4c, 10 so_2c, 11 den_4c, 12 den_2c};
         atm_h4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 2), atom_slices, xmol, n2c, True)
@@ -241,43 +248,8 @@ def eamf_screen(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=Fa
 
         atom_slices = xmol.offset_2c_by_atom()
         n2c = xmol.nao_2c()
-        x = np.zeros((n2c,n2c), dtype=np.complex128)
-        for ia in range(xmol.natm):
-            ish0, ish1, p0, p1 = atom_slices[ia]
-            shls_slice = (ish0, ish1, ish0, ish1)
-            s1 = xmol.intor('int1e_ovlp_spinor', shls_slice=shls_slice)
-            t1 = xmol.intor('int1e_spsp_spinor', shls_slice=shls_slice) * .5
-            with xmol.with_rinv_at_nucleus(ia):
-                z = -xmol.atom_charge(ia)
-                v1 = z*xmol.intor('int1e_rinv_spinor', shls_slice=shls_slice)
-                w1 = z*xmol.intor('int1e_sprinvsp_spinor', shls_slice=shls_slice)
-            n2c_atm = p1-p0
-            n4c_atm = 2*n2c_atm
-            h4c_atm = np.zeros((n4c_atm,n4c_atm), dtype=complex)
-            h4c_atm[:n2c_atm,:n2c_atm] = v1
-            h4c_atm[n2c_atm:,:n2c_atm] = t1
-            h4c_atm[:n2c_atm,n2c_atm:] = t1
-            h4c_atm[n2c_atm:,n2c_atm:] = w1*(0.5/LIGHT_SPEED)**2 - t1
-            s4c_atm = np.zeros_like(h4c_atm)
-            s4c_atm[:n2c_atm,:n2c_atm] = s1
-            s4c_atm[n2c_atm:,n2c_atm:] = t1*0.5/(LIGHT_SPEED)**2
-            x1, st1, r1, h2c1 = x2c1e_hfw0_4cmat(h4c_atm, s4c_atm, xmol)
-            x[p0:p1,p0:p1] = x1 
-        #x = screen_amf_matrix(xmol, x)
-        for i in range(x.shape[0]):
-            if x[i,i] == 0:
-                x[i,i] = 1.0
-        r = x2cobj._get_rmat(x)
-        h_x2c = to_2c(x, r, h1e_4c)
-    elif x2cobj.amf_type == 'screen_atom1e_01':
-        # results{0 atm_X, 1 atm_R, 2 h1e_4c, 3 fock_4c, 4 fock_2c, 5 fock_4c_2e, 
-        #         6 fock_2c_2e, 7 fock_4c_K, 8 fock_2c_K, 9 so_4c, 10 so_2c, 11 den_4c, 12 den_2c};
-        atm_h4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 2), atom_slices, xmol, n2c, True)
-        n2c = atm_h4c.shape[0]//2
-
-        atom_slices = xmol.offset_2c_by_atom()
-        n2c = xmol.nao_2c()
-        x = np.zeros((n2c,n2c), dtype=np.complex128)
+        x = np.zeros((n2c,n2c), dtype=complex)
+        r = np.zeros((n2c,n2c), dtype=complex)
         atm_h4c = np.zeros_like(atm_h4c, dtype=complex)
         atm_s4c = np.zeros_like(atm_h4c, dtype=complex)
 
@@ -289,176 +261,10 @@ def eamf_screen(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=Fa
             with xmol.with_rinv_at_nucleus(ia):
                 z = -xmol.atom_charge(ia)
                 v1 = z*xmol.intor('int1e_rinv_spinor', shls_slice=shls_slice)
-                w1 = z*xmol.intor('int1e_sprinvsp_spinor', shls_slice=shls_slice)
-            atm_h4c[p0:p1, n2c+p0:n2c+p1] = t1
-            atm_h4c[n2c+p0:n2c+p1, p0:p1] = t1
-            atm_h4c[p0:p1, p0:p1] = v1
-            atm_h4c[n2c+p0:n2c+p1,n2c+p0:n2c+p1] = w1*(0.5/LIGHT_SPEED)**2 - t1
-            atm_s4c[p0:p1,p0:p1] = s1
-            atm_s4c[n2c+p0:n2c+p1,n2c+p0:n2c+p1] = t1*0.5/(LIGHT_SPEED)**2
-
-        ao_loc = xmol.ao_loc_2c()
-        nbas = xmol.nbas
-        exps = xmol.bas_exps()
-            
-        for ia in range(xmol.natm):
-            ish0, ish1, p0, p1 = atom_slices[ia]
-            shls_slice = (ish0, ish1, ish0, ish1)
-            hls = atm_h4c[p0:p1, n2c+p0:n2c+p1]
-            hsl = atm_h4c[n2c+p0:n2c+p1, p0:p1]
-            hll = atm_h4c[p0:p1, p0:p1]
-            hss = atm_h4c[n2c+p0:n2c+p1,n2c+p0:n2c+p1]
-            sll = atm_s4c[p0:p1,p0:p1]
-            sss = atm_s4c[n2c+p0:n2c+p1,n2c+p0:n2c+p1]
-            n2c_atm = p1-p0
-            n4c_atm = 2*n2c_atm
-            h4c_atm = np.zeros((n4c_atm,n4c_atm), dtype=complex)
-            h4c_atm[:n2c_atm,:n2c_atm] = hll
-            h4c_atm[n2c_atm:,:n2c_atm] = hsl
-            h4c_atm[:n2c_atm,n2c_atm:] = hls
-            h4c_atm[n2c_atm:,n2c_atm:] = hss
-            s4c_atm = np.zeros_like(h4c_atm)
-            s4c_atm[:n2c_atm,:n2c_atm] = sll
-            s4c_atm[n2c_atm:,n2c_atm:] = sss
-            x1, st1, r1, h2c1 = x2c1e_hfw0_4cmat(h4c_atm, s4c_atm, xmol)
-            x[p0:p1,p0:p1] = x1 
-
-        for ishl in range(nbas):
-            p0, p1 = ao_loc[ishl], ao_loc[ishl+1]
-            angular = xmol.bas_angular(ishl)
-            exp = exps[ishl][0] # since xmol is decontracted, exp[0] is its only exponent
-            if exp < min_bas_ref[angular]:
-               x[p0:p1,:] *= 0.0
-               x[:,p0:p1] *= 0.0
-               x[p0:p1,p0:p1] = np.eye(p1-p0)+0.j
-
-        r = x2cobj._get_rmat(x)
-        h_x2c = to_2c(x, r, h1e_4c)
-    elif x2cobj.amf_type == 'screen_atom1e_02':
-        # results{0 atm_X, 1 atm_R, 2 h1e_4c, 3 fock_4c, 4 fock_2c, 5 fock_4c_2e, 
-        #         6 fock_2c_2e, 7 fock_4c_K, 8 fock_2c_K, 9 so_4c, 10 so_2c, 11 den_4c, 12 den_2c};
-        atm_h4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 2), atom_slices, xmol, n2c, True)
-        n2c = atm_h4c.shape[0]//2
-
-        atom_slices = xmol.offset_2c_by_atom()
-        n2c = xmol.nao_2c()
-        x = np.zeros((n2c,n2c), dtype=np.complex128)
-        atm_h4c = np.zeros_like(atm_h4c, dtype=complex)
-        atm_s4c = np.zeros_like(atm_h4c, dtype=complex)
-
-        for ia in range(xmol.natm):
-            ish0, ish1, p0, p1 = atom_slices[ia]
-            shls_slice = (ish0, ish1, ish0, ish1)
-            s1 = xmol.intor('int1e_ovlp_spinor', shls_slice=shls_slice)
-            t1 = xmol.intor('int1e_spsp_spinor', shls_slice=shls_slice) * .5
-            with xmol.with_rinv_at_nucleus(ia):
-                z = -xmol.atom_charge(ia)
-                v1 = z*xmol.intor('int1e_rinv_spinor', shls_slice=shls_slice)
-                w1 = z*xmol.intor('int1e_sprinvsp_spinor', shls_slice=shls_slice)
-            atm_h4c[p0:p1, n2c+p0:n2c+p1] = t1
-            atm_h4c[n2c+p0:n2c+p1, p0:p1] = t1
-            atm_h4c[p0:p1, p0:p1] = v1
-            atm_h4c[n2c+p0:n2c+p1,n2c+p0:n2c+p1] = w1*(0.5/LIGHT_SPEED)**2 - t1
-            atm_s4c[p0:p1,p0:p1] = s1
-            atm_s4c[n2c+p0:n2c+p1,n2c+p0:n2c+p1] = t1*0.5/(LIGHT_SPEED)**2
-
-        ao_loc = xmol.ao_loc_2c()
-        nbas = xmol.nbas
-        exps = xmol.bas_exps()
-        for ishl in range(nbas):
-            p0, p1 = ao_loc[ishl], ao_loc[ishl+1]
-            angular = xmol.bas_angular(ishl)
-            exp = exps[ishl][0] # since xmol is decontracted, exp[0] is its only exponent
-            if exp < min_bas_ref[angular]:
-               atm_hll_bkp = atm_h4c[p0:p1,p0:p1]
-               atm_hss_bkp = atm_h4c[p0+n2c:p1+n2c,p0+n2c:p1+n2c]
-               atm_hls_bkp = atm_h4c[p0:p1,p0+n2c:p1+n2c]
-               atm_hsl_bkp = atm_h4c[p0+n2c:p1+n2c,p0:p1]
-               atm_sll_bkp = atm_s4c[p0:p1,p0:p1]
-               atm_sss_bkp = atm_s4c[p0+n2c:p1+n2c,p0+n2c:p1+n2c]
-               atm_h4c[p0:p1,:] *= 0.0j
-               atm_h4c[:,p0:p1] *= 0.0j
-               atm_h4c[p0+n2c:p1+n2c,:]*=0.0j
-               atm_h4c[:,p0+n2c:p1+n2c]*=0.0j
-               atm_s4c[p0:p1,:] *= 0.0j
-               atm_s4c[:,p0:p1] *= 0.0j
-               atm_s4c[p0+n2c:p1+n2c,:]*=0.0j
-               atm_s4c[:,p0+n2c:p1+n2c]*=0.0j
-               #atm_h4c[p0+n2c:p1+n2c,p0+n2c:p1+n2c] = np.diag(np.arange(p0,p1))*10.0-2.*LIGHT_SPEED**2+0.j
-               #atm_h4c[p0:p1,p0:p1] = np.diag(np.arange(p0,p1))*10.0+0.j
-               #atm_s4c[p0:p1,p0:p1] = np.diag(np.ones(p1-p0))+0.j
-               #atm_s4c[p0+n2c:p1+n2c,p0+n2c:p1+n2c] = atm_s4c[p0:p1,p0:p1]
-               atm_h4c[p0:p1,p0:p1] = atm_hll_bkp
-               atm_h4c[p0+n2c:p1+n2c,p0+n2c:p1+n2c] = atm_hss_bkp
-               atm_h4c[p0:p1,p0+n2c:p1+n2c] = atm_hls_bkp
-               atm_h4c[p0+n2c:p1+n2c,p0:p1] = atm_hsl_bkp
-               atm_s4c[p0:p1,p0:p1] = atm_sll_bkp
-               atm_s4c[p0+n2c:p1+n2c,p0+n2c:p1+n2c] = atm_sss_bkp
-            
-        for ia in range(xmol.natm):
-            ish0, ish1, p0, p1 = atom_slices[ia]
-            shls_slice = (ish0, ish1, ish0, ish1)
-            hls = atm_h4c[p0:p1, n2c+p0:n2c+p1]
-            hsl = atm_h4c[n2c+p0:n2c+p1, p0:p1]
-            hll = atm_h4c[p0:p1, p0:p1]
-            hss = atm_h4c[n2c+p0:n2c+p1,n2c+p0:n2c+p1]
-            sll = atm_s4c[p0:p1,p0:p1]
-            sss = atm_s4c[n2c+p0:n2c+p1,n2c+p0:n2c+p1]
-            n2c_atm = p1-p0
-            n4c_atm = 2*n2c_atm
-            h4c_atm = np.zeros((n4c_atm,n4c_atm), dtype=complex)
-            h4c_atm[:n2c_atm,:n2c_atm] = hll
-            h4c_atm[n2c_atm:,:n2c_atm] = hsl
-            h4c_atm[:n2c_atm,n2c_atm:] = hls
-            h4c_atm[n2c_atm:,n2c_atm:] = hss
-            s4c_atm = np.zeros_like(h4c_atm)
-            s4c_atm[:n2c_atm,:n2c_atm] = sll
-            s4c_atm[n2c_atm:,n2c_atm:] = sss
-            print(h4c_atm)
-            print(s4c_atm)
-            import scipy
-            e_atm, c_atm = scipy.linalg.eigh(h4c_atm, s4c_atm)
-            print(e_atm)
-            x1, st1, r1, h2c1 = x2c1e_hfw0_4cmat(h4c_atm, s4c_atm, xmol)
-            x[p0:p1,p0:p1] = x1 
-
-        for ishl in range(nbas):
-            p0, p1 = ao_loc[ishl], ao_loc[ishl+1]
-            angular = xmol.bas_angular(ishl)
-            exp = exps[ishl][0] # since xmol is decontracted, exp[0] is its only exponent
-            if exp < min_bas_ref[angular]:
-               print(x[p0:p1,p0:p1])
-               print(atm_h4c[p0:p1,p0:p1])
-               print(atm_h4c[p0+n2c:p1+n2c,p0+n2c:p1+n2c])
-               print(atm_s4c[p0:p1,p0:p1])
-               x[p0:p1,:] *= 0.0
-               x[:,p0:p1] *= 0.0
-               x[p0:p1,p0:p1] = np.eye(p1-p0)+0.j
-
-        r = x2cobj._get_rmat(x)
-        h_x2c = to_2c(x, r, h1e_4c)
-        
-    elif x2cobj.amf_type == 'screen_sfa1e_02':
-        # results{0 atm_X, 1 atm_R, 2 h1e_4c, 3 fock_4c, 4 fock_2c, 5 fock_4c_2e, 
-        #         6 fock_2c_2e, 7 fock_4c_K, 8 fock_2c_K, 9 so_4c, 10 so_2c, 11 den_4c, 12 den_2c};
-        atm_h4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 2), atom_slices, xmol, n2c, True)
-        n2c = atm_h4c.shape[0]//2
-
-        atom_slices = xmol.offset_2c_by_atom()
-        n2c = xmol.nao_2c()
-        x = np.zeros((n2c,n2c), dtype=np.complex128)
-        atm_h4c = np.zeros_like(atm_h4c, dtype=complex)
-        atm_s4c = np.zeros_like(atm_h4c, dtype=complex)
-
-        for ia in range(xmol.natm):
-            ish0, ish1, p0, p1 = atom_slices[ia]
-            shls_slice = (ish0, ish1, ish0, ish1)
-            s1 = xmol.intor('int1e_ovlp_spinor', shls_slice=shls_slice)
-            t1 = xmol.intor('int1e_spsp_spinor', shls_slice=shls_slice) * .5
-            with xmol.with_rinv_at_nucleus(ia):
-                z = -xmol.atom_charge(ia)
-                v1 = z*xmol.intor('int1e_rinv_spinor', shls_slice=shls_slice)
-                w1 = z*xmol.intor('int1e_prinvp_spinor', shls_slice=shls_slice)
+                if 'sf' in x2cobj.amf_type:
+                    w1 = z*xmol.intor('int1e_prinvp_spinor', shls_slice=shls_slice)
+                else:
+                    w1 = z*xmol.intor('int1e_sprinvsp_spinor', shls_slice=shls_slice)
             atm_h4c[p0:p1, n2c+p0:n2c+p1] = t1
             atm_h4c[n2c+p0:n2c+p1, p0:p1] = t1
             atm_h4c[p0:p1, p0:p1] = v1
@@ -474,7 +280,8 @@ def eamf_screen(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=Fa
         for ishl in range(nbas):
             p0, p1 = ao_loc[ishl], ao_loc[ishl+1]
             angular = xmol.bas_angular(ishl)
-            exp = exps[ishl][0] # since xmol is decontracted, exp[0] is its only exponent
+            exp = exps[ishl][0]
+            # since xmol is decontracted, exp[0] is its only exponent
             if exp < min_bas_ref[angular]:
                 atm_h4c[p0:p1,:] *= 0.0j
                 atm_h4c[:,p0:p1] *= 0.0j
@@ -527,6 +334,7 @@ def eamf_screen(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=Fa
             s4c_atm[n2c_atm:,n2c_atm:] = sss
             x1, st1, r1, h2c1 = x2c1e_hfw0_4cmat(h4c_atm, s4c_atm, xmol)
             x[p0:p1,p0:p1] = x1 
+            r[p0:p1,p0:p1] = r1
 
         for ishl in range(nbas):
             p0, p1 = ao_loc[ishl], ao_loc[ishl+1]
@@ -540,21 +348,28 @@ def eamf_screen(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=Fa
                x[p0:p1,:] *= 0.0
                x[:,p0:p1] *= 0.0
                x[p0:p1,p0:p1] = np.eye(p1-p0)+0.j
+               r[p0:p1,p0:p1] = np.eye(p1-p0)+0.j
 
-        t = mol.intor('int1e_spsp_spinor') * 0.5
-        vn = mol.intor('int1e_nuc_spinor')
-        wn = mol.intor('int1e_pnucp_spinor')
-        n2c = mol.nao_2c()
-        n4c = n2c * 2
-        h1e_4csf = np.empty((n4c, n4c), np.complex128)
-        h1e_4csf[:n2c,:n2c] = vn
-        h1e_4csf[n2c:,:n2c] = t
-        h1e_4csf[:n2c,n2c:] = t
-        h1e_4csf[n2c:,n2c:] = wn * (.25/LIGHT_SPEED**2) - t
-        r = x2cobj._get_rmat(x)
-        h_x2c = to_2c(x, r, h1e_4csf)
+        if 'sf' in x2cobj.amf_type:
+            t = mol.intor('int1e_spsp_spinor') * 0.5
+            vn = mol.intor('int1e_nuc_spinor')
+            wn = mol.intor('int1e_pnucp_spinor')
+            n2c = mol.nao_2c()
+            n4c = n2c * 2
+            h1e_4c = np.empty((n4c, n4c), np.complex128)
+            h1e_4c[:n2c,:n2c] = vn
+            h1e_4c[n2c:,:n2c] = t
+            h1e_4c[:n2c,n2c:] = t
+            h1e_4c[n2c:,n2c:] = wn * (.25/LIGHT_SPEED**2) - t
+        if 'ax' in x2cobj.amf_type:
+            r = x2cobj._get_rmat(x)
+        h_x2c = to_2c(x, r, h1e_4c)
         
-    elif x2cobj.amf_type == 'screen_sfa1e_01':
+    elif 'screenX' in x2cobj.amf_type:
+        '''
+        In this scheme, X matrix is screened base on exponentials,
+        atomic X approximation is employed.
+        '''
         # results{0 atm_X, 1 atm_R, 2 h1e_4c, 3 fock_4c, 4 fock_2c, 5 fock_4c_2e, 
         #         6 fock_2c_2e, 7 fock_4c_K, 8 fock_2c_K, 9 so_4c, 10 so_2c, 11 den_4c, 12 den_2c};
         atm_h4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 2), atom_slices, xmol, n2c, True)
@@ -568,15 +383,17 @@ def eamf_screen(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=Fa
 
         t = mol.intor('int1e_spsp_spinor') * 0.5
         vn = mol.intor('int1e_nuc_spinor')
-        wn = mol.intor('int1e_pnucp_spinor')
+        if 'sf' in x2cobj.amf_type:
+            wn = mol.intor('int1e_pnucp_spinor')
+        else:
+            wn = mol.intor('int1e_sprinvsp_spinor')
         n2c = mol.nao_2c()
         n4c = n2c * 2
-        h1e_4csf = np.empty((n4c, n4c), np.complex128)
-        h1e_4csf[:n2c,:n2c] = vn
-        h1e_4csf[n2c:,:n2c] = t
-        h1e_4csf[:n2c,n2c:] = t
-        h1e_4csf[n2c:,n2c:] = wn * (.25/LIGHT_SPEED**2) - t
-        #x, st, r, h2c = x2c1e_hfw0_4cmat(h1e_4csf, s4c, mol=xmol)
+        h1e_4c = np.empty((n4c, n4c), np.complex128)
+        h1e_4c[:n2c,:n2c] = vn
+        h1e_4c[n2c:,:n2c] = t
+        h1e_4c[:n2c,n2c:] = t
+        h1e_4c[n2c:,n2c:] = wn * (.25/LIGHT_SPEED**2) - t
 
         for ia in range(xmol.natm):
             ish0, ish1, p0, p1 = atom_slices[ia]
@@ -586,7 +403,10 @@ def eamf_screen(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=Fa
             with xmol.with_rinv_at_nucleus(ia):
                 z = -xmol.atom_charge(ia)
                 v1 = z*xmol.intor('int1e_rinv_spinor', shls_slice=shls_slice)
-                w1 = z*xmol.intor('int1e_prinvp_spinor', shls_slice=shls_slice)
+                if 'sf' in x2cobj.amf_type:
+                    w1 = z*xmol.intor('int1e_prinvp_spinor', shls_slice=shls_slice)
+                else:
+                    w1 = z*xmol.intor('int1e_sprinvsp_spinor', shls_slice=shls_slice)
             atm_h4c[p0:p1, n2c+p0:n2c+p1] = t1
             atm_h4c[n2c+p0:n2c+p1, p0:p1] = t1
             atm_h4c[p0:p1, p0:p1] = v1
@@ -628,13 +448,11 @@ def eamf_screen(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=Fa
                #x[p0:p1,:] *= 0.0
                x[:,p0:p1] *= 0.0
                x[p0:p1,p0:p1] = np.eye(p1-p0)+0.j
-
         r = x2cobj._get_rmat(x)
-        h_x2c = to_2c(x, r, h1e_4csf)
-
+        h_x2c = to_2c(x, r, h1e_4c)
     return h_x2c
 
-def eamf(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, nucmod=None):
+def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, nucmod=None):
     mol = x2cobj.mol
     if nucmod is None:
         nucmod = mol.nucmod
@@ -681,7 +499,7 @@ def eamf(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, nu
     x2cobj.soc_matrix = np.zeros((n2c, n2c))
     density_2c = construct_molecular_matrix(extract_ith_integral(atm_ints, 12), atom_slices, xmol, n2c, False)
     x2cobj.density_2c = density_2c
-    if x2cobj.amf_type == 'eamf':
+    if x2cobj.amf_type == 'x2cmp':
         # results{0 atm_X, 1 atm_R, 2 h1e_4c, 3 fock_4c, 4 fock_2c, 5 fock_4c_2e, 
         #         6 fock_2c_2e, 7 fock_4c_K, 8 fock_2c_K, 9 so_4c, 10 so_2c, 11 den_4c, 12 den_2c};
         density_4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 11), atom_slices, xmol, n2c, True)
@@ -707,7 +525,7 @@ def eamf(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, nu
         h_x2c = to_2c(x, r, fock_4c) - veff_2c
         x2cobj.h4c = h1e_4c + veff_4c
         x2cobj.soc_matrix = h_x2c - to_2c(x, r, h1e_4c)
-    elif x2cobj.amf_type == 'eamf_x1e':
+    elif x2cobj.amf_type == 'x2cmp_x1e':
         density_4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 11), atom_slices, xmol, n2c, True)
         density_2c = construct_molecular_matrix(extract_ith_integral(atm_ints, 12), atom_slices, xmol, n2c, False)
         vj_4c, vk_4c= mf_4c.get_jk(dm=density_4c)
@@ -905,16 +723,17 @@ def eamf(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, nu
     h_x2c = reduce(np.dot, (contr_coeff.T.conj(), h_x2c, contr_coeff))
     return h_x2c
 
-class SpinorEAMFX2CHelper(x2c.x2c.SpinorX2CHelper):
+class SpinorX2CMPHelper(x2c.x2c.SpinorX2CHelper):
     hcore = None
-    def __init__(self, mol, eamf='eamf', with_gaunt=False, with_breit=False, with_pcc=True, with_aoc=False, screen=False):
+    def __init__(self, mol, x2cmp='x2cmp', with_gaunt=False, with_breit=False, with_pcc=True, with_aoc=False, screen=False):
         super().__init__(mol)
+        self.x2c_intermediate = None
         self.gaunt = with_gaunt
         self.gaunt_sd = False        
         self.breit = with_breit
         self.pcc = with_pcc
         self.aoc = with_aoc
-        self.amf_type = eamf # use this class to implement various flavors of approximations.
+        self.amf_type = x2cmp # use this class to implement various flavors of approximations.
         self.nucmod = mol.nucmod
         self.h4c = None
         self.m4c = None
@@ -926,39 +745,33 @@ class SpinorEAMFX2CHelper(x2c.x2c.SpinorX2CHelper):
         else:
             self.gau_nuc = False
         
-    def eamf(self):
+    def x2cmp(self):
         print(self.gaunt,self.breit,self.pcc,self.aoc)
-        #xmol, contr_coeff_nr = self.get_xmol()
-        #npri, ncon = contr_coeff_nr.shape
-        #contr_coeff = np.zeros((npri*2,ncon*2))
-        #contr_coeff[0::2,0::2] = contr_coeff_nr
-        #contr_coeff[1::2,1::2] = contr_coeff_nr
-        return eamf(self, self.mol.verbose, self.gaunt, self.breit, self.pcc, self.aoc, self.gau_nuc)
-        #return reduce(np.dot, (contr_coeff.T, eamf_unc, contr_coeff))
+        return x2cmp(self, self.mol.verbose, self.gaunt, self.breit, self.pcc, self.aoc, self.gau_nuc)
     
-    def eamf_screen(self):
+    def x2cmp_screen(self):
         print(self.gaunt,self.breit,self.pcc,self.aoc)
         xmol, contr_coeff_nr = self.get_xmol()
         npri, ncon = contr_coeff_nr.shape
         contr_coeff = np.zeros((npri*2,ncon*2))
         contr_coeff[0::2,0::2] = contr_coeff_nr
         contr_coeff[1::2,1::2] = contr_coeff_nr
-        eamf_unc = eamf_screen(self, self.mol.verbose, self.gaunt, self.breit, self.pcc, self.aoc, self.gau_nuc)
-        return reduce(np.dot, (contr_coeff.T, eamf_unc, contr_coeff))
+        x2cmp_unc = x2cmp_screen(self, self.mol.verbose, self.gaunt, self.breit, self.pcc, self.aoc, self.gau_nuc)
+        return reduce(np.dot, (contr_coeff.T, x2cmp_unc, contr_coeff))
     
     def get_hcore(self, mol):
         if self.hcore is None:
             if self.screen is False:
-                self.hcore = self.eamf()
+                self.hcore = self.x2cmp()
             else:
-                self.hcore = self.eamf_screen()
+                self.hcore = self.x2cmp_screen()
         return self.hcore
 
-    def save_hcore(self, filename='eamf.chk'):
+    def save_hcore(self, filename='x2cmp.chk'):
         if self.hcore is None:
-            chkfile.dump(filename, 'eamf_integral', self.eamf())
+            chkfile.dump(filename, 'x2cmp_integral', self.x2cmp())
         else:
-            chkfile.dump(filename, 'eamf_integral', self.hcore())
+            chkfile.dump(filename, 'x2cmp_integral', self.hcore())
         if self.h4c is not None:
             chkfile.dump(filename, 'h4c', self.h4c)
         if self.m4c is not None:
@@ -966,11 +779,11 @@ class SpinorEAMFX2CHelper(x2c.x2c.SpinorX2CHelper):
         if self.soc_matrix is not None:
             chkfile.dump(filename, 'soc_integral', self.soc_matrix)
 
-    def load_hcore(self, filename='eamf.chk'):
+    def load_hcore(self, filename='x2cmp.chk'):
         try:
-            self.hcore = chkfile.load(filename, 'eamf_integral')
+            self.hcore = chkfile.load(filename, 'x2cmp_integral')
         except:
-            raise ValueError('No eamf integral found in the chkfile')
+            raise ValueError('No x2cmp integral found in the chkfile')
         try:
             self.h4c = chkfile.load(filename, 'h4c')
         except:
@@ -999,7 +812,18 @@ class SpinorEAMFX2CHelper(x2c.x2c.SpinorX2CHelper):
         sLL = self.m4c[:n2c,:n2c]
         sSS = self.m4c[n2c:,n2c:]
 
-        a, e, x, st, r, l, h4c, m4c = x2c_grad.x2c1e_hfw0_block(hLL, hSL, hLS, hSS, sLL, sSS)
+        if self.x2c_intermediate is None:
+            a, e, x, st, r, l, h4c, m4c = x2c_grad.x2c1e_hfw0_block(hLL, hSL, hLS, hSS, sLL, sSS)
+            self.x2c_intermediate={'a':a,'e':e,'x':x,'st':st,'r':r,'l':l}
+        else:
+            a = self.x2c_intermediate['a']
+            e = self.x2c_intermediate['e']
+            x = self.x2c_intermediate['x']
+            st = self.x2c_intermediate['st']
+            r = self.x2c_intermediate['r']
+            l = self.x2c_intermediate['l']
+            h4c = self.h4c
+            m4c = self.m4c
         if x_response is True:
             hfw1 = x2c_grad.get_hfw1(a, x, st, m4c, h4c, e, r, l, h4c1, s4c1)
         else:
@@ -1026,16 +850,17 @@ class SpinorEAMFX2CHelper(x2c.x2c.SpinorX2CHelper):
         c4c[n2c:, n2c:] = cs
         return c4c
 
-class SpinOrbitalEAMFX2CHelper(x2c.x2c.SpinOrbitalX2CHelper):
+class SpinOrbitalX2CMPHelper(x2c.x2c.SpinOrbitalX2CHelper):
     hcore = None
-    def __init__(self, mol, eamf='eamf', with_gaunt=False, with_breit=False, with_pcc=True, with_aoc=False):
+    def __init__(self, mol, x2cmp='x2cmp', with_gaunt=False, with_breit=False, with_pcc=True, with_aoc=False):
         super().__init__(mol)
+        self.x2c_intermediate = None
         self.gaunt = with_gaunt
         self.gaunt_sd = False        
         self.breit = with_breit
         self.pcc = with_pcc
         self.aoc = with_aoc
-        self.amf_type = eamf # use this class to implement various flavors of approximations.
+        self.amf_type = x2cmp # use this class to implement various flavors of approximations.
         self.nucmod = mol.nucmod
         self.h4c = None
         self.m4c = None
@@ -1046,29 +871,20 @@ class SpinOrbitalEAMFX2CHelper(x2c.x2c.SpinOrbitalX2CHelper):
         else:
             self.gau_nuc = False
         
-    def eamf(self):
-        print(self.gaunt,self.breit,self.pcc,self.aoc)
-        # xmol, contr_coeff_nr = self.get_xmol()
-        # npri, ncon = contr_coeff_nr.shape
-        # contr_coeff = np.zeros((npri*2,ncon*2))
-        # contr_coeff[0::2,0::2] = contr_coeff_nr
-        # contr_coeff[1::2,1::2] = contr_coeff_nr
-        # eamf_unc = eamf(self, self.mol.verbose, self.gaunt, self.breit, self.pcc, self.aoc, self.gau_nuc)
-        # eamf_spinor = reduce(np.dot, (contr_coeff.T, eamf_unc, contr_coeff))
-
-        eamf_spinor = eamf(self, self.mol.verbose, self.gaunt, self.breit, self.pcc, self.aoc, self.gau_nuc)
-        return spinor2sph.spinor2sph(self.mol, eamf_spinor)
+    def x2cmp(self):
+        x2cmp_spinor = x2cmp(self, self.mol.verbose, self.gaunt, self.breit, self.pcc, self.aoc, self.gau_nuc)
+        return spinor2sph.spinor2sph(self.mol, x2cmp_spinor)
     
     def get_hcore(self, mol):
         if self.hcore is None:
-            self.hcore = self.eamf()
+            self.hcore = self.x2cmp()
         return self.hcore
 
-    def save_hcore(self, filename='eamf.chk'):
+    def save_hcore(self, filename='x2cmp.chk'):
         if self.hcore is None:
-            chkfile.dump(filename, 'eamf_integral', self.eamf())
+            chkfile.dump(filename, 'x2cmp_integral', self.x2cmp())
         else:
-            chkfile.dump(filename, 'eamf_integral', self.hcore())
+            chkfile.dump(filename, 'x2cmp_integral', self.hcore())
         if self.h4c is not None:
             chkfile.dump(filename, 'h4c', self.h4c)
         if self.m4c is not None:
@@ -1077,8 +893,8 @@ class SpinOrbitalEAMFX2CHelper(x2c.x2c.SpinOrbitalX2CHelper):
             chkfile.dump(filename, 'soc_integral', self.soc_matrix)
 
 
-    def load_hcore(self, filename='eamf.chk'):
-        self.hcore = chkfile.load(filename, 'eamf_integral')
+    def load_hcore(self, filename='x2cmp.chk'):
+        self.hcore = chkfile.load(filename, 'x2cmp_integral')
 
     def get_hfw1(self, h4c1, s4c1=None, x_response=True):
         if self.h4c is None:
@@ -1099,6 +915,7 @@ class SpinOrbitalEAMFX2CHelper(x2c.x2c.SpinOrbitalX2CHelper):
             hfw1 = to_2c(x, r, h4c1)
         return hfw1
 
+X2CMP = SpinorX2CMPHelper
 
 if __name__ == '__main__':
     mol = gto.M(atom = 'Ne 0 0 0; Ar 0 0 1.8', basis='uncccpvdz', verbose=5)
