@@ -551,6 +551,14 @@ class SpinorSCF(hf.SCF):
         from pyscf.x2c.stability import x2chf_stability
         return x2chf_stability(self, verbose, return_status)
 
+    def spin_square(self, mo_coeff=None, s=None):
+        from pyscf.scf.ghf import spin_square as spin_square_ghf
+        if mo_coeff is None: mo_coeff = self.mo_coeff[:,self.mo_occ>0]
+        if s is None: s = self.get_ovlp()
+        mo_coeff_ghf = np.dot(np.vstack(self.mol.sph2spinor_coeff()), mo_coeff)
+        s_ghf = spinor2sph(self.mol, s)
+        return spin_square_ghf(mo_coeff_ghf, s_ghf)
+
     def nuc_grad_method(self):
         raise NotImplementedError
 
