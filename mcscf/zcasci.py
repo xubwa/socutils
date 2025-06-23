@@ -15,7 +15,7 @@ from socutils.tools import fcidump_rel
 
 
 def h1e_for_cas(casci, mo_coeff=None, ncas=None, ncore=None):
-    '''CAS sapce one-electron hamiltonian
+    '''CAS space one-electron hamiltonian
 
     Args:
         casci : a CASSCF/CASCI object or RHF object
@@ -111,7 +111,7 @@ def get_fock(mc, mo_coeff=None, ci=None, eris=None, casdm1=None, verbose=None):
     mocas = mo_coeff[:, ncore:nocc]
     dm = dm_core + reduce(numpy.dot, (mocas, casdm1, mocas.T.conj()))
     vj, vk = mc._scf.get_jk(mc.mol, dm)
-    fock = mc.get_hcore() + vj - vk * .5
+    fock = mc.get_hcore() + vj - vk
     return fock
 
 
@@ -136,14 +136,17 @@ def kernel(casci, mo_coeff=None, ci0=None, verbose=logger.NOTE):
     #t1 = log.timer('effective h1e in CAS space', *t1)
 
     if h1eff.shape[0] != ncas:
-        raise RuntimeError('Active space size error. nmo=%d ncore=%d ncas=%d' % (mo_coeff.shape[1], casci.ncore, ncas))
-
+        raise RuntimeError(f'Active space size error. nmo={mo_coeff.shape[1]:%d} ncore={casci.ncore:%d} ncas={ncas:%d}')
     # FCI
     fcidump_rel.from_integrals('FCIDUMP', h1eff, eri_cas.reshape(ncas*ncas, ncas*ncas), ncas, nelecas, energy_core.real)
+    print('integral written')
     max_memory = max(4000, casci.max_memory - lib.current_memory()[0])
+    from pyscf import fci
+    from socutils.hci import shci
+    
     e_tot, fcivec = casci.fcisolver.kernel(h1eff, eri_cas.reshape(ncas, ncas, ncas, ncas), ncas, nelecas,
-                                           ci0=ci0, verbose=log, max_memory=max_memory, ecore=energy_core)
-    print(e_tot)
+                                           ci0=ci0, verbose=5, max_memory=max_memory, ecore=energy_core)
+    
     #if isinstance(e_tot, list):
     #    e_tot = numpy.average(e_tot)
     t1 = log.timer('FCI solver', *t1)
@@ -401,7 +404,6 @@ class CASCI(zcasbase.CASBase):
 
         if self.verbose >= logger.WARN:
             self.check_sanity()
-        self.dump_flags(log)
 
         self.e_tot, self.e_cas, self.ci = \
                 kernel(self, mo_coeff, ci0=ci0, verbose=verbose)
@@ -422,14 +424,14 @@ class CASCI(zcasbase.CASBase):
         #self._finalize()
         return self.e_tot, self.e_cas, self.ci
 
-    def _finalize(self):
-        log = logger.Logger(self.stdout, self.verbose)
-        if isinstance(self.e_cas, (float, numpy.number)):
-            log.note('CASCI E = %.15g  E(CI) = %.15g', self.e_tot, self.e_cas)
-        else:
-            for i, e in enumerate(self.e_cas):
-                log.note('CASCI state %d  E = %.15g  E(CI) = %.15g', i, self.e_tot[i], e)
-        return self
+    #def _finalize(self):
+    #    log = logger.Logger(self.stdout, self.verbose)
+    #    if isinstance(self.e_cas, (float, numpy.number)):
+    #        log.note('CASCI E = %.15g  E(CI) = %.15g', self.e_tot, self.e_cas)
+    #    else:
+    #        for i, e in enumerate(self.e_cas):
+    #            log.note('CASCI state %d  E = %.15g  E(CI) = %.15g', i, self.e_tot[i], e)
+    #    return self
 
     def get_fock(self, mo_coeff=None, ci=None, eris=None, casdm1=None, verbose=None):
         return get_fock(self, mo_coeff, ci, eris, casdm1, verbose)

@@ -1,8 +1,8 @@
 import numpy
 import tempfile
 from functools import reduce
-from pyscf import mcscf, lib, scf, gto
-from pyscf import fci
+from pyscf import fci, mcscf, lib, scf, gto
+from pyscf.lib import logger
 from pyscf import __config__
 
 

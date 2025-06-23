@@ -35,7 +35,8 @@ def density_fit(mf, auxbasis=None, with_df=None, only_dfj=False):
 
 class _DFJHF(df.df_jk._DFHF):
     def get_jk(self, mol=None, dm=None, hermi=1, with_j=True, with_k=True, omega=None):
-        if dm is None: dm = self.make_rdm1()
+        if dm is None:
+            dm = self.make_rdm1()
         dm_sph = spinor2sph(mol, dm)
         with_dfk = with_k and self.with_df
 
@@ -268,8 +269,13 @@ def get_occ_symm(mf, irrep, occup, irrep_mo=None, mo_energy=None, mo_coeff=None)
 def spinor2sph(mol, spinor):
     c = mol.sph2spinor_coeff()
     c2 = numpy.vstack(c)
-    assert (spinor.shape[0] == c2.shape[1]), "spinor integral must be of shape (nao_2c, nao_2c)"
-    ints_sph = lib.einsum('ip,pq,qj->ij', c2, spinor, c2.T.conj())
+    assert (spinor.shape[-2] == c2.shape[-1]), "spinor integral must be of shape (nao_2c, nao_2c)"
+    if len(spinor.shape) == 3:
+        ints_sph = lib.einsum('ip,xpq,qj->ij', c2, spinor, c2.T.conj())
+    elif len(spinor.shape) == 2:
+        ints_sph = lib.einsum('ip,pq,qj->ij', c2, spinor, c2.T.conj())
+    else:
+        raise ValueError("spherical integral must be of shape (nao_nr, nao_nr) or (nao_nr, nao_nr, 3)")
     return ints_sph
 
 def sph2spinor(mol, sph):
@@ -553,7 +559,7 @@ class SymmSpinorSCF(SpinorSCF):
     def __init__(self, mol, symmetry=None, occup=None):
         SpinorSCF.__init__(self, mol)
         self.symmetry = symmetry
-        if symmetry is 'linear' or symmetry is 'sph':
+        if symmetry in ['linear', 'sph']:
             self.irrep_ao = symmetry_label(mol, symmetry)
         else:
             raise NotImplementedError
@@ -579,22 +585,30 @@ class SymmSpinorSCF(SpinorSCF):
             return get_occ_symm(self, self.irrep_ao, self.occupation, mo_energy=mo_energy, mo_coeff=mo_coeff)
         
 class KRHF(SpinorSCF):
-   def __init__(self, mol):
-       super().__init__(mol)
-       if zquatev is None:
-           raise RuntimeError('zquatev library is required to perform Kramers-restricted JHF')
-   def _eigh(self, h, s):
-       return dhf.zquatev.solve_KR_FCSCE(self.mol, h, s)
-   def to_ks(self, xc='HF'):
+    def __init__(self, mol):
+        super().__init__(mol)
+        if zquatev is None:
+            raise RuntimeError('zquatev library is required to perform Kramers-restricted JHF')
+    def _eigh(self, h, s):
+        return dhf.zquatev.solve_KR_FCSCE(self.mol, h, s)
+    def eig(self, h, s=None):
+        if s is not None:
+            return self._eigh(h, s) 
+        else:
+            return zquatev.eigh(h, iop=1)
+    def to_ks(self, xc='HF'):
        from pyscf.x2c import dft
        mf = self.view(dft.RKS)
        mf.converged = False
        return mf
 
+from pyscf.scf import _response_functions
+SpinorSCF.gen_response = _response_functions._gen_ghf_response
 
 JHF = SpinorSCF
 SCF = SpinorSCF
 SpinorSymmSCF = SymmSCF = SymmJHF = SymmSpinorSCF
+
 
 if __name__ == '__main__':
     from pyscf import scf

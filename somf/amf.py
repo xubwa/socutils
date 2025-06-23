@@ -4,6 +4,7 @@ from functools import reduce
 from pyscf import gto
 from pyscf.scf import dhf
 from pyscf.x2c import x2c
+from pyscf.x2c.x2c import _decontract_spinor
 from pyscf.lib import chkfile
 from pyscf.lib.parameters import LIGHT_SPEED
 from socutils.somf import somf, writeInput, settings
@@ -97,7 +98,7 @@ def get_soc_integrals(x2cobj, mol=None, prog="sph_atm", with_gaunt=False, with_b
         mol = x2cobj.mol
     if mol.has_ecp():
         raise NotImplementedError
-    xmol, contr_coeff_nr = x2cobj.get_xmol()
+    xmol, contr_coeff = _decontract_spinor(mol, x2cobj.xuncontract)
     nao_2c = xmol.nao_2c()
     if x2cobj.soc_matrix is not None:
         return x2cobj.soc_matrix
@@ -134,10 +135,6 @@ def get_soc_integrals(x2cobj, mol=None, prog="sph_atm", with_gaunt=False, with_b
             soc_matrix[c0:c1, c0:c1] += x2cobj.atom_gso_mf[xmol.elements[ia]]
 
     if x2cobj.xuncontract:
-        np, nc = contr_coeff_nr.shape
-        contr_coeff = numpy.zeros((np * 2, nc * 2))
-        contr_coeff[0::2, 0::2] = contr_coeff_nr
-        contr_coeff[1::2, 1::2] = contr_coeff_nr
         soc_matrix = reduce(numpy.dot, (contr_coeff.T.conj(), soc_matrix, contr_coeff))
 
     if sph:
