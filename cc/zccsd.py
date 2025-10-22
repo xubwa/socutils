@@ -283,10 +283,6 @@ def _make_eris_outcore(mycc, mo_coeff=None, erifile=None, swapfile=None, mod='co
         nao_2c = mo.shape[0]//2
         mo_l = mo[:nao_2c,:]
         mo_s = mo[nao_2c:,:]
-        mos = [[mo_l,mo_l,mo_l,mo_l],#llll
-               [mo_l,mo_l,mo_s,mo_s],#llss
-               [mo_s,mo_s,mo_l,mo_l],#ssll
-               [mo_s,mo_s,mo_s,mo_s]]
         if swapfile is not None:
             fswap = lib.H5TmpFile(swapfile)
         else:
@@ -308,8 +304,14 @@ def _make_eris_outcore(mycc, mo_coeff=None, erifile=None, swapfile=None, mod='co
                 eri = ao2mo.general(mol, mo, fswap, 'eri', intor=intor, aosym='s1', comp=1, max_memory=max_memory, verbose=mycc.verbose)
                 fill_eris(fswap, multip)
                 del fswap['eri']
+
         intors = ['int2e_spinor','int2e_spsp1_spinor','int2e_spsp2_spinor','int2e_spsp1spsp2_spinor']
         multips = [1.0, c1**2, c1**2, c1**4] 
+        mos = [[mo_l,mo_l,mo_l,mo_l],#llll
+               [mo_l,mo_l,mo_s,mo_s],#llss
+               [mo_s,mo_s,mo_l,mo_l],#ssll
+               [mo_s,mo_s,mo_s,mo_s]]
+
         for mo, intor, multip in zip(mos, intors, multips):
             eri = ao2mo.general(mol, mo, fswap, 'eri', intor=intor, max_memory=max_memory, verbose=mycc.verbose)
             fill_eris(fswap, multip)
