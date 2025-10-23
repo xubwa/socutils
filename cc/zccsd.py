@@ -305,7 +305,7 @@ def _make_eris_outcore(mycc, mo_coeff=None, erifile=None, swapfile=None, mod='co
                 fill_eris(fswap, multip)
                 del fswap['eri']
 
-        intors = ['int2e_spinor','int2e_spsp1_spinor','int2e_spsp2_spinor','int2e_spsp1spsp2_spinor']
+        intors = ['int2e_spinor','int2e_spsp2_spinor','int2e_spsp1_spinor','int2e_spsp1spsp2_spinor']
         multips = [1.0, c1**2, c1**2, c1**4] 
         mos = [[mo_l,mo_l,mo_l,mo_l],#llll
                [mo_l,mo_l,mo_s,mo_s],#llss
