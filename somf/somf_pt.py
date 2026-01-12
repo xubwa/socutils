@@ -8,7 +8,7 @@ from pyscf.lib.parameters import LIGHT_SPEED
 from pyscf.x2c import x2c
 from pyscf.x2c import sfx2c1e
 from socutils.somf import x2c_grad
-from socutils.somf import eamf
+from socutils.somf import x2cmp
 from socutils.tools import addons
 from socutils.tools.spinor2sph import spinor2sph_soc, spinor2spinor_sd
 from socutils.scf.spinor_hf import sph2spinor, SpinorSCF
@@ -23,7 +23,7 @@ except ImportError:
 
 def get_psoc_somf(mol, dm0, gaunt=True, gauge=True, form='scalar'):
     xmol, contr_coeff_nr = sfx2c1e.SpinFreeX2C(mol).get_xmol()
-    x2cobj = eamf.SpinorEAMFX2CHelper(mol, eamf='sf1e')
+    x2cobj = x2cmp.SpinorX2CMPHelper(mol, x2cmp='sf1e')
     np, nc = contr_coeff_nr.shape
     contr_coeff = numpy.zeros((np * 2, nc * 2))
     contr_coeff[0::2, 0::2] = contr_coeff_nr
