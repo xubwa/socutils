@@ -86,7 +86,7 @@ def qdpt(tda_singlet, tda_triplet, socints_mo):
         for sz in range(-1, 2):
             pos_t = 1 + nroots_s + i*3 + (sz + 1)
             # <T|H_soc|0>
-            tdm = transition_spin_density_t_0(tda_triplet.xy[i][0], sz)
+            tdm = transition_spin_density_t_0(tda_triplet.xy[i][0] - tda_triplet.xy[i][1], sz)
             soc_me = contract_soc_tdm(socints_mo, tdm, sz)
             mat_qdpt[pos_t, 0] = soc_me
             mat_qdpt[0, pos_t] = numpy.conj(soc_me)
@@ -94,7 +94,7 @@ def qdpt(tda_singlet, tda_triplet, socints_mo):
             # <T|H_soc|S>
             for j in range(nroots_s):
                 pos_s = 1 + j
-                tdm_ts = transition_spin_density_t_s(tda_triplet.xy[i][0], tda_singlet.xy[j][0], sz)
+                tdm_ts = transition_spin_density_t_s(tda_triplet.xy[i][0] - tda_triplet.xy[i][1], tda_singlet.xy[j][0] - tda_singlet.xy[j][1], sz)
                 soc_me_ts = contract_soc_tdm(socints_mo, tdm_ts, sz)
                 mat_qdpt[pos_t, pos_s] = soc_me_ts
                 mat_qdpt[pos_s, pos_t] = numpy.conj(soc_me_ts)
@@ -105,7 +105,7 @@ def qdpt(tda_singlet, tda_triplet, socints_mo):
                     if abs(sz - sz2) > 1:
                         continue
                     pos_t2 = 1 + nroots_s + j*3 + (sz2 + 1)
-                    tdm_tt = transition_spin_density_t_t(tda_triplet.xy[i][0], tda_triplet.xy[j][0], sz, sz2)
+                    tdm_tt = transition_spin_density_t_t(tda_triplet.xy[i][0] - tda_triplet.xy[i][1], tda_triplet.xy[j][0] - tda_triplet.xy[j][1], sz, sz2)
                     soc_me_tt = contract_soc_tdm(socints_mo, tdm_tt, sz - sz2)
                     mat_qdpt[pos_t, pos_t2] = soc_me_tt
                     mat_qdpt[pos_t2, pos_t] = numpy.conj(soc_me_tt)
@@ -124,7 +124,7 @@ def qdpt(tda_singlet, tda_triplet, socints_mo):
 
 if __name__ == "__main__":
     from pyscf import gto, scf, dft
-    from pyscf.tdscf.rks import TDA
+    from pyscf.tdscf.rks import TDA, TDDFT
     mol = gto.Mole()
     mol.atom = """
 O      0.000000    0.000000    0.601105
@@ -142,20 +142,22 @@ H      0.000000    0.944973   -1.202781
 
     # X2CAMF SOC
     # x2cints = somf_pt.get_psoc_x2camf(mol)
-    # socints_mo = numpy.array([mf.mo_coeff.T @ x2cints[i] @ mf.mo_coeff for i in range(3)])
 
     # Mean-field Breit-Pauli SOC
     x2cints = somf_pt.get_soc_mf_bp(mf,mol)
-    socints_mo = [numpy.zeros_like(mf.mo_coeff.T @ x2cints[0] @ mf.mo_coeff)]
-    socints_mo = numpy.array([mf.mo_coeff.T @ x2cints[i] @ mf.mo_coeff for i in range(3)])
-    
 
-    s_tda = TDA(mf)
+    # SO-ECP
+    # x2cints = mol.intor("ECPso") * 0.5
+
+    # ao2mo
+    socints_mo = numpy.array([mf.mo_coeff.T @ x2cints[i] @ mf.mo_coeff for i in range(3)])
+
+    s_tda = TDDFT(mf)
     s_tda.singlet = True
     s_tda.nroots = 5
     s_tda.kernel()
     
-    t_tda = TDA(mf)
+    t_tda = TDDFT(mf)
     t_tda.singlet = False
     t_tda.nroots = 5
     t_tda.kernel()
