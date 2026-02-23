@@ -211,8 +211,12 @@ def x2cmp_screen(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=F
     h1e_4c = mf_4c.get_hcore()
     s4c = mf_4c.get_ovlp()
     print('amf_type', x2cobj.amf_type)
-    x2cobj.h4c = h1e_4c
-    x2cobj.m4c = s4c
+    if x2cobj.h4c is None:
+        x2cobj.h4c = h1e_4c
+    if x2cobj.m4c is None:
+        x2cobj.m4c = s4c
+    print(np.linalg.norm(x2cobj.h4c))
+    exit()
     x2cobj.soc_matrix = np.zeros((n2c, n2c))
     density_2c = construct_molecular_matrix(extract_ith_integral(atm_ints, 12), atom_slices, xmol, n2c, False)
     x2cobj.density_2c = density_2c
@@ -494,8 +498,12 @@ def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, n
     h1e_4c = mf_4c.get_hcore()
     s4c = mf_4c.get_ovlp()
     print('amf_type', x2cobj.amf_type)
-    x2cobj.h4c = h1e_4c
-    x2cobj.m4c = s4c
+    if x2cobj.h4c is None:
+        x2cobj.h4c = h1e_4c
+    else:
+        h1e_4c = x2cobj.h4c
+    if x2cobj.m4c is None:
+        x2cobj.m4c = s4c
     x2cobj.soc_matrix = np.zeros((n2c, n2c))
     density_2c = construct_molecular_matrix(extract_ith_integral(atm_ints, 12), atom_slices, xmol, n2c, False)
     x2cobj.density_2c = density_2c
@@ -517,10 +525,46 @@ def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, n
         print(ene_corr*0.5, ene_corr2*0.5)
         vj_4c, vk_4c= mf_4c.get_jk(dm=density_4c)
         veff_4c = vj_4c - vk_4c
-        fock_4c = h1e_4c + veff_4c
+        fock_4c = x2cobj.h4c + veff_4c
         x, st, r, h2c = x2c1e_hfw0_4cmat(fock_4c, s4c, xmol)
         mf_2c = spinor_hf.SCF(xmol)
         veff_2c = mf_2c.get_veff(dm=density_2c)
+        x2cobj.veff_2c=veff_2c
+        h_x2c = to_2c(x, r, fock_4c) - veff_2c
+        x2cobj.h4c = h1e_4c + veff_4c
+        x2cobj.soc_matrix = h_x2c - to_2c(x, r, h1e_4c)
+    elif x2cobj.amf_type == 'x2cmp_core':
+#This option is implemented specially for testing purpose.
+#It currently assumes x2cmp for a single atom.
+        density_4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 11), atom_slices, xmol, n2c, True)
+        density_2c = construct_molecular_matrix(extract_ith_integral(atm_ints, 12), atom_slices, xmol, n2c, False)
+        atomic_h1e_4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 2), atom_slices, xmol, n2c, True)
+        atomic_fock_4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 3), atom_slices, xmol, n2c, True)
+        atomic_fock_4c_2e = construct_molecular_matrix(extract_ith_integral(atm_ints, 5), atom_slices, xmol, n2c, True)
+        atomic_fock_2c_2e = construct_molecular_matrix(extract_ith_integral(atm_ints, 6), atom_slices, xmol, n2c, False)
+        atm_x = construct_molecular_matrix(extract_ith_integral(atm_ints, 0), atom_slices, xmol, n2c, False)
+        atm_r = construct_molecular_matrix(extract_ith_integral(atm_ints, 1), atom_slices, xmol, n2c, False)
+        atomic_fock_2c2e_fw = to_2c(atm_x, atm_r, atomic_fock_4c_2e)
+        density_4c_ss = density_4c.copy()
+        n2c = s4c.shape[1]//2
+        e, c = scipy.linalg.eigh(atomic_fock_4c, s4c)
+        c_pes = c[:,n2c:] 
+        c_occ = c_pes[:,:54]
+        density_4c_core = np.dot(c_occ, c_occ.T.conj())
+        x, st, r, h2c = x2c1e_hfw0_4cmat(atomic_fock_4c, s4c, xmol)
+        vj_4c, vk_4c= mf_4c.get_jk(dm=density_4c)
+        veff_4c = vj_4c - vk_4c
+        fock_4c = x2cobj.h4c + veff_4c
+        fock_x2c = to_2c(x, r, fock_4c)
+        s2c = xmol.intor('int1e_ovlp_spinor')
+        e2c, c2c = scipy.linalg.eigh(fock_x2c, s2c) 
+        density_2c_core = np.dot(c2c[:,:54], c2c[:,:54].T.conj())
+        vj_4c, vk_4c= mf_4c.get_jk(dm=density_4c_core)
+        veff_4c = vj_4c - vk_4c
+        fock_4c = x2cobj.h4c + veff_4c
+        x, st, r, h2c = x2c1e_hfw0_4cmat(fock_4c, s4c, xmol)
+        mf_2c = spinor_hf.SCF(xmol)
+        veff_2c = mf_2c.get_veff(dm=density_2c_core)
         x2cobj.veff_2c=veff_2c
         h_x2c = to_2c(x, r, fock_4c) - veff_2c
         x2cobj.h4c = h1e_4c + veff_4c
@@ -676,8 +720,11 @@ def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, n
         x2cobj.soc_matrix = so_2c
         h_x2c = to_2c(x, r, h1e_4c) + so_2c
     elif x2cobj.amf_type == '1e':
-        x2cobj.h4c = h1e_4c
-        x2cobj.m4c = s4c
+        #x2cobj.h4c = h1e_4c
+        #x2cobj.m4c = s4c
+        h1e_4c = x2cobj.h4c
+        print('norm of hcore', np.linalg.norm(h1e_4c))
+        s4c = x2cobj.m4c
         x, st, r, h2c = x2c1e_hfw0_4cmat(h1e_4c, s4c, mol=xmol)
         h_x2c = to_2c(x, r, h1e_4c)
     elif x2cobj.amf_type == 'sf1e':
@@ -765,7 +812,7 @@ class SpinorX2CMPHelper(x2c.x2c.SpinorX2CHelper):
                 self.hcore = self.x2cmp()
             else:
                 self.hcore = self.x2cmp_screen()
-        return self.hcore
+        return self.hcore.copy()
 
     def save_hcore(self, filename='x2cmp.chk'):
         if self.hcore is None:
@@ -848,6 +895,8 @@ class SpinorX2CMPHelper(x2c.x2c.SpinorX2CHelper):
         c4c = np.zeros((n2c*2,n2c*2), dtype=dtype)
         c4c[:n2c, n2c:] = cl
         c4c[n2c:, n2c:] = cs
+        e0, c0 = scipy.linalg.eigh(self.h4c, self.m4c)
+        c4c[:,:n2c] = c0[:,:n2c]  
         return c4c
 
 class SpinOrbitalX2CMPHelper(x2c.x2c.SpinOrbitalX2CHelper):
