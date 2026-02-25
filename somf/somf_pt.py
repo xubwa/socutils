@@ -75,7 +75,7 @@ def get_psoc_somf(mol, dm0, gaunt=True, gauge=True, form='scalar'):
         hfw1 = hso
         return hfw1
     elif form == "scalar":
-        hfw1 = spinor2sph_soc(mol, hfw1)
+        hfw1 = spinor2sph_soc(mol, hfw1, with_scalar=False)
         return hfw1
     else:
         raise ValueError("Unknown form")
@@ -149,7 +149,7 @@ def get_psoc_x2camf(mol, gaunt=True, gauge=True, atm_pt=True, form="scalar"):
         hfw1 = hso
         return hfw1
     elif form == "scalar":
-        hfw1 = spinor2sph_soc(mol, hfw1)
+        hfw1 = spinor2sph_soc(mol, hfw1, with_scalar=False)
         return hfw1
     else:
         raise ValueError("Unknown form")
@@ -187,7 +187,7 @@ def get_psoc_x2c1e(mol, form="scalar"):
         hfw1 = hso
         return hfw1
     elif form == "scalar":
-        hfw1 = spinor2sph_soc(mol, hfw1)
+        hfw1 = spinor2sph_soc(mol, hfw1, with_scalar=False)
         return hfw1
     else:
         raise ValueError("Unknown form")
