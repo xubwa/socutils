@@ -1,0 +1,849 @@
+#
+# Author: Xubo Wang <wangxubo0201@outlook.com>
+#
+
+from functools import reduce
+import copy
+import numpy
+import numpy as np
+import scipy.linalg
+from pyscf import df
+from pyscf import lib
+from pyscf.gto import mole
+from pyscf.lib import logger
+from pyscf.scf import hf, dhf, ghf, _vhf
+import re
+try:
+    import zquatev
+except ImportError:
+    zquatev = None
+        
+#from zquatev import solve_KR_FCSCE as eigkr
+
+@lib.with_doc(hf.get_jk.__doc__)
+def df_get_jk(mol, dm, hermi=0,
+           with_j=True, with_k=True, jkbuild=hf.get_jk, omega=None):
+
+    dm = numpy.asarray(dm)
+    nso = dm.shape[-1]
+    nao = nso // 2
+    dms = dm.reshape(-1,nso,nso)
+    n_dm = dms.shape[0]
+
+    dmaa = dms[:,:nao,:nao]
+    dmab = dms[:,:nao,nao:]
+    dmbb = dms[:,nao:,nao:]
+    if with_k:
+        if hermi:
+            dms = numpy.stack((dmaa, dmbb, dmab))
+        else:
+            dmba = dms[:,nao:,:nao]
+            dms = numpy.stack((dmaa, dmbb, dmab, dmba))
+        # Note the off-diagonal block breaks the hermitian
+        _hermi = 0
+    else:
+        dms = numpy.stack((dmaa, dmbb))
+        _hermi = 1
+
+    j1, k1 = jkbuild(mol, dms, _hermi, with_j, with_k, omega)
+
+    vj = vk = None
+    if with_j:
+        vj = numpy.zeros((n_dm,nso,nso), dm.dtype)
+        vj[:,:nao,:nao] = vj[:,nao:,nao:] = j1[0] + j1[1]
+        vj = vj.reshape(dm.shape)
+
+    if with_k:
+        vk = numpy.zeros((n_dm,nso,nso), dm.dtype)
+        vk[:,:nao,:nao] = k1[0]
+        vk[:,nao:,nao:] = k1[1]
+        vk[:,:nao,nao:] = k1[2]
+        if hermi:
+            vk[:,nao:,:nao] = k1[2].conj().transpose(0,2,1)
+        else:
+            vk[:,nao:,:nao] = k1[3]
+        vk = vk.reshape(dm.shape)
+
+
+def density_fit(mf, auxbasis=None, with_df=None, only_dfj=False):
+    if with_df is None:
+        with_df = df.DF(mf.mol)
+    with_df.max_memory = mf.max_memory
+    with_df.auxbasis = auxbasis
+    with_df.stdout = mf.stdout
+    with_df.verbose = mf.verbose
+
+    dfmf = _DFJHF(mf, with_df, only_dfj)
+    dfmf.direct_scf=False
+    return lib.set_class(dfmf, (_DFJHF, mf.__class__))
+
+
+class _DFJHF(df.df_jk._DFHF):
+    def get_jk(self, mol=None, dm=None, hermi=1, with_j=True, with_k=True, omega=None):
+        if mol is None: mol = self.mol
+        if dm is None:
+            dm = self.make_rdm1()
+
+        t0 = (logger.process_clock(), logger.perf_counter())
+        nao = mol.nao_nr()   # real spherical AO dimension (matches DF integrals)
+        vj = vk = None
+
+        # --- J ---
+        # J depends only on the total charge density dm_aa + dm_bb.
+        # Pass real/imag parts of the trace DM directly to with_df.get_jk;
+        # no need to go through ghf.get_jk's block splitting.
+        if with_j:
+            dm_sph   = spinor2sph(mol, dm)                       # (2*nao, 2*nao)
+            dm_trace = dm_sph[:nao, :nao] + dm_sph[nao:, nao:]   # (nao, nao)
+            vj_ao, _ = self.with_df.get_jk(dm_trace.real, 1, True, False,
+                                            self.direct_scf_tol, omega)
+            if numpy.iscomplexobj(dm_trace):
+                vj_i, _ = self.with_df.get_jk(dm_trace.imag, 1, True, False,
+                                               self.direct_scf_tol, omega)
+                vj_ao = vj_ao + 1j * vj_i
+            vj_sph = numpy.zeros((2 * nao, 2 * nao), dtype=complex)
+            vj_sph[:nao, :nao] = vj_sph[nao:, nao:] = vj_ao
+            vj = sph2spinor(mol, vj_sph)
+
+        # --- K ---
+        if with_k and self.with_df:
+            mo_coeff = getattr(dm, 'mo_coeff', None)
+            mo_occ   = getattr(dm, 'mo_occ',   None)
+            if mo_coeff is not None and mo_occ is not None:
+                vk = self._get_k_mo(mol, mo_coeff, mo_occ, omega)
+            else:
+                # Fallback: DM-based K via ghf.get_jk (first iteration etc.)
+                logger.warn(self, 'mo_coeff not tagged on dm, using DM-based K')
+                if not with_j:
+                    dm_sph = spinor2sph(mol, dm)
+
+                def jkbuild(mol, dms, hermi, with_j, with_k, omega=None):
+                    vj_list, vk_list = [], []
+                    for dm_blk in dms:
+                        vj_, vk_ = self.with_df.get_jk(dm_blk.real, hermi,
+                                                        with_j, with_k,
+                                                        self.direct_scf_tol, omega)
+                        if numpy.iscomplexobj(dm_blk):
+                            vjI, vkI = self.with_df.get_jk(dm_blk.imag, hermi,
+                                                            with_j, with_k,
+                                                            self.direct_scf_tol, omega)
+                            if with_j and vj_ is not None: vj_ = vj_ + vjI * 1j
+                            if with_k and vk_ is not None: vk_ = vk_ + vkI * 1j
+                        vj_list.append(vj_)
+                        vk_list.append(vk_)
+                    return numpy.array(vj_list), numpy.array(vk_list)
+
+                _, k_sph = ghf.get_jk(mol, dm_sph, hermi, False, True, jkbuild, omega)
+                vk = sph2spinor(mol, k_sph)
+
+        logger.timer(self, 'vj and vk', *t0)
+        return vj, vk
+
+    def _get_k_mo(self, mol, mo_coeff, mo_occ, omega=None):
+        """Build K in spinor basis via MO half-transform of DF 3-index integrals.
+
+        DF integrals (P|mu nu) live in the real spherical AO basis (nao = mol.nao_nr()).
+        Spinor MOs are projected to the spherical GHF basis and split into
+        alpha/beta spin blocks, each of dimension nao.
+
+        Because the DF integrals are real but the spinor MOs are complex, we split
+        each MO block into real and imaginary parts and call PySCF's real-only C
+        half-transform (AO2MOnr_e2_drv) twice per block.  The four real
+        half-transformed buffers
+
+            LaR[Pi, mu] = sum_nu eri[P,mu,nu] Re(C_a[nu,i])
+            LaI[Pi, mu] = sum_nu eri[P,mu,nu] Im(C_a[nu,i])
+
+        are then combined with real BLAS calls:
+
+            K_aa[m,n] = sum_{Pi} La[Pi,m] La*[Pi,n]
+                      = LaR.T@LaR + LaI.T@LaI + i*(LaI.T@LaR - LaR.T@LaI)
+
+        The C library reads the compressed-triangular eri directly (no unpack_tril).
+        """
+        import ctypes
+        from pyscf.ao2mo import _ao2mo
+
+        ftrans = _ao2mo.libao2mo.AO2MOtranse2_nr_s2
+        fmmm   = _ao2mo.libao2mo.AO2MOmmm_bra_nr_s2
+        fdrv   = _ao2mo.libao2mo.AO2MOnr_e2_drv
+        null   = lib.c_null_ptr()
+
+        # c2: (2*nao, n2c) unitary, projects spinor MOs -> spherical GHF basis
+        c2  = numpy.vstack(mol.sph2spinor_coeff())
+        nao = mol.nao_nr()
+        n2c = mol.nao_2c()
+
+        nocc_mask = mo_occ > 0
+        nocc = int(nocc_mask.sum())
+        if nocc == 0:
+            return numpy.zeros((n2c, n2c), dtype=complex)
+
+        # Occupied spinor MOs weighted by sqrt(f_i), then projected to sph GHF basis
+        C_occ     = mo_coeff[:, nocc_mask] * numpy.sqrt(mo_occ[nocc_mask])
+        C_occ_sph = c2 @ C_occ   # (2*nao, nocc); first nao rows = alpha, last = beta
+
+        # Four real Fortran-order arrays for the C half-transform library
+        # Each has shape (nao, nocc), matching the DF integral AO index
+        C_aR = numpy.asfortranarray(C_occ_sph[:nao].real)
+        C_aI = numpy.asfortranarray(C_occ_sph[:nao].imag)
+        C_bR = numpy.asfortranarray(C_occ_sph[nao:].real)
+        C_bI = numpy.asfortranarray(C_occ_sph[nao:].imag)
+
+        vk_sph = numpy.zeros((2 * nao, 2 * nao), dtype=complex)
+
+        max_memory = self.max_memory - lib.current_memory()[0]
+        blockdim   = getattr(self.with_df, 'blockdim', 240)
+        # 4 real buffers of (blksize*nocc, nao), 8 bytes/element
+        blksize = max(4, int(min(blockdim,
+                                 max_memory * 1e6 / 8 / (4 * nao * nocc))))
+        logger.debug(self, 'DF-K MO half-transform: nocc=%d  blksize=%d', nocc, blksize)
+
+        buf_aR = numpy.empty((blksize * nocc, nao))
+        buf_aI = numpy.empty((blksize * nocc, nao))
+        buf_bR = numpy.empty((blksize * nocc, nao))
+        buf_bI = numpy.empty((blksize * nocc, nao))
+
+        def _half(eri1, C_real, buf):
+            """Half-transform compressed-triangular eri1 (naux, nao*(nao+1)/2)
+            with real Fortran-order C_real (nao, nocc) -> buf (naux*nocc, nao)."""
+            naux_ = eri1.shape[0]
+            fdrv(ftrans, fmmm,
+                 buf.ctypes.data_as(ctypes.c_void_p),
+                 eri1.ctypes.data_as(ctypes.c_void_p),
+                 C_real.ctypes.data_as(ctypes.c_void_p),
+                 ctypes.c_int(naux_), ctypes.c_int(nao),
+                 (ctypes.c_int * 4)(0, nocc, 0, nao),
+                 null, ctypes.c_int(0))
+
+        for eri1 in self.with_df.loop(blksize):
+            naux = eri1.shape[0]
+            LaR = buf_aR[:naux * nocc]
+            LaI = buf_aI[:naux * nocc]
+            LbR = buf_bR[:naux * nocc]
+            LbI = buf_bI[:naux * nocc]
+
+            _half(eri1, C_aR, LaR)
+            _half(eri1, C_aI, LaI)
+            _half(eri1, C_bR, LbR)
+            _half(eri1, C_bI, LbI)
+
+            # K_aa[m,n] = LaR.T@LaR + LaI.T@LaI + i*(LaI.T@LaR - LaR.T@LaI)
+            IRa = lib.dot(LaI.T, LaR)
+            vk_sph[:nao, :nao] += (lib.dot(LaR.T, LaR) + lib.dot(LaI.T, LaI)
+                                   + 1j * (IRa - IRa.T))
+
+            # K_bb[m,n] = LbR.T@LbR + LbI.T@LbI + i*(LbI.T@LbR - LbR.T@LbI)
+            IRb = lib.dot(LbI.T, LbR)
+            vk_sph[nao:, nao:] += (lib.dot(LbR.T, LbR) + lib.dot(LbI.T, LbI)
+                                   + 1j * (IRb - IRb.T))
+
+            # K_ab[m,n] = LaR.T@LbR + LaI.T@LbI + i*(LaI.T@LbR - LaR.T@LbI)
+            K_ab = (lib.dot(LaR.T, LbR) + lib.dot(LaI.T, LbI)
+                    + 1j * (lib.dot(LaI.T, LbR) - lib.dot(LaR.T, LbI)))
+            vk_sph[:nao, nao:] += K_ab
+            vk_sph[nao:, :nao] += K_ab.conj().T   # K_ba = K_ab†
+
+        return sph2spinor(mol, vk_sph)
+
+
+def symmetry_label(mol, symmetry=None):
+    if symmetry is None:
+        raise ValueError("Symmetry of orbital desired here.")
+    if 'sph' not in symmetry and 'linear' not in symmetry:
+        raise ValueError("Only spherical and linear symmetry supported for now.")
+    else:
+        labels = mol.spinor_labels()
+        irrep = dict()
+        processed_labels = []
+        for label in labels:
+            label = label.split()
+            match = re.search(r'[a-zA-Z](.*?),(.*?)$', label[2])
+            if match:
+                #print(match.group(0), match.group(1), match.group(2))
+                full_label = match.group(0)
+                j_val = match.group(1)
+                jz_val = match.group(2)
+            processed_labels.append([full_label, j_val, jz_val])
+        if 'sph' in symmetry:
+            print(f'Spherical symmetry assigned')
+            for ilabel, label in enumerate(processed_labels):
+                full_label = label[0]
+                if irrep.get(full_label) is not None:
+                    irrep[full_label].append(ilabel)
+                else:
+                    irrep[full_label] = [ilabel]
+        elif 'linear' in symmetry:
+            print(f'Linear symmetry assigned')
+            for ilabel, label in enumerate(processed_labels):
+                full_label=label[2]
+                if irrep.get(full_label) is not None:
+                    irrep[full_label].append(ilabel)
+                else:
+                    irrep[full_label] = [ilabel]
+        return irrep
+
+def eig(mf, h, s, irrep=None):
+    '''Solve generalized eigenvalue problem, for each irrep.  The
+    eigenvalues and eigenvectors are not sorted to ascending order.
+    Instead, they are grouped based on irreps.
+    '''
+    print('symmetry adapted eigen value')
+    mol = mf.mol
+
+    if irrep is None:
+        raise ValueError("An irrep is desired as input")
+    cs = []
+    es = []
+    nmo = mf.mol.nao_2c()
+    e = np.zeros(nmo)
+    c = np.zeros((nmo, nmo), dtype=complex)
+    irrep_tag = np.empty(nmo, dtype='U10')
+    for ir in irrep:
+        ir_idx = irrep[ir]
+        hi = h[np.ix_(ir_idx, ir_idx)]
+        si = s[np.ix_(ir_idx, ir_idx)]
+        ei, ci = mf._eigh(h[np.ix_(ir_idx,ir_idx)], s[np.ix_(ir_idx,ir_idx)])
+        c[np.ix_(ir_idx,ir_idx)] = ci
+        e[ir_idx] = ei
+        irrep_tag[ir_idx] = str(ir)
+        angular_tag = None
+    # process max contributing ao
+    from scipy.linalg import sqrtm
+    s_sqrtm = sqrtm(s)
+    c_tilde = np.dot(s_sqrtm, c)
+    labels = np.array(mol.spinor_labels())
+    label_ang = np.array([re.search(r'[a-z]', label.split()[2]).group(0) for label in labels])
+    angular_tag = np.empty(nmo, dtype='U1')
+    for i in range(nmo):
+        ci = abs(c_tilde[:,i])**2
+        norm_ang = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
+        angs = np.array(['s','p', 'd', 'f', 'g'])
+        for j, label in enumerate(angs):
+            norm_ang[j] = sum(ci[np.where(label_ang == label)])
+        angular_tag[i] = angs[np.argmax(norm_ang)]
+
+    sort_idx = np.argsort(e)
+    irrep_tag = irrep_tag[sort_idx]
+    angular_tag = angular_tag[sort_idx]
+    #print(irrep_tag)
+    #print(angular_tag)
+    return lib.tag_array(e[sort_idx],irrep_tag=irrep_tag),\
+           lib.tag_array(c[:,sort_idx], ang_tag=angular_tag)
+
+def get_occ_symm(mf, irrep, occup, irrep_mo=None, mo_energy=None, mo_coeff=None):
+    mol = mf.mol
+    mo_occ = np.zeros_like(mo_energy, dtype=complex)
+    ir_tag = irrep_mo
+    if ir_tag is None:
+        if mo_energy is None:
+            mo_energy = mf.mo_energy
+        ir_tag=mf.irrep_mo
+    if mo_coeff is None and mf.mo_coeff is None:
+        for ir in irrep:
+            ir_mo = np.where(ir_tag==ir)
+            if isinstance(occup[ir][0], int):
+                occupy = sum(occup[ir])
+            else:
+                occupy = occup[ir][0]
+            mo_occ[ir_mo[:occupy]] = 1.0+0.j
+            #mo_occ
+            return mo_occ
+    elif mo_coeff is None:
+        mo_coeff = mf.mo_coeff
+    angular_momentum = ['s', 'p', 'd', 'f']
+    n_ang = 4
+    '''
+    print(mo_coeff.ang_tag)
+    for ir in irrep:
+        ir_mo = np.where(ir_tag==ir)[0]
+        if not ir in occup:
+            continue
+        occupy = occup[ir]
+        if isinstance(occup[ir], int):
+            mo_occ[ir_mo[:occupy]] = 1.0+0.j
+        else:
+            mo_occ[ir_mo[occupy[0]]] = 0.0+0.j
+        for i in range(1, min(len(occupy), n_ang+1)):
+            if occupy[i] == 0:
+                continue
+            else:
+                ang = angular_momentum[i-1]
+                indices = np.where(mo_coeff.ang_tag[ir_mo] == ang)[0]
+                #print(ir_mo)
+                print(ir, ang, ir_mo[indices[:occupy[i]]])
+                if len(indices) < occupy[i]:
+                    raise ValueError(f'Not enough mo with largest contribution from {ang} found')
+                else:
+                    mo_occ[ir_mo[indices[:occupy[i]]]] = 1.0+0.j
+                    #mo_occ[ir_mo[[indices[:occupy[i]]]]] = 1.0+0.j
+    occupied = np.where(mo_occ == 1.0+0.j)[0]
+    count = [0,0,0,0]
+    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
+        if ang == 's':
+            count[0]+=1
+    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
+        if ang == 'p':
+            count[1]+=1
+    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
+        if ang == 'd':
+            count[2]+=1
+    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
+        if ang == 'f':
+            count[3]+=1
+    print(ir_tag[:92])
+    print(mo_coeff.ang_tag[:92])
+    print(occupied)
+    print(len(occupied))
+    print(ir_tag[occupied])
+    print(mo_coeff.ang_tag[occupied])
+    print(count)
+    '''
+    for ir in irrep:
+        ir_mo = np.where(ir_tag==ir)[0]
+        if not ir in occup:
+            continue
+        occupy = occup[ir]
+        if isinstance(occup[ir][0], int):
+            mo_occ[ir_mo[:occupy[0]]] = 1.0+0.j
+        else:
+            mo_occ[ir_mo[occupy[0]]] = 1.0+0.j
+        for i in range(1, min(len(occupy), n_ang+1)):
+            if occupy[i] == 0:
+                continue
+            else:
+                ang = angular_momentum[i-1]
+                indices = np.where(mo_coeff.ang_tag[ir_mo[occupy[0]:]] == ang)[0]
+                print(occupy[0])
+                print(mo_coeff.ang_tag[ir_mo[occupy[0]:]])
+                print(indices)
+                if len(indices) < occupy[i]:
+                    raise ValueError(f'Not enough mo with largest contribution from {ang} found')
+                else:
+                    print(ir_mo[occupy[0]:][indices[:occupy[i]]])
+                    mo_occ[ir_mo[occupy[0]:][indices[:occupy[i]]]] = 1.0+0.j
+    occupied = np.where(mo_occ == 1.0+0.j)[0]
+    count = [0,0,0,0]
+    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
+        if ang == 's':
+            count[0]+=1
+    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
+        if ang == 'p':
+            count[1]+=1
+    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
+        if ang == 'd':
+            count[2]+=1
+    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
+        if ang == 'f':
+            count[3]+=1
+    nelec = mol.nelectron
+    print(ir_tag[:nelec+10])
+    print(mo_coeff.ang_tag[:nelec+10])
+    print(occupied)
+    print(len(occupied))
+    print(ir_tag[occupied])
+    print(mo_coeff.ang_tag[occupied])
+    print(count)
+    return mo_occ
+
+
+def spinor2sph(mol, spinor):
+    c = mol.sph2spinor_coeff()
+    c2 = numpy.vstack(c)
+    assert (spinor.shape[-2] == c2.shape[-1]), "spinor integral must be of shape (nao_2c, nao_2c)"
+    if len(spinor.shape) == 3:
+        ints_sph = lib.einsum('ip,xpq,qj->ij', c2, spinor, c2.T.conj())
+    elif len(spinor.shape) == 2:
+        ints_sph = lib.einsum('ip,pq,qj->ij', c2, spinor, c2.T.conj())
+    else:
+        raise ValueError("spherical integral must be of shape (nao_nr, nao_nr) or (nao_nr, nao_nr, 3)")
+    return ints_sph
+
+def sph2spinor(mol, sph):
+    assert (sph.shape[-1] == sph.shape[-2] == mol.nao_nr() * 2), "spherical integral must be of shape (nao_2c, nao_2c)"
+    c = mol.sph2spinor_coeff()
+    c2 = numpy.vstack(c)
+    if len(sph.shape) == 3:
+        ints_spinor = lib.einsum('ip,xpq,qj->xij', c2.T.conj(), sph, c2)
+    elif len(sph.shape) == 2:
+        ints_spinor = lib.einsum('ip,pq,qj->ij', c2.T.conj(), sph, c2)
+    else:
+        raise ValueError("spherical integral must be of shape (nao_nr, nao_nr) or (nao_nr, nao_nr, 3)")
+    return ints_spinor
+
+def _proj_dmll(mol_nr, dm_nr, mol):
+    from pyscf.scf import addons
+    proj = addons.project_mo_nr2r(mol_nr, numpy.eye(mol_nr.nao_nr()), mol)
+    # *.5 because alpha and beta are summed in project_mo_nr2r
+    dm_ll = reduce(numpy.dot, (proj, dm_nr*.5, proj.T.conj()))
+    dm_ll = (dm_ll + dhf.time_reversal_matrix(mol, dm_ll)) * .5
+    return dm_ll
+
+'''
+def get_jk(mol, dm, hermi=1, mf_opt=None, with_j=True, with_k=True, omega=None):
+    def jkbuild(mol, dm, hermi, with_j, with_k, omega=None):
+        if (not omega and
+            (self._eri is not None or mol.incore_anyway or self._is_mem_enough())):
+            if self._eri is None:
+                self._eri = mol.intor('int2e', aosym='s8')
+            return hf.dot_eri_dm(self._eri, dm, hermi, with_j, with_k)
+        else:
+            return hf.SCF.get_jk(self, mol, dm, hermi, with_j, with_k, omega)
+    dm_sph = spinor2sph(mol, dm)
+    j_sph, k_sph = ghf.get_jk(mol, dm_sph, hermi=1, jkbuild=jkbuild)
+    j_spinor = sph2spinor(mol, j_sph)
+    k_spinor = sph2spinor(mol, k_sph)
+    return j_spinor, k_spinor
+'''
+
+make_rdm1 = hf.make_rdm1
+
+def init_guess_by_minao(mol):
+    '''Initial guess in terms of the overlap to minimal basis.'''
+    dm = hf.init_guess_by_minao(mol)
+    return _proj_dmll(mol, dm, mol)
+
+#def init_guess_by_1e(mol):
+#    '''Initial guess from one electron system.'''
+#    mf = UHF(mol)
+#    return mf.init_guess_by_1e(mol)
+
+def init_guess_by_atom(mol):
+    '''Initial guess from atom calculation.'''
+    dm = hf.init_guess_by_atom(mol)
+    return _proj_dmll(mol, dm, mol)
+
+def init_guess_by_chkfile(mol, chkfile_name, project=None):
+    from pyscf.scf import chkfile as chkmod
+    chk_mol, scf_rec = chkmod.load_scf(chkfile_name)
+    mo_coeff = scf_rec['mo_coeff']
+    mo_occ = scf_rec['mo_occ']
+    n2c = mol.nao_2c()
+    if mo_coeff.shape[0] != n2c:
+        raise ValueError('chkfile is not from a SpinorSCF calculation')
+    return make_rdm1(mo_coeff, mo_occ)
+
+def get_init_guess(mol, key='minao'):
+    if callable(key):
+        return key(mol)
+    #elif key.lower() == '1e':
+    #    return init_guess_by_1e(mol)
+    elif key.lower() == 'atom':
+        return init_guess_by_atom(mol)
+    elif key.lower() == 'chkfile':
+        raise RuntimeError('Call pyscf.scf.hf.init_guess_by_chkfile instead')
+    else:
+        return init_guess_by_minao(mol)
+
+def get_hcore(mol, with_soc=None):
+    '''Core Hamiltonian
+
+    Examples:
+
+    >>> from pyscf import gto, scf
+    >>> mol = gto.M(atom='H 0 0 0; H 0 0 1.1')
+    >>> scf.hf.get_hcore(mol)
+    array([[-0.93767904, -0.59316327],
+           [-0.59316327, -0.93767904]])
+    '''
+    h = mol.intor_symmetric('int1e_kin_spinor')
+
+    if mol._pseudo:
+        # Although mol._pseudo for GTH PP is only available in Cell, GTH PP
+        # may exist if mol is converted from cell object.
+        from pyscf.gto import pp_int
+        h += pp_int.get_gth_pp(mol)
+    else:
+        h+= mol.intor_symmetric('int1e_nuc_spinor')
+
+    if len(mol._ecpbas) > 0:
+        ecp = mol.intor('ECPscalar')
+        iden = numpy.eye(2)
+        ints_sph = mol.intor('int1e_nuc_sph')
+        ints_sph = numpy.einsum('ij,pq->ijpq', iden, ecp)
+
+        c = mol.sph2spinor_coeff()
+
+        ecp_spinor = numpy.einsum('ipa,ijpq,jqb->ab', numpy.conj(c), ints_sph,
+                                  c)
+        h += 1. * ecp_spinor
+        if with_soc is True:
+            mat_sph = mol.intor('ECPso')
+            s = .5 * lib.PauliMatrices
+            u = mol.sph2spinor_coeff()
+            mat_spinor = numpy.einsum('sxy,spq,xpi,yqj->ij', s, mat_sph, u.conj(), u)
+            h += -1.j*mat_spinor
+    return h
+
+# attempt to restructure the spinor hf code structure
+# spinor hf should be parent of x2c hf using j-adapted spinor
+class SpinorSCF(hf.SCF):
+    '''Nonrelativistic SCF under j-adapted spinor basis'''
+
+    _keys = {'with_soc', 'with_x2c'}
+
+    def __init__(self, mol):
+        hf.SCF.__init__(self, mol)
+        self.with_soc=False
+        self.with_x2c=None
+        self.so_contr=None
+        self.new_energy_algo=False
+
+    def density_fit(self, auxbasis=None, with_df=None, only_dfj=False):
+        return density_fit(self, auxbasis, with_df, only_dfj)
+
+    def build(self, mol=None):
+        if self.verbose >= logger.WARN:
+            self.check_sanity()
+        if self.direct_scf:
+            self.opt = self.init_direct_scf(mol)
+        return self
+
+    def dump_flags(self, verbose=None):
+        hf.SCF.dump_flags(self, verbose)
+        return self
+
+    def init_guess_by_minao(self, mol=None):
+        '''Initial guess in terms of the overlap to minimal basis.'''
+        if mol is None: mol = self.mol
+        return init_guess_by_minao(mol)
+
+    def init_guess_by_atom(self, mol=None):
+        if mol is None: mol = self.mol
+        return init_guess_by_atom(mol)
+
+    def init_guess_by_chkfile(self, chkfile=None, project=None):
+        if chkfile is None: chkfile = self.chkfile
+        return init_guess_by_chkfile(self.mol, chkfile, project=project)
+
+    #def _eigh(self, h, s):
+    #    return eigkr(self.mol, h, s, debug=False)
+
+    @lib.with_doc(get_hcore.__doc__)
+    def get_hcore(self, mol=None):
+        if mol is None:
+            mol = self.mol
+        if self.with_x2c is not None:
+            hcore = self.with_x2c.get_hcore(mol)
+        else:
+            hcore = get_hcore(mol, self.with_soc)
+        if getattr(mol, 'so_contr', None) is not None:
+            hcore = reduce(numpy.dot, (mol.so_contr.T, hcore, mol.so_contr))
+        return hcore
+
+    def energy_tot(self, dm=None, h1e=None, vhf=None):
+        if dm is None:
+            dm=self.make_rdm1()
+        if h1e is None:
+            h1e = self.get_hcore()
+        if vhf is None:
+            vhf = self.get_veff()
+        print('new_energy_algo', self.new_energy_algo, hasattr(self.with_x2c, 'soc_matrix'))
+        if self.with_x2c is not None and hasattr(self.with_x2c, 'soc_matrix'):
+            energy_new = hf.energy_tot(self, dm, h1e - self.with_x2c.soc_matrix, vhf+self.with_x2c.soc_matrix)
+            energy_old = hf.energy_tot(self, dm, h1e, vhf)
+            print(f'Energy scheme 1 {energy_new:20.12g}, {energy_old:20.12g}')
+        #    if self.new_energy_algo:
+        #        return energy_new
+        #    else:
+        #        return energy_old
+        #else:
+        return hf.energy_tot(self, dm, h1e, vhf)
+
+    def get_ovlp(self, mol=None):
+        if mol is None: mol = self.mol
+        ovlp = mol.intor_symmetric('int1e_ovlp_spinor')
+        if getattr(mol, 'so_contr', None) is not None:
+            ovlp = reduce(numpy.dot, (mol.so_contr.T, ovlp, mol.so_contr))
+        return ovlp
+
+    def get_occ(self, mo_energy=None, mo_coeff=None):
+        if mo_energy is None: mo_energy = self.mo_energy
+        mol = self.mol
+        mo_occ = numpy.zeros_like(mo_energy)
+        nocc = mol.nelectron
+        mo_occ[:nocc] = 1
+        if nocc < len(mo_energy):
+            if mo_energy[nocc-1]+1e-3 > mo_energy[nocc]:
+                logger.warn(self, 'HOMO %.15g == LUMO %.15g',
+                            mo_energy[nocc-1], mo_energy[nocc])
+            else:
+                logger.info(self, 'nocc = %d  HOMO = %.12g  LUMO = %.12g',
+                            nocc, mo_energy[nocc-1], mo_energy[nocc])
+        else:
+            logger.info(self, 'nocc = %d  HOMO = %.12g  no LUMO',
+                        nocc, mo_energy[nocc-1])
+        logger.debug(self, '  mo_energy = %s', mo_energy)
+        return mo_occ
+
+    make_rdm1 = lib.module_method(make_rdm1, absences=['mo_coeff', 'mo_occ'])
+
+    def get_jk(self, mol=None, dm=None, hermi=1, with_j=True, with_k=True,
+               omega=None):
+        if mol is None: mol = self.mol
+        if dm is None: dm = self.make_rdm1()
+        t0 = (logger.process_clock(), logger.perf_counter())
+        print(self.direct_scf, 'direct_scf')
+        if self.direct_scf and self.opt is None:
+            self.opt = self.init_direct_scf(mol)
+        dm_sph = spinor2sph(mol, dm)
+        j_sph, k_sph = ghf.GHF.get_jk(self, mol, dm_sph)
+        j_spinor = sph2spinor(mol, j_sph)
+        k_spinor = sph2spinor(mol, k_sph)
+        logger.timer(self, 'vj and vk', *t0)
+        return j_spinor, k_spinor
+
+    def get_veff(self, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
+        '''Dirac-Coulomb'''
+        if mol is None: mol = self.mol
+        if dm is None: dm = self.make_rdm1()
+        print(self.direct_scf, 'direct_scf')
+        if self.direct_scf:
+            ddm = numpy.array(dm) - numpy.array(dm_last)
+            vj, vk = self.get_jk(mol, ddm, hermi=hermi)
+            return numpy.array(vhf_last) + vj - vk
+        else:
+            vj, vk = self.get_jk(mol, dm, hermi=hermi)
+            return vj - vk
+
+    def analyze(self, verbose=None):
+        if verbose is None: verbose = self.verbose
+        return dhf.analyze(self, verbose)
+
+    def newton(self):
+        from pyscf.x2c.newton_ah import newton
+        return newton(self)
+
+    def stability(self, internal=None, external=None, verbose=None, return_status=False):
+        '''
+        X2C-HF/X2C-KS stability analysis.
+
+        See also pyscf.scf.stability.rhf_stability function.
+
+        Kwargs:
+            return_status: bool
+                Whether to return `stable_i` and `stable_e`
+
+        Returns:
+            If return_status is False (default), the return value includes
+            two set of orbitals, which are more close to the stable condition.
+            The first corresponds to the internal stability
+            and the second corresponds to the external stability.
+
+            Else, another two boolean variables (indicating current status:
+            stable or unstable) are returned.
+            The first corresponds to the internal stability
+            and the second corresponds to the external stability.
+        '''
+        ''' Currently using GHF stability, and GHF stability is wrong '''
+        from pyscf.x2c.stability import x2chf_stability
+        return x2chf_stability(self, verbose, return_status)
+
+    def spin_square(self, mo_coeff=None, s=None):
+        from pyscf.scf.ghf import spin_square as spin_square_ghf
+        if mo_coeff is None: mo_coeff = self.mo_coeff[:,self.mo_occ>0]
+        if s is None: s = self.get_ovlp()
+        mo_coeff_ghf = np.dot(np.vstack(self.mol.sph2spinor_coeff()), mo_coeff)
+        s_ghf = spinor2sph(self.mol, s)
+        return spin_square_ghf(mo_coeff_ghf, s_ghf)
+
+    def nuc_grad_method(self):
+        raise NotImplementedError
+
+
+class SymmSpinorSCF(SpinorSCF):
+    def __init__(self, mol, symmetry=None, occup=None):
+        SpinorSCF.__init__(self, mol)
+        self.symmetry = symmetry
+        if symmetry in ['linear', 'sph']:
+            self.irrep_ao = symmetry_label(mol, symmetry)
+        else:
+            raise NotImplementedError
+
+        self.occupation = occup
+        print('occup')
+        print(self.occupation)
+
+    def eig(self, h, s=None):
+        if s is not None:
+            e, c = eig(self, h, s, irrep=self.irrep_ao)
+            self.irrep_mo = e.irrep_tag
+            print(e.irrep_tag)
+        else:
+            e, c = scipy.linalg.eigh(h)
+        return e, c
+
+    # when linear symmetry or spherical symmetry imposed,
+    # kramers symmetry is adapted outside the eigensolver
+    def _eigh(self, h, s):
+        return scipy.linalg.eigh(h, s)
+
+    def get_occ(self, mo_energy=None, mo_coeff=None):
+        if self.occupation is None or mo_energy is None:
+            return SpinorSCF.get_occ(self, mo_energy, mo_coeff)
+        else:
+            return get_occ_symm(self, self.irrep_ao, self.occupation, mo_energy=mo_energy, mo_coeff=mo_coeff)
+        
+class KRHF(SpinorSCF):
+    def __init__(self, mol):
+        super().__init__(mol)
+        if zquatev is None:
+            raise RuntimeError('zquatev library is required to perform Kramers-restricted JHF')
+    def _eigh(self, h, s):
+        return dhf.zquatev.solve_KR_FCSCE(self.mol, h, s)
+    def eig(self, h, s=None):
+        if s is not None:
+            return self._eigh(h, s) 
+        else:
+            return zquatev.eigh(h, iop=1)
+    def to_ks(self, xc='HF'):
+       from pyscf.x2c import dft
+       mf = self.view(dft.RKS)
+       mf.converged = False
+       return mf
+
+from pyscf.scf import _response_functions
+SpinorSCF.gen_response = _response_functions._gen_ghf_response
+
+JHF = SpinorSCF
+SCF = SpinorSCF
+SpinorSymmSCF = SymmSCF = SymmJHF = SymmSpinorSCF
+
+def frac_occ(mf, norb_open=0, nelec_open=0):
+    old_get_occ = mf.get_occ
+    mol = mf.mol
+    nelec = mol.nelectron
+    nclose = nelec - nelec_open
+    frac_occup_number = nelec_open / norb_open
+    def get_occ(mo_energy, mo_coeff):
+        mo_occ = numpy.zeros_like(mo_energy)
+        mo_occ[:nclose] = 1.0
+        mo_occ[nclose: nclose + norb_open] = frac_occup_number
+        logger.info(mf, ' frac occupied orbital energies = %s', mo_energy[nclose: nclose+norb_open])
+        logger.debug(mf, '  mo_energy = %s', mo_energy)
+        from socutils.tools import analyze
+        analyze.analyze(mol, mo_coeff[:, nclose: nclose+norb_open], mo_energy[nclose:nclose+norb_open])
+        return mo_occ
+    mf.get_occ = get_occ 
+    return mf
+
+
+if __name__ == '__main__':
+    from pyscf import scf
+    mol = mole.Mole()
+    mol.verbose = 5
+    mol.output = None
+
+    mol.atom = [['Ne', (0, 0, 0)], ]
+    mol.basis = 'ccpvdz'
+    mol.build(0, 0)
+
+    ##############
+    # SCF result
+    method = SpinorSCF(mol)
+    #method.init_guess = '1e'
+    energy = method.scf()
+    print(method.mo_energy)
+    print(method.mo_coeff[:,0])
+    print(method.mo_coeff[:,1])
+    print(energy)
