@@ -35,7 +35,7 @@ def write_eri(fout, eri, nmo, tol=TOL, float_format=DEFAULT_FLOAT_FORMAT):
                         fout.write(output_format % (
                             eri[ij][kl].real,
                             eri[ij][kl].imag,
-                            i + 1, j + 1, k + 1, l + 1))
+                            i+1, j+1, k+1, l+1))
 
 def from_integrals(filename, h1e, h2e, nmo, nelec, nuc=0, ms=0, orbsym=None,
                    tol=TOL, float_format=DEFAULT_FLOAT_FORMAT):
@@ -64,7 +64,10 @@ def write_head(fout, nmo, nelec, ms, orbsym=None):
     fout.write('  ISYM=0,\n')
     fout.write(' &END\n')
 
-def from_x2c(mf, ncore, nact, filename='FCIDUMP', tol=1e-10, intor='int2e_spinor', h1e=None, approx='1e', symm=None):
+def from_x2c(mf, ncore, nact, filename='FCIDUMP', tol=1e-14, intor='int2e_spinor',
+    h1e=None, approx='1e', symm=None, 
+    fourC_fcore=False, fourC_int=False,
+    with_full_coulomb=False, with_coulomb_so=False, with_gaunt=False, with_breit=False):
     ncore = ncore
     nact = nact
     mo_coeff = mf.mo_coeff[:, ncore:ncore + nact]
@@ -79,22 +82,92 @@ def from_x2c(mf, ncore, nact, filename='FCIDUMP', tol=1e-10, intor='int2e_spinor
     core_dm = mf.make_rdm1(mo_occ=core_occ)
     corevhf = mf.get_veff(mol, core_dm)
     energy_core = mf.energy_nuc()
+    print(energy_core)
     energy_core += numpy.einsum('ij,ji', core_dm, hcore)
+    print(energy_core)
     energy_core += numpy.einsum('ij,ji', core_dm, corevhf) * .5
+    print(energy_core)
     h1eff = reduce(numpy.dot, (mo_coeff.T.conj(), hcore + corevhf, mo_coeff))
     #print(h1eff, energy_core)
     #reduce(numpy.dot, (mf.mo_coeff.T, mf.get_hcore(), mf.mo_coeff))[ncore:ncore+nact, ncore:ncore+nact]
 
-    #if mf._eri is None:
-    #eri = ao2mo.kernel(mf.mol, mo_coeff, intor=intor)
-    eri = nrr_outcore.full_iofree(mf.mol, mo_coeff, intor='int2e', motype='j-spinor')
-    print(eri.shape)
-    #else:
-    #    eri = ao2mo.kernel(mf._eri, mo_coeff, intor=intor)
-    #core_occ = numpy.zeros(len(mf.mo_energy))
-    #core_occ[:ncore] = 1.0
-    #dm = mf.make_rdm1(mo_occ = core_occ)
-    #core_energy = scf.hf.energy_elec(mf, dm=dm)
+    if fourC_fcore is True:
+        c4c = mf.with_x2c.to_4c_coeff(mf.mo_coeff)
+        mf4c = scf.DHF(mol) 
+        mf4c.with_gaunt = with_gaunt
+        mf4c.with_breit = with_breit
+        hcore = mf4c.get_hcore()
+        nmo = len(mf.mo_energy)
+        moact_4c = c4c[:,nmo+ncore:nmo+ncore+nact]
+        core_occ = numpy.zeros(2*nmo)
+        core_occ[nmo:nmo+ncore] = 1.0
+        mf4c.mo_coeff = c4c 
+        core_dm = mf4c.make_rdm1(mo_occ=core_occ)
+        energy_core = mf4c.energy_nuc()
+        vj, vk = mf4c.get_jk(mol, core_dm)
+        core_vhf = vj - vk
+        energy_core = mf.energy_nuc()
+        energy_core += numpy.einsum('ij,ji', core_dm, hcore)
+        energy_core += numpy.einsum('ij,ji', core_dm, core_vhf) * 0.5
+        h1eff = reduce(numpy.dot,
+            (moact_4c.T.conj(), hcore + core_vhf, moact_4c))
+
+    if fourC_int is False:
+        eri = nrr_outcore.full_iofree(mf.mol, mo_coeff, intor='int2e', motype='j-spinor')
+    else:
+        c4c = mf.with_x2c.to_4c_coeff(mf.mo_coeff)
+        n2c = mf.mol.nao_2c()
+        mo_l = c4c[:n2c, ncore+n2c:ncore+n2c + nact].copy()
+        mo_s = c4c[n2c:, ncore+n2c:ncore+n2c + nact] * (0.5 / lib.param.LIGHT_SPEED)
+        
+        #if spinfree_coulomb is False:
+        #    eri = nrr_outcore.full_iofree(mf.mol, mo_coeff, intor='int2e', motype='j-spinor')
+        #elif spinfree_only is True:
+        #    print('spinfree_only')
+        #    eri = None
+        #    eri = ao2mo.general(mf.mol, (mo_l, mo_l, mo_l, mo_l), intor='int2e_spinor')
+        #    eri += ao2mo.general(mf.mol, (mo_l, mo_l, mo_s, mo_s), intor='int2e_pp2_spinor')
+        #    eri += ao2mo.general(mf.mol, (mo_s, mo_s, mo_l, mo_l), intor='int2e_pp1_spinor')
+        #    eri += ao2mo.general(mf.mol, (mo_s, mo_s, mo_s, mo_s), intor='int2e_pp1pp2_spinor')
+        #else:
+        #    print('full relativistic coulomb')
+        #    eri = None
+        #    eri = ao2mo.general(mf.mol, (mo_l, mo_l, mo_l, mo_l), intor='int2e_spinor')
+        #    eri += ao2mo.general(mf.mol, (mo_l, mo_l, mo_s, mo_s), intor='int2e_spsp2_spinor')
+        #    eri += ao2mo.general(mf.mol, (mo_s, mo_s, mo_l, mo_l), intor='int2e_spsp1_spinor')
+        #    eri += ao2mo.general(mf.mol, (mo_s, mo_s, mo_s, mo_s), intor='int2e_spsp1spsp2_spinor')
+
+        eri = nrr_outcore.full_iofree(mf.mol, mo_coeff, intor='int2e', motype='j-spinor')
+        if with_coulomb_so:
+            eri2_full = ao2mo.general(mf.mol, (mo_l, mo_l, mo_l, mo_l), intor='int2e_spinor')
+            eri2_full += ao2mo.general(mf.mol, (mo_l, mo_l, mo_s, mo_s), intor='int2e_spsp2_spinor')
+            eri2_full += ao2mo.general(mf.mol, (mo_s, mo_s, mo_l, mo_l), intor='int2e_spsp1_spinor')
+            eri2_full += ao2mo.general(mf.mol, (mo_s, mo_s, mo_s, mo_s), intor='int2e_spsp1spsp2_spinor')
+            eri2_sf = ao2mo.general(mf.mol, (mo_l, mo_l, mo_l, mo_l), intor='int2e_spinor')
+            eri2_sf += ao2mo.general(mf.mol, (mo_l, mo_l, mo_s, mo_s), intor='int2e_pp2_spinor')
+            eri2_sf += ao2mo.general(mf.mol, (mo_s, mo_s, mo_l, mo_l), intor='int2e_pp1_spinor')
+            eri2_sf += ao2mo.general(mf.mol, (mo_s, mo_s, mo_s, mo_s), intor='int2e_pp1pp2_spinor')
+            eri2_so = eri2_full - eri2_sf
+            eri += eri2_so
+
+        if with_full_coulomb:
+            eri2_full = ao2mo.general(mf.mol, (mo_l, mo_l, mo_l, mo_l), intor='int2e_spinor')
+            eri2_full += ao2mo.general(mf.mol, (mo_l, mo_l, mo_s, mo_s), intor='int2e_spsp2_spinor')
+            eri2_full += ao2mo.general(mf.mol, (mo_s, mo_s, mo_l, mo_l), intor='int2e_spsp1_spinor')
+            eri2_full += ao2mo.general(mf.mol, (mo_s, mo_s, mo_s, mo_s), intor='int2e_spsp1spsp2_spinor')
+            eri = eri2_full
+
+        if with_gaunt:
+            p = "int2e_breit_" if with_breit else "int2e_"
+            multips = (1.0,)*4 if with_breit else (-1.0,)*4
+            mos = [[mo_l, mo_s, mo_s, mo_l],
+                   [mo_l, mo_s, mo_l, mo_s],
+                   [mo_s, mo_l, mo_s, mo_l],
+                   [mo_s, mo_l, mo_l, mo_s]]
+            intors = [p+'ssp1sps2_spinor', p+'ssp1ssp2_spinor', p+'sps1sps2_spinor', p+'sps1ssp2_spinor']
+            for mo, intor, multip in zip(mos, intors, multips):
+                eri += multip * ao2mo.general(mol, mo, intor=intor, aosym='s1', comp=1, max_memory=mf.max_memory)
+    #ncas = nact // 2
     from_integrals(filename=filename, h1e=h1eff, h2e=eri, nmo=nact,
                    nelec=sum(mf.mol.nelec)-ncore, nuc=energy_core.real, tol=tol, orbsym=symm)
 
@@ -136,7 +209,7 @@ def from_ghf(mf, ncore, nact, filename='FCIDUMP', tol=1e-10, intor='int2e_sph'):
     from_integrals(filename=filename, h1e=h1eff, h2e=eri, nmo=nact,
                    nelec=sum(mf.mol.nelec)-ncore, nuc=energy_core.real, tol=tol)
 
-def from_dhf(mf, ncore, nact, filename='FCIDUMP', tol=1e-10, with_gaunt=False, with_breit=False):
+def from_dhf(mf, ncore, nact, filename='FCIDUMP', tol=1e-14, with_so_coulomb=True, with_gaunt=None, with_breit=None, hcore=None):
     ncore = ncore
     nact = nact
     n4c, nmo = mf.mo_coeff.shape
@@ -147,7 +220,13 @@ def from_dhf(mf, ncore, nact, filename='FCIDUMP', tol=1e-10, with_gaunt=False, w
     mo_coeff = mf.mo_coeff[:, ncore:ncore + nact]
     assert mo_coeff.dtype == complex
 
-    hcore = mf.get_hcore(mol)
+    if with_gaunt is None:
+        with_gaunt = mf.with_gaunt
+    if with_breit is None:
+        with_breit = mf.with_breit
+
+    if hcore is None: # to parse in qed integral
+        hcore = mf.get_hcore(mol)
     core_occ = numpy.zeros(len(mf.mo_energy))
     core_occ[nNeg:ncore] = 1.0
     core_dm = mf.make_rdm1(mo_occ=core_occ)
@@ -161,13 +240,19 @@ def from_dhf(mf, ncore, nact, filename='FCIDUMP', tol=1e-10, with_gaunt=False, w
     mo_s = mf.mo_coeff[n2c:, ncore:ncore + nact] * (0.5 / lib.param.LIGHT_SPEED)
 
     eri = ao2mo.general(mf.mol, (mo_l, mo_l, mo_l, mo_l), intor='int2e_spinor')
-    eri += ao2mo.general(mf.mol, (mo_l, mo_l, mo_s, mo_s), intor='int2e_spsp2_spinor')
-    eri += ao2mo.general(mf.mol, (mo_s, mo_s, mo_l, mo_l), intor='int2e_spsp1_spinor')
-    eri += ao2mo.general(mf.mol, (mo_s, mo_s, mo_s, mo_s), intor='int2e_spsp1spsp2_spinor')
+    if with_so_coulomb:
+        eri += ao2mo.general(mf.mol, (mo_l, mo_l, mo_s, mo_s), intor='int2e_spsp2_spinor')
+        eri += ao2mo.general(mf.mol, (mo_s, mo_s, mo_l, mo_l), intor='int2e_spsp1_spinor')
+        eri += ao2mo.general(mf.mol, (mo_s, mo_s, mo_s, mo_s), intor='int2e_spsp1spsp2_spinor')
+    else:
+        eri += ao2mo.general(mf.mol, (mo_l, mo_l, mo_s, mo_s), intor='int2e_pp2_spinor')
+        eri += ao2mo.general(mf.mol, (mo_s, mo_s, mo_l, mo_l), intor='int2e_pp1_spinor')
+        eri += ao2mo.general(mf.mol, (mo_s, mo_s, mo_s, mo_s), intor='int2e_pp1pp2_spinor')
 
-    if mf.with_gaunt:
-        p = "int2e_breit_" if mf.with_breit else "int2e_"
-        multips = (1.0,)*4 if mf.with_breit else (-1.0,)*4
+    if with_gaunt:
+        print('with_gaunt')
+        p = "int2e_breit_" if with_breit else "int2e_"
+        multips = (1.0,)*4 if with_breit else (-1.0,)*4
         mos = [[mo_l, mo_s, mo_s, mo_l],
                [mo_l, mo_s, mo_l, mo_s],
                [mo_s, mo_l, mo_s, mo_l],
