@@ -51,6 +51,7 @@ def eig(mf, h, s, irrep=None):
         angular_tag[i] = angs[np.argmax(norm_ang)]
 
     sort_idx = np.argsort(e)
+    print(e[sort_idx])
     irrep_tag = irrep_tag[sort_idx]
     angular_tag = angular_tag[sort_idx]
     return lib.tag_array(e[sort_idx],irrep_tag=irrep_tag),\
