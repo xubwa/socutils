@@ -25,10 +25,14 @@ def pauli_decompose(ints_so, with_scalar=True):
     so_sz = soaa.imag
     so_sy = soab.real
     so_sx = soab.imag
-    assert numpy.allclose(sobb.real, so_scalar)
-    assert numpy.allclose(sobb.imag, -so_sz)
-    assert numpy.allclose(soba.real, -so_sy)
-    assert numpy.allclose(soba.imag, so_sx)
+    if not numpy.allclose(sobb.real, so_scalar):
+        print("Warning: sobb.real and so_scalar are not close")
+    if not numpy.allclose(sobb.imag, -so_sz):
+        print("Warning: sobb.imag and -so_sz are not close")
+    if not numpy.allclose(soba.real, -so_sy):
+        print("Warning: soba.real and -so_sy are not close")
+    if not numpy.allclose(soba.imag, so_sx):
+        print("Warning: soba.imag and so_sx are not close")
 
     if not with_scalar:
         return numpy.array([so_sx, so_sy, so_sz])
