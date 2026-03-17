@@ -62,7 +62,10 @@ class X2CHelperBase(lib.StreamObject):
             xmol.build(False, False, basis=self.basis)
             return xmol, None
         elif self.xuncontract:
-            xmol, contr_coeff = _uncontract_mol(mol, self.xuncontract)
+            if all(mol._bas[:,mole.KAPPA_OF] == 0):
+                xmol, contr_coeff = _uncontract_mol(mol, self.xuncontract)
+            from pyscf.x2c.x2c import _decontract_spinor
+            xmol, contr_coeff = _decontract_spinor(mol, self.xuncontract)
             return xmol, contr_coeff
         else:
             return mol, None
@@ -75,7 +78,7 @@ class X2CHelperBase(lib.StreamObject):
         if mol.has_ecp():
             raise NotImplementedError
 
-        xmol, contr_coeff_nr = self.get_xmol(mol)
+        xmol, contr_coeff = self.get_xmol(mol)
         c = lib.param.LIGHT_SPEED
         assert ('1E' in self.approx.upper())
         s = xmol.intor_symmetric('int1e_ovlp_spinor')
@@ -140,7 +143,7 @@ class X2CHelperBase(lib.StreamObject):
                         #if 60 < Z_ia:
                         if True:
                             fudge_factor[iorb] = min(Z_ia, factor_list[factor_id][4])/Z_ia
-                    elif 'H' in label[2].upper:
+                    elif 'H' in label[2].upper():
                         #if 110 < Z_ia:
                         if True:
                             fudge_factor[iorb] = min(Z_ia, factor_list[factor_id][5])/Z_ia
@@ -179,10 +182,6 @@ class X2CHelperBase(lib.StreamObject):
             c = lib.cho_solve(s22, s21)
             h1 = reduce(numpy.dot, (c.T.conj(), h1, c))
         elif self.xuncontract:
-            np, nc = contr_coeff_nr.shape
-            contr_coeff = numpy.zeros((np*2,nc*2))
-            contr_coeff[0::2,0::2] = contr_coeff_nr
-            contr_coeff[1::2,1::2] = contr_coeff_nr
             h1 = reduce(numpy.dot, (contr_coeff.T.conj(), h1, contr_coeff))
         return h1
 
