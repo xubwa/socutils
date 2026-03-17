@@ -109,6 +109,14 @@ class SpinFreeDHF(scf.dhf.DHF):
 
         log.timer('vj and vk', *t0)
         return vj, vk
+
+
+from pyscf.dft import dks
+class SpinFreeDKS(dks.KohnShamDFT, SpinFreeDHF):
+    '''Kramers unrestricted Dirac-Kohn-Sham'''
+    def __init__(self, mol, xc='LDA,VWN'):
+        SpinFreeDHF.__init__(self, mol)
+        dks.KohnShamDFT.__init__(self, xc)
     
 if __name__ == '__main__':
     mol = gto.M(verbose=4,
