@@ -35,8 +35,10 @@ def h1e_for_cas(casci, mo_coeff=None, ncas=None, ncore=None):
     if mo_core.size == 0:
         corevhf = 0
     else:
+        core_occ = numpy.zeros(mo_coeff.shape[0])
+        core_occ[:ncore] = 1.0
         core_dm = numpy.dot(mo_core, mo_core.T.conj())
-        corevhf = casci.get_veff(casci.mol, core_dm)
+        corevhf = casci.get_veff(casci.mol, lib.tag_array(core_dm, mo_coeff=mo_coeff, mo_occ=core_occ))
 
         #j, k = casci._scf.get_jk(casci.mol, core_dm)
         energy_core += numpy.einsum('ij,ji', core_dm, hcore)
@@ -331,7 +333,10 @@ class CASCI(zcasbase.CASBase):
         if mol is None: mol = self.mol
         if dm is None:
             mocore = self.mo_coeff[:, :self.ncore]
+            moocc = numpy.zeros(self.mo_coeff.shape[1])
+            moocc[:self.ncore]=1.0
             dm = numpy.dot(mocore, mocore.T.conj())
+            dm = lib.tag_array(dm, mo_coeff=self.mo_coeff, mo_occ=moocc)
 
         j, k = self._scf.get_jk(mol, dm)
         return j - k
