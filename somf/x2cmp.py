@@ -504,6 +504,8 @@ def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, n
         h1e_4c = x2cobj.h4c
     if x2cobj.m4c is None:
         x2cobj.m4c = s4c
+    if x2cobj.h4c_ext is not None:
+        x2cobj.h4c += x2cobj.h4c_ext
     x2cobj.soc_matrix = np.zeros((n2c, n2c))
     density_2c = construct_molecular_matrix(extract_ith_integral(atm_ints, 12), atom_slices, xmol, n2c, False)
     x2cobj.density_2c = density_2c
@@ -621,9 +623,9 @@ def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, n
         atm_X = construct_molecular_matrix(extract_ith_integral(atm_ints, 0), atom_slices, xmol, n2c, False)
         density_4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 11), atom_slices, xmol, n2c, True)
         n2c = atm_fock_4c2e.shape[0]//2
-        atm_fock_4c2e_screen = screen_amf4c_matrix(xmol, atm_fock_4c2e)
-        atm_fock_2c2e_screen = screen_amf_matrix(xmol, atm_fock_2c2e)
-        x, st, r, h2c = x2c1e_hfw0_4cmat(h1e_4c+atm_fock_4c2e_screen, s4c, mol=xmol)
+        #atm_fock_4c2e_screen = screen_amf4c_matrix(xmol, atm_fock_4c2e)
+        #atm_fock_2c2e_screen = screen_amf_matrix(xmol, atm_fock_2c2e)
+        x, st, r, h2c = x2c1e_hfw0_4cmat(h1e_4c+atm_fock_4c2e, s4c, mol=xmol)
         h_x2c = to_2c(x, r, h1e_4c)
         soc_matrix = x2camf.amfi(x2cobj, printLevel=x2cobj.verbose, with_gaunt=gaunt, with_gauge=breit,
                      with_gaunt_sd=x2cobj.gaunt_sd, aoc=aoc, pcc=pcc, gaussian_nuclear=x2cobj.gau_nuc)
@@ -784,6 +786,8 @@ class SpinorX2CMPHelper(x2c.x2c.SpinorX2CHelper):
         self.nucmod = mol.nucmod
         self.h4c = None
         self.m4c = None
+        # external potential to be added on h4c, currently with qmmm potential and qed potential in mind.
+        self.h4c_ext = None
         self.veff_2c = None
         self.soc_matrix = None
         self.screen = screen
@@ -791,6 +795,18 @@ class SpinorX2CMPHelper(x2c.x2c.SpinorX2CHelper):
             self.gau_nuc = True
         else:
             self.gau_nuc = False
+
+    def read_qed(self, fname='qedint'):
+        from socutils.tools import label
+        mol = self.mol
+        c2p_2c = label.Labels.spinor_cfour2pyscf(mol)
+        c2p_4c = scipy.linalg.block_diag(c2p_2c, c2p_2c)
+        h4c_cfour = label.carr_f2py(mol, filename=fname).reshape(mol.nao_2c()*2, mol.nao_2c()*2).T
+        h4c_pyscf = reduce(np.dot, (c2p_4c.T.conj(), h4c_cfour, c2p_4c))
+        if self.h4c_ext is None:
+            self.h4c_ext = h4c_pyscf
+        else:
+            self.h4c_ext += h4c_pyscf
         
     def x2cmp(self):
         print(self.gaunt,self.breit,self.pcc,self.aoc)
