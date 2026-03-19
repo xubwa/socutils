@@ -45,6 +45,8 @@ from socutils.tools import fcidump_rel
 import os
 ZFCIEXE = os.popen("which ZFCI").read().strip()
 ZSHCIEXE = os.popen("which ZSHCI").read().strip()
+ZFCIEXE = '/home/xwang405/apps/Dice/bin/ZFCI'
+ZSHCIEXE = '/home/xwang405/apps/Dice/bin/ZSHCI'
 SHCISCRATCHDIR = os.path.join(os.environ.get('TMPDIR', '.'), str(os.getpid()))
 SHCIRUNTIMEDIR = '.'
 MPIPREFIX = '' #'mpirun -np 2'  # change to srun for SLURM job system
@@ -59,6 +61,14 @@ def read_rdm2(filename, norb):
     rdm2 = rdm2.reshape(norb, norb, norb, norb)
     rdm2 = rdm2.transpose(0,2,1,3)
     return rdm2
+
+def read_rdm1(filename, norb):
+    f = h5py.File(filename, 'r')
+    rdm1_real = numpy.array(f['rdm1_real'])
+    rdm1_imag = numpy.array(f['rdm1_imag'])
+    rdm1 = rdm1_real - 1j * rdm1_imag
+    rdm1 = rdm1.reshape(norb, norb)
+    return rdm1
 
 class SHCI(pyscf.lib.StreamObject):
     r'''SHCI program interface and object to hold SHCI program input parameters.
@@ -119,7 +129,7 @@ class SHCI(pyscf.lib.StreamObject):
         # TODO: Organize into pyscf and SHCI parameters
         # Standard SHCI Input parameters
         self.dets = None
-        self.davidsonTol = 1.e-6
+        self.davidsonTol = 1.e-4
         self.epsilon2 = 1.e-7
         self.epsilon2Large = 1000.
         self.targetError = 1.e-4
@@ -242,8 +252,9 @@ class SHCI(pyscf.lib.StreamObject):
         else:
             nelectrons = nelec[0] + nelec[1]
 
-        twopdm = read_rdm2(os.path.join(SHCISCRATCHDIR, f'Dice_{state}_{state}.rdm2.h5'), norb)
-        onepdm = numpy.einsum('ijkk->ji', twopdm) / (nelectrons - 1)
+        twopdm = read_rdm2(os.path.join(self.scratchDirectory, f'Dice_{state}_{state}.rdm2.h5'), norb)
+        # onepdm = numpy.einsum('ijkk->ji', twopdm) / (nelectrons - 1)
+        onepdm = read_rdm1(os.path.join(self.scratchDirectory, f'Dice_{state}_{state}.rdm1.h5'), norb)
         return onepdm, twopdm
 
     def kernel(self, h1e, eri, norb, nelec, fciRestart=None, ecore=0, wfnsym=None,**kwargs):
@@ -423,6 +434,7 @@ def writeSHCIConfFile(SHCI, nelec, Restart):
 
     f.write(f'davidsonTol {SHCI.davidsonTol}\n')
     f.write(f'dE {SHCI.dE}\n')
+    f.write(f'outputlevel 1000\n')
 
     # Sets maxiter to 6 more than the last iter in sweep_iter[] if restarted.
     if not Restart:
