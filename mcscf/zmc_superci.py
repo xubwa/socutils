@@ -107,7 +107,7 @@ def compute_lambda_(mat1, mat2, x_):
     return lambda_test, stepsize
 
 
-def davidson(hop, g, hdiag, tol=5e-6, neig=1, mmax=20):
+def davidson(hop, g, hdiag, max_stepsize=1.0, tol=5e-6, neig=1, mmax=10):
     # Setup the subspace trial vectors
     print('No. of start vectors:', 1)
     neig = neig
@@ -115,7 +115,7 @@ def davidson(hop, g, hdiag, tol=5e-6, neig=1, mmax=20):
     n = g.shape[0] + 1
     x = np.zeros((n, mmax + 1), dtype=complex)  # holder for trial vectors as iterations progress
     sigma = np.zeros((n, mmax + 1), dtype=complex)
-    ritz = np.zeros((n, n), dtype=complex)
+    ritz = np.zeros((n, mmax), dtype=complex)
     #-------------------------------------------------------------------------------
     # Begin iterations
     #-------------------------------------------------------------------------------
@@ -138,16 +138,16 @@ def davidson(hop, g, hdiag, tol=5e-6, neig=1, mmax=20):
         sigma[0, m] = np.dot(g.conj(), x[1:, m])
         # Matrix-vector products, form the projected Hamiltonian in the subspace
         T = np.linalg.multi_dot((x[:, :m + 1].T.conj(), sigma[:, :m + 1]))
-        #print(T)
+        T = T.real*(1+0.j)
+        T = (T+T.T)/2.
         mat1 = numpy.zeros((m + 1, m + 1), dtype=complex)
         mat2 = numpy.zeros((m + 1, m + 1), dtype=complex)
         mat2[1:, 1:] = T[1:, 1:]
         mat1 = T - mat2
         lambda_, stepsize = compute_lambda_(mat1, mat2, x)
         T = mat1 + mat2 * (1.0 / lambda_)
-        T = T.real*(1+0.j)
-        print(np.linalg.norm(T-T.T.conj()))
         e, vects = np.linalg.eigh(T[:m + 1, :m + 1])
+        ivec = -1 
         for j in range(m + 1):
             if abs(vects[0, j]) <= 1.1 and abs(vects[0, j]) > 0.1:
                 ivec = j
@@ -159,16 +159,18 @@ def davidson(hop, g, hdiag, tol=5e-6, neig=1, mmax=20):
 
         ritz[1:, 0] = np.dot(sigma[1:, :m + 1] - lambda_ * e[ivec] * x[1:, :m + 1], vects[:, ivec])
         err = np.linalg.norm(ritz[:, 0])
-        print(f'iter {m}, ivec {ivec}, c[ivec], {vects[0,ivec]:6.2f}, eps={e[ivec]:6.2f}, res={err:8.6e},  lambda={lambda_:6.2f}, step={stepsize:8.4f}')
+        print(f'iter {m}, ivec {ivec}, c[{ivec}], {vects[0,ivec]:8.4f}, eps={e[ivec]:12.8f}, res={err:8.6e},  lambda={lambda_:6.2f}, step={stepsize:8.4f}')
         if err < min(1e-3 * stepsize, tol) and m > 4:
             print('Davidson converged at iteration no.:', m - 1)
             end = time.time()
             print('Davidson time:', end - start)
             x_ = np.dot(x[:, :m + 1], vects[:, ivec])
+            print(f'{x_[0]:.6f}, x_[0]')
             return x_[1:] / x_[0], e[ivec]
         elif m is mmax:
             print('Max iteration reached')
             x_ = np.dot(x[:, :m + 1], vects[:, ivec])
+            print(f'{x_[0]:.6f}, x_[0]')
             return x_[1:] / x_[0], e[ivec]
         else:
             for idx in range(hdiag.shape[0]):
@@ -179,7 +181,7 @@ def davidson(hop, g, hdiag, tol=5e-6, neig=1, mmax=20):
                     ritz[idx + 1, 0] = -ritz[idx + 1, 0] / 1e-8
             # orthonormalize ritz vector
             for idx in range(m + 1):
-                ritz[:, 0] = ritz[:, 0] - (np.dot(x[:, idx], ritz[:, 0]) * x[:, idx])  #/np.linalg.norm(x[:,idx])
+                ritz[:, 0] = ritz[:, 0] - (np.dot(x[:, idx], ritz[:, 0]) * x[:, idx])
             ritz[:, 0] = ritz[:, 0] / (np.linalg.norm(ritz[:, 0]))
             x[:, m + 1] = ritz[:, 0]
 
@@ -211,23 +213,34 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
     vhf_a = reduce(np.dot, (mo.T.conj(), vj_a - vk_a, mo))
     vhf_ca = vhf_c + vhf_a
     
+    c_core = np.eye(ncore)
+    c_vir = np.eye(nmo - nocc)
     # canonicalization begins here
-    fock_eff = h1e_mo + vhf_ca
-    fock_core = fock_eff[:ncore, :ncore]
-    fock_vir = fock_eff[nocc:, nocc:]
-    e_core, c_core = casscf._scf.eig(fock_core, np.eye(ncore, dtype=complex))
-    e_vir, c_vir = casscf._scf.eig(fock_vir, np.eye(nmo-nocc, dtype=complex))
-    mo[:,:ncore] = np.dot(mo[:,:ncore], c_core)
-    mo[:,nocc:] = np.dot(mo[:,nocc:], c_vir)
-    h1e_mo = reduce(np.dot, (mo.T.conj(), casscf.get_hcore(), mo))
-    vhf_c = reduce(np.dot, (mo.T.conj(), vj_c - vk_c, mo))
-    vhf_a = reduce(np.dot, (mo.T.conj(), vj_a - vk_a, mo))
-    vhf_ca = vhf_c + vhf_a
-    print('ecore', e_core)
-    print('evir', e_vir)
-    print('canonicalization done')
+    if casscf.canonicalize_:
+        fock_eff = h1e_mo + vhf_ca
+        fock_core = fock_eff[:ncore, :ncore]
+        fock_vir = fock_eff[nocc:, nocc:]
+        #e_core, c_core = casscf._scf.eig(fock_core, np.eye(ncore))
+        #e_vir, c_vir = casscf._scf.eig(fock_vir, np.eye(nmo-nocc))
+        e_core, c_core = scipy.linalg.eigh(fock_core, np.eye(ncore))
+        e_vir, c_vir = scipy.linalg.eigh(fock_vir, np.eye(nmo-nocc))
+        mo[:,:ncore] = np.dot(mo[:,:ncore], c_core)
+        mo[:,nocc:] = np.dot(mo[:,nocc:], c_vir)
+        h1e_mo = reduce(np.dot, (mo.T.conj(), casscf.get_hcore(), mo))
+        vhf_c = reduce(np.dot, (mo.T.conj(), vj_c - vk_c, mo))
+        vhf_a = reduce(np.dot, (mo.T.conj(), vj_a - vk_a, mo))
+        vhf_ca = vhf_c + vhf_a
+        print('ecore', e_core)
+        print('evir', e_vir)
+        print('Active-active block of effective Fock matrix:\n', fock_eff[ncore:nocc, ncore:nocc])
+        print('canonicalization done')
     # canonicalization ends
-
+    fock_eff = h1e_mo + vhf_ca
+    fock_eff_core = fock_eff[:ncore,:ncore]
+    fock_eff_vir = fock_eff[nocc:,nocc:] 
+    fock_offdiag_core = np.linalg.norm(fock_eff_core - np.diag(fock_eff_core.diagonal()))
+    fock_offdiag_vir = np.linalg.norm(fock_eff_vir - np.diag(fock_eff_vir.diagonal()))
+    print(f'off diagonal elements of effective fock matrix, core-core block {fock_offdiag_core:20.12g}, vir-vir block {fock_offdiag_vir:20.12g}')
     g = np.zeros((nmo, nmo), dtype=complex)
     g[:, :ncore] = h1e_mo[:, :ncore] + vhf_ca[:, :ncore]
     g[:, ncore:nocc] = np.dot(
@@ -268,16 +281,6 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
     #g_orb = casscf.pack_uniq_var(g_new-g_new.T.conj())
 
     fock_eff = h1e_mo + vhf_ca
-    if (norm(g_orb)<0.00001):
-        print('level shift start')
-        print(fock_eff[ncore:nocc,ncore:nocc])
-        # compute a dynamic level shift
-        target = (fock_eff[nocc,nocc] + fock_eff[ncore-1,ncore-1])/2.0
-        active_mean = np.trace(fock_eff[ncore:nocc, ncore:nocc]) / (nocc-ncore)
-        print(active_mean, target, fock_eff[nocc,nocc], fock_eff[ncore-1,ncore-1])
-        g[ncore:nocc, ncore:nocc] += np.eye(nocc-ncore) * (target-active_mean)
-        fock_eff[ncore:nocc,ncore:nocc] += np.eye(nocc-ncore) * (target-active_mean)
-        print(fock_eff[ncore:nocc,ncore:nocc])
     #g_orb = casscf.pack_uniq_var(g - g.T.conj())
     #g = g - g.T.conj()
 
@@ -421,8 +424,8 @@ def postprocess_x0(xbar, xs, ys, rhos, a, bfgs_space=10):
 
 
 def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
-                  conv_tol_grad=None, verbose=5, cderi=None):
-    bfgs = False
+                  conv_tol_grad=None, verbose=5, cderi=None, bfgs=False, solver='davidson'):
+    bfgs = bfgs
     log = logger.new_logger(mc, verbose)
     cput0 = (logger.process_clock(), logger.perf_counter())
     if conv_tol is None:
@@ -470,26 +473,27 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
     g_prev = None
     x_prev = None
     rejected = False
-    trust_radii = 1.0
+    trust_radii = 0.5
     e_last = e_tot
     dr = None
     while not conv and imacro < mc.max_cycle_macro:
         # compute natural orbital and transform ci to natural orbtial basis
         # no transform function available now so re do a ci calculation
         # do it in gen_g_hop
+        if mc.natorb is True: 
+            moa = mo[:, ncore:nocc]
+            natocc, c = scipy.linalg.eigh(-casdm1)
+            moa_new = np.dot(moa, c)
+            mo[:, ncore:nocc] = moa_new
 
-        moa = mo[:, ncore:nocc]
-        natocc, c = mc._eig(-casdm1)
-        moa_new = np.dot(moa, c)
-        mo[:, ncore:nocc] = moa_new
-
-        eris = zmc_ao2mo._CDERIS(mc, mo, cderi=cderi)
-        t2m = log.timer('update eris', *t2m)
-        mci = zmcscf._fake_h_for_fast_casci(mc, mo, eris)
-        print('update eris', verbose)
-        e_nat_tot, e_cas, fcivec = mci.kernel(mo, ci0=None, verbose=verbose)
-        print(e_tot, e_nat_tot)
-        casdm1, casdm2 = mci.fcisolver.make_rdm12(fcivec, ncas, mc.nelecas)
+            eris = zmc_ao2mo._CDERIS(mc, mo, cderi=cderi)
+            t2m = log.timer('update eris', *t2m)
+            mci = zmcscf._fake_h_for_fast_casci(mc, mo, eris)
+            print('update eris', verbose)
+            e_nat_tot, e_cas, fcivec = mci.kernel(mo, ci0=None, verbose=verbose)
+            print(e_tot, e_nat_tot)
+            casdm1, casdm2 = mci.fcisolver.make_rdm12(fcivec, ncas, mc.nelecas)
+            print('natural occupation number in cas space', casdm1.diagonal())
 
         g, h_diag, hop, precond, mo = gen_g_hop(mc, mo, casdm1, casdm2, eris)
         norm_gorb = norm(g)
@@ -503,7 +507,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
         row, col = np.unravel_index(np.argmax(g_unpack), g_unpack.shape)
         for i in range(nmo):
             for j in range(i):
-                if abs(g_unpack[i,j])>1e-3:
+                if abs(g_unpack[i,j])>1e-2:
                     print(f'{i}, {j}, {g_unpack[i,j]}')
         if mc.irrep is not None:
             print(
@@ -518,7 +522,6 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
         if conv:
             break
 
-        print(f'scale gradient by {trust_radii:.4f}')
         gbar = g
 
         class gmres_counter(object):
@@ -547,16 +550,17 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
         t_gmres = (logger.process_clock(), logger.perf_counter())
         BFGS_SUBSPACE = 6
         if imacro > 0:
-            bfgs_on = 0.01
+            bfgs_on = 1.0
             if not rejected and norm_gorb < bfgs_on:
                 ys.append(g - g_prev)
                 xs.append(x_prev)
-                rhos.append(np.dot(ys[-1].conj(), xs[-1]).real)
+                rhos.append(2*np.dot(ys[-1].conj(), xs[-1]).real)
             if len(ys) > BFGS_SUBSPACE:
                 ys.pop(0)
                 xs.pop(0)
                 rhos.pop(0)
-            if np.linalg.norm(g_prev) < norm_gorb or de > 0.0:
+            #if np.linalg.norm(g_prev) < norm_gorb or de > 0.0:
+            if de > 0.0:
                 print('gradeint norm', np.linalg.norm(g_prev), norm_gorb)
                 xs = []
                 ys = []
@@ -567,29 +571,37 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
             residuals = []
             def callback(rk):
                 residuals.append(rk)
-            x, _ = gmres(hop, -trust_radii*gbar, M=precond, maxiter=50, callback=callback)
-            #x = precond(-trust_radii*gbar) 
-            #x, e = davidson(hop, trust_radii*gbar, h_diag)
-            #print('residuals', _, residuals)
+            if solver == 'gmres':
+                x, _ = gmres(hop, -trust_radii*gbar, M=precond, maxiter=50, callback=callback)
+                #x = precond(-trust_radii*gbar) 
+            elif solver == 'davidson':
+                trust_radii = max(trust_radii, 0.01)
+                x, e = davidson(hop, trust_radii*gbar, h_diag, max_stepsize=trust_radii, mmax=10)
+                print('residuals', residuals)
             if bfgs is True and norm_gorb < bfgs_on:
                 x = 0.5*postprocess_x(x, xs, ys, rhos, a, bfgs_space=BFGS_SUBSPACE)
         else:
             residuals = []
             def callback(rk):
                 residuals.append(rk)
-            x, _ = gmres(hop, -trust_radii*gbar, M=precond, maxiter=1000, callback=callback)
-            #x = precond(-trust_radii*gbar) 
-            #x, e = davidson(hop, trust_radii*gbar, h_diag)
-            print('residuals', residuals)
+            if solver == 'gmres':
+                x, _ = gmres(hop, -trust_radii*gbar, M=precond, maxiter=50, callback=callback)
+                #x = precond(-trust_radii*gbar) 
+            elif solver == 'davidson':
+                x, e = davidson(hop, trust_radii*gbar, h_diag, mmax=10)
+                print('residuals', residuals)
         t2m = log.timer('Solving Super-CI equation', *t_gmres)
 
         dr = mc.unpack_uniq_var(x)
         step_control = max_stepsize
-        #if norm(dr) > step_control:
-        #    print('step rescaled')
-        #    dr = dr * (step_control / norm(dr))
-        #    print(norm(dr))
-        #    exit()
+        for i in range(nmo):
+            for j in range(i):
+                if abs(dr[i,j])>1e-2:
+                    print(f'{i}, {j}, dr {dr[i,j]}')
+        if norm(dr) > step_control:
+            print('step rescaled')
+            dr = dr * (step_control / norm(dr))
+            print(norm(dr))
         rotation = expmat(dr)
 
         norm_rot = np.linalg.norm(rotation-np.eye(nmo, dtype=complex))
@@ -652,10 +664,10 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
             e_last = e_tot
             #continue
         elif de > 0.0:
-            trust_radii *= 0.7
+            trust_radii *= 0.5
             print(f'Energy rises by {de:.4e}, accept step but shrik trust radius to {trust_radii:.4f}')
         elif r < 0.25: #and de < 0.0:
-            trust_radii *= 0.7
+            trust_radii *= 0.5
             print(f'r value too small, shrink the trust radius {trust_radii:.4f}')
         elif r > 0.75 and de < 0.0:
             trust_radii = min(1.4*trust_radii, 1.0)
@@ -673,13 +685,13 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
         rotation = expmat(dr)
         norm_rot = np.linalg.norm(dr)
         nvar = rotation.shape[0]
-        for i in range(nvar):
-            if abs(rotation[i, i]) > 1.01 or abs(rotation[i, i]) < 0.99:
-                print(rotation[i, i] > 1.01, rotation[i, i] < 0.99, i, j,
-                      rotation[i, i])
-            for j in range(i):
-                if abs(rotation[i, j]) > 0.01:
-                    continue
+        #for i in range(nvar):
+        #    if abs(rotation[i, i]) > 1.01 or abs(rotation[i, i]) < 0.99:
+        #        print(rotation[i, i] > 1.01, rotation[i, i] < 0.99, i, i,
+        #              rotation[i, i])
+        #    for j in range(i):
+        #        if abs(rotation[i, j]) > 0.01:
+        #            continue
 
         rejected = False
         mo = mo_new
@@ -687,6 +699,8 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
         x_prev = x
         g_prev = g
         casdm1, casdm2 = mc.fcisolver.make_rdm12(fcivec, ncas, mc.nelecas)
+        #from socutils.tools import analyze
+        #analyze.analyze(mol, mo[:, ncore:nocc], casdm1.diagonal())
         nact = casdm1.shape[0]
         #for i in range(nact):
         #    for j in range(i):
@@ -694,6 +708,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
         #            print(f'{i}, {j}, {casdm1[i,j]}')
         imacro += 1
         t1m = log.timer(f'macro iter {imacro}', *t1m)
+        lib.chkfile.save(mc.chkfile, f'mo_coeff_iter_{imacro}', mo)
         if verbose >= logger.INFO:
             mc.e_tot = e_tot
             mc.e_cas = e_cas
