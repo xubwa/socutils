@@ -19,7 +19,7 @@ except ImportError:
     pass
 
 def get_hxr(mol, uncontract=True):
-    if (uncontract):
+    if uncontract:
         xmol, contr_coeff = x2c.X2C(mol).get_xmol()
     else:
         xmol, contr_coeff = mol, None
@@ -31,7 +31,7 @@ def get_hxr(mol, uncontract=True):
     w = xmol.intor_symmetric('int1e_pnucp')
 
     h1, x, r = _x2c1e_hxrmat(t, v, w, s, c)
-    if (uncontract):
+    if uncontract:
         h1 = reduce(numpy.dot, (contr_coeff.T, h1, contr_coeff))
 
     return h1, x, r
@@ -208,7 +208,7 @@ def print_int1e(h1, name):
             fout.write('%d\n' % h1[k].shape[0])
             for i in range(h1[k].shape[0]):
                 for j in range(h1[k].shape[0]):
-                    if (abs(h1[k, i, j]) > 1.e-8):
+                    if abs(h1[k, i, j]) > 1.e-8:
                         fout.write('%16.10g %4d %4d\n' %
                                    (h1[k, i, j].real, i + 1, j + 1))
 
@@ -224,7 +224,7 @@ def get_soc_integrals(method, dm=None, pc1e=None, pc2e=None, unc=None, atomic=Tr
         pc1e = 'None'
     if pc2e is None:
         pc2e = 'None'
-    if (pc1e == 'None' and pc2e == 'None'):
+    if pc1e == 'None' and pc2e == 'None':
         if has_ecp:
             hso = mol.intor('ECPso')
             print('''
@@ -235,7 +235,7 @@ def get_soc_integrals(method, dm=None, pc1e=None, pc2e=None, unc=None, atomic=Tr
             AssertionError(
                 'No picture change effects provided, no soc effects included')
 
-    if (has_ecp and ('x2c' in pc1e or 'x2c' in pc2e)):
+    if has_ecp and ('x2c' in pc1e or 'x2c' in pc2e):
         raise AssertionError('X2C should not be used together with ECP at any time.')
 
 
@@ -259,31 +259,31 @@ def get_soc_integrals(method, dm=None, pc1e=None, pc2e=None, unc=None, atomic=Tr
     nb = xmol.nao_nr()
     hso = numpy.zeros((3, nb, nb))
 
-    if (has_ecp):
+    if has_ecp:
         hso += mol.intor('ECPso')
 
-    if (pc1e == 'bp'):
+    if pc1e == 'bp':
         hso += factor * get_wso(xmol)
-    elif (pc1e == 'x2c1'):
+    elif pc1e == 'x2c1':
         hso += factor * get_hso1e_x2c1(xmol, unc=unc)
-    elif (pc1e == 'None'):
+    elif pc1e == 'None':
         hso += 0.0
     else:
         AssertionError('pc1e=%s is not a valid option.' % pc1e)
 
-    if (atomic is not True):
-        if (pc2e == 'bp'):
+    if atomic is not True:
+        if pc2e == 'bp':
             hso -= factor * get_fso2e_bp(xmol, dm)
-        elif (pc2e == 'x2c'):
+        elif pc2e == 'x2c':
             hso -= factor * get_fso2e_x2c(xmol, dm, unc=unc)
-        elif (pc2e == 'None'):
+        elif pc2e == 'None':
             hso += 0.0
         else:
             AssertionError('pc2e=%s is not a valid option.' % pc2e)
     else:
-        if (pc2e == 'bp'):
+        if pc2e == 'bp':
             NotImplementedError('Atomic mean-field for BP is not implemented yet, set atomic = False instead.')
-        elif (pc2e == 'x2c'):
+        elif pc2e == 'x2c':
             if x2camf:
                 x2cobj = x2c.X2C(xmol)
                 spinor = x2camf.amfi(x2cobj, printLevel=x2cobj.verbose, with_gaunt=True, with_gauge=True)
