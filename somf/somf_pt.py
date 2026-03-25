@@ -81,7 +81,7 @@ def get_psoc_somf(mol, dm0, gaunt=True, gauge=True, form='scalar'):
         raise ValueError("Unknown form")
 
 
-def get_psoc_x2camf(mol, gaunt=True, gauge=True, atm_pt=True, form="scalar"):
+def get_psoc_x2camf(mol, gaunt=True, gauge=True, atm_pt=True, xresp=False, form="scalar"):
     r'''
     Perturbative treatment of spin-orbit coupling within X2CAMF scheme.
     The SOC contributions are evaluated in a consistent way to include only first-order terms.
@@ -101,6 +101,10 @@ def get_psoc_x2camf(mol, gaunt=True, gauge=True, atm_pt=True, form="scalar"):
         atm_pt = True:
             The molecular one-electron 4c SO integral (Wso) is treated as the perturbation solely and
             then augmented with the AMF pt integrals.
+        xresp = True:
+            Cases where the soc matrix lose certain symmetry after perturbation of the X operator has
+            been observed.
+            Therefore an option to just take the expectation value is supplied here.
         These two choices are supposed to give very similar results.
         form: what to actually return
             "scalar": return the scalar integrals
@@ -126,7 +130,11 @@ def get_psoc_x2camf(mol, gaunt=True, gauge=True, atm_pt=True, form="scalar"):
     h4c1 = numpy.zeros((n4c, n4c), dtype=wso.dtype)
     h4c1[n2c:, n2c:] = wso * (.25 / c**2)
 
-    if (atm_pt):
+    x2cobj = x2cmp.X2CMP(mol, x2cmp='sf1e')
+
+    if not xresp:
+        hfw1 = x2cobj.get_hfw1(h4c1, x_response=False) 
+    elif (atm_pt):
         hfw1 = x2c_grad.x2c1e_hfw1(xmol, h4c1, w=wsf)
         hfw1 += x2camf.amfi(x2c.X2C(mol), printLevel=mol.verbose,
                             with_gaunt=gaunt, with_gauge=gauge, pt=True, int4c=False)

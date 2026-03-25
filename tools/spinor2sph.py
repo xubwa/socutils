@@ -26,13 +26,25 @@ def pauli_decompose(ints_so, with_scalar=True):
     so_sy = soab.real
     so_sx = soab.imag
     if not numpy.allclose(sobb.real, so_scalar):
-        print("Warning: sobb.real and so_scalar are not close")
+        print(f"Warning: sobb.real and soaa.real are not close, "
+              f"norm(diff) = {numpy.linalg.norm(soaa.real - sobb.real):.6e}. "
+              f"Symmetrizing so_scalar by (soaa.real+sobb.real)/2.")
+        so_scalar = 0.5 * (soaa.real + sobb.real)
     if not numpy.allclose(sobb.imag, -so_sz):
-        print("Warning: sobb.imag and -so_sz are not close")
+        print(f"Warning: sobb.imag and -soaa.imag are not close, "
+              f"norm(diff) = {numpy.linalg.norm(sobb.imag + so_sz):.6e}. "
+              f"Symmetrizing so_sz by (soaa.imag-sobb.imag)/2.")
+        so_sz = 0.5 * (soaa.imag - sobb.imag)
     if not numpy.allclose(soba.real, -so_sy):
-        print("Warning: soba.real and -so_sy are not close")
+        print(f"Warning: soba.real and -soab.real are not close, "
+              f"norm(diff) = {numpy.linalg.norm(soba.real + so_sy):.6e}. "
+              f"Symmetrizing so_sy by (soab.real-soba.real)/2.")
+        so_sy = 0.5 * (soab.real - soba.real)
     if not numpy.allclose(soba.imag, so_sx):
-        print("Warning: soba.imag and so_sx are not close")
+        print(f"Warning: soba.imag and soab.imag are not close, "
+              f"norm(diff) = {numpy.linalg.norm(soba.imag - so_sx):.6e}. "
+              f"Symmetrizing so_sx by (soab.imag+soba.imag)/2.")
+        so_sx = 0.5 * (soab.imag + soba.imag)
 
     if not with_scalar:
         return numpy.array([so_sx, so_sy, so_sz])
