@@ -173,7 +173,9 @@ class CD(df.DF):
                     delta = diag - Mapprox
 
                     if nchol >= nchol_max:
-                        chol_vecs = np.vstack([chol_vecs, np.zeros((nao, nao * nao))])
+                        new_vecs = np.zeros((nchol_max + nao, nao * nao))
+                        new_vecs[:nchol_max] = chol_vecs
+                        chol_vecs = new_vecs
                         nchol_max += nao
 
                 log.info('  shell pair (%d,%d): nchol = %4d, %.2f sec',
