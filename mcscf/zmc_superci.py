@@ -144,7 +144,9 @@ def davidson(hop, g, hdiag, max_stepsize=1.0, tol=5e-6, neig=1, mmax=10):
         mat2 = numpy.zeros((m + 1, m + 1), dtype=complex)
         mat2[1:, 1:] = T[1:, 1:]
         mat1 = T - mat2
-        lambda_, stepsize = compute_lambda_(mat1, mat2, x)
+        #lambda_, stepsize = compute_lambda_(mat1, mat2, x)
+        lambda_ = 1.0
+        stepsize = 0.0
         T = mat1 + mat2 * (1.0 / lambda_)
         e, vects = np.linalg.eigh(T[:m + 1, :m + 1])
         ivec = -1 
@@ -205,12 +207,13 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
     dm_active[ncore:nocc, ncore:nocc] = casdm1
     dm1 = dm_core + dm_active
     h1e_mo = reduce(np.dot, (mo.T.conj(), casscf.get_hcore(), mo))
-    vj_c, vk_c = casscf.get_jk(casscf.mol,
-                                   reduce(np.dot, (mo, dm_core, mo.T.conj())))
-    vj_a, vk_a = casscf.get_jk(casscf.mol,
-                                   reduce(np.dot, (mo, dm_active, mo.T.conj())))
+    core_occ = np.zeros(nmo)
+    core_occ[:ncore] = 1
+    dm_core_ao = reduce(np.dot, (mo, dm_core, mo.T.conj()))
+    vj_c, vk_c = eris.get_jk(dm_core_ao, mo_coeff=mo, mo_occ=core_occ)
     vhf_c = reduce(np.dot, (mo.T.conj(), vj_c - vk_c, mo))
-    vhf_a = reduce(np.dot, (mo.T.conj(), vj_a - vk_a, mo))
+    vj_a_mo, vk_a_mo = eris.get_jk_active_mo(casdm1)
+    vhf_a = vj_a_mo - vk_a_mo
     vhf_ca = vhf_c + vhf_a
     
     c_core = np.eye(ncore)
@@ -228,7 +231,11 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
         mo[:,nocc:] = np.dot(mo[:,nocc:], c_vir)
         h1e_mo = reduce(np.dot, (mo.T.conj(), casscf.get_hcore(), mo))
         vhf_c = reduce(np.dot, (mo.T.conj(), vj_c - vk_c, mo))
-        vhf_a = reduce(np.dot, (mo.T.conj(), vj_a - vk_a, mo))
+        # Rotate vhf_a to new MO basis using canonicalization rotation
+        c = np.eye(nmo, dtype=complex)
+        c[:ncore, :ncore] = c_core
+        c[nocc:, nocc:] = c_vir
+        vhf_a = reduce(np.dot, (c.T.conj(), vhf_a, c))
         vhf_ca = vhf_c + vhf_a
         print('ecore', e_core)
         print('evir', e_vir)
@@ -424,8 +431,10 @@ def postprocess_x0(xbar, xs, ys, rhos, a, bfgs_space=10):
 
 
 def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
-                  conv_tol_grad=None, verbose=5, cderi=None, bfgs=False, solver='davidson'):
+                  conv_tol_grad=None, verbose=5, cderi=None, bfgs=False, solver='davidson',
+                  davidson_maxiter=10):
     bfgs = bfgs
+    davidson_mmax = davidson_maxiter
     log = logger.new_logger(mc, verbose)
     cput0 = (logger.process_clock(), logger.perf_counter())
     if conv_tol is None:
@@ -575,8 +584,8 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
                 x, _ = gmres(hop, -trust_radii*gbar, M=precond, maxiter=50, callback=callback)
                 #x = precond(-trust_radii*gbar) 
             elif solver == 'davidson':
-                trust_radii = max(trust_radii, 0.01)
-                x, e = davidson(hop, trust_radii*gbar, h_diag, max_stepsize=trust_radii, mmax=10)
+                trust_radii = max(trust_radii, 0.2)
+                x, e = davidson(hop, trust_radii*gbar, h_diag, max_stepsize=trust_radii, mmax=davidson_mmax)
                 print('residuals', residuals)
             if bfgs is True and norm_gorb < bfgs_on:
                 x = 0.5*postprocess_x(x, xs, ys, rhos, a, bfgs_space=BFGS_SUBSPACE)
