@@ -531,20 +531,41 @@ class _CDERIS(lib.StreamObject):
         c2 = numpy.vstack(mol.sph2spinor_coeff())
         if mode == 'ghf':
             c2 = numpy.eye(c2.shape[0], dtype=complex)
-        moa_sph = numpy.dot(c2, mo[:, ncore:nocc])  # (2*nao_nr, ncas)
-        mop_sph = numpy.dot(c2, mo)                  # (2*nao_nr, nmo)
+        moo_sph = numpy.dot(c2, mo[:, :nocc])        # (2*nao_nr, nocc)
+        mop_sph = numpy.dot(c2, mo)                   # (2*nao_nr, nmo)
 
         if level is 2:
-            cd_pa = self._build_cd_pa(
-                with_df, cderi, mol, nao_nr, nmo, ncas,
-                moa_sph, mop_sph, log)
-            self.cd_pa = cd_pa
-            self.cd_aa = cd_pa[:, ncore:nocc, :].copy()
+            if with_df is not None:
+                cd_pa, vk_core = self._build_cd_pa_and_vk(
+                    with_df, mol, nao_nr, nmo, ncore, ncas, nocc,
+                    moo_sph, mop_sph, log)
+                self.cd_pa = cd_pa
+                self.cd_aa = cd_pa[:, ncore:nocc, :].copy()
+                self.vk_core = vk_core  # spinor AO basis
+            elif cderi is not None:
+                # Legacy path
+                moa_sph = numpy.dot(c2, mo[:, ncore:nocc])
+                cd_pa = self._build_cd_pa(
+                    None, cderi, mol, nao_nr, nmo, ncas,
+                    moa_sph, mop_sph, log)
+                self.cd_pa = cd_pa
+                self.cd_aa = cd_pa[:, ncore:nocc, :].copy()
+                self.vk_core = None
+            else:
+                raise ValueError('Either with_df or cderi must be provided')
         elif level > 2:
             raise NotImplementedError('level > 2 with new CDERIS not yet supported')
 
         self.aaaa = lib.einsum('ptu,pvw->tuvw', self.cd_aa, self.cd_aa)
         self.paaa = lib.einsum('ptu,pvw->tuvw', self.cd_pa, self.cd_aa)
+
+        # Memory report
+        def _mb(arr):
+            return arr.nbytes / 1e6 if arr is not None else 0
+        log.info('CDERIS memory: cd_pa %.1f MB, cd_aa %.1f MB, aaaa %.1f MB, paaa %.1f MB, vk_core %.1f MB, total %.1f MB',
+                 _mb(self.cd_pa), _mb(self.cd_aa), _mb(self.aaaa), _mb(self.paaa),
+                 _mb(getattr(self, 'vk_core', None)),
+                 _mb(self.cd_pa) + _mb(self.cd_aa) + _mb(self.aaaa) + _mb(self.paaa) + _mb(getattr(self, 'vk_core', None)))
         self._scf = zcasscf._scf
         self.mo = mo
         self.ncore = ncore
@@ -552,12 +573,22 @@ class _CDERIS(lib.StreamObject):
         self.nocc = nocc
         log.timer('CD integral transformation', *t0)
 
-    def _build_cd_pa(self, with_df, cderi, mol, nao_nr, nmo, ncas,
-                     moa_sph, mop_sph, log):
-        """Build cd_pa using C library half-transform + second-step contraction.
+    @staticmethod
+    def _half_transform(with_df, mo_sph, nao_nr, log):
+        """Half-transform DF integrals with complex MO coefficients in sph GHF basis.
 
-        Step 1: L_{P,μ,t} = Σ_ν eri(P,μ,ν) C_{ν,t}  (C library, real/imag split)
-        Step 2: cd_pa[P,p,t] = Σ_μ C*_{p,μ} L_{P,μ,t}  (numpy dot)
+        L_{P,μ,i} = Σ_ν eri(P,μ,ν) C_{ν,i}
+
+        Uses PySCF C library with real/imag splitting for complex MOs.
+
+        Args:
+            with_df: DF object with loop() method
+            mo_sph: complex MO coefficients in sph GHF basis, shape (2*nao_nr, nmo_subset)
+            nao_nr: number of real spherical AO basis functions
+            log: logger
+
+        Returns:
+            L_half: (naux, 2*nao_nr, nmo_subset) complex half-transformed integrals
         """
         import ctypes
         from pyscf.ao2mo import _ao2mo
@@ -567,11 +598,77 @@ class _CDERIS(lib.StreamObject):
         fdrv   = _ao2mo.libao2mo.AO2MOnr_e2_drv
         null   = lib.c_null_ptr()
 
-        # Split active MOs (sph GHF basis) into alpha/beta, real/imag
-        C_aR = numpy.asfortranarray(moa_sph[:nao_nr].real)
-        C_aI = numpy.asfortranarray(moa_sph[:nao_nr].imag)
-        C_bR = numpy.asfortranarray(moa_sph[nao_nr:].real)
-        C_bI = numpy.asfortranarray(moa_sph[nao_nr:].imag)
+        nmo_sub = mo_sph.shape[1]
+
+        # Split MOs into alpha/beta, real/imag
+        C_aR = numpy.asfortranarray(mo_sph[:nao_nr].real)
+        C_aI = numpy.asfortranarray(mo_sph[:nao_nr].imag)
+        C_bR = numpy.asfortranarray(mo_sph[nao_nr:].real)
+        C_bI = numpy.asfortranarray(mo_sph[nao_nr:].imag)
+
+        def _half(eri1, C_real, buf):
+            naux_ = eri1.shape[0]
+            fdrv(ftrans, fmmm,
+                 buf.ctypes.data_as(ctypes.c_void_p),
+                 eri1.ctypes.data_as(ctypes.c_void_p),
+                 C_real.ctypes.data_as(ctypes.c_void_p),
+                 ctypes.c_int(naux_), ctypes.c_int(nao_nr),
+                 (ctypes.c_int * 4)(0, nmo_sub, 0, nao_nr),
+                 null, ctypes.c_int(0))
+
+        naux = with_df.get_naoaux()
+        L_half = numpy.zeros((naux, 2 * nao_nr, nmo_sub), dtype=complex)
+        blksize = with_df.blockdim
+        buf = numpy.empty((blksize * nmo_sub, nao_nr))
+
+        b0 = 0
+        for eri1 in with_df.loop(blksize):
+            naux_blk = eri1.shape[0]
+            bufslice = buf[:naux_blk * nmo_sub]
+
+            _half(eri1, C_aR, bufslice)
+            LaR = bufslice.reshape(naux_blk, nmo_sub, nao_nr).copy()
+            _half(eri1, C_aI, bufslice)
+            LaI = bufslice.reshape(naux_blk, nmo_sub, nao_nr).copy()
+            _half(eri1, C_bR, bufslice)
+            LbR = bufslice.reshape(naux_blk, nmo_sub, nao_nr).copy()
+            _half(eri1, C_bI, bufslice)
+            LbI = bufslice.reshape(naux_blk, nmo_sub, nao_nr).copy()
+
+            # Combine: L_{P,μ,i} with μ in sph GHF basis (2*nao_nr)
+            # La/Lb shape: (naux_blk, nmo_sub, nao_nr)
+            # → (naux_blk, nmo_sub, 2*nao_nr) → transpose to (naux_blk, 2*nao_nr, nmo_sub)
+            La = LaR + 1j * LaI
+            Lb = LbR + 1j * LbI
+            L_chunk = numpy.concatenate([La, Lb], axis=2).transpose(0, 2, 1)
+            L_half[b0:b0 + naux_blk] = L_chunk
+            b0 += naux_blk
+
+        return L_half
+
+    def _build_cd_pa_and_vk(self, with_df, mol, nao_nr, nmo, ncore, ncas, nocc,
+                             moo_sph, mop_sph, log):
+        """One-pass: half-transform occ MOs, produce cd_pa and vk_core simultaneously.
+
+        For each DF chunk:
+        1. Half-transform with occ MOs → L_{P,μ,i} (i ∈ core+active)
+        2. Active columns: second-step transform → cd_pa
+        3. Core columns: K assembly → accumulate vk_sph
+        """
+        import ctypes
+        from pyscf.ao2mo import _ao2mo
+        from socutils.scf.spinor_hf import sph2spinor
+
+        ftrans = _ao2mo.libao2mo.AO2MOtranse2_nr_s2
+        fmmm   = _ao2mo.libao2mo.AO2MOmmm_bra_nr_s2
+        fdrv   = _ao2mo.libao2mo.AO2MOnr_e2_drv
+        null   = lib.c_null_ptr()
+
+        # Split occ MOs (sph GHF) into alpha/beta, real/imag
+        C_aR = numpy.asfortranarray(moo_sph[:nao_nr].real)
+        C_aI = numpy.asfortranarray(moo_sph[:nao_nr].imag)
+        C_bR = numpy.asfortranarray(moo_sph[nao_nr:].real)
+        C_bI = numpy.asfortranarray(moo_sph[nao_nr:].imag)
 
         mop_sph_H = mop_sph.T.conj()  # (nmo, 2*nao_nr)
 
@@ -582,47 +679,89 @@ class _CDERIS(lib.StreamObject):
                  eri1.ctypes.data_as(ctypes.c_void_p),
                  C_real.ctypes.data_as(ctypes.c_void_p),
                  ctypes.c_int(naux_), ctypes.c_int(nao_nr),
-                 (ctypes.c_int * 4)(0, ncas, 0, nao_nr),
+                 (ctypes.c_int * 4)(0, nocc, 0, nao_nr),
                  null, ctypes.c_int(0))
 
+        naux = with_df.get_naoaux()
+        cd_pa = numpy.zeros((naux, nmo, ncas), dtype=complex)
+        vk_sph = numpy.zeros((2 * nao_nr, 2 * nao_nr), dtype=complex)
+        blksize = with_df.blockdim
+        buf = numpy.empty((blksize * nocc, nao_nr))
+
+        log.info('CDERIS before loop: current memory %.1f MB', lib.current_memory()[0])
+        b0 = 0
+        for eri1 in with_df.loop(blksize):
+            naux_blk = eri1.shape[0]
+            bufslice = buf[:naux_blk * nocc]
+
+            # Half-transform: 4 calls for alpha/beta × real/imag
+            _half(eri1, C_aR, bufslice)
+            LaR = bufslice.reshape(naux_blk, nocc, nao_nr).copy()
+            _half(eri1, C_aI, bufslice)
+            LaI = bufslice.reshape(naux_blk, nocc, nao_nr).copy()
+            _half(eri1, C_bR, bufslice)
+            LbR = bufslice.reshape(naux_blk, nocc, nao_nr).copy()
+            _half(eri1, C_bI, bufslice)
+            LbI = bufslice.reshape(naux_blk, nocc, nao_nr).copy()
+
+            # Complex half-transformed: L_{P,i,μ} for alpha and beta
+            La = LaR + 1j * LaI  # (naux_blk, nocc, nao_nr)
+            Lb = LbR + 1j * LbI
+
+            # --- Core K assembly (i < ncore) ---
+            # K_aa[μ,ν] = Σ_{P,i} La[P,i,μ]* La[P,i,ν] (wrong)
+            # Actually L[P,μ,i] but buf gives L[P,i,μ], so:
+            # K[μ,ν] = Σ_{Pi} L[P,i,μ].conj() * L[P,i,ν]
+            #        = La_core_flat.conj().T @ La_core_flat
+            # L[P,i,μ] stored as La[P,i,μ], reshape to (naux*ncore, nao_nr) = L[Pi,μ]
+            # K[μ,ν] = Σ_{Pi} L[Pi,μ] L*[Pi,ν] = La.T @ La.conj()
+            La_core = La[:, :ncore, :].reshape(-1, nao_nr)  # (naux_blk*ncore, nao_nr)
+            Lb_core = Lb[:, :ncore, :].reshape(-1, nao_nr)
+            vk_sph[:nao_nr, :nao_nr] += lib.dot(La_core.T, La_core.conj())
+            vk_sph[nao_nr:, nao_nr:] += lib.dot(Lb_core.T, Lb_core.conj())
+            K_ab = lib.dot(La_core.T, Lb_core.conj())
+            vk_sph[:nao_nr, nao_nr:] += K_ab
+            vk_sph[nao_nr:, :nao_nr] += K_ab.conj().T
+
+            # --- cd_pa: active columns, second-step transform ---
+            # L_active: (naux_blk, ncas, 2*nao_nr) → (naux_blk, 2*nao_nr, ncas)
+            La_act = La[:, ncore:, :]  # (naux_blk, ncas, nao_nr)
+            Lb_act = Lb[:, ncore:, :]
+            L_act = numpy.concatenate([La_act, Lb_act], axis=2)  # (naux_blk, ncas, 2*nao_nr)
+            L_act = L_act.transpose(0, 2, 1)  # (naux_blk, 2*nao_nr, ncas)
+            for i in range(naux_blk):
+                cd_pa[b0 + i] = numpy.dot(mop_sph_H, L_act[i])
+            b0 += naux_blk
+            del LaR, LaI, LbR, LbI, La, Lb, La_core, Lb_core, La_act, Lb_act, L_act
+            if b0 % (blksize * 5) == 0 or b0 >= naux - blksize:
+                log.info('  chunk b0=%d, memory %.1f MB', b0, lib.current_memory()[0])
+
+        import gc
+        gc.collect()
+        vk_core = sph2spinor(mol, vk_sph)
+        log.info('CDERIS after loop: current memory %.1f MB', lib.current_memory()[0])
+        log.info('CDERIS: %d aux functions, cd_pa and vk_core built in one pass', naux)
+        return cd_pa, vk_core
+
+    def _build_cd_pa(self, with_df, cderi, mol, nao_nr, nmo, ncas,
+                     moa_sph, mop_sph, log):
+        """Build cd_pa using half-transform + second-step contraction.
+
+        Step 1: L_{P,μ,t} = Σ_ν eri(P,μ,ν) C_{ν,t}  (C library)
+        Step 2: cd_pa[P,p,t] = Σ_μ C*_{p,μ} L_{P,μ,t}  (numpy dot)
+        """
+        mop_sph_H = mop_sph.T.conj()  # (nmo, 2*nao_nr)
+
         if with_df is not None:
-            # Read from with_df.loop() — compressed triangular format
-            naux = with_df.get_naoaux()
-            cd_pa = numpy.zeros((naux, nmo, ncas), dtype=complex)
-            blksize = with_df.blockdim
-            buf = numpy.empty((blksize * ncas, nao_nr))
-
-            b0 = 0
-            for eri1 in with_df.loop(blksize):
-                naux_blk = eri1.shape[0]
-                bufslice = buf[:naux_blk * ncas]
-
-                # Half-transform alpha real/imag, beta real/imag
-                _half(eri1, C_aR, bufslice)
-                LaR = bufslice.reshape(naux_blk, ncas, nao_nr).copy()
-                _half(eri1, C_aI, bufslice)
-                LaI = bufslice.reshape(naux_blk, ncas, nao_nr).copy()
-                _half(eri1, C_bR, bufslice)
-                LbR = bufslice.reshape(naux_blk, ncas, nao_nr).copy()
-                _half(eri1, C_bI, bufslice)
-                LbI = bufslice.reshape(naux_blk, ncas, nao_nr).copy()
-
-                # Combine into complex L_{P,μ,t} in sph GHF basis (2*nao_nr, ncas)
-                # La = LaR + i*LaI, shape (naux_blk, ncas, nao_nr)
-                # Lb = LbR + i*LbI, shape (naux_blk, ncas, nao_nr)
-                # L_{P,μ,t}: stack alpha and beta → (naux_blk, ncas, 2*nao_nr)
-                # then transpose to (naux_blk, 2*nao_nr, ncas)
-                La = LaR + 1j * LaI  # (naux_blk, ncas, nao_nr)
-                Lb = LbR + 1j * LbI
-                L_half = numpy.concatenate([La, Lb], axis=2)  # (naux_blk, ncas, 2*nao_nr)
-                L_half = L_half.transpose(0, 2, 1)  # (naux_blk, 2*nao_nr, ncas)
-
-                # Step 2: cd_pa[P,p,t] = Σ_μ C*_{p,μ} L_{P,μ,t}
-                for i in range(naux_blk):
-                    cd_pa[b0 + i] = numpy.dot(mop_sph_H, L_half[i])
-                b0 += naux_blk
-
+            # C library half-transform
+            L_half = self._half_transform(with_df, moa_sph, nao_nr, log)
+            naux = L_half.shape[0]
             log.info('CDERIS: %d aux functions from with_df', naux)
+
+            # Step 2: full transform
+            cd_pa = numpy.zeros((naux, nmo, ncas), dtype=complex)
+            for i in range(naux):
+                cd_pa[i] = numpy.dot(mop_sph_H, L_half[i])
         else:
             # Legacy path: cderi as (ncd, nao_nr, nao_nr) numpy array
             ncd = cderi.shape[0]
@@ -639,12 +778,18 @@ class _CDERIS(lib.StreamObject):
     def get_jk(self, dm, mo_coeff=None, mo_occ=None):
         """Compute J and K matrices.
 
-        If mo_coeff and mo_occ are provided, tags them onto dm for MO path.
-        Otherwise falls back to DM path.
+        If vk_core is cached (from _build_cd_pa_and_vk), uses it directly.
+        J always goes through _scf.get_jk (DM path).
+        Otherwise falls back entirely to _scf.get_jk.
         """
-        if mo_coeff is not None and mo_occ is not None:
-            dm = lib.tag_array(dm, mo_coeff=mo_coeff, mo_occ=mo_occ)
-        return self._scf.get_jk(self._scf.mol, dm)
+        if self.vk_core is not None and mo_coeff is not None and mo_occ is not None:
+            # K from cached vk_core (built during __init__)
+            vj, _ = self._scf.get_jk(self._scf.mol, dm, with_j=True, with_k=False)
+            return vj, self.vk_core
+        else:
+            if mo_coeff is not None and mo_occ is not None:
+                dm = lib.tag_array(dm, mo_coeff=mo_coeff, mo_occ=mo_occ)
+            return self._scf.get_jk(self._scf.mol, dm)
 
     def get_jk_active_mo(self, casdm1):
         """Compute active J and K matrices in MO basis.
