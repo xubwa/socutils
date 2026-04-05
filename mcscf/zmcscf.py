@@ -8,6 +8,7 @@ from socutils.scf import spinor_hf
 from socutils.mcscf import zcasbase, zcasci
 from socutils.mcscf.zmc_ao2mo import chunked_cholesky
 #from .zmc_superci import mcscf_superci
+import zquatev
 
 def eig(h, irrep=None):
     if irrep is None:
@@ -36,6 +37,26 @@ def _fake_h_for_fast_casci(casscf, mo, eris):
         return mc
 
     mc.get_h2eff = lambda *args: eris.aaaa
+
+    # Precompute core JK from eris to avoid redundant get_jk in CASCI kernel
+    if hasattr(eris, 'get_jk'):
+        ncore = casscf.ncore
+        ncas = casscf.ncas
+        nocc = ncore + ncas
+        mo_core = mo[:, :ncore]
+        mo_cas = mo[:, ncore:nocc]
+        core_occ = numpy.zeros(mo.shape[1])
+        core_occ[:ncore] = 1
+        dm_core_ao = numpy.dot(mo_core, mo_core.T.conj())
+        vj_c, vk_c = eris.get_jk(dm_core_ao, mo_coeff=mo, mo_occ=core_occ)
+        corevhf = vj_c - vk_c
+        hcore = casscf.get_hcore()
+        h1eff = reduce(numpy.dot, (mo_cas.T.conj(), hcore + corevhf, mo_cas))
+        energy_core = casscf.energy_nuc()
+        energy_core += numpy.einsum('ij,ji', dm_core_ao, hcore)
+        energy_core += numpy.einsum('ij,ji', dm_core_ao, corevhf) * 0.5
+        mc.get_h1eff = lambda *args, h1=h1eff, ec=energy_core: (h1, ec)
+
     return mc
 
 def get_fock(mc, mo_coeff=None, ci=None, eris=None, casdm1=None, verbose=None):
@@ -76,16 +97,15 @@ def canonicalize(mc, mo_coeff=None, ci=None, eris=None, sort=False,
         log.info('Density matrix diagonal elements %s', casdm1.diagonal())
 
     mo_energy = numpy.einsum('pi,pi->i', mo_coeff.conj(), fock_ao.dot(mo_coeff1))
-
-    irs = numpy.unique(mc.irrep)
+    
 
     def _diag_subfock_(idx):
         if idx.size > 1:
             c = mo_coeff1[:,idx]
             fock = reduce(numpy.dot, (c.conj().T, fock_ao, c))
-            ovlp = numpy.eye(idx.size, dtype=complex)
-            w, c = eig(fock, irrep=mc.irrep[idx])
-
+            w, c = eig(fock)
+            print(mo_energy[idx])
+            print(w)
             mo_coeff1[:,idx] = mo_coeff1[:,idx].dot(c)
             mo_energy[idx] = w
 
@@ -100,9 +120,28 @@ def canonicalize(mc, mo_coeff=None, ci=None, eris=None, sort=False,
     core_idx = numpy.where(mask[:ncore])[0]
     vir_idx = numpy.where(mask[nocc:])[0] + nocc
     act_idx = numpy.where(mask[ncore:nocc])[0] + ncore
+    print(act_idx)
+    print(core_idx)
+    c = mo_coeff1[:, core_idx]
+    fock = reduce(numpy.dot, (c.conj().T, fock_ao, c))
+    #print(fock)
+    w, c = zquatev.eigh(fock)
+    #print(w, mo_energy[core_idx])
+    #print(c)
+    #mo_coeff1[:, core_idx] = mo_coeff1[:, core_idx].dot(c)
+    
+    c = mo_coeff1[:, act_idx]
+    fock = reduce(numpy.dot, (c.conj().T, fock_ao, c))
+    w, c = zquatev.eigh(fock)
+    #print(fock)
+    #print(w)
+    #print(c)
+    mo_coeff1[:, act_idx] = mo_coeff1[:, act_idx].dot(c)
+    #c = mo_coeff1[:, act_idx]
+    #print(reduce(numpy.dot, (c.T.conj(), fock_ao, c)))
     #_diag_subfock_(core_idx)
     #_diag_subfock_(vir_idx)
-    _diag_subfock_(act_idx)
+    #_diag_subfock_(act_idx)
 
     return mo_coeff1, ci, mo_energy
 
@@ -120,6 +159,8 @@ class CASSCF(zcasci.CASCI):
         self.conv_tol = 1e-8
         self.conv_tol_grad = None
         self.freeze_pair = None
+        self.canonicalize_ = True
+        self.natorb = True
 
     def get_fock(self, mo_coeff=None, ci=None, eris=None, casdm1=None, verbose=None):
         return get_fock(self, mo_coeff, ci, eris, casdm1, verbose)
