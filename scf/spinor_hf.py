@@ -601,9 +601,25 @@ class KRHF(SpinorSCF):
         return dhf.zquatev.solve_KR_FCSCE(self.mol, h, s)
     def eig(self, h, s=None):
         if s is not None:
-            return self._eigh(h, s) 
+            return self._eigh(h, s)
         else:
-            return zquatev.eigh(h, iop=1)
+            n = h.shape[0]
+            if n % 2 != 0:
+                return scipy.linalg.eigh(h)
+            # Reorder from interleaved [u0,b0,u1,b1,...] to block [u0,u1,...,b0,b1,...]
+            idx = numpy.hstack([numpy.arange(0, n, 2), numpy.arange(1, n, 2)])
+            h_kr = h[numpy.ix_(idx, idx)]
+            try:
+                zquatev.check_kramers_structure(h_kr, thresh=1e-6)
+            except AssertionError:
+                logger.warn(self, 'Kramers structure check failed in eig, falling back to scipy.linalg.eigh')
+                return scipy.linalg.eigh(h)
+            e, v_kr = zquatev.eigh(h_kr, iop=1)
+            # v_kr columns are in interleaved order (iop=1)
+            # but rows are in block order, need to map back to interleaved
+            v = numpy.zeros_like(v_kr)
+            v[idx] = v_kr
+            return e, v
     def to_ks(self, xc='HF'):
        from pyscf.x2c import dft
        mf = self.view(dft.RKS)
