@@ -107,7 +107,7 @@ def compute_lambda_(mat1, mat2, x_):
     return lambda_test, stepsize
 
 
-def davidson(hop, g, hdiag, max_stepsize=1.0, tol=5e-6, neig=1, mmax=10):
+def davidson(hop, g, hdiag, sop=None, max_stepsize=1.0, tol=5e-6, neig=1, mmax=10):
     # Setup the subspace trial vectors
     print('No. of start vectors:', 1)
     neig = neig
@@ -115,6 +115,7 @@ def davidson(hop, g, hdiag, max_stepsize=1.0, tol=5e-6, neig=1, mmax=10):
     n = g.shape[0] + 1
     x = np.zeros((n, mmax + 1), dtype=complex)  # holder for trial vectors as iterations progress
     sigma = np.zeros((n, mmax + 1), dtype=complex)
+    sdotx = np.zeros((n, mmax + 1), dtype=complex)
     ritz = np.zeros((n, mmax), dtype=complex)
     #-------------------------------------------------------------------------------
     # Begin iterations
@@ -123,6 +124,10 @@ def davidson(hop, g, hdiag, max_stepsize=1.0, tol=5e-6, neig=1, mmax=10):
     start = time.time()
     x[0, 0] = 1.0
     sigma[1:, 0] = g
+    sdotx[0, 0] = 1.0
+    if sop is None:
+        print('No sop parsed')
+        exit()
 
     # "first" guess vector
 
@@ -136,10 +141,11 @@ def davidson(hop, g, hdiag, max_stepsize=1.0, tol=5e-6, neig=1, mmax=10):
     for m in range(1, mmax + 1):
         sigma[1:, m] = hop(x[1:, m])
         sigma[0, m] = np.dot(g.conj(), x[1:, m])
+        sdotx[1:, m] = sop(x[1:, m])
+        sdotx[0, m] = 0.0j
         # Matrix-vector products, form the projected Hamiltonian in the subspace
         T = np.linalg.multi_dot((x[:, :m + 1].T.conj(), sigma[:, :m + 1]))
-        T = T.real*(1+0.j)
-        T = (T+T.T)/2.
+        S = np.linalg.multi_dot((x[:, :m + 1].T.conj(), sdotx[:, :m + 1]))
         mat1 = numpy.zeros((m + 1, m + 1), dtype=complex)
         mat2 = numpy.zeros((m + 1, m + 1), dtype=complex)
         mat2[1:, 1:] = T[1:, 1:]
@@ -148,8 +154,8 @@ def davidson(hop, g, hdiag, max_stepsize=1.0, tol=5e-6, neig=1, mmax=10):
         lambda_ = 1.0
         stepsize = 0.0
         T = mat1 + mat2 * (1.0 / lambda_)
-        e, vects = np.linalg.eigh(T[:m + 1, :m + 1])
-        ivec = -1 
+        e, vects = scipy.linalg.eigh(T[:m + 1, :m + 1], S[:m+1,:m+1])
+        ivec = -1
         for j in range(m + 1):
             if abs(vects[0, j]) <= 1.1 and abs(vects[0, j]) > 0.1:
                 ivec = j
@@ -159,7 +165,7 @@ def davidson(hop, g, hdiag, max_stepsize=1.0, tol=5e-6, neig=1, mmax=10):
         elif ivec > 0:
             print('... the vector found in AugHess was not the lowest eigenvector ...')
 
-        ritz[1:, 0] = np.dot(sigma[1:, :m + 1] - lambda_ * e[ivec] * x[1:, :m + 1], vects[:, ivec])
+        ritz[1:, 0] = np.dot(sigma[1:, :m + 1] - lambda_ * e[ivec] * sdotx[1:, :m + 1], vects[:, ivec])
         err = np.linalg.norm(ritz[:, 0])
         print(f'iter {m}, ivec {ivec}, c[{ivec}], {vects[0,ivec]:8.4f}, eps={e[ivec]:12.8f}, res={err:8.6e},  lambda={lambda_:6.2f}, step={stepsize:8.4f}')
         if err < min(1e-3 * stepsize, tol) and m > 4:
@@ -198,7 +204,7 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
     nmo = mo.shape[1]
     
     #casdm1 = np.diag(np.diag(casdm1))
-    #casdm1 = casdm1#.conj()
+
     ################# gradient #################
     dm_core = np.zeros((nmo, nmo), dtype=complex)
     dm_active = np.zeros((nmo, nmo), dtype=complex)
@@ -211,6 +217,8 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
     core_occ[:ncore] = 1
     dm_core_ao = reduce(np.dot, (mo, dm_core, mo.T.conj()))
     vj_c, vk_c = eris.get_jk(dm_core_ao, mo_coeff=mo, mo_occ=core_occ)
+    eris.vj_c = vj_c
+    eris.vk_c = vk_c
     vhf_c = reduce(np.dot, (mo.T.conj(), vj_c - vk_c, mo))
     vj_a_mo, vk_a_mo = eris.get_jk_active_mo(casdm1)
     vhf_a = vj_a_mo - vk_a_mo
@@ -223,10 +231,8 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
         fock_eff = h1e_mo + vhf_ca
         fock_core = fock_eff[:ncore, :ncore]
         fock_vir = fock_eff[nocc:, nocc:]
-        #e_core, c_core = casscf._scf.eig(fock_core, np.eye(ncore))
-        #e_vir, c_vir = casscf._scf.eig(fock_vir, np.eye(nmo-nocc))
-        e_core, c_core = scipy.linalg.eigh(fock_core, np.eye(ncore))
-        e_vir, c_vir = scipy.linalg.eigh(fock_vir, np.eye(nmo-nocc))
+        e_core, c_core = casscf._scf.eig(fock_core)
+        e_vir, c_vir = casscf._scf.eig(fock_vir)
         mo[:,:ncore] = np.dot(mo[:,:ncore], c_core)
         mo[:,nocc:] = np.dot(mo[:,nocc:], c_vir)
         h1e_mo = reduce(np.dot, (mo.T.conj(), casscf.get_hcore(), mo))
@@ -398,10 +404,21 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
 
     n_uniq_var = g_orb.shape[0]
     hop = LinearOperator((n_uniq_var,n_uniq_var), matvec=h_op)
+    def s_op(x):
+        x1 = casscf.unpack_uniq_var(x)
+        cas_natocc = casdm1.diagonal()
+        for iact in range(ncore,nocc):
+            inatocc = cas_natocc[iact-ncore]
+            x1[nocc:,iact] *= inatocc
+            x1[iact,nocc:] *= inatocc
+            x1[:ncore,iact] *= 1.0 - inatocc
+            x1[iact,:ncore] *= 1.0 - inatocc
+        return casscf.pack_uniq_var(x1)
+    sop = LinearOperator((n_uniq_var, n_uniq_var), matvec=s_op)
     def h_diag_inv(x):
         return x/(casscf.pack_uniq_var(h_diag+h_diag.T))
     precond = LinearOperator((n_uniq_var, n_uniq_var), h_diag_inv)
-    return g_orb, casscf.pack_uniq_var((h_diag+h_diag.T).real), hop, precond, mo
+    return g_orb, casscf.pack_uniq_var((h_diag+h_diag.T).real), hop, sop, precond, mo
 
 
 def precondition_grad0(grad, xs, ys, rhos, bfgs_space=10):
@@ -431,7 +448,7 @@ def postprocess_x0(xbar, xs, ys, rhos, a, bfgs_space=10):
 
 
 def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
-                  conv_tol_grad=None, verbose=5, cderi=None, bfgs=False, solver='davidson',
+                  conv_tol_grad=None, verbose=5, cderi=None, bfgs=False, solver='davidson',  # cderi kept for backward compat
                   davidson_maxiter=10):
     bfgs = bfgs
     davidson_mmax = davidson_maxiter
@@ -449,8 +466,6 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
     nocc = ncore + ncas
 
     mci = mc.view(zcasci.CASCI)
-    if cderi is None:
-        cderi = zmc_ao2mo.chunked_cholesky(mol)
     #eris = zmc_ao2mo._ERIS(mc, mo, level=2)
     eris = zmc_ao2mo._CDERIS(mc, mo, cderi=cderi, level=2)
     mci = zmcscf._fake_h_for_fast_casci(mc, mo, eris)
@@ -491,11 +506,11 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
         # do it in gen_g_hop
         if mc.natorb is True: 
             moa = mo[:, ncore:nocc]
-            natocc, c = scipy.linalg.eigh(-casdm1)
+            natocc, c = mc._scf.eig(-casdm1)
             moa_new = np.dot(moa, c)
             mo[:, ncore:nocc] = moa_new
 
-            eris = zmc_ao2mo._CDERIS(mc, mo, cderi=cderi)
+            eris = zmc_ao2mo._CDERIS(mc, mo, cderi=cderi, level=2)
             t2m = log.timer('update eris', *t2m)
             mci = zmcscf._fake_h_for_fast_casci(mc, mo, eris)
             print('update eris', verbose)
@@ -504,7 +519,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
             casdm1, casdm2 = mci.fcisolver.make_rdm12(fcivec, ncas, mc.nelecas)
             print('natural occupation number in cas space', casdm1.diagonal())
 
-        g, h_diag, hop, precond, mo = gen_g_hop(mc, mo, casdm1, casdm2, eris)
+        g, h_diag, hop, sop, precond, mo = gen_g_hop(mc, mo, casdm1, casdm2, eris)
         norm_gorb = norm(g)
         print(f'Iter {imacro:3d}: E = {e_tot:20.15f}  dE = {de:12.10f}' +
               f'  norm(grad) = {norm_gorb:8.6f} step_size = {norm_rot:8.6f}')
@@ -584,8 +599,8 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
                 x, _ = gmres(hop, -trust_radii*gbar, M=precond, maxiter=50, callback=callback)
                 #x = precond(-trust_radii*gbar) 
             elif solver == 'davidson':
-                trust_radii = max(trust_radii, 0.2)
-                x, e = davidson(hop, trust_radii*gbar, h_diag, max_stepsize=trust_radii, mmax=davidson_mmax)
+                trust_radii = max(trust_radii, 0.01)
+                x, e = davidson(hop, trust_radii*gbar, h_diag, sop=sop, max_stepsize=trust_radii, mmax=davidson_mmax)
                 print('residuals', residuals)
             if bfgs is True and norm_gorb < bfgs_on:
                 x = 0.5*postprocess_x(x, xs, ys, rhos, a, bfgs_space=BFGS_SUBSPACE)
@@ -597,7 +612,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
                 x, _ = gmres(hop, -trust_radii*gbar, M=precond, maxiter=50, callback=callback)
                 #x = precond(-trust_radii*gbar) 
             elif solver == 'davidson':
-                x, e = davidson(hop, trust_radii*gbar, h_diag, mmax=10)
+                x, e = davidson(hop, trust_radii*gbar, h_diag, sop=sop, mmax=10)
                 print('residuals', residuals)
         t2m = log.timer('Solving Super-CI equation', *t_gmres)
 
@@ -619,7 +634,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
         mo_new = np.dot(mo, rotation)
         # e_tot, e_cas, fcivec, _, _ = mci.kernel(mo)
         #eris = zmc_ao2mo._ERIS(mc, mo_new, level=2)
-        eris = zmc_ao2mo._CDERIS(mc, mo_new, cderi=cderi)
+        eris = zmc_ao2mo._CDERIS(mc, mo_new, cderi=cderi, level=2)
         t2m = log.timer('update eris', *t2m)
         mci = zmcscf._fake_h_for_fast_casci(mc, mo_new, eris)
         print('update eris2')
@@ -643,7 +658,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
         #    dr = 0.5*dr
         #    rotation = expmat(dr)
         #    mo_new = np.dot(mo, rotation)
-        #    eris = zmc_ao2mo._CDERIS(mc, mo_new, cderi=cderi)
+        #    eris = zmc_ao2mo._CDERIS(mc, mo_new, cderi=cderi, level=2)
         #    mci = zmcscf._fake_h_for_fast_casci(mc, mo_new, eris)
         #    e_tot, e_cas, fcivec = mci.kernel(mo_new, ci0=None, verbose=verbose)
         #    de = e_tot - e_last
@@ -657,7 +672,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
             rejected=True
             new_rot = expmat(0.01*dr)
             mo_new = np.dot(mo, new_rot)
-            eris = zmc_ao2mo._CDERIS(mc, mo_new, cderi=cderi)
+            eris = zmc_ao2mo._CDERIS(mc, mo_new, cderi=cderi, level=2)
             t2m = log.timer('update eris', *t2m)
             mci = zmcscf._fake_h_for_fast_casci(mc, mo, eris)
             print('step size', np.linalg.norm(dr), np.linalg.norm(rotation))
