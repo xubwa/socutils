@@ -231,8 +231,8 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
         fock_eff = h1e_mo + vhf_ca
         fock_core = fock_eff[:ncore, :ncore]
         fock_vir = fock_eff[nocc:, nocc:]
-        e_core, c_core = casscf._scf.eig(fock_core)
-        e_vir, c_vir = casscf._scf.eig(fock_vir)
+        e_core, c_core = casscf._scf.eig(fock_core, mo=mo[:, :ncore])
+        e_vir, c_vir = casscf._scf.eig(fock_vir, mo=mo[:, nocc:])
         mo[:,:ncore] = np.dot(mo[:,:ncore], c_core)
         mo[:,nocc:] = np.dot(mo[:,nocc:], c_vir)
         h1e_mo = reduce(np.dot, (mo.T.conj(), casscf.get_hcore(), mo))
@@ -447,7 +447,7 @@ def postprocess_x0(xbar, xs, ys, rhos, a, bfgs_space=10):
     return 0.5*xbar
 
 
-def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
+def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, conv_tol=None,
                   conv_tol_grad=None, verbose=5, cderi=None, bfgs=False, solver='davidson',  # cderi kept for backward compat
                   davidson_maxiter=10):
     bfgs = bfgs
@@ -506,7 +506,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
         # do it in gen_g_hop
         if mc.natorb is True: 
             moa = mo[:, ncore:nocc]
-            natocc, c = mc._scf.eig(-casdm1)
+            natocc, c = mc._scf.eig(-casdm1, mo=moa)
             moa_new = np.dot(moa, c)
             mo[:, ncore:nocc] = moa_new
 
@@ -599,7 +599,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.5, conv_tol=None,
                 x, _ = gmres(hop, -trust_radii*gbar, M=precond, maxiter=50, callback=callback)
                 #x = precond(-trust_radii*gbar) 
             elif solver == 'davidson':
-                trust_radii = max(trust_radii, 0.01)
+                trust_radii = max(trust_radii, 0.2)
                 x, e = davidson(hop, trust_radii*gbar, h_diag, sop=sop, max_stepsize=trust_radii, mmax=davidson_mmax)
                 print('residuals', residuals)
             if bfgs is True and norm_gorb < bfgs_on:

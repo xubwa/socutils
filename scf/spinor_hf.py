@@ -406,6 +406,9 @@ class SpinorSCF(hf.SCF):
     def density_fit(self, auxbasis=None, with_df=None, only_dfj=False):
         return density_fit(self, auxbasis, with_df, only_dfj)
 
+    def eig(self, h, s=None, *args, **kwargs):
+        return hf.SCF.eig(self, h, s)
+
     def build(self, mol=None):
         if self.verbose >= logger.WARN:
             self.check_sanity()
@@ -576,15 +579,74 @@ class SymmSpinorSCF(SpinorSCF):
         print('occup')
         print(self.occupation)
 
-    def eig(self, h, s):
-        e, c = eig(self, h, s, irrep=self.irrep_ao)
-        self.irrep_mo = e.irrep_tag
-        return e, c
+    def eig(self, h, s=None, *args, mo=None, **kwargs):
+        # AO basis generalized eigenproblem (existing path)
+        if s is not None:
+            e, c = eig(self, h, s, irrep=self.irrep_ao)
+            self.irrep_mo = e.irrep_tag
+            return e, c
+        # MO subspace per-irrep diagonalization
+        if mo is not None:
+            labels = self.label_mo(mo)
+            return self._eig_per_irrep(h, labels)
+        # No symmetry info — plain diagonalization
+        return self._eigh(h, s)
 
-    # when linear symmetry or spherical symmetry imposed,
-    # kramers symmetry is adapted outside the eigensolver
     def _eigh(self, h, s):
         return scipy.linalg.eigh(h, s)
+
+    def label_mo(self, mo):
+        """Assign an irrep label to each column of `mo` by max AO irrep
+        contribution.  Stateless — call on demand.
+
+        mo : (nao_2c, k) ndarray
+        Returns: length-k array of irrep tags (str).
+        """
+        s = self.get_ovlp()
+        from scipy.linalg import sqrtm
+        s_sqrtm = sqrtm(s)
+        c_tilde = s_sqrtm @ mo
+        weight2 = (c_tilde.conj() * c_tilde).real
+        tags = list(self.irrep_ao.keys())
+        norms = numpy.zeros((len(tags), mo.shape[1]))
+        for it, tag in enumerate(tags):
+            ao_idx = self.irrep_ao[tag]
+            norms[it] = weight2[ao_idx].sum(axis=0)
+        best = numpy.argmax(norms, axis=0)
+        total = norms.sum(axis=0)
+        purity = norms[best, numpy.arange(mo.shape[1])] / numpy.where(total > 0, total, 1.0)
+        if (purity < 0.9).any():
+            logger.warn(self,
+                'label_mo: some MOs have low irrep purity (min=%.3f), '
+                'symmetry may be broken', purity.min())
+        return numpy.array([tags[b] for b in best])
+
+    def _eig_per_irrep(self, h, labels):
+        n = h.shape[0]
+        e = numpy.zeros(n)
+        c = numpy.zeros((n, n), dtype=h.dtype)
+        irrep_tag = numpy.empty(n, dtype='U10')
+        labels = numpy.asarray(labels)
+        # cross-irrep coupling check: build mask of same-irrep entries, measure
+        # Frobenius norm of the complement relative to the whole matrix
+        same = labels[:, None] == labels[None, :]
+        cross_norm = numpy.linalg.norm(numpy.where(same, 0., h))
+        total_norm = numpy.linalg.norm(h)
+        if total_norm > 0 and cross_norm / total_norm > 1e-6:
+            logger.warn(self,
+                '_eig_per_irrep: cross-irrep coupling norm=%.3e (relative=%.3e) '
+                'is non-negligible; off-block couplings will be ignored',
+                cross_norm, cross_norm / total_norm)
+        for ir in numpy.unique(labels):
+            idx = numpy.where(labels == ir)[0]
+            hi = h[numpy.ix_(idx, idx)]
+            ei, ci = scipy.linalg.eigh(hi)
+            e[idx] = ei
+            c[numpy.ix_(idx, idx)] = ci
+            irrep_tag[idx] = str(ir)
+        sort_idx = numpy.argsort(e)
+        return (lib.tag_array(e[sort_idx], irrep_tag=irrep_tag[sort_idx]),
+                c[:, sort_idx])
 
     def get_occ(self, mo_energy=None, mo_coeff=None):
         if self.occupation is None or mo_energy is None:
@@ -599,7 +661,7 @@ class KRHF(SpinorSCF):
             raise RuntimeError('zquatev library is required to perform Kramers-restricted JHF')
     def _eigh(self, h, s):
         return dhf.zquatev.solve_KR_FCSCE(self.mol, h, s)
-    def eig(self, h, s=None):
+    def eig(self, h, s=None, *args, **kwargs):
         if s is not None:
             return self._eigh(h, s)
         else:

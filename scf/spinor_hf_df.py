@@ -764,14 +764,61 @@ class SymmSpinorSCF(SpinorSCF):
         print('occup')
         print(self.occupation)
 
-    def eig(self, h, s=None):
+    def eig(self, h, s=None, *args, mo=None, **kwargs):
         if s is not None:
             e, c = eig(self, h, s, irrep=self.irrep_ao)
             self.irrep_mo = e.irrep_tag
             print(e.irrep_tag)
-        else:
-            e, c = scipy.linalg.eigh(h)
-        return e, c
+            return e, c
+        if mo is not None:
+            labels = self.label_mo(mo)
+            return self._eig_per_irrep(h, labels)
+        return scipy.linalg.eigh(h)
+
+    def label_mo(self, mo):
+        s = self.get_ovlp()
+        from scipy.linalg import sqrtm
+        s_sqrtm = sqrtm(s)
+        c_tilde = s_sqrtm @ mo
+        weight2 = (c_tilde.conj() * c_tilde).real
+        tags = list(self.irrep_ao.keys())
+        norms = numpy.zeros((len(tags), mo.shape[1]))
+        for it, tag in enumerate(tags):
+            ao_idx = self.irrep_ao[tag]
+            norms[it] = weight2[ao_idx].sum(axis=0)
+        best = numpy.argmax(norms, axis=0)
+        total = norms.sum(axis=0)
+        purity = norms[best, numpy.arange(mo.shape[1])] / numpy.where(total > 0, total, 1.0)
+        if (purity < 0.9).any():
+            logger.warn(self,
+                'label_mo: some MOs have low irrep purity (min=%.3f), '
+                'symmetry may be broken', purity.min())
+        return numpy.array([tags[b] for b in best])
+
+    def _eig_per_irrep(self, h, labels):
+        n = h.shape[0]
+        e = numpy.zeros(n)
+        c = numpy.zeros((n, n), dtype=h.dtype)
+        irrep_tag = numpy.empty(n, dtype='U10')
+        labels = numpy.asarray(labels)
+        same = labels[:, None] == labels[None, :]
+        cross_norm = numpy.linalg.norm(numpy.where(same, 0., h))
+        total_norm = numpy.linalg.norm(h)
+        if total_norm > 0 and cross_norm / total_norm > 1e-6:
+            logger.warn(self,
+                '_eig_per_irrep: cross-irrep coupling norm=%.3e (relative=%.3e) '
+                'is non-negligible; off-block couplings will be ignored',
+                cross_norm, cross_norm / total_norm)
+        for ir in numpy.unique(labels):
+            idx = numpy.where(labels == ir)[0]
+            hi = h[numpy.ix_(idx, idx)]
+            ei, ci = scipy.linalg.eigh(hi)
+            e[idx] = ei
+            c[numpy.ix_(idx, idx)] = ci
+            irrep_tag[idx] = str(ir)
+        sort_idx = numpy.argsort(e)
+        return (lib.tag_array(e[sort_idx], irrep_tag=irrep_tag[sort_idx]),
+                c[:, sort_idx])
 
     # when linear symmetry or spherical symmetry imposed,
     # kramers symmetry is adapted outside the eigensolver
@@ -791,7 +838,7 @@ class KRHF(SpinorSCF):
             raise RuntimeError('zquatev library is required to perform Kramers-restricted JHF')
     def _eigh(self, h, s):
         return dhf.zquatev.solve_KR_FCSCE(self.mol, h, s)
-    def eig(self, h, s=None):
+    def eig(self, h, s=None, *args, **kwargs):
         if s is not None:
             return self._eigh(h, s)
         else:
