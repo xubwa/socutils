@@ -931,6 +931,7 @@ class SpinOrbitalX2CMPHelper(x2c.x2c.SpinOrbitalX2CHelper):
         self.m4c = None
         self.veff_2c = None
         self.soc_matrix = None
+        self.h4c_ext = None
         if self.nucmod != {}:
             self.gau_nuc = True
         else:
