@@ -13,8 +13,7 @@ from socutils.tools import spinor2sph
 from pyscf import gto, scf
 from x2camf.x2camf import construct_molecular_matrix, pcc_k, _amf
 from x2camf import libx2camf
-
-LIGHT_SPEED = lib.param.LIGHT_SPEED
+from pyscf.lib import param
 
 def build_prim(mol):
     bas = mol._bas
@@ -182,7 +181,8 @@ def x2cmp_screen(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=F
         exp_a = np.asarray(exp_a)
         nbas = shell.shape[0]
         nshell = shell[-1] + 1
-        integrals = x2camf.libx2camf.atm_integrals(soc_int_flavor, atom_number, nshell, nbas, verbose, shell, exp_a)
+        integrals = x2camf.libx2camf.atm_integrals(soc_int_flavor, atom_number, nshell, nbas, verbose, shell, exp_a,
+                                                   speed_of_light=param.LIGHT_SPEED)
         integrals.append(_amf(atom_number, shell, exp_a, pcc_int_flavor, 4))
         for i, int_i in enumerate(integrals):
             if int_i.shape[-1] == n2c_screen:
@@ -272,9 +272,9 @@ def x2cmp_screen(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=F
             atm_h4c[p0:p1, n2c+p0:n2c+p1] = t1
             atm_h4c[n2c+p0:n2c+p1, p0:p1] = t1
             atm_h4c[p0:p1, p0:p1] = v1
-            atm_h4c[n2c+p0:n2c+p1,n2c+p0:n2c+p1] = w1*(0.5/LIGHT_SPEED)**2 - t1
+            atm_h4c[n2c+p0:n2c+p1,n2c+p0:n2c+p1] = w1*(0.5/param.LIGHT_SPEED)**2 - t1
             atm_s4c[p0:p1,p0:p1] = s1
-            atm_s4c[n2c+p0:n2c+p1,n2c+p0:n2c+p1] = t1*0.5/(LIGHT_SPEED)**2
+            atm_s4c[n2c+p0:n2c+p1,n2c+p0:n2c+p1] = t1*0.5/(param.LIGHT_SPEED)**2
 
         ao_loc = xmol.ao_loc_2c()
         nbas = xmol.nbas
@@ -364,7 +364,7 @@ def x2cmp_screen(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=F
             h1e_4c[:n2c,:n2c] = vn
             h1e_4c[n2c:,:n2c] = t
             h1e_4c[:n2c,n2c:] = t
-            h1e_4c[n2c:,n2c:] = wn * (.25/LIGHT_SPEED**2) - t
+            h1e_4c[n2c:,n2c:] = wn * (.25/param.LIGHT_SPEED**2) - t
         if 'ax' in x2cobj.amf_type:
             r = x2cobj._get_rmat(x)
         h_x2c = to_2c(x, r, h1e_4c)
@@ -397,7 +397,7 @@ def x2cmp_screen(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=F
         h1e_4c[:n2c,:n2c] = vn
         h1e_4c[n2c:,:n2c] = t
         h1e_4c[:n2c,n2c:] = t
-        h1e_4c[n2c:,n2c:] = wn * (.25/LIGHT_SPEED**2) - t
+        h1e_4c[n2c:,n2c:] = wn * (.25/param.LIGHT_SPEED**2) - t
 
         for ia in range(xmol.natm):
             ish0, ish1, p0, p1 = atom_slices[ia]
@@ -414,9 +414,9 @@ def x2cmp_screen(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=F
             atm_h4c[p0:p1, n2c+p0:n2c+p1] = t1
             atm_h4c[n2c+p0:n2c+p1, p0:p1] = t1
             atm_h4c[p0:p1, p0:p1] = v1
-            atm_h4c[n2c+p0:n2c+p1,n2c+p0:n2c+p1] = w1*(0.5/LIGHT_SPEED)**2 - t1
+            atm_h4c[n2c+p0:n2c+p1,n2c+p0:n2c+p1] = w1*(0.5/param.LIGHT_SPEED)**2 - t1
             atm_s4c[p0:p1,p0:p1] = s1
-            atm_s4c[n2c+p0:n2c+p1,n2c+p0:n2c+p1] = t1*0.5/(LIGHT_SPEED)**2
+            atm_s4c[n2c+p0:n2c+p1,n2c+p0:n2c+p1] = t1*0.5/(param.LIGHT_SPEED)**2
 
         ao_loc = xmol.ao_loc_2c()
         nbas = xmol.nbas
@@ -484,7 +484,8 @@ def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, n
         exp_a = np.array(exp_a)
         nbas = shell.shape[0]
         nshell = shell[-1] + 1
-        atm_ints[atom] = x2camf.libx2camf.atm_integrals(soc_int_flavor, atom_number, nshell, nbas, verbose, shell, exp_a)
+        atm_ints[atom] = x2camf.libx2camf.atm_integrals(soc_int_flavor, atom_number, nshell, nbas, verbose, shell, exp_a,
+                                                        speed_of_light=param.LIGHT_SPEED)
     x2cobj.atomic_integrals = atm_ints
         # results{0 atm_X, 1 atm_R, 2 h1e_4c, 3 fock_4c, 4 fock_2c, 5 fock_4c_2e, 
         #         6 fock_2c_2e, 7 fock_4c_K, 8 fock_2c_K, 9 so_4c, 10 so_2c, 11 den_4c, 12 den_2c};
@@ -658,7 +659,6 @@ def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, n
         v = xmol.intor_symmetric('int1e_nuc_spinor')
         w = xmol.intor_symmetric('int1e_spnucsp_spinor')
         from pyscf.x2c.x2c import _get_hcore_fw
-        from pyscf.lib.parameters import LIGHT_SPEED
         print('atm_fock')
         mf_4c = scf.DHF(xmol)
         r = x2cobj._get_rmat(atm_x)
@@ -679,7 +679,6 @@ def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, n
         v = xmol.intor_symmetric('int1e_nuc_spinor')
         w = xmol.intor_symmetric('int1e_spnucsp_spinor')
         from pyscf.x2c.x2c import _get_hcore_fw
-        from pyscf.lib.parameters import LIGHT_SPEED
         print('atm_x1e')
         mf_4c = scf.DHF(xmol)
         r = x2cobj._get_rmat(atm_x)
@@ -693,7 +692,6 @@ def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, n
         atom_slices = xmol.offset_2c_by_atom()
         n2c = xmol.nao_2c()
         x = np.zeros((n2c,n2c), dtype=np.complex128)
-        from pyscf.lib.parameters import LIGHT_SPEED as c
         for ia in range(xmol.natm):
             ish0, ish1, p0, p1 = atom_slices[ia]
             shls_slice = (ish0, ish1, ish0, ish1)
@@ -703,7 +701,7 @@ def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, n
                 z = -xmol.atom_charge(ia)
                 v1 = z*xmol.intor('int1e_rinv_spinor', shls_slice=shls_slice)
                 w1 = z*xmol.intor('int1e_sprinvsp_spinor', shls_slice=shls_slice)
-            x[p0:p1,p0:p1] = x2c.x2c._x2c1e_xmatrix(t1, v1, w1, s1, c)
+            x[p0:p1,p0:p1] = x2c.x2c._x2c1e_xmatrix(t1, v1, w1, s1, param.LIGHT_SPEED)
         r = x2cobj._get_rmat(x)
         h1 = to_2c(x, r, h1e_4c)
         pcc_matrix = x2camf.amfi(x2cobj, printLevel=x2cobj.verbose, with_gaunt=gaunt, with_gauge=breit,
@@ -730,7 +728,6 @@ def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, n
         x, st, r, h2c = x2c1e_hfw0_4cmat(h1e_4c, s4c, mol=xmol)
         h_x2c = to_2c(x, r, h1e_4c)
     elif x2cobj.amf_type == 'sf1e':
-        from pyscf.lib.parameters import LIGHT_SPEED as c
         t = xmol.intor('int1e_spsp_spinor') * 0.5
         vn = xmol.intor('int1e_nuc_spinor')
         wn = xmol.intor('int1e_pnucp_spinor')
@@ -740,7 +737,7 @@ def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, n
         h1e_4csf[:n2c,:n2c] = vn
         h1e_4csf[n2c:,:n2c] = t
         h1e_4csf[:n2c,n2c:] = t
-        h1e_4csf[n2c:,n2c:] = wn * (.25/c**2) - t
+        h1e_4csf[n2c:,n2c:] = wn * (.25/param.LIGHT_SPEED**2) - t
         x, st, r, h2c = x2c1e_hfw0_4cmat(h1e_4csf, s4c, mol=xmol)
         x2cobj.h4c = h1e_4csf
         x2cobj.m4c = s4c
