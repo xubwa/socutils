@@ -485,7 +485,8 @@ def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, n
         nbas = shell.shape[0]
         nshell = shell[-1] + 1
         atm_ints[atom] = x2camf.libx2camf.atm_integrals(soc_int_flavor, atom_number, nshell, nbas, verbose, shell, exp_a,
-                                                        speed_of_light=param.LIGHT_SPEED)
+                                                        speed_of_light=param.LIGHT_SPEED,
+                                                        spin_free=(x2cobj.amf_type == 'sfmp'))
     x2cobj.atomic_integrals = atm_ints
         # results{0 atm_X, 1 atm_R, 2 h1e_4c, 3 fock_4c, 4 fock_2c, 5 fock_4c_2e, 
         #         6 fock_2c_2e, 7 fock_4c_K, 8 fock_2c_K, 9 so_4c, 10 so_2c, 11 den_4c, 12 den_2c};
@@ -536,6 +537,39 @@ def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, n
         h_x2c = to_2c(x, r, fock_4c) - veff_2c
         x2cobj.h4c = h1e_4c + veff_4c
         x2cobj.soc_matrix = h_x2c - to_2c(x, r, h1e_4c)
+    elif x2cobj.amf_type == 'sfmp':
+        # Spin-free model potential: contract atomic SF density with the
+        # *molecular* SF 2e integrals (via SpinFreeDHF). Only densities are
+        # taken from atm_ints (idx 11/12); atomic Fock/Veff are not used.
+        import warnings
+        from socutils.scf import sfdhf
+        if gaunt or breit:
+            warnings.warn("'sfmp' does not support Gaunt/Breit; ignoring.")
+            gaunt = False
+            breit = False
+
+        mf_4c_sf  = sfdhf.SpinFreeDHF(xmol)
+        h1e_4c_sf = mf_4c_sf.get_hcore()
+        s4c_sf    = mf_4c_sf.get_ovlp()
+        x2cobj.h4c = h1e_4c_sf
+        x2cobj.m4c = s4c_sf
+
+        density_4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 11), atom_slices, xmol, n2c, True)
+        density_2c = construct_molecular_matrix(extract_ith_integral(atm_ints, 12), atom_slices, xmol, n2c, False)
+
+        vj_4c, vk_4c = mf_4c_sf.get_jk(dm=density_4c)
+        veff_4c = vj_4c - vk_4c
+        fock_4c = h1e_4c_sf + veff_4c
+
+        x, st, r, h2c = x2c1e_hfw0_4cmat(fock_4c, s4c_sf, xmol)
+        mf_2c = spinor_hf.SCF(xmol)
+        veff_2c = mf_2c.get_veff(dm=density_2c)
+        x2cobj.veff_2c = veff_2c
+        h_x2c = to_2c(x, r, fock_4c) - veff_2c
+        x2cobj.h4c = h1e_4c_sf + veff_4c
+        # NB: x2cobj.soc_matrix here is not a SOC matrix — it is the SF
+        # model-potential 2e correction on top of the bare X2C 1e h_x2c.
+        x2cobj.soc_matrix = h_x2c - to_2c(x, r, h1e_4c_sf)
     elif x2cobj.amf_type == 'x2cmp_core':
 #This option is implemented specially for testing purpose.
 #It currently assumes x2cmp for a single atom.
