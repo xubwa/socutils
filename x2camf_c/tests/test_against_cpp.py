@@ -1,9 +1,11 @@
-'''Validation of the pure-C implementation against the original C++ code.
+'''Validation of the pure-C backend against the original C++ reference.
 
-Requires the original pybind11 module (built from the upstream x2camf
-repository) importable as `libx2camf`, e.g.:
+Point the C++ backend at the upstream pybind11 module, e.g.:
 
-    PYTHONPATH=/path/to/x2camf/build python tests/test_against_cpp.py
+    X2CAMF_CPP_LIBRARY=/path/to/x2camf/build/libx2camf*.so \
+        python tests/test_against_cpp.py
+    # or
+    X2CAMF_CPP_PATH=/path/to/x2camf/build python tests/test_against_cpp.py
 
 Eigen and LAPACK produce slightly different floating-point round-off, and
 the SCF amplifies it, so the comparison uses a tolerance rather than
@@ -15,8 +17,11 @@ import sys
 import numpy
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-import libx2camf as cpp_lib  # noqa: E402  (pybind11 reference)
-from x2camf import libx2camf as c_lib  # noqa: E402  (ctypes / pure C)
+# Compare the two backends directly, independent of X2CAMF_BACKEND:
+#   c_lib   -> pure-C ctypes implementation
+#   cpp_lib -> pybind11 C++ reference
+from x2camf import _c_backend as c_lib       # noqa: E402
+from x2camf import _cpp_backend as cpp_lib   # noqa: E402
 
 TOL = 1e-8
 
