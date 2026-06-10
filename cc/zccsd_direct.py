@@ -28,6 +28,7 @@ from pyscf import lib
 from pyscf.lib import logger
 from pyscf.cc import ccsd
 from pyscf.cc import gccsd
+from pyscf.ao2mo import nrr_outcore
 from pyscf import __config__
 
 from socutils.cc import gintermediates as imd
@@ -246,18 +247,6 @@ class _PhysicistsERIs(gccsd._PhysicistsERIs):
         return self
 
 
-def _chem(eri, sp, C1p, C1q, C2r, C2s):
-    '''Chemist's spinor MO integral ``(p q | r s)`` built from the scalar AO
-    ERIs ``eri`` (shape ``(nao,nao,nao,nao)``).  ``sp`` is the list of the two
-    spin-block slices; each ``C`` is ``(2*nao, n)``.'''
-    out = 0.
-    for s1 in sp:
-        h = einsum('Mp,Nq,MNLS->pqLS', C1p[s1].conj(), C1q[s1], eri)
-        for s2 in sp:
-            out = out + einsum('pqLS,Lr,Ss->pqrs', h, C2r[s2].conj(), C2s[s2])
-    return out
-
-
 def _make_eris_direct(mycc, mo_coeff=None):
     log = logger.Logger(mycc.stdout, mycc.verbose)
     cput0 = (logger.process_clock(), logger.perf_counter())
@@ -293,25 +282,31 @@ def _make_eris_direct(mycc, mo_coeff=None):
                    einsum('cmn,mp,nq->cpq', Lc, mob.conj(), mob))
         _eris_from_cholmo(eris, chol_mo, nocc)
     else:
-        # Exact incore scalar ERIs; build the occupied-row blocks directly.
-        o = mog[:, :nocc]
-        v = mog[:, nocc:]
-        sp = [slice(0, nao), slice(nao, 2*nao)]
-        eri = mol.intor('int2e_sph').reshape(nao, nao, nao, nao)
-        oooo = _chem(eri, sp, o, o, o, o)
-        eris.oooo = oooo.transpose(0, 2, 1, 3) - oooo.transpose(0, 2, 3, 1)
-        ooov = _chem(eri, sp, o, o, o, v)
-        eris.ooov = ooov.transpose(0, 2, 1, 3) - ooov.transpose(2, 0, 1, 3)
-        oovv = _chem(eri, sp, o, o, v, v)
-        ovov = _chem(eri, sp, o, v, o, v)
-        ovvo = _chem(eri, sp, o, v, v, o)
-        eris.oovv = ovov.transpose(0, 2, 1, 3) - ovov.transpose(0, 2, 3, 1)
-        eris.ovov = oovv.transpose(0, 2, 1, 3) - ovvo.transpose(0, 2, 3, 1)
-        eris.ovvo = ovvo.transpose(0, 2, 1, 3) - oovv.transpose(0, 2, 3, 1)
-        ovvv = _chem(eri, sp, o, v, v, v)
-        eris.ovvv = ovvv.transpose(0, 2, 1, 3) - ovvv.transpose(0, 2, 3, 1)
-        # Store as [(nu,sigma), (mu,lambda)] so the ladder is a single GEMM:
+        # Exact integrals.  Transform only the occupied-row chemist integrals
+        # (orbo, mo, mo, mo) with pyscf's optimised sph->j-spinor AO2MO (C
+        # code + 8-fold AO symmetry), then assemble the antisymmetrized blocks.
+        # vvvv is never transformed.
+        mo = eris.mo_coeff
+        nmo = mo.shape[1]
+        orbo = mo[:, :nocc]
+        feri = lib.H5TmpFile()
+        nrr_outcore.general(mol, (orbo, mo, mo, mo), feri, 'eri',
+                            intor='int2e_sph', motype='j-spinor',
+                            max_memory=mycc.max_memory, verbose=mycc.verbose)
+        g = np.asarray(feri['eri']).reshape(nocc, nmo, nmo, nmo)  # (iq|rs) chemist
+        feri = None
+        no = nocc
+        eris.oooo = g[:,:no,:no,:no].transpose(0,2,1,3) - g[:,:no,:no,:no].transpose(0,2,3,1)
+        eris.ooov = g[:,:no,:no,no:].transpose(0,2,1,3) - g[:,no:,:no,:no].transpose(0,2,3,1)
+        eris.oovv = g[:,no:,:no,no:].transpose(0,2,1,3) - g[:,no:,:no,no:].transpose(0,2,3,1)
+        eris.ovov = g[:,:no,no:,no:].transpose(0,2,1,3) - g[:,no:,no:,:no].transpose(0,2,3,1)
+        eris.ovvo = g[:,no:,no:,:no].transpose(0,2,1,3) - g[:,:no,no:,no:].transpose(0,2,3,1)
+        eris.ovvv = g[:,no:,no:,no:].transpose(0,2,1,3) - g[:,no:,no:,no:].transpose(0,2,3,1)
+        g = None
+        # Scalar AO Coulomb operator for the ladder, stored as
+        # [(nu,sigma), (mu,lambda)] so the contraction is a single GEMM:
         # G[mu,lambda] = sum_{nu,sigma} (mu nu | lambda sigma) T[nu,sigma].
+        eri = mol.intor('int2e_sph').reshape(nao, nao, nao, nao)
         eris.ao_eri = eri.transpose(1, 3, 0, 2).reshape(nao*nao, nao*nao).copy()
         eris.ao_chol = None
 
