@@ -22,6 +22,7 @@ Usage:
     mc.fcisolver.nroots = 3
 '''
 
+import sys
 import numpy
 import scipy.linalg
 from pyscf import lib
@@ -119,6 +120,293 @@ def trans_rdm1(cibra, ciket, norb, nelec, link_index=None):
             dbra[str1, i] += sign * cibra[str0]
             dket[str1, i] += sign * ciket[str0]
     return dbra.conj().T @ dket
+
+
+###############################################################
+# CI in a given list of determinants (selected CI)
+###############################################################
+
+if hasattr(numpy, 'bitwise_count'):
+    _popcount = numpy.bitwise_count
+else:  # numpy < 2.0
+    _popcount_tab = numpy.array([bin(i).count('1') for i in range(256)],
+                                dtype=numpy.uint8)
+    def _popcount(x):
+        x = numpy.ascontiguousarray(x)
+        return _popcount_tab[x.view(numpy.uint8)].reshape(x.shape + (x.dtype.itemsize,)).sum(axis=-1)
+
+def _bitpos(x):
+    '''Position of the (single) set bit in each element of x'''
+    return _popcount(x - numpy.uint64(1)).astype(numpy.int64)
+
+def _between_mask(p, q):
+    '''Bit mask covering the positions strictly between p and q'''
+    one = numpy.uint64(1)
+    lo = numpy.minimum(p, q).astype(numpy.uint64)
+    hi = numpy.maximum(p, q).astype(numpy.uint64)
+    return ((one << hi) - one) ^ ((one << (lo + one)) - one)
+
+def _to_strings(occslst, norb):
+    '''Convert a list of determinants (each a list of occupied spinor-orbital
+    indices) to sorted occupation lists and uint64 bit strings.'''
+    occs = numpy.asarray(occslst, dtype=numpy.int64)
+    if occs.ndim != 2:
+        raise ValueError('occslst must be a (ndet, nelec) array of occupied orbitals')
+    if norb > 64:
+        raise NotImplementedError('more than 64 spinor orbitals')
+    occs = numpy.sort(occs, axis=1)
+    if occs.size > 0 and ((occs[:,0] < 0).any() or (occs[:,-1] >= norb).any()):
+        raise ValueError('orbital index out of range')
+    strs = numpy.zeros(len(occs), dtype=numpy.uint64)
+    for k in range(occs.shape[1]):
+        strs |= numpy.uint64(1) << occs[:,k].astype(numpy.uint64)
+    if (_popcount(strs) != occs.shape[1]).any():
+        raise ValueError('repeated orbital within a determinant')
+    if len(numpy.unique(strs)) != len(strs):
+        raise ValueError('duplicate determinants in occslst')
+    return occs, strs
+
+def _excitations(strs, p0, p1):
+    '''Classify all pairs (I in [p0:p1), J in full list) by excitation level.
+
+    Returns:
+        singles: (row, col, a, i, phase) with |I> = phase * a_a^+ a_i |J>
+        doubles: (row, col, a, b, i, j, phase) with
+                 |I> = phase * a_b^+ a_j a_a^+ a_i |J>, a < b, i < j
+        row is relative to p0.
+    '''
+    one = numpy.uint64(1)
+    xor = strs[p0:p1, None] ^ strs[None, :]
+    ndiff = _popcount(xor)
+
+    ri, rj = numpy.nonzero(ndiff == 2)
+    jstr = strs[rj]
+    xp = xor[ri, rj]
+    a = _bitpos(xp & strs[p0 + ri])
+    i = _bitpos(xp & jstr)
+    perm = _popcount(jstr & _between_mask(a, i))
+    singles = (ri, rj, a, i, 1 - 2*(perm.astype(numpy.int64) & 1))
+
+    ri2, rj2 = numpy.nonzero(ndiff == 4)
+    jstr = strs[rj2]
+    xp = xor[ri2, rj2]
+    pmask = xp & strs[p0 + ri2]
+    hmask = xp & jstr
+    abit = pmask & (~pmask + one)
+    ibit = hmask & (~hmask + one)
+    a = _bitpos(abit)
+    b = _bitpos(pmask ^ abit)
+    i = _bitpos(ibit)
+    j = _bitpos(hmask ^ ibit)
+    perm = _popcount(jstr & _between_mask(a, i))
+    perm += _popcount((jstr ^ (ibit | abit)) & _between_mask(b, j))
+    doubles = (ri2, rj2, a, b, i, j, 1 - 2*(perm.astype(numpy.int64) & 1))
+    return singles, doubles
+
+def _pair_block_size(ndet, max_memory):
+    # xor + popcount intermediates: ~3 arrays of (bsize, ndet) uint64
+    bsize = int(max_memory*1e6 / (3 * 8 * ndet + 1))
+    return max(1, min(ndet, bsize))
+
+def make_hmat_dets(h1e, eri, norb, occslst, max_memory=2000):
+    '''Build the CI Hamiltonian matrix in the basis of an arbitrary list of
+    determinants, using Slater-Condon rules.
+
+    Args:
+        occslst: (ndet, nelec) array-like; each row lists the occupied spinor
+            orbitals of one determinant.  A determinant is defined with its
+            creation operators in ascending orbital order.
+
+    The phase convention is identical to the cistring-based full CI basis, so
+    when occslst covers the complete space in cistring order this returns the
+    same matrix as make_hmat.
+    '''
+    occs, strs = _to_strings(occslst, norb)
+    nd, ne = occs.shape
+    hmat = numpy.zeros((nd, nd), dtype=numpy.complex128)
+    if nd == 0 or ne == 0:
+        return hmat
+
+    # diagonal: sum_i h_ii + 1/2 sum_ij [(ii|jj) - (ij|ji)]
+    jk = numpy.einsum('iijj->ij', eri) - numpy.einsum('ijji->ij', eri)
+    diag = h1e.diagonal()[occs].sum(axis=1)
+    diag = diag + 0.5 * jk[occs[:,:,None], occs[:,None,:]].sum(axis=(1,2))
+    hmat[numpy.diag_indices(nd)] = diag
+
+    # w[a,i,k] = (ai|kk) - (ak|ki); note w[a,i,i] = 0, so the sum over the
+    # common occupied orbitals can run over all occupied orbitals of J
+    w = numpy.einsum('aikk->aik', eri) - numpy.einsum('akki->aik', eri)
+
+    for p0, p1 in lib.prange(0, nd, _pair_block_size(nd, max_memory)):
+        (ri, rj, a, i, ph1), (ri2, rj2, a2, b2, i2, j2, ph2) = \
+                _excitations(strs, p0, p1)
+        wai = numpy.take_along_axis(w[a, i], occs[rj], axis=1).sum(axis=1)
+        hmat[p0 + ri, rj] = ph1 * (h1e[a, i] + wai)
+        hmat[p0 + ri2, rj2] = ph2 * (eri[a2, i2, b2, j2] - eri[a2, j2, b2, i2])
+    return hmat
+
+def kernel_dets(h1e, eri, norb, occslst, ecore=0, nroots=1, max_memory=2000,
+                verbose=logger.NOTE):
+    '''Diagonalize the Hamiltonian in the space spanned by the determinants
+    in occslst.  Returns energies and CI vectors; the CI coefficients follow
+    the order of occslst.'''
+    hmat = make_hmat_dets(h1e, eri, norb, occslst, max_memory)
+    e, c = scipy.linalg.eigh(hmat)
+    if nroots == 1:
+        return e[0] + ecore, c[:,0]
+    else:
+        return e[:nroots] + ecore, [numpy.ascontiguousarray(c[:,i])
+                                    for i in range(nroots)]
+
+def trans_rdm1_dets(cibra, ciket, norb, occslst, max_memory=2000):
+    '''Transition density matrix dm_pq = <bra|p^+ q|ket> in a determinant
+    list basis.'''
+    occs, strs = _to_strings(occslst, norb)
+    nd, ne = occs.shape
+    rdm1 = numpy.zeros((norb, norb), dtype=numpy.complex128)
+    if nd == 0 or ne == 0:
+        return rdm1
+    wdiag = cibra.conj() * ciket
+    numpy.add.at(rdm1, (occs.ravel(), occs.ravel()), numpy.repeat(wdiag, ne))
+    for p0, p1 in lib.prange(0, nd, _pair_block_size(nd, max_memory)):
+        (ri, rj, a, i, ph), _ = _excitations(strs, p0, p1)
+        numpy.add.at(rdm1, (a, i), ph * cibra[p0 + ri].conj() * ciket[rj])
+    return rdm1
+
+def make_rdm1_dets(fcivec, norb, occslst, max_memory=2000):
+    return trans_rdm1_dets(fcivec, fcivec, norb, occslst, max_memory)
+
+def make_rdm12_dets(fcivec, norb, occslst, max_memory=2000):
+    '''1- and 2-particle density matrices in a determinant list basis,
+    with the same conventions as fci_dhf_slow.make_rdm12:
+    rdm1[p,q] = <p^+ q>, rdm2[p,q,r,s] = <p^+ r^+ s q>.'''
+    occs, strs = _to_strings(occslst, norb)
+    nd, ne = occs.shape
+    rdm1 = numpy.zeros((norb, norb), dtype=numpy.complex128)
+    rdm2 = numpy.zeros((norb,)*4, dtype=numpy.complex128)
+    if nd == 0 or ne == 0:
+        return rdm1, rdm2
+
+    # diagonal: <k^+ k> and <k^+ l^+ l k> = -<k^+ l^+ k l> for k != l
+    w = (fcivec.conj() * fcivec)
+    numpy.add.at(rdm1, (occs.ravel(), occs.ravel()), numpy.repeat(w, ne))
+    k = numpy.broadcast_to(occs[:,:,None], (nd, ne, ne))
+    l = numpy.broadcast_to(occs[:,None,:], (nd, ne, ne))
+    offdiag = (k != l).ravel()
+    k = k.ravel()[offdiag]
+    l = l.ravel()[offdiag]
+    wkl = numpy.broadcast_to(w[:,None,None], (nd, ne, ne)).ravel()[offdiag]
+    numpy.add.at(rdm2, (k, k, l, l), wkl)
+    numpy.add.at(rdm2, (k, l, l, k), -wkl)
+
+    for p0, p1 in lib.prange(0, nd, _pair_block_size(nd, max_memory)):
+        (ri, rj, a, i, ph1), (ri2, rj2, a2, b2, i2, j2, ph2) = \
+                _excitations(strs, p0, p1)
+        # singles, with spectator orbital k in both determinants
+        c1 = ph1 * fcivec[p0 + ri].conj() * fcivec[rj]
+        numpy.add.at(rdm1, (a, i), c1)
+        kk = occs[rj]                              # (ns, ne), includes k == i
+        spect = (kk != i[:,None]).ravel()
+        aa = numpy.repeat(a, ne)[spect]
+        ii = numpy.repeat(i, ne)[spect]
+        cc = numpy.repeat(c1, ne)[spect]
+        kk = kk.ravel()[spect]
+        numpy.add.at(rdm2, (aa, ii, kk, kk), cc)
+        numpy.add.at(rdm2, (kk, kk, aa, ii), cc)
+        numpy.add.at(rdm2, (aa, kk, kk, ii), -cc)
+        numpy.add.at(rdm2, (kk, ii, aa, kk), -cc)
+        # doubles
+        c2 = ph2 * fcivec[p0 + ri2].conj() * fcivec[rj2]
+        numpy.add.at(rdm2, (a2, i2, b2, j2), c2)
+        numpy.add.at(rdm2, (b2, j2, a2, i2), c2)
+        numpy.add.at(rdm2, (a2, j2, b2, i2), -c2)
+        numpy.add.at(rdm2, (b2, i2, a2, j2), -c2)
+    return rdm1, rdm2
+
+
+class SelectedCI(lib.StreamObject):
+    '''CI solver in an arbitrary, fixed list of determinants.
+
+    The Hamiltonian is built with Slater-Condon rules directly in the basis
+    of the given determinants and diagonalized exactly, so the full CI space
+    never needs to be enumerated.  When occslst covers the complete
+    determinant space (in cistring order) the result is identical to
+    FCISolver.
+
+    Attributes:
+        occslst: (ndet, nelec) array-like; each row lists the occupied
+            spinor orbitals of one determinant, e.g. the determinant list
+            of a preceding SHCI calculation.  CI coefficients follow the
+            order of this list.
+
+    Usage:
+        mc = zmcscf.CASSCF(mf, ncas, nelecas)
+        mc.fcisolver = zfci.SelectedCI(mol)
+        mc.fcisolver.occslst = [[0,1,2,3], [0,1,4,5], ...]
+    '''
+
+    def __init__(self, mol=None, occslst=None):
+        if mol is None:
+            self.stdout = sys.stdout
+            self.verbose = logger.NOTE
+            self.max_memory = lib.param.MAX_MEMORY
+        else:
+            self.stdout = mol.stdout
+            self.verbose = mol.verbose
+            self.max_memory = mol.max_memory
+        self.mol = mol
+        self.occslst = occslst
+        self.nroots = 1
+        self.converged = True
+        self.eci = None
+        self.ci = None
+
+    def _check_occslst(self, nelec):
+        if self.occslst is None:
+            raise RuntimeError('SelectedCI.occslst is not set')
+        occs = numpy.asarray(self.occslst)
+        if not isinstance(nelec, (int, numpy.integer)):
+            nelec = sum(nelec)
+        if occs.shape[1] != nelec:
+            raise ValueError(f'occslst has {occs.shape[1]} occupied orbitals '
+                             f'per determinant, but nelec = {nelec}')
+        return occs
+
+    def make_hmat(self, h1e, eri, norb, nelec, max_memory=None):
+        if max_memory is None:
+            max_memory = self.max_memory - lib.current_memory()[0]
+        return make_hmat_dets(h1e, eri, norb, self._check_occslst(nelec),
+                              max_memory)
+
+    def kernel(self, h1e, eri, norb, nelec, ci0=None, nroots=None,
+               ecore=0, max_memory=None, verbose=None, **kwargs):
+        if nroots is None: nroots = self.nroots
+        if max_memory is None:
+            max_memory = self.max_memory - lib.current_memory()[0]
+        log = logger.new_logger(self, verbose)
+        occs = self._check_occslst(nelec)
+        self.norb = norb
+        self.nelec = nelec
+        log.debug('Selected CI space size %d, Hamiltonian matrix %.1f MB',
+                  len(occs), len(occs)**2*16e-6)
+        self.eci, self.ci = kernel_dets(h1e, eri.reshape(norb, norb, norb, norb),
+                                        norb, occs, ecore=ecore,
+                                        nroots=min(nroots, len(occs)),
+                                        max_memory=max_memory, verbose=log)
+        self.converged = True
+        return self.eci, self.ci
+
+    def make_rdm1(self, fcivec, norb, nelec, **kwargs):
+        return make_rdm1_dets(fcivec, norb, self._check_occslst(nelec))
+
+    def make_rdm12(self, fcivec, norb, nelec, **kwargs):
+        return make_rdm12_dets(fcivec, norb, self._check_occslst(nelec))
+
+    def make_rdm2(self, fcivec, norb, nelec, **kwargs):
+        return self.make_rdm12(fcivec, norb, nelec, **kwargs)[1]
+
+    def trans_rdm1(self, cibra, ciket, norb, nelec, **kwargs):
+        return trans_rdm1_dets(cibra, ciket, norb, self._check_occslst(nelec))
 
 
 class FCISolver(fci_dhf_slow.FCISolver):
