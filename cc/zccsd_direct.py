@@ -224,6 +224,42 @@ def _cc_Wovvo(t1, t2, eris):
     return Wmbej
 
 
+def _ladder_lc(tau, eris):
+    '''Particle-particle ladder ``0.5 sum_cd <ab||cd> tau_ij^cd`` evaluated
+    AO-direct with the Liu-Cheng spin-block decomposition (J. Chem. Phys. 148,
+    034106 (2018)).
+
+    The same-spin (alpha-alpha, beta-beta) contributions use the antisymmetrized
+    same-spin AO integral ``<mu nu||si rho>`` packed on the (mu>nu, si>rho)
+    triangles -- a packed intermediate that cuts the rate limiting contraction by
+    ~4.  The result is then *unpacked* and back-transformed with the usual two
+    quarter transforms (which are cheaper unpacked).  The opposite-spin block has
+    no permutational antisymmetry and is evaluated once, in full, reusing
+    :func:`_ao_contract`.'''
+    Co, Cv, Cf = _spin_mo(eris)
+    nocc = eris.nocc
+    nao = eris.nao_sph
+    nvir = Cv[0].shape[1]
+    nij = nocc*nocc
+    pi, pj = eris.ao_tril
+    W = eris.W_same
+    res = np.zeros((nocc, nocc, nvir, nvir), dtype=tau.dtype)
+    for s in (0, 1):                          # same-spin aa, bb
+        T = einsum('se,ijef,rf->ijsr', Cv[s], tau, Cv[s]).reshape(nij, nao, nao)
+        thatp = 2.0 * lib.dot(T[:, pi, pj], W)            # packed N^6 contraction
+        that = np.zeros((nij, nao, nao), dtype=tau.dtype)
+        that[:, pi, pj] = thatp
+        that[:, pj, pi] = -thatp                          # unpack (antisymmetric)
+        that = that.reshape(nocc, nocc, nao, nao)
+        res += 0.5*einsum('ma,ijml,lb->ijab', Cv[s].conj(), that, Cv[s].conj())
+    # opposite spin (alpha-beta), one full contraction + P(ab) antisymmetrization
+    Tab = einsum('se,ijef,rf->ijsr', Cv[0], tau, Cv[1])
+    that_ab = _ao_contract(eris, Tab)
+    Iab = einsum('ma,ijmn,nb->ijab', Cv[0].conj(), that_ab, Cv[1].conj())
+    res += Iab - Iab.transpose(0, 1, 3, 2)
+    return res
+
+
 def update_t2_vvvv_direct(t1, t2, tau, eris):
     '''AO-direct analogue of :func:`gintermediates.update_t2_vvvv`.
 
@@ -232,23 +268,26 @@ def update_t2_vvvv_direct(t1, t2, tau, eris):
     and ``oovv`` contributions are identical to the in-core routine.
     '''
     nocc, nvir = t1.shape
-    Cv = _ao_spin_blocks(eris)
     t2_new = np.zeros(t2.shape, dtype=t2.dtype)
 
-    # AO-direct particle-particle ladder, blocked over the first occupied index
-    # to bound the peak memory at O(nocc * nao^2).
-    nao = eris.nao_sph
-    blk = max(1, int(2000*1e6/16/max(1, nocc*nao*nao)))
-    for i0, i1 in prange(0, nocc, blk):
-        taui = tau[i0:i1]                                   # (di,no,nv,nv)
-        ladder = np.zeros((i1-i0, nocc, nvir, nvir), dtype=t2.dtype)
-        for C1 in Cv:
-            for C2 in Cv:
-                T = einsum('ne,ijef,sf->ijns', C1, taui, C2)
-                G = _ao_contract(eris, T)
-                ladder += einsum('ma,ijml,lb->ijab', C1.conj(), G, C2.conj())
-        # 2x because <ab||ef> = (ae|bf) - (af|be) and sum_ef (af|be) tau = -sum (ae|bf) tau
-        t2_new[i0:i1] += 2.0 * ladder
+    if eris.W_same is not None:
+        # Liu-Cheng spin-block ladder with antisymmetric AO packing.
+        t2_new += 2.0 * _ladder_lc(tau, eris)
+    else:
+        # Plain spin-summed AO-direct ladder (e.g. chol mode), blocked over the
+        # first occupied index to bound peak memory.
+        Cv = _ao_spin_blocks(eris)
+        nao = eris.nao_sph
+        blk = max(1, int(2000*1e6/16/max(1, nocc*nao*nao)))
+        for i0, i1 in prange(0, nocc, blk):
+            taui = tau[i0:i1]
+            ladder = np.zeros((i1-i0, nocc, nvir, nvir), dtype=t2.dtype)
+            for C1 in Cv:
+                for C2 in Cv:
+                    T = einsum('ne,ijef,sf->ijns', C1, taui, C2)
+                    G = _ao_contract(eris, T)
+                    ladder += einsum('ma,ijml,lb->ijab', C1.conj(), G, C2.conj())
+            t2_new[i0:i1] += 2.0 * ladder
 
     tmp = _ovvv_ladder(tau, eris)
     tmp = einsum('maij,mb->baij', tmp, t1)
@@ -373,6 +412,8 @@ class _PhysicistsERIs(gccsd._PhysicistsERIs):
         self.ao_eri = None
         self.ao_chol = None
         self.E4 = None              # 4-index scalar AO ERIs (exact 'ao' mode)
+        self.W_same = None          # packed antisymmetric same-spin AO integral <mu nu||si rho>
+        self.ao_tril = None         # (mu>nu) pair indices
         self._spin_mo_cache = None
 
     def _common_init_(self, mycc, mo_coeff=None):
@@ -471,6 +512,14 @@ def _make_eris_direct(mycc, mo_coeff=None):
         eris.oovv = g_qov[:, no:].transpose(0,2,1,3) - g_qov[:, no:].transpose(0,2,3,1)
         eris.ovov = g_ovv.transpose(0,2,1,3) - g_qvo[:, no:].transpose(0,2,3,1)
         eris.ovvo = g_qvo[:, no:].transpose(0,2,1,3) - g_ovv.transpose(0,2,3,1)
+
+        # Packed antisymmetrized same-spin AO integral <mu nu||si rho> on the
+        # (mu>nu, si>rho) triangles, for the Liu-Cheng particle-particle ladder.
+        # Amplitude independent -> built once.
+        pi, pj = np.tril_indices(nao, -1)
+        eris.ao_tril = (pi, pj)
+        eris.W_same = (E[pi[:, None], pi[None, :], pj[:, None], pj[None, :]] -
+                       E[pi[:, None], pj[None, :], pj[:, None], pi[None, :]])
 
     log.timer('CCSD integral transformation (vvvv/ovvv-free)', *cput0)
     return eris
