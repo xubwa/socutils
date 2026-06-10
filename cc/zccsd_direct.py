@@ -123,20 +123,31 @@ def _ovvv_fvv(t1, eris):
 
 
 def _ovvv_wovvo(t1, eris):
-    '''sum_f t1[j,f] <mb||ef>  ->  [m,b,e,j]   (cc_Wovvo contribution).'''
+    '''sum_f t1[j,f] <mb||ef>  ->  [m,b,e,j]   (cc_Wovvo contribution).
+
+    The cheap legs are contracted first so neither an O(nao^4 nvir) nor an
+    O(nao^2 nvir^2) intermediate appears.  For the Coulomb part (me|bf) the
+    t1-dressed f index (occupied count) is contracted first; for the exchange
+    part (mf|be) the occupied bra indices are contracted first.'''
     if eris.E4 is None:
         return einsum('jf,mbef->mbej', t1, np.asarray(eris.ovvv))
     Co, Cv, Cf = _spin_mo(eris)
     E = eris.E4
     res = 0.
-    for s1 in (0, 1):
+    for s2 in (0, 1):                                  # Coulomb (me|bf)
+        dt = t1 @ Cv[s2].T                             # [j,sigma]
+        Ej = einsum('unls,js->unlj', E, dt)            # sigma -> j  (occ first)
+        for s1 in (0, 1):
+            A1 = einsum('um,unlj->mnlj', Co[s1].conj(), Ej)
+            A2 = einsum('ne,mnlj->melj', Cv[s1], A1)
+            res = res + einsum('melj,lb->mbej', A2, Cv[s2].conj())
+    for s1 in (0, 1):                                  # exchange (mf|be)
+        dt1 = t1 @ Cv[s1].T                            # [j,nu]
+        Em = einsum('um,unls->mnls', Co[s1].conj(), E)  # mu -> m  (occ first)
+        Emj = einsum('jn,mnls->mjls', dt1, Em)         # nu -> j
         for s2 in (0, 1):
-            dt = einsum('jf,sf->js', t1, Cv[s2])
-            R = einsum('unls,lb,js->unbj', E, Cv[s2].conj(), dt)
-            res = res + einsum('um,ne,unbj->mbej', Co[s1].conj(), Cv[s1], R)
-            dt1 = einsum('jf,nf->jn', t1, Cv[s1])
-            Rb = einsum('unls,lb,se->unbe', E, Cv[s2].conj(), Cv[s2])
-            res = res - einsum('um,jn,unbe->mbej', Co[s1].conj(), dt1, Rb)
+            Eb = einsum('mjls,lb->mjbs', Emj, Cv[s2].conj())
+            res = res - einsum('mjbs,se->mbej', Eb, Cv[s2])
     return res
 
 
@@ -179,11 +190,13 @@ def _ovvv_t2(t1, eris):
     Co, Cv, Cf = _spin_mo(eris)
     E = eris.E4
     A5 = 0.
-    for s1 in (0, 1):
-        for s2 in (0, 1):
-            dt = einsum('ie,le->il', t1, Cv[s2])
-            R = einsum('unls,il,sa->unia', E, dt, Cv[s2].conj())
-            A5 = A5 + einsum('uj,nb,unia->ijab', Co[s1], Cv[s1].conj(), R)
+    for s2 in (0, 1):
+        dt = einsum('ie,le->il', t1, Cv[s2])             # [i,lambda]
+        Ei = einsum('unls,il->unis', E, dt)              # lambda -> i  (occ first)
+        R = einsum('unis,sa->unia', Ei, Cv[s2].conj())   # [u,n,i,a]
+        for s1 in (0, 1):
+            R1 = einsum('uj,unia->jnia', Co[s1], R)      # u->j
+            A5 = A5 + einsum('nb,jnia->ijab', Cv[s1].conj(), R1)  # n->b
     return A5 - A5.transpose(0, 1, 3, 2)
 
 
