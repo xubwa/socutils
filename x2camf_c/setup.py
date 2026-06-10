@@ -57,7 +57,8 @@ class CMakeBuild(build_ext):
 setup(
     name='x2camf-c',
     version='0.1',
-    description='ctypes interface to the X2CAMF code (C ABI, no pybind11)',
+    description='pure-C reimplementation of the X2CAMF code with a ctypes '
+                'interface (no C++, no pybind11)',
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
     packages=find_packages(),

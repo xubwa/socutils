@@ -1,55 +1,55 @@
 # x2camf-c
 
-A plain-C (`extern "C"`) interface to the
-[X2CAMF](https://github.com/Warlocat/x2camf) code, together with a Python
-binding based on **ctypes** instead of pybind11.
+A **pure-C reimplementation** of the [X2CAMF](https://github.com/Warlocat/x2camf)
+code, with a Python binding based on **ctypes**.
 
-The upstream X2CAMF C++ core is reused unchanged as a git submodule
-(`external/x2camf`); this repository adds
+The original X2CAMF is C++ (Eigen + pybind11). This project is a faithful,
+function-by-function C99 translation of its computational core, so the
+result is plain C that links only against BLAS/LAPACK and libm — no C++
+runtime, no Eigen, no pybind11. That makes it straightforward to
+contribute upstream to projects that only accept C extensions (e.g. the
+PySCF main line) and to call from any language with a C FFI.
 
-- `c_api/` — a C ABI layer (`x2camf_c.h` / `x2camf_c.cpp`) exposing the
-  three entry points of the pybind11 module (`amfi`, `atm_integrals`,
-  `pcc_K`) with only `int`/`double` scalars and arrays. The resulting
-  shared library `libx2camf_c.so` has **no Python or pybind11 dependency**
-  and can be called from any language with a C FFI (C, Fortran, Julia,
-  Rust, ...).
-- `x2camf/` — a Python package that loads the library via `ctypes` and is
-  a **drop-in replacement** for the pybind11-based `x2camf` package: it
-  provides the same `x2camf.amfi(x2cobj, ...)`, `x2camf.x2camf.pcc_k`,
-  `x2camf.x2camf.construct_molecular_matrix` and `x2camf.libx2camf.*`
-  APIs, so downstream code such as
-  [socutils](https://github.com/xubwa/socutils) works without any change.
+## What is translated
 
-Because the build no longer embeds CPython, one compiled library works for
-every Python version (no more rebuilds when switching interpreters), and
-the same binary can serve non-Python consumers.
+The C sources in `csrc/` correspond 1:1 to the upstream C++ sources:
 
-## Installation
+| C++ (`x2camf/src`) | C (`csrc`) | contents |
+|---|---|---|
+| Eigen `MatrixXd`, `SelfAdjointEigenSolver`, ... | `x2c_mat.{h,c}` | dense matrix layer over LAPACK (`dsyev`, `dgetrf/dgetri`, `dgesv`) |
+| `general.cpp` | `x2c_general.{h,c}` | Wigner 3j/6j/9j, `factorial`, X2C transforms, `Rotate::unite_irrep*`, `elem_list` |
+| `int_sph_basic.cpp` | `x2c_int_sph_basic.c` | `INT_SPH` ctor, auxiliary radial integrals |
+| `int_sph.cpp` | `x2c_int_sph.c` | 1e integrals, Coulomb 2e (J/K) |
+| `int_sph_gaunt.cpp` | `x2c_int_sph_gaunt.c` | Gaunt integrals (incl. spin-free) |
+| `int_sph_gauge.cpp` | `x2c_int_sph_gauge.c` | gauge/Breit integrals |
+| `dhf_sph.cpp` | `x2c_dhf_sph.c` | 4c/2c Dirac-HF SCF, DIIS, AMFI |
+| `dhf_sph_ca.cpp` | `x2c_dhf_sph_ca.c` | average-of-configuration open-shell DHF |
+| `dhf_sph_pcc.cpp` | `x2c_dhf_sph_pcc.c` | x2c2e picture-change correction |
+| `executables/pyx2camf.cpp` | `c_api/x2camf_c.{h,c}` | the public C ABI (`x2camf_amfi`, `x2camf_atm_integrals`, `x2camf_pcc_k`) |
+
+Members not reachable from the three entry points (GENBAS reader,
+`basisGenerator`, `radialDensity`, `coreIonization`, CFOUR interface) are
+intentionally not translated.
+
+## Building
+
+Requirements: a C99 compiler, BLAS + LAPACK, OpenMP (optional), numpy
+(for the Python binding). `pyscf` is only needed for the high-level
+molecular interface.
 
 ```bash
-git clone --recurse-submodules <this-repo>
-# or, after a plain clone:
-git submodule update --init external/x2camf
-cd external/x2camf && git submodule update --init eigen && cd ../..
+# direct build of the shared library
+./build_c.sh                 # -> build_c/libx2camf_c.so
 
+# or via CMake
+mkdir build && cd build && cmake .. && make -j
+
+# or as a Python package
 pip install .
 ```
 
-Requirements: a C++11 compiler, CMake >= 3.9, numpy. OpenMP is used when
-available. `pyscf` is only needed for the high-level molecular interface
-(`x2camf.amfi(x2cobj, ...)`); the low-level `x2camf.libx2camf` works with
-numpy alone.
-
-### Library only (no Python)
-
-```bash
-mkdir build && cd build
-cmake .. && make -j
-# -> libx2camf_c.so, header in c_api/x2camf_c.h
-```
-
-If the library is not installed inside the Python package directory, point
-the binding at it with the environment variable
+If the library is not inside the Python package directory, point the
+binding at it:
 
 ```bash
 export X2CAMF_C_LIBRARY=/path/to/libx2camf_c.so
@@ -57,7 +57,9 @@ export X2CAMF_C_LIBRARY=/path/to/libx2camf_c.so
 
 ## Usage
 
-### From Python (identical to the pybind11 package)
+The Python API is a drop-in replacement for the pybind11 `x2camf`
+package, so downstream code such as
+[socutils](https://github.com/xubwa/socutils) works unchanged:
 
 ```python
 from pyscf import gto
@@ -68,54 +70,29 @@ mol = gto.M(atom='S 0 0 0', basis='unc-cc-pvtz')
 amf = x2camf.amfi(x2c.X2C(mol), with_gaunt=True, with_gauge=True)
 ```
 
-Low level, numpy only:
+Low level (numpy only) and from C — see `tests/` and `examples/`.
 
-```python
-from x2camf import libx2camf
-results = libx2camf.amfi(soc_int_flavor, atom_number, nshell, nbas,
-                         print_level, shell, exp_a)
-```
+All output matrices are row-major (C order); 2c matrices are `n2c x n2c`,
+4c matrices `2*n2c x 2*n2c` with `n2c = sum_i (4*l_i + 2)`. Functions
+return `0` on success; `x2camf_error_message()` decodes error codes.
 
-### From C
+## Validation
 
-See `examples/amfi_from_c.c`:
-
-```c
-#include "x2camf_c.h"
-int n2c = x2camf_n2c(nbas, shell);
-double *amfi = malloc(n2c * n2c * sizeof(double));
-int ierr = x2camf_amfi(flavor, atom_number, nshell, nbas, 0,
-                       shell, exp_a, X2CAMF_SPEED_OF_LIGHT_DEFAULT, amfi);
-```
-
-All output matrices are written row-major (C order) into caller-allocated
-buffers; two-component matrices are `n2c x n2c`, four-component ones
-`2*n2c x 2*n2c` with `n2c = sum_i (4*l_i + 2)`. Functions return `0` on
-success; `x2camf_error_message()` decodes error codes.
-
-## Testing
+`tests/test_against_cpp.py` compares every entry point and flavor against
+the original pybind11 module (built from upstream x2camf and importable as
+`libx2camf`):
 
 ```bash
-python tests/test_smoke.py        # numpy only
+PYTHONPATH=/path/to/x2camf/build \
+X2CAMF_C_LIBRARY=$PWD/build_c/libx2camf_c.so \
+python tests/test_against_cpp.py          # O smoke test + heavy d/f atom
+# stress an open f-shell (AOC) atom:
+X2CAMF_TEST_Z=60 python tests/test_against_cpp.py
 ```
 
-The ctypes interface has been verified to produce bit-for-bit identical
-matrices to the pybind11 module for `amfi` (Coulomb / Gaunt / gauge / 4c /
-average-of-configuration flavors), `pcc_K` and all 13 matrices of
-`atm_integrals` (including `spin_free=True`).
-
-## Note: extracting to a standalone repository
-
-This directory is staged inside socutils because the session could not
-create a new GitHub repository. To publish it standalone:
-
-```bash
-# from a socutils checkout of this branch
-git subtree split --prefix=x2camf_c -b x2camf-c-main
-git push git@github.com:<you>/x2camf-c.git x2camf-c-main:main
-# then, in a clone of the new repo, register the upstream core as a
-# submodule (the gitlink itself is not carried through the subtree split):
-git submodule add https://github.com/Warlocat/x2camf.git external/x2camf
-cd external/x2camf && git submodule update --init eigen && cd ../..
-git commit -m "Add x2camf core submodule"
-```
+Verified agreement with the C++/Eigen implementation to better than
+3e-9 (LAPACK-vs-Eigen round-off through the SCF) for O, Xe and Nd across
+all flavors — Coulomb, Gaunt, gauge, 4c, average-of-configuration, PT,
+PCC, SD-Gaunt — and all 13 `atm_integrals` matrices (spin-free and
+spin-dependent). `tests/test_smoke.py` runs without pyscf or the C++
+reference.
