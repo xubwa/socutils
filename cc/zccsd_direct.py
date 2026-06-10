@@ -76,6 +76,141 @@ def _ao_contract(eris, T):
     return G.reshape(*lead, nao, nao)
 
 
+# ---------------------------------------------------------------------------
+# AO-direct evaluation of the ovvv (<ma||ef>) contractions.
+#
+# When ``eris.E4`` is set (exact 'ao' mode) ``ovvv`` is never built; the five
+# contractions below are evaluated as generalised J/K builds with the scalar
+# AO Coulomb operator, folding the amplitudes into nao x nao densities so no
+# nvir^3 intermediate ever appears.  When ``ovvv`` is stored ('chol' mode) the
+# plain einsum contractions are used.
+# ---------------------------------------------------------------------------
+
+def _spin_mo(eris):
+    '''Occupied/virtual/full MO coefficients in the (scalar AO x spin) basis,
+    one matrix per spin component.'''
+    if eris._spin_mo_cache is None:
+        nocc = eris.nocc
+        nao = eris.nao_sph
+        Ca, Cb = eris.mo_ao_spin[:nao], eris.mo_ao_spin[nao:]
+        Co = [Ca[:, :nocc], Cb[:, :nocc]]
+        Cv = [Ca[:, nocc:], Cb[:, nocc:]]
+        Cf = [Ca, Cb]
+        eris._spin_mo_cache = (Co, Cv, Cf)
+    return eris._spin_mo_cache
+
+
+def _ovvv_fvv(t1, eris):
+    '''sum_mf t1[m,f] <ma||fe>  ->  [a,e]   (cc_Fvv contribution).'''
+    if eris.E4 is None:
+        return einsum('mf,amef->ae', t1, np.asarray(eris.ovvv).transpose(1, 0, 3, 2))
+    Co, Cv, Cf = _spin_mo(eris)
+    E = eris.E4
+    J = 0.
+    for s in (0, 1):
+        T1m = Co[s].conj() @ t1 @ Cv[s].T
+        J = J + einsum('uv,uvls->ls', T1m, E)
+    partA = 0.
+    for s in (0, 1):
+        partA = partA + einsum('ls,la,se->ae', J, Cv[s].conj(), Cv[s])
+    partB = 0.
+    for s1 in (0, 1):
+        for s2 in (0, 1):
+            K = Co[s1].conj() @ t1 @ Cv[s2].T
+            Ex = einsum('us,unls->nl', K, E)
+            partB = partB + einsum('nl,ne,la->ae', Ex, Cv[s1], Cv[s2].conj())
+    return partA - partB
+
+
+def _ovvv_wovvo(t1, eris):
+    '''sum_f t1[j,f] <mb||ef>  ->  [m,b,e,j]   (cc_Wovvo contribution).'''
+    if eris.E4 is None:
+        return einsum('jf,mbef->mbej', t1, np.asarray(eris.ovvv))
+    Co, Cv, Cf = _spin_mo(eris)
+    E = eris.E4
+    res = 0.
+    for s1 in (0, 1):
+        for s2 in (0, 1):
+            dt = einsum('jf,sf->js', t1, Cv[s2])
+            R = einsum('unls,lb,js->unbj', E, Cv[s2].conj(), dt)
+            res = res + einsum('um,ne,unbj->mbej', Co[s1].conj(), Cv[s1], R)
+            dt1 = einsum('jf,nf->jn', t1, Cv[s1])
+            Rb = einsum('unls,lb,se->unbe', E, Cv[s2].conj(), Cv[s2])
+            res = res - einsum('um,jn,unbe->mbej', Co[s1].conj(), dt1, Rb)
+    return res
+
+
+def _ovvv_ladder(tau, eris):
+    '''sum_ef <ma||ef> tau[i,j,e,f]  ->  [m,a,i,j]   (ladder ovvv term).'''
+    if eris.E4 is None:
+        return einsum('maef,ijef->maij', np.asarray(eris.ovvv), tau)
+    Co, Cv, Cf = _spin_mo(eris)
+    E = eris.E4
+    res = 0.
+    for s1 in (0, 1):
+        for s2 in (0, 1):
+            tauAO = einsum('ne,ijef,sf->ijns', Cv[s1], tau, Cv[s2])
+            G = einsum('ijns,unls->ijul', tauAO, E)
+            res = res + 2.0*einsum('ijul,um,la->maij', G, Co[s1].conj(), Cv[s2].conj())
+    return res
+
+
+def _ovvv_t1(t2, eris):
+    '''sum_mef t2[i,m,e,f] <ma||ef>  ->  [i,a]   (T1 contribution).'''
+    if eris.E4 is None:
+        return einsum('imef,maef->ia', t2, np.asarray(eris.ovvv))
+    Co, Cv, Cf = _spin_mo(eris)
+    E = eris.E4
+    res = 0.
+    for s1 in (0, 1):
+        for s2 in (0, 1):
+            te = einsum('ne,imef->imnf', Cv[s1], t2)
+            tef = einsum('imnf,sf->imns', te, Cv[s2])
+            D = einsum('um,imns->iuns', Co[s1].conj(), tef)
+            G = einsum('iuns,unls->il', D, E)
+            res = res + 2.0*einsum('il,la->ia', G, Cv[s2].conj())
+    return res
+
+
+def _ovvv_t2(t1, eris):
+    '''sum_e t1[i,e] <je||ba>.conj()  ->  [i,j,a,b]   (T2 contribution).'''
+    if eris.E4 is None:
+        return einsum('ie,jeba->ijab', t1, np.asarray(eris.ovvv).conj())
+    Co, Cv, Cf = _spin_mo(eris)
+    E = eris.E4
+    A5 = 0.
+    for s1 in (0, 1):
+        for s2 in (0, 1):
+            dt = einsum('ie,le->il', t1, Cv[s2])
+            R = einsum('unls,il,sa->unia', E, dt, Cv[s2].conj())
+            A5 = A5 + einsum('uj,nb,unia->ijab', Co[s1], Cv[s1].conj(), R)
+    return A5 - A5.transpose(0, 1, 3, 2)
+
+
+def _cc_Fvv(t1, t2, eris):
+    '''cc_Fvv with the ovvv term evaluated AO-direct (see :func:`_ovvv_fvv`).'''
+    nocc, nvir = t1.shape
+    fov = eris.fock[:nocc, nocc:]
+    fvv = eris.fock[nocc:, nocc:]
+    tau_tilde = imd.make_tau(t2, t1, t1, fac=0.5)
+    Fae = fvv - 0.5*einsum('me,ma->ae', fov, t1)
+    Fae += _ovvv_fvv(t1, eris)
+    Fae -= 0.5*einsum('mnaf,mnef->ae', tau_tilde, eris.oovv)
+    return Fae
+
+
+def _cc_Wovvo(t1, t2, eris):
+    '''cc_Wovvo with the ovvv term evaluated AO-direct (see :func:`_ovvv_wovvo`).'''
+    eris_ovvo = -np.asarray(eris.ovov).transpose(0, 1, 3, 2)
+    eris_oovo = -np.asarray(eris.ooov).transpose(0, 1, 3, 2)
+    Wmbej = _ovvv_wovvo(t1, eris)
+    Wmbej -= einsum('nb,mnej->mbej', t1, eris_oovo)
+    Wmbej -= 0.5*einsum('jnfb,mnef->mbej', t2, eris.oovv)
+    Wmbej -= einsum('jf,nb,mnef->mbej', t1, t1, eris.oovv)
+    Wmbej += eris_ovvo
+    return Wmbej
+
+
 def update_t2_vvvv_direct(t1, t2, tau, eris):
     '''AO-direct analogue of :func:`gintermediates.update_t2_vvvv`.
 
@@ -102,8 +237,7 @@ def update_t2_vvvv_direct(t1, t2, tau, eris):
         # 2x because <ab||ef> = (ae|bf) - (af|be) and sum_ef (af|be) tau = -sum (ae|bf) tau
         t2_new[i0:i1] += 2.0 * ladder
 
-    eris_ovvv = np.asarray(eris.ovvv)
-    tmp = einsum('maef,ijef->maij', eris_ovvv, tau)
+    tmp = _ovvv_ladder(tau, eris)
     tmp = einsum('maij,mb->baij', tmp, t1)
     t2_new += einsum('baij->ijab', tmp) - einsum('baij->ijba', tmp)
     tmp = einsum('mnef,ijef->mnij', 0.25*np.asarray(eris.oovv), tau)
@@ -123,11 +257,11 @@ def update_amps(cc, t1, t2, eris):
 
     tau = imd.make_tau(t2, t1, t1)
 
-    Fvv = imd.cc_Fvv(t1, t2, eris)
+    Fvv = _cc_Fvv(t1, t2, eris)
     Foo = imd.cc_Foo(t1, t2, eris)
     Fov = imd.cc_Fov(t1, t2, eris)
     Woooo = imd.cc_Woooo(t1, t2, eris)
-    Wovvo = imd.cc_Wovvo(t1, t2, eris)
+    Wovvo = _cc_Wovvo(t1, t2, eris)
 
     Fvv[np.diag_indices(nvir)] -= mo_e_v
     Foo[np.diag_indices(nocc)] -= mo_e_o
@@ -137,7 +271,7 @@ def update_amps(cc, t1, t2, eris):
     t1new += -einsum('ma,mi->ia', t1, Foo)
     t1new += einsum('imae,me->ia', t2, Fov)
     t1new += -einsum('nf,naif->ia', t1, eris.ovov)
-    t1new += -0.5*einsum('imef,maef->ia', t2, eris.ovvv)
+    t1new += -0.5*_ovvv_t1(t2, eris)
     t1new += -0.5*einsum('mnae,mnie->ia', t2, eris.ooov)
     t1new += fov.conj()
 
@@ -156,7 +290,7 @@ def update_amps(cc, t1, t2, eris):
     tmp = tmp - tmp.transpose(1, 0, 2, 3)
     tmp = tmp - tmp.transpose(0, 1, 3, 2)
     t2new += tmp
-    tmp = einsum('ie,jeba->ijab', t1, np.array(eris.ovvv).conj())
+    tmp = _ovvv_t2(t1, eris)
     t2new += (tmp - tmp.transpose(1, 0, 2, 3))
     tmp = einsum('ma,ijmb->ijab', t1, np.asarray(eris.ooov).conj())
     t2new -= (tmp - tmp.transpose(0, 1, 3, 2))
@@ -220,11 +354,13 @@ class _PhysicistsERIs(gccsd._PhysicistsERIs):
         self.oooo = self.ooov = self.oovv = None
         self.ovvo = self.ovov = self.ovvv = None
         self.vvvv = None
-        # AO-direct ladder data
+        # AO-direct ladder / ovvv data
         self.mo_ao_spin = None
         self.nao_sph = None
         self.ao_eri = None
         self.ao_chol = None
+        self.E4 = None              # 4-index scalar AO ERIs (exact 'ao' mode)
+        self._spin_mo_cache = None
 
     def _common_init_(self, mycc, mo_coeff=None):
         if mo_coeff is None:
@@ -282,35 +418,48 @@ def _make_eris_direct(mycc, mo_coeff=None):
                    einsum('cmn,mp,nq->cpq', Lc, mob.conj(), mob))
         _eris_from_cholmo(eris, chol_mo, nocc)
     else:
-        # Exact integrals.  Transform only the occupied-row chemist integrals
-        # (orbo, mo, mo, mo) with pyscf's optimised sph->j-spinor AO2MO (C
-        # code + 8-fold AO symmetry), then assemble the antisymmetrized blocks.
-        # vvvv is never transformed.
-        mo = eris.mo_coeff
-        nmo = mo.shape[1]
-        orbo = mo[:, :nocc]
-        feri = lib.H5TmpFile()
-        nrr_outcore.general(mol, (orbo, mo, mo, mo), feri, 'eri',
-                            intor='int2e_sph', motype='j-spinor',
-                            max_memory=mycc.max_memory, verbose=mycc.verbose)
-        g = np.asarray(feri['eri']).reshape(nocc, nmo, nmo, nmo)  # (iq|rs) chemist
-        feri = None
-        no = nocc
-        eris.oooo = g[:,:no,:no,:no].transpose(0,2,1,3) - g[:,:no,:no,:no].transpose(0,2,3,1)
-        eris.ooov = g[:,:no,:no,no:].transpose(0,2,1,3) - g[:,no:,:no,:no].transpose(0,2,3,1)
-        eris.oovv = g[:,no:,:no,no:].transpose(0,2,1,3) - g[:,no:,:no,no:].transpose(0,2,3,1)
-        eris.ovov = g[:,:no,no:,no:].transpose(0,2,1,3) - g[:,no:,no:,:no].transpose(0,2,3,1)
-        eris.ovvo = g[:,no:,no:,:no].transpose(0,2,1,3) - g[:,:no,no:,no:].transpose(0,2,3,1)
-        eris.ovvv = g[:,no:,no:,no:].transpose(0,2,1,3) - g[:,no:,no:,no:].transpose(0,2,3,1)
-        g = None
-        # Scalar AO Coulomb operator for the ladder, stored as
-        # [(nu,sigma), (mu,lambda)] so the contraction is a single GEMM:
-        # G[mu,lambda] = sum_{nu,sigma} (mu nu | lambda sigma) T[nu,sigma].
-        eri = mol.intor('int2e_sph').reshape(nao, nao, nao, nao)
-        eris.ao_eri = eri.transpose(1, 3, 0, 2).reshape(nao*nao, nao*nao).copy()
+        # Exact integrals, AO-direct ovvv: only blocks with at most two virtual
+        # indices are transformed (oooo, ooov, oovv, ovov, ovvo).  Neither vvvv
+        # nor ovvv is ever formed -- the ovvv terms are evaluated AO-direct from
+        # eris.E4 during the iterations.
+        E = mol.intor('int2e_sph').reshape(nao, nao, nao, nao)
+        eris.E4 = E
+        # ladder operator, [(nu,sigma),(mu,lambda)] layout for a single GEMM
+        eris.ao_eri = E.transpose(1, 3, 0, 2).reshape(nao*nao, nao*nao).copy()
         eris.ao_chol = None
+        eris.ovvv = None
 
-    log.timer('CCSD integral transformation (vvvv-free)', *cput0)
+        Ca, Cb = mog[:nao], mog[nao:]
+        Co = [Ca[:, :nocc], Cb[:, :nocc]]
+        Cv = [Ca[:, nocc:], Cb[:, nocc:]]
+        Cf = [Ca, Cb]
+        # Shared electron-1 half transform: H[i,q,lambda,sigma], i occ, q full.
+        H = 0.
+        for s in (0, 1):
+            t = einsum('mi,mnls->inls', Co[s].conj(), E)
+            H = H + einsum('inls,nq->iqls', t, Cf[s])
+
+        def e2(Hx, Cr, Cs):
+            '''Finish the electron-2 transform of Hx onto the (Cr, Cs) ket.'''
+            out = 0.
+            for s in (0, 1):
+                u = einsum('iqls,lr->iqrs', Hx, Cr[s].conj())
+                out = out + einsum('iqrs,st->iqrt', u, Cs[s])
+            return out
+
+        no = nocc
+        g_qoo = e2(H, Co, Co)              # (i, q, o, o)
+        g_qov = e2(H, Co, Cv)             # (i, q, o, v)
+        g_qvo = e2(H, Cv, Co)             # (i, q, v, o)
+        g_ovv = e2(H[:, :no], Cv, Cv)     # (i, o, v, v)  (q restricted to occ)
+        H = None
+        eris.oooo = g_qoo[:, :no].transpose(0,2,1,3) - g_qoo[:, :no].transpose(0,2,3,1)
+        eris.ooov = g_qov[:, :no].transpose(0,2,1,3) - g_qoo[:, no:].transpose(0,2,3,1)
+        eris.oovv = g_qov[:, no:].transpose(0,2,1,3) - g_qov[:, no:].transpose(0,2,3,1)
+        eris.ovov = g_ovv.transpose(0,2,1,3) - g_qvo[:, no:].transpose(0,2,3,1)
+        eris.ovvo = g_qvo[:, no:].transpose(0,2,1,3) - g_ovv.transpose(0,2,3,1)
+
+    log.timer('CCSD integral transformation (vvvv/ovvv-free)', *cput0)
     return eris
 
 
