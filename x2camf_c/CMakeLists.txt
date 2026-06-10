@@ -35,17 +35,29 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
-# BLAS / LAPACK. Honour a user-provided BLAS_LIBRARIES, otherwise let
-# find_package locate it; -DBLA_VENDOR=OpenBLAS (or Intel10_64lp, ...)
-# selects a threaded vendor library, which also parallelizes the dense
-# linear algebra (dgemm/dsyev/...) on top of the OpenMP integral loops.
+# BLAS / LAPACK. Honour a user-provided BLAS_LIBRARIES (e.g. the common
+# MKL single-dynamic-library form  -DBLAS_LIBRARIES=mkl_rt , or OpenBLAS),
+# otherwise let find_package locate it; -DBLA_VENDOR=OpenBLAS (or
+# Intel10_64lp, ...) selects a threaded vendor library, which also
+# parallelizes the dense linear algebra (dgemm/dsyev/...) on top of the
+# OpenMP integral loops.
+set(_blas_user_provided TRUE)
 if (NOT BLAS_LIBRARIES)
+  set(_blas_user_provided FALSE)
   find_package(BLAS REQUIRED)
   message(STATUS "BLAS libraries: ${BLAS_LIBRARIES}")
 endif()
 if (NOT LAPACK_LIBRARIES)
-  find_package(LAPACK REQUIRED)
-  message(STATUS "LAPACK libraries: ${LAPACK_LIBRARIES}")
+  if (_blas_user_provided)
+    # An explicitly supplied BLAS is assumed self-contained: mkl_rt and
+    # OpenBLAS both provide the LAPACK routines (dsyev/dgetrf/dgetri/dgesv)
+    # we need, so do not drag in a separate reference LAPACK.
+    set(LAPACK_LIBRARIES "")
+    message(STATUS "Using user BLAS_LIBRARIES for LAPACK too: ${BLAS_LIBRARIES}")
+  else()
+    find_package(LAPACK REQUIRED)
+    message(STATUS "LAPACK libraries: ${LAPACK_LIBRARIES}")
+  endif()
 endif()
 
 # OpenMP (parallelizes the 2e-integral and Fock-build loops)

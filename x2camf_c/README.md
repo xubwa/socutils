@@ -43,7 +43,24 @@ molecular interface.
 
 # or via CMake
 mkdir build && cd build && cmake .. && make -j
+```
 
+BLAS/LAPACK selection follows the PySCF conventions. The default
+auto-detects a BLAS and LAPACK. To use an optimized, threaded library
+(which also parallelizes the dense linear algebra on top of the OpenMP
+integral loops), either name it explicitly or pick a vendor:
+
+```bash
+cmake .. -DBLAS_LIBRARIES=mkl_rt          # Intel MKL single dynamic lib
+cmake .. -DBLA_VENDOR=OpenBLAS            # OpenBLAS
+cmake .. -DBLA_VENDOR=Intel10_64lp        # MKL (LP64) via FindBLAS
+```
+
+A user-supplied `BLAS_LIBRARIES` (e.g. `mkl_rt`) is assumed to also
+provide LAPACK, so no separate reference LAPACK is linked. OpenMP is on by
+default; disable with `-DENABLE_OPENMP=OFF`.
+
+```bash
 # or as a Python package
 pip install .
 ```
