@@ -14,6 +14,12 @@ extern void dgetri_(const int* n, double* a, const int* lda, const int* ipiv,
                     double* work, const int* lwork, int* info);
 extern void dgesv_(const int* n, const int* nrhs, double* a, const int* lda,
                    int* ipiv, double* b, const int* ldb, int* info);
+/* BLAS (Fortran, column-major) */
+extern void dgemm_(const char* transa, const char* transb, const int* m,
+                   const int* n, const int* k, const double* alpha,
+                   const double* a, const int* lda, const double* b,
+                   const int* ldb, const double* beta, double* c,
+                   const int* ldc);
 
 static void* xmalloc(size_t n)
 {
@@ -86,16 +92,18 @@ mat_t mat_mul(mat_t A, mat_t B)
                 A.rows, A.cols, B.rows, B.cols);
         exit(99);
     }
-    mat_t C = mat_new(A.rows, B.cols);
-    for (int i = 0; i < A.rows; i++)
-        for (int k = 0; k < A.cols; k++)
-        {
-            const double aik = M(A, i, k);
-            if (aik == 0.0) continue;
-            const double* brow = &B.d[(size_t)k * B.cols];
-            double* crow = &C.d[(size_t)i * C.cols];
-            for (int j = 0; j < B.cols; j++) crow[j] += aik * brow[j];
-        }
+    const int m = A.rows, n = B.cols, k = A.cols;
+    mat_t C = mat_new(m, n); /* zero initialized */
+    if (m == 0 || n == 0 || k == 0) return C;
+
+    /* C (row major, m x n) = A (m x k) * B (k x n) via column-major dgemm.
+       A row-major buffer read column-major is A^T, likewise B; computing
+       C^T = B^T * A^T in column-major writes exactly the row-major C:
+         dgemm('N','N', n, m, k, 1, B, n, A, k, 0, C, n). dgemm is
+       reentrant, so this is safe to call concurrently from different
+       threads on thread-private matrices. */
+    const double alpha = 1.0, beta = 0.0;
+    dgemm_("N", "N", &n, &m, &k, &alpha, B.d, &n, A.d, &k, &beta, C.d, &n);
     return C;
 }
 
