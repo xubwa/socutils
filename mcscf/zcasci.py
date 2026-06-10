@@ -140,12 +140,14 @@ def kernel(casci, mo_coeff=None, ci0=None, verbose=logger.NOTE):
     if h1eff.shape[0] != ncas:
         raise RuntimeError(f'Active space size error. nmo={mo_coeff.shape[1]:%d} ncore={casci.ncore:%d} ncas={ncas:%d}')
     # FCI
-    fcidump_rel.from_integrals('FCIDUMP', h1eff, eri_cas.reshape(ncas*ncas, ncas*ncas), ncas, nelecas, energy_core.real)
-    print('integral written')
+    # Dice-based solvers (socutils.hci.shci) read the integrals from an
+    # FCIDUMP file instead of taking them through the kernel arguments.
+    if hasattr(casci.fcisolver, 'fci_exe'):
+        fcidump_rel.from_integrals('FCIDUMP', h1eff, eri_cas.reshape(ncas*ncas, ncas*ncas),
+                                   ncas, nelecas, energy_core.real)
+        log.debug('FCIDUMP written for external CI solver')
     max_memory = max(4000, casci.max_memory - lib.current_memory()[0])
-    from pyscf import fci
-    from socutils.hci import shci
-    
+
     e_tot, fcivec = casci.fcisolver.kernel(h1eff, eri_cas.reshape(ncas, ncas, ncas, ncas), ncas, nelecas,
                                            ci0=ci0, verbose=5, max_memory=max_memory, ecore=energy_core)
     
