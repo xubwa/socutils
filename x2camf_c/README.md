@@ -113,7 +113,9 @@ create a new GitHub repository. To publish it standalone:
 # from a socutils checkout of this branch
 git subtree split --prefix=x2camf_c -b x2camf-c-main
 git push git@github.com:<you>/x2camf-c.git x2camf-c-main:main
-# then, in the new repo:
-git submodule update --init external/x2camf
-cd external/x2camf && git submodule update --init eigen
+# then, in a clone of the new repo, register the upstream core as a
+# submodule (the gitlink itself is not carried through the subtree split):
+git submodule add https://github.com/Warlocat/x2camf.git external/x2camf
+cd external/x2camf && git submodule update --init eigen && cd ../..
+git commit -m "Add x2camf core submodule"
 ```
