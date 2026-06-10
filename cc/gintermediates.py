@@ -95,6 +95,77 @@ def update_t2_vvvv(t1, t2, tau, eris):
     t2_new += einsum('mnij,mnab->ijab', tmp, tau)
     return 0.5*t2_new
 
+def _make_vvvv_tril(eris):
+    '''Pack the antisymmetrized particle-particle integrals ``<ab||ef>`` onto
+    the (a>b, e>f) triangles, storing the result as a ``(npair, npair)`` matrix
+    in a scratch file cached on ``eris``.
+
+    The packing reads ``eris.vvvv`` from disk one ``a`` block at a time so the
+    peak memory stays the same as the full contraction, and it is built only
+    once per set of integrals (the cost is amortized over the CCSD iterations).
+    '''
+    nv = eris.vvvv.shape[0]
+    ti, tj = np.tril_indices(nv, -1)
+    npair = ti.size
+    dtype = np.asarray(eris.vvvv[0]).dtype
+    feri = lib.H5TmpFile()
+    vvvv_tril = feri.create_dataset('vvvv_tril', (npair, npair), dtype.char)
+
+    nblk = max(1, int(4000*1e6/16/nv**3))
+    for a0, a1 in prange(0, nv, nblk):
+        vblk_p = np.asarray(eris.vvvv[a0:a1])[:, :, ti, tj]  # (da,nv,npair)
+        rows = np.where((ti >= a0) & (ti < a1))[0]           # contiguous range
+        if rows.size == 0:
+            continue
+        vvvv_tril[rows[0]:rows[-1]+1] = vblk_p[ti[rows]-a0, tj[rows], :]
+    # Keep the scratch file alive for the lifetime of eris.
+    eris._vvvv_tril_file = feri
+    eris.vvvv_tril = vvvv_tril
+    eris.vvvv_tril_idx = (ti, tj)
+    return eris
+
+def update_t2_vvvv_sym(t1, t2, tau, eris):
+    '''Same as :func:`update_t2_vvvv` but exploits the four-fold permutational
+    antisymmetry of the antisymmetrized integrals ``<ab||ef>`` in the rate
+    limiting particle-particle ladder term
+
+        0.5 * sum_{ef} <ab||ef> tau_{ij}^{ef}.
+
+    Because ``<ab||ef> = -<ba||ef> = -<ab||fe> = <ba||fe>`` and tau is
+    antisymmetric in its virtual pair, the summation over the full (e,f) plane
+    can be folded onto the e>f triangle (a factor of two) and the result, being
+    antisymmetric in (a,b), only needs to be evaluated for a>b (another factor
+    of two).  This cuts both the flop count and the memory traffic of the
+    O(o^2 v^4) contraction by roughly four.  The packed integrals are built
+    once (see :func:`_make_vvvv_tril`) and reused across iterations.
+    '''
+    nocc, nvir = t1.shape
+    t2_new = np.zeros(t2.shape, dtype=t2.dtype)
+
+    if getattr(eris, 'vvvv_tril', None) is None:
+        _make_vvvv_tril(eris)
+    ti, tj = eris.vvvv_tril_idx
+    vvvv_tril = eris.vvvv_tril
+    npair = ti.size
+
+    # Fold the ket pair (e,f) onto its e>f triangle.
+    tau_p = tau[:, :, ti, tj]                       # (nocc,nocc,npair)
+
+    nblk = max(1, int(4000*1e6/16/npair))
+    for a0, a1 in prange(0, npair, nblk):
+        mat = np.asarray(vvvv_tril[a0:a1])          # (dA,npair) = <ab||e>f>, a>b
+        tp = 2.0 * einsum('rE,ijE->ijr', mat, tau_p)
+        t2_new[:, :, ti[a0:a1], tj[a0:a1]] += tp
+        t2_new[:, :, tj[a0:a1], ti[a0:a1]] -= tp
+
+    eris_ovvv = np.asarray(eris.ovvv)
+    tmp = einsum('maef,ijef->maij', eris_ovvv, tau)
+    tmp = einsum('maij,mb->baij', tmp, t1)
+    t2_new += einsum('baij->ijab', tmp) - einsum('baij->ijba', tmp)
+    tmp = einsum('mnef,ijef->mnij', 0.25*np.asarray(eris.oovv), tau)
+    t2_new += einsum('mnij,mnab->ijab', tmp, tau)
+    return 0.5*t2_new
+
 def cc_Wovvo(t1, t2, eris):
     eris_ovvo = -np.asarray(eris.ovov).transpose(0,1,3,2)
     eris_oovo = -np.asarray(eris.ooov).transpose(0,1,3,2)

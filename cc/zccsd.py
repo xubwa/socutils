@@ -21,7 +21,7 @@ MEMORYMIN = getattr(__config__, 'cc_ccsd_memorymin', 2000)
 
 einsum = lib.einsum
 
-def update_amps(cc, t1, t2, eris, alg='new'):
+def update_amps(cc, t1, t2, eris, alg='sym'):
     assert(isinstance(eris, _PhysicistsERIs))
     nocc, nvir = t1.shape
     fock = eris.fock
@@ -66,6 +66,8 @@ def update_amps(cc, t1, t2, eris, alg='new'):
         t2new += 0.5*einsum('ijef,abef->ijab', tau, Wvvvv)
     elif (alg == 'new'):
         t2new += imd.update_t2_vvvv(t1, t2, tau, eris)
+    elif (alg == 'sym'):
+        t2new += imd.update_t2_vvvv_sym(t1, t2, tau, eris)
     tmp = einsum('imae,mbej->ijab', t2, Wovvo)
     tmp -= -einsum('ie,ma,mbje->ijab', t1, t1, eris.ovov)
     tmp = tmp - tmp.transpose(1,0,2,3)
