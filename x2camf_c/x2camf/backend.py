@@ -29,11 +29,22 @@ _current = None
 
 
 def _default():
-    env = os.environ.get("X2CAMF_BACKEND", "c").strip().lower()
-    if env not in _VALID:
-        raise ValueError(
-            "X2CAMF_BACKEND must be one of %r, got %r" % (_VALID, env))
-    return env
+    env = os.environ.get("X2CAMF_BACKEND")
+    if env is not None:
+        env = env.strip().lower()
+        if env not in _VALID:
+            raise ValueError(
+                "X2CAMF_BACKEND must be one of %r, got %r" % (_VALID, env))
+        return env
+    # Auto: prefer the pure-C library when it is built and loadable,
+    # otherwise fall back to the upstream pybind11 reference so an
+    # unbuilt checkout still works for users who have the C++ module.
+    try:
+        from x2camf import _c_backend  # importing loads libx2camf_c.so
+        assert _c_backend is not None
+        return "c"
+    except Exception:
+        return "cpp"
 
 
 def get_backend():
