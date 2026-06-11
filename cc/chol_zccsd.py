@@ -240,6 +240,16 @@ class DFCCSD(gccsd.GCCSD):
     eaccsd = eomea
     eeccsd = eomee
 
+    def solve_lambda(self, t1=None, t2=None, l1=None, l2=None, eris=None, **kwargs):
+        from socutils.cc import lambda_zccsd
+        if t1 is None: t1 = self.t1
+        if t2 is None: t2 = self.t2
+        if eris is None:
+            eris = _make_df_eris(self, self.mo_coeff)
+        self.converged_lambda, self.l1, self.l2 = \
+            lambda_zccsd.kernel(self, eris, t1, t2, l1, l2, **kwargs)
+        return self.l1, self.l2
+
 
 # Backward-compatible alias
 ZCCSD = DFCCSD

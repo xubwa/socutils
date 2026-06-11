@@ -1,0 +1,165 @@
+#
+# Author Xubo Wang <wangxubo0201@outlook.com>
+#
+# CCSD Lambda (de-excitation) equations for the vvvv-free two-component CCSD
+# (socutils.cc.zccsd_direct.DirectZCCSD and socutils.cc.chol_zccsd.DFCCSD).
+#
+# Ported from pyscf.cc.gccsd_lambda, with the only O(v^4) term -- the
+# particle-particle ladder 0.5 sum_cd l2_ijcd <cd||ab> -- evaluated through the
+# AO-direct / DF ladder of socutils.cc.eom_zccsd_direct (so vvvv is never
+# formed) and ovvv reconstructed once when the 'ao' mode does not store it.
+#
+
+import numpy as np
+from pyscf import lib
+from pyscf.lib import logger
+from pyscf.cc import ccsd_lambda
+
+from socutils.cc.eom_zccsd_direct import ladder_ao, get_ovvv
+
+einsum = lib.einsum
+
+
+def make_intermediates(mycc, t1, t2, eris):
+    nocc, nvir = t1.shape
+    foo = eris.fock[:nocc, :nocc]
+    fov = eris.fock[:nocc, nocc:]
+    fvo = eris.fock[nocc:, :nocc]
+    fvv = eris.fock[nocc:, nocc:]
+    if eris.ovvv is None:                              # 'ao' mode -> rebuild once
+        eris.ovvv = get_ovvv(eris)
+    ovvv = np.asarray(eris.ovvv)
+    oovv = np.asarray(eris.oovv)
+    ooov = np.asarray(eris.ooov)
+
+    tau = t2 + einsum('ia,jb->ijab', t1, t1) * 2
+
+    v1 = fvv - einsum('ja,jb->ba', fov, t1)
+    v1 -= einsum('jbac,jc->ba', ovvv, t1)
+    v1 += einsum('jkca,jkbc->ba', oovv, tau) * .5
+
+    v2 = foo + einsum('ib,jb->ij', fov, t1)
+    v2 -= einsum('kijb,kb->ij', ooov, t1)
+    v2 += einsum('ikbc,jkbc->ij', oovv, tau) * .5
+
+    v3 = einsum('ijcd,klcd->ijkl', oovv, tau)
+    v4 = einsum('ljdb,klcd->jcbk', oovv, t2)
+    v4 += np.asarray(eris.ovvo)
+
+    v5 = fvo + einsum('kc,jkbc->bj', fov, t2)
+    tmp = fov - einsum('kldc,ld->kc', oovv, t1)
+    v5 += einsum('kc,kb,jc->bj', tmp, t1, t1)
+    v5 -= einsum('kljc,klbc->bj', ooov, t2) * .5
+    v5 += einsum('kbdc,jkcd->bj', ovvv, t2) * .5
+
+    w3 = v5 + einsum('jcbk,jb->ck', v4, t1)
+    w3 += einsum('cb,jb->cj', v1, t1)
+    w3 -= einsum('jk,jb->bk', v2, t1)
+
+    woooo = np.asarray(eris.oooo) * .5
+    woooo += v3 * .25
+    woooo += einsum('jilc,kc->jilk', ooov, t1)
+
+    wovvo = v4 - einsum('ljdb,lc,kd->jcbk', oovv, t1, t1)
+    wovvo -= einsum('ljkb,lc->jcbk', ooov, t1)
+    wovvo += einsum('jcbd,kd->jcbk', ovvv, t1)
+
+    wovoo = einsum('icdb,jkdb->icjk', ovvv, tau) * .25
+    wovoo += einsum('jkic->icjk', ooov.conj()) * .5
+    wovoo += einsum('icbk,jb->icjk', v4, t1)
+    wovoo -= einsum('lijb,klcb->icjk', ooov, t2)
+
+    wvvvo = einsum('jcak,jb->bcak', v4, t1)
+    wvvvo += einsum('jlka,jlbc->bcak', ooov, tau) * .25
+    wvvvo -= einsum('jacb->bcaj', ovvv.conj()) * .5
+    wvvvo += einsum('kbad,jkcd->bcaj', ovvv, t2)
+
+    class _IMDS:
+        pass
+    imds = _IMDS()
+    imds.woooo = woooo
+    imds.wovvo = wovvo
+    imds.wovoo = wovoo
+    imds.wvvvo = wvvvo
+    imds.v1 = v1
+    imds.v2 = v2
+    imds.w3 = w3
+    return imds
+
+
+def update_lambda(mycc, t1, t2, l1, l2, eris, imds):
+    time0 = logger.process_clock(), logger.perf_counter()
+    log = logger.Logger(mycc.stdout, mycc.verbose)
+    nocc, nvir = t1.shape
+    fov = eris.fock[:nocc, nocc:]
+    mo_e_o = eris.mo_energy[:nocc]
+    mo_e_v = eris.mo_energy[nocc:] + mycc.level_shift
+    v1 = imds.v1 - np.diag(mo_e_v)
+    v2 = imds.v2 - np.diag(mo_e_o)
+    ovvv = np.asarray(eris.ovvv)
+    oovv = np.asarray(eris.oovv)
+
+    l1new = np.zeros_like(l1)
+    l2new = np.zeros_like(l2)
+
+    mba = einsum('klca,klcb->ba', l2, t2) * .5
+    mij = einsum('kicd,kjcd->ij', l2, t2) * .5
+    m3 = einsum('klab,ijkl->ijab', l2, np.asarray(imds.woooo))
+    tau = t2 + einsum('ia,jb->ijab', t1, t1) * 2
+    tmp = einsum('ijcd,klcd->ijkl', l2, tau)
+    m3 += einsum('klab,ijkl->ijab', oovv, tmp) * .25
+    tmp = einsum('ijcd,kd->ijck', l2, t1)
+    m3 -= einsum('kcba,ijck->ijab', ovvv, tmp)
+    # particle-particle ladder  0.5 sum_cd l2_ijcd <cd||ab>  (vvvv-free)
+    l2r = l2.reshape(nocc*nocc, nvir, nvir)
+    m3 += ladder_ao(l2r.conj(), eris).conj().reshape(nocc, nocc, nvir, nvir)
+
+    l2new += oovv
+    l2new += m3
+    fov1 = fov + einsum('kjcb,kc->jb', oovv, t1)
+    tmp = einsum('ia,jb->ijab', l1, fov1)
+    tmp += einsum('kica,jcbk->ijab', l2, np.asarray(imds.wovvo))
+    tmp = tmp - tmp.transpose(1, 0, 2, 3)
+    l2new += tmp - tmp.transpose(0, 1, 3, 2)
+    tmp = einsum('ka,ijkb->ijab', l1, eris.ooov)
+    tmp += einsum('ijca,cb->ijab', l2, v1)
+    tmp1vv = mba + einsum('ka,kb->ba', l1, t1)
+    tmp += einsum('ca,ijcb->ijab', tmp1vv, oovv)
+    l2new -= tmp - tmp.transpose(0, 1, 3, 2)
+    tmp = einsum('ic,jcba->jiba', l1, ovvv)
+    tmp += einsum('kiab,jk->ijab', l2, v2)
+    tmp1oo = mij + einsum('ic,kc->ik', l1, t1)
+    tmp -= einsum('ik,kjab->ijab', tmp1oo, oovv)
+    l2new += tmp - tmp.transpose(1, 0, 2, 3)
+
+    l1new += fov
+    l1new += einsum('jb,ibaj->ia', l1, eris.ovvo)
+    l1new += einsum('ib,ba->ia', l1, v1)
+    l1new -= einsum('ja,ij->ia', l1, v2)
+    l1new -= einsum('kjca,icjk->ia', l2, imds.wovoo)
+    l1new -= einsum('ikbc,bcak->ia', l2, imds.wvvvo)
+    l1new += einsum('ijab,jb->ia', m3, t1)
+    l1new += einsum('jiba,bj->ia', l2, imds.w3)
+    tmp = (t1 + einsum('kc,kjcb->jb', l1, t2)
+           - einsum('bd,jd->jb', tmp1vv, t1)
+           - einsum('lj,lb->jb', mij, t1))
+    l1new += einsum('jiba,jb->ia', oovv, tmp)
+    l1new += einsum('icab,bc->ia', ovvv, tmp1vv)
+    l1new -= einsum('jika,kj->ia', eris.ooov, tmp1oo)
+    tmp = fov - einsum('kjba,jb->ka', oovv, t1)
+    l1new -= einsum('ik,ka->ia', mij, tmp)
+    l1new -= einsum('ca,ic->ia', mba, tmp)
+
+    eia = lib.direct_sum('i-j->ij', mo_e_o, mo_e_v)
+    l1new /= eia
+    l2new /= lib.direct_sum('ia+jb->ijab', eia, eia)
+    log.timer_debug1('update l1 l2', *time0)
+    return l1new, l2new
+
+
+def kernel(mycc, eris=None, t1=None, t2=None, l1=None, l2=None,
+           max_cycle=50, tol=1e-8, verbose=logger.INFO):
+    if eris is None:
+        eris = mycc.ao2mo()
+    return ccsd_lambda.kernel(mycc, eris, t1, t2, l1, l2, max_cycle, tol,
+                              verbose, make_intermediates, update_lambda)
