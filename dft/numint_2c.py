@@ -32,6 +32,12 @@ class SpinorNumInt2C(numint2c.NumInt2C):
     '''NumInt2C that runs on a j-adapted spinor reference by rotating to and
     from the scalar-AO x spin (GHF) representation.'''
 
+    # mcfun integrates the XC over `spin_samples` spin-quantization axes per
+    # grid point (default 770), all in pure Python -- the dominant cost of the
+    # multicollinear (mcol) path.  Default to a coarse angular quadrature here;
+    # raise it (e.g. 770) for production-quality non-collinear results.
+    spin_samples = 14
+
     def __init__(self, mol):
         numint2c.NumInt2C.__init__(self)
         self.mol = mol
