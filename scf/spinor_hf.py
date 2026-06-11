@@ -406,6 +406,26 @@ class SpinorSCF(hf.SCF):
     def density_fit(self, auxbasis=None, with_df=None, only_dfj=False):
         return density_fit(self, auxbasis, with_df, only_dfj)
 
+    def gen_response(self, *args, **kwargs):
+        '''Linear-response (J - c_x K + f_xc) function for TDDFT/stability.
+
+        The spinor reference is a GHF/GKS reference in a complex n2c basis, so
+        the GHF response template applies directly (J/K from the spinor get_jk,
+        f_xc from the 2-component numint).'''
+        from pyscf.scf._response_functions import _gen_ghf_response
+        if isinstance(self, hf.KohnShamDFT) and self.do_nlc():
+            raise NotImplementedError('NLC response is not implemented for the '
+                                      'spinor (j-adapted) basis')
+        return _gen_ghf_response(self, *args, **kwargs)
+
+    def TDA(self):
+        from socutils.tdscf import gks
+        return gks.TDA(self)
+
+    def TDDFT(self):
+        from socutils.tdscf import gks
+        return gks.TDDFT_factory(self)
+
     def eig(self, h, s=None, *args, **kwargs):
         return hf.SCF.eig(self, h, s)
 
