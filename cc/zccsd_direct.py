@@ -542,7 +542,7 @@ def _make_eris_direct(mycc, mo_coeff=None):
 
 def _eris_from_cholmo(eris, chol_mo, nocc):
     '''Build the antisymmetrized occupied-row blocks from the Cholesky factors
-    in the MO basis (mirrors :func:`chol_zccsd._make_eris_FromChol`).'''
+    in the MO basis (mirrors :func:`chol_zccsd._make_df_eris`).'''
     oo = chol_mo[:, :nocc, :nocc]
     ov = chol_mo[:, :nocc, nocc:]
     vo = chol_mo[:, nocc:, :nocc]

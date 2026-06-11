@@ -1,155 +1,133 @@
-import time
+#
+# Author Xubo Wang <wangxubo0201@outlook.com>
+#
+# Density-fitting (Cholesky) two-component CCSD.
+#
+# The three-center integrals are held in a small density-fitting object
+# (:class:`DFIntegrals`, exposed as ``cc.with_df``) that stores the *scalar*
+# AO Cholesky factors and transforms them to the complex spinor MO basis on
+# demand.  The MO factors are kept on the eris as the blocks ``Loo, Lov, Lvo,
+# Lvv`` (pyscf style), and every term that would otherwise need the O(v^4)
+# ``vvvv`` block (the particle-particle ladder, Fvv, Wovvo, and the (T)
+# correction) is contracted on the fly from these factors so ``vvvv`` is never
+# formed.
+#
+
 import numpy as np
 from functools import reduce
 
 from pyscf import lib
-from pyscf.ao2mo import r_outcore
 from pyscf.lib import logger
 from pyscf.cc import ccsd
 from pyscf.cc import gccsd
 from pyscf.cc import gintermediates as imd
-from pyscf.x2c import x2c
 from pyscf import __config__
+
 from socutils.cc import chol_zccsd_t
 from socutils.mcscf import zmc_ao2mo
 
-MEMORYMIN = getattr(__config__, 'cc_ccsd_memorymin', 2000)
-
 einsum = lib.einsum
-#einsum = np.einsum
 
 
-def makeCholERIMO(mf, mo_idx, mf_type='g', cderi=None):
-    mol = mf.mol
-    ##mol aobasis --->  UHF j-spinors
-    if cderi is None:
-        cderi = zmc_ao2mo.chunked_cholesky(mol, max_error=1.e-5).reshape(-1, mol.nao, mol.nao)
-    else:
-        cderi = cderi.reshape(-1, mol.nao, mol.nao)
-    print(cderi.shape)
-    print(mo_idx)
-    print(mf.mo_coeff[:,mo_idx].shape)
-    naux, norb, orbs = cderi.shape[0], cderi.shape[1], mf.mo_coeff[:,mo_idx]
-    
-    if mf_type == 'j':
-        c = mol.sph2spinor_coeff()
-        c2 = np.vstack(c)
-        orbs = c2.dot(orbs)
-    chol_mo  = lib.einsum('Lib, bj->Lij', lib.einsum('Lab,ai->Lib', cderi, orbs[:norb,:].conj()), orbs[:norb, :])
-    chol_mo += lib.einsum('Lib, bj->Lij', lib.einsum('Lab,ai->Lib', cderi, orbs[norb:,:].conj()), orbs[norb:, :])
+class DFIntegrals:
+    '''Density-fitting / Cholesky three-center integrals for a (two-component)
+    spinor reference.
 
-    return chol_mo
+    Holds the *scalar* AO Cholesky factors ``L_ao`` of shape ``(naux, nao,
+    nao)`` with ``(uv|ls)_ao = sum_P L_ao[P,u,v] L_ao[P,l,s]`` and transforms
+    them to the complex spinor MO basis on demand::
+
+        Lpq = with_df.ao2mo(mo_coeff)          # (naux, nmo, nmo)
+        (pq|rs) = sum_P Lpq[P,p,q] Lpq[P,r,s]
+    '''
+
+    def __init__(self, mol, cderi=None, max_error=1e-5):
+        self.mol = mol
+        nao = mol.nao_nr()
+        if cderi is None:
+            cderi = zmc_ao2mo.chunked_cholesky(mol, max_error=max_error,
+                                               verbose=False)
+        self._cderi = np.asarray(cderi).reshape(-1, nao, nao)
+        self.mf_type = 'g'
+
+    @property
+    def naux(self):
+        return self._cderi.shape[0]
+
+    def ao2mo(self, mo_coeff, mf_type=None):
+        '''Transform the AO Cholesky factors to the spinor MO basis,
+        ``Lpq`` of shape ``(naux, nmo, nmo)``.'''
+        if mf_type is None:
+            mf_type = self.mf_type
+        nao = self.mol.nao_nr()
+        orbs = mo_coeff
+        if mf_type == 'j':
+            orbs = np.vstack(self.mol.sph2spinor_coeff()).dot(orbs)
+        L = self._cderi
+        Lpq  = einsum('Lib,bj->Lij', einsum('Lab,ai->Lib', L, orbs[:nao].conj()), orbs[:nao])
+        Lpq += einsum('Lib,bj->Lij', einsum('Lab,ai->Lib', L, orbs[nao:].conj()), orbs[nao:])
+        return Lpq
 
 
-def cc_vvvv_chol(t1, t2, eris, chol):
+# ---------------------------------------------------------------------------
+# DF intermediates (contract the three-center factors on the fly, no vvvv)
+# ---------------------------------------------------------------------------
+
+def _cc_vvvv_df(t1, t2, eris):
+    '''Particle-particle ladder ``0.5 sum_ef <ab||ef> tau_ij^ef`` from the DF
+    factors (never forms vvvv).'''
     nocc, nvir = t1.shape
     tau = imd.make_tau(t2, t1, t1)
+    oovv = np.asarray(eris.oovv)
 
-    tmp = einsum('ijcd, klcd->ijkl', t2, eris.oovv)
-    t2new = einsum('ijkl,klab->ijab', tmp, tau)/8.
+    tmp = einsum('ijcd,klcd->ijkl', tau, oovv)
+    t2new = einsum('ijkl,klab->ijab', tmp, tau) / 8.
 
-    cholVV = chol[:,nocc:,nocc:]
-    chol2 = einsum('Pkc,ka->Pac', chol[:,:nocc,nocc:], t1).reshape(-1,nvir)
-
-    cholVV_twiddle = (cholVV.transpose(0,2,1)).reshape(-1,nvir)
-    for i in range(nocc):
-        for j in range(i):
-            print(i,j)
-            T2nij, T2ij = t2new[i,j], t2[i,j] 
-            
-            T2ijAsym = T2ij - T2ij.T
-            tmp = 0.5*(cholVV.reshape(-1,nvir).dot(T2ijAsym)).reshape(-1,nvir,nvir)
-            tmp = (tmp.transpose(0,2,1)).reshape(-1, nvir)
-            t2new[i,j] += tmp.T.dot(cholVV_twiddle)
-            #t2new[i,j] += einsum('Pad,Pbd->ab', tmp, cholVV)
-
-            
-            
-            tmp = -0.5*(chol2.dot(T2ijAsym)).reshape(-1,nvir,nvir)
-            tmp = (tmp.transpose(0,2,1)).reshape(-1, nvir)
-            tmp2 = tmp.T.dot(cholVV_twiddle)
-            #tmp2 = einsum('Pad,Pbd->ab', tmp, cholVV)
-            
-            t2new[i,j] +=  tmp2 - tmp2.T
-
-            t2new[j,i] = t2new[i,j].T
-    return t2new
-
-
-def cc_vvvv_chol2(t1, t2, oovv, chol):
-    nocc, nvir = t1.shape
-    tau = imd.make_tau(t2, t1, t1)
-
-    tmp = einsum('ijcd, klcd->ijkl', tau, oovv)
-    t2new = einsum('ijkl,klab->ijab', tmp, tau)/8.
-
-    cholVV = chol[:,nocc:,nocc:]
-    chol2 = einsum('Pkc,ka->Pac', chol[:,:nocc,nocc:], t1)
-
-    T2asym = tau - tau.transpose(0,1,3,2)
+    Lvv = eris.Lvv
+    L2 = einsum('Pkc,ka->Pac', eris.Lov, t1)
+    T2asym = tau - tau.transpose(0, 1, 3, 2)
     for a in range(nvir):
-        int2a = einsum('Pc,Pbd->cbd', cholVV[:,a,:]-chol2[:,a,:], cholVV)        
-        t2new[:,:,a,:] += 0.5*einsum('ijcd,cbd->ijb',  T2asym, int2a)
-
-        int2a = einsum('Pbc,Pd->bcd', chol2, cholVV[:,a,:])        
-        t2new[:,:,a,:] += 0.5*einsum('ijcd,bcd->ijb',  T2asym, int2a)
-
+        int2a = einsum('Pc,Pbd->cbd', Lvv[:, a, :] - L2[:, a, :], Lvv)
+        t2new[:, :, a, :] += 0.5*einsum('ijcd,cbd->ijb', T2asym, int2a)
+        int2a = einsum('Pbc,Pd->bcd', L2, Lvv[:, a, :])
+        t2new[:, :, a, :] += 0.5*einsum('ijcd,bcd->ijb', T2asym, int2a)
     return t2new
 
 
-##DEFUNCT
-def cc_Wvvvv_chol(t1, t2, eris):
-    
-    tau = imd.make_tau(t2, t1, t1)
-    eris_ovvv = np.asarray(eris.ovvv)
-    tmp = einsum('mb,mafe->bafe', t1, eris_ovvv)
-    Wabef = np.asarray(eris.vvvv) - tmp + tmp.transpose(1,0,2,3)
-    Wabef += einsum('mnab,mnef->abef', tau, 0.25*np.asarray(eris.oovv))
-    return Wabef
-
-def cc_Fvv_chol(t1, t2, eris, chol):
+def _cc_Fvv_df(t1, t2, eris):
     nocc, nvir = t1.shape
-    fov = eris.fock[:nocc,nocc:]
-    fvv = eris.fock[nocc:,nocc:]
-
-    tau_tilde = imd.make_tau(t2, t1, t1,fac=0.5)
-    Fae = fvv - 0.5*einsum('me,ma->ae',fov, t1)
-
-    #eris_vovv = np.asarray(eris.ovvv).transpose(1,0,3,2)
-    #Fae += einsum('mf,amef->ae', t1, eris_vovv)
-    L = einsum('Lic, ic->L', chol[:,:nocc, nocc:], t1)
-    Fae += einsum('L,Lab->ab', L, chol[:,nocc:,nocc:])
-
-    Lai = einsum('Lac,ic->Lai', chol[:,nocc:,nocc:], t1)
-    Fae -= einsum('Lib, Lai->ab',  chol[:,:nocc, nocc:], Lai)
-
+    fov = eris.fock[:nocc, nocc:]
+    fvv = eris.fock[nocc:, nocc:]
+    tau_tilde = imd.make_tau(t2, t1, t1, fac=0.5)
+    Fae = fvv - 0.5*einsum('me,ma->ae', fov, t1)
+    L = einsum('Lic,ic->L', eris.Lov, t1)
+    Fae += einsum('L,Lab->ab', L, eris.Lvv)
+    Lai = einsum('Lac,ic->Lai', eris.Lvv, t1)
+    Fae -= einsum('Lib,Lai->ab', eris.Lov, Lai)
     Fae -= 0.5*einsum('mnaf,mnef->ae', tau_tilde, eris.oovv)
     return Fae
 
 
-def cc_Wovvo_chol(t1, t2, eris, chol):
-    nocc, nvir = t1.shape
-    eris_ovvo = -np.asarray(eris.ovov).transpose(0,1,3,2)
-    eris_oovo = -np.asarray(eris.ooov).transpose(0,1,3,2)
-
-    tmp1 = einsum('ia, Pba->Pbi', t1, chol[:,nocc:, nocc:])
-    Wmbej = einsum('Pjc, Pbi->jbci', chol[:,:nocc, nocc:], tmp1)
-    tmp1 = einsum('ia, Pja->Pji', t1, chol[:,:nocc, nocc:])
-    Wmbej -= einsum('Pji, Pbc->jbci', tmp1, chol[:,nocc:, nocc:])
-    #Wmbej  = einsum('jf,mbef->mbej', t1, eris.ovvv)
-
+def _cc_Wovvo_df(t1, t2, eris):
+    eris_ovvo = -np.asarray(eris.ovov).transpose(0, 1, 3, 2)
+    eris_oovo = -np.asarray(eris.ooov).transpose(0, 1, 3, 2)
+    tmp1 = einsum('ia,Pba->Pbi', t1, eris.Lvv)
+    Wmbej = einsum('Pjc,Pbi->jbci', eris.Lov, tmp1)
+    tmp1 = einsum('ia,Pja->Pji', t1, eris.Lov)
+    Wmbej -= einsum('Pji,Pbc->jbci', tmp1, eris.Lvv)
     Wmbej -= einsum('nb,mnej->mbej', t1, eris_oovo)
     Wmbej -= 0.5*einsum('jnfb,mnef->mbej', t2, eris.oovv)
     Wmbej -= einsum('jf,nb,mnef->mbej', t1, t1, eris.oovv)
     Wmbej += eris_ovvo
     return Wmbej
 
+
 def update_amps(cc, t1, t2, eris):
-    assert(isinstance(eris, _PhysicistsERIs))
+    assert isinstance(eris, _PhysicistsERIs)
     nocc, nvir = t1.shape
     fock = eris.fock
 
-    fov = fock[:nocc,nocc:]
+    fov = fock[:nocc, nocc:]
     mo_e_o = eris.mo_energy[:nocc]
     mo_e_v = eris.mo_energy[nocc:] + cc.level_shift
 
@@ -158,16 +136,8 @@ def update_amps(cc, t1, t2, eris):
     Foo = imd.cc_Foo(t1, t2, eris)
     Fov = imd.cc_Fov(t1, t2, eris)
     Woooo = imd.cc_Woooo(t1, t2, eris)
+    Fvv = _cc_Fvv_df(t1, t2, eris)            # ovvv terms from DF factors
 
-
-    ##############
-    ##first set of terms involving ovvv
-    Fvv = cc_Fvv_chol(t1, t2, eris, cc.eriChol)
-    #Fvv = imd.cc_Fvv(t1, t2, eris) #****
-    ##############
-
-
-    # Move energy terms to the other side
     Fvv[np.diag_indices(nvir)] -= mo_e_v
     Foo[np.diag_indices(nocc)] -= mo_e_o
 
@@ -176,97 +146,91 @@ def update_amps(cc, t1, t2, eris):
     t1new += -einsum('ma,mi->ia', t1, Foo)
     t1new +=  einsum('imae,me->ia', t2, Fov)
     t1new += -einsum('nf,naif->ia', t1, eris.ovov)
-
-
     t1new += -0.5*einsum('mnae,mnie->ia', t2, eris.ooov)
     t1new += fov.conj()
 
     # T2 equation
     Ftmp = Fvv - 0.5*einsum('mb,me->be', t1, Fov)
     tmp = einsum('ijae,be->ijab', t2, Ftmp)
-    t2new = tmp - tmp.transpose(0,1,3,2)
+    t2new = tmp - tmp.transpose(0, 1, 3, 2)
     Ftmp = Foo + 0.5*einsum('je,me->mj', t1, Fov)
     tmp = einsum('imab,mj->ijab', t2, Ftmp)
-    t2new -= tmp - tmp.transpose(1,0,2,3)
+    t2new -= tmp - tmp.transpose(1, 0, 2, 3)
     t2new += np.asarray(eris.oovv).conj()
     t2new += 0.5*einsum('mnab,mnij->ijab', tau, Woooo)
 
-    ###########
-    ##all terms involving vvvv
-    t2new += cc_vvvv_chol2(t1, t2, eris.oovv, cc.eriChol)
-    #Wvvvv = imd.cc_Wvvvv(t1, t2, eris) #**
-    #t2new += 0.5*einsum('ijef,abef->ijab', tau, Wvvvv) #**
-    ###########
+    # particle-particle ladder (all vvvv terms) from the DF factors
+    t2new += _cc_vvvv_df(t1, t2, eris)
 
-    ##############
-    ##second set of terms involving ovvv
+    Wovvo = _cc_Wovvo_df(t1, t2, eris)        # ovvv terms from DF factors
 
-    Wovvo = cc_Wovvo_chol(t1, t2, eris, cc.eriChol)
-    #Wovvo = imd.cc_Wovvo(t1, t2, eris)  #**
+    # t2new ovvv term  (sum_e t1[ie] <je||ba>)  from DF factors
+    tmp = einsum('ic,Pca->Pia', t1, eris.Lvv.conj())
+    tmp1 = einsum('Pjb,Pia->ijab', eris.Lov.conj(), tmp)
+    tmp = einsum('ic,Pcb->Pib', t1, eris.Lvv.conj())
+    tmp1 -= einsum('Pja,Pib->ijab', eris.Lov.conj(), tmp)
+    t2new += (tmp1 - tmp1.transpose(1, 0, 2, 3))
 
-
-    tmp = einsum('ic,Pca->Pia', t1, cc.eriChol[:,nocc:, nocc:].conj())
-    tmp1 = einsum('Pjb,Pia->ijab', cc.eriChol[:,:nocc,nocc:].conj(), tmp)
-    tmp = einsum('ic,Pcb->Pib', t1, cc.eriChol[:,nocc:, nocc:].conj())
-    tmp1 -= einsum('Pja,Pib->ijab', cc.eriChol[:,:nocc,nocc:].conj(), tmp)
-    t2new += (tmp1 - tmp1.transpose(1,0,2,3))
-    #tmp = einsum('ie,jeba->ijab', t1, np.array(eris.ovvv).conj()) #**
-    #t2new += (tmp - tmp.transpose(1,0,2,3))   #**
-
-    tmp = -0.5*einsum('ijab,Pja->iPb', t2, cc.eriChol[:,:nocc, nocc:])
-    t1new += einsum('iPb,Pcb->ic', tmp, cc.eriChol[:,nocc:,nocc:])
-    tmp = 0.5*einsum('ijab,Pjb->iPa', t2, cc.eriChol[:,:nocc, nocc:])
-    t1new += einsum('iPa,Pca->ic', tmp, cc.eriChol[:,nocc:,nocc:])
-    #t1new += -0.5*einsum('imef,maef->ia', t2, eris.ovvv)  #**
-    ##################
+    # t1new ovvv term  (-0.5 sum_mef t2[imef] <ma||ef>)  from DF factors
+    tmp = -0.5*einsum('ijab,Pja->iPb', t2, eris.Lov)
+    t1new += einsum('iPb,Pcb->ic', tmp, eris.Lvv)
+    tmp = 0.5*einsum('ijab,Pjb->iPa', t2, eris.Lov)
+    t1new += einsum('iPa,Pca->ic', tmp, eris.Lvv)
 
     tmp = einsum('imae,mbej->ijab', t2, Wovvo)
     tmp -= -einsum('ie,ma,mbje->ijab', t1, t1, eris.ovov)
-    tmp = tmp - tmp.transpose(1,0,2,3)
-    tmp = tmp - tmp.transpose(0,1,3,2)
+    tmp = tmp - tmp.transpose(1, 0, 2, 3)
+    tmp = tmp - tmp.transpose(0, 1, 3, 2)
     t2new += tmp
 
-
     tmp = einsum('ma,ijmb->ijab', t1, np.asarray(eris.ooov).conj())
-    t2new -= (tmp - tmp.transpose(0,1,3,2))
+    t2new -= (tmp - tmp.transpose(0, 1, 3, 2))
 
-    eia = mo_e_o[:,None] - mo_e_v
+    eia = mo_e_o[:, None] - mo_e_v
     eijab = lib.direct_sum('ia,jb->ijab', eia, eia)
     t1new /= eia
     t2new /= eijab
-
     return t1new, t2new
 
-class ZCCSD(gccsd.GCCSD):
 
-    def __init__(self, mf, frozen=0, mo_coeff=None, mo_occ=None, mf_type='g', cderi=None):
-        #if frozen !
-        #assert(isinstance(mf, x2c.RHF))
+class DFCCSD(gccsd.GCCSD):
+    '''Density-fitting two-component CCSD.
+
+    The three-center integrals live in ``self.with_df`` (a :class:`DFIntegrals`
+    object, or any object with a compatible ``ao2mo`` method / ``naux``).
+    '''
+
+    def __init__(self, mf, frozen=0, mo_coeff=None, mo_occ=None,
+                 mf_type='g', cderi=None, with_df=None):
         ccsd.CCSD.__init__(self, mf, frozen, mo_coeff, mo_occ)
-        mo_idx = ccsd.get_frozen_mask(self)
-        self.eriChol = makeCholERIMO(mf, mo_idx, mf_type, cderi=cderi)
+        self.mf_type = mf_type
+        if with_df is None:
+            with_df = DFIntegrals(mf.mol, cderi=cderi)
+        with_df.mf_type = mf_type
+        self.with_df = with_df
 
     update_amps = update_amps
 
     def ao2mo(self, mo_coeff=None):
-        nmo = self.nmo
         if mo_coeff is None:
-            mo_coeff=self.mo_coeff
-        return _make_eris_FromChol(self, mo_coeff)
-
+            mo_coeff = self.mo_coeff
+        return _make_df_eris(self, mo_coeff)
 
     def ccsd_t(self, t1=None, t2=None, eris=None):
-        from pyscf.cc import gccsd_t
         if t1 is None: t1 = self.t1
         if t2 is None: t2 = self.t2
-        #if eris is None: eris = self.ao2mo(self.mo_coeff)
-        if eris is None: eris = _make_eris_FromChol(self, self.mo_coeff)
-        #return gccsd_t.kernel(self, eris, t1, t2)
+        if eris is None:
+            eris = _make_df_eris(self, self.mo_coeff)
         return chol_zccsd_t.kernel(self, eris, t1, t2, self.verbose)
 
 
+# Backward-compatible alias
+ZCCSD = DFCCSD
+
+
 class _PhysicistsERIs(gccsd._PhysicistsERIs):
-    '''<pq||rs> = <pq|rs> - <pq|sr>'''
+    '''<pq||rs> = <pq|rs> - <pq|sr>, plus the DF factor blocks Loo/Lov/Lvo/Lvv.'''
+
     def __init__(self, mol=None):
         self.mol = mol
         self.mo_coeff = None
@@ -274,21 +238,15 @@ class _PhysicistsERIs(gccsd._PhysicistsERIs):
         self.fock = None
         self.e_hf = None
         self.orbspin = None
-
-        self.oooo = None
-        self.ooov = None
-        self.oovv = None
-        self.ovvo = None
-        self.ovov = None
-        self.ovvv = None
-        self.vvvv = None
+        self.oooo = self.ooov = self.oovv = None
+        self.ovvo = self.ovov = self.ovvv = self.vvvv = None
+        self.Loo = self.Lov = self.Lvo = self.Lvv = None
 
     def _common_init_(self, mycc, mo_coeff=None):
         if mo_coeff is None:
             mo_coeff = mycc.mo_coeff
         mo_idx = ccsd.get_frozen_mask(mycc)
-        mo_coeff = mo_coeff[:,mo_idx]
-
+        mo_coeff = mo_coeff[:, mo_idx]
         self.mo_coeff = mo_coeff
 
         dm = mycc._scf.make_rdm1(mycc.mo_coeff, mycc.mo_occ)
@@ -299,93 +257,60 @@ class _PhysicistsERIs(gccsd._PhysicistsERIs):
         self.nocc = mycc.nocc
         self.mol = mycc.mol
         mo_e = self.mo_energy = self.fock.diagonal().real
-        gap = abs(mo_e[:self.nocc,None] - mo_e[None,self.nocc:]).min()
+        gap = abs(mo_e[:self.nocc, None] - mo_e[None, self.nocc:]).min()
         if gap < 1e-5:
-            logger.warn(mycc, 'HOMO-LUMO gap %s too small for ZCCSD', gap)
-        return self 
+            logger.warn(mycc, 'HOMO-LUMO gap %s too small for DF-ZCCSD', gap)
+        return self
 
-def _make_eris_FromChol(mycc, mo_coeff=None):
+
+def _make_df_eris(mycc, mo_coeff=None):
     cput0 = (logger.process_clock(), logger.perf_counter())
     log = logger.Logger(mycc.stdout, mycc.verbose)
-    chol_mo = mycc.eriChol
     eris = _PhysicistsERIs()
     eris._common_init_(mycc, mo_coeff)
-
     nocc = eris.nocc
-    nao, nmo = eris.mo_coeff.shape
-    nvir = nmo - nocc
-    assert(eris.mo_coeff.dtype == complex)
+    assert eris.mo_coeff.dtype == complex
 
-    oooo = einsum('Lij,Lkl->ijkl', chol_mo[:,:nocc,:nocc], chol_mo[:,:nocc,:nocc])
-    eris.oooo = oooo.transpose(0,2,1,3) - oooo.transpose(0,2,3,1)
-    oooo = 0.
-    
-    ooov = einsum('Lij,Lkl->ijkl', chol_mo[:,:nocc,:nocc], chol_mo[:,:nocc,nocc:])
-    eris.ooov = ooov.transpose(0,2,1,3) - ooov.transpose(2, 0, 1, 3) 
-    ooov = 0.
-    
-    oovv = einsum('Lij,Lkl->ijkl', chol_mo[:,:nocc,:nocc], chol_mo[:,nocc:,nocc:])
-    ovov = einsum('Lij,Lkl->ijkl', chol_mo[:,:nocc,nocc:], chol_mo[:,:nocc,nocc:])
-    ovvo = einsum('Lij,Lkl->ijkl', chol_mo[:,:nocc,nocc:], chol_mo[:,nocc:,:nocc])
-    eris.oovv = ovov.transpose(0,2,1,3) - ovov.transpose(0,2,3,1)
-    eris.ovov = oovv.transpose(0,2,1,3) - ovvo.transpose(0,2,3,1)
-    eris.ovvo = ovvo.transpose(0,2,1,3) - oovv.transpose(0,2,3,1)
-    oovv, ovov, ovvo = 0., 0., 0.
+    Lpq = mycc.with_df.ao2mo(eris.mo_coeff, mycc.mf_type)
+    eris.Loo = Lpq[:, :nocc, :nocc]
+    eris.Lov = Lpq[:, :nocc, nocc:]
+    eris.Lvo = Lpq[:, nocc:, :nocc]
+    eris.Lvv = Lpq[:, nocc:, nocc:]
 
-    ##delete this
-    ovvv = einsum('Lia,Lbc->iabc', chol_mo[:, :nocc, nocc:], chol_mo[:, nocc:, nocc:])
-    eris.ovvv = ovvv.transpose(0,2,1,3) - ovvv.transpose(0,2,3,1)
+    # antisymmetrized blocks carrying at most two virtual indices (no vvvv)
+    oooo = einsum('Lij,Lkl->ijkl', eris.Loo, eris.Loo)
+    eris.oooo = oooo.transpose(0, 2, 1, 3) - oooo.transpose(0, 2, 3, 1)
+    ooov = einsum('Lij,Lkl->ijkl', eris.Loo, eris.Lov)
+    eris.ooov = ooov.transpose(0, 2, 1, 3) - ooov.transpose(2, 0, 1, 3)
+    oovv = einsum('Lij,Lkl->ijkl', eris.Loo, eris.Lvv)
+    ovov = einsum('Lij,Lkl->ijkl', eris.Lov, eris.Lov)
+    ovvo = einsum('Lij,Lkl->ijkl', eris.Lov, eris.Lvo)
+    eris.oovv = ovov.transpose(0, 2, 1, 3) - ovov.transpose(0, 2, 3, 1)
+    eris.ovov = oovv.transpose(0, 2, 1, 3) - ovvo.transpose(0, 2, 3, 1)
+    eris.ovvo = ovvo.transpose(0, 2, 1, 3) - oovv.transpose(0, 2, 3, 1)
+    ovvv = einsum('Lia,Lbc->iabc', eris.Lov, eris.Lvv)
+    eris.ovvv = ovvv.transpose(0, 2, 1, 3) - ovvv.transpose(0, 2, 3, 1)
+    log.timer('DF-CCSD integral transformation', *cput0)
     return eris
 
 
 if __name__ == '__main__':
-    from pyscf import scf, gto
+    from pyscf import gto, scf, cc
+    from socutils.scf import spinor_hf
     mol = gto.Mole()
-    mol.atom = [
-        [8 , (0. , 0.     , 0.)],
-        [1 , (0. , -0.757 , 0.587)],
-        [1 , (0. , 0.757  , 0.587)]]
+    mol.atom = [[8, (0., 0., 0.)],
+                [1, (0., -0.757, 0.587)],
+                [1, (0., 0.757, 0.587)]]
     mol.basis = 'cc-pvdz'
     mol.spin = 0
-    mol.verbose = 4 
+    mol.verbose = 0
     mol.build()
-    from socutils.scf import spinor_hf
-    from socutils.somf import eamf
-    import numpy as np
-    mf = spinor_hf.SCF(mol)
-    mf.with_x2c = eamf.SpinorEAMFX2CHelper(mol, eamf='x2camf', with_gaunt=True, with_breit=True) 
-    mf.kernel()
-    mycc = ZCCSD(mf, mf_type='j')
-    ecc, t1, t2 = mycc.kernel()
-    e_corr = mycc.ccsd_t()
-    print(e_corr, ecc)
-    exit()
-    e,v = mycc.ipccsd(nroots=8)
 
-    e,v = mycc.eaccsd(nroots=8)
+    mfg = scf.GHF(mol).run(conv_tol=1e-12)
+    gcc = cc.GCCSD(mfg).run(conv_tol=1e-10)
+    print('pyscf  GCCSD   Ecorr', gcc.e_corr, ' (T)', gcc.ccsd_t())
 
-    e,v = mycc.eeccsd(nroots=4)
-    
-    mf = scf.UHF(mol).run()
-    mf = scf.addons.convert_to_ghf(mf)
-
-    mycc = gccsd.GCCSD(mf)
-    ecc, t1, t2 = mycc.kernel()
-    print(ecc - -0.2133432712431435)
-    e,v = mycc.ipccsd(nroots=8)
-    print(e[0] - 0.4335604332073799)
-    print(e[2] - 0.5187659896045407)
-    print(e[4] - 0.6782876002229172)
-
-    e,v = mycc.eaccsd(nroots=8)
-    print(e[0] - 0.16737886338859731)
-    print(e[2] - 0.24027613852009164)
-    print(e[4] - 0.51006797826488071)
-
-    e,v = mycc.eeccsd(nroots=4)
-    print(e[0] - 0.2757159395886167)
-    print(e[1] - 0.2757159395886167)
-    print(e[2] - 0.2757159395886167)
-    print(e[3] - 0.3005716731825082)
-    
-    mycc.ccsd_t()
+    mf = spinor_hf.SCF(mol).run()
+    mycc = DFCCSD(mf, mf_type='j')
+    ecc = mycc.kernel()[0]
+    print('DF-CCSD        Ecorr', ecc, ' (T)', mycc.ccsd_t().real)
