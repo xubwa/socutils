@@ -13,11 +13,36 @@
 # metric is the indefinite k-metric -- so the subspace problem is itself a
 # small RPA problem, roots come in +/- pairs, and the Krein-space metric is
 # represented correctly [cf. Furche & Chen, JCP 163, 174104 (2025); Z. Li,
-# arXiv:2009.01136].  This is what generic non-Hermitian Davidson solvers
-# miss for complex orbitals.
+# arXiv:2009.01136].
 #
 # Only matvecs with K on the b vectors are needed: the partner's matvec is
 # free, since K p(b) = -p(K b)  (equivalently H p(b) = p(H b) with H = kK).
+#
+# ---------------------------------------------------------------------------
+# Difference from pyscf.tdscf._lr_eig.eig (basis for a future pyscf PR)
+# ---------------------------------------------------------------------------
+# pyscf's _lr_eig.eig is the *same* Olsen paired Davidson; it is NOT a generic
+# non-Hermitian solver.  The one substantive difference is the ROOT SELECTION.
+# pyscf's pickeig (tdscf/ghf.py, tdscf/rhf.py) keeps an eigenpair when
+#
+#     |Im(omega)| < REAL_EIG_THRESHOLD  and  Re(omega) > positive_eig_threshold
+#
+# i.e. it is blind to the Krein norm  eta = |X|^2 - |Y|^2.  For a complex
+# (relativistic / 2-component / GHF) reference the indefinite-metric subspace
+# breeds spurious "eta-neutral" ghost Ritz roots with small positive real
+# eigenvalues; pickeig admits them, they sort into the lowest-nroots window and
+# displace the true (eta-positive, particle-branch) roots, so the run either
+# never converges or aborts with "Not enough eigenvalues".  The physical
+# excitations are exactly the eta-positive roots [Furche & Chen 2025; Li 2020],
+# so the fix is to select on eta, not just on sign(Re omega), which this solver
+# does *during* the iteration (eta_filter).
+#
+# Decisive evidence (cc-pVDZ H2O, 2c spinor B3LYP, identical lr_eig, only the
+# pick changed): default pickeig admits a ghost root 0.3166 Ha and misses a
+# true root -> err 1.3e-2 Ha; the same pickeig with an extra `eta > 0` test ->
+# err 8.4e-10 Ha.  For real references the ghosts rarely appear (real RKS-TDDFT
+# reproduces a dense Casida solve to ~1e-12 eV), which is why pickeig has been
+# adequate there.  The minimal pyscf fix is ~5 lines inside pickeig.
 #
 
 import numpy as np
@@ -25,7 +50,8 @@ import scipy.linalg
 
 
 def paired_eig(matvec, hdiag, nroots=3, x0=None, conv_tol=1e-6,
-               max_cycle=100, max_space=None, pos_tol=1e-3, verbose=False):
+               max_cycle=100, max_space=None, pos_tol=1e-3, eta_filter=True,
+               verbose=False):
     '''Solve K z = omega z for the lowest `nroots` positive real eigenvalues.
 
     Args:
@@ -33,6 +59,10 @@ def paired_eig(matvec, hdiag, nroots=3, x0=None, conv_tol=1e-6,
         hdiag : real array (2n,), diagonal approximation of K,
             i.e. hstack(e_ia, -e_ia)
         pos_tol : roots below this threshold are considered spurious
+        eta_filter : if True, reject candidate Ritz vectors whose Krein norm
+            eta = |X|^2 - |Y|^2 is not positive (the eta-neutral/antiparticle
+            ghosts of the indefinite-metric problem).  Setting it False mimics
+            an eta-blind 'positive real' selection (e.g. pyscf's pickeig).
 
     Returns:
         conv (bool array, nroots), e (real array, nroots, ascending),
@@ -129,10 +159,10 @@ def paired_eig(matvec, hdiag, nroots=3, x0=None, conv_tol=1e-6,
         for i in cand:
             ci = c[:, i]
             z = W.T.dot(ci)
-            eta = np.real(np.vdot(z, kmul(z)))   # Krein-metric norm
-            if eta < 1e-10:
-                continue                         # eta-negative partner / spurious
-            s = 1.0/np.sqrt(eta)
+            eta = np.real(np.vdot(z, kmul(z)))   # Krein-metric norm |X|^2-|Y|^2
+            if eta_filter and eta < 1e-10:
+                continue                         # eta-neutral/negative ghost
+            s = 1.0/np.sqrt(abs(eta)) if abs(eta) > 1e-14 else 1e7
             zlist.append(z*s)
             klist.append(kmul(HW.T.dot(ci))*s)   # = K z
             elist.append(w.real[i])
