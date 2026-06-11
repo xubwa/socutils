@@ -18,12 +18,14 @@ X2C 2-component DFT methods
 '''
 
 from socutils.scf import spinor_hf
+from socutils.dft.numint_2c import SpinorNumInt2C
 from pyscf.dft import dks
 
 class SpinorDFT(dks.KohnShamDFT, spinor_hf.SpinorSCF):
     def __init__(self, mol, xc='LDA,VWN'):
         spinor_hf.SpinorSCF.__init__(self, mol)
         dks.KohnShamDFT.__init__(self, xc)
+        self._numint = SpinorNumInt2C(mol)
 
     def dump_flags(self, verbose=None):
         spinor_hf.SpinorSCF.dump_flags(self, verbose)
@@ -47,6 +49,7 @@ class SymmDFT(dks.KohnShamDFT, spinor_hf.SymmSpinorSCF):
     def __init__(self, mol, xc='LDA,VWN', symmetry=None, occup=None):
         spinor_hf.SymmSpinorSCF.__init__(self, mol, symmetry=symmetry, occup=occup)
         dks.KohnShamDFT.__init__(self, xc)
+        self._numint = SpinorNumInt2C(mol)
 
     def dump_flags(self, verbose=None):
         spinor_hf.SpinorSCF.dump_flags(self, verbose)
@@ -68,6 +71,7 @@ class KRDFT(dks.KohnShamDFT, spinor_hf.KRHF):
     def __init__(self, mol, xc='LDA,VWN'):
         spinor_hf.KRHF.__init__(self, mol)
         dks.KohnShamDFT.__init__(self, xc)
+        self._numint = SpinorNumInt2C(mol)
 
     def dump_flags(self, verbose=None):
         spinor_hf.KRHF.dump_flags(self, verbose)
