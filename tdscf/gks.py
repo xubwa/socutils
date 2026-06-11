@@ -18,17 +18,39 @@
 # response.
 #
 
+from pyscf import lib
 from pyscf.tdscf import ghf as _ghf
 
 
-class TDA(_ghf.TDA):
+class _KernelXCMixin:
+    '''Allow the response (A/B) xc kernel to differ from the ground-state xc.
+
+    Set ``xc_kernel`` to e.g. ``'LDA,VWN'`` to build the TDDFT response with an
+    (A)LDA kernel on top of a GGA/hybrid ground state.  The whole response xc --
+    the local f_xc *and* the exact-exchange fraction -- then comes from
+    ``xc_kernel`` (so an 'LDA,VWN' kernel carries no HF exchange), evaluated on
+    the ground-state density.  Leave it None to use the ground-state functional.
+    '''
+    xc_kernel = None
+
+    def kernel(self, *args, **kwargs):
+        # _gen_ghf_response returns a vind closure that reads mf.xc lazily (at
+        # Davidson time), so the kernel xc must stay set for the whole solve,
+        # not just while the response is generated.
+        if self.xc_kernel is None:
+            return super().kernel(*args, **kwargs)
+        with lib.temporary_env(self._scf, xc=self.xc_kernel):
+            return super().kernel(*args, **kwargs)
+
+
+class TDA(_KernelXCMixin, _ghf.TDA):
     pass
 
 
 # The Casida/RPA solver in tdscf.ghf is named TDHF; driven through
 # mf.gen_response it gives full TDDFT for a KS reference (the response carries
 # f_xc) or TDHF for a bare spinor HF reference.
-class TDDFT(_ghf.TDHF):
+class TDDFT(_KernelXCMixin, _ghf.TDHF):
     pass
 
 
