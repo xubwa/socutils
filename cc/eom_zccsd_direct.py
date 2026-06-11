@@ -83,6 +83,63 @@ def wvvvv_dot_x(X, t1, t2, eris, ovvv):
     return res
 
 
+def wvvvv_dot_xT(X, t1, t2, eris, ovvv):
+    '''Transpose dressed ladder ``0.5 sum_ab Wvvvv[ab,cd] X[B,ab]`` -> [B,cd]
+    (contracts the *first* virtual pair; used by the left EA sigma vector).'''
+    tau = imd.make_tau(t2, t1, t1)
+    res = ladder_ao(X.conj(), eris).conj()             # bare 0.5 sum_ab <ab||cd> X[ab]
+    d1 = einsum('ma,mbcd,Bab->Bcd', t1, ovvv, X)
+    d2 = einsum('mb,macd,Bab->Bcd', t1, ovvv, X)
+    res += 0.5*(-d1 + d2)
+    oox = einsum('mnab,Bab->Bmn', tau, X)
+    res += 0.25*einsum('mncd,Bmn->Bcd', np.asarray(eris.oovv), oox)
+    return res
+
+
+def w4t1(t1, t2, eris, ovvv):
+    '''``Wvvvv . t1`` over the second virtual index,
+    ``sum_f Wvvvv[ab,ef] t1[i,f] -> [a,b,e,i]`` -- the vvvo piece of Wvvvo,
+    built once AO-direct (O(o v^3)).'''
+    Co, Cv, Cf = zd._spin_mo(eris)
+    E = eris.E4
+    oovv = np.asarray(eris.oovv)
+    tau = imd.make_tau(t2, t1, t1)
+    termA = 0.
+    termB = 0.
+    for s1 in (0, 1):
+        for s2 in (0, 1):
+            GA = einsum('mnls,is->mnli', E, t1 @ Cv[s2].T)
+            termA = termA + einsum('ma,ne,lb,mnli->aebi',
+                                   Cv[s1].conj(), Cv[s1], Cv[s2].conj(), GA)
+            GB = einsum('mnls,lb,se->mnbe', E, Cv[s2].conj(), Cv[s2])
+            termB = termB + einsum('ma,in,mnbe->aibe',
+                                   Cv[s1].conj(), t1 @ Cv[s1].T, GB)
+    res = termA.transpose(0, 2, 1, 3) - termB.transpose(0, 2, 3, 1)
+    res += (-einsum('ma,mbef,if->abei', t1, ovvv, t1)
+            + einsum('mb,maef,if->abei', t1, ovvv, t1)
+            + 0.5*einsum('mnab,mnef,if->abei', tau, oovv, t1))
+    return res
+
+
+def vvvv_dot_v1(v1, eris):
+    '''Bare ``sum_f <bc||ef> v1[f] -> [b,c,e]`` (v^3), for the EA *(star)
+    contraction.  ``v1`` is a length-nvir vector.'''
+    Co, Cv, Cf = zd._spin_mo(eris)
+    E = eris.E4
+    nv = Cv[0].shape[1]
+    res = np.zeros((nv, nv, nv), dtype=np.result_type(v1, E.dtype))
+    for s1 in (0, 1):
+        for s2 in (0, 1):
+            dt = Cv[s2].dot(v1)                         # [sigma]
+            GA = einsum('mnls,s->mnl', E, dt)          # [mu,nu,lambda]
+            tA = einsum('mnl,mb,ne,lc->bec', GA, Cv[s1].conj(), Cv[s1], Cv[s2].conj())
+            res += tA.transpose(0, 2, 1)               # (be|cf): [b,e,c] -> [b,c,e]
+            dtb = Cv[s1].dot(v1)                        # [nu]
+            GB = einsum('mnls,n->mls', E, dtb)         # [mu,lambda,sigma]
+            res -= einsum('mls,mb,lc,se->bce', GB, Cv[s1].conj(), Cv[s2].conj(), Cv[s2])
+    return res
+
+
 def wvvvv_diag(eris):
     '''Bare ``<ab||ab>`` for all (a,b), O(v^2) -- the approximate Wvvvv
     diagonal used for the preconditioner / initial guess.'''
@@ -132,13 +189,18 @@ class _IMDS(eom_gccsd._IMDS):
         if self.eris.ovvv is None:
             self.eris.ovvv = self.ovvv     # let the standard imd.* helpers see it
 
+    def _make_wvvvo(self):
+        t1, t2, eris = self.t1, self.t2, self.eris
+        # full Wvvvo = (no-vvvv part) + Wvvvv.t1, the latter AO-direct (O(o v^3))
+        return _Wvvvo_partial(t1, t2, eris) + w4t1(t1, t2, eris, self.ovvv)
+
     def make_ea(self):
         if not self._made_shared:
             self._make_shared()
         t1, t2, eris = self.t1, self.t2, self.eris
         self.Wvovv = imd.Wvovv(t1, t2, eris)
-        self.Wvvvo = _Wvvvo_partial(t1, t2, eris)   # Wvvvv.t1 folded into matvec
-        self.Wvvvv = None                            # never built
+        self.Wvvvo = self._make_wvvvo()
+        self.Wvvvv = None                            # never built (v^4)
         self.made_ea_imds = True
         return self
 
@@ -152,7 +214,7 @@ class _IMDS(eom_gccsd._IMDS):
             self.Wovoo = imd.Wovoo(t1, t2, eris)
         if not self.made_ea_imds:
             self.Wvovv = imd.Wvovv(t1, t2, eris)
-            self.Wvvvo = _Wvvvo_partial(t1, t2, eris)
+            self.Wvvvo = self._make_wvvvo()
             self.Wvvvv = None
         self.made_ee_imds = True
         return self
@@ -172,10 +234,7 @@ def eaccsd_matvec(eom, vector, imds=None, diag=None):
     Hr1 += np.einsum('ld,lad->a', imds.Fov, r2)
     Hr1 += 0.5*np.einsum('alcd,lcd->a', imds.Wvovv, r2)
 
-    Hr2 = np.einsum('abcj,c->jab', imds.Wvvvo, r1)
-    # Wvvvo's Wvvvv.t1 term, folded: sum_cf Wvvvv[ab,cf] r1[c] t1[j,f]
-    X = einsum('c,jf->jcf', r1, t1)
-    Hr2 += wvvvv_dot_x(X - X.transpose(0, 2, 1), t1, t2, eris, ovvv)
+    Hr2 = np.einsum('abcj,c->jab', imds.Wvvvo, r1)    # full Wvvvo (incl Wvvvv.t1)
     tmp1 = lib.einsum('ac,jcb->jab', imds.Fvv, r2)
     Hr2 += tmp1 - tmp1.transpose(0, 2, 1)
     Hr2 -= lib.einsum('lj,lab->jab', imds.Foo, r2)
@@ -219,13 +278,8 @@ def eeccsd_matvec(eom, vector, imds=None, diag=None):
     tmpab -= lib.einsum('amef,ijfb,me->ijab', imds.Wvovv, imds.t2, r1)
     tmpij = lib.einsum('mj,imab->ijab', -imds.Foo, r2)
     tmpij -= 0.5*lib.einsum('mnef,imab,jnef->ijab', imds.Woovv, imds.t2, r2)
-    tmpij += lib.einsum('abej,ie->ijab', imds.Wvvvo, r1)
-    # Wvvvo's Wvvvv.t1 term: sum_ef Wvvvv[ab,ef] r1[i,e] t1[j,f]  (batch ij)
+    tmpij += lib.einsum('abej,ie->ijab', imds.Wvvvo, r1)    # full Wvvvo
     nvir = t1.shape[1]
-    Xee = einsum('ie,jf->ijef', r1, t1)
-    Xee = Xee - Xee.transpose(0, 1, 3, 2)
-    tmpij += wvvvv_dot_x(Xee.reshape(nocc*nocc, nvir, nvir),
-                         t1, t2, eris, ovvv).reshape(nocc, nocc, nvir, nvir)
     tmpij += lib.einsum('mnie,njab,me->ijab', imds.Wooov, imds.t2, r1)
 
     tmpabij = lib.einsum('mbej,imae->ijab', imds.Wovvo, r2)
@@ -256,6 +310,94 @@ def eeccsd_diag(eom, imds=None):
     return eom.amplitudes_to_vector(Hr1, Hr2)
 
 
+def leaccsd_matvec(eom, vector, imds=None, diag=None):
+    if imds is None: imds = eom.make_imds()
+    nocc, nmo = eom.nocc, eom.nmo
+    r1, r2 = eom.vector_to_amplitudes(vector, nmo, nocc)
+    t1, t2, eris, ovvv = imds.t1, imds.t2, imds.eris, imds.ovvv
+
+    Hr1 = lib.einsum('ac,a->c', imds.Fvv, r1)
+    Hr1 += 0.5*lib.einsum('abcj,jab->c', imds.Wvvvo, r2)
+    Hr2 = lib.einsum('alcd,a->lcd', imds.Wvovv, r1)
+    Hr2 += lib.einsum('ld,a->lad', imds.Fov, r1)
+    Hr2 -= lib.einsum('la,d->lad', imds.Fov, r1)
+    tmp1 = lib.einsum('ac,jab->jcb', imds.Fvv, r2)
+    Hr2 += tmp1 - tmp1.transpose(0, 2, 1)
+    Hr2 -= lib.einsum('lj,jab->lab', imds.Foo, r2)
+    tmp2 = lib.einsum('lbdj,jab->lad', imds.Wovvo, r2)
+    Hr2 += tmp2 - tmp2.transpose(0, 2, 1)
+    Hr2 += wvvvv_dot_xT(r2, t1, t2, eris, ovvv)        # 0.5 Wvvvv[ab,cd] r2[j,ab]
+    Hr2 -= 0.5*lib.einsum('klcd,jab,kjab->lcd', imds.Woovv, r2, imds.t2)
+    return eom.amplitudes_to_vector(Hr1, Hr2)
+
+
+def eaccsd_star_contract(eom, eaccsd_evals, eaccsd_evecs, leaccsd_evecs, imds=None):
+    '''EA-EOM-CCSD*(a) perturbative correction, vvvv-free (the only vvvv use,
+    sum_f <bc||ef> r1[f], is evaluated AO-direct).'''
+    assert eom.partition is None
+    if imds is None: imds = eom.make_imds()
+    t1, t2 = imds.t1, imds.t2
+    eris = imds.eris
+    fock = eris.fock
+    nocc, nvir = t1.shape
+    nmo = nocc + nvir
+    foo = fock[:nocc, :nocc].diagonal()
+    fvv = fock[nocc:, nocc:].diagonal()
+    oovv = np.asarray(eris.oovv)
+    ovvv = imds.ovvv
+    ovov = np.asarray(eris.ovov)
+    ooov = np.asarray(eris.ooov)
+    vooo = np.asarray(ooov).conj().transpose(3, 2, 1, 0)
+    vvvo = np.asarray(ovvv).conj().transpose(3, 2, 1, 0)
+
+    eabc = fvv[:, None, None] + fvv[None, :, None] + fvv[None, None, :]
+    eij = foo[:, None] + foo[None, :]
+    eijabc = eij[:, :, None, None, None] - eabc[None, None, :, :, :]
+
+    def pabc(tmp):
+        return tmp + tmp.transpose(0, 1, 3, 4, 2) + tmp.transpose(0, 1, 4, 2, 3)
+
+    def pij(tmp):
+        return tmp - tmp.transpose(1, 0, 2, 3, 4)
+
+    eaccsd_evecs = np.atleast_2d(np.array(eaccsd_evecs))
+    leaccsd_evecs = np.atleast_2d(np.array(leaccsd_evecs))
+    eaccsd_evals = np.atleast_1d(eaccsd_evals)
+    e_star = []
+    for ea_eval, ea_evec, ea_levec in zip(eaccsd_evals, eaccsd_evecs, leaccsd_evecs):
+        l1, l2 = eom.vector_to_amplitudes(ea_levec, nmo, nocc)
+        r1, r2 = eom.vector_to_amplitudes(ea_evec, nmo, nocc)
+        ldotr = np.dot(l1, r1) + 0.5 * np.dot(l2.ravel(), r2.ravel())
+        if abs(ldotr) < 1e-7:
+            logger.warn(eom, 'Small left-right overlap %s', ldotr)
+        l1 = l1 / ldotr
+        l2 = l2 / ldotr
+        denom = 1. / (eijabc + ea_eval)
+
+        tmp = lib.einsum('c,ijab->ijabc', l1, oovv)
+        lijabc = -pabc(tmp)
+        tmp = lib.einsum('jima,mbc->ijabc', ooov, l2)
+        lijabc += -pabc(tmp)
+        tmp = lib.einsum('ieab,jce->ijabc', ovvv, l2)
+        tmp = pabc(tmp)
+        lijabc += -pij(tmp)
+
+        tmp = vvvv_dot_v1(r1, eris)                     # sum_f <bc||ef> r1[f]
+        tmp = lib.einsum('bce,ijae->ijabc', tmp, t2)
+        rijabc = -pabc(tmp)
+        tmp = lib.einsum('mcje,e->mcj', ovov, r1)
+        tmp = lib.einsum('mcj,imab->ijabc', tmp, t2)
+        rijabc += pij(pabc(tmp))
+        tmp = lib.einsum('amij,mcb->ijabc', vooo, r2)
+        rijabc += pabc(tmp)
+        tmp = lib.einsum('baei,jce->ijabc', vvvo, r2)
+        rijabc -= pij(pabc(tmp))
+
+        deltaE = (1. / 12) * lib.einsum('ijabc,ijabc,ijabc', lijabc, rijabc, denom)
+        e_star.append(ea_eval + deltaE.real)
+    return e_star
+
+
 # ---------------------------------------------------------------------------
 # Driver classes
 # ---------------------------------------------------------------------------
@@ -271,7 +413,9 @@ class EOMIP(eom_gccsd.EOMIP):
 
 class EOMEA(eom_gccsd.EOMEA):
     matvec = eaccsd_matvec
+    l_matvec = leaccsd_matvec
     get_diag = eaccsd_diag
+    ccsd_star_contract = eaccsd_star_contract
 
     def make_imds(self, eris=None):
         imds = _IMDS(self._cc, eris)
