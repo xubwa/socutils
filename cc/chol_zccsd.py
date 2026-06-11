@@ -223,6 +223,23 @@ class DFCCSD(gccsd.GCCSD):
             eris = _make_df_eris(self, self.mo_coeff)
         return chol_zccsd_t.kernel(self, eris, t1, t2, self.verbose)
 
+    # vvvv-free EOM-CCSD entry points (see socutils.cc.eom_zccsd_direct)
+    def eomip(self, nroots=1, **kwargs):
+        from socutils.cc.eom_zccsd_direct import EOMIP
+        return EOMIP(self).kernel(nroots=nroots, **kwargs)
+
+    def eomea(self, nroots=1, **kwargs):
+        from socutils.cc.eom_zccsd_direct import EOMEA
+        return EOMEA(self).kernel(nroots=nroots, **kwargs)
+
+    def eomee(self, nroots=1, **kwargs):
+        from socutils.cc.eom_zccsd_direct import EOMEE
+        return EOMEE(self).kernel(nroots=nroots, **kwargs)
+
+    ipccsd = eomip
+    eaccsd = eomea
+    eeccsd = eomee
+
 
 # Backward-compatible alias
 ZCCSD = DFCCSD
