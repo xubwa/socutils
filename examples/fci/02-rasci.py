@@ -16,8 +16,9 @@ next n2 and RAS3 the last n3.  Order the active orbitals accordingly
 
 import math
 from pyscf import gto, scf
+from pyscf.data import nist
 from socutils.mcscf import zcasci
-from socutils.fci import zfci
+from socutils.fci import zfci, addons
 
 mol = gto.M(atom='O 0 0 0; H 0 -0.757 0.587; H 0 0.757 0.587',
             basis='sto-3g', verbose=0)
@@ -70,8 +71,14 @@ mc_gs = zcasci.CASCI(mf, ncas, nelecas)   # valence ground state reference
 mc_gs.fcisolver = zfci.FCISolver(mol)
 mc_gs.kernel()
 
-au2ev = 27.211386245988
-print('O K-edge core-excited states (%d dets):' % len(occslst))
+#
+# XAS intensities: the ground state and the core-excited states live in
+# two different determinant lists, so the oscillator strengths are
+# computed with the cross-space transition density (pass the core-hole
+# CASCI object as mc_ket).
+#
+print('O K-edge XAS (%d dets):' % len(occslst))
 for i, e in enumerate(mc_ch.fcisolver.eci):
-    print('  state %d  E = %.8f  Eex = %.2f eV'
-          % (i, e.real, (e.real - mc_gs.e_tot) * au2ev))
+    f, _ = addons.oscillator_strength(mc_gs, 0, i, mc_ket=mc_ch)
+    print('  state %d  Eex = %.2f eV   f = %.6e'
+          % (i, (e.real - mc_gs.e_tot) * nist.HARTREE2EV, f))

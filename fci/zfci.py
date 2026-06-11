@@ -210,31 +210,35 @@ def _to_strings(occslst, norb):
         raise ValueError('duplicate determinants in occslst')
     return occs, strs
 
-def _excitations(strs, p0, p1):
-    '''Classify all pairs (I in [p0:p1), J in full list) by excitation level.
+def _excitations(strs_bra, strs_ket, p0, p1):
+    '''Classify all pairs (I in strs_bra[p0:p1], J in strs_ket) by
+    excitation level.
 
     Returns:
+        matches: (row, col) pairs of identical determinants
         singles: (row, col, a, i, phase) with |I> = phase * a_a^+ a_i |J>
         doubles: (row, col, a, b, i, j, phase) with
                  |I> = phase * a_b^+ a_j a_a^+ a_i |J>, a < b, i < j
         row is relative to p0.
     '''
     one = numpy.uint64(1)
-    xor = strs[p0:p1, None] ^ strs[None, :]
+    xor = strs_bra[p0:p1, None] ^ strs_ket[None, :]
     ndiff = _popcount(xor)
 
+    matches = numpy.nonzero(ndiff == 0)
+
     ri, rj = numpy.nonzero(ndiff == 2)
-    jstr = strs[rj]
+    jstr = strs_ket[rj]
     xp = xor[ri, rj]
-    a = _bitpos(xp & strs[p0 + ri])
+    a = _bitpos(xp & strs_bra[p0 + ri])
     i = _bitpos(xp & jstr)
     perm = _popcount(jstr & _between_mask(a, i))
     singles = (ri, rj, a, i, 1 - 2*(perm.astype(numpy.int64) & 1))
 
     ri2, rj2 = numpy.nonzero(ndiff == 4)
-    jstr = strs[rj2]
+    jstr = strs_ket[rj2]
     xp = xor[ri2, rj2]
-    pmask = xp & strs[p0 + ri2]
+    pmask = xp & strs_bra[p0 + ri2]
     hmask = xp & jstr
     abit = pmask & (~pmask + one)
     ibit = hmask & (~hmask + one)
@@ -245,7 +249,7 @@ def _excitations(strs, p0, p1):
     perm = _popcount(jstr & _between_mask(a, i))
     perm += _popcount((jstr ^ (ibit | abit)) & _between_mask(b, j))
     doubles = (ri2, rj2, a, b, i, j, 1 - 2*(perm.astype(numpy.int64) & 1))
-    return singles, doubles
+    return matches, singles, doubles
 
 def _pair_block_size(ndet, max_memory):
     # xor + popcount intermediates: ~3 arrays of (bsize, ndet) uint64
@@ -282,8 +286,8 @@ def make_hmat_dets(h1e, eri, norb, occslst, max_memory=2000):
     w = numpy.einsum('aikk->aik', eri) - numpy.einsum('akki->aik', eri)
 
     for p0, p1 in lib.prange(0, nd, _pair_block_size(nd, max_memory)):
-        (ri, rj, a, i, ph1), (ri2, rj2, a2, b2, i2, j2, ph2) = \
-                _excitations(strs, p0, p1)
+        _, (ri, rj, a, i, ph1), (ri2, rj2, a2, b2, i2, j2, ph2) = \
+                _excitations(strs, strs, p0, p1)
         wai = numpy.take_along_axis(w[a, i], occs[rj], axis=1).sum(axis=1)
         hmat[p0 + ri, rj] = ph1 * (h1e[a, i] + wai)
         hmat[p0 + ri2, rj2] = ph2 * (eri[a2, i2, b2, j2] - eri[a2, j2, b2, i2])
@@ -302,23 +306,40 @@ def kernel_dets(h1e, eri, norb, occslst, ecore=0, nroots=1, max_memory=2000,
         return e[:nroots] + ecore, [numpy.ascontiguousarray(c[:,i])
                                     for i in range(nroots)]
 
-def trans_rdm1_dets(cibra, ciket, norb, occslst, max_memory=2000):
+def trans_rdm1_dets(cibra, ciket, norb, occslst_bra, occslst_ket=None,
+                    max_memory=2000):
     '''Transition density matrix dm_pq = <bra|p^+ q|ket> in a determinant
-    list basis.'''
-    occs, strs = _to_strings(occslst, norb)
-    nd, ne = occs.shape
+    list basis.
+
+    The bra and ket vectors may live in different determinant lists (e.g.
+    a valence CI state and a core-hole CI state), as long as both contain
+    the same number of electrons; pass the ket determinant list through
+    occslst_ket (defaults to occslst_bra).
+    '''
+    occs_b, strs_b = _to_strings(occslst_bra, norb)
+    if occslst_ket is None:
+        occs_k, strs_k = occs_b, strs_b
+    else:
+        occs_k, strs_k = _to_strings(occslst_ket, norb)
+        if occs_k.shape[1] != occs_b.shape[1]:
+            raise ValueError('bra and ket determinant lists must have the '
+                             'same number of electrons')
+    ndb, ne = occs_b.shape
     rdm1 = numpy.zeros((norb, norb), dtype=numpy.complex128)
-    if nd == 0 or ne == 0:
+    if ndb == 0 or len(occs_k) == 0 or ne == 0:
         return rdm1
-    wdiag = cibra.conj() * ciket
-    numpy.add.at(rdm1, (occs.ravel(), occs.ravel()), numpy.repeat(wdiag, ne))
-    for p0, p1 in lib.prange(0, nd, _pair_block_size(nd, max_memory)):
-        (ri, rj, a, i, ph), _ = _excitations(strs, p0, p1)
+    for p0, p1 in lib.prange(0, ndb, _pair_block_size(len(occs_k), max_memory)):
+        (mi, mj), (ri, rj, a, i, ph), _ = _excitations(strs_b, strs_k, p0, p1)
+        # identical determinants in both lists
+        w = cibra[p0 + mi].conj() * ciket[mj]
+        numpy.add.at(rdm1, (occs_k[mj].ravel(), occs_k[mj].ravel()),
+                     numpy.repeat(w, ne))
         numpy.add.at(rdm1, (a, i), ph * cibra[p0 + ri].conj() * ciket[rj])
     return rdm1
 
 def make_rdm1_dets(fcivec, norb, occslst, max_memory=2000):
-    return trans_rdm1_dets(fcivec, fcivec, norb, occslst, max_memory)
+    return trans_rdm1_dets(fcivec, fcivec, norb, occslst,
+                           max_memory=max_memory)
 
 def make_rdm12_dets(fcivec, norb, occslst, max_memory=2000):
     '''1- and 2-particle density matrices in a determinant list basis,
@@ -344,8 +365,8 @@ def make_rdm12_dets(fcivec, norb, occslst, max_memory=2000):
     numpy.add.at(rdm2, (k, l, l, k), -wkl)
 
     for p0, p1 in lib.prange(0, nd, _pair_block_size(nd, max_memory)):
-        (ri, rj, a, i, ph1), (ri2, rj2, a2, b2, i2, j2, ph2) = \
-                _excitations(strs, p0, p1)
+        _, (ri, rj, a, i, ph1), (ri2, rj2, a2, b2, i2, j2, ph2) = \
+                _excitations(strs, strs, p0, p1)
         # singles, with spectator orbital k in both determinants
         c1 = ph1 * fcivec[p0 + ri].conj() * fcivec[rj]
         numpy.add.at(rdm1, (a, i), c1)
