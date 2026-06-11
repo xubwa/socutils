@@ -50,7 +50,18 @@ def get_ovvv(eris):
 def ladder_ao(X, eris):
     '''Bare particle-particle ladder ``0.5 sum_cd <ab||cd> X[B,cd]`` for a
     batched antisymmetric ``X`` (batch ``ij`` for EE, ``j`` for EA), via the
-    Liu-Cheng spin-block antisymmetric packing.'''
+    Liu-Cheng spin-block antisymmetric packing -- or, for a DF eris, from the
+    low-rank factors ``Lvv``.'''
+    if getattr(eris, 'Lvv', None) is not None:        # density-fitting path
+        Lvv = eris.Lvv
+        nb, nv = X.shape[0], Lvv.shape[1]
+        out = np.zeros((nb, nv, nv), dtype=X.dtype)
+        blk = max(1, int(2000*1e6/16/max(1, Lvv.shape[0]*nv*nv)))
+        for b0 in range(0, nb, blk):
+            b1 = min(b0+blk, nb)
+            M = einsum('Lae,Bef->BLaf', Lvv, X[b0:b1])
+            out[b0:b1] = einsum('BLaf,Lbf->Bab', M, Lvv)
+        return out
     Co, Cv, Cf = zd._spin_mo(eris)
     nao = eris.nao_sph
     nvir = Cv[0].shape[1]
@@ -99,22 +110,27 @@ def wvvvv_dot_xT(X, t1, t2, eris, ovvv):
 def w4t1(t1, t2, eris, ovvv):
     '''``Wvvvv . t1`` over the second virtual index,
     ``sum_f Wvvvv[ab,ef] t1[i,f] -> [a,b,e,i]`` -- the vvvo piece of Wvvvo,
-    built once AO-direct (O(o v^3)).'''
-    Co, Cv, Cf = zd._spin_mo(eris)
-    E = eris.E4
+    built once (O(o v^3)).'''
     oovv = np.asarray(eris.oovv)
     tau = imd.make_tau(t2, t1, t1)
-    termA = 0.
-    termB = 0.
-    for s1 in (0, 1):
-        for s2 in (0, 1):
-            GA = einsum('mnls,is->mnli', E, t1 @ Cv[s2].T)
-            termA = termA + einsum('ma,ne,lb,mnli->aebi',
-                                   Cv[s1].conj(), Cv[s1], Cv[s2].conj(), GA)
-            GB = einsum('mnls,lb,se->mnbe', E, Cv[s2].conj(), Cv[s2])
-            termB = termB + einsum('ma,in,mnbe->aibe',
-                                   Cv[s1].conj(), t1 @ Cv[s1].T, GB)
-    res = termA.transpose(0, 2, 1, 3) - termB.transpose(0, 2, 3, 1)
+    if getattr(eris, 'Lvv', None) is not None:        # density-fitting path
+        Lvv = eris.Lvv
+        LT1 = einsum('Lbf,if->Lbi', Lvv, t1)          # sum_f Lvv[b,f] t1[i,f]
+        res = einsum('Lae,Lbi->abei', Lvv, LT1) - einsum('Lai,Lbe->abei', LT1, Lvv)
+    else:
+        Co, Cv, Cf = zd._spin_mo(eris)
+        E = eris.E4
+        termA = 0.
+        termB = 0.
+        for s1 in (0, 1):
+            for s2 in (0, 1):
+                GA = einsum('mnls,is->mnli', E, t1 @ Cv[s2].T)
+                termA = termA + einsum('ma,ne,lb,mnli->aebi',
+                                       Cv[s1].conj(), Cv[s1], Cv[s2].conj(), GA)
+                GB = einsum('mnls,lb,se->mnbe', E, Cv[s2].conj(), Cv[s2])
+                termB = termB + einsum('ma,in,mnbe->aibe',
+                                       Cv[s1].conj(), t1 @ Cv[s1].T, GB)
+        res = termA.transpose(0, 2, 1, 3) - termB.transpose(0, 2, 3, 1)
     res += (-einsum('ma,mbef,if->abei', t1, ovvv, t1)
             + einsum('mb,maef,if->abei', t1, ovvv, t1)
             + 0.5*einsum('mnab,mnef,if->abei', tau, oovv, t1))
@@ -124,6 +140,10 @@ def w4t1(t1, t2, eris, ovvv):
 def vvvv_dot_v1(v1, eris):
     '''Bare ``sum_f <bc||ef> v1[f] -> [b,c,e]`` (v^3), for the EA *(star)
     contraction.  ``v1`` is a length-nvir vector.'''
+    if getattr(eris, 'Lvv', None) is not None:        # density-fitting path
+        Lvv = eris.Lvv
+        Lv1 = einsum('Lcf,f->Lc', Lvv, v1)
+        return einsum('Lbe,Lc->bce', Lvv, Lv1) - einsum('Lb,Lce->bce', Lv1, Lvv)
     Co, Cv, Cf = zd._spin_mo(eris)
     E = eris.E4
     nv = Cv[0].shape[1]
@@ -143,6 +163,10 @@ def vvvv_dot_v1(v1, eris):
 def wvvvv_diag(eris):
     '''Bare ``<ab||ab>`` for all (a,b), O(v^2) -- the approximate Wvvvv
     diagonal used for the preconditioner / initial guess.'''
+    if getattr(eris, 'Lvv', None) is not None:        # density-fitting path
+        Lvv = eris.Lvv
+        Laa = einsum('Laa->La', Lvv)
+        return einsum('La,Lb->ab', Laa, Laa) - einsum('Lab,Lba->ab', Lvv, Lvv)
     Co, Cv, Cf = zd._spin_mo(eris)
     E = eris.E4
     nao = eris.nao_sph
