@@ -15,10 +15,8 @@
 # integral transformation: only the blocks carrying at least one occupied
 # index are transformed, ``vvvv`` is never formed.
 #
-# Two representations of the AO Coulomb operator are supported:
-#   ladder='ao'   -- exact incore scalar ERIs (no approximation), and
-#   ladder='chol' -- density-fitted / Cholesky factors (sub-mEh error,
-#                    lower memory and faster for large bases).
+# The ladder uses the exact incore scalar ERIs (no approximation).  For a
+# density-fitted / Cholesky backend use :class:`socutils.cc.chol_zccsd.DFCCSD`.
 #
 
 import numpy as np
@@ -37,21 +35,6 @@ from socutils.cc import zccsd as _zccsd
 einsum = lib.einsum
 
 
-def prange(start, end, step):
-    for i in range(start, end, step):
-        yield i, min(i + step, end)
-
-
-def _ao_spin_blocks(eris):
-    '''Virtual MO coefficients in the (scalar AO x spin) basis, split into the
-    two spin components.  ``eris.mo_ao_spin`` has shape ``(2*nao, nmo)`` with
-    the spin-alpha scalar-AO block stacked on top of the spin-beta block.'''
-    nocc = eris.nocc
-    nao = eris.nao_sph
-    Cv = eris.mo_ao_spin[:, nocc:]
-    return [Cv[:nao], Cv[nao:]]
-
-
 def _ao_contract(eris, T):
     '''Contract the AO Coulomb operator with the half back-transformed
     amplitude ``T_ij^{nu sigma}`` (the electron-2 indices), returning
@@ -65,25 +48,17 @@ def _ao_contract(eris, T):
     nao = eris.nao_sph
     lead = T.shape[:-2]
     Tm = T.reshape(-1, nao * nao)               # flatten (nu, sigma)
-    if eris.ao_eri is not None:                 # exact dense scalar ERIs
-        Gm = lib.dot(Tm, eris.ao_eri)           # ao_eri: [(nu,sigma),(mu,lambda)]
-        return Gm.reshape(*lead, nao, nao)
-    # density fitted / Cholesky:  (mn|ls) = sum_c L[c,m,n] L[c,l,s]
-    Lc = eris.ao_chol                           # (naux, nao, nao)
-    T4 = T.reshape(-1, nao, nao)                # (X, nu, sigma)
-    Q = einsum('cls,Xns->Xcln', Lc, T4)         # contract sigma
-    G = einsum('cmn,Xcln->Xml', Lc, Q)          # contract c and nu
-    return G.reshape(*lead, nao, nao)
+    Gm = lib.dot(Tm, eris.ao_eri)               # ao_eri: [(nu,sigma),(mu,lambda)]
+    return Gm.reshape(*lead, nao, nao)
 
 
 # ---------------------------------------------------------------------------
 # AO-direct evaluation of the ovvv (<ma||ef>) contractions.
 #
-# When ``eris.E4`` is set (exact 'ao' mode) ``ovvv`` is never built; the five
-# contractions below are evaluated as generalised J/K builds with the scalar
-# AO Coulomb operator, folding the amplitudes into nao x nao densities so no
-# nvir^3 intermediate ever appears.  When ``ovvv`` is stored ('chol' mode) the
-# plain einsum contractions are used.
+# ``ovvv`` is never built; the five contractions below are evaluated as
+# generalised J/K builds with the scalar AO Coulomb operator ``eris.E4``,
+# folding the amplitudes into nao x nao densities so no nvir^3 intermediate
+# ever appears.
 # ---------------------------------------------------------------------------
 
 def _spin_mo(eris):
@@ -102,8 +77,6 @@ def _spin_mo(eris):
 
 def _ovvv_fvv(t1, eris):
     '''sum_mf t1[m,f] <ma||fe>  ->  [a,e]   (cc_Fvv contribution).'''
-    if eris.E4 is None:
-        return einsum('mf,amef->ae', t1, np.asarray(eris.ovvv).transpose(1, 0, 3, 2))
     Co, Cv, Cf = _spin_mo(eris)
     E = eris.E4
     J = 0.
@@ -129,8 +102,6 @@ def _ovvv_wovvo(t1, eris):
     O(nao^2 nvir^2) intermediate appears.  For the Coulomb part (me|bf) the
     t1-dressed f index (occupied count) is contracted first; for the exchange
     part (mf|be) the occupied bra indices are contracted first.'''
-    if eris.E4 is None:
-        return einsum('jf,mbef->mbej', t1, np.asarray(eris.ovvv))
     Co, Cv, Cf = _spin_mo(eris)
     E = eris.E4
     res = 0.
@@ -153,8 +124,6 @@ def _ovvv_wovvo(t1, eris):
 
 def _ovvv_ladder(tau, eris):
     '''sum_ef <ma||ef> tau[i,j,e,f]  ->  [m,a,i,j]   (ladder ovvv term).'''
-    if eris.E4 is None:
-        return einsum('maef,ijef->maij', np.asarray(eris.ovvv), tau)
     Co, Cv, Cf = _spin_mo(eris)
     E = eris.E4
     res = 0.
@@ -168,8 +137,6 @@ def _ovvv_ladder(tau, eris):
 
 def _ovvv_t1(t2, eris):
     '''sum_mef t2[i,m,e,f] <ma||ef>  ->  [i,a]   (T1 contribution).'''
-    if eris.E4 is None:
-        return einsum('imef,maef->ia', t2, np.asarray(eris.ovvv))
     Co, Cv, Cf = _spin_mo(eris)
     E = eris.E4
     res = 0.
@@ -185,8 +152,6 @@ def _ovvv_t1(t2, eris):
 
 def _ovvv_t2(t1, eris):
     '''sum_e t1[i,e] <je||ba>.conj()  ->  [i,j,a,b]   (T2 contribution).'''
-    if eris.E4 is None:
-        return einsum('ie,jeba->ijab', t1, np.asarray(eris.ovvv).conj())
     Co, Cv, Cf = _spin_mo(eris)
     E = eris.E4
     A5 = 0.
@@ -270,24 +235,8 @@ def update_t2_vvvv_direct(t1, t2, tau, eris):
     nocc, nvir = t1.shape
     t2_new = np.zeros(t2.shape, dtype=t2.dtype)
 
-    if eris.W_same is not None:
-        # Liu-Cheng spin-block ladder with antisymmetric AO packing.
-        t2_new += 2.0 * _ladder_lc(tau, eris)
-    else:
-        # Plain spin-summed AO-direct ladder (e.g. chol mode), blocked over the
-        # first occupied index to bound peak memory.
-        Cv = _ao_spin_blocks(eris)
-        nao = eris.nao_sph
-        blk = max(1, int(2000*1e6/16/max(1, nocc*nao*nao)))
-        for i0, i1 in prange(0, nocc, blk):
-            taui = tau[i0:i1]
-            ladder = np.zeros((i1-i0, nocc, nvir, nvir), dtype=t2.dtype)
-            for C1 in Cv:
-                for C2 in Cv:
-                    T = einsum('ne,ijef,sf->ijns', C1, taui, C2)
-                    G = _ao_contract(eris, T)
-                    ladder += einsum('ma,ijml,lb->ijab', C1.conj(), G, C2.conj())
-            t2_new[i0:i1] += 2.0 * ladder
+    # Liu-Cheng spin-block ladder with antisymmetric AO packing.
+    t2_new += 2.0 * _ladder_lc(tau, eris)
 
     tmp = _ovvv_ladder(tau, eris)
     tmp = einsum('maij,mb->baij', tmp, t1)
@@ -355,25 +304,17 @@ def update_amps(cc, t1, t2, eris):
 
 
 class DirectZCCSD(_zccsd.ZCCSD):
-    '''Two-component CCSD with an AO-direct particle-particle ladder.
+    '''Two-component CCSD with an exact AO-direct particle-particle ladder.
 
-    Parameters
-    ----------
-    ladder : str
-        ``'ao'`` uses the exact incore scalar ERIs (default), ``'chol'`` uses
-        a Cholesky/density-fitted factorisation of the scalar ERIs.
-    cderi : ndarray, optional
-        Pre-computed AO Cholesky vectors (only used when ``ladder='chol'``).
-    max_error : float
-        Threshold for the on-the-fly Cholesky decomposition.
+    Only the blocks carrying at least one occupied index are transformed; the
+    ``vvvv`` (and ``ovvv``) ladder contractions are evaluated directly from the
+    incore scalar AO ERIs, so neither tensor is ever formed.  For a
+    density-fitted / Cholesky backend use
+    :class:`socutils.cc.chol_zccsd.DFCCSD`.
     '''
 
-    def __init__(self, mf, frozen=0, mo_coeff=None, mo_occ=None,
-                 ladder='ao', cderi=None, max_error=1e-5):
+    def __init__(self, mf, frozen=0, mo_coeff=None, mo_occ=None):
         ccsd.CCSD.__init__(self, mf, frozen, mo_coeff, mo_occ)
-        self.ladder = ladder
-        self.cderi = cderi
-        self.max_error = max_error
         self.eris = None
 
     update_amps = update_amps
@@ -486,8 +427,7 @@ class _PhysicistsERIs(gccsd._PhysicistsERIs):
         self.mo_ao_spin = None
         self.nao_sph = None
         self.ao_eri = None
-        self.ao_chol = None
-        self.E4 = None              # 4-index scalar AO ERIs (exact 'ao' mode)
+        self.E4 = None              # 4-index scalar AO ERIs
         self.W_same = None          # packed antisymmetric same-spin AO integral <mu nu||si rho>
         self.ao_tril = None         # (mu>nu) pair indices
         self._spin_mo_cache = None
@@ -529,97 +469,56 @@ def _make_eris_direct(mycc, mo_coeff=None):
     eris.mo_ao_spin = c2.dot(eris.mo_coeff)         # (2*nao, nmo)
     mog = eris.mo_ao_spin
 
-    if mycc.ladder == 'chol':
-        # Fully density-fitted: the occupied-row blocks and the ladder share
-        # the same scalar Cholesky factors, so the O(nao^4) ERIs are never
-        # formed in core.
-        from socutils.mcscf import zmc_ao2mo
-        if mycc.cderi is None:
-            cderi = zmc_ao2mo.chunked_cholesky(mol, max_error=mycc.max_error,
-                                               verbose=mycc.verbose > 4)
-        else:
-            cderi = mycc.cderi
-        Lc = np.asarray(cderi).reshape(-1, nao, nao)
-        eris.ao_chol = Lc
-        eris.ao_eri = None
-        moa, mob = mog[:nao], mog[nao:]
-        # chol in the spinor MO basis (sum over the two spin components)
-        chol_mo = (einsum('cmn,mp,nq->cpq', Lc, moa.conj(), moa) +
-                   einsum('cmn,mp,nq->cpq', Lc, mob.conj(), mob))
-        _eris_from_cholmo(eris, chol_mo, nocc)
-    else:
-        # Exact integrals, AO-direct ovvv: only blocks with at most two virtual
-        # indices are transformed (oooo, ooov, oovv, ovov, ovvo).  Neither vvvv
-        # nor ovvv is ever formed -- the ovvv terms are evaluated AO-direct from
-        # eris.E4 during the iterations.
-        E = mol.intor('int2e_sph').reshape(nao, nao, nao, nao)
-        eris.E4 = E
-        # ladder operator, [(nu,sigma),(mu,lambda)] layout for a single GEMM
-        eris.ao_eri = E.transpose(1, 3, 0, 2).reshape(nao*nao, nao*nao).copy()
-        eris.ao_chol = None
-        eris.ovvv = None
+    # Exact integrals, AO-direct ovvv: only blocks with at most two virtual
+    # indices are transformed (oooo, ooov, oovv, ovov, ovvo).  Neither vvvv
+    # nor ovvv is ever formed -- the ovvv terms are evaluated AO-direct from
+    # eris.E4 during the iterations.
+    E = mol.intor('int2e_sph').reshape(nao, nao, nao, nao)
+    eris.E4 = E
+    # ladder operator, [(nu,sigma),(mu,lambda)] layout for a single GEMM
+    eris.ao_eri = E.transpose(1, 3, 0, 2).reshape(nao*nao, nao*nao).copy()
+    eris.ovvv = None
 
-        Ca, Cb = mog[:nao], mog[nao:]
-        Co = [Ca[:, :nocc], Cb[:, :nocc]]
-        Cv = [Ca[:, nocc:], Cb[:, nocc:]]
-        Cf = [Ca, Cb]
-        # Shared electron-1 half transform: H[i,q,lambda,sigma], i occ, q full.
-        H = 0.
+    Ca, Cb = mog[:nao], mog[nao:]
+    Co = [Ca[:, :nocc], Cb[:, :nocc]]
+    Cv = [Ca[:, nocc:], Cb[:, nocc:]]
+    Cf = [Ca, Cb]
+    # Shared electron-1 half transform: H[i,q,lambda,sigma], i occ, q full.
+    H = 0.
+    for s in (0, 1):
+        t = einsum('mi,mnls->inls', Co[s].conj(), E)
+        H = H + einsum('inls,nq->iqls', t, Cf[s])
+
+    def e2(Hx, Cr, Cs):
+        '''Finish the electron-2 transform of Hx onto the (Cr, Cs) ket.'''
+        out = 0.
         for s in (0, 1):
-            t = einsum('mi,mnls->inls', Co[s].conj(), E)
-            H = H + einsum('inls,nq->iqls', t, Cf[s])
+            u = einsum('iqls,lr->iqrs', Hx, Cr[s].conj())
+            out = out + einsum('iqrs,st->iqrt', u, Cs[s])
+        return out
 
-        def e2(Hx, Cr, Cs):
-            '''Finish the electron-2 transform of Hx onto the (Cr, Cs) ket.'''
-            out = 0.
-            for s in (0, 1):
-                u = einsum('iqls,lr->iqrs', Hx, Cr[s].conj())
-                out = out + einsum('iqrs,st->iqrt', u, Cs[s])
-            return out
+    no = nocc
+    g_qoo = e2(H, Co, Co)              # (i, q, o, o)
+    g_qov = e2(H, Co, Cv)             # (i, q, o, v)
+    g_qvo = e2(H, Cv, Co)             # (i, q, v, o)
+    g_ovv = e2(H[:, :no], Cv, Cv)     # (i, o, v, v)  (q restricted to occ)
+    H = None
+    eris.oooo = g_qoo[:, :no].transpose(0,2,1,3) - g_qoo[:, :no].transpose(0,2,3,1)
+    eris.ooov = g_qov[:, :no].transpose(0,2,1,3) - g_qoo[:, no:].transpose(0,2,3,1)
+    eris.oovv = g_qov[:, no:].transpose(0,2,1,3) - g_qov[:, no:].transpose(0,2,3,1)
+    eris.ovov = g_ovv.transpose(0,2,1,3) - g_qvo[:, no:].transpose(0,2,3,1)
+    eris.ovvo = g_qvo[:, no:].transpose(0,2,1,3) - g_ovv.transpose(0,2,3,1)
 
-        no = nocc
-        g_qoo = e2(H, Co, Co)              # (i, q, o, o)
-        g_qov = e2(H, Co, Cv)             # (i, q, o, v)
-        g_qvo = e2(H, Cv, Co)             # (i, q, v, o)
-        g_ovv = e2(H[:, :no], Cv, Cv)     # (i, o, v, v)  (q restricted to occ)
-        H = None
-        eris.oooo = g_qoo[:, :no].transpose(0,2,1,3) - g_qoo[:, :no].transpose(0,2,3,1)
-        eris.ooov = g_qov[:, :no].transpose(0,2,1,3) - g_qoo[:, no:].transpose(0,2,3,1)
-        eris.oovv = g_qov[:, no:].transpose(0,2,1,3) - g_qov[:, no:].transpose(0,2,3,1)
-        eris.ovov = g_ovv.transpose(0,2,1,3) - g_qvo[:, no:].transpose(0,2,3,1)
-        eris.ovvo = g_qvo[:, no:].transpose(0,2,1,3) - g_ovv.transpose(0,2,3,1)
-
-        # Packed antisymmetrized same-spin AO integral <mu nu||si rho> on the
-        # (mu>nu, si>rho) triangles, for the Liu-Cheng particle-particle ladder.
-        # Amplitude independent -> built once.
-        pi, pj = np.tril_indices(nao, -1)
-        eris.ao_tril = (pi, pj)
-        eris.W_same = (E[pi[:, None], pi[None, :], pj[:, None], pj[None, :]] -
-                       E[pi[:, None], pj[None, :], pj[:, None], pi[None, :]])
+    # Packed antisymmetrized same-spin AO integral <mu nu||si rho> on the
+    # (mu>nu, si>rho) triangles, for the Liu-Cheng particle-particle ladder.
+    # Amplitude independent -> built once.
+    pi, pj = np.tril_indices(nao, -1)
+    eris.ao_tril = (pi, pj)
+    eris.W_same = (E[pi[:, None], pi[None, :], pj[:, None], pj[None, :]] -
+                   E[pi[:, None], pj[None, :], pj[:, None], pi[None, :]])
 
     log.timer('CCSD integral transformation (vvvv/ovvv-free)', *cput0)
     return eris
-
-
-def _eris_from_cholmo(eris, chol_mo, nocc):
-    '''Build the antisymmetrized occupied-row blocks from the Cholesky factors
-    in the MO basis (mirrors :func:`chol_zccsd._make_df_eris`).'''
-    oo = chol_mo[:, :nocc, :nocc]
-    ov = chol_mo[:, :nocc, nocc:]
-    vo = chol_mo[:, nocc:, :nocc]
-    vv = chol_mo[:, nocc:, nocc:]
-    oooo = einsum('Lij,Lkl->ijkl', oo, oo)
-    eris.oooo = oooo.transpose(0, 2, 1, 3) - oooo.transpose(0, 2, 3, 1)
-    ooov = einsum('Lij,Lkl->ijkl', oo, ov)
-    eris.ooov = ooov.transpose(0, 2, 1, 3) - ooov.transpose(2, 0, 1, 3)
-    oovv = einsum('Lij,Lkl->ijkl', oo, vv)
-    ovov = einsum('Lij,Lkl->ijkl', ov, ov)
-    ovvo = einsum('Lij,Lkl->ijkl', ov, vo)
-    eris.oovv = ovov.transpose(0, 2, 1, 3) - ovov.transpose(0, 2, 3, 1)
-    eris.ovov = oovv.transpose(0, 2, 1, 3) - ovvo.transpose(0, 2, 3, 1)
-    eris.ovvo = ovvo.transpose(0, 2, 1, 3) - oovv.transpose(0, 2, 3, 1)
-    ovvv = einsum('Lia,Lbc->iabc', ov, vv)
-    eris.ovvv = ovvv.transpose(0, 2, 1, 3) - ovvv.transpose(0, 2, 3, 1)
 
 
 if __name__ == '__main__':
@@ -640,8 +539,6 @@ if __name__ == '__main__':
     mf.kernel()
 
     e_ref = ZCCSD(mf, frozen=2).kernel()[0]
-    e_ao = DirectZCCSD(mf, frozen=2, ladder='ao').kernel()[0]
-    e_chol = DirectZCCSD(mf, frozen=2, ladder='chol').kernel()[0]
+    e_ao = DirectZCCSD(mf, frozen=2).kernel()[0]
     print('exact  ZCCSD corr        = %.12f' % e_ref)
     print('direct ZCCSD (ao)   corr = %.12f  diff %.2e' % (e_ao, abs(e_ao-e_ref)))
-    print('direct ZCCSD (chol) corr = %.12f  diff %.2e' % (e_chol, abs(e_chol-e_ref)))
