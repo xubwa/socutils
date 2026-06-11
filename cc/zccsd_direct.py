@@ -385,13 +385,23 @@ class DirectZCCSD(_zccsd.ZCCSD):
         return self.eris
 
     def ccsd_t(self, t1=None, t2=None, eris=None):
+        '''CCSD(T) correction.
+
+        (T) contracts the connected <bc||ei> slice with a small t2 block for
+        every (b,c) virtual pair, so its integrals enter slice by slice rather
+        than as one batched contraction.  That access pattern cannot be made
+        AO-direct efficiently: rebuilding each <bc||ei> from the AO integrals
+        costs O(nao^4) per (b,c), i.e. O(v^2 nao^4) overall, which exceeds the
+        O(o^3 v^4) (T) work itself.  (T) never needs vvvv though -- only ovvv
+        (O(o v^3)) -- so here ovvv is simply reconstructed once from the AO
+        integrals.  For a genuinely storage-free (T), use the Cholesky path
+        (chol_zccsd_t), which rebuilds each slice cheaply from low-rank factors.
+        '''
         from socutils.cc import gccsd_t
         if t1 is None: t1 = self.t1
         if t2 is None: t2 = self.t2
         if eris is None:
             eris = self.eris if self.eris is not None else self.ao2mo()
-        # (T) needs ovvv (O(o v^3), no v^4); the 'ao' mode does not store it, so
-        # reconstruct it once from the AO integrals.
         if eris.ovvv is None:
             from socutils.cc.eom_zccsd_direct import get_ovvv
             eris.ovvv = get_ovvv(eris)
