@@ -64,32 +64,41 @@ def write_head(fout, nmo, nelec, ms, orbsym=None):
     fout.write('  ISYM=0,\n')
     fout.write(' &END\n')
 
-def from_x2c(mf, ncore, nact, filename='FCIDUMP', tol=1e-14, intor='int2e_spinor',
-    h1e=None, approx='1e', symm=None, 
+def x2c_integrals(mf, ncore, nact,
     fourC_fcore=False, fourC_int=False,
     with_full_coulomb=False, with_coulomb_so=False, with_gaunt=False, with_breit=False):
-    ncore = ncore
-    nact = nact
+    '''Active space integrals (h1eff, eri, ecore) for an X2C SCF object,
+    optionally with the orbitals back-transformed to the four-component
+    picture (requires mf.with_x2c.to_4c_coeff).
+
+    Kwargs:
+        fourC_fcore: evaluate the core Fock contribution to h1eff and the
+            core energy in the 4c picture
+        fourC_int: enable the 4c two-electron integral corrections below
+        with_coulomb_so: add the spin-orbit part of the 4c Coulomb
+            interaction (the picture-change correction of the 2e SOC) to
+            the 2c Coulomb integrals
+        with_full_coulomb: use the full 4c Coulomb integrals instead
+        with_gaunt, with_breit: add the Gaunt/Breit interaction
+
+    This is the integral pipeline of the x2c-correlated (x2ccorr) CASCI:
+    the integrals can either be dumped to an FCIDUMP for Dice (from_x2c)
+    or diagonalized directly with socutils.fci.zfci.
+    '''
     mo_coeff = mf.mo_coeff[:, ncore:ncore + nact]
     mol = mf.mol
 
     assert mo_coeff.dtype == complex
 
-    #mf.with_x2c.approx = approx
     hcore = mf.get_hcore(mf.mol)
     core_occ = numpy.zeros(len(mf.mo_energy))
     core_occ[:ncore] = 1.0
     core_dm = mf.make_rdm1(mo_occ=core_occ)
     corevhf = mf.get_veff(mol, core_dm)
     energy_core = mf.energy_nuc()
-    print(energy_core)
     energy_core += numpy.einsum('ij,ji', core_dm, hcore)
-    print(energy_core)
     energy_core += numpy.einsum('ij,ji', core_dm, corevhf) * .5
-    print(energy_core)
     h1eff = reduce(numpy.dot, (mo_coeff.T.conj(), hcore + corevhf, mo_coeff))
-    #print(h1eff, energy_core)
-    #reduce(numpy.dot, (mf.mo_coeff.T, mf.get_hcore(), mf.mo_coeff))[ncore:ncore+nact, ncore:ncore+nact]
 
     if fourC_fcore is True:
         c4c = mf.with_x2c.to_4c_coeff(mf.mo_coeff)
@@ -165,9 +174,19 @@ def from_x2c(mf, ncore, nact, filename='FCIDUMP', tol=1e-14, intor='int2e_spinor
                    [mo_s, mo_l, mo_s, mo_l],
                    [mo_s, mo_l, mo_l, mo_s]]
             intors = [p+'ssp1sps2_spinor', p+'ssp1ssp2_spinor', p+'sps1sps2_spinor', p+'sps1ssp2_spinor']
-            for mo, intor, multip in zip(mos, intors, multips):
-                eri += multip * ao2mo.general(mol, mo, intor=intor, aosym='s1', comp=1, max_memory=mf.max_memory)
-    #ncas = nact // 2
+            for mo, intor_, multip in zip(mos, intors, multips):
+                eri += multip * ao2mo.general(mol, mo, intor=intor_, aosym='s1', comp=1, max_memory=mf.max_memory)
+    return h1eff, eri, energy_core
+
+
+def from_x2c(mf, ncore, nact, filename='FCIDUMP', tol=1e-14, intor='int2e_spinor',
+    h1e=None, approx='1e', symm=None,
+    fourC_fcore=False, fourC_int=False,
+    with_full_coulomb=False, with_coulomb_so=False, with_gaunt=False, with_breit=False):
+    h1eff, eri, energy_core = x2c_integrals(
+        mf, ncore, nact, fourC_fcore=fourC_fcore, fourC_int=fourC_int,
+        with_full_coulomb=with_full_coulomb, with_coulomb_so=with_coulomb_so,
+        with_gaunt=with_gaunt, with_breit=with_breit)
     from_integrals(filename=filename, h1e=h1eff, h2e=eri, nmo=nact,
                    nelec=sum(mf.mol.nelec)-ncore, nuc=energy_core.real, tol=tol, orbsym=symm)
 

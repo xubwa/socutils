@@ -108,6 +108,45 @@ def kernel(h1e, eri, norb, nelec, ecore=0, nroots=1, max_memory=2000,
                                     for i in range(nroots)]
 
 
+def kernel_from_x2c(mf, ncore, ncas, nroots=1, occslst=None, max_memory=2000,
+                    verbose=logger.NOTE, **int_kwargs):
+    '''CASCI by exact diagonalization with the active space integrals of an
+    X2C SCF object, optionally back-transformed to the four-component
+    picture (the "x2ccorr" calculation).
+
+    The integrals are built by socutils.tools.fcidump_rel.x2c_integrals;
+    all of its options (fourC_fcore, fourC_int, with_full_coulomb,
+    with_coulomb_so, with_gaunt, with_breit) are accepted as keyword
+    arguments.  This replaces the FCIDUMP + Dice ZFCI route for active
+    spaces small enough for exact diagonalization, e.g.
+
+        e, ci = zfci.kernel_from_x2c(mf, ncore, ncas, nroots=4,
+                                     fourC_fcore=True, fourC_int=True,
+                                     with_coulomb_so=True)
+
+    Kwargs:
+        occslst: restrict the CI space to a given determinant list
+            (see SelectedCI) instead of the full active space.
+
+    Returns:
+        (energies, civecs); the CI vectors follow the cistring determinant
+        order (or the order of occslst when given) and can be used with
+        the RDM/transition-property functions of this module.
+    '''
+    from socutils.tools import fcidump_rel
+    h1eff, eri, ecore = fcidump_rel.x2c_integrals(mf, ncore, ncas, **int_kwargs)
+    eri = numpy.asarray(eri).reshape(ncas, ncas, ncas, ncas)
+    nelec = mf.mol.nelectron - ncore
+    if occslst is None:
+        return kernel(h1eff, eri, ncas, nelec, ecore=numpy.real(ecore),
+                      nroots=nroots, max_memory=max_memory, verbose=verbose)
+    else:
+        occslst = numpy.asarray(occslst)
+        assert occslst.shape[1] == nelec
+        return kernel_dets(h1eff, eri, ncas, occslst, ecore=numpy.real(ecore),
+                           nroots=nroots, max_memory=max_memory, verbose=verbose)
+
+
 def trans_rdm1(cibra, ciket, norb, nelec, link_index=None):
     '''Transition density matrix dm_pq = <bra|p^+ q|ket>, with the same
     convention as fci_dhf_slow.make_rdm1.'''
