@@ -606,10 +606,6 @@ class SpinorSCF(hf.SCF):
         from socutils.tdscf import gks
         return gks.TDA(self)
 
-    def TDDFT(self):
-        from socutils.tdscf import gks
-        return gks.TDDFT_factory(self)
-
     def eig(self, h, s=None, *args, **kwargs):
         return hf.SCF.eig(self, h, s)
 
