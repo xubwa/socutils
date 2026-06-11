@@ -454,6 +454,20 @@ class DirectZCCSD(_zccsd.ZCCSD):
             mod.kernel(self, eris, t1, t2, l1, l2, **kwargs)
         return self.l1, self.l2
 
+    def make_rdm1(self, t1=None, t2=None, l1=None, l2=None, eris=None,
+                  ao_repr=False, with_t=False):
+        from socutils.cc import rdm_zccsd
+        if eris is None:
+            eris = self.eris if self.eris is not None else self.ao2mo()
+        return rdm_zccsd.make_rdm1(self, t1, t2, l1, l2, eris, ao_repr, with_t)
+
+    def dip_moment(self, t1=None, t2=None, l1=None, l2=None, eris=None,
+                   with_t=False, unit='Debye'):
+        from socutils.cc import rdm_zccsd
+        if eris is None:
+            eris = self.eris if self.eris is not None else self.ao2mo()
+        return rdm_zccsd.dip_moment(self, t1, t2, l1, l2, eris, with_t, unit)
+
 
 class _PhysicistsERIs(gccsd._PhysicistsERIs):
     '''<pq||rs> = <pq|rs> - <pq|sr>, with the ``vvvv`` block omitted.'''
