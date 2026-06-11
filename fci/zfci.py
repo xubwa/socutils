@@ -17,6 +17,7 @@ pyscf.fci.fci_dhf_slow, so the resulting CI vectors and density matrices are
 interchangeable with that module.
 
 Usage:
+    from socutils.fci import zfci
     mc = zmcscf.CASSCF(mf, ncas, nelecas)
     mc.fcisolver = zfci.FCISolver(mol)
     mc.fcisolver.nroots = 3
@@ -340,6 +341,7 @@ class SelectedCI(lib.StreamObject):
             order of this list.
 
     Usage:
+        from socutils.fci import zfci
         mc = zmcscf.CASSCF(mf, ncas, nelecas)
         mc.fcisolver = zfci.SelectedCI(mol)
         mc.fcisolver.occslst = [[0,1,2,3], [0,1,4,5], ...]
