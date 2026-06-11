@@ -408,7 +408,7 @@ def spinor2sph(mol, spinor):
     c2 = numpy.vstack(c)
     assert (spinor.shape[-2] == c2.shape[-1]), "spinor integral must be of shape (nao_2c, nao_2c)"
     if len(spinor.shape) == 3:
-        ints_sph = lib.einsum('ip,xpq,qj->ij', c2, spinor, c2.T.conj())
+        ints_sph = lib.einsum('ip,xpq,qj->xij', c2, spinor, c2.T.conj())
     elif len(spinor.shape) == 2:
         ints_sph = lib.einsum('ip,pq,qj->ij', c2, spinor, c2.T.conj())
     else:
