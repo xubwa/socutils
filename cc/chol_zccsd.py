@@ -240,6 +240,21 @@ class DFCCSD(gccsd.GCCSD):
     eaccsd = eomea
     eeccsd = eomee
 
+    def lambda_ccsd_t(self, t1=None, t2=None, l1=None, l2=None, eris=None):
+        '''Lambda-CCSD(T) energy correction (CCSD(T)_Lambda): the (T) triples
+        contracted with the converged Lambda amplitudes on the bra side.
+        Solves the CCSD Lambda equations first if l1/l2 are not available.'''
+        from socutils.cc import gccsd_t
+        if t1 is None: t1 = self.t1
+        if t2 is None: t2 = self.t2
+        if eris is None:
+            eris = _make_df_eris(self, self.mo_coeff)
+        if l1 is None or l2 is None:
+            if getattr(self, 'l1', None) is None:
+                self.solve_lambda(t1, t2, eris=eris)
+            l1, l2 = self.l1, self.l2
+        return gccsd_t.kernel_lambda(self, eris, t1, t2, l1, l2, self.verbose)
+
     def solve_lambda(self, t1=None, t2=None, l1=None, l2=None, eris=None,
                      with_t=False, **kwargs):
         from socutils.cc import lambda_zccsd, lambda_t_zccsd

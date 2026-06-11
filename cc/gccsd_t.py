@@ -115,6 +115,72 @@ def kernel(cc, eris, t1=None, t2=None, verbose=logger.INFO, alg='vir_loop'):
     return et
 
 
+def kernel_lambda(cc, eris, t1=None, t2=None, l1=None, l2=None,
+                  verbose=logger.INFO):
+    '''Lambda-CCSD(T) energy correction (CCSD(T)_Lambda).
+
+    Same triples as the standard (T) correction, but the bra (de-excitation)
+    side is contracted with the converged Lambda amplitudes l1, l2 instead of
+    t1^+, t2^+ [S. A. Kucharski, R. J. Bartlett, J. Chem. Phys. 108, 5243
+    (1998); T. D. Crawford, J. F. Stanton, Int. J. Quantum Chem. 70, 601
+    (1998)].  With l1 = t1, l2 = t2 this reduces exactly to kernel().
+    '''
+    cpu0 = (logger.process_clock(), logger.perf_counter())
+    log = logger.new_logger(cc, verbose)
+    if t1 is None or t2 is None:
+        t1, t2 = cc.t1, cc.t2
+    if l1 is None or l2 is None:
+        l1, l2 = cc.l1, cc.l2
+    nocc, nvir = t1.shape
+
+    fvo = eris.fock[nocc:,:nocc]
+    mo_e = eris.mo_energy
+    eijk = lib.direct_sum('i+j+k->ijk', mo_e[:nocc], mo_e[:nocc], mo_e[:nocc])
+    eabc = lib.direct_sum('a+b+c->abc', mo_e[nocc:], mo_e[nocc:], mo_e[nocc:])
+
+    bcei = numpy.asarray(eris.ovvv).conj().transpose(3,2,1,0)
+    majk = numpy.asarray(eris.ooov).conj().transpose(2,3,0,1)
+    bcjk = numpy.asarray(eris.oovv).conj().transpose(2,3,0,1)
+
+    t2T = t2.transpose(2,3,0,1)
+    # Lambda amplitudes are de-excitation amplitudes: in the complex case the
+    # converged lambda plays the role of t^* (l ~ t.conj() to lowest order).
+    # The bra is obtained by substituting l for t^* inside conj(v(t)), i.e. by
+    # building v from l.conj() and conjugating as usual.  For real amplitudes
+    # this is indistinguishable from using l directly.
+    l2T = l2.conj().transpose(2,3,0,1)
+    l1T = l1.conj().T
+
+    def get_w(x2T, a, b, c):
+        w  = einsum('ejk,ei->ijk', x2T[a,:], bcei[b,c])
+        w -= einsum('im,mjk->ijk', x2T[b,c], majk[:,a])
+        return w
+
+    def get_wv(a, b, c):
+        w = get_w(t2T, a, b, c)            # ket triples from t2
+        v = get_w(l2T, a, b, c)            # bra from l2 (same structure)
+        v += einsum('i,jk->ijk', l1T[a], bcjk[b,c])
+        v += einsum('i,jk->ijk', fvo[a], l2T[b,c])
+        w = w + w.transpose(2,0,1) + w.transpose(1,2,0)
+        return w, v
+
+    et = 0
+    for a in range(nvir):
+        for b in range(a):
+            for c in range(b):
+                wabc, vabc = get_wv(a, b, c)
+                wcab, vcab = get_wv(c, a, b)
+                wbac, vbac = get_wv(b, a, c)
+                w = wabc + wcab - wbac
+                v = vabc + vcab - vbac
+                w /= eijk - eabc[a,b,c]
+                et += einsum('ijk,ijk', w, v.conj())
+    et /= 2
+    log.note('Lambda-CCSD(T) correction = %.15g (imag %.4e)', et.real, et.imag)
+    log.timer('Lambda-CCSD(T)', *cpu0)
+    return et
+
+
 if __name__ == '__main__':
     from pyscf import gto
     from pyscf import scf
