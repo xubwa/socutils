@@ -56,3 +56,50 @@ class TDA(_KernelXCMixin, _ghf.TDA):
 
 
 CIS = TDA
+
+
+class _PairedRPA(_ghf.TDHF):
+    '''Full RPA/TDDFT solved with the paired-trial-vector Davidson
+    (socutils.tdscf.lr_davidson), which represents the indefinite Krein
+    metric correctly for complex orbitals.  Experimental -- TDA remains the
+    recommended default.'''
+
+    conv_tol = 1e-6
+
+    def kernel(self, x0=None, nstates=None):
+        import numpy as np
+        from pyscf.lib import logger
+        from socutils.tdscf import lr_davidson
+        cpu0 = (logger.process_clock(), logger.perf_counter())
+        self.check_sanity()
+        self.dump_flags()
+        if nstates is None:
+            nstates = self.nstates
+        else:
+            self.nstates = nstates
+        log = logger.Logger(self.stdout, self.verbose)
+
+        vind, hdiag = self.gen_vind(self._scf)
+        conv, e, zs, nmv = lr_davidson.paired_eig(
+            vind, hdiag, nroots=nstates, x0=x0, conv_tol=self.conv_tol,
+            max_cycle=self.max_cycle,
+            pos_tol=getattr(self, 'positive_eig_threshold', 1e-3),
+            verbose=self.verbose > 4)
+        log.debug('TDRPA paired Davidson: %d matvecs', nmv)
+        self.converged = conv
+        self.e = e
+
+        mask = self.get_frozen_mask()
+        mo_occ = self._scf.mo_occ[mask]
+        nocc = int(np.count_nonzero(mo_occ > 0))
+        nvir = mo_occ.size - nocc
+        # zs are normalized to |X|^2 - |Y|^2 = 1 already
+        self.xy = [(z[:nocc*nvir].reshape(nocc, nvir),
+                    z[nocc*nvir:].reshape(nocc, nvir)) for z in zs]
+        log.timer('TDRPA (paired Davidson)', *cpu0)
+        self._finalize()
+        return self.e, self.xy
+
+
+class TDRPA(_KernelXCMixin, _PairedRPA):
+    pass
