@@ -24,6 +24,7 @@ Usage:
 '''
 
 import sys
+import itertools
 import numpy
 import scipy.linalg
 from pyscf import lib
@@ -126,6 +127,43 @@ def trans_rdm1(cibra, ciket, norb, nelec, link_index=None):
 ###############################################################
 # CI in a given list of determinants (selected CI)
 ###############################################################
+
+def gen_ras_occslst(nras, nelec, max_hole=0, max_elec=0):
+    '''Generate the determinant list of a RAS-type CI space, for use as the
+    occslst of SelectedCI.
+
+    The active space is partitioned into three contiguous blocks of spinor
+    orbitals: RAS1 (orbitals 0 to n1-1), RAS2 (the next n2 orbitals) and
+    RAS3 (the last n3 orbitals).  The list contains every determinant with
+    at most max_hole holes in RAS1 and at most max_elec electrons in RAS3;
+    occupation of RAS2 is unrestricted.
+
+    Args:
+        nras: (n1, n2, n3), number of spinor orbitals in each RAS block
+        nelec: total number of electrons
+        max_hole: maximum number of holes in RAS1
+        max_elec: maximum number of electrons in RAS3
+
+    With max_hole >= n1 and max_elec >= n3 this reproduces the complete
+    CAS determinant space; with nras = (n1, 0, n3) and max_hole = max_elec
+    = 2 it gives a CISD-type space, etc.
+    '''
+    n1, n2, n3 = nras
+    ras1 = range(0, n1)
+    ras2 = range(n1, n1 + n2)
+    ras3 = range(n1 + n2, n1 + n2 + n3)
+    occslst = []
+    for nh in range(min(max_hole, n1) + 1):
+        ne1 = n1 - nh
+        for ne3 in range(min(max_elec, n3) + 1):
+            ne2 = nelec - ne1 - ne3
+            if not 0 <= ne2 <= n2:
+                continue
+            for o1 in itertools.combinations(ras1, ne1):
+                for o2 in itertools.combinations(ras2, ne2):
+                    for o3 in itertools.combinations(ras3, ne3):
+                        occslst.append(o1 + o2 + o3)
+    return numpy.asarray(occslst, dtype=numpy.int64).reshape(-1, nelec)
 
 if hasattr(numpy, 'bitwise_count'):
     _popcount = numpy.bitwise_count

@@ -138,7 +138,7 @@ def kernel(casci, mo_coeff=None, ci0=None, verbose=logger.NOTE):
     #t1 = log.timer('effective h1e in CAS space', *t1)
 
     if h1eff.shape[0] != ncas:
-        raise RuntimeError(f'Active space size error. nmo={mo_coeff.shape[1]:%d} ncore={casci.ncore:%d} ncas={ncas:%d}')
+        raise RuntimeError(f'Active space size error. nmo={mo_coeff.shape[1]} ncore={casci.ncore} ncas={ncas}')
     # FCI
     # Always dump the active space integrals: Dice-based solvers
     # (socutils.hci.shci) read them from this file, and for other solvers it
