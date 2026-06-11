@@ -71,27 +71,19 @@ dm_t = addons.trans_rdm1_ao(mc, 0, 4)
 print('norm of AO transition density:', numpy.linalg.norm(dm_t).round(6))
 
 #
-# Magnetic dipole transition moments M = <i|L+2S|j> (in units of hbar)
-# and the corresponding oscillator strengths.  M1 intensities carry the
-# 1/(2c)^2 prefactor and are typically ~alpha^2 weaker than E1.
-#
-m_dip = addons.magnetic_transition_dipole(mc, 0, 1)
-f_m1, _ = addons.oscillator_strength_m1(mc, 0, 1)
-print('|<0|L+2S|1>| = %.6f   f(M1) = %.6e' % (numpy.linalg.norm(m_dip), f_m1))
-
-#
-# Einstein A coefficients (E1 + M1) and radiative lifetimes.  The lowest
-# excited states 1-3 form the triplet-like Kramers multiplet: their decay
-# to the singlet ground state is the phosphorescence channel, enabled
-# only by spin-orbit coupling.  For a thermally equilibrated multiplet,
-# average the decay rates over the degenerate components.
+# Einstein A coefficients (E1 channel) and radiative lifetimes.  The
+# lowest excited states 1-3 form the triplet-like Kramers multiplet:
+# their E1 decay to the singlet ground state is the phosphorescence
+# channel, enabled only by spin-orbit coupling.  For a thermally
+# equilibrated multiplet, average the decay rates over the degenerate
+# components.  (Magnetic multipole channels are not included: for 2c
+# wavefunctions they require picture-change transformed operators.)
 #
 rates = []
 for i in (1, 2, 3):
-    a, a_e1, a_m1 = addons.einstein_coefficient_a(mc, i, 0)
+    a_e1 = addons.einstein_coefficient_a(mc, i, 0)
     tau = addons.radiative_lifetime(mc, i)
     rates.append(1./tau)
-    print('state %d -> 0:  A(E1) = %.3e s-1  A(M1) = %.3e s-1  tau = %.3e s'
-          % (i, a_e1, a_m1, tau))
+    print('state %d -> 0:  A(E1) = %.3e s-1  tau = %.3e s' % (i, a_e1, tau))
 print('phosphorescence lifetime (multiplet average): %.3e s'
       % (3./sum(rates)))

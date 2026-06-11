@@ -3,10 +3,15 @@
 # Author: Xubo Wang <wangxubo0201@outlook.com>
 #
 '''
-Transition properties (transition density matrix, electric and magnetic
-transition dipole moments, oscillator strengths, Einstein coefficients and
-radiative lifetimes) and angular momentum analysis for spinor CASCI/CASSCF
+Transition properties (transition density matrix, electric transition
+dipole moments, oscillator strengths, Einstein coefficients and radiative
+lifetimes) and angular momentum analysis for spinor CASCI/CASSCF
 calculations.
+
+Only the electric dipole (length gauge) channel is provided: magnetic
+multipole operators for 2c (X2C) wavefunctions require picture-change
+transformed operators derived from the relativistic current, and the bare
+nonrelativistic L+2S form is not valid in this framework.
 
 The functions work with any fcisolver providing a
 trans_rdm1(ci_bra, ci_ket, ncas, nelecas) method, e.g. zfci.FCISolver and
@@ -160,26 +165,6 @@ def _orb_angmom_ao(mol, nao, origin):
         # int1e_cg_irxp = <r x nabla> (anti-hermitian)
         return -1j * mol.intor('int1e_cg_irxp_spinor', comp=3)
 
-def magnetic_transition_dipole(mc, state_i=0, state_j=1, origin=None,
-                               mc_ket=None):
-    '''Magnetic (transition) dipole matrix element M = <i|L + 2S|j> in
-    units of hbar.  The magnetic dipole moment operator is
-    m = -mu_B (L + g_e S) with mu_B = 1/(2c) in atomic units (g_e ~ 2).
-
-    The closed core shell does not contribute (L + 2S is time-reversal odd,
-    so its trace over a Kramers-paired core vanishes).
-    '''
-    mol = mc.mol
-    if origin is None:
-        origin = charge_center(mol)
-    ncore, ncas = mc.ncore, mc.ncas
-    mo_cas = mc.mo_coeff[:, ncore:ncore+ncas]
-    nao = mc.mo_coeff.shape[0]
-    ang = _orb_angmom_ao(mol, nao, origin) + 2 * _spin_ao(mol, nao)
-    t_dm1 = _trans_rdm1_act(mc, state_i, state_j, mc_ket)
-    ang_mo = lib.einsum('up,xuv,vq->xpq', mo_cas.conj(), ang, mo_cas)
-    return numpy.einsum('xpq,pq->x', ang_mo, t_dm1)
-
 def oscillator_strength(mc, state_i=0, state_j=1, e_i=None, e_j=None,
                         origin=None, mc_ket=None):
     '''Electric dipole oscillator strength f = 2/3 dE |<i|r|j>|^2
@@ -202,47 +187,27 @@ def oscillator_strength(mc, state_i=0, state_j=1, e_i=None, e_j=None,
     f_comp = 2./3. * de * numpy.abs(t_dip)**2
     return f_comp.sum(), f_comp
 
-def oscillator_strength_m1(mc, state_i=0, state_j=1, e_i=None, e_j=None,
-                           origin=None, mc_ket=None):
-    '''Magnetic dipole oscillator strength f = dE |<i|L+2S|j>|^2 / (6c^2).'''
-    if e_i is None:
-        e_i = numpy.asarray(mc.fcisolver.eci).real.reshape(-1)[state_i]
-    if e_j is None:
-        e_j = numpy.asarray((mc_ket or mc).fcisolver.eci).real.reshape(-1)[state_j]
-    de = abs(e_j - e_i)
-    m_dip = magnetic_transition_dipole(mc, state_i, state_j, origin, mc_ket)
-    c = lib.param.LIGHT_SPEED
-    f_comp = de * numpy.abs(m_dip)**2 / (6 * c**2)
-    return f_comp.sum(), f_comp
-
 def einstein_coefficient_a(mc, state_upper, state_lower, origin=None,
                            mc_ket=None):
     '''Einstein spontaneous emission coefficient A (in s^-1) for the
-    transition state_upper -> state_lower, including the electric (E1) and
-    magnetic (M1) dipole channels:
+    electric dipole channel of the transition state_upper -> state_lower:
 
         A_E1 = 4/3 alpha^3 w^3 |<u|r|l>|^2
-        A_M1 = 1/3 alpha^5 w^3 |<u|L+2S|l>|^2
 
     (atomic units, converted to s^-1).  state_lower belongs to mc_ket when
-    given.
-
-    Returns:
-        (A, A_e1, A_m1)
+    given.  Higher multipole channels (M1, E2, ...) are not included; for
+    2c wavefunctions they require picture-change transformed operators.
     '''
     e_u = numpy.asarray(mc.fcisolver.eci).real.reshape(-1)[state_upper]
     e_l = numpy.asarray((mc_ket or mc).fcisolver.eci).real.reshape(-1)[state_lower]
     w = abs(e_u - e_l)
     alpha = 1. / lib.param.LIGHT_SPEED
     t_dip = transition_dipole(mc, state_upper, state_lower, origin, mc_ket=mc_ket)
-    m_dip = magnetic_transition_dipole(mc, state_upper, state_lower, origin, mc_ket)
-    a_e1 = 4./3. * alpha**3 * w**3 * (numpy.abs(t_dip)**2).sum() / T_AU
-    a_m1 = 1./3. * alpha**5 * w**3 * (numpy.abs(m_dip)**2).sum() / T_AU
-    return a_e1 + a_m1, a_e1, a_m1
+    return 4./3. * alpha**3 * w**3 * (numpy.abs(t_dip)**2).sum() / T_AU
 
 def radiative_lifetime(mc, state, lower_states=None, origin=None):
     '''Radiative lifetime (in seconds) of a state, from the sum of the
-    Einstein A coefficients (E1 + M1) over all lower-lying states.
+    Einstein A coefficients (E1 only) over all lower-lying states.
 
     For an initial state belonging to a degenerate multiplet, average the
     decay rates over the degenerate components (high-temperature limit:
@@ -253,11 +218,18 @@ def radiative_lifetime(mc, state, lower_states=None, origin=None):
         lower_states = [i for i in range(len(e)) if e[i] < e[state]]
     a_tot = 0.
     for i in lower_states:
-        a_tot += einstein_coefficient_a(mc, state, i, origin)[0]
+        a_tot += einstein_coefficient_a(mc, state, i, origin)
     return 1. / a_tot
 
 def angular_momentum_square(mc, state=0, kind='spin', origin=None):
-    '''Expectation value of S^2, L^2 or J^2 = (L+S)^2 for a CASCI state.
+    '''Expectation value of S^2, L^2 or J^2 = (L+S)^2 for a CASCI state,
+    intended for state classification (spin composition, atomic j labels).
+
+    Caveat: the bare (untransformed) operators are contracted with the 2c
+    wavefunction, i.e. no X2C picture-change transformation is applied to
+    S and L.  The resulting values are therefore diagnostics rather than
+    rigorous observables; the associated error is O(alpha^2) and does not
+    affect the classification of valence states.
 
     The two-electron part is evaluated with the active space 1- and 2-RDMs;
     the closed core shell is assumed to carry no net angular momentum
