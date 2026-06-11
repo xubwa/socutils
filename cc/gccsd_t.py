@@ -26,7 +26,6 @@ import numpy
 from pyscf import lib
 from pyscf.lib import logger, einsum
 from pyscf.cc import gccsd
-from numba import jit
 
 # spin-orbital formula
 # JCP 98, 8718 (1993); DOI:10.1063/1.464480
@@ -55,9 +54,9 @@ def kernel(cc, eris, t1=None, t2=None, verbose=logger.INFO, alg='vir_loop'):
         def get_wv_abc(a, b, c):
             w  = einsum('ejk,ei->ijk', t2T[a,:], bcei[b,c])
             w -= einsum('im,mjk->ijk', t2T[b,c], majk[:,a])
-            v = w
-            v  += einsum('i,jk->ijk', t1T[a], bcjk[b,c])
-            #v += einsum('i,jk->ijk', fvo[a], t2T [b,c])
+            v  = einsum('i,jk->ijk', t1T[a], bcjk[b,c])
+            v += einsum('i,jk->ijk', fvo[a], t2T[b,c])
+            v += w
             w = w + w.transpose(2,0,1) + w.transpose(1,2,0)
             return w, v
         et = 0
@@ -89,8 +88,8 @@ def kernel(cc, eris, t1=None, t2=None, verbose=logger.INFO, alg='vir_loop'):
             #w  = einsum('ae,ebc->abc', t2[j,k], ovvv[i])
             w = einsum('ae,bce->abc', t2[j,k], ovvv[i])
             w += einsum('bcm,am->abc', t2T[i], ooov[j,k])
-            v = w
-            v  -= einsum('a,bc->abc', t1[i], oovv[j,k])
+            v  = -einsum('a,bc->abc', t1[i], oovv[j,k])   # separate array (not aliased to w)
+            v += w
             w = w + w.transpose(2,0,1) + w.transpose(1,2,0)
             return w, v
         et = 0

@@ -134,7 +134,7 @@ class ZCCSD(gccsd.GCCSD):
         return e_corr, self.t1, self.t2
 
 
-    def ccsd_t(self, t1=None, t2=None, eris=None, alg='occ_loop'):
+    def ccsd_t(self, t1=None, t2=None, eris=None, alg='vir_loop'):
         from socutils.cc import gccsd_t
         if t1 is None: t1 = self.t1
         if t2 is None: t2 = self.t2

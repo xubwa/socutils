@@ -390,6 +390,11 @@ class DirectZCCSD(_zccsd.ZCCSD):
         if t2 is None: t2 = self.t2
         if eris is None:
             eris = self.eris if self.eris is not None else self.ao2mo()
+        # (T) needs ovvv (O(o v^3), no v^4); the 'ao' mode does not store it, so
+        # reconstruct it once from the AO integrals.
+        if eris.ovvv is None:
+            from socutils.cc.eom_zccsd_direct import get_ovvv
+            eris.ovvv = get_ovvv(eris)
         return gccsd_t.kernel(self, eris, t1, t2, self.verbose)
 
 
