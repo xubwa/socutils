@@ -72,9 +72,23 @@ class SpinorNumInt2C(numint2c.NumInt2C):
                 verbose=None):
         dm0_g = None if dm0 is None else self._dm_to_ghf(dm0)
         dms_g = self._dm_to_ghf(dms)
-        v_g = super().get_fxc(mol, grids, xc_code, dm0_g, dms_g, spin,
-                              relativity, hermi, rho0, vxc, fxc, max_memory,
-                              verbose)
+        _fxc = super().get_fxc
+        if self.collinear[0] == 'c' and np.iscomplexobj(dms_g):
+            # The collinear fxc kernel is real and linear in the perturbing
+            # density, but pyscf routes it through the 1-component nr_uks_fxc,
+            # which rejects complex (TDDFT amplitude) density matrices.  Split
+            # the transition density into real/imag parts and recombine -- this
+            # is exact for the collinear kernel.  (It only couples the diagonal
+            # alpha-alpha/beta-beta spin blocks: the spin-flip response is
+            # absent by construction.  Use collinear='mcol' for that.)
+            fr = _fxc(mol, grids, xc_code, dm0_g, dms_g.real.copy(), spin,
+                      relativity, hermi, rho0, vxc, fxc, max_memory, verbose)
+            fi = _fxc(mol, grids, xc_code, dm0_g, dms_g.imag.copy(), spin,
+                      relativity, hermi, rho0, vxc, fxc, max_memory, verbose)
+            v_g = fr + 1j * fi
+        else:
+            v_g = _fxc(mol, grids, xc_code, dm0_g, dms_g, spin, relativity,
+                       hermi, rho0, vxc, fxc, max_memory, verbose)
         return self._mat_to_spinor(v_g)
     nr_fxc = nr_gks_fxc = get_fxc
 
