@@ -49,15 +49,22 @@ def make_intermediates(mycc, t1, t2, eris):
     t3d = t3d - t3d.transpose(1, 0, 2, 3, 4, 5) - t3d.transpose(2, 1, 0, 3, 4, 5)
     t3d /= d3
 
-    l1_t = einsum('ijkabc,jkbc->ia', t3c.conj(), oovv) / eia
+    # In this two-component code the t-amplitudes carry the conjugate phase of
+    # pyscf's gccsd convention (t2 source is oovv.conj(), not oovv), so the
+    # converged lambda plays the role of t* and l ~ t.conj().  The (T)-lambda
+    # source terms l1_t/l2_t below are bilinear in the (properly occ-positive)
+    # triples t3c/t3d and the bare integrals; to land on the vir-positive lambda
+    # phase the bare integrals must be conjugated.  For real integrals this is a
+    # no-op and reduces exactly to pyscf.cc.gccsd_t_lambda.
+    l1_t = einsum('ijkabc,jkbc->ia', t3c.conj(), oovv.conj()) / eia
     imds.l1_t = l1_t * .25
 
     m3 = t3c * 2 + t3d
-    tmp = einsum('ijkaef,kbfe->ijab', m3.conj(), ovvv) * .5
+    tmp = einsum('ijkaef,kbfe->ijab', m3.conj(), ovvv.conj()) * .5
     l2_t = tmp - tmp.transpose(0, 1, 3, 2)
-    tmp = einsum('imnabc,mnjc->ijab', m3.conj(), ooov) * .5
+    tmp = einsum('imnabc,mnjc->ijab', m3.conj(), ooov.conj()) * .5
     l2_t -= tmp - tmp.transpose(1, 0, 2, 3)
-    l2_t += einsum('kc,ijkabc->ijab', eris.fock[:nocc, nocc:], t3c.conj())
+    l2_t += einsum('kc,ijkabc->ijab', eris.fock[:nocc, nocc:].conj(), t3c.conj())
     imds.l2_t = l2_t / lib.direct_sum('ia+jb->ijab', eia, eia)
 
     return imds
