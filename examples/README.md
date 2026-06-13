@@ -15,6 +15,7 @@ They use the canonical `.x2camf()` / `.x2cmp()` driver API.
 | `07-somf_helper.py` | constructing the X2C SOC helper directly |
 | `08-casci.py` | CASCI on a spinor reference |
 | `09-four_component.py` | four-component Dirac-Hartree-Fock |
+| `10-casscf.py` | CASSCF orbital optimization (needs zquatev) |
 
 Most examples need the optional `x2camf` package for the spin-orbit integrals;
 the Kramers-restricted example additionally needs `zquatev`. See the
