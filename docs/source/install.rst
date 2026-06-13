@@ -18,10 +18,11 @@ Several features depend on optional libraries:
 
    * - Package
      - Needed for
-   * - `zquatev <https://github.com/xubwa/zquatev>`_
+   * - **zquatev** (bundled)
      - Kramers-restricted spinor SCF (``spinor_hf.KRHF``): the quaternion
-       eigensolver that exploits time-reversal symmetry.  Install the
-       ``xubwa/zquatev`` fork (see the note below).
+       eigensolver that exploits time-reversal symmetry.  Now **bundled** in
+       ``socutils/lib/zquatev`` and loaded via ctypes -- no external package is
+       required, but the small C++ library must be compiled (see below).
    * - `x2camf <https://github.com/warlocat/x2camf>`_ (and its
        ``libx2camf`` backend)
      - X2C atomic-mean-field (X2CAMF) spin-orbit integrals, including the
@@ -31,20 +32,30 @@ Without these optional packages, socutils still runs two-component
 calculations that do not require them; the affected entry points raise a clear
 error pointing to the missing dependency.
 
-Installing the optional dependencies
-------------------------------------
+Building the bundled zquatev
+----------------------------
+
+zquatev (Toru Shiozaki's quaternion eigensolver, BSD-2-Clause) ships with
+socutils and is built with CMake.  It needs a BLAS/LAPACK:
 
 .. code-block:: bash
 
-   pip install git+https://github.com/xubwa/zquatev
+   cd socutils/lib/zquatev
+   ./build.sh                                  # auto-detect BLAS/LAPACK
+   # or select a vendor library explicitly, e.g.
+   ./build.sh -DBLA_VENDOR=OpenBLAS
+   ./build.sh -DBLAS_LIBRARIES=/path/to/libopenblas.so
+
+This produces ``libzquatev.so`` next to its ctypes loader.  At runtime the
+loader looks for it via ``$SOCUTILS_ZQUATEV_LIBRARY``, then next to
+``socutils/lib/zquatev/__init__.py``, then via ``ctypes.util.find_library``.
+
+Installing x2camf
+-----------------
+
+.. code-block:: bash
+
    pip install git+https://github.com/warlocat/x2camf
-
-.. note::
-
-   Install zquatev from the ``xubwa/zquatev`` fork, **not** from
-   ``sunqm/zquatev``: the pybind11 bindings in the upstream ``sunqm`` version
-   are too old to build against current toolchains, whereas the ``xubwa`` fork
-   is pip-installable as shown above.
 
 Getting socutils
 ----------------

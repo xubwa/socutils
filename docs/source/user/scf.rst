@@ -74,7 +74,7 @@ Kramers-restricted SCF
 ``spinor_hf.KRHF`` carries the same interface and shortcuts but solves the SCF
 with a Kramers-paired (quaternion) eigensolver that enforces time-reversal
 symmetry, giving exactly doubly-degenerate Kramers pairs.  This path requires
-the optional `zquatev <https://github.com/sunqm/zquatev>`_ library:
+the bundled ``zquatev`` solver to be compiled (see :doc:`../install`):
 
 .. code-block:: python
 

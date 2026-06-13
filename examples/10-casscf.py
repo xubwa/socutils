@@ -6,9 +6,9 @@ zmcscf.CASSCF additionally optimizes the orbitals: kernel() drives the
 super-CI orbital optimizer directly, alternating CI and orbital steps.
 
 The orbital optimizer uses a Kramers-paired eigensolver and therefore requires
-the optional zquatev library (install from xubwa/zquatev); kernel() raises a
-clear error if it is missing.  It also builds its integrals from a
-density-fitted reference, so the mean field must be density-fitted
+the bundled zquatev solver to be compiled (socutils/lib/zquatev/build.sh);
+kernel() raises a clear error if it is missing.  It also builds its integrals
+from a density-fitted reference, so the mean field must be density-fitted
 (.density_fit()).
 '''
 from pyscf import gto
