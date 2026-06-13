@@ -33,9 +33,23 @@ loader (`__init__.py`). At runtime the loader searches, in order:
 2. `libzquatev.so` next to `__init__.py`
 3. `ctypes.util.find_library("zquatev")`
 
+## Local patch (`csrc/f77.h`)
+
+One change was made to the vendored source: `zdotc` is now computed directly
+in C++ instead of calling the Fortran BLAS `zdotc_`.  A `COMPLEX*16` Fortran
+*function* returns its value through a platform/library-dependent ABI (a hidden
+first pointer argument for gfortran-built reference LAPACK / OpenBLAS, vs.
+return-by-register for MKL).  The upstream wrapper hard-coded the
+hidden-pointer convention, so against OpenBLAS or reference LAPACK `zdotc`
+silently returned garbage and corrupted the Householder reduction — producing
+wrong eigenvalues (and `KRHF`/`RDHF` failures) on everything but MKL.
+Computing the dot product in C++ removes the ABI dependency, so the solver is
+correct against any BLAS (verified against OpenBLAS, reference LAPACK 3.9.1 and
+3.12, and MKL).
+
 ## Licensing
 
-- `csrc/` — verbatim ZQUATEV, **BSD-2-Clause**, © 2013 Toru Shiozaki (see
-  `LICENSE` and the per-file headers). Reference: T. Shiozaki, *Mol. Phys.*
-  **115**, 5 (2017).
+- `csrc/` — ZQUATEV, **BSD-2-Clause**, © 2013 Toru Shiozaki (see `LICENSE`
+  and the per-file headers), with the local `f77.h` patch noted above.
+  Reference: T. Shiozaki, *Mol. Phys.* **115**, 5 (2017).
 - `capi/zquatev_capi.cc` and `__init__.py` — part of socutils, **Apache-2.0**.

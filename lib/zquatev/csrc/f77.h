@@ -89,15 +89,20 @@ namespace {
 
  void zaxpy_(const int a, const std::complex<double> b, const std::complex<double>* c, const int d, std::complex<double>* e, const int f) { ::zaxpy_(&a,&b,c,&d,e,&f); }
  void zscal_(const int a, const std::complex<double> b, std::complex<double>* c, const int d) { ::zscal_(&a, &b, c, &d); }
-#ifndef ZDOT_RETURN
- std::complex<double> zdotc_(const int b, const std::complex<double>* c, const int d, const std::complex<double>* e, const int f) {
-   std::complex<double> a;
-   ::zdotc_(&a,&b,c,&d,e,&f);
-   return a;
+ // NOTE (socutils): zdotc computed directly in C++ instead of calling the
+ // Fortran BLAS ::zdotc_.  A COMPLEX*16 Fortran *function* returns its value
+ // through a platform/library-dependent ABI (hidden first pointer argument
+ // for gfortran-built reference LAPACK / OpenBLAS, return-by-register for
+ // MKL).  The original wrapper hard-coded the hidden-pointer convention,
+ // which silently returns garbage when linked against OpenBLAS/reference
+ // LAPACK and corrupts the Householder reduction.  Computing the conjugated
+ // dot product here removes the ABI dependency entirely (correct against any
+ // BLAS); it is a negligible cost next to the zgemm/zhbev work.
+ inline std::complex<double> zdotc_(const int n, const std::complex<double>* x, const int incx, const std::complex<double>* y, const int incy) {
+   std::complex<double> sum(0.0, 0.0);
+   for (int i = 0; i != n; ++i) sum += std::conj(x[i*incx]) * y[i*incy];
+   return sum;
  }
-#else
- std::complex<double> zdotc_(const int a, const std::complex<double>* b, const int c, const std::complex<double>* d, const int e) { return ::zdotc_(&a,b,&c,d,&e); }
-#endif
  void zheev_(const char* a, const char* b, const int c, std::complex<double>* d, const int e, double* f, std::complex<double>* g, const int h, double* i, int& j)
              { ::zheev_(a,b,&c,d,&e,f,g,&h,i,&j); }
  void zhbev_(const char* a, const char* b, const int c, const int d, std::complex<double>* e, const int f, double* g, std::complex<double>* h, const int i,
