@@ -406,30 +406,45 @@ class SpinorSCF(hf.SCF):
     def density_fit(self, auxbasis=None, with_df=None, only_dfj=False):
         return density_fit(self, auxbasis, with_df, only_dfj)
 
-    def x2camf(self, x2cmp='x2cmp', with_gaunt=True, with_breit=True,
-               with_pcc=False, with_aoc=False):
-        '''Attach an X2C molecular-mean-field spin-orbit Hamiltonian to this
-        spinor mean-field object (in place) and return it -- the spinor
-        analogue of PySCF's ``mf.x2c()``.  The SOC enters through
-        ``self.with_x2c`` and is applied in :meth:`get_hcore`; the
-        Kramers-restriction of the solve is a property of the driver (use
-        :class:`KRHF` for a Kramers-restricted run).
-
-        >>> mf = KRHF(mol).x2camf()              # Gaunt + Breit, no PCC
-        >>> mf.kernel()
-        '''
+    def _attach_x2cmp(self, flavor, with_gaunt, with_breit, with_pcc, with_aoc):
         from socutils.somf.x2cmp import SpinorX2CMPHelper
         self.with_x2c = SpinorX2CMPHelper(
-            self.mol, x2cmp=x2cmp, with_gaunt=with_gaunt, with_breit=with_breit,
+            self.mol, x2cmp=flavor, with_gaunt=with_gaunt, with_breit=with_breit,
             with_pcc=with_pcc, with_aoc=with_aoc)
         self._keys = self._keys.union(['with_x2c'])
         terms = ['Dirac-Coulomb']
         if with_gaunt: terms.append('Gaunt')
         if with_breit: terms.append('Breit')
         if with_pcc: terms.append('PCC')
-        logger.info(self, 'X2CAMF Hamiltonian (%s): two-electron SOC terms = %s',
-                    x2cmp, ' + '.join(terms))
+        logger.info(self, 'X2C SOC Hamiltonian: flavor=%s, terms = %s',
+                    flavor, ' + '.join(terms))
         return self
+
+    def x2camf(self, flavor='x2camf', with_gaunt=True, with_breit=True,
+               with_pcc=False, with_aoc=False):
+        '''Attach an X2CAMF (atomic-mean-field) spin-orbit Hamiltonian to this
+        spinor mean-field object, in place, and return it -- the spinor
+        analogue of PySCF's ``mf.x2c()``.  The SOC enters through
+        ``self.with_x2c`` and is applied in :meth:`get_hcore`; the
+        Kramers-restriction of the solve is a property of the driver (use
+        :class:`KRHF` for a Kramers-restricted run).
+
+        >>> mf = KRHF(mol).x2camf()              # Gaunt + Breit
+        >>> mf.kernel()
+        '''
+        return self._attach_x2cmp(flavor, with_gaunt, with_breit, with_pcc, with_aoc)
+
+    def x2cmp(self, flavor='x2cmp', with_gaunt=True, with_breit=True,
+              with_pcc=False, with_aoc=False):
+        '''Attach an X2C molecular-mean-field (molecular picture-change) spin-
+        orbit Hamiltonian to this spinor mean-field object, in place, and
+        return it.  Same usage as :meth:`x2camf`, with the molecular-mean-field
+        flavor.
+
+        >>> mf = KRHF(mol).x2cmp()
+        >>> mf.kernel()
+        '''
+        return self._attach_x2cmp(flavor, with_gaunt, with_breit, with_pcc, with_aoc)
 
     def eig(self, h, s=None, *args, **kwargs):
         return hf.SCF.eig(self, h, s)
