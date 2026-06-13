@@ -12,7 +12,7 @@ from pyscf.scf import hf, dhf
 
 zquatev = None
 try:
-    import zquatev
+    from socutils.lib import zquatev
 except ImportError:
     pass
 

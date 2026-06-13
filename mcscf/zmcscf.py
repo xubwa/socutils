@@ -10,7 +10,7 @@ from socutils.mcscf.zmc_ao2mo import chunked_cholesky
 # mcscf_superci is imported lazily inside superci() to avoid a circular import
 # (zmc_superci imports zmcscf).
 try:
-    import zquatev
+    from socutils.lib import zquatev
 except ImportError:
     zquatev = None
 

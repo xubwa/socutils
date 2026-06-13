@@ -25,6 +25,10 @@ from pyscf.gto import mole
 from pyscf.lib import logger
 from pyscf.scf import hf, ghf, dhf
 from pyscf.scf import _vhf
+try:
+    from socutils.lib import zquatev
+except ImportError:
+    zquatev = None
 from pyscf.data import nist
 from pyscf import __config__
 
@@ -730,11 +734,11 @@ X2C_UHF = UHF
 class RHF(SCF):
     def __init__(self, mol):
         super().__init__(mol)
-        if dhf.zquatev is None:
+        if zquatev is None:
             raise RuntimeError('zquatev library is required to perform Kramers-restricted X2C-RHF')
 
     def _eigh(self, h, s):
-        return dhf.zquatev.solve_KR_FCSCE(self.mol, h, s)
+        return zquatev.solve_KR_FCSCE(self.mol, h, s)
 
     def to_ks(self, xc='HF'):
         '''Convert the input mean-field object to an X2C-KS object.

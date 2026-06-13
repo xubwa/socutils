@@ -15,7 +15,7 @@ from socutils.scf import frac_dhf, spinor_hf
 #, zquatev
 
 try:
-    import zquatev
+    from socutils.lib import zquatev
 except ImportError:
     pass
 

@@ -14,7 +14,7 @@ from pyscf.lib import logger
 from pyscf.scf import hf, dhf, ghf, _vhf
 import re
 try:
-    import zquatev
+    from socutils.lib import zquatev
 except ImportError:
     zquatev = None
         
@@ -700,7 +700,7 @@ class KRHF(SpinorSCF):
         if zquatev is None:
             raise RuntimeError('zquatev library is required to perform Kramers-restricted JHF')
     def _eigh(self, h, s):
-        return dhf.zquatev.solve_KR_FCSCE(self.mol, h, s)
+        return zquatev.solve_KR_FCSCE(self.mol, h, s)
     def eig(self, h, s=None, *args, **kwargs):
         if s is not None:
             return self._eigh(h, s)
