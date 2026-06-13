@@ -1,4 +1,5 @@
 import os
+import warnings
 import numpy
 from functools import reduce
 from pyscf import gto
@@ -152,9 +153,22 @@ def get_soc_integrals(x2cobj, mol=None, prog="sph_atm", with_gaunt=False, with_b
 
 
 class SpinorX2CAMFHelper(x2c.SpinorX2CHelper):
+    '''Deprecated spinor X2CAMF helper.
+
+    This is numerically identical to ``SpinorX2CMPHelper(x2cmp='x2camf')`` and is
+    kept only for backward compatibility. Prefer attaching the spin-orbit
+    Hamiltonian through the driver shortcut ``spinor_hf.SCF(mol).x2camf(...)``,
+    or construct ``socutils.somf.x2cmp.SpinorX2CMPHelper(mol, x2cmp='x2camf')``
+    directly.
+    '''
     atom_gso_mf = None
 
     def __init__(self, mol, sfx2c=False, with_gaunt=True, with_breit=True, with_gaunt_sd=False, with_aoc=False, with_pcc=False, prog="sph_atm"):
+        warnings.warn(
+            'somf.amf.SpinorX2CAMFHelper is deprecated; it is equivalent to '
+            "SpinorX2CMPHelper(x2cmp='x2camf'). Use spinor_hf.SCF(mol).x2camf(...) "
+            'or somf.x2cmp.SpinorX2CMPHelper instead.',
+            DeprecationWarning, stacklevel=2)
         x2c.X2C.__init__(self, mol)
         self.sfx2c = sfx2c  # this is still a spinor x2c object, only labels the flavor of soc integral.
         self.gaunt = with_gaunt

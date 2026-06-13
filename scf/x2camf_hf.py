@@ -1,6 +1,7 @@
 from functools import reduce
 
 import os
+import warnings
 import numpy
 import scipy
 
@@ -10,7 +11,7 @@ from pyscf.lib import chkfile, logger
 from pyscf.x2c import x2c
 from pyscf.scf import hf, dhf, ghf
 
-from socutils.somf.amf import SpinorX2CAMFHelper, SpinOrbitalX2CAMFHelper
+from socutils.somf.amf import SpinOrbitalX2CAMFHelper
 from socutils.scf import frac_dhf, spinor_hf
 #, zquatev
 
@@ -19,54 +20,42 @@ try:
 except ImportError:
     pass
 
-class SCF(spinor_hf.JHF):
-    nopen = None
-    nact = None
+# ----------------------------------------------------------------------------
+# Deprecated spinor X2CAMF drivers.
+#
+# spinor_hf is now the single spinor HF driver, and X2CAMF attaches through
+# ``with_x2c`` -- mirroring how pyscf's x2c works.  The classes below predate
+# that abstraction (they were the original spinor X2CAMF SCF, hence the name
+# x2camf_hf) and are kept only as thin, warning-emitting shims that forward to
+# spinor_hf + ``.x2camf()``.  ``.x2camf()`` defaults to the ``x2camf`` flavor of
+# SpinorX2CMPHelper, which is numerically identical to the old
+# SpinorX2CAMFHelper, so existing results are reproduced.
+#
+# New code should use:
+#     spinor_hf.SCF(mol).x2camf(...)    # Kramers-unrestricted
+#     spinor_hf.KRHF(mol).x2camf(...)   # Kramers-restricted (needs zquatev)
+#
+# The fractional-occupation (nopen/nact) helper that used to live here is gone;
+# set ``mf.get_occ`` to a custom callable if you need it.
+# ----------------------------------------------------------------------------
 
-    def __init__(self, mol, nopen=0, nact=0, with_gaunt=True, with_breit=True, with_gaunt_sd=False, with_aoc=False, with_pcc=False, prog="sph_atm"):
+_DEPRECATION_MSG = (
+    'socutils.scf.x2camf_hf is deprecated. spinor_hf is the single spinor HF '
+    'driver and X2CAMF attaches through with_x2c. Use '
+    'spinor_hf.SCF(mol).x2camf(...) (Kramers-unrestricted) or '
+    'spinor_hf.KRHF(mol).x2camf(...) (Kramers-restricted) instead.'
+)
+
+
+class SCF(spinor_hf.SpinorSCF):
+    '''Deprecated. Use ``spinor_hf.SCF(mol).x2camf(...)``.'''
+
+    def __init__(self, mol, with_gaunt=True, with_breit=True, with_aoc=False,
+                 with_pcc=False, **kwargs):
+        warnings.warn(_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
         super().__init__(mol)
-        print(with_pcc)
-        self.with_x2c = SpinorX2CAMFHelper(mol,
-                                           with_gaunt=with_gaunt,
-                                           with_breit=with_breit,
-                                           with_gaunt_sd=with_gaunt_sd,
-                                           with_aoc=with_aoc,
-                                           with_pcc=with_pcc,
-                                           prog=prog)
-        self._keys = self._keys.union(['with_x2c'])
-        self.nopen = nopen
-        self.nact = nact
-
-    def get_occ(self, mo_energy=None, mo_coeff=None):
-        if mo_energy is None: mo_energy = self.mo_energy
-        mol = self.mol
-        nopen = self.nopen
-        nact = self.nact
-        nclose = mol.nelectron - nact
-        n2c = len(mo_energy)
-        mo_occ = numpy.zeros(n2c)
-
-        if nopen == 0:
-            mo_occ[:mol.nelectron] = 1
-        else:
-            mo_occ[:nclose] = 1
-            mo_occ[nclose:nclose + nopen] = 1. * nact / nopen
-
-        if self.verbose >= logger.INFO:
-            if nopen == 0:
-                homo_ndx = mol.nelectron
-            else:
-                homo_ndx = nclose + nopen
-            logger.info(self, 'HOMO %d = %.12g  LUMO %d = %.12g', homo_ndx, mo_energy[homo_ndx - 1], homo_ndx + 1,
-                        mo_energy[homo_ndx])
-            logger.debug(self, 'mo_energy = %s', mo_energy[:])
-        return mo_occ
-
-
-X2CAMF_SCF = SCF
-
-
-class UHF(SCF):
+        self.x2camf(with_gaunt=with_gaunt, with_breit=with_breit,
+                    with_pcc=with_pcc, with_aoc=with_aoc)
 
     def to_ks(self, xc='HF'):
         from pyscf.x2c import dft
@@ -75,24 +64,20 @@ class UHF(SCF):
         return mf
 
 
+X2CAMF_SCF = SCF
+UHF = SCF
 X2CAMF_UHF = UHF
 
 
-class RHF(UHF):
+class RHF(spinor_hf.KRHF):
+    '''Deprecated. Use ``spinor_hf.KRHF(mol).x2camf(...)`` (needs zquatev).'''
 
-    def __init__(self, mol, nopen=0, nact=0, with_gaunt=True, with_breit=True, with_aoc=False, prog="sph_atm"):
-        super().__init__(mol, nopen, nact, with_gaunt, with_breit, with_aoc, prog)
-        if dhf.zquatev is None:
-            raise RuntimeError('zquatev library is required to perform Kramers-restricted X2C-RHF')
-
-    def _eigh(self, h, s):
-        return dhf.zquatev.solve_KR_FCSCE(self.mol, h, s)
-
-    def to_ks(self, xc='HF'):
-        from pyscf.x2c import dft
-        mf = self.view(dft.RKS)
-        mf.converged = False
-        return mf
+    def __init__(self, mol, with_gaunt=True, with_breit=True, with_aoc=False,
+                 with_pcc=False, **kwargs):
+        warnings.warn(_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        super().__init__(mol)
+        self.x2camf(with_gaunt=with_gaunt, with_breit=with_breit,
+                    with_pcc=with_pcc, with_aoc=with_aoc)
 
 
 X2CAMF_RHF = RHF
