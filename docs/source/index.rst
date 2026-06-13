@@ -28,6 +28,7 @@ calculation:
    :caption: User guide
 
    user/scf
+   user/dhf
    user/somf
    user/mcscf
 

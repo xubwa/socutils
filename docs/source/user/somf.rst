@@ -1,12 +1,13 @@
-Spin-orbit mean-field Hamiltonians (somf)
-=========================================
+somf module
+===========
 
-socutils introduces spin-orbit coupling through an **exact two-component
-(X2C)** one-electron Hamiltonian.  Starting from the four-component
-Dirac picture, the X2C transformation decouples the electronic block into a
-two-component operator that already contains the one-electron spin-orbit
-interaction.  The two-electron spin-orbit contribution is added as a
-mean-field operator, which is where the different *flavors* below differ.
+The ``somf`` module handles the **two-electron spin-orbit coupling and Breit
+interaction within X2C theory**.  The X2C transformation reduces the
+four-component Dirac picture to a two-component one whose one-electron part
+already carries the spin-orbit interaction; ``somf`` supplies the remaining
+*two-electron* spin-orbit and Breit contributions as a mean-field operator
+added to that core.  The different *flavors* below are different ways of
+constructing that two-electron mean field.
 
 Flavors
 -------
@@ -105,18 +106,29 @@ shortcuts do not expose, build the helper yourself and assign it to
 GHF (spin-orbital) path
 -----------------------
 
-The same Hamiltonian can be used with PySCF's generalized Hartree-Fock by
-attaching the spin-orbital helper to an X2C-wrapped GHF object:
+In the spin-orbital (GHF) representation the same Hamiltonian is attached
+through the ``ghf.GHF`` driver (see :doc:`scf`), which uses the spin-orbital
+helper ``SpinOrbitalX2CMPHelper`` internally:
 
 .. code-block:: python
 
-   from pyscf import scf
+   from socutils.scf import ghf
+
+   mf = ghf.GHF(mol).x2camf()
+   e = mf.kernel()
+
+If you need options the shortcut does not expose, build the spin-orbital helper
+and assign it yourself:
+
+.. code-block:: python
+
+   from socutils.scf import ghf
    from socutils.somf.x2cmp import SpinOrbitalX2CMPHelper
 
-   gmf = scf.GHF(mol).x2c()
-   gmf.with_x2c = SpinOrbitalX2CMPHelper(mol, x2cmp='x2camf',
-                                         with_gaunt=True, with_breit=True)
-   e = gmf.kernel()
+   mf = ghf.GHF(mol)
+   mf.with_x2c = SpinOrbitalX2CMPHelper(mol, x2cmp='x2camf',
+                                        with_gaunt=True, with_breit=True)
+   e = mf.kernel()
 
 This reproduces the spinor result to numerical precision -- the spinor and
 spin-orbital pictures describe the same Hamiltonian.

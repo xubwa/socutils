@@ -65,10 +65,6 @@ familiar controls all apply:
    mf.chkfile = 'hf.chk'
    e = mf.kernel()
 
-   mf.analyze()                 # population / orbital analysis
-   ss = mf.spin_square()
-   grad = mf.nuc_grad_method()  # analytic nuclear gradients
-
 The SCF returns ``mf.e_tot`` together with ``mf.mo_energy``,
 ``mf.mo_coeff`` and ``mf.mo_occ`` in the spinor basis.
 
@@ -93,8 +89,21 @@ Symmetry-adapted SCF
 ``spinor_hf.SymmSpinorSCF`` (alias ``SpinorSymmSCF``) block-diagonalizes the
 Fock matrix by spinor irreducible representation, which both speeds up the
 diagonalization and lets you converge to a chosen occupation.  Two symmetries
-are supported: ``'sph'`` (atomic, spherical) and ``'linear'`` (linear
-molecules).  The irreps are labelled by the :math:`(j, m_j)` spinor labels:
+are supported, selected with the ``symmetry`` keyword:
+
+* ``'sph'`` -- spherical (atomic) symmetry, with irreps labelled by the
+  :math:`(j, m_j)` spinor labels, e.g. ``s1/2,1/2`` or ``p3/2,-1/2``;
+* ``'linear'`` -- linear-molecule symmetry, with irreps labelled by
+  :math:`m_j`, e.g. ``1/2`` or ``-3/2``.
+
+.. warning::
+
+   For ``symmetry='linear'`` the molecule **must** be placed along the
+   ``z`` axis.  The code assigns irreps from the spinor labels assuming the
+   molecular axis is ``z`` and does **not** check or reorient the geometry;
+   a molecule on another axis will be silently mis-classified.
+
+Atom (spherical symmetry):
 
 .. code-block:: python
 
@@ -105,7 +114,21 @@ molecules).  The irreps are labelled by the :math:`(j, m_j)` spinor labels:
 
    mf = spinor_hf.SymmSpinorSCF(mol, symmetry='sph').x2camf()
    e = mf.kernel()
-   print(mf.irrep_ao.keys())   # e.g. 's1/2,1/2', 'p3/2,-1/2', ...
+   print(mf.irrep_ao.keys())   # 's1/2,1/2', 'p1/2,-1/2', 'p3/2,3/2', ...
+
+Linear molecule (on the z axis):
+
+.. code-block:: python
+
+   from pyscf import gto
+   from socutils.scf import spinor_hf
+
+   # HF lies along z -- required for symmetry='linear'
+   mol = gto.M(atom='H 0 0 0; F 0 0 0.917', basis='ccpvdz', verbose=4)
+
+   mf = spinor_hf.SymmSpinorSCF(mol, symmetry='linear').x2camf()
+   e = mf.kernel()
+   print(mf.irrep_ao.keys())   # '1/2', '-1/2', '3/2', ...
 
 To target a specific configuration, pass an ``occup`` dictionary mapping irrep
 labels to their occupations; the matching ``get_occ`` then fills those irreps
@@ -140,34 +163,40 @@ AO basis and the spinor basis:
    m_spinor = sph2spinor(mol, m_sph)     # spherical AO -> spinor
    m_sph    = spinor2sph(mol, m_spinor)  # spinor       -> spherical AO
 
-Four-component Dirac-Hartree-Fock helpers
-------------------------------------------
+GHF (spin-orbital) driver
+-------------------------
 
-For reference and benchmarking, socutils also provides a few specialized
-four-component Dirac-Hartree-Fock drivers built on PySCF's ``dhf`` module:
+The spinor SCF works in the j-adapted spinor basis.  The same X2C spin-orbit
+Hamiltonian can instead be run in a spin-orbital basis on top of PySCF's
+generalized Hartree-Fock, through ``socutils.scf.ghf.GHF`` -- the spin-orbital
+analogue of ``spinor_hf.SCF``, carrying the identical ``.x2camf()`` /
+``.x2cmp()`` shortcuts:
 
-* ``scf.linear_dhf.SymmDHF(mol, symmetry='linear', occup=None)`` -- a
-  symmetry-adapted four-component DHF.  This is the same occupation-control
-  logic as ``SymmSpinorSCF`` but in the four-component picture, and it
-  supports linear symmetry only.
-* ``scf.sfdhf.SpinFreeDHF(mol)`` -- a spin-free (scalar-relativistic)
-  four-component DHF, with ``scf.sfdhf.SpinFreeDKS`` the corresponding DFT
-  variant.
-* ``scf.frac_dhf.FRAC_RDHF(mol, nopen=0, nact=0)`` -- a Kramers-restricted
-  four-component DHF that allows fractional occupation of an open shell
-  (``nact`` electrons spread over ``nopen`` orbitals); requires ``zquatev``.
+.. code-block:: python
+
+   from pyscf import gto
+   from socutils.scf import ghf
+
+   mol = gto.M(atom='H 0 0 0; F 0 0 0.917', basis='ccpvdz', verbose=4)
+
+   mf = ghf.GHF(mol).x2camf()
+   e = mf.kernel()
+
+The spinor and GHF drivers describe the same Hamiltonian and their energies
+agree to numerical precision; the choice is mostly about which post-SCF
+toolchain you want to use next.  Four-component reference methods are covered
+in :doc:`dhf`.
 
 Deprecated entry points
 -----------------------
 
 The module ``socutils.scf.x2camf_hf`` predates the ``with_x2c`` abstraction
-and is deprecated.  Its spinor classes still work but emit a
-``DeprecationWarning`` and simply forward to the shortcuts above:
+and is deprecated end to end.  Everything in it still works but emits a
+``DeprecationWarning`` and forwards to the drivers above:
 
 * ``x2camf_hf.X2CAMF_SCF`` / ``X2CAMF_UHF`` -> ``spinor_hf.SCF(mol).x2camf()``
 * ``x2camf_hf.X2CAMF_RHF`` -> ``spinor_hf.KRHF(mol).x2camf()``
+* ``x2camf_hf.x2camf_ghf(scf.GHF(mol))`` -> ``ghf.GHF(mol).x2camf()``
 
-(The fractional-occupation helper that used to live on these classes has been
-removed; set ``mf.get_occ`` to a custom callable if you need it.)  The
-GHF-style ``x2camf_hf.x2camf_ghf`` is **not** deprecated -- it remains the
-spin-orbital entry point.
+(The fractional-occupation helper that used to live on the spinor classes has
+been removed; set ``mf.get_occ`` to a custom callable if you need it.)

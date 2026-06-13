@@ -18,9 +18,10 @@ Several features depend on optional libraries:
 
    * - Package
      - Needed for
-   * - `zquatev <https://github.com/sunqm/zquatev>`_
+   * - `zquatev <https://github.com/xubwa/zquatev>`_
      - Kramers-restricted spinor SCF (``spinor_hf.KRHF``): the quaternion
-       eigensolver that exploits time-reversal symmetry.
+       eigensolver that exploits time-reversal symmetry.  Install the
+       ``xubwa/zquatev`` fork (see the note below).
    * - `x2camf <https://github.com/warlocat/x2camf>`_ (and its
        ``libx2camf`` backend)
      - X2C atomic-mean-field (X2CAMF) spin-orbit integrals, including the
@@ -35,8 +36,15 @@ Installing the optional dependencies
 
 .. code-block:: bash
 
-   pip install git+https://github.com/sunqm/zquatev
+   pip install git+https://github.com/xubwa/zquatev
    pip install git+https://github.com/warlocat/x2camf
+
+.. note::
+
+   Install zquatev from the ``xubwa/zquatev`` fork, **not** from
+   ``sunqm/zquatev``: the pybind11 bindings in the upstream ``sunqm`` version
+   are too old to build against current toolchains, whereas the ``xubwa`` fork
+   is pip-installable as shown above.
 
 Getting socutils
 ----------------

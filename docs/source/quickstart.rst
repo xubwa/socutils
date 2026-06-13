@@ -70,16 +70,16 @@ requires the optional ``zquatev`` library (see :doc:`install`):
 GHF (spin-orbital) style
 ------------------------
 
-The same X2CAMF Hamiltonian can be attached to a PySCF generalized
-Hartree-Fock object, working in a spin-orbital rather than a spinor basis:
+The same X2CAMF Hamiltonian can be run in a spin-orbital rather than a spinor
+basis through the ``ghf.GHF`` driver, which carries the identical
+``.x2camf()`` / ``.x2cmp()`` shortcuts:
 
 .. code-block:: python
 
-   from pyscf import gto, scf
-   from socutils.scf import x2camf_hf
+   from socutils.scf import ghf
 
-   gmf = x2camf_hf.x2camf_ghf(scf.GHF(mol), with_gaunt=True, with_breit=True)
-   e_ghf = gmf.kernel()
+   mf = ghf.GHF(mol).x2camf()
+   e_ghf = mf.kernel()
 
 The spinor and GHF styles describe the same physics: their energies agree to
 numerical precision.  Which one to use is largely a question of what you want
