@@ -15,7 +15,17 @@ They use the canonical `.x2camf()` / `.x2cmp()` driver API.
 | `07-somf_helper.py` | constructing the X2C SOC helper directly |
 | `08-casci.py` | CASCI on a spinor reference |
 | `09-four_component.py` | four-component Dirac-Hartree-Fock |
-| `10-casscf.py` | CASSCF orbital optimization (needs zquatev) |
+| `10-casscf.py` | CASSCF orbital optimization (DF reference, needs zquatev) |
+
+The `fci/` subfolder has examples for the spinor CI module (`socutils.fci`):
+
+| File | Topic |
+| --- | --- |
+| `fci/00-spinor_fci_exact_diag.py` | exact full CI with `zfci.FCISolver` |
+| `fci/01-selected_ci_determinant_list.py` | selected CI over a determinant list |
+| `fci/02-rasci.py` | RASCI via `gen_ras_occslst` + `SelectedCI` |
+| `fci/03-transition_dipole.py` | transition dipoles / oscillator strengths (`fci.addons`) |
+| `fci/04-spin_composition.py` | spin / angular-momentum analysis of states |
 
 Most examples need the optional `x2camf` package for the spin-orbit integrals;
 the Kramers-restricted example additionally needs `zquatev`. See the
