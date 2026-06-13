@@ -11,7 +11,6 @@ from pyscf.lib import chkfile, logger
 from pyscf.x2c import x2c
 from pyscf.scf import hf, dhf, ghf
 
-from socutils.somf.amf import SpinOrbitalX2CAMFHelper
 from socutils.scf import frac_dhf, spinor_hf
 #, zquatev
 
@@ -84,71 +83,20 @@ X2CAMF_RHF = RHF
 
 
 def x2camf_ghf(mf, with_gaunt=True, with_breit=True, with_aoc=False, prog="sph_atm"):
+    '''Deprecated. Use ``socutils.scf.ghf.GHF(mol).x2camf(...)``.
+
+    For backward compatibility this still accepts a PySCF GHF/GKS object and
+    returns a configured spin-orbital X2CAMF driver, but it now forwards to the
+    :class:`socutils.scf.ghf.GHF` driver (which attaches the canonical
+    SpinOrbitalX2CMPHelper).
     '''
-    For the given *GHF* object, generate X2C-GSCF object in GHF spin-orbital
-    basis. Note the orbital basis of X2C_GSCF is different to the X2C_RHF and
-    X2C_UHF objects. X2C_RHF and X2C_UHF use j-adapated spinor basis.
-
-    Args:
-        mf : an GHF/GKS object
-
-    Returns:
-        An GHF/GKS object
-
-    Examples:
-
-    >>> mol = pyscf.M(atom='H 0 0 0; F 0 0 1', basis='ccpvdz', verbose=0)
-    >>> mf = scf.GHF(mol).x2c1e().run()
-    '''
-    assert isinstance(mf, ghf.GHF)
-
-    if isinstance(mf, x2c._X2C_SCF):
-        if mf.with_x2c is None:
-            mf.with_x2c = SpinOrbitalX2CAMFHelper(mf.mol, with_gaunt=with_gaunt,
-                with_breit=with_breit, with_aoc=with_aoc, prog=prog)
-            return mf
-        elif not isinstance(mf.with_x2c, SpinOrbitalX2CAMFHelper):
-            # An object associated to sfx2c1e.SpinFreeX2CHelper
-            raise NotImplementedError
-        else:
-            return mf
-
-    mf_class = mf.__class__
-    if mf_class.__doc__ is None:
-        doc = ''
-    else:
-        doc = mf_class.__doc__
-
-    class X2CAMF_GSCF(x2c._X2C_SCF, mf_class):
-        __doc__ = doc + '''
-        Attributes for spin-orbital X2C with AMF correction:
-            with_x2c : X2C object
-        '''
-
-        def __init__(self, mol, *args, **kwargs):
-            mf_class.__init__(self, mol, *args, **kwargs)
-            self.with_x2c = SpinOrbitalX2CAMFHelper(mf.mol, with_gaunt=with_gaunt,
-                with_breit=with_breit, with_aoc=with_aoc, prog=prog)
-            self._keys = self._keys.union(['with_x2c'])
-
-        def get_hcore(self, mol=None):
-            if mol is None: mol = self.mol
-            hcore = self.with_x2c.get_hcore(mol)
-            return hcore
-
-        def dump_flags(self, verbose=None):
-            mf_class.dump_flags(self, verbose)
-            if self.with_x2c:
-                self.with_x2c.dump_flags(verbose)
-            return self
-
-        def reset(self, mol):
-            self.with_x2c.reset(mol)
-            return mf_class.reset(self, mol)
-
-    mf.with_x2c = SpinOrbitalX2CAMFHelper(mf.mol, with_gaunt=with_gaunt,
-        with_breit=with_breit, with_aoc=with_aoc, prog=prog)
-    return mf.view(X2CAMF_GSCF)
+    warnings.warn(
+        'x2camf_hf.x2camf_ghf is deprecated. Use '
+        'socutils.scf.ghf.GHF(mol).x2camf(...) instead.',
+        DeprecationWarning, stacklevel=2)
+    from socutils.scf import ghf as _ghf
+    return _ghf.GHF(mf.mol).x2camf(with_gaunt=with_gaunt, with_breit=with_breit,
+                                   with_aoc=with_aoc)
 
 
 if __name__ == '__main__':

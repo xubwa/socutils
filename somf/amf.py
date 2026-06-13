@@ -204,9 +204,20 @@ class SpinorX2CAMFHelper(x2c.SpinorX2CHelper):
 
 
 class SpinOrbitalX2CAMFHelper(x2c.SpinOrbitalX2CHelper):
+    '''Deprecated spin-orbital X2CAMF helper.
+
+    Numerically equivalent to ``SpinOrbitalX2CMPHelper(x2cmp='x2camf')``.  Prefer
+    the driver shortcut ``ghf.GHF(mol).x2camf(...)``, or construct
+    ``socutils.somf.x2cmp.SpinOrbitalX2CMPHelper(mol, x2cmp='x2camf')`` directly.
+    '''
     atom_gso_mf = None
 
     def __init__(self, mol, sfx2c=False, with_gaunt=True, with_breit=True, with_aoc=False, prog="sph_atm"):
+        warnings.warn(
+            'somf.amf.SpinOrbitalX2CAMFHelper is deprecated; it is equivalent to '
+            "SpinOrbitalX2CMPHelper(x2cmp='x2camf'). Use ghf.GHF(mol).x2camf(...) "
+            'or somf.x2cmp.SpinOrbitalX2CMPHelper instead.',
+            DeprecationWarning, stacklevel=2)
         x2c.X2C.__init__(self, mol)
         self.sfx2c = sfx2c  # this is still a spinor x2c object, only labels the flavor of soc integral.
         self.pcc = False
