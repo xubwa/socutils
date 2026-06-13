@@ -45,8 +45,10 @@ CASSCF
 ------
 
 ``zmcscf.CASSCF(mf, ncas, nelecas, ncore=None, frozen=None)`` additionally
-optimizes the orbitals.  ``kernel()`` drives the super-CI orbital optimizer
-directly, alternating CI and orbital steps until convergence:
+optimizes the orbitals.  ``kernel()`` drives a **super-CI** orbital optimizer:
+each macro-iteration solves the active-space CI problem, builds the orbital
+gradient and an approximate Hessian, and takes a Kramers-paired orbital
+rotation step, repeating until the energy and orbital gradient are converged.
 
 .. code-block:: python
 
@@ -61,23 +63,67 @@ directly, alternating CI and orbital steps until convergence:
    mf = spinor_hf.SCF(mol).x2camf().density_fit()
    mf.kernel()
 
-   mc = zmcscf.CASSCF(mf, 8, 6)
+   mc = zmcscf.CASSCF(mf, 8, 6)   # 6 electrons in 8 active spinor orbitals
    mc.kernel()
    print(mc.e_tot)
 
-The orbital optimizer uses a Kramers-paired eigensolver and therefore requires
-the optional ``zquatev`` library (see :doc:`../install`); ``kernel()`` raises a
-clear error if it is missing.  It builds its two-electron integrals from a
-density-fitted (Cholesky) reference, so the mean field must be density-fitted
-with ``.density_fit()``.  Options controlling the optimization include:
+Requirements
+~~~~~~~~~~~~
 
-* ``frozen`` -- frozen orbitals (int or list);
-* ``max_stepsize`` -- trust radius for the orbital rotation (default ``0.2``);
-* ``conv_tol`` / ``conv_tol_grad`` -- energy / gradient convergence;
-* ``freeze_pair`` -- freeze rotations between two specified orbital sets;
-* ``irrep`` -- restrict rotations to within matching irrep labels;
-* ``natorb`` / ``canonicalize_`` -- natural-orbital / canonicalization
-  post-processing (both default ``True``).
+* **zquatev** -- the orbital step is solved with the Kramers-paired
+  (quaternion) eigensolver, so the bundled ``zquatev`` solver must be built
+  (see :doc:`../install`); ``kernel()`` raises a clear error if it is missing.
+* **a density-fitted reference** -- the optimizer builds its two-electron
+  integrals by Cholesky/DF transformation from ``mf``, so the mean field must
+  be density-fitted with ``.density_fit()`` (otherwise ``kernel()`` raises
+  ``Either with_df or cderi must be provided``).
+
+Options
+~~~~~~~
+
+The optimization is controlled by attributes set on the ``CASSCF`` object
+(defaults in parentheses):
+
+* ``max_cycle_macro`` (``20``) -- maximum number of macro-iterations;
+* ``max_stepsize`` (``0.2``) -- trust radius capping each orbital-rotation step;
+* ``conv_tol`` (``1e-8``) -- energy convergence threshold;
+* ``conv_tol_grad`` (``None`` → ``sqrt(conv_tol)`` ``= 1e-4``) -- orbital-gradient
+  convergence threshold;
+* ``natorb`` (``True``) -- at each macro-iteration rotate the active orbitals to
+  natural orbitals (eigenvectors of the active 1-RDM, ordered by descending
+  occupation);
+* ``canonicalize_`` (``True``) -- diagonalize the core and virtual blocks of the
+  effective Fock matrix so the inactive/virtual orbitals come out canonical;
+* ``frozen`` (``None``) -- orbitals excluded from rotation; an ``int`` freezes the
+  lowest ``frozen`` orbitals, a list/array freezes the listed indices;
+* ``freeze_pair`` (``None``) -- a pair of index sets ``(set_i, set_j)`` whose
+  mutual rotations are frozen (the rest are still optimized);
+* ``irrep`` (``None``) -- per-orbital symmetry labels; rotations are then allowed
+  only between orbitals carrying the same label.
+
+Convergence and results
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A macro-iteration is accepted as converged when **both** the energy change and
+the orbital-gradient norm fall below their thresholds
+(``abs(dE) < conv_tol`` and ``norm(grad) < conv_tol_grad``); otherwise the loop
+stops at ``max_cycle_macro``.  ``kernel()`` returns
+``(e_tot, e_cas, ci, mo_coeff, mo_energy)`` and sets the attributes
+
+* ``mc.e_tot`` -- total CASSCF energy;
+* ``mc.e_cas`` -- active-space (CI) energy;
+* ``mc.ci`` -- the active-space CI vector;
+* ``mc.mo_coeff`` / ``mc.mo_energy`` -- optimized (canonical) orbitals and their
+  energies;
+* ``mc.converged`` -- whether both convergence criteria were met.
+
+.. note::
+
+   For tightly-bound cases the default ``max_cycle_macro = 20`` can stop a step
+   or two before ``abs(dE) < 1e-8`` even though the gradient is already below
+   ``conv_tol_grad`` (so ``mc.converged`` is ``False`` while the energy is
+   essentially converged).  Raise ``mc.max_cycle_macro`` (e.g. to ``40``) to
+   reach full convergence.
 
 Full CI and selected CI
 -----------------------
