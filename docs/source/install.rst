@@ -19,8 +19,8 @@ Several features depend on optional libraries:
    * - Package
      - Needed for
    * - `zquatev <https://github.com/sunqm/zquatev>`_
-     - Kramers-restricted spinor SCF (``KRHF``, ``X2CAMF_RHF``): the
-       quaternion eigensolver that exploits time-reversal symmetry.
+     - Kramers-restricted spinor SCF (``spinor_hf.KRHF``): the quaternion
+       eigensolver that exploits time-reversal symmetry.
    * - `x2camf <https://github.com/warlocat/x2camf>`_ (and its
        ``libx2camf`` backend)
      - X2C atomic-mean-field (X2CAMF) spin-orbit integrals, including the
