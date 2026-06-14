@@ -60,6 +60,49 @@ def _Pijk_Pabc(t):
     return _Pijk(_Pabc(t))
 
 
+# ---------- T2 antisymmetric packing (store only i<j, a<b) ----------
+
+_T2_PAIR_CACHE = {}
+
+
+def _antisym2(t):
+    '''P(ij)P(ab) antisymmetrizer for t2[i,j,a,b] (4 signed perms, no 1/4).'''
+    return (t - t.transpose(1, 0, 2, 3) - t.transpose(0, 1, 3, 2)
+            + t.transpose(1, 0, 3, 2))
+
+
+def _t2_pair(nocc, nvir):
+    key = (nocc, nvir)
+    if key not in _T2_PAIR_CACHE:
+        op = np.array([(i, j) for i in range(nocc) for j in range(i + 1, nocc)],
+                      dtype=int).reshape(-1, 2)
+        vp = np.array([(a, b) for a in range(nvir) for b in range(a + 1, nvir)],
+                      dtype=int).reshape(-1, 2)
+        _T2_PAIR_CACHE[key] = (op, vp)
+    return _T2_PAIR_CACHE[key]
+
+
+def pack_t2(t2):
+    '''Pack antisymmetric t2[i,j,a,b] into its unique (i<j, a<b) components.'''
+    nocc, nvir = t2.shape[0], t2.shape[2]
+    op, vp = _t2_pair(nocc, nvir)
+    if len(op) == 0 or len(vp) == 0:
+        return np.zeros(0, dtype=t2.dtype)
+    return t2[op[:, 0][:, None], op[:, 1][:, None],
+              vp[:, 0][None, :], vp[:, 1][None, :]].ravel()
+
+
+def unpack_t2(packed, nocc, nvir):
+    '''Rebuild the full antisymmetric t2 from its unique components.'''
+    op, vp = _t2_pair(nocc, nvir)
+    seed = np.zeros((nocc, nocc, nvir, nvir),
+                    dtype=np.result_type(packed, np.complex128))
+    if len(op) and len(vp):
+        seed[op[:, 0][:, None], op[:, 1][:, None],
+             vp[:, 0][None, :], vp[:, 1][None, :]] = packed.reshape(len(op), len(vp))
+    return _antisym2(seed)
+
+
 # ---------- T3 antisymmetric packing (store only i<j<k, a<b<c) ----------
 
 _T3_TRI_CACHE = {}
@@ -306,14 +349,14 @@ class ZCCSDT(ZCCSD):
         return self.e_corr, self.t1, self.t2, self.t3
 
     def amplitudes_to_vector(self, t1, t2, t3):
-        # t3 is stored packed (unique i<j<k, a<b<c) -> ~36x smaller DIIS history
-        return np.hstack((t1.ravel(), t2.ravel(), pack_t3(t3)))
+        # t2, t3 stored packed (unique i<j[<k], a<b[<c]) -> smaller DIIS history
+        return np.hstack((t1.ravel(), pack_t2(t2), pack_t3(t3)))
 
     def vector_to_amplitudes(self, vec, nocc, nvir):
         n1 = nocc * nvir
-        n2 = nocc * nocc * nvir * nvir
+        n2 = nocc * (nocc - 1) // 2 * (nvir * (nvir - 1) // 2)
         t1 = vec[:n1].reshape(nocc, nvir)
-        t2 = vec[n1:n1 + n2].reshape(nocc, nocc, nvir, nvir)
+        t2 = unpack_t2(vec[n1:n1 + n2], nocc, nvir)
         t3 = unpack_t3(vec[n1 + n2:], nocc, nvir)
         return t1, t2, t3
 
