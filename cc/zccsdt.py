@@ -221,8 +221,13 @@ def _t3_residual(t2, t3, ge, fdr, nocc, nmo):
     Xf[:, :, :, md, ne, :] = Xpp
     Xf[:, :, :, ne, md, :] = -Xpp
     R += _Pc_ab(Xf)
-    # hh ladder: pack the summed pair (m<n) -> 2x.
-    R += _Pk_ij(einsum('Pij,Pkabc->ijkabc', oooo[mm, nn], t3[mm, nn]))
+    # hh ladder: pack BOTH the summed pair (m<n) and the output pair (i<j) -> 4x.
+    oooo_pp = oooo[mm[:, None], nn[:, None], mm[None, :], nn[None, :]]   # (mn<, ij<)
+    Xhh = einsum('PQ,Pkabc->Qkabc', oooo_pp, t3[mm, nn])                 # (ij<,o,v,v,v)
+    Yf = np.zeros((nocc, nocc, nocc, nvir, nvir, nvir), dtype=R.dtype)
+    Yf[mm, nn] = Xhh
+    Yf[nn, mm] = -Xhh
+    R += _Pk_ij(Yf)
     R += _Pijk_Pabc(einsum('madi,mjkdbc->ijkabc', ovvo, t3))
 
     # (3) bilinear t2*t3 coupling
