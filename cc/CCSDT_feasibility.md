@@ -125,3 +125,51 @@ CCSDT is largely "make the existing `(T)` `w` self-consistent and add the
 T3↔T3 / T3→T1T2 terms." It becomes a **large effort only when made efficient**
 (packing/blocking/DF), which is exactly the part pyscf devotes most of its
 `rccsdt.py`/`uccsdt.py` to.
+
+## Reaching pyscf's *efficient* CCSDT level (Jin & Zhai, 2025)
+
+pyscf's efficient `rccsdt.py`/`uccsdt.py` (`cc/rccsdt.py`, author Yu Jin /
+Huanchen Zhai, 2025) get their speed/memory from four things:
+
+1. **T3 stored only for `i ≤ j ≤ k`** (triangular packing over occupied
+   indices, ~6× less storage/flops), with **compiled C kernels** for
+   pack/unpack/accumulate (`unpack_t3_tri2block_`, `accumulate_t3_block2tri_`,
+   called via `ctypes`).
+2. **T1-dressed formalism** — T1 folded into the Fock matrix and ERIs, so the
+   residual has far fewer explicit T1 terms.
+3. **Blocking / streaming** over occupied triples (`blksize`, `lib.prange`),
+   unpacking a `(blksize^3, n_v^3)` T3 sub-block at a time → out-of-core-able.
+4. **RHF spin-summation** (`t3_spin_summation`, patterns `P3_422`/`P3_201`):
+   closed-shell spin adaptation. This is the single biggest closed-shell
+   speedup.
+
+**How much transfers to the spinor (generalized, complex) case — and the
+difficulty:**
+
+| technique | transfers? | notes |
+|---|---|---|
+| triangular packing + C kernels | **partly** | the spinor T3 is **antisymmetric**, so packing needs **sign bookkeeping**; pyscf's RHF/RCCSDT packing is *symmetric* (no signs). You cannot reuse its C kernels — you need analogous **antisymmetric, complex128** pack/unpack/accumulate kernels. This is the fiddly, bug-prone core. |
+| T1-dressed integrals | **yes** | worth adopting; simplifies the residual. |
+| blocking / streaming | **yes** | reuse `lib.prange`-style loops; pairs well with the existing DF (`chol_zccsd`) for the `vvvv`/`ovvv`-with-T3 contractions. |
+| RHF spin-summation | **no** | inapplicable — a spinor CC has no spin blocks to sum. The fair reference is the *spin-orbital* cost, intrinsically larger; even an optimal spinor CCSDT is more expensive than RCCSDT for the same molecule. |
+| complex arithmetic | — | ≈2× memory, ≈4× flops, and the C kernels must be complex128. |
+
+**Two things make the spinor case *easier* than pyscf's `uccsdt`:** there is a
+**single** antisymmetric T3 (like the `aaa` block only), avoiding UHF's
+`aaa/aab/abb/bbb` combinatorics (the reason `uccsdt.py` is ~3000 lines); and
+the equations are the clean spin-orbital ones.
+
+**Two things make it *harder*:** there is **no `gccsdt` to port** (pyscf has
+only RHF/UHF efficient CCSDT, and no DF-CCSDT), so the antisymmetric
+single-tensor packed equations and the (recommended) DF residual are a
+**derivation + implementation from scratch**, guided by — not copied from —
+pyscf; and everything is **complex**.
+
+**Difficulty / effort to match that efficiency level: high — a real project,
+~1.5–3 months** for a validated, packed (`i<j<k`), blocked, ideally
+DF-based spinor CCSDT, including the compiled antisymmetric/complex packing
+kernels and exhaustive sign/permutation validation. It is research-grade
+implementation work, not a port. Recommended sequencing is still Phase 1
+(in-core `_highm`-style reference, ~1 week) **first**, to lock down the
+correct spin-orbital residual and serve as the numerical oracle, then build the
+efficient version against it.
