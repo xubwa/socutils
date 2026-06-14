@@ -33,8 +33,13 @@ def _asarray(x):
 
 # ---------- antisymmetrizers / partial permutation operators ----------
 
+_USE_CASYM = _clib is not None and getattr(_clib, 'HAVE_ASYM', False)
+
+
 def fullasym(t):
     '''Full P(i/jk)*P(a/bc) antisymmetrizer (6x6 signed perms, no 1/36).'''
+    if _USE_CASYM:
+        return _clib.fullasym(t)
     a = (t + t.transpose(1, 2, 0, 3, 4, 5) + t.transpose(2, 0, 1, 3, 4, 5)
          - t.transpose(1, 0, 2, 3, 4, 5) - t.transpose(0, 2, 1, 3, 4, 5)
          - t.transpose(2, 1, 0, 3, 4, 5))
@@ -45,22 +50,32 @@ def fullasym(t):
 
 
 def _Pabc(t):
+    if _USE_CASYM:
+        return _clib.Pabc(t)
     return t - t.transpose(0, 1, 2, 4, 3, 5) - t.transpose(0, 1, 2, 5, 4, 3)
 
 
 def _Pijk(t):
+    if _USE_CASYM:
+        return _clib.Pijk(t)
     return t - t.transpose(1, 0, 2, 3, 4, 5) - t.transpose(2, 1, 0, 3, 4, 5)
 
 
 def _Pc_ab(t):
+    if _USE_CASYM:
+        return _clib.Pc_ab(t)
     return t - t.transpose(0, 1, 2, 5, 4, 3) - t.transpose(0, 1, 2, 3, 5, 4)
 
 
 def _Pk_ij(t):
+    if _USE_CASYM:
+        return _clib.Pk_ij(t)
     return t - t.transpose(2, 1, 0, 3, 4, 5) - t.transpose(0, 2, 1, 3, 4, 5)
 
 
 def _Pijk_Pabc(t):
+    if _USE_CASYM:
+        return _clib.Pijk_Pabc(t)
     return _Pijk(_Pabc(t))
 
 

@@ -35,10 +35,16 @@ _cp = ctypes.POINTER(ctypes.c_double)
 
 if HAVE_CLIB:
     for _fn in ('ccsdt_unpack_t3', 'ccsdt_pack_t3',
-                'ccsdt_unpack_t2', 'ccsdt_pack_t2'):
+                'ccsdt_unpack_t2', 'ccsdt_pack_t2',
+                'ccsdt_fullasym', 'ccsdt_Pabc', 'ccsdt_Pc_ab',
+                'ccsdt_Pijk', 'ccsdt_Pk_ij', 'ccsdt_Pijk_Pabc'):
         _f = getattr(_lib, _fn)
         _f.restype = None
         _f.argtypes = [_cp, _cp, ctypes.c_int, ctypes.c_int]
+
+# the permutation (anti)symmetrizers are exposed only when the library is
+# present; zccsdt falls back to numpy otherwise.
+HAVE_ASYM = HAVE_CLIB and hasattr(_lib, 'ccsdt_fullasym')
 
 
 def _ptr(a):
@@ -75,3 +81,37 @@ def pack_t2(full, nocc, nvir):
     f = np.ascontiguousarray(full, dtype=np.complex128)
     _lib.ccsdt_pack_t2(_ptr(f), _ptr(packed), nocc, nvir)
     return packed
+
+
+# ---- T3 residual permutation (anti)symmetrizers ----
+
+def _asym(cfn, t):
+    nocc, nvir = t.shape[0], t.shape[3]
+    inp = np.ascontiguousarray(t, dtype=np.complex128)
+    out = np.empty_like(inp)
+    cfn(_ptr(out), _ptr(inp), nocc, nvir)
+    return out
+
+
+def fullasym(t):
+    return _asym(_lib.ccsdt_fullasym, t)
+
+
+def Pabc(t):
+    return _asym(_lib.ccsdt_Pabc, t)
+
+
+def Pc_ab(t):
+    return _asym(_lib.ccsdt_Pc_ab, t)
+
+
+def Pijk(t):
+    return _asym(_lib.ccsdt_Pijk, t)
+
+
+def Pk_ij(t):
+    return _asym(_lib.ccsdt_Pk_ij, t)
+
+
+def Pijk_Pabc(t):
+    return _asym(_lib.ccsdt_Pijk_Pabc, t)
