@@ -32,9 +32,12 @@ def fullasym(t):
     a=(a+a.transpose(0,1,2,4,5,3)+a.transpose(0,1,2,5,3,4)-a.transpose(0,1,2,4,3,5)-a.transpose(0,1,2,3,5,4)-a.transpose(0,1,2,5,4,3))
     return a
 
-mol = gto.M(atom='O 0 0 0; H 0 -0.757 0.587; H 0 0.757 0.587', basis='sto-3g', verbose=0)
+# FH/6-31g with a heavy frozen core: nocc=4, nvir=12 (nvir > nocc), which
+# exercises the bilinear t2*t3 terms that vanish when nvir <= nocc, while the
+# active space (16 spinors, 4 electrons) is still small enough for the oracle.
+mol = gto.M(atom='F 0 0 0; H 0 0 0.917', basis='6-31g', verbose=0)
 mf = spinor_hf.SCF(mol); mf.kernel()
-cc = ZCCSDT(mf, frozen=2); eris=cc.ao2mo(cc.mo_coeff)
+cc = ZCCSDT(mf, frozen=6); eris=cc.ao2mo(cc.mo_coeff)
 nocc=cc.nocc; nmo=cc.nmo; nvir=nmo-nocc
 fock=np.asarray(eris.fock); g=bf.build_g(eris,nocc,nmo); o=slice(0,nocc); v=slice(nocc,nmo)
 
@@ -87,6 +90,9 @@ def r3_model(t1,t2,t3):
     dFvv = einsum('mnaf,mndf->ad', t2, goovv);  R += -0.5*_Pabc(einsum('ad,ijkdbc->ijkabc', dFvv, t3))
     dWvvvv = einsum('mnab,mnde->abde', t2, goovv); R += 0.25*_Pc_ab(einsum('abde,ijkdec->ijkabc', dWvvvv, t3))
     dWoooo = einsum('mnef,ijef->mnij', goovv, t2); R += 0.25*_Pk_ij(einsum('mnij,mnkabc->ijkabc', dWoooo, t3))
+    dFoo = einsum('mnef,inef->mi', goovv, t2);     R += -0.5*_Pijk(einsum('mi,mjkabc->ijkabc', dFoo, t3))
+    dovvo = einsum('mnde,inae->madi', goovv, t2);  R += _Pijk_Pabc(einsum('madi,mjkdbc->ijkabc', dovvo, t3))
+    dWvooo_t3 = einsum('mnef,ijnaef->maji', goovv, t3); R += -0.125*fullasym(einsum('maji,mkbc->ijkabc', dWvooo_t3, t2))
     return R
 
 if __name__=='__main__':
