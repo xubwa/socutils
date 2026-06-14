@@ -56,6 +56,7 @@ from pyscf import gto, scf, mp
 
 from socutils.scf import spinor_hf
 from socutils.mp import SpinorMP2
+from socutils.adc import SpinorADC
 
 
 def build_mol(atom, basis="cc-pvdz", spin=0, charge=0):
@@ -109,6 +110,17 @@ def run_spinor_mp2(mf):
     return {"e_corr": pt.e_corr, "t2_norm": np.linalg.norm(pt.t2)}
 
 
+def run_spinor_ip(mf, nroots=8):
+    """socutils spinor IP-ADC(2).  Returns the (gauge-invariant) ionization
+    energies; each spatial root appears with its Kramers multiplicity."""
+    return {"e": np.asarray(SpinorADC(mf).ip_adc2(nroots))}
+
+
+def run_spinor_ea(mf, nroots=8):
+    """socutils spinor EA-ADC(2).  Returns the electron affinities."""
+    return {"e": np.asarray(SpinorADC(mf).ea_adc2(nroots))}
+
+
 def run_spinor_eeadc2(mf, nroots=6):
     """TODO: return socutils spinor EE-ADC(2): excitation energies + osc str.
 
@@ -132,6 +144,28 @@ def ref_mp2(mol):
     mf = scf.RHF(mol).run()
     pt = mp.MP2(mf).run()
     return {"e_corr": pt.e_corr}
+
+
+def ref_ip(mol, nroots=4):
+    mf = scf.RHF(mol).run()
+    from pyscf import adc
+    a = adc.ADC(mf)
+    a.method = "adc(2)"
+    a.method_type = "ip"
+    a.verbose = 0
+    e = a.kernel(nroots=nroots)[0]
+    return {"e": np.asarray(e)}
+
+
+def ref_ea(mol, nroots=4):
+    mf = scf.RHF(mol).run()
+    from pyscf import adc
+    a = adc.ADC(mf)
+    a.method = "adc(2)"
+    a.method_type = "ea"
+    a.verbose = 0
+    e = a.kernel(nroots=nroots)[0]
+    return {"e": np.asarray(e)}
 
 
 def ref_eeadc2(mol, nroots=6):
@@ -237,6 +271,49 @@ def test_gate1_mp2(mol, mf):
     ref = ref_mp2(mol)["e_corr"]
     np.testing.assert_allclose(got, ref, atol=1e-8, rtol=0,
                                err_msg="spinor MP2 corr E != PySCF MP2")
+
+
+def _unique_sorted(x, decimals=6):
+    return np.unique(np.round(np.sort(np.real_if_close(np.asarray(x))), decimals))
+
+
+def test_gate1_ip(mol, mf):
+    """spinor IP-ADC(2) reproduces PySCF RADC IP (each spatial root carries
+    its Kramers multiplicity, so compare the unique-value sets)."""
+    got = _unique_sorted(run_spinor_ip(mf)["e"])
+    ref = _unique_sorted(ref_ip(mol)["e"])
+    n = min(len(got), len(ref))
+    assert_set_close(got[:n], ref[:n], atol=1e-6, label="IP-ADC(2) energies")
+
+
+def test_gate1_ea(mol, mf):
+    """spinor EA-ADC(2) reproduces PySCF RADC EA."""
+    got = _unique_sorted(run_spinor_ea(mf)["e"])
+    ref = _unique_sorted(ref_ea(mol)["e"])
+    n = min(len(got), len(ref))
+    assert_set_close(got[:n], ref[:n], atol=1e-6, label="EA-ADC(2) energies")
+
+
+def test_gate2_ip_invariance(mf):
+    """IP roots are invariant under a legal complex orbital rotation."""
+    E, C = mo_energy(mf), mo_coeff(mf)
+    U = legal_rotation(E, seed=11)
+    base = np.sort(run_spinor_ip(mf)["e"])
+    rot = np.sort(run_spinor_ip(set_mo(mf, C @ U, E))["e"])
+    np.testing.assert_allclose(rot, base, atol=1e-7, rtol=0,
+                               err_msg="IP roots changed under complex rotation"
+                                       " -> conjugation/Hermiticity bug")
+
+
+def test_gate2_ea_invariance(mf):
+    """EA roots are invariant under a legal complex orbital rotation."""
+    E, C = mo_energy(mf), mo_coeff(mf)
+    U = legal_rotation(E, seed=12)
+    base = np.sort(run_spinor_ea(mf)["e"])
+    rot = np.sort(run_spinor_ea(set_mo(mf, C @ U, E))["e"])
+    np.testing.assert_allclose(rot, base, atol=1e-7, rtol=0,
+                               err_msg="EA roots changed under complex rotation"
+                                       " -> conjugation/Hermiticity bug")
 
 
 @pytest.mark.xfail(reason="enable once run_spinor_eeadc2 is wired",
