@@ -111,9 +111,13 @@ def run_spinor_mp2(mf):
 
 
 def run_spinor_ip(mf, nroots=8):
-    """socutils spinor IP-ADC(2).  Returns the (gauge-invariant) ionization
-    energies; each spatial root appears with its Kramers multiplicity."""
+    """socutils spinor IP-ADC(2)."""
     return {"e": np.asarray(SpinorADC(mf).ip_adc2(nroots))}
+
+
+def run_spinor_ip_x(mf, nroots=12):
+    """socutils spinor IP-ADC(2)-x."""
+    return {"e": np.asarray(SpinorADC(mf).ip_adc2x(nroots))}
 
 
 def run_spinor_ea(mf, nroots=8):
@@ -153,6 +157,19 @@ def ref_ip(mol, nroots=4):
     a.verbose = 0
     e = a.kernel(nroots=nroots)[0]
     return {"e": np.asarray(e)}
+
+
+def ref_ip_x(mol, nroots=20):
+    # ADC(2)-x splits the doublet/quartet 2h1p satellites, so the spin-orbital
+    # spinor result must be compared against the spin-orbital UADC reference
+    # (RADC keeps only the doublet-coupled satellites).
+    from pyscf import adc
+    mf = scf.UHF(mol).run()
+    a = adc.ADC(mf)
+    a.method = "adc(2)-x"
+    a.method_type = "ip"
+    a.verbose = 0
+    return {"e": np.asarray(a.kernel(nroots=nroots)[0])}
 
 
 def ref_ea(mol, nroots=4):
@@ -295,6 +312,28 @@ def test_gate1_ea(mol, mf):
     ref = _unique_sorted(ref_ea(mol)["e"])
     n = min(len(got), len(ref))
     assert_set_close(got[:n], ref[:n], atol=1e-6, label="EA-ADC(2) energies")
+
+
+def test_gate1_ip_adc2x(mol, mf):
+    """spinor IP-ADC(2)-x reproduces PySCF UADC IP-ADC(2)-x (unique-value
+    set; spinor carries extra Kramers/Ms multiplicity)."""
+    # round coarsely so UADC's loosely-converged near-degenerate satellites
+    # collapse the same way the (exactly degenerate) spinor roots do.
+    got = _unique_sorted(run_spinor_ip_x(mf)["e"], decimals=4)
+    ref = _unique_sorted(ref_ip_x(mol)["e"], decimals=4)
+    n = min(len(got), len(ref), 5)
+    assert_set_close(got[:n], ref[:n], atol=1e-4, label="IP-ADC(2)-x energies")
+
+
+def test_gate2_ip_adc2x_invariance(mf):
+    """IP-ADC(2)-x roots invariant under a legal complex orbital rotation."""
+    E, C = mo_energy(mf), mo_coeff(mf)
+    U = legal_rotation(E, seed=21)
+    base = np.sort(run_spinor_ip_x(mf)["e"])
+    rot = np.sort(run_spinor_ip_x(set_mo(mf, C @ U, E))["e"])
+    np.testing.assert_allclose(rot, base, atol=1e-7, rtol=0,
+                               err_msg="IP-ADC(2)-x roots changed under complex"
+                                       " rotation -> conjugation bug")
 
 
 def test_gate2_ip_invariance(mf):

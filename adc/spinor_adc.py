@@ -16,6 +16,12 @@ Implemented strict ADC(2):
   EA  (electron attachment):  1p   + 2p1h space
   EE  (neutral excitation):   1p1h + 2p2h space
 
+IP additionally supports ADC(2)-x (``method='adc(2)-x'``), which adds the
+first-order interaction in the 2h1p block (hole-hole ladder 0.5<mn||ij> plus
+the particle-hole ring <ma||ei>, i.e. the EOM-IP Hbar(2h1p,2h1p) with t=0).
+Because ADC(2)-x splits the doublet/quartet satellites, the spinor IP-ADC(2)-x
+roots match PySCF UADC (spin-orbital), not RADC.
+
 IP/EA secular matrices are Hermitian and diagonalised directly for the lowest
 roots (the satellite 2h1p/2p1h block is diagonal at strict ADC(2)).  EE uses a
 Davidson matvec (the 2p2h block is too large to store densely); its 1p1h block
@@ -185,8 +191,13 @@ class SpinorADC(lib.StreamObject):
         return np.sort(w)
 
     # -- IP ------------------------------------------------------------------
-    def ip_adc2(self, nroots=6):
-        '''Spinor IP-ADC(2) ionization energies (lowest ``nroots``).'''
+    def ip_adc2(self, nroots=6, method='adc(2)'):
+        '''Spinor IP ionization energies (lowest ``nroots``).
+
+        ``method`` selects strict ADC(2) (default) or ADC(2)-x, which adds the
+        first-order interaction in the 2h1p block (hole-hole ladder + the
+        particle-hole ring).
+        '''
         self._build()
         no, nmo = self.nocc, self.nmo
         nv = nmo - no
@@ -216,7 +227,47 @@ class SpinorADC(lib.StreamObject):
         M[:no, no:] = Csd
         M[no:, :no] = Csd.conj().T
         M[no:, no:] = np.diag(Ddd).astype(complex)
+
+        if method == 'adc(2)-x':
+            M[no:, no:] += self._ip_doubles_x(pairs, nv)
+        elif method != 'adc(2)':
+            raise NotImplementedError(method)
         return self._solve(M, nroots)
+
+    def ip_adc2x(self, nroots=6):
+        '''Spinor IP-ADC(2)-x ionization energies.'''
+        return self.ip_adc2(nroots, method='adc(2)-x')
+
+    def _ip_doubles_x(self, pairs, nv):
+        '''First-order 2h1p-2h1p interaction block (ADC(2)-x), restricted
+        (k<l) basis: hole-hole ladder 0.5<mn||ij> + particle-hole ring
+        <ma||ei> (the EOM-IP Hbar(2h1p,2h1p) with t=0).'''
+        no = self.nocc
+        W = self._W
+        o = slice(0, no)
+        v = slice(no, self.nmo)
+        Woooo = W[o, o, o, o]                      # <mn||ij>
+        Wovvo = W[o, v, v, o]                      # <ma||ei>
+        npair = len(pairs)
+        ndd = npair * nv
+
+        def s2dd(r2):                              # r2[i,j,a], antisym in i,j
+            s = 0.5 * lib.einsum('mnij,mna->ija', Woooo, r2)
+            t = lib.einsum('maei,mje->ija', Wovvo, r2)
+            s += t - t.transpose(1, 0, 2)
+            return s
+
+        Mdd = np.zeros((ndd, ndd), dtype=complex)
+        for q, (k, l) in enumerate(pairs):
+            for b in range(nv):
+                r2 = np.zeros((no, no, nv), dtype=complex)
+                r2[k, l, b] = 1.0
+                r2[l, k, b] = -1.0
+                s = s2dd(r2)
+                col = np.array([s[k2, l2, b2]
+                                for (k2, l2) in pairs for b2 in range(nv)])
+                Mdd[:, q * nv + b] = col
+        return Mdd
 
     # -- EA ------------------------------------------------------------------
     def ea_adc2(self, nroots=6):
