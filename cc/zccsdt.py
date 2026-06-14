@@ -198,72 +198,76 @@ def _t1_dress(g, fock, t1, nocc, nmo):
 def _t3_residual(t2, t3, ge, fdr, nocc, nmo):
     '''Spin-orbital CCSDT T3 residual <Phi_ijk^abc|Hbar|0>, T1-free in the
     T1-dressed integrals ge (=<pq||rs> dressed) and Fock fdr.  Verified
-    element-wise against the determinant-space oracle to ~1e-15.'''
+    element-wise against the determinant-space oracle to ~1e-15.
+
+    Each bilinear t2*t3 correction has the same index/symmetry structure as its
+    linear partner, so it is folded into an *effective* intermediate and the
+    antisymmetrizer / O(o^3 v^3) contraction is applied only once per channel:
+      F_vv  <- f_vv  - 0.5 dF_vv         (-> P(a/bc))
+      F_oo  <- f_oo  + 0.5 dF_oo         (-> P(i/jk))
+      W_vvvv<- <ab||de> + 0.5 dW_vvvv    (-> pp ladder, P(c/ab))
+      W_oooo<- <mn||ij> + 0.5 dW_oooo    (-> hh ladder, P(k/ij))
+      W_ovvo<- <ma||di> + dW_ovvo        (-> ring, P(i/jk)P(a/bc))
+      W_vvvo<- W_vvvo + 0.5 dW_vvvo[t3]  (-> fullasym drive)
+      W_vooo<- W_vooo + 0.5 dW_vooo[t3]  (-> fullasym drive)
+    '''
     o = slice(0, nocc)
     v = slice(nocc, nmo)
+    nvir = nmo - nocc
     fvv = fdr[v, v]; foo = fdr[o, o]; fov = fdr[o, v]
     gvvvo = ge[v, v, v, o]; govoo = ge[o, v, o, o]
     vvvv = ge[v, v, v, v]; oooo = ge[o, o, o, o]; ovvo = ge[o, v, v, o]
     goovv = ge[o, o, v, v]; ovvv = ge[o, v, v, v]; ooov = ge[o, o, o, v]
     oovo = ge[o, o, v, o]
+    op, vp = _t2_pair(nocc, nvir)        # op = occ pairs m<n, vp = vir pairs d<e/a<b
+    md, ne = vp[:, 0], vp[:, 1]
+    mm, nn = op[:, 0], op[:, 1]
 
-    # (1) T2 driving via t2-dressed W_vvvo / W_vooo (contains the linear-in-t2
-    #     driving and the quadratic t2^2 driving)
+    # ---- effective intermediates (linear + bilinear folded together) ----
+    # drive: W_vvvo / W_vooo carry the linear-in-t2 + quadratic-t2^2 driving;
+    # add the t3-dressing (0.5 dW[t3], shared antisym pair packed -> 2x).
     Wvvvo = gvvvo.copy()
     Wvvvo += 0.5 * einsum('mnei,mnab->abei', oovo, t2)              # hole ladder
     tmp = einsum('mbef,miaf->abei', ovvv, t2)
     Wvvvo -= (tmp - tmp.transpose(1, 0, 2, 3))                      # P(ab) particle
     Wvvvo -= einsum('me,miab->abei', fov, t2)                       # dressed-Fock_ov * t2
+    Wvvvo += einsum('Pef,iPabf->abei', goovv[mm, nn], t3[:, mm, nn])  # 0.5 dW_vvvo[t3]
     Wvooo = govoo.copy()                                            # slot [m,a,j,i]
     tmp2 = einsum('mnie,jnbe->mbij', ooov, t2)
     Wvooo -= (tmp2 - tmp2.transpose(0, 1, 3, 2)).transpose(0, 1, 3, 2)
     Wvooo -= (0.5 * einsum('mbef,ijef->mbij', ovvv, t2)).transpose(0, 1, 3, 2)
+    Wvooo += einsum('mnP,ijnaP->maji', goovv[:, :, md, ne], t3[:, :, :, :, md, ne])  # 0.5 dW_vooo[t3]
     R = -0.25 * fullasym(einsum('abei,jkec->ijkabc', Wvvvo, t2)
                          + einsum('maji,mkbc->ijkabc', Wvooo, t2))
 
-    # (2) linear in t3 (dressed integrals)
-    R += _Pabc(einsum('ad,ijkdbc->ijkabc', fvv, t3))
-    R -= _Pijk(einsum('mi,mjkabc->ijkabc', foo, t3))
-    # pp/hh ladders: exploit pair antisymmetry (sum only d<e / m<n -> 2x).
-    nvir = nmo - nocc
-    op, vp = _t2_pair(nocc, nvir)        # op = occ pairs m<n, vp = vir pairs d<e/a<b
-    md, ne = vp[:, 0], vp[:, 1]
-    mm, nn = op[:, 0], op[:, 1]
-    # pp ladder: pack BOTH the summed pair (d<e) and the output pair (a<b) -> 4x.
-    vvvv_pp = vvvv[md[:, None], ne[:, None], md[None, :], ne[None, :]]   # (ab<, de<)
-    Xpp = einsum('QP,ijkPc->ijkQc', vvvv_pp, t3[:, :, :, md, ne, :])     # (o,o,o,ab<,v)
+    # F_vv: f_vv - 0.5 dF_vv  (dF_vv mn-pair packed -> 2x)
+    Feff_vv = fvv - einsum('Paf,Pdf->ad', t2[mm, nn], goovv[mm, nn])
+    R += _Pabc(einsum('ad,ijkdbc->ijkabc', Feff_vv, t3))
+    # F_oo: f_oo + 0.5 dF_oo  (dF_oo ef-pair packed -> 2x)
+    Feff_oo = foo + einsum('mnP,inP->mi', goovv[:, :, md, ne], t2[:, :, md, ne])
+    R -= _Pijk(einsum('mi,mjkabc->ijkabc', Feff_oo, t3))
+    # W_ovvo (ring): <ma||di> + dW_ovvo
+    Weff_ovvo = ovvo + einsum('mnde,inae->madi', goovv, t2)
+    R += _Pijk_Pabc(einsum('madi,mjkdbc->ijkabc', Weff_ovvo, t3))
+
+    # pp ladder: W_vvvv = <ab||de> + 0.5 dW_vvvv, fully (ab)(de)-antisymmetric;
+    # pack BOTH the summed pair (d<e) and the output pair (a<b) -> 4x.
+    Weff_vvvv = vvvv + einsum('Pab,Pde->abde', t2[mm, nn], goovv[mm, nn])
+    vvvv_pp = Weff_vvvv[md[:, None], ne[:, None], md[None, :], ne[None, :]]  # (ab<, de<)
+    Xpp = einsum('QP,ijkPc->ijkQc', vvvv_pp, t3[:, :, :, md, ne, :])
     Xf = np.zeros((nocc, nocc, nocc, nvir, nvir, nvir), dtype=R.dtype)
     Xf[:, :, :, md, ne, :] = Xpp
     Xf[:, :, :, ne, md, :] = -Xpp
     R += _Pc_ab(Xf)
-    # hh ladder: pack BOTH the summed pair (m<n) and the output pair (i<j) -> 4x.
-    oooo_pp = oooo[mm[:, None], nn[:, None], mm[None, :], nn[None, :]]   # (mn<, ij<)
-    Xhh = einsum('PQ,Pkabc->Qkabc', oooo_pp, t3[mm, nn])                 # (ij<,o,v,v,v)
+    # hh ladder: W_oooo = <mn||ij> + 0.5 dW_oooo; pack the summed pair (m<n) and
+    # the output pair (i<j) -> 4x.
+    Weff_oooo = oooo + einsum('mnP,ijP->mnij', goovv[:, :, md, ne], t2[:, :, md, ne])
+    oooo_pp = Weff_oooo[mm[:, None], nn[:, None], mm[None, :], nn[None, :]]  # (mn<, ij<)
+    Xhh = einsum('PQ,Pkabc->Qkabc', oooo_pp, t3[mm, nn])
     Yf = np.zeros((nocc, nocc, nocc, nvir, nvir, nvir), dtype=R.dtype)
     Yf[mm, nn] = Xhh
     Yf[nn, mm] = -Xhh
     R += _Pk_ij(Yf)
-    R += _Pijk_Pabc(einsum('madi,mjkdbc->ijkabc', ovvo, t3))
-
-    # (3) bilinear t2*t3 coupling -- pack the shared antisymmetric pair in each
-    # intermediate (lm / mn / ef -> 2x).
-    dWvvvo_t3 = 2 * einsum('Pef,iPabf->abei', goovv[mm, nn], t3[:, mm, nn])  # lm pair
-    R += -0.125 * fullasym(einsum('abei,jkec->ijkabc', dWvvvo_t3, t2))
-    dFvv = 2 * einsum('Paf,Pdf->ad', t2[mm, nn], goovv[mm, nn])              # mn pair
-    R += -0.5 * _Pabc(einsum('ad,ijkdbc->ijkabc', dFvv, t3))
-    dWvvvv = 2 * einsum('Pab,Pde->abde', t2[mm, nn], goovv[mm, nn])          # mn pair
-    R += 0.25 * _Pc_ab(einsum('abde,ijkdec->ijkabc', dWvvvv, t3))
-    dWoooo = 2 * einsum('mnP,ijP->mnij', goovv[:, :, md, ne], t2[:, :, md, ne])  # ef pair
-    R += 0.25 * _Pk_ij(einsum('mnij,mnkabc->ijkabc', dWoooo, t3))
-    # F_oo t2-part (delta F_mi) contracted with t3 -- ef pair packed
-    dFoo = 2 * einsum('mnP,inP->mi', goovv[:, :, md, ne], t2[:, :, md, ne])
-    R += -0.5 * _Pijk(einsum('mi,mjkabc->ijkabc', dFoo, t3))
-    # W_ovvo (ring) t2-part contracted with t3 (no shared antisym pair)
-    dovvo = einsum('mnde,inae->madi', goovv, t2)
-    R += _Pijk_Pabc(einsum('madi,mjkdbc->ijkabc', dovvo, t3))
-    # W_vooo t3-dressing contracted with t2 (partner of the W_vvvo one) -- ef pair packed
-    dWvooo_t3 = 2 * einsum('mnP,ijnaP->maji', goovv[:, :, md, ne], t3[:, :, :, :, md, ne])
-    R += -0.125 * fullasym(einsum('maji,mkbc->ijkabc', dWvooo_t3, t2))
     return R
 
 
