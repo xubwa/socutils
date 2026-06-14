@@ -14,10 +14,13 @@ mol = gto.M(verbose=4,
     mf2 = x2camf_hf.X2CAMF_RHF(mol, with_gaunt=True, with_breit=True)
     e_breit = mf2.kernel()
 ```
-Note, spinor style calculation requires the "zquatev" module, one can install it through
+Note, Kramers-restricted spinor calculations require the "zquatev" module. Install it
+from the `xubwa/zquatev` fork:
 ```
-pip instal git+https://github.com/sunqm/zquatev
+pip install git+https://github.com/xubwa/zquatev
 ```
+Do not install from `sunqm/zquatev`: its pybind11 bindings are too old to build against
+current toolchains. The `xubwa/zquatev` fork is pip-installable.
 To accelerates the calculation of SOC terms, "libx2camf" is required, and one can install it through
 ```
 pip install git+https://github.com/warlocat/x2camf

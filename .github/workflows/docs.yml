@@ -1,0 +1,49 @@
+name: docs
+
+on:
+  push:
+    branches:
+      - master
+      - claude/x2camf-c-base
+  workflow_dispatch:
+
+# Allow the workflow to publish to GitHub Pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one concurrent Pages deployment; let a running one finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Sphinx
+        # No autodoc in conf.py, so the build does not import socutils/pyscf;
+        # only Sphinx and the theme are needed.
+        run: pip install sphinx sphinx_rtd_theme
+      - name: Build HTML
+        run: sphinx-build -b html docs/source docs/_build/html
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/_build/html
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

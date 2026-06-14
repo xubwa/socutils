@@ -1,0 +1,10 @@
+build/
+build_c/
+__pycache__/
+*.pyc
+*.o
+*.so
+*.dylib
+*.dll
+*.egg-info/
+dist/

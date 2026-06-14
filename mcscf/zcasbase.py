@@ -4,6 +4,7 @@ from functools import reduce
 from pyscf import fci, mcscf, lib, scf, gto
 from pyscf.lib import logger
 from pyscf import __config__
+from socutils.fci import zfci
 
 
 class CASBase(lib.StreamObject):
@@ -41,7 +42,7 @@ class CASBase(lib.StreamObject):
             self.nelecas = nelecas
 
         self.ncore = ncore
-        self.fcisolver = fci.fci_dhf_slow.FCISolver(mol)
+        self.fcisolver = zfci.FCISolver(mol)
         # CI solver parameters are set in fcisolver object
         self.fcisolver.lindep = getattr(__config__, 'mcscf_casci_CASCI_fcisolver_lindep', 1e-12)
         self.fcisolver.max_cycle = getattr(__config__, 'mcscf_casci_CASCI_fcisolver_max_cycle', 200)

@@ -7,8 +7,12 @@ from pyscf.lib import logger
 from socutils.scf import spinor_hf
 from socutils.mcscf import zcasbase, zcasci
 from socutils.mcscf.zmc_ao2mo import chunked_cholesky
-#from .zmc_superci import mcscf_superci
-import zquatev
+# mcscf_superci is imported lazily inside superci() to avoid a circular import
+# (zmc_superci imports zmcscf).
+try:
+    from socutils.lib import zquatev
+except ImportError:
+    zquatev = None
 
 def eig(h, irrep=None):
     if irrep is None:
@@ -252,23 +256,38 @@ class CASSCF(zcasci.CASCI):
         mci = self.view(zcasci.CASCI)
         return mci.kernel(mo_coeff, ci0=ci0, verbose=verbose)
 
-    '''
-    def superci(self, mo_coeff=None, ci0=None, callback=None, _kern=mcscf_superci):
-        Returns:
-            Five elements, they are
-            total energy,
-            active space CI energy,
-            the active space FCI wavefunction coefficients or DMRG wavefunction ID,
-            the MCSCF canonical orbital coefficients,
-            the MCSCF canonical orbital coefficients.
+    def kernel(self, mo_coeff=None, ci0=None, callback=None):
+        '''Optimize the CASSCF orbitals and CI vector.
 
-        They are attributes of mcscf object, which can be accessed by
-        .e_tot, .e_cas, .ci, .mo_coeff, .mo_energy
+        This drives the super-CI orbital optimizer directly (see
+        :meth:`superci`); it is the CASSCF entry point analogous to PySCF's
+        ``mc.kernel()``.
+        '''
+        return self.superci(mo_coeff, ci0=ci0, callback=callback)
+
+    def superci(self, mo_coeff=None, ci0=None, callback=None, _kern=None):
+        '''Super-CI CASSCF orbital optimization.
+
+        Returns:
+            Five elements -- total energy, active-space CI energy, the
+            active-space FCI coefficients, and the MCSCF canonical orbital
+            coefficients and orbital energies.  They are also stored as the
+            attributes ``.e_tot``, ``.e_cas``, ``.ci``, ``.mo_coeff`` and
+            ``.mo_energy``.
+        '''
+        # Lazy import to break the zmcscf <-> zmc_superci circular import.
+        from socutils.mcscf.zmc_superci import mcscf_superci
+        if _kern is None:
+            _kern = mcscf_superci
+        if zquatev is None:
+            raise RuntimeError('zquatev library is required for spinor CASSCF '
+                               'orbital optimization')
         if mo_coeff is None:
             mo_coeff = self.mo_coeff
-        else: # overwrite self.mo_coeff because it is needed in many methods of this class
+        else:  # overwrite self.mo_coeff; it is used by many methods of this class
             self.mo_coeff = mo_coeff
-        if callback is None: callback = self.callback
+        if callback is None:
+            callback = self.callback
 
         self.check_sanity()
         self.dump_flags()
@@ -276,8 +295,8 @@ class CASSCF(zcasci.CASCI):
         self.converged, self.e_tot, self.e_cas, self.ci, \
                 self.mo_coeff, self.mo_energy = \
                 _kern(self, mo_coeff, max_stepsize=self.max_stepsize,
-                      conv_tol=self.conv_tol, conv_tol_grad=self.conv_tol_grad, verbose=self.verbose, cderi=self._cderi)
+                      conv_tol=self.conv_tol, conv_tol_grad=self.conv_tol_grad,
+                      verbose=self.verbose, cderi=self._cderi)
         logger.note(self, 'CASSCF energy = %#.15g', self.e_tot)
         self._finalize()
         return self.e_tot, self.e_cas, self.ci, self.mo_coeff, self.mo_energy
-    '''
