@@ -60,6 +60,51 @@ def _Pijk_Pabc(t):
     return _Pijk(_Pabc(t))
 
 
+# ---------- T3 antisymmetric packing (store only i<j<k, a<b<c) ----------
+
+_T3_TRI_CACHE = {}
+
+
+def _t3_tri(nocc, nvir):
+    '''Index arrays of the strictly-ordered occupied (i<j<k) and virtual
+    (a<b<c) triples; cached per (nocc, nvir).'''
+    key = (nocc, nvir)
+    if key not in _T3_TRI_CACHE:
+        occ = np.array([(i, j, k) for i in range(nocc)
+                        for j in range(i + 1, nocc)
+                        for k in range(j + 1, nocc)], dtype=int).reshape(-1, 3)
+        vir = np.array([(a, b, c) for a in range(nvir)
+                        for b in range(a + 1, nvir)
+                        for c in range(b + 1, nvir)], dtype=int).reshape(-1, 3)
+        _T3_TRI_CACHE[key] = (occ, vir)
+    return _T3_TRI_CACHE[key]
+
+
+def pack_t3(t3):
+    '''Pack a fully-antisymmetric t3[i,j,k,a,b,c] into its unique components
+    (i<j<k, a<b<c) -- a flat array ~36x smaller.'''
+    nocc, nvir = t3.shape[0], t3.shape[3]
+    occ, vir = _t3_tri(nocc, nvir)
+    if len(occ) == 0 or len(vir) == 0:
+        return np.zeros(0, dtype=t3.dtype)
+    return t3[occ[:, 0][:, None], occ[:, 1][:, None], occ[:, 2][:, None],
+              vir[:, 0][None, :], vir[:, 1][None, :], vir[:, 2][None, :]].ravel()
+
+
+def unpack_t3(packed, nocc, nvir):
+    '''Rebuild the full antisymmetric t3 from its unique components.  The unique
+    entries are scattered into a seed tensor and ``fullasym`` fills the rest
+    with the correct signs (no manual sign bookkeeping).'''
+    occ, vir = _t3_tri(nocc, nvir)
+    seed = np.zeros((nocc, nocc, nocc, nvir, nvir, nvir),
+                    dtype=np.result_type(packed, np.complex128))
+    if len(occ) and len(vir):
+        seed[occ[:, 0][:, None], occ[:, 1][:, None], occ[:, 2][:, None],
+             vir[:, 0][None, :], vir[:, 1][None, :], vir[:, 2][None, :]] = \
+            packed.reshape(len(occ), len(vir))
+    return fullasym(seed)
+
+
 # ---------- T1 dressing ----------
 
 def _t1_dress(g, fock, t1, nocc, nmo):
@@ -261,14 +306,15 @@ class ZCCSDT(ZCCSD):
         return self.e_corr, self.t1, self.t2, self.t3
 
     def amplitudes_to_vector(self, t1, t2, t3):
-        return np.hstack((t1.ravel(), t2.ravel(), t3.ravel()))
+        # t3 is stored packed (unique i<j<k, a<b<c) -> ~36x smaller DIIS history
+        return np.hstack((t1.ravel(), t2.ravel(), pack_t3(t3)))
 
     def vector_to_amplitudes(self, vec, nocc, nvir):
         n1 = nocc * nvir
         n2 = nocc * nocc * nvir * nvir
         t1 = vec[:n1].reshape(nocc, nvir)
         t2 = vec[n1:n1 + n2].reshape(nocc, nocc, nvir, nvir)
-        t3 = vec[n1 + n2:].reshape(nocc, nocc, nocc, nvir, nvir, nvir)
+        t3 = unpack_t3(vec[n1 + n2:], nocc, nvir)
         return t1, t2, t3
 
     def run_diis(self, t1, t2, t3, adiis):
