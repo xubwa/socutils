@@ -19,6 +19,10 @@ from pyscf import lib
 from pyscf.lib import logger
 from socutils.cc.zccsd import ZCCSD, _PhysicistsERIs
 from socutils.cc._ccsdt_bruteforce import build_g
+try:
+    from socutils.cc import _ccsdt_clib as _clib
+except Exception:
+    _clib = None
 
 einsum = lib.einsum
 
@@ -85,6 +89,8 @@ def _t2_pair(nocc, nvir):
 def pack_t2(t2):
     '''Pack antisymmetric t2[i,j,a,b] into its unique (i<j, a<b) components.'''
     nocc, nvir = t2.shape[0], t2.shape[2]
+    if _clib is not None and _clib.HAVE_CLIB:
+        return _clib.pack_t2(t2, nocc, nvir)
     op, vp = _t2_pair(nocc, nvir)
     if len(op) == 0 or len(vp) == 0:
         return np.zeros(0, dtype=t2.dtype)
@@ -94,6 +100,8 @@ def pack_t2(t2):
 
 def unpack_t2(packed, nocc, nvir):
     '''Rebuild the full antisymmetric t2 from its unique components.'''
+    if _clib is not None and _clib.HAVE_CLIB:
+        return _clib.unpack_t2(packed, nocc, nvir)
     op, vp = _t2_pair(nocc, nvir)
     seed = np.zeros((nocc, nocc, nvir, nvir),
                     dtype=np.result_type(packed, np.complex128))
@@ -127,6 +135,8 @@ def pack_t3(t3):
     '''Pack a fully-antisymmetric t3[i,j,k,a,b,c] into its unique components
     (i<j<k, a<b<c) -- a flat array ~36x smaller.'''
     nocc, nvir = t3.shape[0], t3.shape[3]
+    if _clib is not None and _clib.HAVE_CLIB:
+        return _clib.pack_t3(t3, nocc, nvir)
     occ, vir = _t3_tri(nocc, nvir)
     if len(occ) == 0 or len(vir) == 0:
         return np.zeros(0, dtype=t3.dtype)
@@ -138,6 +148,8 @@ def unpack_t3(packed, nocc, nvir):
     '''Rebuild the full antisymmetric t3 from its unique components.  The unique
     entries are scattered into a seed tensor and ``fullasym`` fills the rest
     with the correct signs (no manual sign bookkeeping).'''
+    if _clib is not None and _clib.HAVE_CLIB:
+        return _clib.unpack_t3(packed, nocc, nvir)
     occ, vir = _t3_tri(nocc, nvir)
     seed = np.zeros((nocc, nocc, nocc, nvir, nvir, nvir),
                     dtype=np.result_type(packed, np.complex128))
