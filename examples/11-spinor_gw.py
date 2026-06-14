@@ -83,3 +83,27 @@ print('spinor-GW HOMO pair (complex ref) =',
       np.round(gw_rot.mo_energy[nocc - 2:nocc], 6))
 print('max |dE| of rotated pair = %.2e'
       % np.max(np.abs(gw_rot.mo_energy[pair] - mygw.mo_energy[pair])))
+
+# ---------------------------------------------------------------------------
+# 4. genuinely relativistic reference (X2CAMF spin-orbit coupling)
+#    Requires the bundled x2camf C backend to be built (`make` in the repo
+#    root); skipped otherwise.
+# ---------------------------------------------------------------------------
+try:
+    mol_h = gto.M(atom='Ar 0 0 0', basis='cc-pvdz', verbose=0)
+    mf_soc = (spinor_hf.SpinorSCF(mol_h).x2camf()
+              .density_fit(auxbasis='cc-pvdz-jkfit'))
+    mf_soc.kernel()
+    no = mol_h.nelectron
+    gw_soc = SpinorGWAC(mf_soc)
+    gw_soc.ac = 'pade'
+    gw_soc.frozen = 5
+    gw_soc.kernel(orbs=range(no - 4, no + 4))
+    print('\nX2CAMF spinor-HF E = %.8f' % mf_soc.e_tot)
+    print('SOC spinor-GW HOMO (3p_3/2) =',
+          np.round(gw_soc.mo_energy[no - 4:no], 5))
+    print('SOC spinor-GW LUMO          =',
+          np.round(gw_soc.mo_energy[no:no + 4], 5))
+except Exception as err:
+    print('\n[X2CAMF SOC demo skipped: %s]' % err)
+
