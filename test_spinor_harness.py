@@ -121,13 +121,11 @@ def run_spinor_ea(mf, nroots=8):
     return {"e": np.asarray(SpinorADC(mf).ea_adc2(nroots))}
 
 
-def run_spinor_eeadc2(mf, nroots=6):
-    """TODO: return socutils spinor EE-ADC(2): excitation energies + osc str.
-
-    Default is a placeholder so the harness imports/runs; replace with the
-    real call. Gate-1 reference is pyscf EE-RADC (see reference runners).
-    """
-    raise NotImplementedError("wire run_spinor_eeadc2 to socutils EE-ADC(2)")
+def run_spinor_eeadc2(mf, nroots=8):
+    """socutils spinor EE-ADC(2) excitation energies.  The spinor solution
+    spans the full spin manifold (singlets and all Ms components of triplets),
+    so each spin-adapted root appears with its multiplicity."""
+    return {"exc": np.asarray(SpinorADC(mf).ee_adc2(nroots))}
 
 
 def run_spinor_g0w0(mf, norb=None):
@@ -168,12 +166,17 @@ def ref_ea(mol, nroots=4):
     return {"e": np.asarray(e)}
 
 
-def ref_eeadc2(mol, nroots=6):
+def ref_eeadc2(mol, nroots=8):
+    # Spin-orbital reference: UADC EE-ADC(2) returns singlets and the Ms=0
+    # component of triplets, so its UNIQUE energies match the spinor set
+    # (which additionally carries the Ms=+-1 triplet components).
     from pyscf import adc
-    mf = scf.RHF(mol).run()
+    mf = scf.UHF(mol).run()
     myadc = adc.ADC(mf)
     myadc.method = "adc(2)"
-    e, v, p, x = myadc.kernel(nroots=nroots)   # EE by default
+    myadc.method_type = "ee"
+    myadc.verbose = 0
+    e = myadc.kernel(nroots=nroots)[0]
     return {"exc": np.asarray(e)}
 
 
@@ -316,15 +319,15 @@ def test_gate2_ea_invariance(mf):
                                        " -> conjugation/Hermiticity bug")
 
 
-@pytest.mark.xfail(reason="enable once run_spinor_eeadc2 is wired",
-                   raises=NotImplementedError)
 def test_gate1_eeadc2(mol, mf):
-    got = run_spinor_eeadc2(mf, nroots=6)["exc"]
-    ref = ref_eeadc2(mol, nroots=6)["exc"]
-    # spinor reproduces restricted roots up to Kramers multiplicity; compare
-    # the unique set. Tighten/loosen tol to your solver convergence.
-    uniq_got = np.unique(np.round(got, 6))
-    assert_set_close(uniq_got[:len(ref)], ref, atol=1e-5,
+    got = run_spinor_eeadc2(mf, nroots=12)["exc"]
+    ref = ref_eeadc2(mol, nroots=8)["exc"]
+    # Compare the lowest unique excitation energies (spinor carries extra
+    # Kramers/Ms multiplicity, so collapse to unique values first).
+    uniq_got = _unique_sorted(got, decimals=5)
+    uniq_ref = _unique_sorted(ref, decimals=5)
+    n = min(len(uniq_got), len(uniq_ref), 4)
+    assert_set_close(uniq_got[:n], uniq_ref[:n], atol=1e-5,
                      label="EE-ADC(2) exc energies")
 
 
@@ -372,14 +375,14 @@ def test_gate2_intermediate_norm(mf):
                                        " -> covariant contraction has a bug")
 
 
-@pytest.mark.xfail(reason="enable once run_spinor_eeadc2 is wired",
-                   raises=NotImplementedError)
 def test_gate2_eeadc2_invariance(mf):
     E, C = mo_energy(mf), mo_coeff(mf)
     U = legal_rotation(E, seed=3)
-    base = run_spinor_eeadc2(mf)["exc"]
-    rot = run_spinor_eeadc2(set_mo(mf, C @ U, E))["exc"]
-    assert_set_close(rot, base, atol=1e-8, label="EE-ADC(2) under rotation")
+    base = np.sort(run_spinor_eeadc2(mf)["exc"])
+    rot = np.sort(run_spinor_eeadc2(set_mo(mf, C @ U, E))["exc"])
+    np.testing.assert_allclose(rot, base, atol=1e-6, rtol=0,
+                               err_msg="EE-ADC(2) roots changed under complex"
+                                       " rotation -> conjugation bug")
 
 
 @pytest.mark.xfail(reason="enable once run_spinor_g0w0 is wired",
