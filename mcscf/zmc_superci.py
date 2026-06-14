@@ -231,10 +231,8 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
         fock_eff = h1e_mo + vhf_ca
         fock_core = fock_eff[:ncore, :ncore]
         fock_vir = fock_eff[nocc:, nocc:]
-        # canonical orbitals: diagonalize the Hermitian core/virtual Fock
-        # blocks (orthonormal MO basis); eigh orders by ascending energy.
-        e_core, c_core = np.linalg.eigh(fock_core)
-        e_vir, c_vir = np.linalg.eigh(fock_vir)
+        e_core, c_core = casscf._scf.eig(fock_core, mo=mo[:, :ncore])
+        e_vir, c_vir = casscf._scf.eig(fock_vir, mo=mo[:, nocc:])
         mo[:,:ncore] = np.dot(mo[:,:ncore], c_core)
         mo[:,nocc:] = np.dot(mo[:,nocc:], c_vir)
         h1e_mo = reduce(np.dot, (mo.T.conj(), casscf.get_hcore(), mo))
@@ -506,12 +504,9 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, conv_tol=None,
         # compute natural orbital and transform ci to natural orbtial basis
         # no transform function available now so re do a ci calculation
         # do it in gen_g_hop
-        if mc.natorb is True:
+        if mc.natorb is True: 
             moa = mo[:, ncore:nocc]
-            # natural orbitals: diagonalize the active 1-RDM (Hermitian, already
-            # in the orthonormal active-MO basis).  eigh of -casdm1 orders the
-            # eigenvectors by descending occupation.
-            natocc, c = np.linalg.eigh(-casdm1)
+            natocc, c = mc._scf.eig(-casdm1, mo=moa)
             moa_new = np.dot(moa, c)
             mo[:, ncore:nocc] = moa_new
 
