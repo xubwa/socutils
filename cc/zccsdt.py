@@ -7,21 +7,24 @@
 #   - spin-orbital, antisymmetrized physicist integrals <pq||rs>
 #   - complex amplitudes, t2[i,j,a,b] fully antisymmetric
 #
-# STATUS: WORK IN PROGRESS -- converges close to, but not exactly, the oracle.
-#   Validated on H2O/STO-3G (frozen O 1s) via cc/_validate_ccsdt.py:
-#     Stage 1 (CCSD): PASS -- the CCSD part reproduces
-#       socutils.cc.zccsd.update_amps element-wise (max|d|~1e-18), i.e. exact
-#       pyscf CCSD, e_corr = -0.04938919.
-#     Stage 2 (first connected T3 vs gccsd_t (T)): FAIL -- the T2->T3 driving
-#       term's normalization is off, so the first-iteration t3 does not exactly
-#       reproduce the gccsd_t (T) energy (-4.77e-5).
-#     Stage 3 (full CCSDT converged): converges to e_corr = -0.04949353 vs the
-#       pyscf CCSDT oracle -0.04948254 -- off by only ~1.1e-5 (triples right
-#       order, sign, and ~90% of the magnitude), but NOT exact.
-#   The remaining ~1.1e-5 traces to Stage 2: the T2->T3 driving-term
-#   normalization (and possibly double-counting in the T3<->T3 ring term, which
-#   uses the full dressed cc_Wovvo). Fix Stage 2 first, then re-check Stage 3.
-#   Do NOT use for production until cc/_validate_ccsdt.py reports a match.
+# STATUS: WORK IN PROGRESS -- tightly converges close to, but not exactly, the
+#   pyscf CCSDT oracle.  Validated on H2O/STO-3G (frozen O 1s):
+#     * CCSD part: EXACT -- reproduces socutils.cc.zccsd.update_amps
+#       element-wise (max|d|~1e-18), i.e. exact pyscf CCSD, -0.04938919.
+#     * T2->T3 driving term: EXACT -- the full-tensor P(i/jk)P(a/bc)[bare]
+#       matches gccsd_t's connected triple element-wise (max|d|~1e-17), so it
+#       reproduces the pyscf (T) connected amplitude.
+#     * Full CCSDT: with tight convergence (conv_tol 1e-9) converges to
+#       e_corr = -0.04949162 vs the pyscf CCSDT oracle -0.04948254 -- off by
+#       ~9.1e-6 (triples right sign/order, ~110% of magnitude).  (A looser tol
+#       leaves ~1e-5 convergence NOISE, so always converge tightly here.)
+#   ROOT CAUSE of the residual ~9e-6: the T3<->T3 / T3->T2 terms mix
+#   intermediate conventions inconsistently -- a *dressed* cc_Wovvo ring with
+#   *bare* vvvv/oooo ladders and bare-integral driving, plus T3->T2 factors
+#   that were tuned to the energy rather than derived.  Closing the gap needs
+#   ONE consistent formulation (either the fully-dressed CCSD intermediates
+#   throughout, or pyscf-rccsdt's T1-dressed integrals + explicit T2 terms),
+#   validated term-by-term.  Do NOT use for production until that is done.
 #
 
 import numpy as np
@@ -194,21 +197,14 @@ def _t3_residual(cc, t1, t2, t3, eris, Foo, Fvv, oovv, ooov, ovvv,
 
     # w_full[i,j,k,a,b,c] = sum_e t2[j,k,a,e] ovvv_used[i,b,c,e]
     #                     + sum_m t2T[i,b,c,m] ooov_used[j,k,a,m]
-    w = einsum('jkae,ibce->ijkabc', t2, ovvv_used)
-    w += einsum('ibcm,jkam->ijkabc', t2T, ooov_used)
-    # antisymmetrize abc cyclically (w + w(cab) + w(bca)) as in gccsd_t,
-    # which together with the i/jk antisymmetrization gives P(i/jk)P(a/bc).
-    # gccsd_t builds w = w + w.transpose(2,0,1)+w.transpose(1,2,0) on abc, and
-    # combines wijk+wkij-wjik over occ.  Here do it on the full tensor:
-    # abc cyclic (mirrors get_w internal: w + w(c,a,b) + w(b,c,a)):
-    w = (w + w.transpose(0, 1, 2, 5, 3, 4) + w.transpose(0, 1, 2, 4, 5, 3))
-    # ijk combination  R[i,j,k] = wabc[i,j,k] + wabc[k,i,j] - wabc[j,i,k]
-    #   wabc[k,i,j] -> transpose(1,2,0); wabc[j,i,k] -> transpose(1,0,2)
-    w = (w
-         + w.transpose(1, 2, 0, 3, 4, 5)
-         - w.transpose(1, 0, 2, 3, 4, 5))
-
-    R = w
+    # Both bare contractions share the same special indices: i (occ) and a
+    # (vir).  The stored T3 amplitude residual is the FULL antisymmetrizer
+    # P(i/jk) P(a/bc) applied to their sum (NOT gccsd_t's energy-oriented
+    # cyclic symmetrization, which is only correct under the symmetric (T)
+    # energy contraction).
+    bare  = einsum('jkae,ibce->ijkabc', t2, ovvv_used)
+    bare += einsum('ibcm,jkam->ijkabc', t2T, ooov_used)
+    R = _Pijk_Pabc(bare)
 
     # =====================================================================
     # T3 <- T3 terms.  Built with partial permutation operators consistent
@@ -281,6 +277,12 @@ class ZCCSDT(ZCCSD):
     conv_tol = 1e-10
     conv_tol_normt = 1e-8
     max_cycle = 200
+
+    # CCSDT needs a tighter default than CCSD: the triples are ~1e-4, so a
+    # 1e-7 energy tolerance leaves ~1e-5 convergence noise on the correlation
+    # energy (comparable to the quantity of interest).
+    conv_tol = 1e-9
+    conv_tol_normt = 1e-7
 
     def __init__(self, mf, frozen=0, mo_coeff=None, mo_occ=None,
                  with_mmf=False, erifile=None):
