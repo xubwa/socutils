@@ -209,8 +209,13 @@ def _t3_residual(t2, t3, ge, fdr, nocc, nmo):
     # (2) linear in t3 (dressed integrals)
     R += _Pabc(einsum('ad,ijkdbc->ijkabc', fvv, t3))
     R -= _Pijk(einsum('mi,mjkabc->ijkabc', foo, t3))
-    R += 0.5 * _Pc_ab(einsum('abde,ijkdec->ijkabc', vvvv, t3))
-    R += 0.5 * _Pk_ij(einsum('mnij,mnkabc->ijkabc', oooo, t3))
+    # pp/hh ladders: exploit pair antisymmetry (sum only d<e / m<n -> 2x).
+    nvir = nmo - nocc
+    op, vp = _t2_pair(nocc, nvir)        # op = occ pairs m<n, vp = vir pairs d<e
+    md, ne = vp[:, 0], vp[:, 1]
+    mm, nn = op[:, 0], op[:, 1]
+    R += _Pc_ab(einsum('abP,ijkPc->ijkabc', vvvv[:, :, md, ne], t3[:, :, :, md, ne, :]))
+    R += _Pk_ij(einsum('Pij,Pkabc->ijkabc', oooo[mm, nn], t3[mm, nn]))
     R += _Pijk_Pabc(einsum('madi,mjkdbc->ijkabc', ovvo, t3))
 
     # (3) bilinear t2*t3 coupling
