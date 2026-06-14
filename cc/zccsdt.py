@@ -1,41 +1,128 @@
 #
 # Full spin-orbital CCSDT (iterative T3) for socutils two-component spinor CC.
 #
-# Conventions follow pyscf gccsd / socutils zccsd: spin-orbital, antisymmetrized
-# physicist integrals <pq||rs>, complex amplitudes, t2/t3 fully antisymmetric.
+# Efficient T1-dressed tensor implementation, consistent with pyscf's rccsdt:
+# T1 is absorbed into the antisymmetrized integrals and Fock (x = 1 - t1,
+# y = 1 + t1), so the T3 sector is T1-free.  Conventions follow pyscf gccsd /
+# socutils zccsd: spin-orbital, antisymmetrized physicist integrals <pq||rs>,
+# complex amplitudes, t2/t3 fully antisymmetric.
 #
-# STATUS
-# ------
-# Phase-1 reference: correctness over speed.  The connected CCSDT residual is
-# evaluated by the guaranteed-correct determinant-space engine in
-# ``socutils.cc._ccsdt_bruteforce`` (it builds the full Hamiltonian and the T
-# operator in Slater-determinant space and projects <Phi_n|e^{-T}H e^{T}|0>).
-# It is EXACT -- validated against pyscf ``rccsdt_highm`` on three closed-shell
-# molecules (STO-3G, frozen core):
-#     H2O : -0.049482538   (pyscf -0.049482538,  diff 3e-10)
-#     HF  : -0.025823451   (pyscf -0.025823452,  diff 1e-9)
-#     LiH : -0.020231830   (pyscf -0.020231830,  diff 3e-10)
-# Its cost is determinant-space, so use it only for small active spaces
-# (validation / reference), NOT production.
-#
-# The efficient, pyscf-rccsdt-consistent T1-dressed *tensor* form is Phase 2.
-# Most of it is already derived and verified term-by-term against the oracle
-# (linear-in-t3 and bilinear t2*t3 sectors exact to ~1e-15); two localized gaps
-# remain (the t2-dressed driving intermediates W_vvvo/W_ovoo, and their correct
-# T1-dressing).  The determinant-space oracle is the term-by-term ground truth
-# for finishing it.
+# VALIDATION: every residual (r1, r2, r3) matches the guaranteed-correct
+# determinant-space oracle (socutils.cc._ccsdt_bruteforce) element-wise to
+# ~1e-15 (random t1/t2/t3, t1=0 and t1!=0), and the converged correlation
+# energy matches pyscf rccsdt_highm on H2O/HF/LiH (STO-3G, frozen core) to
+# ~1e-9.  See cc/_t3model.py for the standalone term-by-term r3 check.
 #
 
 import numpy as np
 from pyscf import lib
 from pyscf.lib import logger
 from socutils.cc.zccsd import ZCCSD, _PhysicistsERIs
+from socutils.cc._ccsdt_bruteforce import build_g
 
 einsum = lib.einsum
 
 
 def _asarray(x):
     return np.asarray(x)
+
+
+# ---------- antisymmetrizers / partial permutation operators ----------
+
+def fullasym(t):
+    '''Full P(i/jk)*P(a/bc) antisymmetrizer (6x6 signed perms, no 1/36).'''
+    a = (t + t.transpose(1, 2, 0, 3, 4, 5) + t.transpose(2, 0, 1, 3, 4, 5)
+         - t.transpose(1, 0, 2, 3, 4, 5) - t.transpose(0, 2, 1, 3, 4, 5)
+         - t.transpose(2, 1, 0, 3, 4, 5))
+    a = (a + a.transpose(0, 1, 2, 4, 5, 3) + a.transpose(0, 1, 2, 5, 3, 4)
+         - a.transpose(0, 1, 2, 4, 3, 5) - a.transpose(0, 1, 2, 3, 5, 4)
+         - a.transpose(0, 1, 2, 5, 4, 3))
+    return a
+
+
+def _Pabc(t):
+    return t - t.transpose(0, 1, 2, 4, 3, 5) - t.transpose(0, 1, 2, 5, 4, 3)
+
+
+def _Pijk(t):
+    return t - t.transpose(1, 0, 2, 3, 4, 5) - t.transpose(2, 1, 0, 3, 4, 5)
+
+
+def _Pc_ab(t):
+    return t - t.transpose(0, 1, 2, 5, 4, 3) - t.transpose(0, 1, 2, 3, 5, 4)
+
+
+def _Pk_ij(t):
+    return t - t.transpose(2, 1, 0, 3, 4, 5) - t.transpose(0, 2, 1, 3, 4, 5)
+
+
+def _Pijk_Pabc(t):
+    return _Pijk(_Pabc(t))
+
+
+# ---------- T1 dressing ----------
+
+def _t1_dress(g, fock, t1, nocc, nmo):
+    '''Generalized spin-orbital T1 dressing of the antisymmetrized integrals
+    g[p,q,r,s]=<pq||rs> and the Fock matrix (x = 1 - t1, y = 1 + t1).'''
+    x = np.eye(nmo, dtype=complex)
+    x[nocc:, :nocc] -= t1.T
+    y = np.eye(nmo, dtype=complex)
+    y[:nocc, nocc:] += t1
+    ge = einsum('tvuw,pt->pvuw', g, x)
+    ge = einsum('pvuw,rv->pruw', ge, x)
+    ge = ge.transpose(2, 3, 0, 1)
+    ge = einsum('uwpr,qu->qwpr', ge, y)
+    ge = einsum('qwpr,sw->qspr', ge, y)
+    ge = ge.transpose(2, 3, 0, 1)
+    fdr = fock + einsum('risa,ia->rs', g[:, :nocc, :, nocc:], t1)
+    fdr = x @ fdr @ y.T
+    return ge, fdr
+
+
+def _t3_residual(t2, t3, ge, fdr, nocc, nmo):
+    '''Spin-orbital CCSDT T3 residual <Phi_ijk^abc|Hbar|0>, T1-free in the
+    T1-dressed integrals ge (=<pq||rs> dressed) and Fock fdr.  Verified
+    element-wise against the determinant-space oracle to ~1e-15.'''
+    o = slice(0, nocc)
+    v = slice(nocc, nmo)
+    fvv = fdr[v, v]; foo = fdr[o, o]; fov = fdr[o, v]
+    gvvvo = ge[v, v, v, o]; govoo = ge[o, v, o, o]
+    vvvv = ge[v, v, v, v]; oooo = ge[o, o, o, o]; ovvo = ge[o, v, v, o]
+    goovv = ge[o, o, v, v]; ovvv = ge[o, v, v, v]; ooov = ge[o, o, o, v]
+    oovo = ge[o, o, v, o]
+
+    # (1) T2 driving via t2-dressed W_vvvo / W_vooo (contains the linear-in-t2
+    #     driving and the quadratic t2^2 driving)
+    Wvvvo = gvvvo.copy()
+    Wvvvo += 0.5 * einsum('mnei,mnab->abei', oovo, t2)              # hole ladder
+    tmp = einsum('mbef,miaf->abei', ovvv, t2)
+    Wvvvo -= (tmp - tmp.transpose(1, 0, 2, 3))                      # P(ab) particle
+    Wvvvo -= einsum('me,miab->abei', fov, t2)                       # dressed-Fock_ov * t2
+    Wvooo = govoo.copy()                                            # slot [m,a,j,i]
+    tmp2 = einsum('mnie,jnbe->mbij', ooov, t2)
+    Wvooo -= (tmp2 - tmp2.transpose(0, 1, 3, 2)).transpose(0, 1, 3, 2)
+    Wvooo -= (0.5 * einsum('mbef,ijef->mbij', ovvv, t2)).transpose(0, 1, 3, 2)
+    R = -0.25 * fullasym(einsum('abei,jkec->ijkabc', Wvvvo, t2)
+                         + einsum('maji,mkbc->ijkabc', Wvooo, t2))
+
+    # (2) linear in t3 (dressed integrals)
+    R += _Pabc(einsum('ad,ijkdbc->ijkabc', fvv, t3))
+    R -= _Pijk(einsum('mi,mjkabc->ijkabc', foo, t3))
+    R += 0.5 * _Pc_ab(einsum('abde,ijkdec->ijkabc', vvvv, t3))
+    R += 0.5 * _Pk_ij(einsum('mnij,mnkabc->ijkabc', oooo, t3))
+    R += _Pijk_Pabc(einsum('madi,mjkdbc->ijkabc', ovvo, t3))
+
+    # (3) bilinear t2*t3 coupling
+    dWvvvo_t3 = einsum('lmef,ilmabf->abei', goovv, t3)
+    R += -0.125 * fullasym(einsum('abei,jkec->ijkabc', dWvvvo_t3, t2))
+    dFvv = einsum('mnaf,mndf->ad', t2, goovv)
+    R += -0.5 * _Pabc(einsum('ad,ijkdbc->ijkabc', dFvv, t3))
+    dWvvvv = einsum('mnab,mnde->abde', t2, goovv)
+    R += 0.25 * _Pc_ab(einsum('abde,ijkdec->ijkabc', dWvvvv, t3))
+    dWoooo = einsum('mnef,ijef->mnij', goovv, t2)
+    R += 0.25 * _Pk_ij(einsum('mnij,mnkabc->ijkabc', dWoooo, t3))
+    return R
 
 
 def energy(cc, t1, t2, eris):
@@ -50,14 +137,14 @@ def energy(cc, t1, t2, eris):
 
 
 def update_amps(cc, t1, t2, t3, eris):
-    '''Next amplitudes (t1new, t2new, t3new) = t + residual/denominator.
-
-    Connected CCSDT residuals from the determinant-space oracle (guaranteed
-    correct); cost is determinant-space -> small-system reference only.'''
-    from socutils.cc import _ccsdt_bruteforce as bf
+    '''Next amplitudes (t1new, t2new, t3new).  Efficient tensor residuals:
+    the CCSD T1/T2 part from socutils.cc.zccsd (validated), plus the T3->T1/T2
+    couplings and the T3 residual in the T1-dressed formalism.'''
     assert isinstance(eris, _PhysicistsERIs)
     nocc, nvir = t1.shape
     nmo = nocc + nvir
+    o = slice(0, nocc)
+    v = slice(nocc, nmo)
     mo_e = eris.mo_energy
     eia = mo_e[:nocc][:, None] - (mo_e[nocc:] + cc.level_shift)
     eijab = eia[:, None, :, None] + eia[None, :, None, :]
@@ -65,14 +152,32 @@ def update_amps(cc, t1, t2, t3, eris):
                + eia[None, :, None, None, :, None]
                + eia[None, None, :, None, None, :])
 
-    g = bf.build_g(eris, nocc, nmo)
-    fock = np.asarray(eris.fock)
-    r1, r2, r3 = bf.ccsdt_residuals(fock, g, nocc, nmo, t1, t2, t3)
-    return t1 + r1 / eia, t2 + r2 / eijab, t3 + r3 / eijkabc
+    g = build_g(eris, nocc, nmo)
+    fock = _asarray(eris.fock)
+    ge, fdr = _t1_dress(g, fock, t1, nocc, nmo)
+
+    # CCSD T1/T2 part (socutils, validated == pyscf CCSD)
+    t1new, t2new = ZCCSD.update_amps(cc, t1, t2, eris)
+
+    # T3 -> T1
+    t1new = t1new + (0.25 * einsum('mnef,imnaef->ia', ge[o, o, v, v], t3)) / eia
+
+    # T3 -> T2
+    r2t3 = einsum('me,ijmabe->ijab', fdr[o, v], t3)
+    tmp = 0.5 * einsum('amef,ijmebf->ijab', ge[v, o, v, v], t3)
+    r2t3 = r2t3 + (tmp - tmp.transpose(0, 1, 3, 2))            # P(ab)
+    tmp = 0.5 * einsum('mnej,inmabe->ijab', ge[o, o, v, o], t3)
+    r2t3 = r2t3 - (tmp - tmp.transpose(1, 0, 2, 3))            # P(ij)
+    t2new = t2new + r2t3 / eijab
+
+    # T3 residual
+    r3 = _t3_residual(t2, t3, ge, fdr, nocc, nmo)
+    t3new = t3 + r3 / eijkabc
+    return t1new, t2new, t3new
 
 
 class ZCCSDT(ZCCSD):
-    '''Full spin-orbital CCSDT for two-component spinor CC (Phase-1 reference).'''
+    '''Full spin-orbital CCSDT for two-component spinor CC (T1-dressed tensor).'''
 
     conv_tol = 1e-9
     conv_tol_normt = 1e-7
