@@ -211,10 +211,17 @@ def _t3_residual(t2, t3, ge, fdr, nocc, nmo):
     R -= _Pijk(einsum('mi,mjkabc->ijkabc', foo, t3))
     # pp/hh ladders: exploit pair antisymmetry (sum only d<e / m<n -> 2x).
     nvir = nmo - nocc
-    op, vp = _t2_pair(nocc, nvir)        # op = occ pairs m<n, vp = vir pairs d<e
+    op, vp = _t2_pair(nocc, nvir)        # op = occ pairs m<n, vp = vir pairs d<e/a<b
     md, ne = vp[:, 0], vp[:, 1]
     mm, nn = op[:, 0], op[:, 1]
-    R += _Pc_ab(einsum('abP,ijkPc->ijkabc', vvvv[:, :, md, ne], t3[:, :, :, md, ne, :]))
+    # pp ladder: pack BOTH the summed pair (d<e) and the output pair (a<b) -> 4x.
+    vvvv_pp = vvvv[md[:, None], ne[:, None], md[None, :], ne[None, :]]   # (ab<, de<)
+    Xpp = einsum('QP,ijkPc->ijkQc', vvvv_pp, t3[:, :, :, md, ne, :])     # (o,o,o,ab<,v)
+    Xf = np.zeros((nocc, nocc, nocc, nvir, nvir, nvir), dtype=R.dtype)
+    Xf[:, :, :, md, ne, :] = Xpp
+    Xf[:, :, :, ne, md, :] = -Xpp
+    R += _Pc_ab(Xf)
+    # hh ladder: pack the summed pair (m<n) -> 2x.
     R += _Pk_ij(einsum('Pij,Pkabc->ijkabc', oooo[mm, nn], t3[mm, nn]))
     R += _Pijk_Pabc(einsum('madi,mjkdbc->ijkabc', ovvo, t3))
 
