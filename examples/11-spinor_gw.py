@@ -86,24 +86,43 @@ print('max |dE| of rotated pair = %.2e'
 
 # ---------------------------------------------------------------------------
 # 4. genuinely relativistic reference (X2CAMF spin-orbit coupling)
-#    Requires the bundled x2camf C backend to be built (`make` in the repo
-#    root); skipped otherwise.
+#    Requires the bundled x2camf C backend (build it with `make` in the repo
+#    root, see x2camf_c/README.md).
 # ---------------------------------------------------------------------------
-try:
-    mol_h = gto.M(atom='Ar 0 0 0', basis='cc-pvdz', verbose=0)
-    mf_soc = (spinor_hf.SpinorSCF(mol_h).x2camf()
-              .density_fit(auxbasis='cc-pvdz-jkfit'))
-    mf_soc.kernel()
-    no = mol_h.nelectron
-    gw_soc = SpinorGWAC(mf_soc)
-    gw_soc.ac = 'pade'
-    gw_soc.frozen = 5
-    gw_soc.kernel(orbs=range(no - 4, no + 4))
-    print('\nX2CAMF spinor-HF E = %.8f' % mf_soc.e_tot)
-    print('SOC spinor-GW HOMO (3p_3/2) =',
-          np.round(gw_soc.mo_energy[no - 4:no], 5))
-    print('SOC spinor-GW LUMO          =',
-          np.round(gw_soc.mo_energy[no:no + 4], 5))
-except Exception as err:
-    print('\n[X2CAMF SOC demo skipped: %s]' % err)
+mol_h = gto.M(atom='Ar 0 0 0', basis='cc-pvdz', verbose=0)
+mf_soc = (spinor_hf.SpinorSCF(mol_h).x2camf()
+          .density_fit(auxbasis='cc-pvdz-jkfit'))
+mf_soc.kernel()
+no = mol_h.nelectron
+gw_soc = SpinorGWAC(mf_soc)
+gw_soc.ac = 'pade'
+gw_soc.frozen = 5
+gw_soc.kernel(orbs=range(10, no + 4))
+print('\nX2CAMF spinor-HF E = %.8f' % mf_soc.e_tot)
+print('SOC spinor-GW HOMO (3p_3/2) =',
+      np.round(gw_soc.mo_energy[no - 4:no], 5))
+print('SOC spinor-GW LUMO          =',
+      np.round(gw_soc.mo_energy[no:no + 4], 5))
+
+# complex-conjugate symmetry on the SOC reference.  On a Kramers doublet the
+# diagonal self-energy is a*I + (off-diagonal), so the individual diagonal QP
+# energies are basis dependent, but the trace over the complete degenerate
+# manifold is invariant under a within-manifold complex rotation.
+e_soc = mf_soc.mo_energy
+soc_pair = next([i - 1, i] for i in range(7, no)
+                if abs(e_soc[i] - e_soc[i - 1]) < 1e-7
+                and abs(e_soc[i - 1] - e_soc[i - 2]) > 1e-5
+                and abs(e_soc[i] - e_soc[i + 1]) > 1e-5)
+C_soc = mf_soc.mo_coeff.copy()
+C_soc[:, soc_pair] = mf_soc.mo_coeff[:, soc_pair] @ U
+mf_soc_rot = copy.copy(mf_soc)
+mf_soc_rot.mo_coeff = C_soc
+gw_soc_rot = SpinorGWAC(mf_soc_rot)
+gw_soc_rot.ac = 'pade'
+gw_soc_rot.frozen = 5
+gw_soc_rot.kernel(orbs=range(10, no))
+tr0 = gw_soc.mo_energy[soc_pair].sum()
+tr1 = gw_soc_rot.mo_energy[soc_pair].sum()
+print('SOC doublet %s trace QP: orig %.8f  rot %.8f  |dE| %.2e'
+      % (soc_pair, tr0, tr1, abs(tr0 - tr1)))
 

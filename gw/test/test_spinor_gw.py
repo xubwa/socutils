@@ -122,6 +122,79 @@ class KnownValues(unittest.TestCase):
             self.assertAlmostEqual(e_rot[p], e_ref[p], 6)
 
 
+class KnownValuesSOC(unittest.TestCase):
+    '''Genuinely relativistic reference (X2CAMF spin-orbit coupling).
+
+    Requires the bundled x2camf / zquatev C backends to be compiled
+    (`make` in the repo root).
+    '''
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mol = gto.M(atom='Ar 0 0 0', basis='cc-pvdz', verbose=0)
+        cls.mf = (spinor_hf.SpinorSCF(cls.mol).x2camf()
+                  .density_fit(auxbasis='cc-pvdz-jkfit'))
+        cls.mf.conv_tol = 1e-11
+        cls.mf.kernel()
+
+    def _occ_degenerate_pair(self):
+        '''Lowest isolated 2-fold degenerate occupied pair above the frozen
+        core (a Kramers doublet, e.g. 3p_1/2 of Ar).'''
+        e = self.mf.mo_energy
+        nocc = self.mol.nelectron
+        for i in range(7, nocc):
+            deg = abs(e[i] - e[i - 1]) < 1e-7
+            iso_lo = abs(e[i - 1] - e[i - 2]) > 1e-5
+            iso_hi = (i + 1 >= len(e)) or abs(e[i] - e[i + 1]) > 1e-5
+            if deg and iso_lo and iso_hi:
+                return [i - 1, i]
+        raise self.skipTest('no isolated occupied Kramers pair found')
+
+    def test_soc_gw_runs(self):
+        nocc = self.mol.nelectron
+        mygw = SpinorGWAC(self.mf)
+        mygw.ac = 'pade'
+        mygw.frozen = 5
+        mygw.kernel(orbs=range(10, nocc))
+        qpe = mygw.mo_energy[10:nocc]
+        self.assertTrue(np.all(np.isfinite(qpe)))
+        # SOC-split 3p HOMO must lie above the 3s level
+        self.assertGreater(qpe.max(), -0.7)
+
+    def test_complex_conjugate_symmetry_soc(self):
+        '''Complex-conjugate symmetry on a relativistic reference.
+
+        On a SOC Kramers doublet the diagonal self-energy has the form
+        a*I + (off-diagonal); in an arbitrary basis the *individual* diagonal
+        energies are basis-dependent, but the trace over the complete
+        degenerate manifold is exactly invariant under a unitary rotation
+        within it.  Rotating by a 2x2 complex unitary (which makes the MOs
+        genuinely complex) must leave that trace unchanged.
+        '''
+        import copy
+        nocc = self.mol.nelectron
+        pair = self._occ_degenerate_pair()
+
+        def run(mo_coeff):
+            m = copy.copy(self.mf)
+            m.mo_coeff = mo_coeff
+            g = SpinorGWAC(m)
+            g.ac = 'pade'
+            g.frozen = 5
+            g.kernel(orbs=range(10, nocc))
+            return g.mo_energy
+
+        e_ref = run(self.mf.mo_coeff)
+        U = _random_complex_unitary(2, seed=7)
+        C_rot = self.mf.mo_coeff.copy()
+        C_rot[:, pair] = self.mf.mo_coeff[:, pair] @ U
+        self.assertGreater(np.linalg.norm(C_rot.imag), 1e-3)
+        e_rot = run(C_rot)
+
+        self.assertTrue(np.all(np.isfinite(e_rot)))
+        self.assertAlmostEqual(e_rot[pair].sum(), e_ref[pair].sum(), 7)
+
+
 if __name__ == '__main__':
     print('Tests for relativistic spinor G0W0-AC')
     unittest.main()
