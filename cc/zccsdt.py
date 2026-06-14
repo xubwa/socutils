@@ -36,6 +36,13 @@ except Exception:
 einsum = lib.einsum
 
 
+def _einsum_opt(*args):
+    '''numpy einsum with path optimization -- faster than pyscf lib.einsum for
+    the memory-bound single-index F*t3 contractions (which lib.einsum routes
+    through extra full-tensor transposes).'''
+    return np.einsum(*args, optimize=True)
+
+
 def _asarray(x):
     return np.asarray(x)
 
@@ -251,10 +258,10 @@ def _t3_residual(t2, t3, ge, fdr, nocc, nmo):
 
     # F_vv: f_vv - 0.5 dF_vv  (dF_vv mn-pair packed -> 2x)
     Feff_vv = fvv - einsum('Paf,Pdf->ad', t2[mm, nn], goovv[mm, nn])
-    R += _Pabc(einsum('ad,ijkdbc->ijkabc', Feff_vv, t3))
+    R += _Pabc(_einsum_opt('ad,ijkdbc->ijkabc', Feff_vv, t3))
     # F_oo: f_oo + 0.5 dF_oo  (dF_oo ef-pair packed -> 2x)
     Feff_oo = foo + einsum('mnP,inP->mi', goovv[:, :, md, ne], t2[:, :, md, ne])
-    R -= _Pijk(einsum('mi,mjkabc->ijkabc', Feff_oo, t3))
+    R -= _Pijk(_einsum_opt('mi,mjkabc->ijkabc', Feff_oo, t3))
     # W_ovvo (ring): <ma||di> + dW_ovvo
     Weff_ovvo = ovvo + einsum('mnde,inae->madi', goovv, t2)
     R += _Pijk_Pabc(einsum('madi,mjkdbc->ijkabc', Weff_ovvo, t3))
