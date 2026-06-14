@@ -9,9 +9,18 @@
 #
 # VALIDATION: every residual (r1, r2, r3) matches the guaranteed-correct
 # determinant-space oracle (socutils.cc._ccsdt_bruteforce) element-wise to
-# ~1e-15 (random t1/t2/t3, t1=0 and t1!=0), and the converged correlation
-# energy matches pyscf rccsdt_highm on H2O/HF/LiH (STO-3G, frozen core) to
-# ~1e-9.  See cc/_t3model.py for the standalone term-by-term r3 check.
+# ~1e-15 (random t1/t2/t3, t1=0 and t1!=0), on shapes with both nvir<=nocc and
+# nvir>nocc (the latter exercises the bilinear t2*t3 terms), and the converged
+# correlation energy matches pyscf rccsdt_highm on H2O/HF/LiH (STO-3G and
+# 6-31g, frozen core) to ~1e-9.  See cc/_t3model.py for the standalone
+# term-by-term r3 check.
+#
+# PERFORMANCE: amplitudes stored on their unique antisymmetric blocks; the T3
+# residual exploits pair antisymmetry in the ladders/bilinear terms, folds each
+# bilinear t2*t3 correction into its linear partner's effective intermediate
+# (one contraction + one antisymmetrizer per channel), and offloads the
+# permutation (anti)symmetrizers to an optional OpenMP C backend
+# (socutils.cc._ccsdt_clib; pure-numpy fallback otherwise).
 #
 
 import numpy as np
