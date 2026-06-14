@@ -30,40 +30,177 @@ def density_fit(mf, auxbasis=None, with_df=None, only_dfj=False):
     with_df.verbose = mf.verbose
 
     dfmf = _DFJHF(mf, with_df, only_dfj)
+    dfmf.direct_scf = False   # the MO-based K path needs the full (tagged) DM
     return lib.set_class(dfmf, (_DFJHF, mf.__class__))
 
 
 class _DFJHF(df.df_jk._DFHF):
     def get_jk(self, mol=None, dm=None, hermi=1, with_j=True, with_k=True, omega=None):
+        if mol is None: mol = self.mol
         if dm is None:
             dm = self.make_rdm1()
-        dm_sph = spinor2sph(mol, dm)
-        with_dfk = with_k and self.with_df
 
-        def jkbuild(mol, dm, hermi, with_j, with_k, omega=None):
-            vj, vk = self.with_df.get_jk(dm.real, hermi, with_j, with_k, self.direct_scf_tol, omega)
-            if dm.dtype == numpy.complex128:
-                vjI, vkI = self.with_df.get_jk(dm.imag, hermi, with_j, with_k, self.direct_scf_tol, omega)
-                if with_j:
-                    vj = vj + vjI * 1j
-                if with_k:
-                    vk = vk + vkI * 1j
-            return vj, vk
         t0 = (logger.process_clock(), logger.perf_counter())
-        j_sph, k_sph = ghf.get_jk(mol, dm_sph, hermi, with_j, with_dfk, jkbuild, omega)
+        nao = mol.nao_nr()   # real spherical AO dimension (matches DF integrals)
+        vj = vk = None
+
+        # --- J ---
+        # J depends only on the total charge density dm_aa + dm_bb.
+        # Pass real/imag parts of the trace DM directly to with_df.get_jk;
+        # no need to go through ghf.get_jk's block splitting.
         if with_j:
-            j_spinor = sph2spinor(mol, j_sph)
-        if with_dfk:
-            k_spinor = sph2spinor(mol, k_sph)
+            dm_sph   = spinor2sph(mol, dm)                       # (2*nao, 2*nao)
+            dm_trace = dm_sph[:nao, :nao] + dm_sph[nao:, nao:]   # (nao, nao)
+            vj_ao, _ = self.with_df.get_jk(dm_trace.real, 1, True, False,
+                                            self.direct_scf_tol, omega)
+            if numpy.iscomplexobj(dm_trace):
+                vj_i, _ = self.with_df.get_jk(dm_trace.imag, 1, True, False,
+                                               self.direct_scf_tol, omega)
+                vj_ao = vj_ao + 1j * vj_i
+            vj_sph = numpy.zeros((2 * nao, 2 * nao), dtype=complex)
+            vj_sph[:nao, :nao] = vj_sph[nao:, nao:] = vj_ao
+            vj = sph2spinor(mol, vj_sph)
+
+        # --- K ---
+        if with_k and self.with_df:
+            mo_coeff = getattr(dm, 'mo_coeff', None)
+            mo_occ   = getattr(dm, 'mo_occ',   None)
+            if mo_coeff is not None and mo_occ is not None:
+                vk = self._get_k_mo(mol, mo_coeff, mo_occ, omega)
+            else:
+                # Fallback: DM-based K via ghf.get_jk (first iteration etc.)
+                logger.warn(self, 'mo_coeff not tagged on dm, using DM-based K')
+                if not with_j:
+                    dm_sph = spinor2sph(mol, dm)
+
+                def jkbuild(mol, dms, hermi, with_j, with_k, omega=None):
+                    vj_list, vk_list = [], []
+                    for dm_blk in dms:
+                        vj_, vk_ = self.with_df.get_jk(dm_blk.real, hermi,
+                                                        with_j, with_k,
+                                                        self.direct_scf_tol, omega)
+                        if numpy.iscomplexobj(dm_blk):
+                            vjI, vkI = self.with_df.get_jk(dm_blk.imag, hermi,
+                                                            with_j, with_k,
+                                                            self.direct_scf_tol, omega)
+                            if with_j and vj_ is not None: vj_ = vj_ + vjI * 1j
+                            if with_k and vk_ is not None: vk_ = vk_ + vkI * 1j
+                        vj_list.append(vj_)
+                        vk_list.append(vk_)
+                    return numpy.array(vj_list), numpy.array(vk_list)
+
+                _, k_sph = ghf.get_jk(mol, dm_sph, hermi, False, True, jkbuild, omega)
+                vk = sph2spinor(mol, k_sph)
+
         logger.timer(self, 'vj and vk', *t0)
-        if with_j and with_dfk:
-            return j_spinor, k_spinor
-        elif with_j:
-            return j_spinor, None
-        elif with_dfk:
-            return None, k_spinor
-        else:
-            raise ValueError("Either with_j or with_k must be True.")
+        return vj, vk
+
+    def _get_k_mo(self, mol, mo_coeff, mo_occ, omega=None):
+        """Build K in spinor basis via MO half-transform of DF 3-index integrals.
+
+        DF integrals (P|mu nu) live in the real spherical AO basis (nao = mol.nao_nr()).
+        Spinor MOs are projected to the spherical GHF basis and split into
+        alpha/beta spin blocks, each of dimension nao.
+
+        Because the DF integrals are real but the spinor MOs are complex, we split
+        each MO block into real and imaginary parts and call PySCF's real-only C
+        half-transform (AO2MOnr_e2_drv) twice per block.  The four real
+        half-transformed buffers
+
+            LaR[Pi, mu] = sum_nu eri[P,mu,nu] Re(C_a[nu,i])
+            LaI[Pi, mu] = sum_nu eri[P,mu,nu] Im(C_a[nu,i])
+
+        are then combined with real BLAS calls:
+
+            K_aa[m,n] = sum_{Pi} La[Pi,m] La*[Pi,n]
+                      = LaR.T@LaR + LaI.T@LaI + i*(LaI.T@LaR - LaR.T@LaI)
+
+        The C library reads the compressed-triangular eri directly (no unpack_tril).
+        """
+        import ctypes
+        from pyscf.ao2mo import _ao2mo
+
+        ftrans = _ao2mo.libao2mo.AO2MOtranse2_nr_s2
+        fmmm   = _ao2mo.libao2mo.AO2MOmmm_bra_nr_s2
+        fdrv   = _ao2mo.libao2mo.AO2MOnr_e2_drv
+        null   = lib.c_null_ptr()
+
+        # c2: (2*nao, n2c) unitary, projects spinor MOs -> spherical GHF basis
+        c2  = numpy.vstack(mol.sph2spinor_coeff())
+        nao = mol.nao_nr()
+        n2c = mol.nao_2c()
+
+        nocc_mask = mo_occ > 0
+        nocc = int(nocc_mask.sum())
+        if nocc == 0:
+            return numpy.zeros((n2c, n2c), dtype=complex)
+
+        # Occupied spinor MOs weighted by sqrt(f_i), then projected to sph GHF basis
+        C_occ     = mo_coeff[:, nocc_mask] * numpy.sqrt(mo_occ[nocc_mask])
+        C_occ_sph = c2 @ C_occ   # (2*nao, nocc); first nao rows = alpha, last = beta
+
+        # Four real Fortran-order arrays for the C half-transform library
+        # Each has shape (nao, nocc), matching the DF integral AO index
+        C_aR = numpy.asfortranarray(C_occ_sph[:nao].real)
+        C_aI = numpy.asfortranarray(C_occ_sph[:nao].imag)
+        C_bR = numpy.asfortranarray(C_occ_sph[nao:].real)
+        C_bI = numpy.asfortranarray(C_occ_sph[nao:].imag)
+
+        vk_sph = numpy.zeros((2 * nao, 2 * nao), dtype=complex)
+
+        max_memory = self.max_memory - lib.current_memory()[0]
+        blockdim   = getattr(self.with_df, 'blockdim', 240)
+        # 4 real buffers of (blksize*nocc, nao), 8 bytes/element
+        blksize = max(4, int(min(blockdim,
+                                 max_memory * 1e6 / 8 / (4 * nao * nocc))))
+        logger.debug(self, 'DF-K MO half-transform: nocc=%d  blksize=%d', nocc, blksize)
+
+        buf_aR = numpy.empty((blksize * nocc, nao))
+        buf_aI = numpy.empty((blksize * nocc, nao))
+        buf_bR = numpy.empty((blksize * nocc, nao))
+        buf_bI = numpy.empty((blksize * nocc, nao))
+
+        def _half(eri1, C_real, buf):
+            """Half-transform compressed-triangular eri1 (naux, nao*(nao+1)/2)
+            with real Fortran-order C_real (nao, nocc) -> buf (naux*nocc, nao)."""
+            naux_ = eri1.shape[0]
+            fdrv(ftrans, fmmm,
+                 buf.ctypes.data_as(ctypes.c_void_p),
+                 eri1.ctypes.data_as(ctypes.c_void_p),
+                 C_real.ctypes.data_as(ctypes.c_void_p),
+                 ctypes.c_int(naux_), ctypes.c_int(nao),
+                 (ctypes.c_int * 4)(0, nocc, 0, nao),
+                 null, ctypes.c_int(0))
+
+        for eri1 in self.with_df.loop(blksize):
+            naux = eri1.shape[0]
+            LaR = buf_aR[:naux * nocc]
+            LaI = buf_aI[:naux * nocc]
+            LbR = buf_bR[:naux * nocc]
+            LbI = buf_bI[:naux * nocc]
+
+            _half(eri1, C_aR, LaR)
+            _half(eri1, C_aI, LaI)
+            _half(eri1, C_bR, LbR)
+            _half(eri1, C_bI, LbI)
+
+            # K_aa[m,n] = LaR.T@LaR + LaI.T@LaI + i*(LaI.T@LaR - LaR.T@LaI)
+            IRa = lib.dot(LaI.T, LaR)
+            vk_sph[:nao, :nao] += (lib.dot(LaR.T, LaR) + lib.dot(LaI.T, LaI)
+                                   + 1j * (IRa - IRa.T))
+
+            # K_bb[m,n] = LbR.T@LbR + LbI.T@LbI + i*(LbI.T@LbR - LbR.T@LbI)
+            IRb = lib.dot(LbI.T, LbR)
+            vk_sph[nao:, nao:] += (lib.dot(LbR.T, LbR) + lib.dot(LbI.T, LbI)
+                                   + 1j * (IRb - IRb.T))
+
+            # K_ab[m,n] = LaR.T@LbR + LaI.T@LbI + i*(LaI.T@LbR - LaR.T@LbI)
+            K_ab = (lib.dot(LaR.T, LbR) + lib.dot(LaI.T, LbI)
+                    + 1j * (lib.dot(LaI.T, LbR) - lib.dot(LaR.T, LbI)))
+            vk_sph[:nao, nao:] += K_ab
+            vk_sph[nao:, :nao] += K_ab.conj().T   # K_ba = K_ab†
+
+        return sph2spinor(mol, vk_sph)
 
 
 def symmetry_label(mol, symmetry=None):
