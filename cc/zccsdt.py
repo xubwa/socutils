@@ -240,6 +240,15 @@ def _t3_residual(t2, t3, ge, fdr, nocc, nmo):
     R += 0.25 * _Pc_ab(einsum('abde,ijkdec->ijkabc', dWvvvv, t3))
     dWoooo = 2 * einsum('mnP,ijP->mnij', goovv[:, :, md, ne], t2[:, :, md, ne])  # ef pair
     R += 0.25 * _Pk_ij(einsum('mnij,mnkabc->ijkabc', dWoooo, t3))
+    # F_oo t2-part (delta F_mi) contracted with t3
+    dFoo = einsum('mnef,inef->mi', goovv, t2)
+    R += -0.5 * _Pijk(einsum('mi,mjkabc->ijkabc', dFoo, t3))
+    # W_ovvo (ring) t2-part contracted with t3
+    dovvo = einsum('mnde,inae->madi', goovv, t2)
+    R += _Pijk_Pabc(einsum('madi,mjkdbc->ijkabc', dovvo, t3))
+    # W_vooo t3-dressing contracted with t2 (partner of the W_vvvo t3-dressing)
+    dWvooo_t3 = einsum('mnef,ijnaef->maji', goovv, t3)
+    R += -0.125 * fullasym(einsum('maji,mkbc->ijkabc', dWvooo_t3, t2))
     return R
 
 
