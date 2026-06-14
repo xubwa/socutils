@@ -9,29 +9,29 @@ class itself.  Use as, e.g.::
 
     from socutils.scf import spinor_hf, addons
     mf = spinor_hf.SCF(mol).x2camf()
-    addons.open_shell_frac_occ(mf, norb_open=2, nelec_open=1)   # in place
+    addons.even_occ(mf, norb_open=2, nelec_open=1)   # in place
     mf.kernel()
-
-Note this is *not* the same as :func:`pyscf.scf.addons.frac_occ`, which
-auto-detects degenerate frontier orbitals (``frac_occ(mf, tol)``).  Here the
-open shell is specified explicitly.
 """
 
 import numpy
 from pyscf.lib import logger
 
 
-def open_shell_frac_occ(mf, norb_open=0, nelec_open=0):
-    '''Even (configuration-averaged) occupation of an *explicitly specified*
-    open shell.
+def even_occ(mf, norb_open=0, nelec_open=0):
+    '''Even (uniform) fractional occupation of an *explicitly specified* open shell.
 
     Distributes ``nelec_open`` electrons evenly over the ``norb_open`` open-shell
     spinors that sit just above the ``nclose = mol.nelectron - nelec_open``
-    fully-occupied spinors, by overriding ``mf.get_occ`` in place.
+    fully-occupied spinors, by overriding ``mf.get_occ`` in place.  The open
+    shell is given explicitly (unlike :func:`pyscf.scf.addons.frac_occ`, which
+    auto-detects degenerate frontier orbitals).
 
-    Unlike :func:`pyscf.scf.addons.frac_occ` (which auto-detects degenerate
-    HOMOs via a tolerance), the open shell here is given explicitly by
-    ``norb_open`` / ``nelec_open``.
+    This only sets the *occupation numbers* and then runs the ordinary
+    mean-field.  It is well defined for DFT (the energy is a functional of the
+    fractionally-occupied density), but it is **not** a true average-of-
+    configuration / CAHF treatment: it does not include the inter-shell
+    coupling (averaged Slater--Condon J/K) coefficients that the AOC/CAHF energy
+    functional carries, so for HF it is an approximation, not the AOC energy.
 
     Returns the same ``mf`` object (so it can be chained).
     '''
