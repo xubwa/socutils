@@ -230,14 +230,15 @@ def _t3_residual(t2, t3, ge, fdr, nocc, nmo):
     R += _Pk_ij(Yf)
     R += _Pijk_Pabc(einsum('madi,mjkdbc->ijkabc', ovvo, t3))
 
-    # (3) bilinear t2*t3 coupling
-    dWvvvo_t3 = einsum('lmef,ilmabf->abei', goovv, t3)
+    # (3) bilinear t2*t3 coupling -- pack the shared antisymmetric pair in each
+    # intermediate (lm / mn / ef -> 2x).
+    dWvvvo_t3 = 2 * einsum('Pef,iPabf->abei', goovv[mm, nn], t3[:, mm, nn])  # lm pair
     R += -0.125 * fullasym(einsum('abei,jkec->ijkabc', dWvvvo_t3, t2))
-    dFvv = einsum('mnaf,mndf->ad', t2, goovv)
+    dFvv = 2 * einsum('Paf,Pdf->ad', t2[mm, nn], goovv[mm, nn])              # mn pair
     R += -0.5 * _Pabc(einsum('ad,ijkdbc->ijkabc', dFvv, t3))
-    dWvvvv = einsum('mnab,mnde->abde', t2, goovv)
+    dWvvvv = 2 * einsum('Pab,Pde->abde', t2[mm, nn], goovv[mm, nn])          # mn pair
     R += 0.25 * _Pc_ab(einsum('abde,ijkdec->ijkabc', dWvvvv, t3))
-    dWoooo = einsum('mnef,ijef->mnij', goovv, t2)
+    dWoooo = 2 * einsum('mnP,ijP->mnij', goovv[:, :, md, ne], t2[:, :, md, ne])  # ef pair
     R += 0.25 * _Pk_ij(einsum('mnij,mnkabc->ijkabc', dWoooo, t3))
     return R
 
