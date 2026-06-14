@@ -152,7 +152,13 @@ def update_amps(cc, t1, t2, t3, eris):
                + eia[None, :, None, None, :, None]
                + eia[None, None, :, None, None, :])
 
-    g = build_g(eris, nocc, nmo)
+    # The bare antisymmetrized integral tensor g[p,q,r,s]=<pq||rs> depends only
+    # on the (fixed) MO integrals, so build it once and cache it on eris.  Only
+    # the T1-dressing below is redone each iteration (t1 changes).
+    g = getattr(eris, '_ccsdt_g', None)
+    if g is None:
+        g = build_g(eris, nocc, nmo)
+        eris._ccsdt_g = g
     fock = _asarray(eris.fock)
     ge, fdr = _t1_dress(g, fock, t1, nocc, nmo)
 
