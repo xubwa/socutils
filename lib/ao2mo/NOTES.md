@@ -92,9 +92,32 @@ Build (needs the installed pyscf libs at runtime):
   (`AO2MOtranse2_nr_s4` / a sph-s4 `r_e2`) and fix the `nao_pair` bookkeeping
   for the sph-AO j-spinor path; then both ij (done) and kl get the 4x.
 
+## End-to-end CORRECT (nrr_incore.py); speed needs C
+
+`nrr_incore.general_incore` computes (ij|kl) over j-spinor MOs as
+`Bbra . eri_s4 . Bket^T` with `eri_s4 = intor('int2e_sph', aosym='s4')` and
+folded two-component transition densities. **Verified correct to machine
+precision** vs `int2e_spinor` (oovv/vovv/voov/full, ~1e-14). This addresses:
+  * #1 s4: AO integrals via `aosym='s4'` (~4x fewer shell quartets);
+  * #2 order: BLAS zgemm picks the contraction order;
+  * #3 plumbing: sidesteps the broken outcore s2/s4 machinery entirely.
+
+But it is **not faster** than the stock s1 `nrr_outcore` at moderate sizes
+(H2O/cc-pVTZ, 5 ADC blocks: stock s1 outcore 3.9s vs zgemm-incore 8.0s).
+Reasons: the numpy/zgemm transform does not beat pyscf's C transform, and the
+s4 saving is on AO *generation*, which `intor('int2e_sph','s4')` already does
+in ~0s -- it is not the bottleneck. The bottleneck is the MO transform, which
+must be in C (BLAS) to win.
+
+A genuine speedup therefore requires the **C-level s4 outcore**:
+  * e1 (bra) s4: DONE in nrr_ao2mo_opt.c (reuse nr fill + complex mmm), works.
+  * e2 (kl) s4: port nr's `AO2MOtranse2_nr_s2kl` (spherical *shell-block* AO
+    unpack via ao_loc -- NOT element-tril; `r_e2`'s s4 instead applies
+    time-reversal, the 2C/Kramers route) and pair it with a complex mmm.
+  * fix `nao_pair` bookkeeping for the sph shell-block packing.
+
 ## Status
 - [x] copied nr/nrr/r C + nr/nrr outcore Python here for study
 - [x] optimized e1 C driver (s4 fill reuse + complex mmm), builds & runs
-- [x] e1 transform correctness verified in isolation
-- [ ] pass-2 (kl) sph-s4: port nr transe2_s4 / fix r_e2 + nao_pair bookkeeping
-- [ ] end-to-end correctness vs int2e_spinor + speed test
+- [x] **end-to-end CORRECT** spinor s4 transform (nrr_incore.py), verified
+- [ ] C-level s4 e2 (port transe2_nr_s2kl + complex mmm) for an actual speedup
