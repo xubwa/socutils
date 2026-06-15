@@ -5,9 +5,16 @@
 '''
 Relativistic (spinor) GW module for socutils.
 
-Currently provides the one-shot G0W0 approximation with analytic continuation
-(:class:`SpinorGWAC`) and direct RPA correlation/total energy
-(:class:`SpinorRPA`) on top of a spinor mean-field reference.
+.. warning::
+
+   **WORK IN PROGRESS.**  This package is under active development and its API
+   and numerical defaults may change.  It currently provides one-shot G0W0 with
+   analytic continuation (:class:`SpinorGWAC`) and direct-RPA correlation/total
+   energy (:class:`SpinorRPA`) on top of a spinor mean-field reference.  Both
+   are validated against the restricted PySCF implementations in the
+   non-relativistic limit and run on X2CAMF spin-orbit references, but features
+   such as contour-deformation GW, self-consistency, BSE and lower-scaling
+   algorithms are not yet implemented.
 '''
 
 from socutils.gw import spinor_gw_ac

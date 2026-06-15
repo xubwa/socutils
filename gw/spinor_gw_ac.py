@@ -6,6 +6,8 @@
 Relativistic (2-/4-component spinor) G0W0 approximation with analytic
 continuation.
 
+.. warning:: WORK IN PROGRESS -- API and defaults may change.
+
 This module is the spinor analogue of PySCF's restricted ``gw.gw_ac``.  It
 takes a spinor mean-field reference (:class:`socutils.scf.spinor_hf.SpinorSCF`,
 or any of its X2C/X2CAMF subclasses) and computes the diagonal G0W0

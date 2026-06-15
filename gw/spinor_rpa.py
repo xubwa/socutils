@@ -6,6 +6,8 @@
 Relativistic (2-/4-component spinor) direct RPA (dRPA) correlation and total
 energy.
 
+.. warning:: WORK IN PROGRESS -- API and defaults may change.
+
 This is the spinor analogue of PySCF's restricted ``gw.rpa``.  It evaluates the
 adiabatic-connection / fluctuation-dissipation (ACFDT) RPA correlation energy on
 the imaginary frequency axis,
