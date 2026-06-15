@@ -341,36 +341,28 @@ class SpinorADC(lib.StreamObject):
         eo, ev = e[:no], e[no:]
 
         Mpp = np.diag(ev).astype(complex) - self._sig_ea
-        Wvovv = self._eris.vovv                    # <ai||cd>
-
+        # <ai||cd> packed over the antisymmetric particle pair (c<d): the 2p1h
+        # vector is already stored packed, so the dominant contraction runs
+        # over c<d only (0.5 sum_full == sum_{c<d}) -- half the flops/storage.
         vv = np.array([(c, d) for c in range(nv) for d in range(c + 1, nv)],
                       dtype=int).reshape(-1, 2)
         nvp = len(vv)
         vc, vd = vv[:, 0], vv[:, 1]
+        WvovvP = self._eris.vovv[:, :, vc, vd]     # <ai||(cd)>  [a,i,P]
+        ev_p = ev[vc] + ev[vd]
         dim = nv + nvp * no
-
-        def unpack(rp):
-            r2 = np.zeros((nv, nv, no), dtype=complex)
-            blk = rp.reshape(nvp, no)
-            r2[vc, vd, :] = blk
-            r2[vd, vc, :] = -blk
-            return r2
-
-        def pack(s2):
-            return s2[vc, vd, :].reshape(-1)
 
         def matvec(x):
             r1 = x[:nv]
-            r2 = unpack(x[nv:])
-            s1 = Mpp @ r1 + 0.5 * lib.einsum('aicd,cdi->a', Wvovv, r2)
-            s2 = (ev[:, None, None] + ev[None, :, None]
-                  - eo[None, None, :]) * r2
-            s2 += lib.einsum('aicd,a->cdi', Wvovv.conj(), r1)
-            return np.concatenate([s1, pack(s2)])
+            r2 = x[nv:].reshape(nvp, no)           # [P=(c<d), i]
+            s1 = Mpp @ r1 + lib.einsum('aiP,Pi->a', WvovvP, r2)
+            s2 = (ev_p[:, None] - eo[None, :]) * r2
+            s2 += lib.einsum('aiP,a->Pi', WvovvP.conj(), r1)
+            return np.concatenate([s1, s2.reshape(-1)])
 
         diag = np.empty(dim)
         diag[:nv] = Mpp.diagonal().real
-        diag[nv:] = ((ev[vc] + ev[vd])[:, None] - eo[None, :]).reshape(-1)
+        diag[nv:] = (ev_p[:, None] - eo[None, :]).reshape(-1)
         return _davidson(matvec, diag, nroots)
 
 
@@ -417,34 +409,45 @@ class SpinorADC(lib.StreamObject):
         oj, ok = oo[:, 0], oo[:, 1]
         vb, vc = vv[:, 0], vv[:, 1]
 
-        def unpack(rp):
-            r2 = np.zeros((no, no, nv, nv), dtype=complex)
+        # Pack the antisymmetric particle pair (b<c) in the two dominant
+        # O(no^2 nv^3) contractions (akbc, bcak); the smaller O(no^3 nv^2)
+        # terms (jkib, ibjk) stay on the full virtual range.
+        WvovvP = Wvovv[:, :, vb, vc]               # <ak||(bc)>  [a,k,P]
+        WvvvoP = Wvvvo[vb, vc]                      # <(bc)||ak>  [P,a,k]
+        D_hf = (ev[vb] + ev[vc])[None, None, :] - eo[:, None, None] \
+            - eo[None, :, None]                    # [j,k,P]
+
+        def unpack_holes(rp):                      # -> r2_hf[j,k,P]
+            r2 = np.zeros((no, no, nvp), dtype=complex)
             blk = rp.reshape(nop, nvp)
-            r2[oj[:, None], ok[:, None], vb[None, :], vc[None, :]] = blk
-            r2[ok[:, None], oj[:, None], vb[None, :], vc[None, :]] = -blk
-            r2[oj[:, None], ok[:, None], vc[None, :], vb[None, :]] = -blk
-            r2[ok[:, None], oj[:, None], vc[None, :], vb[None, :]] = blk
+            r2[oj, ok, :] = blk
+            r2[ok, oj, :] = -blk
             return r2
 
-        def pack(s2):
-            return s2[oj[:, None], ok[:, None], vb[None, :], vc[None, :]].reshape(-1)
+        def pack_holes(s2):                        # r2_hf[j,k,P] -> packed
+            return s2[oj, ok, :].reshape(-1)
 
         def matvec(x):
             r1 = x[:ns].reshape(no, nv)
-            r2 = unpack(x[ns:])
+            r2 = unpack_holes(x[ns:])              # [j,k,P], holes full
             s1 = (ev[None, :] - eo[:, None]) * r1
             s1 += lib.einsum('ajib,jb->ia', Wajib, r1)
             s1 -= lib.einsum('ij,ja->ia', sig_ip, r1)
             s1 -= lib.einsum('ab,ib->ia', sig_ea, r1)
             s1 += lib.einsum('iajb,jb->ia', Lam, r1)
-            s1 += 0.5 * lib.einsum('akbc,ikbc->ia', Wvovv, r2)
-            s1 -= 0.5 * lib.einsum('jkib,jkab->ia', Wooov, r2)
-            s2 = Dijab * r2
-            tA = lib.einsum('bcak,ja->jkbc', Wvvvo, r1)
-            s2 += tA - tA.transpose(1, 0, 2, 3)
+            s1 += lib.einsum('akP,ikP->ia', WvovvP, r2)          # akbc (packed)
+            # jkib term needs the full virtual range (a free, b summed)
+            r2f = np.zeros((no, no, nv, nv), dtype=complex)
+            r2f[:, :, vb, vc] = r2
+            r2f[:, :, vc, vb] = -r2
+            s1 -= 0.5 * lib.einsum('jkib,jkab->ia', Wooov, r2f)
+            s2 = D_hf * r2                                        # diagonal
+            tA = lib.einsum('Pak,ja->jkP', WvvvoP, r1)           # bcak (packed)
+            s2 += tA - tA.transpose(1, 0, 2)
             tB = lib.einsum('ibjk,ic->jkbc', Wovoo, r1)
-            s2 += tB - tB.transpose(0, 1, 3, 2)
-            return np.concatenate([s1.ravel(), pack(s2)])
+            tB = tB - tB.transpose(0, 1, 3, 2)
+            s2 += tB[:, :, vb, vc]
+            return np.concatenate([s1.ravel(), pack_holes(s2)])
 
         diag = np.empty(dim)
         diag[:ns] = (ev[None, :] - eo[:, None]).ravel().real
