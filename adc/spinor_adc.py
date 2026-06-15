@@ -124,38 +124,82 @@ class _SpinorADCERIs:
     '''Antisymmetrised physicist MO integral blocks ``<pq||rs>`` needed by
     spinor MP2/ADC(2)/ADC(2)-x (no vvvv: those methods never need it).
 
-    Built block-wise from the real spherical AO integrals (int2e_sph),
-    recombined into the j-spinor MO basis by pyscf's C ``nrr_outcore`` driver
-    -- the same path socutils' ZCCSD uses -- so the full complex ``int2e_spinor``
-    AO tensor and the all-virtual block are never formed.
+    Blocks are built lazily on first access and cached, so each method only
+    pays for the blocks it touches (e.g. IP never forms the expensive
+    three-virtual ``vovv`` block).  Each block is transformed from the real
+    spherical AO integrals (int2e_sph) and recombined into the j-spinor MO
+    basis by pyscf's C ``nrr_outcore`` driver -- the same path socutils' ZCCSD
+    uses -- so the full complex ``int2e_spinor`` AO tensor and the all-virtual
+    block are never formed.  Unique chemist sub-blocks are cached and the
+    particle-exchange symmetry ``(pq|rs)=(rs|pq)`` is reused (transpose only).
     '''
 
     def __init__(self, mol, mo_coeff, nocc):
+        self.mol = mol
+        self.o = mo_coeff[:, :nocc]
+        self.v = mo_coeff[:, nocc:]
+        self._chem_cache = {}
+        self._blk_cache = {}
+
+    def _chem(self, A, B, C, D):
+        cache = self._chem_cache
+        key = (id(A), id(B), id(C), id(D))
+        if key in cache:
+            return cache[key]
+        ex = (id(C), id(D), id(A), id(B))
+        if ex in cache:
+            out = cache[ex].transpose(2, 3, 0, 1)
+            cache[key] = out
+            return out
         from pyscf.ao2mo import nrr_outcore
-        o = mo_coeff[:, :nocc]
-        v = mo_coeff[:, nocc:]
+        g = np.asarray(nrr_outcore.general_iofree(
+            self.mol, (A, B, C, D), intor='int2e_sph', motype='j-spinor'))
+        g = g.reshape(A.shape[1], B.shape[1], C.shape[1], D.shape[1])
+        cache[key] = g
+        return g
 
-        def blk(P, Q, R, S):
-            # <PQ||RS> = (PR|QS) - (PS|QR)  (chemist -> antisym physicist)
-            nP, nQ = P.shape[1], Q.shape[1]
-            nR, nS = R.shape[1], S.shape[1]
-            a = np.asarray(nrr_outcore.general_iofree(
-                mol, (P, R, Q, S), intor='int2e_sph', motype='j-spinor'))
-            a = a.reshape(nP, nR, nQ, nS).transpose(0, 2, 1, 3)
-            b = np.asarray(nrr_outcore.general_iofree(
-                mol, (P, S, Q, R), intor='int2e_sph', motype='j-spinor'))
-            b = b.reshape(nP, nS, nQ, nR).transpose(0, 2, 3, 1)
-            return a - b
+    def _blk(self, P, Q, R, S):
+        # <PQ||RS> = (PR|QS) - (PS|QR)  (chemist -> antisym physicist)
+        a = self._chem(P, R, Q, S).transpose(0, 2, 1, 3)
+        b = self._chem(P, S, Q, R).transpose(0, 2, 3, 1)
+        return a - b
 
-        self.oovv = blk(o, o, v, v)               # <ij||ab>
-        self.oooo = blk(o, o, o, o)               # <ij||kl>
-        self.ooov = blk(o, o, o, v)               # <ij||ka>
-        self.voov = blk(v, o, o, v)               # <ai||jb>
-        self.vovv = blk(v, o, v, v)               # <ai||bc>
-        # permutations / Hermitian conjugates of the above (no new transforms)
-        self.ovvo = self.voov.transpose(1, 0, 3, 2)            # <ia||bj>
-        self.vvvo = self.vovv.conj().transpose(2, 3, 0, 1)     # <bc||ak>
-        self.ovoo = self.ooov.conj().transpose(2, 3, 0, 1)     # <ia||jk>
+    def _get(self, name, builder):
+        if name not in self._blk_cache:
+            self._blk_cache[name] = builder()
+        return self._blk_cache[name]
+
+    @property
+    def oovv(self):                                # <ij||ab>
+        return self._get('oovv', lambda: self._blk(self.o, self.o, self.v, self.v))
+
+    @property
+    def oooo(self):                                # <ij||kl>
+        return self._get('oooo', lambda: self._blk(self.o, self.o, self.o, self.o))
+
+    @property
+    def ooov(self):                                # <ij||ka>
+        return self._get('ooov', lambda: self._blk(self.o, self.o, self.o, self.v))
+
+    @property
+    def voov(self):                                # <ai||jb>
+        return self._get('voov', lambda: self._blk(self.v, self.o, self.o, self.v))
+
+    @property
+    def vovv(self):                                # <ai||bc>
+        return self._get('vovv', lambda: self._blk(self.v, self.o, self.v, self.v))
+
+    @property
+    def ovvo(self):                                # <ia||bj>
+        return self._get('ovvo', lambda: self.voov.transpose(1, 0, 3, 2))
+
+    @property
+    def vvvo(self):                                # <bc||ak>
+        return self._get('vvvo', lambda: self.vovv.conj().transpose(2, 3, 0, 1))
+
+    @property
+    def ovoo(self):                                # <ia||jk>
+        return self._get('ovoo', lambda: self.ooov.conj().transpose(2, 3, 0, 1))
 
 
 class SpinorADC(lib.StreamObject):
