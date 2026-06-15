@@ -54,6 +54,9 @@ if HAVE_ASYM_PACK:
         _f.restype = None
         _f.argtypes = [_cp, _cp, ctypes.c_double, ctypes.c_int,
                        ctypes.c_int, ctypes.c_int]
+    _lib.ccsdt_ring_to_pack.restype = None
+    _lib.ccsdt_ring_to_pack.argtypes = [_cp, _cp, ctypes.c_double,
+                                        ctypes.c_int, ctypes.c_int]
 
 
 def _ptr(a):
@@ -150,3 +153,10 @@ def full_to_pack(Rp, X, scale, op, nocc, nvir):
     Xc = np.ascontiguousarray(X, dtype=np.complex128)
     _lib.ccsdt_full_to_pack(_ptr(Rp), _ptr(Xc), float(scale), int(op),
                             nocc, nvir)
+
+
+def ring_to_pack(Rp, Xr, scale, nocc, nvir):
+    '''Rp += scale * P(i/jk)P(a/bc)(X), X reduced to (no,nv,opair,vpair)
+    = (i, a, [j<k], [b<c]); never forms the full O(o^3 v^3) tensor.'''
+    Xc = np.ascontiguousarray(Xr, dtype=np.complex128)
+    _lib.ccsdt_ring_to_pack(_ptr(Rp), _ptr(Xc), float(scale), nocc, nvir)

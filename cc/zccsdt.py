@@ -350,10 +350,13 @@ def _t3_residual_packed(t2, t3, ge, fdr, nocc, nmo):
     Xfoo = _einsum_opt('mi,mjkA->ijkA', Feff_oo, t3vir)
     _clib.pocc_to_pack(Rp, Xfoo, -1.0, 0, nocc, nvir)
 
-    # ring (P(i/jk)P(a/bc), full X)
+    # ring (P(i/jk)P(a/bc)); the contraction inherits t3's (j,k) and (b,c)
+    # antisymmetry, so build it on the reduced (i,a,[j<k],[b<c]) block (~4x
+    # fewer flops, no full O(o^3 v^3) intermediate)
     Weff_ovvo = ovvo + einsum('mnde,inae->madi', goovv, t2)
-    Xring = einsum('madi,mjkdbc->ijkabc', Weff_ovvo, t3)
-    _clib.full_to_pack(Rp, Xring, 1.0, 1, nocc, nvir)
+    t3r = t3[:, mm, nn][:, :, :, md, ne]            # (m, [j<k], d, [b<c])
+    Xr = einsum('madi,mPdQ->iaPQ', Weff_ovvo, t3r)  # (i, a, [j<k], [b<c])
+    _clib.ring_to_pack(Rp, Xr, 1.0, nocc, nvir)
 
     # pp ladder (P(c/ab), occ-restricted t3, summed pair d<e packed)
     Weff_vvvv = vvvv + einsum('Pab,Pde->abde', t2[mm, nn], goovv[mm, nn])

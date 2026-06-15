@@ -23,6 +23,7 @@
  */
 
 #include <complex.h>
+#include <stdlib.h>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -32,6 +33,14 @@ static const int QP3[6][3] = {{0,1,2},{1,2,0},{2,0,1},{1,0,2},{0,2,1},{2,1,0}};
 static const int QS3[6]     = {  1,      1,      1,     -1,     -1,     -1   };
 
 static long ntri(long n) { return n<3 ? 0 : n*(n-1)*(n-2)/6; }
+
+/* number of ordered triples (a<b<c) whose first element is < i */
+static long base_tri(long i, long n)
+{
+    long s = 0;
+    for (long a = 0; a < i; a++) s += (n-1-a)*(n-2-a)/2;
+    return s;
+}
 
 /* ---- pvir: X is (notri, nv, nv, nv), antisymmetrize vir into packed ---- */
 void ccsdt_pvir_to_pack(double complex *Rp, const double complex *X,
@@ -89,6 +98,52 @@ void ccsdt_pocc_to_pack(double complex *Rp, const double complex *X,
             Rp[po*nvt + pv] += scale * val;
         }
     }
+}
+
+/* ---- ring: X reduced to (no, nv, opair, vpair) = (i, a, [j<k], [b<c]) ----
+ * accumulates scale * P(i/jk)P(a/bc)(X_full) onto the packed block, where
+ * X_full[i,j,k,a,b,c] = Xr[i,a,pair(j,k),pair(b,c)] * sgn(j,k) * sgn(b,c).
+ * The 9-term projector reads Xr at its (first, second<third)-pair layout. */
+void ccsdt_ring_to_pack(double complex *Rp, const double complex *Xr,
+                        const double scale, const int nocc, const int nvir)
+{
+    const long no = nocc, nv = nvir, nvt = ntri(nv);
+    const long opair = no*(no-1)/2, vpair = nv*(nv-1)/2;
+    const long sQ = 1, sP = vpair, sa = opair*vpair, si = nv*sa;
+    /* pair-index lookup tables (symmetric, sorted enumeration) */
+    int *opi = (int*)malloc((size_t)no*no*sizeof(int));
+    int *vpi = (int*)malloc((size_t)nv*nv*sizeof(int));
+    { int p = 0; for (int x = 0; x < no; x++) for (int y = x+1; y < no; y++)
+                     { opi[x*no+y] = p; opi[y*no+x] = p; p++; } }
+    { int p = 0; for (int x = 0; x < nv; x++) for (int y = x+1; y < nv; y++)
+                     { vpi[x*nv+y] = p; vpi[y*nv+x] = p; p++; } }
+#pragma omp parallel for schedule(static)
+    for (int i = 0; i < nocc; i++) {
+        long po = base_tri(i, no);
+        for (int j = i+1; j < nocc; j++)
+        for (int k = j+1; k < nocc; k++, po++) {
+            /* occ: P(i/jk) -> (first, pair, coeff) */
+            const int fo[3] = {i, j, k};
+            const long Po[3] = {opi[j*no+k], opi[i*no+k], opi[i*no+j]};
+            const double co[3] = {1.0, -1.0, 1.0};
+            long pv = 0;
+            for (int a = 0; a < nvir; a++)
+            for (int b = a+1; b < nvir; b++)
+            for (int c = b+1; c < nvir; c++) {
+                const int fg[3] = {a, b, c};
+                const long Qo[3] = {vpi[b*nv+c], vpi[a*nv+c], vpi[a*nv+b]};
+                const double cv[3] = {1.0, -1.0, 1.0};
+                double complex acc = 0.0;
+                for (int p = 0; p < 3; p++)
+                for (int q = 0; q < 3; q++)
+                    acc += co[p]*cv[q] *
+                           Xr[fo[p]*si + fg[q]*sa + Po[p]*sP + Qo[q]*sQ];
+                Rp[po*nvt + pv] += scale * acc;
+                pv++;
+            }
+        }
+    }
+    free(opi); free(vpi);
 }
 
 /* ---- full: X is (no,no,no,nv,nv,nv) ---- */
