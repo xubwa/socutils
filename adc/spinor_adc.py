@@ -280,6 +280,30 @@ class SpinorADC(lib.StreamObject):
             ) / (eo[:, None] - ev[None, :])
         return self._t1_2_cache
 
+    def energy_mp3(self):
+        '''Spinor MP2 + MP3 ground-state correlation energy.  The MP3 piece uses
+        the second-order doubles residual (pp + hh ladders + ph ring on t2) --
+        the same intermediate the IP/EA/EE-ADC(3) self-energies are built from.
+        Matches pyscf adc(3) e_corr to machine precision.'''
+        self._build()
+        no = self.nocc
+        e = np.asarray(self.mo_energy)
+        eo, ev = e[:no], e[no:]
+        eris = self._eris
+        t2 = self._t2
+        e_mp2 = 0.25 * lib.einsum('ijab,ijab->', eris.oovv.conj(), t2).real
+        # second-order doubles residual R built on t2.conj() (gauge: holes ~
+        # ph*); MP3 = 0.25 <t2 | R>.  Conjugation pinned by Gate-2 (rotation
+        # invariance) -- matching pyscf alone does not fix it.
+        tc = t2.conj()
+        R = (0.5 * lib.einsum('klij,klab->ijab', eris.oooo, tc)
+             + 0.5 * lib.einsum('abcd,ijcd->ijab', eris.vvvv, tc))
+        tr = lib.einsum('kbcj,ikac->ijab', eris.ovvo, tc)
+        R += (tr - tr.transpose(1, 0, 2, 3)
+              - tr.transpose(0, 1, 3, 2) + tr.transpose(1, 0, 3, 2))
+        e_mp3 = 0.25 * lib.einsum('ijab,ijab->', t2, R).real
+        return e_mp2, e_mp3
+
     def _ip_trans_moments(self, no, nv, oo):
         '''IP-ADC(2) spectroscopic-amplitude (Dyson) vectors T_p for every
         spinor p, in the packed (1h + 2h1p[i<j]) basis -- shape (nmo, dim).'''

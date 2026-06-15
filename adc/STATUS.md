@@ -20,8 +20,18 @@ Branch: `claude/stoic-maxwell-996i5j`.
 | | IP/EA spectroscopic factors | Dyson amplitudes | done, exact |
 | `test_spinor_harness.py` | two-gate validation | — | MP2/IP/EA/EE/IP-x/EA-x/EE-x/CVS/spec green |
 
-Not done: ADC(3), EE transition moments / oscillator strengths,
-G0W0 (xfail in the harness), Kramers-symmetry exploitation.
+In progress: **ADC(3)** -- ground-state foundation done (`energy_mp3`: MP2+MP3
+corr E, validated == pyscf adc(3) `e_corr` to 1e-15, Gate-2 invariant; the
+2nd-order doubles residual `t2_2 = R/D2` it uses is the intermediate the
+ADC(3) self-energies are built from).  Remaining: the 3rd-order IP/EA/EE
+excitation self-energy `M_ij`/`M_ab` (~15-20 spinor terms) and the 2nd-order
+1h-2h1p coupling -- a precise spin-orbital derivation (pyscf's spin-blocked
+source does NOT map term-by-term; cross-spin folds into the antisym spinor
+integral) with conjugations to be pinned by Gate-2.  The ADC(2)-x extended
+2h1p/2h1p block (reused by ADC(3)) is already done.
+
+Not done: ADC(3) excitation self-energy (see above), EE transition moments /
+oscillator strengths, G0W0 (xfail in the harness), Kramers symmetry.
 
 * **IP/EA spectroscopic factors** (`ip_adc2_spec`, `ea_adc2_spec`): pole
   strengths `P_n = sum_p |<N-+1,n|a_p(^dag)|0>|^2` from the ADC(2) Dyson

@@ -110,6 +110,23 @@ def run_spinor_mp2(mf):
     return {"e_corr": pt.e_corr, "t2_norm": np.linalg.norm(pt.t2)}
 
 
+def run_spinor_mp3(mf):
+    """socutils spinor MP2+MP3 ground-state correlation energy (the ADC(3)
+    ground-state foundation)."""
+    e2, e3 = SpinorADC(mf).energy_mp3()
+    return {"e_corr": e2 + e3}
+
+
+def ref_mp3(mol):
+    from pyscf import adc
+    mf = scf.RHF(mol).run()
+    a = adc.ADC(mf)
+    a.method = "adc(3)"
+    a.verbose = 0
+    a.kernel_gs()
+    return {"e_corr": a.e_corr}
+
+
 def run_spinor_ip(mf, nroots=8):
     """socutils spinor IP-ADC(2)."""
     return {"e": np.asarray(SpinorADC(mf).ip_adc2(nroots))}
@@ -365,6 +382,24 @@ def test_gate1_mp2(mol, mf):
     ref = ref_mp2(mol)["e_corr"]
     np.testing.assert_allclose(got, ref, atol=1e-8, rtol=0,
                                err_msg="spinor MP2 corr E != PySCF MP2")
+
+
+def test_gate1_mp3(mol, mf):
+    """spinor MP2+MP3 corr E reproduces PySCF adc(3) ground-state e_corr."""
+    got = run_spinor_mp3(mf)["e_corr"]
+    ref = ref_mp3(mol)["e_corr"]
+    np.testing.assert_allclose(got, ref, atol=1e-8, rtol=0,
+                               err_msg="spinor MP3 corr E != PySCF adc(3) e_corr")
+
+
+def test_gate2_mp3_invariance(mf):
+    """MP3 corr E invariant under a legal complex orbital rotation."""
+    E, C = mo_energy(mf), mo_coeff(mf)
+    U = legal_rotation(E, seed=47)
+    base = run_spinor_mp3(mf)["e_corr"]
+    rot = run_spinor_mp3(set_mo(mf, C @ U, E))["e_corr"]
+    np.testing.assert_allclose(rot, base, atol=1e-9, rtol=0,
+                               err_msg="MP3 corr E changed under complex rotation")
 
 
 def _unique_sorted(x, decimals=6):
