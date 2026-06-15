@@ -27,6 +27,12 @@ void AO2MOnr_e1fill_drv(int (*intor)(), void (*fill)(), double *eri,
                         int *ao_loc, CINTOpt *cintopt, CVHFOpt *vhfopt,
                         int *atm, int natm, int *bas, int nbas, double *env);
 
+/* Complex C^dag . eri . C transform (full nao x nao COMPLEX AO block -> MO).
+ * Generic, no time-reversal -- from r_ao2mo.c, compiled in libao2mo.
+ * Reused here as the e2 (ket) MO contraction. */
+int AO2MOmmm_r_iltj(double complex *vout, double complex *eri,
+                    struct _AO2MOEnvs *envs, int seekdim);
+
 /* Complex two-component MO contraction: full nao x nao real AO block -> MO.
  * (identical to AO2MOmmm_nrr_iltj in nrr_ao2mo.c) */
 int AO2MOmmm_nrr_iltj(double complex *vout, double *eri,
@@ -111,6 +117,91 @@ int AO2MOmmm_nrr_iltj(double complex *vout, double *eri,
         return 0;
 }
 
+/* Complex two-component MO contraction, efficient for i_count > j_count
+ * (transforms the ket/j index first). Real nao x nao AO block -> MO.
+ * Mirrors AO2MOmmm_r_igtj for a real eri (deficiency #2: index-order). */
+int AO2MOmmm_nrr_igtj(double complex *vout, double *eri,
+                      struct _AO2MOEnvs *envs, int seekdim)
+{
+        switch (seekdim) {
+                case 1: return envs->bra_count * envs->ket_count;
+                case 2: return envs->nao * envs->nao;
+        }
+        const double D0 = 0;
+        const double D1 = 1;
+        const char TRANS_T = 'T';
+        const char TRANS_N = 'N';
+        int n2c = envs->nao;
+        int i_start = envs->bra_start;
+        int i_count = envs->bra_count;
+        int j_start = envs->ket_start;
+        int j_count = envs->ket_count;
+        int i;
+        double *buf1 = malloc(sizeof(double)*n2c*j_count*3);
+        double *buf2 = buf1 + n2c*j_count;
+        double *buf3 = buf2 + n2c*j_count;
+        double *bufr, *bufi;
+        double *mo1 = malloc(sizeof(double) * n2c*MAX(i_count,j_count)*2);
+        double *mo2, *mo_r, *mo_i;
+        double *eri_r = malloc(sizeof(double) * n2c*n2c*3);
+        double *eri_i = eri_r + n2c*n2c;
+        double *eri1  = eri_i + n2c*n2c;
+        double *vout1, *vout2, *vout3;
+
+        for (i = 0; i < n2c*n2c; i++) {
+                eri_r[i] = eri[i];
+                eri_i[i] = 0.0;
+                eri1 [i] = eri_r[i] + eri_i[i];
+        }
+        mo_r = envs->mo_r + j_start * n2c;
+        mo_i = envs->mo_i + j_start * n2c;
+        mo2 = mo1 + n2c*j_count;
+        for (i = 0; i < n2c*j_count; i++) {
+                mo1[i] = mo_r[i] + mo_i[i];
+                mo2[i] = mo_i[i] - mo_r[i];
+        }
+        dgemm_(&TRANS_T, &TRANS_N, &j_count, &n2c, &n2c,
+               &D1, mo_r, &n2c, eri1, &n2c, &D0, buf1, &j_count);
+        dgemm_(&TRANS_T, &TRANS_N, &j_count, &n2c, &n2c,
+               &D1, mo2, &n2c, eri_r, &n2c, &D0, buf2, &j_count);
+        dgemm_(&TRANS_T, &TRANS_N, &j_count, &n2c, &n2c,
+               &D1, mo1, &n2c, eri_i, &n2c, &D0, buf3, &j_count);
+        free(eri_r);
+
+        bufr = buf3;
+        bufi = buf2;
+        for (i = 0; i < n2c*j_count; i++) {
+                buf3[i] = buf1[i] - buf3[i];
+                buf2[i] = buf1[i] + buf2[i];
+        }
+        for (i = 0; i < n2c*j_count; i++) {
+                buf1[i] = bufr[i] + bufi[i];
+        }
+        mo_r = envs->mo_r + i_start * n2c;
+        mo_i = envs->mo_i + i_start * n2c;
+        mo2 = mo1 + n2c*i_count;
+        for (i = 0; i < n2c*i_count; i++) {
+                mo1[i] = mo_r[i] - mo_i[i];
+                mo2[i] =-mo_i[i] - mo_r[i];
+        }
+        vout1 = malloc(sizeof(double)*i_count*j_count*3);
+        vout2 = vout1 + i_count * j_count;
+        vout3 = vout2 + i_count * j_count;
+        dgemm_(&TRANS_N, &TRANS_N, &j_count, &i_count, &n2c,
+               &D1, buf1, &j_count, mo_r, &n2c, &D0, vout1, &j_count);
+        dgemm_(&TRANS_N, &TRANS_N, &j_count, &i_count, &n2c,
+               &D1, bufr, &j_count, mo2, &n2c, &D0, vout2, &j_count);
+        dgemm_(&TRANS_N, &TRANS_N, &j_count, &i_count, &n2c,
+               &D1, bufi, &j_count, mo1, &n2c, &D0, vout3, &j_count);
+        for (i = 0; i < i_count*j_count; i++) {
+                vout[i] = (vout1[i]-vout3[i]) + (vout1[i]+vout2[i])*_Complex_I;
+        }
+        free(vout1);
+        free(buf1);
+        free(mo1);
+        return 0;
+}
+
 /* unpack tril AO block (i>=j) -> full nao x nao, then complex MO contraction */
 static void transe1_nrr_s2ij(int (*fmmm)(), double complex *vout, double *vin,
                              double *buf, int row_id, struct _AO2MOEnvs *envs)
@@ -118,7 +209,9 @@ static void transe1_nrr_s2ij(int (*fmmm)(), double complex *vout, double *vin,
         int nao = envs->nao;
         size_t ij_pair = (*fmmm)(NULL, NULL, envs, 1);
         size_t nao_pair = (size_t)nao * (nao + 1) / 2;
-        NPdunpack_tril(nao, vin + nao_pair * row_id, buf, 0);
+        /* The bra mmm reads the full nao x nao block; the AO pair is real and
+         * symmetric, so fill both triangles (SYMMETRIC), not just the lower. */
+        NPdunpack_tril(nao, vin + nao_pair * row_id, buf, SYMMETRIC);
         (*fmmm)(vout + ij_pair * row_id, buf, envs, 0);
 }
 
@@ -178,5 +271,111 @@ void AO2MOnrr_opt_e1_drv(int (*intor)(), void (*fill)(), int (*fmmm)(),
         free(buf);
 }
         free(eri_ao);
+        free(mo_ra); free(mo_ia); free(mo_rb); free(mo_ib);
+}
+
+/* ====================================================================
+ * e2 (ket) transform for the s4 spinor outcore path.
+ *
+ * Input vin: half-transformed integrals (ij-MO-pair, kl-AO-pair) where the
+ * kl axis is the *shell-block s2kl packing* produced by AO2MOfill_nr_s4 (k>=l,
+ * count nao*(nao+1)/2). For each ij row we unpack the shell-block kl into a
+ * full nao x nao COMPLEX buffer -- the half transform is *symmetric* (not
+ * Hermitian) in the remaining sph AO indices, so both triangles get the same
+ * value -- then do the complex ket MO contraction (AO2MOmmm_r_iltj).
+ * ==================================================================== */
+
+/* shell-block unpack of one complex kl row (k>=l) -> full nao x nao (symmetric),
+ * then complex ket MO contraction. Mirrors AO2MOsortranse2_nr_s2kl but for
+ * double complex and with both triangles filled (symmetric, not Hermitian). */
+static void transe2c_s2kl(int (*fmmm)(), int row_id,
+                          double complex *vout_row, double complex *vin,
+                          double complex *buf, struct _AO2MOEnvs *envs)
+{
+        const int nao = envs->nao;
+        const int *ao_loc = envs->ao_loc;
+        const size_t nao_pair = (size_t)nao * (nao + 1) / 2;
+        int ish, jsh, di, dj, i, j, ij;
+        int i0, j0;
+        double complex v;
+
+        vin += nao_pair * row_id;
+        for (ish = 0; ish < envs->nbas; ish++) {
+                di = ao_loc[ish+1] - ao_loc[ish];
+                i0 = ao_loc[ish];
+                for (jsh = 0; jsh < ish; jsh++) {
+                        dj = ao_loc[jsh+1] - ao_loc[jsh];
+                        j0 = ao_loc[jsh];
+                        for (i = 0; i < di; i++) {
+                        for (j = 0; j < dj; j++) {
+                                v = vin[i*dj+j];
+                                buf[(i0+i)*nao + (j0+j)] = v;
+                                buf[(j0+j)*nao + (i0+i)] = v;
+                        } }
+                        vin += di * dj;
+                }
+                /* diagonal block ish == jsh */
+                for (ij = 0, i = 0; i < di; i++) {
+                for (j = 0; j <= i; j++, ij++) {
+                        v = vin[ij];
+                        buf[(i0+i)*nao + (i0+j)] = v;
+                        buf[(i0+j)*nao + (i0+i)] = v;
+                } }
+                vin += di * (di+1) / 2;
+        }
+
+        (*fmmm)(vout_row, buf, envs, 0);
+}
+
+/* 2-spin e2 driver: loop ij rows, transform kl for the alpha and beta sph ket
+ * MO and sum (mirrors nrr_outcore pass-2 pbuf + pbuf2). vin is the transposed
+ * half transform (nij, nao_pair); vout is (nij, k_count*l_count). */
+void AO2MOnrr_opt_e2_drv(int (*fmmm)(),
+                         double complex *vout, double complex *vin,
+                         double complex *mo_a, double complex *mo_b,
+                         int nij, int nao, int *klshape, int *ao_loc, int nbas)
+{
+        const int k_start = klshape[0];
+        const int k_count = klshape[1] - klshape[0];
+        const int l_start = klshape[2];
+        const int l_count = klshape[3] - klshape[2];
+        const size_t kl_mo = (size_t)k_count * l_count;
+        const int nmo = MAX(klshape[1], klshape[3]);
+        size_t i;
+
+        double *mo_ra = malloc(sizeof(double) * (size_t)nao * nmo);
+        double *mo_ia = malloc(sizeof(double) * (size_t)nao * nmo);
+        double *mo_rb = malloc(sizeof(double) * (size_t)nao * nmo);
+        double *mo_ib = malloc(sizeof(double) * (size_t)nao * nmo);
+        for (i = 0; i < (size_t)nao*nmo; i++) {
+                mo_ra[i] = creal(mo_a[i]);  mo_ia[i] = cimag(mo_a[i]);
+                mo_rb[i] = creal(mo_b[i]);  mo_ib[i] = cimag(mo_b[i]);
+        }
+        struct _AO2MOEnvs envs_a = {0, nbas, NULL, NULL, NULL, nao,
+                0, 0, k_start, k_count, l_start, l_count,
+                1, NULL, ao_loc, mo_a, mo_ra, mo_ia, NULL, NULL};
+        struct _AO2MOEnvs envs_b = {0, nbas, NULL, NULL, NULL, nao,
+                0, 0, k_start, k_count, l_start, l_count,
+                1, NULL, ao_loc, mo_b, mo_rb, mo_ib, NULL, NULL};
+
+#pragma omp parallel default(none) \
+        shared(fmmm, vout, vin, nij, nao, kl_mo, envs_a, envs_b) \
+        private(i)
+{
+        double complex *buf = malloc(sizeof(double complex) * (size_t)nao*nao);
+        double complex *pa = malloc(sizeof(double complex) * kl_mo * 2);
+        double complex *pb = pa + kl_mo;
+        size_t j;
+#pragma omp for schedule(static)
+        for (i = 0; i < (size_t)nij; i++) {
+                transe2c_s2kl(fmmm, i, pa, vin, buf, &envs_a);
+                transe2c_s2kl(fmmm, i, pb, vin, buf, &envs_b);
+                for (j = 0; j < kl_mo; j++) {
+                        vout[i*kl_mo + j] = pa[j] + pb[j];
+                }
+        }
+        free(buf);
+        free(pa);
+}
         free(mo_ra); free(mo_ia); free(mo_rb); free(mo_ib);
 }

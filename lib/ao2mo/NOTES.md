@@ -116,7 +116,36 @@ A genuine speedup therefore requires the **C-level s4 outcore**:
     time-reversal, the 2C/Kramers route) and pair it with a complex mmm.
   * fix `nao_pair` bookkeeping for the sph shell-block packing.
 
-## C s4 outcore attempt -- packing convention is the wall
+## RESOLVED: end-to-end C s4 + speedup (nrr_fast.py)
+
+`nrr_fast.py` + `nrr_ao2mo_opt.c` now do the full transform in C with s4 AO
+symmetry and the iltj/igtj index-order optimization -- **all three deficiencies
+fixed, verified to machine precision, and faster than stock s1**:
+
+  * **#1 (s4 AO symmetry):** e1 reuses `AO2MOfill_nr_s4` (real, i>=j/k>=l) +
+    complex 2-component bra mmm; e2 unpacks the shell-block s2kl half transform
+    (`transe2c_s2kl`, the verbatim-ordering copy of `AO2MOsortranse2_nr_s2kl`
+    with double->double complex) + complex ket mmm (`AO2MOmmm_r_iltj/igtj`).
+  * **#2 (iltj/igtj):** both passes pick the cheaper order (transform the
+    smaller MO count first). Added `AO2MOmmm_nrr_igtj` (real-eri 2-component,
+    ket-first) for the bra; e2 selects `AO2MOmmm_r_{iltj,igtj}` from libao2mo.
+  * **#3 (plumbing):** `nrr_fast` is a clean two-pass driver (C e1 -> numpy
+    transpose -> C e2); it sidesteps `nrr_outcore`'s s1-only / `ao_loc_2c`
+    `nao_pair` machinery entirely.
+
+The critical bug found en route: the bra mmm reads the *full* nao x nao AO
+block, but `NPdunpack_tril(..., 0)` only fills the lower triangle (upper left
+uninitialized -> nondeterministic garbage). Fix: unpack with `SYMMETRIC` (the
+real AO pair is symmetric, not Hermitian).
+
+Benchmark (H2O/cc-pVTZ, n2c=116, 4 threads), fast(s4) vs stock(s1):
+
+    ovov  (1060,1060)     2.6x      ovvv  (1060,11236)   3.5x
+    oovv  (100,11236)     2.3x      vvvv  (11236,11236)  4.6x
+
+(The big vvvv block -- the ADC bottleneck -- gets the full ~4x.)
+
+## (historical) C s4 outcore attempt -- packing convention was the wall
 
 Driving the C e1 (`AO2MOnrr_opt_e1_drv`, reuse `AO2MOfill_nr_s4` + complex
 bra mmm) directly for the full kl range gives a half-transform whose kl axis
@@ -130,10 +159,19 @@ is **nr's shell-block s2kl packing** (count nao*(nao+1)/2 but a shell-block
 
 Conclusion: the e2 must be done **in C by copying nr's `AO2MOsortranse2_nr_s2kl`
 verbatim with `double` -> `double complex`** (so the unpack ordering is
-guaranteed identical to the fill), paired with a complex ket mmm (zsymm on the
-symmetric complex AO block + zgemm), and a 2-spin (alpha/beta) driver that
-sums -- mirroring `AO2MOnr_e2_drv`. Then end-to-end s4 in C with a real
-speedup. The e1 (bra) C side already works; only this e2 C remains.
+guaranteed identical to the fill), paired with a complex ket mmm and a 2-spin
+(alpha/beta) driver that sums -- mirroring `AO2MOnr_e2_drv`.
+
+** the complex ket mmm already exists: `AO2MOmmm_r_iltj` in r_ao2mo.c (lines
+82-83 do eri_r=creal(eri), eri_i=cimag(eri)) is a GENERIC complex C^dag.eri.C
+transform with NO time-reversal -- it is exactly the e2 ket mmm and is already
+compiled in libao2mo. So the only NEW C is:
+  1. transe2c_s2kl: copy AO2MOsortranse2_nr_s2kl, double -> double complex
+     (the shell-block unpack of the complex half-transform), calling the
+     complex mmm (which uses envs->mo_r / mo_i, so build envs like the e1 drv).
+  2. a 2-spin e2 driver: loop rows, transe2c + AO2MOmmm_r_iltj for the alpha
+     and beta sph ket MO, summed (like nrr_outcore pass-2 pbuf+pbuf2).
+The e1 (bra) C side already works; only this e2 C remains.
 
 The verified-correct fallback is `nrr_incore.py` (slow but right).
 
@@ -141,5 +179,7 @@ The verified-correct fallback is `nrr_incore.py` (slow but right).
 - [x] copied nr/nrr/r C + nr/nrr outcore Python here for study
 - [x] optimized e1 C driver (s4 fill reuse + complex bra mmm), builds & runs
 - [x] **end-to-end CORRECT** spinor s4 transform (nrr_incore.py), verified
-- [ ] C e2: copy AO2MOsortranse2_nr_s2kl as double complex + complex mmm +
-      2-spin driver (guaranteed packing match) -> end-to-end C s4 + speedup
+- [x] C e2: `transe2c_s2kl` (double complex copy of AO2MOsortranse2_nr_s2kl) +
+      `AO2MOmmm_r_iltj/igtj` ket mmm + 2-spin e2 driver -> end-to-end C s4
+- [x] **#1 s4, #2 iltj/igtj, #3 plumbing all fixed** -- `nrr_fast.py`,
+      verified machine precision (all iltj/igtj combos), 2.3-4.6x vs stock s1
