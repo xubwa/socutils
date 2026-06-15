@@ -330,11 +330,11 @@ def update_amps(cc, t1, t2, t3, eris):
     # T3 -> T1
     t1new = t1new + (0.25 * einsum('mnef,imnaef->ia', ge[o, o, v, v], t3)) / eia
 
-    # T3 -> T2
+    # T3 -> T2 (path-optimized einsum for the two t3-reading contractions)
     r2t3 = einsum('me,ijmabe->ijab', fdr[o, v], t3)
-    tmp = 0.5 * einsum('amef,ijmebf->ijab', ge[v, o, v, v], t3)
+    tmp = 0.5 * _einsum_opt('amef,ijmebf->ijab', ge[v, o, v, v], t3)
     r2t3 = r2t3 + (tmp - tmp.transpose(0, 1, 3, 2))            # P(ab)
-    tmp = 0.5 * einsum('mnej,inmabe->ijab', ge[o, o, v, o], t3)
+    tmp = 0.5 * _einsum_opt('mnej,inmabe->ijab', ge[o, o, v, o], t3)
     r2t3 = r2t3 - (tmp - tmp.transpose(1, 0, 2, 3))            # P(ij)
     t2new = t2new + r2t3 / eijab
 
