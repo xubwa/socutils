@@ -46,6 +46,15 @@ if HAVE_CLIB:
 # present; zccsdt falls back to numpy otherwise.
 HAVE_ASYM = HAVE_CLIB and hasattr(_lib, 'ccsdt_fullasym')
 
+# antisymmetrize-into-packed kernels: (Rp, X, scale, op, nocc, nvir)
+HAVE_ASYM_PACK = HAVE_CLIB and hasattr(_lib, 'ccsdt_full_to_pack')
+if HAVE_ASYM_PACK:
+    for _fn in ('ccsdt_pvir_to_pack', 'ccsdt_pocc_to_pack', 'ccsdt_full_to_pack'):
+        _f = getattr(_lib, _fn)
+        _f.restype = None
+        _f.argtypes = [_cp, _cp, ctypes.c_double, ctypes.c_int,
+                       ctypes.c_int, ctypes.c_int]
+
 
 def _ptr(a):
     return a.ctypes.data_as(_cp)
@@ -115,3 +124,29 @@ def Pk_ij(t):
 
 def Pijk_Pabc(t):
     return _asym(_lib.ccsdt_Pijk_Pabc, t)
+
+
+# ---- antisymmetrize-into-packed accumulation ----
+
+def pvir_to_pack(Rp, X, scale, op, nocc, nvir):
+    '''Rp[notri,nvtri] += scale * P_vir(X), X occ-restricted (notri,nv,nv,nv).
+    op=0 P(a/bc), op=1 P(c/ab).'''
+    Xc = np.ascontiguousarray(X, dtype=np.complex128)
+    _lib.ccsdt_pvir_to_pack(_ptr(Rp), _ptr(Xc), float(scale), int(op),
+                            nocc, nvir)
+
+
+def pocc_to_pack(Rp, X, scale, op, nocc, nvir):
+    '''Rp += scale * P_occ(X), X vir-restricted (no,no,no,nvtri).
+    op=0 P(i/jk), op=1 P(k/ij).'''
+    Xc = np.ascontiguousarray(X, dtype=np.complex128)
+    _lib.ccsdt_pocc_to_pack(_ptr(Rp), _ptr(Xc), float(scale), int(op),
+                            nocc, nvir)
+
+
+def full_to_pack(Rp, X, scale, op, nocc, nvir):
+    '''Rp += scale * OP(X), X full (no,no,no,nv,nv,nv).
+    op=0 fullasym, op=1 P(i/jk)P(a/bc).'''
+    Xc = np.ascontiguousarray(X, dtype=np.complex128)
+    _lib.ccsdt_full_to_pack(_ptr(Rp), _ptr(Xc), float(scale), int(op),
+                            nocc, nvir)

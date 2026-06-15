@@ -9,7 +9,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 if(NOT CMAKE_LIBRARY_OUTPUT_DIRECTORY)
   set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}")
 endif()
-add_library(ccsdt_clib SHARED ccsdt_pack.c ccsdt_asym.c)
+add_library(ccsdt_clib SHARED ccsdt_pack.c ccsdt_asym.c ccsdt_asym_pack.c)
 set_target_properties(ccsdt_clib PROPERTIES PREFIX "lib" OUTPUT_NAME "ccsdt_clib")
 
 find_package(OpenMP QUIET COMPONENTS C)

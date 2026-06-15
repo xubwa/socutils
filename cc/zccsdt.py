@@ -287,6 +287,96 @@ def _t3_residual(t2, t3, ge, fdr, nocc, nmo):
     return R
 
 
+_USE_CPACK = _clib is not None and getattr(_clib, 'HAVE_ASYM_PACK', False)
+
+
+def _t3_residual_packed(t2, t3, ge, fdr, nocc, nmo):
+    '''Same T3 residual as ``_t3_residual`` but returned on its unique
+    antisymmetric block Rp[notri, nvtri] (i<j<k, a<b<c), never materializing the
+    full O(o^3 v^3) tensor.
+
+    Because each term inherits t3's antisymmetry, OP(term) is fully
+    antisymmetric and the unique block determines it.  Terms whose restricted
+    triple is a pure t3 spectator are contracted on the *reduced* t3 (occ-triple
+    or vir-triple restricted -> ~6x, and a further 2x for a packed summed pair):
+      F_vv, pp-ladder : t3 occ-restricted   (i<j<k)
+      F_oo, hh-ladder : t3 vir-restricted   (a<b<c)
+    The drive (fullasym) and ring (P(i/jk)P(a/bc)) mix t3 with t2/W on both
+    sides, so they form the full contraction X and pack it.  Requires the C
+    backend; callers fall back to pack_t3(_t3_residual(...)) otherwise.
+    '''
+    o = slice(0, nocc); v = slice(nocc, nmo)
+    nvir = nmo - nocc
+    notri = nocc * (nocc - 1) * (nocc - 2) // 6
+    nvtri = nvir * (nvir - 1) * (nvir - 2) // 6
+    fvv = fdr[v, v]; foo = fdr[o, o]; fov = fdr[o, v]
+    gvvvo = ge[v, v, v, o]; govoo = ge[o, v, o, o]
+    vvvv = ge[v, v, v, v]; oooo = ge[o, o, o, o]; ovvo = ge[o, v, v, o]
+    goovv = ge[o, o, v, v]; ovvv = ge[o, v, v, v]; ooov = ge[o, o, o, v]
+    oovo = ge[o, o, v, o]
+    op, vp = _t2_pair(nocc, nvir)
+    md, ne = vp[:, 0], vp[:, 1]; mm, nn = op[:, 0], op[:, 1]
+    oi, vi = _t3_tri(nocc, nvir)
+    oi0, oi1, oi2 = oi[:, 0], oi[:, 1], oi[:, 2]
+    vi0, vi1, vi2 = vi[:, 0], vi[:, 1], vi[:, 2]
+
+    Rp = np.zeros(notri * nvtri, dtype=np.complex128)
+
+    # drive (fullasym, full X): W_vvvo / W_vooo with t3-dressing folded in
+    Wvvvo = gvvvo.copy()
+    Wvvvo += 0.5 * einsum('mnei,mnab->abei', oovo, t2)
+    tmp = einsum('mbef,miaf->abei', ovvv, t2)
+    Wvvvo -= (tmp - tmp.transpose(1, 0, 2, 3))
+    Wvvvo -= einsum('me,miab->abei', fov, t2)
+    Wvvvo += einsum('Pef,iPabf->abei', goovv[mm, nn], t3[:, mm, nn])
+    Wvooo = govoo.copy()
+    tmp2 = einsum('mnie,jnbe->mbij', ooov, t2)
+    Wvooo -= (tmp2 - tmp2.transpose(0, 1, 3, 2)).transpose(0, 1, 3, 2)
+    Wvooo -= (0.5 * einsum('mbef,ijef->mbij', ovvv, t2)).transpose(0, 1, 3, 2)
+    Wvooo += einsum('mnP,ijnaP->maji', goovv[:, :, md, ne], t3[:, :, :, :, md, ne])
+    Xdr = (einsum('abei,jkec->ijkabc', Wvvvo, t2)
+           + einsum('maji,mkbc->ijkabc', Wvooo, t2))
+    _clib.full_to_pack(Rp, Xdr, -0.25, 0, nocc, nvir)
+
+    # F_vv (P(a/bc), occ-restricted t3)
+    Feff_vv = fvv - einsum('Paf,Pdf->ad', t2[mm, nn], goovv[mm, nn])
+    t3occ = t3[oi0, oi1, oi2]                                   # (notri,v,v,v)
+    Xfvv = _einsum_opt('ad,Idbc->Iabc', Feff_vv, t3occ)
+    _clib.pvir_to_pack(Rp, Xfvv, 1.0, 0, nocc, nvir)
+
+    # F_oo (-P(i/jk), vir-restricted t3)
+    Feff_oo = foo + einsum('mnP,inP->mi', goovv[:, :, md, ne], t2[:, :, md, ne])
+    t3vir = t3[:, :, :, vi0, vi1, vi2]                          # (o,o,o,nvtri)
+    Xfoo = _einsum_opt('mi,mjkA->ijkA', Feff_oo, t3vir)
+    _clib.pocc_to_pack(Rp, Xfoo, -1.0, 0, nocc, nvir)
+
+    # ring (P(i/jk)P(a/bc), full X)
+    Weff_ovvo = ovvo + einsum('mnde,inae->madi', goovv, t2)
+    Xring = einsum('madi,mjkdbc->ijkabc', Weff_ovvo, t3)
+    _clib.full_to_pack(Rp, Xring, 1.0, 1, nocc, nvir)
+
+    # pp ladder (P(c/ab), occ-restricted t3, summed pair d<e packed)
+    Weff_vvvv = vvvv + einsum('Pab,Pde->abde', t2[mm, nn], goovv[mm, nn])
+    vvvv_pp = Weff_vvvv[md[:, None], ne[:, None], md[None, :], ne[None, :]]
+    t3r = t3occ[:, md, ne, :]                                   # (notri, de<, c)
+    Xpp = einsum('QP,IPc->IQc', vvvv_pp, t3r)                   # (notri, ab<, c)
+    Xocc = np.zeros((notri, nvir, nvir, nvir), dtype=np.complex128)
+    Xocc[:, md, ne, :] = Xpp
+    Xocc[:, ne, md, :] = -Xpp
+    _clib.pvir_to_pack(Rp, Xocc, 1.0, 1, nocc, nvir)
+
+    # hh ladder (P(k/ij), vir-restricted t3, summed pair m<n packed)
+    Weff_oooo = oooo + einsum('mnP,ijP->mnij', goovv[:, :, md, ne], t2[:, :, md, ne])
+    oooo_pp = Weff_oooo[mm[:, None], nn[:, None], mm[None, :], nn[None, :]]
+    t3hr = t3[mm, nn][:, :, vi0, vi1, vi2]                      # (mn<, k, nvtri)
+    Xhh = einsum('PQ,PkA->QkA', oooo_pp, t3hr)                  # (ij<, k, nvtri)
+    Yvir = np.zeros((nocc, nocc, nocc, nvtri), dtype=np.complex128)
+    Yvir[mm, nn] = Xhh
+    Yvir[nn, mm] = -Xhh
+    _clib.pocc_to_pack(Rp, Yvir, 1.0, 1, nocc, nvir)
+    return Rp
+
+
 def energy(cc, t1, t2, eris):
     '''CCSD-form correlation energy (T3 enters only through t1/t2).'''
     nocc, nvir = t1.shape
@@ -310,9 +400,6 @@ def update_amps(cc, t1, t2, t3, eris):
     mo_e = eris.mo_energy
     eia = mo_e[:nocc][:, None] - (mo_e[nocc:] + cc.level_shift)
     eijab = eia[:, None, :, None] + eia[None, :, None, :]
-    eijkabc = (eia[:, None, None, :, None, None]
-               + eia[None, :, None, None, :, None]
-               + eia[None, None, :, None, None, :])
 
     # The bare antisymmetrized integral tensor g[p,q,r,s]=<pq||rs> depends only
     # on the (fixed) MO integrals, so build it once and cache it on eris.  Only
@@ -338,9 +425,23 @@ def update_amps(cc, t1, t2, t3, eris):
     r2t3 = r2t3 - (tmp - tmp.transpose(1, 0, 2, 3))            # P(ij)
     t2new = t2new + r2t3 / eijab
 
-    # T3 residual
-    r3 = _t3_residual(t2, t3, ge, fdr, nocc, nmo)
-    t3new = t3 + r3 / eijkabc
+    # T3 residual.  With the C backend, compute it on the unique antisymmetric
+    # block (packed) -- ~2x faster and no full O(o^3 v^3) intermediate -- and
+    # divide by the packed energy denominator before unpacking once.
+    if _USE_CPACK:
+        r3p = _t3_residual_packed(t2, t3, ge, fdr, nocc, nmo)
+        oi, vi = _t3_tri(nocc, nvir)
+        mo_o = mo_e[:nocc]; eav = mo_e[nocc:] + cc.level_shift
+        eo = mo_o[oi[:, 0]] + mo_o[oi[:, 1]] + mo_o[oi[:, 2]]
+        ev = eav[vi[:, 0]] + eav[vi[:, 1]] + eav[vi[:, 2]]
+        d = (eo[:, None] - ev[None, :]).ravel()
+        t3new = t3 + unpack_t3(r3p / d, nocc, nvir)
+    else:
+        eijkabc = (eia[:, None, None, :, None, None]
+                   + eia[None, :, None, None, :, None]
+                   + eia[None, None, :, None, None, :])
+        r3 = _t3_residual(t2, t3, ge, fdr, nocc, nmo)
+        t3new = t3 + r3 / eijkabc
     return t1new, t2new, t3new
 
 
