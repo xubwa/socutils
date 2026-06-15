@@ -146,6 +146,56 @@ void ccsdt_ring_to_pack(double complex *Rp, const double complex *Xr,
     free(opi); free(vpi);
 }
 
+/* ---- drive ----
+ * X reduced to canonical layout (no, opair, vpair, nv) = (f, [<], [<], g),
+ * representing a tensor antisymmetric in the occ-pair and vir-pair slots with
+ * one free occ index (f, slot 0) and one free vir index (g, slot 5):
+ *   X_full[d0..d5] = sgn(d1,d2) sgn(d3,d4) Xr[d0, opair(d1,d2), vpair(d3,d4), d5].
+ * Accumulates scale * fullasym(X_full) onto the packed block (36 terms).  Both
+ * drive sub-terms map onto this single layout and are summed before the call,
+ * so the full O(o^3 v^3) intermediate is never formed. */
+void ccsdt_drive_to_pack(double complex *Rp, const double complex *Xr,
+                         const double scale, const int nocc, const int nvir)
+{
+    const long no = nocc, nv = nvir, nvt = ntri(nv);
+    const long opair = no*(no-1)/2, vpair = nv*(nv-1)/2;
+    const long sQ = nv, sP = vpair*nv, sf = opair*vpair*nv;
+    int *opi = (int*)malloc((size_t)no*no*sizeof(int));
+    int *vpi = (int*)malloc((size_t)nv*nv*sizeof(int));
+    { int p = 0; for (int x = 0; x < no; x++) for (int y = x+1; y < no; y++)
+                     { opi[x*no+y] = p; opi[y*no+x] = p; p++; } }
+    { int p = 0; for (int x = 0; x < nv; x++) for (int y = x+1; y < nv; y++)
+                     { vpi[x*nv+y] = p; vpi[y*nv+x] = p; p++; } }
+#pragma omp parallel for schedule(static)
+    for (int i = 0; i < nocc; i++) {
+        long po = base_tri(i, no);
+        for (int j = i+1; j < nocc; j++)
+        for (int k = j+1; k < nocc; k++, po++) {
+            const int o3[3] = {i, j, k};
+            long pv = 0;
+            for (int a = 0; a < nvir; a++)
+            for (int b = a+1; b < nvir; b++)
+            for (int c = b+1; c < nvir; c++) {
+                const int v3[3] = {a, b, c};
+                double complex acc = 0.0;
+                for (int p = 0; p < 6; p++) {
+                    const int d0 = o3[QP3[p][0]], d1 = o3[QP3[p][1]], d2 = o3[QP3[p][2]];
+                    const double so = QS3[p] * (d1 < d2 ? 1.0 : -1.0);
+                    const long base = d0*sf + (long)opi[d1*no+d2]*sP;
+                    for (int q = 0; q < 6; q++) {
+                        const int d3 = v3[QP3[q][0]], d4 = v3[QP3[q][1]], d5 = v3[QP3[q][2]];
+                        const double sv = QS3[q] * (d3 < d4 ? 1.0 : -1.0);
+                        acc += so*sv * Xr[base + (long)vpi[d3*nv+d4]*sQ + d5];
+                    }
+                }
+                Rp[po*nvt + pv] += scale * acc;
+                pv++;
+            }
+        }
+    }
+    free(opi); free(vpi);
+}
+
 /* ---- full: X is (no,no,no,nv,nv,nv) ---- */
 void ccsdt_full_to_pack(double complex *Rp, const double complex *X,
                         const double scale, const int op,

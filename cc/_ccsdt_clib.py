@@ -57,6 +57,9 @@ if HAVE_ASYM_PACK:
     _lib.ccsdt_ring_to_pack.restype = None
     _lib.ccsdt_ring_to_pack.argtypes = [_cp, _cp, ctypes.c_double,
                                         ctypes.c_int, ctypes.c_int]
+    _lib.ccsdt_drive_to_pack.restype = None
+    _lib.ccsdt_drive_to_pack.argtypes = [_cp, _cp, ctypes.c_double,
+                                         ctypes.c_int, ctypes.c_int]
 
 
 def _ptr(a):
@@ -160,3 +163,10 @@ def ring_to_pack(Rp, Xr, scale, nocc, nvir):
     = (i, a, [j<k], [b<c]); never forms the full O(o^3 v^3) tensor.'''
     Xc = np.ascontiguousarray(Xr, dtype=np.complex128)
     _lib.ccsdt_ring_to_pack(_ptr(Rp), _ptr(Xc), float(scale), nocc, nvir)
+
+
+def drive_to_pack(Rp, Xr, scale, nocc, nvir):
+    '''Rp += scale * fullasym(X), X reduced to canonical (no,opair,vpair,nv)
+    = (free_occ, [<], [<], free_vir); never forms the full O(o^3 v^3) tensor.'''
+    Xc = np.ascontiguousarray(Xr, dtype=np.complex128)
+    _lib.ccsdt_drive_to_pack(_ptr(Rp), _ptr(Xc), float(scale), nocc, nvir)

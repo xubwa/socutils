@@ -334,9 +334,12 @@ def _t3_residual_packed(t2, t3, ge, fdr, nocc, nmo):
     Wvooo -= (tmp2 - tmp2.transpose(0, 1, 3, 2)).transpose(0, 1, 3, 2)
     Wvooo -= (0.5 * einsum('mbef,ijef->mbij', ovvv, t2)).transpose(0, 1, 3, 2)
     Wvooo += einsum('mnP,ijnaP->maji', goovv[:, :, md, ne], t3[:, :, :, :, md, ne])
-    Xdr = (einsum('abei,jkec->ijkabc', Wvvvo, t2)
-           + einsum('maji,mkbc->ijkabc', Wvooo, t2))
-    _clib.full_to_pack(Rp, Xdr, -0.25, 0, nocc, nvir)
+    # term1 is antisym in (j,k) and (a,b); term2 in (i,j) and (b,c).  Both map
+    # to the canonical reduced layout (free_occ, [<], [<], free_vir), so build
+    # each on its reduced block (~4x), sum, and fullasym->packed in one kernel.
+    Xr1 = einsum('Qei,Pec->iPQc', Wvvvo[md, ne], t2[mm, nn])
+    Xr2 = einsum('maP,mkQ->kPQa', Wvooo[:, :, nn, mm], t2[:, :, md, ne])
+    _clib.drive_to_pack(Rp, Xr1 + Xr2, -0.25, nocc, nvir)
 
     # F_vv (P(a/bc), occ-restricted t3)
     Feff_vv = fvv - einsum('Paf,Pdf->ad', t2[mm, nn], goovv[mm, nn])
