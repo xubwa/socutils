@@ -83,9 +83,48 @@ def check_against_spinor(mol_atom='H 0 0 0; F 0 0 0.917', basis='6-31g'):
     return float(np.abs(Soo - a._sig_ip).max())
 
 
+def derive_self_energy_3rd():
+    '''ADC(3) IP 1h/1h self-energy term structures (o|o blocks).  The
+    3rd-order self-energy is
+
+        Sigma^(3)_ij = B^(3)_ij + (1/2)(eps_i+eps_j) S^(2)_ij        (ISR metric)
+
+    where S^(2)_ij = -1/2 sum_kab t2*_ikab t2_jkab is the occ-occ block of the
+    MP2 1-RDM (the overlap of the 1h intermediate states; S^(1)=0, which is why
+    ADC(2) needed no metric), and B^(3) is the 3rd-order precursor matrix:
+      * V . T2_2           (t2_2 = the validated 2nd-order doubles, energy_mp3)
+      * T2^dagger . V . T2 (oooo, ovov, vvvv contractions).
+
+    Validation target: pyscf uadc_ip.get_imds M_ij eigenvalue magnitudes
+    (HF/6-31g adc(3): 0.67303, 0.7888, 1.62475, 26.31466; adc(2): 0.66321,
+    0.77998, 1.61228, 26.27638 -- the latter reproduced exactly by
+    -diag(eo) - _sig_ip).
+    '''
+    import wicked as w
+    w.reset_space()
+    w.add_space('o', 'fermion', 'occupied', ['i', 'j', 'k', 'l', 'm', 'n'])
+    w.add_space('v', 'fermion', 'unoccupied', ['a', 'b', 'c', 'd', 'e', 'f'])
+    V = w.utils.gen_op('V', 2, 'ov', 'ov')
+    T2 = w.op('T2', ['v+ v+ o o'])
+    T2_2 = w.op('T2b', ['v+ v+ o o'])
+    T2d = w.op('L2', ['o+ o+ v v'])
+    wt = w.WickTheorem()
+    out = {}
+    for nm, expr in [('V.T2_2', w.commutator(V, T2_2)),
+                     ('T2d.V.T2', T2d @ V @ T2)]:
+        mb = wt.contract(expr, 0, 2).to_manybody_equation('S')
+        out[nm] = [e.compile('einsum') for e in mb.get('o|o', [])]
+    return out
+
+
 if __name__ == '__main__':
     for blk, eqs in derive_self_energy().items():
         for e in eqs:
             print(f'[{blk}] {e}')
     print('IP self-energy vs SpinorADC._sig_ip: max|diff| = %.1e'
           % check_against_spinor())
+    print('\nADC(3) 3rd-order precursor (o|o) term structures:')
+    for nm, eqs in derive_self_energy_3rd().items():
+        print(f'  -- {nm}')
+        for e in eqs:
+            print(f'     {e}')
