@@ -161,6 +161,18 @@ class _SpinorADCERIs:
         self.v = mo_coeff[:, nocc:]
         self._chem_cache = {}
         self._blk_cache = {}
+        self._half_cache = {}
+
+    def _bra_half(self, A, B):
+        # e1 (bra) half transform, cached by bra pair so kets sharing the same
+        # bra reuse it (e.g. EE vovv & voov both need the bra=(v,v) half).
+        k = (id(A), id(B))
+        vin = self._half_cache.get(k)
+        if vin is None:
+            from socutils.lib.ao2mo import nrr_fast
+            vin = nrr_fast.bra_half(self.mol, A, B, motype='j-spinor')
+            self._half_cache[k] = vin
+        return vin
 
     def _chem(self, A, B, C, D):
         cache = self._chem_cache
@@ -173,8 +185,8 @@ class _SpinorADCERIs:
             cache[key] = out
             return out
         from socutils.lib.ao2mo import nrr_fast
-        g = np.asarray(nrr_fast.general(
-            self.mol, (A, B, C, D), intor='int2e_sph', motype='j-spinor'))
+        g = np.asarray(nrr_fast.ket_transform(
+            self.mol, self._bra_half(A, B), C, D, motype='j-spinor'))
         g = g.reshape(A.shape[1], B.shape[1], C.shape[1], D.shape[1])
         cache[key] = g
         return g

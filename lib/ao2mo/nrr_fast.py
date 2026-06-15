@@ -143,6 +143,41 @@ def _e2(mol, vin, mokla, moklb, klshape):
     return vout
 
 
+def _split_ab(mol, mos, motype):
+    '''alpha/beta spherical blocks of the given 2-component MOs.'''
+    if motype == 'j-spinor':
+        ca, cb = mol.sph2spinor_coeff()
+        return [ca.dot(m) for m in mos], [cb.dot(m) for m in mos]
+    elif motype == 'ghf':
+        nao = mos[0].shape[0] // 2
+        return [m[:nao] for m in mos], [m[nao:] for m in mos]
+    raise ValueError('motype must be "j-spinor" or "ghf", got %r' % motype)
+
+
+def bra_half(mol, A, B, intor='int2e_sph', motype='j-spinor'):
+    '''e1 (bra) half transform of one bra pair (A,B); returns vin (nij, nkl)
+    ready for ket_transform.  Cache & reuse this across kets that share (A,B)
+    -- e.g. EE's vovv and voov both use the expensive bra=(v,v) half.'''
+    mo_a, mo_b = _split_ab(mol, (A, B), motype)
+    nmoi, nmoj = A.shape[1], B.shape[1]
+    moija = np.hstack((mo_a[0], mo_a[1]))
+    moijb = np.hstack((mo_b[0], mo_b[1]))
+    ijshape = (0, nmoi, nmoi, nmoi + nmoj)
+    half = _e1_full(mol, moija, moijb, ijshape, intor)        # (nkl, nij)
+    return lib.transpose(half)                                # (nij, nkl)
+
+
+def ket_transform(mol, vin, C, D, intor='int2e_sph', motype='j-spinor'):
+    '''e2 (ket) transform of a cached bra half ``vin`` against ket pair (C,D);
+    returns the chemist block (nij, nmok*nmol).'''
+    mo_a, mo_b = _split_ab(mol, (C, D), motype)
+    nmok, nmol = C.shape[1], D.shape[1]
+    mokla = np.hstack((mo_a[0], mo_a[1]))
+    moklb = np.hstack((mo_b[0], mo_b[1]))
+    klshape = (0, nmok, nmok, nmok + nmol)
+    return _e2(mol, vin, mokla, moklb, klshape)
+
+
 def general(mol, mo_coeffs, intor='int2e_sph', motype='j-spinor'):
     '''(ij|kl) chemist over four sets of 2-component MOs, returned (nij, nkl).
 
@@ -151,29 +186,8 @@ def general(mol, mo_coeffs, intor='int2e_sph', motype='j-spinor'):
              'ghf'      -- MOs are (2*nao, nmo) GHF spinors; the alpha/beta sph
                            blocks are the upper/lower halves.
     '''
-    if motype == 'j-spinor':
-        ca, cb = mol.sph2spinor_coeff()
-        mo_a = [ca.dot(m) for m in mo_coeffs]
-        mo_b = [cb.dot(m) for m in mo_coeffs]
-    elif motype == 'ghf':
-        nao = mo_coeffs[0].shape[0] // 2
-        mo_a = [m[:nao] for m in mo_coeffs]
-        mo_b = [m[nao:] for m in mo_coeffs]
-    else:
-        raise ValueError('motype must be "j-spinor" or "ghf", got %r' % motype)
-    nmoi, nmoj, nmok, nmol = [m.shape[1] for m in mo_coeffs]
-
-    moija = np.hstack((mo_a[0], mo_a[1]))
-    moijb = np.hstack((mo_b[0], mo_b[1]))
-    ijshape = (0, nmoi, nmoi, nmoi + nmoj)
-
-    half = _e1_full(mol, moija, moijb, ijshape, intor)        # (nkl, nij)
-    vin = lib.transpose(half)                                  # (nij, nkl)
-
-    mokla = np.hstack((mo_a[2], mo_a[3]))
-    moklb = np.hstack((mo_b[2], mo_b[3]))
-    klshape = (0, nmok, nmok, nmok + nmol)
-    return _e2(mol, vin, mokla, moklb, klshape)
+    vin = bra_half(mol, mo_coeffs[0], mo_coeffs[1], intor, motype)
+    return ket_transform(mol, vin, mo_coeffs[2], mo_coeffs[3], intor, motype)
 
 
 def general_iofree(mol, mo_coeffs, intor='int2e_sph', motype='j-spinor'):
