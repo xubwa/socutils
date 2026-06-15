@@ -116,11 +116,24 @@ def _e2(mol, vin, mokla, moklb, klshape):
     return vout
 
 
-def general(mol, mo_coeffs, intor='int2e_sph'):
-    '''(ij|kl) chemist over four sets of j-spinor MOs, returned (nij, nkl).'''
-    ca, cb = mol.sph2spinor_coeff()
-    mo_a = [ca.dot(m) for m in mo_coeffs]
-    mo_b = [cb.dot(m) for m in mo_coeffs]
+def general(mol, mo_coeffs, intor='int2e_sph', motype='j-spinor'):
+    '''(ij|kl) chemist over four sets of 2-component MOs, returned (nij, nkl).
+
+    motype : 'j-spinor' -- MOs are in the n2c 2-component sph basis; the alpha
+                           and beta sph blocks are recovered via sph2spinor_coeff.
+             'ghf'      -- MOs are (2*nao, nmo) GHF spinors; the alpha/beta sph
+                           blocks are the upper/lower halves.
+    '''
+    if motype == 'j-spinor':
+        ca, cb = mol.sph2spinor_coeff()
+        mo_a = [ca.dot(m) for m in mo_coeffs]
+        mo_b = [cb.dot(m) for m in mo_coeffs]
+    elif motype == 'ghf':
+        nao = mo_coeffs[0].shape[0] // 2
+        mo_a = [m[:nao] for m in mo_coeffs]
+        mo_b = [m[nao:] for m in mo_coeffs]
+    else:
+        raise ValueError('motype must be "j-spinor" or "ghf", got %r' % motype)
     nmoi, nmoj, nmok, nmol = [m.shape[1] for m in mo_coeffs]
 
     moija = np.hstack((mo_a[0], mo_a[1]))
@@ -136,9 +149,9 @@ def general(mol, mo_coeffs, intor='int2e_sph'):
     return _e2(mol, vin, mokla, moklb, klshape)
 
 
-def general_iofree(mol, mo_coeffs, intor='int2e_sph'):
-    return general(mol, mo_coeffs, intor)
+def general_iofree(mol, mo_coeffs, intor='int2e_sph', motype='j-spinor'):
+    return general(mol, mo_coeffs, intor, motype)
 
 
-def full(mol, mo_coeff, intor='int2e_sph'):
-    return general(mol, (mo_coeff,) * 4, intor)
+def full(mol, mo_coeff, intor='int2e_sph', motype='j-spinor'):
+    return general(mol, (mo_coeff,) * 4, intor, motype)
