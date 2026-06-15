@@ -72,20 +72,32 @@ def _davidson(matvec, diag, nroots, max_space=None, tol=1e-9, max_cycle=200):
     if max_space is None:
         max_space = min(dim, max(nguess + 2 * nroots + 20, 10 * nroots))
     order = np.argsort(diag.real)
-    V = np.zeros((dim, nguess), dtype=complex)
+    # Preallocate the subspace (dim x max_space) and its conjugate, growing by
+    # column index instead of np.column_stack (which reallocates the whole
+    # dim x m block every iteration).  conj(V) is maintained incrementally so
+    # the subspace projection does not re-conjugate all of V each cycle.
+    V = np.zeros((dim, max_space), dtype=complex)
+    AV = np.zeros((dim, max_space), dtype=complex)
+    Vc = np.zeros((dim, max_space), dtype=complex)
+    G = np.zeros((dim, nguess), dtype=complex)
     for i in range(nguess):
-        V[order[i], i] = 1.0
-    V, _ = np.linalg.qr(V)
-    AV = np.column_stack([matvec(V[:, i]) for i in range(V.shape[1])])
+        G[order[i], i] = 1.0
+    G, _ = np.linalg.qr(G)
+    ncol = nguess
+    V[:, :ncol] = G
+    Vc[:, :ncol] = G.conj()
+    for i in range(ncol):
+        AV[:, i] = matvec(V[:, i])
     theta_old = np.zeros(nroots)
     for _ in range(max_cycle):
-        S = V.conj().T @ AV
+        Vv, AVv, Vcv = V[:, :ncol], AV[:, :ncol], Vc[:, :ncol]
+        S = Vcv.T @ AVv
         S = (S + S.conj().T) * 0.5
         w, y = np.linalg.eigh(S)
         w = w[:nroots]
         y = y[:, :nroots]
-        X = V @ y
-        AX = AV @ y
+        X = Vv @ y
+        AX = AVv @ y
         res = AX - X * w[None, :]
         rnorm = np.linalg.norm(res, axis=0)
         if np.max(np.abs(w - theta_old)) < tol and np.max(rnorm) < np.sqrt(tol):
@@ -104,19 +116,26 @@ def _davidson(matvec, diag, nroots, max_space=None, tol=1e-9, max_cycle=200):
             return np.sort(w)
         Vnew = np.column_stack(add)
         # orthonormalise against current space
-        Vnew -= V @ (V.conj().T @ Vnew)
-        Vnew -= V @ (V.conj().T @ Vnew)
+        Vnew -= Vv @ (Vcv.T @ Vnew)
+        Vnew -= Vv @ (Vcv.T @ Vnew)
         q, r = np.linalg.qr(Vnew)
         keep = np.abs(np.diag(r)) > 1e-7
         if not np.any(keep):
             return np.sort(w)
         q = q[:, keep]
-        if V.shape[1] + q.shape[1] > max_space:
-            V = X
-            AV = AX
-        Aq = np.column_stack([matvec(q[:, i]) for i in range(q.shape[1])])
-        V = np.column_stack([V, q])
-        AV = np.column_stack([AV, Aq])
+        if ncol + q.shape[1] > max_space:
+            # restart from the current Ritz vectors (q stays orthogonal to them,
+            # since span(X) subset span(V) and q _|_ V)
+            V[:, :nroots] = X
+            AV[:, :nroots] = AX
+            Vc[:, :nroots] = X.conj()
+            ncol = nroots
+        nq = q.shape[1]
+        for j in range(nq):
+            AV[:, ncol + j] = matvec(q[:, j])
+        V[:, ncol:ncol + nq] = q
+        Vc[:, ncol:ncol + nq] = q.conj()
+        ncol += nq
     return np.sort(w)
 
 
@@ -279,6 +298,7 @@ class SpinorADC(lib.StreamObject):
 
         Mss = -np.diag(eo).astype(complex) - self._sig_ip
         Wooov = eris.ooov                          # <kl||ia>
+        WooovC = Wooov.conj()                       # precompute once (was per matvec)
         adc2x = (method == 'adc(2)-x')
         if not adc2x and method != 'adc(2)':
             raise NotImplementedError(method)
@@ -307,7 +327,7 @@ class SpinorADC(lib.StreamObject):
             r2 = unpack(x[no:])
             s1 = Mss @ r1 + 0.5 * lib.einsum('klia,kla->i', Wooov, r2)
             s2 = (ev[None, None, :] - eo[:, None, None] - eo[None, :, None]) * r2
-            s2 += lib.einsum('klia,i->kla', Wooov.conj(), r1)
+            s2 += lib.einsum('klia,i->kla', WooovC, r1)
             if adc2x:
                 s2 += 0.5 * lib.einsum('mnij,mna->ija', Woooo, r2)
                 t = lib.einsum('maei,mje->ija', Wovvo, r2)
@@ -351,15 +371,20 @@ class SpinorADC(lib.StreamObject):
         nvp = len(vv)
         vc, vd = vv[:, 0], vv[:, 1]
         WvovvP = self._eris.vovv[:, :, vc, vd]     # <ai||(cd)>  [a,i,P]
+        # Both 2p1h couplings are plain GEMMs, but lib.einsum('aiP,...') hides a
+        # 47 MB transpose-copy per matvec.  Precompute the contiguous (a, P*i)
+        # layout once so the matvec dots have no per-call transpose (~10-20x).
+        WvovvP_Pi = np.ascontiguousarray(WvovvP.transpose(0, 2, 1)).reshape(nv, -1)
+        WvovvPc_Pi = WvovvP_Pi.conj()
         ev_p = ev[vc] + ev[vd]
         dim = nv + nvp * no
 
         def matvec(x):
             r1 = x[:nv]
             r2 = x[nv:].reshape(nvp, no)           # [P=(c<d), i]
-            s1 = Mpp @ r1 + lib.einsum('aiP,Pi->a', WvovvP, r2)
+            s1 = Mpp @ r1 + WvovvP_Pi @ r2.ravel()
             s2 = (ev_p[:, None] - eo[None, :]) * r2
-            s2 += lib.einsum('aiP,a->Pi', WvovvP.conj(), r1)
+            s2 += (r1 @ WvovvPc_Pi).reshape(nvp, no)
             return np.concatenate([s1, s2.reshape(-1)])
 
         diag = np.empty(dim)
@@ -386,13 +411,15 @@ class SpinorADC(lib.StreamObject):
         t2 = self._t2
         Voovv = eris.oovv
 
-        # ph-ph second-order non-separable term
+        # ph-ph second-order non-separable term, with the first-order CIS-like
+        # ring <aj||ib> folded in (same 'iajb,jb->ia' contraction) so the
+        # matvec runs one einsum on a contiguous [i,a,j,b] block instead of two
+        # (the separate <aj||ib> term used a transposed layout -> per-matvec copy)
         Lam = 0.5 * (lib.einsum('imae,jmbe->iajb', t2.conj(), Voovv)
                      + lib.einsum('jmbe,imae->iajb', t2, Voovv.conj()))
-        Wajib = eris.voov                          # <aj||ib>
+        Lam += eris.voov.transpose(2, 0, 1, 3)     # <aj||ib> -> [i,a,j,b]
         Wvovv = eris.vovv                          # <ak||bc>
         Wooov = eris.ooov                          # <jk||ib>
-        Wvvvo = eris.vvvo                          # <bc||ak>
         Wovoo = eris.ovoo                          # <ib||jk>
         sig_ip, sig_ea = self._sig_ip, self._sig_ea
         Dijab = (-eo[:, None, None, None] - eo[None, :, None, None]
@@ -415,7 +442,14 @@ class SpinorADC(lib.StreamObject):
         # O(no^2 nv^3) contractions (akbc, bcak); the smaller O(no^3 nv^2)
         # terms (jkib, ibjk) stay on the full virtual range.
         WvovvP = Wvovv[:, :, vb, vc]               # <ak||(bc)>  [a,k,P]
-        WvvvoP = Wvvvo[vb, vc]                      # <(bc)||ak>  [P,a,k]
+        # <(bc)||ak> = conj(<ak||(bc)>); reuse WvovvP.conj() instead of building
+        # eris.vvvo and reshaping its [P,a,k] layout every matvec.
+        WvovvPc = WvovvP.conj()
+        # 2D (a, k*P) views: the (k,P) contractions below are plain GEMMs, but
+        # lib.einsum('akP,...') hides a 47 MB transpose-copy per matvec -- do the
+        # reshape+dot explicitly (~8x faster on these two dominant terms).
+        WvovvP_m = WvovvP.reshape(nv, -1)
+        WvovvPc_m = WvovvPc.reshape(nv, -1)
         D_hf = (ev[vb] + ev[vc])[None, None, :] - eo[:, None, None] \
             - eo[None, :, None]                    # [j,k,P]
 
@@ -429,22 +463,24 @@ class SpinorADC(lib.StreamObject):
         def pack_holes(s2):                        # r2_hf[j,k,P] -> packed
             return s2[oj, ok, :].reshape(-1)
 
+        # full-virtual scratch for the jkib term, reused across matvecs (only
+        # the (vb,vc)/(vc,vb) entries are ever written; the rest stay zero).
+        r2f = np.zeros((no, no, nv, nv), dtype=complex)
+
         def matvec(x):
             r1 = x[:ns].reshape(no, nv)
             r2 = unpack_holes(x[ns:])              # [j,k,P], holes full
             s1 = (ev[None, :] - eo[:, None]) * r1
-            s1 += lib.einsum('ajib,jb->ia', Wajib, r1)
             s1 -= lib.einsum('ij,ja->ia', sig_ip, r1)
             s1 -= lib.einsum('ab,ib->ia', sig_ea, r1)
-            s1 += lib.einsum('iajb,jb->ia', Lam, r1)
-            s1 += lib.einsum('akP,ikP->ia', WvovvP, r2)          # akbc (packed)
+            s1 += lib.einsum('iajb,jb->ia', Lam, r1)    # incl. <aj||ib>
+            s1 += r2.reshape(no, -1) @ WvovvP_m.T                 # akbc (packed)
             # jkib term needs the full virtual range (a free, b summed)
-            r2f = np.zeros((no, no, nv, nv), dtype=complex)
             r2f[:, :, vb, vc] = r2
             r2f[:, :, vc, vb] = -r2
             s1 -= 0.5 * lib.einsum('jkib,jkab->ia', Wooov, r2f)
             s2 = D_hf * r2                                        # diagonal
-            tA = lib.einsum('Pak,ja->jkP', WvvvoP, r1)           # bcak (packed)
+            tA = (r1 @ WvovvPc_m).reshape(no, no, nvp)           # bcak (packed)
             s2 += tA - tA.transpose(1, 0, 2)
             tB = lib.einsum('ibjk,ic->jkbc', Wovoo, r1)
             tB = tB - tB.transpose(0, 1, 3, 2)

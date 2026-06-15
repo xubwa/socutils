@@ -75,7 +75,8 @@ Current full harness: **36 passed, 6 xfailed** (xfail = G0W0 only).
   `mo_coeff`) needs no re-diagonalisation; canonical `mo_energy` is reused
   verbatim (never recomputed).
 * Integrals: `_SpinorADCERIs` builds antisymmetrised physicist blocks
-  `<pq||rs>` **lazily, block by block**, via `nrr_outcore` from `int2e_sph`.
+  `<pq||rs>` **lazily, block by block**, via the C s4 driver
+  `socutils.lib.ao2mo.nrr_fast` from `int2e_sph`.
   The full `n2c^4` tensor and the all-virtual `vvvv` block are never formed
   (no current method needs `vvvv`). Unique chemist sub-blocks are cached and
   `(pq|rs)=(rs|pq)` is reused by transpose.
@@ -87,27 +88,31 @@ Current full harness: **36 passed, 6 xfailed** (xfail = G0W0 only).
 
 ## Performance (H2O / cc-pVTZ, n2c=116, nv=106) after optimisation
 
-| method | build+solve |
-|--------|-------------|
-| IP | ~1.1 s (never transforms `vovv`) |
-| EA | ~12 s |
-| EE | ~34 s |
+| method | build+solve | earlier |
+|--------|-------------|---------|
+| IP | ~0.6 s | ~1.1 s |
+| EA | ~2.9 s | ~12 s |
+| EE | ~13 s  | ~34 s |
 
 Optimisation history: dense O(N^9) -> Davidson O(N^5); full-tensor ->
 block-selective lazy integrals (no `vvvv`); 10 -> 6 transforms via exchange
-symmetry; antisymmetry packing in EA/EE matvecs.
+symmetry; antisymmetry packing in EA/EE matvecs; **C s4 AO->MO driver
+(`socutils.lib.ao2mo.nrr_fast`, ~4x on the virtual blocks); matvec GEMMs via
+explicit reshape+dot (lib.einsum hid a 47 MB transpose-copy per matvec, 8-23x
+on the dominant 2p1h/2p2h couplings); precomputed conj'd blocks; preallocated
+Davidson subspace with incremental conj(V).**
 
 ## Current bottlenecks (next work, ranked)
 
-1. **EE is transform-bound (~19 s):** each `nrr_outcore` call redoes the AO->MO
-   half-transform. `voov` (= `(vo|ov)` + `(vv|oo)`) is 14.2 s, `vovv` 5.2 s.
-   **Fix:** share the AO half-transform across blocks (compute the `(vv|··)` /
-   `(vo|··)` first-half once). Biggest single lever.
-2. **EA is matvec-bound (~10 s):** `WvovvP.conj()` reallocates ~94 MB *every*
-   matvec (85 ms vs 21 ms). **Fix (easy):** precompute the conj'd block; also
-   avoid the per-matvec full-virtual `r2f` reallocation in EE.
-3. Fewer Davidson iterations (60-70 matvecs) via a better preconditioner.
-4. Kramers (time-reversal) symmetry: a further ~2x, deliberately skipped.
+EE (~13 s) is now balanced: integral build ~4.6 s, matvec ~6 s, Davidson
+overhead ~2 s. No single dominant lever remains. Next, ranked:
+
+1. **Share the AO half-transform across EE blocks.** `voov`/`vovv` both need
+   the `(v·|··)` bra half-transform; computing it once (or fusing the block
+   builds) would cut the ~4.6 s integral build. Now the top lever.
+2. **Fewer Davidson iterations** (still ~60-70 matvecs) via a better
+   preconditioner / a deflated restart.
+3. **Kramers (time-reversal) symmetry:** a further ~2x, deliberately skipped.
 
 ## Running the tests
 
