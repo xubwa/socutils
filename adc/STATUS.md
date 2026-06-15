@@ -76,13 +76,18 @@ Current full harness: **36 passed, 6 xfailed** (xfail = G0W0 only).
   `... + <ab||ab> + <ij||ij> - <ia||ia> - <ib||ib> - <ja||ja> - <jb||jb>`.
   Compared as UNIQUE values vs UADC (spinor carries the extra Ms triplet
   components), coarse-rounded like IP-x.
-* **ADC(2)-x physical roots match pyscf to ~1e-6; high-lying pure 2p1h/2h1p
-  satellites differ.**  The spinor 2p1h block was verified == a brute-force
-  Slater-Condon CI 2p1h block (1e-13) with exact integrals (1e-15), i.e. it is
-  the standard *bare* extended block.  pyscf's ADC(2)-x splits the deep
-  satellite manifolds more (its values are converged, stable to 1e-10), so
-  pyscf's extended block carries terms beyond the bare ladder+ring.  The
-  physically-relevant low roots agree; the harness compares those.
+* **ADC(2)-x: every DISTINCT excitation energy matches pyscf to ~1e-8**
+  (IP-x 8/8, EA-x 8/8, EE-x 10/10 leading distinct energies on HF/cc-pVDZ,
+  incl. the deep 2p1h/2h1p satellites).  The only difference is degeneracy
+  *multiplicity*: the spinor (Kramers-unrestricted) carries the full
+  Kramers/Ms manifold, so a given energy appears with more copies than in UADC
+  on a spin-restricted reference (e.g. EA satellite 1.08468 is 8-fold here vs
+  4-fold in UADC) -- the same reason strict EE is compared on unique values.
+  Compare DISTINCT energies, never sorted-with-multiplicity (the latter
+  misaligns once multiplicities differ, and truncating at a fixed nroots drops
+  the higher distinct values of whichever side has larger multiplicity).
+  The spinor 2p1h block was independently verified == a brute-force
+  Slater-Condon CI 2p1h block (1e-13) with exact integrals (1e-15).
 * PySCF's `adc` eris are **chemist** `(pq|rs)`. PySCF's `nrr_outcore` with
   `motype='j-spinor'` from `int2e_sph` reproduces `int2e_spinor` MO integrals
   to ~1e-14.
