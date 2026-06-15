@@ -441,13 +441,14 @@ class SpinorADC(lib.StreamObject):
 
 
     # -- EE ------------------------------------------------------------------
-    def ee_adc2(self, nroots=6):
-        '''Spinor EE-ADC(2) excitation energies (lowest ``nroots``).
+    def ee_adc2(self, nroots=6, method='adc(2)'):
+        '''Spinor EE excitation energies (lowest ``nroots``).
 
         The 1p1h block is CIS + the second-order self-energies and the
-        non-separable ph-ph term; the 1p1h<->2p2h coupling is first order and
-        the 2p2h block is diagonal (strict ADC(2)).  Solved by a Davidson
-        matvec (the 2p2h space is too large to store densely).
+        non-separable ph-ph term; the 1p1h<->2p2h coupling is first order.  For
+        strict ADC(2) the 2p2h block is diagonal; ADC(2)-x adds the first-order
+        2p2h interaction (pp ladder 0.5<ab||cd>, hh ladder 0.5<kl||ij>, and the
+        ph ring P(ij)P(ab)<kb||cj>).  Solved by a Davidson matvec.
         '''
         self._build()
         no, nmo = self.nocc, self.nmo
@@ -457,6 +458,9 @@ class SpinorADC(lib.StreamObject):
         eris = self._eris
         t2 = self._t2
         Voovv = eris.oovv
+        adc2x = (method == 'adc(2)-x')
+        if not adc2x and method != 'adc(2)':
+            raise NotImplementedError(method)
 
         # ph-ph second-order non-separable term, with the first-order CIS-like
         # ring <aj||ib> folded in (same 'iajb,jb->ia' contraction) so the
@@ -499,6 +503,10 @@ class SpinorADC(lib.StreamObject):
         WvovvPc_m = WvovvPc.reshape(nv, -1)
         D_hf = (ev[vb] + ev[vc])[None, None, :] - eo[:, None, None] \
             - eo[None, :, None]                    # [j,k,P]
+        if adc2x:
+            Wvvvv = eris.vvvv                       # <ab||cd>
+            Woooo = eris.oooo                       # <ij||kl>
+            Wkbcj = eris.ovvo                       # <kb||cj>  [k,b,c,j]
 
         def unpack_holes(rp):                      # -> r2_hf[j,k,P]
             r2 = np.zeros((no, no, nvp), dtype=complex)
@@ -532,13 +540,35 @@ class SpinorADC(lib.StreamObject):
             tB = lib.einsum('ibjk,ic->jkbc', Wovoo, r1)
             tB = tB - tB.transpose(0, 1, 3, 2)
             s2 += tB[:, :, vb, vc]
+            if adc2x:
+                # 2p2h-2p2h first-order block on the full-virtual r2f[i,j,a,b]
+                add = 0.5 * lib.einsum('abcd,ijcd->ijab', Wvvvv, r2f)   # pp
+                add += 0.5 * lib.einsum('klij,klab->ijab', Woooo, r2f)  # hh
+                tr = lib.einsum('kbcj,ikac->ijab', Wkbcj, r2f)          # ph ring
+                add += (tr - tr.transpose(1, 0, 2, 3)
+                        - tr.transpose(0, 1, 3, 2) + tr.transpose(1, 0, 3, 2))
+                s2 += add[:, :, vb, vc]
             return np.concatenate([s1.ravel(), pack_holes(s2)])
 
         diag = np.empty(dim)
         diag[:ns] = (ev[None, :] - eo[:, None]).ravel().real
         dd = Dijab[oj[:, None], ok[:, None], vb[None, :], vc[None, :]].real
+        if adc2x:
+            # exact 2p2h diagonal: + <ab||ab> + <ij||ij>
+            #                      - <ia||ia> - <ib||ib> - <ja||ja> - <jb||jb>
+            vvvv_d = np.einsum('abab->ab', eris.vvvv).real
+            oooo_d = np.einsum('ijij->ij', eris.oooo).real
+            ovov_d = -np.einsum('iaai->ia', eris.ovvo).real        # <ia||ia>
+            dd = (dd + vvvv_d[vb, vc][None, :]
+                  + oooo_d[oj, ok][:, None]
+                  - ovov_d[oj][:, vb] - ovov_d[oj][:, vc]
+                  - ovov_d[ok][:, vb] - ovov_d[ok][:, vc])
         diag[ns:] = dd.reshape(-1)
         return _davidson(matvec, diag, nroots)
+
+    def ee_adc2x(self, nroots=6):
+        '''Spinor EE-ADC(2)-x excitation energies.'''
+        return self.ee_adc2(nroots, method='adc(2)-x')
 
 
 if __name__ == '__main__':

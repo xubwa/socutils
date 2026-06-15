@@ -15,11 +15,11 @@ Branch: `claude/stoic-maxwell-996i5j`.
 | | EE-ADC(2) | Davidson matvec | done, exact |
 | | IP-ADC(2)-x | Davidson matvec | done, exact |
 | | EA-ADC(2)-x | Davidson matvec | done, exact |
-| `test_spinor_harness.py` | two-gate validation | — | MP2/IP/EA/EE/IP-x/EA-x green |
+| | EE-ADC(2)-x | Davidson matvec | done, exact |
+| `test_spinor_harness.py` | two-gate validation | — | MP2/IP/EA/EE/IP-x/EA-x/EE-x green |
 
-Not done: EE-ADC(2)-x (needs the `vvvv` ladder), ADC(3),
-spectroscopic factors / transition moments, CVS, G0W0 (xfail in the harness),
-Kramers-symmetry exploitation.
+Not done: ADC(3), spectroscopic factors / transition moments, CVS,
+G0W0 (xfail in the harness), Kramers-symmetry exploitation.
 
 ## Validation
 
@@ -69,6 +69,14 @@ Current full harness: **36 passed, 6 xfailed** (xfail = G0W0 only).
   `e_a+e_b-e_i + <ab||ab> - <ia||ia> - <ib||ib>`. Validated against UADC by
   the sorted spectrum (with multiplicity); the unique-set test fails spuriously
   because deep satellites depend on how many roots each side requests.
+* **EE-ADC(2)-x 2p2h block** (pp + hh ladders + ph ring):
+  `(e_a+e_b-e_i-e_j) + 0.5<ab||cd> r2_ijcd + 0.5<kl||ij> r2_klab
+   + P(ij)P(ab)<kb||cj> r2_ikac`, with `<kb||cj> = ovvo[k,b,c,j]` and
+  `P(ij)P(ab) f = f - f(i<->j) - f(a<->b) + f(both)`.  Exact diagonal:
+  `... + <ab||ab> + <ij||ij> - <ia||ia> - <ib||ib> - <ja||ja> - <jb||jb>`.
+  Compared as UNIQUE values vs UADC (spinor carries the extra Ms triplet
+  components), coarse-rounded like IP-x (UADC near-degenerate satellites are
+  only loosely converged).
 * PySCF's `adc` eris are **chemist** `(pq|rs)`. PySCF's `nrr_outcore` with
   `motype='j-spinor'` from `int2e_sph` reproduces `int2e_spinor` MO integrals
   to ~1e-14.
