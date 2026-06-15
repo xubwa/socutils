@@ -49,7 +49,12 @@ from pyscf.lib import logger
 
 def _davidson(matvec, diag, nroots, max_space=None, tol=1e-9, max_cycle=200):
     '''Lowest ``nroots`` eigenpairs of a complex Hermitian operator given as a
-    matvec (acting on a flat complex vector) and its real diagonal.'''
+    matvec (acting on a flat complex vector) and its real diagonal.
+
+    Small spaces are diagonalised densely; larger ones use pyscf's robust
+    Davidson (``lib.davidson_nosym1`` with ``pick_real_eigs`` -- the same
+    solver pyscf's own ADC/EOM use, which handles complex vectors, root
+    following and restarts).'''
     dim = diag.size
     if dim <= max(2000, 8 * nroots):
         # small (incl. the typical IP/EA satellite spaces): build the dense
@@ -66,77 +71,29 @@ def _davidson(matvec, diag, nroots, max_space=None, tol=1e-9, max_cycle=200):
                               subset_by_index=[0, min(dim - 1, nroots - 1)])
         return np.sort(w.real)
 
-    # iterative block Davidson; start from a generous set of guess vectors
-    # (2*nroots) so near-degenerate low roots are not skipped.
+    diag = np.asarray(diag).real
+
+    def aop(xs):
+        return [matvec(np.asarray(x, dtype=complex)) for x in xs]
+
+    def precond(dx, e0, x0):
+        d = diag - e0
+        d[abs(d) < 1e-8] = 1e-8
+        return dx / d
+
+    # generous guess set (2*nroots) from the lowest diagonal entries so
+    # near-degenerate low roots are not skipped
     nguess = min(dim, max(2 * nroots, nroots + 12))
-    if max_space is None:
-        max_space = min(dim, max(nguess + 2 * nroots + 20, 10 * nroots))
-    order = np.argsort(diag.real)
-    # Preallocate the subspace (dim x max_space) and its conjugate, growing by
-    # column index instead of np.column_stack (which reallocates the whole
-    # dim x m block every iteration).  conj(V) is maintained incrementally so
-    # the subspace projection does not re-conjugate all of V each cycle.
-    V = np.zeros((dim, max_space), dtype=complex)
-    AV = np.zeros((dim, max_space), dtype=complex)
-    Vc = np.zeros((dim, max_space), dtype=complex)
-    G = np.zeros((dim, nguess), dtype=complex)
+    order = np.argsort(diag)
+    x0 = np.zeros((nguess, dim), dtype=complex)
     for i in range(nguess):
-        G[order[i], i] = 1.0
-    G, _ = np.linalg.qr(G)
-    ncol = nguess
-    V[:, :ncol] = G
-    Vc[:, :ncol] = G.conj()
-    for i in range(ncol):
-        AV[:, i] = matvec(V[:, i])
-    theta_old = np.zeros(nroots)
-    for _ in range(max_cycle):
-        Vv, AVv, Vcv = V[:, :ncol], AV[:, :ncol], Vc[:, :ncol]
-        S = Vcv.T @ AVv
-        S = (S + S.conj().T) * 0.5
-        w, y = np.linalg.eigh(S)
-        w = w[:nroots]
-        y = y[:, :nroots]
-        X = Vv @ y
-        AX = AVv @ y
-        res = AX - X * w[None, :]
-        rnorm = np.linalg.norm(res, axis=0)
-        if np.max(np.abs(w - theta_old)) < tol and np.max(rnorm) < np.sqrt(tol):
-            return np.sort(w)
-        theta_old = w
-        # preconditioned new directions
-        add = []
-        for i in range(nroots):
-            if rnorm[i] < np.sqrt(tol):
-                continue
-            d = diag.real - w[i]
-            d[np.abs(d) < 1e-8] = 1e-8
-            t = res[:, i] / d
-            add.append(t)
-        if not add:
-            return np.sort(w)
-        Vnew = np.column_stack(add)
-        # orthonormalise against current space
-        Vnew -= Vv @ (Vcv.T @ Vnew)
-        Vnew -= Vv @ (Vcv.T @ Vnew)
-        q, r = np.linalg.qr(Vnew)
-        keep = np.abs(np.diag(r)) > 1e-7
-        if not np.any(keep):
-            return np.sort(w)
-        q = q[:, keep]
-        if ncol + q.shape[1] > max_space:
-            # restart from the current Ritz vectors (q stays orthogonal to them,
-            # since span(X) subset span(V) and q _|_ V)
-            V[:, :nroots] = X
-            AV[:, :nroots] = AX
-            Vc[:, :nroots] = X.conj()
-            ncol = nroots
-        nq = q.shape[1]
-        for j in range(nq):
-            AV[:, ncol + j] = matvec(q[:, j])
-        V[:, ncol:ncol + nq] = q
-        Vc[:, ncol:ncol + nq] = q.conj()
-        ncol += nq
-    return np.sort(w)
+        x0[i, order[i]] = 1.0
+    if max_space is None:
+        max_space = max(40, 12 + 8 * nroots)
+    conv, e, _ = lib.davidson_nosym1(
+        aop, list(x0), precond, tol=tol, tol_residual=1e-7,
+        nroots=nroots, max_cycle=max_cycle, max_space=max_space, verbose=0)
+    return np.sort(np.asarray(e).real)
 
 
 class _SpinorADCERIs:

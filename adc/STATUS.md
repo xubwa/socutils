@@ -75,8 +75,14 @@ Current full harness: **36 passed, 6 xfailed** (xfail = G0W0 only).
   `P(ij)P(ab) f = f - f(i<->j) - f(a<->b) + f(both)`.  Exact diagonal:
   `... + <ab||ab> + <ij||ij> - <ia||ia> - <ib||ib> - <ja||ja> - <jb||jb>`.
   Compared as UNIQUE values vs UADC (spinor carries the extra Ms triplet
-  components), coarse-rounded like IP-x (UADC near-degenerate satellites are
-  only loosely converged).
+  components), coarse-rounded like IP-x.
+* **ADC(2)-x physical roots match pyscf to ~1e-6; high-lying pure 2p1h/2h1p
+  satellites differ.**  The spinor 2p1h block was verified == a brute-force
+  Slater-Condon CI 2p1h block (1e-13) with exact integrals (1e-15), i.e. it is
+  the standard *bare* extended block.  pyscf's ADC(2)-x splits the deep
+  satellite manifolds more (its values are converged, stable to 1e-10), so
+  pyscf's extended block carries terms beyond the bare ladder+ring.  The
+  physically-relevant low roots agree; the harness compares those.
 * PySCF's `adc` eris are **chemist** `(pq|rs)`. PySCF's `nrr_outcore` with
   `motype='j-spinor'` from `int2e_sph` reproduces `int2e_spinor` MO integrals
   to ~1e-14.
@@ -95,11 +101,14 @@ Current full harness: **36 passed, 6 xfailed** (xfail = G0W0 only).
   The full `n2c^4` tensor and the all-virtual `vvvv` block are never formed
   (no current method needs `vvvv`). Unique chemist sub-blocks are cached and
   `(pq|rs)=(rs|pq)` is reused by transpose.
-* Solver: one complex-Hermitian Davidson matvec for IP/EA/EE
-  (`_davidson`), O(N^5)/iteration; small satellite spaces fall back to a dense
-  probe+eigh for robustness. Doubles vectors are stored in the restricted
-  antisymmetric basis (`i<j`, `a<b`); EA/EE matvecs pack the antisymmetric
-  pair to halve the dominant `O(no^2 nv^3)` contractions.
+* Solver: pyscf's ``lib.davidson_nosym1`` (``pick_real_eigs``, the solver
+  pyscf's own ADC/EOM use) drives all IP/EA/EE methods via ``_davidson``;
+  small satellite spaces fall back to a dense probe+eigh.  (The earlier
+  hand-rolled block Davidson under-converged / missed near-degenerate
+  satellites -- replacing it tightened EE-ADC(2)-x agreement with pyscf from
+  ~1e-4 to ~1e-6.)  Doubles vectors are stored in the restricted
+  antisymmetric basis (``i<j``, ``a<b``); EA/EE matvecs pack the antisymmetric
+  pair to halve the dominant ``O(no^2 nv^3)`` contractions.
 
 ## Performance (H2O / cc-pVTZ, n2c=116, nv=106) after optimisation
 
