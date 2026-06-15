@@ -223,6 +223,10 @@ class _SpinorADCERIs:
         return self._get('vovv', lambda: self._blk(self.v, self.o, self.v, self.v))
 
     @property
+    def vvvv(self):                                # <ab||cd> (only EA/EE-ADC(2)-x)
+        return self._get('vvvv', lambda: self._blk(self.v, self.v, self.v, self.v))
+
+    @property
     def ovvo(self):                                # <ia||bj>
         return self._get('ovvo', lambda: self.voov.transpose(1, 0, 3, 2))
 
@@ -363,16 +367,23 @@ class SpinorADC(lib.StreamObject):
         return self.ip_adc2(nroots, method='adc(2)-x')
 
     # -- EA ------------------------------------------------------------------
-    def ea_adc2(self, nroots=6):
-        '''Spinor EA-ADC(2) electron affinities (lowest ``nroots``).
+    def ea_adc2(self, nroots=6, method='adc(2)'):
+        '''Spinor EA electron affinities (lowest ``nroots``).
 
-        Davidson matvec over the restricted (a<b) 2p1h space.
+        ``method`` selects strict ADC(2) (default) or ADC(2)-x, which adds the
+        first-order interaction in the 2p1h block (particle-particle ladder
+        0.5<ab||cd> plus the particle-hole ring <jb||ic>).  Davidson matvec over
+        the restricted (a<b) 2p1h space.
         '''
         self._build()
         no, nmo = self.nocc, self.nmo
         nv = nmo - no
         e = np.asarray(self.mo_energy)
         eo, ev = e[:no], e[no:]
+        eris = self._eris
+        adc2x = (method == 'adc(2)-x')
+        if not adc2x and method != 'adc(2)':
+            raise NotImplementedError(method)
 
         Mpp = np.diag(ev).astype(complex) - self._sig_ea
         # <ai||cd> packed over the antisymmetric particle pair (c<d): the 2p1h
@@ -382,7 +393,7 @@ class SpinorADC(lib.StreamObject):
                       dtype=int).reshape(-1, 2)
         nvp = len(vv)
         vc, vd = vv[:, 0], vv[:, 1]
-        WvovvP = self._eris.vovv[:, :, vc, vd]     # <ai||(cd)>  [a,i,P]
+        WvovvP = eris.vovv[:, :, vc, vd]           # <ai||(cd)>  [a,i,P]
         # Both 2p1h couplings are plain GEMMs, but lib.einsum('aiP,...') hides a
         # 47 MB transpose-copy per matvec.  Precompute the contiguous (a, P*i)
         # layout once so the matvec dots have no per-call transpose (~10-20x).
@@ -390,6 +401,11 @@ class SpinorADC(lib.StreamObject):
         WvovvPc_Pi = WvovvP_Pi.conj()
         ev_p = ev[vc] + ev[vd]
         dim = nv + nvp * no
+        if adc2x:
+            vvvv = eris.vvvv                        # <ab||cd>
+            # packed pp-ladder matrix <(ab)||(cd)>  (nvp, nvp)
+            Wvvvv_pp = vvvv[vc[:, None], vd[:, None], vc[None, :], vd[None, :]]
+            Vjbic = -eris.voov.transpose(1, 0, 2, 3)   # <jb||ic> = -<bj||ic>
 
         def matvec(x):
             r1 = x[:nv]
@@ -397,12 +413,31 @@ class SpinorADC(lib.StreamObject):
             s1 = Mpp @ r1 + WvovvP_Pi @ r2.ravel()
             s2 = (ev_p[:, None] - eo[None, :]) * r2
             s2 += (r1 @ WvovvPc_Pi).reshape(nvp, no)
+            if adc2x:
+                s2 += Wvvvv_pp @ r2                # pp ladder
+                r2f = np.zeros((no, nv, nv), dtype=complex)
+                r2f[:, vc, vd] = r2.T
+                r2f[:, vd, vc] = -r2.T
+                t = -lib.einsum('jbic,jac->iab', Vjbic, r2f)   # ph ring
+                ring = t - t.transpose(0, 2, 1)               # P(ab)
+                s2 += ring[:, vc, vd].T
             return np.concatenate([s1, s2.reshape(-1)])
 
         diag = np.empty(dim)
         diag[:nv] = Mpp.diagonal().real
-        diag[nv:] = (ev_p[:, None] - eo[None, :]).reshape(-1)
+        dd = ev_p[:, None] - eo[None, :]                   # (nvp, no)
+        if adc2x:
+            # exact 2p1h diagonal: + <ab||ab> - <ia||ia> - <ib||ib>
+            vvvv_d = Wvvvv_pp.diagonal().real              # <ab||ab>
+            ovov_d = -np.einsum('iaai->ia', eris.ovvo).real  # <ia||ia>
+            dd = (dd + vvvv_d[:, None]
+                  - ovov_d.T[vc, :] - ovov_d.T[vd, :])
+        diag[nv:] = dd.reshape(-1)
         return _davidson(matvec, diag, nroots)
+
+    def ea_adc2x(self, nroots=6):
+        '''Spinor EA-ADC(2)-x electron affinities.'''
+        return self.ea_adc2(nroots, method='adc(2)-x')
 
 
     # -- EE ------------------------------------------------------------------

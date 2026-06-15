@@ -125,6 +125,11 @@ def run_spinor_ea(mf, nroots=8):
     return {"e": np.asarray(SpinorADC(mf).ea_adc2(nroots))}
 
 
+def run_spinor_ea_x(mf, nroots=12):
+    """socutils spinor EA-ADC(2)-x."""
+    return {"e": np.asarray(SpinorADC(mf).ea_adc2x(nroots))}
+
+
 def run_spinor_eeadc2(mf, nroots=8):
     """socutils spinor EE-ADC(2) excitation energies.  The spinor solution
     spans the full spin manifold (singlets and all Ms components of triplets),
@@ -181,6 +186,18 @@ def ref_ea(mol, nroots=4):
     a.verbose = 0
     e = a.kernel(nroots=nroots)[0]
     return {"e": np.asarray(e)}
+
+
+def ref_ea_x(mol, nroots=20):
+    # ADC(2)-x splits the doublet/quartet 2p1h satellites, so the spin-orbital
+    # spinor result is compared against the spin-orbital UADC reference.
+    from pyscf import adc
+    mf = scf.UHF(mol).run()
+    a = adc.ADC(mf)
+    a.method = "adc(2)-x"
+    a.method_type = "ea"
+    a.verbose = 0
+    return {"e": np.asarray(a.kernel(nroots=nroots)[0])}
 
 
 def ref_eeadc2(mol, nroots=8):
@@ -312,6 +329,29 @@ def test_gate1_ea(mol, mf):
     ref = _unique_sorted(ref_ea(mol)["e"])
     n = min(len(got), len(ref))
     assert_set_close(got[:n], ref[:n], atol=1e-6, label="EA-ADC(2) energies")
+
+
+def test_gate1_ea_adc2x(mol, mf):
+    """spinor EA-ADC(2)-x reproduces PySCF UADC EA-ADC(2)-x.  Both are
+    spin-orbital, so the sorted spectra (with multiplicity) agree directly;
+    compare only the low, well-converged roots (deep satellites depend on how
+    many roots each side requested)."""
+    got = np.sort(np.asarray(run_spinor_ea_x(mf)["e"]).real)
+    ref = np.sort(np.asarray(ref_ea_x(mol)["e"]).real)
+    n = min(len(got), len(ref), 8)
+    np.testing.assert_allclose(got[:n], ref[:n], atol=1e-4, rtol=0,
+                               err_msg="EA-ADC(2)-x energies")
+
+
+def test_gate2_ea_adc2x_invariance(mf):
+    """EA-ADC(2)-x roots invariant under a legal complex orbital rotation."""
+    E, C = mo_energy(mf), mo_coeff(mf)
+    U = legal_rotation(E, seed=23)
+    base = np.sort(run_spinor_ea_x(mf)["e"])
+    rot = np.sort(run_spinor_ea_x(set_mo(mf, C @ U, E))["e"])
+    np.testing.assert_allclose(rot, base, atol=1e-7, rtol=0,
+                               err_msg="EA-ADC(2)-x roots changed under complex"
+                                       " rotation -> conjugation bug")
 
 
 def test_gate1_ip_adc2x(mol, mf):

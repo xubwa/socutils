@@ -14,9 +14,10 @@ Branch: `claude/stoic-maxwell-996i5j`.
 | | EA-ADC(2) | Davidson matvec | done, exact |
 | | EE-ADC(2) | Davidson matvec | done, exact |
 | | IP-ADC(2)-x | Davidson matvec | done, exact |
-| `test_spinor_harness.py` | two-gate validation | — | MP2/IP/EA/EE/IP-x green |
+| | EA-ADC(2)-x | Davidson matvec | done, exact |
+| `test_spinor_harness.py` | two-gate validation | — | MP2/IP/EA/EE/IP-x/EA-x green |
 
-Not done: EA-ADC(2)-x, EE-ADC(2)-x (need the `vvvv` ladder), ADC(3),
+Not done: EE-ADC(2)-x (needs the `vvvv` ladder), ADC(3),
 spectroscopic factors / transition moments, CVS, G0W0 (xfail in the harness),
 Kramers-symmetry exploitation.
 
@@ -62,6 +63,12 @@ Current full harness: **36 passed, 6 xfailed** (xfail = G0W0 only).
   `(e_a-e_i-e_j) + 0.5<mn||ij> r2_mna + P(ij)<ma||ei> r2_mje`. Its exact
   diagonal (needed as Davidson preconditioner, else near-degenerate satellites
   are skipped) is `e_a-e_i-e_j + <ij||ij> - <ia||ia> - <ja||ja>`.
+* **EA-ADC(2)-x 2p1h block** (particle-hole mirror of IP):
+  `(e_a+e_b-e_i) + 0.5<ab||cd> r2_icd - P(ab)<jb||ic> r2_jac`, with
+  `<jb||ic> = -voov[b,j,i,c]`.  Exact diagonal (preconditioner):
+  `e_a+e_b-e_i + <ab||ab> - <ia||ia> - <ib||ib>`. Validated against UADC by
+  the sorted spectrum (with multiplicity); the unique-set test fails spuriously
+  because deep satellites depend on how many roots each side requests.
 * PySCF's `adc` eris are **chemist** `(pq|rs)`. PySCF's `nrr_outcore` with
   `motype='j-spinor'` from `int2e_sph` reproduces `int2e_spinor` MO integrals
   to ~1e-14.
