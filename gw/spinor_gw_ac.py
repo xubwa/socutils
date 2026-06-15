@@ -34,7 +34,6 @@ Method:
     that this implementation follows.
 '''
 
-from functools import reduce
 import contextlib
 import numpy
 import numpy as np
@@ -86,8 +85,6 @@ def kernel(gw, mo_energy, mo_coeff, Lpq=None, orbs=None,
     full2act = -numpy.ones(moidx.size, dtype=int)
     full2act[act_idx] = numpy.arange(act_idx.size)
 
-    if Lpq is None:
-        Lpq = gw.ao2mo(mo_coeff)
     if orbs is None:
         orbs = list(range(gw.nmo))
     else:
@@ -98,34 +95,52 @@ def kernel(gw, mo_energy, mo_coeff, Lpq=None, orbs=None,
 
     nocc = gw.nocc
     nmo = gw.nmo
-    naux = Lpq.shape[0]
 
-    # v_xc (mean-field effective potential minus the Hartree term), projected
-    # onto the *active* MOs.  For a pure HF reference this equals the exact
-    # exchange and exactly cancels vk below; for a DFT reference it is the xc
-    # potential.  mo_coeff here is already the active-space coefficient matrix.
+    # Only two blocks of the MO density-fitting tensor are needed:
+    #   Lov = Lpq[:, occ, vir]   (the RPA density response Pi)
+    #   Lpa = Lpq[:, orbs, all]  (the diagonal self-energy; the conjugate
+    #                             transpose supplies Lpq[:, all, orbs])
+    # Transform only rows = occ U orbs instead of the full nmo x nmo tensor.
+    if Lpq is None:
+        rows = sorted(set(range(nocc)) | set(orbs))
+        Lblk = gw.ao2mo(mo_coeff, rows=rows)
+        rowpos = {r: i for i, r in enumerate(rows)}
+        Lov = numpy.ascontiguousarray(Lblk[:, [rowpos[r] for r in range(nocc)], nocc:])
+        Lpa = numpy.ascontiguousarray(Lblk[:, [rowpos[r] for r in orbs], :])
+        del Lblk
+    else:
+        Lov = numpy.ascontiguousarray(Lpq[:, :nocc, nocc:])
+        Lpa = numpy.ascontiguousarray(Lpq[:, orbs, :])
+
+    # v_xc (mean-field effective potential minus the Hartree term), diagonal in
+    # the active MO basis.  For a pure HF reference this equals the exact
+    # exchange and cancels vk below; for a DFT reference it is the xc potential.
     dm = mf.make_rdm1()
-    v_mf = mf.get_veff(gw.mol, dm) - mf.get_j(gw.mol, dm)
-    v_mf = reduce(numpy.dot, (mo_coeff.conj().T, v_mf, mo_coeff))
+    v_mf_ao = mf.get_veff(gw.mol, dm) - mf.get_j(gw.mol, dm)
+    v_mf = einsum('ap,ab,bp->p', mo_coeff.conj(), v_mf_ao, mo_coeff).real
 
-    # v_hf: exact (bare) exchange self-energy Sigma_x = -K.  The DF shortcut is
-    # only valid when no *occupied* orbital is frozen (otherwise the active Lpq
-    # misses the frozen-core contribution to the exchange).
+    # v_hf: exact (bare) exchange self-energy Sigma_x = -K (diagonal).  The DF
+    # shortcut is only valid when no *occupied* orbital is frozen (otherwise the
+    # active Lpq misses the frozen-core contribution to the exchange).
     nocc_full = int(numpy.sum(mf.mo_occ > 0))
+    vk = numpy.zeros(nmo)
     if vhf_df and nocc == nocc_full:
-        vk = -einsum('Lni,Lim->nm', Lpq[:, :, :nocc], Lpq[:, :nocc, :])
+        # vk[p] = -sum_{P,i in occ} |L^P_{p,i}|^2   for p in orbs
+        vk_orbs = -einsum('Pji,Pji->j', Lpa[:, :, :nocc],
+                          Lpa[:, :, :nocc].conj()).real
+        vk[orbs] = vk_orbs
     else:
         if vhf_df:
             logger.warn(gw, 'vhf_df ignored: occupied orbitals are frozen, '
                             'using exact exchange instead')
-        vk = -mf.get_k(gw.mol, dm)
-        vk = reduce(numpy.dot, (mo_coeff.conj().T, vk, mo_coeff))
+        vk_ao = -mf.get_k(gw.mol, dm)
+        vk = einsum('ap,ab,bp->p', mo_coeff.conj(), vk_ao, mo_coeff).real
 
     # Grids for integration on the imaginary axis
     freqs, wts = _get_scaled_legendre_roots(nw)
 
     # Self-energy (diagonal) on the imaginary axis i*[0, iw_cutoff]
-    sigmaI, omega = get_sigma_diag(gw, orbs, Lpq, freqs, wts, iw_cutoff=5.)
+    sigmaI, omega = get_sigma_diag(gw, orbs, Lov, Lpa, freqs, wts, iw_cutoff=5.)
 
     # Analytic continuation
     if gw.ac == 'twopole':
@@ -149,7 +164,7 @@ def kernel(gw, mo_energy, mo_coeff, Lpq=None, orbs=None,
                 sigmaR = pade_thiele(ep - ef, omega_fit[p - orbs[0]], coeff[:, p - orbs[0]]).real
                 dsigma = pade_thiele(ep - ef + de, omega_fit[p - orbs[0]], coeff[:, p - orbs[0]]).real - sigmaR.real
             zn = 1.0 / (1.0 - dsigma / de)
-            e = ep + zn * (sigmaR.real + vk[p, p].real - v_mf[p, p].real)
+            e = ep + zn * (sigmaR.real + vk[p] - v_mf[p])
             mo_energy[act_idx[p]] = e
         else:
             # self-consistently solve the QP equation
@@ -158,7 +173,7 @@ def kernel(gw, mo_energy, mo_coeff, Lpq=None, orbs=None,
                     sigmaR = two_pole(omega - ef, coeff[:, p - orbs[0]]).real
                 elif gw.ac == 'pade':
                     sigmaR = pade_thiele(omega - ef, omega_fit[p - orbs[0]], coeff[:, p - orbs[0]]).real
-                return omega - mf_mo_energy[p] - (sigmaR.real + vk[p, p].real - v_mf[p, p].real)
+                return omega - mf_mo_energy[p] - (sigmaR.real + vk[p] - v_mf[p])
             try:
                 e = newton(quasiparticle, mf_mo_energy[p], tol=1e-6, maxiter=100)
                 mo_energy[act_idx[p]] = e
@@ -193,20 +208,22 @@ def get_rho_response(omega, mo_energy, Lpq):
     return Pi
 
 
-def get_sigma_diag(gw, orbs, Lpq, freqs, wts, iw_cutoff=None):
+def get_sigma_diag(gw, orbs, Lov, Lpa, freqs, wts, iw_cutoff=None):
     '''
     Compute the (diagonal) GW correlation self-energy in the MO basis on the
     imaginary axis.
 
-    Because ``Lpq`` is Hermitian in its orbital indices, the contraction
-    ``Wmn = einsum('Qnm,Qmn->mn', Qnm, Lpq[:,:,orbs])`` automatically supplies
-    the complex conjugate required by the diagonal self-energy
-    Sigma_nn = sum_m sum_PQ L^P_nm W_PQ conj(L^Q_nm) g0_m.
+    Only two integral blocks are needed:
+        Lov : (naux, nocc, nvir)   occ-vir block, for the density response;
+        Lpa : (naux, norbs, nmo)   orbs-vs-all block.  By Hermiticity
+              Lpq[:, :, orbs] = conj(Lpa) with the two orbital axes swapped, so
+        Sigma_nn = sum_m sum_PQ L^P_nm W_PQ conj(L^Q_nm) g0_m
+    is evaluated as ``einsum('Qnm,Qnm->mn', Qnm, conj(Lpa))``.
     '''
     mo_energy = _mo_energy_without_core(gw, gw._scf.mo_energy)
     nocc = gw.nocc
     nw = len(freqs)
-    naux = Lpq.shape[0]
+    naux = Lov.shape[0]
     norbs = len(orbs)
 
     # TODO: Treatment of degeneracy
@@ -241,20 +258,17 @@ def get_sigma_diag(gw, orbs, Lpq, freqs, wts, iw_cutoff=None):
         else:
             omega[p] = omega_vir.copy()
 
-    # Hoist the orbital slices out of the frequency loop (each is a copy).
-    Lpq_ia = numpy.ascontiguousarray(Lpq[:, :nocc, nocc:])
-    Lpq_pn = numpy.ascontiguousarray(Lpq[:, orbs, :])
-    Lpq_np = numpy.ascontiguousarray(Lpq[:, :, orbs])
+    Lpa_conj = Lpa.conj()
     eye = np.eye(naux)
 
     def _sigma_w(w):
         '''Self-energy contribution from a single imaginary-frequency point.'''
-        Pi = get_rho_response(freqs[w], mo_energy, Lpq_ia)
+        Pi = get_rho_response(freqs[w], mo_energy, Lov)
         Pi_inv = np.linalg.inv(eye - Pi) - eye
         g0_occ = wts[w] * emo_occ / (emo_occ**2 + freqs[w]**2)
         g0_vir = wts[w] * emo_vir / (emo_vir**2 + freqs[w]**2)
-        Qnm = einsum('Pnm,PQ->Qnm', Lpq_pn, Pi_inv)
-        Wmn = einsum('Qnm,Qmn->mn', Qnm, Lpq_np)
+        Qnm = einsum('Pnm,PQ->Qnm', Lpa, Pi_inv)
+        Wmn = einsum('Qnm,Qnm->mn', Qnm, Lpa_conj)
         sig = np.zeros((norbs, nw_sigma), dtype=np.complex128)
         sig[:norbs_occ] = -einsum('mn,mw->nw', Wmn[:, :norbs_occ], g0_occ) / np.pi
         sig[norbs_occ:] = -einsum('mn,mw->nw', Wmn[:, norbs_occ:], g0_vir) / np.pi
@@ -528,8 +542,8 @@ class SpinorGWAC(lib.StreamObject):
         logger.timer(self, 'GW', *cput0)
         return self.mo_energy
 
-    def ao2mo(self, mo_coeff=None):
-        '''Build the complex spinor DF tensor Lpq[P,p,q] in the MO basis.
+    def ao2mo(self, mo_coeff=None, rows=None):
+        '''Build the complex spinor DF tensor in the MO basis.
 
         The DF three-index integrals (P|mu nu) are real and live in the real
         spherical AO basis.  The spinor MOs are projected to the spherical GHF
@@ -538,6 +552,13 @@ class SpinorGWAC(lib.StreamObject):
 
             Lpq[P,p,q] = sum_{mu nu} (P|mu nu)
                          * (Ca*[mu,p] Ca[nu,q] + Cb*[mu,p] Cb[nu,q])
+
+        Kwargs:
+            rows : list of MO indices.  When given, only the left orbital index
+                is restricted to ``rows``, returning ``Lpq[:, rows, :]`` of
+                shape (naux, len(rows), nmo).  This is the workhorse for GW:
+                transforming only ``occ U orbs`` rows avoids forming the full
+                nmo x nmo tensor.  Defaults to all rows.
         '''
         if mo_coeff is None:
             mo_coeff = self.mo_coeff
@@ -550,21 +571,28 @@ class SpinorGWAC(lib.StreamObject):
         Csph = c2 @ mo_coeff                         # (2*nao, nmo)
         Ca = numpy.asarray(Csph[:nao])
         Cb = numpy.asarray(Csph[nao:])
+        if rows is None:
+            Ca_r, Cb_r, nrows = Ca, Cb, nmo
+        else:
+            rows = list(rows)
+            nrows = len(rows)
+            Ca_r = numpy.asarray(Ca[:, rows])
+            Cb_r = numpy.asarray(Cb[:, rows])
 
-        mem_incore = naux * nmo**2 * 16 / 1e6
+        mem_incore = naux * nrows * nmo * 16 / 1e6
         mem_now = lib.current_memory()[0]
         if not ((mem_incore + mem_now < 0.99 * self.max_memory) or mol.incore_anyway):
             logger.warn(self, 'Memory may not be enough for incore Lpq!')
 
-        Lpq = numpy.empty((naux, nmo, nmo), dtype=numpy.complex128)
+        Lpq = numpy.empty((naux, nrows, nmo), dtype=numpy.complex128)
         p1 = 0
         for eri1 in self.with_df.loop():
             eri3c = lib.unpack_tril(numpy.asarray(eri1))   # (blk, nao, nao)
             b = eri3c.shape[0]
-            tmp = einsum('Pmn,mp->Ppn', eri3c, Ca.conj())
-            blk = einsum('Ppn,nq->Ppq', tmp, Ca)
-            tmp = einsum('Pmn,mp->Ppn', eri3c, Cb.conj())
-            blk += einsum('Ppn,nq->Ppq', tmp, Cb)
+            tmp = einsum('Pmn,mr->Prn', eri3c, Ca_r.conj())
+            blk = einsum('Prn,nq->Prq', tmp, Ca)
+            tmp = einsum('Pmn,mr->Prn', eri3c, Cb_r.conj())
+            blk += einsum('Prn,nq->Prq', tmp, Cb)
             Lpq[p1:p1 + b] = blk
             p1 += b
         assert p1 == naux
