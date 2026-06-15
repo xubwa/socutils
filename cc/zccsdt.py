@@ -391,10 +391,17 @@ def energy(cc, t1, t2, eris):
 def update_amps(cc, t1, t2, t3, eris):
     '''Next amplitudes (t1new, t2new, t3new).  Efficient tensor residuals:
     the CCSD T1/T2 part from socutils.cc.zccsd (validated), plus the T3->T1/T2
-    couplings and the T3 residual in the T1-dressed formalism.'''
+    couplings and the T3 residual in the T1-dressed formalism.
+
+    ``t3`` is the *packed* unique block (i<j<k, a<b<c); it is unpacked once for
+    the contractions and ``t3new`` is returned packed, so the iteration never
+    holds more than one full O(o^3 v^3) copy at a time.  A full (6-D) ``t3`` is
+    also accepted for backwards compatibility.'''
     assert isinstance(eris, _PhysicistsERIs)
     nocc, nvir = t1.shape
     nmo = nocc + nvir
+    t3p = t3 if t3.ndim == 1 else pack_t3(t3)
+    t3 = t3 if t3.ndim == 6 else unpack_t3(t3p, nocc, nvir)
     o = slice(0, nocc)
     v = slice(nocc, nmo)
     mo_e = eris.mo_energy
@@ -435,13 +442,13 @@ def update_amps(cc, t1, t2, t3, eris):
         eo = mo_o[oi[:, 0]] + mo_o[oi[:, 1]] + mo_o[oi[:, 2]]
         ev = eav[vi[:, 0]] + eav[vi[:, 1]] + eav[vi[:, 2]]
         d = (eo[:, None] - ev[None, :]).ravel()
-        t3new = t3 + unpack_t3(r3p / d, nocc, nvir)
+        t3new = t3p + r3p / d                              # stays packed
     else:
         eijkabc = (eia[:, None, None, :, None, None]
                    + eia[None, :, None, None, :, None]
                    + eia[None, None, :, None, None, :])
         r3 = _t3_residual(t2, t3, ge, fdr, nocc, nmo)
-        t3new = t3 + r3 / eijkabc
+        t3new = pack_t3(t3 + r3 / eijkabc)
     return t1new, t2new, t3new
 
 
@@ -498,15 +505,23 @@ class ZCCSDT(ZCCSD):
         e_old = self.energy(t1, t2, eris)
         log.info('Init E_corr(CCSDT) = %.15g', e_old)
 
+        # carry t3 packed (unique i<j<k, a<b<c) through the iteration so only a
+        # single full O(o^3 v^3) copy ever exists (transiently, inside
+        # update_amps); t1/t2 stay full.
+        if t3.ndim == 6:
+            t3 = pack_t3(t3)
+
         adiis = lib.diis.DIIS()
         adiis.space = 8
 
         conv = False
         for icycle in range(self.max_cycle):
             t1new, t2new, t3new = self.update_amps(t1, t2, t3, eris)
+            # ||dt3_full|| = 6 ||dt3_packed|| exactly for antisymmetric t3, so
+            # the convergence metric matches the full-tensor formulation.
             normt = (np.linalg.norm(t1new - t1)
                      + np.linalg.norm(t2new - t2)
-                     + np.linalg.norm(t3new - t3))
+                     + 6.0 * np.linalg.norm(t3new - t3))
             t1, t2, t3 = self.run_diis(t1new, t2new, t3new, adiis)
             e_new = self.energy(t1, t2, eris)
             de = e_new - e_old
@@ -519,20 +534,23 @@ class ZCCSDT(ZCCSD):
 
         self.converged = conv
         self.e_corr = e_old
-        self.t1, self.t2, self.t3 = t1, t2, t3
+        # expose the full t3 on the object for downstream consumers
+        self.t1, self.t2, self.t3 = t1, t2, unpack_t3(t3, t1.shape[0], t1.shape[1])
         log.note('E_corr(CCSDT) = %.15g  converged = %s', e_old, conv)
         return self.e_corr, self.t1, self.t2, self.t3
 
     def amplitudes_to_vector(self, t1, t2, t3):
-        # t2, t3 stored packed (unique i<j[<k], a<b[<c]) -> smaller DIIS history
-        return np.hstack((t1.ravel(), pack_t2(t2), pack_t3(t3)))
+        # t2, t3 stored packed (unique i<j[<k], a<b[<c]) -> smaller DIIS history.
+        # t3 may already be packed (1-D), as it is throughout the iteration.
+        t3p = t3 if t3.ndim == 1 else pack_t3(t3)
+        return np.hstack((t1.ravel(), pack_t2(t2), t3p))
 
     def vector_to_amplitudes(self, vec, nocc, nvir):
         n1 = nocc * nvir
         n2 = nocc * (nocc - 1) // 2 * (nvir * (nvir - 1) // 2)
         t1 = vec[:n1].reshape(nocc, nvir)
         t2 = unpack_t2(vec[n1:n1 + n2], nocc, nvir)
-        t3 = unpack_t3(vec[n1 + n2:], nocc, nvir)
+        t3 = vec[n1 + n2:].copy()                          # kept packed
         return t1, t2, t3
 
     def run_diis(self, t1, t2, t3, adiis):
