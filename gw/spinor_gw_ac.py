@@ -43,6 +43,7 @@ from scipy.optimize import newton, least_squares
 from pyscf import lib
 from pyscf import df
 from pyscf.lib import logger
+from pyscf.mp.mp2 import get_nocc, get_nmo, get_frozen_mask
 from pyscf import __config__
 
 try:
@@ -493,28 +494,13 @@ class SpinorGWAC(lib.StreamObject):
     def get_frozen_mask(self):
         '''Boolean mask over the full spinor MO space; True = active orbital.
 
-        ``frozen`` may be an int (freeze that many lowest/core spinors) or a
-        list/array of orbital indices (freeze exactly those, allowing frozen
-        virtuals).'''
-        moidx = numpy.ones(self._scf.mo_occ.size, dtype=bool)
-        if self.frozen is None:
-            pass
-        elif isinstance(self.frozen, (int, numpy.integer)):
-            moidx[:self.frozen] = False
-        else:
-            moidx[list(self.frozen)] = False
-        return moidx
+        Follows PySCF's MP2 ``frozen`` convention: ``frozen`` may be an int
+        (freeze that many lowest/core spinors) or a list/array of orbital
+        indices (freeze exactly those, allowing frozen virtuals).'''
+        return get_frozen_mask(self)
 
-    def get_nocc(self):
-        if self._nocc is not None:
-            return self._nocc
-        moidx = self.get_frozen_mask()
-        return int(numpy.sum(self._scf.mo_occ[moidx] > 0))
-
-    def get_nmo(self):
-        if self._nmo is not None:
-            return self._nmo
-        return int(numpy.sum(self.get_frozen_mask()))
+    get_nocc = get_nocc
+    get_nmo = get_nmo
 
     def kernel(self, mo_energy=None, mo_coeff=None, Lpq=None, orbs=None,
                nw=100, vhf_df=False):
