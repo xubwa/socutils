@@ -120,6 +120,12 @@ def run_spinor_ip_x(mf, nroots=12):
     return {"e": np.asarray(SpinorADC(mf).ip_adc2x(nroots))}
 
 
+def run_spinor_ip_cvs(mf, nroots=6, ncvs_spatial=1):
+    """socutils spinor CVS-IP-ADC(2) (core ionisation).  ncvs counts core
+    spinors = 2x the spatial core count (Kramers pairs)."""
+    return {"e": np.asarray(SpinorADC(mf).ip_cvs_adc2(nroots, ncvs=2 * ncvs_spatial))}
+
+
 def run_spinor_ea(mf, nroots=8):
     """socutils spinor EA-ADC(2).  Returns the electron affinities."""
     return {"e": np.asarray(SpinorADC(mf).ea_adc2(nroots))}
@@ -178,6 +184,17 @@ def ref_ip_x(mol, nroots=20):
     a = adc.ADC(mf)
     a.method = "adc(2)-x"
     a.method_type = "ip"
+    a.verbose = 0
+    return {"e": np.asarray(a.kernel(nroots=nroots)[0])}
+
+
+def ref_ip_cvs(mol, nroots=6, ncvs_spatial=1):
+    from pyscf import adc
+    mf = scf.UHF(mol).run()
+    a = adc.ADC(mf)
+    a.method = "adc(2)"
+    a.method_type = "ip"
+    a.ncvs = ncvs_spatial
     a.verbose = 0
     return {"e": np.asarray(a.kernel(nroots=nroots)[0])}
 
@@ -368,6 +385,25 @@ def test_gate2_ea_adc2x_invariance(mf):
     rot = np.sort(run_spinor_ea_x(set_mo(mf, C @ U, E))["e"])
     np.testing.assert_allclose(rot, base, atol=1e-7, rtol=0,
                                err_msg="EA-ADC(2)-x roots changed under complex"
+                                       " rotation -> conjugation bug")
+
+
+def test_gate1_ip_cvs(mol, mf):
+    """spinor CVS-IP-ADC(2) reproduces PySCF UADC CVS-IP-ADC(2) (1 core)."""
+    got = _unique_sorted(run_spinor_ip_cvs(mf)["e"], decimals=5)
+    ref = _unique_sorted(ref_ip_cvs(mol)["e"], decimals=5)
+    n = min(len(got), len(ref), 3)
+    assert_set_close(got[:n], ref[:n], atol=1e-5, label="CVS-IP-ADC(2) energies")
+
+
+def test_gate2_ip_cvs_invariance(mf):
+    """CVS-IP-ADC(2) roots invariant under a legal complex orbital rotation."""
+    E, C = mo_energy(mf), mo_coeff(mf)
+    U = legal_rotation(E, seed=31)
+    base = np.sort(run_spinor_ip_cvs(mf)["e"])
+    rot = np.sort(run_spinor_ip_cvs(set_mo(mf, C @ U, E))["e"])
+    np.testing.assert_allclose(rot, base, atol=1e-7, rtol=0,
+                               err_msg="CVS-IP roots changed under complex"
                                        " rotation -> conjugation bug")
 
 

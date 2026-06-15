@@ -16,10 +16,17 @@ Branch: `claude/stoic-maxwell-996i5j`.
 | | IP-ADC(2)-x | Davidson matvec | done, exact |
 | | EA-ADC(2)-x | Davidson matvec | done, exact |
 | | EE-ADC(2)-x | Davidson matvec | done, exact |
-| `test_spinor_harness.py` | two-gate validation | — | MP2/IP/EA/EE/IP-x/EA-x/EE-x green |
+| | CVS-IP-ADC(2) | Davidson matvec | done, exact |
+| `test_spinor_harness.py` | two-gate validation | — | MP2/IP/EA/EE/IP-x/EA-x/EE-x/CVS green |
 
-Not done: ADC(3), spectroscopic factors / transition moments, CVS,
+Not done: ADC(3), spectroscopic factors / transition moments,
 G0W0 (xfail in the harness), Kramers-symmetry exploitation.
+
+* **CVS-IP-ADC(2)** (`ip_cvs_adc2(nroots, ncvs)`): core-valence separation by
+  projection -- restrict the 1h space to a core hole and the 2h1p space to
+  configs with >=1 core hole (drop both-valence), with the *same* IP-ADC(2)
+  matrix elements.  ``ncvs`` counts core *spinors* (2x spatial, Kramers).
+  Matches pyscf UADC CVS-IP to machine precision (F 1s: 25.475 Ha; Ne 1s).
 
 ## Validation
 

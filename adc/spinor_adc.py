@@ -253,7 +253,7 @@ class SpinorADC(lib.StreamObject):
         self._t2 = t2
 
     # -- IP ------------------------------------------------------------------
-    def ip_adc2(self, nroots=6, method='adc(2)'):
+    def ip_adc2(self, nroots=6, method='adc(2)', ncvs=None):
         '''Spinor IP ionization energies (lowest ``nroots``).
 
         ``method`` selects strict ADC(2) (default) or ADC(2)-x, which adds the
@@ -317,7 +317,31 @@ class SpinorADC(lib.StreamObject):
             dd = (dd + oooo_d[ok, ol][:, None]
                   - ovov_d[ok, :] - ovov_d[ol, :])
         diag[no:] = dd.reshape(-1)
+
+        if ncvs is not None:
+            # Core-valence separation: project onto 1h with a core hole and
+            # 2h1p with at least one core hole (ncvs lowest spinors are core).
+            # Same matrix elements, restricted space -- matches pyscf CVS.
+            keep = list(range(ncvs))                       # 1h: i in core
+            for P in range(nop):
+                if ok[P] < ncvs:                           # >=1 core hole
+                    base = no + P * nv
+                    keep.extend(range(base, base + nv))
+            keep = np.asarray(keep)
+
+            def cvs_matvec(xr):
+                xf = np.zeros(dim, dtype=complex)
+                xf[keep] = xr
+                return matvec(xf)[keep]
+
+            return _davidson(cvs_matvec, diag[keep], nroots)
         return _davidson(matvec, diag, nroots)
+
+    def ip_cvs_adc2(self, nroots=6, ncvs=2, method='adc(2)'):
+        '''Spinor CVS-IP-ADC(2) core-ionization energies.  ``ncvs`` is the
+        number of core *spinors* (2x the spatial core count for a non-rel
+        Kramers-paired reference).'''
+        return self.ip_adc2(nroots, method=method, ncvs=ncvs)
 
     def ip_adc2x(self, nroots=6):
         '''Spinor IP-ADC(2)-x ionization energies.'''
