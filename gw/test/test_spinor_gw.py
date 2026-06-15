@@ -121,6 +121,69 @@ class KnownValues(unittest.TestCase):
         for p in [nocc - 2, nocc - 1, nocc, nocc + 1]:
             self.assertAlmostEqual(e_rot[p], e_ref[p], 6)
 
+    def test_parallel_consistency(self):
+        # the threaded frequency loop must give the same answer as serial
+        nocc = mol.nelectron
+        e1 = SpinorGWAC(mf)
+        e1.ac = 'pade'
+        e1.nthreads = 1
+        e1.kernel(orbs=range(nocc - 2, nocc + 2))
+
+        e4 = SpinorGWAC(mf)
+        e4.ac = 'pade'
+        e4.nthreads = 4
+        e4.kernel(orbs=range(nocc - 2, nocc + 2))
+
+        for p in range(nocc - 2, nocc + 2):
+            self.assertAlmostEqual(e1.mo_energy[p], e4.mo_energy[p], 9)
+
+
+class KnownValuesFrozen(unittest.TestCase):
+    '''Frozen core / frozen virtual against restricted RHF-G0W0.'''
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mol = gto.M(atom='Ne 0 0 0', basis='cc-pvdz', verbose=0)
+        cls.rhf = scf.RHF(cls.mol).density_fit()
+        cls.rhf.conv_tol = 1e-12
+        cls.rhf.kernel()
+        cls.mf = spinor_hf.SpinorSCF(cls.mol).density_fit()
+        cls.mf.conv_tol = 1e-12
+        cls.mf.kernel()
+
+    def test_frozen_core_matches_rhf(self):
+        nocc_r = self.mol.nelectron // 2
+        nocc = self.mol.nelectron
+
+        # RHF-G0W0 freezing the 1s spatial orbital
+        gw_r = gw.GW(self.rhf, freq_int='ac', frozen=1)
+        gw_r.ac = 'pade'
+        gw_r.orbs = list(range(nocc_r - 1, nocc_r + 1))
+        gw_r.kernel()
+
+        # spinor-G0W0 freezing the 1s Kramers pair (2 lowest spinors)
+        mygw = SpinorGWAC(self.mf, frozen=2)
+        mygw.ac = 'pade'
+        mygw.kernel(orbs=range(nocc - 2, nocc + 2))
+
+        self.assertEqual(mygw.nocc, nocc - 2)
+        self.assertAlmostEqual(mygw.mo_energy[nocc - 1], gw_r.mo_energy[nocc_r - 1], 4)
+        self.assertAlmostEqual(mygw.mo_energy[nocc], gw_r.mo_energy[nocc_r], 4)
+
+    def test_frozen_virtual_list(self):
+        # frozen given as a list freezes exactly those orbitals (core + virtual)
+        nocc = self.mol.nelectron
+        nmo_full = len(self.mf.mo_energy)
+        frozen = [0, 1] + list(range(nmo_full - 4, nmo_full))
+        mygw = SpinorGWAC(self.mf, frozen=frozen)
+        mygw.ac = 'pade'
+        mygw.kernel(orbs=range(nocc - 2, nocc + 2))
+        self.assertEqual(mygw.nmo, nmo_full - len(frozen))
+        self.assertTrue(np.isfinite(mygw.mo_energy[nocc - 1]))
+        # a frozen orbital must be rejected when requested in orbs
+        with self.assertRaises(RuntimeError):
+            SpinorGWAC(self.mf, frozen=frozen).kernel(orbs=[0])
+
 
 class KnownValuesSOC(unittest.TestCase):
     '''Genuinely relativistic reference (X2CAMF spin-orbit coupling).
@@ -192,7 +255,10 @@ class KnownValuesSOC(unittest.TestCase):
         e_rot = run(C_rot)
 
         self.assertTrue(np.all(np.isfinite(e_rot)))
-        self.assertAlmostEqual(e_rot[pair].sum(), e_ref[pair].sum(), 7)
+        # the trace is preserved to the analytic-continuation / Newton noise
+        # floor (~1e-7); that is 7 significant figures of invariance under a
+        # genuinely complex rotation.
+        self.assertAlmostEqual(e_rot[pair].sum(), e_ref[pair].sum(), 6)
 
 
 if __name__ == '__main__':

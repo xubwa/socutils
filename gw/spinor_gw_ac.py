@@ -35,6 +35,7 @@ Method:
 '''
 
 from functools import reduce
+import contextlib
 import numpy
 import numpy as np
 from scipy.optimize import newton, least_squares
@@ -44,7 +45,28 @@ from pyscf import df
 from pyscf.lib import logger
 from pyscf import __config__
 
+try:
+    from threadpoolctl import threadpool_limits
+except ImportError:
+    threadpool_limits = None
+
 einsum = lib.einsum
+
+
+@contextlib.contextmanager
+def _blas_single_thread():
+    '''Pin the BLAS/LAPACK backends to one thread for the duration of the
+    context, so an outer Python thread pool over frequencies does not
+    oversubscribe the cores.  Uses threadpoolctl when available (it also
+    throttles numpy's bundled OpenBLAS), falling back to PySCF's OpenMP
+    control otherwise.'''
+    if threadpool_limits is not None:
+        with threadpool_limits(limits=1):
+            yield
+    else:
+        with lib.with_omp_threads(1):
+            yield
+
 
 
 def kernel(gw, mo_energy, mo_coeff, Lpq=None, orbs=None,
@@ -56,42 +78,47 @@ def kernel(gw, mo_energy, mo_coeff, Lpq=None, orbs=None,
         A list : converged, mo_energy, mo_coeff
     '''
     mf = gw._scf
-    if gw.frozen is None:
-        frozen = 0
-    else:
-        frozen = gw.frozen
-    assert isinstance(frozen, int)
-    assert frozen < gw.nocc
+
+    # active-space bookkeeping (supports frozen core *and* frozen virtual)
+    moidx = gw.get_frozen_mask()        # bool over the full MO space
+    act_idx = numpy.where(moidx)[0]     # full indices of the active orbitals
+    full2act = -numpy.ones(moidx.size, dtype=int)
+    full2act[act_idx] = numpy.arange(act_idx.size)
 
     if Lpq is None:
         Lpq = gw.ao2mo(mo_coeff)
     if orbs is None:
-        orbs = range(gw.nmo)
+        orbs = list(range(gw.nmo))
     else:
-        orbs = [x - frozen for x in orbs]
-        if orbs[0] < 0:
-            logger.warn(gw, 'GW orbs must be larger than frozen core!')
+        orbs = [full2act[x] for x in orbs]
+        if any(o < 0 for o in orbs):
+            logger.warn(gw, 'GW orbs must be active (non-frozen) orbitals!')
             raise RuntimeError
 
     nocc = gw.nocc
     nmo = gw.nmo
     naux = Lpq.shape[0]
 
-    # v_xc (mean-field effective potential minus the Hartree term), in the MO
-    # basis.  For a pure HF reference this equals the exact exchange and exactly
-    # cancels vk below; for a DFT reference it is the xc potential.
+    # v_xc (mean-field effective potential minus the Hartree term), projected
+    # onto the *active* MOs.  For a pure HF reference this equals the exact
+    # exchange and exactly cancels vk below; for a DFT reference it is the xc
+    # potential.  mo_coeff here is already the active-space coefficient matrix.
     dm = mf.make_rdm1()
     v_mf = mf.get_veff(gw.mol, dm) - mf.get_j(gw.mol, dm)
     v_mf = reduce(numpy.dot, (mo_coeff.conj().T, v_mf, mo_coeff))
-    v_mf = v_mf[frozen:, frozen:]
 
-    # v_hf: exact (bare) exchange self-energy Sigma_x = -K
-    if vhf_df and frozen == 0:
+    # v_hf: exact (bare) exchange self-energy Sigma_x = -K.  The DF shortcut is
+    # only valid when no *occupied* orbital is frozen (otherwise the active Lpq
+    # misses the frozen-core contribution to the exchange).
+    nocc_full = int(numpy.sum(mf.mo_occ > 0))
+    if vhf_df and nocc == nocc_full:
         vk = -einsum('Lni,Lim->nm', Lpq[:, :, :nocc], Lpq[:, :nocc, :])
     else:
+        if vhf_df:
+            logger.warn(gw, 'vhf_df ignored: occupied orbitals are frozen, '
+                            'using exact exchange instead')
         vk = -mf.get_k(gw.mol, dm)
         vk = reduce(numpy.dot, (mo_coeff.conj().T, vk, mo_coeff))
-        vk = vk[frozen:, frozen:]
 
     # Grids for integration on the imaginary axis
     freqs, wts = _get_scaled_legendre_roots(nw)
@@ -122,7 +149,7 @@ def kernel(gw, mo_energy, mo_coeff, Lpq=None, orbs=None,
                 dsigma = pade_thiele(ep - ef + de, omega_fit[p - orbs[0]], coeff[:, p - orbs[0]]).real - sigmaR.real
             zn = 1.0 / (1.0 - dsigma / de)
             e = ep + zn * (sigmaR.real + vk[p, p].real - v_mf[p, p].real)
-            mo_energy[p + frozen] = e
+            mo_energy[act_idx[p]] = e
         else:
             # self-consistently solve the QP equation
             def quasiparticle(omega):
@@ -133,7 +160,7 @@ def kernel(gw, mo_energy, mo_coeff, Lpq=None, orbs=None,
                 return omega - mf_mo_energy[p] - (sigmaR.real + vk[p, p].real - v_mf[p, p].real)
             try:
                 e = newton(quasiparticle, mf_mo_energy[p], tol=1e-6, maxiter=100)
-                mo_energy[p + frozen] = e
+                mo_energy[act_idx[p]] = e
             except RuntimeError:
                 conv = False
 
@@ -213,15 +240,38 @@ def get_sigma_diag(gw, orbs, Lpq, freqs, wts, iw_cutoff=None):
         else:
             omega[p] = omega_vir.copy()
 
-    for w in range(nw):
-        Pi = get_rho_response(freqs[w], mo_energy, Lpq[:, :nocc, nocc:])
-        Pi_inv = np.linalg.inv(np.eye(naux) - Pi) - np.eye(naux)
+    # Hoist the orbital slices out of the frequency loop (each is a copy).
+    Lpq_ia = numpy.ascontiguousarray(Lpq[:, :nocc, nocc:])
+    Lpq_pn = numpy.ascontiguousarray(Lpq[:, orbs, :])
+    Lpq_np = numpy.ascontiguousarray(Lpq[:, :, orbs])
+    eye = np.eye(naux)
+
+    def _sigma_w(w):
+        '''Self-energy contribution from a single imaginary-frequency point.'''
+        Pi = get_rho_response(freqs[w], mo_energy, Lpq_ia)
+        Pi_inv = np.linalg.inv(eye - Pi) - eye
         g0_occ = wts[w] * emo_occ / (emo_occ**2 + freqs[w]**2)
         g0_vir = wts[w] * emo_vir / (emo_vir**2 + freqs[w]**2)
-        Qnm = einsum('Pnm,PQ->Qnm', Lpq[:, orbs, :], Pi_inv)
-        Wmn = einsum('Qnm,Qmn->mn', Qnm, Lpq[:, :, orbs])
-        sigma[:norbs_occ] += -einsum('mn,mw->nw', Wmn[:, :norbs_occ], g0_occ) / np.pi
-        sigma[norbs_occ:] += -einsum('mn,mw->nw', Wmn[:, norbs_occ:], g0_vir) / np.pi
+        Qnm = einsum('Pnm,PQ->Qnm', Lpq_pn, Pi_inv)
+        Wmn = einsum('Qnm,Qmn->mn', Qnm, Lpq_np)
+        sig = np.zeros((norbs, nw_sigma), dtype=np.complex128)
+        sig[:norbs_occ] = -einsum('mn,mw->nw', Wmn[:, :norbs_occ], g0_occ) / np.pi
+        sig[norbs_occ:] = -einsum('mn,mw->nw', Wmn[:, norbs_occ:], g0_vir) / np.pi
+        return sig
+
+    # The frequency points are independent.  Run them through a thread pool
+    # (the heavy einsum/inv calls release the GIL) with the BLAS backends
+    # pinned to one thread each to avoid oversubscription.
+    nthreads = gw.nthreads if gw.nthreads else lib.num_threads()
+    nthreads = min(nthreads, nw)
+    if nthreads > 1:
+        with _blas_single_thread():
+            with lib.ThreadPoolExecutor(max_workers=nthreads) as ex:
+                for sig in ex.map(_sigma_w, range(nw)):
+                    sigma += sig
+    else:
+        for w in range(nw):
+            sigma += _sigma_w(w)
 
     return sigma, omega
 
@@ -345,13 +395,11 @@ def AC_pade_thiele_diag(sigma, omega):
 
 
 def _mo_energy_without_core(gw, mo_energy):
-    frozen = 0 if gw.frozen is None else gw.frozen
-    return mo_energy[frozen:]
+    return mo_energy[gw.get_frozen_mask()]
 
 
 def _mo_without_core(gw, mo):
-    frozen = 0 if gw.frozen is None else gw.frozen
-    return mo[:, frozen:]
+    return mo[:, gw.get_frozen_mask()]
 
 
 class SpinorGWAC(lib.StreamObject):
@@ -360,8 +408,15 @@ class SpinorGWAC(lib.StreamObject):
     Args:
         mf : a converged spinor mean-field object
             (:class:`socutils.scf.spinor_hf.SpinorSCF` or a subclass).
-        frozen : int
-            Number of frozen core *spinors* (frozen-core only).
+        frozen : int or list of int
+            Frozen *spinor* orbitals.  An integer freezes that many lowest
+            (core) spinors; a list/array freezes exactly those orbital indices
+            and may therefore include high-lying virtuals (frozen virtual).
+
+    Attributes:
+        nthreads : int
+            Number of worker threads for the imaginary-frequency loop
+            (default: ``pyscf.lib.num_threads()``).  Set to 1 to run serially.
 
     Saved results:
         mo_energy : 1D array
@@ -374,7 +429,7 @@ class SpinorGWAC(lib.StreamObject):
     ac = getattr(__config__, 'gw_gw_GW_ac', 'pade')
 
     _keys = {
-        'linearized', 'ac', 'with_df', 'mol', 'frozen',
+        'linearized', 'ac', 'with_df', 'mol', 'frozen', 'nthreads',
         'mo_energy', 'mo_coeff', 'mo_occ', 'sigma',
     }
 
@@ -385,6 +440,7 @@ class SpinorGWAC(lib.StreamObject):
         self.stdout = self.mol.stdout
         self.max_memory = mf.max_memory
         self.frozen = frozen
+        self.nthreads = lib.num_threads()
 
         # DF-GW must use density fitting integrals
         if getattr(mf, 'with_df', None):
@@ -415,6 +471,7 @@ class SpinorGWAC(lib.StreamObject):
             log.info('frozen = %s', self.frozen)
         logger.info(self, 'use perturbative linearized QP eqn = %s', self.linearized)
         logger.info(self, 'analytic continuation method = %s', self.ac)
+        logger.info(self, 'nthreads (frequency loop) = %s', self.nthreads)
         return self
 
     @property
@@ -433,18 +490,31 @@ class SpinorGWAC(lib.StreamObject):
     def nmo(self, n):
         self._nmo = n
 
+    def get_frozen_mask(self):
+        '''Boolean mask over the full spinor MO space; True = active orbital.
+
+        ``frozen`` may be an int (freeze that many lowest/core spinors) or a
+        list/array of orbital indices (freeze exactly those, allowing frozen
+        virtuals).'''
+        moidx = numpy.ones(self._scf.mo_occ.size, dtype=bool)
+        if self.frozen is None:
+            pass
+        elif isinstance(self.frozen, (int, numpy.integer)):
+            moidx[:self.frozen] = False
+        else:
+            moidx[list(self.frozen)] = False
+        return moidx
+
     def get_nocc(self):
         if self._nocc is not None:
             return self._nocc
-        frozen = 0 if self.frozen is None else self.frozen
-        nocc = int(numpy.sum(self._scf.mo_occ > 0))
-        return nocc - frozen
+        moidx = self.get_frozen_mask()
+        return int(numpy.sum(self._scf.mo_occ[moidx] > 0))
 
     def get_nmo(self):
         if self._nmo is not None:
             return self._nmo
-        frozen = 0 if self.frozen is None else self.frozen
-        return len(self._scf.mo_energy) - frozen
+        return int(numpy.sum(self.get_frozen_mask()))
 
     def kernel(self, mo_energy=None, mo_coeff=None, Lpq=None, orbs=None,
                nw=100, vhf_df=False):
