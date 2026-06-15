@@ -429,16 +429,29 @@ def update_amps(cc, t1, t2, t3, eris):
     # CCSD T1/T2 part (socutils, validated == pyscf CCSD)
     t1new, t2new = ZCCSD.update_amps(cc, t1, t2, eris)
 
-    # T3 -> T1
-    t1new = t1new + (0.25 * einsum('mnef,imnaef->ia', ge[o, o, v, v], t3)) / eia
+    # pair-gathers of t3 reused by the T3->T1/T2 couplings (antisymmetric pairs
+    # are summed only over the unique half, ~2x each)
+    op, vp = _t2_pair(nocc, nvir)
+    mm, nn = op[:, 0], op[:, 1]; md, ne = vp[:, 0], vp[:, 1]
+    t3mn = t3[:, mm, nn]                        # (i, [m<n], a, e, f)
+    t3ij = t3[mm, nn]                           # ([i<j], m, a, b, e)
 
-    # T3 -> T2 (path-optimized einsum for the two t3-reading contractions)
-    r2t3 = einsum('me,ijmabe->ijab', fdr[o, v], t3)
-    tmp = 0.5 * _einsum_opt('amef,ijmebf->ijab', ge[v, o, v, v], t3)
-    r2t3 = r2t3 + (tmp - tmp.transpose(0, 1, 3, 2))            # P(ab)
-    tmp = 0.5 * _einsum_opt('mnej,inmabe->ijab', ge[o, o, v, o], t3)
-    r2t3 = r2t3 - (tmp - tmp.transpose(1, 0, 2, 3))            # P(ij)
-    t2new = t2new + r2t3 / eijab
+    # T3 -> T1: <mn||ef> antisym in (m,n) and (e,f), both summed -> unique halves
+    gT1 = ge[o, o, v, v][mm, nn][:, md, ne]                     # ([m<n], [e<f])
+    r1t3 = einsum('PQ,iPaQ->ia', gT1, t3mn[:, :, :, md, ne])
+    t1new = t1new + r1t3 / eia
+
+    # T3 -> T2: each term inherits t3 antisymmetry, so build it on the reduced
+    # (i<j, a<b) block and unpack once.  term A: (i,j),(a,b) pairs; term B:
+    # e<f summed; term C: m<n summed (the (m,n) pair sits reversed in t3 -> sign).
+    rA = einsum('me,PmQe->PQ', fdr[o, v], t3ij[:, :, md, ne])
+    B0 = 2 * einsum('amP,PQmb->Qab', ge[v, o, v, v][:, :, md, ne],
+                    t3ij[:, :, md, :, ne])                      # ([i<j], a, b)
+    rB = 0.5 * (B0[:, md, ne] - B0[:, ne, md])                  # P(ab)
+    C0 = -2 * einsum('Pej,iPQe->ijQ', ge[o, o, v, o][mm, nn],
+                     t3mn[:, :, md, ne])                        # (i, j, [a<b])
+    rC = -0.5 * (C0[mm, nn] - C0[nn, mm])                       # P(ij)
+    t2new = t2new + unpack_t2((rA + rB + rC).ravel(), nocc, nvir) / eijab
 
     # T3 residual.  With the C backend, compute it on the unique antisymmetric
     # block (packed) -- ~2x faster and no full O(o^3 v^3) intermediate -- and
