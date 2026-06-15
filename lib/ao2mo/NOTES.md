@@ -116,8 +116,30 @@ A genuine speedup therefore requires the **C-level s4 outcore**:
     time-reversal, the 2C/Kramers route) and pair it with a complex mmm.
   * fix `nao_pair` bookkeeping for the sph shell-block packing.
 
+## C s4 outcore attempt -- packing convention is the wall
+
+Driving the C e1 (`AO2MOnrr_opt_e1_drv`, reuse `AO2MOfill_nr_s4` + complex
+bra mmm) directly for the full kl range gives a half-transform whose kl axis
+is **nr's shell-block s2kl packing** (count nao*(nao+1)/2 but a shell-block
+*ordering*, NOT simple element-tril). Consequences found by experiment:
+  * `lib.unpack_tril` (element-tril) on it -> wrong (mis-assigned la,si);
+  * a hand-written numpy replica of `AO2MOsortranse2_nr_s2kl`'s shell-block
+    unpack also did not reproduce int2e_spinor -- the exact fill ordering
+    (s4 fill vs s2kl transe2, and the bra element-tril vs kl shell-block) has
+    subtleties that are too error-prone to replicate by hand.
+
+Conclusion: the e2 must be done **in C by copying nr's `AO2MOsortranse2_nr_s2kl`
+verbatim with `double` -> `double complex`** (so the unpack ordering is
+guaranteed identical to the fill), paired with a complex ket mmm (zsymm on the
+symmetric complex AO block + zgemm), and a 2-spin (alpha/beta) driver that
+sums -- mirroring `AO2MOnr_e2_drv`. Then end-to-end s4 in C with a real
+speedup. The e1 (bra) C side already works; only this e2 C remains.
+
+The verified-correct fallback is `nrr_incore.py` (slow but right).
+
 ## Status
 - [x] copied nr/nrr/r C + nr/nrr outcore Python here for study
-- [x] optimized e1 C driver (s4 fill reuse + complex mmm), builds & runs
+- [x] optimized e1 C driver (s4 fill reuse + complex bra mmm), builds & runs
 - [x] **end-to-end CORRECT** spinor s4 transform (nrr_incore.py), verified
-- [ ] C-level s4 e2 (port transe2_nr_s2kl + complex mmm) for an actual speedup
+- [ ] C e2: copy AO2MOsortranse2_nr_s2kl as double complex + complex mmm +
+      2-spin driver (guaranteed packing match) -> end-to-end C s4 + speedup
