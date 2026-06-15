@@ -40,6 +40,23 @@ So the prototype reuses the existing, compiled nr fill
 The kl (ket) side is already handled in Python by `_ao2mo.r_e2(..., aosym)`
 (pass 2), which supports s2kl/s4; only the e1/bra side needed new C.
 
+## Deficiencies of the spinor (nrr / r) outcore path vs nr
+
+1. **No AO permutational symmetry (s2/s4).** `nrr_ao2mo.c` implements only
+   `s1`; the bra half-transform and AO integral generation do ~4x too much
+   work. (nr has s2ij/s2kl/s4.)
+2. **No bra index-order optimization (iltj vs igtj).** The bra half-transform
+   step is O(n2c^2 * first_count); the cheaper order transforms the *smaller*
+   MO count first. `nrr_ao2mo.c` has only `AO2MOmmm_nrr_iltj` (the igtj choice
+   in `nrr_outcore.r_e1` is commented out), and `r_outcore.py` never selects
+   between `AO2MOmmm_r_{iltj,igtj}` either -- so both always transform the
+   first index first. When bra1 > bra2 this wastes max/min on the dominant
+   step (e.g. nv/no ~ 10x for a (v,o) bra at H2O/cc-pVTZ). Fix: add
+   `AO2MOmmm_nrr_igtj` and pick iltj/igtj from i_count vs j_count.
+3. **Symmetry plumbing inconsistent beyond s1** (see Findings below):
+   `_count_naopair` uses `ao_loc_2c`, `general` vs `half_e1` disagree on the
+   s2ij `nao_pair`, and `_ao2mo.r_e2`'s s4 is the 2C/Kramers path.
+
 ## Prototype (this dir)
 
 * `nrr_ao2mo_opt.c` -- optimized e1 driver `AO2MOnrr_opt_e1_drv`: reuses
