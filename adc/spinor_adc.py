@@ -47,9 +47,12 @@ from pyscf import lib
 from pyscf.lib import logger
 
 
-def _davidson(matvec, diag, nroots, max_space=None, tol=1e-9, max_cycle=200):
+def _davidson(matvec, diag, nroots, max_space=None, tol=1e-9, max_cycle=200,
+              return_vecs=False):
     '''Lowest ``nroots`` eigenpairs of a complex Hermitian operator given as a
-    matvec (acting on a flat complex vector) and its real diagonal.
+    matvec (acting on a flat complex vector) and its real diagonal.  Returns
+    the sorted eigenvalues, or ``(eigenvalues, eigenvectors)`` (columns) when
+    ``return_vecs``.
 
     Small spaces are diagonalised densely; larger ones use pyscf's robust
     Davidson (``lib.davidson_nosym1`` with ``pick_real_eigs`` -- the same
@@ -67,8 +70,10 @@ def _davidson(matvec, diag, nroots, max_space=None, tol=1e-9, max_cycle=200):
             e[k] = 1.0
             H[:, k] = matvec(e)
             e[k] = 0.0
-        w = scipy.linalg.eigh(H, eigvals_only=True,
-                              subset_by_index=[0, min(dim - 1, nroots - 1)])
+        nr = min(dim, nroots)
+        w, V = scipy.linalg.eigh(H, subset_by_index=[0, nr - 1])
+        if return_vecs:
+            return w.real, V
         return np.sort(w.real)
 
     diag = np.asarray(diag).real
@@ -90,10 +95,15 @@ def _davidson(matvec, diag, nroots, max_space=None, tol=1e-9, max_cycle=200):
         x0[i, order[i]] = 1.0
     if max_space is None:
         max_space = max(40, 12 + 8 * nroots)
-    conv, e, _ = lib.davidson_nosym1(
+    conv, e, v = lib.davidson_nosym1(
         aop, list(x0), precond, tol=tol, tol_residual=1e-7,
         nroots=nroots, max_cycle=max_cycle, max_space=max_space, verbose=0)
-    return np.sort(np.asarray(e).real)
+    e = np.asarray(e)
+    if return_vecs:
+        srt = np.argsort(e.real)
+        V = np.asarray(v).T[:, srt]            # (dim, nroots)
+        return e.real[srt], V
+    return np.sort(e.real)
 
 
 class _SpinorADCERIs:
@@ -251,10 +261,74 @@ class SpinorADC(lib.StreamObject):
                                + lib.einsum('ijbc,ijac->ab', t2, Voovv.conj()))
         self._eris = eris
         self._t2 = t2
+        self._t1_2_cache = None
+
+    def _t1_2(self):
+        # second-order singles (only for spectroscopic amplitudes; built lazily
+        # so plain IP/EA/EE never pay for the vovv block it needs).  t2.conj()
+        # so the Dyson amplitudes transform correctly under a complex
+        # orbital-phase gauge (holes ~ ph_i*), like sig_ip.
+        if self._t1_2_cache is None:
+            no = self.nocc
+            e = np.asarray(self.mo_energy)
+            eo, ev = e[:no], e[no:]
+            t2 = self._t2
+            eris = self._eris
+            self._t1_2_cache = -(
+                0.5 * lib.einsum('akcd,ikcd->ia', eris.vovv, t2.conj())
+                - 0.5 * lib.einsum('klic,klac->ia', eris.ooov, t2.conj())
+            ) / (eo[:, None] - ev[None, :])
+        return self._t1_2_cache
+
+    def _ip_trans_moments(self, no, nv, oo):
+        '''IP-ADC(2) spectroscopic-amplitude (Dyson) vectors T_p for every
+        spinor p, in the packed (1h + 2h1p[i<j]) basis -- shape (nmo, dim).'''
+        t2 = self._t2
+        t1_2 = self._t1_2()
+        ok, ol = oo[:, 0], oo[:, 1]
+        nop = len(oo)
+        dim = no + nop * nv
+        nmo = no + nv
+        T = np.zeros((nmo, dim), dtype=complex)
+        # occupied p: 1h-dominated, 2h1p part zero at this order
+        for p in range(no):
+            T[p, p] = 1.0
+            T[p, :no] += -0.25 * lib.einsum('kcd,ikcd->i', t2[p], t2.conj())
+        # virtual p: 2nd-order 1h (t1_2) + the t2 amplitudes in 2h1p
+        for a in range(nv):
+            p = no + a
+            T[p, :no] = t1_2[:, a]
+            T[p, no:] = t2.conj()[ok, ol, a, :].reshape(-1)
+        return T
+
+    def _ea_trans_moments(self, no, nv, vv):
+        '''EA-ADC(2) attachment (Dyson) vectors T_p for every spinor p, in the
+        packed (1p + 2p1h[a<b]) basis -- shape (nmo, dim).'''
+        t2 = self._t2
+        t1_2 = self._t1_2()
+        vc, vd = vv[:, 0], vv[:, 1]
+        nvp = len(vv)
+        dim = nv + nvp * no
+        nmo = no + nv
+        T = np.zeros((nmo, dim), dtype=complex)
+        # virtual p: 1p-dominated, 2p1h part zero at this order
+        for a in range(nv):
+            p = no + a
+            T[p, a] = 1.0
+            T[p, :nv] += -0.25 * lib.einsum('klc,klbc->b', t2[:, :, a, :], t2.conj())
+        # occupied p: 2nd-order 1p (t1_2) + the t2 amplitudes in 2p1h
+        # (1p and 2p1h parts carry the same relative sign -- as in IP)
+        for i in range(no):
+            T[i, :nv] = t1_2[i, :]
+            T[i, nv:] = t2.conj()[:, i, :, :][:, vc, vd].T.reshape(-1)   # [(c<d), j]
+        return T
 
     # -- IP ------------------------------------------------------------------
-    def ip_adc2(self, nroots=6, method='adc(2)', ncvs=None):
+    def ip_adc2(self, nroots=6, method='adc(2)', ncvs=None, with_spec=False):
         '''Spinor IP ionization energies (lowest ``nroots``).
+
+        With ``with_spec`` (strict ADC(2), full space) also returns the
+        spectroscopic factors (pole strengths) ``P_n = sum_p |<N-1,n|a_p|0>|^2``.
 
         ``method`` selects strict ADC(2) (default) or ADC(2)-x, which adds the
         first-order interaction in the 2h1p block (hole-hole ladder 0.5<mn||ij>
@@ -335,7 +409,21 @@ class SpinorADC(lib.StreamObject):
                 return matvec(xf)[keep]
 
             return _davidson(cvs_matvec, diag[keep], nroots)
+
+        if with_spec:
+            if method != 'adc(2)':
+                raise NotImplementedError('spec factors only for adc(2)')
+            w, V = _davidson(matvec, diag, nroots, return_vecs=True)
+            T = self._ip_trans_moments(no, nv, oo)         # (nmo, dim)
+            P = np.sum(np.abs(T.conj() @ V) ** 2, axis=0)  # (nroots,)
+            srt = np.argsort(w)
+            return w[srt], P[srt]
         return _davidson(matvec, diag, nroots)
+
+    def ip_adc2_spec(self, nroots=6):
+        '''Spinor IP-ADC(2) energies and spectroscopic factors (pole
+        strengths).  Returns ``(energies, pole_strengths)``.'''
+        return self.ip_adc2(nroots, with_spec=True)
 
     def ip_cvs_adc2(self, nroots=6, ncvs=2, method='adc(2)'):
         '''Spinor CVS-IP-ADC(2) core-ionization energies.  ``ncvs`` is the
@@ -348,7 +436,7 @@ class SpinorADC(lib.StreamObject):
         return self.ip_adc2(nroots, method='adc(2)-x')
 
     # -- EA ------------------------------------------------------------------
-    def ea_adc2(self, nroots=6, method='adc(2)'):
+    def ea_adc2(self, nroots=6, method='adc(2)', with_spec=False):
         '''Spinor EA electron affinities (lowest ``nroots``).
 
         ``method`` selects strict ADC(2) (default) or ADC(2)-x, which adds the
@@ -414,11 +502,25 @@ class SpinorADC(lib.StreamObject):
             dd = (dd + vvvv_d[:, None]
                   - ovov_d.T[vc, :] - ovov_d.T[vd, :])
         diag[nv:] = dd.reshape(-1)
+
+        if with_spec:
+            if adc2x:
+                raise NotImplementedError('spec factors only for adc(2)')
+            w, V = _davidson(matvec, diag, nroots, return_vecs=True)
+            T = self._ea_trans_moments(no, nv, vv)         # (nmo, dim)
+            P = np.sum(np.abs(T.conj() @ V) ** 2, axis=0)
+            srt = np.argsort(w)
+            return w[srt], P[srt]
         return _davidson(matvec, diag, nroots)
 
     def ea_adc2x(self, nroots=6):
         '''Spinor EA-ADC(2)-x electron affinities.'''
         return self.ea_adc2(nroots, method='adc(2)-x')
+
+    def ea_adc2_spec(self, nroots=6):
+        '''Spinor EA-ADC(2) energies and spectroscopic factors (pole
+        strengths).  Returns ``(energies, pole_strengths)``.'''
+        return self.ea_adc2(nroots, with_spec=True)
 
 
     # -- EE ------------------------------------------------------------------

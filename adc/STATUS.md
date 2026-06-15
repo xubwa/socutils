@@ -17,10 +17,24 @@ Branch: `claude/stoic-maxwell-996i5j`.
 | | EA-ADC(2)-x | Davidson matvec | done, exact |
 | | EE-ADC(2)-x | Davidson matvec | done, exact |
 | | CVS-IP-ADC(2) | Davidson matvec | done, exact |
-| `test_spinor_harness.py` | two-gate validation | — | MP2/IP/EA/EE/IP-x/EA-x/EE-x/CVS green |
+| | IP/EA spectroscopic factors | Dyson amplitudes | done, exact |
+| `test_spinor_harness.py` | two-gate validation | — | MP2/IP/EA/EE/IP-x/EA-x/EE-x/CVS/spec green |
 
-Not done: ADC(3), spectroscopic factors / transition moments,
+Not done: ADC(3), EE transition moments / oscillator strengths,
 G0W0 (xfail in the harness), Kramers-symmetry exploitation.
+
+* **IP/EA spectroscopic factors** (`ip_adc2_spec`, `ea_adc2_spec`): pole
+  strengths `P_n = sum_p |<N-+1,n|a_p(^dag)|0>|^2` from the ADC(2) Dyson
+  amplitudes.  Needs the 2nd-order singles `t1_2` (stored in `_build`).
+  Transition moments: occ-p 1h `delta - 0.25 t2 t2*`, virt-p 2h1p `t2*`
+  + 2nd-order 1h `t1_2`; EA is the mirror.  **All conjugations fixed by
+  Gate-2**: the Dyson amplitudes must use `t2.conj()` (holes ~ ph*), like
+  `sig_ip` -- matching pyscf alone (real reference) does NOT pin them; only
+  the complex-rotation-invariance gate does.  Matches pyscf UADC pole
+  strengths to ~1e-8 (IP 0.924, EA 0.987...).  Note: within a degenerate
+  energy manifold individual P are basis-dependent (solver picks an arbitrary
+  basis); only the manifold sum is gauge-invariant -- the Gate-2 test compares
+  manifold sums.
 
 * **CVS-IP-ADC(2)** (`ip_cvs_adc2(nroots, ncvs)`): core-valence separation by
   projection -- restrict the 1h space to a core hole and the 2h1p space to

@@ -131,6 +131,29 @@ def run_spinor_ea(mf, nroots=8):
     return {"e": np.asarray(SpinorADC(mf).ea_adc2(nroots))}
 
 
+def run_spinor_ip_spec(mf, nroots=8):
+    """socutils spinor IP-ADC(2) energies + pole strengths (spec factors)."""
+    e, p = SpinorADC(mf).ip_adc2_spec(nroots)
+    return {"e": np.asarray(e), "P": np.asarray(p)}
+
+
+def run_spinor_ea_spec(mf, nroots=8):
+    """socutils spinor EA-ADC(2) energies + pole strengths."""
+    e, p = SpinorADC(mf).ea_adc2_spec(nroots)
+    return {"e": np.asarray(e), "P": np.asarray(p)}
+
+
+def _pyscf_spec(mol, method_type, nroots=8):
+    from pyscf import adc
+    mf = scf.UHF(mol).run()
+    a = adc.ADC(mf)
+    a.method = "adc(2)"
+    a.method_type = method_type
+    a.verbose = 0
+    e, v, p, x = a.kernel(nroots=nroots)
+    return np.asarray(e), np.asarray(p)
+
+
 def run_spinor_ea_x(mf, nroots=12):
     """socutils spinor EA-ADC(2)-x."""
     return {"e": np.asarray(SpinorADC(mf).ea_adc2x(nroots))}
@@ -386,6 +409,68 @@ def test_gate2_ea_adc2x_invariance(mf):
     np.testing.assert_allclose(rot, base, atol=1e-7, rtol=0,
                                err_msg="EA-ADC(2)-x roots changed under complex"
                                        " rotation -> conjugation bug")
+
+
+def _lowest_pole(e, P):
+    """pole strength of the lowest-energy root (degenerate roots share it)."""
+    i = int(np.argmin(np.real(e)))
+    return float(np.real(e)[i]), float(np.real(P)[i])
+
+
+def test_gate1_ip_spec(mol, mf):
+    """spinor IP-ADC(2) pole strength of the main line matches PySCF UADC."""
+    e, P = run_spinor_ip_spec(mf)["e"], run_spinor_ip_spec(mf)["P"]
+    em, Pm = _lowest_pole(e, P)
+    er, Pr = _pyscf_spec(mol, "ip")
+    _, Pref = _lowest_pole(er, Pr)
+    np.testing.assert_allclose(Pm, Pref, atol=1e-5, rtol=0,
+                               err_msg="IP-ADC(2) pole strength")
+
+
+def test_gate1_ea_spec(mol, mf):
+    """spinor EA-ADC(2) pole strength of the main line matches PySCF UADC."""
+    d = run_spinor_ea_spec(mf)
+    em, Pm = _lowest_pole(d["e"], d["P"])
+    er, Pr = _pyscf_spec(mol, "ea")
+    _, Pref = _lowest_pole(er, Pr)
+    np.testing.assert_allclose(Pm, Pref, atol=1e-5, rtol=0,
+                               err_msg="EA-ADC(2) pole strength")
+
+
+def _manifold_pole_sums(e, P, decimals=6):
+    """Total pole strength summed within each (degenerate) energy manifold.
+    Individual roots' P are basis-dependent inside a degenerate manifold (the
+    solver picks an arbitrary basis); only the manifold sum is gauge-invariant."""
+    e = np.real(np.asarray(e)); P = np.real(np.asarray(P))
+    keys = np.round(e, decimals)
+    out = {}
+    for k, p in zip(keys, P):
+        out[k] = out.get(k, 0.0) + p
+    return np.array([out[k] for k in sorted(out)])
+
+
+def test_gate2_ip_spec_invariance(mf):
+    """IP manifold-summed pole strengths invariant under a legal rotation."""
+    E, C = mo_energy(mf), mo_coeff(mf)
+    U = legal_rotation(E, seed=41)
+    b = run_spinor_ip_spec(mf); r = run_spinor_ip_spec(set_mo(mf, C @ U, E))
+    base = _manifold_pole_sums(b["e"], b["P"])
+    rot = _manifold_pole_sums(r["e"], r["P"])
+    n = min(len(base), len(rot), 3)
+    np.testing.assert_allclose(rot[:n], base[:n], atol=1e-6, rtol=0,
+                               err_msg="IP pole-strength sums changed under rotation")
+
+
+def test_gate2_ea_spec_invariance(mf):
+    """EA manifold-summed pole strengths invariant under a legal rotation."""
+    E, C = mo_energy(mf), mo_coeff(mf)
+    U = legal_rotation(E, seed=43)
+    b = run_spinor_ea_spec(mf); r = run_spinor_ea_spec(set_mo(mf, C @ U, E))
+    base = _manifold_pole_sums(b["e"], b["P"])
+    rot = _manifold_pole_sums(r["e"], r["P"])
+    n = min(len(base), len(rot), 3)
+    np.testing.assert_allclose(rot[:n], base[:n], atol=1e-6, rtol=0,
+                               err_msg="EA pole-strength sums changed under rotation")
 
 
 def test_gate1_ip_cvs(mol, mf):
