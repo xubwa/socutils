@@ -120,15 +120,42 @@ def _davidson(matvec, diag, nroots, max_space=None, tol=1e-9, max_cycle=200):
     return np.sort(w)
 
 
-def _antisym_mo_eri(mol, mo_coeff):
-    '''Full antisymmetrised physicist integrals ``W[p,q,r,s] = <pq||rs>`` in
-    the spinor MO basis (all spin-orbitals).'''
-    eri_ao = mol.intor('int2e_spinor')           # chemist (pq|rs)
-    c = mo_coeff
-    g = lib.einsum('pqrs,pi,qj,rk,sl->ijkl', eri_ao, c.conj(), c, c.conj(), c)
-    w = g.transpose(0, 2, 1, 3)                   # <ij|kl> = (ik|jl)
-    w = w - w.transpose(0, 1, 3, 2)               # antisymmetrise
-    return w
+class _SpinorADCERIs:
+    '''Antisymmetrised physicist MO integral blocks ``<pq||rs>`` needed by
+    spinor MP2/ADC(2)/ADC(2)-x (no vvvv: those methods never need it).
+
+    Built block-wise from the real spherical AO integrals (int2e_sph),
+    recombined into the j-spinor MO basis by pyscf's C ``nrr_outcore`` driver
+    -- the same path socutils' ZCCSD uses -- so the full complex ``int2e_spinor``
+    AO tensor and the all-virtual block are never formed.
+    '''
+
+    def __init__(self, mol, mo_coeff, nocc):
+        from pyscf.ao2mo import nrr_outcore
+        o = mo_coeff[:, :nocc]
+        v = mo_coeff[:, nocc:]
+
+        def blk(P, Q, R, S):
+            # <PQ||RS> = (PR|QS) - (PS|QR)  (chemist -> antisym physicist)
+            nP, nQ = P.shape[1], Q.shape[1]
+            nR, nS = R.shape[1], S.shape[1]
+            a = np.asarray(nrr_outcore.general_iofree(
+                mol, (P, R, Q, S), intor='int2e_sph', motype='j-spinor'))
+            a = a.reshape(nP, nR, nQ, nS).transpose(0, 2, 1, 3)
+            b = np.asarray(nrr_outcore.general_iofree(
+                mol, (P, S, Q, R), intor='int2e_sph', motype='j-spinor'))
+            b = b.reshape(nP, nS, nQ, nR).transpose(0, 2, 3, 1)
+            return a - b
+
+        self.oovv = blk(o, o, v, v)               # <ij||ab>
+        self.oooo = blk(o, o, o, o)               # <ij||kl>
+        self.ooov = blk(o, o, o, v)               # <ij||ka>
+        self.voov = blk(v, o, o, v)               # <ai||jb>
+        self.vovv = blk(v, o, v, v)               # <ai||bc>
+        # permutations / Hermitian conjugates of the above (no new transforms)
+        self.ovvo = self.voov.transpose(1, 0, 3, 2)            # <ia||bj>
+        self.vvvo = self.vovv.conj().transpose(2, 3, 0, 1)     # <bc||ak>
+        self.ovoo = self.ooov.conj().transpose(2, 3, 0, 1)     # <ia||jk>
 
 
 class SpinorADC(lib.StreamObject):
@@ -152,7 +179,7 @@ class SpinorADC(lib.StreamObject):
         self.mo_occ = mf.mo_occ if mo_occ is None else mo_occ
         self.mo_energy = mf.mo_energy
 
-        self._W = None
+        self._eris = None
         self._t2 = None
         self._sig_ip = None
         self._sig_ea = None
@@ -167,15 +194,13 @@ class SpinorADC(lib.StreamObject):
 
     # -- shared intermediates ------------------------------------------------
     def _build(self):
-        if self._W is not None:
+        if self._eris is not None:
             return
         no = self.nocc
-        W = _antisym_mo_eri(self.mol, self.mo_coeff)
+        eris = _SpinorADCERIs(self.mol, np.asarray(self.mo_coeff), no)
         e = np.asarray(self.mo_energy)
         eo, ev = e[:no], e[no:]
-        o = slice(0, no)
-        v = slice(no, self.nmo)
-        Voovv = W[o, o, v, v]                      # <ij||ab>
+        Voovv = eris.oovv                          # <ij||ab>
         d = (eo[:, None, None, None] + eo[None, :, None, None]
              - ev[None, None, :, None] - ev[None, None, None, :])
         t2 = Voovv / d
@@ -186,7 +211,7 @@ class SpinorADC(lib.StreamObject):
                                + lib.einsum('jkab,ikab->ij', t2, Voovv.conj()))
         self._sig_ea = 0.25 * (lib.einsum('ijac,ijbc->ab', t2.conj(), Voovv)
                                + lib.einsum('ijbc,ijac->ab', t2, Voovv.conj()))
-        self._W = W
+        self._eris = eris
         self._t2 = t2
 
     # -- IP ------------------------------------------------------------------
@@ -204,18 +229,16 @@ class SpinorADC(lib.StreamObject):
         nv = nmo - no
         e = np.asarray(self.mo_energy)
         eo, ev = e[:no], e[no:]
-        W = self._W
-        o = slice(0, no)
-        v = slice(no, nmo)
+        eris = self._eris
 
         Mss = -np.diag(eo).astype(complex) - self._sig_ip
-        Wooov = W[o, o, o, v]                      # <kl||ia>
+        Wooov = eris.ooov                          # <kl||ia>
         adc2x = (method == 'adc(2)-x')
         if not adc2x and method != 'adc(2)':
             raise NotImplementedError(method)
         if adc2x:
-            Woooo = W[o, o, o, o]                  # <mn||ij>
-            Wovvo = W[o, v, v, o]                  # <ma||ei>
+            Woooo = eris.oooo                      # <mn||ij>
+            Wovvo = eris.ovvo                      # <ma||ei>
 
         oo = np.array([(k, l) for k in range(no) for l in range(k + 1, no)],
                       dtype=int).reshape(-1, 2)
@@ -250,9 +273,9 @@ class SpinorADC(lib.StreamObject):
         dd = ev[None, :] - (eo[ok] + eo[ol])[:, None]      # (nop, nv)
         if adc2x:
             # exact 2h1p diagonal: + <ij||ij> - <ia||ia> - <ja||ja>
-            oovv_d = np.einsum('ijij->ij', W[o, o, o, o]).real
-            ovov_d = np.einsum('iaia->ia', W[o, v, o, v]).real
-            dd = (dd + oovv_d[ok, ol][:, None]
+            oooo_d = np.einsum('ijij->ij', eris.oooo).real     # <ij||ij>
+            ovov_d = -np.einsum('iaai->ia', eris.ovvo).real    # <ia||ia>
+            dd = (dd + oooo_d[ok, ol][:, None]
                   - ovov_d[ok, :] - ovov_d[ol, :])
         diag[no:] = dd.reshape(-1)
         return _davidson(matvec, diag, nroots)
@@ -272,12 +295,9 @@ class SpinorADC(lib.StreamObject):
         nv = nmo - no
         e = np.asarray(self.mo_energy)
         eo, ev = e[:no], e[no:]
-        W = self._W
-        o = slice(0, no)
-        v = slice(no, nmo)
 
         Mpp = np.diag(ev).astype(complex) - self._sig_ea
-        Wvovv = W[v, o, v, v]                      # <ai||cd>
+        Wvovv = self._eris.vovv                    # <ai||cd>
 
         vv = np.array([(c, d) for c in range(nv) for d in range(c + 1, nv)],
                       dtype=int).reshape(-1, 2)
@@ -324,20 +344,18 @@ class SpinorADC(lib.StreamObject):
         nv = nmo - no
         e = np.asarray(self.mo_energy)
         eo, ev = e[:no], e[no:]
-        W = self._W
-        o = slice(0, no)
-        v = slice(no, nmo)
+        eris = self._eris
         t2 = self._t2
-        Voovv = W[o, o, v, v]
+        Voovv = eris.oovv
 
         # ph-ph second-order non-separable term
         Lam = 0.5 * (lib.einsum('imae,jmbe->iajb', t2.conj(), Voovv)
                      + lib.einsum('jmbe,imae->iajb', t2, Voovv.conj()))
-        Wajib = W[v, o, o, v]                      # <aj||ib>
-        Wvovv = W[v, o, v, v]                      # <ak||bc>
-        Wooov = W[o, o, o, v]                      # <jk||ib>
-        Wvvvo = W[v, v, v, o]                      # <bc||ak>
-        Wovoo = W[o, v, o, o]                      # <ib||jk>
+        Wajib = eris.voov                          # <aj||ib>
+        Wvovv = eris.vovv                          # <ak||bc>
+        Wooov = eris.ooov                          # <jk||ib>
+        Wvvvo = eris.vvvo                          # <bc||ak>
+        Wovoo = eris.ovoo                          # <ib||jk>
         sig_ip, sig_ea = self._sig_ip, self._sig_ea
         Dijab = (-eo[:, None, None, None] - eo[None, :, None, None]
                  + ev[None, None, :, None] + ev[None, None, None, :])
