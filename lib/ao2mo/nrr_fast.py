@@ -17,11 +17,38 @@ self-test at the bottom and NOTES.md.
 import os
 import ctypes
 import _ctypes
+import subprocess
 import numpy as np
 from pyscf import lib
 from pyscf.gto.moleintor import make_cintopt, make_loc, ascint3
 
-_libopt = ctypes.CDLL(os.path.join(os.path.dirname(__file__), 'libnrr_opt.so'))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_SO = os.path.join(_HERE, 'libnrr_opt.so')
+_SRC = os.path.join(_HERE, 'nrr_ao2mo_opt.c')
+
+
+def _ensure_lib():
+    '''Build libnrr_opt.so from nrr_ao2mo_opt.c if missing or stale.
+
+    The .so is gitignored, so it is (re)built on demand against the installed
+    pyscf libraries (all needed headers live under pyscf/lib).'''
+    if os.path.exists(_SO) and os.path.getmtime(_SO) >= os.path.getmtime(_SRC):
+        return
+    pi = os.path.dirname(os.path.abspath(lib.__file__))      # pyscf/lib
+    import glob
+    openblas = glob.glob(os.path.join(pi, 'libopenblas*.so')) or \
+        glob.glob(os.path.join(pi, 'deps', 'lib', 'libopenblas*.so'))
+    cmd = ['gcc', '-shared', '-fPIC', '-fopenmp', '-O2', _SRC, '-o', _SO,
+           '-I' + pi, '-I' + os.path.join(pi, 'deps', 'include'), '-I' + _HERE,
+           '-L' + pi, '-lao2mo', '-lnp_helper', '-lcvhf',
+           '-L' + os.path.join(pi, 'deps', 'lib'), '-lcint',
+           *openblas,
+           '-Wl,-rpath,' + pi, '-Wl,-rpath,' + os.path.join(pi, 'deps', 'lib')]
+    subprocess.run(cmd, check=True)
+
+
+_ensure_lib()
+_libopt = ctypes.CDLL(_SO)
 _libao2mo = lib.load_library('libao2mo')
 
 
