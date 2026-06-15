@@ -20,18 +20,19 @@ Branch: `claude/stoic-maxwell-996i5j`.
 | | IP/EA spectroscopic factors | Dyson amplitudes | done, exact |
 | `test_spinor_harness.py` | two-gate validation | — | MP2/IP/EA/EE/IP-x/EA-x/EE-x/CVS/spec green |
 
-In progress: **ADC(3)** -- ground-state foundation done (`energy_mp3`: MP2+MP3
-corr E, validated == pyscf adc(3) `e_corr` to 1e-15, Gate-2 invariant; the
-2nd-order doubles residual `t2_2 = R/D2` it uses is the intermediate the
-ADC(3) self-energies are built from).  Remaining: the 3rd-order IP/EA/EE
-excitation self-energy `M_ij`/`M_ab` (~15-20 spinor terms) and the 2nd-order
-1h-2h1p coupling -- a precise spin-orbital derivation (pyscf's spin-blocked
-source does NOT map term-by-term; cross-spin folds into the antisym spinor
-integral) with conjugations to be pinned by Gate-2.  The ADC(2)-x extended
-2h1p/2h1p block (reused by ADC(3)) is already done.
+In progress: **ADC(3)** -- ground-state foundation done (`energy_mp3`, validated
+== pyscf adc(3) `e_corr` to 1e-15, Gate-2 invariant).  **Symbolic derivation
+toolchain validated** (`adc/wick_derive.py`): `wicked` (built from source --
+see the module docstring) derives the spin-orbital ADC equations, which map
+1:1 onto the spinor code; it reproduces the MP2 residual and the 2nd-order
+IP/EA self-energy (`[V,T2]` o|o / v|v blocks) -- matching the hand-coded
+`_sig_ip` to 1e-17.  Remaining (now de-risked, generate-and-validate): the
+3rd-order self-energy `[V,T2_2] + (1/2)[[V,T2],T2]`, the 2nd-order 1h<->2h1p
+coupling, gauge conjugations via Gate-2, assemble + validate IP/EA/EE-ADC(3).
+The ADC(2)-x 2h1p/2h1p block (reused by ADC(3)) is already done.
 
-Not done: ADC(3) excitation self-energy (see above), EE transition moments /
-oscillator strengths, G0W0 (xfail in the harness), Kramers symmetry.
+Not done: ADC(3) excitation self-energy (in progress, see above), EE
+transition moments, G0W0 (xfail), Kramers symmetry.
 
 * **IP/EA spectroscopic factors** (`ip_adc2_spec`, `ea_adc2_spec`): pole
   strengths `P_n = sum_p |<N-+1,n|a_p(^dag)|0>|^2` from the ADC(2) Dyson
