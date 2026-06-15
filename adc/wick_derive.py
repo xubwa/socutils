@@ -99,6 +99,16 @@ def derive_self_energy_3rd():
     (HF/6-31g adc(3): 0.67303, 0.7888, 1.62475, 26.31466; adc(2): 0.66321,
     0.77998, 1.61228, 26.27638 -- the latter reproduced exactly by
     -diag(eo) - _sig_ip).
+
+    Assembly findings (so far): with
+        M_ij(3) = -diag(eo) - sig_ip + sig3,   sig3 = B^(3) + metric
+        B^(3)  = (0.5 t2_2 . <ab||jk> + h.c.) + (T2dag.V.T2 block)
+        metric = 0.5 (eps_i+eps_j) S^(2),  S^(2) = -0.5 t2*_ikab t2_jkab
+    the SIGN is +sig3 (not -), and this reproduces the *valence* IP M_ij
+    eigenvalues to ~1e-4 (0.7889 vs 0.7888; 0.67241 vs 0.67303).  The core
+    (26.273 vs 26.315) and the 1.618 state remain off -> still missing the
+    t1_2 (V.T1_2 / singles) precursor terms and possibly higher V.T2.T2
+    contributions; add those + finalise Gate-2 conjugations to close it.
     '''
     import wicked as w
     w.reset_space()
