@@ -60,6 +60,10 @@ if HAVE_ASYM_PACK:
     _lib.ccsdt_drive_to_pack.restype = None
     _lib.ccsdt_drive_to_pack.argtypes = [_cp, _cp, ctypes.c_double,
                                          ctypes.c_int, ctypes.c_int]
+    for _fn in ('ccsdt_pp_to_pack', 'ccsdt_hh_to_pack'):
+        _f = getattr(_lib, _fn)
+        _f.restype = None
+        _f.argtypes = [_cp, _cp, ctypes.c_double, ctypes.c_int, ctypes.c_int]
 
 
 def _ptr(a):
@@ -170,3 +174,15 @@ def drive_to_pack(Rp, Xr, scale, nocc, nvir):
     = (free_occ, [<], [<], free_vir); never forms the full O(o^3 v^3) tensor.'''
     Xc = np.ascontiguousarray(Xr, dtype=np.complex128)
     _lib.ccsdt_drive_to_pack(_ptr(Rp), _ptr(Xc), float(scale), nocc, nvir)
+
+
+def pp_to_pack(Rp, Xpp, scale, nocc, nvir):
+    '''Rp += scale * P(c/ab)(X), X = (notri, vpair, nv) = (i<j<k, [a<b], c).'''
+    Xc = np.ascontiguousarray(Xpp, dtype=np.complex128)
+    _lib.ccsdt_pp_to_pack(_ptr(Rp), _ptr(Xc), float(scale), nocc, nvir)
+
+
+def hh_to_pack(Rp, Xhh, scale, nocc, nvir):
+    '''Rp += scale * P(k/ij)(X), X = (opair, no, nvtri) = ([i<j], k, a<b<c).'''
+    Xc = np.ascontiguousarray(Xhh, dtype=np.complex128)
+    _lib.ccsdt_hh_to_pack(_ptr(Rp), _ptr(Xc), float(scale), nocc, nvir)

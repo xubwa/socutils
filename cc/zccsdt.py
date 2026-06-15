@@ -322,33 +322,40 @@ def _t3_residual_packed(t2, t3, ge, fdr, nocc, nmo):
 
     Rp = np.zeros(notri * nvtri, dtype=np.complex128)
 
-    # drive (fullasym, full X): W_vvvo / W_vooo with t3-dressing folded in
+    # pair- and triple-gathers reused across several terms (gather once)
+    t2mn = t2[mm, nn]                       # (m<n, a, b)
+    goovvmn = goovv[mm, nn]                 # (m<n, e, f)
+    goovvP = goovv[:, :, md, ne]            # (m, n, [e<f])
+    t2P = t2[:, :, md, ne]                  # (i, j, [a<b])
+    t3mn = t3[:, mm, nn]                    # (i, [m<n], a, b, c)
+    t3occ = t3[oi0, oi1, oi2]              # (i<j<k, d, b, c)
+
+    # drive: W_vvvo / W_vooo with t3-dressing folded in.  term1 is antisym in
+    # (j,k) and (a,b); term2 in (i,j) and (b,c).  Both map to the canonical
+    # reduced layout (free_occ, [<], [<], free_vir), so build each on its reduced
+    # block (~4x), sum, and fullasym->packed in one kernel.
     Wvvvo = gvvvo.copy()
     Wvvvo += 0.5 * einsum('mnei,mnab->abei', oovo, t2)
     tmp = einsum('mbef,miaf->abei', ovvv, t2)
     Wvvvo -= (tmp - tmp.transpose(1, 0, 2, 3))
     Wvvvo -= einsum('me,miab->abei', fov, t2)
-    Wvvvo += einsum('Pef,iPabf->abei', goovv[mm, nn], t3[:, mm, nn])
+    Wvvvo += einsum('Pef,iPabf->abei', goovvmn, t3mn)
     Wvooo = govoo.copy()
     tmp2 = einsum('mnie,jnbe->mbij', ooov, t2)
     Wvooo -= (tmp2 - tmp2.transpose(0, 1, 3, 2)).transpose(0, 1, 3, 2)
     Wvooo -= (0.5 * einsum('mbef,ijef->mbij', ovvv, t2)).transpose(0, 1, 3, 2)
-    Wvooo += einsum('mnP,ijnaP->maji', goovv[:, :, md, ne], t3[:, :, :, :, md, ne])
-    # term1 is antisym in (j,k) and (a,b); term2 in (i,j) and (b,c).  Both map
-    # to the canonical reduced layout (free_occ, [<], [<], free_vir), so build
-    # each on its reduced block (~4x), sum, and fullasym->packed in one kernel.
-    Xr1 = einsum('Qei,Pec->iPQc', Wvvvo[md, ne], t2[mm, nn])
-    Xr2 = einsum('maP,mkQ->kPQa', Wvooo[:, :, nn, mm], t2[:, :, md, ne])
+    Wvooo += einsum('mnP,ijnaP->maji', goovvP, t3[:, :, :, :, md, ne])
+    Xr1 = einsum('Qei,Pec->iPQc', Wvvvo[md, ne], t2mn)
+    Xr2 = einsum('maP,mkQ->kPQa', Wvooo[:, :, nn, mm], t2P)
     _clib.drive_to_pack(Rp, Xr1 + Xr2, -0.25, nocc, nvir)
 
     # F_vv (P(a/bc), occ-restricted t3)
-    Feff_vv = fvv - einsum('Paf,Pdf->ad', t2[mm, nn], goovv[mm, nn])
-    t3occ = t3[oi0, oi1, oi2]                                   # (notri,v,v,v)
+    Feff_vv = fvv - einsum('Paf,Pdf->ad', t2mn, goovvmn)
     Xfvv = _einsum_opt('ad,Idbc->Iabc', Feff_vv, t3occ)
     _clib.pvir_to_pack(Rp, Xfvv, 1.0, 0, nocc, nvir)
 
     # F_oo (-P(i/jk), vir-restricted t3)
-    Feff_oo = foo + einsum('mnP,inP->mi', goovv[:, :, md, ne], t2[:, :, md, ne])
+    Feff_oo = foo + einsum('mnP,inP->mi', goovvP, t2P)
     t3vir = t3[:, :, :, vi0, vi1, vi2]                          # (o,o,o,nvtri)
     Xfoo = _einsum_opt('mi,mjkA->ijkA', Feff_oo, t3vir)
     _clib.pocc_to_pack(Rp, Xfoo, -1.0, 0, nocc, nvir)
@@ -357,29 +364,24 @@ def _t3_residual_packed(t2, t3, ge, fdr, nocc, nmo):
     # antisymmetry, so build it on the reduced (i,a,[j<k],[b<c]) block (~4x
     # fewer flops, no full O(o^3 v^3) intermediate)
     Weff_ovvo = ovvo + einsum('mnde,inae->madi', goovv, t2)
-    t3r = t3[:, mm, nn][:, :, :, md, ne]            # (m, [j<k], d, [b<c])
+    t3r = t3mn[:, :, :, md, ne]                     # (m, [j<k], d, [b<c])
     Xr = einsum('madi,mPdQ->iaPQ', Weff_ovvo, t3r)  # (i, a, [j<k], [b<c])
     _clib.ring_to_pack(Rp, Xr, 1.0, nocc, nvir)
 
-    # pp ladder (P(c/ab), occ-restricted t3, summed pair d<e packed)
-    Weff_vvvv = vvvv + einsum('Pab,Pde->abde', t2[mm, nn], goovv[mm, nn])
+    # pp ladder (P(c/ab), occ-restricted t3, summed pair d<e packed); feed the
+    # (i<j<k, [a<b], c) block straight to the kernel (no full-vir scatter)
+    Weff_vvvv = vvvv + einsum('Pab,Pde->abde', t2mn, goovvmn)
     vvvv_pp = Weff_vvvv[md[:, None], ne[:, None], md[None, :], ne[None, :]]
-    t3r = t3occ[:, md, ne, :]                                   # (notri, de<, c)
-    Xpp = einsum('QP,IPc->IQc', vvvv_pp, t3r)                   # (notri, ab<, c)
-    Xocc = np.zeros((notri, nvir, nvir, nvir), dtype=np.complex128)
-    Xocc[:, md, ne, :] = Xpp
-    Xocc[:, ne, md, :] = -Xpp
-    _clib.pvir_to_pack(Rp, Xocc, 1.0, 1, nocc, nvir)
+    Xpp = einsum('QP,IPc->IQc', vvvv_pp, t3occ[:, md, ne, :])   # (notri, [a<b], c)
+    _clib.pp_to_pack(Rp, Xpp, 1.0, nocc, nvir)
 
-    # hh ladder (P(k/ij), vir-restricted t3, summed pair m<n packed)
-    Weff_oooo = oooo + einsum('mnP,ijP->mnij', goovv[:, :, md, ne], t2[:, :, md, ne])
+    # hh ladder (P(k/ij), vir-restricted t3, summed pair m<n packed); feed the
+    # ([i<j], k, a<b<c) block straight to the kernel (no full-occ scatter)
+    Weff_oooo = oooo + einsum('mnP,ijP->mnij', goovvP, t2P)
     oooo_pp = Weff_oooo[mm[:, None], nn[:, None], mm[None, :], nn[None, :]]
-    t3hr = t3[mm, nn][:, :, vi0, vi1, vi2]                      # (mn<, k, nvtri)
-    Xhh = einsum('PQ,PkA->QkA', oooo_pp, t3hr)                  # (ij<, k, nvtri)
-    Yvir = np.zeros((nocc, nocc, nocc, nvtri), dtype=np.complex128)
-    Yvir[mm, nn] = Xhh
-    Yvir[nn, mm] = -Xhh
-    _clib.pocc_to_pack(Rp, Yvir, 1.0, 1, nocc, nvir)
+    t3hr = t3[mm, nn][:, :, vi0, vi1, vi2]                      # (m<n, k, nvtri)
+    Xhh = einsum('PQ,PkA->QkA', oooo_pp, t3hr)                  # ([i<j], k, nvtri)
+    _clib.hh_to_pack(Rp, Xhh, 1.0, nocc, nvir)
     return Rp
 
 

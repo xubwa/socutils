@@ -196,6 +196,60 @@ void ccsdt_drive_to_pack(double complex *Rp, const double complex *Xr,
     free(opi); free(vpi);
 }
 
+/* ---- pp ladder: Xpp (notri, vpair, nv) = (I, [a<b], c); P(c/ab) into packed.
+ *   P(c/ab)(X)[abc] = X[abc]-X[cba]-X[acb], X antisym in (a,b), so for a<b<c
+ *   = Xpp[I,vp(a,b),c] + Xpp[I,vp(b,c),a] - Xpp[I,vp(a,c),b]. */
+void ccsdt_pp_to_pack(double complex *Rp, const double complex *Xpp,
+                      const double scale, const int nocc, const int nvir)
+{
+    const long nv = nvir, nvt = ntri(nv), vpair = nv*(nv-1)/2;
+    const long sc = 1, sQ = nv, sI = vpair*nv;
+    int *vpi = (int*)malloc((size_t)nv*nv*sizeof(int));
+    { int p = 0; for (int x = 0; x < nv; x++) for (int y = x+1; y < nv; y++)
+                     { vpi[x*nv+y] = p; vpi[y*nv+x] = p; p++; } }
+#pragma omp parallel for schedule(static)
+    for (long po = 0; po < ntri(nocc); po++) {
+        const double complex *XI = Xpp + po*sI;
+        long pv = 0;
+        for (int a = 0; a < nvir; a++)
+        for (int b = a+1; b < nvir; b++)
+        for (int c = b+1; c < nvir; c++) {
+            const double complex val = XI[(long)vpi[a*nv+b]*sQ + c]
+                                     + XI[(long)vpi[b*nv+c]*sQ + a]
+                                     - XI[(long)vpi[a*nv+c]*sQ + b];
+            Rp[po*nvt + pv] += scale * val;
+            pv++;
+        }
+    }
+    free(vpi);
+}
+
+/* ---- hh ladder: Xhh (opair, no, nvtri) = ([i<j], k, A); P(k/ij) into packed.
+ *   P(k/ij)(X)[ijk] = X[ijk]-X[kji]-X[ikj], X antisym in (i,j), so for i<j<k
+ *   = Xhh[op(i,j),k,A] + Xhh[op(j,k),i,A] - Xhh[op(i,k),j,A]. */
+void ccsdt_hh_to_pack(double complex *Rp, const double complex *Xhh,
+                      const double scale, const int nocc, const int nvir)
+{
+    const long no = nocc, nvt = ntri(nvir);
+    const long sk = nvt, sP = no*nvt;
+    int *opi = (int*)malloc((size_t)no*no*sizeof(int));
+    { int p = 0; for (int x = 0; x < no; x++) for (int y = x+1; y < no; y++)
+                     { opi[x*no+y] = p; opi[y*no+x] = p; p++; } }
+#pragma omp parallel for schedule(static)
+    for (int i = 0; i < nocc; i++) {
+        long po = base_tri(i, no);
+        for (int j = i+1; j < nocc; j++)
+        for (int k = j+1; k < nocc; k++, po++) {
+            const double complex *Xij = Xhh + (long)opi[i*no+j]*sP + (long)k*sk;
+            const double complex *Xjk = Xhh + (long)opi[j*no+k]*sP + (long)i*sk;
+            const double complex *Xik = Xhh + (long)opi[i*no+k]*sP + (long)j*sk;
+            for (long pv = 0; pv < nvt; pv++)
+                Rp[po*nvt + pv] += scale * (Xij[pv] + Xjk[pv] - Xik[pv]);
+        }
+    }
+    free(opi);
+}
+
 /* ---- full: X is (no,no,no,nv,nv,nv) ---- */
 void ccsdt_full_to_pack(double complex *Rp, const double complex *X,
                         const double scale, const int op,
