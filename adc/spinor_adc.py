@@ -128,9 +128,11 @@ class _SpinorADCERIs:
     pays for the blocks it touches (e.g. IP never forms the expensive
     three-virtual ``vovv`` block).  Each block is transformed from the real
     spherical AO integrals (int2e_sph) and recombined into the j-spinor MO
-    basis by pyscf's C ``nrr_outcore`` driver -- the same path socutils' ZCCSD
-    uses -- so the full complex ``int2e_spinor`` AO tensor and the all-virtual
-    block are never formed.  Unique chemist sub-blocks are cached and the
+    basis by the C ``socutils.lib.ao2mo.nrr_fast`` driver (s4 AO permutational
+    symmetry + iltj/igtj index ordering, ~4x faster than pyscf's s1-only
+    ``nrr_outcore`` on the big virtual blocks) -- so the full complex
+    ``int2e_spinor`` AO tensor and the all-virtual block are never formed.
+    Unique chemist sub-blocks are cached and the
     particle-exchange symmetry ``(pq|rs)=(rs|pq)`` is reused (transpose only).
     '''
 
@@ -151,8 +153,8 @@ class _SpinorADCERIs:
             out = cache[ex].transpose(2, 3, 0, 1)
             cache[key] = out
             return out
-        from pyscf.ao2mo import nrr_outcore
-        g = np.asarray(nrr_outcore.general_iofree(
+        from socutils.lib.ao2mo import nrr_fast
+        g = np.asarray(nrr_fast.general(
             self.mol, (A, B, C, D), intor='int2e_sph', motype='j-spinor'))
         g = g.reshape(A.shape[1], B.shape[1], C.shape[1], D.shape[1])
         cache[key] = g

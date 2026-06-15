@@ -139,15 +139,15 @@ class SpinorMP2(lib.StreamObject):
         nocc = self.nocc
         orbo = mo_coeff[:, :nocc]
         orbv = mo_coeff[:, nocc:]
+        nvir = orbv.shape[1]
 
-        # Chemist spinor Coulomb integrals (pq|rs) in the AO spinor basis.
-        eri_ao = self.mol.intor('int2e_spinor')
-
-        # Half-then-half transform to the chemist MO block (ia|jb).
-        tmp = lib.einsum('pqrs,pi->iqrs', eri_ao, orbo.conj())
-        tmp = lib.einsum('iqrs,qa->iars', tmp, orbv)
-        tmp = lib.einsum('iars,rj->iajs', tmp, orbo.conj())
-        ovov = lib.einsum('iajs,sb->iajb', tmp, orbv)
+        # Chemist MO block (ia|jb) via the C s4 spinor AO->MO driver -- avoids
+        # forming the full complex int2e_spinor AO tensor.
+        from socutils.lib.ao2mo import nrr_fast
+        ovov = np.asarray(nrr_fast.general(
+            self.mol, (orbo, orbv, orbo, orbv),
+            intor='int2e_sph', motype='j-spinor'))
+        ovov = ovov.reshape(nocc, nvir, nocc, nvir)
 
         # Physicist <ij|ab> = (ia|jb); antisymmetrise the virtual indices.
         phys = ovov.transpose(0, 2, 1, 3)
