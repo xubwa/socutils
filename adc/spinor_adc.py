@@ -22,11 +22,13 @@ the particle-hole ring <ma||ei>, i.e. the EOM-IP Hbar(2h1p,2h1p) with t=0).
 Because ADC(2)-x splits the doublet/quartet satellites, the spinor IP-ADC(2)-x
 roots match PySCF UADC (spin-orbital), not RADC.
 
-IP/EA secular matrices are Hermitian and diagonalised directly for the lowest
-roots (the satellite 2h1p/2p1h block is diagonal at strict ADC(2)).  EE uses a
-Davidson matvec (the 2p2h block is too large to store densely); its 1p1h block
-is CIS plus the second-order self-energies and a non-separable ph-ph term, the
-1p1h<->2p2h coupling is first order and the 2p2h block is diagonal.  Orbital
+All three are solved by a single complex-Hermitian Davidson matvec over the
+restricted (i<j / a<b) antisymmetric satellite space, so the cost is O(N^5)
+per iteration rather than the O(N^9) of an explicit dense diagonalisation
+(small satellite spaces fall back to a dense solve for robustness).  The EE
+1p1h block is CIS plus the second-order self-energies and a non-separable
+ph-ph term, the 1p1h<->2p2h coupling is first order and the 2p2h block is
+diagonal (strict ADC(2)).  Orbital
 energies are taken from the mean field (canonical); under a legal canonical
 rotation (per-orbital phase or a unitary mix within an exactly degenerate /
 Kramers block) the orbital energies are unchanged and the eigenvalues are
@@ -49,8 +51,11 @@ def _davidson(matvec, diag, nroots, max_space=None, tol=1e-9, max_cycle=200):
     '''Lowest ``nroots`` eigenpairs of a complex Hermitian operator given as a
     matvec (acting on a flat complex vector) and its real diagonal.'''
     dim = diag.size
-    if dim <= max(400, 6 * nroots):
-        # small: just build the dense matrix by probing the matvec
+    if dim <= max(2000, 8 * nroots):
+        # small (incl. the typical IP/EA satellite spaces): build the dense
+        # matrix by probing the matvec and diagonalise directly -- robust and
+        # avoids Davidson's missing-root failure mode for dense, near-
+        # degenerate satellite spectra.
         H = np.empty((dim, dim), dtype=complex)
         e = np.zeros(dim, dtype=complex)
         for k in range(dim):
@@ -61,11 +66,14 @@ def _davidson(matvec, diag, nroots, max_space=None, tol=1e-9, max_cycle=200):
                               subset_by_index=[0, min(dim - 1, nroots - 1)])
         return np.sort(w.real)
 
+    # iterative block Davidson; start from a generous set of guess vectors
+    # (2*nroots) so near-degenerate low roots are not skipped.
+    nguess = min(dim, max(2 * nroots, nroots + 12))
     if max_space is None:
-        max_space = min(dim, max(2 * nroots + 20, 8 * nroots))
+        max_space = min(dim, max(nguess + 2 * nroots + 20, 10 * nroots))
     order = np.argsort(diag.real)
-    V = np.zeros((dim, nroots), dtype=complex)
-    for i in range(nroots):
+    V = np.zeros((dim, nguess), dtype=complex)
+    for i in range(nguess):
         V[order[i], i] = 1.0
     V, _ = np.linalg.qr(V)
     AV = np.column_stack([matvec(V[:, i]) for i in range(V.shape[1])])
@@ -181,22 +189,15 @@ class SpinorADC(lib.StreamObject):
         self._W = W
         self._t2 = t2
 
-    def _solve(self, M, nroots):
-        '''Lowest ``nroots`` eigenvalues of a Hermitian matrix M.'''
-        n = M.shape[0]
-        if nroots >= n:
-            return np.sort(scipy.linalg.eigh(M, eigvals_only=True))
-        hi = min(n - 1, 4 * nroots + 8)
-        w = scipy.linalg.eigh(M, eigvals_only=True, subset_by_index=[0, hi])
-        return np.sort(w)
-
     # -- IP ------------------------------------------------------------------
     def ip_adc2(self, nroots=6, method='adc(2)'):
         '''Spinor IP ionization energies (lowest ``nroots``).
 
         ``method`` selects strict ADC(2) (default) or ADC(2)-x, which adds the
-        first-order interaction in the 2h1p block (hole-hole ladder + the
-        particle-hole ring).
+        first-order interaction in the 2h1p block (hole-hole ladder 0.5<mn||ij>
+        plus the particle-hole ring <ma||ei>).  Solved by a complex-Hermitian
+        Davidson matvec over the restricted (i<j) 2h1p space, so the cost is
+        O(N^5) per iteration rather than the O(N^9) of a dense diagonalisation.
         '''
         self._build()
         no, nmo = self.nocc, self.nmo
@@ -207,71 +208,65 @@ class SpinorADC(lib.StreamObject):
         o = slice(0, no)
         v = slice(no, nmo)
 
-        # 1h block: -e_i delta_ij - static self-energy
         Mss = -np.diag(eo).astype(complex) - self._sig_ip
-
-        # 2h1p configurations (k<l occupied pair, a virtual)
-        pairs = [(k, l) for k in range(no) for l in range(k + 1, no)]
-        npair = len(pairs)
-        ndd = npair * nv
-        Vooov = W[o, o, o, v]                      # <kl||ia>
-        Csd = np.zeros((no, ndd), dtype=complex)
-        Ddd = np.empty(ndd)
-        for p, (k, l) in enumerate(pairs):
-            Csd[:, p * nv:(p + 1) * nv] = Vooov[k, l, :, :]
-            Ddd[p * nv:(p + 1) * nv] = ev - eo[k] - eo[l]
-
-        dim = no + ndd
-        M = np.zeros((dim, dim), dtype=complex)
-        M[:no, :no] = Mss
-        M[:no, no:] = Csd
-        M[no:, :no] = Csd.conj().T
-        M[no:, no:] = np.diag(Ddd).astype(complex)
-
-        if method == 'adc(2)-x':
-            M[no:, no:] += self._ip_doubles_x(pairs, nv)
-        elif method != 'adc(2)':
+        Wooov = W[o, o, o, v]                      # <kl||ia>
+        adc2x = (method == 'adc(2)-x')
+        if not adc2x and method != 'adc(2)':
             raise NotImplementedError(method)
-        return self._solve(M, nroots)
+        if adc2x:
+            Woooo = W[o, o, o, o]                  # <mn||ij>
+            Wovvo = W[o, v, v, o]                  # <ma||ei>
+
+        oo = np.array([(k, l) for k in range(no) for l in range(k + 1, no)],
+                      dtype=int).reshape(-1, 2)
+        nop = len(oo)
+        ok, ol = oo[:, 0], oo[:, 1]
+        dim = no + nop * nv
+
+        def unpack(rp):
+            r2 = np.zeros((no, no, nv), dtype=complex)
+            blk = rp.reshape(nop, nv)
+            r2[ok, ol, :] = blk
+            r2[ol, ok, :] = -blk
+            return r2
+
+        def pack(s2):
+            return s2[ok, ol, :].reshape(-1)
+
+        def matvec(x):
+            r1 = x[:no]
+            r2 = unpack(x[no:])
+            s1 = Mss @ r1 + 0.5 * lib.einsum('klia,kla->i', Wooov, r2)
+            s2 = (ev[None, None, :] - eo[:, None, None] - eo[None, :, None]) * r2
+            s2 += lib.einsum('klia,i->kla', Wooov.conj(), r1)
+            if adc2x:
+                s2 += 0.5 * lib.einsum('mnij,mna->ija', Woooo, r2)
+                t = lib.einsum('maei,mje->ija', Wovvo, r2)
+                s2 += t - t.transpose(1, 0, 2)
+            return np.concatenate([s1, pack(s2)])
+
+        diag = np.empty(dim)
+        diag[:no] = Mss.diagonal().real
+        dd = ev[None, :] - (eo[ok] + eo[ol])[:, None]      # (nop, nv)
+        if adc2x:
+            # exact 2h1p diagonal: + <ij||ij> - <ia||ia> - <ja||ja>
+            oovv_d = np.einsum('ijij->ij', W[o, o, o, o]).real
+            ovov_d = np.einsum('iaia->ia', W[o, v, o, v]).real
+            dd = (dd + oovv_d[ok, ol][:, None]
+                  - ovov_d[ok, :] - ovov_d[ol, :])
+        diag[no:] = dd.reshape(-1)
+        return _davidson(matvec, diag, nroots)
 
     def ip_adc2x(self, nroots=6):
         '''Spinor IP-ADC(2)-x ionization energies.'''
         return self.ip_adc2(nroots, method='adc(2)-x')
 
-    def _ip_doubles_x(self, pairs, nv):
-        '''First-order 2h1p-2h1p interaction block (ADC(2)-x), restricted
-        (k<l) basis: hole-hole ladder 0.5<mn||ij> + particle-hole ring
-        <ma||ei> (the EOM-IP Hbar(2h1p,2h1p) with t=0).'''
-        no = self.nocc
-        W = self._W
-        o = slice(0, no)
-        v = slice(no, self.nmo)
-        Woooo = W[o, o, o, o]                      # <mn||ij>
-        Wovvo = W[o, v, v, o]                      # <ma||ei>
-        npair = len(pairs)
-        ndd = npair * nv
-
-        def s2dd(r2):                              # r2[i,j,a], antisym in i,j
-            s = 0.5 * lib.einsum('mnij,mna->ija', Woooo, r2)
-            t = lib.einsum('maei,mje->ija', Wovvo, r2)
-            s += t - t.transpose(1, 0, 2)
-            return s
-
-        Mdd = np.zeros((ndd, ndd), dtype=complex)
-        for q, (k, l) in enumerate(pairs):
-            for b in range(nv):
-                r2 = np.zeros((no, no, nv), dtype=complex)
-                r2[k, l, b] = 1.0
-                r2[l, k, b] = -1.0
-                s = s2dd(r2)
-                col = np.array([s[k2, l2, b2]
-                                for (k2, l2) in pairs for b2 in range(nv)])
-                Mdd[:, q * nv + b] = col
-        return Mdd
-
     # -- EA ------------------------------------------------------------------
     def ea_adc2(self, nroots=6):
-        '''Spinor EA-ADC(2) electron affinities (lowest ``nroots``).'''
+        '''Spinor EA-ADC(2) electron affinities (lowest ``nroots``).
+
+        Davidson matvec over the restricted (a<b) 2p1h space.
+        '''
         self._build()
         no, nmo = self.nocc, self.nmo
         nv = nmo - no
@@ -281,29 +276,38 @@ class SpinorADC(lib.StreamObject):
         o = slice(0, no)
         v = slice(no, nmo)
 
-        # 1p block: +e_a delta_ab - static self-energy
         Mpp = np.diag(ev).astype(complex) - self._sig_ea
+        Wvovv = W[v, o, v, v]                      # <ai||cd>
 
-        # 2p1h configurations (c<d virtual pair, i hole). Coupling <ai||cd>
-        # keeps the external particle 'a' in the bra (correct phase gauge).
-        Vovvv = W[o, v, v, v]                      # <ia||cd>; <ai||cd> = -<ia||cd>
-        pairs = [(c, d) for c in range(nv) for d in range(c + 1, nv)]
-        npair = len(pairs)
-        ndd = npair * no
-        Cps = np.zeros((nv, ndd), dtype=complex)
-        Ddd = np.empty(ndd)
-        for p, (c, d) in enumerate(pairs):
-            # <ai||cd> = -<ia||cd> = -Vovvv[i,a,c,d]
-            Cps[:, p * no:(p + 1) * no] = -Vovvv[:, :, c, d].T
-            Ddd[p * no:(p + 1) * no] = ev[c] + ev[d] - eo
+        vv = np.array([(c, d) for c in range(nv) for d in range(c + 1, nv)],
+                      dtype=int).reshape(-1, 2)
+        nvp = len(vv)
+        vc, vd = vv[:, 0], vv[:, 1]
+        dim = nv + nvp * no
 
-        dim = nv + ndd
-        M = np.zeros((dim, dim), dtype=complex)
-        M[:nv, :nv] = Mpp
-        M[:nv, nv:] = Cps
-        M[nv:, :nv] = Cps.conj().T
-        M[nv:, nv:] = np.diag(Ddd).astype(complex)
-        return self._solve(M, nroots)
+        def unpack(rp):
+            r2 = np.zeros((nv, nv, no), dtype=complex)
+            blk = rp.reshape(nvp, no)
+            r2[vc, vd, :] = blk
+            r2[vd, vc, :] = -blk
+            return r2
+
+        def pack(s2):
+            return s2[vc, vd, :].reshape(-1)
+
+        def matvec(x):
+            r1 = x[:nv]
+            r2 = unpack(x[nv:])
+            s1 = Mpp @ r1 + 0.5 * lib.einsum('aicd,cdi->a', Wvovv, r2)
+            s2 = (ev[:, None, None] + ev[None, :, None]
+                  - eo[None, None, :]) * r2
+            s2 += lib.einsum('aicd,a->cdi', Wvovv.conj(), r1)
+            return np.concatenate([s1, pack(s2)])
+
+        diag = np.empty(dim)
+        diag[:nv] = Mpp.diagonal().real
+        diag[nv:] = ((ev[vc] + ev[vd])[:, None] - eo[None, :]).reshape(-1)
+        return _davidson(matvec, diag, nroots)
 
 
     # -- EE ------------------------------------------------------------------
