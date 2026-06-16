@@ -87,6 +87,24 @@ VALIDATION TARGET (un-masked -- compare the self-energy, not eigenvalues):
    first, then the full matrix, then eigenvalues; finally assemble the full
    IP-ADC(3) (M_ij + coupling + 2h1p) and check vs pyscf 0.57686 + Gate-2.
    Mirror o|o->v|v for EA; EE is the pp/hh/ph analog.
+
+PROGRESS (goal: ADC(3) excitation self-energy validated vs pyscf)
+----------------------------------------------------------------
+* 1h self-energy sig3 = -(VT1b + TVT) [VT1b = [V,T1] o|o; TVT = T2dag.V.T2 o|o,
+  8 terms], built from t1b (= [V,T2] o|v residual /D) and t2.  VALIDATED to
+  1e-6 / 0 against pyscf uadc_ip.get_imds M_ij(3) for HF and Ne (6-31g).
+* BUT it is INCOMPLETE for general molecules: H2O/LiH give ~2e-3 error and a
+  4-term (VT2b,VT1b,TVT,metric) multi-system least-squares fit has residual
+  ~1e-3 with non-integer coeffs -> terms are missing.
+* ROOT CAUSE (order-2 diagnostic): the explicit-F0 ISR cannot be evaluated
+  literally -- F0@T2b computed as eps*t2b gives ||F0-dressing||~0.8 instead of
+  cancelling (it must be eliminated via the MP amplitude equations
+  [F0,T2]+V=0, D2*t2b=residual).  Eliminating F0 generates EXTRA amplitude-form
+  terms (more t2.t2.oooo and t2.t2.ovvo/oovv than TVT's, plus the t2_2 pieces),
+  which are the missing terms.  The complete set = the pyscf M_ij(3) amplitude
+  formula (~20 terms); finish by deriving them F0-eliminated via wicked (or
+  translating pyscf's spin-blocked M_ij(3) with the spin-orbital coeffs wicked
+  gives) and validating diag(sig3) over HF+Ne+H2O+LiH simultaneously.
 '''
 import numpy as np
 
