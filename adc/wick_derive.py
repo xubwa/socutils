@@ -114,12 +114,23 @@ def derive_self_energy_3rd():
     etc. are 4th order (T1^(1)=0 by Brillouin, so the leading T1 is T1^(2)).
     Adding it moves the core the right way (26.273 -> 26.307, target 26.315)
     but *overshoots* the valence (0.67241 -> 0.6846) for either sign of t1 --
-    i.e. no single t1 coefficient fixes both.  Diagnosis: a compensating
-    coefficient/sign error remains in the B^(3) (T2dag.V.T2) block (it
-    under-contributes to BOTH valence and core), so the next step is a
-    term-by-term check of those 8 contractions against the pyscf M_ij matrix
-    (not just eigenvalues).  Everything else (toolchain, metric, sign, t2_2,
-    t1_2 structure) is in place; this is the bounded remaining debug.
+    i.e. no single t1 coefficient fixes both.
+
+    UN-MASKING the eigenvalue test: the right target is the *diagonal* of sig3
+    vs pyscf's Sigma^(3) = (M_ij(3) - M_ij(2)); the eigenvalue agreement was
+    MASKED by the large -eps Koopmans diagonal.
+        diag(my sig3)  ==  -diag(M_ij(3)_pyscf - M_ij(2)_pyscf)
+    pyscf Sigma^(3) diag (HF/6-31g, sign-flipped, core first):
+        [0.03828, 0.0125, 0.00879, 0.00982, 0.00982]
+    my sig3 diag (no t1):
+        [-0.00358, 0.0057, 0.00895, 0.0092, 0.0092]
+    -> OUTER valence ~right (0.00895 vs 0.00879) but CORE (-0.00358 vs 0.03828)
+    and inner (0.0057 vs 0.0125) are wrong.  The self-energy is substantially
+    off for the deep states (the eigenvalue near-match was misleading); B^(3)
+    needs a term-by-term rebuild against this diagonal target (the dominant
+    core piece -- a 0.5 t2_2.<ab||jk> style term -- is mis-scaled/sign-flipped).
+    Toolchain + metric + validation target are solid; the B^(3) coefficients
+    are the real remaining work.
     '''
     import wicked as w
     w.reset_space()
