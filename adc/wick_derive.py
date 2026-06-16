@@ -46,6 +46,47 @@ Build from source instead::
     cmake --build build -j4
     cp build/wicked/_wicked*.so wicked/        # next to the python package
     # then:  PYTHONPATH=<repo>/wicked python ...
+
+FINISH RECIPE (do the whole ISR in one clean pass, fresh context)
+-----------------------------------------------------------------
+Do NOT cherry-pick commutators (that was the earlier mistake -- it dropped the
+metric and the F0 dressing).  Build the full intermediate-state representation
+systematically and let wicked emit every term:
+
+1. Ground-state cluster op  T = T2 (order 1) + T2_2 + T1_2 (order 2), with
+   t2 = <ij||ab>/D, t2_2 = (pp+hh+ph residual on t2)/D2  (== SpinorADC
+   .energy_mp3's R/D2, validated), t1_2 from the [V,T2] o|v residual.
+2. Precursor secular matrix and overlap (IP 1h block = the "o|o" block):
+       B = [ e^{T+} (F0 + V - E0) e^{T} ]_oo      to 3rd order
+       S = [ e^{T+} e^{T} ]_oo                    to 2nd order   (S^(1)=0)
+   *** Include the F0 (Fock) dressing -- the V-only terms are INCOMPLETE; the
+   missing F0 pieces are why the valence diag came out ~half. ***  Expand
+   e^{T}=1+T+T^2/2, e^{T+}=1+T++T+^2/2 and keep all connected order<=3 (B) /
+   <=2 (S) o|o contractions via wt.contract(...).to_manybody_equation.
+3. Symmetric orthonormalisation (the metric):
+       M = S^{-1/2} B S^{-1/2} = B - 1/2 (S^(2) B^(0) + B^(0) S^(2)) + ...
+   with B^(0) = the Koopmans -eps diagonal.  S^(2) = +0.5 t2.t2+ (wicked sign).
+4. Couplings: the 1h<->2h1p block is the "o|oov"/"oov|o" block of the same
+   dressed (F0+V) to 2nd order; the 2h1p/2h1p block is 1st order = the existing
+   ADC(2)-x extended block (oooo ladder + ovvo ring).
+5. Gauge: apply t2 -> t2.conj() on the hole-carrying amplitudes (holes ~ ph*),
+   as for _sig_ip / the spectroscopic factors; fix by Gate-2.
+
+VALIDATION TARGET (un-masked -- compare the self-energy, not eigenvalues):
+   diag(my sig3)  ==  -diag( M_ij(3) - M_ij(2) )_pyscf
+   where M_ij comes from:
+       from pyscf.adc import uadc_ip, uadc_amplitudes
+       a = adc.ADC(uhf); a.method='adc(3)'; a.method_type='ip'
+       eris = a.transform_integrals()
+       a.e_corr,a.t1,a.t2 = uadc_amplitudes.compute_amplitudes_energy(a,eris)
+       Ma,Mb = uadc_ip.get_imds(a, eris)        # Ma = alpha 1h block
+   HF/6-31g target (sign-flipped to the M = -diag(eo)-sig convention, core 1st):
+       Sigma^(3) diag = [0.03828, 0.0125, 0.00879, 0.00982, 0.00982]
+   (M_ij(2) is reproduced exactly by -diag(eo) - SpinorADC._sig_ip; the spinor
+   diag is the spatial diag with each value Kramers-doubled.)  Match the DIAG
+   first, then the full matrix, then eigenvalues; finally assemble the full
+   IP-ADC(3) (M_ij + coupling + 2h1p) and check vs pyscf 0.57686 + Gate-2.
+   Mirror o|o->v|v for EA; EE is the pp/hh/ph analog.
 '''
 import numpy as np
 
