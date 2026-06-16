@@ -109,6 +109,17 @@ def derive_self_energy_3rd():
     (26.273 vs 26.315) and the 1.618 state remain off -> still missing the
     t1_2 (V.T1_2 / singles) precursor terms and possibly higher V.T2.T2
     contributions; add those + finalise Gate-2 conjugations to close it.
+
+    Update: the t1_2 term IS [V,T1] o|o = t1_2[k,a] <ja||ik> (+ h.c.); T1d.V.T2
+    etc. are 4th order (T1^(1)=0 by Brillouin, so the leading T1 is T1^(2)).
+    Adding it moves the core the right way (26.273 -> 26.307, target 26.315)
+    but *overshoots* the valence (0.67241 -> 0.6846) for either sign of t1 --
+    i.e. no single t1 coefficient fixes both.  Diagnosis: a compensating
+    coefficient/sign error remains in the B^(3) (T2dag.V.T2) block (it
+    under-contributes to BOTH valence and core), so the next step is a
+    term-by-term check of those 8 contractions against the pyscf M_ij matrix
+    (not just eigenvalues).  Everything else (toolchain, metric, sign, t2_2,
+    t1_2 structure) is in place; this is the bounded remaining debug.
     '''
     import wicked as w
     w.reset_space()
