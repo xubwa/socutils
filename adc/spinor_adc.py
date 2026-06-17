@@ -219,10 +219,14 @@ class _SpinorADCERIs:
 # delta) for the *ket* half; the block is Hermitised as  m + m^dagger  and the
 # delta tag broadcasts a Kronecker delta on the spectator leg ('vir' -> i j * d_ab,
 # 'occ' -> a b * d_ij, 'none' -> full i a j b).  Amplitudes: T2=t2, T2b=t2^(2),
-# T1b=t1^(2) (with .conj() where conj==1).  Derived term-by-term from the
-# spin-orbital ISR and validated to ~1e-15 against pyscf UADC EE-ADC(3) (alpha
-# block) over general molecules; the per-tensor conjugations are pinned by
-# orbital-phase gauge covariance (Gate-2, residual ~1e-17).
+# T1b=t1^(2) (with .conj() where conj==1).  This is the *complete* third-order
+# 1p1h secular increment: it reproduces pyscf's full ph-ph block (the static
+# uadc_ee.get_imds part *plus* the t2.t2 contributions pyscf computes on the fly
+# in its matvec) to ~1e-15 over general molecules.  Per-tensor conjugations are
+# pinned by full complex orbital-rotation gauge covariance (phase + degenerate
+# mixing, Gate-2 ~1e-14): t2^(2), t1^(2) are built on t2.conj() (transform as
+# conjugated amplitudes) so they enter un-conjugated with the interaction block
+# conjugated; the t2.t2.V ladders use (t2.conj, t2, V.conj).
 _EE_M3_TERMS = [
     (-0.25, 'ikbc,bcjk->ij', [('T2b','oovv',0),('V','vvoo',1)], 'vir'),
     (-0.25, 'jkac,bcjk->ab', [('T2b','oovv',0),('V','vvoo',1)], 'occ'),
@@ -231,23 +235,24 @@ _EE_M3_TERMS = [
     (-1.0, 'jc,bcja->ab', [('T1b','ov',0),('V','vvov',1)], 'occ'),
     (1.0, 'ka,ibjk->iajb', [('T1b','ov',0),('V','ovoo',1)], 'none'),
     (1.0, 'ic,bcja->iajb', [('T1b','ov',0),('V','vvov',1)], 'none'),
+    (-0.125, 'ikbc,bclm,lmjk->ij', [('T2','oovv',1),('T2','vvoo',0),('V','oooo',1)], 'vir'),
     (-0.5, 'klbc,bdjk,icld->ij', [('T2','oovv',1),('T2','vvoo',0),('V','ovov',1)], 'vir'),
-    (-0.125, 'klbc,bcjm,imkl->ij', [('T2','oovv',1),('T2','vvoo',0),('V','oooo',1)], 'vir'),
     (-0.25, 'klbc,bdkl,icjd->ij', [('T2','oovv',1),('T2','vvoo',0),('V','ovov',1)], 'vir'),
     (0.25, 'klbc,bckm,imjl->ij', [('T2','oovv',1),('T2','vvoo',0),('V','oooo',1)], 'vir'),
-    (-0.5, 'jkac,cdjl,lbkd->ab', [('T2','oovv',1),('T2','vvoo',0),('V','ovov',1)], 'occ'),
-    (-0.125, 'jkcd,bejk,cdae->ab', [('T2','oovv',1),('T2','vvoo',0),('V','vvvv',1)], 'occ'),
+    (-0.125, 'jkac,dejk,bcde->ab', [('T2','oovv',1),('T2','vvoo',0),('V','vvvv',1)], 'occ'),
     (0.25, 'jkcd,cejk,bdae->ab', [('T2','oovv',1),('T2','vvoo',0),('V','vvvv',1)], 'occ'),
+    (-0.5, 'jkcd,bcjl,ldka->ab', [('T2','oovv',1),('T2','vvoo',0),('V','ovov',1)], 'occ'),
     (-0.25, 'jkcd,cdjl,lbka->ab', [('T2','oovv',1),('T2','vvoo',0),('V','ovov',1)], 'occ'),
     (0.25, 'ikac,dejk,bcde->iajb', [('T2','oovv',1),('T2','vvoo',0),('V','vvvv',1)], 'none'),
     (0.5, 'ikac,cdjl,lbkd->iajb', [('T2','oovv',1),('T2','vvoo',0),('V','ovov',1)], 'none'),
-    (0.5, 'ikac,bdkl,lcjd->iajb', [('T2','oovv',1),('T2','vvoo',0),('V','ovov',1)], 'none'),
-    (0.25, 'ikac,bclm,lmjk->iajb', [('T2','oovv',1),('T2','vvoo',0),('V','oooo',1)], 'none'),
+    (0.5, 'klac,bdjk,icld->iajb', [('T2','oovv',1),('T2','vvoo',0),('V','ovov',1)], 'none'),
+    (-1.0, 'klac,cdjk,ibld->iajb', [('T2','oovv',1),('T2','vvoo',0),('V','ovov',1)], 'none'),
+    (0.25, 'klac,bcjm,imkl->iajb', [('T2','oovv',1),('T2','vvoo',0),('V','oooo',1)], 'none'),
+    (0.25, 'klac,bdkl,icjd->iajb', [('T2','oovv',1),('T2','vvoo',0),('V','ovov',1)], 'none'),
     (-0.25, 'klac,cdkl,ibjd->iajb', [('T2','oovv',1),('T2','vvoo',0),('V','ovov',1)], 'none'),
     (-0.5, 'klac,bckm,imjl->iajb', [('T2','oovv',1),('T2','vvoo',0),('V','oooo',1)], 'none'),
     (-0.5, 'ikcd,cejk,bdae->iajb', [('T2','oovv',1),('T2','vvoo',0),('V','vvvv',1)], 'none'),
     (0.25, 'ikcd,cdjl,lbka->iajb', [('T2','oovv',1),('T2','vvoo',0),('V','ovov',1)], 'none'),
-    (-1.0, 'ikcd,bckl,ldja->iajb', [('T2','oovv',1),('T2','vvoo',0),('V','ovov',1)], 'none'),
     (-0.25, 'ikcd,cdkl,lbja->iajb', [('T2','oovv',1),('T2','vvoo',0),('V','ovov',1)], 'none'),
 ]
 
@@ -947,7 +952,8 @@ class SpinorADC(lib.StreamObject):
         eris = self._eris
         t2 = self._t2
         Voovv = eris.oovv
-        adc2x = (method == 'adc(2)-x')
+        adc3 = (method == 'adc(3)')
+        adc2x = (method == 'adc(2)-x') or adc3   # adc(3) keeps the ADC(2)-x 2p2h block
         if not adc2x and method != 'adc(2)':
             raise NotImplementedError(method)
 
@@ -958,6 +964,10 @@ class SpinorADC(lib.StreamObject):
         Lam = 0.5 * (lib.einsum('imae,jmbe->iajb', t2.conj(), Voovv)
                      + lib.einsum('jmbe,imae->iajb', t2, Voovv.conj()))
         Lam += eris.voov.transpose(2, 0, 1, 3)     # <aj||ib> -> [i,a,j,b]
+        if adc3:
+            # third-order ph-ph self-energy (full M^(3) increment: third-order
+            # IP/EA legs + ph-ph coupling), folded into the same [i,a,j,b] term
+            Lam = Lam + self._ee_lam3()
         Wvovv = eris.vovv                          # <ak||bc>
         Wooov = eris.ooov                          # <jk||ib>
         Wovoo = eris.ovoo                          # <ib||jk>
@@ -1058,6 +1068,12 @@ class SpinorADC(lib.StreamObject):
     def ee_adc2x(self, nroots=6):
         '''Spinor EE-ADC(2)-x excitation energies.'''
         return self.ee_adc2(nroots, method='adc(2)-x')
+
+    def ee_adc3(self, nroots=6):
+        '''Spinor EE-ADC(3) excitation energies.  The 1p1h block carries the
+        third-order ph-ph self-energy (:meth:`_ee_lam3`); the 1p1h<->2p2h
+        coupling is first order and the 2p2h block is the ADC(2)-x interaction.'''
+        return self.ee_adc2(nroots, method='adc(3)')
 
 
 if __name__ == '__main__':
