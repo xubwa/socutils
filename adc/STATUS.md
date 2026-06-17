@@ -20,6 +20,7 @@ Branch: `claude/stoic-maxwell-996i5j`.
 | | IP/EA spectroscopic factors | Dyson amplitudes | done, exact |
 | | **IP-ADC(3)** | Davidson matvec | **done, exact** |
 | | **EA-ADC(3)** | Davidson matvec | **done, exact** |
+| | **EE-ADC(3) ph-ph self-energy** | `_ee_lam3` | **done, validated (full solver coupling pending)** |
 | `test_spinor_harness.py` | two-gate validation | — | MP2/IP/EA/EE/IP-x/EA-x/EE-x/CVS/spec/IP+EA-ADC(3) green |
 
 **IP-ADC(3) done & validated** (`ip_adc3`).  The full secular matrix:
@@ -58,47 +59,44 @@ Both charged-excitation ADC(3) self-energies (IP `Sigma^(3)_ij`, EA
 `Sigma^(3)_ab`) are validated eigenvalue-for-eigenvalue against the
 Kramers-doubled UADC `Sigma^(3)` for GENERAL molecules (HF/Ne/H2O/N2/CO/LiH/BH).
 
-Not done: **EE-ADC(3)** -- the neutral-excitation 1p1h block at third order.
-This is the ph-channel intermediate-state representation (ISR), qualitatively
-harder than the IP/EA self-energies (pyscf's `uadc_ee.get_imds` adc(3) branch is
-~1500 ENERGY-WEIGHTED einsum terms -- the ph metric is non-trivial).  Detailed
-investigation this session (scratch in `/tmp/ee*.py`, `/tmp/ee*.json`):
-  * The reference is solid: pyscf `get_imds` M_ia_jb(adc2) == the validated
-    spinor `ee_adc2` 1p1h block (insertions -sig_ip/-sig_ea + Lam2_phph) to
-    1.4e-7.  So the target M3 = pyscf(M_adc3 - M_adc2).
-  * `wicked` (built) derives the ph-block ISR pieces in MANAGEABLE counts
-    (unified, not 1500): B1(ring)=1, B2=4, B3a([V,T2_2])=4, B3b([V,T1_2])=4,
-    B3c(T2d.V.T2)=41, S2=4, S3=8.  The ph-ph piece is RIGHT: wicked B2's
-    fully-contracted (R[j,b]) term == the validated Lam2_phph exactly.
-  * BLOCKER: assembling M = S^{-1/2} B S^{-1/2} (or the order-by-order metric
-    B3 - 1/2(S2 B1 + B1 S2) - 1/2(S3 B0 + B0 S3)) does NOT reproduce pyscf --
-    even at 2nd order the ISR reconstruction is ~1e-2 off, and a free
-    matrix-level lstsq of M3-M2 over {B3a,B3b,B3c,S2B1,S3B0,sig3 insertions}
-    leaves ~22% residual with non-integer coefficients.  The error is in the
-    precursor's F0/E_corr (disconnected) subtraction and/or the metric
-    convention for the INSERTION part (the ph-ph part is fine; the trouble is
-    the -sig insertion + metric bookkeeping).  Removing the disconnected
-    (R-label==output) terms helps but does not close it.
-  * BREAKTHROUGH (order 2 SOLVED): the order-2 ISR bug was DOUBLE-COUNTING.
-    The wicked precursor pieces B2k = (V R T2) [ket-dressing] and
-    B2b = (T2d V R) [bra-dressing] EACH already give the full Hermitian 2nd
-    order, so summing them double-counts.  The fix is **0.5*(B2k+B2b)** with the
-    R-label==output (disconnected E_corr) filter, and NO explicit metric:
-        M2 = B0 + B1(ring) + 0.5*(B2k+B2b)_connected   == pyscf M2 to 1.4e-7.
-    So the linked connected precursor IS the ADC matrix at 2nd order (no metric
-    needed); ee_adc2's -sig_ip/-sig_ea insertions + Lam2 are exactly the
-    connected B2 decomposed.
-  * ORDER 3 (partially pinned): M3 = B0+B1+0.5(B2k+B2b) + [B3 terms].  With the
-    same 0.5-Hermitization, a multi-molecule lstsq of (M3-M2) over
-    {B3a=V.T2_2, B3b=V.T1_2, B3c=T2d.V.T2, F0-dressed T2d.F.T2_2, metric
-    S2.B1/S3.B0/S2.B0} gives CLEAN B3a=+1.0 and S2B1 metric=-0.5, but the
-    B3b (t1_2) and B3c (TVT) channels stay unstable (~22% residual) -- those
-    two channels' connected/metric bookkeeping at 3rd order is the remaining
-    piece (split B3c's 41 terms into sub-topologies and the t1_2 channel, pin
-    each vs the exact pyscf reference).
-  * NEXT STEP: split B3c into sub-topologies + fix the t1_2 channel + the
-    order-3 metric (S2.B1 confirmed -0.5); then port to spinor with conjugations
-    (Gate-2) as for IP/EA.  All tooling + term lists in place (/tmp/ee*.json).
+**EE-ADC(3) ph-ph excitation self-energy DONE & validated** (`_ee_lam3`,
+`_EE_M3_TERMS`).  The neutral-excitation 1p1h block at third order -- the
+ph-channel ISR -- is the complete third-order increment M^(3)_{ia,jb} of the
+1p1h secular matrix (third-order IP/EA self-energy legs + genuine ph-ph
+coupling).  Derivation/validation this session:
+  * The order-2 ISR bug was DOUBLE-COUNTING: wicked's ket-dressing B2k=(V R T2)
+    and bra-dressing B2b=(T2d V R) each give the full Hermitian 2nd order, so
+    `M2 = B0 + B1(ring) + 0.5*(B2k+B2b)_connected` == pyscf M2 (no metric).
+  * M^(3) is a clean half-integer combination of the same B3a([V,T2_2])=0.5,
+    B3b([V,T1_2])=1.0, B3c(T2.V.T2)=0.5/1.0 spin-orbital topologies (Hermitised
+    m+m^dagger, connected filter).  Found by least-squares over many molecules:
+    machine-precision fit, clean coefficients, generalises to held-out molecules.
+  * CRITICAL: pyscf's `uadc_ee.get_imds` is NOT the complete ph-ph block -- the
+    EE matvec adds t2.t2 ph-ph terms on the fly.  `_ee_lam3` is the COMPLETE
+    block (get_imds + matvec terms), validated two ways: (a) reproduces
+    get_imds + the matvec t2.t2 increment to ~1e-15 over general molecules; (b)
+    its eigenvalues match pyscf's full M11 (all spin sectors, probed) to ~1e-6.
+  * Gate-2: complex orbital-rotation covariance (phase + degenerate mixing) to
+    ~1e-14.  Conjugations pinned by a full-unitary oracle: t2_2, t1_2 are built
+    on t2.conj() (transform as conjugated amplitudes) so they enter
+    un-conjugated with the interaction conjugated; t2.t2.V ladders use
+    (t2.conj, t2, V.conj).  (Phase-only covariance is NOT sufficient -- the
+    legs/channels are only covariant as wholes; this is why the earlier
+    per-term phase pinning failed Gate-2 under degenerate-orbital mixing.)
+
+`ee_adc3` (= `ee_adc2(method='adc(3)')`): 1p1h = ADC(2) self-energies + ring +
+complete M^(3); 2p2h = ADC(2)-x.  The 1p1h<->2p2h SECOND-ORDER coupling is still
+pending, so excitation energies agree with pyscf EE-UADC(3) to ~2-5e-3 (the
+coupling contribution).  The static ph-ph self-energy itself -- the deliverable
+-- is complete and validated.  The remaining coupling is the t2-dressed (ia|bc)
+2nd-order term (pyscf matvec M_02Y1/M_12Y0); its dominant contribution to the
+alpha singles is via the opposite-spin (abab) doubles, so the clean spin-orbital
+form needs the all-alpha matvec (pyscf's empty-beta path needs guarding) -- the
+ph-ph block confirms the remaining solver error is purely this coupling.
+
+All three ADC(3) excitation self-energies (IP `Sigma^(3)_ij`, EA
+`Sigma^(3)_ab`, EE `M^(3)_{ia,jb}`) are now validated against pyscf for general
+molecules.
 Also pending: EE transition moments, G0W0 (xfail), Kramers symmetry.
 
 * **IP/EA spectroscopic factors** (`ip_adc2_spec`, `ea_adc2_spec`): pole
