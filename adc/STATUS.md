@@ -19,7 +19,8 @@ Branch: `claude/stoic-maxwell-996i5j`.
 | | CVS-IP-ADC(2) | Davidson matvec | done, exact |
 | | IP/EA spectroscopic factors | Dyson amplitudes | done, exact |
 | | **IP-ADC(3)** | Davidson matvec | **done, exact** |
-| `test_spinor_harness.py` | two-gate validation | — | MP2/IP/EA/EE/IP-x/EA-x/EE-x/CVS/spec/IP-ADC(3) green |
+| | **EA-ADC(3)** | Davidson matvec | **done, exact** |
+| `test_spinor_harness.py` | two-gate validation | — | MP2/IP/EA/EE/IP-x/EA-x/EE-x/CVS/spec/IP+EA-ADC(3) green |
 
 **IP-ADC(3) done & validated** (`ip_adc3`).  The full secular matrix:
 * 1h-1h block = `-eps - Sigma^(2) - Sigma^(3)`.  The third-order static
@@ -44,16 +45,26 @@ Branch: `claude/stoic-maxwell-996i5j`.
   roots (main + 2h1p satellites) match UADC IP-ADC(3) to ~5e-7 and are
   rotation-invariant to ~1e-14.
 
-In progress: **EA/EE-ADC(3)**.  Same validated recipe as IP: transcribe the
-pyscf UADC `M_ab^(3)` / EE imds to the unified spin-orbital antisym form
-(EA adds a vvvv particle ladder + the `t2_1_vvvv` intermediate), pin the
-coefficients against `uadc_ea.get_imds` / `uadc_ee`, then port with covariant
-conjugations (`t2.conj()` intermediates; `P + P^dag` Hermitian pairs) and
-validate Gate-1 (vs UADC) + Gate-2.  `wicked` is built (see
-`adc/wick_derive.py`) as an alternative bra/ket-resolved generator.
+**EA-ADC(3) done & validated** (`ea_adc3`, `_sig_ea3`): the particle-hole
+mirror (o<->v) of IP-ADC(3).  `Sigma^(3)_ab` is built from the o<->v dual
+amplitudes and dual blocks (vvvv/vvoo/voov/vvvo); the second-order coupling is
+the t2-dressed `<kl||ia>` (coeff -1/4) + `<ia||bc>` pieces (exact adjoint in
+reverse).  Note the EA self-energy enters the 1p block with the OPPOSITE sign
+to IP (`eps - Sigma^(2) + Sigma^(3)`), mirroring the EA<->IP eigenvalue
+convention -- pinned numerically.  Matches pyscf UADC EA-ADC(3) roots to ~5e-7,
+Hermitian to ~1e-15, rotation-invariant to ~1e-14.
 
-Not done: EA/EE-ADC(3) (in progress, see above), EE transition moments,
-G0W0 (xfail), Kramers symmetry.
+Both charged-excitation ADC(3) self-energies (IP `Sigma^(3)_ij`, EA
+`Sigma^(3)_ab`) are validated eigenvalue-for-eigenvalue against the
+Kramers-doubled UADC `Sigma^(3)` for GENERAL molecules (HF/Ne/H2O/N2/CO/LiH/BH).
+
+Not done: **EE-ADC(3)** -- the neutral-excitation 1p1h block at third order is
+a qualitatively larger object (pyscf's `uadc_ee.get_imds` adc(3) branch is
+~1500 einsum terms vs ~20-40 for IP/EA), so it is a separate major effort: the
+same recipe applies (isolate the 1p1h block via amplitude-zeroing, pin the
+unified antisym coefficients against `uadc_ee`, port with Gate-2 conjugations),
+but the term count makes it out of scope for the IP/EA pass.  Also pending:
+EE transition moments, G0W0 (xfail), Kramers symmetry.
 
 * **IP/EA spectroscopic factors** (`ip_adc2_spec`, `ea_adc2_spec`): pole
   strengths `P_n = sum_p |<N-+1,n|a_p(^dag)|0>|^2` from the ADC(2) Dyson
