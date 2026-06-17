@@ -205,6 +205,14 @@ class _SpinorADCERIs:
     def ovoo(self):                                # <ia||jk>
         return self._get('ovoo', lambda: self.ooov.conj().transpose(2, 3, 0, 1))
 
+    @property
+    def vvoo(self):                                # <ab||ij>  (EA-ADC(3))
+        return self._get('vvoo', lambda: self.oovv.conj().transpose(2, 3, 0, 1))
+
+    @property
+    def ovvv(self):                                # <ia||bc>  (EA-ADC(3))
+        return self._get('ovvv', lambda: self._blk(self.o, self.v, self.v, self.v))
+
 
 class SpinorADC(lib.StreamObject):
     '''Spinor ADC(2).
@@ -369,6 +377,49 @@ class SpinorADC(lib.StreamObject):
             S += -0.5 * lib.einsum('lmdf,lmde,jefi->ij', tc, t2, ovvo)
             self._sig_ip3_cache = 0.5 * (S + S.conj().T)
         return self._sig_ip3_cache
+
+    def _sig_ea3(self):
+        '''Third-order EA self-energy (1p-1p block), the static spin-orbital
+        Sigma^(3)_ab.  The particle-hole mirror (o<->v) of the IP Sigma^(3):
+        built from the o<->v dual amplitudes (t2, t2^(2), t1^(2) transposed
+        with the denominator sign flip) and the dual antisym blocks (vvvv,
+        vvoo, voov, vvvo).  Validated to ~3e-8 against ``uadc_ea.get_imds``
+        (full matrix) over LiH/H2O/N2/HF.  i-side amplitudes conjugated (gauge:
+        particles ~ ph), Hermitised.'''
+        if getattr(self, '_sig_ea3_cache', None) is None:
+            self._build()
+            eris = self._eris
+            t2 = self._t2
+            nv = self.nmo - self.nocc
+            vvvv, vvoo, voov, vvvo = eris.vvvv, eris.vvoo, eris.voov, eris.vvvo
+            # o<->v dual amplitudes (carry the -1 from the flipped MP denominator)
+            t2d = -t2.transpose(2, 3, 0, 1)
+            tcd = -t2.conj().transpose(2, 3, 0, 1)
+            t1_2d = -self._t1_2_pyscf().T
+            t2_2d = -self._t2_2().transpose(2, 3, 0, 1)
+            # interaction blocks are conjugated where the o<->v mirror flips the
+            # bra/ket sense (so each term is covariant under a complex rotation);
+            # for a real reference conj is the identity, so the validated value
+            # is unchanged.  Which blocks carry .conj() is pinned by Gate-2.
+            S = np.zeros((nv, nv), dtype=complex)
+            # Group A : second-order singles
+            A1 = lib.einsum('dl,dbal->ab', t1_2d, vvvo.conj())
+            S += A1 + A1.conj().T
+            # Group B : second-order doubles (Sigma^(2)-EA structure)
+            B1 = 0.25 * lib.einsum('adlm,bdlm->ab', t2_2d, vvoo.conj())
+            S += B1 + B1.conj().T
+            # Group O/L/S : two-amplitude particle ladders (vvvv) and ph ladders
+            S += -0.125 * lib.einsum('delm,bflm,deaf->ab', tcd, t2d, vvvv.conj())
+            S += -0.125 * lib.einsum('aflm,delm,bfde->ab', tcd, t2d, vvvv.conj())
+            O3 = 0.25 * lib.einsum('dflm,delm,bfae->ab', tcd, t2d, vvvv.conj())
+            S += O3 + O3.conj().T
+            Mtd = lib.einsum('delm,bdln->embn', tcd, t2d)
+            L1 = lib.einsum('embn,enma->ab', Mtd, voov.conj())
+            S += 0.5 * L1 + 0.5 * L1.conj().T
+            S1 = 0.25 * lib.einsum('deln,delm,bmna->ab', tcd, t2d, voov.conj())
+            S += S1 + S1.conj().T
+            self._sig_ea3_cache = 0.5 * (S + S.conj().T)
+        return self._sig_ea3_cache
 
     def energy_mp3(self):
         '''Spinor MP2 + MP3 ground-state correlation energy.  The MP3 piece uses

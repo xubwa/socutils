@@ -526,6 +526,42 @@ def test_gate2_ea_spec_invariance(mf):
                                err_msg="EA pole-strength sums changed under rotation")
 
 
+def ref_ea_sigma3(mol):
+    """PySCF UADC Sigma^(3) for the EA 1p-1p block = M_ab(adc3) - M_ab(adc2)
+    (alpha spin block), as a set of eigenvalues."""
+    from pyscf import adc
+    from pyscf.adc import uadc_ea
+    mf = scf.UHF(mol).run()
+    def imds(method):
+        a = adc.ADC(mf); a.method = method; a.method_type = "ea"; a.verbose = 0
+        eris = a.transform_integrals(); a.kernel_gs()
+        return uadc_ea.get_imds(a, eris)
+    M3 = imds("adc(3)")[0]; M2 = imds("adc(2)")[0]
+    return np.linalg.eigvalsh((M3 - M2).real)
+
+
+def test_gate1_ea_sigma3(mol, mf):
+    """spinor EA-ADC(3) static self-energy Sigma^(3) (1p-1p block beyond second
+    order) matches PySCF UADC Sigma^(3) eigenvalue-for-eigenvalue (Kramers
+    doubled).  The particle-hole mirror of the IP Sigma^(3)."""
+    s3 = SpinorADC(mf)._sig_ea3()
+    got = np.sort(np.linalg.eigvalsh(s3).real)
+    ref = np.repeat(np.sort(ref_ea_sigma3(mol)), 2)
+    np.testing.assert_allclose(got, ref, atol=1e-6, rtol=0,
+                               err_msg="spinor EA Sigma^(3) != PySCF UADC Sigma^(3)")
+
+
+def test_gate2_ea_sigma3_invariance(mf):
+    """EA Sigma^(3) eigenvalues invariant under a legal complex orbital rotation
+    (pins the o<->v dual conjugations)."""
+    E, C = mo_energy(mf), mo_coeff(mf)
+    U = legal_rotation(E, seed=53)
+    base = np.sort(np.linalg.eigvalsh(SpinorADC(mf)._sig_ea3()).real)
+    rot = np.sort(np.linalg.eigvalsh(SpinorADC(set_mo(mf, C @ U, E))._sig_ea3()).real)
+    np.testing.assert_allclose(rot, base, atol=1e-7, rtol=0,
+                               err_msg="EA Sigma^(3) changed under complex rotation")
+
+
 def test_gate1_ip_cvs(mol, mf):
     """spinor CVS-IP-ADC(2) reproduces PySCF UADC CVS-IP-ADC(2) (1 core)."""
     got = _unique_sorted(run_spinor_ip_cvs(mf)["e"], decimals=5)
