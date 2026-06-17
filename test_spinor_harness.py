@@ -137,6 +137,11 @@ def run_spinor_ip_x(mf, nroots=12):
     return {"e": np.asarray(SpinorADC(mf).ip_adc2x(nroots))}
 
 
+def run_spinor_ip3(mf, nroots=12):
+    """socutils spinor IP-ADC(3)."""
+    return {"e": np.asarray(SpinorADC(mf).ip_adc3(nroots))}
+
+
 def run_spinor_ip_cvs(mf, nroots=6, ncvs_spatial=1):
     """socutils spinor CVS-IP-ADC(2) (core ionisation).  ncvs counts core
     spinors = 2x the spatial core count (Kramers pairs)."""
@@ -226,6 +231,19 @@ def ref_ip_x(mol, nroots=20):
     a.method_type = "ip"
     a.verbose = 0
     return {"e": np.asarray(a.kernel(nroots=nroots)[0])}
+
+
+def ref_ip3(mol, nroots=10):
+    # IP-ADC(3): the spinor result is spin-orbital, so satellites match the
+    # spin-orbital UADC reference (RADC keeps only doublet-coupled 2h1p states).
+    from pyscf import adc
+    mf = scf.UHF(mol).run()
+    a = adc.ADC(mf)
+    a.method = "adc(3)"
+    a.method_type = "ip"
+    a.verbose = 0
+    a.kernel_gs()
+    return {"e": np.asarray(a.ip_adc(nroots=nroots)[0])}
 
 
 def ref_ip_cvs(mol, nroots=6, ncvs_spatial=1):
@@ -558,6 +576,55 @@ def test_gate2_ip_invariance(mf):
     np.testing.assert_allclose(rot, base, atol=1e-7, rtol=0,
                                err_msg="IP roots changed under complex rotation"
                                        " -> conjugation/Hermiticity bug")
+
+
+def test_gate1_ip3(mol, mf):
+    """spinor IP-ADC(3) reproduces PySCF UADC IP-ADC(3) (spin-orbital) -- the
+    full 1h block (-eps - Sigma^(2) - Sigma^(3)) plus the second-order coupling
+    and the ADC(2)-x 2h1p block.  Lowest roots (main lines + 2h1p satellites)
+    compared as a set; the spinor carries the extra Kramers multiplicity."""
+    got = np.sort(run_spinor_ip3(mf, nroots=12)["e"])
+    ref = np.sort(ref_ip3(mol, nroots=8)["e"])
+    # each UADC root must coincide with a spinor root (within Davidson tol)
+    err = max(min(abs(got - r)) for r in ref[:6])
+    assert err < 5e-5, f"IP-ADC(3) vs UADC: max per-root err {err:.2e}"
+
+
+def ref_ip_sigma3(mol):
+    """PySCF UADC Sigma^(3) for the IP 1h-1h block = M_ij(adc3) - M_ij(adc2)
+    (alpha spin block), as a set of eigenvalues."""
+    from pyscf import adc
+    from pyscf.adc import uadc_ip
+    mf = scf.UHF(mol).run()
+    def imds(method):
+        a = adc.ADC(mf); a.method = method; a.method_type = "ip"; a.verbose = 0
+        eris = a.transform_integrals(); a.kernel_gs()
+        return uadc_ip.get_imds(a, eris)
+    M3 = imds("adc(3)")[0]; M2 = imds("adc(2)")[0]
+    return np.linalg.eigvalsh((M3 - M2).real)
+
+
+def test_gate1_ip_sigma3(mol, mf):
+    """spinor IP-ADC(3) static self-energy Sigma^(3) (the 1h-1h block beyond
+    second order) matches PySCF UADC Sigma^(3) eigenvalue-for-eigenvalue (each
+    spatial value Kramers-doubled).  This is the core ADC(3) self-energy check."""
+    s3 = SpinorADC(mf)._sig_ip3()
+    got = np.sort(np.linalg.eigvalsh(s3).real)
+    ref = np.repeat(np.sort(ref_ip_sigma3(mol)), 2)        # Kramers doubling
+    np.testing.assert_allclose(got, ref, atol=1e-6, rtol=0,
+                               err_msg="spinor IP Sigma^(3) != PySCF UADC Sigma^(3)")
+
+
+def test_gate2_ip3_invariance(mf):
+    """IP-ADC(3) roots invariant under a legal complex orbital rotation
+    (pins the Sigma^(3) and the second-order coupling conjugations)."""
+    E, C = mo_energy(mf), mo_coeff(mf)
+    U = legal_rotation(E, seed=17)
+    base = np.sort(run_spinor_ip3(mf)["e"])
+    rot = np.sort(run_spinor_ip3(set_mo(mf, C @ U, E))["e"])
+    np.testing.assert_allclose(rot, base, atol=1e-7, rtol=0,
+                               err_msg="IP-ADC(3) roots changed under complex"
+                                       " rotation -> conjugation/Hermiticity bug")
 
 
 def test_gate2_ea_invariance(mf):

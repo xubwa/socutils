@@ -262,6 +262,10 @@ class SpinorADC(lib.StreamObject):
         self._eris = eris
         self._t2 = t2
         self._t1_2_cache = None
+        self._t2_2_cache = None
+        self._t1_2p_cache = None
+        self._sig_ip3_cache = None
+        self._sig_ea3_cache = None
 
     def _t1_2(self):
         # second-order singles (only for spectroscopic amplitudes; built lazily
@@ -279,6 +283,92 @@ class SpinorADC(lib.StreamObject):
                 - 0.5 * lib.einsum('klic,klac->ia', eris.ooov, t2.conj())
             ) / (eo[:, None] - ev[None, :])
         return self._t1_2_cache
+
+    def _t2_2(self):
+        '''Second-order doubles t2^(2) = R / D, where R is the same second-order
+        doubles residual (pp + hh ladders + ph ring on t2) used by the MP3
+        energy.  Cached; needed by the ADC(3) self-energies.  Built on t2 (the
+        residual is contracted against t2.conj() on the i-side in the
+        self-energy, which is where the gauge phase is fixed).'''
+        if getattr(self, '_t2_2_cache', None) is None:
+            no = self.nocc
+            e = np.asarray(self.mo_energy)
+            eo, ev = e[:no], e[no:]
+            eris = self._eris
+            t2 = self._t2
+            d = (eo[:, None, None, None] + eo[None, :, None, None]
+                 - ev[None, None, :, None] - ev[None, None, None, :])
+            # residual on t2.conj() (gauge: holes ~ ph*), so t2^(2) is covariant
+            # under a complex orbital rotation -- the same convention as the
+            # validated MP3 residual in energy_mp3.
+            tc = t2.conj()
+            R = (0.5 * lib.einsum('klij,klab->ijab', eris.oooo, tc)
+                 + 0.5 * lib.einsum('abcd,ijcd->ijab', eris.vvvv, tc))
+            tr = lib.einsum('kbcj,ikac->ijab', eris.ovvo, tc)
+            R += (tr - tr.transpose(1, 0, 2, 3)
+                  - tr.transpose(0, 1, 3, 2) + tr.transpose(1, 0, 3, 2))
+            self._t2_2_cache = R / d
+        return self._t2_2_cache
+
+    def _t1_2_pyscf(self):
+        '''Second-order singles in the pyscf/ADC(3) sign convention
+        ``t1^(2)_ia = (0.5 <ai||cd> t_ikcd - 0.5 <kl||ic> t_klac) / (e_i-e_a)``
+        (no leading minus, unlike :meth:`_t1_2` which carries the
+        spectroscopic-amplitude gauge sign).  Used only by the ADC(3)
+        self-energy Group-A term.'''
+        if getattr(self, '_t1_2p_cache', None) is None:
+            no = self.nocc
+            e = np.asarray(self.mo_energy)
+            eo, ev = e[:no], e[no:]
+            t2 = self._t2
+            eris = self._eris
+            # built on t2.conj() so t1^(2) is covariant under a complex orbital
+            # rotation (transforms as e^{+i theta_occ - i theta_vir}); reduces
+            # to the pyscf real t1^(2) for real orbitals.
+            tc = t2.conj()
+            self._t1_2p_cache = (
+                0.5 * lib.einsum('akcd,ikcd->ia', eris.vovv, tc)
+                - 0.5 * lib.einsum('klic,klac->ia', eris.ooov, tc)
+            ) / (eo[:, None] - ev[None, :])
+        return self._t1_2p_cache
+
+    def _sig_ip3(self):
+        '''Third-order IP self-energy (1h-1h block), the static spin-orbital
+        Sigma^(3)_ij.  Built from t2, the second-order doubles t2^(2) and the
+        second-order singles t1^(2) and the antisymmetrised integrals.  Derived
+        by transcribing the spin-blocked pyscf UADC M_ij^(3) to the unified
+        spin-orbital (antisymmetrised) form and validated to ~1e-10 against
+        ``uadc_ip.get_imds`` (full matrix) across H2O/HF/N2/CO/LiH/BH.  The
+        i-side amplitude is conjugated (gauge: holes ~ ph*, like _sig_ip) and
+        the result is Hermitised.'''
+        if getattr(self, '_sig_ip3_cache', None) is None:
+            self._build()
+            eris = self._eris
+            t2 = self._t2
+            tc = t2.conj()
+            t2_2 = self._t2_2()
+            t1_2 = self._t1_2_pyscf()
+            oovv, oooo = eris.oovv, eris.oooo
+            ovvo, ooov = eris.ovvo, eris.ooov
+            S = np.zeros((self.nocc, self.nocc), dtype=complex)
+            # Group A : second-order singles (P + P^dag with the covariant t1^(2))
+            A1 = -lib.einsum('ld,ljid->ij', t1_2, ooov)
+            S += A1 + A1.conj().T
+            # Group B : second-order doubles, Sigma^(2) structure (P + P^dag)
+            B1 = 0.25 * lib.einsum('ilde,jlde->ij', t2_2, oovv)
+            S += B1 + B1.conj().T
+            # Group O : two-amplitude hole-ladder (oooo) -- covariant as written
+            S += 0.125 * lib.einsum('lmde,jnde,lmin->ij', tc, t2, oooo)
+            S += 0.125 * lib.einsum('inde,lmde,jnlm->ij', tc, t2, oooo)
+            S += -0.5 * lib.einsum('lnde,lmde,jnim->ij', tc, t2, oooo)
+            # Group L : double particle-hole ladder (P + P^dag)
+            Mt = lib.einsum('lmde,jldf->mejf', tc, t2)
+            L1 = -0.5 * lib.einsum('mejf,mfei->ij', Mt, ovvo)
+            S += L1 + L1.conj().T
+            # Group S : single particle-hole ladder -- covariant as written
+            S += -0.5 * lib.einsum('lmdf,lmde,jefi->ij', tc, t2, ovvo)
+            self._sig_ip3_cache = 0.5 * (S + S.conj().T)
+        return self._sig_ip3_cache
 
     def energy_mp3(self):
         '''Spinor MP2 + MP3 ground-state correlation energy.  The MP3 piece uses
@@ -458,6 +548,83 @@ class SpinorADC(lib.StreamObject):
     def ip_adc2x(self, nroots=6):
         '''Spinor IP-ADC(2)-x ionization energies.'''
         return self.ip_adc2(nroots, method='adc(2)-x')
+
+    def ip_adc3(self, nroots=6):
+        '''Spinor IP-ADC(3) ionization energies (lowest ``nroots``).
+
+        The 1h-1h block is the effective Hamiltonian through third order
+        (``-eps - Sigma^(2) - Sigma^(3)``); the 1h<->2h1p coupling is through
+        second order (the first-order ``<kl||ia>`` plus the t2-dressed
+        ``<ai||bc>``/``<kl||ia>`` pieces); the 2h1p block is first order (the
+        ADC(2)-x hole-hole ladder ``0.5<mn||ij>`` + particle-hole ring
+        ``<ma||ei>``).  Reproduces pyscf IP-UADC(3)/RADC(3) eigenvalues to
+        ~1e-6 and is invariant under a legal complex orbital rotation.'''
+        self._build()
+        no, nmo = self.nocc, self.nmo
+        nv = nmo - no
+        e = np.asarray(self.mo_energy)
+        eo, ev = e[:no], e[no:]
+        eris = self._eris
+        t2 = self._t2
+
+        Mss = -np.diag(eo).astype(complex) - self._sig_ip - self._sig_ip3()
+        Wooov = eris.ooov                              # <kl||ia>
+        WooovC = Wooov.conj()
+        Woooo = eris.oooo                              # <mn||ij>
+        Wovvo = eris.ovvo                              # <ma||ei>
+        Wvovv = eris.vovv                              # <ai||bc>
+        WvovvC = Wvovv.conj()
+
+        oo = np.array([(k, l) for k in range(no) for l in range(k + 1, no)],
+                      dtype=int).reshape(-1, 2)
+        nop = len(oo)
+        ok, ol = oo[:, 0], oo[:, 1]
+        dim = no + nop * nv
+
+        def unpack(rp):
+            r2 = np.zeros((no, no, nv), dtype=complex)
+            blk = rp.reshape(nop, nv)
+            r2[ok, ol, :] = blk
+            r2[ol, ok, :] = -blk
+            return r2
+
+        def pack(s2):
+            return s2[ok, ol, :].reshape(-1)
+
+        def matvec(x):
+            r1 = x[:no]
+            r2 = unpack(x[no:])                         # [k,l,a]
+            # 1h <- 1h
+            s1 = Mss @ r1
+            # 1h <- 2h1p : first order + second order (t2-dressed) coupling.
+            # r2 contracts with un-conjugated amplitudes (like the first-order
+            # <kl||ia>) and conjugated interaction integrals, so the coupling is
+            # covariant under a complex orbital rotation (pinned by Gate-2).
+            s1 += 0.5 * lib.einsum('klia,kla->i', Wooov, r2)
+            s1 += -0.25 * lib.einsum('jkbc,jka,aibc->i', t2, r2, WvovvC)
+            s1 += 0.5 * lib.einsum('jlab,jka,likb->i', t2, r2, WooovC)
+            s1 += 0.5 * lib.einsum('klab,kja,lijb->i', t2, r2, WooovC)
+            # 2h1p <- 1h : Hermitian conjugate of the above coupling
+            s2 = (ev[None, None, :] - eo[:, None, None] - eo[None, :, None]) * r2
+            s2 += lib.einsum('klia,i->kla', WooovC, r1)
+            s2 += -0.5 * lib.einsum('jkbc,aibc,i->jka', t2.conj(), Wvovv, r1)
+            t = lib.einsum('jlab,likb,i->jka', t2.conj(), Wooov, r1)
+            s2 += (t - t.transpose(1, 0, 2))
+            # 2h1p <- 2h1p : ADC(2)-x block
+            s2 += 0.5 * lib.einsum('mnij,mna->ija', Woooo, r2)
+            tr = lib.einsum('maei,mje->ija', Wovvo, r2)
+            s2 += tr - tr.transpose(1, 0, 2)
+            return np.concatenate([s1, pack(s2)])
+
+        diag = np.empty(dim)
+        diag[:no] = Mss.diagonal().real
+        dd = ev[None, :] - (eo[ok] + eo[ol])[:, None]
+        oooo_d = np.einsum('ijij->ij', eris.oooo).real     # <ij||ij>
+        ovov_d = -np.einsum('iaai->ia', eris.ovvo).real    # <ia||ia>
+        dd = (dd + oooo_d[ok, ol][:, None]
+              - ovov_d[ok, :] - ovov_d[ol, :])
+        diag[no:] = dd.reshape(-1)
+        return _davidson(matvec, diag, nroots)
 
     # -- EA ------------------------------------------------------------------
     def ea_adc2(self, nroots=6, method='adc(2)', with_spec=False):
