@@ -58,13 +58,31 @@ Both charged-excitation ADC(3) self-energies (IP `Sigma^(3)_ij`, EA
 `Sigma^(3)_ab`) are validated eigenvalue-for-eigenvalue against the
 Kramers-doubled UADC `Sigma^(3)` for GENERAL molecules (HF/Ne/H2O/N2/CO/LiH/BH).
 
-Not done: **EE-ADC(3)** -- the neutral-excitation 1p1h block at third order is
-a qualitatively larger object (pyscf's `uadc_ee.get_imds` adc(3) branch is
-~1500 einsum terms vs ~20-40 for IP/EA), so it is a separate major effort: the
-same recipe applies (isolate the 1p1h block via amplitude-zeroing, pin the
-unified antisym coefficients against `uadc_ee`, port with Gate-2 conjugations),
-but the term count makes it out of scope for the IP/EA pass.  Also pending:
-EE transition moments, G0W0 (xfail), Kramers symmetry.
+Not done: **EE-ADC(3)** -- the neutral-excitation 1p1h block at third order.
+This is the ph-channel intermediate-state representation (ISR), qualitatively
+harder than the IP/EA self-energies (pyscf's `uadc_ee.get_imds` adc(3) branch is
+~1500 ENERGY-WEIGHTED einsum terms -- the ph metric is non-trivial).  Detailed
+investigation this session (scratch in `/tmp/ee*.py`, `/tmp/ee*.json`):
+  * The reference is solid: pyscf `get_imds` M_ia_jb(adc2) == the validated
+    spinor `ee_adc2` 1p1h block (insertions -sig_ip/-sig_ea + Lam2_phph) to
+    1.4e-7.  So the target M3 = pyscf(M_adc3 - M_adc2).
+  * `wicked` (built) derives the ph-block ISR pieces in MANAGEABLE counts
+    (unified, not 1500): B1(ring)=1, B2=4, B3a([V,T2_2])=4, B3b([V,T1_2])=4,
+    B3c(T2d.V.T2)=41, S2=4, S3=8.  The ph-ph piece is RIGHT: wicked B2's
+    fully-contracted (R[j,b]) term == the validated Lam2_phph exactly.
+  * BLOCKER: assembling M = S^{-1/2} B S^{-1/2} (or the order-by-order metric
+    B3 - 1/2(S2 B1 + B1 S2) - 1/2(S3 B0 + B0 S3)) does NOT reproduce pyscf --
+    even at 2nd order the ISR reconstruction is ~1e-2 off, and a free
+    matrix-level lstsq of M3-M2 over {B3a,B3b,B3c,S2B1,S3B0,sig3 insertions}
+    leaves ~22% residual with non-integer coefficients.  The error is in the
+    precursor's F0/E_corr (disconnected) subtraction and/or the metric
+    convention for the INSERTION part (the ph-ph part is fine; the trouble is
+    the -sig insertion + metric bookkeeping).  Removing the disconnected
+    (R-label==output) terms helps but does not close it.
+  * NEXT STEP (concrete): first make the ISR reproduce the KNOWN `ee_adc2`
+    block exactly (debug the order-2 B/S/metric so B0+ring+B2-metric == pyscf
+    M2), THEN extend to order 3.  All tooling + term lists are in place.
+Also pending: EE transition moments, G0W0 (xfail), Kramers symmetry.
 
 * **IP/EA spectroscopic factors** (`ip_adc2_spec`, `ea_adc2_spec`): pole
   strengths `P_n = sum_p |<N-+1,n|a_p(^dag)|0>|^2` from the ADC(2) Dyson
