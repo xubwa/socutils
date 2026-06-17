@@ -18,21 +18,42 @@ Branch: `claude/stoic-maxwell-996i5j`.
 | | EE-ADC(2)-x | Davidson matvec | done, exact |
 | | CVS-IP-ADC(2) | Davidson matvec | done, exact |
 | | IP/EA spectroscopic factors | Dyson amplitudes | done, exact |
-| `test_spinor_harness.py` | two-gate validation | — | MP2/IP/EA/EE/IP-x/EA-x/EE-x/CVS/spec green |
+| | **IP-ADC(3)** | Davidson matvec | **done, exact** |
+| `test_spinor_harness.py` | two-gate validation | — | MP2/IP/EA/EE/IP-x/EA-x/EE-x/CVS/spec/IP-ADC(3) green |
 
-In progress: **ADC(3)** -- ground-state foundation done (`energy_mp3`, validated
-== pyscf adc(3) `e_corr` to 1e-15, Gate-2 invariant).  **Symbolic derivation
-toolchain validated** (`adc/wick_derive.py`): `wicked` (built from source --
-see the module docstring) derives the spin-orbital ADC equations, which map
-1:1 onto the spinor code; it reproduces the MP2 residual and the 2nd-order
-IP/EA self-energy (`[V,T2]` o|o / v|v blocks) -- matching the hand-coded
-`_sig_ip` to 1e-17.  Remaining (now de-risked, generate-and-validate): the
-3rd-order self-energy `[V,T2_2] + (1/2)[[V,T2],T2]`, the 2nd-order 1h<->2h1p
-coupling, gauge conjugations via Gate-2, assemble + validate IP/EA/EE-ADC(3).
-The ADC(2)-x 2h1p/2h1p block (reused by ADC(3)) is already done.
+**IP-ADC(3) done & validated** (`ip_adc3`).  The full secular matrix:
+* 1h-1h block = `-eps - Sigma^(2) - Sigma^(3)`.  The third-order static
+  self-energy `Sigma^(3)` (`_sig_ip3`) is the unified spin-orbital
+  (antisymmetrised `<pq||rs>`) transcription of the pyscf UADC `M_ij^(3)`
+  amplitude formula -- groups A (`t1^(2)`), B (`t2^(2)`, the Sigma^(2)
+  structure), O (oooo hole ladder), L (double ph ladder), S (single ph
+  ladder).  Coefficients pinned against `uadc_ip.get_imds` (full matrix,
+  ~1e-10 over H2O/HF/N2/CO/LiH/BH; symmetric molecules must be compared in
+  the same orbital gauge, since RHF vs UHF resolve degenerate blocks
+  differently).
+* second-order doubles `t2^(2)` (`_t2_2`) and singles `t1^(2)`
+  (`_t1_2_pyscf`), both built on `t2.conj()` so they are covariant under a
+  complex rotation.
+* second-order 1h<->2h1p coupling: the t2-dressed `<ai||bc>` + `<kl||ia>`
+  pieces (sign negative vs the naive translation); 2h1p block = the ADC(2)-x
+  ladder+ring (already done).
+* **gauge conjugations pinned by Gate-2**: A/B/L formed as `P + P^dag`; the
+  coupling uses un-conjugated amplitudes with conjugated interaction integrals
+  in the 2h1p->1h direction and its exact adjoint in reverse.  `Sigma^(3)`
+  eigenvalues match the Kramers-doubled UADC `Sigma^(3)` exactly; IP-ADC(3)
+  roots (main + 2h1p satellites) match UADC IP-ADC(3) to ~5e-7 and are
+  rotation-invariant to ~1e-14.
 
-Not done: ADC(3) excitation self-energy (in progress, see above), EE
-transition moments, G0W0 (xfail), Kramers symmetry.
+In progress: **EA/EE-ADC(3)**.  Same validated recipe as IP: transcribe the
+pyscf UADC `M_ab^(3)` / EE imds to the unified spin-orbital antisym form
+(EA adds a vvvv particle ladder + the `t2_1_vvvv` intermediate), pin the
+coefficients against `uadc_ea.get_imds` / `uadc_ee`, then port with covariant
+conjugations (`t2.conj()` intermediates; `P + P^dag` Hermitian pairs) and
+validate Gate-1 (vs UADC) + Gate-2.  `wicked` is built (see
+`adc/wick_derive.py`) as an alternative bra/ket-resolved generator.
+
+Not done: EA/EE-ADC(3) (in progress, see above), EE transition moments,
+G0W0 (xfail), Kramers symmetry.
 
 * **IP/EA spectroscopic factors** (`ip_adc2_spec`, `ea_adc2_spec`): pole
   strengths `P_n = sum_p |<N-+1,n|a_p(^dag)|0>|^2` from the ADC(2) Dyson
