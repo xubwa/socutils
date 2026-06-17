@@ -79,9 +79,26 @@ investigation this session (scratch in `/tmp/ee*.py`, `/tmp/ee*.json`):
     convention for the INSERTION part (the ph-ph part is fine; the trouble is
     the -sig insertion + metric bookkeeping).  Removing the disconnected
     (R-label==output) terms helps but does not close it.
-  * NEXT STEP (concrete): first make the ISR reproduce the KNOWN `ee_adc2`
-    block exactly (debug the order-2 B/S/metric so B0+ring+B2-metric == pyscf
-    M2), THEN extend to order 3.  All tooling + term lists are in place.
+  * BREAKTHROUGH (order 2 SOLVED): the order-2 ISR bug was DOUBLE-COUNTING.
+    The wicked precursor pieces B2k = (V R T2) [ket-dressing] and
+    B2b = (T2d V R) [bra-dressing] EACH already give the full Hermitian 2nd
+    order, so summing them double-counts.  The fix is **0.5*(B2k+B2b)** with the
+    R-label==output (disconnected E_corr) filter, and NO explicit metric:
+        M2 = B0 + B1(ring) + 0.5*(B2k+B2b)_connected   == pyscf M2 to 1.4e-7.
+    So the linked connected precursor IS the ADC matrix at 2nd order (no metric
+    needed); ee_adc2's -sig_ip/-sig_ea insertions + Lam2 are exactly the
+    connected B2 decomposed.
+  * ORDER 3 (partially pinned): M3 = B0+B1+0.5(B2k+B2b) + [B3 terms].  With the
+    same 0.5-Hermitization, a multi-molecule lstsq of (M3-M2) over
+    {B3a=V.T2_2, B3b=V.T1_2, B3c=T2d.V.T2, F0-dressed T2d.F.T2_2, metric
+    S2.B1/S3.B0/S2.B0} gives CLEAN B3a=+1.0 and S2B1 metric=-0.5, but the
+    B3b (t1_2) and B3c (TVT) channels stay unstable (~22% residual) -- those
+    two channels' connected/metric bookkeeping at 3rd order is the remaining
+    piece (split B3c's 41 terms into sub-topologies and the t1_2 channel, pin
+    each vs the exact pyscf reference).
+  * NEXT STEP: split B3c into sub-topologies + fix the t1_2 channel + the
+    order-3 metric (S2.B1 confirmed -0.5); then port to spinor with conjugations
+    (Gate-2) as for IP/EA.  All tooling + term lists in place (/tmp/ee*.json).
 Also pending: EE transition moments, G0W0 (xfail), Kramers symmetry.
 
 * **IP/EA spectroscopic factors** (`ip_adc2_spec`, `ea_adc2_spec`): pole
