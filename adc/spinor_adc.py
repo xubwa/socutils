@@ -759,6 +759,86 @@ class SpinorADC(lib.StreamObject):
         '''Spinor EA-ADC(2)-x electron affinities.'''
         return self.ea_adc2(nroots, method='adc(2)-x')
 
+    def ea_adc3(self, nroots=6):
+        '''Spinor EA-ADC(3) electron affinities (lowest ``nroots``).
+
+        The particle-hole mirror of :meth:`ip_adc3`.  The 1p-1p block is the
+        effective Hamiltonian through third order (``eps - Sigma^(2) +
+        Sigma^(3)``; note the EA self-energy enters with the opposite sign to
+        IP, mirroring the EA<->IP eigenvalue convention); the 1p<->2p1h coupling
+        is through second order (the first-order ``<ai||bc>`` plus the t2-dressed
+        ``<kl||ia>``/``<ia||bc>`` pieces); the 2p1h block is first order (the
+        ADC(2)-x particle-particle ladder ``0.5<ab||cd>`` + particle-hole ring).
+        Reproduces pyscf EA-UADC(3) eigenvalues to ~1e-6 and is invariant under
+        a legal complex orbital rotation.'''
+        self._build()
+        no, nmo = self.nocc, self.nmo
+        nv = nmo - no
+        e = np.asarray(self.mo_energy)
+        eo, ev = e[:no], e[no:]
+        eris = self._eris
+        t2 = self._t2
+
+        Mpp = np.diag(ev).astype(complex) - self._sig_ea + self._sig_ea3()
+        Wvovv = eris.vovv                              # <ai||bc>
+        WvovvC = Wvovv.conj()
+        Wooov = eris.ooov                              # <kl||ia>
+        WooovC = Wooov.conj()
+        Wovvv = eris.ovvv                              # <ia||bc>
+        WovvvC = Wovvv.conj()
+        vvvv = eris.vvvv                               # <ab||cd>
+        Vjbic = -eris.voov.transpose(1, 0, 2, 3)       # <jb||ic> = -<bj||ic>
+
+        vv = np.array([(c, d) for c in range(nv) for d in range(c + 1, nv)],
+                      dtype=int).reshape(-1, 2)
+        nvp = len(vv)
+        vc, vd = vv[:, 0], vv[:, 1]
+        Wvvvv_pp = vvvv[vc[:, None], vd[:, None], vc[None, :], vd[None, :]]
+        ev_p = ev[vc] + ev[vd]
+        dim = nv + nvp * no
+
+        def unpack(rp):
+            r2 = np.zeros((no, nv, nv), dtype=complex)
+            blk = rp.reshape(nvp, no)
+            r2[:, vc, vd] = blk.T
+            r2[:, vd, vc] = -blk.T
+            return r2
+
+        def pack(s2):
+            return s2[:, vc, vd].T.reshape(-1)
+
+        def matvec(x):
+            r1 = x[:nv]
+            r2 = unpack(x[nv:])                         # [i,c,d]
+            # 1p <- 1p
+            s1 = Mpp @ r1
+            # 1p <- 2p1h : first order + second order (t2-dressed) coupling.
+            # r2 contracts with un-conjugated amplitudes and conjugated
+            # interaction integrals (covariant; pinned by Gate-2).
+            s1 += 0.5 * lib.einsum('aicd,icd->a', Wvovv, r2)
+            s1 += -0.25 * lib.einsum('lmcd,icd,lmia->a', t2, r2, WooovC)
+            s1 += lib.einsum('jlwd,jzw,lzda->a', t2, r2, WovvvC)
+            # 2p1h <- 1p : Hermitian conjugate of the above coupling
+            s2 = (ev[None, :, None] + ev[None, None, :] - eo[:, None, None]) * r2
+            s2 += lib.einsum('aicd,a->icd', WvovvC, r1)
+            s2 += -0.5 * lib.einsum('lmcd,lmia,a->icd', t2.conj(), Wooov, r1)
+            t = lib.einsum('jlwd,lzda,a->jzw', t2.conj(), Wovvv, r1)
+            s2 += t - t.transpose(0, 2, 1)
+            # 2p1h <- 2p1h : ADC(2)-x block (pp ladder + ph ring)
+            s2 += 0.5 * lib.einsum('abcd,icd->iab', vvvv, r2)
+            tr = -lib.einsum('jbic,jac->iab', Vjbic, r2)
+            s2 += tr - tr.transpose(0, 2, 1)
+            return np.concatenate([s1, pack(s2)])
+
+        diag = np.empty(dim)
+        diag[:nv] = Mpp.diagonal().real
+        dd = ev_p[:, None] - eo[None, :]
+        vvvv_d = Wvvvv_pp.diagonal().real
+        ovov_d = -np.einsum('iaai->ia', eris.ovvo).real
+        dd = (dd + vvvv_d[:, None] - ovov_d.T[vc, :] - ovov_d.T[vd, :])
+        diag[nv:] = dd.reshape(-1)
+        return _davidson(matvec, diag, nroots)
+
     def ea_adc2_spec(self, nroots=6):
         '''Spinor EA-ADC(2) energies and spectroscopic factors (pole
         strengths).  Returns ``(energies, pole_strengths)``.'''

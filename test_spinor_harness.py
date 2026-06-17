@@ -142,6 +142,11 @@ def run_spinor_ip3(mf, nroots=12):
     return {"e": np.asarray(SpinorADC(mf).ip_adc3(nroots))}
 
 
+def run_spinor_ea3(mf, nroots=12):
+    """socutils spinor EA-ADC(3)."""
+    return {"e": np.asarray(SpinorADC(mf).ea_adc3(nroots))}
+
+
 def run_spinor_ip_cvs(mf, nroots=6, ncvs_spatial=1):
     """socutils spinor CVS-IP-ADC(2) (core ionisation).  ncvs counts core
     spinors = 2x the spatial core count (Kramers pairs)."""
@@ -244,6 +249,18 @@ def ref_ip3(mol, nroots=10):
     a.verbose = 0
     a.kernel_gs()
     return {"e": np.asarray(a.ip_adc(nroots=nroots)[0])}
+
+
+def ref_ea3(mol, nroots=10):
+    # EA-ADC(3): spin-orbital, so compare to UADC (RADC keeps only doublet 2p1h).
+    from pyscf import adc
+    mf = scf.UHF(mol).run()
+    a = adc.ADC(mf)
+    a.method = "adc(3)"
+    a.method_type = "ea"
+    a.verbose = 0
+    a.kernel_gs()
+    return {"e": np.asarray(a.ea_adc(nroots=nroots)[0])}
 
 
 def ref_ip_cvs(mol, nroots=6, ncvs_spatial=1):
@@ -672,6 +689,27 @@ def test_gate2_ea_invariance(mf):
     np.testing.assert_allclose(rot, base, atol=1e-7, rtol=0,
                                err_msg="EA roots changed under complex rotation"
                                        " -> conjugation/Hermiticity bug")
+
+
+def test_gate1_ea3(mol, mf):
+    """spinor EA-ADC(3) reproduces PySCF UADC EA-ADC(3) (spin-orbital): the full
+    1p block (eps - Sigma^(2) + Sigma^(3)), second-order coupling, ADC(2)-x
+    2p1h block.  Lowest roots compared as a set (Kramers multiplicity)."""
+    got = np.sort(run_spinor_ea3(mf, nroots=12)["e"])
+    ref = np.sort(ref_ea3(mol, nroots=8)["e"])
+    err = max(min(abs(got - r)) for r in ref[:6])
+    assert err < 5e-5, f"EA-ADC(3) vs UADC: max per-root err {err:.2e}"
+
+
+def test_gate2_ea3_invariance(mf):
+    """EA-ADC(3) roots invariant under a legal complex orbital rotation."""
+    E, C = mo_energy(mf), mo_coeff(mf)
+    U = legal_rotation(E, seed=19)
+    base = np.sort(run_spinor_ea3(mf)["e"])
+    rot = np.sort(run_spinor_ea3(set_mo(mf, C @ U, E))["e"])
+    np.testing.assert_allclose(rot, base, atol=1e-7, rtol=0,
+                               err_msg="EA-ADC(3) roots changed under complex"
+                                       " rotation -> conjugation/Hermiticity bug")
 
 
 def test_gate1_eeadc2(mol, mf):
