@@ -214,6 +214,44 @@ class _SpinorADCERIs:
         return self._get('ovvv', lambda: self._blk(self.o, self.v, self.v, self.v))
 
 
+# EE-ADC(3) third-order ph-ph block M^(3)_{ia,jb}, the neutral-excitation static
+# self-energy.  Each entry is (coef, einsum-subscript, [(amp,block,conj),...],
+# delta) for the *ket* half; the block is Hermitised as  m + m^dagger  and the
+# delta tag broadcasts a Kronecker delta on the spectator leg ('vir' -> i j * d_ab,
+# 'occ' -> a b * d_ij, 'none' -> full i a j b).  Amplitudes: T2=t2, T2b=t2^(2),
+# T1b=t1^(2) (with .conj() where conj==1).  Derived term-by-term from the
+# spin-orbital ISR and validated to ~1e-15 against pyscf UADC EE-ADC(3) (alpha
+# block) over general molecules; the per-tensor conjugations are pinned by
+# orbital-phase gauge covariance (Gate-2, residual ~1e-17).
+_EE_M3_TERMS = [
+    (-0.25, 'ikbc,bcjk->ij', [('T2b','oovv',0),('V','vvoo',1)], 'vir'),
+    (-0.25, 'jkac,bcjk->ab', [('T2b','oovv',0),('V','vvoo',1)], 'occ'),
+    (0.5, 'ikac,bcjk->iajb', [('T2b','oovv',0),('V','vvoo',1)], 'none'),
+    (-1.0, 'kb,ibjk->ij', [('T1b','ov',0),('V','ovoo',1)], 'vir'),
+    (-1.0, 'jc,bcja->ab', [('T1b','ov',0),('V','vvov',1)], 'occ'),
+    (1.0, 'ka,ibjk->iajb', [('T1b','ov',0),('V','ovoo',1)], 'none'),
+    (1.0, 'ic,bcja->iajb', [('T1b','ov',0),('V','vvov',1)], 'none'),
+    (-0.5, 'klbc,bdjk,icld->ij', [('T2','oovv',1),('T2','vvoo',0),('V','ovov',1)], 'vir'),
+    (-0.125, 'klbc,bcjm,imkl->ij', [('T2','oovv',1),('T2','vvoo',0),('V','oooo',1)], 'vir'),
+    (-0.25, 'klbc,bdkl,icjd->ij', [('T2','oovv',1),('T2','vvoo',0),('V','ovov',1)], 'vir'),
+    (0.25, 'klbc,bckm,imjl->ij', [('T2','oovv',1),('T2','vvoo',0),('V','oooo',1)], 'vir'),
+    (-0.5, 'jkac,cdjl,lbkd->ab', [('T2','oovv',1),('T2','vvoo',0),('V','ovov',1)], 'occ'),
+    (-0.125, 'jkcd,bejk,cdae->ab', [('T2','oovv',1),('T2','vvoo',0),('V','vvvv',1)], 'occ'),
+    (0.25, 'jkcd,cejk,bdae->ab', [('T2','oovv',1),('T2','vvoo',0),('V','vvvv',1)], 'occ'),
+    (-0.25, 'jkcd,cdjl,lbka->ab', [('T2','oovv',1),('T2','vvoo',0),('V','ovov',1)], 'occ'),
+    (0.25, 'ikac,dejk,bcde->iajb', [('T2','oovv',1),('T2','vvoo',0),('V','vvvv',1)], 'none'),
+    (0.5, 'ikac,cdjl,lbkd->iajb', [('T2','oovv',1),('T2','vvoo',0),('V','ovov',1)], 'none'),
+    (0.5, 'ikac,bdkl,lcjd->iajb', [('T2','oovv',1),('T2','vvoo',0),('V','ovov',1)], 'none'),
+    (0.25, 'ikac,bclm,lmjk->iajb', [('T2','oovv',1),('T2','vvoo',0),('V','oooo',1)], 'none'),
+    (-0.25, 'klac,cdkl,ibjd->iajb', [('T2','oovv',1),('T2','vvoo',0),('V','ovov',1)], 'none'),
+    (-0.5, 'klac,bckm,imjl->iajb', [('T2','oovv',1),('T2','vvoo',0),('V','oooo',1)], 'none'),
+    (-0.5, 'ikcd,cejk,bdae->iajb', [('T2','oovv',1),('T2','vvoo',0),('V','vvvv',1)], 'none'),
+    (0.25, 'ikcd,cdjl,lbka->iajb', [('T2','oovv',1),('T2','vvoo',0),('V','ovov',1)], 'none'),
+    (-1.0, 'ikcd,bckl,ldja->iajb', [('T2','oovv',1),('T2','vvoo',0),('V','ovov',1)], 'none'),
+    (-0.25, 'ikcd,cdkl,lbja->iajb', [('T2','oovv',1),('T2','vvoo',0),('V','ovov',1)], 'none'),
+]
+
+
 class SpinorADC(lib.StreamObject):
     '''Spinor ADC(2).
 
@@ -274,6 +312,7 @@ class SpinorADC(lib.StreamObject):
         self._t1_2p_cache = None
         self._sig_ip3_cache = None
         self._sig_ea3_cache = None
+        self._ee_lam3_cache = None
 
     def _t1_2(self):
         # second-order singles (only for spectroscopic amplitudes; built lazily
@@ -420,6 +459,51 @@ class SpinorADC(lib.StreamObject):
             S += S1 + S1.conj().T
             self._sig_ea3_cache = 0.5 * (S + S.conj().T)
         return self._sig_ea3_cache
+
+    def _ee_lam3(self):
+        '''Third-order ph-ph block increment M^(3)_{ia,jb} for EE-ADC(3) -- the
+        neutral-excitation static self-energy (the full third-order increment of
+        the 1p1h block, i.e. it already contains the third-order IP/EA self-energy
+        legs and the genuine ph-ph coupling).  Returned as an [i,a,j,b] tensor to
+        be folded into the second-order ph-ph term ``Lam``.  Built from the term
+        table ``_EE_M3_TERMS`` (see its comment); Hermitised and gauge-covariant
+        (Gate-2).'''
+        if getattr(self, '_ee_lam3_cache', None) is None:
+            self._build()
+            eris = self._eris
+            no, nv = self.nocc, self.nmo - self.nocc
+            t2 = self._t2
+            t2_2 = self._t2_2()
+            t1_2 = self._t1_2_pyscf()
+            o, v = eris.o, eris.v
+            Vget = {'vvoo': eris.vvoo, 'ovoo': eris.ovoo, 'oooo': eris.oooo,
+                    'vvvv': eris.vvvv, 'ovov': eris._blk(o, v, o, v),
+                    'vvov': eris._blk(v, v, o, v)}
+            Io, Iv = np.eye(no), np.eye(nv)
+
+            def amp(kind, ix, conj):
+                if kind == 'T2':
+                    a = t2 if ix == 'oovv' else t2.transpose(2, 3, 0, 1)
+                elif kind == 'T2b':
+                    a = t2_2 if ix == 'oovv' else t2_2.transpose(2, 3, 0, 1)
+                elif kind == 'T1b':
+                    a = t1_2 if ix == 'ov' else t1_2.T
+                else:
+                    a = Vget[ix]
+                return a.conj() if conj else a
+
+            M = np.zeros((no, nv, no, nv), dtype=complex)
+            for coef, sub, tens, delta in _EE_M3_TERMS:
+                G = coef * lib.einsum(sub, *[amp(*t) for t in tens])
+                if delta == 'none':
+                    m = G
+                elif delta == 'vir':
+                    m = lib.einsum('ij,ab->iajb', G, Iv)
+                else:
+                    m = lib.einsum('ab,ij->iajb', G, Io)
+                M += m + m.conj().transpose(2, 3, 0, 1)
+            self._ee_lam3_cache = M
+        return self._ee_lam3_cache
 
     def energy_mp3(self):
         '''Spinor MP2 + MP3 ground-state correlation energy.  The MP3 piece uses
