@@ -543,6 +543,13 @@ class SpinorSCF(hf.SCF):
     def density_fit(self, auxbasis=None, with_df=None, only_dfj=False):
         return density_fit(self, auxbasis, with_df, only_dfj)
 
+    def cholesky(self, tau=1e-4, sigma=1e-2, method='threeloop',
+                 cderi=None, cderi_to_save=None, with_df=None, only_dfj=False):
+        from socutils.cd.cd import cholesky
+        return cholesky(self, tau=tau, sigma=sigma, method=method,
+                        cderi=cderi, cderi_to_save=cderi_to_save,
+                        with_df=with_df, only_dfj=only_dfj)
+
     def _attach_x2cmp(self, flavor, with_gaunt, with_breit, with_pcc, with_aoc):
         from socutils.somf.x2cmp import SpinorX2CMPHelper
         self.with_x2c = SpinorX2CMPHelper(

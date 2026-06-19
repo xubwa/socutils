@@ -257,6 +257,16 @@ def chunked_cholesky_threeloop(mol, max_error=1e-5, verbose=True, cmax=15):
                     if delta_nu < min(max_error, 1e-8):
                         continue
                     #print(delta[nu], nu, (dims[sj]+cj)*nao+dims[sl]+cl)
+                    # Grow the buffer if cmax*nao was not enough, so cmax is
+                    # only an initial guess and never a hard cap.  Grow once a
+                    # full nao of headroom is left (not at the very last slot),
+                    # so a shell-pair block adding several vectors always fits;
+                    # nchol ends up at a few times nao, so this costs only a
+                    # handful of reallocations.
+                    if nchol + nao >= nchol_max:
+                        chol_vecs = np.concatenate(
+                            [chol_vecs, np.zeros((nao, nao * nao))], axis=0)
+                        nchol_max += nao
                     # Updated residual = \sum_x L_i^x L_nu^x
                     R = np.dot(chol_vecs[:nchol + 1, nu], chol_vecs[:nchol + 1, :])
                     munu0 = eri_col[:,:,i_j,i_l].reshape(nao*nao)

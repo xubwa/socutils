@@ -28,6 +28,14 @@ class GHF(ghf.GHF):
         ghf.GHF.__init__(self, mol)
         self.with_x2c = None
 
+    def cholesky(self, tau=1e-4, sigma=1e-2, method='threeloop',
+                 cderi=None, cderi_to_save=None, with_df=None, **kwargs):
+        '''Cholesky-decomposed ERIs -- the CD analogue of ``mf.density_fit()``.'''
+        from socutils.cd.cd import cholesky
+        return cholesky(self, tau=tau, sigma=sigma, method=method,
+                        cderi=cderi, cderi_to_save=cderi_to_save,
+                        with_df=with_df, **kwargs)
+
     def _attach_x2cmp(self, flavor, with_gaunt, with_breit, with_pcc, with_aoc):
         from socutils.somf.x2cmp import SpinOrbitalX2CMPHelper
         self.with_x2c = SpinOrbitalX2CMPHelper(

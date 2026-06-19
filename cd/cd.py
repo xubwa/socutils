@@ -6,10 +6,47 @@
 # _cderi / loop() / get_naoaux() work transparently for downstream code.
 #
 
+import os
 import numpy as np
 import scipy.linalg
 from pyscf import df, lib, gto
 from pyscf.lib import logger
+
+
+def cholesky(mf, tau=1e-4, sigma=1e-2, method='threeloop',
+             cderi=None, cderi_to_save=None, with_df=None, **kwargs):
+    """Attach Cholesky-decomposed ERIs to an SCF object -- the CD analogue of
+    ``mf.density_fit()``.
+
+    Builds a :class:`CD` object (a ``df.DF`` subclass producing ``_cderi`` in
+    the same compressed-triangular layout as density fitting) and routes it
+    through the mean field's own ``density_fit(with_df=...)``, so it works for
+    spinor, GHF and plain pyscf mean fields alike:
+
+        mf = spinor_hf.SCF(mol).x2camf().cholesky()
+
+    The on-disk cache uses exactly the same interface as pyscf DF -- the
+    ``_cderi_to_save`` / ``_cderi`` attributes -- exposed here as keywords:
+
+        # save the decomposition (first run computes, writes 'cderi.h5'):
+        mf = spinor_hf.SCF(mol).x2camf().cholesky(cderi_to_save='cderi.h5')
+        # reuse it (skip the decomposition entirely):
+        mf = spinor_hf.SCF(mol).x2camf().cholesky(cderi='cderi.h5')
+
+    equivalently, set ``mf.with_df._cderi_to_save`` / ``mf.with_df._cderi``
+    directly, just like a density-fitted object.  With neither, the vectors
+    stay in memory and plug into the DF machinery like ``.density_fit()``.
+
+    Extra keyword arguments (e.g. ``only_dfj``) are forwarded to the underlying
+    ``density_fit``.
+    """
+    if with_df is None:
+        with_df = CD(mf.mol, tau=tau, sigma=sigma, method=method)
+    if cderi is not None:
+        with_df._cderi = cderi
+    if cderi_to_save is not None:
+        with_df._cderi_to_save = cderi_to_save
+    return mf.density_fit(with_df=with_df, **kwargs)
 
 
 class CD(df.DF):
@@ -32,33 +69,101 @@ class CD(df.DF):
             Stored for gradient calculations.
     """
 
-    _keys = {'tau', 'sigma', 'pivots', 'metric_chol'}
+    _keys = {'tau', 'sigma', 'method', 'pivots', 'metric_chol'}
 
-    def __init__(self, mol, tau=1e-4, sigma=1e-2):
+    def __init__(self, mol, tau=1e-4, sigma=1e-2, method='threeloop'):
         df.DF.__init__(self, mol)
         self.tau = tau
-        self.sigma = sigma  # span factor
+        self.sigma = sigma  # span factor (only used by the 'twostep' method)
+        # Decomposition algorithm:
+        #   'threeloop' (default) -- zmc_ao2mo.chunked_cholesky_threeloop, the
+        #                            direct pivoted Cholesky used elsewhere in
+        #                            socutils.  Its vector buffer grows
+        #                            dynamically, so there is no cap to tune.
+        #   'twostep'             -- pivot selection + RI reconstruction
+        #                            (_determine_pivots + _construct_vectors);
+        #                            stores metric_chol for analytic gradients.
+        self.method = method
         self.pivots = None
         self.metric_chol = None
 
+    def get_jk(self, dm, hermi=1, with_j=True, with_k=True,
+               direct_scf_tol=1e-13, omega=None):
+        # Make sure the Cholesky vectors exist before delegating, so that BOTH
+        # J and K are built from THEM.  Otherwise pyscf's J-only fast path
+        # (df_jk.get_j, taken when ``_cderi is None``) would build a separate
+        # even-tempered DF auxbasis and compute J from that instead of the CD
+        # decomposition -- inconsistent with the CD-based K, and the source of
+        # the spurious "ETB ... DF auxbasis" output.
+        if self._cderi is None:
+            self.build()
+        return df.DF.get_jk(self, dm, hermi, with_j, with_k,
+                            direct_scf_tol, omega)
+
     def build(self):
         log = logger.new_logger(self)
-        t0 = (logger.process_clock(), logger.perf_counter())
         mol = self.mol
-        nao = mol.nao_nr()
-        tau = self.tau
 
-        # --- Step 1: Determine Cholesky pivots ---
-        pivots, pivot_indices = self._determine_pivots(mol, tau, log)
-        self.pivots = pivots
-        npiv = len(pivot_indices)
-        log.info('CD: %d pivots selected with tau = %g', npiv, tau)
-        t1 = log.timer('CD Step 1: pivot determination', *t0)
+        # Same on-disk cache interface as pyscf DF: a pre-set _cderi (file path
+        # or in-core array) is used as-is and the decomposition is skipped.
+        if self._cderi is not None:
+            log.info('CD: using preset _cderi (%s); skipping decomposition',
+                     self._cderi if isinstance(self._cderi, str) else 'in-core array')
+            return self
 
-        # --- Step 2: Construct Cholesky vectors via RI formula ---
-        self._cderi = self._construct_vectors(mol, pivots, pivot_indices, log)
-        log.timer('CD Step 2: RI construction', *t1)
+        if self.method == 'threeloop':
+            cderi = self._build_threeloop(mol, log)
+        elif self.method == 'twostep':
+            cderi = self._build_twostep(mol, log)
+        else:
+            raise ValueError("CD.method must be 'threeloop' or 'twostep', "
+                             "got %r" % self.method)
+
+        # Honour _cderi_to_save exactly like DF: a string selects an on-disk
+        # HDF5 cache (dataset = self._dataname, default 'j3c'); _cderi is then
+        # the saved path, so the DF machinery reads from the file.
+        if isinstance(self._cderi_to_save, str):
+            import h5py
+            dataname = getattr(self, '_dataname', 'j3c')
+            with h5py.File(self._cderi_to_save, 'w') as f:
+                f[dataname] = cderi
+            self._cderi = self._cderi_to_save
+            log.info('CD: saved %d vectors to %s', cderi.shape[0],
+                     self._cderi_to_save)
+        else:
+            self._cderi = cderi
         return self
+
+    def _build_threeloop(self, mol, log):
+        """Default: chunked_cholesky_threeloop from socutils.mcscf.zmc_ao2mo.
+
+        Returns the Cholesky vectors packed to (naux, nao_pair), the DF layout.
+        """
+        from socutils.mcscf.zmc_ao2mo import chunked_cholesky_threeloop
+        t0 = (logger.process_clock(), logger.perf_counter())
+        nao = mol.nao_nr()
+        # The buffer inside chunked_cholesky_threeloop grows dynamically, so the
+        # cmax there is only an initial allocation -- nothing to tune here.
+        chol = chunked_cholesky_threeloop(mol, max_error=self.tau,
+                                          verbose=(self.verbose >= logger.INFO))
+        # (nchol, nao*nao) -> (nchol, nao_pair); L_{mu nu} is symmetric in mu,nu.
+        cderi = lib.pack_tril(np.asarray(chol).reshape(-1, nao, nao))
+        log.info('CD(threeloop): %d vectors, max_error = %g',
+                 cderi.shape[0], self.tau)
+        log.timer('CD threeloop decomposition', *t0)
+        return cderi
+
+    def _build_twostep(self, mol, log):
+        """Pivot selection (CD) + RI reconstruction; stores metric_chol."""
+        t0 = (logger.process_clock(), logger.perf_counter())
+        pivots, pivot_indices = self._determine_pivots(mol, self.tau, log)
+        self.pivots = pivots
+        log.info('CD: %d pivots selected with tau = %g',
+                 len(pivot_indices), self.tau)
+        t1 = log.timer('CD Step 1: pivot determination', *t0)
+        cderi = self._construct_vectors(mol, pivots, pivot_indices, log)
+        log.timer('CD Step 2: RI construction', *t1)
+        return cderi
 
     def _determine_pivots(self, mol, tau, log):
         """Step 1: Determine the Cholesky pivot set B.
