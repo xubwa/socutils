@@ -13,13 +13,29 @@
 
 #include "x2c_dhf_sph.h"
 
-/* timing helpers from the C++ code: keep the call sites, drop the prints */
+/* Timing helpers, faithful to the C++ original (general.cpp countTime/printTime).
+   Each countTime() records a mark; printTime() reports the interval between the
+   two most recent marks as "<msg> time (CPU/WALL): c/w seconds.", matching the
+   reference output.  The call sites gate these on printLevel >= 1. */
+#include <time.h>
+
+static clock_t        _t_cpu_prev,  _t_cpu_cur;
+static struct timespec _t_wall_prev, _t_wall_cur;
+
 static void countTime(void)
 {
+    _t_cpu_prev  = _t_cpu_cur;
+    _t_wall_prev = _t_wall_cur;
+    _t_cpu_cur = clock();
+    clock_gettime(CLOCK_MONOTONIC, &_t_wall_cur);
 }
 static void printTime(const char* msg)
 {
-    (void)msg;
+    double cpu  = (double)(_t_cpu_cur - _t_cpu_prev) / (double)CLOCKS_PER_SEC;
+    double wall = (double)(_t_wall_cur.tv_sec  - _t_wall_prev.tv_sec)
+                + (double)(_t_wall_cur.tv_nsec - _t_wall_prev.tv_nsec) * 1e-9;
+    printf("%s time (CPU/WALL): %.2f/%.2f seconds.\n", msg, cpu, wall);
+    fflush(stdout);
 }
 
 /* ----------------------------------------------------------------------

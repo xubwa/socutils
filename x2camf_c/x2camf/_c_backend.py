@@ -63,7 +63,11 @@ def _load_library():
             tried.append(path)
             continue
         try:
-            return ctypes.CDLL(path)
+            lib = ctypes.CDLL(path)
+            sys.stdout.write(
+                "[socutils] x2camf: BUNDLED pure-C backend loaded (%s)\n"
+                % os.path.abspath(path))
+            return lib
         except OSError:
             tried.append(path)
     raise ImportError(

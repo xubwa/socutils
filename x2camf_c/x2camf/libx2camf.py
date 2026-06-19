@@ -16,9 +16,31 @@ Switch backends for comparison testing with:
         ...
 '''
 
+import os
+import sys
+import time
+
 from x2camf import backend
 
 SPEED_OF_LIGHT_DEFAULT = 137.0359991
+
+# Per-call wall-clock timing, printed to stdout. On by default; silence with
+# X2CAMF_TIMING=0 (also accepts false/off/no).
+_TIMING = os.environ.get('X2CAMF_TIMING', '1').strip().lower() \
+    not in ('0', 'false', 'off', 'no')
+
+
+def _dispatch(method, atom_number, args, kwargs):
+    '''Route a call to the selected backend, optionally timing it.'''
+    fn = getattr(backend.load_backend(), method)
+    if not _TIMING:
+        return fn(*args, **kwargs)
+    t0 = time.perf_counter()
+    out = fn(*args, **kwargs)
+    dt = time.perf_counter() - t0
+    sys.stdout.write("[socutils] x2camf.%s  Z=%s  backend=%s  %.3f s\n"
+                     % (method, atom_number, backend.get_backend(), dt))
+    return out
 
 # (name, is_four_component) for the 13 matrices returned by atm_integrals;
 # identical across both backends.
@@ -34,21 +56,24 @@ ATM_INTEGRALS_LAYOUT = (
 
 def amfi(input_string, atom_number, nshell, nbas, printLevel, shell, exp_a,
          speed_of_light=SPEED_OF_LIGHT_DEFAULT):
-    return backend.load_backend().amfi(
-        input_string, atom_number, nshell, nbas, printLevel, shell, exp_a,
-        speed_of_light=speed_of_light)
+    return _dispatch('amfi', atom_number,
+                     (input_string, atom_number, nshell, nbas, printLevel,
+                      shell, exp_a),
+                     dict(speed_of_light=speed_of_light))
 
 
 def pcc_K(input_string, atom_number, nshell, nbas, printLevel, shell, exp_a,
           speed_of_light=SPEED_OF_LIGHT_DEFAULT):
-    return backend.load_backend().pcc_K(
-        input_string, atom_number, nshell, nbas, printLevel, shell, exp_a,
-        speed_of_light=speed_of_light)
+    return _dispatch('pcc_K', atom_number,
+                     (input_string, atom_number, nshell, nbas, printLevel,
+                      shell, exp_a),
+                     dict(speed_of_light=speed_of_light))
 
 
 def atm_integrals(input_string, atom_number, nshell, nbas, printLevel,
                   shell, exp_a, speed_of_light=SPEED_OF_LIGHT_DEFAULT,
                   spin_free=False):
-    return backend.load_backend().atm_integrals(
-        input_string, atom_number, nshell, nbas, printLevel, shell, exp_a,
-        speed_of_light=speed_of_light, spin_free=spin_free)
+    return _dispatch('atm_integrals', atom_number,
+                     (input_string, atom_number, nshell, nbas, printLevel,
+                      shell, exp_a),
+                     dict(speed_of_light=speed_of_light, spin_free=spin_free))

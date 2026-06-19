@@ -202,14 +202,31 @@ def x2cmp_screen(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=F
         atm_ints[atom] = integrals
     x2cobj.atomic_integrals = atm_ints
 
+    # --- track down the time between "atm_integrals finished normally." and
+    # the "amf_type" line below: this region is pyscf 4c molecular work, not
+    # x2camf.  Gated by X2CAMF_TIMING (default on; set 0/false/off to silence).
+    import os as _os, time as _t
+    _TM = _os.environ.get('X2CAMF_TIMING', '1').strip().lower() \
+        not in ('0', 'false', 'off', 'no')
+    def _toc(_label, _t0):
+        if _TM:
+            print('[socutils] x2cmp.%-9s %.3f s' % (_label, _t.perf_counter() - _t0),
+                  flush=True)
+
+    _t0 = _t.perf_counter()
     xmol, _  = x2cobj.get_xmol()
+    _toc('get_xmol', _t0)
     n2c = xmol.nao_2c()
     atom_slices = xmol.aoslice_2c_by_atom()
     mf_4c = scf.DHF(xmol)
     mf_4c.with_gaunt = gaunt
     mf_4c.with_breit = breit
+    _t0 = _t.perf_counter()
     h1e_4c = mf_4c.get_hcore()
+    _toc('get_hcore', _t0)
+    _t0 = _t.perf_counter()
     s4c = mf_4c.get_ovlp()
+    _toc('get_ovlp', _t0)
     print('amf_type', x2cobj.amf_type)
     if x2cobj.h4c is None:
         x2cobj.h4c = h1e_4c
@@ -491,14 +508,31 @@ def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, n
         # results{0 atm_X, 1 atm_R, 2 h1e_4c, 3 fock_4c, 4 fock_2c, 5 fock_4c_2e, 
         #         6 fock_2c_2e, 7 fock_4c_K, 8 fock_2c_K, 9 so_4c, 10 so_2c, 11 den_4c, 12 den_2c};
 
+    # --- track down the time between "atm_integrals finished normally." and
+    # the "amf_type" line below: this region is pyscf 4c molecular work, not
+    # x2camf.  Gated by X2CAMF_TIMING (default on; set 0/false/off to silence).
+    import os as _os, time as _t
+    _TM = _os.environ.get('X2CAMF_TIMING', '1').strip().lower() \
+        not in ('0', 'false', 'off', 'no')
+    def _toc(_label, _t0):
+        if _TM:
+            print('[socutils] x2cmp.%-9s %.3f s' % (_label, _t.perf_counter() - _t0),
+                  flush=True)
+
+    _t0 = _t.perf_counter()
     xmol, _  = x2cobj.get_xmol()
+    _toc('get_xmol', _t0)
     n2c = xmol.nao_2c()
     atom_slices = xmol.aoslice_2c_by_atom()
     mf_4c = scf.DHF(xmol)
     mf_4c.with_gaunt = gaunt
     mf_4c.with_breit = breit
+    _t0 = _t.perf_counter()
     h1e_4c = mf_4c.get_hcore()
+    _toc('get_hcore', _t0)
+    _t0 = _t.perf_counter()
     s4c = mf_4c.get_ovlp()
+    _toc('get_ovlp', _t0)
     print('amf_type', x2cobj.amf_type)
     if x2cobj.h4c is None:
         x2cobj.h4c = h1e_4c
