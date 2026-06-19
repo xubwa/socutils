@@ -11,7 +11,8 @@ signatures, so downstream code works unchanged.  The numerical solver
 
 The shared library is located in the following order:
   1. the path in the environment variable SOCUTILS_ZQUATEV_LIBRARY
-  2. libzquatev.so / .dylib / .dll next to this file
+  2. libzquatev.so / .dylib / .dll in the socutils/lib directory (one level up:
+     all bundled libraries are built flat into lib/, pyscf-style)
   3. the system library search path (ctypes.util.find_library)
 '''
 
@@ -28,6 +29,7 @@ def _candidate_paths():
     if env:
         yield env
     here = os.path.dirname(os.path.abspath(__file__))
+    libdir = os.path.dirname(here)   # socutils/lib -- the flat output directory
     if sys.platform.startswith("win"):
         names = ["zquatev.dll", "libzquatev.dll"]
     elif sys.platform == "darwin":
@@ -35,7 +37,8 @@ def _candidate_paths():
     else:
         names = ["libzquatev.so"]
     for name in names:
-        yield os.path.join(here, name)
+        yield os.path.join(libdir, name)
+        yield os.path.join(here, name)   # legacy in-place location
     found = ctypes.util.find_library("zquatev")
     if found:
         yield found

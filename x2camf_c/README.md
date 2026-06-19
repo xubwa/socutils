@@ -12,7 +12,8 @@ PySCF main line) and to call from any language with a C FFI.
 
 ## What is translated
 
-The C sources in `csrc/` correspond 1:1 to the upstream C++ sources:
+The C sources (now under `socutils/lib/x2camf/csrc`) correspond 1:1 to the
+upstream C++ sources:
 
 | C++ (`x2camf/src`) | C (`csrc`) | contents |
 |---|---|---|
@@ -37,12 +38,12 @@ Requirements: a C99 compiler, BLAS + LAPACK, OpenMP (optional), numpy
 (for the Python binding). `pyscf` is only needed for the high-level
 molecular interface.
 
-```bash
-# direct build of the shared library
-./build_c.sh                 # -> build_c/libx2camf_c.so
+The C sources now live in the socutils tree under ``lib/x2camf`` and are built
+together with the other bundled libraries by the top-level ``lib/`` CMake:
 
-# or via CMake
-mkdir build && cd build && cmake .. && make -j
+```bash
+make                         # at the repo root -> lib/libx2camf_c.so
+# equivalently: cd ../lib && ./build.sh
 ```
 
 BLAS/LAPACK selection follows the PySCF conventions. The default
@@ -60,13 +61,8 @@ A user-supplied `BLAS_LIBRARIES` (e.g. `mkl_rt`) is assumed to also
 provide LAPACK, so no separate reference LAPACK is linked. OpenMP is on by
 default; disable with `-DENABLE_OPENMP=OFF`.
 
-```bash
-# or as a Python package
-pip install .
-```
-
-If the library is not inside the Python package directory, point the
-binding at it:
+If the compiled library is not in `socutils/lib`, point the binding at it
+explicitly:
 
 ```bash
 export X2CAMF_C_LIBRARY=/path/to/libx2camf_c.so
@@ -101,7 +97,7 @@ the original pybind11 module (built from upstream x2camf and importable as
 
 ```bash
 PYTHONPATH=/path/to/x2camf/build \
-X2CAMF_C_LIBRARY=$PWD/build_c/libx2camf_c.so \
+X2CAMF_C_LIBRARY=$PWD/x2camf/libx2camf_c.so \
 python tests/test_against_cpp.py          # O smoke test + heavy d/f atom
 # stress an open f-shell (AOC) atom:
 X2CAMF_TEST_Z=60 python tests/test_against_cpp.py

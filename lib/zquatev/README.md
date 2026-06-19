@@ -18,19 +18,22 @@ This is a drop-in replacement for the external `zquatev` Python module (same
 
 ## Building
 
-The solver is a small C++ library built with CMake (BLAS/LAPACK required):
+This is a thin subdirectory of the socutils `lib/` CMake (pyscf/lib style); it
+is built together with the other bundled libraries from the repo root
+(BLAS/LAPACK required):
 
 ```sh
-./build.sh                                   # auto-detect BLAS/LAPACK
+make                                # auto-detect BLAS/LAPACK
 # or pass an explicit BLAS, e.g. OpenBLAS / MKL:
-./build.sh -DBLAS_LIBRARIES=/path/to/libopenblas.so
+make CMAKE_ARGS=-DBLAS_LIBRARIES=/path/to/libopenblas.so
+# equivalently: cd socutils/lib && ./build.sh
 ```
 
-The resulting `libzquatev.so` is placed in this directory, next to the ctypes
-loader (`__init__.py`). At runtime the loader searches, in order:
+The resulting `libzquatev.so` is placed flat in `socutils/lib` (one level up),
+next to all the bundled libraries. At runtime the loader searches, in order:
 
 1. `$SOCUTILS_ZQUATEV_LIBRARY`
-2. `libzquatev.so` next to `__init__.py`
+2. `libzquatev.so` in `socutils/lib`
 3. `ctypes.util.find_library("zquatev")`
 
 ## Local patch (`csrc/f77.h`)

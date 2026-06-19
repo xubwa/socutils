@@ -8,7 +8,7 @@ the SCF with a Kramers-paired (quaternion) eigensolver, yielding exactly
 doubly-degenerate Kramers pairs.
 
 This path requires the bundled zquatev solver to be compiled
-(socutils/lib/zquatev/build.sh; see the install docs).
+(run `make` at the repo root; see the install docs).
 '''
 from pyscf import gto
 from socutils.scf import spinor_hf

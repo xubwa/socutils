@@ -5,7 +5,8 @@ a<b<c) in C (avoids the 36-copy fullasym blowup of the pure-numpy path).
 ``HAVE_CLIB`` is False if the shared library has not been built; callers then
 fall back to the numpy reference in zccsdt.
 
-Build: cc/clib/build.sh  (or set $SOCUTILS_CCSDT_CLIB to the .so path).
+Build: `make` at the repo root (or lib/build.sh); the library is emitted to
+socutils/lib/libccsdt_clib.so.  Set $SOCUTILS_CCSDT_CLIB to override the path.
 '''
 import ctypes
 import os
@@ -16,9 +17,10 @@ import numpy as np
 def _load():
     env = os.environ.get('SOCUTILS_CCSDT_CLIB')
     here = os.path.dirname(os.path.abspath(__file__))
+    libdir = os.path.join(os.path.dirname(here), 'lib')  # socutils/lib
     cands = ([env] if env else []) + [
-        os.path.join(here, 'clib', 'libccsdt_clib.so'),
-        os.path.join(here, 'clib', 'libccsdt_clib.dylib'),
+        os.path.join(libdir, 'libccsdt_clib.so'),
+        os.path.join(libdir, 'libccsdt_clib.dylib'),
     ]
     for p in cands:
         if p and os.path.exists(p):
