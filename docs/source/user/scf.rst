@@ -150,6 +150,58 @@ PySCF:
    # choose an auxiliary basis explicitly:
    mf = spinor_hf.SCF(mol).x2camf().density_fit(auxbasis='ccpvdz-jkfit')
 
+.. _cholesky-decomposition:
+
+Cholesky decomposition
+----------------------
+
+Instead of an external auxiliary basis, the two-electron integrals can be
+factorised on the fly by a pivoted **Cholesky decomposition** (CD).  The
+``.cholesky()`` shortcut is the CD analogue of ``.density_fit()``: it attaches a
+:class:`socutils.cd.cd.CD` object (a ``df.DF`` subclass) as ``with_df``, so both
+``J`` and ``K`` are built from the same Cholesky vectors and everything
+downstream (gradients, MCSCF, CC) works unchanged.  It is available on both the
+spinor and GHF drivers:
+
+.. code-block:: python
+
+   mf = spinor_hf.SCF(mol).x2camf().cholesky()
+   e = mf.kernel()
+
+   mf = ghf.GHF(mol).x2camf().cholesky()      # GHF style
+
+The accuracy is controlled by ``tau`` (the decomposition threshold, mapped to
+the ``max_error`` of the underlying solver):
+
+.. code-block:: python
+
+   mf = spinor_hf.SCF(mol).x2camf().cholesky(tau=1e-6)   # tighter, more vectors
+
+By default the vectors are produced by
+``socutils.mcscf.zmc_ao2mo.chunked_cholesky_threeloop``
+(``method='threeloop'``); its buffer grows dynamically, so there is no size
+cap to tune.  An alternative two-step variant -- pivot selection followed by an
+RI reconstruction, which also stores the metric factor used for analytic
+gradients -- is available with ``method='twostep'``.
+
+On-disk caching uses exactly the same interface as PySCF density fitting, the
+``_cderi_to_save`` / ``_cderi`` attributes, exposed here as keywords:
+
+.. code-block:: python
+
+   # first run: compute and save the Cholesky vectors
+   mf = spinor_hf.SCF(mol).x2camf().cholesky(cderi_to_save='cderi.h5')
+   mf.kernel()
+
+   # later runs: reuse them, skipping the (expensive) decomposition
+   mf = spinor_hf.SCF(mol).x2camf().cholesky(cderi='cderi.h5')
+   mf.kernel()
+
+equivalently, set ``mf.with_df._cderi_to_save`` / ``mf.with_df._cderi``
+directly, just like a density-fitted object.  The file is a plain HDF5 dataset
+``j3c`` in the ``(naux, nao_pair)`` layout, interchangeable with a PySCF DF
+``_cderi`` file.
+
 Spinor basis utilities
 ----------------------
 

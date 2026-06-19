@@ -59,7 +59,7 @@ rotation step, repeating until the energy and orbital gradient are converged.
    mol = gto.M(atom='H 0 0 0; F 0 0 0.917', basis='ccpvdz', verbose=4)
 
    # the orbital optimizer builds its integrals from a density-fitted
-   # reference, so the mean field must be density-fitted
+   # reference, so the mean field must be density-fitted (or .cholesky())
    mf = spinor_hf.SCF(mol).x2camf().density_fit()
    mf.kernel()
 
@@ -75,8 +75,10 @@ Requirements
   (see :doc:`../install`); ``kernel()`` raises a clear error if it is missing.
 * **a density-fitted reference** -- the optimizer builds its two-electron
   integrals by Cholesky/DF transformation from ``mf``, so the mean field must
-  be density-fitted with ``.density_fit()`` (otherwise ``kernel()`` raises
-  ``Either with_df or cderi must be provided``).
+  carry a ``with_df``: attach it with ``.density_fit()`` or ``.cholesky()``
+  (otherwise ``kernel()`` raises ``Either with_df or cderi must be provided``).
+  See :ref:`the Cholesky decomposition section <cholesky-decomposition>` for the
+  CD route and its on-disk caching.
 
 Options
 ~~~~~~~
