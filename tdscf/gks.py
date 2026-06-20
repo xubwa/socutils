@@ -50,6 +50,30 @@ class _KernelXCMixin:
         with lib.temporary_env(self._scf, xc=self.xc_kernel):
             return super().kernel(*args, **kwargs)
 
+    def cvs(self, core):
+        '''Core-valence separation for core-excitation spectra.
+
+        Keep only the ``core`` occupied orbitals active as holes and **freeze
+        every other occupied orbital** (all virtuals stay active).  This is the
+        inverse selection of the usual frozen-core: it sets ``self.frozen`` to
+        the complement of ``core`` within the occupied space and returns self,
+        so it chains:
+
+            td = mf.TDA().cvs([0, 1])      # holes restricted to the 1s pair
+            es = td.kernel()
+            td.xc_kernel = 'LDA,VWN'       # optional: ALDA response kernel
+            es_alda = td.kernel()
+
+        ``core`` is a list of occupied spinor-orbital indices (a deep core is a
+        Kramers pair, e.g. ``[0, 1]``).  Builds on pyscf's ``frozen`` mechanism
+        (get_frozen_mask), so it composes with everything else here.
+        '''
+        import numpy
+        core = set(int(i) for i in numpy.atleast_1d(core))
+        occ = numpy.where(self._scf.mo_occ == 1)[0]
+        self.frozen = [int(i) for i in occ if i not in core]
+        return self
+
 
 class TDA(_KernelXCMixin, _ghf.TDA):
     pass
