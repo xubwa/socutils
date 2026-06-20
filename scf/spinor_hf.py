@@ -49,16 +49,20 @@ class _DFJHF(df.df_jk._DFHF):
         # Pass real/imag parts of the trace DM directly to with_df.get_jk;
         # no need to go through ghf.get_jk's block splitting.
         if with_j:
-            dm_sph   = spinor2sph(mol, dm)                       # (2*nao, 2*nao)
-            dm_trace = dm_sph[:nao, :nao] + dm_sph[nao:, nao:]   # (nao, nao)
+            # ``dm`` may be a single (n2c, n2c) matrix or a batch
+            # (nset, n2c, n2c) -- the TDDFT response feeds many trial densities
+            # at once.  Slice the spin blocks with an ellipsis so the batch axis
+            # (if any) is preserved.
+            dm_sph   = spinor2sph(mol, dm)                                # (..., 2nao, 2nao)
+            dm_trace = dm_sph[..., :nao, :nao] + dm_sph[..., nao:, nao:]  # (..., nao, nao)
             vj_ao, _ = self.with_df.get_jk(dm_trace.real, 1, True, False,
                                             self.direct_scf_tol, omega)
             if numpy.iscomplexobj(dm_trace):
                 vj_i, _ = self.with_df.get_jk(dm_trace.imag, 1, True, False,
                                                self.direct_scf_tol, omega)
                 vj_ao = vj_ao + 1j * vj_i
-            vj_sph = numpy.zeros((2 * nao, 2 * nao), dtype=complex)
-            vj_sph[:nao, :nao] = vj_sph[nao:, nao:] = vj_ao
+            vj_sph = numpy.zeros(dm_sph.shape, dtype=complex)
+            vj_sph[..., :nao, :nao] = vj_sph[..., nao:, nao:] = vj_ao
             vj = sph2spinor(mol, vj_sph)
 
         # --- K ---
@@ -74,20 +78,19 @@ class _DFJHF(df.df_jk._DFHF):
                     dm_sph = spinor2sph(mol, dm)
 
                 def jkbuild(mol, dms, hermi, with_j, with_k, omega=None):
-                    vj_list, vk_list = [], []
-                    for dm_blk in dms:
-                        vj_, vk_ = self.with_df.get_jk(dm_blk.real, hermi,
+                    # Pass the whole batch of (real spherical) densities to the
+                    # DF get_jk in one call instead of looping over them -- the
+                    # TDDFT response hands us many trial densities at once.
+                    dms = numpy.asarray(dms)
+                    vj, vk = self.with_df.get_jk(dms.real, hermi, with_j, with_k,
+                                                  self.direct_scf_tol, omega)
+                    if numpy.iscomplexobj(dms):
+                        vjI, vkI = self.with_df.get_jk(dms.imag, hermi,
                                                         with_j, with_k,
                                                         self.direct_scf_tol, omega)
-                        if numpy.iscomplexobj(dm_blk):
-                            vjI, vkI = self.with_df.get_jk(dm_blk.imag, hermi,
-                                                            with_j, with_k,
-                                                            self.direct_scf_tol, omega)
-                            if with_j and vj_ is not None: vj_ = vj_ + vjI * 1j
-                            if with_k and vk_ is not None: vk_ = vk_ + vkI * 1j
-                        vj_list.append(vj_)
-                        vk_list.append(vk_)
-                    return numpy.array(vj_list), numpy.array(vk_list)
+                        if with_j and vj is not None: vj = vj + vjI * 1j
+                        if with_k and vk is not None: vk = vk + vkI * 1j
+                    return vj, vk
 
                 _, k_sph = ghf.get_jk(mol, dm_sph, hermi, False, True, jkbuild, omega)
                 vk = sph2spinor(mol, k_sph)
