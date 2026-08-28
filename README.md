@@ -1,3 +1,5 @@
+
+
 This repository adds utility for PySCF to include SOMF corrections within spinor style and GHF style calculations.
 To do a spinor (j-adapted) style calculation, build a spinor SCF and attach an
 X2CAMF spin-orbit Hamiltonian with the `.x2camf()` shortcut (the spinor analogue
@@ -22,8 +24,9 @@ Note: the C/C++ libraries these features need are **bundled** with socutils
 once with a single `make` at the repo root (needs a BLAS/LAPACK):
 ```
 make            # builds libx2camf_c (X2CAMF SOC integrals),
-                #        libzquatev   (Kramers-restricted spinor SCF), and
-                #        libccsdt_clib (spinor CCSDT kernels) into socutils/lib
+                #        libzquatev   (Kramers-restricted spinor SCF),
+                #        libccsdt_clib (spinor CCSDT kernels), and
+                #        libnrr_opt   (spinor AO2MO e1/e2 kernels) into socutils/lib
 ```
 - **x2camf** (the SOC integrals) ships as a pure-C reimplementation exposed as
   `import x2camf`; an external upstream
