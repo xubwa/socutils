@@ -1,0 +1,413 @@
+# CFOUR X2C 性质积分 → socutils 接口
+
+调研结论与实施方案。所有标注「实测」的数字都是在 `~/scr4/zmcscf/sm` 的真实 Sm 算例上跑出来的。
+
+上游格式备忘：`~/apps/cfour-x2cso/doc/x2cprop_integral_files.md`（本文档在 §2.5 列出它需要修正的地方）。
+
+---
+
+## 0. 新 session 上手须知
+
+**这个 repo 的位置**。`~/apps/socutils-git` 是活的 repo（repo 根目录**就是** `socutils` 包）。
+`~/apps/socutils` 是 2024-03 的陈旧副本，`.git` 已损坏（只剩 `objects/`），它嵌套的
+`socutils/` 会在 cwd 是它时**静默遮蔽 `import socutils`**。`CLAUDE.md` 里写着这个副本
+"has been removed"，实际还在。跑任何 import socutils 的东西一律用：
+
+```bash
+PYTHONPATH="/home/xwang405/apps/socutils-git-env:/home/xwang405/apps/pyscf:$PYTHONPATH" \
+  /home/xwang405/apps/conda/bin/python ...
+```
+
+（`~/apps/pyscf` 才是可信的 pyscf，conda site-packages 里那个不是；不要临时建符号链接，
+`socutils-git-env/socutils -> socutils-git` 是常设的。另外 `python -c` 会把 cwd 放在
+`sys.path` 最前，所以**不要**从含有 `socutils` 目录的地方跑。）
+
+**验证数据**：`~/scr4/zmcscf/sm`。单个 Sm 原子，C1，未收缩 Dyall v3z，`nc = 308`，`natms = 1`。
+里面既有 CFOUR 写出的性质积分文件，也有 socutils 的驱动脚本（`Sm_hf.py` / `Sm_cahf.py`）和
+SHCI 的 `FCIDUMP` / `input.dat` / `states_splitting.csv`。**不要碰这个目录**（`cderi.chk` 是 2.8 GB）。
+
+**注意**：`~/scr4/zmcscf/sm/output.dat` 是 Dice/ZFCI 的输出，**不是 CFOUR 的输出**。里面没有
+任何 CFOUR 打印的性质数值。所以没有现成的参考数字可对，验证只能靠「CFOUR 文件 vs socutils
+自己算的同一个算符」这种内部一致性检验（§6）。
+
+---
+
+## 1. TL;DR
+
+1. **reader 的大半已经存在**。`tools/label.py` 里的 `carr_f2py` 就是这个 Fortran 格式的读取器，
+   `Labels.spinor_cfour2pyscf(mol)` 就是 CFOUR→pyscf 的 AO 重排 + 旋量变换。
+   `somf/x2cmp.py:864 read_qed()` 是一个现成的 6 行消费模板。剩下要做的是**分类学 + 语义**，
+   不是解析。
+
+2. **AO 顺序问题已经彻底解决并验证到 1e-15**（§3）。CFOUR 的 `SM:DYVTZUNC` 与 pyscf 的
+   `basis='dyallv3z'` 逐位一致，置换矩阵精确，无需任何符号翻转。
+
+3. **CFOUR 写出来的是 `x_response=True` 的图像变换算符**（实测：`SOX2CDPZ` 对
+   `get_hfw1(..., x_response=True)` 吻合到 1.1e-9，对普通图像变换只有 3.8e-5）。
+   这意味着它们是**能量导数性质**的算符，**不能**直接用于跃迁矩——而 `prop/int1e.py` 和
+   `tdscf/gks.py` 恰恰刻意对跃迁矩用 `x_response=False`。**且这个约定在文件之间不统一**
+   （§4.1），接口必须逐文件带元数据，不能全局设一个开关。
+
+4. **socutils 的性质计算确实坏了，而且比表面看到的更严重**（§5）。有两条互不相干的车道：
+   新的 `prop/int1e.py`（未提交、只注册了一个算符）和旧的 `prop/{efg,hfc,gfac,...}`
+   （与 2024-03 快照逐字节相同、多处直接抛异常）。
+
+5. **缺的关键接口是「算符已经是 2c 了，直接缩并」这个入口**——今天不存在。这正是 CFOUR
+   文件需要的入口，也正是相关联的 CAHF/SHCI 密度需要的入口。
+
+---
+
+## 2. 文件格式：实测确认的规范
+
+### 2.1 容器
+
+Fortran unformatted sequential，**整个数组一条 record**（前后各 4 字节长度标记）。
+`scipy.io.FortranFile` 可直接读。
+
+**但有例外，文档没提**：以下 9 个文件是**裸 dump，没有 record 标记**，
+`FortranFile` 会抛 `FortranFormattingError`：
+
+```
+X2CATMXM  X2CAX1EM  X2CD4CLL  X2CD4CLS  X2CD4CSS
+X2CDEN2C  X2CFOCKM  X2CMFSOM  X2COVLPM
+```
+
+判据很简单：读头 4 字节整数，若 == `filesize - 8` 则是 record，否则是裸 dump。
+（表现为 `SO*` 文件是 6071304 字节而 `X2C*` 是 6071296 —— 差的正是那 8 字节。）
+
+### 2.2 数据布局
+
+- `complex*16`，**实虚交错**（numpy `.view(complex128)`）。
+  实测：交错解释给出厄米性 1e-16，「前半实后半虚」解释给出 ~1.0 的相对误差 —— 交错是确定的。
+- **Fortran 列主序**，reshape 成 `(2nc, 2nc)`。代码里就是 `.reshape(2*nc, 2*nc).T`。
+- 旋量基排列：**前 nc 个 α ⊕ 后 nc 个 β**（确认）。
+- `nc` 可由文件大小唯一定出：`6071296 = 64·nc²` → `nc = 308`，与 `NTOTAL` 一致。
+
+> **陷阱**：C-order/F-order 搞反时，厄米矩阵会静默地变成它的复共轭 —— **能通过任何厄米性自检**。
+> 所以必须显式 `order='F'`，并且用已知数值验证，而不是用厄米性验证。
+
+### 2.3 分类（文档的 A–F 分类经实测确认）
+
+| 类 | 布局 | 偏移（以 double 计） |
+|---|---|---|
+| A 单矩阵 | `8·nc²` | — |
+| B 3 分量、分文件（x/y/z 在文件名里） | 每文件 `8·nc²` | — |
+| C 有原子项、无分量 | `8·nc²·natms` | `(j-1)·8nc²` |
+| D 原子 × 3 分量 | `8·nc²·3·natms` | `((j-1)·3 + i-1)·8nc²` |
+| E 原子 × 6 分量（`SOEFG`） | `8·nc²·6·natms` | `((j-1)·6 + i-1)·8nc²` |
+| F 实数文件 | `EFGNUC`: `6·natms`；`OVRLPGRD`: `nc(nc+1)/2·3·natms` | — |
+
+原子在外、分量在内，实测确认。`SOEFG` 的 6 分量顺序 `(zz, yy, xx, zx, zy, yx)` 确认。
+`SOM01`/`UTM01`/`SOPSNEC`/`SOSFMO2C` 的 3 分量顺序 `(x, y, z)` 确认。
+
+算符文件本身**不带原子标签**，原子索引纯粹是字节偏移 —— 原子的身份要由调用方从
+`mol` 那边提供，接口必须保证两边的原子顺序一致。
+
+### 2.4 本算例里恒为零的文件
+
+`SONUCGRD`、`EFGNUC`、`OVRLPGRD` 在这个单原子（位于原点）算例里**恒等于零**，
+拿它们验证不了任何东西。多原子的情形本算例覆盖不到，这是验证数据的固有缺口（§6.4）。
+
+### 2.5 上游文档需要修正的地方
+
+1. **「矩阵为 Hermitian」不成立于全部文件**。`SOLZ` 是实反对称矩阵（存的是 `i·L_z`），
+   **反厄米**，期望值取迹的**虚部**。
+2. **9 个 `X2C*` 文件不是 `wfile` 格式**（§2.1），文档未提。
+3. **`SOEFG` 的物理注解不对**。文档说 i=1 是无迹组合而 i=2,3（yy、xx）各含一项 `4π/3` 接触项；
+   实测**三个对角分量之和精确为零**（相对 1.1e-14 ~ 1.5e-14），即三个槽**都**是无迹组合。
+4. 文档没有说明 `x_response` 约定逐文件不同（§4.1）—— 这是最容易出错的一点。
+5. **两份文档都没列的三个文件**（2026-08-31 全目录扫描）：`ATMFOCKM`、`ATMOVLPM`、`SOX2CHFW`，
+   均为 record 格式、各一个 2c 矩阵。
+6. `SONEFG4C` 的自我覆盖问题**由文件大小独立证实**：它只有 **3** 个 4c 矩阵，而写盘端按 6 分量
+   索引。接口里已拉黑（`prop/cfour.py:BLACKLIST`）。
+
+---
+
+## 3. CFOUR ↔ pyscf 转换（已验证到 1e-15）
+
+### 3.1 AO 顺序
+
+CFOUR 的收缩球谐 AO 排列：**原子 → l 从小到大 → m → 收缩函数（指数从大到小）**，
+每个 (l,m) 组连续。m 的顺序是：
+
+```
++l, -l, +(l-1), -(l-1), ..., +1, -1, 0     （|m| 降序，正在负前，m=0 放最后）
+```
+
+Sm/DYVTZUNC 计数核对：`30 s + 3×24 p + 5×16 d + 7×11 f + 9×3 g + 11×2 h = 308` ✓
+
+**这个规则 `tools/label.py:_cfour_sph_rules` 已经实现了**（`m_sort_key` 把 `m==0` 映射到
+`+inf`，其余映射到 `(-|m|, 0 if m>0 else 1)`）。
+
+pyscf 的 `basis='dyallv3z'` 对 Sm 与 CFOUR 的 `SM:DYVTZUNC` **逐位一致**（本来就是未收缩的），
+所以这个算例不需要自己解析 GENBAS。
+
+### 3.2 现成的转换代码
+
+```python
+from socutils.tools import label
+
+# (2*nao_sph, n2c) 的酉矩阵：CFOUR 的 α⊕β 球谐基 → pyscf 的 j-adapted 旋量基
+C = label.Labels.spinor_cfour2pyscf(mol)
+
+# 读一个 (2nc, 2nc) 的性质矩阵并转到 socutils 的旋量基
+n2c = mol.nao_2c()                       # == 2*nc
+flat = label.carr_f2py(mol, 'SOX2CDPZ')  # 交错复数 → complex128 一维数组
+M_cfour = flat.reshape(n2c, n2c).T       # .T 就是 Fortran 列主序
+M_pyscf = C.conj().T @ M_cfour @ C
+```
+
+`somf/x2cmp.py:864 read_qed()` 就是这个模式的现成用例（它读的是 4c 的 QED 修正，
+用 `block_diag(C, C)` 拼成 4c 版本）。
+
+### 3.3 实测吻合度
+
+| 检验 | 误差 |
+|---|---|
+| CFOUR 重叠 vs pyscf `int1e_ovlp`（球谐基，加置换） | max 1.4e-15 |
+| `SOLZ` vs pyscf `int1e_cg_irxp[z]` | 4.9e-16 相对 |
+| `X2COVLPM` → 旋量基 vs `int1e_ovlp_spinor` | 1.3e-15 |
+| 旋量配方 vs `int1e_ovlp_spinor` | 4.4e-16 |
+| `Tr(D·S)`，D 取自 `Sm.chk` 的真实 socutils SCF 密度 | **60.000000000000014**（应为 60）|
+
+**不需要任何符号翻转** —— 实球谐的符号约定两边一致。
+
+---
+
+## 4. 语义陷阱（决定正确性的部分）
+
+格式已经解决了；接下来这些是真正会算错的地方。
+
+### 4.1 `x_response` 约定逐文件不同 ⚠️ 最重要
+
+CFOUR 内部走两条路径：`sox2c1o0`（含 X 响应）和 `sox2c1onox`（不含）。
+
+- **绝大多数文件** = `x_response=True`（能量导数算符）。
+  实测：`SOX2CDPZ` 对 `X2CMP(...).get_hfw1(op4c, x_response=True)` 吻合到 **1.1e-9**，
+  对普通图像变换 `[U†OU]_++` 只有 **3.8e-5**；`SOEFG` 槽 0 分别是 **5e-11 相对** vs **0.4%**。
+- **`SODEN2C`、`SOMOSS2C`** = `x_response=False`。
+- **`SODEN2CG`** = 同一个接触密度但响应打开。
+- **`SOSIGZ`、`SOSIGX`、`SOLZ`** = **完全不做图像变换**。
+
+后果：**接口不能设一个全局开关**，必须每个文件带自己的元数据。
+另外，因为主流文件是 `x_response=True`，它们是能量导数算符，
+**用于跃迁矩是错的** —— `prop/int1e.py` 和 `tdscf/gks.py:126` 对跃迁矩刻意用
+`x_response=False`，CFOUR 的偶极文件在那里是错的对象。
+
+### 4.2 单位与前因子全部由 Python 侧负责
+
+`sox2cprop/evaprp.f90` 极其单薄：每个性质就是一次 `Tr(D·O)`，加上三种后处理 ——
+电子电荷的符号翻转、核贡献相加（**只有电偶极和 EFG 有**）、以及**仅对偶极**的
+Debye 换算（`/0.3934303`）。
+
+Fortran 里**没有**任何 MHz / mm·s⁻¹ / V·m⁻² 换算，**没有**核 g 因子，**没有**核四极矩。
+CFOUR 把超精细/EDM/NEC 全部当作「a.u. 的裸电子学参数」输出。**所有同位素相关的因子都是
+Python 侧的工作**。
+
+### 4.3 KB vs UT（`SOM*` vs `UTM*`）
+
+差别是真实且巨大的：`UTM01` 逐元素约为 `SOM01` 的 **10 倍**（超精细），g 因子上约 **7%**。
+参考：Cheng, *Mol. Phys.* **121**, e2113567 (2023)。
+
+好消息：CFOUR 的本征基公式 `V + (ε_p T_pq + ε_q T*_qp)/2c²` 与 socutils
+`prop/gfac`、`prop/hfc/dhf.py` 里已经实现的对易子形式 `h m⁻¹ τ − τ m⁻¹ h`
+**代数上等价** —— 只要喂同样的 `h4c`/`m4c`，两边按构造就一致。
+
+### 4.4 已解码的算符恒等式（可直接当验证用）
+
+- `SOSIGZ` = `σ_z ⊗ S`（精确），`SOSIGX` = `σ_x ⊗ S`
+- `X2CEFGZZ` 与 `SOEFG` 的槽 1 **逐字节相同**（实测差为**精确 0**）
+- 自由原子球对称性自洽（可当 `SOEFG` 分量序的独立佐证）：三个对角槽的 Frobenius 范数彼此相等、
+  三个非对角槽彼此相等，比值 **2/√3 = 1.1547**；六个槽两两相对差 1–2 量级（确实互不相同），
+  各自厄米到 ~1e-16
+- ~~`UTM10Z − UTML0Z = (g_e/4)·σ_z·S`~~ ⚠️ **这条是错的，不能当验证用**（2026-08-31 实测）。
+  最小二乘拟合给出的系数是 **0.465**（而 `g_e/4 = 0.5006`，差 7%），max-norm 残差 20–70%。
+  原因：`UTM10*`/`UTML0*` 是**图像变换过**的算符（`x_response=True`），而 `SOLZ`/`SOSIGZ`
+  **完全不做图像变换**（§4.1），Sm（Z=62）下两者的差不可能小。
+  **结构是对的**：把 `UTM10Z`/`UTML0Z` 同时对 `SOLZ` 和 `σ_z S` 做二元拟合，`SOLZ` 系数在
+  两者中都是 ≈ 0.4866（≈ ½），而 `UTML0Z` 的 `σ_z S` 系数是 0.0014（≈ 0）——
+  即 `½(L + g_e S)` 与 `UTML0* = g_e→0` 是**非相对论极限**的结构，不是精确恒等式。
+
+---
+
+## 5. socutils 现状：性质计算为什么「有点问题」
+
+### 5.1 两条互不相干的车道
+
+**新车道**：`prop/int1e.py` + `SpinorSCF.prop_int1e` + `tdscf/gks.py` + `fci/addons.py`。
+文档写得好，思路正确（4c 组装 → 用建 Hamiltonian 的同一套解耦变换 → 收缩回来，
+并区分 `x_response`），自检通过（PC(identity)−S = 4e-11，PC(r) 对 pyscf 独立实现 7e-13）。
+
+但是：
+- **只注册了一个算符**（`ELECTRIC_OPS = {'r': ...}`，`int1e.py:72-75`）
+- **在 git 里是未跟踪状态**（`?? prop/int1e.py`）
+- 没有 per-atom / `rinv` 机制
+- **对 GHF（自旋轨道基）参考给出静默错误**：`prop_int1e` 会返回**旋量基**矩阵，
+  然后被拿去和 GHF 的自旋轨道密度缩并。实测：z 轴上的分子电子偶极 x 分量给出
+  **−0.43 a.u.**（正确值 0）。
+
+**旧车道**：`prop/{efg,hfc,gfac,effective_field,contact_density}`。
+11 个文件与 2024-03 快照**逐字节相同**，没有 `__init__.py`、没有文档、没有 example、没有测试。
+
+### 5.2 旧车道的实际状态（逐个跑过）
+
+直接抛异常的：
+
+- `hfc/spinor_hf.kernel` 和 `hfc/dhf.kernel` → `NameError: name 'mol' is not defined`
+  （`hfc_nuc is None` 时命中，应为 `method.mol`）
+- `contact_density/spinor_hf` → **连 import 都失败**，`_decontract_spinior` 拼写错误
+- **所有 `Xresp=False` 分支** → `ModuleNotFoundError: No module named 'socutils.somf.eamf'`
+  （该模块已从活 repo 删除）。而 `Xresp=False` 是两个接触密度 kernel 的**默认值**。
+
+能跑的只有 `efg/{rhf,spinor_hf}`、`gfac/{dhf,spinor_hf}`、`effective_field/*`，其中两个返回 `None`。
+
+结构性问题：
+
+- 五份手抄的同一条五步流水线（decontract → 建 4c 算符 → `get_hfw1` → 反收缩 → `einsum('ij,ji->')`）
+- **重复且被浪费的 X2C 构建**：`efg/spinor_hf.py:48`、`hfc/spinor_hf.py:29,61`、
+  `effective_field/spinor_hf.py:45` 各自调一次 `x2c_grad.x2c1e_hfw0`（未收缩基下的完整 4c 对角化），
+  然后立刻被 `method.with_x2c.h4c/m4c` **覆盖**。既白算几秒，又埋雷 ——
+  本地那个是裸 X2C-1e，缓存那个含 AMF/Gaunt/Breit，两者不是一回事。
+- **`hfc/spinor_hf.py:50-54` 的 `contr_coeff` 是错的**：用标量收缩系数按 `0::2/1::2` 交错拼 α/β，
+  而同文件的 `int_hfc_2c:22` 用的是正确的 `_decontract_spinor`。同一文件两条路径不一致。
+- `efg/spinor_hf.py:73` 在循环体内重绑定了循环变量 `efg_nuc`
+- 关键字名分裂：`x_response` vs `Xresp`；同一物理开关默认值分裂：
+  2c kernel 里 `utm=True`，4c kernel 里 `utm=False`
+- 复制粘贴错的 docstring / 日志串（`effective_field/spinor_hf.py` 的 docstring 写着 "Contact density"）
+- 遗留调试痕迹（`print('hehe')`）、遗留 profiling 代码
+- **就地修改 X2C helper 缓存的 `h4c`**
+- 导入时副作用：`warnings.warn(...)` + 猴补丁 `JHF.EFG = ...` / `JHF.HFC = ...`
+- `prop/` 下**所有 `__init__.py` 缺失**（靠 namespace package 侥幸工作）
+
+### 5.3 最要命的缺口
+
+**只吃 `method.make_rdm1()`，没有任何入口接受外部密度矩阵。**
+而 Sm 这个 case 要的恰恰是 CAHF/SHCI 的态分辨密度和跃迁密度。
+`hci/shci.py` 的 `transition_dipole` 是注释掉的，而且用的是裸的非相对论球谐
+`mol.intor('int1e_r')`。
+
+**以及：不存在「算符已经是 2c 了，直接缩并」的入口** —— 这正是 CFOUR 文件需要的入口。
+
+---
+
+## 6. 验证阶梯
+
+因为没有 CFOUR 打印的参考数值（§0），验证靠内部一致性。按风险从低到高：
+
+1. **容器**：每个文件读出来，长度能被 `8·nc²` 整除，商等于预期的 item 数。
+2. **AO 顺序**：CFOUR 重叠 ↔ pyscf `int1e_ovlp`（已做，1.4e-15）。
+3. **单算符、无图像变换**：`SOLZ` ↔ `int1e_cg_irxp[z]`（已做，4.9e-16）；
+   `SOSIGZ` ↔ `σ_z ⊗ S`（已做，精确）。
+4. **图像变换语义**：`SOX2CDPZ` ↔ `with_x2c.get_hfw1(op4c, x_response=True)`（已做，1.1e-9），
+   并确认 `x_response=False` 明显更差（3.8e-5）—— 这一步同时验证了约定和 socutils 自己的实现。
+5. **多分量 + 原子项**：`SOEFG` 6 个槽各自厄米、互不相同、三个对角槽之和为零（已做，1.1e-14）。
+6. **密度缩并**：`Tr(D·S) = 60` 用 `Sm.chk` 的真实密度（已做，60.000000000000014）。
+7. **端到端**：`Tr(D·X2COVLPM) = 60.000000000000`，用 `Sm.chk` 的真实 socutils SCF 密度
+   经 `prop/cfour.py` 全链路（读盘 → 旋转到 pyscf 旋量基 → 缩并），与 pyscf 自己的重叠一致。
+   ✅ 2026-08-31 由 `prop/cfour.py` 复现，第 1–6 级全部通过（数字见下）。
+8. **多原子**：❌ **本算例覆盖不到**。需要另跑一个多原子 CFOUR 算例才能验证原子偏移公式
+   和原子顺序一致性。在此之前，接口应对 `natms > 1` 的路径加显式断言而不是默默相信。
+
+---
+
+### 6.1 `prop/cfour.py` 实测复现（2026-08-31）
+
+| 检验 | 实测 | 文档原值 |
+|---|---|---|
+| 40 个文件的容器类型 + 项数 vs 分类学 | 全对；9 个裸 dump 全部正确识别 | §2.1 / §2.3 |
+| `X2COVLPM` vs `int1e_ovlp_spinor` | 1.332e-15 | 1.3e-15 |
+| `SOSIGZ` / `SOSIGX` vs `int1e_sigma` | 1.221e-15 / 9.992e-16 | 「精确」 |
+| `SOLZ` 反厄米性 | 8.882e-17 | — |
+| `SOLZ` vs `int1e_cg_irxp[z]`（相对） | 8.882e-16 | 4.9e-16 |
+| `SOEFG` 三对角槽和为零（相对） | 1.457e-14 | 1.1e-14 |
+| `X2CEFGZZ` vs `SOEFG[zz]` | 精确 0 | 「逐字节相同」 |
+| `UTM01` / `SOM01` 逐元素比 | 10.323 | ~10 |
+| `Tr(D·S)`，真实 `Sm.chk` 密度 | 60.000000000000 | 60.000000000000014 |
+
+⚠️ **这些容差本身有个未解决的基准问题**：`~/apps/pyscf/pyscf/data/nist.py:22` 的
+`LIGHT_SPEED = 137.0359991` 是**未提交的本地修改**（上游 `137.03599967994`）。
+c 差 4.23e-9 → **1/c² 差 8.46e-9**，比 §6 第 4 级当作数值地板的 `SOX2CDPZ` 吻合度 **1.1e-9 还大 8 倍**。
+在把 c 和 CFOUR 对齐之前，1.1e-9 不能当作任何其他检验的容差基准。
+
+---
+
+## 7. 实施方案（2026-08-31 定稿）
+
+设计经一轮多 agent 方案竞争 + 对抗批判（operator-first 胜出），并经与用户逐条讨论确定。
+下面每条都是**已决**，不是建议。
+
+### 7.1 分层与硬规矩
+
+```
+prop/cfour.py        算符层来源 A：CFOUR 目录（本轮做）
+prop/int1e.py        算符层来源 B：socutils 自造（本轮不动）
+  ↓ 裸 a.u. 的 (n2c, n2c) ndarray
+缩并层               唯一一份 Tr(O·D)
+  ↓ 裸 a.u. 的标量 / 数组
+可观测量层           符号、核项、3×3 组装、（可选）对角化
+```
+
+**硬规矩（唯一需要的那条）**：**性质对象不得把波函数存成属性**。
+密度适配器可以接收波函数作参数，但自己无状态。这条成立，单体就长不回来。
+`prop/cfour.py` 的 `CfourPropStore` 只持有 `mol`，够不着任何 `make_rdm1`。
+
+### 7.2 已决的设计要点
+
+1. **算符与密度解耦。** SCF 密度不是特例 —— 上游 `evaprpscf` 就是 `evaprp` 在 `D = 1_occ` 时的
+   特例却被抄成另外 400 行，socutils 抄了 5 份，同一个病。
+2. **保留 CFOUR 的数据模型，丢掉它的控制流。** 它的模式是「把算符物化到 store，一次流一个出来」，
+   store 才是解耦机制；过程式的坏味道（硬编码 `inquire` 链、手算偏移、`write(*,*)` 拿不到值、
+   手工内存 arena）全是 Fortran 逼出来的，不属于数据模型。
+3. **元数据不骑在 ndarray 上。** `lib.tag_array` 实测在**取分量、翻符号、加核项、reshape**
+   时全部丢失（只有 `.conj()` 幸存），机制是 `NPArrayWithTag` 没有 `__array_finalize__`
+   （`pyscf/lib/numpy_helper.py:1442`）。改由**名字**承载：算符端靠文件名查 `FILES` 表。
+4. **「哪种密度合法」做进 API 表面，不做运行时检查。** 上游 `evaprptran ⊂ evaprp` 已经这么选了：
+   有 `transition_dipole` 而**没有** `transition_contact_density` —— 用户打不出这个调用。
+5. **表管到裸 a.u.，函数管从裸 a.u. 到物理量。** 这条线是数据给的（§4.2）。
+6. **算符来源经 `mf.with_props` 挂载**，与 `with_x2c` / `with_df` 同构；声明式，构造时说明要算
+   哪些性质、哪些原子，于是 `mc.EFG()` 可以不带参数。
+7. **门面不放在波函数类上。** 那是 N 个波函数 × M 个性质份复制粘贴。改用**密度适配器**：
+   每种波函数一个无状态适配器，性质对象可调用、波函数是**调用参数**而非属性 →
+   **N + M**。加一种波函数 = 一个适配器；加一种性质 = 一个类。
+
+### 7.3 已决的范围（本轮）
+
+| | |
+|---|---|
+| CFOUR 算符读取层 `prop/cfour.py` | ✅ **已完成并验证**（§6.1）|
+| 缩并层 + 密度适配器 | 本轮做 |
+| 可观测量层 | 本轮做 |
+| socutils 自造算符（扩 `prop/int1e.py`）| **不做**；只保留它现有的三个 early-return 分支 |
+| 旧车道五个 kernel | **不碰** |
+| CC / EOM 性质 | **不做**（但适配器形状不得堵死以后加）|
+| CFOUR picture 一致性校验 | **不做** —— 用户决定：CFOUR 吐出来的当作正确 |
+| 同位素因子 / 单位换算 | **不做** —— 裸 a.u. 输出，使用者自己拉表乘核素常数 |
+
+### 7.4 被这个范围消解掉的「物理选择」
+
+多 agent 综合提出了 5 个物理选择，其中 **4 个因「CFOUR 的选择即正确」而消解** ——
+它们全是 CFOUR 写文件时已经做完的决定，我们只**记录**不**选择**：
+KB/UT（`SOM01` vs `UTM01` 就是表里两行，`balance` 只是名字选择器）、
+EFG 无迹/有迹（CFOUR 是无迹；有迹那个是 socutils 自造算符的事）、
+`pc`/`energy_derivative`（§4.1 的逐文件约定是既成事实）、
+AMF/Gaunt/Breit 响不响应微扰（在文件里面）。
+第 5 个（核数据）因「不做单位换算」而消解。
+
+### 7.5 仍然悬着的（socutils 自造算符那半边接进来时才活）
+
+- **socutils 的 EFG 和 CFOUR 的不是同一个算符**：`prop/efg/spinor_hf.py:96-99` 和 `:105-108`
+  的去迹在 LL 和 SS **两处都被注释掉了**（有迹），CFOUR 是无迹。交叉验证前必须先统一。
+- **`get_hfw1` 的缓存只做了一半**：`somf/x2c_grad.py:216-242` 每次 `x_response=True` 调用都在
+  `get_Asqi1` 里重算 `sqrtm(S0)`、`inv(Ssq0)`、`A`、`eigh(A)` —— 全是零阶量，与算符/原子/分量无关；
+  `x2c_intermediate` 一个都没缓存。外加两个纯 Python 双重循环（nc=308 时 1,517,824 + 379,456 次）。
+  所以「建一次复用」在**密度**轴上成立、在 **(原子, 分量)** 轴上不成立，而 40 原子 EFG 正好活在后者。
+- **`prop/int1e.py:123` 硬编码的 `.5/c`** 和三个旧的 odd 算符都不匹配，HFC 照它移植会差一个 **c**。
+- **AO 密度转置约定树内不一致**：`mcscf/zcasbase.py:216` 建 `C·d·C†`，
+  `fci/addons.py:108 trans_rdm1_ao` 建 `C·d^T·C†`。
+- **`SpinOrbitalX2CMPHelper.h4c` 是旋量矩阵**（`x2cmp.py:537`）而同一对象的 `get_hcore` 返回
+  自旋轨道（`:1005-1007`），且 `nao_2c() == 2·nao_nr()` 精确相等 —— 形状对得上、什么都不报，
+  这就是 §5.1 那个 −0.43 a.u. 的机制。
+- **§5.2 的「`contr_coeff` 是错的」被推翻**（实测五个基组下 bit-identical），但一致是巧合不是构造。
+- **pyscf 的 `ISOTOPE_QUAD_MOMENT` 符号被剥掉**：Sm-147 给 `+0.263`，随附源表
+  `quadrupole_moment.txt:701` 是 `-0.26(3)`（符号丢失 + 不确定度数字拼到尾数）。
+  Sm-149 是 `+0.078(8)`，**与 147 符号相反**。本轮不做换算所以够不着我们，但用者自己乘的时候要注意。
