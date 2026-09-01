@@ -27,7 +27,9 @@ Every adapter yields the same 4-tuple::
 ``mo_coeff is None`` marks ``dm`` as an AO-basis density -- a mean field has
 nothing else to give -- and :func:`socutils.prop.contract.contract_dm` takes
 its AO branch on exactly that signal.  Otherwise ``dm`` is an MO-basis
-``gamma[p,q] = <p^dagger q>`` spanning ``mo_coeff``.
+``gamma[p,q] = <p^dagger q>`` spanning ``mo_coeff``, which is what a CI
+wavefunction hands over: one full-space ``gamma`` per root, all roots, with
+the root's energy and its degeneracy group in ``meta``.
 
 Always an iterator, even for a single density.  A caller that has to ask "is
 this one density or several?" ends up writing that test in every property
@@ -163,6 +165,111 @@ def _mean_field(mf):
     yield ('scf', dm, None, meta)
 
 
+def _roots(mc):
+    '''``[(index, ci, energy), ...]`` over the roots a CASCI/CASSCF holds.
+
+    The solvers do not agree on what a "CI vector" is -- zfci hands back a
+    coefficient array (a list of them for several roots), SHCI an integer
+    index (a ``range`` for several) that names a Dice rdm file -- and a
+    state-averaged object keeps one averaged ``e_tot`` beside per-root
+    ``e_states``.  This is the one place that knows all of that; the rest of
+    the adapter sees a flat list.
+    '''
+    ci = mc.ci
+    if ci is None:
+        raise ValueError('%s has no CI vector: run .kernel() first' % type(mc).__name__)
+    cis = list(ci) if isinstance(ci, (list, tuple, range)) else [ci]
+
+    e = getattr(mc, 'e_states', None)
+    e = numpy.atleast_1d(numpy.asarray(mc.e_tot if e is None else e)).real
+    if len(e) != len(cis):
+        if len(e) == 1:
+            e = numpy.repeat(e, len(cis))
+        else:
+            raise ValueError('%s holds %d CI roots but %d energies'
+                             % (type(mc).__name__, len(cis), len(e)))
+    return [(i, c, float(ei)) for i, (c, ei) in enumerate(zip(cis, e))]
+
+
+def _degeneracy(energies, tol):
+    '''Group consecutive roots within ``tol`` Hartree: ``(level, degeneracy)``
+    per root.  Descriptive -- a Kramers doublet or a (2J+1) multiplet shows
+    up here as one level with d > 1, which is exactly the case where a single
+    root's expectation value of a non-scalar operator is not by itself
+    meaningful (see the module doc of socutils.prop.contract).'''
+    levels = []
+    lvl = -1
+    e_prev = None
+    for e in energies:
+        if e_prev is None or abs(e - e_prev) > tol:
+            lvl += 1
+        levels.append(lvl)
+        e_prev = e
+    degen = numpy.bincount(levels)
+    return [(l, int(degen[l])) for l in levels]
+
+
+def _cas(mc, degen_tol=1e-6):
+    '''Every root of a CASCI/CASSCF, as a full-space MO-basis ``gamma``.
+
+    ``gamma`` spans all of ``mc.mo_coeff``: identity on the core block, the
+    solver's active-space ``<p^dagger q>`` on the active block, zero on the
+    virtuals.  Full-space rather than core/active split because the
+    contraction is one einsum either way and the reader sees one matrix per
+    state.  Which convention the solver uses was measured, not read: zfci
+    (both the string and the determinant-list kernels) and pyscf's
+    ``fci_dhf_slow`` give ``gamma[p,q] = <p^dagger q>`` for a
+    ``(|p> + i|q>)/sqrt2`` test state, which is what
+    :func:`socutils.prop.contract.contract_dm` contracts as
+    ``sum_pq O_pq gamma_pq``.  (pyscf's docstring says ``<q^dagger p>``; the
+    code does not.)  SHCI's ``read_rdm1`` conjugates the Dice h5 on the way
+    in to land on the same convention.
+    '''
+    mf = mc._scf
+    basis = _basis_of(mf)
+    if basis == 'scalar':
+        raise TypeError(
+            'this property lane is for 2-component (spinor) and 4-component '
+            'references; the CASCI is built on a scalar %s.' % type(mf).__name__)
+    if basis == 'spin_orbital':
+        raise TypeError(
+            'a CASCI on a spin-orbital (GHF) reference is not handled: its '
+            'orbitals would have to be rotated into the spinor basis before '
+            'the MO contraction, and no such CASCI exists in socutils yet.')
+
+    mo = numpy.asarray(mc.mo_coeff)
+    nmo = mo.shape[1]
+    ncore, ncas = mc.ncore, mc.ncas
+    nelecas = mc.nelecas
+    nelec_cas = int(nelecas) if numpy.isscalar(nelecas) else int(sum(nelecas))
+
+    roots = _roots(mc)
+    degen = _degeneracy([e for _, _, e in roots], degen_tol)
+    for (i, ci, e), (level, d) in zip(roots, degen):
+        casdm1 = numpy.asarray(mc.fcisolver.make_rdm1(ci, ncas, nelecas))
+        if casdm1.shape != (ncas, ncas):
+            raise ValueError('active-space rdm1 of root %d is %r, expected (%d, %d)'
+                             % (i, casdm1.shape, ncas, ncas))
+        gamma = numpy.zeros((nmo, nmo), dtype=numpy.result_type(casdm1, mo))
+        gamma[:ncore, :ncore] = numpy.eye(ncore)
+        gamma[ncore:ncore + ncas, ncore:ncore + ncas] = casdm1
+
+        n = gamma.trace().real
+        nref = ncore + nelec_cas
+        if abs(n - nref) > 1e-6 * max(nref, 1):
+            raise ValueError('root %d: Tr(gamma) = %.10f but the CAS holds %d '
+                             'electrons (%d core + %d active)'
+                             % (i, n, nref, ncore, nelec_cas))
+
+        meta = dm_meta(basis, kind='state',
+                       source=type(mc).__name__,
+                       solver=type(mc.fcisolver).__name__,
+                       root=i, energy=e, level=level, degeneracy=d,
+                       converged=bool(getattr(mc, 'converged', False)),
+                       nelec=float(nref))
+        yield ('state_%d' % i, gamma, mo, meta)
+
+
 def densities(wfn, **kwargs):
     '''Iterate ``(label, dm, mo_coeff, meta)`` over whatever ``wfn`` can give.
 
@@ -170,11 +277,12 @@ def densities(wfn, **kwargs):
     does not recognise raises rather than being guessed at -- a density in the
     wrong basis contracts silently and the wrong number looks reasonable.
     '''
-    if hasattr(wfn, 'make_rdm1') and hasattr(wfn, 'mo_occ') and \
-       not hasattr(wfn, 'fcisolver'):
+    if hasattr(wfn, 'fcisolver') and hasattr(wfn, 'ncas'):
+        return _cas(wfn, **kwargs)
+    if hasattr(wfn, 'make_rdm1') and hasattr(wfn, 'mo_occ'):
         return _mean_field(wfn, **kwargs)
 
     raise TypeError(
-        'no density adapter for %s. Mean-field references are supported; '
-        'CI/CASCI and linear-response adapters are not written yet.'
-        % type(wfn).__name__)
+        'no density adapter for %s. Mean-field and CASCI/CASSCF references '
+        'are supported; linear-response (TDA/TDDFT) and coupled-cluster '
+        'adapters are not written yet.' % type(wfn).__name__)
