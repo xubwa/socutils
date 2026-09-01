@@ -375,9 +375,12 @@ prop/int1e.py        算符层来源 B：socutils 自造（本轮不动）
 **默认在 MO 基缩并**，AO 只作逃生口：
 
 ```python
-expect(O, gamma_mo, mo_coeff)   # 主路径：算符转到 MO 基，einsum('pq,pq->', O_mo, gamma)
-expect(O_ao, dm_ao)             # 逃生口：手上已经是 AO 密度时（mf.make_rdm1() 就是）
+contract_dm(O, gamma, mo_coeff=mo)   # 主路径：算符转到 MO 基，einsum('pq,pq->', O_mo, gamma)
+contract_dm(O, dm_ao)                # mo_coeff=None 走 AO（mf.make_rdm1() 就是 AO 密度）
 ```
+
+**弛豫归波函数自己管。** 缩并层不认识「弛豫」这个概念,也没有对应的参数或元数据 ——
+波函数给什么密度就缩什么,要弛豫密度就由波函数交出弛豫密度。
 
 数学上两者恒等（`Tr(O_AO·D_AO) = Tr(O_MO·γ_MO)`），**选 MO 是为了把两类静默错误从路径里
 结构性地拿掉**，而不是靠检查去防：
