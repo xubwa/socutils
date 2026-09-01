@@ -254,17 +254,18 @@ class CfourPropStore:
         # CFOUR's property files carry no atom labels -- an atom index is a
         # byte offset and nothing more, so the correspondence to mol's atom
         # order is an assumption, not a fact recoverable from the file. It is
-        # verified only for the single-atom case; anything else must say
-        # explicitly how the two orders line up.
+        # verified for CFOUR's input order on a 3-atom case (doc section
+        # 6.2); anything else must say explicitly how the two orders line up.
         if atom_map is None:
             if self.natm != 1:
                 raise ValueError(
                     'mol has %d atoms and CFOUR property files carry no atom '
                     'labels, so the file order cannot be inferred. Pass '
                     'atom_map=[...] giving the mol atom index for each CFOUR '
-                    'atom slot. (CFOUR may also reorient to a principal-axis '
-                    'frame, which the nuclear terms would not survive; the '
-                    'multi-atom path is unvalidated -- see section 6.7.)'
+                    'atom slot -- [0, 1, ...] when the ZMAT lists the atoms in '
+                    'mol order. Note that xjoda translates to the centre of '
+                    'mass (and reorients unless FIXGEOM=ON), so build mol in '
+                    'that frame; see doc section 6.2.'
                     % self.natm)
             atom_map = [0]
         atom_map = list(atom_map)

@@ -305,10 +305,38 @@ Python 侧的工作**。
 7. **端到端**：`Tr(D·X2COVLPM) = 60.000000000000`，用 `Sm.chk` 的真实 socutils SCF 密度
    经 `prop/cfour.py` 全链路（读盘 → 旋转到 pyscf 旋量基 → 缩并），与 pyscf 自己的重叠一致。
    ✅ 2026-08-31 由 `prop/cfour.py` 复现，第 1–6 级全部通过（数字见下）。
-8. **多原子**：❌ **本算例覆盖不到**。需要另跑一个多原子 CFOUR 算例才能验证原子偏移公式
-   和原子顺序一致性。在此之前，接口应对 `natms > 1` 的路径加显式断言而不是默默相信。
+8. **多原子**：✅ **2026-09-01 已验证**（§6.2）。旋转 H₂O（一般欧拉角、离原点、`SYM=OFF`、
+   `FIXGEOM=ON`、`UNIT=BOHR`、非收缩 cc-pVDZ、点核、纯 SO-X2C-1e 不跑 `xx2camf`）：
+   CFOUR `xsox2cprop` 打印的 HF 偶极 ↔ socutils 用 CFOUR 的 `SOX2CDP*` + 自己的 `X2CMP('1e')`
+   SCF 密度经 `prop.observables.dipole` 算出的偶极，**1.5e-12**；HF 能量 3e-13。
+   多原子的原子顺序（`atom_map=[0,1,2]`）、p/d 壳层 m 序、复数 MO 系数一次覆盖。
 
 ---
+
+### 6.2 多原子端到端：CFOUR 自己算的 HF 偶极（2026-09-01）
+
+算例在 `~/scr4/zmcscf/h2o_x2cprop_1e`（`ZMAT`、五个 `*.out`、全部 `SO*` 文件、
+`compare_socutils.py`）。序列 `xjoda → xsox2catm → xsox2chf → xsox2cprop`（`~/apps/cfour-x2cso/bin`；
+`xx2camf` 需要 `LD_LIBRARY_PATH=~/apps/conda/lib` 才能起，这个算例刻意不跑它）。
+
+| 检验 | 实测 |
+|---|---|
+| HF 能量 socutils `X2CMP('1e')` vs CFOUR `xsox2chf` | 3.4e-13 |
+| 核偶极 `Σ Z_A R_A` vs CFOUR 打印的 "Nuclear dipole" | 2.3e-13 |
+| 总偶极 `dipole(mf, store)` vs CFOUR "Total Electric Dipole Moments" | **1.5e-12** |
+| 同一几何、`xx2camf` + `%amfiMethod* 0 1 0 0` vs socutils `x2camf(with_gaunt=True, with_breit=False)` | 能量 1e-12，偶极 1.7e-9（`h2o_x2cprop/`；那 1.7e-9 是下面的质心问题，未重跑） |
+
+两个必须对上的约定，任何一个不对就停在 1e-8 量级：
+
+- **坐标系**。`FIXGEOM=ON` 保留取向但 xjoda 仍**平移到质心**（joda.out "Coordinates (in bohr)"）。
+  pyscf 的 mol 必须用同一组质心坐标；而且质心要用 **CFOUR 的质量表**（`joda/pertable.f`：
+  O 15.99491463，H 1.007825035）。用 pyscf/NIST 的质量差 1.6e-9 a.u.，全部落在核偶极上。
+- **核模型**。`sox2catm` 的有限核开关是 `iflags2(80)==2`（`NUC_MODEL=GAUSSIAN`），默认点核，
+  与 pyscf 默认一致；算例里显式写了 `NUC_MODEL=POINT`。
+
+另外确认：`O:PVDZUNC`/`H:PVDZUNC` 与 `gto.uncontract(gto.load('ccpvdz', ·))` 指数逐位相同；
+CFOUR 的 `SCF_CONV=13` 与 socutils 的 `conv_tol=1e-14, conv_tol_grad=1e-10` 是达到 1e-12 所需的
+（`SCF_CONV=10` / `conv_tol=1e-12` 时差 2e-8，全是密度收敛）。
 
 ### 6.1 `prop/cfour.py` 实测复现（2026-08-31）
 
