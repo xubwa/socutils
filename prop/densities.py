@@ -46,7 +46,7 @@ import numpy
 from pyscf import lib
 from pyscf.scf import dhf as _dhf
 
-__all__ = ['densities', 'dm_meta']
+__all__ = ['densities', 'level_densities', 'dm_meta']
 
 
 def dm_meta(basis, kind='state', **kw):
@@ -209,6 +209,36 @@ def _degeneracy(energies, tol):
     return [(l, int(degen[l])) for l in levels]
 
 
+def _cas_frame(mc):
+    '''Orbitals and partition of a CASCI/CASSCF, after the basis check.'''
+    mf = mc._scf
+    basis = _basis_of(mf)
+    if basis == 'scalar':
+        raise TypeError(
+            'this property lane is for 2-component (spinor) and 4-component '
+            'references; the CASCI is built on a scalar %s.' % type(mf).__name__)
+    if basis == 'spin_orbital':
+        raise TypeError(
+            'a CASCI on a spin-orbital (GHF) reference is not handled: its '
+            'orbitals would have to be rotated into the spinor basis before '
+            'the MO contraction, and no such CASCI exists in socutils yet.')
+    mo = numpy.asarray(mc.mo_coeff)
+    nelecas = mc.nelecas
+    nelec_cas = int(nelecas) if numpy.isscalar(nelecas) else int(sum(nelecas))
+    return basis, mo, mc.ncore, mc.ncas, nelecas, nelec_cas
+
+
+def _full_space(casdm1, nmo, ncore, ncas, diagonal, dtype):
+    '''Embed an active-space (transition) density in the full MO space: the
+    core block is the identity for a state density and zero for a transition
+    density between different states.'''
+    gamma = numpy.zeros((nmo, nmo), dtype=dtype)
+    if diagonal:
+        gamma[:ncore, :ncore] = numpy.eye(ncore)
+    gamma[ncore:ncore + ncas, ncore:ncore + ncas] = casdm1
+    return gamma
+
+
 def _cas(mc, degen_tol=1e-6):
     '''Every root of a CASCI/CASSCF, as a full-space MO-basis ``gamma``.
 
@@ -225,23 +255,8 @@ def _cas(mc, degen_tol=1e-6):
     code does not.)  SHCI's ``read_rdm1`` conjugates the Dice h5 on the way
     in to land on the same convention.
     '''
-    mf = mc._scf
-    basis = _basis_of(mf)
-    if basis == 'scalar':
-        raise TypeError(
-            'this property lane is for 2-component (spinor) and 4-component '
-            'references; the CASCI is built on a scalar %s.' % type(mf).__name__)
-    if basis == 'spin_orbital':
-        raise TypeError(
-            'a CASCI on a spin-orbital (GHF) reference is not handled: its '
-            'orbitals would have to be rotated into the spinor basis before '
-            'the MO contraction, and no such CASCI exists in socutils yet.')
-
-    mo = numpy.asarray(mc.mo_coeff)
+    basis, mo, ncore, ncas, nelecas, nelec_cas = _cas_frame(mc)
     nmo = mo.shape[1]
-    ncore, ncas = mc.ncore, mc.ncas
-    nelecas = mc.nelecas
-    nelec_cas = int(nelecas) if numpy.isscalar(nelecas) else int(sum(nelecas))
 
     roots = _roots(mc)
     degen = _degeneracy([e for _, _, e in roots], degen_tol)
@@ -250,9 +265,7 @@ def _cas(mc, degen_tol=1e-6):
         if casdm1.shape != (ncas, ncas):
             raise ValueError('active-space rdm1 of root %d is %r, expected (%d, %d)'
                              % (i, casdm1.shape, ncas, ncas))
-        gamma = numpy.zeros((nmo, nmo), dtype=numpy.result_type(casdm1, mo))
-        gamma[:ncore, :ncore] = numpy.eye(ncore)
-        gamma[ncore:ncore + ncas, ncore:ncore + ncas] = casdm1
+        gamma = _full_space(casdm1, nmo, ncore, ncas, True, numpy.result_type(casdm1, mo))
 
         n = gamma.trace().real
         nref = ncore + nelec_cas
@@ -286,3 +299,53 @@ def densities(wfn, **kwargs):
         'no density adapter for %s. Mean-field and CASCI/CASSCF references '
         'are supported; linear-response (TDA/TDDFT) and coupled-cluster '
         'adapters are not written yet.' % type(wfn).__name__)
+
+
+def level_densities(mc, degen_tol=1e-6):
+    '''Every degenerate level of a CASCI/CASSCF as the ``d x d`` matrix of
+    state and transition densities ``gamma[i, j][p, q] = <i|p^dagger q|j>``
+    over the roots of that level, in the full MO space (core identity on
+    the diagonal entries only).
+
+    This is what a time-odd operator needs: inside a Kramers doublet or a
+    multiplet the solver's roots are an arbitrary unitary mixture, so a
+    single root's ``<mu>`` can be anything between the two eigenvalues of
+    the ``d x d`` block, while the block itself -- and every invariant built
+    from it -- is basis independent.  The transition densities come from
+    the solver's ``trans_rdm1`` in the same ``<p^dagger q>`` convention as
+    its ``make_rdm1`` (measured for zfci; the ``i == j`` entry equals
+    ``make_rdm1`` to round-off).
+
+    Yields ``('level_%d', gammas, mo, meta)`` with ``gammas`` of shape
+    ``(d, d, nmo, nmo)`` -- ``d^2`` full matrices resident at once, which is
+    fine for a doublet on a few hundred orbitals and something to revisit
+    for large multiplets on large bases.
+    '''
+    basis, mo, ncore, ncas, nelecas, nelec_cas = _cas_frame(mc)
+    nmo = mo.shape[1]
+    roots = _roots(mc)
+    degen = _degeneracy([e for _, _, e in roots], degen_tol)
+    dtype = numpy.result_type(mo, numpy.complex128)
+    pos = 0
+    while pos < len(roots):
+        level, d = degen[pos]
+        members = roots[pos:pos + d]
+        gammas = numpy.zeros((d, d, nmo, nmo), dtype=dtype)
+        for a, (i, ci, _) in enumerate(members):
+            for b, (j, cj, _) in enumerate(members):
+                t = numpy.asarray(mc.fcisolver.trans_rdm1(ci, cj, ncas, nelecas))
+                if t.shape != (ncas, ncas):
+                    raise ValueError('transition rdm1 <%d|%d> is %r, expected (%d, %d)'
+                                     % (i, j, t.shape, ncas, ncas))
+                gammas[a, b] = _full_space(t, nmo, ncore, ncas, a == b, dtype)
+        e = numpy.array([ei for _, _, ei in members])
+        meta = dm_meta(basis, kind='level',
+                       source=type(mc).__name__,
+                       solver=type(mc.fcisolver).__name__,
+                       level=level, degeneracy=d,
+                       roots=tuple(i for i, _, _ in members),
+                       energy=float(e.mean()), energy_spread=float(e.max() - e.min()),
+                       converged=bool(getattr(mc, 'converged', False)),
+                       nelec=float(ncore + nelec_cas))
+        yield ('level_%d' % level, gammas, mo, meta)
+        pos += d

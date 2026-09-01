@@ -35,7 +35,8 @@ from pyscf.lib import logger
 from socutils.prop.densities import densities
 from socutils.prop.contract import contract_dm
 
-__all__ = ['dipole', 'nuclear_dipole', 'efg', 'efg_principal', 'nuclear_density']
+__all__ = ['dipole', 'nuclear_dipole', 'efg', 'efg_principal', 'nuclear_density',
+           'level_block', 'pseudo_spin_tensor', 'pseudo_spin_frame', 'g_tensor', 'hyperfine_tensor']
 
 
 def _check_same_system(store, wfn):
@@ -194,3 +195,165 @@ def nuclear_density(wfn, store, formulation='contact', verbose=None, **kwargs):
     _log_table(log, 'Electron density at the nuclei, %s' % formulation, metas, vals,
                tuple('%s%d' % (store.mol.atom_symbol(a), a) for a in range(natm)))
     return _squeeze_roots(vals, metas)
+
+
+# --- time-odd operators: Kramers-level blocks and pseudo-spin tensors --------
+
+#: Pauli matrices, the pseudo-spin-1/2 basis of a Kramers doublet block.
+_PAULI = numpy.array([[[0, 1], [1, 0]], [[0, -1j], [1j, 0]], [[1, 0], [0, -1]]])
+
+_G_FILES = {'UT': ('UTM10X', 'UTM10Y', 'UTM10Z'), 'KB': ('SOM10X', 'SOM10Y', 'SOM10Z')}
+_A_FILES = {'UT': 'UTM01', 'KB': 'SOM01'}
+
+
+def level_block(wfn, store, ops, spec, verbose=None, label='operator', **kwargs):
+    '''``M[a, i, j] = <i|O_a|j>`` over the roots of every degenerate level.
+
+    ``ops`` is ``(ncomp, n2c, n2c)`` in the store's AO basis and ``spec`` the
+    taxonomy row that goes with it (its sign is applied).  Returns
+    ``(blocks, metas)`` with one ``(ncomp, d, d)`` complex array per level.
+    The block is Hermitian in ``(i, j)`` for a Hermitian operator, which is
+    checked -- it is the same free test of "operator and density in one
+    basis" that :func:`socutils.prop.contract.contract_dm` runs.
+    '''
+    from socutils.prop.densities import level_densities
+    from socutils.prop.contract import to_mo
+    ops = numpy.asarray(ops)
+    blocks, metas = [], []
+    for name, gammas, mo, meta in level_densities(wfn, **kwargs):
+        omo = to_mo(ops, mo)
+        M = spec['sign'] * numpy.einsum('apq,ijpq->aij', omo, gammas, optimize=True)
+        dev = abs(M - spec['hermi'] * M.conj().transpose(0, 2, 1)).max()
+        scale = max(abs(M).max(), 1.0)
+        if dev > 1e-6 * scale:
+            raise ValueError('%s (%s): block is not %s (deviation %.3e); operator '
+                             'and transition densities are not in one basis'
+                             % (label, name, 'Hermitian' if spec['hermi'] > 0
+                                else 'anti-Hermitian', dev))
+        blocks.append(M)
+        metas.append(meta)
+    return blocks, metas
+
+
+def pseudo_spin_tensor(block):
+    '''``T[a, b] = Tr(M_a sigma_b)`` for a ``(3, 2, 2)`` Kramers-doublet
+    block: the operator written as ``M_a = (1/2) sum_b T_ab sigma_b`` in the
+    solver's basis of the doublet.  A change of that basis multiplies ``T``
+    from the right by one rotation common to every operator of the level,
+    so ``T T^T`` and products ``T_1 T_2^T`` are invariant.'''
+    block = numpy.asarray(block)
+    if block.shape[-2:] != (2, 2):
+        raise ValueError('pseudo-spin 1/2 needs a doublet, got a %dx%d block' % block.shape[-2:])
+    return numpy.einsum('aij,bji->ab', block, _PAULI).real
+
+
+def pseudo_spin_frame(t_g):
+    '''Fix the pseudo-spin frame on the g tensor.
+
+    Convention: left polar decomposition ``T_g = P R``; ``P = sqrt(T T^T)``
+    is symmetric positive semidefinite and becomes ``g/2``, ``R`` is the
+    rotation that carries every other tensor of the level into the same
+    frame (``T' = T R^T``).  Principal g values are therefore reported
+    non-negative and the sign of a hyperfine tensor is *relative to g*; the
+    overall sign of g (``det``) is not recoverable from ``G = g g^T`` and is
+    not claimed.  When ``T_g`` is rank deficient (``g_perp = 0``, e.g. a
+    case-(a) 2Pi_3/2 level) the rotation about the pseudo-spin axis is
+    undetermined and only the parallel components of other tensors are
+    pinned to g.  Returns ``(P, R)``.
+    '''
+    from scipy.linalg import polar
+    R, P = polar(t_g, side='left')
+    return P, R
+
+
+def _principal(t):
+    '''Principal values (descending |v|) and axes of a 3x3 tensor's symmetric part.'''
+    w, v = numpy.linalg.eigh(0.5 * (t + t.T))
+    order = numpy.argsort(-abs(w))
+    return w[order], v[:, order]
+
+
+def _log_tensor_table(log, title, metas, tensors, labels):
+    log.note('%s (a.u.)', title)
+    log.note('%6s %18s %4s %8s ' % ('level', 'energy', 'deg', 'roots')
+             + ' '.join('%14s' % l for l in labels))
+    for meta, t in zip(metas, tensors):
+        w, _ = _principal(t) if not numpy.isnan(t).any() else (numpy.full(3, numpy.nan), None)
+        log.note('%6d %18.10f %4d %8s ' % (meta['level'], meta['energy'], meta['degeneracy'],
+                                           ','.join(map(str, meta['roots'])))
+                 + ' '.join('%14.8f' % x for x in numpy.r_[w, t.ravel()]))
+
+
+def _g_blocks(wfn, store, balance, **kwargs):
+    names = _G_FILES[balance]
+    spec = store.meta(names[0])
+    ops = numpy.array([store.op(n) for n in names])
+    return level_block(wfn, store, ops, spec, label='g (%s)' % balance, **kwargs)
+
+
+def g_tensor(wfn, store, balance='UT', verbose=None, **kwargs):
+    '''g tensor of every Kramers doublet of ``wfn`` from the store's
+    magnetic-moment operators (``UTM10*`` or ``SOM10*``).
+
+    ``g = 2 P`` with ``P`` from :func:`pseudo_spin_frame`: the factor 2 is
+    ``1/mu_B`` in atomic units and makes a free electron give ``g_e``.
+    Levels that are not doublets get a NaN tensor and a log line.
+
+    Returns:
+        ``(3, 3)`` for a single level, ``(nlevel, 3, 3)`` otherwise;
+        symmetric, principal values non-negative (see the frame convention).
+    '''
+    _check_same_system(store, wfn)
+    log = logger.new_logger(wfn, verbose)
+    blocks, metas = _g_blocks(wfn, store, balance, **kwargs)
+    out = []
+    for M, meta in zip(blocks, metas):
+        if meta['degeneracy'] != 2:
+            log.info('level %d has degeneracy %d: no pseudo-spin-1/2 g tensor',
+                     meta['level'], meta['degeneracy'])
+            out.append(numpy.full((3, 3), numpy.nan))
+            continue
+        P, _ = pseudo_spin_frame(pseudo_spin_tensor(M))
+        out.append(2 * P)
+    out = numpy.array(out)
+    _log_tensor_table(log, 'g tensor (%s)' % balance, metas, out,
+                      ('g1', 'g2', 'g3') + tuple('g%s%s' % (a, b) for a in 'xyz' for b in 'xyz'))
+    return _squeeze_roots(out, metas)
+
+
+def hyperfine_tensor(wfn, store, balance='KB', g_balance='UT', verbose=None, **kwargs):
+    '''Hyperfine tensor ``A`` of every Kramers doublet at every nucleus, in
+    the pseudo-spin frame fixed by the g tensor of the same level.
+
+    ``A_ab = Tr(M_a sigma_b)`` in that frame, so that the effective
+    Hamiltonian is ``sum_ab A_ab I_a S~_b`` with pseudo-spin ``S~ = 1/2``;
+    bare a.u. per unit nuclear magnetic moment -- no isotope factor.  The
+    file's sign (CFOUR reports ``-Tr``) is applied; the sign of ``A`` is
+    relative to the non-negative g of :func:`g_tensor`.
+
+    Returns:
+        ``(natm, 3, 3)`` for a single level, ``(nlevel, natm, 3, 3)`` otherwise.
+    '''
+    _check_same_system(store, wfn)
+    log = logger.new_logger(wfn, verbose)
+    natm = store.mol.natm
+    name = _A_FILES[balance]
+    spec = store.meta(name)
+    ops = numpy.array([store.op(name, atom=a, comp=k) for a in range(natm) for k in range(3)])
+    blocks, metas = level_block(wfn, store, ops, spec, label='hyperfine (%s)' % balance, **kwargs)
+    gblocks, _ = _g_blocks(wfn, store, g_balance, **kwargs)
+    out = []
+    for M, Mg, meta in zip(blocks, gblocks, metas):
+        if meta['degeneracy'] != 2:
+            log.info('level %d has degeneracy %d: no pseudo-spin-1/2 hyperfine tensor',
+                     meta['level'], meta['degeneracy'])
+            out.append(numpy.full((natm, 3, 3), numpy.nan))
+            continue
+        _, R = pseudo_spin_frame(pseudo_spin_tensor(Mg))
+        out.append(numpy.array([pseudo_spin_tensor(M[3 * a:3 * a + 3]) @ R.T for a in range(natm)]))
+    out = numpy.array(out)
+    for a in range(natm):
+        _log_tensor_table(log, 'hyperfine tensor (%s) at %s%d, frame from g (%s)'
+                          % (balance, store.mol.atom_symbol(a), a, g_balance), metas, out[:, a],
+                          ('A1', 'A2', 'A3') + tuple('A%s%s' % (i, j) for i in 'xyz' for j in 'xyz'))
+    return _squeeze_roots(out, metas)

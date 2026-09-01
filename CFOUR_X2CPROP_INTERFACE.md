@@ -410,6 +410,14 @@ g̃Aᵀ_nn：+4.003821 / +2.000844 / −7.102205 / −0.472334（g/L/A_O/A_H）�
 注意：g̃ 为秩 1 时（g_⊥ = 0）绕赝自旋轴的旋转未定，A 的垂直赝自旋系无法钉到 g 上——此处
 A_⊥ 也为 0 所以无害；G 只给 |g|，A 的符号是相对 g（取 P ≥ 0）的。
 
+**收进 `prop/` 的接口（2026-09-01，约定定稿）。** `densities.level_densities(mc)` 逐简并能级
+yield `(d, d, nmo, nmo)` 的态/跃迁密度（`trans_rdm1`，⟨p†q⟩ 约定，core 单位阵只在对角项）；
+`observables.level_block` 给 `⟨i|O_a|j⟩` 块并检查厄米性；`pseudo_spin_tensor` T_ab = Tr(M_a σ_b)；
+`pseudo_spin_frame` 左极分解 T_g = P·R；**`g_tensor` 返回 g = 2P**（因子 2 = 1/μ_B，自由电子给 g_e；
+对称、主值 ≥ 0，det 符号不声称）；**`hyperfine_tensor` 返回 A' = T_A·Rᵀ**（H = Σ A_ab I_a S̃_b，裸 a.u.、
+不乘核因子，符号相对 g）。d ≠ 2 的能级给 NaN 并记日志。`balance='UT'|'KB'` 选文件。两取向上与脚本
+逐位一致；自包含单元测试 `prop/test/test_gtensor.py`（pyscf 旋量 X2C 的 SOC + 裸 (L+g_eS)/2）。
+
 两个必须对上的约定，任何一个不对就停在 1e-8 量级：
 
 - **坐标系**。`FIXGEOM=ON` 保留取向但 xjoda 仍**平移到质心**（joda.out "Coordinates (in bohr)"）。
