@@ -64,10 +64,10 @@ def _basis_of(mf):
     '''Which basis this mean field's density matrix lives in, decided from the
     object rather than from any array shape.
 
-    Duck-typed on purpose.  ``somf.snso.SCF`` and ``scf.spinor_hf.SpinorSCF``
-    are both spinor references with no common base below pyscf's ``hf.SCF``,
-    and ``scf.x2camf_hf.x2camf_ghf`` builds its object on the fly, so a single
-    isinstance chain misses cases that are plainly fine.
+    Duck-typed on purpose.  ``scf.x2camf_hf.x2camf_ghf`` builds its object
+    on the fly and pyscf's own ``x2c.SCF`` is a spinor reference outside
+    socutils' class tree, so a single isinstance chain misses cases that are
+    plainly fine; the helper's class name is asked first.
     '''
     if _is_4c(mf):
         return '4c'
