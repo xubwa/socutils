@@ -370,6 +370,34 @@ prop/int1e.py        算符层来源 B：socutils 自造（本轮不动）
    每种波函数一个无状态适配器，性质对象可调用、波函数是**调用参数**而非属性 →
    **N + M**。加一种波函数 = 一个适配器；加一种性质 = 一个类。
 
+### 7.2b 缩并层：默认 MO 基（2026-09-01 定）
+
+**默认在 MO 基缩并**，AO 只作逃生口：
+
+```python
+expect(O, gamma_mo, mo_coeff)   # 主路径：算符转到 MO 基，einsum('pq,pq->', O_mo, gamma)
+expect(O_ao, dm_ao)             # 逃生口：手上已经是 AO 密度时（mf.make_rdm1() 就是）
+```
+
+数学上两者恒等（`Tr(O_AO·D_AO) = Tr(O_MO·γ_MO)`），**选 MO 是为了把两类静默错误从路径里
+结构性地拿掉**，而不是靠检查去防：
+
+1. **AO 有转置歧义，MO 没有。** AO 密度要写 `C·γ^T·C†` 还是 `C·γ·C†`，树里两种都有（§7.5），
+   而两个候选**都厄米、都 `Tr(S·D)=N`**，没有便宜的检查能分开 —— 实测代价是 Kramers 禁阻
+   跃迁上 7 个数量级的假信号。MO 基下没有 `C` 参与，`einsum('pq,pq->', O, γ)` 只有一种写法。
+2. **AO 有基的歧义，MO 没有。** 旋量 vs 自旋轨道，而 `nao_2c() == 2·nao_nr()` **精确相等**，
+   形状永远分不出来（§5.1 那个 −0.43 a.u. 的机制）。MO 基下 γ 的维度是 nmo，与用哪套 AO 无关。
+3. 成本方向相反但都不是瓶颈：AO 密度 6 MB/态、算符只转一次；MO 密度小、算符每换 `mo_coeff`
+   重转一次。实测真正贵的是**建**算符（0.53 s）而不是缩并（0.004 s）。
+
+**接口不做 core/active 切分。** 适配器给全空间的 `(γ_MO, mo_coeff)`，性质层一条 einsum、
+零分支；core/active 是适配器内部的事。core 也用密度矩阵缩并而不是 `Tr(O_core)` ——
+两者在 `γ_core = I` 时恒等，但 core **不总是**单位阵（CAHF 分数占据、`scf/addons.even_occ`、
+`lo/atomic_ref`），把「core 满占据」焊死在代码里会在那些情形悄悄出错。
+
+AO 逃生口不是可选项：SCF 的 `mf.make_rdm1()` 本来就只给 AO 密度。走 AO 时语义由调用方负责，
+与 CFOUR 那条独立路径同一个原则。
+
 ### 7.3 已决的范围（本轮）
 
 | | |
@@ -392,6 +420,32 @@ EFG 无迹/有迹（CFOUR 是无迹；有迹那个是 socutils 自造算符的�
 `pc`/`energy_derivative`（§4.1 的逐文件约定是既成事实）、
 AMF/Gaunt/Breit 响不响应微扰（在文件里面）。
 第 5 个（核数据）因「不做单位换算」而消解。
+
+### 7.4b pyscf 的先例：MO 与 AO 是两个接口，且两族默认方向相反
+
+| | 默认返回 | 另一个怎么拿 |
+|---|---|---|
+| CC（`cc/ccsd.py:1157`） | **MO 基**（docstring: "in MO space"） | `make_rdm1(ao_repr=True)` |
+| CASCI/CASSCF（`mcscf/casci.py:1057`） | **AO 基** | 没有开关，AO 是唯一选项 |
+| fcisolver（`fcisolver.make_rdm1`） | **活性空间 MO** | 只有这一种 |
+
+AO 那个本质是 MO 那个 + 一次基变换（`cc/ccsd_rdm.py:274` 的 `if ao_repr:`）。CASCI 因为要拼
+core 才当场做（`casci.py:1069-1071`；其中的 `* 2` 是非相对论闭壳层每个空间轨道两个电子，
+**旋量基下没有这个 2**）。
+
+**`make_rdm1` 是导出格式，不是内部货币。** `mc1step.py` 里 `casdm1` 出现 45 次，每个优化点用的
+都是 `fcisolver.make_rdm12`（活性 MO）；AO 的 `make_rdm1` 在整个 `mc1step.py` 里只出现在注释里
+—— **CASSCF 轨道优化从头到尾不碰 AO 密度**。pyscf 里调它的全是把总 AO 密度交给外部消费者的场景：
+`solvent/_attach_solvent.py`（5 处）、`qmmm/pbc/itrf.py:375`、`mcscf/addons.py:708`（自然占据分析）。
+
+socutils 一个这样的消费者都没移植，所以 `zcasci`/`zcasbase` 的 `make_rdm1` **零调用是结构上正常的**
+（`somf/somf.py:373` 那个唯一疑似调用点接的是**标量 pyscf CASSCF** —— 全走 `_sph` 积分且
+`mo_coeff` 不取共轭）。这也是为什么我们的性质层走 MO 基不是抄近路：**那就是 pyscf 内部自己的做法**。
+
+继承上 pyscf 只在 `casci.CASBase` 定义一次 `make_rdm1`，`CASCI` 和 `CASSCF` 都继承不重写
+（`CASSCF` 继承的是 `CASBase` 而非 `CASCI`）。socutils 在 `zcasbase.CASBase:202` 和
+`zcasci.CASCI:466` **各写了一份**，派生类那份重写了基类那份，而两份只差 `.conj().T` 与 `.T.conj()`
+的写法 —— 行为完全相同，所以这次重写没有意义，后果是同一个转置 bug 抄成两份、只改一份等于没改。
 
 ### 7.5 仍然悬着的（socutils 自造算符那半边接进来时才活）
 
