@@ -326,6 +326,16 @@ Python 侧的工作**。
 | 总偶极 `dipole(mf, store)` vs CFOUR "Total Electric Dipole Moments" | **1.5e-12** |
 | 同一几何、`xx2camf` + `%amfiMethod* 0 1 0 0` vs socutils `x2camf(with_gaunt=True, with_breit=False)` | 能量 1e-12，偶极 1.7e-9（`h2o_x2cprop/`；那 1.7e-9 是下面的质心问题，未重跑） |
 
+同一算例、同一密度，其余时间反演为偶的性质（`compare_even_properties.py`，2026-09-01）：
+
+| 检验 | 实测 |
+|---|---|
+| `efg(mf, store)` 六槽总 EFG（`-Tr` + `EFGNUC`）vs CFOUR "Total Electric Field Gradients"，O / H / H | 5.2e-12 / 1.1e-13 / 4.1e-13 |
+| `efg_principal` 本征值（\|V\| 升序）vs CFOUR "Eigenvalues of EFG"（只印 6 位） | 3.2e-7（= 打印舍入） |
+| `EFGNUC` vs 用 mol 点电荷公式 `Σ_B Z_B (3r r − r²δ)/r⁵` | 1.1e-12 |
+| `nuclear_density(..., 'contact' / 'contact_derivative' / 'effective')` vs CFOUR 三段 "Density at atm#" | 相对 5.1e-13（O 上 300.545 差 6e-11） |
+| 奇宇称零检验：`SOX2CEFD`、`SOMQM` 对闭壳层密度 | −5e-15、1.5e-11（CFOUR 1.4e-14、1.3e-10） |
+
 两个必须对上的约定，任何一个不对就停在 1e-8 量级：
 
 - **坐标系**。`FIXGEOM=ON` 保留取向但 xjoda 仍**平移到质心**（joda.out "Coordinates (in bohr)"）。
