@@ -468,3 +468,27 @@ socutils 一个这样的消费者都没移植，所以 `zcasci`/`zcasbase` 的 `
 - **pyscf 的 `ISOTOPE_QUAD_MOMENT` 符号被剥掉**：Sm-147 给 `+0.263`，随附源表
   `quadrupole_moment.txt:701` 是 `-0.26(3)`（符号丢失 + 不确定度数字拼到尾数）。
   Sm-149 是 `+0.078(8)`，**与 147 符号相反**。本轮不做换算所以够不着我们，但用者自己乘的时候要注意。
+
+### 7.6 `with_x2c` 侧的目标形态（2026-09-01 定方向，性质线做完再动）
+
+`somf/` 里的 X2C helper 已经清点过：spinor 侧有 pyscf `SpinorX2CHelper`（1e）、`snso`（1e +
+Boettger）、`amf.SpinorX2CAMFHelper`（已 deprecated，≡ `x2cmp(x2cmp='x2camf')`）、
+`x2cmp.SpinorX2CMPHelper`（`amf_type` 字符串分发约 20 个 flavor）、`x2cmmf`（从收敛 4c DHF）；
+外加 GHF 孪生。**类的数量不是问题，`x2cmp.py:548-800` 那条 if/elif 链才是。**
+
+定下的方向：**`x2cmp.SpinorX2CMPHelper` 是最终的 all-in-one `with_x2c`，其余都是它的 flavor。**
+依据是实现本来就已经是一条流水线 —— 每个 flavor 都是「造 `(h4c, m4c)`，可选加一个 2c 修正
+`so_2c`」，然后同一个 `x2c1e_hfw0_4cmat` 做 FW、同一个 `to_2c`、同一个 `get_hfw1(h4c1, x_response)`
+做 picture change。SNSO 落在这条线上就是把 `h4c` SS 块里 `W − pVp` 乘 `boettger_damp`（`snso.py`
+今天抽出来的函数，就是为这个留的）；MMF 就是 `h4c` = 收敛的 4c Fock；`'1e'` 已经有。
+
+- 分发变成一张表：`FLAVORS[name](x2cobj, xmol) -> (h4c, m4c, so_2c|None)`；`get_hcore`/`get_hfw1`/
+  `save_hcore`/`load_hcore` 各一份。实验性 flavor 用同一签名在 `somf/flavors_experimental.py` 注册。
+- **GHF 是旋量的视图，不是第二套实现**：`SpinOrbital*` 只做 `spinor2sph(spinor hcore)`（x2cmp 的
+  GHF 孪生现在已经是这么做的；`snso.py` 在 24da800 里也改成了这样，与直算版差 2e-11）。`get_hfw1`
+  同理转一次。这同时消掉 7.5 里「`h4c` 是旋量而 `get_hcore` 是自旋轨道」那个形状陷阱的一半。
+- `amf.SpinorX2CAMFHelper`、`x2cmmf` 的类、`snso` 的两个类到时候收掉；`spinor_hf.x2camf()/.x2cmp()`
+  快捷方式保留，再加一个 `.x2c(flavor=…)`。
+- 性质层从 helper 只要 `get_hcore` 和 `get_hfw1`（或 pyscf 的 `picture_change`）两样，统一前后都
+  成立，所以当前分支不依赖这次重构；**动手前需要用者圈定 20 个 flavor 里哪些还活着**（猜：
+  `x2camf, x2camf_sd, x2cmp, sfmp, 1e, sf1e` 活，其余实验）。
