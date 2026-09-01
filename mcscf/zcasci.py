@@ -149,13 +149,20 @@ def kernel(casci, mo_coeff=None, ci0=None, verbose=logger.NOTE):
     e_tot, fcivec = casci.fcisolver.kernel(h1eff, eri_cas.reshape(ncas, ncas, ncas, ncas), ncas, nelecas,
                                            ci0=ci0, verbose=5, max_memory=max_memory, ecore=energy_core)
     
-    #if isinstance(e_tot, list):
-    #    e_tot = numpy.average(e_tot)
     t1 = log.timer('FCI solver', *t1)
+    e_tot = numpy.asarray(e_tot)
     e_cas = e_tot.real - energy_core.real
-    if not isinstance(e_cas, (float, numpy.number)):
-        e_cas = e_cas.mean()
-        e_tot = e_tot.mean()
+    if e_tot.ndim > 0:
+        # A multi-root solver keeps its roots: e_tot and e_cas stay arrays,
+        # as in pyscf (mcscf/casci.py indexes self.e_tot[i] when e_cas is not
+        # a scalar, and so does zcasbase._finalize).  Averaging them here
+        # would leave the individual energies only in the log, and any
+        # method that works per state -- transition moments, degeneracy
+        # grouping, state-resolved properties -- would have nowhere to read
+        # them from.  A state-averaged solver is the case that reports a
+        # single averaged e_tot, and it does that through its own wrapper.
+        for i, e in enumerate(e_tot.real):
+            log.info('CASCI state %d  E = %.10f', i, e)
     return e_tot.real, e_cas.real, fcivec
 
 
