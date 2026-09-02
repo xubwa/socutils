@@ -126,6 +126,25 @@ class GTensorOH(unittest.TestCase):
         self.assertAlmostEqual(n @ a @ n, 1.0, delta=0.02)
         self.assertGreater(n @ a @ n, 0)
 
+    def test_invariant_matches_frame_route(self):
+        """The basis-independent invariant reproduces the doublet frame route.
+
+        Only to 1e-8: the invariant is quadratic in the block, so taking its
+        square root costs half the digits on a vanishing principal value --
+        which is why g_tensor uses the SVD-based frame route for a doublet
+        and the invariant only for larger multiplets.
+        """
+        from socutils.prop import cfour
+        xyz, _ = oh([0.68, 0.57, 0.45])
+        mol, mc = casci_pi(xyz)
+        store = MemStore(mol)
+        ops = numpy.array([store.op('UTM10' + c) for c in 'XYZ'])
+        blocks, _ = observables.level_block(mc, store, ops, cfour.meta('UTM10X'))
+        for M in blocks:
+            P, _ = observables.pseudo_spin_frame(observables.pseudo_spin_tensor(M))
+            g_inv = observables._sym_sqrt(observables.spin_invariant(M))
+            self.assertAlmostEqual(abs(2 * P - g_inv).max(), 0, 7)
+
     def test_orientation_invariance(self):
         n1, _, g1, A1 = run([0.68, 0.57, 0.45])
         n2, _, g2, A2 = run([numpy.cos(0.3), numpy.sin(0.3), 0.0])       # axis in the xy plane

@@ -36,7 +36,8 @@ from socutils.prop.densities import densities
 from socutils.prop.contract import contract_dm
 
 __all__ = ['dipole', 'nuclear_dipole', 'efg', 'efg_principal', 'nuclear_density',
-           'level_block', 'pseudo_spin_tensor', 'pseudo_spin_frame', 'g_tensor', 'hyperfine_tensor']
+           'level_block', 'pseudo_spin_tensor', 'pseudo_spin_frame', 'spin_invariant',
+           'g_tensor', 'hyperfine_tensor']
 
 
 def _check_same_system(store, wfn):
@@ -247,8 +248,42 @@ def pseudo_spin_tensor(block):
     return numpy.einsum('aij,bji->ab', block, _PAULI).real
 
 
+def spin_invariant(block):
+    '''``g g^T`` of a multiplet, from the block alone.
+
+    Inside a manifold of ``d = 2S + 1`` states a time-odd operator is
+    exactly linear in the pseudo-spin, ``M_a = (1/2) sum_b g_ab S_b`` (for
+    ``S <= 1`` no higher odd rank exists, and for larger ``S`` this is the
+    rank-1 part), so ``Tr(M_a M_b) = (K/4) (g g^T)_ab`` with
+    ``K = S(S+1)(2S+1)/3``.  The trace of a product of two blocks is
+    invariant under *any* unitary mixing of the manifold, which is what the
+    CI solver leaves arbitrary -- so this works for a Kramers doublet and a
+    spin triplet alike, and needs no identification of which state is which
+    ``M_S``.  What it cannot give is a sign: ``g g^T`` is even in ``g``.
+    '''
+    block = numpy.asarray(block)
+    d = block.shape[-1]
+    if block.shape[-2] != d or d < 2:
+        raise ValueError('expected a (ncomp, d, d) block with d >= 2, got %r' % (block.shape,))
+    # The identity part of the block shifts the whole manifold instead of
+    # splitting it, so it is not a Zeeman term: project it out.  It vanishes
+    # exactly for a time-odd operator on a Kramers manifold and is otherwise
+    # the size of the solver's degeneracy error.
+    tr = numpy.einsum('aii->a', block) / d
+    block = block - tr[:, None, None] * numpy.eye(d)
+    S = (d - 1) / 2.0
+    K = S * (S + 1) * (2 * S + 1) / 3
+    return (4 / K) * numpy.einsum('aij,bji->ab', block, block).real
+
+
+def _sym_sqrt(g2):
+    '''Symmetric positive semidefinite square root.'''
+    w, v = numpy.linalg.eigh(0.5 * (g2 + g2.T))
+    return (v * numpy.sqrt(numpy.clip(w, 0, None))) @ v.T
+
+
 def pseudo_spin_frame(t_g):
-    '''Fix the pseudo-spin frame on the g tensor.
+    '''Fix the pseudo-spin frame on the g tensor of a *doublet*.
 
     Convention: left polar decomposition ``T_g = P R``; ``P = sqrt(T T^T)``
     is symmetric positive semidefinite and becomes ``g/2``, ``R`` is the
@@ -260,6 +295,11 @@ def pseudo_spin_frame(t_g):
     case-(a) 2Pi_3/2 level) the rotation about the pseudo-spin axis is
     undetermined and only the parallel components of other tensors are
     pinned to g.  Returns ``(P, R)``.
+
+    Only a doublet has a frame this simple: for ``d > 2`` a general unitary
+    mixing of the manifold is not a rotation of the spin matrices, so the
+    frame is not recoverable from one operator and only
+    :func:`spin_invariant` is used there.
     '''
     from scipy.linalg import polar
     R, P = polar(t_g, side='left')
@@ -295,26 +335,35 @@ def g_tensor(wfn, store, balance='UT', verbose=None, **kwargs):
     '''g tensor of every Kramers doublet of ``wfn`` from the store's
     magnetic-moment operators (``UTM10*`` or ``SOM10*``).
 
-    ``g = 2 P`` with ``P`` from :func:`pseudo_spin_frame`: the factor 2 is
-    ``1/mu_B`` in atomic units and makes a free electron give ``g_e``.
-    Levels that are not doublets get a NaN tensor and a log line.
+    ``g`` is the symmetric positive semidefinite square root of
+    :func:`spin_invariant`'s ``g g^T``, which for a doublet is the ``2 P``
+    of the frame convention in :func:`pseudo_spin_frame` (the factor 2 is
+    ``1/mu_B`` in atomic units, so a free electron gives ``g_e``) and for a
+    larger multiplet -- a spin triplet, say -- is the same construction
+    without a frame.  The sign of ``g`` is not claimed.  A non-degenerate
+    level gets a NaN tensor and a log line.
 
     Returns:
         ``(3, 3)`` for a single level, ``(nlevel, 3, 3)`` otherwise;
-        symmetric, principal values non-negative (see the frame convention).
+        symmetric, principal values non-negative.
     '''
     _check_same_system(store, wfn)
     log = logger.new_logger(wfn, verbose)
     blocks, metas = _g_blocks(wfn, store, balance, **kwargs)
     out = []
     for M, meta in zip(blocks, metas):
-        if meta['degeneracy'] != 2:
-            log.info('level %d has degeneracy %d: no pseudo-spin-1/2 g tensor',
-                     meta['level'], meta['degeneracy'])
+        if meta['degeneracy'] < 2:
+            log.info('level %d is not degenerate: no pseudo-spin g tensor', meta['level'])
             out.append(numpy.full((3, 3), numpy.nan))
             continue
-        P, _ = pseudo_spin_frame(pseudo_spin_tensor(M))
-        out.append(2 * P)
+        if meta['degeneracy'] == 2:
+            # the doublet has a frame, and its polar decomposition goes
+            # through an SVD -- no squaring, so a vanishing g_perp comes out
+            # at 1e-11 rather than the 1e-8 of a square root of g g^T
+            P, _ = pseudo_spin_frame(pseudo_spin_tensor(M))
+            out.append(2 * P)
+        else:
+            out.append(_sym_sqrt(spin_invariant(M)))
     out = numpy.array(out)
     _log_tensor_table(log, 'g tensor (%s)' % balance, metas, out,
                       ('g1', 'g2', 'g3') + tuple('g%s%s' % (a, b) for a in 'xyz' for b in 'xyz'))
@@ -345,7 +394,8 @@ def hyperfine_tensor(wfn, store, balance='KB', g_balance='UT', verbose=None, **k
     out = []
     for M, Mg, meta in zip(blocks, gblocks, metas):
         if meta['degeneracy'] != 2:
-            log.info('level %d has degeneracy %d: no pseudo-spin-1/2 hyperfine tensor',
+            log.info('level %d has degeneracy %d: the pseudo-spin frame is fixed by g '
+                     'only for a doublet, so no hyperfine tensor is reported',
                      meta['level'], meta['degeneracy'])
             out.append(numpy.full((natm, 3, 3), numpy.nan))
             continue
