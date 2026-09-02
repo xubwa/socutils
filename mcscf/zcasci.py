@@ -467,22 +467,6 @@ class CASCI(zcasbase.CASBase):
         addons.state_specific(self, state)
         return self
 
-    def make_rdm1(self, mo_coeff=None, ci=None, ncas=None, nelecas=None, ncore=None, **kwargs):
-        '''One-particle density matrix in AO representation
-        '''
-        if mo_coeff is None: mo_coeff = self.mo_coeff
-        if ci is None: ci = self.ci
-        if ncas is None: ncas = self.ncas
-        if nelecas is None: nelecas = self.nelecas
-        if ncore is None: ncore = self.ncore
-
-        casdm1 = self.fcisolver.make_rdm1(ci, ncas, nelecas)
-        mocore = mo_coeff[:, :ncore]
-        mocas = mo_coeff[:, ncore:ncore + ncas]
-        dm1 = numpy.dot(mocore, mocore.T.conj())
-        dm1 = dm1 + reduce(numpy.dot, (mocas, casdm1, mocas.T.conj()))
-        return dm1
-
 
 if __name__ == '__main__':
     from pyscf import mcscf
