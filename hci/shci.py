@@ -218,24 +218,37 @@ class SHCI(pyscf.lib.StreamObject):
     # -----------------------------------------------------------------------------------------------
         
     def trans_rdm1(self, state_i, state_j, norb, nelec, link_index=None, **kwargs):
-        trdm1 = numpy.zeros((norb, norb), dtype=complex)
-        # assume Dice prints only i < j transition rdm.
-        if state_i > state_j:
-            tmp = state_i
-            state_i = state_j
-            state_j = tmp
+        '''Transition density matrix ``t[p,q] = <i|p^dagger q|j>``.
 
-        filetrdm1 = os.path.join(self.scratchDirectory, "transition1RDM.%d.%d.txt" % (state_i, state_j))
-        with open(filetrdm1) as f:
-            line = f.readline()
-            file_orb = int(line.split()[0])
-            for line in f:
-                orb1 = int(line.split()[0])
-                orb2 = int(line.split()[1])
-                val = re.split("[(,)]", line.split()[2])
-                val = complex(float(val[1]), float(val[2]))
-                trdm1[orb1][orb2] = val
-        return trdm1
+        Same convention as socutils' own ``fci.zfci`` solver and as
+        :func:`socutils.prop.contract.contract_dm` contracts
+        (``sum_pq O_pq t_pq``), so the two solvers are interchangeable.
+
+        Dice writes transition densities only with the bra fixed at root 0
+        (``Dice_0_j.rdm1.h5``, ZSHCI/FCI.cpp), and only when the ``DoTDM``
+        keyword is in the input, so one of the two states must be root 0.
+        The h5 payload is column-major, hence :func:`read_rdm1` returns the
+        Hermitian conjugate ``<j|p^dagger q|0>``; the bra/ket order is
+        restored here.  (The previous implementation read a text file
+        ``transition1RDM.i.j.txt`` that no Dice in this tree ever writes --
+        the name comes from the upstream non-relativistic wrapper.)
+        '''
+        if state_i == state_j:
+            return self.make_rdm1(state_i, norb, nelec, link_index, **kwargs)
+        if min(state_i, state_j) != 0:
+            raise NotImplementedError(
+                'Dice writes transition densities only for bra = root 0, so '
+                '<%d|p^dagger q|%d> is not on disk. Transitions inside an '
+                'excited manifold need the zfci solver.' % (state_i, state_j))
+        path = os.path.join(self.scratchDirectory,
+                            'Dice_0_%d.rdm1.h5' % max(state_i, state_j))
+        if not os.path.isfile(path):
+            raise IOError(
+                '%s not found. Dice writes transition densities only under the '
+                'DoTDM keyword: set fcisolver.DoTRDM = True before kernel().'
+                % path)
+        t = read_rdm1(path, norb)                     # <j|p^dagger q|0>
+        return t if state_i > state_j else t.conj().T
         
     def make_rdm1(self, state, norb, nelec, link_index=None, **kwargs):
         # Avoid calling self.make_rdm12 because it may be overloaded
@@ -466,6 +479,8 @@ def writeSHCIConfFile(SHCI, nelec, Restart):
         f.write(f'prefix {SHCI.scratchDirectory}\n')
     if SHCI.DoRDM:
         f.write('DoRDM\n')
+    if getattr(SHCI, 'DoTRDM', False):
+        f.write('DoTDM\n')          # Dice's keyword; writes Dice_0_j.rdm1.h5
     for line in SHCI.extraline:
         f.write(f'{line}\n')
     f.write('\n')  # SHCI requires that there is an extra line.

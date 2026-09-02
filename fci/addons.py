@@ -39,7 +39,8 @@ def charge_center(mol):
     return numpy.einsum('z,zx->x', charges, mol.atom_coords()) / charges.sum()
 
 def _state_ci(ci, state):
-    if isinstance(ci, (list, tuple)):
+    # a solver may hand back a range (hci/shci.py sets mc.ci = range(nroots))
+    if isinstance(ci, (list, tuple, range)):
         return ci[state]
     if state != 0:
         raise ValueError(f'state {state} requested but only one CI vector '
