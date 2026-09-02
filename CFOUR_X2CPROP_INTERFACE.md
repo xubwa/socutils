@@ -44,9 +44,8 @@ SHCI 的 `FCIDUMP` / `input.dat` / `states_splitting.csv`。**不要碰这个目
 
 3. **CFOUR 写出来的是 `x_response=True` 的图像变换算符**（实测：`SOX2CDPZ` 对
    `get_hfw1(..., x_response=True)` 吻合到 1.1e-9，对普通图像变换只有 3.8e-5）。
-   这意味着它们是**能量导数性质**的算符，**不能**直接用于跃迁矩——而 `prop/int1e.py` 和
-   `tdscf/gks.py` 恰恰刻意对跃迁矩用 `x_response=False`。**且这个约定在文件之间不统一**
-   （§4.1），接口必须逐文件带元数据，不能全局设一个开关。
+   **且这个约定在文件之间不统一**（§4.1），接口必须逐文件带元数据，不能全局设一个开关。
+   要紧的是**图像变换本身有没有做**；`x_response` 真假只是其中的小修正（量级见 §4.1）。
 
 4. **socutils 的性质计算确实坏了，而且比表面看到的更严重**（§5）。有两条互不相干的车道：
    新的 `prop/int1e.py`（未提交、只注册了一个算符）和旧的 `prop/{efg,hfc,gfac,...}`
@@ -190,9 +189,19 @@ CFOUR 内部走两条路径：`sox2c1o0`（含 X 响应）和 `sox2c1onox`（不
 - **`SOSIGZ`、`SOSIGX`、`SOLZ`** = **完全不做图像变换**。
 
 后果：**接口不能设一个全局开关**，必须每个文件带自己的元数据。
-另外，因为主流文件是 `x_response=True`，它们是能量导数算符，
-**用于跃迁矩是错的** —— `prop/int1e.py` 和 `tdscf/gks.py:126` 对跃迁矩刻意用
-`x_response=False`，CFOUR 的偶极文件在那里是错的对象。
+
+**量级（2026-09-02 在 Sm³⁺ 上实测，`~/scr4/zmcscf/sm/pc_levels2.py`，占据×虚轨道偶极块）：**
+
+| 比较 | 相对差 |
+|---|---|
+| CFOUR 文件 vs socutils `get_hfw1(..., x_response=True)` | 2.9e-11 |
+| `x_response` 真 vs 假（响应的是 **X 算符**，解耦矩阵对微扰的重整） | **1.8e-7** |
+| 图像变换本身（`x_response=False` vs 裸 `int1e_r_spinor`） | **7.4e-5** |
+
+**大项是图像变换本身,`x_response` 的选择是小项。** 对偶极,用 CFOUR 的 `SOX2CDP*` 做跃迁矩
+没有问题（1e-7）；真正会出事的是**完全不做图像变换**（裸 `int1e_r`，1e-4，重原子更大——
+`hci/shci.py` 里那段注释掉的旧 `transition_dipole` 就是这么写的）。近核算符另当别论：
+`SOEFG` 槽 0 对 `x_response=True` 吻合 5e-11，对纯图像变换差 **0.4%**。
 
 ### 4.2 单位与前因子全部由 Python 侧负责
 
