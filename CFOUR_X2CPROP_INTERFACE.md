@@ -699,8 +699,12 @@ socutils 一个这样的消费者都没移植，所以 `zcasci`/`zcasbase` 的 `
   `x2c_intermediate` 一个都没缓存。外加两个纯 Python 双重循环（nc=308 时 1,517,824 + 379,456 次）。
   所以「建一次复用」在**密度**轴上成立、在 **(原子, 分量)** 轴上不成立，而 40 原子 EFG 正好活在后者。
 - **`prop/int1e.py:123` 硬编码的 `.5/c`** 和三个旧的 odd 算符都不匹配，HFC 照它移植会差一个 **c**。
-- **AO 密度转置约定树内不一致**：`mcscf/zcasbase.py:216` 建 `C·d·C†`，
-  `fci/addons.py:108 trans_rdm1_ao` 建 `C·d^T·C†`。
+- ~~**AO 密度转置约定树内不一致**：`mcscf/zcasbase.py:216` 建 `C·d·C†`，
+  `fci/addons.py:108 trans_rdm1_ao` 建 `C·d^T·C†`。~~ **已修（2026-09-02）**：`zcasbase` 改成
+  `C·d^T·C†`（与 `fci/addons.py` 一致），`zcasci.py` 里那份逐字复制的 `make_rdm1`（曾 shadow 基类，
+  只改基类没用）删除。实测：`mc.make_rdm1()` 的 AO 路线与 MO 路线在 `int1e_r_spinor` 上
+  1.4e-16、在 `int1e_spnucsp_spinor` 上 1.2e-16 相对（修前 2e-4～3e-3）。注意 `Tr(S·D)=N` 对
+  转置不敏感，不能用来验这件事。
 - **`SpinOrbitalX2CMPHelper.h4c` 是旋量矩阵**（`x2cmp.py:537`）而同一对象的 `get_hcore` 返回
   自旋轨道（`:1005-1007`），且 `nao_2c() == 2·nao_nr()` 精确相等 —— 形状对得上、什么都不报，
   这就是 §5.1 那个 −0.43 a.u. 的机制。
