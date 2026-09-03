@@ -157,8 +157,12 @@ FILES = {
                     layout='atom3', comps=('x', 'y', 'z')),
 
     # --- Hamiltonians, not properties -------------------------------------
-    'SOX2C1EM': _op('CFOUR 2c X2C one-electron Hamiltonian'),
-    'SOX2CH0M': _op('CFOUR 2c X2C zeroth-order Hamiltonian'),
+    # measured, and the other way round from what the names suggest:
+    # SOX2C1EM carries the atomic mean field of the run, SOX2CH0M is the bare
+    # one-electron X2C Hamiltonian (3.8e-11 against the matching socutils
+    # X2CMP flavour on [SmCl2(H2O)6]+, 9.8e-6 against the other one)
+    'SOX2C1EM': _op('CFOUR 2c X2C Hamiltonian including the run\'s AMF'),
+    'SOX2CH0M': _op('CFOUR 2c bare one-electron X2C Hamiltonian'),
     'SOX2CHFW': _op('CFOUR 2c X2C HFW Hamiltonian'),
     'X2CMFSOM': _op('CFOUR mean-field spin-orbit matrix'),
     'X2COVLPM': _op('CFOUR 2c overlap'),
@@ -166,7 +170,7 @@ FILES = {
     'X2CDEN2C': _op('CFOUR 2c density'),
     'X2CATMXM': _op('CFOUR atomic X matrix'),
     'X2CAX1EM': _op('CFOUR atomic X2C-1e matrix'),
-    'ATMOVLPM': _op('CFOUR atomic overlap'),
+    'ATMOVLPM': _op('CFOUR atomic overlap', note='atom-block diagonal: the AMF atomic overlap, not the molecular one'),
     'ATMFOCKM': _op('CFOUR atomic Fock matrix'),
 }
 
@@ -245,8 +249,15 @@ class CfourPropStore:
         if not os.path.isdir(self.directory):
             raise IOError('not a directory: %s' % self.directory)
         self.mol = mol
+        #: CFOUR writes its matrices in the alpha (+) beta space of the *scalar*
+        #: spherical basis, so their dimension is 2*nao_nr -- which is
+        #: mol.nao_2c() only for an ordinary basis.  A j-adapted (SO-contracted,
+        #: kappa != 0) basis keeps fewer spinors than alpha (+) beta slots
+        #: (976 vs 1000 for [SmCl2(H2O)6]+ with CL:PVDZ-SO), and the rotation
+        #: Labels.spinor_cfour2pyscf is then the (2nc, n2c) projection that
+        #: carries one to the other.  Keep the two dimensions apart.
         self.n2c = mol.nao_2c()
-        self.nc = self.n2c // 2
+        self.nc = mol.nao_nr()
         #: bytes in one (2nc, 2nc) complex*16 matrix; 64*nc**2 == 6071296 at nc=308
         self.item_bytes = 64 * self.nc ** 2
         self.natm = mol.natm
@@ -392,7 +403,7 @@ class CfourPropStore:
         # Getting this backwards yields the complex conjugate, which passes
         # every Hermiticity self-check -- so the order is explicit here and
         # the check below is a stride check, not a correctness proof.
-        return z.reshape(self.n2c, self.n2c).T
+        return z.reshape(2 * self.nc, 2 * self.nc).T
 
     def op(self, name, atom=None, comp=None, check_hermi=True):
         '''One property operator as an (n2c, n2c) array in pyscf's spinor

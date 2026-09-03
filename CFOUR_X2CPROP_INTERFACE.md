@@ -547,6 +547,32 @@ d = 2 时仍走极分解（SVD，不平方，g_⊥ = 0 能给到 1e-11，不变�
 接触项，UHF 与 CAHF/CASCI 在轻原子上差 9%（O）/ 40%（H）；**接触密度 `SODEN2C`** 与超精细
 共享核附近的 s 密度，可交叉验证 core 处理。
 
+#### 6.2.6 SO 收缩基（κ≠0）下的接口验证：[SmCl₂(H₂O)₆]⁺（2026-09-02）
+
+算例 `~/scr4/zmcscf/smcl2_prop`（`ZMAT`/`GENBAS`/`*.out` + 8 GB 算符文件 + `smcl2_cfour_prop.py`）。
+Cl 用 `CL:PVDZ-SO`（j 分辨的收缩基），于是 **`mol.nao_2c() = 976` ≠ `2·mol.nao_nr() = 1000`**，
+这暴露了 store 里一处把两个维度当成同一个的 bug（`self.nc = self.n2c // 2`）。
+
+**CFOUR 写在标量球谐基的 α⊕β 乘积空间里**，维度 `2·nao_nr`，不是 j-适配旋量基。普通基下两者
+同构（所以此前一直没暴露）；SO 基下 CFOUR 的空间**更大** —— p1/2 收缩壳层的 α⊕β 有 6 个函数
+而只有 j=1/2 的 2 个是物理的。`Labels.spinor_cfour2pyscf` 正是那个 (2nc, n2c) 投影，且是精确的：
+
+| 检验 | 实测 |
+|---|---|
+| `ATMOVLPM` 投影后的 Sm 块（普通基）vs `int1e_ovlp_spinor` | 1.6e-15 |
+| `ATMOVLPM` 投影后的 **Cl 块（SO 基）** | 8.9e-16 |
+| `SOX2C1EM` vs socutils `X2CMP('x2camf', gaunt, breit).get_hcore` | **3.8e-11** |
+| `SOX2CH0M` vs socutils `X2CMP('1e').get_hcore` | **3.8e-11** |
+
+后两行顺带订正了命名：**`SOX2C1EM` 是含该次 AMF 的哈密顿量，`SOX2CH0M` 才是裸 1e**，与名字
+给人的印象相反（互换着比是 9.8e-6）。`ATMOVLPM` 是**原子块对角**的 AMF 原子重叠，块间严格为 0，
+不能拿来比分子重叠。
+
+**副产品**：pyscf 对 κ≠0 的基会警告 "the uncontract basis might be wrong"，那是防御性的 ——
+这类基组几乎只在本组手里，上游没法广泛测试。这里的 3.8e-11 相当于用一个独立实现在同一套 SO 基上
+验证了 pyscf 的解收缩路径，是别处拿不到的数据点。`mol.so_contr`（`scf/spinor_hf.py:707,733`）
+是死代码：`basis_parser` 从不设它，一切原生跑在 976 维里。
+
 两个必须对上的约定，任何一个不对就停在 1e-8 量级：
 
 - **坐标系**。`FIXGEOM=ON` 保留取向但 xjoda 仍**平移到质心**（joda.out "Coordinates (in bohr)"）。
