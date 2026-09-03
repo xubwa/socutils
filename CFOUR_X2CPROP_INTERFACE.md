@@ -782,3 +782,124 @@ Boettger）、`amf.SpinorX2CAMFHelper`（已 deprecated，≡ `x2cmp(x2cmp='x2ca
 - 性质层从 helper 只要 `get_hcore` 和 `get_hfw1`（或 pyscf 的 `picture_change`）两样，统一前后都
   成立，所以当前分支不依赖这次重构；**动手前需要用者圈定 20 个 flavor 里哪些还活着**（猜：
   `x2camf, x2camf_sd, x2cmp, sfmp, 1e, sf1e` 活，其余实验）。
+
+---
+
+## 8. 代码审查地图（2026-09-02）
+
+给审代码的人：这一节不讲物理，只列**每个决定性约定在哪一行、反了会出什么、现在靠什么钉住**，
+以及**现有测试盖不到的地方**。分支 `prop-cfour-interface`，26 个 commit，改动文件：
+
+| 文件 | 性质 | 行数 |
+|---|---|---|
+| `prop/cfour.py` | 新，算符 store | 523 |
+| `prop/contract.py` | 新，唯一的 Tr(O·D) | 127 |
+| `prop/densities.py` | 新，密度适配器 | 351 |
+| `prop/observables.py` | 新，驱动 | 409 |
+| `prop/test/test_dipole.py`, `test_gtensor.py` | 新，自包含测试（不需要 CFOUR 文件） | 128 + 158 |
+| `somf/snso.py` | 重写：1133 行 pyscf 复制 → 194 行只留 Boettger 屏蔽 | −940 |
+| `hci/shci.py` | `trans_rdm1` 改读 h5；`DoTDM` | +51/−19 |
+| `mcscf/zcasbase.py` | AO 密度 `C·γᵀ·C†` | 12 |
+| `mcscf/zcasci.py` | 删掉 shadow 基类的 `make_rdm1` 复制品 | −16 |
+| `fci/addons.py` | `_state_ci` 接受 `range` | 3 |
+
+### 8.1 决定性约定逐行表
+
+**`prop/cfour.py`**
+
+| 行 | 决定什么 | 反了会怎样 | 钉住它的 |
+|---|---|---|---|
+| :259–262 | `nc = nao_nr`（CFOUR 的标量维度）、`n2c = nao_2c`（pyscf 旋量维度）**分开**；`item_bytes = 64·nc²` | 普通基下两者相等看不出；SO 基下读不出文件（会大声失败） | SmCl₂ 的 SO 基读取；§6.2.6 |
+| :339, :355 | `atom_map` 反查 + `slot*ncomp + comp` 的项索引 | 原子/分量错位 | H₂O 每原子 EFG vs CFOUR 2e-12；SmCl₂ C2 对称原子对超精细逐位相同 |
+| :406 | `reshape(2nc, 2nc).T` —— Fortran 列主序 | **少了 `.T` 得到的是复共轭，厄米性检查照样通过** | `SOLZ`（反厄米，存 i·L_z）的符号检验 §6.1；所有期望值 vs CFOUR |
+| :436 | 厄米性检查 = 跨步检查（错偏移的槽跨两个矩阵，不厄米） | 静默读错槽 | 本身就是检查 |
+| :447 | `mat = c†·raw·c`，`c = Labels.spinor_cfour2pyscf` 为 (2nc, n2c) | 方向反（`c·raw·c†`）在 SO 基下维度报错，普通基下静默错 | `ATMOVLPM` 原子块 1e-15；`SOX2C1EM` vs `X2CMP` 3.8e-11；全部 CFOUR 对比 |
+| :499 | `read_real` 的原子重排 | `EFGNUC` 错原子 | H₂O EFG 核项 vs 点电荷公式 1e-12 |
+| `FILES` | 每文件的 `sign / hermi / picture / nuclear / balance / layout / comps` | 任一字段错 → 该文件的量错 | 与 CFOUR 打印值一致（`evaprp.f90` 用同样的符号）；`SOX2C1EM`/`SOX2CH0M` 命名已实测订正 |
+
+**`prop/contract.py`**
+
+| 行 | 决定什么 | 反了会怎样 | 钉住它的 |
+|---|---|---|---|
+| :56 | `to_mo`：`bra.conj()` 在左 | 复数 MO 下全错 | `test_dipole`（随机相位 MO，判别量 ≥ 5e-2） |
+| :102 | AO 路线 `einsum('pq,qp')` = Tr(O·D) | 与 :109 配错 → 态密度差 1e-4，跃迁密度差 1e-2（自旋禁阻跃迁矩从 1e-15 变 3e-2） | `test_dipole` MO vs AO 1e-16；对话中的禁阻跃迁检验 |
+| :109 | MO 路线 `einsum('pq,pq')`，γ_pq = ⟨p†q⟩ | 同上 | 同上；zfci 约定用 (\|p⟩+i\|q⟩)/√2 实测为 +0.5i |
+| :114–127 | `hermi` 检查：被禁的实/虚部必须是舍入 | 算符和密度不在同一基时报错 | 本身就是检查 |
+
+**`prop/densities.py`**
+
+| 行 | 决定什么 | 反了会怎样 | 钉住它的 |
+|---|---|---|---|
+| :65 | `_basis_of` 按**类**判 4c/spinor/spin_orbital/scalar（形状判不出：`nao_2c == 2·nao_nr`） | GHF 密度当旋量密度用 → §5.1 的 −0.43 a.u. | 分类逻辑；**但 GHF 与 4c 路径无数值测试（见 8.3）** |
+| :152 | GHF 密度用 `sph2spinor` 转旋量（密度方向，是算符方向的对偶） | 用错对偶方向 → 静默错 | **无测试（8.3）** |
+| :181, :183 | `_roots`：`range`（SHCI）/ 列表（zfci）/ `e_states`（state-average） | 根与能量错配 | H₂O 六根 vs CFOUR；SHCI 六根验证 |
+| :237, :264 | 全空间 γ：core 单位阵 + `fcisolver.make_rdm1` | — | `Tr γ = nelec` 检查；MO vs AO 1e-16 |
+| :336, :340 | `level_densities`：`trans_rdm1(ci, cj)` = ⟨i\|p†q\|j⟩；core 单位阵**只在 a==b** | 非对角块混入 core → 块不厄米 | `level_block` 的厄米检查；`test_gtensor` 检 γ_01 = γ_10† |
+
+**`prop/observables.py`**
+
+| 行 | 决定什么 | 反了会怎样 | 钉住它的 |
+|---|---|---|---|
+| :60 | `spec['sign']·el + nuclear`，逐密度 | 符号/核项错 | 偶极/EFG/密度 vs CFOUR 1e-12 |
+| :103, :158 | 核项来源：偶极用 `store.mol`，EFG 用 `EFGNUC` 文件 | 坐标系不一致 → 核项错（H₂O 上质量表差 1.6e-9） | §6.2 |
+| :117 | `_EFG_SLOTS`：(zz,yy,xx,zx,zy,yx) → 3×3 | 张量装错 | 本征值 vs CFOUR `efgdiag` 6 位 |
+| :226 | `level_block`：`sign·einsum('apq,ijpq->aij')` + 厄米检查 | — | `test_gtensor` |
+| :248 | `pseudo_spin_tensor`：T_ab = Tr(M_a σ_b) | — | 与不变量路线一致（`test_invariant_matches_frame_route`，1e-7） |
+| :272–276 | `spin_invariant`：**先减迹**，再 (4/K)·Tr(M̃_aM̃_b)，K = S(S+1)(2S+1)/3 | 不减迹 → 数值噪声进 g；K 错 → d>2 的 g 错常数倍 | Sm 原子 J=5/2,7/2,9/2 各向同性 5e-8 且 g ≈ Landé；NH 三重态 |
+| :305 | `polar(t_g, side='left')` 返回 `(R, P)`，**取 P = 第二个** | 拆反 → A 的系是垃圾（对话里发生过一次） | `test_gtensor`（A 沿键、符号相对 g） |
+| :359–366 | d==2 走极分解（SVD 不平方，g_⊥=0 到 1e-11）；d>2 走不变量（开方后 1e-8） | — | `test_invariant_matches_frame_route` |
+| :396–403 | `hyperfine_tensor` 只做 d==2；A′ = T_A·Rᵀ，R 来自 **g_balance 那个块** | d>2 给 NaN（有日志）；R 取错块 → A 取向错 | OH 双取向不变 1e-14；符号相对 g 为负与 CFOUR 单行列式一致 |
+| :43 | `_check_same_system`：只比 natm、n2c、核电荷 | **同原子不同几何/坐标系的 store 会静默通过**（8.3） | 无 |
+
+**`hci/shci.py`**
+
+| 行 | 决定什么 | 反了会怎样 | 钉住它的 |
+|---|---|---|---|
+| :69 | `real − i·imag`：Dice 列主序 + 共轭 = 厄米共轭 | 去掉 → 能量差 2e-2 | vs zfci 2.1e-13；能量 1.4e-14 |
+| :244, :251 | 读 `Dice_0_max(i,j)`；`i>j` 原样，否则 `.conj().T` | bra/ket 反 → 跃迁密度转置 | 非简并根跃迁强度 vs zfci 4.1e-15 |
+| :483 | `DoTRDM` → 写 `DoTDM` | Dice 不写 TDM 文件 | 文件出现 |
+
+**`mcscf/zcasbase.py:224`** `C·casdm1ᵀ·C†` —— 钉住：AO vs MO 路线 1.4e-16（修前 2e-4～3e-3）。
+**`somf/snso.py`** :70–88 Boettger 屏蔽；:133 作用在 W 上；:183 GHF = `spinor2sph`(旋量 hcore) —— 钉住：旋量 hcore 与旧代码逐位相同（off/scaled=0/3），GHF 与直接实现 2e-11，SCF 能量 1e-10。
+
+### 8.2 现有测试跑法
+
+```
+PYTHONPATH=~/apps/socutils-git-env:~/apps/pyscf ~/apps/conda/bin/python prop/test/test_dipole.py   # 2 项，~3 s
+PYTHONPATH=~/apps/socutils-git-env:~/apps/pyscf ~/apps/conda/bin/python prop/test/test_gtensor.py  # 3 项，~3 s
+```
+两者都不需要 CFOUR 文件（内存 store 包 pyscf 积分）。依赖 CFOUR 文件的对比脚本在
+`~/scr4/zmcscf/{h2o,h2op,oh,oh_xy}_x2cprop_1e/`、`nh_gtensor*/`、`sm/`、`smcl2_prop/`。
+
+### 8.3 现有测试盖不到的地方（审查重点）
+
+1. **`_mean_field` 的 GHF 路径**（:152 `sph2spinor` 转密度）和 **4c/DHF 路径**（`_is_4c`）：没有数值测试。
+   建议：GHF 与 SpinorSCF 同一分子，`dipole()` 必须逐位相同。
+2. **`_check_same_system` 不比坐标**：同一组原子、不同几何或不同坐标系的 store 静默通过。
+   鉴于 xjoda 会平移到质心（§6.2），这是真实风险。建议加原子坐标比较（容差 1e-6 bohr）。
+3. **`hyperfine_tensor` 的赝自旋系**（A′ = T_A·Rᵀ）只有 OH 上的取向不变性和符号自洽，
+   没有外部锚点（CFOUR 只给单行列式的 A 值，不给张量框架）。
+4. **`spin_invariant` 在 d>2** 只有 Sm 原子各向同性/Landé（1e-8 级）和 NH vs 文献（5%），
+   没有机器精度锚点（极分解 vs 不变量的一致性测试只在 d=2）。
+5. **跨能级的跃迁密度**（Van Vleck 用的 24×24 磁矩矩阵）在 `vanvleck.py` 里直接调 `trans_rdm1`，
+   不经过 `prop/`，只验证了厄米性和 g=2 二重态的单位。完备性和规则 Σ_j\|⟨0\|μ\|j⟩\|² = ⟨0\|μ²\|0⟩ 未做。
+6. **`_roots` 的 `e_states`（state-average）分支**：无数值测试。
+7. **`efg` 对 d>2 逐根**：已知限制，未做能级块。
+8. **SHCI 的 `level_densities`** 对不含 root 0 的简并能级会抛 `NotImplementedError`（Dice 只写 bra=0）；
+   含 root 0 的二重态可用，但**没有一个端到端的 SHCI g 张量测试**。
+9. **`prop/int1e.py`**（未跟踪，用户文件）的 `.5/c` 前因子是全局常数，磁算符走它会多一个 c（§7.5）。
+
+### 8.4 产生了物理结论、但不在仓库里的脚本
+
+| 脚本 | 产生的结论 | 位置 |
+|---|---|---|
+| `smcl2_cfour_prop.py` | SmCl₂ 基态 g、A（§6.2.6） | `~/scr4/zmcscf/smcl2_prop/` |
+| `amom.py` | 2⟨L⟩/2⟨S⟩/2⟨J⟩、A/g vs 自由离子 | 同上 |
+| `efg_contact.py` | EFG、接触密度、核四极耦合 | 同上 |
+| `vanvleck.py`, `sm/vv_atom.py` | χT(T) 团簇 / 自由离子 | 同上、`~/scr4/zmcscf/sm/` |
+| `sm_gtensor.py`, `sm_decomp.py`, `sm_opcheck.py`, `sm_hfc.py`, `calib_ops.py` | Sm 原子 J 流形 g/A、Landé、投影检验、算符标定 | `~/scr4/zmcscf/sm/` |
+| `ci_g_factor.py`, `gtensor_oh.py`, `gA_oh.py` | OH CI 级 g/A（§6.2.2） | `~/scr4/zmcscf/oh_x2cprop_1e/` |
+| `g_tensor.py`（两份） | NH ³Σ⁻ g 位移（§6.2.3） | `~/scr4/zmcscf/nh_gtensor*/` |
+
+这些脚本里的数值逻辑（Van Vleck 求和、共振场公式、四极劈裂、单位换算）**没有测试**，
+审查时应视为"未验证代码"，逐个核（`smcl2_prop/VERIFY.md` 第五部分列了每个常数的出处）。
