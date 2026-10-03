@@ -524,9 +524,28 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
     # active-orbital basis (frozen basis == natural orbitals), while the orbital
     # rotation itself and the L-BFGS history stay in the frozen basis.
     occ_no, u_no = np.linalg.eigh(casdm1)          # casdm1 = u n u^dagger
+    # the natural occupations are (at least) pairwise degenerate and eigh
+    # returns an arbitrary basis of each degenerate subspace; diagonalising
+    # the Fock matrix inside every such subspace makes the representation
+    # unique, so the diagonals below do not depend on that arbitrariness
+    f_act = fock_eff[ncore:nocc, ncore:nocc]
+    f_act = 0.5 * (f_act + f_act.T.conj())
+    i0 = 0
+    while i0 < ncas:
+        i1 = i0 + 1
+        while i1 < ncas and abs(occ_no[i1] - occ_no[i0]) < 1e-7:
+            i1 += 1
+        if i1 - i0 > 1:
+            sub = u_no[:, i0:i1]
+            u_no[:, i0:i1] = np.dot(sub, np.linalg.eigh(reduce(np.dot, (sub.T.conj(), f_act, sub)))[1])
+        i0 = i1
     f_no = reduce(np.dot, (u_no.T.conj(), fock_eff[ncore:nocc, ncore:nocc], u_no)).diagonal().real
-    y_no = reduce(np.dot, (u_no.T.conj(), y, u_no)).diagonal().real
-    g2_no = reduce(np.dot, (u_no.T.conj(), g_dm2[ncore:nocc], u_no)).diagonal().real
+    # y and the active block of g_dm2 are not Hermitian away from convergence;
+    # only the diagonal of a Hermitian, time-reversal symmetric matrix is
+    # independent of how the degenerate natural-orbital Kramers pairs are chosen
+    herm = lambda m: 0.5 * (m + m.T.conj())
+    y_no = reduce(np.dot, (u_no.T.conj(), herm(y), u_no)).diagonal().real
+    g2_no = reduce(np.dot, (u_no.T.conj(), herm(g_dm2[ncore:nocc]), u_no)).diagonal().real
     f_c = fock_eff.diagonal().real[:ncore]
     f_v = fock_eff.diagonal().real[nocc:]
     hd_vc = f_v[:, None] - f_c[None, :]
@@ -694,7 +713,10 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, uphill_step_tol=1e-3, conv_tol
         # do it in gen_g_hop
         if mc.natorb is True: 
             moa = mo[:, ncore:nocc]
-            natocc, c = mc._scf.eig(-casdm1, mo=moa)
+            # casdm1[t,u] = <t^dagger u> transforms as c^T D c^* under mo -> mo c,
+            # so the natural orbitals are the eigenvectors of its transpose
+            # (the same matrix for a real rdm)
+            natocc, c = mc._scf.eig(-casdm1.T, mo=moa)
             moa_new = np.dot(moa, c)
             mo[:, ncore:nocc] = moa_new
 
