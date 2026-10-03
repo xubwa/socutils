@@ -576,32 +576,6 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
     return g_orb, casscf.pack_uniq_var((h_diag+h_diag.T).real), hop, sop, precond, mo
 
 
-def precondition_grad0(grad, xs, ys, rhos, bfgs_space=10):
-    assert len(ys) <= bfgs_space, 'size of xs greater than bfgs space size'
-    gbar = grad.copy()
-    niter = len(xs) if bfgs_space > len(xs) else bfgs_space
-    a = np.zeros(niter)
-    for ii in range(niter):
-        i = niter-ii-1
-        a[i] = np.dot(xs[i].conj(), gbar).real / rhos[i]
-        gbar = gbar - ys[i] * a[i]
-        #print(f'precond_grad, {ii}, {i}, {np.linalg.norm(gbar):.4e}, {np.linalg.norm(xs[i]):.4f} {np.linalg.norm(ys[i]):.4f}, {rhos[i]:.4f}, {a[i]:.4e}, {np.dot(xs[i].conj(), gbar).real:.4e} ')
-    print(f'{len(ys)} {len(xs)} {np.linalg.norm(gbar):.4e} {np.linalg.norm(gbar-grad):.4e} bfgs precond')
-    return gbar, a
-
-
-def postprocess_x0(xbar, xs, ys, rhos, a, bfgs_space=10):
-    assert len(xs) <= bfgs_space, 'size of xs greater than bfgs space size'
-    niter = len(xs) if bfgs_space > len(xs) else bfgs_space
-    xorig = xbar.copy()
-    for i in range(niter):
-        b = np.dot(ys[i].conj(), xbar).real / rhos[i]
-        #print(f'postprocess {a[i]:.4e}, {b:.4e}, {np.linalg.norm(xs[i]):.4f}')
-        xbar = xbar - xs[i] * (a[i] - b)
-    print(f'bfgs post {np.linalg.norm(xorig-xbar):.4e}, {np.linalg.norm(xorig):.4e}')
-    return 0.5*xbar
-
-
 def lbfgs_precondition(grad, xs, ys, dens):
     '''First loop of the L-BFGS two-loop recursion (Kreplin, Knowles, Werner,
     JCP 152, 074102 (2020), Fig. 1).  Vectors are packed complex rotations; the
@@ -625,31 +599,61 @@ def lbfgs_postprocess(x, xs, ys, dens, a):
     return x
 
 
-def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, uphill_step_tol=1e-3, conv_tol=None,
-                  conv_tol_grad=None, verbose=5, cderi=None, bfgs=False, solver='davidson',  # cderi kept for backward compat
-                  davidson_maxiter=10, ah_lambda=False, ah_root='yanai', no_basis_precond=True, descent_guard=True,
-                  step_control='legacy', trust_radius=None, trust_radius_max=2.0, grad_scale=1.0,
-                  reject_uphill=False,
-                  sd_hdiag_floor=0.05, kramers_check=True, kramers_project=True):
-    bfgs = bfgs
+def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=None, verbose=5,
+                  cderi=None, bfgs=False, solver='davidson', davidson_maxiter=10, ah_root='yanai',
+                  trust_radius=None, trust_radius_max=2.0, reject_uphill=False, descent_guard=True,
+                  sd_hdiag_floor=0.05, kramers_check=True, kramers_project=True, **deprecated):
+    '''Super-CI orbital optimisation with an adaptive trust region.
+
+    Every macro iteration solves the super-CI augmented-Hessian problem for the
+    level-shifted step y = -(H - mu S)^-1 g, with mu chosen (through lambda in
+    the Davidson solver) so that |y| <= trust radius; |y| is the Frobenius norm
+    of the rotation matrix.  With bfgs=True the gradient is preconditioned and
+    the step post-processed with the L-BFGS two-loop recursion (Kreplin,
+    Knowles, Werner, JCP 152, 074102 (2020)) and then scaled back into the
+    trust region.  The trust radius follows rho = dE / Q, Q = 2 Re(g.y) +
+    Re(y.Hy): halved for rho < 0.25 or an energy rise, doubled for rho > 0.75
+    when the step reached the boundary, never above trust_radius_max.
+
+    trust_radius      initial trust radius (default 0.2).  max_stepsize is the
+                      former name of this argument and is used when
+                      trust_radius is not given.
+    reject_uphill     False: every step is accepted (an energy rise shrinks the
+                      trust radius and discards the L-BFGS history).  True: a
+                      step that raises the energy by more than conv_tol is
+                      discarded and the problem re-solved in the smaller region.
+    kramers_check     require interleaved, phase +1 Kramers pairs at entry.
+    kramers_project   project every rotation onto its time-reversal even part.
+    descent_guard     replace a step that is not a descent direction by the
+                      Fock-diagonal preconditioned gradient step.
+
+    The orbital basis is not rotated between iterations (mc.canonicalize_ and
+    mc.natorb are not needed: metric, Hessian and preconditioner are basis
+    covariant), which keeps the L-BFGS history and the Kramers pairing intact.
+    '''
+    for key in deprecated:
+        if key in ('uphill_step_tol', 'ah_lambda', 'step_control', 'no_basis_precond', 'grad_scale'):
+            print(f'mcscf_superci: argument {key} is no longer used and is ignored')
+        else:
+            raise TypeError(f'mcscf_superci got an unexpected keyword argument {key!r}')
+    if trust_radius is None:
+        trust_radius = 0.2 if max_stepsize is None else max_stepsize
     davidson_mmax = davidson_maxiter
     log = logger.new_logger(mc, verbose)
     cput0 = (logger.process_clock(), logger.perf_counter())
     if conv_tol is None:
         conv_tol = mc.conv_tol
     mol = mc.mol
-    #if mc.irrep is None:
-    #    mo = form_kramers(mo_coeff)
     mo = mo_coeff
     nmo = mo_coeff.shape[1]
     ncore = mc.ncore
     ncas = mc.ncas
     nocc = ncore + ncas
 
-    # every step is projected with ensure_kramers, which is only meaningful for
-    # orbitals laid out as interleaved, phase +1 Kramers pairs.  Orbitals that
-    # lost this (plain-eigh canonicalisation, sort_mo, an unrestricted run)
-    # would silently have most of each step projected away.
+    # the Kramers projection of the step is only meaningful for orbitals laid
+    # out as interleaved, phase +1 Kramers pairs.  Orbitals that lost this
+    # (plain-eigh canonicalisation, sort_mo, an unrestricted run) would
+    # silently have most of each step projected away.
     if kramers_check:
         from socutils.tools import kramers
         s_ovlp = mol.intor('int1e_ovlp_spinor')
@@ -662,85 +666,66 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, uphill_step_tol=1e-3, conv_tol
                 'trace_orbital=False) or use socutils.tools.kramers.symmetrize, '
                 'or pass kramers_check=False' % dev)
 
-    mci = mc.view(zcasci.CASCI)
-    #eris = zmc_ao2mo._ERIS(mc, mo, level=2)
     eris = zmc_ao2mo._CDERIS(mc, mo, cderi=cderi, level=2)
     mci = zmcscf._fake_h_for_fast_casci(mc, mo, eris)
     print('first CI calculation')
     e_tot, e_cas, fcivec = mci.kernel(mo, verbose=verbose)
     mc.e_tot, mc.e_cas = e_tot, e_cas
-    #mc._finalize()
-    #e_tot, e_cas, fcivec = mc.casci(mo, ci0=None, eris=eris)
     if conv_tol_grad is None:
         conv_tol_grad = np.sqrt(conv_tol)
         logger.info(mc, 'Set conv_tol_grad to %g', conv_tol_grad)
 
     conv = False
-    norm_gorb = norm_gci = -1
-    de, elast = e_tot, e_tot
-
+    norm_gorb = -1
+    de = e_tot
     t1m = log.timer('Initializing Super-CI based MCSCF', *cput0)
     casdm1, casdm2 = mc.fcisolver.make_rdm12(fcivec, ncas, mc.nelecas)
-
     norm_rot = 0.0
-    norm_ddm = 1e2
-    casdm1_prev = casdm1_last = casdm1
-    t3m = t2m = log.timer('CAS DM', *t1m)
+    t2m = log.timer('CAS DM', *t1m)
 
+    BFGS_SUBSPACE = 6
+    BFGS_GRAD_MAX = 1.0      # no L-BFGS while |g| is above this
     imacro = 0
-    xs = []
-    ys = []
-    rhos = []
-    g_prev = None
-    x_prev = None
+    xs, ys, dens = [], [], []
+    g_prev = x_prev = None
     rejected = False
-    trust_radii = 0.5
-    # step_control='trust': restricted-step augmented Hessian with an adaptive
-    # trust radius delta (Frobenius norm of the rotation matrix, the same norm
-    # max_stepsize has always been compared with).  The AH step is the
-    # level-shifted step y = -(H - mu S)^-1 g with mu chosen (through lambda)
-    # so that |y| <= delta; delta follows rho = dE_actual / Q(y) with the
-    # second-order model Q(y) = 2 Re(g.y) + Re(y.Hy):  rho < 0.25 halve,
-    # rho > 0.75 at the boundary double (up to trust_radius_max).
-    # trust_radius is the initial delta (max_stepsize if not given).  'legacy'
-    # keeps the old behaviour (unconstrained step divided by its norm, fixed
-    # cap max_stepsize); its variable trust_radii is not a bound on the step
-    # but a scale factor applied to the gradient handed to the AH solver.
-    tr_mode = step_control == 'trust'
-    use_lam = ah_lambda or tr_mode
-    delta = max_stepsize if trust_radius is None else trust_radius
     e_last = e_tot
-    dr = None
-    while not conv and imacro < mc.max_cycle_macro:
-        # compute natural orbital and transform ci to natural orbtial basis
-        # no transform function available now so re do a ci calculation
-        # do it in gen_g_hop
-        if mc.natorb is True: 
-            moa = mo[:, ncore:nocc]
-            # casdm1[t,u] = <t^dagger u> transforms as c^T D c^* under mo -> mo c,
-            # so the natural orbitals are the eigenvectors of its transpose
-            # (the same matrix for a real rdm)
-            natocc, c = mc._scf.eig(-casdm1.T, mo=moa)
-            moa_new = np.dot(moa, c)
-            mo[:, ncore:nocc] = moa_new
 
+    def finalize_step(x):
+        '''The step actually taken: Kramers projected, inside the trust region.'''
+        dr = mc.unpack_uniq_var(x)
+        if kramers_project:
+            # assumes interleaved, phase +1 Kramers pairs (checked at entry;
+            # exp(dr) with a time-reversal even dr keeps the pairing)
+            dr = ensure_kramers(dr)
+        if norm(dr) > trust_radius:
+            print('step rescaled')
+            dr = dr * (trust_radius / norm(dr))
+            print(norm(dr))
+        return dr, mc.pack_uniq_var(dr)
+
+    while not conv and imacro < mc.max_cycle_macro:
+        if mc.natorb is True:
+            # optional: natural active orbitals.  casdm1[t,u] = <t^dagger u>
+            # transforms as c^T D c^* under mo -> mo c, so the natural orbitals
+            # are the eigenvectors of its transpose.
+            moa = mo[:, ncore:nocc]
+            natocc, c = mc._scf.eig(-casdm1.T, mo=moa)
+            mo[:, ncore:nocc] = np.dot(moa, c)
             eris = zmc_ao2mo._CDERIS(mc, mo, cderi=cderi, level=2)
             t2m = log.timer('update eris', *t2m)
             mci = zmcscf._fake_h_for_fast_casci(mc, mo, eris)
-            print('update eris', verbose)
             e_nat_tot, e_cas, fcivec = mci.kernel(mo, ci0=None, verbose=verbose)
             print(e_tot, e_nat_tot)
             casdm1, casdm2 = mci.fcisolver.make_rdm12(fcivec, ncas, mc.nelecas)
             print('natural occupation number in cas space', casdm1.diagonal())
+            xs, ys, dens = [], [], []     # the history is in the old basis
 
         g, h_diag, hop, sop, precond, mo = gen_g_hop(mc, mo, casdm1, casdm2, eris)
         norm_gorb = norm(g)
         print(f'Iter {imacro:3d}: E = {e_tot:20.15f}  dE = {de:12.10f}' +
               f'  norm(grad) = {norm_gorb:8.6f} step_size = {norm_rot:8.6f}')
         t2m = log.timer('Compute gradient', *t2m)
-        norm_gorb = np.linalg.norm(g)
-        g_unpack = mc.unpack_uniq_var(g)
-
         g_unpack = mc.unpack_uniq_var(g)
         row, col = np.unravel_index(np.argmax(g_unpack), g_unpack.shape)
         for i in range(nmo):
@@ -748,300 +733,94 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, uphill_step_tol=1e-3, conv_tol
                 if abs(g_unpack[i,j])>1e-2:
                     print(f'{i}, {j}, {g_unpack[i,j]}')
         if mc.irrep is not None:
-            print(
-                f'{row}, {col}, {g_unpack[row,col].real:8.6f} {mc.irrep[row]}, {mc.irrep[col]}'
-            )
+            print(f'{row}, {col}, {g_unpack[row,col].real:8.6f} {mc.irrep[row]}, {mc.irrep[col]}')
         else:
-            print(
-                f'{row}, {col}, {g_unpack[row,col].real:8.6f}'
-            )
+            print(f'{row}, {col}, {g_unpack[row,col].real:8.6f}')
         if abs(de) < conv_tol and norm_gorb < conv_tol_grad:
             conv = True
-        if conv:
             break
 
-        gbar = g
-
-        class gmres_counter(object):
-
-            def __init__(self, disp=True):
-                self._disp = disp
-                self.niter = 0
-                self.callbacks = []
-                self.timer = (logger.process_clock(), logger.perf_counter())
-                self.log = logger.Logger(sys.stdout, verbose)
-
-            def __call__(self, rk=None):
-                self.callbacks.append(str(rk))
-                self.niter += 1
-                # if self._disp:
-                self.timer = self.log.timer(
-                    f'GMRES iteration #{self.niter}, residual : {rk:.4e}',
-                    *self.timer)
-
-        #if verbose >= logger.INFO:
-        #    counter = gmres_counter()
-        #else:
-        #    counter = None
-        counter = gmres_counter()
-        print(counter)
-        t_gmres = (logger.process_clock(), logger.perf_counter())
-        BFGS_SUBSPACE = 6
-        if imacro > 0:
-            bfgs_on = 1.0
-            if not rejected and norm_gorb < bfgs_on:
-                # x_prev is the step actually taken; keep the pair only if
-                # it has positive curvature (KKW II eq. 40)
-                den = np.dot((g - g_prev).conj(), x_prev).real
-                if den > 0:
-                    ys.append(g - g_prev)
-                    xs.append(x_prev)
-                    rhos.append(den)
-                else:
-                    print(f'bfgs: pair skipped, y.x = {den:.4e} <= 0')
-            if len(ys) > BFGS_SUBSPACE:
-                ys.pop(0)
-                xs.pop(0)
-                rhos.pop(0)
-            #if np.linalg.norm(g_prev) < norm_gorb or de > 0.0:
-            if de > 0.0:
-                print('gradeint norm', np.linalg.norm(g_prev), norm_gorb)
-                xs = []
-                ys = []
-                rhos = []
-            # never precondition with BFGS while retrying a rejected step: the
-            # history produced the rejected direction, the retry must not
-            # inherit it (the de>0 wipe above makes this mostly redundant,
-            # but the intent should not depend on that coincidence)
-            use_bfgs = bfgs is True and norm_gorb < bfgs_on and not rejected and len(xs) > 0
-            # anti-stagnation floor for the gradient-scaling mode only: with
-            # ah_lambda the trust radius is the step-length bound and must be
-            # allowed to stay small after a rejection (the floor re-inflated it
-            # after every accepted step and produced reject/accept limit cycles)
-            if not rejected and not use_lam:
-                trust_radii = max(trust_radii, 0.02)
-            # the trust radius scales the gradient handed to the solver, so
-            # the two-loop recursion has to act on the same scaled gradient
-            # without ah_lambda the trust radius scales the gradient handed to
-            # the solver (the two-loop then acts on that scaled gradient); with
-            # ah_lambda the step length is limited by lambda inside the AH
-            gbar = g if use_lam else trust_radii * g
-            # grad_scale < 1 damps the super-CI step uniformly (equivalent to
-            # scaling its Hessian by 1/grad_scale near convergence): the
-            # super-CI matrix underestimates the curvature of the slow modes
-            gbar = grad_scale * gbar
-            if use_bfgs:
-                gbar, a = lbfgs_precondition(gbar, xs, ys, rhos)
-
-            residuals = []
-            def callback(rk):
-                residuals.append(rk)
-            if solver == 'gmres':
-                x, _ = gmres(hop, -gbar, M=precond, maxiter=50, callback=callback)
-            elif solver == 'davidson':
-                # the 0.02 floor on trust_radii above keeps the step from
-                # vanishing (anti-stagnation near local minima)
-                x, e = davidson(hop, gbar, h_diag, sop=sop,
-                                max_stepsize=delta / np.sqrt(2.) if tr_mode else min(trust_radii, max_stepsize),
-                                mmax=davidson_mmax, use_lambda=use_lam, root=ah_root,
-                                precond=getattr(hop, 'precond_shift', None) if no_basis_precond else None)
-                print('residuals', residuals)
-            if use_bfgs:
-                x = lbfgs_postprocess(x, xs, ys, rhos, a)
-        else:
-            residuals = []
-            def callback(rk):
-                residuals.append(rk)
-            if solver == 'gmres':
-                x, _ = gmres(hop, -trust_radii*gbar, M=precond, maxiter=50, callback=callback)
-                #x = precond(-trust_radii*gbar) 
-            elif solver == 'davidson':
-                x, e = davidson(hop, grad_scale * (gbar if use_lam else trust_radii*gbar), h_diag, sop=sop, mmax=10,
-                                max_stepsize=delta / np.sqrt(2.) if tr_mode else min(trust_radii, max_stepsize),
-                                use_lambda=use_lam, root=ah_root,
-                                precond=getattr(hop, 'precond_shift', None) if no_basis_precond else None)
-                print('residuals', residuals)
-        t2m = log.timer('Solving Super-CI equation', *t_gmres)
-
-        def finalize_step(x):
-            dr = mc.unpack_uniq_var(x)
-            # project the step onto the Kramers-symmetric subspace: numerical
-            # T-breaking in dr is amplified x3-10 per macro iteration by the soft
-            # modes (seen even with exact CI), so kill it at the source.  Assumes
-            # interleaved +1-phase Kramers pairs (phase-clean CAHF start + frozen
-            # basis keep this true throughout).
-            if kramers_project:
-                dr = ensure_kramers(dr)
-            # with ah_lambda the trust radius bounds the step actually taken,
-            # including the L-BFGS post-processing (KKW II: the post-processed
-            # rotation is rescaled to the trust radius)
-            if tr_mode:
-                step_cap = delta
+        t_solve = (logger.process_clock(), logger.perf_counter())
+        # L-BFGS history: (step taken, gradient difference) of accepted steps
+        if imacro > 0 and not rejected and norm_gorb < BFGS_GRAD_MAX:
+            den = np.dot((g - g_prev).conj(), x_prev).real
+            if den > 0:
+                ys.append(g - g_prev)
+                xs.append(x_prev)
+                dens.append(den)
             else:
-                step_cap = min(trust_radii, max_stepsize) if ah_lambda else max_stepsize
-            if norm(dr) > step_cap:
-                print('step rescaled')
-                dr = dr * (step_cap / norm(dr))
-                print(norm(dr))
-            # from here on x is the step actually taken (KR-projected, rescaled):
-            # the energy model and the BFGS history must both see this one
-            return dr, mc.pack_uniq_var(dr)
+                print(f'bfgs: pair skipped, y.x = {den:.4e} <= 0')
+            if len(ys) > BFGS_SUBSPACE:
+                ys.pop(0); xs.pop(0); dens.pop(0)
+        if imacro > 0 and de > 0.0:
+            # the energy rose: discard the history (as KKW do)
+            xs, ys, dens = [], [], []
+        use_bfgs = bfgs is True and norm_gorb < BFGS_GRAD_MAX and not rejected and len(xs) > 0
+
+        gbar = g
+        if use_bfgs:
+            gbar, a = lbfgs_precondition(g, xs, ys, dens)
+        if solver == 'gmres':
+            x, _ = gmres(hop, -gbar, M=precond, maxiter=50)
+        elif solver == 'davidson':
+            # restricted-step AH; the packed vector has norm |dr| / sqrt(2)
+            x, e = davidson(hop, gbar, h_diag, sop=sop, max_stepsize=trust_radius / np.sqrt(2.),
+                            mmax=davidson_mmax, use_lambda=True, root=ah_root,
+                            precond=getattr(hop, 'precond_shift', None))
+        else:
+            raise ValueError(f'unknown solver {solver}')
+        if use_bfgs:
+            x = lbfgs_postprocess(x, xs, ys, dens, a)
+        t2m = log.timer('Solving Super-CI equation', *t_solve)
 
         dr, x = finalize_step(x)
-        # descent guard: the super-CI AH step is not guaranteed to go downhill
-        # (unconverged Davidson / root picked by |c0| can carry eps > 0).  If the
-        # step taken is not a descent direction of the first-order model, or we
-        # are retrying after an uphill step, fall back to the Fock-diagonal
-        # preconditioned gradient step instead of re-solving the same AH.
+        # descent guard: the AH step is not guaranteed to go downhill once it
+        # has been post-processed.  If the step taken is not a descent
+        # direction of the first-order model, fall back to the Fock-diagonal
+        # preconditioned gradient step.
         slope = np.dot(g.conj(), x).real
-        if descent_guard and (slope >= 0 or (rejected and not tr_mode)):
-            why = 'retry after uphill step' if rejected else f'AH step not downhill, Re(g.x) = {slope:.3e}'
-            x = -(1.0 if tr_mode else trust_radii) * g / np.maximum(h_diag.real, sd_hdiag_floor)
+        if descent_guard and slope >= 0:
+            x = -g / np.maximum(h_diag.real, sd_hdiag_floor)
             dr, x = finalize_step(x)
-            print(f'descent guard ({why}): preconditioned gradient step, '
-                  f'|dr| = {norm(dr):.4e}, Re(g.x) = {np.dot(g.conj(), x).real:.3e}')
+            print(f'descent guard (step not downhill, Re(g.x) = {slope:.3e}): preconditioned '
+                  f'gradient step, |dr| = {norm(dr):.4e}, Re(g.x) = {np.dot(g.conj(), x).real:.3e}')
         for i in range(nmo):
             for j in range(i):
                 if abs(dr[i,j])>1e-2:
                     print(f'{i}, {j}, dr {dr[i,j]}')
-        rotation = expmat(dr)
 
-        norm_rot = np.linalg.norm(rotation-np.eye(nmo, dtype=complex))
-        g_unpack = mc.unpack_uniq_var(g)
-
-        mo_new = np.dot(mo, rotation)
-        # e_tot, e_cas, fcivec, _, _ = mci.kernel(mo)
-        #eris = zmc_ao2mo._ERIS(mc, mo_new, level=2)
+        mo_new = np.dot(mo, expmat(dr))
         eris = zmc_ao2mo._CDERIS(mc, mo_new, cderi=cderi, level=2)
         t2m = log.timer('update eris', *t2m)
         mci = zmcscf._fake_h_for_fast_casci(mc, mo_new, eris)
-        print('update eris2')
         e_tot, e_cas, fcivec = mci.kernel(mo_new, ci0=None, verbose=verbose)
 
-        # trus radius control
-        #g_new, h_diag, hop, precondition = gen_g_hop(mc, mo_new, casdm1, casdm2, eris)
-        #dg = norm(g_new) - norm(g)
-        de = e_tot - e_last  #+ dg * .1
-        e2 = 0.5 * np.dot(x.T.conj(), g)
-        r = de / e2
-
-        print(f'Energy change {de:.4e}, predicted change {e2:.4e}')
-        if tr_mode:
-            q_model = 2. * np.vdot(g, x).real + np.vdot(x, hop(x)).real
-            rho = de / q_model if q_model < 0 else -1.0
-            print(f'trust region: |dr| = {norm(dr):.4e}, delta = {delta:.4e}, model Q = {q_model:.4e}, rho = {rho:.3f}')
-            # an energy rise below conv_tol is noise at the level we converge to:
-            # never reject on it.  reject_uphill=False accepts every step (as the
-            # original driver and KKW's L-BFGS do): the trust radius still
-            # shrinks and the L-BFGS history is discarded at the next iteration.
-            if de > conv_tol and reject_uphill:
-                delta = 0.5 * norm(dr)
-                print(f'step rejected (dE = {de:.4e} > 0), trust radius -> {delta:.4e}')
-                eris = zmc_ao2mo._CDERIS(mc, mo, cderi=cderi, level=2)
-                rejected = True
-                imacro += 1
-                t1m = log.timer(f'macro iter {imacro}', *t1m)
-                continue
-            if de > conv_tol:
-                delta = 0.5 * norm(dr)
-                print(f'uphill step accepted (dE = {de:.4e} > 0), trust radius -> {delta:.4e}')
-            elif rho < 0.25:
-                delta = 0.5 * norm(dr)
-                print(f'rho < 0.25: trust radius -> {delta:.4e}')
-            elif rho > 0.75 and norm(dr) > 0.9 * delta:
-                delta = min(2. * delta, trust_radius_max)
-                print(f'rho > 0.75 at the boundary: trust radius -> {delta:.4e}')
-        #while(True):
-        #    if de < 0.0:
-        #        print('energy lowered, exit iteration')
-        #        break
-        #    elif (abs(r) < 2.0):
-        #        print('normal step')
-        #        break
-        #    dr = 0.5*dr
-        #    rotation = expmat(dr)
-        #    mo_new = np.dot(mo, rotation)
-        #    eris = zmc_ao2mo._CDERIS(mc, mo_new, cderi=cderi, level=2)
-        #    mci = zmcscf._fake_h_for_fast_casci(mc, mo_new, eris)
-        #    e_tot, e_cas, fcivec = mci.kernel(mo_new, ci0=None, verbose=verbose)
-        #    de = e_tot - e_last
-        #    e2 = 0.5 * np.dot(x.T.conj(), g)
-        #    r = de / e2
-        #    print(f'Energy change {de:.4e}, predicted change {e2:.4e}')
-        if tr_mode:
-            pass
-        elif False: #r < -10 and de > 0.0:
-            trust_radii *= 0.7
-            print(dr)
-            print(f'step rejected, shrink trust radius to {trust_radii:.4f}')
-            rejected=True
-            new_rot = expmat(0.01*dr)
-            mo_new = np.dot(mo, new_rot)
-            eris = zmc_ao2mo._CDERIS(mc, mo_new, cderi=cderi, level=2)
-            t2m = log.timer('update eris', *t2m)
-            mci = zmcscf._fake_h_for_fast_casci(mc, mo, eris)
-            print('step size', np.linalg.norm(dr), np.linalg.norm(rotation))
-            #print(rotation[np.where(abs(rotation) > 1e-4)])
-            #for dri in dr:
-            #    print(dri)
-            #for roti in rotation:
-            #    print(roti)
-            print('update eris2')
-            e_tot, e_cas, fcivec = mci.kernel(mo, ci0=None, verbose=verbose)
-            casdm1, casdm2 = mci.fcisolver.make_rdm12(fcivec, ncas, mc.nelecas)
-            de = e_tot-e_last
-            e_last = e_tot
-            #continue
-        elif de > 0.0:
-            trust_radii *= 0.5
-            print(f'Energy rises by {de:.4e}, accept step but shrik trust radius to {trust_radii:.4f}')
-        elif r < 0.25: #and de < 0.0:
-            trust_radii *= 0.5
-            print(f'r value too small, shrink the trust radius {trust_radii:.4f}')
-        elif r > 0.75 and de < 0.0:
-            trust_radii = min(1.4*trust_radii, 1.0)
-            print(f'r value pretty large, we can uplift the trust radius {trust_radii:.4f}')
-        else:
-            print(f'normal step, trust radius now is {trust_radii:.4f}')
-        if trust_radii < 1e-2*max_stepsize:
-            trust_radii = 1e-2*max_stepsize
-            rejected=False
-        #'''
-        #print(trust_radii)
-        #dr[::2,::2] = dr[1::2,1::2]
-        #dr[::2,1::2] = dr[1::2,::2]
-
-        rotation = expmat(dr)
-        norm_rot = np.linalg.norm(dr)
-        nvar = rotation.shape[0]
-        #for i in range(nvar):
-        #    if abs(rotation[i, i]) > 1.01 or abs(rotation[i, i]) < 0.99:
-        #        print(rotation[i, i] > 1.01, rotation[i, i] < 0.99, i, i,
-        #              rotation[i, i])
-        #    for j in range(i):
-        #        if abs(rotation[i, j]) > 0.01:
-        #            continue
-
-        trust_floor = 1e-2 * max_stepsize
-        if reject_uphill and not tr_mode and de > 0.0 and norm(dr) > uphill_step_tol and imacro > 0 \
-                and trust_radii > trust_floor * 1.001:
-            # substantial uphill step: reject AND shrink the trust radius --
-            # without the shrink the retry re-solves the same problem at the
-            # same point and proposes the same step forever (deadlock).  Once
-            # the trust radius reaches its floor the step is force-accepted
-            # instead (the model cannot be trusted to do better at this
-            # resolution and the outer loop keeps re-evaluating).
-            trust_radii = max(trust_radii * 0.5, trust_floor)
-            print(f'step rejected (dE = {de:.4e} > 0, |dr| = {norm(dr):.4e} > {uphill_step_tol:.1e}), '
-                  f'shrink trust radius to {trust_radii:.4f}')
+        # trust region: compare with the second-order model of the step taken
+        de = e_tot - e_last
+        q_model = 2. * np.vdot(g, x).real + np.vdot(x, hop(x)).real
+        rho = de / q_model if q_model < 0 else -1.0
+        norm_rot = norm(dr)
+        print(f'Energy change {de:.4e}, predicted change {q_model:.4e}')
+        print(f'trust region: |dr| = {norm_rot:.4e}, trust radius = {trust_radius:.4e}, rho = {rho:.3f}')
+        if de > conv_tol and reject_uphill:
+            trust_radius = 0.5 * norm_rot
+            print(f'step rejected (dE = {de:.4e} > 0), trust radius -> {trust_radius:.4e}')
             eris = zmc_ao2mo._CDERIS(mc, mo, cderi=cderi, level=2)
             rejected = True
             imacro += 1
             t1m = log.timer(f'macro iter {imacro}', *t1m)
             continue
-        elif reject_uphill and not tr_mode and de > 0.0 and norm(dr) > uphill_step_tol and imacro > 0:
-            print(f'trust radius at floor {trust_floor:.4f}: force-accepting '
-                  f'uphill step (dE = {de:.4e}, |dr| = {norm(dr):.4e})')
+        if de > conv_tol:
+            trust_radius = 0.5 * norm_rot
+            print(f'uphill step accepted (dE = {de:.4e} > 0), trust radius -> {trust_radius:.4e}')
+        elif abs(q_model) < conv_tol:
+            pass      # changes below conv_tol say nothing about the model
+        elif rho < 0.25:
+            trust_radius = 0.5 * norm_rot
+            print(f'rho < 0.25: trust radius -> {trust_radius:.4e}')
+        elif rho > 0.75 and norm_rot > 0.9 * trust_radius:
+            trust_radius = min(2. * trust_radius, trust_radius_max)
+            print(f'rho > 0.75 at the boundary: trust radius -> {trust_radius:.4e}')
 
         rejected = False
         mo = mo_new
@@ -1049,13 +828,6 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, uphill_step_tol=1e-3, conv_tol
         x_prev = x
         g_prev = g
         casdm1, casdm2 = mc.fcisolver.make_rdm12(fcivec, ncas, mc.nelecas)
-        #from socutils.tools import analyze
-        #analyze.analyze(mol, mo[:, ncore:nocc], casdm1.diagonal())
-        nact = casdm1.shape[0]
-        #for i in range(nact):
-        #    for j in range(i):
-        #        if abs(casdm1[i, j]) > 1e-5:
-        #            print(f'{i}, {j}, {casdm1[i,j]}')
         imacro += 1
         t1m = log.timer(f'macro iter {imacro}', *t1m)
         lib.chkfile.save(mc.chkfile, f'mo_coeff_iter_{imacro}', mo)
@@ -1068,6 +840,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, uphill_step_tol=1e-3, conv_tol
             mc._finalize()
     mc.mo_coeff = mo
     return conv, e_tot, e_cas, fcivec, mo, None
+
 
 
 if __name__ == '__main__':
