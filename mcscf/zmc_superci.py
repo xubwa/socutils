@@ -628,8 +628,9 @@ def lbfgs_postprocess(x, xs, ys, dens, a):
 def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, uphill_step_tol=1e-3, conv_tol=None,
                   conv_tol_grad=None, verbose=5, cderi=None, bfgs=False, solver='davidson',  # cderi kept for backward compat
                   davidson_maxiter=10, ah_lambda=False, ah_root='yanai', no_basis_precond=True, descent_guard=True,
-                  step_control='legacy', trust_max=2.0, grad_scale=1.0, reject_uphill=True,
-                  sd_hdiag_floor=0.05, kramers_check=True):
+                  step_control='legacy', trust_radius=None, trust_radius_max=2.0, grad_scale=1.0,
+                  reject_uphill=False,
+                  sd_hdiag_floor=0.05, kramers_check=True, kramers_project=True):
     bfgs = bfgs
     davidson_mmax = davidson_maxiter
     log = logger.new_logger(mc, verbose)
@@ -651,7 +652,8 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, uphill_step_tol=1e-3, conv_tol
     # would silently have most of each step projected away.
     if kramers_check:
         from socutils.tools import kramers
-        dev = kramers.pairing_deviation(mol, mo)
+        s_ovlp = mol.intor('int1e_ovlp_spinor')
+        dev = kramers.pairing_deviation(mol, mo, s_ovlp)
         log.info('Kramers pairing of the starting orbitals: max deviation %.2e', dev)
         if dev > 1e-6:
             raise RuntimeError(
@@ -699,12 +701,14 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, uphill_step_tol=1e-3, conv_tol
     # level-shifted step y = -(H - mu S)^-1 g with mu chosen (through lambda)
     # so that |y| <= delta; delta follows rho = dE_actual / Q(y) with the
     # second-order model Q(y) = 2 Re(g.y) + Re(y.Hy):  rho < 0.25 halve,
-    # rho > 0.75 at the boundary double (up to trust_max), dE > 0 reject.
-    # max_stepsize is the initial delta.  'legacy' keeps the old behaviour
-    # (unconstrained step divided by its norm, fixed cap max_stepsize).
+    # rho > 0.75 at the boundary double (up to trust_radius_max).
+    # trust_radius is the initial delta (max_stepsize if not given).  'legacy'
+    # keeps the old behaviour (unconstrained step divided by its norm, fixed
+    # cap max_stepsize); its variable trust_radii is not a bound on the step
+    # but a scale factor applied to the gradient handed to the AH solver.
     tr_mode = step_control == 'trust'
     use_lam = ah_lambda or tr_mode
-    delta = max_stepsize
+    delta = max_stepsize if trust_radius is None else trust_radius
     e_last = e_tot
     dr = None
     while not conv and imacro < mc.max_cycle_macro:
@@ -866,7 +870,8 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, uphill_step_tol=1e-3, conv_tol
             # modes (seen even with exact CI), so kill it at the source.  Assumes
             # interleaved +1-phase Kramers pairs (phase-clean CAHF start + frozen
             # basis keep this true throughout).
-            dr = ensure_kramers(dr)
+            if kramers_project:
+                dr = ensure_kramers(dr)
             # with ah_lambda the trust radius bounds the step actually taken,
             # including the L-BFGS post-processing (KKW II: the post-processed
             # rotation is rescaled to the trust radius)
@@ -944,7 +949,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, uphill_step_tol=1e-3, conv_tol
                 delta = 0.5 * norm(dr)
                 print(f'rho < 0.25: trust radius -> {delta:.4e}')
             elif rho > 0.75 and norm(dr) > 0.9 * delta:
-                delta = min(2. * delta, trust_max)
+                delta = min(2. * delta, trust_radius_max)
                 print(f'rho > 0.75 at the boundary: trust radius -> {delta:.4e}')
         #while(True):
         #    if de < 0.0:
@@ -1054,6 +1059,9 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, uphill_step_tol=1e-3, conv_tol
         imacro += 1
         t1m = log.timer(f'macro iter {imacro}', *t1m)
         lib.chkfile.save(mc.chkfile, f'mo_coeff_iter_{imacro}', mo)
+        if kramers_check:
+            print('Kramers pairing deviation of the orbitals after macro iter %d: %.3e'
+                  % (imacro, kramers.pairing_deviation(mol, mo, s_ovlp)))
         if verbose >= logger.INFO:
             mc.e_tot = e_tot
             mc.e_cas = e_cas
