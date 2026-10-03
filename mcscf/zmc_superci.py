@@ -53,7 +53,7 @@ def ensure_kramers(mat):
           % (numpy.linalg.norm(mat - out), numpy.linalg.norm(mat)))
     return out
 
-def compute_lambda_(mat1, mat2, x_, S=None, maxstepsize=1.0):
+def compute_lambda_(mat1, mat2, x_, S=None, maxstepsize=1.0, lowest=False):
     nlast = mat1.shape[0]
     assert (nlast > 1)
     lambda_test = 1.0
@@ -73,10 +73,15 @@ def compute_lambda_(mat1, mat2, x_, S=None, maxstepsize=1.0):
             e, c = scipy.linalg.eigh(scr, S)
 
         ivec = -1
-        for j in range(nlast):
-            if abs(c[0, j]) <= 1.1 and abs(c[0, j]) > 0.1:
-                ivec = j
-                break
+        if lowest:
+            # restricted-step AH: always the lowest root, lambda shortens it
+            if abs(c[0, 0]) > 1e-10:
+                ivec = 0
+        else:
+            for j in range(nlast):
+                if abs(c[0, j]) <= 1.1 and abs(c[0, j]) > 0.1:
+                    ivec = j
+                    break
         if ivec < 0:
             raise Exception('logical error in AugHess')
         c[:, ivec] = c[:, ivec] / (c[0, ivec])
@@ -113,7 +118,13 @@ def compute_lambda_(mat1, mat2, x_, S=None, maxstepsize=1.0):
 
 
 def davidson(hop, g, hdiag, sop=None, max_stepsize=1.0, tol=5e-6, neig=1, mmax=10,
-             use_lambda=False):
+             use_lambda=False, root='yanai', microstep_tol=1e-4, precond=None, micro_red=0.1):
+    # use_lambda: restricted-step augmented Hessian (as BAGEL AugHess / ORZ):
+    # lambda (>= 1) scales the Hessian block so that |step| <= max_stepsize,
+    # and the micro iterations stop at |r|/lambda < max(tol, microstep_tol*step).
+    # root: 'yanai' = first root with 0.1 < |c0| <= 1.1 (ORZ/BAGEL rule),
+    #       'lowest' = always the lowest root.
+    lowest = use_lambda and root == "lowest"
     # Setup the subspace trial vectors
     print('No. of start vectors:', 1)
     neig = neig
@@ -137,11 +148,13 @@ def davidson(hop, g, hdiag, sop=None, max_stepsize=1.0, tol=5e-6, neig=1, mmax=1
 
     # "first" guess vector
 
-    for i in range(1, n):
-        if hdiag[i - 1] + 0.001 > 1.0e-8:
-            x[i, 1] = -g[i - 1] / (hdiag[i - 1] + 0.001)
-        else:
-            x[i, 1] = -g[i - 1] / (hdiag[i - 1] + 0.001 - 1.0e-8)
+    if precond is None:
+        den = hdiag.real + 0.001
+        den = np.where(abs(den) > PRECOND_DEN_FLOOR, den, np.where(den < 0, -PRECOND_DEN_FLOOR, PRECOND_DEN_FLOOR))
+        x[1:, 1] = -g / den
+    else:
+        # precond(r, shift) = (h_diag - shift*s_diag)^-1 r
+        x[1:, 1] = -precond(g, -0.001)
 
     x[:, 1] = x[:, 1] / np.linalg.norm(x[:, 1])
     for m in range(1, mmax + 1):
@@ -159,7 +172,7 @@ def davidson(hop, g, hdiag, sop=None, max_stepsize=1.0, tol=5e-6, neig=1, mmax=1
         if use_lambda:
             try:
                 lambda_, stepsize = compute_lambda_(mat1, mat2, x, S=S,
-                                                    maxstepsize=max_stepsize)
+                                                    maxstepsize=max_stepsize, lowest=lowest)
             except Exception as exc:
                 print(f'compute_lambda_ failed ({exc}), falling back to lambda=1')
                 lambda_ = 1.0
@@ -179,22 +192,42 @@ def davidson(hop, g, hdiag, sop=None, max_stepsize=1.0, tol=5e-6, neig=1, mmax=1
             e, u = scipy.linalg.eigh(Vk.T.conj() @ T[:m + 1, :m + 1] @ Vk)
             vects = Vk @ u
         ivec = -1
-        for j in range(m + 1):
-            if abs(vects[0, j]) <= 1.1 and abs(vects[0, j]) > 0.1:
-                ivec = j
-                break
+        if lowest and abs(vects[0, 0]) > 1e-10:
+            ivec = 0
+        else:
+            for j in range(m + 1):
+                if abs(vects[0, j]) <= 1.1 and abs(vects[0, j]) > 0.1:
+                    ivec = j
+                    break
         if ivec < 0:
             raise Exception('logical error in AugHess')
         elif ivec > 0:
             print('... the vector found in AugHess was not the lowest eigenvector ...')
 
-        ritz[1:, 0] = np.dot(sigma[1:, :m + 1] - lambda_ * e[ivec] * sdotx[1:, :m + 1], vects[:, ivec])
+        # residual of (g c0 + H x / lambda - eps S x) = 0, the equation the
+        # subspace matrix mat1 + mat2/lambda stands for.  sigma[1:, 0] is g (the
+        # (1,0) basis vector), sigma[1:, k>=1] = H x_k.  The former expression
+        # sigma - lambda*eps*S x scaled the H and S terms by lambda but not the
+        # gradient term, i.e. it was lambda*r - (lambda-1) g c0: identical for
+        # lambda = 1, never zero for lambda != 1 (BAGEL AugHess has the form used
+        # here, written with the vector divided by lambda*c0).
+        v = vects[:, ivec]
+        ritz[1:, 0] = g * v[0] + np.dot(sigma[1:, 1:m + 1], v[1:]) / lambda_ \
+            - e[ivec] * np.dot(sdotx[1:, :m + 1], v)
+        ritz[0, 0] = 0.0
         err = np.linalg.norm(ritz[:, 0])
         print(f'iter {m}, ivec {ivec}, c[{ivec}], {vects[0,ivec]:8.4f}, eps={e[ivec]:12.8f}, res={err:8.6e},  lambda={lambda_:6.2f}, step={stepsize:8.4f}')
         # NOTE stepsize is hardwired to 0.0 above (compute_lambda_ disabled),
         # so the old criterion min(1e-3*stepsize, tol) was always 0 and the
         # solver never converged -- it silently ran to mmax every time
-        if err < tol and m > 4:
+        # BAGEL criterion with lambda on; the old absolute one otherwise
+        # with lambda on: relative to the gradient (an absolute tol is met by
+        # the first trial vector once |g| is small) and at least 3 micro iterations
+        if use_lambda:
+            converged = m >= 3 and err < max(microstep_tol * stepsize, micro_red * np.linalg.norm(g) * abs(v[0]))
+        else:
+            converged = err < tol and m > 4
+        if converged:
             print('Davidson converged at iteration no.:', m - 1)
             end = time.time()
             print('Davidson time:', end - start)
@@ -208,12 +241,12 @@ def davidson(hop, g, hdiag, sop=None, max_stepsize=1.0, tol=5e-6, neig=1, mmax=1
             print(f'{x_[0]:.6f}, x_[0]')
             return x_[1:] / x_[0] / lambda_, e[ivec]
         else:
-            for idx in range(hdiag.shape[0]):
-                denom = hdiag[idx] - e[ivec] * lambda_
-                if abs(denom) > 1e-8:
-                    ritz[idx + 1, 0] = -ritz[idx + 1, 0] / denom
-                else:
-                    ritz[idx + 1, 0] = -ritz[idx + 1, 0] / 1e-8
+            if precond is None:
+                den = hdiag.real - e[ivec] * lambda_
+                den = np.where(abs(den) > PRECOND_DEN_FLOOR, den, np.where(den < 0, -PRECOND_DEN_FLOOR, PRECOND_DEN_FLOOR))
+                ritz[1:, 0] = -ritz[1:, 0] / den
+            else:
+                ritz[1:, 0] = -precond(ritz[1:, 0], e[ivec] * lambda_)
             # orthonormalize ritz vector (complex inner product needs the
             # conjugate; two passes of Gram-Schmidt for numerical stability)
             for _ in range(2):
@@ -223,7 +256,7 @@ def davidson(hop, g, hdiag, sop=None, max_stepsize=1.0, tol=5e-6, neig=1, mmax=1
             if nrm < 1e-10:
                 print('Davidson: new trial vector linearly dependent, returning current solution')
                 x_ = np.dot(x[:, :m + 1], vects[:, ivec])
-                return x_[1:] / x_[0], e[ivec]
+                return x_[1:] / x_[0] / lambda_, e[ivec]
             x[:, m + 1] = ritz[:, 0] / nrm
 
 # term 5 of the super-CI operator contracts (g - G)[t,u] x[u,i]; gauge covariance
