@@ -659,7 +659,8 @@ def lbfgs_postprocess(x, xs, ys, dens, a):
 def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=None, verbose=5,
                   cderi=None, bfgs=False, solver='davidson', davidson_maxiter=10, ah_root='yanai',
                   trust_radius=None, trust_radius_max=2.0, reject_uphill=False, descent_guard=True,
-                  sd_hdiag_floor=0.05, kramers_check=True, kramers_project=True, **deprecated):
+                  sd_hdiag_floor=0.05, kramers_check=True, kramers_project=True, gen_g_hop_fn=None,
+                  **deprecated):
     '''Super-CI orbital optimisation with an adaptive trust region.
 
     Every macro iteration solves the super-CI augmented-Hessian problem for the
@@ -683,6 +684,9 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
     kramers_project   project every rotation onto its time-reversal even part.
     descent_guard     replace a step that is not a descent direction by the
                       Fock-diagonal preconditioned gradient step.
+    gen_g_hop_fn      a replacement for gen_g_hop with the same return values
+                      (zmc_sosci uses it to run this macro iteration with the
+                      SO-SCI Hessian).
 
     The orbital basis is not rotated between iterations (mc.canonicalize_ and
     mc.natorb are not needed: metric, Hessian and preconditioner are basis
@@ -799,7 +803,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
             g_prev = x_prev = None
 
         _t = time.perf_counter()
-        g, h_diag, hop, sop, precond, mo = gen_g_hop(mc, mo, casdm1, casdm2, eris)
+        g, h_diag, hop, sop, precond, mo = (gen_g_hop_fn or gen_g_hop)(mc, mo, casdm1, casdm2, eris)
         _tick('gen_g_hop (total)', _t)
         if getattr(mc, 'canonicalize_', False):
             xs, ys, dens = [], [], []     # gen_g_hop rotated the core / virtual orbitals
