@@ -369,19 +369,20 @@ class CASCI(zcasbase.CASBase):
         '''
         return self.ao2mo(mo_coeff)
 
-    ####THIS SHOULD BE CHECKED###
     def ao2mo(self, mo_coeff=None, level=1):
         ncore = self.ncore
         ncas = self.ncas
         nocc = ncore + ncas
-        nao = self.mo_coeff.shape[0] // 2
         if mo_coeff is None:
-            ncore = self.ncore
             mo_coeff = self.mo_coeff
 
-        eri_cas1 = nrr_outcore.full_iofree(self.mol, mo_coeff[:, ncore:nocc], motype='j-spinor', verbose=5)
-        eri_cas = ao2mo.kernel(self.mol, mo_coeff[:, ncore:nocc], intor='int2e_spinor', verbose=5)
-        from numpy.linalg import norm
+        if getattr(self._scf, 'with_df', None) is not None:
+            # reuse the SCF's Cholesky/DF integrals (same transform as the
+            # cahf_diis/_fake_h_for_fast_casci path) instead of a direct
+            # AO-basis transformation
+            eris = zmc_ao2mo._CDERIS(self, mo_coeff, level=2)
+            return eris.aaaa
+        eri_cas = nrr_outcore.full_iofree(self.mol, mo_coeff[:, ncore:nocc], motype='j-spinor', verbose=5)
         return eri_cas
 
     get_h1cas = h1e_for_cas = h1e_for_cas
