@@ -551,7 +551,7 @@ class _CDERIS(lib.StreamObject):
                 self.jtu_tril = None
                 cd_pa, vk_core = self._build_cd_pa_and_vk(
                     with_df, mol, nao_nr, nmo, ncore, ncas, nocc,
-                    moo_sph, mop_sph, log)
+                    moo_sph, mop_sph, log, cache_owner=zcasscf)
                 self.cd_pa = cd_pa
                 self.cd_aa = cd_pa[:, ncore:nocc, :].copy()
                 self.vk_core = vk_core  # spinor AO basis
@@ -661,8 +661,46 @@ class _CDERIS(lib.StreamObject):
 
         return L_half
 
+    @staticmethod
+    def _cderi_blocks(with_df, blksize, work_mb, cache_owner, log):
+        """AO Cholesky/DF vectors block by block, as with_df.loop does.
+
+        Every macro iteration reads all the vectors again.  When they are on
+        disk and fit into the memory left under cache_owner.max_memory (after
+        work_mb for the buffers of the pass), they are read once and kept on
+        cache_owner; otherwise they are read from disk every time, as before.
+        """
+        src = with_df._cderi
+        if cache_owner is None or isinstance(src, numpy.ndarray):
+            return with_df.loop(blksize)
+        cached = getattr(cache_owner, '_cderi_incore', None)
+        if cached is not None and cached[0] == src:
+            arr = cached[1]
+        else:
+            cache_owner._cderi_incore = None
+            naux = with_df.get_naoaux()
+            nao = with_df.mol.nao_nr()
+            size_mb = naux * (nao * (nao + 1) // 2) * 8 / 1e6
+            avail_mb = cache_owner.max_memory * .9 - lib.current_memory()[0] - work_mb
+            if size_mb > avail_mb:
+                log.info('CDERIS: AO vectors (%.0f MB) are read from disk in every macro iteration: '
+                         '%.0f MB left under max_memory = %.0f MB', size_mb, max(avail_mb, 0), cache_owner.max_memory)
+                return with_df.loop(blksize)
+            arr = None
+            b0 = 0
+            for eri1 in with_df.loop(blksize):
+                if eri1.ndim != 2:
+                    return with_df.loop(blksize)
+                if arr is None:
+                    arr = numpy.empty((naux, eri1.shape[1]))
+                arr[b0:b0 + eri1.shape[0]] = eri1
+                b0 += eri1.shape[0]
+            cache_owner._cderi_incore = (src, arr)
+            log.info('CDERIS: AO vectors (%.0f MB) kept in memory for the following macro iterations', size_mb)
+        return (arr[b0:b0 + blksize] for b0 in range(0, arr.shape[0], blksize))
+
     def _build_cd_pa_and_vk(self, with_df, mol, nao_nr, nmo, ncore, ncas, nocc,
-                             moo_sph, mop_sph, log):
+                             moo_sph, mop_sph, log, cache_owner=None):
         """One-pass: half-transform occ MOs, produce cd_pa and vk_core simultaneously.
 
         Mirrors scf.spinor_hf._DFJHF._get_k_mo's real/imag-split K build: never
@@ -744,7 +782,10 @@ class _CDERIS(lib.StreamObject):
         # and the three phases always printed the same number)
         t_half, t_corek, t_cdpa = numpy.zeros(2), numpy.zeros(2), numpy.zeros(2)
         b0 = 0
-        for eri1 in with_df.loop(blksize):
+        # half-transform buffers, the complex active block and the two copies of cd_pa
+        work_mb = (4 * nbuf * nocc * nao_nr * 8 + nbuf * ncas * 2 * nao_nr * 16
+                   + 2 * naux * nmo * ncas * 16 + npair * ncas * ncas * 16) / 1e6
+        for eri1 in self._cderi_blocks(with_df, blksize, work_mb, cache_owner, log):
             tb0 = (logger.process_clock(), logger.perf_counter())
             naux_blk = eri1.shape[0]
             # Half-transform: alpha/beta x real/imag, real arrays only
