@@ -125,7 +125,10 @@ def compute_lambda_(mat1, mat2, x_, S=None, maxstepsize=1.0, lowest=False, gram=
 
 
 def davidson(hop, g, hdiag, sop=None, max_stepsize=1.0, tol=5e-6, neig=1, mmax=10,
-             use_lambda=False, root='yanai', microstep_tol=1e-4, precond=None, micro_red=0.1):
+             use_lambda=False, root='yanai', microstep_tol=1e-4, precond=None, micro_red=0.1,
+             with_hx=False):
+    # with_hx: also return H x for the step x returned (from the stored images
+    # of the trial vectors, no extra hop call)
     # use_lambda: restricted-step augmented Hessian (as BAGEL AugHess / ORZ):
     # lambda (>= 1) scales the Hessian block so that |step| <= max_stepsize,
     # and the micro iterations stop at |r|/lambda < max(tol, microstep_tol*step).
@@ -250,11 +253,15 @@ def davidson(hop, g, hdiag, sop=None, max_stepsize=1.0, tol=5e-6, neig=1, mmax=1
             x_ = v @ x[:m + 1]
             print(f'{x_[0]:.6f}, x_[0]')
             # restricted-step AH: the level-shifted step is scaled by 1/lambda
+            if with_hx:
+                return x_[1:] / x_[0] / lambda_, e[ivec], (v[1:] @ sigma[1:m + 1, 1:]) / x_[0] / lambda_
             return x_[1:] / x_[0] / lambda_, e[ivec]
         elif m is mmax:
             print('Max iteration reached')
             x_ = v @ x[:m + 1]
             print(f'{x_[0]:.6f}, x_[0]')
+            if with_hx:
+                return x_[1:] / x_[0] / lambda_, e[ivec], (v[1:] @ sigma[1:m + 1, 1:]) / x_[0] / lambda_
             return x_[1:] / x_[0] / lambda_, e[ivec]
         else:
             if precond is None:
@@ -271,6 +278,8 @@ def davidson(hop, g, hdiag, sop=None, max_stepsize=1.0, tol=5e-6, neig=1, mmax=1
             if nrm < 1e-10:
                 print('Davidson: new trial vector linearly dependent, returning current solution')
                 x_ = v @ x[:m + 1]
+                if with_hx:
+                    return x_[1:] / x_[0] / lambda_, e[ivec], (v[1:] @ sigma[1:m + 1, 1:]) / x_[0] / lambda_
                 return x_[1:] / x_[0] / lambda_, e[ivec]
             x[m + 1] = ritz / nrm
 
