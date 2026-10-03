@@ -17,7 +17,8 @@ Run:  python mcscf/test/test_orbital_grad_fd.py
 import os, sys
 import numpy as np
 
-sys.path.insert(0, os.path.expanduser('~/apps/socutils-git-env'))
+# SOCUTILS_ENV: the wrapper dir whose socutils/ is the checkout under test
+sys.path.insert(0, os.environ.get('SOCUTILS_ENV', os.path.expanduser('~/apps/socutils-git-env')))
 
 from pyscf import gto, lib
 from socutils.scf import spinor_hf
@@ -37,7 +38,7 @@ def sa_energy(mc, mo, weights):
     return float(np.dot(weights, np.asarray(e).real))
 
 
-def run_check(verbose=True):
+def run_check(verbose=True, complex_active=False):
     mol = gto.M(atom='Be 0 0 0; H 0 0 1.3', basis='sto-3g', charge=0,
                 spin=1, verbose=0)
     mf = spinor_hf.SpinorSCF(mol).density_fit()
@@ -54,6 +55,14 @@ def run_check(verbose=True):
     mo = mf.mo_coeff.copy()
     nmo = mo.shape[1]
     ncore = mc.ncore
+    if complex_active:
+        # a random complex rotation inside the active space leaves the CASCI
+        # energy unchanged but makes the rdms complex -- with natural (real)
+        # rdms a transposed casdm1 convention in gen_g_hop goes unnoticed
+        import scipy.linalg
+        rng0 = np.random.default_rng(7)
+        a = rng0.standard_normal((ncas, ncas)) + 1j * rng0.standard_normal((ncas, ncas))
+        mo[:, ncore:ncore + ncas] = mo[:, ncore:ncore + ncas] @ scipy.linalg.expm(0.4 * (a - a.conj().T))
 
     # analytic gradient at mo: solve the CI once, build SA rdms, call gen_g_hop
     h1eff, ecore = mc.get_h1eff(mo)
@@ -101,11 +110,12 @@ def run_check(verbose=True):
                       f'FD = {fd:+.10f}  analytic = {an:+.10f}  '
                       f'err = {err:.2e}')
     print(f'\nchecked {npair_checked} rotations, max |FD - analytic| = '
-          f'{max_err:.3e}  (FD eps = {eps:.0e})')
+          f'{max_err:.3e}  (FD eps = {eps:.0e}), max |Im casdm1| = {abs(dm1.imag).max():.3e}')
     return max_err
 
 
 if __name__ == '__main__':
-    err = run_check()
-    assert err < 5e-7, f'orbital gradient FAILS FD check: {err:.3e}'
-    print('orbital gradient PASSES finite-difference check')
+    for cplx in (False, True):
+        err = run_check(verbose=False, complex_active=cplx)
+        assert err < 5e-7, f'orbital gradient FAILS FD check (complex_active={cplx}): {err:.3e}'
+        print(f'orbital gradient PASSES finite-difference check (complex_active={cplx})')
