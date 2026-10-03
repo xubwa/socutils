@@ -610,7 +610,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, uphill_step_tol=1e-3, conv_tol
                   conv_tol_grad=None, verbose=5, cderi=None, bfgs=False, solver='davidson',  # cderi kept for backward compat
                   davidson_maxiter=10, ah_lambda=False, ah_root='yanai', no_basis_precond=True, descent_guard=True,
                   step_control='legacy', trust_max=2.0, grad_scale=1.0, reject_uphill=True,
-                  sd_hdiag_floor=0.05):
+                  sd_hdiag_floor=0.05, kramers_check=True):
     bfgs = bfgs
     davidson_mmax = davidson_maxiter
     log = logger.new_logger(mc, verbose)
@@ -625,6 +625,21 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, uphill_step_tol=1e-3, conv_tol
     ncore = mc.ncore
     ncas = mc.ncas
     nocc = ncore + ncas
+
+    # every step is projected with ensure_kramers, which is only meaningful for
+    # orbitals laid out as interleaved, phase +1 Kramers pairs.  Orbitals that
+    # lost this (plain-eigh canonicalisation, sort_mo, an unrestricted run)
+    # would silently have most of each step projected away.
+    if kramers_check:
+        from socutils.tools import kramers
+        dev = kramers.pairing_deviation(mol, mo)
+        log.info('Kramers pairing of the starting orbitals: max deviation %.2e', dev)
+        if dev > 1e-6:
+            raise RuntimeError(
+                'starting orbitals are not interleaved, phase +1 Kramers pairs '
+                '(max deviation %.2e); phase-clean them (e.g. a CAHF pass with '
+                'trace_orbital=False) or use socutils.tools.kramers.symmetrize, '
+                'or pass kramers_check=False' % dev)
 
     mci = mc.view(zcasci.CASCI)
     #eris = zmc_ao2mo._ERIS(mc, mo, level=2)
