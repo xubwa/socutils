@@ -163,8 +163,12 @@ class CASSCF(zcasci.CASCI):
         self.conv_tol = 1e-8
         self.conv_tol_grad = None
         self.freeze_pair = None
-        self.canonicalize_ = True
-        self.natorb = True
+        # Not needed by the super-CI driver any more (its metric, Hessian and
+        # preconditioner are basis covariant) and both rotate the orbital basis
+        # between iterations, which discards the L-BFGS history and, through
+        # the plain-eigh fallback, can scramble the Kramers pairing.
+        self.canonicalize_ = False
+        self.natorb = False
 
     def get_fock(self, mo_coeff=None, ci=None, eris=None, casdm1=None, verbose=None):
         return get_fock(self, mo_coeff, ci, eris, casdm1, verbose)
