@@ -47,25 +47,30 @@ def ensure_kramers(mat):
     out[ ::2, ::2] = aa
     out[1::2, 1::2] = aa.conj()
     bb = (b - bt.conj()) * 0.5
-    print(norm(a), norm(at), norm(b), norm(bt))
-    print(norm(a-at.T), norm(b+bt.T))
     out[ ::2, 1::2] = bb
     out[1::2,  ::2] = -bb.conj()
-    print('ensure kramers', numpy.linalg.norm(mat - out), numpy.linalg.norm(mat))
+    print('ensure kramers: removed non-KR component %.3e of %.3e'
+          % (numpy.linalg.norm(mat - out), numpy.linalg.norm(mat)))
     return out
 
-def compute_lambda_(mat1, mat2, x_):
+def compute_lambda_(mat1, mat2, x_, S=None, maxstepsize=1.0):
     nlast = mat1.shape[0]
     assert (nlast > 1)
     lambda_test = 1.0
     lambda_lasttest = 0.0
     stepsize_lasttest = 0.0
     stepsize = 0.0
-    maxstepsize = 1.0
     iok = 0
     for i in range(10):
         scr = mat1 + mat2 * (1.0 / lambda_test)
-        e, c = np.linalg.eigh(scr)
+        # the trial vectors are orthonormal in the Euclidean metric, not the
+        # sop metric, so the subspace problem is generalized: keep the same
+        # overlap S as the main davidson loop or lambda is solved for the
+        # wrong equation (this inconsistency is why the call was disabled)
+        if S is None:
+            e, c = np.linalg.eigh(scr)
+        else:
+            e, c = scipy.linalg.eigh(scr, S)
 
         ivec = -1
         for j in range(nlast):
@@ -76,7 +81,7 @@ def compute_lambda_(mat1, mat2, x_):
             raise Exception('logical error in AugHess')
         c[:, ivec] = c[:, ivec] / (c[0, ivec])
         step = np.dot(x_[1:, :nlast], c[:nlast, ivec])
-        stepsize = np.linalg.norm(step[1:]) / abs(lambda_test)
+        stepsize = np.linalg.norm(step) / abs(lambda_test)
         #print(ivec, e, stepsize, lambda_test)
 
         if i == 0:
@@ -107,7 +112,8 @@ def compute_lambda_(mat1, mat2, x_):
     return lambda_test, stepsize
 
 
-def davidson(hop, g, hdiag, sop=None, max_stepsize=1.0, tol=5e-6, neig=1, mmax=10):
+def davidson(hop, g, hdiag, sop=None, max_stepsize=1.0, tol=5e-6, neig=1, mmax=10,
+             use_lambda=False):
     # Setup the subspace trial vectors
     print('No. of start vectors:', 1)
     neig = neig
@@ -150,11 +156,28 @@ def davidson(hop, g, hdiag, sop=None, max_stepsize=1.0, tol=5e-6, neig=1, mmax=1
         mat2 = numpy.zeros((m + 1, m + 1), dtype=complex)
         mat2[1:, 1:] = T[1:, 1:]
         mat1 = T - mat2
-        #lambda_, stepsize = compute_lambda_(mat1, mat2, x)
-        lambda_ = 1.0
-        stepsize = 0.0
+        if use_lambda:
+            try:
+                lambda_, stepsize = compute_lambda_(mat1, mat2, x, S=S,
+                                                    maxstepsize=max_stepsize)
+            except Exception as exc:
+                print(f'compute_lambda_ failed ({exc}), falling back to lambda=1')
+                lambda_ = 1.0
+                stepsize = 0.0
+        else:
+            lambda_ = 1.0
+            stepsize = 0.0
         T = mat1 + mat2 * (1.0 / lambda_)
-        e, vects = scipy.linalg.eigh(T[:m + 1, :m + 1], S[:m+1,:m+1])
+        try:
+            e, vects = scipy.linalg.eigh(T[:m + 1, :m + 1], S[:m+1,:m+1])
+        except np.linalg.LinAlgError:
+            # near-linearly-dependent trial vectors made S numerically
+            # singular; solve in the well-conditioned subspace of S instead
+            w, V = scipy.linalg.eigh(S[:m + 1, :m + 1])
+            keep = w > 1e-10 * w.max()
+            Vk = V[:, keep] / np.sqrt(w[keep])
+            e, u = scipy.linalg.eigh(Vk.T.conj() @ T[:m + 1, :m + 1] @ Vk)
+            vects = Vk @ u
         ivec = -1
         for j in range(m + 1):
             if abs(vects[0, j]) <= 1.1 and abs(vects[0, j]) > 0.1:
@@ -168,18 +191,22 @@ def davidson(hop, g, hdiag, sop=None, max_stepsize=1.0, tol=5e-6, neig=1, mmax=1
         ritz[1:, 0] = np.dot(sigma[1:, :m + 1] - lambda_ * e[ivec] * sdotx[1:, :m + 1], vects[:, ivec])
         err = np.linalg.norm(ritz[:, 0])
         print(f'iter {m}, ivec {ivec}, c[{ivec}], {vects[0,ivec]:8.4f}, eps={e[ivec]:12.8f}, res={err:8.6e},  lambda={lambda_:6.2f}, step={stepsize:8.4f}')
-        if err < min(1e-3 * stepsize, tol) and m > 4:
+        # NOTE stepsize is hardwired to 0.0 above (compute_lambda_ disabled),
+        # so the old criterion min(1e-3*stepsize, tol) was always 0 and the
+        # solver never converged -- it silently ran to mmax every time
+        if err < tol and m > 4:
             print('Davidson converged at iteration no.:', m - 1)
             end = time.time()
             print('Davidson time:', end - start)
             x_ = np.dot(x[:, :m + 1], vects[:, ivec])
             print(f'{x_[0]:.6f}, x_[0]')
-            return x_[1:] / x_[0], e[ivec]
+            # restricted-step AH: the level-shifted step is scaled by 1/lambda
+            return x_[1:] / x_[0] / lambda_, e[ivec]
         elif m is mmax:
             print('Max iteration reached')
             x_ = np.dot(x[:, :m + 1], vects[:, ivec])
             print(f'{x_[0]:.6f}, x_[0]')
-            return x_[1:] / x_[0], e[ivec]
+            return x_[1:] / x_[0] / lambda_, e[ivec]
         else:
             for idx in range(hdiag.shape[0]):
                 denom = hdiag[idx] - e[ivec] * lambda_
@@ -187,11 +214,17 @@ def davidson(hop, g, hdiag, sop=None, max_stepsize=1.0, tol=5e-6, neig=1, mmax=1
                     ritz[idx + 1, 0] = -ritz[idx + 1, 0] / denom
                 else:
                     ritz[idx + 1, 0] = -ritz[idx + 1, 0] / 1e-8
-            # orthonormalize ritz vector
-            for idx in range(m + 1):
-                ritz[:, 0] = ritz[:, 0] - (np.dot(x[:, idx], ritz[:, 0]) * x[:, idx])
-            ritz[:, 0] = ritz[:, 0] / (np.linalg.norm(ritz[:, 0]))
-            x[:, m + 1] = ritz[:, 0]
+            # orthonormalize ritz vector (complex inner product needs the
+            # conjugate; two passes of Gram-Schmidt for numerical stability)
+            for _ in range(2):
+                for idx in range(m + 1):
+                    ritz[:, 0] = ritz[:, 0] - (np.dot(x[:, idx].conj(), ritz[:, 0]) * x[:, idx])
+            nrm = np.linalg.norm(ritz[:, 0])
+            if nrm < 1e-10:
+                print('Davidson: new trial vector linearly dependent, returning current solution')
+                x_ = np.dot(x[:, :m + 1], vects[:, ivec])
+                return x_[1:] / x_[0], e[ivec]
+            x[:, m + 1] = ritz[:, 0] / nrm
 
 # note: the ncas, nelecas, ncore should all be counted as the number of spin orbitals
 def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
@@ -447,9 +480,9 @@ def postprocess_x0(xbar, xs, ys, rhos, a, bfgs_space=10):
     return 0.5*xbar
 
 
-def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, conv_tol=None,
+def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, uphill_step_tol=1e-3, conv_tol=None,
                   conv_tol_grad=None, verbose=5, cderi=None, bfgs=False, solver='davidson',  # cderi kept for backward compat
-                  davidson_maxiter=10):
+                  davidson_maxiter=10, ah_lambda=False):
     bfgs = bfgs
     davidson_mmax = davidson_maxiter
     log = logger.new_logger(mc, verbose)
@@ -589,7 +622,11 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, conv_tol=None,
                 xs = []
                 ys = []
                 rhos = []
-            if bfgs is True and norm_gorb < bfgs_on:
+            # never precondition with BFGS while retrying a rejected step: the
+            # history produced the rejected direction, the retry must not
+            # inherit it (the de>0 wipe above makes this mostly redundant,
+            # but the intent should not depend on that coincidence)
+            if bfgs is True and norm_gorb < bfgs_on and not rejected:
                 gbar, a = precondition_grad(g, xs, ys, rhos, bfgs_space=BFGS_SUBSPACE)
 
             residuals = []
@@ -599,10 +636,15 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, conv_tol=None,
                 x, _ = gmres(hop, -trust_radii*gbar, M=precond, maxiter=50, callback=callback)
                 #x = precond(-trust_radii*gbar) 
             elif solver == 'davidson':
-                trust_radii = max(trust_radii, 0.2)
-                x, e = davidson(hop, trust_radii*gbar, h_diag, sop=sop, max_stepsize=trust_radii, mmax=davidson_mmax)
+                # floor keeps the step from vanishing (anti-stagnation near
+                # local minima); 0.2 here was a typo that defeated the
+                # trust-radius shrink logic entirely
+                if not rejected:
+                    trust_radii = max(trust_radii, 0.02)
+                x, e = davidson(hop, trust_radii*gbar, h_diag, sop=sop, max_stepsize=trust_radii, mmax=davidson_mmax,
+                                use_lambda=ah_lambda)
                 print('residuals', residuals)
-            if bfgs is True and norm_gorb < bfgs_on:
+            if bfgs is True and norm_gorb < bfgs_on and not rejected:
                 x = 0.5*postprocess_x(x, xs, ys, rhos, a, bfgs_space=BFGS_SUBSPACE)
         else:
             residuals = []
@@ -612,11 +654,18 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, conv_tol=None,
                 x, _ = gmres(hop, -trust_radii*gbar, M=precond, maxiter=50, callback=callback)
                 #x = precond(-trust_radii*gbar) 
             elif solver == 'davidson':
-                x, e = davidson(hop, trust_radii*gbar, h_diag, sop=sop, mmax=10)
+                x, e = davidson(hop, trust_radii*gbar, h_diag, sop=sop, mmax=10,
+                                use_lambda=ah_lambda)
                 print('residuals', residuals)
         t2m = log.timer('Solving Super-CI equation', *t_gmres)
 
         dr = mc.unpack_uniq_var(x)
+        # project the step onto the Kramers-symmetric subspace: numerical
+        # T-breaking in dr is amplified x3-10 per macro iteration by the soft
+        # modes (seen even with exact CI), so kill it at the source.  Assumes
+        # interleaved +1-phase Kramers pairs (phase-clean CAHF start + frozen
+        # basis keep this true throughout).
+        dr = ensure_kramers(dr)
         step_control = max_stepsize
         for i in range(nmo):
             for j in range(i):
@@ -716,6 +765,27 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=0.2, conv_tol=None,
         #    for j in range(i):
         #        if abs(rotation[i, j]) > 0.01:
         #            continue
+
+        trust_floor = 1e-2 * max_stepsize
+        if de > 0.0 and norm(dr) > uphill_step_tol and imacro > 0 \
+                and trust_radii > trust_floor * 1.001:
+            # substantial uphill step: reject AND shrink the trust radius --
+            # without the shrink the retry re-solves the same problem at the
+            # same point and proposes the same step forever (deadlock).  Once
+            # the trust radius reaches its floor the step is force-accepted
+            # instead (the model cannot be trusted to do better at this
+            # resolution and the outer loop keeps re-evaluating).
+            trust_radii = max(trust_radii * 0.5, trust_floor)
+            print(f'step rejected (dE = {de:.4e} > 0, |dr| = {norm(dr):.4e} > {uphill_step_tol:.1e}), '
+                  f'shrink trust radius to {trust_radii:.4f}')
+            eris = zmc_ao2mo._CDERIS(mc, mo, cderi=cderi, level=2)
+            rejected = True
+            imacro += 1
+            t1m = log.timer(f'macro iter {imacro}', *t1m)
+            continue
+        elif de > 0.0 and norm(dr) > uphill_step_tol and imacro > 0:
+            print(f'trust radius at floor {trust_floor:.4f}: force-accepting '
+                  f'uphill step (dE = {de:.4e}, |dr| = {norm(dr):.4e})')
 
         rejected = False
         mo = mo_new
