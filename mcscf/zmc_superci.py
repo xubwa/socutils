@@ -226,6 +226,14 @@ def davidson(hop, g, hdiag, sop=None, max_stepsize=1.0, tol=5e-6, neig=1, mmax=1
                 return x_[1:] / x_[0], e[ivec]
             x[:, m + 1] = ritz[:, 0] / nrm
 
+# term 5 of the super-CI operator contracts (g - G)[t,u] x[u,i]; gauge covariance
+# needs G = g_tu2 (= g_tu^T).  False keeps the historical g_tu, which differs
+# already for real rdms whenever g_tu is not symmetric.
+TERM5_GTU_COVARIANT = True
+
+# smallest |h_diag - shift*s_diag| used by the natural-orbital preconditioner
+PRECOND_DEN_FLOOR = 0.05
+
 # note: the ncas, nelecas, ncore should all be counted as the number of spin orbitals
 def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
     if casscf.mo_coeff is None:
@@ -235,8 +243,22 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
     ncore = casscf.ncore
     nocc = ncas + ncore
     nmo = mo.shape[1]
-    
-    #casdm1 = np.diag(np.diag(casdm1))
+
+    # The CI solvers (pyscf fci_dhf_slow and the Dice reader alike) return
+    # casdm1[t,u] = <t^dagger u>.  Everything below uses casdm1 as an MO-basis
+    # density matrix, rho = C D C^dagger, which needs D = casdm1^T.  The two
+    # coincide for a real rdm (natural orbitals), so only complex rdms (frozen
+    # basis, natorb=False) were affected: there the orbital gradient was wrong
+    # in size and sign (FD-checked on Nd(H2O)8 SA-52).  casdm2 is consistent
+    # with the g_dm2 contraction as is.
+    # casdm1_ci keeps the solver convention for the few places that need it.
+    # Every contraction below is written gauge covariant: under orbital phases
+    # phi_p -> ph_p phi_p all operator matrices (F, g, kappa, sigma, casdm1)
+    # transform as O_pq -> conj(ph_p) ph_q O_pq, casdm1_ci and the index pairs
+    # of casdm2 as the transpose of that (checked numerically, see
+    # mcscf/test/test_orbital_grad_fd.py).
+    casdm1_ci = casdm1
+    casdm1 = casdm1.T
 
     ################# gradient #################
     dm_core = np.zeros((nmo, nmo), dtype=complex)
@@ -342,12 +364,15 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
     # paaa = eris.paaa
     # g_dm2 = lib.einsum('puvw,tuvw->pt', paaa, casdm2)
     # g_tu = d_tu,vw F_vw - F_vw,D_vw,D_tu
-    g_tu = lib.einsum('tuvw,vw->tu', casdm2, g[ncore:nocc,ncore:nocc]) - lib.einsum('tu,vw,vw->tu', casdm1, casdm1, g[ncore:nocc,ncore:nocc])
+    g_tu = lib.einsum('tuvw,vw->tu', casdm2, g[ncore:nocc,ncore:nocc]) - lib.einsum('tu,vw,vw->tu', casdm1_ci, casdm1_ci, g[ncore:nocc,ncore:nocc])
     # g_tu2 = d_vw,ut F_vw - F_vw,D_vw,D_tu
-    g_tu2 = lib.einsum('vwut,vw->tu', casdm2, g[ncore:nocc,ncore:nocc]) - lib.einsum('tu,vw,vw->tu', casdm1, casdm1, g[ncore:nocc,ncore:nocc])
+    g_tu2 = lib.einsum('vwut,vw->tu', casdm2, g[ncore:nocc,ncore:nocc]) - lib.einsum('ut,vw,vw->tu', casdm1_ci, casdm1_ci, g[ncore:nocc,ncore:nocc])
 
-    y = lib.einsum('pu,qu->pq', (h1e_mo + vhf_c)[ncore:nocc, ncore:nocc], casdm1)
-    h_diag = np.ones((nmo, nmo), dtype=complex)
+    y = lib.einsum('pu,qu->pq', (h1e_mo + vhf_c)[ncore:nocc, ncore:nocc], casdm1_ci)
+    # zeros, not ones: only the lower-triangle blocks are filled and the packed
+    # diagonal is taken from h_diag + h_diag.T, so a ones-initialised upper
+    # triangle silently added 1 Eh to every element handed to the Davidson
+    h_diag = np.zeros((nmo, nmo), dtype=complex)
     for v_idx in range(nocc,nmo):
         for i_idx in range(ncore):
             h_diag[v_idx, i_idx]=fock_eff[v_idx,v_idx]-fock_eff[i_idx, i_idx]
@@ -390,25 +415,25 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
 
         # term 2 h_ai,bu = -delta_ab*f_vi*D_vu
         sigma[nocc:, :ncore] -= lib.einsum(
-            'vi,vu,au->ai', g[ncore:nocc, :ncore], dm1_aa,
+            'vi,uv,au->ai', g[ncore:nocc, :ncore], dm1_aa,
             x1[nocc:, ncore:nocc])
 
         # term3 h_ai,uj = delta_ij(f_au-f_av*D_uv)
         sigma[nocc:, :ncore] += \
              lib.einsum('au,ui->ai', g[nocc:, ncore:nocc], x1[ncore:nocc, :ncore])\
-            -lib.einsum('av,uv,ui->ai', g[nocc:, ncore:nocc], dm1_aa, x1[ncore:nocc, :ncore])
+            -lib.einsum('av,vu,ui->ai', g[nocc:, ncore:nocc], dm1_aa, x1[ncore:nocc, :ncore])
 
         # core-active block
         # term5 h_ti,uj =
         # f_ji * (D_ut - delta_tu)
         sigma[ncore:nocc, :ncore] += \
-            lib.einsum('ut,ji,uj->ti', dm1_aa, f_oo, x1[ncore:nocc, :ncore])\
+            lib.einsum('tu,ji,uj->ti', dm1_aa, f_oo, x1[ncore:nocc, :ncore])\
             - lib.einsum('ji,tj->ti', f_oo, x1[ncore:nocc, :ncore])
         # h_ti,uj += f_tu delta_ij - f_tv,d_uv,delta_ij
         sigma[ncore:nocc, :ncore] += \
-            lib.einsum('tu,ui->ti', g[ncore:nocc,ncore:nocc] - g_tu, x1[ncore:nocc, :ncore])\
-            -lib.einsum('tv,uv,ui->ti', g[ncore:nocc,ncore:nocc], dm1_aa, x1[ncore:nocc, :ncore])\
-            -lib.einsum('tv,uv,ui->ti', dm1_aa, g[ncore:nocc,ncore:nocc], x1[ncore:nocc, :ncore])
+            lib.einsum('tu,ui->ti', g[ncore:nocc,ncore:nocc] - (g_tu2 if TERM5_GTU_COVARIANT else g_tu), x1[ncore:nocc, :ncore])\
+            -lib.einsum('tv,vu,ui->ti', g[ncore:nocc,ncore:nocc], dm1_aa, x1[ncore:nocc, :ncore])\
+            -lib.einsum('tv,uv,ui->ti', dm1_aa, g[ncore:nocc,ncore:nocc].conj(), x1[ncore:nocc, :ncore])
         # term5 continued
         # g_tu = d_tu,vw F_vw - F_vw,D_vw,D_tu
         # + delta_ij(f_tu-(d_tu,vw-d_ut*d_vw)*f_vw-f_tv*d_uv
@@ -418,19 +443,19 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
         # term3 h_ai,uj = delta_ij(f_au-f_av*D_uv)
         # adjoint of term 3 h_ti,bj x_bj->sigma_ti
         sigma[ncore:nocc,:ncore] += \
-            lib.einsum('au,ai->ui', g[nocc:, ncore:nocc], x1[nocc:,:ncore]) \
-           -lib.einsum('av,uv,ai->ui', g[nocc:, ncore:nocc], dm1_aa, x1[nocc:,:ncore])
+            lib.einsum('au,ai->ui', g[nocc:, ncore:nocc].conj(), x1[nocc:,:ncore]) \
+           -lib.einsum('av,uv,ai->ui', g[nocc:, ncore:nocc].conj(), dm1_aa, x1[nocc:,:ncore])
         #sigma[ncore:nocc,:ncore] += x1[ncore:nocc,:ncore] * h_diag[ncore:nocc,:ncore]
         # virtual-active block
         # adjoint of term2
         # h_bu,ai = -delta_ab * f_vi*D_vu
-        sigma[nocc:,ncore:nocc] -= lib.einsum('vi,vu,ai->au', g[ncore:nocc, :ncore], dm1_aa, x1[nocc:,:ncore])
+        sigma[nocc:,ncore:nocc] -= lib.einsum('vi,vu,ai->au', g[ncore:nocc, :ncore].conj(), dm1_aa, x1[nocc:,:ncore])
         # term4 h_ti,bu = 0
 
         #term 6 h_at,bu=delta_ab(d_tu,vw-d_tu*d_vw)f_vw+d_tu*f_ab
         #sigma[nocc:,ncore:nocc] += x1[nocc:,ncore:nocc] * h_diag[nocc:,ncore:nocc]
         
-        sigma[nocc:, ncore:nocc] += lib.einsum('tu,ab,bu->at', dm1_aa, f_vv, x1[nocc:, ncore:nocc]) + lib.einsum('tu,au->at', g_tu, x1[nocc:, ncore:nocc])
+        sigma[nocc:, ncore:nocc] += lib.einsum('ut,ab,bu->at', dm1_aa, f_vv, x1[nocc:, ncore:nocc]) + lib.einsum('tu,au->at', g_tu, x1[nocc:, ncore:nocc])
         
         sigma_pack = casscf.pack_uniq_var(sigma)
         return sigma_pack
@@ -438,19 +463,64 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
     n_uniq_var = g_orb.shape[0]
     hop = LinearOperator((n_uniq_var,n_uniq_var), matvec=h_op)
     def s_op(x):
+        # overlap of the super-CI singly excited functions, with the full
+        # active 1-rdm (the diagonal-only form is this metric in natural
+        # orbitals; without natorb casdm1 is not diagonal):
+        #   <ai|bj> = delta_ab delta_ij
+        #   <at|bu> = delta_ab D_tu            -> (S x)_at = x_au D_ut
+        #   <ti|uj> = delta_ij (delta_tu-D_tu) -> (S x)_ti = x_ti - D_tu x_ui
+        # casdm1 here is the MO density matrix (operator-like), as in h_op.
         x1 = casscf.unpack_uniq_var(x)
-        cas_natocc = casdm1.diagonal()
-        for iact in range(ncore,nocc):
-            inatocc = cas_natocc[iact-ncore]
-            x1[nocc:,iact] *= inatocc
-            x1[iact,nocc:] *= inatocc
-            x1[:ncore,iact] *= 1.0 - inatocc
-            x1[iact,:ncore] *= 1.0 - inatocc
-        return casscf.pack_uniq_var(x1)
+        out = np.zeros_like(x1)
+        out[nocc:, :ncore] = x1[nocc:, :ncore]
+        out[nocc:, ncore:nocc] = np.dot(x1[nocc:, ncore:nocc], casdm1)
+        out[ncore:nocc, :ncore] = x1[ncore:nocc, :ncore] - np.dot(casdm1, x1[ncore:nocc, :ncore])
+        return casscf.pack_uniq_var(out)
     sop = LinearOperator((n_uniq_var, n_uniq_var), matvec=s_op)
     def h_diag_inv(x):
-        return x/(casscf.pack_uniq_var(h_diag+h_diag.T))
+        den = casscf.pack_uniq_var(h_diag+h_diag.T).real
+        den = np.where(abs(den) > PRECOND_DEN_FLOOR, den, np.where(den < 0, -PRECOND_DEN_FLOOR, PRECOND_DEN_FLOOR))
+        return x/den
     precond = LinearOperator((n_uniq_var, n_uniq_var), h_diag_inv)
+
+    # Preconditioner for the generalized problem (H - eps*S) x = r, applied in
+    # the natural-orbital representation of the active space: there S is
+    # diagonal (1, n_t, 1-n_t) and the diagonal h formulas above are the ones
+    # they were derived for.  Rotating the active index of the residual with the
+    # eigenvectors of casdm1 makes the Davidson iteration independent of the
+    # active-orbital basis (frozen basis == natural orbitals), while the orbital
+    # rotation itself and the L-BFGS history stay in the frozen basis.
+    occ_no, u_no = np.linalg.eigh(casdm1)          # casdm1 = u n u^dagger
+    f_no = reduce(np.dot, (u_no.T.conj(), fock_eff[ncore:nocc, ncore:nocc], u_no)).diagonal().real
+    y_no = reduce(np.dot, (u_no.T.conj(), y, u_no)).diagonal().real
+    g2_no = reduce(np.dot, (u_no.T.conj(), g_dm2[ncore:nocc], u_no)).diagonal().real
+    f_c = fock_eff.diagonal().real[:ncore]
+    f_v = fock_eff.diagonal().real[nocc:]
+    hd_vc = f_v[:, None] - f_c[None, :]
+    hd_tc = (f_no - y_no - g2_no)[:, None] - (1. - occ_no)[:, None] * f_c[None, :]
+    hd_vt = f_v[:, None] * occ_no[None, :] - (y_no + g2_no)[None, :]
+    sd_tc = np.repeat((1. - occ_no)[:, None], ncore, axis=1)
+    sd_vt = np.repeat(occ_no[None, :], nmo - nocc, axis=0)
+
+    def _safe_div(r, den):
+        # nearly redundant rotations (active occupation -> 0 or 1) have s_diag
+        # and h_diag -> 0 together; an unprotected denominator amplifies them by
+        # orders of magnitude and the Davidson diverges (OH CAS(7e,8), SA-4).
+        # The historical preconditioner was protected by an accidental +1 Eh.
+        den = np.where(abs(den) > PRECOND_DEN_FLOOR, den, np.where(den < 0, -PRECOND_DEN_FLOOR, PRECOND_DEN_FLOOR))
+        return r / den
+
+    def precond_shift(x, shift=0.0):
+        '''(h_diag - shift*s_diag)^-1 x in the active natural-orbital basis.'''
+        x1 = casscf.unpack_uniq_var(x)
+        out = np.zeros_like(x1)
+        out[nocc:, :ncore] = _safe_div(x1[nocc:, :ncore], hd_vc - shift)
+        tc = np.dot(u_no.T.conj(), x1[ncore:nocc, :ncore])
+        out[ncore:nocc, :ncore] = np.dot(u_no, _safe_div(tc, hd_tc - shift * sd_tc))
+        vt = np.dot(x1[nocc:, ncore:nocc], u_no)
+        out[nocc:, ncore:nocc] = np.dot(_safe_div(vt, hd_vt - shift * sd_vt), u_no.T.conj())
+        return casscf.pack_uniq_var(out)
+    hop.precond_shift = precond_shift
     return g_orb, casscf.pack_uniq_var((h_diag+h_diag.T).real), hop, sop, precond, mo
 
 
