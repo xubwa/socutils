@@ -582,7 +582,9 @@ class _CDERIS(lib.StreamObject):
                  _mb(getattr(self, 'vk_core', None)),
                  _mb(self.cd_pa) + _mb(self.cd_aa) + _mb(self.aaaa) + _mb(self.paaa) + _mb(getattr(self, 'vk_core', None)))
         self._scf = zcasscf._scf
+        self._owner = zcasscf
         self.mo = mo
+        self.mo_sph = mop_sph
         self.ncore = ncore
         self.ncas = ncas
         self.nocc = nocc
@@ -867,6 +869,116 @@ class _CDERIS(lib.StreamObject):
                  'core-K CPU %.1f wall %.1f sec, cd_pa CPU %.1f wall %.1f sec',
                  t_half[0], t_half[1], t_corek[0], t_corek[1], t_cdpa[0], t_cdpa[1])
         return cd_pa, vk_core
+
+    def rotated_pass(self, kappa, dm_act):
+        """The part of the exact orbital Hessian-vector product that needs the AO vectors.
+
+        H x contains L_pm kappa_mi with p running over all orbitals, i.e. the
+        virtual-virtual MO vectors.  They are never formed: the AO vectors are
+        half-transformed with the rotated occupied orbitals C kappa[:, occ] (one
+        pass, the kernel of _build_cd_pa_and_vk), and from them
+
+          jk_c1 = (J - K)[kappa P_c - P_c kappa]      first-order core density
+          jk_a1 = (J - K)[kappa D - D kappa]          first-order active density
+          cd1_pa[P, p, u] = sum_m L_P,pm kappa_mu     one-index transformed vectors
+
+        are assembled (MO basis).  kappa: anti-Hermitian (nmo, nmo); dm_act: the
+        active density D_tu = <u^+ t> (transpose of the solver's casdm1).
+        """
+        import ctypes
+        from pyscf.ao2mo import _ao2mo
+        with_df = self._scf.with_df
+        mol = self._scf.mol
+        nao = mol.nao_nr()
+        ncore, nocc = self.ncore, self.nocc
+        ncas = nocc - ncore
+        mo_sph = self.mo_sph
+        nmo = mo_sph.shape[1]
+        log = logger.Logger(sys.stdout, self._owner.verbose)
+        ftrans = _ao2mo.libao2mo.AO2MOtranse2_nr_s2
+        fmmm = _ao2mo.libao2mo.AO2MOmmm_bra_nr_s2
+        fdrv = _ao2mo.libao2mo.AO2MOnr_e2_drv
+        null = lib.c_null_ptr()
+
+        def _split(orb):   # alpha/beta x real/imag, Fortran order for the kernel
+            return [numpy.asfortranarray(x) for x in (orb[:nao].real, orb[:nao].imag, orb[nao:].real, orb[nao:].imag)]
+
+        def _half(eri1, c_real, buf):
+            norb = c_real.shape[1]
+            fdrv(ftrans, fmmm, buf.ctypes.data_as(ctypes.c_void_p), eri1.ctypes.data_as(ctypes.c_void_p),
+                 c_real.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(eri1.shape[0]), ctypes.c_int(nao),
+                 (ctypes.c_int * 4)(0, norb, 0, nao), null, ctypes.c_int(0))
+
+        def _complex(bufs, n, norb):   # (n, norb, 2 nao) from the four real pieces
+            out = numpy.empty((n, norb, 2 * nao), dtype=complex)
+            out[:, :, :nao].real = bufs[0][:n * norb].reshape(n, norb, nao)
+            out[:, :, :nao].imag = bufs[1][:n * norb].reshape(n, norb, nao)
+            out[:, :, nao:].real = bufs[2][:n * norb].reshape(n, norb, nao)
+            out[:, :, nao:].imag = bufs[3][:n * norb].reshape(n, norb, nao)
+            return out
+
+        Cc, Ca = mo_sph[:, :ncore], mo_sph[:, ncore:nocc]
+        yc_orb, xc_orb = _split(Cc), _split(lib.dot(mo_sph, numpy.ascontiguousarray(kappa[:, :ncore])))
+        ya_orb, xa_orb = _split(Ca), _split(lib.dot(mo_sph, numpy.ascontiguousarray(kappa[:, ncore:nocc])))
+        # rho_P = 2 Re sum_i <C_i| L_P |X_i>: flattened conj(C) in the (i, mu) layout of the buffers
+        cc_flat = [numpy.ascontiguousarray(c.T).ravel() for c in yc_orb]
+        ca_conj = numpy.ascontiguousarray(Ca.conj().T).reshape(-1, 1)
+        mo_sph_conj = numpy.ascontiguousarray(mo_sph.conj())
+        dm_t = numpy.ascontiguousarray(numpy.asarray(dm_act).T)
+
+        naux = with_df.get_naoaux()
+        npair = nao * (nao + 1) // 2
+        blksize = with_df.blockdim
+        nbuf = min(blksize, naux)
+        work_mb = (8 * nbuf * ncore * nao * 8 + 8 * nbuf * ncas * nao * 8 + 3 * nbuf * ncas * 2 * nao * 16
+                   + naux * nmo * ncas * 16) / 1e6
+        ybuf = [numpy.empty((nbuf * ncore, nao)) for _ in range(4)]
+        xbuf = [numpy.empty((nbuf * ncore, nao)) for _ in range(4)]
+        yabuf = [numpy.empty((nbuf * ncas, nao)) for _ in range(4)]
+        xabuf = [numpy.empty((nbuf * ncas, nao)) for _ in range(4)]
+        jc, ja = numpy.zeros(npair), numpy.zeros(npair)
+        kc = numpy.zeros((2 * nao, 2 * nao), dtype=complex)
+        ka = numpy.zeros((2 * nao, 2 * nao), dtype=complex)
+        cd1 = numpy.empty((naux, nmo, ncas), dtype=complex)
+        b0 = 0
+        for eri1 in self._cderi_blocks(with_df, blksize, work_mb, self._owner, log):
+            if eri1.ndim != 2:
+                raise NotImplementedError('rotated_pass needs the packed (s2) AO vectors')
+            n = eri1.shape[0]
+            if ncore > 0:
+                Y = [b[:n * ncore] for b in ybuf]
+                X = [b[:n * ncore] for b in xbuf]
+                for k in range(4):
+                    _half(eri1, yc_orb[k], Y[k])
+                    _half(eri1, xc_orb[k], X[k])
+                rho = 2 * sum(lib.dot(X[k].reshape(n, -1), cc_flat[k][:, None]) for k in range(4))
+                jc += lib.dot(rho.T, eri1).ravel()
+                # K[mu s, nu s'] = sum_Pi X_s[Pi, mu] Y_s'[Pi, nu]^*, real GEMMs only
+                for s in range(2):
+                    xr, xi = X[2 * s], X[2 * s + 1]
+                    for sp in range(2):
+                        yr, yi = Y[2 * sp], Y[2 * sp + 1]
+                        kc[s * nao:(s + 1) * nao, sp * nao:(sp + 1) * nao] += (
+                            lib.dot(xr.T, yr) + lib.dot(xi.T, yi) + 1j * (lib.dot(xi.T, yr) - lib.dot(xr.T, yi)))
+            for k in range(4):
+                _half(eri1, ya_orb[k], yabuf[k][:n * ncas])
+                _half(eri1, xa_orb[k], xabuf[k][:n * ncas])
+            Ya = _complex(yabuf, n, ncas).reshape(n * ncas, 2 * nao)
+            Xa = _complex(xabuf, n, ncas)
+            XaD = numpy.matmul(dm_t, Xa).reshape(n * ncas, 2 * nao)      # sum_t Xa[P, t] D_tu
+            rho = 2 * lib.dot(XaD.reshape(n, -1), ca_conj).real
+            ja += lib.dot(rho.T, eri1).ravel()
+            ka += lib.dot(XaD.T, Ya.conj())
+            cd1[b0:b0 + n] = lib.dot(Xa.reshape(n * ncas, 2 * nao), mo_sph_conj).reshape(n, ncas, nmo).transpose(0, 2, 1)
+            b0 += n
+
+        def _to_mo(j_tril, k):
+            v = -(k + k.conj().T)
+            j = lib.unpack_tril(j_tril)
+            v[:nao, :nao] += j
+            v[nao:, nao:] += j
+            return lib.dot(mo_sph_conj.T, lib.dot(v, mo_sph))
+        return _to_mo(jc, kc), _to_mo(ja, ka), cd1
 
     def _build_cd_pa(self, with_df, cderi, mol, nao_nr, nmo, ncas,
                      moa_sph, mop_sph, log):
