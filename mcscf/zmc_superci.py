@@ -53,7 +53,10 @@ def ensure_kramers(mat):
           % (numpy.linalg.norm(mat - out), numpy.linalg.norm(mat)))
     return out
 
-def compute_lambda_(mat1, mat2, x_, S=None, maxstepsize=1.0, lowest=False):
+def compute_lambda_(mat1, mat2, x_, S=None, maxstepsize=1.0, lowest=False, gram=None):
+    # gram: Euclidean overlap of the rotation parts of the trial vectors,
+    # gram[i, j] = <x_i[1:], x_j[1:]>.  With it the step length of every trial
+    # lambda is c^H gram c and the step itself is never rebuilt (x_ is unused).
     nlast = mat1.shape[0]
     assert (nlast > 1)
     lambda_test = 1.0
@@ -85,8 +88,12 @@ def compute_lambda_(mat1, mat2, x_, S=None, maxstepsize=1.0, lowest=False):
         if ivec < 0:
             raise Exception('logical error in AugHess')
         c[:, ivec] = c[:, ivec] / (c[0, ivec])
-        step = np.dot(x_[1:, :nlast], c[:nlast, ivec])
-        stepsize = np.linalg.norm(step) / abs(lambda_test)
+        if gram is not None:
+            cv = c[:nlast, ivec]
+            stepsize = np.sqrt(abs(np.vdot(cv, gram[:nlast, :nlast] @ cv))) / abs(lambda_test)
+        else:
+            step = np.dot(x_[1:, :nlast], c[:nlast, ivec])
+            stepsize = np.linalg.norm(step) / abs(lambda_test)
         #print(ivec, e, stepsize, lambda_test)
 
         if i == 0:
@@ -130,18 +137,24 @@ def davidson(hop, g, hdiag, sop=None, max_stepsize=1.0, tol=5e-6, neig=1, mmax=1
     neig = neig
     print('No. of desired Eigenvalues:', neig)
     n = g.shape[0] + 1
-    x = np.zeros((n, mmax + 1), dtype=complex)  # holder for trial vectors as iterations progress
-    sigma = np.zeros((n, mmax + 1), dtype=complex)
-    sdotx = np.zeros((n, mmax + 1), dtype=complex)
-    ritz = np.zeros((n, mmax), dtype=complex)
+    # trial vectors and their images are stored as rows: every vector is then
+    # contiguous, and the subspace matrices are updated by one row and one
+    # column per micro iteration instead of being rebuilt
+    x = np.zeros((mmax + 1, n), dtype=complex)
+    sigma = np.zeros((mmax + 1, n), dtype=complex)
+    sdotx = np.zeros((mmax + 1, n), dtype=complex)
+    Tfull = np.zeros((mmax + 1, mmax + 1), dtype=complex)   # x_i^H sigma_j
+    Sfull = np.zeros((mmax + 1, mmax + 1), dtype=complex)   # x_i^H (S x_j)
+    Gfull = np.zeros((mmax + 1, mmax + 1), dtype=complex)   # <x_i[1:], x_j[1:]>
     #-------------------------------------------------------------------------------
     # Begin iterations
     #-------------------------------------------------------------------------------
     #initial extra (1,0) vector
     start = time.time()
     x[0, 0] = 1.0
-    sigma[1:, 0] = g
+    sigma[0, 1:] = g
     sdotx[0, 0] = 1.0
+    Sfull[0, 0] = 1.0
     if sop is None:
         print('No sop parsed')
         exit()
@@ -151,28 +164,34 @@ def davidson(hop, g, hdiag, sop=None, max_stepsize=1.0, tol=5e-6, neig=1, mmax=1
     if precond is None:
         den = hdiag.real + 0.001
         den = np.where(abs(den) > PRECOND_DEN_FLOOR, den, np.where(den < 0, -PRECOND_DEN_FLOOR, PRECOND_DEN_FLOOR))
-        x[1:, 1] = -g / den
+        x[1, 1:] = -g / den
     else:
         # precond(r, shift) = (h_diag - shift*s_diag)^-1 r
-        x[1:, 1] = -precond(g, -0.001)
+        x[1, 1:] = -precond(g, -0.001)
 
-    x[:, 1] = x[:, 1] / np.linalg.norm(x[:, 1])
+    x[1] = x[1] / np.linalg.norm(x[1])
     for m in range(1, mmax + 1):
-        sigma[1:, m] = hop(x[1:, m])
-        sigma[0, m] = np.dot(g.conj(), x[1:, m])
-        sdotx[1:, m] = sop(x[1:, m])
-        sdotx[0, m] = 0.0j
+        sigma[m, 1:] = hop(x[m, 1:])
+        sigma[m, 0] = np.dot(g.conj(), x[m, 1:])
+        sdotx[m, 1:] = sop(x[m, 1:])
+        sdotx[m, 0] = 0.0j
         # Matrix-vector products, form the projected Hamiltonian in the subspace
-        T = np.linalg.multi_dot((x[:, :m + 1].T.conj(), sigma[:, :m + 1]))
-        S = np.linalg.multi_dot((x[:, :m + 1].T.conj(), sdotx[:, :m + 1]))
-        mat1 = numpy.zeros((m + 1, m + 1), dtype=complex)
+        xc = x[:m + 1].conj()
+        Tfull[:m + 1, m] = xc @ sigma[m]
+        Tfull[m, :m] = sigma[:m] @ xc[m]
+        Sfull[:m + 1, m] = xc @ sdotx[m]
+        Sfull[m, :m] = sdotx[:m] @ xc[m]
+        Gfull[:m + 1, m] = xc[:, 1:] @ x[m, 1:]
+        Gfull[m, :m] = Gfull[:m, m].conj()
+        T = Tfull[:m + 1, :m + 1].copy()
+        S = Sfull[:m + 1, :m + 1].copy()
         mat2 = numpy.zeros((m + 1, m + 1), dtype=complex)
         mat2[1:, 1:] = T[1:, 1:]
         mat1 = T - mat2
         if use_lambda:
             try:
-                lambda_, stepsize = compute_lambda_(mat1, mat2, x, S=S,
-                                                    maxstepsize=max_stepsize, lowest=lowest)
+                lambda_, stepsize = compute_lambda_(mat1, mat2, None, S=S, maxstepsize=max_stepsize,
+                                                    lowest=lowest, gram=Gfull[:m + 1, :m + 1])
             except Exception as exc:
                 print(f'compute_lambda_ failed ({exc}), falling back to lambda=1')
                 lambda_ = 1.0
@@ -205,21 +224,18 @@ def davidson(hop, g, hdiag, sop=None, max_stepsize=1.0, tol=5e-6, neig=1, mmax=1
             print('... the vector found in AugHess was not the lowest eigenvector ...')
 
         # residual of (g c0 + H x / lambda - eps S x) = 0, the equation the
-        # subspace matrix mat1 + mat2/lambda stands for.  sigma[1:, 0] is g (the
-        # (1,0) basis vector), sigma[1:, k>=1] = H x_k.  The former expression
+        # subspace matrix mat1 + mat2/lambda stands for.  sigma[0, 1:] is g (the
+        # (1,0) basis vector), sigma[k>=1, 1:] = H x_k.  The former expression
         # sigma - lambda*eps*S x scaled the H and S terms by lambda but not the
         # gradient term, i.e. it was lambda*r - (lambda-1) g c0: identical for
         # lambda = 1, never zero for lambda != 1 (BAGEL AugHess has the form used
         # here, written with the vector divided by lambda*c0).
         v = vects[:, ivec]
-        ritz[1:, 0] = g * v[0] + np.dot(sigma[1:, 1:m + 1], v[1:]) / lambda_ \
-            - e[ivec] * np.dot(sdotx[1:, :m + 1], v)
-        ritz[0, 0] = 0.0
-        err = np.linalg.norm(ritz[:, 0])
+        ritz = np.zeros(n, dtype=complex)
+        ritz[1:] = g * v[0] + (v[1:] @ sigma[1:m + 1, 1:]) / lambda_ \
+            - e[ivec] * (v @ sdotx[:m + 1, 1:])
+        err = np.linalg.norm(ritz)
         print(f'iter {m}, ivec {ivec}, c[{ivec}], {vects[0,ivec]:8.4f}, eps={e[ivec]:12.8f}, res={err:8.6e},  lambda={lambda_:6.2f}, step={stepsize:8.4f}')
-        # NOTE stepsize is hardwired to 0.0 above (compute_lambda_ disabled),
-        # so the old criterion min(1e-3*stepsize, tol) was always 0 and the
-        # solver never converged -- it silently ran to mmax every time
         # BAGEL criterion with lambda on; the old absolute one otherwise
         # with lambda on: relative to the gradient (an absolute tol is met by
         # the first trial vector once |g| is small) and at least 3 micro iterations
@@ -231,33 +247,55 @@ def davidson(hop, g, hdiag, sop=None, max_stepsize=1.0, tol=5e-6, neig=1, mmax=1
             print('Davidson converged at iteration no.:', m - 1)
             end = time.time()
             print('Davidson time:', end - start)
-            x_ = np.dot(x[:, :m + 1], vects[:, ivec])
+            x_ = v @ x[:m + 1]
             print(f'{x_[0]:.6f}, x_[0]')
             # restricted-step AH: the level-shifted step is scaled by 1/lambda
             return x_[1:] / x_[0] / lambda_, e[ivec]
         elif m is mmax:
             print('Max iteration reached')
-            x_ = np.dot(x[:, :m + 1], vects[:, ivec])
+            x_ = v @ x[:m + 1]
             print(f'{x_[0]:.6f}, x_[0]')
             return x_[1:] / x_[0] / lambda_, e[ivec]
         else:
             if precond is None:
                 den = hdiag.real - e[ivec] * lambda_
                 den = np.where(abs(den) > PRECOND_DEN_FLOOR, den, np.where(den < 0, -PRECOND_DEN_FLOOR, PRECOND_DEN_FLOOR))
-                ritz[1:, 0] = -ritz[1:, 0] / den
+                ritz[1:] = -ritz[1:] / den
             else:
-                ritz[1:, 0] = -precond(ritz[1:, 0], e[ivec] * lambda_)
+                ritz[1:] = -precond(ritz[1:], e[ivec] * lambda_)
             # orthonormalize ritz vector (complex inner product needs the
             # conjugate; two passes of Gram-Schmidt for numerical stability)
             for _ in range(2):
-                for idx in range(m + 1):
-                    ritz[:, 0] = ritz[:, 0] - (np.dot(x[:, idx].conj(), ritz[:, 0]) * x[:, idx])
-            nrm = np.linalg.norm(ritz[:, 0])
+                ritz -= (xc @ ritz) @ x[:m + 1]
+            nrm = np.linalg.norm(ritz)
             if nrm < 1e-10:
                 print('Davidson: new trial vector linearly dependent, returning current solution')
-                x_ = np.dot(x[:, :m + 1], vects[:, ivec])
+                x_ = v @ x[:m + 1]
                 return x_[1:] / x_[0] / lambda_, e[ivec]
-            x[:, m + 1] = ritz[:, 0] / nrm
+            x[m + 1] = ritz / nrm
+
+# wall-time breakdown, accumulated over a run: name -> [seconds, calls]
+TIMINGS = {}
+
+
+def _tick(name, t0):
+    '''Add the wall time since t0 to TIMINGS[name]; returns the current time.'''
+    t1 = time.perf_counter()
+    rec = TIMINGS.setdefault(name, [0.0, 0])
+    rec[0] += t1 - t0
+    rec[1] += 1
+    return t1
+
+
+def print_timings(header='wall-time breakdown', wall=None):
+    '''Percentages are of `wall` (the whole run).  Nested entries overlap: the
+    "grad:" lines are inside gen_g_hop, "super-CI H x" inside the AH solve.'''
+    if wall is None:
+        wall = sum(v[0] for v in TIMINGS.values())
+    print(f'{header}: wall time {wall:.1f} s')
+    for name, (sec, n) in sorted(TIMINGS.items(), key=lambda kv: -kv[1][0]):
+        print(f'  TIMING {name:36s} {sec:10.1f} s  {n:5d} calls  {sec/max(n,1):8.2f} s/call  {100*sec/max(wall,1e-30):5.1f} %')
+
 
 # term 5 of the super-CI operator contracts (g - G)[t,u] x[u,i]; gauge covariance
 # needs G = g_tu2 (= g_tu^T).  False keeps the historical g_tu, which differs
@@ -300,7 +338,9 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
     dm_core[idx, idx] = 1
     dm_active[ncore:nocc, ncore:nocc] = casdm1
     dm1 = dm_core + dm_active
+    _t = time.perf_counter()
     h1e_mo = reduce(np.dot, (mo.T.conj(), casscf.get_hcore(), mo))
+    _t = _tick('grad: hcore to MO', _t)
     core_occ = np.zeros(nmo)
     core_occ[:ncore] = 1
     dm_core_ao = reduce(np.dot, (mo, dm_core, mo.T.conj()))
@@ -308,7 +348,9 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
     eris.vj_c = vj_c
     eris.vk_c = vk_c
     vhf_c = reduce(np.dot, (mo.T.conj(), vj_c - vk_c, mo))
+    _t = _tick('grad: core J-K', _t)
     vj_a_mo, vk_a_mo = eris.get_jk_active_mo(casdm1)
+    _t = _tick('grad: active J-K', _t)
     vhf_a = vj_a_mo - vk_a_mo
     vhf_ca = vhf_c + vhf_a
     
@@ -364,6 +406,7 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
         cd_aa = eris.cd_aa
         tmp = lib.einsum('Lvw,tuvw->Ltu', cd_aa, casdm2)
         g_dm2 = lib.einsum('Lpu,Ltu->pt', cd_pa, tmp)
+        _t = _tick('grad: 2-rdm contraction', _t)
         del tmp
     else:
         raise('eris type not recognized')
@@ -421,7 +464,10 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
             h_diag[v_idx, a_idx] = fock_eff[v_idx, v_idx] * dm1[a_idx, a_idx] - y[a_idx-ncore, a_idx-ncore] - g_dm2[a_idx, a_idx-ncore]
     h_diag = h_diag.real*(1.+0.j)
 
+    _t = _tick('grad: assembly, g_tu, h_diag', _t)
+
     def h_op(x):
+        _th = time.perf_counter()
         x1 = casscf.unpack_uniq_var(x)
         # super-ci hessian
         sigma = np.zeros_like(x1)
@@ -491,6 +537,7 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
         sigma[nocc:, ncore:nocc] += lib.einsum('ut,ab,bu->at', dm1_aa, f_vv, x1[nocc:, ncore:nocc]) + lib.einsum('tu,au->at', g_tu, x1[nocc:, ncore:nocc])
         
         sigma_pack = casscf.pack_uniq_var(sigma)
+        _tick('super-CI H x', _th)
         return sigma_pack
 
     n_uniq_var = g_orb.shape[0]
@@ -573,6 +620,7 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
         out[nocc:, ncore:nocc] = np.dot(_safe_div(vt, hd_vt - shift * sd_vt), u_no.T.conj())
         return casscf.pack_uniq_var(out)
     hop.precond_shift = precond_shift
+    _tick('grad: NO preconditioner setup', _t)
     return g_orb, casscf.pack_uniq_var((h_diag+h_diag.T).real), hop, sop, precond, mo
 
 
@@ -666,10 +714,27 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
                 'trace_orbital=False) or use socutils.tools.kramers.symmetrize, '
                 'or pass kramers_check=False' % dev)
 
+    # Rotating the orbital basis between iterations is not a harmless option:
+    # natorb costs a second integral half-transform and a second CI solve per
+    # macro iteration; both rotations invalidate the L-BFGS history; and their
+    # diagonalisations fall back to a plain eigh when the Kramers check fails,
+    # which scrambles the pairing the Kramers projection relies on.  Neither is
+    # needed: metric, Hessian and preconditioner are basis covariant.
+    if getattr(mc, 'natorb', False) or getattr(mc, 'canonicalize_', False):
+        log.warn('mc.natorb = %s, mc.canonicalize_ = %s: the orbital basis is rotated every macro '
+                 'iteration.  This is not needed by this driver; it discards the L-BFGS history each '
+                 'time, natorb doubles the integral transformation and CI work, and a non-Kramers '
+                 'diagonalisation can scramble the Kramers pairing.  Leave both False unless you '
+                 'know you need them.', mc.natorb, mc.canonicalize_)
+    TIMINGS.clear()
+    _t = time.perf_counter()
     eris = zmc_ao2mo._CDERIS(mc, mo, cderi=cderi, level=2)
+    _t = _tick('integral half-transform (_CDERIS)', _t)
     mci = zmcscf._fake_h_for_fast_casci(mc, mo, eris)
+    _t = _tick('core J-K for the CASCI', _t)
     print('first CI calculation')
     e_tot, e_cas, fcivec = mci.kernel(mo, verbose=verbose)
+    _t = _tick('CI solver', _t)
     mc.e_tot, mc.e_cas = e_tot, e_cas
     if conv_tol_grad is None:
         conv_tol_grad = np.sqrt(conv_tol)
@@ -679,7 +744,9 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
     norm_gorb = -1
     de = e_tot
     t1m = log.timer('Initializing Super-CI based MCSCF', *cput0)
+    _t = time.perf_counter()
     casdm1, casdm2 = mc.fcisolver.make_rdm12(fcivec, ncas, mc.nelecas)
+    _tick('make_rdm12', _t)
     norm_rot = 0.0
     t2m = log.timer('CAS DM', *t1m)
 
@@ -720,8 +787,14 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
             casdm1, casdm2 = mci.fcisolver.make_rdm12(fcivec, ncas, mc.nelecas)
             print('natural occupation number in cas space', casdm1.diagonal())
             xs, ys, dens = [], [], []     # the history is in the old basis
+            g_prev = x_prev = None
 
+        _t = time.perf_counter()
         g, h_diag, hop, sop, precond, mo = gen_g_hop(mc, mo, casdm1, casdm2, eris)
+        _tick('gen_g_hop (total)', _t)
+        if getattr(mc, 'canonicalize_', False):
+            xs, ys, dens = [], [], []     # gen_g_hop rotated the core / virtual orbitals
+            g_prev = x_prev = None
         norm_gorb = norm(g)
         print(f'Iter {imacro:3d}: E = {e_tot:20.15f}  dE = {de:12.10f}' +
               f'  norm(grad) = {norm_gorb:8.6f} step_size = {norm_rot:8.6f}')
@@ -742,7 +815,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
 
         t_solve = (logger.process_clock(), logger.perf_counter())
         # L-BFGS history: (step taken, gradient difference) of accepted steps
-        if imacro > 0 and not rejected and norm_gorb < BFGS_GRAD_MAX:
+        if imacro > 0 and not rejected and norm_gorb < BFGS_GRAD_MAX and g_prev is not None:
             den = np.dot((g - g_prev).conj(), x_prev).real
             if den > 0:
                 ys.append(g - g_prev)
@@ -772,6 +845,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
         if use_bfgs:
             x = lbfgs_postprocess(x, xs, ys, dens, a)
         t2m = log.timer('Solving Super-CI equation', *t_solve)
+        _tick('AH Davidson + L-BFGS (total)', t_solve[1])
 
         dr, x = finalize_step(x)
         # descent guard: the AH step is not guaranteed to go downhill once it
@@ -789,14 +863,20 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
                 if abs(dr[i,j])>1e-2:
                     print(f'{i}, {j}, dr {dr[i,j]}')
 
+        _t = time.perf_counter()
         mo_new = np.dot(mo, expmat(dr))
+        _t = _tick('expm of the rotation', _t)
         eris = zmc_ao2mo._CDERIS(mc, mo_new, cderi=cderi, level=2)
+        _t = _tick('integral half-transform (_CDERIS)', _t)
         t2m = log.timer('update eris', *t2m)
         mci = zmcscf._fake_h_for_fast_casci(mc, mo_new, eris)
+        _t = _tick('core J-K for the CASCI', _t)
         e_tot, e_cas, fcivec = mci.kernel(mo_new, ci0=None, verbose=verbose)
+        _t = _tick('CI solver', _t)
 
         # trust region: compare with the second-order model of the step taken
         de = e_tot - e_last
+        _t = time.perf_counter()
         q_model = 2. * np.vdot(g, x).real + np.vdot(x, hop(x)).real
         rho = de / q_model if q_model < 0 else -1.0
         norm_rot = norm(dr)
@@ -827,18 +907,23 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
         e_last = e_tot
         x_prev = x
         g_prev = g
+        _t = time.perf_counter()
         casdm1, casdm2 = mc.fcisolver.make_rdm12(fcivec, ncas, mc.nelecas)
+        _t = _tick('make_rdm12', _t)
         imacro += 1
         t1m = log.timer(f'macro iter {imacro}', *t1m)
         lib.chkfile.save(mc.chkfile, f'mo_coeff_iter_{imacro}', mo)
+        _t = _tick('chkfile save of the orbitals', _t)
         if kramers_check:
             print('Kramers pairing deviation of the orbitals after macro iter %d: %.3e'
                   % (imacro, kramers.pairing_deviation(mol, mo, s_ovlp)))
+            _t = _tick('Kramers pairing check', _t)
         if verbose >= logger.INFO:
             mc.e_tot = e_tot
             mc.e_cas = e_cas
             mc._finalize()
     mc.mo_coeff = mo
+    print_timings('mcscf_superci', wall=time.perf_counter() - cput0[1])
     return conv, e_tot, e_cas, fcivec, mo, None
 
 
