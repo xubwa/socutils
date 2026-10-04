@@ -660,7 +660,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
                   cderi=None, bfgs=False, solver='davidson', davidson_maxiter=10, ah_root='yanai',
                   trust_radius=None, trust_radius_max=2.0, reject_uphill=False, descent_guard=True,
                   sd_hdiag_floor=0.05, kramers_check=True, kramers_project=True, gen_g_hop_fn=None,
-                  **deprecated):
+                  bfgs_start_grad=1.0, **deprecated):
     '''Super-CI orbital optimisation with an adaptive trust region.
 
     Every macro iteration solves the super-CI augmented-Hessian problem for the
@@ -684,6 +684,8 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
     kramers_project   project every rotation onto its time-reversal even part.
     descent_guard     replace a step that is not a descent direction by the
                       Fock-diagonal preconditioned gradient step.
+    bfgs_start_grad   with bfgs=True, the L-BFGS pairs are collected and used only
+                      once the gradient norm is below this value.
     gen_g_hop_fn      a replacement for gen_g_hop with the same return values
                       (zmc_sosci uses it to run this macro iteration with the
                       SO-SCI Hessian).
@@ -764,7 +766,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
     t2m = log.timer('CAS DM', *t1m)
 
     BFGS_SUBSPACE = 6
-    BFGS_GRAD_MAX = 1.0      # no L-BFGS while |g| is above this
+    BFGS_GRAD_MAX = bfgs_start_grad      # no L-BFGS while |g| is above this
     imacro = 0
     xs, ys, dens = [], [], []
     g_prev = x_prev = None
