@@ -8,6 +8,7 @@ top-level CMake) and emitted flat into this directory:
   libccsdt_clib.so spinor CCSDT residual kernels  (socutils.cc)
   libzquatev.so    quaternion eigensolver         (Kramers-restricted SCF)
   libnrr_opt.so    spinor AO2MO e1/e2 kernels      (socutils.lib.ao2mo.nrr_fast)
+  libsocvhf.so     multi-centre J/K prescreen     (socutils.somf.x2cmp)
 
 ``load_library`` mirrors ``pyscf.lib.load_library``: it loads a library by name
 from this directory.  A ``SOCUTILS_<NAME>_LIBRARY`` environment variable (e.g.

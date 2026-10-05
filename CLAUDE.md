@@ -24,8 +24,8 @@ here; it has been removed.)
 
 ## Building native libraries
 
-Four bundled C/C++ libraries must be compiled before the features that use
-them. All four are built together by **one** top-level CMake under `lib/`
+Five bundled C/C++ libraries must be compiled before the features that use
+them. All five are built together by **one** top-level CMake under `lib/`
 (`lib/CMakeLists.txt`), modelled on `pyscf/lib`: it centralises the common
 config (BLAS/LAPACK, OpenMP, flags, `$ORIGIN` RPATH) and `add_subdirectory`s
 each library. The subdir CMakeLists for `lib/x2camf`, `lib/ccsdt`, `lib/zquatev`
@@ -36,11 +36,14 @@ reuses C already compiled into an *installed* pyscf (`libao2mo`/`libnp_helper`/
 `libcvhf`/`libcint`) rather than standing alone, so its CMakeLists locates that
 pyscf via the configuring Python interpreter at configure time — if upstreamed
 *into* pyscf it would simplify to an ordinary in-tree `target_link_libraries`.
+`lib/vhf` (`libsocvhf.so`, prescreen functions that skip one-centre shell
+quartets, used by `somf/x2cmp.py`) links against the installed pyscf's `libcvhf`
+the same way; without it `.x2cmp()` falls back to the full molecular J/K build.
 Each `.so` is emitted **flat into `lib/`**, next to its ctypes loader. They're
 optional — two-component code that doesn't call them runs without.
 
 ```bash
-make            # build all four -> lib/libx2camf_c.so, libccsdt_clib.so, libzquatev.so, libnrr_opt.so
+make            # build all -> lib/libx2camf_c.so, libccsdt_clib.so, libzquatev.so, libnrr_opt.so, libsocvhf.so
 make test       # build + no-dependency x2camf smoke test
 make compare    # build + A/B compare C backend vs C++ reference
                 #   (needs X2CAMF_CPP_LIBRARY=/path/to/libx2camf*.so)

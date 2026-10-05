@@ -10,6 +10,8 @@
 #   zquatev ->  lib/libzquatev.so     (spinor_hf.KRHF)
 #   ao2mo   ->  lib/libnrr_opt.so     (socutils.lib.ao2mo.nrr_fast; links
 #               against whatever pyscf the configuring Python resolves)
+#   vhf     ->  lib/libsocvhf.so      (socutils.somf.x2cmp; links against
+#               the same pyscf)
 #
 # Targets:
 #   make            build all C/C++ libraries (default)

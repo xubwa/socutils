@@ -473,6 +473,65 @@ def x2cmp_screen(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=F
         h_x2c = to_2c(x, r, h1e_4c)
     return h_x2c
 
+_MC_PRESCREEN = {'llll': 'SOCrkbllll_mc_prescreen',
+                 'ssll': 'SOCrkbssll_mc_prescreen',
+                 'ssss': 'SOCrkbllll_mc_prescreen',
+                 'gaunt_lsls': 'SOCrkb_gaunt_lsls_mc_prescreen',
+                 'gaunt_lssl': 'SOCrkb_gaunt_lssl_mc_prescreen'}
+
+def _mc_prescreen_pointers():
+    '''Addresses of the prescreen functions in lib/libsocvhf.so that skip the
+    one-centre shell quartets, or None if the library has not been built.'''
+    import ctypes, _ctypes
+    from socutils.lib import load_library
+    try:
+        libsocvhf = load_library('libsocvhf', 'SOCUTILS_SOCVHF_LIBRARY')
+    except OSError:
+        return None
+    return {key: ctypes.c_void_p(_ctypes.dlsym(libsocvhf._handle, name))
+            for key, name in _MC_PRESCREEN.items()}
+
+def get_veff_mc(mf_4c, xmol, density_4c, density_2c):
+    '''Multi-centre part of J-K for a superposition of atomic densities.
+
+    The quartets with four shells on the same atom are skipped; their
+    contribution is the two-electron Fock matrix of the atomic calculations
+    (atm_integrals index 5 for 4c, 6 for 2c) and has to be added by the caller.
+    The (LL|LL) integrals are contracted with the LL block of density_4c and
+    with density_2c in the same pass.
+
+    Returns:
+        (veff_4c, veff_2c), or None if lib/libsocvhf.so is not available or
+        mf_4c is not a plain direct-SCF DHF with the (SS|SS) integrals.
+    '''
+    from pyscf.scf import dhf
+    fscreen = _mc_prescreen_pointers()
+    if (fscreen is None or not mf_4c.direct_scf or mf_4c.screening is False
+            or mf_4c._coulomb_level.upper() != 'SSSS'):
+        return None
+    opts = dict(zip(('llll', 'ssll', 'ssss', 'gaunt_lsls', 'gaunt_lssl'),
+                    mf_4c.init_direct_scf(xmol)))
+    for key, opt in opts.items():
+        if opt is not None:
+            opt.prescreen = fscreen[key]
+
+    n2c = density_2c.shape[0]
+    vj, vk = dhf._call_veff_ssll(xmol, density_4c, 1, opts['ssll'])
+    veff_4c = vj - vk
+    dm_ll = np.zeros((2,) + density_4c.shape, dtype=density_4c.dtype)
+    dm_ll[0] = density_4c
+    dm_ll[1,:n2c,:n2c] = density_2c
+    vj, vk = dhf._call_veff_llll(xmol, dm_ll, 1, opts['llll'])
+    veff_4c[:n2c,:n2c] += vj[0] - vk[0]
+    veff_2c = vj[1] - vk[1]
+    vj, vk = dhf._call_veff_ssss(xmol, density_4c, 1, opts['ssss'])
+    veff_4c[n2c:,n2c:] += vj - vk
+    if mf_4c.with_breit or mf_4c.with_gaunt:
+        vj, vk = dhf._call_veff_gaunt_breit(
+            xmol, density_4c, 1, (opts['gaunt_lsls'], opts['gaunt_lssl']), mf_4c.with_breit)
+        veff_4c += vj - vk
+    return veff_4c, veff_2c
+
 def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, nucmod=None):
     mol = x2cobj.mol
     if nucmod is None:
@@ -561,12 +620,23 @@ def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, n
         ene_corr = np.einsum('ij,ji->', atomic_fock_4c_2e, density_4c).real-np.einsum('ij,ji->',atomic_fock_2c_2e, density_2c).real
         ene_corr2 = np.einsum('ij,ji->',atomic_fock_2c2e_fw - atomic_fock_2c_2e, density_2c).real
         print(ene_corr*0.5, ene_corr2*0.5)
-        vj_4c, vk_4c= mf_4c.get_jk(dm=density_4c)
-        veff_4c = vj_4c - vk_4c
+        # The one-centre part of J-K is the atomic two-electron Fock matrix;
+        # only the multi-centre part needs the molecular integrals.  The
+        # atomic Fock matrix of an average-of-configuration calculation is
+        # not J-K of the atomic density, so that case takes the full build.
+        veff_mc = None
+        if getattr(x2cobj, 'atomic_1c', True) and not aoc:
+            veff_mc = get_veff_mc(mf_4c, xmol, density_4c, density_2c)
+        if veff_mc is None:
+            vj_4c, vk_4c= mf_4c.get_jk(dm=density_4c)
+            veff_4c = vj_4c - vk_4c
+            mf_2c = spinor_hf.SCF(xmol)
+            veff_2c = mf_2c.get_veff(dm=density_2c)
+        else:
+            veff_4c = veff_mc[0] + atomic_fock_4c_2e
+            veff_2c = veff_mc[1] + atomic_fock_2c_2e
         fock_4c = x2cobj.h4c + veff_4c
         x, st, r, h2c = x2c1e_hfw0_4cmat(fock_4c, s4c, xmol)
-        mf_2c = spinor_hf.SCF(xmol)
-        veff_2c = mf_2c.get_veff(dm=density_2c)
         x2cobj.veff_2c=veff_2c
         h_x2c = to_2c(x, r, fock_4c) - veff_2c
         x2cobj.h4c = h1e_4c + veff_4c
@@ -848,6 +918,8 @@ class SpinorX2CMPHelper(x2c.x2c.SpinorX2CHelper):
         self.pcc = with_pcc
         self.aoc = with_aoc
         self.amf_type = x2cmp # use this class to implement various flavors of approximations.
+        # take the one-centre part of J-K from the atomic calculations ('x2cmp' flavor)
+        self.atomic_1c = True
         self.nucmod = mol.nucmod
         self.h4c = None
         self.m4c = None
@@ -991,6 +1063,8 @@ class SpinOrbitalX2CMPHelper(x2c.x2c.SpinOrbitalX2CHelper):
         self.pcc = with_pcc
         self.aoc = with_aoc
         self.amf_type = x2cmp # use this class to implement various flavors of approximations.
+        # take the one-centre part of J-K from the atomic calculations ('x2cmp' flavor)
+        self.atomic_1c = True
         self.nucmod = mol.nucmod
         self.h4c = None
         self.m4c = None
