@@ -511,6 +511,9 @@ def get_veff_mc(mf_4c, xmol, density_4c, density_2c):
     if (fscreen is None or not mf_4c.direct_scf or mf_4c.screening is False
             or mf_4c._coulomb_level.upper() != 'SSSS'):
         return None
+    # dropping the direct Gaunt/Breit term needs a Kramers-symmetric density
+    if abs(density_4c - dhf.time_reversal_matrix(xmol, density_4c)).max() > 1e-10:
+        return None
     opts = dict(zip(('llll', 'ssll', 'ssss', 'gaunt_lsls', 'gaunt_lssl'),
                     mf_4c.init_direct_scf(xmol)))
     for key, opt in opts.items():
