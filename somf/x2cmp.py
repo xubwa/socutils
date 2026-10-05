@@ -533,10 +533,10 @@ def get_veff_mc(mf_4c, xmol, density_4c, density_2c):
     veff_4c[n2c:,n2c:] += vj - vk
     if mf_4c.with_breit or mf_4c.with_gaunt:
         veff_4c -= _get_k_gaunt_breit(xmol, density_4c, opts['gaunt_lsls'],
-                                      opts['gaunt_lssl'], mf_4c.with_breit)
+                                      opts['gaunt_lssl'], mf_4c.with_breit, lssl_tril=True)
     return veff_4c, veff_2c
 
-def _get_k_gaunt_breit(xmol, dm, opt_lsls, opt_lssl, with_breit):
+def _get_k_gaunt_breit(xmol, dm, opt_lsls, opt_lssl, with_breit, lssl_tril=False):
     '''Exchange matrix of the Gaunt (or Gaunt + gauge) interaction for a
     Hermitian 4c density matrix: dhf._call_veff_gaunt_breit without the
     contractions for J.
@@ -545,6 +545,9 @@ def _get_k_gaunt_breit(xmol, dm, opt_lsls, opt_lssl, with_breit):
     for a superposition of spherically averaged, Kramers-symmetric atomic
     densities, and the quartets that enter J only are not integrated here
     (the prescreen functions of the two optimizers keep the K quartets).
+
+    lssl_tril: the prescreen function of opt_lssl keeps only the quartets for
+    the lower triangles of the Hermitian LL and SS blocks.
     '''
     from pyscf.scf import _vhf
     intor_prefix = 'int2e_breit_' if with_breit else 'int2e_'
@@ -559,6 +562,8 @@ def _get_k_gaunt_breit(xmol, dm, opt_lsls, opt_lssl, with_breit):
     vx = _vhf.rdirect_bindm(
         intor_prefix+'ssp1sps2_spinor', 's1', ('li->s1kj', 'jk->s1il'), [dmll, dmss], 1,
         xmol._atm, xmol._bas, xmol._env, opt_lssl)
+    if lssl_tril:
+        vx = [np.tril(x) + np.tril(x, -1).conj().T for x in vx]
     vk[n2c:,n2c:] = vx[0]
     vk[:n2c,:n2c] = vx[1]
     vk[n2c:,:n2c] = vk[:n2c,n2c:].T.conj()

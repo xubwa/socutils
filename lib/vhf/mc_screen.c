@@ -81,6 +81,9 @@ int SOCrkb_gaunt_lssl_mc_prescreen(int *shls, CVHFOpt *opt,
  *   (LS|SL), K^SS_kj = (ij|kl) D^LL_li and K^LL_il = (ij|kl) D^SS_jk.
  *   dm_cond is that of the two density matrices (D^LL, D^SS): the block 0
  *   is the maximum over the two, the blocks 1 and 2 are D^LL and D^SS.
+ *   K^SS and K^LL are Hermitian, so only the quartets for their lower
+ *   triangles (k >= j, i >= l) are kept; the upper triangles returned by the
+ *   driver are incomplete.
  */
 int SOCrkb_gaunt_lsls_mck_prescreen(int *shls, CVHFOpt *opt,
                                     int *atm, int *bas, double *env)
@@ -115,6 +118,6 @@ int SOCrkb_gaunt_lssl_mck_prescreen(int *shls, CVHFOpt *opt,
         double qijkl = opt->q_cond[i*n+j] * opt->q_cond[k*n+l];
         double dmin = opt->direct_scf_cutoff / qijkl;
         return qijkl > opt->direct_scf_cutoff
-            &&((dmll[l*n+i] > dmin)
-            || (dmss[j*n+k] > dmin));
+            &&((k >= j && dmll[l*n+i] > dmin)
+            || (i >= l && dmss[j*n+k] > dmin));
 }
