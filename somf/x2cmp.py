@@ -476,8 +476,8 @@ def x2cmp_screen(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=F
 _MC_PRESCREEN = {'llll': 'SOCrkbllll_mc_prescreen',
                  'ssll': 'SOCrkbssll_mc_prescreen',
                  'ssss': 'SOCrkbllll_mc_prescreen',
-                 'gaunt_lsls': 'SOCrkb_gaunt_lsls_mc_prescreen',
-                 'gaunt_lssl': 'SOCrkb_gaunt_lssl_mc_prescreen'}
+                 'gaunt_lsls': 'SOCrkb_gaunt_lsls_mck_prescreen',
+                 'gaunt_lssl': 'SOCrkb_gaunt_lssl_mck_prescreen'}
 
 def _mc_prescreen_pointers():
     '''Addresses of the prescreen functions in lib/libsocvhf.so that skip the
@@ -499,6 +499,8 @@ def get_veff_mc(mf_4c, xmol, density_4c, density_2c):
     (atm_integrals index 5 for 4c, 6 for 2c) and has to be added by the caller.
     The (LL|LL) integrals are contracted with the LL block of density_4c and
     with density_2c in the same pass.
+    Of the Gaunt/Breit integrals only the exchange part is integrated; the
+    direct part is zero for these densities (see _get_k_gaunt_breit).
 
     Returns:
         (veff_4c, veff_2c), or None if lib/libsocvhf.so is not available or
@@ -527,10 +529,42 @@ def get_veff_mc(mf_4c, xmol, density_4c, density_2c):
     vj, vk = dhf._call_veff_ssss(xmol, density_4c, 1, opts['ssss'])
     veff_4c[n2c:,n2c:] += vj - vk
     if mf_4c.with_breit or mf_4c.with_gaunt:
-        vj, vk = dhf._call_veff_gaunt_breit(
-            xmol, density_4c, 1, (opts['gaunt_lsls'], opts['gaunt_lssl']), mf_4c.with_breit)
-        veff_4c += vj - vk
+        veff_4c -= _get_k_gaunt_breit(xmol, density_4c, opts['gaunt_lsls'],
+                                      opts['gaunt_lssl'], mf_4c.with_breit)
     return veff_4c, veff_2c
+
+def _get_k_gaunt_breit(xmol, dm, opt_lsls, opt_lssl, with_breit):
+    '''Exchange matrix of the Gaunt (or Gaunt + gauge) interaction for a
+    Hermitian 4c density matrix: dhf._call_veff_gaunt_breit without the
+    contractions for J.
+
+    The direct term is the interaction with the current density.  It is zero
+    for a superposition of spherically averaged, Kramers-symmetric atomic
+    densities, and the quartets that enter J only are not integrated here
+    (the prescreen functions of the two optimizers keep the K quartets).
+    '''
+    from pyscf.scf import _vhf
+    intor_prefix = 'int2e_breit_' if with_breit else 'int2e_'
+    n2c = dm.shape[0] // 2
+    dmll = dm[:n2c,:n2c].copy()
+    dmsl = dm[n2c:,:n2c].copy()
+    dmss = dm[n2c:,n2c:].copy()
+    vk = np.zeros(dm.shape, dtype=np.complex128)
+    vk[:n2c,n2c:] = _vhf.rdirect_mapdm(
+        intor_prefix+'ssp1ssp2_spinor', 's1', 'jk->s1il', dmsl, 1,
+        xmol._atm, xmol._bas, xmol._env, opt_lsls)
+    vx = _vhf.rdirect_bindm(
+        intor_prefix+'ssp1sps2_spinor', 's1', ('li->s1kj', 'jk->s1il'), [dmll, dmss], 1,
+        xmol._atm, xmol._bas, xmol._env, opt_lssl)
+    vk[n2c:,n2c:] = vx[0]
+    vk[:n2c,:n2c] = vx[1]
+    vk[n2c:,:n2c] = vk[:n2c,n2c:].T.conj()
+    c1 = .5 / param.LIGHT_SPEED
+    if with_breit:
+        vk *= c1**2
+    else:
+        vk *= -c1**2
+    return vk
 
 def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, nucmod=None):
     mol = x2cobj.mol
