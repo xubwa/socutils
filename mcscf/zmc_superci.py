@@ -660,7 +660,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
                   cderi=None, bfgs=False, solver='davidson', davidson_maxiter=10, ah_root='yanai',
                   trust_radius=None, trust_radius_max=2.0, reject_uphill=False, descent_guard=True,
                   sd_hdiag_floor=0.05, kramers_check=True, kramers_project=True, gen_g_hop_fn=None,
-                  bfgs_start_grad=1.0, qn_model=False, **deprecated):
+                  bfgs_start_grad=1.0, **deprecated):
     '''Super-CI orbital optimisation with an adaptive trust region.
 
     Every macro iteration solves the super-CI augmented-Hessian problem for the
@@ -672,6 +672,14 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
     trust region.  The trust radius follows rho = dE / Q, Q = 2 Re(g.y) +
     Re(y.Hy): halved for rho < 0.25 or an energy rise, doubled for rho > 0.75
     when the step reached the boundary, never above trust_radius_max.
+
+    Q is never bought with an extra Hessian-vector product.  For the Davidson
+    solution it follows from the images the solver stored; for a step that
+    L-BFGS has post-processed, from the equation the step solves,
+    B x = -g + mu S x (B the L-BFGS Hessian, mu the level shift), i.e.
+    Q = Re(g.x) + mu x.Sx.  For any other step (descent guard, a Kramers
+    projection that changed it) there is no Q and the trust radius only reacts
+    to an energy rise.
 
     trust_radius      initial trust radius (default 0.2).  max_stepsize is the
                       former name of this argument and is used when
@@ -686,12 +694,6 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
                       Fock-diagonal preconditioned gradient step.
     bfgs_start_grad   with bfgs=True, the L-BFGS pairs are collected and used only
                       once the gradient norm is below this value.
-    qn_model          how the model energy Q of the trust region is obtained when
-                      L-BFGS has post-processed the step.  False: with one more
-                      H x of the step taken.  True: from the equation the step
-                      solves, B x = -g + mu S x with B the L-BFGS Hessian, i.e.
-                      Q = Re<g,x> + mu <x,Sx>, without any product (for
-                      Hessians whose products are expensive).
     gen_g_hop_fn      a replacement for gen_g_hop with the same return values
                       (zmc_sosci uses it to run this macro iteration with the
                       SO-SCI Hessian).
@@ -868,7 +870,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
         x_qn = mu_qn = None
         if use_bfgs:
             x = lbfgs_postprocess(x, xs, ys, dens, a)
-            if qn_model and x_ah is not None:
+            if x_ah is not None:
                 # level shift of the AH solution: H x_ah = -gbar + mu S x_ah
                 mu_qn = (np.vdot(x_ah, hx_ah + gbar).real
                          / max(np.vdot(x_ah, sop(x_ah)).real, 1e-300))
@@ -906,30 +908,32 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
         # trust region: compare with the second-order model of the step taken
         de = e_tot - e_last
         _t = time.perf_counter()
-        # H x of the step taken.  When it is the Davidson solution up to a real
-        # factor (no L-BFGS post-processing, the Kramers projection a no-op),
-        # H x follows from the images stored by the Davidson solver; only
-        # otherwise is another product needed.
-        hx = None
-        if x_ah is not None:
-            fac = np.vdot(x_ah, x).real / max(np.vdot(x_ah, x_ah).real, 1e-300)
-            if norm(x - fac * x_ah) <= 1e-10 * norm(x):
-                hx = fac * hx_ah
+        # <x, H x> of the step taken, only from what is already there: the
+        # images stored by the Davidson solver when the step is its solution up
+        # to a real factor, the L-BFGS model when the step was post-processed
+        # (the Kramers projection removes roundoff of order 1e-13 in absolute
+        # terms, which is a sizeable fraction of a step near convergence: the
+        # match is tested to 1e-6, far below anything that matters for Q)
+        STEP_MATCH_TOL = 1e-6
         xhx = None
-        if hx is None and x_qn is not None:
+        if x_qn is not None:
             fac = np.vdot(x_qn, x).real / max(np.vdot(x_qn, x_qn).real, 1e-300)
-            if norm(x - fac * x_qn) <= 1e-10 * norm(x):
-                # <x, B x> of the L-BFGS model for the step it produced
+            if norm(x - fac * x_qn) <= STEP_MATCH_TOL * norm(x):
                 xhx = fac**2 * (-np.vdot(g, x_qn).real + mu_qn * np.vdot(x_qn, sop(x_qn)).real)
-        if hx is None and xhx is None:
-            hx = hop(x)
-        if xhx is None:
-            xhx = np.vdot(x, hx).real
-        q_model = 2. * np.vdot(g, x).real + xhx
-        rho = de / q_model if q_model < 0 else -1.0
+        elif x_ah is not None:
+            fac = np.vdot(x_ah, x).real / max(np.vdot(x_ah, x_ah).real, 1e-300)
+            if norm(x - fac * x_ah) <= STEP_MATCH_TOL * norm(x):
+                xhx = fac**2 * np.vdot(x_ah, hx_ah).real
+        q_model = None if xhx is None else 2. * np.vdot(g, x).real + xhx
         norm_rot = norm(dr)
-        print(f'Energy change {de:.4e}, predicted change {q_model:.4e}')
-        print(f'trust region: |dr| = {norm_rot:.4e}, trust radius = {trust_radius:.4e}, rho = {rho:.3f}')
+        if q_model is None:
+            rho = None
+            print(f'Energy change {de:.4e}, no model energy for this step')
+            print(f'trust region: |dr| = {norm_rot:.4e}, trust radius = {trust_radius:.4e}')
+        else:
+            rho = de / q_model if q_model < 0 else -1.0
+            print(f'Energy change {de:.4e}, predicted change {q_model:.4e}')
+            print(f'trust region: |dr| = {norm_rot:.4e}, trust radius = {trust_radius:.4e}, rho = {rho:.3f}')
         if de > conv_tol and reject_uphill:
             trust_radius = 0.5 * norm_rot
             print(f'step rejected (dE = {de:.4e} > 0), trust radius -> {trust_radius:.4e}')
@@ -941,8 +945,8 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
         if de > conv_tol:
             trust_radius = 0.5 * norm_rot
             print(f'uphill step accepted (dE = {de:.4e} > 0), trust radius -> {trust_radius:.4e}')
-        elif abs(q_model) < conv_tol:
-            pass      # changes below conv_tol say nothing about the model
+        elif q_model is None or abs(q_model) < conv_tol:
+            pass      # no model, or changes below conv_tol that say nothing about it
         elif rho < 0.25:
             trust_radius = 0.5 * norm_rot
             print(f'rho < 0.25: trust radius -> {trust_radius:.4e}')

@@ -124,7 +124,4 @@ def mcscf_twostep(mc, mo_coeff, **kwargs):
     zmc_superci.mcscf_superci, used unchanged: see there for the arguments.
     Only the Hessian and the metric differ.
     '''
-    # an exact H x is expensive: the model energy of the trust region never
-    # takes an extra one (see qn_model in mcscf_superci)
-    kwargs.setdefault('qn_model', True)
     return zmc_superci.mcscf_superci(mc, mo_coeff, gen_g_hop_fn=gen_g_hop, **kwargs)
