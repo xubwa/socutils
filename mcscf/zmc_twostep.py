@@ -50,14 +50,18 @@ def gen_g_hop_exact(mc, mo, casdm1, casdm2, eris):
     va = vja - vka
     cd_pa = eris.cd_pa                                    # L_P,pu  (naux, nmo, ncas)
     naux = cd_pa.shape[0]
+    cd_up = getattr(eris, 'cd_up', None)                  # the same as (P, u, p)
+    if cd_up is None:
+        cd_up = numpy.ascontiguousarray(cd_pa.transpose(0, 2, 1))
+    cd_up2 = cd_up.reshape(naux * ncas, nmo)
     dm2 = numpy.asarray(casdm2).reshape(ncas * ncas, ncas * ncas)
     cd_aa = eris.cd_aa.reshape(naux, ncas * ncas)
 
     def contract_dm2(l_aa):                               # T_P,tu = sum_vw L_P,vw Gamma_tuvw
         return lib.dot(l_aa, dm2.T).reshape(naux, ncas, ncas)
 
-    def half_fock(l_pu, t):                               # sum_P,u L_P,pu T_P,tu -> (p, t)
-        return lib.einsum('Lpu,Ltu->pt', l_pu, t)
+    def half_fock(l_up2, t):                              # sum_P,u L_P,pu T_P,tu -> (p, t)
+        return lib.dot(l_up2.T, numpy.ascontiguousarray(t.transpose(0, 2, 1)).reshape(naux * ncas, ncas))
 
     def fock(h_, vc_, va_):
         a = numpy.zeros((nmo, nmo), dtype=complex)
@@ -67,7 +71,7 @@ def gen_g_hop_exact(mc, mo, casdm1, casdm2, eris):
 
     t0 = contract_dm2(cd_aa)
     a0 = fock(h, vc, va)
-    a0[:, act] += half_fock(cd_pa, t0)
+    a0[:, act] += half_fock(cd_up2, t0)
     g_mat = a0 - a0.conj().T
     e = (mc.energy_nuc() + numpy.trace(h[:ncore, :ncore]) + 0.5 * numpy.trace(vc[:ncore, :ncore])
          + numpy.einsum('tu,ut', (h + vc)[act, act], dm)
@@ -76,15 +80,18 @@ def gen_g_hop_exact(mc, mo, casdm1, casdm2, eris):
     def hop(x):
         _t = time.perf_counter()
         k = mc.unpack_uniq_var(x)
-        jkc, jka, cd1 = eris.rotated_pass(k, dm)
+        jkc, jka, cd1 = eris.rotated_pass(k, dm)          # cd1[P, u, p] = sum_m L_P,pm k_mu
         _t = _tick('exact H x: AO pass', _t)
         h1 = lib.dot(h, k) - lib.dot(k, h)
         vc1 = lib.dot(vc, k) - lib.dot(k, vc) + jkc
         va1 = lib.dot(va, k) - lib.dot(k, va) + jka
-        cd1 -= numpy.matmul(k, cd_pa)                     # L1_P,pu = sum_m L_pm k_mu - k_pm L_mu
-        t1 = contract_dm2(numpy.ascontiguousarray(cd1[:, act, :]).reshape(naux, ncas * ncas))
+        # L1_P,pu = sum_m L_pm k_mu - k_pm L_mu, kept in the (P, u, p) layout
+        cd1 = cd1.reshape(naux * ncas, nmo)
+        cd1 -= lib.dot(cd_up2, numpy.ascontiguousarray(k.T))
+        l1_aa = numpy.ascontiguousarray(cd1.reshape(naux, ncas, nmo)[:, :, act].transpose(0, 2, 1))
+        t1 = contract_dm2(l1_aa.reshape(naux, ncas * ncas))
         a1 = fock(h1, vc1, va1)
-        a1[:, act] += half_fock(cd1, t0) + half_fock(cd_pa, t1)
+        a1[:, act] += half_fock(cd1, t0) + half_fock(cd_up2, t1)
         out = mc.pack_uniq_var(a1 - a1.conj().T - 0.5 * (lib.dot(g_mat, k) - lib.dot(k, g_mat)))
         _tick('exact H x: MO assembly', _t)
         return out

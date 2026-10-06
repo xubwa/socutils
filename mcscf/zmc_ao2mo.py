@@ -880,9 +880,12 @@ class _CDERIS(lib.StreamObject):
 
           jk_c1 = (J - K)[kappa P_c - P_c kappa]      first-order core density
           jk_a1 = (J - K)[kappa D - D kappa]          first-order active density
-          cd1_pa[P, p, u] = sum_m L_P,pm kappa_mu     one-index transformed vectors
+          cd1_up[P, u, p] = sum_m L_P,pm kappa_mu     one-index transformed vectors
 
-        are assembled (MO basis).  kappa: anti-Hermitian (nmo, nmo); dm_act: the
+        are assembled (MO basis).  The half-transformed vectors of the unrotated
+        occupied orbitals do not depend on kappa: they are computed in the first
+        call and kept for the following ones when max_memory allows, as are the
+        work buffers.  kappa: anti-Hermitian (nmo, nmo); dm_act: the
         active density D_tu = <u^+ t> (transpose of the solver's casdm1).
         """
         import ctypes
@@ -930,26 +933,46 @@ class _CDERIS(lib.StreamObject):
         npair = nao * (nao + 1) // 2
         blksize = with_df.blockdim
         nbuf = min(blksize, naux)
-        work_mb = (8 * nbuf * ncore * nao * 8 + 8 * nbuf * ncas * nao * 8 + 3 * nbuf * ncas * 2 * nao * 16
-                   + naux * nmo * ncas * 16) / 1e6
-        ybuf = [numpy.empty((nbuf * ncore, nao)) for _ in range(4)]
-        xbuf = [numpy.empty((nbuf * ncore, nao)) for _ in range(4)]
-        yabuf = [numpy.empty((nbuf * ncas, nao)) for _ in range(4)]
-        xabuf = [numpy.empty((nbuf * ncas, nao)) for _ in range(4)]
+        cache = getattr(self, '_rotated_cache', None)
+        if cache is None:
+            # work buffers, allocated once per set of orbitals
+            cache = self._rotated_cache = {
+                'x': [numpy.empty((nbuf * ncore, nao)) for _ in range(4)],
+                'xa': [numpy.empty((nbuf * ncas, nao)) for _ in range(4)],
+                'ya_tmp': [numpy.empty((nbuf * ncas, nao)) for _ in range(4)],
+                'y': None, 'ya': None, 'filled': False}
+            y_mb = (4 * naux * ncore * nao * 8 + naux * ncas * 2 * nao * 16) / 1e6
+            work_mb = (4 * nbuf * ncore * nao * 8 + 8 * nbuf * ncas * nao * 8 + 3 * nbuf * ncas * 2 * nao * 16
+                       + naux * nmo * ncas * 16) / 1e6
+            avail_mb = self._owner.max_memory * .9 - lib.current_memory()[0] - work_mb
+            if y_mb < avail_mb:
+                cache['y'] = [numpy.empty((naux * ncore, nao)) for _ in range(4)]
+                cache['ya'] = numpy.empty((naux * ncas, 2 * nao), dtype=complex)
+            else:
+                log.info('rotated_pass: the half-transformed unrotated vectors (%.0f MB) are recomputed in every '
+                         'H x: %.0f MB left under max_memory = %.0f MB', y_mb, max(avail_mb, 0), self._owner.max_memory)
+                cache['y_tmp'] = [numpy.empty((nbuf * ncore, nao)) for _ in range(4)]
+        keep = cache['y'] is not None
+        xbuf, xabuf = cache['x'], cache['xa']
+        work_mb = 0. if keep else 4 * nbuf * ncore * nao * 8 / 1e6
         jc, ja = numpy.zeros(npair), numpy.zeros(npair)
         kc = numpy.zeros((2 * nao, 2 * nao), dtype=complex)
         ka = numpy.zeros((2 * nao, 2 * nao), dtype=complex)
-        cd1 = numpy.empty((naux, nmo, ncas), dtype=complex)
+        cd1 = numpy.empty((naux, ncas, nmo), dtype=complex)
         b0 = 0
         for eri1 in self._cderi_blocks(with_df, blksize, work_mb, self._owner, log):
             if eri1.ndim != 2:
                 raise NotImplementedError('rotated_pass needs the packed (s2) AO vectors')
             n = eri1.shape[0]
             if ncore > 0:
-                Y = [b[:n * ncore] for b in ybuf]
+                if keep:
+                    Y = [b[b0 * ncore:(b0 + n) * ncore] for b in cache['y']]
+                else:
+                    Y = [b[:n * ncore] for b in cache['y_tmp']]
                 X = [b[:n * ncore] for b in xbuf]
                 for k in range(4):
-                    _half(eri1, yc_orb[k], Y[k])
+                    if not (keep and cache['filled']):
+                        _half(eri1, yc_orb[k], Y[k])
                     _half(eri1, xc_orb[k], X[k])
                 rho = 2 * sum(lib.dot(X[k].reshape(n, -1), cc_flat[k][:, None]) for k in range(4))
                 jc += lib.dot(rho.T, eri1).ravel()
@@ -960,17 +983,24 @@ class _CDERIS(lib.StreamObject):
                         yr, yi = Y[2 * sp], Y[2 * sp + 1]
                         kc[s * nao:(s + 1) * nao, sp * nao:(sp + 1) * nao] += (
                             lib.dot(xr.T, yr) + lib.dot(xi.T, yi) + 1j * (lib.dot(xi.T, yr) - lib.dot(xr.T, yi)))
+            if keep and cache['filled']:
+                Ya = cache['ya'][b0 * ncas:(b0 + n) * ncas]
+            else:
+                for k in range(4):
+                    _half(eri1, ya_orb[k], cache['ya_tmp'][k][:n * ncas])
+                Ya = _complex(cache['ya_tmp'], n, ncas).reshape(n * ncas, 2 * nao)
+                if keep:
+                    cache['ya'][b0 * ncas:(b0 + n) * ncas] = Ya
             for k in range(4):
-                _half(eri1, ya_orb[k], yabuf[k][:n * ncas])
                 _half(eri1, xa_orb[k], xabuf[k][:n * ncas])
-            Ya = _complex(yabuf, n, ncas).reshape(n * ncas, 2 * nao)
             Xa = _complex(xabuf, n, ncas)
             XaD = numpy.matmul(dm_t, Xa).reshape(n * ncas, 2 * nao)      # sum_t Xa[P, t] D_tu
             rho = 2 * lib.dot(XaD.reshape(n, -1), ca_conj).real
             ja += lib.dot(rho.T, eri1).ravel()
             ka += lib.dot(XaD.T, Ya.conj())
-            cd1[b0:b0 + n] = lib.dot(Xa.reshape(n * ncas, 2 * nao), mo_sph_conj).reshape(n, ncas, nmo).transpose(0, 2, 1)
+            cd1[b0:b0 + n] = lib.dot(Xa.reshape(n * ncas, 2 * nao), mo_sph_conj).reshape(n, ncas, nmo)
             b0 += n
+        cache['filled'] = True
 
         def _to_mo(j_tril, k):
             v = -(k + k.conj().T)
