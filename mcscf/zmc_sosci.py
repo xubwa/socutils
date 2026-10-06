@@ -97,16 +97,35 @@ def gen_hop_active(mc, mo, casdm1, casdm2, eris):
     a0[:, act] = (h + vc)[:, act] @ dm + f2
     g_mat = a0 - a0.conj().T
 
+    # The pair operators stay in the AO basis.  Every use of (pq|tu) below is
+    # contracted with a vector on one side, (pq|tu) v_q = C_p^+ J^tu (C v), so
+    # a product with the AO matrix replaces the transformation of all J^tu to
+    # the MO basis.  ja[(t mu), (u nu)] = J^tu_{mu nu} (spin free), and
+    # wa[(t mu), (u nu)] = sum_vw Gamma_tuvw J^vw_{mu nu}.
     _t = time.perf_counter()
-    jmo = pair_coulomb_mo(eris)                            # (pq|tu) as [t, u, p, q]
-    # W[(t p), (u m)] = sum_vw (pm|vw) Gamma_tuvw
-    jg = lib.dot(dm2_mat, jmo.reshape(ncas * ncas, nmo * nmo)).reshape(ncas, ncas, nmo, nmo)
-    jg = numpy.ascontiguousarray(jg.transpose(0, 2, 1, 3)).reshape(ncas * nmo, ncas * nmo)
-    # (p i|t u) as [(t i), (u p)] and (i j|t u) as [(t j), (u i)]
-    jpc = numpy.ascontiguousarray(jmo[:, :, :, core].transpose(0, 3, 1, 2)).reshape(ncas * ncore, ncas * nmo)
-    jcc = numpy.ascontiguousarray(jmo[:, :, core, core].transpose(0, 3, 1, 2)).reshape(ncas * ncore, ncas * ncore)
-    del jmo
-    _tick('SO-SCI: J^tu to the MO basis', _t)
+    if getattr(eris, 'jtu_tril', None) is None:
+        raise NotImplementedError('SO-SCI needs the pair operators J^tu (eris.jtu_tril)')
+    mo_sph = eris.mo_sph
+    nao = mo_sph.shape[0] // 2
+    cs = [numpy.ascontiguousarray(mo_sph[:nao]), numpy.ascontiguousarray(mo_sph[nao:])]      # alpha, beta
+    cs_core = [numpy.ascontiguousarray(c[:, core]) for c in cs]
+    jt = eris.jtu_tril.T                                   # (ncas^2, npair)
+    wt = lib.dot(dm2_mat, numpy.ascontiguousarray(jt))
+
+    def _pair_matrix(tril):                                # [(t mu), (u nu)] from the packed [(t u), (mu nu)]
+        full = (lib.unpack_tril(numpy.ascontiguousarray(tril.real))
+                + 1j * lib.unpack_tril(numpy.ascontiguousarray(tril.imag))).reshape(ncas, ncas, nao, nao)
+        return numpy.ascontiguousarray(full.transpose(0, 2, 1, 3)).reshape(ncas * nao, ncas * nao)
+    ja = _pair_matrix(jt)
+    wa = _pair_matrix(wt)
+    del jt, wt
+    _tick('SO-SCI: pair operators J^tu, W^tu (AO)', _t)
+
+    def _apply(mat, v):                                    # sum_(u nu) mat[(t mu), (u nu)] v[nu, u] -> [mu, t]
+        return lib.dot(mat, numpy.ascontiguousarray(v.T).reshape(-1, 1)).reshape(ncas, nao).T
+
+    def _apply_t(mat, v):                                  # the same with mat transposed
+        return lib.dot(numpy.ascontiguousarray(v.T).reshape(1, -1), mat).reshape(ncas, nao).T
 
     mask = numpy.zeros((nmo, nmo))
     mask[act, core] = 1
@@ -126,12 +145,18 @@ def gen_hop_active(mc, mo, casdm1, casdm2, eris):
         # (J - K) of the first-order core density  dD[t,i] = kappa_ti, dD[i,t] = kappa_ti^*
         rho = 2 * lib.dot(lc2, xtc.T.reshape(-1, 1)).real.ravel()           # 2 Re sum_ti L_P,it kappa_ti
         m2 = numpy.ascontiguousarray(numpy.matmul(xtc, lc)).reshape(naux * ncas, ncas)   # [(P t), u]
+        # v[nu, t] = sum_i C_nu,i kappa_ti^* (per spin):
+        #   sum_ti kappa_ti^* (p i|t u) = C_p^+ sum_t J^tu v_t        -> [p, u]
+        #   sum_ti kappa_ti   (i j|s t) = sum_t v_t^+ J^st C_j        -> [s, j]
+        vs = [cc @ xtc.conj().T for cc in cs_core]
+        k_pu = sum(c.conj().T @ _apply_t(ja, v) for c, v in zip(cs, vs))
+        k_sj = sum(_apply(ja, v.conj()).T @ cc for cc, v in zip(cs_core, vs))
         jkc_pu = (lib.dot(rho[None, :] + 0j, lp2).reshape(nmo, ncas)
                   - lib.dot(lup2.T, m2)
-                  - lib.dot(xtc.conj().reshape(1, -1), jpc).reshape(ncas, nmo).T)
+                  - k_pu)
         j_ti = lib.dot(rho[None, :] + 0j, lc2).reshape(ncore, ncas).conj().T
         jkc_ti = (j_ti
-                  - lib.dot(jcc, xtc.reshape(-1, 1)).reshape(ncas, ncore)
+                  - k_sj
                   - lib.dot(m2.T, lcu2).conj())
         # one-index transformed vectors with two active indices; the first
         # piece, sum_m L_P,vm kappa_mw, also gives the exchange of the
@@ -139,12 +164,15 @@ def gen_hop_active(mc, mo, casdm1, casdm2, eris):
         l1 = lib.dot(lup2, kpa.conj()).conj().reshape(naux, ncas, ncas)     # [P, v, w]
         rho = 2 * lib.dot(lp2, y.conj().reshape(-1, 1)).real.ravel()        # 2 Re sum_pu L_P,up y_pu
         n2 = numpy.ascontiguousarray(numpy.matmul(l1, dm).transpose(0, 2, 1)).reshape(naux * ncas, ncas)   # [(P u), s]
+        # w[nu, u] = sum_p C_nu,p y_pu:  sum_pu y_pu^* (p j|s u) = sum_u w_u^+ J^su C_j   -> [s, j]
+        ws = [c @ y for c in cs]
         jka_ti = (lib.dot(rho[None, :] + 0j, lc2).reshape(ncore, ncas).conj().T
                   - lib.dot(n2.T, lcu2.conj())
-                  - lib.dot(jpc, y.conj().T.reshape(-1, 1)).reshape(ncas, ncore))
+                  - sum(_apply(ja, w.conj()).T @ cc for cc, w in zip(cs_core, ws)))
         l1 -= numpy.matmul(numpy.ascontiguousarray(k[act, :]), lp)
         t1 = contract_dm2(l1.reshape(naux, ncas * ncas))
-        r12 = (lib.dot(jg, kpa.T.reshape(-1, 1)).reshape(ncas, nmo).T - k @ f2 + half_fock(t1))
+        # sum_um W[t,u,p,m] kappa_mu = C_p^+ sum_u W^tu (C kappa)_u               -> [p, t]
+        r12 = (sum(c.conj().T @ _apply(wa, c @ kpa) for c in cs) - k @ f2 + half_fock(t1))
 
         h1 = h @ k - k @ h
         vc1 = vc @ k - k @ vc

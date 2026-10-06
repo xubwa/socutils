@@ -848,13 +848,15 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
         gbar = g
         if use_bfgs:
             gbar, a = lbfgs_precondition(g, xs, ys, dens)
+        x_ah = hx_ah = None
         if solver == 'gmres':
             x, _ = gmres(hop, -gbar, M=precond, maxiter=50)
         elif solver == 'davidson':
             # restricted-step AH; the packed vector has norm |dr| / sqrt(2)
-            x, e = davidson(hop, gbar, h_diag, sop=sop, max_stepsize=trust_radius / np.sqrt(2.),
-                            mmax=davidson_mmax, use_lambda=True, root=ah_root,
-                            precond=getattr(hop, 'precond_shift', None))
+            x, e, hx_ah = davidson(hop, gbar, h_diag, sop=sop, max_stepsize=trust_radius / np.sqrt(2.),
+                                   mmax=davidson_mmax, use_lambda=True, root=ah_root,
+                                   precond=getattr(hop, 'precond_shift', None), with_hx=True)
+            x_ah = x
         else:
             raise ValueError(f'unknown solver {solver}')
         if use_bfgs:
@@ -892,7 +894,18 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
         # trust region: compare with the second-order model of the step taken
         de = e_tot - e_last
         _t = time.perf_counter()
-        q_model = 2. * np.vdot(g, x).real + np.vdot(x, hop(x)).real
+        # H x of the step taken.  When it is the Davidson solution up to a real
+        # factor (no L-BFGS post-processing, the Kramers projection a no-op),
+        # H x follows from the images stored by the Davidson solver; only
+        # otherwise is another product needed.
+        hx = None
+        if x_ah is not None:
+            fac = np.vdot(x_ah, x).real / max(np.vdot(x_ah, x_ah).real, 1e-300)
+            if norm(x - fac * x_ah) <= 1e-10 * norm(x):
+                hx = fac * hx_ah
+        if hx is None:
+            hx = hop(x)
+        q_model = 2. * np.vdot(g, x).real + np.vdot(x, hx).real
         rho = de / q_model if q_model < 0 else -1.0
         norm_rot = norm(dr)
         print(f'Energy change {de:.4e}, predicted change {q_model:.4e}')
