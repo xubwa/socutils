@@ -660,7 +660,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
                   cderi=None, bfgs=False, solver='davidson', davidson_maxiter=10, ah_root='yanai',
                   trust_radius=None, trust_radius_max=2.0, reject_uphill=False, descent_guard=True,
                   sd_hdiag_floor=0.05, kramers_check=True, kramers_project=True, gen_g_hop_fn=None,
-                  bfgs_start_grad=1.0, **deprecated):
+                  bfgs_start_grad=1.0, damp_overshoot=False, bfgs_keep_history=False, **deprecated):
     '''Super-CI orbital optimisation with an adaptive trust region.
 
     Every macro iteration solves the super-CI augmented-Hessian problem for the
@@ -694,6 +694,12 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
                       Fock-diagonal preconditioned gradient step.
     bfgs_start_grad   with bfgs=True, the L-BFGS pairs are collected and used only
                       once the gradient norm is below this value.
+    damp_overshoot    (experimental, off) halve the step when the last step showed
+                      a curvature above 1.5 times the model's.  With a step s
+                      times the model's Newton step, rho = (2 - c s) / (2 - s)
+                      gives the curvature ratio c along it.
+    bfgs_keep_history (experimental, off) keep the L-BFGS pairs after a step that
+                      raised the energy instead of discarding them.
     gen_g_hop_fn      a replacement for gen_g_hop with the same return values
                       (zmc_sosci uses it to run this macro iteration with the
                       SO-SCI Hessian).
@@ -779,6 +785,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
     xs, ys, dens = [], [], []
     g_prev = x_prev = None
     rejected = False
+    curv_last = 1.0          # curvature along the last step in units of the model's
     e_last = e_tot
 
     def finalize_step(x):
@@ -848,7 +855,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
                 print(f'bfgs: pair skipped, y.x = {den:.4e} <= 0')
             if len(ys) > BFGS_SUBSPACE:
                 ys.pop(0); xs.pop(0); dens.pop(0)
-        if imacro > 0 and de > 0.0:
+        if imacro > 0 and de > 0.0 and not bfgs_keep_history:
             # the energy rose: discard the history (as KKW do)
             xs, ys, dens = [], [], []
         use_bfgs = bfgs is True and norm_gorb < BFGS_GRAD_MAX and not rejected and len(xs) > 0
@@ -875,6 +882,9 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
                 mu_qn = (np.vdot(x_ah, hx_ah + gbar).real
                          / max(np.vdot(x_ah, sop(x_ah)).real, 1e-300))
                 x_qn = x
+        if damp_overshoot and curv_last > 1.5:
+            print(f'damping: the last step saw {curv_last:.2f} times the model curvature, step halved')
+            x = 0.5 * x
         t2m = log.timer('Solving Super-CI equation', *t_solve)
         _tick('AH Davidson + L-BFGS (total)', t_solve[1])
 
@@ -916,6 +926,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
         # match is tested to 1e-6, far below anything that matters for Q)
         STEP_MATCH_TOL = 1e-6
         xhx = None
+        fac = 1.0
         if x_qn is not None:
             fac = np.vdot(x_qn, x).real / max(np.vdot(x_qn, x_qn).real, 1e-300)
             if norm(x - fac * x_qn) <= STEP_MATCH_TOL * norm(x):
@@ -928,10 +939,12 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
         norm_rot = norm(dr)
         if q_model is None:
             rho = None
+            curv_last = 1.0
             print(f'Energy change {de:.4e}, no model energy for this step')
             print(f'trust region: |dr| = {norm_rot:.4e}, trust radius = {trust_radius:.4e}')
         else:
             rho = de / q_model if q_model < 0 else -1.0
+            curv_last = min(max((2. - rho * (2. - fac)) / fac, 1.0), 4.0) if (q_model < 0 and 0 < fac < 1.999) else 1.0
             print(f'Energy change {de:.4e}, predicted change {q_model:.4e}')
             print(f'trust region: |dr| = {norm_rot:.4e}, trust radius = {trust_radius:.4e}, rho = {rho:.3f}')
         if de > conv_tol and reject_uphill:
