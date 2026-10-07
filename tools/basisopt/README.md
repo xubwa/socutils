@@ -48,6 +48,23 @@ reference the same set with the tight region of the optimised l saturated.
     new = contract.contract('Xe', prims, pattern, kind='so', name='PWCVQZ-SO')
     contract.compare(new, ref); genbas.append('GENBAS', new)
 
+Command line (appends an entry to a GENBAS file):
+
+    python -m socutils.tools.basisopt.contract O --basis aug-cc-pvtz --add p:225.713 \
+           --kind sog --name APVTZ+P1-SOG --out GENBAS --check
+    python -m socutils.tools.basisopt.contract Xe --genbas GENBAS --entry XE:PWCVQZ-SO \
+           --kind so --name PWCVQZ-SO-NEW --out GENBAS.new --compare
+
+The primitives and the contraction pattern come from a PySCF basis-set name (`--basis`) or
+an existing GENBAS entry (`--genbas/--entry`); `--add` merges new primitives, which enter
+the contracted functions only (`--uncontract-added` keeps them as primitives too).
+`--check` prints the contraction error of the occupied spinor energies and of the
+spin-orbit splittings (uncontracted X2CAMF-Gaunt Fock matrix diagonalised in the
+contracted space).  For O aug-cc-pVTZ + p(225.713) the 2p splitting keeps 0.99944 (SF
+contraction), 0.99970 (SF, tight p also uncontracted) and 0.99991 (j-adapted) of the
+uncontracted value.  Only occupied atomic orbitals can be contracted: a pattern asking for
+more contracted functions than occupied shells is refused.
+
 Recipe: atomic X2C-1e HF in the primitives, occupied atomic orbitals = contracted functions,
 chosen primitives appended uncontracted.  `kind='sf'`: SF-X2C-1e; `'so'`, `'sog'`, `'sob'`:
 X2C-1e + X2CAMF spin-orbit integrals of a 4c DC / DCG / DCB DHF, p1/2-type contractions
