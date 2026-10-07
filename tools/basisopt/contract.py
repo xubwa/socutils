@@ -163,7 +163,7 @@ def compare(a, b):
     return out
 
 
-def contraction_error(entry, element, hamiltonian='x2camf-g', gau_nuc=False):
+def contraction_error(entry, element, hamiltonian='x2camf-g', gau_nuc=False, result=None):
     """Spinor energies of the occupied shells in the contracted space of `entry` against the
     uncontracted primitives: the converged (fractional-occupation) two-component Fock matrix
     of the uncontracted atom is diagonalised in the span of the contracted functions of each
@@ -173,7 +173,8 @@ def contraction_error(entry, element, hamiltonian='x2camf-g', gau_nuc=False):
     Returns [(n, l, two_j, eps_uncontracted, eps_contracted)]."""
     import scipy.linalg
     prims = {l: list(e) for l, (e, c) in entry.shells.items()}
-    r = engine.atom(element, prims, hamiltonian, gau_nuc=gau_nuc)
+    # `result`: an engine.atom() result in the same primitives, to avoid recomputing it
+    r = result or engine.atom(element, prims, hamiltonian, gau_nuc=gau_nuc)
     so = entry.so_info()
     out = []
     for b in r.blocks:
