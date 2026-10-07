@@ -66,7 +66,10 @@ uncontracted value.  Only occupied atomic orbitals can be contracted: a pattern 
 more contracted functions than occupied shells is refused.
 
 Recipe: atomic X2C-1e HF in the primitives, occupied atomic orbitals = contracted functions,
-chosen primitives appended uncontracted.  `kind='sf'`: SF-X2C-1e; `'so'`, `'sog'`, `'sob'`:
+chosen primitives appended uncontracted.  Default `kind='sog'` (use it for DCG and DCB:
+rare gases Ne-Og with dyall-v3z, SOG vs SOB contractions differ by < 1.2e-6 in the valence
+splitting, SO vs SOG by up to 5e-4 and by mEh in the spinor energies of heavy atoms).
+`kind='sf'`: SF-X2C-1e; `'so'`, `'sog'`, `'sob'`:
 X2C-1e + X2CAMF spin-orbit integrals of a 4c DC / DCG / DCB DHF, p1/2-type contractions
 first, and the GENBAS comment line "nl  l n ..." read by
 `socutils.tools.basis_parser.parse_genbas(..., so_basis=True)`.

@@ -7,7 +7,7 @@ Objectives (smaller is better):
   energy  the atomic SCF energy.
 
 Command line, e.g.
-  python -m socutils.tools.basisopt.optimize O aug-cc-pvtz --add p:1 --ham dcb
+  python -m socutils.tools.basisopt.optimize O aug-cc-pvtz --add p:1 --ham dcg
 """
 import argparse
 
@@ -59,7 +59,7 @@ def all_targets(result):
 class TightOptimizer:
     """Optimise `add` = {l: number of new primitives} on top of `prims` = {l: exponents}."""
 
-    def __init__(self, element, prims, add, hamiltonian='dcb', objective='so', targets='valence',
+    def __init__(self, element, prims, add, hamiltonian='dcg', objective='so', targets='valence',
                  weights=None, gau_nuc=True, sat_ratio=2.0, verbose=1, **atom_kwargs):
         self.element = element
         self.prims = {l: sorted(v, reverse=True) for l, v in prims.items()}
@@ -160,7 +160,7 @@ def main():
     ap.add_argument('element')
     ap.add_argument('basis', help='PySCF basis-set name; its primitives are the fixed part')
     ap.add_argument('--add', required=True, help='new primitives per l, e.g. p:2,d:1')
-    ap.add_argument('--ham', default='dcb', choices=sorted(engine.HAMILTONIANS))
+    ap.add_argument('--ham', default='dcg', choices=sorted(engine.HAMILTONIANS))
     ap.add_argument('--objective', default='so', choices=('so', 'energy'))
     ap.add_argument('--targets', default='valence',
                     help="'valence', 'all', or shells such as 2p,3p,3d")

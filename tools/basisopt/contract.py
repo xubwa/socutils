@@ -83,7 +83,7 @@ def add_primitives(prims, pattern, added, uncontract_added=False):
     return prims, pattern
 
 
-def contract(element, prims, pattern, kind='sf', aoc=True, gau_nuc=False, name=None,
+def contract(element, prims, pattern, kind='sog', aoc=True, gau_nuc=False, name=None,
              zero_uncontracted=False, **atom_kwargs):
     """Contracted basis as a genbas.Entry.
 
@@ -91,7 +91,10 @@ def contract(element, prims, pattern, kind='sf', aoc=True, gau_nuc=False, name=N
     pattern : {l: (n, [primitive indices kept uncontracted])}; n = contracted functions per
               l (spin-free) or per kappa (j-adapted, l >= 1); l absent from pattern or with
               n = 0 stay fully uncontracted.  Indices refer to exponents in descending order.
-    kind    : 'sf', 'so', 'sog' or 'sob'.
+    kind    : 'sog' (default), 'sob', 'so' or 'sf'.  'sog' also serves Dirac-Coulomb-Breit
+              calculations (the gauge term changes the contraction by < 1e-6 in the valence
+              splittings, rare gases Ne-Og); 'so' (no Gaunt) differs in the spinor energies
+              of heavy atoms by mEh and is only for calculations without the Gaunt term.
     aoc     : average-of-configuration SCF for open shells (as the generators do).
     zero_uncontracted : zero the rows of the uncontracted primitives in the contracted
               functions (the stand-alone basisGenerator does this, xx2cbasis does not).
@@ -221,9 +224,9 @@ def main():
                     'p:1223.0/182.873,d:50.1; they enter the contracted functions only')
     ap.add_argument('--uncontract-added', action='store_true',
                     help='also keep the added primitives as uncontracted functions')
-    ap.add_argument('--kind', default='sf', choices=sorted(SUFFIX_HAM),
-                    help='sf: SF-X2C-1e; so / sog / sob: j-adapted with the X2CAMF '
-                    'spin-orbit integrals of a 4c DC / DC-Gaunt / DC-Breit DHF')
+    ap.add_argument('--kind', default='sog', choices=sorted(SUFFIX_HAM),
+                    help='sog (default) / sob / so: j-adapted with the X2CAMF spin-orbit '
+                    'integrals of a 4c DC-Gaunt / DC-Breit / DC DHF; sf: SF-X2C-1e')
     ap.add_argument('--name', required=True, help='name of the new set (without the element)')
     ap.add_argument('--out', default='GENBAS', help='GENBAS file to append to')
     ap.add_argument('--gau-nuc', action='store_true', help='Gaussian nucleus (default: point)')
