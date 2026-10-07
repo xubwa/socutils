@@ -64,6 +64,7 @@ python gw/test/test_spinor_gw.py        # spinor G0W0 (unittest)
 python gw/test/test_spinor_rpa.py
 python x2camf_c/tests/test_smoke.py     # also: make test
 python x2camf_c/tests/test_against_cpp.py
+python x2camf_c/tests/test_atom_scf.py  # atomic-SCF entry point, nuclear models
 ```
 
 The `examples/` directory (numbered `00-…` upward) doubles as runnable
@@ -122,6 +123,14 @@ two-electron corrections on) and only then require the `x2camf` integral backend
   **`grad/`** (analytic gradients), **`cd/`** (Cholesky decomposition),
   **`lo/`**, **`tools/`** (`spinor2sph`, `fragmo_guess`) — all built on the
   spinor/GHF SCF objects above.
+
+- **`tools/basisopt/`** — basis-set tools on the atomic program alone (no
+  molecule): `engine.atom()` wraps the C entry point `x2camf_atom_scf` (energy,
+  spinor energies, coefficients per kappa; point / Gaussian / Fermi / sphere
+  nucleus), `optimize` fits added exponents, `contract` + `genbas` make
+  relativistic (SF or j-adapted) contractions in GENBAS format. It loads
+  `lib/libx2camf_c.so` by path, independent of `SOCUTILS_X2CAMF`. See
+  `tools/basisopt/README.md`.
 
 - **`lib/`** — the pyscf-style home for all bundled C/C++ libraries: thin
   subdirs `lib/x2camf`, `lib/ccsdt`, `lib/zquatev` driven by `lib/CMakeLists.txt`,
