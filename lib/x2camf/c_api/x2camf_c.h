@@ -105,6 +105,42 @@ int x2camf_atm_integrals(int soc_int_flavor, int atom_number, int nshell,
                          const double* exp_a, double speed_of_light,
                          int spin_free, double* const* outs);
 
+/*
+ * One atomic SCF for basis-set work: SCF energy and, for every kappa block,
+ * spinor energies, coefficients, occupations, overlap, Fock, one-electron
+ * and density matrices (electronic solutions only).
+ *
+ *   scf_type  0: 4c DHF (Dirac-Coulomb, + Gaunt / gauge; spin-free if
+ *                spin_free)
+ *             1: X2C-1e HF (spin-free if spin_free)
+ *             2: X2C-1e HF whose one-electron Hamiltonian contains the
+ *                X2CAMF spin-orbit integrals of a preceding 4c DHF (the
+ *                recipe of the j-adapted "-SO" contracted basis sets)
+ *   occ_file  file searched for "%occAMFI_<ATOM>"; the built-in ground
+ *             state occupations are used when it is NULL or has no entry
+ *   nuc_model 0: point nucleus, or the built-in Gaussian nucleus if gau_nuc;
+ *             1 Fermi (nuc_p1 = c, nuc_p2 = a), 2 Gaussian (nuc_p1 =
+ *             exponent), 3 uniform sphere (nuc_p1 = radius), lengths in
+ *             bohr, by radial quadrature (exclusive with gau_nuc)
+ *
+ * The kappa blocks are ordered s1/2, p1/2, p3/2, d3/2, ...  With n_k
+ * primitives in block k and dim_k = 2 n_k (scf_type 0) or n_k (otherwise),
+ * the caller-allocated, row-major outputs are concatenated over the blocks:
+ *   eps, occ                 n_k each (occ: occupation per m_j)
+ *   coeff                    dim_k x n_k each
+ *   ovlp, fock, h1e, den     dim_k x dim_k each
+ * *e_scf is NaN and *converged 0 when the SCF did not converge.
+ */
+int x2camf_atom_scf(int atom_number, int nshell, int nbas, int print_level,
+                    const int* shell, const double* exp_a,
+                    double speed_of_light, int scf_type, int spin_free,
+                    int gaunt, int gauge, int gau_nuc, int aoc,
+                    const char* occ_file, double conv, int max_iter,
+                    int nuc_model, double nuc_p1, double nuc_p2,
+                    double* e_scf, int* converged, double* eps, double* occ,
+                    double* coeff, double* ovlp, double* fock, double* h1e,
+                    double* den);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

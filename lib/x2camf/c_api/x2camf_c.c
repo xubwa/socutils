@@ -9,6 +9,7 @@
 
 #include "x2camf_c.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -322,4 +323,124 @@ int x2camf_atm_integrals(int soc_int_flavor, int atom_number, int nshell,
     dhf_sph_free(scfer);
     int_sph_free(intor);
     return ret;
+}
+
+static DHF_SPH* new_scf(INT_SPH* intor, const char* occ_file, int print_level,
+                        bool spinFree, bool twoC, bool Gaunt, bool gauge,
+                        bool gauNuc, bool aoc)
+{
+    const bool allint = true;
+    if (aoc)
+        return dhf_sph_ca_new(intor, occ_file, print_level, spinFree, twoC,
+                              Gaunt, gauge, allint, gauNuc);
+    return dhf_sph_new(intor, occ_file, print_level, spinFree, twoC, Gaunt,
+                       gauge, allint, gauNuc);
+}
+
+int x2camf_atom_scf(int atom_number, int nshell, int nbas, int print_level,
+                    const int* shell, const double* exp_a,
+                    double speed_of_light, int scf_type, int spin_free,
+                    int gaunt, int gauge, int gau_nuc, int aoc,
+                    const char* occ_file, double conv, int max_iter,
+                    int nuc_model, double nuc_p1, double nuc_p2,
+                    double* e_scf, int* converged, double* eps, double* occ,
+                    double* coeff, double* ovlp, double* fock, double* h1e,
+                    double* den)
+{
+    int err = check_args(atom_number, nbas, shell, exp_a);
+    if (err != X2CAMF_SUCCESS) return err;
+    if (e_scf == NULL || converged == NULL || eps == NULL || occ == NULL ||
+        coeff == NULL || ovlp == NULL || fock == NULL || h1e == NULL ||
+        den == NULL)
+        return X2CAMF_ERR_BAD_ARGUMENT;
+    if (scf_type < 0 || scf_type > 2) return X2CAMF_ERR_BAD_ARGUMENT;
+    if (nuc_model < X2C_NUC_POINT || nuc_model > X2C_NUC_SPHERE ||
+        (nuc_model != X2C_NUC_POINT && (gau_nuc || nuc_p1 <= 0.0)))
+        return X2CAMF_ERR_BAD_ARGUMENT;
+    if (occ_file == NULL) occ_file = "";
+    if (conv <= 0.0) conv = 1e-9;
+    if (max_iter <= 0) max_iter = 100;
+
+    set_speed_of_light(speed_of_light);
+    const bool twoC = (scf_type != 0), renormS = false;
+    INT_SPH* intor = int_sph_new(atom_number, nshell, nbas, shell, exp_a);
+    if (nuc_model != X2C_NUC_POINT)
+        int_sph_set_nuclear_model(intor, nuc_model, nuc_p1, nuc_p2);
+
+    DHF_SPH* scfer;
+    if (scf_type == 0)
+        scfer = new_scf(intor, occ_file, print_level, spin_free != 0, false,
+                        gaunt != 0, gauge != 0, gau_nuc != 0, aoc != 0);
+    else if (scf_type == 1)
+        scfer = new_scf(intor, occ_file, print_level, spin_free != 0, true,
+                        false, false, gau_nuc != 0, aoc != 0);
+    else
+    {
+        scfer = new_scf(intor, occ_file, print_level, false, true, false,
+                        false, gau_nuc != 0, aoc != 0);
+        DHF_SPH* scfer2 = dhf_sph_new(intor, occ_file, print_level, false,
+                                      false, gaunt != 0, gauge != 0, true,
+                                      gau_nuc != 0);
+        scfer2->convControl = conv;
+        scfer2->maxIter = max_iter;
+        dhf_sph_run_scf(scfer2, false, renormS);
+        vmat_t h1 = dhf_sph_get_h1e_4c(scfer);
+        vmat_t amfso = dhf_sph_get_amfi_unc(scfer2, intor, false,
+                                            "partialFock", gaunt != 0,
+                                            gauge != 0, false, false);
+        for (int ir = 0; ir < h1.n; ir++)
+            mat_add_inplace(h1.m[ir], amfso.m[ir], 1.0);
+        dhf_sph_set_h1e_4c(scfer, &h1, false);
+        vmat_free(&h1);
+        vmat_free(&amfso);
+        dhf_sph_free(scfer2);
+    }
+    scfer->convControl = conv;
+    scfer->maxIter = max_iter;
+    dhf_sph_run_scf(scfer, twoC, renormS);
+
+    /* ene_scf is only evaluated on convergence */
+    *converged = scfer->converged ? 1 : 0;
+    *e_scf = scfer->converged ? scfer->ene_scf : NAN;
+
+    const irrep_jm* irr = scfer->irrep_list;
+    for (int ir = 0; ir < scfer->Nirrep; ir += irr[ir].two_j + 1)
+    {
+        const int n = irr[ir].size, dim = twoC ? n : 2 * n;
+        const int shift = twoC ? 0 : n; /* electronic solutions */
+        const mat_t c = scfer->coeff.m[ir];
+        for (int i = 0; i < n; i++)
+        {
+            eps[i] = scfer->ene_orb.v[ir].d[shift + i];
+            occ[i] = i < scfer->occNumber.v[ir].n
+                         ? scfer->occNumber.v[ir].d[i] : 0.0;
+        }
+        for (int i = 0; i < dim; i++)
+            for (int j = 0; j < n; j++)
+                coeff[(size_t)i * n + j] = M(c, i, shift + j);
+        const mat_t* src[4] = {&scfer->overlap_4c.m[ir], &scfer->fock_4c.m[ir],
+                               &scfer->h1e_4c.m[ir], &scfer->density.m[ir]};
+        double* dst[4] = {ovlp, fock, h1e, den};
+        for (int k = 0; k < 4; k++)
+        {
+            if (src[k]->rows != dim || src[k]->cols != dim)
+            {
+                dhf_sph_free(scfer);
+                int_sph_free(intor);
+                return X2CAMF_ERR_DIM_MISMATCH;
+            }
+            memcpy(dst[k], src[k]->d, (size_t)dim * dim * sizeof(double));
+        }
+        eps += n;
+        occ += n;
+        coeff += (size_t)dim * n;
+        ovlp += (size_t)dim * dim;
+        fock += (size_t)dim * dim;
+        h1e += (size_t)dim * dim;
+        den += (size_t)dim * dim;
+    }
+
+    dhf_sph_free(scfer);
+    int_sph_free(intor);
+    return X2CAMF_SUCCESS;
 }

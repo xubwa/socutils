@@ -36,7 +36,29 @@ typedef struct
     int size_gtoc, size_gtou, size_shell;
     int size_gtoc_spinor, size_gtou_spinor;
     const char* atomName; /* points into elem_list */
+    /* Spherical nuclear charge distribution treated by radial quadrature
+       (see int_sph_set_nuclear_model); nucModel == 0: point nucleus. */
+    int nucModel;
+    double nucP1, nucP2;
+    int nucQuadN;
+    double *nucQuadR, *nucQuadW; /* nodes, weights * (1 - Z_eff/Z) */
 } INT_SPH;
+
+/* Nuclear models integrated numerically, lengths in bohr:
+     1 Fermi, rho ~ 1/(1+exp((r-c)/a)) with p1 = c, p2 = a (as in GRASP)
+     2 Gaussian, p1 = exponent
+     3 uniformly charged sphere, p1 = radius
+   They replace the point nucleus in "nuc_attra" and "s_p_nuc_s_p*" of
+   int_sph_get_h1e (use gaussian_nuc = false in dhf_sph_new). */
+#define X2C_NUC_POINT 0
+#define X2C_NUC_FERMI 1
+#define X2C_NUC_GAUSSIAN 2
+#define X2C_NUC_SPHERE 3
+void int_sph_set_nuclear_model(INT_SPH* self, int model, double p1, double p2);
+/* Z_eff(r)/Z = -r V(r)/Z */
+double int_sph_nuc_zeff(const INT_SPH* self, double r);
+/* int_0^inf r^n exp(-a r^2) Z_eff(r)/Z dr */
+double int_sph_nuc_radial(const INT_SPH* self, int n, double a);
 
 /* Programmatic constructor (uncontracted basis), mirrors
    INT_SPH::INT_SPH(atom_number, nshell, nbas, shell, exp_a). */

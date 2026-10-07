@@ -77,3 +77,11 @@ def atm_integrals(input_string, atom_number, nshell, nbas, printLevel,
                      (input_string, atom_number, nshell, nbas, printLevel,
                       shell, exp_a),
                      dict(speed_of_light=speed_of_light, spin_free=spin_free))
+
+
+def atom_scf(atom_number, nshell, nbas, printLevel, shell, exp_a, **kwargs):
+    '''One atomic SCF for basis-set work (energy, spinor energies and
+    coefficients per kappa block); see x2camf._c_backend.atom_scf.  Not timed:
+    it is called hundreds of times by the exponent optimiser.'''
+    return backend.load_backend().atom_scf(
+        atom_number, nshell, nbas, printLevel, shell, exp_a, **kwargs)

@@ -113,7 +113,145 @@ void int_sph_free(INT_SPH* self)
     }
     free(self->shell_list);
     free(self->irrep_list);
+    free(self->nucQuadR);
+    free(self->nucQuadW);
     free(self);
+}
+
+/*
+    Nuclear charge distributions treated by radial quadrature
+*/
+
+/* sum_{n>=1} (-1)^n exp(n f) / n^k, k = 2, 3, for f <= 0 (ES of GRASP) */
+static void fermi_series(double f, double* s2, double* s3)
+{
+    double fase = 1.0;
+    *s2 = 0.0;
+    *s3 = 0.0;
+    for (int n = 1; n < 100000; n++)
+    {
+        fase = -fase;
+        double term2 = fase * exp(n * f) / n / n, last = *s2;
+        *s2 += term2;
+        *s3 += term2 / n;
+        if (fabs(*s2) == fabs(last)) break;
+    }
+}
+
+double int_sph_nuc_zeff(const INT_SPH* self, double r)
+{
+    if (self->nucModel == X2C_NUC_FERMI)
+    {
+        /* closed form of NUCPOT in GRASP */
+        const double c = self->nucP1, a = self->nucP2, abc = a / c,
+                     abc2 = abc * abc, abc3 = abc2 * abc;
+        const double pi2 = M_PI * M_PI;
+        double s2, s3, s2m, s3m;
+        fermi_series(-c / a, &s2m, &s3m);
+        const double dmsas = -6.0 * abc3 * s3m,
+                     en = 1.0 + abc2 * pi2 + dmsas, rbc = r / c;
+        if (rbc <= 1.0)
+        {
+            fermi_series((r - c) / a, &s2, &s3);
+            return (dmsas + 6.0 * abc3 * s3 +
+                    rbc * (1.5 + 0.5 * pi2 * abc2 - 3.0 * abc2 * s2 -
+                           0.5 * rbc * rbc)) / en;
+        }
+        fermi_series(-(r - c) / a, &s2, &s3);
+        return 1.0 + 3.0 * abc2 * (rbc * s2 + 2.0 * abc * s3) / en;
+    }
+    if (self->nucModel == X2C_NUC_GAUSSIAN) return erf(sqrt(self->nucP1) * r);
+    if (self->nucModel == X2C_NUC_SPHERE)
+        return r < self->nucP1
+                   ? 0.5 * r / self->nucP1 *
+                         (3.0 - r * r / self->nucP1 / self->nucP1)
+                   : 1.0;
+    return 1.0;
+}
+
+static int cmp_double(const void* a, const void* b)
+{
+    const double x = *(const double*)a, y = *(const double*)b;
+    return (x > y) - (x < y);
+}
+
+void int_sph_set_nuclear_model(INT_SPH* self, int model, double p1, double p2)
+{
+    self->nucModel = model;
+    self->nucP1 = p1;
+    self->nucP2 = p2;
+    free(self->nucQuadR);
+    free(self->nucQuadW);
+    self->nucQuadR = self->nucQuadW = NULL;
+    self->nucQuadN = 0;
+    if (model == X2C_NUC_POINT) return;
+    /* range beyond which Z_eff = Z to machine precision, and the length
+       scale to resolve */
+    double rcut, scale;
+    if (model == X2C_NUC_FERMI) { rcut = p1 + 45.0 * p2; scale = p2; }
+    else if (model == X2C_NUC_GAUSSIAN)
+    { rcut = 7.0 / sqrt(p1); scale = 0.25 / sqrt(p1); }
+    else { rcut = p1; scale = p1 / 32.0; }
+    /* panels: uniform ones resolving the distribution, refined dyadically
+       towards r = 0 for integrands with very large Gaussian exponents */
+    const int nuni = (int)ceil(rcut / scale);
+    double* edges = (double*)malloc((size_t)(nuni + 64) * sizeof(double));
+    int nedge = 0;
+    edges[nedge++] = 0.0;
+    for (int i = 1; i <= nuni; i++) edges[nedge++] = rcut * i / nuni;
+    for (double x = rcut / nuni / 2.0; x > rcut * 1e-14; x /= 2.0)
+        edges[nedge++] = x;
+    qsort(edges, (size_t)nedge, sizeof(double), cmp_double);
+    /* 16-point Gauss-Legendre nodes by Newton iteration */
+    enum { NGL = 16 };
+    double xg[NGL], wg[NGL];
+    for (int i = 0; i < NGL; i++)
+    {
+        double x = cos(M_PI * (i + 0.75) / (NGL + 0.5)), dp = 1.0;
+        for (int it = 0; it < 100; it++)
+        {
+            double p0 = 1.0, p1_ = x;
+            for (int k = 2; k <= NGL; k++)
+            {
+                double p2_ = ((2 * k - 1) * x * p1_ - (k - 1) * p0) / k;
+                p0 = p1_;
+                p1_ = p2_;
+            }
+            dp = NGL * (x * p1_ - p0) / (x * x - 1.0);
+            double dx = p1_ / dp;
+            x -= dx;
+            if (fabs(dx) < 1e-16) break;
+        }
+        xg[i] = x;
+        wg[i] = 2.0 / ((1.0 - x * x) * dp * dp);
+    }
+    self->nucQuadN = (nedge - 1) * NGL;
+    self->nucQuadR = (double*)malloc((size_t)self->nucQuadN * sizeof(double));
+    self->nucQuadW = (double*)malloc((size_t)self->nucQuadN * sizeof(double));
+    int iq = 0;
+    for (int ip = 0; ip + 1 < nedge; ip++)
+    {
+        const double lo = edges[ip], hi = edges[ip + 1];
+        for (int i = 0; i < NGL; i++)
+        {
+            const double r = 0.5 * (hi + lo) + 0.5 * (hi - lo) * xg[i];
+            self->nucQuadR[iq] = r;
+            self->nucQuadW[iq] =
+                0.5 * (hi - lo) * wg[i] * (1.0 - int_sph_nuc_zeff(self, r));
+            iq++;
+        }
+    }
+    free(edges);
+}
+
+double int_sph_nuc_radial(const INT_SPH* self, int n, double a)
+{
+    /* point-nucleus integral minus the part screened inside the nucleus */
+    double corr = 0.0;
+    for (int i = 0; i < self->nucQuadN; i++)
+        corr += self->nucQuadW[i] * pow(self->nucQuadR[i], n) *
+                exp(-a * self->nucQuadR[i] * self->nucQuadR[i]);
+    return int_sph_auxiliary_1e(n, a) - corr;
 }
 
 /*

@@ -101,6 +101,17 @@ _lib.x2camf_atm_integrals.argtypes = [
     ctypes.POINTER(_c_double_p)]
 
 
+_c_int_out = ctypes.POINTER(ctypes.c_int)
+_HAS_ATOM_SCF = hasattr(_lib, "x2camf_atom_scf")   # absent in older builds
+if _HAS_ATOM_SCF:
+    _lib.x2camf_atom_scf.restype = ctypes.c_int
+    _lib.x2camf_atom_scf.argtypes = (
+        [ctypes.c_int] * 4 + [_c_int_p, _c_double_p, ctypes.c_double]
+        + [ctypes.c_int] * 6 + [ctypes.c_char_p, ctypes.c_double, ctypes.c_int]
+        + [ctypes.c_int, ctypes.c_double, ctypes.c_double]
+        + [_c_double_p, _c_int_out] + [_c_double_p] * 7)
+
+
 def _check(ierr, name):
     if ierr != 0:
         msg = _ERROR_MESSAGES.get(ierr, "unknown error code %d" % ierr)
@@ -190,3 +201,67 @@ def atm_integrals(input_string, atom_number, nshell, nbas, printLevel,
         float(speed_of_light), int(bool(spin_free)), out_ptrs)
     _check(ierr, "x2camf_atm_integrals")
     return outs
+
+
+def atom_scf(atom_number, nshell, nbas, printLevel, shell, exp_a,
+             speed_of_light=SPEED_OF_LIGHT_DEFAULT, scf_type=0,
+             spin_free=False, gaunt=False, gauge=False, gau_nuc=False,
+             aoc=False, occ_file="", conv=1e-9, max_iter=100,
+             nuc_model=0, nuc_p1=0.0, nuc_p2=0.0):
+    '''One atomic SCF: energy and, per kappa block, spinor energies,
+    coefficients, occupations, overlap, Fock, h1e and density matrices.
+
+    scf_type 0: 4c DHF (DC, +Gaunt/gauge, or spin-free); 1: X2C-1e HF;
+    2: X2C-1e HF + X2CAMF spin-orbit integrals of a 4c DHF.
+    nuc_model 0: point (or the built-in Gaussian nucleus with gau_nuc),
+    1 Fermi (c, a), 2 Gaussian (exponent), 3 uniform sphere (radius); bohr.
+
+    Returns {'e_scf', 'converged', 'blocks'}; each block is a dict with
+    l, two_j, exp, e, c, occ, ovlp, fock, h1e, den (see x2camf_c.h).
+    '''
+    if not _HAS_ATOM_SCF:
+        raise RuntimeError("this libx2camf_c has no x2camf_atom_scf: "
+                           "rebuild the socutils libraries (make)")
+    shell, exp_a, _ = _prepare_basis(shell, exp_a)
+    if numpy.any(numpy.diff(shell) < 0):
+        raise ValueError("shell must be sorted by angular momentum")
+    twoC = int(scf_type) != 0
+    # kappa blocks: (l, two_j, primitives), s1/2, p1/2, p3/2, d3/2, ...
+    layout = []
+    for l in range(int(nshell)):
+        n = int(numpy.count_nonzero(shell == l))
+        for two_j in ([1] if l == 0 else [2 * l - 1, 2 * l + 1]):
+            layout.append((l, two_j, n))
+    dims = [n if twoC else 2 * n for _, _, n in layout]
+    n1 = sum(n for _, _, n in layout)
+    eps, occ = numpy.zeros(n1), numpy.zeros(n1)
+    coeff = numpy.zeros(sum(d * n for d, (_, _, n) in zip(dims, layout)))
+    mats = [numpy.zeros(sum(d * d for d in dims)) for _ in range(4)]
+    e_scf = ctypes.c_double(0.0)
+    converged = ctypes.c_int(0)
+    ierr = _lib.x2camf_atom_scf(
+        int(atom_number), int(nshell), int(nbas), int(printLevel),
+        _as_int_p(shell), _as_double_p(exp_a), float(speed_of_light),
+        int(scf_type), int(bool(spin_free)), int(bool(gaunt)),
+        int(bool(gauge)), int(bool(gau_nuc)), int(bool(aoc)),
+        os.fsencode(occ_file or ""), float(conv), int(max_iter),
+        int(nuc_model), float(nuc_p1), float(nuc_p2),
+        ctypes.byref(e_scf), ctypes.byref(converged), _as_double_p(eps),
+        _as_double_p(occ), _as_double_p(coeff),
+        *[_as_double_p(m) for m in mats])
+    _check(ierr, "x2camf_atom_scf")
+    blocks, i1, ic, im = [], 0, 0, 0
+    for (l, two_j, n), d in zip(layout, dims):
+        blocks.append(dict(
+            l=l, two_j=two_j, exp=exp_a[shell == l].copy(),
+            e=eps[i1:i1 + n].copy(), occ=occ[i1:i1 + n].copy(),
+            c=coeff[ic:ic + d * n].reshape(d, n).copy(),
+            ovlp=mats[0][im:im + d * d].reshape(d, d).copy(),
+            fock=mats[1][im:im + d * d].reshape(d, d).copy(),
+            h1e=mats[2][im:im + d * d].reshape(d, d).copy(),
+            den=mats[3][im:im + d * d].reshape(d, d).copy()))
+        i1 += n
+        ic += d * n
+        im += d * d
+    return dict(e_scf=e_scf.value, converged=bool(converged.value),
+                blocks=blocks)

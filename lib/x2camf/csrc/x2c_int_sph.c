@@ -69,6 +69,20 @@ vmat_t int_sph_get_h1e(const INT_SPH* self, const char* intType)
             {
                 auxiliary_1e_list[5] = 0.0;
             }
+            /* r^n exp(-a r^2) Z_eff(r)/Z integrals of a numerically treated
+               nuclear model (equal to auxiliary_1e_list for a point nucleus) */
+            double nuc_1e_list[6];
+            memcpy(nuc_1e_list, auxiliary_1e_list, sizeof(nuc_1e_list));
+            if (self->nucModel != X2C_NUC_POINT &&
+                strstr(intType, "nuc") != NULL &&
+                strstr(intType, "nucGau") == NULL)
+            {
+                nuc_1e_list[1] = int_sph_nuc_radial(self, 2 * ll + 1, a1 + a2);
+                nuc_1e_list[3] = int_sph_nuc_radial(self, 2 * ll + 3, a1 + a2);
+                if (ll != 0)
+                    nuc_1e_list[5] =
+                        int_sph_nuc_radial(self, 2 * ll - 1, a1 + a2);
+            }
             for (int twojj = abs(2 * ll - 1); twojj <= 2 * ll + 1;
                  twojj = twojj + 2)
             {
@@ -79,21 +93,21 @@ vmat_t int_sph_get_h1e(const INT_SPH* self, const char* intType)
 
                 if (strcmp(intType, "s_p_nuc_s_p") == 0)
                 {
-                    M(h1e_mat, ii, jj) = 4 * a1 * a2 * auxiliary_1e_list[3];
+                    M(h1e_mat, ii, jj) = 4 * a1 * a2 * nuc_1e_list[3];
                     if (ll != 0)
                         M(h1e_mat, ii, jj) +=
-                            pow(ll + kappa + 1.0, 2) * auxiliary_1e_list[5] -
+                            pow(ll + kappa + 1.0, 2) * nuc_1e_list[5] -
                             2.0 * (ll + kappa + 1.0) * (a1 + a2) *
-                                auxiliary_1e_list[1];
+                                nuc_1e_list[1];
                     M(h1e_mat, ii, jj) *= -self->atomNumber;
                 }
                 else if (strcmp(intType, "s_p_nuc_s_p_sf") == 0)
                 {
-                    M(h1e_mat, ii, jj) = 4 * a1 * a2 * auxiliary_1e_list[3];
+                    M(h1e_mat, ii, jj) = 4 * a1 * a2 * nuc_1e_list[3];
                     if (ll != 0)
                         M(h1e_mat, ii, jj) +=
-                            (2 * ll * ll + ll) * auxiliary_1e_list[5] -
-                            2.0 * ll * (a1 + a2) * auxiliary_1e_list[1];
+                            (2 * ll * ll + ll) * nuc_1e_list[5] -
+                            2.0 * ll * (a1 + a2) * nuc_1e_list[1];
                     M(h1e_mat, ii, jj) *= -self->atomNumber;
                 }
                 else if (strcmp(intType, "s_p_nuc_s_p_sd") == 0)
@@ -101,7 +115,7 @@ vmat_t int_sph_get_h1e(const INT_SPH* self, const char* intType)
                     M(h1e_mat, ii, jj) = 0.0;
                     if (ll != 0)
                         M(h1e_mat, ii, jj) +=
-                            (kappa + 1.0) * auxiliary_1e_list[5];
+                            (kappa + 1.0) * nuc_1e_list[5];
                     M(h1e_mat, ii, jj) *= -self->atomNumber;
                 }
                 else if (strcmp(intType, "s_p_s_p") == 0)
@@ -117,7 +131,7 @@ vmat_t int_sph_get_h1e(const INT_SPH* self, const char* intType)
                     M(h1e_mat, ii, jj) = auxiliary_1e_list[2];
                 else if (strcmp(intType, "nuc_attra") == 0)
                     M(h1e_mat, ii, jj) =
-                        -self->atomNumber * auxiliary_1e_list[1];
+                        -self->atomNumber * nuc_1e_list[1];
                 else if (strcmp(intType, "nucGau_attra") == 0)
                 {
                     double a_13 =

@@ -94,3 +94,15 @@ def atm_integrals(input_string, atom_number, nshell, nbas, printLevel,
                              int(nbas), int(printLevel), shell, exp_a,
                              speed_of_light=float(speed_of_light),
                              spin_free=bool(spin_free))
+
+
+def atom_scf(atom_number, nshell, nbas, printLevel, shell, exp_a, **kwargs):
+    '''Atomic SCF (see _c_backend.atom_scf).  Only C++ builds that carry the
+    atom_scf entry point (the basis-opt development branch) provide it.'''
+    lib = _load()
+    if not hasattr(lib, "atom_scf"):
+        raise RuntimeError("the loaded C++ libx2camf has no atom_scf")
+    shell, exp_a = _shaped(shell, exp_a)
+    res = lib.atom_scf(int(atom_number), int(nshell), int(nbas),
+                       int(printLevel), shell, exp_a, **kwargs)
+    return dict(res)
