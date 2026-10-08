@@ -66,6 +66,28 @@ def pattern_from_pyscf(element, basis):
     return prims, pattern
 
 
+def pattern_occupied(element, prims, keep=None, gau_nuc=False):
+    """Contraction pattern for an uncontracted set: every occupied atomic orbital contracted,
+    and the primitives `keep` = {l: [k, ...]} left uncontracted, counted FROM THE SMALLEST
+    exponent (1 = most diffuse), which is how Dyall's papers prescribe contracted sets
+    ("add the first and third s primitives ...").  Angular momenta without occupied
+    orbitals stay uncontracted."""
+    nocc = {}
+    for n_, l_, two_j, f, e in engine.atom(element, prims, 'sfx2c1e', gau_nuc=gau_nuc).occupied():
+        nocc[l_] = max(nocc.get(l_, 0), n_ - l_)
+    pattern = {}
+    for l, exps in prims.items():
+        n = len(exps)
+        if l not in nocc:
+            pattern[l] = (0, list(range(n)))
+            continue
+        ks = sorted(set((keep or {}).get(l, [])))
+        if ks and (ks[0] < 1 or ks[-1] > n):
+            raise ValueError('l = %d: primitive numbers must be in 1..%d' % (l, n))
+        pattern[l] = (nocc[l], sorted(n - k for k in ks))
+    return pattern
+
+
 def add_primitives(prims, pattern, added, uncontract_added=False):
     """New (prims, pattern) with the exponents `added` = {l: [...]} merged in.  The added
     primitives enter the contracted functions only, unless uncontract_added."""
@@ -220,6 +242,12 @@ def main():
     src.add_argument('--basis', help='PySCF basis-set name')
     src.add_argument('--genbas', help='GENBAS file (with --entry)')
     src.add_argument('--entry', help="entry of --genbas, e.g. 'O:APVTZ-X2C'")
+    ap.add_argument('--occupied', action='store_true',
+                    help='for an uncontracted source: contract every occupied atomic orbital '
+                    '(instead of taking the contraction pattern of the source)')
+    ap.add_argument('--keep', default='', help='with --occupied: primitives left uncontracted, '
+                    'counted from the smallest exponent as in Dyall\'s prescriptions, '
+                    'e.g. "s:1,3;p:1,3;d:1,2;f:1,3"')
     ap.add_argument('--add', default='', help='added primitives, e.g. p:225.713 or '
                     'p:1223.0/182.873,d:50.1; they enter the contracted functions only')
     ap.add_argument('--uncontract-added', action='store_true',
@@ -248,6 +276,10 @@ def main():
         prims, pattern = pattern_from_pyscf(args.element, args.basis)
     else:
         ap.error('give --basis or --genbas/--entry')
+    if args.occupied:
+        keep = {'spdfghi'.index(item.split(':')[0]): [int(x) for x in item.split(':')[1].split(',')]
+                for item in args.keep.split(';') if item}
+        pattern = pattern_occupied(args.element, prims, keep, gau_nuc=args.gau_nuc)
     if args.add:
         added = {'spdfghi'.index(item.split(':')[0]): [float(x) for x in item.split(':')[1].split('/')]
                  for item in args.add.split(',')}

@@ -83,6 +83,19 @@ contraction), 0.99970 (SF, tight p also uncontracted) and 0.99991 (j-adapted) of
 uncontracted value.  Only occupied atomic orbitals can be contracted: a pattern asking for
 more contracted functions than occupied shells is refused.
 
+Contracting an uncontracted (Dyall) set: `--occupied` contracts every occupied atomic
+orbital, `--keep` leaves primitives uncontracted, counted from the smallest exponent, which
+is the form of the prescriptions in Dyall's papers.  In his sets the core-correlating s, p,
+d functions ARE SCF primitives (dyall.cvNz adds only higher angular momenta to dyall.vNz),
+so core correlation in a contracted set is a matter of which primitives stay uncontracted.
+Lanthanides, triple zeta (Gomes, Dyall, Visscher, TCA 127, 369 (2010), section 4.2):
+
+    # outer valence 5d/6s/6p
+    python -m socutils.tools.basisopt.contract Yb --basis dyall-v3z --occupied --gau-nuc \
+           --keep "s:1,3;p:1,3;d:1,2;f:1,3" --name DYV3Z-OV-SOG --out GENBAS
+    # + inner valence 4f/5s/5p:  --keep "s:1,3,4,6;p:1,3,5,6;d:1,2,3,4,5;f:1,3,4,5"
+    # + core 4d:                 --keep "s:1,3,4,6,7,9;p:1,3,5,6,7,9;d:1,2,3,4,5,7,8;f:1,3,4,5,6,7"
+
 Recipe: atomic X2C-1e HF in the primitives, occupied atomic orbitals = contracted functions,
 chosen primitives appended uncontracted.  Default `kind='sog'` (use it for DCG and DCB:
 rare gases Ne-Og with dyall-v3z, SOG vs SOB contractions differ by < 1.2e-6 in the valence
