@@ -145,3 +145,21 @@ first, and the GENBAS comment line "nl  l n ..." read by
 * O: the 2p spinor-energy splitting against the basis reproduces the ratios of the CASSCF
   3P fine structure to 5e-4 and predicts the O2 zero-field splitting to 0.2 %.
 * Contraction: XE:PWCVQZ-SO of the CFOUR GENBAS reproduced to 5e-9.
+
+## Converting between GENBAS and the PySCF format
+
+`genbas.py` converts in both directions, including the j-adapted ("-SO") sets, for which the
+PySCF form carries kappa (`[l, kappa, [exponent, c, ...], ...]`: kappa = l for j = l-1/2,
+-l-1 for j = l+1/2, 0 for functions shared by both):
+
+    # GENBAS entries -> a Python file with  basis = {'H': [...], 'He': [...]}
+    python -m socutils.tools.basisopt.genbas to-pyscf GENBAS H:DYVTZ-SOG HE:DYVTZ-SOG --out dyvtz_sog.py
+    # PySCF format (such a file, or a basis-set name known to PySCF) -> GENBAS entries
+    python -m socutils.tools.basisopt.genbas to-genbas dyvtz_sog.py H He --name DYVTZ-SOG --out GENBAS
+    python -m socutils.tools.basisopt.genbas to-genbas cc-pvtz O --name PVTZ --out GENBAS
+
+In Python: `genbas.to_pyscf(entry, kappa=True)`, `genbas.from_pyscf(name, basis_list)`,
+`genbas.write_pyscf(path, {element: basis_list})`, `genbas.read_pyscf(path)` (parsed, not
+executed).  `from_pyscf` merges the shells of one l over the union of their exponents, so
+segmented sets become one general contraction per l; the two kappas of an l must have the
+same number of functions (a requirement of the GENBAS format).  GENBAS files carry 8 decimals.

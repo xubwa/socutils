@@ -218,6 +218,11 @@ def contraction_error(entry, element, hamiltonian='x2camf-g', gau_nuc=False, res
 
 
 def print_contraction_error(entry, element, hamiltonian='x2camf-g', gau_nuc=False):
+    if engine.charge(element) == 1:
+        # one electron: the fractional-occupation Fock matrix of the check contains a
+        # self-interaction that the configuration-average SCF of the contraction does not
+        print('  contraction check: not meaningful for a one-electron atom, skipped')
+        return
     rows = contraction_error(entry, element, hamiltonian, gau_nuc)
     print('  contraction check (%s, spinor energies in Eh):' % hamiltonian)
     eps = {}
