@@ -96,6 +96,27 @@ Lanthanides, triple zeta (Gomes, Dyall, Visscher, TCA 127, 369 (2010), section 4
     # + inner valence 4f/5s/5p:  --keep "s:1,3,4,6;p:1,3,5,6;d:1,2,3,4,5;f:1,3,4,5"
     # + core 4d:                 --keep "s:1,3,4,6,7,9;p:1,3,5,6,7,9;d:1,2,3,4,5,7,8;f:1,3,4,5,6,7"
 
+### select: which primitives to leave uncontracted
+
+The ordinal prescriptions of the papers cannot be mapped onto today's library files with
+certainty (the files do not mark SCF primitives; an off-by-one costs 3-10 % of the
+correlation energy in the Yb test).  `select.Selector` chooses the primitives itself:
+
+    from socutils.tools.basisopt.select import Selector, keep_string
+    sel = Selector('Yb', prims, nfrozen=18)              # correlate above orbital 18 (4d ...)
+    keep, hist = sel.greedy(group_frozen=34, target=0.99)             # outer valence: 6s
+    keep, hist = sel.greedy(group_frozen=23, keep=keep, target=0.99)  # + 4f 5s 5p
+    keep, hist = sel.greedy(group_frozen=18, keep=keep, target=0.99)  # + 4d
+    sel.fraction(keep, 23); keep_string(keep)            # -> argument of contract --keep
+
+Greedy: the primitive is released that recovers most of the MP2 correlation energy
+(SF-X2C-1e RHF, PySCF) of the group, relative to the fully uncontracted set.  One SCF and
+one half-transformed integral array serve all candidates (the occupied orbitals are
+contracted functions, so only the virtual space changes): about 1 s per candidate for Yb.
+Yb dyall-v3z, 99 % at each level: outer valence 2s3p3d2f, + inner valence 3s5p5d6f,
++ core 4d 3s5p7d7f (the published list as read from the paper: 2s2p2d2f 85 %,
+4s4p5d4f 95.8 %, 6s6p7d6f 98.7 %).  Closed-shell atoms only.
+
 Recipe: atomic X2C-1e HF in the primitives, occupied atomic orbitals = contracted functions,
 chosen primitives appended uncontracted.  Default `kind='sog'` (use it for DCG and DCB:
 rare gases Ne-Og with dyall-v3z, SOG vs SOB contractions differ by < 1.2e-6 in the valence
