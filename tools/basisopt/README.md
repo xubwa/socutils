@@ -103,19 +103,25 @@ certainty (the files do not mark SCF primitives; an off-by-one costs 3-10 % of t
 correlation energy in the Yb test).  `select.Selector` chooses the primitives itself:
 
     from socutils.tools.basisopt.select import Selector, keep_string
-    sel = Selector('Yb', prims, nfrozen=18)              # correlate above orbital 18 (4d ...)
+    sel = Selector('Yb', prims, nfrozen=18)              # 18 core orbitals never correlated
     keep, hist = sel.greedy(group_frozen=34, target=0.99)             # outer valence: 6s
     keep, hist = sel.greedy(group_frozen=23, keep=keep, target=0.99)  # + 4f 5s 5p
     keep, hist = sel.greedy(group_frozen=18, keep=keep, target=0.99)  # + 4d
     sel.fraction(keep, 23); keep_string(keep)            # -> argument of contract --keep
 
-Greedy: the primitive is released that recovers most of the MP2 correlation energy
-(SF-X2C-1e RHF, PySCF) of the group, relative to the fully uncontracted set.  One SCF and
-one half-transformed integral array serve all candidates (the occupied orbitals are
-contracted functions, so only the virtual space changes): about 1 s per candidate for Yb.
-Yb dyall-v3z, 99 % at each level: outer valence 2s3p3d2f, + inner valence 3s5p5d6f,
-+ core 4d 3s5p7d7f (the published list as read from the paper: 2s2p2d2f 85 %,
-4s4p5d4f 95.8 %, 6s6p7d6f 98.7 %).  Closed-shell atoms only.
+Greedy: the primitive is released that recovers most of the MP2 correlation energy of the
+group, relative to the fully uncontracted set.  Non-canonical MP2 on a fixed reference: the
+determinant is built from the contracted atomic orbitals (open shell high-spin), so no SCF is
+needed per candidate and open-shell atoms are handled; one Fock build and one set of
+half-transformed integrals serve all candidates (semicanonical virtuals in the candidate
+span, singles + doubles).  For closed shells it equals RMP2 (Ar: identical to PySCF).
+Spin-free X2C-1e, meant as a coarse screen; verify the final choice with a spinor method.
+
+Results (dyall-v3z, 99 % per level): Ar valence `s:1,3;p:1,3,4`, + 2s2p
+`s:1,2,3,6;p:1,3,4,5,6`; the Ar lists applied to Cl, S, P, Si recover 99.2-99.3 % (valence)
+and 98.9, 98.8, 98.6, 98.5 % (+2s2p): a pattern selected on a closed-shell atom carries over
+to its neighbours.  Yb: outer valence 2s3p3d2f, + inner valence 3s5p5d6f, + core 4d
+3s5p7d7f (the published list as read from the paper: 85 %, 95.8 %, 98.7 %).
 
 Recipe: atomic X2C-1e HF in the primitives, occupied atomic orbitals = contracted functions,
 chosen primitives appended uncontracted.  Default `kind='sog'` (use it for DCG and DCB:
