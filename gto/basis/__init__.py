@@ -8,7 +8,13 @@ known to PySCF under its file name, so that
 
     gto.M(atom=..., basis={'Th': 'dyvtz-sog', 'O': 'cc-pvtz'})
 
-works; `import socutils` calls it.  Nothing in the PySCF installation is modified.
+works.  It is NOT called automatically: call socutils.gto.basis.register() yourself.  Nothing in
+the PySCF installation is modified.
+
+Interim solution.  The intended home of both parts (the alias entries and the warning) is
+PySCF itself, to be written there when this code is cherry-picked into PySCF: the basis
+modules into pyscf/gto/basis with ALIAS entries, and the check for scalar calculations into
+PySCF's SCF build, instead of the replacement of SCF.build done here.
 
 A j-adapted set is meant for spinor calculations only.  In a scalar (real spherical or
 Cartesian AO) calculation both contractions of every shell enter as separate functions: the

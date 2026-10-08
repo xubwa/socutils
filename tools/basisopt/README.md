@@ -170,9 +170,12 @@ same number of functions (a requirement of the GENBAS format).  GENBAS files car
 
 ## Basis sets by name in PySCF
 
-`socutils/gto/basis/` holds basis modules of the form above; `import socutils` registers each
-with PySCF under its file name (also the modules of the directories in `SOCUTILS_BASIS_PATH`;
-`SOCUTILS_BASIS=off` skips this), without modifying the PySCF installation:
+Interim, opt-in: `socutils.gto.basis.register()` registers the basis modules of
+`socutils/gto/basis/` and of the directories in `SOCUTILS_BASIS_PATH` with PySCF under their
+file names, without modifying the PySCF installation (it is not called by `import socutils`).
+The intended final form is in PySCF itself (basis modules and ALIAS entries in
+`pyscf/gto/basis`, the scalar-calculation check in PySCF's SCF), to be done when this code is
+cherry-picked into PySCF.
 
     gto.M(atom=..., basis={'Th': 'dyvtz-sog', 'O': 'cc-pvtz'})
 
