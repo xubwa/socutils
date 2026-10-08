@@ -167,3 +167,16 @@ In Python: `genbas.to_pyscf(entry, kappa=True)`, `genbas.from_pyscf(name, basis_
 executed).  `from_pyscf` merges the shells of one l over the union of their exponents, so
 segmented sets become one general contraction per l; the two kappas of an l must have the
 same number of functions (a requirement of the GENBAS format).  GENBAS files carry 8 decimals.
+
+## Basis sets by name in PySCF
+
+`socutils/gto/basis/` holds basis modules of the form above; `import socutils` registers each
+with PySCF under its file name (also the modules of the directories in `SOCUTILS_BASIS_PATH`;
+`SOCUTILS_BASIS=off` skips this), without modifying the PySCF installation:
+
+    gto.M(atom=..., basis={'Th': 'dyvtz-sog', 'O': 'cc-pvtz'})
+
+A j-adapted set must not be used in a scalar calculation (both contractions of each shell
+would enter as separate functions).  After registration every SCF object that works in the
+scalar AO basis of a molecule with such a set emits `ScalarWithSpinorBasisWarning`; spinor
+SCF classes (PySCF's X2C and DHF, socutils' SpinorSCF) do not.

@@ -31,3 +31,18 @@ def _setup_x2camf():
 
 
 _setup_x2camf()
+
+
+# Register the j-adapted basis sets of socutils/gto/basis with PySCF (basis='<name>') and make
+# scalar SCF objects warn when given such a set.  SOCUTILS_BASIS=off skips this.
+def _setup_basis():
+    if _os.environ.get('SOCUTILS_BASIS', 'on').strip().lower() == 'off':
+        return
+    try:
+        from .gto import basis as _basis
+        _basis.register()
+    except ImportError:
+        pass
+
+
+_setup_basis()
