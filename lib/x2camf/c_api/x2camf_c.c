@@ -444,3 +444,48 @@ int x2camf_atom_scf(int atom_number, int nshell, int nbas, int print_level,
     int_sph_free(intor);
     return X2CAMF_SUCCESS;
 }
+
+int x2camf_atom_exp_grad(int atom_number, int nshell, int nbas,
+                         int print_level, const int* shell,
+                         const double* exp_a, double speed_of_light,
+                         int spin_free, int gau_nuc, const char* occ_file,
+                         double conv, int max_iter, int nuc_model,
+                         double nuc_p1, double nuc_p2, double step,
+                         double* e_scf, double* grad)
+{
+    int err = check_args(atom_number, nbas, shell, exp_a);
+    if (err != X2CAMF_SUCCESS) return err;
+    if (e_scf == NULL || grad == NULL) return X2CAMF_ERR_BAD_ARGUMENT;
+    if (nuc_model < X2C_NUC_POINT || nuc_model > X2C_NUC_SPHERE ||
+        (nuc_model != X2C_NUC_POINT && (gau_nuc || nuc_p1 <= 0.0)))
+        return X2CAMF_ERR_BAD_ARGUMENT;
+    if (occ_file == NULL) occ_file = "";
+    if (conv <= 0.0) conv = 1e-9;
+    if (max_iter <= 0) max_iter = 100;
+    if (step <= 0.0) step = 1e-3;
+
+    set_speed_of_light(speed_of_light);
+    INT_SPH* intor = int_sph_new(atom_number, nshell, nbas, shell, exp_a);
+    if (nuc_model != X2C_NUC_POINT)
+        int_sph_set_nuclear_model(intor, nuc_model, nuc_p1, nuc_p2);
+    DHF_SPH* scfer = new_scf(intor, occ_file, print_level, spin_free != 0,
+                             false, false, false, gau_nuc != 0, false);
+    scfer->convControl = conv;
+    scfer->maxIter = max_iter;
+    dhf_sph_run_scf(scfer, false, false);
+    int ret = X2CAMF_SUCCESS;
+    if (!scfer->converged)
+    {
+        *e_scf = NAN;
+        ret = X2CAMF_ERR_INTERNAL;
+    }
+    else
+    {
+        *e_scf = scfer->ene_scf;
+        if (dhf_sph_exponent_gradient(scfer, intor, step, grad) != 0)
+            ret = X2CAMF_ERR_INTERNAL;
+    }
+    dhf_sph_free(scfer);
+    int_sph_free(intor);
+    return ret;
+}

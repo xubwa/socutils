@@ -54,7 +54,7 @@ vmat_t int_sph_get_h1e(const INT_SPH* self, const char* intType)
         for (int ii = 0; ii < size_gtos; ii++)
         for (int jj = 0; jj < size_gtos; jj++)
         {
-            double a1 = self->shell_list[ishell].exp_a.d[ii],
+            double a1 = int_sph_exp(self, ishell, ii, 1),
                    a2 = self->shell_list[ishell].exp_a.d[jj];
             double auxiliary_1e_list[6];
             for (int mm = 0; mm <= 4; mm++)
@@ -206,7 +206,7 @@ vmat_t int_sph_get_h1e(const INT_SPH* self, const char* intType)
                     exit(99);
                 }
                 M(h1e_mat, ii, jj) = M(h1e_mat, ii, jj) /
-                                     self->shell_list[ishell].norm.d[ii] /
+                                     int_sph_norm(self, ishell, ii, 1) /
                                      self->shell_list[ishell].norm.d[jj];
             }
         }
@@ -737,14 +737,12 @@ void int_sph_get_h2e_JK_direct(INT_SPH* self, int2eJK* LLLL, int2eJK* SSLL,
             int e2J = tt - e1J * (size_gtos_q * size_gtos_q);
             int ii = e1J / size_gtos_p, jj = e1J - ii * size_gtos_p;
             int kk = e2J / size_gtos_q, ll = e2J - kk * size_gtos_q;
-            double a_i_J = self->shell_list[pshell].exp_a.d[ii],
-                   a_j_J = self->shell_list[pshell].exp_a.d[jj],
-                   a_k_J = self->shell_list[qshell].exp_a.d[kk],
-                   a_l_J = self->shell_list[qshell].exp_a.d[ll];
-            double a_i_K = self->shell_list[pshell].exp_a.d[ii],
-                   a_j_K = self->shell_list[qshell].exp_a.d[ll],
-                   a_k_K = self->shell_list[qshell].exp_a.d[kk],
-                   a_l_K = self->shell_list[pshell].exp_a.d[jj];
+            double a_i_J = int_sph_exp(self, pshell, ii, 1),
+                   a_j_J = int_sph_exp(self, pshell, jj, 2),
+                   a_k_J = int_sph_exp(self, qshell, kk, 3),
+                   a_l_J = int_sph_exp(self, qshell, ll, 4);
+            double a_i_K = a_i_J, a_j_K = a_l_J, a_k_K = a_k_J,
+                   a_l_K = a_j_J;
 
             for (int LL = LmaxJ; LL >= 0; LL -= 2)
             {
@@ -915,20 +913,17 @@ void int_sph_get_h2e_JK_direct(INT_SPH* self, int2eJK* LLLL, int2eJK* SSLL,
                 int ii = e1J / size_gtos_p, jj = e1J - ii * size_gtos_p;
                 int kk = e2J / size_gtos_q, ll = e2J - kk * size_gtos_q;
                 int e1K = ii * size_gtos_q + ll, e2K = kk * size_gtos_p + jj;
-                double norm_J = self->shell_list[pshell].norm.d[ii] *
-                                self->shell_list[pshell].norm.d[jj] *
-                                self->shell_list[qshell].norm.d[kk] *
-                                self->shell_list[qshell].norm.d[ll],
-                       norm_K = self->shell_list[pshell].norm.d[ii] *
-                                self->shell_list[qshell].norm.d[ll] *
-                                self->shell_list[qshell].norm.d[kk] *
-                                self->shell_list[pshell].norm.d[jj];
+                double norm_J = int_sph_norm(self, pshell, ii, 1) *
+                                int_sph_norm(self, pshell, jj, 2) *
+                                int_sph_norm(self, qshell, kk, 3) *
+                                int_sph_norm(self, qshell, ll, 4),
+                       norm_K = norm_J;
                 double lk1 = 1 + l_p + k_p, lk2 = 1 + l_p + k_p,
                        lk3 = 1 + l_q + k_q, lk4 = 1 + l_q + k_q,
-                       a1 = self->shell_list[pshell].exp_a.d[ii],
-                       a2 = self->shell_list[pshell].exp_a.d[jj],
-                       a3 = self->shell_list[qshell].exp_a.d[kk],
-                       a4 = self->shell_list[qshell].exp_a.d[ll];
+                       a1 = int_sph_exp(self, pshell, ii, 1),
+                       a2 = int_sph_exp(self, pshell, jj, 2),
+                       a3 = int_sph_exp(self, qshell, kk, 3),
+                       a4 = int_sph_exp(self, qshell, ll, 4);
                 LLLL->J[int_tmp1_p + int_tmp2_p][int_tmp1_q + int_tmp2_q][e1J]
                        [e2J] = 0.0;
                 LLLL->K[int_tmp1_p + int_tmp2_p][int_tmp1_q + int_tmp2_q][e1K]
@@ -974,8 +969,8 @@ void int_sph_get_h2e_JK_direct(INT_SPH* self, int2eJK* LLLL, int2eJK* SSLL,
                 }
                 lk2 = 1 + l_q + k_q;
                 lk4 = 1 + l_p + k_p;
-                a2 = self->shell_list[qshell].exp_a.d[ll];
-                a4 = self->shell_list[pshell].exp_a.d[jj];
+                a2 = int_sph_exp(self, qshell, ll, 4);
+                a4 = int_sph_exp(self, pshell, jj, 2);
                 for (int tmp = LmaxK; tmp >= 0; tmp -= 2)
                 {
                     radial_K_LLLL = int_sph_get_radial_LLLL_K(

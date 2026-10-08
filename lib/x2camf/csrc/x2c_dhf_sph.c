@@ -54,6 +54,8 @@ DHF_SPH* dhf_sph_new(INT_SPH* int_sph, const char* filename, int printLevel,
     self->converged = false;
     self->renormalizedSmall = false;
     self->with_gaunt = with_gaunt;
+    self->gaussian_nuc = gaussian_nuc;
+    self->spin_free = spinFree;
     self->with_gauge = with_gauge;
     self->X_calculated = false;
     self->ca = NULL;
@@ -2329,4 +2331,181 @@ void dhf_sph_set_h1e_4c(DHF_SPH* self, const vmat_t* inputM, bool addto)
             mat_assign(&self->h1e_4c.m[ir], mat_clone(inputM->m[ir]));
     }
     return;
+}
+
+
+/*
+    Exponent gradient of the 4c Dirac-Coulomb SCF energy.
+
+    E = sum_kappa (2j+1) [ tr(D h) + 1/2 tr(D G[D]) ] is stationary in the
+    orbitals, so
+      dE/d ln(a_k) = sum_kappa (2j+1) 2 sum_n [ D(n,m) F(m',n) - W(n,m) S(m',n) ]
+    for the large and the small function of primitive m = k, where m' is the
+    derivative of the bra function with respect to ln(a) and W the
+    energy-weighted density.  The rows F(m',n), S(m',n) are obtained by a
+    central difference of integrals in which only the exponent of ONE
+    primitive position is displaced (INT_SPH.dispSlot); three positions are
+    needed: 1 (all arrays), 3 ((SS|LL) Coulomb with the LL pair displaced)
+    and 2 ((SS|LL) exchange with the large function displaced).
+*/
+static void free_all_h2e(DHF_SPH* self, int2eJK* a, int2eJK* b, int2eJK* c)
+{
+    int sizes[self->Nirrep_compact];
+    for (int i = 0; i < self->Nirrep_compact; i++)
+        sizes[i] = self->irrep_list[self->compact2all[i]].size;
+    int2e_free(a, sizes, self->Nirrep_compact);
+    int2e_free(b, sizes, self->Nirrep_compact);
+    int2e_free(c, sizes, self->Nirrep_compact);
+}
+
+int dhf_sph_exponent_gradient(DHF_SPH* self, INT_SPH* int_sph, double h,
+                              double* grad)
+{
+    if (self->ca != NULL || self->with_gaunt || !self->converged ||
+        self->occMax_irrep != self->Nirrep)
+        return 1;
+    const double c2 = speedOfLight * speedOfLight;
+    const int nirr = self->Nirrep;
+    /* accumulated rows d/dln(a) of F and S, per irrep, (2n x 2n): row index =
+       displaced function (large: m, small: n + m) */
+    vmat_t dF = vmat_new(nirr), dS = vmat_new(nirr);
+    for (int ir = 0; ir < nirr; ir += self->irrep_list[ir].two_j + 1)
+    {
+        int n = self->irrep_list[ir].size;
+        mat_assign(&dF.m[ir], mat_new(2 * n, 2 * n));
+        mat_assign(&dS.m[ir], mat_new(2 * n, 2 * n));
+    }
+
+    for (int isign = 0; isign < 2; isign++)
+    {
+        const double w = (isign == 0 ? 1.0 : -1.0) / (2.0 * h);
+        int_sph->dispScale = exp(isign == 0 ? h : -h);
+
+        /* ---- position 1: one-electron rows and all two-electron arrays */
+        int_sph->dispSlot = 1;
+        vmat_t S1 = int_sph_get_h1e(int_sph, "overlap");
+        vmat_t T1 = int_sph_get_h1e(int_sph, "kinetic");
+        vmat_t V1 = int_sph_get_h1e(
+            int_sph, self->gaussian_nuc ? "nucGau_attra" : "nuc_attra");
+        vmat_t W1 = int_sph_get_h1e(
+            int_sph, self->gaussian_nuc
+                         ? (self->spin_free ? "s_p_nucGau_s_p_sf"
+                                            : "s_p_nucGau_s_p")
+                         : (self->spin_free ? "s_p_nuc_s_p_sf"
+                                            : "s_p_nuc_s_p"));
+        int2eJK L1, SL1, SS1, L3, SL3, SS3, L2, SL2, SS2;
+        int_sph_get_h2e_JK_direct(int_sph, &L1, &SL1, &SS1, -1,
+                                  self->spin_free);
+        dhf_sph_symmetrize_JK(self, &L1, self->Nirrep_compact);
+        dhf_sph_symmetrize_JK(self, &SS1, self->Nirrep_compact);
+        int_sph->dispSlot = 3;
+        int_sph_get_h2e_JK_direct(int_sph, &L3, &SL3, &SS3, -1,
+                                  self->spin_free);
+        int_sph->dispSlot = 2;
+        int_sph_get_h2e_JK_direct(int_sph, &L2, &SL2, &SS2, -1,
+                                  self->spin_free);
+        int_sph->dispSlot = 0;
+
+        for (int Iirrep = 0; Iirrep < nirr;
+             Iirrep += self->irrep_list[Iirrep].two_j + 1)
+        {
+            const int ir = self->all2compact[Iirrep];
+            const int size = self->irrep_list[Iirrep].size;
+            mat_t F = dF.m[Iirrep], S = dS.m[Iirrep];
+#pragma omp parallel for
+            for (int mm = 0; mm < size; mm++)
+                for (int nn = 0; nn < size; nn++)
+                {
+                    const double t = M(T1.m[Iirrep], mm, nn);
+                    double fll = M(V1.m[Iirrep], mm, nn), fls = t, fsl = t,
+                           fss = M(W1.m[Iirrep], mm, nn) / 4.0 / c2 - t;
+                    for (int jr = 0; jr < self->Nirrep_compact; jr++)
+                    {
+                        const int Jirrep = self->compact2all[jr];
+                        const double tw = self->irrep_list[Jirrep].two_j + 1;
+                        const int s2 = self->irrep_list[Jirrep].size;
+                        const mat_t den = self->density.m[Jirrep];
+                        for (int ss = 0; ss < s2; ss++)
+                            for (int rr = 0; rr < s2; rr++)
+                            {
+                                const int emn = mm * size + nn,
+                                          esr = ss * s2 + rr,
+                                          emr = mm * s2 + rr,
+                                          esn = ss * size + nn,
+                                          enr = nn * s2 + rr,
+                                          esm = ss * size + mm;
+                                const double dll = M(den, ss, rr),
+                                             dss = M(den, s2 + ss, s2 + rr),
+                                             dls = M(den, ss, s2 + rr);
+                                fll += tw * dll * L1.J[ir][jr][emn][esr] +
+                                       tw * dss * SL3.J[jr][ir][esr][emn];
+                                fsl -= tw * dls * SL1.K[ir][jr][emr][esn];
+                                fls -= tw * dls * SL2.K[ir][jr][enr][esm];
+                                fss += tw * dss * SS1.J[ir][jr][emn][esr] +
+                                       tw * dll * SL1.J[ir][jr][emn][esr];
+                            }
+                    }
+                    M(F, mm, nn) += w * fll;
+                    M(F, mm, size + nn) += w * fls;
+                    M(F, size + mm, nn) += w * fsl;
+                    M(F, size + mm, size + nn) += w * fss;
+                    M(S, mm, nn) += w * M(S1.m[Iirrep], mm, nn);
+                    M(S, size + mm, size + nn) += w * t / 2.0 / c2;
+                }
+        }
+        free_all_h2e(self, &L1, &SL1, &SS1);
+        free_all_h2e(self, &L3, &SL3, &SS3);
+        free_all_h2e(self, &L2, &SL2, &SS2);
+        vmat_free(&S1);
+        vmat_free(&T1);
+        vmat_free(&V1);
+        vmat_free(&W1);
+    }
+
+    /* contraction with the density and the energy-weighted density */
+    int offset = 0;
+    for (int ish = 0; ish < self->size_shell; ish++)
+    {
+        const int n = self->shell_list[ish].coeff.rows;
+        for (int m = 0; m < n; m++) grad[offset + m] = 0.0;
+        offset += n;
+    }
+    offset = 0;
+    int prev_l = -1, shell_off = 0;
+    for (int ir = 0; ir < nirr; ir += self->irrep_list[ir].two_j + 1)
+    {
+        const int n = self->irrep_list[ir].size, l = self->irrep_list[ir].l;
+        if (l != prev_l)
+        {
+            shell_off = offset;
+            offset += n;
+            prev_l = l;
+        }
+        const double deg = self->irrep_list[ir].two_j + 1.0;
+        const mat_t den = self->density.m[ir], cf = self->coeff.m[ir];
+        mat_t wd = mat_new(2 * n, 2 * n);
+        for (int ii = 0; ii < self->occNumber.v[ir].n; ii++)
+        {
+            const double oe = self->occNumber.v[ir].d[ii] *
+                              self->ene_orb.v[ir].d[n + ii];
+            if (oe == 0.0) continue;
+            for (int aa = 0; aa < 2 * n; aa++)
+                for (int bb = 0; bb < 2 * n; bb++)
+                    M(wd, aa, bb) += oe * M(cf, aa, n + ii) * M(cf, bb, n + ii);
+        }
+        for (int m = 0; m < n; m++)
+        {
+            double g = 0.0;
+            for (int q = 0; q < 2 * n; q++)
+                g += M(den, q, m) * M(dF.m[ir], m, q) +
+                     M(den, q, n + m) * M(dF.m[ir], n + m, q) -
+                     M(wd, q, m) * M(dS.m[ir], m, q) -
+                     M(wd, q, n + m) * M(dS.m[ir], n + m, q);
+            grad[shell_off + m] += 2.0 * deg * g;
+        }
+        mat_free(&wd);
+    }
+    vmat_free(&dF);
+    vmat_free(&dS);
+    return 0;
 }

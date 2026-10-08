@@ -19,6 +19,7 @@
 #ifndef X2C_INT_SPH_H
 #define X2C_INT_SPH_H
 
+#include <math.h>
 #include <stdbool.h>
 
 #include "x2c_general.h"
@@ -42,6 +43,14 @@ typedef struct
     double nucP1, nucP2;
     int nucQuadN;
     double *nucQuadR, *nucQuadW; /* nodes, weights * (1 - Z_eff/Z) */
+    /* Exponent displacement for derivative integrals: when dispSlot != 0 the
+       exponent of the primitive in that position of an integral is scaled
+       by dispScale (see int_sph_exp).  Positions: 1, 2 = first, second
+       primitive of the shell pair p; 3, 4 = first, second primitive of the
+       shell pair q, as indexed (ii, jj, kk, ll) in
+       int_sph_get_h2e_JK_direct; 1 = the bra primitive in int_sph_get_h1e. */
+    int dispSlot;
+    double dispScale;
 } INT_SPH;
 
 /* Nuclear models integrated numerically, lengths in bohr:
@@ -234,6 +243,23 @@ double int_sph_int2e_get_threeSH(int l1, int m1, int l2, int m2, int l3,
                                  int m3, double threeJ);
 double int_sph_int2e_get_angularX_RME(int two_j1, int l1, int two_j2, int l2,
                                       int LL, int vv, double threeJ);
+
+/* exponent / normalisation of primitive idx of a shell in integral
+   position slot, including the displacement */
+static inline double int_sph_exp(const INT_SPH* self, int shell, int idx,
+                                 int slot)
+{
+    const double a = self->shell_list[shell].exp_a.d[idx];
+    return (self->dispSlot == slot) ? a * self->dispScale : a;
+}
+static inline double int_sph_norm(const INT_SPH* self, int shell, int idx,
+                                  int slot)
+{
+    if (self->dispSlot != slot) return self->shell_list[shell].norm.d[idx];
+    return sqrt(int_sph_auxiliary_1e(
+        2 * self->shell_list[shell].l + 2,
+        2.0 * self->shell_list[shell].exp_a.d[idx] * self->dispScale));
+}
 
 #ifdef __cplusplus
 }

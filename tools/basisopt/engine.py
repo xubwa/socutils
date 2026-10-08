@@ -211,6 +211,27 @@ def atom(element, prims, hamiltonian='dc', occ=None, aoc=False, gau_nuc=False,
                       hamiltonian, raw)
 
 
+def exponent_gradient(element, prims, spin_free=False, gau_nuc=False, occ=None,
+                      c=LIGHT_SPEED, conv=1e-9, max_iter=100, nucleus=None, step=1e-3,
+                      verbose=0):
+    """4c Dirac-Coulomb atomic SCF (fractional occupations) and dE/d ln(alpha) of every
+    primitive: returns (e_scf, {l: [gradient per exponent, as sorted in flatten()]}).
+    One SCF plus six integral evaluations, whatever the number of primitives."""
+    shell, exps, nshell = flatten(prims)
+    with tempfile.TemporaryDirectory() as tmp:
+        occ_file = os.path.join(tmp, 'occ')
+        if occ is not None:
+            write_occ_file(occ_file, element, occ)
+        with _quiet(verbose == 0):
+            e, g = backend().atom_exp_grad(
+                charge(element), nshell, len(shell), verbose, shell, exps, speed_of_light=c,
+                spin_free=spin_free, gau_nuc=gau_nuc, occ_file=occ_file, conv=conv,
+                max_iter=max_iter, nuc_model=NUCLEAR_MODELS[nucleus[0]] if nucleus else 0,
+                nuc_p1=nucleus[1] if nucleus else 0.0,
+                nuc_p2=nucleus[2] if nucleus and len(nucleus) > 2 else 0.0, step=step)
+    return e, {l: list(g[shell == l]) for l in range(nshell)}
+
+
 def prims_from_pyscf(element, basis):
     """Primitive exponents {l: [...]} of a PySCF basis-set name (duplicates removed)."""
     from pyscf import gto

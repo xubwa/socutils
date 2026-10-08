@@ -57,6 +57,7 @@ typedef struct
     vvecd_t occNumber;
     double d_density, nelec;
     bool converged, renormalizedSmall, with_gaunt, with_gauge, X_calculated;
+    bool gaussian_nuc, spin_free; /* as passed to the constructor */
 
     /* public members */
     intShell* shell_list; /* borrowed from INT_SPH */
@@ -121,6 +122,14 @@ vvecd_t dhf_sph_get_occNumber(DHF_SPH* self);
 vmat_t dhf_sph_get_X(DHF_SPH* self);
 vmat_t dhf_sph_get_R(DHF_SPH* self);
 void dhf_sph_set_h1e_4c(DHF_SPH* self, const vmat_t* inputM, bool addto);
+
+/* ---- exponent gradient ---------------------------------------------- */
+/* dE/d ln(alpha) of the converged 4c Dirac-Coulomb SCF energy for every
+   primitive (ordered as the input basis), from Fock and overlap rows of
+   exponent-displaced bra primitives (central difference with step h in
+   ln alpha of integrals, no SCF).  Not for twoC, Gaunt or the CA variant. */
+int dhf_sph_exponent_gradient(DHF_SPH* self, INT_SPH* int_sph, double h,
+                              double* grad);
 
 /* ---- internal helpers shared between the translation units ---------- */
 void dhf_sph_setOCC(DHF_SPH* self, const char* filename,

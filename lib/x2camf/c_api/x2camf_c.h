@@ -141,6 +141,22 @@ int x2camf_atom_scf(int atom_number, int nshell, int nbas, int print_level,
                     double* coeff, double* ovlp, double* fock, double* h1e,
                     double* den);
 
+/*
+ * Atomic 4c Dirac-Coulomb SCF (fractional occupations; spin_free optional)
+ * followed by the gradient of its energy with respect to ln(exponent) of
+ * every primitive: grad[nbas], in the order of the input basis.  The cost
+ * beyond the SCF is six integral evaluations, independent of nbas.
+ * step: displacement in ln(alpha) of the central difference of integrals
+ * (<= 0: 1e-3).  Returns X2CAMF_ERR_INTERNAL if the SCF did not converge.
+ */
+int x2camf_atom_exp_grad(int atom_number, int nshell, int nbas,
+                         int print_level, const int* shell,
+                         const double* exp_a, double speed_of_light,
+                         int spin_free, int gau_nuc, const char* occ_file,
+                         double conv, int max_iter, int nuc_model,
+                         double nuc_p1, double nuc_p2, double step,
+                         double* e_scf, double* grad);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

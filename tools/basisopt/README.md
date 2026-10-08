@@ -31,6 +31,24 @@ The engine loads the bundled C library directly, whatever `x2camf` package is on
 * Dense sets (even-tempered ratio <= 1.8) reach a density convergence of about 1e-9 only:
   use `conv=1e-8`.  An unconverged SCF returns `e_scf = nan`.
 
+### Exponent gradients
+
+    e, g = engine.exponent_gradient('Hg', prims, gau_nuc=True)     # {l: [dE/d ln(alpha)]}
+
+Gradient of the 4c Dirac-Coulomb SCF energy (fractional occupations) with respect to the
+logarithm of every exponent, from one SCF plus six integral evaluations in which only one
+primitive position carries a displaced exponent (`x2camf_atom_exp_grad`; the energy is
+stationary in the orbitals, so only the density and the energy-weighted density are
+needed).  Xe dyall.v2z, 47 exponents: 2.6 s, equal to 7e-8 Eh to a PySCF-integral
+implementation of the same formula; Hg dyall.v4z, 96 exponents: 37 s.  Not available with
+the Gaunt term or for the configuration-average SCF (DC-optimal exponents are also optimal
+with Gaunt to 0.1 % in the exponent, Xe-Og).
+
+Use: a set optimised for the DC energy has |g| < 1e-3 Eh for its SCF exponents (the one or
+two outermost functions of an l are often correlating functions and not at the SCF
+optimum).  The erroneous f exponents of Hg dyall.*4z (corrected by K. Dyall, Dirac Users
+list, 27 Feb) show up as |g| up to 0.22 Eh; after the correction 9e-4.
+
 ## optimize
 
     python -m socutils.tools.basisopt.optimize O aug-cc-pvtz --add p:1 [--ham dcg]

@@ -112,6 +112,15 @@ if _HAS_ATOM_SCF:
         + [_c_double_p, _c_int_out] + [_c_double_p] * 7)
 
 
+_HAS_EXP_GRAD = hasattr(_lib, "x2camf_atom_exp_grad")
+if _HAS_EXP_GRAD:
+    _lib.x2camf_atom_exp_grad.restype = ctypes.c_int
+    _lib.x2camf_atom_exp_grad.argtypes = (
+        [ctypes.c_int] * 4 + [_c_int_p, _c_double_p, ctypes.c_double]
+        + [ctypes.c_int] * 2 + [ctypes.c_char_p, ctypes.c_double, ctypes.c_int]
+        + [ctypes.c_int] + [ctypes.c_double] * 3 + [_c_double_p, _c_double_p])
+
+
 def _check(ierr, name):
     if ierr != 0:
         msg = _ERROR_MESSAGES.get(ierr, "unknown error code %d" % ierr)
@@ -265,3 +274,33 @@ def atom_scf(atom_number, nshell, nbas, printLevel, shell, exp_a,
         im += d * d
     return dict(e_scf=e_scf.value, converged=bool(converged.value),
                 blocks=blocks)
+
+
+def atom_exp_grad(atom_number, nshell, nbas, printLevel, shell, exp_a,
+                  speed_of_light=SPEED_OF_LIGHT_DEFAULT, spin_free=False,
+                  gau_nuc=False, occ_file="", conv=1e-9, max_iter=100,
+                  nuc_model=0, nuc_p1=0.0, nuc_p2=0.0, step=1e-3):
+    '''4c Dirac-Coulomb atomic SCF (fractional occupations) and the gradient
+    of its energy with respect to ln(exponent) of every primitive.
+
+    Returns (e_scf, grad[nbas]).  The gradient costs six integral
+    evaluations whatever the number of primitives.
+    '''
+    if not _HAS_EXP_GRAD:
+        raise RuntimeError("this libx2camf_c has no x2camf_atom_exp_grad: "
+                           "rebuild the socutils libraries (make)")
+    shell, exp_a, _ = _prepare_basis(shell, exp_a)
+    if numpy.any(numpy.diff(shell) < 0):
+        raise ValueError("shell must be sorted by angular momentum")
+    grad = numpy.zeros(shell.size)
+    e_scf = ctypes.c_double(0.0)
+    ierr = _lib.x2camf_atom_exp_grad(
+        int(atom_number), int(nshell), int(nbas), int(printLevel),
+        _as_int_p(shell), _as_double_p(exp_a), float(speed_of_light),
+        int(bool(spin_free)), int(bool(gau_nuc)), os.fsencode(occ_file or ""),
+        float(conv), int(max_iter), int(nuc_model), float(nuc_p1),
+        float(nuc_p2), float(step), ctypes.byref(e_scf), _as_double_p(grad))
+    if ierr == 3:
+        raise RuntimeError("x2camf_atom_exp_grad: the SCF did not converge")
+    _check(ierr, "x2camf_atom_exp_grad")
+    return e_scf.value, grad

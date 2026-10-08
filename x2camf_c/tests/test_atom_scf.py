@@ -1,6 +1,6 @@
 '''
-Tests of the atomic-SCF entry point x2camf_atom_scf and of the numerically
-integrated nuclear models (no dependency beyond numpy).
+Tests of the atomic-SCF entry point x2camf_atom_scf, of the exponent gradient
+x2camf_atom_exp_grad and of the numerically integrated nuclear models (no dependency beyond numpy).
 
     python x2camf_c/tests/test_atom_scf.py
 
@@ -81,6 +81,32 @@ class KnownValues(unittest.TestCase):
         r = ne(max_iter=1)
         self.assertFalse(r['converged'])
         self.assertTrue(numpy.isnan(r['e_scf']))
+
+    def _check_gradient(self, z, s_exp, p_exp, **kw):
+        shell = numpy.array([0] * len(s_exp) + [1] * len(p_exp))
+        exps = numpy.array(s_exp + p_exp)
+        e, g = cb.atom_exp_grad(z, 2, len(shell), 0, shell, exps, speed_of_light=C,
+                                conv=1e-11, max_iter=300, **kw)
+        ref = cb.atom_scf(z, 2, len(shell), 0, shell, exps, speed_of_light=C, conv=1e-11,
+                          max_iter=300, **kw)['e_scf']
+        self.assertAlmostEqual(e, ref, 9)
+        h = 2e-3
+        for k in (0, 3, len(s_exp) - 1, len(s_exp), len(shell) - 1):
+            ep, em = [cb.atom_scf(z, 2, len(shell), 0, shell,
+                                  exps * numpy.exp(sgn * h * (numpy.arange(len(shell)) == k)),
+                                  speed_of_light=C, conv=1e-11, max_iter=300, **kw)['e_scf']
+                      for sgn in (1, -1)]
+            self.assertAlmostEqual(g[k], (ep - em) / (2 * h), 6)
+
+    def test_exponent_gradient_closed_shell(self):
+        # against central differences of converged SCF energies
+        self._check_gradient(10, NE_S, NE_P)
+        self._check_gradient(10, NE_S, NE_P, gau_nuc=True)
+
+    def test_exponent_gradient_open_shell(self):
+        # O with the default fractional occupations (p1/2^4/3 p3/2^8/3), spin-free too
+        self._check_gradient(8, NE_S, NE_P)
+        self._check_gradient(8, NE_S, NE_P, spin_free=True)
 
     def test_unsorted_shells_rejected(self):
         shell = numpy.array([0, 1, 0])
