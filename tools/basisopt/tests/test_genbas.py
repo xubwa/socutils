@@ -31,6 +31,11 @@ def test_so_roundtrip(so_entry, tmp_path):
     g, p = str(tmp_path / 'GENBAS'), str(tmp_path / 'o.py')
     genbas.append(g, so_entry)
     genbas.write_pyscf(p, {'O': genbas.to_pyscf(genbas.read(g, 'O:PVDZ-TEST'), kappa=True)})
+    assert '\nO = [' in open(p).read()            # one variable per element, as PySCF's modules
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('o_mod', p); mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.O == genbas.read_pyscf(p)['O']
     again = genbas.from_pyscf('O:PVDZ-TEST', genbas.read_pyscf(p)['O'])
     same(genbas.read(g, 'O:PVDZ-TEST'), again, tol=1e-12)
     # the same kappa basis as the existing socutils parser gives

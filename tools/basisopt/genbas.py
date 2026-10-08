@@ -162,27 +162,34 @@ def format_pyscf(basis, indent='    '):
 
 
 def write_pyscf(path, basis_by_element, header=''):
-    """Python file defining `basis = {'O': [...], ...}` (PySCF internal format; with kappa for
-    j-adapted sets).  Use: `from <file> import basis; gto.M(..., basis=basis)`, or
-    read_pyscf(path)."""
+    """Python module in the form PySCF itself uses for the sets it cannot keep in NWChem format
+    (pyscf/gto/basis/dyall_tz.py, dyall-basis/*.py): comment header, then one module-level
+    variable per element holding the basis in the internal format, `He = [[l, kappa, [exp, c,
+    ...], ...], ...]`.  NWChem files cannot carry kappa, so j-adapted sets exist only like this.
+    Use: `import <module>; gto.M(..., basis={'He': <module>.He})`, or read_pyscf(path)."""
     with open(path, 'w') as f:
+        f.write('#\n# Elements supported\n# %s\n#\n' % ' '.join(basis_by_element))
         if header:
-            f.write(''.join('# %s\n' % line for line in header.splitlines()))
-        f.write('basis = {\n')
+            f.write(''.join('# %s\n' % line for line in header.splitlines()) + '#\n')
         for el, b in basis_by_element.items():
-            f.write('%r: %s,\n' % (el, format_pyscf(b)))
-        f.write('}\n')
+            f.write('\n%s = %s\n' % (el, format_pyscf(b)))
 
 
 def read_pyscf(path):
-    """{element: basis list} from a file written by write_pyscf (or any Python file whose only
-    assignment is a literal `basis = {...}`); the file is parsed, not executed."""
-    import ast
-    tree = ast.parse(open(path).read())
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and getattr(node.targets[0], 'id', None) == 'basis':
-            return ast.literal_eval(node.value)
-    raise ValueError('no literal `basis = {...}` in %s' % path)
+    """{element: basis list} from a Python basis module (one variable per element, as PySCF's
+    own, or a literal `basis = {...}`); the file is parsed, not executed."""
+    import ast, re
+    out = {}
+    for node in ast.parse(open(path).read()).body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            name = getattr(node.targets[0], 'id', '')
+            if name == 'basis':
+                out.update(ast.literal_eval(node.value))
+            elif re.fullmatch(r'[A-Z][a-z]?', name):
+                out[name] = ast.literal_eval(node.value)
+    if not out:
+        raise ValueError('no element variables (He = [...]) in %s' % path)
+    return out
 
 
 def main():
@@ -191,12 +198,12 @@ def main():
                                  'and the PySCF internal format (plain or j-adapted with kappa).')
     sub = ap.add_subparsers(dest='cmd', required=True)
     a = sub.add_parser('to-genbas', help='PySCF format -> GENBAS entry (appended to --out)')
-    a.add_argument('source', help='Python file with `basis = {element: [...]}` (as written by '
+    a.add_argument('source', help='Python basis module (one variable per element, as written by '
                    'to-pyscf), or a basis-set name known to PySCF')
     a.add_argument('elements', nargs='+', help='elements to convert')
     a.add_argument('--name', required=True, help='name of the entries (without the element)')
     a.add_argument('--out', default='GENBAS')
-    b = sub.add_parser('to-pyscf', help='GENBAS entries -> Python file with `basis = {...}`')
+    b = sub.add_parser('to-pyscf', help='GENBAS entries -> Python basis module (one variable per element)')
     b.add_argument('genbas')
     b.add_argument('entries', nargs='+', help="entries, e.g. 'O:PVTZ-SO' 'H:PVTZ-SO'")
     b.add_argument('--out', required=True, help='Python file to write')
@@ -221,7 +228,7 @@ def main():
             entry = read(args.genbas, name)
             el = name.split(':')[0].capitalize()
             out[el] = to_pyscf(entry, kappa=not args.plain)
-        write_pyscf(args.out, out, header='from %s: %s' % (args.genbas, ' '.join(args.entries)))
+        write_pyscf(args.out, out, header='GENBAS entries: %s' % ' '.join(args.entries))
         print('%s written (%s)' % (args.out, ', '.join(out)))
 
 

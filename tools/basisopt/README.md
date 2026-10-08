@@ -152,11 +152,15 @@ first, and the GENBAS comment line "nl  l n ..." read by
 PySCF form carries kappa (`[l, kappa, [exponent, c, ...], ...]`: kappa = l for j = l-1/2,
 -l-1 for j = l+1/2, 0 for functions shared by both):
 
-    # GENBAS entries -> a Python file with  basis = {'H': [...], 'He': [...]}
+    # GENBAS entries -> a Python basis module with one variable per element (H = [...], He = [...])
     python -m socutils.tools.basisopt.genbas to-pyscf GENBAS H:DYVTZ-SOG HE:DYVTZ-SOG --out dyvtz_sog.py
     # PySCF format (such a file, or a basis-set name known to PySCF) -> GENBAS entries
     python -m socutils.tools.basisopt.genbas to-genbas dyvtz_sog.py H He --name DYVTZ-SOG --out GENBAS
     python -m socutils.tools.basisopt.genbas to-genbas cc-pvtz O --name PVTZ --out GENBAS
+
+PySCF's basis files are NWChem format, which has no kappa; nothing supports j-adapted sets
+natively.  The module written here follows what PySCF does for its own Dyall sets
+(`pyscf/gto/basis/dyall_tz.py`): a Python file with the internal-format list of each element.
 
 In Python: `genbas.to_pyscf(entry, kappa=True)`, `genbas.from_pyscf(name, basis_list)`,
 `genbas.write_pyscf(path, {element: basis_list})`, `genbas.read_pyscf(path)` (parsed, not
