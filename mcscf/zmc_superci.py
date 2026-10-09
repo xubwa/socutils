@@ -453,24 +453,23 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
     # g_tu2 = d_vw,ut F_vw - F_vw,D_vw,D_tu
     g_tu2 = lib.einsum('vwut,vw->tu', casdm2, g[ncore:nocc,ncore:nocc]) - lib.einsum('ut,vw,vw->tu', casdm1_ci, casdm1_ci, g[ncore:nocc,ncore:nocc])
 
-    y = lib.einsum('pu,qu->pq', (h1e_mo + vhf_c)[ncore:nocc, ncore:nocc], casdm1_ci)
-    # zeros, not ones: only the lower-triangle blocks are filled and the packed
-    # diagonal is taken from h_diag + h_diag.T, so a ones-initialised upper
-    # triangle silently added 1 Eh to every element handed to the Davidson
+    # exact diagonal of the super-CI Hessian of h_op below, from the quantities it uses (no further
+    # integrals).  Only the lower-triangle blocks are filled; the packed diagonal is h_diag + h_diag.T.
+    #   virtual-core   F_aa - F_ii
+    #   active-core    (D_tt - 1) F_ii + [g - G - g D - D g^dagger]_tt,   G = g_tu2 (g_tu without the
+    #                  covariant term 5), g the active block of the generalized Fock matrix
+    #   virtual-active D_tt F_aa + (g_tu)_tt
+    dm1_act = dm1[ncore:nocc, ncore:nocc]
+    g_act = g[ncore:nocc, ncore:nocc]
+    f_d = fock_eff.diagonal()
+    d_d = dm1_act.diagonal()
+    m_tc = (g_act - (g_tu2 if TERM5_GTU_COVARIANT else g_tu) - np.dot(g_act, dm1_act)
+            - np.dot(dm1_act, g_act.conj().T))
+    ct = m_tc.diagonal()
     h_diag = np.zeros((nmo, nmo), dtype=complex)
-    for v_idx in range(nocc,nmo):
-        for i_idx in range(ncore):
-            h_diag[v_idx, i_idx]=fock_eff[v_idx,v_idx]-fock_eff[i_idx, i_idx]
-
-    for a_idx in range(ncore, nocc):
-        for i_idx in range(ncore):
-            d_tt = dm1[a_idx, a_idx]
-            h_diag[a_idx, i_idx] = fock_eff[a_idx, a_idx] - (1.-d_tt)*fock_eff[i_idx, i_idx]\
-                - y[a_idx-ncore, a_idx-ncore] - g_dm2[a_idx, a_idx-ncore]
-
-    for v_idx in range(nocc, nmo):
-        for a_idx in range(ncore, nocc):
-            h_diag[v_idx, a_idx] = fock_eff[v_idx, v_idx] * dm1[a_idx, a_idx] - y[a_idx-ncore, a_idx-ncore] - g_dm2[a_idx, a_idx-ncore]
+    h_diag[nocc:, :ncore] = f_d[nocc:, None] - f_d[None, :ncore]
+    h_diag[ncore:nocc, :ncore] = ct[:, None] + (d_d[:, None] - 1.) * f_d[None, :ncore]
+    h_diag[nocc:, ncore:nocc] = f_d[nocc:, None] * d_d[None, :] + g_tu.diagonal()[None, :]
     h_diag = h_diag.real*(1.+0.j)
 
     _t = _tick('grad: assembly, g_tu, h_diag', _t)
@@ -595,18 +594,19 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
             sub = u_no[:, i0:i1]
             u_no[:, i0:i1] = np.dot(sub, np.linalg.eigh(reduce(np.dot, (sub.T.conj(), f_act, sub)))[1])
         i0 = i1
-    f_no = reduce(np.dot, (u_no.T.conj(), fock_eff[ncore:nocc, ncore:nocc], u_no)).diagonal().real
-    # y and the active block of g_dm2 are not Hermitian away from convergence;
-    # only the diagonal of a Hermitian, time-reversal symmetric matrix is
-    # independent of how the degenerate natural-orbital Kramers pairs are chosen
+    # exact diagonal of the super-CI Hessian in the natural-orbital basis: the active-index matrices
+    # of the frozen-basis diagonal above, transformed.  Only the Hermitian part contributes to
+    # Re(x^dagger H x), and its diagonal is independent of how the degenerate natural-orbital
+    # Kramers pairs are chosen
     herm = lambda m: 0.5 * (m + m.T.conj())
-    y_no = reduce(np.dot, (u_no.T.conj(), herm(y), u_no)).diagonal().real
-    g2_no = reduce(np.dot, (u_no.T.conj(), herm(g_dm2[ncore:nocc]), u_no)).diagonal().real
+    mtc_no = reduce(np.dot, (u_no.T.conj(), herm(m_tc), u_no)).diagonal().real
+    # g_tu acts on the virtual-active block from the right as x g_tu^T (term 6 of h_op)
+    gtu_no = reduce(np.dot, (u_no.T.conj(), herm(g_tu).T, u_no)).diagonal().real
     f_c = fock_eff.diagonal().real[:ncore]
     f_v = fock_eff.diagonal().real[nocc:]
     hd_vc = f_v[:, None] - f_c[None, :]
-    hd_tc = (f_no - y_no - g2_no)[:, None] - (1. - occ_no)[:, None] * f_c[None, :]
-    hd_vt = f_v[:, None] * occ_no[None, :] - (y_no + g2_no)[None, :]
+    hd_tc = mtc_no[:, None] - (1. - occ_no)[:, None] * f_c[None, :]
+    hd_vt = f_v[:, None] * occ_no[None, :] + gtu_no[None, :]
     sd_tc = np.repeat((1. - occ_no)[:, None], ncore, axis=1)
     sd_vt = np.repeat(occ_no[None, :], nmo - nocc, axis=0)
 
@@ -629,6 +629,7 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
         out[nocc:, ncore:nocc] = np.dot(_safe_div(vt, hd_vt - shift * sd_vt), u_no.T.conj())
         return casscf.pack_uniq_var(out)
     hop.precond_shift = precond_shift
+    hop.no_diag = (u_no, hd_vc, hd_tc, hd_vt, sd_tc, sd_vt)
     _tick('grad: NO preconditioner setup', _t)
     return g_orb, casscf.pack_uniq_var((h_diag+h_diag.T).real), hop, sop, precond, mo
 
