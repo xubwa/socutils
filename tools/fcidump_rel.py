@@ -64,10 +64,83 @@ def write_head(fout, nmo, nelec, ms, orbsym=None):
     fout.write('  ISYM=0,\n')
     fout.write(' &END\n')
 
+def x2c_4c_spinors(mf, mo_coeff):
+    '''Four-component form of two-component spinors of an X2C calculation.
+
+    mo_coeff is given in the spinor basis of mf.mol, which may be contracted
+    (also per kappa).  X and R of the X2C step are matrices in the
+    uncontracted basis xmol; a contracted spinor is an exact combination of
+    those primitives, C' = contr C, with the matrix that contracts the X2C
+    one-electron operator.  Returns xmol and the large and small components
+    R C' and X R C' in the spinor basis of xmol (small component without the
+    factor 1/2c, as in to_4c_coeff and pyscf's DHF).'''
+    from pyscf.x2c.x2c import _decontract_spinor
+    x2cobj = mf.with_x2c
+    x, r = x2cobj.get_xr()
+    xmol, contr = _decontract_spinor(mf.mol, x2cobj.xuncontract)
+    n2c = xmol.nao_2c()
+    if x.shape != (n2c, n2c) or contr.shape != (n2c, mf.mol.nao_2c()):
+        raise RuntimeError('X is %s, the uncontracted basis has %d spinors and the '
+                           'contraction is %s' % (x.shape, n2c, contr.shape))
+    err = abs(reduce(numpy.dot, (contr.conj().T, xmol.intor('int1e_ovlp_spinor'), contr))
+              - mf.mol.intor('int1e_ovlp_spinor')).max()
+    if err > 1e-8:
+        raise RuntimeError('the contraction does not reproduce the overlap of the '
+                           'contracted basis (%.1e)' % err)
+    mo_l = numpy.dot(r, numpy.dot(contr, mo_coeff))
+    mo_s = numpy.dot(x, mo_l)
+    return xmol, mo_l, mo_s
+
+
+def x2c_active_eri_4c(mf, mo_act, with_full_coulomb=False, with_coulomb_so=False,
+                      with_gaunt=False, with_breit=False, eri=None):
+    '''(tu|vw) of the spinors mo_act with the four-component two-electron
+    operator, the spinors transformed back to the four-component picture
+    (x2c_4c_spinors, so mf.mol may be contracted).
+
+    eri: two-component Coulomb integrals of mo_act, to which the corrections
+    are added (with_coulomb_so, with_gaunt) or which with_full_coulomb
+    replaces; computed from mf.mol if not given.  Returns the matrix
+    (nact^2, nact^2).'''
+    xmol, mo_l, mo_s = x2c_4c_spinors(mf, mo_act)
+    mo_s = mo_s * (0.5 / lib.param.LIGHT_SPEED)
+    nact = mo_act.shape[1]
+    if eri is None and not with_full_coulomb:
+        eri = nrr_outcore.full_iofree(mf.mol, mo_act, intor='int2e', motype='j-spinor')
+    if eri is not None:
+        eri = numpy.asarray(eri).reshape(nact * nact, nact * nact)
+
+    def coulomb(prefix):
+        out = ao2mo.general(xmol, (mo_l, mo_l, mo_l, mo_l), intor='int2e_spinor')
+        out = out + ao2mo.general(xmol, (mo_l, mo_l, mo_s, mo_s), intor='int2e_%s2_spinor' % prefix)
+        out += ao2mo.general(xmol, (mo_s, mo_s, mo_l, mo_l), intor='int2e_%s1_spinor' % prefix)
+        out += ao2mo.general(xmol, (mo_s, mo_s, mo_s, mo_s),
+                             intor='int2e_%s1%s2_spinor' % (prefix, prefix))
+        return out
+
+    if with_coulomb_so:
+        eri = eri + (coulomb('spsp') - coulomb('pp'))
+    if with_full_coulomb:
+        eri = coulomb('spsp')
+    if with_gaunt:
+        p = "int2e_breit_" if with_breit else "int2e_"
+        multip = 1.0 if with_breit else -1.0
+        mos = [[mo_l, mo_s, mo_s, mo_l],
+               [mo_l, mo_s, mo_l, mo_s],
+               [mo_s, mo_l, mo_s, mo_l],
+               [mo_s, mo_l, mo_l, mo_s]]
+        intors = [p+'ssp1sps2_spinor', p+'ssp1ssp2_spinor', p+'sps1sps2_spinor', p+'sps1ssp2_spinor']
+        for mo, intor in zip(mos, intors):
+            eri = eri + multip * ao2mo.general(xmol, mo, intor=intor, aosym='s1', comp=1,
+                                               max_memory=mf.max_memory)
+    return eri
+
+
 def from_x2c(mf, ncore, nact, filename='FCIDUMP', tol=1e-14, intor='int2e_spinor',
-    h1e=None, approx='1e', symm=None, 
+    h1e=None, approx='1e', symm=None,
     fourC_fcore=False, fourC_int=False,
-    with_full_coulomb=False, with_coulomb_so=False, with_gaunt=False, with_breit=False):
+    with_full_coulomb=False, with_coulomb_so=False, with_gaunt=False, with_breit=False,
+    cderi=None):
     ncore = ncore
     nact = nact
     mo_coeff = mf.mo_coeff[:, ncore:ncore + nact]
@@ -92,19 +165,18 @@ def from_x2c(mf, ncore, nact, filename='FCIDUMP', tol=1e-14, intor='int2e_spinor
     #reduce(numpy.dot, (mf.mo_coeff.T, mf.get_hcore(), mf.mo_coeff))[ncore:ncore+nact, ncore:ncore+nact]
 
     if fourC_fcore is True:
-        c4c = mf.with_x2c.to_4c_coeff(mf.mo_coeff)
-        mf4c = scf.DHF(mol) 
+        # four-component mean field of the core in the uncontracted basis of
+        # the X2C step (the basis of X and R); mf.mol may be contracted
+        nmo = len(mf.mo_energy)
+        xmol, mo_l, mo_s = x2c_4c_spinors(mf, mf.mo_coeff[:, :ncore + nact])
+        c4c = numpy.vstack((mo_l, mo_s))
+        mf4c = scf.DHF(xmol)
         mf4c.with_gaunt = with_gaunt
         mf4c.with_breit = with_breit
         hcore = mf4c.get_hcore()
-        nmo = len(mf.mo_energy)
-        moact_4c = c4c[:,nmo+ncore:nmo+ncore+nact]
-        core_occ = numpy.zeros(2*nmo)
-        core_occ[nmo:nmo+ncore] = 1.0
-        mf4c.mo_coeff = c4c 
-        core_dm = mf4c.make_rdm1(mo_occ=core_occ)
-        energy_core = mf4c.energy_nuc()
-        vj, vk = mf4c.get_jk(mol, core_dm)
+        moact_4c = c4c[:, ncore:ncore + nact]
+        core_dm = numpy.dot(c4c[:, :ncore], c4c[:, :ncore].conj().T)
+        vj, vk = mf4c.get_jk(xmol, core_dm)
         core_vhf = vj - vk
         energy_core = mf.energy_nuc()
         energy_core += numpy.einsum('ij,ji', core_dm, hcore)
@@ -113,60 +185,23 @@ def from_x2c(mf, ncore, nact, filename='FCIDUMP', tol=1e-14, intor='int2e_spinor
             (moact_4c.T.conj(), hcore + core_vhf, moact_4c))
 
     if fourC_int is False:
-        eri = nrr_outcore.full_iofree(mf.mol, mo_coeff, intor='int2e', motype='j-spinor')
+        if cderi is not None or getattr(mf, 'with_df', None) is not None:
+            # build the active-space ERIs from the SCF's Cholesky/DF vectors
+            # (same transform as the cahf_diis path) instead of a direct
+            # AO-basis transformation
+            from types import SimpleNamespace
+            from socutils.mcscf import zmc_ao2mo
+            shim = SimpleNamespace(mol=mol, ncore=ncore, ncas=nact,
+                                   verbose=mf.verbose, _scf=mf)
+            eris = zmc_ao2mo._CDERIS(shim, mf.mo_coeff[:, :ncore + nact],
+                                     level=2, cderi=cderi)
+            eri = eris.aaaa.reshape(nact * nact, nact * nact)
+        else:
+            eri = nrr_outcore.full_iofree(mf.mol, mo_coeff, intor='int2e', motype='j-spinor')
     else:
-        c4c = mf.with_x2c.to_4c_coeff(mf.mo_coeff)
-        n2c = mf.mol.nao_2c()
-        mo_l = c4c[:n2c, ncore+n2c:ncore+n2c + nact].copy()
-        mo_s = c4c[n2c:, ncore+n2c:ncore+n2c + nact] * (0.5 / lib.param.LIGHT_SPEED)
-        
-        #if spinfree_coulomb is False:
-        #    eri = nrr_outcore.full_iofree(mf.mol, mo_coeff, intor='int2e', motype='j-spinor')
-        #elif spinfree_only is True:
-        #    print('spinfree_only')
-        #    eri = None
-        #    eri = ao2mo.general(mf.mol, (mo_l, mo_l, mo_l, mo_l), intor='int2e_spinor')
-        #    eri += ao2mo.general(mf.mol, (mo_l, mo_l, mo_s, mo_s), intor='int2e_pp2_spinor')
-        #    eri += ao2mo.general(mf.mol, (mo_s, mo_s, mo_l, mo_l), intor='int2e_pp1_spinor')
-        #    eri += ao2mo.general(mf.mol, (mo_s, mo_s, mo_s, mo_s), intor='int2e_pp1pp2_spinor')
-        #else:
-        #    print('full relativistic coulomb')
-        #    eri = None
-        #    eri = ao2mo.general(mf.mol, (mo_l, mo_l, mo_l, mo_l), intor='int2e_spinor')
-        #    eri += ao2mo.general(mf.mol, (mo_l, mo_l, mo_s, mo_s), intor='int2e_spsp2_spinor')
-        #    eri += ao2mo.general(mf.mol, (mo_s, mo_s, mo_l, mo_l), intor='int2e_spsp1_spinor')
-        #    eri += ao2mo.general(mf.mol, (mo_s, mo_s, mo_s, mo_s), intor='int2e_spsp1spsp2_spinor')
-
-        eri = nrr_outcore.full_iofree(mf.mol, mo_coeff, intor='int2e', motype='j-spinor')
-        if with_coulomb_so:
-            eri2_full = ao2mo.general(mf.mol, (mo_l, mo_l, mo_l, mo_l), intor='int2e_spinor')
-            eri2_full += ao2mo.general(mf.mol, (mo_l, mo_l, mo_s, mo_s), intor='int2e_spsp2_spinor')
-            eri2_full += ao2mo.general(mf.mol, (mo_s, mo_s, mo_l, mo_l), intor='int2e_spsp1_spinor')
-            eri2_full += ao2mo.general(mf.mol, (mo_s, mo_s, mo_s, mo_s), intor='int2e_spsp1spsp2_spinor')
-            eri2_sf = ao2mo.general(mf.mol, (mo_l, mo_l, mo_l, mo_l), intor='int2e_spinor')
-            eri2_sf += ao2mo.general(mf.mol, (mo_l, mo_l, mo_s, mo_s), intor='int2e_pp2_spinor')
-            eri2_sf += ao2mo.general(mf.mol, (mo_s, mo_s, mo_l, mo_l), intor='int2e_pp1_spinor')
-            eri2_sf += ao2mo.general(mf.mol, (mo_s, mo_s, mo_s, mo_s), intor='int2e_pp1pp2_spinor')
-            eri2_so = eri2_full - eri2_sf
-            eri += eri2_so
-
-        if with_full_coulomb:
-            eri2_full = ao2mo.general(mf.mol, (mo_l, mo_l, mo_l, mo_l), intor='int2e_spinor')
-            eri2_full += ao2mo.general(mf.mol, (mo_l, mo_l, mo_s, mo_s), intor='int2e_spsp2_spinor')
-            eri2_full += ao2mo.general(mf.mol, (mo_s, mo_s, mo_l, mo_l), intor='int2e_spsp1_spinor')
-            eri2_full += ao2mo.general(mf.mol, (mo_s, mo_s, mo_s, mo_s), intor='int2e_spsp1spsp2_spinor')
-            eri = eri2_full
-
-        if with_gaunt:
-            p = "int2e_breit_" if with_breit else "int2e_"
-            multips = (1.0,)*4 if with_breit else (-1.0,)*4
-            mos = [[mo_l, mo_s, mo_s, mo_l],
-                   [mo_l, mo_s, mo_l, mo_s],
-                   [mo_s, mo_l, mo_s, mo_l],
-                   [mo_s, mo_l, mo_l, mo_s]]
-            intors = [p+'ssp1sps2_spinor', p+'ssp1ssp2_spinor', p+'sps1sps2_spinor', p+'sps1ssp2_spinor']
-            for mo, intor, multip in zip(mos, intors, multips):
-                eri += multip * ao2mo.general(mol, mo, intor=intor, aosym='s1', comp=1, max_memory=mf.max_memory)
+        eri = x2c_active_eri_4c(mf, mo_coeff, with_full_coulomb=with_full_coulomb,
+                                with_coulomb_so=with_coulomb_so, with_gaunt=with_gaunt,
+                                with_breit=with_breit)
     #ncas = nact // 2
     from_integrals(filename=filename, h1e=h1eff, h2e=eri, nmo=nact,
                    nelec=sum(mf.mol.nelec)-ncore, nuc=energy_core.real, tol=tol, orbsym=symm)
