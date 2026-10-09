@@ -658,9 +658,10 @@ def lbfgs_postprocess(x, xs, ys, dens, a):
 
 def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=None, verbose=5,
                   cderi=None, bfgs=False, solver='davidson', davidson_maxiter=10, ah_root='yanai',
-                  trust_radius=None, trust_radius_max=2.0, reject_uphill=False, descent_guard=True,
+                  trust_radius=None, trust_radius_max=2.0, reject_uphill=True, descent_guard=True,
                   sd_hdiag_floor=0.05, kramers_check=True, kramers_project=True, gen_g_hop_fn=None,
-                  bfgs_start_grad=1.0, damp_overshoot=False, bfgs_keep_history=False, **deprecated):
+                  bfgs_start_grad=1.0, damp_overshoot=False, bfgs_keep_history=False,
+                  reject_noise=1e-3, reject_ratio=0.5, trust_radius_min=0.01, stall_limit=5, **deprecated):
     '''Super-CI orbital optimisation with an adaptive trust region.
 
     Every macro iteration solves the super-CI augmented-Hessian problem for the
@@ -684,10 +685,22 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
     trust_radius      initial trust radius (default 0.2).  max_stepsize is the
                       former name of this argument and is used when
                       trust_radius is not given.
-    reject_uphill     False: every step is accepted (an energy rise shrinks the
-                      trust radius and discards the L-BFGS history).  True: a
-                      step that raises the energy by more than conv_tol is
-                      discarded and the problem re-solved in the smaller region.
+    reject_uphill     True: a step that raises the energy by more than
+                      reject_noise (1e-3 Eh) and by more than reject_ratio (0.5)
+                      times the last decrease that was achieved is not taken:
+                      back to the last accepted orbitals, half the trust radius,
+                      L-BFGS history kept, and the radius may not grow straight
+                      back to the one that failed.  A smaller rise is accepted
+                      with half the radius and a discarded L-BFGS history.
+                      False: every step is accepted in that way.
+    trust_radius_min  the trust radius never falls below min(trust_radius_min, |g|).
+    stall_limit       stop, not converged, after this many consecutive rejected
+                      steps at the minimum radius.
+                      (Step control settled on the non-relativistic benchmarks of
+                      2026-10: Cu2O2, Al4O2, FeCl3, a Co2 complex, Fe-porphine, 21
+                      aromatics.  Rejecting every rise stalls in flat regions and
+                      at the noise level of the CI energy; discarding the history
+                      on a rejection brings back a two-step cycle.)
     kramers_check     require interleaved, phase +1 Kramers pairs at entry.
     kramers_project   project every rotation onto its time-reversal even part.
     descent_guard     replace a step that is not a descent direction by the
@@ -787,6 +800,11 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
     rejected = False
     curv_last = 1.0          # curvature along the last step in units of the model's
     e_last = e_tot
+    last_drop = None         # the last energy decrease that was achieved
+    de_accepted = de
+    radius_cap = trust_radius_max
+    nstall = 0
+    stalled = False
 
     def finalize_step(x):
         '''The step actually taken: Kramers projected, inside the trust region.'''
@@ -858,7 +876,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
         if imacro > 0 and de > 0.0 and not bfgs_keep_history:
             # the energy rose: discard the history (as KKW do)
             xs, ys, dens = [], [], []
-        use_bfgs = bfgs is True and norm_gorb < BFGS_GRAD_MAX and not rejected and len(xs) > 0
+        use_bfgs = bfgs is True and norm_gorb < BFGS_GRAD_MAX and len(xs) > 0
 
         gbar = g
         if use_bfgs:
@@ -947,14 +965,31 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
             curv_last = min(max((2. - rho * (2. - fac)) / fac, 1.0), 4.0) if (q_model < 0 and 0 < fac < 1.999) else 1.0
             print(f'Energy change {de:.4e}, predicted change {q_model:.4e}')
             print(f'trust region: |dr| = {norm_rot:.4e}, trust radius = {trust_radius:.4e}, rho = {rho:.3f}')
-        if de > conv_tol and reject_uphill:
-            trust_radius = 0.5 * norm_rot
-            print(f'step rejected (dE = {de:.4e} > 0), trust radius -> {trust_radius:.4e}')
+        # a rise is large when it exceeds the noise level and a fraction of the last
+        # decrease (before the first decrease: the gain the model promised)
+        if last_drop is not None:
+            big_rise = de > max(reject_noise, reject_ratio * last_drop)
+        else:
+            big_rise = de > max(reject_noise, abs(q_model) if (q_model is not None and q_model < 0) else 0.0)
+        r_min = min(trust_radius_min, norm_gorb)
+        if big_rise and reject_uphill:
+            nstall = nstall + 1 if norm_rot <= 1.001 * r_min else 0
+            trust_radius = max(0.5 * norm_rot, r_min)
+            radius_cap = trust_radius      # do not grow straight back to the radius that failed
+            print(f'step rejected (dE = {de:.4e}), trust radius -> {trust_radius:.4e}')
+            if nstall >= stall_limit:
+                print(f'stopped: {nstall} consecutive steps at the minimum trust radius {r_min:.3e} raised the energy')
+                stalled = True
+                e_tot = e_last
+                break
             eris = zmc_ao2mo._CDERIS(mc, mo, cderi=cderi, level=2)
             rejected = True
+            e_tot = e_last
+            de = de_accepted               # the L-BFGS history is kept
             imacro += 1
             t1m = log.timer(f'macro iter {imacro}', *t1m)
             continue
+        nstall = 0
         if de > conv_tol:
             trust_radius = 0.5 * norm_rot
             print(f'uphill step accepted (dE = {de:.4e} > 0), trust radius -> {trust_radius:.4e}')
@@ -964,8 +999,13 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
             trust_radius = 0.5 * norm_rot
             print(f'rho < 0.25: trust radius -> {trust_radius:.4e}')
         elif rho > 0.75 and norm_rot > 0.9 * trust_radius:
-            trust_radius = min(2. * trust_radius, trust_radius_max)
+            radius_cap = min(1.25 * radius_cap, trust_radius_max)
+            trust_radius = min(2. * trust_radius, trust_radius_max, radius_cap)
             print(f'rho > 0.75 at the boundary: trust radius -> {trust_radius:.4e}')
+        trust_radius = max(trust_radius, r_min)
+        if de < 0:
+            last_drop = -de
+        de_accepted = de
 
         rejected = False
         mo = mo_new
