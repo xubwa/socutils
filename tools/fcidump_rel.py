@@ -192,7 +192,8 @@ def from_x2c(mf, ncore, nact, filename='FCIDUMP', tol=1e-14, intor='int2e_spinor
             from types import SimpleNamespace
             from socutils.mcscf import zmc_ao2mo
             shim = SimpleNamespace(mol=mol, ncore=ncore, ncas=nact,
-                                   verbose=mf.verbose, _scf=mf)
+                                   verbose=mf.verbose, stdout=mf.stdout,
+                                   max_memory=mf.max_memory, _scf=mf)
             eris = zmc_ao2mo._CDERIS(shim, mf.mo_coeff[:, :ncore + nact],
                                      level=2, cderi=cderi)
             eri = eris.aaaa.reshape(nact * nact, nact * nact)
