@@ -12,19 +12,20 @@
 #include <cstdint>
 #include <vector>
 
-#include "integrals.h"
 #include "parallel.h"
+#include "scalar.h"
 
 namespace zshci {
 
 // A Hermitian operator the eigensolver can work with.
+template <typename S>
 class LinearOperator {
  public:
   virtual ~LinearOperator() = default;
   virtual size_t dim() const = 0;
   virtual const std::vector<double>& diagonal() const = 0;
   // y = H x.
-  virtual void Apply(const Complex* x, Complex* y) const = 0;
+  virtual void Apply(const S* x, S* y) const = 0;
 };
 
 // Index of a determinant in the variational space.
@@ -35,28 +36,31 @@ using DetIndex = uint32_t;
 // that holds a small part of the matrix does not pay for all its rows:
 // row[r] is the r-th such row, in increasing order, and its elements are
 // col/val[row_ptr[r] .. row_ptr[r + 1]), sorted by column.
+template <typename S>
 struct CsrBlock {
   size_t dim = 0;
   size_t first_col = 0;
   RawArray<DetIndex> row;
   std::vector<uint64_t> row_ptr;  // row.size() + 1 entries
   RawArray<DetIndex> col;
-  RawArray<Complex> val;
+  RawArray<S> val;
 
   size_t num_stored_rows() const { return row.size(); }
   size_t num_elements() const { return col.size(); }
 };
 
 // Whether two blocks hold the same elements, the values within `tolerance`.
-bool SameBlock(const CsrBlock& a, const CsrBlock& b, double tolerance);
+template <typename S>
+bool SameBlock(const CsrBlock<S>& a, const CsrBlock<S>& b, double tolerance);
 
-class SparseH : public LinearOperator {
+template <typename S>
+class SparseH : public LinearOperator<S> {
  public:
   size_t dim() const override { return dim_; }
   // Empty on ranks that were given no diagonal (see Grow).
   const std::vector<double>& diagonal() const override { return diagonal_; }
-  void Apply(const Complex* x, Complex* y) const override { Multiply(x, y); }
-  const std::vector<CsrBlock>& blocks() const { return blocks_; }
+  void Apply(const S* x, S* y) const override { Multiply(x, y); }
+  const std::vector<CsrBlock<S>>& blocks() const { return blocks_; }
   size_t num_elements() const;
 
   // Appends the diagonal elements of newly added determinants.
@@ -67,7 +71,7 @@ class SparseH : public LinearOperator {
   void Grow(size_t dim) { dim_ = dim; }
 
   // Adds a block and re-partitions the rows among the threads.
-  void AppendBlock(CsrBlock block);
+  void AppendBlock(CsrBlock<S> block);
 
   // y = H x. Each thread owns a contiguous range of y and is the only writer
   // to it: an element H(i, j) is read once by the owner of i, for
@@ -75,14 +79,14 @@ class SparseH : public LinearOperator {
   // No thread-private copy of y is made. For the second kind of access every
   // block keeps, per row, the positions where the columns pass from one
   // thread's range to the next.
-  void Multiply(const Complex* x, Complex* y) const;
+  void Multiply(const S* x, S* y) const;
 
   // When the matrix is spread over several ranks, each holding part of the
   // off-diagonal elements, exactly one of them must add the diagonal.
   void set_apply_diagonal(bool apply) { apply_diagonal_ = apply; }
 
   // Plain serial product, used to check Multiply.
-  void MultiplyReference(const Complex* x, Complex* y) const;
+  void MultiplyReference(const S* x, S* y) const;
 
  private:
   // Where the columns of each row of one block cross segment boundaries.
@@ -99,11 +103,11 @@ class SparseH : public LinearOperator {
   };
 
   void PartitionRows();
-  void BuildSplitTable(const CsrBlock& block, SplitTable* table) const;
+  void BuildSplitTable(const CsrBlock<S>& block, SplitTable* table) const;
 
   size_t dim_ = 0;
   std::vector<double> diagonal_;
-  std::vector<CsrBlock> blocks_;
+  std::vector<CsrBlock<S>> blocks_;
   std::vector<SplitTable> splits_;  // one per block
   // Thread t owns rows [segment_[t], segment_[t + 1]).
   std::vector<size_t> segment_;

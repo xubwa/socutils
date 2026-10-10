@@ -170,9 +170,9 @@ class RestrictedFilter {
 //   sink.Double(i, j, a, b, magnitude) for (i, j) -> (a, b), i < j, a < b,
 //                                     if magnitude = |<new|H|det>| >= cutoff.
 // Excitations rejected by the filter are skipped.
-template <int W, class Filter, class Sink>
+template <int W, class Filter, class Sink, typename S>
 void ForEachExcitation(const Det<W>& det, const std::vector<int>& occ,
-                       double cutoff, const Integrals& ints,
+                       double cutoff, const Integrals<S>& ints,
                        const HeatBath& heat_bath, const Filter& filter,
                        Sink* sink) {
   const int num_orbs = ints.num_orbs();
@@ -184,7 +184,7 @@ void ForEachExcitation(const Det<W>& det, const std::vector<int>& occ,
     for (int a = 0; a < num_orbs; ++a) {
       if (det.Occupied(a) || !view.Single(i, a)) continue;
       single.particles[0] = a;
-      const Complex element = OffDiagonalElement(det, single, ints);
+      const S element = OffDiagonalElement(det, single, ints);
       if (std::abs(element) > cutoff) sink->Single(i, a, element);
     }
   }

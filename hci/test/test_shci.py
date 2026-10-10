@@ -92,6 +92,52 @@ class KnownValues(unittest.TestCase):
         self.check(solver)
 
 
+class RealNumbers(unittest.TestCase):
+    '''A real Hamiltonian in real arithmetic against the same Hamiltonian in
+    complex arithmetic and against zfci.'''
+
+    def test_real_against_complex(self):
+        norb, nelec, nroots = 8, 4, 2
+        h1, eri = random_hamiltonian(norb, seed=11)
+        h1, eri = h1.real.copy(), eri.real.copy()
+        ref = zfci.FCISolver()
+        e_ref, ci_ref = ref.kernel(h1.astype(complex), eri.astype(complex),
+                                   norb, nelec, nroots=nroots)
+
+        results = {}
+        for scalar in ('auto', 'complex'):
+            solver = shci.SHCI()
+            solver.occslst = 'all'
+            solver.davidson_tol = 1e-10
+            solver.scalar = scalar
+            e, ci = solver.kernel(h1, eri, norb, nelec, nroots=nroots)
+            results[scalar] = (e, [solver.make_rdm12(c, norb, nelec) for c in ci],
+                               solver.wavefunction()[1])
+        e_real, dms_real, ci_real = results['auto']
+        e_complex, dms_complex, ci_complex = results['complex']
+        self.assertTrue(numpy.isrealobj(ci_real))
+        self.assertTrue(numpy.iscomplexobj(ci_complex))
+        self.assertAlmostEqual(abs(numpy.asarray(e_real) - e_ref).max(), 0, 8)
+        self.assertAlmostEqual(abs(numpy.asarray(e_real) - e_complex).max(), 0, 10)
+        for k in range(nroots):
+            dm1_ref, dm2_ref = ref.make_rdm12(ci_ref[k], norb, nelec)
+            self.assertTrue(numpy.isrealobj(dms_real[k][0]))
+            self.assertTrue(numpy.isrealobj(dms_real[k][1]))
+            self.assertAlmostEqual(abs(dms_real[k][0] - dm1_ref).max(), 0, 6)
+            self.assertAlmostEqual(abs(dms_real[k][1] - dm2_ref).max(), 0, 6)
+            self.assertAlmostEqual(abs(dms_real[k][0] - dms_complex[k][0]).max(), 0, 8)
+            self.assertAlmostEqual(abs(dms_real[k][1] - dms_complex[k][1]).max(), 0, 8)
+
+    def test_real_refuses_complex_integrals(self):
+        norb, nelec = 8, 4
+        h1, eri = random_hamiltonian(norb, seed=11)
+        solver = shci.SHCI()
+        solver.occslst = 'all'
+        solver.scalar = 'real'
+        with self.assertRaises(RuntimeError):
+            solver.kernel(h1, eri, norb, nelec)
+
+
 if __name__ == '__main__':
     print('Tests for hci.shci against zfci')
     unittest.main()

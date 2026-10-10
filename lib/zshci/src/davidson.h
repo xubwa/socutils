@@ -5,7 +5,7 @@
 
 #include <vector>
 
-#include "integrals.h"
+#include "scalar.h"
 #include "sparse_h.h"
 
 namespace zshci {
@@ -16,8 +16,8 @@ struct DavidsonOptions {
   // The subspace is collapsed to the current Ritz vectors when it would grow
   // beyond max_space_per_root * num_roots vectors. Small values cost many
   // more iterations: 8 instead of 20 quadrupled them on a 700k-determinant
-  // test, while 40 brought nothing further. Each vector takes 32 bytes per
-  // determinant.
+  // test, while 40 brought nothing further. Each vector and its product
+  // with H take two numbers per determinant.
   int max_space_per_root = 20;
   int max_iterations = 200;
   // Matrices up to this dimension are diagonalized densely instead.
@@ -33,9 +33,12 @@ struct DavidsonResult {
 };
 
 // On entry `vectors` holds one starting guess per root; on exit it holds the
-// eigenvectors. Guesses need not be normalized or orthogonal.
-DavidsonResult Davidson(const LinearOperator& h, const DavidsonOptions& options,
-                        std::vector<std::vector<Complex>>* vectors);
+// eigenvectors. Guesses need not be normalized or orthogonal. Instantiated
+// for double and Complex.
+template <typename S>
+DavidsonResult Davidson(const LinearOperator<S>& h,
+                        const DavidsonOptions& options,
+                        std::vector<std::vector<S>>* vectors);
 
 }  // namespace zshci
 

@@ -8,7 +8,8 @@
 
 namespace zshci {
 
-bool SameBlock(const CsrBlock& a, const CsrBlock& b, double tolerance) {
+template <typename S>
+bool SameBlock(const CsrBlock<S>& a, const CsrBlock<S>& b, double tolerance) {
   if (a.row_ptr != b.row_ptr || a.row.size() != b.row.size() ||
       a.col.size() != b.col.size()) {
     return false;
@@ -23,18 +24,21 @@ bool SameBlock(const CsrBlock& a, const CsrBlock& b, double tolerance) {
   return true;
 }
 
-size_t SparseH::num_elements() const {
+template <typename S>
+size_t SparseH<S>::num_elements() const {
   size_t n = 0;
-  for (const CsrBlock& block : blocks_) n += block.num_elements();
+  for (const CsrBlock<S>& block : blocks_) n += block.num_elements();
   return n;
 }
 
-void SparseH::AppendDiagonal(const std::vector<double>& diagonal) {
+template <typename S>
+void SparseH<S>::AppendDiagonal(const std::vector<double>& diagonal) {
   diagonal_.insert(diagonal_.end(), diagonal.begin(), diagonal.end());
   dim_ = diagonal_.size();
 }
 
-void SparseH::AppendBlock(CsrBlock block) {
+template <typename S>
+void SparseH<S>::AppendBlock(CsrBlock<S> block) {
   blocks_.push_back(std::move(block));
   PartitionRows();
 }
@@ -42,14 +46,15 @@ void SparseH::AppendBlock(CsrBlock block) {
 // Splits the rows into one contiguous segment per thread such that every
 // segment touches about the same number of stored elements. An element (i, j)
 // counts for both i and j, which is the work Multiply does for a segment.
-void SparseH::PartitionRows() {
-  const size_t n = dim();
+template <typename S>
+void SparseH<S>::PartitionRows() {
+  const size_t n = dim_;
   const int num_threads = omp_get_max_threads();
   segment_.assign(num_threads + 1, n);
   segment_[0] = 0;
   if (num_threads > 1) {
     std::vector<uint64_t> weight(n, 1);
-    for (const CsrBlock& block : blocks_) {
+    for (const CsrBlock<S>& block : blocks_) {
       const long num_rows = static_cast<long>(block.num_stored_rows());
 #pragma omp parallel for schedule(static)
       for (long r = 0; r < num_rows; ++r) {
@@ -80,7 +85,9 @@ void SparseH::PartitionRows() {
   }
 }
 
-void SparseH::BuildSplitTable(const CsrBlock& block, SplitTable* table) const {
+template <typename S>
+void SparseH<S>::BuildSplitTable(const CsrBlock<S>& block,
+                                 SplitTable* table) const {
   const int num_segments = static_cast<int>(segment_.size()) - 1;
   // The segments that contain the first and the last possible column.
   auto segment_of = [&](size_t index) {
@@ -113,18 +120,19 @@ void SparseH::BuildSplitTable(const CsrBlock& block, SplitTable* table) const {
   }
 }
 
-void SparseH::Multiply(const Complex* x, Complex* y) const {
+template <typename S>
+void SparseH<S>::Multiply(const S* x, S* y) const {
   const int num_segments = static_cast<int>(segment_.size()) - 1;
 #pragma omp parallel for schedule(static, 1)
   for (int t = 0; t < num_segments; ++t) {
     const size_t begin = segment_[t];
     const size_t end = segment_[t + 1];
     for (size_t i = begin; i < end; ++i) {
-      y[i] = apply_diagonal_ ? diagonal_[i] * x[i] : Complex(0.0);
+      y[i] = apply_diagonal_ ? diagonal_[i] * x[i] : S(0.0);
     }
 
     for (size_t b = 0; b < blocks_.size(); ++b) {
-      const CsrBlock& block = blocks_[b];
+      const CsrBlock<S>& block = blocks_[b];
       const SplitTable& split = splits_[b];
       // The stored rows below `begin` and below `end`.
       const DetIndex* const rows = block.row.data();
@@ -136,7 +144,7 @@ void SparseH::Multiply(const Complex* x, Complex* y) const {
 
       // Rows owned by this thread: y_i += H(i,j) x_j.
       for (size_t r = first_row; r < last_row; ++r) {
-        Complex sum(0.0);
+        S sum(0.0);
         for (uint64_t k = block.row_ptr[r]; k < block.row_ptr[r + 1]; ++k) {
           sum += block.val[k] * x[block.col[k]];
         }
@@ -155,30 +163,38 @@ void SparseH::Multiply(const Complex* x, Complex* y) const {
         const uint64_t last = t == split.last_segment
                                   ? block.row_ptr[r + 1]
                                   : block.row_ptr[r] + offsets[local];
-        const Complex xi = x[rows[r]];
+        const S xi = x[rows[r]];
         for (uint64_t k = first; k < last; ++k) {
-          y[block.col[k]] += std::conj(block.val[k]) * xi;
+          y[block.col[k]] += Conj(block.val[k]) * xi;
         }
       }
     }
   }
 }
 
-void SparseH::MultiplyReference(const Complex* x, Complex* y) const {
-  const size_t n = dim();
+template <typename S>
+void SparseH<S>::MultiplyReference(const S* x, S* y) const {
+  const size_t n = dim_;
   for (size_t i = 0; i < n; ++i) {
-    y[i] = apply_diagonal_ ? diagonal_[i] * x[i] : Complex(0.0);
+    y[i] = apply_diagonal_ ? diagonal_[i] * x[i] : S(0.0);
   }
-  for (const CsrBlock& block : blocks_) {
+  for (const CsrBlock<S>& block : blocks_) {
     for (size_t r = 0; r < block.num_stored_rows(); ++r) {
       const DetIndex i = block.row[r];
       for (uint64_t k = block.row_ptr[r]; k < block.row_ptr[r + 1]; ++k) {
         const DetIndex j = block.col[k];
         y[i] += block.val[k] * x[j];
-        y[j] += std::conj(block.val[k]) * x[i];
+        y[j] += Conj(block.val[k]) * x[i];
       }
     }
   }
 }
+
+template bool SameBlock(const CsrBlock<double>&, const CsrBlock<double>&,
+                        double);
+template bool SameBlock(const CsrBlock<Complex>&, const CsrBlock<Complex>&,
+                        double);
+template class SparseH<double>;
+template class SparseH<Complex>;
 
 }  // namespace zshci

@@ -3,7 +3,8 @@
 // The Hamiltonian is
 //   H = sum_pq h(p,q) p^+ q + 1/2 sum_pqrs (pr|qs) p^+ q^+ s r + E_core,
 // with (pr|qs) in chemists' notation. No spin or time-reversal structure is
-// assumed; the only integral symmetry used is (pq|rs) = (rs|pq).
+// assumed; the only integral symmetry used is (pq|rs) = (rs|pq). The number
+// type S of the integrals is double or Complex (scalar.h).
 
 #ifndef ZSHCI_SRC_HAMILTONIAN_H_
 #define ZSHCI_SRC_HAMILTONIAN_H_
@@ -74,8 +75,8 @@ double DoubleSign(const Det<W>& ket, int i, int j, int a, int b) {
 // <det|H|det> without the core energy. Called once per candidate determinant
 // in perturbation theory, so it must not allocate: memory allocation is a
 // point of contention between threads.
-template <int W>
-double DiagonalEnergy(const Det<W>& det, const Integrals& ints) {
+template <int W, typename S>
+double DiagonalEnergy(const Det<W>& det, const Integrals<S>& ints) {
   int occ[64 * W];
   int num_occ = 0;
   for (int k = 0; k < W; ++k) {
@@ -88,7 +89,7 @@ double DiagonalEnergy(const Det<W>& det, const Integrals& ints) {
   double energy = 0.0;
   for (int m = 0; m < num_occ; ++m) {
     const int p = occ[m];
-    energy += ints.OneBody(p, p).real();
+    energy += Real(ints.OneBody(p, p));
     for (int n = 0; n < m; ++n) {
       energy += ints.Direct(p, occ[n]) - ints.Exchange(p, occ[n]);
     }
@@ -97,13 +98,13 @@ double DiagonalEnergy(const Det<W>& det, const Integrals& ints) {
 }
 
 // <bra|H|ket> for a bra that differs from the ket by `exc` (rank 1 or 2).
-template <int W>
-Complex OffDiagonalElement(const Det<W>& ket, const Excitation& exc,
-                           const Integrals& ints) {
+template <int W, typename S>
+S OffDiagonalElement(const Det<W>& ket, const Excitation& exc,
+                     const Integrals<S>& ints) {
   if (exc.rank == 1) {
     const int i = exc.holes[0];
     const int a = exc.particles[0];
-    Complex value = ints.OneBody(a, i);
+    S value = ints.OneBody(a, i);
     for (int k = 0; k < W; ++k) {
       uint64_t word = ket.words[k];
       while (word != 0) {
@@ -122,12 +123,12 @@ Complex OffDiagonalElement(const Det<W>& ket, const Excitation& exc,
     return DoubleSign(ket, i, j, a, b) *
            (ints.TwoBody(a, i, b, j) - ints.TwoBody(a, j, b, i));
   }
-  return Complex(0.0);
+  return S(0.0);
 }
 
 // <bra|H|ket> for two different determinants; zero beyond double excitations.
-template <int W>
-Complex Hij(const Det<W>& bra, const Det<W>& ket, const Integrals& ints) {
+template <int W, typename S>
+S Hij(const Det<W>& bra, const Det<W>& ket, const Integrals<S>& ints) {
   return OffDiagonalElement(ket, FindExcitation(bra, ket), ints);
 }
 

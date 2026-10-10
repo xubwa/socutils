@@ -30,20 +30,21 @@ void WriteEnergies(const std::string& prefix,
   }
 }
 
+template <typename S>
 void WriteDensityMatrices(const std::string& prefix, int bra, int ket,
-                          const DensityMatrices& dm) {
+                          const DensityMatrices<S>& dm) {
   const size_t n = dm.num_orbs;
   HighFive::File file(prefix + "/rdm_" + std::to_string(bra) + "_" +
                           std::to_string(ket) + ".h5",
                       HighFive::File::Overwrite);
   // dm.one is already dm1[p,q] = <p^+ q> in row-major order.
-  file.createDataSet<Complex>("dm1", HighFive::DataSpace({n, n}))
+  file.createDataSet<S>("dm1", HighFive::DataSpace({n, n}))
       .write_raw(dm.one.data());
   if (dm.two.empty()) return;
 
   // Stored: D2(p,q,r,s) = <p^+ q^+ s r>. Written: dm2[p,q,r,s] =
   // <p^+ r^+ s q> = D2(p,r,q,s).
-  std::vector<Complex> dm2(dm.two.size());
+  std::vector<S> dm2(dm.two.size());
   const long num = static_cast<long>(n);
 #pragma omp parallel for schedule(static)
   for (long p = 0; p < num; ++p) {
@@ -55,11 +56,12 @@ void WriteDensityMatrices(const std::string& prefix, int bra, int ket,
       }
     }
   }
-  file.createDataSet<Complex>("dm2", HighFive::DataSpace({n, n, n, n}))
+  file.createDataSet<S>("dm2", HighFive::DataSpace({n, n, n, n}))
       .write_raw(dm2.data());
 }
 
-void WriteWaveFunction(const std::string& path, const WaveFunction& wfn) {
+template <typename S>
+void WriteWaveFunction(const std::string& path, const WaveFunction<S>& wfn) {
   HighFive::File file(path, HighFive::File::Overwrite);
   const size_t width = wfn.det_width;
   const size_t num_dets = width == 0 ? 0 : wfn.det_words.size() / width;
@@ -73,16 +75,18 @@ void WriteWaveFunction(const std::string& path, const WaveFunction& wfn) {
   std::vector<double> im(num_roots * num_dets);
   for (size_t k = 0; k < num_roots; ++k) {
     for (size_t i = 0; i < num_dets; ++i) {
-      re[k * num_dets + i] = wfn.coefficients[k][i].real();
-      im[k * num_dets + i] = wfn.coefficients[k][i].imag();
+      re[k * num_dets + i] = Real(wfn.coefficients[k][i]);
+      im[k * num_dets + i] = Imag(wfn.coefficients[k][i]);
     }
   }
   file.createDataSet<double>("ci_real",
                              HighFive::DataSpace({num_roots, num_dets}))
       .write_raw(re.data());
-  file.createDataSet<double>("ci_imag",
-                             HighFive::DataSpace({num_roots, num_dets}))
-      .write_raw(im.data());
+  if (ScalarTraits<S>::kIsComplex) {
+    file.createDataSet<double>("ci_imag",
+                               HighFive::DataSpace({num_roots, num_dets}))
+        .write_raw(im.data());
+  }
 
   WriteVector(&file, "energies", wfn.energies);
   if (!wfn.pt_corrections.empty()) {
@@ -112,5 +116,14 @@ std::vector<uint64_t> ReadDetWords(const std::string& path, int* det_width) {
   dataset.read(words.data());
   return words;
 }
+
+template void WriteDensityMatrices(const std::string&, int, int,
+                                   const DensityMatrices<double>&);
+template void WriteDensityMatrices(const std::string&, int, int,
+                                   const DensityMatrices<Complex>&);
+template void WriteWaveFunction(const std::string&,
+                                const WaveFunction<double>&);
+template void WriteWaveFunction(const std::string&,
+                                const WaveFunction<Complex>&);
 
 }  // namespace zshci

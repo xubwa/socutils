@@ -21,34 +21,46 @@
 namespace zshci {
 namespace {
 
-template <int W>
-void Run(const Input& input, const Integrals& ints, const Comm& comm) {
+template <int W, typename S>
+void Run(const Input& input, const Integrals<S>& ints, const Comm& comm) {
   switch (input.mode) {
     case Mode::kDiag:
-      RunDiag<W>(input, ints, comm);
+      RunDiag<W, S>(input, ints, comm);
       return;
     case Mode::kSelect:
-      RunSelect<W>(input, ints, comm);
+      RunSelect<W, S>(input, ints, comm);
       return;
   }
 }
 
-void RunWithWidth(const Input& input, const Integrals& ints,
+template <typename S>
+void RunWithWidth(const Input& input, const Integrals<S>& ints,
                   const Comm& comm) {
   switch (WordsForOrbitals(ints.num_orbs())) {
     case 1:
-      return Run<1>(input, ints, comm);
+      return Run<1, S>(input, ints, comm);
     case 2:
-      return Run<2>(input, ints, comm);
+      return Run<2, S>(input, ints, comm);
     case 3:
-      return Run<3>(input, ints, comm);
+      return Run<3, S>(input, ints, comm);
     case 4:
-      return Run<4>(input, ints, comm);
+      return Run<4, S>(input, ints, comm);
     default:
       throw std::runtime_error(
           "NORB = " + std::to_string(ints.num_orbs()) + " exceeds the " +
           std::to_string(64 * kMaxDetWords) + " spinors this build supports");
   }
+}
+
+// Reads the integrals as numbers of type S and runs the calculation.
+template <typename S>
+void RunWithScalar(const Input& input, const Comm& comm) {
+  const double time = omp_get_wtime();
+  const Integrals<S> ints = ReadFcidump<S>(input.integrals, comm);
+  std::printf("integrals: %s, %s, %d spinors, core energy %.12f, %.2f s\n",
+              input.integrals.c_str(), ScalarTraits<S>::kName, ints.num_orbs(),
+              ints.core_energy(), omp_get_wtime() - time);
+  RunWithWidth(input, ints, comm);
 }
 
 void Main(const char* input_path, const Comm& comm) {
@@ -67,13 +79,15 @@ void Main(const char* input_path, const Comm& comm) {
               omp_get_max_threads());
   std::printf("input:\n%s\n", input.resolved.c_str());
 
-  const double time = omp_get_wtime();
-  const Integrals ints = ReadFcidump(input.integrals, comm);
-  std::printf("integrals: %s, %d spinors, core energy %.12f, %.2f s\n",
-              input.integrals.c_str(), ints.num_orbs(), ints.core_energy(),
-              omp_get_wtime() - time);
-
-  RunWithWidth(input, ints, comm);
+  bool is_complex = input.scalar == ScalarChoice::kComplex;
+  if (input.scalar == ScalarChoice::kAuto) {
+    is_complex = FcidumpIsComplex(input.integrals, comm);
+  }
+  if (is_complex) {
+    RunWithScalar<Complex>(input, comm);
+  } else {
+    RunWithScalar<double>(input, comm);
+  }
   std::printf("zshci finished normally\n");
 }
 

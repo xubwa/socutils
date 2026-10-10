@@ -1,7 +1,7 @@
 # zshci
 
-Selected configuration interaction for spinor (two- or four-component,
-complex) Hamiltonians.
+Selected configuration interaction for spinor (two- or four-component)
+Hamiltonians, in complex or in real arithmetic.
 
 Given one- and two-electron integrals over spinors, `zshci`
 
@@ -65,9 +65,15 @@ The input is a JSON file; comments are allowed and unknown keys are errors.
 }
 ```
 
-`src/input.h` documents every key. The integrals are read from a complex
-FCIDUMP file (`src/integrals.h`). The program exits with a nonzero status on
-any error.
+`src/input.h` documents every key. The integrals are read from a FCIDUMP
+file (`src/integrals.h`) in the complex format, `(re,im) p q r s`, or the real
+format, `value p q r s`. A file in the real format is treated with real
+numbers throughout (integrals, Hamiltonian, CI vectors, density matrices),
+which takes about two thirds of the memory; `"scalar": "real"` asks for the
+same with a file in the complex format whose imaginary parts are all zero, and
+`"scalar": "complex"` forces complex numbers. The integrals are still indexed
+by spinors: real numbers do not imply spin symmetry. The program exits with a
+nonzero status on any error.
 
 Output, in the directory `prefix` (`src/output.h`):
 
@@ -75,7 +81,7 @@ Output, in the directory `prefix` (`src/output.h`):
 |---|---|
 | `shci.e` | total energies, including the perturbative correction if any |
 | `wfn.h5` | determinants, CI vectors, energies, the resolved input |
-| `rdm_i_i.h5` | `dm1` and `dm2` of state i, as complex arrays in the convention of PySCF |
+| `rdm_i_i.h5` | `dm1` and `dm2` of state i, as real or complex arrays (the number type of the calculation) in the convention of PySCF |
 | `rdm_0_j.h5` | `dm1`: transition density matrix between states 0 and j |
 
 `dm1[p,q]` is `<p^+ q>` and `dm2[p,q,r,s]` is `<p^+ r^+ s q>`; a reader takes

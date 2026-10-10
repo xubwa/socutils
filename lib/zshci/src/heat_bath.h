@@ -30,7 +30,10 @@ class HeatBath {
 
   // Entries with |g| <= threshold are left out. With several ranks this is
   // collective: the root builds the tables and they are held once per node.
-  HeatBath(const Integrals& ints, double threshold, const Comm& comm = Comm());
+  // Instantiated for double and Complex.
+  template <typename S>
+  HeatBath(const Integrals<S>& ints, double threshold,
+           const Comm& comm = Comm());
 
   // The list of the pair i < j, by decreasing magnitude.
   const Entry* begin(int i, int j) const {

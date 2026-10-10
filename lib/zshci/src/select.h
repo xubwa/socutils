@@ -36,13 +36,13 @@ namespace zshci {
 namespace internal {
 
 // Sink of ForEachExcitation that collects the excited determinants.
-template <int W>
+template <int W, typename S>
 class CandidateSink {
  public:
   CandidateSink(const Det<W>& parent, std::vector<Det<W>>* out)
       : parent_(parent), out_(out) {}
 
-  void Single(int i, int a, Complex /*element*/) {
+  void Single(int i, int a, S /*element*/) {
     Det<W> det = parent_;
     det.Clear(i);
     det.Set(a);
@@ -72,11 +72,11 @@ class CandidateSink {
 // candidates are sent to the rank that owns their hash, which removes
 // duplicates and known determinants, and the survivors are gathered so that
 // every rank returns the same list.
-template <int W, class Filter>
+template <int W, class Filter, typename S>
 std::vector<Det<W>> SelectNewDeterminants(
-    Span<Det<W>> dets, Span<Det<W>> sorted_dets, Span<double> weights, double epsilon, const Integrals& ints,
-    const HeatBath& heat_bath, const Filter& filter,
-    const Comm& comm = Comm()) {
+    Span<Det<W>> dets, Span<Det<W>> sorted_dets, Span<double> weights,
+    double epsilon, const Integrals<S>& ints, const HeatBath& heat_bath,
+    const Filter& filter, const Comm& comm = Comm()) {
   std::vector<Det<W>> candidates;
   const long num_dets = static_cast<long>(dets.size());
   const long num_ranks = comm.size();
@@ -90,7 +90,7 @@ std::vector<Det<W>> SelectNewDeterminants(
       if (i % num_ranks != rank || weights[i] <= 0.0) continue;
       occ.clear();
       dets[i].AppendOccupied(&occ);
-      internal::CandidateSink<W> sink(dets[i], &local);
+      internal::CandidateSink<W, S> sink(dets[i], &local);
       ForEachExcitation(dets[i], occ, epsilon / weights[i], ints, heat_bath,
                         filter, &sink);
     }
@@ -125,14 +125,15 @@ std::vector<Det<W>> SelectNewDeterminants(
 // the root-sum-square of its coefficients over the roots or, without
 // eigenvectors (fewer starting determinants than roots), the value every
 // determinant would have if each root were that determinant.
-inline SharedArray<double> ShareWeights(
-    const std::vector<std::vector<Complex>>& root_vectors, size_t dim,
-    int num_roots, const Comm& comm) {
+template <typename S>
+SharedArray<double> ShareWeights(
+    const std::vector<std::vector<S>>& root_vectors, size_t dim, int num_roots,
+    const Comm& comm) {
   SharedArray<double> weights(dim, comm);
   if (comm.is_root()) {
     for (size_t i = 0; i < dim; ++i) {
       double sum = 0.0;
-      for (const std::vector<Complex>& v : root_vectors) sum += std::norm(v[i]);
+      for (const std::vector<S>& v : root_vectors) sum += std::norm(v[i]);
       weights[i] = root_vectors.empty() ? std::sqrt(double(num_roots))
                                         : std::sqrt(sum);
     }
@@ -141,8 +142,8 @@ inline SharedArray<double> ShareWeights(
   return weights;
 }
 
-template <int W>
-void RunSelect(const Input& input, const Integrals& ints, const Comm& comm) {
+template <int W, typename S>
+void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
   const int num_orbs = ints.num_orbs();
   const int num_roots = input.nroots;
   const std::vector<int> labels = ResolveLabels(input, ints);
@@ -187,7 +188,7 @@ void RunSelect(const Input& input, const Integrals& ints, const Comm& comm) {
   const ConnectOptions connect = MakeConnectOptions(input);
   ConnectStats stats;
 
-  SparseH h;
+  SparseH<S> h;
   h.set_apply_diagonal(comm.is_root());
   AppendDiagonal(shared_dets.span(), 0, ints, comm, &h);
   h.AppendBlock(
@@ -196,7 +197,7 @@ void RunSelect(const Input& input, const Integrals& ints, const Comm& comm) {
   // The eigenvectors live on the root; the other ranks see only what is
   // shared from them (the selection weights, and at the end the vectors).
   // If the starting space can hold all roots, start from its eigenvectors.
-  std::vector<std::vector<Complex>> root_vectors;
+  std::vector<std::vector<S>> root_vectors;
   std::vector<double> energies;
   DavidsonOptions loose = input.davidson;
   loose.tol = std::max(input.davidson.tol, input.select.davidson_tol_loose);
@@ -254,7 +255,7 @@ void RunSelect(const Input& input, const Integrals& ints, const Comm& comm) {
       if (!have_vectors) {
         root_vectors = GuessVectors(shared_dets.span(), h, ints, num_roots);
       } else {
-        for (std::vector<Complex>& v : root_vectors) v.resize(new_size, 0.0);
+        for (std::vector<S>& v : root_vectors) v.resize(new_size, 0.0);
       }
     }
     have_vectors = true;
@@ -301,9 +302,9 @@ void RunSelect(const Input& input, const Integrals& ints, const Comm& comm) {
   PrintConnectStats(stats);
 
   root_dets = std::vector<Det<W>>();
-  const SharedVectors vectors =
+  const SharedVectors<S> vectors =
       ShareVectors(root_vectors, shared_dets.size(), comm);
-  root_vectors = std::vector<std::vector<Complex>>();
+  root_vectors = std::vector<std::vector<S>>();
   const std::vector<PtResult> pt =
       ComputePerturbation(input, ints, shared_dets.span(), energies, vectors,
                           &heat_bath, filter, comm);

@@ -422,10 +422,10 @@ void ForEachConnectedPair(Span<Det<W>> dets, size_t first_new,
 }
 
 // Builds the block from the pairs the finder reports.
-template <int W, class Finder>
-CsrBlock BuildBlockWith(Span<Det<W>> dets, size_t first_new,
-                        const Integrals& ints, double threshold,
-                        const Finder& finder, ConnectStats* stats) {
+template <int W, class Finder, typename S>
+CsrBlock<S> BuildBlockWith(Span<Det<W>> dets, size_t first_new,
+                           const Integrals<S>& ints, double threshold,
+                           const Finder& finder, ConnectStats* stats) {
   const size_t n = dets.size();
   if (n > static_cast<size_t>(UINT32_MAX)) {
     throw std::length_error("too many determinants for a 32-bit index");
@@ -458,7 +458,7 @@ CsrBlock BuildBlockWith(Span<Det<W>> dets, size_t first_new,
 
   // The rows that hold elements, and where each one starts. `count` turns
   // into the write cursor of every row.
-  CsrBlock block;
+  CsrBlock<S> block;
   block.dim = n;
   block.first_col = first_new;
   size_t num_stored_rows = 0;
@@ -481,7 +481,7 @@ CsrBlock BuildBlockWith(Span<Det<W>> dets, size_t first_new,
   }
   std::vector<uint64_t>& cursor = count;
   block.col = RawArray<DetIndex>(block.row_ptr[num_stored_rows]);
-  block.val = RawArray<Complex>(block.row_ptr[num_stored_rows]);
+  block.val = RawArray<S>(block.row_ptr[num_stored_rows]);
 
   // Pass 2: fill. Each row has its own cursor, advanced atomically.
   for (int pass = 0; pass < num_passes; ++pass) {
@@ -490,7 +490,7 @@ CsrBlock BuildBlockWith(Span<Det<W>> dets, size_t first_new,
                         : MakeEntries(dets, first_new, finder, pass);
     ForEachConnectedPair(dets, first_new, entries, finder, pass,
                          [&](DetIndex i, DetIndex j) {
-                           const Complex value = Hij(dets[i], dets[j], ints);
+                           const S value = Hij(dets[i], dets[j], ints);
                            if (!keep_all && std::abs(value) <= threshold) {
                              return;
                            }
@@ -505,7 +505,7 @@ CsrBlock BuildBlockWith(Span<Det<W>> dets, size_t first_new,
   // Sort every row by column.
 #pragma omp parallel
   {
-    std::vector<std::pair<DetIndex, Complex>> row;
+    std::vector<std::pair<DetIndex, S>> row;
 #pragma omp for schedule(dynamic, 256)
     for (size_t r = 0; r < num_stored_rows; ++r) {
       const uint64_t begin = block.row_ptr[r];
@@ -514,11 +514,11 @@ CsrBlock BuildBlockWith(Span<Det<W>> dets, size_t first_new,
       for (uint64_t k = begin; k < end; ++k) {
         row.emplace_back(block.col[k], block.val[k]);
       }
-      std::sort(row.begin(), row.end(),
-                [](const std::pair<DetIndex, Complex>& a,
-                   const std::pair<DetIndex, Complex>& b) {
-                  return a.first < b.first;
-                });
+      std::sort(
+          row.begin(), row.end(),
+          [](const std::pair<DetIndex, S>& a, const std::pair<DetIndex, S>& b) {
+            return a.first < b.first;
+          });
       for (uint64_t k = begin; k < end; ++k) {
         block.col[k] = row[k - begin].first;
         block.val[k] = row[k - begin].second;
@@ -538,10 +538,11 @@ CsrBlock BuildBlockWith(Span<Det<W>> dets, size_t first_new,
 // of the covers (segments) and returns the elements found there. The blocks
 // of all ranks together hold each element once; no communication is needed.
 // `stats`, if given, is updated with what this rank's search did.
-template <int W>
-CsrBlock BuildBlock(Span<Det<W>> dets, size_t first_new,
-                    const Integrals& ints, const ConnectOptions& options,
-                    const Comm& comm = Comm(), ConnectStats* stats = nullptr) {
+template <int W, typename S>
+CsrBlock<S> BuildBlock(Span<Det<W>> dets, size_t first_new,
+                       const Integrals<S>& ints, const ConnectOptions& options,
+                       const Comm& comm = Comm(),
+                       ConnectStats* stats = nullptr) {
   if (options.method == ConnectMethod::kSegments) {
     const internal::SegmentFinder<W> finder(dets, ints.num_orbs(),
                                             options.num_segments, comm);
@@ -555,23 +556,23 @@ CsrBlock BuildBlock(Span<Det<W>> dets, size_t first_new,
 
 // Reference implementation: tests every pair of determinants. Quadratic; used
 // only to check BuildBlock on small cases.
-template <int W>
-CsrBlock BuildBlockBruteForce(Span<Det<W>> dets, size_t first_new,
-                              const Integrals& ints,
-                              const ConnectOptions& options) {
+template <int W, typename S>
+CsrBlock<S> BuildBlockBruteForce(Span<Det<W>> dets, size_t first_new,
+                                 const Integrals<S>& ints,
+                                 const ConnectOptions& options) {
   const size_t n = dets.size();
-  CsrBlock block;
+  CsrBlock<S> block;
   block.dim = n;
   block.first_col = first_new;
   std::vector<DetIndex> row;
   std::vector<DetIndex> col;
-  std::vector<Complex> val;
+  std::vector<S> val;
   block.row_ptr.assign(1, 0);
   for (size_t i = 0; i < n; ++i) {
     for (size_t j = std::max(i + 1, first_new); j < n; ++j) {
       const int num_bits = dets[i].NumDifferentBits(dets[j]);
       if (num_bits != 2 && num_bits != 4) continue;
-      const Complex value = Hij(dets[i], dets[j], ints);
+      const S value = Hij(dets[i], dets[j], ints);
       if (options.threshold >= 0.0 && std::abs(value) <= options.threshold) {
         continue;
       }
@@ -585,7 +586,7 @@ CsrBlock BuildBlockBruteForce(Span<Det<W>> dets, size_t first_new,
   }
   block.row = RawArray<DetIndex>(row.size());
   block.col = RawArray<DetIndex>(col.size());
-  block.val = RawArray<Complex>(val.size());
+  block.val = RawArray<S>(val.size());
   std::copy(row.begin(), row.end(), block.row.begin());
   std::copy(col.begin(), col.end(), block.col.begin());
   std::copy(val.begin(), val.end(), block.val.begin());

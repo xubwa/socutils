@@ -25,18 +25,19 @@ namespace zshci {
 
 // Dense tensors in row-major order: D1[p * n + q], D2[((p * n + q) * n + r) *
 // n + s].
+template <typename S>
 struct DensityMatrices {
   int num_orbs = 0;
-  std::vector<Complex> one;
-  std::vector<Complex> two;  // empty unless requested
+  std::vector<S> one;
+  std::vector<S> two;  // empty unless requested
 
-  Complex& One(int p, int q) { return one[p * num_orbs + q]; }
-  Complex& Two(int p, int q, int r, int s) {
+  S& One(int p, int q) { return one[p * num_orbs + q]; }
+  S& Two(int p, int q, int r, int s) {
     const size_t n = num_orbs;
     return two[((p * n + q) * n + r) * n + s];
   }
-  Complex One(int p, int q) const { return one[p * num_orbs + q]; }
-  Complex Two(int p, int q, int r, int s) const {
+  S One(int p, int q) const { return one[p * num_orbs + q]; }
+  S Two(int p, int q, int r, int s) const {
     const size_t n = num_orbs;
     return two[((p * n + q) * n + r) * n + s];
   }
@@ -44,21 +45,10 @@ struct DensityMatrices {
 
 namespace internal {
 
-// Adds `value` to a shared accumulator; several threads may hit one element.
-inline void AtomicAdd(Complex* target, Complex value) {
-  double* parts = reinterpret_cast<double*>(target);
-  const double re = value.real();
-  const double im = value.imag();
-#pragma omp atomic
-  parts[0] += re;
-#pragma omp atomic
-  parts[1] += im;
-}
-
 // Adds value to D2(p, q, r, s), stored at its canonical position with p < q
 // and r < s.
-inline void AddCanonical(DensityMatrices* dm, int p, int q, int r, int s,
-                         Complex value) {
+template <typename S>
+void AddCanonical(DensityMatrices<S>* dm, int p, int q, int r, int s, S value) {
   if (p > q) {
     std::swap(p, q);
     value = -value;
@@ -71,14 +61,14 @@ inline void AddCanonical(DensityMatrices* dm, int p, int q, int r, int s,
 }
 
 // Contribution of the pair <D_bra| ... |D_ket> with weight conj(b_bra) k_ket.
-template <int W>
+template <int W, typename S>
 void AddPair(const Det<W>& ket, const Excitation& exc,
-             const std::vector<int>& ket_occ, Complex weight, bool with_two,
-             DensityMatrices* dm) {
+             const std::vector<int>& ket_occ, S weight, bool with_two,
+             DensityMatrices<S>* dm) {
   if (exc.rank == 1) {
     const int i = exc.holes[0];
     const int a = exc.particles[0];
-    const Complex value = SingleSign(ket, i, a) * weight;
+    const S value = SingleSign(ket, i, a) * weight;
     AtomicAdd(&dm->One(a, i), value);
     if (!with_two) return;
     for (int k : ket_occ) {
@@ -99,18 +89,17 @@ void AddPair(const Det<W>& ket, const Excitation& exc,
 // several ranks, `h` is the local part of the Hamiltonian; every rank adds
 // the pairs it holds, the root adds the diagonal part, and all ranks return
 // the sum.
-template <int W>
-DensityMatrices ComputeDensityMatrices(Span<Det<W>> dets,
-                                       const SparseH& h, int num_orbs,
-                                       Span<Complex> bra,
-                                       Span<Complex> ket,
-                                       bool with_two,
-                                       const Comm& comm = Comm()) {
+template <int W, typename S>
+DensityMatrices<S> ComputeDensityMatrices(Span<Det<W>> dets,
+                                          const SparseH<S>& h, int num_orbs,
+                                          Span<S> bra, Span<S> ket,
+                                          bool with_two,
+                                          const Comm& comm = Comm()) {
   const size_t n = num_orbs;
-  DensityMatrices dm;
+  DensityMatrices<S> dm;
   dm.num_orbs = num_orbs;
-  dm.one.assign(n * n, Complex(0.0));
-  if (with_two) dm.two.assign(n * n * n * n, Complex(0.0));
+  dm.one.assign(n * n, S(0.0));
+  if (with_two) dm.two.assign(n * n * n * n, S(0.0));
 
   // Diagonal part: every determinant with itself. One rank does it.
   if (comm.is_root()) {
@@ -122,13 +111,12 @@ DensityMatrices ComputeDensityMatrices(Span<Det<W>> dets,
       for (long i = 0; i < num_dets; ++i) {
         occ.clear();
         dets[i].AppendOccupied(&occ);
-        const Complex weight = std::conj(bra[i]) * ket[i];
+        const S weight = Conj(bra[i]) * ket[i];
         for (size_t m = 0; m < occ.size(); ++m) {
-          internal::AtomicAdd(&dm.One(occ[m], occ[m]), weight);
+          AtomicAdd(&dm.One(occ[m], occ[m]), weight);
           if (!with_two) continue;
           for (size_t l = 0; l < m; ++l) {
-            internal::AtomicAdd(&dm.Two(occ[l], occ[m], occ[l], occ[m]),
-                                weight);
+            AtomicAdd(&dm.Two(occ[l], occ[m], occ[l], occ[m]), weight);
           }
         }
       }
@@ -136,7 +124,7 @@ DensityMatrices ComputeDensityMatrices(Span<Det<W>> dets,
   }
 
   // Off-diagonal part: the connected pairs this rank holds.
-  for (const CsrBlock& block : h.blocks()) {
+  for (const CsrBlock<S>& block : h.blocks()) {
     const long num_rows = static_cast<long>(block.num_stored_rows());
 #pragma omp parallel
     {
@@ -153,16 +141,18 @@ DensityMatrices ComputeDensityMatrices(Span<Det<W>> dets,
           dets[j].AppendOccupied(&occ_j);
           // <D_i| ... |D_j> and its transpose <D_j| ... |D_i>.
           internal::AddPair(dets[j], FindExcitation(dets[i], dets[j]), occ_j,
-                            std::conj(bra[i]) * ket[j], with_two, &dm);
+                            Conj(bra[i]) * ket[j], with_two, &dm);
           internal::AddPair(dets[i], FindExcitation(dets[j], dets[i]), occ_i,
-                            std::conj(bra[j]) * ket[i], with_two, &dm);
+                            Conj(bra[j]) * ket[i], with_two, &dm);
         }
       }
     }
   }
 
-  comm.Sum(reinterpret_cast<double*>(dm.one.data()), 2 * dm.one.size());
-  comm.Sum(reinterpret_cast<double*>(dm.two.data()), 2 * dm.two.size());
+  comm.Sum(reinterpret_cast<double*>(dm.one.data()),
+           kDoublesPerScalar<S> * dm.one.size());
+  comm.Sum(reinterpret_cast<double*>(dm.two.data()),
+           kDoublesPerScalar<S> * dm.two.size());
 
   if (with_two) {
     // Expand the canonical elements by antisymmetry.
@@ -172,7 +162,7 @@ DensityMatrices ComputeDensityMatrices(Span<Det<W>> dets,
       for (int q = p + 1; q < num; ++q) {
         for (int r = 0; r < num; ++r) {
           for (int s = r + 1; s < num; ++s) {
-            const Complex value = dm.Two(p, q, r, s);
+            const S value = dm.Two(p, q, r, s);
             dm.Two(p, q, s, r) = -value;
             dm.Two(q, p, r, s) = -value;
             dm.Two(q, p, s, r) = value;
@@ -185,20 +175,21 @@ DensityMatrices ComputeDensityMatrices(Span<Det<W>> dets,
 }
 
 // Energy (without the core energy) from the density matrices of one state.
-inline double EnergyFromDensityMatrices(const DensityMatrices& dm,
-                                        const Integrals& ints) {
+template <typename S>
+double EnergyFromDensityMatrices(const DensityMatrices<S>& dm,
+                                 const Integrals<S>& ints) {
   const int n = dm.num_orbs;
-  Complex energy(0.0);
+  S energy(0.0);
   for (int p = 0; p < n; ++p) {
     for (int q = 0; q < n; ++q) energy += ints.OneBody(p, q) * dm.One(p, q);
   }
-  double re = energy.real();
+  double re = Real(energy);
 #pragma omp parallel for reduction(+ : re) schedule(static)
   for (int p = 0; p < n; ++p) {
     for (int q = 0; q < n; ++q) {
       for (int r = 0; r < n; ++r) {
         for (int s = 0; s < n; ++s) {
-          re += 0.5 * (ints.TwoBody(p, r, q, s) * dm.Two(p, q, r, s)).real();
+          re += 0.5 * Real(ints.TwoBody(p, r, q, s) * dm.Two(p, q, r, s));
         }
       }
     }

@@ -45,17 +45,17 @@ namespace internal {
 // Sink of ForEachExcitation that evaluates the exact element <D_a|H|D_i> of
 // every excitation and calls visit(D_a, element, is_large), is_large telling
 // whether the element also passes the larger cutoff.
-template <int W, class Visit>
+template <int W, class Visit, typename S>
 class ElementSink {
  public:
-  ElementSink(const Det<W>& parent, const Integrals& ints, double large_cutoff,
-              const Visit& visit)
+  ElementSink(const Det<W>& parent, const Integrals<S>& ints,
+              double large_cutoff, const Visit& visit)
       : parent_(parent),
         ints_(ints),
         large_cutoff_(large_cutoff),
         visit_(visit) {}
 
-  void Single(int i, int a, Complex element) {
+  void Single(int i, int a, S element) {
     Det<W> det = parent_;
     det.Clear(i);
     det.Set(a);
@@ -79,17 +79,17 @@ class ElementSink {
 
  private:
   const Det<W>& parent_;
-  const Integrals& ints_;
+  const Integrals<S>& ints_;
   double large_cutoff_;
   const Visit& visit_;
 };
 
 // What the deterministic sum accumulates for one external determinant:
 // sum_i H(a,i) c_i.
-template <int W>
+template <int W, typename S>
 struct DetTerm {
   Det<W> det;
-  Complex sum;
+  S sum = S(0.0);
 
   void Add(const DetTerm& other) { sum += other.sum; }
 };
@@ -97,11 +97,11 @@ struct DetTerm {
 // What the stochastic estimator accumulates for one external determinant.
 // The `large` members hold the part from the terms that pass the larger
 // cutoff; the `square` members hold the diagonal sum of the estimator.
-template <int W>
+template <int W, typename S>
 struct SampleTerm {
   Det<W> det;
-  Complex sum;
-  Complex sum_large;
+  S sum = S(0.0);
+  S sum_large = S(0.0);
   double square = 0.0;
   double square_large = 0.0;
 
@@ -123,13 +123,11 @@ struct SampleTerm {
 // parents, sends them to their owners, and the parts are merged in parallel.
 // To bound the memory, the whole procedure is repeated `num_batches` times,
 // each pass keeping one slice of the hash range.
-template <int W, class Term, class Generate, class Contribution>
-std::vector<double> SumOverExternalDets(size_t num_parents,
-                                        Span<Det<W>> sorted_dets,
-                                        const Integrals& ints, int num_batches,
-                                        int num_values, const Comm& comm,
-                                        const Generate& generate,
-                                        const Contribution& contribution) {
+template <int W, class Term, class Generate, class Contribution, typename S>
+std::vector<double> SumOverExternalDets(
+    size_t num_parents, Span<Det<W>> sorted_dets, const Integrals<S>& ints,
+    int num_batches, int num_values, const Comm& comm, const Generate& generate,
+    const Contribution& contribution) {
   const uint64_t num_ranks = comm.size();
   const uint64_t batches = std::max(1, num_batches);
   // More parts than threads, so that uneven parts even out.
@@ -211,13 +209,13 @@ std::vector<double> SumOverExternalDets(size_t num_parents,
 }  // namespace internal
 
 // Everything the perturbative routines need to know about the wave function.
-template <int W, class Filter>
+template <int W, class Filter, typename S>
 struct PtProblem {
   Span<Det<W>> dets;
   Span<Det<W>> sorted_dets;
-  Span<Complex> coefficients;
+  Span<S> coefficients;
   double energy;  // variational energy, without the core energy
-  const Integrals& ints;
+  const Integrals<S>& ints;
   const HeatBath& heat_bath;
   const Filter& filter;
   int num_batches;
@@ -225,22 +223,22 @@ struct PtProblem {
 };
 
 // E2(epsilon), deterministically.
-template <int W, class Filter>
-double PtDeterministic(const PtProblem<W, Filter>& problem, double epsilon) {
-  using Term = internal::DetTerm<W>;
+template <int W, class Filter, typename S>
+double PtDeterministic(const PtProblem<W, Filter, S>& problem, double epsilon) {
+  using Term = internal::DetTerm<W, S>;
   auto generate = [&](long i, const auto& emit) {
-    const Complex ci = problem.coefficients[i];
+    const S ci = problem.coefficients[i];
     if (std::abs(ci) == 0.0) return;
     std::vector<int> occ;
     problem.dets[i].AppendOccupied(&occ);
-    auto visit = [&](const Det<W>& det, Complex element, bool /*is_large*/) {
+    auto visit = [&](const Det<W>& det, S element, bool /*is_large*/) {
       Term term;
       term.det = det;
       term.sum = element * ci;
       emit(term);
     };
-    internal::ElementSink<W, decltype(visit)> sink(problem.dets[i],
-                                                   problem.ints, 0.0, visit);
+    internal::ElementSink<W, decltype(visit), S> sink(problem.dets[i],
+                                                      problem.ints, 0.0, visit);
     ForEachExcitation(problem.dets[i], occ, epsilon / std::abs(ci),
                       problem.ints, problem.heat_bath, problem.filter, &sink);
   };
@@ -265,7 +263,8 @@ struct StochasticEstimate {
 // per node. Construction is collective.
 class DeterminantSampler {
  public:
-  DeterminantSampler(Span<Complex> coefficients, const Comm& comm)
+  template <typename S>
+  DeterminantSampler(Span<S> coefficients, const Comm& comm)
       : cumulative_(coefficients.size(), comm) {
     if (comm.is_root()) {
       double sum = 0.0;
@@ -318,9 +317,9 @@ class DeterminantSampler {
 // sampling starts and reused for every sample, so that walkers running as
 // threads share no mutable state - not even the memory allocator - and
 // behave like walkers running as separate processes.
-template <int W>
+template <int W, typename S>
 struct WalkerWorkspace {
-  std::vector<internal::SampleTerm<W>> terms;
+  std::vector<internal::SampleTerm<W, S>> terms;
   std::vector<size_t> draws;
   std::vector<size_t> indices;
   std::vector<int> multiplicities;
@@ -331,13 +330,13 @@ struct WalkerWorkspace {
 // from them alone. The terms are generated, merged and summed inside the
 // caller's workspace, so any number of walkers run side by side without
 // exchanging data, on threads and on ranks alike.
-template <int W, class Filter, class Rng>
-StochasticEstimate PtWalkerSample(const PtProblem<W, Filter>& problem,
+template <int W, class Filter, class Rng, typename S>
+StochasticEstimate PtWalkerSample(const PtProblem<W, Filter, S>& problem,
                                   double epsilon, double epsilon_large,
                                   int num_samples,
                                   const DeterminantSampler& sampler, Rng* rng,
-                                  WalkerWorkspace<W>* workspace) {
-  using Term = internal::SampleTerm<W>;
+                                  WalkerWorkspace<W, S>* workspace) {
+  using Term = internal::SampleTerm<W, S>;
   if (num_samples < 2) {
     throw std::invalid_argument("stochastic PT needs at least two samples");
   }
@@ -354,16 +353,16 @@ StochasticEstimate PtWalkerSample(const PtProblem<W, Filter>& problem,
     terms->clear();
     for (size_t sample = 0; sample < indices.size(); ++sample) {
       const size_t i = indices[sample];
-      const Complex ci = problem.coefficients[i];
+      const S ci = problem.coefficients[i];
       const double w = multiplicities[sample];
       const double p = sampler.Probability(i);
       const double linear = w / p;
       const double quadratic = w * (n - 1.0) / p - w * w / (p * p);
       occ.clear();
       problem.dets[i].AppendOccupied(&occ);
-      auto visit = [&](const Det<W>& det, Complex element, bool is_large) {
+      auto visit = [&](const Det<W>& det, S element, bool is_large) {
         if (batches > 1 && det.Hash() % batches != batch) return;
-        const Complex x = element * ci;
+        const S x = element * ci;
         Term term;
         term.det = det;
         term.sum = linear * x;
@@ -374,7 +373,7 @@ StochasticEstimate PtWalkerSample(const PtProblem<W, Filter>& problem,
         }
         terms->push_back(term);
       };
-      internal::ElementSink<W, decltype(visit)> sink(
+      internal::ElementSink<W, decltype(visit), S> sink(
           problem.dets[i], problem.ints, epsilon_large / std::abs(ci), visit);
       ForEachExcitation(problem.dets[i], occ, epsilon / std::abs(ci),
                         problem.ints, problem.heat_bath, problem.filter, &sink);
@@ -420,8 +419,8 @@ struct PtResult {
 // draws its own samples with its own random stream and produces its own
 // estimate in each iteration, without communication. The result is the mean
 // over all walker estimates, and its error their standard error.
-template <int W, class Filter>
-PtResult RunPerturbation(const PtProblem<W, Filter>& problem,
+template <int W, class Filter, typename S>
+PtResult RunPerturbation(const PtProblem<W, Filter, S>& problem,
                          const PtInput& pt, int root, bool print) {
   PtResult result;
   if (pt.method == PtMethod::kDeterministic) {
@@ -452,7 +451,7 @@ PtResult RunPerturbation(const PtProblem<W, Filter>& problem,
     streams.emplace_back(Mix64(pt.seed) ^ Mix64(walker + 1) ^
                          Mix64(0x9e3779b97f4a7c15ULL * (root + 1)));
   }
-  std::vector<WalkerWorkspace<W>> workspaces(num_threads);
+  std::vector<WalkerWorkspace<W, S>> workspaces(num_threads);
 
   // sums[0..2]: number of estimates, their sum, the sum of their squares.
   double sums[3] = {0.0, 0.0, 0.0};

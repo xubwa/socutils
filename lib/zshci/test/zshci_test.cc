@@ -82,9 +82,9 @@ std::vector<Det<W>> ToDets(const std::vector<std::vector<int>>& occupations,
 }
 
 // The same integrals with every spinor index increased by `shift`.
-Integrals ShiftIntegrals(const Integrals& ints, int shift) {
+Integrals<Complex> ShiftIntegrals(const Integrals<Complex>& ints, int shift) {
   const int n = ints.num_orbs();
-  Integrals shifted(n + shift);
+  Integrals<Complex> shifted(n + shift);
   for (int p = 0; p < n; ++p) {
     for (int q = 0; q < n; ++q) {
       shifted.SetOneBody(p + shift, q + shift, ints.OneBody(p, q));
@@ -119,7 +119,7 @@ void TestCountBetween() {
   Expect(ok, "Det<3>::CountBetween agrees with a bit-by-bit count");
 }
 
-void TestHamiltonian(const Integrals& ints) {
+void TestHamiltonian(const Integrals<Complex>& ints) {
   const int n = ints.num_orbs();
   const std::vector<std::vector<int>> occupations =
       RandomOccupations(n, ints.num_elec(), 500, 3, 11);
@@ -130,7 +130,8 @@ void TestHamiltonian(const Integrals& ints) {
   thresholded.threshold = 1e-6;
 
   const std::vector<Det<1>> dets1 = ToDets<1>(occupations, 0);
-  const CsrBlock block1 = BuildBlock(MakeSpan(dets1), 0, ints, keep_all);
+  const CsrBlock<Complex> block1 =
+      BuildBlock(MakeSpan(dets1), 0, ints, keep_all);
   Expect(SameBlock(block1, BuildBlockBruteForce(MakeSpan(dets1), 0, ints, keep_all), 0),
          "bucket search equals brute force (one word)");
   Expect(SameBlock(block1, BuildBlock(MakeSpan(dets1), 0, ints, batched), 0),
@@ -169,8 +170,10 @@ void TestHamiltonian(const Integrals& ints) {
     const size_t first_new = 300;
     const std::vector<Det<1>> old_dets(dets1.begin(),
                                        dets1.begin() + first_new);
-    const CsrBlock old_block = BuildBlock(MakeSpan(old_dets), 0, ints, keep_all);
-    const CsrBlock new_block = BuildBlock(MakeSpan(dets1), first_new, ints, keep_all);
+    const CsrBlock<Complex> old_block =
+        BuildBlock(MakeSpan(old_dets), 0, ints, keep_all);
+    const CsrBlock<Complex> new_block =
+        BuildBlock(MakeSpan(dets1), first_new, ints, keep_all);
     bool ok = old_block.num_elements() + new_block.num_elements() ==
               block1.num_elements();
     for (size_t k = 0; k < new_block.col.size() && ok; ++k) {
@@ -181,9 +184,10 @@ void TestHamiltonian(const Integrals& ints) {
 
   // Shifting all spinors across a word boundary must not change anything.
   const int shift = 66 - n;
-  const Integrals shifted = ShiftIntegrals(ints, shift);
+  const Integrals<Complex> shifted = ShiftIntegrals(ints, shift);
   const std::vector<Det<2>> dets2 = ToDets<2>(occupations, shift);
-  const CsrBlock block2 = BuildBlock(MakeSpan(dets2), 0, shifted, keep_all);
+  const CsrBlock<Complex> block2 =
+      BuildBlock(MakeSpan(dets2), 0, shifted, keep_all);
   Expect(SameBlock(block1, block2, 1e-14),
          "two-word determinants give the same Hamiltonian block");
   {
@@ -203,7 +207,7 @@ void TestHamiltonian(const Integrals& ints) {
   Expect(same_diagonal, "two-word determinants give the same diagonal");
 
   // Solver and density matrices.
-  SparseH h;
+  SparseH<Complex> h;
   std::vector<double> diagonal(dets1.size());
   for (size_t d = 0; d < dets1.size(); ++d) {
     diagonal[d] = DiagonalEnergy(dets1[d], ints);
@@ -249,8 +253,8 @@ void TestHamiltonian(const Integrals& ints) {
   }
   Expect(same_energies, "Davidson reproduces the dense eigenvalues");
 
-  const DensityMatrices dm =
-      ComputeDensityMatrices(MakeSpan(dets1), h, n, exact[0], exact[0], true);
+  const DensityMatrices<Complex> dm = ComputeDensityMatrices(
+      MakeSpan(dets1), h, n, MakeSpan(exact[0]), MakeSpan(exact[0]), true);
   Expect(std::abs(EnergyFromDensityMatrices(dm, ints) - dense.energies[0]) <
              1e-10,
          "energy from the density matrices equals the eigenvalue");
@@ -285,10 +289,10 @@ void TestHamiltonian(const Integrals& ints) {
 
   // Transition density between two eigenvectors: <0|p^+ q|1> = conj(<1|q^+
   // p|0>).
-  const DensityMatrices t01 =
-      ComputeDensityMatrices(MakeSpan(dets1), h, n, exact[0], exact[1], false);
-  const DensityMatrices t10 =
-      ComputeDensityMatrices(MakeSpan(dets1), h, n, exact[1], exact[0], false);
+  const DensityMatrices<Complex> t01 = ComputeDensityMatrices(
+      MakeSpan(dets1), h, n, MakeSpan(exact[0]), MakeSpan(exact[1]), false);
+  const DensityMatrices<Complex> t10 = ComputeDensityMatrices(
+      MakeSpan(dets1), h, n, MakeSpan(exact[1]), MakeSpan(exact[0]), false);
   double max_transition_diff = 0.0;
   for (int p = 0; p < n; ++p) {
     for (int q = 0; q < n; ++q) {
@@ -304,8 +308,8 @@ void TestHamiltonian(const Integrals& ints) {
 // Selection through the heat-bath tables against a direct evaluation of
 // |H(a,i)| w_i for every single and double excitation. `restrictions` bound
 // the number of electrons in sets of spinors.
-void TestSelection(const Integrals& ints, const std::vector<int>& labels,
-                   int mod,
+void TestSelection(const Integrals<Complex>& ints,
+                   const std::vector<int>& labels, int mod,
                    const std::vector<OccupationRestriction>& restrictions,
                    const std::string& what) {
   const int n = ints.num_orbs();
@@ -393,7 +397,7 @@ void TestSelection(const Integrals& ints, const std::vector<int>& labels,
 }
 
 // Perturbation theory against a direct sum over all excitations.
-void TestPerturbation(const Integrals& ints) {
+void TestPerturbation(const Integrals<Complex>& ints) {
   const int n = ints.num_orbs();
   const std::vector<Det<1>> dets =
       ToDets<1>(RandomOccupations(n, ints.num_elec(), 60, 2, 23), 0);
@@ -401,7 +405,7 @@ void TestPerturbation(const Integrals& ints) {
   std::sort(sorted_dets.begin(), sorted_dets.end());
 
   // The lowest eigenvector in this small space.
-  SparseH h;
+  SparseH<Complex> h;
   std::vector<double> diagonal(dets.size());
   for (size_t d = 0; d < dets.size(); ++d) {
     diagonal[d] = DiagonalEnergy(dets[d], ints);
@@ -470,8 +474,8 @@ void TestPerturbation(const Integrals& ints) {
   const HeatBath heat_bath(ints, 1e-12);
   const LabelFilter filter(std::vector<int>(n, 0), 0);
   const Comm serial;
-  PtProblem<1, LabelFilter> problem{dets, sorted_dets, c,      energy, ints,
-                                    heat_bath, filter, 1, serial};
+  PtProblem<1, LabelFilter, Complex> problem{
+      dets, sorted_dets, c, energy, ints, heat_bath, filter, 1, serial};
   const double exact = direct(epsilon);
   const double exact_large = direct(epsilon_large);
   const double deterministic = PtDeterministic(problem, epsilon);
@@ -484,9 +488,9 @@ void TestPerturbation(const Integrals& ints) {
 
   // The stochastic estimator is unbiased: its mean over many samples must
   // agree with the deterministic value within the statistical error.
-  const DeterminantSampler sampler(c, serial);
+  const DeterminantSampler sampler(MakeSpan(c), serial);
   std::mt19937_64 rng(5);
-  WalkerWorkspace<1> scratch;
+  WalkerWorkspace<1, Complex> scratch;
   const int num_iterations = 400;
   double sum = 0.0, sum_squares = 0.0;
   double sum_large = 0.0, sum_squares_large = 0.0;
@@ -536,7 +540,7 @@ void TestPerturbation(const Integrals& ints) {
 // lambda, and no coupling inside Q, the exact energy is
 // E0 + lambda^2 E2 + O(lambda^4). This fixes which of H(a,i) and its complex
 // conjugate enters the numerator, independently of the PT code.
-void TestSecondOrderLimit(const Integrals& ints) {
+void TestSecondOrderLimit(const Integrals<Complex>& ints) {
   const int n = ints.num_orbs();
   const std::vector<Det<1>> dets =
       ToDets<1>(RandomOccupations(n, ints.num_elec(), 300, 2, 31), 0);
@@ -628,14 +632,14 @@ bool Create(int p, Det<1>* det, double* sign) {
 // applied to every determinant one operator at a time, with none of the
 // logic of rdm.h. Unlike the energy, this tells a density matrix from its
 // complex conjugate and from its transpose.
-void TestDensityMatricesFromDefinition(const Integrals& ints) {
+void TestDensityMatricesFromDefinition(const Integrals<Complex>& ints) {
   const int n = ints.num_orbs();
   const std::vector<Det<1>> dets =
       ToDets<1>(RandomOccupations(n, ints.num_elec(), 120, 2, 41), 0);
   std::map<Det<1>, size_t> index;
   for (size_t d = 0; d < dets.size(); ++d) index[dets[d]] = d;
 
-  SparseH h;
+  SparseH<Complex> h;
   std::vector<double> diagonal(dets.size());
   for (size_t d = 0; d < dets.size(); ++d) {
     diagonal[d] = DiagonalEnergy(dets[d], ints);
@@ -655,7 +659,7 @@ void TestDensityMatricesFromDefinition(const Integrals& ints) {
   // <bra| p^+ q |ket> and <bra| p^+ q^+ s r |ket> by direct application.
   auto reference = [&](const std::vector<Complex>& bra,
                        const std::vector<Complex>& ket, bool with_two) {
-    DensityMatrices dm;
+    DensityMatrices<Complex> dm;
     dm.num_orbs = n;
     dm.one.assign(static_cast<size_t>(n) * n, Complex(0.0));
     if (with_two) {
@@ -709,9 +713,10 @@ void TestDensityMatricesFromDefinition(const Integrals& ints) {
     return diff;
   };
 
-  const DensityMatrices state =
-      ComputeDensityMatrices(MakeSpan(dets), h, n, states[0], states[0], true);
-  const DensityMatrices state_ref = reference(states[0], states[0], true);
+  const DensityMatrices<Complex> state = ComputeDensityMatrices(
+      MakeSpan(dets), h, n, MakeSpan(states[0]), MakeSpan(states[0]), true);
+  const DensityMatrices<Complex> state_ref =
+      reference(states[0], states[0], true);
   Expect(max_imag > 1e-3, "the test wave function is genuinely complex");
   Expect(max_difference(state.one, state_ref.one) < 1e-12,
          "dm1 equals <p^+ q> applied operator by operator");
@@ -723,11 +728,159 @@ void TestDensityMatricesFromDefinition(const Integrals& ints) {
   Expect(max_difference(state.one, conjugated) > 1e-6,
          "dm1 differs from its complex conjugate in this test");
 
-  const DensityMatrices transition =
-      ComputeDensityMatrices(MakeSpan(dets), h, n, states[0], states[1], false);
-  const DensityMatrices transition_ref = reference(states[0], states[1], false);
+  const DensityMatrices<Complex> transition = ComputeDensityMatrices(
+      MakeSpan(dets), h, n, MakeSpan(states[0]), MakeSpan(states[1]), false);
+  const DensityMatrices<Complex> transition_ref =
+      reference(states[0], states[1], false);
   Expect(max_difference(transition.one, transition_ref.one) < 1e-12,
          "the transition dm1 equals <0| p^+ q |1> applied operator by operator");
+}
+
+// The real part of a Hamiltonian, which is again a Hamiltonian, as numbers
+// of type S.
+template <typename S>
+Integrals<S> RealPart(const Integrals<Complex>& ints) {
+  const int n = ints.num_orbs();
+  Integrals<S> out(n);
+  for (int p = 0; p < n; ++p) {
+    for (int q = 0; q < n; ++q) {
+      out.SetOneBody(p, q, S(ints.OneBody(p, q).real()));
+      for (int r = 0; r < n; ++r) {
+        for (int s = 0; s < n; ++s) {
+          out.SetTwoBody(p, q, r, s, S(ints.TwoBody(p, q, r, s).real()));
+        }
+      }
+    }
+  }
+  out.set_num_elec(ints.num_elec());
+  out.set_core_energy(ints.core_energy());
+  out.Finalize();
+  return out;
+}
+
+// What a small calculation produces, in a form that does not depend on the
+// number type.
+struct ScalarResults {
+  size_t num_elements = 0;
+  std::vector<double> energies;
+  double pt = 0.0;
+  StochasticEstimate sample;
+  std::vector<Complex> dm1;
+  std::vector<Complex> dm2;
+  std::vector<Complex> transition;
+  std::vector<double> real_vector;  // the lowest state, if it is real
+};
+
+// `pt_vector`, if given, replaces the lowest state in the perturbative part:
+// the stochastic sample compares only between runs that draw from exactly
+// the same coefficients.
+template <typename S>
+ScalarResults SmallCalculation(const Integrals<S>& ints,
+                               const std::vector<double>* pt_vector) {
+  const int n = ints.num_orbs();
+  const std::vector<Det<1>> dets =
+      ToDets<1>(RandomOccupations(n, ints.num_elec(), 500, 2, 41), 0);
+  std::vector<Det<1>> sorted_dets = dets;
+  std::sort(sorted_dets.begin(), sorted_dets.end());
+
+  ConnectOptions connect;
+  connect.threshold = -1.0;
+  SparseH<S> h;
+  std::vector<double> diagonal(dets.size());
+  for (size_t d = 0; d < dets.size(); ++d) {
+    diagonal[d] = DiagonalEnergy(dets[d], ints);
+  }
+  h.AppendDiagonal(diagonal);
+  h.AppendBlock(BuildBlock(MakeSpan(dets), 0, ints, connect));
+
+  ScalarResults results;
+  results.num_elements = h.num_elements();
+  std::vector<std::vector<S>> vectors =
+      GuessVectors(MakeSpan(dets), h, ints, 2);
+  DavidsonOptions options;
+  options.tol = 1e-10;
+  results.energies = Davidson<S>(h, options, &vectors).energies;
+  // The sign of a real eigenvector is arbitrary; fix it for the transition
+  // density, which is linear in each state.
+  for (std::vector<S>& v : vectors) {
+    size_t largest = 0;
+    for (size_t i = 0; i < v.size(); ++i) {
+      if (std::abs(v[i]) > std::abs(v[largest])) largest = i;
+    }
+    const S phase = std::abs(v[largest]) / v[largest];
+    for (S& c : v) c *= phase;
+  }
+
+  for (const S& c : vectors[0]) results.real_vector.push_back(Real(c));
+
+  const std::vector<S> pt_state =
+      pt_vector == nullptr
+          ? vectors[0]
+          : std::vector<S>(pt_vector->begin(), pt_vector->end());
+  const HeatBath heat_bath(ints, 1e-12);
+  const LabelFilter filter(std::vector<int>(n, 0), 0);
+  const Comm serial;
+  const PtProblem<1, LabelFilter, S> problem{
+      dets,   sorted_dets, pt_state, results.energies[0], ints, heat_bath,
+      filter, 1,           serial};
+  results.pt = PtDeterministic(problem, 1e-5);
+  const DeterminantSampler sampler(MakeSpan(pt_state), serial);
+  std::mt19937_64 rng(11);
+  WalkerWorkspace<1, S> workspace;
+  results.sample =
+      PtWalkerSample(problem, 1e-5, 1e-3, 50, sampler, &rng, &workspace);
+
+  const DensityMatrices<S> dm = ComputeDensityMatrices(
+      MakeSpan(dets), h, n, MakeSpan(vectors[0]), MakeSpan(vectors[0]), true);
+  const DensityMatrices<S> transition = ComputeDensityMatrices(
+      MakeSpan(dets), h, n, MakeSpan(vectors[0]), MakeSpan(vectors[1]), false);
+  results.dm1.assign(dm.one.begin(), dm.one.end());
+  results.dm2.assign(dm.two.begin(), dm.two.end());
+  results.transition.assign(transition.one.begin(), transition.one.end());
+  return results;
+}
+
+// A real Hamiltonian treated with real numbers and with complex numbers.
+void TestRealScalar(const Integrals<Complex>& ints) {
+  const ScalarResults real = SmallCalculation(RealPart<double>(ints), nullptr);
+  const ScalarResults complex =
+      SmallCalculation(RealPart<Complex>(ints), &real.real_vector);
+  auto max_difference = [](const std::vector<Complex>& a,
+                           const std::vector<Complex>& b) {
+    double diff = a.size() == b.size() ? 0.0 : 1.0;
+    for (size_t k = 0; k < a.size() && k < b.size(); ++k) {
+      diff = std::max(diff, std::abs(a[k] - b[k]));
+    }
+    return diff;
+  };
+  Expect(real.num_elements > 1000 && real.num_elements == complex.num_elements,
+         "real numbers: the Hamiltonian has the same elements");
+  Expect(std::abs(real.energies[0] - complex.energies[0]) < 1e-10 &&
+             std::abs(real.energies[1] - complex.energies[1]) < 1e-10,
+         "real numbers: the same two lowest energies as with complex numbers");
+  Expect(real.pt < -1e-5 && std::abs(real.pt - complex.pt) < 1e-10,
+         "real numbers: the same deterministic PT energy");
+  Expect(std::abs(real.sample.small - complex.sample.small) < 1e-10 &&
+             std::abs(real.sample.large - complex.sample.large) < 1e-10,
+         "real numbers: the same stochastic PT sample from the same draws");
+  std::printf(
+      "      E0 %.10f  PT %.10f  sample %.10f (difference %.1e) and "
+      "%.10f (difference %.1e)\n",
+      real.energies[0], real.pt, real.sample.small,
+      real.sample.small - complex.sample.small, real.sample.large,
+      real.sample.large - complex.sample.large);
+  // Davidson converged the vectors to about 1e-10 only.
+  Expect(max_difference(real.dm1, complex.dm1) < 1e-8 &&
+             max_difference(real.dm2, complex.dm2) < 1e-8,
+         "real numbers: the same one- and two-body density matrices");
+  Expect(max_difference(real.transition, complex.transition) < 1e-7,
+         "real numbers: the same transition density matrix");
+  std::printf(
+      "      largest differences: dm1 %.1e  dm2 %.1e  transition "
+      "%.1e\n",
+      max_difference(real.dm1, complex.dm1),
+      max_difference(real.dm2, complex.dm2),
+      max_difference(real.transition, complex.transition));
 }
 
 }  // namespace
@@ -739,7 +892,8 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
   try {
-    const zshci::Integrals ints = zshci::ReadFcidump(argv[1]);
+    const zshci::Integrals<zshci::Complex> ints =
+        zshci::ReadFcidump<zshci::Complex>(argv[1]);
     if (ints.num_orbs() > 32 || ints.num_orbs() < ints.num_elec() + 2) {
       throw std::runtime_error("the test needs NELEC + 2 <= NORB <= 32");
     }
@@ -748,6 +902,7 @@ int main(int argc, char** argv) {
     zshci::TestDensityMatricesFromDefinition(ints);
     zshci::TestPerturbation(ints);
     zshci::TestSecondOrderLimit(ints);
+    zshci::TestRealScalar(ints);
     const int n = ints.num_orbs();
     zshci::TestSelection(ints, std::vector<int>(n, 0), 0, {},
                          "heat-bath selection equals direct evaluation");

@@ -3,8 +3,9 @@
 //   shci.e          nroots native doubles: the total energies, including the
 //                   perturbative correction if one was computed.
 //   wfn.h5          determinants, CI vectors, energies, the resolved input.
-//   rdm_<i>_<j>.h5  density matrices between states i and j, as complex
-//                   arrays in the convention of PySCF:
+//   rdm_<i>_<j>.h5  density matrices between states i and j, as arrays of
+//                   the number type of the calculation (real or complex) in
+//                   the convention of PySCF:
 //                     dm1[p,q]     = <i| p^+ q |j>              shape (n,n)
 //                     dm2[p,q,r,s] = <i| p^+ r^+ s q |i>        shape (n,n,n,n)
 //                   dm2 is present only for i = j and when requested. A
@@ -18,25 +19,30 @@
 #include <string>
 #include <vector>
 
-#include "integrals.h"
 #include "rdm.h"
+#include "scalar.h"
 
 namespace zshci {
 
 void WriteEnergies(const std::string& prefix,
                    const std::vector<double>& energies);
 
+// The functions below that depend on the number type S are instantiated for
+// double and Complex.
+
 // Writes rdm_<bra>_<ket>.h5 with dm1 and, if dm.two is not empty, dm2.
+template <typename S>
 void WriteDensityMatrices(const std::string& prefix, int bra, int ket,
-                          const DensityMatrices& dm);
+                          const DensityMatrices<S>& dm);
 
 // The wave function: `det_words` is the N x W table of occupation words.
+template <typename S>
 struct WaveFunction {
   int num_orbs = 0;
   int num_elec = 0;
   int det_width = 0;
   std::vector<uint64_t> det_words;                // N * W
-  std::vector<std::vector<Complex>> coefficients;  // nroots x N
+  std::vector<std::vector<S>> coefficients;       // nroots x N
   std::vector<double> energies;                    // variational, total
   std::vector<double> pt_corrections;              // empty without PT
   std::vector<double> pt_errors;
@@ -44,7 +50,9 @@ struct WaveFunction {
   std::string input;  // resolved input, JSON text
 };
 
-void WriteWaveFunction(const std::string& path, const WaveFunction& wfn);
+// The coefficients go to "ci_real" and, for a complex calculation, "ci_imag".
+template <typename S>
+void WriteWaveFunction(const std::string& path, const WaveFunction<S>& wfn);
 
 // Reads the determinant table of a wfn.h5 file; sets *det_width.
 std::vector<uint64_t> ReadDetWords(const std::string& path, int* det_width);

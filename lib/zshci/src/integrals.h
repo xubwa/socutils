@@ -3,17 +3,17 @@
 #ifndef ZSHCI_SRC_INTEGRALS_H_
 #define ZSHCI_SRC_INTEGRALS_H_
 
-#include <complex>
 #include <cstddef>
 #include <string>
 #include <vector>
 
 #include "comm.h"
+#include "scalar.h"
 
 namespace zshci {
 
-using Complex = std::complex<double>;
-
+// S is double or Complex; both are instantiated in integrals.cc.
+template <typename S>
 class Integrals {
  public:
   Integrals() = default;
@@ -32,10 +32,10 @@ class Integrals {
   void set_labels(std::vector<int> labels) { labels_ = std::move(labels); }
 
   // h(p, q) = <p|h|q>.
-  Complex OneBody(int p, int q) const { return one_body_[p * num_orbs_ + q]; }
+  S OneBody(int p, int q) const { return one_body_[p * num_orbs_ + q]; }
 
   // (pq|rs) in chemists' notation: p, q belong to electron 1.
-  Complex TwoBody(int p, int q, int r, int s) const {
+  S TwoBody(int p, int q, int r, int s) const {
     return two_body_[PairIndex(p, q, r, s)];
   }
 
@@ -43,10 +43,10 @@ class Integrals {
   double Direct(int p, int q) const { return direct_[p * num_orbs_ + q]; }
   double Exchange(int p, int q) const { return exchange_[p * num_orbs_ + q]; }
 
-  void SetOneBody(int p, int q, Complex value) {
+  void SetOneBody(int p, int q, S value) {
     one_body_[p * num_orbs_ + q] = value;
   }
-  void SetTwoBody(int p, int q, int r, int s, Complex value) {
+  void SetTwoBody(int p, int q, int r, int s, S value) {
     two_body_[PairIndex(p, q, r, s)] = value;
   }
 
@@ -70,20 +70,30 @@ class Integrals {
   int num_elec_ = 0;
   double core_energy_ = 0.0;
   std::vector<int> labels_;
-  std::vector<Complex> one_body_;
-  SharedArray<Complex> two_body_;
+  std::vector<S> one_body_;
+  SharedArray<S> two_body_;
   std::vector<double> direct_;
   std::vector<double> exchange_;
 };
 
-// Reads a complex FCIDUMP file: a namelist header with NORB, NELEC and
-// (optionally) ORBSYM, then lines "(re,im) p q r s" with 1-based indices.
+// FCIDUMP files: a namelist header with NORB, NELEC and (optionally) ORBSYM,
+// then one integral per line with 1-based indices, either
+//   "(re,im) p q r s"   complex format, or
+//   "value p q r s"     real format.
 // "p q 0 0" is a one-body element, whose Hermitian partner is filled in as
 // well; "0 0 0 0" is the core energy; "p 0 0 0" (orbital energy) is skipped.
-// Throws std::runtime_error on a malformed file.
+
+// Whether the file is in the complex format, judged from its first integral
+// line. Collective: the root looks and every rank returns the answer.
+bool FcidumpIsComplex(const std::string& path, const Comm& comm = Comm());
+
+// Reads a file in either format. With S = double an imaginary part other
+// than zero is an error. Throws std::runtime_error on a malformed file.
 //
 // Collective: the root reads the file and every rank returns the integrals.
-Integrals ReadFcidump(const std::string& path, const Comm& comm = Comm());
+// Instantiated for double and Complex.
+template <typename S>
+Integrals<S> ReadFcidump(const std::string& path, const Comm& comm = Comm());
 
 }  // namespace zshci
 

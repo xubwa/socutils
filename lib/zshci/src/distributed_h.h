@@ -13,15 +13,16 @@
 
 #include "comm.h"
 #include "davidson.h"
-#include "integrals.h"
+#include "scalar.h"
 #include "sparse_h.h"
 
 namespace zshci {
 
-class DistributedH : public LinearOperator {
+template <typename S>
+class DistributedH : public LinearOperator<S> {
  public:
   // Collective.
-  DistributedH(const SparseH& local, const Comm& comm)
+  DistributedH(const SparseH<S>& local, const Comm& comm)
       : local_(local), comm_(comm), x_(local.dim(), comm), y_(local.dim()) {}
 
   size_t dim() const override { return local_.dim(); }
@@ -30,7 +31,7 @@ class DistributedH : public LinearOperator {
   }
 
   // Root only: y = H x, with the help of the ranks in Serve().
-  void Apply(const Complex* x, Complex* y) const override;
+  void Apply(const S* x, S* y) const override;
 
   // Other ranks: take part in the root's products until it calls Stop().
   void Serve() const;
@@ -41,21 +42,23 @@ class DistributedH : public LinearOperator {
  private:
   enum Command : int { kStop = 0, kApply = 1 };
 
-  const SparseH& local_;
+  const SparseH<S>& local_;
   const Comm& comm_;
   // The vector being multiplied, one copy per node, and the local product of
   // a serving rank.
-  mutable SharedArray<Complex> x_;
-  mutable std::vector<Complex> y_;
+  mutable SharedArray<S> x_;
+  mutable std::vector<S> y_;
 };
 
 // Solves for the lowest eigenpairs with all ranks. On entry the root's
 // `vectors` holds the starting guesses and on exit the eigenvectors; the
 // other ranks' `vectors` is not touched. Every rank gets the result.
-DavidsonResult SolveDistributed(const SparseH& local,
+// Instantiated for double and Complex.
+template <typename S>
+DavidsonResult SolveDistributed(const SparseH<S>& local,
                                 const DavidsonOptions& options,
                                 const Comm& comm,
-                                std::vector<std::vector<Complex>>* vectors);
+                                std::vector<std::vector<S>>* vectors);
 
 }  // namespace zshci
 

@@ -6,7 +6,8 @@
 
 namespace zshci {
 
-HeatBath::HeatBath(const Integrals& ints, double threshold,
+template <typename S>
+HeatBath::HeatBath(const Integrals<S>& ints, double threshold,
                    const Comm& comm) {
   const int n = ints.num_orbs();
   if (n > UINT16_MAX) throw std::length_error("HeatBath: too many spinors");
@@ -59,5 +60,8 @@ HeatBath::HeatBath(const Integrals& ints, double threshold,
   }
   entries_.ShareFromRoot(comm);
 }
+
+template HeatBath::HeatBath(const Integrals<double>&, double, const Comm&);
+template HeatBath::HeatBath(const Integrals<Complex>&, double, const Comm&);
 
 }  // namespace zshci

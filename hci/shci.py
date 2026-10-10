@@ -126,6 +126,11 @@ class SHCI(lib.StreamObject):
         self.pt = None
         self.extra = {}
         self.integral_tol = 1e-14
+        # Number type of the calculation: 'auto' runs in real arithmetic when
+        # h1e and eri are passed as real arrays, in complex arithmetic
+        # otherwise; 'real' or 'complex' force one.  'real' with integrals
+        # that have an imaginary part is an error of the program.
+        self.scalar = 'auto'
 
         # Names of the earlier Dice driver, honoured if set (see the module
         # docstring).
@@ -239,6 +244,13 @@ class SHCI(lib.StreamObject):
         self.nelec = nelec
 
         inp = self._input(norb, nelec, nroots)
+        if self.scalar not in ('auto', 'real', 'complex'):
+            raise ValueError("scalar must be 'auto', 'real' or 'complex'")
+        if self.scalar == 'auto':
+            real = numpy.isrealobj(h1e) and numpy.isrealobj(eri)
+            inp.setdefault('scalar', 'real' if real else 'complex')
+        else:
+            inp.setdefault('scalar', self.scalar)
         ecore = complex(ecore)
         fcidump_rel.from_integrals(
             inp['integrals'], numpy.asarray(h1e, dtype=complex),
@@ -329,11 +341,13 @@ class SHCI(lib.StreamObject):
 
         Returns:
             occslst : list of tuples, the occupied spinors of each determinant
-            ci : complex array (nroots, ndet)
+            ci : array (nroots, ndet), real or complex as the calculation
         '''
         with h5py.File(os.path.join(self.scratch, 'wfn.h5'), 'r') as f:
             words = f['dets'][()]
-            ci = f['ci_real'][()] + 1j * f['ci_imag'][()]
+            ci = f['ci_real'][()]
+            if 'ci_imag' in f:
+                ci = ci + 1j * f['ci_imag'][()]
         occslst = []
         for row in words:
             occ = []

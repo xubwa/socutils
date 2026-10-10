@@ -43,32 +43,33 @@ std::vector<int> NamelistInts(const std::string& header,
 
 }  // namespace
 
-Integrals::Integrals(int num_orbs, const Comm& comm) : num_orbs_(num_orbs) {
+template <typename S>
+Integrals<S>::Integrals(int num_orbs, const Comm& comm) : num_orbs_(num_orbs) {
   const size_t n = num_orbs;
   const size_t num_pairs = n * n;
-  one_body_.assign(num_pairs, Complex(0.0));
-  two_body_ =
-      SharedArray<Complex>(num_pairs * (num_pairs + 1) / 2, comm);
+  one_body_.assign(num_pairs, S(0.0));
+  two_body_ = SharedArray<S>(num_pairs * (num_pairs + 1) / 2, comm);
   if (comm.is_node_leader()) {
-    std::fill(two_body_.data(), two_body_.data() + two_body_.size(),
-              Complex(0.0));
+    std::fill(two_body_.data(), two_body_.data() + two_body_.size(), S(0.0));
   }
   labels_.assign(n, 0);
 }
 
-void Integrals::Finalize() {
+template <typename S>
+void Integrals<S>::Finalize() {
   const size_t n = num_orbs_;
   direct_.assign(n * n, 0.0);
   exchange_.assign(n * n, 0.0);
   for (int p = 0; p < num_orbs_; ++p) {
     for (int q = 0; q < num_orbs_; ++q) {
-      direct_[p * n + q] = TwoBody(p, p, q, q).real();
-      exchange_[p * n + q] = TwoBody(p, q, q, p).real();
+      direct_[p * n + q] = Real(TwoBody(p, p, q, q));
+      exchange_[p * n + q] = Real(TwoBody(p, q, q, p));
     }
   }
 }
 
-void Integrals::Share(const Comm& comm) {
+template <typename S>
+void Integrals<S>::Share(const Comm& comm) {
   comm.BcastValue(&num_elec_);
   comm.BcastValue(&core_energy_);
   comm.Bcast(&labels_);
@@ -124,15 +125,71 @@ FcidumpHeader ReadHeader(const std::string& path, std::ifstream* file) {
   return result;
 }
 
+// One integral line: the value and the four indices. Returns false for a
+// blank line; throws on anything else that does not parse.
+struct FcidumpLine {
+  double re = 0.0;
+  double im = 0.0;
+  bool is_complex = false;
+  int index[4] = {0, 0, 0, 0};
+};
+
+bool ParseLine(std::string line, const std::string& path, size_t line_number,
+               FcidumpLine* out) {
+  for (char& c : line) {
+    if (c == '(' || c == ')' || c == ',') c = ' ';
+  }
+  std::istringstream fields(line);
+  std::vector<std::string> tokens;
+  std::string token;
+  while (fields >> token) tokens.push_back(token);
+  if (tokens.empty()) return false;
+  if (tokens.size() != 5 && tokens.size() != 6) {
+    throw std::runtime_error(path + ": malformed integral line " +
+                             std::to_string(line_number));
+  }
+  try {
+    size_t next = 0;
+    out->re = std::stod(tokens[next++]);
+    out->is_complex = tokens.size() == 6;
+    out->im = out->is_complex ? std::stod(tokens[next++]) : 0.0;
+    for (int k = 0; k < 4; ++k) out->index[k] = std::stoi(tokens[next++]);
+  } catch (const std::exception&) {
+    throw std::runtime_error(path + ": malformed integral line " +
+                             std::to_string(line_number));
+  }
+  return true;
+}
+
 }  // namespace
 
-Integrals ReadFcidump(const std::string& path, const Comm& comm) {
+bool FcidumpIsComplex(const std::string& path, const Comm& comm) {
+  int is_complex = 0;
+  if (comm.is_root()) {
+    std::ifstream file;
+    ReadHeader(path, &file);
+    std::string line;
+    size_t line_number = 0;
+    FcidumpLine parsed;
+    while (std::getline(file, line)) {
+      if (ParseLine(line, path, ++line_number, &parsed)) {
+        is_complex = parsed.is_complex ? 1 : 0;
+        break;
+      }
+    }
+  }
+  comm.BcastValue(&is_complex);
+  return is_complex != 0;
+}
+
+template <typename S>
+Integrals<S> ReadFcidump(const std::string& path, const Comm& comm) {
   std::ifstream file;
   FcidumpHeader header;
   if (comm.is_root()) header = ReadHeader(path, &file);
   comm.BcastValue(&header.num_orbs);
 
-  Integrals ints(header.num_orbs, comm);
+  Integrals<S> ints(header.num_orbs, comm);
   if (!comm.is_root()) {
     ints.Share(comm);
     return ints;
@@ -143,26 +200,26 @@ Integrals ReadFcidump(const std::string& path, const Comm& comm) {
   const int n = header.num_orbs;
   std::string line;
   size_t line_number = 0;
+  FcidumpLine parsed;
   while (std::getline(file, line)) {
     ++line_number;
-    for (char& c : line) {
-      if (c == '(' || c == ')' || c == ',') c = ' ';
-    }
-    std::istringstream fields(line);
-    double re, im;
-    int p, q, r, s;
-    if (!(fields >> re)) continue;  // blank line
-    if (!(fields >> im >> p >> q >> r >> s)) {
-      throw std::runtime_error(path + ": malformed integral line " +
-                               std::to_string(line_number));
-    }
+    if (!ParseLine(line, path, line_number, &parsed)) continue;
+    const int p = parsed.index[0];
+    const int q = parsed.index[1];
+    const int r = parsed.index[2];
+    const int s = parsed.index[3];
     if (p < 0 || q < 0 || r < 0 || s < 0 || p > n || q > n || r > n || s > n) {
       throw std::runtime_error(path + ": orbital index out of range on line " +
                                std::to_string(line_number));
     }
-    const Complex value(re, im);
+    if (!ScalarTraits<S>::kIsComplex && parsed.im != 0.0) {
+      throw std::runtime_error(
+          path + ": line " + std::to_string(line_number) +
+          " has an imaginary part, which a real calculation cannot hold");
+    }
+    const S value = ScalarTraits<S>::Make(parsed.re, parsed.im);
     if (p == 0 && q == 0 && r == 0 && s == 0) {
-      ints.set_core_energy(re);
+      ints.set_core_energy(parsed.re);
     } else if (q == 0 && r == 0 && s == 0) {
       continue;  // orbital energy
     } else if (r == 0 && s == 0) {
@@ -171,7 +228,7 @@ Integrals ReadFcidump(const std::string& path, const Comm& comm) {
                                  std::to_string(line_number));
       }
       ints.SetOneBody(p - 1, q - 1, value);
-      ints.SetOneBody(q - 1, p - 1, std::conj(value));
+      ints.SetOneBody(q - 1, p - 1, Conj(value));
     } else {
       if (p == 0 || q == 0 || r == 0 || s == 0) {
         throw std::runtime_error(path + ": bad two-body index on line " +
@@ -184,5 +241,11 @@ Integrals ReadFcidump(const std::string& path, const Comm& comm) {
   ints.Share(comm);
   return ints;
 }
+
+template class Integrals<double>;
+template class Integrals<Complex>;
+template Integrals<double> ReadFcidump<double>(const std::string&, const Comm&);
+template Integrals<Complex> ReadFcidump<Complex>(const std::string&,
+                                                 const Comm&);
 
 }  // namespace zshci

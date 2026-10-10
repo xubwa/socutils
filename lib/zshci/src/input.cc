@@ -68,6 +68,9 @@ Json ToJson(const Input& in) {
   Json j;
   j["mode"] = in.mode == Mode::kDiag ? "diag" : "select";
   j["integrals"] = in.integrals;
+  j["scalar"] = in.scalar == ScalarChoice::kAuto   ? "auto"
+                : in.scalar == ScalarChoice::kReal ? "real"
+                                                   : "complex";
   j["prefix"] = in.prefix;
   j["nroots"] = in.nroots;
   if (!in.detfile.empty()) j["detfile"] = in.detfile;
@@ -144,6 +147,17 @@ Input ParseInput(const std::string& text) {
   }
 
   top.Get("integrals", &in.integrals);
+  std::string scalar = "auto";
+  top.Get("scalar", &scalar);
+  if (scalar == "auto") {
+    in.scalar = ScalarChoice::kAuto;
+  } else if (scalar == "real") {
+    in.scalar = ScalarChoice::kReal;
+  } else if (scalar == "complex") {
+    in.scalar = ScalarChoice::kComplex;
+  } else {
+    top.Fail("scalar", "must be \"auto\", \"real\" or \"complex\"");
+  }
   top.Get("prefix", &in.prefix);
   top.Get("nroots", &in.nroots);
   if (in.nroots < 1) top.Fail("nroots", "must be at least 1");

@@ -114,11 +114,10 @@ int DeterminantLabel(const Det<W>& det, const std::vector<int>& labels,
 
 // Starting vectors: eigenvectors of H in the span of the `guess_dim`
 // determinants of lowest diagonal energy.
-template <int W>
-std::vector<std::vector<Complex>> GuessVectors(Span<Det<W>> dets,
-                                               const SparseH& h,
-                                               const Integrals& ints,
-                                               int num_roots) {
+template <int W, typename S>
+std::vector<std::vector<S>> GuessVectors(Span<Det<W>> dets, const SparseH<S>& h,
+                                         const Integrals<S>& ints,
+                                         int num_roots) {
   const size_t n = dets.size();
   const size_t guess_dim =
       std::min(n, static_cast<size_t>(std::max(100, 20 * num_roots)));
@@ -131,17 +130,17 @@ std::vector<std::vector<Complex>> GuessVectors(Span<Det<W>> dets,
                                  ? diagonal[a] < diagonal[b]
                                  : a < b;
                     });
-  Eigen::MatrixXcd small(guess_dim, guess_dim);
+  using Matrix = Eigen::Matrix<S, Eigen::Dynamic, Eigen::Dynamic>;
+  Matrix small(guess_dim, guess_dim);
   for (size_t a = 0; a < guess_dim; ++a) {
     small(a, a) = diagonal[order[a]];
     for (size_t b = a + 1; b < guess_dim; ++b) {
       small(a, b) = Hij(dets[order[a]], dets[order[b]], ints);
-      small(b, a) = std::conj(small(a, b));
+      small(b, a) = Conj(small(a, b));
     }
   }
-  Eigen::SelfAdjointEigenSolver<Eigen::MatrixXcd> solver(small);
-  std::vector<std::vector<Complex>> guess(
-      num_roots, std::vector<Complex>(n, Complex(0.0)));
+  Eigen::SelfAdjointEigenSolver<Matrix> solver(small);
+  std::vector<std::vector<S>> guess(num_roots, std::vector<S>(n, S(0.0)));
   for (int k = 0; k < num_roots; ++k) {
     for (size_t a = 0; a < guess_dim; ++a) {
       guess[k][order[a]] = solver.eigenvectors()(a, k);
@@ -152,19 +151,19 @@ std::vector<std::vector<Complex>> GuessVectors(Span<Det<W>> dets,
 
 // Compares the block and the threaded product with their slow references.
 // Throws if they disagree.
-template <int W>
-void CheckHamiltonian(Span<Det<W>> dets, const SparseH& h,
-                      const Integrals& ints, const ConnectOptions& options) {
-  const CsrBlock reference = BuildBlockBruteForce(dets, 0, ints, options);
+template <int W, typename S>
+void CheckHamiltonian(Span<Det<W>> dets, const SparseH<S>& h,
+                      const Integrals<S>& ints, const ConnectOptions& options) {
+  const CsrBlock<S> reference = BuildBlockBruteForce(dets, 0, ints, options);
   if (!SameBlock(h.blocks()[0], reference, 0.0)) {
     throw std::runtime_error(
         "check: the bucket search and the brute-force search disagree");
   }
 
   const size_t n = h.dim();
-  std::vector<Complex> x(n), y(n), y_ref(n);
+  std::vector<S> x(n), y(n), y_ref(n);
   for (size_t i = 0; i < n; ++i) {
-    x[i] = Complex(std::sin(0.37 * i + 0.1), std::cos(1.3 * i));
+    x[i] = ScalarTraits<S>::Make(std::sin(0.37 * i + 0.1), std::cos(1.3 * i));
   }
   h.Multiply(x.data(), y.data());
   h.MultiplyReference(x.data(), y_ref.data());
@@ -181,9 +180,9 @@ void CheckHamiltonian(Span<Det<W>> dets, const SparseH& h,
   std::printf("check: Hamiltonian block and H*x agree with the references\n");
 }
 
-template <int W>
-void PrintLeadingDeterminants(Span<Det<W>> dets, Span<Complex> vector,
-                              int num_orbs, int count) {
+template <int W, typename S>
+void PrintLeadingDeterminants(Span<Det<W>> dets, Span<S> vector, int num_orbs,
+                              int count) {
   std::vector<size_t> order(dets.size());
   std::iota(order.begin(), order.end(), 0);
   const size_t shown = std::min(order.size(), static_cast<size_t>(count));
@@ -193,16 +192,21 @@ void PrintLeadingDeterminants(Span<Det<W>> dets, Span<Complex> vector,
                     });
   for (size_t m = 0; m < shown; ++m) {
     const size_t i = order[m];
-    std::printf("    %14.10f %14.10f  %s\n", vector[i].real(),
-                vector[i].imag(), dets[i].ToString(num_orbs).c_str());
+    if (ScalarTraits<S>::kIsComplex) {
+      std::printf("    %14.10f %14.10f  %s\n", Real(vector[i]), Imag(vector[i]),
+                  dets[i].ToString(num_orbs).c_str());
+    } else {
+      std::printf("    %14.10f  %s\n", Real(vector[i]),
+                  dets[i].ToString(num_orbs).c_str());
+    }
   }
 }
 
 // Extends h to all of `dets`. Only the root, which applies the diagonal and
 // runs the eigensolver, stores the diagonal elements of dets[first_new..].
-template <int W>
-void AppendDiagonal(Span<Det<W>> dets, size_t first_new, const Integrals& ints,
-                    const Comm& comm, SparseH* h) {
+template <int W, typename S>
+void AppendDiagonal(Span<Det<W>> dets, size_t first_new,
+                    const Integrals<S>& ints, const Comm& comm, SparseH<S>* h) {
   if (!comm.is_root()) {
     h->Grow(dets.size());
     return;
@@ -218,8 +222,8 @@ void AppendDiagonal(Span<Det<W>> dets, size_t first_new, const Integrals& ints,
 
 // The orbital labels of the calculation: those of the input if given, else
 // ORBSYM of the integral file.
-inline std::vector<int> ResolveLabels(const Input& input,
-                                      const Integrals& ints) {
+template <typename S>
+std::vector<int> ResolveLabels(const Input& input, const Integrals<S>& ints) {
   std::vector<int> labels =
       input.symmetry.labels.empty() ? ints.labels() : input.symmetry.labels;
   if (static_cast<int>(labels.size()) != ints.num_orbs()) {
@@ -230,23 +234,24 @@ inline std::vector<int> ResolveLabels(const Input& input,
 
 // The CI vectors of all roots, held once per node: root k occupies
 // [k * dim, (k + 1) * dim).
+template <typename S>
 struct SharedVectors {
-  SharedArray<Complex> data;
+  SharedArray<S> data;
   size_t dim = 0;
   int num_roots = 0;
 
-  Span<Complex> Root(int k) const { return data.span(k * dim, dim); }
+  Span<S> Root(int k) const { return data.span(k * dim, dim); }
 };
 
 // Collective: puts the root's eigenvectors where every rank can read them.
-inline SharedVectors ShareVectors(
-    const std::vector<std::vector<Complex>>& vectors, size_t dim,
-    const Comm& comm) {
-  SharedVectors shared;
+template <typename S>
+SharedVectors<S> ShareVectors(const std::vector<std::vector<S>>& vectors,
+                              size_t dim, const Comm& comm) {
+  SharedVectors<S> shared;
   shared.dim = dim;
   shared.num_roots = static_cast<int>(vectors.size());
   comm.BcastValue(&shared.num_roots);
-  shared.data = SharedArray<Complex>(shared.num_roots * dim, comm);
+  shared.data = SharedArray<S>(shared.num_roots * dim, comm);
   if (comm.is_root()) {
     for (int k = 0; k < shared.num_roots; ++k) {
       std::copy(vectors[k].begin(), vectors[k].end(),
@@ -308,10 +313,10 @@ inline RestrictedFilter MakeFilter(const Input& input,
 
 // Runs the perturbative correction requested in the input for every root.
 // `heat_bath` may be null, in which case the tables are built here.
-template <int W>
+template <int W, typename S>
 std::vector<PtResult> ComputePerturbation(
-    const Input& input, const Integrals& ints, Span<Det<W>> dets,
-    const std::vector<double>& result_energies, const SharedVectors& vectors,
+    const Input& input, const Integrals<S>& ints, Span<Det<W>> dets,
+    const std::vector<double>& result_energies, const SharedVectors<S>& vectors,
     const HeatBath* heat_bath, const RestrictedFilter& filter,
     const Comm& comm) {
   std::vector<PtResult> results;
@@ -327,9 +332,9 @@ std::vector<PtResult> ComputePerturbation(
   const SharedArray<Det<W>> sorted_dets = ShareSorted(dets, comm);
 
   for (int k = 0; k < input.nroots; ++k) {
-    const PtProblem<W, RestrictedFilter> problem{
-        dets,       sorted_dets.span(), vectors.Root(k),      result_energies[k],
-        ints,       *heat_bath,         filter,               input.pt.num_batches,
+    const PtProblem<W, RestrictedFilter, S> problem{
+        dets, sorted_dets.span(), vectors.Root(k), result_energies[k],
+        ints, *heat_bath,         filter,          input.pt.num_batches,
         comm};
     results.push_back(
         RunPerturbation(problem, input.pt, k, input.output_level > 1));
@@ -356,12 +361,12 @@ std::vector<PtResult> ComputePerturbation(
 // matrices. `result_energies` are without the core energy; `pt` is empty if
 // no perturbative correction was computed. All ranks take part in the
 // density matrices; only the root writes.
-template <int W>
-void WriteResults(const Input& input, const Integrals& ints,
-                  Span<Det<W>> dets, const SparseH& h,
+template <int W, typename S>
+void WriteResults(const Input& input, const Integrals<S>& ints,
+                  Span<Det<W>> dets, const SparseH<S>& h,
                   const std::vector<int>& labels,
                   const std::vector<double>& result_energies,
-                  const SharedVectors& vectors,
+                  const SharedVectors<S>& vectors,
                   const std::vector<PtResult>& pt, const Comm& comm) {
   const size_t n = dets.size();
   const int num_orbs = ints.num_orbs();
@@ -385,7 +390,7 @@ void WriteResults(const Input& input, const Integrals& ints,
 
   if (comm.is_root()) {
     WriteEnergies(input.prefix, final_energies);
-    WaveFunction wfn;
+    WaveFunction<S> wfn;
     wfn.num_orbs = num_orbs;
     wfn.num_elec = num_elec;
     wfn.det_width = W;
@@ -394,7 +399,7 @@ void WriteResults(const Input& input, const Integrals& ints,
       for (int k = 0; k < W; ++k) wfn.det_words[d * W + k] = dets[d].words[k];
     }
     for (int k = 0; k < input.nroots; ++k) {
-      const Span<Complex> root = vectors.Root(k);
+      const Span<S> root = vectors.Root(k);
       wfn.coefficients.emplace_back(root.begin(), root.end());
     }
     wfn.energies = energies;
@@ -410,7 +415,7 @@ void WriteResults(const Input& input, const Integrals& ints,
   if (input.rdm.one || input.rdm.two) {
     time = omp_get_wtime();
     for (int k = 0; k < input.nroots; ++k) {
-      const DensityMatrices dm =
+      const DensityMatrices<S> dm =
           ComputeDensityMatrices(dets, h, num_orbs, vectors.Root(k),
                                  vectors.Root(k), input.rdm.two, comm);
       if (!comm.is_root()) continue;
@@ -427,7 +432,7 @@ void WriteResults(const Input& input, const Integrals& ints,
   }
   if (input.rdm.transition) {
     for (int k = 1; k < input.nroots; ++k) {
-      const DensityMatrices dm =
+      const DensityMatrices<S> dm =
           ComputeDensityMatrices(dets, h, num_orbs, vectors.Root(0),
                                  vectors.Root(k), /*with_two=*/false, comm);
       if (comm.is_root()) WriteDensityMatrices(input.prefix, 0, k, dm);

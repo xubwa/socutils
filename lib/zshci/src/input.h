@@ -4,6 +4,7 @@
 //   {
 //     "mode": "diag",
 //     "integrals": "FCIDUMP",
+//     "scalar": "auto",
 //     "nroots": 2,
 //     "prefix": "./scratch",
 //     "dets": [[0, 1, 2, 3], [0, 1, 2, 5]],
@@ -33,6 +34,12 @@ namespace zshci {
 constexpr int kMaxConnectSegments = 20;
 
 enum class Mode { kSelect, kDiag };
+
+// The number type of the calculation. kAuto: real if the integral file is in
+// the real format, complex if it is in the complex format. kReal on a file in
+// the complex format requires every imaginary part to be exactly zero; kComplex
+// accepts both formats.
+enum class ScalarChoice { kAuto, kReal, kComplex };
 
 struct SymmetryInput {
   // Additive integer label of every spinor. Empty: take ORBSYM of the
@@ -112,6 +119,7 @@ struct RdmInput {
 struct Input {
   Mode mode = Mode::kSelect;
   std::string integrals = "FCIDUMP";
+  ScalarChoice scalar = ScalarChoice::kAuto;
   std::string prefix = ".";
   int nroots = 1;
 

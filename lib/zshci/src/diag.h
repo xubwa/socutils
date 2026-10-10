@@ -22,8 +22,8 @@
 
 namespace zshci {
 
-template <int W>
-void RunDiag(const Input& input, const Integrals& ints, const Comm& comm) {
+template <int W, typename S>
+void RunDiag(const Input& input, const Integrals<S>& ints, const Comm& comm) {
   const int num_orbs = ints.num_orbs();
   std::vector<Det<W>> root_dets;
   if (comm.is_root()) root_dets = LoadDeterminants<W>(input, num_orbs);
@@ -60,7 +60,7 @@ void RunDiag(const Input& input, const Integrals& ints, const Comm& comm) {
   }
 
   double time = omp_get_wtime();
-  SparseH h;
+  SparseH<S> h;
   h.set_apply_diagonal(comm.is_root());
   AppendDiagonal(dets, 0, ints, comm, &h);
   const ConnectOptions connect = MakeConnectOptions(input);
@@ -79,7 +79,7 @@ void RunDiag(const Input& input, const Integrals& ints, const Comm& comm) {
   }
 
   time = omp_get_wtime();
-  std::vector<std::vector<Complex>> root_vectors;
+  std::vector<std::vector<S>> root_vectors;
   if (comm.is_root()) root_vectors = GuessVectors(dets, h, ints, input.nroots);
   const DavidsonResult result =
       SolveDistributed(h, input.davidson, comm, &root_vectors);
@@ -90,8 +90,8 @@ void RunDiag(const Input& input, const Integrals& ints, const Comm& comm) {
   }
   std::printf("Davidson: %d iterations, %.2f s\n", result.num_iterations,
               omp_get_wtime() - time);
-  const SharedVectors vectors = ShareVectors(root_vectors, n, comm);
-  root_vectors = std::vector<std::vector<Complex>>();
+  const SharedVectors<S> vectors = ShareVectors(root_vectors, n, comm);
+  root_vectors = std::vector<std::vector<S>>();
 
   // The list is taken as given, but a perturbative correction on top of it
   // respects the occupation restrictions.
