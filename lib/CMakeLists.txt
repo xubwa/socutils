@@ -12,6 +12,7 @@
 #   ccsdt   ->  lib/libccsdt_clib.so  (socutils.cc CCSDT kernels)
 #   zquatev ->  lib/libzquatev.so     (Kramers-restricted spinor SCF)
 #   ao2mo   ->  lib/libnrr_opt.so     (socutils.lib.ao2mo.nrr_fast spinor AO2MO)
+#   qdhf    ->  lib/libqdhf.so        (socutils.qdhf, quad precision HF; needs libquadmath)
 #
 # The subdirectory CMakeLists.txt files are thin (just the target plus its
 # link/output), exactly as in pyscf/lib, so they slot into pyscf/lib unchanged
@@ -95,3 +96,17 @@ add_subdirectory(x2camf)
 add_subdirectory(ccsdt)
 add_subdirectory(zquatev)
 add_subdirectory(ao2mo)
+
+option(ENABLE_QDHF "Quadruple precision HF kernels (requires libquadmath)" ON)
+if(ENABLE_QDHF)
+  include(CheckCSourceCompiles)
+  set(CMAKE_REQUIRED_LIBRARIES quadmath)
+  check_c_source_compiles("#include <quadmath.h>
+int main() { __float128 x = sqrtq(2.Q); return x > 1 ? 0 : 1; }" HAVE_QUADMATH)
+  unset(CMAKE_REQUIRED_LIBRARIES)
+  if(HAVE_QUADMATH)
+    add_subdirectory(qdhf)
+  else()
+    message(WARNING "libquadmath not found; socutils.qdhf is not built")
+  endif()
+endif()
