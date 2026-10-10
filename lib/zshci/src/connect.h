@@ -160,14 +160,20 @@ class SegmentFinder {
   // segments, which bounds their number.
   static constexpr int kMaxSegments = 20;  // also the input's upper bound
 
-  SegmentFinder(int num_orbs, int num_segments, const Comm& comm) {
+  // Cuts the spinors 0 .. num_orbs-1 into consecutive segments that carry
+  // about the same amount of information about `dets`. A spinor that is
+  // occupied in (almost) all or in (almost) none of the determinants tells
+  // them apart poorly, and a segment made of such spinors would give keys
+  // shared by nearly everything; so the cuts are placed at equal steps of the
+  // summed occupation entropy rather than of the spinor index.
+  SegmentFinder(Span<Det<W>> dets, int num_orbs, int num_segments,
+                const Comm& comm) {
     const int k =
         std::max(1, std::min(num_segments, std::min(num_orbs, kMaxSegments)));
+    const std::vector<int> first = SegmentStarts(dets, num_orbs, k);
     segments_.resize(k);
     for (int s = 0; s < k; ++s) {
-      for (int p = num_orbs * s / k; p < num_orbs * (s + 1) / k; ++p) {
-        segments_[s].Set(p);
-      }
+      for (int p = first[s]; p < first[s + 1]; ++p) segments_[s].Set(p);
     }
     cover_size_ = std::min(4, k);
     // All covers, in increasing order of their bit pattern; this rank takes
@@ -223,6 +229,58 @@ class SegmentFinder {
     uint32_t bits = 0;  // bit s: segment s is covered
     Det<W> keep;        // the spinors outside the cover
   };
+
+  // Returns k + 1 increasing spinor indices: segment s is
+  // [first[s], first[s + 1]). Every segment holds at least one spinor.
+  static std::vector<int> SegmentStarts(Span<Det<W>> dets, int num_orbs,
+                                        int k) {
+    // How often each spinor is occupied.
+    std::vector<uint64_t> count(num_orbs, 0);
+#pragma omp parallel
+    {
+      std::vector<uint64_t> local(num_orbs, 0);
+#pragma omp for schedule(static) nowait
+      for (size_t d = 0; d < dets.size(); ++d) {
+        for (int w = 0; w < W; ++w) {
+          uint64_t word = dets[d].words[w];
+          while (word != 0) {
+            const int p = 64 * w + __builtin_ctzll(word);
+            if (p < num_orbs) ++local[p];
+            word &= word - 1;
+          }
+        }
+      }
+#pragma omp critical
+      for (int p = 0; p < num_orbs; ++p) count[p] += local[p];
+    }
+    // Entropy of each occupation, plus a small floor so that the cuts stay
+    // defined when the spinors carry no information at all.
+    std::vector<double> weight(num_orbs);
+    double total = 0.0;
+    for (int p = 0; p < num_orbs; ++p) {
+      const double f =
+          dets.empty() ? 0.0 : static_cast<double>(count[p]) / dets.size();
+      double entropy = 0.0;
+      if (f > 0.0 && f < 1.0) {
+        entropy = -f * std::log(f) - (1.0 - f) * std::log(1.0 - f);
+      }
+      weight[p] = entropy + 1e-6;
+      total += weight[p];
+    }
+    std::vector<int> first(k + 1, num_orbs);
+    first[0] = 0;
+    double running = 0.0;
+    int next = 1;
+    for (int p = 0; p < num_orbs && next < k; ++p) {
+      running += weight[p];
+      // Cut after p when the target is reached, but leave enough spinors for
+      // the segments still to come.
+      const bool reached = running * k >= total * next;
+      const bool must = num_orbs - (p + 1) == k - next;
+      if ((reached || must) && p + 1 > first[next - 1]) first[next++] = p + 1;
+    }
+    return first;
+  }
 
   std::vector<Det<W>> segments_;  // the spinors of each segment
   std::vector<Cover> covers_;
@@ -485,7 +543,7 @@ CsrBlock BuildBlock(Span<Det<W>> dets, size_t first_new,
                     const Integrals& ints, const ConnectOptions& options,
                     const Comm& comm = Comm(), ConnectStats* stats = nullptr) {
   if (options.method == ConnectMethod::kSegments) {
-    const internal::SegmentFinder<W> finder(ints.num_orbs(),
+    const internal::SegmentFinder<W> finder(dets, ints.num_orbs(),
                                             options.num_segments, comm);
     return internal::BuildBlockWith(dets, first_new, ints, options.threshold,
                                     finder, stats);
