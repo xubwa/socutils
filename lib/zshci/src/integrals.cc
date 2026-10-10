@@ -2,8 +2,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 
@@ -44,15 +47,101 @@ std::vector<int> NamelistInts(const std::string& header,
 }  // namespace
 
 template <typename S>
-Integrals<S>::Integrals(int num_orbs, const Comm& comm) : num_orbs_(num_orbs) {
+Integrals<S>::Integrals(int num_orbs, std::vector<LabelSet> symmetry,
+                        const Comm& comm)
+    : num_orbs_(num_orbs), symmetry_(std::move(symmetry)) {
   const size_t n = num_orbs;
-  const size_t num_pairs = n * (n - 1) / 2;
+  if (n > UINT16_MAX) throw std::length_error("too many spinors");
+  for (const LabelSet& set : symmetry_) {
+    if (set.labels.size() != n) {
+      throw std::invalid_argument(
+          "symmetry: labels must have one entry per spinor");
+    }
+  }
   one_body_.assign(n * n, S(0.0));
-  two_body_ = SharedArray<S>(num_pairs * (num_pairs + 1) / 2, comm);
+
+  // The block of a pair is given by the sums of its labels, one per set.
+  const size_t num_pairs = n * (n - 1) / 2;
+  pair_slot_.resize(num_pairs);
+  std::map<std::vector<int>, uint32_t> block_of_sums;
+  std::vector<uint32_t> block_size;
+  std::vector<int> sums(symmetry_.size());
+  for (int q = 1; q < num_orbs; ++q) {
+    for (int p = 0; p < q; ++p) {
+      for (size_t k = 0; k < symmetry_.size(); ++k) {
+        const LabelSet& set = symmetry_[k];
+        int sum = set.labels[p] + set.labels[q];
+        if (set.mod > 0) sum = ((sum % set.mod) + set.mod) % set.mod;
+        sums[k] = sum;
+      }
+      const auto found =
+          block_of_sums.emplace(sums, static_cast<uint32_t>(block_size.size()));
+      if (found.second) block_size.push_back(0);
+      const uint32_t block = found.first->second;
+      pair_slot_[PairIndex(p, q)] = {block, block_size[block]++};
+    }
+  }
+  const size_t num_blocks = block_size.size();
+  block_offset_.assign(num_blocks + 1, 0);
+  block_start_.assign(num_blocks + 1, 0);
+  for (size_t b = 0; b < num_blocks; ++b) {
+    const size_t size = block_size[b];
+    block_offset_[b + 1] = block_offset_[b] + size * (size + 1) / 2;
+    block_start_[b + 1] = block_start_[b] + size;
+  }
+  block_pairs_.resize(num_pairs);
+  for (int q = 1; q < num_orbs; ++q) {
+    for (int p = 0; p < q; ++p) {
+      const PairSlot slot = pair_slot_[PairIndex(p, q)];
+      block_pairs_[block_start_[slot.block] + slot.position] = {
+          static_cast<uint16_t>(p), static_cast<uint16_t>(q)};
+    }
+  }
+
+  two_body_ = SharedArray<S>(block_offset_[num_blocks], comm);
   if (comm.is_node_leader()) {
     std::fill(two_body_.data(), two_body_.data() + two_body_.size(), S(0.0));
   }
-  labels_.assign(n, 0);
+}
+
+template <typename S>
+void Integrals<S>::NoteForbidden(S value) {
+  max_forbidden_ = std::max(max_forbidden_, std::abs(value));
+}
+
+template <typename S>
+S* Integrals<S>::Stored(size_t bra, size_t ket, bool* conjugated) {
+  const PairSlot a = pair_slot_[bra];
+  const PairSlot b = pair_slot_[ket];
+  if (a.block != b.block) return nullptr;
+  const size_t i = a.position;
+  const size_t j = b.position;
+  *conjugated = i < j;
+  const size_t hi = i < j ? j : i;
+  const size_t lo = i < j ? i : j;
+  return &two_body_[block_offset_[a.block] + hi * (hi + 1) / 2 + lo];
+}
+
+template <typename S>
+void Integrals<S>::SetOneBody(int p, int q, S value) {
+  for (const LabelSet& set : symmetry_) {
+    if (!LabelConserved(set.labels[p] - set.labels[q], set.mod)) {
+      NoteForbidden(value);
+      return;
+    }
+  }
+  one_body_[p * num_orbs_ + q] = value;
+}
+
+template <typename S>
+void Integrals<S>::SetAntisymOrdered(int p, int q, int r, int s, S value) {
+  bool conjugated = false;
+  S* const stored = Stored(PairIndex(p, q), PairIndex(r, s), &conjugated);
+  if (stored == nullptr) {
+    NoteForbidden(value);
+    return;
+  }
+  *stored = conjugated ? Conj(value) : value;
 }
 
 template <typename S>
@@ -72,13 +161,13 @@ void Integrals<S>::AddChemist(int p, int q, int r, int s, S value) {
   if (negative) value = -value;
   // The Hermitian partner (qp|sr) adds conj(value) to <qs||pr>, which is the
   // same stored number seen from the other side; one of the two is added.
-  const size_t bra = PairIndex(p, r);
-  const size_t ket = PairIndex(q, s);
-  if (bra >= ket) {
-    two_body_[bra * (bra + 1) / 2 + ket] += value;
-  } else {
-    two_body_[ket * (ket + 1) / 2 + bra] += Conj(value);
+  bool conjugated = false;
+  S* const stored = Stored(PairIndex(p, r), PairIndex(q, s), &conjugated);
+  if (stored == nullptr) {
+    NoteForbidden(value);
+    return;
   }
+  *stored += conjugated ? Conj(value) : value;
 }
 
 template <typename S>
@@ -96,7 +185,7 @@ template <typename S>
 void Integrals<S>::Share(const Comm& comm) {
   comm.BcastValue(&num_elec_);
   comm.BcastValue(&core_energy_);
-  comm.Bcast(&labels_);
+  comm.BcastValue(&max_forbidden_);
   comm.Bcast(&one_body_);
   two_body_.ShareFromRoot(comm);
   comm.Bcast(&pair_energy_);
@@ -206,19 +295,34 @@ bool FcidumpIsComplex(const std::string& path, const Comm& comm) {
 }
 
 template <typename S>
-Integrals<S> ReadFcidump(const std::string& path, const Comm& comm) {
+Integrals<S> ReadFcidump(const std::string& path,
+                         const std::vector<LabelSet>& symmetry,
+                         double symmetry_tolerance, const Comm& comm) {
   std::ifstream file;
   FcidumpHeader header;
   if (comm.is_root()) header = ReadHeader(path, &file);
   comm.BcastValue(&header.num_orbs);
+  comm.Bcast(&header.labels);
 
-  Integrals<S> ints(header.num_orbs, comm);
+  // A set without labels takes ORBSYM, or nothing if the file has none.
+  std::vector<LabelSet> sets;
+  for (const LabelSet& requested : symmetry) {
+    LabelSet set = requested;
+    if (set.labels.empty()) set.labels = header.labels;
+    if (set.labels.empty()) continue;
+    if (static_cast<int>(set.labels.size()) != header.num_orbs) {
+      throw std::runtime_error(
+          "symmetry: labels must have one entry per spinor");
+    }
+    sets.push_back(std::move(set));
+  }
+
+  Integrals<S> ints(header.num_orbs, std::move(sets), comm);
   if (!comm.is_root()) {
     ints.Share(comm);
     return ints;
   }
   ints.set_num_elec(header.num_elec);
-  if (!header.labels.empty()) ints.set_labels(std::move(header.labels));
 
   const int n = header.num_orbs;
   // One bit per integral (pq|rs), (pq|rs) and (rs|pq) sharing one: set when
@@ -275,6 +379,15 @@ Integrals<S> ReadFcidump(const std::string& path, const Comm& comm) {
       ints.AddChemist(p - 1, q - 1, r - 1, s - 1, value);
     }
   }
+  if (ints.max_forbidden() > symmetry_tolerance) {
+    char magnitude[32];
+    std::snprintf(magnitude, sizeof(magnitude), "%.3e", ints.max_forbidden());
+    throw std::runtime_error(
+        path +
+        ": the integrals do not have the symmetry of the labels: an "
+        "integral of magnitude " +
+        magnitude + " would change a label (see symmetry_tolerance)");
+  }
   ints.Finalize();
   ints.Share(comm);
   return ints;
@@ -282,8 +395,11 @@ Integrals<S> ReadFcidump(const std::string& path, const Comm& comm) {
 
 template class Integrals<double>;
 template class Integrals<Complex>;
-template Integrals<double> ReadFcidump<double>(const std::string&, const Comm&);
+template Integrals<double> ReadFcidump<double>(const std::string&,
+                                               const std::vector<LabelSet>&,
+                                               double, const Comm&);
 template Integrals<Complex> ReadFcidump<Complex>(const std::string&,
-                                                 const Comm&);
+                                                 const std::vector<LabelSet>&,
+                                                 double, const Comm&);
 
 }  // namespace zshci

@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "davidson.h"
+#include "labels.h"
 
 namespace zshci {
 
@@ -41,16 +42,6 @@ enum class Mode { kSelect, kDiag };
 // the complex format requires every imaginary part to be exactly zero; kComplex
 // accepts both formats.
 enum class ScalarChoice { kAuto, kReal, kComplex };
-
-// One conserved quantity (see LabelSet in excite.h).
-struct SymmetryInput {
-  // Additive integer label of every spinor. Empty: take ORBSYM of the
-  // integral file.
-  std::vector<int> labels;
-  // Labels add modulo `mod`; 0 means plain integer addition (linear
-  // molecules).
-  int mod = 0;
-};
 
 // A bound on the number of electrons in a set of spinors (0-based indices).
 struct RestrictionInput {
@@ -131,10 +122,14 @@ struct Input {
   // Alternatively, an HDF5 file with a dataset "dets" as written to wfn.h5.
   std::string detfile;
 
-  // The conserved label sets; "symmetry" is an array of them, or a single
-  // one written without the brackets. Default: ORBSYM of the integral file,
-  // added without a modulus.
-  std::vector<SymmetryInput> symmetry = {SymmetryInput()};
+  // The conserved label sets (labels.h); "symmetry" is an array of them, or
+  // a single one written without the brackets. A set without labels takes
+  // ORBSYM of the integral file ("labels": "fcidump"). Default: that, added
+  // without a modulus.
+  std::vector<LabelSet> symmetry = {LabelSet()};
+  // The integrals must obey the labels: the largest integral that would
+  // change a label may not exceed this. Such integrals are not stored.
+  double symmetry_tolerance = 1e-8;
   // Occupation restrictions. Selection and perturbation theory only generate
   // determinants that satisfy all of them, and the starting determinants
   // must. Not applied in diag mode, where the list is taken as given.

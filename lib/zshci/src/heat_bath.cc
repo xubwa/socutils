@@ -19,13 +19,14 @@ HeatBath::HeatBath(const Integrals<S>& ints, double threshold,
     for (int j = 1; j < n; ++j) {
       for (int i = 0; i < j; ++i) {
         std::vector<Entry>& list = lists[PairIndex(i, j)];
-        for (int b = 1; b < n; ++b) {
-          for (int a = 0; a < b; ++a) {
-            const double magnitude = std::abs(ints.AntisymOrdered(a, b, i, j));
-            if (magnitude > threshold) {
-              list.push_back({magnitude, static_cast<uint16_t>(a),
-                              static_cast<uint16_t>(b)});
-            }
+        // Only the pairs in the symmetry block of (i, j) can be reached.
+        const auto* const partners_end = ints.PartnersEnd(i, j);
+        for (const auto* pair = ints.PartnersBegin(i, j); pair != partners_end;
+             ++pair) {
+          const double magnitude =
+              std::abs(ints.AntisymOrdered(pair->first, pair->second, i, j));
+          if (magnitude > threshold) {
+            list.push_back({magnitude, pair->first, pair->second});
           }
         }
         // Ties are broken by the orbital pair so that the order, and with it

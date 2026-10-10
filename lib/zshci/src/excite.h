@@ -25,16 +25,9 @@
 #include "hamiltonian.h"
 #include "heat_bath.h"
 #include "integrals.h"
+#include "labels.h"
 
 namespace zshci {
-
-// One conserved quantity: an integer label per spinor whose sum over the
-// occupied spinors, modulo `mod` if that is nonzero, is the same for all
-// determinants of a calculation.
-struct LabelSet {
-  std::vector<int> labels;
-  int mod = 0;
-};
 
 // Allows an excitation when it conserves every label set. One set with
 // labels 2*omega is the angular momentum projection of a linear molecule
@@ -72,6 +65,12 @@ class LabelFilter {
   LabelFilter(std::vector<int> labels, int mod)
       : LabelFilter(std::vector<LabelSet>{{std::move(labels), mod}}) {}
 
+  // Declares that the double excitations offered to this filter conserve
+  // the labels already, so that Double() need not look. That is the case
+  // when they come from heat-bath tables of integrals held in the blocks of
+  // the same label sets (Integrals::symmetry()).
+  void set_doubles_conserved(bool conserved) { doubles_conserved_ = conserved; }
+
   // Label conservation does not depend on the determinant.
   const LabelFilter& ForDeterminant(const std::vector<int>& /*occ*/) const {
     return *this;
@@ -82,31 +81,30 @@ class LabelFilter {
     const int* const li = labels_.data() + i * num_sets;
     const int* const la = labels_.data() + a * num_sets;
     for (size_t k = 0; k < num_sets; ++k) {
-      if (!Conserved(la[k] - li[k], mods_[k])) return false;
+      if (!LabelConserved(la[k] - li[k], mods_[k])) return false;
     }
     return true;
   }
   bool Double(int i, int j, int a, int b) const {
+    if (doubles_conserved_) return true;
     const size_t num_sets = mods_.size();
     const int* const li = labels_.data() + i * num_sets;
     const int* const lj = labels_.data() + j * num_sets;
     const int* const la = labels_.data() + a * num_sets;
     const int* const lb = labels_.data() + b * num_sets;
     for (size_t k = 0; k < num_sets; ++k) {
-      if (!Conserved(la[k] + lb[k] - li[k] - lj[k], mods_[k])) return false;
+      if (!LabelConserved(la[k] + lb[k] - li[k] - lj[k], mods_[k]))
+        return false;
     }
     return true;
   }
 
  private:
-  static bool Conserved(int change, int mod) {
-    return mod == 0 ? change == 0 : change % mod == 0;
-  }
-
   size_t num_orbs_ = 0;
   // labels_[p * (number of sets) + k]: label of spinor p in set k.
   std::vector<int> labels_;
   std::vector<int> mods_;
+  bool doubles_conserved_ = false;
 };
 
 // A bound on the number of electrons in a set of spinors.

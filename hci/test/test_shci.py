@@ -178,19 +178,27 @@ class LabelSets(unittest.TestCase):
         e_fci = zfci.FCISolver().kernel(h1, eri, norb, nelec, nroots=20)[0]
         self.assertAlmostEqual(abs(numpy.asarray(e_fci) - e_both).min(), 0, 8)
 
-        # With integrals that break the parity, imposing it changes the result.
+        # Integrals that break the parity are refused when it is imposed ...
         h1_broken = h1.copy()
         h1_broken[0, 2] += 0.3
         h1_broken[2, 0] += 0.3
-        results = []
-        for orbsym, mod in ((None, 0), ([axis, parity], [4, 2])):
+
+        def run_broken(orbsym, mod, tolerance=None):
             solver = shci.SHCI()
             solver.initial_dets = [[0, 1, 2, 4]]
             solver.orbsym, solver.orbsym_mod = orbsym, mod
             solver.schedule = [[0, 1e-12]]
             solver.max_iter = 20
-            results.append(solver.kernel(h1_broken, eri, norb, nelec)[0])
-        self.assertGreater(abs(results[0] - results[1]), 1e-4)
+            if tolerance is not None:
+                solver.extra = {'symmetry_tolerance': tolerance}
+            return solver.kernel(h1_broken, eri, norb, nelec)[0]
+
+        with self.assertRaises(RuntimeError):
+            run_broken([axis, parity], [4, 2])
+        # ... unless the tolerance allows dropping them, which gives back the
+        # symmetric Hamiltonian; without labels they act.
+        self.assertAlmostEqual(run_broken([axis, parity], [4, 2], 1.0), e_both, 7)
+        self.assertGreater(abs(run_broken(None, 0) - e_both), 1e-4)
 
 
 if __name__ == '__main__':

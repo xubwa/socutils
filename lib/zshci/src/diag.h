@@ -40,7 +40,7 @@ void RunDiag(const Input& input, const Integrals<S>& ints, const Comm& comm) {
 
   // In diag mode the labels are only reported: the space is whatever the
   // list contains.
-  const std::vector<LabelSet> labels = ResolveSymmetry(input, ints);
+  const std::vector<LabelSet>& labels = ints.symmetry();
   if (comm.is_root()) {
     const std::vector<int> first_label = DeterminantLabels(dets[0], labels);
     size_t num_other = 0;

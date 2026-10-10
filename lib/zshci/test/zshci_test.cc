@@ -845,6 +845,130 @@ ScalarResults SmallCalculation(const Integrals<S>& ints,
   return results;
 }
 
+// Integrals held in symmetry blocks against the same integrals held in one
+// block.
+void TestBlockedIntegrals(const Integrals<Complex>& ints) {
+  const int n = ints.num_orbs();
+  std::vector<int> axis(n), parity(n);
+  for (int p = 0; p < n; ++p) {
+    axis[p] = (p * p + 3 * p) % 5 - 2;
+    parity[p] = (p / 3) % 2;
+  }
+  const std::vector<LabelSet> sets = {{axis, 4}, {parity, 2}};
+
+  // Dropping what the labels forbid makes a Hamiltonian with the symmetry.
+  Integrals<Complex> blocked(n, sets);
+  Integrals<Complex> plain(n);
+  for (int p = 0; p < n; ++p) {
+    for (int q = 0; q < n; ++q) blocked.SetOneBody(p, q, ints.OneBody(p, q));
+  }
+  for (int q = 1; q < n; ++q) {
+    for (int p = 0; p < q; ++p) {
+      for (int s = 1; s < n; ++s) {
+        for (int r = 0; r < s; ++r) {
+          blocked.SetAntisymOrdered(p, q, r, s,
+                                    ints.AntisymOrdered(p, q, r, s));
+        }
+      }
+    }
+  }
+  bool same_elements = true;
+  for (int p = 0; p < n; ++p) {
+    for (int q = 0; q < n; ++q) plain.SetOneBody(p, q, blocked.OneBody(p, q));
+  }
+  for (int q = 1; q < n; ++q) {
+    for (int p = 0; p < q; ++p) {
+      for (int s = 1; s < n; ++s) {
+        for (int r = 0; r < s; ++r) {
+          plain.SetAntisymOrdered(p, q, r, s,
+                                  blocked.AntisymOrdered(p, q, r, s));
+          const Complex original = ints.AntisymOrdered(p, q, r, s);
+          const Complex kept = blocked.AntisymOrdered(p, q, r, s);
+          same_elements =
+              same_elements && (kept == original || kept == Complex(0.0));
+        }
+      }
+    }
+  }
+  for (Integrals<Complex>* each : {&blocked, &plain}) {
+    each->set_num_elec(ints.num_elec());
+    each->Finalize();
+  }
+  std::printf(
+      "      %zu numbers in blocks, %zu in one block; largest dropped "
+      "integral %.2e\n",
+      blocked.num_stored(), plain.num_stored(), blocked.max_forbidden());
+  Expect(same_elements && 3 * blocked.num_stored() < plain.num_stored() &&
+             blocked.max_forbidden() > 1e-3 && plain.max_forbidden() == 0.0,
+         "blocked integrals keep the allowed elements in a third of the space");
+
+  const std::vector<Det<1>> dets =
+      ToDets<1>(RandomOccupations(n, ints.num_elec(), 300, 2, 9), 0);
+  double max_diff = 0.0;
+  double max_element = 0.0;
+  for (size_t i = 0; i < dets.size(); ++i) {
+    max_diff = std::max(max_diff, std::abs(DiagonalEnergy(dets[i], blocked) -
+                                           DiagonalEnergy(dets[i], plain)));
+    for (size_t j = 0; j < i; ++j) {
+      const Complex element = Hij(dets[i], dets[j], blocked);
+      max_element = std::max(max_element, std::abs(element));
+      max_diff =
+          std::max(max_diff, std::abs(element - Hij(dets[i], dets[j], plain)));
+    }
+  }
+  Expect(max_element > 1e-3 && max_diff == 0.0,
+         "blocked integrals give the same Hamiltonian elements");
+
+  const HeatBath heat_bath_blocked(blocked, 1e-12);
+  const HeatBath heat_bath_plain(plain, 1e-12);
+  bool same_tables =
+      heat_bath_blocked.num_entries() == heat_bath_plain.num_entries();
+  for (int j = 1; j < n && same_tables; ++j) {
+    for (int i = 0; i < j && same_tables; ++i) {
+      const HeatBath::Entry* a = heat_bath_blocked.begin(i, j);
+      const HeatBath::Entry* b = heat_bath_plain.begin(i, j);
+      same_tables =
+          heat_bath_blocked.end(i, j) - a == heat_bath_plain.end(i, j) - b;
+      for (; same_tables && a != heat_bath_blocked.end(i, j); ++a, ++b) {
+        same_tables =
+            a->magnitude == b->magnitude && a->a == b->a && a->b == b->b;
+      }
+    }
+  }
+  Expect(heat_bath_blocked.num_entries() > 1000 && same_tables,
+         "blocked integrals give the same heat-bath tables");
+
+  // Selection: the filter that trusts the tables for the double excitations
+  // against the filter that checks every one.
+  std::vector<Det<1>> start;
+  const std::vector<int> block_labels = DeterminantLabels(dets[0], sets);
+  for (const Det<1>& det : dets) {
+    if (DeterminantLabels(det, sets) == block_labels) start.push_back(det);
+  }
+  std::vector<Det<1>> sorted_start = start;
+  std::sort(sorted_start.begin(), sorted_start.end());
+  const std::vector<double> weights(start.size(), 0.3);
+  LabelFilter trusting(sets);
+  trusting.set_doubles_conserved(true);
+  const LabelFilter checking(sets);
+  const std::vector<Det<1>> selected_trusting = SelectNewDeterminants(
+      MakeSpan(start), MakeSpan(sorted_start), MakeSpan(weights), 1e-3, blocked,
+      heat_bath_blocked, trusting);
+  const std::vector<Det<1>> selected_checking = SelectNewDeterminants(
+      MakeSpan(start), MakeSpan(sorted_start), MakeSpan(weights), 1e-3, plain,
+      heat_bath_plain, checking);
+  bool one_block = true;
+  for (const Det<1>& det : selected_trusting) {
+    one_block = one_block && DeterminantLabels(det, sets) == block_labels;
+  }
+  Expect(start.size() >= 3 && selected_trusting.size() > 100 && one_block &&
+             selected_trusting == selected_checking,
+         "selection from blocked integrals stays in the block without "
+         "checking the double excitations");
+  std::printf("      %zu starting determinants, %zu selected\n", start.size(),
+              selected_trusting.size());
+}
+
 // A real Hamiltonian treated with real numbers and with complex numbers.
 void TestRealScalar(const Integrals<Complex>& ints) {
   const ScalarResults real = SmallCalculation(RealPart<double>(ints), nullptr);
@@ -908,6 +1032,7 @@ int main(int argc, char** argv) {
     zshci::TestPerturbation(ints);
     zshci::TestSecondOrderLimit(ints);
     zshci::TestRealScalar(ints);
+    zshci::TestBlockedIntegrals(ints);
     const int n = ints.num_orbs();
     const std::vector<zshci::LabelSet> no_symmetry = {
         {std::vector<int>(n, 0), 0}};

@@ -68,6 +68,7 @@ Json ToJson(const Input& in) {
   Json j;
   j["mode"] = in.mode == Mode::kDiag ? "diag" : "select";
   j["integrals"] = in.integrals;
+  j["symmetry_tolerance"] = in.symmetry_tolerance;
   j["scalar"] = in.scalar == ScalarChoice::kAuto   ? "auto"
                 : in.scalar == ScalarChoice::kReal ? "real"
                                                    : "complex";
@@ -76,7 +77,7 @@ Json ToJson(const Input& in) {
   if (!in.detfile.empty()) j["detfile"] = in.detfile;
   if (!in.dets.empty()) j["dets"] = in.dets;
   j["symmetry"] = Json::array();
-  for (const SymmetryInput& set : in.symmetry) {
+  for (const LabelSet& set : in.symmetry) {
     Json item;
     if (set.labels.empty()) {
       item["labels"] = "fcidump";
@@ -181,7 +182,7 @@ Input ParseInput(const std::string& text) {
       ObjectReader sym(
           is_list ? symmetry[k] : symmetry,
           is_list ? "symmetry[" + std::to_string(k) + "]" : "symmetry");
-      SymmetryInput set;
+      LabelSet set;
       if (sym.Has("labels")) {
         const Json& labels = sym.At("labels");
         if (labels.is_string()) {
@@ -197,6 +198,11 @@ Input ParseInput(const std::string& text) {
       sym.CheckNoUnknownKeys();
       in.symmetry.push_back(set);
     }
+  }
+
+  top.Get("symmetry_tolerance", &in.symmetry_tolerance);
+  if (in.symmetry_tolerance < 0.0) {
+    top.Fail("symmetry_tolerance", "must not be negative");
   }
 
   if (top.Has("restrictions")) {

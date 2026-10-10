@@ -146,7 +146,7 @@ template <int W, typename S>
 void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
   const int num_orbs = ints.num_orbs();
   const int num_roots = input.nroots;
-  const std::vector<LabelSet> labels = ResolveSymmetry(input, ints);
+  const std::vector<LabelSet>& labels = ints.symmetry();
   const RestrictedFilter filter =
       MakeFilter(input, labels, num_orbs, /*with_restrictions=*/true);
 

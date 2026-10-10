@@ -70,7 +70,10 @@ and a modulus (0: none): `{"labels": [...], "mod": 4}` is the label of a
 twofold axis, a second entry `{"labels": [0, 1, ...], "mod": 2}` adds
 inversion. The entries are independent of each other. A single entry may be
 written without the brackets; `"labels": "fcidump"` takes ORBSYM of the
-integral file.
+integral file. The integrals must obey the labels: an integral that would
+change one is an error if it exceeds `"symmetry_tolerance"` (default 1e-8) and
+is dropped otherwise. The two-electron integrals are stored in the blocks the
+labels define, so labels also save memory.
 
 `src/input.h` documents every key. The integrals are read from a FCIDUMP
 file (`src/integrals.h`) in the complex format, `(re,im) p q r s`, or the real

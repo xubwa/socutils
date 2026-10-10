@@ -116,8 +116,9 @@ std::vector<int> DeterminantLabels(const Det<W>& det,
   return values;
 }
 
-// "3" or "(3, 1)".
+// "3", "(3, 1)", or "none" without label sets.
 inline std::string FormatLabels(const std::vector<int>& values) {
+  if (values.empty()) return "none";
   if (values.size() == 1) return std::to_string(values[0]);
   std::string text = "(";
   for (size_t k = 0; k < values.size(); ++k) {
@@ -234,25 +235,6 @@ void AppendDiagonal(Span<Det<W>> dets, size_t first_new,
   h->AppendDiagonal(diagonal);
 }
 
-// The label sets of the calculation: for each set of the input its labels if
-// given, else ORBSYM of the integral file.
-template <typename S>
-std::vector<LabelSet> ResolveSymmetry(const Input& input,
-                                      const Integrals<S>& ints) {
-  std::vector<LabelSet> sets;
-  for (const SymmetryInput& item : input.symmetry) {
-    LabelSet set;
-    set.labels = item.labels.empty() ? ints.labels() : item.labels;
-    set.mod = item.mod;
-    if (static_cast<int>(set.labels.size()) != ints.num_orbs()) {
-      throw std::runtime_error(
-          "symmetry: labels must have one entry per spinor");
-    }
-    sets.push_back(std::move(set));
-  }
-  return sets;
-}
-
 // The CI vectors of all roots, held once per node: root k occupies
 // [k * dim, (k + 1) * dim).
 template <typename S>
@@ -328,7 +310,11 @@ inline RestrictedFilter MakeFilter(const Input& input,
       restrictions.push_back({item.orbitals, item.min_elec, item.max_elec});
     }
   }
-  return RestrictedFilter(LabelFilter(symmetry), restrictions, num_orbs);
+  // The label sets are those of the integrals, whose heat-bath tables then
+  // hold label-conserving double excitations only.
+  LabelFilter labels(symmetry);
+  labels.set_doubles_conserved(true);
+  return RestrictedFilter(std::move(labels), restrictions, num_orbs);
 }
 
 // Runs the perturbative correction requested in the input for every root.

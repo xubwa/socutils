@@ -56,10 +56,19 @@ void RunWithWidth(const Input& input, const Integrals<S>& ints,
 template <typename S>
 void RunWithScalar(const Input& input, const Comm& comm) {
   const double time = omp_get_wtime();
-  const Integrals<S> ints = ReadFcidump<S>(input.integrals, comm);
+  const Integrals<S> ints = ReadFcidump<S>(input.integrals, input.symmetry,
+                                           input.symmetry_tolerance, comm);
   std::printf("integrals: %s, %s, %d spinors, core energy %.12f, %.2f s\n",
               input.integrals.c_str(), ScalarTraits<S>::kName, ints.num_orbs(),
               ints.core_energy(), omp_get_wtime() - time);
+  const size_t num_pairs =
+      static_cast<size_t>(ints.num_orbs()) * (ints.num_orbs() - 1) / 2;
+  std::printf(
+      "two-electron integrals: %zu stored, %.1f%% of what no symmetry "
+      "would need; largest integral forbidden by the labels: %.1e\n",
+      ints.num_stored(),
+      100.0 * ints.num_stored() / (num_pairs * (num_pairs + 1) / 2.0),
+      ints.max_forbidden());
   RunWithWidth(input, ints, comm);
 }
 
