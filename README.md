@@ -56,6 +56,7 @@ The input is a JSON file; comments are allowed and unknown keys are errors.
   "prefix": ".",
   "dets": [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]],
   "symmetry": {"labels": "fcidump", "mod": 0},
+  "connect": {"method": "strings"},
   "select": {"schedule": [[0, 1e-3], [3, 1e-4]], "max_iter": 12},
   "davidson": {"tol": 1e-6},
   "pt": {"method": "semistochastic", "epsilon2": 1e-7, "epsilon2_large": 1e-5,

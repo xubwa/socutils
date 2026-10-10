@@ -63,10 +63,10 @@ void RunDiag(const Input& input, const Integrals& ints, const Comm& comm) {
   SparseH h;
   h.set_apply_diagonal(comm.is_root());
   AppendDiagonal(dets, 0, ints, comm, &h);
-  ConnectOptions connect;
-  connect.threshold = input.hij_threshold;
-  connect.num_batches = input.connect_batches;
-  h.AppendBlock(BuildBlock(dets, 0, ints, connect, comm));
+  const ConnectOptions connect = MakeConnectOptions(input);
+  ConnectStats stats;
+  h.AppendBlock(BuildBlock(dets, 0, ints, connect, comm, &stats));
+  PrintConnectStats(stats);
   std::printf("Hamiltonian: %zu stored elements (upper triangle) on the "
               "root, %.2f s\n",
               h.num_elements(), omp_get_wtime() - time);

@@ -184,14 +184,14 @@ void RunSelect(const Input& input, const Integrals& ints, const Comm& comm) {
   std::printf("heat-bath tables: %zu entries, %.2f s\n",
               heat_bath.num_entries(), omp_get_wtime() - time);
 
-  ConnectOptions connect;
-  connect.threshold = input.hij_threshold;
-  connect.num_batches = input.connect_batches;
+  const ConnectOptions connect = MakeConnectOptions(input);
+  ConnectStats stats;
 
   SparseH h;
   h.set_apply_diagonal(comm.is_root());
   AppendDiagonal(shared_dets.span(), 0, ints, comm, &h);
-  h.AppendBlock(BuildBlock(shared_dets.span(), 0, ints, connect, comm));
+  h.AppendBlock(
+      BuildBlock(shared_dets.span(), 0, ints, connect, comm, &stats));
 
   // The eigenvectors live on the root; the other ranks see only what is
   // shared from them (the selection weights, and at the end the vectors).
@@ -245,8 +245,8 @@ void RunSelect(const Input& input, const Integrals& ints, const Comm& comm) {
       }
       shared_dets = SharedArray<Det<W>>::FromRoot(root_dets, comm);
       AppendDiagonal(shared_dets.span(), old_size, ints, comm, &h);
-      h.AppendBlock(
-          BuildBlock(shared_dets.span(), old_size, ints, connect, comm));
+      h.AppendBlock(BuildBlock(shared_dets.span(), old_size, ints, connect,
+                               comm, &stats));
     }
     fresh = std::vector<Det<W>>();
 
@@ -298,6 +298,7 @@ void RunSelect(const Input& input, const Integrals& ints, const Comm& comm) {
   std::printf("variational space: %zu determinants, %zu stored Hamiltonian "
               "elements on the root\n",
               shared_dets.size(), h.num_elements());
+  PrintConnectStats(stats);
 
   root_dets = std::vector<Det<W>>();
   const SharedVectors vectors =

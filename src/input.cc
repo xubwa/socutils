@@ -110,7 +110,9 @@ Json ToJson(const Input& in) {
               {"two", in.rdm.two},
               {"transition", in.rdm.transition}};
   j["hij_threshold"] = in.hij_threshold;
-  j["connect_batches"] = in.connect_batches;
+  j["connect"] = {{"method", in.connect_by_segments ? "segments" : "strings"},
+                  {"segments", in.connect_segments},
+                  {"batches", in.connect_batches}};
   j["check"] = in.check;
   j["output_level"] = in.output_level;
   return j;
@@ -286,9 +288,22 @@ Input ParseInput(const std::string& text) {
   // An explicit non-negative threshold together with density matrices is
   // allowed, but the density matrices then miss the dropped pairs.
   top.Get("hij_threshold", &in.hij_threshold);
-  top.Get("connect_batches", &in.connect_batches);
-  if (in.connect_batches < 1) {
-    top.Fail("connect_batches", "must be at least 1");
+  if (top.Has("connect")) {
+    ObjectReader connect(top.At("connect"), "connect");
+    std::string method = "strings";
+    connect.Get("method", &method);
+    if (method != "strings" && method != "segments") {
+      connect.Fail("method", "must be \"strings\" or \"segments\"");
+    }
+    in.connect_by_segments = method == "segments";
+    connect.Get("segments", &in.connect_segments);
+    connect.Get("batches", &in.connect_batches);
+    connect.CheckNoUnknownKeys();
+    if (in.connect_segments < 1 || in.connect_segments > kMaxConnectSegments) {
+      connect.Fail("segments", "must be between 1 and " +
+                                   std::to_string(kMaxConnectSegments));
+    }
+    if (in.connect_batches < 1) connect.Fail("batches", "must be at least 1");
   }
   top.Get("check", &in.check);
   top.Get("output_level", &in.output_level);

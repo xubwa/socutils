@@ -29,6 +29,9 @@
 
 namespace zshci {
 
+// Largest number of segments of the segment connection search.
+constexpr int kMaxConnectSegments = 20;
+
 enum class Mode { kSelect, kDiag };
 
 struct SymmetryInput {
@@ -131,7 +134,14 @@ struct Input {
   // |H(i,j)| below this is not stored. Negative keeps every connected pair.
   // If not given: -1 when density matrices are requested, 0 otherwise.
   double hij_threshold = 0.0;
-  // Number of passes of the connection search (trades time for memory).
+  // How connected determinants are found (see connect.h): "strings" (N-1 and
+  // N-2 electron strings; no wasted tests, memory grows with the square of
+  // the electron number) or "segments" (covers of four out of
+  // `connect_segments` orbital segments; memory independent of the electron
+  // number, at the price of testing unconnected pairs).
+  bool connect_by_segments = false;
+  int connect_segments = 8;
+  // Strings only: number of passes (trades time for memory).
   int connect_batches = 1;
   // Compare the Hamiltonian and its product against slow reference
   // implementations; for testing on small cases.

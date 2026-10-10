@@ -57,6 +57,16 @@ struct ConnectOptions {
   int num_segments = 8;
 };
 
+// What a connection search did, summed over calls: how many pairs sharing a
+// bucket were tested, how many of them were connected, and the largest
+// bucket met. Tested pairs that are not connected are the overhead of the
+// segment method; the string method has none apart from hash collisions.
+struct ConnectStats {
+  uint64_t tested_pairs = 0;
+  uint64_t connected_pairs = 0;
+  uint64_t largest_bucket = 0;
+};
+
 namespace internal {
 
 struct BucketEntry {
@@ -148,7 +158,7 @@ class SegmentFinder {
  public:
   // The covers are enumerated by counting through all subsets of the
   // segments, which bounds their number.
-  static constexpr int kMaxSegments = 20;
+  static constexpr int kMaxSegments = 20;  // also the input's upper bound
 
   SegmentFinder(int num_orbs, int num_segments, const Comm& comm) {
     const int k =
@@ -303,10 +313,13 @@ Partitioned<BucketEntry> MakeEntries(Span<Det<W>> dets, size_t first_new,
 template <int W, class Finder, class Visitor>
 void ForEachConnectedPair(Span<Det<W>> dets, size_t first_new,
                           const Partitioned<BucketEntry>& entries,
-                          const Finder& finder, int pass,
-                          const Visitor& visit) {
+                          const Finder& finder, int pass, const Visitor& visit,
+                          ConnectStats* stats = nullptr) {
   const long num_parts = static_cast<long>(entries.num_parts());
-#pragma omp parallel
+  uint64_t tested = 0;
+  uint64_t connected = 0;
+  uint64_t largest = 0;
+#pragma omp parallel reduction(+ : tested, connected) reduction(max : largest)
   {
     // The determinants of one bucket, each once: a hash collision can put
     // the same determinant twice under one key.
@@ -327,16 +340,26 @@ void ForEachConnectedPair(Span<Det<W>> dets, size_t first_new,
         // Indices increase within a bucket, so the last one decides whether
         // the bucket holds a new determinant at all.
         if (bucket.size() < 2 || bucket.back() < first_new) continue;
+        largest = std::max<uint64_t>(largest, bucket.size());
         for (size_t a = 0; a < bucket.size(); ++a) {
           const DetIndex i = bucket[a];
           for (size_t b = a + 1; b < bucket.size(); ++b) {
             const DetIndex j = bucket[b];
             if (j < first_new) continue;
-            if (finder.Accept(dets[i], dets[j], key, pass)) visit(i, j);
+            ++tested;
+            if (finder.Accept(dets[i], dets[j], key, pass)) {
+              ++connected;
+              visit(i, j);
+            }
           }
         }
       }
     }
+  }
+  if (stats != nullptr) {
+    stats->tested_pairs += tested;
+    stats->connected_pairs += connected;
+    stats->largest_bucket = std::max(stats->largest_bucket, largest);
   }
 }
 
@@ -344,7 +367,7 @@ void ForEachConnectedPair(Span<Det<W>> dets, size_t first_new,
 template <int W, class Finder>
 CsrBlock BuildBlockWith(Span<Det<W>> dets, size_t first_new,
                         const Integrals& ints, double threshold,
-                        const Finder& finder) {
+                        const Finder& finder, ConnectStats* stats) {
   const size_t n = dets.size();
   if (n > static_cast<size_t>(UINT32_MAX)) {
     throw std::length_error("too many determinants for a 32-bit index");
@@ -370,7 +393,8 @@ CsrBlock BuildBlockWith(Span<Det<W>> dets, size_t first_new,
                            if (!stored(i, j)) return;
 #pragma omp atomic
                            ++count[i];
-                         });
+                         },
+                         stats);
     if (num_passes == 1) cached = std::move(entries);
   }
 
@@ -455,19 +479,20 @@ CsrBlock BuildBlockWith(Span<Det<W>> dets, size_t first_new,
 // With several ranks, each rank handles its share of the keys (strings) or
 // of the covers (segments) and returns the elements found there. The blocks
 // of all ranks together hold each element once; no communication is needed.
+// `stats`, if given, is updated with what this rank's search did.
 template <int W>
 CsrBlock BuildBlock(Span<Det<W>> dets, size_t first_new,
                     const Integrals& ints, const ConnectOptions& options,
-                    const Comm& comm = Comm()) {
+                    const Comm& comm = Comm(), ConnectStats* stats = nullptr) {
   if (options.method == ConnectMethod::kSegments) {
     const internal::SegmentFinder<W> finder(ints.num_orbs(),
                                             options.num_segments, comm);
     return internal::BuildBlockWith(dets, first_new, ints, options.threshold,
-                                    finder);
+                                    finder, stats);
   }
   const internal::StringFinder<W> finder(options.num_batches, comm);
   return internal::BuildBlockWith(dets, first_new, ints, options.threshold,
-                                  finder);
+                                  finder, stats);
 }
 
 // Reference implementation: tests every pair of determinants. Quadratic; used

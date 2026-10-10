@@ -268,6 +268,29 @@ SharedArray<Det<W>> ShareSorted(Span<Det<W>> dets, const Comm& comm) {
   return SharedArray<Det<W>>::FromRoot(sorted, comm);
 }
 
+// The connection search requested in the input.
+inline ConnectOptions MakeConnectOptions(const Input& input) {
+  ConnectOptions options;
+  options.threshold = input.hij_threshold;
+  options.method = input.connect_by_segments ? ConnectMethod::kSegments
+                                             : ConnectMethod::kStrings;
+  options.num_segments = input.connect_segments;
+  options.num_batches = input.connect_batches;
+  return options;
+}
+
+// Prints what the connection search of the root did.
+inline void PrintConnectStats(const ConnectStats& stats) {
+  std::printf("connection search (root): %llu pairs tested, %llu connected "
+              "(%.1f%%), largest bucket %llu\n",
+              static_cast<unsigned long long>(stats.tested_pairs),
+              static_cast<unsigned long long>(stats.connected_pairs),
+              stats.tested_pairs == 0
+                  ? 100.0
+                  : 100.0 * stats.connected_pairs / stats.tested_pairs,
+              static_cast<unsigned long long>(stats.largest_bucket));
+}
+
 // The excitation filter of the calculation: label conservation and, unless
 // `with_restrictions` is false, the occupation restrictions of the input.
 inline RestrictedFilter MakeFilter(const Input& input,
