@@ -15,7 +15,7 @@ nonrelativistic L+2S form is not valid in this framework.
 
 The functions work with any fcisolver providing a
 trans_rdm1(ci_bra, ci_ket, ncas, nelecas) method, e.g. zfci.FCISolver and
-zfci.SelectedCI.  The Dice interface (socutils.hci.shci) is also supported,
+zfci.SelectedCI.  The selected-CI program (socutils.hci.shci) is also supported,
 since there mc.ci holds the root indices that its trans_rdm1 expects.
 
 Transitions between states from two different determinant spaces (e.g. a

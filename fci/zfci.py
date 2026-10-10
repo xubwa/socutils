@@ -7,7 +7,7 @@ Exact full CI solver for spinor (relativistic) Hamiltonians.
 
 The full CI Hamiltonian matrix is built explicitly in the determinant basis
 and diagonalized with a dense Hermitian eigensolver.  It is a drop-in
-replacement for the Dice-based interface (socutils.hci.shci) when the active
+replacement for the selected-CI program (socutils.hci.shci) when the active
 space is small enough for exact diagonalization, and it avoids the Davidson
 iterations of pyscf.fci.fci_dhf_slow, which can be fragile for the (nearly)
 degenerate roots arising from Kramers degeneracy.
