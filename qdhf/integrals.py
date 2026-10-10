@@ -376,6 +376,31 @@ class QuadIntegrals:
         v = self._int1e_cart(1, self.shls_S, self.shls_S, atoms, zeta)
         return self.cy @ v @ self.cy.T
 
+    def dip_x(self, comp):
+        '''<chi_mu | r_comp | chi_nu> (origin at 0), comp = 0, 1, 2'''
+        d = self._int1e_cart(2 + comp, self.shls_L, self.shls_L)
+        return self.cx @ d @ self.cx.T
+
+    def dip_y(self, comp):
+        '''<d_a chi_mu | r_comp | d_b chi_nu>,  index 3*mu+a (origin at 0)'''
+        d = self._int1e_cart(2 + comp, self.shls_S, self.shls_S)
+        return self.cy @ d @ self.cy.T
+
+    def get_jk_direct(self, dm):
+        '''Integral-direct J, K in the X space for a real symmetric density
+        matrix: J_ij = sum (ij|kl) dm_lk, K_il = sum (ij|kl) dm_jk'''
+        dma = self.cx.T @ dm @ self.cx
+        n = self.ncart_L
+        vj = numpy.empty((n, n), dtype=QDTYPE)
+        vk = numpy.empty((n, n), dtype=QDTYPE)
+        ptr = qarray._ptr
+        ierr = libqd.QDjk_direct(ptr(vj), ptr(vk), ptr(numpy.ascontiguousarray(dma.re)),
+                                 ptr(self.shls_L), ctypes.c_int(len(self.shls_L)),
+                                 ptr(self._bas), ptr(self._env))
+        if ierr != 0:
+            raise RuntimeError('QDjk_direct failed')
+        return self.cx @ QArray(vj) @ self.cx.T, self.cx @ QArray(vk) @ self.cx.T
+
     def eri_xxxx(self):
         L = self.shls_L
         eri = self._int2e_cart([L, L, L, L], 7)

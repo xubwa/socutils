@@ -254,6 +254,7 @@ static void shell_offsets(int *offs, const int *shls, int n, const int *bas)
 /* ------------------------------------------------------------------ */
 /*
  * kind = 0: overlap <i|j>
+ * kind = 2, 3, 4: dipole <i| x | j>, <i| y |j>, <i| z |j> (origin at 0)
  * kind = 1: nuclear attraction <i| -sum_C Z_C/|r-R_C| |j>.  zetas[C] > 0
  *           selects the Gaussian charge distribution
  *           rho_C(r) = Z_C (zeta/pi)^{3/2} exp(-zeta |r-R_C|^2), for which
@@ -319,6 +320,29 @@ int QDint1e(int kind, quad *out, const int *shls_i, int nsi,
                                                 * pp->E[0][lxa[a]][lxb[b]][0]
                                                 * pp->E[1][lya[a]][lyb[b]][0]
                                                 * pp->E[2][lza[a]][lzb[b]][0];
+                                } }
+                                continue;
+                        }
+                        if (kind >= 2 && kind <= 4) {
+                                /* r_d = (r_d - P_d) + P_d:
+                                 * int x_C Lambda_t = sqrt(pi/p) (P_C delta_t0 + delta_t1) */
+                                int dd = kind - 2;
+                                quad fac = pp->fac * powq(M_PIq / p, 1.5Q);
+                                for (a = 0; a < nci; a++) {
+                                for (b = 0; b < ncj; b++) {
+                                        int la[3] = {lxa[a], lya[a], lza[a]};
+                                        int lb[3] = {lxb[b], lyb[b], lzb[b]};
+                                        quad v = fac;
+                                        int d1;
+                                        for (d1 = 0; d1 < 3; d1++) {
+                                                const quad *E1 = pp->E[d1][la[d1]][lb[d1]];
+                                                if (d1 == dd) {
+                                                        v *= E1[1] + pp->P[d1] * E1[0];
+                                                } else {
+                                                        v *= E1[0];
+                                                }
+                                        }
+                                        out[(long)(offi[ish]+a)*Nj+offj[jsh]+b] += v;
                                 } }
                                 continue;
                         }
@@ -602,5 +626,139 @@ int QDint2e(quad *out, const int *shls, const int *nshl, int sym,
         free(offs);
         free(pij);
         free(pkl);
+        return 0;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* integral-direct J and K for a real symmetric density matrix        */
+/* ------------------------------------------------------------------ */
+/*
+ * vj[i,j] = sum_kl (ij|kl) dm[l,k],   vk[i,l] = sum_jk (ij|kl) dm[j,k]
+ * over the Cartesian functions of the shell list shls (one list for all
+ * four indices, 8-fold permutational symmetry).  The ERIs are evaluated on
+ * the fly in quad precision; memory O(N^2) per thread.
+ * Returns 0 on success, -1 if the angular momentum is not supported.
+ */
+int QDjk_direct(quad *vj, quad *vk, const quad *dm, const int *shls, int nsh,
+                const int *bas, const quad *env)
+{
+        int lmax = max_ang(shls, nsh, bas);
+        if (lmax > MAXL) {
+                return -1;
+        }
+        int *offs = malloc(sizeof(int) * (nsh + 1));
+        shell_offsets(offs, shls, nsh, bas);
+        long N = offs[nsh];
+        int npair = nsh * (nsh + 1) / 2;
+        int *pairs = malloc(sizeof(int) * 2 * npair);
+        int I, J, n = 0;
+        for (I = 0; I < nsh; I++) {
+        for (J = 0; J <= I; J++) {
+                pairs[n*2+0] = I;
+                pairs[n*2+1] = J;
+                n++;
+        } }
+        int mp = max_prims(shls, nsh, bas);
+        memset(vj, 0, sizeof(quad) * N * N);
+        memset(vk, 0, sizeof(quad) * N * N);
+
+#pragma omp parallel
+{
+        int L1max = 4 * MAXL + 1;
+        int B1max = 2 * MAXL + 1;
+        PrimPair *bra = malloc(sizeof(PrimPair) * mp * mp);
+        PrimPair *ket = malloc(sizeof(PrimPair) * mp * mp);
+        quad *R = malloc(sizeof(quad) * L1max * L1max * L1max);
+        quad *Rbuf = malloc(sizeof(quad) * L1max * L1max * L1max);
+        quad *G = malloc(sizeof(quad) * NCART(lmax) * NCART(lmax)
+                         * B1max * B1max * B1max);
+        quad *buf = malloc(sizeof(quad) * NCART(lmax) * NCART(lmax)
+                           * NCART(lmax) * NCART(lmax));
+        quad *jt = calloc(N * N, sizeof(quad));
+        quad *kt = calloc(N * N, sizeof(quad));
+        int ij, kl, a, b, c, d, nbra, nket, ip;
+#pragma omp for schedule(dynamic)
+        for (ij = 0; ij < npair; ij++) {
+                int ish = pairs[ij*2+0];
+                int jsh = pairs[ij*2+1];
+                int li = bas[shls[ish]*BAS_SLOTS+ANG_OF];
+                int lj = bas[shls[jsh]*BAS_SLOTS+ANG_OF];
+                int nci = NCART(li);
+                int ncj = NCART(lj);
+                nbra = make_pairs(bra, shls[ish], shls[jsh], bas, env);
+                for (kl = 0; kl <= ij; kl++) {
+                        int ksh = pairs[kl*2+0];
+                        int lsh = pairs[kl*2+1];
+                        int lk = bas[shls[ksh]*BAS_SLOTS+ANG_OF];
+                        int ll = bas[shls[lsh]*BAS_SLOTS+ANG_OF];
+                        int nck = NCART(lk);
+                        int ncl = NCART(ll);
+                        nket = make_pairs(ket, shls[ksh], shls[lsh], bas, env);
+                        eri_quartet(buf, li, lj, lk, ll, bra, nbra, ket, nket,
+                                    G, R, Rbuf);
+                        /* distinct shell-level permutations of (IJ|KL) */
+                        int perm[8][4];
+                        int np = 0;
+                        int s_ij = (ish != jsh);
+                        int s_kl = (ksh != lsh);
+                        int s_ijkl = (ij != kl);
+                        int x, y, z;
+                        for (z = 0; z <= s_ijkl; z++) {
+                        for (x = 0; x <= s_ij; x++) {
+                        for (y = 0; y <= s_kl; y++) {
+                                /* perm[] stores which of (i,j,k,l) goes to each slot */
+                                int q[4] = {0, 1, 2, 3};
+                                if (x) { q[0] = 1; q[1] = 0; }
+                                if (y) { q[2] = 3; q[3] = 2; }
+                                if (z) {
+                                        int t0 = q[0], t1 = q[1];
+                                        q[0] = q[2]; q[1] = q[3];
+                                        q[2] = t0; q[3] = t1;
+                                }
+                                perm[np][0] = q[0]; perm[np][1] = q[1];
+                                perm[np][2] = q[2]; perm[np][3] = q[3];
+                                np++;
+                        } } }
+                        for (a = 0; a < nci; a++) {
+                        for (b = 0; b < ncj; b++) {
+                        for (c = 0; c < nck; c++) {
+                        for (d = 0; d < ncl; d++) {
+                                quad val = buf[((a*ncj+b)*nck+c)*ncl+d];
+                                long idx[4];
+                                idx[0] = offs[ish] + a;
+                                idx[1] = offs[jsh] + b;
+                                idx[2] = offs[ksh] + c;
+                                idx[3] = offs[lsh] + d;
+                                for (ip = 0; ip < np; ip++) {
+                                        long p0 = idx[perm[ip][0]];
+                                        long p1 = idx[perm[ip][1]];
+                                        long p2 = idx[perm[ip][2]];
+                                        long p3 = idx[perm[ip][3]];
+                                        jt[p0*N+p1] += val * dm[p3*N+p2];
+                                        kt[p0*N+p3] += val * dm[p1*N+p2];
+                                }
+                        } } } }
+                }
+        }
+#pragma omp critical
+        {
+                long m;
+                for (m = 0; m < N*N; m++) {
+                        vj[m] += jt[m];
+                        vk[m] += kt[m];
+                }
+        }
+        free(bra);
+        free(ket);
+        free(R);
+        free(Rbuf);
+        free(G);
+        free(buf);
+        free(jt);
+        free(kt);
+}
+        free(offs);
+        free(pairs);
         return 0;
 }

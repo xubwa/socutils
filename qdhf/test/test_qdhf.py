@@ -227,6 +227,28 @@ class KnownValues(unittest.TestCase):
         mf.approx = 'atom1e'
         self.assertAlmostEqual(float(mf.kernel()), mf0.kernel(), 10)
 
+    def test_dipole_and_direct_jk(self):
+        mol1 = gto.M(atom='F 0 0 0; H 0 0 0.917', basis='cc-pvdz', verbose=0)
+        n = mol1.nao
+        qi = integrals.QuadIntegrals(mol1)
+        with mol1.with_common_orig((0, 0, 0)):
+            r = mol1.intor('int1e_r')
+            prp = mol1.intor('int1e_sprsp').reshape(3, 4, n, n)[:, 3]
+        for k in range(3):
+            self.assertAlmostEqual(abs(qi.dip_x(k).to_numpy() - r[k]).max(), 0, 13)
+            dy = qi.dip_y(k)
+            dy = (dy[0::3, 0::3] + dy[1::3, 1::3] + dy[2::3, 2::3]).to_numpy()
+            self.assertAlmostEqual(abs(dy - prp[k]).max(), 0, 12)
+        dm = scf.RHF(mol1).run().make_rdm1()
+        vj, vk = qi.get_jk_direct(QArray.from_numpy(dm))
+        vj0, vk0 = scf.hf.get_jk(mol1, dm)
+        self.assertAlmostEqual(abs(vj.to_numpy() - vj0).max(), 0, 12)
+        self.assertAlmostEqual(abs(vk.to_numpy() - vk0).max(), 0, 12)
+        e1 = dhf.RHF(mol1).kernel()
+        mf = dhf.RHF(mol1)
+        mf.direct = True
+        self.assertLess(abs(mf.kernel() - e1), 1e-28)
+
     def test_sfx2c_rs1e(self):
         # range-separated X2C-1e, formula of pyscf branch range-separated-x2c1e
         from pyscf import lib

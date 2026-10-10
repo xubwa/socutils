@@ -683,6 +683,44 @@ class DHF(lib.StreamObject):
 # --------------------------------------------------------------------------
 # nonrelativistic Hartree-Fock
 # --------------------------------------------------------------------------
+class DirectRHFHamiltonian:
+    '''Closed-shell RHF Hamiltonian with integral-direct quad precision J/K
+    (memory O(N^2)).  Same interface as Hamiltonian4c.'''
+    light_speed = None
+    k_factor = 0.5
+    occ_number = 2
+
+    def __init__(self, mol, qi, hcore, ovlp, energy_nuc):
+        self.mol = mol
+        self.qi = qi
+        self.hcore = hcore
+        self.ovlp = ovlp
+        self.energy_nuc = energy_nuc
+
+    def get_jk(self, dm):
+        return self.qi.get_jk_direct(dm)
+
+    def to_double(self):
+        return _PySCFRHFHamiltonian(self.mol, self.hcore.to_numpy(),
+                                    self.ovlp.to_numpy(), float(self.energy_nuc))
+
+
+class _PySCFRHFHamiltonian:
+    '''Double precision counterpart of DirectRHFHamiltonian (libcint J/K)'''
+    light_speed = None
+    k_factor = 0.5
+    occ_number = 2
+
+    def __init__(self, mol, hcore, ovlp, energy_nuc):
+        self.mol = mol
+        self.hcore = hcore
+        self.ovlp = ovlp
+        self.energy_nuc = energy_nuc
+
+    def get_jk(self, dm):
+        from pyscf.scf import hf
+        return hf.get_jk(self.mol, dm)
+
 def build_nr_hamiltonian(mol, method='RHF', verbose=None):
     '''Nonrelativistic Hamiltonian with quad precision integrals.
 
@@ -734,6 +772,8 @@ class RHF(DHF):
     double precision first.
     '''
     _method = 'RHF'
+    # integral-direct quad precision J/K (RHF only), no ERI storage
+    direct = False
 
     def __init__(self, mol):
         DHF.__init__(self, mol, integrals='quad', light_speed=None)
@@ -748,7 +788,14 @@ class RHF(DHF):
         return self
 
     def build_hamiltonian(self):
-        self.ham = build_nr_hamiltonian(self.mol, self._method, self.verbose)
+        if self.direct and self._method.upper() == 'RHF':
+            qi = qints.QuadIntegrals(self.mol)
+            sy = qi.ovlp_y()
+            t = (sy[0::3, 0::3] + sy[1::3, 1::3] + sy[2::3, 2::3]) * hmp.mpf(0.5)
+            self.ham = DirectRHFHamiltonian(self.mol, qi, t + qi.nuc_x(), qi.ovlp_x(),
+                                            qmp.mpf(qints.energy_nuc(self.mol)))
+        else:
+            self.ham = build_nr_hamiltonian(self.mol, self._method, self.verbose)
         return self.ham
 
     def _pyscf_guess(self):

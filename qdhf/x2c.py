@@ -250,6 +250,10 @@ class SFX2C1E_RHF(dhf.RHF):
         qi = qints.QuadIntegrals(mol)
         h = get_hcore(mol, self.light_speed, self.approx, qi, self.xuncontract, self.omega)
         t0 = log.timer('quad sf-X2C-1e hcore', *t0)
+        if self.direct:
+            self.ham = dhf.DirectRHFHamiltonian(mol, qi, h, qi.ovlp_x(),
+                                                qmp.mpf(qints.energy_nuc(mol)))
+            return self.ham
         eri = {('X', 'X'): qi.eri_xxxx()}
         log.timer('quad 2e integrals', *t0)
         e_nuc = qmp.mpf(qints.energy_nuc(mol))
