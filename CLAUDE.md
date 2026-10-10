@@ -129,6 +129,19 @@ two-electron corrections on) and only then require the `x2camf` integral backend
   them. `lib/zquatev/` is Toru Shiozaki's quaternion eigensolver (BSD-2-Clause),
   ctypes-loaded for Kramers-restricted SCF.
 
+- **`lib/zshci/` + `hci/shci.py`** — selected CI (heat-bath selection, Davidson,
+  deterministic / stochastic / semistochastic PT2, 1- and 2-RDMs, transition
+  1-RDM) for spinor Hamiltonians. Unlike its siblings in `lib/` it is a
+  **program**, not a ctypes library: `hci/shci.py` (`SHCI`, same solver
+  interface and RDM conventions as `fci.zfci.FCISolver`) writes an FCIDUMP and
+  `input.json`, runs `lib/zshci/bin/zshci`, and reads HDF5 back. It replaces the
+  earlier driver of the external Dice binary. The top-level CMake builds it
+  when HDF5, OpenMP and Eigen 3 are found (`-DEIGEN_ROOT=...`,
+  `-DHDF5_ROOT=...`) and skips it with a notice otherwise; `lib/zshci/Makefile`
+  builds the same programs alone. C++17, Google C++ style, own self-checks
+  (`bin/zshci_test <FCIDUMP>`); details in `lib/zshci/README.md`. Python test:
+  `hci/test/test_shci.py` (against `zfci`).
+
 ## Environment variables
 
 - `SOCUTILS_X2CAMF` = `auto` (default) | `bundled` | `external` — whether the
@@ -136,3 +149,4 @@ two-electron corrections on) and only then require the `x2camf` integral backend
 - `X2CAMF_BACKEND` = `c` (default if built) | `cpp` — which x2camf backend runs.
 - `X2CAMF_CPP_LIBRARY` — path to upstream `libx2camf*.so` for `make compare` / cpp backend.
 - `SOCUTILS_ZQUATEV_LIBRARY` — explicit path to `libzquatev.so`.
+- `SOCUTILS_ZSHCI_EXE` — explicit path to the `zshci` executable used by `hci/shci.py`.

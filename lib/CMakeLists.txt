@@ -13,6 +13,9 @@
 #   zquatev ->  lib/libzquatev.so     (Kramers-restricted spinor SCF)
 #   ao2mo   ->  lib/libnrr_opt.so     (socutils.lib.ao2mo.nrr_fast spinor AO2MO)
 #
+# zshci is the exception: a program, run by socutils.hci.shci, whose
+# executables go to lib/zshci/bin/.
+#
 # The subdirectory CMakeLists.txt files are thin (just the target plus its
 # link/output), exactly as in pyscf/lib, so they slot into pyscf/lib unchanged
 # if contributed upstream.
@@ -95,3 +98,4 @@ add_subdirectory(x2camf)
 add_subdirectory(ccsdt)
 add_subdirectory(zquatev)
 add_subdirectory(ao2mo)
+add_subdirectory(zshci)
