@@ -146,7 +146,7 @@ template <int W, typename S>
 void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
   const int num_orbs = ints.num_orbs();
   const int num_roots = input.nroots;
-  const std::vector<int> labels = ResolveLabels(input, ints);
+  const std::vector<LabelSet> labels = ResolveSymmetry(input, ints);
   const RestrictedFilter filter =
       MakeFilter(input, labels, num_orbs, /*with_restrictions=*/true);
 
@@ -156,11 +156,10 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
     root_dets = LoadDeterminants<W>(input, num_orbs);
     // The starting determinants fix the symmetry block; mixing blocks is
     // almost certainly an input mistake.
-    const int block_label =
-        DeterminantLabel(root_dets[0], labels, input.symmetry.mod);
+    const std::vector<int> block_label =
+        DeterminantLabels(root_dets[0], labels);
     for (size_t d = 0; d < root_dets.size(); ++d) {
-      if (DeterminantLabel(root_dets[d], labels, input.symmetry.mod) !=
-          block_label) {
+      if (DeterminantLabels(root_dets[d], labels) != block_label) {
         throw std::runtime_error(
             "starting determinant " + std::to_string(d) +
             " has a symmetry label different from that of the first one");
@@ -172,10 +171,11 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
                                  " violates an occupation restriction");
       }
     }
-    std::printf("starting determinants: %zu, electrons: %d, spinors: %d, "
-                "words: %d, symmetry label: %d\n",
-                root_dets.size(), root_dets[0].Count(), num_orbs, W,
-                block_label);
+    std::printf(
+        "starting determinants: %zu, electrons: %d, spinors: %d, "
+        "words: %d, symmetry label: %s\n",
+        root_dets.size(), root_dets[0].Count(), num_orbs, W,
+        FormatLabels(block_label).c_str());
   }
   SharedArray<Det<W>> shared_dets =
       SharedArray<Det<W>>::FromRoot(root_dets, comm);

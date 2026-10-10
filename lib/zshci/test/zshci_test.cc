@@ -309,7 +309,7 @@ void TestHamiltonian(const Integrals<Complex>& ints) {
 // |H(a,i)| w_i for every single and double excitation. `restrictions` bound
 // the number of electrons in sets of spinors.
 void TestSelection(const Integrals<Complex>& ints,
-                   const std::vector<int>& labels, int mod,
+                   const std::vector<LabelSet>& symmetry,
                    const std::vector<OccupationRestriction>& restrictions,
                    const std::string& what) {
   const int n = ints.num_orbs();
@@ -340,13 +340,20 @@ void TestSelection(const Integrals<Complex>& ints,
   const double epsilon = 2e-3;
 
   const HeatBath heat_bath(ints, 1e-12);
-  const RestrictedFilter filter(LabelFilter(labels, mod), restrictions, n);
+  const RestrictedFilter filter(LabelFilter(symmetry), restrictions, n);
   const std::vector<Det<1>> selected =
       SelectNewDeterminants(MakeSpan(dets), MakeSpan(sorted_dets),
                             MakeSpan(weights), epsilon, ints, heat_bath, filter);
 
-  auto conserved = [&](int change) {
-    return mod == 0 ? change == 0 : change % mod == 0;
+  // Whether moving electrons from i, j to a, b (-1: none) conserves every
+  // label set.
+  auto conserved = [&](int i, int j, int a, int b) {
+    for (const LabelSet& set : symmetry) {
+      auto label = [&](int p) { return p < 0 ? 0 : set.labels[p]; };
+      const int change = label(a) + label(b) - label(i) - label(j);
+      if (set.mod == 0 ? change != 0 : change % set.mod != 0) return false;
+    }
+    return true;
   };
   std::set<Det<1>> expected;
   for (size_t d = 0; d < dets.size(); ++d) {
@@ -359,7 +366,7 @@ void TestSelection(const Integrals<Complex>& ints,
     }
     for (int i : occ) {
       for (int a : virt) {
-        if (!conserved(labels[a] - labels[i])) continue;
+        if (!conserved(i, -1, a, -1)) continue;
         Det<1> det = dets[d];
         det.Clear(i);
         det.Set(a);
@@ -372,10 +379,7 @@ void TestSelection(const Integrals<Complex>& ints,
       for (size_t y = x + 1; y < occ.size(); ++y) {
         for (size_t u = 0; u < virt.size(); ++u) {
           for (size_t v = u + 1; v < virt.size(); ++v) {
-            if (!conserved(labels[virt[u]] + labels[virt[v]] -
-                           labels[occ[x]] - labels[occ[y]])) {
-              continue;
-            }
+            if (!conserved(occ[x], occ[y], virt[u], virt[v])) continue;
             Det<1> det = dets[d];
             det.Clear(occ[x]);
             det.Clear(occ[y]);
@@ -905,7 +909,9 @@ int main(int argc, char** argv) {
     zshci::TestSecondOrderLimit(ints);
     zshci::TestRealScalar(ints);
     const int n = ints.num_orbs();
-    zshci::TestSelection(ints, std::vector<int>(n, 0), 0, {},
+    const std::vector<zshci::LabelSet> no_symmetry = {
+        {std::vector<int>(n, 0), 0}};
+    zshci::TestSelection(ints, no_symmetry, {},
                          "heat-bath selection equals direct evaluation");
     // RAS-like bounds: few holes in the lowest spinors, few electrons in the
     // highest, and an overlapping third set.
@@ -923,16 +929,26 @@ int main(int argc, char** argv) {
     restrictions[2].min_elec = 1;
     restrictions[2].max_elec = 3;
     zshci::TestSelection(
-        ints, std::vector<int>(n, 0), 0, restrictions,
+        ints, no_symmetry, restrictions,
         "selection with occupation restrictions equals direct evaluation");
     std::vector<int> labels(n);
     for (int p = 0; p < n; ++p) labels[p] = (p * p + 3 * p) % 5 - 2;
     zshci::TestSelection(
-        ints, labels, 0, {},
+        ints, {{labels, 0}}, {},
         "selection with additive labels equals direct evaluation");
     zshci::TestSelection(
-        ints, labels, 4, {},
+        ints, {{labels, 4}}, {},
         "selection with labels modulo 4 equals direct evaluation");
+    // Two independent sets, as for an axis together with inversion.
+    std::vector<int> parity(n);
+    for (int p = 0; p < n; ++p) parity[p] = (p / 3) % 2;
+    zshci::TestSelection(
+        ints, {{labels, 4}, {parity, 2}}, {},
+        "selection with two label sets equals direct evaluation");
+    zshci::TestSelection(
+        ints, {{labels, 4}, {parity, 2}}, restrictions,
+        "selection with two label sets and occupation restrictions equals "
+        "direct evaluation");
   } catch (const std::exception& e) {
     std::fprintf(stderr, "zshci_test: error: %s\n", e.what());
     return EXIT_FAILURE;

@@ -93,8 +93,13 @@ void WriteWaveFunction(const std::string& path, const WaveFunction<S>& wfn) {
     WriteVector(&file, "pt_corrections", wfn.pt_corrections);
     WriteVector(&file, "pt_errors", wfn.pt_errors);
   }
-  file.createDataSet<int>("labels", HighFive::DataSpace(wfn.labels.size()))
+  const size_t num_sets = wfn.label_mods.size();
+  file.createDataSet<int>(
+          "labels",
+          HighFive::DataSpace({num_sets, static_cast<size_t>(wfn.num_orbs)}))
       .write_raw(wfn.labels.data());
+  file.createDataSet<int>("label_mods", HighFive::DataSpace(num_sets))
+      .write_raw(wfn.label_mods.data());
   file.createAttribute<int>("num_orbs", HighFive::DataSpace::From(wfn.num_orbs))
       .write(wfn.num_orbs);
   file.createAttribute<int>("num_elec", HighFive::DataSpace::From(wfn.num_elec))

@@ -75,12 +75,17 @@ Json ToJson(const Input& in) {
   j["nroots"] = in.nroots;
   if (!in.detfile.empty()) j["detfile"] = in.detfile;
   if (!in.dets.empty()) j["dets"] = in.dets;
-  if (in.symmetry.labels.empty()) {
-    j["symmetry"]["labels"] = "fcidump";
-  } else {
-    j["symmetry"]["labels"] = in.symmetry.labels;
+  j["symmetry"] = Json::array();
+  for (const SymmetryInput& set : in.symmetry) {
+    Json item;
+    if (set.labels.empty()) {
+      item["labels"] = "fcidump";
+    } else {
+      item["labels"] = set.labels;
+    }
+    item["mod"] = set.mod;
+    j["symmetry"].push_back(item);
   }
-  j["symmetry"]["mod"] = in.symmetry.mod;
   j["restrictions"] = Json::array();
   for (const RestrictionInput& restriction : in.restrictions) {
     j["restrictions"].push_back({{"orbitals", restriction.orbitals},
@@ -169,20 +174,29 @@ Input ParseInput(const std::string& text) {
   }
 
   if (top.Has("symmetry")) {
-    ObjectReader sym(top.At("symmetry"), "symmetry");
-    if (sym.Has("labels")) {
-      const Json& labels = sym.At("labels");
-      if (labels.is_string()) {
-        if (labels.get<std::string>() != "fcidump") {
-          sym.Fail("labels", "must be \"fcidump\" or an array of integers");
+    const Json& symmetry = top.At("symmetry");
+    const bool is_list = symmetry.is_array();
+    in.symmetry.clear();
+    for (size_t k = 0; k < (is_list ? symmetry.size() : 1); ++k) {
+      ObjectReader sym(
+          is_list ? symmetry[k] : symmetry,
+          is_list ? "symmetry[" + std::to_string(k) + "]" : "symmetry");
+      SymmetryInput set;
+      if (sym.Has("labels")) {
+        const Json& labels = sym.At("labels");
+        if (labels.is_string()) {
+          if (labels.get<std::string>() != "fcidump") {
+            sym.Fail("labels", "must be \"fcidump\" or an array of integers");
+          }
+        } else {
+          sym.Get("labels", &set.labels);
         }
-      } else {
-        sym.Get("labels", &in.symmetry.labels);
       }
+      sym.Get("mod", &set.mod);
+      if (set.mod < 0) sym.Fail("mod", "must not be negative");
+      sym.CheckNoUnknownKeys();
+      in.symmetry.push_back(set);
     }
-    sym.Get("mod", &in.symmetry.mod);
-    if (in.symmetry.mod < 0) sym.Fail("mod", "must not be negative");
-    sym.CheckNoUnknownKeys();
   }
 
   if (top.Has("restrictions")) {

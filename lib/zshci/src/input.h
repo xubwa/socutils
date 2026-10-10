@@ -8,7 +8,8 @@
 //     "nroots": 2,
 //     "prefix": "./scratch",
 //     "dets": [[0, 1, 2, 3], [0, 1, 2, 5]],
-//     "symmetry": {"labels": "fcidump", "mod": 0},
+//     "symmetry": [{"labels": [1, -1, 3, -3], "mod": 0},
+//                  {"labels": [0, 0, 1, 1], "mod": 2}],
 //     "restrictions": [{"orbitals": [0, 1, 2, 3], "min": 2, "max": 4}],
 //     "select": {"schedule": [[0, 1e-3], [3, 1e-4]], "max_iter": 12},
 //     "davidson": {"tol": 1e-8},
@@ -41,6 +42,7 @@ enum class Mode { kSelect, kDiag };
 // accepts both formats.
 enum class ScalarChoice { kAuto, kReal, kComplex };
 
+// One conserved quantity (see LabelSet in excite.h).
 struct SymmetryInput {
   // Additive integer label of every spinor. Empty: take ORBSYM of the
   // integral file.
@@ -129,7 +131,10 @@ struct Input {
   // Alternatively, an HDF5 file with a dataset "dets" as written to wfn.h5.
   std::string detfile;
 
-  SymmetryInput symmetry;
+  // The conserved label sets; "symmetry" is an array of them, or a single
+  // one written without the brackets. Default: ORBSYM of the integral file,
+  // added without a modulus.
+  std::vector<SymmetryInput> symmetry = {SymmetryInput()};
   // Occupation restrictions. Selection and perturbation theory only generate
   // determinants that satisfy all of them, and the starting determinants
   // must. Not applied in diag mode, where the list is taken as given.

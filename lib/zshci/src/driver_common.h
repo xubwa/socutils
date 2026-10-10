@@ -99,17 +99,31 @@ std::vector<Det<W>> LoadDeterminants(const Input& input, int num_orbs) {
   return dets;
 }
 
-// Sum of the orbital labels of a determinant, reduced modulo `mod` if
-// nonzero.
+// The value of every label set for a determinant: the sum of the labels of
+// its occupied spinors, reduced modulo `mod` if that is nonzero.
 template <int W>
-int DeterminantLabel(const Det<W>& det, const std::vector<int>& labels,
-                     int mod) {
+std::vector<int> DeterminantLabels(const Det<W>& det,
+                                   const std::vector<LabelSet>& sets) {
   std::vector<int> occ;
   det.AppendOccupied(&occ);
-  long sum = 0;
-  for (int p : occ) sum += labels[p];
-  if (mod > 0) sum = ((sum % mod) + mod) % mod;
-  return static_cast<int>(sum);
+  std::vector<int> values;
+  for (const LabelSet& set : sets) {
+    long sum = 0;
+    for (int p : occ) sum += set.labels[p];
+    if (set.mod > 0) sum = ((sum % set.mod) + set.mod) % set.mod;
+    values.push_back(static_cast<int>(sum));
+  }
+  return values;
+}
+
+// "3" or "(3, 1)".
+inline std::string FormatLabels(const std::vector<int>& values) {
+  if (values.size() == 1) return std::to_string(values[0]);
+  std::string text = "(";
+  for (size_t k = 0; k < values.size(); ++k) {
+    text += (k == 0 ? "" : ", ") + std::to_string(values[k]);
+  }
+  return text + ")";
 }
 
 // Starting vectors: eigenvectors of H in the span of the `guess_dim`
@@ -220,16 +234,23 @@ void AppendDiagonal(Span<Det<W>> dets, size_t first_new,
   h->AppendDiagonal(diagonal);
 }
 
-// The orbital labels of the calculation: those of the input if given, else
-// ORBSYM of the integral file.
+// The label sets of the calculation: for each set of the input its labels if
+// given, else ORBSYM of the integral file.
 template <typename S>
-std::vector<int> ResolveLabels(const Input& input, const Integrals<S>& ints) {
-  std::vector<int> labels =
-      input.symmetry.labels.empty() ? ints.labels() : input.symmetry.labels;
-  if (static_cast<int>(labels.size()) != ints.num_orbs()) {
-    throw std::runtime_error("symmetry.labels must have one entry per spinor");
+std::vector<LabelSet> ResolveSymmetry(const Input& input,
+                                      const Integrals<S>& ints) {
+  std::vector<LabelSet> sets;
+  for (const SymmetryInput& item : input.symmetry) {
+    LabelSet set;
+    set.labels = item.labels.empty() ? ints.labels() : item.labels;
+    set.mod = item.mod;
+    if (static_cast<int>(set.labels.size()) != ints.num_orbs()) {
+      throw std::runtime_error(
+          "symmetry: labels must have one entry per spinor");
+    }
+    sets.push_back(std::move(set));
   }
-  return labels;
+  return sets;
 }
 
 // The CI vectors of all roots, held once per node: root k occupies
@@ -299,7 +320,7 @@ inline void PrintConnectStats(const ConnectStats& stats) {
 // The excitation filter of the calculation: label conservation and, unless
 // `with_restrictions` is false, the occupation restrictions of the input.
 inline RestrictedFilter MakeFilter(const Input& input,
-                                   const std::vector<int>& labels,
+                                   const std::vector<LabelSet>& symmetry,
                                    int num_orbs, bool with_restrictions) {
   std::vector<OccupationRestriction> restrictions;
   if (with_restrictions) {
@@ -307,8 +328,7 @@ inline RestrictedFilter MakeFilter(const Input& input,
       restrictions.push_back({item.orbitals, item.min_elec, item.max_elec});
     }
   }
-  return RestrictedFilter(LabelFilter(labels, input.symmetry.mod),
-                          restrictions, num_orbs);
+  return RestrictedFilter(LabelFilter(symmetry), restrictions, num_orbs);
 }
 
 // Runs the perturbative correction requested in the input for every root.
@@ -364,7 +384,7 @@ std::vector<PtResult> ComputePerturbation(
 template <int W, typename S>
 void WriteResults(const Input& input, const Integrals<S>& ints,
                   Span<Det<W>> dets, const SparseH<S>& h,
-                  const std::vector<int>& labels,
+                  const std::vector<LabelSet>& symmetry,
                   const std::vector<double>& result_energies,
                   const SharedVectors<S>& vectors,
                   const std::vector<PtResult>& pt, const Comm& comm) {
@@ -407,7 +427,10 @@ void WriteResults(const Input& input, const Integrals<S>& ints,
       wfn.pt_corrections.push_back(result.correction);
       wfn.pt_errors.push_back(result.error);
     }
-    wfn.labels = labels;
+    for (const LabelSet& set : symmetry) {
+      wfn.labels.insert(wfn.labels.end(), set.labels.begin(), set.labels.end());
+      wfn.label_mods.push_back(set.mod);
+    }
     wfn.input = input.resolved;
     WriteWaveFunction(input.prefix + "/wfn.h5", wfn);
   }

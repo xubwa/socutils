@@ -138,6 +138,61 @@ class RealNumbers(unittest.TestCase):
             solver.kernel(h1, eri, norb, nelec)
 
 
+class LabelSets(unittest.TestCase):
+    '''Two independent conserved labels (an axis modulo 4 and a parity).'''
+
+    def test_two_label_sets(self):
+        norb, nelec = 8, 4
+        axis = numpy.array([1, -1, 1, -1, 3, -3, 3, -3])
+        parity = numpy.array([0, 0, 1, 1, 0, 0, 1, 1])
+        h1, eri = random_hamiltonian(norb, seed=3)
+        # Keep only what conserves both labels: (pq|rs) moves electrons from
+        # q, s to p, r.
+        d_axis = axis[:, None] - axis[None, :]
+        d_parity = parity[:, None] - parity[None, :]
+        h1 = h1 * ((d_axis % 4 == 0) & (d_parity % 2 == 0))
+        keep = (((d_axis[:, :, None, None] + d_axis[None, None, :, :]) % 4 == 0)
+                & ((d_parity[:, :, None, None] + d_parity[None, None, :, :]) % 2 == 0))
+        eri = eri * keep
+
+        def run(orbsym, mod):
+            solver = shci.SHCI()
+            solver.initial_dets = [[0, 1, 2, 4]]
+            solver.orbsym, solver.orbsym_mod = orbsym, mod
+            solver.extra = {'davidson': {'tol': 1e-10},
+                            'select': {'schedule': [[0, 1e-12]], 'max_iter': 20,
+                                       'energy_tol': 1e-12,
+                                       'davidson_tol_loose': 1e-10}}
+            e, _ = solver.kernel(h1, eri, norb, nelec)
+            return e, len(solver.wavefunction()[0])
+
+        e_none, n_none = run(None, 0)
+        e_both, n_both = run([axis, parity], [4, 2])
+        e_axis, n_axis = run(axis, 4)
+        # The Hamiltonian has the symmetry, so the labels change nothing ...
+        self.assertAlmostEqual(e_both, e_none, 9)
+        self.assertAlmostEqual(e_axis, e_none, 9)
+        self.assertEqual(n_both, n_none)
+        # ... and the block is a proper part of the full space.
+        self.assertLess(n_both, 70)
+        e_fci = zfci.FCISolver().kernel(h1, eri, norb, nelec, nroots=20)[0]
+        self.assertAlmostEqual(abs(numpy.asarray(e_fci) - e_both).min(), 0, 8)
+
+        # With integrals that break the parity, imposing it changes the result.
+        h1_broken = h1.copy()
+        h1_broken[0, 2] += 0.3
+        h1_broken[2, 0] += 0.3
+        results = []
+        for orbsym, mod in ((None, 0), ([axis, parity], [4, 2])):
+            solver = shci.SHCI()
+            solver.initial_dets = [[0, 1, 2, 4]]
+            solver.orbsym, solver.orbsym_mod = orbsym, mod
+            solver.schedule = [[0, 1e-12]]
+            solver.max_iter = 20
+            results.append(solver.kernel(h1_broken, eri, norb, nelec)[0])
+        self.assertGreater(abs(results[0] - results[1]), 1e-4)
+
+
 if __name__ == '__main__':
     print('Tests for hci.shci against zfci')
     unittest.main()

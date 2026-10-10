@@ -28,32 +28,85 @@
 
 namespace zshci {
 
-// Allows an excitation when it conserves the sum of the orbital labels,
-// modulo `mod` if that is nonzero. With labels 2*omega this is the
-// conservation of the angular momentum projection of a linear molecule
-// (mod = 0) or of the label of an n-fold axis (mod = 2n).
+// One conserved quantity: an integer label per spinor whose sum over the
+// occupied spinors, modulo `mod` if that is nonzero, is the same for all
+// determinants of a calculation.
+struct LabelSet {
+  std::vector<int> labels;
+  int mod = 0;
+};
+
+// Allows an excitation when it conserves every label set. One set with
+// labels 2*omega is the angular momentum projection of a linear molecule
+// (mod = 0) or the label of an n-fold axis (mod = 2n); a second set with
+// labels 0 and 1 modulo 2 adds inversion; the spin projection together with
+// a point group is likewise two sets. The sets are independent, which a
+// single label with a single modulus cannot express.
 class LabelFilter {
  public:
+  explicit LabelFilter(const std::vector<LabelSet>& sets) {
+    // A set whose labels are all equal conserves itself.
+    for (const LabelSet& set : sets) {
+      bool trivial = true;
+      for (int label : set.labels) trivial = trivial && label == set.labels[0];
+      if (trivial) continue;
+      if (num_orbs_ == 0) num_orbs_ = set.labels.size();
+      if (set.labels.size() != num_orbs_) {
+        throw std::invalid_argument("label sets of different lengths");
+      }
+      mods_.push_back(set.mod);
+    }
+    const size_t num_sets = mods_.size();
+    labels_.resize(num_orbs_ * num_sets);
+    size_t k = 0;
+    for (const LabelSet& set : sets) {
+      bool trivial = true;
+      for (int label : set.labels) trivial = trivial && label == set.labels[0];
+      if (trivial) continue;
+      for (size_t p = 0; p < num_orbs_; ++p) {
+        labels_[p * num_sets + k] = set.labels[p];
+      }
+      ++k;
+    }
+  }
   LabelFilter(std::vector<int> labels, int mod)
-      : labels_(std::move(labels)), mod_(mod) {}
+      : LabelFilter(std::vector<LabelSet>{{std::move(labels), mod}}) {}
 
   // Label conservation does not depend on the determinant.
   const LabelFilter& ForDeterminant(const std::vector<int>& /*occ*/) const {
     return *this;
   }
 
-  bool Single(int i, int a) const { return Conserved(labels_[a] - labels_[i]); }
+  bool Single(int i, int a) const {
+    const size_t num_sets = mods_.size();
+    const int* const li = labels_.data() + i * num_sets;
+    const int* const la = labels_.data() + a * num_sets;
+    for (size_t k = 0; k < num_sets; ++k) {
+      if (!Conserved(la[k] - li[k], mods_[k])) return false;
+    }
+    return true;
+  }
   bool Double(int i, int j, int a, int b) const {
-    return Conserved(labels_[a] + labels_[b] - labels_[i] - labels_[j]);
+    const size_t num_sets = mods_.size();
+    const int* const li = labels_.data() + i * num_sets;
+    const int* const lj = labels_.data() + j * num_sets;
+    const int* const la = labels_.data() + a * num_sets;
+    const int* const lb = labels_.data() + b * num_sets;
+    for (size_t k = 0; k < num_sets; ++k) {
+      if (!Conserved(la[k] + lb[k] - li[k] - lj[k], mods_[k])) return false;
+    }
+    return true;
   }
 
  private:
-  bool Conserved(int change) const {
-    return mod_ == 0 ? change == 0 : change % mod_ == 0;
+  static bool Conserved(int change, int mod) {
+    return mod == 0 ? change == 0 : change % mod == 0;
   }
 
+  size_t num_orbs_ = 0;
+  // labels_[p * (number of sets) + k]: label of spinor p in set k.
   std::vector<int> labels_;
-  int mod_;
+  std::vector<int> mods_;
 };
 
 // A bound on the number of electrons in a set of spinors.

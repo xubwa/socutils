@@ -40,22 +40,21 @@ void RunDiag(const Input& input, const Integrals<S>& ints, const Comm& comm) {
 
   // In diag mode the labels are only reported: the space is whatever the
   // list contains.
-  const std::vector<int> labels = ResolveLabels(input, ints);
+  const std::vector<LabelSet> labels = ResolveSymmetry(input, ints);
   if (comm.is_root()) {
-    const int first_label =
-        DeterminantLabel(dets[0], labels, input.symmetry.mod);
+    const std::vector<int> first_label = DeterminantLabels(dets[0], labels);
     size_t num_other = 0;
     for (const Det<W>& det : dets) {
-      if (DeterminantLabel(det, labels, input.symmetry.mod) != first_label) {
-        ++num_other;
-      }
+      if (DeterminantLabels(det, labels) != first_label) ++num_other;
     }
     if (num_other == 0) {
-      std::printf("symmetry label of all determinants: %d\n", first_label);
+      std::printf("symmetry label of all determinants: %s\n",
+                  FormatLabels(first_label).c_str());
     } else {
-      std::printf("note: %zu determinants carry a symmetry label different "
-                  "from that of the first one (%d)\n",
-                  num_other, first_label);
+      std::printf(
+          "note: %zu determinants carry a symmetry label different "
+          "from that of the first one, %s\n",
+          num_other, FormatLabels(first_label).c_str());
     }
   }
 

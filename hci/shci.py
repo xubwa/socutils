@@ -86,11 +86,14 @@ class SHCI(lib.StreamObject):
             If set, no selection is done: the Hamiltonian is diagonalized in
             exactly these determinants ('all': every determinant, i.e. full
             CI, feasible for small spaces only).
-        orbsym : list of int, or None
+        orbsym : list of int, list of such lists, or None
             Additive symmetry label of every spinor; the calculation stays in
-            the block of the starting determinants.
-        orbsym_mod : int
-            Labels add modulo this number; 0 for plain addition.
+            the block of the starting determinants.  Several lists are
+            several independent conserved quantities, e.g. 2*m_j of an axis
+            and the parity.
+        orbsym_mod : int, or list of int
+            Labels add modulo this number; 0 for plain addition.  One number
+            per list of orbsym if there are several.
         restrictions : list of dict(orbitals=[...], min=..., max=...)
             Bounds on the number of electrons in sets of spinors.
         pt : dict or None
@@ -213,8 +216,17 @@ class SHCI(lib.StreamObject):
                 dets = self.occslst
         inp['dets'] = [[int(p) for p in det] for det in dets]
         if self.orbsym is not None:
-            inp['symmetry'] = {'labels': [int(x) for x in self.orbsym],
-                               'mod': int(self.orbsym_mod)}
+            sets = self.orbsym
+            if numpy.ndim(sets) == 1:
+                sets = [sets]
+            mods = numpy.atleast_1d(self.orbsym_mod)
+            if len(mods) == 1:
+                mods = [mods[0]] * len(sets)
+            if len(mods) != len(sets):
+                raise ValueError('orbsym_mod needs one entry per label set')
+            inp['symmetry'] = [{'labels': [int(x) for x in labels],
+                                'mod': int(mod)}
+                               for labels, mod in zip(sets, mods)]
         if self.restrictions:
             inp['restrictions'] = self.restrictions
         if self.pt:

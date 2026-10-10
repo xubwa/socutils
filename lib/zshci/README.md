@@ -55,7 +55,7 @@ The input is a JSON file; comments are allowed and unknown keys are errors.
   "nroots": 1,
   "prefix": ".",
   "dets": [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]],
-  "symmetry": {"labels": "fcidump", "mod": 0},
+  "symmetry": [{"labels": "fcidump", "mod": 0}],
   "connect": {"method": "strings"},
   "select": {"schedule": [[0, 1e-3], [3, 1e-4]], "max_iter": 12},
   "davidson": {"tol": 1e-6},
@@ -64,6 +64,13 @@ The input is a JSON file; comments are allowed and unknown keys are errors.
   "rdm": {"one": true, "two": true, "transition": false}
 }
 ```
+
+`"symmetry"` lists the conserved quantities, each an integer label per spinor
+and a modulus (0: none): `{"labels": [...], "mod": 4}` is the label of a
+twofold axis, a second entry `{"labels": [0, 1, ...], "mod": 2}` adds
+inversion. The entries are independent of each other. A single entry may be
+written without the brackets; `"labels": "fcidump"` takes ORBSYM of the
+integral file.
 
 `src/input.h` documents every key. The integrals are read from a FCIDUMP
 file (`src/integrals.h`) in the complex format, `(re,im) p q r s`, or the real

@@ -46,7 +46,8 @@ struct WaveFunction {
   std::vector<double> energies;                    // variational, total
   std::vector<double> pt_corrections;              // empty without PT
   std::vector<double> pt_errors;
-  std::vector<int> labels;
+  std::vector<int> labels;      // label sets x spinors, set by set
+  std::vector<int> label_mods;  // one modulus per label set
   std::string input;  // resolved input, JSON text
 };
 
