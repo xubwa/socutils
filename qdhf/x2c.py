@@ -136,12 +136,11 @@ def uncontract_mol(mol):
     return xmol, QArray.from_mpf(c)
 
 
-def get_hcore(mol, light_speed=None, approx='1e', qi=None, xuncontract=True):
-    '''sf-X2C-1e one-electron Hamiltonian in quad precision'''
-    if xuncontract:
-        xmol, contr = uncontract_mol(mol)
-        h = get_hcore(xmol, light_speed, approx, xuncontract=False)
-        return contr.T @ h @ contr
+def get_xr(mol, light_speed=None, approx='1e', qi=None):
+    '''X and R matrices of sf-X2C-1e in the basis of mol (no decontraction).
+
+    Returns a dict with x, r and the integrals t, v, w (pV.p), s.
+    '''
     if qi is None:
         qi = qints.QuadIntegrals(mol)
     c = dhf.get_light_speed(light_speed)
@@ -171,10 +170,32 @@ def get_hcore(mol, light_speed=None, approx='1e', qi=None, xuncontract=True):
         raise ValueError('Unknown approx %s' % approx)
 
     s1 = s + x.T @ t @ x * (1 / (2 * c**2))
+    r = _get_r(s, s1)
+    return {'x': x, 'r': r, 't': t, 'v': v, 'w': w, 's': s, 'c': c, 'qi': qi}
+
+
+def hcore_from_xr(d):
+    '''h_X2C = R^T (V + T X + X^T T - X^T T X + X^T W X/(4c^2)) R'''
+    x, r, t, v, w, c = d['x'], d['r'], d['t'], d['v'], d['w'], d['c']
     tx = t @ x
     h1 = v + tx + tx.T - x.T @ tx + x.T @ w @ x * (1 / (4 * c**2))
-    r = _get_r(s, s1)
     return r.T @ h1 @ r
+
+
+def picture_change(d, v_op, w_op):
+    '''Picture-change transformed multiplicative operator
+    R^T (O + X^T W_O X / (4c^2)) R, with W_O = <p chi| O |p chi>'''
+    x, r, c = d['x'], d['r'], d['c']
+    return r.T @ (v_op + x.T @ w_op @ x * (1 / (4 * c**2))) @ r
+
+
+def get_hcore(mol, light_speed=None, approx='1e', qi=None, xuncontract=True):
+    '''sf-X2C-1e one-electron Hamiltonian in quad precision'''
+    if xuncontract:
+        xmol, contr = uncontract_mol(mol)
+        h = get_hcore(xmol, light_speed, approx, xuncontract=False)
+        return contr.T @ h @ contr
+    return hcore_from_xr(get_xr(mol, light_speed, approx, qi))
 
 
 class SFX2C1E_RHF(dhf.RHF):
