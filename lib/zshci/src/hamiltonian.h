@@ -1,9 +1,9 @@
 // Slater-Condon rules for spinor determinants.
 //
 // The Hamiltonian is
-//   H = sum_pq h(p,q) p^+ q + 1/2 sum_pqrs (pr|qs) p^+ q^+ s r + E_core,
-// with (pr|qs) in chemists' notation. No spin or time-reversal structure is
-// assumed; the only integral symmetry used is (pq|rs) = (rs|pq). The number
+//   H = sum_pq h(p,q) p^+ q + 1/4 sum_pqrs <pq||rs> p^+ q^+ s r + E_core,
+// with the antisymmetrized integrals of integrals.h. No spin or time-reversal
+// structure is assumed. The number
 // type S of the integrals is double or Complex (scalar.h).
 
 #ifndef ZSHCI_SRC_HAMILTONIAN_H_
@@ -91,7 +91,7 @@ double DiagonalEnergy(const Det<W>& det, const Integrals<S>& ints) {
     const int p = occ[m];
     energy += Real(ints.OneBody(p, p));
     for (int n = 0; n < m; ++n) {
-      energy += ints.Direct(p, occ[n]) - ints.Exchange(p, occ[n]);
+      energy += ints.PairEnergy(p, occ[n]);
     }
   }
   return energy;
@@ -109,7 +109,7 @@ S OffDiagonalElement(const Det<W>& ket, const Excitation& exc,
       uint64_t word = ket.words[k];
       while (word != 0) {
         const int j = 64 * k + __builtin_ctzll(word);
-        value += ints.TwoBody(a, i, j, j) - ints.TwoBody(a, j, j, i);
+        value += ints.Antisym(a, j, i, j);
         word &= word - 1;
       }
     }
@@ -120,8 +120,7 @@ S OffDiagonalElement(const Det<W>& ket, const Excitation& exc,
     const int j = exc.holes[1];
     const int a = exc.particles[0];
     const int b = exc.particles[1];
-    return DoubleSign(ket, i, j, a, b) *
-           (ints.TwoBody(a, i, b, j) - ints.TwoBody(a, j, b, i));
+    return DoubleSign(ket, i, j, a, b) * ints.AntisymOrdered(a, b, i, j);
   }
   return S(0.0);
 }

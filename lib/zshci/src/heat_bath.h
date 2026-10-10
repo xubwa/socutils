@@ -1,7 +1,7 @@
 // Sorted tables of double-excitation integrals for heat-bath selection.
 //
 // For every pair of spinors i < j the table lists the pairs a < b with
-//   g = (ai|bj) - (aj|bi),
+//   g = <ab||ij>,
 // the magnitude of the matrix element of the double excitation
 // (i, j) -> (a, b), in order of decreasing |g|. Generating all double
 // excitations of a determinant whose element exceeds a cutoff then costs time

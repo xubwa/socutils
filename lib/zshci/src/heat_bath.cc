@@ -21,8 +21,7 @@ HeatBath::HeatBath(const Integrals<S>& ints, double threshold,
         std::vector<Entry>& list = lists[PairIndex(i, j)];
         for (int b = 1; b < n; ++b) {
           for (int a = 0; a < b; ++a) {
-            const double magnitude =
-                std::abs(ints.TwoBody(a, i, b, j) - ints.TwoBody(a, j, b, i));
+            const double magnitude = std::abs(ints.AntisymOrdered(a, b, i, j));
             if (magnitude > threshold) {
               list.push_back({magnitude, static_cast<uint16_t>(a),
                               static_cast<uint16_t>(b)});

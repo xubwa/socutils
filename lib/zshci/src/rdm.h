@@ -3,7 +3,7 @@
 // Definitions, for a bra vector b and a ket vector k:
 //   D1(p, q)       = <b| p^+ q |k>
 //   D2(p, q, r, s) = <b| p^+ q^+ s r |k>
-// so that  E = sum_pq h(p,q) D1(p,q) + 1/2 sum_pqrs (pr|qs) D2(p,q,r,s).
+// so that  E = sum_pq h(p,q) D1(p,q) + 1/4 sum_pqrs <pq||rs> D2(p,q,r,s).
 //
 // The connected pairs of determinants are taken from the sparsity pattern of
 // the Hamiltonian, which must therefore have been built without a threshold
@@ -183,13 +183,15 @@ double EnergyFromDensityMatrices(const DensityMatrices<S>& dm,
   for (int p = 0; p < n; ++p) {
     for (int q = 0; q < n; ++q) energy += ints.OneBody(p, q) * dm.One(p, q);
   }
+  // 1/4 sum_pqrs <pq||rs> D2(p,q,r,s), both factors being antisymmetric in
+  // p, q and in r, s.
   double re = Real(energy);
 #pragma omp parallel for reduction(+ : re) schedule(static)
-  for (int p = 0; p < n; ++p) {
-    for (int q = 0; q < n; ++q) {
-      for (int r = 0; r < n; ++r) {
-        for (int s = 0; s < n; ++s) {
-          re += 0.5 * Real(ints.TwoBody(p, r, q, s) * dm.Two(p, q, r, s));
+  for (int q = 1; q < n; ++q) {
+    for (int p = 0; p < q; ++p) {
+      for (int s = 1; s < n; ++s) {
+        for (int r = 0; r < s; ++r) {
+          re += Real(ints.AntisymOrdered(p, q, r, s) * dm.Two(p, q, r, s));
         }
       }
     }

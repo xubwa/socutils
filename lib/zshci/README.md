@@ -72,7 +72,9 @@ numbers throughout (integrals, Hamiltonian, CI vectors, density matrices),
 which takes about two thirds of the memory; `"scalar": "real"` asks for the
 same with a file in the complex format whose imaginary parts are all zero, and
 `"scalar": "complex"` forces complex numbers. The integrals are still indexed
-by spinors: real numbers do not imply spin symmetry. The program exits with a
+by spinors: real numbers do not imply spin symmetry. They are held
+antisymmetrized, `<pq||rs> = (pr|qs) - (ps|qr)`, about `n^4/8` numbers for `n`
+spinors (3.2 GB of complex numbers for 200 spinors). The program exits with a
 nonzero status on any error.
 
 Output, in the directory `prefix` (`src/output.h`):

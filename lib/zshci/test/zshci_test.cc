@@ -88,10 +88,10 @@ Integrals<Complex> ShiftIntegrals(const Integrals<Complex>& ints, int shift) {
   for (int p = 0; p < n; ++p) {
     for (int q = 0; q < n; ++q) {
       shifted.SetOneBody(p + shift, q + shift, ints.OneBody(p, q));
-      for (int r = 0; r < n; ++r) {
-        for (int s = 0; s < n; ++s) {
-          shifted.SetTwoBody(p + shift, q + shift, r + shift, s + shift,
-                             ints.TwoBody(p, q, r, s));
+      for (int s = 1; s < n && p < q; ++s) {
+        for (int r = 0; r < s; ++r) {
+          shifted.SetAntisymOrdered(p + shift, q + shift, r + shift, s + shift,
+                                    ints.AntisymOrdered(p, q, r, s));
         }
       }
     }
@@ -745,9 +745,10 @@ Integrals<S> RealPart(const Integrals<Complex>& ints) {
   for (int p = 0; p < n; ++p) {
     for (int q = 0; q < n; ++q) {
       out.SetOneBody(p, q, S(ints.OneBody(p, q).real()));
-      for (int r = 0; r < n; ++r) {
-        for (int s = 0; s < n; ++s) {
-          out.SetTwoBody(p, q, r, s, S(ints.TwoBody(p, q, r, s).real()));
+      for (int s = 1; s < n && p < q; ++s) {
+        for (int r = 0; r < s; ++r) {
+          out.SetAntisymOrdered(p, q, r, s,
+                                S(ints.AntisymOrdered(p, q, r, s).real()));
         }
       }
     }

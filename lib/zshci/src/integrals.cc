@@ -46,8 +46,8 @@ std::vector<int> NamelistInts(const std::string& header,
 template <typename S>
 Integrals<S>::Integrals(int num_orbs, const Comm& comm) : num_orbs_(num_orbs) {
   const size_t n = num_orbs;
-  const size_t num_pairs = n * n;
-  one_body_.assign(num_pairs, S(0.0));
+  const size_t num_pairs = n * (n - 1) / 2;
+  one_body_.assign(n * n, S(0.0));
   two_body_ = SharedArray<S>(num_pairs * (num_pairs + 1) / 2, comm);
   if (comm.is_node_leader()) {
     std::fill(two_body_.data(), two_body_.data() + two_body_.size(), S(0.0));
@@ -56,14 +56,38 @@ Integrals<S>::Integrals(int num_orbs, const Comm& comm) : num_orbs_(num_orbs) {
 }
 
 template <typename S>
+void Integrals<S>::AddChemist(int p, int q, int r, int s, S value) {
+  // (pq|rs) is the first term of <pr||qs>, and the second, with a minus
+  // sign, of <pr||sq> = -<pr||qs>: either way it adds to <pr||qs>.
+  if (p == r || q == s) return;
+  bool negative = false;
+  if (p > r) {
+    std::swap(p, r);
+    negative = !negative;
+  }
+  if (q > s) {
+    std::swap(q, s);
+    negative = !negative;
+  }
+  if (negative) value = -value;
+  // The Hermitian partner (qp|sr) adds conj(value) to <qs||pr>, which is the
+  // same stored number seen from the other side; one of the two is added.
+  const size_t bra = PairIndex(p, r);
+  const size_t ket = PairIndex(q, s);
+  if (bra >= ket) {
+    two_body_[bra * (bra + 1) / 2 + ket] += value;
+  } else {
+    two_body_[ket * (ket + 1) / 2 + bra] += Conj(value);
+  }
+}
+
+template <typename S>
 void Integrals<S>::Finalize() {
   const size_t n = num_orbs_;
-  direct_.assign(n * n, 0.0);
-  exchange_.assign(n * n, 0.0);
+  pair_energy_.assign(n * n, 0.0);
   for (int p = 0; p < num_orbs_; ++p) {
     for (int q = 0; q < num_orbs_; ++q) {
-      direct_[p * n + q] = Real(TwoBody(p, p, q, q));
-      exchange_[p * n + q] = Real(TwoBody(p, q, q, p));
+      pair_energy_[p * n + q] = Real(Antisym(p, q, p, q));
     }
   }
 }
@@ -75,8 +99,7 @@ void Integrals<S>::Share(const Comm& comm) {
   comm.Bcast(&labels_);
   comm.Bcast(&one_body_);
   two_body_.ShareFromRoot(comm);
-  comm.Bcast(&direct_);
-  comm.Bcast(&exchange_);
+  comm.Bcast(&pair_energy_);
 }
 
 namespace {
@@ -198,6 +221,17 @@ Integrals<S> ReadFcidump(const std::string& path, const Comm& comm) {
   if (!header.labels.empty()) ints.set_labels(std::move(header.labels));
 
   const int n = header.num_orbs;
+  // One bit per integral (pq|rs), (pq|rs) and (rs|pq) sharing one: set when
+  // the integral or its Hermitian partner has been used.
+  const size_t num_products = static_cast<size_t>(n) * n;
+  std::vector<bool> used(num_products * (num_products + 1) / 2, false);
+  auto bit_of = [&](int p, int q, int r, int s) {
+    const size_t pq = static_cast<size_t>(p) * n + q;
+    const size_t rs = static_cast<size_t>(r) * n + s;
+    const size_t hi = pq > rs ? pq : rs;
+    const size_t lo = pq > rs ? rs : pq;
+    return hi * (hi + 1) / 2 + lo;
+  };
   std::string line;
   size_t line_number = 0;
   FcidumpLine parsed;
@@ -234,7 +268,11 @@ Integrals<S> ReadFcidump(const std::string& path, const Comm& comm) {
         throw std::runtime_error(path + ": bad two-body index on line " +
                                  std::to_string(line_number));
       }
-      ints.SetTwoBody(p - 1, q - 1, r - 1, s - 1, value);
+      const size_t bit = bit_of(p - 1, q - 1, r - 1, s - 1);
+      if (used[bit]) continue;
+      used[bit] = true;
+      used[bit_of(q - 1, p - 1, s - 1, r - 1)] = true;
+      ints.AddChemist(p - 1, q - 1, r - 1, s - 1, value);
     }
   }
   ints.Finalize();
