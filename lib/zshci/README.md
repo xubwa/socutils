@@ -65,6 +65,14 @@ The input is a JSON file; comments are allowed and unknown keys are errors.
 }
 ```
 
+`"orbitals": "spatial"` is for a non-relativistic calculation with a
+restricted reference: the FCIDUMP file holds real integrals `(ij|kl)` over
+spatial orbitals (the standard format, as written by PySCF or Molpro), which
+are stored as such, `n^4/8` numbers for `n` orbitals. The determinants are over
+the spin orbitals `2P` (alpha) and `2P+1` (beta) of spatial orbital `P`, the
+spin projection is conserved automatically, and ORBSYM is read as the
+irreducible representations of D2h or a subgroup in Molpro's numbering.
+
 `"symmetry"` lists the conserved quantities, each an integer label per spinor
 and a modulus (0: none): `{"labels": [...], "mod": 4}` is the label of a
 twofold axis, a second entry `{"labels": [0, 1, ...], "mod": 2}` adds

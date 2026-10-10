@@ -13,6 +13,14 @@
 // unless both pairs carry the same sums; only those are stored. Spin
 // orbitals labelled by their spin projection, for example, cost 3/8 of the
 // storage without labels.
+//
+// Spatial orbitals. When all electrons see the same real spatial orbitals
+// (a restricted reference), the integrals (PQ|RS) over n spatial orbitals
+// have eightfold symmetry and take n^4 / 8 numbers. Integrals::Spatial holds
+// them that way and presents the 2n spin orbitals p = 2P (alpha), 2P + 1
+// (beta) through the same functions, <pq||rs> being put together from two
+// spatial integrals on each call. The spin projection is then the first
+// label set.
 
 #ifndef ZSHCI_SRC_INTEGRALS_H_
 #define ZSHCI_SRC_INTEGRALS_H_
@@ -44,6 +52,18 @@ class Integrals {
   explicit Integrals(int num_orbs, const Comm& comm = Comm())
       : Integrals(num_orbs, std::vector<LabelSet>(), comm) {}
 
+  // Storage for num_spatial spatial orbitals, zeroed (see the top of this
+  // file). `spatial_symmetry` holds one label per spatial orbital in each
+  // set; symmetry() then lists the spin projection (labels +1 for alpha, -1
+  // for beta) followed by these sets, per spin orbital. Collective.
+  static Integrals Spatial(int num_spatial,
+                           const std::vector<LabelSet>& spatial_symmetry,
+                           const Comm& comm = Comm());
+
+  // Whether the integrals are held over spatial orbitals, and their number.
+  bool is_spatial() const { return num_spatial_ > 0; }
+  int num_spatial() const { return num_spatial_; }
+
   int num_orbs() const { return num_orbs_; }
   int num_elec() const { return num_elec_; }
   double core_energy() const { return core_energy_; }
@@ -63,6 +83,7 @@ class Integrals {
 
   // <pq||rs> for p < q and r < s.
   S AntisymOrdered(int p, int q, int r, int s) const {
+    if (num_spatial_ > 0) return SpatialAntisym(p, q, r, s);
     const PairSlot bra = pair_slot_[PairIndex(p, q)];
     const PairSlot ket = pair_slot_[PairIndex(r, s)];
     if (bra.block != ket.block) return S(0.0);
@@ -95,8 +116,13 @@ class Integrals {
     return pair_energy_[p * num_orbs_ + q];
   }
 
+  // (PQ|RS) over spatial orbitals; is_spatial() only.
+  S SpatialTwoBody(int p, int q, int r, int s) const {
+    return two_body_[SpatialIndex(p, q, r, s)];
+  }
+
   // The pairs r < s for which <pq||rs> can be nonzero, in increasing order
-  // of s and then r; p < q.
+  // of s and then r; p < q. Not with spatial orbitals.
   struct OrbitalPair {
     uint16_t first;
     uint16_t second;
@@ -111,8 +137,14 @@ class Integrals {
   }
 
   void SetOneBody(int p, int q, S value);
-  // Sets <pq||rs> and, with it, <rs||pq>; p < q and r < s.
+  // Sets <pq||rs> and, with it, <rs||pq>; p < q and r < s. Not with spatial
+  // orbitals, nor is AddChemist.
   void SetAntisymOrdered(int p, int q, int r, int s, S value);
+
+  // Spatial orbitals only: h(P, Q) for both spins, and (PQ|RS) with all its
+  // eight permutations.
+  void SetSpatialOneBody(int p, int q, S value);
+  void SetSpatialTwoBody(int p, int q, int r, int s, S value);
 
   // Adds what the integral (pq|rs) = value, together with its Hermitian
   // partner (qp|sr) = conj(value), contributes to the antisymmetrized
@@ -139,6 +171,26 @@ class Integrals {
     uint32_t position;
   };
 
+  static size_t Triangle(size_t a, size_t b) {
+    return a >= b ? a * (a + 1) / 2 + b : b * (b + 1) / 2 + a;
+  }
+  size_t SpatialIndex(int p, int q, int r, int s) const {
+    return Triangle(Triangle(p, q), Triangle(r, s));
+  }
+  // <pq||rs> = (pr|qs) - (ps|qr) over spin orbitals, each term present when
+  // the spins of its two charge distributions match.
+  S SpatialAntisym(int p, int q, int r, int s) const {
+    const int sp = p & 1, sq = q & 1, sr = r & 1, ss = s & 1;
+    S value(0.0);
+    if (sp == sr && sq == ss) {
+      value += two_body_[SpatialIndex(p >> 1, r >> 1, q >> 1, s >> 1)];
+    }
+    if (sp == ss && sq == sr) {
+      value -= two_body_[SpatialIndex(p >> 1, s >> 1, q >> 1, r >> 1)];
+    }
+    return value;
+  }
+
   // The stored number that holds <pair||other pair> or its conjugate, and
   // whether it is the conjugate; nullptr if the pairs are in different
   // blocks.
@@ -146,6 +198,7 @@ class Integrals {
   void NoteForbidden(S value);
 
   int num_orbs_ = 0;
+  int num_spatial_ = 0;  // nonzero: spatial orbitals
   int num_elec_ = 0;
   double core_energy_ = 0.0;
   double max_forbidden_ = 0.0;
@@ -195,6 +248,23 @@ template <typename S>
 Integrals<S> ReadFcidump(const std::string& path, const Comm& comm = Comm()) {
   return ReadFcidump<S>(path, std::vector<LabelSet>(), 0.0, comm);
 }
+
+// Reads integrals over real spatial orbitals from a FCIDUMP file in the real
+// format: "value i j k l" is (ij|kl), with any of its eight permutations
+// standing for all of them. The result presents spin orbitals
+// (Integrals::Spatial).
+//
+// `symmetry` holds label sets per spatial orbital. A set without labels
+// takes ORBSYM of the file as irreducible representations of D2h or a
+// subgroup numbered as in Molpro, whose products are the exclusive or of the
+// numbers minus one: it becomes up to three sets of labels modulo 2.
+//
+// Collective. Instantiated for double and Complex.
+template <typename S>
+Integrals<S> ReadSpatialFcidump(const std::string& path,
+                                const std::vector<LabelSet>& symmetry,
+                                double symmetry_tolerance,
+                                const Comm& comm = Comm());
 
 }  // namespace zshci
 

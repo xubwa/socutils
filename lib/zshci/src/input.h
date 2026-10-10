@@ -5,6 +5,7 @@
 //     "mode": "diag",
 //     "integrals": "FCIDUMP",
 //     "scalar": "auto",
+//     "orbitals": "spinor",
 //     "nroots": 2,
 //     "prefix": "./scratch",
 //     "dets": [[0, 1, 2, 3], [0, 1, 2, 5]],
@@ -113,6 +114,13 @@ struct Input {
   Mode mode = Mode::kSelect;
   std::string integrals = "FCIDUMP";
   ScalarChoice scalar = ScalarChoice::kAuto;
+  // "orbitals": "spatial" reads integrals over real spatial orbitals, which
+  // all electrons share (a restricted reference); the determinants are then
+  // over the spin orbitals 2P (alpha) and 2P + 1 (beta) of spatial orbital P,
+  // the spin projection is conserved, and the labels of "symmetry" are per
+  // spatial orbital. The default, "spinor", takes the orbitals of the file as
+  // they are.
+  bool spatial_orbitals = false;
   std::string prefix = ".";
   int nroots = 1;
 

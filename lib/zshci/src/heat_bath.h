@@ -7,6 +7,15 @@
 // excitations of a determinant whose element exceeds a cutoff then costs time
 // proportional to their number: walk each list until |g| drops below the
 // cutoff.
+//
+// With integrals over spatial orbitals (Integrals::Spatial) the lists are
+// kept per pair of spatial orbitals and serve every spin combination:
+//   same spin       I < J:   pairs A < B with g = (AI|BJ) - (AJ|BI),
+//                            for alpha-alpha and for beta-beta;
+//   opposite spin   I <= J:  pairs (A, B) with g = (AI|BJ), I -> A, J -> B,
+//                            for either orbital being the alpha one.
+// That is 3/4 n^4 entries for n spatial orbitals instead of the 3/2 n^4 that
+// lists per pair of spin orbitals would take.
 
 #ifndef ZSHCI_SRC_HEAT_BATH_H_
 #define ZSHCI_SRC_HEAT_BATH_H_
@@ -35,12 +44,46 @@ class HeatBath {
   HeatBath(const Integrals<S>& ints, double threshold,
            const Comm& comm = Comm());
 
-  // The list of the pair i < j, by decreasing magnitude.
-  const Entry* begin(int i, int j) const {
-    return entries_.data() + start_[PairIndex(i, j)];
-  }
-  const Entry* end(int i, int j) const {
-    return entries_.data() + start_[PairIndex(i, j) + 1];
+  // Calls visit(a, b, magnitude), a < b, for the double excitations
+  // (i, j) -> (a, b) of the spinors i < j with magnitude >= cutoff, in order
+  // of decreasing magnitude.
+  template <class Visit>
+  void ForEachDouble(int i, int j, double cutoff, const Visit& visit) const {
+    if (!spatial_) {
+      const Entry* const end = entries_.data() + start_[PairIndex(i, j) + 1];
+      for (const Entry* e = entries_.data() + start_[PairIndex(i, j)];
+           e != end && e->magnitude >= cutoff; ++e) {
+        visit(e->a, e->b, e->magnitude);
+      }
+      return;
+    }
+    const int spin_i = i & 1;
+    const int spin_j = j & 1;
+    const int orb_i = i >> 1;
+    const int orb_j = j >> 1;
+    if (spin_i == spin_j) {
+      const Entry* const end =
+          entries_.data() + start_[PairIndex(orb_i, orb_j) + 1];
+      for (const Entry* e = entries_.data() + start_[PairIndex(orb_i, orb_j)];
+           e != end && e->magnitude >= cutoff; ++e) {
+        visit(2 * e->a + spin_i, 2 * e->b + spin_i, e->magnitude);
+      }
+      return;
+    }
+    // Opposite spins. Since i < j the spatial orbital of i is not above
+    // that of j, and the entry (a, b) moves i to a and j to b.
+    const size_t pair = opposite_offset_ + PairIndexWithDiagonal(orb_i, orb_j);
+    const Entry* const end = entries_.data() + start_[pair + 1];
+    for (const Entry* e = entries_.data() + start_[pair];
+         e != end && e->magnitude >= cutoff; ++e) {
+      const int a = 2 * e->a + spin_i;
+      const int b = 2 * e->b + spin_j;
+      if (a < b) {
+        visit(a, b, e->magnitude);
+      } else {
+        visit(b, a, e->magnitude);
+      }
+    }
   }
 
   // Largest magnitude in the whole table.
@@ -48,10 +91,25 @@ class HeatBath {
   size_t num_entries() const { return entries_.size(); }
 
  private:
+  // Index of the pair i < j, and of the pair i <= j.
   static size_t PairIndex(int i, int j) {
     return static_cast<size_t>(j) * (j - 1) / 2 + i;
   }
+  static size_t PairIndexWithDiagonal(int i, int j) {
+    return static_cast<size_t>(j) * (j + 1) / 2 + i;
+  }
 
+  template <typename S>
+  void BuildSpinorLists(const Integrals<S>& ints, double threshold,
+                        std::vector<std::vector<Entry>>* lists) const;
+  template <typename S>
+  void BuildSpatialLists(const Integrals<S>& ints, double threshold,
+                         std::vector<std::vector<Entry>>* lists) const;
+
+  bool spatial_ = false;
+  // With spatial orbitals the opposite-spin lists follow the same-spin ones;
+  // this is the index of the first.
+  size_t opposite_offset_ = 0;
   std::vector<size_t> start_;
   SharedArray<Entry> entries_;
   double max_magnitude_ = 0.0;

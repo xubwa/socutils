@@ -105,6 +105,65 @@ Integrals<S>::Integrals(int num_orbs, std::vector<LabelSet> symmetry,
 }
 
 template <typename S>
+Integrals<S> Integrals<S>::Spatial(
+    int num_spatial, const std::vector<LabelSet>& spatial_symmetry,
+    const Comm& comm) {
+  Integrals ints;
+  const size_t n = num_spatial;
+  if (2 * n > UINT16_MAX) throw std::length_error("too many orbitals");
+  ints.num_spatial_ = num_spatial;
+  ints.num_orbs_ = 2 * num_spatial;
+  LabelSet spin;
+  for (size_t p = 0; p < n; ++p) {
+    spin.labels.push_back(1);
+    spin.labels.push_back(-1);
+  }
+  ints.symmetry_.push_back(spin);
+  for (const LabelSet& spatial : spatial_symmetry) {
+    if (spatial.labels.size() != n) {
+      throw std::invalid_argument(
+          "symmetry: labels must have one entry per spatial orbital");
+    }
+    LabelSet set;
+    set.mod = spatial.mod;
+    for (int label : spatial.labels) {
+      set.labels.push_back(label);
+      set.labels.push_back(label);
+    }
+    ints.symmetry_.push_back(std::move(set));
+  }
+  ints.one_body_.assign(4 * n * n, S(0.0));
+  const size_t num_products = n * (n + 1) / 2;
+  ints.two_body_ = SharedArray<S>(num_products * (num_products + 1) / 2, comm);
+  if (comm.is_node_leader()) {
+    std::fill(ints.two_body_.data(),
+              ints.two_body_.data() + ints.two_body_.size(), S(0.0));
+  }
+  return ints;
+}
+
+template <typename S>
+void Integrals<S>::SetSpatialOneBody(int p, int q, S value) {
+  SetOneBody(2 * p, 2 * q, value);
+  SetOneBody(2 * p + 1, 2 * q + 1, value);
+}
+
+template <typename S>
+void Integrals<S>::SetSpatialTwoBody(int p, int q, int r, int s, S value) {
+  // (pq|rs) moves electrons from q, s to p, r. The first set is the spin.
+  for (size_t k = 1; k < symmetry_.size(); ++k) {
+    const std::vector<int>& labels = symmetry_[k].labels;
+    const int change =
+        labels[2 * p] + labels[2 * r] - labels[2 * q] - labels[2 * s];
+    if (!LabelConserved(change, symmetry_[k].mod)) {
+      NoteForbidden(value);
+      return;
+    }
+  }
+  two_body_[SpatialIndex(p, q, r, s)] = value;
+}
+
+template <typename S>
 void Integrals<S>::NoteForbidden(S value) {
   max_forbidden_ = std::max(max_forbidden_, std::abs(value));
 }
@@ -135,6 +194,9 @@ void Integrals<S>::SetOneBody(int p, int q, S value) {
 
 template <typename S>
 void Integrals<S>::SetAntisymOrdered(int p, int q, int r, int s, S value) {
+  if (is_spatial()) {
+    throw std::logic_error("spatial integrals are set by SetSpatialTwoBody");
+  }
   bool conjugated = false;
   S* const stored = Stored(PairIndex(p, q), PairIndex(r, s), &conjugated);
   if (stored == nullptr) {
@@ -159,6 +221,9 @@ void Integrals<S>::AddChemist(int p, int q, int r, int s, S value) {
     negative = !negative;
   }
   if (negative) value = -value;
+  if (is_spatial()) {
+    throw std::logic_error("spatial integrals are set by SetSpatialTwoBody");
+  }
   // The Hermitian partner (qp|sr) adds conj(value) to <qs||pr>, which is the
   // same stored number seen from the other side; one of the two is added.
   bool conjugated = false;
@@ -393,6 +458,102 @@ Integrals<S> ReadFcidump(const std::string& path,
   return ints;
 }
 
+template <typename S>
+Integrals<S> ReadSpatialFcidump(const std::string& path,
+                                const std::vector<LabelSet>& symmetry,
+                                double symmetry_tolerance, const Comm& comm) {
+  std::ifstream file;
+  FcidumpHeader header;
+  if (comm.is_root()) header = ReadHeader(path, &file);
+  comm.BcastValue(&header.num_orbs);
+  comm.Bcast(&header.labels);
+  const int n = header.num_orbs;
+
+  std::vector<LabelSet> sets;
+  for (const LabelSet& requested : symmetry) {
+    if (!requested.labels.empty()) {
+      sets.push_back(requested);
+      continue;
+    }
+    // ORBSYM: the bits of (irrep - 1) multiply independently.
+    for (int bit = 0; bit < 3; ++bit) {
+      LabelSet set;
+      set.mod = 2;
+      bool any = false;
+      for (int irrep : header.labels) {
+        if (irrep < 1 || irrep > 8) {
+          throw std::runtime_error(
+              path +
+              ": ORBSYM must hold numbers from 1 to 8 to be used as "
+              "the symmetry of spatial orbitals");
+        }
+        set.labels.push_back(((irrep - 1) >> bit) & 1);
+        any = any || set.labels.back() != 0;
+      }
+      if (any) sets.push_back(std::move(set));
+    }
+  }
+
+  Integrals<S> ints = Integrals<S>::Spatial(n, sets, comm);
+  if (!comm.is_root()) {
+    ints.Share(comm);
+    return ints;
+  }
+  ints.set_num_elec(header.num_elec);
+
+  std::string line;
+  size_t line_number = 0;
+  FcidumpLine parsed;
+  while (std::getline(file, line)) {
+    ++line_number;
+    if (!ParseLine(line, path, line_number, &parsed)) continue;
+    const int p = parsed.index[0];
+    const int q = parsed.index[1];
+    const int r = parsed.index[2];
+    const int s = parsed.index[3];
+    if (p < 0 || q < 0 || r < 0 || s < 0 || p > n || q > n || r > n || s > n) {
+      throw std::runtime_error(path + ": orbital index out of range on line " +
+                               std::to_string(line_number));
+    }
+    if (parsed.im != 0.0) {
+      throw std::runtime_error(
+          path + ": line " + std::to_string(line_number) +
+          " has an imaginary part; integrals over spatial orbitals are real");
+    }
+    const S value(parsed.re);
+    if (p == 0 && q == 0 && r == 0 && s == 0) {
+      ints.set_core_energy(parsed.re);
+    } else if (q == 0 && r == 0 && s == 0) {
+      continue;  // orbital energy
+    } else if (r == 0 && s == 0) {
+      if (p == 0 || q == 0) {
+        throw std::runtime_error(path + ": bad one-body index on line " +
+                                 std::to_string(line_number));
+      }
+      ints.SetSpatialOneBody(p - 1, q - 1, value);
+      ints.SetSpatialOneBody(q - 1, p - 1, value);
+    } else {
+      if (p == 0 || q == 0 || r == 0 || s == 0) {
+        throw std::runtime_error(path + ": bad two-body index on line " +
+                                 std::to_string(line_number));
+      }
+      ints.SetSpatialTwoBody(p - 1, q - 1, r - 1, s - 1, value);
+    }
+  }
+  if (ints.max_forbidden() > symmetry_tolerance) {
+    char magnitude[32];
+    std::snprintf(magnitude, sizeof(magnitude), "%.3e", ints.max_forbidden());
+    throw std::runtime_error(
+        path +
+        ": the integrals do not have the symmetry of the labels: an "
+        "integral of magnitude " +
+        magnitude + " would change a label (see symmetry_tolerance)");
+  }
+  ints.Finalize();
+  ints.Share(comm);
+  return ints;
+}
+
 template class Integrals<double>;
 template class Integrals<Complex>;
 template Integrals<double> ReadFcidump<double>(const std::string&,
@@ -401,5 +562,10 @@ template Integrals<double> ReadFcidump<double>(const std::string&,
 template Integrals<Complex> ReadFcidump<Complex>(const std::string&,
                                                  const std::vector<LabelSet>&,
                                                  double, const Comm&);
+
+template Integrals<double> ReadSpatialFcidump<double>(
+    const std::string&, const std::vector<LabelSet>&, double, const Comm&);
+template Integrals<Complex> ReadSpatialFcidump<Complex>(
+    const std::string&, const std::vector<LabelSet>&, double, const Comm&);
 
 }  // namespace zshci

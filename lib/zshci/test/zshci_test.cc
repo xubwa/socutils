@@ -925,13 +925,22 @@ void TestBlockedIntegrals(const Integrals<Complex>& ints) {
       heat_bath_blocked.num_entries() == heat_bath_plain.num_entries();
   for (int j = 1; j < n && same_tables; ++j) {
     for (int i = 0; i < j && same_tables; ++i) {
-      const HeatBath::Entry* a = heat_bath_blocked.begin(i, j);
-      const HeatBath::Entry* b = heat_bath_plain.begin(i, j);
-      same_tables =
-          heat_bath_blocked.end(i, j) - a == heat_bath_plain.end(i, j) - b;
-      for (; same_tables && a != heat_bath_blocked.end(i, j); ++a, ++b) {
-        same_tables =
-            a->magnitude == b->magnitude && a->a == b->a && a->b == b->b;
+      std::vector<HeatBath::Entry> from_blocked, from_plain;
+      heat_bath_blocked.ForEachDouble(
+          i, j, 0.0, [&](int a, int b, double magnitude) {
+            from_blocked.push_back({magnitude, static_cast<uint16_t>(a),
+                                    static_cast<uint16_t>(b)});
+          });
+      heat_bath_plain.ForEachDouble(
+          i, j, 0.0, [&](int a, int b, double magnitude) {
+            from_plain.push_back({magnitude, static_cast<uint16_t>(a),
+                                  static_cast<uint16_t>(b)});
+          });
+      same_tables = from_blocked.size() == from_plain.size();
+      for (size_t k = 0; same_tables && k < from_plain.size(); ++k) {
+        same_tables = from_blocked[k].magnitude == from_plain[k].magnitude &&
+                      from_blocked[k].a == from_plain[k].a &&
+                      from_blocked[k].b == from_plain[k].b;
       }
     }
   }
@@ -967,6 +976,164 @@ void TestBlockedIntegrals(const Integrals<Complex>& ints) {
          "checking the double excitations");
   std::printf("      %zu starting determinants, %zu selected\n", start.size(),
               selected_trusting.size());
+}
+
+// Integrals over spatial orbitals against the same Hamiltonian written out
+// over spin orbitals.
+void TestSpatialIntegrals() {
+  const int n = 7;  // spatial orbitals
+  const int num_elec = 6;
+  std::mt19937 rng(29);
+  std::uniform_real_distribution<double> uniform(-1.0, 1.0);
+  // Random integrals with the eightfold symmetry: (pq|rs) = sum_l L(l,pq)
+  // L(l,rs) with symmetric L(l), and a symmetric h.
+  std::vector<std::vector<double>> factors(2 * n, std::vector<double>(n * n));
+  for (std::vector<double>& factor : factors) {
+    for (int p = 0; p < n; ++p) {
+      for (int q = 0; q <= p; ++q) {
+        factor[p * n + q] = factor[q * n + p] = 0.4 * uniform(rng);
+      }
+    }
+  }
+  std::vector<double> h(n * n);
+  for (int p = 0; p < n; ++p) {
+    for (int q = 0; q <= p; ++q) h[p * n + q] = h[q * n + p] = uniform(rng);
+  }
+  auto eri = [&](int p, int q, int r, int s) {
+    double value = 0.0;
+    for (const std::vector<double>& factor : factors) {
+      value += factor[p * n + q] * factor[r * n + s];
+    }
+    return value;
+  };
+
+  Integrals<double> spatial = Integrals<double>::Spatial(n, {});
+  for (int p = 0; p < n; ++p) {
+    for (int q = 0; q < n; ++q) {
+      spatial.SetSpatialOneBody(p, q, h[p * n + q]);
+      for (int r = 0; r < n; ++r) {
+        for (int s = 0; s < n; ++s) {
+          spatial.SetSpatialTwoBody(p, q, r, s, eri(p, q, r, s));
+        }
+      }
+    }
+  }
+  // Spin orbital 2P + sigma; <pq||rs> = (pr|qs) - (ps|qr) with the spins of
+  // each charge distribution equal.
+  const int m = 2 * n;
+  Integrals<double> spinor(m, spatial.symmetry());
+  auto chemist = [&](int p, int q, int r, int s) {
+    return (p % 2 == q % 2 && r % 2 == s % 2) ? eri(p / 2, q / 2, r / 2, s / 2)
+                                              : 0.0;
+  };
+  for (int p = 0; p < m; ++p) {
+    for (int q = 0; q < m; ++q) {
+      spinor.SetOneBody(p, q, p % 2 == q % 2 ? h[(p / 2) * n + q / 2] : 0.0);
+    }
+  }
+  for (int q = 1; q < m; ++q) {
+    for (int p = 0; p < q; ++p) {
+      for (int s = 1; s < m; ++s) {
+        for (int r = 0; r < s; ++r) {
+          spinor.SetAntisymOrdered(p, q, r, s,
+                                   chemist(p, r, q, s) - chemist(p, s, q, r));
+        }
+      }
+    }
+  }
+  for (Integrals<double>* each : {&spatial, &spinor}) {
+    each->set_num_elec(num_elec);
+    each->Finalize();
+  }
+  std::printf(
+      "      %zu numbers over spatial orbitals, %zu over spin "
+      "orbitals in spin blocks\n",
+      spatial.num_stored(), spinor.num_stored());
+  Expect(spinor.max_forbidden() == 0.0 &&
+             4 * spatial.num_stored() < spinor.num_stored(),
+         "spatial integrals take less than a quarter of the spin-orbital ones");
+
+  const std::vector<Det<1>> dets =
+      ToDets<1>(RandomOccupations(m, num_elec, 400, 3, 31), 0);
+  double max_diff = 0.0;
+  double max_element = 0.0;
+  for (size_t i = 0; i < dets.size(); ++i) {
+    max_diff = std::max(max_diff, std::abs(DiagonalEnergy(dets[i], spatial) -
+                                           DiagonalEnergy(dets[i], spinor)));
+    for (size_t j = 0; j < i; ++j) {
+      const double element = Hij(dets[i], dets[j], spatial);
+      max_element = std::max(max_element, std::abs(element));
+      max_diff =
+          std::max(max_diff, std::abs(element - Hij(dets[i], dets[j], spinor)));
+    }
+  }
+  Expect(max_element > 1e-2 && max_diff < 1e-13,
+         "spatial integrals give the Hamiltonian elements of the spin-orbital "
+         "ones");
+
+  // The heat-bath lists hold the same excitations (ties may be ordered
+  // differently).
+  const HeatBath heat_bath_spatial(spatial, 1e-12);
+  const HeatBath heat_bath_spinor(spinor, 1e-12);
+  bool same_lists = true;
+  size_t num_listed = 0;
+  for (int j = 1; j < m; ++j) {
+    for (int i = 0; i < j; ++i) {
+      std::map<std::pair<int, int>, double> from_spatial, from_spinor;
+      bool decreasing = true;
+      double previous = 1e300;
+      heat_bath_spatial.ForEachDouble(
+          i, j, 0.0, [&](int a, int b, double magnitude) {
+            from_spatial[{a, b}] = magnitude;
+            decreasing = decreasing && magnitude <= previous;
+            previous = magnitude;
+          });
+      heat_bath_spinor.ForEachDouble(i, j, 0.0,
+                                     [&](int a, int b, double magnitude) {
+                                       from_spinor[{a, b}] = magnitude;
+                                     });
+      num_listed += from_spatial.size();
+      same_lists =
+          same_lists && decreasing && from_spatial.size() == from_spinor.size();
+      for (const auto& entry : from_spinor) {
+        const auto found = from_spatial.find(entry.first);
+        same_lists = same_lists && found != from_spatial.end() &&
+                     std::abs(found->second - entry.second) < 1e-13;
+      }
+    }
+  }
+  std::printf(
+      "      %zu excitations listed from %zu spatial table entries "
+      "(%zu spin-orbital ones)\n",
+      num_listed, heat_bath_spatial.num_entries(),
+      heat_bath_spinor.num_entries());
+  Expect(num_listed > 1000 && same_lists &&
+             heat_bath_spatial.num_entries() < heat_bath_spinor.num_entries(),
+         "spatial heat-bath tables list the excitations of the spin-orbital "
+         "ones from fewer entries");
+
+  // Selection from the closed-shell determinant.
+  std::vector<int> closed_shell(num_elec);
+  for (int i = 0; i < num_elec; ++i) closed_shell[i] = i;
+  const std::vector<Det<1>> start = ToDets<1>({closed_shell}, 0);
+  const std::vector<double> weights(1, 1.0);
+  LabelFilter filter(spatial.symmetry());
+  filter.set_doubles_conserved(true);
+  const std::vector<Det<1>> selected_spatial =
+      SelectNewDeterminants(MakeSpan(start), MakeSpan(start), MakeSpan(weights),
+                            1e-3, spatial, heat_bath_spatial, filter);
+  const std::vector<Det<1>> selected_spinor =
+      SelectNewDeterminants(MakeSpan(start), MakeSpan(start), MakeSpan(weights),
+                            1e-3, spinor, heat_bath_spinor, filter);
+  bool spin_conserved = true;
+  for (const Det<1>& det : selected_spatial) {
+    spin_conserved =
+        spin_conserved && DeterminantLabels(det, spatial.symmetry())[0] == 0;
+  }
+  Expect(selected_spatial.size() > 50 && spin_conserved &&
+             selected_spatial == selected_spinor,
+         "selection from spatial integrals equals that from spin-orbital "
+         "ones and conserves the spin projection");
 }
 
 // A real Hamiltonian treated with real numbers and with complex numbers.
@@ -1033,6 +1200,7 @@ int main(int argc, char** argv) {
     zshci::TestSecondOrderLimit(ints);
     zshci::TestRealScalar(ints);
     zshci::TestBlockedIntegrals(ints);
+    zshci::TestSpatialIntegrals();
     const int n = ints.num_orbs();
     const std::vector<zshci::LabelSet> no_symmetry = {
         {std::vector<int>(n, 0), 0}};

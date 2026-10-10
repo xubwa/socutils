@@ -69,6 +69,7 @@ Json ToJson(const Input& in) {
   j["mode"] = in.mode == Mode::kDiag ? "diag" : "select";
   j["integrals"] = in.integrals;
   j["symmetry_tolerance"] = in.symmetry_tolerance;
+  j["orbitals"] = in.spatial_orbitals ? "spatial" : "spinor";
   j["scalar"] = in.scalar == ScalarChoice::kAuto   ? "auto"
                 : in.scalar == ScalarChoice::kReal ? "real"
                                                    : "complex";
@@ -200,6 +201,15 @@ Input ParseInput(const std::string& text) {
     }
   }
 
+  std::string orbitals = "spinor";
+  top.Get("orbitals", &orbitals);
+  if (orbitals != "spinor" && orbitals != "spatial") {
+    top.Fail("orbitals", "must be \"spinor\" or \"spatial\"");
+  }
+  in.spatial_orbitals = orbitals == "spatial";
+  if (in.spatial_orbitals && in.scalar == ScalarChoice::kComplex) {
+    top.Fail("scalar", "integrals over spatial orbitals are real");
+  }
   top.Get("symmetry_tolerance", &in.symmetry_tolerance);
   if (in.symmetry_tolerance < 0.0) {
     top.Fail("symmetry_tolerance", "must not be negative");

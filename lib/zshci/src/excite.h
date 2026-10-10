@@ -245,13 +245,12 @@ void ForEachExcitation(const Det<W>& det, const std::vector<int>& occ,
     const int j = occ[n];
     for (size_t m = 0; m < n; ++m) {
       const int i = occ[m];
-      const HeatBath::Entry* const end = heat_bath.end(i, j);
-      for (const HeatBath::Entry* e = heat_bath.begin(i, j); e != end; ++e) {
-        if (e->magnitude < cutoff) break;
-        if (det.Occupied(e->a) || det.Occupied(e->b)) continue;
-        if (!view.Double(i, j, e->a, e->b)) continue;
-        sink->Double(i, j, e->a, e->b, e->magnitude);
-      }
+      heat_bath.ForEachDouble(i, j, cutoff,
+                              [&](int a, int b, double magnitude) {
+                                if (det.Occupied(a) || det.Occupied(b)) return;
+                                if (!view.Double(i, j, a, b)) return;
+                                sink->Double(i, j, a, b, magnitude);
+                              });
     }
   }
 }
