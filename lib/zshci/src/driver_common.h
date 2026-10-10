@@ -170,7 +170,8 @@ template <int W, typename S>
 void CheckHamiltonian(Span<Det<W>> dets, const SparseH<S>& h,
                       const Integrals<S>& ints, const ConnectOptions& options) {
   const CsrBlock<S> reference = BuildBlockBruteForce(dets, 0, ints, options);
-  if (!SameBlock(h.blocks()[0], reference, 0.0)) {
+  // The blocks of h may be one per thread; compare a single one.
+  if (!SameBlock(BuildBlock(dets, 0, ints, options), reference, 0.0)) {
     throw std::runtime_error(
         "check: the bucket search and the brute-force search disagree");
   }
@@ -298,6 +299,11 @@ inline void PrintConnectStats(const ConnectStats& stats) {
                   ? 100.0
                   : 100.0 * stats.connected_pairs / stats.tested_pairs,
               static_cast<unsigned long long>(stats.largest_bucket));
+  std::printf(
+      "connection search (root): %.2f s preparing, %.2f s counting, "
+      "%.2f s filling, %.2f s sorting rows\n",
+      stats.seconds_prepare, stats.seconds_count, stats.seconds_fill,
+      stats.seconds_sort);
 }
 
 // The excitation filter of the calculation: label conservation and, unless

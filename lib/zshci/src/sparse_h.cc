@@ -43,6 +43,12 @@ void SparseH<S>::AppendBlock(CsrBlock<S> block) {
   PartitionRows();
 }
 
+template <typename S>
+void SparseH<S>::AppendBlocks(std::vector<CsrBlock<S>> blocks) {
+  for (CsrBlock<S>& block : blocks) blocks_.push_back(std::move(block));
+  PartitionRows();
+}
+
 // Splits the rows into one contiguous segment per thread such that every
 // segment touches about the same number of stored elements. An element (i, j)
 // counts for both i and j, which is the work Multiply does for a segment.
@@ -89,15 +95,17 @@ template <typename S>
 void SparseH<S>::BuildSplitTable(const CsrBlock<S>& block,
                                  SplitTable* table) const {
   const int num_segments = static_cast<int>(segment_.size()) - 1;
-  // The segments that contain the first and the last possible column.
+  // The segments that can contain a column: from the first determinant to
+  // the one before the last row.
   auto segment_of = [&](size_t index) {
     int s = 0;
     while (s + 1 < num_segments && segment_[s + 1] <= index) ++s;
     return s;
   };
-  table->first_segment = segment_of(block.first_col);
+  const size_t stored_rows = block.num_stored_rows();
+  table->first_segment = 0;
   table->last_segment =
-      segment_of(block.dim == 0 ? block.first_col : block.dim - 1);
+      stored_rows == 0 ? 0 : segment_of(block.row[stored_rows - 1]);
   const size_t num_boundaries = table->num_boundaries();
   table->offset = RawArray<uint32_t>(block.num_stored_rows() * num_boundaries);
   if (num_boundaries == 0) return;
@@ -142,7 +150,7 @@ void SparseH<S>::Multiply(const S* x, S* y) const {
       const size_t last_row =
           std::lower_bound(rows + first_row, rows + num_rows, end) - rows;
 
-      // Rows owned by this thread: y_i += H(i,j) x_j.
+      // Rows owned by this thread: y_j += H(j,i) x_i.
       for (size_t r = first_row; r < last_row; ++r) {
         S sum(0.0);
         for (uint64_t k = block.row_ptr[r]; k < block.row_ptr[r + 1]; ++k) {
@@ -150,12 +158,14 @@ void SparseH<S>::Multiply(const S* x, S* y) const {
         }
         y[rows[r]] += sum;
       }
-      // Columns owned by this thread: y_j += conj(H(i,j)) x_i. Since j > i,
-      // only rows below `end` can hold such a column.
+      // Columns owned by this thread: y_i += conj(H(j,i)) x_j. Since i < j,
+      // only rows above `begin` can hold such a column.
       if (t < split.first_segment || t > split.last_segment) continue;
       const size_t num_boundaries = split.num_boundaries();
       const int local = t - split.first_segment;
-      for (size_t r = 0; r < last_row; ++r) {
+      const size_t first_candidate =
+          std::upper_bound(rows, rows + num_rows, begin) - rows;
+      for (size_t r = first_candidate; r < num_rows; ++r) {
         const uint32_t* offsets = split.offset.data() + r * num_boundaries;
         const uint64_t first =
             local == 0 ? block.row_ptr[r]

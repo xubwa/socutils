@@ -80,21 +80,19 @@ class SpinStringTables {
   size_t num_strings(int spin) const { return det_start_[spin].size() - 1; }
   size_t num_single_links(int spin) const { return single_list_[spin].size(); }
 
-  // Calls visit(i, j) once for every connected pair i < j with
-  // j >= first_new that this rank is responsible for (those whose j it
-  // owns). `visit` runs concurrently from several threads. The counters are
-  // incremented by the number of determinant pairs compared and by the
-  // number of pairs reported.
+  // Whether this rank is responsible for the row of determinant j.
+  bool Owns(size_t j) const {
+    return static_cast<long>(j) % num_ranks_ == rank_;
+  }
+
+  // Calls visit(i) once for every determinant i < j connected to
+  // determinant j. Adds to *tested_pairs the number of determinants that
+  // were compared with j bit by bit.
   template <class Visitor>
-  void ForEachConnectedPair(size_t first_new, const Visitor& visit,
-                            uint64_t* tested_pairs,
-                            uint64_t* connected_pairs) const {
-    const long num_dets = static_cast<long>(dets_.size());
+  void ForEachConnected(size_t j, const Visitor& visit,
+                        uint64_t* tested_pairs) const {
     uint64_t tested = 0;
-    uint64_t connected = 0;
-#pragma omp parallel for schedule(dynamic, 64) reduction(+ : tested, connected)
-    for (long j = static_cast<long>(first_new); j < num_dets; ++j) {
-      if (j % num_ranks_ != rank_) continue;
+    {
       const uint32_t self = static_cast<uint32_t>(j);
       for (int spin = 0; spin < 2; ++spin) {
         const int other = 1 - spin;
@@ -119,10 +117,7 @@ class SpinStringTables {
               std::lower_bound(with_partner, with_partner_end, *s);
           if (found == with_partner_end || *found != *s) continue;
           const uint32_t i = with_partner_dets[found - with_partner];
-          if (i < self) {
-            ++connected;
-            visit(i, self);
-          }
+          if (i < self) visit(i);
         }
 
         // A double excitation of this string: compare with the determinants
@@ -132,10 +127,7 @@ class SpinStringTables {
           const uint32_t i = *d;
           if (i >= self) continue;
           ++tested;
-          if (dets_[i].NumDifferentBits(dets_[j]) == 4) {
-            ++connected;
-            visit(i, self);
-          }
+          if (dets_[i].NumDifferentBits(dets_[j]) == 4) visit(i);
         }
 
         // A single excitation of each string; counted from the alpha side.
@@ -161,10 +153,7 @@ class SpinStringTables {
               ++t;
             } else {
               const uint32_t i = with_dets[with - with_begin];
-              if (i < self) {
-                ++connected;
-                visit(i, self);
-              }
+              if (i < self) visit(i);
               ++with;
               ++t;
             }
@@ -173,7 +162,6 @@ class SpinStringTables {
       }
     }
     *tested_pairs += tested;
-    *connected_pairs += connected;
   }
 
  private:

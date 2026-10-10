@@ -176,8 +176,8 @@ void TestHamiltonian(const Integrals<Complex>& ints) {
         BuildBlock(MakeSpan(dets1), first_new, ints, keep_all);
     bool ok = old_block.num_elements() + new_block.num_elements() ==
               block1.num_elements();
-    for (size_t k = 0; k < new_block.col.size() && ok; ++k) {
-      ok = new_block.col[k] >= first_new;
+    for (size_t r = 0; r < new_block.row.size() && ok; ++r) {
+      ok = new_block.row[r] >= first_new;
     }
     Expect(ok, "incremental blocks partition the elements of the full block");
   }

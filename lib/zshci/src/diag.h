@@ -64,7 +64,7 @@ void RunDiag(const Input& input, const Integrals<S>& ints, const Comm& comm) {
   AppendDiagonal(dets, 0, ints, comm, &h);
   const ConnectOptions connect = MakeConnectOptions(input);
   ConnectStats stats;
-  h.AppendBlock(BuildBlock(dets, 0, ints, connect, comm, &stats));
+  h.AppendBlocks(BuildBlocks(dets, 0, ints, connect, comm, &stats));
   PrintConnectStats(stats);
   std::printf("Hamiltonian: %zu stored elements (upper triangle) on the "
               "root, %.2f s\n",

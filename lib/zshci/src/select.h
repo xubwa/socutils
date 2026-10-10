@@ -191,8 +191,8 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
   SparseH<S> h;
   h.set_apply_diagonal(comm.is_root());
   AppendDiagonal(shared_dets.span(), 0, ints, comm, &h);
-  h.AppendBlock(
-      BuildBlock(shared_dets.span(), 0, ints, connect, comm, &stats));
+  h.AppendBlocks(
+      BuildBlocks(shared_dets.span(), 0, ints, connect, comm, &stats));
 
   // The eigenvectors live on the root; the other ranks see only what is
   // shared from them (the selection weights, and at the end the vectors).
@@ -246,8 +246,8 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
       }
       shared_dets = SharedArray<Det<W>>::FromRoot(root_dets, comm);
       AppendDiagonal(shared_dets.span(), old_size, ints, comm, &h);
-      h.AppendBlock(BuildBlock(shared_dets.span(), old_size, ints, connect,
-                               comm, &stats));
+      h.AppendBlocks(BuildBlocks(shared_dets.span(), old_size, ints, connect,
+                                 comm, &stats));
     }
     fresh = std::vector<Det<W>>();
 

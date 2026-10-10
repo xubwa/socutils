@@ -69,6 +69,13 @@ struct ConnectStats {
   uint64_t tested_pairs = 0;
   uint64_t connected_pairs = 0;
   uint64_t largest_bucket = 0;
+  // Seconds spent preparing the search (tables of the spin-string method),
+  // counting the elements of every row, filling them in, and sorting the
+  // rows.
+  double seconds_prepare = 0.0;
+  double seconds_count = 0.0;
+  double seconds_fill = 0.0;
+  double seconds_sort = 0.0;
 };
 
 namespace internal {
@@ -443,25 +450,27 @@ CsrBlock<S> BuildBlockFromPairs(Span<Det<W>> dets, size_t first_new,
   // With a threshold the element has to be evaluated to know whether it is
   // stored, so the counting pass evaluates it too.
   auto stored = [&](DetIndex i, DetIndex j) {
-    return keep_all || std::abs(Hij(dets[i], dets[j], ints)) > threshold;
+    return keep_all || std::abs(Hij(dets[j], dets[i], ints)) > threshold;
   };
 
   // Pass 1: number of stored elements per row. This array and the cursors
   // below are the only ones of length n; they are released before returning.
   std::vector<uint64_t> count(n, 0);
+  double time = omp_get_wtime();
   for_each_pair(
       [&](DetIndex i, DetIndex j) {
         if (!stored(i, j)) return;
 #pragma omp atomic
-        ++count[i];
+        ++count[j];
       },
       stats);
+  if (stats != nullptr) stats->seconds_count += omp_get_wtime() - time;
 
   // The rows that hold elements, and where each one starts. `count` turns
   // into the write cursor of every row.
   CsrBlock<S> block;
   block.dim = n;
-  block.first_col = first_new;
+  block.first_row = first_new;
   size_t num_stored_rows = 0;
   for (size_t i = 0; i < n; ++i) num_stored_rows += count[i] > 0 ? 1 : 0;
   block.row = RawArray<DetIndex>(num_stored_rows);
@@ -485,19 +494,22 @@ CsrBlock<S> BuildBlockFromPairs(Span<Det<W>> dets, size_t first_new,
   block.val = RawArray<S>(block.row_ptr[num_stored_rows]);
 
   // Pass 2: fill. Each row has its own cursor, advanced atomically.
+  time = omp_get_wtime();
   for_each_pair(
       [&](DetIndex i, DetIndex j) {
-        const S value = Hij(dets[i], dets[j], ints);
+        const S value = Hij(dets[j], dets[i], ints);
         if (!keep_all && std::abs(value) <= threshold) return;
         uint64_t slot;
 #pragma omp atomic capture
-        slot = cursor[i]++;
-        block.col[slot] = j;
+        slot = cursor[j]++;
+        block.col[slot] = i;
         block.val[slot] = value;
       },
       nullptr);
+  if (stats != nullptr) stats->seconds_fill += omp_get_wtime() - time;
 
   // Sort every row by column.
+  time = omp_get_wtime();
 #pragma omp parallel
   {
     std::vector<std::pair<DetIndex, S>> row;
@@ -520,7 +532,129 @@ CsrBlock<S> BuildBlockFromPairs(Span<Det<W>> dets, size_t first_new,
       }
     }
   }
+  if (stats != nullptr) stats->seconds_sort += omp_get_wtime() - time;
   return block;
+}
+
+// Builds the rows of the determinants this rank owns from the spin-string
+// tables, in one sweep: each thread finds the connections of a determinant,
+// evaluates the elements and appends the finished row to a block of its
+// own. Returns the blocks that hold elements.
+template <int W, typename S>
+std::vector<CsrBlock<S>> BuildSpinBlocks(Span<Det<W>> dets, size_t first_new,
+                                         const Integrals<S>& ints,
+                                         double threshold,
+                                         const SpinStringTables<W>& tables,
+                                         ConnectStats* stats) {
+  const size_t n = dets.size();
+  const bool keep_all = threshold < 0.0;
+  const double time = omp_get_wtime();
+  std::vector<CsrBlock<S>> blocks(omp_get_max_threads());
+  uint64_t tested = 0;
+  uint64_t connected = 0;
+#pragma omp parallel reduction(+ : tested, connected)
+  {
+    std::vector<DetIndex> rows;
+    std::vector<uint64_t> row_ptr(1, 0);
+    std::vector<DetIndex> cols;
+    std::vector<S> vals;
+    std::vector<std::pair<DetIndex, S>> row;
+#pragma omp for schedule(dynamic, 64) nowait
+    for (long j = static_cast<long>(first_new); j < static_cast<long>(n); ++j) {
+      if (!tables.Owns(j)) continue;
+      row.clear();
+      tables.ForEachConnected(
+          j,
+          [&](DetIndex i) {
+            ++connected;
+            const S value = Hij(dets[j], dets[i], ints);
+            if (keep_all || std::abs(value) > threshold) {
+              row.emplace_back(i, value);
+            }
+          },
+          &tested);
+      if (row.empty()) continue;
+      std::sort(
+          row.begin(), row.end(),
+          [](const std::pair<DetIndex, S>& a, const std::pair<DetIndex, S>& b) {
+            return a.first < b.first;
+          });
+      rows.push_back(static_cast<DetIndex>(j));
+      for (const std::pair<DetIndex, S>& element : row) {
+        cols.push_back(element.first);
+        vals.push_back(element.second);
+      }
+      row_ptr.push_back(cols.size());
+    }
+    // The schedule hands every thread its determinants in increasing order,
+    // so the rows are sorted. The arrays are copied by the thread that will
+    // mostly read them.
+    CsrBlock<S>& block = blocks[omp_get_thread_num()];
+    block.dim = n;
+    block.first_row = first_new;
+    block.row = RawArray<DetIndex>(rows.size());
+    std::copy(rows.begin(), rows.end(), block.row.begin());
+    rows = std::vector<DetIndex>();
+    block.row_ptr = std::move(row_ptr);
+    block.col = RawArray<DetIndex>(cols.size());
+    std::copy(cols.begin(), cols.end(), block.col.begin());
+    cols = std::vector<DetIndex>();
+    block.val = RawArray<S>(vals.size());
+    std::copy(vals.begin(), vals.end(), block.val.begin());
+  }
+  std::vector<CsrBlock<S>> filled;
+  for (CsrBlock<S>& block : blocks) {
+    if (block.num_elements() > 0) filled.push_back(std::move(block));
+  }
+  if (stats != nullptr) {
+    // Every reported pair counts as tested, as with the other methods.
+    stats->tested_pairs += tested + connected;
+    stats->connected_pairs += connected;
+    stats->seconds_fill += omp_get_wtime() - time;
+  }
+  return filled;
+}
+
+// One block with the rows of several, which must not share a row.
+template <typename S>
+CsrBlock<S> MergeBlocks(std::vector<CsrBlock<S>> blocks, size_t dim,
+                        size_t first_row) {
+  struct Source {
+    DetIndex row;
+    uint32_t block;
+    size_t index;
+  };
+  std::vector<Source> sources;
+  size_t num_elements = 0;
+  for (size_t b = 0; b < blocks.size(); ++b) {
+    num_elements += blocks[b].num_elements();
+    for (size_t r = 0; r < blocks[b].num_stored_rows(); ++r) {
+      sources.push_back({blocks[b].row[r], static_cast<uint32_t>(b), r});
+    }
+  }
+  std::sort(sources.begin(), sources.end(),
+            [](const Source& a, const Source& b) { return a.row < b.row; });
+  CsrBlock<S> merged;
+  merged.dim = dim;
+  merged.first_row = first_row;
+  merged.row = RawArray<DetIndex>(sources.size());
+  merged.row_ptr.assign(1, 0);
+  merged.col = RawArray<DetIndex>(num_elements);
+  merged.val = RawArray<S>(num_elements);
+  uint64_t offset = 0;
+  for (size_t r = 0; r < sources.size(); ++r) {
+    const CsrBlock<S>& from = blocks[sources[r].block];
+    const uint64_t begin = from.row_ptr[sources[r].index];
+    const uint64_t end = from.row_ptr[sources[r].index + 1];
+    merged.row[r] = sources[r].row;
+    std::copy(from.col.begin() + begin, from.col.begin() + end,
+              merged.col.begin() + offset);
+    std::copy(from.val.begin() + begin, from.val.begin() + end,
+              merged.val.begin() + offset);
+    offset += end - begin;
+    merged.row_ptr.push_back(offset);
+  }
+  return merged;
 }
 
 // Builds the block from the pairs a bucket finder reports.
@@ -553,48 +687,60 @@ CsrBlock<S> BuildBlockWith(Span<Det<W>> dets, size_t first_new,
 
 }  // namespace internal
 
-// Builds the block of H(i, j), i < j, with j >= first_new, for the
+// Builds the blocks of H(j, i), i < j, with j >= first_new, for the
 // determinants `dets`. Determinants before `first_new` are assumed to be
-// connected among themselves by earlier blocks.
+// connected among themselves by earlier blocks. The spin-string method
+// returns one block per thread, the others a single one.
 //
 // With several ranks, each rank handles its share of the keys (strings), of
 // the covers (segments) or of the determinants (spin strings) and returns
-// the elements found there. The blocks
-// of all ranks together hold each element once; no communication is needed.
-// `stats`, if given, is updated with what this rank's search did.
+// the elements found there. The blocks of all ranks together hold each
+// element once; no communication is needed. `stats`, if given, is updated
+// with what this rank's search did.
 template <int W, typename S>
-CsrBlock<S> BuildBlock(Span<Det<W>> dets, size_t first_new,
-                       const Integrals<S>& ints, const ConnectOptions& options,
-                       const Comm& comm = Comm(),
-                       ConnectStats* stats = nullptr) {
+std::vector<CsrBlock<S>> BuildBlocks(Span<Det<W>> dets, size_t first_new,
+                                     const Integrals<S>& ints,
+                                     const ConnectOptions& options,
+                                     const Comm& comm = Comm(),
+                                     ConnectStats* stats = nullptr) {
+  if (dets.size() > static_cast<size_t>(UINT32_MAX)) {
+    throw std::length_error("too many determinants for a 32-bit index");
+  }
   if (options.method == ConnectMethod::kSpinStrings) {
     if (!ints.is_spatial()) {
       throw std::invalid_argument(
           "the spin-string connection search needs spatial orbitals");
     }
+    const double time = omp_get_wtime();
     const internal::SpinStringTables<W> tables(dets, comm);
-    auto for_each_pair = [&](const auto& visit, ConnectStats* pass_stats) {
-      uint64_t tested = 0;
-      uint64_t connected = 0;
-      tables.ForEachConnectedPair(first_new, visit, &tested, &connected);
-      if (pass_stats != nullptr) {
-        // Every reported pair counts as tested, as with the other methods.
-        pass_stats->tested_pairs += tested + connected;
-        pass_stats->connected_pairs += connected;
-      }
-    };
-    return internal::BuildBlockFromPairs(
-        dets, first_new, ints, options.threshold, for_each_pair, stats);
+    if (stats != nullptr) stats->seconds_prepare += omp_get_wtime() - time;
+    return internal::BuildSpinBlocks(dets, first_new, ints, options.threshold,
+                                     tables, stats);
   }
+  std::vector<CsrBlock<S>> blocks;
   if (options.method == ConnectMethod::kSegments) {
     const internal::SegmentFinder<W> finder(dets, ints.num_orbs(),
                                             options.num_segments, comm);
-    return internal::BuildBlockWith(dets, first_new, ints, options.threshold,
-                                    finder, stats);
+    blocks.push_back(internal::BuildBlockWith(
+        dets, first_new, ints, options.threshold, finder, stats));
+  } else {
+    const internal::StringFinder<W> finder(options.num_batches, comm);
+    blocks.push_back(internal::BuildBlockWith(
+        dets, first_new, ints, options.threshold, finder, stats));
   }
-  const internal::StringFinder<W> finder(options.num_batches, comm);
-  return internal::BuildBlockWith(dets, first_new, ints, options.threshold,
-                                  finder, stats);
+  return blocks;
+}
+
+// The same as a single block.
+template <int W, typename S>
+CsrBlock<S> BuildBlock(Span<Det<W>> dets, size_t first_new,
+                       const Integrals<S>& ints, const ConnectOptions& options,
+                       const Comm& comm = Comm(),
+                       ConnectStats* stats = nullptr) {
+  std::vector<CsrBlock<S>> blocks =
+      BuildBlocks(dets, first_new, ints, options, comm, stats);
+  if (blocks.size() == 1) return std::move(blocks[0]);
+  return internal::MergeBlocks(std::move(blocks), dets.size(), first_new);
 }
 
 // Reference implementation: tests every pair of determinants. Quadratic; used
@@ -606,24 +752,24 @@ CsrBlock<S> BuildBlockBruteForce(Span<Det<W>> dets, size_t first_new,
   const size_t n = dets.size();
   CsrBlock<S> block;
   block.dim = n;
-  block.first_col = first_new;
+  block.first_row = first_new;
   std::vector<DetIndex> row;
   std::vector<DetIndex> col;
   std::vector<S> val;
   block.row_ptr.assign(1, 0);
-  for (size_t i = 0; i < n; ++i) {
-    for (size_t j = std::max(i + 1, first_new); j < n; ++j) {
+  for (size_t j = first_new; j < n; ++j) {
+    for (size_t i = 0; i < j; ++i) {
       const int num_bits = dets[i].NumDifferentBits(dets[j]);
       if (num_bits != 2 && num_bits != 4) continue;
-      const S value = Hij(dets[i], dets[j], ints);
+      const S value = Hij(dets[j], dets[i], ints);
       if (options.threshold >= 0.0 && std::abs(value) <= options.threshold) {
         continue;
       }
-      col.push_back(static_cast<DetIndex>(j));
+      col.push_back(static_cast<DetIndex>(i));
       val.push_back(value);
     }
     if (col.size() > block.row_ptr.back()) {
-      row.push_back(static_cast<DetIndex>(i));
+      row.push_back(static_cast<DetIndex>(j));
       block.row_ptr.push_back(col.size());
     }
   }

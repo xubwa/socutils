@@ -1,9 +1,10 @@
 // Sparse Hermitian Hamiltonian in the determinant basis.
 //
-// Only the strict upper triangle is stored, so the matrix costs half the
-// memory of a full CSR. The matrix is a list of blocks because a selected-CI
-// calculation grows the determinant list: each block holds the elements whose
-// column lies in the range of determinants added in one iteration.
+// Only one triangle is stored, so the matrix costs half the memory of a full
+// CSR: for every determinant, its elements with the determinants before it. The
+// matrix is a list of blocks because a selected-CI calculation grows the
+// determinant list: each block holds the elements whose column lies in the
+// range of determinants added in one iteration.
 
 #ifndef ZSHCI_SRC_SPARSE_H_H_
 #define ZSHCI_SRC_SPARSE_H_H_
@@ -31,15 +32,18 @@ class LinearOperator {
 // Index of a determinant in the variational space.
 using DetIndex = uint32_t;
 
-// Compressed storage of elements H(i, j) = <D_i|H|D_j> with i < j < dim and
-// j >= first_col. Only the rows that hold elements are listed, so a rank
+// Compressed storage of elements H(j, i) = <D_j|H|D_i> with i < j < dim and
+// j >= first_row: the rows are the determinants added in one iteration, the
+// columns those before each of them. A determinant's whole row is thus known
+// as soon as its connections are, and one thread can write it down by
+// itself. Only the rows that hold elements are listed, so a rank or a thread
 // that holds a small part of the matrix does not pay for all its rows:
 // row[r] is the r-th such row, in increasing order, and its elements are
 // col/val[row_ptr[r] .. row_ptr[r + 1]), sorted by column.
 template <typename S>
 struct CsrBlock {
   size_t dim = 0;
-  size_t first_col = 0;
+  size_t first_row = 0;
   RawArray<DetIndex> row;
   std::vector<uint64_t> row_ptr;  // row.size() + 1 entries
   RawArray<DetIndex> col;
@@ -70,12 +74,13 @@ class SparseH : public LinearOperator<S> {
   // the ranks that do not apply the diagonal.
   void Grow(size_t dim) { dim_ = dim; }
 
-  // Adds a block and re-partitions the rows among the threads.
+  // Adds a block, or several, and re-partitions the rows among the threads.
   void AppendBlock(CsrBlock<S> block);
+  void AppendBlocks(std::vector<CsrBlock<S>> blocks);
 
   // y = H x. Each thread owns a contiguous range of y and is the only writer
-  // to it: an element H(i, j) is read once by the owner of i, for
-  // y_i += H(i,j) x_j, and once by the owner of j, for y_j += conj(H(i,j)) x_i.
+  // to it: an element H(j, i) is read once by the owner of j, for
+  // y_j += H(j,i) x_i, and once by the owner of i, for y_i += conj(H(j,i)) x_j.
   // No thread-private copy of y is made. For the second kind of access every
   // block keeps, per row, the positions where the columns pass from one
   // thread's range to the next.
