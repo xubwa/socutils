@@ -22,6 +22,9 @@
 // bit count tells which pairs are connected. One pass per choice, one entry
 // per determinant per pass: the memory does not depend on the electron
 // number. The price is pairs in a bucket that turn out not to be connected.
+//
+// A third method, for spin orbitals with a conserved spin projection, works
+// from tables of alpha and beta strings instead (connect_spin.h).
 
 #ifndef ZSHCI_SRC_CONNECT_H_
 #define ZSHCI_SRC_CONNECT_H_
@@ -35,6 +38,7 @@
 #include <vector>
 
 #include "comm.h"
+#include "connect_spin.h"
 #include "det.h"
 #include "hamiltonian.h"
 #include "integrals.h"
@@ -43,7 +47,7 @@
 
 namespace zshci {
 
-enum class ConnectMethod { kStrings, kSegments };
+enum class ConnectMethod { kStrings, kSegments, kSpinStrings };
 
 struct ConnectOptions {
   // Elements with |H(i,j)| <= threshold are not stored. A negative value
@@ -421,16 +425,19 @@ void ForEachConnectedPair(Span<Det<W>> dets, size_t first_new,
   }
 }
 
-// Builds the block from the pairs the finder reports.
-template <int W, class Finder, typename S>
-CsrBlock<S> BuildBlockWith(Span<Det<W>> dets, size_t first_new,
-                           const Integrals<S>& ints, double threshold,
-                           const Finder& finder, ConnectStats* stats) {
+// Builds the block from the connected pairs. for_each_pair(visit, stats)
+// must call visit(i, j) once for every connected pair i < j with
+// j >= first_new, possibly from several threads at once; it is called twice,
+// the second time with stats == nullptr.
+template <int W, typename S, class ForEachPair>
+CsrBlock<S> BuildBlockFromPairs(Span<Det<W>> dets, size_t first_new,
+                                const Integrals<S>& ints, double threshold,
+                                const ForEachPair& for_each_pair,
+                                ConnectStats* stats) {
   const size_t n = dets.size();
   if (n > static_cast<size_t>(UINT32_MAX)) {
     throw std::length_error("too many determinants for a 32-bit index");
   }
-  const int num_passes = finder.num_passes();
   const bool keep_all = threshold < 0.0;
 
   // With a threshold the element has to be evaluated to know whether it is
@@ -442,19 +449,13 @@ CsrBlock<S> BuildBlockWith(Span<Det<W>> dets, size_t first_new,
   // Pass 1: number of stored elements per row. This array and the cursors
   // below are the only ones of length n; they are released before returning.
   std::vector<uint64_t> count(n, 0);
-  Partitioned<BucketEntry> cached;
-  for (int pass = 0; pass < num_passes; ++pass) {
-    Partitioned<BucketEntry> entries =
-        MakeEntries(dets, first_new, finder, pass);
-    ForEachConnectedPair(dets, first_new, entries, finder, pass,
-                         [&](DetIndex i, DetIndex j) {
-                           if (!stored(i, j)) return;
+  for_each_pair(
+      [&](DetIndex i, DetIndex j) {
+        if (!stored(i, j)) return;
 #pragma omp atomic
-                           ++count[i];
-                         },
-                         stats);
-    if (num_passes == 1) cached = std::move(entries);
-  }
+        ++count[i];
+      },
+      stats);
 
   // The rows that hold elements, and where each one starts. `count` turns
   // into the write cursor of every row.
@@ -484,23 +485,17 @@ CsrBlock<S> BuildBlockWith(Span<Det<W>> dets, size_t first_new,
   block.val = RawArray<S>(block.row_ptr[num_stored_rows]);
 
   // Pass 2: fill. Each row has its own cursor, advanced atomically.
-  for (int pass = 0; pass < num_passes; ++pass) {
-    const Partitioned<BucketEntry> entries =
-        num_passes == 1 ? std::move(cached)
-                        : MakeEntries(dets, first_new, finder, pass);
-    ForEachConnectedPair(dets, first_new, entries, finder, pass,
-                         [&](DetIndex i, DetIndex j) {
-                           const S value = Hij(dets[i], dets[j], ints);
-                           if (!keep_all && std::abs(value) <= threshold) {
-                             return;
-                           }
-                           uint64_t slot;
+  for_each_pair(
+      [&](DetIndex i, DetIndex j) {
+        const S value = Hij(dets[i], dets[j], ints);
+        if (!keep_all && std::abs(value) <= threshold) return;
+        uint64_t slot;
 #pragma omp atomic capture
-                           slot = cursor[i]++;
-                           block.col[slot] = j;
-                           block.val[slot] = value;
-                         });
-  }
+        slot = cursor[i]++;
+        block.col[slot] = j;
+        block.val[slot] = value;
+      },
+      nullptr);
 
   // Sort every row by column.
 #pragma omp parallel
@@ -528,14 +523,43 @@ CsrBlock<S> BuildBlockWith(Span<Det<W>> dets, size_t first_new,
   return block;
 }
 
+// Builds the block from the pairs a bucket finder reports.
+template <int W, class Finder, typename S>
+CsrBlock<S> BuildBlockWith(Span<Det<W>> dets, size_t first_new,
+                           const Integrals<S>& ints, double threshold,
+                           const Finder& finder, ConnectStats* stats) {
+  const int num_passes = finder.num_passes();
+  // A single pass keeps its entries for the second round.
+  Partitioned<BucketEntry> cached;
+  bool have_cached = false;
+  auto for_each_pair = [&](const auto& visit, ConnectStats* pass_stats) {
+    for (int pass = 0; pass < num_passes; ++pass) {
+      if (num_passes == 1) {
+        if (!have_cached) cached = MakeEntries(dets, first_new, finder, pass);
+        have_cached = true;
+        ForEachConnectedPair(dets, first_new, cached, finder, pass, visit,
+                             pass_stats);
+      } else {
+        const Partitioned<BucketEntry> entries =
+            MakeEntries(dets, first_new, finder, pass);
+        ForEachConnectedPair(dets, first_new, entries, finder, pass, visit,
+                             pass_stats);
+      }
+    }
+  };
+  return BuildBlockFromPairs(dets, first_new, ints, threshold, for_each_pair,
+                             stats);
+}
+
 }  // namespace internal
 
 // Builds the block of H(i, j), i < j, with j >= first_new, for the
 // determinants `dets`. Determinants before `first_new` are assumed to be
 // connected among themselves by earlier blocks.
 //
-// With several ranks, each rank handles its share of the keys (strings) or
-// of the covers (segments) and returns the elements found there. The blocks
+// With several ranks, each rank handles its share of the keys (strings), of
+// the covers (segments) or of the determinants (spin strings) and returns
+// the elements found there. The blocks
 // of all ranks together hold each element once; no communication is needed.
 // `stats`, if given, is updated with what this rank's search did.
 template <int W, typename S>
@@ -543,6 +567,25 @@ CsrBlock<S> BuildBlock(Span<Det<W>> dets, size_t first_new,
                        const Integrals<S>& ints, const ConnectOptions& options,
                        const Comm& comm = Comm(),
                        ConnectStats* stats = nullptr) {
+  if (options.method == ConnectMethod::kSpinStrings) {
+    if (!ints.is_spatial()) {
+      throw std::invalid_argument(
+          "the spin-string connection search needs spatial orbitals");
+    }
+    const internal::SpinStringTables<W> tables(dets, comm);
+    auto for_each_pair = [&](const auto& visit, ConnectStats* pass_stats) {
+      uint64_t tested = 0;
+      uint64_t connected = 0;
+      tables.ForEachConnectedPair(first_new, visit, &tested, &connected);
+      if (pass_stats != nullptr) {
+        // Every reported pair counts as tested, as with the other methods.
+        pass_stats->tested_pairs += tested + connected;
+        pass_stats->connected_pairs += connected;
+      }
+    };
+    return internal::BuildBlockFromPairs(
+        dets, first_new, ints, options.threshold, for_each_pair, stats);
+  }
   if (options.method == ConnectMethod::kSegments) {
     const internal::SegmentFinder<W> finder(dets, ints.num_orbs(),
                                             options.num_segments, comm);

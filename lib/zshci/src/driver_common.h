@@ -280,8 +280,9 @@ SharedArray<Det<W>> ShareSorted(Span<Det<W>> dets, const Comm& comm) {
 inline ConnectOptions MakeConnectOptions(const Input& input) {
   ConnectOptions options;
   options.threshold = input.hij_threshold;
-  options.method = input.connect_by_segments ? ConnectMethod::kSegments
-                                             : ConnectMethod::kStrings;
+  options.method = input.connect_by_spin_strings ? ConnectMethod::kSpinStrings
+                   : input.connect_by_segments   ? ConnectMethod::kSegments
+                                                 : ConnectMethod::kStrings;
   options.num_segments = input.connect_segments;
   options.num_batches = input.connect_batches;
   return options;

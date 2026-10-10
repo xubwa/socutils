@@ -72,6 +72,8 @@ are stored as such, `n^4/8` numbers for `n` orbitals. The determinants are over
 the spin orbitals `2P` (alpha) and `2P+1` (beta) of spatial orbital `P`, the
 spin projection is conserved automatically, and ORBSYM is read as the
 irreducible representations of D2h or a subgroup in Molpro's numbering.
+Connected determinants are then found from tables of alpha and beta strings
+(`src/connect_spin.h`), as in the non-relativistic Dice program.
 
 `"symmetry"` lists the conserved quantities, each an integer label per spinor
 and a modulus (0: none): `{"labels": [...], "mod": 4}` is the label of a

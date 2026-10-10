@@ -155,7 +155,10 @@ struct Input {
   // the electron number) or "segments" (covers of four out of
   // `connect_segments` orbital segments; memory independent of the electron
   // number, at the price of testing unconnected pairs).
+  // "spin" (tables of alpha and beta strings, connect_spin.h) is for spatial
+  // orbitals only, where it is the default.
   bool connect_by_segments = false;
+  bool connect_by_spin_strings = false;
   int connect_segments = 8;
   // Strings only: number of passes (trades time for memory).
   int connect_batches = 1;

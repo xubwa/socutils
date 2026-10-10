@@ -120,7 +120,9 @@ Json ToJson(const Input& in) {
               {"two", in.rdm.two},
               {"transition", in.rdm.transition}};
   j["hij_threshold"] = in.hij_threshold;
-  j["connect"] = {{"method", in.connect_by_segments ? "segments" : "strings"},
+  j["connect"] = {{"method", in.connect_by_spin_strings ? "spin"
+                             : in.connect_by_segments   ? "segments"
+                                                        : "strings"},
                   {"segments", in.connect_segments},
                   {"batches", in.connect_batches}};
   j["check"] = in.check;
@@ -332,14 +334,19 @@ Input ParseInput(const std::string& text) {
   // An explicit non-negative threshold together with density matrices is
   // allowed, but the density matrices then miss the dropped pairs.
   top.Get("hij_threshold", &in.hij_threshold);
+  in.connect_by_spin_strings = in.spatial_orbitals;
   if (top.Has("connect")) {
     ObjectReader connect(top.At("connect"), "connect");
-    std::string method = "strings";
+    std::string method = in.spatial_orbitals ? "spin" : "strings";
     connect.Get("method", &method);
-    if (method != "strings" && method != "segments") {
-      connect.Fail("method", "must be \"strings\" or \"segments\"");
+    if (method != "strings" && method != "segments" && method != "spin") {
+      connect.Fail("method", "must be \"strings\", \"segments\" or \"spin\"");
     }
     in.connect_by_segments = method == "segments";
+    in.connect_by_spin_strings = method == "spin";
+    if (in.connect_by_spin_strings && !in.spatial_orbitals) {
+      connect.Fail("method", "\"spin\" needs \"orbitals\": \"spatial\"");
+    }
     connect.Get("segments", &in.connect_segments);
     connect.Get("batches", &in.connect_batches);
     connect.CheckNoUnknownKeys();

@@ -1136,6 +1136,73 @@ void TestSpatialIntegrals() {
          "ones and conserves the spin projection");
 }
 
+// The alpha/beta string tables against a comparison of all pairs.
+template <int W>
+void TestSpinStringConnections(int num_spatial, int shift,
+                               const std::string& what) {
+  const int num_alpha = 4;
+  const int num_beta = 3;
+  std::mt19937 rng(43);
+  // Random integrals; only the pattern of connections is tested here, and
+  // every connected pair gets an element since no threshold is set.
+  Integrals<double> ints = Integrals<double>::Spatial(num_spatial + shift, {});
+  std::uniform_real_distribution<double> uniform(-1.0, 1.0);
+  for (int p = 0; p < num_spatial + shift; ++p) {
+    for (int q = 0; q <= p; ++q) {
+      ints.SetSpatialOneBody(p, q, uniform(rng));
+      ints.SetSpatialOneBody(q, p, ints.OneBody(2 * p, 2 * q));
+      for (int r = 0; r <= p; ++r) {
+        for (int s = 0; s <= r; ++s) {
+          ints.SetSpatialTwoBody(p, q, r, s, uniform(rng));
+        }
+      }
+    }
+  }
+  ints.Finalize();
+
+  // Determinants with fixed numbers of alpha and beta electrons, strings
+  // drawn from small pools so that many determinants share one.
+  auto random_string = [&](int count, int spin) {
+    std::set<int> orbitals;
+    while (static_cast<int>(orbitals.size()) < count) {
+      orbitals.insert(rng() % num_spatial);
+    }
+    Det<W> string;
+    for (int p : orbitals) string.Set(2 * (p + shift) + spin);
+    return string;
+  };
+  std::vector<Det<W>> alpha_pool, beta_pool;
+  for (int k = 0; k < 40; ++k)
+    alpha_pool.push_back(random_string(num_alpha, 0));
+  for (int k = 0; k < 30; ++k) beta_pool.push_back(random_string(num_beta, 1));
+  std::set<Det<W>> seen;
+  std::vector<Det<W>> dets;
+  while (dets.size() < 500) {
+    const Det<W>& a = alpha_pool[rng() % alpha_pool.size()];
+    const Det<W>& b = beta_pool[rng() % beta_pool.size()];
+    Det<W> det;
+    for (int k = 0; k < W; ++k) det.words[k] = a.words[k] | b.words[k];
+    if (seen.insert(det).second) dets.push_back(det);
+  }
+
+  ConnectOptions spin;
+  spin.threshold = -1.0;
+  spin.method = ConnectMethod::kSpinStrings;
+  ConnectOptions reference;
+  reference.threshold = -1.0;
+  bool same = true;
+  size_t num_elements = 0;
+  for (size_t first_new : {size_t{0}, size_t{137}, dets.size() - 1}) {
+    const CsrBlock<double> block =
+        BuildBlock(MakeSpan(dets), first_new, ints, spin);
+    const CsrBlock<double> brute =
+        BuildBlockBruteForce(MakeSpan(dets), first_new, ints, reference);
+    same = same && SameBlock(block, brute, 0.0);
+    num_elements += block.num_elements();
+  }
+  Expect(num_elements > 5000 && same, what);
+}
+
 // A real Hamiltonian treated with real numbers and with complex numbers.
 void TestRealScalar(const Integrals<Complex>& ints) {
   const ScalarResults real = SmallCalculation(RealPart<double>(ints), nullptr);
@@ -1201,6 +1268,10 @@ int main(int argc, char** argv) {
     zshci::TestRealScalar(ints);
     zshci::TestBlockedIntegrals(ints);
     zshci::TestSpatialIntegrals();
+    zshci::TestSpinStringConnections<1>(
+        10, 0, "spin-string tables find the connected pairs of all pairs");
+    zshci::TestSpinStringConnections<2>(
+        10, 27, "spin-string tables find the same with two-word determinants");
     const int n = ints.num_orbs();
     const std::vector<zshci::LabelSet> no_symmetry = {
         {std::vector<int>(n, 0), 0}};
