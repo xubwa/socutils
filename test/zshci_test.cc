@@ -139,6 +139,31 @@ void TestHamiltonian(const Integrals& ints) {
                    BuildBlockBruteForce(MakeSpan(dets1), 0, ints, thresholded), 0),
          "bucket search equals brute force with a threshold");
 
+  // The segment method, for several numbers of segments (fewer than five
+  // means a single cover, i.e. all pairs in one bucket).
+  bool segments_ok = true;
+  for (int num_segments : {1, 3, 5, 6, 8, 11, 16}) {
+    ConnectOptions segmented;
+    segmented.method = ConnectMethod::kSegments;
+    segmented.num_segments = num_segments;
+    segments_ok = segments_ok &&
+                  SameBlock(block1, BuildBlock(MakeSpan(dets1), 0, ints, segmented), 0);
+  }
+  Expect(segments_ok, "segment search equals the string search");
+  {
+    ConnectOptions segmented;
+    segmented.method = ConnectMethod::kSegments;
+    segmented.num_segments = 7;
+    segmented.threshold = 1e-6;
+    Expect(SameBlock(BuildBlock(MakeSpan(dets1), 0, ints, segmented),
+                     BuildBlockBruteForce(MakeSpan(dets1), 0, ints, thresholded), 0),
+           "segment search equals brute force with a threshold");
+    segmented.threshold = -1.0;
+    Expect(SameBlock(BuildBlock(MakeSpan(dets1), 300, ints, segmented),
+                     BuildBlock(MakeSpan(dets1), 300, ints, keep_all), 0),
+           "segment search builds the same incremental block");
+  }
+
   // Blocks built for a growing space add up to the block of the full space.
   {
     const size_t first_new = 300;
@@ -161,6 +186,14 @@ void TestHamiltonian(const Integrals& ints) {
   const CsrBlock block2 = BuildBlock(MakeSpan(dets2), 0, shifted, keep_all);
   Expect(SameBlock(block1, block2, 1e-14),
          "two-word determinants give the same Hamiltonian block");
+  {
+    ConnectOptions segmented;
+    segmented.method = ConnectMethod::kSegments;
+    segmented.num_segments = 9;
+    Expect(SameBlock(block1, BuildBlock(MakeSpan(dets2), 0, shifted, segmented),
+                     1e-14),
+           "segment search works across a word boundary");
+  }
   bool same_diagonal = true;
   for (size_t d = 0; d < dets1.size(); ++d) {
     same_diagonal = same_diagonal &&

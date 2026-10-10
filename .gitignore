@@ -2,3 +2,9 @@ build/
 build_mpi/
 bin/
 config.mk
+# outputs of the timing runs
+bench/**/slurm-*.out
+bench/**/out.txt
+bench/**/err.txt
+bench/**/*.h5
+bench/**/shci.e
