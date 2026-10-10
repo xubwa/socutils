@@ -1,7 +1,8 @@
 #include "comm.h"
 
-#include <cstdlib>
 #include <algorithm>
+#include <cstdlib>
+#include <exception>
 #include <limits>
 #include <new>
 #include <stdexcept>
@@ -134,7 +135,11 @@ void* Comm::AllocateShared(size_t bytes, void** base) const {
 void Comm::FreeShared(void* handle) {
   SharedBlock* block = static_cast<SharedBlock*>(handle);
   if (block->is_window) {
-    MPI_Win_free(&block->window);
+    // Freeing a window is collective. While an exception unwinds the stack
+    // of this rank the others are not doing the same, and waiting for them
+    // would keep the error from ever reaching main(), which aborts all
+    // ranks. Leave the window to the abort.
+    if (std::uncaught_exceptions() == 0) MPI_Win_free(&block->window);
   } else {
     std::free(block->memory);
   }
