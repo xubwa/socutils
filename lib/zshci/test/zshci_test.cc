@@ -602,6 +602,134 @@ void TestSecondOrderLimit(const Integrals& ints) {
          "to second order");
 }
 
+// Applies the annihilator of spinor p to a determinant: returns false if p is
+// empty, otherwise removes it and multiplies `sign` by the fermionic phase,
+// (-1) to the number of occupied spinors below p. The determinant stands for
+// the creators of its spinors applied to the vacuum in increasing order.
+bool Annihilate(int p, Det<1>* det, double* sign) {
+  if (!det->Occupied(p)) return false;
+  if (__builtin_popcountll(det->words[0] & ((1ULL << p) - 1)) & 1) {
+    *sign = -*sign;
+  }
+  det->Clear(p);
+  return true;
+}
+
+bool Create(int p, Det<1>* det, double* sign) {
+  if (det->Occupied(p)) return false;
+  if (__builtin_popcountll(det->words[0] & ((1ULL << p) - 1)) & 1) {
+    *sign = -*sign;
+  }
+  det->Set(p);
+  return true;
+}
+
+// The density matrices against their definition: every operator string is
+// applied to every determinant one operator at a time, with none of the
+// logic of rdm.h. Unlike the energy, this tells a density matrix from its
+// complex conjugate and from its transpose.
+void TestDensityMatricesFromDefinition(const Integrals& ints) {
+  const int n = ints.num_orbs();
+  const std::vector<Det<1>> dets =
+      ToDets<1>(RandomOccupations(n, ints.num_elec(), 120, 2, 41), 0);
+  std::map<Det<1>, size_t> index;
+  for (size_t d = 0; d < dets.size(); ++d) index[dets[d]] = d;
+
+  SparseH h;
+  std::vector<double> diagonal(dets.size());
+  for (size_t d = 0; d < dets.size(); ++d) {
+    diagonal[d] = DiagonalEnergy(dets[d], ints);
+  }
+  h.AppendDiagonal(diagonal);
+  h.AppendBlock(BuildBlock(MakeSpan(dets), 0, ints, ConnectOptions()));
+  DavidsonOptions dense;
+  dense.dense_dim = 1 << 20;
+  std::vector<std::vector<Complex>> states(
+      2, std::vector<Complex>(dets.size(), 0.0));
+  Davidson(h, dense, &states);
+  double max_imag = 0.0;
+  for (const Complex& c : states[0]) {
+    max_imag = std::max(max_imag, std::abs(c.imag()));
+  }
+
+  // <bra| p^+ q |ket> and <bra| p^+ q^+ s r |ket> by direct application.
+  auto reference = [&](const std::vector<Complex>& bra,
+                       const std::vector<Complex>& ket, bool with_two) {
+    DensityMatrices dm;
+    dm.num_orbs = n;
+    dm.one.assign(static_cast<size_t>(n) * n, Complex(0.0));
+    if (with_two) {
+      dm.two.assign(static_cast<size_t>(n) * n * n * n, Complex(0.0));
+    }
+    for (size_t j = 0; j < dets.size(); ++j) {
+      for (int q = 0; q < n; ++q) {
+        Det<1> one_removed = dets[j];
+        double sign_q = 1.0;
+        if (!Annihilate(q, &one_removed, &sign_q)) continue;
+        for (int p = 0; p < n; ++p) {
+          Det<1> det = one_removed;
+          double sign = sign_q;
+          if (!Create(p, &det, &sign)) continue;
+          const auto found = index.find(det);
+          if (found == index.end()) continue;
+          dm.One(p, q) += sign * std::conj(bra[found->second]) * ket[j];
+        }
+        if (!with_two) continue;
+        // p^+ q2^+ s r with r = q: remove r, then s, add q2, then p.
+        const int r = q;
+        for (int s = 0; s < n; ++s) {
+          Det<1> two_removed = one_removed;
+          double sign_s = sign_q;
+          if (!Annihilate(s, &two_removed, &sign_s)) continue;
+          for (int q2 = 0; q2 < n; ++q2) {
+            Det<1> one_added = two_removed;
+            double sign_q2 = sign_s;
+            if (!Create(q2, &one_added, &sign_q2)) continue;
+            for (int p = 0; p < n; ++p) {
+              Det<1> det = one_added;
+              double sign = sign_q2;
+              if (!Create(p, &det, &sign)) continue;
+              const auto found = index.find(det);
+              if (found == index.end()) continue;
+              dm.Two(p, q2, r, s) +=
+                  sign * std::conj(bra[found->second]) * ket[j];
+            }
+          }
+        }
+      }
+    }
+    return dm;
+  };
+  auto max_difference = [](const std::vector<Complex>& a,
+                           const std::vector<Complex>& b) {
+    double diff = 0.0;
+    for (size_t k = 0; k < a.size(); ++k) {
+      diff = std::max(diff, std::abs(a[k] - b[k]));
+    }
+    return diff;
+  };
+
+  const DensityMatrices state =
+      ComputeDensityMatrices(MakeSpan(dets), h, n, states[0], states[0], true);
+  const DensityMatrices state_ref = reference(states[0], states[0], true);
+  Expect(max_imag > 1e-3, "the test wave function is genuinely complex");
+  Expect(max_difference(state.one, state_ref.one) < 1e-12,
+         "dm1 equals <p^+ q> applied operator by operator");
+  Expect(max_difference(state.two, state_ref.two) < 1e-12,
+         "dm2 equals <p^+ q^+ s r> applied operator by operator");
+  // The conjugate must not pass: the test has to be able to tell them apart.
+  std::vector<Complex> conjugated = state_ref.one;
+  for (Complex& value : conjugated) value = std::conj(value);
+  Expect(max_difference(state.one, conjugated) > 1e-6,
+         "dm1 differs from its complex conjugate in this test");
+
+  const DensityMatrices transition =
+      ComputeDensityMatrices(MakeSpan(dets), h, n, states[0], states[1], false);
+  const DensityMatrices transition_ref = reference(states[0], states[1], false);
+  Expect(max_difference(transition.one, transition_ref.one) < 1e-12,
+         "the transition dm1 equals <0| p^+ q |1> applied operator by operator");
+}
+
 }  // namespace
 }  // namespace zshci
 
@@ -617,6 +745,7 @@ int main(int argc, char** argv) {
     }
     zshci::TestCountBetween();
     zshci::TestHamiltonian(ints);
+    zshci::TestDensityMatricesFromDefinition(ints);
     zshci::TestPerturbation(ints);
     zshci::TestSecondOrderLimit(ints);
     const int n = ints.num_orbs();

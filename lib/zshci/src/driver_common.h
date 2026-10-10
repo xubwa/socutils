@@ -414,9 +414,8 @@ void WriteResults(const Input& input, const Integrals& ints,
           ComputeDensityMatrices(dets, h, num_orbs, vectors.Root(k),
                                  vectors.Root(k), input.rdm.two, comm);
       if (!comm.is_root()) continue;
-      WriteOneRdm(input.prefix, k, k, dm);
+      WriteDensityMatrices(input.prefix, k, k, dm);
       if (input.rdm.two) {
-        WriteTwoRdm(input.prefix, k, dm);
         const double from_rdm =
             EnergyFromDensityMatrices(dm, ints) + ints.core_energy();
         std::printf("State %3d  energy from density matrices = %20.12f "
@@ -431,7 +430,7 @@ void WriteResults(const Input& input, const Integrals& ints,
       const DensityMatrices dm =
           ComputeDensityMatrices(dets, h, num_orbs, vectors.Root(0),
                                  vectors.Root(k), /*with_two=*/false, comm);
-      if (comm.is_root()) WriteOneRdm(input.prefix, 0, k, dm);
+      if (comm.is_root()) WriteDensityMatrices(input.prefix, 0, k, dm);
     }
   }
 }

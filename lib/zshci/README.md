@@ -75,12 +75,12 @@ Output, in the directory `prefix` (`src/output.h`):
 |---|---|
 | `shci.e` | total energies, including the perturbative correction if any |
 | `wfn.h5` | determinants, CI vectors, energies, the resolved input |
-| `Dice_i_i.rdm1.h5`, `Dice_i_i.rdm2.h5` | density matrices of state i |
-| `Dice_0_j.rdm1.h5` | transition density matrix between states 0 and j |
+| `rdm_i_i.h5` | `dm1` and `dm2` of state i, as complex arrays in the convention of PySCF |
+| `rdm_0_j.h5` | `dm1`: transition density matrix between states 0 and j |
 
-The energy and density-matrix files have the names and layout of the ZSHCI
-program of Dice, so readers written for it keep working. `wfn.h5` can be given
-as `"detfile"` to restart from a previous space.
+`dm1[p,q]` is `<p^+ q>` and `dm2[p,q,r,s]` is `<p^+ r^+ s q>`; a reader takes
+the datasets as they are. `wfn.h5` can be given as `"detfile"` to restart from
+a previous space.
 
 ## Layout
 

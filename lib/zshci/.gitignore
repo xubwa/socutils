@@ -9,3 +9,5 @@ bench/**/err.txt
 bench/**/*.h5
 bench/**/shci.e
 bench/**/FCIDUMP
+# test Hamiltonians are generated or copied locally, not tracked
+test/data/

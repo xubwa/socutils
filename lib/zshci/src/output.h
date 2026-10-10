@@ -1,16 +1,15 @@
-// Result files.
+// Result files, all in the directory `prefix`.
 //
-//   <prefix>/shci.e              nroots native doubles: the total energies,
-//                                including the PT correction if one was run.
-//   <prefix>/Dice_i_j.rdm1.h5    datasets rdm1_real, rdm1_imag (n^2 values).
-//   <prefix>/Dice_i_i.rdm2.h5    datasets rdm2_real, rdm2_imag (n^4 values).
-//   <prefix>/wfn.h5              determinants, CI vectors, energies, input.
-//
-// The first three keep the names and the element order written by the
-// ZSHCI/DetCI programs of this repository, so existing readers (socutils
-// hci/shci.py) work unchanged:
-//   rdm1 flat index q * n + p               holds <i| p^+ q |j>,
-//   rdm2 flat index ((p*n + q)*n + r)*n + s holds conj(<i| p^+ q^+ s r |i>).
+//   shci.e          nroots native doubles: the total energies, including the
+//                   perturbative correction if one was computed.
+//   wfn.h5          determinants, CI vectors, energies, the resolved input.
+//   rdm_<i>_<j>.h5  density matrices between states i and j, as complex
+//                   arrays in the convention of PySCF:
+//                     dm1[p,q]     = <i| p^+ q |j>              shape (n,n)
+//                     dm2[p,q,r,s] = <i| p^+ r^+ s q |i>        shape (n,n,n,n)
+//                   dm2 is present only for i = j and when requested. A
+//                   reader gets the arrays as they are (h5py: f['dm1'][()]);
+//                   no conjugation or reordering is needed.
 
 #ifndef ZSHCI_SRC_OUTPUT_H_
 #define ZSHCI_SRC_OUTPUT_H_
@@ -27,11 +26,9 @@ namespace zshci {
 void WriteEnergies(const std::string& prefix,
                    const std::vector<double>& energies);
 
-void WriteOneRdm(const std::string& prefix, int bra, int ket,
-                 const DensityMatrices& dm);
-
-void WriteTwoRdm(const std::string& prefix, int root,
-                 const DensityMatrices& dm);
+// Writes rdm_<bra>_<ket>.h5 with dm1 and, if dm.two is not empty, dm2.
+void WriteDensityMatrices(const std::string& prefix, int bra, int ket,
+                          const DensityMatrices& dm);
 
 // The wave function: `det_words` is the N x W table of occupation words.
 struct WaveFunction {

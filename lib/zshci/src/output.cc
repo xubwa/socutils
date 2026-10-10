@@ -15,11 +15,6 @@ void WriteVector(HighFive::File* file, const std::string& name,
   dataset.write_raw(data.data());
 }
 
-std::string RdmPath(const std::string& prefix, int bra, int ket, int order) {
-  return prefix + "/Dice_" + std::to_string(bra) + "_" + std::to_string(ket) +
-         ".rdm" + std::to_string(order) + ".h5";
-}
-
 }  // namespace
 
 void WriteEnergies(const std::string& prefix,
@@ -35,37 +30,33 @@ void WriteEnergies(const std::string& prefix,
   }
 }
 
-void WriteOneRdm(const std::string& prefix, int bra, int ket,
-                 const DensityMatrices& dm) {
-  const int n = dm.num_orbs;
-  std::vector<double> re(static_cast<size_t>(n) * n);
-  std::vector<double> im(re.size());
-  for (int p = 0; p < n; ++p) {
-    for (int q = 0; q < n; ++q) {
-      const Complex value = dm.One(p, q);
-      re[q * n + p] = value.real();
-      im[q * n + p] = value.imag();
+void WriteDensityMatrices(const std::string& prefix, int bra, int ket,
+                          const DensityMatrices& dm) {
+  const size_t n = dm.num_orbs;
+  HighFive::File file(prefix + "/rdm_" + std::to_string(bra) + "_" +
+                          std::to_string(ket) + ".h5",
+                      HighFive::File::Overwrite);
+  // dm.one is already dm1[p,q] = <p^+ q> in row-major order.
+  file.createDataSet<Complex>("dm1", HighFive::DataSpace({n, n}))
+      .write_raw(dm.one.data());
+  if (dm.two.empty()) return;
+
+  // Stored: D2(p,q,r,s) = <p^+ q^+ s r>. Written: dm2[p,q,r,s] =
+  // <p^+ r^+ s q> = D2(p,r,q,s).
+  std::vector<Complex> dm2(dm.two.size());
+  const long num = static_cast<long>(n);
+#pragma omp parallel for schedule(static)
+  for (long p = 0; p < num; ++p) {
+    for (size_t q = 0; q < n; ++q) {
+      for (size_t r = 0; r < n; ++r) {
+        for (size_t s = 0; s < n; ++s) {
+          dm2[((p * n + q) * n + r) * n + s] = dm.Two(p, r, q, s);
+        }
+      }
     }
   }
-  HighFive::File file(RdmPath(prefix, bra, ket, 1), HighFive::File::Overwrite);
-  WriteVector(&file, "rdm1_real", re);
-  WriteVector(&file, "rdm1_imag", im);
-}
-
-void WriteTwoRdm(const std::string& prefix, int root,
-                 const DensityMatrices& dm) {
-  std::vector<double> re(dm.two.size());
-  std::vector<double> im(dm.two.size());
-  const long size = static_cast<long>(dm.two.size());
-#pragma omp parallel for schedule(static)
-  for (long k = 0; k < size; ++k) {
-    re[k] = dm.two[k].real();
-    im[k] = -dm.two[k].imag();
-  }
-  HighFive::File file(RdmPath(prefix, root, root, 2),
-                      HighFive::File::Overwrite);
-  WriteVector(&file, "rdm2_real", re);
-  WriteVector(&file, "rdm2_imag", im);
+  file.createDataSet<Complex>("dm2", HighFive::DataSpace({n, n, n, n}))
+      .write_raw(dm2.data());
 }
 
 void WriteWaveFunction(const std::string& path, const WaveFunction& wfn) {
