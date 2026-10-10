@@ -69,7 +69,9 @@ Json ToJson(const Input& in) {
   j["mode"] = in.mode == Mode::kDiag ? "diag" : "select";
   j["integrals"] = in.integrals;
   j["symmetry_tolerance"] = in.symmetry_tolerance;
-  j["orbitals"] = in.spatial_orbitals ? "spatial" : "spinor";
+  j["orbitals"] = in.spatial_orbitals        ? "spatial"
+                  : in.unrestricted_orbitals ? "unrestricted"
+                                             : "spinor";
   j["scalar"] = in.scalar == ScalarChoice::kAuto   ? "auto"
                 : in.scalar == ScalarChoice::kReal ? "real"
                                                    : "complex";
@@ -205,13 +207,18 @@ Input ParseInput(const std::string& text) {
 
   std::string orbitals = "spinor";
   top.Get("orbitals", &orbitals);
-  if (orbitals != "spinor" && orbitals != "spatial") {
-    top.Fail("orbitals", "must be \"spinor\" or \"spatial\"");
+  if (orbitals != "spinor" && orbitals != "spatial" &&
+      orbitals != "unrestricted") {
+    top.Fail("orbitals", "must be \"spinor\", \"spatial\" or \"unrestricted\"");
   }
   in.spatial_orbitals = orbitals == "spatial";
-  if (in.spatial_orbitals && in.scalar == ScalarChoice::kComplex) {
-    top.Fail("scalar", "integrals over spatial orbitals are real");
+  in.unrestricted_orbitals = orbitals == "unrestricted";
+  const bool spin_orbitals = in.spatial_orbitals || in.unrestricted_orbitals;
+  if (spin_orbitals && in.scalar == ScalarChoice::kComplex) {
+    top.Fail("scalar", "these integrals are real");
   }
+  // ORBSYM is a matter of FCIDUMP files.
+  if (in.unrestricted_orbitals && !top.Has("symmetry")) in.symmetry.clear();
   top.Get("symmetry_tolerance", &in.symmetry_tolerance);
   if (in.symmetry_tolerance < 0.0) {
     top.Fail("symmetry_tolerance", "must not be negative");
@@ -334,18 +341,20 @@ Input ParseInput(const std::string& text) {
   // An explicit non-negative threshold together with density matrices is
   // allowed, but the density matrices then miss the dropped pairs.
   top.Get("hij_threshold", &in.hij_threshold);
-  in.connect_by_spin_strings = in.spatial_orbitals;
+  in.connect_by_spin_strings = spin_orbitals;
   if (top.Has("connect")) {
     ObjectReader connect(top.At("connect"), "connect");
-    std::string method = in.spatial_orbitals ? "spin" : "strings";
+    std::string method = spin_orbitals ? "spin" : "strings";
     connect.Get("method", &method);
     if (method != "strings" && method != "segments" && method != "spin") {
       connect.Fail("method", "must be \"strings\", \"segments\" or \"spin\"");
     }
     in.connect_by_segments = method == "segments";
     in.connect_by_spin_strings = method == "spin";
-    if (in.connect_by_spin_strings && !in.spatial_orbitals) {
-      connect.Fail("method", "\"spin\" needs \"orbitals\": \"spatial\"");
+    if (in.connect_by_spin_strings && !spin_orbitals) {
+      connect.Fail("method",
+                   "\"spin\" needs \"orbitals\": \"spatial\" or "
+                   "\"unrestricted\"");
     }
     connect.Get("segments", &in.connect_segments);
     connect.Get("batches", &in.connect_batches);

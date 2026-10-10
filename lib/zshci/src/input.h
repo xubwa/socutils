@@ -114,6 +114,11 @@ struct Input {
   Mode mode = Mode::kSelect;
   std::string integrals = "FCIDUMP";
   ScalarChoice scalar = ScalarChoice::kAuto;
+  // "orbitals": "unrestricted" reads the integrals of an unrestricted
+  // reference, different spatial orbitals for the two spins, from an HDF5
+  // file (ReadUnrestrictedIntegrals); determinants and labels as for
+  // "spatial", density matrices over the spin orbitals.
+  bool unrestricted_orbitals = false;
   // "orbitals": "spatial" reads integrals over real spatial orbitals, which
   // all electrons share (a restricted reference); the determinants are then
   // over the spin orbitals 2P (alpha) and 2P + 1 (beta) of spatial orbital P,

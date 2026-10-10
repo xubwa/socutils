@@ -60,6 +60,9 @@ void RunWithScalar(const Input& input, const Comm& comm) {
       input.spatial_orbitals
           ? ReadSpatialFcidump<S>(input.integrals, input.symmetry,
                                   input.symmetry_tolerance, comm)
+      : input.unrestricted_orbitals
+          ? ReadUnrestrictedIntegrals<S>(input.integrals, input.symmetry,
+                                         input.symmetry_tolerance, comm)
           : ReadFcidump<S>(input.integrals, input.symmetry,
                            input.symmetry_tolerance, comm);
   std::printf("integrals: %s, %s, %d %s, core energy %.12f, %.2f s\n",
@@ -95,10 +98,11 @@ void Main(const char* input_path, const Comm& comm) {
   std::printf("input:\n%s\n", input.resolved.c_str());
 
   bool is_complex = input.scalar == ScalarChoice::kComplex;
-  if (input.scalar == ScalarChoice::kAuto) {
+  if (input.spatial_orbitals || input.unrestricted_orbitals) {
+    is_complex = false;
+  } else if (input.scalar == ScalarChoice::kAuto) {
     is_complex = FcidumpIsComplex(input.integrals, comm);
   }
-  if (input.spatial_orbitals) is_complex = false;
   if (is_complex) {
     RunWithScalar<Complex>(input, comm);
   } else {

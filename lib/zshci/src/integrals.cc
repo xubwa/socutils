@@ -10,6 +10,8 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "highfive/H5File.hpp"
+
 namespace zshci {
 namespace {
 
@@ -104,21 +106,18 @@ Integrals<S>::Integrals(int num_orbs, std::vector<LabelSet> symmetry,
   }
 }
 
-template <typename S>
-Integrals<S> Integrals<S>::Spatial(
-    int num_spatial, const std::vector<LabelSet>& spatial_symmetry,
-    const Comm& comm) {
-  Integrals ints;
+namespace {
+
+// The spin projection (+1 for alpha, -1 for beta) followed by the given
+// sets, each label doubled for the two spin orbitals of a spatial orbital.
+std::vector<LabelSet> SpinOrbitalSymmetry(
+    int num_spatial, const std::vector<LabelSet>& spatial_symmetry) {
   const size_t n = num_spatial;
-  if (2 * n > UINT16_MAX) throw std::length_error("too many orbitals");
-  ints.num_spatial_ = num_spatial;
-  ints.num_orbs_ = 2 * num_spatial;
-  LabelSet spin;
+  std::vector<LabelSet> sets(1);
   for (size_t p = 0; p < n; ++p) {
-    spin.labels.push_back(1);
-    spin.labels.push_back(-1);
+    sets[0].labels.push_back(1);
+    sets[0].labels.push_back(-1);
   }
-  ints.symmetry_.push_back(spin);
   for (const LabelSet& spatial : spatial_symmetry) {
     if (spatial.labels.size() != n) {
       throw std::invalid_argument(
@@ -130,8 +129,34 @@ Integrals<S> Integrals<S>::Spatial(
       set.labels.push_back(label);
       set.labels.push_back(label);
     }
-    ints.symmetry_.push_back(std::move(set));
+    sets.push_back(std::move(set));
   }
+  return sets;
+}
+
+}  // namespace
+
+template <typename S>
+Integrals<S> Integrals<S>::SpinOrbitals(
+    int num_spatial, const std::vector<LabelSet>& spatial_symmetry,
+    const Comm& comm) {
+  Integrals ints(2 * num_spatial,
+                 SpinOrbitalSymmetry(num_spatial, spatial_symmetry), comm);
+  ints.spin_orbitals_ = true;
+  return ints;
+}
+
+template <typename S>
+Integrals<S> Integrals<S>::Spatial(
+    int num_spatial, const std::vector<LabelSet>& spatial_symmetry,
+    const Comm& comm) {
+  Integrals ints;
+  const size_t n = num_spatial;
+  if (2 * n > UINT16_MAX) throw std::length_error("too many orbitals");
+  ints.num_spatial_ = num_spatial;
+  ints.num_orbs_ = 2 * num_spatial;
+  ints.spin_orbitals_ = true;
+  ints.symmetry_ = SpinOrbitalSymmetry(num_spatial, spatial_symmetry);
   ints.one_body_.assign(4 * n * n, S(0.0));
   const size_t num_products = n * (n + 1) / 2;
   ints.two_body_ = SharedArray<S>(num_products * (num_products + 1) / 2, comm);
@@ -554,6 +579,107 @@ Integrals<S> ReadSpatialFcidump(const std::string& path,
   return ints;
 }
 
+template <typename S>
+Integrals<S> ReadUnrestrictedIntegrals(const std::string& path,
+                                       const std::vector<LabelSet>& symmetry,
+                                       double symmetry_tolerance,
+                                       const Comm& comm) {
+  int n = 0;
+  std::vector<double> h1[2];
+  std::vector<double> eri_aa, eri_bb, eri_ab;
+  double ecore = 0.0;
+  int num_elec = 0;
+  if (comm.is_root()) {
+    HighFive::File file(path, HighFive::File::ReadOnly);
+    auto read = [&](const std::string& name, size_t rank,
+                    std::vector<double>* data) {
+      HighFive::DataSet dataset = file.getDataSet(name);
+      const std::vector<size_t> dims = dataset.getDimensions();
+      if (n == 0 && !dims.empty()) n = static_cast<int>(dims[0]);
+      size_t size = 1;
+      bool good = dims.size() == rank;
+      for (size_t d : dims) {
+        good = good && d == static_cast<size_t>(n);
+        size *= d;
+      }
+      if (!good) {
+        throw std::runtime_error(path + ": dataset " + name +
+                                 " does not have the expected shape");
+      }
+      data->resize(size);
+      dataset.read(data->data());
+    };
+    read("h1_a", 2, &h1[0]);
+    read("h1_b", 2, &h1[1]);
+    read("eri_aa", 4, &eri_aa);
+    read("eri_bb", 4, &eri_bb);
+    read("eri_ab", 4, &eri_ab);
+    if (file.hasAttribute("ecore")) file.getAttribute("ecore").read(ecore);
+    if (file.hasAttribute("nelec")) file.getAttribute("nelec").read(num_elec);
+  }
+  comm.BcastValue(&n);
+  for (const LabelSet& set : symmetry) {
+    if (set.labels.empty()) {
+      throw std::runtime_error(
+          "symmetry: an unrestricted calculation needs explicit labels");
+    }
+  }
+
+  Integrals<S> ints = Integrals<S>::SpinOrbitals(n, symmetry, comm);
+  if (!comm.is_root()) {
+    ints.Share(comm);
+    return ints;
+  }
+  ints.set_num_elec(num_elec);
+  ints.set_core_energy(ecore);
+
+  const size_t size = n;
+  // (pq|rs) over spin orbitals.
+  auto chemist = [&](int p, int q, int r, int s) {
+    const int spin1 = p & 1;
+    const int spin2 = r & 1;
+    if ((q & 1) != spin1 || (s & 1) != spin2) return 0.0;
+    const size_t a = p >> 1, b = q >> 1, c = r >> 1, d = s >> 1;
+    if (spin1 != spin2) {
+      return spin1 == 0 ? eri_ab[((a * size + b) * size + c) * size + d]
+                        : eri_ab[((c * size + d) * size + a) * size + b];
+    }
+    return (spin1 == 0 ? eri_aa
+                       : eri_bb)[((a * size + b) * size + c) * size + d];
+  };
+  const int m = 2 * n;
+  for (int p = 0; p < m; ++p) {
+    for (int q = 0; q < m; ++q) {
+      if ((p & 1) != (q & 1)) continue;
+      ints.SetOneBody(p, q, S(h1[p & 1][(p >> 1) * size + (q >> 1)]));
+    }
+  }
+  // Every pair of pairs is offered, so that integrals the labels forbid are
+  // noticed.
+  for (int q = 1; q < m; ++q) {
+    for (int p = 0; p < q; ++p) {
+      for (int s = 1; s <= q; ++s) {
+        for (int r = 0; r < s; ++r) {
+          const double value = chemist(p, r, q, s) - chemist(p, s, q, r);
+          if (value != 0.0) ints.SetAntisymOrdered(p, q, r, s, S(value));
+        }
+      }
+    }
+  }
+  if (ints.max_forbidden() > symmetry_tolerance) {
+    char magnitude[32];
+    std::snprintf(magnitude, sizeof(magnitude), "%.3e", ints.max_forbidden());
+    throw std::runtime_error(
+        path +
+        ": the integrals do not have the symmetry of the labels: an "
+        "integral of magnitude " +
+        magnitude + " would change a label (see symmetry_tolerance)");
+  }
+  ints.Finalize();
+  ints.Share(comm);
+  return ints;
+}
+
 template class Integrals<double>;
 template class Integrals<Complex>;
 template Integrals<double> ReadFcidump<double>(const std::string&,
@@ -566,6 +692,11 @@ template Integrals<Complex> ReadFcidump<Complex>(const std::string&,
 template Integrals<double> ReadSpatialFcidump<double>(
     const std::string&, const std::vector<LabelSet>&, double, const Comm&);
 template Integrals<Complex> ReadSpatialFcidump<Complex>(
+    const std::string&, const std::vector<LabelSet>&, double, const Comm&);
+
+template Integrals<double> ReadUnrestrictedIntegrals<double>(
+    const std::string&, const std::vector<LabelSet>&, double, const Comm&);
+template Integrals<Complex> ReadUnrestrictedIntegrals<Complex>(
     const std::string&, const std::vector<LabelSet>&, double, const Comm&);
 
 }  // namespace zshci

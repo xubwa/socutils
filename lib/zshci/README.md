@@ -75,6 +75,12 @@ irreducible representations of D2h or a subgroup in Molpro's numbering.
 Connected determinants are then found from tables of alpha and beta strings
 (`src/connect_spin.h`), as in the non-relativistic Dice program.
 
+`"orbitals": "unrestricted"` is for an unrestricted reference, different
+spatial orbitals for the two spins: the integrals come from an HDF5 file
+(`h1_a`, `h1_b`, `eri_aa`, `eri_bb`, `eri_ab`; `src/integrals.h`) and are held
+over the spin orbitals in spin blocks, the density matrices are over the spin
+orbitals.
+
 `"symmetry"` lists the conserved quantities, each an integer label per spinor
 and a modulus (0: none): `{"labels": [...], "mod": 4}` is the label of a
 twofold axis, a second entry `{"labels": [0, 1, ...], "mod": 2}` adds
@@ -126,3 +132,20 @@ a previous space.
 | `bench/` | inputs and job scripts of the timing runs |
 
 The code follows the Google C++ style guide.
+
+## Benchmarks
+
+`bench/n2/` is a non-relativistic comparison with Dice: `make_inputs.py`
+writes the integrals and equivalent inputs for both programs, `run.sh` runs
+zshci with threads, zshci_mpi and Dice on one node. Measured on 16 cores
+(N2, cc-pVDZ, 10 electrons in 26 orbitals, 674709 determinants at
+epsilon1 = 5e-5, deterministic PT with epsilon2 = 1e-6):
+
+| | zshci, 16 threads | zshci_mpi, 16 ranks | Dice, 16 ranks |
+|---|---|---|---|
+| variational part | 8.0 s | 7.5 s | 9.4 s |
+| perturbation theory | 4.2 s | 3.1 s | 23.1 s |
+| whole run | 12.6 s | 12.8 s | 34.4 s |
+
+The two programs select slightly different spaces (673981 determinants in
+Dice) and agree to 4e-8 Eh in the energy with the perturbative correction.

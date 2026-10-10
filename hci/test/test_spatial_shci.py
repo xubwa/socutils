@@ -101,6 +101,54 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(mc.e_tot, ref.e_tot, 7)
 
 
+class Unrestricted(unittest.TestCase):
+    '''UnrestrictedSHCI against pyscf.fci.direct_uhf with the orbitals of a
+    UHF calculation on a triplet.'''
+
+    def test_uhf_orbitals(self):
+        mol = gto.M(atom='O 0 0 0; O 0 0 1.21', basis='6-31g', spin=2,
+                    verbose=0)
+        mf = scf.UHF(mol).run(conv_tol=1e-11)
+        ncore, norb, nelec = 2, 8, (7, 5)
+        mo = [c[:, ncore:ncore + norb] for c in mf.mo_coeff]
+        core = [c[:, :ncore] for c in mf.mo_coeff]
+        dm_core = [c @ c.T for c in core]
+        vj, vk = mf.get_jk(mol, dm_core)
+        hcore = mf.get_hcore()
+        veff = [vj[0] + vj[1] - vk[0], vj[0] + vj[1] - vk[1]]
+        ecore = mol.energy_nuc() + sum(
+            numpy.einsum('ij,ji', dm_core[s], hcore + 0.5 * veff[s])
+            for s in (0, 1))
+        h1 = tuple(mo[s].T @ (hcore + veff[s]) @ mo[s] for s in (0, 1))
+        eri = (ao2mo.restore(1, ao2mo.kernel(mol, mo[0]), norb),
+               ao2mo.kernel(mol, (mo[0], mo[0], mo[1], mo[1]),
+                            compact=False).reshape((norb,) * 4),
+               ao2mo.restore(1, ao2mo.kernel(mol, mo[1]), norb))
+
+        ref = fci.direct_uhf.FCISolver()
+        ref.conv_tol = 1e-12
+        e_ref, ci_ref = ref.kernel(h1, eri, norb, nelec, ecore=ecore)
+        (dm1a, dm1b), (dm2aa, dm2ab, dm2bb) = ref.make_rdm12s(ci_ref, norb,
+                                                              nelec)
+
+        solver = shci.UnrestrictedSHCI(mol)
+        solver.occslst = 'all'
+        solver.davidson_tol = 1e-10
+        e, ci = solver.kernel(h1, eri, norb, nelec, ecore=ecore)
+        self.assertAlmostEqual(e, e_ref, 8)
+        (a, b), (aa, ab, bb) = solver.make_rdm12s(ci, norb, nelec)
+        self.assertGreater(abs(dm1a - dm1b).max(), 1e-2)
+        self.assertAlmostEqual(abs(a - dm1a).max(), 0, 5)
+        self.assertAlmostEqual(abs(b - dm1b).max(), 0, 5)
+        self.assertAlmostEqual(abs(aa - dm2aa).max(), 0, 5)
+        self.assertAlmostEqual(abs(ab - dm2ab).max(), 0, 5)
+        self.assertAlmostEqual(abs(bb - dm2bb).max(), 0, 5)
+
+        solver = converged_selection(shci.UnrestrictedSHCI(mol))
+        e, ci = solver.kernel(h1, eri, norb, nelec, ecore=ecore)
+        self.assertAlmostEqual(e, e_ref, 8)
+
+
 if __name__ == '__main__':
     print('Tests for hci.shci.SpatialSHCI against pyscf.fci')
     unittest.main()

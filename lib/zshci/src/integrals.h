@@ -64,6 +64,18 @@ class Integrals {
   bool is_spatial() const { return num_spatial_ > 0; }
   int num_spatial() const { return num_spatial_; }
 
+  // Storage over 2 * num_spatial spin orbitals, 2P (alpha) and 2P + 1 (beta),
+  // whose alpha and beta spatial parts may differ (an unrestricted
+  // reference): antisymmetrized integrals in the blocks of the spin
+  // projection and of `spatial_symmetry`, as for Spatial. Collective.
+  static Integrals SpinOrbitals(int num_spatial,
+                                const std::vector<LabelSet>& spatial_symmetry,
+                                const Comm& comm = Comm());
+
+  // Whether the orbitals are spin orbitals 2P, 2P + 1 with the spin
+  // projection as the first label set (Spatial and SpinOrbitals).
+  bool has_spin_orbitals() const { return spin_orbitals_; }
+
   int num_orbs() const { return num_orbs_; }
   int num_elec() const { return num_elec_; }
   double core_energy() const { return core_energy_; }
@@ -199,6 +211,7 @@ class Integrals {
 
   int num_orbs_ = 0;
   int num_spatial_ = 0;  // nonzero: spatial orbitals
+  bool spin_orbitals_ = false;
   int num_elec_ = 0;
   double core_energy_ = 0.0;
   double max_forbidden_ = 0.0;
@@ -265,6 +278,22 @@ Integrals<S> ReadSpatialFcidump(const std::string& path,
                                 const std::vector<LabelSet>& symmetry,
                                 double symmetry_tolerance,
                                 const Comm& comm = Comm());
+
+// Reads the integrals of an unrestricted reference from an HDF5 file with
+// the real datasets, for n spatial orbitals of each spin,
+//   h1_a, h1_b                 (n, n)
+//   eri_aa, eri_bb, eri_ab     (n, n, n, n), (pq|rs) with p, q of the first
+//                              and r, s of the second spin named
+// and the optional attributes ecore (double) and nelec (int). The result
+// holds spin orbitals (Integrals::SpinOrbitals); `symmetry` is per spatial
+// orbital, and a set without labels is not allowed.
+//
+// Collective. Instantiated for double and Complex.
+template <typename S>
+Integrals<S> ReadUnrestrictedIntegrals(const std::string& path,
+                                       const std::vector<LabelSet>& symmetry,
+                                       double symmetry_tolerance,
+                                       const Comm& comm = Comm());
 
 }  // namespace zshci
 

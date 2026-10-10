@@ -707,9 +707,10 @@ std::vector<CsrBlock<S>> BuildBlocks(Span<Det<W>> dets, size_t first_new,
     throw std::length_error("too many determinants for a 32-bit index");
   }
   if (options.method == ConnectMethod::kSpinStrings) {
-    if (!ints.is_spatial()) {
+    if (!ints.has_spin_orbitals()) {
       throw std::invalid_argument(
-          "the spin-string connection search needs spatial orbitals");
+          "the spin-string connection search needs spin orbitals with a "
+          "conserved spin projection");
     }
     const double time = omp_get_wtime();
     const internal::SpinStringTables<W> tables(dets, comm);

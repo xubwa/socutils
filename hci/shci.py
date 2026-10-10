@@ -478,3 +478,85 @@ class SpatialSHCI(SHCI):
 
     def spin_square(self, fcivec, norb, nelec):
         raise NotImplementedError('zshci does not evaluate <S^2>')
+
+
+class UnrestrictedSHCI(SpatialSHCI):
+    '''Selected CI on an unrestricted reference: different spatial orbitals
+    for the two spins.  Interface and conventions of pyscf.fci.direct_uhf:
+
+        h1e = (h1_a, h1_b)
+        eri = (eri_aa, eri_ab, eri_bb),  eri_ab[p,q,r,s] = (p_a q_a|r_b s_b)
+        nelec = (nalpha, nbeta)
+
+    The program holds these integrals over spin orbitals in spin blocks, three
+    times what a restricted calculation of the same size takes, and returns
+    density matrices over the spin orbitals; meant for moderate active spaces.
+    orbsym (D2h-subgroup numbers) must then be the same for the alpha and the
+    beta orbital of each index.
+    '''
+
+    def _input(self, norb, nelec, nroots):
+        inp = super()._input(norb, nelec, nroots)
+        inp['orbitals'] = 'unrestricted'
+        inp['integrals'] = os.path.join(self.scratch, 'integrals.h5')
+        return inp
+
+    def _write_integrals(self, inp, h1e, eri, norb, nelec, ecore):
+        from pyscf import ao2mo
+
+        def full(x, mixed=False):
+            x = numpy.asarray(x)
+            if x.ndim == 4:
+                return x
+            if mixed:
+                # (npair, npair) with fourfold symmetry.
+                x = lib.unpack_tril(x.reshape(-1, norb * (norb + 1) // 2))
+                x = lib.unpack_tril(x.reshape(-1, norb * norb).T.copy())
+                return x.reshape(norb, norb, norb, norb).transpose(2, 3, 0, 1)
+            return ao2mo.restore(1, x, norb)
+
+        if any(numpy.iscomplexobj(x) for x in tuple(h1e) + tuple(eri)):
+            raise ValueError('integrals of an unrestricted reference must be '
+                             'real')
+        nalpha, nbeta = self._nelec_ab
+        with h5py.File(inp['integrals'], 'w') as f:
+            f['h1_a'] = numpy.asarray(h1e[0], dtype=float)
+            f['h1_b'] = numpy.asarray(h1e[1], dtype=float)
+            f['eri_aa'] = full(eri[0])
+            f['eri_ab'] = full(eri[1], mixed=True)
+            f['eri_bb'] = full(eri[2])
+            f.attrs['ecore'] = float(numpy.real(ecore))
+            f.attrs['nelec'] = numpy.int32(nalpha + nbeta)
+
+    def make_rdm1s(self, fcivec, norb, nelec, **kwargs):
+        '''(dm1a, dm1b), dm1a[p,q] = <p_a^+ q_a>.'''
+        state = _state_index(fcivec)
+        dm1 = self._read(state, state, 'dm1')
+        return dm1[0::2, 0::2], dm1[1::2, 1::2]
+
+    def make_rdm12s(self, fcivec, norb, nelec, **kwargs):
+        '''((dm1a, dm1b), (dm2aa, dm2ab, dm2bb)) as pyscf.fci.direct_uhf:
+        dm2ab[p,q,r,s] = <p_a^+ r_b^+ s_b q_a>.'''
+        state = _state_index(fcivec)
+        dm2 = self._read(state, state, 'dm2')
+        return (self.make_rdm1s(fcivec, norb, nelec),
+                (dm2[0::2, 0::2, 0::2, 0::2], dm2[0::2, 0::2, 1::2, 1::2],
+                 dm2[1::2, 1::2, 1::2, 1::2]))
+
+    def make_rdm1(self, fcivec, norb, nelec, **kwargs):
+        dm1a, dm1b = self.make_rdm1s(fcivec, norb, nelec)
+        return dm1a + dm1b
+
+    def make_rdm2(self, fcivec, norb, nelec, **kwargs):
+        return self.make_rdm12(fcivec, norb, nelec)[1]
+
+    def make_rdm12(self, fcivec, norb, nelec, **kwargs):
+        (dm1a, dm1b), (dm2aa, dm2ab, dm2bb) = self.make_rdm12s(fcivec, norb,
+                                                               nelec)
+        return (dm1a + dm1b,
+                dm2aa + dm2ab + dm2ab.transpose(2, 3, 0, 1) + dm2bb)
+
+    def trans_rdm1(self, cibra, ciket, norb, nelec, **kwargs):
+        t = super().trans_rdm1(cibra, ciket, norb, nelec)
+        return t[0::2, 0::2] + t[1::2, 1::2]
+

@@ -143,7 +143,9 @@ two-electron corrections on) and only then require the `x2camf` integral backend
   `hci/test/test_shci.py` (against `zfci`). The same program does
   non-relativistic selected CI over spatial orbitals (`"orbitals": "spatial"`,
   class `SpatialSHCI`, a drop-in `fcisolver` for PySCF's CASCI/CASSCF with
-  spin-traced RDMs; test `hci/test/test_spatial_shci.py` against `pyscf.fci`).
+  spin-traced RDMs; test `hci/test/test_spatial_shci.py` against `pyscf.fci`)
+  and, for an unrestricted reference, `UnrestrictedSHCI` (interface of
+  `pyscf.fci.direct_uhf`).
 
 ## Environment variables
 
