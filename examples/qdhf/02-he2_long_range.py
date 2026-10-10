@@ -29,7 +29,7 @@ from pyscf import gto
 from socutils import qdhf
 from socutils.qdhf.qarray import qmp
 
-basis = sys.argv[1] if len(sys.argv) > 1 else 'unc-cc-pvdz'
+basis = sys.argv[1] if len(sys.argv) > 1 else 'cc-pvdz'
 distances = [5, 10, 20, 40, 80, 160]   # Angstrom
 
 methods = {

@@ -205,6 +205,28 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(abs(h - mf0.get_hcore()).max(), 0, 12)
         self.assertAlmostEqual(float(mf.kernel()), e_ref, 10)
 
+    def test_sfx2c1e_xuncontract(self):
+        from pyscf import lib
+        from pyscf.x2c import x2c as px2c
+        mol1 = gto.M(atom='He 0 0 0; He 0.3 0 2.5', basis='cc-pvdz', verbose=0)
+        xmol, contr = x2c.uncontract_mol(mol1)
+        cd = contr.to_numpy()
+        self.assertAlmostEqual(abs(cd.T @ xmol.intor('int1e_ovlp') @ cd
+                                   - mol1.intor('int1e_ovlp')).max(), 0, 14)
+        c = lib.param.LIGHT_SPEED
+        t, v, w, s = [xmol.intor_symmetric(k) for k in
+                      ('int1e_kin', 'int1e_nuc', 'int1e_pnucp', 'int1e_ovlp')]
+        ref = cd.T @ px2c._get_hcore_fw(t, v, w, s, px2c._x2c1e_xmatrix(t, v, w, s, c), c) @ cd
+        self.assertAlmostEqual(abs(x2c.get_hcore(mol1).to_numpy() - ref).max(), 0, 12)
+
+        mf0 = scf.RHF(mol1).sfx2c1e()
+        mf0.with_x2c.approx = 'atom1e'
+        h = x2c.get_hcore(mol1, approx='atom1e').to_numpy()
+        self.assertAlmostEqual(abs(h - mf0.get_hcore()).max(), 0, 12)
+        mf = x2c.SFX2C1E_RHF(mol1)
+        mf.approx = 'atom1e'
+        self.assertAlmostEqual(float(mf.kernel()), mf0.kernel(), 10)
+
     def test_he2_x2c_long_range(self):
         # spurious R^-4 tail of the molecular sf-X2C-1e decoupling
         basis = 'unc-cc-pvdz'

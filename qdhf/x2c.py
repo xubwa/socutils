@@ -17,9 +17,12 @@
 Spin-free exact two-component (sf-X2C-1e) Hartree-Fock in quadruple
 precision.
 
-The one-electron X2C decoupling follows pyscf.x2c.sfx2c1e (with
-xuncontract=False, i.e. the X2C transformation is carried out in the basis of
-mol; use an uncontracted basis set to reproduce the usual setting):
+The one-electron X2C decoupling follows pyscf.x2c.sfx2c1e.  With
+xuncontract=True (default, as in pyscf) the decoupling is carried out in the
+decontracted basis (one shell per unique exponent and angular momentum on
+each atom) and the X2C Hamiltonian is contracted back,
+h = C^T h_unc C, with the contraction coefficients C in quad precision.
+With xuncontract=False the X2C transformation is done in the basis of mol.
 
     h4 = [[V, T], [T, W/(4c^2) - T]],  M4 = [[S, 0], [0, T/(2c^2)]]
     h4 C = M4 C E,   X = C_S C_L^{-1}  (positive energy solutions)
@@ -34,6 +37,7 @@ The two-electron interaction is the nonrelativistic Coulomb operator
 (no picture change).
 '''
 
+import numpy
 from pyscf import lib
 from pyscf.lib import logger
 from socutils.qdhf import qarray
@@ -83,8 +87,61 @@ def xmatrix(t, v, w, s, c):
     return qarray.solve(cl.T, cs.T).T
 
 
-def get_hcore(mol, light_speed=None, approx='1e', qi=None):
+def uncontract_mol(mol):
+    '''Decontracted molecule and the quad precision coefficients C
+    (xmol.nao x mol.nao) of the contracted AOs of mol in the AOs of xmol.
+
+    Primitives with the same exponent and angular momentum on the same atom
+    are merged (same as pyscf mol.decontract_basis(aggregate=True)).
+    '''
+    xbasis = {}
+    for key, shells in mol._basis.items():
+        prims = []
+        for b in shells:
+            if isinstance(b[1], (int, numpy.integer)):
+                if b[1] != 0:
+                    raise NotImplementedError('kappa-dependent spinor basis')
+                b = [b[0]] + list(b[2:])
+            l = b[0]
+            for prim in b[1:]:
+                if (l, prim[0]) not in prims:
+                    prims.append((l, prim[0]))
+        prims.sort(key=lambda x: (x[0], -x[1]))
+        xbasis[key] = [[l, [e, 1.]] for l, e in prims]
+    xmol = mol.copy(deep=False)
+    xmol.build(False, False, basis=xbasis)
+
+    xshell = {}
+    for ib in range(xmol.nbas):
+        assert xmol.bas_nprim(ib) == 1
+        xshell[(xmol.bas_atom(ib), xmol.bas_angular(ib),
+                float(xmol.bas_exp(ib)[0]))] = ib
+    ao_loc = mol.ao_loc_nr(mol.cart)
+    xao_loc = xmol.ao_loc_nr(xmol.cart)
+    nao = ao_loc[-1]
+    xnao = xao_loc[-1]
+    c = numpy.empty((xnao, nao), dtype=object)
+    c[:] = hmp.mpf(0)
+    for ib, (ia, l, es, cs) in enumerate(qints.shell_data(mol)):
+        cs = qints.normalized_coefficients(l, es, cs)
+        nf = ao_loc[ib+1] - ao_loc[ib]
+        nf //= cs.shape[1]
+        for k, e in enumerate(es):
+            # normalization of the uncontracted primitive in xmol
+            nk = qints.normalized_coefficients(l, [e], numpy.ones((1, 1)))[0, 0]
+            xb = xshell[(ia, l, float(e))]
+            for ic in range(cs.shape[1]):
+                for m in range(nf):
+                    c[xao_loc[xb]+m, ao_loc[ib]+ic*nf+m] += cs[k, ic] / nk
+    return xmol, QArray.from_mpf(c)
+
+
+def get_hcore(mol, light_speed=None, approx='1e', qi=None, xuncontract=True):
     '''sf-X2C-1e one-electron Hamiltonian in quad precision'''
+    if xuncontract:
+        xmol, contr = uncontract_mol(mol)
+        h = get_hcore(xmol, light_speed, approx, xuncontract=False)
+        return contr.T @ h @ contr
     if qi is None:
         qi = qints.QuadIntegrals(mol)
     c = dhf.get_light_speed(light_speed)
@@ -125,9 +182,11 @@ class SFX2C1E_RHF(dhf.RHF):
 
     Attributes:
         approx : '1e' (default, molecular decoupling) or 'atom1e'
+        xuncontract : decouple in the decontracted basis (default True)
         light_speed : speed of light (default lib.param.LIGHT_SPEED)
     '''
     approx = '1e'
+    xuncontract = True
 
     def __init__(self, mol, light_speed=None):
         dhf.RHF.__init__(self, mol)
@@ -137,6 +196,7 @@ class SFX2C1E_RHF(dhf.RHF):
         dhf.RHF.dump_flags(self, verbose)
         log = logger.new_logger(self, verbose)
         log.info('X2C approx = %s', self.approx)
+        log.info('X2C xuncontract = %s', self.xuncontract)
         log.info('light speed = %s', qmp.nstr(qmp.mpf(dhf.get_light_speed(self.light_speed)), 34))
         return self
 
@@ -145,7 +205,7 @@ class SFX2C1E_RHF(dhf.RHF):
         t0 = (logger.process_clock(), logger.perf_counter())
         mol = self.mol
         qi = qints.QuadIntegrals(mol)
-        h = get_hcore(mol, self.light_speed, self.approx, qi)
+        h = get_hcore(mol, self.light_speed, self.approx, qi, self.xuncontract)
         t0 = log.timer('quad sf-X2C-1e hcore', *t0)
         eri = {('X', 'X'): qi.eri_xxxx()}
         log.timer('quad 2e integrals', *t0)
@@ -158,7 +218,7 @@ class SFX2C1E_RHF(dhf.RHF):
     def _pyscf_guess(self):
         from pyscf import scf
         mf = scf.RHF(self.mol).sfx2c1e()
-        mf.with_x2c.xuncontract = False
+        mf.with_x2c.xuncontract = self.xuncontract
         mf.with_x2c.approx = self.approx
         mf.verbose = 0
         mf.conv_tol = 1e-11
