@@ -136,10 +136,18 @@ def uncontract_mol(mol):
     return xmol, QArray.from_mpf(c)
 
 
-def get_xr(mol, light_speed=None, approx='1e', qi=None):
+def get_xr(mol, light_speed=None, approx='1e', qi=None, omega=1.0):
     '''X and R matrices of sf-X2C-1e in the basis of mol (no decontraction).
 
-    Returns a dict with x, r and the integrals t, v, w (pV.p), s.
+    approx = '1e', 'atom1e' or 'rs1e'.  'rs1e' is the range-separated X2C-1e
+    of Q. Sun (pyscf branch range-separated-x2c1e): every nucleus is split
+    into V = V_sr + V_lr, V_lr = -Z erf(omega r)/r (the potential of a
+    Gaussian countercharge exp(-omega^2 r^2)); X is built from V_sr only and
+    V_lr is added untransformed, consistent with the untransformed
+    electron-electron interaction.
+
+    Returns a dict with x, r, the integrals t, v, w (pV.p), s and, for
+    'rs1e', v_lr (v and w are then the short-range parts).
     '''
     if qi is None:
         qi = qints.QuadIntegrals(mol)
@@ -152,7 +160,15 @@ def get_xr(mol, light_speed=None, approx='1e', qi=None):
     t = (sy[0::3, 0::3] + sy[1::3, 1::3] + sy[2::3, 2::3]) * hmp.mpf(0.5)
     w = vy[0::3, 0::3] + vy[1::3, 1::3] + vy[2::3, 2::3]
 
-    if approx.upper() == '1E':
+    v_lr = None
+    if approx.upper() == 'RS1E':
+        zeta = float(omega)**2
+        v_lr = qi.nuc_x(zeta=zeta)
+        vy_lr = qi.nuc_y(zeta=zeta)
+        v = v - v_lr
+        w = w - (vy_lr[0::3, 0::3] + vy_lr[1::3, 1::3] + vy_lr[2::3, 2::3])
+        x = xmatrix(t, v, w, s, c)
+    elif approx.upper() == '1E':
         x = xmatrix(t, v, w, s, c)
     elif approx.upper() in ('ATOM1E', 'ATOM'):
         x = QArray.zeros((n, n))
@@ -171,7 +187,8 @@ def get_xr(mol, light_speed=None, approx='1e', qi=None):
 
     s1 = s + x.T @ t @ x * (1 / (2 * c**2))
     r = _get_r(s, s1)
-    return {'x': x, 'r': r, 't': t, 'v': v, 'w': w, 's': s, 'c': c, 'qi': qi}
+    return {'x': x, 'r': r, 't': t, 'v': v, 'w': w, 's': s, 'c': c, 'qi': qi,
+            'v_lr': v_lr}
 
 
 def hcore_from_xr(d):
@@ -179,7 +196,10 @@ def hcore_from_xr(d):
     x, r, t, v, w, c = d['x'], d['r'], d['t'], d['v'], d['w'], d['c']
     tx = t @ x
     h1 = v + tx + tx.T - x.T @ tx + x.T @ w @ x * (1 / (4 * c**2))
-    return r.T @ h1 @ r
+    h = r.T @ h1 @ r
+    if d.get('v_lr') is not None:
+        h = h + d['v_lr']
+    return h
 
 
 def picture_change(d, v_op, w_op):
@@ -189,25 +209,27 @@ def picture_change(d, v_op, w_op):
     return r.T @ (v_op + x.T @ w_op @ x * (1 / (4 * c**2))) @ r
 
 
-def get_hcore(mol, light_speed=None, approx='1e', qi=None, xuncontract=True):
+def get_hcore(mol, light_speed=None, approx='1e', qi=None, xuncontract=True, omega=1.0):
     '''sf-X2C-1e one-electron Hamiltonian in quad precision'''
     if xuncontract:
         xmol, contr = uncontract_mol(mol)
-        h = get_hcore(xmol, light_speed, approx, xuncontract=False)
+        h = get_hcore(xmol, light_speed, approx, xuncontract=False, omega=omega)
         return contr.T @ h @ contr
-    return hcore_from_xr(get_xr(mol, light_speed, approx, qi))
+    return hcore_from_xr(get_xr(mol, light_speed, approx, qi, omega))
 
 
 class SFX2C1E_RHF(dhf.RHF):
     '''Quad precision closed-shell RHF with the sf-X2C-1e Hamiltonian
 
     Attributes:
-        approx : '1e' (default, molecular decoupling) or 'atom1e'
+        approx : '1e' (default, molecular decoupling), 'atom1e' or 'rs1e'
+        omega : range-separation parameter of 'rs1e' (default 1.0)
         xuncontract : decouple in the decontracted basis (default True)
         light_speed : speed of light (default lib.param.LIGHT_SPEED)
     '''
     approx = '1e'
     xuncontract = True
+    omega = 1.0
 
     def __init__(self, mol, light_speed=None):
         dhf.RHF.__init__(self, mol)
@@ -226,7 +248,7 @@ class SFX2C1E_RHF(dhf.RHF):
         t0 = (logger.process_clock(), logger.perf_counter())
         mol = self.mol
         qi = qints.QuadIntegrals(mol)
-        h = get_hcore(mol, self.light_speed, self.approx, qi, self.xuncontract)
+        h = get_hcore(mol, self.light_speed, self.approx, qi, self.xuncontract, self.omega)
         t0 = log.timer('quad sf-X2C-1e hcore', *t0)
         eri = {('X', 'X'): qi.eri_xxxx()}
         log.timer('quad 2e integrals', *t0)

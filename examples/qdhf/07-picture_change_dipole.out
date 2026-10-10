@@ -1,0 +1,13 @@
+HF molecule, sf-X2C-1e(atom1e): picture-change error of the electronic dipole
+basis                          nao   dmu_z (a.u.)    Z_He*dmu_z    
+cc-pVDZ                         19    1.135292e-06    2.270584e-06
+cc-pVTZ                         44    1.474515e-07    2.949030e-07
+aug-cc-pVTZ                     69    8.523081e-09    1.704616e-08
+cc-pVQZ                         85    6.680485e-08    1.336097e-07
+aug-cc-pVQZ                    126   -1.302749e-09   -2.605498e-09
+ETB beta=3.0 (F spdf, H spd)   126   -1.391923e-08   -2.783847e-08
+ETB beta=2.5 (F spdf, H spd)   152    5.103737e-09    1.020747e-08
+ETB beta=2.0 (F spdf, H spd)   188    2.841558e-04    5.683116e-04
+ETB beta=1.8 (F spdf, H spd)   220    5.182607e-04    1.036521e-03
+ETB beta=2.5 (F spdfg, H spdf)   200    1.455008e-08    2.910015e-08
+ETB beta=2.0 (F spdfg, H spdf)   252   -1.076624e-04   -2.153248e-04

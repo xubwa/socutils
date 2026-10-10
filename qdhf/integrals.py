@@ -314,12 +314,16 @@ class QuadIntegrals:
         self._zetas = qarray._raw_from_double(zetas)
 
     # ------------------------------------------------------------ raw ints
-    def _int1e_cart(self, kind, shls_i, shls_j, atoms=None):
+    def _int1e_cart(self, kind, shls_i, shls_j, atoms=None, zeta=None):
         ni = sum((self._bas[i,0]+1)*(self._bas[i,0]+2)//2 for i in shls_i)
         nj = sum((self._bas[i,0]+1)*(self._bas[i,0]+2)//2 for i in shls_j)
         out = numpy.empty((ni, nj), dtype=QDTYPE)
         ptr = qarray._ptr
         charges = self._charges
+        zetas = self._zetas
+        if zeta is not None:
+            # Gaussian charge distributions exp(-zeta r^2) on all nuclei
+            zetas = qarray._raw_from_double(numpy.full(self.mol.natm, float(zeta)))
         if atoms is not None:
             # nuclear attraction of the selected nuclei only
             z = self.mol.atom_charges().astype(float)
@@ -332,7 +336,7 @@ class QuadIntegrals:
             ptr(shls_j), ctypes.c_int(len(shls_j)),
             ptr(self._bas), ptr(self._env),
             ctypes.c_int(self.mol.natm), ptr(charges), ptr(self._coords),
-            ptr(self._zetas))
+            ptr(zetas))
         if ierr != 0:
             raise RuntimeError('QDint1e failed')
         return QArray(out)
@@ -354,9 +358,11 @@ class QuadIntegrals:
         s = self._int1e_cart(0, self.shls_L, self.shls_L)
         return self.cx @ s @ self.cx.T
 
-    def nuc_x(self, atoms=None):
-        '''<chi_mu | V_nuc | chi_nu>.  atoms selects a subset of the nuclei'''
-        v = self._int1e_cart(1, self.shls_L, self.shls_L, atoms)
+    def nuc_x(self, atoms=None, zeta=None):
+        '''<chi_mu | V_nuc | chi_nu>.  atoms selects a subset of the nuclei.
+        zeta: replace the nuclei by Gaussian charges exp(-zeta r^2), i.e.
+        the long-range potential -Z erf(sqrt(zeta) r)/r'''
+        v = self._int1e_cart(1, self.shls_L, self.shls_L, atoms, zeta)
         return self.cx @ v @ self.cx.T
 
     def ovlp_y(self):
@@ -364,10 +370,10 @@ class QuadIntegrals:
         s = self._int1e_cart(0, self.shls_S, self.shls_S)
         return self.cy @ s @ self.cy.T
 
-    def nuc_y(self, atoms=None):
+    def nuc_y(self, atoms=None, zeta=None):
         '''<d_a chi_mu | V_nuc | d_b chi_nu>,  index 3*mu+a.  atoms selects a
-        subset of the nuclei'''
-        v = self._int1e_cart(1, self.shls_S, self.shls_S, atoms)
+        subset of the nuclei.  zeta: see nuc_x'''
+        v = self._int1e_cart(1, self.shls_S, self.shls_S, atoms, zeta)
         return self.cy @ v @ self.cy.T
 
     def eri_xxxx(self):

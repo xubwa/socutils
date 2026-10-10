@@ -227,6 +227,25 @@ class KnownValues(unittest.TestCase):
         mf.approx = 'atom1e'
         self.assertAlmostEqual(float(mf.kernel()), mf0.kernel(), 10)
 
+    def test_sfx2c_rs1e(self):
+        # range-separated X2C-1e, formula of pyscf branch range-separated-x2c1e
+        from pyscf import lib
+        from pyscf.x2c import x2c as px2c, sfx2c1e
+        mol1 = gto.M(atom='F 0 0 0; H 0 0 0.917; He 0 0 4', basis='cc-pvdz', verbose=0)
+        omega = 0.8
+        xmol, contr = sfx2c1e.SpinFreeX2CHelper(mol1).get_xmol()
+        c = lib.param.LIGHT_SPEED
+        t, v, w, s = [xmol.intor_symmetric(k) for k in
+                      ('int1e_kin', 'int1e_nuc', 'int1e_pnucp', 'int1e_ovlp')]
+        xmol._atm[:, 2] = 2
+        xmol._env[xmol._atm[:, 3]] = omega**2
+        vlr = xmol.intor_symmetric('int1e_nuc')
+        wlr = xmol.intor_symmetric('int1e_pnucp')
+        x = px2c._x2c1e_xmatrix(t, v-vlr, w-wlr, s, c)
+        ref = contr.T @ (px2c._get_hcore_fw(t, v-vlr, w-wlr, s, x, c) + vlr) @ contr
+        h = x2c.get_hcore(mol1, approx='rs1e', omega=omega).to_numpy()
+        self.assertAlmostEqual(abs(h - ref).max(), 0, 11)
+
     def test_he2_x2c_long_range(self):
         # spurious R^-4 tail of the molecular sf-X2C-1e decoupling
         basis = 'unc-cc-pvdz'
