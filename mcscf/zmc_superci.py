@@ -1028,6 +1028,13 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
             mc.e_tot = e_tot
             mc.e_cas = e_cas
             mc._finalize()
+    if rejected or stalled:
+        # the last CI was done at the orbitals of a rejected step; the returned CI vector and
+        # e_cas (and the files of a file-based solver) must belong to the returned orbitals
+        eris = zmc_ao2mo._CDERIS(mc, mo, cderi=cderi, level=2)
+        mci = zmcscf._fake_h_for_fast_casci(mc, mo, eris)
+        e_tot, e_cas, fcivec = mci.kernel(mo, ci0=None, verbose=verbose)
+        print(f'CI redone at the last accepted orbitals, E = {e_tot:.12f}')
     mc.mo_coeff = mo
     print_timings('mcscf_superci', wall=time.perf_counter() - cput0[1])
     return conv, e_tot, e_cas, fcivec, mo, None
