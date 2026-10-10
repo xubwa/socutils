@@ -1,0 +1,4 @@
+build/
+build_mpi/
+bin/
+config.mk
