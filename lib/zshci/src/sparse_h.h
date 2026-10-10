@@ -1,0 +1,115 @@
+// Sparse Hermitian Hamiltonian in the determinant basis.
+//
+// Only the strict upper triangle is stored, so the matrix costs half the
+// memory of a full CSR. The matrix is a list of blocks because a selected-CI
+// calculation grows the determinant list: each block holds the elements whose
+// column lies in the range of determinants added in one iteration.
+
+#ifndef ZSHCI_SRC_SPARSE_H_H_
+#define ZSHCI_SRC_SPARSE_H_H_
+
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+#include "integrals.h"
+#include "parallel.h"
+
+namespace zshci {
+
+// A Hermitian operator the eigensolver can work with.
+class LinearOperator {
+ public:
+  virtual ~LinearOperator() = default;
+  virtual size_t dim() const = 0;
+  virtual const std::vector<double>& diagonal() const = 0;
+  // y = H x.
+  virtual void Apply(const Complex* x, Complex* y) const = 0;
+};
+
+// Index of a determinant in the variational space.
+using DetIndex = uint32_t;
+
+// Compressed storage of elements H(i, j) = <D_i|H|D_j> with i < j < dim and
+// j >= first_col. Only the rows that hold elements are listed, so a rank
+// that holds a small part of the matrix does not pay for all its rows:
+// row[r] is the r-th such row, in increasing order, and its elements are
+// col/val[row_ptr[r] .. row_ptr[r + 1]), sorted by column.
+struct CsrBlock {
+  size_t dim = 0;
+  size_t first_col = 0;
+  RawArray<DetIndex> row;
+  std::vector<uint64_t> row_ptr;  // row.size() + 1 entries
+  RawArray<DetIndex> col;
+  RawArray<Complex> val;
+
+  size_t num_stored_rows() const { return row.size(); }
+  size_t num_elements() const { return col.size(); }
+};
+
+// Whether two blocks hold the same elements, the values within `tolerance`.
+bool SameBlock(const CsrBlock& a, const CsrBlock& b, double tolerance);
+
+class SparseH : public LinearOperator {
+ public:
+  size_t dim() const override { return dim_; }
+  // Empty on ranks that were given no diagonal (see Grow).
+  const std::vector<double>& diagonal() const override { return diagonal_; }
+  void Apply(const Complex* x, Complex* y) const override { Multiply(x, y); }
+  const std::vector<CsrBlock>& blocks() const { return blocks_; }
+  size_t num_elements() const;
+
+  // Appends the diagonal elements of newly added determinants.
+  void AppendDiagonal(const std::vector<double>& diagonal);
+
+  // Enlarges the matrix to `dim` rows without storing diagonal elements, for
+  // the ranks that do not apply the diagonal.
+  void Grow(size_t dim) { dim_ = dim; }
+
+  // Adds a block and re-partitions the rows among the threads.
+  void AppendBlock(CsrBlock block);
+
+  // y = H x. Each thread owns a contiguous range of y and is the only writer
+  // to it: an element H(i, j) is read once by the owner of i, for
+  // y_i += H(i,j) x_j, and once by the owner of j, for y_j += conj(H(i,j)) x_i.
+  // No thread-private copy of y is made. For the second kind of access every
+  // block keeps, per row, the positions where the columns pass from one
+  // thread's range to the next.
+  void Multiply(const Complex* x, Complex* y) const;
+
+  // When the matrix is spread over several ranks, each holding part of the
+  // off-diagonal elements, exactly one of them must add the diagonal.
+  void set_apply_diagonal(bool apply) { apply_diagonal_ = apply; }
+
+  // Plain serial product, used to check Multiply.
+  void MultiplyReference(const Complex* x, Complex* y) const;
+
+ private:
+  // Where the columns of each row of one block cross segment boundaries.
+  struct SplitTable {
+    // The segments that hold columns of this block.
+    int first_segment = 0;
+    int last_segment = 0;
+    // For stored row r and boundary b = 0 .. last_segment - first_segment - 1,
+    // the offset within the row of the first column in segment
+    // first_segment + b + 1.
+    RawArray<uint32_t> offset;
+
+    int num_boundaries() const { return last_segment - first_segment; }
+  };
+
+  void PartitionRows();
+  void BuildSplitTable(const CsrBlock& block, SplitTable* table) const;
+
+  size_t dim_ = 0;
+  std::vector<double> diagonal_;
+  std::vector<CsrBlock> blocks_;
+  std::vector<SplitTable> splits_;  // one per block
+  // Thread t owns rows [segment_[t], segment_[t + 1]).
+  std::vector<size_t> segment_;
+  bool apply_diagonal_ = true;
+};
+
+}  // namespace zshci
+
+#endif  // ZSHCI_SRC_SPARSE_H_H_
