@@ -4,20 +4,28 @@
 #   make MPI=1 CXX=mpicxx     MPI + threads
 #   make test                 self-checks
 #
-# Requires a C++17 compiler with OpenMP, Eigen 3 and HDF5. Put the paths of
-# your machine into config.mk (not tracked), for example
+# Requires a C++17 compiler with OpenMP, Eigen 3 and HDF5 (a serial build of
+# HDF5 is enough, also for MPI=1: only one rank writes files). HighFive and
+# nlohmann/json are in third_party/.
 #
-#   EIGEN_ROOT = /path/to/eigen
-#   HDF5_ROOT  = /path/to/hdf5
+# Eigen and HDF5 are looked for in an active conda environment
+# (conda install eigen hdf5), else under /usr. To use other locations, put
+# them into config.mk (not tracked):
 #
-# HighFive and nlohmann/json are in third_party/.
+#   EIGEN_ROOT = /path/to/eigen      # the directory that contains Eigen/
+#   HDF5_ROOT  = /path/to/hdf5       # contains include/ and lib/
 
 -include config.mk
 
 CXX        ?= g++
-EIGEN_ROOT ?= /usr/include/eigen3
-HDF5_ROOT  ?= /usr
 MPI        ?= 0
+ifdef CONDA_PREFIX
+  EIGEN_ROOT ?= $(CONDA_PREFIX)/include/eigen3
+  HDF5_ROOT  ?= $(CONDA_PREFIX)
+else
+  EIGEN_ROOT ?= /usr/include/eigen3
+  HDF5_ROOT  ?= /usr
+endif
 
 CXXFLAGS  := -std=c++17 -O3 -g -march=core-avx2 -fopenmp -Wall -Wextra \
              -Isrc -isystem third_party -isystem $(EIGEN_ROOT) \

@@ -21,12 +21,16 @@ it to RAS-type spaces.
 
 ## Building
 
-A C++17 compiler with OpenMP, Eigen 3 and HDF5 are needed. HighFive and
-nlohmann/json are included in `third_party/`. Put the paths of your machine
+A C++17 compiler with OpenMP, Eigen 3 and HDF5 are needed; a serial build of
+HDF5 is enough, also for the MPI program. HighFive and nlohmann/json are
+included in `third_party/`.
+
+Eigen and HDF5 are found automatically in an active conda environment
+(`conda install eigen hdf5`) or under `/usr`. For other locations, write them
 into `config.mk`:
 
-    EIGEN_ROOT = /path/to/eigen
-    HDF5_ROOT  = /path/to/hdf5
+    EIGEN_ROOT = /path/to/eigen      # the directory that contains Eigen/
+    HDF5_ROOT  = /path/to/hdf5       # contains include/ and lib/
 
 Then
 
