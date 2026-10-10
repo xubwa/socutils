@@ -122,11 +122,12 @@ Json ToJson(const Input& in) {
               {"two", in.rdm.two},
               {"transition", in.rdm.transition}};
   j["hij_threshold"] = in.hij_threshold;
-  j["connect"] = {{"method", in.connect_by_spin_strings ? "spin"
-                             : in.connect_by_segments   ? "segments"
-                                                        : "strings"},
+  j["connect"] = {{"method", in.connect_by_groups     ? "groups"
+                             : in.connect_by_segments ? "segments"
+                                                      : "strings"},
                   {"segments", in.connect_segments},
                   {"batches", in.connect_batches}};
+  if (!in.connect_group_a.empty()) j["connect"]["group_a"] = in.connect_group_a;
   j["check"] = in.check;
   j["output_level"] = in.output_level;
   return j;
@@ -341,21 +342,17 @@ Input ParseInput(const std::string& text) {
   // An explicit non-negative threshold together with density matrices is
   // allowed, but the density matrices then miss the dropped pairs.
   top.Get("hij_threshold", &in.hij_threshold);
-  in.connect_by_spin_strings = spin_orbitals;
+  in.connect_by_groups = spin_orbitals;
   if (top.Has("connect")) {
     ObjectReader connect(top.At("connect"), "connect");
-    std::string method = spin_orbitals ? "spin" : "strings";
+    std::string method = spin_orbitals ? "groups" : "strings";
     connect.Get("method", &method);
-    if (method != "strings" && method != "segments" && method != "spin") {
-      connect.Fail("method", "must be \"strings\", \"segments\" or \"spin\"");
+    if (method != "strings" && method != "segments" && method != "groups") {
+      connect.Fail("method", "must be \"strings\", \"segments\" or \"groups\"");
     }
     in.connect_by_segments = method == "segments";
-    in.connect_by_spin_strings = method == "spin";
-    if (in.connect_by_spin_strings && !spin_orbitals) {
-      connect.Fail("method",
-                   "\"spin\" needs \"orbitals\": \"spatial\" or "
-                   "\"unrestricted\"");
-    }
+    in.connect_by_groups = method == "groups";
+    connect.Get("group_a", &in.connect_group_a);
     connect.Get("segments", &in.connect_segments);
     connect.Get("batches", &in.connect_batches);
     connect.CheckNoUnknownKeys();

@@ -73,7 +73,7 @@ the spin orbitals `2P` (alpha) and `2P+1` (beta) of spatial orbital `P`, the
 spin projection is conserved automatically, and ORBSYM is read as the
 irreducible representations of D2h or a subgroup in Molpro's numbering.
 Connected determinants are then found from tables of alpha and beta strings
-(`src/connect_spin.h`), as in the non-relativistic Dice program.
+(`src/connect_groups.h`), as in the non-relativistic Dice program.
 
 `"orbitals": "unrestricted"` is for an unrestricted reference, different
 spatial orbitals for the two spins: the integrals come from an HDF5 file
@@ -90,6 +90,20 @@ integral file. The integrals must obey the labels: an integral that would
 change one is an error if it exceeds `"symmetry_tolerance"` (default 1e-8) and
 is dropped otherwise. The two-electron integrals are stored in the blocks the
 labels define, so labels also save memory.
+
+`"connect": {"method": ...}` chooses how connected determinants are found
+(`src/connect.h`): `"strings"` (the default for spinors), `"segments"`, or
+`"groups"`, which divides the spinors into two groups (`"group_a"`, default
+the even ones) and works from tables of the strings of each group, electrons
+being allowed to move between the groups. With a conserved spin projection
+that is the alpha/beta scheme and the default. Timings of the three on two
+spinor cases, 16 threads, seconds spent building the Hamiltonian over a whole
+selection run and the peak memory of the program:
+
+| | strings | segments | groups |
+|---|---|---|---|
+| O2, 12 electrons in 32 spinors, 433k determinants | 6.2 s, 3.5 GB | 11.0 s, 2.9 GB | 5.9 s, 3.1 GB |
+| Cl2, 34 electrons in 52 spinors, 124k determinants | 4.2 s, 2.5 GB | 1.8 s, 0.4 GB | 1.8 s, 0.7 GB |
 
 `src/input.h` documents every key. The integrals are read from a FCIDUMP
 file (`src/integrals.h`) in the complex format, `(re,im) p q r s`, or the real

@@ -1141,7 +1141,7 @@ void TestSpatialIntegrals() {
   space.insert(space.end(), selected_spatial.begin(), selected_spatial.end());
   ConnectOptions keep_all;
   keep_all.threshold = -1.0;
-  keep_all.method = ConnectMethod::kSpinStrings;
+  keep_all.method = ConnectMethod::kGroups;
   SparseH<double> hamiltonian;
   hamiltonian.AppendDiagonal(std::vector<double>(space.size(), 0.0));
   hamiltonian.AppendBlock(BuildBlock(MakeSpan(space), 0, spatial, keep_all));
@@ -1237,7 +1237,7 @@ void TestSpinStringConnections(int num_spatial, int shift,
 
   ConnectOptions spin;
   spin.threshold = -1.0;
-  spin.method = ConnectMethod::kSpinStrings;
+  spin.method = ConnectMethod::kGroups;
   ConnectOptions reference;
   reference.threshold = -1.0;
   bool same = true;
@@ -1251,6 +1251,60 @@ void TestSpinStringConnections(int num_spatial, int shift,
     num_elements += block.num_elements();
   }
   Expect(num_elements > 5000 && same, what);
+}
+
+// The group string tables for spinors, where electrons move between the
+// groups, against a comparison of all pairs.
+void TestGroupConnections(const Integrals<Complex>& ints) {
+  const int n = ints.num_orbs();
+  const std::vector<std::vector<int>> occupations =
+      RandomOccupations(n, ints.num_elec(), 700, 3, 61);
+  ConnectOptions reference;
+  reference.threshold = -1.0;
+  std::vector<std::vector<int>> groups(4);  // the first: even spinors
+  for (int p = 0; p < n / 2; ++p) groups[1].push_back(p);
+  for (int p = 0; p < n; ++p) {
+    if ((p * 7 + p / 3) % 3 == 0) groups[2].push_back(p);
+  }
+  groups[3] = {0};
+  bool same = true;
+  size_t num_elements = 0;
+  for (const std::vector<int>& group_a : groups) {
+    ConnectOptions grouped = reference;
+    grouped.method = ConnectMethod::kGroups;
+    grouped.group_a = group_a;
+    const std::vector<Det<1>> dets = ToDets<1>(occupations, 0);
+    for (size_t first_new : {size_t{0}, size_t{251}, dets.size() - 1}) {
+      const CsrBlock<Complex> block =
+          BuildBlock(MakeSpan(dets), first_new, ints, grouped);
+      same = same && SameBlock(block,
+                               BuildBlockBruteForce(MakeSpan(dets), first_new,
+                                                    ints, reference),
+                               0.0);
+      num_elements += block.num_elements();
+    }
+  }
+  Expect(num_elements > 20000 && same,
+         "group string tables find the connected pairs of spinor "
+         "determinants for four choices of the groups");
+
+  const int shift = 66 - n;
+  const Integrals<Complex> shifted = ShiftIntegrals(ints, shift);
+  const std::vector<Det<2>> dets2 = ToDets<2>(occupations, shift);
+  ConnectOptions grouped = reference;
+  grouped.method = ConnectMethod::kGroups;
+  Expect(SameBlock(BuildBlock(MakeSpan(dets2), 0, shifted, grouped),
+                   BuildBlockBruteForce(MakeSpan(dets2), 0, shifted, reference),
+                   0.0),
+         "group string tables work across a word boundary");
+  grouped.threshold = 1e-3;
+  ConnectOptions thresholded = reference;
+  thresholded.threshold = 1e-3;
+  Expect(SameBlock(
+             BuildBlock(MakeSpan(dets2), 300, shifted, grouped),
+             BuildBlockBruteForce(MakeSpan(dets2), 300, shifted, thresholded),
+             0.0),
+         "group string tables with a threshold equal brute force");
 }
 
 // A real Hamiltonian treated with real numbers and with complex numbers.
@@ -1315,13 +1369,16 @@ int main(int argc, char** argv) {
     zshci::TestDensityMatricesFromDefinition(ints);
     zshci::TestPerturbation(ints);
     zshci::TestSecondOrderLimit(ints);
+    zshci::TestGroupConnections(ints);
     zshci::TestRealScalar(ints);
     zshci::TestBlockedIntegrals(ints);
     zshci::TestSpatialIntegrals();
     zshci::TestSpinStringConnections<1>(
-        10, 0, "spin-string tables find the connected pairs of all pairs");
+        10, 0,
+        "group string tables find the connected pairs of spin-conserving "
+        "determinants");
     zshci::TestSpinStringConnections<2>(
-        10, 27, "spin-string tables find the same with two-word determinants");
+        10, 27, "group string tables find the same with two-word determinants");
     const int n = ints.num_orbs();
     const std::vector<zshci::LabelSet> no_symmetry = {
         {std::vector<int>(n, 0), 0}};

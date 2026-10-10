@@ -281,9 +281,10 @@ SharedArray<Det<W>> ShareSorted(Span<Det<W>> dets, const Comm& comm) {
 inline ConnectOptions MakeConnectOptions(const Input& input) {
   ConnectOptions options;
   options.threshold = input.hij_threshold;
-  options.method = input.connect_by_spin_strings ? ConnectMethod::kSpinStrings
-                   : input.connect_by_segments   ? ConnectMethod::kSegments
-                                                 : ConnectMethod::kStrings;
+  options.group_a = input.connect_group_a;
+  options.method = input.connect_by_groups     ? ConnectMethod::kGroups
+                   : input.connect_by_segments ? ConnectMethod::kSegments
+                                               : ConnectMethod::kStrings;
   options.num_segments = input.connect_segments;
   options.num_batches = input.connect_batches;
   return options;
@@ -299,6 +300,13 @@ inline void PrintConnectStats(const ConnectStats& stats) {
                   ? 100.0
                   : 100.0 * stats.connected_pairs / stats.tested_pairs,
               static_cast<unsigned long long>(stats.largest_bucket));
+  if (stats.num_strings > 0) {
+    std::printf(
+        "connection search (root): %llu distinct strings, %llu "
+        "entries in their relation lists\n",
+        static_cast<unsigned long long>(stats.num_strings),
+        static_cast<unsigned long long>(stats.num_links));
+  }
   std::printf(
       "connection search (root): %.2f s preparing, %.2f s counting, "
       "%.2f s filling, %.2f s sorting rows\n",

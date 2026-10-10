@@ -160,10 +160,13 @@ struct Input {
   // the electron number) or "segments" (covers of four out of
   // `connect_segments` orbital segments; memory independent of the electron
   // number, at the price of testing unconnected pairs).
-  // "spin" (tables of alpha and beta strings, connect_spin.h) is for spatial
-  // orbitals only, where it is the default.
+  // "groups" (tables of the strings of two groups of spinors,
+  // connect_groups.h) is the default for "orbitals": "spatial" and
+  // "unrestricted", the groups being the two spins; "group_a" lists the
+  // spinors of the first group (default: those with an even index).
   bool connect_by_segments = false;
-  bool connect_by_spin_strings = false;
+  bool connect_by_groups = false;
+  std::vector<int> connect_group_a;
   int connect_segments = 8;
   // Strings only: number of passes (trades time for memory).
   int connect_batches = 1;

@@ -21,9 +21,9 @@
 
 namespace zshci {
 
-// A fixed-size array of trivially copyable elements whose memory is left
+// An array of trivially copyable elements whose memory is left
 // uninitialized, so that pages are first touched by the threads that fill
-// them.
+// them. Its size changes only through Resize.
 template <class T>
 class RawArray {
  public:
@@ -48,6 +48,20 @@ class RawArray {
   }
   RawArray(const RawArray&) = delete;
   RawArray& operator=(const RawArray&) = delete;
+
+  // Changes the size, keeping the elements that fit; new ones are
+  // uninitialized. Large arrays grow without being copied.
+  void Resize(size_t size) {
+    if (size == 0) {
+      std::free(data_);
+      data_ = nullptr;
+    } else {
+      T* const moved = static_cast<T*>(std::realloc(data_, size * sizeof(T)));
+      if (moved == nullptr) throw std::bad_alloc();
+      data_ = moved;
+    }
+    size_ = size;
+  }
 
   size_t size() const { return size_; }
   bool empty() const { return size_ == 0; }

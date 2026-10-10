@@ -23,8 +23,8 @@
 // per determinant per pass: the memory does not depend on the electron
 // number. The price is pairs in a bucket that turn out not to be connected.
 //
-// A third method, for spin orbitals with a conserved spin projection, works
-// from tables of alpha and beta strings instead (connect_spin.h).
+// A third method divides the spinors into two groups and works from tables
+// of the strings of each group instead (connect_groups.h).
 
 #ifndef ZSHCI_SRC_CONNECT_H_
 #define ZSHCI_SRC_CONNECT_H_
@@ -38,7 +38,7 @@
 #include <vector>
 
 #include "comm.h"
-#include "connect_spin.h"
+#include "connect_groups.h"
 #include "det.h"
 #include "hamiltonian.h"
 #include "integrals.h"
@@ -47,7 +47,7 @@
 
 namespace zshci {
 
-enum class ConnectMethod { kStrings, kSegments, kSpinStrings };
+enum class ConnectMethod { kStrings, kSegments, kGroups };
 
 struct ConnectOptions {
   // Elements with |H(i,j)| <= threshold are not stored. A negative value
@@ -59,6 +59,10 @@ struct ConnectOptions {
   int num_batches = 1;
   // Segments: the number of segments K.
   int num_segments = 8;
+  // Groups: the spinors of group A; empty means those with an even index
+  // (the alpha spin orbitals, or one spinor of every interleaved Kramers
+  // pair).
+  std::vector<int> group_a;
 };
 
 // What a connection search did, summed over calls: how many pairs sharing a
@@ -69,7 +73,11 @@ struct ConnectStats {
   uint64_t tested_pairs = 0;
   uint64_t connected_pairs = 0;
   uint64_t largest_bucket = 0;
-  // Seconds spent preparing the search (tables of the spin-string method),
+  // Groups: the distinct strings of both groups and the entries of their
+  // relation lists, at the last call.
+  uint64_t num_strings = 0;
+  uint64_t num_links = 0;
+  // Seconds spent preparing the search (tables of the group method),
   // counting the elements of every row, filling them in, and sorting the
   // rows.
   double seconds_prepare = 0.0;
@@ -536,16 +544,16 @@ CsrBlock<S> BuildBlockFromPairs(Span<Det<W>> dets, size_t first_new,
   return block;
 }
 
-// Builds the rows of the determinants this rank owns from the spin-string
-// tables, in one sweep: each thread finds the connections of a determinant,
-// evaluates the elements and appends the finished row to a block of its
-// own. Returns the blocks that hold elements.
+// Builds the rows of the determinants this rank owns from the string tables
+// of two groups, in one sweep: each thread finds the connections of a
+// determinant, evaluates the elements and appends the finished row to a block
+// of its own. Returns the blocks that hold elements.
 template <int W, typename S>
-std::vector<CsrBlock<S>> BuildSpinBlocks(Span<Det<W>> dets, size_t first_new,
-                                         const Integrals<S>& ints,
-                                         double threshold,
-                                         const SpinStringTables<W>& tables,
-                                         ConnectStats* stats) {
+std::vector<CsrBlock<S>> BuildGroupBlocks(Span<Det<W>> dets, size_t first_new,
+                                          const Integrals<S>& ints,
+                                          double threshold,
+                                          const GroupStringTables<W>& tables,
+                                          ConnectStats* stats) {
   const size_t n = dets.size();
   const bool keep_all = threshold < 0.0;
   const double time = omp_get_wtime();
@@ -554,10 +562,13 @@ std::vector<CsrBlock<S>> BuildSpinBlocks(Span<Det<W>> dets, size_t first_new,
   uint64_t connected = 0;
 #pragma omp parallel reduction(+ : tested, connected)
   {
+    // The block grows in place as rows are appended; nothing is copied at
+    // the end.
     std::vector<DetIndex> rows;
     std::vector<uint64_t> row_ptr(1, 0);
-    std::vector<DetIndex> cols;
-    std::vector<S> vals;
+    RawArray<DetIndex> cols;
+    RawArray<S> vals;
+    size_t num_elements = 0;
     std::vector<std::pair<DetIndex, S>> row;
 #pragma omp for schedule(dynamic, 64) nowait
     for (long j = static_cast<long>(first_new); j < static_cast<long>(n); ++j) {
@@ -579,28 +590,32 @@ std::vector<CsrBlock<S>> BuildSpinBlocks(Span<Det<W>> dets, size_t first_new,
           [](const std::pair<DetIndex, S>& a, const std::pair<DetIndex, S>& b) {
             return a.first < b.first;
           });
+      if (num_elements + row.size() > cols.size()) {
+        const size_t capacity =
+            std::max(num_elements + row.size(), 2 * cols.size() + 1024);
+        cols.Resize(capacity);
+        vals.Resize(capacity);
+      }
       rows.push_back(static_cast<DetIndex>(j));
       for (const std::pair<DetIndex, S>& element : row) {
-        cols.push_back(element.first);
-        vals.push_back(element.second);
+        cols[num_elements] = element.first;
+        vals[num_elements] = element.second;
+        ++num_elements;
       }
-      row_ptr.push_back(cols.size());
+      row_ptr.push_back(num_elements);
     }
     // The schedule hands every thread its determinants in increasing order,
-    // so the rows are sorted. The arrays are copied by the thread that will
-    // mostly read them.
+    // so the rows are sorted.
+    cols.Resize(num_elements);
+    vals.Resize(num_elements);
     CsrBlock<S>& block = blocks[omp_get_thread_num()];
     block.dim = n;
     block.first_row = first_new;
     block.row = RawArray<DetIndex>(rows.size());
     std::copy(rows.begin(), rows.end(), block.row.begin());
-    rows = std::vector<DetIndex>();
     block.row_ptr = std::move(row_ptr);
-    block.col = RawArray<DetIndex>(cols.size());
-    std::copy(cols.begin(), cols.end(), block.col.begin());
-    cols = std::vector<DetIndex>();
-    block.val = RawArray<S>(vals.size());
-    std::copy(vals.begin(), vals.end(), block.val.begin());
+    block.col = std::move(cols);
+    block.val = std::move(vals);
   }
   std::vector<CsrBlock<S>> filled;
   for (CsrBlock<S>& block : blocks) {
@@ -689,11 +704,11 @@ CsrBlock<S> BuildBlockWith(Span<Det<W>> dets, size_t first_new,
 
 // Builds the blocks of H(j, i), i < j, with j >= first_new, for the
 // determinants `dets`. Determinants before `first_new` are assumed to be
-// connected among themselves by earlier blocks. The spin-string method
+// connected among themselves by earlier blocks. The group method
 // returns one block per thread, the others a single one.
 //
 // With several ranks, each rank handles its share of the keys (strings), of
-// the covers (segments) or of the determinants (spin strings) and returns
+// the covers (segments) or of the determinants (groups) and returns
 // the elements found there. The blocks of all ranks together hold each
 // element once; no communication is needed. `stats`, if given, is updated
 // with what this rank's search did.
@@ -706,17 +721,26 @@ std::vector<CsrBlock<S>> BuildBlocks(Span<Det<W>> dets, size_t first_new,
   if (dets.size() > static_cast<size_t>(UINT32_MAX)) {
     throw std::length_error("too many determinants for a 32-bit index");
   }
-  if (options.method == ConnectMethod::kSpinStrings) {
-    if (!ints.has_spin_orbitals()) {
-      throw std::invalid_argument(
-          "the spin-string connection search needs spin orbitals with a "
-          "conserved spin projection");
+  if (options.method == ConnectMethod::kGroups) {
+    Det<W> group_a;
+    if (options.group_a.empty()) {
+      for (int p = 0; p < ints.num_orbs(); p += 2) group_a.Set(p);
+    }
+    for (int p : options.group_a) {
+      if (p < 0 || p >= ints.num_orbs()) {
+        throw std::invalid_argument("connect: spinor of group A out of range");
+      }
+      group_a.Set(p);
     }
     const double time = omp_get_wtime();
-    const internal::SpinStringTables<W> tables(dets, comm);
-    if (stats != nullptr) stats->seconds_prepare += omp_get_wtime() - time;
-    return internal::BuildSpinBlocks(dets, first_new, ints, options.threshold,
-                                     tables, stats);
+    const internal::GroupStringTables<W> tables(dets, group_a, comm);
+    if (stats != nullptr) {
+      stats->seconds_prepare += omp_get_wtime() - time;
+      stats->num_strings = tables.num_strings(0) + tables.num_strings(1);
+      stats->num_links = tables.num_links();
+    }
+    return internal::BuildGroupBlocks(dets, first_new, ints, options.threshold,
+                                      tables, stats);
   }
   std::vector<CsrBlock<S>> blocks;
   if (options.method == ConnectMethod::kSegments) {
