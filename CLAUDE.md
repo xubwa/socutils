@@ -140,7 +140,10 @@ two-electron corrections on) and only then require the `x2camf` integral backend
   `-DHDF5_ROOT=...`) and skips it with a notice otherwise; `lib/zshci/Makefile`
   builds the same programs alone. C++17, Google C++ style, own self-checks
   (`bin/zshci_test <FCIDUMP>`); details in `lib/zshci/README.md`. Python test:
-  `hci/test/test_shci.py` (against `zfci`).
+  `hci/test/test_shci.py` (against `zfci`). The same program does
+  non-relativistic selected CI over spatial orbitals (`"orbitals": "spatial"`,
+  class `SpatialSHCI`, a drop-in `fcisolver` for PySCF's CASCI/CASSCF with
+  spin-traced RDMs; test `hci/test/test_spatial_shci.py` against `pyscf.fci`).
 
 ## Environment variables
 

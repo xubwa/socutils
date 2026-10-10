@@ -1134,6 +1134,56 @@ void TestSpatialIntegrals() {
              selected_spatial == selected_spinor,
          "selection from spatial integrals equals that from spin-orbital "
          "ones and conserves the spin projection");
+
+  // Spin-summed density matrices against the spin-orbital ones summed
+  // afterwards, for two different vectors (a transition density).
+  std::vector<Det<1>> space = start;
+  space.insert(space.end(), selected_spatial.begin(), selected_spatial.end());
+  ConnectOptions keep_all;
+  keep_all.threshold = -1.0;
+  keep_all.method = ConnectMethod::kSpinStrings;
+  SparseH<double> hamiltonian;
+  hamiltonian.AppendDiagonal(std::vector<double>(space.size(), 0.0));
+  hamiltonian.AppendBlock(BuildBlock(MakeSpan(space), 0, spatial, keep_all));
+  std::vector<double> bra(space.size()), ket(space.size());
+  for (size_t i = 0; i < space.size(); ++i) {
+    bra[i] = uniform(rng);
+    ket[i] = uniform(rng);
+  }
+  const DensityMatrices<double> full = ComputeDensityMatrices(
+      MakeSpan(space), hamiltonian, m, MakeSpan(bra), MakeSpan(ket), true);
+  const DensityMatrices<double> summed =
+      ComputeDensityMatrices(MakeSpan(space), hamiltonian, m, MakeSpan(bra),
+                             MakeSpan(ket), true, Comm(), /*spin_summed=*/true);
+  double max_one = 0.0;
+  double max_two = 0.0;
+  double largest = 0.0;
+  for (int p = 0; p < n; ++p) {
+    for (int q = 0; q < n; ++q) {
+      double one = 0.0;
+      for (int spin = 0; spin < 2; ++spin) {
+        one += full.One(2 * p + spin, 2 * q + spin);
+      }
+      max_one = std::max(max_one, std::abs(one - summed.One(p, q)));
+      for (int r = 0; r < n; ++r) {
+        for (int s = 0; s < n; ++s) {
+          double two = 0.0;
+          for (int spin = 0; spin < 2; ++spin) {
+            for (int other = 0; other < 2; ++other) {
+              two += full.Two(2 * p + spin, 2 * q + other, 2 * r + spin,
+                              2 * s + other);
+            }
+          }
+          largest = std::max(largest, std::abs(two));
+          max_two = std::max(max_two, std::abs(two - summed.Two(p, q, r, s)));
+        }
+      }
+    }
+  }
+  Expect(summed.num_orbs == n && largest > 0.1 && max_one < 1e-12 &&
+             max_two < 1e-12,
+         "spin-summed density matrices equal the spin-orbital ones summed "
+         "over the spins");
 }
 
 // The alpha/beta string tables against a comparison of all pairs.

@@ -8,6 +8,9 @@
 //                   the convention of PySCF:
 //                     dm1[p,q]     = <i| p^+ q |j>              shape (n,n)
 //                     dm2[p,q,r,s] = <i| p^+ r^+ s q |i>        shape (n,n,n,n)
+//                   over spinors or, with "orbitals": "spatial", summed over
+//                   the spins and over the n spatial orbitals (PySCF's
+//                   spin-traced dm1 and dm2).
 //                   dm2 is present only for i = j and when requested. A
 //                   reader gets the arrays as they are (h5py: f['dm1'][()]);
 //                   no conjugation or reordering is needed.

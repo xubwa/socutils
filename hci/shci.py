@@ -200,7 +200,7 @@ class SHCI(lib.StreamObject):
             inp['mode'] = 'select'
             dets = self.initial_dets
             if dets is None:
-                dets = [list(range(nelec))]
+                dets = self._default_dets(norb, nelec)
             select = {'schedule': [[int(i), float(e)] for i, e in self.schedule],
                       'energy_tol': self.energy_tol}
             if self.max_iter is not None:
@@ -211,10 +211,30 @@ class SHCI(lib.StreamObject):
             if isinstance(self.occslst, str):
                 if self.occslst != 'all':
                     raise ValueError("occslst must be a list or 'all'")
-                dets = itertools.combinations(range(norb), nelec)
+                dets = self._all_dets(norb, nelec)
             else:
                 dets = self.occslst
         inp['dets'] = [[int(p) for p in det] for det in dets]
+        symmetry = self._symmetry_input(norb)
+        if symmetry is not None:
+            inp['symmetry'] = symmetry
+        if self.restrictions:
+            inp['restrictions'] = self.restrictions
+        if self.pt:
+            inp['pt'] = self.pt
+        inp.update(self.extra)
+        return inp
+
+    def _default_dets(self, norb, nelec):
+        '''The starting determinants when none are given.'''
+        return [list(range(nelec))]
+
+    def _all_dets(self, norb, nelec):
+        '''Every determinant of the space, for occslst = 'all'.'''
+        return itertools.combinations(range(norb), nelec)
+
+    def _symmetry_input(self, norb):
+        '''The "symmetry" entry of the input, or None.'''
         if self.orbsym is not None:
             sets = self.orbsym
             if numpy.ndim(sets) == 1:
@@ -224,15 +244,24 @@ class SHCI(lib.StreamObject):
                 mods = [mods[0]] * len(sets)
             if len(mods) != len(sets):
                 raise ValueError('orbsym_mod needs one entry per label set')
-            inp['symmetry'] = [{'labels': [int(x) for x in labels],
-                                'mod': int(mod)}
-                               for labels, mod in zip(sets, mods)]
-        if self.restrictions:
-            inp['restrictions'] = self.restrictions
-        if self.pt:
-            inp['pt'] = self.pt
-        inp.update(self.extra)
-        return inp
+            return [{'labels': [int(x) for x in labels], 'mod': int(mod)}
+                    for labels, mod in zip(sets, mods)]
+        return None
+
+    def _write_integrals(self, inp, h1e, eri, norb, nelec, ecore):
+        '''Writes the integral file named in the input `inp`, which may be
+        amended.'''
+        if self.scalar not in ('auto', 'real', 'complex'):
+            raise ValueError("scalar must be 'auto', 'real' or 'complex'")
+        if self.scalar == 'auto':
+            real = numpy.isrealobj(h1e) and numpy.isrealobj(eri)
+            inp.setdefault('scalar', 'real' if real else 'complex')
+        else:
+            inp.setdefault('scalar', self.scalar)
+        fcidump_rel.from_integrals(
+            inp['integrals'], numpy.asarray(h1e, dtype=complex),
+            numpy.asarray(eri, dtype=complex).reshape(norb * norb, norb * norb),
+            norb, nelec, nuc=complex(ecore).real, tol=self.integral_tol)
 
     def kernel(self, h1e, eri, norb, nelec, ci0=None, nroots=None, ecore=0,
                verbose=None, **kwargs):
@@ -256,18 +285,7 @@ class SHCI(lib.StreamObject):
         self.nelec = nelec
 
         inp = self._input(norb, nelec, nroots)
-        if self.scalar not in ('auto', 'real', 'complex'):
-            raise ValueError("scalar must be 'auto', 'real' or 'complex'")
-        if self.scalar == 'auto':
-            real = numpy.isrealobj(h1e) and numpy.isrealobj(eri)
-            inp.setdefault('scalar', 'real' if real else 'complex')
-        else:
-            inp.setdefault('scalar', self.scalar)
-        ecore = complex(ecore)
-        fcidump_rel.from_integrals(
-            inp['integrals'], numpy.asarray(h1e, dtype=complex),
-            numpy.asarray(eri, dtype=complex).reshape(norb * norb, norb * norb),
-            norb, nelec, nuc=ecore.real, tol=self.integral_tol)
+        self._write_integrals(inp, h1e, eri, norb, nelec, ecore)
         input_file = os.path.join(self.scratch, 'input.json')
         with open(input_file, 'w') as f:
             json.dump(inp, f)
@@ -374,3 +392,89 @@ class SHCI(lib.StreamObject):
 
 
 ZSHCI = SHCI
+
+
+class SpatialSHCI(SHCI):
+    '''Selected CI for a non-relativistic Hamiltonian over spatial orbitals
+    (a restricted reference), with the interface and the spin-traced density
+    matrices of the PySCF FCI solvers (pyscf.fci.direct_spin1)::
+
+        mc = mcscf.CASSCF(mf, ncas, nelecas)
+        mc.fcisolver = shci.SpatialSHCI(mol)
+        mc.fcisolver.schedule = [[0, 1e-4]]
+        mc.kernel()
+
+    h1e and eri are real and over norb spatial orbitals; nelec is
+    (nalpha, nbeta) or their sum together with the attribute spin
+    (nalpha - nbeta).  The program works with the spin orbitals 2P (alpha) and
+    2P + 1 (beta) of spatial orbital P, and determinants (initial_dets,
+    occslst, wavefunction()) are lists of those.  The spin projection is
+    conserved; the total spin is not imposed, so with several roots states of
+    different spin come out together, as in direct_spin1.
+
+    Attributes in addition to those of SHCI:
+        spin : int or None
+            nalpha - nbeta when nelec is given as one number (default 0 or 1).
+        orbsym : list of int, or None
+            Irreducible representation of every orbital as PySCF numbers
+            those of D2h and its subgroups (0 to 7, products being exclusive
+            ors).  Other groups (linear molecules) are not understood; leave
+            orbsym unset for them.
+    '''
+
+    def __init__(self, mol=None):
+        super().__init__(mol)
+        self.spin = None
+        self.wfnsym = None
+
+    def _unpack_nelec(self, nelec):
+        if isinstance(nelec, (int, numpy.integer)):
+            spin = self.spin if self.spin is not None else nelec % 2
+            return (nelec + spin) // 2, (nelec - spin) // 2
+        return int(nelec[0]), int(nelec[1])
+
+    def _input(self, norb, nelec, nroots):
+        nalpha, nbeta = self._unpack_nelec(nelec)
+        self._nelec_ab = (nalpha, nbeta)
+        inp = super()._input(norb, nalpha + nbeta, nroots)
+        inp['orbitals'] = 'spatial'
+        return inp
+
+    def _default_dets(self, norb, nelec):
+        nalpha, nbeta = self._nelec_ab
+        return [[2 * p for p in range(nalpha)] +
+                [2 * p + 1 for p in range(nbeta)]]
+
+    def _all_dets(self, norb, nelec):
+        nalpha, nbeta = self._nelec_ab
+        return [[2 * p for p in alpha] + [2 * p + 1 for p in beta]
+                for alpha in itertools.combinations(range(norb), nalpha)
+                for beta in itertools.combinations(range(norb), nbeta)]
+
+    def _symmetry_input(self, norb):
+        if self.orbsym is None or len(self.orbsym) == 0:
+            return []
+        orbsym = numpy.asarray(self.orbsym, dtype=int)
+        if orbsym.size != norb or orbsym.min() < 0 or orbsym.max() > 7:
+            raise ValueError('orbsym must give one irreducible representation '
+                             'of D2h or a subgroup (0 to 7) per orbital')
+        sets = []
+        for bit in range(3):
+            labels = (orbsym >> bit) & 1
+            if labels.any():
+                sets.append({'labels': [int(x) for x in labels], 'mod': 2})
+        return sets
+
+    def _write_integrals(self, inp, h1e, eri, norb, nelec, ecore):
+        from pyscf import ao2mo
+        from pyscf.tools import fcidump
+        if numpy.iscomplexobj(h1e) or numpy.iscomplexobj(eri):
+            raise ValueError('integrals over spatial orbitals must be real')
+        nalpha, nbeta = self._nelec_ab
+        fcidump.from_integrals(
+            inp['integrals'], numpy.asarray(h1e), ao2mo.restore(8, eri, norb),
+            norb, nalpha + nbeta, nuc=float(numpy.real(ecore)),
+            ms=nalpha - nbeta, tol=self.integral_tol)
+
+    def spin_square(self, fcivec, norb, nelec):
+        raise NotImplementedError('zshci does not evaluate <S^2>')

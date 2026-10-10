@@ -425,9 +425,9 @@ void WriteResults(const Input& input, const Integrals<S>& ints,
   if (input.rdm.one || input.rdm.two) {
     time = omp_get_wtime();
     for (int k = 0; k < input.nroots; ++k) {
-      const DensityMatrices<S> dm =
-          ComputeDensityMatrices(dets, h, num_orbs, vectors.Root(k),
-                                 vectors.Root(k), input.rdm.two, comm);
+      const DensityMatrices<S> dm = ComputeDensityMatrices(
+          dets, h, num_orbs, vectors.Root(k), vectors.Root(k), input.rdm.two,
+          comm, ints.is_spatial());
       if (!comm.is_root()) continue;
       WriteDensityMatrices(input.prefix, k, k, dm);
       if (input.rdm.two) {
@@ -442,9 +442,9 @@ void WriteResults(const Input& input, const Integrals<S>& ints,
   }
   if (input.rdm.transition) {
     for (int k = 1; k < input.nroots; ++k) {
-      const DensityMatrices<S> dm =
-          ComputeDensityMatrices(dets, h, num_orbs, vectors.Root(0),
-                                 vectors.Root(k), /*with_two=*/false, comm);
+      const DensityMatrices<S> dm = ComputeDensityMatrices(
+          dets, h, num_orbs, vectors.Root(0), vectors.Root(k),
+          /*with_two=*/false, comm, ints.is_spatial());
       if (comm.is_root()) WriteDensityMatrices(input.prefix, 0, k, dm);
     }
   }
