@@ -13,6 +13,7 @@
 #   zquatev ->  lib/libzquatev.so     (Kramers-restricted spinor SCF)
 #   ao2mo   ->  lib/libnrr_opt.so     (socutils.lib.ao2mo.nrr_fast spinor AO2MO)
 #   qdhf    ->  lib/libqdhf.so        (socutils.qdhf, quad precision HF; needs libquadmath)
+#   rf12    ->  lib/librf12.so        (socutils.rf12, quad precision symmetric eigensolver)
 #
 # The subdirectory CMakeLists.txt files are thin (just the target plus its
 # link/output), exactly as in pyscf/lib, so they slot into pyscf/lib unchanged
@@ -106,6 +107,7 @@ int main() { __float128 x = sqrtq(2.Q); return x > 1 ? 0 : 1; }" HAVE_QUADMATH)
   unset(CMAKE_REQUIRED_LIBRARIES)
   if(HAVE_QUADMATH)
     add_subdirectory(qdhf)
+    add_subdirectory(rf12)
   else()
     message(WARNING "libquadmath not found; socutils.qdhf is not built")
   endif()
