@@ -1306,6 +1306,42 @@ void TestGroupConnections(const Integrals<Complex>& ints) {
              0.0),
          "group string tables with a threshold equal brute force");
 
+  // Tables extended step by step against tables made at once: the same
+  // connections for every determinant. The first step holds one
+  // determinant, so the lists for electrons moving between the groups only
+  // come into being later.
+  {
+    const std::vector<Det<1>> dets = ToDets<1>(occupations, 0);
+    const Comm serial;
+    const Det<1> mask = GroupMask<1>(ConnectOptions(), n);
+    const internal::GroupStringTables<1> at_once(MakeSpan(dets), mask, serial);
+    internal::GroupStringTables<1> stepwise(mask, serial);
+    size_t previous = 0;
+    for (size_t size :
+         {size_t{1}, size_t{40}, size_t{41}, size_t{300}, dets.size()}) {
+      stepwise.Extend(Span<Det<1>>(dets.data(), size), previous);
+      previous = size;
+    }
+    bool same_connections = true;
+    size_t num_connections = 0;
+    for (size_t j = 0; j < dets.size() && same_connections; ++j) {
+      std::vector<DetIndex> a, b;
+      uint64_t tested = 0;
+      at_once.ForEachConnected(j, [&](DetIndex i) { a.push_back(i); }, &tested);
+      stepwise.ForEachConnected(
+          j, [&](DetIndex i) { b.push_back(i); }, &tested);
+      std::sort(a.begin(), a.end());
+      std::sort(b.begin(), b.end());
+      same_connections = a == b;
+      num_connections += a.size();
+    }
+    Expect(num_connections > 5000 && same_connections &&
+               at_once.num_links() == stepwise.num_links() &&
+               at_once.has_transfers(),
+           "group string tables extended step by step equal those made at "
+           "once");
+  }
+
   // The Hamiltonian applied from the tables against the stored one, and
   // density matrices from the tables against those from the stored pairs.
   const std::vector<Det<1>> dets = ToDets<1>(occupations, 0);

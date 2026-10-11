@@ -102,16 +102,16 @@ selection run and the peak memory of the program:
 
 | | strings | segments | groups |
 |---|---|---|---|
-| O2, 12 electrons in 32 spinors, 433k determinants | 6.2 s, 3.5 GB | 11.0 s, 2.9 GB | 5.9 s, 3.1 GB |
-| Cl2, 34 electrons in 52 spinors, 124k determinants | 4.2 s, 2.5 GB | 1.8 s, 0.4 GB | 1.8 s, 0.7 GB |
+| O2, 12 electrons in 32 spinors, 433k determinants | 6.2 s, 3.5 GB | 11.0 s, 2.9 GB | 2.7 s, 3.2 GB |
+| Cl2, 34 electrons in 52 spinors, 124k determinants | 4.2 s, 2.5 GB | 1.8 s, 0.4 GB | 0.8 s, 0.7 GB |
 
 `"hamiltonian": "direct"` does not store the matrix: every product with a
 vector works the connections out again from the tables of the group method
 and evaluates the elements on the way, and the density matrices are computed
 the same way. On the O2 case above (433k determinants, 131 million elements,
-16 threads) a product takes 4.7 s instead of 0.2 s and the whole selection
-284 s instead of 23 s, with a peak memory of 0.42 GB instead of 3.1 GB: for
-when the matrix does not fit.
+16 threads) a product costs several times a stored one and the peak memory
+is a fraction of a gigabyte instead of 3.1 GB; at 243k determinants a product
+takes 1.0 s against 0.2 s. For when the matrix does not fit.
 
 `src/input.h` documents every key. The integrals are read from a FCIDUMP
 file (`src/integrals.h`) in the complex format, `(re,im) p q r s`, or the real

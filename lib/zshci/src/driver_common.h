@@ -340,18 +340,26 @@ class VariationalH {
   void Extend(Span<Det<W>> dets, size_t first_new) {
     dets_ = dets;
     AppendDiagonal(dets, first_new, ints_, comm_, &stored_);
-    if (!direct_) {
+    if (connect_.method != ConnectMethod::kGroups) {
       stored_.AppendBlocks(
           BuildBlocks(dets, first_new, ints_, connect_, comm_, &stats_));
       return;
     }
+    // The string tables live as long as the calculation and are extended
+    // by what the new determinants bring.
     const double time = omp_get_wtime();
-    tables_.reset();
-    tables_ = std::make_unique<internal::GroupStringTables<W>>(
-        dets, GroupMask<W>(connect_, ints_.num_orbs()), comm_);
+    if (tables_ == nullptr) {
+      tables_ = std::make_unique<internal::GroupStringTables<W>>(
+          GroupMask<W>(connect_, ints_.num_orbs()), comm_);
+    }
+    tables_->Extend(dets, first_new);
     stats_.seconds_prepare += omp_get_wtime() - time;
     stats_.num_strings = tables_->num_strings(0) + tables_->num_strings(1);
     stats_.num_links = tables_->num_links();
+    if (!direct_) {
+      stored_.AppendBlocks(internal::BuildGroupBlocks(
+          dets, first_new, ints_, connect_.threshold, *tables_, &stats_));
+    }
   }
 
   // Collective: the lowest eigenpairs (see SolveDistributed).

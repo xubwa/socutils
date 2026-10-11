@@ -55,52 +55,64 @@ template <int W>
 class GroupStringTables {
  public:
   // `group_a` has the bits of the spinors of group A set; all others form
-  // group B. Collective: the root builds the tables of all determinants and
-  // they are held once per node.
-  GroupStringTables(Span<Det<W>> dets, const Det<W>& group_a, const Comm& comm)
-      : dets_(dets),
+  // group B. The tables are empty until Extend is called.
+  GroupStringTables(const Det<W>& group_a, const Comm& comm)
+      : comm_(comm),
         rank_(comm.rank()),
         num_ranks_(comm.size()),
-        group_a_(group_a) {
+        group_a_(group_a) {}
+
+  // The tables of `dets`. Collective.
+  GroupStringTables(Span<Det<W>> dets, const Det<W>& group_a, const Comm& comm)
+      : GroupStringTables(group_a, comm) {
+    Extend(dets, 0);
+  }
+
+  // Makes the tables those of `dets`, of which the determinants before
+  // first_new are the ones of the previous call, unchanged. Only what the
+  // new determinants bring is worked out: strings not seen before get the
+  // next numbers, their keys are merged into the sorted keys kept from
+  // before, and the relation lists gain the pairs that involve a new
+  // string. Collective: the root does this and the tables are held once per
+  // node.
+  void Extend(Span<Det<W>> dets, size_t first_new) {
     if (dets.size() > static_cast<size_t>(UINT32_MAX)) {
       throw std::length_error("too many determinants for a 32-bit index");
     }
-    std::vector<uint32_t> string_of_det[2];
+    dets_ = dets;
     std::vector<uint64_t> det_start[2];
     std::vector<uint32_t> det_other[2];
     std::vector<uint32_t> det_index[2];
-    std::vector<uint64_t> related_start[2][kNumRelations];
-    std::vector<uint32_t> related_list[2][kNumRelations];
-    if (comm.is_root()) {
-      std::vector<Det<W>> strings[2];
+    if (comm_.is_root()) {
+      if (first_new == 0) root_ = RootState();
+      size_t first_new_string[2];
       for (int group = 0; group < 2; ++group) {
-        NumberStrings(group, &strings[group], &string_of_det[group]);
+        first_new_string[group] = NumberStrings(group, first_new);
       }
       for (int group = 0; group < 2; ++group) {
-        GroupDets(strings[group].size(), string_of_det[group],
-                  string_of_det[1 - group], &det_start[group],
+        GroupDets(root_.strings[group].size(), root_.string_of_det[group],
+                  root_.string_of_det[1 - group], &det_start[group],
                   &det_other[group], &det_index[group]);
-        FindRelated(strings[group], related_start[group], related_list[group]);
+        UpdateRelated(group, first_new_string[group]);
       }
     }
+    transfers_ = false;
     for (int group = 0; group < 2; ++group) {
       string_of_det_[group] =
-          SharedArray<uint32_t>::FromRoot(string_of_det[group], comm);
+          SharedArray<uint32_t>::FromRoot(root_.string_of_det[group], comm_);
       det_start_[group] =
-          SharedArray<uint64_t>::FromRoot(det_start[group], comm);
+          SharedArray<uint64_t>::FromRoot(det_start[group], comm_);
       det_other_[group] =
-          SharedArray<uint32_t>::FromRoot(det_other[group], comm);
+          SharedArray<uint32_t>::FromRoot(det_other[group], comm_);
       det_index_[group] =
-          SharedArray<uint32_t>::FromRoot(det_index[group], comm);
+          SharedArray<uint32_t>::FromRoot(det_index[group], comm_);
       for (int r = 0; r < kNumRelations; ++r) {
-        related_start_[group][r] =
-            SharedArray<uint64_t>::FromRoot(related_start[group][r], comm);
-        related_list_[group][r] =
-            SharedArray<uint32_t>::FromRoot(related_list[group][r], comm);
+        related_start_[group][r] = SharedArray<uint64_t>::FromRoot(
+            root_.related_start[group][r], comm_);
+        related_list_[group][r] = SharedArray<uint32_t>::FromRoot(
+            root_.related_list[group][r], comm_);
+        if (r > 0 && related_list_[group][r].size() > 0) transfers_ = true;
       }
-    }
-    for (int r = 1; r < kNumRelations; ++r) {
-      transfers_ = transfers_ || related_list_[0][r].size() > 0;
     }
   }
 
@@ -285,26 +297,52 @@ class GroupStringTables {
     return out;
   }
 
-  // The distinct strings of one group, sorted, and the number of its string
-  // for every determinant.
-  void NumberStrings(int group, std::vector<Det<W>>* strings,
-                     std::vector<uint32_t>* string_of_det) const {
+  // Numbers the strings of the determinants from first_new on: known
+  // strings keep their number, new ones get the next numbers. Returns the
+  // number of strings there were before.
+  size_t NumberStrings(int group, size_t first_new) {
+    std::vector<Det<W>>& strings = root_.strings[group];
+    std::vector<std::pair<Det<W>, uint32_t>>& sorted = root_.sorted[group];
+    std::vector<uint32_t>& string_of_det = root_.string_of_det[group];
     const size_t n = dets_.size();
-    std::vector<Det<W>> all(n);
-    const long count = static_cast<long>(n);
+    const size_t num_old = strings.size();
+    const long begin = static_cast<long>(first_new);
+    const long end = static_cast<long>(n);
+    string_of_det.resize(n);
+    std::vector<Det<W>> of_det(n - first_new);
+    auto by_string = [](const std::pair<Det<W>, uint32_t>& entry,
+                        const Det<W>& string) { return entry.first < string; };
 #pragma omp parallel for schedule(static)
-    for (long i = 0; i < count; ++i) all[i] = StringOf(dets_[i], group);
-    *strings = all;
-    std::sort(strings->begin(), strings->end());
-    strings->erase(std::unique(strings->begin(), strings->end()),
-                   strings->end());
-    string_of_det->resize(n);
-#pragma omp parallel for schedule(static)
-    for (long i = 0; i < count; ++i) {
-      (*string_of_det)[i] = static_cast<uint32_t>(
-          std::lower_bound(strings->begin(), strings->end(), all[i]) -
-          strings->begin());
+    for (long i = begin; i < end; ++i) {
+      const Det<W> string = StringOf(dets_[i], group);
+      of_det[i - begin] = string;
+      const auto found =
+          std::lower_bound(sorted.begin(), sorted.end(), string, by_string);
+      string_of_det[i] = found != sorted.end() && found->first == string
+                             ? found->second
+                             : UINT32_MAX;
     }
+    std::vector<Det<W>> fresh;
+    for (long i = begin; i < end; ++i) {
+      if (string_of_det[i] == UINT32_MAX) fresh.push_back(of_det[i - begin]);
+    }
+    std::sort(fresh.begin(), fresh.end());
+    fresh.erase(std::unique(fresh.begin(), fresh.end()), fresh.end());
+#pragma omp parallel for schedule(static)
+    for (long i = begin; i < end; ++i) {
+      if (string_of_det[i] != UINT32_MAX) continue;
+      string_of_det[i] = static_cast<uint32_t>(
+          num_old +
+          (std::lower_bound(fresh.begin(), fresh.end(), of_det[i - begin]) -
+           fresh.begin()));
+    }
+    const size_t middle = sorted.size();
+    for (size_t k = 0; k < fresh.size(); ++k) {
+      strings.push_back(fresh[k]);
+      sorted.emplace_back(fresh[k], static_cast<uint32_t>(num_old + k));
+    }
+    std::inplace_merge(sorted.begin(), sorted.begin() + middle, sorted.end());
+    return num_old;
   }
 
   // For every string, the determinants that contain it: the number of their
@@ -345,15 +383,29 @@ class GroupStringTables {
     uint8_t removed;
   };
 
-  // Fills the relation lists of one group. Strings s and t are related when
-  // they share a key: s with one electron out and t with one out is a
-  // single; s with one out and t itself is "1 out"; s with two out and t
-  // with one out is "2 out, 1 in" unless t is contained in s; s with two out
-  // and t itself is "2 out". Keys with electrons taken out of the longer
-  // string are only made when shorter strings exist at all.
-  static void FindRelated(const std::vector<Det<W>>& strings,
-                          std::vector<uint64_t>* start,
-                          std::vector<uint32_t>* list) {
+  // A pair of related strings found from a shared key.
+  struct Link {
+    uint32_t from;
+    uint32_t to;
+    uint8_t relation;
+  };
+
+  static bool KeyLess(const Shortened& x, const Shortened& y) {
+    if (x.key != y.key) return x.key < y.key;
+    if (x.removed != y.removed) return x.removed < y.removed;
+    return x.string < y.string;
+  }
+
+  // Brings the relation lists of one group up to date with the strings from
+  // first_new_string on. Strings s and t are related when they share a key:
+  // s with one electron out and t with one out is a single; s with one out
+  // and t itself is "1 out"; s with two out and t with one out is "2 out,
+  // 1 in" unless t is contained in s; s with two out and t itself is
+  // "2 out". Keys with electrons taken out of the longer string are only
+  // made when shorter strings exist at all; if new strings change that, the
+  // keys of this group are made afresh.
+  void UpdateRelated(int group, size_t first_new_string) {
+    const std::vector<Det<W>>& strings = root_.strings[group];
     const size_t num_strings = strings.size();
     int min_count = 64 * W;
     int max_count = 0;
@@ -362,10 +414,24 @@ class GroupStringTables {
       max_count = std::max(max_count, s.Count());
     }
     const bool transfers = max_count > min_count;
+    std::vector<std::vector<Shortened>>& kept = root_.keys[group];
+    const size_t num_parts = 8 * static_cast<size_t>(omp_get_max_threads());
+    if (first_new_string == 0 || kept.size() != num_parts ||
+        transfers != root_.transfers[group] ||
+        (transfers && min_count != root_.min_count[group])) {
+      first_new_string = 0;
+      kept.assign(num_parts, std::vector<Shortened>());
+      for (int r = 0; r < kNumRelations; ++r) {
+        root_.related_start[group][r].clear();
+        root_.related_list[group][r].clear();
+      }
+    }
+    root_.transfers[group] = transfers;
+    root_.min_count[group] = min_count;
 
-    // The keys, made by all threads and then dealt into parts by their
-    // hash, so that equal keys meet in one part and the parts can be sorted
-    // and swept side by side.
+    // The keys of the new strings, made by all threads and dealt into parts
+    // by their hash, so that equal keys meet in one part and the parts can
+    // be handled side by side.
     std::vector<std::vector<Shortened>> chunks(omp_get_max_threads());
     const long count = static_cast<long>(num_strings);
 #pragma omp parallel
@@ -373,7 +439,7 @@ class GroupStringTables {
       std::vector<Shortened>& mine = chunks[omp_get_thread_num()];
       int occ[64 * W];
 #pragma omp for schedule(dynamic, 256) nowait
-      for (long s = 0; s < count; ++s) {
+      for (long s = static_cast<long>(first_new_string); s < count; ++s) {
         int num_occ = 0;
         for (int k = 0; k < W; ++k) {
           uint64_t word = strings[s].words[k];
@@ -398,98 +464,156 @@ class GroupStringTables {
         }
       }
     }
-    const size_t num_parts = 8 * static_cast<size_t>(omp_get_max_threads());
-    Partitioned<Shortened> keys = PartitionChunks(
+    Partitioned<Shortened> fresh = PartitionChunks(
         &chunks, num_parts,
         [&](const Shortened& item) { return item.key.Hash() % num_parts; });
-#pragma omp parallel for schedule(dynamic, 1)
-    for (long part = 0; part < static_cast<long>(num_parts); ++part) {
-      std::sort(keys.begin(part), keys.end(part),
-                [](const Shortened& x, const Shortened& y) {
-                  if (x.key != y.key) return x.key < y.key;
-                  if (x.removed != y.removed) return x.removed < y.removed;
-                  return x.string < y.string;
-                });
-    }
 
-    const int num_lists = transfers ? kNumRelations : 1;
-    for (int r = 0; r < num_lists; ++r) start[r].assign(num_strings + 1, 0);
-    // First sweep counts, second fills; several threads may meet at one
-    // string.
-    std::vector<uint64_t> cursor[kNumRelations];
-    for (int fill = 0; fill < 2; ++fill) {
-      auto add = [&](int relation, uint32_t from, uint32_t to) {
-        if (fill == 0) {
-#pragma omp atomic
-          ++start[relation][from + 1];
-        } else {
-          uint64_t slot;
-#pragma omp atomic capture
-          slot = cursor[relation][from]++;
-          list[relation][slot] = to;
-        }
+    // Every run of equal keys that holds a new key gives the pairs in which
+    // at least one string is new. The new keys then join the kept ones.
+    std::vector<std::vector<Link>> links(omp_get_max_threads());
+#pragma omp parallel
+    {
+      std::vector<Link>& mine = links[omp_get_thread_num()];
+      // The members of one run, kept ones first within equal `removed`.
+      struct Member {
+        uint32_t string;
+        uint8_t removed;
+        bool is_new;
       };
-#pragma omp parallel for schedule(dynamic, 1)
+      std::vector<Member> run;
+      auto add = [&](int relation, const Member& from, const Member& to) {
+        if (!from.is_new && !to.is_new) return;
+        mine.push_back(
+            {from.string, to.string, static_cast<uint8_t>(relation)});
+      };
+#pragma omp for schedule(dynamic, 1)
       for (long part = 0; part < static_cast<long>(num_parts); ++part) {
-        const Shortened* run = keys.begin(part);
-        const Shortened* const part_end = keys.end(part);
-        while (run != part_end) {
-          const Shortened* end = run + 1;
-          while (end != part_end && end->key == run->key) ++end;
-          // The run is ordered by the number of electrons removed: 0 up to
-          // first[1], 1 up to first[2], 2 up to first[3].
-          const Shortened* first[4] = {run, run, run, end};
-          while (first[1] != end && first[1]->removed < 1) ++first[1];
+        std::sort(fresh.begin(part), fresh.end(part), KeyLess);
+        std::vector<Shortened>& old = kept[part];
+        const Shortened* next = fresh.begin(part);
+        const Shortened* const part_end = fresh.end(part);
+        while (next != part_end) {
+          const Shortened* run_end = next + 1;
+          while (run_end != part_end && run_end->key == next->key) ++run_end;
+          run.clear();
+          const auto old_range =
+              std::equal_range(old.begin(), old.end(), *next,
+                               [](const Shortened& x, const Shortened& y) {
+                                 return x.key < y.key;
+                               });
+          for (auto it = old_range.first; it != old_range.second; ++it) {
+            run.push_back({it->string, it->removed, false});
+          }
+          for (const Shortened* it = next; it != run_end; ++it) {
+            run.push_back({it->string, it->removed, true});
+          }
+          std::stable_sort(run.begin(), run.end(),
+                           [](const Member& x, const Member& y) {
+                             return x.removed < y.removed;
+                           });
+          // Ordered by the number of electrons removed: 0 up to first[1],
+          // 1 up to first[2], 2 up to first[3].
+          size_t first[4] = {0, 0, 0, run.size()};
+          while (first[1] < run.size() && run[first[1]].removed < 1) ++first[1];
           first[2] = first[1];
-          while (first[2] != end && first[2]->removed < 2) ++first[2];
+          while (first[2] < run.size() && run[first[2]].removed < 2) ++first[2];
           // Singles: two strings with one electron out each.
-          for (const Shortened* x = first[1]; x != first[2]; ++x) {
-            for (const Shortened* y = first[1]; y != first[2]; ++y) {
-              if (x != y) add(kSingle, x->string, y->string);
+          for (size_t x = first[1]; x < first[2]; ++x) {
+            for (size_t y = first[1]; y < first[2]; ++y) {
+              if (x != y) add(kSingle, run[x], run[y]);
             }
           }
           if (transfers) {
-            for (const Shortened* t = first[0]; t != first[1]; ++t) {
-              const uint32_t shorter = t->string;
-              for (const Shortened* x = first[1]; x != first[2]; ++x) {
-                add(kMinus1, x->string, shorter);
-                add(kPlus1, shorter, x->string);
+            for (size_t t = first[0]; t < first[1]; ++t) {
+              for (size_t x = first[1]; x < first[2]; ++x) {
+                add(kMinus1, run[x], run[t]);
+                add(kPlus1, run[t], run[x]);
               }
-              for (const Shortened* x = first[2]; x != first[3]; ++x) {
-                add(kMinus2, x->string, shorter);
-                add(kPlus2, shorter, x->string);
+              for (size_t x = first[2]; x < first[3]; ++x) {
+                add(kMinus2, run[x], run[t]);
+                add(kPlus2, run[t], run[x]);
               }
             }
-            for (const Shortened* x = first[2]; x != first[3]; ++x) {
-              const uint32_t longer = x->string;
-              for (const Shortened* t = first[1]; t != first[2]; ++t) {
-                const uint32_t shorter = t->string;
+            for (size_t x = first[2]; x < first[3]; ++x) {
+              for (size_t t = first[1]; t < first[2]; ++t) {
                 // Contained strings are "1 out", found above.
-                if (Contains(strings[longer], strings[shorter])) continue;
-                add(kMinus21, longer, shorter);
-                add(kPlus12, shorter, longer);
+                if (Contains(strings[run[x].string], strings[run[t].string])) {
+                  continue;
+                }
+                add(kMinus21, run[x], run[t]);
+                add(kPlus12, run[t], run[x]);
               }
             }
           }
-          run = end;
+          next = run_end;
         }
+        const size_t middle = old.size();
+        old.insert(old.end(), fresh.begin(part), fresh.end(part));
+        std::inplace_merge(old.begin(), old.begin() + middle, old.end(),
+                           KeyLess);
       }
-      if (fill == 0) {
-        for (int r = 0; r < num_lists; ++r) {
-          for (size_t s = 0; s < num_strings; ++s) {
-            start[r][s + 1] += start[r][s];
-          }
-          list[r].resize(start[r][num_strings]);
-          cursor[r].assign(start[r].begin(), start[r].end() - 1);
-        }
+    }
+
+    // The lists: what was there, then the new pairs, sorted where a list
+    // gained entries. Several threads may meet at one string.
+    const int num_lists = transfers ? kNumRelations : 1;
+    const long num_chunks = static_cast<long>(links.size());
+    size_t num_links = 0;
+    for (const std::vector<Link>& chunk : links) num_links += chunk.size();
+    std::vector<uint64_t> added[kNumRelations];
+    std::vector<uint64_t> cursor[kNumRelations];
+    std::vector<uint64_t> new_start[kNumRelations];
+    std::vector<uint32_t> new_list[kNumRelations];
+    for (int r = 0; r < num_lists; ++r) added[r].assign(num_strings, 0);
+#pragma omp parallel for schedule(dynamic, 1)
+    for (long c = 0; c < num_chunks; ++c) {
+      for (const Link& link : links[c]) {
+#pragma omp atomic
+        ++added[link.relation][link.from];
       }
     }
     for (int r = 0; r < num_lists; ++r) {
-#pragma omp parallel for schedule(dynamic, 256)
-      for (long s = 0; s < count; ++s) {
-        std::sort(list[r].begin() + start[r][s],
-                  list[r].begin() + start[r][s + 1]);
+      const std::vector<uint64_t>& start = root_.related_start[group][r];
+      const std::vector<uint32_t>& list = root_.related_list[group][r];
+      const size_t num_old = start.empty() ? 0 : start.size() - 1;
+      new_start[r].assign(num_strings + 1, 0);
+      for (size_t s = 0; s < num_strings; ++s) {
+        const uint64_t before = s < num_old ? start[s + 1] - start[s] : 0;
+        new_start[r][s + 1] = new_start[r][s] + before + added[r][s];
       }
+      new_list[r].resize(new_start[r][num_strings]);
+      cursor[r].resize(num_strings);
+#pragma omp parallel for schedule(static)
+      for (long s = 0; s < count; ++s) {
+        const uint64_t before =
+            static_cast<size_t>(s) < num_old ? start[s + 1] - start[s] : 0;
+        if (before > 0) {
+          std::copy(list.begin() + start[s], list.begin() + start[s + 1],
+                    new_list[r].begin() + new_start[r][s]);
+        }
+        cursor[r][s] = new_start[r][s] + before;
+      }
+    }
+#pragma omp parallel for schedule(dynamic, 1)
+    for (long c = 0; c < num_chunks; ++c) {
+      for (const Link& link : links[c]) {
+        uint64_t slot;
+#pragma omp atomic capture
+        slot = cursor[link.relation][link.from]++;
+        new_list[link.relation][slot] = link.to;
+      }
+    }
+    for (int r = 0; r < num_lists; ++r) {
+      if (num_links > 0) {
+#pragma omp parallel for schedule(dynamic, 256)
+        for (long s = 0; s < count; ++s) {
+          if (added[r][s] == 0) continue;
+          std::sort(new_list[r].begin() + new_start[r][s],
+                    new_list[r].begin() + new_start[r][s + 1]);
+        }
+      }
+      root_.related_start[group][r] = std::move(new_start[r]);
+      root_.related_list[group][r] = std::move(new_list[r]);
     }
   }
 
@@ -500,11 +624,27 @@ class GroupStringTables {
     return true;
   }
 
+  // What the root keeps between calls of Extend.
+  struct RootState {
+    std::vector<Det<W>> strings[2];                      // by number
+    std::vector<std::pair<Det<W>, uint32_t>> sorted[2];  // string, number
+    std::vector<uint32_t> string_of_det[2];
+    // The keys of all strings, in parts by hash, each part sorted.
+    std::vector<std::vector<Shortened>> keys[2];
+    // What the keys were made for.
+    bool transfers[2] = {false, false};
+    int min_count[2] = {0, 0};
+    std::vector<uint64_t> related_start[2][kNumRelations];
+    std::vector<uint32_t> related_list[2][kNumRelations];
+  };
+
+  const Comm& comm_;
   Span<Det<W>> dets_;
   long rank_;
   long num_ranks_;
   Det<W> group_a_;
   bool transfers_ = false;
+  RootState root_;
   // Index 0: strings of group A, 1: of group B.
   SharedArray<uint32_t> string_of_det_[2];
   // The determinants that contain string s are det_index_[det_start_[s] ..
