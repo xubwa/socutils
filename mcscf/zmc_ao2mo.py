@@ -519,6 +519,7 @@ class _CDERIS(lib.StreamObject):
     def __init__(self, zcasscf, mo, level=2, cderi=None, df=False, mode='j-spinor'):
         import gc
         gc.collect()
+        self.cd_up = None
         mol = zcasscf.mol
         nao, nmo = mo.shape
         ncore = zcasscf.ncore
@@ -546,9 +547,11 @@ class _CDERIS(lib.StreamObject):
 
         if level is 2:
             if with_df is not None:
+                self.vj_core = None
+                self.jtu_tril = None
                 cd_pa, vk_core = self._build_cd_pa_and_vk(
                     with_df, mol, nao_nr, nmo, ncore, ncas, nocc,
-                    moo_sph, mop_sph, log)
+                    moo_sph, mop_sph, log, cache_owner=zcasscf)
                 self.cd_pa = cd_pa
                 self.cd_aa = cd_pa[:, ncore:nocc, :].copy()
                 self.vk_core = vk_core  # spinor AO basis
@@ -561,6 +564,8 @@ class _CDERIS(lib.StreamObject):
                 self.cd_pa = cd_pa
                 self.cd_aa = cd_pa[:, ncore:nocc, :].copy()
                 self.vk_core = None
+                self.vj_core = None
+                self.jtu_tril = None
             else:
                 raise ValueError('Either with_df or cderi must be provided')
         elif level > 2:
@@ -577,7 +582,9 @@ class _CDERIS(lib.StreamObject):
                  _mb(getattr(self, 'vk_core', None)),
                  _mb(self.cd_pa) + _mb(self.cd_aa) + _mb(self.aaaa) + _mb(self.paaa) + _mb(getattr(self, 'vk_core', None)))
         self._scf = zcasscf._scf
+        self._owner = zcasscf
         self.mo = mo
+        self.mo_sph = mop_sph
         self.ncore = ncore
         self.ncas = ncas
         self.nocc = nocc
@@ -656,8 +663,46 @@ class _CDERIS(lib.StreamObject):
 
         return L_half
 
+    @staticmethod
+    def _cderi_blocks(with_df, blksize, work_mb, cache_owner, log):
+        """AO Cholesky/DF vectors block by block, as with_df.loop does.
+
+        Every macro iteration reads all the vectors again.  When they are on
+        disk and fit into the memory left under cache_owner.max_memory (after
+        work_mb for the buffers of the pass), they are read once and kept on
+        cache_owner; otherwise they are read from disk every time, as before.
+        """
+        src = with_df._cderi
+        if cache_owner is None or isinstance(src, numpy.ndarray):
+            return with_df.loop(blksize)
+        cached = getattr(cache_owner, '_cderi_incore', None)
+        if cached is not None and cached[0] == src:
+            arr = cached[1]
+        else:
+            cache_owner._cderi_incore = None
+            naux = with_df.get_naoaux()
+            nao = with_df.mol.nao_nr()
+            size_mb = naux * (nao * (nao + 1) // 2) * 8 / 1e6
+            avail_mb = cache_owner.max_memory * .9 - lib.current_memory()[0] - work_mb
+            if size_mb > avail_mb:
+                log.info('CDERIS: AO vectors (%.0f MB) are read from disk in every macro iteration: '
+                         '%.0f MB left under max_memory = %.0f MB', size_mb, max(avail_mb, 0), cache_owner.max_memory)
+                return with_df.loop(blksize)
+            arr = None
+            b0 = 0
+            for eri1 in with_df.loop(blksize):
+                if eri1.ndim != 2:
+                    return with_df.loop(blksize)
+                if arr is None:
+                    arr = numpy.empty((naux, eri1.shape[1]))
+                arr[b0:b0 + eri1.shape[0]] = eri1
+                b0 += eri1.shape[0]
+            cache_owner._cderi_incore = (src, arr)
+            log.info('CDERIS: AO vectors (%.0f MB) kept in memory for the following macro iterations', size_mb)
+        return (arr[b0:b0 + blksize] for b0 in range(0, arr.shape[0], blksize))
+
     def _build_cd_pa_and_vk(self, with_df, mol, nao_nr, nmo, ncore, ncas, nocc,
-                             moo_sph, mop_sph, log):
+                             moo_sph, mop_sph, log, cache_owner=None):
         """One-pass: half-transform occ MOs, produce cd_pa and vk_core simultaneously.
 
         Mirrors scf.spinor_hf._DFJHF._get_k_mo's real/imag-split K build: never
@@ -689,27 +734,44 @@ class _CDERIS(lib.StreamObject):
         C_bR = numpy.asfortranarray(moo_sph[nao_nr:].real)
         C_bI = numpy.asfortranarray(moo_sph[nao_nr:].imag)
 
-        mop_sph_H = mop_sph.T.conj()  # (nmo, 2*nao_nr)
-
-        def _half(eri1, C_real, buf):
+        def _half(eri1, C_real, buf, i0, i1):
             naux_ = eri1.shape[0]
             fdrv(ftrans, fmmm,
                  buf.ctypes.data_as(ctypes.c_void_p),
                  eri1.ctypes.data_as(ctypes.c_void_p),
                  C_real.ctypes.data_as(ctypes.c_void_p),
                  ctypes.c_int(naux_), ctypes.c_int(nao_nr),
-                 (ctypes.c_int * 4)(0, nocc, 0, nao_nr),
+                 (ctypes.c_int * 4)(i0, i1, 0, nao_nr),
                  null, ctypes.c_int(0))
 
         naux = with_df.get_naoaux()
         cd_pa = numpy.zeros((naux, nmo, ncas), dtype=complex)
+        # the same vectors with the active index in front, (P, u, p): the layout
+        # the second transformation step produces, and the one in which the
+        # active exchange matrix is a single matrix product
+        cd_up = numpy.zeros((naux, ncas, nmo), dtype=complex)
+        mop_sph_conj = numpy.ascontiguousarray(mop_sph.conj())
         vk_sph = numpy.zeros((2 * nao_nr, 2 * nao_nr), dtype=complex)
+        # core Coulomb matrix in the same pass: J = sum_P rho_P L_P with
+        # rho_P = sum_i L_P,ii, accumulated in the packed (s2) AO layout of eri1
+        npair = nao_nr * (nao_nr + 1) // 2
+        vj_tril = numpy.zeros(npair)
+        CcaR = numpy.ascontiguousarray(C_aR[:, :ncore].T).ravel()      # (ncore*nao_nr,)
+        CcaI = numpy.ascontiguousarray(C_aI[:, :ncore].T).ravel()
+        CcbR = numpy.ascontiguousarray(C_bR[:, :ncore].T).ravel()
+        CcbI = numpy.ascontiguousarray(C_bI[:, :ncore].T).ravel()
+        # J^{tu}_{mu nu} = sum_P L_P(mu nu) L_P,tu for every active pair, also in
+        # this pass: the Coulomb matrix of any active density is then
+        # sum_tu J^{tu} D_ut without reading the AO vectors again
+        jtu_tril = numpy.zeros((npair, ncas * ncas), dtype=complex)
 
         blksize = with_df.blockdim
-        buf_aR = numpy.empty((blksize * nocc, nao_nr))
-        buf_aI = numpy.empty((blksize * nocc, nao_nr))
-        buf_bR = numpy.empty((blksize * nocc, nao_nr))
-        buf_bI = numpy.empty((blksize * nocc, nao_nr))
+        # core and active orbitals are half-transformed into separate buffers:
+        # slicing the core rows out of a (P, nocc, mu) buffer is not contiguous
+        # and the copy it forces costs more than the matrix products of K
+        nbuf = min(blksize, naux)
+        cbuf = [numpy.empty((nbuf * ncore, nao_nr)) for _ in range(4)]
+        abuf = [numpy.empty((nbuf * ncas, nao_nr)) for _ in range(4)]
 
         log.info('CDERIS before loop: current memory %.1f MB, blksize=%d',
                  lib.current_memory()[0], blksize)
@@ -718,74 +780,235 @@ class _CDERIS(lib.StreamObject):
         # total into half-transform (C kernel, untouched) vs core-K assembly vs
         # cd_pa construction (the two this rewrite changed), so a slow run shows
         # which phase to look at instead of one opaque number.
-        t_half = t_corek = t_cdpa = numpy.zeros(2)
+        # (three separate accumulators: a chained assignment made them one array
+        # and the three phases always printed the same number)
+        t_half, t_corek, t_cdpa = numpy.zeros(2), numpy.zeros(2), numpy.zeros(2)
         b0 = 0
-        for eri1 in with_df.loop(blksize):
+        # half-transform buffers, the complex active block and the two copies of cd_pa
+        work_mb = (4 * nbuf * nocc * nao_nr * 8 + nbuf * ncas * 2 * nao_nr * 16
+                   + 2 * naux * nmo * ncas * 16 + npair * ncas * ncas * 16) / 1e6
+        for eri1 in self._cderi_blocks(with_df, blksize, work_mb, cache_owner, log):
             tb0 = (logger.process_clock(), logger.perf_counter())
             naux_blk = eri1.shape[0]
-            LaR = buf_aR[:naux_blk * nocc]
-            LaI = buf_aI[:naux_blk * nocc]
-            LbR = buf_bR[:naux_blk * nocc]
-            LbI = buf_bI[:naux_blk * nocc]
-
-            # Half-transform: 4 calls for alpha/beta x real/imag, real arrays only
-            _half(eri1, C_aR, LaR)
-            _half(eri1, C_aI, LaI)
-            _half(eri1, C_bR, LbR)
-            _half(eri1, C_bI, LbI)
-
-            LaR = LaR.reshape(naux_blk, nocc, nao_nr)
-            LaI = LaI.reshape(naux_blk, nocc, nao_nr)
-            LbR = LbR.reshape(naux_blk, nocc, nao_nr)
-            LbI = LbI.reshape(naux_blk, nocc, nao_nr)
+            # Half-transform: alpha/beta x real/imag, real arrays only
+            LaR_c, LaI_c, LbR_c, LbI_c = [x[:naux_blk * ncore] for x in cbuf]
+            LaR_a, LaI_a, LbR_a, LbI_a = [x[:naux_blk * ncas] for x in abuf]
+            for C_real, core, act in ((C_aR, LaR_c, LaR_a), (C_aI, LaI_c, LaI_a),
+                                      (C_bR, LbR_c, LbR_a), (C_bI, LbI_c, LbI_a)):
+                if ncore > 0:
+                    _half(eri1, C_real, core, 0, ncore)
+                _half(eri1, C_real, act, ncore, nocc)
             tb1 = (logger.process_clock(), logger.perf_counter())
             t_half += (tb1[0] - tb0[0], tb1[1] - tb0[1])
+
+            # --- Core J: rho_P = sum_i C_i^dagger L_P C_i (real), J += rho_P L_P ---
+            if eri1.ndim == 2 and vj_tril is not None:
+                if ncore > 0:
+                    rho = (lib.dot(LaR_c.reshape(naux_blk, -1), CcaR[:, None])
+                           + lib.dot(LaI_c.reshape(naux_blk, -1), CcaI[:, None])
+                           + lib.dot(LbR_c.reshape(naux_blk, -1), CcbR[:, None])
+                           + lib.dot(LbI_c.reshape(naux_blk, -1), CcbI[:, None]))
+                    vj_tril += lib.dot(rho.T, numpy.asarray(eri1)).ravel()
+            else:
+                vj_tril = None
 
             # --- Core K assembly (i < ncore), real GEMMs only ---
             # K[mu,nu] = sum_{Pi} L[Pi,mu] L[Pi,nu]* with L = LR + i*LI splits
             # into a real symmetric part (LR.T@LR + LI.T@LI) and an imaginary
             # antisymmetric part (LI.T@LR - (LI.T@LR).T); this never forms the
             # complex L itself for the (naux_blk, ncore, nao_nr) core block.
-            LaR_c = LaR[:, :ncore, :].reshape(-1, nao_nr)
-            LaI_c = LaI[:, :ncore, :].reshape(-1, nao_nr)
-            LbR_c = LbR[:, :ncore, :].reshape(-1, nao_nr)
-            LbI_c = LbI[:, :ncore, :].reshape(-1, nao_nr)
-
-            IRa = lib.dot(LaI_c.T, LaR_c)
-            vk_sph[:nao_nr, :nao_nr] += (lib.dot(LaR_c.T, LaR_c) + lib.dot(LaI_c.T, LaI_c)
-                                          + 1j * (IRa - IRa.T))
-            IRb = lib.dot(LbI_c.T, LbR_c)
-            vk_sph[nao_nr:, nao_nr:] += (lib.dot(LbR_c.T, LbR_c) + lib.dot(LbI_c.T, LbI_c)
-                                          + 1j * (IRb - IRb.T))
-            K_ab = (lib.dot(LaR_c.T, LbR_c) + lib.dot(LaI_c.T, LbI_c)
-                    + 1j * (lib.dot(LaI_c.T, LbR_c) - lib.dot(LaR_c.T, LbI_c)))
-            vk_sph[:nao_nr, nao_nr:] += K_ab
-            vk_sph[nao_nr:, :nao_nr] += K_ab.conj().T
+            if ncore > 0:
+                IRa = lib.dot(LaI_c.T, LaR_c)
+                vk_sph[:nao_nr, :nao_nr] += (lib.dot(LaR_c.T, LaR_c) + lib.dot(LaI_c.T, LaI_c)
+                                              + 1j * (IRa - IRa.T))
+                IRb = lib.dot(LbI_c.T, LbR_c)
+                vk_sph[nao_nr:, nao_nr:] += (lib.dot(LbR_c.T, LbR_c) + lib.dot(LbI_c.T, LbI_c)
+                                              + 1j * (IRb - IRb.T))
+                K_ab = (lib.dot(LaR_c.T, LbR_c) + lib.dot(LaI_c.T, LbI_c)
+                        + 1j * (lib.dot(LaI_c.T, LbR_c) - lib.dot(LaR_c.T, LbI_c)))
+                vk_sph[:nao_nr, nao_nr:] += K_ab
+                vk_sph[nao_nr:, :nao_nr] += K_ab.conj().T
             tb2 = (logger.process_clock(), logger.perf_counter())
             t_corek += (tb2[0] - tb1[0], tb2[1] - tb1[1])
 
             # --- cd_pa: active rows only, complex-materialised (ncas << ncore) ---
-            La_act = LaR[:, ncore:, :] + 1j * LaI[:, ncore:, :]  # (naux_blk, ncas, nao_nr)
-            Lb_act = LbR[:, ncore:, :] + 1j * LbI[:, ncore:, :]
-            L_act = numpy.concatenate([La_act, Lb_act], axis=2).transpose(0, 2, 1)  # (naux_blk, 2*nao_nr, ncas)
-            cd_pa[b0:b0 + naux_blk] = numpy.matmul(mop_sph_H, L_act)
+            # one product over all (P, u) rows: X[(P,u), p] = sum_mu L[P,u,mu] C*[mu,p]
+            L_act = numpy.empty((naux_blk * ncas, 2 * nao_nr), dtype=complex)
+            L_act[:, :nao_nr].real = LaR_a
+            L_act[:, :nao_nr].imag = LaI_a
+            L_act[:, nao_nr:].real = LbR_a
+            L_act[:, nao_nr:].imag = LbI_a
+            x_up = lib.dot(L_act, mop_sph_conj).reshape(naux_blk, ncas, nmo)
+            cd_up[b0:b0 + naux_blk] = x_up
+            cd_pa[b0:b0 + naux_blk] = x_up.transpose(0, 2, 1)
+            if vj_tril is not None:
+                laa = numpy.ascontiguousarray(x_up[:, :, ncore:nocc].transpose(0, 2, 1)).reshape(naux_blk, ncas * ncas)
+                e1 = numpy.asarray(eri1)
+                jtu_tril += lib.dot(e1.T, laa.real) + 1j * lib.dot(e1.T, laa.imag)
             tb3 = (logger.process_clock(), logger.perf_counter())
             t_cdpa += (tb3[0] - tb2[0], tb3[1] - tb2[1])
 
             b0 += naux_blk
-            del LaR_c, LaI_c, LbR_c, LbI_c, La_act, Lb_act, L_act
+            del L_act, x_up
             if b0 % (blksize * 5) == 0 or b0 >= naux - blksize:
                 log.info('  chunk b0=%d, memory %.1f MB', b0, lib.current_memory()[0])
 
         import gc
         gc.collect()
         vk_core = sph2spinor(mol, vk_sph)
+        if vj_tril is not None:
+            vj_ao = lib.unpack_tril(vj_tril)
+            vj_sph = numpy.zeros((2 * nao_nr, 2 * nao_nr), dtype=complex)
+            vj_sph[:nao_nr, :nao_nr] = vj_sph[nao_nr:, nao_nr:] = vj_ao
+            self.vj_core = sph2spinor(mol, vj_sph)
+            self.jtu_tril = jtu_tril
+        self.cd_up = cd_up
         log.info('CDERIS after loop: current memory %.1f MB', lib.current_memory()[0])
         log.info('CDERIS: %d aux functions, cd_pa and vk_core built in one pass', naux)
         log.info('CDERIS phase breakdown: half-transform CPU %.1f wall %.1f sec, '
                  'core-K CPU %.1f wall %.1f sec, cd_pa CPU %.1f wall %.1f sec',
                  t_half[0], t_half[1], t_corek[0], t_corek[1], t_cdpa[0], t_cdpa[1])
         return cd_pa, vk_core
+
+    def rotated_pass(self, kappa, dm_act):
+        """The part of the exact orbital Hessian-vector product that needs the AO vectors.
+
+        H x contains L_pm kappa_mi with p running over all orbitals, i.e. the
+        virtual-virtual MO vectors.  They are never formed: the AO vectors are
+        half-transformed with the rotated occupied orbitals C kappa[:, occ] (one
+        pass, the kernel of _build_cd_pa_and_vk), and from them
+
+          jk_c1 = (J - K)[kappa P_c - P_c kappa]      first-order core density
+          jk_a1 = (J - K)[kappa D - D kappa]          first-order active density
+          cd1_up[P, u, p] = sum_m L_P,pm kappa_mu     one-index transformed vectors
+
+        are assembled (MO basis).  The half-transformed vectors of the unrotated
+        occupied orbitals do not depend on kappa: they are computed in the first
+        call and kept for the following ones when max_memory allows, as are the
+        work buffers.  kappa: anti-Hermitian (nmo, nmo); dm_act: the
+        active density D_tu = <u^+ t> (transpose of the solver's casdm1).
+        """
+        import ctypes
+        from pyscf.ao2mo import _ao2mo
+        with_df = self._scf.with_df
+        mol = self._scf.mol
+        nao = mol.nao_nr()
+        ncore, nocc = self.ncore, self.nocc
+        ncas = nocc - ncore
+        mo_sph = self.mo_sph
+        nmo = mo_sph.shape[1]
+        log = logger.Logger(sys.stdout, self._owner.verbose)
+        ftrans = _ao2mo.libao2mo.AO2MOtranse2_nr_s2
+        fmmm = _ao2mo.libao2mo.AO2MOmmm_bra_nr_s2
+        fdrv = _ao2mo.libao2mo.AO2MOnr_e2_drv
+        null = lib.c_null_ptr()
+
+        def _split(orb):   # alpha/beta x real/imag, Fortran order for the kernel
+            return [numpy.asfortranarray(x) for x in (orb[:nao].real, orb[:nao].imag, orb[nao:].real, orb[nao:].imag)]
+
+        def _half(eri1, c_real, buf):
+            norb = c_real.shape[1]
+            fdrv(ftrans, fmmm, buf.ctypes.data_as(ctypes.c_void_p), eri1.ctypes.data_as(ctypes.c_void_p),
+                 c_real.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(eri1.shape[0]), ctypes.c_int(nao),
+                 (ctypes.c_int * 4)(0, norb, 0, nao), null, ctypes.c_int(0))
+
+        def _complex(bufs, n, norb):   # (n, norb, 2 nao) from the four real pieces
+            out = numpy.empty((n, norb, 2 * nao), dtype=complex)
+            out[:, :, :nao].real = bufs[0][:n * norb].reshape(n, norb, nao)
+            out[:, :, :nao].imag = bufs[1][:n * norb].reshape(n, norb, nao)
+            out[:, :, nao:].real = bufs[2][:n * norb].reshape(n, norb, nao)
+            out[:, :, nao:].imag = bufs[3][:n * norb].reshape(n, norb, nao)
+            return out
+
+        Cc, Ca = mo_sph[:, :ncore], mo_sph[:, ncore:nocc]
+        yc_orb, xc_orb = _split(Cc), _split(lib.dot(mo_sph, numpy.ascontiguousarray(kappa[:, :ncore])))
+        ya_orb, xa_orb = _split(Ca), _split(lib.dot(mo_sph, numpy.ascontiguousarray(kappa[:, ncore:nocc])))
+        # rho_P = 2 Re sum_i <C_i| L_P |X_i>: flattened conj(C) in the (i, mu) layout of the buffers
+        cc_flat = [numpy.ascontiguousarray(c.T).ravel() for c in yc_orb]
+        ca_conj = numpy.ascontiguousarray(Ca.conj().T).reshape(-1, 1)
+        mo_sph_conj = numpy.ascontiguousarray(mo_sph.conj())
+        dm_t = numpy.ascontiguousarray(numpy.asarray(dm_act).T)
+
+        naux = with_df.get_naoaux()
+        npair = nao * (nao + 1) // 2
+        blksize = with_df.blockdim
+        nbuf = min(blksize, naux)
+        cache = getattr(self, '_rotated_cache', None)
+        if cache is None:
+            # work buffers, allocated once per set of orbitals
+            cache = self._rotated_cache = {
+                'x': [numpy.empty((nbuf * ncore, nao)) for _ in range(4)],
+                'xa': [numpy.empty((nbuf * ncas, nao)) for _ in range(4)],
+                'ya_tmp': [numpy.empty((nbuf * ncas, nao)) for _ in range(4)],
+                'y': None, 'ya': None, 'filled': False}
+            y_mb = (4 * naux * ncore * nao * 8 + naux * ncas * 2 * nao * 16) / 1e6
+            work_mb = (4 * nbuf * ncore * nao * 8 + 8 * nbuf * ncas * nao * 8 + 3 * nbuf * ncas * 2 * nao * 16
+                       + naux * nmo * ncas * 16) / 1e6
+            avail_mb = self._owner.max_memory * .9 - lib.current_memory()[0] - work_mb
+            if y_mb < avail_mb:
+                cache['y'] = [numpy.empty((naux * ncore, nao)) for _ in range(4)]
+                cache['ya'] = numpy.empty((naux * ncas, 2 * nao), dtype=complex)
+            else:
+                log.info('rotated_pass: the half-transformed unrotated vectors (%.0f MB) are recomputed in every '
+                         'H x: %.0f MB left under max_memory = %.0f MB', y_mb, max(avail_mb, 0), self._owner.max_memory)
+                cache['y_tmp'] = [numpy.empty((nbuf * ncore, nao)) for _ in range(4)]
+        keep = cache['y'] is not None
+        xbuf, xabuf = cache['x'], cache['xa']
+        work_mb = 0. if keep else 4 * nbuf * ncore * nao * 8 / 1e6
+        jc, ja = numpy.zeros(npair), numpy.zeros(npair)
+        kc = numpy.zeros((2 * nao, 2 * nao), dtype=complex)
+        ka = numpy.zeros((2 * nao, 2 * nao), dtype=complex)
+        cd1 = numpy.empty((naux, ncas, nmo), dtype=complex)
+        b0 = 0
+        for eri1 in self._cderi_blocks(with_df, blksize, work_mb, self._owner, log):
+            if eri1.ndim != 2:
+                raise NotImplementedError('rotated_pass needs the packed (s2) AO vectors')
+            n = eri1.shape[0]
+            if ncore > 0:
+                if keep:
+                    Y = [b[b0 * ncore:(b0 + n) * ncore] for b in cache['y']]
+                else:
+                    Y = [b[:n * ncore] for b in cache['y_tmp']]
+                X = [b[:n * ncore] for b in xbuf]
+                for k in range(4):
+                    if not (keep and cache['filled']):
+                        _half(eri1, yc_orb[k], Y[k])
+                    _half(eri1, xc_orb[k], X[k])
+                rho = 2 * sum(lib.dot(X[k].reshape(n, -1), cc_flat[k][:, None]) for k in range(4))
+                jc += lib.dot(rho.T, eri1).ravel()
+                # K[mu s, nu s'] = sum_Pi X_s[Pi, mu] Y_s'[Pi, nu]^*, real GEMMs only
+                for s in range(2):
+                    xr, xi = X[2 * s], X[2 * s + 1]
+                    for sp in range(2):
+                        yr, yi = Y[2 * sp], Y[2 * sp + 1]
+                        kc[s * nao:(s + 1) * nao, sp * nao:(sp + 1) * nao] += (
+                            lib.dot(xr.T, yr) + lib.dot(xi.T, yi) + 1j * (lib.dot(xi.T, yr) - lib.dot(xr.T, yi)))
+            if keep and cache['filled']:
+                Ya = cache['ya'][b0 * ncas:(b0 + n) * ncas]
+            else:
+                for k in range(4):
+                    _half(eri1, ya_orb[k], cache['ya_tmp'][k][:n * ncas])
+                Ya = _complex(cache['ya_tmp'], n, ncas).reshape(n * ncas, 2 * nao)
+                if keep:
+                    cache['ya'][b0 * ncas:(b0 + n) * ncas] = Ya
+            for k in range(4):
+                _half(eri1, xa_orb[k], xabuf[k][:n * ncas])
+            Xa = _complex(xabuf, n, ncas)
+            XaD = numpy.matmul(dm_t, Xa).reshape(n * ncas, 2 * nao)      # sum_t Xa[P, t] D_tu
+            rho = 2 * lib.dot(XaD.reshape(n, -1), ca_conj).real
+            ja += lib.dot(rho.T, eri1).ravel()
+            ka += lib.dot(XaD.T, Ya.conj())
+            cd1[b0:b0 + n] = lib.dot(Xa.reshape(n * ncas, 2 * nao), mo_sph_conj).reshape(n, ncas, nmo)
+            b0 += n
+        cache['filled'] = True
+
+        def _to_mo(j_tril, k):
+            v = -(k + k.conj().T)
+            j = lib.unpack_tril(j_tril)
+            v[:nao, :nao] += j
+            v[nao:, nao:] += j
+            return lib.dot(mo_sph_conj.T, lib.dot(v, mo_sph))
+        return _to_mo(jc, kc), _to_mo(ja, ka), cd1
 
     def _build_cd_pa(self, with_df, cderi, mol, nao_nr, nmo, ncas,
                      moa_sph, mop_sph, log):
@@ -827,7 +1050,10 @@ class _CDERIS(lib.StreamObject):
         Otherwise falls back entirely to _scf.get_jk.
         """
         if self.vk_core is not None and mo_coeff is not None and mo_occ is not None:
-            # K from cached vk_core (built during __init__)
+            # J and K of the core density cached from the half-transform pass
+            # (built during __init__); only valid for the core density of self.mo
+            if getattr(self, 'vj_core', None) is not None:
+                return self.vj_core, self.vk_core
             vj, _ = self._scf.get_jk(self._scf.mol, dm, with_j=True, with_k=False)
             return vj, self.vk_core
         else:
@@ -850,15 +1076,33 @@ class _CDERIS(lib.StreamObject):
         nocc = self.nocc
 
         # K_a in MO basis from cd_pa
-        tmp = lib.einsum('Ppt,tu->Ppu', self.cd_pa, casdm1)
-        vk_a_mo = lib.einsum('Ppu,Pqu->pq', tmp, self.cd_pa.conj())
+        # K_pq = sum_P sum_tu L_P,pt D_tu L_P,qu^*
+        if getattr(self, 'cd_up', None) is not None:
+            # (P, u, p) layout: one matrix product over the (P, u) rows
+            tmp = numpy.matmul(numpy.asarray(casdm1).T, self.cd_up).reshape(-1, nmo)
+            vk_a_mo = lib.dot(tmp.T, self.cd_up.reshape(-1, nmo).conj())
+        else:
+            tmp = lib.einsum('Ppt,tu->Ppu', self.cd_pa, casdm1)
+            vk_a_mo = lib.einsum('Ppu,Pqu->pq', tmp, self.cd_pa.conj())
 
-        # J_a via DM path (J only), then transform to MO basis
-        dm_active = numpy.zeros((nmo, nmo), dtype=complex)
-        dm_active[ncore:nocc, ncore:nocc] = casdm1
-        dm_active_ao = reduce(numpy.dot, (mo, dm_active, mo.T.conj()))
-        vj_a, _ = self._scf.get_jk(self._scf.mol, dm_active_ao,
-                                     with_j=True, with_k=False)
+        if getattr(self, 'jtu_tril', None) is not None:
+            # J_a = sum_tu J^{tu} D_ut with the pair operators accumulated during
+            # the half-transform pass (real: L_P and D are Hermitian)
+            from socutils.scf.spinor_hf import sph2spinor
+            mol = self._scf.mol
+            nao_nr = mol.nao_nr()
+            ncas = nocc - ncore
+            vj_tril = lib.dot(self.jtu_tril, numpy.asarray(casdm1).T.reshape(ncas * ncas, 1)).ravel().real
+            vj_sph = numpy.zeros((2 * nao_nr, 2 * nao_nr), dtype=complex)
+            vj_sph[:nao_nr, :nao_nr] = vj_sph[nao_nr:, nao_nr:] = lib.unpack_tril(vj_tril)
+            vj_a = sph2spinor(mol, vj_sph)
+        else:
+            # J_a via DM path (J only)
+            dm_active = numpy.zeros((nmo, nmo), dtype=complex)
+            dm_active[ncore:nocc, ncore:nocc] = casdm1
+            dm_active_ao = reduce(numpy.dot, (mo, dm_active, mo.T.conj()))
+            vj_a, _ = self._scf.get_jk(self._scf.mol, dm_active_ao,
+                                         with_j=True, with_k=False)
         vj_a_mo = reduce(numpy.dot, (mo.T.conj(), vj_a, mo))
 
         return vj_a_mo, vk_a_mo

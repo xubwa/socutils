@@ -148,13 +148,20 @@ def kernel(casci, mo_coeff=None, ci0=None, verbose=logger.NOTE):
     e_tot, fcivec = casci.fcisolver.kernel(h1eff, eri_cas.reshape(ncas, ncas, ncas, ncas), ncas, nelecas,
                                            ci0=ci0, verbose=5, max_memory=max_memory, ecore=energy_core)
     
-    #if isinstance(e_tot, list):
-    #    e_tot = numpy.average(e_tot)
     t1 = log.timer('FCI solver', *t1)
+    e_tot = numpy.asarray(e_tot)
     e_cas = e_tot.real - energy_core.real
-    if not isinstance(e_cas, (float, numpy.number)):
-        e_cas = e_cas.mean()
-        e_tot = e_tot.mean()
+    if e_tot.ndim > 0:
+        # A multi-root solver keeps its roots: e_tot and e_cas stay arrays,
+        # as in pyscf (mcscf/casci.py indexes self.e_tot[i] when e_cas is not
+        # a scalar, and so does zcasbase._finalize).  Averaging them here
+        # would leave the individual energies only in the log, and any
+        # method that works per state -- transition moments, degeneracy
+        # grouping, state-resolved properties -- would have nowhere to read
+        # them from.  A state-averaged solver is the case that reports a
+        # single averaged e_tot, and it does that through its own wrapper.
+        for i, e in enumerate(e_tot.real):
+            log.info('CASCI state %d  E = %.10f', i, e)
     return e_tot.real, e_cas.real, fcivec
 
 
@@ -361,19 +368,20 @@ class CASCI(zcasbase.CASBase):
         '''
         return self.ao2mo(mo_coeff)
 
-    ####THIS SHOULD BE CHECKED###
     def ao2mo(self, mo_coeff=None, level=1):
         ncore = self.ncore
         ncas = self.ncas
         nocc = ncore + ncas
-        nao = self.mo_coeff.shape[0] // 2
         if mo_coeff is None:
-            ncore = self.ncore
             mo_coeff = self.mo_coeff
 
-        eri_cas1 = nrr_outcore.full_iofree(self.mol, mo_coeff[:, ncore:nocc], motype='j-spinor', verbose=5)
-        eri_cas = ao2mo.kernel(self.mol, mo_coeff[:, ncore:nocc], intor='int2e_spinor', verbose=5)
-        from numpy.linalg import norm
+        if getattr(self._scf, 'with_df', None) is not None:
+            # reuse the SCF's Cholesky/DF integrals (same transform as the
+            # cahf_diis/_fake_h_for_fast_casci path) instead of a direct
+            # AO-basis transformation
+            eris = zmc_ao2mo._CDERIS(self, mo_coeff, level=2)
+            return eris.aaaa
+        eri_cas = nrr_outcore.full_iofree(self.mol, mo_coeff[:, ncore:nocc], motype='j-spinor', verbose=5)
         return eri_cas
 
     get_h1cas = h1e_for_cas = h1e_for_cas
@@ -458,22 +466,6 @@ class CASCI(zcasbase.CASBase):
     def state_specific_(self, state=1):
         addons.state_specific(self, state)
         return self
-
-    def make_rdm1(self, mo_coeff=None, ci=None, ncas=None, nelecas=None, ncore=None, **kwargs):
-        '''One-particle density matrix in AO representation
-        '''
-        if mo_coeff is None: mo_coeff = self.mo_coeff
-        if ci is None: ci = self.ci
-        if ncas is None: ncas = self.ncas
-        if nelecas is None: nelecas = self.nelecas
-        if ncore is None: ncore = self.ncore
-
-        casdm1 = self.fcisolver.make_rdm1(ci, ncas, nelecas)
-        mocore = mo_coeff[:, :ncore]
-        mocas = mo_coeff[:, ncore:ncore + ncas]
-        dm1 = numpy.dot(mocore, mocore.T.conj())
-        dm1 = dm1 + reduce(numpy.dot, (mocas, casdm1, mocas.T.conj()))
-        return dm1
 
 
 if __name__ == '__main__':

@@ -201,7 +201,15 @@ class CASBase(lib.StreamObject):
     #     return self.mo_coeff, ci, self.mo_energy
     def make_rdm1(self, mo_coeff=None, ci=None, ncas=None, nelecas=None,
                   ncore=None, **kwargs):
-        '''One-particle density matrix in AO representation
+        '''One-particle density matrix in AO representation.
+
+        The solver returns ``casdm1[p,q] = <p^dagger q>``; an AO density is
+        consumed as ``Tr(O D) = sum_uv O_uv D_vu``, and the two index orders
+        differ by a transpose, so the active block is ``C casdm1^T C^dagger``.
+        Getting this wrong is invisible on a real operator and worth a few
+        parts in 1e3 on a complex Hermitian one (and turns a vanishing
+        transition moment into a finite signal, which is why
+        :mod:`socutils.prop` contracts in the MO basis by default).
         '''
         if mo_coeff is None: mo_coeff = self.mo_coeff
         if ci is None: ci = self.ci
@@ -213,7 +221,7 @@ class CASBase(lib.StreamObject):
         mocore = mo_coeff[:,:ncore]
         mocas = mo_coeff[:,ncore:ncore+ncas]
         dm1 = numpy.dot(mocore, mocore.conj().T)
-        dm1 = dm1 + reduce(numpy.dot, (mocas, casdm1, mocas.conj().T))
+        dm1 = dm1 + reduce(numpy.dot, (mocas, casdm1.T, mocas.conj().T))
         return dm1
 
     def density_fit(self, auxbasis=None, with_df=None):
