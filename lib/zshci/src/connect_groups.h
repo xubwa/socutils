@@ -96,6 +96,15 @@ class GroupStringTables {
         UpdateRelated(group, first_new_string[group]);
       }
     }
+    if (comm_.is_root()) {
+      if (first_new == 0) sector_sizes_.clear();
+      for (size_t i = first_new; i < dets.size(); ++i) {
+        const size_t in_a = StringOf(dets[i], 0).Count();
+        if (sector_sizes_.size() <= in_a) sector_sizes_.resize(in_a + 1, 0);
+        ++sector_sizes_[in_a];
+      }
+    }
+    comm_.Bcast(&sector_sizes_);
     transfers_ = false;
     for (int group = 0; group < 2; ++group) {
       string_of_det_[group] =
@@ -128,6 +137,10 @@ class GroupStringTables {
   }
   // Whether determinants differ in the number of electrons of a group.
   bool has_transfers() const { return transfers_; }
+  // The sectors: element n is the number of determinants with n electrons in
+  // group A (and the rest in group B). Determinants are only connected
+  // within a sector and to the sectors one or two electrons away.
+  const std::vector<uint64_t>& sector_sizes() const { return sector_sizes_; }
 
   // Whether this rank is responsible for the row of determinant j.
   bool Owns(size_t j) const {
@@ -644,6 +657,7 @@ class GroupStringTables {
   long num_ranks_;
   Det<W> group_a_;
   bool transfers_ = false;
+  std::vector<uint64_t> sector_sizes_;
   RootState root_;
   // Index 0: strings of group A, 1: of group B.
   SharedArray<uint32_t> string_of_det_[2];

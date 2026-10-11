@@ -387,6 +387,20 @@ class VariationalH {
   }
 
   void PrintStats() const {
+    if (tables_ != nullptr) {
+      // How the determinants divide by the electrons in the first group.
+      std::string text;
+      const std::vector<uint64_t>& sizes = tables_->sector_sizes();
+      for (size_t in_a = 0; in_a < sizes.size(); ++in_a) {
+        if (sizes[in_a] == 0) continue;
+        text += (text.empty() ? "" : ", ") + std::to_string(in_a) + ": " +
+                std::to_string(sizes[in_a]);
+      }
+      std::printf(
+          "sectors (electrons in the first group: determinants): "
+          "%s\n",
+          text.c_str());
+    }
     if (direct_) {
       std::printf(
           "Hamiltonian: not stored; %llu distinct strings, %llu "
