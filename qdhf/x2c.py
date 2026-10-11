@@ -136,10 +136,41 @@ def uncontract_mol(mol):
     return xmol, QArray.from_mpf(c)
 
 
-def get_xr(mol, light_speed=None, approx='1e', qi=None, omega=1.0):
+def sap_charges(mol, sap_basis='sapgrasplarge'):
+    '''Gaussian charges of the superposition of atomic potentials (SAP,
+    S. Lehtola, JCTC 15, 1593 (2019); Gaussian fit: Lehtola, Visscher,
+    Engel, JCP 152, 144105 (2020)) as used by pyscf init_guess='sap'.
+    The coefficients of each atom are renormalized in hmp precision to sum
+    to exactly -Z (neutral atoms).  Returns (charges, coords, zetas).'''
+    from pyscf.gto.basis import load
+    charges, coords, zetas = [], [], []
+    for ia in range(mol.natm):
+        z = int(mol.atom_charge(ia))
+        if z == 0:
+            continue
+        symb = mol.atom_pure_symbol(ia)
+        b = load(sap_basis, symb)
+        if isinstance(b, dict):
+            b = b[symb]
+        arr = numpy.asarray(b[0][1:], dtype=float)
+        cs = [hmp.mpf(float(x)) for x in arr[:, 1]]
+        scale = hmp.mpf(-z) / sum(cs)
+        for (e, _), cq in zip(arr, cs):
+            charges.append(cq * scale)
+            coords.append(mol.atom_coord(ia))
+            zetas.append(e)
+    return charges, coords, zetas
+
+
+def get_xr(mol, light_speed=None, approx='1e', qi=None, omega=1.0,
+           sap_basis='sapgrasplarge'):
     '''X and R matrices of sf-X2C-1e in the basis of mol (no decontraction).
 
-    approx = '1e', 'atom1e' or 'rs1e'.  'rs1e' is the range-separated X2C-1e
+    approx = '1e', 'atom1e', 'rs1e' or 'sap1e'.  'sap1e': X is built from
+    the screened potential V + V_scr, V_scr the electronic part of the SAP
+    of neutral atoms (Gaussian charges, see sap_charges); V_scr is then
+    subtracted untransformed.  rs1e is the special case of one Gaussian
+    countercharge -Z exp(-omega^2 r^2) per nucleus.  'rs1e' is the range-separated X2C-1e
     of Q. Sun (pyscf branch range-separated-x2c1e): every nucleus is split
     into V = V_sr + V_lr, V_lr = -Z erf(omega r)/r (the potential of a
     Gaussian countercharge exp(-omega^2 r^2)); X is built from V_sr only and
@@ -161,7 +192,13 @@ def get_xr(mol, light_speed=None, approx='1e', qi=None, omega=1.0):
     w = vy[0::3, 0::3] + vy[1::3, 1::3] + vy[2::3, 2::3]
 
     v_lr = None
-    if approx.upper() == 'RS1E':
+    if approx.upper() == 'SAP1E':
+        v_scr, vy_scr = qi.charge_potential(*sap_charges(mol, sap_basis))
+        v = v + v_scr
+        w = w + (vy_scr[0::3, 0::3] + vy_scr[1::3, 1::3] + vy_scr[2::3, 2::3])
+        v_lr = v_scr * -1
+        x = xmatrix(t, v, w, s, c)
+    elif approx.upper() == 'RS1E':
         zeta = float(omega)**2
         v_lr = qi.nuc_x(zeta=zeta)
         vy_lr = qi.nuc_y(zeta=zeta)
@@ -222,7 +259,7 @@ class SFX2C1E_RHF(dhf.RHF):
     '''Quad precision closed-shell RHF with the sf-X2C-1e Hamiltonian
 
     Attributes:
-        approx : '1e' (default, molecular decoupling), 'atom1e' or 'rs1e'
+        approx : '1e' (default, molecular decoupling), 'atom1e', 'rs1e' or 'sap1e'
         omega : range-separation parameter of 'rs1e' (default 1.0)
         xuncontract : decouple in the decontracted basis (default True)
         light_speed : speed of light (default lib.param.LIGHT_SPEED)

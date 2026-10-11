@@ -314,13 +314,19 @@ class QuadIntegrals:
         self._zetas = qarray._raw_from_double(zetas)
 
     # ------------------------------------------------------------ raw ints
-    def _int1e_cart(self, kind, shls_i, shls_j, atoms=None, zeta=None):
+    def _int1e_cart(self, kind, shls_i, shls_j, atoms=None, zeta=None, centers=None):
         ni = sum((self._bas[i,0]+1)*(self._bas[i,0]+2)//2 for i in shls_i)
         nj = sum((self._bas[i,0]+1)*(self._bas[i,0]+2)//2 for i in shls_j)
         out = numpy.empty((ni, nj), dtype=QDTYPE)
         ptr = qarray._ptr
         charges = self._charges
         zetas = self._zetas
+        coords = self._coords
+        natm = self.mol.natm
+        if centers is not None:
+            # explicit list of Gaussian charges: (charges, coords, zetas)
+            charges, coords, zetas = centers
+            natm = charges.size
         if zeta is not None:
             # Gaussian charge distributions exp(-zeta r^2) on all nuclei
             zetas = qarray._raw_from_double(numpy.full(self.mol.natm, float(zeta)))
@@ -335,7 +341,7 @@ class QuadIntegrals:
             ptr(shls_i), ctypes.c_int(len(shls_i)),
             ptr(shls_j), ctypes.c_int(len(shls_j)),
             ptr(self._bas), ptr(self._env),
-            ctypes.c_int(self.mol.natm), ptr(charges), ptr(self._coords),
+            ctypes.c_int(natm), ptr(charges), ptr(coords),
             ptr(zetas))
         if ierr != 0:
             raise RuntimeError('QDint1e failed')
@@ -375,6 +381,18 @@ class QuadIntegrals:
         subset of the nuclei.  zeta: see nuc_x'''
         v = self._int1e_cart(1, self.shls_S, self.shls_S, atoms, zeta)
         return self.cy @ v @ self.cy.T
+
+    def charge_potential(self, charges, coords, zetas):
+        '''<chi|V|chi> and <d_a chi|V|d_b chi> (index 3*mu+a) of a set of
+        Gaussian charge distributions q_k (zeta_k/pi)^{3/2} exp(-zeta_k |r-C_k|^2),
+        V(r) = -sum_k q_k erf(sqrt(zeta_k) |r-C_k|) / |r-C_k|.
+        charges: hmp/mpf numbers (converted exactly), coords, zetas: doubles.'''
+        q = qarray._raw_from_mpf(numpy.asarray(charges, dtype=object))
+        c = qarray._raw_from_double(numpy.asarray(coords, dtype=float).reshape(-1, 3))
+        z = qarray._raw_from_double(numpy.asarray(zetas, dtype=float))
+        vx = self._int1e_cart(1, self.shls_L, self.shls_L, centers=(q, c, z))
+        vy = self._int1e_cart(1, self.shls_S, self.shls_S, centers=(q, c, z))
+        return self.cx @ vx @ self.cx.T, self.cy @ vy @ self.cy.T
 
     def dip_x(self, comp):
         '''<chi_mu | r_comp | chi_nu> (origin at 0), comp = 0, 1, 2'''

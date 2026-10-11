@@ -268,6 +268,14 @@ class KnownValues(unittest.TestCase):
         h = x2c.get_hcore(mol1, approx='rs1e', omega=omega).to_numpy()
         self.assertAlmostEqual(abs(h - ref).max(), 0, 11)
 
+    def test_sap_potential(self):
+        from pyscf.gto.basis import load
+        mol1 = gto.M(atom='F 0 0 0; H 0 0 0.917', basis='cc-pvdz', verbose=0)
+        sapbas = {a: numpy.asarray(load('sapgrasplarge', a)[0][1:], float) for a in ('F', 'H')}
+        vref = scf.hf.make_sap(mol1, sapbas)
+        v, vy = integrals.QuadIntegrals(mol1).charge_potential(*x2c.sap_charges(mol1))
+        self.assertAlmostEqual(abs(v.to_numpy() - vref).max(), 0, 11)
+
     def test_he2_x2c_long_range(self):
         # spurious R^-4 tail of the molecular sf-X2C-1e decoupling
         basis = 'unc-cc-pvdz'
