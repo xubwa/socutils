@@ -213,38 +213,67 @@ class GroupStringTables {
   }
 
   // Reports the determinants below `limit` whose A string is related to a
-  // by relation_a and whose B string to b by relation_b: for every such A
-  // string, the determinants that contain it, ordered by their B string,
-  // are merged with the list of B strings.
+  // by relation_a and whose B string to b by relation_b. For every such A
+  // string the determinants that contain it are known with their B strings,
+  // and those whose B string is in the list of b are wanted. The list of b
+  // is marked once in a bit array of this thread, so that each determinant
+  // costs one bit test; only where an A string occurs in very many more
+  // determinants than b has related strings, those are looked up in its
+  // sorted determinants instead.
   template <class Visitor>
   void Combine(uint32_t limit, uint32_t a, int relation_a, uint32_t b,
                int relation_b, const Visitor& visit) const {
     const uint32_t* const b_begin = RelatedBegin(1, relation_b, b);
     const uint32_t* const b_end = RelatedEnd(1, relation_b, b);
     if (b_begin == b_end) return;
+    const uint32_t* const a_begin = RelatedBegin(0, relation_a, a);
     const uint32_t* const a_end = RelatedEnd(0, relation_a, a);
-    for (const uint32_t* s = RelatedBegin(0, relation_a, a); s != a_end; ++s) {
+    if (a_begin == a_end) return;
+    const size_t num_b = b_end - b_begin;
+    std::vector<uint64_t>& marks = Marks();
+    bool marked = false;
+    for (const uint32_t* s = a_begin; s != a_end; ++s) {
       const uint32_t* const with_begin =
           det_other_[0].data() + det_start_[0][*s];
       const uint32_t* const with_end =
           det_other_[0].data() + det_start_[0][*s + 1];
       const uint32_t* const with_dets =
           det_index_[0].data() + det_start_[0][*s];
-      const uint32_t* with = with_begin;
-      const uint32_t* t = b_begin;
-      while (with != with_end && t != b_end) {
-        if (*with < *t) {
-          ++with;
-        } else if (*t < *with) {
-          ++t;
-        } else {
-          const uint32_t i = with_dets[with - with_begin];
+      // A bit test in a small array costs far less than a step of a binary
+      // search in a long list, hence the large factor.
+      if (static_cast<size_t>(with_end - with_begin) > 64 * num_b) {
+        for (const uint32_t* t = b_begin; t != b_end; ++t) {
+          const uint32_t* const found =
+              std::lower_bound(with_begin, with_end, *t);
+          if (found == with_end || *found != *t) continue;
+          const uint32_t i = with_dets[found - with_begin];
           if (i < limit) visit(i);
-          ++with;
-          ++t;
         }
+        continue;
+      }
+      if (!marked) {
+        for (const uint32_t* t = b_begin; t != b_end; ++t) {
+          marks[*t >> 6] |= 1ULL << (*t & 63);
+        }
+        marked = true;
+      }
+      for (const uint32_t* with = with_begin; with != with_end; ++with) {
+        if (((marks[*with >> 6] >> (*with & 63)) & 1ULL) == 0) continue;
+        const uint32_t i = with_dets[with - with_begin];
+        if (i < limit) visit(i);
       }
     }
+    if (marked) {
+      for (const uint32_t* t = b_begin; t != b_end; ++t) marks[*t >> 6] = 0;
+    }
+  }
+
+  // A bit per B string, all zero between uses; one array per thread.
+  std::vector<uint64_t>& Marks() const {
+    static thread_local std::vector<uint64_t> marks;
+    const size_t needed = num_strings(1) / 64 + 1;
+    if (marks.size() < needed) marks.resize(needed, 0);
+    return marks;
   }
 
   Det<W> StringOf(const Det<W>& det, int group) const {

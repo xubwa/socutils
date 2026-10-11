@@ -1329,8 +1329,11 @@ void TestGroupConnections(const Integrals<Complex>& ints) {
     double max_diff = 0.0;
     double norm = 0.0;
     for (const std::vector<double>* given : diagonals) {
-      const DirectH<1, Complex> direct(MakeSpan(dets), ints, tables, threshold,
-                                       *given);
+      // With the diagonal given: per-thread vectors; without: atomic
+      // additions into y.
+      const DirectH<1, Complex> direct(
+          MakeSpan(dets), ints, tables, threshold, *given,
+          given->empty() ? 0 : DirectH<1, Complex>::kDefaultScratchBytes);
       std::vector<Complex> x(dets.size()), y(dets.size()), y_ref(dets.size());
       for (size_t i = 0; i < x.size(); ++i) {
         x[i] = Complex(std::sin(0.3 * i + 0.2), std::cos(1.7 * i));
