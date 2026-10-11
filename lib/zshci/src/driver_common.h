@@ -401,6 +401,23 @@ class VariationalH {
           "%s\n",
           text.c_str());
     }
+    const double mb = 1.0 / (1024.0 * 1024.0);
+    if (tables_ != nullptr) {
+      const auto memory = tables_->memory();
+      std::printf(
+          "string tables (root): %.1f MB held per node, %.1f MB kept "
+          "to extend them (keys %.1f MB), at most %.1f MB more "
+          "while extending\n",
+          memory.shared * mb, memory.kept * mb, memory.keys * mb,
+          memory.transient * mb);
+    }
+    if (!direct_) {
+      std::printf(
+          "stored Hamiltonian (root): %.1f MB of elements, %.1f MB "
+          "of row lists and thread tables\n",
+          stored_.element_bytes() * mb, stored_.overhead_bytes() * mb);
+    }
+    std::printf("determinants: %.1f MB\n", dets_.size() * sizeof(Det<W>) * mb);
     if (direct_) {
       std::printf(
           "Hamiltonian: not stored; %llu distinct strings, %llu "

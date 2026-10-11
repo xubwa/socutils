@@ -66,6 +66,11 @@ class SparseH : public LinearOperator<S> {
   void Apply(const S* x, S* y) const override { Multiply(x, y); }
   const std::vector<CsrBlock<S>>& blocks() const { return blocks_; }
   size_t num_elements() const;
+  // Bytes of the stored elements (columns and values), and of what is held
+  // besides them: the row lists and the tables that tell every thread where
+  // its columns lie in each row.
+  size_t element_bytes() const;
+  size_t overhead_bytes() const;
 
   // Appends the diagonal elements of newly added determinants.
   void AppendDiagonal(const std::vector<double>& diagonal);

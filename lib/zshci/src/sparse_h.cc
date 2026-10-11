@@ -32,6 +32,24 @@ size_t SparseH<S>::num_elements() const {
 }
 
 template <typename S>
+size_t SparseH<S>::element_bytes() const {
+  return num_elements() * (sizeof(DetIndex) + sizeof(S));
+}
+
+template <typename S>
+size_t SparseH<S>::overhead_bytes() const {
+  size_t bytes = diagonal_.size() * sizeof(double);
+  for (const CsrBlock<S>& block : blocks_) {
+    bytes += block.row.size() * sizeof(DetIndex) +
+             block.row_ptr.size() * sizeof(uint64_t);
+  }
+  for (const SplitTable& split : splits_) {
+    bytes += split.offset.size() * sizeof(uint32_t);
+  }
+  return bytes;
+}
+
+template <typename S>
 void SparseH<S>::AppendDiagonal(const std::vector<double>& diagonal) {
   diagonal_.insert(diagonal_.end(), diagonal.begin(), diagonal.end());
   dim_ = diagonal_.size();

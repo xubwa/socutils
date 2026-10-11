@@ -180,6 +180,51 @@ class GroupStringTables {
   // within a sector and to the sectors one or two electrons away.
   const std::vector<uint64_t>& sector_sizes() const { return sector_sizes_; }
 
+  // Memory of the tables, in bytes. `shared`: what every node holds once
+  // and the connection search reads. `kept`: what the root keeps in
+  // addition, to extend the tables later, of which `keys` are the sorted
+  // keys of all strings. `transient`: the largest amount the root held
+  // briefly during a call of Extend (new keys and new pairs).
+  struct Memory {
+    size_t shared = 0;
+    size_t kept = 0;
+    size_t keys = 0;
+    size_t transient = 0;
+  };
+  Memory memory() const {
+    Memory m;
+    m.shared = count_a_of_det_.size() * sizeof(uint16_t);
+    for (int group = 0; group < 2; ++group) {
+      m.shared += string_of_det_[group].size() * sizeof(uint32_t) +
+                  det_start_[group].size() * sizeof(uint64_t) +
+                  det_other_[group].size() * sizeof(uint32_t) +
+                  det_index_[group].size() * sizeof(uint32_t);
+      for (int r = 0; r < kNumRelations; ++r) {
+        m.shared += related_start_[group][r].size() * sizeof(uint64_t) +
+                    related_list_[group][r].size() * sizeof(uint32_t);
+        for (const auto& part : root_.related_start[group][r]) {
+          m.kept += part.size() * sizeof(uint64_t);
+        }
+        for (const auto& part : root_.related_list[group][r]) {
+          m.kept += part.size() * sizeof(uint32_t);
+        }
+      }
+      m.kept += root_.string_of_det[group].size() * sizeof(uint32_t);
+      for (const auto& part : root_.strings[group]) {
+        m.kept += part.size() * sizeof(Det<W>);
+      }
+      for (const auto& part : root_.sorted[group]) {
+        m.kept += part.size() * sizeof(std::pair<Det<W>, uint32_t>);
+      }
+      for (const auto& part : root_.keys[group]) {
+        m.keys += part.size() * sizeof(Shortened);
+      }
+    }
+    m.kept += root_.count_a_of_det.size() * sizeof(uint16_t) + m.keys;
+    m.transient = max_transient_bytes_;
+    return m;
+  }
+
   // Whether this rank is responsible for the row of determinant j.
   bool Owns(size_t j) const {
     return static_cast<long>(j) % num_ranks_ == rank_;
@@ -668,6 +713,14 @@ class GroupStringTables {
       }
     }
 
+    {
+      size_t transient = fresh.items.size() * sizeof(Shortened);
+      for (const std::vector<Link>& chunk : links) {
+        transient += chunk.size() * sizeof(Link);
+      }
+      max_transient_bytes_ = std::max(max_transient_bytes_, transient);
+    }
+
     // The lists, one set per relation and electron count: what was there,
     // then the new pairs, sorted where a list gained entries. Several
     // threads may meet at one string.
@@ -816,6 +869,7 @@ class GroupStringTables {
   int num_elec_ = 0;
   bool transfers_ = false;
   size_t max_b_strings_ = 0;
+  size_t max_transient_bytes_ = 0;
   std::vector<uint64_t> sector_sizes_;
   RootState root_;
   // base_[g][c]: the place of the first string of c electrons among all
