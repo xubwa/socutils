@@ -124,6 +124,38 @@ std::vector<uint64_t> ReadDetWords(const std::string& path, int* det_width) {
   return words;
 }
 
+template <typename S>
+bool ReadCoefficients(const std::string& path, size_t num_dets,
+                      size_t num_roots, std::vector<std::vector<S>>* vectors) {
+  HighFive::File file(path, HighFive::File::ReadOnly);
+  if (!file.exist("ci_real")) return false;
+  HighFive::DataSet real_part = file.getDataSet("ci_real");
+  const std::vector<size_t> dims = real_part.getDimensions();
+  if (dims.size() != 2 || dims[0] != num_roots || dims[1] != num_dets) {
+    return false;
+  }
+  std::vector<double> re(num_roots * num_dets);
+  std::vector<double> im(num_roots * num_dets, 0.0);
+  real_part.read(re.data());
+  if (ScalarTraits<S>::kIsComplex && file.exist("ci_imag")) {
+    HighFive::DataSet imag_part = file.getDataSet("ci_imag");
+    if (imag_part.getDimensions() != dims) return false;
+    imag_part.read(im.data());
+  }
+  vectors->assign(num_roots, std::vector<S>(num_dets));
+  for (size_t k = 0; k < num_roots; ++k) {
+    for (size_t i = 0; i < num_dets; ++i) {
+      (*vectors)[k][i] =
+          ScalarTraits<S>::Make(re[k * num_dets + i], im[k * num_dets + i]);
+    }
+  }
+  return true;
+}
+
+template bool ReadCoefficients(const std::string&, size_t, size_t,
+                               std::vector<std::vector<double>>*);
+template bool ReadCoefficients(const std::string&, size_t, size_t,
+                               std::vector<std::vector<Complex>>*);
 template void WriteDensityMatrices(const std::string&, int, int,
                                    const DensityMatrices<double>&);
 template void WriteDensityMatrices(const std::string&, int, int,

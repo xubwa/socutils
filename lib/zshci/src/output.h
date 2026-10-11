@@ -61,6 +61,14 @@ void WriteWaveFunction(const std::string& path, const WaveFunction<S>& wfn);
 // Reads the determinant table of a wfn.h5 file; sets *det_width.
 std::vector<uint64_t> ReadDetWords(const std::string& path, int* det_width);
 
+// Reads the CI vectors of a wfn.h5 file into `vectors`, one per root, if the
+// file holds `num_roots` vectors over `num_dets` determinants; otherwise
+// returns false and leaves `vectors` alone. The imaginary parts are dropped
+// when S is double. Instantiated for double and Complex.
+template <typename S>
+bool ReadCoefficients(const std::string& path, size_t num_dets,
+                      size_t num_roots, std::vector<std::vector<S>>* vectors);
+
 }  // namespace zshci
 
 #endif  // ZSHCI_SRC_OUTPUT_H_

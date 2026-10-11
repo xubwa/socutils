@@ -92,6 +92,34 @@ class KnownValues(unittest.TestCase):
         self.check(solver)
 
 
+    def test_restart(self):
+        # A second call on a slightly different Hamiltonian, started from the
+        # wave function of the first, gives what a fresh calculation gives.
+        import os
+        h1b = self.h1 * 1.02
+        solvers = []
+        for restart in (False, True):
+            solver = shci.SHCI()
+            solver.schedule = [[0, 1e-3], [2, 1e-12]]
+            solver.davidson_tol = 1e-10
+            solver.restart = restart
+            solver.kernel(self.h1, self.eri, self.norb, self.nelec,
+                          nroots=self.nroots, ecore=self.ecore)
+            e, ci = solver.kernel(h1b, self.eri, self.norb, self.nelec,
+                                  nroots=self.nroots, ecore=self.ecore)
+            solvers.append((solver, e, ci))
+        (fresh, e0, ci0), (restarted, e1, ci1) = solvers
+        with open(os.path.join(restarted.scratch, 'output.txt')) as f:
+            self.assertIn('starting vectors: read from', f.read())
+        with open(os.path.join(fresh.scratch, 'output.txt')) as f:
+            self.assertNotIn('starting vectors: read from', f.read())
+        self.assertAlmostEqual(abs(numpy.asarray(e1) - e0).max(), 0, 8)
+        for k in range(self.nroots):
+            dm1a, dm2a = fresh.make_rdm12(ci0[k], self.norb, self.nelec)
+            dm1b, dm2b = restarted.make_rdm12(ci1[k], self.norb, self.nelec)
+            self.assertAlmostEqual(abs(dm1a - dm1b).max(), 0, 6)
+            self.assertAlmostEqual(abs(dm2a - dm2b).max(), 0, 6)
+
 class RealNumbers(unittest.TestCase):
     '''A real Hamiltonian in real arithmetic against the same Hamiltonian in
     complex arithmetic and against zfci.'''

@@ -96,6 +96,14 @@ class SHCI(lib.StreamObject):
             per list of orbsym if there are several.
         restrictions : list of dict(orbitals=[...], min=..., max=...)
             Bounds on the number of electrons in sets of spinors.
+        restart : bool
+            If True, every call of kernel after the first starts from the
+            determinants and CI vectors of the previous call (same norb,
+            nelec and nroots) instead of initial_dets, and uses only the
+            last epsilon1 of the schedule.  Meant for orbital optimization,
+            where the Hamiltonian changes little between calls.  The space
+            then only grows from call to call: determinants selected at
+            earlier orbitals stay.
         pt : dict or None
             Perturbative correction, e.g. dict(method='semistochastic',
             epsilon2=1e-7, epsilon2_large=1e-5, target_error=1e-5).  The
@@ -123,6 +131,8 @@ class SHCI(lib.StreamObject):
         self.davidson_tol = 1e-8
         self.initial_dets = None
         self.occslst = None
+        self.restart = False
+        self._restart_key = None
         self.orbsym = None
         self.orbsym_mod = 0
         self.restrictions = []
@@ -286,6 +296,20 @@ class SHCI(lib.StreamObject):
 
         inp = self._input(norb, nelec, nroots)
         self._write_integrals(inp, h1e, eri, norb, nelec, ecore)
+
+        # Restart from the wave function of the previous call.
+        key = (norb, repr(nelec), nroots)
+        previous = os.path.join(self.scratch, 'wfn.h5')
+        restart_file = os.path.join(self.scratch, 'restart.h5')
+        if (self.restart and inp['mode'] == 'select'
+                and self._restart_key == key and os.path.isfile(previous)):
+            os.replace(previous, restart_file)
+            del inp['dets']
+            inp['detfile'] = restart_file
+            inp['select']['schedule'] = [[0, float(self.schedule[-1][1])]]
+            log.debug('zshci restarts from the previous wave function')
+        self._restart_key = None
+
         input_file = os.path.join(self.scratch, 'input.json')
         with open(input_file, 'w') as f:
             json.dump(inp, f)
@@ -318,6 +342,7 @@ class SHCI(lib.StreamObject):
             raise RuntimeError('zshci wrote %d energies for %d roots'
                                % (e.size, nroots))
         self.converged = True
+        self._restart_key = key
         if nroots == 1:
             self.eci, self.ci = e[0], 0
         else:

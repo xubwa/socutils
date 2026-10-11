@@ -546,7 +546,9 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
 
   // The eigenvectors live on the root; the other ranks see only what is
   // shared from them (the selection weights, and at the end the vectors).
-  // If the starting space can hold all roots, start from its eigenvectors.
+  // If the starting space can hold all roots, start from its eigenvectors;
+  // the guesses for them are the vectors of the file the determinants came
+  // from, if it has them.
   std::vector<std::vector<S>> root_vectors;
   std::vector<double> energies;
   DavidsonOptions loose = input.davidson;
@@ -554,8 +556,15 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
   bool have_vectors = shared_dets.size() >= static_cast<size_t>(num_roots);
   if (have_vectors) {
     if (comm.is_root()) {
-      root_vectors =
-          GuessVectors(shared_dets.span(), h.stored(), ints, num_roots);
+      const bool from_file = !input.detfile.empty() &&
+                             ReadCoefficients(input.detfile, shared_dets.size(),
+                                              num_roots, &root_vectors);
+      if (from_file) {
+        std::printf("starting vectors: read from %s\n", input.detfile.c_str());
+      } else {
+        root_vectors =
+            GuessVectors(shared_dets.span(), h.stored(), ints, num_roots);
+      }
     }
     energies = h.Solve(loose, &root_vectors).energies;
   }

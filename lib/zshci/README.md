@@ -156,7 +156,8 @@ Output, in the directory `prefix` (`src/output.h`):
 
 `dm1[p,q]` is `<p^+ q>` and `dm2[p,q,r,s]` is `<p^+ r^+ s q>`; a reader takes
 the datasets as they are. `wfn.h5` can be given as `"detfile"` to restart from
-a previous space.
+a previous space; a selection then also starts the eigensolver from the CI
+vectors of that file, if it holds one per root.
 
 ## Layout
 
