@@ -30,6 +30,7 @@ approx='1e': X and R are those of A + C; the remainder
   decoupling (X, R) itself to V_C.
 
 Usage:  python 14-h1h4_decomposition.py [basis ...]
+        QDHF_GEOM='He 0 0 -1.5; He 0 0 1.5' QDHF_NPOW=3 python 14-h1h4_decomposition.py
 '''
 
 import sys
@@ -40,7 +41,10 @@ from socutils.qdhf import integrals as qints
 from socutils.qdhf.qarray import QArray, qmp, hmp
 
 bohr = 1 / 0.52917721092
-geom_a = 'F 0 0 0; H 0 0 0.917'
+import os
+# fragment A and the power n of the expected R^-n tail (environment overrides)
+geom_a = os.environ.get('QDHF_GEOM', 'F 0 0 0; H 0 0 0.917')
+npow = int(os.environ.get('QDHF_NPOW', '2'))
 zc = 2
 c0 = qmp.mpf(lib.param.LIGHT_SPEED)
 
@@ -94,7 +98,7 @@ def decompose(basis, r_ang, approx, c):
     h3 = R @ X.T @ (Wt - V @ T - T @ V) @ X @ R * k
     h4 = R @ X.T @ Wp @ X @ R * k
     do = sp @ dm @ sp
-    r2 = qmp.mpf(rc)**2
+    r2 = qmp.mpf(rc)**npow
     e = [trace(do, h) * r2 for h in (h1, h2, h3, h4)]
     resid = (delta - h1 - h2 - h3 - h4).max_abs()
     ex = None
@@ -108,7 +112,7 @@ def decompose(basis, r_ang, approx, c):
 
 if __name__ == '__main__':
     bases = sys.argv[1:] if len(sys.argv) > 1 else ['cc-pvdz', 'cc-pvtz', 'aug-cc-pvtz']
-    print('HF + bare charge Z=2 at R on +z (H side).  R^2 E_k (a.u.), E_k = Tr[D H_k]')
+    print('%s + bare charge Z=2 at R on +z.  R^%d E_k (a.u.), E_k = Tr[D H_k]' % (geom_a, npow))
     print('%-12s %-7s %4s %4s  %-13s %-13s %-13s %-13s %-13s %-9s' % (
         'basis', 'approx', 'c/c0', 'R/A', 'H1', 'H2', 'H3', 'H4', 'X-response', '|resid|'))
     for basis in bases:
