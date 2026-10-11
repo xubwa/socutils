@@ -143,7 +143,7 @@ SharedArray<double> ShareWeights(
   if (comm.is_root()) {
     for (size_t i = 0; i < dim; ++i) {
       double sum = 0.0;
-      for (const std::vector<S>& v : root_vectors) sum += Norm(v[i]);
+      for (const std::vector<S>& v : root_vectors) sum += std::norm(v[i]);
       weights[i] = root_vectors.empty() ? std::sqrt(double(num_roots))
                                         : std::sqrt(sum);
     }
@@ -341,7 +341,7 @@ class PtScoreSelector : public Selector<W, S> {
     const double epsilon = select_.epsilon_generate;
     auto generate = [&](long i, const auto& emit) {
       const S ci = coefficients[i];
-      if (Abs(ci) == 0.0 || context.weights[i] < core_weight) return;
+      if (std::abs(ci) == 0.0 || context.weights[i] < core_weight) return;
       std::vector<int> occ;
       context.dets[i].AppendOccupied(&occ);
       auto visit = [&](const Det<W>& det, S element, bool /*is_large*/) {
@@ -352,8 +352,8 @@ class PtScoreSelector : public Selector<W, S> {
       };
       internal::ElementSink<W, decltype(visit), S> sink(
           context.dets[i], context.ints, 0.0, visit);
-      ForEachExcitation(context.dets[i], occ, epsilon / Abs(ci), context.ints,
-                        context.heat_bath, context.filter, &sink);
+      ForEachExcitation(context.dets[i], occ, epsilon / std::abs(ci),
+                        context.ints, context.heat_bath, context.filter, &sink);
     };
     // The merged terms arrive here from several threads; each keeps its own
     // list.
@@ -364,7 +364,7 @@ class PtScoreSelector : public Selector<W, S> {
       const double gap = energy_a - energy;
       if (gap <= 0.0) return;  // not a candidate for a perturbative score
       const double score =
-          amplitude ? Abs(term.sum) / gap : Norm(term.sum) / gap;
+          amplitude ? std::abs(term.sum) / gap : std::norm(term.sum) / gap;
       if (score > 0.0) {
         per_thread[omp_get_thread_num()].push_back({term.det, score});
       }
@@ -638,7 +638,7 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
         !previous.empty()) {
       double change = 0.0;
       for (int k = 0; k < num_roots; ++k) {
-        change += Abs(result.energies[k] - previous[k]) / num_roots;
+        change += std::abs(result.energies[k] - previous[k]) / num_roots;
       }
       converged_space =
           new_size == old_size || change < input.select.energy_tol;

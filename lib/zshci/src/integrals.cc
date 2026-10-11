@@ -190,7 +190,7 @@ void Integrals<S>::SetSpatialTwoBody(int p, int q, int r, int s, S value) {
 
 template <typename S>
 void Integrals<S>::NoteForbidden(S value) {
-  max_forbidden_ = std::max(max_forbidden_, Abs(value));
+  max_forbidden_ = std::max(max_forbidden_, std::abs(value));
 }
 
 template <typename S>

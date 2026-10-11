@@ -33,6 +33,9 @@ file(GLOB ZSHCI_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc)
 set(ZSHCI_LIBRARY_SOURCES ${ZSHCI_SOURCES})
 list(REMOVE_ITEM ZSHCI_LIBRARY_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cc)
 
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag(-fcx-limited-range ZSHCI_HAS_CX_LIMITED_RANGE)
+
 function(zshci_program name)
   add_executable(${name} ${ARGN})
   set_target_properties(${name} PROPERTIES
@@ -40,6 +43,10 @@ function(zshci_program name)
     CXX_STANDARD_REQUIRED ON
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/bin
     INSTALL_RPATH_USE_LINK_PATH TRUE)
+  # Complex products as the textbook formula; see the Makefile.
+  if(ZSHCI_HAS_CX_LIMITED_RANGE)
+    target_compile_options(${name} PRIVATE -fcx-limited-range)
+  endif()
   target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_include_directories(${name} SYSTEM PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party ${HDF5_INCLUDE_DIRS})

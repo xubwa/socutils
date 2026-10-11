@@ -59,7 +59,7 @@ class ElementSink {
     Det<W> det = parent_;
     det.Clear(i);
     det.Set(a);
-    visit_(det, element, Abs(element) > large_cutoff_);
+    visit_(det, element, std::abs(element) > large_cutoff_);
   }
   void Double(int i, int j, int a, int b, double magnitude) {
     Det<W> det = parent_;
@@ -228,7 +228,7 @@ double PtDeterministic(const PtProblem<W, Filter, S>& problem, double epsilon) {
   using Term = internal::DetTerm<W, S>;
   auto generate = [&](long i, const auto& emit) {
     const S ci = problem.coefficients[i];
-    if (Abs(ci) == 0.0) return;
+    if (std::abs(ci) == 0.0) return;
     std::vector<int> occ;
     problem.dets[i].AppendOccupied(&occ);
     auto visit = [&](const Det<W>& det, S element, bool /*is_large*/) {
@@ -239,12 +239,12 @@ double PtDeterministic(const PtProblem<W, Filter, S>& problem, double epsilon) {
     };
     internal::ElementSink<W, decltype(visit), S> sink(problem.dets[i],
                                                       problem.ints, 0.0, visit);
-    ForEachExcitation(problem.dets[i], occ, epsilon / Abs(ci), problem.ints,
-                      problem.heat_bath, problem.filter, &sink);
+    ForEachExcitation(problem.dets[i], occ, epsilon / std::abs(ci),
+                      problem.ints, problem.heat_bath, problem.filter, &sink);
   };
   auto contribution = [&](const Term& term, double energy_a,
                           std::vector<double>* values) {
-    (*values)[0] = Norm(term.sum) / (problem.energy - energy_a);
+    (*values)[0] = std::norm(term.sum) / (problem.energy - energy_a);
   };
   return internal::SumOverExternalDets<W, Term>(
              problem.dets.size(), problem.sorted_dets, problem.ints,
@@ -269,7 +269,7 @@ class DeterminantSampler {
     if (comm.is_root()) {
       double sum = 0.0;
       for (size_t i = 0; i < coefficients.size(); ++i) {
-        sum += Abs(coefficients[i]);
+        sum += std::abs(coefficients[i]);
         cumulative_[i] = sum;
       }
     }
@@ -366,7 +366,7 @@ StochasticEstimate PtWalkerSample(const PtProblem<W, Filter, S>& problem,
         Term term;
         term.det = det;
         term.sum = linear * x;
-        term.square = quadratic * Norm(x);
+        term.square = quadratic * std::norm(x);
         if (is_large) {
           term.sum_large = term.sum;
           term.square_large = term.square;
@@ -374,9 +374,9 @@ StochasticEstimate PtWalkerSample(const PtProblem<W, Filter, S>& problem,
         terms->push_back(term);
       };
       internal::ElementSink<W, decltype(visit), S> sink(
-          problem.dets[i], problem.ints, epsilon_large / Abs(ci), visit);
-      ForEachExcitation(problem.dets[i], occ, epsilon / Abs(ci), problem.ints,
-                        problem.heat_bath, problem.filter, &sink);
+          problem.dets[i], problem.ints, epsilon_large / std::abs(ci), visit);
+      ForEachExcitation(problem.dets[i], occ, epsilon / std::abs(ci),
+                        problem.ints, problem.heat_bath, problem.filter, &sink);
     }
 
     std::sort(terms->begin(), terms->end(),
@@ -397,9 +397,9 @@ StochasticEstimate PtWalkerSample(const PtProblem<W, Filter, S>& problem,
       const double denominator =
           (problem.energy - DiagonalEnergy(merged.det, problem.ints)) * n *
           (n - 1.0);
-      estimate.small += (Norm(merged.sum) + merged.square) / denominator;
+      estimate.small += (std::norm(merged.sum) + merged.square) / denominator;
       estimate.large +=
-          (Norm(merged.sum_large) + merged.square_large) / denominator;
+          (std::norm(merged.sum_large) + merged.square_large) / denominator;
     }
   }
   return estimate;

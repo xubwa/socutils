@@ -146,23 +146,20 @@ std::vector<std::vector<S>> GuessVectors(Span<Det<W>> dets, const SparseH<S>& h,
                                  ? diagonal[a] < diagonal[b]
                                  : a < b;
                     });
-  using Matrix = Eigen::Matrix<typename ScalarTraits<S>::Std, Eigen::Dynamic,
-                               Eigen::Dynamic>;
+  using Matrix = Eigen::Matrix<S, Eigen::Dynamic, Eigen::Dynamic>;
   Matrix small(guess_dim, guess_dim);
   for (size_t a = 0; a < guess_dim; ++a) {
     small(a, a) = diagonal[order[a]];
     for (size_t b = a + 1; b < guess_dim; ++b) {
-      const S element = Hij(dets[order[a]], dets[order[b]], ints);
-      small(a, b) = ScalarTraits<S>::ToStd(element);
-      small(b, a) = ScalarTraits<S>::ToStd(Conj(element));
+      small(a, b) = Hij(dets[order[a]], dets[order[b]], ints);
+      small(b, a) = Conj(small(a, b));
     }
   }
   Eigen::SelfAdjointEigenSolver<Matrix> solver(small);
   std::vector<std::vector<S>> guess(num_roots, std::vector<S>(n, S(0.0)));
   for (int k = 0; k < num_roots; ++k) {
     for (size_t a = 0; a < guess_dim; ++a) {
-      guess[k][order[a]] =
-          ScalarTraits<S>::FromStd(solver.eigenvectors()(a, k));
+      guess[k][order[a]] = solver.eigenvectors()(a, k);
     }
   }
   return guess;
@@ -190,8 +187,8 @@ void CheckHamiltonian(Span<Det<W>> dets, const SparseH<S>& h,
   double norm = 0.0;
   double max_diff = 0.0;
   for (size_t i = 0; i < n; ++i) {
-    max_diff = std::max(max_diff, Abs(y[i] - y_ref[i]));
-    norm = std::max(norm, Abs(y_ref[i]));
+    max_diff = std::max(max_diff, std::abs(y[i] - y_ref[i]));
+    norm = std::max(norm, std::abs(y_ref[i]));
   }
   if (max_diff > 1e-12 * std::max(1.0, norm)) {
     throw std::runtime_error(
@@ -206,9 +203,10 @@ void PrintLeadingDeterminants(Span<Det<W>> dets, Span<S> vector, int num_orbs,
   std::vector<size_t> order(dets.size());
   std::iota(order.begin(), order.end(), 0);
   const size_t shown = std::min(order.size(), static_cast<size_t>(count));
-  std::partial_sort(
-      order.begin(), order.begin() + shown, order.end(),
-      [&](size_t a, size_t b) { return Abs(vector[a]) > Abs(vector[b]); });
+  std::partial_sort(order.begin(), order.begin() + shown, order.end(),
+                    [&](size_t a, size_t b) {
+                      return std::abs(vector[a]) > std::abs(vector[b]);
+                    });
   for (size_t m = 0; m < shown; ++m) {
     const size_t i = order[m];
     if (ScalarTraits<S>::kIsComplex) {

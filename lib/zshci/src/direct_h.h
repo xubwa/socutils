@@ -96,7 +96,7 @@ class DirectH : public LinearOperator<S> {
             j,
             [&](DetIndex i) {
               const S value = Hij(dets_[j], dets_[i], ints_);
-              if (!keep_all && Abs(value) <= threshold_) return;
+              if (!keep_all && std::abs(value) <= threshold_) return;
               sum += value * x[i];
               if (own_vectors) {
                 target[i] += Conj(value) * xj;

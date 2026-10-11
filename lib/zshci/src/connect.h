@@ -458,7 +458,7 @@ CsrBlock<S> BuildBlockFromPairs(Span<Det<W>> dets, size_t first_new,
   // With a threshold the element has to be evaluated to know whether it is
   // stored, so the counting pass evaluates it too.
   auto stored = [&](DetIndex i, DetIndex j) {
-    return keep_all || Abs(Hij(dets[j], dets[i], ints)) > threshold;
+    return keep_all || std::abs(Hij(dets[j], dets[i], ints)) > threshold;
   };
 
   // Pass 1: number of stored elements per row. This array and the cursors
@@ -506,7 +506,7 @@ CsrBlock<S> BuildBlockFromPairs(Span<Det<W>> dets, size_t first_new,
   for_each_pair(
       [&](DetIndex i, DetIndex j) {
         const S value = Hij(dets[j], dets[i], ints);
-        if (!keep_all && Abs(value) <= threshold) return;
+        if (!keep_all && std::abs(value) <= threshold) return;
         uint64_t slot;
 #pragma omp atomic capture
         slot = cursor[j]++;
@@ -579,7 +579,7 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(Span<Det<W>> dets, size_t first_new,
           [&](DetIndex i) {
             ++connected;
             const S value = Hij(dets[j], dets[i], ints);
-            if (keep_all || Abs(value) > threshold) {
+            if (keep_all || std::abs(value) > threshold) {
               row.emplace_back(i, value);
             }
           },
@@ -794,7 +794,7 @@ CsrBlock<S> BuildBlockBruteForce(Span<Det<W>> dets, size_t first_new,
       const int num_bits = dets[i].NumDifferentBits(dets[j]);
       if (num_bits != 2 && num_bits != 4) continue;
       const S value = Hij(dets[j], dets[i], ints);
-      if (options.threshold >= 0.0 && Abs(value) <= options.threshold) {
+      if (options.threshold >= 0.0 && std::abs(value) <= options.threshold) {
         continue;
       }
       col.push_back(static_cast<DetIndex>(i));

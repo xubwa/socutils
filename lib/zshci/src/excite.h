@@ -236,7 +236,7 @@ void ForEachExcitation(const Det<W>& det, const std::vector<int>& occ,
       if (det.Occupied(a) || !view.Single(i, a)) continue;
       single.particles[0] = a;
       const S element = OffDiagonalElement(det, single, ints);
-      if (Abs(element) > cutoff) sink->Single(i, a, element);
+      if (std::abs(element) > cutoff) sink->Single(i, a, element);
     }
   }
 
