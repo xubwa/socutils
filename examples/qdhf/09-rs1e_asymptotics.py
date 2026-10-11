@@ -2,7 +2,7 @@
 
 '''
 Asymptotics of range-separated X2C-1e (rs1e) at very large separations,
-compared with 4c Dirac-Coulomb HF (no spurious tail) and NR-HF.
+compared with NR-HF and sf-X2C-1e.
 
 The physical tails (R^-6 for HF...He, R^-8 for He2...He, exponential for
 He...He) fall below 1e-26 Hartree beyond ~1000 A, so any residual spurious
@@ -25,7 +25,7 @@ systems = [
     ('He2...He', 'He 0 0 -1.5; He 0 0 1.5'),
     ('He...He', 'He 0 0 0'),
 ]
-methods = ['DHF', 'rs1e', 'HF', 'sfX2C1e']
+methods = ['rs1e', 'HF', 'sfX2C1e']
 
 
 def energy(method, geom):
@@ -53,7 +53,7 @@ for label, geom_a in systems:
         e0 = energy(m, geom_a) + energy(m, 'He')
         res[m] = [energy(m, geom_a + '; He 0 0 %g' % r) - e0 for r in distances]
     print('\n%s   dE(R) / Hartree   (local exponent n)' % label)
-    print('   R/A  ' + ''.join('%-30s' % m for m in methods) + 'rs1e/DHF')
+    print('   R/A  ' + ''.join('%-30s' % m for m in methods) + 'rs1e/HF')
     for i, r in enumerate(distances):
         line = '%6g  ' % r
         for m in methods:
@@ -62,6 +62,6 @@ for label, geom_a in systems:
             if i > 0 and de * res[m][i-1] > 0:
                 n = '(%6.3f)' % -float(qmp.log(de / res[m][i-1]) / qmp.log(qmp.mpf(r) / distances[i-1]))
             line += '% .6e %-9s     ' % (float(de), n)
-        ratio = res['rs1e'][i] / res['DHF'][i] if res['DHF'][i] != 0 else 0
+        ratio = res['rs1e'][i] / res['HF'][i] if res['HF'][i] != 0 else 0
         line += '%.8f' % float(ratio)
         print(line, flush=True)
