@@ -70,15 +70,17 @@ def _c(a):
     return a.ctypes.data_as(ctypes.c_void_p)
 
 
-def contract2e(mol, kernel, cls, A, B, zeta=None):
-    '''T[a, cj, j, b, cl, l] = sum A[a, ci, i] B[b, ck, k] (ci i cj j|K|ck k cl l)
+def contract2e(mol, kernel, cls, A, B, zeta=None, mode=0):
+    '''mode 0: T[a, cj, j, b, cl, l] = sum A[a, ci, i] B[b, ck, k] (ci i cj j|K|ck k cl l)
+    mode 1: T[a, ci, i, b, ck, k] = sum A[a, cj, j] B[b, cl, l] (ci i cj j|K|ck k cl l)
 
-    A: (na, nci, nao) complex, B: (nb, nck, nao) complex.'''
+    A: (na, ncx1, nao) complex, B: (nb, ncx2, nao) complex (x = contracted).'''
     f, o, nc, name = _fn(kernel, cls)
     nci, ncj, nck, ncl = nc
     nao = mol.nao
-    A = numpy.asarray(A, dtype=complex).reshape(-1, nci, nao)
-    B = numpy.asarray(B, dtype=complex).reshape(-1, nck, nao)
+    ncx1, ncy1, ncx2, ncy2 = (ncj, nci, ncl, nck) if mode else (nci, ncj, nck, ncl)
+    A = numpy.asarray(A, dtype=complex).reshape(-1, ncx1, nao)
+    B = numpy.asarray(B, dtype=complex).reshape(-1, ncx2, nao)
     na, nb = A.shape[0], B.shape[0]
     env = mol._env.copy()
     if zeta is not None:
@@ -92,9 +94,9 @@ def contract2e(mol, kernel, cls, A, B, zeta=None):
     Aim = numpy.ascontiguousarray(A.imag)
     Bre = numpy.ascontiguousarray(B.real)
     Bim = numpy.ascontiguousarray(B.imag)
-    Tre = numpy.zeros((na, ncj, nao, nb, ncl, nao))
+    Tre = numpy.zeros((na, ncy1, nao, nb, ncy2, nao))
     Tim = numpy.zeros_like(Tre)
-    librf.RF12_contract2e(ctypes.c_void_p(ctypes.cast(f, ctypes.c_void_p).value), opt,
+    librf.RF12_contract2e(ctypes.c_void_p(ctypes.cast(f, ctypes.c_void_p).value), opt, ctypes.c_int(mode),
                           ctypes.c_int(nci), ctypes.c_int(ncj), ctypes.c_int(nck), ctypes.c_int(ncl),
                           _c(Are), _c(Aim), ctypes.c_int(na), _c(Bre), _c(Bim), ctypes.c_int(nb),
                           _c(Tre), _c(Tim), _c(ao_loc), _c(atm), ctypes.c_int(mol.natm),

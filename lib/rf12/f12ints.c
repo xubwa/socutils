@@ -67,20 +67,21 @@ F12CLASS(yp,  ipip1ipip2,   2, 0, 2, 0)
 /*
  * RF12_contract2e
  *
- *   T[a, cj, j, b, cl, l] = sum_{ci, i, ck, k} A[a, ci, i] B[b, ck, k]
- *                                           * (ci i  cj j | K | ck k  cl l)
+ *   mode 0:  T[a, cj, j, b, cl, l] = sum A[a, ci, i] B[b, ck, k] (ci i cj j | K | ck k cl l)
+ *   mode 1:  T[a, ci, i, b, ck, k] = sum A[a, cj, j] B[b, cl, l] (ci i cj j | K | ck k cl l)
  *
- * (complex A, B given as separate real/imaginary arrays; integrals real.)
- * The integral class has ncomp = nci*ncj*nck*ncl components; libcint stores
- * a shell-quartet block as out[comp][l][k][j][i] (i fastest) with comp the
- * row-major index of (ci, cj, ck, cl) for the classes used here (checked
- * against finite differences in rf12/test).  Output T is complex,
- * layout [a][cj][j][b][cl][l], accumulated (caller zeroes it).
+ * i.e. mode 0 contracts the first function of each electron, mode 1 the
+ * second (real AOs: (ij|kl) = (ji|kl), so derivative classes acting on the
+ * first function, e.g. ipip1, can be used for the second one).  Complex A, B
+ * as separate real/imaginary arrays, real integrals.  libcint stores a
+ * shell-quartet block as out[comp][l][k][j][i] (i fastest) with comp the
+ * row-major index of (ci, cj, ck, cl) (checked against finite differences in
+ * rf12/test/test_ints4c.py).  T is accumulated (caller zeroes it).
  */
 typedef CACHE_SIZE_T (*intor_t)(double *out, FINT *dims, FINT *shls, FINT *atm, FINT natm,
                                 FINT *bas, FINT nbas, double *env, CINTOpt *opt, double *cache);
 
-void RF12_contract2e(intor_t intor, CINTOpt *opt, int nci, int ncj, int nck, int ncl,
+void RF12_contract2e(intor_t intor, CINTOpt *opt, int mode, int nci, int ncj, int nck, int ncl,
                      double *Are, double *Aim, int na,
                      double *Bre, double *Bim, int nb,
                      double *Tre, double *Tim, int *ao_loc,
@@ -88,10 +89,13 @@ void RF12_contract2e(intor_t intor, CINTOpt *opt, int nci, int ncj, int nck, int
 {
         int nao = ao_loc[nbas];
         int ncomp = nci * ncj * nck * ncl;
-        long sT_l = 1, sT_cl = nao, sT_b = (long)ncl * nao;
-        long sT_j = (long)nb * sT_b, sT_cj = (long)nao * sT_j, sT_a = (long)ncj * sT_cj;
-        long sA_i = 1, sA_ci = nao, sA_a = (long)nci * nao;
-        long sB_k = 1, sB_ck = nao, sB_b = (long)nck * nao;
+        /* contracted (x1 on electron 1, x2 on electron 2), open (y1, y2) */
+        int ncx1 = mode ? ncj : nci, ncy1 = mode ? nci : ncj;
+        int ncx2 = mode ? ncl : nck, ncy2 = mode ? nck : ncl;
+        long sT_y2 = 1, sT_cy2 = nao, sT_b = (long)ncy2 * nao;
+        long sT_y1 = (long)nb * sT_b, sT_cy1 = (long)nao * sT_y1, sT_a = (long)ncy1 * sT_cy1;
+        long sA_ci = nao, sA_a = (long)ncx1 * nao;
+        long sB_ck = nao, sB_b = (long)ncx2 * nao;
 #pragma omp parallel
 {
         int ish, jsh, ksh, lsh;
@@ -103,7 +107,6 @@ void RF12_contract2e(intor_t intor, CINTOpt *opt, int nci, int ncj, int nck, int
         }
         long blk = (long)dmax * dmax * dmax * dmax * ncomp;
         double *buf = malloc(sizeof(double) * blk);
-        /* cache size as in pyscf GTOmax_cache_size: query libcint with out = NULL */
         long csize = 0;
         for (ish = 0; ish < nbas; ish++) {
                 int s4[4] = {ish, ish, ish, ish};
@@ -111,77 +114,82 @@ void RF12_contract2e(intor_t intor, CINTOpt *opt, int nci, int ncj, int nck, int
                 if (n > csize) csize = n;
         }
         double *cache = malloc(sizeof(double) * (csize + 1000));
-        /* partial sums: P[a][cj][j][ck][k][cl][l] for one (ish, jsh, ksh, lsh) after i contraction */
-        long psize = (long)na * ncj * dmax * nck * dmax * ncl * dmax;
+        long psize = (long)na * ncy1 * dmax * ncx2 * dmax * ncy2 * dmax;
         double *Pre = malloc(sizeof(double) * psize);
         double *Pim = malloc(sizeof(double) * psize);
-        /* thread-private accumulation of T for the j-shell slice handled by this thread */
+        int y1sh, y2sh, x1sh, x2sh;
+        /* the open electron-1 shell is distributed over threads, so each
+         * thread owns disjoint slices of T */
 #pragma omp for schedule(dynamic)
-        for (jsh = 0; jsh < nbas; jsh++) {
-        for (lsh = 0; lsh < nbas; lsh++) {
-        for (ish = 0; ish < nbas; ish++) {
-        for (ksh = 0; ksh < nbas; ksh++) {
+        for (y1sh = 0; y1sh < nbas; y1sh++) {
+        for (y2sh = 0; y2sh < nbas; y2sh++) {
+        for (x1sh = 0; x1sh < nbas; x1sh++) {
+        for (x2sh = 0; x2sh < nbas; x2sh++) {
+                if (mode) { ish = y1sh; jsh = x1sh; ksh = y2sh; lsh = x2sh; }
+                else      { ish = x1sh; jsh = y1sh; ksh = x2sh; lsh = y2sh; }
                 shls[0] = ish; shls[1] = jsh; shls[2] = ksh; shls[3] = lsh;
                 int di = ao_loc[ish+1] - ao_loc[ish];
                 int dj = ao_loc[jsh+1] - ao_loc[jsh];
                 int dk = ao_loc[ksh+1] - ao_loc[ksh];
                 int dl = ao_loc[lsh+1] - ao_loc[lsh];
-                int i0 = ao_loc[ish], j0 = ao_loc[jsh], k0 = ao_loc[ksh], l0 = ao_loc[lsh];
                 if (!(*intor)(buf, NULL, shls, atm, natm, bas, nbas, env, opt, cache)) {
                         continue;
                 }
                 long nblk = (long)di * dj * dk * dl;
-                int a, ci, cj, ck, cl, i, j, k, l, b;
-                /* step 1: contract i -> a:  P[a][cj][j][ck][k][cl][l] */
-                long sPl = 1, sPcl = dl, sPk = (long)ncl * dl, sPck = (long)dk * sPk;
-                long sPj = (long)nck * sPck, sPcj = (long)dj * sPj, sPa = (long)ncj * sPcj;
+                int dx1 = mode ? dj : di, dy1 = mode ? di : dj;
+                int dx2 = mode ? dl : dk, dy2 = mode ? dk : dl;
+                int x10 = ao_loc[x1sh], y10 = ao_loc[y1sh], x20 = ao_loc[x2sh], y20 = ao_loc[y2sh];
+                int a, ci, cj, ck, cl, i, j, k, l, b, cx1, cy1, cx2, cy2, x1, y1, x2, y2;
+                long sPy2 = 1, sPcy2 = dy2, sPx2 = (long)ncy2 * dy2, sPcx2 = (long)dx2 * sPx2;
+                long sPy1 = (long)ncx2 * sPcx2, sPcy1 = (long)dy1 * sPy1, sPa = (long)ncy1 * sPcy1;
                 memset(Pre, 0, sizeof(double) * na * sPa);
                 memset(Pim, 0, sizeof(double) * na * sPa);
+                /* step 1: contract x1 -> a */
                 for (ci = 0; ci < nci; ci++) {
                 for (cj = 0; cj < ncj; cj++) {
                 for (ck = 0; ck < nck; ck++) {
                 for (cl = 0; cl < ncl; cl++) {
                         int comp = ((ci * ncj + cj) * nck + ck) * ncl + cl;
                         double *g = buf + comp * nblk;
+                        cx1 = mode ? cj : ci; cy1 = mode ? ci : cj;
+                        cx2 = mode ? cl : ck; cy2 = mode ? ck : cl;
                         for (l = 0; l < dl; l++) {
                         for (k = 0; k < dk; k++) {
                         for (j = 0; j < dj; j++) {
-                                double *gi = g + ((long)(l * dk + k) * dj + j) * di;
+                        for (i = 0; i < di; i++) {
+                                double v = g[((long)(l * dk + k) * dj + j) * di + i];
+                                if (v == 0) continue;
+                                x1 = mode ? j : i; y1 = mode ? i : j;
+                                x2 = mode ? l : k; y2 = mode ? k : l;
+                                long p0 = cy1 * sPcy1 + y1 * sPy1 + cx2 * sPcx2 + x2 * sPx2 + cy2 * sPcy2 + y2;
+                                double *ar = Are + cx1 * sA_ci + x10 + x1;
+                                double *aI = Aim + cx1 * sA_ci + x10 + x1;
                                 for (a = 0; a < na; a++) {
-                                        double *ar = Are + a * sA_a + ci * sA_ci + i0;
-                                        double *aI = Aim + a * sA_a + ci * sA_ci + i0;
-                                        double sr = 0, si = 0;
-                                        for (i = 0; i < di; i++) {
-                                                sr += ar[i] * gi[i];
-                                                si += aI[i] * gi[i];
-                                        }
-                                        long p = a * sPa + cj * sPcj + j * sPj + ck * sPck + k * sPk + cl * sPcl + l;
-                                        Pre[p] += sr;
-                                        Pim[p] += si;
+                                        Pre[a * sPa + p0] += ar[a * sA_a] * v;
+                                        Pim[a * sPa + p0] += aI[a * sA_a] * v;
                                 }
-                        } } }
+                        } } } }
                 } } } }
-                /* step 2: contract k -> b and accumulate into T */
+                /* step 2: contract x2 -> b and accumulate */
                 for (a = 0; a < na; a++) {
-                for (cj = 0; cj < ncj; cj++) {
-                for (j = 0; j < dj; j++) {
+                for (cy1 = 0; cy1 < ncy1; cy1++) {
+                for (y1 = 0; y1 < dy1; y1++) {
                 for (b = 0; b < nb; b++) {
-                for (cl = 0; cl < ncl; cl++) {
-                for (l = 0; l < dl; l++) {
+                for (cy2 = 0; cy2 < ncy2; cy2++) {
+                for (y2 = 0; y2 < dy2; y2++) {
                         double sr = 0, si = 0;
-                        for (ck = 0; ck < nck; ck++) {
-                                double *br = Bre + b * sB_b + ck * sB_ck + k0;
-                                double *bI = Bim + b * sB_b + ck * sB_ck + k0;
-                                long p0 = a * sPa + cj * sPcj + j * sPj + ck * sPck + cl * sPcl + l;
-                                for (k = 0; k < dk; k++) {
-                                        double pr = Pre[p0 + k * sPk];
-                                        double pi = Pim[p0 + k * sPk];
-                                        sr += pr * br[k] - pi * bI[k];
-                                        si += pr * bI[k] + pi * br[k];
+                        for (cx2 = 0; cx2 < ncx2; cx2++) {
+                                double *br = Bre + b * sB_b + cx2 * sB_ck + x20;
+                                double *bI = Bim + b * sB_b + cx2 * sB_ck + x20;
+                                long p0 = a * sPa + cy1 * sPcy1 + y1 * sPy1 + cx2 * sPcx2 + cy2 * sPcy2 + y2;
+                                for (x2 = 0; x2 < dx2; x2++) {
+                                        double pr = Pre[p0 + x2 * sPx2];
+                                        double pi = Pim[p0 + x2 * sPx2];
+                                        sr += pr * br[x2] - pi * bI[x2];
+                                        si += pr * bI[x2] + pi * br[x2];
                                 }
                         }
-                        long t = a * sT_a + cj * sT_cj + (long)(j0 + j) * sT_j + b * sT_b + cl * sT_cl + (l0 + l);
-                        /* each (j, l) element is owned by one thread (jsh loop) */
+                        long t = a * sT_a + cy1 * sT_cy1 + (long)(y10 + y1) * sT_y1 + b * sT_b + cy2 * sT_cy2 + (y20 + y2);
                         Tre[t] += sr;
                         Tim[t] += si;
                 } } } } } }

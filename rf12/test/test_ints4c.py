@@ -98,5 +98,19 @@ class Ints4c(unittest.TestCase):
             self.assertLess(err[1], 1e-4)
 
 
+    def test_mode1_contracts_second_function(self):
+        # mode 1 contracts j and l; compare with the full integral tensor
+        mol = self.mol
+        nao = mol.nao
+        rng = numpy.random.default_rng(7)
+        for cls, (nci, ncj, nck, ncl) in (('ipip1', (9, 1, 1, 1)), ('ipvip1', (3, 3, 1, 1))):
+            I = ints4c.full(mol, 'F', cls, Z)            # [ci,cj,ck,cl,i,j,k,l]
+            A = rng.random((2, ncj, nao)) + 1j * rng.random((2, ncj, nao))
+            B = rng.random((3, ncl, nao)) + 1j * rng.random((3, ncl, nao))
+            T = ints4c.contract2e(mol, 'F', cls, A, B, Z, mode=1)
+            ref = numpy.einsum('adj,bfl,cdefijkl->acibek', A, B, I)
+            self.assertLess(abs(T - ref).max(), 1e-12)
+
+
 if __name__ == '__main__':
     unittest.main()
