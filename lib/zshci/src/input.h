@@ -175,6 +175,12 @@ struct Input {
   // method (which it implies) and evaluates the elements on the way. Slow
   // per product, but the memory of the matrix is saved. Default "stored".
   bool direct_hamiltonian = false;
+  // "incremental": true (default) extends the stored Hamiltonian and the
+  // string tables by what the determinants added in an iteration bring, for
+  // which the root keeps the sorted keys of all strings. false makes both
+  // afresh in every iteration and releases the keys each time: slower, less
+  // memory.
+  bool incremental = true;
   // Compare the Hamiltonian and its product against slow reference
   // implementations; for testing on small cases.
   bool check = false;

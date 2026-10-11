@@ -326,6 +326,7 @@ class VariationalH {
       : ints_(ints),
         comm_(comm),
         direct_(input.direct_hamiltonian),
+        incremental_(input.incremental),
         connect_(MakeConnectOptions(input)) {
     stored_.set_apply_diagonal(comm.is_root());
   }
@@ -338,6 +339,12 @@ class VariationalH {
   // Collective: makes the Hamiltonian that of `dets`, of which those from
   // first_new on are new.
   void Extend(Span<Det<W>> dets, size_t first_new) {
+    if (!incremental_ && first_new > 0) {
+      // Everything is made afresh for the whole list.
+      first_new = 0;
+      stored_ = SparseH<S>();
+      stored_.set_apply_diagonal(comm_.is_root());
+    }
     dets_ = dets;
     AppendDiagonal(dets, first_new, ints_, comm_, &stored_);
     if (connect_.method != ConnectMethod::kGroups) {
@@ -353,6 +360,8 @@ class VariationalH {
           GroupMask<W>(connect_, ints_.num_orbs()), comm_);
     }
     tables_->Extend(dets, first_new);
+    table_memory_ = tables_->memory();
+    if (!incremental_) tables_->DropExtensionState();
     stats_.seconds_prepare += omp_get_wtime() - time;
     stats_.num_strings = tables_->num_strings(0) + tables_->num_strings(1);
     stats_.num_links = tables_->num_links();
@@ -403,13 +412,16 @@ class VariationalH {
     }
     const double mb = 1.0 / (1024.0 * 1024.0);
     if (tables_ != nullptr) {
-      const auto memory = tables_->memory();
+      // As of the last extension; without incremental updates what is
+      // "kept" is released as soon as the tables are made.
+      const auto& memory = table_memory_;
       std::printf(
-          "string tables (root): %.1f MB held per node, %.1f MB kept "
-          "to extend them (keys %.1f MB), at most %.1f MB more "
-          "while extending\n",
-          memory.shared * mb, memory.kept * mb, memory.keys * mb,
-          memory.transient * mb);
+          "string tables (root): %.1f MB held per node, %.1f MB %s "
+          "(keys %.1f MB), at most %.1f MB more while extending\n",
+          memory.shared * mb, memory.kept * mb,
+          incremental_ ? "kept to extend them"
+                       : "needed only while they are made",
+          memory.keys * mb, memory.transient * mb);
     }
     if (!direct_) {
       std::printf(
@@ -434,6 +446,8 @@ class VariationalH {
   const Integrals<S>& ints_;
   const Comm& comm_;
   bool direct_;
+  bool incremental_;
+  typename internal::GroupStringTables<W>::Memory table_memory_;
   ConnectOptions connect_;
   Span<Det<W>> dets_;
   SparseH<S> stored_;

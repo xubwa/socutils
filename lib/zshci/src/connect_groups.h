@@ -93,6 +93,10 @@ class GroupStringTables {
     if (dets.size() > static_cast<size_t>(UINT32_MAX)) {
       throw std::length_error("too many determinants for a 32-bit index");
     }
+    if (first_new > 0 && comm_.is_root() && root_.keys[0].empty()) {
+      throw std::logic_error(
+          "the string tables can only be extended while their keys are kept");
+    }
     dets_ = dets;
     num_elec_ = dets.empty() ? 0 : dets[0].Count();
     std::vector<uint64_t> det_start[2];
@@ -162,6 +166,11 @@ class GroupStringTables {
       }
     }
   }
+
+  // Releases what the root keeps to extend the tables (the keys above
+  // all). The tables stay usable; the next Extend must start afresh, with
+  // first_new = 0.
+  void DropExtensionState() { root_ = RootState(); }
 
   // Number of distinct strings of a group, over all electron counts.
   size_t num_strings(int group) const {

@@ -129,6 +129,7 @@ Json ToJson(const Input& in) {
                   {"batches", in.connect_batches}};
   if (!in.connect_group_a.empty()) j["connect"]["group_a"] = in.connect_group_a;
   j["hamiltonian"] = in.direct_hamiltonian ? "direct" : "stored";
+  j["incremental"] = in.incremental;
   j["check"] = in.check;
   j["output_level"] = in.output_level;
   return j;
@@ -379,6 +380,7 @@ Input ParseInput(const std::string& text) {
     }
     in.connect_by_groups = true;
   }
+  top.Get("incremental", &in.incremental);
   top.Get("check", &in.check);
   top.Get("output_level", &in.output_level);
 
