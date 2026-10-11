@@ -155,17 +155,17 @@ struct Input {
   // |H(i,j)| below this is not stored. Negative keeps every connected pair.
   // If not given: -1 when density matrices are requested, 0 otherwise.
   double hij_threshold = 0.0;
-  // How connected determinants are found (see connect.h): "strings" (N-1 and
-  // N-2 electron strings; no wasted tests, memory grows with the square of
-  // the electron number) or "segments" (covers of four out of
-  // `connect_segments` orbital segments; memory independent of the electron
-  // number, at the price of testing unconnected pairs).
-  // "groups" (tables of the strings of two groups of spinors,
-  // connect_groups.h) is the default for "orbitals": "spatial" and
-  // "unrestricted", the groups being the two spins; "group_a" lists the
-  // spinors of the first group (default: those with an even index).
+  // How connected determinants are found (see connect.h). "groups", the
+  // default: tables of the strings of two groups of spinors
+  // (connect_groups.h); "group_a" lists the spinors of the first group
+  // (default: those with an even index, which for spin orbitals are the
+  // alpha ones). "strings": N-1 and N-2 electron strings of the whole
+  // determinant; no wasted tests, memory grows with the square of the
+  // electron number. "segments": covers of four out of `connect_segments`
+  // orbital segments; least memory, at the price of testing unconnected
+  // pairs.
   bool connect_by_segments = false;
-  bool connect_by_groups = false;
+  bool connect_by_groups = true;
   std::vector<int> connect_group_a;
   int connect_segments = 8;
   // Strings only: number of passes (trades time for memory).

@@ -56,7 +56,7 @@ The input is a JSON file; comments are allowed and unknown keys are errors.
   "prefix": ".",
   "dets": [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]],
   "symmetry": [{"labels": "fcidump", "mod": 0}],
-  "connect": {"method": "strings"},
+  "connect": {"method": "groups"},
   "select": {"schedule": [[0, 1e-3], [3, 1e-4]], "max_iter": 12},
   "davidson": {"tol": 1e-6},
   "pt": {"method": "semistochastic", "epsilon2": 1e-7, "epsilon2_large": 1e-5,
@@ -92,10 +92,10 @@ is dropped otherwise. The two-electron integrals are stored in the blocks the
 labels define, so labels also save memory.
 
 `"connect": {"method": ...}` chooses how connected determinants are found
-(`src/connect.h`): `"strings"` (the default for spinors), `"segments"`, or
-`"groups"`, which divides the spinors into two groups (`"group_a"`, default
-the even ones) and works from tables of the strings of each group, electrons
-being allowed to move between the groups. With a conserved spin projection
+(`src/connect.h`): `"groups"`, the default, divides the spinors into two
+groups (`"group_a"`, default the even ones) and works from tables of the
+strings of each group, electrons being allowed to move between the groups;
+`"strings"` and `"segments"` are the earlier methods. With a conserved spin projection
 that is the alpha/beta scheme and the default. Timings of the three on two
 spinor cases, 16 threads, seconds spent building the Hamiltonian over a whole
 selection run and the peak memory of the program:

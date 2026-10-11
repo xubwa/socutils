@@ -53,7 +53,7 @@ struct ConnectOptions {
   // Elements with |H(i,j)| <= threshold are not stored. A negative value
   // keeps every connected pair, which the density matrices need.
   double threshold = -1.0;
-  ConnectMethod method = ConnectMethod::kStrings;
+  ConnectMethod method = ConnectMethod::kGroups;
   // Strings: the keys are processed in this many passes; the transient
   // memory of the entry list is divided by the same factor.
   int num_batches = 1;

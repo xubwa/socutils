@@ -343,10 +343,10 @@ Input ParseInput(const std::string& text) {
   // An explicit non-negative threshold together with density matrices is
   // allowed, but the density matrices then miss the dropped pairs.
   top.Get("hij_threshold", &in.hij_threshold);
-  in.connect_by_groups = spin_orbitals;
+  in.connect_by_groups = true;
   if (top.Has("connect")) {
     ObjectReader connect(top.At("connect"), "connect");
-    std::string method = spin_orbitals ? "groups" : "strings";
+    std::string method = "groups";
     connect.Get("method", &method);
     if (method != "strings" && method != "segments" && method != "groups") {
       connect.Fail("method", "must be \"strings\", \"segments\" or \"groups\"");

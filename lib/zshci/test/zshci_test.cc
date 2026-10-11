@@ -123,10 +123,12 @@ void TestHamiltonian(const Integrals<Complex>& ints) {
   const int n = ints.num_orbs();
   const std::vector<std::vector<int>> occupations =
       RandomOccupations(n, ints.num_elec(), 500, 3, 11);
+  // The string method; the group method has tests of its own below.
   ConnectOptions keep_all;
-  ConnectOptions batched;
+  keep_all.method = ConnectMethod::kStrings;
+  ConnectOptions batched = keep_all;
   batched.num_batches = 4;
-  ConnectOptions thresholded;
+  ConnectOptions thresholded = keep_all;
   thresholded.threshold = 1e-6;
 
   const std::vector<Det<1>> dets1 = ToDets<1>(occupations, 0);
