@@ -2,7 +2,7 @@
 '''
 Collect the stage-1 numbers into the tables of rf12/notes/stage1_results.md.
 
-    python stage1_summary.py RUNDIR
+    python stage1_summary.py RUNDIR      (e.g. examples/rf12/data)
 '''
 import sys
 import json
