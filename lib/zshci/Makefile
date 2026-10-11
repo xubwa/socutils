@@ -27,11 +27,7 @@ else
   HDF5_ROOT  ?= /usr
 endif
 
-# -fcx-limited-range: complex products as the textbook formula. Without it
-# the compiler calls a library routine for every product, to get infinities
-# and NaNs right, which makes complex arithmetic several times slower.
-CXXFLAGS  := -std=c++17 -O3 -g -march=core-avx2 -fopenmp -fcx-limited-range \
-             -Wall -Wextra \
+CXXFLAGS  := -std=c++17 -O3 -g -march=core-avx2 -fopenmp -Wall -Wextra \
              -Isrc -isystem third_party -isystem $(EIGEN_ROOT) \
              -isystem $(HDF5_ROOT)/include -MMD -MP
 LDFLAGS   := -fopenmp -L$(HDF5_ROOT)/lib -Wl,-rpath,$(HDF5_ROOT)/lib -lhdf5

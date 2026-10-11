@@ -13,8 +13,10 @@ namespace {
 template <typename S>
 using Vector = std::vector<S>;
 
+// Dense matrices are Eigen's, over the number type Eigen knows.
 template <typename S>
-using Matrix = Eigen::Matrix<S, Eigen::Dynamic, Eigen::Dynamic>;
+using Matrix = Eigen::Matrix<typename ScalarTraits<S>::Std, Eigen::Dynamic,
+                             Eigen::Dynamic>;
 
 // <a|b>
 template <typename S>
@@ -74,7 +76,7 @@ std::vector<Vector<S>> Combine(const std::vector<Vector<S>>& basis,
   std::vector<Vector<S>> out(num_out, Vector<S>(n, S(0.0)));
   for (int k = 0; k < num_out; ++k) {
     for (size_t m = 0; m < basis.size(); ++m) {
-      Axpy(S(coeff(m, k)), basis[m], &out[k]);
+      Axpy(ScalarTraits<S>::FromStd(coeff(m, k)), basis[m], &out[k]);
     }
   }
   return out;
@@ -92,7 +94,9 @@ DavidsonResult SolveDense(const LinearOperator<S>& h,
     unit[j] = 1.0;
     h.Apply(unit.data(), column.data());
     unit[j] = 0.0;
-    for (int i = 0; i < n; ++i) dense(i, j) = column[i];
+    for (int i = 0; i < n; ++i) {
+      dense(i, j) = ScalarTraits<S>::ToStd(column[i]);
+    }
   }
   Eigen::SelfAdjointEigenSolver<Matrix<S>> solver(dense);
   if (solver.info() != Eigen::Success) {
@@ -102,7 +106,9 @@ DavidsonResult SolveDense(const LinearOperator<S>& h,
   for (int k = 0; k < num_roots; ++k) {
     result.energies.push_back(solver.eigenvalues()[k]);
     result.residual_norms.push_back(0.0);
-    for (int i = 0; i < n; ++i) (*vectors)[k][i] = solver.eigenvectors()(i, k);
+    for (int i = 0; i < n; ++i) {
+      (*vectors)[k][i] = ScalarTraits<S>::FromStd(solver.eigenvectors()(i, k));
+    }
   }
   result.converged = true;
   return result;
@@ -163,8 +169,9 @@ DavidsonResult Davidson(const LinearOperator<S>& h,
     grown.topLeftCorner(old_size, old_size) = projected;
     for (int m = old_size; m < size; ++m) {
       for (int l = 0; l <= m; ++l) {
-        grown(l, m) = Dot(basis[l], sigma[m]);
-        grown(m, l) = Conj(grown(l, m));
+        const S element = Dot(basis[l], sigma[m]);
+        grown(l, m) = ScalarTraits<S>::ToStd(element);
+        grown(m, l) = ScalarTraits<S>::ToStd(Conj(element));
       }
     }
     projected = grown;
@@ -218,7 +225,7 @@ DavidsonResult Davidson(const LinearOperator<S>& h,
 #pragma omp parallel for schedule(static)
       for (long i = 0; i < length; ++i) {
         double denominator = theta - diagonal[i];
-        if (std::abs(denominator) < 1e-8) {
+        if (Abs(denominator) < 1e-8) {
           denominator = denominator < 0.0 ? -1e-8 : 1e-8;
         }
         correction[i] /= denominator;

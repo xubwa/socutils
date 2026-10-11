@@ -38,8 +38,10 @@ void WriteDensityMatrices(const std::string& prefix, int bra, int ket,
                           std::to_string(ket) + ".h5",
                       HighFive::File::Overwrite);
   // dm.one is already dm1[p,q] = <p^+ q> in row-major order.
-  file.createDataSet<S>("dm1", HighFive::DataSpace({n, n}))
-      .write_raw(dm.one.data());
+  // The numbers are laid out as the type the file library knows.
+  using Std = typename ScalarTraits<S>::Std;
+  file.createDataSet<Std>("dm1", HighFive::DataSpace({n, n}))
+      .write_raw(reinterpret_cast<const Std*>(dm.one.data()));
   if (dm.two.empty()) return;
 
   // Stored: D2(p,q,r,s) = <p^+ q^+ s r>. Written: dm2[p,q,r,s] =
@@ -56,8 +58,8 @@ void WriteDensityMatrices(const std::string& prefix, int bra, int ket,
       }
     }
   }
-  file.createDataSet<S>("dm2", HighFive::DataSpace({n, n, n, n}))
-      .write_raw(dm2.data());
+  file.createDataSet<Std>("dm2", HighFive::DataSpace({n, n, n, n}))
+      .write_raw(reinterpret_cast<const Std*>(dm2.data()));
 }
 
 template <typename S>

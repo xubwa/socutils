@@ -35,7 +35,7 @@ void HeatBath::BuildSpinorLists(const Integrals<S>& ints, double threshold,
       for (const auto* pair = ints.PartnersBegin(i, j); pair != partners_end;
            ++pair) {
         const double magnitude =
-            std::abs(ints.AntisymOrdered(pair->first, pair->second, i, j));
+            Abs(ints.AntisymOrdered(pair->first, pair->second, i, j));
         if (magnitude > threshold) {
           list.push_back({magnitude, pair->first, pair->second});
         }
@@ -59,8 +59,8 @@ void HeatBath::BuildSpatialLists(const Integrals<S>& ints, double threshold,
         std::vector<Entry>& same = (*lists)[PairIndex(i, j)];
         for (int b = 1; b < n; ++b) {
           for (int a = 0; a < b; ++a) {
-            const double magnitude = std::abs(ints.SpatialTwoBody(a, i, b, j) -
-                                              ints.SpatialTwoBody(a, j, b, i));
+            const double magnitude = Abs(ints.SpatialTwoBody(a, i, b, j) -
+                                         ints.SpatialTwoBody(a, j, b, i));
             if (magnitude > threshold) {
               same.push_back({magnitude, static_cast<uint16_t>(a),
                               static_cast<uint16_t>(b)});
@@ -73,7 +73,7 @@ void HeatBath::BuildSpatialLists(const Integrals<S>& ints, double threshold,
           (*lists)[num_same + PairIndexWithDiagonal(i, j)];
       for (int b = 0; b < n; ++b) {
         for (int a = 0; a < n; ++a) {
-          const double magnitude = std::abs(ints.SpatialTwoBody(a, i, b, j));
+          const double magnitude = Abs(ints.SpatialTwoBody(a, i, b, j));
           if (magnitude > threshold) {
             opposite.push_back({magnitude, static_cast<uint16_t>(a),
                                 static_cast<uint16_t>(b)});

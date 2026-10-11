@@ -19,7 +19,7 @@ bool SameBlock(const CsrBlock<S>& a, const CsrBlock<S>& b, double tolerance) {
   }
   for (size_t k = 0; k < a.col.size(); ++k) {
     if (a.col[k] != b.col[k]) return false;
-    if (std::abs(a.val[k] - b.val[k]) > tolerance) return false;
+    if (Abs(a.val[k] - b.val[k]) > tolerance) return false;
   }
   return true;
 }
@@ -155,6 +155,48 @@ void SparseH<S>::BuildSplitTable(const CsrBlock<S>& block,
   }
 }
 
+namespace {
+
+// One row of the one-sweep product: returns sum_k val[k] x[col[k]] and adds
+// conj(val[k]) xj to mine[col[k]]. The complex version works on the real
+// and imaginary parts in local variables, which the compiler keeps in
+// registers across the stores into `mine`.
+inline double RowSweep(const double* __restrict val,
+                       const DetIndex* __restrict col, uint64_t count,
+                       const double* __restrict x, double xj,
+                       double* __restrict mine) {
+  double sum = 0.0;
+  for (uint64_t k = 0; k < count; ++k) {
+    sum += val[k] * x[col[k]];
+    mine[col[k]] += val[k] * xj;
+  }
+  return sum;
+}
+
+inline Complex RowSweep(const Complex* __restrict val,
+                        const DetIndex* __restrict col, uint64_t count,
+                        const Complex* __restrict x, Complex xj,
+                        Complex* __restrict mine) {
+  double sum_re = 0.0;
+  double sum_im = 0.0;
+  const double xj_re = xj.re;
+  const double xj_im = xj.im;
+  for (uint64_t k = 0; k < count; ++k) {
+    const double v_re = val[k].re;
+    const double v_im = val[k].im;
+    const DetIndex c = col[k];
+    const double x_re = x[c].re;
+    const double x_im = x[c].im;
+    sum_re += v_re * x_re - v_im * x_im;
+    sum_im += v_re * x_im + v_im * x_re;
+    mine[c].re += v_re * xj_re + v_im * xj_im;
+    mine[c].im += v_re * xj_im - v_im * xj_re;
+  }
+  return Complex(sum_re, sum_im);
+}
+
+}  // namespace
+
 template <typename S>
 void SparseH<S>::Multiply(const S* x, S* y) const {
   const int num_segments = static_cast<int>(segment_.size()) - 1;
@@ -185,10 +227,8 @@ void SparseH<S>::Multiply(const S* x, S* y) const {
         for (size_t r = first_row; r < last_row; ++r) {
           const S xj = x[rows[r]];
           S sum(0.0);
-          for (uint64_t k = block.row_ptr[r]; k < block.row_ptr[r + 1]; ++k) {
-            sum += val[k] * x[col[k]];
-            mine[col[k]] += Conj(val[k]) * xj;
-          }
+          sum = RowSweep(val + block.row_ptr[r], col + block.row_ptr[r],
+                         block.row_ptr[r + 1] - block.row_ptr[r], x, xj, mine);
           y[rows[r]] += sum;
         }
       }

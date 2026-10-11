@@ -202,8 +202,8 @@ void TestHamiltonian(const Integrals<Complex>& ints) {
   }
   bool same_diagonal = true;
   for (size_t d = 0; d < dets1.size(); ++d) {
-    same_diagonal = same_diagonal &&
-                    std::abs(DiagonalEnergy(dets1[d], ints) -
+    same_diagonal =
+        same_diagonal && Abs(DiagonalEnergy(dets1[d], ints) -
                              DiagonalEnergy(dets2[d], shifted)) < 1e-11;
   }
   Expect(same_diagonal, "two-word determinants give the same diagonal");
@@ -226,7 +226,7 @@ void TestHamiltonian(const Integrals<Complex>& ints) {
   h.MultiplyReference(x.data(), y_ref.data());
   double max_diff = 0.0;
   for (size_t i = 0; i < dim; ++i) {
-    max_diff = std::max(max_diff, std::abs(y[i] - y_ref[i]));
+    max_diff = std::max(max_diff, Abs(y[i] - y_ref[i]));
   }
   Expect(max_diff < 1e-12, "threaded H*x equals the serial product");
 
@@ -250,15 +250,14 @@ void TestHamiltonian(const Integrals<Complex>& ints) {
   const DavidsonResult iterative = Davidson(h, iterative_options, &vectors);
   bool same_energies = iterative.converged;
   for (int k = 0; k < num_roots; ++k) {
-    same_energies = same_energies &&
-                    std::abs(iterative.energies[k] - dense.energies[k]) < 1e-10;
+    same_energies =
+        same_energies && Abs(iterative.energies[k] - dense.energies[k]) < 1e-10;
   }
   Expect(same_energies, "Davidson reproduces the dense eigenvalues");
 
   const DensityMatrices<Complex> dm = ComputeDensityMatrices(
       MakeSpan(dets1), h, n, MakeSpan(exact[0]), MakeSpan(exact[0]), true);
-  Expect(std::abs(EnergyFromDensityMatrices(dm, ints) - dense.energies[0]) <
-             1e-10,
+  Expect(Abs(EnergyFromDensityMatrices(dm, ints) - dense.energies[0]) < 1e-10,
          "energy from the density matrices equals the eigenvalue");
   Complex trace(0.0);
   double max_antihermitian = 0.0;
@@ -266,11 +265,10 @@ void TestHamiltonian(const Integrals<Complex>& ints) {
     trace += dm.One(p, p);
     for (int q = 0; q < n; ++q) {
       max_antihermitian =
-          std::max(max_antihermitian,
-                   std::abs(dm.One(p, q) - std::conj(dm.One(q, p))));
+          std::max(max_antihermitian, Abs(dm.One(p, q) - Conj(dm.One(q, p))));
     }
   }
-  Expect(std::abs(trace - Complex(ints.num_elec())) < 1e-10,
+  Expect(Abs(trace - Complex(ints.num_elec())) < 1e-10,
          "the one-body density matrix traces to the electron number");
   Expect(max_antihermitian < 1e-12,
          "the one-body density matrix is Hermitian");
@@ -281,9 +279,9 @@ void TestHamiltonian(const Integrals<Complex>& ints) {
     for (int r = 0; r < n; ++r) {
       Complex sum(0.0);
       for (int q = 0; q < n; ++q) sum += dm.Two(p, q, r, q);
-      max_trace_diff = std::max(
-          max_trace_diff,
-          std::abs(sum - double(ints.num_elec() - 1) * dm.One(p, r)));
+      max_trace_diff =
+          std::max(max_trace_diff,
+                   Abs(sum - double(ints.num_elec() - 1) * dm.One(p, r)));
     }
   }
   Expect(max_trace_diff < 1e-10,
@@ -298,9 +296,8 @@ void TestHamiltonian(const Integrals<Complex>& ints) {
   double max_transition_diff = 0.0;
   for (int p = 0; p < n; ++p) {
     for (int q = 0; q < n; ++q) {
-      max_transition_diff =
-          std::max(max_transition_diff,
-                   std::abs(t01.One(p, q) - std::conj(t10.One(q, p))));
+      max_transition_diff = std::max(max_transition_diff,
+                                     Abs(t01.One(p, q) - Conj(t10.One(q, p))));
     }
   }
   Expect(max_transition_diff < 1e-12,
@@ -372,7 +369,7 @@ void TestSelection(const Integrals<Complex>& ints,
         Det<1> det = dets[d];
         det.Clear(i);
         det.Set(a);
-        if (within_bounds(det) && std::abs(Hij(det, dets[d], ints)) > cutoff) {
+        if (within_bounds(det) && Abs(Hij(det, dets[d], ints)) > cutoff) {
           expected.insert(det);
         }
       }
@@ -387,8 +384,7 @@ void TestSelection(const Integrals<Complex>& ints,
             det.Clear(occ[y]);
             det.Set(virt[u]);
             det.Set(virt[v]);
-            if (within_bounds(det) &&
-                std::abs(Hij(det, dets[d], ints)) >= cutoff) {
+            if (within_bounds(det) && Abs(Hij(det, dets[d], ints)) >= cutoff) {
               expected.insert(det);
             }
           }
@@ -422,7 +418,7 @@ void TestPerturbation(const Integrals<Complex>& ints) {
       1, std::vector<Complex>(dets.size(), 0.0));
   const double energy = Davidson(h, DavidsonOptions(), &vectors).energies[0];
   // An arbitrary global phase must not matter.
-  for (Complex& c : vectors[0]) c *= std::polar(1.0, 0.7);
+  for (Complex& c : vectors[0]) c *= Complex(std::cos(0.7), std::sin(0.7));
   const std::vector<Complex>& c = vectors[0];
 
   const double epsilon = 1e-4;
@@ -438,7 +434,7 @@ void TestPerturbation(const Integrals<Complex>& ints) {
       }
       auto add = [&](const Det<1>& det, bool strict) {
         const Complex x = Hij(det, dets[d], ints) * c[d];
-        if (strict ? std::abs(x) > eps : std::abs(x) >= eps) {
+        if (strict ? Abs(x) > eps : Abs(x) >= eps) {
           numerators[det] += x;
         }
       };
@@ -471,8 +467,7 @@ void TestPerturbation(const Integrals<Complex>& ints) {
                              entry.first)) {
         continue;
       }
-      e2 += std::norm(entry.second) /
-            (energy - DiagonalEnergy(entry.first, ints));
+      e2 += Norm(entry.second) / (energy - DiagonalEnergy(entry.first, ints));
     }
     return e2;
   };
@@ -485,10 +480,10 @@ void TestPerturbation(const Integrals<Complex>& ints) {
   const double exact = direct(epsilon);
   const double exact_large = direct(epsilon_large);
   const double deterministic = PtDeterministic(problem, epsilon);
-  Expect(exact < -1e-4 && std::abs(deterministic - exact) < 1e-12,
+  Expect(exact < -1e-4 && Abs(deterministic - exact) < 1e-12,
          "deterministic PT equals the direct sum");
   problem.num_batches = 3;
-  Expect(std::abs(PtDeterministic(problem, epsilon) - exact) < 1e-12,
+  Expect(Abs(PtDeterministic(problem, epsilon) - exact) < 1e-12,
          "deterministic PT in three batches gives the same energy");
   problem.num_batches = 1;
 
@@ -513,7 +508,7 @@ void TestPerturbation(const Integrals<Complex>& ints) {
         problem, epsilon, epsilon_large, 20, sampler, &rng_copy, &scratch);
     problem.num_batches = 1;
     max_batch_diff =
-        std::max(max_batch_diff, std::abs(batched.small - estimate.small));
+        std::max(max_batch_diff, Abs(batched.small - estimate.small));
     sum += estimate.small;
     sum_squares += estimate.small * estimate.small;
     sum_large += estimate.large;
@@ -521,7 +516,7 @@ void TestPerturbation(const Integrals<Complex>& ints) {
     const StochasticEstimate same = PtWalkerSample(
         problem, epsilon, epsilon, 20, sampler, &rng, &scratch);
     max_equal_cutoff_diff =
-        std::max(max_equal_cutoff_diff, std::abs(same.small - same.large));
+        std::max(max_equal_cutoff_diff, Abs(same.small - same.large));
   }
   auto within_error = [&](double s, double s2, double reference) {
     const double mean = s / num_iterations;
@@ -529,7 +524,7 @@ void TestPerturbation(const Integrals<Complex>& ints) {
                                    (num_iterations - 1));
     std::printf("      mean %.8f  error %.1e  reference %.8f\n", mean, error,
                 reference);
-    return std::abs(mean - reference) < 4.0 * error && error < 0.1 * -reference;
+    return Abs(mean - reference) < 4.0 * error && error < 0.1 * -reference;
   };
   Expect(within_error(sum, sum_squares, exact),
          "stochastic PT averages to the deterministic value");
@@ -557,7 +552,9 @@ void TestSecondOrderLimit(const Integrals<Complex>& ints) {
   for (int i = 0; i < dim; ++i) {
     full(i, i) = DiagonalEnergy(dets[i], ints);
     for (int j = 0; j < i; ++j) {
-      if (j < num_p) full(i, j) = Hij(dets[i], dets[j], ints);
+      if (j < num_p) {
+        full(i, j) = ScalarTraits<Complex>::ToStd(Hij(dets[i], dets[j], ints));
+      }
       full(j, i) = std::conj(full(i, j));
     }
   }
@@ -597,17 +594,18 @@ void TestSecondOrderLimit(const Integrals<Complex>& ints) {
     Complex conjugated(0.0);
     for (int i = 0; i < num_p; ++i) {
       const Complex element = Hij(dets[a], dets[i], ints);
-      numerator += element * c[i];
-      conjugated += std::conj(element) * c[i];
+      const Complex ci = ScalarTraits<Complex>::FromStd(c[i]);
+      numerator += element * ci;
+      conjugated += Conj(element) * ci;
     }
     const double denominator = e0 - DiagonalEnergy(dets[a], ints);
-    second_order += std::norm(numerator) / denominator;
-    second_order_conjugated += std::norm(conjugated) / denominator;
+    second_order += Norm(numerator) / denominator;
+    second_order_conjugated += Norm(conjugated) / denominator;
   }
   std::printf("      exact %.8f  sum H(a,i) c_i: %.8f  sum conj(H(a,i)) c_i: "
               "%.8f\n",
               exact, second_order, second_order_conjugated);
-  Expect(std::abs(exact - second_order) < 1e-4 * std::abs(exact),
+  Expect(Abs(exact - second_order) < 1e-4 * Abs(exact),
          "the PT numerator sum_i H(a,i) c_i reproduces exact diagonalization "
          "to second order");
 }
@@ -659,7 +657,7 @@ void TestDensityMatricesFromDefinition(const Integrals<Complex>& ints) {
   Davidson(h, dense, &states);
   double max_imag = 0.0;
   for (const Complex& c : states[0]) {
-    max_imag = std::max(max_imag, std::abs(c.imag()));
+    max_imag = std::max(max_imag, Abs(c.imag()));
   }
 
   // <bra| p^+ q |ket> and <bra| p^+ q^+ s r |ket> by direct application.
@@ -682,7 +680,7 @@ void TestDensityMatricesFromDefinition(const Integrals<Complex>& ints) {
           if (!Create(p, &det, &sign)) continue;
           const auto found = index.find(det);
           if (found == index.end()) continue;
-          dm.One(p, q) += sign * std::conj(bra[found->second]) * ket[j];
+          dm.One(p, q) += sign * Conj(bra[found->second]) * ket[j];
         }
         if (!with_two) continue;
         // p^+ q2^+ s r with r = q: remove r, then s, add q2, then p.
@@ -701,8 +699,7 @@ void TestDensityMatricesFromDefinition(const Integrals<Complex>& ints) {
               if (!Create(p, &det, &sign)) continue;
               const auto found = index.find(det);
               if (found == index.end()) continue;
-              dm.Two(p, q2, r, s) +=
-                  sign * std::conj(bra[found->second]) * ket[j];
+              dm.Two(p, q2, r, s) += sign * Conj(bra[found->second]) * ket[j];
             }
           }
         }
@@ -714,7 +711,7 @@ void TestDensityMatricesFromDefinition(const Integrals<Complex>& ints) {
                            const std::vector<Complex>& b) {
     double diff = 0.0;
     for (size_t k = 0; k < a.size(); ++k) {
-      diff = std::max(diff, std::abs(a[k] - b[k]));
+      diff = std::max(diff, Abs(a[k] - b[k]));
     }
     return diff;
   };
@@ -730,7 +727,7 @@ void TestDensityMatricesFromDefinition(const Integrals<Complex>& ints) {
          "dm2 equals <p^+ q^+ s r> applied operator by operator");
   // The conjugate must not pass: the test has to be able to tell them apart.
   std::vector<Complex> conjugated = state_ref.one;
-  for (Complex& value : conjugated) value = std::conj(value);
+  for (Complex& value : conjugated) value = Conj(value);
   Expect(max_difference(state.one, conjugated) > 1e-6,
          "dm1 differs from its complex conjugate in this test");
 
@@ -812,9 +809,9 @@ ScalarResults SmallCalculation(const Integrals<S>& ints,
   for (std::vector<S>& v : vectors) {
     size_t largest = 0;
     for (size_t i = 0; i < v.size(); ++i) {
-      if (std::abs(v[i]) > std::abs(v[largest])) largest = i;
+      if (Abs(v[i]) > Abs(v[largest])) largest = i;
     }
-    const S phase = std::abs(v[largest]) / v[largest];
+    const S phase = Abs(v[largest]) / v[largest];
     for (S& c : v) c *= phase;
   }
 
@@ -909,13 +906,13 @@ void TestBlockedIntegrals(const Integrals<Complex>& ints) {
   double max_diff = 0.0;
   double max_element = 0.0;
   for (size_t i = 0; i < dets.size(); ++i) {
-    max_diff = std::max(max_diff, std::abs(DiagonalEnergy(dets[i], blocked) -
-                                           DiagonalEnergy(dets[i], plain)));
+    max_diff = std::max(max_diff, Abs(DiagonalEnergy(dets[i], blocked) -
+                                      DiagonalEnergy(dets[i], plain)));
     for (size_t j = 0; j < i; ++j) {
       const Complex element = Hij(dets[i], dets[j], blocked);
-      max_element = std::max(max_element, std::abs(element));
+      max_element = std::max(max_element, Abs(element));
       max_diff =
-          std::max(max_diff, std::abs(element - Hij(dets[i], dets[j], plain)));
+          std::max(max_diff, Abs(element - Hij(dets[i], dets[j], plain)));
     }
   }
   Expect(max_element > 1e-3 && max_diff == 0.0,
@@ -1060,13 +1057,13 @@ void TestSpatialIntegrals() {
   double max_diff = 0.0;
   double max_element = 0.0;
   for (size_t i = 0; i < dets.size(); ++i) {
-    max_diff = std::max(max_diff, std::abs(DiagonalEnergy(dets[i], spatial) -
-                                           DiagonalEnergy(dets[i], spinor)));
+    max_diff = std::max(max_diff, Abs(DiagonalEnergy(dets[i], spatial) -
+                                      DiagonalEnergy(dets[i], spinor)));
     for (size_t j = 0; j < i; ++j) {
       const double element = Hij(dets[i], dets[j], spatial);
-      max_element = std::max(max_element, std::abs(element));
+      max_element = std::max(max_element, Abs(element));
       max_diff =
-          std::max(max_diff, std::abs(element - Hij(dets[i], dets[j], spinor)));
+          std::max(max_diff, Abs(element - Hij(dets[i], dets[j], spinor)));
     }
   }
   Expect(max_element > 1e-2 && max_diff < 1e-13,
@@ -1100,7 +1097,7 @@ void TestSpatialIntegrals() {
       for (const auto& entry : from_spinor) {
         const auto found = from_spatial.find(entry.first);
         same_lists = same_lists && found != from_spatial.end() &&
-                     std::abs(found->second - entry.second) < 1e-13;
+                     Abs(found->second - entry.second) < 1e-13;
       }
     }
   }
@@ -1166,7 +1163,7 @@ void TestSpatialIntegrals() {
       for (int spin = 0; spin < 2; ++spin) {
         one += full.One(2 * p + spin, 2 * q + spin);
       }
-      max_one = std::max(max_one, std::abs(one - summed.One(p, q)));
+      max_one = std::max(max_one, Abs(one - summed.One(p, q)));
       for (int r = 0; r < n; ++r) {
         for (int s = 0; s < n; ++s) {
           double two = 0.0;
@@ -1176,8 +1173,8 @@ void TestSpatialIntegrals() {
                               2 * s + other);
             }
           }
-          largest = std::max(largest, std::abs(two));
-          max_two = std::max(max_two, std::abs(two - summed.Two(p, q, r, s)));
+          largest = std::max(largest, Abs(two));
+          max_two = std::max(max_two, Abs(two - summed.Two(p, q, r, s)));
         }
       }
     }
@@ -1375,9 +1372,8 @@ void TestGroupConnections(const Integrals<Complex>& ints) {
         stored.set_product(product);
         stored.Multiply(x.data(), y.data());
         for (size_t i = 0; i < x.size(); ++i) {
-          max_diff[which] =
-              std::max(max_diff[which], std::abs(y[i] - y_ref[i]));
-          largest = std::max(largest, std::abs(y_ref[i]));
+          max_diff[which] = std::max(max_diff[which], Abs(y[i] - y_ref[i]));
+          largest = std::max(largest, Abs(y_ref[i]));
         }
         ++which;
       }
@@ -1407,8 +1403,8 @@ void TestGroupConnections(const Integrals<Complex>& ints) {
       direct.Apply(x.data(), y.data());
       stored.Multiply(x.data(), y_ref.data());
       for (size_t i = 0; i < x.size(); ++i) {
-        max_diff = std::max(max_diff, std::abs(y[i] - y_ref[i]));
-        norm = std::max(norm, std::abs(y_ref[i]));
+        max_diff = std::max(max_diff, Abs(y[i] - y_ref[i]));
+        norm = std::max(norm, Abs(y_ref[i]));
       }
     }
     Expect(norm > 1.0 && max_diff < 1e-12 * norm,
@@ -1429,12 +1425,10 @@ void TestGroupConnections(const Integrals<Complex>& ints) {
     double max_one = 0.0;
     double max_two = 0.0;
     for (size_t k = 0; k < from_stored.one.size(); ++k) {
-      max_one =
-          std::max(max_one, std::abs(from_stored.one[k] - from_tables.one[k]));
+      max_one = std::max(max_one, Abs(from_stored.one[k] - from_tables.one[k]));
     }
     for (size_t k = 0; k < from_stored.two.size(); ++k) {
-      max_two =
-          std::max(max_two, std::abs(from_stored.two[k] - from_tables.two[k]));
+      max_two = std::max(max_two, Abs(from_stored.two[k] - from_tables.two[k]));
     }
     Expect(max_one < 1e-10 && max_two < 1e-10,
            "density matrices from the tables equal those from the stored "
@@ -1507,8 +1501,8 @@ void TestPtScoreSelection(const Integrals<Complex>& ints) {
       }
       const double gap = energy_a - energies[k];
       if (gap <= 0.0) continue;
-      item.energy_score += std::norm(v) / gap;
-      item.amplitude_score = std::max(item.amplitude_score, std::abs(v) / gap);
+      item.energy_score += Norm(v) / gap;
+      item.amplitude_score = std::max(item.amplitude_score, Abs(v) / gap);
     }
     reference.push_back(item);
   }
@@ -1594,19 +1588,19 @@ void TestRealScalar(const Integrals<Complex>& ints) {
                            const std::vector<Complex>& b) {
     double diff = a.size() == b.size() ? 0.0 : 1.0;
     for (size_t k = 0; k < a.size() && k < b.size(); ++k) {
-      diff = std::max(diff, std::abs(a[k] - b[k]));
+      diff = std::max(diff, Abs(a[k] - b[k]));
     }
     return diff;
   };
   Expect(real.num_elements > 1000 && real.num_elements == complex.num_elements,
          "real numbers: the Hamiltonian has the same elements");
-  Expect(std::abs(real.energies[0] - complex.energies[0]) < 1e-10 &&
-             std::abs(real.energies[1] - complex.energies[1]) < 1e-10,
+  Expect(Abs(real.energies[0] - complex.energies[0]) < 1e-10 &&
+             Abs(real.energies[1] - complex.energies[1]) < 1e-10,
          "real numbers: the same two lowest energies as with complex numbers");
-  Expect(real.pt < -1e-5 && std::abs(real.pt - complex.pt) < 1e-10,
+  Expect(real.pt < -1e-5 && Abs(real.pt - complex.pt) < 1e-10,
          "real numbers: the same deterministic PT energy");
-  Expect(std::abs(real.sample.small - complex.sample.small) < 1e-10 &&
-             std::abs(real.sample.large - complex.sample.large) < 1e-10,
+  Expect(Abs(real.sample.small - complex.sample.small) < 1e-10 &&
+             Abs(real.sample.large - complex.sample.large) < 1e-10,
          "real numbers: the same stochastic PT sample from the same draws");
   std::printf(
       "      E0 %.10f  PT %.10f  sample %.10f (difference %.1e) and "
