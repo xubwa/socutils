@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <iterator>
 #include <memory>
 #include <stdexcept>
@@ -162,6 +163,10 @@ struct SelectionContext {
   // For every determinant, the root-sum-square of its coefficients over the
   // roots (see ShareWeights).
   Span<double> weights;
+  // The eigenvectors and their energies (without the core energy); only for
+  // selectors that ask for them (needs_vectors), otherwise null and empty.
+  const SharedVectors<S>* vectors;
+  const std::vector<double>& energies;
   const Integrals<S>& ints;
   const HeatBath& heat_bath;
   const RestrictedFilter& filter;
@@ -178,9 +183,13 @@ class Selector {
   // for the progress table.
   virtual const char* parameter_name() const = 0;
   virtual double Parameter(int iteration) const = 0;
-  // The first iteration from which the parameter no longer changes; the
-  // calculation can only be called converged from there on.
-  virtual int final_stage() const = 0;
+  // Whether the selection has reached its last stage, given the iteration,
+  // the size of the space and how many determinants the last SelectNew
+  // added; the calculation can only be called converged from there on.
+  virtual bool InFinalStage(int iteration, size_t num_dets,
+                            size_t num_added) const = 0;
+  // Whether SelectNew uses the eigenvectors.
+  virtual bool needs_vectors() const { return false; }
 
   // Collective: the determinants to add, sorted, none of them in the space
   // yet, the same list on every rank.
@@ -198,7 +207,10 @@ class HeatBathSelector : public Selector<W, S> {
   double Parameter(int iteration) const override {
     return select_.Epsilon(iteration);
   }
-  int final_stage() const override { return select_.schedule.back().first; }
+  bool InFinalStage(int iteration, size_t /*num_dets*/,
+                    size_t /*num_added*/) const override {
+    return iteration >= select_.schedule.back().first;
+  }
 
   std::vector<Det<W>> SelectNew(
       const SelectionContext<W, S>& context) override {
@@ -212,12 +224,276 @@ class HeatBathSelector : public Selector<W, S> {
   const SelectInput& select_;
 };
 
+// Selection by a score from first-order perturbation theory. For every
+// determinant D_a outside the space and every root k,
+//   V_a(k) = sum_i H(a,i) c_i(k),
+// the sum running over the determinants of the space (for asci: over the
+// core_dets ones of largest weight) and, if epsilon_generate is set, over
+// the terms above it. The score of D_a is
+//   cipsi, aci:  sum_k |V_a(k)|^2 / (E_a - E_k)     (its second-order energy)
+//   asci:        max_k |V_a(k)| / (E_a - E_k)       (its first-order amplitude)
+// and the determinants with the largest scores are added:
+//   cipsi, asci: as many as make the space grow by the factor `growth`, up
+//                to target_dets;
+//   aci:         all but the lowest ones whose scores sum to at most sigma.
+// Either rule amounts to a threshold on the score, which is found by
+// bisection over all ranks. No determinant is ever removed.
+template <int W, typename S>
+class PtScoreSelector : public Selector<W, S> {
+ public:
+  explicit PtScoreSelector(const SelectInput& select) : select_(select) {}
+
+  const char* parameter_name() const override {
+    return select_.method == SelectMethod::kAci ? "sigma" : "target";
+  }
+  double Parameter(int /*iteration*/) const override {
+    return select_.method == SelectMethod::kAci
+               ? select_.sigma
+               : static_cast<double>(select_.target_dets);
+  }
+  bool InFinalStage(int /*iteration*/, size_t num_dets,
+                    size_t num_added) const override {
+    // Also when nothing is left to add before the target is reached.
+    return select_.method == SelectMethod::kAci ||
+           num_dets >= select_.target_dets || num_added == 0;
+  }
+  bool needs_vectors() const override { return true; }
+
+  std::vector<Det<W>> SelectNew(
+      const SelectionContext<W, S>& context) override {
+    const Comm& comm = context.comm;
+    const size_t num_dets = context.dets.size();
+    const bool by_count = select_.method != SelectMethod::kAci;
+    size_t wanted = 0;
+    if (by_count) {
+      if (num_dets >= select_.target_dets) return {};
+      const size_t grown =
+          static_cast<size_t>(std::ceil(select_.growth * num_dets));
+      wanted = std::min(select_.target_dets, std::max(grown, num_dets + 1)) -
+               num_dets;
+    }
+
+    // asci: only determinants of weight at least this generate candidates.
+    double core_weight = 0.0;
+    if (select_.method == SelectMethod::kAsci && select_.core_dets > 0 &&
+        select_.core_dets < num_dets) {
+      if (comm.is_root()) {
+        std::vector<double> sorted(context.weights.begin(),
+                                   context.weights.end());
+        std::nth_element(sorted.begin(), sorted.begin() + select_.core_dets - 1,
+                         sorted.end(), std::greater<double>());
+        core_weight = sorted[select_.core_dets - 1];
+      }
+      comm.BcastValue(&core_weight);
+    }
+
+    // The scores of the external determinants this rank owns, root by root.
+    std::vector<Scored> scores;
+    if (context.vectors == nullptr) {
+      // No eigenvectors yet: the space holds fewer determinants than roots.
+      // Score with one stand-in state, all determinants with their weight
+      // and the lowest diagonal energy, to get the space started.
+      const std::vector<S> stand_in(context.weights.begin(),
+                                    context.weights.end());
+      double lowest = DiagonalEnergy(context.dets[0], context.ints);
+      for (const Det<W>& det : context.dets) {
+        lowest = std::min(lowest, DiagonalEnergy(det, context.ints));
+      }
+      scores = ScoresOfRoot(context, MakeSpan(stand_in), lowest, core_weight);
+    } else {
+      for (int k = 0; k < context.vectors->num_roots; ++k) {
+        std::vector<Scored> of_root =
+            ScoresOfRoot(context, context.vectors->Root(k), context.energies[k],
+                         core_weight);
+        if (k == 0) {
+          scores = std::move(of_root);
+        } else {
+          scores = Combine(scores, of_root);
+        }
+      }
+    }
+
+    const double threshold = by_count
+                                 ? ThresholdForCount(scores, wanted, comm)
+                                 : ThresholdForSum(scores, select_.sigma, comm);
+    std::vector<Det<W>> chosen;
+    for (const Scored& item : scores) {
+      if (item.score >= threshold) chosen.push_back(item.det);
+    }
+    chosen = comm.GatherAll(chosen);
+    std::sort(chosen.begin(), chosen.end());
+    return chosen;
+  }
+
+ private:
+  struct Scored {
+    Det<W> det;
+    double score;
+  };
+
+  // The scores from one state with the given coefficients and energy,
+  // sorted by determinant.
+  std::vector<Scored> ScoresOfRoot(const SelectionContext<W, S>& context,
+                                   Span<S> coefficients, double energy,
+                                   double core_weight) const {
+    using Term = internal::DetTerm<W, S>;
+    const bool amplitude = select_.method == SelectMethod::kAsci;
+    const double epsilon = select_.epsilon_generate;
+    auto generate = [&](long i, const auto& emit) {
+      const S ci = coefficients[i];
+      if (std::abs(ci) == 0.0 || context.weights[i] < core_weight) return;
+      std::vector<int> occ;
+      context.dets[i].AppendOccupied(&occ);
+      auto visit = [&](const Det<W>& det, S element, bool /*is_large*/) {
+        Term term;
+        term.det = det;
+        term.sum = element * ci;
+        emit(term);
+      };
+      internal::ElementSink<W, decltype(visit), S> sink(
+          context.dets[i], context.ints, 0.0, visit);
+      ForEachExcitation(context.dets[i], occ, epsilon / std::abs(ci),
+                        context.ints, context.heat_bath, context.filter, &sink);
+    };
+    // The merged terms arrive here from several threads; each keeps its own
+    // list.
+    std::vector<std::vector<Scored>> per_thread(omp_get_max_threads());
+    auto contribution = [&](const Term& term, double energy_a,
+                            std::vector<double>* values) {
+      (*values)[0] = 0.0;
+      const double gap = energy_a - energy;
+      if (gap <= 0.0) return;  // not a candidate for a perturbative score
+      const double score =
+          amplitude ? std::abs(term.sum) / gap : std::norm(term.sum) / gap;
+      if (score > 0.0) {
+        per_thread[omp_get_thread_num()].push_back({term.det, score});
+      }
+    };
+    internal::SumOverExternalDets<W, Term>(
+        context.dets.size(), context.sorted_dets, context.ints, 1, 1,
+        context.comm, generate, contribution);
+    std::vector<Scored> all;
+    for (std::vector<Scored>& list : per_thread) {
+      all.insert(all.end(), list.begin(), list.end());
+      list = std::vector<Scored>();
+    }
+    std::sort(all.begin(), all.end(),
+              [](const Scored& a, const Scored& b) { return a.det < b.det; });
+    return all;
+  }
+
+  // Two lists sorted by determinant into one: energies add, amplitudes take
+  // the larger.
+  std::vector<Scored> Combine(const std::vector<Scored>& a,
+                              const std::vector<Scored>& b) const {
+    const bool amplitude = select_.method == SelectMethod::kAsci;
+    std::vector<Scored> out;
+    out.reserve(std::max(a.size(), b.size()));
+    size_t i = 0, j = 0;
+    while (i < a.size() || j < b.size()) {
+      if (j == b.size() || (i < a.size() && a[i].det < b[j].det)) {
+        out.push_back(a[i++]);
+      } else if (i == a.size() || b[j].det < a[i].det) {
+        out.push_back(b[j++]);
+      } else {
+        out.push_back({a[i].det, amplitude ? std::max(a[i].score, b[j].score)
+                                           : a[i].score + b[j].score});
+        ++i;
+        ++j;
+      }
+    }
+    return out;
+  }
+
+  // The smallest and the largest score over all ranks; both zero if there
+  // are no scores.
+  static void Range(const std::vector<Scored>& scores, const Comm& comm,
+                    double* smallest, double* largest) {
+    // Largest score and largest inverse score of this rank.
+    std::vector<double> local(2, 0.0);
+    for (const Scored& item : scores) {
+      local[0] = std::max(local[0], item.score);
+      local[1] = std::max(local[1], 1.0 / item.score);
+    }
+    const std::vector<double> all = comm.GatherAll(local);
+    double max_score = 0.0, max_inverse = 0.0;
+    for (size_t r = 0; r + 1 < all.size(); r += 2) {
+      max_score = std::max(max_score, all[r]);
+      max_inverse = std::max(max_inverse, all[r + 1]);
+    }
+    *largest = max_score;
+    *smallest = max_inverse > 0.0 ? 1.0 / max_inverse : 0.0;
+  }
+
+  // The score such that about `wanted` determinants, over all ranks, lie at
+  // or above it (all of them if there are no more).
+  static double ThresholdForCount(const std::vector<Scored>& scores,
+                                  size_t wanted, const Comm& comm) {
+    double low, high;
+    Range(scores, comm, &low, &high);
+    if (high == 0.0) return 1.0;  // nothing to choose from
+    auto count_at = [&](double threshold) {
+      double count = 0.0;
+      for (const Scored& item : scores) count += item.score >= threshold;
+      comm.Sum(&count, 1);
+      return count;
+    };
+    if (count_at(low) <= static_cast<double>(wanted)) return low;
+    // Invariant: more than `wanted` at `low`, at most `wanted` at `high`.
+    high *= 1.0 + 1e-12;
+    for (int step = 0; step < 100 && high > low * (1.0 + 1e-14); ++step) {
+      const double middle = std::sqrt(low * high);
+      if (count_at(middle) > static_cast<double>(wanted)) {
+        low = middle;
+      } else {
+        high = middle;
+      }
+    }
+    return high;
+  }
+
+  // The largest score t such that the scores below t, over all ranks, sum to
+  // at most `budget`.
+  static double ThresholdForSum(const std::vector<Scored>& scores,
+                                double budget, const Comm& comm) {
+    double low, high;
+    Range(scores, comm, &low, &high);
+    if (high == 0.0) return 1.0;
+    auto sum_below = [&](double threshold) {
+      double sum = 0.0;
+      for (const Scored& item : scores) {
+        if (item.score < threshold) sum += item.score;
+      }
+      comm.Sum(&sum, 1);
+      return sum;
+    };
+    high *= 1.0 + 1e-12;
+    if (sum_below(high) <= budget) return high;  // everything may be left out
+    // Invariant: the sum below `low` fits the budget, that below `high` not.
+    for (int step = 0; step < 100 && high > low * (1.0 + 1e-14); ++step) {
+      const double middle = std::sqrt(low * high);
+      if (sum_below(middle) <= budget) {
+        low = middle;
+      } else {
+        high = middle;
+      }
+    }
+    return low;
+  }
+
+  const SelectInput& select_;
+};
+
 // The selector the input asks for.
 template <int W, typename S>
 std::unique_ptr<Selector<W, S>> MakeSelector(const Input& input) {
   switch (input.select.method) {
     case SelectMethod::kHeatBath:
       return std::make_unique<HeatBathSelector<W, S>>(input.select);
+    case SelectMethod::kCipsi:
+    case SelectMethod::kAsci:
+    case SelectMethod::kAci:
+      return std::make_unique<PtScoreSelector<W, S>>(input.select);
   }
   throw std::logic_error("unknown selection method");
 }
@@ -291,7 +567,6 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
               selector->parameter_name(), "dets", "root", "energy", "davidson",
               "t_sel", "t_ham", "t_dav", "time");
   const double start_time = omp_get_wtime();
-  const int last_schedule_start = selector->final_stage();
   bool finished = false;
   for (int iter = 0; iter < input.select.max_iter && !finished; ++iter) {
     const double epsilon = selector->Parameter(iter);
@@ -304,10 +579,16 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
           ShareWeights(root_vectors, old_size, num_roots, comm);
       const SharedArray<Det<W>> sorted_dets =
           ShareSorted(shared_dets.span(), comm);
+      // The eigenvectors go to all ranks only for selectors that use them.
+      SharedVectors<S> vectors;
+      const bool with_vectors = selector->needs_vectors() && have_vectors;
+      if (with_vectors) vectors = ShareVectors(root_vectors, old_size, comm);
       const SelectionContext<W, S> context{iter,
                                            shared_dets.span(),
                                            sorted_dets.span(),
                                            weights.span(),
+                                           with_vectors ? &vectors : nullptr,
+                                           energies,
                                            ints,
                                            heat_bath,
                                            filter,
@@ -347,7 +628,8 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
     const std::vector<double> previous = energies;
     DavidsonResult result = h.Solve(loose, &root_vectors);
     bool converged_space = false;
-    if (iter >= last_schedule_start && !previous.empty()) {
+    if (selector->InFinalStage(iter, new_size, new_size - old_size) &&
+        !previous.empty()) {
       double change = 0.0;
       for (int k = 0; k < num_roots; ++k) {
         change += std::abs(result.energies[k] - previous[k]) / num_roots;

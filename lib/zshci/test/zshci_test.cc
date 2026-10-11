@@ -1414,6 +1414,149 @@ void TestGroupConnections(const Integrals<Complex>& ints) {
   }
 }
 
+// The selectors that score external determinants by perturbation theory
+// against scores worked out determinant by determinant.
+void TestPtScoreSelection(const Integrals<Complex>& ints) {
+  const int n = ints.num_orbs();
+  const std::vector<Det<1>> dets =
+      ToDets<1>(RandomOccupations(n, ints.num_elec(), 60, 2, 71), 0);
+  std::vector<Det<1>> sorted_dets = dets;
+  std::sort(sorted_dets.begin(), sorted_dets.end());
+  SparseH<Complex> h;
+  std::vector<double> diagonal(dets.size());
+  for (size_t d = 0; d < dets.size(); ++d) {
+    diagonal[d] = DiagonalEnergy(dets[d], ints);
+  }
+  h.AppendDiagonal(diagonal);
+  h.AppendBlock(BuildBlock(MakeSpan(dets), 0, ints, ConnectOptions()));
+  std::vector<std::vector<Complex>> root_vectors =
+      GuessVectors(MakeSpan(dets), h, ints, 2);
+  const std::vector<double> energies =
+      Davidson<Complex>(h, DavidsonOptions(), &root_vectors).energies;
+  const Comm serial;
+  const SharedVectors<Complex> vectors =
+      ShareVectors(root_vectors, dets.size(), serial);
+  const SharedArray<double> weights =
+      ShareWeights(root_vectors, dets.size(), 2, serial);
+
+  // Every determinant one or two excitations from the space, with V_a of
+  // both roots from all determinants of the space.
+  std::set<Det<1>> external;
+  for (const Det<1>& det : dets) {
+    std::vector<int> occ, virt;
+    for (int p = 0; p < n; ++p) (det.Occupied(p) ? occ : virt).push_back(p);
+    for (size_t x = 0; x < occ.size(); ++x) {
+      for (size_t u = 0; u < virt.size(); ++u) {
+        Det<1> single = det;
+        single.Clear(occ[x]);
+        single.Set(virt[u]);
+        external.insert(single);
+        for (size_t y = x + 1; y < occ.size(); ++y) {
+          for (size_t v = u + 1; v < virt.size(); ++v) {
+            Det<1> doubly = single;
+            doubly.Clear(occ[y]);
+            doubly.Set(virt[v]);
+            external.insert(doubly);
+          }
+        }
+      }
+    }
+  }
+  for (const Det<1>& det : dets) external.erase(det);
+  struct Reference {
+    Det<1> det;
+    double energy_score;     // sum over roots of |V|^2 / gap
+    double amplitude_score;  // largest over roots of |V| / gap
+  };
+  std::vector<Reference> reference;
+  for (const Det<1>& det : external) {
+    Reference item{det, 0.0, 0.0};
+    const double energy_a = DiagonalEnergy(det, ints);
+    for (int k = 0; k < 2; ++k) {
+      Complex v(0.0);
+      for (size_t i = 0; i < dets.size(); ++i) {
+        v += Hij(det, dets[i], ints) * root_vectors[k][i];
+      }
+      const double gap = energy_a - energies[k];
+      if (gap <= 0.0) continue;
+      item.energy_score += std::norm(v) / gap;
+      item.amplitude_score = std::max(item.amplitude_score, std::abs(v) / gap);
+    }
+    reference.push_back(item);
+  }
+
+  const HeatBath heat_bath(ints, 0.0);
+  const RestrictedFilter filter(LabelFilter(std::vector<int>(n, 0), 0), {}, n);
+  const SelectionContext<1, Complex> context{0,
+                                             MakeSpan(dets),
+                                             MakeSpan(sorted_dets),
+                                             weights.span(),
+                                             &vectors,
+                                             energies,
+                                             ints,
+                                             heat_bath,
+                                             filter,
+                                             serial};
+
+  // By count: the space grows from 60 to 150 determinants.
+  for (SelectMethod method : {SelectMethod::kCipsi, SelectMethod::kAsci}) {
+    SelectInput select;
+    select.method = method;
+    select.growth = 2.5;
+    select.target_dets = 1000;
+    PtScoreSelector<1, Complex> selector(select);
+    const std::vector<Det<1>> chosen = selector.SelectNew(context);
+    const bool amplitude = method == SelectMethod::kAsci;
+    std::sort(reference.begin(), reference.end(),
+              [&](const Reference& a, const Reference& b) {
+                return amplitude ? a.amplitude_score > b.amplitude_score
+                                 : a.energy_score > b.energy_score;
+              });
+    std::vector<Det<1>> expected;
+    for (size_t k = 0; k < 90; ++k) expected.push_back(reference[k].det);
+    std::sort(expected.begin(), expected.end());
+    Expect(reference.size() > 1000 && chosen == expected,
+           amplitude ? "asci selection takes the determinants of largest "
+                       "first-order amplitude"
+                     : "cipsi selection takes the determinants of largest "
+                       "second-order energy");
+  }
+
+  // By sum: everything except the smallest energies that sum to sigma.
+  {
+    std::sort(reference.begin(), reference.end(),
+              [](const Reference& a, const Reference& b) {
+                return a.energy_score < b.energy_score;
+              });
+    double total = 0.0;
+    for (const Reference& item : reference) total += item.energy_score;
+    SelectInput select;
+    select.method = SelectMethod::kAci;
+    select.sigma = 0.05 * total;
+    std::vector<Det<1>> expected;
+    double left_out = 0.0;
+    for (const Reference& item : reference) {
+      if (item.energy_score <= 0.0) continue;
+      if (left_out + item.energy_score <= select.sigma) {
+        left_out += item.energy_score;
+      } else {
+        expected.push_back(item.det);
+      }
+    }
+    std::sort(expected.begin(), expected.end());
+    PtScoreSelector<1, Complex> selector(select);
+    const std::vector<Det<1>> chosen = selector.SelectNew(context);
+    Expect(expected.size() > 20 && expected.size() + 20 < reference.size() &&
+               chosen == expected,
+           "aci selection leaves out the smallest energies that sum to "
+           "sigma");
+    std::printf(
+        "      %zu candidates, second-order energy %.6f, %zu kept "
+        "with sigma %.6f\n",
+        reference.size(), total, chosen.size(), select.sigma);
+  }
+}
+
 // A real Hamiltonian treated with real numbers and with complex numbers.
 void TestRealScalar(const Integrals<Complex>& ints) {
   const ScalarResults real = SmallCalculation(RealPart<double>(ints), nullptr);
@@ -1477,6 +1620,7 @@ int main(int argc, char** argv) {
     zshci::TestPerturbation(ints);
     zshci::TestSecondOrderLimit(ints);
     zshci::TestGroupConnections(ints);
+    zshci::TestPtScoreSelection(ints);
     zshci::TestRealScalar(ints);
     zshci::TestBlockedIntegrals(ints);
     zshci::TestSpatialIntegrals();

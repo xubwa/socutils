@@ -52,10 +52,33 @@ struct RestrictionInput {
 };
 
 // The kind of selected CI (select.h).
-enum class SelectMethod { kHeatBath };
+//   heat_bath  add D_a when |H(a,i) c_i| > epsilon1 for some D_i ("schedule")
+// The others score every determinant D_a outside the space from its
+// first-order interaction with the wave function, V_a = sum_i H(a,i) c_i:
+//   cipsi  by its second-order energy |V_a|^2 / (E_a - E); the best ones are
+//          added so that the space grows by the factor "growth" per
+//          iteration up to "target_dets"
+//   asci   by its first-order amplitude |V_a| / (E_a - E), V_a summed over
+//          the "core_dets" determinants of largest coefficient only; growth
+//          and target as for cipsi
+//   aci    by its second-order energy; those left out are the smallest ones,
+//          whose energies sum to at most "sigma"
+// None of them removes determinants from the space.
+enum class SelectMethod { kHeatBath, kCipsi, kAsci, kAci };
 
 struct SelectInput {
   SelectMethod method = SelectMethod::kHeatBath;
+  // cipsi, asci: size of the space at which the selection stops, and the
+  // factor by which it grows per iteration.
+  size_t target_dets = 0;
+  double growth = 2.0;
+  // asci: number of determinants that generate candidates; 0 means all.
+  size_t core_dets = 0;
+  // aci: the energy left out, in Hartree.
+  double sigma = 0.0;
+  // cipsi, asci, aci: only terms with |H(a,i) c_i| above this enter V_a
+  // (0: all single and double excitations).
+  double epsilon_generate = 0.0;
   // (first iteration, epsilon1) pairs: from that iteration on, a determinant
   // D_a is added when |H(a,i) c_i| > epsilon1 for some D_i in the space.
   std::vector<std::pair<int, double>> schedule;

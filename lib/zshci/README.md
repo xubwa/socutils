@@ -91,6 +91,26 @@ change one is an error if it exceeds `"symmetry_tolerance"` (default 1e-8) and
 is dropped otherwise. The two-electron integrals are stored in the blocks the
 labels define, so labels also save memory.
 
+`"select": {"method": ...}` chooses the kind of selected CI. The loop is the
+same for all (`src/select.h`); a selector class says which determinants come
+in:
+
+| method | adds | controlled by |
+|---|---|---|
+| `"heat_bath"` (default) | D_a with \|H(a,i) c_i\| > epsilon1 for some D_i in the space | `"schedule"` |
+| `"cipsi"` | the D_a of largest second-order energy \|V_a\|^2 / (E_a - E), V_a = sum_i H(a,i) c_i | `"target_dets"`, `"growth"` (factor per iteration, default 2) |
+| `"asci"` | the D_a of largest first-order amplitude \|V_a\| / (E_a - E), V_a from the `"core_dets"` determinants of largest coefficient | `"target_dets"`, `"growth"`, `"core_dets"` |
+| `"aci"` | all D_a except the smallest second-order energies that sum to `"sigma"` | `"sigma"` |
+
+The last three score every determinant outside the space, which costs about
+one deterministic perturbation-theory pass per iteration and root;
+`"epsilon_generate"` restricts V_a to the terms above it. None of them
+removes determinants from the space, unlike the published ASCI and ACI. On N2
+CAS(10e,12o) at equal size the cipsi and asci spaces are lower in energy than
+the heat-bath one (0.81 and 0.83 against 1.30 mHartree above full CI at 1635
+determinants), and the aci error follows sigma (0.93, 0.096 and 0.0096
+mHartree for sigma = 1, 0.1 and 0.01 mHartree).
+
 `"connect": {"method": ...}` chooses how connected determinants are found
 (`src/connect.h`): `"groups"`, the default, divides the spinors into two
 groups (`"group_a"`, default the even ones) and works from tables of the

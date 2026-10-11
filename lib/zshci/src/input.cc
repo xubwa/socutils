@@ -97,7 +97,14 @@ Json ToJson(const Input& in) {
                                  {"max", restriction.max_elec}});
   }
   if (in.mode == Mode::kSelect) {
-    j["select"] = {{"method", "heat_bath"},
+    static const char* const kMethodNames[] = {"heat_bath", "cipsi", "asci",
+                                               "aci"};
+    j["select"] = {{"method", kMethodNames[static_cast<int>(in.select.method)]},
+                   {"target_dets", in.select.target_dets},
+                   {"growth", in.select.growth},
+                   {"core_dets", in.select.core_dets},
+                   {"sigma", in.select.sigma},
+                   {"epsilon_generate", in.select.epsilon_generate},
                    {"schedule", in.select.schedule},
                    {"max_iter", in.select.max_iter},
                    {"energy_tol", in.select.energy_tol},
@@ -254,32 +261,66 @@ Input ParseInput(const std::string& text) {
     ObjectReader sel(top.At("select"), "select");
     std::string method = "heat_bath";
     sel.Get("method", &method);
-    if (method != "heat_bath") {
-      sel.Fail("method", "must be \"heat_bath\"");
+    if (method == "heat_bath") {
+      in.select.method = SelectMethod::kHeatBath;
+    } else if (method == "cipsi") {
+      in.select.method = SelectMethod::kCipsi;
+    } else if (method == "asci") {
+      in.select.method = SelectMethod::kAsci;
+    } else if (method == "aci") {
+      in.select.method = SelectMethod::kAci;
+    } else {
+      sel.Fail("method",
+               "must be \"heat_bath\", \"cipsi\", \"asci\" or "
+               "\"aci\"");
     }
-    in.select.method = SelectMethod::kHeatBath;
     sel.Get("schedule", &in.select.schedule);
     sel.Get("max_iter", &in.select.max_iter);
     sel.Get("energy_tol", &in.select.energy_tol);
     sel.Get("davidson_tol_loose", &in.select.davidson_tol_loose);
     sel.Get("integral_threshold", &in.select.integral_threshold);
+    sel.Get("target_dets", &in.select.target_dets);
+    sel.Get("growth", &in.select.growth);
+    sel.Get("core_dets", &in.select.core_dets);
+    sel.Get("sigma", &in.select.sigma);
+    sel.Get("epsilon_generate", &in.select.epsilon_generate);
     sel.CheckNoUnknownKeys();
 
-    if (in.select.schedule.empty() || in.select.schedule[0].first != 0) {
-      sel.Fail("schedule", "must be [[0, epsilon1], [iteration, epsilon1], "
-                           "...]");
-    }
-    int previous = -1;
-    for (const std::pair<int, double>& entry : in.select.schedule) {
-      if (entry.first <= previous || entry.second <= 0.0) {
-        sel.Fail("schedule", "needs increasing iterations and positive "
-                             "epsilon1");
+    if (in.select.method == SelectMethod::kHeatBath) {
+      if (in.select.schedule.empty() || in.select.schedule[0].first != 0) {
+        sel.Fail("schedule",
+                 "must be [[0, epsilon1], [iteration, epsilon1], "
+                 "...]");
       }
-      previous = entry.first;
-    }
-    if (in.select.max_iter == 0) in.select.max_iter = previous + 6;
-    if (in.select.max_iter <= previous) {
-      sel.Fail("max_iter", "must exceed the last iteration of the schedule");
+      int previous = -1;
+      for (const std::pair<int, double>& entry : in.select.schedule) {
+        if (entry.first <= previous || entry.second <= 0.0) {
+          sel.Fail("schedule",
+                   "needs increasing iterations and positive "
+                   "epsilon1");
+        }
+        previous = entry.first;
+      }
+      if (in.select.max_iter == 0) in.select.max_iter = previous + 6;
+      if (in.select.max_iter <= previous) {
+        sel.Fail("max_iter", "must exceed the last iteration of the schedule");
+      }
+    } else {
+      if (!in.select.schedule.empty()) {
+        sel.Fail("schedule", "belongs to the method \"heat_bath\"");
+      }
+      if (in.select.epsilon_generate < 0.0) {
+        sel.Fail("epsilon_generate", "must not be negative");
+      }
+      if (in.select.method == SelectMethod::kAci) {
+        if (in.select.sigma <= 0.0) sel.Fail("sigma", "must be positive");
+      } else {
+        if (in.select.target_dets == 0) {
+          sel.Fail("target_dets", "must be given");
+        }
+        if (in.select.growth <= 1.0) sel.Fail("growth", "must exceed 1");
+      }
+      if (in.select.max_iter == 0) in.select.max_iter = 50;
     }
   }
 
