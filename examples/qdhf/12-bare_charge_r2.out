@@ -1,0 +1,4 @@
+HF + bare charge Z=2 on the +z axis (H side): R^2 dE_spurious (a.u.), c^2 and c^4 scaled
+atom1e   cc-pVDZ              R=160:  2.268250e-06  R=320:  2.269375e-06   c^2*:  4.261629e-02  c^4*:  800.28547  (12 s)
+atom1e   cc-pVTZ              R=160:  2.941855e-07  R=320:  2.945193e-07   c^2*:  5.530738e-03  c^4*:  103.86098  (79 s)
+atom1e   aug-cc-pVTZ          R=160:  1.716478e-08  R=320:  1.709974e-08   c^2*:  3.211138e-04  c^4*:  6.03015  (320 s)
