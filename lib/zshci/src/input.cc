@@ -97,7 +97,8 @@ Json ToJson(const Input& in) {
                                  {"max", restriction.max_elec}});
   }
   if (in.mode == Mode::kSelect) {
-    j["select"] = {{"schedule", in.select.schedule},
+    j["select"] = {{"method", "heat_bath"},
+                   {"schedule", in.select.schedule},
                    {"max_iter", in.select.max_iter},
                    {"energy_tol", in.select.energy_tol},
                    {"davidson_tol_loose", in.select.davidson_tol_loose},
@@ -251,6 +252,12 @@ Input ParseInput(const std::string& text) {
   if (in.mode == Mode::kSelect) {
     if (!top.Has("select")) top.Fail("select", "is required in select mode");
     ObjectReader sel(top.At("select"), "select");
+    std::string method = "heat_bath";
+    sel.Get("method", &method);
+    if (method != "heat_bath") {
+      sel.Fail("method", "must be \"heat_bath\"");
+    }
+    in.select.method = SelectMethod::kHeatBath;
     sel.Get("schedule", &in.select.schedule);
     sel.Get("max_iter", &in.select.max_iter);
     sel.Get("energy_tol", &in.select.energy_tol);

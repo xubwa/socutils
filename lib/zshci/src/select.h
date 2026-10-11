@@ -1,10 +1,18 @@
-// "select" mode: heat-bath selected configuration interaction.
+// "select" mode: selected configuration interaction.
 //
-// Starting from the determinants of the input, each iteration adds every
-// determinant D_a with |H(a,i) c_i| > epsilon1 for some D_i already in the
-// space, where c_i is the coefficient of D_i (the root-mean-square over the
-// roots times sqrt(nroots)), and diagonalizes the Hamiltonian in the enlarged
-// space.
+// Starting from the determinants of the input, each iteration asks a
+// selector which determinants to add and diagonalizes the Hamiltonian in the
+// enlarged space. The loop (RunSelect) is the same for every kind of
+// selected CI; what differs between them is the selector, a class derived
+// from Selector that says which determinants come in. The heat-bath
+// selector adds every determinant D_a with |H(a,i) c_i| > epsilon1 for some
+// D_i already in the space, where c_i is the coefficient of D_i (the
+// root-mean-square over the roots times sqrt(nroots)).
+//
+// Selectors, like everything here, are templates in the number of words of
+// a determinant and in the number type, so one selector serves real and
+// complex, spinor and spatial-orbital calculations; which selector runs is
+// decided when the program runs, through a virtual call once per iteration.
 
 #ifndef ZSHCI_SRC_SELECT_H_
 #define ZSHCI_SRC_SELECT_H_
@@ -15,6 +23,7 @@
 #include <cmath>
 #include <cstdio>
 #include <iterator>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -142,6 +151,77 @@ SharedArray<double> ShareWeights(
   return weights;
 }
 
+// What a selector is given in one iteration. Everything is the same on every
+// rank.
+template <int W, typename S>
+struct SelectionContext {
+  int iteration;
+  // The determinants of the space, and the same sorted.
+  Span<Det<W>> dets;
+  Span<Det<W>> sorted_dets;
+  // For every determinant, the root-sum-square of its coefficients over the
+  // roots (see ShareWeights).
+  Span<double> weights;
+  const Integrals<S>& ints;
+  const HeatBath& heat_bath;
+  const RestrictedFilter& filter;
+  const Comm& comm;
+};
+
+// One kind of selected CI: the rule by which the variational space grows.
+template <int W, typename S>
+class Selector {
+ public:
+  virtual ~Selector() = default;
+
+  // The quantity that controls the selection in an iteration, and its name,
+  // for the progress table.
+  virtual const char* parameter_name() const = 0;
+  virtual double Parameter(int iteration) const = 0;
+  // The first iteration from which the parameter no longer changes; the
+  // calculation can only be called converged from there on.
+  virtual int final_stage() const = 0;
+
+  // Collective: the determinants to add, sorted, none of them in the space
+  // yet, the same list on every rank.
+  virtual std::vector<Det<W>> SelectNew(
+      const SelectionContext<W, S>& context) = 0;
+};
+
+// Heat-bath selection with the epsilon1 schedule of the input.
+template <int W, typename S>
+class HeatBathSelector : public Selector<W, S> {
+ public:
+  explicit HeatBathSelector(const SelectInput& select) : select_(select) {}
+
+  const char* parameter_name() const override { return "epsilon1"; }
+  double Parameter(int iteration) const override {
+    return select_.Epsilon(iteration);
+  }
+  int final_stage() const override { return select_.schedule.back().first; }
+
+  std::vector<Det<W>> SelectNew(
+      const SelectionContext<W, S>& context) override {
+    return SelectNewDeterminants(
+        context.dets, context.sorted_dets, context.weights,
+        select_.Epsilon(context.iteration), context.ints, context.heat_bath,
+        context.filter, context.comm);
+  }
+
+ private:
+  const SelectInput& select_;
+};
+
+// The selector the input asks for.
+template <int W, typename S>
+std::unique_ptr<Selector<W, S>> MakeSelector(const Input& input) {
+  switch (input.select.method) {
+    case SelectMethod::kHeatBath:
+      return std::make_unique<HeatBathSelector<W, S>>(input.select);
+  }
+  throw std::logic_error("unknown selection method");
+}
+
 template <int W, typename S>
 void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
   const int num_orbs = ints.num_orbs();
@@ -206,14 +286,15 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
 
   // t_sel, t_ham and t_dav are the seconds spent in this iteration on the
   // selection, the Hamiltonian and the eigensolver.
+  const std::unique_ptr<Selector<W, S>> selector = MakeSelector<W, S>(input);
   std::printf("%5s %10s %12s %5s %20s %9s %8s %8s %8s %9s\n", "iter",
-              "epsilon1", "dets", "root", "energy", "davidson", "t_sel",
-              "t_ham", "t_dav", "time");
+              selector->parameter_name(), "dets", "root", "energy", "davidson",
+              "t_sel", "t_ham", "t_dav", "time");
   const double start_time = omp_get_wtime();
-  const int last_schedule_start = input.select.schedule.back().first;
+  const int last_schedule_start = selector->final_stage();
   bool finished = false;
   for (int iter = 0; iter < input.select.max_iter && !finished; ++iter) {
-    const double epsilon = input.select.Epsilon(iter);
+    const double epsilon = selector->Parameter(iter);
     const size_t old_size = shared_dets.size();
 
     const double select_start = omp_get_wtime();
@@ -223,9 +304,15 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
           ShareWeights(root_vectors, old_size, num_roots, comm);
       const SharedArray<Det<W>> sorted_dets =
           ShareSorted(shared_dets.span(), comm);
-      fresh = SelectNewDeterminants(shared_dets.span(), sorted_dets.span(),
-                                    weights.span(), epsilon, ints, heat_bath,
-                                    filter, comm);
+      const SelectionContext<W, S> context{iter,
+                                           shared_dets.span(),
+                                           sorted_dets.span(),
+                                           weights.span(),
+                                           ints,
+                                           heat_bath,
+                                           filter,
+                                           comm};
+      fresh = selector->SelectNew(context);
     }
     const double build_start = omp_get_wtime();
 
@@ -233,7 +320,7 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
     if (new_size < static_cast<size_t>(num_roots)) {
       throw std::runtime_error(
           "the space holds fewer determinants than roots; give more "
-          "starting determinants or a smaller epsilon1");
+          "starting determinants or select more");
     }
     if (!fresh.empty()) {
       if (comm.is_root()) {

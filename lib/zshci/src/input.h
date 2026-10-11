@@ -51,7 +51,11 @@ struct RestrictionInput {
   int max_elec = 0;
 };
 
+// The kind of selected CI (select.h).
+enum class SelectMethod { kHeatBath };
+
 struct SelectInput {
+  SelectMethod method = SelectMethod::kHeatBath;
   // (first iteration, epsilon1) pairs: from that iteration on, a determinant
   // D_a is added when |H(a,i) c_i| > epsilon1 for some D_i in the space.
   std::vector<std::pair<int, double>> schedule;
