@@ -113,7 +113,11 @@ class GroupStringTables {
         root_.sorted[group].resize(num_elec_ + 1);
         num_old[group].resize(num_elec_ + 1, 0);
       }
-      // Where the strings of each count start among all strings of a group.
+      // Where the strings of each count start among all strings of a group;
+      // the lists held so far are laid out by the previous places.
+      const std::vector<uint64_t> old_base[2] = {
+          first_new == 0 ? std::vector<uint64_t>() : base_[0],
+          first_new == 0 ? std::vector<uint64_t>() : base_[1]};
       for (int group = 0; group < 2; ++group) {
         base_[group].assign(1, 0);
         for (const std::vector<Det<W>>& strings : root_.strings[group]) {
@@ -125,8 +129,8 @@ class GroupStringTables {
       for (int group = 0; group < 2; ++group) {
         GroupDets(group, &det_start[group], &det_other[group],
                   &det_index[group]);
-        UpdateRelated(group, num_old[group]);
-        Flatten(group, related_start[group], related_list[group]);
+        UpdateRelated(group, num_old[group], old_base[group],
+                      related_start[group], related_list[group]);
       }
     }
     comm_.Bcast(&base_[0]);
@@ -202,12 +206,6 @@ class GroupStringTables {
       for (int r = 0; r < kNumRelations; ++r) {
         m.shared += related_start_[group][r].size() * sizeof(uint64_t) +
                     related_list_[group][r].size() * sizeof(uint32_t);
-        for (const auto& part : root_.related_start[group][r]) {
-          m.kept += part.size() * sizeof(uint64_t);
-        }
-        for (const auto& part : root_.related_list[group][r]) {
-          m.kept += part.size() * sizeof(uint32_t);
-        }
       }
       m.kept += root_.string_of_det[group].size() * sizeof(uint32_t);
       for (const auto& part : root_.strings[group]) {
@@ -552,7 +550,16 @@ class GroupStringTables {
   // nothing else. Keys with electrons taken out of the longer string are
   // only made when shorter strings exist at all; if new strings change
   // that, the keys of this group are made afresh.
-  void UpdateRelated(int group, std::vector<size_t> num_old) {
+  //
+  // The lists are written to start[r] and list[r] for every relation r, laid
+  // out as the ranks hold them: the lists of all electron counts one after
+  // the other, a string being found at its place among all strings of the
+  // group. What was there is taken from the arrays held so far, which are
+  // laid out by `old_base`. A relation without any entry gets no arrays.
+  void UpdateRelated(int group, std::vector<size_t> num_old,
+                     const std::vector<uint64_t>& old_base,
+                     std::vector<uint64_t>* start,
+                     std::vector<uint32_t>* list) {
     const std::vector<std::vector<Det<W>>>& strings = root_.strings[group];
     const int num_counts = static_cast<int>(strings.size());
     int min_count = num_counts;
@@ -565,13 +572,11 @@ class GroupStringTables {
     const bool transfers = max_count > min_count;
     std::vector<std::vector<Shortened>>& kept = root_.keys[group];
     const size_t num_parts = 8 * static_cast<size_t>(omp_get_max_threads());
-    if (kept.size() != num_parts || transfers != root_.transfers[group] ||
-        (transfers && min_count != root_.min_count[group])) {
+    const bool afresh = kept.size() != num_parts ||
+                        transfers != root_.transfers[group] ||
+                        (transfers && min_count != root_.min_count[group]);
+    if (afresh) {
       kept.assign(num_parts, std::vector<Shortened>());
-      for (int r = 0; r < kNumRelations; ++r) {
-        root_.related_start[group][r].clear();
-        root_.related_list[group][r].clear();
-      }
       num_old.assign(num_counts, 0);
     }
     root_.transfers[group] = transfers;
@@ -721,117 +726,92 @@ class GroupStringTables {
       max_transient_bytes_ = std::max(max_transient_bytes_, transient);
     }
 
-    // The lists, one set per relation and electron count: what was there,
-    // then the new pairs, sorted where a list gained entries. Several
-    // threads may meet at one string.
-    const int num_lists = transfers ? kNumRelations : 1;
+    // The lists: what was there, then the new pairs, sorted where a list
+    // gained entries. Several threads may meet at one string.
+    const std::vector<uint64_t>& base = base_[group];
+    const size_t num_slots = base.back();
     const long num_chunks = static_cast<long>(links.size());
-    for (int r = 0; r < kNumRelations; ++r) {
-      root_.related_start[group][r].resize(r < num_lists ? num_counts : 0);
-      root_.related_list[group][r].resize(r < num_lists ? num_counts : 0);
-    }
-    // added[r][c][s]: new entries of string s of count c for relation r.
-    std::vector<std::vector<std::vector<uint64_t>>> added(num_lists);
-    std::vector<std::vector<std::vector<uint64_t>>> cursor(num_lists);
-    for (int r = 0; r < num_lists; ++r) {
-      added[r].resize(num_counts);
-      cursor[r].resize(num_counts);
-      for (int c = 0; c < num_counts; ++c) {
-        added[r][c].assign(strings[c].size(), 0);
-      }
-    }
+    const int num_lists = transfers ? kNumRelations : 1;
+    // added[r][slot]: new entries of the string at `slot` for relation r.
+    std::vector<uint64_t> added[kNumRelations];
+    std::vector<uint64_t> cursor[kNumRelations];
+    for (int r = 0; r < num_lists; ++r) added[r].assign(num_slots, 0);
 #pragma omp parallel for schedule(dynamic, 1)
     for (long k = 0; k < num_chunks; ++k) {
       for (const Link& link : links[k]) {
 #pragma omp atomic
-        ++added[link.relation][link.from_count][link.from];
+        ++added[link.relation][base[link.from_count] + link.from];
       }
     }
-    // One list set per relation and count; the sets are independent.
-    const long num_sets = static_cast<long>(num_lists) * num_counts;
-#pragma omp parallel for schedule(dynamic, 1)
-    for (long set = 0; set < num_sets; ++set) {
-      const int r = static_cast<int>(set / num_counts);
-      const int c = static_cast<int>(set % num_counts);
-      std::vector<uint64_t>& start = root_.related_start[group][r][c];
-      std::vector<uint32_t>& list = root_.related_list[group][r][c];
-      const size_t num_strings = strings[c].size();
-      const size_t had = start.empty() ? 0 : start.size() - 1;
-      std::vector<uint64_t> new_start(num_strings + 1, 0);
-      for (size_t s = 0; s < num_strings; ++s) {
-        const uint64_t before = s < had ? start[s + 1] - start[s] : 0;
-        new_start[s + 1] = new_start[s] + before + added[r][c][s];
-      }
-      std::vector<uint32_t> new_list(new_start[num_strings]);
-      cursor[r][c].resize(num_strings);
-      for (size_t s = 0; s < num_strings; ++s) {
-        const uint64_t before = s < had ? start[s + 1] - start[s] : 0;
-        if (before > 0) {
-          std::copy(list.begin() + start[s], list.begin() + start[s + 1],
-                    new_list.begin() + new_start[s]);
+    // The place a string had before, or none.
+    auto old_slot = [&](int c, size_t s, uint64_t* slot) {
+      if (afresh || static_cast<size_t>(c) + 1 >= old_base.size()) return false;
+      if (s >= old_base[c + 1] - old_base[c]) return false;
+      *slot = old_base[c] + s;
+      return true;
+    };
+    for (int r = 0; r < kNumRelations; ++r) {
+      start[r].clear();
+      list[r].clear();
+      if (r >= num_lists) continue;
+      const SharedArray<uint64_t>& old_start = related_start_[group][r];
+      const SharedArray<uint32_t>& old_list = related_list_[group][r];
+      const bool had_any = old_start.size() > 0;
+      start[r].assign(num_slots + 1, 0);
+      for (int c = 0; c < num_counts; ++c) {
+        for (size_t s = 0; s < strings[c].size(); ++s) {
+          const size_t slot = base[c] + s;
+          uint64_t before = 0;
+          uint64_t old;
+          if (had_any && old_slot(c, s, &old)) {
+            before = old_start[old + 1] - old_start[old];
+          }
+          start[r][slot + 1] = start[r][slot] + before + added[r][slot];
         }
-        cursor[r][c][s] = new_start[s] + before;
       }
-      start = std::move(new_start);
-      list = std::move(new_list);
+      if (start[r][num_slots] == 0 && r != kSingle) {
+        start[r].clear();
+        continue;
+      }
+      list[r].resize(start[r][num_slots]);
+      cursor[r].assign(num_slots, 0);
+#pragma omp parallel for schedule(dynamic, 1)
+      for (int c = 0; c < num_counts; ++c) {
+        for (size_t s = 0; s < strings[c].size(); ++s) {
+          const size_t slot = base[c] + s;
+          uint64_t before = 0;
+          uint64_t old;
+          if (had_any && old_slot(c, s, &old)) {
+            before = old_start[old + 1] - old_start[old];
+            std::copy(old_list.data() + old_start[old],
+                      old_list.data() + old_start[old + 1],
+                      list[r].begin() + start[r][slot]);
+          }
+          cursor[r][slot] = start[r][slot] + before;
+        }
+      }
     }
 #pragma omp parallel for schedule(dynamic, 1)
     for (long k = 0; k < num_chunks; ++k) {
       for (const Link& link : links[k]) {
         uint64_t slot;
 #pragma omp atomic capture
-        slot = cursor[link.relation][link.from_count][link.from]++;
-        root_.related_list[group][link.relation][link.from_count][slot] =
-            link.to;
+        slot = cursor[link.relation][base[link.from_count] + link.from]++;
+        list[link.relation][slot] = link.to;
       }
     }
 #pragma omp parallel
     {
       for (int r = 0; r < num_lists; ++r) {
-        for (int c = 0; c < num_counts; ++c) {
-          const std::vector<uint64_t>& start = root_.related_start[group][r][c];
-          std::vector<uint32_t>& list = root_.related_list[group][r][c];
-          const long count = static_cast<long>(strings[c].size());
+        if (list[r].empty()) continue;
+        const long count = static_cast<long>(num_slots);
 #pragma omp for schedule(dynamic, 256) nowait
-          for (long s = 0; s < count; ++s) {
-            if (added[r][c][s] == 0) continue;
-            std::sort(list.begin() + start[s], list.begin() + start[s + 1]);
-          }
+        for (long slot = 0; slot < count; ++slot) {
+          if (added[r][slot] == 0) continue;
+          std::sort(list[r].begin() + start[r][slot],
+                    list[r].begin() + start[r][slot + 1]);
         }
       }
-    }
-  }
-
-  // The relation lists of one group as the ranks hold them: for every
-  // relation, the lists of all electron counts one after the other, a
-  // string being found at its place among all strings of the group. A
-  // relation without any entry gets no arrays.
-  void Flatten(int group, std::vector<uint64_t>* start,
-               std::vector<uint32_t>* list) const {
-    const size_t num_slots = base_[group].back();
-    for (int r = 0; r < kNumRelations; ++r) {
-      start[r].clear();
-      list[r].clear();
-      const auto& starts = root_.related_start[group][r];
-      const auto& lists = root_.related_list[group][r];
-      size_t total = 0;
-      for (const std::vector<uint32_t>& part : lists) total += part.size();
-      if (total == 0 && r != kSingle) continue;
-      start[r].assign(num_slots + 1, 0);
-      list[r].resize(total);
-      uint64_t offset = 0;
-      for (size_t c = 0; c + 1 < base_[group].size(); ++c) {
-        const size_t num_strings = base_[group][c + 1] - base_[group][c];
-        const bool has = c < starts.size() && !starts[c].empty();
-        for (size_t s = 0; s < num_strings; ++s) {
-          start[r][base_[group][c] + s] = offset + (has ? starts[c][s] : 0);
-        }
-        if (has) {
-          std::copy(lists[c].begin(), lists[c].end(), list[r].begin() + offset);
-          offset += lists[c].size();
-        }
-      }
-      start[r][num_slots] = offset;
     }
   }
 
@@ -855,10 +835,6 @@ class GroupStringTables {
     // What the keys were made for.
     bool transfers[2] = {false, false};
     int min_count[2] = {0, 0};
-    // By relation and count: where the list of each string starts, and the
-    // lists.
-    std::vector<std::vector<uint64_t>> related_start[2][kNumRelations];
-    std::vector<std::vector<uint32_t>> related_list[2][kNumRelations];
   };
 
   const Comm& comm_;
