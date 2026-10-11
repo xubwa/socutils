@@ -21,12 +21,16 @@ F1  4c MO integrals assembled from sph derivative classes == pyscf spinor
 F2  anchor (a) for the reference and the conventional pair part: DHF and
     no-pair DHF-MP2 at c = 10 c0, 20 c0, Richardson in 1/c^2 -> the
     non-relativistic HF / MP2 of stage 2 (same basis)
+F3  RKB complete space "1" (dc_space): orthonormal, occupied block of the
+    Fock matrix = DHF orbital energies, and the no-pair CABS singles at
+    c -> infinity == stage-2 CABS singles (this anchor rejected the
+    block-diagonal definition of C+-, see dc_space docstring)
 '''
 
 import unittest
 import numpy
 from pyscf import gto, scf, mp
-from socutils.rf12 import fourc
+from socutils.rf12 import fourc, dc_space
 from socutils.rf12.nr import gbs
 
 C0 = 137.035999084
@@ -66,6 +70,23 @@ class FourC(unittest.TestCase):
                     e[f] = (mf.e_tot, fourc.mp2(mf, C0 * f))
             for i, ref in ((0, rhf.e_tot), (1, emp2)):
                 self.assertAlmostEqual((4 * e[20][i] - e[10][i]) / 3, ref, 7)
+
+
+    def test_f3_complete_space_singles(self):
+        import json, os
+        ref = json.load(open(os.path.join(os.path.dirname(__file__), 'data', 'psi4_aug-cc-pvdz.json')))
+        for name, tol in (('He', 9), ('Ne', 7)):
+            mol = gto.M(atom=name + ' 0 0 0', unit='bohr', basis=gbs.basis('aug-cc-pvdz', [name]), verbose=0)
+            es = {}
+            for f in (10, 20):
+                with fourc.light_speed(C0 * f):
+                    mf = scf.DHF(mol)
+                    mf.conv_tol = 1e-11
+                    mf.kernel()
+                sp = dc_space.DCSpace(mf, gbs.basis('aug-cc-pvdz-optri', [name]), C0 * f)
+                self.assertLess(sp.metric_error, 1e-9)
+                es[f] = sp.cabs_singles()
+            self.assertAlmostEqual((4 * es[20] - es[10]) / 3, ref[name + '_ae']['F12 CABS CORRECTION ENERGY'], tol)
 
 
 if __name__ == '__main__':
