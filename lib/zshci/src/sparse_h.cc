@@ -68,12 +68,16 @@ void SparseH<S>::AppendBlocks(std::vector<CsrBlock<S>> blocks) {
 }
 
 // Splits the rows into one contiguous segment per thread such that every
-// segment touches about the same number of stored elements. An element (i, j)
-// counts for both i and j, which is the work Multiply does for a segment.
+// segment has about the same work in Multiply: with one sweep the elements
+// of its rows, with two sweeps an element (j, i) counts for both j and i.
 template <typename S>
 void SparseH<S>::PartitionRows() {
   const size_t n = dim_;
   const int num_threads = omp_get_max_threads();
+  one_sweep_ =
+      num_threads > 1 && product_ != Product::kTwoSweeps &&
+      (product_ == Product::kOneSweep ||
+       4 * static_cast<size_t>(num_threads) * n * sizeof(S) <= element_bytes());
   segment_.assign(num_threads + 1, n);
   segment_[0] = 0;
   if (num_threads > 1) {
@@ -85,6 +89,7 @@ void SparseH<S>::PartitionRows() {
         const uint64_t count = block.row_ptr[r + 1] - block.row_ptr[r];
 #pragma omp atomic
         weight[block.row[r]] += count;
+        if (one_sweep_) continue;
         for (uint64_t k = block.row_ptr[r]; k < block.row_ptr[r + 1]; ++k) {
 #pragma omp atomic
           ++weight[block.col[k]];
@@ -103,6 +108,10 @@ void SparseH<S>::PartitionRows() {
     }
   }
 
+  // The split tables serve the two-sweep product only.
+  splits_.clear();
+  if (one_sweep_) return;
+  scratch_ = RawArray<S>();
   splits_.resize(blocks_.size());
   for (size_t b = 0; b < blocks_.size(); ++b) {
     BuildSplitTable(blocks_[b], &splits_[b]);
@@ -149,6 +158,55 @@ void SparseH<S>::BuildSplitTable(const CsrBlock<S>& block,
 template <typename S>
 void SparseH<S>::Multiply(const S* x, S* y) const {
   const int num_segments = static_cast<int>(segment_.size()) - 1;
+  if (one_sweep_) {
+    const size_t n = dim_;
+    if (scratch_.size() != static_cast<size_t>(num_segments) * n) {
+      scratch_ = RawArray<S>(static_cast<size_t>(num_segments) * n);
+    }
+#pragma omp parallel for schedule(static, 1)
+    for (int t = 0; t < num_segments; ++t) {
+      const size_t begin = segment_[t];
+      const size_t end = segment_[t + 1];
+      // The columns of this thread's rows lie below `end`.
+      S* const mine = scratch_.data() + static_cast<size_t>(t) * n;
+      std::fill(mine, mine + end, S(0.0));
+      for (size_t i = begin; i < end; ++i) {
+        y[i] = apply_diagonal_ ? diagonal_[i] * x[i] : S(0.0);
+      }
+      for (const CsrBlock<S>& block : blocks_) {
+        const DetIndex* const rows = block.row.data();
+        const size_t num_rows = block.num_stored_rows();
+        const size_t first_row =
+            std::lower_bound(rows, rows + num_rows, begin) - rows;
+        const size_t last_row =
+            std::lower_bound(rows + first_row, rows + num_rows, end) - rows;
+        const DetIndex* const col = block.col.data();
+        const S* const val = block.val.data();
+        for (size_t r = first_row; r < last_row; ++r) {
+          const S xj = x[rows[r]];
+          S sum(0.0);
+          for (uint64_t k = block.row_ptr[r]; k < block.row_ptr[r + 1]; ++k) {
+            sum += val[k] * x[col[k]];
+            mine[col[k]] += Conj(val[k]) * xj;
+          }
+          y[rows[r]] += sum;
+        }
+      }
+    }
+    // Element i received contributions from the threads whose range ends
+    // above i: its owner and those after it.
+#pragma omp parallel for schedule(static, 1)
+    for (int t = 0; t < num_segments; ++t) {
+      for (size_t i = segment_[t]; i < segment_[t + 1]; ++i) {
+        S sum(0.0);
+        for (int u = t; u < num_segments; ++u) {
+          sum += scratch_[static_cast<size_t>(u) * n + i];
+        }
+        y[i] += sum;
+      }
+    }
+    return;
+  }
 #pragma omp parallel for schedule(static, 1)
   for (int t = 0; t < num_segments; ++t) {
     const size_t begin = segment_[t];

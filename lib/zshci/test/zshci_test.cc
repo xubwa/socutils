@@ -1359,6 +1359,34 @@ void TestGroupConnections(const Integrals<Complex>& ints) {
     }
     stored.AppendDiagonal(diagonal);
     stored.AppendBlocks(BuildBlocks(MakeSpan(dets), 0, ints, options));
+    // Both ways of multiplying the stored matrix against the serial one.
+    if (threshold < 0.0) {
+      std::vector<Complex> x(dets.size()), y(dets.size()), y_ref(dets.size());
+      for (size_t i = 0; i < x.size(); ++i) {
+        x[i] = Complex(std::cos(0.7 * i + 0.3), std::sin(2.1 * i));
+      }
+      stored.MultiplyReference(x.data(), y_ref.data());
+      double max_diff[2] = {0.0, 0.0};
+      double largest = 0.0;
+      int which = 0;
+      for (SparseH<Complex>::Product product :
+           {SparseH<Complex>::Product::kOneSweep,
+            SparseH<Complex>::Product::kTwoSweeps}) {
+        stored.set_product(product);
+        stored.Multiply(x.data(), y.data());
+        for (size_t i = 0; i < x.size(); ++i) {
+          max_diff[which] =
+              std::max(max_diff[which], std::abs(y[i] - y_ref[i]));
+          largest = std::max(largest, std::abs(y_ref[i]));
+        }
+        ++which;
+      }
+      stored.set_product(SparseH<Complex>::Product::kAutomatic);
+      Expect(largest > 1.0 && max_diff[0] < 1e-12 * largest &&
+                 max_diff[1] < 1e-12 * largest,
+             "the one-sweep and the two-sweep product of the stored matrix "
+             "equal the serial one");
+    }
     const internal::GroupStringTables<1> tables(
         MakeSpan(dets), GroupMask<1>(options, n), serial);
     const std::vector<double> no_diagonal;

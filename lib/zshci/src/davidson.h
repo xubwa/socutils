@@ -29,6 +29,10 @@ struct DavidsonResult {
   std::vector<double> energies;  // without the core energy
   std::vector<double> residual_norms;
   int num_iterations = 0;
+  // Products H x, and the seconds spent in them and in the whole solve.
+  int num_products = 0;
+  double seconds_products = 0.0;
+  double seconds_total = 0.0;
   bool converged = false;
 };
 

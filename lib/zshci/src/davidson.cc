@@ -1,7 +1,8 @@
 #include "davidson.h"
 
-#include <Eigen/Dense>
+#include <omp.h>
 
+#include <Eigen/Dense>
 #include <cmath>
 #include <cstdio>
 #include <stdexcept>
@@ -140,6 +141,7 @@ DavidsonResult Davidson(const LinearOperator<S>& h,
   }
 
   DavidsonResult result;
+  const double solve_start = omp_get_wtime();
   Matrix<S> projected(0, 0);
   if (options.print) {
     std::printf("  %5s %5s %20s %12s\n", "iter", "root", "energy", "residual");
@@ -152,7 +154,10 @@ DavidsonResult Davidson(const LinearOperator<S>& h,
     const int size = static_cast<int>(basis.size());
     for (int m = old_size; m < size; ++m) {
       sigma.emplace_back(n);
+      const double apply_start = omp_get_wtime();
       h.Apply(basis[m].data(), sigma[m].data());
+      result.seconds_products += omp_get_wtime() - apply_start;
+      ++result.num_products;
     }
     Matrix<S> grown = Matrix<S>::Zero(size, size);
     grown.topLeftCorner(old_size, old_size) = projected;
@@ -189,6 +194,7 @@ DavidsonResult Davidson(const LinearOperator<S>& h,
     if (all_converged) {
       *vectors = std::move(ritz);
       result.converged = true;
+      result.seconds_total = omp_get_wtime() - solve_start;
       return result;
     }
 
@@ -232,6 +238,7 @@ DavidsonResult Davidson(const LinearOperator<S>& h,
       projected.topLeftCorner(size, size));
   *vectors = Combine(basis, solver.eigenvectors(), num_roots);
   result.converged = false;
+  result.seconds_total = omp_get_wtime() - solve_start;
   return result;
 }
 

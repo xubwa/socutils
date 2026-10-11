@@ -568,6 +568,9 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
               "t_sel", "t_ham", "t_dav", "time");
   const double start_time = omp_get_wtime();
   bool finished = false;
+  int num_products = 0;
+  double seconds_products = 0.0;
+  double seconds_solver = 0.0;
   for (int iter = 0; iter < input.select.max_iter && !finished; ++iter) {
     const double epsilon = selector->Parameter(iter);
     const size_t old_size = shared_dets.size();
@@ -627,6 +630,9 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
     const double solve_start = omp_get_wtime();
     const std::vector<double> previous = energies;
     DavidsonResult result = h.Solve(loose, &root_vectors);
+    num_products += result.num_products;
+    seconds_products += result.seconds_products;
+    seconds_solver += result.seconds_total;
     bool converged_space = false;
     if (selector->InFinalStage(iter, new_size, new_size - old_size) &&
         !previous.empty()) {
@@ -640,6 +646,9 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
     finished = converged_space || iter == input.select.max_iter - 1;
     if (finished) {
       result = h.Solve(input.davidson, &root_vectors);
+      num_products += result.num_products;
+      seconds_products += result.seconds_products;
+      seconds_solver += result.seconds_total;
     }
     if (!result.converged) {
       throw std::runtime_error("Davidson did not converge in iteration " +
@@ -664,6 +673,10 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
       "elements on the root\n",
       shared_dets.size(), h.stored().num_elements());
   h.PrintStats();
+  std::printf(
+      "eigensolver (root): %d products H*x in %.2f s, %.2f s in the "
+      "rest of the solver\n",
+      num_products, seconds_products, seconds_solver - seconds_products);
 
   root_dets = std::vector<Det<W>>();
   const SharedVectors<S> vectors =
