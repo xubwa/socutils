@@ -19,7 +19,7 @@ void DistributedH<S>::Apply(const S* x, S* y) const {
   comm_.BcastValue(&command);
   std::copy(x, x + dim(), x_.data());
   x_.ShareFromRoot(comm_);
-  local_.Multiply(x, y);
+  local_.Apply(x, y);
   comm_.SumToRoot(AsDoubles(y), kDoublesPerScalar<S> * dim());
 }
 
@@ -30,7 +30,7 @@ void DistributedH<S>::Serve() const {
     comm_.BcastValue(&command);
     if (command == kStop) return;
     x_.ShareFromRoot(comm_);
-    local_.Multiply(x_.data(), y_.data());
+    local_.Apply(x_.data(), y_.data());
     comm_.SumToRoot(AsDoubles(y_.data()), kDoublesPerScalar<S> * dim());
   }
 }
@@ -42,7 +42,7 @@ void DistributedH<S>::Stop() const {
 }
 
 template <typename S>
-DavidsonResult SolveDistributed(const SparseH<S>& local,
+DavidsonResult SolveDistributed(const LinearOperator<S>& local,
                                 const DavidsonOptions& options,
                                 const Comm& comm,
                                 std::vector<std::vector<S>>* vectors) {
@@ -66,10 +66,10 @@ DavidsonResult SolveDistributed(const SparseH<S>& local,
 
 template class DistributedH<double>;
 template class DistributedH<Complex>;
-template DavidsonResult SolveDistributed(const SparseH<double>&,
+template DavidsonResult SolveDistributed(const LinearOperator<double>&,
                                          const DavidsonOptions&, const Comm&,
                                          std::vector<std::vector<double>>*);
-template DavidsonResult SolveDistributed(const SparseH<Complex>&,
+template DavidsonResult SolveDistributed(const LinearOperator<Complex>&,
                                          const DavidsonOptions&, const Comm&,
                                          std::vector<std::vector<Complex>>*);
 

@@ -6,7 +6,6 @@
 #include <omp.h>
 
 #include <Eigen/Dense>
-
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -20,6 +19,8 @@
 #include "connect.h"
 #include "davidson.h"
 #include "det.h"
+#include "direct_h.h"
+#include "distributed_h.h"
 #include "excite.h"
 #include "hamiltonian.h"
 #include "heat_bath.h"
@@ -314,6 +315,93 @@ inline void PrintConnectStats(const ConnectStats& stats) {
       stats.seconds_sort);
 }
 
+// The Hamiltonian in the determinants of a calculation, as the drivers use
+// it: grown when determinants are added, diagonalized, and asked for density
+// matrices. It is either stored (SparseH) or, with "hamiltonian": "direct",
+// applied from the group string tables without being stored (DirectH).
+template <int W, typename S>
+class VariationalH {
+ public:
+  VariationalH(const Input& input, const Integrals<S>& ints, const Comm& comm)
+      : ints_(ints),
+        comm_(comm),
+        direct_(input.direct_hamiltonian),
+        connect_(MakeConnectOptions(input)) {
+    stored_.set_apply_diagonal(comm.is_root());
+  }
+
+  bool direct() const { return direct_; }
+  // The diagonal (on the root) and, unless direct, the stored elements.
+  const SparseH<S>& stored() const { return stored_; }
+  const ConnectOptions& connect() const { return connect_; }
+
+  // Collective: makes the Hamiltonian that of `dets`, of which those from
+  // first_new on are new.
+  void Extend(Span<Det<W>> dets, size_t first_new) {
+    dets_ = dets;
+    AppendDiagonal(dets, first_new, ints_, comm_, &stored_);
+    if (!direct_) {
+      stored_.AppendBlocks(
+          BuildBlocks(dets, first_new, ints_, connect_, comm_, &stats_));
+      return;
+    }
+    const double time = omp_get_wtime();
+    tables_.reset();
+    tables_ = std::make_unique<internal::GroupStringTables<W>>(
+        dets, GroupMask<W>(connect_, ints_.num_orbs()), comm_);
+    stats_.seconds_prepare += omp_get_wtime() - time;
+    stats_.num_strings = tables_->num_strings(0) + tables_->num_strings(1);
+    stats_.num_links = tables_->num_links();
+  }
+
+  // Collective: the lowest eigenpairs (see SolveDistributed).
+  DavidsonResult Solve(const DavidsonOptions& options,
+                       std::vector<std::vector<S>>* root_vectors) const {
+    if (!direct_) {
+      return SolveDistributed<S>(stored_, options, comm_, root_vectors);
+    }
+    const DirectH<W, S> h(dets_, ints_, *tables_, connect_.threshold,
+                          stored_.diagonal());
+    return SolveDistributed<S>(h, options, comm_, root_vectors);
+  }
+
+  // Collective: the density matrices between two vectors.
+  DensityMatrices<S> Density(Span<S> bra, Span<S> ket, bool with_two) const {
+    const int num_orbs = ints_.num_orbs();
+    if (!direct_) {
+      return ComputeDensityMatricesFrom(dets_, StoredPairs<S>(stored_),
+                                        num_orbs, bra, ket, with_two, comm_,
+                                        ints_.is_spatial());
+    }
+    return ComputeDensityMatricesFrom(
+        dets_, TablePairs<W>(*tables_, dets_.size()), num_orbs, bra, ket,
+        with_two, comm_, ints_.is_spatial());
+  }
+
+  void PrintStats() const {
+    if (direct_) {
+      std::printf(
+          "Hamiltonian: not stored; %llu distinct strings, %llu "
+          "entries in their relation lists, %.2f s for the tables\n",
+          static_cast<unsigned long long>(stats_.num_strings),
+          static_cast<unsigned long long>(stats_.num_links),
+          stats_.seconds_prepare);
+    } else {
+      PrintConnectStats(stats_);
+    }
+  }
+
+ private:
+  const Integrals<S>& ints_;
+  const Comm& comm_;
+  bool direct_;
+  ConnectOptions connect_;
+  Span<Det<W>> dets_;
+  SparseH<S> stored_;
+  std::unique_ptr<internal::GroupStringTables<W>> tables_;
+  ConnectStats stats_;
+};
+
 // The excitation filter of the calculation: label conservation and, unless
 // `with_restrictions` is false, the occupation restrictions of the input.
 inline RestrictedFilter MakeFilter(const Input& input,
@@ -384,7 +472,7 @@ std::vector<PtResult> ComputePerturbation(
 // density matrices; only the root writes.
 template <int W, typename S>
 void WriteResults(const Input& input, const Integrals<S>& ints,
-                  Span<Det<W>> dets, const SparseH<S>& h,
+                  Span<Det<W>> dets, const VariationalH<W, S>& h,
                   const std::vector<LabelSet>& symmetry,
                   const std::vector<double>& result_energies,
                   const SharedVectors<S>& vectors,
@@ -439,9 +527,8 @@ void WriteResults(const Input& input, const Integrals<S>& ints,
   if (input.rdm.one || input.rdm.two) {
     time = omp_get_wtime();
     for (int k = 0; k < input.nroots; ++k) {
-      const DensityMatrices<S> dm = ComputeDensityMatrices(
-          dets, h, num_orbs, vectors.Root(k), vectors.Root(k), input.rdm.two,
-          comm, ints.is_spatial());
+      const DensityMatrices<S> dm =
+          h.Density(vectors.Root(k), vectors.Root(k), input.rdm.two);
       if (!comm.is_root()) continue;
       WriteDensityMatrices(input.prefix, k, k, dm);
       if (input.rdm.two) {
@@ -456,9 +543,8 @@ void WriteResults(const Input& input, const Integrals<S>& ints,
   }
   if (input.rdm.transition) {
     for (int k = 1; k < input.nroots; ++k) {
-      const DensityMatrices<S> dm = ComputeDensityMatrices(
-          dets, h, num_orbs, vectors.Root(0), vectors.Root(k),
-          /*with_two=*/false, comm, ints.is_spatial());
+      const DensityMatrices<S> dm =
+          h.Density(vectors.Root(0), vectors.Root(k), /*with_two=*/false);
       if (comm.is_root()) WriteDensityMatrices(input.prefix, 0, k, dm);
     }
   }

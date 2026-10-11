@@ -12,17 +12,20 @@
 // are accumulated directly, so that nothing of the size of the spin-orbital
 // D2, sixteen times larger, is ever held.
 //
-// The connected pairs of determinants are taken from the sparsity pattern of
-// the Hamiltonian, which must therefore have been built without a threshold
-// (ConnectOptions::threshold < 0).
+// The connected pairs of determinants come from a pair source: the sparsity
+// pattern of a stored Hamiltonian (StoredPairs), which must then have been
+// built without a threshold (ConnectOptions::threshold < 0), or the group
+// string tables (TablePairs), which need no stored matrix.
 
 #ifndef ZSHCI_SRC_RDM_H_
 #define ZSHCI_SRC_RDM_H_
 
+#include <algorithm>
 #include <utility>
 #include <vector>
 
 #include "comm.h"
+#include "connect_groups.h"
 #include "det.h"
 #include "hamiltonian.h"
 #include "integrals.h"
@@ -125,19 +128,73 @@ void AddPair(const Det<W>& ket, const Excitation& exc,
 
 }  // namespace internal
 
+// The connected pairs held in the blocks of a stored Hamiltonian.
+template <typename S>
+class StoredPairs {
+ public:
+  explicit StoredPairs(const SparseH<S>& h) : h_(h), first_row_(1, 0) {
+    for (const CsrBlock<S>& block : h.blocks()) {
+      first_row_.push_back(first_row_.back() + block.num_stored_rows());
+    }
+  }
+
+  long num_rows() const { return static_cast<long>(first_row_.back()); }
+
+  // Calls visit(i, j) for the pairs of row r.
+  template <class Visitor>
+  void ForRow(long r, const Visitor& visit) const {
+    const size_t b = std::upper_bound(first_row_.begin(), first_row_.end(),
+                                      static_cast<size_t>(r)) -
+                     first_row_.begin() - 1;
+    const CsrBlock<S>& block = h_.blocks()[b];
+    const size_t local = r - first_row_[b];
+    const DetIndex i = block.row[local];
+    for (uint64_t k = block.row_ptr[local]; k < block.row_ptr[local + 1]; ++k) {
+      visit(i, block.col[k]);
+    }
+  }
+
+ private:
+  const SparseH<S>& h_;
+  std::vector<size_t> first_row_;  // of every block, among all stored rows
+};
+
+// The connected pairs this rank owns, worked out from the group string
+// tables.
+template <int W>
+class TablePairs {
+ public:
+  TablePairs(const internal::GroupStringTables<W>& tables, size_t num_dets)
+      : tables_(tables), num_dets_(num_dets) {}
+
+  long num_rows() const { return static_cast<long>(num_dets_); }
+
+  template <class Visitor>
+  void ForRow(long r, const Visitor& visit) const {
+    if (!tables_.Owns(r)) return;
+    uint64_t tested = 0;
+    tables_.ForEachConnected(
+        r, [&](DetIndex i) { visit(static_cast<DetIndex>(r), i); }, &tested);
+  }
+
+ private:
+  const internal::GroupStringTables<W>& tables_;
+  size_t num_dets_;
+};
+
 // Computes D1, and D2 if `with_two`, for the vectors `bra` and `ket`. With
-// several ranks, `h` is the local part of the Hamiltonian; every rank adds
-// the pairs it holds, the root adds the diagonal part, and all ranks return
-// the sum. `num_orbs` is the number of spinors; with `spin_summed` they are
-// the spin orbitals of num_orbs / 2 spatial orbitals and the matrices are
-// summed over the spins.
-template <int W, typename S>
-DensityMatrices<S> ComputeDensityMatrices(Span<Det<W>> dets,
-                                          const SparseH<S>& h, int num_orbs,
-                                          Span<S> bra, Span<S> ket,
-                                          bool with_two,
-                                          const Comm& comm = Comm(),
-                                          bool spin_summed = false) {
+// several ranks, `pairs` holds the connected pairs of this rank; every rank
+// adds those, the root adds the diagonal part, and all ranks return the sum.
+// `num_orbs` is the number of spinors; with `spin_summed` they are the spin
+// orbitals of num_orbs / 2 spatial orbitals and the matrices are summed over
+// the spins.
+template <int W, typename S, class Pairs>
+DensityMatrices<S> ComputeDensityMatricesFrom(Span<Det<W>> dets,
+                                              const Pairs& pairs, int num_orbs,
+                                              Span<S> bra, Span<S> ket,
+                                              bool with_two,
+                                              const Comm& comm = Comm(),
+                                              bool spin_summed = false) {
   const size_t n = spin_summed ? num_orbs / 2 : num_orbs;
   DensityMatrices<S> dm;
   dm.num_orbs = static_cast<int>(n);
@@ -168,28 +225,24 @@ DensityMatrices<S> ComputeDensityMatrices(Span<Det<W>> dets,
   }
 
   // Off-diagonal part: the connected pairs this rank holds.
-  for (const CsrBlock<S>& block : h.blocks()) {
-    const long num_rows = static_cast<long>(block.num_stored_rows());
+  const long num_rows = pairs.num_rows();
 #pragma omp parallel
-    {
-      std::vector<int> occ_i;
-      std::vector<int> occ_j;
+  {
+    std::vector<int> occ_i;
+    std::vector<int> occ_j;
 #pragma omp for schedule(dynamic, 64)
-      for (long r = 0; r < num_rows; ++r) {
-        const DetIndex i = block.row[r];
+    for (long r = 0; r < num_rows; ++r) {
+      pairs.ForRow(r, [&](DetIndex i, DetIndex j) {
         occ_i.clear();
         dets[i].AppendOccupied(&occ_i);
-        for (uint64_t k = block.row_ptr[r]; k < block.row_ptr[r + 1]; ++k) {
-          const DetIndex j = block.col[k];
-          occ_j.clear();
-          dets[j].AppendOccupied(&occ_j);
-          // <D_i| ... |D_j> and its transpose <D_j| ... |D_i>.
-          internal::AddPair(dets[j], FindExcitation(dets[i], dets[j]), occ_j,
-                            Conj(bra[i]) * ket[j], with_two, &dm);
-          internal::AddPair(dets[i], FindExcitation(dets[j], dets[i]), occ_i,
-                            Conj(bra[j]) * ket[i], with_two, &dm);
-        }
-      }
+        occ_j.clear();
+        dets[j].AppendOccupied(&occ_j);
+        // <D_i| ... |D_j> and its transpose <D_j| ... |D_i>.
+        internal::AddPair(dets[j], FindExcitation(dets[i], dets[j]), occ_j,
+                          Conj(bra[i]) * ket[j], with_two, &dm);
+        internal::AddPair(dets[i], FindExcitation(dets[j], dets[i]), occ_i,
+                          Conj(bra[j]) * ket[i], with_two, &dm);
+      });
     }
   }
 
@@ -216,6 +269,18 @@ DensityMatrices<S> ComputeDensityMatrices(Span<Det<W>> dets,
     }
   }
   return dm;
+}
+
+// The same from the pairs of a stored Hamiltonian.
+template <int W, typename S>
+DensityMatrices<S> ComputeDensityMatrices(Span<Det<W>> dets,
+                                          const SparseH<S>& h, int num_orbs,
+                                          Span<S> bra, Span<S> ket,
+                                          bool with_two,
+                                          const Comm& comm = Comm(),
+                                          bool spin_summed = false) {
+  return ComputeDensityMatricesFrom(dets, StoredPairs<S>(h), num_orbs, bra, ket,
+                                    with_two, comm, spin_summed);
 }
 
 // Energy (without the core energy) from the density matrices of one state.

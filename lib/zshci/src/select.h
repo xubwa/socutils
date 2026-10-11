@@ -185,14 +185,8 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
   std::printf("heat-bath tables: %zu entries, %.2f s\n",
               heat_bath.num_entries(), omp_get_wtime() - time);
 
-  const ConnectOptions connect = MakeConnectOptions(input);
-  ConnectStats stats;
-
-  SparseH<S> h;
-  h.set_apply_diagonal(comm.is_root());
-  AppendDiagonal(shared_dets.span(), 0, ints, comm, &h);
-  h.AppendBlocks(
-      BuildBlocks(shared_dets.span(), 0, ints, connect, comm, &stats));
+  VariationalH<W, S> h(input, ints, comm);
+  h.Extend(shared_dets.span(), 0);
 
   // The eigenvectors live on the root; the other ranks see only what is
   // shared from them (the selection weights, and at the end the vectors).
@@ -204,9 +198,10 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
   bool have_vectors = shared_dets.size() >= static_cast<size_t>(num_roots);
   if (have_vectors) {
     if (comm.is_root()) {
-      root_vectors = GuessVectors(shared_dets.span(), h, ints, num_roots);
+      root_vectors =
+          GuessVectors(shared_dets.span(), h.stored(), ints, num_roots);
     }
-    energies = SolveDistributed(h, loose, comm, &root_vectors).energies;
+    energies = h.Solve(loose, &root_vectors).energies;
   }
 
   // t_sel, t_ham and t_dav are the seconds spent in this iteration on the
@@ -245,15 +240,14 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
         root_dets.insert(root_dets.end(), fresh.begin(), fresh.end());
       }
       shared_dets = SharedArray<Det<W>>::FromRoot(root_dets, comm);
-      AppendDiagonal(shared_dets.span(), old_size, ints, comm, &h);
-      h.AppendBlocks(BuildBlocks(shared_dets.span(), old_size, ints, connect,
-                                 comm, &stats));
+      h.Extend(shared_dets.span(), old_size);
     }
     fresh = std::vector<Det<W>>();
 
     if (comm.is_root()) {
       if (!have_vectors) {
-        root_vectors = GuessVectors(shared_dets.span(), h, ints, num_roots);
+        root_vectors =
+            GuessVectors(shared_dets.span(), h.stored(), ints, num_roots);
       } else {
         for (std::vector<S>& v : root_vectors) v.resize(new_size, 0.0);
       }
@@ -264,7 +258,7 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
     // stopped changing: solve tightly and stop.
     const double solve_start = omp_get_wtime();
     const std::vector<double> previous = energies;
-    DavidsonResult result = SolveDistributed(h, loose, comm, &root_vectors);
+    DavidsonResult result = h.Solve(loose, &root_vectors);
     bool converged_space = false;
     if (iter >= last_schedule_start && !previous.empty()) {
       double change = 0.0;
@@ -276,7 +270,7 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
     }
     finished = converged_space || iter == input.select.max_iter - 1;
     if (finished) {
-      result = SolveDistributed(h, input.davidson, comm, &root_vectors);
+      result = h.Solve(input.davidson, &root_vectors);
     }
     if (!result.converged) {
       throw std::runtime_error("Davidson did not converge in iteration " +
@@ -296,10 +290,11 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
                   input.select.max_iter);
     }
   }
-  std::printf("variational space: %zu determinants, %zu stored Hamiltonian "
-              "elements on the root\n",
-              shared_dets.size(), h.num_elements());
-  PrintConnectStats(stats);
+  std::printf(
+      "variational space: %zu determinants, %zu stored Hamiltonian "
+      "elements on the root\n",
+      shared_dets.size(), h.stored().num_elements());
+  h.PrintStats();
 
   root_dets = std::vector<Det<W>>();
   const SharedVectors<S> vectors =

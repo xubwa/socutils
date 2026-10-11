@@ -6,7 +6,6 @@
 // least two more spinors than electrons.
 
 #include <Eigen/Dense>
-
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -21,6 +20,7 @@
 #include "connect.h"
 #include "davidson.h"
 #include "det.h"
+#include "direct_h.h"
 #include "excite.h"
 #include "hamiltonian.h"
 #include "heat_bath.h"
@@ -1305,6 +1305,72 @@ void TestGroupConnections(const Integrals<Complex>& ints) {
              BuildBlockBruteForce(MakeSpan(dets2), 300, shifted, thresholded),
              0.0),
          "group string tables with a threshold equal brute force");
+
+  // The Hamiltonian applied from the tables against the stored one, and
+  // density matrices from the tables against those from the stored pairs.
+  const std::vector<Det<1>> dets = ToDets<1>(occupations, 0);
+  const Comm serial;
+  for (double threshold : {-1.0, 1e-3}) {
+    ConnectOptions options;
+    options.threshold = threshold;
+    options.method = ConnectMethod::kGroups;
+    SparseH<Complex> stored;
+    std::vector<double> diagonal(dets.size());
+    for (size_t d = 0; d < dets.size(); ++d) {
+      diagonal[d] = DiagonalEnergy(dets[d], ints);
+    }
+    stored.AppendDiagonal(diagonal);
+    stored.AppendBlocks(BuildBlocks(MakeSpan(dets), 0, ints, options));
+    const internal::GroupStringTables<1> tables(
+        MakeSpan(dets), GroupMask<1>(options, n), serial);
+    const std::vector<double> no_diagonal;
+    const std::vector<const std::vector<double>*> diagonals = {&diagonal,
+                                                               &no_diagonal};
+    double max_diff = 0.0;
+    double norm = 0.0;
+    for (const std::vector<double>* given : diagonals) {
+      const DirectH<1, Complex> direct(MakeSpan(dets), ints, tables, threshold,
+                                       *given);
+      std::vector<Complex> x(dets.size()), y(dets.size()), y_ref(dets.size());
+      for (size_t i = 0; i < x.size(); ++i) {
+        x[i] = Complex(std::sin(0.3 * i + 0.2), std::cos(1.7 * i));
+      }
+      direct.Apply(x.data(), y.data());
+      stored.Multiply(x.data(), y_ref.data());
+      for (size_t i = 0; i < x.size(); ++i) {
+        max_diff = std::max(max_diff, std::abs(y[i] - y_ref[i]));
+        norm = std::max(norm, std::abs(y_ref[i]));
+      }
+    }
+    Expect(norm > 1.0 && max_diff < 1e-12 * norm,
+           threshold < 0.0
+               ? "the Hamiltonian applied from the tables equals the stored one"
+               : "the same with a threshold on the elements");
+    if (threshold >= 0.0) continue;
+    std::vector<Complex> bra(dets.size()), ket(dets.size());
+    for (size_t i = 0; i < dets.size(); ++i) {
+      bra[i] = Complex(std::cos(0.9 * i), std::sin(0.4 * i + 1.0));
+      ket[i] = Complex(std::sin(1.1 * i), std::cos(0.6 * i));
+    }
+    const DensityMatrices<Complex> from_stored = ComputeDensityMatrices(
+        MakeSpan(dets), stored, n, MakeSpan(bra), MakeSpan(ket), true);
+    const DensityMatrices<Complex> from_tables = ComputeDensityMatricesFrom(
+        MakeSpan(dets), TablePairs<1>(tables, dets.size()), n, MakeSpan(bra),
+        MakeSpan(ket), true);
+    double max_one = 0.0;
+    double max_two = 0.0;
+    for (size_t k = 0; k < from_stored.one.size(); ++k) {
+      max_one =
+          std::max(max_one, std::abs(from_stored.one[k] - from_tables.one[k]));
+    }
+    for (size_t k = 0; k < from_stored.two.size(); ++k) {
+      max_two =
+          std::max(max_two, std::abs(from_stored.two[k] - from_tables.two[k]));
+    }
+    Expect(max_one < 1e-10 && max_two < 1e-10,
+           "density matrices from the tables equal those from the stored "
+           "pairs");
+  }
 }
 
 // A real Hamiltonian treated with real numbers and with complex numbers.

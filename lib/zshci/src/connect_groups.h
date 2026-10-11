@@ -123,12 +123,15 @@ class GroupStringTables {
   }
 
   // Calls visit(i) once for every determinant i < j connected to
-  // determinant j. Adds to *tested_pairs the number of determinants that
-  // were compared with j bit by bit.
+  // determinant j or, with `both_sides`, for every determinant connected to
+  // it. Adds to *tested_pairs the number of determinants that were compared
+  // with j bit by bit.
   template <class Visitor>
-  void ForEachConnected(size_t j, const Visitor& visit,
-                        uint64_t* tested_pairs) const {
+  void ForEachConnected(size_t j, const Visitor& visit, uint64_t* tested_pairs,
+                        bool both_sides = false) const {
     const uint32_t self = static_cast<uint32_t>(j);
+    // Determinants up to this index are reported.
+    const uint32_t limit = both_sides ? UINT32_MAX : self;
     uint64_t tested = 0;
     for (int group = 0; group < 2; ++group) {
       const int other = 1 - group;
@@ -150,7 +153,7 @@ class GroupStringTables {
             std::lower_bound(with_partner, with_partner_end, *s);
         if (found == with_partner_end || *found != *s) continue;
         const uint32_t i = with_partner_dets[found - with_partner];
-        if (i < self) visit(i);
+        if (i < limit) visit(i);
       }
 
       // A double excitation of this string: compare with the determinants
@@ -158,7 +161,7 @@ class GroupStringTables {
       for (const uint32_t* d = with_partner_dets;
            d != with_partner_dets + (with_partner_end - with_partner); ++d) {
         const uint32_t i = *d;
-        if (i >= self) continue;
+        if (i >= limit || i == self) continue;
         ++tested;
         if (dets_[i].NumDifferentBits(dets_[j]) == 4) visit(i);
       }
@@ -168,19 +171,19 @@ class GroupStringTables {
     // read from A to B and from B to A.
     const uint32_t a = string_of_det_[0][j];
     const uint32_t b = string_of_det_[1][j];
-    Combine(self, a, kSingle, b, kSingle, visit);
+    Combine(limit, a, kSingle, b, kSingle, visit);
     if (!transfers_) {
       *tested_pairs += tested;
       return;
     }
-    Combine(self, a, kMinus1, b, kPlus1, visit);
-    Combine(self, a, kPlus1, b, kMinus1, visit);
-    Combine(self, a, kMinus1, b, kPlus12, visit);
-    Combine(self, a, kPlus12, b, kMinus1, visit);
-    Combine(self, a, kMinus21, b, kPlus1, visit);
-    Combine(self, a, kPlus1, b, kMinus21, visit);
-    Combine(self, a, kMinus2, b, kPlus2, visit);
-    Combine(self, a, kPlus2, b, kMinus2, visit);
+    Combine(limit, a, kMinus1, b, kPlus1, visit);
+    Combine(limit, a, kPlus1, b, kMinus1, visit);
+    Combine(limit, a, kMinus1, b, kPlus12, visit);
+    Combine(limit, a, kPlus12, b, kMinus1, visit);
+    Combine(limit, a, kMinus21, b, kPlus1, visit);
+    Combine(limit, a, kPlus1, b, kMinus21, visit);
+    Combine(limit, a, kMinus2, b, kPlus2, visit);
+    Combine(limit, a, kPlus2, b, kMinus2, visit);
     *tested_pairs += tested;
   }
 
@@ -209,12 +212,12 @@ class GroupStringTables {
     return related_list_[group][relation].data() + start[s + 1];
   }
 
-  // Reports the determinants below `self` whose A string is related to a
+  // Reports the determinants below `limit` whose A string is related to a
   // by relation_a and whose B string to b by relation_b: for every such A
   // string, the determinants that contain it, ordered by their B string,
   // are merged with the list of B strings.
   template <class Visitor>
-  void Combine(uint32_t self, uint32_t a, int relation_a, uint32_t b,
+  void Combine(uint32_t limit, uint32_t a, int relation_a, uint32_t b,
                int relation_b, const Visitor& visit) const {
     const uint32_t* const b_begin = RelatedBegin(1, relation_b, b);
     const uint32_t* const b_end = RelatedEnd(1, relation_b, b);
@@ -236,7 +239,7 @@ class GroupStringTables {
           ++t;
         } else {
           const uint32_t i = with_dets[with - with_begin];
-          if (i < self) visit(i);
+          if (i < limit) visit(i);
           ++with;
           ++t;
         }

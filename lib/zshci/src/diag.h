@@ -59,29 +59,31 @@ void RunDiag(const Input& input, const Integrals<S>& ints, const Comm& comm) {
   }
 
   double time = omp_get_wtime();
-  SparseH<S> h;
-  h.set_apply_diagonal(comm.is_root());
-  AppendDiagonal(dets, 0, ints, comm, &h);
-  const ConnectOptions connect = MakeConnectOptions(input);
-  ConnectStats stats;
-  h.AppendBlocks(BuildBlocks(dets, 0, ints, connect, comm, &stats));
-  PrintConnectStats(stats);
-  std::printf("Hamiltonian: %zu stored elements (upper triangle) on the "
-              "root, %.2f s\n",
-              h.num_elements(), omp_get_wtime() - time);
+  VariationalH<W, S> h(input, ints, comm);
+  h.Extend(dets, 0);
+  h.PrintStats();
+  if (!h.direct()) {
+    std::printf(
+        "Hamiltonian: %zu stored elements (one triangle) on the "
+        "root, %.2f s\n",
+        h.stored().num_elements(), omp_get_wtime() - time);
+  }
   if (input.check) {
-    if (comm.size() == 1) {
-      CheckHamiltonian(dets, h, ints, connect);
+    if (comm.size() == 1 && !h.direct()) {
+      CheckHamiltonian(dets, h.stored(), ints, h.connect());
     } else {
-      std::printf("note: \"check\" needs a single rank and is skipped\n");
+      std::printf(
+          "note: \"check\" needs a single rank and a stored "
+          "Hamiltonian and is skipped\n");
     }
   }
 
   time = omp_get_wtime();
   std::vector<std::vector<S>> root_vectors;
-  if (comm.is_root()) root_vectors = GuessVectors(dets, h, ints, input.nroots);
-  const DavidsonResult result =
-      SolveDistributed(h, input.davidson, comm, &root_vectors);
+  if (comm.is_root()) {
+    root_vectors = GuessVectors(dets, h.stored(), ints, input.nroots);
+  }
+  const DavidsonResult result = h.Solve(input.davidson, &root_vectors);
   if (!result.converged) {
     throw std::runtime_error("Davidson did not converge in " +
                              std::to_string(result.num_iterations) +

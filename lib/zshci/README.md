@@ -105,6 +105,14 @@ selection run and the peak memory of the program:
 | O2, 12 electrons in 32 spinors, 433k determinants | 6.2 s, 3.5 GB | 11.0 s, 2.9 GB | 5.9 s, 3.1 GB |
 | Cl2, 34 electrons in 52 spinors, 124k determinants | 4.2 s, 2.5 GB | 1.8 s, 0.4 GB | 1.8 s, 0.7 GB |
 
+`"hamiltonian": "direct"` does not store the matrix: every product with a
+vector works the connections out again from the tables of the group method
+and evaluates the elements on the way, and the density matrices are computed
+the same way. On the O2 case above (433k determinants, 131 million elements,
+16 threads) a product takes 4.7 s instead of 0.2 s and the whole selection
+284 s instead of 23 s, with a peak memory of 0.42 GB instead of 3.1 GB: for
+when the matrix does not fit.
+
 `src/input.h` documents every key. The integrals are read from a FCIDUMP
 file (`src/integrals.h`) in the complex format, `(re,im) p q r s`, or the real
 format, `value p q r s`. A file in the real format is treated with real
@@ -137,7 +145,7 @@ a previous space.
 | `src/det.h` | determinants as fixed-width bit strings |
 | `src/integrals.*`, `src/hamiltonian.h` | integrals, Slater-Condon rules |
 | `src/heat_bath.*`, `src/excite.h` | excitation generation, symmetry and occupation filters |
-| `src/connect.h`, `src/sparse_h.*` | connected pairs of determinants, the sparse Hamiltonian |
+| `src/connect.h`, `src/connect_groups.h`, `src/sparse_h.*`, `src/direct_h.h` | connected pairs of determinants, the sparse Hamiltonian, the Hamiltonian applied without storing it |
 | `src/davidson.*`, `src/distributed_h.*` | eigensolver, alone and over MPI ranks |
 | `src/select.h`, `src/diag.h`, `src/driver_common.h` | the two modes |
 | `src/pt.h`, `src/rdm.h` | perturbation theory, density matrices |

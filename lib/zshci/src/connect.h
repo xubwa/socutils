@@ -702,6 +702,22 @@ CsrBlock<S> BuildBlockWith(Span<Det<W>> dets, size_t first_new,
 
 }  // namespace internal
 
+// The spinors of group A of the group method as a bit mask.
+template <int W>
+Det<W> GroupMask(const ConnectOptions& options, int num_orbs) {
+  Det<W> group_a;
+  if (options.group_a.empty()) {
+    for (int p = 0; p < num_orbs; p += 2) group_a.Set(p);
+  }
+  for (int p : options.group_a) {
+    if (p < 0 || p >= num_orbs) {
+      throw std::invalid_argument("connect: spinor of group A out of range");
+    }
+    group_a.Set(p);
+  }
+  return group_a;
+}
+
 // Builds the blocks of H(j, i), i < j, with j >= first_new, for the
 // determinants `dets`. Determinants before `first_new` are assumed to be
 // connected among themselves by earlier blocks. The group method
@@ -722,18 +738,9 @@ std::vector<CsrBlock<S>> BuildBlocks(Span<Det<W>> dets, size_t first_new,
     throw std::length_error("too many determinants for a 32-bit index");
   }
   if (options.method == ConnectMethod::kGroups) {
-    Det<W> group_a;
-    if (options.group_a.empty()) {
-      for (int p = 0; p < ints.num_orbs(); p += 2) group_a.Set(p);
-    }
-    for (int p : options.group_a) {
-      if (p < 0 || p >= ints.num_orbs()) {
-        throw std::invalid_argument("connect: spinor of group A out of range");
-      }
-      group_a.Set(p);
-    }
     const double time = omp_get_wtime();
-    const internal::GroupStringTables<W> tables(dets, group_a, comm);
+    const internal::GroupStringTables<W> tables(
+        dets, GroupMask<W>(options, ints.num_orbs()), comm);
     if (stats != nullptr) {
       stats->seconds_prepare += omp_get_wtime() - time;
       stats->num_strings = tables.num_strings(0) + tables.num_strings(1);

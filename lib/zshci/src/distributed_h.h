@@ -1,7 +1,8 @@
 // The Hamiltonian spread over the ranks of a communicator, and the
 // eigensolver on top of it.
 //
-// Every rank holds a SparseH with the off-diagonal elements it found; the
+// Every rank holds an operator for its part of the matrix - a SparseH with
+// the off-diagonal elements it found, or a DirectH for the rows it owns; the
 // product H x is the sum of the local products. The eigensolver runs on the
 // root only: the other ranks wait in Serve() and take part in each product.
 // They never hold the Davidson basis.
@@ -22,7 +23,7 @@ template <typename S>
 class DistributedH : public LinearOperator<S> {
  public:
   // Collective.
-  DistributedH(const SparseH<S>& local, const Comm& comm)
+  DistributedH(const LinearOperator<S>& local, const Comm& comm)
       : local_(local), comm_(comm), x_(local.dim(), comm), y_(local.dim()) {}
 
   size_t dim() const override { return local_.dim(); }
@@ -42,7 +43,7 @@ class DistributedH : public LinearOperator<S> {
  private:
   enum Command : int { kStop = 0, kApply = 1 };
 
-  const SparseH<S>& local_;
+  const LinearOperator<S>& local_;
   const Comm& comm_;
   // The vector being multiplied, one copy per node, and the local product of
   // a serving rank.
@@ -55,7 +56,7 @@ class DistributedH : public LinearOperator<S> {
 // other ranks' `vectors` is not touched. Every rank gets the result.
 // Instantiated for double and Complex.
 template <typename S>
-DavidsonResult SolveDistributed(const SparseH<S>& local,
+DavidsonResult SolveDistributed(const LinearOperator<S>& local,
                                 const DavidsonOptions& options,
                                 const Comm& comm,
                                 std::vector<std::vector<S>>* vectors);

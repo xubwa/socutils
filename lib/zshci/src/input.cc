@@ -128,6 +128,7 @@ Json ToJson(const Input& in) {
                   {"segments", in.connect_segments},
                   {"batches", in.connect_batches}};
   if (!in.connect_group_a.empty()) j["connect"]["group_a"] = in.connect_group_a;
+  j["hamiltonian"] = in.direct_hamiltonian ? "direct" : "stored";
   j["check"] = in.check;
   j["output_level"] = in.output_level;
   return j;
@@ -361,6 +362,22 @@ Input ParseInput(const std::string& text) {
                                    std::to_string(kMaxConnectSegments));
     }
     if (in.connect_batches < 1) connect.Fail("batches", "must be at least 1");
+  }
+  std::string hamiltonian = "stored";
+  top.Get("hamiltonian", &hamiltonian);
+  if (hamiltonian != "stored" && hamiltonian != "direct") {
+    top.Fail("hamiltonian", "must be \"stored\" or \"direct\"");
+  }
+  in.direct_hamiltonian = hamiltonian == "direct";
+  if (in.direct_hamiltonian) {
+    if (in.connect_by_segments ||
+        (top.Has("connect") && top.At("connect").contains("method") &&
+         !in.connect_by_groups)) {
+      top.Fail("hamiltonian",
+               "\"direct\" works with the connection method "
+               "\"groups\" only");
+    }
+    in.connect_by_groups = true;
   }
   top.Get("check", &in.check);
   top.Get("output_level", &in.output_level);

@@ -170,6 +170,11 @@ struct Input {
   int connect_segments = 8;
   // Strings only: number of passes (trades time for memory).
   int connect_batches = 1;
+  // "hamiltonian": "direct" does not store the matrix: every product with a
+  // vector works the connections out again from the tables of the group
+  // method (which it implies) and evaluates the elements on the way. Slow
+  // per product, but the memory of the matrix is saved. Default "stored".
+  bool direct_hamiltonian = false;
   // Compare the Hamiltonian and its product against slow reference
   // implementations; for testing on small cases.
   bool check = false;
