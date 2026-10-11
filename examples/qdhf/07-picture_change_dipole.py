@@ -75,8 +75,13 @@ if __name__ == '__main__':
         bases.append(('ETB beta=%.1f (F spdf, H spd)' % beta, etb_basis(beta)))
     for beta in (2.5, 2.0):
         bases.append(('ETB beta=%.1f (F spdfg, H spdf)' % beta, etb_basis(beta, 4, 3)))
+    # sp only: T maps an s (p) Gaussian on a center to s (p) functions on the
+    # same center, so completeness of the one-center sp radial spaces is
+    # enough for <T mu| S^-1 |V nu> = <T mu|V nu>, i.e. dmu -> 0
+    for beta in (3.0, 2.5, 2.0, 1.7, 1.5):
+        bases.append(('ETB beta=%.1f (sp)' % beta, etb_basis(beta, 1, 1)))
     if len(sys.argv) > 1:
-        bases = [b for b in bases if b[0] in sys.argv[1:]]
+        bases = [b for b in bases if any(k in b[0] for k in sys.argv[1:])]
     for label, basis in bases:
         t0 = time.time()
         mol = gto.M(atom=geom, basis=basis, verbose=0)
