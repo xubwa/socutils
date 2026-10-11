@@ -457,3 +457,35 @@ def energy_nuc(mol):
                              for d in range(3)))
             e += hmp.mpf(int(charges[i])) * int(charges[j]) / r
     return e
+
+
+def ao_values(mol, point):
+    '''Values chi_mu(point) of the AOs of mol (same functions and order as
+    QuadIntegrals), evaluated in hmp precision.  point in Bohr.'''
+    pt = [hmp.mpf(float(x)) for x in point]
+    ao_loc = mol.ao_loc_nr(mol.cart)
+    out = numpy.empty(ao_loc[-1], dtype=object)
+    out[:] = hmp.mpf(0)
+    for ib, (ia, l, es, cs) in enumerate(shell_data(mol)):
+        cs = normalized_coefficients(l, es, cs)
+        center = [hmp.mpf(float(x)) for x in mol.atom_coord(ia)]
+        d = [pt[k] - center[k] for k in range(3)]
+        r2 = d[0]**2 + d[1]**2 + d[2]**2
+        comps = cart_comps(l)
+        if mol.cart:
+            fac = cart2sph(l)[0, 0] if l <= 1 else hmp.mpf(1)
+            ang = numpy.empty((len(comps), len(comps)), dtype=object)
+            ang[:] = hmp.mpf(0)
+            for i in range(len(comps)):
+                ang[i, i] = fac
+        else:
+            ang = cart2sph(l).T
+        nf = ang.shape[0]
+        mono = [d[0]**i * d[1]**j * d[2]**k for i, j, k in comps]
+        for ic in range(cs.shape[1]):
+            radial = sum(cs[ip, ic] * hmp.exp(-hmp.mpf(float(e)) * r2)
+                         for ip, e in enumerate(es))
+            for m in range(nf):
+                out[ao_loc[ib] + ic*nf + m] = radial * sum(ang[m, k] * mono[k]
+                                                           for k in range(len(comps)))
+    return out
