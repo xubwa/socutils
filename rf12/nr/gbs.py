@@ -16,6 +16,8 @@
 '''Reader for Psi4 .gbs (Gaussian94-style) basis files -> pyscf basis dicts,
 so that the reference program and this code use byte-identical bases.'''
 
+import os
+
 ANG = {'S': 0, 'P': 1, 'D': 2, 'F': 3, 'G': 4, 'H': 5, 'I': 6}
 
 
@@ -46,7 +48,18 @@ def load(path, element):
     raise KeyError('%s not in %s' % (element, path))
 
 
-def basis(name, elements, basdir='/home/user/psi4env/share/psi4/basis'):
-    import os
-    path = os.path.join(basdir, name.lower() + '.gbs')
+def _default_basdir():
+    '''$RF12_BASDIR, else the basis/ directory of an importable psi4, else the original container path.'''
+    d = os.environ.get('RF12_BASDIR')
+    if d:
+        return d
+    try:
+        import psi4
+        return os.path.join(psi4.core.get_datadir(), 'basis')
+    except Exception:
+        return '/home/user/psi4env/share/psi4/basis'
+
+
+def basis(name, elements, basdir=None):
+    path = os.path.join(basdir or _default_basdir(), name.lower() + '.gbs')
     return {el: load(path, el) for el in elements}
