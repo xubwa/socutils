@@ -12,6 +12,7 @@
 #   ccsdt   ->  lib/libccsdt_clib.so  (socutils.cc CCSDT kernels)
 #   zquatev ->  lib/libzquatev.so     (Kramers-restricted spinor SCF)
 #   ao2mo   ->  lib/libnrr_opt.so     (socutils.lib.ao2mo.nrr_fast spinor AO2MO)
+#   zgasci  ->  lib/libzgasci.so      (socutils.hci.gasci FCI / GAS-CI kernels)
 #
 # zshci is the exception: a program, run by socutils.hci.shci, whose
 # executables go to lib/zshci/bin/.
@@ -98,4 +99,5 @@ add_subdirectory(x2camf)
 add_subdirectory(ccsdt)
 add_subdirectory(zquatev)
 add_subdirectory(ao2mo)
+add_subdirectory(zgasci)
 add_subdirectory(zshci)
