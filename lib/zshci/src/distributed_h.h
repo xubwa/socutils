@@ -54,12 +54,15 @@ class DistributedH : public LinearOperator<S> {
 // Solves for the lowest eigenpairs with all ranks. On entry the root's
 // `vectors` holds the starting guesses and on exit the eigenvectors; the
 // other ranks' `vectors` is not touched. Every rank gets the result.
+// With `active` (read on the root only, one entry per basis vector), the
+// problem is solved in the marked subspace; see MaskedOperator.
 // Instantiated for double and Complex.
 template <typename S>
 DavidsonResult SolveDistributed(const LinearOperator<S>& local,
                                 const DavidsonOptions& options,
                                 const Comm& comm,
-                                std::vector<std::vector<S>>* vectors);
+                                std::vector<std::vector<S>>* vectors,
+                                const std::vector<uint8_t>* active = nullptr);
 
 }  // namespace zshci
 

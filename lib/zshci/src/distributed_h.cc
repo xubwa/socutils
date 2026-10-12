@@ -45,11 +45,17 @@ template <typename S>
 DavidsonResult SolveDistributed(const LinearOperator<S>& local,
                                 const DavidsonOptions& options,
                                 const Comm& comm,
-                                std::vector<std::vector<S>>* vectors) {
+                                std::vector<std::vector<S>>* vectors,
+                                const std::vector<uint8_t>* active) {
   DavidsonResult result;
   const DistributedH<S> h(local, comm);
   if (comm.is_root()) {
-    result = Davidson(h, options, vectors);
+    if (active != nullptr) {
+      const MaskedOperator<S> masked(h, *active);
+      result = Davidson<S>(masked, options, vectors);
+    } else {
+      result = Davidson(h, options, vectors);
+    }
     h.Stop();
   } else {
     h.Serve();
@@ -68,9 +74,11 @@ template class DistributedH<double>;
 template class DistributedH<Complex>;
 template DavidsonResult SolveDistributed(const LinearOperator<double>&,
                                          const DavidsonOptions&, const Comm&,
-                                         std::vector<std::vector<double>>*);
+                                         std::vector<std::vector<double>>*,
+                                         const std::vector<uint8_t>*);
 template DavidsonResult SolveDistributed(const LinearOperator<Complex>&,
                                          const DavidsonOptions&, const Comm&,
-                                         std::vector<std::vector<Complex>>*);
+                                         std::vector<std::vector<Complex>>*,
+                                         const std::vector<uint8_t>*);
 
 }  // namespace zshci

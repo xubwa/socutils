@@ -105,7 +105,17 @@ in:
 The last three score every determinant outside the space, which costs about
 one deterministic perturbation-theory pass per iteration and root;
 `"epsilon_generate"` restricts V_a to the terms above it. None of them
-removes determinants from the space, unlike the published ASCI and ACI. On N2
+removes determinants from the space, unlike the published ASCI and ACI,
+unless `"prune": true` is given (for `"asci"` so far): the determinants of the
+space are then ranked with the candidates, by the same amplitude from the
+generating determinants, and the space is the `"target_dets"` highest of both
+(while it grows: `"growth"` times its size). A determinant taken out stays in
+the list of the program with coefficient zero, so that the stored Hamiltonian
+is neither reordered nor rebuilt, and comes back at no cost if it is selected
+again; the eigensolver works in the others. The list is cleared of such
+determinants, and the Hamiltonian made afresh, at the end and, with
+`"compact_above": f`, whenever more than the share f of the list is out of
+the space. On N2
 CAS(10e,12o) at equal size the cipsi and asci spaces are lower in energy than
 the heat-bath one (0.81 and 0.83 against 1.30 mHartree above full CI at 1635
 determinants), and the aci error follows sigma (0.93, 0.096 and 0.0096

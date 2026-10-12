@@ -11,6 +11,7 @@ Needs the zshci executable (make in socutils/lib/zshci).  Run:
     python hci/test/test_shci.py
 '''
 
+import os
 import unittest
 
 import numpy
@@ -119,6 +120,49 @@ class KnownValues(unittest.TestCase):
             dm1b, dm2b = restarted.make_rdm12(ci1[k], self.norb, self.nelec)
             self.assertAlmostEqual(abs(dm1a - dm1b).max(), 0, 6)
             self.assertAlmostEqual(abs(dm2a - dm2b).max(), 0, 6)
+
+    def test_asci_with_pruning(self):
+        # Determinants leave and re-enter the space.  Whatever the path, the
+        # result must be the eigenstates of the Hamiltonian in the final
+        # determinants, and the same for every way of holding the
+        # Hamiltonian.
+        norb, nelec = self.norb, self.nelec
+        select = {'method': 'asci', 'target_dets': 30, 'growth': 1.6,
+                  'core_dets': 12, 'prune': True, 'max_iter': 30,
+                  'energy_tol': 1e-12, 'davidson_tol_loose': 1e-10}
+        results = []
+        for extra in ({}, {'incremental': False}, {'hamiltonian': 'direct'},
+                      {'select': dict(select, compact_above=0.1)}):
+            solver = shci.SHCI()
+            solver.davidson_tol = 1e-10
+            solver.extra = dict({'select': select}, **extra)
+            solver.extra.setdefault('davidson', {'tol': 1e-10})
+            e, ci = solver.kernel(self.h1, self.eri, norb, nelec,
+                                  nroots=2, ecore=self.ecore)
+            occslst, vectors = solver.wavefunction()
+            with open(os.path.join(solver.scratch, 'output.txt')) as f:
+                output = f.read()
+            results.append((e, occslst, solver, ci, output))
+        e, occslst, solver, ci, output = results[0]
+        self.assertEqual(len(occslst), 30)
+        self.assertIn('list compacted', output)
+        # Larger than the target: something was taken out along the way.
+        removed = int(output.split('list compacted: ')[1].split()[0])
+        self.assertGreater(removed, 0)
+        self.assertGreater(results[3][4].count('list compacted'), 1)
+
+        e_ref, ci_ref = zfci.kernel_dets(self.h1, self.eri, norb, occslst,
+                                         ecore=self.ecore, nroots=2)
+        self.assertAlmostEqual(abs(numpy.asarray(e) - e_ref).max(), 0, 8)
+        for k in range(2):
+            dm1, dm2 = solver.make_rdm12(ci[k], norb, nelec)
+            dm1_ref, dm2_ref = zfci.make_rdm12_dets(ci_ref[k], norb, occslst)
+            self.assertAlmostEqual(abs(dm1 - dm1_ref).max(), 0, 6)
+            self.assertAlmostEqual(abs(dm2 - dm2_ref).max(), 0, 6)
+        for other in results[1:]:
+            self.assertEqual(sorted(other[1]), sorted(occslst))
+            self.assertAlmostEqual(abs(numpy.asarray(other[0]) - e).max(), 0, 8)
+
 
 class RealNumbers(unittest.TestCase):
     '''A real Hamiltonian in real arithmetic against the same Hamiltonian in

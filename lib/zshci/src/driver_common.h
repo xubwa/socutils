@@ -278,6 +278,22 @@ SharedArray<Det<W>> ShareSorted(Span<Det<W>> dets, const Comm& comm) {
   return SharedArray<Det<W>>::FromRoot(sorted, comm);
 }
 
+// Collective: the determinants of the root that are marked in `active` (read
+// on the root), sorted, once per node.
+template <int W>
+SharedArray<Det<W>> ShareSortedActive(Span<Det<W>> dets,
+                                      const std::vector<uint8_t>& active,
+                                      const Comm& comm) {
+  std::vector<Det<W>> sorted;
+  if (comm.is_root()) {
+    for (size_t i = 0; i < dets.size(); ++i) {
+      if (active[i]) sorted.push_back(dets[i]);
+    }
+    std::sort(sorted.begin(), sorted.end());
+  }
+  return SharedArray<Det<W>>::FromRoot(sorted, comm);
+}
+
 // The connection search requested in the input.
 inline ConnectOptions MakeConnectOptions(const Input& input) {
   ConnectOptions options;
@@ -371,15 +387,26 @@ class VariationalH {
     }
   }
 
-  // Collective: the lowest eigenpairs (see SolveDistributed).
+  // Collective: makes the Hamiltonian of `dets` from nothing, forgetting
+  // what was there.
+  void Rebuild(Span<Det<W>> dets) {
+    stored_ = SparseH<S>();
+    stored_.set_apply_diagonal(comm_.is_root());
+    tables_.reset();
+    Extend(dets, 0);
+  }
+
+  // Collective: the lowest eigenpairs (see SolveDistributed), with `active`
+  // in the determinants it marks.
   DavidsonResult Solve(const DavidsonOptions& options,
-                       std::vector<std::vector<S>>* root_vectors) const {
+                       std::vector<std::vector<S>>* root_vectors,
+                       const std::vector<uint8_t>* active = nullptr) const {
     if (!direct_) {
-      return SolveDistributed<S>(stored_, options, comm_, root_vectors);
+      return SolveDistributed<S>(stored_, options, comm_, root_vectors, active);
     }
     const DirectH<W, S> h(dets_, ints_, *tables_, connect_.threshold,
                           stored_.diagonal());
-    return SolveDistributed<S>(h, options, comm_, root_vectors);
+    return SolveDistributed<S>(h, options, comm_, root_vectors, active);
   }
 
   // Collective: the density matrices between two vectors.

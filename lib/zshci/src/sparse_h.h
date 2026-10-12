@@ -29,6 +29,47 @@ class LinearOperator {
   virtual void Apply(const S* x, S* y) const = 0;
 };
 
+// An operator restricted to the basis vectors marked in `active`: P H P,
+// where P projects on them, plus a shift on the others that puts them above
+// every eigenvalue of the restricted operator. Its lowest eigenvectors are
+// those of H in the marked subspace, with zeros elsewhere (as long as the
+// subspace holds that many).
+template <typename S>
+class MaskedOperator : public LinearOperator<S> {
+ public:
+  // `inner` and `active` (one entry per basis vector) must outlive this.
+  MaskedOperator(const LinearOperator<S>& inner,
+                 const std::vector<uint8_t>& active)
+      : inner_(inner), active_(active), diagonal_(inner.diagonal()) {
+    double largest = 0.0;
+    for (double d : diagonal_) largest = d > largest ? d : largest;
+    shift_ = largest + 1.0;
+    for (size_t i = 0; i < diagonal_.size(); ++i) {
+      if (!active_[i]) diagonal_[i] = shift_;
+    }
+  }
+
+  size_t dim() const override { return inner_.dim(); }
+  const std::vector<double>& diagonal() const override { return diagonal_; }
+  void Apply(const S* x, S* y) const override {
+    const long n = static_cast<long>(dim());
+    std::vector<S> masked(n);
+#pragma omp parallel for schedule(static)
+    for (long i = 0; i < n; ++i) masked[i] = active_[i] ? x[i] : S(0.0);
+    inner_.Apply(masked.data(), y);
+#pragma omp parallel for schedule(static)
+    for (long i = 0; i < n; ++i) {
+      if (!active_[i]) y[i] = shift_ * x[i];
+    }
+  }
+
+ private:
+  const LinearOperator<S>& inner_;
+  const std::vector<uint8_t>& active_;
+  std::vector<double> diagonal_;
+  double shift_ = 0.0;
+};
+
 // Index of a determinant in the variational space.
 using DetIndex = uint32_t;
 

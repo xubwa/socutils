@@ -1515,6 +1515,7 @@ void TestPtScoreSelection(const Integrals<Complex>& ints) {
 
   const HeatBath heat_bath(ints, 0.0);
   const RestrictedFilter filter(LabelFilter(std::vector<int>(n, 0), 0), {}, n);
+  const std::vector<uint8_t> all_active(dets.size(), 1);
   const SelectionContext<1, Complex> context{0,
                                              MakeSpan(dets),
                                              MakeSpan(sorted_dets),
@@ -1524,7 +1525,9 @@ void TestPtScoreSelection(const Integrals<Complex>& ints) {
                                              ints,
                                              heat_bath,
                                              filter,
-                                             serial};
+                                             serial,
+                                             MakeSpan(all_active),
+                                             dets.size()};
 
   // By count: the space grows from 60 to 150 determinants.
   for (SelectMethod method : {SelectMethod::kCipsi, SelectMethod::kAsci}) {
@@ -1533,7 +1536,7 @@ void TestPtScoreSelection(const Integrals<Complex>& ints) {
     select.growth = 2.5;
     select.target_dets = 1000;
     PtScoreSelector<1, Complex> selector(select);
-    const std::vector<Det<1>> chosen = selector.SelectNew(context);
+    const std::vector<Det<1>> chosen = selector.Select(context).add;
     const bool amplitude = method == SelectMethod::kAsci;
     std::sort(reference.begin(), reference.end(),
               [&](const Reference& a, const Reference& b) {
@@ -1573,7 +1576,7 @@ void TestPtScoreSelection(const Integrals<Complex>& ints) {
     }
     std::sort(expected.begin(), expected.end());
     PtScoreSelector<1, Complex> selector(select);
-    const std::vector<Det<1>> chosen = selector.SelectNew(context);
+    const std::vector<Det<1>> chosen = selector.Select(context).add;
     Expect(expected.size() > 20 && expected.size() + 20 < reference.size() &&
                chosen == expected,
            "aci selection leaves out the smallest energies that sum to "
@@ -1582,6 +1585,157 @@ void TestPtScoreSelection(const Integrals<Complex>& ints) {
         "      %zu candidates, second-order energy %.6f, %zu kept "
         "with sigma %.6f\n",
         reference.size(), total, chosen.size(), select.sigma);
+  }
+
+  // asci with pruning: the determinants of the space are ranked with the
+  // candidates, by the largest magnitude of their coefficients.
+  {
+    SelectInput select;
+    select.method = SelectMethod::kAsci;
+    select.prune = true;
+    select.growth = 2.5;
+    select.target_dets = 100;
+    struct Ranked {
+      double value;
+      bool internal;
+      size_t index;  // into dets or into reference
+    };
+    std::vector<Ranked> ranking;
+    for (size_t i = 0; i < dets.size(); ++i) {
+      ranking.push_back(
+          {std::max(std::abs(root_vectors[0][i]), std::abs(root_vectors[1][i])),
+           true, i});
+    }
+    for (size_t a = 0; a < reference.size(); ++a) {
+      ranking.push_back({reference[a].amplitude_score, false, a});
+    }
+    std::sort(
+        ranking.begin(), ranking.end(),
+        [](const Ranked& a, const Ranked& b) { return a.value > b.value; });
+    std::vector<Det<1>> expected_add;
+    std::vector<size_t> expected_drop;
+    for (size_t r = 0; r < ranking.size(); ++r) {
+      const bool kept = r < select.target_dets;
+      if (kept && !ranking[r].internal) {
+        expected_add.push_back(reference[ranking[r].index].det);
+      } else if (!kept && ranking[r].internal) {
+        expected_drop.push_back(ranking[r].index);
+      }
+    }
+    std::sort(expected_add.begin(), expected_add.end());
+    std::sort(expected_drop.begin(), expected_drop.end());
+    PtScoreSelector<1, Complex> selector(select);
+    const Selection<1> selection = selector.Select(context);
+    Expect(!expected_drop.empty() && expected_drop.size() < dets.size() &&
+               selection.add == expected_add && selection.drop == expected_drop,
+           "asci with pruning keeps the highest-ranked determinants of the "
+           "space and of the candidates");
+    std::printf("      %zu of %zu determinants leave the space, %zu come in\n",
+                selection.drop.size(), dets.size(), selection.add.size());
+
+    // The eigensolver in the determinants that stay.
+    std::vector<uint8_t> active(dets.size(), 1);
+    for (size_t i : selection.drop) active[i] = 0;
+    std::vector<Det<1>> staying;
+    for (size_t i = 0; i < dets.size(); ++i) {
+      if (active[i]) staying.push_back(dets[i]);
+    }
+    SparseH<Complex> h_staying;
+    std::vector<double> diagonal_staying(staying.size());
+    for (size_t d = 0; d < staying.size(); ++d) {
+      diagonal_staying[d] = DiagonalEnergy(staying[d], ints);
+    }
+    h_staying.AppendDiagonal(diagonal_staying);
+    h_staying.AppendBlock(
+        BuildBlock(MakeSpan(staying), 0, ints, ConnectOptions()));
+    DavidsonOptions dense;
+    dense.dense_dim = 1 << 20;
+    std::vector<std::vector<Complex>> exact(
+        2, std::vector<Complex>(staying.size(), 0.0));
+    const std::vector<double> exact_energies =
+        Davidson<Complex>(h_staying, dense, &exact).energies;
+    const MaskedOperator<Complex> masked(h, active);
+    bool same = true;
+    for (int dense_dim : {1 << 20, 0}) {
+      DavidsonOptions options;
+      options.dense_dim = dense_dim;
+      options.tol = 1e-9;
+      std::vector<std::vector<Complex>> guess = root_vectors;
+      for (std::vector<Complex>& v : guess) {
+        for (size_t i : selection.drop) v[i] = 0.0;
+      }
+      const DavidsonResult result = Davidson<Complex>(masked, options, &guess);
+      for (int k = 0; k < 2; ++k) {
+        same = same && result.converged &&
+               std::abs(result.energies[k] - exact_energies[k]) < 1e-9;
+        for (size_t i : selection.drop) {
+          same = same && std::abs(guess[k][i]) < 1e-12;
+        }
+      }
+    }
+    Expect(same,
+           "the eigensolver in the marked determinants gives the "
+           "eigenpairs of the Hamiltonian in them, with zeros "
+           "elsewhere");
+  }
+
+  // asci with pruning and a subset generating: every determinant, of the
+  // space or not, is ranked by its amplitude from the generators.
+  {
+    SelectInput select;
+    select.method = SelectMethod::kAsci;
+    select.prune = true;
+    select.growth = 2.5;
+    select.target_dets = 100;
+    select.core_dets = 20;
+    std::vector<size_t> by_weight(dets.size());
+    for (size_t i = 0; i < dets.size(); ++i) by_weight[i] = i;
+    std::sort(by_weight.begin(), by_weight.end(),
+              [&](size_t a, size_t b) { return weights[a] > weights[b]; });
+    by_weight.resize(select.core_dets);
+    std::vector<Det<1>> pool(external.begin(), external.end());
+    pool.insert(pool.end(), dets.begin(), dets.end());
+    std::vector<std::pair<double, Det<1>>> ranking;
+    for (const Det<1>& det : pool) {
+      const double energy_a = DiagonalEnergy(det, ints);
+      double score = 0.0;
+      for (int k = 0; k < 2; ++k) {
+        Complex v(0.0);
+        for (size_t j : by_weight) {
+          if (dets[j] == det) continue;
+          v += Hij(det, dets[j], ints) * root_vectors[k][j];
+        }
+        const double gap = energy_a - energies[k];
+        if (gap > 0.0) score = std::max(score, std::abs(v) / gap);
+      }
+      if (score > 0.0) ranking.push_back({score, det});
+    }
+    std::sort(
+        ranking.begin(), ranking.end(),
+        [](const std::pair<double, Det<1>>& a,
+           const std::pair<double, Det<1>>& b) { return a.first > b.first; });
+    std::vector<Det<1>> kept;
+    for (size_t r = 0; r < select.target_dets; ++r) {
+      kept.push_back(ranking[r].second);
+    }
+    std::sort(kept.begin(), kept.end());
+    std::vector<Det<1>> expected_add;
+    std::set_difference(kept.begin(), kept.end(), sorted_dets.begin(),
+                        sorted_dets.end(), std::back_inserter(expected_add));
+    std::vector<size_t> expected_drop;
+    for (size_t i = 0; i < dets.size(); ++i) {
+      if (!std::binary_search(kept.begin(), kept.end(), dets[i])) {
+        expected_drop.push_back(i);
+      }
+    }
+    PtScoreSelector<1, Complex> selector(select);
+    const Selection<1> selection = selector.Select(context);
+    Expect(ranking.size() > 200 && !expected_drop.empty() &&
+               selection.add == expected_add && selection.drop == expected_drop,
+           "asci with pruning and a generating subset ranks all "
+           "determinants by their amplitude from the generators");
+    std::printf("      %zu of %zu determinants leave the space, %zu come in\n",
+                selection.drop.size(), dets.size(), selection.add.size());
   }
 }
 

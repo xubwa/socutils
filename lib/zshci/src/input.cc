@@ -103,6 +103,8 @@ Json ToJson(const Input& in) {
                    {"target_dets", in.select.target_dets},
                    {"growth", in.select.growth},
                    {"core_dets", in.select.core_dets},
+                   {"prune", in.select.prune},
+                   {"compact_above", in.select.compact_above},
                    {"sigma", in.select.sigma},
                    {"epsilon_generate", in.select.epsilon_generate},
                    {"schedule", in.select.schedule},
@@ -282,9 +284,17 @@ Input ParseInput(const std::string& text) {
     sel.Get("target_dets", &in.select.target_dets);
     sel.Get("growth", &in.select.growth);
     sel.Get("core_dets", &in.select.core_dets);
+    sel.Get("prune", &in.select.prune);
+    sel.Get("compact_above", &in.select.compact_above);
     sel.Get("sigma", &in.select.sigma);
     sel.Get("epsilon_generate", &in.select.epsilon_generate);
     sel.CheckNoUnknownKeys();
+    if (in.select.prune && in.select.method != SelectMethod::kAsci) {
+      sel.Fail("prune", "is available for the method \"asci\" only");
+    }
+    if (in.select.compact_above < 0.0 || in.select.compact_above >= 1.0) {
+      sel.Fail("compact_above", "must be at least 0 and below 1");
+    }
 
     if (in.select.method == SelectMethod::kHeatBath) {
       if (in.select.schedule.empty() || in.select.schedule[0].first != 0) {

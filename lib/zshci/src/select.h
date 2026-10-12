@@ -157,11 +157,14 @@ SharedArray<double> ShareWeights(
 template <int W, typename S>
 struct SelectionContext {
   int iteration;
-  // The determinants of the space, and the same sorted.
+  // The list of determinants. All of them are in the space unless a
+  // selector has taken some out (see Selection): those stay in the list,
+  // with weight and coefficients zero, and count as outside the space.
   Span<Det<W>> dets;
+  // The determinants of the space, sorted.
   Span<Det<W>> sorted_dets;
-  // For every determinant, the root-sum-square of its coefficients over the
-  // roots (see ShareWeights).
+  // For every determinant of the list, the root-sum-square of its
+  // coefficients over the roots (see ShareWeights).
   Span<double> weights;
   // The eigenvectors and their energies (without the core energy); only for
   // selectors that ask for them (needs_vectors), otherwise null and empty.
@@ -171,9 +174,24 @@ struct SelectionContext {
   const HeatBath& heat_bath;
   const RestrictedFilter& filter;
   const Comm& comm;
+  // For every determinant of the list, whether it is in the space, and how
+  // many are.
+  Span<uint8_t> active;
+  size_t num_active;
 };
 
-// One kind of selected CI: the rule by which the variational space grows.
+// What a selector decides in one iteration; the same on every rank.
+template <int W>
+struct Selection {
+  // Determinants to bring into the space, sorted, none of them in it now:
+  // new ones, or ones of the list that were taken out before.
+  std::vector<Det<W>> add;
+  // Positions in the list of the determinants to take out of the space,
+  // increasing.
+  std::vector<size_t> drop;
+};
+
+// One kind of selected CI: the rule by which the variational space changes.
 template <int W, typename S>
 class Selector {
  public:
@@ -184,17 +202,16 @@ class Selector {
   virtual const char* parameter_name() const = 0;
   virtual double Parameter(int iteration) const = 0;
   // Whether the selection has reached its last stage, given the iteration,
-  // the size of the space and how many determinants the last SelectNew
-  // added; the calculation can only be called converged from there on.
+  // the size of the space and how many determinants the last Select brought
+  // in or took out; the calculation can only be called converged from there
+  // on.
   virtual bool InFinalStage(int iteration, size_t num_dets,
-                            size_t num_added) const = 0;
-  // Whether SelectNew uses the eigenvectors.
+                            size_t num_changed) const = 0;
+  // Whether Select uses the eigenvectors.
   virtual bool needs_vectors() const { return false; }
 
-  // Collective: the determinants to add, sorted, none of them in the space
-  // yet, the same list on every rank.
-  virtual std::vector<Det<W>> SelectNew(
-      const SelectionContext<W, S>& context) = 0;
+  // Collective: what to bring into the space and what to take out of it.
+  virtual Selection<W> Select(const SelectionContext<W, S>& context) = 0;
 };
 
 // Heat-bath selection with the epsilon1 schedule of the input.
@@ -208,16 +225,17 @@ class HeatBathSelector : public Selector<W, S> {
     return select_.Epsilon(iteration);
   }
   bool InFinalStage(int iteration, size_t /*num_dets*/,
-                    size_t /*num_added*/) const override {
+                    size_t /*num_changed*/) const override {
     return iteration >= select_.schedule.back().first;
   }
 
-  std::vector<Det<W>> SelectNew(
-      const SelectionContext<W, S>& context) override {
-    return SelectNewDeterminants(
+  Selection<W> Select(const SelectionContext<W, S>& context) override {
+    Selection<W> selection;
+    selection.add = SelectNewDeterminants(
         context.dets, context.sorted_dets, context.weights,
         select_.Epsilon(context.iteration), context.ints, context.heat_bath,
         context.filter, context.comm);
+    return selection;
   }
 
  private:
@@ -237,7 +255,16 @@ class HeatBathSelector : public Selector<W, S> {
 //                to target_dets;
 //   aci:         all but the lowest ones whose scores sum to at most sigma.
 // Either rule amounts to a threshold on the score, which is found by
-// bisection over all ranks. No determinant is ever removed.
+// bisection over all ranks.
+//
+// With "prune" (asci), the determinants of the space take part in the
+// ranking, with the same amplitude - the sum for D_a then runs over the
+// generating determinants other than D_a - and the space becomes the
+// highest-ranked determinants of both kinds: growth times its present size,
+// up to target_dets. Those of the space that fall below are taken out. If
+// all determinants generate, the amplitude of one of the space is its
+// coefficient (the eigenvalue equation says so) and that is used. Without
+// "prune" no determinant is ever removed.
 template <int W, typename S>
 class PtScoreSelector : public Selector<W, S> {
  public:
@@ -252,25 +279,28 @@ class PtScoreSelector : public Selector<W, S> {
                : static_cast<double>(select_.target_dets);
   }
   bool InFinalStage(int /*iteration*/, size_t num_dets,
-                    size_t num_added) const override {
+                    size_t num_changed) const override {
     // Also when nothing is left to add before the target is reached.
     return select_.method == SelectMethod::kAci ||
-           num_dets >= select_.target_dets || num_added == 0;
+           num_dets >= select_.target_dets || num_changed == 0;
   }
   bool needs_vectors() const override { return true; }
 
-  std::vector<Det<W>> SelectNew(
-      const SelectionContext<W, S>& context) override {
+  Selection<W> Select(const SelectionContext<W, S>& context) override {
     const Comm& comm = context.comm;
-    const size_t num_dets = context.dets.size();
+    const size_t num_dets = context.num_active;
     const bool by_count = select_.method != SelectMethod::kAci;
+    // Ranking the determinants of the space takes their coefficients.
+    const bool prune = select_.prune && context.vectors != nullptr;
+    // The number of determinants to add or, with pruning, the size the
+    // space is to have.
     size_t wanted = 0;
     if (by_count) {
-      if (num_dets >= select_.target_dets) return {};
+      if (!prune && num_dets >= select_.target_dets) return {};
       const size_t grown =
           static_cast<size_t>(std::ceil(select_.growth * num_dets));
-      wanted = std::min(select_.target_dets, std::max(grown, num_dets + 1)) -
-               num_dets;
+      wanted = std::min(select_.target_dets, std::max(grown, num_dets + 1));
+      if (!prune) wanted -= num_dets;
     }
 
     // asci: only determinants of weight at least this generate candidates.
@@ -287,7 +317,13 @@ class PtScoreSelector : public Selector<W, S> {
       comm.BcastValue(&core_weight);
     }
 
-    // The scores of the external determinants this rank owns, root by root.
+    // With pruning and a subset generating, the determinants of the space
+    // are scored like the others; nothing is excluded from the sums.
+    const bool rank_all = prune && core_weight > 0.0;
+    const Span<Det<W>> excluded =
+        rank_all ? Span<Det<W>>() : context.sorted_dets;
+
+    // The scores of the determinants this rank owns, root by root.
     std::vector<Scored> scores;
     if (context.vectors == nullptr) {
       // No eigenvectors yet: the space holds fewer determinants than roots.
@@ -299,12 +335,13 @@ class PtScoreSelector : public Selector<W, S> {
       for (const Det<W>& det : context.dets) {
         lowest = std::min(lowest, DiagonalEnergy(det, context.ints));
       }
-      scores = ScoresOfRoot(context, MakeSpan(stand_in), lowest, core_weight);
+      scores = ScoresOfRoot(context, MakeSpan(stand_in), lowest, core_weight,
+                            excluded);
     } else {
       for (int k = 0; k < context.vectors->num_roots; ++k) {
         std::vector<Scored> of_root =
             ScoresOfRoot(context, context.vectors->Root(k), context.energies[k],
-                         core_weight);
+                         core_weight, excluded);
         if (k == 0) {
           scores = std::move(of_root);
         } else {
@@ -313,16 +350,54 @@ class PtScoreSelector : public Selector<W, S> {
       }
     }
 
-    const double threshold = by_count
-                                 ? ThresholdForCount(scores, wanted, comm)
-                                 : ThresholdForSum(scores, select_.sigma, comm);
-    std::vector<Det<W>> chosen;
-    for (const Scored& item : scores) {
-      if (item.score >= threshold) chosen.push_back(item.det);
+    // With pruning and all determinants generating: the rank of every
+    // determinant of the space, zero for the others of the list. The root
+    // counts them.
+    std::vector<double> internal;
+    if (prune && !rank_all) {
+      internal.assign(context.dets.size(), 0.0);
+      for (int k = 0; k < context.vectors->num_roots; ++k) {
+        const Span<S> root = context.vectors->Root(k);
+        for (size_t i = 0; i < internal.size(); ++i) {
+          if (context.active[i]) {
+            internal[i] = std::max(internal[i], std::abs(root[i]));
+          }
+        }
+      }
     }
-    chosen = comm.GatherAll(chosen);
-    std::sort(chosen.begin(), chosen.end());
-    return chosen;
+    const std::vector<double> none;
+    const double threshold =
+        by_count ? ThresholdForCount(scores, comm.is_root() ? internal : none,
+                                     wanted, comm)
+                 : ThresholdForSum(scores, select_.sigma, comm);
+    Selection<W> selection;
+    for (const Scored& item : scores) {
+      if (item.score >= threshold) selection.add.push_back(item.det);
+    }
+    selection.add = comm.GatherAll(selection.add);
+    std::sort(selection.add.begin(), selection.add.end());
+    if (rank_all) {
+      // What was gathered is the new space: split it into what comes in and
+      // what stays.
+      const std::vector<Det<W>> kept = std::move(selection.add);
+      selection.add.clear();
+      std::set_difference(kept.begin(), kept.end(), context.sorted_dets.begin(),
+                          context.sorted_dets.end(),
+                          std::back_inserter(selection.add));
+      for (size_t i = 0; i < context.dets.size(); ++i) {
+        if (context.active[i] &&
+            !std::binary_search(kept.begin(), kept.end(), context.dets[i])) {
+          selection.drop.push_back(i);
+        }
+      }
+    } else if (prune) {
+      for (size_t i = 0; i < internal.size(); ++i) {
+        if (context.active[i] && internal[i] < threshold) {
+          selection.drop.push_back(i);
+        }
+      }
+    }
+    return selection;
   }
 
  private:
@@ -331,11 +406,12 @@ class PtScoreSelector : public Selector<W, S> {
     double score;
   };
 
-  // The scores from one state with the given coefficients and energy,
-  // sorted by determinant.
+  // The scores from one state with the given coefficients and energy, of
+  // the determinants not in `excluded` (sorted), sorted by determinant.
   std::vector<Scored> ScoresOfRoot(const SelectionContext<W, S>& context,
                                    Span<S> coefficients, double energy,
-                                   double core_weight) const {
+                                   double core_weight,
+                                   Span<Det<W>> excluded) const {
     using Term = internal::DetTerm<W, S>;
     const bool amplitude = select_.method == SelectMethod::kAsci;
     const double epsilon = select_.epsilon_generate;
@@ -369,9 +445,9 @@ class PtScoreSelector : public Selector<W, S> {
         per_thread[omp_get_thread_num()].push_back({term.det, score});
       }
     };
-    internal::SumOverExternalDets<W, Term>(
-        context.dets.size(), context.sorted_dets, context.ints, 1, 1,
-        context.comm, generate, contribution);
+    internal::SumOverExternalDets<W, Term>(context.dets.size(), excluded,
+                                           context.ints, 1, 1, context.comm,
+                                           generate, contribution);
     std::vector<Scored> all;
     for (std::vector<Scored>& list : per_thread) {
       all.insert(all.end(), list.begin(), list.end());
@@ -405,15 +481,21 @@ class PtScoreSelector : public Selector<W, S> {
     return out;
   }
 
-  // The smallest and the largest score over all ranks; both zero if there
-  // are no scores.
-  static void Range(const std::vector<Scored>& scores, const Comm& comm,
+  // The smallest and the largest positive value among the scores and
+  // `others` over all ranks; both zero if there are none.
+  static void Range(const std::vector<Scored>& scores,
+                    const std::vector<double>& others, const Comm& comm,
                     double* smallest, double* largest) {
-    // Largest score and largest inverse score of this rank.
+    // Largest value and largest inverse value of this rank.
     std::vector<double> local(2, 0.0);
     for (const Scored& item : scores) {
       local[0] = std::max(local[0], item.score);
       local[1] = std::max(local[1], 1.0 / item.score);
+    }
+    for (double value : others) {
+      if (value <= 0.0) continue;
+      local[0] = std::max(local[0], value);
+      local[1] = std::max(local[1], 1.0 / value);
     }
     const std::vector<double> all = comm.GatherAll(local);
     double max_score = 0.0, max_inverse = 0.0;
@@ -425,16 +507,20 @@ class PtScoreSelector : public Selector<W, S> {
     *smallest = max_inverse > 0.0 ? 1.0 / max_inverse : 0.0;
   }
 
-  // The score such that about `wanted` determinants, over all ranks, lie at
-  // or above it (all of them if there are no more).
+  // The value such that about `wanted` of the scores, over all ranks, and
+  // of `others` (values that take part in the ranking; a rank passes its
+  // own, so shared ones come from one rank only) lie at or above it - all
+  // the positive ones if there are no more.
   static double ThresholdForCount(const std::vector<Scored>& scores,
+                                  const std::vector<double>& others,
                                   size_t wanted, const Comm& comm) {
     double low, high;
-    Range(scores, comm, &low, &high);
+    Range(scores, others, comm, &low, &high);
     if (high == 0.0) return 1.0;  // nothing to choose from
     auto count_at = [&](double threshold) {
       double count = 0.0;
       for (const Scored& item : scores) count += item.score >= threshold;
+      for (double value : others) count += value >= threshold;
       comm.Sum(&count, 1);
       return count;
     };
@@ -457,7 +543,7 @@ class PtScoreSelector : public Selector<W, S> {
   static double ThresholdForSum(const std::vector<Scored>& scores,
                                 double budget, const Comm& comm) {
     double low, high;
-    Range(scores, comm, &low, &high);
+    Range(scores, std::vector<double>(), comm, &low, &high);
     if (high == 0.0) return 1.0;
     auto sum_below = [&](double threshold) {
       double sum = 0.0;
@@ -580,17 +666,54 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
   int num_products = 0;
   double seconds_products = 0.0;
   double seconds_solver = 0.0;
+
+  // A selector may take determinants out of the space. They stay in the
+  // list, so that neither the list nor the stored Hamiltonian is reordered
+  // or rebuilt; the root marks them here, the eigenvectors are zero on them
+  // and the eigensolver works in the others.
+  std::vector<uint8_t> root_active;
+  if (comm.is_root()) root_active.assign(shared_dets.size(), 1);
+  size_t num_inactive = 0;
+
+  // Collective: removes the determinants out of the space from the list and
+  // makes the Hamiltonian afresh. The eigenvectors must be those of the
+  // list as it is.
+  auto compact = [&]() {
+    const double compact_start = omp_get_wtime();
+    if (comm.is_root()) {
+      size_t kept = 0;
+      for (size_t i = 0; i < root_dets.size(); ++i) {
+        if (!root_active[i]) continue;
+        root_dets[kept] = root_dets[i];
+        for (std::vector<S>& v : root_vectors) v[kept] = v[i];
+        ++kept;
+      }
+      root_dets.resize(kept);
+      for (std::vector<S>& v : root_vectors) v.resize(kept);
+      root_active.assign(kept, 1);
+    }
+    shared_dets = SharedArray<Det<W>>::FromRoot(root_dets, comm);
+    h.Rebuild(shared_dets.span());
+    std::printf(
+        "list compacted: %zu determinants out of the space removed, "
+        "Hamiltonian made afresh in %.2f s\n",
+        num_inactive, omp_get_wtime() - compact_start);
+    num_inactive = 0;
+  };
+
   for (int iter = 0; iter < input.select.max_iter && !finished; ++iter) {
     const double epsilon = selector->Parameter(iter);
     const size_t old_size = shared_dets.size();
 
     const double select_start = omp_get_wtime();
-    std::vector<Det<W>> fresh;
+    Selection<W> selection;
     {
       const SharedArray<double> weights =
           ShareWeights(root_vectors, old_size, num_roots, comm);
+      const SharedArray<uint8_t> active =
+          SharedArray<uint8_t>::FromRoot(root_active, comm);
       const SharedArray<Det<W>> sorted_dets =
-          ShareSorted(shared_dets.span(), comm);
+          ShareSortedActive(shared_dets.span(), root_active, comm);
       // The eigenvectors go to all ranks only for selectors that use them.
       SharedVectors<S> vectors;
       const bool with_vectors = selector->needs_vectors() && have_vectors;
@@ -604,20 +727,66 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
                                            ints,
                                            heat_bath,
                                            filter,
-                                           comm};
-      fresh = selector->SelectNew(context);
+                                           comm,
+                                           active.span(),
+                                           old_size - num_inactive};
+      selection = selector->Select(context);
     }
     const double build_start = omp_get_wtime();
 
-    const size_t new_size = old_size + fresh.size();
-    if (new_size < static_cast<size_t>(num_roots)) {
+    // The root applies the selection to the list: determinants taken out
+    // are marked, those brought in are either marked again, if the list
+    // has them, or appended.
+    std::vector<Det<W>> fresh;
+    size_t num_fresh = 0, num_back = 0, num_out = 0;
+    if (comm.is_root()) {
+      for (size_t i : selection.drop) {
+        root_active[i] = 0;
+        for (std::vector<S>& v : root_vectors) v[i] = S(0.0);
+      }
+      num_out = selection.drop.size();
+      if (num_inactive + num_out == 0) {
+        fresh = std::move(selection.add);
+      } else {
+        // The positions of the list in the order of the determinants.
+        std::vector<size_t> order(old_size);
+        for (size_t i = 0; i < old_size; ++i) order[i] = i;
+        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+          return root_dets[a] < root_dets[b];
+        });
+        for (const Det<W>& det : selection.add) {
+          const auto found = std::lower_bound(
+              order.begin(), order.end(), det,
+              [&](size_t i, const Det<W>& d) { return root_dets[i] < d; });
+          if (found == order.end() || root_dets[*found] < det ||
+              det < root_dets[*found]) {
+            fresh.push_back(det);
+          } else if (!root_active[*found]) {
+            root_active[*found] = 1;
+            ++num_back;
+          }
+        }
+      }
+      num_fresh = fresh.size();
+    }
+    selection = Selection<W>();
+    comm.BcastValue(&num_fresh);
+    comm.BcastValue(&num_back);
+    comm.BcastValue(&num_out);
+    num_inactive = num_inactive + num_out - num_back;
+    const size_t num_changed = num_fresh + num_back + num_out;
+
+    const size_t new_size = old_size + num_fresh;
+    const size_t num_active = new_size - num_inactive;
+    if (num_active < static_cast<size_t>(num_roots)) {
       throw std::runtime_error(
           "the space holds fewer determinants than roots; give more "
           "starting determinants or select more");
     }
-    if (!fresh.empty()) {
+    if (num_fresh > 0) {
       if (comm.is_root()) {
         root_dets.insert(root_dets.end(), fresh.begin(), fresh.end());
+        root_active.resize(new_size, 1);
       }
       shared_dets = SharedArray<Det<W>>::FromRoot(root_dets, comm);
       h.Extend(shared_dets.span(), old_size);
@@ -638,23 +807,24 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
     // stopped changing: solve tightly and stop.
     const double solve_start = omp_get_wtime();
     const std::vector<double> previous = energies;
-    DavidsonResult result = h.Solve(loose, &root_vectors);
+    const std::vector<uint8_t>* mask =
+        num_inactive > 0 ? &root_active : nullptr;
+    DavidsonResult result = h.Solve(loose, &root_vectors, mask);
     num_products += result.num_products;
     seconds_products += result.seconds_products;
     seconds_solver += result.seconds_total;
     bool converged_space = false;
-    if (selector->InFinalStage(iter, new_size, new_size - old_size) &&
+    if (selector->InFinalStage(iter, num_active, num_changed) &&
         !previous.empty()) {
       double change = 0.0;
       for (int k = 0; k < num_roots; ++k) {
         change += std::abs(result.energies[k] - previous[k]) / num_roots;
       }
-      converged_space =
-          new_size == old_size || change < input.select.energy_tol;
+      converged_space = num_changed == 0 || change < input.select.energy_tol;
     }
     finished = converged_space || iter == input.select.max_iter - 1;
     if (finished) {
-      result = h.Solve(input.davidson, &root_vectors);
+      result = h.Solve(input.davidson, &root_vectors, mask);
       num_products += result.num_products;
       seconds_products += result.seconds_products;
       seconds_solver += result.seconds_total;
@@ -666,17 +836,28 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
     energies = result.energies;
     for (int k = 0; k < num_roots; ++k) {
       std::printf("%5d %10.2e %12zu %5d %20.12f %9d %8.2f %8.2f %8.2f %9.2f\n",
-                  iter, epsilon, new_size, k,
+                  iter, epsilon, num_active, k,
                   energies[k] + ints.core_energy(), result.num_iterations,
                   build_start - select_start, solve_start - build_start,
                   omp_get_wtime() - solve_start, omp_get_wtime() - start_time);
+    }
+    if (num_back + num_out + num_inactive > 0) {
+      std::printf(
+          "      space: %zu new, %zu back in, %zu taken out; %zu of "
+          "the %zu listed are out of the space\n",
+          num_fresh, num_back, num_out, num_inactive, new_size);
     }
     if (finished && !converged_space) {
       std::printf("note: stopped at max_iter = %d before the energies "
                   "converged to energy_tol\n",
                   input.select.max_iter);
     }
+    if (!finished && input.select.compact_above > 0.0 &&
+        num_inactive > input.select.compact_above * new_size) {
+      compact();
+    }
   }
+  if (num_inactive > 0) compact();
   std::printf(
       "variational space: %zu determinants, %zu stored Hamiltonian "
       "elements on the root\n",

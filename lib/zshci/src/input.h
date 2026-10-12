@@ -63,7 +63,17 @@ struct RestrictionInput {
 //          and target as for cipsi
 //   aci    by its second-order energy; those left out are the smallest ones,
 //          whose energies sum to at most "sigma"
-// None of them removes determinants from the space.
+// None of them removes determinants from the space, unless "prune" is set:
+//   asci   the determinants of the space are then ranked together with the
+//          candidates, by the same amplitude, and only the target_dets (or,
+//          while growing, growth times the present number) highest of both
+//          stay in the space
+// A determinant taken out of the space stays in the list of the program,
+// with coefficient zero, so that the stored Hamiltonian is neither reordered
+// nor rebuilt, and is treated like any determinant outside the space; it
+// comes back without cost if it is selected again. The list is cleared of
+// such determinants at the end and, if "compact_above" is set, whenever
+// their share of the list exceeds it; the Hamiltonian is then made afresh.
 enum class SelectMethod { kHeatBath, kCipsi, kAsci, kAci };
 
 struct SelectInput {
@@ -74,6 +84,11 @@ struct SelectInput {
   double growth = 2.0;
   // asci: number of determinants that generate candidates; 0 means all.
   size_t core_dets = 0;
+  // asci: whether determinants leave the space (see above).
+  bool prune = false;
+  // Share of determinants out of the space above which the list is
+  // compacted during the iterations; 0: only at the end.
+  double compact_above = 0.0;
   // aci: the energy left out, in Hartree.
   double sigma = 0.0;
   // cipsi, asci, aci: only terms with |H(a,i) c_i| above this enter V_a
