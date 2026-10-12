@@ -6,6 +6,7 @@
 # no extra configuration is needed:
 #
 #   ccsdt   ->  lib/libccsdt_clib.so  (socutils.cc)
+#   zgasci  ->  lib/libzgasci.so      (socutils.hci.gasci)
 #   ao2mo   ->  lib/libnrr_opt.so     (socutils.lib.ao2mo.nrr_fast; links
 #               against whatever pyscf the configuring Python resolves)
 #   vhf     ->  lib/libsocvhf.so      (socutils.somf.x2cmp; links against
@@ -54,7 +55,7 @@ build:
 	@mkdir -p $(BUILDDIR)
 	cd $(BUILDDIR) && $(CMAKE) .. -DCMAKE_BUILD_TYPE=Release $(CMAKE_ARGS)
 	$(CMAKE) --build $(BUILDDIR) -- -j$(NPROC)
-	@for so in libccsdt_clib.so libnrr_opt.so libsocvhf.so libsocdft.so libqdhf.so libsocpbcdf.so libsocthc.so \
+	@for so in libccsdt_clib.so libnrr_opt.so libsocvhf.so libsocdft.so libqdhf.so libsocpbcdf.so libsocthc.so libzgasci.so \
 	           deps/lib/libx2camf_c.so deps/lib/libzquatev.so; do \
 	    test -f $(LIBDIR)/$$so && echo "built $(LIBDIR)/$$so" \
 	        || { echo "ERROR: $$so not produced"; exit 1; }; \
@@ -71,4 +72,4 @@ compare: build
 clean:
 	rm -rf $(BUILDDIR) \
 	    $(LIBDIR)/libccsdt_clib.so $(LIBDIR)/libnrr_opt.so $(LIBDIR)/libsocvhf.so $(LIBDIR)/libsocdft.so \
-	    $(LIBDIR)/libqdhf.so $(LIBDIR)/libsocpbcdf.so $(LIBDIR)/libsocthc.so $(LIBDIR)/deps
+	    $(LIBDIR)/libqdhf.so $(LIBDIR)/libsocpbcdf.so $(LIBDIR)/libsocthc.so $(LIBDIR)/libzgasci.so $(LIBDIR)/deps
