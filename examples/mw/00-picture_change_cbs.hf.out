@@ -1,0 +1,5 @@
+== hf  prec 1e-04  order 9  box +-32  zeta 10000  int rho_nuc 10.0000000000
+  guess: GTO RHF/cc-pvdz (point nuclei) E_elec -105.2134990886
+  prec 1e-04 it  0  E_elec -104.108214936299  dE -1.04e+02  |res| 7.39e-02  (88 s)
+  prec 1e-04 it  1  E_elec -104.227823680166  dE -1.20e-01  |res| 1.99e-02  (164 s)
+  prec 1e-04 it  2  E_elec -104.235290320588  dE -7.47e-03  |res| 5.05e-03  (239 s)

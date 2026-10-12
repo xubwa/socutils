@@ -1,0 +1,14 @@
+== he2  prec 1e-05  order 9  box +-32  zeta 10000  int rho_nuc 4.0000000000
+  guess: GTO RHF/cc-pvdz (point nuclei) E_elec -6.4158897037
+  prec 1e-05 it  0  E_elec -6.412193814216  dE -6.41e+00  |res| 2.83e-02  (31 s)
+  prec 1e-05 it  1  E_elec -6.424442895707  dE -1.22e-02  |res| 4.91e-03  (57 s)
+  prec 1e-05 it  2  E_elec -6.424574318705  dE -1.31e-04  |res| 4.61e-04  (83 s)
+  prec 1e-05 it  3  E_elec -6.424576658826  dE -2.34e-06  |res| 7.22e-05  (110 s)
+  prec 1e-05 it  4  E_elec -6.424576735564  dE -7.67e-08  |res| 1.16e-05  (138 s)
+  prec 1e-05 it  5  E_elec -6.424576736568  dE -1.00e-09  |res| 1.07e-06  (165 s)
+  E_elec = -6.424576736533  eps = [-0.91929962 -0.91519558]  (183 s)
+  RESULT prec 1e-05  E_elec -6.424576736533  <O>  3.2141037752e+01  a2  9.96e-10 (exact 0)
+  RESULT prec 1e-05  a4 -5.63645613e-02 = H1 -1.79142319e-05 + H2kin -7.16569274e-05 + W -5.62749902e-02
+  RESULT prec 1e-05  a4_X (1e decoupling response) -1.63370037e-01  (check form -1.63366881e-01)  a4 + a4_X -2.19734598e-01
+  per orbital <[T,[T,O]]>: [ 0.019875 -0.020162]   <W T^-1[O,T]>: [-0.080332 -0.144768]  (234 s)
+== he2  prec 1e-06  order 9  box +-32  zeta 10000  int rho_nuc 4.0000000000
