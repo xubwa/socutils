@@ -12,18 +12,27 @@ atoms in 60 spinors, the spinor counterpart of the (24e, 30o) active space
 often used for this molecule. More virtual spinors: 24 100 (all of them).
 More occupied ones: 12 72 unfreezes 2p and 3s (36 electrons).
 
-Options, a comma-separated list: "nonrel" leaves the relativistic terms out
-(the non-relativistic Hamiltonian in spinors), "nosym" runs the
-Hartree-Fock without symmetry, which leaves degenerate spinors mixed and
-gives no labels. Both make the Hamiltonian harder for the program and are
-meant for stress tests.
+Options, a comma-separated list, to make the Hamiltonian harder for the
+program:
+  c=X     multiplies the speed of light by X. Spin-orbit coupling grows as
+          1/X^2: with X = 0.3 chromium has about the coupling of a 6p
+          element, and determinants that differ in the spin orientation of
+          an electron mix strongly.
+  he      adds a helium atom off the axis and off the middle, which leaves
+          a mirror plane as the only symmetry; implies nosym.
+  nosym   runs the Hartree-Fock without symmetry: no labels, and for the
+          linear molecule degenerate spinors come out mixed.
+  nonrel  leaves the relativistic terms out (the non-relativistic
+          Hamiltonian in spinors).
+  shift=X level shift of the Hartree-Fock iterations (default 0.3).
+  loose   accepts a Hartree-Fock that has not converged.
 
 Needs pyscf and socutils.
 """
 import sys
 from fractions import Fraction
 
-from pyscf import gto
+from pyscf import gto, lib
 from socutils.scf import spinor_hf
 from socutils.tools import fcidump_rel
 
@@ -32,7 +41,14 @@ num_active = int(sys.argv[2]) if len(sys.argv) > 2 else 60
 filename = sys.argv[3] if len(sys.argv) > 3 else 'FCIDUMP'
 options = sys.argv[4].split(',') if len(sys.argv) > 4 else []
 
-mol = gto.M(atom='Cr 0 0 0; Cr 0 0 1.68', basis='def2-svp', verbose=4)
+atoms = 'Cr 0 0 0; Cr 0 0 1.68'
+if 'he' in options:
+    atoms += '; He 1.8 0 0.3'
+    options.append('nosym')
+for option in options:
+    if option.startswith('c='):
+        lib.param.LIGHT_SPEED *= float(option[2:])
+mol = gto.M(atom=atoms, basis='def2-svp', verbose=4)
 if 'nosym' in options:
     mf = spinor_hf.SpinorSCF(mol)
 else:
@@ -40,9 +56,14 @@ else:
 if 'nonrel' not in options:
     mf = mf.x2camf()
 mf.level_shift = 0.3
-mf.max_cycle = 200
+for option in options:
+    if option.startswith('shift='):
+        mf.level_shift = float(option[6:])
+mf.max_cycle = 400
 mf.kernel()
-assert mf.converged
+# Orbitals of an unconverged Hartree-Fock still span a valid test
+# Hamiltonian; they are just not the Hartree-Fock orbitals.
+assert mf.converged or 'loose' in options
 assert num_core + num_active <= mol.nao_2c()
 labels = None
 if 'nosym' not in options:
@@ -52,5 +73,6 @@ if 'nosym' not in options:
 fcidump_rel.from_x2c(mf, num_core, num_active, filename=filename, tol=1e-12,
                      symm=labels)
 print('spinors', mol.nao_2c(), 'active', num_active, 'electrons',
-      mol.nelectron - num_core, 'E(HF)', mf.e_tot)
+      mol.nelectron - num_core, 'E(HF)', mf.e_tot, 'speed of light',
+      lib.param.LIGHT_SPEED)
 print('2 m_j of the active spinors', labels)
