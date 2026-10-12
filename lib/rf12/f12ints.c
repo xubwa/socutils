@@ -67,12 +67,12 @@ F12CLASS(yp,  ipip1ipip2,   2, 0, 2, 0)
 /*
  * RF12_contract2e
  *
- *   mode 0:  T[a, cj, j, b, cl, l] = sum A[a, ci, i] B[b, ck, k] (ci i cj j | K | ck k cl l)
- *   mode 1:  T[a, ci, i, b, ck, k] = sum A[a, cj, j] B[b, cl, l] (ci i cj j | K | ck k cl l)
+ *   T[a, cy1, y1, b, cy2, y2] = sum A[a, cx1, x1] B[b, cx2, x2] (ci i cj j | K | ck k cl l)
  *
- * i.e. mode 0 contracts the first function of each electron, mode 1 the
- * second (real AOs: (ij|kl) = (ji|kl), so derivative classes acting on the
- * first function, e.g. ipip1, can be used for the second one).  Complex A, B
+ * mode bit 0: electron 1 contracts x1 = i (0) or x1 = j (1), the other is open (y1);
+ * mode bit 1: electron 2 contracts x2 = k (0) or x2 = l (1).
+ * (real AOs: (ij|kl) = (ji|kl), so derivative classes acting on the first
+ * function, e.g. ipip1, can be used for either function of a pair.)  Complex A, B
  * as separate real/imaginary arrays, real integrals.  libcint stores a
  * shell-quartet block as out[comp][l][k][j][i] (i fastest) with comp the
  * row-major index of (ci, cj, ck, cl) (checked against finite differences in
@@ -90,8 +90,9 @@ void RF12_contract2e(intor_t intor, CINTOpt *opt, int mode, int nci, int ncj, in
         int nao = ao_loc[nbas];
         int ncomp = nci * ncj * nck * ncl;
         /* contracted (x1 on electron 1, x2 on electron 2), open (y1, y2) */
-        int ncx1 = mode ? ncj : nci, ncy1 = mode ? nci : ncj;
-        int ncx2 = mode ? ncl : nck, ncy2 = mode ? nck : ncl;
+        int m1 = mode & 1, m2 = (mode >> 1) & 1;
+        int ncx1 = m1 ? ncj : nci, ncy1 = m1 ? nci : ncj;
+        int ncx2 = m2 ? ncl : nck, ncy2 = m2 ? nck : ncl;
         long sT_y2 = 1, sT_cy2 = nao, sT_b = (long)ncy2 * nao;
         long sT_y1 = (long)nb * sT_b, sT_cy1 = (long)nao * sT_y1, sT_a = (long)ncy1 * sT_cy1;
         long sA_ci = nao, sA_a = (long)ncx1 * nao;
@@ -125,8 +126,8 @@ void RF12_contract2e(intor_t intor, CINTOpt *opt, int mode, int nci, int ncj, in
         for (y2sh = 0; y2sh < nbas; y2sh++) {
         for (x1sh = 0; x1sh < nbas; x1sh++) {
         for (x2sh = 0; x2sh < nbas; x2sh++) {
-                if (mode) { ish = y1sh; jsh = x1sh; ksh = y2sh; lsh = x2sh; }
-                else      { ish = x1sh; jsh = y1sh; ksh = x2sh; lsh = y2sh; }
+                if (m1) { ish = y1sh; jsh = x1sh; } else { ish = x1sh; jsh = y1sh; }
+                if (m2) { ksh = y2sh; lsh = x2sh; } else { ksh = x2sh; lsh = y2sh; }
                 shls[0] = ish; shls[1] = jsh; shls[2] = ksh; shls[3] = lsh;
                 int di = ao_loc[ish+1] - ao_loc[ish];
                 int dj = ao_loc[jsh+1] - ao_loc[jsh];
@@ -136,8 +137,8 @@ void RF12_contract2e(intor_t intor, CINTOpt *opt, int mode, int nci, int ncj, in
                         continue;
                 }
                 long nblk = (long)di * dj * dk * dl;
-                int dx1 = mode ? dj : di, dy1 = mode ? di : dj;
-                int dx2 = mode ? dl : dk, dy2 = mode ? dk : dl;
+                int dx1 = m1 ? dj : di, dy1 = m1 ? di : dj;
+                int dx2 = m2 ? dl : dk, dy2 = m2 ? dk : dl;
                 int x10 = ao_loc[x1sh], y10 = ao_loc[y1sh], x20 = ao_loc[x2sh], y20 = ao_loc[y2sh];
                 int a, ci, cj, ck, cl, i, j, k, l, b, cx1, cy1, cx2, cy2, x1, y1, x2, y2;
                 long sPy2 = 1, sPcy2 = dy2, sPx2 = (long)ncy2 * dy2, sPcx2 = (long)dx2 * sPx2;
@@ -151,16 +152,16 @@ void RF12_contract2e(intor_t intor, CINTOpt *opt, int mode, int nci, int ncj, in
                 for (cl = 0; cl < ncl; cl++) {
                         int comp = ((ci * ncj + cj) * nck + ck) * ncl + cl;
                         double *g = buf + comp * nblk;
-                        cx1 = mode ? cj : ci; cy1 = mode ? ci : cj;
-                        cx2 = mode ? cl : ck; cy2 = mode ? ck : cl;
+                        cx1 = m1 ? cj : ci; cy1 = m1 ? ci : cj;
+                        cx2 = m2 ? cl : ck; cy2 = m2 ? ck : cl;
                         for (l = 0; l < dl; l++) {
                         for (k = 0; k < dk; k++) {
                         for (j = 0; j < dj; j++) {
                         for (i = 0; i < di; i++) {
                                 double v = g[((long)(l * dk + k) * dj + j) * di + i];
                                 if (v == 0) continue;
-                                x1 = mode ? j : i; y1 = mode ? i : j;
-                                x2 = mode ? l : k; y2 = mode ? k : l;
+                                x1 = m1 ? j : i; y1 = m1 ? i : j;
+                                x2 = m2 ? l : k; y2 = m2 ? k : l;
                                 long p0 = cy1 * sPcy1 + y1 * sPy1 + cx2 * sPcx2 + x2 * sPx2 + cy2 * sPcy2 + y2;
                                 double *ar = Are + cx1 * sA_ci + x10 + x1;
                                 double *aI = Aim + cx1 * sA_ci + x10 + x1;

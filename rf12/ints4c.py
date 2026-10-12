@@ -48,6 +48,8 @@ KERNELS = {'G': '', 'F': 'stg_', 'Y': 'yp_'}     # 1/r12, exp(-z r12), exp(-z r1
 CLASSES = {'plain': ('', (1, 1, 1, 1)),
            'ipvip1': ('ipvip1', (3, 3, 1, 1)),
            'ipvip1ipvip2': ('ipvip1ipvip2', (3, 3, 3, 3)),
+           'ip1': ('ip1', (3, 1, 1, 1)),
+           'ip1ip2': ('ip1ip2', (3, 1, 3, 1)),
            'ipip1': ('ipip1', (9, 1, 1, 1)),
            'ipip1ipip2': ('ipip1ipip2', (9, 1, 9, 1))}
 
@@ -71,14 +73,17 @@ def _c(a):
 
 
 def contract2e(mol, kernel, cls, A, B, zeta=None, mode=0):
-    '''mode 0: T[a, cj, j, b, cl, l] = sum A[a, ci, i] B[b, ck, k] (ci i cj j|K|ck k cl l)
-    mode 1: T[a, ci, i, b, ck, k] = sum A[a, cj, j] B[b, cl, l] (ci i cj j|K|ck k cl l)
+    '''T[a, cy1, y1, b, cy2, y2] = sum A[a, cx1, x1] B[b, cx2, x2] (ci i cj j|K|ck k cl l)
 
-    A: (na, ncx1, nao) complex, B: (nb, ncx2, nao) complex (x = contracted).'''
+    mode bit 0: electron 1 contracts x1 = i (0) or j (1); bit 1: electron 2
+    contracts x2 = k (0) or l (1); the other function of each pair is open.
+    mode 0: contract (i, k); 3: (j, l); 1: (j, k); 2: (i, l).
+    A: (na, ncx1, nao) complex, B: (nb, ncx2, nao) complex.'''
     f, o, nc, name = _fn(kernel, cls)
     nci, ncj, nck, ncl = nc
     nao = mol.nao
-    ncx1, ncy1, ncx2, ncy2 = (ncj, nci, ncl, nck) if mode else (nci, ncj, nck, ncl)
+    ncx1, ncy1 = (ncj, nci) if mode & 1 else (nci, ncj)
+    ncx2, ncy2 = (ncl, nck) if mode & 2 else (nck, ncl)
     A = numpy.asarray(A, dtype=complex).reshape(-1, ncx1, nao)
     B = numpy.asarray(B, dtype=complex).reshape(-1, ncx2, nao)
     na, nb = A.shape[0], B.shape[0]

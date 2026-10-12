@@ -114,6 +114,8 @@ class DCSpace:
         self.slices = {k: slice(off[i], off[i + 1]) for i, k in enumerate(('o', 'v+', 'c+', 'n'))}
         self.dims = dict(zip(('o', 'v+', 'c+', 'n'), n))
         self.nri = C1.shape[1]
+        self.vj_ao = vj
+        self.vk_ao = vk
         self.fock = reduce(numpy.dot, (C1.conj().T, fock_ao, C1))
         self.K = reduce(numpy.dot, (C1.conj().T, vk, C1))
         self.metric_error = abs(reduce(numpy.dot, (C1.conj().T, S, C1)) - numpy.eye(self.nri)).max()

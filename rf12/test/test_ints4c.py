@@ -98,18 +98,25 @@ class Ints4c(unittest.TestCase):
             self.assertLess(err[1], 1e-4)
 
 
-    def test_mode1_contracts_second_function(self):
-        # mode 1 contracts j and l; compare with the full integral tensor
+    def test_contraction_modes(self):
+        # all four modes against the full integral tensor
         mol = self.mol
         nao = mol.nao
         rng = numpy.random.default_rng(7)
-        for cls, (nci, ncj, nck, ncl) in (('ipip1', (9, 1, 1, 1)), ('ipvip1', (3, 3, 1, 1))):
+        spec = {0: ('adi,bfk,cdefijkl->acjbel', 0, 2), 1: ('adj,bfk,cdefijkl->acibel', 1, 2),
+                2: ('adi,bfl,cdefijkl->acjbek', 0, 3), 3: ('adj,bfl,cdefijkl->acibek', 1, 3)}
+        for cls, nc in (('ipip1', (9, 1, 1, 1)), ('ipvip1', (3, 3, 1, 1)), ('ip1ip2', (3, 1, 3, 1))):
             I = ints4c.full(mol, 'F', cls, Z)            # [ci,cj,ck,cl,i,j,k,l]
-            A = rng.random((2, ncj, nao)) + 1j * rng.random((2, ncj, nao))
-            B = rng.random((3, ncl, nao)) + 1j * rng.random((3, ncl, nao))
-            T = ints4c.contract2e(mol, 'F', cls, A, B, Z, mode=1)
-            ref = numpy.einsum('adj,bfl,cdefijkl->acibek', A, B, I)
-            self.assertLess(abs(T - ref).max(), 1e-12)
+            for mode, (sub, x1, x2) in spec.items():
+                A = rng.random((2, nc[x1], nao)) + 1j * rng.random((2, nc[x1], nao))
+                B = rng.random((3, nc[x2], nao)) + 1j * rng.random((3, nc[x2], nao))
+                T = ints4c.contract2e(mol, 'F', cls, A, B, Z, mode=mode)
+                # einsum letters: c,d,e,f = comps of i,j,k,l; contracted comp index d/f relabelled
+                s1 = sub.replace('ad', 'a' + 'cd'[x1]).replace('bf', 'b' + 'ef'[x2 - 2])
+                out = s1.split('->')[1]
+                out = 'a' + 'cd'[1 - x1] + out[2] + 'b' + 'ef'[3 - x2] + out[5]
+                ref = numpy.einsum(s1.split('->')[0] + '->' + out, A, B, I)
+                self.assertLess(abs(T - ref).max(), 1e-12, (cls, mode))
 
 
 if __name__ == '__main__':

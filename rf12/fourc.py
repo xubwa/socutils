@@ -53,20 +53,23 @@ def light_speed(c):
 
 
 class Orbitals:
-    '''RKB orbital set in the sph/derivative representation'''
-    def __init__(self, L, D):
+    '''RKB orbital set in the sph/derivative representation.
+    Xi: small-component generator, psi^S = sigma.p Xi (Xi includes 1/2c)'''
+    def __init__(self, L, D, Xi=None):
         self.L = L          # (n, 2, nao)
         self.D = D          # (n, 2, 3, nao)
+        self.Xi = Xi        # (n, 2, nao)
 
     def __len__(self):
         return self.L.shape[0]
 
     def __getitem__(self, idx):
-        return Orbitals(self.L[idx], self.D[idx])
+        return Orbitals(self.L[idx], self.D[idx], None if self.Xi is None else self.Xi[idx])
 
     @staticmethod
     def concatenate(sets):
-        return Orbitals(numpy.concatenate([s.L for s in sets]), numpy.concatenate([s.D for s in sets]))
+        return Orbitals(numpy.concatenate([s.L for s in sets]), numpy.concatenate([s.D for s in sets]),
+                        numpy.concatenate([s.Xi for s in sets]))
 
 
 def orbitals(mol, mo, c):
@@ -85,7 +88,7 @@ def orbitals(mol, mo, c):
     D[:, 1, 0] = -1j * a
     D[:, 1, 1] = a
     D[:, 1, 2] = 1j * b
-    return Orbitals(L, D)
+    return Orbitals(L, D, numpy.stack([a, b], axis=1))
 
 
 def _bra(o, comp):
