@@ -12,3 +12,4 @@
   RESULT prec 1e-05  a4_X (1e decoupling response) -1.63370037e-01  (check form -1.63366881e-01)  a4 + a4_X -2.19734598e-01
   per orbital <[T,[T,O]]>: [ 0.019875 -0.020162]   <W T^-1[O,T]>: [-0.080332 -0.144768]  (234 s)
 == he2  prec 1e-06  order 9  box +-32  zeta 10000  int rho_nuc 4.0000000000
+  prec 1e-06 it  0  E_elec -6.424577694680  dE -6.42e+00  |res| 2.36e-05  (43 s)
