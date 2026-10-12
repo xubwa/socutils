@@ -485,11 +485,12 @@ class VariationalH : private ElementSource<S> {
       if (adapt_) {
         const size_t n = dets_.size();
         std::printf(
-            "memory (root): limit %.1f MB; %.1f MB taken by the string "
-            "tables, the determinants and %zu vectors, which leaves %.1f MB "
-            "for the Hamiltonian\n",
-            memory_limit_ * mb, OtherBytes(n) * mb, num_vectors_,
-            HamiltonianBudget(n) * mb);
+            "memory (root): limit %.1f MB; %.1f MB counted for the string "
+            "tables, the determinants and the larger of extending the tables "
+            "and %zu vectors%s, which leaves %.1f MB for the Hamiltonian\n",
+            memory_limit_ * mb, OtherBytes(n, one_sweep_) * mb, num_vectors_,
+            one_sweep_ ? " with one more per thread" : " (two-sweep product)",
+            HamiltonianBudget(n, one_sweep_) * mb);
         if (!all_rows_stored()) {
           std::printf(
               "stored Hamiltonian (root): the rows of the determinants from "
@@ -545,18 +546,23 @@ class VariationalH : private ElementSource<S> {
   bool all_rows_stored() const { return first_direct_row_ >= dets_.size(); }
 
   // Bytes of what this process holds besides the Hamiltonian for n
-  // determinants: the string tables with what extending them takes, the
-  // determinants (the list, the root's copy, the sorted copy), the vectors
-  // of the eigensolver, the vectors the threads add into in a product, and
-  // a twentieth of the limit for everything else.
-  size_t OtherBytes(size_t n) const {
-    return table_memory_.shared + table_memory_.kept + table_memory_.transient +
-           3 * n * sizeof(Det<W>) + num_vectors_ * n * sizeof(S) +
-           static_cast<size_t>(omp_get_max_threads()) * n * sizeof(S) +
-           memory_limit_ / 20;
+  // determinants. All the time: the string tables, the determinants (the
+  // list, the root's copy, the sorted copy) and a twentieth of the limit
+  // for everything else. In addition, at different times: what extending
+  // the tables takes, while the Hamiltonian is being extended; and the
+  // vectors of the eigensolver while it runs, with, for the one-sweep
+  // product of the stored part, a vector per thread. Only the larger of
+  // the two counts.
+  size_t OtherBytes(size_t n, bool one_sweep) const {
+    const size_t solving =
+        num_vectors_ * n * sizeof(S) +
+        (one_sweep ? static_cast<size_t>(omp_get_max_threads()) * n * sizeof(S)
+                   : 0);
+    return table_memory_.shared + table_memory_.kept + 3 * n * sizeof(Det<W>) +
+           memory_limit_ / 20 + std::max(table_memory_.transient, solving);
   }
-  size_t HamiltonianBudget(size_t n) const {
-    const size_t other = OtherBytes(n);
+  size_t HamiltonianBudget(size_t n, bool one_sweep) const {
+    const size_t other = OtherBytes(n, one_sweep);
     return memory_limit_ > other ? memory_limit_ - other : 0;
   }
 
@@ -564,7 +570,9 @@ class VariationalH : private ElementSource<S> {
   // limit (see "adapt" in input.h). Collective.
   void ExtendWithinMemory(size_t first_new) {
     const size_t n = dets_.size();
-    const size_t budget = HamiltonianBudget(n);
+    // The connections are judged against the larger budget, that of the
+    // two-sweep product, which needs no vectors of its own.
+    const size_t budget_two_sweeps = HamiltonianBudget(n, false);
     // What is stored of the new rows; nothing if they are applied directly.
     // Appended in any case, so that the stored part knows of the new
     // determinants.
@@ -572,9 +580,14 @@ class VariationalH : private ElementSource<S> {
     if (first_direct_row_ > first_new) {
       // What the connections of the new rows may take: the budget less the
       // connections already held. Values can make way.
+      // The two-sweep product keeps, for every stored row, where its
+      // columns pass from one thread's rows to the next.
       const size_t held =
-          stored_.num_elements() * sizeof(DetIndex) + stored_.overhead_bytes();
-      const size_t room = budget > held ? budget - held : 0;
+          stored_.num_elements() * sizeof(DetIndex) + stored_.overhead_bytes() +
+          (n - first_new) * static_cast<size_t>(omp_get_max_threads()) *
+              sizeof(uint32_t);
+      const size_t room =
+          budget_two_sweeps > held ? budget_two_sweeps - held : 0;
       bool fits = true;
       blocks = internal::BuildGroupBlocks(dets_, first_new, ints_,
                                           connect_.threshold, *tables_, &stats_,
@@ -588,6 +601,14 @@ class VariationalH : private ElementSource<S> {
       }
     }
     stored_.AppendBlocks(std::move(blocks));
+    // The one-sweep product, which reads the matrix once but takes a vector
+    // per thread, if the connections leave room for those.
+    one_sweep_ = stored_.num_elements() * sizeof(DetIndex) +
+                     stored_.overhead_bytes() <=
+                 HamiltonianBudget(n, true);
+    stored_.set_product(one_sweep_ ? SparseH<S>::Product::kAutomatic
+                                   : SparseH<S>::Product::kTwoSweeps);
+    const size_t budget = HamiltonianBudget(n, one_sweep_);
     // Values: released from the newest blocks until the budget is kept,
     // then worked out for the blocks that have none while they fit.
     const size_t num_blocks = stored_.blocks().size();
@@ -634,6 +655,8 @@ class VariationalH : private ElementSource<S> {
   size_t memory_limit_;
   size_t num_vectors_;
   size_t first_direct_row_ = SIZE_MAX;
+  // Whether the stored part may use the one-sweep product.
+  bool one_sweep_ = true;
   bool incremental_;
   typename internal::GroupStringTables<W>::Memory table_memory_;
   ConnectOptions connect_;
