@@ -1510,6 +1510,44 @@ void TestGroupConnections(const Integrals<Complex>& ints) {
            threshold < 0.0
                ? "the Hamiltonian applied from the tables equals the stored one"
                : "the same with a threshold on the elements");
+    {
+      // The same with the connections found string by string, for the
+      // usual groups and for groups of 5 and 27 spinors.
+      ConnectOptions uneven = options;
+      for (int p = 0; p < n; ++p) {
+        if (p % 7 == 0) uneven.group_a.push_back(p);
+      }
+      double worst = 0.0, largest = 0.0;
+      size_t num_tasks = 0;
+      for (const ConnectOptions& grouping : {options, uneven}) {
+        internal::GroupStringTables<1> blocked(GroupMask<1>(grouping, n),
+                                               serial);
+        blocked.set_block_search(true);
+        blocked.Extend(MakeSpan(dets), 0);
+        num_tasks += blocked.num_tasks();
+        for (size_t budget :
+             {size_t{0}, DirectH<1, Complex>::kDefaultScratchBytes}) {
+          const DirectH<1, Complex> direct(MakeSpan(dets), ints, blocked,
+                                           threshold, diagonal, budget);
+          std::vector<Complex> x(dets.size()), y(dets.size()),
+              y_ref(dets.size());
+          for (size_t i = 0; i < x.size(); ++i) {
+            x[i] = Complex(std::sin(0.3 * i + 0.2), std::cos(1.7 * i));
+          }
+          direct.Apply(x.data(), y.data());
+          stored.Multiply(x.data(), y_ref.data());
+          for (size_t i = 0; i < x.size(); ++i) {
+            worst = std::max(worst, std::abs(y[i] - y_ref[i]));
+            largest = std::max(largest, std::abs(y_ref[i]));
+          }
+        }
+      }
+      Expect(num_tasks > 0 && largest > 1.0 && worst < 1e-12 * largest,
+             threshold < 0.0
+                 ? "the Hamiltonian applied string by string equals the "
+                   "stored one"
+                 : "the same with a threshold on the elements");
+    }
     if (threshold >= 0.0) continue;
     std::vector<Complex> bra(dets.size()), ket(dets.size());
     for (size_t i = 0; i < dets.size(); ++i) {

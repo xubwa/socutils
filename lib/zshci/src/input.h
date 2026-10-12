@@ -225,6 +225,9 @@ struct Input {
   bool connect_by_groups = true;
   std::vector<int> connect_group_a;
   bool connect_subgroups = true;
+  // With "hamiltonian": "direct": "blocks": false finds the connections
+  // determinant by determinant, as for a stored Hamiltonian; slower.
+  bool connect_blocks = true;
   int connect_segments = 8;
   // Strings only: number of passes (trades time for memory).
   int connect_batches = 1;

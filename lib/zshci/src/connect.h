@@ -66,6 +66,9 @@ struct ConnectOptions {
   // Groups: whether related strings are found through sub-groups of the
   // two groups or by keys (connect_groups.h).
   bool subgroups = true;
+  // Groups, Hamiltonian not stored: whether the connections are found
+  // string by string (connect_groups.h) or determinant by determinant.
+  bool blocks = true;
 };
 
 // What a connection search did, summed over calls: how many pairs sharing a

@@ -175,6 +175,14 @@ takes 1092 MB stored and 218 MB as connections, the 231 products of a run 10.0
 and 24.8 s, and the energies are the same; a direct product of that size
 takes 2.1 s, against 0.25 s with the connections and 0.044 s stored.
 
+For a Hamiltonian that is not stored the connections are found string by
+string rather than determinant by determinant (`src/connect_groups.h`): the
+determinants of two related strings lie together in memory and are compared
+pair by pair, instead of each determinant going through the lists of several
+hundred related strings by itself. The same Cr2 run takes 77 s in its 231
+direct products that way and 221 s the other way
+(`"connect": {"blocks": false}`); stored 10 s, connections 25 s.
+
 `src/input.h` documents every key. The integrals are read from a FCIDUMP
 file (`src/integrals.h`) in the complex format, `(re,im) p q r s`, or the real
 format, `value p q r s`. A file in the real format is treated with real

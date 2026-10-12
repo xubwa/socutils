@@ -6,6 +6,11 @@
 // stored matrix, but the memory is that of the tables: the way to go when
 // the matrix does not fit.
 //
+// When the tables were made with the block-wise search (connect_groups.h),
+// the connections are found string by string instead of determinant by
+// determinant, which is several times faster; a rank then does its share
+// of the tasks of that search instead of its share of the rows.
+//
 // Like the stored matrix, only one triangle is visited: an element H(j,i),
 // i < j, found from determinant j, serves y_j += H(j,i) x_i and
 // y_i += conj(H(j,i)) x_j. The second goes to an element of y that another
@@ -84,9 +89,44 @@ class DirectH : public LinearOperator<S> {
 #pragma omp for schedule(static)
         for (long j = 0; j < n; ++j) y[j] = S(0.0);
       }
+      if (tables_.has_blocks()) {
+        // The diagonal, by rows; the rest, by tasks.
+#pragma omp for schedule(static)
+        for (long j = 0; j < n; ++j) {
+          if (!tables_.Owns(j)) continue;
+          const S term =
+              (have_diagonal ? diagonal_[j] : DiagonalEnergy(dets_[j], ints_)) *
+              x[j];
+          if (own_vectors) {
+            target[j] += term;
+          } else {
+            AtomicAdd(&target[j], term);
+          }
+        }
+        const long num_tasks = static_cast<long>(tables_.num_tasks());
+#pragma omp for schedule(dynamic, 16)
+        for (long t = 0; t < num_tasks; ++t) {
+          if (!tables_.OwnsTask(t)) continue;
+          uint64_t tested = 0;
+          tables_.ForEachConnectedOfTask(
+              t,
+              [&](DetIndex j, DetIndex i) {
+                const S value = Hij(dets_[j], dets_[i], ints_);
+                if (!keep_all && std::abs(value) <= threshold_) return;
+                if (own_vectors) {
+                  target[j] += value * x[i];
+                  target[i] += Conj(value) * x[j];
+                } else {
+                  AtomicAdd(&target[j], value * x[i]);
+                  AtomicAdd(&target[i], Conj(value) * x[j]);
+                }
+              },
+              &tested);
+        }
+      }
 #pragma omp for schedule(dynamic, 64)
       for (long j = 0; j < n; ++j) {
-        if (!tables_.Owns(j)) continue;
+        if (tables_.has_blocks() || !tables_.Owns(j)) continue;
         const S xj = x[j];
         S sum =
             (have_diagonal ? diagonal_[j] : DiagonalEnergy(dets_[j], ints_)) *

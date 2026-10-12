@@ -189,6 +189,7 @@ class GroupStringTables {
         if (r > 0 && related_list_[group][r].size() > 0) transfers_ = true;
       }
     }
+    if (block_search_) MakeBlocks();
   }
 
   // Releases what the root keeps to extend the tables (the keys above
@@ -235,7 +236,8 @@ class GroupStringTables {
       m.shared += string_of_det_[group].size() * sizeof(uint32_t) +
                   det_start_[group].size() * sizeof(uint64_t) +
                   det_other_[group].size() * sizeof(uint32_t) +
-                  det_index_[group].size() * sizeof(uint32_t);
+                  det_index_[group].size() * sizeof(uint32_t) +
+                  block_dets_[group].size() * sizeof(Det<W>);
       for (int r = 0; r < kNumRelations; ++r) {
         m.shared += related_start_[group][r].size() * sizeof(uint64_t) +
                     related_list_[group][r].size() * sizeof(uint32_t);
@@ -325,6 +327,93 @@ class GroupStringTables {
       Combine(limit, count[0], slot, kPlus2, kMinus2, visit);
     }
     *tested_pairs += tested;
+  }
+
+  // --- Connections by blocks of determinants that share a string ---
+  //
+  // ForEachConnected works determinant by determinant: for each related
+  // string of its string it visits the determinants that contain it, a few
+  // each time and somewhere else in memory each time. When all connections
+  // are wanted, as in a product with a Hamiltonian that is not stored, it
+  // is several times faster to go string by string: the determinants that
+  // contain an A string a and those that contain a related A string a' lie
+  // together, and every pair of one from each is compared - they are
+  // connected when they differ in at most four spinors. That gives all
+  // connections with different A strings; those with the same A string, and
+  // those with the same B string, come from comparing the determinants of
+  // each string among themselves.
+  //
+  // The work is cut into tasks, a string with a range of its determinants
+  // each, so that a string with very many determinants does not hold up one
+  // thread.
+
+  // Switches the block-wise search on: Extend then also makes, for each
+  // group, a copy of the determinants in the order of the strings of that
+  // group (once per node), and the tasks. Call before Extend.
+  void set_block_search(bool on) { block_search_ = on; }
+  bool has_blocks() const { return block_search_ && !tasks_.empty(); }
+  size_t num_tasks() const { return tasks_.size(); }
+  // Whether this rank does task t.
+  bool OwnsTask(size_t t) const {
+    return static_cast<long>(t) % num_ranks_ == rank_;
+  }
+
+  // Calls visit(j, i) for the connected pairs of task t. Over all tasks
+  // every connected pair of determinants is visited exactly once, in no
+  // particular order of j and i. Adds the number of pairs compared to
+  // *tested.
+  template <class Visitor>
+  void ForEachConnectedOfTask(size_t t, const Visitor& visit,
+                              uint64_t* tested) const {
+    const Task& task = tasks_[t];
+    const int group = task.group;
+    const uint64_t place = task.place;
+    const uint64_t begin = det_start_[group][place];
+    const Det<W>* const mine = block_dets_[group].data();
+    const uint32_t* const index = det_index_[group].data();
+    uint64_t compared = 0;
+    // Same string: the determinants of the task with those before them.
+    for (uint64_t x = task.begin; x < task.end; ++x) {
+      for (uint64_t y = begin; y < x; ++y) {
+        if (mine[x].NumDifferentBits(mine[y]) <= 4) visit(index[x], index[y]);
+      }
+      compared += x - begin;
+    }
+    if (group == 1) {
+      *tested += compared;
+      return;
+    }
+    // Related A strings at lower places. The electron count of this one:
+    const int count = static_cast<int>(
+        std::upper_bound(base_[0].begin(), base_[0].end(), place) -
+        base_[0].begin() - 1);
+    const uint32_t* const other = det_other_[0].data();
+    for (int r = 0; r < kNumRelations; ++r) {
+      const uint32_t* const r_begin = RelatedBegin(0, r, place);
+      const uint32_t* const r_end = RelatedEnd(0, r, place);
+      if (r_begin == r_end) continue;
+      const uint64_t target_base = base_[0][count + Shift(r)];
+      // With the same B string the pair belongs to that B string's tasks.
+      // B strings of different electron counts have unrelated numbers and
+      // are different anyway.
+      const bool same_count = Shift(r) == 0;
+      for (const uint32_t* s = r_begin; s != r_end; ++s) {
+        const uint64_t target = target_base + *s;
+        if (target >= place) continue;
+        const uint64_t t_begin = det_start_[0][target];
+        const uint64_t t_end = det_start_[0][target + 1];
+        for (uint64_t x = task.begin; x < task.end; ++x) {
+          for (uint64_t y = t_begin; y < t_end; ++y) {
+            if (same_count && other[x] == other[y]) continue;
+            if (mine[x].NumDifferentBits(mine[y]) <= 4) {
+              visit(index[x], index[y]);
+            }
+          }
+        }
+        compared += (task.end - task.begin) * (t_end - t_begin);
+      }
+    }
+    *tested += compared;
   }
 
  private:
@@ -1150,6 +1239,34 @@ class GroupStringTables {
     }
   }
 
+  // The copies of the determinants and the tasks of the block-wise search.
+  // Collective.
+  void MakeBlocks() {
+    // Determinants of one string handled by one task at most.
+    const uint64_t kTaskSize = 256;
+    tasks_.clear();
+    for (int group = 0; group < 2; ++group) {
+      std::vector<Det<W>> ordered;
+      if (comm_.is_root()) {
+        const long n = static_cast<long>(det_index_[group].size());
+        ordered.resize(n);
+#pragma omp parallel for schedule(static)
+        for (long k = 0; k < n; ++k) {
+          ordered[k] = dets_[det_index_[group][k]];
+        }
+      }
+      block_dets_[group] = SharedArray<Det<W>>::FromRoot(ordered, comm_);
+      const uint64_t num_places = base_[group].back();
+      for (uint64_t place = 0; place < num_places; ++place) {
+        const uint64_t begin = det_start_[group][place];
+        const uint64_t end = det_start_[group][place + 1];
+        for (uint64_t x = begin; x < end; x += kTaskSize) {
+          tasks_.push_back({place, x, std::min(end, x + kTaskSize), group});
+        }
+      }
+    }
+  }
+
   static bool Contains(const Det<W>& outer, const Det<W>& inner) {
     for (int k = 0; k < W; ++k) {
       if ((inner.words[k] & ~outer.words[k]) != 0) return false;
@@ -1203,6 +1320,18 @@ class GroupStringTables {
   // Empty arrays for relations that do not occur.
   SharedArray<uint64_t> related_start_[2][kNumRelations];
   SharedArray<uint32_t> related_list_[2][kNumRelations];
+  // Block-wise search (see ForEachConnectedOfTask). The determinants in the
+  // order of det_index_ of each group, and the tasks: a string (group,
+  // place) with the range [begin, end) of its determinants in that order.
+  struct Task {
+    uint64_t place;
+    uint64_t begin;
+    uint64_t end;
+    int group;
+  };
+  bool block_search_ = false;
+  SharedArray<Det<W>> block_dets_[2];
+  std::vector<Task> tasks_;
 };
 
 }  // namespace internal

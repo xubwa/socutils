@@ -300,6 +300,7 @@ inline ConnectOptions MakeConnectOptions(const Input& input) {
   options.threshold = input.hij_threshold;
   options.group_a = input.connect_group_a;
   options.subgroups = input.connect_subgroups;
+  options.blocks = input.connect_blocks;
   options.method = input.connect_by_groups     ? ConnectMethod::kGroups
                    : input.connect_by_segments ? ConnectMethod::kSegments
                                                : ConnectMethod::kStrings;
@@ -378,6 +379,9 @@ class VariationalH : private ElementSource<S> {
     if (tables_ == nullptr) {
       tables_ = std::make_unique<internal::GroupStringTables<W>>(
           GroupMask<W>(connect_, ints_.num_orbs()), comm_, connect_.subgroups);
+      // A Hamiltonian that is not stored wants all connections, again and
+      // again.
+      tables_->set_block_search(direct_ && connect_.blocks);
     }
     tables_->Extend(dets, first_new);
     table_memory_ = tables_->memory();
