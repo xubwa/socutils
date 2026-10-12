@@ -13,3 +13,18 @@
   per orbital <[T,[T,O]]>: [ 0.019875 -0.020162]   <W T^-1[O,T]>: [-0.080332 -0.144768]  (234 s)
 == he2  prec 1e-06  order 9  box +-32  zeta 10000  int rho_nuc 4.0000000000
   prec 1e-06 it  0  E_elec -6.424577694680  dE -6.42e+00  |res| 2.36e-05  (43 s)
+  prec 1e-06 it  1  E_elec -6.424580730603  dE -3.04e-06  |res| 7.08e-07  (87 s)
+  prec 1e-06 it  2  E_elec -6.424580730612  dE -9.14e-12  |res| 1.40e-07  (132 s)
+  E_elec = -6.424580730612  eps = [-0.91930077 -0.9151967 ]  (161 s)
+  RESULT prec 1e-06  E_elec -6.424580730612  <O>  3.2141038453e+01  a2  9.52e-12 (exact 0)
+  RESULT prec 1e-06  a4 -5.63723916e-02 = H1 -1.76009044e-05 + H2kin -7.04036174e-05 + W -5.62843870e-02
+  RESULT prec 1e-06  a4_X (1e decoupling response) -1.63369919e-01  (check form -1.63369888e-01)  a4 + a4_X -2.19742311e-01
+  per orbital <[T,[T,O]]>: [ 0.019876 -0.020158]   <W T^-1[O,T]>: [-0.080349 -0.144788]  (466 s)
+== he2  prec 1e-07  order 9  box +-32  zeta 10000  int rho_nuc 4.0000000000
+  prec 1e-07 it  0  E_elec -6.424580762620  dE -6.42e+00  |res| 5.74e-07  (70 s)
+  prec 1e-07 it  1  E_elec -6.424580764071  dE -1.45e-09  |res| 6.54e-08  (141 s)
+  E_elec = -6.424580764071  eps = [-0.91930075 -0.91519668]  (183 s)
+  RESULT prec 1e-07  E_elec -6.424580764071  <O>  3.2141038471e+01  a2  1.19e-12 (exact 0)
+  RESULT prec 1e-07  a4 -5.63720812e-02 = H1 -1.75963295e-05 + H2kin -7.03853180e-05 + W -5.62840996e-02
+  RESULT prec 1e-07  a4_X (1e decoupling response) -1.63369985e-01  (check form -1.63369982e-01)  a4 + a4_X -2.19742066e-01
+  per orbital <[T,[T,O]]>: [ 0.019876 -0.020158]   <W T^-1[O,T]>: [-0.080349 -0.144788]  (745 s)
