@@ -214,9 +214,9 @@ struct Input {
   // (connect_groups.h); "group_a" lists the spinors of the first group
   // (default: those with an even index, which for spin orbitals are the
   // alpha ones); "relations" says how related strings are found there:
-  // "subgroups" (default), each group divided once more, or "keys", which
-  // keeps a number of keys per string that grows with the square of its
-  // electrons. "strings": N-1 and N-2 electron strings of the whole
+  // "subgroups" (default for spinors), each group divided once more, or
+  // "keys" (default for spatial and unrestricted orbitals), which keeps a
+  // number of keys per string that grows with the square of its electrons. "strings": N-1 and N-2 electron strings of the whole
   // determinant; no wasted tests, memory grows with the square of the
   // electron number. "segments": covers of four out of `connect_segments`
   // orbital segments; least memory, at the price of testing unconnected

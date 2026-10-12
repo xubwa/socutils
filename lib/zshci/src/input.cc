@@ -414,6 +414,10 @@ Input ParseInput(const std::string& text) {
   // allowed, but the density matrices then miss the dropped pairs.
   top.Get("hij_threshold", &in.hij_threshold);
   in.connect_by_groups = true;
+  // Spin orbitals with a conserved spin projection are the alpha/beta
+  // scheme: no electron moves between the groups, the keys are few, and
+  // dividing the groups again would only cost time.
+  in.connect_subgroups = !in.spatial_orbitals && !in.unrestricted_orbitals;
   if (top.Has("connect")) {
     ObjectReader connect(top.At("connect"), "connect");
     std::string method = "groups";
@@ -424,7 +428,7 @@ Input ParseInput(const std::string& text) {
     in.connect_by_segments = method == "segments";
     in.connect_by_groups = method == "groups";
     connect.Get("group_a", &in.connect_group_a);
-    std::string relations = "subgroups";
+    std::string relations = in.connect_subgroups ? "subgroups" : "keys";
     connect.Get("relations", &relations);
     if (relations != "subgroups" && relations != "keys") {
       connect.Fail("relations", "must be \"subgroups\" or \"keys\"");

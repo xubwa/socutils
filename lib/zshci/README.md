@@ -137,9 +137,11 @@ that is the alpha/beta scheme and the default. The strings of a group that
 are related (one or two electrons out, one or two in) are found by dividing
 the group once more into two sub-groups, of equal size or not, and combining
 the relations between the sub-strings, which are few and short
-(`"relations": "subgroups"`, the default); `"relations": "keys"` finds them
-from keys instead, of which a string of n electrons has n (n + 1) / 2 that
-must be kept to extend the tables. Both give the same tables. What the root
+(`"relations": "subgroups"`, the default for spinors); `"relations": "keys"`
+finds them from keys instead, of which a string of n electrons has
+n (n + 1) / 2 that must be kept to extend the tables, and is the default for
+spatial and unrestricted orbitals, where no electron moves between the
+groups and the keys are few. Both give the same tables. What the root
 keeps to extend them falls from 82.6 to 2.0 MB for the Cl2 case below (34
 electrons, 124367 determinants) and from 20.4 to 5.0 MB for O2 (12 electrons,
 432939 determinants), the most it holds briefly while extending from 95 to 49
