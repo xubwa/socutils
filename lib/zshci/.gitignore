@@ -1,6 +1,6 @@
-build/
-build_mpi/
-bin/
+build
+build_mpi
+bin
 config.mk
 # outputs of the timing runs
 bench/**/slurm-*.out
