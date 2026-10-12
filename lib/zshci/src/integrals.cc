@@ -390,8 +390,9 @@ Integrals<S> ReadAntisymFile(const std::string& path,
     std::string format;
     if (file.hasAttribute("format")) file.getAttribute("format").read(format);
     if (format != "antisym-1") {
-      throw std::runtime_error(path + ": not an integral file of format "
-                                      "antisym-1");
+      throw std::runtime_error(path +
+                               ": not an integral file of format "
+                               "antisym-1");
     }
     file.getAttribute("norb").read(n);
     if (file.hasAttribute("nelec")) file.getAttribute("nelec").read(num_elec);
@@ -454,8 +455,9 @@ Integrals<S> ReadAntisymFile(const std::string& path,
   auto number = [&](const std::vector<double>& data, size_t k) {
     if (!ScalarTraits<S>::kIsComplex && data[2 * k + 1] != 0.0) {
       throw std::runtime_error(
-          path + ": an integral has an imaginary part, which a real "
-                 "calculation cannot hold");
+          path +
+          ": an integral has an imaginary part, which a real "
+          "calculation cannot hold");
     }
     return ScalarTraits<S>::Make(data[2 * k], data[2 * k + 1]);
   };

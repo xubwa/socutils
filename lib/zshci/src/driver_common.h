@@ -603,9 +603,9 @@ class VariationalH : private ElementSource<S> {
     stored_.AppendBlocks(std::move(blocks));
     // The one-sweep product, which reads the matrix once but takes a vector
     // per thread, if the connections leave room for those.
-    one_sweep_ = stored_.num_elements() * sizeof(DetIndex) +
-                     stored_.overhead_bytes() <=
-                 HamiltonianBudget(n, true);
+    one_sweep_ =
+        stored_.num_elements() * sizeof(DetIndex) + stored_.overhead_bytes() <=
+        HamiltonianBudget(n, true);
     stored_.set_product(one_sweep_ ? SparseH<S>::Product::kAutomatic
                                    : SparseH<S>::Product::kTwoSweeps);
     const size_t budget = HamiltonianBudget(n, one_sweep_);
