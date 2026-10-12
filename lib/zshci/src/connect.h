@@ -559,14 +559,14 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(
     Span<Det<W>> dets, size_t first_new, const Integrals<S>& ints,
     double threshold, const GroupStringTables<W>& tables, ConnectStats* stats,
     bool store_values = true, size_t max_bytes = SIZE_MAX,
-    bool* fits = nullptr) {
-  // If the elements of this rank would take more than max_bytes, nothing is
-  // returned and *fits is set to false.
+    uint8_t* left_out = nullptr) {
+  // Rows of this rank are stored as long as the elements take no more than
+  // max_bytes; the others are left out and left_out[j - first_new] is set
+  // to 1 for each of them.
   const size_t n = dets.size();
   const size_t element_bytes =
       sizeof(DetIndex) + (store_values ? sizeof(S) : 0);
   size_t bytes_used = 0;
-  bool too_large = false;
   const bool keep_all = threshold < 0.0;
   const double time = omp_get_wtime();
   std::vector<CsrBlock<S>> blocks(omp_get_max_threads());
@@ -584,7 +584,7 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(
     std::vector<std::pair<DetIndex, S>> row;
 #pragma omp for schedule(dynamic, 64) nowait
     for (long j = static_cast<long>(first_new); j < static_cast<long>(n); ++j) {
-      if (!tables.Owns(j) || too_large) continue;
+      if (!tables.Owns(j)) continue;
       row.clear();
       tables.ForEachConnected(
           j,
@@ -602,8 +602,9 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(
 #pragma omp atomic capture
         now = bytes_used += row.size() * element_bytes;
         if (now > max_bytes) {
-#pragma omp atomic write
-          too_large = true;
+#pragma omp atomic
+          bytes_used -= row.size() * element_bytes;
+          left_out[j - first_new] = 1;
           continue;
         }
       }
@@ -640,11 +641,8 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(
     block.val = std::move(vals);
   }
   std::vector<CsrBlock<S>> filled;
-  if (fits != nullptr) *fits = !too_large;
   for (CsrBlock<S>& block : blocks) {
-    if (!too_large && block.num_elements() > 0) {
-      filled.push_back(std::move(block));
-    }
+    if (block.num_elements() > 0) filled.push_back(std::move(block));
   }
   if (stats != nullptr) {
     // Every reported pair counts as tested, as with the other methods.

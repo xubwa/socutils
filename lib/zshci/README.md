@@ -189,8 +189,9 @@ each rank - stays within G gigabytes for the Hamiltonian together with the
 string tables, the determinants and the vectors of the eigensolver. A byte
 spent on connections saves about ten times the time of a byte spent on
 values, hence the order: all connections first; with what is left, values
-for as many blocks as fit; and only when the connections do not fit are the
-rows from then on applied directly. When new rows need room, values of
+for as many blocks as fit; and when the connections of new rows do not all
+fit, those of as many rows as fit are stored and the other rows are applied
+directly. When new rows need room, values of
 other blocks are dropped, which releases an array and rebuilds nothing. The
 same Cr2 Hamiltonian restarted at 2.04 million determinants (205 million
 elements, 16 threads; the tables, determinants and vectors are counted as 5.8
@@ -221,6 +222,10 @@ vectors of the eigensolver are counted as 47 GB:
 
 A direct product of that size takes 54 s, against 4.2 s stored and about 10 s
 with the connections.
+With 45 GB the connections of 71 % of the rows fit (45.2 GB peak, 1679 s; no
+row stored: 33 GB, 1978 s). The gain is small because the direct product
+still goes through all pairs of related strings to find the connections of
+the rows that are left; it pays to give the limit that holds all connections.
 
 `src/input.h` documents every key. The integrals are read from an HDF5 file
 that holds the two-electron integrals antisymmetrized

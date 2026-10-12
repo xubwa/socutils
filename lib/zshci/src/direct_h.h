@@ -49,22 +49,23 @@ class DirectH : public LinearOperator<S> {
   // per-thread vectors may take together. The arguments must outlive the
   // operator.
   //
-  // With first_row > 0 only the elements H(j,i), i < j, of the rows
-  // j >= first_row are applied (in both directions), and with
-  // with_diagonal = false no diagonal element: the part of a Hamiltonian
+  // With `rows` only the elements H(j,i), i < j, of the rows j it marks
+  // (one byte per determinant, nonzero: apply) are applied, in both
+  // directions, and with with_diagonal = false no diagonal element: the
+  // part of a Hamiltonian
   // whose other rows are stored.
   DirectH(Span<Det<W>> dets, const Integrals<S>& ints,
           const internal::GroupStringTables<W>& tables, double threshold,
           const std::vector<double>& diagonal,
-          size_t scratch_bytes = kDefaultScratchBytes, size_t first_row = 0,
-          bool with_diagonal = true)
+          size_t scratch_bytes = kDefaultScratchBytes,
+          const std::vector<uint8_t>* rows = nullptr, bool with_diagonal = true)
       : dets_(dets),
         ints_(ints),
         tables_(tables),
         threshold_(threshold),
         diagonal_(diagonal),
         scratch_bytes_(scratch_bytes),
-        first_row_(first_row),
+        rows_(rows),
         with_diagonal_(with_diagonal) {}
 
   static constexpr size_t kDefaultScratchBytes = size_t{1} << 30;
@@ -119,7 +120,7 @@ class DirectH : public LinearOperator<S> {
           tables_.ForEachConnectedOfTask(
               t,
               [&](DetIndex j, DetIndex i) {
-                if (std::max(j, i) < first_row_) return;
+                if (rows_ != nullptr && !(*rows_)[std::max(j, i)]) return;
                 const S value = Hij(dets_[j], dets_[i], ints_);
                 if (!keep_all && std::abs(value) <= threshold_) return;
                 if (own_vectors) {
@@ -136,7 +137,7 @@ class DirectH : public LinearOperator<S> {
 #pragma omp for schedule(dynamic, 64)
       for (long j = 0; j < n; ++j) {
         if (tables_.has_blocks() || !tables_.Owns(j)) continue;
-        if (static_cast<size_t>(j) < first_row_) continue;
+        if (rows_ != nullptr && !(*rows_)[j]) continue;
         const S xj = x[j];
         S sum = !with_diagonal_
                     ? S(0.0)
@@ -183,7 +184,7 @@ class DirectH : public LinearOperator<S> {
   double threshold_;
   const std::vector<double>& diagonal_;
   size_t scratch_bytes_;
-  size_t first_row_;
+  const std::vector<uint8_t>* rows_;
   bool with_diagonal_;
   // One vector per thread, when they fit the budget.
   mutable RawArray<S> scratch_;

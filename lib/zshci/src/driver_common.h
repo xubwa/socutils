@@ -429,7 +429,7 @@ class VariationalH : private ElementSource<S> {
       const DirectH<W, S> rest(dets_, ints_, *tables_, connect_.threshold,
                                stored_.diagonal(),
                                DirectH<W, S>::kDefaultScratchBytes,
-                               first_direct_row_, /*with_diagonal=*/false);
+                               &direct_rows_, /*with_diagonal=*/false);
       const SumOperator sum(stored_, rest);
       return SolveDistributed<S>(sum, options, comm_, root_vectors, active);
     }
@@ -493,9 +493,9 @@ class VariationalH : private ElementSource<S> {
             HamiltonianBudget(n, one_sweep_) * mb);
         if (!all_rows_stored()) {
           std::printf(
-              "stored Hamiltonian (root): the rows of the determinants from "
-              "%zu on (%zu of %zu) are not stored and are applied directly\n",
-              first_direct_row_, n - first_direct_row_, n);
+              "stored Hamiltonian (root): the rows of %zu of %zu determinants "
+              "are not stored and are applied directly\n",
+              num_direct_rows_, n);
         }
       }
       if (stored_.num_values() < stored_.num_elements()) {
@@ -543,7 +543,7 @@ class VariationalH : private ElementSource<S> {
     const LinearOperator<S>& b_;
   };
 
-  bool all_rows_stored() const { return first_direct_row_ >= dets_.size(); }
+  bool all_rows_stored() const { return num_direct_rows_ == 0; }
 
   // Bytes of what this process holds besides the Hamiltonian for n
   // determinants. All the time: the string tables, the determinants (the
@@ -573,33 +573,31 @@ class VariationalH : private ElementSource<S> {
     // The connections are judged against the larger budget, that of the
     // two-sweep product, which needs no vectors of its own.
     const size_t budget_two_sweeps = HamiltonianBudget(n, false);
-    // What is stored of the new rows; nothing if they are applied directly.
-    // Appended in any case, so that the stored part knows of the new
-    // determinants.
-    std::vector<CsrBlock<S>> blocks;
-    if (first_direct_row_ > first_new) {
-      // What the connections of the new rows may take: the budget less the
-      // connections already held. Values can make way.
-      // The two-sweep product keeps, for every stored row, where its
-      // columns pass from one thread's rows to the next.
-      const size_t held =
-          stored_.num_elements() * sizeof(DetIndex) + stored_.overhead_bytes() +
-          (n - first_new) * static_cast<size_t>(omp_get_max_threads()) *
-              sizeof(uint32_t);
-      const size_t room =
-          budget_two_sweeps > held ? budget_two_sweeps - held : 0;
-      bool fits = true;
-      blocks = internal::BuildGroupBlocks(dets_, first_new, ints_,
-                                          connect_.threshold, *tables_, &stats_,
-                                          /*store_values=*/false, room, &fits);
-      // If one rank cannot hold its part, none stores these rows.
-      double overflows = fits ? 0.0 : 1.0;
-      comm_.Sum(&overflows, 1);
-      if (overflows > 0.0) {
-        first_direct_row_ = first_new;
-        blocks.clear();
-      }
+    // The connections of the new rows, as far as they fit: the budget less
+    // the connections already held (values can make way). The rows that do
+    // not fit are applied directly from then on. The blocks are appended
+    // even if empty, so that the stored part knows of the new determinants.
+    // The two-sweep product keeps, for every stored row, where its columns
+    // pass from one thread's rows to the next.
+    const size_t held =
+        stored_.num_elements() * sizeof(DetIndex) + stored_.overhead_bytes() +
+        (n - first_new) * static_cast<size_t>(omp_get_max_threads()) *
+            sizeof(uint32_t);
+    const size_t room = budget_two_sweeps > held ? budget_two_sweeps - held : 0;
+    std::vector<uint8_t> left_out(n - first_new, 0);
+    std::vector<CsrBlock<S>> blocks = internal::BuildGroupBlocks(
+        dets_, first_new, ints_, connect_.threshold, *tables_, &stats_,
+        /*store_values=*/false, room, left_out.data());
+    // Every rank must know which rows the others left out.
+    if (comm_.size() > 1) {
+      std::vector<double> flags(left_out.begin(), left_out.end());
+      comm_.Sum(flags.data(), flags.size());
+      for (size_t k = 0; k < flags.size(); ++k) left_out[k] = flags[k] > 0.0;
     }
+    direct_rows_.resize(first_new);
+    direct_rows_.insert(direct_rows_.end(), left_out.begin(), left_out.end());
+    num_direct_rows_ = 0;
+    for (uint8_t flag : direct_rows_) num_direct_rows_ += flag;
     stored_.AppendBlocks(std::move(blocks));
     // The one-sweep product, which reads the matrix once but takes a vector
     // per thread, if the connections leave room for those.
@@ -638,7 +636,8 @@ class VariationalH : private ElementSource<S> {
   }
 
   void ResetStored() {
-    first_direct_row_ = SIZE_MAX;
+    direct_rows_.clear();
+    num_direct_rows_ = 0;
     stored_ = SparseH<S>();
     stored_.set_apply_diagonal(comm_.is_root());
     stored_.set_element_source(this);
@@ -649,12 +648,13 @@ class VariationalH : private ElementSource<S> {
   bool direct_;
   bool store_values_;
   // "adapt": the memory limit, the number of vectors of the eigensolver
-  // counted against it, and the first row that is not stored (none: larger
-  // than any index).
+  // counted against it, and the rows that are not stored (one byte per
+  // determinant, 1: applied directly) with their number.
   bool adapt_;
   size_t memory_limit_;
   size_t num_vectors_;
-  size_t first_direct_row_ = SIZE_MAX;
+  std::vector<uint8_t> direct_rows_;
+  size_t num_direct_rows_ = 0;
   // Whether the stored part may use the one-sweep product.
   bool one_sweep_ = true;
   bool incremental_;
