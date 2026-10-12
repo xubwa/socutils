@@ -139,6 +139,10 @@ class SHCI(lib.StreamObject):
         self.pt = None
         self.extra = {}
         self.integral_tol = 1e-14
+        # 'hdf5': the two-electron integrals go to the program
+        # antisymmetrized in a binary file (fcidump_rel.from_integrals_h5);
+        # 'fcidump': as a text FCIDUMP file, far slower to write and read.
+        self.integral_format = 'hdf5'
         # Number type of the calculation: 'auto' runs in real arithmetic when
         # h1e and eri are passed as real arrays, in complex arithmetic
         # otherwise; 'real' or 'complex' force one.  'real' with integrals
@@ -268,6 +272,10 @@ class SHCI(lib.StreamObject):
             inp.setdefault('scalar', 'real' if real else 'complex')
         else:
             inp.setdefault('scalar', self.scalar)
+        if self.integral_format not in ('hdf5', 'fcidump'):
+            raise ValueError("integral_format must be 'hdf5' or 'fcidump'")
+        if self.integral_format == 'hdf5':
+            inp['integrals'] = os.path.join(self.scratch, 'integrals.h5')
         fcidump_rel.from_integrals(
             inp['integrals'], numpy.asarray(h1e, dtype=complex),
             numpy.asarray(eri, dtype=complex).reshape(norb * norb, norb * norb),

@@ -363,11 +363,142 @@ bool ParseLine(std::string line, const std::string& path, size_t line_number,
   return true;
 }
 
+// Whether the file begins with the signature of HDF5.
+bool IsHdf5(const std::string& path) {
+  static const char kSignature[8] = {'\x89', 'H',  'D',    'F',
+                                     '\r',   '\n', '\x1a', '\n'};
+  std::ifstream file(path, std::ios::binary);
+  if (!file) throw std::runtime_error("cannot open integral file " + path);
+  char head[8] = {};
+  file.read(head, 8);
+  return file.gcount() == 8 && std::equal(head, head + 8, kSignature);
+}
+
+// Reads the binary file of antisymmetrized integrals (integrals.h).
+template <typename S>
+Integrals<S> ReadAntisymFile(const std::string& path,
+                             const std::vector<LabelSet>& symmetry,
+                             double symmetry_tolerance, const Comm& comm) {
+  int n = 0;
+  int num_elec = 0;
+  double ecore = 0.0;
+  std::vector<int> labels;
+  std::vector<double> h1, eri;
+  std::vector<uint32_t> bra, ket;
+  if (comm.is_root()) {
+    HighFive::File file(path, HighFive::File::ReadOnly);
+    std::string format;
+    if (file.hasAttribute("format")) file.getAttribute("format").read(format);
+    if (format != "antisym-1") {
+      throw std::runtime_error(path + ": not an integral file of format "
+                                      "antisym-1");
+    }
+    file.getAttribute("norb").read(n);
+    if (file.hasAttribute("nelec")) file.getAttribute("nelec").read(num_elec);
+    if (file.hasAttribute("ecore")) file.getAttribute("ecore").read(ecore);
+    if (file.exist("orbsym")) file.getDataSet("orbsym").read(labels);
+    const size_t size = n;
+    auto shape_error = [&](const std::string& name) {
+      return std::runtime_error(path + ": dataset " + name +
+                                " does not have the expected shape");
+    };
+    {
+      HighFive::DataSet dataset = file.getDataSet("h1");
+      if (dataset.getDimensions() != std::vector<size_t>{size, size, 2}) {
+        throw shape_error("h1");
+      }
+      h1.resize(2 * size * size);
+      dataset.read(h1.data());
+    }
+    HighFive::DataSet values = file.getDataSet("eri");
+    const std::vector<size_t> dims = values.getDimensions();
+    if (dims.size() != 2 || dims[1] != 2) throw shape_error("eri");
+    const size_t count = dims[0];
+    eri.resize(2 * count);
+    bra.resize(count);
+    ket.resize(count);
+    HighFive::DataSet bras = file.getDataSet("pair_bra");
+    HighFive::DataSet kets = file.getDataSet("pair_ket");
+    if (bras.getElementCount() != count) throw shape_error("pair_bra");
+    if (kets.getElementCount() != count) throw shape_error("pair_ket");
+    if (count > 0) {
+      values.read(eri.data());
+      bras.read(bra.data());
+      kets.read(ket.data());
+    }
+  }
+  comm.BcastValue(&n);
+  comm.Bcast(&labels);
+
+  // A set without labels takes orbsym, or nothing if the file has none.
+  std::vector<LabelSet> sets;
+  for (const LabelSet& requested : symmetry) {
+    LabelSet set = requested;
+    if (set.labels.empty()) set.labels = labels;
+    if (set.labels.empty()) continue;
+    if (static_cast<int>(set.labels.size()) != n) {
+      throw std::runtime_error(
+          "symmetry: labels must have one entry per spinor");
+    }
+    sets.push_back(std::move(set));
+  }
+
+  Integrals<S> ints(n, std::move(sets), comm);
+  if (!comm.is_root()) {
+    ints.Share(comm);
+    return ints;
+  }
+  ints.set_num_elec(num_elec);
+  ints.set_core_energy(ecore);
+
+  auto number = [&](const std::vector<double>& data, size_t k) {
+    if (!ScalarTraits<S>::kIsComplex && data[2 * k + 1] != 0.0) {
+      throw std::runtime_error(
+          path + ": an integral has an imaginary part, which a real "
+                 "calculation cannot hold");
+    }
+    return ScalarTraits<S>::Make(data[2 * k], data[2 * k + 1]);
+  };
+  for (int p = 0; p < n; ++p) {
+    for (int q = 0; q < n; ++q) {
+      ints.SetOneBody(p, q, number(h1, static_cast<size_t>(p) * n + q));
+    }
+  }
+  // The pairs p < q in the order of their numbers q (q - 1) / 2 + p.
+  std::vector<std::pair<int, int>> pairs;
+  for (int q = 1; q < n; ++q) {
+    for (int p = 0; p < q; ++p) pairs.emplace_back(p, q);
+  }
+  for (size_t k = 0; k < bra.size(); ++k) {
+    if (bra[k] >= pairs.size() || ket[k] >= pairs.size()) {
+      throw std::runtime_error(path + ": pair number out of range");
+    }
+    ints.SetAntisymOrdered(pairs[bra[k]].first, pairs[bra[k]].second,
+                           pairs[ket[k]].first, pairs[ket[k]].second,
+                           number(eri, k));
+  }
+  if (ints.max_forbidden() > symmetry_tolerance) {
+    char magnitude[32];
+    std::snprintf(magnitude, sizeof(magnitude), "%.3e", ints.max_forbidden());
+    throw std::runtime_error(
+        path +
+        ": the integrals do not have the symmetry of the labels: an "
+        "integral of magnitude " +
+        magnitude + " would change a label (see symmetry_tolerance)");
+  }
+  ints.Finalize();
+  ints.Share(comm);
+  return ints;
+}
+
 }  // namespace
 
 bool FcidumpIsComplex(const std::string& path, const Comm& comm) {
   int is_complex = 0;
-  if (comm.is_root()) {
+  if (comm.is_root() && IsHdf5(path)) {
+    HighFive::File file(path, HighFive::File::ReadOnly);
+    file.getAttribute("complex").read(is_complex);
+  } else if (comm.is_root()) {
     std::ifstream file;
     ReadHeader(path, &file);
     std::string line;
@@ -388,6 +519,11 @@ template <typename S>
 Integrals<S> ReadFcidump(const std::string& path,
                          const std::vector<LabelSet>& symmetry,
                          double symmetry_tolerance, const Comm& comm) {
+  int binary = comm.is_root() && IsHdf5(path) ? 1 : 0;
+  comm.BcastValue(&binary);
+  if (binary != 0) {
+    return ReadAntisymFile<S>(path, symmetry, symmetry_tolerance, comm);
+  }
   std::ifstream file;
   FcidumpHeader header;
   if (comm.is_root()) header = ReadHeader(path, &file);

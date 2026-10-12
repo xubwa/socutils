@@ -244,6 +244,23 @@ class KnownValues(unittest.TestCase):
         self.assertTrue(all_values)
 
 
+    def test_integral_formats(self):
+        # The binary file of antisymmetrized integrals and the text FCIDUMP
+        # give the same Hamiltonian, with and without symmetry labels.
+        norb, nelec = self.norb, self.nelec
+        energies = []
+        for fmt in ('hdf5', 'fcidump'):
+            solver = shci.SHCI()
+            solver.integral_format = fmt
+            solver.davidson_tol = 1e-10
+            e, _ = solver.kernel(self.h1, self.eri, norb, nelec, nroots=2,
+                                 ecore=self.ecore)
+            name = 'integrals.h5' if fmt == 'hdf5' else 'FCIDUMP'
+            self.assertTrue(os.path.exists(os.path.join(solver.scratch, name)))
+            energies.append(numpy.asarray(e))
+        self.assertAlmostEqual(abs(energies[0] - energies[1]).max(), 0, 9)
+
+
 class RealNumbers(unittest.TestCase):
     '''A real Hamiltonian in real arithmetic against the same Hamiltonian in
     complex arithmetic and against zfci.'''

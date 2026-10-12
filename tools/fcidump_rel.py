@@ -39,7 +39,13 @@ def write_eri(fout, eri, nmo, tol=TOL, float_format=DEFAULT_FLOAT_FORMAT):
 
 def from_integrals(filename, h1e, h2e, nmo, nelec, nuc=0, ms=0, orbsym=None,
                    tol=TOL, float_format=DEFAULT_FLOAT_FORMAT):
-    '''Convert the given 1-electron and 2-electron integrals to FCIDUMP format'''
+    '''Convert the given 1-electron and 2-electron integrals to FCIDUMP format
+
+    A filename that ends in .h5 gives the binary file of from_integrals_h5
+    instead.'''
+    if filename.endswith('.h5'):
+        return from_integrals_h5(filename, h1e, h2e, nmo, nelec, nuc=nuc,
+                                 orbsym=orbsym, tol=tol)
     print('write integrals')
     with open(filename, 'w') as fout:
         write_head(fout, nmo, nelec, ms, orbsym)
@@ -47,6 +53,69 @@ def from_integrals(filename, h1e, h2e, nmo, nelec, nuc=0, ms=0, orbsym=None,
         write_hcore(fout, h1e, nmo, tol=tol, float_format=float_format)
         output_format = float_format + '  0  0  0  0\n'
         fout.write(output_format % (nuc, 0.0))
+
+def from_integrals_h5(filename, h1e, h2e, nmo, nelec, nuc=0, orbsym=None,
+                      tol=TOL, max_memory=2000):
+    '''Writes the integrals to an HDF5 file with the two-electron integrals
+    antisymmetrized, <pq||rs> = (pr|qs) - (ps|qr), which is what a determinant
+    program needs and an eighth of the numbers of (pq|rs).
+
+    Spinor pairs p < q are numbered P = q (q - 1) / 2 + p (from 0).  Stored
+    are the <pq||rs> with P(p,q) >= P(r,s) and magnitude above tol; the others
+    follow from <rs||pq> = conj(<pq||rs>).
+
+    Attributes: format = 'antisym-1', norb, nelec, ecore, complex (0 or 1:
+    whether any integral has an imaginary part).
+    Datasets:
+        h1        (norb, norb, 2)   real and imaginary part of h(p, q)
+        pair_bra  (m,) uint32       P(p,q) of each stored integral
+        pair_ket  (m,) uint32       P(r,s)
+        eri       (m, 2)            real and imaginary part of <pq||rs>
+        orbsym    (norb,) int       symmetry labels, if given
+
+    h2e holds (pq|rs) with shape (nmo^2, nmo^2) or (nmo,) * 4.
+    '''
+    if not isinstance(nelec, (int, numpy.number)):
+        nelec = nelec[0] + nelec[1]
+    h1e = numpy.asarray(h1e).reshape(nmo, nmo)
+    eri = numpy.asarray(h2e).reshape(nmo, nmo, nmo, nmo)
+    q, p = numpy.tril_indices(nmo, -1)
+    npair = p.size
+    # rows of pairs worked on at a time
+    step = max(1, int(max_memory * 1e6 / (64 * nmo * nmo + 1)))
+    bras, kets, values = [], [], []
+    for start in range(0, npair, step):
+        stop = min(npair, start + step)
+        # block[k, r, s] = (p_k r|q_k s)
+        block = eri[p[start:stop], :, q[start:stop], :]
+        block = block - block.transpose(0, 2, 1)
+        block = block[:, p, q]
+        bra, ket = numpy.nonzero(abs(block) > tol)
+        keep = ket <= bra + start
+        bra, ket = bra[keep], ket[keep]
+        values.append(block[bra, ket])
+        bras.append((bra + start).astype(numpy.uint32))
+        kets.append(ket.astype(numpy.uint32))
+    values = numpy.concatenate(values) if values else numpy.zeros(0)
+    values = numpy.asarray(values, dtype=complex)
+    is_complex = bool(abs(values.imag).max(initial=0) > 0 or
+                      abs(numpy.asarray(h1e, dtype=complex).imag).max() > 0)
+    with h5py.File(filename, 'w') as f:
+        f.attrs['format'] = 'antisym-1'
+        f.attrs['norb'] = int(nmo)
+        f.attrs['nelec'] = int(nelec)
+        f.attrs['ecore'] = float(numpy.real(nuc))
+        f.attrs['complex'] = int(is_complex)
+        h1 = numpy.asarray(h1e, dtype=complex)
+        f['h1'] = numpy.stack([h1.real, h1.imag], axis=-1)
+        f['pair_bra'] = (numpy.concatenate(bras) if bras
+                         else numpy.zeros(0, numpy.uint32))
+        f['pair_ket'] = (numpy.concatenate(kets) if kets
+                         else numpy.zeros(0, numpy.uint32))
+        f['eri'] = numpy.stack([values.real, values.imag], axis=-1)
+        if orbsym is not None and len(orbsym) > 0:
+            f['orbsym'] = numpy.asarray(orbsym, dtype=numpy.int32)
+
 
 def view(h5file, dataname='eri_mo'):
     with h5py.File(h5file, 'r') as f5:

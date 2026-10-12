@@ -208,9 +208,28 @@ GB):
 
 with the same energy in every case.
 
-`src/input.h` documents every key. The integrals are read from a FCIDUMP
-file (`src/integrals.h`) in the complex format, `(re,im) p q r s`, or the real
-format, `value p q r s`. A file in the real format is treated with real
+At 22.1 million determinants (3.5 billion elements, 48 threads), where the
+tables, the determinants and the larger of extending the tables and the
+vectors of the eigensolver are counted as 47 GB:
+
+| | elements with values | peak memory | 36 products |
+|---|---|---|---|
+| `"stored"` | all | 108.9 GB | 150 s |
+| `"adapt"`, 150 GB | all | 109.9 GB | 149 s |
+| `"adapt"`, 80 GB | 36 % | 74.7 GB | 286 s |
+| `"adapt"`, 60 GB | 0.7 % | 55.4 GB | 397 s |
+
+A direct product of that size takes 54 s, against 4.2 s stored and about 10 s
+with the connections.
+
+`src/input.h` documents every key. The integrals are read from an HDF5 file
+that holds the two-electron integrals antisymmetrized
+(`socutils.tools.fcidump_rel.from_integrals_h5`; layout in
+`src/integrals.h`), or from a FCIDUMP file in the complex format,
+`(re,im) p q r s`, or the real format, `value p q r s`. The binary file is
+what to use beyond a few dozen spinors: for Cr2 in 100 spinors with 2 m_j
+labels it takes 38 MB, 1.5 s to write and 0.06 s to read, the text file 771
+MB, 54 s and 15 s. A file in the real format is treated with real
 numbers throughout (integrals, Hamiltonian, CI vectors, density matrices),
 which takes about two thirds of the memory; `"scalar": "real"` asks for the
 same with a file in the complex format whose imaginary parts are all zero, and

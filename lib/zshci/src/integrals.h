@@ -237,8 +237,21 @@ class Integrals {
 // first one met in the file is used and the others, if listed, are ignored,
 // so a file may list all of them or any one of each set.
 
+// A file may instead be an HDF5 file with the two-electron integrals already
+// antisymmetrized, which is read in one go (written by
+// socutils.tools.fcidump_rel.from_integrals_h5). Spinor pairs p < q are
+// numbered P = q (q - 1) / 2 + p. Attributes: format = "antisym-1", norb,
+// nelec, ecore, complex (0 or 1). Datasets:
+//   h1        (norb, norb, 2)  real and imaginary part of h(p, q)
+//   pair_bra  (m)              P(p, q) of each stored integral
+//   pair_ket  (m)              P(r, s), not above pair_bra
+//   eri       (m, 2)           real and imaginary part of <pq||rs>
+//   orbsym    (norb)           optional; taken as ORBSYM is
+// with <rs||pq> = conj(<pq||rs>) implied and integrals not listed zero.
+
 // Whether the file is in the complex format, judged from its first integral
-// line. Collective: the root looks and every rank returns the answer.
+// line (HDF5: from the attribute). Collective: the root looks and every rank
+// returns the answer.
 bool FcidumpIsComplex(const std::string& path, const Comm& comm = Comm());
 
 // Reads a file in either format. With S = double an imaginary part other
