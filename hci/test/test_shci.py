@@ -164,6 +164,47 @@ class KnownValues(unittest.TestCase):
             self.assertAlmostEqual(abs(numpy.asarray(other[0]) - e).max(), 0, 8)
 
 
+    def check_final_space(self, select, nroots=2, smaller_than=None):
+        '''Runs a selection that takes determinants out of the space and
+        checks that the result is the eigenstates of the Hamiltonian in the
+        determinants it ends with.  Returns their number and the output.'''
+        norb, nelec = self.norb, self.nelec
+        solver = shci.SHCI()
+        solver.davidson_tol = 1e-10
+        solver.extra = {'select': select, 'davidson': {'tol': 1e-10}}
+        e, ci = solver.kernel(self.h1, self.eri, norb, nelec, nroots=nroots,
+                              ecore=self.ecore)
+        occslst, vectors = solver.wavefunction()
+        with open(os.path.join(solver.scratch, 'output.txt')) as f:
+            output = f.read()
+        e_ref, ci_ref = zfci.kernel_dets(self.h1, self.eri, norb, occslst,
+                                         ecore=self.ecore, nroots=nroots)
+        self.assertAlmostEqual(abs(numpy.asarray(e) - e_ref).max(), 0, 8)
+        for k in range(nroots):
+            dm1, dm2 = solver.make_rdm12(ci[k], norb, nelec)
+            dm1_ref, dm2_ref = zfci.make_rdm12_dets(ci_ref[k], norb, occslst)
+            self.assertAlmostEqual(abs(dm1 - dm1_ref).max(), 0, 6)
+            self.assertAlmostEqual(abs(dm2 - dm2_ref).max(), 0, 6)
+        return len(occslst), output
+
+    def test_aci_with_pruning(self):
+        base = {'method': 'aci', 'sigma': 0.3, 'max_iter': 30,
+                'energy_tol': 1e-12, 'davidson_tol_loose': 1e-10}
+        grown, _ = self.check_final_space(base)
+        pruned, output = self.check_final_space(dict(base, prune=True))
+        self.assertIn('list compacted', output)
+        self.assertLess(pruned, grown)
+
+    def test_prune_by_coefficient(self):
+        base = {'schedule': [[0, 1e-3]], 'max_iter': 12, 'energy_tol': 1e-12,
+                'davidson_tol_loose': 1e-10}
+        full, _ = self.check_final_space(base)
+        pruned, output = self.check_final_space(
+            dict(base, prune_coefficient=0.1))
+        self.assertIn('left for their small coefficients', output)
+        self.assertLess(pruned, full)
+
+
 class RealNumbers(unittest.TestCase):
     '''A real Hamiltonian in real arithmetic against the same Hamiltonian in
     complex arithmetic and against zfci.'''

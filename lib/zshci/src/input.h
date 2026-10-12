@@ -68,6 +68,14 @@ struct RestrictionInput {
 //          candidates, by the same amplitude, and only the target_dets (or,
 //          while growing, growth times the present number) highest of both
 //          stay in the space
+//   aci    the determinants of largest coefficients that hold all but
+//          "gamma" * sigma of the squared norm generate the candidates and
+//          stay; every other determinant is scored from them, those of the
+//          space included, and the lowest ones, whose energies sum to at
+//          most sigma, are left out
+// With any method, "prune_coefficient": c takes out, after every
+// diagonalization, the determinants whose coefficients (root-sum-square
+// over the roots) are below c; the states are then those of what remains.
 // A determinant taken out of the space stays in the list of the program,
 // with coefficient zero, so that the stored Hamiltonian is neither reordered
 // nor rebuilt, and is treated like any determinant outside the space; it
@@ -84,8 +92,12 @@ struct SelectInput {
   double growth = 2.0;
   // asci: number of determinants that generate candidates; 0 means all.
   size_t core_dets = 0;
-  // asci: whether determinants leave the space (see above).
+  // asci, aci: whether determinants leave the space (see above).
   bool prune = false;
+  // aci with prune: see above.
+  double gamma = 1.0;
+  // Determinants with coefficients below this leave the space; 0: none.
+  double prune_coefficient = 0.0;
   // Share of determinants out of the space above which the list is
   // compacted during the iterations; 0: only at the end.
   double compact_above = 0.0;

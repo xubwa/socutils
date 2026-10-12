@@ -1737,6 +1737,85 @@ void TestPtScoreSelection(const Integrals<Complex>& ints) {
     std::printf("      %zu of %zu determinants leave the space, %zu come in\n",
                 selection.drop.size(), dets.size(), selection.add.size());
   }
+
+  // aci with pruning: the determinants of largest weight that hold all but
+  // sigma of the squared norm generate and stay; the others are scored
+  // from them, and the smallest energies, summing to sigma, are left out.
+  {
+    SelectInput select;
+    select.method = SelectMethod::kAci;
+    select.prune = true;
+    select.sigma = 0.02;
+    std::vector<size_t> by_weight(dets.size());
+    for (size_t i = 0; i < dets.size(); ++i) by_weight[i] = i;
+    std::sort(by_weight.begin(), by_weight.end(),
+              [&](size_t a, size_t b) { return weights[a] > weights[b]; });
+    double total = 0.0;
+    for (size_t i = 0; i < dets.size(); ++i) total += weights[i] * weights[i];
+    std::vector<size_t> generators;
+    double held = 0.0;
+    for (size_t i : by_weight) {
+      generators.push_back(i);
+      held += weights[i] * weights[i];
+      if (held >= (1.0 - select.sigma) * total) break;
+    }
+    std::vector<uint8_t> generates(dets.size(), 0);
+    for (size_t i : generators) generates[i] = 1;
+    std::vector<Det<1>> pool(external.begin(), external.end());
+    for (size_t i = 0; i < dets.size(); ++i) {
+      if (!generates[i]) pool.push_back(dets[i]);
+    }
+    std::vector<std::pair<double, Det<1>>> ranking;
+    for (const Det<1>& det : pool) {
+      const double energy_a = DiagonalEnergy(det, ints);
+      double score = 0.0;
+      for (int k = 0; k < 2; ++k) {
+        Complex v(0.0);
+        for (size_t j : generators) {
+          v += Hij(det, dets[j], ints) * root_vectors[k][j];
+        }
+        const double gap = energy_a - energies[k];
+        if (gap > 0.0) score += std::norm(v) / gap;
+      }
+      if (score > 0.0) ranking.push_back({score, det});
+    }
+    std::sort(
+        ranking.begin(), ranking.end(),
+        [](const std::pair<double, Det<1>>& a,
+           const std::pair<double, Det<1>>& b) { return a.first < b.first; });
+    std::vector<Det<1>> kept;
+    double left_out = 0.0;
+    for (const std::pair<double, Det<1>>& item : ranking) {
+      if (left_out + item.first <= select.sigma) {
+        left_out += item.first;
+      } else {
+        kept.push_back(item.second);
+      }
+    }
+    std::sort(kept.begin(), kept.end());
+    std::vector<Det<1>> expected_add;
+    std::set_difference(kept.begin(), kept.end(), sorted_dets.begin(),
+                        sorted_dets.end(), std::back_inserter(expected_add));
+    std::vector<size_t> expected_drop;
+    for (size_t i = 0; i < dets.size(); ++i) {
+      if (!generates[i] &&
+          !std::binary_search(kept.begin(), kept.end(), dets[i])) {
+        expected_drop.push_back(i);
+      }
+    }
+    PtScoreSelector<1, Complex> selector(select);
+    const Selection<1> selection = selector.Select(context);
+    Expect(generators.size() < dets.size() && !expected_drop.empty() &&
+               !expected_add.empty() && kept.size() < ranking.size() &&
+               selection.add == expected_add && selection.drop == expected_drop,
+           "aci with pruning keeps the generating determinants and the "
+           "others of largest energy");
+    std::printf(
+        "      %zu of %zu determinants generate, %zu leave the "
+        "space, %zu come in\n",
+        generators.size(), dets.size(), selection.drop.size(),
+        selection.add.size());
+  }
 }
 
 // A real Hamiltonian treated with real numbers and with complex numbers.

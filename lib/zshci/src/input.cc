@@ -104,6 +104,8 @@ Json ToJson(const Input& in) {
                    {"growth", in.select.growth},
                    {"core_dets", in.select.core_dets},
                    {"prune", in.select.prune},
+                   {"gamma", in.select.gamma},
+                   {"prune_coefficient", in.select.prune_coefficient},
                    {"compact_above", in.select.compact_above},
                    {"sigma", in.select.sigma},
                    {"epsilon_generate", in.select.epsilon_generate},
@@ -285,12 +287,20 @@ Input ParseInput(const std::string& text) {
     sel.Get("growth", &in.select.growth);
     sel.Get("core_dets", &in.select.core_dets);
     sel.Get("prune", &in.select.prune);
+    sel.Get("gamma", &in.select.gamma);
+    sel.Get("prune_coefficient", &in.select.prune_coefficient);
     sel.Get("compact_above", &in.select.compact_above);
     sel.Get("sigma", &in.select.sigma);
     sel.Get("epsilon_generate", &in.select.epsilon_generate);
     sel.CheckNoUnknownKeys();
-    if (in.select.prune && in.select.method != SelectMethod::kAsci) {
-      sel.Fail("prune", "is available for the method \"asci\" only");
+    if (in.select.prune && in.select.method != SelectMethod::kAsci &&
+        in.select.method != SelectMethod::kAci) {
+      sel.Fail("prune", "is for the methods \"asci\" and \"aci\"");
+    }
+    if (in.select.gamma < 0.0) sel.Fail("gamma", "must not be negative");
+    if (in.select.prune_coefficient < 0.0 ||
+        in.select.prune_coefficient >= 1.0) {
+      sel.Fail("prune_coefficient", "must be at least 0 and below 1");
     }
     if (in.select.compact_above < 0.0 || in.select.compact_above >= 1.0) {
       sel.Fail("compact_above", "must be at least 0 and below 1");

@@ -263,8 +263,15 @@ class HeatBathSelector : public Selector<W, S> {
 // highest-ranked determinants of both kinds: growth times its present size,
 // up to target_dets. Those of the space that fall below are taken out. If
 // all determinants generate, the amplitude of one of the space is its
-// coefficient (the eigenvalue equation says so) and that is used. Without
-// "prune" no determinant is ever removed.
+// coefficient (the eigenvalue equation says so) and that is used.
+//
+// With "prune" (aci), the determinants of largest weight that together hold
+// all but gamma * sigma of the squared norm of the states generate, and
+// stay; every other determinant, of the space or not, is scored from them,
+// and the space becomes the generators and all scored determinants but the
+// lowest ones whose scores sum to at most sigma.
+//
+// Without "prune" no determinant is ever removed.
 template <int W, typename S>
 class PtScoreSelector : public Selector<W, S> {
  public:
@@ -317,11 +324,41 @@ class PtScoreSelector : public Selector<W, S> {
       comm.BcastValue(&core_weight);
     }
 
-    // With pruning and a subset generating, the determinants of the space
-    // are scored like the others; nothing is excluded from the sums.
-    const bool rank_all = prune && core_weight > 0.0;
-    const Span<Det<W>> excluded =
-        rank_all ? Span<Det<W>>() : context.sorted_dets;
+    // aci with pruning: the determinants of largest weight that hold all but
+    // gamma * sigma of the squared norm are the ones that generate, and
+    // they stay; all others are scored.
+    const bool protect = prune && select_.method == SelectMethod::kAci;
+    std::vector<Det<W>> generators;
+    if (protect) {
+      if (comm.is_root()) {
+        std::vector<double> sorted(context.weights.begin(),
+                                   context.weights.end());
+        std::sort(sorted.begin(), sorted.end(), std::greater<double>());
+        double total = 0.0;
+        for (double w : sorted) total += w * w;
+        const double needed = (1.0 - select_.gamma * select_.sigma) * total;
+        double held = 0.0;
+        for (size_t i = 0; i < sorted.size() && sorted[i] > 0.0; ++i) {
+          core_weight = sorted[i];
+          held += sorted[i] * sorted[i];
+          if (held >= needed) break;
+        }
+      }
+      comm.BcastValue(&core_weight);
+      for (size_t i = 0; i < context.dets.size(); ++i) {
+        if (context.active[i] && context.weights[i] >= core_weight) {
+          generators.push_back(context.dets[i]);
+        }
+      }
+      std::sort(generators.begin(), generators.end());
+    }
+
+    // asci with pruning and a subset generating: the determinants of the
+    // space are scored like the others; nothing is excluded from the sums.
+    const bool rank_all = prune && !protect && core_weight > 0.0;
+    const Span<Det<W>> excluded = rank_all  ? Span<Det<W>>()
+                                  : protect ? Span<Det<W>>(generators)
+                                            : context.sorted_dets;
 
     // The scores of the determinants this rank owns, root by root.
     std::vector<Scored> scores;
@@ -350,11 +387,11 @@ class PtScoreSelector : public Selector<W, S> {
       }
     }
 
-    // With pruning and all determinants generating: the rank of every
+    // asci with pruning and all determinants generating: the rank of every
     // determinant of the space, zero for the others of the list. The root
     // counts them.
     std::vector<double> internal;
-    if (prune && !rank_all) {
+    if (prune && !rank_all && !protect) {
       internal.assign(context.dets.size(), 0.0);
       for (int k = 0; k < context.vectors->num_roots; ++k) {
         const Span<S> root = context.vectors->Root(k);
@@ -386,6 +423,19 @@ class PtScoreSelector : public Selector<W, S> {
                           std::back_inserter(selection.add));
       for (size_t i = 0; i < context.dets.size(); ++i) {
         if (context.active[i] &&
+            !std::binary_search(kept.begin(), kept.end(), context.dets[i])) {
+          selection.drop.push_back(i);
+        }
+      }
+    } else if (protect) {
+      // What was gathered stays or comes in, beside the generators.
+      const std::vector<Det<W>> kept = std::move(selection.add);
+      selection.add.clear();
+      std::set_difference(kept.begin(), kept.end(), context.sorted_dets.begin(),
+                          context.sorted_dets.end(),
+                          std::back_inserter(selection.add));
+      for (size_t i = 0; i < context.dets.size(); ++i) {
+        if (context.active[i] && context.weights[i] < core_weight &&
             !std::binary_search(kept.begin(), kept.end(), context.dets[i])) {
           selection.drop.push_back(i);
         }
@@ -777,7 +827,7 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
     const size_t num_changed = num_fresh + num_back + num_out;
 
     const size_t new_size = old_size + num_fresh;
-    const size_t num_active = new_size - num_inactive;
+    size_t num_active = new_size - num_inactive;
     if (num_active < static_cast<size_t>(num_roots)) {
       throw std::runtime_error(
           "the space holds fewer determinants than roots; give more "
@@ -813,6 +863,41 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
     num_products += result.num_products;
     seconds_products += result.seconds_products;
     seconds_solver += result.seconds_total;
+
+    // Determinants of small coefficient leave the space, and the states are
+    // those of what remains.
+    size_t num_small = 0;
+    if (input.select.prune_coefficient > 0.0) {
+      if (comm.is_root()) {
+        std::vector<size_t> small;
+        for (size_t i = 0; i < new_size; ++i) {
+          if (!root_active[i]) continue;
+          double sum = 0.0;
+          for (const std::vector<S>& v : root_vectors) sum += std::norm(v[i]);
+          if (std::sqrt(sum) < input.select.prune_coefficient) {
+            small.push_back(i);
+          }
+        }
+        // Never below one determinant per root.
+        if (num_active - small.size() >= static_cast<size_t>(num_roots)) {
+          for (size_t i : small) {
+            root_active[i] = 0;
+            for (std::vector<S>& v : root_vectors) v[i] = S(0.0);
+          }
+          num_small = small.size();
+        }
+      }
+      comm.BcastValue(&num_small);
+      if (num_small > 0) {
+        num_inactive += num_small;
+        num_active -= num_small;
+        mask = &root_active;
+        result = h.Solve(loose, &root_vectors, mask);
+        num_products += result.num_products;
+        seconds_products += result.seconds_products;
+        seconds_solver += result.seconds_total;
+      }
+    }
     bool converged_space = false;
     if (selector->InFinalStage(iter, num_active, num_changed) &&
         !previous.empty()) {
@@ -841,11 +926,14 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
                   build_start - select_start, solve_start - build_start,
                   omp_get_wtime() - solve_start, omp_get_wtime() - start_time);
     }
-    if (num_back + num_out + num_inactive > 0) {
-      std::printf(
-          "      space: %zu new, %zu back in, %zu taken out; %zu of "
-          "the %zu listed are out of the space\n",
-          num_fresh, num_back, num_out, num_inactive, new_size);
+    if (num_back + num_out + num_small + num_inactive > 0) {
+      std::printf("      space: %zu new, %zu back in, %zu taken out", num_fresh,
+                  num_back, num_out);
+      if (input.select.prune_coefficient > 0.0) {
+        std::printf(", %zu left for their small coefficients", num_small);
+      }
+      std::printf("; %zu of the %zu listed are out of the space\n",
+                  num_inactive, new_size);
     }
     if (finished && !converged_space) {
       std::printf("note: stopped at max_iter = %d before the energies "

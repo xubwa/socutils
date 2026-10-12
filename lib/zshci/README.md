@@ -106,10 +106,17 @@ The last three score every determinant outside the space, which costs about
 one deterministic perturbation-theory pass per iteration and root;
 `"epsilon_generate"` restricts V_a to the terms above it. None of them
 removes determinants from the space, unlike the published ASCI and ACI,
-unless `"prune": true` is given (for `"asci"` so far): the determinants of the
-space are then ranked with the candidates, by the same amplitude from the
+unless `"prune": true` is given. For `"asci"` the determinants of the space
+are then ranked with the candidates, by the same amplitude from the
 generating determinants, and the space is the `"target_dets"` highest of both
-(while it grows: `"growth"` times its size). A determinant taken out stays in
+(while it grows: `"growth"` times its size). For `"aci"` the determinants of
+largest coefficients that hold all but `"gamma"` (default 1) times sigma of
+the squared norm generate the candidates and stay, and every other
+determinant, of the space or not, is scored from them and kept or left out
+by the sigma rule. With any method, `"prune_coefficient": c` takes out, after
+each diagonalization, the determinants whose coefficients are below c
+(root-sum-square over the roots) and diagonalizes again in what remains.
+A determinant taken out stays in
 the list of the program with coefficient zero, so that the stored Hamiltonian
 is neither reordered nor rebuilt, and comes back at no cost if it is selected
 again; the eigensolver works in the others. The list is cleared of such
