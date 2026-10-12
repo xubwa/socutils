@@ -132,6 +132,7 @@ class KnownValues(unittest.TestCase):
                   'energy_tol': 1e-12, 'davidson_tol_loose': 1e-10}
         results = []
         for extra in ({}, {'incremental': False}, {'hamiltonian': 'direct'},
+                      {'hamiltonian': 'connections'},
                       {'select': dict(select, compact_above=0.1)}):
             solver = shci.SHCI()
             solver.davidson_tol = 1e-10
@@ -149,7 +150,8 @@ class KnownValues(unittest.TestCase):
         # Larger than the target: something was taken out along the way.
         removed = int(output.split('list compacted: ')[1].split()[0])
         self.assertGreater(removed, 0)
-        self.assertGreater(results[3][4].count('list compacted'), 1)
+        self.assertGreater(results[4][4].count('list compacted'), 1)
+        self.assertIn('values held for 0 of', results[3][4])
 
         e_ref, ci_ref = zfci.kernel_dets(self.h1, self.eri, norb, occslst,
                                          ecore=self.ecore, nroots=2)

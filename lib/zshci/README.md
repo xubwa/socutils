@@ -164,6 +164,17 @@ the same way. On the O2 case above (433k determinants, 131 million elements,
 is a fraction of a gigabyte instead of 3.1 GB; at 243k determinants a product
 takes 1.0 s against 0.2 s. For when the matrix does not fit.
 
+`"hamiltonian": "connections"` is in between: it stores which determinants are
+connected, 4 bytes per element, but not the values, which are worked out again
+in every product. Finding the connections is nine tenths of the cost of a
+direct product and evaluating an element one tenth, so this keeps most of the
+speed for a fifth of the memory of the matrix with complex numbers and a third
+with real ones. Cr2 with the X2CAMF Hamiltonian (`bench/cr2`, 24 electrons in
+60 spinors, 706655 determinants, 57 million elements, 16 threads): the matrix
+takes 1092 MB stored and 218 MB as connections, the 231 products of a run 10.0
+and 24.8 s, and the energies are the same; a direct product of that size
+takes 2.1 s, against 0.25 s with the connections and 0.044 s stored.
+
 `src/input.h` documents every key. The integrals are read from a FCIDUMP
 file (`src/integrals.h`) in the complex format, `(re,im) p q r s`, or the real
 format, `value p q r s`. A file in the real format is treated with real

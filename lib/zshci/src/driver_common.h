@@ -337,16 +337,19 @@ inline void PrintConnectStats(const ConnectStats& stats) {
 // matrices. It is either stored (SparseH) or, with "hamiltonian": "direct",
 // applied from the group string tables without being stored (DirectH).
 template <int W, typename S>
-class VariationalH {
+class VariationalH : private ElementSource<S> {
  public:
   VariationalH(const Input& input, const Integrals<S>& ints, const Comm& comm)
       : ints_(ints),
         comm_(comm),
         direct_(input.direct_hamiltonian),
+        store_values_(input.store_values),
         incremental_(input.incremental),
         connect_(MakeConnectOptions(input)) {
-    stored_.set_apply_diagonal(comm.is_root());
+    ResetStored();
   }
+  VariationalH(const VariationalH&) = delete;
+  VariationalH& operator=(const VariationalH&) = delete;
 
   bool direct() const { return direct_; }
   // The diagonal (on the root) and, unless direct, the stored elements.
@@ -359,14 +362,14 @@ class VariationalH {
     if (!incremental_ && first_new > 0) {
       // Everything is made afresh for the whole list.
       first_new = 0;
-      stored_ = SparseH<S>();
-      stored_.set_apply_diagonal(comm_.is_root());
+      ResetStored();
     }
     dets_ = dets;
     AppendDiagonal(dets, first_new, ints_, comm_, &stored_);
     if (connect_.method != ConnectMethod::kGroups) {
       stored_.AppendBlocks(
           BuildBlocks(dets, first_new, ints_, connect_, comm_, &stats_));
+      if (!store_values_) stored_.DropValues();
       return;
     }
     // The string tables live as long as the calculation and are extended
@@ -383,16 +386,16 @@ class VariationalH {
     stats_.num_strings = tables_->num_strings(0) + tables_->num_strings(1);
     stats_.num_links = tables_->num_links();
     if (!direct_) {
-      stored_.AppendBlocks(internal::BuildGroupBlocks(
-          dets, first_new, ints_, connect_.threshold, *tables_, &stats_));
+      stored_.AppendBlocks(
+          internal::BuildGroupBlocks(dets, first_new, ints_, connect_.threshold,
+                                     *tables_, &stats_, store_values_));
     }
   }
 
   // Collective: makes the Hamiltonian of `dets` from nothing, forgetting
   // what was there.
   void Rebuild(Span<Det<W>> dets) {
-    stored_ = SparseH<S>();
-    stored_.set_apply_diagonal(comm_.is_root());
+    ResetStored();
     tables_.reset();
     Extend(dets, 0);
   }
@@ -456,6 +459,12 @@ class VariationalH {
           "stored Hamiltonian (root): %.1f MB of elements, %.1f MB "
           "of row lists and thread tables\n",
           stored_.element_bytes() * mb, stored_.overhead_bytes() * mb);
+      if (stored_.num_values() < stored_.num_elements()) {
+        std::printf(
+            "stored Hamiltonian (root): values held for %zu of %zu elements; "
+            "the others are worked out in every product\n",
+            stored_.num_values(), stored_.num_elements());
+      }
     }
     std::printf("determinants: %.1f MB\n", dets_.size() * sizeof(Det<W>) * mb);
     if (direct_) {
@@ -471,9 +480,25 @@ class VariationalH {
   }
 
  private:
+  // The elements of stored blocks that hold columns only.
+  void Fill(DetIndex row, const DetIndex* cols, size_t count,
+            S* values) const override {
+    const Det<W>& bra = dets_[row];
+    for (size_t k = 0; k < count; ++k) {
+      values[k] = Hij(bra, dets_[cols[k]], ints_);
+    }
+  }
+
+  void ResetStored() {
+    stored_ = SparseH<S>();
+    stored_.set_apply_diagonal(comm_.is_root());
+    stored_.set_element_source(this);
+  }
+
   const Integrals<S>& ints_;
   const Comm& comm_;
   bool direct_;
+  bool store_values_;
   bool incremental_;
   typename internal::GroupStringTables<W>::Memory table_memory_;
   ConnectOptions connect_;

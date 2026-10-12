@@ -81,6 +81,11 @@ using DetIndex = uint32_t;
 // that holds a small part of the matrix does not pay for all its rows:
 // row[r] is the r-th such row, in increasing order, and its elements are
 // col/val[row_ptr[r] .. row_ptr[r + 1]), sorted by column.
+//
+// A block may hold the columns without the values (`val` empty): which
+// determinants are connected is then known, at a fifth of the memory for
+// complex numbers and a third for real ones, and the values are worked out
+// again whenever they are needed (ElementSource).
 template <typename S>
 struct CsrBlock {
   size_t dim = 0;
@@ -92,6 +97,17 @@ struct CsrBlock {
 
   size_t num_stored_rows() const { return row.size(); }
   size_t num_elements() const { return col.size(); }
+  bool has_values() const { return val.size() == col.size(); }
+};
+
+// Works out the elements of blocks that hold no values.
+template <typename S>
+class ElementSource {
+ public:
+  virtual ~ElementSource() = default;
+  // values[k] = H(row, cols[k]) for k < count. Called by several threads.
+  virtual void Fill(DetIndex row, const DetIndex* cols, size_t count,
+                    S* values) const = 0;
 };
 
 // Whether two blocks hold the same elements, the values within `tolerance`.
@@ -107,6 +123,8 @@ class SparseH : public LinearOperator<S> {
   void Apply(const S* x, S* y) const override { Multiply(x, y); }
   const std::vector<CsrBlock<S>>& blocks() const { return blocks_; }
   size_t num_elements() const;
+  // The elements whose values are stored.
+  size_t num_values() const;
   // Bytes of the stored elements (columns and values), and of what is held
   // besides them: the row lists and the tables that tell every thread where
   // its columns lie in each row.
@@ -123,6 +141,12 @@ class SparseH : public LinearOperator<S> {
   // Adds a block, or several, and re-partitions the rows among the threads.
   void AppendBlock(CsrBlock<S> block);
   void AppendBlocks(std::vector<CsrBlock<S>> blocks);
+
+  // Who works out the elements of blocks without values; must outlive the
+  // products. Needed as soon as such a block is held.
+  void set_element_source(const ElementSource<S>* source) { source_ = source; }
+  // Releases the values of all blocks; the columns stay.
+  void DropValues();
 
   // y = H x. Each thread owns a contiguous range of rows. An element
   // H(j, i) serves y_j += H(j,i) x_i, which its row owner writes, and
@@ -180,6 +204,7 @@ class SparseH : public LinearOperator<S> {
   // Thread t owns rows [segment_[t], segment_[t + 1]).
   std::vector<size_t> segment_;
   bool apply_diagonal_ = true;
+  const ElementSource<S>* source_ = nullptr;
   Product product_ = Product::kAutomatic;
   bool one_sweep_ = false;
   // One sweep: thread t adds into scratch_[t * dim .. t * dim + its range

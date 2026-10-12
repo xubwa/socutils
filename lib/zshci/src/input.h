@@ -232,7 +232,12 @@ struct Input {
   // vector works the connections out again from the tables of the group
   // method (which it implies) and evaluates the elements on the way. Slow
   // per product, but the memory of the matrix is saved. Default "stored".
+  // "connections" is in between: which determinants are connected is stored
+  // (4 bytes per element) but not the values, which are worked out in every
+  // product; a fifth of the memory of "stored" for complex numbers, a third
+  // for real ones, and several times slower per product.
   bool direct_hamiltonian = false;
+  bool store_values = true;
   // "incremental": true (default) extends the stored Hamiltonian and the
   // string tables by what the determinants added in an iteration bring, for
   // which the root keeps the sorted keys of all strings. false makes both

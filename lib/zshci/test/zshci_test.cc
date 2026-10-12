@@ -1439,6 +1439,48 @@ void TestGroupConnections(const Integrals<Complex>& ints) {
                  max_diff[1] < 1e-12 * largest,
              "the one-sweep and the two-sweep product of the stored matrix "
              "equal the serial one");
+
+      // The same with the values dropped and worked out in every product.
+      struct Source : ElementSource<Complex> {
+        const std::vector<Det<1>>* dets;
+        const Integrals<Complex>* ints;
+        void Fill(DetIndex row, const DetIndex* cols, size_t count,
+                  Complex* values) const override {
+          for (size_t k = 0; k < count; ++k) {
+            values[k] = Hij((*dets)[row], (*dets)[cols[k]], *ints);
+          }
+        }
+      };
+      Source source;
+      source.dets = &dets;
+      source.ints = &ints;
+      const size_t bytes_with_values = stored.element_bytes();
+      stored.set_element_source(&source);
+      stored.DropValues();
+      double worst = 0.0;
+      for (SparseH<Complex>::Product product :
+           {SparseH<Complex>::Product::kOneSweep,
+            SparseH<Complex>::Product::kTwoSweeps}) {
+        stored.set_product(product);
+        stored.Multiply(x.data(), y.data());
+        for (size_t i = 0; i < x.size(); ++i) {
+          worst = std::max(worst, std::abs(y[i] - y_ref[i]));
+        }
+      }
+      stored.MultiplyReference(x.data(), y.data());
+      for (size_t i = 0; i < x.size(); ++i) {
+        worst = std::max(worst, std::abs(y[i] - y_ref[i]));
+      }
+      stored.set_product(SparseH<Complex>::Product::kAutomatic);
+      Expect(stored.num_values() == 0 &&
+                 5 * stored.element_bytes() == bytes_with_values &&
+                 worst < 1e-12 * largest,
+             "products with the columns only, the values worked out each "
+             "time, equal those of the stored matrix");
+      // The matrix with its values again, for what follows.
+      stored = SparseH<Complex>();
+      stored.AppendDiagonal(diagonal);
+      stored.AppendBlocks(BuildBlocks(MakeSpan(dets), 0, ints, options));
     }
     const internal::GroupStringTables<1> tables(
         MakeSpan(dets), GroupMask<1>(options, n), serial);

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <vector>
 
 namespace zshci {
 
@@ -17,9 +18,12 @@ bool SameBlock(const CsrBlock<S>& a, const CsrBlock<S>& b, double tolerance) {
   for (size_t r = 0; r < a.row.size(); ++r) {
     if (a.row[r] != b.row[r]) return false;
   }
+  if (a.has_values() != b.has_values()) return false;
   for (size_t k = 0; k < a.col.size(); ++k) {
     if (a.col[k] != b.col[k]) return false;
-    if (std::abs(a.val[k] - b.val[k]) > tolerance) return false;
+    if (a.has_values() && std::abs(a.val[k] - b.val[k]) > tolerance) {
+      return false;
+    }
   }
   return true;
 }
@@ -32,9 +36,41 @@ size_t SparseH<S>::num_elements() const {
 }
 
 template <typename S>
-size_t SparseH<S>::element_bytes() const {
-  return num_elements() * (sizeof(DetIndex) + sizeof(S));
+size_t SparseH<S>::num_values() const {
+  size_t n = 0;
+  for (const CsrBlock<S>& block : blocks_) n += block.val.size();
+  return n;
 }
+
+template <typename S>
+size_t SparseH<S>::element_bytes() const {
+  return num_elements() * sizeof(DetIndex) + num_values() * sizeof(S);
+}
+
+template <typename S>
+void SparseH<S>::DropValues() {
+  for (CsrBlock<S>& block : blocks_) block.val = RawArray<S>();
+}
+
+namespace {
+
+// The values of elements [first, last) of stored row r of `block`: where
+// they are stored, or in `buffer` after being worked out by `source`.
+template <typename S>
+const S* ValuesOfRow(const CsrBlock<S>& block, size_t r, uint64_t first,
+                     uint64_t last, const ElementSource<S>* source,
+                     std::vector<S>* buffer) {
+  if (block.has_values()) return block.val.data() + first;
+  if (source == nullptr) {
+    throw std::logic_error("a block without values needs an element source");
+  }
+  if (buffer->size() < last - first) buffer->resize(last - first);
+  source->Fill(block.row[r], block.col.data() + first, last - first,
+               buffer->data());
+  return buffer->data();
+}
+
+}  // namespace
 
 template <typename S>
 size_t SparseH<S>::overhead_bytes() const {
@@ -77,7 +113,10 @@ void SparseH<S>::PartitionRows() {
   one_sweep_ =
       num_threads > 1 && product_ != Product::kTwoSweeps &&
       (product_ == Product::kOneSweep ||
-       4 * static_cast<size_t>(num_threads) * n * sizeof(S) <= element_bytes());
+       // Judged by what the elements would take with their values: values
+       // that are worked out are worth even more not to be visited twice.
+       4 * static_cast<size_t>(num_threads) * n * sizeof(S) <=
+           num_elements() * (sizeof(DetIndex) + sizeof(S)));
   segment_.assign(num_threads + 1, n);
   segment_[0] = 0;
   if (num_threads > 1) {
@@ -169,6 +208,7 @@ void SparseH<S>::Multiply(const S* x, S* y) const {
       const size_t end = segment_[t + 1];
       // The columns of this thread's rows lie below `end`.
       S* const mine = scratch_.data() + static_cast<size_t>(t) * n;
+      std::vector<S> buffer;
       std::fill(mine, mine + end, S(0.0));
       for (size_t i = begin; i < end; ++i) {
         y[i] = apply_diagonal_ ? diagonal_[i] * x[i] : S(0.0);
@@ -180,12 +220,15 @@ void SparseH<S>::Multiply(const S* x, S* y) const {
             std::lower_bound(rows, rows + num_rows, begin) - rows;
         const size_t last_row =
             std::lower_bound(rows + first_row, rows + num_rows, end) - rows;
-        const DetIndex* const col = block.col.data();
-        const S* const val = block.val.data();
         for (size_t r = first_row; r < last_row; ++r) {
+          const uint64_t first = block.row_ptr[r];
+          const uint64_t count = block.row_ptr[r + 1] - first;
+          const DetIndex* const col = block.col.data() + first;
+          const S* const val =
+              ValuesOfRow(block, r, first, first + count, source_, &buffer);
           const S xj = x[rows[r]];
           S sum(0.0);
-          for (uint64_t k = block.row_ptr[r]; k < block.row_ptr[r + 1]; ++k) {
+          for (uint64_t k = 0; k < count; ++k) {
             sum += val[k] * x[col[k]];
             mine[col[k]] += Conj(val[k]) * xj;
           }
@@ -211,6 +254,7 @@ void SparseH<S>::Multiply(const S* x, S* y) const {
   for (int t = 0; t < num_segments; ++t) {
     const size_t begin = segment_[t];
     const size_t end = segment_[t + 1];
+    std::vector<S> buffer;
     for (size_t i = begin; i < end; ++i) {
       y[i] = apply_diagonal_ ? diagonal_[i] * x[i] : S(0.0);
     }
@@ -228,10 +272,13 @@ void SparseH<S>::Multiply(const S* x, S* y) const {
 
       // Rows owned by this thread: y_j += H(j,i) x_i.
       for (size_t r = first_row; r < last_row; ++r) {
+        const uint64_t first = block.row_ptr[r];
+        const uint64_t count = block.row_ptr[r + 1] - first;
+        const DetIndex* const col = block.col.data() + first;
+        const S* const val =
+            ValuesOfRow(block, r, first, first + count, source_, &buffer);
         S sum(0.0);
-        for (uint64_t k = block.row_ptr[r]; k < block.row_ptr[r + 1]; ++k) {
-          sum += block.val[k] * x[block.col[k]];
-        }
+        for (uint64_t k = 0; k < count; ++k) sum += val[k] * x[col[k]];
         y[rows[r]] += sum;
       }
       // Columns owned by this thread: y_i += conj(H(j,i)) x_j. Since i < j,
@@ -249,9 +296,13 @@ void SparseH<S>::Multiply(const S* x, S* y) const {
         const uint64_t last = t == split.last_segment
                                   ? block.row_ptr[r + 1]
                                   : block.row_ptr[r] + offsets[local];
+        if (first == last) continue;
+        const DetIndex* const col = block.col.data() + first;
+        const S* const val =
+            ValuesOfRow(block, r, first, last, source_, &buffer);
         const S xi = x[rows[r]];
-        for (uint64_t k = first; k < last; ++k) {
-          y[block.col[k]] += Conj(block.val[k]) * xi;
+        for (uint64_t k = 0; k < last - first; ++k) {
+          y[col[k]] += Conj(val[k]) * xi;
         }
       }
     }
@@ -264,13 +315,18 @@ void SparseH<S>::MultiplyReference(const S* x, S* y) const {
   for (size_t i = 0; i < n; ++i) {
     y[i] = apply_diagonal_ ? diagonal_[i] * x[i] : S(0.0);
   }
+  std::vector<S> buffer;
   for (const CsrBlock<S>& block : blocks_) {
     for (size_t r = 0; r < block.num_stored_rows(); ++r) {
       const DetIndex i = block.row[r];
-      for (uint64_t k = block.row_ptr[r]; k < block.row_ptr[r + 1]; ++k) {
-        const DetIndex j = block.col[k];
-        y[i] += block.val[k] * x[j];
-        y[j] += Conj(block.val[k]) * x[i];
+      const uint64_t first = block.row_ptr[r];
+      const uint64_t count = block.row_ptr[r + 1] - first;
+      const S* const val =
+          ValuesOfRow(block, r, first, first + count, source_, &buffer);
+      for (uint64_t k = 0; k < count; ++k) {
+        const DetIndex j = block.col[first + k];
+        y[i] += val[k] * x[j];
+        y[j] += Conj(val[k]) * x[i];
       }
     }
   }

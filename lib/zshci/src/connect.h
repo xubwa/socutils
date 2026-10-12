@@ -556,7 +556,8 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(Span<Det<W>> dets, size_t first_new,
                                           const Integrals<S>& ints,
                                           double threshold,
                                           const GroupStringTables<W>& tables,
-                                          ConnectStats* stats) {
+                                          ConnectStats* stats,
+                                          bool store_values = true) {
   const size_t n = dets.size();
   const bool keep_all = threshold < 0.0;
   const double time = omp_get_wtime();
@@ -597,12 +598,12 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(Span<Det<W>> dets, size_t first_new,
         const size_t capacity =
             std::max(num_elements + row.size(), 2 * cols.size() + 1024);
         cols.Resize(capacity);
-        vals.Resize(capacity);
+        if (store_values) vals.Resize(capacity);
       }
       rows.push_back(static_cast<DetIndex>(j));
       for (const std::pair<DetIndex, S>& element : row) {
         cols[num_elements] = element.first;
-        vals[num_elements] = element.second;
+        if (store_values) vals[num_elements] = element.second;
         ++num_elements;
       }
       row_ptr.push_back(num_elements);
@@ -610,7 +611,7 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(Span<Det<W>> dets, size_t first_new,
     // The schedule hands every thread its determinants in increasing order,
     // so the rows are sorted.
     cols.Resize(num_elements);
-    vals.Resize(num_elements);
+    if (store_values) vals.Resize(num_elements);
     CsrBlock<S>& block = blocks[omp_get_thread_num()];
     block.dim = n;
     block.first_row = first_new;
