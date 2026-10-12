@@ -190,6 +190,14 @@ two-electron corrections on) and only then require the `x2camf` integral backend
   ExternalProject into `lib/deps/lib`. `lib/zquatev/__init__.py` is the ctypes
   loader of Toru Shiozaki's quaternion eigensolver for Kramers-restricted SCF.
 
+- **`lib/zgasci/` + `hci/gasci.py`** — full / GAS / RAS CI over spinors
+  (and, as `SpatialGASCI`, over spatial orbitals with the pyscf
+  `direct_spin1` interface). Plain C99 + OpenMP kernels (`lib/libzgasci.so`,
+  ctypes) for the diagonal, sigma and the pair density; vectors and the
+  Davidson (`pyscf.lib.davidson1`) stay in Python. `GASCI` has the interface
+  and density-matrix conventions of `SHCI`/`zfci.FCISolver`. Details in
+  `lib/zgasci/README.md`; test `hci/test/test_gasci.py`.
+
 ## Environment variables
 
 - `SOCUTILS_X2CAMF` = `bundled` (default) | `auto` | `external` — whether the
@@ -198,3 +206,4 @@ two-electron corrections on) and only then require the `x2camf` integral backend
 - `X2CAMF_CPP_LIBRARY` — path to upstream `libx2camf*.so` for `make compare` / cpp backend.
 - `SOCUTILS_ZQUATEV_LIBRARY` — explicit path to `libzquatev.so`.
 - `SOCUTILS_SOCDFT_LIBRARY` — explicit path to `libsocdft.so`.
+- `SOCUTILS_ZGASCI_LIBRARY` — explicit path to `libzgasci.so`.

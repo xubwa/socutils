@@ -593,8 +593,8 @@ class GASCI(lib.StreamObject):
 
     def _rdm12_plan_order(self, bra, ket, norb, nelec):
         '''dm1, dm2 of <bra| ... |ket> over the spinors of the plan.'''
-        nelec = self._nelec(nelec)
         plan = self.plan(norb, nelec)
+        nelec = self._nelec(nelec)
         bra, ket = numpy.asarray(bra).ravel(), numpy.asarray(ket).ravel()
         n = plan.n
         if nelec < 2:
@@ -666,7 +666,8 @@ class SpatialGASCI(GASCI):
     list of lists of spatial orbitals, used for both spins.  orbsym holds the
     PySCF numbers of the irreducible representations of D2h and its
     subgroups (0 to 7), wfnsym the target (default: that of the aufbau
-    determinant).
+    determinant).  Transition density matrices follow pyscf,
+    t[p,q] = <bra| q^+ p |ket>: the transpose of SpatialSHCI.trans_rdm1.
     '''
 
     def __init__(self, mol=None):
@@ -863,10 +864,13 @@ class SpatialGASCI(GASCI):
         return self.make_rdm12(fcivec, norb, nelec)[1]
 
     def trans_rdm12s(self, cibra, ciket, norb, nelec, **kwargs):
+        '''As pyscf.fci.direct_spin1: t1a[p,q] = <bra| q_a^+ p_a |ket> (the
+        transpose of GASCI.trans_rdm1 and of SpatialSHCI.trans_rdm1),
+        t2ab[p,q,r,s] = <bra| p_a^+ r_b^+ s_b q_a |ket>, t2ba likewise.'''
         dm1, dm2 = self._so_rdm12(cibra, ciket, norb, nelec)
         (t1a, t1b), (t2aa, t2ab, t2bb) = self._spin_blocks(dm1, dm2, norb)
         b, a = slice(norb, 2 * norb), slice(0, norb)
-        return (t1a, t1b), (t2aa, t2ab, dm2[b, b, a, a], t2bb)
+        return (t1a.T, t1b.T), (t2aa, t2ab, dm2[b, b, a, a], t2bb)
 
     def trans_rdm12(self, cibra, ciket, norb, nelec, **kwargs):
         (t1a, t1b), (t2aa, t2ab, t2ba, t2bb) = self.trans_rdm12s(cibra, ciket,
@@ -877,15 +881,19 @@ class SpatialGASCI(GASCI):
         return self.trans_rdm12s(cibra, ciket, norb, nelec)[0]
 
     def trans_rdm1(self, cibra, ciket, norb, nelec, **kwargs):
+        '''t[p,q] = <bra| q^+ p |ket>, spin-traced, as pyscf.fci.direct_spin1.'''
         t1a, t1b = self.trans_rdm1s(cibra, ciket, norb, nelec)
         return t1a + t1b
 
     def _spin_square(self, fcivec, norb, nelec, *args, **kwargs):
-        '''(<S^2>, 2S+1).'''
-        from pyscf.fci import spin_op
-        (dm1a, dm1b), (dm2aa, dm2ab, dm2bb) = self.make_rdm12s(fcivec, norb, nelec)
-        return spin_op.spin_square_general(dm1a, dm1b, dm2aa, dm2ab, dm2bb,
-                                           numpy.eye(norb))
+        '''(<S^2>, 2S+1): S^2 = S_- S_+ + S_z (S_z + 1), and
+        <S_- S_+> = N_beta - sum_pq <p_a^+ q_b^+ p_b q_a>.'''
+        nalpha, nbeta = self._unpack_nelec(nelec)
+        _, (_, dm2ab, _) = self.make_rdm12s(fcivec, norb, (nalpha, nbeta))
+        sz = 0.5 * (nalpha - nbeta)
+        ss = nbeta - numpy.einsum('pqqp->', dm2ab).real + sz * (sz + 1)
+        s = numpy.sqrt(max(ss, 0) + 0.25) - 0.5
+        return ss, 2 * s + 1
 
     def wavefunction(self, fcivec, norb, nelec):
         '''Determinants as tuples of spin orbitals 2P (alpha) and 2P + 1
