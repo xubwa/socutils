@@ -1308,6 +1308,59 @@ void TestGroupConnections(const Integrals<Complex>& ints) {
              0.0),
          "group string tables with a threshold equal brute force");
 
+  // Related strings found through sub-groups against those found by keys:
+  // the same connections for every determinant, for tables made at once
+  // and step by step, with the usual groups and with groups of 5 and 27
+  // spinors, whose sub-groups are of unequal size.
+  {
+    const std::vector<Det<1>> dets = ToDets<1>(occupations, 0);
+    const Comm serial;
+    std::vector<Det<1>> masks = {GroupMask<1>(ConnectOptions(), n)};
+    ConnectOptions uneven;
+    for (int p = 0; p < n; ++p) {
+      if (p % 7 == 0) uneven.group_a.push_back(p);
+    }
+    masks.push_back(GroupMask<1>(uneven, n));
+    bool same_connections = true;
+    size_t num_connections = 0;
+    for (const Det<1>& mask : masks) {
+      const internal::GroupStringTables<1> by_keys(MakeSpan(dets), mask, serial,
+                                                   false);
+      const internal::GroupStringTables<1> at_once(MakeSpan(dets), mask, serial,
+                                                   true);
+      internal::GroupStringTables<1> stepwise(mask, serial, true);
+      size_t previous = 0;
+      for (size_t size :
+           {size_t{1}, size_t{40}, size_t{41}, size_t{300}, dets.size()}) {
+        stepwise.Extend(Span<Det<1>>(dets.data(), size), previous);
+        previous = size;
+      }
+      same_connections = same_connections &&
+                         by_keys.num_links() == at_once.num_links() &&
+                         by_keys.num_links() == stepwise.num_links();
+      for (size_t j = 0; j < dets.size() && same_connections; ++j) {
+        std::vector<DetIndex> a, b, c;
+        uint64_t tested = 0;
+        by_keys.ForEachConnected(
+            j, [&](DetIndex i) { a.push_back(i); }, &tested, true);
+        at_once.ForEachConnected(
+            j, [&](DetIndex i) { b.push_back(i); }, &tested, true);
+        stepwise.ForEachConnected(
+            j, [&](DetIndex i) { c.push_back(i); }, &tested, true);
+        std::sort(a.begin(), a.end());
+        std::sort(b.begin(), b.end());
+        std::sort(c.begin(), c.end());
+        same_connections = a == b && a == c;
+        num_connections += a.size();
+      }
+    }
+    Expect(same_connections && num_connections > 1000,
+           "related strings from sub-groups equal those from keys, also "
+           "for groups of unequal size and tables extended step by step");
+    std::printf("      %d spinors; %zu connections compared\n", n,
+                num_connections);
+  }
+
   // Tables extended step by step against tables made at once: the same
   // connections for every determinant. The first step holds one
   // determinant, so the lists for electrons moving between the groups only

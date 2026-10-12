@@ -63,6 +63,9 @@ struct ConnectOptions {
   // (the alpha spin orbitals, or one spinor of every interleaved Kramers
   // pair).
   std::vector<int> group_a;
+  // Groups: whether related strings are found through sub-groups of the
+  // two groups or by keys (connect_groups.h).
+  bool subgroups = true;
 };
 
 // What a connection search did, summed over calls: how many pairs sharing a
@@ -740,7 +743,7 @@ std::vector<CsrBlock<S>> BuildBlocks(Span<Det<W>> dets, size_t first_new,
   if (options.method == ConnectMethod::kGroups) {
     const double time = omp_get_wtime();
     const internal::GroupStringTables<W> tables(
-        dets, GroupMask<W>(options, ints.num_orbs()), comm);
+        dets, GroupMask<W>(options, ints.num_orbs()), comm, options.subgroups);
     if (stats != nullptr) {
       stats->seconds_prepare += omp_get_wtime() - time;
       stats->num_strings = tables.num_strings(0) + tables.num_strings(1);

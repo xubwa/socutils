@@ -133,7 +133,19 @@ mHartree for sigma = 1, 0.1 and 0.01 mHartree).
 groups (`"group_a"`, default the even ones) and works from tables of the
 strings of each group, electrons being allowed to move between the groups;
 `"strings"` and `"segments"` are the earlier methods. With a conserved spin projection
-that is the alpha/beta scheme and the default. Timings of the three on two
+that is the alpha/beta scheme and the default. The strings of a group that
+are related (one or two electrons out, one or two in) are found by dividing
+the group once more into two sub-groups, of equal size or not, and combining
+the relations between the sub-strings, which are few and short
+(`"relations": "subgroups"`, the default); `"relations": "keys"` finds them
+from keys instead, of which a string of n electrons has n (n + 1) / 2 that
+must be kept to extend the tables. Both give the same tables. What the root
+keeps to extend them falls from 82.6 to 2.0 MB for the Cl2 case below (34
+electrons, 124367 determinants) and from 20.4 to 5.0 MB for O2 (12 electrons,
+432939 determinants), the most it holds briefly while extending from 95 to 49
+and from 74 to 34 MB; the time for the tables is about the same (0.49 against
+0.54 s and 0.73 against 0.80 s over a whole run; N2 without electrons moving
+between the groups: 0.44 against 0.22 s). Timings of the three on two
 spinor cases, 16 threads, seconds spent building the Hamiltonian over a whole
 selection run and the peak memory of the program:
 

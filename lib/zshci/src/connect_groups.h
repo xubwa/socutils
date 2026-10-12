@@ -40,11 +40,29 @@
 // reordered: they, and a Hamiltonian stored for them, stay as they were
 // when determinants are added.
 //
-// Related strings are found by sorting: two strings are related when they
-// share a string of one or two electrons less, so each string contributes
-// such shortened strings as keys and equal keys bring the related strings
-// together. Doubles of one string with the other string unchanged are found
-// by comparing the determinants that share the other string.
+// Related strings are found in one of two ways.
+//
+// By keys: two strings are related when they share a string of one or two
+// electrons less, so each string contributes such shortened strings as keys
+// and equal keys, brought together by sorting, give the related strings.
+// A string of n electrons has n (n + 1) / 2 keys, which the root must keep
+// to extend the tables later; with many electrons they outweigh the tables.
+//
+// By sub-groups (the default): the scheme is applied once more. Each group
+// is divided into two sub-groups (its spinors in turn; the two need not be
+// of equal size), a string of the group is a string of each, and the
+// sub-strings are far fewer and half as long. Electrons leaving and
+// entering a string do so in one sub-group or the other, so every relation
+// between strings follows from the relations between their sub-strings:
+// "2 out, 1 in", say, is "2 out" in one and "1 in" in the other, or "1 out,
+// 1 in" in one and "1 out" in the other, and so on. For a new string, the
+// related sub-strings are combined and each combination looked up among
+// the strings there are. The relations between sub-strings are found by
+// keys; those are few and short, are made afresh at every extension, and
+// nothing but the numbering of the strings is kept.
+//
+// Doubles of one string with the other string unchanged are found by
+// comparing the determinants that share the other string.
 
 #ifndef ZSHCI_SRC_CONNECT_GROUPS_H_
 #define ZSHCI_SRC_CONNECT_GROUPS_H_
@@ -69,16 +87,21 @@ template <int W>
 class GroupStringTables {
  public:
   // `group_a` has the bits of the spinors of group A set; all others form
-  // group B. The tables are empty until Extend is called.
-  GroupStringTables(const Det<W>& group_a, const Comm& comm)
+  // group B. `subgroups` chooses how related strings are found (see the top
+  // of this file); the tables are the same either way. They are empty until
+  // Extend is called.
+  GroupStringTables(const Det<W>& group_a, const Comm& comm,
+                    bool subgroups = true)
       : comm_(comm),
         rank_(comm.rank()),
         num_ranks_(comm.size()),
-        group_a_(group_a) {}
+        group_a_(group_a),
+        subgroups_(subgroups) {}
 
   // The tables of `dets`. Collective.
-  GroupStringTables(Span<Det<W>> dets, const Det<W>& group_a, const Comm& comm)
-      : GroupStringTables(group_a, comm) {
+  GroupStringTables(Span<Det<W>> dets, const Det<W>& group_a, const Comm& comm,
+                    bool subgroups = true)
+      : GroupStringTables(group_a, comm, subgroups) {
     Extend(dets, 0);
   }
 
@@ -93,9 +116,10 @@ class GroupStringTables {
     if (dets.size() > static_cast<size_t>(UINT32_MAX)) {
       throw std::length_error("too many determinants for a 32-bit index");
     }
-    if (first_new > 0 && comm_.is_root() && root_.keys[0].empty()) {
+    if (first_new > 0 && comm_.is_root() && root_.strings[0].empty()) {
       throw std::logic_error(
-          "the string tables can only be extended while their keys are kept");
+          "the string tables can only be extended while "
+          "what the root keeps for that is there");
     }
     dets_ = dets;
     num_elec_ = dets.empty() ? 0 : dets[0].Count();
@@ -549,48 +573,29 @@ class GroupStringTables {
     return x.string < y.string;
   }
 
-  // Brings the relation lists of one group up to date with the strings from
-  // number num_old[c] on in every electron count c. Strings s and t are
-  // related when they share a key: s with one electron out and t with one
-  // out is a single; s with one out and t itself is "1 out"; s with two out
-  // and t with one out is "2 out, 1 in" unless t is contained in s; s with
-  // two out and t itself is "2 out". A key of k electrons thus relates
-  // strings of k, k + 1 and k + 2 electrons: three neighbouring counts, and
-  // nothing else. Keys with electrons taken out of the longer string are
-  // only made when shorter strings exist at all; if new strings change
-  // that, the keys of this group are made afresh.
+  // The pairs of related strings in which at least one is new, i.e. has a
+  // number from num_old[c] on in its electron count c, found from keys.
+  // Strings s and t are related when they share a key: s with one electron
+  // out and t with one out is a single; s with one out and t itself is "1
+  // out"; s with two out and t with one out is "2 out, 1 in" unless t is
+  // contained in s; s with two out and t itself is "2 out". A key of k
+  // electrons thus relates strings of k, k + 1 and k + 2 electrons: three
+  // neighbouring counts, and nothing else. Keys with electrons taken out of
+  // the longer string are only made when shorter strings exist at all
+  // (`transfers`, and counts above `min_count`).
   //
-  // The lists are written to start[r] and list[r] for every relation r, laid
-  // out as the ranks hold them: the lists of all electron counts one after
-  // the other, a string being found at its place among all strings of the
-  // group. What was there is taken from the arrays held so far, which are
-  // laid out by `old_base`. A relation without any entry gets no arrays.
-  void UpdateRelated(int group, std::vector<size_t> num_old,
-                     const std::vector<uint64_t>& old_base,
-                     std::vector<uint64_t>* start,
-                     std::vector<uint32_t>* list) {
-    const std::vector<std::vector<Det<W>>>& strings = root_.strings[group];
+  // `kept_keys` holds the sorted keys of the strings before the new ones, in
+  // parts by hash (as many as it has entries), and gains those of the new
+  // ones. Returns the bytes of the new keys.
+  static size_t LinksFromKeys(const std::vector<std::vector<Det<W>>>& strings,
+                              const std::vector<size_t>& num_old,
+                              bool transfers, int min_count,
+                              std::vector<std::vector<Shortened>>* kept_keys,
+                              std::vector<std::vector<Link>>* links_out) {
     const int num_counts = static_cast<int>(strings.size());
-    int min_count = num_counts;
-    int max_count = -1;
-    for (int c = 0; c < num_counts; ++c) {
-      if (strings[c].empty()) continue;
-      min_count = std::min(min_count, c);
-      max_count = std::max(max_count, c);
-    }
-    const bool transfers = max_count > min_count;
-    std::vector<std::vector<Shortened>>& kept = root_.keys[group];
-    const size_t num_parts = 8 * static_cast<size_t>(omp_get_max_threads());
-    const bool afresh = kept.size() != num_parts ||
-                        transfers != root_.transfers[group] ||
-                        (transfers && min_count != root_.min_count[group]);
-    if (afresh) {
-      kept.assign(num_parts, std::vector<Shortened>());
-      num_old.assign(num_counts, 0);
-    }
-    root_.transfers[group] = transfers;
-    root_.min_count[group] = min_count;
-
+    std::vector<std::vector<Shortened>>& kept = *kept_keys;
+    const size_t num_parts = kept.size();
+    std::vector<std::vector<Link>>& links = *links_out;
     // The keys of the new strings, made by all threads and dealt into parts
     // by their hash, so that equal keys meet in one part and the parts can
     // be handled side by side.
@@ -634,7 +639,7 @@ class GroupStringTables {
 
     // Every run of equal keys that holds a new key gives the pairs in which
     // at least one string is new. The new keys then join the kept ones.
-    std::vector<std::vector<Link>> links(omp_get_max_threads());
+    links.assign(omp_get_max_threads(), std::vector<Link>());
 #pragma omp parallel
     {
       std::vector<Link>& mine = links[omp_get_thread_num()];
@@ -727,8 +732,329 @@ class GroupStringTables {
       }
     }
 
+    return fresh.items.size() * sizeof(Shortened);
+  }
+
+  // Electrons that leave and enter a string under a relation.
+  static int Out(int relation) {
+    static const int kOut[kNumRelations] = {1, 1, 0, 2, 1, 2, 0};
+    return kOut[relation];
+  }
+  static int In(int relation) {
+    static const int kIn[kNumRelations] = {1, 0, 1, 1, 2, 0, 2};
+    return kIn[relation];
+  }
+  // The relation with `out` electrons leaving and `in` entering, for the
+  // combinations that have one; kNumRelations stands for "the same string".
+  static int RelationOf(int out, int in) {
+    static const int kOf[3][3] = {{kNumRelations, kPlus1, kPlus2},
+                                  {kMinus1, kSingle, kPlus12},
+                                  {kMinus2, kMinus21, -1}};
+    return kOf[out][in];
+  }
+  // The relation of t to s when that of s to t is `relation`.
+  static int Inverse(int relation) {
+    static const int kInverse[kNumRelations] = {
+        kSingle, kPlus1, kMinus1, kPlus12, kMinus21, kPlus2, kMinus2};
+    return kInverse[relation];
+  }
+
+  // The distinct strings of a sub-group and how they are related.
+  struct SubStrings {
+    // By electron count, sorted; a string's number is its place there.
+    std::vector<std::vector<Det<W>>> strings;
+    // base[c]: place of the first string of c electrons among all.
+    std::vector<uint64_t> base;
+    // The strings related by r to the one at place s are
+    // list[r][start[r][s] .. start[r][s + 1]), increasing numbers within
+    // the count the relation leads to. No arrays for an empty relation.
+    std::vector<uint64_t> start[kNumRelations];
+    std::vector<uint32_t> list[kNumRelations];
+
+    uint64_t Place(const Det<W>& string) const {
+      const int c = string.Count();
+      return base[c] +
+             (std::lower_bound(strings[c].begin(), strings[c].end(), string) -
+              strings[c].begin());
+    }
+    size_t bytes() const {
+      size_t n = base.size() * sizeof(uint64_t);
+      for (const std::vector<Det<W>>& part : strings) {
+        n += part.size() * sizeof(Det<W>);
+      }
+      for (int r = 0; r < kNumRelations; ++r) {
+        n += start[r].size() * sizeof(uint64_t) +
+             list[r].size() * sizeof(uint32_t);
+      }
+      return n;
+    }
+  };
+
+  // The two sub-groups of a group: its spinors in turn, the first, third,
+  // ... in one and the others in the other (one more in the first if their
+  // number is odd).
+  void SubgroupMasks(int group, Det<W>* masks) const {
+    masks[0] = Det<W>();
+    masks[1] = Det<W>();
+    int position = 0;
+    for (int p = 0; p < 64 * W; ++p) {
+      if (group_a_.Occupied(p) != (group == 0)) continue;
+      masks[position % 2].Set(p);
+      ++position;
+    }
+  }
+
+  static Det<W> Masked(const Det<W>& string, const Det<W>& mask) {
+    Det<W> out;
+    for (int k = 0; k < W; ++k) out.words[k] = string.words[k] & mask.words[k];
+    return out;
+  }
+
+  // The distinct sub-strings that the strings of a group have in `mask`,
+  // with their relation lists. Sets *work_bytes to the bytes of the keys
+  // that were made for it.
+  static SubStrings MakeSubStrings(
+      const std::vector<std::vector<Det<W>>>& strings, const Det<W>& mask,
+      size_t* work_bytes) {
+    std::vector<Det<W>> all;
+    for (const std::vector<Det<W>>& part : strings) {
+      for (const Det<W>& string : part) all.push_back(Masked(string, mask));
+    }
+    std::sort(all.begin(), all.end());
+    all.erase(std::unique(all.begin(), all.end()), all.end());
+    SubStrings sub;
+    for (const Det<W>& string : all) {
+      const size_t c = string.Count();
+      if (sub.strings.size() <= c) sub.strings.resize(c + 1);
+      sub.strings[c].push_back(string);
+    }
+    const int num_counts = static_cast<int>(sub.strings.size());
+    int min_count = num_counts;
+    int max_count = -1;
+    sub.base.assign(1, 0);
+    for (int c = 0; c < num_counts; ++c) {
+      sub.base.push_back(sub.base.back() + sub.strings[c].size());
+      if (sub.strings[c].empty()) continue;
+      min_count = std::min(min_count, c);
+      max_count = std::max(max_count, c);
+    }
+    std::vector<std::vector<Shortened>> keys(
+        8 * static_cast<size_t>(omp_get_max_threads()));
+    std::vector<std::vector<Link>> links;
+    *work_bytes =
+        LinksFromKeys(sub.strings, std::vector<size_t>(num_counts, 0),
+                      max_count > min_count, min_count, &keys, &links);
+    const size_t num_places = sub.base.back();
+    for (int r = 0; r < kNumRelations; ++r) {
+      std::vector<uint64_t>& start = sub.start[r];
+      start.assign(num_places + 1, 0);
+      for (const std::vector<Link>& chunk : links) {
+        for (const Link& link : chunk) {
+          if (link.relation == r) {
+            ++start[sub.base[link.from_count] + link.from + 1];
+          }
+        }
+      }
+      for (size_t s = 0; s < num_places; ++s) start[s + 1] += start[s];
+      if (start[num_places] == 0) {
+        start.clear();
+        continue;
+      }
+      std::vector<uint32_t>& list = sub.list[r];
+      list.resize(start[num_places]);
+      std::vector<uint64_t> cursor(start.begin(), start.end() - 1);
+      for (const std::vector<Link>& chunk : links) {
+        for (const Link& link : chunk) {
+          if (link.relation == r) {
+            list[cursor[sub.base[link.from_count] + link.from]++] = link.to;
+          }
+        }
+      }
+      const long count = static_cast<long>(num_places);
+#pragma omp parallel for schedule(dynamic, 256)
+      for (long s = 0; s < count; ++s) {
+        std::sort(list.begin() + start[s], list.begin() + start[s + 1]);
+      }
+    }
+    return sub;
+  }
+
+  // The pairs of related strings of a group in which at least one is new,
+  // i.e. has a number from num_old[c] on in its electron count c, found
+  // from the sub-strings (see the top of this file). Without `transfers`
+  // only the singles. Returns the bytes this took.
+  size_t LinksFromSubgroups(int group, const std::vector<size_t>& num_old,
+                            bool transfers,
+                            std::vector<std::vector<Link>>* links_out) const {
+    const std::vector<std::vector<Det<W>>>& strings = root_.strings[group];
+    const std::vector<uint64_t>& base = base_[group];
+    const int num_counts = static_cast<int>(strings.size());
+    Det<W> masks[2];
+    SubgroupMasks(group, masks);
+    size_t key_bytes[2] = {0, 0};
+    const SubStrings sub[2] = {
+        MakeSubStrings(strings, masks[0], &key_bytes[0]),
+        MakeSubStrings(strings, masks[1], &key_bytes[1])};
+
+    // Every string as a pair of sub-strings, and the strings there are,
+    // ordered by the place of their first sub-string and then of their
+    // second.
+    struct Entry {
+      uint64_t first;   // place of the sub-string in sub-group 0
+      uint64_t second;  // place of the sub-string in sub-group 1
+      uint32_t number;  // of the string within its electron count
+      uint16_t count;
+    };
+    const size_t num_strings = base.back();
+    std::vector<Entry> of_place(num_strings);
+    for (int c = 0; c < num_counts; ++c) {
+      const long count = static_cast<long>(strings[c].size());
+#pragma omp parallel for schedule(static)
+      for (long s = 0; s < count; ++s) {
+        of_place[base[c] + s] = {sub[0].Place(Masked(strings[c][s], masks[0])),
+                                 sub[1].Place(Masked(strings[c][s], masks[1])),
+                                 static_cast<uint32_t>(s),
+                                 static_cast<uint16_t>(c)};
+      }
+    }
+    std::vector<Entry> ordered = of_place;
+    std::sort(
+        ordered.begin(), ordered.end(), [](const Entry& x, const Entry& y) {
+          return x.first != y.first ? x.first < y.first : x.second < y.second;
+        });
+    std::vector<uint64_t> first_start(sub[0].base.back() + 1, 0);
+    for (const Entry& entry : ordered) ++first_start[entry.first + 1];
+    for (size_t u = 0; u + 1 < first_start.size(); ++u) {
+      first_start[u + 1] += first_start[u];
+    }
+
+    // The sub-strings related to the one at `place` by `relation`, as
+    // places; for kNumRelations the sub-string itself.
+    auto related = [&](int h, int relation, uint64_t place, int count,
+                       std::vector<uint64_t>* out) {
+      out->clear();
+      if (relation == kNumRelations) {
+        out->push_back(place);
+        return;
+      }
+      if (sub[h].start[relation].empty()) return;
+      const int target = count + Shift(relation);
+      for (uint64_t k = sub[h].start[relation][place];
+           k < sub[h].start[relation][place + 1]; ++k) {
+        out->push_back(sub[h].base[target] + sub[h].list[relation][k]);
+      }
+    };
+
+    const int num_lists = transfers ? kNumRelations : 1;
+    std::vector<std::vector<Link>>& links = *links_out;
+    links.assign(omp_get_max_threads(), std::vector<Link>());
+#pragma omp parallel
     {
-      size_t transient = fresh.items.size() * sizeof(Shortened);
+      std::vector<Link>& mine = links[omp_get_thread_num()];
+      std::vector<uint64_t> firsts, seconds;
+      auto by_second = [](const Entry& entry, uint64_t second) {
+        return entry.second < second;
+      };
+      for (int c = 0; c < num_counts; ++c) {
+        const long count = static_cast<long>(strings[c].size());
+#pragma omp for schedule(dynamic, 64) nowait
+        for (long s = static_cast<long>(num_old[c]); s < count; ++s) {
+          const Entry& self = of_place[base[c] + s];
+          const int count_first = Masked(strings[c][s], masks[0]).Count();
+          const int count_second = c - count_first;
+          for (int r = 0; r < num_lists; ++r) {
+            // How the electrons that leave and enter divide between the
+            // sub-groups.
+            for (int out = 0; out <= Out(r); ++out) {
+              for (int in = 0; in <= In(r); ++in) {
+                related(0, RelationOf(out, in), self.first, count_first,
+                        &firsts);
+                if (firsts.empty()) continue;
+                related(1, RelationOf(Out(r) - out, In(r) - in), self.second,
+                        count_second, &seconds);
+                if (seconds.empty()) continue;
+                for (uint64_t first : firsts) {
+                  const Entry* const begin =
+                      ordered.data() + first_start[first];
+                  const Entry* const end =
+                      ordered.data() + first_start[first + 1];
+                  const Entry* from = begin;
+                  for (uint64_t second : seconds) {
+                    from = std::lower_bound(from, end, second, by_second);
+                    if (from == end) break;
+                    if (from->second != second) continue;
+                    mine.push_back({self.number, from->number,
+                                    static_cast<uint8_t>(r),
+                                    static_cast<uint8_t>(c)});
+                    if (from->number < num_old[from->count]) {
+                      mine.push_back({from->number, self.number,
+                                      static_cast<uint8_t>(Inverse(r)),
+                                      static_cast<uint8_t>(from->count)});
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    return key_bytes[0] + key_bytes[1] + sub[0].bytes() + sub[1].bytes() +
+           (of_place.size() + ordered.size()) * sizeof(Entry) +
+           first_start.size() * sizeof(uint64_t);
+  }
+
+  // Brings the relation lists of one group up to date with the strings from
+  // number num_old[c] on in every electron count c: the pairs in which at
+  // least one string is new are found (LinksFromSubgroups or LinksFromKeys)
+  // and join the lists.
+  //
+  // The lists are written to start[r] and list[r] for every relation r, laid
+  // out as the ranks hold them: the lists of all electron counts one after
+  // the other, a string being found at its place among all strings of the
+  // group. What was there is taken from the arrays held so far, which are
+  // laid out by `old_base`. A relation without any entry gets no arrays.
+  void UpdateRelated(int group, std::vector<size_t> num_old,
+                     const std::vector<uint64_t>& old_base,
+                     std::vector<uint64_t>* start,
+                     std::vector<uint32_t>* list) {
+    const std::vector<std::vector<Det<W>>>& strings = root_.strings[group];
+    const int num_counts = static_cast<int>(strings.size());
+    int min_count = num_counts;
+    int max_count = -1;
+    for (int c = 0; c < num_counts; ++c) {
+      if (strings[c].empty()) continue;
+      min_count = std::min(min_count, c);
+      max_count = std::max(max_count, c);
+    }
+    const bool transfers = max_count > min_count;
+    std::vector<std::vector<Shortened>>& kept = root_.keys[group];
+    const size_t num_parts = 8 * static_cast<size_t>(omp_get_max_threads());
+    // The kept keys depend on which strings have keys of two electrons
+    // less; if that changes, they are made afresh. With sub-groups nothing
+    // of the kind is kept.
+    const bool afresh =
+        !subgroups_ &&
+        (kept.size() != num_parts || transfers != root_.transfers[group] ||
+         (transfers && min_count != root_.min_count[group]));
+    if (afresh) {
+      kept.assign(num_parts, std::vector<Shortened>());
+      num_old.assign(num_counts, 0);
+    }
+    root_.transfers[group] = transfers;
+    root_.min_count[group] = min_count;
+
+    std::vector<std::vector<Link>> links;
+    size_t work_bytes = 0;
+    if (subgroups_) {
+      work_bytes = LinksFromSubgroups(group, num_old, transfers, &links);
+    } else {
+      work_bytes =
+          LinksFromKeys(strings, num_old, transfers, min_count, &kept, &links);
+    }
+
+    {
+      size_t transient = work_bytes;
       for (const std::vector<Link>& chunk : links) {
         transient += chunk.size() * sizeof(Link);
       }
@@ -851,6 +1177,7 @@ class GroupStringTables {
   long rank_;
   long num_ranks_;
   Det<W> group_a_;
+  bool subgroups_ = true;
   int num_elec_ = 0;
   bool transfers_ = false;
   size_t max_b_strings_ = 0;

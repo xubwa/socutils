@@ -137,6 +137,7 @@ Json ToJson(const Input& in) {
   j["connect"] = {{"method", in.connect_by_groups     ? "groups"
                              : in.connect_by_segments ? "segments"
                                                       : "strings"},
+                  {"relations", in.connect_subgroups ? "subgroups" : "keys"},
                   {"segments", in.connect_segments},
                   {"batches", in.connect_batches}};
   if (!in.connect_group_a.empty()) j["connect"]["group_a"] = in.connect_group_a;
@@ -423,6 +424,12 @@ Input ParseInput(const std::string& text) {
     in.connect_by_segments = method == "segments";
     in.connect_by_groups = method == "groups";
     connect.Get("group_a", &in.connect_group_a);
+    std::string relations = "subgroups";
+    connect.Get("relations", &relations);
+    if (relations != "subgroups" && relations != "keys") {
+      connect.Fail("relations", "must be \"subgroups\" or \"keys\"");
+    }
+    in.connect_subgroups = relations == "subgroups";
     connect.Get("segments", &in.connect_segments);
     connect.Get("batches", &in.connect_batches);
     connect.CheckNoUnknownKeys();

@@ -299,6 +299,7 @@ inline ConnectOptions MakeConnectOptions(const Input& input) {
   ConnectOptions options;
   options.threshold = input.hij_threshold;
   options.group_a = input.connect_group_a;
+  options.subgroups = input.connect_subgroups;
   options.method = input.connect_by_groups     ? ConnectMethod::kGroups
                    : input.connect_by_segments ? ConnectMethod::kSegments
                                                : ConnectMethod::kStrings;
@@ -373,7 +374,7 @@ class VariationalH {
     const double time = omp_get_wtime();
     if (tables_ == nullptr) {
       tables_ = std::make_unique<internal::GroupStringTables<W>>(
-          GroupMask<W>(connect_, ints_.num_orbs()), comm_);
+          GroupMask<W>(connect_, ints_.num_orbs()), comm_, connect_.subgroups);
     }
     tables_->Extend(dets, first_new);
     table_memory_ = tables_->memory();
