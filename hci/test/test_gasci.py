@@ -42,7 +42,8 @@ def random_hamiltonian(norb, seed=7):
 
 def new_solver(cls=None, **settings):
     '''A solver converged tightly enough for 1e-10 comparisons.'''
-    solver = (cls or gasci.GASCI)()
+    mol = settings.pop('mol', None)
+    solver = (cls or gasci.GASCI)(mol)
     solver.conv_tol = 1e-12
     solver.conv_tol_residual = 1e-7
     solver.max_cycle = 400
@@ -416,6 +417,268 @@ class Spinors(unittest.TestCase):
             self.assertAlmostEqual(abs(numpy.asarray(e) - e_ref).max(), 0, 9)
             energies.append(numpy.asarray(e))
         self.assertAlmostEqual(abs(energies[0] - energies[1]).max(), 0, 10)
+
+
+# -- against SHCI ---------------------------------------------------------------
+
+def have_zshci():
+    from socutils.hci import shci
+    return os.path.isfile(shci.DEFAULT_EXE)
+
+
+@unittest.skipUnless(have_zshci(), 'zshci executable not found')
+class AgainstSHCI(unittest.TestCase):
+    '''GASCI against SHCI on the same spinor problems: occslst = 'all' (full
+    CI), occslst of a constrained space, and a converged selection under
+    restrictions.'''
+
+    @classmethod
+    def setUpClass(cls):
+        cls.norb, cls.nelec = 8, 4
+        cls.h1, cls.eri = random_hamiltonian(cls.norb, seed=13)
+
+    def compare(self, shci_solver, solver, nroots=2):
+        norb, nelec = self.norb, self.nelec
+        e_ref, ci_ref = shci_solver.kernel(self.h1, self.eri, norb, nelec, nroots=nroots)
+        e, ci = solver.kernel(self.h1, self.eri, norb, nelec, nroots=nroots)
+        self.assertAlmostEqual(abs(numpy.asarray(e) - e_ref).max(), 0, 8)
+        for k in range(nroots):
+            dm1_ref, dm2_ref = shci_solver.make_rdm12(ci_ref[k], norb, nelec)
+            dm1, dm2 = solver.make_rdm12(ci[k], norb, nelec)
+            self.assertAlmostEqual(abs(dm1 - dm1_ref).max(), 0, 6)
+            self.assertAlmostEqual(abs(dm2 - dm2_ref).max(), 0, 6)
+        t_ref = shci_solver.trans_rdm1(ci_ref[0], ci_ref[1], norb, nelec)
+        t = solver.trans_rdm1(ci[0], ci[1], norb, nelec)
+        self.assertAlmostEqual(abs(align_phase(t, t_ref) - t_ref).max(), 0, 6)
+
+    def test_full_ci(self):
+        from socutils.hci import shci
+        ref = shci.SHCI()
+        ref.occslst = 'all'
+        ref.davidson_tol = 1e-10
+        self.compare(ref, new_solver(max_subgroup=2))
+
+    def test_gas(self):
+        from socutils.hci import shci
+        gas = [dict(orbitals=[0, 1, 2, 3], min=2, max=3),
+               dict(orbitals=[4, 5, 6, 7], min=1, max=2)]
+        ref = shci.SHCI()
+        ref.occslst = filtered_occslst(self.norb, self.nelec, gas)
+        ref.davidson_tol = 1e-10
+        self.compare(ref, new_solver(gas=gas))
+        # The same space reached by selection under restrictions.
+        ref = shci.SHCI()
+        ref.restrictions = gas
+        ref.initial_dets = [[0, 1, 4, 5]]
+        ref.davidson_tol = 1e-10
+        ref.extra = {'davidson': {'tol': 1e-10},
+                     'select': {'schedule': [[0, 1e-12]], 'max_iter': 20,
+                                'energy_tol': 1e-12, 'davidson_tol_loose': 1e-10}}
+        self.compare(ref, new_solver(restrictions=gas, max_subgroup=1))
+
+    def test_labels(self):
+        from socutils.hci import shci
+        jz = [1, -1, 3, -3, 1, -1, 5, -5]
+        ref = shci.SHCI()
+        ref.occslst = filtered_occslst(self.norb, self.nelec, (), [jz], [4], [2])
+        ref.davidson_tol = 1e-10
+        self.compare(ref, new_solver(orbsym=jz, orbsym_mod=4, target=2))
+
+
+# -- spinor CASSCF ------------------------------------------------------------------
+
+@unittest.skipUnless(have_zshci(), 'zshci executable not found')
+class SpinorCASSCF(unittest.TestCase):
+    def test_casscf(self):
+        import tempfile
+        from pyscf import gto
+        from socutils.hci import shci
+        from socutils.mcscf import zmcscf
+        from socutils.scf import spinor_hf
+        here = os.getcwd()
+        # zcasci leaves an FCIDUMP in the working directory.
+        os.chdir(tempfile.mkdtemp())
+        try:
+            mol = gto.M(atom='N 0 0 0; N 0 0 1.3', basis='sto-3g', verbose=0)
+            mf = spinor_hf.KRHF(mol).density_fit()
+            mf.kernel()
+            results = []
+            for make in (lambda: shci.SHCI(mol), lambda: new_solver()):
+                mc = zmcscf.CASSCF(mf, 8, 6)
+                mc.fcisolver = make()
+                if isinstance(mc.fcisolver, shci.SHCI):
+                    mc.fcisolver.occslst = 'all'
+                    mc.fcisolver.davidson_tol = 1e-10
+                mc.max_cycle_macro = 60
+                mc.kernel()
+                self.assertTrue(mc.converged)
+                dm1 = mc.fcisolver.make_rdm1(mc.ci, 8, 6)
+                results.append((mc.e_tot, numpy.linalg.eigvalsh(dm1)))
+        finally:
+            os.chdir(here)
+        (e_ref, occ_ref), (e, occ) = results
+        self.assertAlmostEqual(e, e_ref, 8)
+        self.assertAlmostEqual(abs(occ - occ_ref).max(), 0, 5)
+
+
+# -- spatial orbitals ---------------------------------------------------------------
+
+def flatten(x):
+    '''Nested tuples of arrays as one vector.'''
+    if isinstance(x, (tuple, list)):
+        return numpy.hstack([flatten(y) for y in x])
+    return numpy.ravel(x)
+
+
+def spatial_filtered(norb, nelec, constraints):
+    '''Determinants of SpatialSHCI (spin orbitals 2P, 2P + 1) of the space.'''
+    nalpha, nbeta = nelec
+    out = []
+    for alpha in itertools.combinations(range(norb), nalpha):
+        for beta in itertools.combinations(range(norb), nbeta):
+            good = all(c['min'] <= sum(1 for p in alpha + beta if p in c['orbitals'])
+                       <= c['max'] for c in constraints)
+            if good:
+                out.append([2 * p for p in alpha] + [2 * p + 1 for p in beta])
+    return out
+
+
+class Spatial(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from pyscf import gto, mcscf, scf
+        cls.mol = gto.M(atom='O 0 0 0; H 0 0.76 0.59; H 0 -0.76 0.59',
+                        basis='6-31g', symmetry='c2v', verbose=0)
+        cls.mf = scf.RHF(cls.mol).run(conv_tol=1e-12)
+        cls.norb, cls.nelec = 8, (4, 4)
+        mc = mcscf.CASCI(cls.mf, cls.norb, cls.nelec)
+        cls.h1, cls.ecore = mc.get_h1eff()
+        cls.eri = mc.get_h2eff()
+        cls.orbsym = cls.mf.mo_coeff.orbsym[mc.ncore:mc.ncore + cls.norb]
+
+    def against_direct_spin1(self, solver, nelec, nroots=3):
+        from pyscf import fci
+        norb = self.norb
+        ref = fci.direct_spin1.FCI()
+        ref.conv_tol = 1e-12
+        e_ref, ci_ref = ref.kernel(self.h1, self.eri, norb, nelec, nroots=nroots,
+                                   ecore=self.ecore)
+        e, ci = solver.kernel(self.h1, self.eri, norb, nelec, nroots=nroots,
+                              ecore=self.ecore)
+        self.assertAlmostEqual(abs(numpy.asarray(e) - e_ref).max(), 0, 9)
+        for k in range(nroots):
+            dm1_ref, dm2_ref = ref.make_rdm12(ci_ref[k], norb, nelec)
+            dm1, dm2 = solver.make_rdm12(ci[k], norb, nelec)
+            self.assertEqual(dm2.shape, (norb,) * 4)
+            self.assertAlmostEqual(abs(dm1 - dm1_ref).max(), 0, 6)
+            self.assertAlmostEqual(abs(dm2 - dm2_ref).max(), 0, 6)
+            (a, b), (aa, ab, bb) = solver.make_rdm12s(ci[k], norb, nelec)
+            (a0, b0), (aa0, ab0, bb0) = ref.make_rdm12s(ci_ref[k], norb, nelec)
+            for x, y in ((a, a0), (b, b0), (aa, aa0), (ab, ab0), (bb, bb0)):
+                self.assertAlmostEqual(abs(x - y).max(), 0, 6)
+            ss = solver.spin_square(ci[k], norb, nelec)[0]
+            self.assertAlmostEqual(ss, ref.spin_square(ci_ref[k], norb, nelec)[0], 6)
+        for k in range(1, nroots):
+            # Each state has an arbitrary sign.
+            sign = None
+            for name in ('trans_rdm12s', 'trans_rdm12', 'trans_rdm1'):
+                t_ref = getattr(ref, name)(ci_ref[0], ci_ref[k], norb, nelec)
+                t = getattr(solver, name)(ci[0], ci[k], norb, nelec)
+                t, t_ref = flatten(t), flatten(t_ref)
+                if sign is None:
+                    sign = 1 if abs(t - t_ref).max() < abs(t + t_ref).max() else -1
+                self.assertAlmostEqual(abs(sign * t - t_ref).max(), 0, 6)
+        return e
+
+    def test_full_space(self):
+        e0 = self.against_direct_spin1(new_solver(gasci.SpatialGASCI), self.nelec)
+        e1 = self.against_direct_spin1(
+            new_solver(gasci.SpatialGASCI, subgroups=[[0, 5], [1, 2, 3], [4], [6, 7]]),
+            self.nelec)
+        self.assertAlmostEqual(abs(numpy.asarray(e0) - e1).max(), 0, 10)
+
+    def test_open_shell(self):
+        self.against_direct_spin1(new_solver(gasci.SpatialGASCI, max_subgroup=3), (5, 3))
+        solver = new_solver(gasci.SpatialGASCI)
+        solver.spin = 2
+        e, _ = solver.kernel(self.h1, self.eri, self.norb, 8, ecore=self.ecore)
+        from pyscf import fci
+        e_ref = fci.direct_spin1.FCI().kernel(self.h1, self.eri, self.norb, (5, 3),
+                                              ecore=self.ecore)[0]
+        self.assertAlmostEqual(e, e_ref, 9)
+
+    def test_point_group(self):
+        from pyscf import fci
+        norb, nelec = self.norb, self.nelec
+        for wfnsym in (0, 3):
+            ref = fci.direct_spin1_symm.FCI(self.mol)
+            ref.conv_tol = 1e-12
+            ref.wfnsym = wfnsym
+            e_ref, ci_ref = ref.kernel(self.h1, self.eri, norb, nelec, nroots=2,
+                                       ecore=self.ecore, orbsym=self.orbsym)
+            solver = new_solver(gasci.SpatialGASCI, orbsym=self.orbsym, wfnsym=wfnsym)
+            e, ci = solver.kernel(self.h1, self.eri, norb, nelec, nroots=2,
+                                  ecore=self.ecore)
+            self.assertAlmostEqual(abs(numpy.asarray(e) - e_ref).max(), 0, 9)
+            self.assertLess(solver.plan(norb, nelec).dim, 70 * 70 // 2)
+            for k in range(2):
+                dm1_ref, dm2_ref = ref.make_rdm12(ci_ref[k], norb, nelec)
+                dm1, dm2 = solver.make_rdm12(ci[k], norb, nelec)
+                self.assertAlmostEqual(abs(dm1 - dm1_ref).max(), 0, 5)
+                self.assertAlmostEqual(abs(dm2 - dm2_ref).max(), 0, 5)
+
+    @unittest.skipUnless(have_zshci(), 'zshci executable not found')
+    def test_gas_against_spatial_shci(self):
+        from socutils.hci import shci
+        norb = self.norb
+        gas = [dict(orbitals=[0, 1, 2], min=5, max=6),
+               dict(orbitals=[3, 4], min=2, max=4),
+               dict(orbitals=[5, 6, 7], min=0, max=1)]
+        for nelec in ((4, 4), (5, 3)):
+            ref = shci.SpatialSHCI(self.mol)
+            ref.occslst = spatial_filtered(norb, nelec, gas)
+            ref.davidson_tol = 1e-10
+            e_ref, ci_ref = ref.kernel(self.h1, self.eri, norb, nelec, nroots=2,
+                                       ecore=self.ecore)
+            results = []
+            for settings in (dict(gas=gas), dict(restrictions=gas, max_subgroup=1),
+                             dict(gas=gas, orbsym=self.orbsym,
+                                  wfnsym=0 if nelec == (4, 4) else None)):
+                solver = new_solver(gasci.SpatialGASCI, **settings)
+                e, ci = solver.kernel(self.h1, self.eri, norb, nelec, nroots=2,
+                                      ecore=self.ecore)
+                if 'orbsym' in settings:
+                    # The lowest states of the space happen to be of that
+                    # symmetry.
+                    self.assertAlmostEqual(e[0], e_ref[0], 8)
+                    continue
+                self.assertEqual(solver.plan(norb, nelec).dim, len(ref.occslst))
+                self.assertAlmostEqual(abs(numpy.asarray(e) - e_ref).max(), 0, 8)
+                for k in range(2):
+                    dm1_ref, dm2_ref = ref.make_rdm12(ci_ref[k], norb, nelec)
+                    dm1, dm2 = solver.make_rdm12(ci[k], norb, nelec)
+                    self.assertAlmostEqual(abs(dm1 - dm1_ref).max(), 0, 6)
+                    self.assertAlmostEqual(abs(dm2 - dm2_ref).max(), 0, 6)
+                results.append(numpy.asarray(e))
+            self.assertAlmostEqual(abs(results[0] - results[1]).max(), 0, 10)
+
+    def test_casscf(self):
+        from pyscf import mcscf
+        ref = mcscf.CASSCF(self.mf, 6, 6).run(conv_tol=1e-10)
+        mc = mcscf.CASSCF(self.mf, 6, 6)
+        mc.fcisolver = new_solver(gasci.SpatialGASCI, mol=self.mol)
+        mc.conv_tol = 1e-10
+        mc.kernel()
+        self.assertTrue(mc.converged)
+        self.assertAlmostEqual(mc.e_tot, ref.e_tot, 8)
+        # A RAS-type CASSCF runs too and lies above the full one.
+        mc = mcscf.CASSCF(self.mf, 6, 6)
+        mc.fcisolver = new_solver(gasci.SpatialGASCI,
+                                  gas=[dict(orbitals=[0, 1, 2], min=5, max=6)])
+        mc.conv_tol = 1e-9
+        mc.kernel()
+        self.assertTrue(mc.converged)
+        self.assertGreater(mc.e_tot, ref.e_tot)
 
 
 if __name__ == '__main__':

@@ -147,6 +147,14 @@ two-electron corrections on) and only then require the `x2camf` integral backend
   and, for an unrestricted reference, `UnrestrictedSHCI` (interface of
   `pyscf.fci.direct_uhf`).
 
+- **`lib/zgasci/` + `hci/gasci.py`** — full / GAS / RAS CI over spinors
+  (and, as `SpatialGASCI`, over spatial orbitals with the pyscf
+  `direct_spin1` interface). Plain C99 + OpenMP kernels (`lib/libzgasci.so`,
+  ctypes) for the diagonal, sigma and the pair density; vectors and the
+  Davidson (`pyscf.lib.davidson1`) stay in Python. `GASCI` has the interface
+  and density-matrix conventions of `SHCI`/`zfci.FCISolver`. Details in
+  `lib/zgasci/README.md`; test `hci/test/test_gasci.py`.
+
 ## Environment variables
 
 - `SOCUTILS_X2CAMF` = `auto` (default) | `bundled` | `external` — whether the
@@ -155,3 +163,4 @@ two-electron corrections on) and only then require the `x2camf` integral backend
 - `X2CAMF_CPP_LIBRARY` — path to upstream `libx2camf*.so` for `make compare` / cpp backend.
 - `SOCUTILS_ZQUATEV_LIBRARY` — explicit path to `libzquatev.so`.
 - `SOCUTILS_ZSHCI_EXE` — explicit path to the `zshci` executable used by `hci/shci.py`.
+- `SOCUTILS_ZGASCI_LIBRARY` — explicit path to `libzgasci.so`.
