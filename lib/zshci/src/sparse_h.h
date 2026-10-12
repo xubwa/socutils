@@ -145,8 +145,11 @@ class SparseH : public LinearOperator<S> {
   // Who works out the elements of blocks without values; must outlive the
   // products. Needed as soon as such a block is held.
   void set_element_source(const ElementSource<S>* source) { source_ = source; }
-  // Releases the values of all blocks; the columns stay.
+  // Releases the values of all blocks, or of block b; the columns stay.
   void DropValues();
+  void DropBlockValues(size_t b) { blocks_[b].val = RawArray<S>(); }
+  // Works out and stores the values of block b, which has none.
+  void FillBlockValues(size_t b);
 
   // y = H x. Each thread owns a contiguous range of rows. An element
   // H(j, i) serves y_j += H(j,i) x_i, which its row owner writes, and

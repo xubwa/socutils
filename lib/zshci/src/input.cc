@@ -142,9 +142,11 @@ Json ToJson(const Input& in) {
                   {"segments", in.connect_segments},
                   {"batches", in.connect_batches}};
   if (!in.connect_group_a.empty()) j["connect"]["group_a"] = in.connect_group_a;
-  j["hamiltonian"] = in.direct_hamiltonian ? "direct"
-                     : in.store_values     ? "stored"
-                                           : "connections";
+  j["hamiltonian"] = in.adapt_hamiltonian    ? "adapt"
+                     : in.direct_hamiltonian ? "direct"
+                     : in.store_values       ? "stored"
+                                             : "connections";
+  if (in.memory_gb > 0.0) j["memory"] = in.memory_gb;
   j["incremental"] = in.incremental;
   j["check"] = in.check;
   j["output_level"] = in.output_level;
@@ -450,19 +452,28 @@ Input ParseInput(const std::string& text) {
   std::string hamiltonian = "stored";
   top.Get("hamiltonian", &hamiltonian);
   if (hamiltonian != "stored" && hamiltonian != "connections" &&
-      hamiltonian != "direct") {
+      hamiltonian != "direct" && hamiltonian != "adapt") {
     top.Fail("hamiltonian",
-             "must be \"stored\", \"connections\" or \"direct\"");
+             "must be \"stored\", \"connections\", "
+             "\"direct\" or \"adapt\"");
   }
   in.direct_hamiltonian = hamiltonian == "direct";
   in.store_values = hamiltonian != "connections";
-  if (in.direct_hamiltonian) {
+  in.adapt_hamiltonian = hamiltonian == "adapt";
+  top.Get("memory", &in.memory_gb);
+  if (in.memory_gb < 0.0) top.Fail("memory", "must not be negative");
+  if (in.adapt_hamiltonian && in.memory_gb == 0.0) {
+    top.Fail("memory",
+             "must be given, in gigabytes, with \"hamiltonian\": "
+             "\"adapt\"");
+  }
+  if (in.direct_hamiltonian || in.adapt_hamiltonian) {
     if (in.connect_by_segments ||
         (top.Has("connect") && top.At("connect").contains("method") &&
          !in.connect_by_groups)) {
       top.Fail("hamiltonian",
-               "\"direct\" works with the connection method "
-               "\"groups\" only");
+               "\"direct\" and \"adapt\" work with the connection "
+               "method \"groups\" only");
     }
     in.connect_by_groups = true;
   }

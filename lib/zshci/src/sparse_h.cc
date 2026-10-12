@@ -52,6 +52,23 @@ void SparseH<S>::DropValues() {
   for (CsrBlock<S>& block : blocks_) block.val = RawArray<S>();
 }
 
+template <typename S>
+void SparseH<S>::FillBlockValues(size_t b) {
+  CsrBlock<S>& block = blocks_[b];
+  if (block.has_values()) return;
+  if (source_ == nullptr) {
+    throw std::logic_error("a block without values needs an element source");
+  }
+  block.val = RawArray<S>(block.col.size());
+  const long num_rows = static_cast<long>(block.num_stored_rows());
+#pragma omp parallel for schedule(dynamic, 64)
+  for (long r = 0; r < num_rows; ++r) {
+    const uint64_t first = block.row_ptr[r];
+    source_->Fill(block.row[r], block.col.data() + first,
+                  block.row_ptr[r + 1] - first, block.val.data() + first);
+  }
+}
+
 namespace {
 
 // The values of elements [first, last) of stored row r of `block`: where

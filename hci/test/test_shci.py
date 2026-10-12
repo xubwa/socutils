@@ -207,6 +207,43 @@ class KnownValues(unittest.TestCase):
         self.assertLess(pruned, full)
 
 
+    def test_adaptive_storage(self):
+        # "hamiltonian": "adapt" under memory limits from far too small to
+        # ample: rows applied directly, rows stored as connections, rows
+        # stored with their values, and mixtures of them, always with the
+        # energies and density matrices of the stored Hamiltonian.
+        norb, nelec = self.norb, self.nelec
+
+        def run(extra):
+            solver = shci.SHCI()
+            solver.schedule = [[0, 1e-1], [2, 1e-2], [4, 1e-3]]
+            solver.davidson_tol = 1e-10
+            solver.extra = dict({'davidson': {'tol': 1e-10}}, **extra)
+            e, ci = solver.kernel(self.h1, self.eri, norb, nelec, nroots=2,
+                                  ecore=self.ecore)
+            dms = [solver.make_rdm12(ci[k], norb, nelec) for k in range(2)]
+            with open(os.path.join(solver.scratch, 'output.txt')) as f:
+                return numpy.asarray(e), dms, f.read()
+
+        e_ref, dms_ref, _ = run({})
+        direct_rows, partial_values, all_values = False, False, False
+        for kilobytes in (20, 60, 90, 100, 120, 150, 200, 400, 4000):
+            e, dms, output = run({'hamiltonian': 'adapt',
+                                  'memory': kilobytes / 1048576.0})
+            self.assertAlmostEqual(abs(e - e_ref).max(), 0, 8)
+            for (dm1, dm2), (dm1_ref, dm2_ref) in zip(dms, dms_ref):
+                self.assertAlmostEqual(abs(dm1 - dm1_ref).max(), 0, 6)
+                self.assertAlmostEqual(abs(dm2 - dm2_ref).max(), 0, 6)
+            direct_rows = direct_rows or 'are applied directly' in output
+            if 'values held for' in output:
+                held = int(output.split('values held for ')[1].split()[0])
+                partial_values = partial_values or held > 0
+            elif 'are applied directly' not in output:
+                all_values = True
+        self.assertTrue(direct_rows)
+        self.assertTrue(all_values)
+
+
 class RealNumbers(unittest.TestCase):
     '''A real Hamiltonian in real arithmetic against the same Hamiltonian in
     complex arithmetic and against zfci.'''

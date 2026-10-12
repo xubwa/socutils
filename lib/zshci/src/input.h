@@ -239,8 +239,19 @@ struct Input {
   // (4 bytes per element) but not the values, which are worked out in every
   // product; a fifth of the memory of "stored" for complex numbers, a third
   // for real ones, and several times slower per product.
+  // "adapt" chooses between the three, block by block (the rows added in
+  // one iteration), to stay within "memory", the gigabytes this process
+  // (each rank) may use for the Hamiltonian together with the string
+  // tables, the determinants and the vectors of the eigensolver. Every
+  // byte spent on connections saves about ten times the time of a byte
+  // spent on values, so all connections come first; with what is left, as
+  // many blocks as fit keep their values; and only when the connections do
+  // not fit are the newest rows applied directly. Blocks change as the
+  // space grows: dropping values releases an array, nothing is rebuilt.
   bool direct_hamiltonian = false;
   bool store_values = true;
+  bool adapt_hamiltonian = false;
+  double memory_gb = 0.0;
   // "incremental": true (default) extends the stored Hamiltonian and the
   // string tables by what the determinants added in an iteration bring, for
   // which the root keeps the sorted keys of all strings. false makes both

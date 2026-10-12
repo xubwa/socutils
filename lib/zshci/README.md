@@ -183,6 +183,31 @@ hundred related strings by itself. The same Cr2 run takes 77 s in its 231
 direct products that way and 221 s the other way
 (`"connect": {"blocks": false}`); stored 10 s, connections 25 s.
 
+`"hamiltonian": "adapt"` with `"memory": G` chooses between the three, block
+by block (a block is the rows added in one iteration), so that the process -
+each rank - stays within G gigabytes for the Hamiltonian together with the
+string tables, the determinants and the vectors of the eigensolver. A byte
+spent on connections saves about ten times the time of a byte spent on
+values, hence the order: all connections first; with what is left, values
+for as many blocks as fit; and only when the connections do not fit are the
+rows from then on applied directly. When new rows need room, values of
+other blocks are dropped, which releases an array and rebuilds nothing. The
+same Cr2 Hamiltonian restarted at 2.04 million determinants (205 million
+elements, 16 threads; the tables, determinants and vectors are counted as 5.8
+GB):
+
+| | elements with values | peak memory | 34 products |
+|---|---|---|---|
+| `"stored"` | all | 8.5 GB | 13.5 s |
+| `"adapt"`, 12 GB | all | 8.6 GB | 13.5 s |
+| `"adapt"`, 8 GB | 44 % | 6.8 GB | 30.0 s |
+| `"adapt"`, 6.5 GB | 0.5 % | 5.4 GB | 43.5 s |
+| `"connections"` | none | 5.3 GB | 45.0 s |
+| `"adapt"`, 5.5 GB | no row stored | 4.5 GB | 139 s |
+| `"direct"` | no row stored | (not measured) | 118 s |
+
+with the same energy in every case.
+
 `src/input.h` documents every key. The integrals are read from a FCIDUMP
 file (`src/integrals.h`) in the complex format, `(re,im) p q r s`, or the real
 format, `value p q r s`. A file in the real format is treated with real

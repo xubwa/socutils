@@ -345,6 +345,14 @@ class VariationalH : private ElementSource<S> {
         comm_(comm),
         direct_(input.direct_hamiltonian),
         store_values_(input.store_values),
+        adapt_(input.adapt_hamiltonian),
+        memory_limit_(
+            static_cast<size_t>(input.memory_gb * 1024.0 * 1024.0 * 1024.0)),
+        // Basis vectors and their products of the eigensolver, the
+        // eigenvectors, and two for a product.
+        num_vectors_((2 * std::max(2, input.davidson.max_space_per_root) + 1) *
+                         input.nroots +
+                     2),
         incremental_(input.incremental),
         connect_(MakeConnectOptions(input)) {
     ResetStored();
@@ -381,7 +389,7 @@ class VariationalH : private ElementSource<S> {
           GroupMask<W>(connect_, ints_.num_orbs()), comm_, connect_.subgroups);
       // A Hamiltonian that is not stored wants all connections, again and
       // again.
-      tables_->set_block_search(direct_ && connect_.blocks);
+      tables_->set_block_search((direct_ || adapt_) && connect_.blocks);
     }
     tables_->Extend(dets, first_new);
     table_memory_ = tables_->memory();
@@ -389,7 +397,9 @@ class VariationalH : private ElementSource<S> {
     stats_.seconds_prepare += omp_get_wtime() - time;
     stats_.num_strings = tables_->num_strings(0) + tables_->num_strings(1);
     stats_.num_links = tables_->num_links();
-    if (!direct_) {
+    if (adapt_) {
+      ExtendWithinMemory(first_new);
+    } else if (!direct_) {
       stored_.AppendBlocks(
           internal::BuildGroupBlocks(dets, first_new, ints_, connect_.threshold,
                                      *tables_, &stats_, store_values_));
@@ -409,18 +419,27 @@ class VariationalH : private ElementSource<S> {
   DavidsonResult Solve(const DavidsonOptions& options,
                        std::vector<std::vector<S>>* root_vectors,
                        const std::vector<uint8_t>* active = nullptr) const {
-    if (!direct_) {
-      return SolveDistributed<S>(stored_, options, comm_, root_vectors, active);
+    if (direct_) {
+      const DirectH<W, S> h(dets_, ints_, *tables_, connect_.threshold,
+                            stored_.diagonal());
+      return SolveDistributed<S>(h, options, comm_, root_vectors, active);
     }
-    const DirectH<W, S> h(dets_, ints_, *tables_, connect_.threshold,
-                          stored_.diagonal());
-    return SolveDistributed<S>(h, options, comm_, root_vectors, active);
+    if (!all_rows_stored()) {
+      // The stored rows, which include the diagonal, and the others.
+      const DirectH<W, S> rest(dets_, ints_, *tables_, connect_.threshold,
+                               stored_.diagonal(),
+                               DirectH<W, S>::kDefaultScratchBytes,
+                               first_direct_row_, /*with_diagonal=*/false);
+      const SumOperator sum(stored_, rest);
+      return SolveDistributed<S>(sum, options, comm_, root_vectors, active);
+    }
+    return SolveDistributed<S>(stored_, options, comm_, root_vectors, active);
   }
 
   // Collective: the density matrices between two vectors.
   DensityMatrices<S> Density(Span<S> bra, Span<S> ket, bool with_two) const {
     const int num_orbs = ints_.num_orbs();
-    if (!direct_) {
+    if (!direct_ && all_rows_stored()) {
       return ComputeDensityMatricesFrom(dets_, StoredPairs<S>(stored_),
                                         num_orbs, bra, ket, with_two, comm_,
                                         ints_.is_spatial());
@@ -463,6 +482,21 @@ class VariationalH : private ElementSource<S> {
           "stored Hamiltonian (root): %.1f MB of elements, %.1f MB "
           "of row lists and thread tables\n",
           stored_.element_bytes() * mb, stored_.overhead_bytes() * mb);
+      if (adapt_) {
+        const size_t n = dets_.size();
+        std::printf(
+            "memory (root): limit %.1f MB; %.1f MB taken by the string "
+            "tables, the determinants and %zu vectors, which leaves %.1f MB "
+            "for the Hamiltonian\n",
+            memory_limit_ * mb, OtherBytes(n) * mb, num_vectors_,
+            HamiltonianBudget(n) * mb);
+        if (!all_rows_stored()) {
+          std::printf(
+              "stored Hamiltonian (root): the rows of the determinants from "
+              "%zu on (%zu of %zu) are not stored and are applied directly\n",
+              first_direct_row_, n - first_direct_row_, n);
+        }
+      }
       if (stored_.num_values() < stored_.num_elements()) {
         std::printf(
             "stored Hamiltonian (root): values held for %zu of %zu elements; "
@@ -484,6 +518,95 @@ class VariationalH : private ElementSource<S> {
   }
 
  private:
+  // The sum of two operators of the same dimension; the diagonal is that of
+  // the first.
+  class SumOperator : public LinearOperator<S> {
+   public:
+    SumOperator(const LinearOperator<S>& a, const LinearOperator<S>& b)
+        : a_(a), b_(b) {}
+    size_t dim() const override { return a_.dim(); }
+    const std::vector<double>& diagonal() const override {
+      return a_.diagonal();
+    }
+    void Apply(const S* x, S* y) const override {
+      const long n = static_cast<long>(dim());
+      a_.Apply(x, y);
+      std::vector<S> other(n);
+      b_.Apply(x, other.data());
+#pragma omp parallel for schedule(static)
+      for (long i = 0; i < n; ++i) y[i] += other[i];
+    }
+
+   private:
+    const LinearOperator<S>& a_;
+    const LinearOperator<S>& b_;
+  };
+
+  bool all_rows_stored() const { return first_direct_row_ >= dets_.size(); }
+
+  // Bytes of what this process holds besides the Hamiltonian for n
+  // determinants: the string tables with what extending them takes, the
+  // determinants (the list, the root's copy, the sorted copy), the vectors
+  // of the eigensolver, the vectors the threads add into in a product, and
+  // a twentieth of the limit for everything else.
+  size_t OtherBytes(size_t n) const {
+    return table_memory_.shared + table_memory_.kept + table_memory_.transient +
+           3 * n * sizeof(Det<W>) + num_vectors_ * n * sizeof(S) +
+           static_cast<size_t>(omp_get_max_threads()) * n * sizeof(S) +
+           memory_limit_ / 20;
+  }
+  size_t HamiltonianBudget(size_t n) const {
+    const size_t other = OtherBytes(n);
+    return memory_limit_ > other ? memory_limit_ - other : 0;
+  }
+
+  // Adds the rows of the determinants from first_new on within the memory
+  // limit (see "adapt" in input.h). Collective.
+  void ExtendWithinMemory(size_t first_new) {
+    const size_t n = dets_.size();
+    const size_t budget = HamiltonianBudget(n);
+    // What is stored of the new rows; nothing if they are applied directly.
+    // Appended in any case, so that the stored part knows of the new
+    // determinants.
+    std::vector<CsrBlock<S>> blocks;
+    if (first_direct_row_ > first_new) {
+      // What the connections of the new rows may take: the budget less the
+      // connections already held. Values can make way.
+      const size_t held =
+          stored_.num_elements() * sizeof(DetIndex) + stored_.overhead_bytes();
+      const size_t room = budget > held ? budget - held : 0;
+      bool fits = true;
+      blocks = internal::BuildGroupBlocks(dets_, first_new, ints_,
+                                          connect_.threshold, *tables_, &stats_,
+                                          /*store_values=*/false, room, &fits);
+      // If one rank cannot hold its part, none stores these rows.
+      double overflows = fits ? 0.0 : 1.0;
+      comm_.Sum(&overflows, 1);
+      if (overflows > 0.0) {
+        first_direct_row_ = first_new;
+        blocks.clear();
+      }
+    }
+    stored_.AppendBlocks(std::move(blocks));
+    // Values: released from the newest blocks until the budget is kept,
+    // then worked out for the blocks that have none while they fit.
+    const size_t num_blocks = stored_.blocks().size();
+    size_t bytes = stored_.element_bytes() + stored_.overhead_bytes();
+    for (size_t b = num_blocks; b-- > 0 && bytes > budget;) {
+      const size_t freed = stored_.blocks()[b].val.size() * sizeof(S);
+      stored_.DropBlockValues(b);
+      bytes -= freed;
+    }
+    for (size_t b = 0; b < num_blocks; ++b) {
+      const CsrBlock<S>& block = stored_.blocks()[b];
+      if (block.has_values()) continue;
+      const size_t needed = block.col.size() * sizeof(S);
+      if (bytes + needed > budget) continue;
+      stored_.FillBlockValues(b);
+      bytes += needed;
+    }
+  }
+
   // The elements of stored blocks that hold columns only.
   void Fill(DetIndex row, const DetIndex* cols, size_t count,
             S* values) const override {
@@ -494,6 +617,7 @@ class VariationalH : private ElementSource<S> {
   }
 
   void ResetStored() {
+    first_direct_row_ = SIZE_MAX;
     stored_ = SparseH<S>();
     stored_.set_apply_diagonal(comm_.is_root());
     stored_.set_element_source(this);
@@ -503,6 +627,13 @@ class VariationalH : private ElementSource<S> {
   const Comm& comm_;
   bool direct_;
   bool store_values_;
+  // "adapt": the memory limit, the number of vectors of the eigensolver
+  // counted against it, and the first row that is not stored (none: larger
+  // than any index).
+  bool adapt_;
+  size_t memory_limit_;
+  size_t num_vectors_;
+  size_t first_direct_row_ = SIZE_MAX;
   bool incremental_;
   typename internal::GroupStringTables<W>::Memory table_memory_;
   ConnectOptions connect_;
