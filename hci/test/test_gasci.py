@@ -48,7 +48,7 @@ def new_solver(cls=None, **settings):
     solver.conv_tol_residual = 1e-7
     solver.max_cycle = 400
     solver.max_space = 30
-    solver.sigma_kernel = os.environ.get('ZGASCI_TEST_KERNEL', 'reference')
+    solver.sigma_kernel = os.environ.get('ZGASCI_TEST_KERNEL', solver.sigma_kernel)
     for key, value in settings.items():
         setattr(solver, key, value)
     return solver

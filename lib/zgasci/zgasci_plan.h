@@ -12,7 +12,7 @@
 #define ZG_MAX_SPINOR (ZG_MAX_SUB * ZG_MAX_SUBSIZE)
 #define ZG_MAX_ROWS 1024  /* rows of a piece of work of the block kernel */
 #define ZG_MAX_COLS 512   /* and its columns */
-#define ZG_BLAS_ROWS 64   /* rows of a piece of work of the BLAS kernel */
+#define ZG_BLAS_ROWS 256   /* rows of a piece of work of the BLAS kernel */
 
 /* One side.  A "tuple" is a choice of the number of electrons in each of
  * its sub-groups, numbered t = sum_g k_g stride_g; the tuples that occur in
@@ -77,18 +77,37 @@ typedef struct {
   int64_t r0, r1;
 } zg_rtask;
 
-/* A kind of term as the BLAS kernel sees it: operators on the row side as
- * in zg_term, on the column side the adjoint string (so that enumerating it
- * on a source string gives the target strings). */
+/* A kind of term as the BLAS kernel sees it: its operators on the row side
+ * and on the column side, as in zg_term. */
 typedef struct {
   int term;
   int kr, kc;
   int kind_r[4], rel_r[4];
   int kind_c[4], rel_c[4];
   int par_r, par_c; /* whether (-1)^(N_A of the ket) goes with rows, columns */
+  int add_r, add_c; /* electrons of the source string minus the target's */
   int64_t wr, wc;   /* W[row index * wr + column index * wc] */
   int64_t ncidx;    /* column indices */
+  /* Label filter of the row operators (kinds with at most one column
+   * operator, which can make up for few changes of the labels of the row
+   * string): a hash table from the change made by all row operators but the
+   * last (packed, zg_label_key) to the spinors the last one may take.
+   * fsize 0: no filter. */
+  int fsize;
+  uint64_t *fkey, *fmask;
 } zg_bkind;
+
+/* A way of placing the operators of one side in its sub-groups (g, local
+ * to the side), with the class of the source strings O^dagger |target>, and
+ * what their numbers need: the first of the class, the radix of each
+ * sub-group, the sub-groups the operators act in. */
+typedef struct {
+  int g[4];
+  int ntouch, touch[4];
+  int32_t cls;
+  int64_t base;
+  int64_t radix[ZG_MAX_SUB];
+} zg_asg;
 
 /* A piece of the transposition of the CI vector: rows i0 .. i1 - 1 of block
  * k = ba * nclassB + cb. */
@@ -140,6 +159,18 @@ struct zg_plan {
   int64_t nrtask[2];
   zg_tpiece *tpieces;
   int64_t ntpiece;
+  /* For each row bucket of a half, the column classes it has a block with:
+   * pair_cls[h][pair_ptr[h][bucket] .. pair_ptr[h][bucket + 1]]. */
+  int64_t *pair_ptr[2];
+  int32_t *pair_cls[2];
+  /* The distinct labels of the spinors of each side and the spinors (bits
+   * of the side's word) that carry each. */
+  int ndlab[2];
+  int dlab[2][64][ZG_MAX_SETS];
+  uint64_t dmask[2][64];
+  uint8_t dof[2][64]; /* which of them each spinor carries */
+  /* (bucket << 32) + place in the bucket of each string of a side. */
+  uint64_t *bp[2];
 };
 
 /* Block kernel helpers (zgasci.c). */
@@ -150,10 +181,23 @@ int64_t zg_word_sid(const zg_plan *p, int side, uint64_t w);
 int zg_enum_ops(int k, const int *kind, const int *rel, int nside, uint64_t w,
                 int64_t *x, uint64_t *src, int8_t *sign, int cap);
 
-/* BLAS kernel helper: whether the column operators of a kind take a string
- * of class cs (column side of half h) to a class that pairs with row bucket
- * bt. */
-int zg_blas_reach(const zg_plan *p, int h, const zg_bkind *kd, int cs, int bt);
+/* BLAS kernel helpers (zgasci.c).  zg_asg_list: the placements of k
+ * operators (kind, rel as in zg_term) in the sub-groups of a side for which
+ * O^dagger takes the strings of class `from` to a class marked in ok (any
+ * class of the space if ok is NULL); returns their number (at most cap).
+ * zg_asg_enum: for one placement and the target string w (rk: the ranks of
+ * its sub-strings, zg_string_ranks), appends from n on the operators: their
+ * numbers x, the source strings and the signs <w|O(x)|source>; returns the
+ * new n.  With a filter (the kind whose row operators these are) only the
+ * operators that its label filter lets through. */
+int zg_asg_list(const zg_plan *p, int side, int k, const int *kind,
+                const int *rel, int from, const uint8_t *ok, zg_asg *out,
+                int cap);
+void zg_string_ranks(const zg_plan *p, int side, uint64_t w, int64_t *rk);
+int zg_asg_enum(const zg_plan *p, int side, int k, const int *kind,
+                const int *rel, const zg_asg *a, uint64_t w, const int64_t *rk,
+                const zg_bkind *filter, int64_t *x, int64_t *sid, int8_t *sign,
+                int n);
 
 int64_t zg_binom(int n, int k);
 
