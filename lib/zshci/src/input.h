@@ -216,7 +216,10 @@ struct Input {
   // alpha ones); "relations" says how related strings are found there:
   // "subgroups" (default for spinors), each group divided once more, or
   // "keys" (default for spatial and unrestricted orbitals), which keeps a
-  // number of keys per string that grows with the square of its electrons. "strings": N-1 and N-2 electron strings of the whole
+  // number of keys per string that grows with the square of its electrons;
+  // both store the lists of related strings. "bytes" stores none and works
+  // the related strings out when they are needed (connect_bytes.h).
+  // "strings": N-1 and N-2 electron strings of the whole
   // determinant; no wasted tests, memory grows with the square of the
   // electron number. "segments": covers of four out of `connect_segments`
   // orbital segments; least memory, at the price of testing unconnected
@@ -224,7 +227,7 @@ struct Input {
   bool connect_by_segments = false;
   bool connect_by_groups = true;
   std::vector<int> connect_group_a;
-  bool connect_subgroups = true;
+  std::string connect_relations = "subgroups";
   // With "hamiltonian": "direct": "blocks": false finds the connections
   // determinant by determinant, as for a stored Hamiltonian; slower.
   bool connect_blocks = true;

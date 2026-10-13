@@ -167,12 +167,24 @@ class TablePairs {
   TablePairs(const internal::GroupStringTables<W>& tables, size_t num_dets)
       : tables_(tables), num_dets_(num_dets) {}
 
-  long num_rows() const { return static_cast<long>(num_dets_); }
+  // A row is a determinant or, where the tables find the connections of
+  // the determinants of a string together, a chunk of them.
+  long num_rows() const {
+    return static_cast<long>(tables_.has_chunks() ? tables_.num_chunks()
+                                                  : num_dets_);
+  }
 
   template <class Visitor>
   void ForRow(long r, const Visitor& visit) const {
-    if (!tables_.Owns(r)) return;
     uint64_t tested = 0;
+    if (tables_.has_chunks()) {
+      tables_.ForEachConnectedOfChunk(
+          r, [&](DetIndex j) { return tables_.Owns(j); },
+          [&](int /*k*/, DetIndex j, DetIndex i) { visit(j, i); },
+          [](const uint32_t* /*indices*/, int /*count*/) {}, &tested);
+      return;
+    }
+    if (!tables_.Owns(r)) return;
     tables_.ForEachConnected(
         r, [&](DetIndex i) { visit(static_cast<DetIndex>(r), i); }, &tested);
   }

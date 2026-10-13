@@ -63,9 +63,9 @@ struct ConnectOptions {
   // (the alpha spin orbitals, or one spinor of every interleaved Kramers
   // pair).
   std::vector<int> group_a;
-  // Groups: whether related strings are found through sub-groups of the
-  // two groups or by keys (connect_groups.h).
-  bool subgroups = true;
+  // Groups: how the strings related to a string are found
+  // (connect_groups.h).
+  StringRelations relations = StringRelations::kSubgroups;
   // Groups, Hamiltonian not stored: whether the connections are found
   // string by string (connect_groups.h) or determinant by determinant.
   bool blocks = true;
@@ -550,6 +550,41 @@ CsrBlock<S> BuildBlockFromPairs(Span<Det<W>> dets, size_t first_new,
   return block;
 }
 
+// Puts the stored rows of a block in increasing order of their determinant.
+template <typename S>
+void SortBlockRows(CsrBlock<S>* block) {
+  const size_t num_rows = block->num_stored_rows();
+  if (std::is_sorted(block->row.begin(), block->row.end())) return;
+  std::vector<size_t> order(num_rows);
+  for (size_t r = 0; r < num_rows; ++r) order[r] = r;
+  std::sort(order.begin(), order.end(),
+            [&](size_t a, size_t b) { return block->row[a] < block->row[b]; });
+  const bool with_values = block->has_values();
+  RawArray<DetIndex> row(num_rows);
+  std::vector<uint64_t> row_ptr(1, 0);
+  row_ptr.reserve(num_rows + 1);
+  RawArray<DetIndex> col(block->col.size());
+  RawArray<S> val(with_values ? block->val.size() : 0);
+  uint64_t offset = 0;
+  for (size_t r = 0; r < num_rows; ++r) {
+    const uint64_t begin = block->row_ptr[order[r]];
+    const uint64_t end = block->row_ptr[order[r] + 1];
+    row[r] = block->row[order[r]];
+    std::copy(block->col.begin() + begin, block->col.begin() + end,
+              col.begin() + offset);
+    if (with_values) {
+      std::copy(block->val.begin() + begin, block->val.begin() + end,
+                val.begin() + offset);
+    }
+    offset += end - begin;
+    row_ptr.push_back(offset);
+  }
+  block->row = std::move(row);
+  block->row_ptr = std::move(row_ptr);
+  block->col = std::move(col);
+  block->val = std::move(val);
+}
+
 // Builds the rows of the determinants this rank owns from the string tables
 // of two groups, in one sweep: each thread finds the connections of a
 // determinant, evaluates the elements and appends the finished row to a block
@@ -581,54 +616,87 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(
     RawArray<DetIndex> cols;
     RawArray<S> vals;
     size_t num_elements = 0;
-    std::vector<std::pair<DetIndex, S>> row;
-#pragma omp for schedule(dynamic, 64) nowait
-    for (long j = static_cast<long>(first_new); j < static_cast<long>(n); ++j) {
-      if (!tables.Owns(j)) continue;
-      row.clear();
-      tables.ForEachConnected(
-          j,
-          [&](DetIndex i) {
-            ++connected;
-            const S value = Hij(dets[j], dets[i], ints);
-            if (keep_all || std::abs(value) > threshold) {
-              row.emplace_back(i, value);
-            }
-          },
-          &tested);
-      if (row.empty()) continue;
+    // Appends the finished row of determinant j, if it fits.
+    auto append = [&](long j, std::vector<std::pair<DetIndex, S>>* row) {
+      if (row->empty()) return;
       if (max_bytes != SIZE_MAX) {
         size_t now;
 #pragma omp atomic capture
-        now = bytes_used += row.size() * element_bytes;
+        now = bytes_used += row->size() * element_bytes;
         if (now > max_bytes) {
 #pragma omp atomic
-          bytes_used -= row.size() * element_bytes;
+          bytes_used -= row->size() * element_bytes;
           left_out[j - first_new] = 1;
-          continue;
+          return;
         }
       }
       std::sort(
-          row.begin(), row.end(),
+          row->begin(), row->end(),
           [](const std::pair<DetIndex, S>& a, const std::pair<DetIndex, S>& b) {
             return a.first < b.first;
           });
-      if (num_elements + row.size() > cols.size()) {
+      if (num_elements + row->size() > cols.size()) {
         const size_t capacity =
-            std::max(num_elements + row.size(), 2 * cols.size() + 1024);
+            std::max(num_elements + row->size(), 2 * cols.size() + 1024);
         cols.Resize(capacity);
         if (store_values) vals.Resize(capacity);
       }
       rows.push_back(static_cast<DetIndex>(j));
-      for (const std::pair<DetIndex, S>& element : row) {
+      for (const std::pair<DetIndex, S>& element : *row) {
         cols[num_elements] = element.first;
         if (store_values) vals[num_elements] = element.second;
         ++num_elements;
       }
       row_ptr.push_back(num_elements);
+    };
+    if (tables.has_chunks()) {
+      // The determinants of a string together; their rows fill side by
+      // side and are appended when the string is done.
+      std::vector<std::vector<std::pair<DetIndex, S>>> pending(
+          GroupStringTables<W>::kChunkSize);
+      const long num_chunks = static_cast<long>(tables.num_chunks());
+#pragma omp for schedule(dynamic, 4) nowait
+      for (long c = 0; c < num_chunks; ++c) {
+        tables.ForEachConnectedOfChunk(
+            c, [&](DetIndex j) { return j >= first_new && tables.Owns(j); },
+            [&](int k, DetIndex j, DetIndex i) {
+              ++connected;
+              const S value = Hij(dets[j], dets[i], ints);
+              if (keep_all || std::abs(value) > threshold) {
+                pending[k].emplace_back(i, value);
+              }
+            },
+            [&](const uint32_t* indices, int count) {
+              for (int k = 0; k < count; ++k) {
+                append(indices[k], &pending[k]);
+                pending[k].clear();
+              }
+            },
+            &tested);
+      }
+    } else {
+      std::vector<std::pair<DetIndex, S>> row;
+#pragma omp for schedule(dynamic, 64) nowait
+      for (long j = static_cast<long>(first_new); j < static_cast<long>(n);
+           ++j) {
+        if (!tables.Owns(j)) continue;
+        row.clear();
+        tables.ForEachConnected(
+            j,
+            [&](DetIndex i) {
+              ++connected;
+              const S value = Hij(dets[j], dets[i], ints);
+              if (keep_all || std::abs(value) > threshold) {
+                row.emplace_back(i, value);
+              }
+            },
+            &tested);
+        append(j, &row);
+      }
     }
-    // The schedule hands every thread its determinants in increasing order,
-    // so the rows are sorted.
+    // Determinant by determinant the schedule hands every thread its
+    // determinants in increasing order, so the rows are sorted; string by
+    // string they are put in order below.
     cols.Resize(num_elements);
     if (store_values) vals.Resize(num_elements);
     CsrBlock<S>& block = blocks[omp_get_thread_num()];
@@ -643,6 +711,14 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(
   std::vector<CsrBlock<S>> filled;
   for (CsrBlock<S>& block : blocks) {
     if (block.num_elements() > 0) filled.push_back(std::move(block));
+  }
+  if (tables.has_chunks()) {
+    // A block is copied to be put in order; few at a time, so that little
+    // more than the blocks themselves is held.
+    const long num_filled = static_cast<long>(filled.size());
+    const int at_a_time = std::max(1, omp_get_max_threads() / 16);
+#pragma omp parallel for schedule(dynamic, 1) num_threads(at_a_time)
+    for (long b = 0; b < num_filled; ++b) SortBlockRows(&filled[b]);
   }
   if (stats != nullptr) {
     // Every reported pair counts as tested, as with the other methods.
@@ -763,7 +839,7 @@ std::vector<CsrBlock<S>> BuildBlocks(Span<Det<W>> dets, size_t first_new,
   if (options.method == ConnectMethod::kGroups) {
     const double time = omp_get_wtime();
     const internal::GroupStringTables<W> tables(
-        dets, GroupMask<W>(options, ints.num_orbs()), comm, options.subgroups);
+        dets, GroupMask<W>(options, ints.num_orbs()), comm, options.relations);
     if (stats != nullptr) {
       stats->seconds_prepare += omp_get_wtime() - time;
       stats->num_strings = tables.num_strings(0) + tables.num_strings(1);

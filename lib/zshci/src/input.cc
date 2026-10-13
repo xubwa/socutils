@@ -137,7 +137,7 @@ Json ToJson(const Input& in) {
   j["connect"] = {{"method", in.connect_by_groups     ? "groups"
                              : in.connect_by_segments ? "segments"
                                                       : "strings"},
-                  {"relations", in.connect_subgroups ? "subgroups" : "keys"},
+                  {"relations", in.connect_relations},
                   {"blocks", in.connect_blocks},
                   {"segments", in.connect_segments},
                   {"batches", in.connect_batches}};
@@ -422,7 +422,8 @@ Input ParseInput(const std::string& text) {
   // Spin orbitals with a conserved spin projection are the alpha/beta
   // scheme: no electron moves between the groups, the keys are few, and
   // dividing the groups again would only cost time.
-  in.connect_subgroups = !in.spatial_orbitals && !in.unrestricted_orbitals;
+  in.connect_relations =
+      in.spatial_orbitals || in.unrestricted_orbitals ? "keys" : "subgroups";
   if (top.Has("connect")) {
     ObjectReader connect(top.At("connect"), "connect");
     std::string method = "groups";
@@ -433,12 +434,11 @@ Input ParseInput(const std::string& text) {
     in.connect_by_segments = method == "segments";
     in.connect_by_groups = method == "groups";
     connect.Get("group_a", &in.connect_group_a);
-    std::string relations = in.connect_subgroups ? "subgroups" : "keys";
-    connect.Get("relations", &relations);
-    if (relations != "subgroups" && relations != "keys") {
-      connect.Fail("relations", "must be \"subgroups\" or \"keys\"");
+    connect.Get("relations", &in.connect_relations);
+    if (in.connect_relations != "subgroups" && in.connect_relations != "keys" &&
+        in.connect_relations != "bytes") {
+      connect.Fail("relations", "must be \"subgroups\", \"keys\" or \"bytes\"");
     }
-    in.connect_subgroups = relations == "subgroups";
     connect.Get("blocks", &in.connect_blocks);
     connect.Get("segments", &in.connect_segments);
     connect.Get("batches", &in.connect_batches);

@@ -63,6 +63,11 @@
 //
 // Doubles of one string with the other string unchanged are found by
 // comparing the determinants that share the other string.
+//
+// By bytes: no relation lists at all. The related strings are worked out
+// whenever they are needed, from a static table over the bytes of a string
+// and a tree of the strings there are (connect_bytes.h, where the scheme is
+// described). GroupStringTables then only passes every call on.
 
 #ifndef ZSHCI_SRC_CONNECT_GROUPS_H_
 #define ZSHCI_SRC_CONNECT_GROUPS_H_
@@ -71,37 +76,47 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <utility>
 #include <vector>
 
 #include "comm.h"
+#include "connect_bytes.h"
 #include "det.h"
 #include "parallel.h"
 #include "sparse_h.h"
 
 namespace zshci {
+
+// How the strings related to a string are found (see the top of this file).
+enum class StringRelations { kKeys, kSubgroups, kBytes };
+
 namespace internal {
 
 template <int W>
 class GroupStringTables {
  public:
   // `group_a` has the bits of the spinors of group A set; all others form
-  // group B. `subgroups` chooses how related strings are found (see the top
-  // of this file); the tables are the same either way. They are empty until
-  // Extend is called.
+  // group B. `relations` chooses how related strings are found (see the top
+  // of this file); keys and sub-groups give the same tables, bytes none.
+  // The tables are empty until Extend is called.
   GroupStringTables(const Det<W>& group_a, const Comm& comm,
-                    bool subgroups = true)
+                    StringRelations relations = StringRelations::kSubgroups)
       : comm_(comm),
         rank_(comm.rank()),
         num_ranks_(comm.size()),
         group_a_(group_a),
-        subgroups_(subgroups) {}
+        subgroups_(relations == StringRelations::kSubgroups) {
+    if (relations == StringRelations::kBytes) {
+      bytes_ = std::make_unique<ByteStringTables<W>>(group_a, comm);
+    }
+  }
 
   // The tables of `dets`. Collective.
   GroupStringTables(Span<Det<W>> dets, const Det<W>& group_a, const Comm& comm,
-                    bool subgroups = true)
-      : GroupStringTables(group_a, comm, subgroups) {
+                    StringRelations relations = StringRelations::kSubgroups)
+      : GroupStringTables(group_a, comm, relations) {
     Extend(dets, 0);
   }
 
@@ -111,8 +126,13 @@ class GroupStringTables {
   // next numbers of their electron count, their keys are merged into the
   // sorted keys kept from before, and the relation lists gain the pairs
   // that involve a new string. Collective: the root does this and the
-  // tables are held once per node.
+  // tables are held once per node. (By bytes there is nothing to keep and
+  // everything is made anew.)
   void Extend(Span<Det<W>> dets, size_t first_new) {
+    if (bytes_ != nullptr) {
+      bytes_->Extend(dets);
+      return;
+    }
     if (dets.size() > static_cast<size_t>(UINT32_MAX)) {
       throw std::length_error("too many determinants for a 32-bit index");
     }
@@ -199,6 +219,7 @@ class GroupStringTables {
 
   // Number of distinct strings of a group, over all electron counts.
   size_t num_strings(int group) const {
+    if (bytes_ != nullptr) return bytes_->num_strings(group);
     return base_[group].empty() ? 0 : base_[group].back();
   }
   // Number of entries in all relation lists.
@@ -212,11 +233,15 @@ class GroupStringTables {
     return n;
   }
   // Whether determinants differ in the number of electrons of a group.
-  bool has_transfers() const { return transfers_; }
+  bool has_transfers() const {
+    return bytes_ != nullptr ? bytes_->has_transfers() : transfers_;
+  }
   // The sectors: element n is the number of determinants with n electrons in
   // group A (and the rest in group B). Determinants are only connected
   // within a sector and to the sectors one or two electrons away.
-  const std::vector<uint64_t>& sector_sizes() const { return sector_sizes_; }
+  const std::vector<uint64_t>& sector_sizes() const {
+    return bytes_ != nullptr ? bytes_->sector_sizes() : sector_sizes_;
+  }
 
   // Memory of the tables, in bytes. `shared`: what every node holds once
   // and the connection search reads. `kept`: what the root keeps in
@@ -231,6 +256,11 @@ class GroupStringTables {
   };
   Memory memory() const {
     Memory m;
+    if (bytes_ != nullptr) {
+      m.shared = bytes_->shared_bytes();
+      m.transient = bytes_->transient_bytes();
+      return m;
+    }
     m.shared = count_a_of_det_.size() * sizeof(uint16_t);
     for (int group = 0; group < 2; ++group) {
       m.shared += string_of_det_[group].size() * sizeof(uint32_t) +
@@ -270,6 +300,10 @@ class GroupStringTables {
   template <class Visitor>
   void ForEachConnected(size_t j, const Visitor& visit, uint64_t* tested_pairs,
                         bool both_sides = false) const {
+    if (bytes_ != nullptr) {
+      bytes_->ForEachConnected(j, visit, tested_pairs, both_sides);
+      return;
+    }
     const uint32_t self = static_cast<uint32_t>(j);
     // Determinants up to this index are reported.
     const uint32_t limit = both_sides ? UINT32_MAX : self;
@@ -329,6 +363,20 @@ class GroupStringTables {
     *tested_pairs += tested;
   }
 
+  // Whether the rows of a Hamiltonian are best made for the determinants of
+  // a string together (ForEachConnectedOfChunk, see connect_bytes.h) rather
+  // than one by one with ForEachConnected. So it is when the related
+  // strings are found by bytes.
+  bool has_chunks() const { return bytes_ != nullptr; }
+  size_t num_chunks() const { return bytes_->num_chunks(); }
+  static constexpr size_t kChunkSize = ByteStringTables<W>::kChunkSize;
+  template <class Wanted, class Visitor, class Done>
+  void ForEachConnectedOfChunk(size_t c, const Wanted& wanted,
+                               const Visitor& visit, const Done& done,
+                               uint64_t* rejected) const {
+    bytes_->ForEachConnectedOfChunk(c, wanted, visit, done, rejected);
+  }
+
   // --- Connections by blocks of determinants that share a string ---
   //
   // ForEachConnected works determinant by determinant: for each related
@@ -350,9 +398,17 @@ class GroupStringTables {
   // Switches the block-wise search on: Extend then also makes, for each
   // group, a copy of the determinants in the order of the strings of that
   // group (once per node), and the tasks. Call before Extend.
-  void set_block_search(bool on) { block_search_ = on; }
-  bool has_blocks() const { return block_search_ && !tasks_.empty(); }
-  size_t num_tasks() const { return tasks_.size(); }
+  void set_block_search(bool on) {
+    block_search_ = on;
+    if (bytes_ != nullptr) bytes_->set_block_search(on);
+  }
+  bool has_blocks() const {
+    if (bytes_ != nullptr) return bytes_->has_blocks();
+    return block_search_ && !tasks_.empty();
+  }
+  size_t num_tasks() const {
+    return bytes_ != nullptr ? bytes_->num_tasks() : tasks_.size();
+  }
   // Whether this rank does task t.
   bool OwnsTask(size_t t) const {
     return static_cast<long>(t) % num_ranks_ == rank_;
@@ -365,6 +421,10 @@ class GroupStringTables {
   template <class Visitor>
   void ForEachConnectedOfTask(size_t t, const Visitor& visit,
                               uint64_t* tested) const {
+    if (bytes_ != nullptr) {
+      bytes_->ForEachConnectedOfTask(t, visit, tested);
+      return;
+    }
     const Task& task = tasks_[t];
     const int group = task.group;
     const uint64_t place = task.place;
@@ -1332,6 +1392,8 @@ class GroupStringTables {
   bool block_search_ = false;
   SharedArray<Det<W>> block_dets_[2];
   std::vector<Task> tasks_;
+  // Set when the relations are found by bytes; nothing above is then used.
+  std::unique_ptr<ByteStringTables<W>> bytes_;
 };
 
 }  // namespace internal

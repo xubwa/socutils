@@ -1242,17 +1242,160 @@ void TestSpinStringConnections(int num_spatial, int shift,
   spin.method = ConnectMethod::kGroups;
   ConnectOptions reference;
   reference.threshold = -1.0;
-  bool same = true;
-  size_t num_elements = 0;
-  for (size_t first_new : {size_t{0}, size_t{137}, dets.size() - 1}) {
-    const CsrBlock<double> block =
-        BuildBlock(MakeSpan(dets), first_new, ints, spin);
-    const CsrBlock<double> brute =
-        BuildBlockBruteForce(MakeSpan(dets), first_new, ints, reference);
-    same = same && SameBlock(block, brute, 0.0);
-    num_elements += block.num_elements();
+  // With stored relation lists (by keys and by sub-groups) and with related
+  // strings composed from the byte table.
+  for (StringRelations relations :
+       {StringRelations::kKeys, StringRelations::kSubgroups,
+        StringRelations::kBytes}) {
+    spin.relations = relations;
+    bool same = true;
+    size_t num_elements = 0;
+    for (size_t first_new : {size_t{0}, size_t{137}, dets.size() - 1}) {
+      const CsrBlock<double> block =
+          BuildBlock(MakeSpan(dets), first_new, ints, spin);
+      const CsrBlock<double> brute =
+          BuildBlockBruteForce(MakeSpan(dets), first_new, ints, reference);
+      same = same && SameBlock(block, brute, 0.0);
+      num_elements += block.num_elements();
+    }
+    Expect(num_elements > 5000 && same,
+           what + (relations == StringRelations::kKeys        ? " (keys)"
+                   : relations == StringRelations::kSubgroups ? " (sub-groups)"
+                                                              : " (bytes)"));
   }
-  Expect(num_elements > 5000 && same, what);
+}
+
+// The connections of every determinant and of every task from tables with
+// the given way of finding related strings, as sorted lists of pairs
+// (larger index first).
+template <int W>
+void TableConnections(const internal::GroupStringTables<W>& tables,
+                      size_t num_dets,
+                      std::vector<std::pair<DetIndex, DetIndex>>* below,
+                      std::vector<std::pair<DetIndex, DetIndex>>* both,
+                      std::vector<std::pair<DetIndex, DetIndex>>* by_tasks) {
+  below->clear();
+  both->clear();
+  by_tasks->clear();
+  uint64_t tested = 0;
+  for (size_t j = 0; j < num_dets; ++j) {
+    const DetIndex row = static_cast<DetIndex>(j);
+    tables.ForEachConnected(
+        j, [&](DetIndex i) { below->emplace_back(row, i); }, &tested);
+    tables.ForEachConnected(
+        j, [&](DetIndex i) { both->emplace_back(row, i); }, &tested, true);
+  }
+  for (size_t t = 0; t < tables.num_tasks(); ++t) {
+    tables.ForEachConnectedOfTask(
+        t,
+        [&](DetIndex j, DetIndex i) {
+          by_tasks->emplace_back(std::max(j, i), std::min(j, i));
+        },
+        &tested);
+  }
+  std::sort(below->begin(), below->end());
+  std::sort(both->begin(), both->end());
+  std::sort(by_tasks->begin(), by_tasks->end());
+}
+
+// Related strings composed from the byte table (connect_bytes.h) against
+// the stored relation lists and against a comparison of all pairs: the
+// connections of every determinant, below it and on both sides, and those
+// found string by string. `labels`, if not empty, restricts the
+// determinants to those whose labels sum to that of the first one.
+template <int W>
+void TestByteConnections(int num_orbs, int num_elec, int shift, int count,
+                         int max_rank, const std::vector<int>& labels,
+                         const std::string& what) {
+  std::vector<std::vector<int>> occupations =
+      RandomOccupations(num_orbs, num_elec, count, max_rank, 97);
+  if (!labels.empty()) {
+    auto sum = [&](const std::vector<int>& occ) {
+      int total = 0;
+      for (int p : occ) total += labels[p];
+      return total;
+    };
+    const int wanted = sum(occupations[0]);
+    std::vector<std::vector<int>> kept;
+    for (const std::vector<int>& occ : occupations) {
+      if (sum(occ) == wanted) kept.push_back(occ);
+    }
+    occupations = kept;
+  }
+  const std::vector<Det<W>> dets = ToDets<W>(occupations, shift);
+  const size_t n = dets.size();
+  const int num_spinors = num_orbs + shift;
+  std::vector<std::pair<DetIndex, DetIndex>> brute, brute_both;
+  for (size_t j = 0; j < n; ++j) {
+    for (size_t i = 0; i < n; ++i) {
+      const int differing = dets[i].NumDifferentBits(dets[j]);
+      if (differing != 2 && differing != 4) continue;
+      brute_both.emplace_back(j, i);
+      if (i < j) brute.emplace_back(j, i);
+    }
+  }
+  // The usual groups; groups of unequal size whose last bytes are partial;
+  // the lower and the upper half; a group of one spinor; and one group
+  // only, which leaves the other without any spinor.
+  std::vector<ConnectOptions> groupings(5);
+  for (int p = 0; p < num_spinors; ++p) {
+    if (p % 7 == 0) groupings[1].group_a.push_back(p);
+    if (p < shift + num_orbs / 2) groupings[2].group_a.push_back(p);
+    groupings[4].group_a.push_back(p);
+  }
+  groupings[3].group_a = {shift};
+  const Comm serial;
+  bool same = true;
+  bool same_as_lists = true;
+  bool same_stepwise = true;
+  size_t num_strings = 0;
+  for (const ConnectOptions& grouping : groupings) {
+    const Det<W> mask = GroupMask<W>(grouping, num_spinors);
+    std::vector<std::pair<DetIndex, DetIndex>> below, both, by_tasks;
+    internal::GroupStringTables<W> composed(mask, serial,
+                                            StringRelations::kBytes);
+    composed.set_block_search(true);
+    composed.Extend(MakeSpan(dets), 0);
+    num_strings += composed.num_strings(0) + composed.num_strings(1);
+    TableConnections(composed, n, &below, &both, &by_tasks);
+    same = same && below == brute && both == brute_both && by_tasks == brute &&
+           composed.num_links() == 0;
+    std::vector<std::pair<DetIndex, DetIndex>> list_below, list_both,
+        list_tasks;
+    internal::GroupStringTables<W> listed(mask, serial,
+                                          StringRelations::kSubgroups);
+    listed.set_block_search(true);
+    listed.Extend(MakeSpan(dets), 0);
+    TableConnections(listed, n, &list_below, &list_both, &list_tasks);
+    same_as_lists = same_as_lists && below == list_below && both == list_both &&
+                    by_tasks == list_tasks &&
+                    composed.has_transfers() == listed.has_transfers() &&
+                    composed.num_strings(0) == listed.num_strings(0) &&
+                    composed.num_strings(1) == listed.num_strings(1);
+    // Determinants added in steps, the first step a single one.
+    internal::GroupStringTables<W> stepwise(mask, serial,
+                                            StringRelations::kBytes);
+    stepwise.set_block_search(true);
+    size_t previous = 0;
+    for (size_t size : {size_t{1}, size_t{40}, size_t{41}, n / 2, n}) {
+      stepwise.Extend(Span<Det<W>>(dets.data(), size), previous);
+      previous = size;
+    }
+    std::vector<std::pair<DetIndex, DetIndex>> step_below, step_both,
+        step_tasks;
+    TableConnections(stepwise, n, &step_below, &step_both, &step_tasks);
+    same_stepwise = same_stepwise && step_below == brute &&
+                    step_both == brute_both && step_tasks == brute;
+  }
+  Expect(brute.size() > 2000 && same, what);
+  Expect(same_as_lists, "  and equal those from the stored relation lists");
+  Expect(same_stepwise,
+         "  and the same after determinants were added in "
+         "steps");
+  std::printf(
+      "      %zu determinants, %zu connected pairs, %zu strings over "
+      "five groupings\n",
+      n, brute.size(), num_strings);
 }
 
 // The group string tables for spinors, where electrons move between the
@@ -1290,6 +1433,60 @@ void TestGroupConnections(const Integrals<Complex>& ints) {
          "group string tables find the connected pairs of spinor "
          "determinants for four choices of the groups");
 
+  // The same blocks with the related strings composed from the byte table,
+  // with the values and with the columns only.
+  {
+    const std::vector<Det<1>> dets = ToDets<1>(occupations, 0);
+    const Comm serial;
+    bool same_blocks = true;
+    bool same_columns = true;
+    size_t num_composed = 0;
+    for (const std::vector<int>& group_a : groups) {
+      ConnectOptions composed = reference;
+      composed.method = ConnectMethod::kGroups;
+      composed.relations = StringRelations::kBytes;
+      composed.group_a = group_a;
+      for (double threshold : {-1.0, 1e-3}) {
+        composed.threshold = threshold;
+        ConnectOptions brute = reference;
+        brute.threshold = threshold;
+        for (size_t first_new : {size_t{0}, size_t{251}, dets.size() - 1}) {
+          const CsrBlock<Complex> wanted =
+              BuildBlockBruteForce(MakeSpan(dets), first_new, ints, brute);
+          const CsrBlock<Complex> block =
+              BuildBlock(MakeSpan(dets), first_new, ints, composed);
+          same_blocks = same_blocks && SameBlock(block, wanted, 0.0);
+          num_composed += block.num_elements();
+          // "connections": the columns without the values.
+          const internal::GroupStringTables<1> tables(
+              MakeSpan(dets), GroupMask<1>(composed, n), serial,
+              StringRelations::kBytes);
+          std::map<DetIndex, std::vector<DetIndex>> columns, wanted_columns;
+          for (const CsrBlock<Complex>& part : internal::BuildGroupBlocks(
+                   MakeSpan(dets), first_new, ints, threshold, tables, nullptr,
+                   /*store_values=*/false)) {
+            same_columns = same_columns && !part.has_values();
+            for (size_t r = 0; r < part.num_stored_rows(); ++r) {
+              columns[part.row[r]].assign(
+                  part.col.begin() + part.row_ptr[r],
+                  part.col.begin() + part.row_ptr[r + 1]);
+            }
+          }
+          for (size_t r = 0; r < wanted.num_stored_rows(); ++r) {
+            wanted_columns[wanted.row[r]].assign(
+                wanted.col.begin() + wanted.row_ptr[r],
+                wanted.col.begin() + wanted.row_ptr[r + 1]);
+          }
+          same_columns = same_columns && columns == wanted_columns;
+        }
+      }
+    }
+    Expect(num_composed > 20000 && same_blocks,
+           "the same blocks with related strings composed from the byte "
+           "table, with and without a threshold");
+    Expect(same_columns, "  and the same columns when no values are stored");
+  }
+
   const int shift = 66 - n;
   const Integrals<Complex> shifted = ShiftIntegrals(ints, shift);
   const std::vector<Det<2>> dets2 = ToDets<2>(occupations, shift);
@@ -1299,6 +1496,15 @@ void TestGroupConnections(const Integrals<Complex>& ints) {
                    BuildBlockBruteForce(MakeSpan(dets2), 0, shifted, reference),
                    0.0),
          "group string tables work across a word boundary");
+  {
+    ConnectOptions composed = grouped;
+    composed.relations = StringRelations::kBytes;
+    Expect(
+        SameBlock(BuildBlock(MakeSpan(dets2), 0, shifted, composed),
+                  BuildBlockBruteForce(MakeSpan(dets2), 0, shifted, reference),
+                  0.0),
+        "and with related strings composed from the byte table");
+  }
   grouped.threshold = 1e-3;
   ConnectOptions thresholded = reference;
   thresholded.threshold = 1e-3;
@@ -1325,10 +1531,11 @@ void TestGroupConnections(const Integrals<Complex>& ints) {
     size_t num_connections = 0;
     for (const Det<1>& mask : masks) {
       const internal::GroupStringTables<1> by_keys(MakeSpan(dets), mask, serial,
-                                                   false);
+                                                   StringRelations::kKeys);
       const internal::GroupStringTables<1> at_once(MakeSpan(dets), mask, serial,
-                                                   true);
-      internal::GroupStringTables<1> stepwise(mask, serial, true);
+                                                   StringRelations::kSubgroups);
+      internal::GroupStringTables<1> stepwise(mask, serial,
+                                              StringRelations::kSubgroups);
       size_t previous = 0;
       for (size_t size :
            {size_t{1}, size_t{40}, size_t{41}, size_t{300}, dets.size()}) {
@@ -1548,6 +1755,45 @@ void TestGroupConnections(const Integrals<Complex>& ints) {
                    "stored one"
                  : "the same with a threshold on the elements");
     }
+    {
+      // Both again with the related strings composed from the byte table.
+      ConnectOptions uneven = options;
+      for (int p = 0; p < n; ++p) {
+        if (p % 7 == 0) uneven.group_a.push_back(p);
+      }
+      double worst = 0.0, largest = 0.0;
+      size_t num_tasks = 0;
+      std::vector<Complex> x(dets.size()), y(dets.size()), y_ref(dets.size());
+      for (size_t i = 0; i < x.size(); ++i) {
+        x[i] = Complex(std::sin(0.3 * i + 0.2), std::cos(1.7 * i));
+      }
+      stored.Multiply(x.data(), y_ref.data());
+      for (const ConnectOptions& grouping : {options, uneven}) {
+        for (bool by_blocks : {false, true}) {
+          internal::GroupStringTables<1> composed(
+              GroupMask<1>(grouping, n), serial, StringRelations::kBytes);
+          composed.set_block_search(by_blocks);
+          composed.Extend(MakeSpan(dets), 0);
+          num_tasks += composed.num_tasks();
+          for (size_t budget :
+               {size_t{0}, DirectH<1, Complex>::kDefaultScratchBytes}) {
+            const DirectH<1, Complex> direct(MakeSpan(dets), ints, composed,
+                                             threshold, diagonal, budget);
+            direct.Apply(x.data(), y.data());
+            for (size_t i = 0; i < x.size(); ++i) {
+              worst = std::max(worst, std::abs(y[i] - y_ref[i]));
+              largest = std::max(largest, std::abs(y_ref[i]));
+            }
+          }
+        }
+      }
+      Expect(num_tasks > 0 && largest > 1.0 && worst < 1e-12 * largest,
+             threshold < 0.0
+                 ? "the Hamiltonian applied with related strings from the "
+                   "byte table, by determinants and by strings, equals the "
+                   "stored one"
+                 : "the same with a threshold on the elements");
+    }
     if (threshold >= 0.0) continue;
     std::vector<Complex> bra(dets.size()), ket(dets.size());
     for (size_t i = 0; i < dets.size(); ++i) {
@@ -1572,6 +1818,24 @@ void TestGroupConnections(const Integrals<Complex>& ints) {
     Expect(max_one < 1e-10 && max_two < 1e-10,
            "density matrices from the tables equal those from the stored "
            "pairs");
+    const internal::GroupStringTables<1> composed(
+        MakeSpan(dets), GroupMask<1>(options, n), serial,
+        StringRelations::kBytes);
+    const DensityMatrices<Complex> from_bytes = ComputeDensityMatricesFrom(
+        MakeSpan(dets), TablePairs<1>(composed, dets.size()), n, MakeSpan(bra),
+        MakeSpan(ket), true);
+    max_one = 0.0;
+    max_two = 0.0;
+    for (size_t k = 0; k < from_stored.one.size(); ++k) {
+      max_one =
+          std::max(max_one, std::abs(from_stored.one[k] - from_bytes.one[k]));
+    }
+    for (size_t k = 0; k < from_stored.two.size(); ++k) {
+      max_two =
+          std::max(max_two, std::abs(from_stored.two[k] - from_bytes.two[k]));
+    }
+    Expect(max_one < 1e-10 && max_two < 1e-10,
+           "and with related strings composed from the byte table");
   }
 }
 
@@ -2014,6 +2278,23 @@ int main(int argc, char** argv) {
     zshci::TestPerturbation(ints);
     zshci::TestSecondOrderLimit(ints);
     zshci::TestGroupConnections(ints);
+    {
+      // Labels as of an axis: values -3, -1, 1, 3 in turn by pairs.
+      std::vector<int> axis(44);
+      for (int p = 0; p < 44; ++p) axis[p] = 2 * ((p / 2) % 4) - 3;
+      zshci::TestByteConnections<1>(
+          44, 14, 0, 900, 3, {},
+          "related strings composed from the byte table give the connections "
+          "of 14 electrons in 44 spinors");
+      zshci::TestByteConnections<1>(
+          44, 14, 0, 4000, 3, axis,
+          "the same for determinants of one symmetry label");
+      zshci::TestByteConnections<2>(
+          44, 14, 46, 900, 3, {},
+          "the same with two-word determinants, in spinors 46 to 89");
+      zshci::TestByteConnections<2>(100, 20, 0, 900, 4, {},
+                                    "the same for 20 electrons in 100 spinors");
+    }
     zshci::TestPtScoreSelection(ints);
     zshci::TestRealScalar(ints);
     zshci::TestBlockedIntegrals(ints);
