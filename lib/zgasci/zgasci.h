@@ -71,6 +71,13 @@ void zg_sigma_d(const zg_plan *plan, const double *v, const double *c,
                 double *sigma);
 void zg_sigma_z(const zg_plan *plan, const double _Complex *v,
                 const double _Complex *c, double _Complex *sigma);
+/* The same by the block kernel (each side at most 64 spinors, zg_block_ok):
+ * every row of sigma written by one thread, no atomic additions. */
+int zg_block_ok(const zg_plan *plan);
+void zg_sigma_block_d(const zg_plan *plan, const double *v, const double *c,
+                      double *sigma);
+void zg_sigma_block_z(const zg_plan *plan, const double _Complex *v,
+                      const double _Complex *c, double _Complex *sigma);
 /* out[npair * npair] = <bra| A+_P A_R |ket>, P the row. */
 void zg_rdm2_d(const zg_plan *plan, const double *bra, const double *ket,
                double *out);

@@ -134,6 +134,10 @@ static int number_strings(zg_plan *p, int side) {
   return 1;
 }
 
+static void setup_block(zg_plan *p);
+static inline int64_t side_sid(const zg_plan *p, int side, const int *counts,
+                               const uint32_t *masks);
+
 /* Whether some A bucket of class ca pairs with B class cb. */
 static int classes_pair(const zg_plan *p, int ca, int cb) {
   const zg_side *sa = &p->s[0], *sb = &p->s[1];
@@ -404,6 +408,7 @@ zg_plan *zg_plan_new(int nspinor, int nelec, int nsub, int nsub_a,
     }
   }
 #undef ZG_TUPLES_B
+  setup_block(p);
   return p;
 }
 
@@ -438,10 +443,12 @@ void zg_plan_free(zg_plan *p) {
   free(p->match);
   free(p->blockoff);
   free(p->tasks);
+  free(p->btasks);
   free(p);
 }
 
 int64_t zg_dim(const zg_plan *p) { return p->dim; }
+int zg_block_ok(const zg_plan *p) { return p->block_ok; }
 int zg_nwords(const zg_plan *p) { return (p->n + 63) / 64; }
 
 void zg_info(const zg_plan *p, int64_t *out) {
@@ -563,6 +570,188 @@ int zg_connect(const zg_plan *p, const uint32_t *masks, int32_t *pair,
   return n;
 }
 
+
+/* -- the block kernel: terms, pieces of work, strings as words ------------ */
+
+/* The nine kinds of terms; see zg_term. */
+static void setup_terms(zg_plan *p) {
+  static const int kind[4] = {1, 1, 0, 0}; /* a+_p a+_q a_s a_r */
+  for (int tp = 0; tp < 3; ++tp) {
+    for (int tr = 0; tr < 3; ++tr) {
+      zg_term *t = &p->terms[tp * 3 + tr];
+      memset(t, 0, sizeof(*t));
+      /* Side of p, q, s, r: P within A (0), across (1), within B (2). */
+      int side[4];
+      side[0] = tp == 2;
+      side[1] = tp >= 1;
+      side[3] = tr == 2; /* r */
+      side[2] = tr >= 1; /* s */
+      int nb_before = 0, sign = 1;
+      for (int i = 0; i < 4; ++i) {
+        if (side[i]) {
+          t->kind_b[t->kb] = kind[i];
+          t->role_b[t->kb++] = i;
+          ++nb_before;
+        } else {
+          t->kind_a[t->ka] = kind[i];
+          t->role_a[t->ka++] = i;
+          if (nb_before % 2) sign = -sign;
+        }
+      }
+      t->sign = sign;
+      /* Order within a side: p < q, and s > r (listed s first). */
+      for (int which = 0; which < 2; ++which) {
+        const int k = which ? t->kb : t->ka;
+        const int *role = which ? t->role_b : t->role_a;
+        int *rel = which ? t->rel_b : t->rel_a;
+        for (int i = 0; i + 1 < k; ++i) {
+          if (role[i] == 0 && role[i + 1] == 1) rel[i] = 1;
+          if (role[i] == 2 && role[i + 1] == 3) rel[i] = -1;
+        }
+      }
+      t->nx = 1;
+      t->ny = 1;
+      for (int i = 0; i < t->ka; ++i) t->nx *= p->nside[0];
+      for (int i = 0; i < t->kb; ++i) t->ny *= p->nside[1];
+    }
+  }
+}
+
+/* Work of a row of a block, roughly: its columns times the excitations of
+ * each side (the same for all rows of a class). */
+static double row_weight(const zg_plan *p, int ca, int cb, int64_t ncol) {
+  double w[2];
+  for (int side = 0; side < 2; ++side) {
+    const zg_side *s = &p->s[side];
+    const int k = s->tuple_elec[s->class_tuple[side ? cb : ca]];
+    const int n = p->nside[side];
+    w[side] = 1.0 + (double)k * (n - k) + 0.25 * k * (k - 1) * (n - k) * (n - k - 1);
+  }
+  return (double)ncol * w[0] * w[1];
+}
+
+static void setup_block(zg_plan *p) {
+  for (int side = 0; side < 2; ++side) {
+    const zg_side *s = &p->s[side];
+    p->nside[side] = p->off[s->first + s->nsub - 1] + p->m[s->first + s->nsub - 1] -
+                     p->off[s->first];
+  }
+  p->block_ok = p->nside[0] <= 64 && p->nside[1] <= 64;
+  if (!p->block_ok) return;
+  setup_terms(p);
+  const zg_side *sa = &p->s[0], *sb = &p->s[1];
+  /* Tile shape; ZGASCI_TILE="rows,columns" overrides it (experiments). */
+  int64_t max_rows = 128, max_cols = 32;
+  const char *tile = getenv("ZGASCI_TILE");
+  if (tile) {
+    long r = 0, cc = 0;
+    if (sscanf(tile, "%ld,%ld", &r, &cc) == 2 && r > 0 && cc > 0) {
+      max_rows = r < ZG_MAX_ROWS ? r : ZG_MAX_ROWS;
+      max_cols = cc < ZG_MAX_COLS ? cc : ZG_MAX_COLS;
+    }
+  }
+  double total = 0.0;
+  for (int pass = 0; pass < 2; ++pass) {
+    const double piece = total / (8.0 * omp_get_max_threads()) + 1.0;
+    int64_t capacity = 256;
+    if (pass == 1) p->btasks = malloc(capacity * sizeof(zg_btask));
+    p->nbtask = 0;
+    for (int ba = 0; ba < sa->nbucket; ++ba) {
+      for (int cb = 0; cb < sb->nclass; ++cb) {
+        const int64_t k = (int64_t)ba * sb->nclass + cb;
+        const int bb = p->match[k];
+        if (bb < 0) continue;
+        const int64_t nrow = sa->bucket_size[ba];
+        const double w = row_weight(p, sa->bucket_class[ba], cb, sb->bucket_size[bb]);
+        if (pass == 0) {
+          total += w * nrow;
+          continue;
+        }
+        /* Tiles of at most ZG_MAX_ROWS x ZG_MAX_COLS, smaller where the
+         * work would be too coarse to balance. */
+        const int64_t ncol = sb->bucket_size[bb];
+        const double per = w / (double)ncol; /* one element */
+        int64_t rows = nrow < max_rows ? nrow : max_rows;
+        int64_t cols = ncol < max_cols ? ncol : max_cols;
+        while (rows * cols * per > piece && (rows > 8 || cols > 8)) {
+          if (rows >= cols) rows = (rows + 1) / 2; else cols = (cols + 1) / 2;
+        }
+        for (int64_t r0 = 0; r0 < nrow; r0 += rows) {
+          for (int64_t j0 = 0; j0 < ncol; j0 += cols) {
+            if (p->nbtask == capacity) {
+              capacity *= 2;
+              p->btasks = realloc(p->btasks, capacity * sizeof(zg_btask));
+            }
+            p->btasks[p->nbtask++] = (zg_btask){
+                k, r0, r0 + rows < nrow ? r0 + rows : nrow, j0,
+                j0 + cols < ncol ? j0 + cols : ncol};
+          }
+        }
+      }
+    }
+  }
+}
+
+uint64_t zg_side_word(const zg_plan *p, int side, int64_t sid) {
+  const zg_side *s = &p->s[side];
+  const int c = s->bucket_class[s->bucket[sid]];
+  int counts[ZG_MAX_SUB];
+  uint32_t masks[ZG_MAX_SUB];
+  zg_counts(p, side, s->class_tuple[c], counts);
+  zg_unpack(p, side, counts, sid - s->class_base[c], masks);
+  uint64_t w = 0;
+  const int first = p->off[s->first];
+  for (int g = 0; g < s->nsub; ++g) {
+    w |= (uint64_t)masks[g] << (p->off[s->first + g] - first);
+  }
+  return w;
+}
+
+int64_t zg_word_sid(const zg_plan *p, int side, uint64_t w) {
+  const zg_side *s = &p->s[side];
+  int counts[ZG_MAX_SUB];
+  uint32_t masks[ZG_MAX_SUB];
+  const int first = p->off[s->first];
+  for (int g = 0; g < s->nsub; ++g) {
+    const int sub = s->first + g;
+    masks[g] = (uint32_t)((w >> (p->off[sub] - first)) & ((1u << p->m[sub]) - 1));
+    counts[g] = __builtin_popcount(masks[g]);
+  }
+  return side_sid(p, side, counts, masks);
+}
+
+/* Applies O(x)^dagger = o_1^dagger ... slot by slot, o_1^dagger first. */
+static int enum_rec(int i, int k, const int *kind, const int *rel, int nside,
+                    uint64_t w, int64_t x, int64_t radix, int prev, int8_t sg,
+                    int64_t *xs, uint64_t *src, int8_t *sign, int n, int cap) {
+  if (i == k) {
+    if (n < cap) {
+      xs[n] = x;
+      src[n] = w;
+      sign[n] = sg;
+    }
+    return n + 1;
+  }
+  int lo = 0, hi = nside;
+  if (i > 0 && rel[i - 1] > 0) lo = prev + 1;
+  if (i > 0 && rel[i - 1] < 0) hi = prev;
+  /* creation in O: its adjoint removes an electron, and the other way. */
+  const uint64_t want = kind[i] ? w : ~w;
+  for (int j = lo; j < hi; ++j) {
+    if (!(want >> j & 1)) continue;
+    const int8_t s =
+        (__builtin_popcountll(w & (((uint64_t)1 << j) - 1)) & 1) ? -sg : sg;
+    n = enum_rec(i + 1, k, kind, rel, nside, w ^ ((uint64_t)1 << j),
+                 x + radix * j, radix * nside, j, s, xs, src, sign, n, cap);
+  }
+  return n;
+}
+
+int zg_enum_ops(int k, const int *kind, const int *rel, int nside, uint64_t w,
+                int64_t *x, uint64_t *src, int8_t *sign, int cap) {
+  return enum_rec(0, k, kind, rel, nside, w, 0, 1, -1, 1, x, src, sign, 0, cap);
+}
+
 /* The occupied spinors of string sid of a side; returns their number. */
 static int string_occ(const zg_plan *p, int side, int64_t sid, int *occ) {
   const zg_side *s = &p->s[side];
@@ -626,6 +815,7 @@ int zg_string_occ(const zg_plan *p, int side, int64_t sid, int *occ) {
     (target) += (value);             \
   } while (0)
 #include "zgasci_kernel.inc"
+#include "zgasci_block.inc"
 #undef ZG_SCALAR
 #undef ZG_NAME
 #undef ZG_CONJ
@@ -647,3 +837,4 @@ int zg_string_occ(const zg_plan *p, int side, int64_t sid, int *occ) {
     zg_t_[1] += cimag(zg_v_);                      \
   } while (0)
 #include "zgasci_kernel.inc"
+#include "zgasci_block.inc"

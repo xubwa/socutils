@@ -41,13 +41,27 @@ Build: `make` at the top of socutils (lib/CMakeLists.txt), or directly
   `<bra|A+_P A_R|ket> = sum_K conj(d_bra[P]) d_ket[R]` is the same loop; dm1
   follows by contraction. The determinants K come in tasks (pairs of N - 2
   electron tuples, larger ones cut) under dynamic scheduling.
+* **Block kernel** (`zg_sigma_block_{d,z}`, `sigma_kernel='block'`). Each
+  term `v[P,R] a+_p a+_q a_s a_r` falls in one of nine kinds by whether P and
+  R lie within A, across, or within B; each kind is exactly
+  `sign (-1)^(k_B N_A) <a'|O_A(x)|a> <b'|O_B(y)|b>` with `W[x][y] = ±v[P,R]`
+  (one, two electrons passing between the sides are kinds of their own, as
+  in Olsen's LUCIAREL). sigma is built by tiles (rows x columns of a target
+  block), each written by the thread that owns it: no atomic additions, the
+  unit of a later MPI distribution. Strings are 64-bit words on each side
+  (each side at most 64 spinors); excitations are done on the words in the
+  loop, with only the per-sub-group tables, and no string-level excitation
+  table is stored. Tiles are weighted from the classes for the dynamic
+  schedule. `ZGASCI_TERMS` (bit mask) restricts the kinds,
+  `ZGASCI_STATS` prints their multiply-adds.
 * **Phase.** A determinant is `a+_p1 a+_p2 ... |0>`, `p1 < p2 < ...` in the
   order of the kernels; `GASCI.wavefunction` converts to the original order.
 
 ## Interface
 
 C (`zgasci.h`): `zg_plan_new` / `zg_plan_free`, `zg_dim`, `zg_dets`,
-`zg_info`, and `zg_hdiag_{d,z}`, `zg_sigma_{d,z}`, `zg_rdm2_{d,z}` (real and
+`zg_info`, and `zg_hdiag_{d,z}`, `zg_sigma_{d,z}`, `zg_sigma_block_{d,z}`
+(with `zg_block_ok`), `zg_rdm2_{d,z}` (real and
 complex from one source, `zgasci_kernel.inc` compiled twice).
 
 Python (`socutils.hci.gasci`):
@@ -82,7 +96,8 @@ memory; OpenMP only; time reversal is not used. The reference kernel does
 
 ## Tests and measured timings
 
-`python hci/test/test_gasci.py` (21 tests): kernels against H built from the
+`python hci/test/test_gasci.py` (21 tests; `ZGASCI_TEST_KERNEL=block` runs
+the solvers with the block kernel, and the exhaustive tests check both): kernels against H built from the
 operators on bit strings (≤ 8 spinors; real and complex; FCI, GAS, labels with
 and without modulus; several divisions), against zfci, zfci.kernel_dets and
 SHCI (FCI, GAS by occslst and by restrictions in a selection, labels), the
@@ -99,7 +114,18 @@ One sigma with the reference kernel, random dense integrals, 12 electrons,
 | 22 | 646 646 | 0.48 s | — |
 | 24 | 2 704 156 | 2.47 s | 1.32 s |
 
-22 spinors: 6.72 s on 1 thread, 14× faster on 16. O2 (12, 32) has
+22 spinors: 6.72 s on 1 thread, 14× faster on 16. (Measured before
+`-fcx-limited-range`, which makes complex products inline instead of calls
+to `__muldc3`: about 25 % faster on one thread.)
+
+Block kernel against the reference (complex, measured): it does the same
+number of multiply-adds (1.62e10 at 24 spinors / 12 electrons, both close to
+the number of connected determinants, so near the minimum of a direct CI),
+and both run at about 2 ns per complex multiply-add per core, limited by the
+dependent gathers. One thread, 20 spinors: block 0.97 s, reference 0.74 s;
+16 threads, 24 spinors, on a shared node: block 4.8–5.5 s, reference
+3.2–4.3 s. So the block kernel is the structure (ownership, tiles, no
+atomics), not yet a speed-up; the reference stays the default. O2 (12, 32) has
 2.26·10^8 determinants; from the operation count, about 9 min per complex
 sigma with this kernel on 16 cores (estimate), the reason for the block
 kernel planned next.
