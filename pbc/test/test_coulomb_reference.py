@@ -98,5 +98,41 @@ class KnownValues(unittest.TestCase):
             self.assertLess(abs(folded - res[key]).max(), 1e-11)
 
 
+    def test_gaussian_nucleus_attraction(self):
+        '''molecular_coulomb's Gaussian nuclei agree with treating each nucleus
+        as a charge-normalised s Gaussian in 3-centre Coulomb integrals.'''
+        from pyscf import gto, scf, df
+        mol = gto.M(atom='H 0 0 -0.7; H 0 0 0.7', unit='B', basis='cc-pvdz', verbose=0)
+        dm = scf.RHF(mol).run().make_rdm1()
+        zeta = 10.
+        aux = gto.M(atom=mol.atom, unit='B', basis={'H': [[0, [zeta, 1.]]]}, verbose=0)
+        q = (np.pi / zeta)**1.5 * (2 * zeta / np.pi)**.75  # charge of a libcint s function
+        v3 = -df.incore.aux_e2(mol, aux, intor='int3c2e').sum(axis=2) / q
+        m = cr.molecular_coulomb(mol, dm, zeta)
+        self.assertLess(abs(m['vnuc'] - v3).max(), 1e-12)
+
+    def test_zero_dimensional_limit(self):
+        '''Molecule in a box: E(L) - E_mol ~ A/L^5, and vj + vnuc is shifted by
+        -(2 pi/3V) tr2 S, where tr2 is the second moment of the total charge.'''
+        from pyscf import gto, scf
+        mol = gto.M(atom='H 0 0 -0.7; H 0 0 0.7', unit='B', basis='cc-pvdz', verbose=0)
+        dm = scf.RHF(mol).run().make_rdm1()
+        zeta = 10.
+        m = cr.molecular_coulomb(mol, dm, zeta)
+        dip, tr2 = cr.dipole_and_second_moment(mol, dm, zeta)
+        self.assertLess(np.linalg.norm(dip), 1e-10)
+        S = mol.intor('int1e_ovlp')
+        scaled = []
+        for L in (12., 16.):
+            r = cr.coulomb_reference(cr.molecule_in_box(mol, L), dm, zeta,
+                                     ke_cutoff=450, rpair=L / 2 + 6)
+            scaled.append((r['e_coul'] - m['e_coul']) * L**5)
+            dV = (r['vj'] + r['vnuc']) - (m['vj'] + m['vnuc'])
+            c = -2 * np.pi / (3 * L**3) * tr2
+            self.assertLess(abs(dV - c * S).max(), 6e3 / L**5)
+        self.assertAlmostEqual(scaled[1] / scaled[0], 1., 0)  # 1.97 vs 1.84
+        self.assertLess(abs(scaled[1] - scaled[0]), .2)
+
+
 if __name__ == '__main__':
     unittest.main()

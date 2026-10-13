@@ -139,6 +139,86 @@ def gaussian_self_energy(charges, alphas):
 
 
 #
+# Zero-dimensional limit: a molecule in a growing box
+#
+def molecular_coulomb(mol, dm, zeta=None):
+    '''Exact Coulomb quantities of a molecule from molecular integrals.
+
+    zeta=None uses point nuclei (e_nn without self energies, comparable to
+    pyscf.pbc energy_nuc); otherwise normalised Gaussian nuclei with exponents
+    zeta and e_nn including their self energies (the convention of
+    coulomb_reference).'''
+    from pyscf import scf
+    Z = mol.atom_charges().astype(float)
+    R = mol.atom_coords()
+    vj = scf.hf.get_jk(mol, dm, with_k=False)[0]
+    if zeta is None:
+        vnuc = mol.intor('int1e_nuc')
+        e_nn = mol.energy_nuc()
+    else:
+        zeta = np.broadcast_to(np.asarray(zeta, dtype=float), (mol.natm,))
+        # libcint's Gaussian nuclear model, rho_A = Z_A (zeta/pi)^1.5 exp(-zeta r^2).
+        # (int1e_rinv ignores the range-separation omega, so it cannot be used here.)
+        gmol = mol.copy()
+        gmol.build(False, False)
+        for ia in range(mol.natm):
+            gmol._env[gmol._atm[ia, gto.PTR_ZETA]] = zeta[ia]
+        gmol._atm[:, gto.NUC_MOD_OF] = gto.NUC_GAUSS
+        vnuc = gmol.intor('int1e_nuc')
+        e_nn = gaussian_self_energy(Z, zeta)
+        for i in range(mol.natm):
+            for j in range(i):
+                r = np.linalg.norm(R[i] - R[j])
+                g = np.sqrt(zeta[i] * zeta[j] / (zeta[i] + zeta[j]))
+                e_nn += Z[i] * Z[j] * erf(g * r) / r
+    e_ee = .5 * np.einsum('ij,ji', dm, vj)
+    e_en = np.einsum('ij,ji', dm, vnuc)
+    return {'vj': vj, 'vnuc': vnuc, 'e_ee': e_ee, 'e_en': e_en, 'e_nn': e_nn,
+            'e_coul': e_ee + e_en + e_nn}
+
+
+def molecule_in_box(mol, L, **kwargs):
+    '''Cubic cell of edge L (Bohr) containing mol, centred in the box.'''
+    from pyscf.pbc import gto as pgto
+    R = mol.atom_coords()
+    shift = np.full(3, L / 2) - R.mean(axis=0)
+    cell = pgto.Cell()
+    cell.a = np.eye(3) * L
+    cell.unit = 'Bohr'
+    cell.atom = [(mol.atom_symbol(i), R[i] + shift) for i in range(mol.natm)]
+    cell.basis = mol._basis
+    cell.cart = mol.cart
+    cell.spin = mol.spin
+    cell.charge = mol.charge
+    cell.verbose = 0
+    for k, v in kwargs.items():
+        setattr(cell, k, v)
+    cell.build(False, False)
+    return cell
+
+
+def dipole_and_second_moment(mol, dm, zeta=None):
+    '''Dipole and trace of the second moment of the total (nuclear minus
+    electronic) charge, about the nuclear centroid.  For a neutral, dipole-free
+    molecule in a box with the G = 0 potential dropped, the total potential
+    matrix vj + vnuc differs from the molecular one by -(2 pi / 3V) * tr2 * S
+    (the box removes the average potential) up to O(L^-5); the Coulomb energy
+    differs by O(L^-5).'''
+    Z = mol.atom_charges().astype(float)
+    R = mol.atom_coords()
+    origin = R.mean(axis=0)
+    with mol.with_common_orig(origin):
+        r = mol.intor('int1e_r')
+        rr = mol.intor('int1e_r2')
+    dip = Z @ (R - origin) - np.einsum('xij,ji->x', r, dm)
+    tr2 = Z @ np.einsum('ix,ix->i', R - origin, R - origin) - np.einsum('ij,ji', rr, dm)
+    if zeta is not None:
+        zeta = np.broadcast_to(np.asarray(zeta, dtype=float), (mol.natm,))
+        tr2 += np.sum(Z * 1.5 / zeta)
+    return dip, tr2
+
+
+#
 # AO density + Gaussian nuclei
 #
 def _image_mole(cell, rpair):
