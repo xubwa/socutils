@@ -81,6 +81,13 @@ void zg_sigma_block_d(const zg_plan *plan, const double *v, const double *c,
                       double *sigma);
 void zg_sigma_block_z(const zg_plan *plan, const double _Complex *v,
                       const double _Complex *c, double _Complex *sigma);
+/* The same by the BLAS kernel (zgasci_blas.inc; needs zg_block_ok, else the
+ * reference kernel runs): the terms as gather - matrix product - scatter,
+ * rows written by the thread that owns them.  Workspace: two vectors. */
+void zg_sigma_blas_d(const zg_plan *plan, const double *v, const double *c,
+                     double *sigma);
+void zg_sigma_blas_z(const zg_plan *plan, const double _Complex *v,
+                     const double _Complex *c, double _Complex *sigma);
 /* out[npair * npair] = <bra| A+_P A_R |ket>, P the row. */
 void zg_rdm2_d(const zg_plan *plan, const double *bra, const double *ket,
                double *out);

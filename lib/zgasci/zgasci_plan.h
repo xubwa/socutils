@@ -12,6 +12,7 @@
 #define ZG_MAX_SPINOR (ZG_MAX_SUB * ZG_MAX_SUBSIZE)
 #define ZG_MAX_ROWS 1024  /* rows of a piece of work of the block kernel */
 #define ZG_MAX_COLS 512   /* and its columns */
+#define ZG_BLAS_ROWS 64   /* rows of a piece of work of the BLAS kernel */
 
 /* One side.  A "tuple" is a choice of the number of electrons in each of
  * its sub-groups, numbered t = sum_g k_g stride_g; the tuples that occur in
@@ -69,6 +70,32 @@ typedef struct {
   int64_t k, r0, r1, j0, j1;
 } zg_btask;
 
+/* A piece of work of the BLAS kernel: rows r0 .. r1 - 1 of a bucket of the
+ * row side, with all the blocks they run through. */
+typedef struct {
+  int32_t bucket;
+  int64_t r0, r1;
+} zg_rtask;
+
+/* A kind of term as the BLAS kernel sees it: operators on the row side as
+ * in zg_term, on the column side the adjoint string (so that enumerating it
+ * on a source string gives the target strings). */
+typedef struct {
+  int term;
+  int kr, kc;
+  int kind_r[4], rel_r[4];
+  int kind_c[4], rel_c[4];
+  int par_r, par_c; /* whether (-1)^(N_A of the ket) goes with rows, columns */
+  int64_t wr, wc;   /* W[row index * wr + column index * wc] */
+  int64_t ncidx;    /* column indices */
+} zg_bkind;
+
+/* A piece of the transposition of the CI vector: rows i0 .. i1 - 1 of block
+ * k = ba * nclassB + cb. */
+typedef struct {
+  int64_t k, i0, i1;
+} zg_tpiece;
+
 struct zg_plan {
   int n, nelec, nsub, nsets, npair;
   int m[ZG_MAX_SUB];   /* spinors of each sub-group */
@@ -101,6 +128,18 @@ struct zg_plan {
   zg_term terms[9];
   zg_btask *btasks;
   int64_t nbtask;
+  /* BLAS kernel.  Half 0 has the A strings as rows (the vector as it is),
+   * half 1 the B strings (the transposed vector: for B bucket bb and A class
+   * ca, match_t gives the A bucket and blockoff_t where the block
+   * (B string, A string) starts). */
+  int32_t *match_t;
+  int64_t *blockoff_t;
+  zg_bkind bkinds[2][5];
+  int nbkind[2];
+  zg_rtask *rtasks[2];
+  int64_t nrtask[2];
+  zg_tpiece *tpieces;
+  int64_t ntpiece;
 };
 
 /* Block kernel helpers (zgasci.c). */
@@ -110,6 +149,11 @@ int64_t zg_word_sid(const zg_plan *p, int side, uint64_t w);
  * the signs <w|O(x)|source>.  Returns their number (at most cap). */
 int zg_enum_ops(int k, const int *kind, const int *rel, int nside, uint64_t w,
                 int64_t *x, uint64_t *src, int8_t *sign, int cap);
+
+/* BLAS kernel helper: whether the column operators of a kind take a string
+ * of class cs (column side of half h) to a class that pairs with row bucket
+ * bt. */
+int zg_blas_reach(const zg_plan *p, int h, const zg_bkind *kd, int cs, int bt);
 
 int64_t zg_binom(int n, int k);
 

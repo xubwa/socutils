@@ -149,7 +149,7 @@ class Exhaustive(unittest.TestCase):
         if not real:
             c = c + 1j * rng.standard_normal(plan.dim)
         self.assertTrue(plan.block_ok)
-        for kernel in ('reference', 'block'):
+        for kernel in ('reference', 'block', 'blas'):
             sigma = plan.sigma(v, c, kernel=kernel)
             self.assertEqual(numpy.iscomplexobj(sigma), not real)
             self.assertAlmostEqual(abs(sigma - hmat @ c).max(), 0, 10, msg=kernel)
@@ -199,6 +199,108 @@ class Exhaustive(unittest.TestCase):
                        targets=[2, 1], real=real)
             self.check(8, 3, [2, 2, 2, 2], 3, labels=[jz, parity], mods=[0, 2],
                        targets=[1, 0], constraints=[([0, 3], 1, 2)], real=real)
+
+
+class BlasKernel(unittest.TestCase):
+    '''sigma of the BLAS kernel against the reference kernel, element by
+    element, in spaces large enough for several rows and runs of columns;
+    with the matrix products forced, the dot products forced, and the default
+    choice between them.'''
+
+    settings = ({},
+                {'ZGASCI_BLAS_DIRECT': '0'},
+                {'ZGASCI_BLAS_DIRECT': '1e300', 'ZGASCI_BLAS_SMALL': '0',
+                 'ZGASCI_BLAS_COLS': '5'})
+
+    def compare(self, n, nelec, sub_sizes, nsub_a, constraints=(), labels=None,
+                mods=(), targets=(), real=False):
+        h1, eri = random_hamiltonian(n, seed=11)
+        if real:
+            h1, eri = h1.real.copy(), eri.real.copy()
+        plan = gasci.Plan(n, nelec, sub_sizes, nsub_a, constraints, labels,
+                          mods, targets)
+        self.assertTrue(plan.block_ok)
+        self.assertGreater(plan.dim, 0)
+        v = gasci.antisymmetrized(h1, eri, n, nelec)
+        rng = numpy.random.default_rng(3)
+        c = rng.standard_normal(plan.dim)
+        if not real:
+            c = c + 1j * rng.standard_normal(plan.dim)
+        reference = plan.sigma(v, c, kernel='reference')
+        for setting in self.settings:
+            saved = {key: os.environ.get(key) for key in setting}
+            os.environ.update(setting)
+            try:
+                sigma = plan.sigma(v, c, kernel='blas')
+            finally:
+                for key, value in saved.items():
+                    if value is None:
+                        del os.environ[key]
+                    else:
+                        os.environ[key] = value
+            self.assertEqual(sigma.dtype, reference.dtype)
+            self.assertLess(abs(sigma - reference).max(), 1e-10, msg=str(setting))
+        return plan
+
+    def test_full_ci(self):
+        for real in (False, True):
+            for n, nelec, sub_sizes, nsub_a in (
+                    (12, 6, [6, 6], 1), (12, 5, [3, 3, 3, 3], 2),
+                    (11, 4, [4, 2, 5], 1), (12, 7, [2, 2, 2, 2, 2, 2], 3),
+                    (12, 6, [1, 4, 2, 5], 3), (10, 2, [5, 5], 1),
+                    (10, 3, [2, 3, 5], 2), (10, 9, [5, 2, 3], 1),
+                    (9, 9, [4, 5], 1)):
+                with self.subTest(real=real, n=n, nelec=nelec, sub_sizes=sub_sizes):
+                    self.compare(n, nelec, sub_sizes, nsub_a, real=real)
+
+    def test_constraints(self):
+        for real in (False, True):
+            # GAS spaces half on each side, unions across the sides, a
+            # constraint on one side only, weights (an excitation level).
+            self.compare(12, 6, [3, 3, 3, 3], 2, real=real,
+                         constraints=[([0, 2], 2, 4), ([1, 3], 2, 4)])
+            self.compare(12, 5, [2, 2, 2, 2, 2, 2], 3, real=real,
+                         constraints=[([0, 3], 2, 4), ([1, 4], 0, 2), ([2, 5], 0, 1)])
+            self.compare(12, 6, [3, 3, 3, 3], 2, real=real,
+                         constraints=[([0, 1, 2], 3, 5), ([3], 1, 2)])
+            self.compare(12, 7, [2, 4, 3, 3], 2, real=real,
+                         constraints=[([0, 1], 3, 3)])
+            self.compare(12, 6, [2, 2, 2, 2, 2, 2], 3, real=real,
+                         constraints=[([1, 2, 4, 5], 0, 4, [1, 2, 1, 2]),
+                                      ([0, 3], 2, 4)])
+
+    def test_labels(self):
+        jz = [1, -1, 3, -3, 1, -1, 5, -5, 3, -3, 1, -1]
+        parity = [0, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1]
+        for real in (False, True):
+            self.compare(12, 6, [6, 6], 1, labels=[jz], mods=[0], targets=[0], real=real)
+            self.compare(12, 5, [3, 3, 3, 3], 2, labels=[jz], mods=[0], targets=[1],
+                         real=real)
+            self.compare(12, 6, [4, 2, 2, 4], 2, labels=[jz, parity], mods=[4, 2],
+                         targets=[2, 1], real=real)
+            self.compare(12, 7, [2, 2, 2, 2, 2, 2], 3, labels=[jz, parity],
+                         mods=[0, 2], targets=[-1, 0], real=real)
+            self.compare(12, 6, [3, 3, 3, 3], 2, labels=[jz, parity], mods=[0, 2],
+                         targets=[2, 0], constraints=[([0, 2], 2, 5), ([1, 2, 3], 2, 5)],
+                         real=real)
+
+    def test_symmetric_integrals(self):
+        # Integrals that conserve the labels (as real ones do), over the
+        # driver with its reordering of the orbitals.
+        n, nelec = 12, 6
+        jz = numpy.array([1, -1, 3, -3, 1, -1, 5, -5, 3, -3, 1, -1])
+        h1, eri = random_hamiltonian(n, seed=4)
+        h1 = h1 * (jz[:, None] == jz[None, :])
+        change = jz[:, None] - jz[None, :]
+        eri = eri * (change[:, :, None, None] + change[None, None, :, :] == 0)
+        for gas in (None, [dict(orbitals=range(4), min=2, max=4)]):
+            solver = new_solver(orbsym=jz, target=[0], gas=gas, max_subgroup=3)
+            plan = solver.plan(n, nelec)
+            v = solver._hamiltonian(h1, eri, n, nelec, plan)
+            rng = numpy.random.default_rng(2)
+            c = rng.standard_normal(plan.dim) + 1j * rng.standard_normal(plan.dim)
+            self.assertLess(abs(plan.sigma(v, c, 'blas') - plan.sigma(v, c, 'reference')).max(),
+                            1e-10)
 
 
 # -- spinors -------------------------------------------------------------------

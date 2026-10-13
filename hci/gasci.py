@@ -71,7 +71,8 @@ def _load():
         lib_.zg_block_ok.restype = ctypes.c_int
         lib_.zg_block_ok.argtypes = [ctypes.c_void_p]
         for name in ('zg_sigma_d', 'zg_sigma_z', 'zg_rdm2_d', 'zg_rdm2_z',
-                     'zg_sigma_block_d', 'zg_sigma_block_z'):
+                     'zg_sigma_block_d', 'zg_sigma_block_z',
+                     'zg_sigma_blas_d', 'zg_sigma_blas_z'):
             getattr(lib_, name).argtypes = [ctypes.c_void_p] + [ctypes.c_void_p] * 3
         _lib = lib_
     return _lib
@@ -232,9 +233,11 @@ class Plan:
             v = v.astype(numpy.complex128)
         c = self._vector(c, complex_)
         out = numpy.empty_like(c)
-        if kernel not in ('block', 'reference'):
-            raise ValueError("kernel must be 'block' or 'reference'")
-        if kernel == 'block' and self.block_ok:
+        if kernel not in ('blas', 'block', 'reference'):
+            raise ValueError("kernel must be 'blas', 'block' or 'reference'")
+        if kernel == 'blas' and self.block_ok:
+            fn = self._lib.zg_sigma_blas_z if complex_ else self._lib.zg_sigma_blas_d
+        elif kernel == 'block' and self.block_ok:
             fn = self._lib.zg_sigma_block_z if complex_ else self._lib.zg_sigma_block_d
         else:
             fn = self._lib.zg_sigma_z if complex_ else self._lib.zg_sigma_d
