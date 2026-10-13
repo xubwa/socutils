@@ -136,6 +136,7 @@ static int number_strings(zg_plan *p, int side) {
 }
 
 static void setup_block(zg_plan *p);
+static void setup_blas(zg_plan *p);
 static inline int64_t side_sid(const zg_plan *p, int side, const int *counts,
                                const uint32_t *masks);
 
@@ -418,6 +419,7 @@ zg_plan *zg_plan_new(int nspinor, int nelec, int nsub, int nsub_a,
   }
 #undef ZG_TUPLES_B
   setup_block(p);
+  setup_blas(p);
   return p;
 }
 
@@ -454,6 +456,11 @@ void zg_plan_free(zg_plan *p) {
   free(p->cpair);
   free(p->tasks);
   free(p->btasks);
+  free(p->match_t);
+  free(p->blockoff_t);
+  free(p->rtasks[0]);
+  free(p->rtasks[1]);
+  free(p->tpieces);
   free(p);
 }
 
@@ -729,6 +736,159 @@ static void setup_block(zg_plan *p) {
   }
 }
 
+/* -- the BLAS kernel: the transposed view, kinds of terms, pieces of work -- */
+
+/* Multiply-adds of a row of half h, per column, roughly (the matrix
+ * products of zgasci_blas.inc for kr electrons of n on the row side). */
+static double blas_row_weight(const zg_plan *p, int h, int kr) {
+  const double n = p->nside[h], nc = p->nside[1 - h], k = kr, u = n - k;
+  const double pairs = 0.5 * k * (k - 1);
+  double w = pairs * 0.5 * (u + 2) * (u + 1)      /* two electrons moved */
+             + pairs * (u + 2) * nc               /* a+ a+ a (x) a */
+             + k * 0.5 * (u + 1) * u * nc         /* a+ a a (x) a+ */
+             + pairs * 0.5 * nc * (nc - 1);       /* a+ a+ (x) a a */
+  if (h == 0) w += k * (u + 1) * nc * nc;         /* a+ a (x) a+ a */
+  return w + 1.0;
+}
+
+static void setup_blas(zg_plan *p) {
+  if (!p->block_ok) return;
+  const zg_side *sa = &p->s[0], *sb = &p->s[1];
+  /* The transposed vector. */
+  const size_t nt = (size_t)sb->nbucket * sa->nclass;
+  p->match_t = malloc((nt + 1) * sizeof(int32_t));
+  p->blockoff_t = malloc((nt + 1) * sizeof(int64_t));
+  for (size_t i = 0; i < nt; ++i) {
+    p->match_t[i] = -1;
+    p->blockoff_t[i] = 0;
+  }
+  for (int ba = 0; ba < sa->nbucket; ++ba) {
+    for (int cb = 0; cb < sb->nclass; ++cb) {
+      const int bb = p->match[(size_t)ba * sb->nclass + cb];
+      if (bb >= 0) p->match_t[(size_t)bb * sa->nclass + sa->bucket_class[ba]] = ba;
+    }
+  }
+  int64_t at = 0;
+  for (size_t i = 0; i < nt; ++i) {
+    if (p->match_t[i] < 0) continue;
+    p->blockoff_t[i] = at;
+    at += sb->bucket_size[i / sa->nclass] * sa->bucket_size[p->match_t[i]];
+  }
+  /* The kinds of each half: the side with more operators, or with the
+   * creation operators, is the row side. */
+  static const int which[2][5] = {{0, 1, 3, 4, 2}, {8, 7, 5, 6, -1}};
+  for (int h = 0; h < 2; ++h) {
+    p->nbkind[h] = 0;
+    for (int i = 0; i < 5 && which[h][i] >= 0; ++i) {
+      const zg_term *t = &p->terms[which[h][i]];
+      zg_bkind *kd = &p->bkinds[h][p->nbkind[h]++];
+      memset(kd, 0, sizeof(*kd));
+      kd->term = which[h][i];
+      kd->kr = h ? t->kb : t->ka;
+      kd->kc = h ? t->ka : t->kb;
+      const int *kind_r = h ? t->kind_b : t->kind_a, *rel_r = h ? t->rel_b : t->rel_a;
+      const int *kind_c = h ? t->kind_a : t->kind_b, *rel_c = h ? t->rel_a : t->rel_b;
+      for (int j = 0; j < kd->kr; ++j) {
+        kd->kind_r[j] = kind_r[j];
+        kd->rel_r[j] = rel_r[j];
+      }
+      for (int j = 0; j < kd->kc; ++j) kd->kind_c[j] = !kind_c[kd->kc - 1 - j];
+      for (int j = 0; j + 1 < kd->kc; ++j) kd->rel_c[j] = -rel_c[kd->kc - 2 - j];
+      kd->par_r = h == 0 && (t->kb & 1);
+      kd->par_c = h == 1 && (t->kb & 1);
+      kd->wr = h ? 1 : t->ny;
+      kd->wc = h ? t->ny : 1;
+      kd->ncidx = h ? t->nx : t->ny;
+    }
+  }
+  /* Pieces of work: rows of the buckets of each half. */
+  for (int h = 0; h < 2; ++h) {
+    const zg_side *sr = &p->s[h], *sc = &p->s[1 - h];
+    const int32_t *match = h ? p->match_t : p->match;
+    double total = 0.0;
+    for (int pass = 0; pass < 2; ++pass) {
+      const double piece = total / (16.0 * omp_get_max_threads()) + 1.0;
+      int64_t capacity = 256;
+      if (pass == 1) p->rtasks[h] = malloc(capacity * sizeof(zg_rtask));
+      p->nrtask[h] = 0;
+      for (int bt = 0; bt < sr->nbucket; ++bt) {
+        double ncol = 0.0;
+        for (int cc = 0; cc < sc->nclass; ++cc) {
+          const int bb = match[(size_t)bt * sc->nclass + cc];
+          if (bb >= 0) ncol += (double)sc->bucket_size[bb];
+        }
+        if (ncol == 0.0) continue;
+        const int kr = sr->tuple_elec[sr->class_tuple[sr->bucket_class[bt]]];
+        const double w = ncol * blas_row_weight(p, h, kr);
+        const int64_t nrow = sr->bucket_size[bt];
+        if (pass == 0) {
+          total += w * nrow;
+          continue;
+        }
+        int64_t rows = (int64_t)(piece / w);
+        if (rows < 1) rows = 1;
+        if (rows > ZG_BLAS_ROWS) rows = ZG_BLAS_ROWS;
+        for (int64_t r0 = 0; r0 < nrow; r0 += rows) {
+          if (p->nrtask[h] == capacity) {
+            capacity *= 2;
+            p->rtasks[h] = realloc(p->rtasks[h], capacity * sizeof(zg_rtask));
+          }
+          p->rtasks[h][p->nrtask[h]++] =
+              (zg_rtask){bt, r0, r0 + rows < nrow ? r0 + rows : nrow};
+        }
+      }
+    }
+  }
+  /* Pieces of the transposition, of about 2^16 elements. */
+  int64_t capacity = 256;
+  p->tpieces = malloc(capacity * sizeof(zg_tpiece));
+  p->ntpiece = 0;
+  for (int ba = 0; ba < sa->nbucket; ++ba) {
+    for (int cb = 0; cb < sb->nclass; ++cb) {
+      const int64_t k = (int64_t)ba * sb->nclass + cb;
+      const int bb = p->match[k];
+      if (bb < 0) continue;
+      const int64_t na = sa->bucket_size[ba], nb = sb->bucket_size[bb];
+      int64_t rows = 65536 / nb;
+      if (rows < 1) rows = 1;
+      for (int64_t i0 = 0; i0 < na; i0 += rows) {
+        if (p->ntpiece == capacity) {
+          capacity *= 2;
+          p->tpieces = realloc(p->tpieces, capacity * sizeof(zg_tpiece));
+        }
+        p->tpieces[p->ntpiece++] = (zg_tpiece){k, i0, i0 + rows < na ? i0 + rows : na};
+      }
+    }
+  }
+}
+
+int zg_blas_reach(const zg_plan *p, int h, const zg_bkind *kd, int cs, int bt) {
+  const zg_side *s = &p->s[1 - h];
+  const int32_t *match = h ? p->match_t : p->match;
+  const int64_t ts = s->class_tuple[cs];
+  int counts[ZG_MAX_SUB];
+  zg_counts(p, 1 - h, ts, counts);
+  for (int g0 = 0; g0 < s->nsub; ++g0) {
+    for (int g1 = 0; g1 < (kd->kc == 2 ? s->nsub : 1); ++g1) {
+      int now[ZG_MAX_SUB], ok = 1;
+      int64_t tt = ts;
+      memcpy(now, counts, sizeof(int) * s->nsub);
+      for (int i = 0; i < kd->kc; ++i) {
+        const int g = i ? g1 : g0;
+        /* creation in the adjoint: the target has one electron fewer. */
+        const int d = kd->kind_c[i] ? -1 : 1;
+        now[g] += d;
+        if (now[g] < 0 || now[g] > p->m[s->first + g]) ok = 0;
+        tt += d * s->stride[g];
+      }
+      if (!ok) continue;
+      const int ct = s->class_of[tt];
+      if (ct >= 0 && match[(size_t)bt * s->nclass + ct] >= 0) return 1;
+    }
+  }
+  return 0;
+}
+
 uint64_t zg_side_word(const zg_plan *p, int side, int64_t sid) {
   const zg_side *s = &p->s[side];
   const int c = s->bucket_class[s->bucket[sid]];
@@ -842,7 +1002,41 @@ int zg_string_occ(const zg_plan *p, int side, int64_t sid, int *occ) {
   return string_occ(p, side, sid, occ);
 }
 
+/* BLAS (Fortran interface, 32-bit integers as the other socutils
+ * libraries).  The kernel calls it from inside its own parallel region, one
+ * call per thread at a time, so it must run sequentially there: MKL and
+ * OpenBLAS are told so for the calling thread when they are the library in
+ * use (weak symbols; another BLAS is assumed to be sequential when called
+ * from a parallel region). */
+void dgemm_(const char *, const char *, const int *, const int *, const int *,
+            const double *, const double *, const int *, const double *,
+            const int *, const double *, double *, const int *);
+void zgemm_(const char *, const char *, const int *, const int *, const int *,
+            const void *, const void *, const int *, const void *, const int *,
+            const void *, void *, const int *);
+void daxpy_(const int *, const double *, const double *, const int *, double *,
+            const int *);
+void zaxpy_(const int *, const void *, const void *, const int *, void *,
+            const int *);
+extern int MKL_Set_Num_Threads_Local(int) __attribute__((weak));
+extern int openblas_set_num_threads_local(int) __attribute__((weak));
+static int zg_blas_single(void) {
+  if (MKL_Set_Num_Threads_Local) return MKL_Set_Num_Threads_Local(1);
+  if (openblas_set_num_threads_local) return openblas_set_num_threads_local(1);
+  return 0;
+}
+static void zg_blas_restore(int before) {
+  if (MKL_Set_Num_Threads_Local) {
+    MKL_Set_Num_Threads_Local(before);
+  } else if (openblas_set_num_threads_local) {
+    openblas_set_num_threads_local(before);
+  }
+}
+
 #define ZG_SCALAR double
+#define ZG_GEMM dgemm_
+#define ZG_AXPY daxpy_
+#define ZG_BLAS_DIRECT 8.0
 #define ZG_NAME(x) x##_d
 #define ZG_CONJ(x) (x)
 #define ZG_REAL(x) (x)
@@ -853,7 +1047,11 @@ int zg_string_occ(const zg_plan *p, int side, int64_t sid, int *occ) {
   } while (0)
 #include "zgasci_kernel.inc"
 #include "zgasci_block.inc"
+#include "zgasci_blas.inc"
 #undef ZG_SCALAR
+#undef ZG_GEMM
+#undef ZG_AXPY
+#undef ZG_BLAS_DIRECT
 #undef ZG_NAME
 #undef ZG_CONJ
 #undef ZG_REAL
@@ -861,6 +1059,9 @@ int zg_string_occ(const zg_plan *p, int side, int64_t sid, int *occ) {
 
 #include <complex.h>
 #define ZG_SCALAR double complex
+#define ZG_GEMM zgemm_
+#define ZG_AXPY zaxpy_
+#define ZG_BLAS_DIRECT 4.0
 #define ZG_NAME(x) x##_z
 #define ZG_CONJ(x) conj(x)
 #define ZG_REAL(x) creal(x)
@@ -875,3 +1076,4 @@ int zg_string_occ(const zg_plan *p, int side, int64_t sid, int *occ) {
   } while (0)
 #include "zgasci_kernel.inc"
 #include "zgasci_block.inc"
+#include "zgasci_blas.inc"
