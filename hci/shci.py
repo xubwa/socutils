@@ -509,6 +509,12 @@ class SpatialSHCI(SHCI):
             norb, nalpha + nbeta, nuc=float(numpy.real(ecore)),
             ms=nalpha - nbeta, tol=self.integral_tol)
 
+    def trans_rdm1(self, cibra, ciket, norb, nelec, **kwargs):
+        '''t[p,q] = <bra| q^+ p |ket>, the convention of
+        pyscf.fci.direct_spin1.trans_rdm1 (the transpose of SHCI.trans_rdm1).
+        '''
+        return super().trans_rdm1(cibra, ciket, norb, nelec).T
+
     def spin_square(self, fcivec, norb, nelec):
         raise NotImplementedError('zshci does not evaluate <S^2>')
 

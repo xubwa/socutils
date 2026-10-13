@@ -55,11 +55,17 @@ class KnownValues(unittest.TestCase):
             self.assertEqual(dm2.shape, (norb,) * 4)
             self.assertAlmostEqual(abs(dm1 - dm1_ref).max(), 0, 5)
             self.assertAlmostEqual(abs(dm2 - dm2_ref).max(), 0, 5)
-        t_ref = ref.trans_rdm1(ci_ref[0], ci_ref[1], norb, nelec)
-        t = solver.trans_rdm1(ci[0], ci[1], norb, nelec)
-        # Each state has an arbitrary sign.
-        self.assertAlmostEqual(min(abs(t - t_ref).max(), abs(t + t_ref).max()),
-                               0, 5)
+        # Transition densities, which are not symmetric: at least one pair of
+        # states must have the same spin for the comparison to see anything.
+        largest = 0.0
+        for k in range(1, nroots):
+            t_ref = ref.trans_rdm1(ci_ref[0], ci_ref[k], norb, nelec)
+            t = solver.trans_rdm1(ci[0], ci[k], norb, nelec)
+            # Each state has an arbitrary sign.
+            self.assertAlmostEqual(
+                min(abs(t - t_ref).max(), abs(t + t_ref).max()), 0, 5)
+            largest = max(largest, abs(t_ref - t_ref.T).max())
+        self.assertGreater(largest, 1e-2)
 
     def test_selection_with_point_group(self):
         norb, nelec = self.norb, self.nelec
