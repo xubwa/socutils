@@ -551,6 +551,8 @@ CsrBlock<S> BuildBlockFromPairs(Span<Det<W>> dets, size_t first_new,
 }
 
 // Puts the stored rows of a block in increasing order of their determinant.
+// The block is copied, by all threads; call for one block at a time, so that
+// no more than one block is held twice.
 template <typename S>
 void SortBlockRows(CsrBlock<S>* block) {
   const size_t num_rows = block->num_stored_rows();
@@ -561,23 +563,25 @@ void SortBlockRows(CsrBlock<S>* block) {
             [&](size_t a, size_t b) { return block->row[a] < block->row[b]; });
   const bool with_values = block->has_values();
   RawArray<DetIndex> row(num_rows);
-  std::vector<uint64_t> row_ptr(1, 0);
-  row_ptr.reserve(num_rows + 1);
+  std::vector<uint64_t> row_ptr(num_rows + 1, 0);
+  for (size_t r = 0; r < num_rows; ++r) {
+    row_ptr[r + 1] =
+        row_ptr[r] + block->row_ptr[order[r] + 1] - block->row_ptr[order[r]];
+  }
   RawArray<DetIndex> col(block->col.size());
   RawArray<S> val(with_values ? block->val.size() : 0);
-  uint64_t offset = 0;
-  for (size_t r = 0; r < num_rows; ++r) {
+  const long count = static_cast<long>(num_rows);
+#pragma omp parallel for schedule(static)
+  for (long r = 0; r < count; ++r) {
     const uint64_t begin = block->row_ptr[order[r]];
     const uint64_t end = block->row_ptr[order[r] + 1];
     row[r] = block->row[order[r]];
     std::copy(block->col.begin() + begin, block->col.begin() + end,
-              col.begin() + offset);
+              col.begin() + row_ptr[r]);
     if (with_values) {
       std::copy(block->val.begin() + begin, block->val.begin() + end,
-                val.begin() + offset);
+                val.begin() + row_ptr[r]);
     }
-    offset += end - begin;
-    row_ptr.push_back(offset);
   }
   block->row = std::move(row);
   block->row_ptr = std::move(row_ptr);
@@ -696,7 +700,8 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(
     }
     // Determinant by determinant the schedule hands every thread its
     // determinants in increasing order, so the rows are sorted; string by
-    // string they are put in order below.
+    // string they come in the order of the strings and the block is put
+    // in order below.
     cols.Resize(num_elements);
     if (store_values) vals.Resize(num_elements);
     CsrBlock<S>& block = blocks[omp_get_thread_num()];
@@ -712,19 +717,16 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(
   for (CsrBlock<S>& block : blocks) {
     if (block.num_elements() > 0) filled.push_back(std::move(block));
   }
+  const double time_filled = omp_get_wtime();
   if (tables.has_chunks()) {
-    // A block is copied to be put in order; few at a time, so that little
-    // more than the blocks themselves is held.
-    const long num_filled = static_cast<long>(filled.size());
-    const int at_a_time = std::max(1, omp_get_max_threads() / 16);
-#pragma omp parallel for schedule(dynamic, 1) num_threads(at_a_time)
-    for (long b = 0; b < num_filled; ++b) SortBlockRows(&filled[b]);
+    for (CsrBlock<S>& block : filled) SortBlockRows(&block);
   }
   if (stats != nullptr) {
     // Every reported pair counts as tested, as with the other methods.
     stats->tested_pairs += tested + connected;
     stats->connected_pairs += connected;
-    stats->seconds_fill += omp_get_wtime() - time;
+    stats->seconds_fill += time_filled - time;
+    stats->seconds_sort += omp_get_wtime() - time_filled;
   }
   return filled;
 }

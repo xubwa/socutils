@@ -84,6 +84,32 @@ class KnownValues(unittest.TestCase):
         self.assertEqual(len(solver.wavefunction()[0]), ndet)
         self.assertLess(ndet, 70 * 70)
 
+    def test_relations_by_bytes(self):
+        # Related strings composed from the byte table instead of stored
+        # lists: the same selection, energy and density matrices.
+        norb, nelec = self.norb, self.nelec
+        results = []
+        for relations in ('keys', 'bytes'):
+            for hamiltonian in ('stored', 'direct'):
+                solver = shci.SpatialSHCI(self.mol)
+                solver.orbsym = self.orbsym
+                solver.schedule = [[0, 1e-2], [2, 1e-3], [4, 1e-4]]
+                solver.davidson_tol = 1e-10
+                solver.extra = {'davidson': {'tol': 1e-10},
+                                'hamiltonian': hamiltonian,
+                                'connect': {'relations': relations}}
+                e, ci = solver.kernel(self.h1, self.eri, norb, nelec,
+                                      ecore=self.ecore)
+                results.append((e, len(solver.wavefunction()[0]),
+                                solver.make_rdm12(ci, norb, nelec)))
+        e_ref, ndet_ref, (dm1_ref, dm2_ref) = results[0]
+        self.assertLess(ndet_ref, 1000)
+        for e, ndet, (dm1, dm2) in results[1:]:
+            self.assertEqual(ndet, ndet_ref)
+            self.assertAlmostEqual(e, e_ref, 9)
+            self.assertAlmostEqual(abs(dm1 - dm1_ref).max(), 0, 6)
+            self.assertAlmostEqual(abs(dm2 - dm2_ref).max(), 0, 6)
+
     def test_open_shell(self):
         norb, nelec = self.norb, (5, 3)
         e_ref = fci.direct_spin1.FCI().kernel(

@@ -243,6 +243,39 @@ class KnownValues(unittest.TestCase):
         self.assertTrue(direct_rows)
         self.assertTrue(all_values)
 
+    def test_relations(self):
+        # The three ways of finding related strings ("connect":
+        # {"relations": ...}; "bytes" stores no lists of them) with every
+        # way of holding the Hamiltonian: the same energies and density
+        # matrices.
+        norb, nelec = self.norb, self.nelec
+
+        def run(extra):
+            solver = shci.SHCI()
+            solver.schedule = [[0, 1e-1], [2, 1e-2], [4, 1e-3]]
+            solver.davidson_tol = 1e-10
+            solver.extra = dict({'davidson': {'tol': 1e-10}}, **extra)
+            e, ci = solver.kernel(self.h1, self.eri, norb, nelec, nroots=2,
+                                  ecore=self.ecore)
+            dms = [solver.make_rdm12(ci[k], norb, nelec) for k in range(2)]
+            with open(os.path.join(solver.scratch, 'output.txt')) as f:
+                return numpy.asarray(e), dms, f.read()
+
+        e_ref, dms_ref, _ = run({'connect': {'relations': 'subgroups'}})
+        for relations in ('keys', 'bytes'):
+            for storage in ({}, {'hamiltonian': 'connections'},
+                            {'hamiltonian': 'direct'},
+                            {'hamiltonian': 'direct', 'incremental': False},
+                            {'hamiltonian': 'adapt', 'memory': 1e-4}):
+                connect = {'relations': relations}
+                if storage.get('incremental') is False:
+                    connect['blocks'] = False
+                e, dms, output = run(dict(storage, connect=connect))
+                self.assertIn('"relations": "%s"' % relations, output)
+                self.assertAlmostEqual(abs(e - e_ref).max(), 0, 8)
+                for (dm1, dm2), (dm1_ref, dm2_ref) in zip(dms, dms_ref):
+                    self.assertAlmostEqual(abs(dm1 - dm1_ref).max(), 0, 6)
+                    self.assertAlmostEqual(abs(dm2 - dm2_ref).max(), 0, 6)
 
     def test_integral_formats(self):
         # The binary file of antisymmetrized integrals and the text FCIDUMP

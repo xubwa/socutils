@@ -93,7 +93,7 @@
 
 #include <omp.h>
 
-#ifdef __BMI2__
+#if defined(__BMI2__) || defined(__AVX2__)
 #include <immintrin.h>
 #endif
 
@@ -105,6 +105,10 @@
 #include "comm.h"
 #include "det.h"
 #include "parallel.h"
+
+// The searches are compiled as functions of their own (see FindClose), and
+// apart from the search by stored lists that their callers can take instead.
+#define ZSHCI_NOINLINE __attribute__((noinline))
 
 namespace zshci {
 namespace internal {
@@ -283,8 +287,9 @@ class ByteStringTables {
   // it. Adds to *rejected the number of determinants that were compared with
   // j and not reported.
   template <class Visitor>
-  void ForEachConnected(size_t j, const Visitor& visit, uint64_t* rejected,
-                        bool both_sides = false) const {
+  ZSHCI_NOINLINE void ForEachConnected(size_t j, const Visitor& visit,
+                                       uint64_t* rejected,
+                                       bool both_sides = false) const {
     // Determinants up to this index are reported.
     const uint32_t limit = both_sides ? UINT32_MAX : static_cast<uint32_t>(j);
     const Det<W> det = dets_[j];
@@ -346,9 +351,10 @@ class ByteStringTables {
   // accepted determinants, at most kChunkSize. Adds to *rejected the number
   // of pairs that were compared and not reported.
   template <class Wanted, class Visitor, class Done>
-  void ForEachConnectedOfChunk(size_t c, const Wanted& wanted,
-                               const Visitor& visit, const Done& done,
-                               uint64_t* rejected) const {
+  ZSHCI_NOINLINE void ForEachConnectedOfChunk(size_t c, const Wanted& wanted,
+                                              const Visitor& visit,
+                                              const Done& done,
+                                              uint64_t* rejected) const {
     const uint64_t* const start = det_start_[0].data();
     const uint32_t* const index = det_index_[0].data();
     const Det<W>* const mine = block_dets_[0].data();
@@ -425,8 +431,8 @@ class ByteStringTables {
   // particular order of j and i. Adds the number of pairs compared to
   // *tested.
   template <class Visitor>
-  void ForEachConnectedOfTask(size_t t, const Visitor& visit,
-                              uint64_t* tested) const {
+  ZSHCI_NOINLINE void ForEachConnectedOfTask(size_t t, const Visitor& visit,
+                                             uint64_t* tested) const {
     const Task& task = tasks_[t];
     const int group = task.group;
     const uint64_t* const start = det_start_[group].data();
@@ -682,21 +688,104 @@ class ByteStringTables {
     return nodes;
   }
 
-  // Calls hit(k, y) for every pair of rows[k], k < num_rows, and theirs[y],
-  // begin <= y < end, that differ in at most four spinors and at least
-  // `least`. Hardly any pair does.
-  template <class Hit>
-  static inline __attribute__((always_inline)) void Compare(
-      const Det<W>* rows, int num_rows, const Det<W>* theirs, uint64_t begin,
-      uint64_t end, int least, const Hit& hit) {
-    for (uint64_t y = begin; y < end; ++y) {
-      const Det<W> other = theirs[y];
-      for (int k = 0; k < num_rows; ++k) {
-        const int differing = other.NumDifferentBits(rows[k]);
-        if (__builtin_expect(differing <= 4 && differing >= least, 0)) {
-          hit(k, y);
+  // A row and another determinant that differ in few spinors.
+  struct Close {
+    uint64_t other;
+    uint32_t row;
+  };
+
+  // Calls emit(y) for the determinants list[y], begin <= y < end, that
+  // differ from `one` in at most four spinors and at least `least`; hardly
+  // any does.
+  template <class Emit>
+  static inline __attribute__((always_inline)) void FindCloseToOne(
+      const Det<W>& one, const Det<W>* list, uint64_t begin, uint64_t end,
+      int least, const Emit& emit) {
+    // d is wanted when least <= d <= 4: one comparison of unsigned numbers.
+    const unsigned span = 4 - least;
+    uint64_t y = begin;
+#ifdef __AVX2__
+    if (W == 1) {
+      // Four at a time: the bits of each byte are counted by looking up
+      // its two halves, and the bytes of a word are summed.
+      const __m256i mine = _mm256_set1_epi64x(one.words[0]);
+      const __m256i low_half = _mm256_set1_epi8(0x0f);
+      const __m256i counts =
+          _mm256_setr_epi8(0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4, 0, 1,
+                           1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4);
+      const __m256i most = _mm256_set1_epi64x(4);
+      for (; y + 4 <= end; y += 4) {
+        const __m256i differ = _mm256_xor_si256(
+            mine,
+            _mm256_loadu_si256(reinterpret_cast<const __m256i*>(list + y)));
+        const __m256i per_byte = _mm256_add_epi8(
+            _mm256_shuffle_epi8(counts, _mm256_and_si256(differ, low_half)),
+            _mm256_shuffle_epi8(
+                counts,
+                _mm256_and_si256(_mm256_srli_epi64(differ, 4), low_half)));
+        const __m256i per_word =
+            _mm256_sad_epu8(per_byte, _mm256_setzero_si256());
+        // All four differ in more than four spinors: nearly always.
+        if (__builtin_expect(_mm256_movemask_pd(_mm256_castsi256_pd(
+                                 _mm256_cmpgt_epi64(per_word, most))) == 15,
+                             1)) {
+          continue;
+        }
+        for (uint64_t z = y; z < y + 4; ++z) {
+          const unsigned differing = one.NumDifferentBits(list[z]);
+          if (differing - least <= span) emit(z);
         }
       }
+    }
+#endif
+    for (; y < end; ++y) {
+      const unsigned differing = one.NumDifferentBits(list[y]);
+      if (__builtin_expect(differing - least <= span, 0)) emit(y);
+    }
+  }
+
+  // Compares rows[k], k < num_rows, with theirs[y], begin <= y < end, and
+  // appends to `found` the pairs that differ in at most four spinors and at
+  // least `least`.
+  //
+  // This loop is where the time of every search goes. It is a function of
+  // its own so that it is compiled the same way whatever is done with the
+  // pairs; merged into its callers it ran up to a quarter slower or faster
+  // depending on unrelated details of them. The longer of the two lists is
+  // gone through in the inner loop.
+  ZSHCI_NOINLINE static void FindClose(const Det<W>* rows, uint64_t num_rows,
+                                       const Det<W>* theirs, uint64_t begin,
+                                       uint64_t end, int least,
+                                       std::vector<Close>* found) {
+    if (num_rows < end - begin) {
+      for (uint64_t k = 0; k < num_rows; ++k) {
+        FindCloseToOne(rows[k], theirs, begin, end, least, [&](uint64_t y) {
+          found->push_back({y, static_cast<uint32_t>(k)});
+        });
+      }
+    } else {
+      for (uint64_t y = begin; y < end; ++y) {
+        FindCloseToOne(theirs[y], rows, 0, num_rows, least, [&](uint64_t k) {
+          found->push_back({y, static_cast<uint32_t>(k)});
+        });
+      }
+    }
+  }
+
+  // Calls hit(k, y) for every pair of rows[k], k < num_rows, and theirs[y],
+  // begin <= y < end, that differ in at most four spinors and at least
+  // `least`. The others are taken a limited number at a time, so that they
+  // stay in the cache while the rows pass and the pairs found stay few.
+  template <class Hit>
+  static void Compare(const Det<W>* rows, int num_rows, const Det<W>* theirs,
+                      uint64_t begin, uint64_t end, int least, const Hit& hit) {
+    const uint64_t kTogether = 1024;
+    static thread_local std::vector<Close> found;
+    for (uint64_t from = begin; from < end; from += kTogether) {
+      found.clear();
+      FindClose(rows, num_rows, theirs, from, std::min(end, from + kTogether),
+                least, &found);
+      for (const Close& pair : found) hit(pair.row, pair.other);
     }
   }
 
@@ -815,5 +904,7 @@ class ByteStringTables {
 
 }  // namespace internal
 }  // namespace zshci
+
+#undef ZSHCI_NOINLINE
 
 #endif  // ZSHCI_SRC_CONNECT_BYTES_H_
