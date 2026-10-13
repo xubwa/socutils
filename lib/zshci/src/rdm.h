@@ -178,8 +178,9 @@ class TablePairs {
   void ForRow(long r, const Visitor& visit) const {
     uint64_t tested = 0;
     if (tables_.has_chunks()) {
+      if (!tables_.OwnsChunk(r)) return;
       tables_.ForEachConnectedOfChunk(
-          r, [&](DetIndex j) { return tables_.Owns(j); },
+          r, [](DetIndex /*j*/) { return true; },
           [&](int /*k*/, DetIndex j, DetIndex i) { visit(j, i); },
           [](const uint32_t* /*indices*/, int /*count*/) {}, &tested);
       return;

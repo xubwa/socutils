@@ -369,6 +369,7 @@ class GroupStringTables {
   // strings are found by bytes.
   bool has_chunks() const { return bytes_ != nullptr; }
   size_t num_chunks() const { return bytes_->num_chunks(); }
+  bool OwnsChunk(size_t c) const { return bytes_->OwnsChunk(c); }
   static constexpr size_t kChunkSize = ByteStringTables<W>::kChunkSize;
   template <class Wanted, class Visitor, class Done>
   void ForEachConnectedOfChunk(size_t c, const Wanted& wanted,

@@ -9,13 +9,14 @@
 // projection, which is more than a kilobyte per determinant. Here nothing is
 // stored per pair of strings.
 //
-// Bytes. The determinant stays the bit string it is. The spinors of a group,
-// in increasing order, are read as the bits of a number of their own (the
-// "compact string": bit k is the k-th spinor of the group), and that number
-// is read byte by byte, eight spinors of the group at a time, the last byte
-// possibly partial with its unused bits zero. A byte is the sub-string of a
-// sub-group of eight spinors and has 256 possible values, so everything
-// about sub-strings is known beforehand:
+// Bytes. The determinant stays the bit string it is. The spinors of a group
+// that are occupied in some determinant, in increasing order, are read as
+// the bits of a number of their own (the "compact string": bit k is the
+// k-th of these spinors), and that number is read byte by byte, eight
+// spinors of the group at a time, the last byte possibly partial with its
+// unused bits zero. A byte is the sub-string of a sub-group of eight spinors
+// and has 256 possible values, so everything about sub-strings is known
+// beforehand:
 //
 //   changed[o][i][v], o, i = 0, 1, 2: the byte values that v turns into when
 //   o of its electrons leave and i enter, as a set of 256 bits.
@@ -146,20 +147,8 @@ class ByteStringTables {
       : comm_(comm),
         rank_(comm.rank()),
         num_ranks_(comm.size()),
-        table_(ByteTable::Get()) {
-    for (int k = 0; k < W; ++k) {
-      mask_[0].words[k] = group_a.words[k];
-      mask_[1].words[k] = ~group_a.words[k];
-    }
-    for (int group = 0; group < 2; ++group) {
-      int num_bits = 0;
-      for (int k = 0; k < W; ++k) {
-        offset_[group][k] = num_bits;
-        num_bits += __builtin_popcountll(mask_[group].words[k]);
-      }
-      trees_[group].num_bytes = std::max(1, (num_bits + 7) / 8);
-    }
-  }
+        group_a_(group_a),
+        table_(ByteTable::Get()) {}
 
   // Makes the tables those of `dets`. Collective: the root does this and
   // the tables are held once per node.
@@ -169,6 +158,7 @@ class ByteStringTables {
     }
     dets_ = dets;
     const size_t n = dets.size();
+    SetGroups();
     for (int group = 0; group < 2; ++group) {
       Tree& tree = trees_[group];
       Partitioned<Item> sorted;
@@ -342,6 +332,12 @@ class ByteStringTables {
   static constexpr uint64_t kChunkSize = 256;
   size_t num_chunks() const {
     return (det_index_[0].size() + kChunkSize - 1) / kChunkSize;
+  }
+  // Whether this rank does chunk c. A rank takes whole chunks, not the rows
+  // it would own one by one, so that the determinants of a string stay
+  // together.
+  bool OwnsChunk(size_t c) const {
+    return static_cast<long>(c) % num_ranks_ == rank_;
   }
 
   // For the determinants of chunk c that wanted(j) accepts: calls
@@ -536,6 +532,37 @@ class ByteStringTables {
         key.words[word + 1] |= bits >> (64 - shift);
     }
     return key;
+  }
+
+  // The spinors of the two groups: those that are occupied in some
+  // determinant. The others would only make the strings longer. Collective.
+  void SetGroups() {
+    Det<W> used;
+    if (comm_.is_root()) {
+      const long count = static_cast<long>(dets_.size());
+#pragma omp parallel
+      {
+        Det<W> local;
+#pragma omp for schedule(static) nowait
+        for (long i = 0; i < count; ++i) {
+          for (int k = 0; k < W; ++k) local.words[k] |= dets_[i].words[k];
+        }
+#pragma omp critical
+        for (int k = 0; k < W; ++k) used.words[k] |= local.words[k];
+      }
+    }
+    comm_.BcastValue(&used);
+    for (int group = 0; group < 2; ++group) {
+      int num_bits = 0;
+      for (int k = 0; k < W; ++k) {
+        mask_[group].words[k] =
+            used.words[k] &
+            (group == 0 ? group_a_.words[k] : ~group_a_.words[k]);
+        offset_[group][k] = num_bits;
+        num_bits += __builtin_popcountll(mask_[group].words[k]);
+      }
+      trees_[group].num_bytes = std::max(1, (num_bits + 7) / 8);
+    }
   }
 
   // The bytes of a compact string in the order of the levels of the tree,
@@ -875,9 +902,10 @@ class ByteStringTables {
   Span<Det<W>> dets_;
   long rank_;
   long num_ranks_;
+  Det<W> group_a_;
   const ByteTable& table_;
-  // The spinors of each group, and where those of every word start in the
-  // compact string.
+  // The spinors of each group that are occupied in some determinant, and
+  // where those of every word start in the compact string.
   Det<W> mask_[2];
   int offset_[2][W];
   bool transfers_ = false;

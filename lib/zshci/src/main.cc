@@ -11,6 +11,10 @@
 #include <stdexcept>
 #include <string>
 
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
+
 #include "comm.h"
 #include "det.h"
 #include "diag.h"
@@ -116,6 +120,14 @@ void Main(const char* input_path, const Comm& comm) {
 
 int main(int argc, char** argv) {
   const zshci::Comm comm = zshci::Comm::Init(&argc, &argv);
+#ifdef __GLIBC__
+  // Arrays from a megabyte on are mapped on their own and go back to the
+  // system when they are released. By default the limit rises to 32 MB as
+  // the program runs, and what is released below it stays with the process:
+  // too much where many arrays of that size are filled and then copied into
+  // one (the rows of the Hamiltonian, connect.h).
+  mallopt(M_MMAP_THRESHOLD, 1 << 20);
+#endif
   if (argc != 2) {
     if (comm.is_root()) std::fprintf(stderr, "usage: %s input.json\n", argv[0]);
     zshci::Comm::Finalize();

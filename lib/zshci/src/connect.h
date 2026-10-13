@@ -550,49 +550,121 @@ CsrBlock<S> BuildBlockFromPairs(Span<Det<W>> dets, size_t first_new,
   return block;
 }
 
-// Puts the stored rows of a block in increasing order of their determinant.
-// The block is copied, by all threads; call for one block at a time, so that
-// no more than one block is held twice.
+// Finished rows that arrive in any order, kept by ranges of their
+// determinant: bucket b holds the rows j with
+// (j - first_row) * kNumRowRanges / (dim - first_row) == b. One per thread;
+// BlocksOfRanges makes blocks of the buckets of all threads.
+constexpr size_t kNumRowRanges = 16;
+
 template <typename S>
-void SortBlockRows(CsrBlock<S>* block) {
-  const size_t num_rows = block->num_stored_rows();
-  if (std::is_sorted(block->row.begin(), block->row.end())) return;
-  std::vector<size_t> order(num_rows);
-  for (size_t r = 0; r < num_rows; ++r) order[r] = r;
-  std::sort(order.begin(), order.end(),
-            [&](size_t a, size_t b) { return block->row[a] < block->row[b]; });
-  const bool with_values = block->has_values();
-  RawArray<DetIndex> row(num_rows);
-  std::vector<uint64_t> row_ptr(num_rows + 1, 0);
-  for (size_t r = 0; r < num_rows; ++r) {
-    row_ptr[r + 1] =
-        row_ptr[r] + block->row_ptr[order[r] + 1] - block->row_ptr[order[r]];
-  }
-  RawArray<DetIndex> col(block->col.size());
-  RawArray<S> val(with_values ? block->val.size() : 0);
-  const long count = static_cast<long>(num_rows);
-#pragma omp parallel for schedule(static)
-  for (long r = 0; r < count; ++r) {
-    const uint64_t begin = block->row_ptr[order[r]];
-    const uint64_t end = block->row_ptr[order[r] + 1];
-    row[r] = block->row[order[r]];
-    std::copy(block->col.begin() + begin, block->col.begin() + end,
-              col.begin() + row_ptr[r]);
-    if (with_values) {
-      std::copy(block->val.begin() + begin, block->val.begin() + end,
-                val.begin() + row_ptr[r]);
+struct RowBuckets {
+  // Row k of a bucket is of determinant rows[k] and its elements start at
+  // row_start[k].
+  struct Bucket {
+    std::vector<DetIndex> rows;
+    std::vector<uint64_t> row_start;
+    RawArray<DetIndex> cols;
+    RawArray<S> vals;
+    size_t num_elements = 0;
+  };
+  Bucket buckets[kNumRowRanges];
+
+  // Adds the row of determinant j, first_row <= j < dim.
+  void Append(DetIndex j, size_t first_row, size_t dim, bool store_values,
+              const std::vector<std::pair<DetIndex, S>>& row) {
+    Bucket& bucket =
+        buckets[(j - first_row) * kNumRowRanges / (dim - first_row)];
+    const size_t needed = bucket.num_elements + row.size();
+    if (needed > bucket.cols.size()) {
+      const size_t capacity = std::max(needed, 2 * bucket.cols.size() + 1024);
+      bucket.cols.Resize(capacity);
+      if (store_values) bucket.vals.Resize(capacity);
+    }
+    bucket.rows.push_back(j);
+    bucket.row_start.push_back(bucket.num_elements);
+    for (const std::pair<DetIndex, S>& element : row) {
+      bucket.cols[bucket.num_elements] = element.first;
+      if (store_values) bucket.vals[bucket.num_elements] = element.second;
+      ++bucket.num_elements;
     }
   }
-  block->row = std::move(row);
-  block->row_ptr = std::move(row_ptr);
-  block->col = std::move(col);
-  block->val = std::move(val);
+};
+
+// One block per range of rows from the buckets of all threads, the rows in
+// increasing order; the buckets are released range by range, so that little
+// more than the rows themselves is held at any time. A product then reads
+// consecutive rows from one block.
+template <typename S>
+std::vector<CsrBlock<S>> BlocksOfRanges(std::vector<RowBuckets<S>>* threads,
+                                        size_t first_row, size_t dim,
+                                        bool store_values) {
+  struct Source {
+    DetIndex row;
+    uint32_t thread;
+    uint32_t index;
+  };
+  std::vector<CsrBlock<S>> blocks;
+  std::vector<Source> sources;
+  for (size_t b = 0; b < kNumRowRanges; ++b) {
+    sources.clear();
+    for (size_t t = 0; t < threads->size(); ++t) {
+      const auto& bucket = (*threads)[t].buckets[b];
+      for (size_t k = 0; k < bucket.rows.size(); ++k) {
+        sources.push_back({bucket.rows[k], static_cast<uint32_t>(t),
+                           static_cast<uint32_t>(k)});
+      }
+    }
+    if (!sources.empty()) {
+      std::sort(sources.begin(), sources.end(),
+                [](const Source& x, const Source& y) { return x.row < y.row; });
+      const size_t num_rows = sources.size();
+      auto length = [&](const Source& source) {
+        const auto& bucket = (*threads)[source.thread].buckets[b];
+        const uint64_t end = source.index + 1 < bucket.rows.size()
+                                 ? bucket.row_start[source.index + 1]
+                                 : bucket.num_elements;
+        return end - bucket.row_start[source.index];
+      };
+      CsrBlock<S> block;
+      block.dim = dim;
+      block.first_row = first_row;
+      block.row = RawArray<DetIndex>(num_rows);
+      block.row_ptr.assign(num_rows + 1, 0);
+      for (size_t r = 0; r < num_rows; ++r) {
+        block.row_ptr[r + 1] = block.row_ptr[r] + length(sources[r]);
+      }
+      block.col = RawArray<DetIndex>(block.row_ptr[num_rows]);
+      block.val = RawArray<S>(store_values ? block.row_ptr[num_rows] : 0);
+      const long count = static_cast<long>(num_rows);
+#pragma omp parallel for schedule(static)
+      for (long r = 0; r < count; ++r) {
+        const Source& source = sources[r];
+        const auto& bucket = (*threads)[source.thread].buckets[b];
+        const uint64_t begin = bucket.row_start[source.index];
+        const uint64_t end = begin + length(source);
+        block.row[r] = source.row;
+        std::copy(bucket.cols.begin() + begin, bucket.cols.begin() + end,
+                  block.col.begin() + block.row_ptr[r]);
+        if (store_values) {
+          std::copy(bucket.vals.begin() + begin, bucket.vals.begin() + end,
+                    block.val.begin() + block.row_ptr[r]);
+        }
+      }
+      blocks.push_back(std::move(block));
+    }
+    for (RowBuckets<S>& thread : *threads) {
+      thread.buckets[b] = typename RowBuckets<S>::Bucket();
+    }
+  }
+  return blocks;
 }
 
 // Builds the rows of the determinants this rank owns from the string tables
 // of two groups, in one sweep: each thread finds the connections of a
 // determinant, evaluates the elements and appends the finished row to a block
-// of its own. Returns the blocks that hold elements.
+// of its own. Where the tables find the connections of the determinants of
+// a string together, a rank owns chunks of determinants in the order of the
+// strings instead. Returns the blocks that hold elements.
 template <int W, typename S>
 std::vector<CsrBlock<S>> BuildGroupBlocks(
     Span<Det<W>> dets, size_t first_new, const Integrals<S>& ints,
@@ -609,6 +681,8 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(
   const bool keep_all = threshold < 0.0;
   const double time = omp_get_wtime();
   std::vector<CsrBlock<S>> blocks(omp_get_max_threads());
+  // Where the rows are made string by string: by ranges, for every thread.
+  std::vector<RowBuckets<S>> buckets(tables.has_chunks() ? blocks.size() : 0);
   uint64_t tested = 0;
   uint64_t connected = 0;
 #pragma omp parallel reduction(+ : tested, connected)
@@ -639,6 +713,11 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(
           [](const std::pair<DetIndex, S>& a, const std::pair<DetIndex, S>& b) {
             return a.first < b.first;
           });
+      if (tables.has_chunks()) {
+        buckets[omp_get_thread_num()].Append(static_cast<DetIndex>(j),
+                                             first_new, n, store_values, *row);
+        return;
+      }
       if (num_elements + row->size() > cols.size()) {
         const size_t capacity =
             std::max(num_elements + row->size(), 2 * cols.size() + 1024);
@@ -661,8 +740,9 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(
       const long num_chunks = static_cast<long>(tables.num_chunks());
 #pragma omp for schedule(dynamic, 4) nowait
       for (long c = 0; c < num_chunks; ++c) {
+        if (!tables.OwnsChunk(c)) continue;
         tables.ForEachConnectedOfChunk(
-            c, [&](DetIndex j) { return j >= first_new && tables.Owns(j); },
+            c, [&](DetIndex j) { return j >= first_new; },
             [&](int k, DetIndex j, DetIndex i) {
               ++connected;
               const S value = Hij(dets[j], dets[i], ints);
@@ -700,8 +780,8 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(
     }
     // Determinant by determinant the schedule hands every thread its
     // determinants in increasing order, so the rows are sorted; string by
-    // string they come in the order of the strings and the block is put
-    // in order below.
+    // string they come in the order of the strings and went to the buckets,
+    // of which blocks are made below.
     cols.Resize(num_elements);
     if (store_values) vals.Resize(num_elements);
     CsrBlock<S>& block = blocks[omp_get_thread_num()];
@@ -719,7 +799,7 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(
   }
   const double time_filled = omp_get_wtime();
   if (tables.has_chunks()) {
-    for (CsrBlock<S>& block : filled) SortBlockRows(&block);
+    filled = BlocksOfRanges(&buckets, first_new, n, store_values);
   }
   if (stats != nullptr) {
     // Every reported pair counts as tested, as with the other methods.
