@@ -82,7 +82,7 @@ struct zg_plan {
   int32_t *sublabel[ZG_MAX_SUB]; /* [nsets << m] label sums of a sub-string */
   int mods[ZG_MAX_SETS], targets[ZG_MAX_SETS];
   int ngas;
-  uint32_t *gas_set; /* sub-groups of each constraint, as bits */
+  int *gas_w; /* [ngas * ZG_MAX_SUB] weight of each sub-group in a constraint */
   int *gas_min, *gas_max;
   zg_side s[2];
   /* For A bucket ba and B class cb: the B bucket that pairs with it, or -1,

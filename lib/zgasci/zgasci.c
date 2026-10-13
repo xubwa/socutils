@@ -31,9 +31,10 @@ int64_t zg_binom(int n, int k) {
 static int gas_ok(const zg_plan *p, const int *counts_a, const int *counts_b) {
   for (int c = 0; c < p->ngas; ++c) {
     int sum = 0;
+    const int *w = p->gas_w + (size_t)c * ZG_MAX_SUB;
     for (int g = 0; g < p->nsub; ++g) {
-      if (!(p->gas_set[c] >> g & 1)) continue;
-      sum += g < p->s[0].nsub ? counts_a[g] : counts_b[g - p->s[0].nsub];
+      if (!w[g]) continue;
+      sum += w[g] * (g < p->s[0].nsub ? counts_a[g] : counts_b[g - p->s[0].nsub]);
     }
     if (sum < p->gas_min[c] || sum > p->gas_max[c]) return 0;
   }
@@ -149,9 +150,9 @@ static int classes_pair(const zg_plan *p, int ca, int cb) {
 
 zg_plan *zg_plan_new(int nspinor, int nelec, int nsub, int nsub_a,
                      const int *sub_size, int ngas, const int *gas_ptr,
-                     const int *gas_sub, const int *gas_min,
-                     const int *gas_max, int nsets, const int *labels,
-                     const int *mods, const int *targets) {
+                     const int *gas_sub, const int *gas_weight,
+                     const int *gas_min, const int *gas_max, int nsets,
+                     const int *labels, const int *mods, const int *targets) {
   init_binom();
   zg_message[0] = '\0';
   int total = 0;
@@ -194,12 +195,12 @@ zg_plan *zg_plan_new(int nspinor, int nelec, int nsub, int nsub_a,
     p->targets[set] = reduce_label(targets[set], mods[set]);
   }
   p->ngas = ngas;
-  p->gas_set = calloc(ngas + 1, sizeof(uint32_t));
+  p->gas_w = calloc((size_t)(ngas + 1) * ZG_MAX_SUB, sizeof(int));
   p->gas_min = malloc((ngas + 1) * sizeof(int));
   p->gas_max = malloc((ngas + 1) * sizeof(int));
   for (int c = 0; c < ngas; ++c) {
     for (int k = gas_ptr[c]; k < gas_ptr[c + 1]; ++k) {
-      p->gas_set[c] |= 1u << gas_sub[k];
+      p->gas_w[(size_t)c * ZG_MAX_SUB + gas_sub[k]] += gas_weight ? gas_weight[k] : 1;
     }
     p->gas_min[c] = gas_min[c];
     p->gas_max[c] = gas_max[c];
@@ -419,7 +420,7 @@ void zg_plan_free(zg_plan *p) {
     free(p->masks[g]);
     free(p->sublabel[g]);
   }
-  free(p->gas_set);
+  free(p->gas_w);
   free(p->gas_min);
   free(p->gas_max);
   for (int side = 0; side < 2; ++side) {

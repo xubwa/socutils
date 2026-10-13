@@ -126,8 +126,10 @@ class Exhaustive(unittest.TestCase):
         bounds = numpy.cumsum([0] + list(sub_sizes))
 
         def keep(occ):
-            for subs, lo, hi in constraints:
-                k = sum(1 for p in occ for g in subs
+            for item in constraints:
+                subs, lo, hi = item[:3]
+                weights = item[3] if len(item) > 3 else [1] * len(subs)
+                k = sum(w for p in occ for g, w in zip(subs, weights)
                         if bounds[g] <= p < bounds[g + 1])
                 if not lo <= k <= hi:
                     return False
@@ -182,6 +184,10 @@ class Exhaustive(unittest.TestCase):
                    constraints=[([0, 3], 2, 2), ([1, 4], 1, 3), ([2, 5], 0, 1)])
         self.check(8, 4, [2, 2, 2, 2], 2, constraints=[([0, 2], 1, 3), ([0, 1, 2], 2, 3)],
                    real=True)
+        # Weighted: an excitation level, N(1) + 2 N(2, 3) <= 3.
+        self.check(8, 4, [2, 2, 2, 2], 2, constraints=[([1, 2, 3], 0, 3, [1, 2, 2])])
+        self.check(8, 4, [3, 1, 2, 2], 2, constraints=[([1, 2, 3], 1, 4, [1, 2, 2]),
+                                                       ([0], 1, 3)], real=True)
 
     def test_labels(self):
         jz = [1, -1, 3, -3, 1, -1, 5, -5]
@@ -341,6 +347,26 @@ class Spinors(unittest.TestCase):
         solver.subgroups = ([[0, 1], [3]], [[2, 4, 5], [6, 7]])
         with self.assertRaises(ValueError):
             solver.plan(self.norb, self.nelec)
+
+    def test_excitation_level(self):
+        # Excitations from a reference with 0..1 filled, 2..3 its active
+        # space and 4..7 empty, of at most 2: holes(0,1) + N(4..7) <= 2,
+        # i.e. N(2,3) + 2 N(4..7) <= 2 + 2 (4 electrons).
+        level = [dict(orbitals=list(range(2, 8)), weights=[1, 1, 2, 2, 2, 2],
+                      min=0, max=4)]
+        def keep(occ):
+            holes = sum(1 for p in (0, 1) if p not in occ)
+            return holes + sum(1 for p in occ if p >= 4) <= 2
+        from socutils.fci import zfci
+        occslst = [occ for occ in itertools.combinations(range(8), 4) if keep(occ)]
+        e_ref, ci_ref = zfci.kernel_dets(self.h1, self.eri, 8, occslst, ecore=self.ecore,
+                                         nroots=2)
+        for settings in (dict(), dict(max_subgroup=1)):
+            solver = new_solver(restrictions=level, direct_dim=0, **settings)
+            self.assertEqual(solver.plan(8, 4).dim, len(occslst))
+            self.compare(solver, e_ref, ci_ref,
+                         lambda c: zfci.make_rdm12_dets(c, 8, occslst),
+                         lambda b, k: zfci.trans_rdm1_dets(b, k, 8, occslst), nroots=2)
 
     def test_ras(self):
         # RAS1 = 0..2 (at most one hole), RAS3 = 6..7 (at most one particle),
