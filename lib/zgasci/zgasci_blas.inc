@@ -544,7 +544,8 @@ static void ZG_NAME(blas_half)(const zg_plan *p, int h, ZG_SCALAR *const *w,
                 for (; i < lr_start[lb + 1] && sl_row[i] == r; ++i) {
                   nx += run_start[sl_runid[i] + 1] - run_start[sl_runid[i]];
                 }
-                const int direct = (double)nyc * nc > direct_ratio * (double)nq ||
+                const int direct = !ZG_HAVE_BLAS ||
+                                   (double)nyc * nc > direct_ratio * (double)nq ||
                                    (double)nx * nyc * nc < direct_small;
                 nx = 0;
                 for (int64_t ii = i0; ii < i; ++ii) {

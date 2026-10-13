@@ -1,8 +1,9 @@
 /*
  * zgasci: full and generalized-active-space configuration interaction over
- * spinors, the kernels.  Plain C99, no dependencies but OpenMP; arrays come
- * from the caller (socutils.hci.gasci drives them from Python, as PySCF
- * drives its FCI kernels).
+ * spinors, the kernels.  Plain C99, no dependencies but OpenMP and BLAS
+ * (GEMM and AXPY, in zg_sigma_blas only; ZGASCI_NO_BLAS compiles without);
+ * arrays come from the caller (socutils.hci.gasci drives them from Python,
+ * as PySCF drives its FCI kernels).
  *
  * Spinors are numbered 0 .. n-1 and cut into consecutive sub-groups of at
  * most 16; the first ones form side A, the others side B.  A determinant is

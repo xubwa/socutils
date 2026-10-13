@@ -1309,6 +1309,8 @@ int zg_string_occ(const zg_plan *p, int side, int64_t sid, int *occ) {
  * OpenBLAS are told so for the calling thread when they are the library in
  * use (weak symbols; another BLAS is assumed to be sequential when called
  * from a parallel region). */
+#ifndef ZGASCI_NO_BLAS
+#define ZG_HAVE_BLAS 1
 void dgemm_(const char *, const char *, const int *, const int *, const int *,
             const double *, const double *, const int *, const double *,
             const int *, const double *, double *, const int *);
@@ -1319,6 +1321,26 @@ void daxpy_(const int *, const double *, const double *, const int *, double *,
             const int *);
 void zaxpy_(const int *, const void *, const void *, const int *, void *,
             const int *);
+#define ZG_DGEMM dgemm_
+#define ZG_ZGEMM zgemm_
+#define ZG_DAXPY daxpy_
+#define ZG_ZAXPY zaxpy_
+#else
+/* Without BLAS the kernel never forms a matrix product (dot products
+ * only) and adds rows by a loop. */
+#define ZG_HAVE_BLAS 0
+#define ZG_NO_GEMM(ta, tb, m, n, k, al, a, lda, b, ldb, be, c, ldc) \
+  ((void)(m), (void)(n), (void)(k), (void)(al), (void)(be))
+#define ZG_NO_AXPY(n, a, x, incx, y, incy)                         \
+  do {                                                             \
+    (void)(incx), (void)(incy);                                    \
+    for (int i_ = 0; i_ < *(n); ++i_) (y)[i_] += *(a) * (x)[i_];   \
+  } while (0)
+#define ZG_DGEMM ZG_NO_GEMM
+#define ZG_ZGEMM ZG_NO_GEMM
+#define ZG_DAXPY ZG_NO_AXPY
+#define ZG_ZAXPY ZG_NO_AXPY
+#endif
 extern int MKL_Set_Num_Threads_Local(int) __attribute__((weak));
 extern int openblas_set_num_threads_local(int) __attribute__((weak));
 static int zg_blas_single(void) {
@@ -1335,8 +1357,8 @@ static void zg_blas_restore(int before) {
 }
 
 #define ZG_SCALAR double
-#define ZG_GEMM dgemm_
-#define ZG_AXPY daxpy_
+#define ZG_GEMM ZG_DGEMM
+#define ZG_AXPY ZG_DAXPY
 #define ZG_BLAS_DIRECT 4.0
 #define ZG_NAME(x) x##_d
 #define ZG_CONJ(x) (x)
@@ -1360,8 +1382,8 @@ static void zg_blas_restore(int before) {
 
 #include <complex.h>
 #define ZG_SCALAR double complex
-#define ZG_GEMM zgemm_
-#define ZG_AXPY zaxpy_
+#define ZG_GEMM ZG_ZGEMM
+#define ZG_AXPY ZG_ZAXPY
 #define ZG_BLAS_DIRECT 4.0
 #define ZG_NAME(x) x##_z
 #define ZG_CONJ(x) conj(x)
