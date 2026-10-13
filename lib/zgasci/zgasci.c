@@ -137,6 +137,7 @@ static int number_strings(zg_plan *p, int side) {
 
 static void setup_block(zg_plan *p);
 static void setup_blas(zg_plan *p);
+static void build_filter(zg_plan *p, int h, zg_bkind *kd);
 static inline int64_t side_sid(const zg_plan *p, int side, const int *counts,
                                const uint32_t *masks);
 
@@ -461,6 +462,15 @@ void zg_plan_free(zg_plan *p) {
   free(p->rtasks[0]);
   free(p->rtasks[1]);
   free(p->tpieces);
+  for (int h = 0; h < 2; ++h) {
+    free(p->pair_ptr[h]);
+    free(p->pair_cls[h]);
+    free(p->bp[h]);
+    for (int k = 0; k < p->nbkind[h]; ++k) {
+      free(p->bkinds[h][k].fkey);
+      free(p->bkinds[h][k].fmask);
+    }
+  }
   free(p);
 }
 
@@ -774,6 +784,36 @@ static void setup_blas(zg_plan *p) {
     p->blockoff_t[i] = at;
     at += sb->bucket_size[i / sa->nclass] * sa->bucket_size[p->match_t[i]];
   }
+  /* The distinct labels of the spinors of each side. */
+  for (int side = 0; side < 2; ++side) {
+    const zg_side *s = &p->s[side];
+    p->bp[side] = malloc((size_t)(s->nsid + 1) * sizeof(uint64_t));
+    for (int64_t sid = 0; sid < s->nsid; ++sid) {
+      p->bp[side][sid] = (uint64_t)s->bucket[sid] << 32 | s->pos[sid];
+    }
+    p->ndlab[side] = 0;
+    for (int g = 0; g < s->nsub; ++g) {
+      const int sub = s->first + g;
+      for (int j = 0; j < p->m[sub]; ++j) {
+        int lab[ZG_MAX_SETS] = {0}, found = -1;
+        for (int set = 0; set < p->nsets; ++set) {
+          lab[set] = reduce_label(
+              p->sublabel[sub][((size_t)set << p->m[sub]) + ((size_t)1 << j)],
+              p->mods[set]);
+        }
+        for (int d = 0; d < p->ndlab[side] && found < 0; ++d) {
+          if (memcmp(p->dlab[side][d], lab, sizeof(lab)) == 0) found = d;
+        }
+        if (found < 0) {
+          found = p->ndlab[side]++;
+          memcpy(p->dlab[side][found], lab, sizeof(lab));
+          p->dmask[side][found] = 0;
+        }
+        p->dmask[side][found] |= (uint64_t)1 << (p->off[sub] + j - p->off[s->first]);
+        p->dof[side][p->off[sub] + j - p->off[s->first]] = (uint8_t)found;
+      }
+    }
+  }
   /* The kinds of each half: the side with more operators, or with the
    * creation operators, is the row side. */
   static const int which[2][5] = {{0, 1, 3, 4, 2}, {8, 7, 5, 6, -1}};
@@ -792,19 +832,40 @@ static void setup_blas(zg_plan *p) {
         kd->kind_r[j] = kind_r[j];
         kd->rel_r[j] = rel_r[j];
       }
-      for (int j = 0; j < kd->kc; ++j) kd->kind_c[j] = !kind_c[kd->kc - 1 - j];
-      for (int j = 0; j + 1 < kd->kc; ++j) kd->rel_c[j] = -rel_c[kd->kc - 2 - j];
+      for (int j = 0; j < kd->kc; ++j) {
+        kd->kind_c[j] = kind_c[j];
+        kd->rel_c[j] = rel_c[j];
+        kd->add_c += kind_c[j] ? -1 : 1;
+      }
+      for (int j = 0; j < kd->kr; ++j) kd->add_r += kind_r[j] ? -1 : 1;
       kd->par_r = h == 0 && (t->kb & 1);
       kd->par_c = h == 1 && (t->kb & 1);
-      kd->wr = h ? 1 : t->ny;
-      kd->wc = h ? t->ny : 1;
+      /* The matrix of the kind, rows first (zg_sigma_blas transposes those
+       * of half 1). */
+      kd->wr = h ? t->nx : t->ny;
+      kd->wc = 1;
       kd->ncidx = h ? t->nx : t->ny;
+      build_filter(p, h, kd);
     }
   }
-  /* Pieces of work: rows of the buckets of each half. */
+  /* Pieces of work: rows of the buckets of each half, at most
+   * ZG_BLAS_ROWS (ZGASCI_BLAS_ROWS lowers it, for experiments). */
+  int64_t max_rows = ZG_BLAS_ROWS;
+  const char *text = getenv("ZGASCI_BLAS_ROWS");
+  if (text && atol(text) > 0 && atol(text) < max_rows) max_rows = atol(text);
   for (int h = 0; h < 2; ++h) {
     const zg_side *sr = &p->s[h], *sc = &p->s[1 - h];
     const int32_t *match = h ? p->match_t : p->match;
+    p->pair_ptr[h] = malloc((size_t)(sr->nbucket + 1) * sizeof(int64_t));
+    p->pair_cls[h] = malloc((size_t)(p->nblock + 1) * sizeof(int32_t));
+    int64_t npair = 0;
+    for (int bt = 0; bt < sr->nbucket; ++bt) {
+      p->pair_ptr[h][bt] = npair;
+      for (int cc = 0; cc < sc->nclass; ++cc) {
+        if (match[(size_t)bt * sc->nclass + cc] >= 0) p->pair_cls[h][npair++] = cc;
+      }
+    }
+    p->pair_ptr[h][sr->nbucket] = npair;
     double total = 0.0;
     for (int pass = 0; pass < 2; ++pass) {
       const double piece = total / (16.0 * omp_get_max_threads()) + 1.0;
@@ -827,7 +888,7 @@ static void setup_blas(zg_plan *p) {
         }
         int64_t rows = (int64_t)(piece / w);
         if (rows < 1) rows = 1;
-        if (rows > ZG_BLAS_ROWS) rows = ZG_BLAS_ROWS;
+        if (rows > max_rows) rows = max_rows;
         for (int64_t r0 = 0; r0 < nrow; r0 += rows) {
           if (p->nrtask[h] == capacity) {
             capacity *= 2;
@@ -862,31 +923,271 @@ static void setup_blas(zg_plan *p) {
   }
 }
 
-int zg_blas_reach(const zg_plan *p, int h, const zg_bkind *kd, int cs, int bt) {
-  const zg_side *s = &p->s[1 - h];
-  const int32_t *match = h ? p->match_t : p->match;
-  const int64_t ts = s->class_tuple[cs];
+int zg_asg_list(const zg_plan *p, int side, int k, const int *kind,
+                const int *rel, int from, const uint8_t *ok, zg_asg *out,
+                int cap) {
+  const zg_side *s = &p->s[side];
+  const int64_t ts = s->class_tuple[from];
   int counts[ZG_MAX_SUB];
-  zg_counts(p, 1 - h, ts, counts);
-  for (int g0 = 0; g0 < s->nsub; ++g0) {
-    for (int g1 = 0; g1 < (kd->kc == 2 ? s->nsub : 1); ++g1) {
-      int now[ZG_MAX_SUB], ok = 1;
-      int64_t tt = ts;
-      memcpy(now, counts, sizeof(int) * s->nsub);
-      for (int i = 0; i < kd->kc; ++i) {
-        const int g = i ? g1 : g0;
-        /* creation in the adjoint: the target has one electron fewer. */
-        const int d = kd->kind_c[i] ? -1 : 1;
-        now[g] += d;
-        if (now[g] < 0 || now[g] > p->m[s->first + g]) ok = 0;
-        tt += d * s->stride[g];
+  zg_counts(p, side, ts, counts);
+  int64_t total = 1;
+  for (int i = 0; i < k; ++i) total *= s->nsub;
+  int n = 0;
+  for (int64_t code = 0; code < total; ++code) {
+    int g[4] = {0, 0, 0, 0}, good = 1;
+    int64_t rest = code;
+    for (int i = 0; i < k; ++i) {
+      g[i] = (int)(rest % s->nsub);
+      rest /= s->nsub;
+    }
+    for (int i = 0; i + 1 < k; ++i) {
+      if ((rel[i] > 0 && g[i] > g[i + 1]) || (rel[i] < 0 && g[i] < g[i + 1])) good = 0;
+    }
+    if (!good) continue;
+    int now[ZG_MAX_SUB];
+    int64_t tt = ts;
+    memcpy(now, counts, sizeof(int) * s->nsub);
+    for (int i = 0; i < k; ++i) {
+      /* creation in O: the source has one electron fewer there. */
+      const int d = kind[i] ? -1 : 1;
+      now[g[i]] += d;
+      tt += d * s->stride[g[i]];
+    }
+    for (int i = 0; i < k; ++i) {
+      if (now[g[i]] < 0 || now[g[i]] > p->m[s->first + g[i]]) good = 0;
+    }
+    if (!good) continue;
+    const int cls = s->class_of[tt];
+    if (cls < 0 || (ok && !ok[cls])) continue;
+    if (n < cap) {
+      zg_asg *a = &out[n];
+      a->cls = cls;
+      a->base = s->class_base[cls];
+      a->ntouch = 0;
+      for (int i = 0; i < 4; ++i) a->g[i] = i < k ? g[i] : 0;
+      for (int i = 0; i < k; ++i) {
+        int seen = 0;
+        for (int j = 0; j < a->ntouch; ++j) seen = seen || a->touch[j] == g[i];
+        if (!seen) a->touch[a->ntouch++] = g[i];
       }
-      if (!ok) continue;
-      const int ct = s->class_of[tt];
-      if (ct >= 0 && match[(size_t)bt * s->nclass + ct] >= 0) return 1;
+      int64_t radix = 1;
+      for (int gg = 0; gg < s->nsub; ++gg) {
+        a->radix[gg] = radix;
+        radix *= zg_binom(p->m[s->first + gg], now[gg]);
+      }
+    }
+    ++n;
+  }
+  return n;
+}
+
+void zg_string_ranks(const zg_plan *p, int side, uint64_t w, int64_t *rk) {
+  const zg_side *s = &p->s[side];
+  const int first = p->off[s->first];
+  for (int g = 0; g < s->nsub; ++g) {
+    const int sub = s->first + g;
+    rk[g] = p->rank[sub][(w >> (p->off[sub] - first)) & ((1u << p->m[sub]) - 1)];
+  }
+}
+
+/* A change of the labels as one number (16 bits a set). */
+static inline uint64_t label_key(const int *change, int nsets, const int *mods) {
+  uint64_t key = 0;
+  for (int s = 0; s < nsets; ++s) {
+    key |= (uint64_t)((reduce_label(change[s], mods[s]) + 32768) & 0xffff) << (16 * s);
+  }
+  return key;
+}
+
+static inline uint64_t filter_slot(const zg_bkind *kd, uint64_t key) {
+  return (key * 0x9E3779B97F4A7C15ull) >> 40 & (uint64_t)(kd->fsize - 1);
+}
+
+/* The spinors the last row operator may take after the change `key`. */
+static inline uint64_t filter_mask(const zg_bkind *kd, uint64_t key) {
+  for (uint64_t i = filter_slot(kd, key);; i = (i + 1) & (uint64_t)(kd->fsize - 1)) {
+    if (kd->fkey[i] == key) return kd->fmask[i];
+    if (kd->fkey[i] == UINT64_MAX) return 0;
+  }
+}
+
+/* Builds the label filter of a kind of half h (see zg_bkind). */
+static void build_filter(zg_plan *p, int h, zg_bkind *kd) {
+  kd->fsize = 0;
+  kd->fkey = kd->fmask = NULL;
+  if (p->nsets == 0 || kd->kc > 1 || kd->kr < 1) return;
+  const int nd = p->ndlab[h], ndc = p->ndlab[1 - h];
+  int64_t combos = 1;
+  for (int i = 0; i + 1 < kd->kr; ++i) combos *= nd;
+  if (combos > 20000) return;
+  int big = 0;
+  for (int side = 0; side < 2; ++side) {
+    for (int d = 0; d < p->ndlab[side]; ++d) {
+      for (int set = 0; set < p->nsets; ++set) {
+        if (abs(p->dlab[side][d][set]) > big) big = abs(p->dlab[side][d][set]);
+      }
     }
   }
-  return 0;
+  if (big * 5 > 30000) return;
+  /* The changes of the row labels (source minus target) that are allowed:
+   * minus the change the column operator makes. */
+  int nallow = 0;
+  uint64_t allow[65];
+  if (kd->kc == 0) {
+    int zero[ZG_MAX_SETS] = {0};
+    allow[nallow++] = label_key(zero, p->nsets, p->mods);
+  } else {
+    const int csign = kd->kind_c[0] ? -1 : 1;
+    for (int d = 0; d < ndc; ++d) {
+      int lab[ZG_MAX_SETS];
+      for (int set = 0; set < p->nsets; ++set) lab[set] = -csign * p->dlab[1 - h][d][set];
+      allow[nallow++] = label_key(lab, p->nsets, p->mods);
+    }
+  }
+  int size = 16;
+  while (size < 2 * combos) size *= 2;
+  kd->fsize = size;
+  kd->fkey = malloc((size_t)size * sizeof(uint64_t));
+  kd->fmask = malloc((size_t)size * sizeof(uint64_t));
+  for (int i = 0; i < size; ++i) kd->fkey[i] = UINT64_MAX;
+  const int last = kd->kind_r[kd->kr - 1] ? -1 : 1;
+  for (int64_t code = 0; code < combos; ++code) {
+    int acc[ZG_MAX_SETS] = {0};
+    int64_t rest = code;
+    for (int i = 0; i + 1 < kd->kr; ++i) {
+      const int d = (int)(rest % nd), lsign = kd->kind_r[i] ? -1 : 1;
+      rest /= nd;
+      for (int set = 0; set < p->nsets; ++set) acc[set] += lsign * p->dlab[h][d][set];
+    }
+    const uint64_t key = label_key(acc, p->nsets, p->mods);
+    uint64_t slot = filter_slot(kd, key);
+    while (kd->fkey[slot] != UINT64_MAX && kd->fkey[slot] != key) {
+      slot = (slot + 1) & (uint64_t)(size - 1);
+    }
+    if (kd->fkey[slot] == key) continue;
+    uint64_t good = 0;
+    for (int d = 0; d < nd; ++d) {
+      int total[ZG_MAX_SETS];
+      for (int set = 0; set < p->nsets; ++set) total[set] = acc[set] + last * p->dlab[h][d][set];
+      const uint64_t tkey = label_key(total, p->nsets, p->mods);
+      for (int a = 0; a < nallow; ++a) {
+        if (allow[a] == tkey) {
+          good |= p->dmask[h][d];
+          break;
+        }
+      }
+    }
+    kd->fkey[slot] = key;
+    kd->fmask[slot] = good;
+  }
+}
+
+typedef struct {
+  int k, nside;
+  const int *kind, *rel;
+  /* Label filter: the change so far at each slot. */
+  const zg_bkind *filter;
+  int nsets;
+  const int (*dlab)[ZG_MAX_SETS];
+  const uint8_t *dof;
+  const int *mods;
+  int acc[5][ZG_MAX_SETS];
+  uint64_t range[4]; /* the spinors of the sub-group of each slot */
+  int ntouch, shift[4];
+  uint32_t mask[4];
+  const uint32_t *rank[4];
+  int64_t radix[4];
+  int64_t fixed;
+  int64_t *x, *sid;
+  int8_t *sign;
+  int n;
+} asg_ctx;
+
+static void asg_rec(asg_ctx *c, int i, uint64_t w, int prev, int8_t sg,
+                    int64_t x, int64_t xradix) {
+  if (i == c->k) {
+    int64_t sid = c->fixed;
+    for (int t = 0; t < c->ntouch; ++t) {
+      sid += c->radix[t] * c->rank[t][(w >> c->shift[t]) & c->mask[t]];
+    }
+    c->x[c->n] = x;
+    c->sid[c->n] = sid;
+    c->sign[c->n] = sg;
+    c->n++;
+    return;
+  }
+  if (i > 3) return; /* at most four operators */
+  uint64_t bits = (c->kind[i] ? w : ~w) & c->range[i];
+  if (i > 0 && c->rel[i - 1] > 0) bits &= ~(((uint64_t)2 << prev) - 1);
+  if (i > 0 && c->rel[i - 1] < 0) bits &= ((uint64_t)1 << prev) - 1;
+  /* creation in O: the source lacks this spinor. */
+  const int lsign = c->kind[i] ? -1 : 1;
+  if (c->filter && i == c->k - 1) {
+    /* acc is kept reduced, so this is label_key without the divisions. */
+    uint64_t key = 0;
+    for (int s = 0; s < c->nsets; ++s) {
+      key |= (uint64_t)((c->acc[i][s] + 32768) & 0xffff) << (16 * s);
+    }
+    bits &= filter_mask(c->filter, key);
+  }
+  while (bits) {
+    const int j = __builtin_ctzll(bits);
+    bits &= bits - 1;
+    if (c->filter && i < c->k - 1) {
+      const int *lab = c->dlab[c->dof[j]];
+      for (int s = 0; s < c->nsets; ++s) {
+        /* lab is reduced: one step brings the sum back into range. */
+        int v = c->acc[i][s] + lsign * lab[s];
+        const int mod = c->mods[s];
+        if (mod) v = v >= mod ? v - mod : v < 0 ? v + mod : v;
+        c->acc[i + 1][s] = v;
+      }
+    }
+    const int8_t s =
+        (__builtin_popcountll(w & (((uint64_t)1 << j) - 1)) & 1) ? (int8_t)-sg : sg;
+    asg_rec(c, i + 1, w ^ ((uint64_t)1 << j), j, s, x + xradix * j,
+            xradix * c->nside);
+  }
+}
+
+int zg_asg_enum(const zg_plan *p, int side, int k, const int *kind,
+                const int *rel, const zg_asg *a, uint64_t w, const int64_t *rk,
+                const zg_bkind *filter, int64_t *x, int64_t *sid, int8_t *sign,
+                int n) {
+  const zg_side *s = &p->s[side];
+  const int first = p->off[s->first];
+  asg_ctx c;
+  c.k = k;
+  c.nside = p->nside[side];
+  c.kind = kind;
+  c.rel = rel;
+  for (int i = 0; i < k; ++i) {
+    const int sub = s->first + a->g[i];
+    c.range[i] = (((uint64_t)1 << p->m[sub]) - 1) << (p->off[sub] - first);
+  }
+  c.ntouch = a->ntouch;
+  c.fixed = a->base;
+  for (int g = 0; g < s->nsub; ++g) c.fixed += a->radix[g] * rk[g];
+  for (int t = 0; t < a->ntouch; ++t) {
+    const int g = a->touch[t], sub = s->first + g;
+    c.fixed -= a->radix[g] * rk[g];
+    c.shift[t] = p->off[sub] - first;
+    c.mask[t] = (1u << p->m[sub]) - 1;
+    c.rank[t] = p->rank[sub];
+    c.radix[t] = a->radix[g];
+  }
+  c.filter = filter && filter->fsize > 0 ? filter : NULL;
+  c.nsets = p->nsets;
+  c.dlab = (const int (*)[ZG_MAX_SETS])p->dlab[side];
+  c.dof = p->dof[side];
+  c.mods = p->mods;
+  for (int set = 0; set < ZG_MAX_SETS; ++set) c.acc[0][set] = 0;
+  c.x = x;
+  c.sid = sid;
+  c.sign = sign;
+  c.n = n;
+  asg_rec(&c, 0, w, -1, 1, 0, 1);
+  return c.n;
 }
 
 uint64_t zg_side_word(const zg_plan *p, int side, int64_t sid) {
@@ -1036,7 +1337,7 @@ static void zg_blas_restore(int before) {
 #define ZG_SCALAR double
 #define ZG_GEMM dgemm_
 #define ZG_AXPY daxpy_
-#define ZG_BLAS_DIRECT 8.0
+#define ZG_BLAS_DIRECT 4.0
 #define ZG_NAME(x) x##_d
 #define ZG_CONJ(x) (x)
 #define ZG_REAL(x) (x)

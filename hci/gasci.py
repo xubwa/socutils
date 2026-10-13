@@ -223,10 +223,12 @@ class Plan:
         fn(self._handle, v.ctypes.data, out.ctypes.data)
         return out
 
-    def sigma(self, v, c, kernel='reference'):
-        '''H c.  kernel: 'reference' (default) or 'block' (each row of the
-        result written by one thread; needs each side to hold at most 64
-        spinors, else the reference kernel runs).'''
+    def sigma(self, v, c, kernel='blas'):
+        '''H c.  kernel: 'blas' (default; gather - matrix product - scatter,
+        the fastest), 'block' or 'reference'.  'blas' and 'block' write each
+        row of the result by one thread and need each side to hold at most
+        64 spinors, else the reference kernel runs.  'blas' uses two more
+        vectors of memory while it runs.'''
         v, complex_ = self._check_v(v)
         complex_ = complex_ or numpy.iscomplexobj(c)
         if complex_:
@@ -363,7 +365,7 @@ class GASCI(lib.StreamObject):
             of sub-groups.
         direct_dim : int
             Spaces up to this size are diagonalized as a full matrix.
-        sigma_kernel : 'reference' or 'block'
+        sigma_kernel : 'blas' (default), 'block' or 'reference'
             The C kernel of H c (lib/zgasci/README.md).
     '''
 
@@ -394,7 +396,7 @@ class GASCI(lib.StreamObject):
         self.max_subgroup = 12
         self.subgroups = None
         self.direct_dim = 300
-        self.sigma_kernel = 'reference'
+        self.sigma_kernel = 'blas'
         self.converged = False
         self.eci = None
         self.ci = None
