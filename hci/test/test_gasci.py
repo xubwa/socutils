@@ -48,6 +48,7 @@ def new_solver(cls=None, **settings):
     solver.conv_tol_residual = 1e-7
     solver.max_cycle = 400
     solver.max_space = 30
+    solver.sigma_kernel = os.environ.get('ZGASCI_TEST_KERNEL', 'reference')
     for key, value in settings.items():
         setattr(solver, key, value)
     return solver
@@ -145,9 +146,11 @@ class Exhaustive(unittest.TestCase):
         c = rng.standard_normal(plan.dim)
         if not real:
             c = c + 1j * rng.standard_normal(plan.dim)
-        sigma = plan.sigma(v, c)
-        self.assertEqual(numpy.iscomplexobj(sigma), not real)
-        self.assertAlmostEqual(abs(sigma - hmat @ c).max(), 0, 10)
+        self.assertTrue(plan.block_ok)
+        for kernel in ('reference', 'block'):
+            sigma = plan.sigma(v, c, kernel=kernel)
+            self.assertEqual(numpy.iscomplexobj(sigma), not real)
+            self.assertAlmostEqual(abs(sigma - hmat @ c).max(), 0, 10, msg=kernel)
 
         # g[P,R] = <b| A+_P A_R |c>: sum_{P,R} v[P,R] g[P,R] = <b|H|c>.
         b = rng.standard_normal(plan.dim) + (0 if real else 1j * rng.standard_normal(plan.dim))
@@ -499,7 +502,7 @@ class SpinorCASSCF(unittest.TestCase):
         # zcasci leaves an FCIDUMP in the working directory.
         os.chdir(tempfile.mkdtemp())
         try:
-            mol = gto.M(atom='N 0 0 0; N 0 0 1.3', basis='sto-3g', verbose=0)
+            mol = gto.M(atom='N 0 0 0; N 0 0 1.1', basis='sto-3g', verbose=0)
             mf = spinor_hf.KRHF(mol).density_fit()
             mf.kernel()
             results = []

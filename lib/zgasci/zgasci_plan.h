@@ -10,6 +10,8 @@
 #define ZG_MAX_SUBSIZE 16 /* spinors of a sub-group */
 #define ZG_MAX_SETS 4     /* label sets */
 #define ZG_MAX_SPINOR (ZG_MAX_SUB * ZG_MAX_SUBSIZE)
+#define ZG_MAX_ROWS 1024  /* rows of a piece of work of the block kernel */
+#define ZG_MAX_COLS 512   /* and its columns */
 
 /* One side.  A "tuple" is a choice of the number of electrons in each of
  * its sub-groups, numbered t = sum_g k_g stride_g; the tuples that occur in
@@ -46,6 +48,27 @@ typedef struct {
   int64_t ta, tb, a0, a1;
 } zg_task;
 
+/* One of the nine kinds of terms of the block kernel: v[P,R] a+_p a+_q a_s a_r
+ * with each of P, R within A, across (p in A, q in B; r in A, s in B) or
+ * within B.  Its operators on each side, in operator order, so that the term
+ * is sign * (-1)^(kb N_A(ket)) <a'|O_A(x)|a> <b'|O_B(y)|b>; x, y are the
+ * local spinors of the slots in mixed radix (n_A, n_B). */
+typedef struct {
+  int ka, kb;
+  int kind_a[4], kind_b[4]; /* 1: creation, 0: annihilation */
+  int rel_a[4], rel_b[4];   /* slot i against slot i + 1: +1 <, -1 >, 0 */
+  int role_a[4], role_b[4]; /* 0 p, 1 q, 2 s, 3 r */
+  int sign;
+  int64_t nx, ny;
+} zg_term;
+
+/* A piece of work of the block kernel: rows r0 .. r1 - 1, columns
+ * j0 .. j1 - 1 of the block of A bucket ba and B class cb (index
+ * k = ba * nclassB + cb).  Its thread alone writes there. */
+typedef struct {
+  int64_t k, r0, r1, j0, j1;
+} zg_btask;
+
 struct zg_plan {
   int n, nelec, nsub, nsets, npair;
   int m[ZG_MAX_SUB];   /* spinors of each sub-group */
@@ -70,7 +93,22 @@ struct zg_plan {
   int64_t dim;
   zg_task *tasks;
   int64_t ntask;
+  /* Block kernel: whether each side fits a 64-bit word, the terms, and the
+   * pieces of work. */
+  int block_ok;
+  int nside[2];
+  zg_term terms[9];
+  zg_btask *btasks;
+  int64_t nbtask;
 };
+
+/* Block kernel helpers (zgasci.c). */
+uint64_t zg_side_word(const zg_plan *p, int side, int64_t sid);
+int64_t zg_word_sid(const zg_plan *p, int side, uint64_t w);
+/* The x with O(x)^dagger w a valid string: their numbers, the strings and
+ * the signs <w|O(x)|source>.  Returns their number (at most cap). */
+int zg_enum_ops(int k, const int *kind, const int *rel, int nside, uint64_t w,
+                int64_t *x, uint64_t *src, int8_t *sign, int cap);
 
 int64_t zg_binom(int n, int k);
 

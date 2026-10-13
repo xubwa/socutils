@@ -68,7 +68,10 @@ def _load():
             getattr(lib_, name).argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         for name in ('zg_hdiag_d', 'zg_hdiag_z'):
             getattr(lib_, name).argtypes = [ctypes.c_void_p] + [ctypes.c_void_p] * 2
-        for name in ('zg_sigma_d', 'zg_sigma_z', 'zg_rdm2_d', 'zg_rdm2_z'):
+        lib_.zg_block_ok.restype = ctypes.c_int
+        lib_.zg_block_ok.argtypes = [ctypes.c_void_p]
+        for name in ('zg_sigma_d', 'zg_sigma_z', 'zg_rdm2_d', 'zg_rdm2_z',
+                     'zg_sigma_block_d', 'zg_sigma_block_z'):
             getattr(lib_, name).argtypes = [ctypes.c_void_p] + [ctypes.c_void_p] * 3
         _lib = lib_
     return _lib
@@ -160,6 +163,7 @@ class Plan:
         self.nsub_a = int(nsub_a)
         self.dim = int(self._lib.zg_dim(self._handle))
         self.nwords = int(self._lib.zg_nwords(self._handle))
+        self.block_ok = bool(self._lib.zg_block_ok(self._handle))
 
     def __del__(self):
         handle = getattr(self, '_handle', None)
@@ -211,14 +215,22 @@ class Plan:
         fn(self._handle, v.ctypes.data, out.ctypes.data)
         return out
 
-    def sigma(self, v, c):
+    def sigma(self, v, c, kernel='reference'):
+        '''H c.  kernel: 'reference' (default) or 'block' (each row of the
+        result written by one thread; needs each side to hold at most 64
+        spinors, else the reference kernel runs).'''
         v, complex_ = self._check_v(v)
         complex_ = complex_ or numpy.iscomplexobj(c)
         if complex_:
             v = v.astype(numpy.complex128)
         c = self._vector(c, complex_)
         out = numpy.empty_like(c)
-        fn = self._lib.zg_sigma_z if complex_ else self._lib.zg_sigma_d
+        if kernel not in ('block', 'reference'):
+            raise ValueError("kernel must be 'block' or 'reference'")
+        if kernel == 'block' and self.block_ok:
+            fn = self._lib.zg_sigma_block_z if complex_ else self._lib.zg_sigma_block_d
+        else:
+            fn = self._lib.zg_sigma_z if complex_ else self._lib.zg_sigma_d
         fn(self._handle, v.ctypes.data, c.ctypes.data, out.ctypes.data)
         return out
 
@@ -329,6 +341,8 @@ class GASCI(lib.StreamObject):
             of sub-groups.
         direct_dim : int
             Spaces up to this size are diagonalized as a full matrix.
+        sigma_kernel : 'reference' or 'block'
+            The C kernel of H c (lib/zgasci/README.md).
     '''
 
     def __init__(self, mol=None):
@@ -358,6 +372,7 @@ class GASCI(lib.StreamObject):
         self.max_subgroup = 12
         self.subgroups = None
         self.direct_dim = 300
+        self.sigma_kernel = 'reference'
         self.converged = False
         self.eci = None
         self.ci = None
@@ -545,14 +560,14 @@ class GASCI(lib.StreamObject):
         hdiag = plan.hdiag(v)
         if plan.dim <= self.direct_dim:
             eye = numpy.eye(plan.dim, dtype=v.dtype)
-            hmat = numpy.array([plan.sigma(v, x) for x in eye]).T
+            hmat = numpy.array([plan.sigma(v, x, self.sigma_kernel) for x in eye]).T
             e, c = numpy.linalg.eigh(hmat)
             self.converged = True
             return e[:nroots], [c[:, k] for k in range(nroots)]
         x0 = self._guess(plan, hdiag, ci0, nroots, v.dtype)
         precond = lib.make_diag_precond(hdiag, self.level_shift)
         conv, e, c = lib.davidson1(
-            lambda xs: [plan.sigma(v, x) for x in xs], x0, precond,
+            lambda xs: [plan.sigma(v, x, self.sigma_kernel) for x in xs], x0, precond,
             tol=self.conv_tol, max_cycle=self.max_cycle,
             max_space=self.max_space, lindep=self.lindep, nroots=nroots,
             max_memory=self.max_memory, verbose=log,
