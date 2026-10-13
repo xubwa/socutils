@@ -355,6 +355,14 @@ zg_plan *zg_plan_new(int nspinor, int nelec, int nsub, int nsub_a,
     }
   }
 
+  /* Which classes pair at all. */
+  p->cpair = calloc((size_t)sa->nclass * sb->nclass + 1, 1);
+  for (int ca = 0; ca < sa->nclass; ++ca) {
+    for (int cb = 0; cb < sb->nclass; ++cb) {
+      p->cpair[(size_t)ca * sb->nclass + cb] = (uint8_t)classes_pair(p, ca, cb);
+    }
+  }
+
   /* Tasks: the pairs of tuples of N - 2 electrons from which two electrons
    * can be added to reach the CI space, the larger ones in pieces. */
   int64_t capacity = 1024;
@@ -443,6 +451,7 @@ void zg_plan_free(zg_plan *p) {
   }
   free(p->match);
   free(p->blockoff);
+  free(p->cpair);
   free(p->tasks);
   free(p->btasks);
   free(p);
@@ -489,83 +498,110 @@ static inline int64_t locate(const zg_plan *p, int64_t ia, int64_t ib) {
 int zg_connect(const zg_plan *p, const uint32_t *masks, int32_t *pair,
                int64_t *addr, int8_t *sign) {
   const int nsub = p->nsub, na = p->s[0].nsub;
+  const zg_side *sa = &p->s[0], *sb = &p->s[1];
   int counts[ZG_MAX_SUB];
   uint32_t work[ZG_MAX_SUB];
   for (int g = 0; g < nsub; ++g) {
     counts[g] = __builtin_popcount(masks[g]);
     work[g] = masks[g];
   }
-  /* The unoccupied spinors, A ones first, and the parity of the number of
-   * occupied ones below each. */
-  int u[ZG_MAX_SPINOR], ug[ZG_MAX_SPINOR], nu = 0, nua = 0;
+  /* The unoccupied spinors, A ones first, by sub-group (ustart), and the
+   * parity of the number of occupied ones below each. */
+  int u[ZG_MAX_SPINOR], nu = 0, ustart[ZG_MAX_SUB + 1];
   uint8_t par[ZG_MAX_SPINOR];
   for (int g = 0; g < nsub; ++g) {
+    ustart[g] = nu;
     for (int j = 0; j < p->m[g]; ++j) {
       if (masks[g] >> j & 1) continue;
       u[nu] = p->off[g] + j;
-      ug[nu] = g;
       par[nu] = (uint8_t)((u[nu] - nu) & 1);
       ++nu;
     }
-    if (g == na - 1) nua = nu;
   }
-  /* Each side as it is, and with one electron added. */
+  ustart[nsub] = nu;
+  /* The tuples of K, and which pairs of sub-groups can take the two
+   * electrons: both resulting tuples classes, and the classes paired. */
+  int64_t t[2] = {0, 0};
+  for (int g = 0; g < nsub; ++g) {
+    const int side = g >= na;
+    t[side] += counts[g] * p->s[side].stride[g - (side ? na : 0)];
+  }
+  /* Each side as it is, and with one electron added to a sub-group. */
   int64_t sid0[2];
   sid0[0] = side_sid(p, 0, counts, masks);
   sid0[1] = side_sid(p, 1, counts + na, masks + na);
+  int32_t cls0[2] = {sa->class_of[t[0]], sb->class_of[t[1]]};
+  int32_t cls1[ZG_MAX_SUB];
+  for (int g = 0; g < nsub; ++g) {
+    const int side = g >= na, loc = g - (side ? na : 0);
+    cls1[g] = counts[g] < p->m[g] ? p->s[side].class_of[t[side] + p->s[side].stride[loc]] : -1;
+  }
   int64_t sid1[ZG_MAX_SPINOR];
-  for (int i = 0; i < nu; ++i) {
-    const int g = ug[i], side = g >= na, base = side ? na : 0;
-    work[g] |= 1u << (u[i] - p->off[g]);
-    counts[g]++;
-    sid1[i] = side_sid(p, side, counts + base, work + base);
-    work[g] = masks[g];
-    counts[g]--;
+  for (int g = 0; g < nsub; ++g) {
+    const int side = g >= na, base = side ? na : 0;
+    for (int i = ustart[g]; i < ustart[g + 1]; ++i) {
+      if (cls1[g] < 0) {
+        sid1[i] = -1;
+        continue;
+      }
+      work[g] |= 1u << (u[i] - p->off[g]);
+      counts[g]++;
+      sid1[i] = side_sid(p, side, counts + base, work + base);
+      work[g] = masks[g];
+      counts[g]--;
+    }
   }
   int n = 0;
-  for (int k = 1; k < nu; ++k) {
-    const int gk = ug[k];
-    const int32_t base_pair = u[k] * (u[k] - 1) / 2;
-    for (int i = 0; i < k; ++i) {
-      int64_t ia, ib;
-      if (k < nua) {
-        /* Both to A. */
-        if (sid0[1] < 0) break;
-        const int gi = ug[i];
-        work[gi] |= 1u << (u[i] - p->off[gi]);
-        work[gk] |= 1u << (u[k] - p->off[gk]);
-        counts[gi]++;
-        counts[gk]++;
-        ia = side_sid(p, 0, counts, work);
-        work[gi] = masks[gi];
-        work[gk] = masks[gk];
-        counts[gi]--;
-        counts[gk]--;
-        ib = sid0[1];
-      } else if (i < nua) {
-        ia = sid1[i];
-        ib = sid1[k];
+  for (int gk = 0; gk < nsub; ++gk) {
+    for (int gi = 0; gi <= gk; ++gi) {
+      /* Feasibility of the pair of sub-groups. */
+      const int side_i = gi >= na, side_k = gk >= na;
+      int ca, cb;
+      if (side_i != side_k) {
+        ca = cls1[gi];
+        cb = cls1[gk];
       } else {
-        if (sid0[0] < 0) break;
-        const int gi = ug[i];
-        work[gi] |= 1u << (u[i] - p->off[gi]);
-        work[gk] |= 1u << (u[k] - p->off[gk]);
-        counts[gi]++;
-        counts[gk]++;
-        ib = side_sid(p, 1, counts + na, work + na);
-        work[gi] = masks[gi];
-        work[gk] = masks[gk];
-        counts[gi]--;
-        counts[gk]--;
-        ia = sid0[0];
+        const int side = side_k, base = side ? na : 0;
+        const zg_side *s = &p->s[side];
+        const int need = gi == gk ? 2 : 1;
+        if (counts[gi] + need > p->m[gi] || (gi != gk && counts[gk] + 1 > p->m[gk])) continue;
+        const int64_t tt = t[side] + s->stride[gi - base] + s->stride[gk - base];
+        const int32_t c2 = s->class_of[tt];
+        ca = side ? cls0[0] : c2;
+        cb = side ? c2 : cls0[1];
       }
-      if (ia < 0 || ib < 0) continue;
-      const int64_t where = locate(p, ia, ib);
-      if (where < 0) continue;
-      pair[n] = base_pair + u[i];
-      addr[n] = where;
-      sign[n] = (par[i] ^ par[k]) ? -1 : 1;
-      ++n;
+      if (ca < 0 || cb < 0 || !p->cpair[(size_t)ca * sb->nclass + cb]) continue;
+      for (int k = ustart[gk]; k < ustart[gk + 1]; ++k) {
+        const int32_t base_pair = u[k] * (u[k] - 1) / 2;
+        const int i1 = gi == gk ? k : ustart[gi + 1];
+        for (int i = ustart[gi]; i < i1; ++i) {
+          int64_t ia, ib;
+          if (side_i != side_k) {
+            ia = sid1[i];
+            ib = sid1[k];
+          } else {
+            const int side = side_k, base = side ? na : 0;
+            work[gi] |= 1u << (u[i] - p->off[gi]);
+            work[gk] |= 1u << (u[k] - p->off[gk]);
+            counts[gi]++;
+            counts[gk]++;
+            const int64_t s2 = side_sid(p, side, counts + base, work + base);
+            work[gi] = masks[gi];
+            work[gk] = masks[gk];
+            counts[gi]--;
+            counts[gk]--;
+            ia = side ? sid0[0] : s2;
+            ib = side ? s2 : sid0[1];
+          }
+          if (ia < 0 || ib < 0) continue;
+          const int64_t where = locate(p, ia, ib);
+          if (where < 0) continue;
+          pair[n] = base_pair + u[i];
+          addr[n] = where;
+          sign[n] = (par[i] ^ par[k]) ? -1 : 1;
+          ++n;
+        }
+      }
     }
   }
   return n;
