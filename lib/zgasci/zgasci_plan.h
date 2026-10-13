@@ -89,6 +89,7 @@ struct zg_plan {
    * and where their block starts.  [nbucketA * nclassB] */
   int32_t *match;
   int64_t *blockoff;
+  uint8_t *cpair; /* [nclassA * nclassB] whether two classes pair */
   int64_t nblock;
   int64_t dim;
   zg_task *tasks;
