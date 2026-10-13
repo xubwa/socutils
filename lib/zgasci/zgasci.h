@@ -37,16 +37,19 @@ typedef struct zg_plan zg_plan;
 /*
  * sub_size[nsub]: spinors of each sub-group, in order; the first nsub_a
  * sub-groups are side A.  Constraint c holds for the sub-groups
- * gas_sub[gas_ptr[c] .. gas_ptr[c+1]): gas_min[c] <= electrons <= gas_max[c].
+ * g = gas_sub[k], k in gas_ptr[c] .. gas_ptr[c+1]), with integer weights
+ * w = gas_weight[k] (all 1 if gas_weight is NULL):
+ * gas_min[c] <= sum w * (electrons in g) <= gas_max[c].  Weights express
+ * e.g. an excitation level, N_active + 2 N_virtual <= k + 2.
  * labels[nsets * nspinor]: symmetry labels, set after set; the labels of the
  * occupied spinors add up to targets[s], modulo mods[s] if that is not 0.
  * Returns NULL on error (zg_error tells why).
  */
 zg_plan *zg_plan_new(int nspinor, int nelec, int nsub, int nsub_a,
                      const int *sub_size, int ngas, const int *gas_ptr,
-                     const int *gas_sub, const int *gas_min,
-                     const int *gas_max, int nsets, const int *labels,
-                     const int *mods, const int *targets);
+                     const int *gas_sub, const int *gas_weight,
+                     const int *gas_min, const int *gas_max, int nsets,
+                     const int *labels, const int *mods, const int *targets);
 void zg_plan_free(zg_plan *plan);
 const char *zg_error(void);
 

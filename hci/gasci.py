@@ -57,7 +57,7 @@ def _load():
         lib_.zg_plan_new.restype = ctypes.c_void_p
         lib_.zg_plan_new.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int,
                                      ctypes.c_int, ip, ctypes.c_int, ip, ip, ip,
-                                     ip, ctypes.c_int, ip, ip, ip]
+                                     ip, ip, ctypes.c_int, ip, ip, ip]
         lib_.zg_plan_free.argtypes = [ctypes.c_void_p]
         lib_.zg_error.restype = ctypes.c_char_p
         lib_.zg_dim.restype = ctypes.c_int64
@@ -121,8 +121,10 @@ class Plan:
     kernels (lib/zgasci/zgasci.h).
 
     sub_sizes: spinors of each sub-group, the first nsub_a on side A;
-    constraints: list of (sub-groups, min, max); labels: (nsets, n) integer
-    array, mods and targets one per set.
+    constraints: list of (sub-groups, min, max) or (sub-groups, min, max,
+    weights), bounding sum weight * electrons over the sub-groups (weights 1
+    if not given); labels: (nsets, n) integer array, mods and targets one
+    per set.
     '''
 
     def __init__(self, n, nelec, sub_sizes, nsub_a, constraints=(),
@@ -132,13 +134,17 @@ class Plan:
         self.npair = self.n * (self.n - 1) // 2
         sub_sizes = numpy.asarray(sub_sizes, dtype=numpy.intc)
         gas_ptr = numpy.zeros(len(constraints) + 1, dtype=numpy.intc)
-        gas_sub, gas_min, gas_max = [], [], []
-        for k, (subs, lo, hi) in enumerate(constraints):
+        gas_sub, gas_wt, gas_min, gas_max = [], [], [], []
+        for k, item in enumerate(constraints):
+            subs, lo, hi = item[:3]
+            weights = item[3] if len(item) > 3 else [1] * len(subs)
             gas_sub.extend(int(x) for x in subs)
+            gas_wt.extend(int(x) for x in weights)
             gas_ptr[k + 1] = len(gas_sub)
             gas_min.append(int(lo))
             gas_max.append(int(hi))
         gas_sub = numpy.asarray(gas_sub + [0], dtype=numpy.intc)
+        gas_wt = numpy.asarray(gas_wt + [0], dtype=numpy.intc)
         gas_min = numpy.asarray(gas_min + [0], dtype=numpy.intc)
         gas_max = numpy.asarray(gas_max + [0], dtype=numpy.intc)
         if labels is None:
@@ -148,11 +154,12 @@ class Plan:
         nsets = labels.shape[0]
         mods = numpy.asarray(list(mods) + [0], dtype=numpy.intc)
         targets = numpy.asarray(list(targets) + [0], dtype=numpy.intc)
-        self._keep = (sub_sizes, gas_ptr, gas_sub, gas_min, gas_max, labels,
-                      mods, targets)
+        self._keep = (sub_sizes, gas_ptr, gas_sub, gas_wt, gas_min, gas_max,
+                      labels, mods, targets)
         handle = self._lib.zg_plan_new(
             self.n, self.nelec, len(sub_sizes), int(nsub_a), _intp(sub_sizes),
-            len(constraints), _intp(gas_ptr), _intp(gas_sub), _intp(gas_min),
+            len(constraints), _intp(gas_ptr), _intp(gas_sub), _intp(gas_wt),
+            _intp(gas_min),
             _intp(gas_max), nsets, _intp(labels.reshape(-1) if nsets else
                                          numpy.zeros(1, dtype=numpy.intc)),
             _intp(mods), _intp(targets))
@@ -271,43 +278,55 @@ def _chunks(orbitals, size):
 
 
 def _atoms(norb, sets):
-    '''The orbitals grouped by which of the sets they belong to, in the order
-    of their first orbital.'''
+    '''The orbitals grouped by their weights in the constraints (sets are
+    dicts orbital -> weight), in the order of their first orbital.'''
     groups = {}
     for p in range(norb):
-        key = tuple(p in s for s in sets)
+        key = tuple(s.get(p, 0) for s in sets)
         groups.setdefault(key, []).append(p)
     return sorted(groups.values(), key=lambda g: g[0])
 
 
 def _constraint_list(gas, restrictions, norb):
-    '''[(set of orbitals, min, max)] from the gas and restrictions inputs.'''
+    '''[(dict orbital -> weight, min, max)] from the gas and restrictions
+    inputs: dict(orbitals=[...], min=..., max=..., weights=[...]), weights
+    (integers, one per orbital) 1 if not given.'''
     out = []
     for item in list(gas or []) + list(restrictions or []):
-        orbitals = sorted(set(int(p) for p in item['orbitals']))
-        if not orbitals or orbitals[0] < 0 or orbitals[-1] >= norb:
+        orbitals = [int(p) for p in item['orbitals']]
+        weights = item.get('weights')
+        weights = [1] * len(orbitals) if weights is None else [int(w) for w in weights]
+        if len(weights) != len(orbitals):
+            raise ValueError('weights needs one entry per orbital')
+        if len(set(orbitals)) != len(orbitals):
+            raise ValueError('an orbital is named twice in a constraint')
+        if not orbitals or min(orbitals) < 0 or max(orbitals) >= norb:
             raise ValueError('constraint on orbitals %s out of 0..%d'
-                             % (orbitals, norb - 1))
-        lo = int(item.get('min', 0))
-        hi = int(item.get('max', len(orbitals)))
-        out.append((frozenset(orbitals), lo, hi))
+                             % (sorted(orbitals), norb - 1))
+        wmap = {p: w for p, w in zip(orbitals, weights) if w != 0}
+        lo = int(item.get('min', min(0, sum(w for w in weights if w < 0))))
+        hi = int(item.get('max', sum(w for w in weights if w > 0)))
+        out.append((wmap, lo, hi))
     return out
 
 
 def _subgroups_of(sets, groups):
-    '''For every set, the sub-groups that make it up; an error if a set is
-    not a union of sub-groups.'''
+    '''For every constraint (dict orbital -> weight), the sub-groups in it
+    and their weights; an error if a sub-group has orbitals of different
+    weights.'''
     result = []
     for s in sets:
-        subs = []
+        subs, weights = [], []
         for k, g in enumerate(groups):
-            inside = [p in s for p in g]
-            if all(inside):
-                subs.append(k)
-            elif any(inside):
+            w = set(s.get(p, 0) for p in g)
+            if len(w) > 1:
                 raise ValueError('the sub-groups must not cut a constraint: '
-                                 'sub-group %s and set %s' % (g, sorted(s)))
-        result.append(subs)
+                                 'sub-group %s and constraint %s' % (g, s))
+            w = w.pop()
+            if w:
+                subs.append(k)
+                weights.append(w)
+        result.append((subs, weights))
     return result
 
 
@@ -455,7 +474,7 @@ class GASCI(lib.StreamObject):
             nsub_a = len(side_a)
         perm = [p for g in groups for p in g]
         subs = _subgroups_of(sets, groups)
-        constraints = [(s, c[1], c[2]) for s, c in zip(subs, cons)]
+        constraints = [(sw[0], c[1], c[2], sw[1]) for sw, c in zip(subs, cons)]
         position = numpy.argsort(perm)
         groups = [[int(position[p]) for p in g] for g in groups]
         return numpy.asarray(perm), groups, nsub_a, constraints
@@ -491,8 +510,9 @@ class GASCI(lib.StreamObject):
         occs = []
         for occ in itertools.combinations(range(norb), nelec):
             good = True
-            for subs, lo, hi in constraints:
-                k = sum(1 for p in occ if group_of[p] in subs)
+            for subs, lo, hi, weights in constraints:
+                wt = dict(zip(subs, weights))
+                k = sum(wt.get(group_of[p], 0) for p in occ)
                 good = good and lo <= k <= hi
             for s in range(len(labels)):
                 total = sum(labels[s, perm[p]] for p in occ)
@@ -728,8 +748,8 @@ class SpatialGASCI(GASCI):
         subs = _subgroups_of(sets, groups)
         ng = len(groups)
         # Spin orbital i < norb: alpha of sperm[i]; norb + i: beta of it.
-        constraints = [(s + [k + ng for k in s], c[1], c[2])
-                       for s, c in zip(subs, cons)]
+        constraints = [(sw[0] + [k + ng for k in sw[0]], c[1], c[2], sw[1] + sw[1])
+                       for sw, c in zip(subs, cons)]
         constraints.append((list(range(ng)), nalpha, nalpha))
         position = numpy.argsort(sperm)
         groups = [[int(position[p]) for p in g] for g in groups]
@@ -788,8 +808,9 @@ class SpatialGASCI(GASCI):
         occs = []
         for occ in itertools.combinations(range(2 * norb), nalpha + nbeta):
             good = True
-            for subs, lo, hi in constraints:
-                k = sum(1 for p in occ if group_of[p] in subs)
+            for subs, lo, hi, weights in constraints:
+                wt = dict(zip(subs, weights))
+                k = sum(wt.get(group_of[p], 0) for p in occ)
                 good = good and lo <= k <= hi
             for s in range(len(labels)):
                 good = good and (sum(labels[s, p] for p in occ) - targets[s]) % 2 == 0
