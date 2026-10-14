@@ -82,6 +82,45 @@ def _sr_g(p, q, omega, d):
     return out
 
 
+def _k_real_cderi(L, d):
+    '''K_mn = sum_P sum_ls L[P,m,l] d[l,s] L[P,s,n] for real L and real d.'''
+    naux, nao = L.shape[:2]
+    X = (L.reshape(-1, nao) @ d).reshape(naux, nao, nao)          # X_P = L_P d
+    # sum_P X_P L_P as one GEMM over the combined (P, s) index
+    return X.transpose(1, 0, 2).reshape(nao, -1) @ L.reshape(-1, nao)
+
+
+def ghf_get_jk(get_jk, dm, hermi=0, with_j=True, with_k=True):
+    '''Spin-orbital (2c) J/K from a scalar J/K builder.
+
+    get_jk(dms, hermi, with_j, with_k) acts on a stack of (nao, nao) matrices.
+    dm is (..., 2nao, 2nao) with [[aa, ab], [ba, bb]] blocks.  The alpha-beta
+    exchange block uses D_ab = dm[:nao, nao:] (pyscf.pbc.scf.ghf takes the
+    beta-alpha block there, which is wrong for non-collinear densities).'''
+    dm = np.asarray(dm)
+    nso = dm.shape[-1]
+    nao = nso // 2
+    dms = dm.reshape(-1, nso, nso)
+    daa, dbb = dms[:, :nao, :nao], dms[:, nao:, nao:]
+    dab, dba = dms[:, :nao, nao:], dms[:, nao:, :nao]
+    vj = vk = None
+    if with_j:
+        j = get_jk(daa + dbb, 1 if hermi else 0, True, False)[0]
+        vj = np.zeros(dms.shape, dtype=np.result_type(j, dm))
+        vj[:, :nao, :nao] = vj[:, nao:, nao:] = j
+        vj = vj.reshape(dm.shape)
+    if with_k:
+        blocks = [daa, dbb, dab] if hermi else [daa, dbb, dab, dba]
+        k = [get_jk(b, 0, False, True)[1] for b in blocks]
+        vk = np.zeros(dms.shape, dtype=np.result_type(k[0], dm))
+        vk[:, :nao, :nao] = k[0]
+        vk[:, nao:, nao:] = k[1]
+        vk[:, :nao, nao:] = k[2]
+        vk[:, nao:, :nao] = k[2].conj().transpose(0, 2, 1) if hermi else k[3]
+        vk = vk.reshape(dm.shape)
+    return vj, vk
+
+
 class RSDF(lib.StreamObject):
     '''Range-separated Gamma-point density fitting for a pyscf Cell.
 
@@ -226,9 +265,6 @@ class RSDF(lib.StreamObject):
         cq = np.zeros(sysmol.nbas)
         qmin[aux_sh0:] = np.tile(qmin0, len(Tfit))
         cq[aux_sh0:] = np.tile(cq0, len(Tfit))
-        am = np.zeros(sysmol.nbas)
-        cm = np.zeros(sysmol.nbas)
-        am[:nao_sh], cm[:nao_sh] = amin, cmax
 
         # bin the aux image shells on a uniform grid
         rk = sysmol.atom_coords()[bas[aux_sh0:, gto.ATOM_OF]]
@@ -247,13 +283,19 @@ class RSDF(lib.StreamObject):
         ptr = lambda x: x.ctypes.data_as(ctypes.c_void_p)
         stats = np.zeros(3, dtype=np.int64)
         B = np.zeros((nfit, nao, nao))
+        sh_cell = np.tile(np.arange(cell.nbas, dtype=np.int32), len(Tao))
         libp.SOCpbc_sr_int3c(
             ptr(B), c_int(nao), c_int(nfit), c_int(cell.nbas), c_int(nao_sh),
-            c_int(aux_sh0), c_int(naux_sh), ptr(ao_fold), ptr(aux_fold),
-            ptr(am), ptr(cm), ptr(qmin), ptr(cq),
+            c_int(aux_sh0), c_int(naux_sh), ptr(ao_fold), ptr(sh_cell), ptr(aux_fold),
+            ptr(qmin), ptr(cq),
             ptr(origin), c_dbl(h), ptr(gdims), ptr(bin_start), ptr(bin_shells),
-            c_dbl(omega), c_dbl(cutoff), c_dbl(cutoff),
+            c_dbl(omega), c_dbl(cutoff),
             ptr(atm), c_int(sysmol.natm), ptr(bas), c_int(sysmol.nbas), ptr(env), ptr(stats))
+        # only shell pairs (i, j) with cell shell of j >= i were evaluated; the
+        # rest follow from (mu_0 nu_T|P) = (nu_0 mu_-T|P)
+        ao2sh = np.repeat(np.arange(cell.nbas), np.diff(cell.ao_loc_nr()))
+        offdiag = (ao2sh[:, None] != ao2sh[None, :])
+        B += B.transpose(0, 2, 1) * offdiag
         self.stats['sr3c'] = dict(pairs=int(stats[0]), triples=int(stats[1]), screened=int(stats[2]))
         t1 = log.timer('RSDF SR 3c (%d pairs, %d triples)' % (stats[0], stats[1]), *t1)
         M = np.zeros((nfit, nfit))
@@ -350,12 +392,8 @@ class RSDF(lib.StreamObject):
             vj = np.array([np.einsum('P,Pij->ij', np.einsum('Pij,ji->P', L, d), L) for d in dms])
             vj = vj.reshape(dm.shape)
         if with_k:
-            Lf = L.reshape(-1, nao)
-            vk = []
-            for d in dms:
-                X = (Lf @ d).reshape(-1, nao, nao)
-                vk.append(np.einsum('Pms,Psn->mn', X, L))
-            vk = np.array(vk)
+            vk = np.array([_k_real_cderi(L, d.real) + (1j * _k_real_cderi(L, d.imag)
+                           if np.iscomplexobj(d) else 0) for d in dms])
             if exxdiv == 'ewald':
                 from pyscf.pbc import tools
                 madelung = tools.pbc.madelung(self.cell, np.zeros((1, 3)))
@@ -364,6 +402,11 @@ class RSDF(lib.StreamObject):
                 raise NotImplementedError(exxdiv)
             vk = vk.reshape(dm.shape)
         return vj, vk
+
+    def get_jk_ghf(self, dm, hermi=0, with_j=True, with_k=True, exxdiv=None):
+        '''J/K for a (2nao, 2nao) spin-orbital density matrix.'''
+        return ghf_get_jk(lambda d, h, wj, wk: self.get_jk(d, h, wj, wk, exxdiv=exxdiv),
+                          dm, hermi, with_j, with_k)
 
     def get_nuc(self):
         '''Electron-nucleus attraction with Gaussian nuclei, exact (not fitted).'''

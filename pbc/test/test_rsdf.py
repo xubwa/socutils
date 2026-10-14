@@ -117,5 +117,28 @@ class KnownValues(unittest.TestCase):
         self.assertLess(abs(diffs[1]), abs(diffs[0]))
 
 
+
+class GHFBlocks(unittest.TestCase):
+    def test_ghf_assembly_matches_molecular_ghf(self):
+        '''ghf_get_jk with a molecular scalar J/K reproduces pyscf's molecular
+        GHF get_jk (correct alpha-beta slice) for a non-collinear density.'''
+        from pyscf.scf import ghf as mol_ghf, hf
+        from socutils.pbc.rsdf import ghf_get_jk
+        mol = gto.M(atom='O 0 0 0; H 0 .7 .6; H 0 -.7 .6', basis='6-31g', verbose=0)
+        n = mol.nao
+        rng = np.random.default_rng(3)
+        c = rng.standard_normal((2 * n, 6)) + 1j * rng.standard_normal((2 * n, 6))
+        dm = c @ c.conj().T                       # Hermitian, non-collinear
+        scalar = lambda d, h, wj, wk: hf.get_jk(mol, d, h, with_j=wj, with_k=wk)
+        # pyscf.scf.ghf.get_jk's default jkbuild=hf.get_jk passes with_j as
+        # vhfopt (positional mismatch), so give it a correct one
+        jkbuild = lambda m, d, h, wj, wk, omega=None: hf.get_jk(m, d, h, with_j=wj, with_k=wk)
+        for hermi, d in ((1, dm), (0, dm + .1 * rng.standard_normal(dm.shape))):
+            vj, vk = ghf_get_jk(scalar, d, hermi)
+            rj, rk = mol_ghf.get_jk(mol, d, hermi, jkbuild=jkbuild)
+            self.assertLess(abs(vj - rj).max(), 1e-11)
+            self.assertLess(abs(vk - rk).max(), 1e-11)
+
+
 if __name__ == '__main__':
     unittest.main()

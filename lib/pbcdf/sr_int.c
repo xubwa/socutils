@@ -111,25 +111,112 @@ static size_t max_cache(CINTIntegralFunction *intor, int sh0, int sh1,
         return cache;
 }
 
+#define NPBIN_MAX 24
+#define PBIN_RATIO 4.
+
+/* envelope of a shell pair, binned in the product exponent p = a + b */
+typedef struct {
+        int nbin;
+        double p[NPBIN_MAX];      /* smallest p in the bin */
+        double k[NPBIN_MAX];      /* largest |c_a c_b| exp(-mu R^2) (pi/p)^1.5 in the bin */
+        double shift[NPBIN_MAX];  /* largest distance of a product centre from the midpoint */
+} PairEnvelope;
+
+/* largest |coefficient| of primitive ip of shell sh over its contractions */
+static inline double prim_cmax(int sh, int ip, int *bas, double *env)
+{
+        const int nprim = bas[sh * BAS_SLOTS + NPRIM_OF];
+        const int nctr = bas[sh * BAS_SLOTS + NCTR_OF];
+        const double *c = env + bas[sh * BAS_SLOTS + PTR_COEFF];
+        double m = 0.;
+        int ic;
+        for (ic = 0; ic < nctr; ic++) {
+                m = MAX(m, fabs(c[ip + nprim * ic]));
+        }
+        return m;
+}
+
+/* Keep primitive pairs that can exceed the cutoff with some aux function:
+ * k * max(c_k (pi/q)^1.5) * max_q g(0; p, q) >= cutoff (g(0) is monotone in q,
+ * so its extremes are at the smallest/largest aux exponents). */
+static void pair_envelope(PairEnvelope *pe, int ish, int jsh, double r2, double rab,
+                          double cutoff, double cqhi, double qlo, double qhi, double omega,
+                          int *bas, double *env)
+{
+        const int ni = bas[ish * BAS_SLOTS + NPRIM_OF];
+        const int nj = bas[jsh * BAS_SLOTS + NPRIM_OF];
+        const double *ai = env + bas[ish * BAS_SLOTS + PTR_EXP];
+        const double *aj = env + bas[jsh * BAS_SLOTS + PTR_EXP];
+        pe->nbin = 0;
+        int ip, jp, n;
+        for (ip = 0; ip < ni; ip++) {
+                double ca = prim_cmax(ish, ip, bas, env);
+                for (jp = 0; jp < nj; jp++) {
+                        double a = ai[ip], b = aj[jp];
+                        double p = a + b;
+                        double k = ca * prim_cmax(jsh, jp, bas, env) * exp(-a * b / p * r2) *
+                                   pow(M_PI / p, 1.5);
+                        double g0 = MAX(sr_gauss(p, qlo, omega, 0.), sr_gauss(p, qhi, omega, 0.));
+                        if (k * cqhi * g0 < cutoff) {
+                                continue;
+                        }
+                        /* product centre A + b/p (B - A): offset from the midpoint */
+                        double shift = fabs(b / p - .5) * rab;
+                        for (n = 0; n < pe->nbin; n++) {
+                                if (p < pe->p[n] * PBIN_RATIO && p * PBIN_RATIO > pe->p[n]) {
+                                        break;
+                                }
+                        }
+                        if (n == pe->nbin) {
+                                if (n == NPBIN_MAX) {
+                                        n = NPBIN_MAX - 1;  /* merge into the last bin */
+                                } else {
+                                        pe->nbin++;
+                                        pe->p[n] = p;
+                                        pe->k[n] = 0.;
+                                        pe->shift[n] = 0.;
+                                }
+                        }
+                        pe->p[n] = MIN(pe->p[n], p);
+                        pe->k[n] = MAX(pe->k[n], k);
+                        pe->shift[n] = MAX(pe->shift[n], shift);
+                }
+        }
+}
+
+/* bound of (pair | aux shell)_SR for an aux envelope (q, kq) at distance d from the midpoint */
+static inline double pair_aux_bound(PairEnvelope *pe, double q, double kq, double d, double omega)
+{
+        double est = 0.;
+        int n;
+        for (n = 0; n < pe->nbin; n++) {
+                double dd = MAX(0., d - pe->shift[n]);
+                est = MAX(est, pe->k[n] * kq * sr_gauss(pe->p[n], q, omega, dd));
+        }
+        return est;
+}
+
 /*
  * out:       (naux0, nao0, nao0), accumulated
  * nbas0:     number of cell-0 AO shells (rows)
  * nao_sh:    number of AO image shells (cell 0 first)
  * aux_sh0, naux_sh: range of aux image shells
  * ao_fold:   [nao_sh] AO offset in cell 0 of each AO image shell
+ * sh_cell:   [nao_sh] cell-0 shell of each AO image shell; only pairs with
+ *            sh_cell[j] >= i are evaluated (the caller adds the transpose of
+ *            the off-diagonal shell blocks: (mu_0 nu_T|.) = (nu_0 mu_-T|.) )
  * aux_fold:  [natot] aux offset in cell 0 of each aux image shell (indexed by shell id)
- * amin, cmax: [nao_sh] screening parameters of AO image shells
  * qmin, cqmax: [natot] screening parameters of aux shells (indexed by shell id)
  * grid:      aux bins (origin, spacing, dims, bin_start, bin_shells)
  * stats:     [3] out: number of pairs kept, triples evaluated, triples screened
  */
 void SOCpbc_sr_int3c(double *out, int nao0, int naux0,
                      int nbas0, int nao_sh, int aux_sh0, int naux_sh,
-                     int *ao_fold, int *aux_fold,
-                     double *amin, double *cmax, double *qmin, double *cqmax,
+                     int *ao_fold, int *sh_cell, int *aux_fold,
+                     double *qmin, double *cqmax,
                      double *grid_origin, double grid_spacing, int *grid_dims,
                      int *bin_start, int *bin_shells,
-                     double omega, double cutoff, double pair_cutoff,
+                     double omega, double cutoff,
                      int *atm, int natm, int *bas, int nbas, double *env,
                      long *stats)
 {
@@ -154,6 +241,7 @@ void SOCpbc_sr_int3c(double *out, int nao0, int naux0,
 {
         double *buf = malloc(sizeof(double) * ((size_t)dimax * dimax * dimax + cache));
         double *cbuf = buf + (size_t)dimax * dimax * dimax;
+        PairEnvelope pe;
         int shls[3];
         int ish, jsh;
 #pragma omp for schedule(dynamic)
@@ -162,27 +250,36 @@ void SOCpbc_sr_int3c(double *out, int nao0, int naux0,
                 const int di = shell_dim(ish, bas);
                 const int mi = ao_fold[ish];
                 for (jsh = 0; jsh < nao_sh; jsh++) {
+                        if (sh_cell[jsh] < ish) {
+                                continue;
+                        }
                         const double *rj = shell_center(jsh, atm, bas, env);
                         double rij[3] = {ri[0] - rj[0], ri[1] - rj[1], ri[2] - rj[2]};
                         double r2 = rij[0] * rij[0] + rij[1] * rij[1] + rij[2] * rij[2];
-                        double a = amin[ish], b = amin[jsh];
-                        double p = a + b;
-                        double kij = cmax[ish] * cmax[jsh] * exp(-a * b / p * r2) * pow(M_PI / p, 1.5);
-                        /* largest possible SR factor at d = 0 over the aux set */
-                        double g0 = MAX(sr_gauss(p, qlo, omega, 0.), sr_gauss(p, qhi, omega, 0.));
-                        if (kij * cqhi * g0 < pair_cutoff) {
+                        double rab = sqrt(r2);
+                        /* primitive pairs that can matter for any aux function */
+                        pair_envelope(&pe, ish, jsh, r2, rab, cutoff, cqhi, qlo, qhi, omega, bas, env);
+                        if (pe.nbin == 0) {
+                                continue;
+                        }
+                        double rmax = 0.;
+                        int n, x;
+                        for (n = 0; n < pe.nbin; n++) {
+                                double beta = 1. / sqrt(1. / (omega * omega) + 1. / pe.p[n] + 1. / qlo);
+                                double g0 = MAX(sr_gauss(pe.p[n], qlo, omega, 0.),
+                                                sr_gauss(pe.p[n], qhi, omega, 0.));
+                                if (pe.k[n] * cqhi * g0 < cutoff) {
+                                        continue;
+                                }
+                                rmax = MAX(rmax, sr_radius(beta, pe.k[n] * cqhi, cutoff) + pe.shift[n]);
+                        }
+                        if (rmax <= 0.) {
                                 continue;
                         }
                         npair++;
                         double pc[3];
-                        int x;
                         for (x = 0; x < 3; x++) {
-                                pc[x] = (a * ri[x] + b * rj[x]) / p;
-                        }
-                        double beta_min = 1. / sqrt(1. / (omega * omega) + 1. / p + 1. / qlo);
-                        double rmax = sr_radius(beta_min, kij * cqhi, cutoff);
-                        if (rmax <= 0.) {
-                                continue;
+                                pc[x] = .5 * (ri[x] + rj[x]);
                         }
                         int lo[3], hi[3];
                         for (x = 0; x < 3; x++) {
@@ -193,7 +290,7 @@ void SOCpbc_sr_int3c(double *out, int nao0, int naux0,
                         }
                         const int dj = shell_dim(jsh, bas);
                         const int nj = ao_fold[jsh];
-                        int bx, by, bz, n;
+                        int bx, by, bz;
                         for (bx = lo[0]; bx <= hi[0]; bx++) {
                         for (by = lo[1]; by <= hi[1]; by++) {
                         for (bz = lo[2]; bz <= hi[2]; bz++) {
@@ -208,8 +305,8 @@ void SOCpbc_sr_int3c(double *out, int nao0, int naux0,
                                                 continue;
                                         }
                                         double q = qmin[ksh];
-                                        double est = kij * cqmax[ksh] * pow(M_PI / q, 1.5) *
-                                                     sr_gauss(p, q, omega, d);
+                                        double est = pair_aux_bound(&pe, q, cqmax[ksh] * pow(M_PI / q, 1.5),
+                                                                    d, omega);
                                         if (est < cutoff) {
                                                 nskip++;
                                                 continue;
