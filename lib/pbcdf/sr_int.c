@@ -474,17 +474,24 @@ void SOCpbc_sr_int3c(double *out, int nao0, int naux0,
 /*
  * out: (naux0, naux0), accumulated.  Rows: the first naux_sh0 aux image shells
  * (cell 0, starting at aux_sh0); columns: all aux image shells, folded.
+ * env_full, env_lr: env with range omega 0 and +omega.  The SR integrals are
+ * evaluated as full - LR: libcint's erfc-attenuated 2c integrals lose ~1e-10
+ * relative accuracy for diffuse high-l pairs (Y f shells: 3.7e-10 at omega
+ * 0.5, checked against Fourier quadrature), enough to make the fitting metric
+ * indefinite.  For the kept (short-range) pairs the difference is benign.
  */
 void SOCpbc_sr_int2c(double *out, int naux0, int aux_sh0, int naux_sh0, int naux_sh,
                      int *aux_fold, double *qmin, double *cqmax,
                      double omega, double cutoff,
-                     int *atm, int natm, int *bas, int nbas, double *env,
+                     int *atm, int natm, int *bas, int nbas, double *env_full, double *env_lr,
                      long *stats)
 {
         CINTOpt *opt = NULL;
-        int2c2e_optimizer(&opt, atm, natm, bas, nbas, env);
-        size_t cache = max_cache(int2c2e_sph, aux_sh0, aux_sh0 + naux_sh,
-                                 atm, natm, bas, nbas, env);
+        CINTOpt *opt_lr = NULL;
+        int2c2e_optimizer(&opt, atm, natm, bas, nbas, env_full);
+        int2c2e_optimizer(&opt_lr, atm, natm, bas, nbas, env_lr);
+        size_t cache = MAX(max_cache(int2c2e_sph, aux_sh0, aux_sh0 + naux_sh, atm, natm, bas, nbas, env_full),
+                           max_cache(int2c2e_sph, aux_sh0, aux_sh0 + naux_sh, atm, natm, bas, nbas, env_lr));
         int dimax = 0;
         int i;
         for (i = aux_sh0; i < aux_sh0 + naux_sh; i++) {
@@ -493,18 +500,19 @@ void SOCpbc_sr_int2c(double *out, int naux0, int aux_sh0, int naux_sh0, int naux
         long npair = 0, nskip = 0;
 #pragma omp parallel reduction(+:npair, nskip)
 {
-        double *buf = malloc(sizeof(double) * ((size_t)dimax * dimax + cache));
-        double *cbuf = buf + (size_t)dimax * dimax;
+        double *buf = malloc(sizeof(double) * ((size_t)2 * dimax * dimax + cache));
+        double *buf_lr = buf + (size_t)dimax * dimax;
+        double *cbuf = buf_lr + (size_t)dimax * dimax;
         int shls[2];
         int psh, qsh;
 #pragma omp for schedule(dynamic)
         for (psh = aux_sh0; psh < aux_sh0 + naux_sh0; psh++) {
-                const double *rp = shell_center(psh, atm, bas, env);
+                const double *rp = shell_center(psh, atm, bas, env_full);
                 const int dp = shell_dim(psh, bas);
                 const int pp = aux_fold[psh];
 
                 for (qsh = aux_sh0; qsh < aux_sh0 + naux_sh; qsh++) {
-                        const double *rq = shell_center(qsh, atm, bas, env);
+                        const double *rq = shell_center(qsh, atm, bas, env_full);
                         double d = sqrt((rp[0] - rq[0]) * (rp[0] - rq[0]) +
                                         (rp[1] - rq[1]) * (rp[1] - rq[1]) +
                                         (rp[2] - rq[2]) * (rp[2] - rq[2]));
@@ -520,7 +528,9 @@ void SOCpbc_sr_int2c(double *out, int naux0, int aux_sh0, int naux_sh0, int naux
                         }
                         npair++;
                         shls[0] = psh; shls[1] = qsh;
-                        if (!int2c2e_sph(buf, NULL, shls, atm, natm, bas, nbas, env, opt, cbuf)) {
+                        int nz = int2c2e_sph(buf, NULL, shls, atm, natm, bas, nbas, env_full, opt, cbuf);
+                        int nz_lr = int2c2e_sph(buf_lr, NULL, shls, atm, natm, bas, nbas, env_lr, opt_lr, cbuf);
+                        if (!nz && !nz_lr) {
                                 continue;
                         }
                         const int dq = shell_dim(qsh, bas);
@@ -528,13 +538,15 @@ void SOCpbc_sr_int2c(double *out, int naux0, int aux_sh0, int naux_sh0, int naux
                         int a, b;
                         for (b = 0; b < dq; b++) {
                         for (a = 0; a < dp; a++) {
-                                out[(size_t)(pp + a) * naux0 + qq0 + b] += buf[a + dp * b];
+                                out[(size_t)(pp + a) * naux0 + qq0 + b] +=
+                                        (nz ? buf[a + dp * b] : 0.) - (nz_lr ? buf_lr[a + dp * b] : 0.);
                         } }
                 }
         }
         free(buf);
 }
         CINTdel_optimizer(&opt);
+        CINTdel_optimizer(&opt_lr);
         stats[0] = npair;
         stats[1] = nskip;
 }

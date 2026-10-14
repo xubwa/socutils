@@ -365,10 +365,16 @@ class RSDF(lib.StreamObject):
         t1 = log.timer('RSDF SR 3c (%d pairs, %d triples)' % (stats[0], stats[1]), *t1)
         M = np.zeros((nfit, nfit))
         stats2 = np.zeros(2, dtype=np.int64)
+        # SR 2c as full - LR (libcint's erfc 2c integrals are not accurate enough
+        # for the metric, see sr_int.c)
+        env_full, env_lr = env.copy(), env.copy()
+        env_full[gto.PTR_RANGE_OMEGA] = 0.
+        env_lr[gto.PTR_RANGE_OMEGA] = omega
         libp.SOCpbc_sr_int2c(
             ptr(M), c_int(nfit), c_int(aux_sh0), c_int(nfit_sh0), c_int(naux_sh),
             ptr(aux_fold), ptr(qmin), ptr(cq), c_dbl(omega), c_dbl(cutoff),
-            ptr(atm), c_int(sysmol.natm), ptr(bas), c_int(sysmol.nbas), ptr(env), ptr(stats2))
+            ptr(atm), c_int(sysmol.natm), ptr(bas), c_int(sysmol.nbas), ptr(env_full), ptr(env_lr),
+            ptr(stats2))
         t1 = log.timer('RSDF SR 2c', *t1)
 
         # long range, reciprocal space
