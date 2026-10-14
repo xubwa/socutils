@@ -12,6 +12,8 @@
 #               against whatever pyscf the configuring Python resolves)
 #   vhf     ->  lib/libsocvhf.so      (socutils.somf.x2cmp; links against
 #               the same pyscf)
+#   pbcdf   ->  lib/libsocpbcdf.so    (socutils.pbc.rsdf; links against
+#               the same pyscf's libcint)
 #
 # Targets:
 #   make            build all C/C++ libraries (default)
@@ -44,7 +46,7 @@ build:
 	@mkdir -p $(BUILDDIR)
 	cd $(BUILDDIR) && $(CMAKE) .. -DCMAKE_BUILD_TYPE=Release $(CMAKE_ARGS)
 	$(CMAKE) --build $(BUILDDIR) -- -j$(NPROC)
-	@for so in libx2camf_c.so libccsdt_clib.so libzquatev.so libnrr_opt.so libsocvhf.so libqdhf.so; do \
+	@for so in libx2camf_c.so libccsdt_clib.so libzquatev.so libnrr_opt.so libsocvhf.so libsocpbcdf.so libqdhf.so; do \
 	    test -f $(LIBDIR)/$$so && echo "built $(LIBDIR)/$$so" \
 	        || { echo "ERROR: $$so not produced"; exit 1; }; \
 	done
@@ -58,4 +60,4 @@ compare: build
 clean:
 	rm -rf $(BUILDDIR) \
 	    $(LIBDIR)/libx2camf_c.so $(LIBDIR)/libccsdt_clib.so $(LIBDIR)/libzquatev.so \
-	    $(LIBDIR)/libnrr_opt.so $(LIBDIR)/libsocvhf.so $(LIBDIR)/libqdhf.so
+	    $(LIBDIR)/libnrr_opt.so $(LIBDIR)/libsocvhf.so $(LIBDIR)/libsocpbcdf.so $(LIBDIR)/libqdhf.so

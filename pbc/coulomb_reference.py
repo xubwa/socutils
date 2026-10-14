@@ -221,7 +221,7 @@ def dipole_and_second_moment(mol, dm, zeta=None):
 #
 # AO density + Gaussian nuclei
 #
-def _image_mole(cell, rpair):
+def image_mole(cell, rpair):
     '''Molecule made of cell-0 atoms followed by every image atom within rpair of
     some cell-0 atom.  Returns (mol, ao_fold) where ao_fold maps each AO of mol to
     the corresponding AO index of the cell.'''
@@ -291,7 +291,7 @@ def coulomb_reference(cell, dm, zeta, ke_cutoff, rpair, blksize=2048):
     Z = cell.atom_charges().astype(float)
     zeta = np.broadcast_to(np.asarray(zeta, dtype=float), (cell.natm,))
 
-    mol, ao_fold = _image_mole(cell, rpair)
+    mol, ao_fold = image_mole(cell, rpair)
     nbas0 = cell.nbas
     shls_slice = (0, nbas0, 0, mol.nbas)
     dm_img = dm[:, ao_fold]  # D_{mu nu} for every image of nu

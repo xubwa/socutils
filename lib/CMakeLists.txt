@@ -13,6 +13,7 @@
 #   zquatev ->  lib/libzquatev.so     (Kramers-restricted spinor SCF)
 #   ao2mo   ->  lib/libnrr_opt.so     (socutils.lib.ao2mo.nrr_fast spinor AO2MO)
 #   vhf     ->  lib/libsocvhf.so      (socutils.somf.x2cmp multi-centre J/K prescreen)
+#   pbcdf   ->  lib/libsocpbcdf.so    (socutils.pbc.rsdf screened SR integrals over images)
 #   qdhf    ->  lib/libqdhf.so        (socutils.qdhf, quad precision HF; needs libquadmath)
 #
 # The subdirectory CMakeLists.txt files are thin (just the target plus its
@@ -98,6 +99,7 @@ add_subdirectory(ccsdt)
 add_subdirectory(zquatev)
 add_subdirectory(ao2mo)
 add_subdirectory(vhf)
+add_subdirectory(pbcdf)
 
 option(ENABLE_QDHF "Quadruple precision HF kernels (requires libquadmath)" ON)
 if(ENABLE_QDHF)
