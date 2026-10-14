@@ -72,29 +72,6 @@ static inline double sr_gauss(double p, double q, double omega, double d)
         return (erf(gamma * d) - erf(beta * d)) / d;
 }
 
-/* radius beyond which erfc(beta d)/d * fac < cutoff (upper bound of g) */
-static double sr_radius(double beta, double fac, double cutoff)
-{
-        if (fac <= cutoff) {
-                return 0.;
-        }
-        double lo = 0., hi = 1.;
-        while (erfc(beta * hi) / hi * fac > cutoff && hi < 1e4) {
-                lo = hi;
-                hi *= 2.;
-        }
-        int it;
-        for (it = 0; it < 60; it++) {
-                double mid = .5 * (lo + hi);
-                if (erfc(beta * mid) / mid * fac > cutoff) {
-                        lo = mid;
-                } else {
-                        hi = mid;
-                }
-        }
-        return hi;
-}
-
 typedef struct {
         double origin[3];
         double spacing;
@@ -129,18 +106,25 @@ typedef struct {
         double shift[NPBIN_MAX];  /* largest distance of a product centre from the midpoint */
 } PairEnvelope;
 
-/* envelope of primitive (exponent a, angular l): exponent and amplitude factor.
- * ang[l] is the largest |angular part| of a libcint function of momentum l per
- * unit coefficient, measured by the caller (it absorbs libcint's conventions). */
-static inline void prim_envelope(double a, int l, const double *ang, double *ae, double *fac)
+/* Envelopes of a primitive (exponent a, angular l).  For 0 < t < 1,
+ *   r^l exp(-a r^2) <= (l / (2 (1-t) a e))^(l/2) exp(-t a r^2),
+ * so each t gives a pointwise s-Gaussian bound (l = 0: exact, t = 1).  A larger
+ * t decays faster but has a larger amplitude; the screening uses the smallest
+ * of the bounds over a few t (NENV).  ang[l] is the largest |angular part| of a
+ * libcint function of momentum l per unit coefficient, measured by the caller
+ * (it absorbs libcint's conventions). */
+#define NENV 3
+static const double ENV_T[NENV] = {.5, .75, .9};
+
+static inline void prim_envelope(double a, int l, double t, const double *ang, double *ae, double *fac)
 {
         double ymax = ang[l];
         if (l == 0) {
                 *ae = a;
                 *fac = ymax;
         } else {
-                *ae = .5 * a;
-                *fac = ymax * pow(l / (a * M_E), .5 * l);
+                *ae = t * a;
+                *fac = ymax * pow(l / (2. * (1. - t) * a * M_E), .5 * l);
         }
 }
 
@@ -158,12 +142,25 @@ static inline double prim_cmax(int sh, int ip, int *bas, double *env)
         return m;
 }
 
-/* Keep primitive pairs that can exceed the cutoff with some aux function:
- * k * max_k Q_k * max_q g(0; p, q) >= cutoff (g(0) is monotone in q,
- * so its extremes are at the smallest/largest aux exponents). */
+typedef struct {
+        double w, p, k, shift;
+} PrimPair;
+
+static int cmp_primpair(const void *x, const void *y)
+{
+        double a = ((const PrimPair *)x)->w, b = ((const PrimPair *)y)->w;
+        return (a > b) - (a < b);
+}
+
+/* Envelope of the primitive pairs that can matter for some aux function.
+ * w = k * max_k Q_k * max_q g(0; p, q) bounds the contribution of a primitive
+ * pair to any triple (g(0) is monotone in q, so its extremes are at the
+ * smallest/largest aux exponents).  The smallest are dropped while their sum
+ * stays below cutoff/2, which bounds the error of the dropped pairs together.
+ * pp: work space of ni*nj PrimPair. */
 static void pair_envelope(PairEnvelope *pe, int ish, int jsh, double r2, double rab,
                           double cutoff, double cqhi, double qlo, double qhi, double omega,
-                          const double *ang, int *bas, double *env)
+                          double t, const double *ang, int *bas, double *env, PrimPair *pp)
 {
         const int ni = bas[ish * BAS_SLOTS + NPRIM_OF];
         const int nj = bas[jsh * BAS_SLOTS + NPRIM_OF];
@@ -171,48 +168,136 @@ static void pair_envelope(PairEnvelope *pe, int ish, int jsh, double r2, double 
         const int lj = bas[jsh * BAS_SLOTS + ANG_OF];
         const double *ai = env + bas[ish * BAS_SLOTS + PTR_EXP];
         const double *aj = env + bas[jsh * BAS_SLOTS + PTR_EXP];
-        /* the kept primitive pairs add up: each dropped one must be below cutoff/(ni nj) */
-        const double pcut = cutoff / (ni * nj);
-        pe->nbin = 0;
-        int ip, jp, n;
+        int ip, jp, n, m = 0;
+        double wsum = 0.;
         for (ip = 0; ip < ni; ip++) {
                 double a, fa;
-                prim_envelope(ai[ip], li, ang, &a, &fa);
+                prim_envelope(ai[ip], li, t, ang, &a, &fa);
                 double ca = prim_cmax(ish, ip, bas, env) * fa;
                 for (jp = 0; jp < nj; jp++) {
                         double b, fb;
-                        prim_envelope(aj[jp], lj, ang, &b, &fb);
+                        prim_envelope(aj[jp], lj, t, ang, &b, &fb);
                         double p = a + b;
                         double k = ca * prim_cmax(jsh, jp, bas, env) * fb * exp(-a * b / p * r2) *
                                    pow(M_PI / p, 1.5);
                         double g0 = MAX(sr_gauss(p, qlo, omega, 0.), sr_gauss(p, qhi, omega, 0.));
-                        if (k * cqhi * g0 < pcut) {
-                                continue;
-                        }
+                        pp[m].w = k * cqhi * g0;
+                        pp[m].p = p;
+                        pp[m].k = k;
                         /* product centre A + b/p (B - A): offset from the midpoint */
-                        double shift = fabs(b / p - .5) * rab;
-                        for (n = 0; n < pe->nbin; n++) {
-                                if (p < pe->p[n] * PBIN_RATIO && p * PBIN_RATIO > pe->p[n]) {
-                                        break;
-                                }
-                        }
-                        if (n == pe->nbin) {
-                                if (n == NPBIN_MAX) {
-                                        n = NPBIN_MAX - 1;  /* merge into the last bin */
-                                } else {
-                                        pe->nbin++;
-                                        pe->p[n] = p;
-                                        pe->pmax[n] = p;
-                                        pe->k[n] = 0.;
-                                        pe->shift[n] = 0.;
-                                }
-                        }
-                        pe->p[n] = MIN(pe->p[n], p);
-                        pe->pmax[n] = MAX(pe->pmax[n], p);
-                        pe->k[n] += k;
-                        pe->shift[n] = MAX(pe->shift[n], shift);
+                        pp[m].shift = fabs(b / p - .5) * rab;
+                        wsum += pp[m].w;
+                        m++;
                 }
         }
+        pe->nbin = 0;
+        if (wsum < .5 * cutoff) {
+                return;
+        }
+        qsort(pp, m, sizeof(PrimPair), cmp_primpair);
+        int i0 = 0;
+        double dropped = 0.;
+        while (i0 < m && dropped + pp[i0].w < .5 * cutoff) {
+                dropped += pp[i0].w;
+                i0++;
+        }
+        for (; i0 < m; i0++) {
+                double p = pp[i0].p;
+                for (n = 0; n < pe->nbin; n++) {
+                        if (p < pe->p[n] * PBIN_RATIO && p * PBIN_RATIO > pe->p[n]) {
+                                break;
+                        }
+                }
+                if (n == pe->nbin) {
+                        if (n == NPBIN_MAX) {
+                                n = NPBIN_MAX - 1;  /* merge into the last bin */
+                        } else {
+                                pe->nbin++;
+                                pe->p[n] = p;
+                                pe->pmax[n] = p;
+                                pe->k[n] = 0.;
+                                pe->shift[n] = 0.;
+                        }
+                }
+                pe->p[n] = MIN(pe->p[n], p);
+                pe->pmax[n] = MAX(pe->pmax[n], p);
+                pe->k[n] += pp[i0].k;
+                pe->shift[n] = MAX(pe->shift[n], pp[i0].shift);
+        }
+}
+
+/* sum over bins of the long-range tail bound k Q erfc(beta d')/d', d' = d - shift */
+static double pair_tail(PairEnvelope *pe, const double *beta, double kq, double d)
+{
+        double t = 0.;
+        int n;
+        for (n = 0; n < pe->nbin; n++) {
+                double dd = d - pe->shift[n];
+                if (dd <= 0.) {
+                        return 1e300;
+                }
+                t += pe->k[n] * kq * erfc(beta[n] * dd) / dd;
+        }
+        return t;
+}
+
+/* radius beyond which no aux function can reach the cutoff (0 if none can at all) */
+static double pair_radius(PairEnvelope *pe, double cqhi, double qlo, double qhi,
+                          double omega, double cutoff)
+{
+        double beta[NPBIN_MAX];
+        double g0 = 0.;
+        int n;
+        for (n = 0; n < pe->nbin; n++) {
+                beta[n] = 1. / sqrt(1. / (omega * omega) + 1. / pe->p[n] + 1. / qlo);
+                g0 += pe->k[n] * cqhi * MAX(MAX(sr_gauss(pe->p[n], qlo, omega, 0.),
+                                                sr_gauss(pe->p[n], qhi, omega, 0.)),
+                                            MAX(sr_gauss(pe->pmax[n], qlo, omega, 0.),
+                                                sr_gauss(pe->pmax[n], qhi, omega, 0.)));
+        }
+        if (g0 < cutoff) {
+                return 0.;
+        }
+        double lo = 0., hi = 1.;
+        while (pair_tail(pe, beta, cqhi, hi) > cutoff && hi < 1e4) {
+                lo = hi;
+                hi *= 2.;
+        }
+        int it;
+        for (it = 0; it < 50; it++) {
+                double mid = .5 * (lo + hi);
+                if (pair_tail(pe, beta, cqhi, mid) > cutoff) {
+                        lo = mid;
+                } else {
+                        hi = mid;
+                }
+        }
+        return hi;
+}
+
+static inline double sr_gauss0(double p, double q, double omega)
+{
+        double gamma = sqrt(p * q / (p + q));
+        double beta = 1. / sqrt(1. / (omega * omega) + 1. / p + 1. / q);
+        return 2. * (gamma - beta) / sqrt(M_PI);
+}
+
+/* cheap upper bound of pair_aux_bound (no erf): g(d) <= g(0) and
+ * g(d) <= erfc(beta d)/d <= exp(-beta^2 d^2)/d, beta decreasing towards small p */
+static inline double pair_aux_bound_cheap(PairEnvelope *pe, double q, double kq, double d, double omega)
+{
+        double est = 0.;
+        int n;
+        for (n = 0; n < pe->nbin; n++) {
+                double dd = MAX(0., d - pe->shift[n]);
+                double g = MAX(sr_gauss0(pe->p[n], q, omega), sr_gauss0(pe->pmax[n], q, omega));
+                if (dd > 0.) {
+                        double b2 = 1. / (1. / (omega * omega) + 1. / pe->p[n] + 1. / q);
+                        g = MIN(g, exp(-b2 * dd * dd) / dd);
+                }
+                est += pe->k[n] * kq * g;
+        }
+        return est;
 }
 
 /* bound of (pair | aux shell)_SR for an aux envelope (q, charge kq) at distance d
@@ -239,7 +324,8 @@ static inline double pair_aux_bound(PairEnvelope *pe, double q, double kq, doubl
  *            sh_cell[j] >= i are evaluated (the caller adds the transpose of
  *            the off-diagonal shell blocks: (mu_0 nu_T|.) = (nu_0 mu_-T|.) )
  * aux_fold:  [natot] aux offset in cell 0 of each aux image shell (indexed by shell id)
- * qmin, cqmax: [natot] envelope exponent and envelope charge of each aux shell
+ * qmin, cqmax: [NENV, nbas] envelope exponent and charge of each aux shell for
+ *            each envelope parameter ENV_T (rows indexed by shell id)
  * grid:      aux bins (origin, spacing, dims, bin_start, bin_shells)
  * ang:       [lmax+1] largest |angular part| per unit coefficient (see prim_envelope)
  * stats:     [3] out: number of pairs kept, triples evaluated, triples screened
@@ -257,16 +343,23 @@ void SOCpbc_sr_int3c(double *out, int nao0, int naux0,
         CINTOpt *opt = NULL;
         int3c2e_optimizer(&opt, atm, natm, bas, nbas, env);
         size_t cache = max_cache(int3c2e_sph, 0, nbas, atm, natm, bas, nbas, env);
-        int dimax = 0;
+        int dimax = 0, npmax = 1;
         int i;
         for (i = 0; i < nbas; i++) {
                 dimax = MAX(dimax, shell_dim(i, bas));
         }
-        double qlo = 1e300, qhi = 0., cqhi = 0.;
-        for (i = aux_sh0; i < aux_sh0 + naux_sh; i++) {
-                qlo = MIN(qlo, qmin[i]);
-                qhi = MAX(qhi, qmin[i]);
-                cqhi = MAX(cqhi, cqmax[i]);
+        for (i = 0; i < nao_sh; i++) {
+                npmax = MAX(npmax, bas[i * BAS_SLOTS + NPRIM_OF]);
+        }
+        double qlo[NENV], qhi[NENV], cqhi[NENV];
+        int ie;
+        for (ie = 0; ie < NENV; ie++) {
+                qlo[ie] = 1e300; qhi[ie] = 0.; cqhi[ie] = 0.;
+                for (i = aux_sh0; i < aux_sh0 + naux_sh; i++) {
+                        qlo[ie] = MIN(qlo[ie], qmin[ie * nbas + i]);
+                        qhi[ie] = MAX(qhi[ie], qmin[ie * nbas + i]);
+                        cqhi[ie] = MAX(cqhi[ie], cqmax[ie * nbas + i]);
+                }
         }
         const size_t nn = (size_t)nao0 * nao0;
         long npair = 0, ntrip = 0, nskip = 0;
@@ -275,7 +368,8 @@ void SOCpbc_sr_int3c(double *out, int nao0, int naux0,
 {
         double *buf = malloc(sizeof(double) * ((size_t)dimax * dimax * dimax + cache));
         double *cbuf = buf + (size_t)dimax * dimax * dimax;
-        PairEnvelope pe;
+        PrimPair *pp = malloc(sizeof(PrimPair) * (size_t)npmax * npmax);
+        PairEnvelope pe[NENV];
         int shls[3];
         int ish, jsh;
 #pragma omp for schedule(dynamic)
@@ -292,24 +386,16 @@ void SOCpbc_sr_int3c(double *out, int nao0, int naux0,
                         double r2 = rij[0] * rij[0] + rij[1] * rij[1] + rij[2] * rij[2];
                         double rab = sqrt(r2);
                         /* primitive pairs that can matter for any aux function */
-                        pair_envelope(&pe, ish, jsh, r2, rab, cutoff, cqhi, qlo, qhi, omega, ang, bas, env);
-                        if (pe.nbin == 0) {
-                                continue;
-                        }
-                        double rmax = 0.;
-                        int n, x;
-                        /* bins add up, so each must stay below cutoff/nbin */
-                        const double bcut = cutoff / pe.nbin;
-                        for (n = 0; n < pe.nbin; n++) {
-                                double beta = 1. / sqrt(1. / (omega * omega) + 1. / pe.p[n] + 1. / qlo);
-                                double g0 = MAX(MAX(sr_gauss(pe.p[n], qlo, omega, 0.),
-                                                    sr_gauss(pe.p[n], qhi, omega, 0.)),
-                                                MAX(sr_gauss(pe.pmax[n], qlo, omega, 0.),
-                                                    sr_gauss(pe.pmax[n], qhi, omega, 0.)));
-                                if (pe.k[n] * cqhi * g0 < bcut) {
-                                        continue;
-                                }
-                                rmax = MAX(rmax, sr_radius(beta, pe.k[n] * cqhi, bcut) + pe.shift[n]);
+                        /* every envelope bounds the pair; the primitive pairs
+                         * each drops sum to < cutoff/2, so a triple can be
+                         * skipped when one of them bounds the rest by cutoff/2 */
+                        int n, x, e;
+                        double rmax = 1e300;
+                        for (e = 0; e < NENV; e++) {
+                                pair_envelope(pe + e, ish, jsh, r2, rab, cutoff, cqhi[e], qlo[e], qhi[e],
+                                              omega, ENV_T[e], ang, bas, env, pp);
+                                rmax = MIN(rmax, pe[e].nbin == 0 ? 0. :
+                                           pair_radius(pe + e, cqhi[e], qlo[e], qhi[e], omega, .5 * cutoff));
                         }
                         if (rmax <= 0.) {
                                 continue;
@@ -342,9 +428,16 @@ void SOCpbc_sr_int3c(double *out, int nao0, int naux0,
                                         if (d > rmax) {
                                                 continue;
                                         }
-                                        double q = qmin[ksh];
-                                        double est = pair_aux_bound(&pe, q, cqmax[ksh], d, omega);
-                                        if (est < cutoff) {
+                                        int skip = 0;
+                                        for (e = 0; e < NENV && !skip; e++) {
+                                                skip = pair_aux_bound_cheap(pe + e, qmin[e * nbas + ksh],
+                                                                            cqmax[e * nbas + ksh], d, omega) < .5 * cutoff;
+                                        }
+                                        for (e = 0; e < NENV && !skip; e++) {
+                                                skip = pair_aux_bound(pe + e, qmin[e * nbas + ksh],
+                                                                      cqmax[e * nbas + ksh], d, omega) < .5 * cutoff;
+                                        }
+                                        if (skip) {
                                                 nskip++;
                                                 continue;
                                         }
@@ -369,6 +462,7 @@ void SOCpbc_sr_int3c(double *out, int nao0, int naux0,
                         } } }
                 }
         }
+        free(pp);
         free(buf);
 }
         CINTdel_optimizer(&opt);
@@ -408,13 +502,18 @@ void SOCpbc_sr_int2c(double *out, int naux0, int aux_sh0, int naux_sh0, int naux
                 const double *rp = shell_center(psh, atm, bas, env);
                 const int dp = shell_dim(psh, bas);
                 const int pp = aux_fold[psh];
-                const double kp = cqmax[psh];
+
                 for (qsh = aux_sh0; qsh < aux_sh0 + naux_sh; qsh++) {
                         const double *rq = shell_center(qsh, atm, bas, env);
                         double d = sqrt((rp[0] - rq[0]) * (rp[0] - rq[0]) +
                                         (rp[1] - rq[1]) * (rp[1] - rq[1]) +
                                         (rp[2] - rq[2]) * (rp[2] - rq[2]));
-                        double est = kp * cqmax[qsh] * sr_gauss(qmin[psh], qmin[qsh], omega, d);
+                        double est = 1e300;
+                        int e;
+                        for (e = 0; e < NENV; e++) {
+                                est = MIN(est, cqmax[e * nbas + psh] * cqmax[e * nbas + qsh] *
+                                               sr_gauss(qmin[e * nbas + psh], qmin[e * nbas + qsh], omega, d));
+                        }
                         if (est < cutoff) {
                                 nskip++;
                                 continue;
@@ -438,4 +537,13 @@ void SOCpbc_sr_int2c(double *out, int naux0, int aux_sh0, int naux_sh0, int naux
         CINTdel_optimizer(&opt);
         stats[0] = npair;
         stats[1] = nskip;
+}
+
+int SOCpbc_nenv(double *t)
+{
+        int e;
+        for (e = 0; e < NENV; e++) {
+                t[e] = ENV_T[e];
+        }
+        return NENV;
 }

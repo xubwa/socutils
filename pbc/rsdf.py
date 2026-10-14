@@ -93,12 +93,12 @@ def _angular_amplitude(lmax):
     return ang
 
 
-def _shell_envelope(mol, ang):
+def _shell_envelope(mol, ang, t=.5):
     '''Envelope of each shell: |chi| <= Q (q/pi)^1.5 exp(-q r^2) for every function.
 
-    r^l exp(-a r^2) <= (l/(a e))^(l/2) exp(-a r^2 / 2), so primitive k contributes
-    the charge |c_k| ang[l] (l/(a_k e))^(l/2) (pi/a'_k)^1.5 with a' = a (l = 0) or
-    a/2 (l > 0).  Returns the smallest envelope exponent q and the summed charge Q
+    r^l exp(-a r^2) <= (l/(2(1-t)a e))^(l/2) exp(-t a r^2) for 0 < t < 1, so
+    primitive k contributes the charge |c_k| ang[l] (l/(2(1-t)a_k e))^(l/2)
+    (pi/a'_k)^1.5 with a' = a (l = 0) or t a (l > 0).  Returns the smallest envelope exponent q and the summed charge Q
     (bounding a contracted shell by its most diffuse exponent).'''
     qmin = np.empty(mol.nbas)
     charge = np.empty(mol.nbas)
@@ -109,7 +109,7 @@ def _shell_envelope(mol, ang):
         if l == 0:
             ae, fac = a, ang[0] * np.ones_like(a)
         else:
-            ae, fac = .5 * a, ang[l] * (l / (a * np.e))**(.5 * l)
+            ae, fac = t * a, ang[l] * (l / (2 * (1 - t) * a * np.e))**(.5 * l)
         qmin[i] = ae.min()
         charge[i] = (c * fac * (np.pi / ae)**1.5).sum()
     return qmin, charge
@@ -278,19 +278,24 @@ class RSDF(lib.StreamObject):
         aomol, Tao, sh_fold, amin, cmax, kij = self._ao_images()
         lmax = max(cell._bas[:, gto.ANG_OF].max(), fitmol0._bas[:, gto.ANG_OF].max())
         ang = _angular_amplitude(lmax)
-        qmin0, cq0 = _shell_envelope(fitmol0, ang)
+        libp = _libpbcdf()
+        env_t = np.zeros(8)
+        nenv = libp.SOCpbc_nenv(env_t.ctypes.data_as(ctypes.c_void_p))
+        env_t = env_t[:nenv]
+        # one envelope (exponent, charge) per shell and envelope parameter t
+        qmin0, cq0 = np.array([_shell_envelope(fitmol0, ang, t) for t in env_t]).transpose(1, 0, 2)
         # Auxiliary functions enter through fit coefficients, so their bound
         # depends on the units the coefficients are measured in.  'l2' takes the
         # libcint (L2) normalisation, 'coulomb' rescales to (P|P) = 1, 'max'
         # (default) the larger of the two.  The nuclei are not fitted and carry
         # their physical charge Z.
         if self.aux_bound in ('coulomb', 'max'):
-            c_coul = cq0[:naux_sh_cell] / np.sqrt(_aux_coulomb_diag(auxmol0))
+            c_coul = cq0[:, :naux_sh_cell] / np.sqrt(_aux_coulomb_diag(auxmol0))
             if self.aux_bound == 'coulomb':
-                cq0[:naux_sh_cell] = c_coul
+                cq0[:, :naux_sh_cell] = c_coul
             else:
-                cq0[:naux_sh_cell] = np.maximum(cq0[:naux_sh_cell], c_coul)
-        cq0[naux_sh_cell:] *= nucscale
+                cq0[:, :naux_sh_cell] = np.maximum(cq0[:, :naux_sh_cell], c_coul)
+        cq0[:, naux_sh_cell:] *= nucscale
         # aux images: far enough for the most diffuse pair with the most diffuse aux
         p_lo = 2 * amin.min()
         beta = 1. / np.sqrt(1. / omega**2 + 2. / p_lo + 1. / qmin0.min())
@@ -322,10 +327,10 @@ class RSDF(lib.StreamObject):
         aux_fold[aux_sh0:] = np.tile(fit_loc0[:-1], len(Tfit))
         ao_fold = np.zeros(sysmol.nbas, dtype=np.int32)
         ao_fold[:nao_sh] = sh_fold
-        qmin = np.zeros(sysmol.nbas)
-        cq = np.zeros(sysmol.nbas)
-        qmin[aux_sh0:] = np.tile(qmin0, len(Tfit))
-        cq[aux_sh0:] = np.tile(cq0, len(Tfit))
+        qmin = np.zeros((nenv, sysmol.nbas))
+        cq = np.zeros((nenv, sysmol.nbas))
+        qmin[:, aux_sh0:] = np.tile(qmin0, len(Tfit))
+        cq[:, aux_sh0:] = np.tile(cq0, len(Tfit))
 
         # bin the aux image shells on a uniform grid
         rk = sysmol.atom_coords()[bas[aux_sh0:, gto.ATOM_OF]]
@@ -339,7 +344,6 @@ class RSDF(lib.StreamObject):
         bin_start = np.searchsorted(binid[order], np.arange(np.prod(gdims) + 1)).astype(np.int32)
 
         cutoff = self.precision * 1e-2
-        libp = _libpbcdf()
         c_int, c_dbl = ctypes.c_int, ctypes.c_double
         ptr = lambda x: x.ctypes.data_as(ctypes.c_void_p)
         stats = np.zeros(3, dtype=np.int64)
