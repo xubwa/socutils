@@ -142,6 +142,37 @@ class KnownValues(unittest.TestCase):
         L = lib.unpack_tril(np.vstack(list(r0.loop())))
         self.assertLess(abs(np.einsum('Pij,P->ij', L, np.einsum('Pij,ji->P', L, d)) - r0.get_jk(d)[0]).max(), 1e-12)
 
+    def test_occ_ri_exchange(self):
+        '''K from occupied factors (tagged dm) equals K from the density matrix,
+        for real/fractional, complex, and spin-orbital (GHF) orbitals.'''
+        from pyscf import lib
+        mol = gto.M(atom='H 0 0 -0.7; H 0 0 0.7', unit='B', basis='cc-pvdz', verbose=0)
+        cell = cr.molecule_in_box(mol, 9.)
+        r = RSDF(cell, df.addons.aug_etb(mol, beta=2.0), precision=1e-10, nuc_zeta=ZETA).build()
+        nao = cell.nao
+        rng = np.random.default_rng(7)
+        occ = np.array([2., 1.3, .4, 0., .7])
+        for c in (rng.normal(size=(nao, 5)), rng.normal(size=(nao, 5)) + 1j * rng.normal(size=(nao, 5))):
+            dm = (c * occ) @ c.conj().T
+            j0, k0 = r.get_jk(dm, hermi=0)
+            j1, k1 = r.get_jk(lib.tag_array(dm, mo_coeff=c, mo_occ=occ), hermi=0)
+            self.assertLess(abs(k1 - k0).max(), 1e-12)
+            self.assertLess(abs(j1 - j0).max(), 1e-12)
+        # two densities at once (UHF-like tags)
+        c2 = rng.normal(size=(2, nao, 5))
+        dm2 = np.einsum('xpi,i,xqi->xpq', c2, occ, c2)
+        k0 = r.get_jk(dm2, with_j=False)[1]
+        k1 = r.get_jk(lib.tag_array(dm2, mo_coeff=c2, mo_occ=np.array([occ, occ])), with_j=False)[1]
+        self.assertLess(abs(k1 - k0).max(), 1e-12)
+        # spin-orbital, non-collinear complex spinors
+        cg = rng.normal(size=(2 * nao, 4)) + 1j * rng.normal(size=(2 * nao, 4))
+        og = np.array([1., 1., .5, .25])
+        dmg = (cg * og) @ cg.conj().T
+        j0, k0 = r.get_jk_ghf(dmg, hermi=1)
+        j1, k1 = r.get_jk_ghf(lib.tag_array(dmg, mo_coeff=cg, mo_occ=og), hermi=1)
+        self.assertLess(abs(j1 - j0).max(), 1e-12)
+        self.assertLess(abs(k1 - k0).max(), 1e-12)
+
 
 
 class GHFBlocks(unittest.TestCase):

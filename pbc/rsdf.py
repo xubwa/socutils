@@ -143,6 +143,29 @@ def _k_real_cderi(L, d):
     return X.transpose(1, 0, 2).reshape(nao, -1) @ L.reshape(-1, nao)
 
 
+def _occ_factors(dm, nrow):
+    '''Occupied factors C sqrt(n) (one (nrow, nocc) array per density) when dm
+    carries pyscf's mo_coeff/mo_occ tags with non-negative occupations, so that
+    dm = C n C^H; else None.'''
+    c = getattr(dm, 'mo_coeff', None)
+    n = getattr(dm, 'mo_occ', None)
+    if c is None or n is None:
+        return None
+    c = np.asarray(c)
+    n = np.asarray(n, dtype=float)
+    c = c.reshape(-1, nrow, c.shape[-1])
+    n = n.reshape(-1, n.shape[-1])
+    if len(c) != len(n) or (n < -1e-14).any():
+        return None
+    return [ci[:, ni > 1e-14] * np.sqrt(ni[ni > 1e-14]) for ci, ni in zip(c, n)]
+
+
+def _xxh(X, Y):
+    '''sum_P X_P Y_P^H for (naux, nao, nocc) stacks.'''
+    nao = X.shape[1]
+    return X.transpose(1, 0, 2).reshape(nao, -1) @ Y.transpose(1, 0, 2).reshape(nao, -1).conj().T
+
+
 def ghf_get_jk(get_jk, dm, hermi=0, with_j=True, with_k=True):
     '''Spin-orbital (2c) J/K from a scalar J/K builder.
 
@@ -530,47 +553,106 @@ class RSDF(lib.StreamObject):
         for p0 in range(0, self.cderi.shape[0], blksize):
             yield np.asarray(self.cderi[p0:p0 + blksize])
 
-    def get_jk(self, dm, hermi=1, with_j=True, with_k=True, exxdiv=None):
-        '''Gamma-point J and K (pyscf conventions; dm real or complex).'''
-        if self.cderi is None:
-            self.build()
-        dm = np.asarray(dm)
+    def _j_density(self, dms):
+        '''Packed (nset, npair) densities for J: sum_{mu>=nu} (D_mu nu + D_nu mu)(1 - delta/2).'''
         nao = self.cell.nao
-        dms = dm.reshape(-1, nao, nao)
-        nset = len(dms)
-        # J: rho_P = sum_{mu>=nu} L_P,mu nu (D_mu nu + D_nu mu) (1 - delta/2)
         tril = np.tril_indices(nao)
         dsym = dms + dms.transpose(0, 2, 1)
         dsym[:, np.arange(nao), np.arange(nao)] *= .5
-        dtril = dsym[:, tril[0], tril[1]]                             # (nset, npair)
-        vj = np.zeros((nset, len(tril[0])), dtype=dtril.dtype) if with_j else None
-        vk = np.zeros(dms.shape, dtype=dms.dtype) if with_k else None
+        return dsym[:, tril[0], tril[1]]
+
+    def _exxdiv(self, vk, dms, exxdiv):
+        if exxdiv == 'ewald':
+            from pyscf.pbc import tools
+            madelung = tools.pbc.madelung(self.cell, np.zeros((1, 3)))
+            return vk + madelung * np.einsum('ij,xjk,kl->xil', self.S, dms, self.S)
+        elif exxdiv is not None:
+            raise NotImplementedError(exxdiv)
+        return vk
+
+    def get_jk(self, dm, hermi=1, with_j=True, with_k=True, exxdiv=None):
+        '''Gamma-point J and K (pyscf conventions; dm real or complex).
+
+        When dm carries mo_coeff/mo_occ (pyscf tag_array, occupations >= 0,
+        fractional allowed), K is built from the occupied factors (occ-RI):
+        K = sum_P (L_P C)(L_P C)^H, naux nao^2 nocc instead of 2 naux nao^3.'''
+        if self.cderi is None:
+            self.build()
+        nao = self.cell.nao
+        occ = _occ_factors(dm, nao) if with_k else None
+        dm = np.asarray(dm)
+        dms = dm.reshape(-1, nao, nao)
+        nset = len(dms)
+        if occ is not None and len(occ) != nset:
+            occ = None
+        dtril = self._j_density(dms)
+        vj = np.zeros((nset, dtril.shape[1]), dtype=dtril.dtype) if with_j else None
+        kdtype = np.result_type(dms, *(occ or []))
+        vk = np.zeros(dms.shape, dtype=kdtype) if with_k else None
         for Lp in self.loop():
             if with_j:
                 vj += (dtril @ Lp.T) @ Lp
             if with_k:
                 L = lib.unpack_tril(Lp)
                 for i, d in enumerate(dms):
-                    vk[i] += _k_real_cderi(L, d.real)
-                    if np.iscomplexobj(d):
-                        vk[i] += 1j * _k_real_cderi(L, d.imag)
-                L = None
+                    if occ is not None:
+                        X = L @ occ[i]                                 # (naux, nao, nocc)
+                        vk[i] += _xxh(X, X)
+                    else:
+                        vk[i] += _k_real_cderi(L, d.real)
+                        if np.iscomplexobj(d):
+                            vk[i] += 1j * _k_real_cderi(L, d.imag)
+                L = X = None
         if with_j:
             vj = lib.unpack_tril(vj, lib.SYMMETRIC).reshape(dm.shape)
         if with_k:
-            if exxdiv == 'ewald':
-                from pyscf.pbc import tools
-                madelung = tools.pbc.madelung(self.cell, np.zeros((1, 3)))
-                vk = vk + madelung * np.einsum('ij,xjk,kl->xil', self.S, dms, self.S)
-            elif exxdiv is not None:
-                raise NotImplementedError(exxdiv)
-            vk = vk.reshape(dm.shape)
+            if not np.iscomplexobj(dms) and np.iscomplexobj(vk):
+                vk = vk.real
+            vk = self._exxdiv(vk, dms, exxdiv).reshape(dm.shape)
         return vj, vk
 
     def get_jk_ghf(self, dm, hermi=0, with_j=True, with_k=True, exxdiv=None):
-        '''J/K for a (2nao, 2nao) spin-orbital density matrix.'''
-        return ghf_get_jk(lambda d, h, wj, wk: self.get_jk(d, h, wj, wk, exxdiv=exxdiv),
-                          dm, hermi, with_j, with_k)
+        '''J/K for a (2nao, 2nao) spin-orbital density matrix.  With
+        mo_coeff/mo_occ tags K uses the occupied spinors (occ-RI): the spin
+        blocks are K_st = sum_P (L_P C_s)(L_P C_t)^H, one pass over the vectors.'''
+        nao = self.cell.nao
+        occ = _occ_factors(dm, 2 * nao) if with_k else None
+        if occ is None:
+            return ghf_get_jk(lambda d, h, wj, wk: self.get_jk(d, h, wj, wk, exxdiv=exxdiv),
+                              dm, hermi, with_j, with_k)
+        if self.cderi is None:
+            self.build()
+        dm = np.asarray(dm)
+        dms = dm.reshape(-1, 2 * nao, 2 * nao)
+        nset = len(dms)
+        dtril = self._j_density(dms[:, :nao, :nao] + dms[:, nao:, nao:])
+        vj = np.zeros((nset, dtril.shape[1]), dtype=dtril.dtype) if with_j else None
+        vk = np.zeros(dms.shape, dtype=np.result_type(dms, *occ))
+        for Lp in self.loop():
+            if with_j:
+                vj += (dtril @ Lp.T) @ Lp
+            L = lib.unpack_tril(Lp)
+            for i, c in enumerate(occ):
+                Xa = L @ c[:nao]
+                Xb = L @ c[nao:]
+                vk[i, :nao, :nao] += _xxh(Xa, Xa)
+                vk[i, nao:, nao:] += _xxh(Xb, Xb)
+                vk[i, :nao, nao:] += _xxh(Xa, Xb)
+            L = Xa = Xb = None
+        vk[:, nao:, :nao] = vk[:, :nao, nao:].conj().transpose(0, 2, 1)
+        for i in range(nset):
+            for s0, t0 in ((0, 0), (nao, nao), (0, nao), (nao, 0)):
+                blk = vk[i:i + 1, s0:s0 + nao, t0:t0 + nao]
+                vk[i, s0:s0 + nao, t0:t0 + nao] = self._exxdiv(
+                    blk, dms[i:i + 1, s0:s0 + nao, t0:t0 + nao], exxdiv)[0]
+        if with_j:
+            j = lib.unpack_tril(vj, lib.SYMMETRIC)
+            vj = np.zeros(dms.shape, dtype=j.dtype)
+            vj[:, :nao, :nao] = vj[:, nao:, nao:] = j
+            vj = vj.reshape(dm.shape)
+        else:
+            vj = None
+        return vj, vk.reshape(dm.shape)
 
     def get_nuc(self):
         '''Electron-nucleus attraction with Gaussian nuclei, exact (not fitted).'''
