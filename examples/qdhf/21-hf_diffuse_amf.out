@@ -23,3 +23,46 @@ amfX2C (h4 + atom-block-diagonal G_L): one negative-energy state rises
 through the gap; at k=5 it sits at the F 1s energy (-27.51) and the F 1s
 state is assigned to the negative-energy half, so X and the 2c Hamiltonian
 collapse.  x2cmp (molecular G[D_atoms]) and X2C-1e keep the gap at -2c^2.
+
+Variants of the 4c decoupling matrix (K_L = atom-block-diagonal exchange, J_mol/K_mol = molecular J/K of the superposed atomic D4c;
+'diffuse blk' = J_mol only on blocks with a primitive exponent < 0.03; thr = canonical orthogonalization of S4c):
+k=3 thr None  amf  J_L - K_L          #E<-c^2 114  top neg -3.0989e+04  lowest pos -2.7509e+01
+k=3 thr None  J_mol - K_L             #E<-c^2 114  top neg -3.7558e+04  lowest pos -2.4429e+03
+k=3 thr None  J_L - K_mol             #E<-c^2 114  top neg -3.0989e+04  lowest pos -2.7798e+01
+k=3 thr None  J_mol(diffuse blk)-K_L  #E<-c^2 114  top neg -3.4127e+04  lowest pos -7.0285e+02
+k=3 thr None  eamf J_mol - K_mol      #E<-c^2 114  top neg -3.7558e+04  lowest pos -2.6565e+01
+k=3 thr 1e-05 amf  J_L - K_L          #E<-c^2  62  top neg -3.7560e+04  lowest pos -2.7513e+01
+k=3 thr 1e-05 J_mol - K_L             #E<-c^2  62  top neg -3.7558e+04  lowest pos -2.4433e+03
+k=3 thr 1e-05 J_L - K_mol             #E<-c^2  62  top neg -3.7560e+04  lowest pos -2.7804e+01
+k=3 thr 1e-05 J_mol(diffuse blk)-K_L  #E<-c^2  62  top neg -3.7560e+04  lowest pos -7.0326e+02
+k=3 thr 1e-05 eamf J_mol - K_mol      #E<-c^2  62  top neg -3.7558e+04  lowest pos -2.6565e+01
+k=4 thr None  amf  J_L - K_L          #E<-c^2 128  top neg -3.5883e+04  lowest pos -1.0288e+04
+k=4 thr None  J_mol - K_L             #E<-c^2 130  top neg -3.7557e+04  lowest pos -7.4599e+03
+k=4 thr None  J_L - K_mol             #E<-c^2 128  top neg -3.5883e+04  lowest pos -1.0288e+04
+k=4 thr None  J_mol(diffuse blk)-K_L  #E<-c^2 130  top neg -3.3720e+04  lowest pos -7.2319e+03
+k=4 thr None  eamf J_mol - K_mol      #E<-c^2 130  top neg -3.7557e+04  lowest pos -2.6565e+01
+k=4 thr 1e-05 amf  J_L - K_L          #E<-c^2  62  top neg -3.7560e+04  lowest pos -2.7514e+01
+k=4 thr 1e-05 J_mol - K_L             #E<-c^2  62  top neg -3.7558e+04  lowest pos -7.4602e+03
+k=4 thr 1e-05 J_L - K_mol             #E<-c^2  62  top neg -3.7560e+04  lowest pos -2.7806e+01
+k=4 thr 1e-05 J_mol(diffuse blk)-K_L  #E<-c^2  62  top neg -3.7560e+04  lowest pos -7.2323e+03
+k=4 thr 1e-05 eamf J_mol - K_mol      #E<-c^2  62  top neg -3.7558e+04  lowest pos -2.6565e+01
+k=5 thr None  amf  J_L - K_L          #E<-c^2 144  top neg -3.2388e+04  lowest pos -2.7511e+01
+k=5 thr None  J_mol - K_L             #E<-c^2 146  top neg -3.7557e+04  lowest pos -1.6246e+04
+k=5 thr None  J_L - K_mol             #E<-c^2 144  top neg -3.2388e+04  lowest pos -2.7801e+01
+k=5 thr None  J_mol(diffuse blk)-K_L  #E<-c^2 146  top neg -3.3699e+04  lowest pos -1.7419e+04
+k=5 thr None  eamf J_mol - K_mol      #E<-c^2 146  top neg -3.7557e+04  lowest pos -2.6565e+01
+k=5 thr 1e-05 amf  J_L - K_L          #E<-c^2  62  top neg -3.7560e+04  lowest pos -2.7513e+01
+k=5 thr 1e-05 J_mol - K_L             #E<-c^2  62  top neg -3.7558e+04  lowest pos -2.8782e+03
+k=5 thr 1e-05 J_L - K_mol             #E<-c^2  62  top neg -3.7560e+04  lowest pos -2.7805e+01
+k=5 thr 1e-05 J_mol(diffuse blk)-K_L  #E<-c^2  62  top neg -3.7560e+04  lowest pos -2.1511e+03
+k=5 thr 1e-05 eamf J_mol - K_mol      #E<-c^2  62  top neg -3.7558e+04  lowest pos -2.6565e+01
+k=6 thr None  amf  J_L - K_L          #E<-c^2 160  top neg -2.4795e+04  lowest pos -2.7511e+01
+k=6 thr None  J_mol - K_L             #E<-c^2 164  top neg -2.7808e+04  lowest pos -5.3442e+01
+k=6 thr None  J_L - K_mol             #E<-c^2 160  top neg -2.4795e+04  lowest pos -2.7802e+01
+k=6 thr None  J_mol(diffuse blk)-K_L  #E<-c^2 164  top neg -2.9136e+04  lowest pos -1.7221e+03
+k=6 thr None  eamf J_mol - K_mol      #E<-c^2 162  top neg -3.7557e+04  lowest pos -2.6565e+01
+k=6 thr 1e-05 amf  J_L - K_L          #E<-c^2  62  top neg -3.7560e+04  lowest pos -2.7514e+01
+k=6 thr 1e-05 J_mol - K_L             #E<-c^2  62  top neg -3.7558e+04  lowest pos -2.2376e+03
+k=6 thr 1e-05 J_L - K_mol             #E<-c^2  62  top neg -3.7560e+04  lowest pos -2.7805e+01
+k=6 thr 1e-05 J_mol(diffuse blk)-K_L  #E<-c^2  62  top neg -3.7560e+04  lowest pos -1.1873e+03
+k=6 thr 1e-05 eamf J_mol - K_mol      #E<-c^2  62  top neg -3.7558e+04  lowest pos -2.6565e+01
