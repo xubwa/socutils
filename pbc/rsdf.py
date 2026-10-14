@@ -71,6 +71,59 @@ def _shell_params(mol):
     return amin, cmax
 
 
+_ANG_CACHE = {}
+
+
+def _angular_amplitude(lmax):
+    '''ang[l] = max over directions of |chi| / (c r^l exp(-a r^2)) for a libcint
+    spherical function of momentum l with coefficient c (env value).  Measured
+    numerically so that libcint's normalisation conventions are absorbed; 5%
+    safety margin for the finite direction sample.'''
+    if lmax in _ANG_CACHE:
+        return _ANG_CACHE[lmax]
+    rng = np.random.default_rng(0)
+    u = rng.normal(size=(20000, 3))
+    u /= np.linalg.norm(u, axis=1)[:, None]
+    ang = np.empty(lmax + 1)
+    for l in range(lmax + 1):
+        m = gto.M(atom='X 0 0 0', basis={'X': [[l, [1., 1.]]]}, unit='Bohr', verbose=0)
+        c = m._env[m._bas[0, gto.PTR_COEFF]]
+        ang[l] = 1.05 * abs(m.eval_gto('GTOval_sph', u)).max() / (c * np.exp(-1.))
+    _ANG_CACHE[lmax] = ang
+    return ang
+
+
+def _shell_envelope(mol, ang):
+    '''Envelope of each shell: |chi| <= Q (q/pi)^1.5 exp(-q r^2) for every function.
+
+    r^l exp(-a r^2) <= (l/(a e))^(l/2) exp(-a r^2 / 2), so primitive k contributes
+    the charge |c_k| ang[l] (l/(a_k e))^(l/2) (pi/a'_k)^1.5 with a' = a (l = 0) or
+    a/2 (l > 0).  Returns the smallest envelope exponent q and the summed charge Q
+    (bounding a contracted shell by its most diffuse exponent).'''
+    qmin = np.empty(mol.nbas)
+    charge = np.empty(mol.nbas)
+    for i in range(mol.nbas):
+        l = mol.bas_angular(i)
+        a = mol.bas_exp(i)
+        c = abs(mol._libcint_ctr_coeff(i)).max(axis=1)
+        if l == 0:
+            ae, fac = a, ang[0] * np.ones_like(a)
+        else:
+            ae, fac = .5 * a, ang[l] * (l / (a * np.e))**(.5 * l)
+        qmin[i] = ae.min()
+        charge[i] = (c * fac * (np.pi / ae)**1.5).sum()
+    return qmin, charge
+
+
+def _aux_coulomb_diag(auxmol):
+    '''Smallest (P|P) of each aux shell.'''
+    out = np.empty(auxmol.nbas)
+    for i in range(auxmol.nbas):
+        d = np.diag(auxmol.intor('int2c2e', shls_slice=(i, i + 1, i, i + 1)))
+        out[i] = d.min()
+    return out
+
+
 def _sr_g(p, q, omega, d):
     '''SR (erfc) interaction of normalised s Gaussians, as in sr_int.c.'''
     from scipy.special import erf
@@ -223,20 +276,20 @@ class RSDF(lib.StreamObject):
         naux_sh_cell = auxmol0.nbas
 
         aomol, Tao, sh_fold, amin, cmax, kij = self._ao_images()
-        qmin0, cq0 = _shell_params(fitmol0)
-        # Auxiliary functions enter through fit coefficients.  Measured in
-        # Coulomb-normalised units ((P|P) = 1, effective size (pi/2q)^(1/4) for
-        # the s envelope) compact functions are bounded correctly but diffuse
-        # ones are under-estimated; in their L2 normalisation it is the other
-        # way round (Y2O3: either alone needs prec 1e-12, see DEVELOPMENT.md).
-        # Use the larger of the two.  The nuclei are not fitted and carry their
-        # physical charge Z.
-        qa = qmin0[:naux_sh_cell]
-        c_coul = (np.pi / (2 * qa))**.25 / (np.pi / qa)**1.5
-        if self.aux_bound == 'coulomb':
-            cq0[:naux_sh_cell] = c_coul
-        elif self.aux_bound == 'max':
-            cq0[:naux_sh_cell] = np.maximum(cq0[:naux_sh_cell], c_coul)
+        lmax = max(cell._bas[:, gto.ANG_OF].max(), fitmol0._bas[:, gto.ANG_OF].max())
+        ang = _angular_amplitude(lmax)
+        qmin0, cq0 = _shell_envelope(fitmol0, ang)
+        # Auxiliary functions enter through fit coefficients, so their bound
+        # depends on the units the coefficients are measured in.  'l2' takes the
+        # libcint (L2) normalisation, 'coulomb' rescales to (P|P) = 1, 'max'
+        # (default) the larger of the two.  The nuclei are not fitted and carry
+        # their physical charge Z.
+        if self.aux_bound in ('coulomb', 'max'):
+            c_coul = cq0[:naux_sh_cell] / np.sqrt(_aux_coulomb_diag(auxmol0))
+            if self.aux_bound == 'coulomb':
+                cq0[:naux_sh_cell] = c_coul
+            else:
+                cq0[:naux_sh_cell] = np.maximum(cq0[:naux_sh_cell], c_coul)
         cq0[naux_sh_cell:] *= nucscale
         # aux images: far enough for the most diffuse pair with the most diffuse aux
         p_lo = 2 * amin.min()
@@ -297,7 +350,7 @@ class RSDF(lib.StreamObject):
             c_int(aux_sh0), c_int(naux_sh), ptr(ao_fold), ptr(sh_cell), ptr(aux_fold),
             ptr(qmin), ptr(cq),
             ptr(origin), c_dbl(h), ptr(gdims), ptr(bin_start), ptr(bin_shells),
-            c_dbl(omega), c_dbl(cutoff),
+            c_dbl(omega), c_dbl(cutoff), ptr(ang),
             ptr(atm), c_int(sysmol.natm), ptr(bas), c_int(sysmol.nbas), ptr(env), ptr(stats))
         # only shell pairs (i, j) with cell shell of j >= i were evaluated; the
         # rest follow from (mu_0 nu_T|P) = (nu_0 mu_-T|P)
