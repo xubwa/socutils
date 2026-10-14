@@ -1,0 +1,9 @@
+HF...He cc-pVDZ, production socutils (double precision), dE(R) / Hartree
+1e = X2C-1e (SO), amf_fixed = amfX2C with the pure 2e atomic correction, x2cmp = eamfX2C (HF)
+  R/A  NR              1e              amf_fixed       x2cmp
+    5  -5.1539e-06     -5.1259e-06     -5.1251e-06     -5.1508e-06
+   10  -1.1653e-08     -5.3265e-09     -5.2844e-09     -1.1623e-08
+   20  -1.5025e-10      1.4386e-09      1.4475e-09     -1.4973e-10
+   40  -1.8332e-12      3.9525e-10      4.0082e-10     -2.1316e-12
+   80  -2.4158e-13      1.0135e-10      1.0070e-10      5.8265e-13
+  160   1.4211e-13      2.2325e-11      2.6503e-11      4.5475e-13
