@@ -135,7 +135,7 @@ class RSDF(lib.StreamObject):
             point nuclei (default 1e12)
     '''
 
-    def __init__(self, cell, auxbasis, omega=0.5, precision=1e-11, lindep=1e-12, nuc_zeta=1e12):
+    def __init__(self, cell, auxbasis, omega=0.5, precision=1e-10, lindep=1e-12, nuc_zeta=1e12):
         self.cell = cell
         self.auxbasis = auxbasis
         self.omega = omega
@@ -146,6 +146,7 @@ class RSDF(lib.StreamObject):
         self.stdout = cell.stdout
         self.max_memory = cell.max_memory
         self.grid_spacing = 4.0
+        self.aux_bound = 'max'       # aux bound units: 'max' (default), 'l2' or 'coulomb'
         self.cderi = None
         self.stats = {}
 
@@ -223,12 +224,19 @@ class RSDF(lib.StreamObject):
 
         aomol, Tao, sh_fold, amin, cmax, kij = self._ao_images()
         qmin0, cq0 = _shell_params(fitmol0)
-        # Auxiliary functions enter through fit coefficients, so their bounds are
-        # taken in Coulomb-normalised units ((P|P) = 1): for the s envelope the
-        # effective size is (pi/2q)^(1/4), independent of the L2 normalisation.
-        # The nuclei are not fitted and carry their physical charge Z.
+        # Auxiliary functions enter through fit coefficients.  Measured in
+        # Coulomb-normalised units ((P|P) = 1, effective size (pi/2q)^(1/4) for
+        # the s envelope) compact functions are bounded correctly but diffuse
+        # ones are under-estimated; in their L2 normalisation it is the other
+        # way round (Y2O3: either alone needs prec 1e-12, see DEVELOPMENT.md).
+        # Use the larger of the two.  The nuclei are not fitted and carry their
+        # physical charge Z.
         qa = qmin0[:naux_sh_cell]
-        cq0[:naux_sh_cell] = (np.pi / (2 * qa))**.25 / (np.pi / qa)**1.5
+        c_coul = (np.pi / (2 * qa))**.25 / (np.pi / qa)**1.5
+        if self.aux_bound == 'coulomb':
+            cq0[:naux_sh_cell] = c_coul
+        elif self.aux_bound == 'max':
+            cq0[:naux_sh_cell] = np.maximum(cq0[:naux_sh_cell], c_coul)
         cq0[naux_sh_cell:] *= nucscale
         # aux images: far enough for the most diffuse pair with the most diffuse aux
         p_lo = 2 * amin.min()

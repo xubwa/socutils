@@ -112,47 +112,85 @@ functions transformed analytically; |G| up to 2w sqrt(ln(1/prec) + ln 4pi).
 `rs_lr.LongRangeJK` is the same LR part as a direct J/K (no fitting), validated
 against FFTDF with omega to 1e-13.
 
-### 4.4 Lesson: screening must not depend on normalisation
+### 4.4 Lessons from the screening
 
-First version: errors of 1e-5..1e-6 in the exact-fit dense test, shrinking with
-precision.  Cause: libcint-normalised compact s shells have tiny charges, so
-quantities divided by those charges afterwards (nuclei) or multiplied by large
-fit coefficients (compact aux) amplify every screened-out integral (factor
-~6e7 for a 1e6 nucleus).  Fix: bounds in physical units, i.e. nuclei scaled to
-charge Z inside the libcint environment, aux functions measured in Coulomb-
-normalised units ((pi/2q)^(1/4) per s envelope).  After the fix the exact-fit
-dense test is at 5e-11 (prec 1e-12) for omega 0.5-2.
+**Bounds must be in the units the quantity is used in.**  First version:
+errors of 1e-5..1e-6 in the exact-fit dense test, shrinking with precision.
+libcint-normalised compact s shells have tiny charges, so quantities divided
+by those charges afterwards (nuclei) or multiplied by large fit coefficients
+(compact aux) amplify every screened-out integral (factor ~6e7 for a 1e6
+nucleus).  Nuclei are now scaled to their charge Z inside the libcint
+environment.
 
-The metric must be checked: at prec 1e-6 the quartz metric already has a
--6e-6 eigenvalue and J turns positive (+4.1e-4), the same signature as the
-pyscf failure.  RSDF warns when that happens.
+**Neither L2 nor Coulomb normalisation alone is a safe measure for the
+auxiliary functions.**  Coulomb-normalised bounds ((pi/2q)^(1/4) per s
+envelope) fix compact aux functions (exact-fit dense test 5e-11) but
+under-estimate diffuse ones: on Y2O3 at prec 1e-10 the metric got a -4e-8
+eigenvalue, J turned positive (+2.5e-5) and the omega dependence was 3.5e-4.
+L2-normalised bounds have the opposite problem.  Either alone needs prec 1e-12
+on Y2O3; the larger of the two converges at 1e-10 (default, `aux_bound='max'`).
 
-### 4.5 Results so far
+| Y2O3, omega 0.8 | J dE | K dE | metric min eig | triples | build |
+|---|---|---|---|---|---|
+| aux bound L2, prec 1e-10 | -1.8e-5 | 5.5e-5 | +2.4e-11 | 2.35e7 | 161 s |
+| aux bound Coulomb, prec 1e-12 | -1.8e-5 | 5.6e-5 | -5.7e-11 | 2.69e7 | 194 s |
+| aux bound L2, prec 1e-12 | -1.8e-5 | 5.5e-5 | +2.4e-11 | 3.60e7 | 213 s |
+
+**The metric must be checked.**  Loose screening shows up first as negative
+metric eigenvalues and a positive J error, the same signature as the pyscf
+failure: quartz at prec 1e-6 gives -6e-6 and J +5e-4; Y2O3 at prec 1e-6
+gives -4e-4 and J +2e-2.  RSDF warns when the metric is not positive
+semidefinite.
+
+**Next step for robustness:** a rigorous envelope.  For any r,
+r^l exp(-a r^2) <= (l/(a e))^(l/2) exp(-a r^2/2), so every primitive is bounded
+pointwise by an s Gaussian of half the exponent; with the positive erfc kernel
+the s-s interaction of the envelopes is then a true upper bound (with bin
+amplitudes summed rather than maximised).  The current bound has no angular
+factor, which is the likely reason Y (f AOs, aux up to l = 6) needs the
+conservative aux measure.
+
+### 4.5 Results
 
 Exact-fit tests (`pbc/test/test_rsdf.py`): energies and J/V_ne matrices vs the
-references to ~1e-12 for omega 0.4-1.5; tight-dense test 5e-11.
+references to ~1e-12 for omega 0.4-1.5; tight-dense test 5e-11 at prec 1e-12.
 
-Realistic bases, against RSJK prec 1e-10 (x2c-SVPall trimmed at 0.1, auxgen
-uncontracted tau 1e-8, omega 0.5, before the 4.4 fix):
+Realistic bases (x2c-SVPall trimmed at 0.1, auxgen uncontracted tau 1e-8),
+defaults (prec 1e-10, `aux_bound='max'`), against RSJK prec 1e-10:
 
-| system | J dE | K dE | pyscf GDF, same aux |
-|---|---|---|---|
-| alpha-quartz | -1.2e-5 | 2.2e-4 | -1.2e-5 / 2.2e-4 (identical) |
-| A-Y2O3 | -1.8e-5 | 5.5e-5 | **+6.7 / -0.29** |
+| system | omega | J dE | K dE | metric min eig | build (4 cores) |
+|---|---|---|---|---|---|
+| alpha-quartz (135 AO) | 0.5 | -1.2e-5 | 2.2e-4 | +1.7e-9 | 65 s |
+| alpha-quartz | 0.8 | -1.2e-5 | 2.2e-4 | +1.7e-9 | 120 s |
+| A-Y2O3 (128 AO) | 0.5 | -1.8e-5 | 5.5e-5 | -1.5e-10 | 166 s |
+| A-Y2O3 | 0.8 | -1.8e-5 | 5.5e-5 | +2.4e-11 | 159 s |
 
-The remaining errors are fitting errors of the auxiliary basis (sign-correct).
+Omega independence (max matrix difference, omega 0.5 vs 0.8): quartz J 3.7e-9,
+K 1.3e-8; Y2O3 J 5.4e-6, K 1.1e-5 (an order of magnitude below the K fitting
+error of this auxiliary basis, 2.7e-4; the rigorous envelope of 4.4 should
+close it).
 
-Precision/omega scan with the fixed screening: see 4.6 (to be filled).
+pyscf GDF with the same auxiliary basis: quartz identical errors (-1.2e-5 /
+2.2e-4, build 63 s); Y2O3 J +6.7 Eh, K -0.29 (build 137 s).  So RSDF costs
+about the same as pyscf GDF and is correct where GDF breaks.
 
-### 4.6 Precision and omega scan
+### 4.6 Precision and omega
 
-(pending: `pbc/bench` scan on quartz and Y2O3, omega 0.5/0.8/1.2, prec 1e-6..1e-10)
+* prec 1e-6: unusable (metric non-PSD, positive J error) on both systems.
+* prec 1e-8: quartz fine (J -7.7e-6), Y2O3 marginal (metric -3e-6).
+* prec 1e-10: converged to the fitting error on both; default.
+* omega: 0.5 is the faster choice on these cells (quartz 65 s vs 120 s at
+  0.8; LR grows as omega^3, SR shrinks); omega 1.2 took 300+ s.
+
+Build-time history (quartz, prec 1e-8): 152 s first version -> 38 s after
+folding image AOs by a sum over translations, using one vector per +-G pair
+and a GEMM for the metric transform (SR 3c 20 s, LR 15 s, SR 2c 1.5 s).
 
 ### 4.7 Known limitations
 
-* Build cost: quartz ~2-4 min, Y2O3 ~7 min on 4 cores, dominated by SR 3c
-  triples (6e7) with high-l uncontracted auxiliary shells; no use yet of the
-  mu <-> nu symmetry or angular factors in the bound.
+* Build cost (4 cores, defaults): quartz ~1 min, Y2O3 ~3 min, comparable to
+  pyscf GDF with the same auxiliary basis; SR 3c (2-4e7 shell triples with
+  high-l uncontracted aux) and the LR transforms dominate.
 * Storage is dense global (naux x nao^2): fine up to the YSO conventional cell
   on a large-memory node, not beyond.
 * K accuracy is limited by the auxiliary basis (quartz 2e-4 with auxgen tau
@@ -177,7 +215,7 @@ Precision/omega scan with the fixed screening: see 4.6 (to be filled).
 
 ## 6. Roadmap
 
-1. Precision/omega scan; choose defaults (4.6).
+1. Rigorous angular envelope in the bounds (4.4); omega independence on Y2O3.
 2. Cost: mu <-> nu symmetry in the 3c kernel, tighter bounds (angular factors),
    omega choice, LR blocking; benchmark against pyscf GDF/RSJK incl. YSO.
 3. GHF/2c interface: spin-block J/K with the correct alpha-beta slice,
