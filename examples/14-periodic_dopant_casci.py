@@ -1,15 +1,16 @@
 #!/usr/bin/env python
 '''
 Gamma-point periodic two-component calculation of a lanthanide dopant:
-RSDF Coulomb integrals -> KRHF with one-centre X2CAMF and the dopant 4f shell
-fractionally occupied (chosen by character) -> CASCI(4f) on the 4f spinors.
+RSDF Coulomb integrals -> Kramers-restricted HF or KS (--xc) with one-centre
+X2CAMF and the dopant 4f shell fractionally occupied (chosen by character) ->
+CASCI(4f) on the 4f spinors.
 
     python 14-periodic_dopant_casci.py eu_yso_x2 --workdir run_eu --max-memory 400000
 
 Every stage writes to --workdir and is reused on a second run:
   cderi.h5   the RSDF vectors, S, V_ne, E_nn (RSDF.load)      [the expensive step]
-  scf.npz    converged orbitals, occupations, energies         (SCF restart guess)
-  casci.npz  CASCI energies
+  scf_<xc>.npz    converged orbitals, occupations, energies    (SCF restart guess)
+  casci_<xc>.npz  CASCI energies on those orbitals
 
 Structures: socutils.pbc.bench.cells.SYSTEMS (eu_y2o3A, eu_yso, eu_yso_x2,
 eu_yso_x3), or adapt make_cell for your own CIF/coordinates.  The basis (x2c-SVPall
@@ -29,7 +30,7 @@ from pyscf import lib
 from socutils.pbc.bench.cells import make_cell, SYSTEMS
 from socutils.pbc.bench.auxgen_util import auxgen
 from socutils.pbc.rsdf import RSDF
-from socutils.pbc import spinor_scf
+from socutils.pbc import spinor_scf, spinor_ks
 from socutils.scf import spinor_hf, addons
 from socutils.mcscf import zcasci
 
@@ -44,12 +45,14 @@ p.add_argument('--precision', type=float, default=1e-10)
 p.add_argument('--max-memory', type=float, default=8000, help='MB')
 p.add_argument('--nroots', type=int, default=13)
 p.add_argument('--no-gaunt', action='store_true')
+p.add_argument('--xc', default=None, help='KS functional (e.g. PBE, PBE0); default HF')
+p.add_argument('--grids-level', type=int, default=4)
 args = p.parse_args()
 
 os.makedirs(args.workdir, exist_ok=True)
 f_cderi = os.path.join(args.workdir, 'cderi.h5')
-f_scf = os.path.join(args.workdir, 'scf.npz')
-f_cas = os.path.join(args.workdir, 'casci.npz')
+f_scf = os.path.join(args.workdir, 'scf_%s.npz' % (args.xc or 'hf'))
+f_cas = os.path.join(args.workdir, 'casci_%s.npz' % (args.xc or 'hf'))
 log = lambda *a: print(*a, flush=True)
 
 cell = make_cell(args.system, args.precision, nucmod='G', max_memory=args.max_memory)
@@ -75,8 +78,12 @@ else:
         % (time.time() - t, r.naux_kept, *r.metric_eig))
 
 # 2. KRHF + one-centre X2CAMF, dopant 4f shell fractionally occupied
-mf = spinor_scf.periodic(spinor_hf.KRHF(cell), r).x2camf(with_gaunt=not args.no_gaunt,
-                                                          with_breit=not args.no_gaunt)
+if args.xc:
+    mf = spinor_ks.periodic_ks(spinor_hf.KRHF(cell), r, xc=args.xc)
+    mf.grids_level = args.grids_level
+else:
+    mf = spinor_scf.periodic(spinor_hf.KRHF(cell), r)
+mf = mf.x2camf(with_gaunt=not args.no_gaunt, with_breit=not args.no_gaunt)
 mf.max_cycle = 100
 mf.conv_tol = 1e-9
 mf.verbose = 4
