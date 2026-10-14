@@ -701,6 +701,10 @@ class _CDERIS(lib.StreamObject):
             log.info('CDERIS: AO vectors (%.0f MB) kept in memory for the following macro iterations', size_mb)
         return (arr[b0:b0 + blksize] for b0 in range(0, arr.shape[0], blksize))
 
+    @staticmethod
+    def _owner_scf_kramers(owner):
+        return getattr(owner, '_scf', owner)
+
     def _build_cd_pa_and_vk(self, with_df, mol, nao_nr, nmo, ncore, ncas, nocc,
                              moo_sph, mop_sph, log, cache_owner=None):
         """One-pass: half-transform occ MOs, produce cd_pa and vk_core simultaneously.
@@ -727,6 +731,19 @@ class _CDERIS(lib.StreamObject):
         fmmm   = _ao2mo.libao2mo.AO2MOmmm_bra_nr_s2
         fdrv   = _ao2mo.libao2mo.AO2MOnr_e2_drv
         null   = lib.c_null_ptr()
+
+        # Kramers-paired core (u, Theta u in columns 2k, 2k+1): only the unbarred
+        # half is half-transformed; core J doubles, core K is completed after
+        # the loop (as in scf.spinor_hf._DFJHF._get_k_mo)
+        from socutils.scf.spinor_hf import _kramers_unbarred
+        kr_core = (_kramers_unbarred(moo_sph[:, :ncore], nao_nr)
+                   if ncore > 0 and getattr(self._owner_scf_kramers(cache_owner), 'kramers_k', True) else False)
+        nck = ncore
+        if kr_core is not False:
+            nck = ncore // 2
+            moo_sph = moo_sph.copy()
+            moo_sph[:, :nck] = kr_core
+            log.info('CDERIS: Kramers-paired core, %d of %d core spinors transformed', nck, ncore)
 
         # Split occ MOs (sph GHF) into alpha/beta, real/imag
         C_aR = numpy.asfortranarray(moo_sph[:nao_nr].real)
@@ -756,10 +773,10 @@ class _CDERIS(lib.StreamObject):
         # rho_P = sum_i L_P,ii, accumulated in the packed (s2) AO layout of eri1
         npair = nao_nr * (nao_nr + 1) // 2
         vj_tril = numpy.zeros(npair)
-        CcaR = numpy.ascontiguousarray(C_aR[:, :ncore].T).ravel()      # (ncore*nao_nr,)
-        CcaI = numpy.ascontiguousarray(C_aI[:, :ncore].T).ravel()
-        CcbR = numpy.ascontiguousarray(C_bR[:, :ncore].T).ravel()
-        CcbI = numpy.ascontiguousarray(C_bI[:, :ncore].T).ravel()
+        CcaR = numpy.ascontiguousarray(C_aR[:, :nck].T).ravel()        # (nck*nao_nr,)
+        CcaI = numpy.ascontiguousarray(C_aI[:, :nck].T).ravel()
+        CcbR = numpy.ascontiguousarray(C_bR[:, :nck].T).ravel()
+        CcbI = numpy.ascontiguousarray(C_bI[:, :nck].T).ravel()
         # J^{tu}_{mu nu} = sum_P L_P(mu nu) L_P,tu for every active pair, also in
         # this pass: the Coulomb matrix of any active density is then
         # sum_tu J^{tu} D_ut without reading the AO vectors again
@@ -770,7 +787,7 @@ class _CDERIS(lib.StreamObject):
         # slicing the core rows out of a (P, nocc, mu) buffer is not contiguous
         # and the copy it forces costs more than the matrix products of K
         nbuf = min(blksize, naux)
-        cbuf = [numpy.empty((nbuf * ncore, nao_nr)) for _ in range(4)]
+        cbuf = [numpy.empty((nbuf * nck, nao_nr)) for _ in range(4)]
         abuf = [numpy.empty((nbuf * ncas, nao_nr)) for _ in range(4)]
 
         log.info('CDERIS before loop: current memory %.1f MB, blksize=%d',
@@ -791,12 +808,12 @@ class _CDERIS(lib.StreamObject):
             tb0 = (logger.process_clock(), logger.perf_counter())
             naux_blk = eri1.shape[0]
             # Half-transform: alpha/beta x real/imag, real arrays only
-            LaR_c, LaI_c, LbR_c, LbI_c = [x[:naux_blk * ncore] for x in cbuf]
+            LaR_c, LaI_c, LbR_c, LbI_c = [x[:naux_blk * nck] for x in cbuf]
             LaR_a, LaI_a, LbR_a, LbI_a = [x[:naux_blk * ncas] for x in abuf]
             for C_real, core, act in ((C_aR, LaR_c, LaR_a), (C_aI, LaI_c, LaI_a),
                                       (C_bR, LbR_c, LbR_a), (C_bI, LbI_c, LbI_a)):
                 if ncore > 0:
-                    _half(eri1, C_real, core, 0, ncore)
+                    _half(eri1, C_real, core, 0, nck)
                 _half(eri1, C_real, act, ncore, nocc)
             tb1 = (logger.process_clock(), logger.perf_counter())
             t_half += (tb1[0] - tb0[0], tb1[1] - tb0[1])
@@ -808,6 +825,8 @@ class _CDERIS(lib.StreamObject):
                            + lib.dot(LaI_c.reshape(naux_blk, -1), CcaI[:, None])
                            + lib.dot(LbR_c.reshape(naux_blk, -1), CcbR[:, None])
                            + lib.dot(LbI_c.reshape(naux_blk, -1), CcbI[:, None]))
+                    if kr_core is not False:
+                        rho *= 2   # C_b^+ L C_b = C_u^+ L C_u for real L
                     vj_tril += lib.dot(rho.T, numpy.asarray(eri1)).ravel()
             else:
                 vj_tril = None
@@ -855,6 +874,14 @@ class _CDERIS(lib.StreamObject):
 
         import gc
         gc.collect()
+        if kr_core is not False:
+            A = vk_sph[:nao_nr, :nao_nr].copy()
+            B = vk_sph[nao_nr:, nao_nr:].copy()
+            C = vk_sph[:nao_nr, nao_nr:].copy()
+            vk_sph[:nao_nr, :nao_nr] = A + B.conj()
+            vk_sph[nao_nr:, nao_nr:] = B + A.conj()
+            vk_sph[:nao_nr, nao_nr:] = C - C.T
+            vk_sph[nao_nr:, :nao_nr] = vk_sph[:nao_nr, nao_nr:].conj().T
         vk_core = sph2spinor(mol, vk_sph)
         if vj_tril is not None:
             vj_ao = lib.unpack_tril(vj_tril)

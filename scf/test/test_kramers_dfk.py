@@ -52,6 +52,23 @@ class KnownValues(unittest.TestCase):
         o[nocc:nocc + 2] = .5                     # next pair half occupied
         self.assertLess(abs(self._k(c, o, True) - self._k(c, o, False)).max(), 1e-12)
 
+    def test_casci_core_kramers(self):
+        '''_CDERIS (CASCI integral transformation): Kramers-paired core
+        exchange/Coulomb equal the full build.'''
+        from socutils.mcscf import zcasci, zmc_ao2mo
+        res = {}
+        for kr in (True, False):
+            self.mf.kramers_k = kr
+            mc = zcasci.CASCI(self.mf, 8, 4)
+            mc.verbose = 0
+            mc.kernel()
+            er = zmc_ao2mo._CDERIS(mc, mc.mo_coeff, level=2)
+            res[kr] = (mc.e_tot, er.vk_core, er.vj_core)
+        self.mf.kramers_k = True
+        self.assertAlmostEqual(res[True][0], res[False][0], 11)
+        self.assertLess(abs(res[True][1] - res[False][1]).max(), 1e-12)
+        self.assertLess(abs(res[True][2] - res[False][2]).max(), 1e-12)
+
 
 if __name__ == '__main__':
     unittest.main()
