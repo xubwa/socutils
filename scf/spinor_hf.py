@@ -141,6 +141,12 @@ class _DFJHF(df.df_jk._DFHF):
         # Occupied spinor MOs weighted by sqrt(f_i), then projected to sph GHF basis
         C_occ     = mo_coeff[:, nocc_mask] * numpy.sqrt(mo_occ[nocc_mask])
         C_occ_sph = c2 @ C_occ   # (2*nao, nocc); first nao rows = alpha, last = beta
+        # Kramers pairs (u, Theta u): only the unbarred half is transformed
+        kramers = getattr(self, 'kramers_k', True) and _kramers_unbarred(C_occ_sph, nao)
+        if kramers is not False:
+            C_occ_sph = kramers
+            nocc = C_occ_sph.shape[1]
+            logger.debug(self, 'DF-K: Kramers-paired occupied spinors, %d unbarred', nocc)
 
         # Four real Fortran-order arrays for the C half-transform library
         # Each has shape (nao, nocc), matching the DF integral AO index
@@ -203,7 +209,37 @@ class _DFJHF(df.df_jk._DFHF):
             vk_sph[:nao, nao:] += K_ab
             vk_sph[nao:, :nao] += K_ab.conj().T   # K_ba = K_ab†
 
+        if kramers is not False:
+            # unbarred sums A = K_aa, B = K_bb, C = K_ab; the barred partners
+            # (Theta u: alpha = -u_b*, beta = u_a*, and real DF vectors) add
+            # B* to K_aa and -C^T to K_ab
+            A = vk_sph[:nao, :nao].copy()
+            B = vk_sph[nao:, nao:].copy()
+            C = vk_sph[:nao, nao:].copy()
+            vk_sph[:nao, :nao] = A + B.conj()
+            vk_sph[nao:, nao:] = B + A.conj()
+            vk_sph[:nao, nao:] = C - C.T
+            vk_sph[nao:, :nao] = vk_sph[:nao, nao:].conj().T
+
         return sph2spinor(mol, vk_sph)
+
+
+def _kramers_unbarred(C, nao, tol=1e-8):
+    '''Unbarred columns of an occupied set (sph GHF basis, (2 nao, nocc), columns
+    weighted by sqrt(occupation)) made of Kramers pairs (u_k, b_k) in columns
+    (2k, 2k+1) with b_k = Theta u_k up to a phase, Theta (a, b) = (-b*, a*),
+    and equal occupations; False when the set is not paired that way.'''
+    nocc = C.shape[1]
+    if nocc == 0 or nocc % 2:
+        return False
+    u, b = C[:, 0::2], C[:, 1::2]
+    tu = numpy.vstack((-u[nao:].conj(), u[:nao].conj()))
+    nu = numpy.einsum('pk,pk->k', u.conj(), u).real
+    nb = numpy.einsum('pk,pk->k', b.conj(), b).real
+    ov = abs(numpy.einsum('pk,pk->k', b.conj(), tu))
+    if (abs(nu - nb) > tol * nu.max()).any() or (abs(ov - numpy.sqrt(nu * nb)) > tol * nu.max()).any():
+        return False
+    return numpy.ascontiguousarray(u)
 
 
 def symmetry_label(mol, symmetry=None):
