@@ -443,6 +443,30 @@ fit W B and occ-RI K grow as n^4; storage grows as n^3.
 * Beyond 64 atoms this needs local fitting for K (PARI / RI-LVL) and sparse
   storage for J.
 
+## 4d. First Eu-doped run (workflow check, `bench/eu_casci.py`)
+
+Eu:Y2O3 (A-type cell, one Y -> Eu; 5 atoms, n2c 320, 126 electrons; Gaussian
+nuclei; 4 cores).  The workflow:
+1. RSDF, w 0.8: 272 s.
+2. Periodic KRHF + one-centre X2CAMF, with the 14 Eu 4f spinors at 6/14
+   occupation (`projected_frac_occ`), K rebuilt every 3rd iteration: 77
+   cycles, 28 exact K builds, 160 s.  This run predates the frozen-K
+   convergence fix.
+3. CASCI(6e, 14) (`cas_order`): 24 s.
+
+What it shows:
+* **4f selection.**  The selected open shell has Eu-f weights 0.94-0.99, in
+  Kramers pairs.  The first version picked virtual f-polarisation orbitals
+  at +1..+4.6 Eh, which is why the selection is now by energy among the
+  candidates.
+* **Multiplet structure.**  The CASCI levels (cm-1) are 0 (7F0); 98 and
+  725 x2 (7F1, A + E); 1340 x2, 1598 and 2160 x2 (7F2, E + A + E).  That is
+  the C3v crystal-field pattern of the site.  The barycentres (7F1 ~ 516,
+  7F2 ~ 1700) lie above the free-ion values (370, 1000).  This is expected
+  from HF orbitals with no dynamic correlation, an approximate structure,
+  and a basis for which the atomic X2CAMF Dirac-HF of Eu does not converge.
+  The run checks the workflow, not the physics.
+
 ## 5. Auxiliary bases (measured)
 
 * ETB (pyscf default for custom bases): built from primitive exponent ranges,
