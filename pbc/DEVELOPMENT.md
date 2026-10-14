@@ -161,8 +161,9 @@ envelope charge directly.  Result (prec 1e-10, 4 cores):
 
 (w-dep. = max matrix difference omega 0.5 vs 0.8.)  Errors against RSJK are
 unchanged (fitting-limited: J dE -1.2e-5 / -1.8e-5, K dE 2.2e-4 / 5.5e-5).
-With the angular factor in the bound, the L2 measure alone is enough, and it
-is the default now (`aux_bound='l2'`); 'max' is no longer needed.  The omega
+On these cells L2 alone would do (cheapest); but the exact-fit tight-dense
+test still needs the Coulomb measure for its compact aux functions (L2 alone:
+energy error 2e-8 there), so the default stays `aux_bound='max'`.  The omega
 dependence on Y2O3 dropped 10x (K 100x).  It costs 4x the triples and 2.4x the
 build time, because halving the exponent is loose.  Two things are left: the
 remaining 5e-7 on Y2O3, and the cost.  For the 5e-7, the AO image set and
