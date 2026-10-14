@@ -467,6 +467,58 @@ What it shows:
   and a basis for which the atomic X2CAMF Dirac-HF of Eu does not converge.
   The run checks the workflow, not the physics.
 
+## 4e. Local exchange: accuracy prototype (`pbc/pari.py`)
+
+Pair-atomic RI (PARI): each lattice-summed AO pair (mu on A, nu on B) is
+fitted with the lattice-summed aux functions of A and B, optionally plus
+their first neighbours; K = C V C (non-robust).  This is the scheme of
+Sodt/Subotnik/Head-Gordon 2006, PARI-K (Manzer et al. 2015) and RI-LVL
+(Ihrig et al. 2015, FHI-aims periodic hybrids); the robust form is Dunlap's,
+analysed for PARI by Merlot et al. 2013.  The prototype uses dense
+intermediates (`RSDF.keep_raw`).  Exchange-energy error dE against global DF
+(minao density):
+
+| | Y2O3 (5 at.) | quartz (9 at.) |
+|---|---|---|
+| PARI, two-atom domains | -2.6e-4 | 2.0e-3 |
+| robust PARI | 1.3e-3 | 1.8e-3 |
+| PARI + first neighbours (4.5 bohr) | 2.4e-5 | 4.1e-4 |
+| **SR-PARI (erfc) + exact LR**, two-atom, w 0.8 / 1.6 | -8.6e-5 / -8.2e-5 | 1.5e-3 / 6.2e-4 |
+| **SR-PARI + neighbours + exact LR**, w 0.8 / 1.6 | 1.6e-5 / -3.6e-7 | 3.2e-4 / 9.4e-5 |
+| (global DF vs RSJK, for scale) | 5.5e-5 | 2.2e-4 |
+
+**SR-PARI + exact LR** means:
+* K_SR uses PARI with the erfc kernel only, for both the fit and the
+  metric, so everything in it is local.
+* K_LR = sum_G (v_G/V) Re[rho(G) D rho(G)^+] - pi/(w^2 V) S D S, computed
+  from the analytic lattice-summed pair FTs, with no fit.
+* Splitting this way is exact: a global SR fit plus the exact LR reproduces
+  global DF to 2e-6 (w 0.8).
+
+Findings:
+* Robust PARI does not help K: the two-atom fit residuals are too large for
+  second-order cancellation to pay.
+* The shorter the SR kernel (larger w), the more accurate the local fit.
+* With neighbours, SR-PARI at w 1.6 is below the fitting error of the
+  global DF itself.
+
+**The open problem is the cost of K_LR.**  Densely it is ng nao^3 per K,
+with ng ~ w^3 V:
+* At a small w_K (0.2-0.3) a 128-atom cell needs ~10^3 G and roughly
+  1e14 flop, i.e. minutes.  But SR-PARI loses accuracy there, because the
+  SR kernel is long-ranged.
+* At w 1.6, ng is ~10^5 and the dense form is out of reach.
+
+The way out is the locality of exchange.  Two options:
+* Sparse D (LinK-type screening of rho(G) D rho(G)^+).
+* Localised occupied spinors.
+
+Either one makes K_LR ~ ng N, so w can stay large.  Storage of the SR-PARI
+coefficients is linear, and they need only the SR three-index integrals,
+which are local and come from the existing SR kernel restricted to the
+domain aux.  The LR part of the three-index tensor, the N^2 wall of any
+explicit fit, is never formed.
+
 ## 5. Auxiliary bases (measured)
 
 * ETB (pyscf default for custom bases): built from primitive exponent ranges,
