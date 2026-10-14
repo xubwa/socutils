@@ -9,6 +9,7 @@ integral transformation (_CDERIS), h1eff and the core energy on RSDF.
 '''
 import unittest
 import numpy as np
+import numpy
 from pyscf import gto, df
 from socutils.scf import spinor_hf
 from socutils.mcscf import zcasci
@@ -64,16 +65,19 @@ class KnownValues(unittest.TestCase):
         for r in self.res.values():
             self.assertAlmostEqual(r['e_cas_occ'], r['e_hf'], 9)
 
-    def test_frozen_exchange_cycles(self):
-        '''K rebuilt every 3rd iteration converges to the same energy.'''
+    def test_fractional_occupation_madelung(self):
+        '''The SCF carries the exchange G = 0 term as -nu tr(DSDS)/2 (K + nu S D S);
+        for an idempotent density that is the wavefunction form -nu N/2.'''
         r = self.res[20.]
-        mf = _quiet(spinor_scf.SpinorRSDF(r['mf'].mol, r['rsdf']))
-        mf.k_rebuild_cycle = 3
-        mf.conv_tol = 1e-10
-        e = mf.kernel()
-        self.assertTrue(mf.converged)
-        self.assertAlmostEqual(e, r['e_hf'], 8)
-        self.assertLess(mf.k_builds, mf.cycles)
+        cell = r['mf'].mol
+        mf = _quiet(spinor_scf.SpinorRSDF(cell, r['rsdf']))
+        mf.kernel()
+        nu = mf.madelung()
+        dm = mf.make_rdm1()
+        s = mf.get_ovlp()
+        # idempotent: the two forms agree
+        self.assertAlmostEqual(numpy.einsum('ij,ji', dm @ s, dm @ s).real, cell.nelectron, 8)
+        self.assertAlmostEqual(mf.e_tot, r['e_hf'], 8)
 
     def test_madelung_constant_term(self):
         '''exxdiv only shifts the energy by -nu_M N / 2.'''

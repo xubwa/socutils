@@ -23,8 +23,16 @@
 # the cell).  exxdiv='ewald' (default, as in pyscf) adds this constant to
 # energy_nuc(); it equals pyscf's ewald exchange correction for HF at
 # convergence and leaves orbitals, CI vectors and correlation energies
-# unchanged, so CASCI/CASSCF on top see the same constant.  exxdiv=None gives
-# the bare G = 0-free energy (error ~ 1/L for a molecule in a box).
+# unchanged, so CASCI/CASSCF/CAHF on top see the same constant.  exxdiv=None
+# gives the bare G = 0-free energy (error ~ 1/L for a molecule in a box).
+#
+# A fractional-occupation mean field is not an N-electron wavefunction: its
+# exchange G = 0 term is -nu_M tr(DSDS)/2, not -nu_M N/2.  The SCF therefore
+# uses pyscf's form, K + nu_M S D S in the Fock matrix and the energy (with
+# the constant taken back out of energy_nuc); for an idempotent density this
+# only shifts the occupied block and gives the same energy.  (O atom, 2p^4 at
+# 2/3 in a box: with the constant the fractional HF energy missed the
+# molecular one by 5e-2 Eh.)
 #
 # Usage:
 #     r = RSDF(cell, auxbasis).build()
@@ -120,76 +128,39 @@ class _PeriodicSpinorSCF(spinor_hf._DFJHF):
     and RSDF Coulomb interactions (with_df).'''
 
     exxdiv = 'ewald'
-    # Frozen-exchange inner iterations: K is rebuilt every k_rebuild_cycle
-    # SCF iterations and kept fixed in between (J is always rebuilt).  The
-    # convergence test passes only on an iteration whose K is exact, and the
-    # final Fock matrix uses an exact K.  (In an AO basis this is what ACE
-    # buys: the ACE operator reproduces the frozen K on the occupied space
-    # only, so reusing the full frozen K is at least as accurate.)
-    k_rebuild_cycle = 1
-    _keys = {'exxdiv', 'k_rebuild_cycle'}
-
-    def _k_reset(self):
-        self._k_frozen = None
-        self._k_age = 0
-        self._k_exact = True
-        self._k_force = False
-        self._k_post = False
-        self._e_exact_last = None
-        self.k_builds = 0
-
-    def scf(self, dm0=None, **kwargs):
-        self._k_reset()
-        return super().scf(dm0, **kwargs)
-    kernel = lib.alias(scf, alias_name='kernel')
+    _keys = {'exxdiv'}
 
     def get_veff(self, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
         if mol is None:
             mol = self.mol
         if dm is None:
             dm = self.make_rdm1()
-        if not hasattr(self, '_k_frozen'):
-            self._k_reset()
-        single = numpy.ndim(dm) == 2
-        if (self.k_rebuild_cycle <= 1 or not single or self._k_frozen is None or self._k_force
-                or self._k_age + 1 >= self.k_rebuild_cycle):
-            vj, vk = self.get_jk(mol, dm, hermi=hermi)
-            if single:
-                self._k_frozen, self._k_age, self._k_exact, self._k_force = vk, 0, True, False
-                self.k_builds += 1
-        else:
-            vj = self.get_jk(mol, dm, hermi=hermi, with_k=False)[0]
-            vk = self._k_frozen
-            self._k_age += 1
-            self._k_exact = False
+        vj, vk = self.get_jk(mol, dm, hermi=hermi)
+        nu = self.madelung()
+        if nu:
+            s = self.get_ovlp()
+            vk = vk + nu * (s @ dm @ s)
         return vj - vk
 
-    def check_convergence(self, envs):
-        e = envs['e_tot']
-        if getattr(self, '_k_post', False):
-            # pyscf's extra cycle after convergence (its own, looser test)
-            return abs(e - envs['last_hf_e']) < envs['conv_tol'] or envs['norm_gorb'] < envs['conv_tol_grad']
-        if not getattr(self, '_k_exact', True):
-            return False      # a frozen-K iteration never converges
-        # with frozen K in between, consecutive energies differ by the K update:
-        # compare with the previous exact-K iteration instead
-        e_ref = getattr(self, '_e_exact_last', None)
-        e_ref = envs['last_hf_e'] if self.k_rebuild_cycle <= 1 or e_ref is None else e_ref
-        self._e_exact_last = e
-        conv = abs(e - e_ref) < envs['conv_tol'] and envs['norm_gorb'] < envs['conv_tol_grad']
-        if conv:
-            self._k_force = True      # the extra cycle uses an exact K
-            self._k_post = True
-        return conv
-
-    def madelung_energy(self):
-        '''-nu_M N / 2 for exxdiv='ewald', else 0 (see the module notes).'''
+    def madelung(self):
+        '''nu_M for exxdiv='ewald', else 0.'''
         if self.exxdiv is None:
             return 0.
         if self.exxdiv != 'ewald':
             raise NotImplementedError(self.exxdiv)
-        from pyscf.pbc import tools
-        return -.5 * tools.pbc.madelung(self.mol, numpy.zeros((1, 3))) * self.mol.nelectron
+        if getattr(self, '_madelung', None) is None:
+            from pyscf.pbc import tools
+            self._madelung = tools.pbc.madelung(self.mol, numpy.zeros((1, 3)))
+        return self._madelung
+
+    def madelung_energy(self):
+        '''-nu_M N / 2 for exxdiv='ewald', else 0 (see the module notes).'''
+        return -.5 * self.madelung() * self.mol.nelectron
+
+    def energy_tot(self, dm=None, h1e=None, vhf=None):
+        # vhf from get_veff carries the exchange G = 0 term (nu_M S D S);
+        # energy_nuc carries the wavefunction form -nu_M N/2: take it out
+        return super().energy_tot(dm, h1e, vhf) - self.madelung_energy()
 
     def get_ovlp(self, mol=None):
         if mol is None:
