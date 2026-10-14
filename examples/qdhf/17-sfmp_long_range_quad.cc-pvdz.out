@@ -18,3 +18,216 @@
   HF...He sfX2C1e  R=  640  dE  1.558144e-12  (44 s)
   HF...He sfX2C1e  R= 1280  dE  3.896004e-13  (47 s)
   HF...He sfX2C1e  R= 2560  dE  9.740812e-14  (51 s)
+[socutils] x2camf: BUNDLED pure-C backend loaded (/home/user/socenv/socutils/lib/libx2camf_c.so)
+Initializing SF-4c-HF for F atom.
+Final DHF energy is -99.1185409088052 hartree.
+[socutils] x2camf.atm_integrals  Z=9  backend=c  0.027 s
+Initializing SF-4c-HF for H atom.
+Special treatment for fractional occupation of H atom.
+Final DHF energy is -0.342966031421904 hartree.
+[socutils] x2camf.atm_integrals  Z=1  backend=c  0.001 s
+Initializing SF-4c-HF for HE atom.
+Final DHF energy is -2.85528486790146 hartree.
+[socutils] x2camf.atm_integrals  Z=2  backend=c  0.002 s
+Initializing SF-4c-HF for F atom.
+Final DHF energy is -99.1185409088052 hartree.
+[socutils] x2camf.atm_integrals  Z=9  backend=c  0.048 s
+Initializing SF-4c-HF for H atom.
+Special treatment for fractional occupation of H atom.
+Final DHF energy is -0.342966031421904 hartree.
+[socutils] x2camf.atm_integrals  Z=1  backend=c  0.031 s
+Initializing SF-4c-HF for HE atom.
+Final DHF energy is -2.85528486790146 hartree.
+[socutils] x2camf.atm_integrals  Z=2  backend=c  0.002 s
+  HF...He sfmp     R=    5  dE -5.150806e-06  (185 s)
+Initializing SF-4c-HF for F atom.
+Final DHF energy is -99.1185409088052 hartree.
+[socutils] x2camf.atm_integrals  Z=9  backend=c  0.026 s
+Initializing SF-4c-HF for H atom.
+Special treatment for fractional occupation of H atom.
+Final DHF energy is -0.342966031421904 hartree.
+[socutils] x2camf.atm_integrals  Z=1  backend=c  0.034 s
+Initializing SF-4c-HF for HE atom.
+Final DHF energy is -2.85528486790146 hartree.
+[socutils] x2camf.atm_integrals  Z=2  backend=c  0.002 s
+  HF...He sfmp     R=   10  dE -1.162347e-08  (269 s)
+Initializing SF-4c-HF for F atom.
+Final DHF energy is -99.1185409088052 hartree.
+[socutils] x2camf.atm_integrals  Z=9  backend=c  0.031 s
+Initializing SF-4c-HF for H atom.
+Special treatment for fractional occupation of H atom.
+Final DHF energy is -0.342966031421904 hartree.
+[socutils] x2camf.atm_integrals  Z=1  backend=c  0.008 s
+Initializing SF-4c-HF for HE atom.
+Final DHF energy is -2.85528486790146 hartree.
+[socutils] x2camf.atm_integrals  Z=2  backend=c  0.001 s
+  HF...He sfmp     R=   20  dE -1.497855e-10  (354 s)
+Initializing SF-4c-HF for F atom.
+Final DHF energy is -99.1185409088052 hartree.
+[socutils] x2camf.atm_integrals  Z=9  backend=c  0.037 s
+Initializing SF-4c-HF for H atom.
+Special treatment for fractional occupation of H atom.
+Final DHF energy is -0.342966031421904 hartree.
+[socutils] x2camf.atm_integrals  Z=1  backend=c  0.099 s
+Initializing SF-4c-HF for HE atom.
+Final DHF energy is -2.85528486790146 hartree.
+[socutils] x2camf.atm_integrals  Z=2  backend=c  0.002 s
+  HF...He sfmp     R=   40  dE -2.130398e-12  (437 s)
+Initializing SF-4c-HF for F atom.
+Final DHF energy is -99.1185409088052 hartree.
+[socutils] x2camf.atm_integrals  Z=9  backend=c  0.033 s
+Initializing SF-4c-HF for H atom.
+Special treatment for fractional occupation of H atom.
+Final DHF energy is -0.342966031421904 hartree.
+[socutils] x2camf.atm_integrals  Z=1  backend=c  0.025 s
+Initializing SF-4c-HF for HE atom.
+Final DHF energy is -2.85528486790146 hartree.
+[socutils] x2camf.atm_integrals  Z=2  backend=c  0.003 s
+  HF...He sfmp     R=   80  dE -3.177439e-14  (518 s)
+Initializing SF-4c-HF for F atom.
+Final DHF energy is -99.1185409088052 hartree.
+[socutils] x2camf.atm_integrals  Z=9  backend=c  0.037 s
+Initializing SF-4c-HF for H atom.
+Special treatment for fractional occupation of H atom.
+Final DHF energy is -0.342966031421904 hartree.
+[socutils] x2camf.atm_integrals  Z=1  backend=c  0.006 s
+Initializing SF-4c-HF for HE atom.
+Final DHF energy is -2.85528486790146 hartree.
+[socutils] x2camf.atm_integrals  Z=2  backend=c  0.006 s
+  HF...He sfmp     R=  160  dE -4.851132e-16  (598 s)
+Initializing SF-4c-HF for F atom.
+Final DHF energy is -99.1185409088052 hartree.
+[socutils] x2camf.atm_integrals  Z=9  backend=c  0.038 s
+Initializing SF-4c-HF for H atom.
+Special treatment for fractional occupation of H atom.
+Final DHF energy is -0.342966031421904 hartree.
+[socutils] x2camf.atm_integrals  Z=1  backend=c  0.005 s
+Initializing SF-4c-HF for HE atom.
+Final DHF energy is -2.85528486790146 hartree.
+[socutils] x2camf.atm_integrals  Z=2  backend=c  0.056 s
+  HF...He sfmp     R=  320  dE -7.492855e-18  (679 s)
+Initializing SF-4c-HF for F atom.
+Final DHF energy is -99.1185409088052 hartree.
+[socutils] x2camf.atm_integrals  Z=9  backend=c  0.035 s
+Initializing SF-4c-HF for H atom.
+Special treatment for fractional occupation of H atom.
+Final DHF energy is -0.342966031421904 hartree.
+[socutils] x2camf.atm_integrals  Z=1  backend=c  0.034 s
+Initializing SF-4c-HF for HE atom.
+Final DHF energy is -2.85528486790146 hartree.
+[socutils] x2camf.atm_integrals  Z=2  backend=c  0.002 s
+  HF...He sfmp     R=  640  dE -1.164025e-19  (759 s)
+Initializing SF-4c-HF for F atom.
+Final DHF energy is -99.1185409088052 hartree.
+[socutils] x2camf.atm_integrals  Z=9  backend=c  0.024 s
+Initializing SF-4c-HF for H atom.
+Special treatment for fractional occupation of H atom.
+Final DHF energy is -0.342966031421904 hartree.
+[socutils] x2camf.atm_integrals  Z=1  backend=c  0.110 s
+Initializing SF-4c-HF for HE atom.
+Final DHF energy is -2.85528486790146 hartree.
+[socutils] x2camf.atm_integrals  Z=2  backend=c  0.002 s
+  HF...He sfmp     R= 1280  dE -1.813553e-21  (839 s)
+Initializing SF-4c-HF for F atom.
+Final DHF energy is -99.1185409088052 hartree.
+[socutils] x2camf.atm_integrals  Z=9  backend=c  0.030 s
+Initializing SF-4c-HF for H atom.
+Special treatment for fractional occupation of H atom.
+Final DHF energy is -0.342966031421904 hartree.
+[socutils] x2camf.atm_integrals  Z=1  backend=c  0.039 s
+Initializing SF-4c-HF for HE atom.
+Final DHF energy is -2.85528486790146 hartree.
+[socutils] x2camf.atm_integrals  Z=2  backend=c  0.002 s
+  HF...He sfmp     R= 2560  dE -2.829597e-23  (920 s)
+
+HF...He (cc-pvdz)  dE(R) / Hartree, local exponent n in ()
+   R/A  HF                          sfX2C1e                     sfmp                        sfmp/HF
+     5  -5.153876e-06              -5.126083e-06              -5.150806e-06              0.99940449
+    10  -1.165293e-08 ( 8.789)     -5.356753e-09 ( 9.902)     -1.162347e-08 ( 8.792)     0.99747250
+    20  -1.501915e-10 ( 6.278)      1.429352e-09              -1.497855e-10 ( 6.278)     0.99729673
+    40  -2.136379e-12 ( 6.135)      3.947462e-10 ( 1.856)     -2.130398e-12 ( 6.136)     0.99720049
+    80  -3.186520e-14 ( 6.067)      9.945645e-11 ( 1.989)     -3.177439e-14 ( 6.067)     0.99715018
+   160  -4.865122e-16 ( 6.033)      2.490500e-11 ( 1.998)     -4.851132e-16 ( 6.033)     0.99712445
+   320  -7.514562e-18 ( 6.017)      6.230508e-12 ( 1.999)     -7.492855e-18 ( 6.017)     0.99711145
+   640  -1.167405e-19 ( 6.008)      1.558144e-12 ( 2.000)     -1.164025e-19 ( 6.008)     0.99710491
+  1280  -1.818825e-21 ( 6.004)      3.896004e-13 ( 2.000)     -1.813553e-21 ( 6.004)     0.99710164
+  2560  -2.837827e-23 ( 6.002)      9.740812e-14 ( 2.000)     -2.829597e-23 ( 6.002)     0.99710000
+  He2...He HF       R=    5  dE -6.763961e-07  (920 s)
+  He2...He HF       R=   10  dE -2.939756e-18  (920 s)
+  He2...He HF       R=   20  dE -1.088420e-20  (920 s)
+  He2...He HF       R=   40  dE -4.195686e-23  (920 s)
+  He2...He HF       R=   80  dE -1.633535e-25  (921 s)
+  He2...He HF       R=  160  dE -6.375768e-28  (921 s)
+  He2...He HF       R=  320  dE -2.492924e-30  (921 s)
+  He2...He HF       R=  640  dE -1.232595e-32  (921 s)
+  He2...He HF       R= 1280  dE -4.622232e-33  (921 s)
+  He2...He HF       R= 2560  dE -1.540744e-33  (921 s)
+  He2...He sfX2C1e  R=    5  dE -6.768578e-07  (922 s)
+  He2...He sfX2C1e  R=   10  dE  2.403347e-12  (922 s)
+  He2...He sfX2C1e  R=   20  dE  3.036155e-13  (922 s)
+  He2...He sfX2C1e  R=   40  dE  3.823249e-14  (923 s)
+  He2...He sfX2C1e  R=   80  dE  4.800591e-15  (923 s)
+  He2...He sfX2C1e  R=  160  dE  6.015659e-16  (923 s)
+  He2...He sfX2C1e  R=  320  dE  7.529391e-17  (923 s)
+  He2...He sfX2C1e  R=  640  dE  9.418032e-18  (924 s)
+  He2...He sfX2C1e  R= 1280  dE  1.177652e-18  (924 s)
+  He2...He sfX2C1e  R= 2560  dE  1.472316e-19  (924 s)
+Initializing SF-4c-HF for HE atom.
+Final DHF energy is -2.85528486790146 hartree.
+[socutils] x2camf.atm_integrals  Z=2  backend=c  0.014 s
+Initializing SF-4c-HF for HE atom.
+Final DHF energy is -2.85528486790146 hartree.
+[socutils] x2camf.atm_integrals  Z=2  backend=c  0.002 s
+Initializing SF-4c-HF for HE atom.
+Final DHF energy is -2.85528486790146 hartree.
+[socutils] x2camf.atm_integrals  Z=2  backend=c  0.002 s
+  He2...He sfmp     R=    5  dE -6.768051e-07  (930 s)
+Initializing SF-4c-HF for HE atom.
+Final DHF energy is -2.85528486790146 hartree.
+[socutils] x2camf.atm_integrals  Z=2  backend=c  0.002 s
+  He2...He sfmp     R=   10  dE -2.944573e-18  (934 s)
+Initializing SF-4c-HF for HE atom.
+Final DHF energy is -2.85528486790146 hartree.
+[socutils] x2camf.atm_integrals  Z=2  backend=c  0.003 s
+  He2...He sfmp     R=   20  dE -1.090195e-20  (938 s)
+Initializing SF-4c-HF for HE atom.
+Final DHF energy is -2.85528486790146 hartree.
+[socutils] x2camf.atm_integrals  Z=2  backend=c  0.002 s
+  He2...He sfmp     R=   40  dE -4.202518e-23  (941 s)
+Initializing SF-4c-HF for HE atom.
+Final DHF energy is -2.85528486790146 hartree.
+[socutils] x2camf.atm_integrals  Z=2  backend=c  0.002 s
+  He2...He sfmp     R=   80  dE -1.636195e-25  (945 s)
+Initializing SF-4c-HF for HE atom.
+Final DHF energy is -2.85528486790146 hartree.
+[socutils] x2camf.atm_integrals  Z=2  backend=c  0.002 s
+  He2...He sfmp     R=  160  dE -6.386137e-28  (948 s)
+Initializing SF-4c-HF for HE atom.
+Final DHF energy is -2.85528486790146 hartree.
+[socutils] x2camf.atm_integrals  Z=2  backend=c  0.002 s
+  He2...He sfmp     R=  320  dE -2.496005e-30  (952 s)
+Initializing SF-4c-HF for HE atom.
+Final DHF energy is -2.85528486790146 hartree.
+[socutils] x2camf.atm_integrals  Z=2  backend=c  0.002 s
+  He2...He sfmp     R=  640  dE -9.244464e-33  (955 s)
+Initializing SF-4c-HF for HE atom.
+Final DHF energy is -2.85528486790146 hartree.
+[socutils] x2camf.atm_integrals  Z=2  backend=c  0.005 s
+  He2...He sfmp     R= 1280  dE -1.540744e-33  (958 s)
+Initializing SF-4c-HF for HE atom.
+Final DHF energy is -2.85528486790146 hartree.
+[socutils] x2camf.atm_integrals  Z=2  backend=c  0.002 s
+  He2...He sfmp     R= 2560  dE  4.622232e-33  (962 s)
+
+He2...He (cc-pvdz)  dE(R) / Hartree, local exponent n in ()
+   R/A  HF                          sfX2C1e                     sfmp                        sfmp/HF
+     5  -6.763961e-07              -6.768578e-07              -6.768051e-07              1.00060462
+    10  -2.939756e-18 (37.743)      2.403347e-12              -2.944573e-18 (37.742)     1.00163887
+    20  -1.088420e-20 ( 8.077)      3.036155e-13 ( 2.985)     -1.090195e-20 ( 8.077)     1.00163057
+    40  -4.195686e-23 ( 8.019)      3.823249e-14 ( 2.989)     -4.202518e-23 ( 8.019)     1.00162855
+    80  -1.633535e-25 ( 8.005)      4.800591e-15 ( 2.994)     -1.636195e-25 ( 8.005)     1.00162800
+   160  -6.375768e-28 ( 8.001)      6.015659e-16 ( 2.996)     -6.386137e-28 ( 8.001)     1.00162635
+   320  -2.492924e-30 ( 7.999)      7.529391e-17 ( 2.998)     -2.496005e-30 ( 7.999)     1.00123609
+   640  -1.232595e-32 ( 7.660)      9.418032e-18 ( 2.999)     -9.244464e-33 ( 8.077)     0.75000000
+  1280  -4.622232e-33 ( 1.415)      1.177652e-18 ( 3.000)     -1.540744e-33 ( 2.585)     0.33333333
+  2560  -1.540744e-33 ( 1.585)      1.472316e-19 ( 3.000)      4.622232e-33              -3.00000000
