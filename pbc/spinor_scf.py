@@ -120,7 +120,62 @@ class _PeriodicSpinorSCF(spinor_hf._DFJHF):
     and RSDF Coulomb interactions (with_df).'''
 
     exxdiv = 'ewald'
-    _keys = {'exxdiv'}
+    # Frozen-exchange inner iterations: K is rebuilt every k_rebuild_cycle
+    # SCF iterations and kept fixed in between (J is always rebuilt).  The
+    # convergence test passes only on an iteration whose K is exact, and the
+    # final Fock matrix uses an exact K.  (In an AO basis this is what ACE
+    # buys: the ACE operator reproduces the frozen K on the occupied space
+    # only, so reusing the full frozen K is at least as accurate.)
+    k_rebuild_cycle = 1
+    _keys = {'exxdiv', 'k_rebuild_cycle'}
+
+    def _k_reset(self):
+        self._k_frozen = None
+        self._k_age = 0
+        self._k_exact = True
+        self._k_force = False
+        self._k_post = False
+        self.k_builds = 0
+
+    def scf(self, dm0=None, **kwargs):
+        self._k_reset()
+        return super().scf(dm0, **kwargs)
+    kernel = lib.alias(scf, alias_name='kernel')
+
+    def get_veff(self, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
+        if mol is None:
+            mol = self.mol
+        if dm is None:
+            dm = self.make_rdm1()
+        if not hasattr(self, '_k_frozen'):
+            self._k_reset()
+        single = numpy.ndim(dm) == 2
+        if (self.k_rebuild_cycle <= 1 or not single or self._k_frozen is None or self._k_force
+                or self._k_age + 1 >= self.k_rebuild_cycle):
+            vj, vk = self.get_jk(mol, dm, hermi=hermi)
+            if single:
+                self._k_frozen, self._k_age, self._k_exact, self._k_force = vk, 0, True, False
+                self.k_builds += 1
+        else:
+            vj = self.get_jk(mol, dm, hermi=hermi, with_k=False)[0]
+            vk = self._k_frozen
+            self._k_age += 1
+            self._k_exact = False
+        return vj - vk
+
+    def check_convergence(self, envs):
+        dE = abs(envs['e_tot'] - envs['last_hf_e'])
+        if getattr(self, '_k_post', False):
+            # pyscf's extra cycle after convergence (its own, looser test)
+            return dE < envs['conv_tol'] or envs['norm_gorb'] < envs['conv_tol_grad']
+        conv = dE < envs['conv_tol'] and envs['norm_gorb'] < envs['conv_tol_grad']
+        if conv and not getattr(self, '_k_exact', True):
+            self._k_force = True      # converged on a frozen K: one more exact step
+            return False
+        if conv:
+            self._k_force = True      # the extra cycle uses an exact K
+            self._k_post = True
+        return conv
 
     def madelung_energy(self):
         '''-nu_M N / 2 for exxdiv='ewald', else 0 (see the module notes).'''
