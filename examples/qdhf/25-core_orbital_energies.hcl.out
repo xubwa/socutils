@@ -1,0 +1,14 @@
+[socutils] x2camf: BUNDLED pure-C backend loaded (/home/user/socenv/socutils/lib/libx2camf_c.so)
+[socutils] x2camf.atm_integrals  Z=1  backend=c  0.029 s
+[socutils] x2camf.atm_integrals  Z=17  backend=c  0.130 s
+H 0 0 0; Cl 0 0 1.275 (unc-cc-pvdz): occupied orbital energies / Hartree; differences from sfmp in mHartree
+orb  sfmp           1e          rs1e:1.0    rs1e:0.5    sap1e       
+ 0 core -105.25028174     30.8354     30.7145     30.8252     14.0388  
+ 1 core -10.63730551      2.1388      2.0200      2.1261      1.0775  
+ 2 core -8.03779292      0.6187      0.4984      0.6061     -0.0862  
+ 3 core -8.03492901      0.6186      0.4984      0.6061     -0.0865  
+ 4 core -8.03492901      0.6186      0.4984      0.6061     -0.0865  
+ 5 val  -1.11975523      0.1439      0.1257      0.1332      0.0883  
+ 6 val  -0.62067441      0.0037     -0.0057     -0.0047     -0.0031  
+ 7 val  -0.47123148     -0.0030     -0.0145     -0.0120     -0.0137  
+ 8 val  -0.47123148     -0.0030     -0.0145     -0.0120     -0.0137  
