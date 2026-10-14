@@ -611,6 +611,75 @@ Tests: `test_periodic_cahf` extrapolates the O atom in a box to the
 molecular CAHF with both drivers.  The mcscf finite-difference and Hessian
 tests pass.
 
+## 4i. Integral-free CAHF (`mcscf/cahf_fock.py`)
+
+Integrals should not go through one global cderi: the plan is AO-driven
+J/K and integral-free wavefunction steps.  For one open shell (n electrons
+in m spinors, Eu 4f^6) the configuration-averaged energy depends only on
+D_c = C_c C_c^+ and D_o = f C_o C_o^+ (f = n/m):
+
+    E = tr h (D_c + D_o) + 1/2 tr D_c G_c + tr D_o G_c + a/2 tr D_o G_o + E_nuc,
+    a = (n-1) m / (n (m-1)),
+
+with G_x = J(D_x) - K(D_x).  The gradient is g = [F_c, P_c] + f [F_o, P_o],
+with F_c = h + G_c + G_o and F_o = h + G_c + a G_o.  Each energy plus
+gradient costs two `mf.get_jk` calls (occ-RI, Kramers-paired).  There is no
+integral transformation and no rdm2.  Optimiser: L-BFGS on kappa
+(exponential retraction), preconditioned with the diagonal model Hessian
+2[n_p(F^p_qq - F^p_pp) - n_q(F^q_qq - F^q_pp)], backtracking line search on
+the exact energy.
+
+* O atom (2p^4, cc-pVDZ, DF): 10 iterations, equal to super-CI to 1e-14.
+  The finite-difference gradient matches.
+* Eu:Y2O3 (5 atoms, 4 cores): 15 iterations, 56 s, |g| 4e-6.
+  E = -14420.0181818019; super-CI gave -14420.0181817902 in 590 s, not
+  converged.  The CASCI levels on top are identical.
+* It is the default of the dopant driver (`--cahf-driver fock`).
+
+Active-space CASCI without the global cderi: h1eff and E_core come from the
+same core Fock build.  (tu|vw) needs only the active pair densities: the SR
+part from a local fit in the domain of the dopant (4f coefficients are
+local, the erfc kernel keeps the aux near the pair), the LR part exactly
+from the pair FTs rho_tu(G).  The G = 0 term is a constant (4j).  To do.
+
+## 4j. SR-only fit + exact LR rows (`RSDF(lr='gspace')`)
+
+The kernel is (mn|ls)' = SR + LR(G != 0) - c0 S_mn S_ls, with
+c0 = pi/(w^2 V) the G = 0 part of the erfc kernel.  With lr='gspace':
+* the vectors are the fit of the SR kernel alone (SR metric, SR 3c, no
+  G = 0 removal), plus the LR part as its exact plane-wave factorisation:
+  one real row per cos/sin of each +-G pair, sqrt(v_G/V) Re/Im rho_mn(G);
+* -c0 S S stays out of the vectors and out of RSDF.get_jk (with_g0=True
+  adds it: J -c0 tr(DS) S, K -c0 S D S).  In an orthonormal MO basis it is -c0 delta_pq delta_rs, so
+  for wavefunctions it is the constant -c0 N(N-1)/2, in energy_nuc next to
+  the Madelung term.  spinor_scf/spinor_ks add it explicitly to the mean
+  field (`g0_terms`, `k_shift`, `wavefunction_constant`).  Every consumer of
+  `loop()` (_CDERIS, CASCI, CAHF) needs no change.
+* V_ne and E_nn keep the full kernel (LR only for the nuclei columns).
+
+N2 in a box, A/L^3 extrapolation against the exact (non-DF) spinor HF
+(aug-etb beta 2 aux; the molecular DF error is -4.7e-5):
+
+| | vectors (L = 26) | E_inf - exact |
+|---|---|---|
+| lr='fit', w 0.5 | 240 | -4.66e-5 |
+| gspace, w 0.5 | 43962 | -3.18e-5 |
+| gspace, w 0.3 | 9674 | -3.90e-5 |
+| gspace, w 0.2 | 3040 | -4.24e-5 |
+
+* The exact LR removes part of the fit error.  The SR fit covers more of
+  the kernel as w goes to 0, and lr='gspace' becomes lr='fit' in that limit.
+* The LR row count is ~V (2w)^3 (times ln 1/eps)^{3/2}: the boxes are the
+  worst case.  For YSO-64 (V ~ 11400 bohr^3) that is ~25000 rows at w = 0.5
+  and ~5000 at w = 0.3, against ~9000 aux.
+* Stored rows are the first step.  Next: SR vectors from a local fit
+  (sparse, linear storage), and LR J/K evaluated from the rho(G) on the fly
+  (K_LR with D sparsity) instead of stored rows.
+
+Tests: `pbc/test/test_rsdf_gspace.py` checks the LR rows against the dense
+G-space exchange, the SR rows against the SR fit, the G = 0 constant (CAS
+of occupied orbitals = HF) and the box limit.
+
 ## 5. Auxiliary bases (measured)
 
 * ETB (pyscf default for custom bases): built from primitive exponent ranges,

@@ -34,6 +34,11 @@
 # 2/3 in a box: with the constant the fractional HF energy missed the
 # molecular one by 5e-2 Eh.)
 #
+# RSDF(lr='gspace') keeps the G = 0 part of its SR kernel, -c0 S_mn S_ls,
+# out of the vectors (pbc/rsdf.py); it is handled like the exchange G = 0
+# term: explicitly in the mean field (g0_terms), as the constant
+# -c0 N (N - 1)/2 in energy_nuc for wavefunctions (wavefunction_constant).
+#
 # Usage:
 #     r = RSDF(cell, auxbasis).build()
 #     mf = spinor_scf.SpinorRSDF(cell, r).run()
@@ -136,11 +141,27 @@ class _PeriodicSpinorSCF(spinor_hf._DFJHF):
         if dm is None:
             dm = self.make_rdm1()
         vj, vk = self.get_jk(mol, dm, hermi=hermi)
-        nu = self.madelung()
-        if nu:
-            s = self.get_ovlp()
-            vk = vk + nu * (s @ dm @ s)
-        return vj - vk
+        dvj, dvk = self.g0_terms(dm)
+        return vj + dvj - (vk + dvk)
+
+    def k_shift(self):
+        '''Coefficient of S D S that the mean field adds to K: the exchange
+        G = 0 term nu_M minus the SR G = 0 part kept out of the RSDF vectors
+        (lr='gspace').'''
+        return self.madelung() - getattr(self.with_df, 'c_g0', 0.)
+
+    def g0_terms(self, dm):
+        '''(dJ, dK) the mean field adds to mf.get_jk: J gets -c0 tr(DS) S (the
+        G = 0 part of the SR kernel kept out of the vectors), K gets
+        (nu_M - c0) S D S.  Zero for lr='fit' with exxdiv=None.'''
+        c0 = getattr(self.with_df, 'c_g0', 0.)
+        sk = self.k_shift()
+        if not c0 and not sk:
+            return 0, 0
+        s = self.get_ovlp()
+        dvj = -c0 * numpy.einsum('ij,ji', dm, s).real * s if c0 else 0
+        dvk = sk * (s @ dm @ s) if sk else 0
+        return dvj, dvk
 
     def madelung(self):
         '''nu_M for exxdiv='ewald', else 0.'''
@@ -157,10 +178,19 @@ class _PeriodicSpinorSCF(spinor_hf._DFJHF):
         '''-nu_M N / 2 for exxdiv='ewald', else 0 (see the module notes).'''
         return -.5 * self.madelung() * self.mol.nelectron
 
+    def wavefunction_constant(self):
+        '''The G = 0 terms as constants of any N-electron wavefunction:
+        -nu_M N / 2 and, for lr='gspace' vectors, -c0 N (N - 1) / 2.'''
+        e = self.madelung_energy()
+        g0 = getattr(self.with_df, 'g0_constant', None)
+        if g0 is not None:
+            e += g0(self.mol.nelectron)
+        return e
+
     def energy_tot(self, dm=None, h1e=None, vhf=None):
-        # vhf from get_veff carries the exchange G = 0 term (nu_M S D S);
-        # energy_nuc carries the wavefunction form -nu_M N/2: take it out
-        return super().energy_tot(dm, h1e, vhf) - self.madelung_energy()
+        # vhf from get_veff carries the G = 0 terms explicitly (g0_terms);
+        # energy_nuc carries their wavefunction form: take it out
+        return super().energy_tot(dm, h1e, vhf) - self.wavefunction_constant()
 
     def get_ovlp(self, mol=None):
         if mol is None:
@@ -196,7 +226,7 @@ class _PeriodicSpinorSCF(spinor_hf._DFJHF):
         return self._attach_x2cmp(flavor, with_gaunt, with_breit, with_pcc, with_aoc)
 
     def energy_nuc(self):
-        return self.with_df.energy_nuc() + self.madelung_energy()
+        return self.with_df.energy_nuc() + self.wavefunction_constant()
 
 
 def nuclear_zeta(cell):

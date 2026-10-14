@@ -27,6 +27,20 @@
 # exposed through loop() in pyscf's packed layout, so socutils.mcscf._CDERIS
 # and other molecular DF consumers can use the object as with_df.
 #
+# lr='gspace': only the SR part is fitted (metric and 3c of the erfc kernel,
+# local); the LR part is not fitted at all but appended as its exact
+# plane-wave factorisation, one real row per cos/sin of each +-G pair,
+#     L_G[mu nu] = sqrt(v_G / V) Re/Im rho_mu nu(G),   G != 0,
+# and the G = 0 part of the SR kernel, -c0 S_mn S_ls (c0 = pi / (w^2 V)), is
+# kept out of the vectors.  The vectors then carry
+#     (mn|ls)' = (mn|ls)_vectors - c0 S_mn S_ls,
+# get_jk(with_g0=True) adds the c0 term (J: -c0 tr(DS) S, K: -c0 S D S); in an
+# orthonormal MO basis it is -c0 delta_pq delta_rs, i.e. the constant
+# -c0 N (N - 1) / 2 for any N-electron wavefunction (see g0_constant and
+# socutils.pbc.spinor_scf).  The SR vectors are what a local (sparse) fit
+# replaces later; the LR rows are exact (no fitting error) and their number
+# ~ V (2 w)^3 shrinks with w.
+#
 
 import ctypes
 import numpy as np
@@ -228,9 +242,16 @@ class RSDF(lib.StreamObject):
         lindep : relative eigenvalue threshold of the fitting metric
         nuc_zeta : Gaussian nuclear exponent(s); a very large value mimics
             point nuclei (default 1e12)
+        lr : 'fit' (default) fits the whole kernel; 'gspace' fits the SR part
+            only and appends the exact LR plane-wave rows (module notes)
     '''
 
-    def __init__(self, cell, auxbasis, omega=0.5, precision=1e-10, lindep=1e-12, nuc_zeta=1e12):
+    def __init__(self, cell, auxbasis, omega=0.5, precision=1e-10, lindep=1e-12, nuc_zeta=1e12, lr='fit'):
+        if lr not in ('fit', 'gspace'):
+            raise ValueError("lr must be 'fit' or 'gspace'")
+        self.lr = lr
+        self.c_g0 = 0.               # G = 0 coefficient kept out of the vectors (lr='gspace')
+        self.nlr = 0                 # number of exact LR rows appended to the vectors
         self.cell = cell
         self.auxbasis = auxbasis
         self.omega = omega
@@ -406,7 +427,8 @@ class RSDF(lib.StreamObject):
             ptr(atm), c_int(sysmol.natm), ptr(bas), c_int(sysmol.nbas), ptr(env_full), ptr(env_lr),
             ptr(stats2))
         t1 = log.timer('RSDF SR 2c', *t1)
-        if self.keep_raw:
+        gspace = self.lr == 'gspace'
+        if self.keep_raw or gspace:
             self.metric_sr = .5 * (M[:naux, :naux] + M[:naux, :naux].T)
 
         G = reciprocal_vectors(a, 2 * omega * np.sqrt(lnp + np.log(4 * np.pi)))
@@ -450,7 +472,13 @@ class RSDF(lib.StreamObject):
         e_self = np.sum(Z**2 * np.sqrt(2 * zeta / np.pi)) / 2
         self.e_nuc = .5 * M[naux:, naux:].sum() - e_self
         self.metric = M[:naux, :naux].copy() if self.keep_raw else None
-        w, v = scipy.linalg.eigh(M[:naux, :naux])
+        # lr='gspace': the SR kernel (with its own G = 0 part) is fitted
+        Mfit = self.metric_sr if gspace else M[:naux, :naux]
+        if gspace and not self.keep_raw:
+            self.metric_sr = None
+        M = M[naux:, naux:] if gspace else M
+        w, v = scipy.linalg.eigh(Mfit)
+        Mfit = None
         self.metric_eig = (w.min(), w.max())
         if w.min() < -self.lindep * w.max() * 1e2:
             log.warn('RSDF: fitting metric has negative eigenvalue %.2e (max %.2e): integrals are inaccurate',
@@ -464,9 +492,14 @@ class RSDF(lib.StreamObject):
         # mu of the block, columns nu <= mu, i.e. a contiguous range of
         # pyscf's packed (pack_tril) pair index
         npair = nao * (nao + 1) // 2
+        self.c_g0 = c0 if gspace else 0.
+        self.nlr = nlr = 2 * len(G) if gspace else 0
+        nvec = nkept + nlr
+        if gspace:
+            log.info('RSDF lr=gspace: %d SR fitted vectors + %d exact LR rows (c0 = %.6g)', nkept, nlr, c0)
         self._cderi_file = None
         self._h5 = None
-        if self.cderi_file or nkept * npair * 8 > .5 * self.max_memory * 1e6 or self.cderi_to_disk:
+        if self.cderi_file or nvec * npair * 8 > .5 * self.max_memory * 1e6 or self.cderi_to_disk:
             import h5py
             if self.cderi_file:
                 path = self.cderi_file
@@ -475,9 +508,9 @@ class RSDF(lib.StreamObject):
                 self._cderi_file = tempfile.NamedTemporaryFile(dir=lib.param.TMPDIR, suffix='.h5')
                 path = self._cderi_file.name
             self._h5 = f = h5py.File(path, 'w')
-            cderi = f.create_dataset('j3c', (nkept, npair), 'f8', chunks=(min(nkept, 64), min(npair, 4096)))
+            cderi = f.create_dataset('j3c', (nvec, npair), 'f8', chunks=(min(nvec, 64), min(npair, 4096)))
         else:
-            cderi = np.empty((nkept, npair))
+            cderi = np.empty((nvec, npair))
         self.cderi = cderi
         self.int3c = None            # (naux, npair) unfitted (aux|pair), with keep_raw
         self.int3c_sr = None         # its short-range (erfc) part, with keep_raw
@@ -536,23 +569,33 @@ class RSDF(lib.StreamObject):
 
             gblk = len(G) if cache_fit else gblk_fit
             gblk = max(16, min(gblk, int(.2 * self.max_memory * 1e6 / (16 * nrow * nao * 3))))
+            # lr='gspace': LR and G = 0 only for the nuclei (V_ne); the pairs'
+            # LR goes into the exact rows
+            f0 = naux if gspace else 0
             for g0 in range(0, len(G), gblk):
                 g1 = min(g0 + gblk, len(G))
                 PgR, PgI = pair_ft(G[g0:g1])                         # (ng, p1 - p0)
-                fw = fit_ft(g0, g1).T * (vG[g0:g1] * vol)              # (nfit, ng)
+                fw = fit_ft(g0, g1)[:, f0:].T * (vG[g0:g1] * vol)      # (nfit - f0, ng)
                 # Re(fw conj(Pg)) as two real GEMMs
-                Bp += np.asarray(fw.real, order='C') @ PgR
-                Bp += np.asarray(fw.imag, order='C') @ PgI
+                Bp[f0:] += np.asarray(fw.real, order='C') @ PgR
+                Bp[f0:] += np.asarray(fw.imag, order='C') @ PgI
+                if gspace:
+                    sq = np.sqrt(vG[g0:g1] * vol)[:, None]
+                    rows = np.empty((g1 - g0, 2, p1 - p0))
+                    rows[:, 0] = sq * PgR
+                    rows[:, 1] = sq * PgI
+                    cderi[nkept + 2 * g0:nkept + 2 * g1, p0:p1] = rows.reshape(-1, p1 - p0)
+                    rows = None
                 PgR = PgI = fw = None
             # overlap at G = 0 (same pair list), for the SR G = 0 removal
             Sb = pair_ft(np.zeros((1, 3)))[0][0] * vol
-            Bp -= c0 * np.outer(q, Sb)
+            Bp[f0:] -= c0 * np.outer(q[f0:], Sb)
             t_lr += logger.perf_counter() - tb
             S[p0:p1] = Sb
             vnuc[p0:p1] = -Bp[naux:].sum(axis=0)
             tb = logger.perf_counter()
-            cderi[:, p0:p1] = W @ Bp[:naux]
-            if self.keep_raw:
+            cderi[:nkept, p0:p1] = W @ Bp[:naux]
+            if self.keep_raw and not gspace:
                 if self.int3c is None:
                     self.int3c = np.zeros((naux, npair))
                 self.int3c[:, p0:p1] = Bp[:naux]
@@ -586,6 +629,9 @@ class RSDF(lib.StreamObject):
         f.attrs['e_nuc'] = self.e_nuc
         f.attrs['metric_eig'] = np.asarray(self.metric_eig, dtype=float)
         f.attrs['naux_kept'] = self.naux_kept
+        f.attrs['lr'] = self.lr
+        f.attrs['c_g0'] = self.c_g0
+        f.attrs['nlr'] = self.nlr
         f.attrs['omega'] = self.omega
         f.attrs['precision'] = self.precision
         f.attrs['nuc_zeta'] = np.atleast_1d(np.asarray(self.nuc_zeta, dtype=float))
@@ -624,6 +670,9 @@ class RSDF(lib.StreamObject):
         r.e_nuc = float(f.attrs['e_nuc'])
         r.metric_eig = tuple(f.attrs['metric_eig'])
         r.naux_kept = int(f.attrs['naux_kept'])
+        r.lr = str(f.attrs.get('lr', 'fit'))
+        r.c_g0 = float(f.attrs.get('c_g0', 0.))
+        r.nlr = int(f.attrs.get('nlr', 0))
         return r
 
     # ------------------------------------------------------------------
@@ -650,6 +699,20 @@ class RSDF(lib.StreamObject):
         dsym[:, np.arange(nao), np.arange(nao)] *= .5
         return dsym[:, tril[0], tril[1]]
 
+    def g0_constant(self, nelectron):
+        '''Energy of the G = 0 term kept out of the vectors (lr='gspace') for
+        any N-electron wavefunction: -c0 N (N - 1) / 2.'''
+        return -.5 * self.c_g0 * nelectron * (nelectron - 1)
+
+    def _g0_jk(self, vj, vk, dms):
+        '''Add the -c0 S_mn S_ls term to J (packed) and K.'''
+        c0 = self.c_g0
+        if vj is not None:
+            n = np.einsum('xij,ji->x', dms, self.S)
+            vj -= c0 * n[:, None] * lib.pack_tril(self.S)[None]
+        if vk is not None:
+            vk -= c0 * np.einsum('ij,xjk,kl->xil', self.S, dms, self.S)
+
     def _exxdiv(self, vk, dms, exxdiv):
         if exxdiv == 'ewald':
             from pyscf.pbc import tools
@@ -670,8 +733,15 @@ class RSDF(lib.StreamObject):
     def _cderi(self):
         return self.cderi
 
-    def get_jk(self, dm, hermi=1, with_j=True, with_k=True, direct_scf_tol=None, omega=None, exxdiv=None):
+    def get_jk(self, dm, hermi=1, with_j=True, with_k=True, direct_scf_tol=None, omega=None, exxdiv=None,
+               with_g0=False):
         '''Gamma-point J and K (pyscf conventions; dm real or complex).
+
+        J/K of the vectors.  For lr='gspace' that excludes the G = 0 part of
+        the SR kernel, -c0 S S; with_g0=True adds it (J: -c0 tr(DS) S, K:
+        -c0 S D S).  The default matches what loop() consumers (the spinor
+        SCF's MO-based K, _CDERIS) see; spinor_scf adds the term to the mean
+        field itself (g0_terms).
 
         The argument order is that of pyscf's DF.get_jk (direct_scf_tol is
         ignored; range-separated omega is not supported).
@@ -708,6 +778,8 @@ class RSDF(lib.StreamObject):
                         if np.iscomplexobj(d):
                             vk[i] += 1j * _k_real_cderi(L, d.imag)
                 L = X = None
+        if self.c_g0 and with_g0:
+            self._g0_jk(vj, vk, dms)
         if with_j:
             vj = lib.unpack_tril(vj, lib.SYMMETRIC).reshape(dm.shape)
         if with_k:
@@ -716,14 +788,14 @@ class RSDF(lib.StreamObject):
             vk = self._exxdiv(vk, dms, exxdiv).reshape(dm.shape)
         return vj, vk
 
-    def get_jk_ghf(self, dm, hermi=0, with_j=True, with_k=True, exxdiv=None):
+    def get_jk_ghf(self, dm, hermi=0, with_j=True, with_k=True, exxdiv=None, with_g0=False):
         '''J/K for a (2nao, 2nao) spin-orbital density matrix.  With
         mo_coeff/mo_occ tags K uses the occupied spinors (occ-RI): the spin
         blocks are K_st = sum_P (L_P C_s)(L_P C_t)^H, one pass over the vectors.'''
         nao = self.cell.nao
         occ = _occ_factors(dm, 2 * nao) if with_k else None
         if occ is None:
-            return ghf_get_jk(lambda d, h, wj, wk: self.get_jk(d, h, wj, wk, exxdiv=exxdiv),
+            return ghf_get_jk(lambda d, h, wj, wk: self.get_jk(d, h, wj, wk, exxdiv=exxdiv, with_g0=with_g0),
                               dm, hermi, with_j, with_k)
         if self.cderi is None:
             self.build()
@@ -745,6 +817,13 @@ class RSDF(lib.StreamObject):
                 vk[i, :nao, nao:] += _xxh(Xa, Xb)
             L = Xa = Xb = None
         vk[:, nao:, :nao] = vk[:, :nao, nao:].conj().transpose(0, 2, 1)
+        if self.c_g0 and with_g0:
+            S2 = np.zeros((2 * nao, 2 * nao))
+            S2[:nao, :nao] = S2[nao:, nao:] = self.S
+            n = np.einsum('xij,ji->x', dms, S2)
+            if with_j:
+                vj -= self.c_g0 * n[:, None] * lib.pack_tril(self.S)[None]
+            vk -= self.c_g0 * np.einsum('ij,xjk,kl->xil', S2, dms, S2)
         for i in range(nset):
             for s0, t0 in ((0, 0), (nao, nao), (0, nao), (nao, 0)):
                 blk = vk[i:i + 1, s0:s0 + nao, t0:t0 + nao]

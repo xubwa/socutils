@@ -105,9 +105,9 @@ def mc_diis(mc, mo_coeff, target_orbital=None, mo_cap=None, conv_tol=None,
         # ensemble (energy_nuc) and only shifts the diagonal shell blocks of the
         # Fock matrices (no gradient), but without it the core/active level
         # positions of the step are off by nu_M and the iterations go uphill.
-        madelung = getattr(mc._scf, 'madelung', None)
-        if callable(madelung) and madelung():
-            nu = madelung()
+        k_shift = getattr(mc._scf, 'k_shift', None)
+        if callable(k_shift) and k_shift():
+            nu = k_shift()
             vhf_c = vhf_c - nu * dm_core
             vhf_a = vhf_a - nu * dm_active
         vhf_ca = vhf_c + vhf_a

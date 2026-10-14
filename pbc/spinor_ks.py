@@ -18,8 +18,9 @@
 #              term (nu_M S D S); none for pure functionals (XC is local)
 #
 # Energy: E = tr(D h) + E_J + E_xc - (hyb/2) tr(D K') + E_nn, with E_nn the
-# bare nuclear repulsion (the -nu_M N/2 wavefunction constant of energy_nuc
-# belongs to HF/CASCI and is taken out, as in spinor_scf).
+# bare nuclear repulsion (the wavefunction constants of energy_nuc belong to
+# HF/CASCI and are taken out, as in spinor_scf; J and K' carry the G = 0
+# terms explicitly, spinor_scf g0_terms).
 #
 # Usage:
 #     r = RSDF(cell, auxbasis, nuc_zeta=spinor_scf.nuclear_zeta(cell)).build()
@@ -95,15 +96,13 @@ class _PeriodicSpinorKS(spinor_scf._PeriodicSpinorSCF):
         hyb = self.hybrid_coeff()
         if hyb:
             vj, vk = self.get_jk(mol, dm, hermi=hermi)
-            nu = self.madelung()
-            if nu:
-                s = self.get_ovlp()
-                vk = vk + nu * (s @ dm @ s)
-            vk = vk * hyb
+            dvj, dvk = self.g0_terms(dm)
+            vj = vj + dvj
+            vk = (vk + dvk) * hyb
             exc = exc - .5 * numpy.einsum('ij,ji', dm, vk).real
             vxc = vxc - vk
         else:
-            vj = self.get_jk(mol, dm, hermi=hermi, with_k=False)[0]
+            vj = self.get_jk(mol, dm, hermi=hermi, with_k=False)[0] + self.g0_terms(dm)[0]
         ecoul = .5 * numpy.einsum('ij,ji', dm, vj).real
         return lib.tag_array(vxc + vj, ecoul=ecoul, exc=exc)
 

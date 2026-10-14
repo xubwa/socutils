@@ -35,7 +35,7 @@ from socutils.pbc import spinor_scf, spinor_ks
 from socutils.scf import spinor_hf, addons
 import io
 import contextlib
-from socutils.mcscf import zcasci, zmcscf, zcahf, cahf_diis
+from socutils.mcscf import zcasci, zmcscf, zcahf, cahf_diis, cahf_fock
 
 p = argparse.ArgumentParser()
 p.add_argument('system', choices=sorted(SYSTEMS))
@@ -44,6 +44,9 @@ p.add_argument('--dopant', default='Eu')
 p.add_argument('--nelec-open', type=int, default=6, help='4f electrons (Eu3+: 6)')
 p.add_argument('--norb-open', type=int, default=14, help='4f spinors')
 p.add_argument('--omega', type=float, default=0.5)
+p.add_argument('--lr', choices=('fit', 'gspace'), default='fit',
+               help="RSDF long range: 'fit' (whole kernel fitted) or 'gspace' (SR fitted, LR exact "
+                    "plane-wave rows; ~V (2 omega)^3 extra rows, use a smaller --omega, e.g. 0.3)")
 p.add_argument('--precision', type=float, default=1e-10)
 p.add_argument('--max-memory', type=float, default=8000, help='MB')
 p.add_argument('--nroots', type=int, default=13)
@@ -52,8 +55,9 @@ p.add_argument('--xc', default=None, help='KS functional (e.g. PBE, PBE0); defau
 p.add_argument('--grids-level', type=int, default=4)
 p.add_argument('--no-cahf', action='store_true', help='CASCI directly on the fractional-occupation orbitals')
 p.add_argument('--cahf-max-cycle', type=int, default=100)
-p.add_argument('--cahf-driver', choices=('superci', 'diis'), default='superci',
-               help='superci: second-order (zmcscf.CASSCF.kernel); diis: cahf_diis.mc_diis')
+p.add_argument('--cahf-driver', choices=('fock', 'superci', 'diis'), default='fock',
+               help='fock: integral-free (cahf_fock, J/K of the core and 4f densities only); '
+                    'superci: second-order (zmcscf.CASSCF.kernel); diis: cahf_diis.mc_diis')
 args = p.parse_args()
 
 os.makedirs(args.workdir, exist_ok=True)
@@ -77,7 +81,7 @@ if os.path.exists(f_cderi):
 else:
     aux = auxgen(cell, contract=False, prune_lmax=False, threshold=1e-8)
     r = RSDF(cell, aux, omega=args.omega, precision=args.precision,
-             nuc_zeta=spinor_scf.nuclear_zeta(cell))
+             nuc_zeta=spinor_scf.nuclear_zeta(cell), lr=args.lr)
     r.cderi_file = f_cderi
     r.verbose = 4
     r.stdout = sys.stdout
@@ -120,6 +124,15 @@ if not args.no_cahf:
         z = numpy.load(f_cahf)
         mo = z['mo_coeff']
         log('CAHF orbitals loaded from %s (E = %.10f)' % (f_cahf, float(z['e_tot'])))
+    elif args.cahf_driver == 'fock':
+        mc = cahf_fock.CAHF(mf, args.norb_open, args.nelec_open, ncore=ncore)
+        mc.max_cycle = args.cahf_max_cycle
+        mc.conv_tol = 1e-9
+        mc.verbose = 4
+        t = time.time()
+        with open(os.path.join(args.workdir, 'cahf.log'), 'w') as fcahf:
+            mc.stdout = fcahf
+            mc.kernel(mo)
     else:
         mc = zmcscf.CASSCF(mf, args.norb_open, args.nelec_open, ncore=ncore)
         mc.fcisolver = zcahf.CAHF(cell)
@@ -133,6 +146,7 @@ if not args.no_cahf:
                 mc.kernel(mo)
             else:
                 cahf_diis.mc_diis(mc, mo, conv_tol=1e-9)
+    if not os.path.exists(f_cahf):
         mo = mc.mo_coeff
         numpy.savez(f_cahf, mo_coeff=mo, e_tot=mc.e_tot, ncore=ncore)
         w = addons.subspace_weights(mf.get_ovlp(), mo[:, ncore:ncore + args.norb_open], idx)
