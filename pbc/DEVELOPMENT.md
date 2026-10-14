@@ -402,6 +402,47 @@ Next for the Eu target:
 * Kramers pairs in J/K and in the transformation.
 * ACE.
 
+## 4c. Cost after the LR and load-balance changes (YSO conventional cell)
+
+The run below had nothing else running alongside it (4 cores, w 0.5,
+prec 1e-10, `bench/yso_build.py`):
+
+| | before | now |
+|---|---|---|
+| SR 3c | 1994 s | 938 s (tasks over (row shell, column shell) pairs) |
+| LR 3c | 1418 s | 538 s (pyscf's C lattice-sum pair FT, s2, real/imag) |
+| fit W B | 343 s | 309 s |
+| 2c metric | 150 s | 154 s |
+| build | 3960 s | 2026 s |
+
+**Calls on this run** (minao density, scalar `RSDF.get_jk`, vectors read
+from disk):
+* J: 39 s.
+* Full K: 147 s.
+* occ-RI K: 145 s, with nocc 312 of 692 (fractional minao occupations).
+  It is no faster here because each block is unpacked and copied.
+
+The 2c SCF does not take this path.  It uses `_DFJHF._get_k_mo`, which
+half-transforms the packed vectors with the occupied spinors and now
+transforms only the unbarred Kramers half.  Its cost still has to be
+measured in an SCF.
+
+**Omega scan** (single cell, the LR part now being cheap):
+* Y2O3: w 0.8 is fastest (179 s vs 259 s at w 0.5).  The SR triple count
+  falls only from 3.8e7 at w 0.8 to 2.8e7 at w 1.6, because the SR cost
+  comes from the compact core functions whatever w is.
+* Quartz: also fastest at w 0.8 (62 s vs 85 s at w 0.5).
+* For a larger cell the LR part grows faster (N^2 V against N), so the best
+  w shrinks with the cell.  For YSO, w 0.5 remains the choice.
+
+**Scaling**, for a cell n times larger: SR 3c grows as n; the LR GEMM, the
+fit W B and occ-RI K grow as n^4; storage grows as n^3.
+* On 48 cores (about 10x the 4 used here) the estimates are: 1x1x1 build
+  4 min / 19 GB; 1x1x2 (64 atoms) build 25 min / 150 GB, a few minutes per
+  K; 128 atoms build 6 h / 1.2 TB.
+* Beyond 64 atoms this needs local fitting for K (PARI / RI-LVL) and sparse
+  storage for J.
+
 ## 5. Auxiliary bases (measured)
 
 * ETB (pyscf default for custom bases): built from primitive exponent ranges,
