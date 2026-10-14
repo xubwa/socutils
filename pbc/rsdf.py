@@ -199,7 +199,7 @@ class RSDF(lib.StreamObject):
         self.stdout = cell.stdout
         self.max_memory = cell.max_memory
         self.grid_spacing = 4.0
-        self.aux_bound = 'l2'        # aux bound units: 'l2' (default), 'coulomb' or 'max' (larger of the two)
+        self.aux_bound = 'max'       # aux bound units: 'max' (default), 'l2' or 'coulomb'
         self.cderi = None
         self.stats = {}
 
