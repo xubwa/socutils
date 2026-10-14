@@ -72,11 +72,16 @@ def subspace_weights(s, mo_coeff, idx):
     return numpy.einsum('pi,pi->i', (sf @ x).conj(), mo_coeff).real
 
 
-def projected_frac_occ(mf, idx, norb_open, nelec_open):
-    '''Even fractional occupation of the norb_open MOs with the largest weight
-    in the span of the basis functions idx (e.g. the f functions of a dopant,
-    :func:`spinor_ao_indices`), the remaining mol.nelectron - nelec_open
-    electrons by aufbau among the other MOs.
+def projected_frac_occ(mf, idx, norb_open, nelec_open, w_min=.5):
+    '''Even fractional occupation of an open shell chosen by character: among
+    the MOs whose weight in the span of the basis functions idx (e.g. the f
+    functions of a dopant, :func:`spinor_ao_indices`) is at least w_min, the
+    norb_open lowest in energy; the remaining mol.nelectron - nelec_open
+    electrons by aufbau among the other MOs.  The span of all f functions also
+    contains the virtual f-polarisation orbitals (weight ~1, high energy), so
+    the energy order among the candidates picks the valence shell, as AVAS
+    does with a minimal atomic basis.  With fewer than norb_open candidates
+    the largest weights are taken (with a warning).
 
     Unlike :func:`even_occ` the open shell is chosen by character, not by
     orbital energy, which matters for a 4f shell in a solid: HF puts the
@@ -97,17 +102,22 @@ def projected_frac_occ(mf, idx, norb_open, nelec_open):
         if mo_coeff is None:
             mo_coeff = mf.mo_coeff
         w = subspace_weights(mf.get_ovlp(), mo_coeff, idx)
-        open_mo = numpy.sort(numpy.argsort(-w, kind='stable')[:norb_open])
+        cand = numpy.where(w >= w_min)[0]
+        if len(cand) >= norb_open:
+            open_mo = numpy.sort(cand[numpy.argsort(mo_energy[cand], kind='stable')[:norb_open]])
+        else:
+            logger.warn(mf, 'projected_frac_occ: only %d MOs with weight >= %.2f, taking the %d largest weights',
+                        len(cand), w_min, norb_open)
+            open_mo = numpy.sort(numpy.argsort(-w, kind='stable')[:norb_open])
         mo_occ = numpy.zeros_like(mo_energy)
         mo_occ[open_mo] = frac
         rest = numpy.array([i for i in numpy.argsort(mo_energy, kind='stable') if i not in set(open_mo)])
         mo_occ[rest[:nclose]] = 1.0
         mf.open_shell_mo = open_mo
         logger.info(mf, '  open shell: %d MOs x %.6f electrons, weights %.3f..%.3f, '
-                    'energies %.4f..%.4f; next weight %.3f',
+                    'energies %.4f..%.4f; %d candidates with weight >= %.2f',
                     norb_open, frac, w[open_mo].min(), w[open_mo].max(),
-                    mo_energy[open_mo].min(), mo_energy[open_mo].max(),
-                    numpy.sort(w)[::-1][norb_open] if len(w) > norb_open else 0.)
+                    mo_energy[open_mo].min(), mo_energy[open_mo].max(), len(cand), w_min)
         e_occ = mo_energy[rest[:nclose]]
         if len(rest) > nclose:
             logger.info(mf, '  closed shell HOMO %.6f LUMO %.6f', e_occ.max(), mo_energy[rest[nclose]])
