@@ -243,6 +243,8 @@ class RSDF(lib.StreamObject):
         self.grid_spacing = 4.0
         self.aux_bound = 'max'       # aux bound units: 'max' (default), 'l2' or 'coulomb'
         self.cderi_to_disk = False   # force HDF5 storage (default: only when larger than max_memory/2)
+        self.keep_raw = False        # keep the unfitted (aux|pair) and the aux metric (small cells; local fitting)
+        self.metric_sr = None
         self.cderi = None            # (naux_kept, nao(nao+1)/2), pyscf packed pairs; ndarray or h5py dataset
         self.stats = {}
 
@@ -403,6 +405,8 @@ class RSDF(lib.StreamObject):
             ptr(atm), c_int(sysmol.natm), ptr(bas), c_int(sysmol.nbas), ptr(env_full), ptr(env_lr),
             ptr(stats2))
         t1 = log.timer('RSDF SR 2c', *t1)
+        if self.keep_raw:
+            self.metric_sr = .5 * (M[:naux, :naux] + M[:naux, :naux].T)
 
         G = reciprocal_vectors(a, 2 * omega * np.sqrt(lnp + np.log(4 * np.pi)))
         # all densities are real, so the -G term is the complex conjugate of
@@ -444,6 +448,7 @@ class RSDF(lib.StreamObject):
 
         e_self = np.sum(Z**2 * np.sqrt(2 * zeta / np.pi)) / 2
         self.e_nuc = .5 * M[naux:, naux:].sum() - e_self
+        self.metric = M[:naux, :naux].copy() if self.keep_raw else None
         w, v = scipy.linalg.eigh(M[:naux, :naux])
         self.metric_eig = (w.min(), w.max())
         if w.min() < -self.lindep * w.max() * 1e2:
@@ -468,6 +473,8 @@ class RSDF(lib.StreamObject):
         else:
             cderi = np.empty((nkept, npair))
         self.cderi = cderi
+        self.int3c = None            # (naux, npair) unfitted (aux|pair), with keep_raw
+        self.int3c_sr = None         # its short-range (erfc) part, with keep_raw
         vnuc = np.zeros(npair)
         S = np.zeros(npair)
 
@@ -510,6 +517,10 @@ class RSDF(lib.StreamObject):
             tril = np.arange(nao)[None, :] <= np.arange(r0, r1)[:, None]
             p0, p1 = r0 * (r0 + 1) // 2, r1 * (r1 + 1) // 2
             Bp = B[:, tril]                                            # (nfit, p1 - p0)
+            if self.keep_raw:
+                if self.int3c_sr is None:
+                    self.int3c_sr = np.zeros((naux, npair))
+                self.int3c_sr[:, p0:p1] = Bp[:naux]
             B = None
             # long range: lattice-summed pair FTs at Gamma for the packed pair
             # range [p0, p1), real and imaginary parts (pyscf's C lattice sum)
@@ -535,6 +546,10 @@ class RSDF(lib.StreamObject):
             vnuc[p0:p1] = -Bp[naux:].sum(axis=0)
             tb = logger.perf_counter()
             cderi[:, p0:p1] = W @ Bp[:naux]
+            if self.keep_raw:
+                if self.int3c is None:
+                    self.int3c = np.zeros((naux, npair))
+                self.int3c[:, p0:p1] = Bp[:naux]
             Bp = None
             log.debug('RSDF block %d/%d (%d rows): SR %.1f s (%d triples), LR %.1f s, fit+store %.1f s',
                       ib + 1, len(blocks), nrow, t_sr - tsr0, int(stats[1]), t_lr - tlr0,
