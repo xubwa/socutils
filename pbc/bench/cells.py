@@ -77,8 +77,75 @@ def substitute(system, element='Eu', host='Y', index=0):
     return A, out
 
 
+def _reduced_basis(L, nmax=6):
+    '''Three shortest lattice vectors of L spanning the same lattice.'''
+    import itertools
+    T = np.array(list(itertools.product(range(-nmax, nmax + 1), repeat=3)))
+    V = T @ L
+    order = np.argsort(np.linalg.norm(V, axis=1))
+    vol = abs(np.linalg.det(L))
+    basis = []
+    for i in order:
+        if np.linalg.norm(V[i]) < 1e-8:
+            continue
+        trial = basis + [V[i]]
+        if len(trial) < 3:
+            if np.linalg.matrix_rank(np.array(trial), tol=1e-6) == len(trial):
+                basis = trial
+        elif abs(abs(np.linalg.det(np.array(trial))) - vol) < 1e-6 * vol:
+            basis = trial
+            break
+    B = np.array(basis)
+    return B if np.linalg.det(B) > 0 else B[[1, 0, 2]]
+
+
+def supercell(system, M):
+    '''Supercell with lattice vectors M @ A (M an integer matrix, or a mesh
+    (n1, n2, n3) for a diagonal one), returned on a reduced (short) basis.'''
+    A, atoms = system
+    A = np.asarray(A, dtype=float)
+    M = np.asarray(M)
+    if M.ndim == 1:
+        M = np.diag(M)
+    L = _reduced_basis(M @ A)
+    n = round(abs(np.linalg.det(M)))
+    Linv = np.linalg.inv(L)
+    span = int(np.abs(M).sum()) + 1
+    pts = []
+    for t in np.array(np.meshgrid(*[np.arange(-span, span + 1)] * 3, indexing='ij')).reshape(3, -1).T @ A:
+        f = t @ Linv
+        if np.all(f > -1e-8) and np.all(f < 1 - 1e-8):
+            pts.append(t)
+    assert len(pts) == n, (len(pts), n)
+    out = []
+    for t in pts:
+        for e, x in atoms:
+            out.append((e, np.mod((np.asarray(x) + t) @ Linv, 1.) @ L))
+    return L, out
+
+
+def min_image_distance(system, element):
+    '''Shortest distance (A) between atoms of element and their periodic images
+    (or each other): the dopant-dopant separation of a doped supercell.'''
+    A, atoms = system
+    A = np.asarray(A, dtype=float)
+    X = np.array([x for e, x in atoms if e == element])
+    T = np.array([[i, j, k] for i in (-2, -1, 0, 1, 2) for j in (-2, -1, 0, 1, 2)
+                  for k in (-2, -1, 0, 1, 2)]) @ A
+    d = np.linalg.norm(X[:, None, None, :] + T[None, None] - X[None, :, None, :], axis=-1)
+    d[d < 1e-6] = np.inf
+    return d.min()
+
+
 SYSTEMS = {'quartz': QUARTZ, 'y2o3A': Y2O3_A, 'yso': YSO,
-           'eu_y2o3A': substitute(Y2O3_A), 'eu_yso': substitute(YSO)}
+           'eu_y2o3A': substitute(Y2O3_A), 'eu_yso': substitute(YSO),
+           # Supercells of the primitive cell with the largest Eu-Eu image
+           # distance for their size (all Hermite normal forms enumerated; the
+           # primitive cell already contains a 6.82 A vector, -a1 + 2 a3 = c):
+           #   x2, 64 atoms: 8.05 A (1 Eu / 16 Y);  x3, 96 atoms: 10.52 A;
+           #   (x4, 128 atoms: 12.54 A)
+           'eu_yso_x2': substitute(supercell(YSO, (2, 1, 1))),
+           'eu_yso_x3': substitute(supercell(YSO, (1, 1, 3)))}
 
 
 def trim_basis(basname, elements, emin=0.1):
