@@ -54,7 +54,7 @@ def get_r(s, st):
     return si @ hpow(si @ st @ si, qmp.mpf(-0.5)) @ sp
 
 
-def decouple(h4c, s4c):
+def decouple(h4c, s4c, return_vectors=False):
     '''X and R from the positive-energy eigenvectors of (h4c, s4c).'''
     n4 = h4c.shape[0]
     n2 = n4 // 2
@@ -67,6 +67,8 @@ def decouple(h4c, s4c):
     xm = csolve(cl.T, cs.T).T
     st = s4c[:n2, :n2] + xm.conj().T @ s4c[n2:, n2:] @ xm
     r = get_r(s4c[:n2, :n2], st)
+    if return_vectors:
+        return xm, r, c[:, n2:]
     return xm, r
 
 
@@ -102,17 +104,24 @@ def atomic_densities(xmol, light_speed=None, cache=None):
                 raise NotImplementedError('open-shell atom %s' % symb)
             mf = dhf.DHF(amol, light_speed=light_speed)
             mf.verbose = 0
+            mf.conv_tol = 1e-32
+            mf.conv_tol_grad = 1e-17
+            mf.max_cycle = 100
             mf.kernel()
             if not mf.converged:
                 raise RuntimeError('atomic DHF of %s not converged' % symb)
             ham = mf.ham
-            d4 = mf.make_rdm1().as_complex()
-            vj, vk = ham.get_jk(d4)
+            vj, vk = ham.get_jk(mf.make_rdm1().as_complex())
             f4 = ham.hcore + vj - vk
-            xa, ra = decouple(f4, ham.ovlp)
+            # D4c and D2c from the same occupied eigenvectors of the converged
+            # Fock matrix, so that Tr D4c S4c = Tr D2c S2c = N exactly
+            xa, ra, cpes = decouple(f4, ham.ovlp, return_vectors=True)
             na = amol.nao_nr(amol.cart)
+            cocc = cpes[:, :amol.nelectron]
+            d4 = cocc @ cocc.conj().T
             rinv = csolve(ra, QArray.eye(2*na).as_complex())
-            d2 = rinv @ d4[:2*na, :2*na] @ rinv.conj().T
+            c2 = rinv @ cocc[:2*na]
+            d2 = c2 @ c2.conj().T
             cache[symb] = (d4, d2, na)
         d4, d2, na = cache[symb]
         assert na == p1 - p0
