@@ -321,7 +321,8 @@ static inline double pair_aux_bound(PairEnvelope *pe, double q, double kq, doubl
  * nao_sh:    number of AO image shells (cell 0 first)
  * aux_sh0, naux_sh: range of aux image shells
  * ao_fold:   [nao_sh] AO offset in cell 0 of each AO image shell
- * sh_cell:   [nao_sh] cell-0 shell of each AO image shell; only pairs with
+ * sh_cell:   [nao_sh] cell-0 shell of each AO image shell (image shells are
+ *            translation-major, nao_sh = nT nbas0); only pairs with
  *            sh_cell[j] <= i are evaluated, i.e. the lower shell triangle of
  *            the folded (symmetric) matrices; diagonal shell blocks are complete
  * aux_fold:  [natot] aux offset in cell 0 of each aux image shell (indexed by shell id)
@@ -373,15 +374,21 @@ void SOCpbc_sr_int3c(double *out, int nao0, int naux0, int ish0, int ish1, int r
         PairEnvelope pe[NENV];
         int shls[3];
         int ish, jsh;
+        /* tasks: (row shell ish, cell-0 column shell jc <= ish) with all images
+         * of jc (image shells are translation-major: jsh = t nbas0 + jc), so
+         * tasks write disjoint output blocks and there are many of them */
+        int task;
 #pragma omp for schedule(dynamic)
-        for (ish = ish0; ish < ish1; ish++) {
+        for (task = 0; task < (ish1 - ish0) * nbas0; task++) {
+                const int jc = task % nbas0;
+                ish = ish0 + task / nbas0;
+                if (jc > ish) {
+                        continue;
+                }
                 const double *ri = shell_center(ish, atm, bas, env);
                 const int di = shell_dim(ish, bas);
                 const int mi = ao_fold[ish] - row0;
-                for (jsh = 0; jsh < nao_sh; jsh++) {
-                        if (sh_cell[jsh] > ish) {
-                                continue;
-                        }
+                for (jsh = jc; jsh < nao_sh; jsh += nbas0) {
                         const double *rj = shell_center(jsh, atm, bas, env);
                         double rij[3] = {ri[0] - rj[0], ri[1] - rj[1], ri[2] - rj[2]};
                         double r2 = rij[0] * rij[0] + rij[1] * rij[1] + rij[2] * rij[2];
