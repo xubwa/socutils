@@ -50,7 +50,7 @@ class KnownValues(unittest.TestCase):
             mc.kernel()
             mc0 = _quiet(zcasci.CASCI(mf, 6, 6))
             mc0.kernel()
-            cls.res[L] = dict(mf=mf, e_hf=e_hf, e_ci=mc.e_tot, e_cas_occ=mc0.e_tot)
+            cls.res[L] = dict(mf=mf, e_hf=e_hf, e_ci=mc.e_tot, e_cas_occ=mc0.e_tot, rsdf=r)
 
     def _extrapolate(self, key):
         (a, ea), (b, eb) = [(L, self.res[L][key]) for L in sorted(self.res)]
@@ -63,6 +63,17 @@ class KnownValues(unittest.TestCase):
     def test_cas_of_occupied_orbitals_is_hf(self):
         for r in self.res.values():
             self.assertAlmostEqual(r['e_cas_occ'], r['e_hf'], 9)
+
+    def test_frozen_exchange_cycles(self):
+        '''K rebuilt every 3rd iteration converges to the same energy.'''
+        r = self.res[20.]
+        mf = _quiet(spinor_scf.SpinorRSDF(r['mf'].mol, r['rsdf']))
+        mf.k_rebuild_cycle = 3
+        mf.conv_tol = 1e-10
+        e = mf.kernel()
+        self.assertTrue(mf.converged)
+        self.assertAlmostEqual(e, r['e_hf'], 8)
+        self.assertLess(mf.k_builds, mf.cycles)
 
     def test_madelung_constant_term(self):
         '''exxdiv only shifts the energy by -nu_M N / 2.'''

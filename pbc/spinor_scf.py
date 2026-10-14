@@ -135,6 +135,7 @@ class _PeriodicSpinorSCF(spinor_hf._DFJHF):
         self._k_exact = True
         self._k_force = False
         self._k_post = False
+        self._e_exact_last = None
         self.k_builds = 0
 
     def scf(self, dm0=None, **kwargs):
@@ -164,14 +165,18 @@ class _PeriodicSpinorSCF(spinor_hf._DFJHF):
         return vj - vk
 
     def check_convergence(self, envs):
-        dE = abs(envs['e_tot'] - envs['last_hf_e'])
+        e = envs['e_tot']
         if getattr(self, '_k_post', False):
             # pyscf's extra cycle after convergence (its own, looser test)
-            return dE < envs['conv_tol'] or envs['norm_gorb'] < envs['conv_tol_grad']
-        conv = dE < envs['conv_tol'] and envs['norm_gorb'] < envs['conv_tol_grad']
-        if conv and not getattr(self, '_k_exact', True):
-            self._k_force = True      # converged on a frozen K: one more exact step
-            return False
+            return abs(e - envs['last_hf_e']) < envs['conv_tol'] or envs['norm_gorb'] < envs['conv_tol_grad']
+        if not getattr(self, '_k_exact', True):
+            return False      # a frozen-K iteration never converges
+        # with frozen K in between, consecutive energies differ by the K update:
+        # compare with the previous exact-K iteration instead
+        e_ref = getattr(self, '_e_exact_last', None)
+        e_ref = envs['last_hf_e'] if self.k_rebuild_cycle <= 1 or e_ref is None else e_ref
+        self._e_exact_last = e
+        conv = abs(e - e_ref) < envs['conv_tol'] and envs['norm_gorb'] < envs['conv_tol_grad']
         if conv:
             self._k_force = True      # the extra cycle uses an exact K
             self._k_post = True
