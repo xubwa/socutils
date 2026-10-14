@@ -45,7 +45,8 @@ def make_basis(k):
         for l in (0, 1):
             emin = min(p[0] for s in b if s[0] == l for p in s[1:])
             extra += [[l, [emin / 2.5**(i+1), 1.]] for i in range(k)]
-        bas[el] = b + extra
+        # x2camf expects the shells sorted by angular momentum
+        bas[el] = sorted(b + extra, key=lambda sh: sh[0])
     return bas
 
 
