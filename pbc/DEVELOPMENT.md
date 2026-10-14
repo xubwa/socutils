@@ -315,6 +315,53 @@ Where the time goes:
   (tested against pyscf's molecular GHF for Hermitian and non-Hermitian
   non-collinear densities).  No Kramers-symmetry savings yet.
 
+## 4b. Spinor SCF and CASCI on RSDF (`pbc/spinor_scf.py`)
+
+The molecular socutils machinery is reused as is, and RSDF is the DF object:
+* `scf.spinor_hf._DFJHF` builds J and the MO-based K from `with_df.loop()`.
+* `mcscf.zmc_ao2mo._CDERIS` (zcasci/zcasscf) builds cd_pa, (tu|vw), core K
+  and core J in one pass over the vectors.
+
+RSDF only needed adapters: pyscf's `get_jk(dm, hermi, with_j, with_k,
+direct_scf_tol, omega)` argument order, and the `mol`, `blockdim` and
+`_cderi` attributes.  `spinor_scf.periodic(mf, rsdf)` (or
+`SpinorRSDF(cell, rsdf)`) replaces only the one-electron part:
+* S and T are Gamma lattice sums.
+* V_ne and E_nn come from RSDF (Gaussian nuclei, the same kernel as J).
+* Periodic X2C/X2CAMF is not wired in yet (NotImplementedError).
+
+**Exchange G = 0 term.**  The first molecule-in-box comparison was off by
+1.40 Eh at L = 14 and 0.99 Eh at L = 20.  That is -nu_M N/2 with
+nu_M = 2.837/L: the exchange-hole G = 0 term that exxdiv=None leaves out.
+The earlier 0D tests checked only Coulomb energies, so they missed it.  The
+G = 0 part of (pq|rs) is v delta_pq delta_rs.  For any N-electron
+wavefunction it gives v N(N-1)/2, which leaves -nu_M N/2 after the
+background.  So it is a constant: orbitals, CI vectors and correlation
+energies are unaffected.  `exxdiv='ewald'` (default) adds it to
+`energy_nuc()`; HF and CASCI both pick it up there, and for converged HF it
+equals pyscf's ewald exchange correction.
+
+What remains is the tin-foil dipole term, exactly A/L^3.  For N2/cc-pVDZ,
+aug-ETB aux, CASCI(6e, 12 spinors), with the extrapolated value
+E_inf = (E_b b^3 - E_a a^3)/(b^3 - a^3):
+
+| L (bohr) | E_HF - E_mol | E_CASCI - E_mol |
+|---|---|---|
+| 14 | -1.38e-2 | -1.24e-2 |
+| 20 | -4.73e-3 | -4.24e-3 |
+| 26 | -2.15e-3 | -1.93e-3 |
+| extrapolated (20, 26) | 5.0e-7 | 2.1e-7 |
+
+A CAS of only occupied orbitals reproduces E_HF to 1e-13.
+`pbc/test/test_spinor_casci.py` covers the extrapolation, the CAS = occupied
+check and the Madelung term.
+
+Next for the Eu target:
+* Localised Eu 4f active spinors in a Gamma supercell (AVAS-type projection).
+* A (tu|vw) accuracy check against exact integrals.
+* Periodic X2CAMF hcore.
+* Kramers pairs in the transformation.
+
 ## 5. Auxiliary bases (measured)
 
 * ETB (pyscf default for custom bases): built from primitive exponent ranges,

@@ -570,12 +570,28 @@ class RSDF(lib.StreamObject):
             raise NotImplementedError(exxdiv)
         return vk
 
-    def get_jk(self, dm, hermi=1, with_j=True, with_k=True, exxdiv=None):
+    # pyscf/socutils DF interface (scf.spinor_hf._DFJHF, mcscf.zmc_ao2mo._CDERIS)
+    blockdim = 240
+
+    @property
+    def mol(self):
+        return self.cell
+
+    @property
+    def _cderi(self):
+        return self.cderi
+
+    def get_jk(self, dm, hermi=1, with_j=True, with_k=True, direct_scf_tol=None, omega=None, exxdiv=None):
         '''Gamma-point J and K (pyscf conventions; dm real or complex).
+
+        The argument order is that of pyscf's DF.get_jk (direct_scf_tol is
+        ignored; range-separated omega is not supported).
 
         When dm carries mo_coeff/mo_occ (pyscf tag_array, occupations >= 0,
         fractional allowed), K is built from the occupied factors (occ-RI):
         K = sum_P (L_P C)(L_P C)^H, naux nao^2 nocc instead of 2 naux nao^3.'''
+        if omega:
+            raise NotImplementedError('RSDF.get_jk with omega')
         if self.cderi is None:
             self.build()
         nao = self.cell.nao
