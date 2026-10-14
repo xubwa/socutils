@@ -372,12 +372,23 @@ class RSDF(lib.StreamObject):
         G2 = np.einsum('gx,gx->g', G, G)
         vG = 2 * 4 * np.pi * np.exp(-G2 / (4 * omega**2)) / G2
 
+        # aux FTs (ng, nfit); computed once for all G when small enough
+        cache_fit = len(G) * nfit * 16 < .1 * self.max_memory * 1e6
+
         def fit_ft(g0, g1):
-            fit = ft_ao(fitmol0, G[g0:g1]) / vol                       # (ng, nfit)
+            if cache_fit:
+                if 'all' not in fit_cache:
+                    fit_cache['all'] = _fit_ft(0, len(G))
+                return fit_cache['all'][g0:g1]
+            return _fit_ft(g0, g1)
+
+        def _fit_ft(g0, g1):
+            fit = ft_ao(fitmol0, G[g0:g1]) / vol
             fit[:, naux:] *= nucscale
             return fit
+        fit_cache = {}
 
-        gblk_fit = max(16, int(self.max_memory * .1e6 / (16 * nfit * 2)))
+        gblk_fit = len(G) if cache_fit else max(16, int(self.max_memory * .1e6 / (16 * nfit * 2)))
         for g0 in range(0, len(G), gblk_fit):
             g1 = min(g0 + gblk_fit, len(G))
             fit = fit_ft(g0, g1)
@@ -435,8 +446,9 @@ class RSDF(lib.StreamObject):
         stats = np.zeros(3, dtype=np.int64)
         tot = dict(pairs=0, triples=0, screened=0)
         t_sr = t_lr = 0.
-        for i0, i1 in blocks:
+        for ib, (i0, i1) in enumerate(blocks):
             r0, r1 = ao_loc[i0], ao_loc[i1]
+            tsr0, tlr0 = t_sr, t_lr
             nrow = r1 - r0
             tb = logger.perf_counter()
             B = np.zeros((nfit, nrow, nao))
@@ -452,31 +464,48 @@ class RSDF(lib.StreamObject):
                 tot[key] += int(stats[k])
             t_sr += logger.perf_counter() - tb
             tb = logger.perf_counter()
-            # long range; image AOs are translation-major copies of the cell
-            # AOs, so folding them onto cell 0 is a sum over the translation axis
-            mask = np.asarray(mask_all[i0:i1], order='F')
-            fold = lambda F: F.reshape(F.shape[0], nrow, nT, nao).sum(axis=2)
-            gblk = max(16, int(self.max_memory * .1e6 / (16 * nrow * aomol.nao * 3)))
-            Bl = B.reshape(nfit, -1)
-            for g0 in range(0, len(G), gblk):
-                g1 = min(g0 + gblk, len(G))
-                F = ft_aopair(aomol, G[g0:g1], shls_slice=(i0, i1, 0, aomol.nbas), ovlp_mask=mask)
-                Pg = fold(F) / vol                                     # (ng, nrow, nao)
-                fit = fit_ft(g0, g1)
-                Bl += ((fit.T * (vG[g0:g1] * vol)) @ Pg.reshape(g1 - g0, -1).conj()).real
-            # overlap at G = 0 (same pair list), for the SR G = 0 removal
-            F0 = ft_aopair(aomol, np.zeros((1, 3)), shls_slice=(i0, i1, 0, aomol.nbas), ovlp_mask=mask)
-            Sb = fold(F0)[0].real
-            Bl -= c0 * np.outer(q, Sb.ravel())
-            t_lr += logger.perf_counter() - tb
             # lower triangle of the block rows -> packed pair range [p0, p1)
             tril = np.arange(nao)[None, :] <= np.arange(r0, r1)[:, None]
             p0, p1 = r0 * (r0 + 1) // 2, r1 * (r1 + 1) // 2
             Bp = B[:, tril]                                            # (nfit, p1 - p0)
-            S[p0:p1] = Sb[tril]
+            B = None
+            # long range.  Image AOs are translation-major copies of the cell
+            # AOs, so the folded pair FT is a sum over translations; only the
+            # lower shell triangle is needed, and translations whose mask is
+            # empty are skipped.
+            mask = mask_all[i0:i1] & (sh_cell[None, :] <= np.arange(i0, i1)[:, None])
+            mask = mask.reshape(i1 - i0, nT, cell.nbas)
+            Tlist = [t for t in range(nT) if mask[:, t].any()]
+
+            def pair_ft(Gb):
+                P = np.zeros((len(Gb), nrow, nao), dtype=np.complex128)
+                for t in Tlist:
+                    P += ft_aopair(aomol, Gb, shls_slice=(i0, i1, t * cell.nbas, (t + 1) * cell.nbas),
+                                   ovlp_mask=np.asarray(mask[:, t], order='F'))
+                return P[:, tril] / vol                                # (ng, p1 - p0)
+
+            gblk = len(G) if cache_fit else gblk_fit
+            gblk = max(16, min(gblk, int(.2 * self.max_memory * 1e6 / (16 * nrow * nao * 3))))
+            for g0 in range(0, len(G), gblk):
+                g1 = min(g0 + gblk, len(G))
+                Pg = pair_ft(G[g0:g1])
+                fw = fit_ft(g0, g1).T * (vG[g0:g1] * vol)              # (nfit, ng)
+                # Re(fw conj(Pg)) as two real GEMMs
+                Bp += np.asarray(fw.real, order='C') @ np.asarray(Pg.real, order='C')
+                Bp += np.asarray(fw.imag, order='C') @ np.asarray(Pg.imag, order='C')
+                Pg = fw = None
+            # overlap at G = 0 (same pair list), for the SR G = 0 removal
+            Sb = pair_ft(np.zeros((1, 3)))[0].real * vol
+            Bp -= c0 * np.outer(q, Sb)
+            t_lr += logger.perf_counter() - tb
+            S[p0:p1] = Sb
             vnuc[p0:p1] = -Bp[naux:].sum(axis=0)
+            tb = logger.perf_counter()
             cderi[:, p0:p1] = W @ Bp[:naux]
-            B = Bl = Bp = None
+            Bp = None
+            log.debug('RSDF block %d/%d (%d rows): SR %.1f s (%d triples), LR %.1f s, fit+store %.1f s',
+                      ib + 1, len(blocks), nrow, t_sr - tsr0, int(stats[1]), t_lr - tlr0,
+                      logger.perf_counter() - tb)
         self.stats['sr3c'] = tot
         log.info('RSDF 3c: %d row blocks, SR %.1f s (%d pairs, %d triples), LR %.1f s (%d G vectors)',
                  len(blocks), t_sr, tot['pairs'], tot['triples'], t_lr, len(G))
