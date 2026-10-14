@@ -137,6 +137,33 @@ The G = 0 bookkeeping is the subtle part (4b, 4j):
 5. Known loose end: the auxgen tau = 1e-8 aux set has metric condition
    number ~1e13.  Prune it if fits look noisy.
 
+## Notes from the design discussion (K_SR options)
+
+* Range separation removes what makes local fitting dangerous in molecules.
+  There, the long-range Coulomb coupling of the fit residuals makes the
+  optimal coefficients nonlocal: domain truncation gives first-order errors,
+  and the robust form can lose positive definiteness (Merlot et al. 2013).
+  With only the erfc kernel fitted, M_SR^-1 decays exponentially, so a
+  local fit converges to the global SR fit with domain radius, and
+  non-robust PARI (C V_SR C) stays PSD.  Left over: the omega trade-off.
+* Pair-independent domains (one domain for all active pairs) are an
+  ordinary variational fit: use them for active / fragment integrals.
+* The candidates for K_SR:
+
+  | scheme | fit error | storage |
+  |---|---|---|
+  | global SR fit with sparse algebra | 2nd order, variational | ~linear if M_SR^-1 decays fast |
+  | SR-PARI | 1st order, PSD | linear |
+  | LinK/ONX-type exact erfc 4c with density screening (as in CP2K HFX) | none | none |
+
+  For LinK, the 4c prefactor for the deep x2c contractions is the question.
+  A count of surviving shell quartets and primitive combinations on
+  Y2O3/YSO decides between the three (no timing needed).
+* occ-RI and Kramers pairing only lower the prefactor (nao/nocc, 2x).  The
+  scaling changes only through locality: localized occupied orbitals make
+  X^P_mi sparse (the Polly/Werner local-fit exchange), or density screening
+  at the 4c level (LinK).
+
 ## Tests
 
 No central runner.  Run each script with `PYTHONPATH` set as above:
