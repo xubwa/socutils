@@ -214,11 +214,12 @@ struct Input {
   // (connect_groups.h); "group_a" lists the spinors of the first group
   // (default: those with an even index, which for spin orbitals are the
   // alpha ones); "relations" says how related strings are found there:
-  // "subgroups" (default for spinors), each group divided once more, or
-  // "keys" (default for spatial and unrestricted orbitals), which keeps a
-  // number of keys per string that grows with the square of its electrons;
-  // both store the lists of related strings. "bytes" stores none and works
-  // the related strings out when they are needed (connect_bytes.h).
+  // "bytes" (default) stores no lists of them and works them out when they
+  // are needed, from a table over the bytes of a string (connect_bytes.h);
+  // "subgroups", each group divided once more, and "keys", which keeps a
+  // number of keys per string that grows with the square of its electrons,
+  // store the lists (connect_groups.h): the earlier scheme, slower and
+  // far larger for spinors.
   // "strings": N-1 and N-2 electron strings of the whole
   // determinant; no wasted tests, memory grows with the square of the
   // electron number. "segments": covers of four out of `connect_segments`
@@ -227,7 +228,7 @@ struct Input {
   bool connect_by_segments = false;
   bool connect_by_groups = true;
   std::vector<int> connect_group_a;
-  std::string connect_relations = "subgroups";
+  std::string connect_relations = "bytes";
   // With "hamiltonian": "direct": "blocks": false finds the connections
   // determinant by determinant, as for a stored Hamiltonian; slower.
   bool connect_blocks = true;
@@ -255,11 +256,12 @@ struct Input {
   bool store_values = true;
   bool adapt_hamiltonian = false;
   double memory_gb = 0.0;
-  // "incremental": true (default) extends the stored Hamiltonian and the
-  // string tables by what the determinants added in an iteration bring, for
-  // which the root keeps the sorted keys of all strings. false makes both
-  // afresh in every iteration and releases the keys each time: slower, less
-  // memory.
+  // "incremental": true (default) extends the stored Hamiltonian by the
+  // rows of the determinants added in an iteration and, where lists of
+  // related strings are stored, extends those, for which the root keeps the
+  // strings (and, with "keys", the sorted keys of all of them). false makes
+  // everything afresh in every iteration: slower, and less memory where
+  // something was kept.
   bool incremental = true;
   // Compare the Hamiltonian and its product against slow reference
   // implementations; for testing on small cases.

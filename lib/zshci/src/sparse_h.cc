@@ -123,6 +123,8 @@ void SparseH<S>::AppendBlocks(std::vector<CsrBlock<S>> blocks) {
 // Splits the rows into one contiguous segment per thread such that every
 // segment has about the same work in Multiply: with one sweep the elements
 // of its rows, with two sweeps an element (j, i) counts for both j and i.
+// An element whose value is worked out in the product counts as several
+// (measured: products with no value stored take 2.5 to 4 times as long).
 template <typename S>
 void SparseH<S>::PartitionRows() {
   const size_t n = dim_;
@@ -140,15 +142,16 @@ void SparseH<S>::PartitionRows() {
     std::vector<uint64_t> weight(n, 1);
     for (const CsrBlock<S>& block : blocks_) {
       const long num_rows = static_cast<long>(block.num_stored_rows());
+      const uint64_t cost = block.has_values() ? 1 : 3;
 #pragma omp parallel for schedule(static)
       for (long r = 0; r < num_rows; ++r) {
-        const uint64_t count = block.row_ptr[r + 1] - block.row_ptr[r];
+        const uint64_t count = cost * (block.row_ptr[r + 1] - block.row_ptr[r]);
 #pragma omp atomic
         weight[block.row[r]] += count;
         if (one_sweep_) continue;
         for (uint64_t k = block.row_ptr[r]; k < block.row_ptr[r + 1]; ++k) {
 #pragma omp atomic
-          ++weight[block.col[k]];
+          weight[block.col[k]] += cost;
         }
       }
     }

@@ -627,6 +627,10 @@ class VariationalH : private ElementSource<S> {
       stored_.FillBlockValues(b);
       bytes += needed;
     }
+    // The rows are divided among the threads by their work, which depends
+    // on which blocks hold values: once more, now that this is settled.
+    stored_.set_product(one_sweep_ ? SparseH<S>::Product::kAutomatic
+                                   : SparseH<S>::Product::kTwoSweeps);
   }
 
   // The elements of stored blocks that hold columns only.
