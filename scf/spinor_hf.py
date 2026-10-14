@@ -43,6 +43,22 @@ class _DFJHF(df.df_jk._DFHF):
         t0 = (logger.process_clock(), logger.perf_counter())
         nao = mol.nao_nr()   # real spherical AO dimension (matches DF integrals)
         vj = vk = None
+        mo_coeff = getattr(dm, 'mo_coeff', None)
+        mo_occ   = getattr(dm, 'mo_occ',   None)
+        # J and the MO-based K in one pass over the DF vectors (they are read
+        # from disk for large systems): a single Hermitian density with MOs
+        if (with_j and with_k and self.with_df and hermi and numpy.ndim(dm) == 2
+                and mo_coeff is not None and mo_occ is not None):
+            dm_sph   = spinor2sph(mol, dm)
+            dm_trace = dm_sph[:nao, :nao] + dm_sph[nao:, nao:]
+            # the imaginary part of a Hermitian D_aa + D_bb is antisymmetric
+            # and does not contribute to J with symmetric (P|mu nu)
+            vk, vj_ao = self._get_k_mo(mol, mo_coeff, mo_occ, omega, dm_j=dm_trace.real)
+            vj_sph = numpy.zeros(dm_sph.shape, dtype=complex)
+            vj_sph[:nao, :nao] = vj_sph[nao:, nao:] = vj_ao
+            vj = sph2spinor(mol, vj_sph)
+            logger.timer(self, 'vj and vk (one pass)', *t0)
+            return vj, vk
 
         # --- J ---
         # J depends only on the total charge density dm_aa + dm_bb.
@@ -98,7 +114,7 @@ class _DFJHF(df.df_jk._DFHF):
         logger.timer(self, 'vj and vk', *t0)
         return vj, vk
 
-    def _get_k_mo(self, mol, mo_coeff, mo_occ, omega=None):
+    def _get_k_mo(self, mol, mo_coeff, mo_occ, omega=None, dm_j=None):
         """Build K in spinor basis via MO half-transform of DF 3-index integrals.
 
         DF integrals (P|mu nu) live in the real spherical AO basis (nao = mol.nao_nr()).
@@ -119,6 +135,9 @@ class _DFJHF(df.df_jk._DFHF):
                       = LaR.T@LaR + LaI.T@LaI + i*(LaI.T@LaR - LaR.T@LaI)
 
         The C library reads the compressed-triangular eri directly (no unpack_tril).
+
+        With dm_j (a real symmetric (nao, nao) density) the Coulomb matrix of
+        dm_j is accumulated in the same pass and (vk, vj) is returned.
         """
         import ctypes
         from pyscf.ao2mo import _ao2mo
@@ -135,8 +154,18 @@ class _DFJHF(df.df_jk._DFHF):
 
         nocc_mask = mo_occ > 0
         nocc = int(nocc_mask.sum())
+        if dm_j is not None:
+            dj = dm_j + dm_j.T
+            dj[numpy.diag_indices(nao)] *= .5
+            dj_tril = lib.pack_tril(dj)
+            vj_tril = numpy.zeros_like(dj_tril)
         if nocc == 0:
-            return numpy.zeros((n2c, n2c), dtype=complex)
+            vk0 = numpy.zeros((n2c, n2c), dtype=complex)
+            if dm_j is None:
+                return vk0
+            for eri1 in self.with_df.loop():
+                vj_tril += lib.dot(lib.dot(eri1, dj_tril[:, None]).T, eri1).ravel()
+            return vk0, lib.unpack_tril(vj_tril)
 
         # Occupied spinor MOs weighted by sqrt(f_i), then projected to sph GHF basis
         C_occ     = mo_coeff[:, nocc_mask] * numpy.sqrt(mo_occ[nocc_mask])
@@ -182,6 +211,8 @@ class _DFJHF(df.df_jk._DFHF):
                  null, ctypes.c_int(0))
 
         for eri1 in self.with_df.loop(blksize):
+            if dm_j is not None:
+                vj_tril += lib.dot(lib.dot(eri1, dj_tril[:, None]).T, eri1).ravel()
             naux = eri1.shape[0]
             LaR = buf_aR[:naux * nocc]
             LaI = buf_aI[:naux * nocc]
@@ -221,6 +252,8 @@ class _DFJHF(df.df_jk._DFHF):
             vk_sph[:nao, nao:] = C - C.T
             vk_sph[nao:, :nao] = vk_sph[:nao, nao:].conj().T
 
+        if dm_j is not None:
+            return sph2spinor(mol, vk_sph), lib.unpack_tril(vj_tril)
         return sph2spinor(mol, vk_sph)
 
 

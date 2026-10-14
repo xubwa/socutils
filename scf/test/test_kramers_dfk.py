@@ -52,6 +52,18 @@ class KnownValues(unittest.TestCase):
         o[nocc:nocc + 2] = .5                     # next pair half occupied
         self.assertLess(abs(self._k(c, o, True) - self._k(c, o, False)).max(), 1e-12)
 
+    def test_one_pass_jk(self):
+        '''J and the MO-based K in one pass equal the separate builds.'''
+        from pyscf import lib
+        mf = self.mf
+        dm = mf.make_rdm1()
+        dmt = lib.tag_array(dm, mo_coeff=mf.mo_coeff, mo_occ=mf.mo_occ)
+        vj1, vk1 = mf.get_jk(self.mol, dmt)
+        vj0 = mf.get_jk(self.mol, dmt, with_k=False)[0]
+        vk0 = mf._get_k_mo(self.mol, mf.mo_coeff, mf.mo_occ)
+        self.assertLess(abs(vj1 - vj0).max(), 1e-12)
+        self.assertLess(abs(vk1 - vk0).max(), 1e-12)
+
 
 if __name__ == '__main__':
     unittest.main()
