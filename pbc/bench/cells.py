@@ -62,7 +62,23 @@ def _yso_primitive():
 
 
 YSO = _yso_primitive()
-SYSTEMS = {'quartz': QUARTZ, 'y2o3A': Y2O3_A, 'yso': YSO}
+
+
+def substitute(system, element='Eu', host='Y', index=0):
+    '''The structure with the index-th host atom replaced (dopant on a host site).'''
+    A, atoms = system
+    out, k = [], 0
+    for e, x in atoms:
+        if e == host:
+            if k == index:
+                e = element
+            k += 1
+        out.append((e, x))
+    return A, out
+
+
+SYSTEMS = {'quartz': QUARTZ, 'y2o3A': Y2O3_A, 'yso': YSO,
+           'eu_y2o3A': substitute(Y2O3_A), 'eu_yso': substitute(YSO)}
 
 
 def trim_basis(basname, elements, emin=0.1):
