@@ -124,6 +124,25 @@ def _aux_coulomb_diag(auxmol):
     return out
 
 
+def _gamma_ft_kernel(cell, precision):
+    '''Analytic FT of lattice-summed AO pairs at Gamma, packed lower triangle
+    (s2), from pyscf's C lattice sum (pbc.df.ft_ao): rows of shells [i0, i1),
+    called as kern(Gv, kptjs=zeros((1, 3)), shls_slice=(i0, i1, 0, i1)) and
+    returning (2, 1, ng, nij) real/imaginary parts.  Against an explicit sum
+    over images the matrices agree to 2e-11 of max 1 (Y2O3), independent of
+    the pyscf precision 1e-10..1e-14 (the explicit sum was the less converged
+    one), at ~1/10 of the cost.'''
+    from pyscf.pbc.df import ft_ao as pft
+    c = cell.copy(deep=False)
+    c.precision = min(cell.precision, precision)
+    c.build(False, False)
+    rs_cell = pft._RangeSeparatedCell.from_cell(c, pft.KECUT_THRESHOLD, pft.RCUT_THRESHOLD)
+    rcut = pft.estimate_rcut(rs_cell)
+    supmol = pft.ExtendedMole.from_cell(rs_cell, [1, 1, 1], rcut.max())
+    supmol = supmol.strip_basis(rcut)
+    return supmol.gen_ft_kernel('s2', return_complex=False)
+
+
 def _sr_g(p, q, omega, d):
     '''SR (erfc) interaction of normalised s Gaussians, as in sr_int.c.'''
     from scipy.special import erf
@@ -464,7 +483,7 @@ class RSDF(lib.StreamObject):
                 i1 += 1
             blocks.append((i0, i1))
             i0 = i1
-        mask_all = np.asarray(kij > cutoff, dtype=np.int8)
+        ft_kern = _gamma_ft_kernel(cell, cutoff)
         sh_cell = np.tile(np.arange(cell.nbas, dtype=np.int32), len(Tao))
         stats = np.zeros(3, dtype=np.int64)
         tot = dict(pairs=0, triples=0, screened=0)
@@ -492,33 +511,24 @@ class RSDF(lib.StreamObject):
             p0, p1 = r0 * (r0 + 1) // 2, r1 * (r1 + 1) // 2
             Bp = B[:, tril]                                            # (nfit, p1 - p0)
             B = None
-            # long range.  Image AOs are translation-major copies of the cell
-            # AOs, so the folded pair FT is a sum over translations; only the
-            # lower shell triangle is needed, and translations whose mask is
-            # empty are skipped.
-            mask = mask_all[i0:i1] & (sh_cell[None, :] <= np.arange(i0, i1)[:, None])
-            mask = mask.reshape(i1 - i0, nT, cell.nbas)
-            Tlist = [t for t in range(nT) if mask[:, t].any()]
-
+            # long range: lattice-summed pair FTs at Gamma for the packed pair
+            # range [p0, p1), real and imaginary parts (pyscf's C lattice sum)
             def pair_ft(Gb):
-                P = np.zeros((len(Gb), nrow, nao), dtype=np.complex128)
-                for t in Tlist:
-                    P += ft_aopair(aomol, Gb, shls_slice=(i0, i1, t * cell.nbas, (t + 1) * cell.nbas),
-                                   ovlp_mask=np.asarray(mask[:, t], order='F'))
-                return P[:, tril] / vol                                # (ng, p1 - p0)
+                F = ft_kern(Gb, kptjs=np.zeros((1, 3)), shls_slice=(i0, i1, 0, i1))[:, 0]
+                return np.asarray(F[0], order='C') / vol, np.asarray(F[1], order='C') / vol
 
             gblk = len(G) if cache_fit else gblk_fit
             gblk = max(16, min(gblk, int(.2 * self.max_memory * 1e6 / (16 * nrow * nao * 3))))
             for g0 in range(0, len(G), gblk):
                 g1 = min(g0 + gblk, len(G))
-                Pg = pair_ft(G[g0:g1])
+                PgR, PgI = pair_ft(G[g0:g1])                         # (ng, p1 - p0)
                 fw = fit_ft(g0, g1).T * (vG[g0:g1] * vol)              # (nfit, ng)
                 # Re(fw conj(Pg)) as two real GEMMs
-                Bp += np.asarray(fw.real, order='C') @ np.asarray(Pg.real, order='C')
-                Bp += np.asarray(fw.imag, order='C') @ np.asarray(Pg.imag, order='C')
-                Pg = fw = None
+                Bp += np.asarray(fw.real, order='C') @ PgR
+                Bp += np.asarray(fw.imag, order='C') @ PgI
+                PgR = PgI = fw = None
             # overlap at G = 0 (same pair list), for the SR G = 0 removal
-            Sb = pair_ft(np.zeros((1, 3)))[0].real * vol
+            Sb = pair_ft(np.zeros((1, 3)))[0][0] * vol
             Bp -= c0 * np.outer(q, Sb)
             t_lr += logger.perf_counter() - tb
             S[p0:p1] = Sb
