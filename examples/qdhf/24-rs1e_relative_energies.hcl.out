@@ -7,3 +7,11 @@ HCl (cc-pvdz), E(R) - E(R_ref), R_ref = 1.275 A, in mHartree; deviation from sf-
  +0.30   35.788039     35.796207 ( 8.168)    35.794473 ( 6.434)    35.797725 ( 9.686)   
  +0.60   95.221296     95.232778 ( 11.483)    95.231684 ( 10.388)    95.234668 ( 13.372)   
 absolute E(R_ref) - E_1e(R_ref) / mHartree: ('rs1e', 1.0) -2.461  ('rs1e', 0.5) -0.432  ('sap1e', None) -49.828
+
+sfmp (spin-free x2cmp, includes the 2e picture change) for comparison, same geometries:
+ dR/A  sfmp rel / mEh   sfmp - 1e (rel) / microEh
+-0.10   8.213723        -6.791
++0.00   0.000000         0.000
++0.10   5.327078         4.459
++0.30  35.797407         9.368
++0.60  95.233906        12.610
