@@ -308,20 +308,27 @@ class RSDF(lib.StreamObject):
 
         # long range, reciprocal space
         G = reciprocal_vectors(a, 2 * omega * np.sqrt(lnp + np.log(4 * np.pi)))
+        # all densities are real, so the -G term is the complex conjugate of
+        # the +G term: keep one vector of each +-G pair with weight 2
+        b = 2 * np.pi * np.linalg.inv(a).T
+        m = np.rint(G @ np.linalg.inv(b)).astype(int)         # integer coordinates
+        half = (m[:, 0] > 0) | ((m[:, 0] == 0) & ((m[:, 1] > 0) | ((m[:, 1] == 0) & (m[:, 2] > 0))))
+        G = G[half]
         G2 = np.einsum('gx,gx->g', G, G)
-        vG = 4 * np.pi * np.exp(-G2 / (4 * omega**2)) / G2
+        vG = 2 * 4 * np.pi * np.exp(-G2 / (4 * omega**2)) / G2
         mask = np.asarray(kij > cutoff, dtype=np.int8, order='F')
-        fold = np.zeros((aomol.nao, nao))
-        aoloc = aomol.ao_loc_nr()
-        for j in range(aomol.nbas):
-            fold[np.arange(aoloc[j], aoloc[j + 1]), sh_fold[j] + np.arange(aoloc[j + 1] - aoloc[j])] = 1.
+        # image AOs are translation-major copies of the cell AOs: folding them
+        # onto cell 0 is a sum over the translation axis
+        nT = len(Tao)
+        assert aomol.nao == nT * nao
+        fold = lambda F: F.reshape(F.shape[0], nao, nT, nao).sum(axis=2)
         blk = max(16, int(self.max_memory * .1e6 / (16 * nao * aomol.nao * 3)))
         Bl = B.reshape(nfit, -1)
         S = np.zeros((nao, nao))
         for g0 in range(0, len(G), blk):
             g1 = min(g0 + blk, len(G))
             F = ft_aopair(aomol, G[g0:g1], shls_slice=(0, cell.nbas, 0, aomol.nbas), ovlp_mask=mask)
-            Pg = (F @ fold) / vol                                      # (ng, nao, nao)
+            Pg = fold(F) / vol                                         # (ng, nao, nao)
             fit = ft_ao(fitmol0, G[g0:g1]) / vol                       # (ng, nfit)
             fit[:, naux:] *= nucscale
             w = vG[g0:g1] * vol
@@ -329,7 +336,7 @@ class RSDF(lib.StreamObject):
             M += ((fit.conj().T * w) @ fit).real
         # overlap and charges at G = 0 (same pair list), for the SR G = 0 removal
         F0 = ft_aopair(aomol, np.zeros((1, 3)), shls_slice=(0, cell.nbas, 0, aomol.nbas), ovlp_mask=mask)
-        S = (F0[0] @ fold).real
+        S = fold(F0)[0].real
         q = ft_ao(fitmol0, np.zeros((1, 3)))[0].real
         q[naux:] *= nucscale
         c0 = np.pi / (omega**2 * vol)
@@ -358,7 +365,7 @@ class RSDF(lib.StreamObject):
                      w.min(), w.max())
         keep = w > self.lindep * w.max()
         self.naux_kept = int(keep.sum())
-        self.cderi = np.einsum('PQ,Pij->Qij', v[:, keep] / np.sqrt(w[keep]), Baux)
+        self.cderi = ((v[:, keep] / np.sqrt(w[keep])).T @ Baux.reshape(naux, -1)).reshape(-1, nao, nao)
         log.info('RSDF: metric eigenvalues [%.2e, %.2e], kept %d of %d; B symmetry error %.1e',
                  w.min(), w.max(), self.naux_kept, naux, self.sym_err)
         log.timer('RSDF build', *t0)
