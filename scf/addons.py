@@ -131,12 +131,29 @@ def cas_order(mf, open_mo=None):
     '''MO coefficients reordered as [closed | open shell | empty] (each by
     energy) for a CASCI/CASSCF on the open shell of a fractional-occupation
     reference, and the number of closed MOs: zcasci.CASCI(mf, ncas, nelecas,
-    ncore=ncore) with mo_coeff=mo.'''
+    ncore=ncore) with mo_coeff=mo.
+
+    Kramers-paired orbitals (columns 2k, 2k+1 degenerate with equal
+    occupations, as from KRHF) are moved as pairs, keeping the interleaved
+    order the Kramers-restricted CASSCF/CAHF drivers require.'''
     o, e = mf.mo_occ, mf.mo_energy
     if open_mo is None:
         open_mo = numpy.where((o > 1e-12) & (o < 1 - 1e-12))[0]
-    open_mo = numpy.asarray(open_mo)
-    closed = [i for i in numpy.argsort(e, kind='stable') if o[i] > 1 - 1e-12 and i not in set(open_mo)]
-    empty = [i for i in numpy.argsort(e, kind='stable') if o[i] < 1e-12 and i not in set(open_mo)]
-    order = numpy.concatenate([closed, open_mo[numpy.argsort(e[open_mo], kind='stable')], empty]).astype(int)
-    return mf.mo_coeff[:, order], len(closed)
+    open_set = set(numpy.asarray(open_mo).tolist())
+    n = len(e)
+    paired = (n % 2 == 0 and numpy.allclose(e[0::2], e[1::2], atol=1e-6)
+              and numpy.allclose(o[0::2], o[1::2], atol=1e-10)
+              and all((2 * k in open_set) == (2 * k + 1 in open_set) for k in range(n // 2)))
+    units = [(2 * k, 2 * k + 1) for k in range(n // 2)] if paired else [(i,) for i in range(n)]
+
+    def cls(u):
+        i = u[0]
+        if i in open_set:
+            return 1
+        return 0 if o[i] > 1 - 1e-12 else 2
+    groups = {0: [], 1: [], 2: []}
+    for u in sorted(units, key=lambda u: e[u[0]]):
+        groups[cls(u)].append(u)
+    order = numpy.array([i for g in (0, 1, 2) for u in groups[g] for i in u], dtype=int)
+    ncore = sum(len(u) for u in groups[0])
+    return mf.mo_coeff[:, order], ncore

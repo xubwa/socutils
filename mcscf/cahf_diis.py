@@ -54,8 +54,17 @@ def mc_diis(mc, mo_coeff, target_orbital=None, mo_cap=None, conv_tol=None,
         t3m = log.timer('Integral transformation', *t3m)
 
         mci = zmcscf._fake_h_for_fast_casci(mc, mo, eris)
-        # if cached vj_c, vk_c available, precompute h1eff and energy_core
-        # to avoid redundant get_jk call inside CASCI kernel
+        # core J/K of the *current* orbitals: _CDERIS built them in its pass
+        # (eris.vj_core/vk_core), so no extra get_jk.  (The J/K kept from the
+        # previous iteration belong to the previous core density; combined
+        # with the new one they give a non-variational energy that drove large
+        # orbital steps away -- periodic Eu:Y2O3 went below the CASCI ground
+        # state and diverged.)
+        if ncore > 0:
+            core_occ0 = np.zeros(nmo)
+            core_occ0[:ncore] = 1
+            vj_c, vk_c = eris.get_jk(np.dot(mo[:, :ncore], mo[:, :ncore].T.conj()),
+                                     mo_coeff=mo, mo_occ=core_occ0)
         if vj_c is not None:
             mo_core = mo[:, :ncore]
             mo_cas = mo[:, ncore:nocc]
@@ -91,6 +100,16 @@ def mc_diis(mc, mo_coeff, target_orbital=None, mo_cap=None, conv_tol=None,
         print('active fock')
         vj_a_mo, vk_a_mo = eris.get_jk_active_mo(casdm1)
         vhf_a = vj_a_mo - vk_a_mo
+        # periodic (spinor_scf): the exchange G = 0 term nu_M S D S, which is
+        # -nu_M D in the MO basis.  It is a constant in the energy of the
+        # ensemble (energy_nuc) and only shifts the diagonal shell blocks of the
+        # Fock matrices (no gradient), but without it the core/active level
+        # positions of the step are off by nu_M and the iterations go uphill.
+        madelung = getattr(mc._scf, 'madelung', None)
+        if callable(madelung) and madelung():
+            nu = madelung()
+            vhf_c = vhf_c - nu * dm_core
+            vhf_a = vhf_a - nu * dm_active
         vhf_ca = vhf_c + vhf_a
 
         g = np.zeros((nmo, nmo), dtype=complex)

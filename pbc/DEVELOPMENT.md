@@ -574,6 +574,43 @@ Eu:Y2O3 with `--xc PBE`: 17 cycles, 288 s on 4 cores, 4f weights 0.92-0.97.
 CASCI on the PBE orbitals shows the same C3v pattern, with 7F1 at 496 and
 918 x2 cm-1.
 
+## 4h. CAHF stage (dopant driver) and three fixes in the CAHF/CASSCF code
+
+The driver now runs reference SCF (HF or KS, fractional 4f) -> CAHF ->
+CASCI.  CAHF is the CASSCF with the `zcahf.CAHF` ensemble solver; it uses
+the second-order super-CI driver (`zmcscf.CASSCF.kernel`) by default, with
+`cahf_diis.mc_diis` as an option.  Eu:Y2O3, 4 cores:
+* Super-CI: monotonic descent to E = -14420.01818.  After 60 iterations
+  dE is ~1e-8 and |g| 7e-5.  Active 4f weights 0.990-0.996.  590 s.
+* CASCI on the CAHF orbitals: E0 = -14420.3724, 0.12 Eh below CASCI on the
+  fractional-HF orbitals.  Levels (cm-1): 0; 153, 507 x2; 948 x2, 1175,
+  1196 x2, ...
+* 7F1 barycentre ~389 and 7F2 ~1090 against the free-ion ~370 / ~1000
+  (with fractional-HF orbitals: ~516 / ~1700).
+* mc_diis: on the molecular Eu3+ ion too, it does not converge in 30
+  cycles (DIIS erratic after cycle 10).  The second-order driver converges
+  there as well.
+
+Fixes on the way:
+* `cahf_diis.mc_diis` built h1eff and the core energy from the core J/K of
+  the *previous* iteration.  tr(D_new h) + 1/2 tr(D_new (J-K)[D_old]) is not
+  variational.  Periodic Eu:Y2O3 went 6 Eh below the CASCI ground state and
+  diverged; the molecular code is affected the same way, only less visibly.
+  It now uses the current core J/K, which `_CDERIS` already builds.
+* `mc_diis`, periodic: the composite Fock matrices lacked the exchange
+  G = 0 term nu S D S.  It is -nu D in the MO basis: no gradient, but the
+  core/active level positions of the step were off by nu and the
+  iterations went uphill.  It is added when the SCF has `madelung()`.
+* `zmc_superci` checked the Kramers pairing with `mol.intor` overlaps,
+  which for a cell lack the lattice sum: a false 8.85 deviation stopped the
+  run.  It now uses `mc._scf.get_ovlp()`, identical for molecules.
+* `addons.cas_order` moves Kramers pairs as units (the interleaved layout
+  the drivers require).
+
+Tests: `test_periodic_cahf` extrapolates the O atom in a box to the
+molecular CAHF with both drivers.  The mcscf finite-difference and Hessian
+tests pass.
+
 ## 5. Auxiliary bases (measured)
 
 * ETB (pyscf default for custom bases): built from primitive exponent ranges,

@@ -21,7 +21,7 @@ except OSError:
     HAVE_LIB = False
 
 
-def _cahf(mf, mol):
+def _cahf(mf, mol, driver='diis'):
     mf.verbose = 0
     mf.conv_tol = 1e-11
     addons.projected_frac_occ(mf, addons.spinor_ao_indices(mol, 0, l=1), 6, 4)
@@ -31,22 +31,33 @@ def _cahf(mf, mol):
     mc.verbose = 0
     mc.max_cycle_macro = 50
     mc.fcisolver = zcahf.CAHF(mol)
+    mc.conv_tol = 1e-12
     with contextlib.redirect_stdout(io.StringIO()):
-        cahf_diis.mc_diis(mc, mo, verbose=0, conv_tol=1e-12, conv_tol_grad=1e-7)
+        if driver == 'superci':
+            mc.kernel(mo)
+        else:
+            cahf_diis.mc_diis(mc, mo, verbose=0, conv_tol=1e-12, conv_tol_grad=1e-7)
     return mc.e_tot, e_frac
 
 
 @unittest.skipUnless(HAVE_LIB, 'libsocpbcdf.so not built (make)')
 class KnownValues(unittest.TestCase):
     def test_box_limit_is_the_molecule(self):
+        self._box_limit('diis')
+
+    def test_box_limit_superci(self):
+        '''The second-order driver (zmcscf.CASSCF.kernel) on the periodic SCF.'''
+        self._box_limit('superci')
+
+    def _box_limit(self, driver):
         mol = gto.M(atom='O 0 0 0', unit='B', basis='cc-pvdz', verbose=0, spin=2)
         aux = df.addons.aug_etb(mol, beta=2.0)
-        ref = _cahf(spinor_hf.KRHF(mol).density_fit(auxbasis=aux), mol)
+        ref = _cahf(spinor_hf.KRHF(mol).density_fit(auxbasis=aux), mol, driver)
         res = {}
         for L in (20., 26.):
             cell = cr.molecule_in_box(mol, L)
             r = RSDF(cell, aux, precision=1e-11, nuc_zeta=1e14).build()
-            res[L] = _cahf(spinor_scf.periodic(spinor_hf.KRHF(cell), r), cell)
+            res[L] = _cahf(spinor_scf.periodic(spinor_hf.KRHF(cell), r), cell, driver)
         (a, ea), (b, eb) = sorted(res.items())
         for k in (0, 1):     # CAHF, fractional SCF
             e_inf = (eb[k] * b**3 - ea[k] * a**3) / (b**3 - a**3)

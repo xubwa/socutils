@@ -10,7 +10,8 @@ CASCI(4f) on the 4f spinors.
 Every stage writes to --workdir and is reused on a second run:
   cderi.h5   the RSDF vectors, S, V_ne, E_nn (RSDF.load)      [the expensive step]
   scf_<xc>.npz    converged orbitals, occupations, energies    (SCF restart guess)
-  casci_<xc>.npz  CASCI energies on those orbitals
+  cahf_<xc>.npz   CAHF orbitals (--no-cahf: CASCI on the fractional-occupation ones)
+  casci_<xc>.npz  CASCI energies
 
 Structures: socutils.pbc.bench.cells.SYSTEMS (eu_y2o3A, eu_yso, eu_yso_x2,
 eu_yso_x3), or adapt make_cell for your own CIF/coordinates.  The basis (x2c-SVPall
@@ -32,7 +33,9 @@ from socutils.pbc.bench.auxgen_util import auxgen
 from socutils.pbc.rsdf import RSDF
 from socutils.pbc import spinor_scf, spinor_ks
 from socutils.scf import spinor_hf, addons
-from socutils.mcscf import zcasci
+import io
+import contextlib
+from socutils.mcscf import zcasci, zmcscf, zcahf, cahf_diis
 
 p = argparse.ArgumentParser()
 p.add_argument('system', choices=sorted(SYSTEMS))
@@ -47,12 +50,17 @@ p.add_argument('--nroots', type=int, default=13)
 p.add_argument('--no-gaunt', action='store_true')
 p.add_argument('--xc', default=None, help='KS functional (e.g. PBE, PBE0); default HF')
 p.add_argument('--grids-level', type=int, default=4)
+p.add_argument('--no-cahf', action='store_true', help='CASCI directly on the fractional-occupation orbitals')
+p.add_argument('--cahf-max-cycle', type=int, default=100)
+p.add_argument('--cahf-driver', choices=('superci', 'diis'), default='superci',
+               help='superci: second-order (zmcscf.CASSCF.kernel); diis: cahf_diis.mc_diis')
 args = p.parse_args()
 
 os.makedirs(args.workdir, exist_ok=True)
 f_cderi = os.path.join(args.workdir, 'cderi.h5')
 f_scf = os.path.join(args.workdir, 'scf_%s.npz' % (args.xc or 'hf'))
 f_cas = os.path.join(args.workdir, 'casci_%s.npz' % (args.xc or 'hf'))
+f_cahf = os.path.join(args.workdir, 'cahf_%s.npz' % (args.xc or 'hf'))
 log = lambda *a: print(*a, flush=True)
 
 cell = make_cell(args.system, args.precision, nucmod='G', max_memory=args.max_memory)
@@ -103,8 +111,35 @@ w = addons.subspace_weights(mf.get_ovlp(), mf.mo_coeff, idx)
 log('SCF converged=%s E = %.10f (%.0f s, %d cycles); open-shell 4f weights %.3f..%.3f'
     % (mf.converged, e_scf, time.time() - t, mf.cycles, w[mf.open_shell_mo].min(), w[mf.open_shell_mo].max()))
 
-# 3. CASCI on the 4f spinors
+# 3. CAHF: average-of-configuration (ensemble of all 4f^n determinants) orbital
+# optimisation with the true Hamiltonian, from the fractional-occupation
+# orbitals (or a previous CAHF run)
 mo, ncore = addons.cas_order(mf)
+if not args.no_cahf:
+    if os.path.exists(f_cahf):
+        z = numpy.load(f_cahf)
+        mo = z['mo_coeff']
+        log('CAHF orbitals loaded from %s (E = %.10f)' % (f_cahf, float(z['e_tot'])))
+    else:
+        mc = zmcscf.CASSCF(mf, args.norb_open, args.nelec_open, ncore=ncore)
+        mc.fcisolver = zcahf.CAHF(cell)
+        mc.max_cycle_macro = args.cahf_max_cycle
+        mc.conv_tol = 1e-9
+        mc.verbose = 4
+        t = time.time()
+        with open(os.path.join(args.workdir, 'cahf.log'), 'w') as fcahf, contextlib.redirect_stdout(fcahf):
+            mc.stdout = fcahf
+            if args.cahf_driver == 'superci':
+                mc.kernel(mo)
+            else:
+                cahf_diis.mc_diis(mc, mo, conv_tol=1e-9)
+        mo = mc.mo_coeff
+        numpy.savez(f_cahf, mo_coeff=mo, e_tot=mc.e_tot, ncore=ncore)
+        w = addons.subspace_weights(mf.get_ovlp(), mo[:, ncore:ncore + args.norb_open], idx)
+        log('CAHF (%s) E = %.10f converged %s (%.0f s); active 4f weights %.3f..%.3f'
+            % (args.cahf_driver, mc.e_tot, getattr(mc, 'converged', None), time.time() - t, w.min(), w.max()))
+
+# 4. CASCI on the 4f spinors
 mc = zcasci.CASCI(mf, args.norb_open, args.nelec_open, ncore=ncore)
 mc.fcisolver.nroots = args.nroots
 mc.verbose = 4
