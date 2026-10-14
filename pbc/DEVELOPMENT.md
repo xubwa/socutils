@@ -165,12 +165,57 @@ On these cells L2 alone would do (cheapest); but the exact-fit tight-dense
 test still needs the Coulomb measure for its compact aux functions (L2 alone:
 energy error 2e-8 there), so the default stays `aux_bound='max'`.  The omega
 dependence on Y2O3 dropped 10x (K 100x).  It costs 4x the triples and 2.4x the
-build time, because halving the exponent is loose.  Two things are left: the
-remaining 5e-7 on Y2O3, and the cost.  For the 5e-7, the AO image set and
-pair radius are not derived from the envelope (amin/2 in `_ao_images`), and
-that is the next suspect.  For the cost, the split
-r^l e^{-ar^2} <= (l/(2(1-t)ae))^(l/2) e^{-t a r^2} with t near 1 is tighter at
-long range, and the best t per bin can be picked.
+build time, because halving the exponent is loose.
+
+**Envelope family.**  For any 0 < t < 1,
+r^l e^{-ar^2} <= (l/(2(1-t)ae))^(l/2) e^{-t a r^2} (t = 1/2 is the bound
+above).  A larger t decays faster with a larger amplitude.  Every t is a
+rigorous bound, so the kernel takes the smallest over t = 0.5, 0.75, 0.9.  It
+also has three other parts:
+* Primitive pairs are dropped smallest first while their summed bound stays
+  below cutoff/2, and triples are screened at cutoff/2.
+* The pair radius comes from bisection on the summed tail.
+* A cheap exp-only bound (erfc x <= e^{-x^2}, g <= g(0)) runs before the erf one.
+
+| prec 1e-10, w 0.5 | triples | SR 3c | build |
+|---|---|---|---|
+| quartz, old heuristic | 4.3e7 | | 65 s |
+| quartz, t = 1/2 only | 1.5e8 | | 136 s |
+| quartz, t in {.5,.75,.9} | 5.6e7 | 69 s | 103 s |
+| Y2O3, old heuristic | 3.6e7 | | 166 s |
+| Y2O3, t = 1/2 only | 1.5e8 | | 404 s |
+| Y2O3, t in {.5,.75,.9} | 5.6e7 | 274 s | 303 s |
+
+On Y2O3 the SR 3c integrals themselves dominate: about 20 us of CPU per
+triple, with f AOs and aux up to l = 6.
+
+**libcint's erfc-attenuated 2c integrals are not exact.**  For a one-centre Y
+f-f pair (exponent 0.32), int2c2e with omega = -0.5 differs from
+full - LR by 3.7e-10.  Both full and LR agree with Fourier quadrature
+(Lebedev 5810 x 400 radial) to 1e-13, so the SR routine is the inaccurate
+one.  The same check on 3c gives 3.5e-11.  The SR 2c metric is now evaluated
+as full - LR (2c is cheap).  It did not remove the Y2O3 residual, but it
+removes a known error source from the metric.
+
+**The remaining omega dependence on Y2O3 is precision times conditioning,
+not a bug.**  Tests that changed nothing (max matrix difference, w 0.5 vs 0.8):
+* G cutoff, SR image radius or AO image radius x1.3: J 5.9e-7 in every case.
+* The fitting metric differences between omega values are about 1e-10 on
+  diffuse s functions (relative 6e-12).  The metric's condition number is
+  1e13 (eigenvalues 2.4e-11..2.6e2), and its smallest eigenvalue is -1.2e-10
+  at w 0.5 for both precisions.  That is about the round-off floor of the
+  lattice sum.
+* With lindep 1e-12..1e-8, K's omega dependence falls from 1.2e-7 to 1.7e-9,
+  but J stays at 5-8e-7.  J's part therefore comes from the 3c integrals.
+
+What does change it is the precision:
+
+| Y2O3 | J w-dep. | K w-dep. | build w 0.5 / 0.8 |
+|---|---|---|---|
+| prec 1e-10 | 5.8e-7 | 1.7e-7 | 318 / 275 s |
+| prec 1e-12 | 9.2e-8 | 1.1e-7 | 381 / 336 s |
+
+The errors against RSJK are the same at both precisions (fitting-limited).
 
 ### 4.5 Results
 
@@ -237,8 +282,11 @@ and a GEMM for the metric transform (SR 3c 20 s, LR 15 s, SR 2c 1.5 s).
 
 ## 6. Roadmap
 
-1. Rigorous envelope done (4.4); left: the 5e-7 omega dependence on Y2O3
-   (AO image radius) and a tighter envelope split (exponent t a, t ~ 0.8-0.9).
+1. Done: rigorous envelopes, an envelope family, and the SR 2c metric as
+   full - LR (4.4).  The omega dependence is now controlled by precision.
+   Open: the auxgen tau = 1e-8 metric has condition number 1e13.  A less
+   linearly dependent aux set, or pivoted-Cholesky pruning of its diffuse s
+   functions, would make the fit robust.
 2. Cost: mu <-> nu symmetry in the 3c kernel, tighter bounds (angular factors),
    omega choice, LR blocking; benchmark against pyscf GDF/RSJK incl. YSO.
 3. GHF/2c interface: spin-block J/K with the correct alpha-beta slice,
