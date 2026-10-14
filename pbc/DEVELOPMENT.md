@@ -142,13 +142,34 @@ failure: quartz at prec 1e-6 gives -6e-6 and J +5e-4; Y2O3 at prec 1e-6
 gives -4e-4 and J +2e-2.  RSDF warns when the metric is not positive
 semidefinite.
 
-**Next step for robustness:** a rigorous envelope.  For any r,
+**Rigorous angular envelope (implemented).**  For any r,
 r^l exp(-a r^2) <= (l/(a e))^(l/2) exp(-a r^2/2), so every primitive is bounded
-pointwise by an s Gaussian of half the exponent; with the positive erfc kernel
-the s-s interaction of the envelopes is then a true upper bound (with bin
-amplitudes summed rather than maximised).  The current bound has no angular
-factor, which is the likely reason Y (f AOs, aux up to l = 6) needs the
-conservative aux measure.
+pointwise by an s Gaussian of half the exponent (l = 0 keeps a).  The angular
+amplitude per l is measured numerically from libcint (`_angular_amplitude`,
++5%), so libcint's normalisation is absorbed.  With the positive erfc kernel
+the s-s interaction of the envelopes is a true upper bound; bin charges are
+summed, g is taken at both ends of each p bin, and the cutoff is split over
+the dropped primitive pairs and bins.  Aux shells pass envelope exponent and
+envelope charge directly.  Result (prec 1e-10, 4 cores):
+
+| | aux bound | quartz w-dep. J / K | Y2O3 w-dep. J / K | Y2O3 min eig (w 0.5) | Y2O3 triples / build (w 0.5) |
+|---|---|---|---|---|---|
+| old heuristic bound | max | 3.7e-9 / 1.3e-8 | 5.4e-6 / 1.1e-5 | -1.5e-10 | 3.6e7 / 166 s |
+| rigorous envelope | max | 3.4e-10 / 2.1e-10 | 5.8e-7 / 1.2e-7 | -1.3e-10 | 1.5e8 / 404 s |
+| rigorous envelope | l2 | 2.6e-10 / 2.1e-10 | 4.8e-7 / 1.2e-7 | -1.3e-10 | 1.3e8 / 396 s |
+| rigorous envelope | coulomb | 6.7e-8 / 5.9e-8 | 3.9e-7 / 5.6e-7 | -4.6e-9 | 1.4e8 / 375 s |
+
+(w-dep. = max matrix difference omega 0.5 vs 0.8.)  Errors against RSJK are
+unchanged (fitting-limited: J dE -1.2e-5 / -1.8e-5, K dE 2.2e-4 / 5.5e-5).
+With the angular factor in the bound, the L2 measure alone is enough, and it
+is the default now (`aux_bound='l2'`); 'max' is no longer needed.  The omega
+dependence on Y2O3 dropped 10x (K 100x).  It costs 4x the triples and 2.4x the
+build time, because halving the exponent is loose.  Two things are left: the
+remaining 5e-7 on Y2O3, and the cost.  For the 5e-7, the AO image set and
+pair radius are not derived from the envelope (amin/2 in `_ao_images`), and
+that is the next suspect.  For the cost, the split
+r^l e^{-ar^2} <= (l/(2(1-t)ae))^(l/2) e^{-t a r^2} with t near 1 is tighter at
+long range, and the best t per bin can be picked.
 
 ### 4.5 Results
 
@@ -215,7 +236,8 @@ and a GEMM for the metric transform (SR 3c 20 s, LR 15 s, SR 2c 1.5 s).
 
 ## 6. Roadmap
 
-1. Rigorous angular envelope in the bounds (4.4); omega independence on Y2O3.
+1. Rigorous envelope done (4.4); left: the 5e-7 omega dependence on Y2O3
+   (AO image radius) and a tighter envelope split (exponent t a, t ~ 0.8-0.9).
 2. Cost: mu <-> nu symmetry in the 3c kernel, tighter bounds (angular factors),
    omega choice, LR blocking; benchmark against pyscf GDF/RSJK incl. YSO.
 3. GHF/2c interface: spin-block J/K with the correct alpha-beta slice,
