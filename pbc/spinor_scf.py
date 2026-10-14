@@ -11,6 +11,8 @@
 #     S, T      lattice sums at Gamma (cell.pbc_intor)
 #     V_ne      RSDF.get_nuc(): Gaussian nuclei through the same kernel as J
 #     E_nn      RSDF.energy_nuc()
+#     relativity  X2CMP in its one-centre approximation (= X2CAMF), see
+#               OneCenterX2CMPHelper: mf.x2camf() or mf.x2cmp('x2cmp_1c')
 # All Coulomb terms use one convention (G = 0 removed, tin-foil), so the
 # total energy of the neutral cell is well defined.
 #
@@ -33,6 +35,77 @@
 import numpy
 from pyscf import lib
 from socutils.scf import spinor_hf
+
+
+# periodic flavors: the one-centre approximation of X2CMP, keyed by the
+# molecular flavor used for the isolated atoms
+ONE_CENTER_FLAVORS = {'x2camf': 'x2camf',      # X2C-1e + atomic mean-field SOC
+                      'x2cmp_1c': 'x2cmp'}     # atomic X2CMP (atomic Fock decoupled)
+
+
+class OneCenterX2CMPHelper:
+    '''X2CMP in the one-centre approximation for a cell (or any molecule).
+
+    The relativistic correction of the one-electron Hamiltonian is a sum of
+    atomic blocks,
+        h = h_NR + sum_A [h_X2C(A) - h_NR(A)],
+    where h_X2C(A) is the molecular socutils X2C Hamiltonian of the isolated
+    atom A in its own basis (flavor 'x2camf': X2C-1e decoupling plus the
+    atomic mean-field SOC, i.e. X2CAMF; 'x2cmp_1c': the atomic 4c Fock
+    matrix decoupled), and h_NR(A) = T + V_A of the same atom.  All
+    multi-centre relativistic terms (other nuclei inside the decoupling, the
+    two-centre picture change) are dropped: that is what X2CAMF is relative to
+    X2CMP, and what makes it applicable to a crystal.  h_NR of the cell (T and
+    the periodic V_ne) is supplied by the caller.
+    '''
+    def __init__(self, mol, flavor='x2camf', with_gaunt=True, with_breit=True,
+                 with_pcc=False, with_aoc=False):
+        if flavor not in ONE_CENTER_FLAVORS:
+            raise ValueError('periodic X2C: only the one-centre approximation of X2CMP is '
+                             'available, flavor %s (got %r)' % (' or '.join(map(repr, ONE_CENTER_FLAVORS)), flavor))
+        self.mol = mol
+        self.flavor = flavor
+        self.gaunt = with_gaunt
+        self.breit = with_breit
+        self.pcc = with_pcc
+        self.aoc = with_aoc
+        self.atomic = {}      # element -> h_X2C(A) - h_NR(A), spinor basis of A
+        self._delta = None
+
+    def _atom_correction(self, ia):
+        from pyscf import gto
+        from socutils.somf.x2cmp import SpinorX2CMPHelper
+        mol = self.mol
+        key = mol.atom_symbol(ia)
+        if key not in self.atomic:
+            atom = gto.Mole()
+            atom.atom = [(key, (0., 0., 0.))]
+            atom.unit = 'Bohr'
+            atom.basis = {key: mol._basis[key]}
+            atom.nucmod = {key: mol.nucmod[key]} if isinstance(mol.nucmod, dict) and key in mol.nucmod else {}
+            atom.cart = mol.cart
+            atom.verbose = 0
+            atom.spin = gto.charge(key) % 2
+            atom.build(False, False)
+            x2c = SpinorX2CMPHelper(atom, x2cmp=ONE_CENTER_FLAVORS[self.flavor], with_gaunt=self.gaunt,
+                                    with_breit=self.breit, with_pcc=self.pcc, with_aoc=self.aoc)
+            h_x2c = x2c.get_hcore(atom)
+            h_nr = atom.intor('int1e_kin_spinor') + atom.intor('int1e_nuc_spinor')
+            self.atomic[key] = h_x2c - h_nr
+        return self.atomic[key]
+
+    def get_correction(self):
+        '''sum_A [h_X2C(A) - h_NR(A)] in the spinor basis of mol (block diagonal by atom).'''
+        if self._delta is None:
+            mol = self.mol
+            n2c = mol.nao_2c()
+            d = numpy.zeros((n2c, n2c), dtype=complex)
+            for ia, (_, _, p0, p1) in enumerate(mol.aoslice_2c_by_atom()):
+                da = self._atom_correction(ia)
+                assert da.shape == (p1 - p0, p1 - p0)
+                d[p0:p1, p0:p1] = da
+            self._delta = d
+        return self._delta
 
 
 def _sph_blockdiag(h):
@@ -67,18 +140,65 @@ class _PeriodicSpinorSCF(spinor_hf._DFJHF):
     def get_hcore(self, mol=None):
         if mol is None:
             mol = self.mol
-        if getattr(self, 'with_x2c', None) is not None:
-            raise NotImplementedError('periodic X2C/X2CAMF one-electron Hamiltonian')
         t = numpy.asarray(mol.pbc_intor('int1e_kin', hermi=1))
-        return spinor_hf.sph2spinor(mol, _sph_blockdiag(t + self.with_df.get_nuc()))
+        h = spinor_hf.sph2spinor(mol, _sph_blockdiag(t + self.with_df.get_nuc()))
+        x2c = getattr(self, 'with_x2c', None)
+        if x2c is not None:
+            if not isinstance(x2c, OneCenterX2CMPHelper):
+                raise TypeError('periodic SCF: with_x2c must be a OneCenterX2CMPHelper')
+            h = h + x2c.get_correction()
+        return h
+
+    def _attach_x2cmp(self, flavor, with_gaunt, with_breit, with_pcc, with_aoc):
+        self.with_x2c = OneCenterX2CMPHelper(self.mol, flavor, with_gaunt, with_breit, with_pcc, with_aoc)
+        self._keys = self._keys.union(['with_x2c'])
+        return self
+
+    def x2camf(self, with_gaunt=True, with_breit=True, with_pcc=False, with_aoc=False):
+        '''X2CAMF: the one-centre approximation of X2CMP (OneCenterX2CMPHelper).'''
+        return self._attach_x2cmp('x2camf', with_gaunt, with_breit, with_pcc, with_aoc)
+
+    def x2cmp(self, flavor='x2cmp_1c', with_gaunt=True, with_breit=True, with_pcc=False, with_aoc=False):
+        '''X2CMP for a cell: only its one-centre approximation exists, flavor
+        'x2cmp_1c' (atomic X2CMP blocks) or 'x2camf'; anything else (the
+        molecular-mean-field 'x2cmp', 'sfmp', ...) raises.'''
+        return self._attach_x2cmp(flavor, with_gaunt, with_breit, with_pcc, with_aoc)
 
     def energy_nuc(self):
         return self.with_df.energy_nuc() + self.madelung_energy()
 
 
+def nuclear_zeta(cell):
+    '''Gaussian nuclear exponents of the cell's nuclear model (cell.nucmod,
+    e.g. 'G' = Visscher-Dyall, the model of the x2camf atomic code), or None
+    for point nuclei.  Pass them to RSDF(..., nuc_zeta=nuclear_zeta(cell)).'''
+    from pyscf import gto
+    z = numpy.array([cell._env[cell._atm[ia, gto.PTR_ZETA]] for ia in range(cell.natm)])
+    return None if (z == 0).all() else z
+
+
+def check_nuclear_model(cell, rsdf, log=None):
+    '''RSDF's Gaussian nuclei must be the cell's nuclear model: V_ne, E_nn and
+    J come from RSDF, while the one-centre X2C blocks (and h_NR(A) inside them)
+    use the cell's nucmod.  A mismatch shows up as a finite-nucleus energy error
+    (Kr, point vs Gaussian zeta = 1e12: 6e-6 Eh at the NR level, more with X2C).'''
+    import warnings
+    zc = nuclear_zeta(cell)
+    zr = numpy.broadcast_to(numpy.asarray(rsdf.nuc_zeta, dtype=float), (cell.natm,))
+    if zc is None:
+        if zr.min() < 1e13:
+            warnings.warn('point nuclei in the cell, but RSDF uses Gaussian nuclei with zeta >= %.1e: '
+                          'finite-nucleus error ~1e-5 Eh for heavy atoms; use RSDF(..., nuc_zeta=1e14) '
+                          'or a Gaussian cell.nucmod with nuc_zeta=nuclear_zeta(cell)' % zr.min())
+    elif not numpy.allclose(zr, zc, rtol=1e-10):
+        raise ValueError('RSDF nuc_zeta differs from the Gaussian nuclear model of the cell; '
+                         'use RSDF(cell, auxbasis, nuc_zeta=spinor_scf.nuclear_zeta(cell))')
+
+
 def periodic(mf, rsdf):
     '''Turn a molecular socutils spinor SCF object on a cell into the
     Gamma-point periodic one with RSDF Coulomb interactions.'''
+    check_nuclear_model(mf.mol, rsdf)
     if rsdf.cderi is None:
         rsdf.build()
     dfmf = _PeriodicSpinorSCF(mf, rsdf, False)

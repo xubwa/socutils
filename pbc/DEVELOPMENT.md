@@ -356,11 +356,51 @@ A CAS of only occupied orbitals reproduces E_HF to 1e-13.
 `pbc/test/test_spinor_casci.py` covers the extrapolation, the CAS = occupied
 check and the Madelung term.
 
+**Periodic X2CAMF = one-centre X2CMP** (`OneCenterX2CMPHelper`):
+
+  h = h_NR(cell) + sum_A [h_X2C(A) - h_NR(A)]
+
+Each atomic block comes from the molecular socutils helper
+(`SpinorX2CMPHelper`) on the isolated atom, in its own basis:
+* flavor 'x2camf': X2C-1e plus the atomic mean-field SOC.
+* flavor 'x2cmp_1c': the atomic 4c Fock decoupled.
+
+The multi-centre relativistic terms are dropped: other nuclei inside the
+decoupling, and the two-centre picture change.  That is exactly what X2CAMF
+neglects relative to X2CMP, and it is what makes the method usable for a
+crystal.  The interface follows the x2cmp one: `mf.x2camf()` or
+`mf.x2cmp('x2cmp_1c')`; every other flavor (molecular 'x2cmp', 'sfmp', ...)
+raises.
+
+Checks (`pbc/test/test_periodic_x2camf.py`):
+* **One-centre error on a molecule** (HI, x2c-SVPall), against the full
+  molecular X2CAMF energy: 4.4e-5 Eh, or 4.9e-5 Eh with Gaunt + Breit.  The
+  relativistic effect itself is 386 Eh.
+* **Kr atom in a box**, where the one-centre form is exact: the
+  extrapolation (22, 28) matches the molecular atom to 7e-7 Eh, for point
+  and for Gaussian nuclei.
+* **Nuclear-model mismatch.**  With RSDF zeta 1e12 against point nuclei the
+  error was 1.5e-5 Eh; at the NR level point vs Gaussian 1e12 is already
+  6e-6.  `check_nuclear_model` now enforces consistency: point cells want
+  zeta >= 1e13 (warning otherwise); Gaussian cells (cell.nucmod 'G',
+  Visscher-Dyall as in the x2camf code) require
+  `nuc_zeta=nuclear_zeta(cell)`.  This matters later for W_NSM.
+
+**x2camf C backend bug found on the way.**  `x2c_int_sph.c` and
+`x2c_int_sph_gauge.c` kept the radial 2e lists (n^4 (L+1) 9 doubles) as
+stack VLAs.  They overflowed the 8 MB default stack for uncontracted
+heavy-atom shells (segfault for I and Eu with x2c-SVPall), so they now live
+on the heap, as the Gaunt kernels already did.
+
+YSO with the (row shell, column shell) task split: SR 3c 1994 -> 1073 s,
+build 3960 -> 3105 s.  The K timings of that run are not usable (the tests
+ran at the same time); occ-RI K = full K to 2.4e-13.
+
 Next for the Eu target:
 * Localised Eu 4f active spinors in a Gamma supercell (AVAS-type projection).
 * A (tu|vw) accuracy check against exact integrals.
-* Periodic X2CAMF hcore.
-* Kramers pairs in the transformation.
+* Kramers pairs in J/K and in the transformation.
+* ACE.
 
 ## 5. Auxiliary bases (measured)
 

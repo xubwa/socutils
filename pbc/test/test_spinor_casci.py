@@ -43,7 +43,7 @@ class KnownValues(unittest.TestCase):
         cls.res = {}
         for L in (20., 26.):
             cell = cr.molecule_in_box(mol, L)
-            r = RSDF(cell, cls.aux, precision=1e-11).build()
+            r = RSDF(cell, cls.aux, precision=1e-11, nuc_zeta=1e14).build()
             mf = _quiet(spinor_scf.SpinorRSDF(cell, r))
             e_hf = mf.kernel()
             mc = _quiet(zcasci.CASCI(mf, 12, 6))
