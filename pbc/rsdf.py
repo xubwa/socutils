@@ -243,6 +243,7 @@ class RSDF(lib.StreamObject):
         self.grid_spacing = 4.0
         self.aux_bound = 'max'       # aux bound units: 'max' (default), 'l2' or 'coulomb'
         self.cderi_to_disk = False   # force HDF5 storage (default: only when larger than max_memory/2)
+        self.cderi_file = None       # keep the vectors in this HDF5 file (RSDF.load reads it back)
         self.keep_raw = False        # keep the unfitted (aux|pair) and the aux metric (small cells; local fitting)
         self.metric_sr = None
         self.cderi = None            # (naux_kept, nao(nao+1)/2), pyscf packed pairs; ndarray or h5py dataset
@@ -464,11 +465,16 @@ class RSDF(lib.StreamObject):
         # pyscf's packed (pack_tril) pair index
         npair = nao * (nao + 1) // 2
         self._cderi_file = None
-        if nkept * npair * 8 > .5 * self.max_memory * 1e6 or self.cderi_to_disk:
+        self._h5 = None
+        if self.cderi_file or nkept * npair * 8 > .5 * self.max_memory * 1e6 or self.cderi_to_disk:
             import h5py
-            import tempfile
-            self._cderi_file = tempfile.NamedTemporaryFile(dir=lib.param.TMPDIR, suffix='.h5')
-            f = h5py.File(self._cderi_file.name, 'w')
+            if self.cderi_file:
+                path = self.cderi_file
+            else:
+                import tempfile
+                self._cderi_file = tempfile.NamedTemporaryFile(dir=lib.param.TMPDIR, suffix='.h5')
+                path = self._cderi_file.name
+            self._h5 = f = h5py.File(path, 'w')
             cderi = f.create_dataset('j3c', (nkept, npair), 'f8', chunks=(min(nkept, 64), min(npair, 4096)))
         else:
             cderi = np.empty((nkept, npair))
@@ -559,8 +565,66 @@ class RSDF(lib.StreamObject):
                  len(blocks), t_sr, tot['pairs'], tot['triples'], t_lr, len(G))
         self.S = lib.unpack_tril(S)
         self.vnuc = lib.unpack_tril(vnuc)
+        if self.cderi_file:
+            self._save_meta(self._h5)
+            self._h5.flush()
         log.timer('RSDF build', *t0)
         return self
+
+    # ------------------------------------------------------------------
+    # persistent vectors: build once, reuse for SCF / CASCI / restarts
+    def _fingerprint(self):
+        cell = self.cell
+        return np.hstack([cell.lattice_vectors().ravel(), cell.atom_coords().ravel(),
+                          cell.atom_charges(), [cell.nao, cell.nbas]]).astype(float)
+
+    def _save_meta(self, f):
+        for k in ('S', 'vnuc'):
+            if k in f:
+                del f[k]
+            f[k] = getattr(self, k)
+        f.attrs['e_nuc'] = self.e_nuc
+        f.attrs['metric_eig'] = np.asarray(self.metric_eig, dtype=float)
+        f.attrs['naux_kept'] = self.naux_kept
+        f.attrs['omega'] = self.omega
+        f.attrs['precision'] = self.precision
+        f.attrs['nuc_zeta'] = np.atleast_1d(np.asarray(self.nuc_zeta, dtype=float))
+        f.attrs['fingerprint'] = self._fingerprint()
+
+    def save(self, path):
+        '''Write the vectors and the one-electron/nuclear parts to an HDF5 file.'''
+        import h5py
+        if self.cderi is None:
+            self.build()
+        if self._h5 is not None and self.cderi_file and \
+                __import__('os').path.abspath(path) == __import__('os').path.abspath(self.cderi_file):
+            return self
+        with h5py.File(path, 'w') as f:
+            d = f.create_dataset('j3c', self.cderi.shape, 'f8',
+                                 chunks=(min(self.cderi.shape[0], 64), min(self.cderi.shape[1], 4096)))
+            for p0, blk in zip(range(0, self.cderi.shape[0], 256), self.loop(256)):
+                d[p0:p0 + blk.shape[0]] = blk
+            self._save_meta(f)
+        return self
+
+    @classmethod
+    def load(cls, cell, path, check=True):
+        '''RSDF from a file written by build (cderi_file) or save; the vectors
+        stay on disk and are streamed.'''
+        import h5py
+        f = h5py.File(path, 'r')
+        r = cls(cell, None, omega=float(f.attrs['omega']), precision=float(f.attrs['precision']),
+                nuc_zeta=f.attrs['nuc_zeta'] if len(f.attrs['nuc_zeta']) > 1 else float(f.attrs['nuc_zeta'][0]))
+        if check and not np.allclose(r._fingerprint(), f.attrs['fingerprint'], atol=1e-8):
+            raise ValueError('%s was built for a different cell' % path)
+        r._h5 = f
+        r.cderi = f['j3c']
+        r.S = f['S'][()]
+        r.vnuc = f['vnuc'][()]
+        r.e_nuc = float(f.attrs['e_nuc'])
+        r.metric_eig = tuple(f.attrs['metric_eig'])
+        r.naux_kept = int(f.attrs['naux_kept'])
+        return r
 
     # ------------------------------------------------------------------
     def get_naoaux(self):

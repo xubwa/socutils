@@ -173,6 +173,32 @@ class KnownValues(unittest.TestCase):
         self.assertLess(abs(j1 - j0).max(), 1e-12)
         self.assertLess(abs(k1 - k0).max(), 1e-12)
 
+    def test_save_load(self):
+        '''Vectors kept in cderi_file (and RSDF.save) are read back by RSDF.load.'''
+        import os
+        import tempfile
+        from pyscf import lib
+        mol = gto.M(atom='H 0 0 -0.7; H 0 0 0.7', unit='B', basis='cc-pvdz', verbose=0)
+        cell = cr.molecule_in_box(mol, 9.)
+        aux = df.addons.aug_etb(mol, beta=2.0)
+        d = tempfile.mkdtemp(dir=lib.param.TMPDIR)
+        r0 = RSDF(cell, aux, precision=1e-10, nuc_zeta=ZETA)
+        r0.cderi_file = os.path.join(d, 'built.h5')
+        r0.build()
+        r0.save(os.path.join(d, 'saved.h5'))
+        dm = np.random.default_rng(5).normal(size=(cell.nao, cell.nao))
+        dm = dm + dm.T
+        j0, k0 = r0.get_jk(dm)
+        for name in ('built.h5', 'saved.h5'):
+            r1 = RSDF.load(cell, os.path.join(d, name))
+            j1, k1 = r1.get_jk(dm)
+            self.assertLess(abs(j1 - j0).max(), 1e-13)
+            self.assertLess(abs(k1 - k0).max(), 1e-13)
+            self.assertLess(abs(r1.get_nuc() - r0.get_nuc()).max(), 1e-13)
+            self.assertAlmostEqual(r1.energy_nuc(), r0.energy_nuc(), 12)
+        with self.assertRaises(ValueError):
+            RSDF.load(cr.molecule_in_box(mol, 10.), os.path.join(d, 'saved.h5'))
+
 
 
 class GHFBlocks(unittest.TestCase):
