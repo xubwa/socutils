@@ -253,13 +253,60 @@ Build-time history (quartz, prec 1e-8): 152 s first version -> 38 s after
 folding image AOs by a sum over translations, using one vector per +-G pair
 and a GEMM for the metric transform (SR 3c 20 s, LR 15 s, SR 2c 1.5 s).
 
+### 4.6b Blocked build and the YSO cell
+
+The build is blocked over cell-0 AO shells (rows), with this order:
+* The metric comes first: SR 2c as full - LR, LR 2c in G space, then the
+  G = 0 removal and the eigendecomposition.
+* Then, per row block:
+  * SR 3c over the lower shell triangle.  It is a contiguous range of pyscf's
+    packed pair index, and the diagonal shell blocks come out complete.
+  * LR: pair FTs summed per translation, skipping translations whose
+    lower-triangle overlap mask is empty, then two real GEMMs on the packed
+    columns.
+  * The G = 0 removal and the fit.
+* The (nfit, nao, nao) tensor is never stored.
+
+The vectors are stored packed (`cderi`, (naux_kept, nao(nao+1)/2)) in memory,
+or in HDF5 when they exceed max_memory/2.  `loop()` and `get_jk` stream aux
+blocks.  The old LR (one complex F over all image AOs, G batches of ~20 under
+the memory limit) took 128-190 s per YSO block; the current one takes 7-47 s.
+
+Y2SiO5 conventional cell (`bench/yso_build.py`): 32 atoms, x2c-SVPall
+trimmed at 0.1, nao 692, auxgen naux 9912, prec 1e-10, w 0.5,
+max_memory 10 GB, 4 cores.
+
+| | |
+|---|---|
+| 2c metric (SR full - LR / LR) | 127 s / 22 s, eig [2.4e-11, 6.5e2], kept 9847 |
+| SR 3c | 1994 s, 2.8e8 triples |
+| LR 3c | 1418 s, 3263 G vectors |
+| build total | 3960 s wall (7277 s CPU: only ~1.8 of 4 cores busy) |
+| storage | 19 GB HDF5; peak RSS 7.4 GB |
+| J / K per call (minao density) | 43 s / 156 s |
+
+No reference exists for this cell (RSJK and GDF are out of reach here), so it
+is a cost measurement only.  Correctness rests on the quartz/Y2O3 checks and
+the tests.
+
+Where the time goes:
+* **Parallel efficiency.** The SR kernel is OpenMP over cell-0 shells, with
+  4-8 shells per row block.  Blocks with one heavy Y shell leave the other
+  threads idle (block 20: 4.6e6 triples in 113 s; block 30: 1.1e7 triples
+  in 38 s).  The LR part is numpy with only partly threaded steps.
+  Next: parallelize over (shell, image-shell) pairs with per-thread row
+  buffers, and run SR and LR concurrently.
+* **K.**  At 156 s per call, K dominates an SCF iteration: about 2 naux nao^3
+  flops plus a 19 GB read.  occ-RI (K on nocc ~ 264 occupied orbitals) and
+  local/robust fitting are the next steps for K, as planned.
+
 ### 4.7 Known limitations
 
 * Build cost (4 cores, defaults): quartz ~1 min, Y2O3 ~3 min, comparable to
   pyscf GDF with the same auxiliary basis; SR 3c (2-4e7 shell triples with
   high-l uncontracted aux) and the LR transforms dominate.
-* Storage is dense global (naux x nao^2): fine up to the YSO conventional cell
-  on a large-memory node, not beyond.
+* Storage is global (naux x nao^2/2, on disk when large): 19 GB for the YSO
+  conventional cell.  Larger cells need local fitting.
 * K accuracy is limited by the auxiliary basis (quartz 2e-4 with auxgen tau
   1e-8): K converges much more slowly than J.
 * Gamma point only.  Complex densities: K is built as K(Re D) + i K(Im D)
@@ -287,8 +334,9 @@ and a GEMM for the metric transform (SR 3c 20 s, LR 15 s, SR 2c 1.5 s).
    Open: the auxgen tau = 1e-8 metric has condition number 1e13.  A less
    linearly dependent aux set, or pivoted-Cholesky pruning of its diffuse s
    functions, would make the fit robust.
-2. Cost: mu <-> nu symmetry in the 3c kernel, tighter bounds (angular factors),
-   omega choice, LR blocking; benchmark against pyscf GDF/RSJK incl. YSO.
+2. Cost.  Done: blocked out-of-core build; YSO conventional cell in 66 min on
+   4 cores.  Left: thread load balance (pair-level parallelism), omega
+   choice, and SR/LR overlap.
 3. GHF/2c interface: spin-block J/K with the correct alpha-beta slice,
    Kramers symmetry, X2CAMF hcore; `_CDERIS` through `loop()`.
 4. K accuracy: auxiliary basis for exchange, robust/local fitting (also cuts
