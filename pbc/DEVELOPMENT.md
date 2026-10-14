@@ -549,6 +549,31 @@ forms, the best Eu-Eu image distances are:
 | x3 (`eu_yso_x3`) | 96 | 10.52 A | ~0.5 TB |
 | x4 | 128 | 12.54 A | ~1.2 TB |
 
+## 4g. Periodic spinor Kohn-Sham (`pbc/spinor_ks.py`)
+
+`spinor_ks.periodic_ks(spinor_hf.KRHF(cell), rsdf, xc)` puts KS on top of the
+periodic spinor SCF (one-centre X2CAMF, fractional occupation and CASCI work
+unchanged):
+* **Grids.**  `pyscf.pbc.dft.gen_grid.BeckeGrids`: atomic radial x angular
+  grids, Becke partition over the lattice images.  The heavy-atom core needs
+  atomic grids; a uniform FFT mesh cannot hold it.
+* **Numerical integration.**  `pyscf.pbc.dft.numint2c` at Gamma, with
+  lattice-summed AO values, on the scalar-AO x spin form of the spinor
+  density, as `socutils.dft.numint_2c` does for molecules.  It is
+  collinear by default; 'mcol' needs `mcfun`.
+* **Coulomb and exchange.**  J comes from RSDF.  Hybrids take hyb x (K +
+  nu S D S); pure functionals have no exchange G = 0 term.
+  Range-separated hybrids are not supported yet.
+* **Energy.**  tr(D h) + E_J + E_xc - hyb tr(D K')/2 + bare E_nn.
+
+Test (`test_periodic_ks.py`): N2 in a box extrapolates to the molecular
+SpinorDFT energy (same aux basis, grid level 4) to 2.5e-7 Eh for both PBE
+and PBE0.
+
+Eu:Y2O3 with `--xc PBE`: 17 cycles, 288 s on 4 cores, 4f weights 0.92-0.97.
+CASCI on the PBE orbitals shows the same C3v pattern, with 7F1 at 496 and
+918 x2 cm-1.
+
 ## 5. Auxiliary bases (measured)
 
 * ETB (pyscf default for custom bases): built from primitive exponent ranges,
