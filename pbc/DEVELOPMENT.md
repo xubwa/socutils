@@ -519,6 +519,36 @@ which are local and come from the existing SR kernel restricted to the
 domain aux.  The LR part of the three-index tensor, the N^2 wall of any
 explicit fit, is never formed.
 
+## 4f. Production driver and dopant supercells
+
+`examples/14-periodic_dopant_casci.py` runs RSDF -> KRHF + one-centre
+X2CAMF (fractional dopant 4f) -> CASCI(4f) and keeps every stage in a work
+directory:
+* `cderi.h5`: `RSDF.cderi_file`, then `RSDF.load` on later runs.
+* `scf.npz`: the SCF restart guess.
+* `casci.npz`: the CASCI energies.
+
+The SCF also builds J and the MO-based K in one pass over the vectors.  On
+Eu:Y2O3 (4 cores):
+* First run: RSDF 279 s, SCF 17 cycles in 92 s, CASCI 24 s.
+* Second run: loads the vectors, the SCF converges in 1 cycle, and the
+  CASCI levels are unchanged.
+* The fractional SCF energy is 0.56 Eh above the earlier run.  That is the
+  -nu tr(DSDS)/2 exchange term (section 4b), not a change in physics: the
+  CASCI energy is the same to 1e-9.
+
+**Dopant separation in Eu:YSO.**  The primitive cell (32 atoms) contains a
+6.82 A lattice vector (-a1 + 2 a3, the conventional c), so doubling a single
+cell vector does not separate the dopant images.  Over all Hermite normal
+forms, the best Eu-Eu image distances are:
+
+| supercell | atoms | Eu-Eu | vectors (global RSDF) |
+|---|---|---|---|
+| x1 | 32 | 6.82 A | 19 GB |
+| x2 (`eu_yso_x2`) | 64 | 8.05 A | ~150 GB |
+| x3 (`eu_yso_x3`) | 96 | 10.52 A | ~0.5 TB |
+| x4 | 128 | 12.54 A | ~1.2 TB |
+
 ## 5. Auxiliary bases (measured)
 
 * ETB (pyscf default for custom bases): built from primitive exponent ranges,
