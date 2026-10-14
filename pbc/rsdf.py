@@ -200,7 +200,8 @@ class RSDF(lib.StreamObject):
         self.max_memory = cell.max_memory
         self.grid_spacing = 4.0
         self.aux_bound = 'max'       # aux bound units: 'max' (default), 'l2' or 'coulomb'
-        self.cderi = None
+        self.cderi_to_disk = False   # force HDF5 storage (default: only when larger than max_memory/2)
+        self.cderi = None            # (naux_kept, nao(nao+1)/2), pyscf packed pairs; ndarray or h5py dataset
         self.stats = {}
 
     # ------------------------------------------------------------------
@@ -346,27 +347,11 @@ class RSDF(lib.StreamObject):
         cutoff = self.precision * 1e-2
         c_int, c_dbl = ctypes.c_int, ctypes.c_double
         ptr = lambda x: x.ctypes.data_as(ctypes.c_void_p)
-        stats = np.zeros(3, dtype=np.int64)
-        B = np.zeros((nfit, nao, nao))
-        sh_cell = np.tile(np.arange(cell.nbas, dtype=np.int32), len(Tao))
-        libp.SOCpbc_sr_int3c(
-            ptr(B), c_int(nao), c_int(nfit), c_int(cell.nbas), c_int(nao_sh),
-            c_int(aux_sh0), c_int(naux_sh), ptr(ao_fold), ptr(sh_cell), ptr(aux_fold),
-            ptr(qmin), ptr(cq),
-            ptr(origin), c_dbl(h), ptr(gdims), ptr(bin_start), ptr(bin_shells),
-            c_dbl(omega), c_dbl(cutoff), ptr(ang),
-            ptr(atm), c_int(sysmol.natm), ptr(bas), c_int(sysmol.nbas), ptr(env), ptr(stats))
-        # only shell pairs (i, j) with cell shell of j >= i were evaluated; the
-        # rest follow from (mu_0 nu_T|P) = (nu_0 mu_-T|P)
-        ao2sh = np.repeat(np.arange(cell.nbas), np.diff(cell.ao_loc_nr()))
-        offdiag = (ao2sh[:, None] != ao2sh[None, :])
-        B += B.transpose(0, 2, 1) * offdiag
-        self.stats['sr3c'] = dict(pairs=int(stats[0]), triples=int(stats[1]), screened=int(stats[2]))
-        t1 = log.timer('RSDF SR 3c (%d pairs, %d triples)' % (stats[0], stats[1]), *t1)
+
+        # ---- metric (fit x fit): SR as full - LR (libcint's erfc 2c integrals
+        # are not accurate enough, see sr_int.c), LR in G space, G = 0 removal
         M = np.zeros((nfit, nfit))
         stats2 = np.zeros(2, dtype=np.int64)
-        # SR 2c as full - LR (libcint's erfc 2c integrals are not accurate enough
-        # for the metric, see sr_int.c)
         env_full, env_lr = env.copy(), env.copy()
         env_full[gto.PTR_RANGE_OMEGA] = 0.
         env_lr[gto.PTR_RANGE_OMEGA] = omega
@@ -377,7 +362,6 @@ class RSDF(lib.StreamObject):
             ptr(stats2))
         t1 = log.timer('RSDF SR 2c', *t1)
 
-        # long range, reciprocal space
         G = reciprocal_vectors(a, 2 * omega * np.sqrt(lnp + np.log(4 * np.pi)))
         # all densities are real, so the -G term is the complex conjugate of
         # the +G term: keep one vector of each +-G pair with weight 2
@@ -387,58 +371,117 @@ class RSDF(lib.StreamObject):
         G = G[half]
         G2 = np.einsum('gx,gx->g', G, G)
         vG = 2 * 4 * np.pi * np.exp(-G2 / (4 * omega**2)) / G2
-        mask = np.asarray(kij > cutoff, dtype=np.int8, order='F')
-        # image AOs are translation-major copies of the cell AOs: folding them
-        # onto cell 0 is a sum over the translation axis
-        nT = len(Tao)
-        assert aomol.nao == nT * nao
-        fold = lambda F: F.reshape(F.shape[0], nao, nT, nao).sum(axis=2)
-        blk = max(16, int(self.max_memory * .1e6 / (16 * nao * aomol.nao * 3)))
-        Bl = B.reshape(nfit, -1)
-        S = np.zeros((nao, nao))
-        for g0 in range(0, len(G), blk):
-            g1 = min(g0 + blk, len(G))
-            F = ft_aopair(aomol, G[g0:g1], shls_slice=(0, cell.nbas, 0, aomol.nbas), ovlp_mask=mask)
-            Pg = fold(F) / vol                                         # (ng, nao, nao)
+
+        def fit_ft(g0, g1):
             fit = ft_ao(fitmol0, G[g0:g1]) / vol                       # (ng, nfit)
             fit[:, naux:] *= nucscale
-            w = vG[g0:g1] * vol
-            Bl += ((fit.T * w) @ Pg.reshape(g1 - g0, -1).conj()).real
-            M += ((fit.conj().T * w) @ fit).real
-        # overlap and charges at G = 0 (same pair list), for the SR G = 0 removal
-        F0 = ft_aopair(aomol, np.zeros((1, 3)), shls_slice=(0, cell.nbas, 0, aomol.nbas), ovlp_mask=mask)
-        S = fold(F0)[0].real
+            return fit
+
+        gblk_fit = max(16, int(self.max_memory * .1e6 / (16 * nfit * 2)))
+        for g0 in range(0, len(G), gblk_fit):
+            g1 = min(g0 + gblk_fit, len(G))
+            fit = fit_ft(g0, g1)
+            M += ((fit.conj().T * (vG[g0:g1] * vol)) @ fit).real
         q = ft_ao(fitmol0, np.zeros((1, 3)))[0].real
         q[naux:] *= nucscale
         c0 = np.pi / (omega**2 * vol)
-        Bl -= c0 * np.outer(q, S.ravel())
         M -= c0 * np.outer(q, q)
-        t1 = log.timer('RSDF LR (%d G vectors)' % len(G), *t1)
-
-        B = Bl.reshape(nfit, nao, nao)
-        self.sym_err = abs(B - B.transpose(0, 2, 1)).max()
-        B = .5 * (B + B.transpose(0, 2, 1))
         M = .5 * (M + M.T)
+        t1 = log.timer('RSDF LR 2c (%d G vectors)' % len(G), *t1)
 
-        # split the auxiliary and the nuclear parts
-        self.S = .5 * (S + S.T)
-        # rows/columns naux: are already the nuclear charges Z_A g_A
-        Baux = B[:naux]
-        Maux = M[:naux, :naux]
-        self.vnuc = -B[naux:].sum(axis=0)
         e_self = np.sum(Z**2 * np.sqrt(2 * zeta / np.pi)) / 2
         self.e_nuc = .5 * M[naux:, naux:].sum() - e_self
-
-        w, v = scipy.linalg.eigh(Maux)
+        w, v = scipy.linalg.eigh(M[:naux, :naux])
         self.metric_eig = (w.min(), w.max())
         if w.min() < -self.lindep * w.max() * 1e2:
             log.warn('RSDF: fitting metric has negative eigenvalue %.2e (max %.2e): integrals are inaccurate',
                      w.min(), w.max())
         keep = w > self.lindep * w.max()
-        self.naux_kept = int(keep.sum())
-        self.cderi = ((v[:, keep] / np.sqrt(w[keep])).T @ Baux.reshape(naux, -1)).reshape(-1, nao, nao)
-        log.info('RSDF: metric eigenvalues [%.2e, %.2e], kept %d of %d; B symmetry error %.1e',
-                 w.min(), w.max(), self.naux_kept, naux, self.sym_err)
+        self.naux_kept = nkept = int(keep.sum())
+        W = np.asarray((v[:, keep] / np.sqrt(w[keep])).T, order='C')  # (nkept, naux)
+        log.info('RSDF: metric eigenvalues [%.2e, %.2e], kept %d of %d', w.min(), w.max(), nkept, naux)
+
+        # ---- 3c, in blocks of cell-0 AO shells (rows), lower triangle: rows
+        # mu of the block, columns nu <= mu, i.e. a contiguous range of
+        # pyscf's packed (pack_tril) pair index
+        npair = nao * (nao + 1) // 2
+        self._cderi_file = None
+        if nkept * npair * 8 > .5 * self.max_memory * 1e6 or self.cderi_to_disk:
+            import h5py
+            import tempfile
+            self._cderi_file = tempfile.NamedTemporaryFile(dir=lib.param.TMPDIR, suffix='.h5')
+            f = h5py.File(self._cderi_file.name, 'w')
+            cderi = f.create_dataset('j3c', (nkept, npair), 'f8', chunks=(min(nkept, 64), min(npair, 4096)))
+        else:
+            cderi = np.empty((nkept, npair))
+        self.cderi = cderi
+        vnuc = np.zeros(npair)
+        S = np.zeros(npair)
+
+        ao_loc = cell.ao_loc_nr()
+        # rows per block: B (nfit, nrow, nao) and LR work space (ng, nrow, nao nT, complex)
+        nT = len(Tao)
+        assert aomol.nao == nT * nao
+        row_max = max(1, int(.25 * self.max_memory * 1e6 / (8 * nfit * nao * 2)))
+        blocks, i0 = [], 0
+        while i0 < cell.nbas:
+            i1 = i0 + 1
+            while i1 < cell.nbas and ao_loc[i1 + 1] - ao_loc[i0] <= row_max:
+                i1 += 1
+            blocks.append((i0, i1))
+            i0 = i1
+        mask_all = np.asarray(kij > cutoff, dtype=np.int8)
+        sh_cell = np.tile(np.arange(cell.nbas, dtype=np.int32), len(Tao))
+        stats = np.zeros(3, dtype=np.int64)
+        tot = dict(pairs=0, triples=0, screened=0)
+        t_sr = t_lr = 0.
+        for i0, i1 in blocks:
+            r0, r1 = ao_loc[i0], ao_loc[i1]
+            nrow = r1 - r0
+            tb = logger.perf_counter()
+            B = np.zeros((nfit, nrow, nao))
+            libp.SOCpbc_sr_int3c(
+                ptr(B), c_int(nao), c_int(nfit), c_int(i0), c_int(i1), c_int(r0), c_int(nrow),
+                c_int(cell.nbas), c_int(nao_sh),
+                c_int(aux_sh0), c_int(naux_sh), ptr(ao_fold), ptr(sh_cell), ptr(aux_fold),
+                ptr(qmin), ptr(cq),
+                ptr(origin), c_dbl(h), ptr(gdims), ptr(bin_start), ptr(bin_shells),
+                c_dbl(omega), c_dbl(cutoff), ptr(ang),
+                ptr(atm), c_int(sysmol.natm), ptr(bas), c_int(sysmol.nbas), ptr(env), ptr(stats))
+            for k, key in enumerate(('pairs', 'triples', 'screened')):
+                tot[key] += int(stats[k])
+            t_sr += logger.perf_counter() - tb
+            tb = logger.perf_counter()
+            # long range; image AOs are translation-major copies of the cell
+            # AOs, so folding them onto cell 0 is a sum over the translation axis
+            mask = np.asarray(mask_all[i0:i1], order='F')
+            fold = lambda F: F.reshape(F.shape[0], nrow, nT, nao).sum(axis=2)
+            gblk = max(16, int(self.max_memory * .1e6 / (16 * nrow * aomol.nao * 3)))
+            Bl = B.reshape(nfit, -1)
+            for g0 in range(0, len(G), gblk):
+                g1 = min(g0 + gblk, len(G))
+                F = ft_aopair(aomol, G[g0:g1], shls_slice=(i0, i1, 0, aomol.nbas), ovlp_mask=mask)
+                Pg = fold(F) / vol                                     # (ng, nrow, nao)
+                fit = fit_ft(g0, g1)
+                Bl += ((fit.T * (vG[g0:g1] * vol)) @ Pg.reshape(g1 - g0, -1).conj()).real
+            # overlap at G = 0 (same pair list), for the SR G = 0 removal
+            F0 = ft_aopair(aomol, np.zeros((1, 3)), shls_slice=(i0, i1, 0, aomol.nbas), ovlp_mask=mask)
+            Sb = fold(F0)[0].real
+            Bl -= c0 * np.outer(q, Sb.ravel())
+            t_lr += logger.perf_counter() - tb
+            # lower triangle of the block rows -> packed pair range [p0, p1)
+            tril = np.arange(nao)[None, :] <= np.arange(r0, r1)[:, None]
+            p0, p1 = r0 * (r0 + 1) // 2, r1 * (r1 + 1) // 2
+            Bp = B[:, tril]                                            # (nfit, p1 - p0)
+            S[p0:p1] = Sb[tril]
+            vnuc[p0:p1] = -Bp[naux:].sum(axis=0)
+            cderi[:, p0:p1] = W @ Bp[:naux]
+            B = Bl = Bp = None
+        self.stats['sr3c'] = tot
+        log.info('RSDF 3c: %d row blocks, SR %.1f s (%d pairs, %d triples), LR %.1f s (%d G vectors)',
+                 len(blocks), t_sr, tot['pairs'], tot['triples'], t_lr, len(G))
+        self.S = lib.unpack_tril(S)
+        self.vnuc = lib.unpack_tril(vnuc)
         log.timer('RSDF build', *t0)
         return self
 
@@ -453,9 +496,10 @@ class RSDF(lib.StreamObject):
         if self.cderi is None:
             self.build()
         if blksize is None:
-            blksize = 240
+            nao = self.cell.nao
+            blksize = max(16, min(1024, int(.2 * self.max_memory * 1e6 / (8 * nao * nao * 3))))
         for p0 in range(0, self.cderi.shape[0], blksize):
-            yield lib.pack_tril(self.cderi[p0:p0 + blksize])
+            yield np.asarray(self.cderi[p0:p0 + blksize])
 
     def get_jk(self, dm, hermi=1, with_j=True, with_k=True, exxdiv=None):
         '''Gamma-point J and K (pyscf conventions; dm real or complex).'''
@@ -464,14 +508,27 @@ class RSDF(lib.StreamObject):
         dm = np.asarray(dm)
         nao = self.cell.nao
         dms = dm.reshape(-1, nao, nao)
-        L = self.cderi
-        vj = vk = None
+        nset = len(dms)
+        # J: rho_P = sum_{mu>=nu} L_P,mu nu (D_mu nu + D_nu mu) (1 - delta/2)
+        tril = np.tril_indices(nao)
+        dsym = dms + dms.transpose(0, 2, 1)
+        dsym[:, np.arange(nao), np.arange(nao)] *= .5
+        dtril = dsym[:, tril[0], tril[1]]                             # (nset, npair)
+        vj = np.zeros((nset, len(tril[0])), dtype=dtril.dtype) if with_j else None
+        vk = np.zeros(dms.shape, dtype=dms.dtype) if with_k else None
+        for Lp in self.loop():
+            if with_j:
+                vj += (dtril @ Lp.T) @ Lp
+            if with_k:
+                L = lib.unpack_tril(Lp)
+                for i, d in enumerate(dms):
+                    vk[i] += _k_real_cderi(L, d.real)
+                    if np.iscomplexobj(d):
+                        vk[i] += 1j * _k_real_cderi(L, d.imag)
+                L = None
         if with_j:
-            vj = np.array([np.einsum('P,Pij->ij', np.einsum('Pij,ji->P', L, d), L) for d in dms])
-            vj = vj.reshape(dm.shape)
+            vj = lib.unpack_tril(vj, lib.SYMMETRIC).reshape(dm.shape)
         if with_k:
-            vk = np.array([_k_real_cderi(L, d.real) + (1j * _k_real_cderi(L, d.imag)
-                           if np.iscomplexobj(d) else 0) for d in dms])
             if exxdiv == 'ewald':
                 from pyscf.pbc import tools
                 madelung = tools.pbc.madelung(self.cell, np.zeros((1, 3)))

@@ -315,14 +315,15 @@ static inline double pair_aux_bound(PairEnvelope *pe, double q, double kq, doubl
 }
 
 /*
- * out:       (naux0, nao0, nao0), accumulated
- * nbas0:     number of cell-0 AO shells (rows)
+ * out:       (naux0, nrow, nao0), accumulated: rows are the AOs of the cell-0
+ *            shells [ish0, ish1), starting at AO row0
+ * nbas0:     number of cell-0 AO shells
  * nao_sh:    number of AO image shells (cell 0 first)
  * aux_sh0, naux_sh: range of aux image shells
  * ao_fold:   [nao_sh] AO offset in cell 0 of each AO image shell
  * sh_cell:   [nao_sh] cell-0 shell of each AO image shell; only pairs with
- *            sh_cell[j] >= i are evaluated (the caller adds the transpose of
- *            the off-diagonal shell blocks: (mu_0 nu_T|.) = (nu_0 mu_-T|.) )
+ *            sh_cell[j] <= i are evaluated, i.e. the lower shell triangle of
+ *            the folded (symmetric) matrices; diagonal shell blocks are complete
  * aux_fold:  [natot] aux offset in cell 0 of each aux image shell (indexed by shell id)
  * qmin, cqmax: [NENV, nbas] envelope exponent and charge of each aux shell for
  *            each envelope parameter ENV_T (rows indexed by shell id)
@@ -330,7 +331,7 @@ static inline double pair_aux_bound(PairEnvelope *pe, double q, double kq, doubl
  * ang:       [lmax+1] largest |angular part| per unit coefficient (see prim_envelope)
  * stats:     [3] out: number of pairs kept, triples evaluated, triples screened
  */
-void SOCpbc_sr_int3c(double *out, int nao0, int naux0,
+void SOCpbc_sr_int3c(double *out, int nao0, int naux0, int ish0, int ish1, int row0, int nrow,
                      int nbas0, int nao_sh, int aux_sh0, int naux_sh,
                      int *ao_fold, int *sh_cell, int *aux_fold,
                      double *qmin, double *cqmax,
@@ -361,7 +362,7 @@ void SOCpbc_sr_int3c(double *out, int nao0, int naux0,
                         cqhi[ie] = MAX(cqhi[ie], cqmax[ie * nbas + i]);
                 }
         }
-        const size_t nn = (size_t)nao0 * nao0;
+        const size_t nn = (size_t)nrow * nao0;
         long npair = 0, ntrip = 0, nskip = 0;
 
 #pragma omp parallel reduction(+:npair, ntrip, nskip)
@@ -373,12 +374,12 @@ void SOCpbc_sr_int3c(double *out, int nao0, int naux0,
         int shls[3];
         int ish, jsh;
 #pragma omp for schedule(dynamic)
-        for (ish = 0; ish < nbas0; ish++) {
+        for (ish = ish0; ish < ish1; ish++) {
                 const double *ri = shell_center(ish, atm, bas, env);
                 const int di = shell_dim(ish, bas);
-                const int mi = ao_fold[ish];
+                const int mi = ao_fold[ish] - row0;
                 for (jsh = 0; jsh < nao_sh; jsh++) {
-                        if (sh_cell[jsh] < ish) {
+                        if (sh_cell[jsh] > ish) {
                                 continue;
                         }
                         const double *rj = shell_center(jsh, atm, bas, env);

@@ -116,6 +116,32 @@ class KnownValues(unittest.TestCase):
         self.assertLess(abs(diffs[1]), 1e-5)
         self.assertLess(abs(diffs[1]), abs(diffs[0]))
 
+    def test_blocked_disk_storage(self):
+        '''Many AO row blocks with the vectors on disk (HDF5) reproduce the
+        in-memory build, for a real and a complex non-Hermitian density.'''
+        mol = gto.M(atom='H 0 0 -0.7; H 0 0 0.7', unit='B', basis='cc-pvdz', verbose=0)
+        cell = cr.molecule_in_box(mol, 9.)
+        aux = df.addons.aug_etb(mol, beta=2.0)
+        r0 = RSDF(cell, aux, precision=1e-10, nuc_zeta=ZETA).build()
+        r1 = RSDF(cell, aux, precision=1e-10, nuc_zeta=ZETA)
+        r1.max_memory = 1e-3     # one shell per row block
+        r1.cderi_to_disk = True
+        r1.build()
+        self.assertFalse(isinstance(r1.cderi, np.ndarray))
+        rng = np.random.default_rng(3)
+        nao = cell.nao
+        d = rng.normal(size=(nao, nao)) + 1j * rng.normal(size=(nao, nao))
+        for dm in (d.real + d.real.T, d):
+            j0, k0 = r0.get_jk(dm)
+            j1, k1 = r1.get_jk(dm)
+            self.assertLess(abs(j1 - j0).max(), 1e-12)
+            self.assertLess(abs(k1 - k0).max(), 1e-12)
+        self.assertLess(abs(r1.get_nuc() - r0.get_nuc()).max(), 1e-12)
+        # J of a complex density through loop() vs an explicit unpacked contraction
+        from pyscf import lib
+        L = lib.unpack_tril(np.vstack(list(r0.loop())))
+        self.assertLess(abs(np.einsum('Pij,P->ij', L, np.einsum('Pij,ji->P', L, d)) - r0.get_jk(d)[0]).max(), 1e-12)
+
 
 
 class GHFBlocks(unittest.TestCase):
