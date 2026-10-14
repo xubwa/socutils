@@ -66,3 +66,16 @@ k=6 thr 1e-05 J_mol - K_L             #E<-c^2  62  top neg -3.7558e+04  lowest p
 k=6 thr 1e-05 J_L - K_mol             #E<-c^2  62  top neg -3.7560e+04  lowest pos -2.7805e+01
 k=6 thr 1e-05 J_mol(diffuse blk)-K_L  #E<-c^2  62  top neg -3.7560e+04  lowest pos -1.1873e+03
 k=6 thr 1e-05 eamf J_mol - K_mol      #E<-c^2  62  top neg -3.7558e+04  lowest pos -2.6565e+01
+
+x2cmp_x1e (X from h4c, picture change applied to h4c + veff4c[D4c_atoms], minus veff2c[D2c_atoms]):
+HF + k diffuse, E - E(DHF):
+k=0  x2cmp_x1e  1.788742e-04   x2cmp  1.796229e-04
+k=3  x2cmp_x1e  1.397861e-04   x2cmp  1.405331e-04
+k=5  x2cmp_x1e  1.395061e-04   x2cmp  1.402531e-04
+k=6  x2cmp_x1e  1.394270e-04   x2cmp  1.401739e-04
+HF...He cc-pVDZ, dE(R) (no R^-2 tail; double-precision noise ~1e-12):
+R=  10  x2cmp_x1e -1.1626e-08   x2cmp -1.1624e-08
+R=  20  x2cmp_x1e -1.4873e-10   x2cmp -1.4936e-10
+R=  40  x2cmp_x1e -2.7143e-12   x2cmp -1.5348e-12
+R=  80  x2cmp_x1e  8.6686e-13   x2cmp -4.9738e-13
+R= 160  x2cmp_x1e -1.6485e-12   x2cmp -4.5475e-13
