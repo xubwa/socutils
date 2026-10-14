@@ -8,7 +8,16 @@ Quadruple precision two-component Hamiltonians decoupled from the full
                       superposition of atomic DHF densities,
                           h = to_2c(F4c[D4c_atoms]) - G2c[D2c_atoms],
                       G = J - K, D2c_atoms the 2c (picture-change transformed)
-                      atomic densities.
+                      atomic densities.  This is the HF variant of the
+                      eamfX2C model of Knecht, Repisky, Jensen and Saue,
+                      JCP 157, 114106 (2022).
+    approx = 'amfx2c' amfX2C of the same paper: the atomic 4c two-electron
+                      Fock matrices G4c_K[D4c_K] enter only the atomic
+                      diagonal blocks,
+                          X, R from h4c + sum_K G4c_K,
+                          h = to_2c(X, R, h4c) + sum_K dF_K,
+                          dF_K = to_2c_K(G4c_K) - G2c_K[D2c_K]
+                      (X_K, R_K of the atomic Fock matrix).
 
 All matrices are in the decontracted basis (x2c.uncontract_mol) and in the
 spin-orbital layout of dhf.build_rkb_hamiltonian:
@@ -122,16 +131,44 @@ def atomic_densities(xmol, light_speed=None, cache=None):
             rinv = csolve(ra, QArray.eye(2*na).as_complex())
             c2 = rinv @ cocc[:2*na]
             d2 = c2 @ c2.conj().T
-            cache[symb] = (d4, d2, na)
-        d4, d2, na = cache[symb]
+            # atomic two-electron Fock matrices and the amfX2C correction
+            vj, vk = ham.get_jk(d4)
+            g4 = vj - vk
+            ham2 = dhf.build_nr_hamiltonian(amol, 'GHF', verbose=0)
+            vj2, vk2 = ham2.get_jk(d2)
+            df2 = to_2c(xa, ra, g4) - (vj2 - vk2)
+            cache[symb] = (d4, d2, na, g4, df2)
+        d4, d2, na = cache[symb][:3]
         assert na == p1 - p0
-        for ci in range(4):
-            for cj in range(4):
-                D4[ci*n+p0:ci*n+p1, cj*n+p0:cj*n+p1] = d4[ci*na:(ci+1)*na, cj*na:(cj+1)*na]
-        for si in range(2):
-            for sj in range(2):
-                D2[si*n+p0:si*n+p1, sj*n+p0:sj*n+p1] = d2[si*na:(si+1)*na, sj*na:(sj+1)*na]
+        _embed(D4, d4, n, na, p0, 4)
+        _embed(D2, d2, n, na, p0, 2)
     return D4, D2
+
+
+def _embed(big, small, n, na, p0, ncomp):
+    '''Copy the atomic matrix (ncomp x ncomp blocks of size na) into the
+    molecular matrix (blocks of size n) at AO offset p0.'''
+    p1 = p0 + na
+    for ci in range(ncomp):
+        for cj in range(ncomp):
+            big[ci*n+p0:ci*n+p1, cj*n+p0:cj*n+p1] = small[ci*na:(ci+1)*na, cj*na:(cj+1)*na]
+
+
+def atomic_blocks(xmol, light_speed=None, cache=None):
+    '''Block-diagonal superpositions of the atomic G4c_K (4c) and dF_K (2c).'''
+    if cache is None:
+        cache = {}
+    atomic_densities(xmol, light_speed, cache)
+    n = xmol.nao_nr(xmol.cart)
+    G4 = QArray.zeros((4*n, 4*n), iscomplex=True)
+    DF = QArray.zeros((2*n, 2*n), iscomplex=True)
+    aoslices = xmol.aoslice_by_atom() if not xmol.cart else xmol.aoslice_nr_by_atom()
+    for ia in range(xmol.natm):
+        p0 = aoslices[ia][2]
+        d4, d2, na, g4, df2 = cache[xmol.atom_symbol(ia)]
+        _embed(G4, g4, n, na, p0, 4)
+        _embed(DF, df2, n, na, p0, 2)
+    return G4, DF
 
 
 def get_hcore(xmol, approx='1e', light_speed=None, ham4c=None, ham2c=None, cache=None):
@@ -152,12 +189,16 @@ def get_hcore(xmol, approx='1e', light_speed=None, ham4c=None, ham2c=None, cache
         xm, r = decouple(f4, s4)
         vj2, vk2 = ham2c.get_jk(d2)
         return to_2c(xm, r, f4) - (vj2 - vk2)
+    elif approx.upper() == 'AMFX2C':
+        g4, df = atomic_blocks(xmol, light_speed, cache)
+        xm, r = decouple(h4 + g4, s4)
+        return to_2c(xm, r, h4) + df
     raise ValueError('Unknown approx %s' % approx)
 
 
 class GHF2c(dhf.GHF):
     '''Quad precision 2c GHF in the decontracted basis of mol with a 2c core
-    Hamiltonian from the 4c Dirac-Coulomb Hamiltonian ('1e' or 'x2cmp');
+    Hamiltonian from the 4c Dirac-Coulomb Hamiltonian ('1e', 'x2cmp' or 'amfx2c');
     approx = None gives the nonrelativistic GHF in the same basis.'''
     approx = '1e'
     light_speed = None

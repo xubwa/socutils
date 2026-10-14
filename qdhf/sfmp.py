@@ -68,9 +68,11 @@ def _spherical_average(amol, d):
     return out
 
 
-def atomic_densities(xmol, light_speed=None):
+def atomic_densities(xmol, light_speed=None, blocks_out=None):
     '''D4c (2n x 2n, blocks LL LS / SL SS) and D2c (n x n) of xmol: superposition
-    of exactly spherical, exactly neutral atomic spin-free densities.'''
+    of exactly spherical, exactly neutral atomic spin-free densities.
+    blocks_out (dict) receives the atomic blocks per element, in the AO order
+    of the atom in xmol.'''
     c = dhf.get_light_speed(light_speed)
     n = xmol.nao_nr()
     d4 = numpy.empty((2*n, 2*n), dtype=object)
@@ -131,6 +133,8 @@ def atomic_densities(xmol, light_speed=None):
         d4[ss, sl] = b['SL']
         d4[ss, ss] = b['SS']
         d2[sl, sl] = b['2c']
+    if blocks_out is not None:
+        blocks_out.update(done)
     return QArray.from_mpf(d4), QArray.from_mpf(d2)
 
 
@@ -281,6 +285,88 @@ def get_hcore(xmol, light_speed=None, sf4c=None):
     h = x2c4c.to_2c(xm, r, f4.as_complex())
     j2, k2 = sf4c.qi.get_jk_direct(d2)
     return QArray(h.re) - (j2 - k2 * hmp.mpf(0.5)), (d4, d2, f4)
+
+
+def get_hcore_amf(xmol, light_speed=None, sf4c=None):
+    '''Spin-free amfX2C 2c core Hamiltonian (Knecht, Repisky, Jensen, Saue,
+    JCP 157, 114106 (2022)): the atomic 2e Fock matrices G4c_K[D4c_K] enter
+    only the atomic diagonal blocks of the matrix that defines X, R, and the
+    2e picture-change correction dF_K = to_2c_K(G4c_K) - G2c_K[D2c_K] only
+    the atomic diagonal blocks of h.'''
+    if sf4c is None:
+        sf4c = SpinFree4c(xmol, light_speed)
+    blocks = {}
+    atomic_densities(xmol, light_speed, blocks)
+    n = sf4c.n
+    gl = QArray.zeros((2*n, 2*n))
+    dfl = QArray.zeros((n, n))
+    aoslices = xmol.aoslice_by_atom()
+    atomic = {}
+    for ia in range(xmol.natm):
+        symb = xmol.atom_pure_symbol(ia)
+        if symb not in atomic:
+            z = elements.charge(symb)
+            amol = gto.M(atom=[[symb, (0., 0., 0.)]],
+                         basis={symb: xmol._basis[xmol.atom_symbol(ia)]}, spin=z % 2, verbose=0)
+            sfa = SpinFree4c(amol, light_speed)
+            na = sfa.n
+            b = blocks[symb]
+            d4 = numpy.empty((2*na, 2*na), dtype=object)
+            d4[:na, :na], d4[:na, na:] = b['LL'], b['LS']
+            d4[na:, :na], d4[na:, na:] = b['SL'], b['SS']
+            d4 = QArray.from_mpf(d4)
+            d2 = QArray.from_mpf(b['2c'])
+            vj, vk = sfa.get_jk(d4)
+            g4 = vj - vk * hmp.mpf(0.5)
+            xk, rk = x2c4c.decouple((sfa.hcore + g4).as_complex(), sfa.ovlp.as_complex())
+            j2, k2 = sfa.qi.get_jk_direct(d2)
+            df = QArray(x2c4c.to_2c(xk, rk, g4.as_complex()).re) - (j2 - k2 * hmp.mpf(0.5))
+            atomic[symb] = (na, g4, df)
+        na, g4, df = atomic[symb]
+        p0 = aoslices[ia][2]
+        for ci in range(2):
+            for cj in range(2):
+                gl[ci*n+p0:ci*n+p0+na, cj*n+p0:cj*n+p0+na] = g4[ci*na:(ci+1)*na, cj*na:(cj+1)*na]
+        dfl[p0:p0+na, p0:p0+na] = df
+    xm, r = x2c4c.decouple((sf4c.hcore + gl).as_complex(), sf4c.ovlp.as_complex())
+    return QArray(x2c4c.to_2c(xm, r, sf4c.hcore.as_complex()).re) + dfl
+
+
+class SFDHF(dhf.DHF):
+    '''Quad precision spin-free Dirac-Hartree-Fock (closed shell, scalar
+    decontracted basis), the parent theory of sf-X2C-1e, sf-amfX2C and sfmp.
+    Stores the (SS|SS) integrals: small systems only.'''
+
+    def __init__(self, mol, light_speed=None):
+        xmol, _ = x2c.uncontract_mol(mol)
+        dhf.DHF.__init__(self, xmol, light_speed=light_speed)
+        self.init_guess = 'double'
+
+    def build_hamiltonian(self):
+        sf = SpinFree4c(self.mol, self.light_speed)
+        ham = sf._ham
+        eri = dict(ham.eri)
+        eri[('Y', 'Y')] = sf.qi.eri_yyyy()
+        self.ham = dhf.Hamiltonian4c(ham.hcore, ham.ovlp, ham.comps, eri,
+                                     qmp.mpf(qints.energy_nuc(self.mol)), sf.c, 0.5, 2)
+        return self.ham
+
+
+class SFAMF_RHF(dhf.RHF):
+    '''Quad precision RHF with the spin-free amfX2C Hamiltonian (contracted basis).'''
+
+    def __init__(self, mol, light_speed=None):
+        dhf.RHF.__init__(self, mol)
+        self.sfmp_light_speed = light_speed
+        self.init_guess = 'double'
+
+    def build_hamiltonian(self):
+        xmol, contr = x2c.uncontract_mol(self.mol)
+        h = get_hcore_amf(xmol, self.sfmp_light_speed)
+        ham = dhf.build_nr_hamiltonian(self.mol, 'RHF', self.verbose)
+        ham.hcore = contr.T @ h @ contr
+        self.ham = ham
+        return ham
 
 
 class SFMP_RHF(dhf.RHF):
