@@ -15,7 +15,7 @@ flavors (Dirac-Coulomb, no Gaunt/Breit):
     x2cmp      x2cmp = HF eamfX2C
 reference: 4c DHF (pyscf), same contracted basis.
 
-Usage:  python 21-hi_diffuse_amf.py [kmax]
+Usage:  python 21-hi_diffuse_amf.py [kmax] [geom] [basis]
 '''
 
 import os
@@ -32,14 +32,15 @@ amfchk = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(amfchk)
 
 kmax = int(sys.argv[1]) if len(sys.argv) > 1 else 3
-geom = 'H 0 0 0; I 0 0 1.609'
+geom = sys.argv[2] if len(sys.argv) > 2 else 'H 0 0 0; I 0 0 1.609'
+base = sys.argv[3] if len(sys.argv) > 3 else 'ano-rcc'
 flavors = ['1e', 'x2camf', 'dirac_amf', 'amf_fixed', 'x2cmp']
 
 
 def make_basis(k):
     bas = {}
-    for el in ('H', 'I'):
-        b = gto.basis.load('ano-rcc', el)
+    for el in sorted(set(a.split()[0] for a in geom.split(';'))):
+        b = gto.basis.load(base, el)
         extra = []
         for l in (0, 1):
             emin = min(p[0] for s in b if s[0] == l for p in s[1:])
@@ -62,7 +63,7 @@ def dhf_energy(mol):
 
 
 t0 = time.time()
-print('HI (1.609 A), ANO-RCC + k diffuse s,p; E(flavor) - E(DHF) / Hartree')
+print('%s, %s + k diffuse s,p; E(flavor) - E(DHF) / Hartree' % (geom, base))
 print('%2s %5s %10s %18s  ' % ('k', 'nao', 'min eig S', 'E(DHF)') + ''.join('%-14s' % f for f in flavors))
 for k in range(kmax + 1):
     mol = gto.M(atom=geom, basis=make_basis(k), verbose=0)

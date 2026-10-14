@@ -1,0 +1,25 @@
+H 0 0 0; F 0 0 0.917, cc-pvdz + k diffuse s,p; E(flavor) - E(DHF) / Hartree
+ k   nao  min eig S             E(DHF)  1e            x2camf        dirac_amf     amf_fixed     x2cmp         
+ 0    19   4.91e-02    -100.1103545017  1.014712e-02   1.015145e-02   2.087372e-04   2.063373e-04   1.796229e-04  (11 s)
+ 1    27   4.57e-03    -100.1197534432  1.013550e-02   1.014011e-02   1.971591e-04   1.945201e-04   1.693712e-04  (32 s)
+ 2    35   6.22e-04    -100.1220271426  1.011546e-02   1.012001e-02   1.667733e-04   1.644652e-04   1.499441e-04  (59 s)
+ 3    43   8.16e-05    -100.1227046067  1.010589e-02   1.011038e-02   1.466985e-04   1.443430e-04   1.405331e-04  (88 s)
+ 4    51   1.51e-05    -100.1228901387  1.010563e-02   1.011007e-02   1.534998e-04   1.515101e-04   1.403432e-04  (123 s)
+ 5    59   4.19e-06    -100.1229642992  1.010552e-02   1.010995e-02  -6.029586e+05  -6.040232e+05   1.402531e-04  (196 s)
+ 6    67   1.48e-06    -100.1229776731  1.010543e-02   1.010985e-02  ERR AttributeErrorERR AttributeError 1.401739e-04  (241 s)
+
+Spectrum of the 4c matrix that defines the decoupling (generalized eigenvalues
+with S4c; n2c lowest = "negative energy", n2c upper = "positive energy"):
+k=3 amf h4+G_L     top neg -3.09888e+04  lowest pos -2.750894e+01
+k=3 x2cmp h4+G[D]  top neg -3.75577e+04  lowest pos -2.656502e+01
+k=3 1e h4          top neg -3.75583e+04  lowest pos -4.111942e+01
+k=4 amf h4+G_L     top neg -1.02878e+04  lowest pos -2.751002e+01
+k=4 x2cmp h4+G[D]  top neg -3.75577e+04  lowest pos -2.656500e+01
+k=4 1e h4          top neg -3.75581e+04  lowest pos -4.111942e+01
+k=5 amf h4+G_L     top neg -2.75109e+01  lowest pos -7.114160e+00
+k=5 x2cmp h4+G[D]  top neg -3.75577e+04  lowest pos -2.656500e+01
+k=5 1e h4          top neg -3.75580e+04  lowest pos -4.111942e+01
+amfX2C (h4 + atom-block-diagonal G_L): one negative-energy state rises
+through the gap; at k=5 it sits at the F 1s energy (-27.51) and the F 1s
+state is assigned to the negative-energy half, so X and the 2c Hamiltonian
+collapse.  x2cmp (molecular G[D_atoms]) and X2C-1e keep the gap at -2c^2.
