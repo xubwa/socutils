@@ -1,0 +1,6 @@
+He atom1e: R^4 E_spur predicted from the polarization by dz = PC(z) - z
+cc-pvdz      e2 -2.833766e-11   predicted R^4 E (Z_B = 2, both atoms) -2.267012e-10
+cc-pvtz      e2 -2.000343e-11   predicted R^4 E (Z_B = 2, both atoms) -1.600274e-10
+cc-pvqz      e2 -1.134327e-11   predicted R^4 E (Z_B = 2, both atoms) -9.074617e-11
+aug-cc-pvqz  e2 -5.771768e-14   predicted R^4 E (Z_B = 2, both atoms) -4.617414e-13
+cc-pv5z      e2 -8.176747e-12   predicted R^4 E (Z_B = 2, both atoms) -6.541397e-11
