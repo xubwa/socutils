@@ -166,7 +166,8 @@ def get_xr(mol, light_speed=None, approx='1e', qi=None, omega=1.0,
            sap_basis='sapgrasplarge'):
     '''X and R matrices of sf-X2C-1e in the basis of mol (no decontraction).
 
-    approx = '1e', 'atom1e', 'rs1e' or 'sap1e'.  'sap1e': X is built from
+    approx = '1e', 'atom1e', 'rs1e' or 'sap1e'.  'sap1e' is the SAP-X2C of
+    K. A. Surjuse and E. F. Valeev (arXiv:2601.04174): X is built from
     the screened potential V + V_scr, V_scr the electronic part of the SAP
     of neutral atoms (Gaussian charges, see sap_charges); V_scr is then
     subtracted untransformed.  rs1e is the special case of one Gaussian
