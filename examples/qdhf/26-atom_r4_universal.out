@@ -1,0 +1,13 @@
+c^4 R^4 dE (a.u.), sf-X2C-1e;  prediction -(N_A Z_B^2 + N_B Z_A^2)/12
+He...He cc-pvdz    1e       R=160: -1.62421   R=320: -1.62421   prediction -1.3333
+He...He cc-pvdz    atom1e   R=160: -0.07995   R=320: -0.07995   prediction -1.3333
+He...He cc-pvtz    1e       R=160: -1.46184   R=320: -1.46183   prediction -1.3333
+He...He cc-pvtz    atom1e   R=160: -0.05644   R=320: -0.05643   prediction -1.3333
+He...Ne cc-pvdz    1e       R=160: -24.02242   R=320: -24.02241   prediction -20.0000
+He...Ne cc-pvdz    atom1e   R=160: -1.13949   R=320: -1.13949   prediction -20.0000
+He...Ne cc-pvtz    1e       R=160: -21.66547   R=320: -21.66527   prediction -20.0000
+He...Ne cc-pvtz    atom1e   R=160: -0.78579   R=320: -0.78576   prediction -20.0000
+Ne...Ne cc-pvdz    1e       R=160: -185.99225   R=320: -185.99156   prediction -166.6667
+Ne...Ne cc-pvdz    atom1e   R=160: -7.00867   R=320: -7.00863   prediction -166.6667
+Ne...Ne cc-pvtz    1e       R=160: -169.62436   R=320: -169.62251   prediction -166.6667
+Ne...Ne cc-pvtz    atom1e   R=160: -4.01722   R=320: -4.01711   prediction -166.6667
