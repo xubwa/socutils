@@ -356,7 +356,13 @@ A CAS of only occupied orbitals reproduces E_HF to 1e-13.
 `pbc/test/test_spinor_casci.py` covers the extrapolation, the CAS = occupied
 check and the Madelung term.
 
-**Periodic X2CAMF = one-centre X2CMP** (`OneCenterX2CMPHelper`):
+**One-centre X2CMP** (`OneCenterX2CMPHelper`, `mf.x2cmp('x2cmp_1c' or
+'x2camf_1c')`).  *Superseded as the periodic X2CAMF by 4k:* the statement
+below that dropping the other nuclei from the decoupling "is exactly what
+X2CAMF neglects relative to X2CMP" is wrong -- molecular X2CAMF decouples the
+full one-electron Dirac Hamiltonian (all nuclei, X2C-1e) and only its 2e
+SOC/Gaunt/Breit part is atomic.  The one-centre scheme also makes the scalar
+relativity one-centre.  Original notes:
 
   h = h_NR(cell) + sum_A [h_X2C(A) - h_NR(A)]
 
@@ -679,6 +685,65 @@ N2 in a box, A/L^3 extrapolation against the exact (non-DF) spinor HF
 Tests: `pbc/test/test_rsdf_gspace.py` checks the LR rows against the dense
 G-space exchange, the SR rows against the SR fit, the G = 0 constant (CAS
 of occupied orbitals = HF) and the box limit.
+
+## 4k. Periodic X2CAMF: range-separated X2C-1e (`RangeSeparatedX2CAMFHelper`)
+
+`mf.x2camf(omega=1.0)`:
+
+  h = h_X2C-1e[V_sr] + (V_ne - V_sr) + sum_A [h_AMF(A) + d_A]
+
+* `V_sr = -Z erfc(omega r)/r` of every nucleus (RSDF Gaussian nuclei),
+  lattice-summed in real space at Gamma (`sr_nuclear_integrals`: V, pVp and
+  p x Vp from int3c2e / int3c2e_pvp1 / int3c2e_pvxp1 with the nuclei as
+  s shells, omega < 0).  Absolutely convergent: no G = 0 term, no background.
+  The modified Dirac equation with V_sr is decoupled in the uncontracted basis
+  and contracted (C^T h C) as in the molecular code; it carries the scalar and
+  1e SOC relativity of all nuclei within ~1/omega, multi-centre included.
+* `V_ne - V_sr`: the long-range rest of the RSDF nuclear potential (G = 0
+  free, with the background), untransformed like J.
+* `h_AMF(A) = h_X2CAMF(A) - h_X2C-1e(A)` of the isolated atom (socutils
+  `SpinorX2CMPHelper`, flavors 'x2camf' and '1e'): the atomic 2e SOC +
+  Gaunt + Breit, exactly the atomic part of molecular X2CAMF.
+* `d_A = h_X2C-1e[V_A] - h_X2C-1e[V_sr,A] - V_lr,A` of the isolated atom
+  (`self_lr=True`, same integrals): the picture change of the atom's OWN
+  long-range nuclear part.  That part is smooth at the atom; leaving it
+  untransformed costs a Darwin-like term of the Gaussian countercharge,
+  ~ (pi/2c^2) Z (omega^2/pi)^1.5 per electron (HI, omega = 1: 28 mEh in the
+  total energy, 0.4 mEh in the I 1s energy).  d_A restores it exactly, so an
+  isolated atom is X2C-1e(+AMF) and only the long-range parts of the other
+  nuclei and the background stay untransformed.
+
+Why not a full X2C-1e of the cell (as pyscf.pbc.x2c.sfx2c1e does): the Ewald
+nuclear potential is that of the bare nuclei plus a uniform background
+-rho = -sum Z / Omega.  X2C-1e picture-changes both, while the electrons
+(J, with their own background) are untransformed; in 4c the two backgrounds
+cancel.  The leftover is the Darwin term of the nuclear background,
+-(pi/2c^2) rho per electron: O(c^-2), extensive, volume dependent
+(computed with exact molecular integrals, qdhf branch
+examples/qdhf/pbc/33-heavy_background_darwin.py: fcc Ar -0.11, Kr -0.34,
+Xe -0.60, Au -4.4 mEh/atom; a spurious pressure of ~ -1 GPa for Au), plus
+the multipole terms of the bare-nucleus field at low-symmetry sites and a
+macroscopic field that grows with the thickness of a slab.  The one-centre
+scheme (4b) avoids all of this but drops the multi-centre scalar relativity.
+
+Checks (`pbc/test/test_periodic_x2camf.py`):
+* omega -> 0, molecule: h equals the molecular X2CAMF hcore to 1e-8 (|h|
+  1.5e3), energy to 2e-8 Eh (HI, x2c-SVPall, Gaussian nuclei).
+* HI, against molecular X2CAMF (energy; I 1s orbital energy):
+  rs1e omega = 1: -1.4e-5 Eh, 1.8e-6;  omega = 2: -4.5e-6, -1.9e-7;
+  one-centre X2CAMF (4b): +5.0e-5, +2.6e-4;  rs1e without d_A (omega = 1):
+  -2.8e-2, -4.1e-4.
+* No background term: first-order relativistic one-electron energy of an Ar
+  atom in a box minus the isolated atom, 1e-12 Eh for L = 12-20, against
+  -(pi/2c^2) Z^2/L^3 = -1.6e-5 .. -3.4e-6 Eh for a full Ewald decoupling.
+* The atom-in-box energies (point and Gaussian nuclei) extrapolate to the
+  molecular X2CAMF atom as before.
+
+omega: the Gaussian countercharges of neighbouring nuclei must not overlap an
+atom (exp(-omega^2 R_nn^2) << 1), or their sum becomes a smooth background
+inside the decoupling again; omega = 1 (R_nn >~ 4 bohr) is the default.  The
+real-space sums are a Python loop over AO images (fine for the test cells;
+for YSO-size supercells the SR kernel of `lib/pbcdf` is the place to move it).
 
 ## 5. Auxiliary bases (measured)
 

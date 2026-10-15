@@ -15,8 +15,16 @@ The pipeline is:
 
 Decisions already taken with the user; do not reopen them:
 
-* **Relativity.** Only the one-centre approximation of X2CMP (= X2CAMF), via
-  `mf.x2camf()` or `mf.x2cmp('x2cmp_1c')`.  Other flavors raise on purpose.
+* **Relativity.** X2CAMF with a range-separated X2C-1e (rs1e) scalar + 1e SOC
+  part: `mf.x2camf()` (`RangeSeparatedX2CAMFHelper`) -- the short-range
+  nuclear potential of the cell decoupled, the long-range rest untransformed,
+  the atomic mean-field SOC/Gaunt/Breit one-centre (decision of 2026-10-15,
+  replacing the one-centre-only scheme: X2CAMF decouples all nuclei, only its
+  2e part is atomic; a full X2C-1e decoupling of the Ewald potential would
+  picture-change the background of the nuclei, an O(c^-2) volume-dependent
+  error, ~ -4 mEh/atom for fcc Au).  The one-centre approximations remain as
+  `mf.x2cmp('x2cmp_1c')` and `mf.x2cmp('x2camf_1c')`.  Other flavors raise on
+  purpose.
 * **Symmetry and k-points.** No space-group symmetry: the doping breaks it.
   Gamma point only, on a supercell.
 * **CAHF.** Single open shell only; no multi-open-shell CAHF.
@@ -34,7 +42,8 @@ Decisions already taken with the user; do not reopen them:
 | RSDF: SR (C kernel, rigorous bounds) + LR (pair FTs), Gaussian nuclei | `pbc/rsdf.py`, `lib/pbcdf/sr_int.c` | validated (4, 4.5-4.6b) |
 | `lr='gspace'`: SR-only fit + exact LR plane-wave rows, G = 0 term kept out | `pbc/rsdf.py` | validated (4j) |
 | periodic spinor HF (KRHF, Kramers occ-RI K, Madelung / G = 0 handling) | `pbc/spinor_scf.py` | validated (4b) |
-| one-centre X2CAMF | `pbc/spinor_scf.py:OneCenterX2CMPHelper` | validated (4b) |
+| rs1e X2CAMF (periodic X2CAMF, `mf.x2camf()`) | `pbc/spinor_scf.py:RangeSeparatedX2CAMFHelper` | validated (4k) |
+| one-centre X2CMP / X2CAMF (`x2cmp_1c`, `x2camf_1c`) | `pbc/spinor_scf.py:OneCenterX2CMPHelper` | validated (4b) |
 | periodic spinor KS (Becke grids, collinear) | `pbc/spinor_ks.py` | validated (4g) |
 | 4f fractional occupation by character, CAS ordering | `scf/addons.py` | done |
 | integral-free CAHF (J/K of D_core, D_open only) | `mcscf/cahf_fock.py` | validated (4i) |

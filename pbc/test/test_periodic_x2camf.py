@@ -1,13 +1,19 @@
-'''Periodic X2CAMF: X2CMP in its one-centre approximation (spinor_scf).
+'''Periodic X2CAMF (spinor_scf): range-separated X2C-1e + atomic mean field
+(RangeSeparatedX2CAMFHelper, mf.x2camf()), and the one-centre approximations
+of X2CMP (OneCenterX2CMPHelper, mf.x2cmp('x2cmp_1c' or 'x2camf_1c')).
 
-* For an atom the one-centre approximation is exact: the atom in a box
-  extrapolates (A/L^3) to the molecular socutils X2CAMF energy of the atom,
-  with point nuclei (RSDF zeta 1e14) and with the Gaussian nuclear model
-  (cell.nucmod 'G', RSDF zeta = nuclear_zeta(cell)).
-* For a molecule (HI) the one-centre blocks reproduce the molecular X2CAMF
-  energy up to the dropped multi-centre relativistic terms (4e-5 Eh of the
-  386 Eh relativistic effect).
-* Only one-centre flavors are accepted for a cell.
+* An atom in a box extrapolates (A/L^3, the exchange finite-size term) to the
+  molecular socutils X2CAMF energy of the atom, with point nuclei (RSDF zeta
+  1e14) and with the Gaussian nuclear model (cell.nucmod 'G', RSDF zeta =
+  nuclear_zeta(cell)).
+* No background term: the relativistic part of the periodic one-electron
+  Hamiltonian of an atom in a box is that of the isolated atom (first order,
+  fixed density), independent of L.  A full X2C-1e decoupling of the Ewald
+  potential would give -(pi/2c^2) Z N / L^3 here.
+* For a molecule (HI) rs1e-X2CAMF reproduces the molecular X2CAMF energy to
+  ~1e-5 Eh (the untransformed long-range potential of the other nucleus); the
+  one-centre X2CAMF blocks to 5e-5 Eh (all multi-centre relativistic terms
+  dropped, core orbital energies off by ~3e-4 Eh).
 '''
 import unittest
 import warnings
@@ -62,22 +68,62 @@ class KnownValues(unittest.TestCase):
         mol = gto.M(atom='I 0 0 0; H 0 0 3.04', unit='B', basis='x2c-svpall', verbose=0)
         aux = df.addons.aug_etb(mol, beta=2.0)
         e_full = _quiet(spinor_hf.SpinorSCF(mol).x2camf().density_fit(auxbasis=aux)).kernel()
-        hlp = spinor_scf.OneCenterX2CMPHelper(mol, 'x2camf')
+        hlp = spinor_scf.OneCenterX2CMPHelper(mol, 'x2camf_1c')
         h1c = mol.intor('int1e_kin_spinor') + mol.intor('int1e_nuc_spinor') + hlp.get_correction()
         mf = _quiet(spinor_hf.SpinorSCF(mol).density_fit(auxbasis=aux))
         mf.get_hcore = lambda *args, **kwargs: h1c
         self.assertLess(abs(mf.kernel() - e_full), 1e-4)
+
+    def test_rs1e_error_molecule(self):
+        mol = gto.M(atom='I 0 0 0; H 0 0 3.04', unit='B', basis='x2c-svpall', verbose=0,
+                    nucmod={'I': 'G', 'H': 'G'})
+        aux = df.addons.aug_etb(mol, beta=2.0)
+        e_full = _quiet(spinor_hf.SpinorSCF(mol).x2camf(with_pcc=False).density_fit(auxbasis=aux)).kernel()
+        zeta = spinor_scf.nuclear_zeta(mol)
+        vne = mol.intor('int1e_nuc')
+        for omega, tol in ((1e-3, 1e-7), (1.0, 3e-5)):
+            hrs = spinor_scf.RangeSeparatedX2CAMFHelper(mol, omega, zeta).get_hcore(vne)
+            mf = _quiet(spinor_hf.SpinorSCF(mol).density_fit(auxbasis=aux))
+            mf.get_hcore = lambda *args, hrs=hrs, **kwargs: hrs
+            self.assertLess(abs(mf.kernel() - e_full), tol)
+
+    def test_no_background_term(self):
+        # first-order relativistic one-electron energy of an atom in a box:
+        # Tr D (h - T - V_sr), with V_ne cancelling, equals the isolated atom
+        import numpy
+        from pyscf.lib import param
+        atm = gto.M(atom='Ar 0 0 0', unit='B', basis='x2c-svpall', verbose=0)
+        mf = _quiet(spinor_hf.SpinorSCF(atm).x2camf(with_pcc=False))
+        mf.kernel()
+        dm = mf.make_rdm1()
+
+        def e1(mol):
+            hlp = spinor_scf.RangeSeparatedX2CAMFHelper(mol, 1.0, 1e14)
+            v = numpy.zeros((mol.nao_nr(), mol.nao_nr()))
+            dh = hlp.get_hcore(v)                     # h without the V_ne - V_sr term
+            t = numpy.asarray(mol.pbc_intor('int1e_kin', hermi=1)) if getattr(mol, 'dimension', 0) \
+                else mol.intor('int1e_kin')
+            dh = dh - spinor_hf.sph2spinor(mol, spinor_scf._sph_blockdiag(t + hlp.v_sr))
+            return numpy.einsum('ij,ji', dm, dh).real
+
+        e0 = e1(atm)
+        z = atm.atom_charge(0)
+        for L in (16., 20.):
+            cell = cr.molecule_in_box(atm, L)
+            full_ewald = -numpy.pi / (2 * param.LIGHT_SPEED**2) * z * z / L**3
+            self.assertLess(abs(e1(cell) - e0), 1e-2 * abs(full_ewald))
 
     def test_flavors(self):
         atm = gto.M(atom='He 0 0 0', unit='B', basis='cc-pvdz', verbose=0)
         cell = cr.molecule_in_box(atm, 8.)
         r = RSDF(cell, df.addons.aug_etb(atm, beta=2.0), nuc_zeta=1e14)
         mf = spinor_scf.SpinorRSDF(cell, r)
-        for bad in ('x2cmp', 'sfmp', 'x2camf_au'):
+        for bad in ('x2cmp', 'sfmp', 'x2camf', 'x2camf_au'):
             with self.assertRaises(ValueError):
                 mf.x2cmp(bad)
         self.assertEqual(mf.x2cmp().with_x2c.flavor, 'x2cmp_1c')
-        self.assertEqual(mf.x2camf().with_x2c.flavor, 'x2camf')
+        self.assertEqual(mf.x2cmp('x2camf_1c').with_x2c.flavor, 'x2camf_1c')
+        self.assertIsInstance(mf.x2camf().with_x2c, spinor_scf.RangeSeparatedX2CAMFHelper)
         # nuclear-model consistency
         with self.assertRaises(ValueError):
             cg = cr.molecule_in_box(atm, 8.)
