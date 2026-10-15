@@ -1,0 +1,4 @@
+Ar fcc a = 5.260 A, Omega = 245.52 bohr^3/atom, c = 137.036, unc-cc-pVDZ
+isolated atom Tr D (h_X2C - h_NR) = -1.5841272607
+k-mesh 2^3:  E1 = -1.104131e-04 Eh/atom   -(pi/2c^2) Z N/Omega = -1.103829e-04   ratio 1.0003
+k-mesh 3^3:  E1 = -1.103594e-04 Eh/atom   -(pi/2c^2) Z N/Omega = -1.103829e-04   ratio 0.9998
