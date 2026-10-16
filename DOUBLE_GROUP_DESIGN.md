@@ -204,6 +204,13 @@ above once validated; their `occup` dict format is translated to `irrep_nelec`.
 
 ## 5. Later (not phase 1)
 
+- Spinor DFT (user 2026-10-16: current state is enough for now): align with pyscf when moving to
+  pyscf/x2c/dft.py — UKS(dks.KohnShamDFT, spinor_hf.UHF), RKS(dks.KohnShamDFT, spinor_hf.RHF),
+  SymAdaptedUKS/RKS(dks.KohnShamDFT, SymAdaptedUHF/RHF) so that SymAdaptedUHF.to_ks() keeps the symmetry
+  (today it returns the non-symmetric KS class). Non-collinear: pyscf numint2c has 'ncol' only for LDA vxc
+  (no GGA/MGGA, no fxc); GGA needs 'mcol' (mcfun). A traditional non-collinear GGA is a separate numint
+  project (options to be researched from the literature first).
+
 - D^j(R) = C^† [D^l_real(R) ⊗ U_SU(2)(R)] C per shell (C = `sph2spinor`, D^l from `pyscf.symm.Dmatrix`), for
   rotating orbitals / density matrices between frames, and if mainline review asks for lab-frame SALCs.
 - Realification (phase 2, user's decision 2026-10-16): after every diagonalization, for groups D2/C2v/D2h (labels
