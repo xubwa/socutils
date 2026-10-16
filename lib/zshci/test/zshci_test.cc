@@ -22,6 +22,8 @@
 #include "det.h"
 #include "direct_h.h"
 #include "excite.h"
+#include "fci_davidson.h"
+#include "gas_space.h"
 #include "hamiltonian.h"
 #include "heat_bath.h"
 #include "integrals.h"
@@ -2258,6 +2260,322 @@ void TestRealScalar(const Integrals<Complex>& ints) {
       max_difference(real.transition, complex.transition));
 }
 
+// The first m spinors of `ints`; the real parts only if S is double.
+template <typename S>
+Integrals<S> FirstSpinors(const Integrals<Complex>& ints, int m) {
+  Integrals<S> out(m);
+  auto take = [](Complex z) {
+    return ScalarTraits<S>::Make(z.real(), z.imag());
+  };
+  for (int p = 0; p < m; ++p) {
+    for (int q = 0; q < m; ++q) {
+      out.SetOneBody(p, q, take(ints.OneBody(p, q)));
+      for (int s = 1; s < m && p < q; ++s) {
+        for (int r = 0; r < s; ++r) {
+          out.SetAntisymOrdered(p, q, r, s,
+                                take(ints.AntisymOrdered(p, q, r, s)));
+        }
+      }
+    }
+  }
+  out.set_num_elec(ints.num_elec());
+  out.Finalize();
+  return out;
+}
+
+template <typename S>
+using DenseMatrix = Eigen::Matrix<S, Eigen::Dynamic, Eigen::Dynamic>;
+
+// H over the determinants of a GAS space in the order and with the phases
+// of the plan (creation operators in the order of the plan's spinors), from
+// the Slater-Condon rules of hamiltonian.h, without the core energy.
+template <typename S>
+DenseMatrix<S> ExplicitGasH(const Integrals<S>& ints, const GasSpace& space) {
+  int nwords = 0;
+  const std::vector<uint64_t> words = space.PlanDets(&nwords);
+  const std::vector<int>& perm = space.layout().perm;
+  const long dim = space.dim();
+  std::vector<Det<1>> dets(dim);
+  std::vector<double> sign(dim, 1.0);
+  for (long d = 0; d < dim; ++d) {
+    std::vector<int> occ;
+    for (int p = 0; p < space.num_orbs(); ++p) {
+      if (words[d * nwords + p / 64] >> (p % 64) & 1) occ.push_back(perm[p]);
+    }
+    int inversions = 0;
+    for (size_t i = 0; i < occ.size(); ++i) {
+      for (size_t j = i + 1; j < occ.size(); ++j) inversions += occ[i] > occ[j];
+      dets[d].Set(occ[i]);
+    }
+    sign[d] = inversions % 2 ? -1.0 : 1.0;
+  }
+  DenseMatrix<S> h(dim, dim);
+#pragma omp parallel for schedule(dynamic, 16)
+  for (long i = 0; i < dim; ++i) {
+    for (long j = 0; j < dim; ++j) {
+      const S value = i == j ? S(DiagonalEnergy(dets[i], ints))
+                             : Hij(dets[i], dets[j], ints);
+      h(i, j) = sign[i] * sign[j] * value;
+    }
+  }
+  return h;
+}
+
+template <typename S>
+struct GasCase {
+  int nelec = 0;
+  std::vector<GasConstraint> constraints;
+  std::vector<LabelSet> labels;
+  int max_subgroup = 12;
+};
+
+template <typename S>
+S RandomScalar(std::mt19937* rng);
+template <>
+double RandomScalar<double>(std::mt19937* rng) {
+  return std::uniform_real_distribution<double>(-1.0, 1.0)(*rng);
+}
+template <>
+Complex RandomScalar<Complex>(std::mt19937* rng) {
+  std::uniform_real_distribution<double> u(-1.0, 1.0);
+  return Complex(u(*rng), u(*rng));
+}
+
+// The kernels against the explicit matrix: the diagonal and H c for a
+// random c, element by element, with each of the three kernels.
+template <typename S>
+void TestGasKernels(const Integrals<S>& ints, const GasCase<S>& c,
+                    const std::string& what, long min_dim) {
+  const GasLayout layout =
+      MakeGasLayout(ints.num_orbs(), c.constraints, c.max_subgroup);
+  std::vector<int> targets;
+  for (const LabelSet& set : c.labels) {
+    int sum = 0;
+    for (int p = 0; p < c.nelec; ++p) sum += set.labels[p];
+    targets.push_back(sum);
+  }
+  const GasSpace space(ints.num_orbs(), c.nelec, layout, c.labels, targets);
+  const long dim = space.dim();
+  const DenseMatrix<S> h = ExplicitGasH(ints, space);
+  const std::vector<S> v = AntisymmetrizedPairs(ints, layout.perm, c.nelec);
+  std::vector<double> diag(dim);
+  space.Diagonal(v, diag.data());
+  double diag_error = 0.0;
+  for (long i = 0; i < dim; ++i) {
+    diag_error = std::max(diag_error, std::abs(diag[i] - Real(h(i, i))));
+  }
+  std::mt19937 rng(7);
+  std::vector<S> x(dim), y(dim);
+  for (S& value : x) value = RandomScalar<S>(&rng);
+  Eigen::Map<const Eigen::Matrix<S, Eigen::Dynamic, 1>> xv(x.data(), dim);
+  const Eigen::Matrix<S, Eigen::Dynamic, 1> reference = h * xv;
+  double error[3] = {0, 0, 0};
+  const GasKernel kernels[3] = {GasKernel::kBlas, GasKernel::kBlock,
+                                GasKernel::kReference};
+  for (int k = 0; k < 3; ++k) {
+    space.Sigma(v, x.data(), y.data(), kernels[k]);
+    for (long i = 0; i < dim; ++i) {
+      error[k] = std::max(error[k], std::abs(y[i] - reference[i]));
+    }
+  }
+  const double scale = reference.cwiseAbs().maxCoeff();
+  Expect(dim >= min_dim && diag_error < 1e-10 &&
+             std::max({error[0], error[1], error[2]}) < 1e-10 * scale,
+         what + " (" + ScalarTraits<S>::kName + ", " + std::to_string(dim) +
+             " determinants)");
+  std::printf(
+      "      largest differences: diagonal %.1e, H c by the BLAS, block, "
+      "reference kernel %.1e %.1e %.1e (largest element %.1e)\n",
+      diag_error, error[0], error[1], error[2], scale);
+}
+
+template <typename S>
+class DenseOperator : public CiOperator<S> {
+ public:
+  DenseOperator(const GasSpace& space, const std::vector<S>& v)
+      : space_(space), v_(v) {}
+  void Apply(const S* x, S* y) const override {
+    space_.Sigma(v_, x, y);
+    ++products;
+  }
+  mutable int products = 0;
+
+ private:
+  const GasSpace& space_;
+  const std::vector<S>& v_;
+};
+
+// The Davidson of the fci mode against the eigenvalues of the explicit
+// matrix, several roots, a small subspace, a checkpoint and a restart.
+template <typename S>
+void TestFciDavidson(const Integrals<S>& ints, const GasCase<S>& c,
+                     const std::string& path) {
+  const GasLayout layout =
+      MakeGasLayout(ints.num_orbs(), c.constraints, c.max_subgroup);
+  std::vector<int> targets;
+  for (const LabelSet& set : c.labels) {
+    int sum = 0;
+    for (int p = 0; p < c.nelec; ++p) sum += set.labels[p];
+    targets.push_back(sum);
+  }
+  const GasSpace space(ints.num_orbs(), c.nelec, layout, c.labels, targets);
+  const long dim = space.dim();
+  const std::vector<S> v = AntisymmetrizedPairs(ints, layout.perm, c.nelec);
+  std::vector<double> diag(dim);
+  space.Diagonal(v, diag.data());
+  Eigen::SelfAdjointEigenSolver<DenseMatrix<S>> exact(
+      ExplicitGasH(ints, space));
+  const DenseOperator<S> h(space, v);
+  const VectorLayout whole = VectorLayout::Whole(dim);
+  const std::string name = std::string(ScalarTraits<S>::kName) + ", " +
+                           std::to_string(dim) + " determinants";
+
+  for (int roots : {1, 3}) {
+    for (int space_per_root : {2, 3}) {
+      FciDavidsonOptions options;
+      options.num_roots = roots;
+      options.tol = 1e-7;
+      options.max_space = space_per_root * roots;
+      options.dense_dim = 0;
+      options.max_iterations = 300;
+      options.print = false;
+      const FciDavidsonResult<S> r =
+          FciDavidson(h, diag.data(), whole, options);
+      double error = 0.0, overlap = 1.0;
+      for (int k = 0; k < roots; ++k) {
+        error =
+            std::max(error, std::abs(r.energies[k] - exact.eigenvalues()[k]));
+        if (k == 0) {
+          S dot(0.0);
+          for (long i = 0; i < dim; ++i) {
+            dot += Conj(exact.eigenvectors()(i, 0)) * r.vectors[0][i];
+          }
+          overlap = std::abs(dot);
+        }
+      }
+      Expect(r.converged && error < 1e-11 && std::abs(overlap - 1.0) < 1e-10,
+             "fci Davidson with " + std::to_string(roots) + " root(s) and " +
+                 std::to_string(options.max_space) +
+                 " vectors equals the full diagonalization (" + name + ")");
+      std::printf("      %d iterations, largest energy difference %.1e\n",
+                  r.num_iterations, error);
+    }
+  }
+
+  // Stopped after a few iterations with checkpoints, then restarted.
+  std::remove(path.c_str());
+  FciDavidsonOptions options;
+  options.num_roots = 2;
+  options.tol = 1e-7;
+  options.max_space = 6;
+  options.dense_dim = 0;
+  options.checkpoint = path;
+  options.fingerprint = space.Fingerprint();
+  options.max_iterations = 4;
+  options.print = false;
+  const FciDavidsonResult<S> first =
+      FciDavidson(h, diag.data(), whole, options);
+  std::vector<BigArray<S>> back;
+  std::vector<double> saved;
+  const int count = ReadCiCheckpoint<S>(path, whole, space.Fingerprint(), 2,
+                                        false, &back, &saved);
+  double vector_error = 0.0;
+  for (int k = 0; k < count; ++k) {
+    for (long i = 0; i < dim; ++i) {
+      vector_error =
+          std::max(vector_error, std::abs(back[k][i] - first.vectors[k][i]));
+    }
+  }
+  Expect(!first.converged && count == 2 && vector_error < 1e-12 &&
+             saved[1] == first.energies[1],
+         "fci checkpoint holds the Ritz vectors and energies (" + name + ")");
+  options.restart = true;
+  options.max_iterations = 300;
+  const FciDavidsonResult<S> second =
+      FciDavidson(h, diag.data(), whole, options);
+  options.max_iterations = 300;
+  const FciDavidsonResult<S> again =
+      FciDavidson(h, diag.data(), whole, options);
+  const double error =
+      std::max(std::abs(second.energies[0] - exact.eigenvalues()[0]),
+               std::abs(second.energies[1] - exact.eigenvalues()[1]));
+  Expect(second.restarted && second.converged && error < 1e-11 &&
+             again.restarted && again.num_iterations == 1,
+         "fci restart from the checkpoint converges to the same roots, and at "
+         "once from a converged one (" +
+             name + ")");
+  std::printf("      %d + %d iterations, then %d; energy difference %.1e\n",
+              first.num_iterations, second.num_iterations, again.num_iterations,
+              error);
+  bool refused = false;
+  try {
+    ReadCiCheckpoint<S>(path, whole, space.Fingerprint() + 1, 2, false, &back);
+  } catch (const std::runtime_error&) {
+    refused = true;
+  }
+  Expect(refused, "fci checkpoint of another space is refused");
+  std::remove(path.c_str());
+}
+
+template <typename S>
+void TestGasCi(const Integrals<Complex>& complex_ints) {
+  const int n = complex_ints.num_orbs();
+  // Full CI: 6 electrons in the first 12 spinors, no constraint.
+  {
+    const Integrals<S> small = FirstSpinors<S>(complex_ints, 12);
+    GasCase<S> fci;
+    fci.nelec = 6;
+    TestGasKernels(small, fci,
+                   "fci kernels equal the explicit Hamiltonian: full CI", 924);
+    fci.max_subgroup = 4;
+    TestGasKernels(small, fci, "the same with sub-groups of 4 spinors", 924);
+  }
+  const Integrals<S> ints = FirstSpinors<S>(complex_ints, n);
+  const int nelec = complex_ints.num_elec();
+  // GAS: at most two holes in the lowest nelec spinors, at most one electron
+  // above nelec + 4; labels as of an axis and of inversion.
+  GasCase<S> gas;
+  gas.nelec = nelec;
+  GasConstraint holes, high, level;
+  for (int p = 0; p < nelec; ++p) holes.orbitals.push_back(p);
+  holes.min_elec = nelec - 2;
+  holes.max_elec = nelec;
+  for (int p = nelec + 4; p < n; ++p) high.orbitals.push_back(p);
+  high.max_elec = 1;
+  gas.constraints = {holes, high};
+  TestGasKernels(ints, gas, "fci kernels: two GAS constraints", 4000);
+  std::vector<int> axis(n), parity(n);
+  for (int p = 0; p < n; ++p) {
+    axis[p] = (p * p + 3 * p) % 5 - 2;
+    parity[p] = (p / 3) % 2;
+  }
+  GasCase<S> labelled = gas;
+  labelled.labels = {{axis, 0}, {parity, 2}};
+  TestGasKernels(ints, labelled, "fci kernels: GAS and two label sets", 500);
+  labelled.labels = {{axis, 4}};
+  TestGasKernels(ints, labelled, "fci kernels: GAS and labels modulo 4", 500);
+  // Weighted: electrons above nelec count once, above nelec + 4 twice, at
+  // most two (an excitation level), and spinors 0-3 hold four electrons.
+  GasCase<S> weighted;
+  weighted.nelec = nelec;
+  for (int p = nelec; p < n; ++p) {
+    level.orbitals.push_back(p);
+    level.weights.push_back(p < nelec + 4 ? 1 : 2);
+  }
+  level.max_elec = 2;
+  GasConstraint frozen;
+  frozen.orbitals = {0, 1, 2, 3};
+  frozen.min_elec = frozen.max_elec = 4;
+  weighted.constraints = {level, frozen};
+  TestGasKernels(ints, weighted, "fci kernels: weighted constraint", 300);
+
+  labelled.labels = {{axis, 0}, {parity, 2}};
+  TestFciDavidson(
+      ints, labelled,
+      std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") +
+          "/zshci_test_" + ScalarTraits<S>::kName + ".ckpt");
+}
+
 }  // namespace
 }  // namespace zshci
 
@@ -2297,6 +2615,8 @@ int main(int argc, char** argv) {
     }
     zshci::TestPtScoreSelection(ints);
     zshci::TestRealScalar(ints);
+    zshci::TestGasCi<double>(ints);
+    zshci::TestGasCi<zshci::Complex>(ints);
     zshci::TestBlockedIntegrals(ints);
     zshci::TestSpatialIntegrals();
     zshci::TestSpinStringConnections<1>(
