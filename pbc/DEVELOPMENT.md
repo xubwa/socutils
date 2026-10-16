@@ -726,18 +726,22 @@ the multipole terms of the bare-nucleus field at low-symmetry sites and a
 macroscopic field that grows with the thickness of a slab.  The one-centre
 scheme (4b) avoids all of this but drops the multi-centre scalar relativity.
 
-Checks (`pbc/test/test_periodic_x2camf.py`):
+Checks (`pbc/test/test_periodic_x2camf.py`, dyall-v2z):
 * omega -> 0, molecule: h equals the molecular X2CAMF hcore to 1e-8 (|h|
-  1.5e3), energy to 2e-8 Eh (HI, x2c-SVPall, Gaussian nuclei).
-* HI, against molecular X2CAMF (energy; I 1s orbital energy):
-  rs1e omega = 1: -1.4e-5 Eh, 1.8e-6;  omega = 2: -4.5e-6, -1.9e-7;
-  one-centre X2CAMF (4b): +5.0e-5, +2.6e-4;  rs1e without d_A (omega = 1):
-  -2.8e-2, -4.1e-4.
+  1.5e3), energy to 2e-8 Eh (HI, Gaussian nuclei; checked with x2c-SVPall).
+* HI against molecular X2CAMF (energy; I 1s orbital energy), dyall-v2z:
+  rs1e omega = 1: -1.46e-5 Eh, +4.6e-6;  omega = 2: -5.8e-7, +2.9e-6;
+  one-centre X2CAMF (4b): -5.8e-5, +7.7e-6.  Without d_A (omega = 1,
+  x2c-SVPall): -2.8e-2, -4.1e-4.
 * No background term: first-order relativistic one-electron energy of an Ar
-  atom in a box minus the isolated atom, 1e-12 Eh for L = 12-20, against
+  atom in a box minus the isolated atom, ~1e-12 Eh for L = 12-20, against
   -(pi/2c^2) Z^2/L^3 = -1.6e-5 .. -3.4e-6 Eh for a full Ewald decoupling.
-* The atom-in-box energies (point and Gaussian nuclei) extrapolate to the
-  molecular X2CAMF atom as before.
+* Kr atom in a box (L = 28): E(X2CAMF) - E(NR) equals the molecular atom's
+  to 2.5e-8 Eh.  The total energies themselves miss the molecular atom by
+  4.6e-5 Eh after the A/L^3 extrapolation (22, 28) already at the NR level
+  (NR 4.64e-5, one-centre 4.48e-5, rs1e 4.47e-5): a periodic NR/RSDF
+  accuracy issue of dyall-v2z with the aug_etb auxiliary basis, not of the
+  relativistic part, so the test compares the relativistic difference.
 
 omega: the Gaussian countercharges of neighbouring nuclei must not overlap an
 atom (exp(-omega^2 R_nn^2) << 1), or their sum becomes a smooth background

@@ -2,18 +2,19 @@
 (RangeSeparatedX2CAMFHelper, mf.x2camf()), and the one-centre approximations
 of X2CMP (OneCenterX2CMPHelper, mf.x2cmp('x2cmp_1c' or 'x2camf_1c')).
 
-* An atom in a box extrapolates (A/L^3, the exchange finite-size term) to the
-  molecular socutils X2CAMF energy of the atom, with point nuclei (RSDF zeta
-  1e14) and with the Gaussian nuclear model (cell.nucmod 'G', RSDF zeta =
-  nuclear_zeta(cell)).
+* An atom in a box: the relativistic part E(X2CAMF) - E(NR) equals that of the
+  molecular atom, with point nuclei (RSDF zeta 1e14) and with the Gaussian
+  nuclear model (cell.nucmod 'G', RSDF zeta = nuclear_zeta(cell)).  The total
+  energy carries the periodic NR error of the fit (4.6e-5 Eh for Kr/dyall-v2z,
+  extrapolated from L = 22, 28), which cancels in the difference.
 * No background term: the relativistic part of the periodic one-electron
   Hamiltonian of an atom in a box is that of the isolated atom (first order,
   fixed density), independent of L.  A full X2C-1e decoupling of the Ewald
   potential would give -(pi/2c^2) Z N / L^3 here.
 * For a molecule (HI) rs1e-X2CAMF reproduces the molecular X2CAMF energy to
-  ~1e-5 Eh (the untransformed long-range potential of the other nucleus); the
-  one-centre X2CAMF blocks to 5e-5 Eh (all multi-centre relativistic terms
-  dropped, core orbital energies off by ~3e-4 Eh).
+  ~1.5e-5 Eh at omega = 1 (dyall-v2z; the untransformed long-range potential
+  of the other nucleus); the one-centre X2CAMF blocks to ~6e-5 Eh (all
+  multi-centre relativistic terms dropped).
 '''
 import unittest
 import warnings
@@ -35,37 +36,35 @@ def _quiet(obj):
     return obj
 
 
-def _extrapolate(res):
-    (a, ea), (b, eb) = sorted(res.items())
-    return (eb * b**3 - ea * a**3) / (b**3 - a**3)
-
-
 @unittest.skipUnless(HAVE_LIB, 'libsocpbcdf.so not built (make)')
 class KnownValues(unittest.TestCase):
-    def _atom_in_box(self, nucmod):
-        atm = gto.M(atom='Kr 0 0 0', unit='B', basis='x2c-svpall', verbose=0, nucmod=nucmod)
+    def _atom_in_box(self, nucmod, L=28.):
+        # relativistic part E(X2CAMF) - E(NR) of an atom in a box against the
+        # molecular atom: the periodic NR error (fit, finite size; 4.6e-5 Eh for
+        # Kr/dyall-v2z at L = 22, 28 extrapolated) cancels in the difference
+        atm = gto.M(atom='Kr 0 0 0', unit='B', basis='dyall-v2z', verbose=0, nucmod=nucmod)
         aux = df.addons.aug_etb(atm, beta=2.0)
-        e_atom = _quiet(spinor_hf.SpinorSCF(atm).x2camf().density_fit(auxbasis=aux)).kernel()
-        res = {}
-        for L in (22., 28.):
-            cell = cr.molecule_in_box(atm, L)
-            cell.nucmod = nucmod
-            cell.build(False, False)
-            zeta = spinor_scf.nuclear_zeta(cell)
-            r = RSDF(cell, aux, precision=1e-11, nuc_zeta=1e14 if zeta is None else zeta).build()
-            res[L] = _quiet(spinor_scf.SpinorRSDF(cell, r).x2camf()).kernel()
-        return _extrapolate(res), e_atom
+        ref = (_quiet(spinor_hf.SpinorSCF(atm).x2camf().density_fit(auxbasis=aux)).kernel()
+               - _quiet(spinor_hf.SpinorSCF(atm).density_fit(auxbasis=aux)).kernel())
+        cell = cr.molecule_in_box(atm, L)
+        cell.nucmod = nucmod
+        cell.build(False, False)
+        zeta = spinor_scf.nuclear_zeta(cell)
+        r = RSDF(cell, aux, precision=1e-11, nuc_zeta=1e14 if zeta is None else zeta).build()
+        e = (_quiet(spinor_scf.SpinorRSDF(cell, r).x2camf()).kernel()
+             - _quiet(spinor_scf.SpinorRSDF(cell, r)).kernel())
+        return e, ref
 
     def test_atom_point_nucleus(self):
         e, ref = self._atom_in_box({})
-        self.assertAlmostEqual(e, ref, 5)
+        self.assertLess(abs(e - ref), 1e-6)
 
     def test_atom_gaussian_nucleus(self):
         e, ref = self._atom_in_box({'Kr': 'G'})
-        self.assertAlmostEqual(e, ref, 5)
+        self.assertLess(abs(e - ref), 1e-6)
 
     def test_one_centre_error_molecule(self):
-        mol = gto.M(atom='I 0 0 0; H 0 0 3.04', unit='B', basis='x2c-svpall', verbose=0)
+        mol = gto.M(atom='I 0 0 0; H 0 0 3.04', unit='B', basis='dyall-v2z', verbose=0)
         aux = df.addons.aug_etb(mol, beta=2.0)
         e_full = _quiet(spinor_hf.SpinorSCF(mol).x2camf().density_fit(auxbasis=aux)).kernel()
         hlp = spinor_scf.OneCenterX2CMPHelper(mol, 'x2camf_1c')
@@ -75,7 +74,7 @@ class KnownValues(unittest.TestCase):
         self.assertLess(abs(mf.kernel() - e_full), 1e-4)
 
     def test_rs1e_error_molecule(self):
-        mol = gto.M(atom='I 0 0 0; H 0 0 3.04', unit='B', basis='x2c-svpall', verbose=0,
+        mol = gto.M(atom='I 0 0 0; H 0 0 3.04', unit='B', basis='dyall-v2z', verbose=0,
                     nucmod={'I': 'G', 'H': 'G'})
         aux = df.addons.aug_etb(mol, beta=2.0)
         e_full = _quiet(spinor_hf.SpinorSCF(mol).x2camf(with_pcc=False).density_fit(auxbasis=aux)).kernel()
@@ -92,7 +91,7 @@ class KnownValues(unittest.TestCase):
         # Tr D (h - T - V_sr), with V_ne cancelling, equals the isolated atom
         import numpy
         from pyscf.lib import param
-        atm = gto.M(atom='Ar 0 0 0', unit='B', basis='x2c-svpall', verbose=0)
+        atm = gto.M(atom='Ar 0 0 0', unit='B', basis='dyall-v2z', verbose=0)
         mf = _quiet(spinor_hf.SpinorSCF(atm).x2camf(with_pcc=False))
         mf.kernel()
         dm = mf.make_rdm1()
