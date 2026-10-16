@@ -1,0 +1,5 @@
+Ar fcc a = 5.260 A, Omega = 245.52 bohr^3, k-mesh 2^3, unc-cc-pVDZ, c = 137.036
+background Darwin -(pi/2c^2) Z^2/Omega = -1.103829e-04
+sfx2c1e            E1 = -1.104129e-04 Eh/atom   E1/pred =  1.0003
+rs1e w=1           E1 = -1.749079e-08 Eh/atom   E1/pred =  0.0002
+rs1e w=1 no self   E1 = -2.750289e-03 Eh/atom   E1/pred =  24.9159
