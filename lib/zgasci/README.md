@@ -57,10 +57,11 @@ threads, so there is no oversubscription.
   (one, two electrons passing between the sides are kinds of their own, as
   in Olsen's LUCIAREL). sigma is built by tiles (rows x columns of a target
   block), each written by the thread that owns it: no atomic additions, the
-  unit of a later MPI distribution. Strings are 64-bit words on each side
-  (each side at most 64 spinors); excitations are done on the words in the
-  loop, with only the per-sub-group tables, and no string-level excitation
-  table is stored. Tiles are weighted from the classes for the dynamic
+  unit of a later MPI distribution. A string is handled as the sub-strings
+  of its sub-groups (at most 16 bits each, any number of spinors per side);
+  excitations are done on them in the loop, the sign from the parity of the
+  sub-groups below and within the operator's own, with only the
+  per-sub-group tables, and no string-level excitation table is stored. Tiles are weighted from the classes for the dynamic
   schedule. `ZGASCI_TERMS` (bit mask) restricts the kinds,
   `ZGASCI_STATS` prints their multiply-adds.
 * **BLAS kernel** (`zg_sigma_blas_{d,z}`, `sigma_kernel='blas'`, the
@@ -125,13 +126,16 @@ Python (`socutils.hci.gasci`):
 
 ## Limits
 
-At most 16 sub-groups of at most 16 spinors (so 256 spinors), 4 label sets,
-2^31 strings per side, 4·10^6 electron distributions per side. Vectors are in
+At most 32 sub-groups of at most 16 spinors (so 512 spinors), 4 label sets,
+2^31 strings per side, 10^8 electron distributions per side (24 bytes each;
+the electrons of a sub-group are bounded by the constraints without negative
+weights, k_g <= max / w, so a GAS space with few electrons outside the
+active spinors needs few). Vectors are in
 memory; OpenMP only; time reversal is not used (plan below). The reference
 kernel does `sum_K n_conn(K)^2` multiply-adds (`n_conn` up to
-C(n - N + 2, 2)). The block and the BLAS kernel need each side to hold at
-most 64 spinors (otherwise the reference kernel runs) and build the matrices
-`W` of the nine kinds at every call: nine arrays of about (n/2)^4 numbers,
+C(n - N + 2, 2)). The block and the BLAS kernel (no limit on the spinors of
+a side since 2026-10-16; before, more than 64 sent them to the reference
+kernel) build the matrices `W` of the nine kinds at every call: nine arrays of about (n/2)^4 numbers,
 0.02 s and 33 MB for 52 spinors with real integrals (measured), but 0.8 GB
 real or 1.6 GB complex for 116 spinors (from the sizes); for that many
 spinors they should be kept between calls or stored by label (not done). The BLAS kernel needs two more vectors of

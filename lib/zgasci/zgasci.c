@@ -47,7 +47,9 @@ static int reduce_label(int value, int mod) {
   return value < 0 ? value + mod : value;
 }
 
-/* The strings of every class of a side: their buckets and places. */
+/* The strings of every class of a side: their buckets and places.  Each
+ * class on its own (in parallel), its buckets in the order in which they
+ * first occur, then numbered through. */
 static int number_strings(zg_plan *p, int side) {
   zg_side *s = &p->s[side];
   const int nsets = p->nsets;
@@ -67,19 +69,20 @@ static int number_strings(zg_plan *p, int side) {
   }
   s->bucket = malloc((s->nsid + 1) * sizeof(int32_t));
   s->pos = malloc((s->nsid + 1) * sizeof(uint32_t));
-  int capacity = 64;
-  s->nbucket = 0;
-  s->bucket_size = malloc(capacity * sizeof(int64_t));
-  s->bucket_label = malloc(capacity * (nsets + 1) * sizeof(int));
-  s->bucket_class = malloc(capacity * sizeof(int));
+  int *nlocal = calloc(s->nclass + 1, sizeof(int));
+  int **lab = calloc(s->nclass + 1, sizeof(int *));
+  int64_t **size = calloc(s->nclass + 1, sizeof(int64_t *));
+#pragma omp parallel for schedule(dynamic, 1)
   for (int c = 0; c < s->nclass; ++c) {
-    s->class_bucket[c] = s->nbucket;
+    int capacity = 8, n = 0;
+    lab[c] = malloc(capacity * (nsets + 1) * sizeof(int));
+    size[c] = malloc(capacity * sizeof(int64_t));
     int counts[ZG_MAX_SUB];
     uint32_t masks[ZG_MAX_SUB];
     zg_counts(p, side, s->class_tuple[c], counts);
-    const int64_t size = s->tuple_size[s->class_tuple[c]];
+    const int64_t nstr = s->tuple_size[s->class_tuple[c]];
     int last = -1;
-    for (int64_t address = 0; address < size; ++address) {
+    for (int64_t address = 0; address < nstr; ++address) {
       zg_unpack(p, side, counts, address, masks);
       int label[ZG_MAX_SETS];
       for (int set = 0; set < nsets; ++set) {
@@ -92,43 +95,68 @@ static int number_strings(zg_plan *p, int side) {
       }
       /* Its bucket among those of this class; often the last one used. */
       int found = -1;
-      if (last >= 0 && memcmp(s->bucket_label + (size_t)last * nsets, label,
+      if (last >= 0 && memcmp(lab[c] + (size_t)last * nsets, label,
                               nsets * sizeof(int)) == 0) {
         found = last;
       }
-      for (int b = s->class_bucket[c]; found < 0 && b < s->nbucket; ++b) {
-        if (memcmp(s->bucket_label + (size_t)b * nsets, label,
-                   nsets * sizeof(int)) == 0) {
+      for (int b = 0; found < 0 && b < n; ++b) {
+        if (memcmp(lab[c] + (size_t)b * nsets, label, nsets * sizeof(int)) == 0) {
           found = b;
         }
       }
       if (found < 0) {
-        if (s->nbucket == capacity) {
+        if (n == capacity) {
           capacity *= 2;
-          s->bucket_size = realloc(s->bucket_size, capacity * sizeof(int64_t));
-          s->bucket_label =
-              realloc(s->bucket_label, capacity * (nsets + 1) * sizeof(int));
-          s->bucket_class = realloc(s->bucket_class, capacity * sizeof(int));
+          lab[c] = realloc(lab[c], capacity * (nsets + 1) * sizeof(int));
+          size[c] = realloc(size[c], capacity * sizeof(int64_t));
         }
-        found = s->nbucket++;
-        s->bucket_size[found] = 0;
-        s->bucket_class[found] = c;
-        memcpy(s->bucket_label + (size_t)found * nsets, label,
-               nsets * sizeof(int));
+        found = n++;
+        size[c][found] = 0;
+        memcpy(lab[c] + (size_t)found * nsets, label, nsets * sizeof(int));
       }
       last = found;
       const int64_t sid = s->class_base[c] + address;
       s->bucket[sid] = found;
-      s->pos[sid] = (uint32_t)s->bucket_size[found]++;
+      s->pos[sid] = (uint32_t)size[c][found]++;
     }
+    nlocal[c] = n;
+  }
+  s->nbucket = 0;
+  for (int c = 0; c < s->nclass; ++c) {
+    s->class_bucket[c] = s->nbucket;
+    s->nbucket += nlocal[c];
   }
   s->class_bucket[s->nclass] = s->nbucket;
+  s->bucket_size = malloc((s->nbucket + 1) * sizeof(int64_t));
+  s->bucket_label = malloc((s->nbucket + 1) * (nsets + 1) * sizeof(int));
+  s->bucket_class = malloc((s->nbucket + 1) * sizeof(int));
+  for (int c = 0; c < s->nclass; ++c) {
+    const int b0 = s->class_bucket[c];
+    for (int b = 0; b < nlocal[c]; ++b) {
+      s->bucket_size[b0 + b] = size[c][b];
+      s->bucket_class[b0 + b] = c;
+      memcpy(s->bucket_label + (size_t)(b0 + b) * nsets, lab[c] + (size_t)b * nsets,
+             nsets * sizeof(int));
+    }
+    free(lab[c]);
+    free(size[c]);
+  }
+  free(nlocal);
+  free(lab);
+  free(size);
+#pragma omp parallel for schedule(dynamic, 1)
+  for (int c = 0; c < s->nclass; ++c) {
+    for (int64_t sid = s->class_base[c]; sid < s->class_base[c + 1]; ++sid) {
+      s->bucket[sid] += s->class_bucket[c];
+    }
+  }
   s->bucket_start = malloc((s->nbucket + 1) * sizeof(int64_t));
   s->bucket_sid = malloc((s->nsid + 1) * sizeof(int64_t));
   s->bucket_start[0] = 0;
   for (int b = 0; b < s->nbucket; ++b) {
     s->bucket_start[b + 1] = s->bucket_start[b] + s->bucket_size[b];
   }
+#pragma omp parallel for schedule(static)
   for (int64_t sid = 0; sid < s->nsid; ++sid) {
     s->bucket_sid[s->bucket_start[s->bucket[sid]] + s->pos[sid]] = sid;
   }
@@ -236,31 +264,67 @@ zg_plan *zg_plan_new(int nspinor, int nelec, int nsub, int nsub_a,
     }
   }
 
+  /* The most electrons a sub-group can hold: its spinors, the electrons,
+   * and the constraints without negative weights. */
+  uint8_t *positive = calloc((size_t)ngas + 1, 1);
+  for (int g = 0; g < nsub; ++g) p->kmax[g] = p->m[g] < nelec ? p->m[g] : nelec;
+  for (int c = 0; c < ngas; ++c) {
+    const int *w = p->gas_w + (size_t)c * ZG_MAX_SUB;
+    positive[c] = 1;
+    for (int g = 0; g < nsub; ++g) positive[c] = positive[c] && w[g] >= 0;
+    if (!positive[c]) continue;
+    for (int g = 0; g < nsub; ++g) {
+      if (w[g] > 0 && p->gas_max[c] / w[g] < p->kmax[g]) p->kmax[g] = p->gas_max[c] / w[g];
+    }
+  }
+  for (int g = 0; g < nsub; ++g) p->kmax[g] = p->kmax[g] > 0 ? p->kmax[g] : 0;
+
+  /* ZGASCI_STATS: the seconds of the steps. */
+  const int stats = getenv("ZGASCI_STATS") != NULL;
+  double t_step = omp_get_wtime();
+#define ZG_STEP(what)                                                    \
+  do {                                                                   \
+    if (stats) {                                                         \
+      fprintf(stderr, "zgasci plan: %s %.2f s\n", what,                  \
+              omp_get_wtime() - t_step);                                 \
+      t_step = omp_get_wtime();                                          \
+    }                                                                    \
+  } while (0)
+
   /* Tuples of each side. */
   for (int side = 0; side < 2; ++side) {
     zg_side *s = &p->s[side];
     s->first = side == 0 ? 0 : nsub_a;
     s->nsub = side == 0 ? nsub_a : nsub - nsub_a;
     s->ntuple = 1;
+    double ntuple = 1.0;
     int nside = 0;
     for (int g = 0; g < s->nsub; ++g) {
       s->stride[g] = s->ntuple;
-      s->ntuple *= p->m[s->first + g] + 1;
-      nside += p->m[s->first + g];
-      if (s->ntuple > 4000000) {
+      ntuple *= p->kmax[s->first + g] + 1;
+      if (ntuple > ZG_MAX_TUPLES) {
         snprintf(zg_message, sizeof(zg_message),
                  "too many ways to distribute electrons over the sub-groups "
-                 "of side %c; use fewer, larger sub-groups",
-                 "AB"[side]);
+                 "of side %c (at least %.3g, %.1f GB of tables; at most %.3g); "
+                 "use fewer, larger sub-groups",
+                 "AB"[side], ntuple, 24e-9 * ntuple, (double)ZG_MAX_TUPLES);
+        free(positive);
         zg_plan_free(p);
         return NULL;
       }
+      s->ntuple *= p->kmax[s->first + g] + 1;
+      nside += p->m[s->first + g];
     }
     s->tuple_elec = malloc(s->ntuple * sizeof(int));
     s->tuple_size = malloc(s->ntuple * sizeof(int64_t));
     s->class_of = malloc(s->ntuple * sizeof(int32_t));
     s->by_elec = malloc(s->ntuple * sizeof(int64_t));
     s->elec_start = calloc(nside + 3, sizeof(int64_t));
+    /* Only the tuples within the upper bounds of the constraints without
+     * negative weights go into by_elec: adding electrons on either side
+     * cannot bring the others back. */
+    uint8_t *fits = malloc(s->ntuple + 1);
+#pragma omp parallel for schedule(static)
     for (int64_t t = 0; t < s->ntuple; ++t) {
       int counts[ZG_MAX_SUB];
       zg_counts(p, side, t, counts);
@@ -273,14 +337,26 @@ zg_plan *zg_plan_new(int nspinor, int nelec, int nsub, int nsub_a,
       s->tuple_elec[t] = elec;
       s->tuple_size[t] = size < 9e18 ? (int64_t)size : INT64_MAX;
       s->class_of[t] = -1;
-      s->elec_start[elec + 2]++;
+      fits[t] = elec <= nelec;
+      for (int c = 0; c < ngas && fits[t]; ++c) {
+        if (!positive[c]) continue;
+        const int *w = p->gas_w + (size_t)c * ZG_MAX_SUB + s->first;
+        int sum = 0;
+        for (int g = 0; g < s->nsub; ++g) sum += w[g] * counts[g];
+        fits[t] = sum <= p->gas_max[c];
+      }
+    }
+    for (int64_t t = 0; t < s->ntuple; ++t) {
+      if (fits[t]) s->elec_start[s->tuple_elec[t] + 2]++;
     }
     for (int k = 0; k <= nside; ++k) s->elec_start[k + 2] += s->elec_start[k + 1];
     for (int64_t t = 0; t < s->ntuple; ++t) {
-      s->by_elec[s->elec_start[s->tuple_elec[t] + 1]++] = t;
+      if (fits[t]) s->by_elec[s->elec_start[s->tuple_elec[t] + 1]++] = t;
     }
+    free(fits);
     /* elec_start[k] .. elec_start[k + 1] now hold the tuples of k. */
   }
+  free(positive);
   zg_side *sa = &p->s[0], *sb = &p->s[1];
   const int nside_b = p->n - p->off[nsub_a];
 #define ZG_TUPLES_B(k, from, to)                    \
@@ -290,8 +366,11 @@ zg_plan *zg_plan_new(int nspinor, int nelec, int nsub, int nsub_a,
     to = sb->elec_start[(k) + 1];                   \
   }
 
+  ZG_STEP("tuples");
   /* Classes: the tuples that pair up with one of the other side. */
-  for (int64_t ta = 0; ta < sa->ntuple; ++ta) {
+  const int nside_a = p->off[nsub_a];
+  for (int64_t ia = 0; ia < sa->elec_start[nside_a + 1]; ++ia) {
+    const int64_t ta = sa->by_elec[ia];
     int counts_a[ZG_MAX_SUB], counts_b[ZG_MAX_SUB];
     zg_counts(p, 0, ta, counts_a);
     ZG_TUPLES_B(nelec - sa->tuple_elec[ta], from, to);
@@ -319,27 +398,33 @@ zg_plan *zg_plan_new(int nspinor, int nelec, int nsub, int nsub_a,
     }
   }
 
-  /* Blocks. */
+  ZG_STEP("classes and strings");
+  /* Blocks: for each A bucket and B class (whose classes may pair, ok) the
+   * B bucket of matching labels; then their places, in order. */
   const size_t nmatch = (size_t)sa->nbucket * sb->nclass;
   p->match = malloc((nmatch + 1) * sizeof(int32_t));
   p->blockoff = malloc((nmatch + 1) * sizeof(int64_t));
-  p->dim = 0;
-  p->nblock = 0;
-  for (int ba = 0; ba < sa->nbucket; ++ba) {
-    const int ca = sa->bucket_class[ba];
+  uint8_t *ok = calloc((size_t)sa->nclass * sb->nclass + 1, 1);
+#pragma omp parallel for schedule(dynamic, 16)
+  for (int ca = 0; ca < sa->nclass; ++ca) {
     int counts_a[ZG_MAX_SUB], counts_b[ZG_MAX_SUB];
     zg_counts(p, 0, sa->class_tuple[ca], counts_a);
     for (int cb = 0; cb < sb->nclass; ++cb) {
-      const size_t k = (size_t)ba * sb->nclass + cb;
-      p->match[k] = -1;
-      p->blockoff[k] = 0;
-      if (sa->tuple_elec[sa->class_tuple[ca]] +
-              sb->tuple_elec[sb->class_tuple[cb]] !=
+      if (sa->tuple_elec[sa->class_tuple[ca]] + sb->tuple_elec[sb->class_tuple[cb]] !=
           nelec) {
         continue;
       }
       zg_counts(p, 1, sb->class_tuple[cb], counts_b);
-      if (!gas_ok(p, counts_a, counts_b)) continue;
+      ok[(size_t)ca * sb->nclass + cb] = (uint8_t)gas_ok(p, counts_a, counts_b);
+    }
+  }
+#pragma omp parallel for schedule(dynamic, 16)
+  for (int ba = 0; ba < sa->nbucket; ++ba) {
+    const int ca = sa->bucket_class[ba];
+    for (int cb = 0; cb < sb->nclass; ++cb) {
+      const size_t k = (size_t)ba * sb->nclass + cb;
+      p->match[k] = -1;
+      if (!ok[(size_t)ca * sb->nclass + cb]) continue;
       for (int bb = sb->class_bucket[cb]; bb < sb->class_bucket[cb + 1]; ++bb) {
         int good = 1;
         for (int set = 0; set < nsets; ++set) {
@@ -349,24 +434,73 @@ zg_plan *zg_plan_new(int nspinor, int nelec, int nsub, int nsub_a,
         }
         if (!good) continue;
         p->match[k] = bb;
-        p->blockoff[k] = p->dim;
-        p->dim += sa->bucket_size[ba] * sb->bucket_size[bb];
-        p->nblock++;
         break;
       }
     }
   }
+  free(ok);
+  p->dim = 0;
+  p->nblock = 0;
+  for (size_t k = 0; k < nmatch; ++k) {
+    p->blockoff[k] = 0;
+    if (p->match[k] < 0) continue;
+    p->blockoff[k] = p->dim;
+    p->dim += sa->bucket_size[k / sb->nclass] * sb->bucket_size[p->match[k]];
+    p->nblock++;
+  }
 
+  ZG_STEP("blocks");
   /* Which classes pair at all. */
   p->cpair = calloc((size_t)sa->nclass * sb->nclass + 1, 1);
+#pragma omp parallel for schedule(dynamic, 16)
   for (int ca = 0; ca < sa->nclass; ++ca) {
     for (int cb = 0; cb < sb->nclass; ++cb) {
       p->cpair[(size_t)ca * sb->nclass + cb] = (uint8_t)classes_pair(p, ca, cb);
     }
   }
 
+  ZG_STEP("pairs of classes");
   /* Tasks: the pairs of tuples of N - 2 electrons from which two electrons
-   * can be added to reach the CI space, the larger ones in pieces. */
+   * can be added to reach the CI space (found in parallel for each A
+   * tuple), the larger ones in pieces. */
+  const int64_t nta = sa->elec_start[nside_a + 1];
+  int64_t *nfeas = calloc(nta + 1, sizeof(int64_t));
+  int64_t **feas = calloc(nta + 1, sizeof(int64_t *));
+#pragma omp parallel for schedule(dynamic, 16)
+  for (int64_t ia = 0; ia < nta; ++ia) {
+    const int64_t ta = sa->by_elec[ia];
+    int64_t cap = 0;
+    ZG_TUPLES_B(nelec - 2 - sa->tuple_elec[ta], from, to);
+    for (int64_t i = from; i < to; ++i) {
+      const int64_t tb = sb->by_elec[i];
+      int feasible = 0;
+      for (int g = 0; g < nsub && !feasible; ++g) {
+        for (int h = g; h < nsub && !feasible; ++h) {
+          int64_t t[2] = {ta, tb};
+          int ok = 1;
+          for (int which = 0; which < 2 && ok; ++which) {
+            const int sub = which == 0 ? g : h;
+            const int side = p->side_of[sub];
+            const int local = sub - p->s[side].first;
+            const int now =
+                (int)((t[side] / p->s[side].stride[local]) % (p->kmax[sub] + 1));
+            if (now + 1 > p->kmax[sub]) ok = 0;
+            t[side] += p->s[side].stride[local];
+          }
+          if (!ok) continue;
+          const int ca = sa->class_of[t[0]], cb = sb->class_of[t[1]];
+          if (ca < 0 || cb < 0) continue;
+          feasible = p->cpair[(size_t)ca * sb->nclass + cb];
+        }
+      }
+      if (!feasible) continue;
+      if (nfeas[ia] == cap) {
+        cap = 2 * cap + 16;
+        feas[ia] = realloc(feas[ia], cap * sizeof(int64_t));
+      }
+      feas[ia][nfeas[ia]++] = tb;
+    }
+  }
   int64_t capacity = 1024;
   p->tasks = malloc(capacity * sizeof(zg_task));
   p->ntask = 0;
@@ -374,31 +508,10 @@ zg_plan *zg_plan_new(int nspinor, int nelec, int nsub, int nsub_a,
   for (int pass = 0; pass < 2; ++pass) {
     /* Pass 0 adds up the work, pass 1 cuts it. */
     const double piece = work / (64.0 * omp_get_max_threads()) + 1.0;
-    for (int64_t ta = 0; ta < sa->ntuple; ++ta) {
-      ZG_TUPLES_B(nelec - 2 - sa->tuple_elec[ta], from, to);
-      for (int64_t i = from; i < to; ++i) {
-        const int64_t tb = sb->by_elec[i];
-        int feasible = 0;
-        for (int g = 0; g < nsub && !feasible; ++g) {
-          for (int h = g; h < nsub && !feasible; ++h) {
-            int64_t t[2] = {ta, tb};
-            int ok = 1;
-            for (int which = 0; which < 2 && ok; ++which) {
-              const int sub = which == 0 ? g : h;
-              const int side = p->side_of[sub];
-              const int local = sub - p->s[side].first;
-              const int now =
-                  (int)((t[side] / p->s[side].stride[local]) % (p->m[sub] + 1));
-              if (now + 1 > p->m[sub]) ok = 0;
-              t[side] += p->s[side].stride[local];
-            }
-            if (!ok) continue;
-            const int ca = sa->class_of[t[0]], cb = sb->class_of[t[1]];
-            if (ca < 0 || cb < 0) continue;
-            feasible = classes_pair(p, ca, cb);
-          }
-        }
-        if (!feasible) continue;
+    for (int64_t ia = 0; ia < nta; ++ia) {
+      const int64_t ta = sa->by_elec[ia];
+      for (int64_t i = 0; i < nfeas[ia]; ++i) {
+        const int64_t tb = feas[ia][i];
         const double size_b = (double)sb->tuple_size[tb];
         if (pass == 0) {
           work += (double)sa->tuple_size[ta] * size_b;
@@ -418,9 +531,16 @@ zg_plan *zg_plan_new(int nspinor, int nelec, int nsub, int nsub_a,
       }
     }
   }
+  for (int64_t ia = 0; ia < nta; ++ia) free(feas[ia]);
+  free(feas);
+  free(nfeas);
 #undef ZG_TUPLES_B
+  ZG_STEP("tasks of the reference kernel");
   setup_block(p);
+  ZG_STEP("block kernel");
   setup_blas(p);
+  ZG_STEP("BLAS kernel");
+#undef ZG_STEP
   return p;
 }
 
@@ -551,7 +671,7 @@ int zg_connect(const zg_plan *p, const uint32_t *masks, int32_t *pair,
   int32_t cls1[ZG_MAX_SUB];
   for (int g = 0; g < nsub; ++g) {
     const int side = g >= na, loc = g - (side ? na : 0);
-    cls1[g] = counts[g] < p->m[g] ? p->s[side].class_of[t[side] + p->s[side].stride[loc]] : -1;
+    cls1[g] = counts[g] < p->kmax[g] ? p->s[side].class_of[t[side] + p->s[side].stride[loc]] : -1;
   }
   int64_t sid1[ZG_MAX_SPINOR];
   for (int g = 0; g < nsub; ++g) {
@@ -581,7 +701,7 @@ int zg_connect(const zg_plan *p, const uint32_t *masks, int32_t *pair,
         const int side = side_k, base = side ? na : 0;
         const zg_side *s = &p->s[side];
         const int need = gi == gk ? 2 : 1;
-        if (counts[gi] + need > p->m[gi] || (gi != gk && counts[gk] + 1 > p->m[gk])) continue;
+        if (counts[gi] + need > p->kmax[gi] || (gi != gk && counts[gk] + 1 > p->kmax[gk])) continue;
         const int64_t tt = t[side] + s->stride[gi - base] + s->stride[gk - base];
         const int32_t c2 = s->class_of[tt];
         ca = side ? cls0[0] : c2;
@@ -690,8 +810,7 @@ static void setup_block(zg_plan *p) {
     p->nside[side] = p->off[s->first + s->nsub - 1] + p->m[s->first + s->nsub - 1] -
                      p->off[s->first];
   }
-  p->block_ok = p->nside[0] <= 64 && p->nside[1] <= 64;
-  if (!p->block_ok) return;
+  p->block_ok = 1;
   setup_terms(p);
   const zg_side *sa = &p->s[0], *sb = &p->s[1];
   /* Tile shape; ZGASCI_TILE="rows,columns" overrides it (experiments). */
@@ -768,6 +887,7 @@ static void setup_blas(zg_plan *p) {
   const size_t nt = (size_t)sb->nbucket * sa->nclass;
   p->match_t = malloc((nt + 1) * sizeof(int32_t));
   p->blockoff_t = malloc((nt + 1) * sizeof(int64_t));
+#pragma omp parallel for schedule(static)
   for (size_t i = 0; i < nt; ++i) {
     p->match_t[i] = -1;
     p->blockoff_t[i] = 0;
@@ -788,6 +908,7 @@ static void setup_blas(zg_plan *p) {
   for (int side = 0; side < 2; ++side) {
     const zg_side *s = &p->s[side];
     p->bp[side] = malloc((size_t)(s->nsid + 1) * sizeof(uint64_t));
+#pragma omp parallel for schedule(static)
     for (int64_t sid = 0; sid < s->nsid; ++sid) {
       p->bp[side][sid] = (uint64_t)s->bucket[sid] << 32 | s->pos[sid];
     }
@@ -807,10 +928,8 @@ static void setup_blas(zg_plan *p) {
         if (found < 0) {
           found = p->ndlab[side]++;
           memcpy(p->dlab[side][found], lab, sizeof(lab));
-          p->dmask[side][found] = 0;
         }
-        p->dmask[side][found] |= (uint64_t)1 << (p->off[sub] + j - p->off[s->first]);
-        p->dof[side][p->off[sub] + j - p->off[s->first]] = (uint8_t)found;
+        p->dof[side][p->off[sub] + j - p->off[s->first]] = (uint16_t)found;
       }
     }
   }
@@ -954,7 +1073,7 @@ int zg_asg_list(const zg_plan *p, int side, int k, const int *kind,
       tt += d * s->stride[g[i]];
     }
     for (int i = 0; i < k; ++i) {
-      if (now[g[i]] < 0 || now[g[i]] > p->m[s->first + g[i]]) good = 0;
+      if (now[g[i]] < 0 || now[g[i]] > p->kmax[s->first + g[i]]) good = 0;
     }
     if (!good) continue;
     const int cls = s->class_of[tt];
@@ -981,13 +1100,10 @@ int zg_asg_list(const zg_plan *p, int side, int k, const int *kind,
   return n;
 }
 
-void zg_string_ranks(const zg_plan *p, int side, uint64_t w, int64_t *rk) {
+void zg_string_ranks(const zg_plan *p, int side, const uint32_t *masks,
+                     int64_t *rk) {
   const zg_side *s = &p->s[side];
-  const int first = p->off[s->first];
-  for (int g = 0; g < s->nsub; ++g) {
-    const int sub = s->first + g;
-    rk[g] = p->rank[sub][(w >> (p->off[sub] - first)) & ((1u << p->m[sub]) - 1)];
-  }
+  for (int g = 0; g < s->nsub; ++g) rk[g] = p->rank[s->first + g][masks[g]];
 }
 
 /* A change of the labels as one number (16 bits a set). */
@@ -1003,18 +1119,20 @@ static inline uint64_t filter_slot(const zg_bkind *kd, uint64_t key) {
   return (key * 0x9E3779B97F4A7C15ull) >> 40 & (uint64_t)(kd->fsize - 1);
 }
 
-/* The spinors the last row operator may take after the change `key`. */
-static inline uint64_t filter_mask(const zg_bkind *kd, uint64_t key) {
+/* The spinors the last row operator may take after the change `key`, by
+ * sub-group, or NULL for none. */
+static inline const uint32_t *filter_mask(const zg_bkind *kd, uint64_t key) {
   for (uint64_t i = filter_slot(kd, key);; i = (i + 1) & (uint64_t)(kd->fsize - 1)) {
-    if (kd->fkey[i] == key) return kd->fmask[i];
-    if (kd->fkey[i] == UINT64_MAX) return 0;
+    if (kd->fkey[i] == key) return kd->fmask + i * kd->fnsub;
+    if (kd->fkey[i] == UINT64_MAX) return NULL;
   }
 }
 
 /* Builds the label filter of a kind of half h (see zg_bkind). */
 static void build_filter(zg_plan *p, int h, zg_bkind *kd) {
   kd->fsize = 0;
-  kd->fkey = kd->fmask = NULL;
+  kd->fkey = NULL;
+  kd->fmask = NULL;
   if (p->nsets == 0 || kd->kc > 1 || kd->kr < 1) return;
   const int nd = p->ndlab[h], ndc = p->ndlab[1 - h];
   int64_t combos = 1;
@@ -1032,7 +1150,7 @@ static void build_filter(zg_plan *p, int h, zg_bkind *kd) {
   /* The changes of the row labels (source minus target) that are allowed:
    * minus the change the column operator makes. */
   int nallow = 0;
-  uint64_t allow[65];
+  uint64_t allow[ZG_MAX_SPINOR + 1];
   if (kd->kc == 0) {
     int zero[ZG_MAX_SETS] = {0};
     allow[nallow++] = label_key(zero, p->nsets, p->mods);
@@ -1046,9 +1164,11 @@ static void build_filter(zg_plan *p, int h, zg_bkind *kd) {
   }
   int size = 16;
   while (size < 2 * combos) size *= 2;
+  const zg_side *s = &p->s[h];
   kd->fsize = size;
+  kd->fnsub = s->nsub;
   kd->fkey = malloc((size_t)size * sizeof(uint64_t));
-  kd->fmask = malloc((size_t)size * sizeof(uint64_t));
+  kd->fmask = calloc((size_t)size * s->nsub, sizeof(uint32_t));
   for (int i = 0; i < size; ++i) kd->fkey[i] = UINT64_MAX;
   const int last = kd->kind_r[kd->kr - 1] ? -1 : 1;
   for (int64_t code = 0; code < combos; ++code) {
@@ -1065,20 +1185,22 @@ static void build_filter(zg_plan *p, int h, zg_bkind *kd) {
       slot = (slot + 1) & (uint64_t)(size - 1);
     }
     if (kd->fkey[slot] == key) continue;
-    uint64_t good = 0;
+    uint8_t good[ZG_MAX_SPINOR];
     for (int d = 0; d < nd; ++d) {
       int total[ZG_MAX_SETS];
       for (int set = 0; set < p->nsets; ++set) total[set] = acc[set] + last * p->dlab[h][d][set];
       const uint64_t tkey = label_key(total, p->nsets, p->mods);
-      for (int a = 0; a < nallow; ++a) {
-        if (allow[a] == tkey) {
-          good |= p->dmask[h][d];
-          break;
-        }
-      }
+      good[d] = 0;
+      for (int a = 0; a < nallow && !good[d]; ++a) good[d] = allow[a] == tkey;
     }
     kd->fkey[slot] = key;
-    kd->fmask[slot] = good;
+    uint32_t *fm = kd->fmask + slot * s->nsub;
+    for (int g = 0; g < s->nsub; ++g) {
+      const int sub = s->first + g, at = p->off[sub] - p->off[s->first];
+      for (int j = 0; j < p->m[sub]; ++j) {
+        if (good[p->dof[h][at + j]]) fm[g] |= 1u << j;
+      }
+    }
   }
 }
 
@@ -1089,12 +1211,18 @@ typedef struct {
   const zg_bkind *filter;
   int nsets;
   const int (*dlab)[ZG_MAX_SETS];
-  const uint8_t *dof;
+  const uint16_t *dof;
   const int *mods;
   int acc[5][ZG_MAX_SETS];
-  uint64_t range[4]; /* the spinors of the sub-group of each slot */
-  int ntouch, shift[4];
-  uint32_t mask[4];
+  /* Each slot: its sub-group (local to the side), the place of that among
+   * the touched ones, the number of its first spinor in the side, its
+   * spinors, and the parity of the electrons below the sub-group when the
+   * slot acts (those of the target, and one for each earlier slot below). */
+  int g[4], at[4], soff[4], par[4];
+  uint32_t range[4];
+  /* The touched sub-groups: their sub-strings as they are now. */
+  int ntouch;
+  uint32_t cur[4];
   const uint32_t *rank[4];
   int64_t radix[4];
   int64_t fixed;
@@ -1103,13 +1231,11 @@ typedef struct {
   int n;
 } asg_ctx;
 
-static void asg_rec(asg_ctx *c, int i, uint64_t w, int prev, int8_t sg,
-                    int64_t x, int64_t xradix) {
+static void asg_rec(asg_ctx *c, int i, int prev, int8_t sg, int64_t x,
+                    int64_t xradix) {
   if (i == c->k) {
     int64_t sid = c->fixed;
-    for (int t = 0; t < c->ntouch; ++t) {
-      sid += c->radix[t] * c->rank[t][(w >> c->shift[t]) & c->mask[t]];
-    }
+    for (int t = 0; t < c->ntouch; ++t) sid += c->radix[t] * c->rank[t][c->cur[t]];
     c->x[c->n] = x;
     c->sid[c->n] = sid;
     c->sign[c->n] = sg;
@@ -1117,9 +1243,13 @@ static void asg_rec(asg_ctx *c, int i, uint64_t w, int prev, int8_t sg,
     return;
   }
   if (i > 3) return; /* at most four operators */
-  uint64_t bits = (c->kind[i] ? w : ~w) & c->range[i];
-  if (i > 0 && c->rel[i - 1] > 0) bits &= ~(((uint64_t)2 << prev) - 1);
-  if (i > 0 && c->rel[i - 1] < 0) bits &= ((uint64_t)1 << prev) - 1;
+  const int t = c->at[i];
+  const uint32_t w = c->cur[t];
+  uint32_t bits = (c->kind[i] ? w : ~w) & c->range[i];
+  if (i > 0 && c->g[i] == c->g[i - 1]) {
+    if (c->rel[i - 1] > 0) bits &= ~((2u << prev) - 1);
+    if (c->rel[i - 1] < 0) bits &= (1u << prev) - 1;
+  }
   /* creation in O: the source lacks this spinor. */
   const int lsign = c->kind[i] ? -1 : 1;
   if (c->filter && i == c->k - 1) {
@@ -1128,13 +1258,14 @@ static void asg_rec(asg_ctx *c, int i, uint64_t w, int prev, int8_t sg,
     for (int s = 0; s < c->nsets; ++s) {
       key |= (uint64_t)((c->acc[i][s] + 32768) & 0xffff) << (16 * s);
     }
-    bits &= filter_mask(c->filter, key);
+    const uint32_t *fm = filter_mask(c->filter, key);
+    bits &= fm ? fm[c->g[i]] : 0;
   }
   while (bits) {
-    const int j = __builtin_ctzll(bits);
+    const int j = __builtin_ctz(bits);
     bits &= bits - 1;
     if (c->filter && i < c->k - 1) {
-      const int *lab = c->dlab[c->dof[j]];
+      const int *lab = c->dlab[c->dof[c->soff[i] + j]];
       for (int s = 0; s < c->nsets; ++s) {
         /* lab is reduced: one step brings the sum back into range. */
         int v = c->acc[i][s] + lsign * lab[s];
@@ -1144,16 +1275,17 @@ static void asg_rec(asg_ctx *c, int i, uint64_t w, int prev, int8_t sg,
       }
     }
     const int8_t s =
-        (__builtin_popcountll(w & (((uint64_t)1 << j) - 1)) & 1) ? (int8_t)-sg : sg;
-    asg_rec(c, i + 1, w ^ ((uint64_t)1 << j), j, s, x + xradix * j,
-            xradix * c->nside);
+        ((c->par[i] + __builtin_popcount(w & ((1u << j) - 1))) & 1) ? (int8_t)-sg : sg;
+    c->cur[t] = w ^ (1u << j);
+    asg_rec(c, i + 1, j, s, x + xradix * (c->soff[i] + j), xradix * c->nside);
   }
+  c->cur[t] = w;
 }
 
 int zg_asg_enum(const zg_plan *p, int side, int k, const int *kind,
-                const int *rel, const zg_asg *a, uint64_t w, const int64_t *rk,
-                const zg_bkind *filter, int64_t *x, int64_t *sid, int8_t *sign,
-                int n) {
+                const int *rel, const zg_asg *a, const uint32_t *masks,
+                const int64_t *rk, const zg_bkind *filter, int64_t *x,
+                int64_t *sid, int8_t *sign, int n) {
   const zg_side *s = &p->s[side];
   const int first = p->off[s->first];
   asg_ctx c;
@@ -1161,20 +1293,28 @@ int zg_asg_enum(const zg_plan *p, int side, int k, const int *kind,
   c.nside = p->nside[side];
   c.kind = kind;
   c.rel = rel;
-  for (int i = 0; i < k; ++i) {
-    const int sub = s->first + a->g[i];
-    c.range[i] = (((uint64_t)1 << p->m[sub]) - 1) << (p->off[sub] - first);
-  }
   c.ntouch = a->ntouch;
   c.fixed = a->base;
   for (int g = 0; g < s->nsub; ++g) c.fixed += a->radix[g] * rk[g];
   for (int t = 0; t < a->ntouch; ++t) {
     const int g = a->touch[t], sub = s->first + g;
     c.fixed -= a->radix[g] * rk[g];
-    c.shift[t] = p->off[sub] - first;
-    c.mask[t] = (1u << p->m[sub]) - 1;
+    c.cur[t] = masks[g];
     c.rank[t] = p->rank[sub];
     c.radix[t] = a->radix[g];
+  }
+  for (int i = 0; i < k; ++i) {
+    const int g = a->g[i], sub = s->first + g;
+    c.g[i] = g;
+    for (int t = 0; t < a->ntouch; ++t) {
+      if (a->touch[t] == g) c.at[i] = t;
+    }
+    c.soff[i] = p->off[sub] - first;
+    c.range[i] = (1u << p->m[sub]) - 1;
+    int par = 0;
+    for (int h = 0; h < g; ++h) par += __builtin_popcount(masks[h]);
+    for (int j = 0; j < i; ++j) par += a->g[j] < g;
+    c.par[i] = par & 1;
   }
   c.filter = filter && filter->fsize > 0 ? filter : NULL;
   c.nsets = p->nsets;
@@ -1186,68 +1326,100 @@ int zg_asg_enum(const zg_plan *p, int side, int k, const int *kind,
   c.sid = sid;
   c.sign = sign;
   c.n = n;
-  asg_rec(&c, 0, w, -1, 1, 0, 1);
+  asg_rec(&c, 0, -1, 1, 0, 1);
   return c.n;
 }
 
-uint64_t zg_side_word(const zg_plan *p, int side, int64_t sid) {
+int zg_side_masks(const zg_plan *p, int side, int64_t sid, uint32_t *masks) {
   const zg_side *s = &p->s[side];
   const int c = s->bucket_class[s->bucket[sid]];
   int counts[ZG_MAX_SUB];
-  uint32_t masks[ZG_MAX_SUB];
   zg_counts(p, side, s->class_tuple[c], counts);
   zg_unpack(p, side, counts, sid - s->class_base[c], masks);
-  uint64_t w = 0;
-  const int first = p->off[s->first];
-  for (int g = 0; g < s->nsub; ++g) {
-    w |= (uint64_t)masks[g] << (p->off[s->first + g] - first);
-  }
-  return w;
+  return s->tuple_elec[s->class_tuple[c]];
 }
 
-int64_t zg_word_sid(const zg_plan *p, int side, uint64_t w) {
+int64_t zg_masks_sid(const zg_plan *p, int side, const uint32_t *masks) {
   const zg_side *s = &p->s[side];
   int counts[ZG_MAX_SUB];
-  uint32_t masks[ZG_MAX_SUB];
-  const int first = p->off[s->first];
   for (int g = 0; g < s->nsub; ++g) {
-    const int sub = s->first + g;
-    masks[g] = (uint32_t)((w >> (p->off[sub] - first)) & ((1u << p->m[sub]) - 1));
     counts[g] = __builtin_popcount(masks[g]);
+    if (counts[g] > p->kmax[s->first + g]) return -1;
   }
   return side_sid(p, side, counts, masks);
 }
 
-/* Applies O(x)^dagger = o_1^dagger ... slot by slot, o_1^dagger first. */
-static int enum_rec(int i, int k, const int *kind, const int *rel, int nside,
-                    uint64_t w, int64_t x, int64_t radix, int prev, int8_t sg,
-                    int64_t *xs, uint64_t *src, int8_t *sign, int n, int cap) {
-  if (i == k) {
-    if (n < cap) {
-      xs[n] = x;
-      src[n] = w;
-      sign[n] = sg;
+typedef struct {
+  const zg_plan *p;
+  int side, k;
+  const int *kind, *rel;
+  uint32_t cur[ZG_MAX_SUB];
+  int64_t *x, *sid;
+  int8_t *sign;
+  int n, cap;
+} enum_ctx;
+
+/* Applies O(x)^dagger = o_1^dagger ... slot by slot, o_1^dagger first; prev
+ * is the spinor (number in the side) of the slot before. */
+static void enum_rec(enum_ctx *c, int i, int prev, int8_t sg, int64_t x,
+                     int64_t radix) {
+  const zg_plan *p = c->p;
+  const zg_side *s = &p->s[c->side];
+  if (i == c->k) {
+    const int64_t sid = zg_masks_sid(p, c->side, c->cur);
+    if (sid < 0) return;
+    if (c->n < c->cap) {
+      c->x[c->n] = x;
+      c->sid[c->n] = sid;
+      c->sign[c->n] = sg;
     }
-    return n + 1;
+    c->n++;
+    return;
   }
-  int lo = 0, hi = nside;
-  if (i > 0 && rel[i - 1] > 0) lo = prev + 1;
-  if (i > 0 && rel[i - 1] < 0) hi = prev;
-  /* creation in O: its adjoint removes an electron, and the other way. */
-  const uint64_t want = kind[i] ? w : ~w;
-  for (int j = lo; j < hi; ++j) {
-    if (!(want >> j & 1)) continue;
-    const int8_t s =
-        (__builtin_popcountll(w & (((uint64_t)1 << j) - 1)) & 1) ? -sg : sg;
-    n = enum_rec(i + 1, k, kind, rel, nside, w ^ ((uint64_t)1 << j),
-                 x + radix * j, radix * nside, j, s, xs, src, sign, n, cap);
+  int lo = 0, hi = p->nside[c->side];
+  if (i > 0 && c->rel[i - 1] > 0) lo = prev + 1;
+  if (i > 0 && c->rel[i - 1] < 0) hi = prev;
+  const int first = p->off[s->first];
+  int par = 0; /* electrons below the sub-group */
+  for (int g = 0; g < s->nsub; ++g) {
+    const int sub = s->first + g, at = p->off[sub] - first;
+    const uint32_t w = c->cur[g];
+    if (at + p->m[sub] > lo && at < hi) {
+      /* creation in O: its adjoint removes an electron, and the other way. */
+      uint32_t bits = (c->kind[i] ? w : ~w) & ((1u << p->m[sub]) - 1);
+      if (lo > at) bits &= ~((1u << (lo - at)) - 1);
+      if (hi < at + p->m[sub]) bits &= (1u << (hi - at)) - 1;
+      while (bits) {
+        const int j = __builtin_ctz(bits);
+        bits &= bits - 1;
+        const int8_t sj =
+            ((par + __builtin_popcount(w & ((1u << j) - 1))) & 1) ? (int8_t)-sg : sg;
+        c->cur[g] = w ^ (1u << j);
+        enum_rec(c, i + 1, at + j, sj, x + radix * (at + j), radix * p->nside[c->side]);
+      }
+      c->cur[g] = w;
+    }
+    par += __builtin_popcount(w);
   }
-  return n;
 }
 
-int zg_enum_ops(int k, const int *kind, const int *rel, int nside, uint64_t w,
-                int64_t *x, uint64_t *src, int8_t *sign, int cap) {
-  return enum_rec(0, k, kind, rel, nside, w, 0, 1, -1, 1, x, src, sign, 0, cap);
+int zg_enum_ops(const zg_plan *p, int side, int k, const int *kind,
+                const int *rel, const uint32_t *masks, int64_t *x,
+                int64_t *sid, int8_t *sign, int cap) {
+  enum_ctx c;
+  c.p = p;
+  c.side = side;
+  c.k = k;
+  c.kind = kind;
+  c.rel = rel;
+  memcpy(c.cur, masks, sizeof(uint32_t) * p->s[side].nsub);
+  c.x = x;
+  c.sid = sid;
+  c.sign = sign;
+  c.n = 0;
+  c.cap = cap;
+  enum_rec(&c, 0, -1, 1, 0, 1);
+  return c.n;
 }
 
 /* The occupied spinors of string sid of a side; returns their number. */
