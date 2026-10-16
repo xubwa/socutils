@@ -1,8 +1,33 @@
+RbI rock salt, HF, cc-pVDZ/dyall-v2z (exponents < 0.1 dropped), k-mesh 2^3, c = 137.036
+     a/A      Omega          E sfx2c1e             E rs1e             dE -(pi/2c^2)Zc^2/O     time
 Traceback (most recent call last):
-  File "/home/user/socutils/examples/qdhf/pbc/35-rocksalt_eos.py", line 43, in <module>
-    basis = {A: trimmed(A), B: trimmed(B)}
-                ~~~~~~~^^^
-  File "/home/user/socutils/examples/qdhf/pbc/35-rocksalt_eos.py", line 37, in trimmed
-    l, prims = sh[0], [p for p in sh[1:] if p[0] >= emin]
-                                            ~^^^
-TypeError: 'int' object is not subscriptable
+  File "/home/user/socutils/examples/qdhf/pbc/35-rocksalt_eos.py", line 57, in <module>
+    mydf.build()
+    ~~~~~~~~~~^^
+  File "/home/user/pyscf/pyscf/pbc/df/df.py", line 266, in build
+    self._make_j3c(self.cell, self.auxcell, None, cderi)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/pyscf/pyscf/pbc/df/df.py", line 293, in _make_j3c
+    dfbuilder.make_j3c(cderi_file, j_only=j_only, dataname=self._dataname,
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                       kptij_lst=kptij_lst)
+                       ^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/pyscf/pyscf/pbc/df/rsdf_builder.py", line 1013, in make_j3c
+    make_cderi(kpt, kpt_ij_idx, cd_j2c)
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/pyscf/pyscf/pbc/df/rsdf_builder.py", line 1005, in make_cderi
+    feri[f'{dataname}/{idx}/{istep}'] = cderi
+    ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/dist-packages/h5py/_hl/group.py", line 580, in __setitem__
+    ds = self.create_dataset(None, data=obj)
+  File "/usr/local/lib/python3.13/dist-packages/h5py/_hl/group.py", line 240, in create_dataset
+    dsid = dataset.make_new_dset(group, shape, dtype, data, name, **kwds)
+  File "/usr/local/lib/python3.13/dist-packages/h5py/_hl/dataset.py", line 192, in make_new_dset
+    dset_id.write(h5s.ALL, h5s.ALL, data)
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "h5py/_objects.pyx", line 54, in h5py._objects.with_phil.wrapper
+  File "h5py/_objects.pyx", line 55, in h5py._objects.with_phil.wrapper
+  File "h5py/h5d.pyx", line 305, in h5py.h5d.DatasetID.write
+  File "h5py/_proxy.pyx", line 122, in h5py._proxy.dset_rw
+OSError: [Errno 28] Can't synchronously write data (file write failed: time = Fri Oct 16 05:03:48 2026
+, filename = '/tmp/tmpu864000x', file descriptor = 4, errno = 28, error message = 'No space left on device', buf = 0x7f0fb5921ab0, total write size = 119946400, bytes this sub-write = 119946400, offset = 5636096000)

@@ -8,7 +8,7 @@ i.e. a spurious pressure -A/Omega^2 and a smaller lattice constant.
 
 Usage:  python 35-rocksalt_eos.py [A] [B] [a_min a_max npts] [nk]
 '''
-import sys, os, time
+import sys, os, time, gc
 import numpy
 from pyscf import lib, gto
 lib.einsum = numpy.einsum   # pyscf lib.einsum vs numpy 2.x
@@ -66,6 +66,11 @@ for a_ang in numpy.linspace(a0, a1, int(npt)):
         dm0 = mf.make_rdm1()
         if not mf.converged:
             print('  warning: %s not converged at a = %.3f' % (name, a_ang))
+    # free the GDF integrals (one temporary HDF5 file per volume, ~10 GB for
+    # uncontracted all-electron heavy-atom bases) before the next volume
+    del mf, dm0
+    mydf = None
+    gc.collect()
     pred = -numpy.pi / (2 * c**2) * zc**2 / cell.vol
     rows.append((a_ang, cell.vol, e['sfx2c1e'], e['rs1e']))
     print('%8.4f %10.3f %18.10f %18.10f % .6e % .6e %8.0f' % (

@@ -1,8 +1,53 @@
+AgCl rock salt, HF, cc-pVDZ/dyall-v2z (exponents < 0.1 dropped), k-mesh 3^3, c = 137.036
+     a/A      Omega          E sfx2c1e             E rs1e             dE -(pi/2c^2)Zc^2/O     time
 Traceback (most recent call last):
-  File "/home/user/socutils/examples/qdhf/pbc/35-rocksalt_eos.py", line 43, in <module>
-    basis = {A: trimmed(A), B: trimmed(B)}
-                ~~~~~~~^^^
-  File "/home/user/socutils/examples/qdhf/pbc/35-rocksalt_eos.py", line 37, in trimmed
-    l, prims = sh[0], [p for p in sh[1:] if p[0] >= emin]
-                                            ~^^^
-TypeError: 'int' object is not subscriptable
+  File "/home/user/socutils/examples/qdhf/pbc/35-rocksalt_eos.py", line 57, in <module>
+    mydf.build()
+    ~~~~~~~~~~^^
+  File "/home/user/pyscf/pyscf/pbc/df/df.py", line 266, in build
+    self._make_j3c(self.cell, self.auxcell, None, cderi)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/pyscf/pyscf/pbc/df/df.py", line 293, in _make_j3c
+    dfbuilder.make_j3c(cderi_file, j_only=j_only, dataname=self._dataname,
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                       kptij_lst=kptij_lst)
+                       ^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/pyscf/pyscf/pbc/df/rsdf_builder.py", line 940, in make_j3c
+    fswap = self.outcore_auxe2(cderi_file, intor, aosym, comp, j_only,
+                               'j3c', shls_slice, kk_idx=kk_idx)
+  File "/home/user/pyscf/pyscf/pbc/df/rsdf_builder.py", line 535, in outcore_auxe2
+    fswap[f'{dataname}R/{idx}'][row0:row1] = outR[k]
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "h5py/_objects.pyx", line 54, in h5py._objects.with_phil.wrapper
+  File "h5py/_objects.pyx", line 55, in h5py._objects.with_phil.wrapper
+  File "/usr/local/lib/python3.13/dist-packages/h5py/_hl/dataset.py", line 1110, in __setitem__
+    self.id.write(mspace, fspace, val, mtype, dxpl=self._dxpl)
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "h5py/_objects.pyx", line 54, in h5py._objects.with_phil.wrapper
+  File "h5py/_objects.pyx", line 55, in h5py._objects.with_phil.wrapper
+  File "h5py/h5d.pyx", line 305, in h5py.h5d.DatasetID.write
+  File "h5py/_proxy.pyx", line 122, in h5py._proxy.dset_rw
+OSError: [Errno 28] Can't synchronously write data (file write failed: time = Fri Oct 16 05:01:14 2026
+, filename = '/tmp/.outcore_auxe2_swaptdyah9tm', file descriptor = 5, errno = 28, error message = 'No space left on device', buf = 0x7fec167de248, total write size = 1733000, bytes this sub-write = 1733000, offset = 8872001536)
+Exception ignored in: <function H5FileWrap.__del__ at 0x7fed3197bf60>
+Traceback (most recent call last):
+  File "/home/user/pyscf/pyscf/lib/misc.py", line 1191, in __del__
+    self._finished()
+  File "/home/user/pyscf/pyscf/lib/misc.py", line 1181, in _finished
+    super().flush()
+  File "/usr/local/lib/python3.13/dist-packages/h5py/_hl/files.py", line 629, in flush
+    h5f.flush(self.id)
+  File "h5py/_objects.pyx", line 54, in h5py._objects.with_phil.wrapper
+  File "h5py/_objects.pyx", line 55, in h5py._objects.with_phil.wrapper
+  File "h5py/h5f.pyx", line 163, in h5py.h5f.flush
+RuntimeError: Unable to flush file (file write failed: time = Fri Oct 16 05:01:14 2026
+, filename = '/tmp/.outcore_auxe2_swaptdyah9tm', file descriptor = 5, errno = 28, error message = 'No space left on device', buf = 0x64c84f8, total write size = 3720, bytes this sub-write = 3720, offset = 4096)
+Traceback (most recent call last):
+  File "h5py/_objects.pyx", line 210, in h5py._objects.ObjectID._dealloc
+  File "h5py/_objects.pyx", line 213, in h5py._objects.ObjectID._dealloc
+RuntimeError: Slist already enabled? (slist already enabled?)
+Exception ignored in: 'h5py._objects.ObjectID.__dealloc__'
+Traceback (most recent call last):
+  File "h5py/_objects.pyx", line 210, in h5py._objects.ObjectID._dealloc
+  File "h5py/_objects.pyx", line 213, in h5py._objects.ObjectID._dealloc
+RuntimeError: Slist already enabled? (slist already enabled?)
