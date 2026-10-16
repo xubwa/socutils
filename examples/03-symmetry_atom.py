@@ -1,16 +1,17 @@
 #!/usr/bin/env python
 '''
-Symmetry-adapted spinor SCF for an atom (spherical symmetry).
+Double-group symmetry for an atom.
 
-SymmSpinorSCF block-diagonalizes the Fock matrix by spinor irrep.  With
-symmetry='sph' the irreps are labelled by the (j, m_j) spinor labels.
+An atom is treated with the D∞h double group: the Fock matrix is blocked by
+m_j and parity, and the irreps are named by m_j ('1/2g', '-3/2u', ...).
+irrep_nelec fixes the number of electrons of named irreps.
 '''
 from pyscf import gto
-from socutils.scf import spinor_hf
+from socutils.scf import double_group_symm
 
-mol = gto.M(atom='Ne 0 0 0', basis='ccpvdz', verbose=4)
+mol = gto.M(atom='Ne 0 0 0', basis='ccpvdz', symmetry=True, verbose=4)
 
-mf = spinor_hf.SymmSpinorSCF(mol, symmetry='sph').x2camf()
+mf = double_group_symm.SymAdaptedRHF(mol).x2camf()
 e = mf.kernel()
-print('E(Ne, sph symmetry) = %.10f' % e)
-print('irreps:', sorted(set(mf.irrep_ao.keys())))   # 's1/2,1/2', 'p3/2,-1/2', ...
+print('E(Ne, D∞h double group) = %.10f' % e)
+print('irreps:', mf.irrep_name)

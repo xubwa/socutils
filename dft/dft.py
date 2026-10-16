@@ -45,28 +45,6 @@ class SpinorDFT(dks.KohnShamDFT, spinor_hf.SpinorSCF):
 
 UKS = SpinorDFT
 
-class SymmDFT(dks.KohnShamDFT, spinor_hf.SymmSpinorSCF):
-    def __init__(self, mol, xc='LDA,VWN', symmetry=None, occup=None):
-        spinor_hf.SymmSpinorSCF.__init__(self, mol, symmetry=symmetry, occup=occup)
-        dks.KohnShamDFT.__init__(self, xc)
-        self._numint = SpinorNumInt2C(mol)
-
-    def dump_flags(self, verbose=None):
-        spinor_hf.SpinorSCF.dump_flags(self, verbose)
-        dks.KohnShamDFT.dump_flags(self, verbose)
-        return self
-
-    def to_hf(self):
-        '''Convert the input mean-field object to an X2C-HF object.
-
-        Note this conversion only changes the class of the mean-field object.
-        The total energy and wave-function are the same as them in the input
-        mean-field object.
-        '''
-        mf = self.view(spinor_hf.SpinorSCF)
-        mf.converged = False
-        return mf
-
 class KRDFT(dks.KohnShamDFT, spinor_hf.KRHF):
     def __init__(self, mol, xc='LDA,VWN'):
         spinor_hf.KRHF.__init__(self, mol)
@@ -88,3 +66,21 @@ class KRDFT(dks.KohnShamDFT, spinor_hf.KRHF):
         mf = self.view(spinor_hf.KRHF)
         mf.converged = False
         return mf
+
+RKS = KRDFT
+
+
+def _symm_classes():
+    from socutils.scf.double_group_symm import DoubleGroupSymm
+
+    class SymAdaptedUKS(DoubleGroupSymm, SpinorDFT):
+        '''Kramers-unrestricted spinor Kohn-Sham with double-group symmetry.'''
+
+    class SymAdaptedRKS(DoubleGroupSymm, KRDFT):
+        '''Kramers-restricted spinor Kohn-Sham with double-group symmetry.'''
+        _kramers_restricted = True
+
+    return SymAdaptedUKS, SymAdaptedRKS
+
+
+SymAdaptedUKS, SymAdaptedRKS = _symm_classes()

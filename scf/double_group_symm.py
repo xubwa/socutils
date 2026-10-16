@@ -11,8 +11,8 @@ can be called from MCSCF/CC/property code.  :class:`DoubleGroupSymm` is a thin
 mixin that feeds them from the SCF object; it is combined with the 2c classes
 of :mod:`socutils.scf.spinor_hf` and the 4c classes of :mod:`pyscf.scf.dhf`:
 
-    SymAdaptedUHF   = DoubleGroupSymm + spinor_hf.SpinorSCF
-    SymAdaptedRHF   = DoubleGroupSymm + spinor_hf.KRHF      (Kramers restricted)
+    SymAdaptedUHF   = DoubleGroupSymm + spinor_hf.UHF
+    SymAdaptedRHF   = DoubleGroupSymm + spinor_hf.RHF       (Kramers restricted)
     SymAdaptedDHF   = DoubleGroupSymm + dhf.DHF
     SymAdaptedRDHF  = DoubleGroupSymm + dhf.RDHF            (Kramers restricted)
 
@@ -182,6 +182,8 @@ class DoubleGroupSymm:
 
     _keys = {'irrep_nelec'}
     _kramers_restricted = False
+    # double group used by this object; None: the double group of mol.groupname
+    _doublegroupname = None
 
     def __init__(self, mol, *args, **kwargs):
         super().__init__(mol, *args, **kwargs)
@@ -189,15 +191,21 @@ class DoubleGroupSymm:
 
     # hooks; defaults are the 2c case
     def _dg_symm_orb(self):
-        return spinor_basis.get_symm_orb(self.mol, '2c')
+        return spinor_basis.get_symm_orb(self.mol, '2c', self.doublegroupname)
 
     def _occ_mask(self, mo_energy):
         return numpy.ones(mo_energy.size, dtype=bool)
 
     @property
     def doublegroupname(self):
-        spinor_basis.get_symm_orb(self.mol)
-        return self.mol.doublegroupname
+        if self._doublegroupname is not None:
+            return self._doublegroupname
+        return spinor_basis._default_group(self.mol)
+
+    @property
+    def irrep_name(self):
+        gname = self.doublegroupname
+        return [dg.irrep_id2name(gname, ir) for ir in self._dg_symm_orb()[1]]
 
     def dump_flags(self, verbose=None):
         super().dump_flags(verbose)
@@ -216,13 +224,13 @@ class DoubleGroupSymm:
     def build(self, mol=None):
         if mol is None:
             mol = self.mol
-        spinor_basis.check_symm_frame(mol)
-        spinor_basis.get_symm_orb(mol)
-        names = set(mol.irrep_name_spinor)
+        if self.doublegroupname in spinor_basis._NEEDS_AXIS:
+            spinor_basis.check_symm_frame(mol)
+        names = self.irrep_name
         for name in self.irrep_nelec:
             if name not in names:
                 raise ValueError('irrep %s not in double group %s (irreps: %s)'
-                                 % (name, mol.doublegroupname, mol.irrep_name_spinor))
+                                 % (name, self.doublegroupname, names))
         return super().build(mol)
 
     def eig(self, h, s=None, *args, **kwargs):
@@ -352,18 +360,18 @@ class DoubleGroupSymm:
         return noccs
 
 
-class SymAdaptedUHF(DoubleGroupSymm, spinor_hf.SpinorSCF):
+class SymAdaptedUHF(DoubleGroupSymm, spinor_hf.UHF):
     '''Kramers-unrestricted spinor SCF with double-group symmetry.'''
 
 
-class SymAdaptedRHF(DoubleGroupSymm, spinor_hf.KRHF):
+class SymAdaptedRHF(DoubleGroupSymm, spinor_hf.RHF):
     '''Kramers-restricted spinor SCF with double-group symmetry.'''
     _kramers_restricted = True
 
 
 class _DiracSymm(DoubleGroupSymm):
     def _dg_symm_orb(self):
-        return spinor_basis.get_symm_orb(self.mol, '4c')
+        return spinor_basis.get_symm_orb(self.mol, '4c', self.doublegroupname)
 
     def _occ_mask(self, mo_energy):
         # positive-energy states (cf. pyscf.scf.dhf.DHF.get_occ)
@@ -377,3 +385,4 @@ class SymAdaptedDHF(_DiracSymm, dhf.DHF):
 class SymAdaptedRDHF(_DiracSymm, dhf.RDHF):
     '''Kramers-restricted Dirac-Hartree-Fock with double-group symmetry.'''
     _kramers_restricted = True
+

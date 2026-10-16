@@ -350,7 +350,11 @@ _SALC_CACHE = weakref.WeakKeyDictionary()
 
 
 def _geometry_key(mol):
-    return (mol.atom_coords().round(10).tobytes(), mol.nao_2c(), getattr(mol, 'doublegroupname', None))
+    return (mol.atom_coords().round(10).tobytes(), mol.nao_2c())
+
+
+def _default_group(mol):
+    return dg.double_group_of(mol.groupname if mol.symmetry else 'C1')
 
 
 def build(mol, doublegroupname=None):
@@ -358,30 +362,33 @@ def build(mol, doublegroupname=None):
     irrep_id_spinor, irrep_name_spinor.  The SALCs are available from
     :func:`get_symm_orb` (cf. mol.symm_orb).'''
     if doublegroupname is None:
-        doublegroupname = dg.double_group_of(mol.groupname if mol.symmetry else 'C1')
-    so, irrep_id = symm_adapted_basis_spinor(mol, doublegroupname)
-    irrep_id = [int(i) for i in irrep_id]
+        doublegroupname = _default_group(mol)
+    so, irrep_id = get_symm_orb(mol, '2c', doublegroupname)
     mol.doublegroupname = doublegroupname
-    mol.irrep_id_spinor = irrep_id
+    mol.irrep_id_spinor = list(irrep_id)
     mol.irrep_name_spinor = [dg.irrep_id2name(doublegroupname, ir) for ir in irrep_id]
-    _SALC_CACHE[mol] = {'key': _geometry_key(mol), 'so': so}
     return mol
 
 
-def get_symm_orb(mol, kind='2c'):
-    '''SALCs of ``mol`` (built on first use): kind '2c' gives the spinor
-    basis of :func:`symm_adapted_basis_spinor`, '4c' that of
-    :func:`dirac_symm_orb`.  Returns (so, irrep_id).'''
-    entry = _SALC_CACHE.get(mol)
+def get_symm_orb(mol, kind='2c', doublegroupname=None):
+    '''SALCs of ``mol`` for ``doublegroupname`` (default: the double group of
+    mol.groupname), built on first use.  kind '2c' gives the spinor basis of
+    :func:`symm_adapted_basis_spinor`, '4c' that of :func:`dirac_symm_orb`.
+    Returns (so, irrep_id).'''
+    if doublegroupname is None:
+        doublegroupname = getattr(mol, 'doublegroupname', None) or _default_group(mol)
+    groups = _SALC_CACHE.setdefault(mol, {})
+    entry = groups.get(doublegroupname)
     if entry is None or entry['key'] != _geometry_key(mol):
-        build(mol, getattr(mol, 'doublegroupname', None))
-        entry = _SALC_CACHE[mol]
+        so, irrep_id = symm_adapted_basis_spinor(mol, doublegroupname)
+        entry = groups[doublegroupname] = {'key': _geometry_key(mol), 'so': so,
+                                           'irrep_id': [int(i) for i in irrep_id]}
     if kind == '2c':
-        return entry['so'], mol.irrep_id_spinor
+        return entry['so'], entry['irrep_id']
     if kind == '4c':
         if 'so4' not in entry:
-            entry['so4'] = dirac_symm_orb(mol, entry['so'], mol.irrep_id_spinor, mol.doublegroupname)[0]
-        return entry['so4'], mol.irrep_id_spinor
+            entry['so4'] = dirac_symm_orb(mol, entry['so'], entry['irrep_id'], doublegroupname)[0]
+        return entry['so4'], entry['irrep_id']
     raise KeyError(kind)
 
 

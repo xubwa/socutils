@@ -117,7 +117,7 @@ class KnownValues(unittest.TestCase):
         mol = MOLS['C2H4'][1]
         mf0 = _run(dgs.SymAdaptedRHF, mol)
         so, irrep_id = mf0._dg_symm_orb()
-        names = mol.irrep_name_spinor
+        names = mf0.irrep_name
         nocc0 = dict(zip(names, dgs.irrep_occupation(mf0.get_orbsym(), mf0.mo_occ, irrep_id)))
         self.assertEqual(nocc0, {'1Eg': 4, '2Eg': 4, '1Eu': 4, '2Eu': 4})
         # ground state fixed explicitly; only one irrep of each Kramers pair given

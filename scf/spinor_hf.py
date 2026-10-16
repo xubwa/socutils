@@ -275,206 +275,6 @@ def _kramers_unbarred(C, nao, tol=1e-8):
     return numpy.ascontiguousarray(u)
 
 
-def symmetry_label(mol, symmetry=None):
-    if symmetry is None:
-        raise ValueError("Symmetry of orbital desired here.")
-    if 'sph' not in symmetry and 'linear' not in symmetry:
-        raise ValueError("Only spherical and linear symmetry supported for now.")
-    else:
-        labels = mol.spinor_labels()
-        irrep = dict()
-        processed_labels = []
-        for label in labels:
-            label = label.split()
-            match = re.search(r'[a-zA-Z](.*?),(.*?)$', label[2])
-            if match:
-                #print(match.group(0), match.group(1), match.group(2))
-                full_label = match.group(0)
-                j_val = match.group(1)
-                jz_val = match.group(2)
-            processed_labels.append([full_label, j_val, jz_val])
-        if 'sph' in symmetry:
-            print(f'Spherical symmetry assigned')
-            for ilabel, label in enumerate(processed_labels):
-                full_label = label[0]
-                if irrep.get(full_label) is not None:
-                    irrep[full_label].append(ilabel)
-                else:
-                    irrep[full_label] = [ilabel]
-        elif 'linear' in symmetry:
-            print(f'Linear symmetry assigned')
-            for ilabel, label in enumerate(processed_labels):
-                full_label=label[2]
-                if irrep.get(full_label) is not None:
-                    irrep[full_label].append(ilabel)
-                else:
-                    irrep[full_label] = [ilabel]
-        return irrep
-
-def eig(mf, h, s, irrep=None):
-    '''Solve generalized eigenvalue problem, for each irrep.  The
-    eigenvalues and eigenvectors are not sorted to ascending order.
-    Instead, they are grouped based on irreps.
-    '''
-    print('symmetry adapted eigen value')
-    mol = mf.mol
-
-    if irrep is None:
-        raise ValueError("An irrep is desired as input")
-    cs = []
-    es = []
-    nmo = mf.mol.nao_2c()
-    e = np.zeros(nmo)
-    c = np.zeros((nmo, nmo), dtype=complex)
-    irrep_tag = np.empty(nmo, dtype='U10')
-    for ir in irrep:
-        ir_idx = irrep[ir]
-        hi = h[np.ix_(ir_idx, ir_idx)]
-        si = s[np.ix_(ir_idx, ir_idx)]
-        ei, ci = mf._eigh(h[np.ix_(ir_idx,ir_idx)], s[np.ix_(ir_idx,ir_idx)])
-        c[np.ix_(ir_idx,ir_idx)] = ci
-        e[ir_idx] = ei
-        irrep_tag[ir_idx] = str(ir)
-        angular_tag = None
-    # process max contributing ao
-    from scipy.linalg import sqrtm
-    s_sqrtm = sqrtm(s)
-    c_tilde = np.dot(s_sqrtm, c)
-    labels = np.array(mol.spinor_labels())
-    label_ang = np.array([re.search(r'[a-z]', label.split()[2]).group(0) for label in labels])
-    angular_tag = np.empty(nmo, dtype='U1')
-    for i in range(nmo):
-        ci = abs(c_tilde[:,i])**2
-        norm_ang = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
-        angs = np.array(['s','p', 'd', 'f', 'g'])
-        for j, label in enumerate(angs):
-            norm_ang[j] = sum(ci[np.where(label_ang == label)])
-        angular_tag[i] = angs[np.argmax(norm_ang)]
-
-    sort_idx = np.argsort(e)
-    irrep_tag = irrep_tag[sort_idx]
-    angular_tag = angular_tag[sort_idx]
-    #print(irrep_tag)
-    #print(angular_tag)
-    return lib.tag_array(e[sort_idx],irrep_tag=irrep_tag),\
-           lib.tag_array(c[:,sort_idx], ang_tag=angular_tag)
-
-def get_occ_symm(mf, irrep, occup, irrep_mo=None, mo_energy=None, mo_coeff=None):
-    mol = mf.mol
-    mo_occ = np.zeros_like(mo_energy, dtype=complex)
-    ir_tag = irrep_mo
-    if ir_tag is None:
-        if mo_energy is None:
-            mo_energy = mf.mo_energy
-        ir_tag=mf.irrep_mo
-    if mo_coeff is None and mf.mo_coeff is None:
-        for ir in irrep:
-            ir_mo = np.where(ir_tag==ir)
-            if isinstance(occup[ir][0], int):
-                occupy = sum(occup[ir])
-            else:
-                occupy = occup[ir][0]
-            mo_occ[ir_mo[:occupy]] = 1.0+0.j
-            #mo_occ
-            return mo_occ
-    elif mo_coeff is None:
-        mo_coeff = mf.mo_coeff
-    angular_momentum = ['s', 'p', 'd', 'f']
-    n_ang = 4
-    '''
-    print(mo_coeff.ang_tag)
-    for ir in irrep:
-        ir_mo = np.where(ir_tag==ir)[0]
-        if not ir in occup:
-            continue
-        occupy = occup[ir]
-        if isinstance(occup[ir], int):
-            mo_occ[ir_mo[:occupy]] = 1.0+0.j
-        else:
-            mo_occ[ir_mo[occupy[0]]] = 0.0+0.j
-        for i in range(1, min(len(occupy), n_ang+1)):
-            if occupy[i] == 0:
-                continue
-            else:
-                ang = angular_momentum[i-1]
-                indices = np.where(mo_coeff.ang_tag[ir_mo] == ang)[0]
-                #print(ir_mo)
-                print(ir, ang, ir_mo[indices[:occupy[i]]])
-                if len(indices) < occupy[i]:
-                    raise ValueError(f'Not enough mo with largest contribution from {ang} found')
-                else:
-                    mo_occ[ir_mo[indices[:occupy[i]]]] = 1.0+0.j
-                    #mo_occ[ir_mo[[indices[:occupy[i]]]]] = 1.0+0.j
-    occupied = np.where(mo_occ == 1.0+0.j)[0]
-    count = [0,0,0,0]
-    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
-        if ang == 's':
-            count[0]+=1
-    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
-        if ang == 'p':
-            count[1]+=1
-    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
-        if ang == 'd':
-            count[2]+=1
-    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
-        if ang == 'f':
-            count[3]+=1
-    print(ir_tag[:92])
-    print(mo_coeff.ang_tag[:92])
-    print(occupied)
-    print(len(occupied))
-    print(ir_tag[occupied])
-    print(mo_coeff.ang_tag[occupied])
-    print(count)
-    '''
-    for ir in irrep:
-        ir_mo = np.where(ir_tag==ir)[0]
-        if not ir in occup:
-            continue
-        occupy = occup[ir]
-        if isinstance(occup[ir][0], int):
-            mo_occ[ir_mo[:occupy[0]]] = 1.0+0.j
-        else:
-            mo_occ[ir_mo[occupy[0]]] = 1.0+0.j
-        for i in range(1, min(len(occupy), n_ang+1)):
-            if occupy[i] == 0:
-                continue
-            else:
-                ang = angular_momentum[i-1]
-                indices = np.where(mo_coeff.ang_tag[ir_mo[occupy[0]:]] == ang)[0]
-                print(occupy[0])
-                print(mo_coeff.ang_tag[ir_mo[occupy[0]:]])
-                print(indices)
-                if len(indices) < occupy[i]:
-                    raise ValueError(f'Not enough mo with largest contribution from {ang} found')
-                else:
-                    print(ir_mo[occupy[0]:][indices[:occupy[i]]])
-                    mo_occ[ir_mo[occupy[0]:][indices[:occupy[i]]]] = 1.0+0.j
-    occupied = np.where(mo_occ == 1.0+0.j)[0]
-    count = [0,0,0,0]
-    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
-        if ang == 's':
-            count[0]+=1
-    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
-        if ang == 'p':
-            count[1]+=1
-    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
-        if ang == 'd':
-            count[2]+=1
-    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
-        if ang == 'f':
-            count[3]+=1
-    nelec = mol.nelectron
-    print(ir_tag[:nelec+10])
-    print(mo_coeff.ang_tag[:nelec+10])
-    print(occupied)
-    print(len(occupied))
-    print(ir_tag[occupied])
-    print(mo_coeff.ang_tag[occupied])
-    print(count)
-    return mo_occ
-
-
 def spinor2sph(mol, spinor):
     c = mol.sph2spinor_coeff()
     c2 = numpy.vstack(c)
@@ -598,10 +398,14 @@ def get_hcore(mol, with_soc=None):
             h += -1.j*mat_spinor
     return h
 
-# attempt to restructure the spinor hf code structure
-# spinor hf should be parent of x2c hf using j-adapted spinor
-class SpinorSCF(hf.SCF):
-    '''Nonrelativistic SCF under j-adapted spinor basis'''
+class SCF(hf.SCF):
+    '''SCF in the j-adapted spinor basis (two-component).
+
+    Without a relativistic Hamiltonian this is the nonrelativistic spinor SCF;
+    .x2camf() / .x2cmp() attach the X2C spin-orbit Hamiltonian (with_x2c).
+    The base class is Kramers unrestricted; :class:`RHF` is the
+    Kramers-restricted variant.
+    '''
 
     _keys = {'with_soc', 'with_x2c'}
 
@@ -609,8 +413,6 @@ class SpinorSCF(hf.SCF):
         hf.SCF.__init__(self, mol)
         self.with_soc=False
         self.with_x2c=None
-        self.so_contr=None
-        self.new_energy_algo=False
 
     def density_fit(self, auxbasis=None, with_df=None, only_dfj=False):
         return density_fit(self, auxbasis, with_df, only_dfj)
@@ -643,9 +445,9 @@ class SpinorSCF(hf.SCF):
         analogue of PySCF's ``mf.x2c()``.  The SOC enters through
         ``self.with_x2c`` and is applied in :meth:`get_hcore`; the
         Kramers-restriction of the solve is a property of the driver (use
-        :class:`KRHF` for a Kramers-restricted run).
+        :class:`RHF` for a Kramers-restricted run).
 
-        >>> mf = KRHF(mol).x2camf()              # Gaunt + Breit
+        >>> mf = RHF(mol).x2camf()              # Gaunt + Breit
         >>> mf.kernel()
         '''
         return self._attach_x2cmp(flavor, with_gaunt, with_breit, with_pcc, with_aoc)
@@ -657,7 +459,7 @@ class SpinorSCF(hf.SCF):
         return it.  Same usage as :meth:`x2camf`, with the molecular-mean-field
         flavor.
 
-        >>> mf = KRHF(mol).x2cmp()
+        >>> mf = RHF(mol).x2cmp()
         >>> mf.kernel()
         '''
         return self._attach_x2cmp(flavor, with_gaunt, with_breit, with_pcc, with_aoc)
@@ -719,25 +521,6 @@ class SpinorSCF(hf.SCF):
         if getattr(mol, 'so_contr', None) is not None:
             hcore = reduce(numpy.dot, (mol.so_contr.T, hcore, mol.so_contr))
         return hcore
-
-    def energy_tot(self, dm=None, h1e=None, vhf=None):
-        if dm is None:
-            dm=self.make_rdm1()
-        if h1e is None:
-            h1e = self.get_hcore()
-        if vhf is None:
-            vhf = self.get_veff()
-        print('new_energy_algo', self.new_energy_algo, hasattr(self.with_x2c, 'soc_matrix'))
-        #if self.with_x2c is not None and hasattr(self.with_x2c, 'soc_matrix'):
-        #    energy_new = hf.energy_tot(self, dm, h1e - self.with_x2c.soc_matrix, vhf+self.with_x2c.soc_matrix)
-        #    energy_old = hf.energy_tot(self, dm, h1e, vhf)
-        #    print(f'Energy scheme 1 {energy_new:20.12g}, {energy_old:20.12g}')
-        #    if self.new_energy_algo:
-        #        return energy_new
-        #    else:
-        #        return energy_old
-        #else:
-        return hf.energy_tot(self, dm, h1e, vhf)
 
     def get_ovlp(self, mol=None):
         if mol is None: mol = self.mol
@@ -838,99 +621,25 @@ class SpinorSCF(hf.SCF):
         raise NotImplementedError
 
 
-class SymmSpinorSCF(SpinorSCF):
-    def __init__(self, mol, symmetry=None, occup=None):
-        SpinorSCF.__init__(self, mol)
-        self.symmetry = symmetry
-        if symmetry in ['linear', 'sph']:
-            self.irrep_ao = symmetry_label(mol, symmetry)
-        else:
-            raise NotImplementedError
+class UHF(SCF):
+    '''Kramers-unrestricted spinor SCF.'''
 
-        self.occupation = occup
-        print('occup')
-        print(self.occupation)
+    def to_ks(self, xc='HF'):
+        '''The spinor Kohn-Sham object of the same flavor (same with_x2c).'''
+        from socutils.dft import dft
+        mf = self.view(dft.UKS)
+        mf.xc = xc
+        mf.converged = False
+        return mf
 
-    def eig(self, h, s=None, *args, mo=None, **kwargs):
-        # AO basis generalized eigenproblem (existing path)
-        if s is not None:
-            e, c = eig(self, h, s, irrep=self.irrep_ao)
-            self.irrep_mo = e.irrep_tag
-            return e, c
-        # MO subspace per-irrep diagonalization
-        if mo is not None:
-            labels = self.label_mo(mo)
-            return self._eig_per_irrep(h, labels)
-        # No symmetry info — plain diagonalization
-        return self._eigh(h, s)
 
-    def _eigh(self, h, s):
-        return scipy.linalg.eigh(h, s)
+class RHF(SCF):
+    '''Kramers-restricted spinor SCF (quaternion eigensolver zquatev).'''
 
-    def label_mo(self, mo):
-        """Assign an irrep label to each column of `mo` by max AO irrep
-        contribution.  Stateless — call on demand.
-
-        mo : (nao_2c, k) ndarray
-        Returns: length-k array of irrep tags (str).
-        """
-        s = self.get_ovlp()
-        from scipy.linalg import sqrtm
-        s_sqrtm = sqrtm(s)
-        c_tilde = s_sqrtm @ mo
-        weight2 = (c_tilde.conj() * c_tilde).real
-        tags = list(self.irrep_ao.keys())
-        norms = numpy.zeros((len(tags), mo.shape[1]))
-        for it, tag in enumerate(tags):
-            ao_idx = self.irrep_ao[tag]
-            norms[it] = weight2[ao_idx].sum(axis=0)
-        best = numpy.argmax(norms, axis=0)
-        total = norms.sum(axis=0)
-        purity = norms[best, numpy.arange(mo.shape[1])] / numpy.where(total > 0, total, 1.0)
-        if (purity < 0.9).any():
-            logger.warn(self,
-                'label_mo: some MOs have low irrep purity (min=%.3f), '
-                'symmetry may be broken', purity.min())
-        return numpy.array([tags[b] for b in best])
-
-    def _eig_per_irrep(self, h, labels):
-        n = h.shape[0]
-        e = numpy.zeros(n)
-        c = numpy.zeros((n, n), dtype=h.dtype)
-        irrep_tag = numpy.empty(n, dtype='U10')
-        labels = numpy.asarray(labels)
-        # cross-irrep coupling check: build mask of same-irrep entries, measure
-        # Frobenius norm of the complement relative to the whole matrix
-        same = labels[:, None] == labels[None, :]
-        cross_norm = numpy.linalg.norm(numpy.where(same, 0., h))
-        total_norm = numpy.linalg.norm(h)
-        if total_norm > 0 and cross_norm / total_norm > 1e-6:
-            logger.warn(self,
-                '_eig_per_irrep: cross-irrep coupling norm=%.3e (relative=%.3e) '
-                'is non-negligible; off-block couplings will be ignored',
-                cross_norm, cross_norm / total_norm)
-        for ir in numpy.unique(labels):
-            idx = numpy.where(labels == ir)[0]
-            hi = h[numpy.ix_(idx, idx)]
-            ei, ci = scipy.linalg.eigh(hi)
-            e[idx] = ei
-            c[numpy.ix_(idx, idx)] = ci
-            irrep_tag[idx] = str(ir)
-        sort_idx = numpy.argsort(e)
-        return (lib.tag_array(e[sort_idx], irrep_tag=irrep_tag[sort_idx]),
-                c[:, sort_idx])
-
-    def get_occ(self, mo_energy=None, mo_coeff=None):
-        if self.occupation is None or mo_energy is None:
-            return SpinorSCF.get_occ(self, mo_energy, mo_coeff)
-        else:
-            return get_occ_symm(self, self.irrep_ao, self.occupation, mo_energy=mo_energy, mo_coeff=mo_coeff)
-        
-class KRHF(SpinorSCF):
     def __init__(self, mol):
         super().__init__(mol)
         if zquatev is None:
-            raise RuntimeError('zquatev library is required to perform Kramers-restricted JHF')
+            raise RuntimeError('zquatev library is required to perform Kramers-restricted spinor SCF')
     def _eigh(self, h, s):
         return zquatev.solve_KR_FCSCE(self.mol, h, s)
     def eig(self, h, s=None, *args, **kwargs):
@@ -944,7 +653,10 @@ class KRHF(SpinorSCF):
             idx = numpy.hstack([numpy.arange(0, n, 2), numpy.arange(1, n, 2)])
             h_kr = h[numpy.ix_(idx, idx)]
             try:
-                zquatev.check_kramers_structure(h_kr, thresh=1e-6)
+                # the check compares Frobenius norms, which grow ~ eps*n for
+                # per-element noise eps: scale the threshold with the block
+                # dimension or large Kramers-clean blocks get rejected
+                zquatev.check_kramers_structure(h_kr, thresh=1e-6 * max(1, n // 2))
             except AssertionError:
                 logger.warn(self, 'Kramers structure check failed in eig, falling back to scipy.linalg.eigh')
                 return scipy.linalg.eigh(h)
@@ -955,17 +667,17 @@ class KRHF(SpinorSCF):
             v[idx] = v_kr
             return e, v
     def to_ks(self, xc='HF'):
-       from pyscf.x2c import dft
-       mf = self.view(dft.RKS)
-       mf.converged = False
-       return mf
+        '''The Kramers-restricted spinor Kohn-Sham object (same with_x2c).'''
+        from socutils.dft import dft
+        mf = self.view(dft.RKS)
+        mf.xc = xc
+        mf.converged = False
+        return mf
 
-from pyscf.scf import _response_functions
-SpinorSCF.gen_response = _response_functions._gen_ghf_response
 
-JHF = SpinorSCF
-SCF = SpinorSCF
-SpinorSymmSCF = SymmSCF = SymmJHF = SymmSpinorSCF
+# old names
+SpinorSCF = JHF = SCF
+KRHF = RHF
 
 
 if __name__ == '__main__':

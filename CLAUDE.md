@@ -87,9 +87,13 @@ These shortcuts attach an AMF X2C spin-orbit Hamiltonian (default: Gaunt + Breit
 two-electron corrections on) and only then require the `x2camf` integral backend.
 
 - **`scf/`** — the SCF entry points.
-  - `spinor_hf.py`: `SpinorSCF` runs in a two-component, *j-adapted spinor*
-    basis; `KRHF` is the Kramers-restricted variant (uses bundled zquatev);
-    `SymmSpinorSCF` adds point-group symmetry. All carry `.x2camf()`/`.x2cmp()`.
+  - `spinor_hf.py`: `SCF`/`UHF` run in a two-component, *j-adapted spinor*
+    basis; `RHF` is the Kramers-restricted variant (uses bundled zquatev).
+    Old names `SpinorSCF`, `JHF`, `KRHF` are aliases. All carry `.x2camf()`/`.x2cmp()`.
+  - `double_group_symm.py`: double-group symmetry (mixin `DoubleGroupSymm`;
+    `SymAdaptedUHF/RHF/DHF/RDHF`), on the AO layer `symm/` (`double_group.py`,
+    `spinor_basis.py`); molecule in its symmetry frame (`symm.to_symm_frame`).
+    Design note: `DOUBLE_GROUP_DESIGN.md`.
   - `ghf.py`: `GHF` is the spin-orbital analogue (same shortcuts, spin-orbital
     basis instead of spinor); spinor and GHF energies agree to numerical precision.
   - `x2camf_hf.py`: `X2CAMF_*` convenience classes + `x2camf_ghf(scf.GHF(mol))`.

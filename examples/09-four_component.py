@@ -7,7 +7,7 @@ module.  Shown here is the spin-free (scalar-relativistic) SpinFreeDHF, which
 keeps the four-component structure but removes spin-orbit coupling -- useful
 for separating scalar-relativistic from spin-orbit effects.
 
-See also scf.linear_dhf.SymmDHF (symmetry-adapted 4c DHF) and
+See also scf.double_group_symm.SymAdaptedDHF (double-group symmetry) and
 scf.frac_dhf.FRAC_RDHF (fractional open-shell occupation, needs zquatev).
 '''
 from pyscf import gto

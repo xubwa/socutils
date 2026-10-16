@@ -83,57 +83,52 @@ the bundled ``zquatev`` solver to be compiled (see :doc:`../install`):
    mf = spinor_hf.KRHF(mol).x2camf()
    e = mf.kernel()
 
-Symmetry-adapted SCF
---------------------
+Double-group symmetry
+---------------------
 
-``spinor_hf.SymmSpinorSCF`` (alias ``SpinorSymmSCF``) block-diagonalizes the
-Fock matrix by spinor irreducible representation, which both speeds up the
-diagonalization and lets you converge to a chosen occupation.  Two symmetries
-are supported, selected with the ``symmetry`` keyword:
+``scf.double_group_symm`` adds double-group point-group symmetry to the spinor
+SCF: ``SymAdaptedUHF`` (Kramers unrestricted), ``SymAdaptedRHF`` (Kramers
+restricted), and the four-component ``SymAdaptedDHF`` / ``SymAdaptedRDHF``
+(:doc:`dhf`); ``dft.dft.SymAdaptedUKS`` / ``SymAdaptedRKS`` for Kohn-Sham.
+The Fock matrix is blocked by the irreps of an Abelian double group:
 
-* ``'sph'`` -- spherical (atomic) symmetry, with irreps labelled by the
-  :math:`(j, m_j)` spinor labels, e.g. ``s1/2,1/2`` or ``p3/2,-1/2``;
-* ``'linear'`` -- linear-molecule symmetry, with irreps labelled by
-  :math:`m_j`, e.g. ``1/2`` or ``-3/2``.
+* D2h molecules use C2h*, C2v and D2 molecules use C2*, plus C1*, Ci*, Cs*;
+  fermion irreps ``1E``, ``2E`` (``1Eg`` ... for C2h*) in the Altmann-Herzig /
+  DIRAC naming, ``1E`` containing m_j = 1/2, -3/2, 5/2, ...; C1*/Ci* irreps
+  ``A1/2``, ``A1/2g``, ``A1/2u``;
+* linear molecules use C∞v* / D∞h*, atoms D∞h*, with irreps named by m_j:
+  ``1/2``, ``-3/2`` (``1/2g``, ``-3/2u`` with inversion).
 
-.. warning::
+With Kramers restriction only one block of each Kramers pair (m_j and -m_j,
+1E and 2E) is diagonalized; the partner block follows by time reversal.
 
-   For ``symmetry='linear'`` the molecule **must** be placed along the
-   ``z`` axis.  The code assigns irreps from the spinor labels assuming the
-   molecular axis is ``z`` and does **not** check or reorient the geometry;
-   a molecule on another axis will be silently mis-classified.
-
-Atom (spherical symmetry):
-
-.. code-block:: python
-
-   from pyscf import gto
-   from socutils.scf import spinor_hf
-
-   mol = gto.M(atom='Ne 0 0 0', basis='ccpvdz', verbose=4)
-
-   mf = spinor_hf.SymmSpinorSCF(mol, symmetry='sph').x2camf()
-   e = mf.kernel()
-   print(mf.irrep_ao.keys())   # 's1/2,1/2', 'p1/2,-1/2', 'p3/2,3/2', ...
-
-Linear molecule (on the z axis):
+The molecule has to be in its **symmetry frame** (main axis along z);
+``socutils.symm.to_symm_frame(mol)`` moves it there and symmetrizes the
+coordinates, and a molecule outside the frame is refused with the coordinates
+to use.  Vectors, tensors and m_j labels then refer to that frame.
 
 .. code-block:: python
 
    from pyscf import gto
-   from socutils.scf import spinor_hf
+   from socutils.symm import to_symm_frame
+   from socutils.scf import double_group_symm
 
-   # HF lies along z -- required for symmetry='linear'
-   mol = gto.M(atom='H 0 0 0; F 0 0 0.917', basis='ccpvdz', verbose=4)
+   mol = gto.M(atom='H 0 0 0; F 0.5 0.3 0.7', basis='ccpvdz', symmetry=True)
+   mol = to_symm_frame(mol)
 
-   mf = spinor_hf.SymmSpinorSCF(mol, symmetry='linear').x2camf()
+   mf = double_group_symm.SymAdaptedRHF(mol).x2camf()
    e = mf.kernel()
-   print(mf.irrep_ao.keys())   # '1/2', '-1/2', '3/2', ...
+   print(mf.irrep_name)          # '1/2', '-1/2', '3/2', ...
 
-To target a specific configuration, pass an ``occup`` dictionary mapping irrep
-labels to their occupations; the matching ``get_occ`` then fills those irreps
-instead of using the aufbau order.  The available label keys are exactly those
-in ``mf.irrep_ao`` (printed above).
+``irrep_nelec`` fixes the number of electrons of named irreps (the others are
+filled by orbital energy).  With Kramers restriction a pair gets the same
+count; Kramers-unrestricted open shells select an Omega component, e.g. HF+
+X 2Pi_3/2 with M_J = -3/2:
+
+.. code-block:: python
+
+   mf = double_group_symm.SymAdaptedUHF(mol_cation).x2camf()
+   mf.irrep_nelec = {'1/2': 4, '-1/2': 4, '3/2': 0, '-3/2': 1}
 
 Density fitting
 ---------------

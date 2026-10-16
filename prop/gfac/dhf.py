@@ -129,8 +129,11 @@ O        0.00000000     0.00000000    -0.89955523
     mf1.EffectiveField()
     gfac = mf1.Gfac()
     print(abs(gfac)*4.-G_ELECTRON)
-    from socutils.scf import linear_dhf
-    mf2 = linear_dhf.SymmDHF(mol, symmetry='linear')
+    from socutils.scf import double_group_symm
+    mol2 = mol.copy()
+    mol2.symmetry = True
+    mol2.build()
+    mf2 = double_group_symm.SymAdaptedDHF(mol2)
     mf2.kernel()
     mf2.EffectiveField()
     mf2.Gfac()
