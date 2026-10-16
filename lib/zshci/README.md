@@ -132,24 +132,75 @@ mHartree for sigma = 1, 0.1 and 0.01 mHartree).
 (`src/connect.h`): `"groups"`, the default, divides the spinors into two
 groups (`"group_a"`, default the even ones) and works from tables of the
 strings of each group, electrons being allowed to move between the groups;
-`"strings"` and `"segments"` are the earlier methods. With a conserved spin projection
-that is the alpha/beta scheme and the default. The strings of a group that
-are related (one or two electrons out, one or two in) are found by dividing
-the group once more into two sub-groups, of equal size or not, and combining
-the relations between the sub-strings, which are few and short
-(`"relations": "subgroups"`, the default for spinors); `"relations": "keys"`
-finds them from keys instead, of which a string of n electrons has
-n (n + 1) / 2 that must be kept to extend the tables, and is the default for
-spatial and unrestricted orbitals, where no electron moves between the
-groups and the keys are few. Both give the same tables. What the root
-keeps to extend them falls from 82.6 to 2.0 MB for the Cl2 case below (34
-electrons, 124367 determinants) and from 20.4 to 5.0 MB for O2 (12 electrons,
-432939 determinants), the most it holds briefly while extending from 95 to 49
-and from 74 to 34 MB; the time for the tables is about the same (0.49 against
-0.54 s and 0.73 against 0.80 s over a whole run; N2 without electrons moving
-between the groups: 0.44 against 0.22 s). Timings of the three on two
-spinor cases, 16 threads, seconds spent building the Hamiltonian over a whole
-selection run and the peak memory of the program:
+`"strings"` and `"segments"` are the earlier methods. With a conserved spin
+projection that is the alpha/beta scheme. Connected determinants have
+strings that are related (one or two electrons out, one or two in), and
+`"relations"` says how the strings related to a string are found:
+
+- `"bytes"`, the default, stores no lists of them. The strings of a group
+  are read byte by byte, eight spinors of the group at a time; one table
+  made at the start says what each of the 256 values of a byte turns into
+  when up to two electrons leave and enter it; and the distinct strings are
+  kept as a tree over their bytes, in which the strings related to a string
+  are found by a walk that gives up a family of candidates at the first
+  byte no string has (`src/connect_bytes.h`). What is held, once per node
+  of the machine, is the trees and the determinants ordered by string with
+  their indices, 24 bytes per one-word determinant for both groups. Nothing
+  is kept to extend the tables: they are made anew when determinants are
+  added, which takes 2 s for 22 million determinants.
+- `"subgroups"` and `"keys"` store, for every string, the lists of the
+  strings related to it (`src/connect_groups.h`), found by dividing each
+  group once more into two sub-groups or from keys, of which a string of n
+  electrons has n (n + 1) / 2. For spinors without a conserved spin
+  projection the lists have about 800 entries per string, more than a
+  kilobyte per determinant.
+
+Old (the program before the byte tables, with its defaults `"subgroups"`
+for spinors and `"keys"` for spatial orbitals) against `"bytes"`, on
+restarts that build everything for the saved determinants at once and do
+one selection step; 24 threads on one socket of a Xeon Gold 6248R. Tables:
+held per node, and the most held in addition while they are made. Search:
+the tables and the connections of all rows. Wall time and peak memory are
+of the whole run; the Cr2 cases have 24 electrons in 60 spinors (30 spatial
+orbitals for RHF); M: millions of determinants.
+
+| case, `"hamiltonian"` | tables (MB) | search (s) | products (s) | wall (s) | peak (GB) |
+|---|---|---|---|---|---|
+| Cr2 X2C, 2.05 M, `"stored"` | 1455 + 2064 → 56 + 63 | 13.2 → 4.3 | 10.4 → 9.5 | 34 → 26 | 8.6 → 5.9 |
+| Cr2 X2C, 2.05 M, `"connections"` | 1455 + 2064 → 56 + 63 | 12.9 → 3.6 | 26.4 → 25.1 | 50 → 42 | 5.6 → 2.8 |
+| Cr2 X2C, 2.05 M, `"direct"` | 1486 + 2064 → 56 + 63 | — | 76.0 → 59.9 | 95 → 74 | 4.9 → 2.3 |
+| Cr2 X2C, 5.79 M, `"stored"` | 3786 + 5356 → 151 + 177 | 46.1 → 15.9 | 40.9 → 33.2 | 120 → 84 | 23.6 → 18.9 |
+| Cr2 X2C, 5.79 M, `"connections"` | 3786 + 5356 → 151 + 177 | 45.2 → 14.2 | 113.2 → 104.9 | 191 → 154 | 13.4 → 8.3 |
+| Cr2 X2C, 5.79 M, `"direct"` | 3874 + 5356 → 151 + 177 | — | 384.4 → 308.4 | 442 → 349 | 10.2 → 4.3 |
+| 26 e, 60 spinors, 1.21 M, `"stored"` | 286 + 374 → 31 + 37 | 13.9 → 12.8 | 32.0 → 30.8 | 75 → 74 | 21.6 → 21.8 |
+| 26 e, 60 spinors, 1.21 M, `"connections"` | 286 + 374 → 31 + 37 | 12.9 → 10.3 | 106.1 → 98.2 | 149 → 139 | 6.3 → 5.3 |
+| 26 e, 60 spinors, 1.21 M, `"direct"` | 304 + 374 → 31 + 37 | — | 177.9 → 142.8 | 212 → 176 | 2.6 → 1.3 |
+| Cr2 RHF, 6.01 M, `"stored"` | 260 + 196 → 145 + 183 | 21.0 → 12.3 | 23.6 → 15.6 | 63 → 47 | 12.2 → 11.3 |
+| Cr2 RHF, 6.01 M, `"connections"` | 260 + 196 → 145 + 183 | 20.4 → 11.4 | 102.7 → 99.0 | 143 → 130 | 6.5 → 5.9 |
+| Cr2 RHF, 6.01 M, `"direct"` | 352 + 196 → 145 + 183 | — | 413.2 → 220.9 | 444 → 245 | 3.2 → 2.4 |
+| Cr2 X2C, 22.1 M, `"connections"` | 12250 + 17234 → 549 + 676 | 286.0 → 91.6 | 637.7 → 629.0 | 1054 → 860 | 46.7 → 34.3 |
+| Cr2 X2C, 22.1 M, `"adapt"`, 80 GB | 12588 + 17234 → 549 + 676 | 294.7 → 93.2 | 399.0 → 352.0 | 862 → 583 | 73.6 → 73.7 |
+| Cr2 X2C, 22.1 M, `"direct"` | 12588 + 17234 → 549 + 676 | — | 2885.5 → 1920.4 | 3136 → 2093 | 30.6 → 16.4 |
+
+"direct" has no rows to find; its products do the search. In all 15 pairs
+of runs the energies agree to 4e-12 Hartree or better. A whole selection
+from the Hartree-Fock determinant to 2.04 million determinants of the first
+system (11 iterations, 289 products, stored) takes 70.1 s and 8.0 GB
+against 63.0 s and 5.9 GB, of which the tables and the rows took 14.7
+against 4.6 s.
+
+Where the time goes with `"bytes"`: the rows of a stored Hamiltonian are
+made for the determinants of a string together, so that the determinants
+of a related string are read once for all of them, and the loop that
+compares determinants bit by bit handles four at a time (AVX2, one-word
+determinants). `"blocks": false` with `"hamiltonian": "direct"`, which
+goes determinant by determinant, is the one path that is slower than with
+stored lists (all connections of the 2.04 million determinants in 7.4 s
+with the lists, 10.5 s with bytes, 16 threads).
+
+Timings of the three methods on two spinor cases, 16 threads, seconds spent
+building the Hamiltonian over a whole selection run and the peak memory of
+the program, measured with `"relations": "subgroups"`:
 
 | | strings | segments | groups |
 |---|---|---|---|
@@ -265,7 +316,7 @@ vectors of that file, if it holds one per root.
 | `src/det.h` | determinants as fixed-width bit strings |
 | `src/integrals.*`, `src/hamiltonian.h` | integrals, Slater-Condon rules |
 | `src/heat_bath.*`, `src/excite.h` | excitation generation, symmetry and occupation filters |
-| `src/connect.h`, `src/connect_groups.h`, `src/sparse_h.*`, `src/direct_h.h` | connected pairs of determinants, the sparse Hamiltonian, the Hamiltonian applied without storing it |
+| `src/connect.h`, `src/connect_groups.h`, `src/connect_bytes.h`, `src/sparse_h.*`, `src/direct_h.h` | connected pairs of determinants, the sparse Hamiltonian, the Hamiltonian applied without storing it |
 | `src/davidson.*`, `src/distributed_h.*` | eigensolver, alone and over MPI ranks |
 | `src/select.h`, `src/diag.h`, `src/driver_common.h` | the two modes |
 | `src/pt.h`, `src/rdm.h` | perturbation theory, density matrices |
