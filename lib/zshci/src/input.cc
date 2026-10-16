@@ -139,6 +139,7 @@ Json ToJson(const Input& in) {
                 {"huge_pages", f.huge_pages},
                 {"distributed", f.distributed},
                 {"balance", f.balance},
+                {"calibrate", f.calibrate},
                 {"slice_gb", f.slice_gb},
                 {"write_wfn", f.write_wfn},
                 {"dry_run", f.dry_run},
@@ -572,6 +573,7 @@ Input ParseInput(const std::string& text) {
       fci.Fail("balance", "must be \"work\" or \"size\"");
     }
     fci.Get("slice_gb", &f.slice_gb);
+    fci.Get("calibrate", &f.calibrate);
     fci.Get("write_wfn", &f.write_wfn);
     fci.Get("dry_run", &f.dry_run);
     fci.Get("benchmark_sigmas", &f.benchmark_sigmas);

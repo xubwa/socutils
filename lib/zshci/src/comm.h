@@ -73,6 +73,9 @@ class Comm {
                    void* receive, uint64_t receive_count, int source,
                    size_t element_size) const;
   void Barrier() const;
+  // Lets pending communication go on (one-sided reads from this rank may
+  // need it); cheap, and callable from the main thread at any time.
+  static void Progress();
 
   // Element-wise sum over all ranks, in place on every rank.
   void Sum(double* data, size_t count) const;

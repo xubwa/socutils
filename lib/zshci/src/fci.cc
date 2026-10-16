@@ -326,8 +326,38 @@ void RunFci(const Input& input, const Integrals<S>& ints, const Comm& comm) {
 
   time = omp_get_wtime();
   const std::vector<S> v = AntisymmetrizedPairs(ints, layout.perm, nelec);
-  BigArray<double> diagonal(local, in.huge_pages);
   std::unique_ptr<CiOperator<S>> h;
+  if (distributed && comm.size() > 1 && in.calibrate) {
+    // One product with the parts as estimated, timing the target rows of
+    // every bucket; the parts are then cut by these times.
+    const int64_t slice_elements =
+        static_cast<int64_t>(in.slice_gb * kGiB / sizeof(S));
+    std::vector<double> a_seconds, b_seconds;
+    {
+      const DistributedGasOperator<S> op(space, v, *dist, comm, in.huge_pages);
+      BigArray<S> x(local, in.huge_pages), y(local, in.huge_pages);
+      const long first = dist->Begin(me);
+#pragma omp parallel for schedule(static)
+      for (long i = 0; i < static_cast<long>(local); ++i) {
+        x[i] = S(1.0 / (1.0 + (first + i) % 97));
+      }
+      op.MeasureBuckets(true);
+      op.Apply(x.data(), y.data());
+      a_seconds = op.BucketSeconds(0);
+      b_seconds = op.BucketSeconds(1);
+      comm.Sum(a_seconds.data(), a_seconds.size());
+      comm.Sum(b_seconds.data(), b_seconds.size());
+    }
+    const double before = dist->Imbalance(a_seconds, b_seconds);
+    dist = std::make_unique<GasDistribution>(space, comm.size(), a_seconds,
+                                             b_seconds, slice_elements);
+    local = dist->End(me) - dist->Begin(me);
+    std::printf(
+        "fci: parts cut by measured times: largest over mean %.2f before, "
+        "%.2f now (%.1f s)\n",
+        before, dist->Imbalance(a_seconds, b_seconds), omp_get_wtime() - time);
+  }
+  BigArray<double> diagonal(local, in.huge_pages);
   if (distributed) {
     auto op = std::make_unique<DistributedGasOperator<S>>(space, v, *dist, comm,
                                                           in.huge_pages);

@@ -29,12 +29,20 @@ zgd_matrices *ZG_NAME(zgd_matrices_new)(const zg_plan *p, const ZG_SCALAR *v) {
 void ZG_NAME(zgd_half)(const zg_plan *p, zgd_matrices *m, int h, int t0,
                        int t1, int s0, int s1, const ZG_SCALAR *cv,
                        int64_t cbase, ZG_SCALAR *sv, int64_t sbase) {
+  ZG_NAME(zgd_half_timed)(p, m, h, t0, t1, s0, s1, cv, cbase, sv, sbase, NULL,
+                          NULL);
+}
+
+void ZG_NAME(zgd_half_timed)(const zg_plan *p, zgd_matrices *m, int h, int t0,
+                             int t1, int s0, int s1, const ZG_SCALAR *cv,
+                             int64_t cbase, ZG_SCALAR *sv, int64_t sbase,
+                             double *bucket_seconds, void (*progress)(void)) {
   int any = 0;
   for (int k = 0; k < p->nbkind[h]; ++k) any = any || m->live[p->bkinds[h][k].term];
   if (!any || t0 >= t1 || s0 >= s1) return;
   ZG_NAME(dist_half)(p, h, (ZG_SCALAR *const *)m->w, m->live, cv, sv, m->cols,
                      m->direct_ratio, m->direct_small, m->stat, t0, t1, s0, s1,
-                     cbase, sbase);
+                     cbase, sbase, bucket_seconds, progress);
 }
 
 void ZG_NAME(zgd_hdiag)(const zg_plan *p, const ZG_SCALAR *v, int b0, int b1,

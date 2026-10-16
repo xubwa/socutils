@@ -37,6 +37,19 @@ void zgd_half_z(const zg_plan *p, zgd_matrices *m, int h, int t0, int t1,
                 int s0, int s1, const double _Complex *cv, int64_t cbase,
                 double _Complex *sv, int64_t sbase);
 
+/* The same, adding the seconds spent on the target rows of each row bucket
+ * to bucket_seconds[bucket] (if not NULL), and calling progress (if not
+ * NULL) from the master thread now and then: one-sided communication may
+ * need it to go on. */
+void zgd_half_timed_d(const zg_plan *p, zgd_matrices *m, int h, int t0,
+                      int t1, int s0, int s1, const double *cv, int64_t cbase,
+                      double *sv, int64_t sbase, double *bucket_seconds,
+                      void (*progress)(void));
+void zgd_half_timed_z(const zg_plan *p, zgd_matrices *m, int h, int t0,
+                      int t1, int s0, int s1, const double _Complex *cv,
+                      int64_t cbase, double _Complex *sv, int64_t sbase,
+                      double *bucket_seconds, void (*progress)(void));
+
 /* out = the diagonal of H for the A buckets b0 .. b1 - 1, out[0] the
  * element at blockoff of the first of their blocks (base). */
 void zgd_hdiag_d(const zg_plan *p, const double *v, int b0, int b1,

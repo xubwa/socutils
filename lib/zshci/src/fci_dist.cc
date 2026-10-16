@@ -45,8 +45,8 @@ std::vector<int> Balance(const std::vector<double>& weight, int n) {
   return bounds;
 }
 
-double Imbalance(const std::vector<double>& weight,
-                 const std::vector<int>& bounds) {
+double PartImbalance(const std::vector<double>& weight,
+                     const std::vector<int>& bounds) {
   const int n = static_cast<int>(bounds.size()) - 1;
   double total = 0.0, most = 0.0;
   for (int r = 0; r < n; ++r) {
@@ -100,6 +100,17 @@ std::vector<Block> Blocks(const zg_plan* p, const GasDistribution& dist) {
 }
 
 }  // namespace
+
+GasDistribution::GasDistribution(const GasSpace& space, int num_ranks,
+                                 const std::vector<double>& a_weight,
+                                 const std::vector<double>& b_weight,
+                                 int64_t slice_elements)
+    : GasDistribution(space, num_ranks, true, slice_elements) {
+  a_work_ = a_weight;
+  b_work_ = b_weight;
+  a_bounds_ = Balance(a_work_, num_ranks);
+  b_bounds_ = Balance(b_work_, num_ranks);
+}
 
 GasDistribution::GasDistribution(const GasSpace& space, int num_ranks,
                                  bool by_work, int64_t slice_elements)
@@ -197,12 +208,19 @@ double GasDistribution::SizeImbalance() const {
   for (size_t b = 0; b + 1 < a_start_.size(); ++b) {
     size[b] = static_cast<double>(a_start_[b + 1] - a_start_[b]);
   }
-  return Imbalance(size, a_bounds_);
+  return PartImbalance(size, a_bounds_);
+}
+
+double GasDistribution::Imbalance(const std::vector<double>& a_weight,
+                                  const std::vector<double>& b_weight) const {
+  return std::max(PartImbalance(a_weight, a_bounds_),
+                  PartImbalance(b_weight, b_bounds_));
 }
 
 double GasDistribution::WorkImbalance() const {
   // Both halves: the larger of the two per rank, which is what waits.
-  return std::max(Imbalance(a_work_, a_bounds_), Imbalance(b_work_, b_bounds_));
+  return std::max(PartImbalance(a_work_, a_bounds_),
+                  PartImbalance(b_work_, b_bounds_));
 }
 
 template <typename S>
@@ -218,6 +236,8 @@ DistributedGasOperator<S>::DistributedGasOperator(const GasSpace& space,
   const int me = comm.rank();
   xt_ = BigArray<S>(dist.EndT(me) - dist.BeginT(me), huge_pages);
   yt_ = BigArray<S>(dist.EndT(me) - dist.BeginT(me), huge_pages);
+  bucket_seconds_[0].assign(space.plan()->s[0].nbucket, 0.0);
+  bucket_seconds_[1].assign(space.plan()->s[1].nbucket, 0.0);
   if (comm.size() > 1) {
     slice_[0] = BigArray<S>(dist.MaxSlice(), huge_pages);
     slice_[1] = BigArray<S>(dist.MaxSlice(), huge_pages);
@@ -394,16 +414,17 @@ namespace {
 
 void HalfKernel(const zg_plan* p, zgd_matrices* m, int h, int t0, int t1,
                 int s0, int s1, const double* cv, int64_t cbase, double* sv,
-                int64_t sbase) {
-  zgd_half_d(p, m, h, t0, t1, s0, s1, cv, cbase, sv, sbase);
+                int64_t sbase, double* seconds, void (*progress)()) {
+  zgd_half_timed_d(p, m, h, t0, t1, s0, s1, cv, cbase, sv, sbase, seconds,
+                   progress);
 }
 
 void HalfKernel(const zg_plan* p, zgd_matrices* m, int h, int t0, int t1,
                 int s0, int s1, const Complex* cv, int64_t cbase, Complex* sv,
-                int64_t sbase) {
-  zgd_half_z(p, m, h, t0, t1, s0, s1,
-             reinterpret_cast<const double _Complex*>(cv), cbase,
-             reinterpret_cast<double _Complex*>(sv), sbase);
+                int64_t sbase, double* seconds, void (*progress)()) {
+  zgd_half_timed_z(
+      p, m, h, t0, t1, s0, s1, reinterpret_cast<const double _Complex*>(cv),
+      cbase, reinterpret_cast<double _Complex*>(sv), sbase, seconds, progress);
 }
 
 }  // namespace
@@ -420,16 +441,20 @@ void DistributedGasOperator<S>::Half(int h, const S* local, S* target) const {
   auto kernel = [&](const std::pair<int, int>& s, const S* source) {
     const double t = omp_get_wtime();
     HalfKernel(p, m, h, bounds[me], bounds[me + 1], s.first, s.second, source,
-               start[s.first], target, my_base);
+               start[s.first], target, my_base,
+               measure_ ? bucket_seconds_[h].data() : nullptr,
+               n > 1 ? &Comm::Progress : nullptr);
     seconds_kernel_ += omp_get_wtime() - t;
   };
   // Own slices first, from place; then those of the other ranks, starting
   // with the next one, each read one-sidedly from its owner while the
-  // previous one is worked on.
-  for (const std::pair<int, int>& s : dist_.Slices(me, h)) {
-    kernel(s, local + (start[s.first] - my_base));
+  // previous one is worked on (the first while the own ones are).
+  if (n == 1) {
+    for (const std::pair<int, int>& s : dist_.Slices(me, h)) {
+      kernel(s, local + (start[s.first] - my_base));
+    }
+    return;
   }
-  if (n == 1) return;
   const RemoteArray remote(comm_, local,
                            sizeof(S) * (start[bounds[me + 1]] - my_base));
   std::vector<std::pair<int, std::pair<int, int>>> others;
@@ -448,11 +473,14 @@ void DistributedGasOperator<S>::Half(int h, const S* local, S* target) const {
                sizeof(S) * (start[s.second] - start[s.first]));
   };
   if (!others.empty()) fetch(0);
+  for (const std::pair<int, int>& s : dist_.Slices(me, h)) {
+    kernel(s, local + (start[s.first] - my_base));
+  }
   for (size_t i = 0; i < others.size(); ++i) {
-    if (i + 1 < others.size()) fetch(i + 1);
     const double t = omp_get_wtime();
     remote.Wait(others[i].first);
     seconds_bcast_ += omp_get_wtime() - t;
+    if (i + 1 < others.size()) fetch(i + 1);
     kernel(others[i].second, slice_[i % 2].data());
   }
 }

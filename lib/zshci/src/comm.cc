@@ -224,6 +224,12 @@ void Comm::Barrier() const {
   if (size_ > 1) Check(MPI_Barrier(MPI_COMM_WORLD), "MPI_Barrier");
 }
 
+void Comm::Progress() {
+  int flag = 0;
+  MPI_Iprobe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &flag,
+             MPI_STATUS_IGNORE);
+}
+
 RemoteArray::RemoteArray(const Comm& comm, const void* local, uint64_t bytes)
     : comm_(comm), local_(local) {
   MPI_Win* window = new MPI_Win;
@@ -364,6 +370,7 @@ void Comm::SendReceive(const void* send, uint64_t send_count, int,
   }
 }
 void Comm::Barrier() const {}
+void Comm::Progress() {}
 RemoteArray::RemoteArray(const Comm& comm, const void* local, uint64_t)
     : comm_(comm), local_(local) {}
 RemoteArray::~RemoteArray() {}

@@ -57,7 +57,8 @@ static void ZG_NAME(dist_half)(const zg_plan *p, int h, ZG_SCALAR *const *w,
                                const int *live, const ZG_SCALAR *cv,
                                ZG_SCALAR *sv, int64_t cols, double direct_ratio,
                                double direct_small, double *stat, int t0, int t1,
-                               int s0, int s1, int64_t cbase, int64_t sbase) {
+                               int s0, int s1, int64_t cbase, int64_t sbase,
+                               double *bucket_seconds, void (*progress)(void)) {
   const int rs = h, cs = 1 - h;
   const zg_side *sr = &p->s[rs], *sc = &p->s[cs];
   const int ncc = sc->nclass, ncr = sr->nclass;
@@ -184,6 +185,10 @@ static void ZG_NAME(dist_half)(const zg_plan *p, int h, ZG_SCALAR *const *w,
 
 #pragma omp for schedule(dynamic, 1)
     for (int64_t it = it0; it < it1; ++it) {
+      /* dist: the seconds of each target bucket, and a call that lets
+       * one-sided communication go on. */
+      const double task_start = bucket_seconds ? omp_get_wtime() : 0.0;
+      if (progress && omp_get_thread_num() == 0) progress();
       const zg_rtask *task = &p->rtasks[h][it];
       const int bt = task->bucket;
       const int64_t r0 = task->r0;
@@ -594,6 +599,11 @@ static void ZG_NAME(dist_half)(const zg_plan *p, int h, ZG_SCALAR *const *w,
           }
         }
         for (int i = 0; i < ncand; ++i) okc[sc->bucket_class[cand[i]]] = 0;
+      }
+      if (bucket_seconds) {
+        const double spent = omp_get_wtime() - task_start;
+#pragma omp atomic
+        bucket_seconds[bt] += spent;
       }
     }
     free(asg_r);

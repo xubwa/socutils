@@ -21,6 +21,7 @@
 #ifndef ZSHCI_SRC_FCI_DIST_H_
 #define ZSHCI_SRC_FCI_DIST_H_
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -38,6 +39,11 @@ class GasDistribution {
   // number of elements ("size"). slice_elements 0: whole ranges.
   GasDistribution(const GasSpace& space, int num_ranks, bool by_work,
                   int64_t slice_elements);
+  // Balanced by given weights of the A buckets (half 0) and of the B
+  // buckets (half 1), e.g. measured seconds.
+  GasDistribution(const GasSpace& space, int num_ranks,
+                  const std::vector<double>& a_weight,
+                  const std::vector<double>& b_weight, int64_t slice_elements);
 
   int num_ranks() const { return static_cast<int>(a_bounds_.size()) - 1; }
   // A buckets [a_bounds[r], a_bounds[r + 1]) are rank r's, their elements
@@ -58,6 +64,9 @@ class GasDistribution {
   // Largest over mean of the elements and of the estimated work per rank.
   double SizeImbalance() const;
   double WorkImbalance() const;
+  // The same for given weights of the buckets of half 0 and of half 1.
+  double Imbalance(const std::vector<double>& a_weight,
+                   const std::vector<double>& b_weight) const;
 
  private:
   std::vector<int> a_bounds_, b_bounds_;
@@ -80,6 +89,18 @@ class DistributedGasOperator : public CiOperator<S> {
   // y = H x over this rank's elements.
   void Apply(const S* x, S* y) const override;
 
+  // With `on`, Apply adds the thread seconds spent on the target rows of
+  // each bucket to BucketSeconds(half) (this rank's buckets only).
+  void MeasureBuckets(bool on) const {
+    measure_ = on;
+    for (std::vector<double>& b : bucket_seconds_) {
+      std::fill(b.begin(), b.end(), 0.0);
+    }
+  }
+  const std::vector<double>& BucketSeconds(int half) const {
+    return bucket_seconds_[half];
+  }
+
   // Seconds of the last Apply: transpositions, waiting for slices, kernel.
   double seconds_exchange() const { return seconds_exchange_; }
   double seconds_bcast() const { return seconds_bcast_; }
@@ -99,6 +120,8 @@ class DistributedGasOperator : public CiOperator<S> {
   void* matrices_ = nullptr;
   mutable BigArray<S> xt_, yt_, slice_[2];
   mutable std::vector<S> send_, receive_;
+  mutable bool measure_ = false;
+  mutable std::vector<double> bucket_seconds_[2];
   mutable double seconds_exchange_ = 0.0;
   mutable double seconds_bcast_ = 0.0;
   mutable double seconds_kernel_ = 0.0;

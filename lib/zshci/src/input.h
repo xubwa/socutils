@@ -198,6 +198,9 @@ struct FciInput {
   // slice_gb gigabytes (0: a rank's whole part).
   bool distributed = false;
   std::string balance = "work";
+  // With several ranks: one product first, timed per bucket, and the parts
+  // cut again by these times.
+  bool calibrate = true;
   double slice_gb = 0.0;
   // wfn.h5 (determinants and CI vectors) is written for spaces of at most
   // this many determinants; 0: never.
