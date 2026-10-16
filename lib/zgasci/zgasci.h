@@ -6,7 +6,8 @@
  * as PySCF drives its FCI kernels).
  *
  * Spinors are numbered 0 .. n-1 and cut into consecutive sub-groups of at
- * most 16; the first ones form side A, the others side B.  A determinant is
+ * most 16 (at most 32 sub-groups); the first ones form side A, the others
+ * side B.  A determinant is
  * a string of each side, a string a sub-string of each sub-group.  The class
  * of a string is the number of electrons in each of its sub-groups; within a
  * class, and within the strings of one symmetry label, strings are numbered
@@ -75,8 +76,9 @@ void zg_sigma_d(const zg_plan *plan, const double *v, const double *c,
                 double *sigma);
 void zg_sigma_z(const zg_plan *plan, const double _Complex *v,
                 const double _Complex *c, double _Complex *sigma);
-/* The same by the block kernel (each side at most 64 spinors, zg_block_ok):
- * every row of sigma written by one thread, no atomic additions. */
+/* The same by the block kernel: every row of sigma written by one thread,
+ * no atomic additions.  zg_block_ok: whether it applies, always 1 now (it
+ * needed sides of at most 64 spinors before). */
 int zg_block_ok(const zg_plan *plan);
 void zg_sigma_block_d(const zg_plan *plan, const double *v, const double *c,
                       double *sigma);

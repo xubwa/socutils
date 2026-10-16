@@ -6,17 +6,18 @@
 
 #include "zgasci.h"
 
-#define ZG_MAX_SUB 16     /* sub-groups */
+#define ZG_MAX_SUB 32     /* sub-groups */
 #define ZG_MAX_SUBSIZE 16 /* spinors of a sub-group */
 #define ZG_MAX_SETS 4     /* label sets */
 #define ZG_MAX_SPINOR (ZG_MAX_SUB * ZG_MAX_SUBSIZE)
 #define ZG_MAX_ROWS 1024  /* rows of a piece of work of the block kernel */
 #define ZG_MAX_COLS 512   /* and its columns */
 #define ZG_BLAS_ROWS 256   /* rows of a piece of work of the BLAS kernel */
+#define ZG_MAX_TUPLES 100000000 /* tuples of a side (24 bytes each) */
 
 /* One side.  A "tuple" is a choice of the number of electrons in each of
- * its sub-groups, numbered t = sum_g k_g stride_g; the tuples that occur in
- * the CI space are the classes.  The strings of all classes are numbered
+ * its sub-groups, k_g <= kmax of the sub-group, numbered t = sum_g k_g
+ * stride_g; the tuples that occur in the CI space are the classes.  The strings of all classes are numbered
  * through (sid); a bucket is the strings of one class with one label. */
 typedef struct {
   int nsub; /* its sub-groups are first .. first + nsub - 1 */
@@ -26,7 +27,8 @@ typedef struct {
   int *tuple_elec;      /* [ntuple] electrons */
   int64_t *tuple_size;  /* [ntuple] strings */
   int32_t *class_of;    /* [ntuple] class, or -1 */
-  int64_t *by_elec;     /* tuples sorted by their electrons ... */
+  int64_t *by_elec;     /* tuples that the constraints allow on this side
+                           alone, sorted by their electrons ... */
   int64_t *elec_start;  /* ... those with k from elec_start[k], [n + 2] */
   int nclass;
   int64_t *class_tuple; /* [nclass] */
@@ -91,10 +93,12 @@ typedef struct {
   /* Label filter of the row operators (kinds with at most one column
    * operator, which can make up for few changes of the labels of the row
    * string): a hash table from the change made by all row operators but the
-   * last (packed, zg_label_key) to the spinors the last one may take.
+   * last (packed, zg_label_key) to the spinors the last one may take, as a
+   * mask of each sub-group of the row side (fmask[slot * fnsub + g]).
    * fsize 0: no filter. */
-  int fsize;
-  uint64_t *fkey, *fmask;
+  int fsize, fnsub;
+  uint64_t *fkey;
+  uint32_t *fmask;
 } zg_bkind;
 
 /* A way of placing the operators of one side in its sub-groups (g, local
@@ -118,6 +122,7 @@ typedef struct {
 struct zg_plan {
   int n, nelec, nsub, nsets, npair;
   int m[ZG_MAX_SUB];   /* spinors of each sub-group */
+  int kmax[ZG_MAX_SUB]; /* the most electrons it can hold in the space */
   int off[ZG_MAX_SUB]; /* its first spinor */
   int side_of[ZG_MAX_SUB];
   /* sub-strings of a sub-group: rank among those of the same number of
@@ -140,8 +145,8 @@ struct zg_plan {
   int64_t dim;
   zg_task *tasks;
   int64_t ntask;
-  /* Block kernel: whether each side fits a 64-bit word, the terms, and the
-   * pieces of work. */
+  /* Block kernel: whether it applies (always now), the spinors of each
+   * side, the terms, and the pieces of work. */
   int block_ok;
   int nside[2];
   zg_term terms[9];
@@ -163,41 +168,47 @@ struct zg_plan {
    * pair_cls[h][pair_ptr[h][bucket] .. pair_ptr[h][bucket + 1]]. */
   int64_t *pair_ptr[2];
   int32_t *pair_cls[2];
-  /* The distinct labels of the spinors of each side and the spinors (bits
-   * of the side's word) that carry each. */
+  /* The distinct labels of the spinors of each side, and which of them
+   * each spinor carries (by its number within the side). */
   int ndlab[2];
-  int dlab[2][64][ZG_MAX_SETS];
-  uint64_t dmask[2][64];
-  uint8_t dof[2][64]; /* which of them each spinor carries */
+  int dlab[2][ZG_MAX_SPINOR][ZG_MAX_SETS];
+  uint16_t dof[2][ZG_MAX_SPINOR];
   /* (bucket << 32) + place in the bucket of each string of a side. */
   uint64_t *bp[2];
 };
 
-/* Block kernel helpers (zgasci.c). */
-uint64_t zg_side_word(const zg_plan *p, int side, int64_t sid);
-int64_t zg_word_sid(const zg_plan *p, int side, uint64_t w);
-/* The x with O(x)^dagger w a valid string: their numbers, the strings and
- * the signs <w|O(x)|source>.  Returns their number (at most cap). */
-int zg_enum_ops(int k, const int *kind, const int *rel, int nside, uint64_t w,
-                int64_t *x, uint64_t *src, int8_t *sign, int cap);
+/* Strings as the kernels act on them: the sub-strings of the sub-groups of
+ * their side, masks[g] (bit j: spinor j of sub-group g).  zg_side_masks:
+ * those of string sid; returns its electrons.  zg_masks_sid: the string, or
+ * -1 if its tuple is not a class. */
+int zg_side_masks(const zg_plan *p, int side, int64_t sid, uint32_t *masks);
+int64_t zg_masks_sid(const zg_plan *p, int side, const uint32_t *masks);
+/* Block kernel helper (zgasci.c): the x with O(x)^dagger |w> a string of
+ * the space (w given by its masks): their numbers, the strings and the signs
+ * <w|O(x)|source>.  Returns their number (at most cap are stored). */
+int zg_enum_ops(const zg_plan *p, int side, int k, const int *kind,
+                const int *rel, const uint32_t *masks, int64_t *x,
+                int64_t *sid, int8_t *sign, int cap);
 
 /* BLAS kernel helpers (zgasci.c).  zg_asg_list: the placements of k
  * operators (kind, rel as in zg_term) in the sub-groups of a side for which
  * O^dagger takes the strings of class `from` to a class marked in ok (any
  * class of the space if ok is NULL); returns their number (at most cap).
- * zg_asg_enum: for one placement and the target string w (rk: the ranks of
- * its sub-strings, zg_string_ranks), appends from n on the operators: their
- * numbers x, the source strings and the signs <w|O(x)|source>; returns the
- * new n.  With a filter (the kind whose row operators these are) only the
- * operators that its label filter lets through. */
+ * zg_asg_enum: for one placement and the target string w (its masks, and
+ * rk: the ranks of its sub-strings, zg_string_ranks), appends from n on the
+ * operators: their numbers x, the source strings and the signs
+ * <w|O(x)|source>; returns the new n.  With a filter (the kind whose row
+ * operators these are) only the operators that its label filter lets
+ * through. */
 int zg_asg_list(const zg_plan *p, int side, int k, const int *kind,
                 const int *rel, int from, const uint8_t *ok, zg_asg *out,
                 int cap);
-void zg_string_ranks(const zg_plan *p, int side, uint64_t w, int64_t *rk);
+void zg_string_ranks(const zg_plan *p, int side, const uint32_t *masks,
+                     int64_t *rk);
 int zg_asg_enum(const zg_plan *p, int side, int k, const int *kind,
-                const int *rel, const zg_asg *a, uint64_t w, const int64_t *rk,
-                const zg_bkind *filter, int64_t *x, int64_t *sid, int8_t *sign,
-                int n);
+                const int *rel, const zg_asg *a, const uint32_t *masks,
+                const int64_t *rk, const zg_bkind *filter, int64_t *x,
+                int64_t *sid, int8_t *sign, int n);
 
 int64_t zg_binom(int n, int k);
 
@@ -206,7 +217,7 @@ static inline void zg_counts(const zg_plan *p, int side, int64_t t,
                              int *counts) {
   const zg_side *s = &p->s[side];
   for (int g = 0; g < s->nsub; ++g) {
-    counts[g] = (int)((t / s->stride[g]) % (p->m[s->first + g] + 1));
+    counts[g] = (int)((t / s->stride[g]) % (p->kmax[s->first + g] + 1));
   }
 }
 

@@ -226,9 +226,8 @@ class Plan:
     def sigma(self, v, c, kernel='blas'):
         '''H c.  kernel: 'blas' (default; gather - matrix product - scatter,
         the fastest), 'block' or 'reference'.  'blas' and 'block' write each
-        row of the result by one thread and need each side to hold at most
-        64 spinors, else the reference kernel runs.  'blas' uses two more
-        vectors of memory while it runs.'''
+        row of the result by one thread.  'blas' uses two more vectors of
+        memory while it runs.'''
         v, complex_ = self._check_v(v)
         complex_ = complex_ or numpy.iscomplexobj(c)
         if complex_:
