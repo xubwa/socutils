@@ -1,53 +1,13 @@
-AgCl rock salt, HF, cc-pVDZ/dyall-v2z (exponents < 0.1 dropped), k-mesh 3^3, c = 137.036
+AgCl rock salt, HF, cc-pVDZ/dyall-v2z (exponents < 0.1 dropped), k-mesh 2^3, c = 137.036
      a/A      Omega          E sfx2c1e             E rs1e             dE -(pi/2c^2)Zc^2/O     time
-Traceback (most recent call last):
-  File "/home/user/socutils/examples/qdhf/pbc/35-rocksalt_eos.py", line 57, in <module>
-    mydf.build()
-    ~~~~~~~~~~^^
-  File "/home/user/pyscf/pyscf/pbc/df/df.py", line 266, in build
-    self._make_j3c(self.cell, self.auxcell, None, cderi)
-    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/user/pyscf/pyscf/pbc/df/df.py", line 293, in _make_j3c
-    dfbuilder.make_j3c(cderi_file, j_only=j_only, dataname=self._dataname,
-    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-                       kptij_lst=kptij_lst)
-                       ^^^^^^^^^^^^^^^^^^^^
-  File "/home/user/pyscf/pyscf/pbc/df/rsdf_builder.py", line 940, in make_j3c
-    fswap = self.outcore_auxe2(cderi_file, intor, aosym, comp, j_only,
-                               'j3c', shls_slice, kk_idx=kk_idx)
-  File "/home/user/pyscf/pyscf/pbc/df/rsdf_builder.py", line 535, in outcore_auxe2
-    fswap[f'{dataname}R/{idx}'][row0:row1] = outR[k]
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^
-  File "h5py/_objects.pyx", line 54, in h5py._objects.with_phil.wrapper
-  File "h5py/_objects.pyx", line 55, in h5py._objects.with_phil.wrapper
-  File "/usr/local/lib/python3.13/dist-packages/h5py/_hl/dataset.py", line 1110, in __setitem__
-    self.id.write(mspace, fspace, val, mtype, dxpl=self._dxpl)
-    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "h5py/_objects.pyx", line 54, in h5py._objects.with_phil.wrapper
-  File "h5py/_objects.pyx", line 55, in h5py._objects.with_phil.wrapper
-  File "h5py/h5d.pyx", line 305, in h5py.h5d.DatasetID.write
-  File "h5py/_proxy.pyx", line 122, in h5py._proxy.dset_rw
-OSError: [Errno 28] Can't synchronously write data (file write failed: time = Fri Oct 16 05:01:14 2026
-, filename = '/tmp/.outcore_auxe2_swaptdyah9tm', file descriptor = 5, errno = 28, error message = 'No space left on device', buf = 0x7fec167de248, total write size = 1733000, bytes this sub-write = 1733000, offset = 8872001536)
-Exception ignored in: <function H5FileWrap.__del__ at 0x7fed3197bf60>
-Traceback (most recent call last):
-  File "/home/user/pyscf/pyscf/lib/misc.py", line 1191, in __del__
-    self._finished()
-  File "/home/user/pyscf/pyscf/lib/misc.py", line 1181, in _finished
-    super().flush()
-  File "/usr/local/lib/python3.13/dist-packages/h5py/_hl/files.py", line 629, in flush
-    h5f.flush(self.id)
-  File "h5py/_objects.pyx", line 54, in h5py._objects.with_phil.wrapper
-  File "h5py/_objects.pyx", line 55, in h5py._objects.with_phil.wrapper
-  File "h5py/h5f.pyx", line 163, in h5py.h5f.flush
-RuntimeError: Unable to flush file (file write failed: time = Fri Oct 16 05:01:14 2026
-, filename = '/tmp/.outcore_auxe2_swaptdyah9tm', file descriptor = 5, errno = 28, error message = 'No space left on device', buf = 0x64c84f8, total write size = 3720, bytes this sub-write = 3720, offset = 4096)
-Traceback (most recent call last):
-  File "h5py/_objects.pyx", line 210, in h5py._objects.ObjectID._dealloc
-  File "h5py/_objects.pyx", line 213, in h5py._objects.ObjectID._dealloc
-RuntimeError: Slist already enabled? (slist already enabled?)
-Exception ignored in: 'h5py._objects.ObjectID.__dealloc__'
-Traceback (most recent call last):
-  File "h5py/_objects.pyx", line 210, in h5py._objects.ObjectID._dealloc
-  File "h5py/_objects.pyx", line 213, in h5py._objects.ObjectID._dealloc
-RuntimeError: Slist already enabled? (slist already enabled?)
+  5.4000    265.655   -5773.8264719040   -5773.8251887520 -1.283152e-03 -1.289712e-03      586
+  5.5000    280.689   -5773.8341501256   -5773.8329372249 -1.212901e-03 -1.220635e-03     1151
+  5.6000    296.279   -5773.8395969313   -5773.8384490700 -1.147861e-03 -1.156405e-03     1628
+  5.7000    312.436   -5773.8432000344   -5773.8421125348 -1.087500e-03 -1.096603e-03     2118
+  5.8000    329.170   -5773.8452797570   -5773.8442483369 -1.031420e-03 -1.040854e-03     2593
+  5.9000    346.492   -5773.8461019638   -5773.8451227392 -9.792246e-04 -9.888214e-04     3072
+  6.0000    364.410   -5773.8458874939   -5773.8449569141 -9.305798e-04 -9.401997e-04     3569
+  6.1000    382.936   -5773.8448200599   -5773.8439348795 -8.851804e-04 -8.947143e-04     4050
+fit dE = const - A/Omega:  A = 3.451391e-01  (background Darwin: (pi/2c^2) Z^2 = 3.426182e-01, ratio 1.0074)  const = 1.670e-05
+sfx2c1e  a_eq = 5.92729 A   B = 31.91 GPa
+rs1e     a_eq = 5.93235 A   B = 31.70 GPa
