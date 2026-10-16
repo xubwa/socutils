@@ -95,6 +95,10 @@ class GasSpace {
   // out[dim] = the diagonal of H. v: AntisymmetrizedPairs.
   template <typename S>
   void Diagonal(const std::vector<S>& v, double* out) const;
+  // out[P * npair + R] = <bra| a+_p a+_q a_s a_r |ket> over the spinors of
+  // the plan (reference kernel: slow for large spaces).
+  template <typename S>
+  void PairDensity(const S* bra, const S* ket, S* out) const;
   // sigma = H c.
   template <typename S>
   void Sigma(const std::vector<S>& v, const S* c, S* sigma,

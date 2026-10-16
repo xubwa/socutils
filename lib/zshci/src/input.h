@@ -199,6 +199,9 @@ struct FciInput {
   bool distributed = false;
   std::string balance = "work";
   double slice_gb = 0.0;
+  // wfn.h5 (determinants and CI vectors) is written for spaces of at most
+  // this many determinants; 0: never.
+  int64_t write_wfn = 10000000;
   // Only report the space and the memory it needs.
   bool dry_run = false;
   // Only time this many products with H of a random vector.

@@ -19,6 +19,7 @@
 #include "fci_dist.h"
 #include "gas_space.h"
 #include "output.h"
+#include "rdm.h"
 
 // MKL's single dynamic library chooses its threading at run time. The kernel
 // calls BLAS from inside its own parallel region, one thread per call, so
@@ -105,6 +106,95 @@ class GasOperator : public CiOperator<S> {
   const std::vector<S>& v_;
   GasKernel kernel_;
 };
+
+// Density matrices over the original spinors from the pair density of the
+// kernel, in the convention of rdm.h: D2(p,q,r,s) = <bra| p^+ q^+ s r |ket>.
+template <typename S>
+DensityMatrices<S> GasDensity(const GasSpace& space, const S* bra, const S* ket,
+                              bool with_two) {
+  const int n = space.num_orbs();
+  const size_t npair = static_cast<size_t>(n) * (n - 1) / 2;
+  const std::vector<int>& perm = space.layout().perm;
+  std::vector<S> g(npair * npair);
+  space.PairDensity(bra, ket, g.data());
+  DensityMatrices<S> dm;
+  dm.num_orbs = n;
+  dm.one.assign(static_cast<size_t>(n) * n, S(0.0));
+  if (with_two) dm.two.assign(static_cast<size_t>(n) * n * n * n, S(0.0));
+  std::vector<int> first(npair), second(npair);
+  for (int q = 1, k = 0; q < n; ++q) {
+    for (int p = 0; p < q; ++p, ++k) {
+      first[k] = perm[p];
+      second[k] = perm[q];
+    }
+  }
+  for (size_t bra_pair = 0; bra_pair < npair; ++bra_pair) {
+    const int a = first[bra_pair], b = second[bra_pair];
+    for (size_t ket_pair = 0; ket_pair < npair; ++ket_pair) {
+      const S value = g[bra_pair * npair + ket_pair];
+      if (value == S(0.0)) continue;
+      const int c = first[ket_pair], d = second[ket_pair];
+      if (with_two) {
+        dm.Two(a, b, c, d) = value;
+        dm.Two(b, a, c, d) = -value;
+        dm.Two(a, b, d, c) = -value;
+        dm.Two(b, a, d, c) = value;
+      }
+      if (b == d) dm.One(a, c) += value;
+      if (a == d) dm.One(b, c) -= value;
+      if (b == c) dm.One(a, d) -= value;
+      if (a == c) dm.One(b, d) += value;
+    }
+  }
+  for (S& x : dm.one) x /= static_cast<double>(space.num_elec() - 1);
+  return dm;
+}
+
+// wfn.h5 as the other modes write it: the determinants over the original
+// spinors and the coefficients in their phase convention (creation
+// operators in increasing order of the original spinors).
+template <typename S>
+void WriteGasWaveFunction(const Input& input, const Integrals<S>& ints,
+                          const GasSpace& space,
+                          const std::vector<BigArray<S>>& vectors,
+                          const std::vector<double>& energies) {
+  int nwords = 0;
+  const std::vector<uint64_t> plan_words = space.PlanDets(&nwords);
+  const std::vector<int>& perm = space.layout().perm;
+  const int n = space.num_orbs();
+  const int64_t dim = space.dim();
+  WaveFunction<S> wfn;
+  wfn.num_orbs = n;
+  wfn.num_elec = space.num_elec();
+  wfn.det_width = (n + 63) / 64;
+  wfn.det_words.assign(static_cast<size_t>(dim) * wfn.det_width, 0);
+  std::vector<double> sign(dim);
+#pragma omp parallel for schedule(static)
+  for (int64_t d = 0; d < dim; ++d) {
+    int occ[256], count = 0, inversions = 0;
+    for (int p = 0; p < n; ++p) {
+      if (!(plan_words[d * nwords + p / 64] >> (p % 64) & 1)) continue;
+      const int orbital = perm[p];
+      for (int i = 0; i < count; ++i) inversions += occ[i] > orbital;
+      occ[count++] = orbital;
+      wfn.det_words[d * wfn.det_width + orbital / 64] |= uint64_t(1)
+                                                         << (orbital % 64);
+    }
+    sign[d] = inversions % 2 ? -1.0 : 1.0;
+  }
+  for (const BigArray<S>& v : vectors) {
+    std::vector<S> c(dim);
+    for (int64_t d = 0; d < dim; ++d) c[d] = sign[d] * v[d];
+    wfn.coefficients.push_back(std::move(c));
+  }
+  wfn.energies = energies;
+  for (const LabelSet& set : ints.symmetry()) {
+    wfn.labels.insert(wfn.labels.end(), set.labels.begin(), set.labels.end());
+    wfn.label_mods.push_back(set.mod);
+  }
+  wfn.input = input.resolved;
+  WriteWaveFunction(input.prefix + "/wfn.h5", wfn);
+}
 
 }  // namespace
 
@@ -329,6 +419,46 @@ void RunFci(const Input& input, const Integrals<S>& ints, const Comm& comm) {
   std::printf("fci: peak memory %.2f GiB (largest over the ranks)\n",
               *std::max_element(peaks.begin(), peaks.end()));
   if (comm.is_root()) WriteEnergies(input.prefix, energies);
+
+  // The wave function and density matrices, held whole by one rank.
+  if (distributed) {
+    if (input.rdm.one || input.rdm.two || input.rdm.transition) {
+      std::printf(
+          "fci: density matrices are not made from distributed "
+          "vectors yet; none written\n");
+    }
+    return;
+  }
+  if (in.write_wfn > 0 && dim <= in.write_wfn) {
+    time = omp_get_wtime();
+    WriteGasWaveFunction(input, ints, space, result.vectors, energies);
+    std::printf("fci: wfn.h5 written, %.1f s\n", omp_get_wtime() - time);
+  }
+  if (input.rdm.one || input.rdm.two) {
+    time = omp_get_wtime();
+    for (int k = 0; k < input.nroots; ++k) {
+      const DensityMatrices<S> dm =
+          GasDensity(space, result.vectors[k].data(), result.vectors[k].data(),
+                     input.rdm.two);
+      WriteDensityMatrices(input.prefix, k, k, dm);
+      if (input.rdm.two) {
+        const double from_rdm =
+            EnergyFromDensityMatrices(dm, ints) + ints.core_energy();
+        std::printf(
+            "fci: root %d  energy from density matrices %.12f (difference "
+            "%.2e)\n",
+            k, from_rdm, from_rdm - energies[k]);
+      }
+    }
+    std::printf("fci: density matrices, %.1f s\n", omp_get_wtime() - time);
+  }
+  if (input.rdm.transition) {
+    for (int k = 1; k < input.nroots; ++k) {
+      const DensityMatrices<S> dm = GasDensity(space, result.vectors[0].data(),
+                                               result.vectors[k].data(), false);
+      WriteDensityMatrices(input.prefix, 0, k, dm);
+    }
+  }
 }
 
 template void RunFci(const Input&, const Integrals<double>&, const Comm&);

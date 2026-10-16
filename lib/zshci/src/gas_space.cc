@@ -247,6 +247,20 @@ void GasSpace::Diagonal(const std::vector<Complex>& v, double* out) const {
 }
 
 template <>
+void GasSpace::PairDensity(const double* bra, const double* ket,
+                           double* out) const {
+  zg_rdm2_d(plan_, bra, ket, out);
+}
+
+template <>
+void GasSpace::PairDensity(const Complex* bra, const Complex* ket,
+                           Complex* out) const {
+  zg_rdm2_z(plan_, reinterpret_cast<const double _Complex*>(bra),
+            reinterpret_cast<const double _Complex*>(ket),
+            reinterpret_cast<double _Complex*>(out));
+}
+
+template <>
 void GasSpace::Sigma(const std::vector<double>& v, const double* c,
                      double* sigma, GasKernel kernel) const {
   switch (kernel) {

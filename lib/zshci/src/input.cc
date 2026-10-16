@@ -140,6 +140,7 @@ Json ToJson(const Input& in) {
                 {"distributed", f.distributed},
                 {"balance", f.balance},
                 {"slice_gb", f.slice_gb},
+                {"write_wfn", f.write_wfn},
                 {"dry_run", f.dry_run},
                 {"benchmark_sigmas", f.benchmark_sigmas}};
     if (!f.groups_a.empty() || !f.groups_b.empty()) {
@@ -571,6 +572,7 @@ Input ParseInput(const std::string& text) {
       fci.Fail("balance", "must be \"work\" or \"size\"");
     }
     fci.Get("slice_gb", &f.slice_gb);
+    fci.Get("write_wfn", &f.write_wfn);
     fci.Get("dry_run", &f.dry_run);
     fci.Get("benchmark_sigmas", &f.benchmark_sigmas);
     fci.CheckNoUnknownKeys();
