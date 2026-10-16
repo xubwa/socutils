@@ -1,5 +1,5 @@
 /* Derived from blas_half and term_matrix of src/zgasci (zgasci_blas.inc,
- * zgasci_block.inc at zgasci 85686dc), generated with few changes, each
+ * zgasci_block.inc at zgasci d700f86), generated with few changes, each
  * marked "dist:", so that the kernel can be re-derived when zgasci changes;
  * compiled twice by gas_dist.c. */
 

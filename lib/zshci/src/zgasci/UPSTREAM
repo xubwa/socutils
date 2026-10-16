@@ -1,4 +1,4 @@
-These files are an unchanged copy of socutils lib/zgasci at commit 85686dc
+These files are an unchanged copy of socutils lib/zgasci at commit d700f86
 (branch zgasci): zgasci.c, zgasci.h, zgasci_plan.h, zgasci_kernel.inc,
 zgasci_block.inc, zgasci_blas.inc. They are compiled as C99 into zshci; the
 adapter is src/gas_space.cc. To take up later changes of the kernel, copy the
