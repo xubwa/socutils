@@ -111,7 +111,8 @@ def get_fock(mc, mo_coeff=None, ci=None, eris=None, casdm1=None, verbose=None):
     '''
     dm_core = numpy.dot(mo_coeff[:, :ncore], mo_coeff[:, :ncore].T.conj())
     mocas = mo_coeff[:, ncore:nocc]
-    dm = dm_core + reduce(numpy.dot, (mocas, casdm1, mocas.T.conj()))
+    # casdm1[p,q] = <p^dagger q>: the AO density takes its transpose
+    dm = dm_core + reduce(numpy.dot, (mocas, casdm1.T, mocas.T.conj()))
     vj, vk = mc._scf.get_jk(mc.mol, dm)
     fock = mc.get_hcore() + vj - vk
     return fock
