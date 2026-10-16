@@ -47,15 +47,26 @@ double Noise(uint64_t x) {
   return static_cast<double>(x >> 11) * (2.0 / 9007199254740992.0) - 1.0;
 }
 
+// A diagonal element and its place, for the start vectors.
+struct Candidate {
+  double value;
+  int64_t index;
+  bool operator<(const Candidate& o) const {
+    return value < o.value || (value == o.value && index < o.index);
+  }
+};
+
 template <typename S>
 class Solver {
  public:
   Solver(const CiOperator<S>& h, const double* diagonal,
-         const VectorLayout& layout, const FciDavidsonOptions& options)
+         const VectorLayout& layout, const FciDavidsonOptions& options,
+         const Comm& comm)
       : h_(h),
         diagonal_(diagonal),
         layout_(layout),
         options_(options),
+        comm_(comm),
         n_(layout.local_size()),
         k_(options.num_roots) {}
 
@@ -76,6 +87,8 @@ class Solver {
 #pragma omp critical
       for (int l = 0; l < count; ++l) total[l] += part[l];
     }
+    comm_.Sum(reinterpret_cast<double*>(total.data()),
+              count * kDoublesPerScalar<S>);
     return total;
   }
 
@@ -83,6 +96,7 @@ class Solver {
     double total = 0.0;
 #pragma omp parallel for schedule(static) reduction(+ : total)
     for (long i = 0; i < n_; ++i) total += Norm2(y[i]);
+    comm_.Sum(&total, 1);
     return std::sqrt(total);
   }
 
@@ -177,6 +191,7 @@ class Solver {
 #pragma omp critical
       for (int j = 0; j < roots; ++j) total[j] += part[j];
     }
+    comm_.Sum(total.data(), roots);
     for (double& t : total) t = std::sqrt(t);
     return total;
   }
@@ -207,6 +222,7 @@ class Solver {
   const double* diagonal_;
   const VectorLayout& layout_;
   const FciDavidsonOptions& options_;
+  const Comm& comm_;
   const long n_;
   const int k_;
   std::vector<BigArray<S>> x_, hx_;
@@ -222,17 +238,16 @@ void Solver<S>::Guess(int first) {
   // The `want` lowest (value, global index), a few more in case some are
   // dependent on the vectors read back.
   const int want = need + first;
-  std::vector<std::pair<double, int64_t>> best;
+  std::vector<Candidate> best;
 #pragma omp parallel
   {
-    std::vector<std::pair<double, int64_t>> mine;
+    std::vector<Candidate> mine;
     long base = 0;
     for (const VectorLayout::Segment& seg : layout_.segments) {
       const long len = seg.end - seg.begin;
 #pragma omp for schedule(static) nowait
       for (long i = 0; i < len; ++i) {
-        const std::pair<double, int64_t> item(diagonal_[base + i],
-                                              seg.begin + i);
+        const Candidate item{diagonal_[base + i], seg.begin + i};
         if (static_cast<int>(mine.size()) < want || item < mine.back()) {
           mine.insert(std::upper_bound(mine.begin(), mine.end(), item), item);
           if (static_cast<int>(mine.size()) > want) mine.pop_back();
@@ -243,6 +258,9 @@ void Solver<S>::Guess(int first) {
 #pragma omp critical
     best.insert(best.end(), mine.begin(), mine.end());
   }
+  std::sort(best.begin(), best.end());
+  if (static_cast<int>(best.size()) > want) best.resize(want);
+  best = comm_.GatherAll(best);
   std::sort(best.begin(), best.end());
   int slot = first;
   for (size_t b = 0; b < best.size() && slot < k_; ++b) {
@@ -255,7 +273,7 @@ void Solver<S>::Guess(int first) {
         const uint64_t global = seg.begin + i;
         y[base + i] =
             S(1e-6 * Noise(global * 64 + slot)) +
-            (static_cast<int64_t>(global) == best[b].second ? S(1.0) : S(0.0));
+            (static_cast<int64_t>(global) == best[b].index ? S(1.0) : S(0.0));
       }
       base += len;
     }
@@ -269,7 +287,13 @@ void Solver<S>::WriteCheckpoint(const Matrix<S>& c,
                                 const std::vector<double>& theta,
                                 int iteration) const {
   const std::string tmp = options_.checkpoint + ".tmp";
-  const int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  // The root makes the file, then every rank writes its elements.
+  if (comm_.is_root()) {
+    const int made = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (made >= 0) close(made);
+  }
+  comm_.Barrier();
+  const int fd = open(tmp.c_str(), O_WRONLY);
   if (fd < 0) {
     throw std::runtime_error("fci: cannot write checkpoint " + tmp + ": " +
                              std::strerror(errno));
@@ -295,8 +319,10 @@ void Solver<S>::WriteCheckpoint(const Matrix<S>& c,
   header.is_complex = ScalarTraits<S>::kIsComplex ? 1 : 0;
   header.fingerprint = options_.fingerprint;
   header.iteration = iteration;
-  write_at(&header, sizeof(header), 0);
-  write_at(theta.data(), sizeof(double) * k_, sizeof(header));
+  if (comm_.is_root()) {
+    write_at(&header, sizeof(header), 0);
+    write_at(theta.data(), sizeof(double) * k_, sizeof(header));
+  }
   // The Ritz vectors, piece by piece.
   const int size = static_cast<int>(c.rows());
   const long chunk = 1 << 21;
@@ -322,9 +348,12 @@ void Solver<S>::WriteCheckpoint(const Matrix<S>& c,
   if (fsync(fd) != 0 || close(fd) != 0) {
     throw std::runtime_error("fci: closing checkpoint " + tmp);
   }
-  if (std::rename(tmp.c_str(), options_.checkpoint.c_str()) != 0) {
+  comm_.Barrier();
+  if (comm_.is_root() &&
+      std::rename(tmp.c_str(), options_.checkpoint.c_str()) != 0) {
     throw std::runtime_error("fci: cannot rename " + tmp);
   }
+  comm_.Barrier();
 }
 
 // The whole matrix, from products with unit vectors.
@@ -361,10 +390,10 @@ FciDavidsonResult<S> Solver<S>::Run() {
   if (k_ < 1 || k_ > layout_.global_dim) {
     throw std::runtime_error("fci: bad number of roots");
   }
-  if (layout_.segments.size() != 1 || n_ != layout_.global_dim) {
-    throw std::runtime_error("fci: vectors must be held whole for now");
+  if (comm_.size() == 1 && n_ == layout_.global_dim &&
+      layout_.global_dim <= options_.dense_dim) {
+    return Dense();
   }
-  if (layout_.global_dim <= options_.dense_dim) return Dense();
   const int m = options_.max_space;
   if (m < 2 * k_ || m > kMaxSpace) {
     throw std::runtime_error(
@@ -522,8 +551,9 @@ FciDavidsonResult<S> Solver<S>::Run() {
 template <typename S>
 FciDavidsonResult<S> FciDavidson(const CiOperator<S>& h, const double* diagonal,
                                  const VectorLayout& layout,
-                                 const FciDavidsonOptions& options) {
-  Solver<S> solver(h, diagonal, layout, options);
+                                 const FciDavidsonOptions& options,
+                                 const Comm& comm) {
+  Solver<S> solver(h, diagonal, layout, options, comm);
   return solver.Run();
 }
 
@@ -580,11 +610,13 @@ int ReadCiCheckpoint(const std::string& path, const VectorLayout& layout,
 template FciDavidsonResult<double> FciDavidson(const CiOperator<double>&,
                                                const double*,
                                                const VectorLayout&,
-                                               const FciDavidsonOptions&);
+                                               const FciDavidsonOptions&,
+                                               const Comm&);
 template FciDavidsonResult<Complex> FciDavidson(const CiOperator<Complex>&,
                                                 const double*,
                                                 const VectorLayout&,
-                                                const FciDavidsonOptions&);
+                                                const FciDavidsonOptions&,
+                                                const Comm&);
 template int ReadCiCheckpoint(const std::string&, const VectorLayout&, uint64_t,
                               int, bool, std::vector<BigArray<double>>*,
                               std::vector<double>*);

@@ -137,6 +137,9 @@ Json ToJson(const Input& in) {
                 {"checkpoint_every", f.checkpoint_every},
                 {"restart", f.restart},
                 {"huge_pages", f.huge_pages},
+                {"distributed", f.distributed},
+                {"balance", f.balance},
+                {"slice_gb", f.slice_gb},
                 {"dry_run", f.dry_run},
                 {"benchmark_sigmas", f.benchmark_sigmas}};
     if (!f.groups_a.empty() || !f.groups_b.empty()) {
@@ -562,6 +565,12 @@ Input ParseInput(const std::string& text) {
     fci.Get("checkpoint_every", &f.checkpoint_every);
     fci.Get("restart", &f.restart);
     fci.Get("huge_pages", &f.huge_pages);
+    fci.Get("distributed", &f.distributed);
+    fci.Get("balance", &f.balance);
+    if (f.balance != "work" && f.balance != "size") {
+      fci.Fail("balance", "must be \"work\" or \"size\"");
+    }
+    fci.Get("slice_gb", &f.slice_gb);
     fci.Get("dry_run", &f.dry_run);
     fci.Get("benchmark_sigmas", &f.benchmark_sigmas);
     fci.CheckNoUnknownKeys();

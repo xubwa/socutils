@@ -63,6 +63,16 @@ class Comm {
     BcastRaw(value, 1, sizeof(T));
   }
   void BcastString(std::string* text) const;
+  // `count` elements of `element_size` bytes from rank `root` to all.
+  void BcastFrom(void* data, uint64_t count, size_t element_size,
+                 int root) const;
+  // Sends `send_count` elements to rank `dest` while receiving
+  // `receive_count` from rank `source` (dest and source may be this rank
+  // only when both counts are zero or the ranks are one).
+  void SendReceive(const void* send, uint64_t send_count, int dest,
+                   void* receive, uint64_t receive_count, int source,
+                   size_t element_size) const;
+  void Barrier() const;
 
   // Element-wise sum over all ranks, in place on every rank.
   void Sum(double* data, size_t count) const;
@@ -158,6 +168,25 @@ class Comm {
   int rank_ = 0;
   int size_ = 1;
   int node_rank_ = 0;
+};
+
+// A local array that the other ranks read without its owner taking part
+// (one-sided communication): Get starts a copy of bytes of rank `owner`'s
+// array into this rank's memory, Wait completes the copies from that rank.
+// Construction and destruction are collective.
+class RemoteArray {
+ public:
+  RemoteArray(const Comm& comm, const void* local, uint64_t bytes);
+  ~RemoteArray();
+  RemoteArray(const RemoteArray&) = delete;
+  RemoteArray& operator=(const RemoteArray&) = delete;
+  void Get(void* destination, int owner, uint64_t offset, uint64_t bytes) const;
+  void Wait(int owner) const;
+
+ private:
+  const Comm& comm_;
+  const void* local_;
+  void* window_ = nullptr;  // MPI_Win, allocated
 };
 
 // An array of trivially copyable elements held once per node and mapped by

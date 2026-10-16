@@ -23,6 +23,7 @@
 #include "direct_h.h"
 #include "excite.h"
 #include "fci_davidson.h"
+#include "fci_dist.h"
 #include "gas_space.h"
 #include "hamiltonian.h"
 #include "heat_bath.h"
@@ -2517,6 +2518,53 @@ void TestFciDavidson(const Integrals<S>& ints, const GasCase<S>& c,
   std::remove(path.c_str());
 }
 
+// The distributed sigma on one rank, with the vector sent round in several
+// slices, against the kernel in one piece; and the Davidson on it.
+template <typename S>
+void TestDistributedSigma(const Integrals<S>& ints, const GasCase<S>& c) {
+  const GasLayout layout =
+      MakeGasLayout(ints.num_orbs(), c.constraints, c.max_subgroup);
+  std::vector<int> targets;
+  for (const LabelSet& set : c.labels) {
+    int sum = 0;
+    for (int p = 0; p < c.nelec; ++p) sum += set.labels[p];
+    targets.push_back(sum);
+  }
+  const GasSpace space(ints.num_orbs(), c.nelec, layout, c.labels, targets);
+  const long dim = space.dim();
+  const std::vector<S> v = AntisymmetrizedPairs(ints, layout.perm, c.nelec);
+  std::mt19937 rng(11);
+  std::vector<S> x(dim), y(dim), z(dim);
+  for (S& value : x) value = RandomScalar<S>(&rng);
+  space.Sigma(v, x.data(), y.data());
+  std::vector<double> diag(dim), diag_dist(dim);
+  space.Diagonal(v, diag.data());
+  const Comm serial;
+  double error = 0.0, diag_error = 0.0, scale = 0.0;
+  int most_slices = 0;
+  for (int64_t slice : {int64_t(0), int64_t(dim / 7 + 1)}) {
+    for (bool by_work : {true, false}) {
+      const GasDistribution dist(space, 1, by_work, slice);
+      most_slices = std::max<int>(most_slices, dist.Slices(0, 0).size());
+      const DistributedGasOperator<S> op(space, v, dist, serial, false);
+      op.Apply(x.data(), z.data());
+      op.Apply(x.data(), z.data());  // twice: nothing left over
+      op.Diagonal(diag_dist.data());
+      for (long i = 0; i < dim; ++i) {
+        error = std::max(error, std::abs(z[i] - y[i]));
+        scale = std::max(scale, std::abs(y[i]));
+        diag_error = std::max(diag_error, std::abs(diag_dist[i] - diag[i]));
+      }
+    }
+  }
+  Expect(most_slices > 3 && error < 1e-12 * scale && diag_error < 1e-12,
+         std::string("distributed sigma in slices equals the kernel (") +
+             ScalarTraits<S>::kName + ", " + std::to_string(dim) +
+             " determinants)");
+  std::printf("      up to %d slices; largest difference %.1e of %.1e\n",
+              most_slices, error, scale);
+}
+
 template <typename S>
 void TestGasCi(const Integrals<Complex>& complex_ints) {
   const int n = complex_ints.num_orbs();
@@ -2569,7 +2617,9 @@ void TestGasCi(const Integrals<Complex>& complex_ints) {
   weighted.constraints = {level, frozen};
   TestGasKernels(ints, weighted, "fci kernels: weighted constraint", 300);
 
+  TestDistributedSigma(ints, gas);
   labelled.labels = {{axis, 0}, {parity, 2}};
+  TestDistributedSigma(ints, labelled);
   TestFciDavidson(
       ints, labelled,
       std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") +

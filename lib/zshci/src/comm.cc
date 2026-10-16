@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <limits>
 #include <new>
@@ -184,6 +185,85 @@ void Comm::BcastRaw(void* data, uint64_t count, size_t element_size) const {
   }
 }
 
+void Comm::BcastFrom(void* data, uint64_t count, size_t element_size,
+                     int root) const {
+  if (size_ == 1 || count == 0) return;
+  const ElementType type(element_size);
+  char* bytes = static_cast<char*>(data);
+  for (uint64_t done = 0; done < count; done += kChunk) {
+    const int piece = static_cast<int>(std::min(kChunk, count - done));
+    Check(MPI_Bcast(bytes + done * element_size, piece, type.get(), root,
+                    MPI_COMM_WORLD),
+          "MPI_Bcast");
+  }
+}
+
+void Comm::SendReceive(const void* send, uint64_t send_count, int dest,
+                       void* receive, uint64_t receive_count, int source,
+                       size_t element_size) const {
+  const ElementType type(element_size);
+  const char* out = static_cast<const char*>(send);
+  char* in = static_cast<char*>(receive);
+  // Both sides know both counts, so they agree on the pieces.
+  uint64_t sent = 0, received = 0;
+  while (sent < send_count || received < receive_count) {
+    const int s = static_cast<int>(std::min(kChunk, send_count - sent));
+    const int r = static_cast<int>(std::min(kChunk, receive_count - received));
+    Check(MPI_Sendrecv(out + sent * element_size, s, type.get(),
+                       s > 0 ? dest : MPI_PROC_NULL, 7,
+                       in + received * element_size, r, type.get(),
+                       r > 0 ? source : MPI_PROC_NULL, 7, MPI_COMM_WORLD,
+                       MPI_STATUS_IGNORE),
+          "MPI_Sendrecv");
+    sent += s;
+    received += r;
+  }
+}
+
+void Comm::Barrier() const {
+  if (size_ > 1) Check(MPI_Barrier(MPI_COMM_WORLD), "MPI_Barrier");
+}
+
+RemoteArray::RemoteArray(const Comm& comm, const void* local, uint64_t bytes)
+    : comm_(comm), local_(local) {
+  MPI_Win* window = new MPI_Win;
+  Check(MPI_Win_create(const_cast<void*>(local), static_cast<MPI_Aint>(bytes),
+                       1, MPI_INFO_NULL, MPI_COMM_WORLD, window),
+        "MPI_Win_create");
+  Check(MPI_Win_lock_all(MPI_MODE_NOCHECK, *window), "MPI_Win_lock_all");
+  window_ = window;
+}
+
+RemoteArray::~RemoteArray() {
+  MPI_Win* window = static_cast<MPI_Win*>(window_);
+  MPI_Win_unlock_all(*window);
+  MPI_Win_free(window);
+  delete window;
+}
+
+void RemoteArray::Get(void* destination, int owner, uint64_t offset,
+                      uint64_t bytes) const {
+  if (owner == comm_.rank()) {
+    std::memcpy(destination, static_cast<const char*>(local_) + offset, bytes);
+    return;
+  }
+  const MPI_Win window = *static_cast<MPI_Win*>(window_);
+  char* to = static_cast<char*>(destination);
+  constexpr uint64_t kPiece = 1ULL << 30;
+  for (uint64_t done = 0; done < bytes; done += kPiece) {
+    const int piece = static_cast<int>(std::min(kPiece, bytes - done));
+    Check(
+        MPI_Get(to + done, piece, MPI_BYTE, owner,
+                static_cast<MPI_Aint>(offset + done), piece, MPI_BYTE, window),
+        "MPI_Get");
+  }
+}
+
+void RemoteArray::Wait(int owner) const {
+  if (owner == comm_.rank()) return;
+  Check(MPI_Win_flush(owner, *static_cast<MPI_Win*>(window_)), "MPI_Win_flush");
+}
+
 void Comm::BcastString(std::string* text) const {
   std::vector<char> buffer(text->begin(), text->end());
   Bcast(&buffer);
@@ -275,6 +355,23 @@ void Comm::ShareFromRoot(void*, uint64_t, size_t) const {}
 void Comm::Abort(int code) const { std::exit(code); }
 void Comm::BcastRaw(void*, uint64_t, size_t) const {}
 void Comm::BcastString(std::string*) const {}
+void Comm::BcastFrom(void*, uint64_t, size_t, int) const {}
+void Comm::SendReceive(const void* send, uint64_t send_count, int,
+                       void* receive, uint64_t, int,
+                       size_t element_size) const {
+  if (send_count > 0 && send != receive) {
+    std::memcpy(receive, send, send_count * element_size);
+  }
+}
+void Comm::Barrier() const {}
+RemoteArray::RemoteArray(const Comm& comm, const void* local, uint64_t)
+    : comm_(comm), local_(local) {}
+RemoteArray::~RemoteArray() {}
+void RemoteArray::Get(void* destination, int, uint64_t offset,
+                      uint64_t bytes) const {
+  std::memcpy(destination, static_cast<const char*>(local_) + offset, bytes);
+}
+void RemoteArray::Wait(int) const {}
 void Comm::Sum(double*, size_t) const {}
 void Comm::SumToRoot(double*, size_t) const {}
 std::vector<uint64_t> Comm::ExchangeCounts(

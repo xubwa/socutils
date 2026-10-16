@@ -85,6 +85,8 @@ class GasSpace {
   // A number that changes with anything that changes the order of the
   // determinants: for checkpoint files.
   uint64_t Fingerprint() const { return fingerprint_; }
+  // The kernel's plan (src/zgasci/zgasci_plan.h), for gas_dist.h.
+  const zg_plan* plan() const { return plan_; }
 
   // The determinants in the order of the vector, as occupation words over
   // the spinors of the plan (bit p: spinor perm[p]); nwords per determinant.

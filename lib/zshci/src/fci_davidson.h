@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "big_array.h"
+#include "comm.h"
 #include "scalar.h"
 
 namespace zshci {
@@ -92,12 +93,14 @@ struct FciDavidsonResult {
   std::vector<BigArray<S>> vectors;
 };
 
-// `diagonal`: H_ii of the local elements. Instantiated for double and
-// Complex.
+// `diagonal`: H_ii of the local elements. With several ranks (comm), each
+// holds the elements of its `layout` and all call this together.
+// Instantiated for double and Complex.
 template <typename S>
 FciDavidsonResult<S> FciDavidson(const CiOperator<S>& h, const double* diagonal,
                                  const VectorLayout& layout,
-                                 const FciDavidsonOptions& options);
+                                 const FciDavidsonOptions& options,
+                                 const Comm& comm = Comm());
 
 // Reads up to num_roots vectors of a checkpoint file into `vectors` (local
 // elements of `layout`, allocated here) and returns their number: 0 if the

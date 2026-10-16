@@ -27,11 +27,11 @@ CXX        ?= g++
 MPI        ?= 0
 BLAS       ?= mkl
 MKL_LIB    ?= /data/lcheng24/intel/oneapi/mkl/2022.1.0/lib/intel64
-# The C compiler of the same installation as CXX, so that both use one
-# OpenMP runtime.
+# The C compiler of the same installation as g++ (also under mpicxx), so
+# that C and C++ use one OpenMP runtime.
 ifeq ($(origin CC),default)
-  CXX_DIR := $(dir $(shell command -v $(CXX)))
-  CC := $(if $(wildcard $(CXX_DIR)gcc),$(CXX_DIR)gcc,gcc)
+  GXX_DIR := $(dir $(shell command -v g++))
+  CC := $(if $(wildcard $(GXX_DIR)gcc),$(GXX_DIR)gcc,gcc)
 endif
 ifdef CONDA_PREFIX
   EIGEN_ROOT ?= $(CONDA_PREFIX)/include/eigen3
@@ -71,7 +71,8 @@ else
 endif
 LDFLAGS   += -lm
 SOURCES   := $(wildcard src/*.cc)
-OBJECTS   := $(patsubst src/%.cc,$(BUILD)/%.o,$(SOURCES)) $(BUILD)/zgasci.o
+OBJECTS   := $(patsubst src/%.cc,$(BUILD)/%.o,$(SOURCES)) $(BUILD)/zgasci.o \
+             $(BUILD)/gas_dist.o
 
 TEST         := $(BUILD)/zshci_test
 TEST_FCIDUMP ?= test/data/o2_4c.fcidump
@@ -97,6 +98,9 @@ $(BUILD)/%.o: src/%.cc | $(BUILD)
 # zgasci.c includes the .inc files next to it.
 $(BUILD)/zgasci.o: src/zgasci/zgasci.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/gas_dist.o: src/gas_dist.c | $(BUILD)
+	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
 $(BUILD) bin:
 	mkdir -p $@

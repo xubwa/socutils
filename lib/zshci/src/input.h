@@ -192,6 +192,13 @@ struct FciInput {
   bool restart = false;
   // madvise(MADV_HUGEPAGE) on the vectors.
   bool huge_pages = true;
+  // The vectors distributed over ranks (fci_dist.h); always with several
+  // ranks, and with one rank on request (for tests). The parts are balanced
+  // by "work" or by "size"; slices of the vector sent round hold at most
+  // slice_gb gigabytes (0: a rank's whole part).
+  bool distributed = false;
+  std::string balance = "work";
+  double slice_gb = 0.0;
   // Only report the space and the memory it needs.
   bool dry_run = false;
   // Only time this many products with H of a random vector.

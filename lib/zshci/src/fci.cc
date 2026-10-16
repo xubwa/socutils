@@ -2,11 +2,13 @@
 
 #include <omp.h>
 #include <sys/resource.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <cstdio>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -14,6 +16,7 @@
 
 #include "big_array.h"
 #include "fci_davidson.h"
+#include "fci_dist.h"
 #include "gas_space.h"
 #include "output.h"
 
@@ -66,6 +69,16 @@ double AvailableBytes() {
   return limit;
 }
 
+// Number of ranks on this rank's node (they share its memory).
+int RanksOnNode(const Comm& comm) {
+  char name[256] = {};
+  gethostname(name, sizeof(name) - 1);
+  uint64_t hash = 1469598103934665603ull;
+  for (const char* c = name; *c; ++c) hash = (hash ^ *c) * 1099511628211ull;
+  const std::vector<uint64_t> all = comm.GatherAll(std::vector<uint64_t>{hash});
+  return static_cast<int>(std::count(all.begin(), all.end(), hash));
+}
+
 double PeakGiB() {
   struct rusage usage;
   getrusage(RUSAGE_SELF, &usage);
@@ -97,9 +110,6 @@ class GasOperator : public CiOperator<S> {
 
 template <typename S>
 void RunFci(const Input& input, const Integrals<S>& ints, const Comm& comm) {
-  if (comm.size() > 1) {
-    throw std::runtime_error("fci mode runs on one rank (threads only)");
-  }
   if (MKL_Set_Threading_Layer) {
     MKL_Set_Threading_Layer(kMklThreadingSequential);
   }
@@ -158,62 +168,131 @@ void RunFci(const Input& input, const Integrals<S>& ints, const Comm& comm) {
     kernel = GasKernel::kReference;
   }
 
-  // Memory: the Davidson vectors, the diagonal, the kernel's workspace, the
-  // integrals and the plan.
-  const double vector_bytes = static_cast<double>(dim) * sizeof(S);
-  const bool dense = dim <= input.davidson.dense_dim;
+  // With several ranks (or "distributed"), each holds a part of the vectors
+  // (fci_dist.h).
+  const bool distributed = comm.size() > 1 || in.distributed;
+  const int me = comm.rank();
+  std::unique_ptr<GasDistribution> dist;
+  int64_t local = dim, most_local = dim, most_t = 0, slice = 0;
+  if (distributed) {
+    if (kernel != GasKernel::kBlas) {
+      throw std::runtime_error("fci: the distributed sigma is the BLAS kernel");
+    }
+    dist = std::make_unique<GasDistribution>(
+        space, comm.size(), in.balance == "work",
+        static_cast<int64_t>(in.slice_gb * kGiB / sizeof(S)));
+    local = dist->End(me) - dist->Begin(me);
+    most_local = most_t = 0;
+    for (int r = 0; r < comm.size(); ++r) {
+      most_local = std::max(most_local, dist->End(r) - dist->Begin(r));
+      most_t = std::max(most_t, dist->EndT(r) - dist->BeginT(r));
+    }
+    slice = comm.size() > 1 ? dist->MaxSlice() : 0;
+    std::printf(
+        "fci: distributed over %d rank(s) by %s; largest part %.3f of the "
+        "vector (size %.2f, work %.2f times the mean); slices of up to %ld "
+        "elements\n",
+        comm.size(), in.balance.c_str(), static_cast<double>(most_local) / dim,
+        dist->SizeImbalance(), dist->WorkImbalance(),
+        static_cast<long>(dist->MaxSlice()));
+  }
+
+  // Memory of the rank with the largest part: the Davidson vectors, the
+  // diagonal, the kernel's workspace, the integrals and the plan.
+  const double vector_bytes = static_cast<double>(most_local) * sizeof(S);
+  const bool dense = !distributed && dim <= input.davidson.dense_dim;
   const int num_vectors = in.benchmark_sigmas > 0 ? 2
                           : dense                 ? 0
                                                   : 2 * in.max_space;
-  const int kernel_vectors = kernel == GasKernel::kBlas ? 2 : 0;
+  // The kernel: the transposed c and sigma, a slice and exchange buffers.
+  const double kernel_bytes =
+      distributed                  ? (2.0 * most_t + 2.0 * slice) * sizeof(S) +
+                                         2.0 * (1 << 26) * sizeof(S)
+      : kernel == GasKernel::kBlas ? 2.0 * dim * sizeof(S)
+                                   : 0.0;
   const double npair = n * (n - 1) / 2.0;
   const double other_bytes =
       3.0 * npair * npair * sizeof(S) + 40.0 * (info[0] + info[1]) + (1 << 30);
-  const double need =
-      (num_vectors + kernel_vectors) * vector_bytes + 8.0 * dim + other_bytes;
-  const double available =
-      input.memory_gb > 0.0 ? input.memory_gb * kGiB : AvailableBytes();
+  const double need = num_vectors * vector_bytes + 8.0 * most_local +
+                      kernel_bytes + other_bytes;
+  double available = input.memory_gb > 0.0
+                         ? input.memory_gb * kGiB
+                         : AvailableBytes() / RanksOnNode(comm);
   std::printf(
-      "fci memory: one vector %.2f GiB (%s); %d Davidson vectors (max_space "
-      "%d, each with its product) %.2f GiB, diagonal %.2f GiB, %d vectors "
-      "of kernel workspace %.2f GiB, integrals, plan and the rest about "
-      "%.2f GiB; total %.2f GiB of %.2f GiB available\n",
+      "fci memory per rank: one vector %.2f GiB (%s); %d Davidson vectors "
+      "(max_space %d, each with its product) %.2f GiB, diagonal %.2f GiB, "
+      "kernel workspace %.2f GiB, integrals, plan and the rest about %.2f "
+      "GiB; total %.2f GiB of %.2f GiB available\n",
       vector_bytes / kGiB, ScalarTraits<S>::kName, num_vectors, in.max_space,
-      num_vectors * vector_bytes / kGiB, 8.0 * dim / kGiB, kernel_vectors,
-      kernel_vectors * vector_bytes / kGiB, other_bytes / kGiB, need / kGiB,
-      available / kGiB);
+      num_vectors * vector_bytes / kGiB, 8.0 * most_local / kGiB,
+      kernel_bytes / kGiB, other_bytes / kGiB, need / kGiB, available / kGiB);
   if (in.dry_run) return;
   if (need > available) {
     throw std::runtime_error(
         "fci: the calculation needs more memory than is available (see "
-        "\"fci memory\" above; \"memory\" sets the gigabytes to assume)");
+        "\"fci memory\" above; \"memory\" sets the gigabytes per rank to "
+        "assume)");
   }
 
   time = omp_get_wtime();
   const std::vector<S> v = AntisymmetrizedPairs(ints, layout.perm, nelec);
-  BigArray<double> diagonal(dim, in.huge_pages);
-  space.Diagonal(v, diagonal.data());
+  BigArray<double> diagonal(local, in.huge_pages);
+  std::unique_ptr<CiOperator<S>> h;
+  if (distributed) {
+    auto op = std::make_unique<DistributedGasOperator<S>>(space, v, *dist, comm,
+                                                          in.huge_pages);
+    op->Diagonal(diagonal.data());
+    h = std::move(op);
+  } else {
+    space.Diagonal(v, diagonal.data());
+    h = std::make_unique<GasOperator<S>>(space, v, kernel);
+  }
   std::printf("fci: integrals over pairs and the diagonal, %.2f s\n",
               omp_get_wtime() - time);
-  const GasOperator<S> h(space, v, kernel);
+  const VectorLayout vector_layout =
+      distributed ? dist->Layout(me) : VectorLayout::Whole(dim);
 
   if (in.benchmark_sigmas > 0) {
-    BigArray<S> x(dim, in.huge_pages), y(dim, in.huge_pages);
+    BigArray<S> x(local, in.huge_pages), y(local, in.huge_pages);
+    const long first = vector_layout.segments[0].begin;
 #pragma omp parallel for schedule(static)
-    for (long i = 0; i < static_cast<long>(dim); ++i) {
-      x[i] = S(1.0 / (1.0 + i % 97));
+    for (long i = 0; i < static_cast<long>(local); ++i) {
+      x[i] = S(1.0 / (1.0 + (first + i) % 97));
     }
     double best = 1e300;
     for (int k = 0; k < in.benchmark_sigmas; ++k) {
+      comm.Barrier();
       time = omp_get_wtime();
-      h.Apply(x.data(), y.data());
+      h->Apply(x.data(), y.data());
+      comm.Barrier();
       const double seconds = omp_get_wtime() - time;
       best = std::min(best, seconds);
       std::printf("fci benchmark: sigma %d, %.2f s, peak memory %.2f GiB\n", k,
                   seconds, PeakGiB());
+      if (distributed) {
+        const auto* op = static_cast<const DistributedGasOperator<S>*>(h.get());
+        const std::vector<double> parts = comm.GatherAll(
+            std::vector<double>{op->seconds_exchange(), op->seconds_bcast(),
+                                op->seconds_kernel(), PeakGiB()});
+        for (int r = 0; r < comm.size(); ++r) {
+          std::printf(
+              "fci benchmark:   rank %d: transpositions %.2f s, slices "
+              "waited for %.2f s, kernel %.2f s, peak memory %.2f GiB\n",
+              r, parts[4 * r], parts[4 * r + 1], parts[4 * r + 2],
+              parts[4 * r + 3]);
+        }
+      }
+      double sum = 0.0;
+#pragma omp parallel for reduction(+ : sum)
+      for (long i = 0; i < static_cast<long>(local); ++i) {
+        sum += Real(Conj(x[i]) * y[i]);
+      }
+      comm.Sum(&sum, 1);
+      std::printf("fci benchmark:   <x|H|x> = %.12e\n", sum);
     }
-    std::printf("fci benchmark: best %.2f s per sigma, %d threads\n", best,
-                omp_get_max_threads());
+    std::printf(
+        "fci benchmark: best %.2f s per sigma, %d rank(s) x %d threads\n", best,
+        comm.size(), omp_get_max_threads());
     return;
   }
 
@@ -230,7 +309,7 @@ void RunFci(const Input& input, const Integrals<S>& ints, const Comm& comm) {
   options.huge_pages = in.huge_pages;
   options.fingerprint = space.Fingerprint();
   const FciDavidsonResult<S> result =
-      FciDavidson(h, diagonal.data(), VectorLayout::Whole(dim), options);
+      FciDavidson(*h, diagonal.data(), vector_layout, options, comm);
 
   std::vector<double> energies;
   for (int k = 0; k < input.nroots; ++k) {
@@ -245,8 +324,11 @@ void RunFci(const Input& input, const Integrals<S>& ints, const Comm& comm) {
     std::printf("fci: root %d  E = %.12f  residual %.2e\n", k, energies[k],
                 result.residual_norms[k]);
   }
-  std::printf("fci: peak memory %.2f GiB\n", PeakGiB());
-  WriteEnergies(input.prefix, energies);
+  const std::vector<double> peaks =
+      comm.GatherAll(std::vector<double>{PeakGiB()});
+  std::printf("fci: peak memory %.2f GiB (largest over the ranks)\n",
+              *std::max_element(peaks.begin(), peaks.end()));
+  if (comm.is_root()) WriteEnergies(input.prefix, energies);
 }
 
 template void RunFci(const Input&, const Integrals<double>&, const Comm&);
