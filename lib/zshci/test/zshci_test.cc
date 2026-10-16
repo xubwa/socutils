@@ -2565,6 +2565,188 @@ void TestDistributedSigma(const Integrals<S>& ints, const GasCase<S>& c) {
               most_slices, error, scale);
 }
 
+// A space for the kernel tests with random v: n spinors, sub-groups given
+// explicitly (groups_a, groups_b) or cut at max_subgroup.
+struct RandomGasCase {
+  int n = 0;
+  int nelec = 0;
+  std::vector<GasConstraint> constraints;
+  std::vector<LabelSet> labels;
+  std::vector<std::vector<int>> groups_a, groups_b;
+  int max_subgroup = 12;
+};
+
+// Consecutive spinors first .. first + size - 1.
+std::vector<int> Range(int first, int size) {
+  std::vector<int> out(size);
+  for (int i = 0; i < size; ++i) out[i] = first + i;
+  return out;
+}
+
+// The BLAS, block and distributed kernels against the reference kernel for
+// random v and c (the kernels are linear in v; no Hamiltonian needed), so
+// that spaces wider than the explicit matrix allows can be checked.
+template <typename S>
+void TestGasKernelsRandom(const RandomGasCase& c, const std::string& what,
+                          long min_dim) {
+  const GasLayout layout =
+      MakeGasLayout(c.n, c.constraints, c.max_subgroup, c.groups_a, c.groups_b);
+  std::vector<int> targets;
+  for (const LabelSet& set : c.labels) {
+    int sum = 0;
+    for (int p = 0; p < c.nelec; ++p) sum += set.labels[layout.perm[p]];
+    targets.push_back(sum);
+  }
+  const GasSpace space(c.n, c.nelec, layout, c.labels, targets);
+  const long dim = space.dim();
+  // For few spinors, the space against all determinants: those of the plan
+  // distinct and allowed, as many as are allowed.
+  bool same_space = true;
+  if (c.n <= 24) {
+    auto allowed = [&](uint64_t occ) {
+      if (__builtin_popcountll(occ) != c.nelec) return false;
+      for (const GasConstraint& con : c.constraints) {
+        int sum = 0;
+        for (size_t k = 0; k < con.orbitals.size(); ++k) {
+          if (occ >> con.orbitals[k] & 1) {
+            sum += con.weights.empty() ? 1 : con.weights[k];
+          }
+        }
+        if (sum < con.min_elec || sum > con.max_elec) return false;
+      }
+      for (size_t s = 0; s < c.labels.size(); ++s) {
+        int sum = 0;
+        for (int p = 0; p < c.n; ++p) {
+          if (occ >> p & 1) sum += c.labels[s].labels[p];
+        }
+        if (!LabelConserved(sum - targets[s], c.labels[s].mod)) return false;
+      }
+      return true;
+    };
+    long count = 0;
+    for (uint64_t occ = 0; occ < (uint64_t(1) << c.n); ++occ) {
+      count += allowed(occ);
+    }
+    int nwords = 0;
+    const std::vector<uint64_t> words = space.PlanDets(&nwords);
+    std::set<uint64_t> seen;
+    for (long d = 0; d < dim; ++d) {
+      uint64_t occ = 0;
+      for (int p = 0; p < c.n; ++p) {
+        if (words[d * nwords] >> p & 1) occ |= uint64_t(1) << layout.perm[p];
+      }
+      same_space = same_space && allowed(occ) && seen.insert(occ).second;
+    }
+    same_space = same_space && count == dim;
+  }
+  int widest[2] = {0, 0};
+  for (size_t g = 0; g < layout.sub_sizes.size(); ++g) {
+    widest[static_cast<int>(g) >= layout.num_sub_a] += layout.sub_sizes[g];
+  }
+  const long npair = static_cast<long>(c.n) * (c.n - 1) / 2;
+  std::mt19937 rng(17);
+  std::vector<S> v(static_cast<size_t>(npair) * npair);
+  for (S& value : v) value = RandomScalar<S>(&rng);
+  std::vector<S> x(dim), reference(dim), y(dim);
+  for (S& value : x) value = RandomScalar<S>(&rng);
+  space.Sigma(v, x.data(), reference.data(), GasKernel::kReference);
+  double scale = 0.0;
+  for (const S& value : reference) scale = std::max(scale, std::abs(value));
+  double error[3] = {0, 0, 0};
+  const GasKernel kernels[2] = {GasKernel::kBlas, GasKernel::kBlock};
+  for (int k = 0; k < 2; ++k) {
+    space.Sigma(v, x.data(), y.data(), kernels[k]);
+    for (long i = 0; i < dim; ++i) {
+      error[k] = std::max(error[k], std::abs(y[i] - reference[i]));
+    }
+  }
+  const Comm serial;
+  const GasDistribution dist(space, 1, true, dim / 5 + 1);
+  const DistributedGasOperator<S> op(space, v, dist, serial, false);
+  op.Apply(x.data(), y.data());
+  for (long i = 0; i < dim; ++i) {
+    error[2] = std::max(error[2], std::abs(y[i] - reference[i]));
+  }
+  Expect(space.block_ok() && dim >= min_dim && same_space &&
+             std::max({error[0], error[1], error[2]}) < 1e-12 * scale,
+         what + " (" + ScalarTraits<S>::kName + ", sides of " +
+             std::to_string(widest[0]) + " and " + std::to_string(widest[1]) +
+             " spinors, " + std::to_string(dim) + " determinants)");
+  std::printf(
+      "      largest differences to the reference kernel: BLAS, block, "
+      "distributed %.1e %.1e %.1e (largest element %.1e)\n",
+      error[0], error[1], error[2], scale);
+}
+
+template <typename S>
+void TestGasKernelsWide() {
+  // Small spaces cut into many small sub-groups: operators that span
+  // several sub-groups of a side.
+  RandomGasCase fci;
+  fci.n = 16;
+  fci.nelec = 6;
+  fci.groups_a = {{0}, Range(1, 2), Range(3, 3), Range(6, 3)};
+  fci.groups_b = {Range(9, 2), Range(11, 5)};
+  TestGasKernelsRandom<S>(fci,
+                          "fci kernels, random v: full CI, sub-groups "
+                          "of 1 to 5 spinors",
+                          8008);
+  std::vector<int> axis(80), parity(80);
+  for (int p = 0; p < 80; ++p) {
+    axis[p] = (p * p + 3 * p) % 5 - 2;
+    parity[p] = (p / 3) % 2;
+  }
+  fci.labels = {{{axis.begin(), axis.begin() + 16}, 0},
+                {{parity.begin(), parity.begin() + 16}, 2}};
+  TestGasKernelsRandom<S>(fci, "the same with two label sets", 500);
+  // GAS with weights, one of them negative (no bound on single sub-groups
+  // from that constraint), and labels.
+  RandomGasCase gas;
+  gas.n = 20;
+  gas.nelec = 6;
+  GasConstraint holes, level, balance;
+  holes.orbitals = Range(0, 6);
+  holes.min_elec = 4;
+  holes.max_elec = 6;
+  level.orbitals = Range(6, 14);
+  for (int p = 6; p < 20; ++p) level.weights.push_back(p < 10 ? 1 : 2);
+  level.max_elec = 3;
+  balance.orbitals = {0, 1, 2, 3, 6, 7};
+  balance.weights = {1, 1, 1, 1, -1, -1};
+  balance.min_elec = 2;
+  balance.max_elec = 4;
+  gas.constraints = {holes, level, balance};
+  gas.max_subgroup = 3;
+  gas.labels = {{{axis.begin(), axis.begin() + 20}, 4}};
+  TestGasKernelsRandom<S>(gas,
+                          "fci kernels, random v: weighted GAS, labels "
+                          "modulo 4, sub-groups of at most 3",
+                          200);
+  // More than 64 spinors on side A, then on side B: 72 spinors, at most two
+  // electrons in 62 of them, with labels.
+  RandomGasCase wide;
+  wide.n = 72;
+  wide.nelec = 4;
+  GasConstraint virt;
+  virt.orbitals = Range(4, 62);
+  virt.max_elec = 2;
+  wide.constraints = {virt};
+  wide.labels = {{{axis.begin(), axis.begin() + 72}, 0},
+                 {{parity.begin(), parity.begin() + 72}, 2}};
+  wide.groups_a = {Range(0, 4),   Range(4, 16),  Range(20, 16),
+                   Range(36, 12), Range(48, 10), Range(58, 8)};
+  wide.groups_b = {Range(66, 3), Range(69, 3)};
+  TestGasKernelsRandom<S>(wide,
+                          "fci kernels, random v: more than 64 "
+                          "spinors on side A",
+                          2000);
+  std::swap(wide.groups_a, wide.groups_b);
+  TestGasKernelsRandom<S>(wide,
+                          "fci kernels, random v: more than 64 "
+                          "spinors on side B",
+                          2000);
+}
+
 template <typename S>
 void TestGasCi(const Integrals<Complex>& complex_ints) {
   const int n = complex_ints.num_orbs();
@@ -2617,6 +2799,7 @@ void TestGasCi(const Integrals<Complex>& complex_ints) {
   weighted.constraints = {level, frozen};
   TestGasKernels(ints, weighted, "fci kernels: weighted constraint", 300);
 
+  TestGasKernelsWide<S>();
   TestDistributedSigma(ints, gas);
   labelled.labels = {{axis, 0}, {parity, 2}};
   TestDistributedSigma(ints, labelled);
