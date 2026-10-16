@@ -36,10 +36,10 @@ Group chosen from PySCF's single-group result (`mol.groupname`, from `symm.as_su
 
 Label of a symmetry-adapted function = exponents of its eigenvalues under the generators:
 
-- C2z: eigenvalue e^{-iπ m_j}  →  n = 2m_j mod 4 ∈ {1, 3} (fermion), {0, 2} (boson)
-- σz = i·C2z: eigenvalue (−1)^l e^{-iπ m_j}  →  n = 2(m_j − l) mod 4
+- C2z: eigenvalue e^{+iπ m_j}  →  n = 2m_j mod 4 ∈ {1, 3} (fermion), {0, 2} (boson)
+- σz = i·C2z: eigenvalue (−1)^l e^{+iπ m_j}  →  n = 2(m_j − l) mod 4
 - i: eigenvalue (−1)^l  →  parity bit p
-- C(φ): e^{-iφ m_j}  →  n = 2m_j (unbounded integer)
+- C(φ): e^{+iφ m_j}  →  n = 2m_j (unbounded integer)
 
 Integer encoding of `orbsym`: `id = 2*n + p` (`p = 0` for groups without inversion); for linear groups
 `n = 2m_j` may be negative. Following PySCF's `symm` API, `mol` only stores the group name
@@ -177,7 +177,10 @@ class SymAdaptedRDHF(DoubleGroupSymm, dhf.RDHF)
 
 Irrep names (user's decision 2026-10-16):
 - finite groups, Altmann–Herzig / DIRAC short names: fermion `1E`, `2E` (C2, Cs), `1Eg 2Eg 1Eu 2Eu` (C2h);
-  `1E` has character +i under C2 (Cs: σh). C1/Ci fermion irreps are `A1/2`, `A1/2g`, `A1/2u` (DIRAC's `A`,
+  `1E` has character +i under C2 (Cs: σh) in the passive convention R(φ) = exp(+iφJ_z) of Altmann–Herzig and
+  DIRAC; 1E contains m_j = 1/2, −3/2, 5/2, … = DIRAC's unbarred spinors (checked 2026-10-16: DIRAC LINSYM output
+  for HBr lists MJ = 1/2, −3/2, 5/2; moltra/traone.F assigns unbarred spinors to 1E). AO-layer phases use the
+  same convention (C2z: e^{+iπ m_j}). C1/Ci fermion irreps are `A1/2`, `A1/2g`, `A1/2u` (DIRAC's `A`,
   `AG`, `AU` would clash with PySCF's boson names `A`, `Ag`, `Au`). Boson irreps keep PySCF's single-group names.
 - linear groups: m_j names, fermion `1/2`, `-3/2`, (`1/2g`, `-3/2u` for Dooh); boson m_l: `0`, `1`, `-2` (+ g/u).
 - `irrep_nelec` keys are these names; m_j names exist only for linear molecules.

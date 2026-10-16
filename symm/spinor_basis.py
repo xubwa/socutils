@@ -9,10 +9,13 @@ The SALCs are built for PySCF's j-adapted spinor GTOs.  All operations used
 here (C2z, i, sigma_h and the rotations C(phi) about z) act on a spinor GTO
 |atom A, kappa, m_j> as an atom permutation times a phase:
 
-    C2z      exp(-i pi m_j)
+    C2z      exp(+i pi m_j)
     i        (-1)^l
-    sigma_h  (-1)^l exp(-i pi m_j)          (sigma_h = i C2z)
-    C(phi)   exp(-i phi m_j)
+    sigma_h  (-1)^l exp(+i pi m_j)          (sigma_h = i C2z)
+    C(phi)   exp(+i phi m_j)
+
+(passive convention R(phi) = exp(+i phi J_z), as in the Altmann-Herzig tables
+and DIRAC; see socutils.symm.double_group).
 
 provided the rotation axis is the lab z axis.  The molecule therefore has to be
 in its symmetry frame (z axis along the main axis); :func:`to_symm_frame`
@@ -75,11 +78,11 @@ def _op_phase(op, l, two_mj):
     if op == 'E':
         return numpy.ones(l.size, dtype=complex)
     if op == 'C2':
-        return numpy.exp(-.5j * numpy.pi * two_mj)
+        return numpy.exp(.5j * numpy.pi * two_mj)
     if op == 'i':
         return (-1.)**l + 0j
     if op == 'sh':
-        return (-1.)**l * numpy.exp(-.5j * numpy.pi * two_mj)
+        return (-1.)**l * numpy.exp(.5j * numpy.pi * two_mj)
     raise KeyError(op)
 
 

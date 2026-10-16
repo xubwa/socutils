@@ -145,6 +145,24 @@ class KnownValues(unittest.TestCase):
             support = abs(x).max(axis=1) > 1e-10
             self.assertTrue(numpy.all(l[support] % 2 == ir % 2))
 
+    def test_1E_contains_mj_half(self):
+        # DIRAC convention: m_j = +1/2 (an alpha-like spinor) belongs to 1E
+        for name in ('H2O', 'NH3', 'C2H4'):
+            gname, mol_lab, mol = MOLS[name]
+            so, ids = sb.get_symm_orb(mol)
+            labels = mol.spinor_labels(fmt=False)
+            # an s spinor with m_j = +1/2 on an atom on the main axis (or at the centre)
+            coords = mol.atom_coords() - numpy.asarray(mol._symm_orig)
+            on_axis = [a for a in range(mol.natm) if numpy.linalg.norm(coords[a, :2]) < 1e-6]
+            if not on_axis:
+                continue
+            mu = [i for i, x in enumerate(labels) if x[0] == on_axis[0] and x[2].endswith('s1/2')
+                  and x[3] == '1/2'][0]
+            weights = {dg.irrep_id2name(gname, ir): (abs(x[mu])**2).sum() for ir, x in zip(ids, so)}
+            # C2h: the two C atoms are related by i, the weight splits between 1Eg and 1Eu
+            w1e = sum(w for k, w in weights.items() if k.startswith('1E'))
+            self.assertAlmostEqual(w1e, 1, 12, (name, weights))
+
     def test_frame(self):
         for name, (gname, mol_lab, mol) in MOLS.items():
             self.assertTrue(sb.symm_frame_ok(mol))

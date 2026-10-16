@@ -187,8 +187,9 @@ class KnownValues(unittest.TestCase):
         for a in dg.irrep_ids('Dooh', mj_max=3.5):
             self.assertAlmostEqual(dg.character('C2h', dg.descend(a, 'Dooh', 'C2h'), 'C2'),
                                    dg.character('Dooh', a, ('C', numpy.pi)), 12)
-        self.assertEqual(dg.irrep_id2name('C2', dg.descend(dg.irrep_name2id('Coov', '1/2'), 'Coov', 'C2')), '2E')
-        self.assertEqual(dg.irrep_id2name('C2', dg.descend(dg.irrep_name2id('Coov', '-1/2'), 'Coov', 'C2')), '1E')
+        # m_j = 1/2, -3/2, 5/2 -> 1E (DIRAC's unbarred spinors)
+        for mj, name in (('1/2', '1E'), ('-3/2', '1E'), ('5/2', '1E'), ('-1/2', '2E'), ('3/2', '2E')):
+            self.assertEqual(dg.irrep_id2name('C2', dg.descend(dg.irrep_name2id('Coov', mj), 'Coov', 'C2')), name)
 
     def test_double_group_of(self):
         self.assertEqual(dg.double_group_of('D2h'), 'C2h')

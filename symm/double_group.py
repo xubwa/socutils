@@ -25,9 +25,11 @@ Irrep ids
 ---------
 Every irrep is labelled by two numbers:
 
-* ``n``: the eigenvalue of the cyclic generator is exp(-i pi n / 2) for
-  C2z (C2, C2h) or sigma_h (Cs), and exp(-i phi n / 2) for C(phi) (linear
-  groups, where n = 2 m_j or 2 m_l).  n is taken modulo N, with N = 2 for C1/Ci,
+* ``n``: the character of the cyclic generator is exp(+i pi n / 2) for
+  C2z (C2, C2h) or sigma_h (Cs), and exp(+i phi n / 2) for C(phi) (linear
+  groups, where n = 2 m_j or 2 m_l).  This is the passive convention,
+  R(phi) = exp(+i phi J_z), of the Altmann-Herzig tables and of DIRAC, so that
+  m_j = +1/2 belongs to 1E.  n is taken modulo N, with N = 2 for C1/Ci,
   N = 4 for C2/Cs/C2h, and unbounded for the linear groups.  Odd n are fermion
   irreps, even n are boson irreps.
 * ``p``: parity under inversion (0 gerade, 1 ungerade), 0 for groups without i.
@@ -39,7 +41,10 @@ n < 0).  Direct product: n adds (mod N), p is XOR-ed.  Complex conjugation
 Names
 -----
 Fermion irreps of C2, Cs, C2h use the Altmann-Herzig short names that DIRAC
-prints: ``1E`` has character +i under C2z (Cs: sigma_h), ``2E`` has -i.  C1 and
+prints: ``1E`` has character +i under C2z (Cs: sigma_h), ``2E`` has -i.  1E
+contains m_j = 1/2, -3/2, 5/2, ..., which are DIRAC's unbarred spinors (DIRAC
+LINSYM prints MJ = 1/2, -3/2, 5/2 for them, and moltra/traone.F puts unbarred
+spinors into 1E).  C1 and
 Ci fermion irreps are ``A1/2``, ``A1/2g``, ``A1/2u`` (DIRAC's ``A``, ``AG``,
 ``AU`` would clash with PySCF's boson names).  Boson irreps use PySCF's
 single-group names.  Linear groups use m_j (fermion) and m_l (boson) values:
@@ -62,10 +67,10 @@ _FROM_SINGLE_GROUP = {'D2h': 'C2h', 'C2v': 'C2', 'D2': 'C2', 'SO3': 'Dooh'}
 _NAMES = {
     'C1' : {(0, 0): 'A', (1, 0): 'A1/2'},
     'Ci' : {(0, 0): 'Ag', (0, 1): 'Au', (1, 0): 'A1/2g', (1, 1): 'A1/2u'},
-    'C2' : {(0, 0): 'A', (2, 0): 'B', (3, 0): '1E', (1, 0): '2E'},
-    'Cs' : {(0, 0): "A'", (2, 0): 'A"', (3, 0): '1E', (1, 0): '2E'},
+    'C2' : {(0, 0): 'A', (2, 0): 'B', (1, 0): '1E', (3, 0): '2E'},
+    'Cs' : {(0, 0): "A'", (2, 0): 'A"', (1, 0): '1E', (3, 0): '2E'},
     'C2h': {(0, 0): 'Ag', (2, 0): 'Bg', (0, 1): 'Au', (2, 1): 'Bu',
-            (3, 0): '1Eg', (1, 0): '2Eg', (3, 1): '1Eu', (1, 1): '2Eu'},
+            (1, 0): '1Eg', (3, 0): '2Eg', (1, 1): '1Eu', (3, 1): '2Eu'},
 }
 _IDS = {g: {name: 2*n+p for (n, p), name in tab.items()} for g, tab in _NAMES.items()}
 
@@ -160,7 +165,7 @@ def irrep_ids(groupname, kind='all', mj_max=None):
     bosons = [2*n+p for n in ns if n % 2 == 0 for p in ps]
     if modulus is not None:
         # DIRAC order: 1Eg 2Eg 1Eu 2Eu, then Ag Bg Au Bu
-        fermions = sorted(fermions, key=lambda ir: (ir % 2, -(ir // 2)))
+        fermions = sorted(fermions, key=lambda ir: (ir % 2, ir // 2))
         bosons = sorted(bosons, key=lambda ir: (ir % 2, ir // 2))
     if kind == 'fermion':
         return fermions
@@ -227,7 +232,7 @@ def character(groupname, ir, op):
     n, p = int(ir) // 2, int(ir) % 2
     if isinstance(op, tuple):
         assert op[0] == 'C'
-        return numpy.exp(-.5j * op[1] * n)
+        return numpy.exp(.5j * op[1] * n)
     sign = 1
     if op.startswith('b'):
         op = op[1:]
@@ -237,12 +242,12 @@ def character(groupname, ir, op):
     elif op == 'i':
         chi = (-1) ** p
     elif op == 'C2':
-        chi = numpy.exp(-.5j * numpy.pi * n)
+        chi = numpy.exp(.5j * numpy.pi * n)
     elif op == 'sh':
         if groupname == 'Cs':
-            chi = numpy.exp(-.5j * numpy.pi * n)
+            chi = numpy.exp(.5j * numpy.pi * n)
         else:  # sigma_h = i * C2
-            chi = (-1) ** p * numpy.exp(-.5j * numpy.pi * n)
+            chi = (-1) ** p * numpy.exp(.5j * numpy.pi * n)
     else:
         raise KeyError('Operation %s' % op)
     return sign * complex(numpy.round(chi, 14))
@@ -273,7 +278,7 @@ def descend(ir, groupname, subgroup):
     elif subgroup == 'Ci':
         out = _join(n, p, 'Ci')
     elif subgroup == 'Cs':
-        # sigma_h = i * C2: exp(-i pi n_s/2) = (-1)^p exp(-i pi n/2)
+        # sigma_h = i * C2: exp(i pi n_s/2) = (-1)^p exp(i pi n/2)
         out = _join(n + 2 * p, 0, 'Cs')
     elif subgroup == 'C1':
         out = _join(n, 0, 'C1')
