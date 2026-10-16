@@ -5,21 +5,46 @@ from pyscf.x2c import x2c
 from pyscf.gto import mole
 import numpy
 
+# The atomic code works in the basis of mole.uncontracted_basis: per l, the
+# unique exponents in descending order.  The uncontracted X2C molecule xmol
+# (pyscf Mole.decontract_basis, pyscf >= 2.1) lists the primitives shell by
+# shell, so for segmented contractions, added functions or shells not ordered
+# by l the two orders differ.  The atomic matrices are permuted into the xmol
+# order instead of being copied by position.
+def atomic_ao_index(xmol, ia):
+    '''Indices, within the 2c AO slice of atom ``ia`` of ``xmol``, of the AOs
+    of the atomic calculation: shells sorted by (l, -exponent), pyscf spinor
+    layout inside each shell.'''
+    b0, b1, p0, p1 = xmol.aoslice_2c_by_atom()[ia]
+    for ib in range(b0, b1):
+        if xmol.bas_nprim(ib) != 1 or xmol.bas_nctr(ib) != 1:
+            raise RuntimeError('atom %d of the X2C molecule is not fully uncontracted' % ia)
+    shells = sorted(range(b0, b1), key=lambda ib: (xmol.bas_angular(ib), -xmol.bas_exp(ib)[0]))
+    prims = [(xmol.bas_angular(ib), xmol.bas_exp(ib)[0]) for ib in shells]
+    for (l0, e0), (l1, e1) in zip(prims[:-1], prims[1:]):
+        if l0 == l1 and abs(e0 - e1) <= 1e-9 * e0:
+            # a singular uncontracted metric would break the X2C transformation
+            raise RuntimeError('atom %d: duplicate exponent %.10g (l = %d) in the uncontracted basis'
+                               % (ia, e0, l0))
+    ao_loc = xmol.ao_loc_2c()
+    return numpy.hstack([numpy.arange(ao_loc[ib], ao_loc[ib + 1]) for ib in shells]) - p0
+
+
 def construct_molecular_matrix(atm_blocks, atom_slices, xmol, n2c, four_component):
-    if four_component:
-        mol_matrix = numpy.zeros((n2c*2, n2c*2))
-        for ia in range(xmol.natm):
-            n2ca = atm_blocks[xmol.elements[ia]].shape[0]//2
-            _, _, c0, c1 = atom_slices[ia]
-            mol_matrix[c0:c1,c0:c1] = atm_blocks[xmol.elements[ia]][:n2ca,:n2ca]
-            mol_matrix[n2c+c0:n2c+c1,c0:c1] = atm_blocks[xmol.elements[ia]][n2ca:,:n2ca]
-            mol_matrix[c0:c1,n2c+c0:n2c+c1] = atm_blocks[xmol.elements[ia]][:n2ca,n2ca:]
-            mol_matrix[n2c+c0:n2c+c1,n2c+c0:n2c+c1] = atm_blocks[xmol.elements[ia]][n2ca:,n2ca:]
-    else:
-        mol_matrix = numpy.zeros((n2c, n2c))
-        for ia in range(xmol.natm):
-            _, _, c0, c1 = atom_slices[ia]
-            mol_matrix[c0:c1,c0:c1] = atm_blocks[xmol.elements[ia]]
+    '''Block-diagonal molecular matrix from per-element atomic matrices (atomic
+    AO order; [L, S] blocks if ``four_component``).'''
+    dtype = numpy.result_type(*[numpy.asarray(b).dtype for b in atm_blocks.values()])
+    n = 2 * n2c if four_component else n2c
+    mol_matrix = numpy.zeros((n, n), dtype=dtype)
+    for ia in range(xmol.natm):
+        blk = numpy.asarray(atm_blocks[xmol.elements[ia]])
+        idx = atomic_ao_index(xmol, ia) + atom_slices[ia][2]
+        if four_component:
+            idx = numpy.hstack((idx, idx + n2c))
+        if blk.shape[0] != idx.size:
+            raise RuntimeError('atomic block of %s has dimension %d, expected %d'
+                               % (xmol.elements[ia], blk.shape[0], idx.size))
+        mol_matrix[numpy.ix_(idx, idx)] = blk
     return mol_matrix
 
 def amfi(x2cobj, printLevel = 0, with_gaunt = True, with_gauge = True, with_gaunt_sd=False, gaussian_nuclear = False, aoc = False, pt = False, pcc = False, int4c = False):

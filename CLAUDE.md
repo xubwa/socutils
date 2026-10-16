@@ -107,9 +107,11 @@ two-electron corrections on) and only then require the `x2camf` integral backend
 
 - **The root `__init__.py`** decides whether the bundled `x2camf` dispatcher
   (`x2camf_c/`) is put on `sys.path` as the top-level `x2camf`. Controlled by
-  `SOCUTILS_X2CAMF`: `auto` (default — bundled only if no external `x2camf` is
-  installed), `bundled`, or `external`. This escape hatch keeps existing
-  workflows that already have the Warlocat pybind build working unchanged.
+  `SOCUTILS_X2CAMF`: `bundled` (default, even if an external `x2camf` is
+  installed), `auto` (bundled only if no external `x2camf` is installed), or
+  `external`. The external package's Python layer places the atomic matrices by
+  position and is wrong for segmented / unsorted basis sets, hence the default.
+  In PySCF mainline there will be no option: only the C backend.
 
 - **`somf/`** — spin-orbit mean-field machinery (`amf.py`, `snso.py`,
   `somf_pt.py`, `x2cmp.py`) underlying the `.x2camf()`/`.x2cmp()` shortcuts.
@@ -134,7 +136,7 @@ two-electron corrections on) and only then require the `x2camf` integral backend
 
 ## Environment variables
 
-- `SOCUTILS_X2CAMF` = `auto` (default) | `bundled` | `external` — whether the
+- `SOCUTILS_X2CAMF` = `bundled` (default) | `auto` | `external` — whether the
   in-tree `x2camf_c` dispatcher is exposed as the top-level `x2camf`.
 - `X2CAMF_BACKEND` = `c` (default if built) | `cpp` — which x2camf backend runs.
 - `X2CAMF_CPP_LIBRARY` — path to upstream `libx2camf*.so` for `make compare` / cpp backend.
