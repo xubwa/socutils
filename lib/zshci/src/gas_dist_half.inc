@@ -126,6 +126,7 @@ static void ZG_NAME(dist_half)(const zg_plan *p, int h, ZG_SCALAR *const *w,
     int32_t *reach_list = malloc((size_t)(ncc + 1) * sizeof(int32_t));
     uint8_t *okc = calloc((size_t)ncc + 1, 1);
     int64_t rk[ZG_MAX_SUB];
+    uint32_t sm[ZG_MAX_SUB]; /* a string as its sub-strings */
     /* Operators of a string, as enumerated. */
     int64_t *xs = malloc((size_t)(capx > capy ? capx : capy) * sizeof(int64_t));
     int64_t *xsid = malloc((size_t)(capx > capy ? capx : capy) * sizeof(int64_t));
@@ -235,17 +236,16 @@ static void ZG_NAME(dist_half)(const zg_plan *p, int h, ZG_SCALAR *const *w,
         /* The row operators. */
         int64_t nent = 0, nrun = 0, maxx = 0;
         for (int r = 0; r < m && nar > 0; ++r) {
-          const uint64_t wrow =
-              zg_side_word(p, rs, sr->bucket_sid[sr->bucket_start[bt] + r0 + r]);
-          zg_string_ranks(p, rs, wrow, rk);
+          const int erow =
+              zg_side_masks(p, rs, sr->bucket_sid[sr->bucket_start[bt] + r0 + r], sm);
+          zg_string_ranks(p, rs, sm, rk);
           row_run[r] = nrun;
           int n = 0;
           for (int i = 0; i < nar; ++i) {
-            n = zg_asg_enum(p, rs, kd->kr, kd->kind_r, kd->rel_r, &asg_r[i], wrow,
-                            rk, filter ? kd : NULL, xs, xsid, xsign, n);
+            n = zg_asg_enum(p, rs, kd->kr, kd->kind_r, kd->rel_r, &asg_r[i], sm, rk,
+                            filter ? kd : NULL, xs, xsid, xsign, n);
           }
-          const int flip =
-              kd->par_r && ((__builtin_popcountll(wrow) + kd->add_r) & 1);
+          const int flip = kd->par_r && ((erow + kd->add_r) & 1);
           /* dist: only the source rows of the slice. */
           if (s0 > 0 || s1 < sr->nbucket) {
             int kept = 0;
@@ -426,16 +426,15 @@ static void ZG_NAME(dist_half)(const zg_plan *p, int h, ZG_SCALAR *const *w,
             if (nac == 0) continue;
             const int64_t ncol = sc->bucket_size[bb];
             for (; jnow < ncol && ne < flush_at; ++jnow) {
-              const uint64_t wc =
-                  zg_side_word(p, cs, sc->bucket_sid[sc->bucket_start[bb] + jnow]);
-              zg_string_ranks(p, cs, wc, rk);
+              const int ecol =
+                  zg_side_masks(p, cs, sc->bucket_sid[sc->bucket_start[bb] + jnow], sm);
+              zg_string_ranks(p, cs, sm, rk);
               int n = 0;
               for (int i = 0; i < nac; ++i) {
-                n = zg_asg_enum(p, cs, kd->kc, kd->kind_c, kd->rel_c, &asg_c[i], wc,
+                n = zg_asg_enum(p, cs, kd->kc, kd->kind_c, kd->rel_c, &asg_c[i], sm,
                                 rk, NULL, xs, xsid, xsign, n);
               }
-              const int flip =
-                  kd->par_c && ((__builtin_popcountll(wc) + kd->add_c) & 1);
+              const int flip = kd->par_c && ((ecol + kd->add_c) & 1);
               cnt[3] += n;
               if (ne + n > tcap) {
                 tcap = 2 * (ne + n) + 256;

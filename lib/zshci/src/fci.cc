@@ -254,7 +254,7 @@ void RunFci(const Input& input, const Integrals<S>& ints, const Comm& comm) {
                      : in.kernel == "block"   ? GasKernel::kBlock
                                               : GasKernel::kBlas;
   if (kernel != GasKernel::kReference && !space.block_ok()) {
-    std::printf("fci: a side holds more than 64 spinors: reference kernel\n");
+    std::printf("fci: the block kernels do not apply: reference kernel\n");
     kernel = GasKernel::kReference;
   }
 
@@ -301,8 +301,11 @@ void RunFci(const Input& input, const Integrals<S>& ints, const Comm& comm) {
       : kernel == GasKernel::kBlas ? 2.0 * dim * sizeof(S)
                                    : 0.0;
   const double npair = n * (n - 1) / 2.0;
+  // The plan: per string about 40 bytes, per A bucket and B class (and B
+  // bucket and A class) 12.
   const double other_bytes =
-      3.0 * npair * npair * sizeof(S) + 40.0 * (info[0] + info[1]) + (1 << 30);
+      3.0 * npair * npair * sizeof(S) + 40.0 * (info[0] + info[1]) +
+      12.0 * (info[4] * info[3] + info[5] * info[2]) + (1 << 30);
   const double need = num_vectors * vector_bytes + 8.0 * most_local +
                       kernel_bytes + other_bytes;
   double available = input.memory_gb > 0.0

@@ -79,8 +79,8 @@ class GasSpace {
   // Strings of A and of B, classes of A and of B, buckets of A and of B,
   // blocks, tasks of the reference kernel.
   std::vector<int64_t> Info() const;
-  // Whether the block and BLAS kernels apply (each side at most 64
-  // spinors); the reference kernel runs otherwise.
+  // Whether the block and BLAS kernels apply (always now); the reference
+  // kernel runs otherwise.
   bool block_ok() const;
   // A number that changes with anything that changes the order of the
   // determinants: for checkpoint files.

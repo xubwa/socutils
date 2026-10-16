@@ -4,7 +4,7 @@
  * piece of work, no atomic additions.  The nine kinds of terms (zg_term) are
  * each a sum over x, y of W[x][y] O_A(x) (x) O_B(y); x and the source rows
  * are found from the target row, y and the source columns from the target
- * column, both by acting on the strings as 64-bit words. */
+ * column, both by acting on the sub-strings of the strings. */
 
 /* W[x][y] = sign * v[P,R] of a kind of term, and whether it is all zero. */
 static ZG_SCALAR *ZG_NAME(term_matrix)(const zg_plan *p, const zg_term *t,
@@ -71,6 +71,12 @@ void ZG_NAME(zg_sigma_block)(const zg_plan *p, const ZG_SCALAR *v,
   for (int b = 0; b < sb->nbucket; ++b) {
     if (sb->bucket_size[b] > maxb) maxb = sb->bucket_size[b];
   }
+  /* Electrons of a source A string minus those of the target. */
+  int add_a[9];
+  for (int k = 0; k < 9; ++k) {
+    add_a[k] = 0;
+    for (int i = 0; i < p->terms[k].ka; ++i) add_a[k] += p->terms[k].kind_a[i] ? -1 : 1;
+  }
   const int stats = getenv("ZGASCI_STATS") != NULL;
   double macs[9] = {0};
 #pragma omp parallel for schedule(static)
@@ -78,9 +84,10 @@ void ZG_NAME(zg_sigma_block)(const zg_plan *p, const ZG_SCALAR *v,
 #pragma omp parallel reduction(+ : macs[:9])
   {
     int64_t *xs = malloc((size_t)capx * sizeof(int64_t));
-    uint64_t *xsrc = malloc((size_t)capx * sizeof(uint64_t));
+    int64_t *xsrc = malloc((size_t)capx * sizeof(int64_t));
     int8_t *xsign = malloc((size_t)capx);
-    uint64_t *ysrc = malloc((size_t)capy * sizeof(uint64_t));
+    int64_t *ysrc = malloc((size_t)capy * sizeof(int64_t));
+    uint32_t sm[ZG_MAX_SUB];
     int64_t *yx = malloc((size_t)capy * sizeof(int64_t));
     int8_t *ys = malloc((size_t)capy);
     ZG_SCALAR *zero = calloc((size_t)maxb + 1, sizeof(ZG_SCALAR));
@@ -110,10 +117,9 @@ void ZG_NAME(zg_sigma_block)(const zg_plan *p, const ZG_SCALAR *v,
         int64_t *st = estart + (size_t)k * (2 * ZG_MAX_COLS + 1);
         if (!live[k] || t->kb == 0) continue;
         for (int64_t j = 0; j < nj; ++j) {
-          const uint64_t wb =
-              zg_side_word(p, 1, sb->bucket_sid[sb->bucket_start[bb_t] + j0 + j]);
-          const int n = zg_enum_ops(t->kb, t->kind_b, t->rel_b, p->nside[1], wb, yx,
-                                    ysrc, ys, capy);
+          zg_side_masks(p, 1, sb->bucket_sid[sb->bucket_start[bb_t] + j0 + j], sm);
+          const int n = zg_enum_ops(p, 1, t->kb, t->kind_b, t->rel_b, sm, yx, ysrc, ys,
+                                    capy);
           if (ne + n > ecap) {
             ecap = 2 * (ne + n);
             ey = realloc(ey, ecap * sizeof(int32_t));
@@ -124,8 +130,7 @@ void ZG_NAME(zg_sigma_block)(const zg_plan *p, const ZG_SCALAR *v,
             st[2 * j + pass] = ne;
             for (int e = 0; e < n; ++e) {
               if ((ys[e] < 0) != pass) continue;
-              const int64_t sid = zg_word_sid(p, 1, ysrc[e]);
-              if (sid < 0) continue;
+              const int64_t sid = ysrc[e];
               const int bb = sb->bucket[sid];
               if (ukey[bb] < 0) {
                 ukey[bb] = nu;
@@ -143,21 +148,20 @@ void ZG_NAME(zg_sigma_block)(const zg_plan *p, const ZG_SCALAR *v,
       for (int u = 0; u < nu; ++u) ukey[ulist[u]] = -1;
       /* The rows. */
       for (int64_t r = task->r0; r < task->r1; ++r) {
-        const uint64_t wa = zg_side_word(p, 0, sa->bucket_sid[sa->bucket_start[ba_t] + r]);
+        const int ea = zg_side_masks(p, 0, sa->bucket_sid[sa->bucket_start[ba_t] + r], sm);
         ZG_SCALAR *row = target + r * ncol + j0;
         for (int k = 0; k < 9; ++k) {
           const zg_term *t = &p->terms[k];
           if (!live[k]) continue;
           const int64_t *st = estart + (size_t)k * (2 * ZG_MAX_COLS + 1);
-          const int n = zg_enum_ops(t->ka, t->kind_a, t->rel_a, p->nside[0], wa, xs,
-                                    xsrc, xsign, capx);
+          const int n = zg_enum_ops(p, 0, t->ka, t->kind_a, t->rel_a, sm, xs, xsrc,
+                                    xsign, capx);
           for (int e = 0; e < n; ++e) {
-            const int64_t sid = zg_word_sid(p, 0, xsrc[e]);
-            if (sid < 0) continue;
+            const int64_t sid = xsrc[e];
             const int ba = sa->bucket[sid];
             const int64_t pa = sa->pos[sid];
             int sg = xsign[e];
-            if ((t->kb & 1) && (__builtin_popcountll(xsrc[e]) & 1)) sg = -sg;
+            if ((t->kb & 1) && ((ea + add_a[k]) & 1)) sg = -sg;
             if (t->kb == 0) {
               const size_t kk = (size_t)ba * ncb + cb_t;
               if (p->match[kk] != bb_t) continue;
