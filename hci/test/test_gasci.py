@@ -284,6 +284,34 @@ class BlasKernel(unittest.TestCase):
                          targets=[2, 0], constraints=[([0, 2], 2, 5), ([1, 2, 3], 2, 5)],
                          real=real)
 
+    def test_wide_sides(self):
+        # More than 64 spinors on side A, then on side B: 72 spinors, at
+        # most two electrons in 62 of them, with labels; random v (the
+        # kernels are linear in it).
+        n, nelec = 72, 4
+        jz = [(p * p + 3 * p) % 5 - 2 for p in range(n)]
+        npair = n * (n - 1) // 2
+        for sub_sizes, nsub_a, virt in (
+                ([4, 16, 16, 12, 10, 8, 3, 3], 6, [1, 2, 3, 4, 5]),
+                ([3, 3, 4, 16, 16, 12, 10, 8], 2, [3, 4, 5, 6, 7])):
+            plan = gasci.Plan(n, nelec, sub_sizes, nsub_a, [(virt, 0, 2)],
+                              [jz], [0], [0])
+            self.assertTrue(plan.block_ok)
+            self.assertGreater(plan.dim, 1000)
+            for real in (False, True):
+                rng = numpy.random.default_rng(5)
+                v = rng.standard_normal((npair, npair))
+                c = rng.standard_normal(plan.dim)
+                if not real:
+                    v = v + 1j * rng.standard_normal((npair, npair))
+                    c = c + 1j * rng.standard_normal(plan.dim)
+                reference = plan.sigma(v, c, kernel='reference')
+                for kernel in ('block', 'blas'):
+                    sigma = plan.sigma(v, c, kernel=kernel)
+                    self.assertLess(abs(sigma - reference).max(),
+                                    1e-12 * abs(reference).max(),
+                                    msg='%s %s' % (sub_sizes, kernel))
+
     def test_symmetric_integrals(self):
         # Integrals that conserve the labels (as real ones do), over the
         # driver with its reordering of the orbitals.
