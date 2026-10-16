@@ -34,9 +34,10 @@ def trimmed(symb, emin=0.1):
     except Exception:
         shells = gto.load('dyall-v2z', symb)
     for sh in shells:
-        l, prims = sh[0], [p for p in sh[1:] if p[0] >= emin]
+        head = sh[:2] if isinstance(sh[1], int) else sh[:1]     # [l] or [l, kappa]
+        prims = [p for p in sh[len(head):] if p[0] >= emin]
         if prims and any(abs(c) > 1e-8 for p in prims for c in p[1:]):
-            out.append([l] + prims)
+            out.append(list(head) + prims)
     return out
 
 
@@ -86,13 +87,10 @@ def eos_min(e):
     if not r:
         return None, None
     am = r[0]
-    # bulk modulus B = V d2E/dV2, V = a^3/4 (A^3 -> bohr), E in Eh -> GPa
-    au2gpa = 29421.02
-    vb = (am / 0.529177210903)**3 / 4
-    dEda = numpy.polyder(p)
-    d2Eda2 = numpy.polyder(p, 2)
-    da_dv = 1 / (3 * vb / (am / 0.529177210903)) / 0.529177210903   # da(A)/dV(bohr^3)
-    bmod = vb * numpy.polyval(d2Eda2, am) * da_dv**2 * au2gpa
+    # B = V d2E/dV2 at the minimum; V = a^3/4 (A^3 per formula unit), dE/da = 0
+    # there, so d2E/dV2 = E''(a) / (dV/da)^2; 1 Eh/A^3 = 4359.74 GPa
+    vb = am**3 / 4
+    bmod = vb * numpy.polyval(numpy.polyder(p, 2), am) / (3 * am**2 / 4)**2 * 4359.744
     return am, bmod
 
 
