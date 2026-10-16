@@ -53,7 +53,8 @@ class KnownValues(unittest.TestCase):
         self.assertTrue(mf.converged)
         h = mf.get_hcore()
         self.assertLess(abs(h - h.conj().T).max(), 1e-10)
-        self.assertAlmostEqual(e, -2595.619430, 5)
+        # loose: the unconverged atomic Dirac-HF of Br in 6-31G (see below) leaves ~1e-5 noise
+        self.assertAlmostEqual(e, -2595.61943, 4)
         # Kramers symmetry is checked with def2-SVP: in 6-31G the atomic Dirac-HF of Br
         # stalls at a density change of ~1e-5 and the hcore is Kramers symmetric only to ~1e-5
         mol = _mol('def2-svp')
