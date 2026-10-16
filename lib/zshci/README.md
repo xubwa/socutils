@@ -7,7 +7,8 @@ Given one- and two-electron integrals over spinors, `zshci`
 
 - selects a variational space of determinants with the heat-bath criterion
   (`"mode": "select"`), or takes a list of determinants as given
-  (`"mode": "diag"`),
+  (`"mode": "diag"`), or does full or GAS CI without determinant lists
+  (`"mode": "fci"`, below),
 - diagonalizes the Hamiltonian in it (Davidson),
 - optionally adds second-order Epstein-Nesbet perturbation theory:
   deterministic, stochastic or semistochastic,
@@ -31,12 +32,14 @@ into `config.mk`:
 
     EIGEN_ROOT = /path/to/eigen      # the directory that contains Eigen/
     HDF5_ROOT  = /path/to/hdf5       # contains include/ and lib/
+    MKL_LIB    = /path/to/mkl/lib     # contains libmkl_rt.so (fci mode)
 
 Then
 
     make                    # bin/zshci: threads only, no MPI needed
     make MPI=1 CXX=mpicxx   # bin/zshci_mpi: for runs on several nodes
     make test               # self-checks
+    make BLAS=none          # bin/zshci_noblas: the fci kernel without BLAS
 
 Both programs do everything; `zshci_mpi` is only needed to use more than one
 node. Any combination of ranks and threads gives the same results.
@@ -309,6 +312,109 @@ the datasets as they are. `wfn.h5` can be given as `"detfile"` to restart from
 a previous space; a selection then also starts the eigensolver from the CI
 vectors of that file, if it holds one per root.
 
+## Full and GAS CI: `"mode": "fci"`
+
+Full CI, or CI in a space bounded by generalized-active-space constraints,
+over all spinors of the integral file, without lists of determinants: the
+sigma vector comes from the kernel of socutils' zgasci, copied unchanged into
+`src/zgasci` (commit and re-sync in `src/zgasci/UPSTREAM`). The spinors are
+reordered and cut into sub-groups as `socutils.hci.gasci` does it
+(`src/gas_space.*`); the labels of `"symmetry"` select one block.
+
+```json
+{
+  "mode": "fci",
+  "integrals": "o2.h5",
+  "nroots": 1,
+  "prefix": "/scratch/run",
+  "symmetry": [{"labels": "fcidump", "mod": 0}, {"labels": [0, 0, 1, 1], "mod": 2}],
+  "symmetry_tolerance": 1e-5,
+  "restrictions": [{"orbitals": [0, 1, 2, 3], "min": 4, "max": 4}],
+  "fci": {"gas": [{"orbitals": [10, 11, 12], "max": 2, "weights": [1, 1, 2]}],
+          "target": [0, 0], "max_space": 3, "checkpoint_every": 1},
+  "davidson": {"tol": 1e-6, "max_iterations": 200}
+}
+```
+
+| key in `"fci"` | meaning (default) |
+|---|---|
+| `nelec` | electrons (NELEC of the file) |
+| `gas` | constraints `{"orbitals", "min", "max", "weights"}`: `min <= sum weight * n_p <= max`; the top-level `restrictions` are added to them |
+| `target` | sum of the labels of the occupied spinors, one per label set (that of the lowest `nelec` spinors) |
+| `max_subgroup`, `subgroups` | the cut into sub-groups (12; `[[groups of side A], [groups of side B]]`) |
+| `kernel` | `"blas"`, `"block"` or `"reference"` (`"blas"`) |
+| `max_space` | basis vectors of the Davidson, each with its product (3 per root) |
+| `level_shift` | of the preconditioner `1 / (H_ii - E + shift)` (1e-3) |
+| `checkpoint`, `checkpoint_every`, `restart` | file of the Ritz vectors (`<prefix>/fci.ckpt`, `"none"`: none), written every so many iterations (1); `restart` starts from it |
+| `huge_pages` | `madvise` the vectors for transparent huge pages (true) |
+| `distributed`, `balance`, `calibrate`, `slice_gb` | MPI, see below |
+| `write_wfn` | `wfn.h5` is written up to this many determinants (1e7) |
+| `dry_run` | only the plan and the memory needed |
+| `benchmark_sigmas` | only time this many products with H |
+
+`davidson.tol` (residual norm), `davidson.max_iterations` and
+`davidson.dense_dim` apply. Imaginary parts must be exactly zero for real
+arithmetic: write such integral files with real numbers. Integrals that
+change a label are dropped below `symmetry_tolerance` (they cannot act within
+one block); the O2 files of the zfs work have such elements up to 1.3e-6.
+
+**Davidson** (`src/fci_davidson.*`). It keeps `max_space` basis vectors and
+their products with H and nothing else of the full length besides the
+diagonal; combinations are formed in place, element by element. On
+collapse it keeps the Ritz vectors and the previous ones (as LOBPCG does),
+so 3 vectors per root converge in about as many products as the 12-vector
+Davidson of `pyscf.lib.davidson1` (O2 8 in 48: 19 against 23). Every
+`checkpoint_every` iterations the Ritz vectors go to `checkpoint` (written
+beside it and renamed, so a killed job leaves the previous one) with a
+fingerprint of the space; `"restart": true` reads them back, also on
+another number of ranks. Memory is printed and checked at the start: per
+rank `2 max_space` vectors, the diagonal (8 bytes per determinant), two
+vectors of kernel workspace, and the plan.
+
+**Output**: `shci.e`; with one rank also `wfn.h5` (determinants over the
+original spinors, coefficients in their phase) and, as requested by `"rdm"`,
+`rdm_i_i.h5` and transition `rdm_0_j.h5` in the convention of the other
+modes (from the kernel's pair density, a slow reference loop: meant for
+moderate spaces).
+
+**MPI** (`src/fci_dist.*`, `src/gas_dist*`): with several ranks every rank
+owns a range of A buckets of the plan (a segment of each vector) and a range
+of B buckets of the transposed vector. c is transposed into the second
+distribution by pairwise exchanges; each half of the kernel then goes
+through the source vector slice by slice, each rank reading the slices of
+the others one-sidedly (`MPI_Get`, the next while the present one is worked
+on) and applying a copy of the kernel's `blas_half` restricted to its own
+target rows and the rows of the slice (`src/gas_dist_half.inc`, derived from
+`zgasci_blas.inc`, changes marked `dist:`); the result of the transposed
+half is transposed back. With `calibrate` (default) one product is timed
+per bucket first and the ranges are cut by these times. `slice_gb` bounds a
+slice (default: a rank's whole range); two slices are held at a time.
+Results agree with one rank to rounding (energies to 1e-11 Eh in the tests).
+One rank per node with all its threads is the arrangement to use: one rank
+per socket gains 6 % on one node and loses across nodes.
+
+**Measured** (O2 DYVDZ X2C, real, labels 2Ω and parity, block 2Ω = 0 g;
+Xeon Gold 6248R, 48 cores, MKL; one sigma, seconds). Nodes of the same type
+differ by up to 25 %: the same input took 182 s on some and 235 s on
+others, so comparisons below are within one job.
+
+| block | determinants | 1 node | 2 nodes | 4 nodes |
+|---|---:|---:|---:|---:|
+| 12 in 40 | 3.5e8 | 55.6 | 33.5 | |
+| 12 in 44 | 1.16e9 | 182.6 | 99.9 | 70.6 |
+| 10 in 52 | 9.4e8 | 298 (slower node) | | 84.9 |
+
+Energies of the Davidson with 3 vectors (tol 1e-6) against zgasci
+(`pyscf.lib.davidson1`, 12 vectors): 8 in 48 2Ω = 0 −149.953598673306 (19
+products; zgasci −149.95359867330146, 23), 2Ω = 2 −149.953588854049, SDTQ
+−150.086940751954, 30 spinors complex 2 roots −149.887068875422 and
+−149.828174697142; all within 5e-12 Eh. Where the time of one sigma goes
+(12 in 44, thread seconds): dot products of the dilute products 53 %, gathers
+14 %, scatter 14 %, matrix products 6 %, axpy 6 %, enumeration of the
+operators 5 %; transparent huge pages and interleaved memory change nothing
+(235.5 and 238.4 s against 235.6 s), one socket alone takes 1.74 times as
+long as two.
+
 ## Layout
 
 | file | content |
@@ -318,7 +424,10 @@ vectors of that file, if it holds one per root.
 | `src/heat_bath.*`, `src/excite.h` | excitation generation, symmetry and occupation filters |
 | `src/connect.h`, `src/connect_groups.h`, `src/connect_bytes.h`, `src/sparse_h.*`, `src/direct_h.h` | connected pairs of determinants, the sparse Hamiltonian, the Hamiltonian applied without storing it |
 | `src/davidson.*`, `src/distributed_h.*` | eigensolver, alone and over MPI ranks |
-| `src/select.h`, `src/diag.h`, `src/driver_common.h` | the two modes |
+| `src/select.h`, `src/diag.h`, `src/driver_common.h` | the select and diag modes |
+| `src/fci.*`, `src/gas_space.*`, `src/fci_davidson.*`, `src/big_array.h` | the fci mode: space, driver, Davidson of few vectors |
+| `src/fci_dist.*`, `src/gas_dist.*`, `src/gas_dist_*.inc` | the fci mode over MPI ranks |
+| `src/zgasci/` | copy of the zgasci kernel (C99, BLAS) |
 | `src/pt.h`, `src/rdm.h` | perturbation theory, density matrices |
 | `src/comm.*`, `src/parallel.h` | MPI wrapper, node-shared arrays, threading helpers |
 | `test/` | self-checks and a small test Hamiltonian |

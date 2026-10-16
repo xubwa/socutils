@@ -8,3 +8,8 @@ files again and update the commit here:
            zgasci_block.inc zgasci_blas.inc; do
     git -C <socutils-zgasci> show <commit>:lib/zgasci/$f > src/zgasci/$f
   done
+
+src/gas_dist_half.inc is derived from blas_half (zgasci_blas.inc) and
+term_matrix (zgasci_block.inc) of the same commit, for the MPI version: the
+changes are marked "dist:" there. After a re-sync, compare those functions
+with the new ones and carry the changes over.
