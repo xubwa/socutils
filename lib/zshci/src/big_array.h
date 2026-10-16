@@ -1,7 +1,7 @@
 // Arrays of many gigabytes for the vectors of the "fci" mode.
 //
-// The memory is mapped directly (not through malloc), optionally marked for
-// transparent huge pages, and touched first by all threads with the static
+// The memory is mapped directly (not through malloc), marked for transparent
+// huge pages or against them, and touched first by all threads with the static
 // schedule that the vector operations use, so that on a machine with several
 // memory controllers (sockets) each thread's part lies near it. Nothing is
 // zeroed beyond what the mapping gives.
@@ -29,11 +29,7 @@ class BigArray {
     void* p = mmap(nullptr, bytes_, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (p == MAP_FAILED) throw std::bad_alloc();
-#ifdef MADV_HUGEPAGE
-    if (huge_pages) madvise(p, bytes_, MADV_HUGEPAGE);
-#else
-    (void)huge_pages;
-#endif
+    madvise(p, bytes_, huge_pages ? MADV_HUGEPAGE : MADV_NOHUGEPAGE);
     data_ = static_cast<T*>(p);
     const long n = static_cast<long>(size);
 #pragma omp parallel for schedule(static)
