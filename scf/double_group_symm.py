@@ -151,6 +151,21 @@ def get_occ(mo_energy, orbsym, nelec, irrep_nelec, groupname, mask=None, kramers
     return mo_occ
 
 
+def symmetrize_matrix(mat, so):
+    '''Projection of an AO matrix onto the symmetry blocks: U blockdiag(U^+ M U) U^+
+    with U = hstack(so) unitary.  Also returns the largest discarded element.'''
+    u = numpy.hstack(so)
+    mp = lib.dot(u.conj().T, lib.dot(mat, u))
+    mask = numpy.zeros(mp.shape, dtype=bool)
+    i0 = 0
+    for x in so:
+        mask[i0:i0 + x.shape[1], i0:i0 + x.shape[1]] = True
+        i0 += x.shape[1]
+    cross = abs(mp[~mask]).max() if (~mask).any() else 0.
+    mp[~mask] = 0
+    return lib.dot(u, lib.dot(mp, u.conj().T)), cross
+
+
 def irrep_occupation(orbsym, mo_occ, irrep_id):
     return [int(round(mo_occ[orbsym == ir].sum())) for ir in irrep_id]
 
@@ -256,6 +271,40 @@ class DoubleGroupSymm:
                 if mo_energy[ihomo] > mo_energy[ilumo] + 1e-9:
                     logger.warn(self, 'HOMO %.15g > LUMO %.15g', mo_energy[ihomo], mo_energy[ilumo])
         return mo_occ
+
+    # cross-irrep Fock elements larger than this mean the geometry is not exactly symmetric
+    cross_irrep_warn = 1e-8
+
+    def _symmetrize(self, mat, what):
+        if mat is None or numpy.ndim(mat) != 2:
+            return mat
+        so, irrep_id = self._dg_symm_orb()
+        mat_s, cross = symmetrize_matrix(numpy.asarray(mat), so)
+        if isinstance(mat, lib.NPArrayWithTag):
+            # keep tags such as ecoul/exc of a KS vhf
+            mat_s = lib.tag_array(mat_s, **mat.__dict__)
+        if cross > self.cross_irrep_warn and not getattr(self, '_cross_irrep_warned', False):
+            logger.warn(self, '%s couples different irreps by %.2e; the geometry is not exactly '
+                        'symmetric and these couplings are dropped. socutils.symm.to_symm_frame '
+                        'symmetrizes the coordinates.', what, cross)
+            self._cross_irrep_warned = True
+        return mat_s
+
+    def get_fock(self, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1, diis=None,
+                 diis_start_cycle=None, level_shift_factor=None, damp_factor=None, fock_last=None):
+        # project h1e and vhf onto the symmetry blocks before DIIS: cross-irrep elements
+        # are directions the symmetry-constrained problem cannot remove
+        if h1e is None:
+            h1e = self.get_hcore()
+        if dm is None:
+            dm = self.make_rdm1()
+        if vhf is None:
+            vhf = self.get_veff(self.mol, dm)
+        h1e = self._symmetrize(h1e, 'The core Hamiltonian')
+        vhf = self._symmetrize(vhf, 'The mean-field potential')
+        return super().get_fock(h1e=h1e, s1e=s1e, vhf=vhf, dm=dm, cycle=cycle, diis=diis,
+                                diis_start_cycle=diis_start_cycle, level_shift_factor=level_shift_factor,
+                                damp_factor=damp_factor, fock_last=fock_last)
 
     def get_grad(self, mo_coeff, mo_occ, fock=None):
         g = super().get_grad(mo_coeff, mo_occ, fock)

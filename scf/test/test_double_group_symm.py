@@ -160,6 +160,23 @@ class KnownValues(unittest.TestCase):
                              False)
         self.assertAlmostEqual(es[0], es[1], 9)
 
+    def test_near_symmetric_geometry(self):
+        # 1e-6 Angstrom from C2v: still detected as C2v; the cross-irrep couplings (~3e-6)
+        # are dropped from h1e/vhf before DIIS, with a warning
+        import io
+        mol = gto.M(atom='O 0 0 0; H 0 .757 .587; H 0 -.757001 .587', basis='cc-pvdz',
+                    symmetry=True, verbose=0)
+        mol.stdout = buf = io.StringIO()
+        mf = dgs.SymAdaptedRHF(mol)
+        mf.with_x2c = x2c.SpinorX2CHelper(mol)
+        mf.verbose = 3
+        mf.conv_tol = 1e-11
+        mf.kernel()
+        self.assertTrue(mf.converged)
+        self.assertIn('couples different irreps', buf.getvalue())
+        so, irrep_id = mf._dg_symm_orb()
+        self.assertLess(dgs.symmetrize_matrix(mf.get_fock(), so)[1], 1e-12)
+
     def test_frame_refused(self):
         mol_lab = MOLS['H2O'][0]
         with self.assertRaises(symm.PointGroupSymmetryError):
