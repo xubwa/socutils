@@ -415,6 +415,26 @@ operators 5 %; transparent huge pages and interleaved memory change nothing
 (235.5 and 238.4 s against 235.6 s), one socket alone takes 1.74 times as
 long as two.
 
+**Limits and the plan.** At most 32 sub-groups of at most 16 spinors, 4
+label sets, 2^31 strings per side; a side may hold any number of spinors
+(the kernels act on the sub-strings of a string; up to 2026-10-16 more than
+64 on a side sent the run to the reference kernel). The electrons of a
+sub-group are bounded by the constraints without negative weights (`k <=
+max / weight`), and the distributions of electrons over the sub-groups of a
+side are enumerated within these bounds, at most 1e8 (24 bytes each). The
+plan itself takes per rank about 24 bytes per string of each side (plus 16
+for the BLAS kernel) and 12 bytes per pair (A bucket, B class) and (B
+bucket, A class); the matrices `W` of the nine kinds of terms hold about
+9 (n/2)^4 numbers. O2 DYCVTZ SDTQ (fc: 12 electrons in 168 spinors, at most
+4 in the 154 virtual ones, 2Ω = 0 g): 2.48e9 determinants, plan 11 s and
+28 GB; all-electron (16 in 172): 1.05e10 determinants, plan 17 s and 48 GB.
+The fc block on 4 nodes (1 rank x 48 threads each, `slice_gb` 4): 1107 s per
+sigma, peak 84 GB on the largest rank with two vectors (calibration product
+1481 s before the parts are cut). Such dilute spaces spend their time on
+enumerating and sorting operators and on gathers, not in matrix products
+(SDT, 3.7e7 determinants, one node: 57 s with `max_subgroup` 16, 68 s with
+12).
+
 ## Layout
 
 | file | content |
