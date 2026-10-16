@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/home/user/socutils/examples/qdhf/pbc/35-rocksalt_eos.py", line 43, in <module>
+    basis = {A: trimmed(A), B: trimmed(B)}
+                ~~~~~~~^^^
+  File "/home/user/socutils/examples/qdhf/pbc/35-rocksalt_eos.py", line 37, in trimmed
+    l, prims = sh[0], [p for p in sh[1:] if p[0] >= emin]
+                                            ~^^^
+TypeError: 'int' object is not subscriptable
