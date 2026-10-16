@@ -89,7 +89,7 @@ Double-group symmetry
 ``scf.double_group_symm`` adds double-group point-group symmetry to the spinor
 SCF: ``SymAdaptedUHF`` (Kramers unrestricted), ``SymAdaptedRHF`` (Kramers
 restricted), and the four-component ``SymAdaptedDHF`` / ``SymAdaptedRDHF``
-(:doc:`dhf`); ``dft.dft.SymAdaptedUKS`` / ``SymAdaptedRKS`` for Kohn-Sham.
+(:doc:`dhf`).  The spinor Kohn-Sham classes have no symmetry support yet.
 The Fock matrix is blocked by the irreps of an Abelian double group:
 
 * D2h molecules use C2h*, C2v and D2 molecules use C2*, plus C1*, Ci*, Cs*;

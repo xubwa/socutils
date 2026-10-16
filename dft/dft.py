@@ -69,18 +69,3 @@ class KRDFT(dks.KohnShamDFT, spinor_hf.KRHF):
 
 RKS = KRDFT
 
-
-def _symm_classes():
-    from socutils.scf.double_group_symm import DoubleGroupSymm
-
-    class SymAdaptedUKS(DoubleGroupSymm, SpinorDFT):
-        '''Kramers-unrestricted spinor Kohn-Sham with double-group symmetry.'''
-
-    class SymAdaptedRKS(DoubleGroupSymm, KRDFT):
-        '''Kramers-restricted spinor Kohn-Sham with double-group symmetry.'''
-        _kramers_restricted = True
-
-    return SymAdaptedUKS, SymAdaptedRKS
-
-
-SymAdaptedUKS, SymAdaptedRKS = _symm_classes()
