@@ -66,7 +66,9 @@ class ObjectReader {
 
 Json ToJson(const Input& in) {
   Json j;
-  j["mode"] = in.mode == Mode::kDiag ? "diag" : "select";
+  j["mode"] = in.mode == Mode::kDiag  ? "diag"
+              : in.mode == Mode::kFci ? "fci"
+                                      : "select";
   j["integrals"] = in.integrals;
   j["symmetry_tolerance"] = in.symmetry_tolerance;
   j["orbitals"] = in.spatial_orbitals        ? "spatial"
@@ -114,6 +116,32 @@ Json ToJson(const Input& in) {
                    {"energy_tol", in.select.energy_tol},
                    {"davidson_tol_loose", in.select.davidson_tol_loose},
                    {"integral_threshold", in.select.integral_threshold}};
+  }
+  if (in.mode == Mode::kFci) {
+    const FciInput& f = in.fci;
+    Json gas = Json::array();
+    for (const GasConstraint& c : f.gas) {
+      Json item = {
+          {"orbitals", c.orbitals}, {"min", c.min_elec}, {"max", c.max_elec}};
+      if (!c.weights.empty()) item["weights"] = c.weights;
+      gas.push_back(item);
+    }
+    j["fci"] = {{"nelec", f.nelec},
+                {"gas", gas},
+                {"target", f.target},
+                {"max_subgroup", f.max_subgroup},
+                {"kernel", f.kernel},
+                {"max_space", f.max_space},
+                {"level_shift", f.level_shift},
+                {"checkpoint", f.checkpoint},
+                {"checkpoint_every", f.checkpoint_every},
+                {"restart", f.restart},
+                {"huge_pages", f.huge_pages},
+                {"dry_run", f.dry_run},
+                {"benchmark_sigmas", f.benchmark_sigmas}};
+    if (!f.groups_a.empty() || !f.groups_b.empty()) {
+      j["fci"]["subgroups"] = {f.groups_a, f.groups_b};
+    }
   }
   j["davidson"] = {{"tol", in.davidson.tol},
                    {"max_space_per_root", in.davidson.max_space_per_root},
@@ -174,8 +202,10 @@ Input ParseInput(const std::string& text) {
     in.mode = Mode::kSelect;
   } else if (mode == "diag") {
     in.mode = Mode::kDiag;
+  } else if (mode == "fci") {
+    in.mode = Mode::kFci;
   } else {
-    top.Fail("mode", "must be \"select\" or \"diag\"");
+    top.Fail("mode", "must be \"select\", \"diag\" or \"fci\"");
   }
 
   top.Get("integrals", &in.integrals);
@@ -196,7 +226,11 @@ Input ParseInput(const std::string& text) {
 
   top.Get("dets", &in.dets);
   top.Get("detfile", &in.detfile);
-  if (in.dets.empty() == in.detfile.empty()) {
+  if (in.mode == Mode::kFci) {
+    if (!in.dets.empty() || !in.detfile.empty()) {
+      top.Fail("dets", "is not used in fci mode");
+    }
+  } else if (in.dets.empty() == in.detfile.empty()) {
     top.Fail("dets", "exactly one of \"dets\" and \"detfile\" must be given");
   }
 
@@ -477,9 +511,78 @@ Input ParseInput(const std::string& text) {
   top.Get("check", &in.check);
   top.Get("output_level", &in.output_level);
 
+  if (top.Has("fci")) {
+    if (in.mode != Mode::kFci) top.Fail("fci", "is for \"mode\": \"fci\"");
+    ObjectReader fci(top.At("fci"), "fci");
+    FciInput& f = in.fci;
+    fci.Get("nelec", &f.nelec);
+    if (fci.Has("gas")) {
+      const Json& list = fci.At("gas");
+      if (!list.is_array()) fci.Fail("gas", "must be an array");
+      for (size_t r = 0; r < list.size(); ++r) {
+        ObjectReader item(list[r], "fci.gas[" + std::to_string(r) + "]");
+        GasConstraint c;
+        item.Get("orbitals", &c.orbitals);
+        item.Get("weights", &c.weights);
+        if (c.orbitals.empty()) item.Fail("orbitals", "must not be empty");
+        if (!c.weights.empty() && c.weights.size() != c.orbitals.size()) {
+          item.Fail("weights", "needs one entry per orbital");
+        }
+        for (size_t k = 0; k < c.orbitals.size(); ++k) {
+          const int w = c.weights.empty() ? 1 : c.weights[k];
+          (w < 0 ? c.min_elec : c.max_elec) += w;
+        }
+        item.Get("min", &c.min_elec);
+        item.Get("max", &c.max_elec);
+        item.CheckNoUnknownKeys();
+        f.gas.push_back(c);
+      }
+    }
+    fci.Get("target", &f.target);
+    fci.Get("max_subgroup", &f.max_subgroup);
+    if (f.max_subgroup < 1 || f.max_subgroup > 16) {
+      fci.Fail("max_subgroup", "must be 1 to 16");
+    }
+    if (fci.Has("subgroups")) {
+      std::vector<std::vector<std::vector<int>>> groups;
+      fci.Get("subgroups", &groups);
+      if (groups.size() != 2) {
+        fci.Fail("subgroups", "must be [groups of side A, groups of side B]");
+      }
+      f.groups_a = groups[0];
+      f.groups_b = groups[1];
+    }
+    fci.Get("kernel", &f.kernel);
+    if (f.kernel != "blas" && f.kernel != "block" && f.kernel != "reference") {
+      fci.Fail("kernel", "must be \"blas\", \"block\" or \"reference\"");
+    }
+    fci.Get("max_space", &f.max_space);
+    fci.Get("level_shift", &f.level_shift);
+    fci.Get("checkpoint", &f.checkpoint);
+    fci.Get("checkpoint_every", &f.checkpoint_every);
+    fci.Get("restart", &f.restart);
+    fci.Get("huge_pages", &f.huge_pages);
+    fci.Get("dry_run", &f.dry_run);
+    fci.Get("benchmark_sigmas", &f.benchmark_sigmas);
+    fci.CheckNoUnknownKeys();
+    if (f.max_space != 0 && f.max_space < 2 * in.nroots) {
+      fci.Fail("max_space", "must be at least 2 * nroots");
+    }
+    if (f.checkpoint_every < 1) {
+      fci.Fail("checkpoint_every", "must be at least 1");
+    }
+  }
+  if (in.mode == Mode::kFci) {
+    if (in.fci.max_space == 0) in.fci.max_space = 3 * in.nroots;
+    if (in.fci.checkpoint.empty()) in.fci.checkpoint = in.prefix + "/fci.ckpt";
+    if (in.spatial_orbitals || in.unrestricted_orbitals) {
+      top.Fail("orbitals", "must be \"spinor\" in fci mode");
+    }
+  }
+
   // The select block is not used in diag mode but accepted, so that one file
   // can serve both modes.
-  if (in.mode == Mode::kDiag) top.Ignore("select");
+  if (in.mode != Mode::kSelect) top.Ignore("select");
   top.CheckNoUnknownKeys();
 
   in.davidson.print = in.output_level > 1;

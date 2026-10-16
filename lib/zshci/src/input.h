@@ -36,7 +36,7 @@ namespace zshci {
 // Largest number of segments of the segment connection search.
 constexpr int kMaxConnectSegments = 20;
 
-enum class Mode { kSelect, kDiag };
+enum class Mode { kSelect, kDiag, kFci };
 
 // The number type of the calculation. kAuto: real if the integral file is in
 // the real format, complex if it is in the complex format. kReal on a file in
@@ -157,6 +157,47 @@ struct PtInput {
   int num_batches = 1;
 };
 
+// sum over `orbitals` of weight * (electrons in the orbital) lies in
+// [min_elec, max_elec]; weights all 1 if empty.
+struct GasConstraint {
+  std::vector<int> orbitals;
+  std::vector<int> weights;
+  int min_elec = 0;
+  int max_elec = 0;
+};
+
+// "mode": "fci": full CI, or CI in a space bounded by "gas" constraints and
+// the top-level "restrictions", over all spinors of the integral file, by
+// the kernel of src/zgasci (gas_space.h, fci.h, FCI.md). The block of the
+// labels "target" (one per set of "symmetry"; default that of the lowest
+// nelec spinors). The Davidson keeps max_space vectors and as many products
+// with H (fci_davidson.h); davidson.tol, max_iterations and dense_dim apply.
+struct FciInput {
+  int nelec = 0;  // 0: NELEC of the integral file
+  std::vector<GasConstraint> gas;
+  std::vector<int> target;
+  int max_subgroup = 12;
+  // Explicit sub-groups of sides A and B (lists of spinors); empty: made
+  // from the constraints.
+  std::vector<std::vector<int>> groups_a;
+  std::vector<std::vector<int>> groups_b;
+  std::string kernel = "blas";  // "blas", "block" or "reference"
+  int max_space = 0;            // 0: 3 * nroots
+  double level_shift = 1e-3;
+  // Ritz vectors are written there every checkpoint_every iterations and,
+  // with restart, read back as the start. Default <prefix>/fci.ckpt; "none"
+  // writes none.
+  std::string checkpoint;
+  int checkpoint_every = 1;
+  bool restart = false;
+  // madvise(MADV_HUGEPAGE) on the vectors.
+  bool huge_pages = true;
+  // Only report the space and the memory it needs.
+  bool dry_run = false;
+  // Only time this many products with H of a random vector.
+  int benchmark_sigmas = 0;
+};
+
 struct RdmInput {
   bool one = false;
   bool two = false;
@@ -205,6 +246,7 @@ struct Input {
   DavidsonOptions davidson;
   PtInput pt;
   RdmInput rdm;
+  FciInput fci;
 
   // |H(i,j)| below this is not stored. Negative keeps every connected pair.
   // If not given: -1 when density matrices are requested, 0 otherwise.

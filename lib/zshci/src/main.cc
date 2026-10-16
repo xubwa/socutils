@@ -18,6 +18,7 @@
 #include "comm.h"
 #include "det.h"
 #include "diag.h"
+#include "fci.h"
 #include "input.h"
 #include "integrals.h"
 #include "select.h"
@@ -33,6 +34,9 @@ void Run(const Input& input, const Integrals<S>& ints, const Comm& comm) {
       return;
     case Mode::kSelect:
       RunSelect<W, S>(input, ints, comm);
+      return;
+    case Mode::kFci:
+      RunFci<S>(input, ints, comm);
       return;
   }
 }
