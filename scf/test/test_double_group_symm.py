@@ -133,6 +133,33 @@ class KnownValues(unittest.TestCase):
         with self.assertRaises(ValueError):
             _run(dgs.SymAdaptedRHF, mol, irrep_nelec={'1E': 4})
 
+    def test_x2camf_df(self):
+        # X2CAMF and X2CMP Hamiltonians, density fitting with the Kramers-paired MO exchange.
+        # cc-pVDZ: with 6-31G the atomic Dirac-HF of Br in the x2camf C backend does not
+        # converge and the process aborts (independent of symmetry).
+        mol = _mol('HBr', basis='cc-pvdz')[1]
+        for flavor in ('x2camf', 'x2cmp'):
+            es = []
+            for cls in (spinor_hf.KRHF, dgs.SymAdaptedRHF):
+                mf = getattr(cls(mol), flavor)()
+                mf.verbose = 0
+                mf.conv_tol = 1e-10
+                es.append(mf.kernel())
+            self.assertAlmostEqual(es[0], es[1], 8, flavor)
+        es = []
+        for cls in (spinor_hf.KRHF, dgs.SymAdaptedRHF):
+            mf = cls(mol).x2camf().density_fit(auxbasis='def2-universal-jkfit')
+            mf.verbose = 0
+            mf.conv_tol = 1e-10
+            es.append(mf.kernel())
+            # the eig output keeps Kramers pairs interleaved (u, Tu): fast DF exchange applies
+            e, c = mf.eig(mf.get_fock(), mf.get_ovlp())
+            occ = mf.get_occ(e, c) > 0
+            c2 = numpy.vstack(mol.sph2spinor_coeff())
+            self.assertIsNot(spinor_hf._kramers_unbarred(c2.dot(numpy.asarray(c)[:, occ]), mol.nao_nr()),
+                             False)
+        self.assertAlmostEqual(es[0], es[1], 9)
+
     def test_frame_refused(self):
         mol_lab = MOLS['H2O'][0]
         with self.assertRaises(symm.PointGroupSymmetryError):

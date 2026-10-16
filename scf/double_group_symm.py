@@ -55,24 +55,42 @@ def eig(h, s, so, irrep_id, groupname, kramers=False):
     :func:`socutils.symm.spinor_basis.symm_adapted_basis_spinor`, and a
     time-reversal symmetric ``h``).'''
     irrep_id = list(irrep_id)
+    blocks = dict(zip(irrep_id, so))
     es, cs, orbsym = [], [], []
-    solved = {}
-    for ir, x in zip(irrep_id, so):
+    done = set()
+    for ir in irrep_id:
+        if ir in done:
+            continue
+        x = blocks[ir]
         partner = dg.conj(ir, groupname)
-        if kramers and partner != ir and partner in solved:
-            e, c = solved[partner]
-            c = c.conj()
+        hx = lib.dot(x.conj().T, lib.dot(h, x))
+        sx = lib.dot(x.conj().T, lib.dot(s, x))
+        if kramers and partner == ir:
+            # zquatev returns the Kramers pairs interleaved
+            e, c = _kramers_eigh(hx, sx)
+            es.append(e)
+            cs.append(lib.dot(x, c))
+            orbsym.append(numpy.full(e.size, ir))
+        elif kramers:
+            # partner orbitals are the time reverses: T(x c) = (T x) c*.
+            # Interleave (u, Tu) pairs, the layout the Kramers-paired DF
+            # exchange in spinor_hf recognizes.
+            e, c = scipy.linalg.eigh(hx, sx)
+            cu = lib.dot(x, c)
+            cb = lib.dot(blocks[partner], c.conj())
+            pair = numpy.empty((cu.shape[0], 2 * e.size), dtype=numpy.result_type(cu, cb))
+            pair[:, 0::2] = cu
+            pair[:, 1::2] = cb
+            es.append(numpy.repeat(e, 2))
+            cs.append(pair)
+            orbsym.append(numpy.tile([ir, partner], e.size))
+            done.add(partner)
         else:
-            hx = lib.dot(x.conj().T, lib.dot(h, x))
-            sx = lib.dot(x.conj().T, lib.dot(s, x))
-            if kramers and partner == ir:
-                e, c = _kramers_eigh(hx, sx)
-            else:
-                e, c = scipy.linalg.eigh(hx, sx)
-            solved[ir] = (e, c)
-        es.append(e)
-        cs.append(lib.dot(x, c))
-        orbsym.append(numpy.full(e.size, ir))
+            e, c = scipy.linalg.eigh(hx, sx)
+            es.append(e)
+            cs.append(lib.dot(x, c))
+            orbsym.append(numpy.full(e.size, ir))
+        done.add(ir)
     e = numpy.hstack(es)
     c = lib.tag_array(numpy.hstack(cs), orbsym=numpy.hstack(orbsym))
     return e, c
