@@ -11,3 +11,4 @@ bench/**/shci.e
 bench/**/FCIDUMP
 # test Hamiltonians are generated or copied locally, not tracked
 test/data/
+build_noblas

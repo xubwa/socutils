@@ -29,15 +29,30 @@ if(NOT HDF5_FOUND OR NOT OpenMP_CXX_FOUND OR NOT EIGEN3_FOUND)
   return()
 endif()
 
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag(-fcx-limited-range ZSHCI_HAS_CX_LIMITED_RANGE)
+
+# The FCI kernel (src/zgasci, C99) with BLAS if CMake finds one.
+enable_language(C)
+find_package(OpenMP COMPONENTS C)
+find_package(BLAS)
+add_library(zshci_zgasci OBJECT ${CMAKE_CURRENT_SOURCE_DIR}/src/zgasci/zgasci.c)
+set_target_properties(zshci_zgasci PROPERTIES C_STANDARD 99)
+target_compile_options(zshci_zgasci PRIVATE -O3 -funroll-loops)
+if(ZSHCI_HAS_CX_LIMITED_RANGE)
+  target_compile_options(zshci_zgasci PRIVATE -fcx-limited-range)
+endif()
+target_link_libraries(zshci_zgasci PRIVATE OpenMP::OpenMP_C)
+if(NOT BLAS_FOUND)
+  target_compile_definitions(zshci_zgasci PRIVATE ZGASCI_NO_BLAS)
+endif()
+
 file(GLOB ZSHCI_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc)
 set(ZSHCI_LIBRARY_SOURCES ${ZSHCI_SOURCES})
 list(REMOVE_ITEM ZSHCI_LIBRARY_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cc)
 
-include(CheckCXXCompilerFlag)
-check_cxx_compiler_flag(-fcx-limited-range ZSHCI_HAS_CX_LIMITED_RANGE)
-
 function(zshci_program name)
-  add_executable(${name} ${ARGN})
+  add_executable(${name} ${ARGN} $<TARGET_OBJECTS:zshci_zgasci>)
   set_target_properties(${name} PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
@@ -51,7 +66,7 @@ function(zshci_program name)
   target_include_directories(${name} SYSTEM PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party ${HDF5_INCLUDE_DIRS})
   target_link_libraries(${name} PRIVATE
-    OpenMP::OpenMP_CXX Eigen3::Eigen ${HDF5_LIBRARIES})
+    OpenMP::OpenMP_CXX Eigen3::Eigen ${HDF5_LIBRARIES} ${BLAS_LIBRARIES} m)
 endfunction()
 
 zshci_program(zshci ${ZSHCI_SOURCES})

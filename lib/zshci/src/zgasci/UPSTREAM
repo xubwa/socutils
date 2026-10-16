@@ -1,0 +1,10 @@
+These files are an unchanged copy of socutils lib/zgasci at commit 85686dc
+(branch zgasci): zgasci.c, zgasci.h, zgasci_plan.h, zgasci_kernel.inc,
+zgasci_block.inc, zgasci_blas.inc. They are compiled as C99 into zshci; the
+adapter is src/gas_space.cc. To take up later changes of the kernel, copy the
+files again and update the commit here:
+
+  for f in zgasci.c zgasci.h zgasci_plan.h zgasci_kernel.inc \
+           zgasci_block.inc zgasci_blas.inc; do
+    git -C <socutils-zgasci> show <commit>:lib/zgasci/$f > src/zgasci/$f
+  done
