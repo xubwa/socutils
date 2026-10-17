@@ -5,6 +5,8 @@ from pyscf import fci, mcscf, lib, scf, gto
 from pyscf.lib import logger
 from pyscf import __config__
 from socutils.fci import zfci
+from socutils.scf import double_group_symm
+from socutils.symm import double_group as dg
 
 
 class CASBase(lib.StreamObject):
@@ -13,10 +15,25 @@ class CASBase(lib.StreamObject):
     canonicalization = getattr(__config__, 'mcscf_casci_CASCI_canonicalization', True)
     sorting_mo_energy = getattr(__config__, 'mcscf_casci_CASCI_sorting_mo_energy', False)
 
+    # Double-group symmetry.  On a double-group SCF (scf.double_group_symm) the
+    # irreps of the orbitals are taken from the symmetry-adapted basis and kept
+    # in .orbsym (ids 2n+p of socutils.symm.double_group); orbital rotations
+    # are then restricted to one irrep.  symmetry = False switches this off;
+    # setting .orbsym by hand overrides the labels.
+    symmetry = True
+    # largest irrep mixing (1 - weight in the irrep) accepted in the input orbitals
+    symm_tol = 1e-6
+    # largest irrep mixing of the final orbitals before a warning
+    symm_check_tol = 1e-8
+    # write ORBSYM (the double-group ids of the active orbitals) to the FCIDUMP
+    # of the CASCI step; off: these ids are not additive labels
+    fcidump_orbsym = False
+
     _keys = {
         'natorb', 'canonicalization', 'sorting_mo_energy', 'mol', 'max_memory',
         'ncas', 'nelecas', 'ncore', 'fcisolver', 'frozen', 'extrasym',
         'e_tot', 'e_cas', 'ci', 'mo_coeff', 'mo_energy', 'mo_occ', 'converged',
+        'orbsym', 'symmetry', 'symm_tol', 'symm_check_tol', 'fcidump_orbsym',
     }
 
     def __init__(self, mf_or_mol, ncas, nelecas, ncore=None):
@@ -59,6 +76,95 @@ class CASBase(lib.StreamObject):
         self.mo_energy = mf.mo_energy
         self.mo_occ = None
         self.converged = False
+        self._orbsym = None
+        self._orbsym_user = False
+
+    @property
+    def orbsym(self):
+        '''Double-group irrep ids of the orbitals (None: no symmetry).'''
+        return self._orbsym
+
+    @orbsym.setter
+    def orbsym(self, x):
+        self._orbsym = None if x is None else numpy.asarray(x)
+        self._orbsym_user = x is not None
+
+    def _dg_symm_orb(self, mo_coeff):
+        mf = self._scf
+        if not isinstance(mf, double_group_symm.DoubleGroupSymm):
+            return None
+        so, irrep_id = mf._dg_symm_orb()
+        if so[0].shape[0] != mo_coeff.shape[0]:
+            return None
+        return so, irrep_id
+
+    def get_orbsym(self, mo_coeff=None, strict=True):
+        '''Irreps of the orbitals: .orbsym if set by hand, the legacy .irrep
+        if set, else those found in the symmetry-adapted basis of a
+        double-group SCF, else None.  With ``strict`` an orbital that mixes
+        irreps by more than symm_tol raises; otherwise None is returned.'''
+        if mo_coeff is None:
+            mo_coeff = self.mo_coeff
+        nmo = mo_coeff.shape[1]
+        if self._orbsym_user:
+            orbsym = self._orbsym
+        elif getattr(self, 'irrep', None) is not None:
+            orbsym = numpy.asarray(self.irrep)
+        elif not self.symmetry:
+            return None
+        else:
+            salc = self._dg_symm_orb(mo_coeff)
+            if salc is None:
+                return None
+            orbsym, impurity = double_group_symm.orbital_purity(mo_coeff, *salc)
+            if impurity.max() > self.symm_tol:
+                if strict:
+                    raise ValueError(
+                        'orbital %d mixes double-group irreps by %.2e (symm_tol %.1e).  Start from '
+                        'symmetry-adapted orbitals (those of the double-group SCF), or set '
+                        'mc.symmetry = False' % (numpy.argmax(impurity), impurity.max(), self.symm_tol))
+                return None
+        if len(orbsym) != nmo:
+            raise ValueError('orbsym has %d entries for %d orbitals' % (len(orbsym), nmo))
+        return orbsym
+
+    def _setup_orbsym(self, mo_coeff=None, strict=True):
+        '''Store the irreps of ``mo_coeff`` in .orbsym (unless set by hand).'''
+        orbsym = self.get_orbsym(mo_coeff, strict)
+        if not self._orbsym_user:
+            self._orbsym = orbsym
+        if orbsym is not None and isinstance(self._scf, double_group_symm.DoubleGroupSymm):
+            gname = self._scf.doublegroupname
+            act = orbsym[self.ncore:self.ncore + self.ncas]
+            logger.info(self, 'double group %s, irreps of the active orbitals %s', gname,
+                        ' '.join(dg.irrep_id2name(gname, ir) for ir in act))
+        return orbsym
+
+    def check_orbsym(self, mo_coeff=None, tol=None):
+        '''Warn if the orbitals left their irreps .orbsym (double-group SCF
+        only).  Returns the largest irrep mixing, or None.'''
+        if mo_coeff is None:
+            mo_coeff = self.mo_coeff
+        if tol is None:
+            tol = self.symm_check_tol
+        salc = self._dg_symm_orb(mo_coeff)
+        if self._orbsym is None or salc is None:
+            return None
+        orbsym, impurity = double_group_symm.orbital_purity(mo_coeff, *salc)
+        if numpy.any(orbsym != self._orbsym) or impurity.max() > tol:
+            logger.warn(self, 'orbitals left their double-group irreps: max mixing %.2e, '
+                        '%d labels changed', impurity.max(), numpy.count_nonzero(orbsym != self._orbsym))
+        else:
+            logger.info(self, 'orbitals symmetry pure, max irrep mixing %.2e', impurity.max())
+        return impurity.max()
+
+    @property
+    def kramers_pairs(self):
+        '''(partner, bar) of the orbitals .mo_coeff from time reversal, see
+        socutils.scf.double_group_symm.kramers_pairs: partner[i] is the index
+        of the Kramers partner of orbital i (-1 if none), bar[i] is 0 for the
+        unbarred (T|u> = +|b>) and 1 for the barred member.'''
+        return double_group_symm.kramers_pairs(self.mol, self.mo_coeff, self._scf.get_ovlp())
 
     @property
     def ncore(self):

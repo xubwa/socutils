@@ -140,8 +140,16 @@ def kernel(casci, mo_coeff=None, ci0=None, verbose=logger.NOTE):
 
     if h1eff.shape[0] != ncas:
         raise RuntimeError(f'Active space size error. nmo={mo_coeff.shape[1]:%d} ncore={casci.ncore:%d} ncas={ncas:%d}')
+    # double-group irreps of the active orbitals, for solvers that take them
+    orbsym = getattr(casci, 'orbsym', None)
+    orbsym_cas = None
+    if orbsym is not None:
+        orbsym_cas = numpy.asarray(orbsym)[casci.ncore:casci.ncore + ncas]
+        if hasattr(casci.fcisolver, 'orbsym'):
+            casci.fcisolver.orbsym = orbsym_cas
     # FCI
-    fcidump_rel.from_integrals('FCIDUMP', h1eff, eri_cas.reshape(ncas*ncas, ncas*ncas), ncas, nelecas, energy_core.real)
+    fcidump_rel.from_integrals('FCIDUMP', h1eff, eri_cas.reshape(ncas*ncas, ncas*ncas), ncas, nelecas, energy_core.real,
+                               orbsym=orbsym_cas if getattr(casci, 'fcidump_orbsym', False) else None)
     print('integral written')
     max_memory = max(4000, casci.max_memory - lib.current_memory()[0])
     from pyscf import fci
@@ -418,6 +426,9 @@ class CASCI(zcasbase.CASBase):
 
         if self.verbose >= logger.WARN:
             self.check_sanity()
+        if not getattr(self, '_orbsym_fixed', False):
+            # a CASCI on its own: irreps if the orbitals are symmetry adapted
+            self._setup_orbsym(mo_coeff, strict=False)
 
         self.e_tot, self.e_cas, self.ci = \
                 kernel(self, mo_coeff, ci0=ci0, verbose=verbose)
