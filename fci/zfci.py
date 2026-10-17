@@ -100,7 +100,10 @@ def kernel(h1e, eri, norb, nelec, ecore=0, nroots=1, max_memory=2000,
         (energies, [civec0, civec1, ...])
     '''
     hmat = make_hmat(h1e, eri, norb, nelec, max_memory)
-    e, c = scipy.linalg.eigh(hmat)
+    # zheevr with an index range skips the eigenvector back-transformation for
+    # the (dim - nroots) roots nobody asked for; same backward-stable dense
+    # solver, so Kramers degeneracies stay at machine precision.
+    e, c = scipy.linalg.eigh(hmat, subset_by_index=[0, min(nroots, hmat.shape[0]) - 1])
     if nroots == 1:
         return e[0] + ecore, c[:,0]
     else:
