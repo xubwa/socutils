@@ -281,6 +281,78 @@ row stored: 33 GB, 1978 s). The gain is small because the direct product
 still goes through all pairs of related strings to find the connections of
 the rows that are left; it pays to give the limit that holds all connections.
 
+**Eigensolver.** The select and diag modes use the Davidson of the fci
+mode (`src/fci_davidson.*`, below): `"davidson": {"max_space": 3}` basis
+vectors per root, each with its product with H, and no other vector of the
+full length; on collapse the Ritz vectors and those of the previous
+iteration are kept (LOBPCG-like). `"solver": "classic"` gives the earlier
+block Davidson with `"max_space_per_root"` (20) vectors. Between selection
+iterations the eigenvectors, padded with zeros for the new determinants,
+start the solver again; its subspace is not carried over. The solver runs
+on the root, which holds all vectors, and the other ranks take part in
+each product (`src/distributed_h.*`); with 3 vectors per root that is 7
+vectors of 16 bytes per determinant for complex numbers, 22 GB at 2e8
+determinants. Same runs as above, 48 threads (both solvers converge in the
+same number of products, 289 against 294 for the whole selection):
+
+| case | products | wall (s) | peak (GB) |
+|---|---|---|---|
+| Cr2 X2C, whole selection to 2.04 M, `"stored"` | 289 → 294 | 58.7 → 49.4 | 6.0 → 5.0 |
+| Cr2 X2C, 2.05 M, `"stored"` | 34 → 34 | 23.9 → 21.0 | 6.1 → 5.5 |
+| Cr2 X2C, 2.05 M, `"direct"` | 34 → 34 | 49.7 → 50.6 | 1.61 → 0.43 |
+| Cr2 X2C, 22.1 M, `"adapt"`, 80 GB | 36 → 36 | 416 → 291 | 75.1 → 73.5 |
+| Cr2 X2C, 22.1 M, `"direct"` | 36 → 36 | 1117 → 1076 | 17.2 → 4.0 |
+
+With `"adapt"` the memory saved goes to stored values (products 242 → 178
+s). The rest of the solver (orthogonalization and combinations) drops from
+54 to 9 s at 22 M. `"davidson": {"checkpoint_every": k}` writes the Ritz
+vectors to `<prefix>/davidson.ckpt` every k iterations with a fingerprint
+of the determinant list, and `"select": {"checkpoint": true}` the list with
+the vectors to `<prefix>/select.h5` (the format of `wfn.h5`) after the
+selection and after the diagonalization of every iteration, both written
+beside the file and renamed. With `"select": {"resume": true}` a run starts
+from `select.h5` if there is one (else from its input as usual), restarts
+the eigensolver from `davidson.ckpt` if that was written for the same list,
+and goes on with the iteration after the one in the file; the same input
+thus serves a chain of jobs. The table of the iterations gives the products
+of each iteration, and the peak memory of the root and of the largest rank.
+
+A growth step at scale, Cr2 X2C from 22.0 to 55.0 million determinants
+(epsilon1 1e-5, `"direct"`, one node, 48 threads, tight 1e-6 at once): 52
+products and 5473 s in the eigensolver, 40.7 GB peak, with the classic
+solver; 49 products, 5056 s and 7.8 GB with the few-vector one (the residual
+falls by the same factor per iteration in both, about 0.8: the vectors
+padded with zeros are a poor start for the many new determinants).
+
+To 2.3e8 determinants: the same system on 8 nodes (one rank of 48 threads
+each), `"direct"`, from the 22.0 M space (epsilon1 2e-5) with the schedule
+1e-5, 6e-6, 3.5e-6, loose tolerance 5e-5 except in the last iteration (1e-6),
+in two jobs (the first was stopped after the selection of iteration 0 and
+resumed from its checkpoints). Seconds; product: the local work of the
+slowest rank per product, comm: what the root spent besides its own work
+(broadcast of x, reduction of y, waiting):
+
+| iter | epsilon1 | determinants | selection | tables | products | product | comm | eigensolver | peak (GB) | energy |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 0 | 1e-5 | 55.0 M | | | 21 + 9 | 13.3 | 0.9 | | | -2095.485289391 |
+| 1 | 6e-6 | 112.7 M | 23.0 | 12.6 | 28 | 38.6 | 1.9 | 1180 | 19.2 | -2095.487107385 |
+| 2 | 3.5e-6 | 232.1 M | 49.9 | 25.7 | 47 | 115.8 | 4.0 | 5767 | 39.2 | -2095.488396966 |
+
+The product grows as n^1.5 (13.3, 38.6, 115.8 s; one node: 27 s at 22 M,
+100 s at 55 M) and divides over the nodes (22 M: 27.4, 14.2, 7.5 s on 1, 2,
+4 nodes; the ranks' shares differ by 5 %); selection, tables and the
+checkpoints (8.7 s for 232 M) are small beside it. At 232 M the string
+tables take 5.5 GB per node (7.1 GB more while extended), the determinants
+1.8 GB per copy, the 7 vectors of the eigensolver 26 GB on the root.
+Toward 1e9: a product would take some 1000 s on 8 nodes, so 50 products
+an iteration call for more nodes; the root would hold 7 vectors of 16 GB
+next to 8 GB per copy of the determinants and some 30 GB of tables, more
+than a node of 192 GB once the copies made for writing checkpoints are
+counted: the vectors are then to be divided over the ranks (the solver
+works on segments, `VectorLayout`) and the root's own list of the
+determinants dropped. A better start than zeros for the new determinants
+(first-order coefficients) would save part of the 30 to 50 products.
+
 `src/input.h` documents every key. The integrals are read from an HDF5 file
 that holds the two-electron integrals antisymmetrized
 (`socutils.tools.fcidump_rel.from_integrals_h5`; layout in
