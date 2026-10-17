@@ -233,12 +233,12 @@ above once validated; their `occup` dict format is translated to `irrep_nelec`.
 
 - D^j(R) = C^† [D^l_real(R) ⊗ U_SU(2)(R)] C per shell (C = `sph2spinor`, D^l from `pyscf.symm.Dmatrix`), for
   rotating orbitals / density matrices between frames (interop only; lab-frame SALCs are not planned).
-- Realification: done (2026-10-17), see section 5a.
+- Realification: done (2026-10-17), see section 5b.
 - κ blocking for atoms (current `symmetry='sph'` mode).
 - Double-group direct product consumers: FCI/CC (zccsdt export), ao2mo with symmetry.
 - PySCF issue: `GHF(mol).x2c()` with `mol.symmetry=True` (warn + fall back to C1).
 
-## 5a. Realification (implemented 2026-10-17)
+## 5b. Realification (implemented 2026-10-17)
 
 For D2h, D2 (double group C2h* / C2*), C2v (C2*) and linear molecules there is an operation G outside the
 double group with G C2z G^-1 = C2z^-1: C2y for D2h/D2, σ_xz for C2v/C∞v/D∞h. G and T both map 1E ↔ 2E
