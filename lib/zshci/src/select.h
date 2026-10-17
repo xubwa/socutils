@@ -947,7 +947,12 @@ void RunSelect(const Input& given, const Integrals<S>& ints, const Comm& comm) {
     const int products_before = num_products;
     const std::vector<uint8_t>* mask =
         num_inactive > 0 ? &root_active : nullptr;
-    DavidsonResult result = h.Solve(loose, &root_vectors, mask);
+    // In the last iteration the solution is tight at once, unless pruning
+    // may change the space once more.
+    const bool tight_now = iter == input.select.max_iter - 1 &&
+                           input.select.prune_coefficient == 0.0;
+    DavidsonResult result =
+        h.Solve(tight_now ? input.davidson : loose, &root_vectors, mask);
     num_products += result.num_products;
     seconds_products += result.seconds_products;
     seconds_solver += result.seconds_total;
@@ -996,7 +1001,7 @@ void RunSelect(const Input& given, const Integrals<S>& ints, const Comm& comm) {
       converged_space = num_changed == 0 || change < input.select.energy_tol;
     }
     finished = converged_space || iter == input.select.max_iter - 1;
-    if (finished) {
+    if (finished && !tight_now) {
       result = h.Solve(input.davidson, &root_vectors, mask);
       num_products += result.num_products;
       seconds_products += result.seconds_products;
