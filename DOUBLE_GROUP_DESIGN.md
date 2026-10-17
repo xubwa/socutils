@@ -115,6 +115,9 @@ frame relative to the input, and that vectors/tensors and m_j labels refer to th
   responsibility; `mol.symm_frame` gives the rotation.
 - Energies are invariant. Orbitals / density matrices are only needed in the lab frame for interop (reading a
   lab-frame chkfile as initial guess, cube files); that needs D^j and is deferred.
+- Deliberate design (user 2026-10-17), also for PySCF mainline: double-group symmetry works in the symmetry
+  frame only; no lab-frame SALCs (they would need a spinor rotation D^j carried along everywhere). This
+  differs from single-group PySCF symmetry, which accepts any orientation; the PR states it.
 
 Stored on `mol` lazily, without touching single-group attributes:
 
@@ -212,7 +215,7 @@ above once validated; their `occup` dict format is translated to `irrep_nelec`.
   project (options to be researched from the literature first).
 
 - D^j(R) = C^† [D^l_real(R) ⊗ U_SU(2)(R)] C per shell (C = `sph2spinor`, D^l from `pyscf.symm.Dmatrix`), for
-  rotating orbitals / density matrices between frames, and if mainline review asks for lab-frame SALCs.
+  rotating orbitals / density matrices between frames (interop only; lab-frame SALCs are not planned).
 - Realification: done (2026-10-17), see section 5a.
 - κ blocking for atoms (current `symmetry='sph'` mode).
 - Double-group direct product consumers: CASCI/FCI/CC (zccsdt export), ao2mo with symmetry.
