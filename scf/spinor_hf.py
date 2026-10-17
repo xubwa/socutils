@@ -480,6 +480,63 @@ class SCF(hf.SCF):
         from socutils.tdscf import gks
         return gks.TDA(self)
 
+    def prop_int1e(self, op, x_response=True, origin=None):
+        '''One-electron property integrals in the picture this reference
+        lives in: bare spinor integrals for a nonrelativistic spinor mean
+        field (exact there), picture-change transformed for an X2C one
+        (``self.with_x2c``).  Correlated/excited-state methods should take
+        their property operators from here, never from a bare ``mol.intor``.
+
+        See :mod:`socutils.prop.int1e` for the operator specs and for the
+        ``x_response`` semantics: True (default) gives the energy-derivative
+        operator dh_X2C/dlambda (EFG/HFC-style kernels); False gives the
+        plain picture-change operator [U+ O U]_++, the right object for
+        expectation values of fixed external operators and for transition
+        moments.'''
+        from socutils.prop.int1e import prop_int1e
+        return prop_int1e(self, op, x_response=x_response, origin=origin)
+
+    def dip_moment(self, mol=None, dm=None, unit='Debye', verbose=logger.NOTE,
+                   picture_change=True, x_response=True,
+                   origin=(0., 0., 0.), **kwargs):
+        '''Molecular dipole moment; on an X2C reference the electronic part
+        uses the picture-change-corrected dipole operator (cf. pyscf's
+        X2C1E_GSCF.dip_moment -- whose convention corresponds to
+        ``x_response=False``; the default True is the derivative of the X2C
+        energy w.r.t. the field, consistent with the prop/ kernels).  The
+        inherited hf.SCF.dip_moment would contract spherical-basis integrals
+        with the spinor density and cannot be used here.
+
+        ``picture_change=False`` forces the bare 2c operator even on an X2C
+        reference (for error estimates).'''
+        from pyscf.data import nist
+        if mol is None:
+            mol = self.mol
+        if dm is None:
+            dm = self.make_rdm1()
+        log = logger.new_logger(mol, verbose)
+        charges = mol.atom_charges()
+        coords = mol.atom_coords()
+        nucl_dip = numpy.einsum('i,ix->x', charges,
+                                coords - numpy.asarray(origin))
+        if picture_change and self.with_x2c is not None:
+            ao_dip = self.prop_int1e('r', x_response=x_response, origin=origin)
+        else:
+            n2c = mol.nao_2c()
+            with mol.with_common_orig(origin):
+                ao_dip = mol.intor('int1e_r_spinor',
+                                   comp=3).reshape(3, n2c, n2c)
+        el_dip = numpy.einsum('xij,ji->x', ao_dip, dm).real
+        mol_dip = nucl_dip - el_dip
+        if unit.upper() == 'DEBYE':
+            mol_dip *= nist.AU2DEBYE
+            log.note('Dipole moment(X, Y, Z, Debye): %8.5f, %8.5f, %8.5f',
+                     *mol_dip)
+        else:
+            log.note('Dipole moment(X, Y, Z, A.U.): %8.5f, %8.5f, %8.5f',
+                     *mol_dip)
+        return mol_dip
+
     def eig(self, h, s=None, *args, **kwargs):
         return hf.SCF.eig(self, h, s)
 

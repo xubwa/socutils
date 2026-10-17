@@ -148,10 +148,89 @@ class GTensorOH(unittest.TestCase):
     def test_orientation_invariance(self):
         n1, _, g1, A1 = run([0.68, 0.57, 0.45])
         n2, _, g2, A2 = run([numpy.cos(0.3), numpy.sin(0.3), 0.0])       # axis in the xy plane
-        for t1, t2 in ((g1[0], g2[0]), (g1[1], g2[1]), (A1[0, 0], A2[0, 0]), (A1[1, 0], A2[1, 0])):
-            self.assertAlmostEqual(abs(numpy.linalg.eigvalsh(0.5 * (t1 + t1.T))
-                                       - numpy.linalg.eigvalsh(0.5 * (t2 + t2.T))).max(), 0, 7)
+        for t1, t2 in ((g1[0], g2[0]), (g1[1], g2[1])):
+            self.assertAlmostEqual(abs(observables.g_principal(t1)[0]
+                                       - observables.g_principal(t2)[0]).max(), 0, 7)
+        for t1, t2 in ((A1[0, 0], A2[0, 0]), (A1[1, 0], A2[1, 0])):
+            self.assertAlmostEqual(abs(observables.hyperfine_principal(t1)[0]
+                                       - observables.hyperfine_principal(t2)[0]).max(), 0, 7)
         self.assertAlmostEqual(n1 @ A1[0, 0] @ n1, n2 @ A2[0, 0] @ n2, 7)
+
+
+def rotation(axis, angle):
+    axis = numpy.asarray(axis, float) / numpy.linalg.norm(axis)
+    k = numpy.array([[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]])
+    return numpy.eye(3) + numpy.sin(angle) * k + (1 - numpy.cos(angle)) * k @ k
+
+
+class PrincipalValues(unittest.TestCase):
+    """Synthetic tensors with known principal values and axes.
+
+    g is symmetric by convention, so its principal values are eigenvalues.
+    A couples a laboratory index to a pseudo-spin index, ``A -> Q A R^T``
+    under a laboratory rotation Q and a doublet-basis rotation R, so the
+    only invariants are the singular values; the eigenvalues of the
+    symmetric part are *not*, and the diagonal elements in the g frame are
+    the observed couplings only when A shares the g axes.
+    """
+    def setUp(self):
+        self.Q = rotation([1, 2, 3], 0.7)
+        self.gd = numpy.array([1.1, 0.35, 0.24])
+        self.g = self.Q @ numpy.diag(self.gd) @ self.Q.T
+
+    def test_g_principal(self):
+        w, v = observables.g_principal(self.g)
+        self.assertAlmostEqual(abs(w - self.gd).max(), 0, 12)
+        for k in range(3):
+            self.assertAlmostEqual(abs(v[:, k] @ self.Q[:, k]), 1, 12)
+        self.assertAlmostEqual(abs(v @ numpy.diag(w) @ v.T - self.g).max(), 0, 12)
+        # stacked levels, nan passthrough
+        w2, v2 = observables.g_principal(numpy.array([self.g, numpy.full((3, 3), numpy.nan)]))
+        self.assertAlmostEqual(abs(w2[0] - self.gd).max(), 0, 12)
+        self.assertTrue(numpy.isnan(w2[1]).all() and numpy.isnan(v2[1]).all())
+
+    def test_hyperfine_principal_is_the_svd_invariant(self):
+        s = numpy.array([25.0, 4.8, 4.1])
+        U = rotation([0, 1, 0], 0.4)
+        V = rotation([1, 0, 1], -1.1)
+        a = U @ numpy.diag(s) @ V.T
+        w, nuc, spin = observables.hyperfine_principal(a)
+        self.assertAlmostEqual(abs(w - s).max(), 0, 12)
+        for k in range(3):
+            self.assertAlmostEqual(abs(nuc[:, k] @ U[:, k]), 1, 12)
+            self.assertAlmostEqual(abs(spin[:, k] @ V[:, k]), 1, 12)
+        # invariant under a laboratory rotation and a change of doublet basis
+        R = rotation([2, -1, 0.5], 2.0)
+        w2 = observables.hyperfine_principal(self.Q @ a @ R.T)[0]
+        self.assertAlmostEqual(abs(w2 - s).max(), 0, 12)
+        # the eigenvalues of the symmetric part are not: they move with R
+        e1 = numpy.sort(abs(numpy.linalg.eigvalsh(0.5 * (a + a.T))))
+        e2 = numpy.sort(abs(numpy.linalg.eigvalsh(0.5 * (a @ R.T + R @ a.T))))
+        self.assertGreater(abs(e1 - e2).max(), 1.0)
+
+    def test_hyperfine_along_g(self):
+        # A sharing the g axes: the couplings along g are the diagonal of A in the g frame
+        ad = numpy.array([25.0, 4.8, 4.1])
+        a = self.Q @ numpy.diag(ad) @ self.Q.T
+        k, axes = observables.hyperfine_along_g(a[None], self.g)
+        self.assertAlmostEqual(abs(k[0] - ad).max(), 0, 12)
+        # A with its axes 10 degrees off g's in the XY plane: the diagonal element under-reads
+        # the coupling |A e_X| = sqrt(A_XX^2 + A_YX^2), and the column norm gets it exactly
+        P = rotation(self.Q[:, 2], numpy.radians(10))
+        a2 = P @ a @ P.T
+        k2, _ = observables.hyperfine_along_g(a2[None], self.g)
+        a2g = self.Q.T @ a2 @ self.Q
+        self.assertAlmostEqual(abs(k2[0] - numpy.linalg.norm(a2g, axis=0)).max(), 0, 12)
+        self.assertLess(abs(a2g[0, 0]), k2[0, 0])
+        self.assertAlmostEqual(k2[0, 0], 25.0 * numpy.sqrt(numpy.cos(numpy.radians(10))**2
+                                                           + (4.8 / 25.0)**2 * numpy.sin(numpy.radians(10))**2), 12)
+        # stacked levels, one g per level, natm nuclei
+        A = numpy.array([[a, a2], [a2, a]])
+        G = numpy.array([self.g, self.g])
+        k3, _ = observables.hyperfine_along_g(A, G)
+        self.assertEqual(k3.shape, (2, 2, 3))
+        self.assertAlmostEqual(abs(k3[0, 0] - k[0]).max(), 0, 12)
+        self.assertAlmostEqual(abs(k3[1, 0] - k2[0]).max(), 0, 12)
 
 
 if __name__ == '__main__':

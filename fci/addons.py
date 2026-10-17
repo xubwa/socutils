@@ -11,7 +11,11 @@ calculations.
 Only the electric dipole (length gauge) channel is provided: magnetic
 multipole operators for 2c (X2C) wavefunctions require picture-change
 transformed operators derived from the relativistic current, and the bare
-nonrelativistic L+2S form is not valid in this framework.
+nonrelativistic L+2S form is not valid in this framework.  The electric
+dipole itself *is* picture-change corrected on an X2C reference: the
+integrals come from socutils.prop.int1e (via mc._scf), which dispatches
+between the bare spinor operator (nonrelativistic reference, exact) and
+the transformed 4c operator (X2C reference).
 
 The functions work with any fcisolver providing a
 trans_rdm1(ci_bra, ci_ket, ncas, nelecas) method, e.g. zfci.FCISolver and
@@ -111,10 +115,21 @@ def trans_rdm1_ao(mc, state_i=0, state_j=1, mo_coeff=None, mc_ket=None):
             dm = dm + ovlp * numpy.dot(mo_core, mo_core.conj().T)
     return dm
 
-def _dipole_integrals(mol, nao, origin):
-    '''AO dipole integrals (3, nao, nao) in the 2c spinor basis, or in the
-    4c basis (following pyscf.scf.dhf.dip_moment) when nao = 2*nao_2c.'''
+def _dipole_integrals(mc, nao, origin):
+    '''AO dipole integrals (3, nao, nao) in the picture of mc's reference:
+    for a 2c X2C reference (mc._scf.with_x2c) the picture-change-corrected
+    operator from socutils.prop.int1e (x_response=False -- a transition
+    moment is a matrix element of the fixed operator, not an energy
+    derivative); for a plain nonrelativistic 2c reference the bare spinor
+    integrals (exact there); in the 4c basis (following
+    pyscf.scf.dhf.dip_moment) when nao = 2*nao_2c.'''
+    mol = mc.mol
     n2c = mol.nao_2c()
+    mf = getattr(mc, '_scf', None)
+    if nao == n2c and mf is not None and \
+       getattr(mf, 'with_x2c', None) is not None:
+        from socutils.prop.int1e import prop_int1e
+        return prop_int1e(mf, 'r', x_response=False, origin=origin)
     with mol.with_common_orig(origin):
         ll_dip = mol.intor_symmetric('int1e_r_spinor', comp=3)
         if nao == n2c:
@@ -146,7 +161,7 @@ def transition_dipole(mc, state_i=0, state_j=1, origin=None, mc_ket=None):
     if origin is None:
         origin = charge_center(mol)
     t_dm1 = trans_rdm1_ao(mc, state_i, state_j, mc_ket=mc_ket)
-    ao_dip = _dipole_integrals(mol, t_dm1.shape[0], origin)
+    ao_dip = _dipole_integrals(mc, t_dm1.shape[0], origin)
     return -numpy.einsum('xij,ji->x', ao_dip, t_dm1)
 
 def _spin_ao(mol, nao):
