@@ -352,13 +352,37 @@ void RunFci(const Input& input, const Integrals<S>& ints, const Comm& comm) {
       comm.Sum(b_seconds.data(), b_seconds.size());
     }
     const double before = dist->Imbalance(a_seconds, b_seconds);
-    dist = std::make_unique<GasDistribution>(space, comm.size(), a_seconds,
-                                             b_seconds, slice_elements);
+    // A rank's range of either half may not outgrow its memory: the
+    // Davidson vectors and the diagonal per element of the vector, the
+    // transposed c and sigma per element of the transpose.
+    const double fixed =
+        other_bytes + (2.0 * slice + 2.0 * (1 << 26)) * sizeof(S);
+    const double per_element = num_vectors * sizeof(S) + 8.0 + 2.0 * sizeof(S);
+    const int64_t max_elements = static_cast<int64_t>(
+        std::max(0.0, (0.85 * available - fixed) / per_element));
+    dist = std::make_unique<GasDistribution>(
+        space, comm.size(), a_seconds, b_seconds, slice_elements, max_elements);
     local = dist->End(me) - dist->Begin(me);
+    most_local = most_t = 0;
+    for (int r = 0; r < comm.size(); ++r) {
+      most_local = std::max(most_local, dist->End(r) - dist->Begin(r));
+      most_t = std::max(most_t, dist->EndT(r) - dist->BeginT(r));
+    }
+    const double need_now = fixed +
+                            (num_vectors * sizeof(S) + 8.0) * most_local +
+                            2.0 * sizeof(S) * most_t;
     std::printf(
         "fci: parts cut by measured times: largest over mean %.2f before, "
-        "%.2f now (%.1f s)\n",
-        before, dist->Imbalance(a_seconds, b_seconds), omp_get_wtime() - time);
+        "%.2f now (%.1f s); largest part %.3f of the vector, about %.2f GiB "
+        "per rank of %.2f GiB\n",
+        before, dist->Imbalance(a_seconds, b_seconds), omp_get_wtime() - time,
+        static_cast<double>(most_local) / dim, need_now / kGiB,
+        available / kGiB);
+    if (need_now > available) {
+      throw std::runtime_error(
+          "fci: after the cut by measured times a rank needs more memory than "
+          "is available; use more ranks or a smaller max_space");
+    }
   }
   BigArray<double> diagonal(local, in.huge_pages);
   if (distributed) {

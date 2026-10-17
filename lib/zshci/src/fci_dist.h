@@ -40,10 +40,12 @@ class GasDistribution {
   GasDistribution(const GasSpace& space, int num_ranks, bool by_work,
                   int64_t slice_elements);
   // Balanced by given weights of the A buckets (half 0) and of the B
-  // buckets (half 1), e.g. measured seconds.
+  // buckets (half 1), e.g. measured seconds, with at most max_elements
+  // elements in a rank's range of either half (0: no limit).
   GasDistribution(const GasSpace& space, int num_ranks,
                   const std::vector<double>& a_weight,
-                  const std::vector<double>& b_weight, int64_t slice_elements);
+                  const std::vector<double>& b_weight, int64_t slice_elements,
+                  int64_t max_elements = 0);
 
   int num_ranks() const { return static_cast<int>(a_bounds_.size()) - 1; }
   // A buckets [a_bounds[r], a_bounds[r + 1]) are rank r's, their elements
@@ -72,8 +74,16 @@ class GasDistribution {
   std::vector<int> a_bounds_, b_bounds_;
   std::vector<int64_t> a_start_, b_start_;
   std::vector<double> a_work_, b_work_;  // per bucket
+  std::vector<double> a_size_, b_size_;  // elements per bucket
   int64_t slice_elements_ = 0;
 };
+
+// Bounds [0 = b_0 <= ... <= b_n = count) that cut `weight` into n parts
+// with the smallest largest part such that no part holds more than
+// `max_size` of `size` (0: no limit). Throws if that is impossible.
+std::vector<int> BalanceWithin(const std::vector<double>& weight,
+                               const std::vector<double>& size, int n,
+                               double max_size);
 
 // S is double or Complex.
 template <typename S>

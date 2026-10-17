@@ -105,6 +105,43 @@ Integrals<Complex> ShiftIntegrals(const Integrals<Complex>& ints, int shift) {
   return shifted;
 }
 
+void TestBalanceWithin() {
+  std::mt19937_64 rng(11);
+  bool ok = true;
+  for (int trial = 0; trial < 300 && ok; ++trial) {
+    const int count = 1 + rng() % 60, n = 1 + rng() % 8;
+    std::vector<double> weight(count), size(count);
+    double total = 0.0, biggest = 0.0;
+    for (int i = 0; i < count; ++i) {
+      weight[i] = 1.0 + rng() % 100;
+      size[i] = 1.0 + rng() % 50;
+      total += size[i];
+      biggest = std::max(biggest, size[i]);
+    }
+    const double cap = std::max(biggest, 1.3 * total / n);
+    std::vector<int> b;
+    try {
+      b = BalanceWithin(weight, size, n, cap);
+    } catch (const std::runtime_error&) {
+      continue;  // a cap the greedy cut cannot meet
+    }
+    ok = static_cast<int>(b.size()) == n + 1 && b[0] == 0 && b[n] == count;
+    for (int r = 0; r < n && ok; ++r) {
+      double s = 0.0;
+      for (int i = b[r]; i < b[r + 1]; ++i) s += size[i];
+      ok = b[r] <= b[r + 1] && s <= cap;
+    }
+  }
+  bool threw = false;
+  try {
+    BalanceWithin({1.0, 1.0}, {10.0, 10.0}, 1, 15.0);
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  Expect(ok && threw,
+         "cut of the vector by work keeps every part within its memory");
+}
+
 void TestCountBetween() {
   std::mt19937_64 rng(7);
   bool ok = true;
@@ -137,13 +174,15 @@ void TestHamiltonian(const Integrals<Complex>& ints) {
   const std::vector<Det<1>> dets1 = ToDets<1>(occupations, 0);
   const CsrBlock<Complex> block1 =
       BuildBlock(MakeSpan(dets1), 0, ints, keep_all);
-  Expect(SameBlock(block1, BuildBlockBruteForce(MakeSpan(dets1), 0, ints, keep_all), 0),
+  Expect(SameBlock(block1,
+                   BuildBlockBruteForce(MakeSpan(dets1), 0, ints, keep_all), 0),
          "bucket search equals brute force (one word)");
   Expect(SameBlock(block1, BuildBlock(MakeSpan(dets1), 0, ints, batched), 0),
          "bucket search in four batches gives the same block");
-  Expect(SameBlock(BuildBlock(MakeSpan(dets1), 0, ints, thresholded),
-                   BuildBlockBruteForce(MakeSpan(dets1), 0, ints, thresholded), 0),
-         "bucket search equals brute force with a threshold");
+  Expect(
+      SameBlock(BuildBlock(MakeSpan(dets1), 0, ints, thresholded),
+                BuildBlockBruteForce(MakeSpan(dets1), 0, ints, thresholded), 0),
+      "bucket search equals brute force with a threshold");
 
   // The segment method, for several numbers of segments (fewer than five
   // means a single cover, i.e. all pairs in one bucket).
@@ -152,8 +191,9 @@ void TestHamiltonian(const Integrals<Complex>& ints) {
     ConnectOptions segmented;
     segmented.method = ConnectMethod::kSegments;
     segmented.num_segments = num_segments;
-    segments_ok = segments_ok &&
-                  SameBlock(block1, BuildBlock(MakeSpan(dets1), 0, ints, segmented), 0);
+    segments_ok =
+        segments_ok &&
+        SameBlock(block1, BuildBlock(MakeSpan(dets1), 0, ints, segmented), 0);
   }
   Expect(segments_ok, "segment search equals the string search");
   {
@@ -161,8 +201,9 @@ void TestHamiltonian(const Integrals<Complex>& ints) {
     segmented.method = ConnectMethod::kSegments;
     segmented.num_segments = 7;
     segmented.threshold = 1e-6;
-    Expect(SameBlock(BuildBlock(MakeSpan(dets1), 0, ints, segmented),
-                     BuildBlockBruteForce(MakeSpan(dets1), 0, ints, thresholded), 0),
+    Expect(SameBlock(
+               BuildBlock(MakeSpan(dets1), 0, ints, segmented),
+               BuildBlockBruteForce(MakeSpan(dets1), 0, ints, thresholded), 0),
            "segment search equals brute force with a threshold");
     segmented.threshold = -1.0;
     Expect(SameBlock(BuildBlock(MakeSpan(dets1), 300, ints, segmented),
@@ -205,9 +246,9 @@ void TestHamiltonian(const Integrals<Complex>& ints) {
   }
   bool same_diagonal = true;
   for (size_t d = 0; d < dets1.size(); ++d) {
-    same_diagonal = same_diagonal &&
-                    std::abs(DiagonalEnergy(dets1[d], ints) -
-                             DiagonalEnergy(dets2[d], shifted)) < 1e-11;
+    same_diagonal =
+        same_diagonal && std::abs(DiagonalEnergy(dets1[d], ints) -
+                                  DiagonalEnergy(dets2[d], shifted)) < 1e-11;
   }
   Expect(same_diagonal, "two-word determinants give the same diagonal");
 
@@ -260,23 +301,21 @@ void TestHamiltonian(const Integrals<Complex>& ints) {
 
   const DensityMatrices<Complex> dm = ComputeDensityMatrices(
       MakeSpan(dets1), h, n, MakeSpan(exact[0]), MakeSpan(exact[0]), true);
-  Expect(std::abs(EnergyFromDensityMatrices(dm, ints) - dense.energies[0]) <
-             1e-10,
-         "energy from the density matrices equals the eigenvalue");
+  Expect(
+      std::abs(EnergyFromDensityMatrices(dm, ints) - dense.energies[0]) < 1e-10,
+      "energy from the density matrices equals the eigenvalue");
   Complex trace(0.0);
   double max_antihermitian = 0.0;
   for (int p = 0; p < n; ++p) {
     trace += dm.One(p, p);
     for (int q = 0; q < n; ++q) {
-      max_antihermitian =
-          std::max(max_antihermitian,
-                   std::abs(dm.One(p, q) - std::conj(dm.One(q, p))));
+      max_antihermitian = std::max(
+          max_antihermitian, std::abs(dm.One(p, q) - std::conj(dm.One(q, p))));
     }
   }
   Expect(std::abs(trace - Complex(ints.num_elec())) < 1e-10,
          "the one-body density matrix traces to the electron number");
-  Expect(max_antihermitian < 1e-12,
-         "the one-body density matrix is Hermitian");
+  Expect(max_antihermitian < 1e-12, "the one-body density matrix is Hermitian");
 
   // Partial trace of D2 over the second index pair gives (N - 1) D1.
   double max_trace_diff = 0.0;
@@ -284,9 +323,9 @@ void TestHamiltonian(const Integrals<Complex>& ints) {
     for (int r = 0; r < n; ++r) {
       Complex sum(0.0);
       for (int q = 0; q < n; ++q) sum += dm.Two(p, q, r, q);
-      max_trace_diff = std::max(
-          max_trace_diff,
-          std::abs(sum - double(ints.num_elec() - 1) * dm.One(p, r)));
+      max_trace_diff =
+          std::max(max_trace_diff,
+                   std::abs(sum - double(ints.num_elec() - 1) * dm.One(p, r)));
     }
   }
   Expect(max_trace_diff < 1e-10,
@@ -559,9 +598,9 @@ void TestSelection(const Integrals<Complex>& ints,
 
   const HeatBath heat_bath(ints, 1e-12);
   const RestrictedFilter filter(LabelFilter(symmetry), restrictions, n);
-  const std::vector<Det<1>> selected =
-      SelectNewDeterminants(MakeSpan(dets), MakeSpan(sorted_dets),
-                            MakeSpan(weights), epsilon, ints, heat_bath, filter);
+  const std::vector<Det<1>> selected = SelectNewDeterminants(
+      MakeSpan(dets), MakeSpan(sorted_dets), MakeSpan(weights), epsilon, ints,
+      heat_bath, filter);
 
   // Whether moving electrons from i, j to a, b (-1: none) conserves every
   // label set.
@@ -734,15 +773,15 @@ void TestPerturbation(const Integrals<Complex>& ints) {
     sum_squares += estimate.small * estimate.small;
     sum_large += estimate.large;
     sum_squares_large += estimate.large * estimate.large;
-    const StochasticEstimate same = PtWalkerSample(
-        problem, epsilon, epsilon, 20, sampler, &rng, &scratch);
+    const StochasticEstimate same =
+        PtWalkerSample(problem, epsilon, epsilon, 20, sampler, &rng, &scratch);
     max_equal_cutoff_diff =
         std::max(max_equal_cutoff_diff, std::abs(same.small - same.large));
   }
   auto within_error = [&](double s, double s2, double reference) {
     const double mean = s / num_iterations;
-    const double error = std::sqrt((s2 / num_iterations - mean * mean) /
-                                   (num_iterations - 1));
+    const double error =
+        std::sqrt((s2 / num_iterations - mean * mean) / (num_iterations - 1));
     std::printf("      mean %.8f  error %.1e  reference %.8f\n", mean, error,
                 reference);
     return std::abs(mean - reference) < 4.0 * error && error < 0.1 * -reference;
@@ -820,9 +859,10 @@ void TestSecondOrderLimit(const Integrals<Complex>& ints) {
     second_order += std::norm(numerator) / denominator;
     second_order_conjugated += std::norm(conjugated) / denominator;
   }
-  std::printf("      exact %.8f  sum H(a,i) c_i: %.8f  sum conj(H(a,i)) c_i: "
-              "%.8f\n",
-              exact, second_order, second_order_conjugated);
+  std::printf(
+      "      exact %.8f  sum H(a,i) c_i: %.8f  sum conj(H(a,i)) c_i: "
+      "%.8f\n",
+      exact, second_order, second_order_conjugated);
   Expect(std::abs(exact - second_order) < 1e-4 * std::abs(exact),
          "the PT numerator sum_i H(a,i) c_i reproduces exact diagonalization "
          "to second order");
@@ -954,8 +994,9 @@ void TestDensityMatricesFromDefinition(const Integrals<Complex>& ints) {
       MakeSpan(dets), h, n, MakeSpan(states[0]), MakeSpan(states[1]), false);
   const DensityMatrices<Complex> transition_ref =
       reference(states[0], states[1], false);
-  Expect(max_difference(transition.one, transition_ref.one) < 1e-12,
-         "the transition dm1 equals <0| p^+ q |1> applied operator by operator");
+  Expect(
+      max_difference(transition.one, transition_ref.one) < 1e-12,
+      "the transition dm1 equals <0| p^+ q |1> applied operator by operator");
 }
 
 // The real part of a Hamiltonian, which is again a Hamiltonian, as numbers
@@ -3037,6 +3078,7 @@ int main(int argc, char** argv) {
       throw std::runtime_error("the test needs NELEC + 2 <= NORB <= 32");
     }
     zshci::TestCountBetween();
+    zshci::TestBalanceWithin();
     zshci::TestHamiltonian(ints);
     zshci::TestFewVectorSolver(ints);
     zshci::TestSelectSolvers(ints);

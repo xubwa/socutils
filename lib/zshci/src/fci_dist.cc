@@ -101,15 +101,64 @@ std::vector<Block> Blocks(const zg_plan* p, const GasDistribution& dist) {
 
 }  // namespace
 
+std::vector<int> BalanceWithin(const std::vector<double>& weight,
+                               const std::vector<double>& size, int n,
+                               double max_size) {
+  if (max_size <= 0.0) return Balance(weight, n);
+  // Greedy cut for a given largest weight; bisection on that weight.
+  auto cut = [&](double most, std::vector<int>* bounds) {
+    bounds->assign(1, 0);
+    double w = 0.0, s = 0.0;
+    for (size_t i = 0; i < weight.size(); ++i) {
+      if (size[i] > max_size) return false;
+      if (i > 0 && (w + weight[i] > most || s + size[i] > max_size)) {
+        bounds->push_back(static_cast<int>(i));
+        if (static_cast<int>(bounds->size()) > n) return false;
+        w = s = 0.0;
+      }
+      w += weight[i];
+      s += size[i];
+    }
+    while (static_cast<int>(bounds->size()) <= n) {
+      bounds->push_back(static_cast<int>(weight.size()));
+    }
+    return true;
+  };
+  double total = 0.0, lo = 0.0;
+  for (double w : weight) {
+    total += w;
+    lo = std::max(lo, w);
+  }
+  std::vector<int> bounds;
+  if (!cut(total, &bounds)) {
+    throw std::runtime_error(
+        "fci: the vector does not fit the memory of the ranks; use more ranks "
+        "or a smaller max_space");
+  }
+  std::vector<int> trial;
+  double hi = total;
+  for (int it = 0; it < 60 && hi - lo > 1e-9 * total; ++it) {
+    const double mid = 0.5 * (lo + hi);
+    if (cut(mid, &trial)) {
+      hi = mid;
+      bounds = trial;
+    } else {
+      lo = mid;
+    }
+  }
+  return bounds;
+}
+
 GasDistribution::GasDistribution(const GasSpace& space, int num_ranks,
                                  const std::vector<double>& a_weight,
                                  const std::vector<double>& b_weight,
-                                 int64_t slice_elements)
+                                 int64_t slice_elements, int64_t max_elements)
     : GasDistribution(space, num_ranks, true, slice_elements) {
   a_work_ = a_weight;
   b_work_ = b_weight;
-  a_bounds_ = Balance(a_work_, num_ranks);
-  b_bounds_ = Balance(b_work_, num_ranks);
+  const double cap = static_cast<double>(max_elements);
+  a_bounds_ = BalanceWithin(a_work_, a_size_, num_ranks, cap);
+  b_bounds_ = BalanceWithin(b_work_, b_size_, num_ranks, cap);
 }
 
 GasDistribution::GasDistribution(const GasSpace& space, int num_ranks,
@@ -160,6 +209,8 @@ GasDistribution::GasDistribution(const GasSpace& space, int num_ranks,
     }
   }
   b_start_[sb.nbucket] = at;
+  a_size_ = a_size;
+  b_size_ = b_size;
   a_bounds_ = Balance(by_work ? a_work_ : a_size, num_ranks);
   b_bounds_ = Balance(by_work ? b_work_ : b_size, num_ranks);
 }
