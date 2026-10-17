@@ -51,11 +51,9 @@ def chunked_cholesky(mol, max_error=1e-5, verbose=True, cmax=8):
         nc = mol.bas_nctr(i)
         nao_per_i += (2 * l + 1) * nc
         dims.append(nao_per_i)
-        print(l, nc)
     dims = mol.ao_loc_nr()
     for i in range(0, mol.nbas):
         shls = (i, i + 1, 0, mol.nbas, i, i + 1, 0, mol.nbas)
-        print(shls)
         buf = mol.intor('int2e_sph', shls_slice=shls)
         di, dk, dj, dl = buf.shape
         diag[ndiag:ndiag + di * nao] = buf.reshape(di * nao, di * nao).diagonal()
@@ -119,7 +117,6 @@ def chunked_cholesky(mol, max_error=1e-5, verbose=True, cmax=8):
                 delta_nu = delta[nu]
                 if delta_nu < min(max_error, 1e-8):
                     continue
-                print(delta[nu], nu, (dims[sj]+cj)*nao+dims[sl]+cl)
                 # Updated residual = \sum_x L_i^x L_nu^x
                 R = np.dot(chol_vecs[:nchol + 1, nu], chol_vecs[:nchol + 1, :])
                 munu0 = eri_col[:,:,i_j,i_l].reshape(nao*nao)
