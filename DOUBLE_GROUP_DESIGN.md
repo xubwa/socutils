@@ -213,20 +213,29 @@ above once validated; their `occup` dict format is translated to `irrep_nelec`.
 
 - D^j(R) = C^† [D^l_real(R) ⊗ U_SU(2)(R)] C per shell (C = `sph2spinor`, D^l from `pyscf.symm.Dmatrix`), for
   rotating orbitals / density matrices between frames, and if mainline review asks for lab-frame SALCs.
-- Realification (phase 2, user's decision 2026-10-16): after every diagonalization, for groups D2/C2v/D2h (labels
-  from C2*/C2h*) and linear molecules, fix the phase of each MO so that it is invariant under the antiunitary
-  K = C2x·T (C2v: σx·T; linear: σv·T). Derivation: C2x C2z C2x^{-1} = C2z^{-1}, so C2x and T both map 1E ↔ 2E and
-  K maps 1E → 1E; K² = (C2x)² T² = (−1)(−1) = +1; KT = TK. With Kφ = φ for the 1E MOs and φ̄ = Tφ, all
-  one-electron and two-electron MO integrals (Coulomb, Gaunt, Breit, X2CAMF/X2CMP SO terms) are real.
-  Per MO: Kφ = e^{iθ}φ (no degeneracy inside a 1E block) → φ ← e^{iθ/2}φ; degenerate subspaces: diagonalize K.
-  On spinor AOs K = atom permutation × phase × complex conjugation (m_j preserved).
-  Valid only when F commutes with T: Kramers-restricted RHF/RDHF (closed shell, average of configuration);
-  not for Kramers-unrestricted UHF or magnetic fields. C2*/Cs*/C2h* (no extra C2x), Ci*, C1* stay complex.
-  Downstream orbital rotations (CASSCF, localization) must be real orthogonal to keep this.
-  Check to run then: C2H4 / HBr, max |Im| of MO integrals ~1e-14.
+- Realification: done (2026-10-17), see section 5a.
 - κ blocking for atoms (current `symmetry='sph'` mode).
 - Double-group direct product consumers: CASCI/FCI/CC (zccsdt export), ao2mo with symmetry.
 - PySCF issue: `GHF(mol).x2c()` with `mol.symmetry=True` (warn + fall back to C1).
+
+## 5a. Realification (implemented 2026-10-17)
+
+For D2h, D2 (double group C2h* / C2*), C2v (C2*) and linear molecules there is an operation G outside the
+double group with G C2z G^-1 = C2z^-1: C2y for D2h/D2, σ_xz for C2v/C∞v/D∞h. G and T both map 1E ↔ 2E
+(m_j ↔ −m_j), so the antiunitary K = G·T maps every fermion irrep onto itself, K² = (C2y)²T² = +1, KT = TK.
+On the spinor GTOs (numerically determined, pyscf phases): C2y |j m⟩ = (−1)^(j−m) |j, −m⟩, σ_xz = i·C2y adds
+(−1)^l; both real.  (C2x would give −i(−1)^(j−1/2), hence C2y.)
+
+Implementation (user's decision 2026-10-17: the gain is in the correlated methods, which can then run in
+real arithmetic; the SCF stays complex): only the final orbitals are made K invariant, in `_finalize` of the
+Kramers-restricted classes (SymAdaptedRHF/RDHF), by `spinor_basis.realify_mo`: per Kramers pair (u, Tu),
+K u = λ u, u ← √λ u, partner ← T u; accidentally degenerate u (same energy) are rotated together,
+U ← U √(U^†SKU) (symmetric unitary).  4c: the same K on the L and S coefficients.
+C2*/Cs*/C2h*/Ci*/C1* molecules without such a G (point group C2, Cs, C2h, Ci, C1) stay complex.
+Downstream orbital rotations (CASSCF, localization) must be real orthogonal to keep the realness.
+(A first version realified the SALCs and solved real eigenproblems; dropped as not worth the complexity.)
+Tests (`scf/test/test_realification.py`): C2H4, H2O, HBr, Cl2 — X2CAMF RHF MO Fock, hcore and MO ERIs real
+to 1e-10, orbitals K invariant, energies equal C1; RDHF MO Fock real; UHF energy unchanged.
 
 ## 6. Open questions
 

@@ -26,6 +26,13 @@ reverses of the first block's functions, its matrix is the complex conjugate,
 and its orbitals are the time reverses of the first block's orbitals.
 Self-conjugate blocks (C1, Ci) are diagonalized with the quaternion solver
 zquatev, in the [X | T X] layout of the symmetry-adapted basis.
+
+Realification: for D2h, D2, C2v and linear molecules the final Kramers-
+restricted orbitals are made K invariant (K = G T, see
+:func:`socutils.symm.spinor_basis.realify_mo`), so that all MO integrals are
+real and correlated methods can work in real arithmetic.  The SCF itself
+stays complex.  Later orbital rotations (CASSCF, localization) must be real
+orthogonal to keep this.
 '''
 
 import numpy
@@ -335,7 +342,12 @@ class DoubleGroupSymm:
                               for g in groups]).astype(int)
         self.mo_energy = self.mo_energy[order]
         self.mo_occ = self.mo_occ[order]
-        self.mo_coeff = lib.tag_array(numpy.asarray(self.mo_coeff)[:, order], orbsym=orbsym[order])
+        mo_coeff = numpy.asarray(self.mo_coeff)[:, order]
+        op = spinor_basis.realification_op(self.mol, self.doublegroupname)
+        if self._kramers_restricted and op is not None:
+            # K-invariant orbitals: real MO integrals for correlated methods
+            mo_coeff = spinor_basis.realify_mo(self.mol, mo_coeff, self.get_ovlp(), op, self.mo_energy)
+        self.mo_coeff = lib.tag_array(mo_coeff, orbsym=orbsym[order])
         if self.chkfile:
             chkfile.dump_scf(self.mol, self.chkfile, self.e_tot, self.mo_energy,
                              self.mo_coeff, self.mo_occ, overwrite_mol=False)

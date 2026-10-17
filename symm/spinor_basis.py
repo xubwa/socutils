@@ -28,6 +28,16 @@ columns of the first block, one by one.  For a self-conjugate irrep (C1, Ci)
 the block is laid out as [X | T X], the order expected by the quaternion
 eigensolver (zquatev).
 
+Realification.  If the molecule has, besides the double group, an operation
+G with G C2z G^-1 = C2z^-1 (C2y for D2h and D2, sigma_xz for C2v and the
+linear groups), the antiunitary K = G T maps every fermion irrep onto itself
+and K^2 = +1.  Kramers-restricted orbitals can then be chosen K invariant
+(:func:`realify_mo`), which makes all their one- and two-electron integrals
+real.  On the spinor GTOs
+
+    C2y       (-1)^(j - m_j)          |j, -m_j>
+    sigma_xz  (-1)^l (-1)^(j - m_j)   |j, -m_j>        (sigma_xz = i C2y)
+
 For 4-component calculations :func:`dirac_symm_orb` adds the small component.
 The small-component basis is sigma.p acting on the same spinor GTOs.  sigma.p
 is odd under inversion, but so is the intrinsic parity of the small component
@@ -37,6 +47,7 @@ of an irrep Gamma are the SALCs of the same Gamma.
 
 import weakref
 import numpy
+import scipy.linalg
 from pyscf import lib
 from pyscf import symm
 from pyscf.lib import logger
@@ -48,6 +59,8 @@ _OP_MATRIX = {
     'C2': numpy.diag([-1., -1., 1.]),
     'i' : -numpy.eye(3),
     'sh': numpy.diag([1., 1., -1.]),
+    'C2y': numpy.diag([-1., 1., -1.]),
+    'sxz': numpy.diag([1., -1., 1.]),
 }
 
 # group elements (barred elements omitted: for fermion irreps they give the
@@ -63,6 +76,11 @@ _LINEAR = ('Coov', 'Dooh')
 _NEEDS_AXIS = ('C2', 'Cs', 'C2h', 'Coov', 'Dooh')
 
 FRAME_TOL = 1e-6
+
+# realification: the operation G (by point group) for K = G T, and the double
+# groups whose conjugate pairs (1E, 2E or m_j, -m_j) G interchanges
+_REALIFY_OP = {'D2h': 'C2y', 'D2': 'C2y', 'C2v': 'sxz', 'Coov': 'sxz', 'Dooh': 'sxz'}
+_REALIFY_GROUPS = ('C2', 'C2h', 'Coov', 'Dooh')
 
 
 def _spinor_ao_info(mol):
@@ -84,6 +102,95 @@ def _op_phase(op, l, two_mj):
     if op == 'sh':
         return (-1.)**l * numpy.exp(.5j * numpy.pi * two_mj)
     raise KeyError(op)
+
+
+def realification_op(mol, doublegroupname):
+    '''The operation G of K = G T for realifying the orbitals of
+    ``doublegroupname``, or None.'''
+    if not mol.symmetry or doublegroupname not in _REALIFY_GROUPS:
+        return None
+    op = _REALIFY_OP.get(mol.groupname)
+    if op is None:
+        return None
+    orig = numpy.asarray(mol._symm_orig)
+    try:
+        _atom_permutation(mol, op, orig, max(symm.geom.TOLERANCE * 10, 1e-4))
+    except symm.PointGroupSymmetryError:
+        return None
+    return op
+
+
+def apply_k(mol, op, c):
+    '''Coefficients of K f = G T f (columns of ``c``).'''
+    labels = mol.spinor_labels(fmt=False)
+    l = numpy.array(['spdfghiklmnortu'.index(x[2].lstrip('0123456789')[0]) for x in labels])
+    two_j = numpy.array([int(x[2].lstrip('0123456789')[1:].split('/')[0]) for x in labels])
+    two_mj = numpy.array([int(x[3].split('/')[0]) for x in labels])
+    phase = (-1.)**((two_j - two_mj) // 2)
+    if op == 'sxz':
+        phase *= (-1.)**l
+    # G maps the AO (A, l, j, m_j) to (G A, l, j, -m_j); the -m_j AO is the
+    # time-reversal partner
+    flip = abs(numpy.asarray(mol.time_reversal_map())) - 1
+    dest = _ao_permutation(mol, _atom_permutation(
+        mol, op, numpy.asarray(mol._symm_orig), max(symm.geom.TOLERANCE * 10, 1e-4)))[flip]
+    tc = time_reversal_coeff(mol, c)
+    kc = numpy.empty_like(tc)
+    kc[dest] = phase.reshape((-1,) + (1,) * (tc.ndim - 1)) * tc
+    return kc
+
+
+def realify_mo(mol, mo_coeff, s, op, mo_energy=None, degen_tol=1e-8):
+    """Phases of Kramers-paired orbitals such that the first orbital u of each
+    pair is K invariant (K u = u, K = G T); the second is replaced by T u.
+
+    mo_coeff : (n, nmo) in the interleaved (u, T u) layout, 2c (n = nao_2c)
+        or 4c (n = 2 nao_2c, [L; S]).  s is the metric of the same dimension.
+    With an orbital energy degenerate within the same K-invariant block
+    (accidental), the degenerate u are rotated together, U -> U sqrt(U^+ S K U).
+    Returns the new coefficients (same layout).
+    """
+    n2c = mol.nao_2c()
+    c = numpy.array(mo_coeff, dtype=complex)
+    four_c = c.shape[0] == 2 * n2c
+
+    def tr(x):
+        if four_c:
+            return numpy.vstack((time_reversal_coeff(mol, x[:n2c]), time_reversal_coeff(mol, x[n2c:])))
+        return time_reversal_coeff(mol, x)
+
+    def k(x):
+        if four_c:
+            return numpy.vstack((apply_k(mol, op, x[:n2c]), apply_k(mol, op, x[n2c:])))
+        return apply_k(mol, op, x)
+
+    u = c[:, 0::2]
+    if abs(tr(u) - c[:, 1::2]).max() > 1e-6:
+        raise ValueError('orbitals are not in the interleaved Kramers-pair layout (u, T u)')
+    lam = numpy.einsum('pi,pq,qi->i', u.conj(), s, k(u))
+    done = numpy.zeros(u.shape[1], dtype=bool)
+    for i in range(u.shape[1]):
+        if done[i]:
+            continue
+        if abs(abs(lam[i]) - 1) < 1e-6:
+            u[:, i] *= numpy.sqrt(lam[i])
+            done[i] = True
+            continue
+        if mo_energy is None:
+            raise RuntimeError('orbital %d mixes under K; pass mo_energy to group degenerate orbitals' % (2 * i))
+        e = numpy.asarray(mo_energy)[0::2]
+        grp = numpy.where(~done & (abs(e - e[i]) < degen_tol))[0]
+        ug = u[:, grp]
+        m = ug.conj().T.dot(s).dot(k(ug))
+        # M is symmetric unitary (K antiunitary, K^2 = 1); its principal square
+        # root W is symmetric unitary and K (U W) = U M W* = U W
+        if abs(m.dot(m.conj()) - numpy.eye(grp.size)).max() > 1e-6:
+            raise RuntimeError('degenerate orbitals %s do not span a K-invariant space' % (2 * grp))
+        u[:, grp] = ug.dot(scipy.linalg.sqrtm(m))
+        done[grp] = True
+    c[:, 0::2] = u
+    c[:, 1::2] = tr(u)
+    return c
 
 
 def _atom_permutation(mol, op, orig, tol):
