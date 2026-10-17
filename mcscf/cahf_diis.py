@@ -28,6 +28,10 @@ def mc_diis(mc, mo_coeff, target_orbital=None, mo_cap=None, conv_tol=None,
     nocc = ncore + ncas
     s1e = mc._scf.get_ovlp()
     mc.mo_coeff = mo_coeff
+    # double-group irreps (mc.orbsym) mask the gradient; the orbitals stay
+    # symmetry adapted because mc._scf.eig diagonalizes the Fock matrix by irrep
+    mc._setup_orbsym(mo_coeff, strict=True)
+    dg_symm = mc.orbsym is not None and mc._dg_symm_orb(mo_coeff) is not None
 
     mc_diis = scf.diis.CDIIS()
     h1e = mc._scf.get_hcore()
@@ -208,6 +212,12 @@ def mc_diis(mc, mo_coeff, target_orbital=None, mo_cap=None, conv_tol=None,
         e_last = e_tot
         mo_old = mo
         mo_energy, mo = mc._scf.eig(fock, s1e)
+        if dg_symm:
+            # the double-group eig groups the orbitals by irrep: back to the
+            # energy order (stable, so the Kramers pairs stay interleaved)
+            order = np.argsort(mo_energy.round(9), kind='stable')
+            mo_energy = mo_energy[order]
+            mo = lib.tag_array(np.asarray(mo)[:, order], orbsym=np.asarray(mo.orbsym)[order])
         print(mo_energy)
         mo_unsrt = mo.copy()
         if hasattr(mc._scf, "irrep_mo") and mc._scf.irrep_mo is not None:
@@ -273,6 +283,12 @@ def mc_diis(mc, mo_coeff, target_orbital=None, mo_cap=None, conv_tol=None,
             analyze.analyze(mol, mo[:,ncore:nocc], mo_energy[ncore:nocc])
         imacro += 1
         mc.mo_coeff = mo.copy()
+        if mc.orbsym is not None:
+            # sort_mo reordered the orbitals
+            mc._setup_orbsym(mc.mo_coeff, strict=True)
         #mc.irrep = mo.orbsym
+    if mc.orbsym is not None:
+        mc.check_orbsym(mc.mo_coeff)
+        mc.mo_coeff = lib.tag_array(np.asarray(mc.mo_coeff), orbsym=mc.orbsym)
     return mc, mo_unsrt, mo_energy
  
