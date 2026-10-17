@@ -310,6 +310,219 @@ void TestHamiltonian(const Integrals<Complex>& ints) {
          "transition density matrices obey <0|p^+ q|1> = conj(<1|q^+ p|0>)");
 }
 
+// The few-vector solver of the select and diag modes against the classic one
+// and the dense eigenvalues: several roots, a space that grows (vectors
+// padded with zeros), determinants out of the space, checkpoint and restart.
+void TestFewVectorSolver(const Integrals<Complex>& ints) {
+  const int n = ints.num_orbs();
+  const std::vector<Det<1>> dets =
+      ToDets<1>(RandomOccupations(n, ints.num_elec(), 500, 3, 11), 0);
+  ConnectOptions connect;
+  connect.method = ConnectMethod::kStrings;
+  auto make_h = [&](size_t count) {
+    SparseH<Complex> h;
+    std::vector<double> diagonal(count);
+    for (size_t d = 0; d < count; ++d) {
+      diagonal[d] = DiagonalEnergy(dets[d], ints);
+    }
+    h.AppendDiagonal(diagonal);
+    const std::vector<Det<1>> part(dets.begin(), dets.begin() + count);
+    h.AppendBlock(BuildBlock(MakeSpan(part), 0, ints, connect));
+    return h;
+  };
+  const SparseH<Complex> h = make_h(dets.size());
+  const size_t dim = h.dim();
+  const int max_roots = 3;
+  DavidsonOptions dense_options;
+  dense_options.dense_dim = 1 << 20;
+  dense_options.few_vectors = false;
+  std::vector<std::vector<Complex>> exact(max_roots,
+                                          std::vector<Complex>(dim, 0.0));
+  const DavidsonResult dense = Davidson(h, dense_options, &exact);
+  // Start vectors: unit vectors on the lowest diagonal elements.
+  auto guess = [&](const SparseH<Complex>& op, int roots) {
+    std::vector<size_t> order(op.dim());
+    for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+      return op.diagonal()[a] < op.diagonal()[b];
+    });
+    std::vector<std::vector<Complex>> v(roots,
+                                        std::vector<Complex>(op.dim(), 0.0));
+    for (int k = 0; k < roots; ++k) v[k][order[k]] = 1.0;
+    return v;
+  };
+  auto error = [&](const DavidsonResult& r, int roots) {
+    double e = r.converged ? 0.0 : 1.0;
+    for (int k = 0; k < roots; ++k) {
+      e = std::max(e, std::abs(r.energies[k] - dense.energies[k]));
+    }
+    return e;
+  };
+
+  for (int roots : {1, 3}) {
+    DavidsonOptions few;
+    few.dense_dim = 0;
+    few.tol = 1e-8;
+    DavidsonOptions classic = few;
+    classic.few_vectors = false;
+    std::vector<std::vector<Complex>> a = guess(h, roots), b = a;
+    const DavidsonResult ra = SolveDistributed<Complex>(h, few, Comm(), &a);
+    const DavidsonResult rb = SolveDistributed<Complex>(h, classic, Comm(), &b);
+    Expect(error(ra, roots) < 1e-10 && error(rb, roots) < 1e-10,
+           "few-vector Davidson (3 per root) and the classic one give the "
+           "dense eigenvalues, " +
+               std::to_string(roots) + " root(s)");
+    std::printf(
+        "      %d root(s): %d products with 3 vectors per root, %d "
+        "with 20\n",
+        roots, ra.num_products, rb.num_products);
+
+    // The space grows: the eigenvectors of the first 300 determinants,
+    // padded with zeros, start the solver in all 500.
+    const SparseH<Complex> small = make_h(300);
+    std::vector<std::vector<Complex>> v = guess(small, roots);
+    SolveDistributed<Complex>(small, few, Comm(), &v);
+    for (std::vector<Complex>& x : v) x.resize(dim, 0.0);
+    const DavidsonResult grown = SolveDistributed<Complex>(h, few, Comm(), &v);
+    double residual = 0.0;
+    std::vector<Complex> hv(dim);
+    for (int k = 0; k < roots; ++k) {
+      h.Multiply(v[k].data(), hv.data());
+      for (size_t i = 0; i < dim; ++i) {
+        residual =
+            std::max(residual, std::abs(hv[i] - grown.energies[k] * v[k][i]));
+      }
+    }
+    Expect(error(grown, roots) < 1e-10 && residual < 1e-7,
+           "few-vector Davidson continues from vectors padded with zeros "
+           "after the space grew, " +
+               std::to_string(roots) + " root(s)");
+
+    // Determinants out of the space.
+    std::vector<uint8_t> active(dim, 1);
+    for (size_t i = 0; i < dim; i += 7) active[i] = 0;
+    std::vector<std::vector<Complex>> c = guess(h, roots), d = c;
+    for (int k = 0; k < roots; ++k) {
+      for (size_t i = 0; i < dim; ++i) {
+        if (!active[i]) c[k][i] = d[k][i] = 0.0;
+      }
+      c[k][(k + 1) * 11 % dim] = d[k][(k + 1) * 11 % dim] = 0.5;
+    }
+    const DavidsonResult rc =
+        SolveDistributed<Complex>(h, few, Comm(), &c, &active);
+    const DavidsonResult rd =
+        SolveDistributed<Complex>(h, classic, Comm(), &d, &active);
+    double diff = rc.converged && rd.converged ? 0.0 : 1.0;
+    for (int k = 0; k < roots; ++k) {
+      diff = std::max(diff, std::abs(rc.energies[k] - rd.energies[k]));
+    }
+    Expect(diff < 1e-10,
+           "few-vector and classic Davidson agree in a masked "
+           "space, " +
+               std::to_string(roots) + " root(s)");
+  }
+
+  // Stopped with checkpoints, then restarted from them; a checkpoint of
+  // another list is passed over.
+  const std::string path =
+      std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") +
+      "/zshci_test_sci.ckpt";
+  std::remove(path.c_str());
+  DavidsonOptions options;
+  options.dense_dim = 0;
+  options.tol = 1e-8;
+  options.checkpoint = path;
+  options.checkpoint_every = 1;
+  options.fingerprint = 12345;
+  options.max_iterations = 4;
+  std::vector<std::vector<Complex>> v = guess(h, 2);
+  const DavidsonResult first =
+      SolveDistributed<Complex>(h, options, Comm(), &v);
+  options.max_iterations = 200;
+  options.restart = true;
+  v = guess(h, 2);
+  const DavidsonResult second =
+      SolveDistributed<Complex>(h, options, Comm(), &v);
+  options.fingerprint = 54321;
+  v = guess(h, 2);
+  const DavidsonResult other =
+      SolveDistributed<Complex>(h, options, Comm(), &v);
+  Expect(!first.converged && second.restarted && error(second, 2) < 1e-10 &&
+             second.num_iterations < other.num_iterations && !other.restarted &&
+             error(other, 2) < 1e-10,
+         "few-vector Davidson restarts from its checkpoint and passes over "
+         "one of another list");
+  std::printf("      %d + %d iterations with the checkpoint, %d without\n",
+              first.num_iterations, second.num_iterations,
+              other.num_iterations);
+  std::remove(path.c_str());
+}
+
+// The energies of a select-mode run in the directory `prefix`.
+std::vector<double> RunSelectCase(const Integrals<Complex>& ints,
+                                  const std::string& prefix,
+                                  const std::string& extra,
+                                  const std::string& solver, int max_iter) {
+  const std::string text =
+      "{\"mode\": \"select\", \"integrals\": \"unused\", \"nroots\": 2, "
+      "\"prefix\": \"" +
+      prefix +
+      "\", \"dets\": [[0,1,2,3,4,5,6,7,8,9,10,"
+      "11]], \"select\": {\"schedule\": [[0, 1e-2], [1, 3e-3]], "
+      "\"max_iter\": " +
+      std::to_string(max_iter) + ", \"energy_tol\": 1e-12" + extra +
+      "}, \"output_level\": 0, "
+      "\"davidson\": {\"tol\": 1e-9, \"checkpoint_every\": 1, "
+      "\"solver\": \"" +
+      solver + "\"}}";
+  Input input = ParseInput(text);
+  RunSelect<1, Complex>(input, ints, Comm());
+  std::vector<double> energies(2, 0.0);
+  std::FILE* file = std::fopen((prefix + "/shci.e").c_str(), "rb");
+  if (file != nullptr) {
+    if (std::fread(energies.data(), sizeof(double), 2, file) != 2) {
+      energies.assign(2, 0.0);
+    }
+    std::fclose(file);
+  }
+  return energies;
+}
+
+// A whole selection with the few-vector solver against the classic one, and
+// one stopped after two iterations and resumed from its checkpoint.
+void TestSelectSolvers(const Integrals<Complex>& ints) {
+  const std::string base =
+      std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") +
+      "/zshci_test_select";
+  std::system(("rm -rf " + base + " && mkdir -p " + base + "/a " + base +
+               "/b " + base + "/c")
+                  .c_str());
+  const std::vector<double> few =
+      RunSelectCase(ints, base + "/a", "", "few", 5);
+  const std::vector<double> classic =
+      RunSelectCase(ints, base + "/b", "", "classic", 5);
+  RunSelectCase(ints, base + "/c", ", \"checkpoint\": true", "few", 2);
+  int iteration = -1, solved = 0;
+  const bool state =
+      ReadSelectState(base + "/c/select.h5", &iteration, &solved);
+  const std::vector<double> resumed = RunSelectCase(
+      ints, base + "/c", ", \"checkpoint\": true, \"resume\": true", "few", 5);
+  double diff = 0.0, resume_diff = 0.0;
+  for (int k = 0; k < 2; ++k) {
+    diff = std::max(diff, std::abs(few[k] - classic[k]));
+    resume_diff = std::max(resume_diff, std::abs(few[k] - resumed[k]));
+  }
+  Expect(few[0] != 0.0 && diff < 1e-9,
+         "select mode: the few-vector and the classic Davidson give the same "
+         "energies (2 roots)");
+  Expect(state && iteration == 1 && solved == 1 && resume_diff < 1e-9,
+         "select mode resumed from its checkpoint after two iterations "
+         "ends with the energies of an uninterrupted run");
+  std::printf("      differences %.1e (solvers), %.1e (resumed)\n", diff,
+              resume_diff);
+  std::system(("rm -rf " + base).c_str());
+}
+
 // Selection through the heat-bath tables against a direct evaluation of
 // |H(a,i)| w_i for every single and double excitation. `restrictions` bound
 // the number of electrons in sets of spinors.
@@ -2825,6 +3038,8 @@ int main(int argc, char** argv) {
     }
     zshci::TestCountBetween();
     zshci::TestHamiltonian(ints);
+    zshci::TestFewVectorSolver(ints);
+    zshci::TestSelectSolvers(ints);
     zshci::TestDensityMatricesFromDefinition(ints);
     zshci::TestPerturbation(ints);
     zshci::TestSecondOrderLimit(ints);

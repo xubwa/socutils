@@ -109,6 +109,22 @@ void WriteWaveFunction(const std::string& path, const WaveFunction<S>& wfn) {
   file.createAttribute<std::string>("input",
                                     HighFive::DataSpace::From(wfn.input))
       .write(wfn.input);
+  if (wfn.select_iteration >= 0) {
+    file.createAttribute<int>("select_iteration",
+                              HighFive::DataSpace::From(wfn.select_iteration))
+        .write(wfn.select_iteration);
+    file.createAttribute<int>("select_solved",
+                              HighFive::DataSpace::From(wfn.select_solved))
+        .write(wfn.select_solved);
+  }
+}
+
+bool ReadSelectState(const std::string& path, int* iteration, int* solved) {
+  HighFive::File file(path, HighFive::File::ReadOnly);
+  if (!file.hasAttribute("select_iteration")) return false;
+  file.getAttribute("select_iteration").read(*iteration);
+  file.getAttribute("select_solved").read(*solved);
+  return true;
 }
 
 std::vector<uint64_t> ReadDetWords(const std::string& path, int* det_width) {

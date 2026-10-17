@@ -352,10 +352,13 @@ class VariationalH : private ElementSource<S> {
         memory_limit_(
             static_cast<size_t>(input.memory_gb * 1024.0 * 1024.0 * 1024.0)),
         // Basis vectors and their products of the eigensolver, the
-        // eigenvectors, and two for a product.
-        num_vectors_((2 * std::max(2, input.davidson.max_space_per_root) + 1) *
-                         input.nroots +
-                     2),
+        // eigenvectors (the few-vector solver takes them over), and two
+        // for a product.
+        num_vectors_(input.davidson.few_vectors
+                         ? 2 * input.davidson.max_space * input.nroots + 3
+                         : (2 * std::max(2, input.davidson.max_space_per_root) +
+                            1) * input.nroots +
+                               2),
         incremental_(input.incremental),
         connect_(MakeConnectOptions(input)) {
     ResetStored();
@@ -419,9 +422,13 @@ class VariationalH : private ElementSource<S> {
 
   // Collective: the lowest eigenpairs (see SolveDistributed), with `active`
   // in the determinants it marks.
-  DavidsonResult Solve(const DavidsonOptions& options,
+  DavidsonResult Solve(const DavidsonOptions& given,
                        std::vector<std::vector<S>>* root_vectors,
                        const std::vector<uint8_t>* active = nullptr) const {
+    DavidsonOptions options = given;
+    if (comm_.is_root() && (options.checkpoint_every > 0 || options.restart)) {
+      options.fingerprint = Fingerprint(active);
+    }
     if (direct_) {
       const DirectH<W, S> h(dets_, ints_, *tables_, connect_.threshold,
                             stored_.diagonal());
@@ -547,6 +554,22 @@ class VariationalH : private ElementSource<S> {
   };
 
   bool all_rows_stored() const { return num_direct_rows_ == 0; }
+
+  // Of the determinant list and, on the root, the determinants in the space;
+  // for the checkpoints of the eigensolver.
+  uint64_t Fingerprint(const std::vector<uint8_t>* active) const {
+    const long n = static_cast<long>(dets_.size());
+    uint64_t sum = 0;
+#pragma omp parallel for reduction(+ : sum) schedule(static)
+    for (long i = 0; i < n; ++i) {
+      uint64_t x = dets_[i].Hash() + 0x9e3779b97f4a7c15ull * (i + 1);
+      if (active != nullptr && !(*active)[i]) x = ~x;
+      x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ull;
+      x = (x ^ (x >> 27)) * 0x94d049bb133111ebull;
+      sum += x ^ (x >> 31);
+    }
+    return sum ^ static_cast<uint64_t>(n);
+  }
 
   // Bytes of what this process holds besides the Hamiltonian for n
   // determinants. All the time: the string tables, the determinants (the

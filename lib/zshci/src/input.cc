@@ -115,7 +115,9 @@ Json ToJson(const Input& in) {
                    {"max_iter", in.select.max_iter},
                    {"energy_tol", in.select.energy_tol},
                    {"davidson_tol_loose", in.select.davidson_tol_loose},
-                   {"integral_threshold", in.select.integral_threshold}};
+                   {"integral_threshold", in.select.integral_threshold},
+                   {"checkpoint", in.select.checkpoint},
+                   {"resume", in.select.resume}};
   }
   if (in.mode == Mode::kFci) {
     const FciInput& f = in.fci;
@@ -149,7 +151,12 @@ Json ToJson(const Input& in) {
     }
   }
   j["davidson"] = {{"tol", in.davidson.tol},
+                   {"solver", in.davidson.few_vectors ? "few" : "classic"},
+                   {"max_space", in.davidson.max_space},
                    {"max_space_per_root", in.davidson.max_space_per_root},
+                   {"level_shift", in.davidson.level_shift},
+                   {"checkpoint_every", in.davidson.checkpoint_every},
+                   {"restart", in.davidson.restart},
                    {"max_iterations", in.davidson.max_iterations},
                    {"dense_dim", in.davidson.dense_dim}};
   static const char* const kPtNames[] = {"none", "deterministic",
@@ -337,6 +344,8 @@ Input ParseInput(const std::string& text) {
     sel.Get("compact_above", &in.select.compact_above);
     sel.Get("sigma", &in.select.sigma);
     sel.Get("epsilon_generate", &in.select.epsilon_generate);
+    sel.Get("checkpoint", &in.select.checkpoint);
+    sel.Get("resume", &in.select.resume);
     sel.CheckNoUnknownKeys();
     if (in.select.prune && in.select.method != SelectMethod::kAsci &&
         in.select.method != SelectMethod::kAci) {
@@ -395,9 +404,29 @@ Input ParseInput(const std::string& text) {
     dav.Get("max_space_per_root", &in.davidson.max_space_per_root);
     dav.Get("max_iterations", &in.davidson.max_iterations);
     dav.Get("dense_dim", &in.davidson.dense_dim);
+    std::string solver = "few";
+    dav.Get("solver", &solver);
+    if (solver != "few" && solver != "classic") {
+      dav.Fail("solver", "must be \"few\" or \"classic\"");
+    }
+    in.davidson.few_vectors = solver == "few";
+    dav.Get("max_space", &in.davidson.max_space);
+    dav.Get("level_shift", &in.davidson.level_shift);
+    dav.Get("checkpoint_every", &in.davidson.checkpoint_every);
+    dav.Get("restart", &in.davidson.restart);
     if (in.davidson.tol <= 0.0) dav.Fail("tol", "must be positive");
     if (in.davidson.max_space_per_root < 2) {
       dav.Fail("max_space_per_root", "must be at least 2");
+    }
+    if (in.davidson.max_space < 2) dav.Fail("max_space", "must be at least 2");
+    if (in.davidson.few_vectors && in.mode != Mode::kFci &&
+        in.davidson.max_space * in.nroots > 64) {
+      dav.Fail("max_space",
+               "times nroots may not exceed 64; for more roots "
+               "take \"solver\": \"classic\"");
+    }
+    if (in.davidson.checkpoint_every < 0) {
+      dav.Fail("checkpoint_every", "must not be negative");
     }
     dav.CheckNoUnknownKeys();
   }
@@ -598,7 +627,14 @@ Input ParseInput(const std::string& text) {
   if (in.mode != Mode::kSelect) top.Ignore("select");
   top.CheckNoUnknownKeys();
 
+  if (in.davidson.few_vectors && in.mode != Mode::kFci &&
+      in.davidson.max_space * in.nroots > 64) {
+    top.Fail("nroots",
+             "is more than the few-vector Davidson takes; give "
+             "\"davidson\": {\"solver\": \"classic\"}");
+  }
   in.davidson.print = in.output_level > 1;
+  in.davidson.checkpoint = in.prefix + "/davidson.ckpt";
   in.resolved = ToJson(in).dump(2);
   return in;
 }

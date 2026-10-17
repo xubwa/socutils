@@ -61,14 +61,15 @@ class Solver {
  public:
   Solver(const CiOperator<S>& h, const double* diagonal,
          const VectorLayout& layout, const FciDavidsonOptions& options,
-         const Comm& comm)
+         const Comm& comm, std::vector<BigArray<S>>* start)
       : h_(h),
         diagonal_(diagonal),
         layout_(layout),
         options_(options),
         comm_(comm),
         n_(layout.local_size()),
-        k_(options.num_roots) {}
+        k_(options.num_roots),
+        start_(start) {}
 
   FciDavidsonResult<S> Run();
 
@@ -225,6 +226,7 @@ class Solver {
   const Comm& comm_;
   const long n_;
   const int k_;
+  std::vector<BigArray<S>>* start_;
   std::vector<BigArray<S>> x_, hx_;
   FciDavidsonResult<S> result_;
 };
@@ -279,7 +281,9 @@ void Solver<S>::Guess(int first) {
     }
     if (Orthonormalize(slot)) ++slot;
   }
-  if (slot < k_) throw std::runtime_error("fci: no independent start vectors");
+  if (slot < k_) {
+    throw std::runtime_error(options_.label + ": no independent start vectors");
+  }
 }
 
 template <typename S>
@@ -388,7 +392,7 @@ template <typename S>
 FciDavidsonResult<S> Solver<S>::Run() {
   const double start = omp_get_wtime();
   if (k_ < 1 || k_ > layout_.global_dim) {
-    throw std::runtime_error("fci: bad number of roots");
+    throw std::runtime_error(options_.label + ": bad number of roots");
   }
   if (comm_.size() == 1 && n_ == layout_.global_dim &&
       layout_.global_dim <= options_.dense_dim) {
@@ -396,42 +400,66 @@ FciDavidsonResult<S> Solver<S>::Run() {
   }
   const int m = options_.max_space;
   if (m < 2 * k_ || m > kMaxSpace) {
-    throw std::runtime_error(
-        "fci: max_space must be at least 2 * nroots and "
-        "at most " +
-        std::to_string(kMaxSpace));
+    throw std::runtime_error(options_.label +
+                             ": max_space must be at least 2 * nroots and "
+                             "at most " +
+                             std::to_string(kMaxSpace));
+  }
+  // The start vectors given become the first basis vectors.
+  int num_given = 0;
+  if (start_ != nullptr) {
+    for (BigArray<S>& v : *start_) {
+      if (num_given == k_) break;
+      if (static_cast<long>(v.size()) != n_) {
+        throw std::runtime_error(options_.label + ": bad start vector size");
+      }
+      x_.push_back(std::move(v));
+      ++num_given;
+    }
+    start_->clear();
   }
   for (int l = 0; l < m; ++l) {
-    x_.emplace_back(n_, options_.huge_pages);
+    if (l >= num_given) x_.emplace_back(n_, options_.huge_pages);
     hx_.emplace_back(n_, options_.huge_pages);
   }
 
-  // Start vectors: the checkpoint, then the lowest diagonal elements.
+  // Start vectors: the checkpoint, the vectors given, then the lowest
+  // diagonal elements.
   int read = 0;
+  int kept = 0;
   if (options_.restart && !options_.checkpoint.empty()) {
     std::vector<BigArray<S>> back;
     std::vector<double> energies;
-    read =
-        ReadCiCheckpoint<S>(options_.checkpoint, layout_, options_.fingerprint,
-                            k_, options_.huge_pages, &back, &energies);
-    int kept = 0;
+    try {
+      read = ReadCiCheckpoint<S>(options_.checkpoint, layout_,
+                                 options_.fingerprint, k_, options_.huge_pages,
+                                 &back, &energies);
+    } catch (const std::runtime_error& e) {
+      if (!options_.restart_if_matching) throw;
+      if (options_.print)
+        std::printf("%s: %s; not used\n", options_.label.c_str(), e.what());
+      read = 0;
+    }
     for (int j = 0; j < read; ++j) {
       std::swap(x_[kept], back[j]);
       if (Orthonormalize(kept)) ++kept;
     }
-    read = kept;
-    result_.restarted = read > 0;
-    if (read > 0 && options_.print) {
-      std::printf("fci: %d vector(s) read from %s (energies", read,
-                  options_.checkpoint.c_str());
+    result_.restarted = kept > 0;
+    if (kept > 0 && options_.print) {
+      std::printf("%s: %d vector(s) read from %s (energies",
+                  options_.label.c_str(), kept, options_.checkpoint.c_str());
       for (int j = 0; j < read; ++j) std::printf(" %.10f", energies[j]);
       std::printf(")\n");
     } else if (options_.print) {
-      std::printf("fci: no checkpoint %s; starting afresh\n",
-                  options_.checkpoint.c_str());
+      std::printf("%s: no checkpoint %s; starting afresh\n",
+                  options_.label.c_str(), options_.checkpoint.c_str());
     }
   }
-  Guess(read);
+  for (int j = read; j < num_given && kept < k_; ++j) {
+    if (j != kept) std::swap(x_[kept], x_[j]);
+    if (Orthonormalize(kept)) ++kept;
+  }
+  Guess(kept);
 
   int size = k_;
   Matrix<S> a = Matrix<S>::Zero(m, m);
@@ -520,7 +548,8 @@ FciDavidsonResult<S> Solver<S>::Run() {
       if (Orthonormalize(size + added)) ++added;
     }
     if (added == 0) {
-      std::printf("fci: the subspace cannot be extended\n");
+      std::printf("%s: the subspace cannot be extended\n",
+                  options_.label.c_str());
       Transform(c, false);
       break;
     }
@@ -552,8 +581,9 @@ template <typename S>
 FciDavidsonResult<S> FciDavidson(const CiOperator<S>& h, const double* diagonal,
                                  const VectorLayout& layout,
                                  const FciDavidsonOptions& options,
-                                 const Comm& comm) {
-  Solver<S> solver(h, diagonal, layout, options, comm);
+                                 const Comm& comm,
+                                 std::vector<BigArray<S>>* start) {
+  Solver<S> solver(h, diagonal, layout, options, comm, start);
   return solver.Run();
 }
 
@@ -607,16 +637,12 @@ int ReadCiCheckpoint(const std::string& path, const VectorLayout& layout,
   return count;
 }
 
-template FciDavidsonResult<double> FciDavidson(const CiOperator<double>&,
-                                               const double*,
-                                               const VectorLayout&,
-                                               const FciDavidsonOptions&,
-                                               const Comm&);
-template FciDavidsonResult<Complex> FciDavidson(const CiOperator<Complex>&,
-                                                const double*,
-                                                const VectorLayout&,
-                                                const FciDavidsonOptions&,
-                                                const Comm&);
+template FciDavidsonResult<double> FciDavidson(
+    const CiOperator<double>&, const double*, const VectorLayout&,
+    const FciDavidsonOptions&, const Comm&, std::vector<BigArray<double>>*);
+template FciDavidsonResult<Complex> FciDavidson(
+    const CiOperator<Complex>&, const double*, const VectorLayout&,
+    const FciDavidsonOptions&, const Comm&, std::vector<BigArray<Complex>>*);
 template int ReadCiCheckpoint(const std::string&, const VectorLayout&, uint64_t,
                               int, bool, std::vector<BigArray<double>>*,
                               std::vector<double>*);

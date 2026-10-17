@@ -1,5 +1,6 @@
 // Davidson eigensolver for CI vectors too long to keep many of: the "fci"
-// mode, up to some 1e10 determinants.
+// mode, up to some 1e10 determinants, and by default the select and diag
+// modes (davidson.h).
 //
 // It keeps at most max_space basis vectors and as many products with H, and
 // no other vector of the full length. Linear combinations of the basis are
@@ -72,7 +73,12 @@ struct FciDavidsonOptions {
   std::string checkpoint;
   int checkpoint_every = 1;
   bool restart = false;
+  // With restart: a checkpoint of another space is passed over (a note is
+  // printed) instead of being an error.
+  bool restart_if_matching = false;
   bool huge_pages = true;
+  // Prefix of the messages.
+  std::string label = "fci";
   // Progress lines on stdout.
   bool print = true;
   // Written into the checkpoint and checked on restart.
@@ -94,13 +100,18 @@ struct FciDavidsonResult {
 };
 
 // `diagonal`: H_ii of the local elements. With several ranks (comm), each
-// holds the elements of its `layout` and all call this together.
+// holds the elements of its `layout` and all call this together. `start`,
+// if given, holds start vectors (local elements, up to num_roots, need not
+// be orthonormal), which are taken over: they become basis vectors without
+// a copy. A checkpoint read with `restart` comes first; roots left without
+// a start vector start from the lowest diagonal elements.
 // Instantiated for double and Complex.
 template <typename S>
 FciDavidsonResult<S> FciDavidson(const CiOperator<S>& h, const double* diagonal,
                                  const VectorLayout& layout,
                                  const FciDavidsonOptions& options,
-                                 const Comm& comm = Comm());
+                                 const Comm& comm = Comm(),
+                                 std::vector<BigArray<S>>* start = nullptr);
 
 // Reads up to num_roots vectors of a checkpoint file into `vectors` (local
 // elements of `layout`, allocated here) and returns their number: 0 if the

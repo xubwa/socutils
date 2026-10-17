@@ -121,6 +121,15 @@ struct SelectInput {
   // Double-excitation integrals below this are left out of the heat-bath
   // tables.
   double integral_threshold = 1e-12;
+  // "checkpoint": after the selection of every iteration and again after
+  // its diagonalization, the list and the vectors go to <prefix>/select.h5
+  // (in the format of wfn.h5, with the iteration). "resume" continues from
+  // that file: the determinants and vectors are read, the eigensolver also
+  // restarts from <prefix>/davidson.ckpt if that was written for the same
+  // list (davidson.checkpoint_every), and the schedule goes on after the
+  // iteration of the file.
+  bool checkpoint = false;
+  bool resume = false;
 
   // epsilon1 of iteration `iter`.
   double Epsilon(int iter) const {

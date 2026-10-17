@@ -18,6 +18,8 @@
 #define ZSHCI_SRC_SELECT_H_
 
 #include <omp.h>
+#include <sys/resource.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <cmath>
@@ -39,6 +41,7 @@
 #include "heat_bath.h"
 #include "input.h"
 #include "integrals.h"
+#include "output.h"
 #include "sparse_h.h"
 
 namespace zshci {
@@ -634,8 +637,69 @@ std::unique_ptr<Selector<W, S>> MakeSelector(const Input& input) {
   throw std::logic_error("unknown selection method");
 }
 
+// Root only: the list and the vectors to <prefix>/select.h5, written beside
+// it and renamed, so that a job killed meanwhile leaves the previous one.
+// `energies` are without the core energy.
 template <int W, typename S>
-void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
+void WriteSelectCheckpoint(const Input& input, const Integrals<S>& ints,
+                           Span<Det<W>> dets,
+                           const std::vector<std::vector<S>>& vectors,
+                           const std::vector<double>& energies, int iteration,
+                           bool solved) {
+  const double start = omp_get_wtime();
+  const size_t n = dets.size();
+  WaveFunction<S> wfn;
+  wfn.num_orbs = ints.num_orbs();
+  wfn.num_elec = dets[0].Count();
+  wfn.det_width = W;
+  wfn.det_words.resize(n * W);
+  for (size_t d = 0; d < n; ++d) {
+    for (int k = 0; k < W; ++k) wfn.det_words[d * W + k] = dets[d].words[k];
+  }
+  wfn.coefficients = vectors;
+  for (double e : energies) wfn.energies.push_back(e + ints.core_energy());
+  wfn.input = input.resolved;
+  wfn.select_iteration = iteration;
+  wfn.select_solved = solved ? 1 : 0;
+  const std::string path = input.prefix + "/select.h5";
+  WriteWaveFunction(path + ".tmp", wfn);
+  if (std::rename((path + ".tmp").c_str(), path.c_str()) != 0) {
+    throw std::runtime_error("cannot rename " + path + ".tmp");
+  }
+  std::printf(
+      "checkpoint: %zu determinants (iteration %d, %s) written to %s, "
+      "%.1f s\n",
+      n, iteration, solved ? "solved" : "selected", path.c_str(),
+      omp_get_wtime() - start);
+}
+
+template <int W, typename S>
+void RunSelect(const Input& given, const Integrals<S>& ints, const Comm& comm) {
+  // "resume": the determinants and vectors come from select.h5, if there is
+  // one, and the iterations go on after the one it was written in.
+  Input resumed;
+  int resume_iter = -1;
+  if (given.select.resume) {
+    const std::string path = given.prefix + "/select.h5";
+    int solved = 0;
+    if (comm.is_root() && access(path.c_str(), R_OK) == 0 &&
+        !ReadSelectState(path, &resume_iter, &solved)) {
+      throw std::runtime_error(path +
+                               " is not a checkpoint of the select mode");
+    }
+    comm.BcastValue(&resume_iter);
+    if (resume_iter >= 0) {
+      resumed = given;
+      resumed.detfile = path;
+      resumed.dets.clear();
+      std::printf("resuming from %s, written in iteration %d (%s)\n",
+                  path.c_str(), resume_iter, solved ? "solved" : "selected");
+    } else {
+      std::printf("no checkpoint %s; starting afresh\n", path.c_str());
+    }
+  }
+  const Input& input = resume_iter >= 0 ? resumed : given;
+  const int first_iter = resume_iter + 1;
   const int num_orbs = ints.num_orbs();
   const int num_roots = input.nroots;
   const std::vector<LabelSet>& labels = ints.symmetry();
@@ -702,15 +766,33 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
             GuessVectors(shared_dets.span(), h.stored(), ints, num_roots);
       }
     }
-    energies = h.Solve(loose, &root_vectors).energies;
+    // On resuming, the eigensolver may go on from its own checkpoint; the
+    // solution is tight if no iteration is left.
+    DavidsonOptions first =
+        first_iter >= input.select.max_iter ? input.davidson : loose;
+    first.restart = resume_iter >= 0;
+    const DavidsonResult result = h.Solve(first, &root_vectors);
+    if (resume_iter >= 0) {
+      if (!result.converged) {
+        throw std::runtime_error("Davidson did not converge on resuming");
+      }
+      std::printf(
+          "resumed space: %zu determinants, energy %.12f, %d "
+          "iterations%s\n",
+          shared_dets.size(), result.energies[0] + ints.core_energy(),
+          result.num_iterations,
+          result.restarted ? " from the checkpoint of the eigensolver" : "");
+    }
+    energies = result.energies;
   }
 
   // t_sel, t_ham and t_dav are the seconds spent in this iteration on the
   // selection, the Hamiltonian and the eigensolver.
   const std::unique_ptr<Selector<W, S>> selector = MakeSelector<W, S>(input);
-  std::printf("%5s %10s %12s %5s %20s %9s %8s %8s %8s %9s\n", "iter",
+  // davidson: iterations of the last solve; products: H*x of the iteration.
+  std::printf("%5s %10s %12s %5s %20s %9s %8s %8s %8s %8s %9s\n", "iter",
               selector->parameter_name(), "dets", "root", "energy", "davidson",
-              "t_sel", "t_ham", "t_dav", "time");
+              "products", "t_sel", "t_ham", "t_dav", "time");
   const double start_time = omp_get_wtime();
   bool finished = false;
   int num_products = 0;
@@ -751,7 +833,8 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
     num_inactive = 0;
   };
 
-  for (int iter = 0; iter < input.select.max_iter && !finished; ++iter) {
+  for (int iter = first_iter; iter < input.select.max_iter && !finished;
+       ++iter) {
     const double epsilon = selector->Parameter(iter);
     const size_t old_size = shared_dets.size();
 
@@ -852,11 +935,16 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
       }
     }
     have_vectors = true;
+    if (input.select.checkpoint && comm.is_root()) {
+      WriteSelectCheckpoint(input, ints, shared_dets.span(), root_vectors,
+                            energies, iter, false);
+    }
 
     // The last epsilon1 has been reached and the space or the energies have
     // stopped changing: solve tightly and stop.
     const double solve_start = omp_get_wtime();
     const std::vector<double> previous = energies;
+    const int products_before = num_products;
     const std::vector<uint8_t>* mask =
         num_inactive > 0 ? &root_active : nullptr;
     DavidsonResult result = h.Solve(loose, &root_vectors, mask);
@@ -919,12 +1007,27 @@ void RunSelect(const Input& input, const Integrals<S>& ints, const Comm& comm) {
                                std::to_string(iter));
     }
     energies = result.energies;
+    const double solve_end = omp_get_wtime();
+    if (input.select.checkpoint && comm.is_root()) {
+      WriteSelectCheckpoint(input, ints, shared_dets.span(), root_vectors,
+                            energies, iter, true);
+    }
     for (int k = 0; k < num_roots; ++k) {
-      std::printf("%5d %10.2e %12zu %5d %20.12f %9d %8.2f %8.2f %8.2f %9.2f\n",
-                  iter, epsilon, num_active, k,
-                  energies[k] + ints.core_energy(), result.num_iterations,
-                  build_start - select_start, solve_start - build_start,
-                  omp_get_wtime() - solve_start, omp_get_wtime() - start_time);
+      std::printf(
+          "%5d %10.2e %12zu %5d %20.12f %9d %8d %8.2f %8.2f %8.2f %9.2f\n",
+          iter, epsilon, num_active, k, energies[k] + ints.core_energy(),
+          result.num_iterations, num_products - products_before,
+          build_start - select_start, solve_start - build_start,
+          solve_end - solve_start, omp_get_wtime() - start_time);
+    }
+    {
+      struct rusage usage;
+      getrusage(RUSAGE_SELF, &usage);
+      const std::vector<double> peaks = comm.GatherAll(
+          std::vector<double>{usage.ru_maxrss / (1024.0 * 1024.0)});
+      std::printf(
+          "      peak memory so far (GB): root %.1f, largest rank %.1f\n",
+          peaks[0], *std::max_element(peaks.begin(), peaks.end()));
     }
     if (num_back + num_out + num_small + num_inactive > 0) {
       std::printf("      space: %zu new, %zu back in, %zu taken out", num_fresh,

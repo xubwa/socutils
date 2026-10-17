@@ -52,11 +52,20 @@ struct WaveFunction {
   std::vector<int> labels;      // label sets x spinors, set by set
   std::vector<int> label_mods;  // one modulus per label set
   std::string input;  // resolved input, JSON text
+  // Checkpoints of the select mode: the iteration and whether its
+  // eigenvectors are converged (1) or those of the iteration before,
+  // padded with zeros (0). Not written if negative.
+  int select_iteration = -1;
+  int select_solved = 0;
 };
 
 // The coefficients go to "ci_real" and, for a complex calculation, "ci_imag".
 template <typename S>
 void WriteWaveFunction(const std::string& path, const WaveFunction<S>& wfn);
+
+// The select-mode checkpoint state of a file written by WriteWaveFunction;
+// false if it has none.
+bool ReadSelectState(const std::string& path, int* iteration, int* solved);
 
 // Reads the determinant table of a wfn.h5 file; sets *det_width.
 std::vector<uint64_t> ReadDetWords(const std::string& path, int* det_width);
