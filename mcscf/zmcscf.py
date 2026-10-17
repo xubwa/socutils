@@ -4,7 +4,9 @@ from functools import reduce
 from pyscf import __config__
 from pyscf.lib import logger
 
+from pyscf import lib
 from socutils.scf import spinor_hf
+from socutils.scf import double_group_symm
 from socutils.mcscf import zcasbase, zcasci
 # mcscf_superci is imported lazily inside superci() to avoid a circular import
 # (zmc_superci imports zmcscf).
@@ -32,9 +34,22 @@ def eig(h, irrep=None):
 def expmat(a):
     return scipy.linalg.expm(a)
 
+def eig_sub(mc, h, idx):
+    '''Eigenvalues and eigenvectors of the matrix h given in the orbitals idx
+    of mc.mo_coeff: within the irreps of the orbitals when they are known
+    (Kramers pairs kept, see double_group_symm.eig_mo), otherwise with the
+    eig of the SCF object.'''
+    orbsym = mc._rot_irrep() if hasattr(mc, '_rot_irrep') else None
+    eigh = lambda m: mc._scf.eig(m, None)
+    if orbsym is None:
+        return eigh(h)
+    return double_group_symm.eig_mo(h, numpy.asarray(orbsym)[idx], eigh)
+
 def _fake_h_for_fast_casci(casscf, mo, eris):
     mc = casscf.view(zcasci.CASCI)
     mc.mo_coeff = mo
+    # the irreps of the orbitals were set up by the orbital optimizer
+    mc._orbsym_fixed = True
 
     if eris is None:
         return mc
@@ -129,14 +144,20 @@ def canonicalize(mc, mo_coeff=None, ci=None, eris=None, sort=False,
     c = mo_coeff1[:, core_idx]
     fock = reduce(numpy.dot, (c.conj().T, fock_ao, c))
     #print(fock)
-    w, c = zquatev.eigh(fock)
+    if mc._rot_irrep() is not None:
+        w, c = eig_sub(mc, fock, core_idx)
+    else:
+        w, c = zquatev.eigh(fock)
     #print(w, mo_energy[core_idx])
     #print(c)
     #mo_coeff1[:, core_idx] = mo_coeff1[:, core_idx].dot(c)
     
     c = mo_coeff1[:, act_idx]
     fock = reduce(numpy.dot, (c.conj().T, fock_ao, c))
-    w, c = zquatev.eigh(fock)
+    if mc._rot_irrep() is not None:
+        w, c = eig_sub(mc, fock, act_idx)
+    else:
+        w, c = zquatev.eigh(fock)
     #print(fock)
     #print(w)
     #print(c)
@@ -201,33 +222,30 @@ class CASSCF(zcasci.CASCI):
             else:
                 frozen = numpy.asarray(frozen)
                 mask[frozen] = mask[:,frozen] = False
-        
-        if self.irrep is not None: 
-            irrep = self.irrep
-            for i, iri in enumerate(irrep):
-                for j, irj in enumerate(irrep):
-                    if iri != irj:
-                        mask[i,j] = False
+
+        orbsym = self._rot_irrep()
+        if orbsym is not None:
+            mask &= orbsym[:, None] == orbsym[None, :]
         return mask
 
-    def screen_irrep(self, mat):
+    def _rot_irrep(self):
+        '''Labels that restrict the orbital rotations: the legacy .irrep if
+        set, else .orbsym (double-group irreps), else None.'''
         if self.irrep is not None:
-            irrep = self.irrep
-            for i, iri in enumerate(irrep):
-                for j, irj in enumerate(irrep):
-                    if iri != irj:
-                        mat[i, j] = 0.
-        return mat
+            return numpy.asarray(self.irrep)
+        return self._orbsym
 
+    def screen_irrep(self, mat):
+        '''Zero the elements of mat that couple different irreps (in place).'''
+        orbsym = self._rot_irrep()
+        if orbsym is not None:
+            mat[orbsym[:, None] != orbsym[None, :]] = 0.
+        return mat
 
     def pack_uniq_var(self, mat):
         nmo = self.mo_coeff.shape[1]
         idx = self.uniq_var_indices(nmo, self.ncore, self.ncas, self.frozen)
-        ncore = self.ncore
-        nocc = self.ncore + self.ncas
-        #print(idx[nocc:, :ncore])
-        #print(idx[:ncore,fnocc:])
-        return self.screen_irrep(mat)[idx]
+        return mat[idx]
 
     # to anti symmetric matrix
     def unpack_uniq_var(self, v):
@@ -235,21 +253,6 @@ class CASSCF(zcasci.CASCI):
         idx = self.uniq_var_indices(nmo, self.ncore, self.ncas, self.frozen)
         mat = numpy.zeros((nmo,nmo), dtype=complex)
         mat[idx] = v
-        all_indices = numpy.arange(nmo)
-        if self.irrep is not None:
-            irrep = self.irrep
-            for i, iri in enumerate(irrep):
-                for j, irj in enumerate(irrep):
-                    if iri != irj:
-                        mat[i, j] = 0.
-        #frozen_pair = [[0,1,4,5,6,7,8,9],[10,11,12,13,14,15,16,17]]
-        #set_i = frozen_pair[0]
-        #set_j = frozen_pair[1]
-        #for i in set_i:
-        #    for j in set_j:
-        #        mat[i,j] = 0.
-        #        mat[j,i] = 0.
-        
         return mat - mat.T.conj()
 
     def update_rotate_matrix(self, dx, u0=1):
@@ -302,5 +305,8 @@ class CASSCF(zcasci.CASCI):
                       conv_tol=self.conv_tol, conv_tol_grad=self.conv_tol_grad,
                       verbose=self.verbose, cderi=self._cderi)
         logger.note(self, 'CASSCF energy = %#.15g', self.e_tot)
+        if self._orbsym is not None:
+            self.check_orbsym(self.mo_coeff)
+            self.mo_coeff = lib.tag_array(numpy.asarray(self.mo_coeff), orbsym=self._orbsym)
         self._finalize()
         return self.e_tot, self.e_cas, self.ci, self.mo_coeff, self.mo_energy
