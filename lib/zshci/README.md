@@ -338,6 +338,12 @@ slowest rank per product, comm: what the root spent besides its own work
 | 1 | 6e-6 | 112.7 M | 23.0 | 12.6 | 28 | 38.6 | 1.9 | 1180 | 19.2 | -2095.487107385 |
 | 2 | 3.5e-6 | 232.1 M | 49.9 | 25.7 | 47 | 115.8 | 4.0 | 5767 | 39.2 | -2095.488396966 |
 
+Then, in diag mode from the `wfn.h5` of the run (8 nodes, 378 s in all):
+one product confirms the vector, and perturbation theory with epsilon2 =
+2e-7 (`"semistochastic"`, of which nothing lies above epsilon2_large =
+1e-5; 384 walkers of 2000 samples) gives -0.0018322 +/- 0.0000486 Eh in 10
+iterations and 101 s, a total of -2095.490229 +/- 0.000049 Eh.
+
 The product grows as n^1.5 (13.3, 38.6, 115.8 s; one node: 27 s at 22 M,
 100 s at 55 M) and divides over the nodes (22 M: 27.4, 14.2, 7.5 s on 1, 2,
 4 nodes; the ranks' shares differ by 5 %); selection, tables and the
