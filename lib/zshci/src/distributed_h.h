@@ -24,7 +24,10 @@ class DistributedH : public LinearOperator<S> {
  public:
   // Collective.
   DistributedH(const LinearOperator<S>& local, const Comm& comm)
-      : local_(local), comm_(comm), x_(local.dim(), comm), y_(local.dim()) {}
+      : local_(local),
+        comm_(comm),
+        x_(comm.size() > 1 ? local.dim() : 0, comm),
+        y_(comm.is_root() ? 0 : local.dim()) {}
 
   size_t dim() const override { return local_.dim(); }
   const std::vector<double>& diagonal() const override {
@@ -40,6 +43,10 @@ class DistributedH : public LinearOperator<S> {
   // Root only: releases the ranks in Serve().
   void Stop() const;
 
+  // Seconds this rank spent in its local products, and in communication.
+  double seconds_local() const { return seconds_local_; }
+  double seconds_comm() const { return seconds_comm_; }
+
  private:
   enum Command : int { kStop = 0, kApply = 1 };
 
@@ -49,6 +56,8 @@ class DistributedH : public LinearOperator<S> {
   // a serving rank.
   mutable SharedArray<S> x_;
   mutable std::vector<S> y_;
+  mutable double seconds_local_ = 0.0;
+  mutable double seconds_comm_ = 0.0;
 };
 
 // Solves for the lowest eigenpairs with all ranks. On entry the root's

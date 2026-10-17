@@ -750,6 +750,9 @@ void RunSelect(const Input& given, const Integrals<S>& ints, const Comm& comm) {
   // the guesses for them are the vectors of the file the determinants came
   // from, if it has them.
   std::vector<std::vector<S>> root_vectors;
+  int num_products = 0;
+  double seconds_products = 0.0;
+  double seconds_solver = 0.0;
   std::vector<double> energies;
   DavidsonOptions loose = input.davidson;
   loose.tol = std::max(input.davidson.tol, input.select.davidson_tol_loose);
@@ -777,13 +780,16 @@ void RunSelect(const Input& given, const Integrals<S>& ints, const Comm& comm) {
         throw std::runtime_error("Davidson did not converge on resuming");
       }
       std::printf(
-          "resumed space: %zu determinants, energy %.12f, %d "
-          "iterations%s\n",
+          "resumed space: %zu determinants, energy %.12f, %d iterations "
+          "(%d products, %.1f s)%s\n",
           shared_dets.size(), result.energies[0] + ints.core_energy(),
-          result.num_iterations,
+          result.num_iterations, result.num_products, result.seconds_total,
           result.restarted ? " from the checkpoint of the eigensolver" : "");
     }
     energies = result.energies;
+    num_products += result.num_products;
+    seconds_products += result.seconds_products;
+    seconds_solver += result.seconds_total;
   }
 
   // t_sel, t_ham and t_dav are the seconds spent in this iteration on the
@@ -795,9 +801,6 @@ void RunSelect(const Input& given, const Integrals<S>& ints, const Comm& comm) {
               "products", "t_sel", "t_ham", "t_dav", "time");
   const double start_time = omp_get_wtime();
   bool finished = false;
-  int num_products = 0;
-  double seconds_products = 0.0;
-  double seconds_solver = 0.0;
 
   // A selector may take determinants out of the space. They stay in the
   // list, so that neither the list nor the stored Hamiltonian is reordered

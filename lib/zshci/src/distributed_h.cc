@@ -3,6 +3,7 @@
 #include <omp.h>
 
 #include <algorithm>
+#include <cstdio>
 
 #include "fci_davidson.h"
 
@@ -90,23 +91,44 @@ DavidsonResult RunSolver(const LinearOperator<S>& h,
 
 template <typename S>
 void DistributedH<S>::Apply(const S* x, S* y) const {
+  double t = omp_get_wtime();
   int command = kApply;
   comm_.BcastValue(&command);
-  std::copy(x, x + dim(), x_.data());
-  x_.ShareFromRoot(comm_);
+  if (comm_.size() > 1) {
+    const long n = static_cast<long>(dim());
+    S* shared = x_.data();
+#pragma omp parallel for schedule(static)
+    for (long i = 0; i < n; ++i) shared[i] = x[i];
+    x_.ShareFromRoot(comm_);
+  }
+  double now = omp_get_wtime();
+  seconds_comm_ += now - t;
+  t = now;
   local_.Apply(x, y);
+  now = omp_get_wtime();
+  seconds_local_ += now - t;
+  t = now;
   comm_.SumToRoot(AsDoubles(y), kDoublesPerScalar<S> * dim());
+  seconds_comm_ += omp_get_wtime() - t;
 }
 
 template <typename S>
 void DistributedH<S>::Serve() const {
   while (true) {
     int command = kStop;
+    double t = omp_get_wtime();
     comm_.BcastValue(&command);
     if (command == kStop) return;
     x_.ShareFromRoot(comm_);
+    double now = omp_get_wtime();
+    seconds_comm_ += now - t;
+    t = now;
     local_.Apply(x_.data(), y_.data());
+    now = omp_get_wtime();
+    seconds_local_ += now - t;
+    t = now;
     comm_.SumToRoot(AsDoubles(y_.data()), kDoublesPerScalar<S> * dim());
+    seconds_comm_ += omp_get_wtime() - t;
   }
 }
 
@@ -136,6 +158,19 @@ DavidsonResult SolveDistributed(const LinearOperator<S>& local,
     h.Serve();
   }
 
+  if (comm.size() > 1) {
+    // How the products divided: the local work of every rank and, on the
+    // root, the communication (with the wait for the slowest rank).
+    const std::vector<double> local =
+        comm.GatherAll(std::vector<double>{h.seconds_local()});
+    if (comm.is_root() && result.num_products > 0) {
+      std::printf(
+          "distributed products: %d, local work per rank %.1f to "
+          "%.1f s, root communicating and waiting %.1f s\n",
+          result.num_products, *std::min_element(local.begin(), local.end()),
+          *std::max_element(local.begin(), local.end()), h.seconds_comm());
+    }
+  }
   comm.Bcast(&result.energies);
   comm.Bcast(&result.residual_norms);
   comm.BcastValue(&result.num_iterations);
