@@ -6,7 +6,8 @@
 Double-group symmetry for spinor (2c) and Dirac (4c) mean-field methods.
 
 The symmetry logic lives in module functions (:func:`eig`, :func:`get_occ`,
-:func:`label_orb_symm`), which only take matrices, coefficients and labels and
+:func:`label_orb_symm`, :func:`orbital_purity`, :func:`eig_mo`,
+:func:`kramers_pairs`), which only take matrices, coefficients and labels and
 can be called from MCSCF/CC/property code.  :class:`DoubleGroupSymm` is a thin
 mixin that feeds them from the SCF object; it is combined with the 2c classes
 of :mod:`socutils.scf.spinor_hf` and the 4c classes of :mod:`pyscf.scf.dhf`:
@@ -103,17 +104,132 @@ def eig(h, s, so, irrep_id, groupname, kramers=False):
     return e, c
 
 
-def label_orb_symm(mo_coeff, so, irrep_id, thresh=1e-6):
-    '''Irrep of each orbital, from the weight of its coefficients in each
-    block of the (unitary) symmetry-adapted basis.'''
+def orbital_purity(mo_coeff, so, irrep_id):
+    '''Irrep of each orbital and its impurity, 1 - (weight in that irrep) /
+    (total weight), from the coefficients in each block of the (unitary)
+    symmetry-adapted basis.'''
     weights = numpy.array([(abs(lib.dot(x.conj().T, mo_coeff))**2).sum(axis=0) for x in so])
     best = numpy.argmax(weights, axis=0)
     total = weights.sum(axis=0)
-    purity = weights[best, numpy.arange(mo_coeff.shape[1])] / total
-    if (1 - purity).max() > thresh:
+    impurity = 1 - weights[best, numpy.arange(mo_coeff.shape[1])] / total
+    return numpy.asarray(irrep_id)[best], impurity
+
+
+def label_orb_symm(mo_coeff, so, irrep_id, thresh=1e-6):
+    '''Irrep of each orbital; raises if an orbital mixes irreps by more than
+    ``thresh`` (see :func:`orbital_purity`).'''
+    orbsym, impurity = orbital_purity(mo_coeff, so, irrep_id)
+    if impurity.size and impurity.max() > thresh:
         raise ValueError('Orbitals are not symmetry adapted (max deviation %.2e)'
-                         % (1 - purity).max())
-    return numpy.asarray(irrep_id)[best]
+                         % impurity.max())
+    return orbsym
+
+
+def eig_mo(h, orbsym, eigh_self_conj=None):
+    '''Diagonalize a matrix given in an orbital basis within the irreps
+    ``orbsym`` of the orbitals.  Each column of the returned c stays in the
+    irrep of its orbital; the eigenvalues of an irrep are sorted within its
+    columns.
+
+    Interleaved Kramers pairs (column 2k+1 the partner of column 2k, in the
+    conjugate irrep, as built by :func:`eig`) are kept: the block of the
+    partner irrep is rotated by the complex conjugate of the rotation of the
+    first block, so a time-reversal symmetric ``h`` keeps the pairing.  Other
+    blocks are diagonalized with ``eigh_self_conj`` (e.g. the zquatev-based
+    eig of a Kramers-restricted SCF for the self-conjugate irreps of C1, Ci),
+    scipy.linalg.eigh by default.'''
+    orbsym = numpy.asarray(orbsym)
+    n = orbsym.size
+    if eigh_self_conj is None:
+        eigh_self_conj = scipy.linalg.eigh
+    e = numpy.zeros(n)
+    c = numpy.zeros((n, n), dtype=numpy.result_type(h, numpy.complex128))
+    first = {}
+    for i, ir in enumerate(orbsym):
+        first.setdefault(ir, i)
+    done = set()
+    for ir in sorted(first, key=first.get):
+        if ir in done:
+            continue
+        idx = numpy.where(orbsym == ir)[0]
+        pidx = idx + 1
+        paired = (numpy.all(idx % 2 == 0) and pidx[-1] < n
+                  and numpy.unique(orbsym[pidx]).size == 1 and orbsym[pidx[0]] != ir
+                  and numpy.array_equal(numpy.where(orbsym == orbsym[pidx[0]])[0], pidx))
+        if paired:
+            w, v = scipy.linalg.eigh(h[numpy.ix_(idx, idx)])
+            e[idx] = e[pidx] = w
+            c[numpy.ix_(idx, idx)] = v
+            c[numpy.ix_(pidx, pidx)] = v.conj()
+            done.add(orbsym[pidx[0]])
+        else:
+            w, v = eigh_self_conj(h[numpy.ix_(idx, idx)])
+            e[idx] = w
+            c[numpy.ix_(idx, idx)] = v
+        done.add(ir)
+    return e, c
+
+
+def kramers_pairs(mol, mo_coeff, s=None, tol=1e-6, return_phase=False):
+    '''Kramers partner of each orbital, from time reversal.
+
+    T acts on the j-spinor AOs through ``mol.time_reversal_map()``; for
+    4-component orbitals (2*n2c rows, large component first) on each
+    component.  ``s`` is the AO overlap (default: the 2c spinor overlap; it
+    must be given for 4c orbitals).
+
+    Returns:
+        partner : int array, partner[i] = j if T|i> = phase |j> with
+            |phase| > 1 - tol, else -1 (no partner among the orbitals).
+        bar : int array, 0 for the unbarred and 1 for the barred member of
+            a pair, -1 without partner.  The unbarred member u is the one with
+            T|u> = +|b>, hence T|b> = -|u>; for a pair with any other phase the
+            lower index is taken as unbarred.  The orbitals of a
+            Kramers-restricted double-group SCF (and of a spinor CASSCF built
+            on it) are interleaved pairs with phase +1, so partner =
+            [1, 0, 3, 2, ...] and bar = [0, 1, 0, 1, ...].
+        phase : complex array, <partner|T|i>, only with ``return_phase``.
+    '''
+    mo_coeff = numpy.asarray(mo_coeff)
+    n2c = mol.nao_2c()
+    if mo_coeff.shape[0] == n2c:
+        tc = spinor_basis.time_reversal_coeff(mol, mo_coeff)
+        if s is None:
+            s = mol.intor_symmetric('int1e_ovlp_spinor')
+    elif mo_coeff.shape[0] == 2 * n2c:
+        if s is None:
+            raise ValueError('the overlap s is required for 4-component orbitals')
+        tc = numpy.vstack((spinor_basis.time_reversal_coeff(mol, mo_coeff[:n2c]),
+                           spinor_basis.time_reversal_coeff(mol, mo_coeff[n2c:])))
+    else:
+        raise ValueError('orbitals with %d rows: expected %d (2c) or %d (4c)'
+                         % (mo_coeff.shape[0], n2c, 2 * n2c))
+    p = lib.dot(mo_coeff.conj().T, lib.dot(s, tc))          # p[j, i] = <j|T|i>
+    nmo = p.shape[1]
+    partner = numpy.full(nmo, -1)
+    bar = numpy.full(nmo, -1)
+    phase = numpy.zeros(nmo, dtype=complex)
+    jbest = numpy.argmax(abs(p), axis=0)
+    for i in range(nmo):
+        j = jbest[i]
+        if j == i or abs(p[j, i]) < 1 - tol or jbest[j] != i:
+            continue
+        partner[i] = j
+        phase[i] = p[j, i]
+    for i in range(nmo):
+        j = partner[i]
+        if j < 0 or bar[i] >= 0:
+            continue
+        if abs(phase[i] - 1) < tol:
+            u, b = i, j
+        elif abs(phase[j] - 1) < tol:
+            u, b = j, i
+        else:
+            u, b = min(i, j), max(i, j)
+        bar[u], bar[b] = 0, 1
+    if return_phase:
+        return partner, bar, phase
+    return partner, bar
 
 
 def get_occ(mo_energy, orbsym, nelec, irrep_nelec, groupname, mask=None, kramers=False):
@@ -259,6 +375,12 @@ class DoubleGroupSymm:
     @property
     def orbsym(self):
         return self.get_orbsym(self.mo_coeff)
+
+    def kramers_pairs(self, mo_coeff=None, tol=1e-6):
+        '''(partner, bar) of the orbitals, see :func:`kramers_pairs`.'''
+        if mo_coeff is None:
+            mo_coeff = self.mo_coeff
+        return kramers_pairs(self.mol, mo_coeff, self.get_ovlp(), tol)
 
     def get_occ(self, mo_energy=None, mo_coeff=None):
         if mo_energy is None:
