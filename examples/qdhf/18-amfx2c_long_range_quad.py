@@ -8,8 +8,8 @@ Spin-orbit coupled family in quad precision (decontracted basis):
     1e       X2C-1e
     amfx2c   amfX2C (Knecht, Repisky, Jensen, Saue, JCP 157, 114106 (2022)):
              atomic 2e Fock matrices only in the atomic diagonal blocks
-    x2cmp    x2cmp = HF eamfX2C: molecular 2e Fock of the superposed atomic
-             4c density matrices
+    x2cmp    X2C model potential (X2CMP): decoupling with the molecular 4c
+             Fock matrix of the superposed atomic 4c density matrices
 
 Usage:  python 18-amfx2c_long_range_quad.py [basis]
 '''
@@ -25,7 +25,7 @@ distances = [20, 40, 80, 160, 320, 640, 1280, 2560]
 systems = [('He2...He', 'He 0 0 -1.5; He 0 0 1.5'),
            ('He...He', 'He 0 0 0')]
 methods = ['DHF', None, '1e', 'amfx2c', 'x2cmp']
-names = {'DHF': 'DHF', None: 'NR', '1e': 'X2C-1e', 'amfx2c': 'amfX2C', 'x2cmp': 'x2cmp/eamfX2C'}
+names = {'DHF': 'DHF', None: 'NR', '1e': 'X2C-1e', 'amfx2c': 'amfX2C', 'x2cmp': 'x2cmp'}
 cache = {}
 t0 = time.time()
 

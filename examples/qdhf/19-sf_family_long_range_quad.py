@@ -4,7 +4,7 @@
 Spin-free family in quad precision: the parent spin-free DHF and the
 spin-free amfX2C (atomic 2e Fock matrices only in the atomic diagonal
 blocks; Knecht, Repisky, Jensen, Saue, JCP 157, 114106 (2022)).  NR-HF,
-sf-X2C-1e and sfmp (= spin-free eamfX2C) are in 17-sfmp_long_range_quad.
+sf-X2C-1e and sfmp (spin-free X2CMP) are in 17-sfmp_long_range_quad.
 
 Usage:  python 19-sf_family_long_range_quad.py [basis] [system ...]
 '''

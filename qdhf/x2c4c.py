@@ -8,10 +8,12 @@ Quadruple precision two-component Hamiltonians decoupled from the full
                       superposition of atomic DHF densities,
                           h = to_2c(F4c[D4c_atoms]) - G2c[D2c_atoms],
                       G = J - K, D2c_atoms the 2c (picture-change transformed)
-                      atomic densities.  This is the HF variant of the
-                      eamfX2C model of Knecht, Repisky, Jensen and Saue,
-                      JCP 157, 114106 (2022).
-    approx = 'amfx2c' amfX2C of the same paper: the atomic 4c two-electron
+                      atomic densities: the X2C model potential (X2CMP),
+                      a mean-field correction built from an atomic model.
+                      It is not eamfX2C (Knecht, Repisky, Jensen, Saue,
+                      JCP 157, 114106 (2022)), whose energy is defined
+                      differently.
+    approx = 'amfx2c' amfX2C of Knecht, Repisky, Jensen and Saue: the atomic 4c two-electron
                       Fock matrices G4c_K[D4c_K] enter only the atomic
                       diagonal blocks,
                           X, R from h4c + sum_K G4c_K,

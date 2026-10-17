@@ -12,7 +12,7 @@ flavors (Dirac-Coulomb, no Gaunt/Breit):
     x2camf     X2C-1e + atomic spin-orbit AMF ('x2camf')
     dirac_amf  amfX2C as implemented ('dirac_amf', pcc=True)
     amf_fixed  amfX2C with the pure 2e atomic correction (20-amfx2c_production_check)
-    x2cmp      x2cmp = HF eamfX2C
+    x2cmp      X2C model potential (X2CMP)
 reference: 4c DHF (pyscf), same contracted basis.
 
 Usage:  python 21-hi_diffuse_amf.py [kmax] [geom] [basis]
