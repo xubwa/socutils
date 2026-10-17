@@ -7,10 +7,12 @@
 #
 
 import os
+import time
 import numpy as np
 import scipy.linalg
 from pyscf import df, lib, gto
 from pyscf.lib import logger
+from socutils.tools import timer
 
 
 def cholesky(mf, tau=1e-4, sigma=1e-2, method='threeloop',
@@ -49,6 +51,166 @@ def cholesky(mf, tau=1e-4, sigma=1e-2, method='threeloop',
     return mf.density_fit(with_df=with_df, **kwargs)
 
 
+
+def get_cderi_ao(mf):
+    '''AO Cholesky (or density-fitting) factors of ``mf.with_df``, unpacked to
+    shape (naux, nao, nao).  Correlated methods take their integrals from the
+    mean field: attach them with ``mf.cholesky()`` or ``mf.density_fit()``.'''
+    with_df = getattr(mf, 'with_df', None)
+    if with_df is None:
+        raise ValueError('%s has no with_df; attach the factorised integrals with '
+                         'mf.cholesky() or mf.density_fit() first' % mf.__class__.__name__)
+    return np.vstack([lib.unpack_tril(blk) for blk in with_df.loop()])
+
+
+def chunked_cholesky_threeloop(mol, max_error=1e-5, verbose=True, cmax=15):
+    """Modified cholesky decomposition from pyscf eris.
+
+    Only works for molecular systems.
+
+    Parameters
+    ----------
+    mol : :class:`pyscf.mol`
+        pyscf mol object.
+    orthoAO: :class:`numpy.ndarray`
+        Orthogonalising matrix for AOs. (e.g., mo_coeff).
+    delta : float
+        Accuracy desired.
+    verbose : bool
+        If true print out convergence progress.
+    cmax : int
+        nchol = cmax * M, where M is the number of basis functions.
+        Controls buffer size for cholesky vectors.
+
+    Returns
+    -------
+    chol_vecs : :class:`numpy.ndarray`
+        Matrix of cholesky vectors in AO basis.
+    """
+    start = time.time()
+    nao = mol.nao_nr()
+    diag = np.zeros(nao * nao)
+    nchol_max = cmax * nao
+    # This shape is more convenient for pauxy.
+    chol_vecs = np.zeros((nchol_max, nao * nao))
+    ndiag = 0
+    dims = [0]
+    nao_per_i = 0
+    for i in range(0, mol.nbas):
+        l = mol.bas_angular(i)
+        nc = mol.bas_nctr(i)
+        nao_per_i += (2 * l + 1) * nc
+        dims.append(nao_per_i)
+        #print(l, nc)
+    dims = mol.ao_loc_nr()
+    timer_ao = timer.Timer() 
+    for i in range(0, mol.nbas):
+        shls = (i, i + 1, 0, mol.nbas, i, i + 1, 0, mol.nbas)
+        #print(shls)
+        timer_ao.start()
+        buf = mol.intor('int2e', shls_slice=shls)
+        #timer_ao.accumulate()
+        #print(timer_ao.cpu_time, timer_ao.wall_time, flush=True)
+        di, dk, dj, dl = buf.shape
+        diag[ndiag:ndiag + di * nao] = buf.reshape(di * nao, di * nao).diagonal()
+        ndiag += di * nao
+    nu = np.argmax(diag)
+    delta_max = diag[nu]
+    if verbose:
+        print("# Generating Cholesky decomposition of ERIs.")
+        print("# max number of cholesky vectors = %d" % nchol_max)
+        print("# iteration %5d: delta_max = %f" % (0, delta_max))
+    j = nu // nao
+    l = nu % nao
+    sj = np.searchsorted(dims, j)
+    sl = np.searchsorted(dims, l)
+    if dims[sj] != j and j != 0:
+        sj -= 1
+    if dims[sl] != l and l != 0:
+        sl -= 1
+    Mapprox = np.zeros(nao * nao)
+    # ERI[:,jl]
+    eri_col = mol.intor('int2e', shls_slice=(0, mol.nbas, 0, mol.nbas, sj, sj + 1, sl, sl + 1))
+    cj, cl = max(j - dims[sj], 0), max(l - dims[sl], 0)
+    chol_vecs[0] = np.copy(eri_col[:, :, cj, cl].reshape(nao * nao)) / delta_max**0.5
+
+    nchol = 0
+    Mapprox += chol_vecs[nchol] * chol_vecs[nchol]
+    while abs(delta_max) > max_error:
+        # Update cholesky vector
+        iter_start = time.time()
+        # M'_ii = L_i^x L_i^x
+        # D_ii = M_ii - M'_ii
+        # find nu through max delta
+        delta = diag - Mapprox
+        nu = np.argmax(np.abs(delta))
+        delta_max = np.abs(delta[nu])
+        j = nu // nao
+        l = nu % nao
+        # Associated shell index.
+        sj = np.searchsorted(dims, j)
+        sl = np.searchsorted(dims, l)
+        if dims[sj] != j and j != 0:
+            sj -= 1
+        if dims[sl] != l and l != 0:
+            sl -= 1
+        # Compute ERI chunk.
+        timer_ao.start()
+        eri_col = mol.intor('int2e', shls_slice=(0, mol.nbas, 0, mol.nbas, sj, sj + 1, sl, sl + 1))
+        timer_ao.accumulate()
+        # Select correct ERI chunk from shell.
+        ang_j = mol.bas_angular(sj)
+        ang_l = mol.bas_angular(sl)
+        sub_delta_max = delta_max
+        while (sub_delta_max) > max(max_error, delta_max*0.01):
+            sub_delta = delta.reshape(nao,nao)[dims[sj]:dims[sj+1], dims[sl]:dims[sl+1]]
+            #print(sub_delta)
+            sub_nu = np.argmax(np.abs(sub_delta))
+            cj0, cl0 = max(j - dims[sj], 0), max(l - dims[sl], 0)
+            cj = sub_nu // (dims[sl+1]-dims[sl])
+            cl = sub_nu % (dims[sl+1]-dims[sl])
+            #print(dims, dims[sj], dims[sl])
+            #print(sj, sl, cj0, cl0, cj, cl)
+            i_ang_j = cj // (2*ang_j+1)
+            i_ang_l = cl // (2*ang_l+1)
+            j_start = i_ang_j * (2 * ang_j + 1)
+            j_end = j_start + 2 * ang_j + 1
+            l_start = i_ang_l * (2 * ang_l + 1)
+            l_end = l_start + 2 * ang_l + 1
+            Munu0 = eri_col[:, :, j_start:j_end, l_start:l_end]
+            for i_j in range(j_start, j_end):
+                for i_l in range(l_start, l_end):
+                    nu = (dims[sj]+i_j) * nao + (dims[sl]+i_l)
+                    delta_nu = delta[nu]
+                    if delta_nu < min(max_error, 1e-8):
+                        continue
+                    #print(delta[nu], nu, (dims[sj]+cj)*nao+dims[sl]+cl)
+                    # Grow the buffer if cmax*nao was not enough, so cmax is
+                    # only an initial guess and never a hard cap.  Grow once a
+                    # full nao of headroom is left (not at the very last slot),
+                    # so a shell-pair block adding several vectors always fits;
+                    # nchol ends up at a few times nao, so this costs only a
+                    # handful of reallocations.
+                    if nchol + nao >= nchol_max:
+                        chol_vecs = np.concatenate(
+                            [chol_vecs, np.zeros((nao, nao * nao))], axis=0)
+                        nchol_max += nao
+                    # Updated residual = \sum_x L_i^x L_nu^x
+                    R = np.dot(chol_vecs[:nchol + 1, nu], chol_vecs[:nchol + 1, :])
+                    munu0 = eri_col[:,:,i_j,i_l].reshape(nao*nao)
+                    chol_vecs[nchol + 1] = (munu0 - R) / (delta_nu)**0.5
+                    nchol += 1
+                    Mapprox += chol_vecs[nchol]*chol_vecs[nchol] 
+                    delta = diag-Mapprox
+            sub_delta_max = max(sub_delta.reshape(-1))
+        if verbose:
+            step_time = time.time() - iter_start
+            total_time = time.time() - start
+            info = (nchol, delta_max, step_time, total_time)
+            print("# iteration %5d: delta_max = %13.8e: time = %13.8e total_time = %13.8e" % info, flush=True)
+    return chol_vecs[:nchol]
+
+
 class CD(df.DF):
     """Cholesky decomposition of ERIs.
 
@@ -81,7 +243,7 @@ class CD(df.DF):
         # from exact integrals, so compression only affects pivot selection.
         self.compress = compress
         # Decomposition algorithm:
-        #   'threeloop' (default) -- zmc_ao2mo.chunked_cholesky_threeloop, the
+        #   'threeloop' (default) -- chunked_cholesky_threeloop below, the
         #                            direct pivoted Cholesky used elsewhere in
         #                            socutils.  Its vector buffer grows
         #                            dynamically, so there is no cap to tune.
@@ -159,11 +321,10 @@ class CD(df.DF):
         return self
 
     def _build_threeloop(self, mol, log):
-        """Default: chunked_cholesky_threeloop from socutils.mcscf.zmc_ao2mo.
+        """Default: :func:`chunked_cholesky_threeloop`.
 
         Returns the Cholesky vectors packed to (naux, nao_pair), the DF layout.
         """
-        from socutils.mcscf.zmc_ao2mo import chunked_cholesky_threeloop
         t0 = (logger.process_clock(), logger.perf_counter())
         nao = mol.nao_nr()
         # The buffer inside chunked_cholesky_threeloop grows dynamically, so the

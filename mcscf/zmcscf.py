@@ -6,7 +6,6 @@ from pyscf.lib import logger
 
 from socutils.scf import spinor_hf
 from socutils.mcscf import zcasbase, zcasci
-from socutils.mcscf.zmc_ao2mo import chunked_cholesky
 # mcscf_superci is imported lazily inside superci() to avoid a circular import
 # (zmc_superci imports zmcscf).
 try:

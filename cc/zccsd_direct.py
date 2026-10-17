@@ -363,9 +363,10 @@ class DirectZCCSD(_zccsd.ZCCSD):
         ``'ao'`` uses the exact incore scalar ERIs (default), ``'chol'`` uses
         a Cholesky/density-fitted factorisation of the scalar ERIs.
     cderi : ndarray, optional
-        Pre-computed AO Cholesky vectors (only used when ``ladder='chol'``).
+        AO Cholesky vectors (only used when ``ladder='chol'``); by default they
+        are taken from ``mf.with_df`` (``mf.cholesky()`` / ``mf.density_fit()``).
     max_error : float
-        Threshold for the on-the-fly Cholesky decomposition.
+        Unused (kept for compatibility); the accuracy is set by ``mf.cholesky(tau=...)``.
     '''
 
     def __init__(self, mf, frozen=0, mo_coeff=None, mo_occ=None,
@@ -489,10 +490,9 @@ def _make_eris_direct(mycc, mo_coeff=None):
         # Fully density-fitted: the occupied-row blocks and the ladder share
         # the same scalar Cholesky factors, so the O(nao^4) ERIs are never
         # formed in core.
-        from socutils.mcscf import zmc_ao2mo
         if mycc.cderi is None:
-            cderi = zmc_ao2mo.chunked_cholesky(mol, max_error=mycc.max_error,
-                                               verbose=mycc.verbose > 4)
+            from socutils.cd.cd import get_cderi_ao
+            cderi = get_cderi_ao(mycc._scf)
         else:
             cderi = mycc.cderi
         Lc = np.asarray(cderi).reshape(-1, nao, nao)
@@ -597,7 +597,8 @@ if __name__ == '__main__':
 
     e_ref = ZCCSD(mf, frozen=2).kernel()[0]
     e_ao = DirectZCCSD(mf, frozen=2, ladder='ao').kernel()[0]
-    e_chol = DirectZCCSD(mf, frozen=2, ladder='chol').kernel()[0]
+    mf_cd = spinor_hf.SCF(mol).cholesky(tau=1e-5).run()
+    e_chol = DirectZCCSD(mf_cd, frozen=2, ladder='chol').kernel()[0]
     print('exact  ZCCSD corr        = %.12f' % e_ref)
     print('direct ZCCSD (ao)   corr = %.12f  diff %.2e' % (e_ao, abs(e_ao-e_ref)))
     print('direct ZCCSD (chol) corr = %.12f  diff %.2e' % (e_chol, abs(e_chol-e_ref)))
