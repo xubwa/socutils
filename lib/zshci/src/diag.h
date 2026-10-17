@@ -81,7 +81,13 @@ void RunDiag(const Input& input, const Integrals<S>& ints, const Comm& comm) {
   time = omp_get_wtime();
   std::vector<std::vector<S>> root_vectors;
   if (comm.is_root()) {
-    root_vectors = GuessVectors(dets, h.stored(), ints, input.nroots);
+    // The vectors of the file the determinants came from, if it has them.
+    if (!input.detfile.empty() &&
+        ReadCoefficients(input.detfile, n, input.nroots, &root_vectors)) {
+      std::printf("starting vectors: read from %s\n", input.detfile.c_str());
+    } else {
+      root_vectors = GuessVectors(dets, h.stored(), ints, input.nroots);
+    }
   }
   const DavidsonResult result = h.Solve(input.davidson, &root_vectors);
   if (!result.converged) {

@@ -785,6 +785,10 @@ void RunSelect(const Input& given, const Integrals<S>& ints, const Comm& comm) {
           shared_dets.size(), result.energies[0] + ints.core_energy(),
           result.num_iterations, result.num_products, result.seconds_total,
           result.restarted ? " from the checkpoint of the eigensolver" : "");
+      if (input.select.checkpoint && comm.is_root()) {
+        WriteSelectCheckpoint(input, ints, shared_dets.span(), root_vectors,
+                              result.energies, resume_iter, true);
+      }
     }
     energies = result.energies;
     num_products += result.num_products;
