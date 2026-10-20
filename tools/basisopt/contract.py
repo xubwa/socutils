@@ -98,8 +98,12 @@ def add_primitives(prims, pattern, added, uncontract_added=False):
         n, unc = pattern.get(l, (0, list(range(len(old)))))
         keep = [old[i] for i in unc] + (list(new) if uncontract_added or n == 0 else [])
         merged = sorted(old + list(new), reverse=True)
-        if min([a / b for a, b in zip(merged, merged[1:])] or [9]) < 1.2:
-            raise ValueError('added l=%d exponents too close to existing ones' % l)
+        # only the added exponents are checked: some published sets (e.g. cc-pwCVTZ, p 38.48
+        # next to 34.46) already contain close pairs
+        for e in new:
+            others = [x for x in merged if x != e]
+            if others and min(max(e / x, x / e) for x in others) < 1.2:
+                raise ValueError('added l=%d exponent %g too close to an existing one' % (l, e))
         prims[l] = merged
         pattern[l] = (n, sorted(merged.index(e) for e in keep))
     return prims, pattern
