@@ -312,7 +312,11 @@ class RSDF(lib.StreamObject):
         return _mole_at(auxmol0, T), T
 
     # ------------------------------------------------------------------
-    def build(self):
+    def build(self, _active=None):
+        '''Fit and store the vectors (cderi).  With _active (internal, see
+        active_vectors) nothing global is stored: the SR three-index integrals
+        and the LR pair FTs of each block of AO rows are contracted with the
+        active pair densities instead.'''
         log = logger.new_logger(self)
         t0 = t1 = (logger.process_clock(), logger.perf_counter())
         cell = self.cell
@@ -501,7 +505,11 @@ class RSDF(lib.StreamObject):
         self._cderi_file = None
         self._h5 = None
         too_big = nvec * npair * 8 > .5 * self.max_memory * 1e6 and not getattr(self, 'cderi_in_memory', False)
-        if self.cderi_file or too_big or self.cderi_to_disk:
+        if _active is not None:
+            cderi = None
+            act_sr = np.zeros((naux, _active['dsym_dim']), dtype=complex)
+            act_lr = np.zeros((nlr, _active['dsym_dim']), dtype=complex) if gspace else None
+        elif self.cderi_file or too_big or self.cderi_to_disk:
             import h5py
             if self.cderi_file:
                 path = self.cderi_file
@@ -513,7 +521,8 @@ class RSDF(lib.StreamObject):
             cderi = f.create_dataset('j3c', (nvec, npair), 'f8', chunks=(min(nvec, 64), min(npair, 4096)))
         else:
             cderi = np.empty((nvec, npair))
-        self.cderi = cderi
+        if _active is None:
+            self.cderi = cderi
         self.int3c = None            # (naux, npair) unfitted (aux|pair), with keep_raw
         self.int3c_sr = None         # its short-range (erfc) part, with keep_raw
         vnuc = np.zeros(npair)
@@ -558,6 +567,9 @@ class RSDF(lib.StreamObject):
             tril = np.arange(nao)[None, :] <= np.arange(r0, r1)[:, None]
             p0, p1 = r0 * (r0 + 1) // 2, r1 * (r1 + 1) // 2
             Bp = B[:, tril]                                            # (nfit, p1 - p0)
+            if _active is not None:
+                dsym = _active['dsym'](r0, r1)                         # (p1 - p0, n*n), packed pairs
+                act_sr += Bp[:naux] @ dsym
             if self.keep_raw:
                 if self.int3c_sr is None:
                     self.int3c_sr = np.zeros((naux, npair))
@@ -586,7 +598,10 @@ class RSDF(lib.StreamObject):
                     rows = np.empty((g1 - g0, 2, p1 - p0))
                     rows[:, 0] = sq * PgR
                     rows[:, 1] = sq * PgI
-                    cderi[nkept + 2 * g0:nkept + 2 * g1, p0:p1] = rows.reshape(-1, p1 - p0)
+                    if _active is not None:
+                        act_lr[2 * g0:2 * g1] += rows.reshape(-1, p1 - p0) @ dsym
+                    else:
+                        cderi[nkept + 2 * g0:nkept + 2 * g1, p0:p1] = rows.reshape(-1, p1 - p0)
                     rows = None
                 PgR = PgI = fw = None
             # overlap at G = 0 (same pair list), for the SR G = 0 removal
@@ -596,7 +611,8 @@ class RSDF(lib.StreamObject):
             S[p0:p1] = Sb
             vnuc[p0:p1] = -Bp[naux:].sum(axis=0)
             tb = logger.perf_counter()
-            cderi[:nkept, p0:p1] = W @ Bp[:naux]
+            if _active is None:
+                cderi[:nkept, p0:p1] = W @ Bp[:naux]
             if self.keep_raw and not gspace:
                 if self.int3c is None:
                     self.int3c = np.zeros((naux, npair))
@@ -605,6 +621,12 @@ class RSDF(lib.StreamObject):
             log.debug('RSDF block %d/%d (%d rows): SR %.1f s (%d triples), LR %.1f s, fit+store %.1f s',
                       ib + 1, len(blocks), nrow, t_sr - tsr0, int(stats[1]), t_lr - tlr0,
                       logger.perf_counter() - tb)
+        if _active is not None:
+            # global SR fit of the active pair densities (to be replaced by the local SR fit)
+            _active['sr'] = W @ act_sr
+            _active['lr'] = act_lr
+            log.timer('RSDF active vectors', *t0)
+            return _active
         self.stats['sr3c'] = tot
         log.info('RSDF 3c: %d row blocks, SR %.1f s (%d pairs, %d triples), LR %.1f s (%d G vectors)',
                  len(blocks), t_sr, tot['pairs'], tot['triples'], t_lr, len(G))
@@ -615,6 +637,53 @@ class RSDF(lib.StreamObject):
             self._h5.flush()
         log.timer('RSDF build', *t0)
         return self
+
+    # ------------------------------------------------------------------
+    def active_vectors(self, mo_act):
+        '''Three-index vectors of the active pair densities without the global
+        cderi: L_X(tu) = sum_mn L_X,mn D^{tu}_mn, D^{tu}_mn = sum_s C^s*_mt C^s_nu
+        (mo_act: active spinors in the cell's j-adapted spinor basis).  Returns
+        (L_sr, L_lr), arrays (nvec, n, n); (tu|vw) = sum_X L_X(tu) L_X(vw), the
+        kernel of the lr='gspace' vectors (SR fitted, LR exact for G != 0, the
+        G = 0 part of the SR kernel kept out, as loop() consumers see it).
+
+        SR: the SR three-index integrals of each block of AO rows are contracted
+        with the pair densities as they are computed (B_P,tu), then fitted with
+        the SR metric (global fit for now: W B).  LR: the pair FTs of the same
+        blocks give rho_tu(G) exactly.  Storage naux n^2; nothing nao^2-sized
+        is kept.'''
+        if self.lr != 'gspace':
+            raise ValueError("active_vectors needs lr='gspace' (SR-only fit, exact LR)")
+        cell = self.cell
+        nao = cell.nao
+        n = mo_act.shape[1]
+        c2 = np.vstack(cell.sph2spinor_coeff())
+        cs = c2 @ mo_act
+        ca, cb = cs[:nao], cs[nao:]
+
+        def dsym(r0, r1):
+            # packed lower-triangle pairs (m >= n) of rows [r0, r1):
+            # D_mn + D_nm for m > n, D_mm on the diagonal; columns (t, u)
+            out = []
+            for m in range(r0, r1):
+                d = (np.einsum('t,nu->ntu', ca[m].conj(), ca[:m + 1]) + np.einsum('t,nu->ntu', cb[m].conj(), cb[:m + 1])
+                     + np.einsum('nt,u->ntu', ca[:m + 1].conj(), ca[m]) + np.einsum('nt,u->ntu', cb[:m + 1].conj(), cb[m]))
+                d[m] *= .5
+                out.append(d.reshape(m + 1, n * n))
+            return np.vstack(out)
+
+        act = self.build(_active=dict(dsym=dsym, dsym_dim=n * n))
+        sr = act['sr'].reshape(-1, n, n)
+        lr = act['lr'].reshape(-1, n, n)
+        return sr, lr
+
+    def active_eri(self, mo_act):
+        '''(tu|vw) of the active spinors from active_vectors (chemists' order).'''
+        sr, lr = self.active_vectors(mo_act)
+        n = mo_act.shape[1]
+        eri = np.einsum('xtu,xvw->tuvw', sr, sr, optimize=True)
+        eri += np.einsum('xtu,xvw->tuvw', lr, lr, optimize=True)
+        return eri
 
     # ------------------------------------------------------------------
     # persistent vectors: build once, reuse for SCF / CASCI / restarts

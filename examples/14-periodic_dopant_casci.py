@@ -83,6 +83,8 @@ p.add_argument('--nsm-dir', default=None,
 p.add_argument('--grids-level', type=int, default=4)
 p.add_argument('--no-cahf', action='store_true', help='CASCI directly on the fractional-occupation orbitals')
 p.add_argument('--cahf-max-cycle', type=int, default=100)
+p.add_argument('--scf-conv-tol', type=float, default=1e-9, help='SCF energy threshold (large cells: DF noise ~1e-9)')
+p.add_argument('--cahf-conv-tol', type=float, default=1e-9, help='CAHF energy threshold')
 p.add_argument('--cahf-conv-grad', type=float, default=1e-5, help='CAHF orbital-gradient threshold')
 p.add_argument('--cahf-driver', choices=('fock', 'superci', 'diis'), default='fock',
                help='fock: integral-free (cahf_fock, J/K of the core and 4f densities only); '
@@ -211,7 +213,7 @@ else:
     mf = spinor_scf.periodic(spinor_hf.KRHF(cell), r)
 mf = mf.x2camf(with_gaunt=not args.no_gaunt, with_breit=not args.no_gaunt)
 mf.max_cycle = 100
-mf.conv_tol = 1e-9
+mf.conv_tol = args.scf_conv_tol
 mf.verbose = 4
 mf.stdout = sys.stdout
 idx = addons.spinor_ao_indices(cell, idop[0], l=args.open_l)
@@ -295,7 +297,7 @@ if not args.no_cahf:
     elif args.cahf_driver == 'fock':
         mc = cahf_fock.CAHF(mf, args.norb_open, args.nelec_open, ncore=ncore)
         mc.max_cycle = args.cahf_max_cycle
-        mc.conv_tol = 1e-9
+        mc.conv_tol = args.cahf_conv_tol
         mc.conv_tol_grad = args.cahf_conv_grad
         mc.verbose = 4
         mc.chkfile = f_cahf.replace('.npz', '_partial.npz')
