@@ -68,6 +68,7 @@ class CAHF(lib.StreamObject):
         self.e_tot = None
         self.converged = False
         self.cycles = 0
+        self.chkfile = None          # npz with the current orbitals, written every cycle (restart)
 
     @property
     def f(self):
@@ -165,6 +166,8 @@ class CAHF(lib.StreamObject):
         for it in range(self.max_cycle):
             gnorm = numpy.linalg.norm(g)
             log.info('CAHF cycle %d  E = %.12f  dE = %.3e  |g| = %.3e', it, e, de, gnorm)
+            if self.chkfile:
+                numpy.savez(self.chkfile, mo_coeff=mo, e_tot=e, cycle=it, gnorm=gnorm)
             if gnorm < self.conv_tol_grad and abs(de) < self.conv_tol and it > 0:
                 self.converged = True
                 break

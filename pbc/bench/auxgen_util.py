@@ -58,3 +58,27 @@ def auxgen(mol, basis='x2c-svpall', emin=0.1, **kwargs):
     els = sorted({mol.atom_pure_symbol(i) for i in range(mol.natm)})
     orb = _trim_bse(bse.get_basis(basis, elements=els), emin)
     return bse_to_pyscf(generate_auxiliary_basis(orb, **kwargs))
+
+
+def pyscf_to_bse(basis):
+    '''{symbol: pyscf basis} -> BSE component dict (the fields auxgen reads).'''
+    import basis_set_exchange as bse
+    elements = {}
+    for el, shells in basis.items():
+        out = []
+        for sh in shells:
+            l, rows = sh[0], sh[1:]
+            if not isinstance(rows[0], (list, tuple)):   # [l, kappa, rows...]
+                rows = rows[1:]
+            out.append({'function_type': 'gto_spherical', 'region': '',
+                        'angular_momentum': [int(l)],
+                        'exponents': ['%.12e' % r[0] for r in rows],
+                        'coefficients': [['%.12e' % r[j] for r in rows] for j in range(1, len(rows[0]))]})
+        elements[str(bse.lut.element_Z_from_sym(el))] = {'electron_shells': out}
+    return {'elements': elements}
+
+
+def auxgen_from_basis(basis, **kwargs):
+    '''auxgen from an explicit pyscf basis dict (e.g. GENBAS entries) instead of a BSE name.'''
+    from basis_set_exchange.auxgen import generate_auxiliary_basis
+    return bse_to_pyscf(generate_auxiliary_basis(pyscf_to_bse(basis), **kwargs))

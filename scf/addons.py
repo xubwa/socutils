@@ -157,3 +157,47 @@ def cas_order(mf, open_mo=None):
     order = numpy.array([i for g in (0, 1, 2) for u in groups[g] for i in u], dtype=int)
     ncore = sum(len(u) for u in groups[0])
     return mf.mo_coeff[:, order], ncore
+
+
+def reference_weights(s, mo_coeff, ref):
+    '''Weight of each MO in the span of the reference orbitals ref (columns,
+    same AO basis): w_i = c_i^+ S R (R^+ S R)^-1 R^+ S c_i.'''
+    x = ref.conj().T @ s @ mo_coeff
+    g = ref.conj().T @ s @ ref
+    return numpy.einsum('pi,pi->i', x.conj(), numpy.linalg.solve(g, x)).real
+
+
+def reference_frac_occ(mf, ref, norb_open, nelec_open):
+    '''As projected_frac_occ, but the open shell is the norb_open MOs with the
+    largest weight in the span of reference orbitals (e.g. atomic 4f spinors
+    placed on every dopant site), regardless of energy.  For dense lattices of
+    open-shell ions, where the span of all f basis functions also covers the
+    ligand valence bands and an energy criterion mixes 4f and ligand levels.'''
+    mol = mf.mol
+    nclose = mol.nelectron - nelec_open
+    frac = nelec_open / norb_open
+
+    def get_occ(mo_energy=None, mo_coeff=None):
+        if mo_energy is None:
+            mo_energy = mf.mo_energy
+        if mo_coeff is None:
+            mo_coeff = mf.mo_coeff
+        w = reference_weights(mf.get_ovlp(), mo_coeff, ref)
+        open_mo = numpy.sort(numpy.argsort(-w, kind='stable')[:norb_open])
+        mo_occ = numpy.zeros_like(mo_energy)
+        mo_occ[open_mo] = frac
+        rest = numpy.array([i for i in numpy.argsort(mo_energy, kind='stable') if i not in set(open_mo)])
+        mo_occ[rest[:nclose]] = 1.0
+        mf.open_shell_mo = open_mo
+        nxt = numpy.sort(w)[::-1][norb_open] if len(w) > norb_open else 0.
+        logger.info(mf, '  open shell (reference): %d MOs x %.6f electrons, weights %.3f..%.3f (next %.3f), '
+                    'energies %.4f..%.4f', norb_open, frac, w[open_mo].min(), w[open_mo].max(), nxt,
+                    mo_energy[open_mo].min(), mo_energy[open_mo].max())
+        if nclose:
+            homo = mo_energy[rest[nclose - 1]]
+            lumo = mo_energy[rest[nclose]] if len(rest) > nclose else numpy.inf
+            logger.info(mf, '  closed shell HOMO %.6f LUMO %.6f', homo, lumo)
+        return mo_occ
+
+    mf.get_occ = get_occ
+    return mf

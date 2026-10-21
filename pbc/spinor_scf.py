@@ -96,10 +96,13 @@ class OneCenterX2CMPHelper:
         key = mol.atom_symbol(ia)
         if key not in self.atomic:
             atom = gto.Mole()
-            atom.atom = [(key, (0., 0., 0.))]
+            # the isolated atom under its element symbol (x2camf keys the atomic blocks by element), with the
+            # basis of this atom label (a relabelled atom, e.g. Eu1, may carry its own basis)
+            sym = gto.mole._std_symbol(key)
+            atom.atom = [(sym, (0., 0., 0.))]
             atom.unit = 'Bohr'
-            atom.basis = {key: mol._basis[key]}
-            atom.nucmod = {key: mol.nucmod[key]} if isinstance(mol.nucmod, dict) and key in mol.nucmod else {}
+            atom.basis = {sym: mol._basis[key]}
+            atom.nucmod = {sym: mol.nucmod[key]} if isinstance(mol.nucmod, dict) and key in mol.nucmod else {}
             atom.cart = mol.cart
             atom.verbose = 0
             atom.spin = gto.charge(key) % 2
@@ -125,7 +128,7 @@ class OneCenterX2CMPHelper:
         return self._delta
 
 
-def sr_nuclear_integrals(mol, omega, nuc_zeta=1e14, precision=1e-12):
+def sr_nuclear_integrals(mol, omega, nuc_zeta=1e14, precision=1e-12, screen=None):
     '''Gamma-point matrices of the short-range nuclear potential
 
         V_sr(r) = -sum_{A,T} Z_A erfc(omega |r - R_A - T|) / |r - R_A - T|
@@ -181,6 +184,10 @@ def sr_nuclear_integrals(mol, omega, nuc_zeta=1e14, precision=1e-12):
     ids = numpy.array([ia for ia, _ in nuc])
     q = (numpy.pi / zeta[ids])**1.5 * (2 * zeta[ids] / numpy.pi)**.75   # charge of a libcint s shell
     chg = -mol.atom_charges()[ids] / q
+    if screen is None:
+        screen = getattr(mol, 'dimension', 0) == 3
+    if screen:
+        return _sr_nuclear_screened(mol, shifted, t_ao, fm, nuc, chg, omega, lnp, r_sr)
     mol0 = shifted(numpy.zeros(3))
     nao = mol.nao_nr()
     v = numpy.zeros((nao, nao))
@@ -194,6 +201,77 @@ def sr_nuclear_integrals(mol, omega, nuc_zeta=1e14, precision=1e-12):
         v += numpy.einsum('ijp,p->ij', pm.intor('int3c2e', shls_slice=sl), chg)
         pvp += numpy.einsum('ijp,p->ij', pm.intor('int3c2e_pvp1', shls_slice=sl), chg)
         pxp += numpy.einsum('xijp,p->xij', pm.intor('int3c2e_pvxp1', shls_slice=sl, comp=3), chg)
+    return v, pvp, pxp
+
+
+def _sr_nuclear_screened(mol, shifted, t_ao, fm, nuc, chg, omega, lnp, r_sr, margin=2.):
+    '''sr_nuclear_integrals with screening, for large cells.  Shells are grouped
+    by (atom, exponent decade); a (bra group, ket group + T) block is kept when
+    exp(-mu R^2) of the most diffuse members exceeds the precision, and only the
+    nuclei within r_sr + sqrt(lnp / (a + b)) + margin of the segment between the
+    two centres enter it (the product of the two Gaussians lies on that segment,
+    with width 1/sqrt(a + b); V_sr is negligible beyond r_sr from a nucleus).'''
+    from pyscf import gto
+    coords = mol.atom_coords()
+    ao_loc = mol.ao_loc_nr()
+    groups = {}
+    for ish in range(mol.nbas):
+        key = (mol.bas_atom(ish), int(numpy.floor(numpy.log10(mol.bas_exp(ish).min()))))
+        groups.setdefault(key, []).append(ish)
+    groups = [(ia, numpy.array(sh), min(mol.bas_exp(i).min() for i in sh)) for (ia, _), sh in sorted(groups.items())]
+
+    def sub(m, shells):
+        s = gto.Mole()
+        s._atm, s._bas, s._env = m._atm, m._bas[shells], m._env
+        s.cart = m.cart
+        s._built = True
+        return s
+
+    def aoidx(shells):
+        return numpy.concatenate([numpy.arange(ao_loc[i], ao_loc[i + 1]) for i in shells])
+
+    rn = numpy.array([r for _, r in nuc])
+    nao = mol.nao_nr()
+    v = numpy.zeros((nao, nao))
+    pvp = numpy.zeros((nao, nao))
+    pxp = numpy.zeros((3, nao, nao))
+    mol0 = shifted(numpy.zeros(3))
+    gc = numpy.array([coords[ia] for ia, _, _ in groups])
+    ge = numpy.array([e for _, _, e in groups])
+    mu = ge[:, None] * ge[None] / (ge[:, None] + ge[None])
+    rpair = numpy.sqrt(lnp / (ge[:, None] + ge[None]))
+    gidx = [aoidx(sh) for _, sh, _ in groups]
+    bras = [sub(mol0, sh) for _, sh, _ in groups]
+    for t in t_ao:
+        R2 = numpy.sum((gc[:, None] - gc[None] - t)**2, axis=2)
+        keep = numpy.argwhere(mu * R2 <= lnp + 4.)
+        if len(keep) == 0:
+            continue
+        molt = shifted(t)
+        for g, h in keep:
+            A, B = gc[g], gc[h] + t
+            ab = B - A
+            s = numpy.clip(((rn - A) @ ab) / max(R2[g, h], 1e-30), 0., 1.)
+            dseg = numpy.linalg.norm(rn - (A + s[:, None] * ab), axis=1)
+            kn = numpy.where(dseg <= r_sr + rpair[g, h] + margin)[0]
+            if len(kn) == 0:
+                continue
+            f = gto.Mole()
+            f._atm = fm._atm[kn].copy()
+            f._bas = fm._bas[kn].copy()
+            f._bas[:, gto.ATOM_OF] = numpy.arange(len(kn))
+            f._env = fm._env
+            f._built = True
+            shj = groups[h][1]
+            pm = gto.conc_mol(gto.conc_mol(bras[g], sub(molt, shj)), f)
+            pm.omega = -omega
+            n1, n2 = len(groups[g][1]), len(shj)
+            sl = (0, n1, n1, n1 + n2, n1 + n2, pm.nbas)
+            c = chg[kn]
+            ix = numpy.ix_(gidx[g], gidx[h])
+            v[ix] += numpy.einsum('ijp,p->ij', pm.intor('int3c2e', shls_slice=sl), c)
+            pvp[ix] += numpy.einsum('ijp,p->ij', pm.intor('int3c2e_pvp1', shls_slice=sl), c)
+            pxp[(slice(None),) + ix] += numpy.einsum('xijp,p->xij', pm.intor('int3c2e_pvxp1', shls_slice=sl, comp=3), c)
     return v, pvp, pxp
 
 
@@ -272,10 +350,13 @@ class RangeSeparatedX2CAMFHelper:
         key = mol.atom_symbol(ia)
         if key not in self.amf:
             atom = gto.Mole()
-            atom.atom = [(key, (0., 0., 0.))]
+            # the isolated atom under its element symbol (x2camf keys the atomic blocks by element), with the
+            # basis of this atom label (a relabelled atom, e.g. Eu1, may carry its own basis)
+            sym = gto.mole._std_symbol(key)
+            atom.atom = [(sym, (0., 0., 0.))]
             atom.unit = 'Bohr'
-            atom.basis = {key: mol._basis[key]}
-            atom.nucmod = {key: mol.nucmod[key]} if isinstance(mol.nucmod, dict) and key in mol.nucmod else {}
+            atom.basis = {sym: mol._basis[key]}
+            atom.nucmod = {sym: mol.nucmod[key]} if isinstance(mol.nucmod, dict) and key in mol.nucmod else {}
             atom.cart = mol.cart
             atom.verbose = 0
             atom.spin = gto.charge(key) % 2

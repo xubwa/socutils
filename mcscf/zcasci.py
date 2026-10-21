@@ -35,7 +35,7 @@ def h1e_for_cas(casci, mo_coeff=None, ncas=None, ncore=None):
     if mo_core.size == 0:
         corevhf = 0
     else:
-        core_occ = numpy.zeros(mo_coeff.shape[0])
+        core_occ = numpy.zeros(mo_coeff.shape[1])
         core_occ[:ncore] = 1.0
         core_dm = numpy.dot(mo_core, mo_core.T.conj())
         corevhf = casci.get_veff(casci.mol, lib.tag_array(core_dm, mo_coeff=mo_coeff, mo_occ=core_occ))

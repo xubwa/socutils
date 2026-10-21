@@ -137,6 +137,84 @@ def min_image_distance(system, element):
     return d.min()
 
 
+def from_cif(path, primitive=True, tol=0.01):
+    '''(A, atoms) from a CIF (pymatgen): primitive cell (or the conventional cell
+    of the file), Cartesian coordinates in Angstrom, plain element symbols.'''
+    from pymatgen.core import Structure
+    st = Structure.from_file(path)
+    if not st.is_ordered:
+        raise ValueError('%s: partially occupied sites; resolve the disorder first' % path)
+    if primitive:
+        st = st.get_primitive_structure(tolerance=tol)
+    A = np.array(st.lattice.matrix)
+    return A, [(sp.specie.symbol, np.array(sp.coords)) for sp in st]
+
+
+def from_cif_relaxed(cif, xyz, tol=0.05):
+    '''Cell of a CIF (as read by ASE, no reduction) with the positions of the
+    first atoms of a relaxed supercell xyz built from it (e.g. the CP2K H-only
+    r2SCAN optimisations of the Eu hydrates: the first image of the 2x2x1
+    cell, as the clusters use); heavy atoms are checked against the CIF.'''
+    from ase.io import read
+    prim = read(cif)
+    sup = read(xyz, index=-1)
+    n = len(prim)
+    sym = prim.get_chemical_symbols()
+    assert sup.get_chemical_symbols()[:n] == sym
+    heavy = [i for i, e in enumerate(sym) if e != 'H']
+    dev = np.linalg.norm(sup.positions[heavy] - prim.positions[heavy], axis=1).max()
+    if dev > tol:
+        raise ValueError('heavy atoms of %s deviate %.3f A from %s' % (xyz, dev, cif))
+    return np.array(prim.cell.array), [(e, np.array(x)) for e, x in zip(sym, sup.positions[:n])]
+
+
+def _hnf(n):
+    '''All 3x3 Hermite normal forms of determinant n (lower triangular).'''
+    for a in range(1, n + 1):
+        if n % a:
+            continue
+        for c in range(1, n // a + 1):
+            if (n // a) % c:
+                continue
+            f = n // (a * c)
+            # row-style HNF: entries below the diagonal bounded by the diagonal of their column
+            for b in range(a):
+                for d in range(a):
+                    for e in range(c):
+                        yield np.array([[a, 0, 0], [b, c, 0], [d, e, f]])
+
+
+def shortest_vector(L):
+    return np.linalg.norm(_reduced_basis(np.asarray(L, float)), axis=1).min()
+
+
+def best_supercells(system, nmax=8):
+    '''For each size n <= nmax, the supercell matrix M (Hermite normal form)
+    with the longest shortest lattice vector, i.e. the largest distance between
+    a site and its own periodic images (the active dopant and its copies).
+    Returns [(n, M, image distance in A)].'''
+    A = np.asarray(system[0], float)
+    out = []
+    for n in range(1, nmax + 1):
+        best = max(_hnf(n), key=lambda M: shortest_vector(M @ A))
+        out.append((n, best, shortest_vector(best @ A)))
+    return out
+
+
+def site_distances(system, element='Eu'):
+    '''Shortest distances (A) from each element site to any other atom of that
+    element and to its own images: (min over other sites, own-image distance).'''
+    A, atoms = system
+    A = np.asarray(A, float)
+    X = np.array([x for e, x in atoms if e == element])
+    T = np.array([[i, j, k] for i in range(-2, 3) for j in range(-2, 3) for k in range(-2, 3)]) @ A
+    d = np.linalg.norm(X[:, None, None, :] + T[None, None] - X[None, :, None, :], axis=-1)
+    d[d < 1e-6] = np.inf
+    own = min(d[i, i].min() for i in range(len(X)))
+    other = min((d[i, j].min() for i in range(len(X)) for j in range(len(X)) if i != j), default=np.inf)
+    return other, own
+
+
 SYSTEMS = {'quartz': QUARTZ, 'y2o3A': Y2O3_A, 'yso': YSO,
            'eu_y2o3A': substitute(Y2O3_A), 'eu_yso': substitute(YSO),
            # Supercells of the primitive cell with the largest Eu-Eu image
@@ -167,12 +245,15 @@ def trim_basis(basname, elements, emin=0.1):
 
 
 def make_cell(name, precision=1e-8, basis='x2c-svpall', emin=0.1, **kwargs):
-    A, atoms = SYSTEMS[name]
+    A, atoms = SYSTEMS[name] if isinstance(name, str) else name
     c = pgto.Cell()
     c.a = A
     c.unit = 'A'
     c.atom = [(e, tuple(x)) for e, x in atoms]
-    c.basis = trim_basis(basis, [e for e, _ in atoms], emin)
+    if isinstance(basis, dict):     # explicit {symbol: pyscf basis}, used as given
+        c.basis = {e: basis[e] for e in set(e for e, _ in atoms)}
+    else:
+        c.basis = trim_basis(basis, [e for e, _ in atoms], emin)
     c.precision = precision
     c.verbose = 0
     for k, v in kwargs.items():
@@ -183,7 +264,7 @@ def make_cell(name, precision=1e-8, basis='x2c-svpall', emin=0.1, **kwargs):
 
 def nearest_neighbours(name):
     '''Print nearest-neighbour distances (sanity check of the structures).'''
-    A, atoms = SYSTEMS[name]
+    A, atoms = SYSTEMS[name] if isinstance(name, str) else name
     T = np.array([[i, j, k] for i in (-1, 0, 1) for j in (-1, 0, 1) for k in (-1, 0, 1)]) @ A
     X = np.array([x for _, x in atoms])
     E = [e for e, _ in atoms]

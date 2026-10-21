@@ -264,6 +264,7 @@ class RSDF(lib.StreamObject):
         self.grid_spacing = 4.0
         self.aux_bound = 'max'       # aux bound units: 'max' (default), 'l2' or 'coulomb'
         self.cderi_to_disk = False   # force HDF5 storage (default: only when larger than max_memory/2)
+        self.cderi_in_memory = False  # never HDF5 (also above max_memory/2): no temporary file on disk
         self.cderi_file = None       # keep the vectors in this HDF5 file (RSDF.load reads it back)
         self.keep_raw = False        # keep the unfitted (aux|pair) and the aux metric (small cells; local fitting)
         self.metric_sr = None
@@ -499,7 +500,8 @@ class RSDF(lib.StreamObject):
             log.info('RSDF lr=gspace: %d SR fitted vectors + %d exact LR rows (c0 = %.6g)', nkept, nlr, c0)
         self._cderi_file = None
         self._h5 = None
-        if self.cderi_file or nvec * npair * 8 > .5 * self.max_memory * 1e6 or self.cderi_to_disk:
+        too_big = nvec * npair * 8 > .5 * self.max_memory * 1e6 and not getattr(self, 'cderi_in_memory', False)
+        if self.cderi_file or too_big or self.cderi_to_disk:
             import h5py
             if self.cderi_file:
                 path = self.cderi_file
