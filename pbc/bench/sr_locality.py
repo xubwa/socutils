@@ -12,6 +12,12 @@ auxiliary functions cannot resolve a domain larger than the cell.  For a cluster
                         central atom), err(R) = (mn|mn) - B_D^T M_DD^-1 B_D >= 0 (variational, exact 4c reference),
                         against the global fit err(inf).  The fit error of (mn|ls) is bounded by sqrt(err_mn err_ls).
 
+With SRLOC_ALPHA_C = a every contracted shell is split into its compact part (primitives with exponent >= a) and
+its smooth part (< a), each part reduced to the span of its contraction columns (SVD), and only the pairs with a
+compact function on either side are scored: the pair class a local SR fit would handle when the smooth-smooth pairs
+go to a grid (ISDF/FFT).  The split parts are renormalised by pyscf, so only relative errors are meaningful.
+The local-fit lines also give the excess over the global fit, err(R) - err(inf), the part due to the domain.
+
 usage: python sr_locality.py SYSTEM CENTRE R_CLUSTER [OMEGA ...]
   SYSTEM: a name of cells.SYSTEMS or a CIF; CENTRE: element symbol of the central atom (first such atom); bases from
   the production rules (Eu ETB0T10, Y DYVDZ-SF, O PVDZ-X2C, Si/Cl PVDZ_X2C); aux: auxgen uncontracted tau 1e-8.'''
@@ -35,6 +41,29 @@ def cluster(system, centre, rcl):
     return out
 
 
+def split_basis(B, ac, keep='both'):
+    '''Split every contracted shell of the basis dict B at exponent ac into its compact part (primitives >= ac) and
+    its smooth part (< ac), each reduced to the span of its contraction columns (SVD); keep = 'both', 'compact' or
+    'smooth'.'''
+    out = {}
+    for el, shells in B.items():
+        new = []
+        for sh in shells:
+            arr = np.array(sh[1:], dtype=float)
+            parts = {'compact': arr[arr[:, 0] >= ac], 'smooth': arr[arr[:, 0] < ac]}
+            for name in ('compact', 'smooth'):
+                part = parts[name]
+                if keep not in ('both', name) or len(part) == 0:
+                    continue
+                u, sv, _ = np.linalg.svd(part[:, 1:], full_matrices=False)
+                r = int((sv > 1e-8 * sv.max()).sum()) if sv.size and sv.max() > 0 else 0
+                if r:
+                    cf = u[:, :r] * sv[:r]
+                    new.append([sh[0]] + [[e] + list(c) for e, c in zip(part[:, 0], cf)])
+        out[el] = new
+    return out
+
+
 def main(system, centre, rcl, omegas):
     B = dict(runpy.run_path(RULES)['BASIS'])
     for spec in filter(None, os.environ.get('SRLOC_TRIM', '').split(',')):   # e.g. "Y:0.05": drop exponents < 0.05
@@ -49,10 +78,15 @@ def main(system, centre, rcl, omegas):
                     out.append([sh[0]] + [[r[0]] + [r[j] for j in keep] for r in rows])
         B[el] = out
         print('basis of %s trimmed below %s' % (el, emin))
+    B0 = dict(B)                     # the auxiliary basis is generated from the unsplit basis
+    ac = float(os.environ.get('SRLOC_ALPHA_C', '0'))
+    if ac > 0:
+        B = split_basis(B, ac)
+        print('basis split at alpha_c = %g: compact part (exponents >= alpha_c) and smooth part, separate shells' % ac)
     atoms = cluster(system, centre, rcl)
     els = sorted(set(e for e, _ in atoms))
     t = time.time()
-    aux = auxgen_from_basis({e: B[e] for e in els}, contract=False, prune_lmax=False, threshold=1e-8)
+    aux = auxgen_from_basis({e: B0[e] for e in els}, contract=False, prune_lmax=False, threshold=1e-8)
     mol = gto.M(atom=[(e, tuple(x)) for e, x in atoms], basis={e: B[e] for e in els}, unit='A', spin=None,
                 verbose=0, nucmod='G')
     auxm = gto.M(atom=[(e, tuple(x)) for e, x in atoms], basis={e: aux[e] for e in els}, unit='A', spin=None,
@@ -61,6 +95,11 @@ def main(system, centre, rcl, omegas):
     pat = np.repeat([auxm.bas_atom(i) for i in range(auxm.nbas)], np.diff(auxm.ao_loc_nr()))
     aoat = np.repeat([mol.bas_atom(i) for i in range(mol.nbas)], np.diff(mol.ao_loc_nr()))
     dist = np.linalg.norm(X[:, None] - X[None], axis=2) * BOHR       # A
+    aohard = np.repeat([ac > 0 and mol.bas_exp(i).min() >= ac for i in range(mol.nbas)], np.diff(mol.ao_loc_nr()))
+    if ac > 0:
+        for e in els:
+            ia = [i for i in range(mol.natm) if mol.atom_symbol(i) == e][0]
+            print('   %s: %d of %d functions compact' % (e, aohard[aoat == ia].sum(), (aoat == ia).sum()))
     print('%s: cluster of %d atoms (R %.1f A), nao %d, naux %d (auxgen %.0f s)' % (
         system, mol.natm, rcl, mol.nao, auxm.nao, time.time() - t), flush=True)
     # pairs: m on the central atom (0), n on atoms within 3 A of it
@@ -130,6 +169,10 @@ def main(system, centre, rcl, omegas):
                             if j in posn:
                                 selfrep[posm[i] * len(n_idx) + posn[j]] = d[a, b2]
         big = selfrep > 1e-6 * selfrep.max()
+        if ac > 0:
+            hp = np.repeat(aohard[m_idx], len(n_idx)) | np.tile(aohard[n_idx], len(m_idx))
+            print('   scored: %d pairs with a compact function (of %d significant)' % ((big & hp).sum(), big.sum()))
+            big &= hp
         # C = M^-1 B in chunks of pairs (memory); statistics by distance bin
         nb = len(bins) - 1
         bmax, bsq = np.zeros(nb), np.zeros(nb)
@@ -153,7 +196,7 @@ def main(system, centre, rcl, omegas):
         print('   global SR fit: err(mn|mn) max %.2e  rel to (mn|mn) max %.2e  (%d pairs)' % (
             err_g[big].max(), (err_g[big] / selfrep[big]).max(), big.sum()))
         # 3. local fits
-        for R in (0., 2.5, 3.5, 4.5, 5.5, 6.5):
+        for R in (0., 1.5, 2.5, 3.5, 4.5, 5.5, 6.5):
             if R > rcl - 1.5:
                 break
             err_pair = np.zeros(Bp.shape[1])
@@ -182,9 +225,10 @@ def main(system, centre, rcl, omegas):
             for k0 in range(0, Bp.shape[1], ch):
                 x = vk_.T @ Bp[Ds, k0:k0 + ch]
                 err_sh[k0:k0 + ch] = selfrep[k0:k0 + ch] - np.einsum('ik,ik->k', x, x / ek_[:, None])
-            print('   domain R = %.1f A: pair-specific (PARI) err max %.2e rel %.2e (%d aux max) | shared (R+3 A, %d aux) err max %.2e rel %.2e' % (
-                R, err_pair[big].max(), (err_pair[big] / selfrep[big]).max(), npd, len(Ds),
-                err_sh[big].max(), (err_sh[big] / selfrep[big]).max()), flush=True)
+            exc = (err_pair - err_g)[big] / selfrep[big]
+            print('   domain R = %.1f A: pair-specific (PARI) err max %.2e rel %.2e excess rel %.2e (%d aux max) | shared (R+3 A, %d aux) err max %.2e rel %.2e excess rel %.2e' % (
+                R, err_pair[big].max(), (err_pair[big] / selfrep[big]).max(), exc.max(), npd, len(Ds),
+                err_sh[big].max(), (err_sh[big] / selfrep[big]).max(), ((err_sh - err_g)[big] / selfrep[big]).max()), flush=True)
 
 
 if __name__ == '__main__':
