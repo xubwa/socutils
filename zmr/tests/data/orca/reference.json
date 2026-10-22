@@ -1,0 +1,125 @@
+{
+ "ch2_t_casscf66": {
+  "atom": "C 0 0 0; H 0 0.9960 0.5870; H 0 -0.9960 0.5870",
+  "basis": "cc-pvdz",
+  "casscf_energy": -38.955588708,
+  "fic_nevpt2": {
+   "aaav": -0.033426757074,
+   "aavv": -0.029286166411,
+   "caaa": -0.00011045,
+   "cava": -0.000692447661,
+   "cavv": -0.000560821148,
+   "ccaa": -8.5248115e-05,
+   "ccav": -0.000243947918,
+   "ccvv": -0.000178886542
+  },
+  "ncas": 6,
+  "ncore": 1,
+  "nelecas": 6,
+  "note": "ORCA 6.0.1 FIC-NEVPT2 of the triplet ground state, NoFrozenCore, D3TPre=D4TPre=1e-30",
+  "spin": 2
+ },
+ "h2o_casscf44": {
+  "atom": "O 0 0 0.1; H 0 -0.757 -0.47; H 0 0.757 -0.47",
+  "basis": "cc-pvdz",
+  "casscf_energy": -76.043658156,
+  "fic_nevpt2": {
+   "aaav": -0.01791506922,
+   "aavv": -0.026920840408,
+   "caaa": -0.002926006436,
+   "cava": -0.04257804295,
+   "cavv": -0.049678943965,
+   "ccaa": -0.004184198282,
+   "ccav": -0.00778187225,
+   "ccvv": -0.033745090396
+  },
+  "ncas": 4,
+  "ncore": 3,
+  "nelecas": 4,
+  "note": "ORCA 6.0.1 FIC-NEVPT2, NoFrozenCore, D3TPre=D4TPre=1e-30"
+ },
+ "h2o_sa3_casscf44": {
+  "atom": "O 0 0 0.1; H 0 -0.757 -0.47; H 0 0.757 -0.47",
+  "basis": "cc-pvdz",
+  "casscf_states": [
+   -76.0098502562,
+   -75.7377602531,
+   -75.6684663833
+  ],
+  "fic_nevpt2_roots": [
+   {
+    "aaav": -0.026559312367,
+    "aavv": -0.041237728738,
+    "caaa": -0.012011441258,
+    "cava": -0.035871209135,
+    "cavv": -0.06645766916,
+    "ccaa": -0.002510017957,
+    "ccav": -0.011871822375,
+    "ccvv": -0.032700320832
+   },
+   {
+    "aaav": -0.012395644294,
+    "aavv": -0.027346645959,
+    "caaa": -0.005349091857,
+    "cava": -0.031968510212,
+    "cavv": -0.055197576781,
+    "ccaa": -0.002010223819,
+    "ccav": -0.014433315406,
+    "ccvv": -0.032219146385
+   },
+   {
+    "aaav": -0.015812800302,
+    "aavv": -0.026935269598,
+    "caaa": -0.00554092889,
+    "cava": -0.030361718779,
+    "cavv": -0.055655116568,
+    "ccaa": -0.000402691819,
+    "ccav": -0.010794831976,
+    "ccvv": -0.032182590242
+   }
+  ],
+  "ncas": 4,
+  "ncore": 3,
+  "nelecas": 4,
+  "note": "ORCA 6.0.1 SA-CASSCF (3 singlets) + per-root FIC-NEVPT2 (state-specific Fock), D3TPre=D4TPre=1e-30"
+ },
+ "n2_casscf66": {
+  "atom": "N 0 0 0; N 0 0 1.0977",
+  "basis": "cc-pvdz",
+  "casscf_energy": -109.055170909,
+  "fic_nevpt2": {
+   "aaav": -0.016766309647,
+   "aavv": -0.030368577585,
+   "caaa": -0.01888138111,
+   "cava": -0.053661052761,
+   "cavv": -0.041591475257,
+   "ccaa": -0.005689508535,
+   "ccav": -0.012603682186,
+   "ccvv": -0.016807710142
+  },
+  "ncas": 6,
+  "ncore": 4,
+  "nelecas": 6,
+  "note": "ORCA 6.0.1 FIC-NEVPT2, NoFrozenCore, D3TPre=D4TPre=1e-30"
+ },
+ "o2_t_casscf86": {
+  "atom": "O 0 0 0; O 0 0 1.2075",
+  "basis": "cc-pvdz",
+  "casscf_energy": -149.708673196,
+  "fic_nevpt2": {
+   "aaav": -0.044193533518,
+   "aavv": -0.085096323286,
+   "caaa": -0.002284616245,
+   "cava": -0.058813340638,
+   "cavv": -0.041411012462,
+   "ccaa": -0.00131676654,
+   "ccav": -0.003400579485,
+   "ccvv": -0.014960404544
+  },
+  "ncas": 6,
+  "ncore": 4,
+  "nelecas": 8,
+  "note": "ORCA 6.0.1 FIC-NEVPT2 of the triplet ground state, NoFrozenCore, D3TPre=D4TPre=1e-30",
+  "spin": 2
+ }
+}

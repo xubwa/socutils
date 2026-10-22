@@ -1,0 +1,21 @@
+! CASSCF cc-pVDZ VeryTightSCF NoFrozenCore
+%casscf
+  nel 6
+  norb 6
+  mult 3
+  nroots 1
+  PTMethod FIC_NEVPT2
+  TrafoStep Exact
+  PTSettings
+    D3TPre 1e-30
+    D4TPre 1e-30
+  end
+  maxiter 200
+  etol 1e-12
+  gtol 1e-8
+end
+* xyz 0 3
+C 0 0 0
+H 0  0.9960 0.5870
+H 0 -0.9960 0.5870
+*

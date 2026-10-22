@@ -10,6 +10,7 @@
 #   zquatev ->  lib/libzquatev.so     (spinor_hf.KRHF)
 #   ao2mo   ->  lib/libnrr_opt.so     (socutils.lib.ao2mo.nrr_fast; links
 #               against whatever pyscf the configuring Python resolves)
+#   zmr     ->  zmr/lib/libzmr.so     (socutils.zmr; its own CMake, zmr/Makefile)
 #   vhf     ->  lib/libsocvhf.so      (socutils.somf.x2cmp; links against
 #               the same pyscf)
 #
@@ -44,6 +45,7 @@ build:
 	@mkdir -p $(BUILDDIR)
 	cd $(BUILDDIR) && $(CMAKE) .. -DCMAKE_BUILD_TYPE=Release $(CMAKE_ARGS)
 	$(CMAKE) --build $(BUILDDIR) -- -j$(NPROC)
+	$(MAKE) -C zmr PYTHON=$(PYTHON)
 	@for so in libx2camf_c.so libccsdt_clib.so libzquatev.so libnrr_opt.so libsocvhf.so libqdhf.so; do \
 	    test -f $(LIBDIR)/$$so && echo "built $(LIBDIR)/$$so" \
 	        || { echo "ERROR: $$so not produced"; exit 1; }; \
@@ -56,6 +58,7 @@ compare: build
 	$(PYTHON) x2camf_c/tests/test_against_cpp.py
 
 clean:
+	$(MAKE) -C zmr clean
 	rm -rf $(BUILDDIR) \
 	    $(LIBDIR)/libx2camf_c.so $(LIBDIR)/libccsdt_clib.so $(LIBDIR)/libzquatev.so \
 	    $(LIBDIR)/libnrr_opt.so $(LIBDIR)/libsocvhf.so $(LIBDIR)/libqdhf.so
