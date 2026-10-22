@@ -265,6 +265,8 @@ class RSDF(lib.StreamObject):
         self.aux_bound = 'max'       # aux bound units: 'max' (default), 'l2' or 'coulomb'
         self.cderi_to_disk = False   # force HDF5 storage (default: only when larger than max_memory/2)
         self.cderi_in_memory = False  # never HDF5 (also above max_memory/2): no temporary file on disk
+        self.lindep_scaled = False    # lindep cut on the unit-diagonal metric (aux self-repulsions span many
+                                      # orders of magnitude; tight heavy-atom functions dominate an unscaled cut)
         self.cderi_file = None       # keep the vectors in this HDF5 file (RSDF.load reads it back)
         self.keep_raw = False        # keep the unfitted (aux|pair) and the aux metric (small cells; local fitting)
         self.metric_sr = None
@@ -482,6 +484,9 @@ class RSDF(lib.StreamObject):
         if gspace and not self.keep_raw:
             self.metric_sr = None
         M = M[naux:, naux:] if gspace else M
+        dsc = 1. / np.sqrt(np.diag(Mfit)) if self.lindep_scaled else None
+        if dsc is not None:
+            Mfit = Mfit * dsc[:, None] * dsc[None]
         w, v = scipy.linalg.eigh(Mfit)
         Mfit = None
         self.metric_eig = (w.min(), w.max())
@@ -491,6 +496,8 @@ class RSDF(lib.StreamObject):
         keep = w > self.lindep * w.max()
         self.naux_kept = nkept = int(keep.sum())
         W = np.asarray((v[:, keep] / np.sqrt(w[keep])).T, order='C')  # (nkept, naux)
+        if dsc is not None:
+            W = np.asarray(W * dsc[None], order='C')       # M^-1/2 of the unscaled metric on the kept space
         log.info('RSDF: metric eigenvalues [%.2e, %.2e], kept %d of %d', w.min(), w.max(), nkept, naux)
 
         # ---- 3c, in blocks of cell-0 AO shells (rows), lower triangle: rows

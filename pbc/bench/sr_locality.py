@@ -36,7 +36,19 @@ def cluster(system, centre, rcl):
 
 
 def main(system, centre, rcl, omegas):
-    B = runpy.run_path(RULES)['BASIS']
+    B = dict(runpy.run_path(RULES)['BASIS'])
+    for spec in filter(None, os.environ.get('SRLOC_TRIM', '').split(',')):   # e.g. "Y:0.05": drop exponents < 0.05
+        el, emin = spec.split(':')
+        out = []
+        for sh in B[el]:
+            rows = [r for r in sh[1:] if r[0] >= float(emin)]
+            if rows:
+                arr = np.array(rows)
+                keep = [j for j in range(1, arr.shape[1]) if abs(arr[:, j]).max() > 1e-8]
+                if keep:
+                    out.append([sh[0]] + [[r[0]] + [r[j] for j in keep] for r in rows])
+        B[el] = out
+        print('basis of %s trimmed below %s' % (el, emin))
     atoms = cluster(system, centre, rcl)
     els = sorted(set(e for e, _ in atoms))
     t = time.time()
@@ -53,7 +65,7 @@ def main(system, centre, rcl, omegas):
         system, mol.natm, rcl, mol.nao, auxm.nao, time.time() - t), flush=True)
     # pairs: m on the central atom (0), n on atoms within 3 A of it
     near = np.where(dist[0] < float(os.environ.get('SRLOC_RPAIR', '3.0')))[0]
-    msh = [i for i in range(mol.nbas) if mol.bas_atom(i) == 0]
+    msh = [i for i in range(mol.nbas) if mol.bas_atom(i) == 0][::int(os.environ.get('SRLOC_MSUB', '1'))]
     nsh = [i for i in range(mol.nbas) if mol.bas_atom(i) in set(near)]
     bins = np.array([0, 1e-3, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 8, 10, 99])
     for w in omegas:
@@ -75,9 +87,11 @@ def main(system, centre, rcl, omegas):
         else:
             sel = np.arange(len(M))
         M = M[np.ix_(sel, sel)]
-        e, v = scipy.linalg.eigh(M)
+        # lindep cut on the unit-diagonal metric (tight heavy-atom functions dominate an unscaled cut)
+        dsc = 1. / np.sqrt(M.diagonal())
+        e, v = scipy.linalg.eigh(M * dsc[:, None] * dsc[None])
         keep = e > 1e-12 * e.max()
-        Minv = (v[:, keep] / e[keep]) @ v[:, keep].T
+        Minv = dsc[:, None] * ((v[:, keep] / e[keep]) @ v[:, keep].T) * dsc[None]
         tm = time.time() - t
         # 1. metric decay from the central atom's aux functions
         patw = pat[sel]
@@ -93,8 +107,9 @@ def main(system, centre, rcl, omegas):
         mlo = mol.ao_loc_nr()
         n0 = min(nsh)
         with pm.with_range_coulomb(-w):
-            Bt = pm.intor('int3c2e', shls_slice=(msh[0], msh[-1] + 1, n0, max(nsh) + 1, mol.nbas, pm.nbas))
-        m_idx = np.arange(mlo[msh[0]], mlo[msh[-1] + 1])
+            Bt = np.concatenate([pm.intor('int3c2e', shls_slice=(i, i + 1, n0, max(nsh) + 1, mol.nbas, pm.nbas))
+                                 for i in msh], axis=0)
+        m_idx = np.concatenate([np.arange(mlo[i], mlo[i + 1]) for i in msh])
         n_all = np.arange(mlo[n0], mlo[max(nsh) + 1])
         nsel = np.isin(aoat[n_all], near)
         Bt = Bt[:, nsel]
@@ -147,7 +162,9 @@ def main(system, centre, rcl, omegas):
                 cols = np.where(pa_n == A_)[0]
                 D = np.where((dist[0][patw] <= R + 1e-6) | (dist[A_][patw] <= R + 1e-6))[0]
                 npd = max(npd, len(D))
-                ee, vv = scipy.linalg.eigh(M[np.ix_(D, D)])
+                ds_ = dsc[D]
+                ee, vv = scipy.linalg.eigh(M[np.ix_(D, D)] * ds_[:, None] * ds_[None])
+                vv = vv * ds_[:, None]                       # columns: M^-1/2 directions of the unscaled block
                 kk = ee > 1e-12 * ee.max()
                 ch = max(1, int(2e9 / 8 / max(len(D), 1)))
                 for c0 in range(0, len(cols), ch):
@@ -155,7 +172,9 @@ def main(system, centre, rcl, omegas):
                     x = vv[:, kk].T @ Bp[np.ix_(D, cc)]
                     err_pair[cc] = selfrep[cc] - np.einsum('ik,ik->k', x, x / ee[kk][:, None])
             Ds = np.where(dist[0][patw] <= R + 3.0 + 1e-6)[0]   # shared domain: aux within R + 3 A of the centre
-            ee, vv = scipy.linalg.eigh(M[np.ix_(Ds, Ds)])
+            ds_ = dsc[Ds]
+            ee, vv = scipy.linalg.eigh(M[np.ix_(Ds, Ds)] * ds_[:, None] * ds_[None])
+            vv = vv * ds_[:, None]                       # columns: M^-1/2 directions of the unscaled block
             kk = ee > 1e-12 * ee.max()
             vk_, ek_ = vv[:, kk], ee[kk]
             err_sh = np.empty(Bp.shape[1])

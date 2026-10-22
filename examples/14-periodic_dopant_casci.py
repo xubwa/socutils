@@ -62,6 +62,9 @@ p.add_argument('--guess-from', default=None,
                     'are projected through the isolated-atom overlap)')
 p.add_argument('--guess-supercell', default=None, help='supercell matrix of the --guess-from cell')
 p.add_argument('--guess-active-label', default=None, help='--active-label of the --guess-from run')
+p.add_argument('--active-eri', choices=('cderi', 'three-index'), default='cderi',
+               help="CASCI (tu|vw): 'cderi' (_CDERIS on the stored vectors) or 'three-index' (RSDF.active_vectors: "
+                    "SR B_P,tu fitted + exact LR rho_tu(G), no transformed global tensor; needs --lr gspace)")
 p.add_argument('--open-l', type=int, default=3, help='angular momentum of the open shell (4f: 3)')
 p.add_argument('--omega', type=float, default=0.5)
 p.add_argument('--lr', choices=('fit', 'gspace'), default='fit',
@@ -69,6 +72,7 @@ p.add_argument('--lr', choices=('fit', 'gspace'), default='fit',
                     "plane-wave rows; ~V (2 omega)^3 extra rows, use a smaller --omega, e.g. 0.3)")
 p.add_argument('--precision', type=float, default=1e-10)
 p.add_argument('--max-memory', type=float, default=8000, help='MB')
+p.add_argument('--lindep-scaled', action='store_true', help='RSDF lindep cut on the normalised metric')
 p.add_argument('--cderi-in-memory', action='store_true',
                help='keep the RSDF vectors in memory only (needs --max-memory > 2x their size); not written to '
                     'cderi.h5, so a rerun rebuilds them (the SCF/CAHF/CASCI stage files are still reused)')
@@ -195,6 +199,7 @@ else:
         aux = auxgen(cell, contract=False, prune_lmax=False, threshold=1e-8)
     r = RSDF(cell, aux, omega=args.omega, precision=args.precision,
              nuc_zeta=spinor_scf.nuclear_zeta(cell), lr=args.lr)
+    r.lindep_scaled = args.lindep_scaled
     if args.cderi_in_memory:
         r.cderi_in_memory = True
     else:
@@ -332,6 +337,16 @@ if not args.no_cahf:
 
 # 4. CASCI on the 4f spinors
 mc = zcasci.CASCI(mf, args.norb_open, args.nelec_open, ncore=ncore)
+if args.active_eri == 'three-index':
+    from socutils.mcscf import eri_active
+
+    def _h2eff(mo_coeff=None):
+        mo_coeff = mc.mo_coeff if mo_coeff is None else mo_coeff
+        t_ = time.time()
+        e_ = eri_active.eri_active(mf, mo_coeff[:, mc.ncore:mc.ncore + mc.ncas])
+        log('active (tu|vw) from the three-index route: %.0f s' % (time.time() - t_))
+        return e_
+    mc.get_h2eff = _h2eff
 mc.fcisolver.nroots = args.nroots
 mc.verbose = 4
 mc.stdout = sys.stdout
