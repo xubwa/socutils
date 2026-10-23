@@ -265,6 +265,9 @@ class RSDF(lib.StreamObject):
         self.aux_bound = 'max'       # aux bound units: 'max' (default), 'l2' or 'coulomb'
         self.cderi_to_disk = False   # force HDF5 storage (default: only when larger than max_memory/2)
         self.cderi_in_memory = False  # never HDF5 (also above max_memory/2): no temporary file on disk
+        self.sr_fit = True            # lr='gspace' only: False leaves the SR (erfc) part out of the vectors (no SR
+                                      # fitted rows; the vectors are the exact LR rows), for a direct SR J/K
+                                      # (socutils.pbc.split_direct); nuclear terms, S and c_g0 are unchanged
         self.lindep_scaled = False    # lindep cut on the unit-diagonal metric (aux self-repulsions span many
                                       # orders of magnitude; tight heavy-atom functions dominate an unscaled cut)
         self.cderi_file = None       # keep the vectors in this HDF5 file (RSDF.load reads it back)
@@ -487,6 +490,10 @@ class RSDF(lib.StreamObject):
         dsc = 1. / np.sqrt(np.diag(Mfit)) if self.lindep_scaled else None
         if dsc is not None:
             Mfit = Mfit * dsc[:, None] * dsc[None]
+        if not self.sr_fit:
+            if not gspace:
+                raise ValueError("RSDF.sr_fit = False needs lr='gspace'")
+            Mfit = Mfit[:1, :1]          # no SR fit: the metric is not needed
         w, v = scipy.linalg.eigh(Mfit)
         Mfit = None
         self.metric_eig = (w.min(), w.max())
@@ -494,9 +501,13 @@ class RSDF(lib.StreamObject):
             log.warn('RSDF: fitting metric has negative eigenvalue %.2e (max %.2e): integrals are inaccurate',
                      w.min(), w.max())
         keep = w > self.lindep * w.max()
+        if not self.sr_fit:
+            keep[:] = False
         self.naux_kept = nkept = int(keep.sum())
         W = np.asarray((v[:, keep] / np.sqrt(w[keep])).T, order='C')  # (nkept, naux)
-        if dsc is not None:
+        if not self.sr_fit:
+            W = np.zeros((0, naux))
+        elif dsc is not None:
             W = np.asarray(W * dsc[None], order='C')       # M^-1/2 of the unscaled metric on the kept space
         log.info('RSDF: metric eigenvalues [%.2e, %.2e], kept %d of %d', w.min(), w.max(), nkept, naux)
 

@@ -44,15 +44,17 @@ def cluster(system, centre, rcl):
 def split_basis(B, ac, keep='both'):
     '''Split every contracted shell of the basis dict B at exponent ac into its compact part (primitives >= ac) and
     its smooth part (< ac), each reduced to the span of its contraction columns (SVD); keep = 'both', 'compact' or
-    'smooth'.'''
+    'smooth'.  ac may also be a list of cut exponents (keep = 'both' only): one part per exponent interval.'''
+    cuts = sorted(ac) if np.ndim(ac) else [ac]
     out = {}
     for el, shells in B.items():
         new = []
         for sh in shells:
             arr = np.array(sh[1:], dtype=float)
-            parts = {'compact': arr[arr[:, 0] >= ac], 'smooth': arr[arr[:, 0] < ac]}
-            for name in ('compact', 'smooth'):
-                part = parts[name]
+            edges = [-np.inf] + cuts + [np.inf]
+            parts = [('compact' if lo >= cuts[-1] else 'smooth', arr[(arr[:, 0] >= lo) & (arr[:, 0] < hi)])
+                     for lo, hi in zip(edges[:-1], edges[1:])][::-1]
+            for name, part in parts:
                 if keep not in ('both', name) or len(part) == 0:
                     continue
                 u, sv, _ = np.linalg.svd(part[:, 1:], full_matrices=False)
