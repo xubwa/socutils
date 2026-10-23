@@ -116,31 +116,57 @@ def _ncol_core(ni, xc_code, rho_tm, deriv, xctype, s_thrd):
         return ret
 
     vt, vs = v                                      # (nvar, ng)
-    sv = rho_ts[1]
-    # P[k, v] = d s_v / d m_k0 for v > 0 :  (M_kv - n_k s_v) / s
-    P = (M - nhat[:, None] * sv) * inv_s            # (3, nvar, ng); P[:, 0] == 0
+    if deriv > 1:
+        ftt = f[0, :, 0]
+        fts = f[0, :, 1]
+        fss = f[1, :, 1]
 
-    # J[v, k, w] = d s_v / d M_kw
-    J = np.zeros((nvar, 3, nvar, ng))
-    for w in range(nvar):
-        J[w, :, w] = nhat
-    J[1:, :, 0] = P[:, 1:].transpose(1, 0, 2)
+    if not np.any(pol):
+        # m = 0 everywhere (e.g. a Kramers closed shell): no spin potential and
+        # the isotropic kernel f_kl = f_ss delta_kl -- no chain rule needed
+        vxc = np.zeros((4, nvar, ng))
+        vxc[0] = vt
+        ret.append(vxc)
+        if deriv == 1:
+            return ret
+        fxc = np.zeros((4, nvar, 4, nvar, ng))
+        fxc[0, :, 0] = ftt
+        for k in range(1, 4):
+            fxc[k, :, k] = fss
+        ret.append(fxc)
+        return ret
+
+    sv = rho_ts[1]
+    # The Jacobian d s_v / d M_kw is sparse:
+    #     J[v, k, w] = delta_vw n_k + delta_w0 [v > 0] P[k, v],
+    #     P[k, v] = d s_v / d m_k0 = (M_kv - n_k s_v) / s     (P[:, 0] == 0)
+    # and every contraction with it below is written out explicitly.
+    P = (M - nhat[:, None] * sv) * inv_s            # (3, nvar, ng)
+    P1 = P[:, 1:]
 
     vxc = np.empty((4, nvar, ng))
     vxc[0] = vt
-    vxc[1:] = np.einsum('vg,vkwg->kwg', vs, J)
+    vxc[1:] = nhat[:, None] * vs
+    vxc[1:, 0] += np.einsum('vg,kvg->kg', vs[1:], P1)
     ret.append(vxc)
     if deriv == 1:
         return ret
 
-    ftt = f[0, :, 0]
-    fts = f[0, :, 1]
-    fss = f[1, :, 1]
     fxc = np.empty((4, nvar, 4, nvar, ng))
     fxc[0, :, 0] = ftt
-    fxc[0, :, 1:] = np.einsum('avg,vlwg->alwg', fts, J)
+    # sum_v fts[a, v] J[v, l, w] = fts[a, w] n_l + delta_w0 R[a, l]
+    fxc[0, :, 1:] = fts[:, None] * nhat[None, :, None]
+    fxc[0, :, 1:, 0] += np.einsum('avg,lvg->alg', fts[:, 1:], P1)
     fxc[1:, :, 0] = fxc[0, :, 1:].transpose(1, 2, 0, 3)
-    fkk = np.einsum('vkwg,vug,ulxg->kwlxg', J, fss, J)
+    # sum_vu J[v, k, w] fss[v, u] J[u, l, x]
+    #   = n_k n_l fss[w, x] + delta_x0 n_k S[w, l] + delta_w0 n_l S[x, k]
+    #     + delta_w0 delta_x0 T[k, l],   S = fss P^T,  T = P fss P^T  (v, u > 0)
+    S = np.einsum('wug,lug->wlg', fss[:, 1:], P1)              # (nvar, 3, ng)
+    T = np.einsum('kvg,vlg->klg', P1, S[1:])                   # (3, 3, ng)
+    fkk = (nhat[:, None, None, None] * nhat[None, None, :, None]) * fss[None, :, None]
+    fkk[:, :, :, 0] += nhat[:, None, None] * S[None]
+    fkk[:, 0] += S.transpose(1, 0, 2)[:, None] * nhat[None, :, None]
+    fkk[:, 0, :, 0] += T
 
     # second derivatives of s_v contracted with vs
     Q = np.eye(3)[:, :, None] - np.einsum('kg,lg->klg', nhat, nhat)   # (3, 3, ng)
