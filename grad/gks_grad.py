@@ -79,33 +79,23 @@ def get_veff(ks_grad, mol=None, dm=None):
     if dm.dtype == complex:
         vxc = vxc * (1+0.j)
     nao = mol.nao_nr()
-    dmaa = dm[:nao, :nao]
-    dmbb = dm[nao:, nao:]
-    dmab = dm[:nao, nao:]
-    dmba = dm[nao:, :nao]
     if abs(hyb) < 1e-10:
-        dms = numpy.stack((dmaa, dmbb))
-        j1 = ks_grad.get_j(mol, dms)
+        # pyscf's get_j kernel takes real density matrices only.  The total
+        # density block is Hermitian, its imaginary part antisymmetric, which
+        # contracts to zero with the symmetric (lambda sigma| pair.
+        j1 = ks_grad.get_j(mol, (dm[:nao, :nao] + dm[nao:, nao:]).real.copy())
         vj = numpy.zeros((3, nao*2, nao*2), dm.dtype)
-        vj[:, :nao, :nao] = j1[0] + j1[1]
-        vj[:, nao:, nao:] = j1[0] + j1[1]
+        vj[:, :nao, :nao] = j1
+        vj[:, nao:, nao:] = j1
         vxc += vj
 
     else:
-        dms = numpy.stack((dmaa, dmbb, dmab, dmba))
-        j1, k1 = ks_grad.get_jk(mol, dms)
-        vj = numpy.zeros((3, nao*2, nao*2), dm.dtype)
-        vk = numpy.zeros((3, nao*2, nao*2), dm.dtype)
-        vj[:, :nao, :nao] = j1[0] + j1[1]
-        vj[:, nao:, nao:] = j1[0] + j1[1]
-        vk[:, :nao, :nao] = k1[0]
-        vk[:, nao:, nao:] = k1[1]
-        vk[:, :nao, nao:] = k1[2]
-        vk[:, nao:, :nao] = k1[3]
+        # the GHF J/K derivative handles complex, spin-off-diagonal dms
+        vj, vk = ghf_grad.get_jk(ks_grad, mol, dm)
         vk *= hyb
         if abs(omega) > 1e-10:  # For range separated Coulomb operator
             with mol.with_range_coulomb(omega):
-                vk += ks_grad.get_k(mol, dm) * (alpha - hyb)
+                vk += ghf_grad.get_jk(ks_grad, mol, dm)[1] * (alpha - hyb)
         vxc += vj - vk
 
     return lib.tag_array(vxc, exc1_grid=exc)
@@ -196,7 +186,6 @@ def get_vxc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
     if ni.collinear[0] != 'c':
         raise NotImplementedError('Noncollinear spin is not supported.')
     xctype = ni._xc_type(xc_code)
-    make_rho, nset, nao = ni._gen_rho_evaluator(mol, dms, hermi, False, grids)
     ao_loc = mol.ao_loc_nr()
     aoslices = mol.aoslice_by_atom()
 
