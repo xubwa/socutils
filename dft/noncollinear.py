@@ -121,21 +121,6 @@ def _ncol_core(ni, xc_code, rho_tm, deriv, xctype, s_thrd):
         fts = f[0, :, 1]
         fss = f[1, :, 1]
 
-    if not np.any(pol):
-        # m = 0 everywhere (e.g. a Kramers closed shell): no spin potential and
-        # the isotropic kernel f_kl = f_ss delta_kl -- no chain rule needed
-        vxc = np.zeros((4, nvar, ng))
-        vxc[0] = vt
-        ret.append(vxc)
-        if deriv == 1:
-            return ret
-        fxc = np.zeros((4, nvar, 4, nvar, ng))
-        fxc[0, :, 0] = ftt
-        for k in range(1, 4):
-            fxc[k, :, k] = fss
-        ret.append(fxc)
-        return ret
-
     sv = rho_ts[1]
     # The Jacobian d s_v / d M_kw is sparse:
     #     J[v, k, w] = delta_vw n_k + delta_w0 [v > 0] P[k, v],
@@ -184,14 +169,12 @@ def _ncol_core(ni, xc_code, rho_tm, deriv, xctype, s_thrd):
         fkk[:, 0, :, w] += hw
         fkk[:, w, :, 0] += hw
 
-    # unpolarized points: isotropic limit (= multi-collinear kernel at m = 0)
-    unpol = ~pol
-    if np.any(unpol):
-        fkk[..., unpol] = 0
-        for k in range(3):
-            fkk[k, :, k][..., unpol] = fss[..., unpol]
-        fxc[0, :, 1:][..., unpol] = 0
-        fxc[1:, :, 0][..., unpol] = 0
+    # Unpolarized points (n = 0, 1/s := 0, so P = 0): every term above already
+    # vanishes there; add the isotropic limit f_kl = fss delta_kl (= the
+    # multi-collinear kernel at m = 0).
+    fss_unpol = fss * (~pol)
+    for k in range(3):
+        fkk[k, :, k] += fss_unpol
     fxc[1:, :, 1:] = fkk
     ret.append(fxc)
     return ret
