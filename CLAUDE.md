@@ -24,8 +24,8 @@ here; it has been removed.)
 
 ## Building native libraries
 
-Five bundled C/C++ libraries must be compiled before the features that use
-them. All five are built together by **one** top-level CMake under `lib/`
+Six bundled C/C++ libraries must be compiled before the features that use
+them. All six are built together by **one** top-level CMake under `lib/`
 (`lib/CMakeLists.txt`), modelled on `pyscf/lib`: it centralises the common
 config (BLAS/LAPACK, OpenMP, flags, `$ORIGIN` RPATH) and `add_subdirectory`s
 each library. The subdir CMakeLists for `lib/x2camf`, `lib/ccsdt`, `lib/zquatev`
@@ -36,6 +36,8 @@ reuses C already compiled into an *installed* pyscf (`libao2mo`/`libnp_helper`/
 `libcvhf`/`libcint`) rather than standing alone, so its CMakeLists locates that
 pyscf via the configuring Python interpreter at configure time — if upstreamed
 *into* pyscf it would simplify to an ordinary in-tree `target_link_libraries`.
+`lib/dft` (`libsocdft.so`) is the standalone OpenMP multi-collinear XC kernel
+of `dft/noncollinear.py` (falls back to numpy when not built).
 `lib/vhf` (`libsocvhf.so`, prescreen functions that skip one-centre shell
 quartets, used by `somf/x2cmp.py`) links against the installed pyscf's `libcvhf`
 the same way; without it `.x2cmp()` falls back to the full molecular J/K build.
@@ -43,7 +45,7 @@ Each `.so` is emitted **flat into `lib/`**, next to its ctypes loader. They're
 optional — two-component code that doesn't call them runs without.
 
 ```bash
-make            # build all -> lib/libx2camf_c.so, libccsdt_clib.so, libzquatev.so, libnrr_opt.so, libsocvhf.so
+make            # build all -> lib/libx2camf_c.so, libccsdt_clib.so, libzquatev.so, libnrr_opt.so, libsocvhf.so, libsocdft.so
 make test       # build + no-dependency x2camf smoke test
 make compare    # build + A/B compare C backend vs C++ reference
                 #   (needs X2CAMF_CPP_LIBRARY=/path/to/libx2camf*.so)
@@ -64,6 +66,7 @@ There is no central pytest config. Tests are standalone scripts/`unittest`:
 
 ```bash
 python gw/test/test_spinor_gw.py        # spinor G0W0 (unittest)
+python dft/test/test_noncollinear.py    # ncol / mcol DFT
 python gw/test/test_spinor_rpa.py
 python x2camf_c/tests/test_smoke.py     # also: make test
 python x2camf_c/tests/test_against_cpp.py
@@ -120,6 +123,13 @@ two-electron corrections on) and only then require the `x2camf` integral backend
 - **`somf/`** — spin-orbit mean-field machinery (`amf.py`, `snso.py`,
   `somf_pt.py`, `x2cmp.py`) underlying the `.x2camf()`/`.x2cmp()` shortcuts.
 
+- **`dft/`** — two-component Kohn-Sham: `dft.py` (`SpinorDFT`/`KRDFT`, spinor
+  basis; `numint_2c.SpinorNumInt2C` rotates to the scalar-AO x spin basis for the
+  grid work), `gks.py` (`GKS` on the socutils GHF).  `noncollinear.py` supplies
+  the `collinear` schemes beyond pyscf: `'ncol'` (locally collinear, LDA/GGA/MGGA
+  Vxc + fxc) and `'mcol'` (native multi-collinear, no mcfun; LDA in closed form,
+  GGA/MGGA on a half Lebedev sphere via `lib/libsocdft.so`).
+
 - **`cc/`** — relativistic coupled cluster on a spinor reference: `zccsd.py`,
   `zccsd_direct.py`, `zccsdt.py` (triples), `gccsd_t.py`, `eom_zccsd_direct.py`,
   `chol_zccsd*.py` (Cholesky-decomposed ERIs). C kernels live in `lib/ccsdt`
@@ -145,3 +155,4 @@ two-electron corrections on) and only then require the `x2camf` integral backend
 - `X2CAMF_BACKEND` = `c` (default if built) | `cpp` — which x2camf backend runs.
 - `X2CAMF_CPP_LIBRARY` — path to upstream `libx2camf*.so` for `make compare` / cpp backend.
 - `SOCUTILS_ZQUATEV_LIBRARY` — explicit path to `libzquatev.so`.
+- `SOCUTILS_SOCDFT_LIBRARY` — explicit path to `libsocdft.so`.

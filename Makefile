@@ -12,6 +12,7 @@
 #               against whatever pyscf the configuring Python resolves)
 #   vhf     ->  lib/libsocvhf.so      (socutils.somf.x2cmp; links against
 #               the same pyscf)
+#   dft     ->  lib/libsocdft.so      (socutils.dft.noncollinear, mcol XC)
 #
 # Targets:
 #   make            build all C/C++ libraries (default)

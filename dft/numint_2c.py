@@ -14,28 +14,34 @@
 # real scalar AOs on the grid instead of complex spinor AOs, which is several
 # times faster.
 #
+# Non-collinear functionals: collinear='ncol' (locally collinear, LDA/GGA/MGGA
+# Vxc and fxc) and collinear='mcol' (multi-collinear, native, no mcfun needed)
+# come from socutils.dft.noncollinear.NumInt2C, which this class extends.
+#
 # Note on TDDFT (fxc): the default *collinear* kernel only couples the diagonal
 # (alpha-alpha, beta-beta) spin blocks and structurally drops the off-diagonal
 # (alpha-beta) spin-flip response, so it cannot describe spin-mixed (SOC)
 # excitations.  Complex orbitals / amplitudes themselves are fine.  For a
-# correct two-component response set ``collinear='mcol'`` (multi-collinear,
-# mcfun), which fills the full spin structure and handles complex transition
-# densities.
+# correct two-component response set ``collinear='mcol'`` (multi-collinear),
+# which fills the full spin structure and is well defined for closed shells,
+# or ``collinear='ncol'``.
 #
 
 import numpy as np
 from pyscf import lib
 from pyscf.dft import numint2c
+from socutils.dft import noncollinear
 
 
-class SpinorNumInt2C(numint2c.NumInt2C):
+class SpinorNumInt2C(noncollinear.NumInt2C):
     '''NumInt2C that runs on a j-adapted spinor reference by rotating to and
     from the scalar-AO x spin (GHF) representation.'''
 
-    # mcfun integrates the XC over `spin_samples` spin-quantization axes per
-    # grid point (default 770), all in pure Python -- the dominant cost of the
-    # multicollinear (mcol) path.  Default to a coarse angular quadrature here;
-    # raise it (e.g. 770) for production-quality non-collinear results.
+    # Multi-collinear GGA/MGGA integrate the XC over `spin_samples` spin-
+    # projection directions per grid point (Lebedev; half of them are
+    # evaluated) -- the dominant cost of the mcol path.  Default to a coarse
+    # angular quadrature here; raise it (e.g. 50-110) for production-quality
+    # results.  Multi-collinear LDA is exact and does not sample.
     spin_samples = 14
 
     def __init__(self, mol):
