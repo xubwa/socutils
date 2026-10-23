@@ -46,7 +46,7 @@ def main(name, acs, facs):
         T = np.linalg.lstsq(cell.pbc_intor('int1e_ovlp'), pgto.intor_cross('int1e_ovlp', cell, full), rcond=1e-12)[0]
         dm = T @ dm0 @ T.T
         print('\n== alpha_c %g: split nao %d' % (ac, cell.nao), flush=True)
-        th = THCExchange(cell, aux, ac).build_common()
+        th = THCExchange(cell, aux, ac, selector=os.environ.get('THC_SELECTOR', 'cholesky')).build_common()
         nao, sm, ss = th.nao, th.smooth, th.ss
         # level 2 (and the pieces of level 1) from the same RSDF raw data
         J, M, C, Y = th.J, th.M, th.C, th.Y
@@ -76,7 +76,7 @@ def main(name, acs, facs):
         ns = len(sm)
         for fac in facs:
             nmu = int(round(fac * ns))
-            if nmu > len(th.piv):
+            if th.selector in ('cholesky', 'cholesky_blocked', 'coarse') and nmu > len(th.piv):
                 print('   N_mu %d > %d pivots, skipped' % (nmu, len(th.piv)))
                 continue
             rank = th.build_thc(nmu)

@@ -30,7 +30,8 @@ from pyscf import lib
 from pyscf.gto.ft_ao import ft_ao
 from pyscf.df import addons as df_addons
 from pyscf.pbc.gto.cell import estimate_ke_cutoff
-from socutils.pbc.bench.hybrid_k import _inv_metric, k_from_factors, build as rsdf_build
+from socutils.pbc.bench.hybrid_k import _inv_metric, k_from_factors
+from socutils.pbc.rsdf import RSDF
 
 OMEGA = 0.5
 
@@ -55,6 +56,50 @@ def pivots(phi, kmax):
     return np.array(piv), L[:len(piv)]
 
 
+def pivots_blocked(phi, kmax, b=64, over=4, tol=1e-14):
+    '''Pivoted Cholesky of G = (Phi Phi^T)^2 on the grid in blocks (BLAS-3): per block the over*b grid points with
+    the largest residual diagonal are candidates, their residual columns come from one GEMM, and an exact pivoted
+    Cholesky among the candidates picks up to b pivots.  Same output as pivots() (pivot order, factor L); the pivot
+    choice is restricted to the candidates of the block only.'''
+    ng = len(phi)
+    L = np.zeros((kmax, ng))
+    res = np.einsum('ri,ri->r', phi, phi) ** 2
+    dmax = res.max()
+    piv = []
+    k = 0
+    while k < kmax:
+        m = min(over * b, ng)
+        cand = np.argpartition(-res, m - 1)[:m]
+        if res[cand].max() <= tol * dmax:
+            break
+        Cc = (phi @ phi[cand].T) ** 2                                  # (ng, m)
+        if k:
+            Cc -= L[:k].T @ L[:k][:, cand]
+        rc = res[cand].copy()
+        nb = min(b, kmax - k)
+        new = []
+        for j in range(nb):
+            q = int(np.argmax(rc))
+            if rc[q] <= tol * dmax:
+                break
+            row = Cc[:, q].copy()
+            for r_ in new:
+                row -= r_ * r_[cand[q]]
+            row /= np.sqrt(rc[q])
+            new.append(row)
+            piv.append(int(cand[q]))
+            rc -= row[cand] ** 2
+            rc[q] = 0.
+        if not new:
+            break
+        L[k:k + len(new)] = new
+        res -= (np.asarray(new) ** 2).sum(axis=0)
+        np.maximum(res, 0, out=res)
+        res[piv[-len(new):]] = 0.
+        k += len(new)
+    return np.array(piv), L[:k]
+
+
 def isdf_xi(L, piv, nmu):
     '''Lu-Ying least-squares interpolation vectors for the first nmu pivots, xi (nmu, ngrid):
     xi = G[:, P] G[P, P]^-1 = L^T L[:, P]^-T with the Cholesky factor (L[:, P] is upper triangular in pivot
@@ -62,6 +107,65 @@ def isdf_xi(L, piv, nmu):
     Lk = L[:nmu]
     U = Lk[:, piv[:nmu]]
     return scipy.linalg.solve_triangular(U, Lk, lower=False, check_finite=False), nmu
+
+
+def kmeans_points(cell, coords, weight, k, iters=40, tol=1e-4, seed=0):
+    '''Interpolation points by weighted K-means on the grid (ISDF-K-means, Dong, Hu and Lin, JCTC 14, 1311 (2018)):
+    Lloyd iterations with periodic (minimum-image) distances, weight w(r) = G(r, r) = (sum_m phi_m(r)^2)^2, then the
+    grid point nearest to each centroid.  O(ngrid log k) per iteration (k-d tree over the 27 images of the centroids).'''
+    from scipy.spatial import cKDTree
+    A = np.asarray(cell.lattice_vectors())
+    shifts = np.array([[i, j, l] for i in (-1, 0, 1) for j in (-1, 0, 1) for l in (-1, 0, 1)]) @ A
+    rng = np.random.default_rng(seed)
+    w = weight / weight.sum()
+    cen = coords[rng.choice(len(coords), k, replace=False, p=w)]
+    for it in range(iters):
+        img = (cen[None] + shifts[:, None]).reshape(-1, 3)
+        _, idx = cKDTree(img).query(coords, workers=-1)
+        lab = idx % k
+        d = coords - img[idx]                                  # displacement from the nearest centroid image
+        ws = np.bincount(lab, weights=weight, minlength=k)
+        empty = ws <= 0
+        shift = np.stack([np.bincount(lab, weights=weight * d[:, x], minlength=k) for x in range(3)], -1)
+        shift[~empty] /= ws[~empty, None]
+        cen = cen + shift
+        if empty.any():                                        # re-seed empty clusters at heavy points
+            cen[empty] = coords[rng.choice(len(coords), empty.sum(), replace=False, p=w)]
+        if np.sqrt((shift[~empty] ** 2).sum(1)).max() < tol:
+            break
+    img = (cen[None] + shifts[:, None]).reshape(-1, 3)
+    dist, idx = cKDTree(img).query(coords, workers=-1)
+    lab = idx % k
+    order = np.lexsort((dist, lab))                            # per cluster, the nearest grid point first
+    first = np.ones(len(order), dtype=bool)
+    first[1:] = lab[order][1:] != lab[order][:-1]
+    pts = np.unique(order[first])
+    return pts, it + 1
+
+
+def candidate_cholesky_points(phi, cand, k):
+    '''The first k pivots of a pivoted Cholesky (LAPACK dpstrf, blocked) of the Gram matrix G = (Phi Phi^T)^2
+    restricted to the candidate grid points cand.'''
+    from scipy.linalg import lapack
+    Pc = phi[cand]
+    G = (Pc @ Pc.T) ** 2
+    d = np.sqrt(G.diagonal())
+    _, piv, rank, info = lapack.dpstrf(G / d[:, None] / d[None], lower=1, tol=1e-14)   # equilibrated
+    return cand[piv[:min(k, rank)] - 1], rank
+
+
+def isdf_xi_ls(phi, pts, cut=1e-13, blk=200000):
+    '''Lu-Ying least-squares interpolation vectors for given points, xi (npts, ngrid) = (G[:, P] G[P, P]^+)^T with
+    G = (Phi Phi^T)^2 (Hadamard square); the pseudo-inverse on a relative eigenvalue cut, GEMMs in grid blocks.'''
+    PP = phi[pts]
+    e, v = scipy.linalg.eigh((PP @ PP.T) ** 2)
+    keep = e > cut * e.max()
+    Ginv = (v[:, keep] / e[keep]) @ v[:, keep].T
+    xi = np.empty((len(pts), len(phi)))
+    for g0 in range(0, len(phi), blk):
+        g1 = min(g0 + blk, len(phi))
+        xi[:, g0:g1] = Ginv @ ((PP @ phi[g0:g1].T) ** 2)
+    return xi, int(keep.sum())
 
 
 def half_gv(cell, mesh):
@@ -90,8 +194,18 @@ def kernels(Gv, omega):
 
 
 class THCExchange:
-    def __init__(self, cell, aux, alpha_c, omega=OMEGA, verbose=True):
+    def __init__(self, cell, aux, alpha_c, omega=OMEGA, verbose=True, selector='cholesky', nuc_zeta=1e12):
+        '''selector: 'cholesky' (column-by-column pivoted Cholesky of the grid Gram matrix, O(k^2 ngrid), reference),
+        'coarse' (the same on the grid coarsened by self.coarsen per direction, least-squares xi on the full grid),
+        'cholesky_blocked' (blocked candidates, BLAS-3; worse points, not faster), 'kmeans'
+        (weighted K-means on the grid + least-squares xi, BLAS-3; fast but poor points for all-electron smooth
+        functions) or 'kmeans+chol' (K-means candidates, cand_factor per point, then the pivots of a blocked
+        pivoted Cholesky among them; least-squares xi).'''
         self.cell, self.aux, self.ac, self.omega = cell, aux, alpha_c, omega
+        self.selector = selector
+        self.cand_factor = 4.        # kmeans+chol: K-means candidates per point
+        self.coarsen = 2             # coarse: grid coarsening per direction for the point selection
+        self.nuc_zeta = nuc_zeta
         self.verbose = verbose
         self.timings = {}
 
@@ -103,7 +217,11 @@ class THCExchange:
     def build_common(self, kmax_factor=20):
         cell, ac = self.cell, self.ac
         t = time.time()
-        self.r = r = rsdf_build(cell, self.aux)
+        r = RSDF(cell, self.aux, omega=self.omega, precision=1e-10, nuc_zeta=self.nuc_zeta, lr='gspace')
+        r.keep_raw = True
+        r.cderi_in_memory = True
+        r.verbose = 0
+        self.r = r.build()
         nao = self.nao = cell.nao
         self.J = r.int3c_sr
         self.M = r.metric_sr
@@ -140,12 +258,29 @@ class THCExchange:
         sm_cell = _subcell(cell, self.smooth)
         self.ke = estimate_ke_cutoff(sm_cell, 1e-10)
         self.mesh = cell.cutoff_to_mesh(self.ke)
-        coords = cell.get_uniform_grids(self.mesh)
+        coords = self.coords = cell.get_uniform_grids(self.mesh)
         self.phi = cell.pbc_eval_gto('GTOval_sph', coords)[:, self.smooth]  # (ng, nao_s)
         self.ng = len(coords)
         self.timings['grid'] = time.time() - t
         t = time.time()
-        self.piv, self.L = pivots(self.phi, min(self.ng, kmax_factor * len(self.smooth)))
+        if self.selector == 'coarse':
+            # pivoted Cholesky on a grid coarsened by coarsen per direction, pivots snapped to the nearest point of
+            # the full grid (the smooth pair densities are band-limited; xi is fitted on the full grid)
+            mc = np.maximum(np.asarray(self.mesh) // self.coarsen, 1)
+            cc = cell.get_uniform_grids(mc)
+            phic = cell.pbc_eval_gto('GTOval_sph', cc)[:, self.smooth]
+            pc, _ = pivots(phic, min(len(cc), kmax_factor * len(self.smooth)))
+            ijk = np.stack(np.unravel_index(pc, mc), -1)
+            fine = np.rint(ijk * (np.asarray(self.mesh) / mc)).astype(int) % np.asarray(self.mesh)
+            fidx = np.ravel_multi_index(fine.T, self.mesh)
+            _, first = np.unique(fidx, return_index=True)
+            self.piv, self.L = fidx[np.sort(first)], None
+            self.coarse_mesh = mc
+        elif not self.selector.startswith('cholesky'):
+            self.piv, self.L = np.zeros(0, dtype=int), None
+        else:
+            f = pivots_blocked if self.selector == 'cholesky_blocked' else pivots
+            self.piv, self.L = f(self.phi, min(self.ng, kmax_factor * len(self.smooth)))
         self.timings['pivots'] = time.time() - t
         self.Gv, self.fG = half_gv(cell, self.mesh)
         self.w_vec, self.w_sr = kernels(self.Gv, self.omega)
@@ -158,8 +293,24 @@ class THCExchange:
     # ---- THC factors for N_mu points
     def build_thc(self, nmu):
         t = time.time()
-        pts = self.piv[:nmu]
-        xi, rank = isdf_xi(self.L, self.piv, nmu)
+        if self.selector in ('kmeans', 'kmeans+chol'):
+            weight = np.einsum('ri,ri->r', self.phi, self.phi) ** 2
+            ncand = nmu if self.selector == 'kmeans' else min(self.ng, int(self.cand_factor * nmu))
+            pts, nit = kmeans_points(self.cell, self.coords, weight, ncand)
+            self.timings['kmeans (%d it)' % nit] = time.time() - t
+            if self.selector == 'kmeans+chol':
+                t = time.time()
+                pts, crank = candidate_cholesky_points(self.phi, pts, nmu)
+                self.timings['candidate Cholesky (%d candidates, rank %d)' % (ncand, crank)] = time.time() - t
+            t = time.time()
+            xi, rank = isdf_xi_ls(self.phi, pts)
+            nmu = len(pts)
+        elif self.selector == 'coarse':
+            pts = self.piv[:nmu]
+            xi, rank = isdf_xi_ls(self.phi, pts)
+        else:
+            pts = self.piv[:nmu]
+            xi, rank = isdf_xi(self.L, self.piv, nmu)
         t_xi = time.time() - t
         # per-pair interpolation error |rho - sum_mu xi_mu rho(r_mu)| / |rho| on the grid, for all pairs of 16
         # sampled first functions, dropping pairs below 1e-3 of the largest pair sharing that first function
@@ -208,7 +359,7 @@ class THCExchange:
         '''K (vector convention, split basis, real dm): THC SS-SS + local CX (SR) + exact LR rows of the CX blocks.'''
         t = time.time()
         nao, sm = self.nao, self.smooth
-        K = np.zeros((nao, nao))
+        K = np.zeros((nao, nao), dtype=np.result_type(dm, float))
         # SS-SS: K_ab = sum_mu,nu phi_a(mu) [(Phi D Phi^T) o V]_mu,nu phi_b(nu)
         P = self.phimu
         Mmn = (P @ dm[np.ix_(sm, sm)] @ P.T) * self.V
@@ -225,6 +376,90 @@ class THCExchange:
         self.timings.update({'K SS (THC)': t_ss, 'K CX (prototype, dense factors)': time.time() - t})
         return K
 
+    def _aux_ft(self):
+        '''Analytic FTs of the aux functions on the half spectrum, (naux, nG) complex64, cached (prototype; a
+        production code would put the local SR potentials of the aux functions on the grid in real space).'''
+        if getattr(self, '_Pg', None) is None:
+            Pg = np.empty((self.auxmol.nao, len(self.Gv)), dtype=np.complex64)
+            for g0 in range(0, len(self.Gv), 20000):
+                g1 = min(g0 + 20000, len(self.Gv))
+                Pg[:, g0:g1] = ft_ao(self.auxmol, self.Gv[g0:g1]).T
+            self._Pg = Pg
+        return self._Pg
+
+    def _metric_inv(self):
+        if getattr(self, '_Minv', None) is None:
+            v, e = _inv_metric(self.M)
+            self._Minv = (v / e) @ v.T
+        return self._Minv
+
+    def get_j(self, dm):
+        '''J (vector convention, split basis).  The pair-local CX fit is good for K but not for J: its residual
+        densities add up over the pairs with one sign, so J is robust RI-J of the total densities instead:
+            n_SS(r) on the uniform grid (exact for the smooth functions);
+            rho_CX = sum_p d_p rho_p (p CX), b = (P|rho_CX)_SR exact three-centre, global fit c_CX = M^-1 b;
+            J_p (SS p) = (rho_p | n_SS)_grid + (rho_p | sum_P c_CX,P P)_SR      (potentials on the grid)
+            J_p (CX p) = (rho_p | P)_SR . M^-1 [b + (P|n_SS)_SR]               (the global fit of all of rho)
+        (the derivative of the robust (rho_CX|n_SS) + 1/2 (rho_CX|rho_CX); the error is quadratic in the fit
+        error of the total density), plus the LR rows of the CX-involving blocks.'''
+        if np.iscomplexobj(dm):
+            return self.get_j(dm.real) + 1j * self.get_j(dm.imag)
+        nao, sm = self.nao, self.smooth
+        ti, tj = self.ti, self.tj
+        d = (dm + dm.T)[ti, tj]
+        d[ti == tj] *= .5                                           # packed density: D_mn + D_nm (m > n), D_mm
+        cxi = np.where(self.cx)[0]
+        vol, ng, mesh = self.cell.vol, self.ng, self.mesh
+        hshape = (mesh[0], mesh[1], mesh[2] // 2 + 1)
+        Pg = self._aux_ft()
+        Minv = self._metric_inv()
+        b = self.J[:, cxi] @ d[cxi]                                 # (P|rho_CX)_SR
+        c_cx = Minv @ b
+        n = np.einsum('ri,ri->r', self.phi @ dm[np.ix_(sm, sm)], self.phi)
+        nG = scipy.fft.rfftn(n.reshape(mesh), workers=-1).reshape(-1) * (vol / ng)
+        Pn = ((Pg.conj() * (self.fG * self.w_sr / vol)) @ nG).real   # (P|n_SS)_SR
+        vG = self.w_vec * nG + self.w_sr * (c_cx.astype(np.complex64) @ Pg)
+        vr = scipy.fft.irfftn(vG.reshape(hshape), s=mesh, workers=-1).reshape(-1)   # v(r) vol / ng
+        Jss = self.phi.T @ (vr[:, None] * self.phi)
+        jp = np.zeros(len(d))
+        jp[self.ss] = Jss[np.searchsorted(sm, ti[self.ss]), np.searchsorted(sm, tj[self.ss])]
+        jp[cxi] = self.J[:, cxi].T @ (Minv @ (b + Pn))
+        Lss = np.zeros_like(self.Llr)
+        Lss[:, self.ss] = self.Llr[:, self.ss]
+        jp += self.Llr.T @ (self.Llr @ d) - Lss.T @ (Lss @ d)
+        J = np.zeros((nao, nao))
+        J[ti, tj] = jp
+        J[tj, ti] = jp
+        return J
+
+    def get_j_thc(self, dm):
+        '''J with THC for the SS blocks (diagnostic: the interpolation errors add up coherently).'''
+        nao = self.nao
+        ti, tj = self.ti, self.tj
+        d = (dm + dm.T)[ti, tj]
+        d[ti == tj] *= .5
+        pos = -np.ones(nao, dtype=int)
+        pos[self.smooth] = np.arange(len(self.smooth))
+        X = self.phimu[:, pos[ti[self.ss]]] * self.phimu[:, pos[tj[self.ss]]]   # (N_mu, nSS)
+        jp = np.zeros(len(d), dtype=d.dtype)
+        jp[self.ss] = X.T @ (self.V @ (X @ d[self.ss]))
+        J3 = self.J.copy()
+        J3[:, self.ss] = self.A @ X
+        jp += self.C.T @ (J3 @ d) + J3.T @ (self.C @ d) - self.Y.T @ (self.Y @ d)
+        Lss = np.zeros_like(self.Llr)
+        Lss[:, self.ss] = self.Llr[:, self.ss]
+        jp += self.Llr.T @ (self.Llr @ d) - Lss.T @ (Lss @ d)
+        J = np.zeros((nao, nao), dtype=jp.dtype)
+        J[ti, tj] = jp
+        J[tj, ti] = jp
+        return J
+
+    def get_jk(self, dms, with_j=True, with_k=True):
+        dms = np.asarray(dms)
+        vj = np.array([self.get_j(d) for d in dms]) if with_j else None
+        vk = np.array([self.get_k(d) for d in dms]) if with_k else None
+        return vj, vk
+
     def storage(self):
         nmu, nao_s = len(self.pts), len(self.smooth)
         return {'V': nmu * nmu, 'phi(r_mu)': nmu * nao_s, '(P|xi)': self.A.size,
@@ -239,3 +474,67 @@ def _subcell(cell, ao_idx):
     c = cell.copy(deep=True)
     c._bas = cell._bas[shells]
     return c
+
+
+class THCJK:
+    '''Gamma-point J/K for socutils.pbc.spinor_scf (the RSDF interface): THCExchange in the basis split at alpha_c,
+    mapped to the cell's basis (chi_cell = chi_split T); nuclei, S and c_g0 from its RSDF (lr='gspace').
+    split_direct.periodic(mf, THCJK(...)) gives the periodic spinor SCF.'''
+
+    def __init__(self, cell, aux, alpha_c=4., nmu_factor=16., selector='coarse', omega=OMEGA, nuc_zeta=1e12,
+                 verbose=True):
+        self.cell, self.aux, self.alpha_c, self.nmu_factor = cell, aux, alpha_c, nmu_factor
+        self.selector, self.omega, self.nuc_zeta, self.verbose = selector, omega, nuc_zeta, verbose
+        self._built = False
+
+    def build(self):
+        from pyscf.pbc import gto as pgto
+        from socutils.pbc.bench.sr_locality import split_basis
+        cell = self.cell
+        cs = cell.copy(deep=True)
+        cs.basis = split_basis(cell._basis, self.alpha_c)
+        cs.build(False, False)
+        self.T = np.linalg.lstsq(cs.pbc_intor('int1e_ovlp'), pgto.intor_cross('int1e_ovlp', cs, cell), rcond=1e-12)[0]
+        self.th = THCExchange(cs, self.aux, self.alpha_c, self.omega, self.verbose, self.selector,
+                              self.nuc_zeta).build_common()
+        self.th.build_thc(int(round(self.nmu_factor * len(self.th.smooth))))
+        self.S = cell.pbc_intor('int1e_ovlp')
+        self._built = True
+        return self
+
+    @property
+    def c_g0(self):
+        return self.th.r.c_g0
+
+    def g0_constant(self, nelectron):
+        return self.th.r.g0_constant(nelectron)
+
+    def get_nuc(self):
+        return self.T.T @ self.th.r.get_nuc() @ self.T
+
+    def energy_nuc(self):
+        return self.th.r.energy_nuc()
+
+    def get_jk(self, dm, hermi=1, with_j=True, with_k=True, direct_scf_tol=None, omega=None, exxdiv=None,
+               with_g0=False):
+        if omega or exxdiv:
+            raise NotImplementedError
+        if not self._built:
+            self.build()
+        dm = np.asarray(dm)
+        nao = self.cell.nao
+        dms = dm.reshape(-1, nao, nao)
+        T = self.T
+        ds = lib.einsum('pi,nij,qj->npq', T, dms, T)
+        vj, vk = self.th.get_jk(ds, with_j, with_k)
+        if with_j:
+            vj = lib.einsum('pi,npq,qj->nij', T, vj, T)
+        if with_k:
+            vk = lib.einsum('pi,npq,qj->nij', T, vk, T)
+        if with_g0 and self.c_g0:
+            c0, S = self.c_g0, self.S
+            if with_j:
+                vj -= c0 * np.einsum('nij,ji->n', dms, S)[:, None, None] * S
+            if with_k:
+                vk -= c0 * np.einsum('ij,njk,kl->nil', S, dms, S)
+        return (None if vj is None else vj.reshape(dm.shape)), (None if vk is None else vk.reshape(dm.shape))

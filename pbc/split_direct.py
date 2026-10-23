@@ -156,7 +156,7 @@ def periodic(mf, jk):
     from socutils.pbc import spinor_scf
     from socutils.scf.spinor_hf import spinor2sph, sph2spinor
     spinor_scf.check_nuclear_model(mf.mol, jk)
-    if jk.rsjk is None:
+    if not getattr(jk, '_built', getattr(jk, 'rsjk', None) is not None):
         jk.build()
 
     class _SplitDirectSCF(spinor_scf._PeriodicSpinorSCF):
