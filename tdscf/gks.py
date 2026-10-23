@@ -20,11 +20,14 @@
 # now.
 #
 # Validated vs pyscf's 2-component GKS-TDA (non-relativistic integrals, no SOC)
-# to machine precision (LDA / GGA / hybrid).  With SOC integrals the orbitals
-# are genuinely complex; set mf._numint.collinear='mcol' for the spin-flip
-# (non-collinear) response.
+# to machine precision (LDA / GGA / hybrid), and vs ReSpect (1e-X2C PBE TDA of
+# Zn: 3P0,1,2 and 1P1 within 3e-8 a.u.).  The response kernel defaults to the
+# non-collinear one (td.collinear = 'auto': 'ncol' for closed shells, 'mcol'
+# for open shells) even on a collinear ground state: the collinear kernel has
+# no spin-flip channel and scrambles spin-orbit fine structure.
 #
 
+import contextlib
 import numpy
 from pyscf import lib
 from pyscf.tdscf import ghf as _ghf
@@ -136,13 +139,41 @@ class _KernelXCMixin:
     '''
     xc_kernel = None
 
+    # Spin treatment of the response kernel (the ground state is unchanged).
+    # 'auto': a collinear ground state gets 'ncol' for a closed shell (m = 0 by
+    # Kramers symmetry; the isotropic kernel, identical to 'mcol' there) and
+    # 'mcol' for an open shell; an 'ncol'/'mcol' ground state keeps its scheme.
+    # The collinear kernel has no spin-flip channel and breaks the fine
+    # structure of spin-orbit-coupled excitations; set 'col' only to compare.
+    collinear = 'auto'
+
+    def response_collinear(self):
+        ni = getattr(self._scf, '_numint', None)
+        if ni is None or not hasattr(ni, 'collinear'):
+            return None
+        if self.collinear != 'auto':
+            return self.collinear
+        if ni.collinear[0] != 'c':
+            return ni.collinear
+        mol = self._scf.mol
+        return 'ncol' if mol.spin == 0 and mol.nelectron % 2 == 0 else 'mcol'
+
+    @contextlib.contextmanager
+    def _response_env(self):
+        # _gen_ghf_response returns a vind closure that reads mf.xc and the
+        # numint's collinear scheme lazily (at Davidson time), so both must
+        # stay set for the whole solve, not just while the response is built.
+        with contextlib.ExitStack() as stack:
+            if self.xc_kernel is not None:
+                stack.enter_context(lib.temporary_env(self._scf, xc=self.xc_kernel))
+            col = self.response_collinear()
+            if col is not None:
+                lib.logger.info(self, 'response xc kernel: collinear = %s', col)
+                stack.enter_context(lib.temporary_env(self._scf._numint, collinear=col))
+            yield
+
     def kernel(self, *args, **kwargs):
-        # _gen_ghf_response returns a vind closure that reads mf.xc lazily (at
-        # Davidson time), so the kernel xc must stay set for the whole solve,
-        # not just while the response is generated.
-        if self.xc_kernel is None:
-            return super().kernel(*args, **kwargs)
-        with lib.temporary_env(self._scf, xc=self.xc_kernel):
+        with self._response_env():
             return super().kernel(*args, **kwargs)
 
     def cvs(self, core):
@@ -447,10 +478,8 @@ class TDA(_KernelXCMixin, _ghf.TDA):
     def kernel(self, x0=None, nstates=None):
         if not (self.direct or self.couple_reference):
             return super().kernel(x0=x0, nstates=nstates)
-        # honour xc_kernel for the response (same as _KernelXCMixin.kernel)
-        if self.xc_kernel is None:
-            return self._direct_solve(nstates)
-        with lib.temporary_env(self._scf, xc=self.xc_kernel):
+        # response xc / collinear scheme, as in _KernelXCMixin.kernel
+        with self._response_env():
             return self._direct_solve(nstates)
 
     def _coupling_vector(self):
