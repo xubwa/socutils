@@ -28,7 +28,6 @@
 #
 
 import numpy as np
-from pyscf import lib
 from pyscf.dft import numint2c
 from socutils.dft import noncollinear
 
@@ -57,19 +56,16 @@ class SpinorNumInt2C(noncollinear.NumInt2C):
         return self._U
 
     # spinor DM -> GHF DM,  V(GHF) -> V(spinor)
+    # Two (batched) BLAS products, U D U^H: a three-operand einsum is not
+    # factorized by numpy and runs as an O(n^4) loop, which made every TDA
+    # matvec with many trial vectors spend almost all of its time here.
     def _dm_to_ghf(self, dm):
         U = self.U
-        dm = np.asarray(dm)
-        if dm.ndim == 2:
-            return U.dot(dm).dot(U.conj().T)
-        return lib.einsum('mp,...pq,nq->...mn', U, dm, U.conj())
+        return np.matmul(np.matmul(U, np.asarray(dm)), U.conj().T)
 
     def _mat_to_spinor(self, mat):
         U = self.U
-        mat = np.asarray(mat)
-        if mat.ndim == 2:
-            return U.conj().T.dot(mat).dot(U)
-        return lib.einsum('mp,...mn,nq->...pq', U.conj(), mat, U)
+        return np.matmul(np.matmul(U.conj().T, np.asarray(mat)), U)
 
     def get_vxc(self, mol, grids, xc_code, dms, spin=0, relativity=0, hermi=1,
                 max_memory=2000, verbose=None):
