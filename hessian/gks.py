@@ -110,7 +110,7 @@ def veff_deriv1(hessobj, dm0, atmlst):
             v1[ia] += vlr[ia] - vj[ia]
 
     if hessobj.grid_response:
-        vxc1 = hessobj.xc_fd(dm0)[1]
+        vxc1 = hessobj.xc_fd(dm0, need_hess=False)[1]
         for ia in atmlst:
             v1[ia] += vxc1[ia]
         return v1
@@ -223,16 +223,22 @@ class Hessian(ghf_hess.Hessian):
     partial_hess_veff = partial_hess_veff
     veff_deriv1 = veff_deriv1
 
-    def xc_fd(self, dm0):
+    def xc_fd(self, dm0, need_hess=True):
         '''(XC partial Hessian, XC first-order Fock matrices) with the grid
-        response, computed once per density.'''
+        response, computed once per density.  need_hess=False (e.g. for the
+        first-order Fock matrices of an excited-state gradient) skips the
+        second derivatives of the analytic route.'''
         cache = self._xc_fd_cache
-        if cache is None or cache[0].shape != dm0.shape or abs(cache[0] - dm0).max() > 1e-12:
+        if (cache is None or cache[0].shape != dm0.shape or abs(cache[0] - dm0).max() > 1e-12
+                or (need_hess and cache[1] is None)):
             if self.grid_response_method == 'fd':
                 hxc, vxc1 = xc_geometric_derivs_fd(self, dm0, self.grid_fd_step)
             elif self.grid_response_method == 'analytic':
                 from socutils.hessian import xc_grid_response
-                hxc, vxc1 = xc_grid_response.xc_derivs_grid_response(self.base, dm0)
+                hxc, vxc1 = xc_grid_response.xc_derivs_grid_response(self.base, dm0,
+                                                                      with_hess=need_hess)
+                if not need_hess:
+                    hxc = None
             else:
                 raise ValueError('grid_response_method %s' % self.grid_response_method)
             self._xc_fd_cache = cache = (dm0.copy(), hxc, vxc1)
