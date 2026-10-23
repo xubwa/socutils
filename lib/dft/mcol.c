@@ -18,9 +18,10 @@
  * point in small local buffers: the third derivative is only ever needed
  * contracted with s_u, so the (2 nvar)^3 kernel tensor is never formed.
  *
- * xc layout: eval_xc1 output of pyscf.dft.libxc (xcfun order, i.e. the unique
- * index combinations i <= j <= k in lexicographic order), shape (ncomp, npts),
- * with point index p = g * nu + o.
+ * xc layout: raw libxc output of pyscf.dft.libxc._eval_xc, shape (ncomp, npts),
+ * point index p = g * nu + o.  xcmap[c] is the row of component c in xcfun
+ * order (the unique index combinations i <= j <= k in lexicographic order),
+ * i.e. the reordering eval_xc1 applies -- read through the map, not copied.
  */
 
 #include <stdlib.h>
@@ -131,9 +132,37 @@ static void add_atfb(const Layout *L, double A[MAXQ][MAXX], double F[MAXQ][MAXQ]
  * exc:    (ng)               vxc: (4, nvar, ng)     fxc: (4, nvar, 4, nvar, ng)
  * deriv = 1 (exc, vxc) or 2 (exc, vxc, fxc).  Outputs are overwritten.
  */
+/*
+ * Spin densities projected on the sampled directions, for libxc:
+ * rho_ud[sigma, v, g*nu+o] = (rho[v,g] +/- u_o . m[:,v,g]) / 2
+ */
+void SOCmcol_project(double *rho_ud, const double *rho_tm, const double *u,
+                     int nvar, int ng, int nu)
+{
+        const size_t Ng = ng;
+        const size_t npts = (size_t)ng * nu;
+#pragma omp parallel for schedule(static)
+        for (int g = 0; g < ng; g++) {
+                for (int v = 0; v < nvar; v++) {
+                        const double r = rho_tm[v * Ng + g];
+                        const double mx = rho_tm[(1 * nvar + v) * Ng + g];
+                        const double my = rho_tm[(2 * nvar + v) * Ng + g];
+                        const double mz = rho_tm[(3 * nvar + v) * Ng + g];
+                        double *ra = rho_ud + v * npts + (size_t)g * nu;
+                        double *rb = rho_ud + (nvar + v) * npts + (size_t)g * nu;
+                        for (int o = 0; o < nu; o++) {
+                                const double s = u[o*3] * mx + u[o*3+1] * my + u[o*3+2] * mz;
+                                ra[o] = .5 * (r + s);
+                                rb[o] = .5 * (r - s);
+                        }
+                }
+        }
+}
+
 void SOCmcol_sphere(double *exc, double *vxc, double *fxc,
                     const double *rho_tm, const double *u, const double *wu,
-                    const double *xc, int nvar, int ng, int nu, int deriv)
+                    const double *xc, const int *xcmap, int nvar, int ng, int nu,
+                    int deriv)
 {
         Layout L;
         make_layout(&L, nvar);
@@ -177,11 +206,11 @@ void SOCmcol_sphere(double *exc, double *vxc, double *fxc,
                                 dlt[v] = da[v];
                                 dlt[nvar + v] = db[v];
                         }
-                        const double e = xc[p];
+                        const double e = xc[(size_t)xcmap[0] * npts + p];
                         for (q = 0; q < nq; q++) {
-                                vq[q] = xc[(L.off1 + q) * npts + p];
+                                vq[q] = xc[(size_t)xcmap[L.off1 + q] * npts + p];
                                 for (r = 0; r < nq; r++) {
-                                        F[q][r] = xc[(L.off2 + L.i2[q][r]) * npts + p];
+                                        F[q][r] = xc[(size_t)xcmap[L.off2 + L.i2[q][r]] * npts + p];
                                 }
                         }
 
@@ -232,7 +261,7 @@ void SOCmcol_sphere(double *exc, double *vxc, double *fxc,
                                 for (r = 0; r < nq; r++) {
                                         double acc = 0;
                                         for (t = 0; t < nq; t++) {
-                                                acc += xc[(L.off3 + L.i3[q][r][t]) * npts + p] * dq[t];
+                                                acc += xc[(size_t)xcmap[L.off3 + L.i3[q][r][t]] * npts + p] * dq[t];
                                         }
                                         Kd[q][r] = acc;
                                         acc2 += F[q][r] * dq[r];

@@ -224,20 +224,21 @@ def _load_libsocdft():
 def _mcol_sphere_c(ni, xc_code, rho_tm, deriv, xctype, u, wu):
     '''C kernel of _mcol_sphere (lib/dft/mcol.c): libxc derivatives are
     contracted per point, without the unfolded (2 nvar)^n tensors.'''
+    from pyscf.dft import libxc
     lib_c = _load_libsocdft()
+    rho_tm = np.asarray(rho_tm, order='C')
     nvar, ng = rho_tm.shape[1:]
     nu = wu.size
-    rho = rho_tm[0]
-    sp = np.einsum('kvg,uk->vgu', rho_tm[1:], u)
-    rho_ud = np.empty((2, nvar, ng, nu))
-    rho_ud[0] = (rho[:, :, None] + sp) * .5
-    rho_ud[1] = (rho[:, :, None] - sp) * .5
-    sp = None
-    xc = ni.libxc.eval_xc1(xc_code, rho_ud.reshape(2, nvar, ng * nu), 1, deriv + 1,
-                           ni.omega)
+    rho_ud = np.empty((2, nvar, ng * nu))
+    lib_c.SOCmcol_project(
+        rho_ud.ctypes.data_as(ctypes.c_void_p), rho_tm.ctypes.data_as(ctypes.c_void_p),
+        u.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nvar), ctypes.c_int(ng),
+        ctypes.c_int(nu))
+    # raw libxc rows; the xcfun-order permutation of eval_xc1 is applied in C
+    xc = libxc._eval_xc(xc_code, rho_ud, 1, deriv + 1, ni.omega)
     rho_ud = None
-    xc = np.asarray(xc, order='C')
-    rho_tm = np.asarray(rho_tm, order='C')
+    xcmap = np.arange(xc.shape[0])[libxc._libxc_to_xcfun_indices(xctype, 1, deriv + 1)]
+    xcmap = np.asarray(xcmap, dtype=np.int32)
     exc = np.empty(ng)
     vxc = np.empty((4, nvar, ng))
     fxc = np.empty((4, nvar, 4, nvar, ng)) if deriv > 1 else np.empty(1)
@@ -245,8 +246,8 @@ def _mcol_sphere_c(ni, xc_code, rho_tm, deriv, xctype, u, wu):
         exc.ctypes.data_as(ctypes.c_void_p), vxc.ctypes.data_as(ctypes.c_void_p),
         fxc.ctypes.data_as(ctypes.c_void_p), rho_tm.ctypes.data_as(ctypes.c_void_p),
         u.ctypes.data_as(ctypes.c_void_p), wu.ctypes.data_as(ctypes.c_void_p),
-        xc.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nvar), ctypes.c_int(ng),
-        ctypes.c_int(nu), ctypes.c_int(deriv))
+        xc.ctypes.data_as(ctypes.c_void_p), xcmap.ctypes.data_as(ctypes.c_void_p),
+        ctypes.c_int(nvar), ctypes.c_int(ng), ctypes.c_int(nu), ctypes.c_int(deriv))
     ret = [exc, vxc, fxc]
     return ret[:deriv + 1]
 
