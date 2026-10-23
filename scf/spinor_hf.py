@@ -618,7 +618,17 @@ class SCF(hf.SCF):
         return spin_square_ghf(mo_coeff_ghf, s_ghf)
 
     def nuc_grad_method(self):
-        raise NotImplementedError
+        '''Nuclear gradient through the equivalent GHF / GKS object
+        (socutils.scf.spinor_ghf).'''
+        from socutils.scf import spinor_ghf
+        return spinor_ghf._gradients(self)
+    Gradients = nuc_grad_method
+
+    def Hessian(self):
+        '''Nuclear Hessian through the equivalent GHF / GKS object
+        (socutils.scf.spinor_ghf, socutils.hessian).'''
+        from socutils.scf import spinor_ghf
+        return spinor_ghf._hessian(self)
 
 
 class UHF(SCF):

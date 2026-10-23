@@ -448,6 +448,16 @@ class _KernelXCMixin:
 
 
 class TDA(_KernelXCMixin, _ghf.TDA):
+    def Gradients(self):
+        '''Excited-state nuclear gradient (socutils.grad.tdghf_grad); a spinor
+        reference goes through its GHF / GKS representation.'''
+        from socutils.grad import tdghf_grad
+        from socutils.scf import spinor_hf, spinor_ghf
+        if isinstance(self._scf, spinor_hf.SCF):
+            return spinor_ghf._td_gradients(self)
+        return tdghf_grad.Gradients(self)
+    nuc_grad_method = Gradients
+
     # When True, gen_vind builds the response MO-driven: the Coulomb + exact
     # exchange come from a dense, precomputed A_JK block (cderi half-transformed
     # to the active occ/vir space once), and only the local f_xc is evaluated

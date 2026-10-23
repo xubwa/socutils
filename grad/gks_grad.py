@@ -54,6 +54,23 @@ def get_veff(ks_grad, mol=None, dm=None):
 
     mem_now = lib.current_memory()[0]
     max_memory = max(2000, ks_grad.max_memory*.9-mem_now)
+    collinear = ni.collinear
+    if collinear[0] != 'c':
+        if mol.spin == 0 and mol.nelectron % 2 == 0:
+            # Kramers closed shell: m = 0, ncol/mcol reduce to the collinear functional
+            logger.info(ks_grad, 'collinear=%s: closed shell, XC gradient with the '
+                        'collinear functional (exact for m = 0)', collinear)
+            collinear = 'col'
+        else:
+            raise NotImplementedError('Noncollinear spin is not supported.')
+    with lib.temporary_env(ni, collinear=collinear):
+        exc, vxc = _vxc_terms(ks_grad, ni, mol, grids, mf.xc, dm, max_memory)
+    t0 = logger.timer(ks_grad, 'vxc', *t0)
+    return _add_jk(ks_grad, mol, dm, vxc, exc, omega, alpha, hyb)
+
+
+def _vxc_terms(ks_grad, ni, mol, grids, xc, dm, max_memory):
+    mf = ks_grad.base
     if ks_grad.grid_response:
         exc, vxc = get_vxc_full_response(ni, mol, grids, mf.xc, dm,
                                          max_memory=max_memory,
@@ -75,7 +92,10 @@ def get_veff(ks_grad, mol=None, dm=None):
         #                                  dm[0]+dm[1], max_memory=max_memory,
         #                                  verbose=ks_grad.verbose)
         #    vxc += vnlc
-    t0 = logger.timer(ks_grad, 'vxc', *t0)
+    return exc, vxc
+
+
+def _add_jk(ks_grad, mol, dm, vxc, exc, omega, alpha, hyb):
     if dm.dtype == complex:
         vxc = vxc * (1+0.j)
     nao = mol.nao_nr()
