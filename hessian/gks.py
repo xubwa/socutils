@@ -15,9 +15,11 @@ symmetric and positive semidefinite and are passed as pseudo-orbitals
 V sqrt(n) of their eigendecompositions.  The Coulomb / exact-exchange pieces
 are those of socutils.hessian.ghf.
 
-Like pyscf's UKS Hessian, the response of the integration grid is not
-included; its translational part is restored by rebuilding the diagonal
-blocks from the sum rule sum_B H_AB = 0 (Hessian.translation_sum_rule).
+The response of the integration grid is included by default
+(Hessian.grid_response, analytic: socutils.hessian.xc_grid_response).  Without
+it (as in pyscf's UKS Hessian) the one-centre blocks are badly wrong for steep
+core densities; the translational part is then restored by rebuilding the
+diagonal blocks from the sum rule sum_B H_AB = 0 (translation_sum_rule).
 '''
 
 import types
@@ -70,6 +72,10 @@ def partial_hess_veff(hessobj, dm0, atmlst):
                                             k_scale=alpha - hyb) \
                  - ghf_hess.partial_hess_jk(mol, dm0, atmlst, with_k=False)
 
+    if hessobj.grid_response:
+        hxc = hessobj.xc_fd(dm0)[0]
+        return de2 + hxc[numpy.ix_(atmlst, atmlst)]
+
     proxy, mo_coeff, mo_occ, _ = _uks_proxy(hessobj, dm0)
     max_memory = max(2000, mf.max_memory * .9 - lib.current_memory()[0])
     nao = mol.nao_nr()
@@ -103,6 +109,12 @@ def veff_deriv1(hessobj, dm0, atmlst):
         for ia in atmlst:
             v1[ia] += vlr[ia] - vj[ia]
 
+    if hessobj.grid_response:
+        vxc1 = hessobj.xc_fd(dm0)[1]
+        for ia in atmlst:
+            v1[ia] += vxc1[ia]
+        return v1
+
     proxy, mo_coeff, mo_occ, _ = _uks_proxy(hessobj, dm0)
     max_memory = max(2000, mf.max_memory * .9 - lib.current_memory()[0])
     vxca, vxcb = uks_hess._get_vxc_deriv1(proxy, mo_coeff, mo_occ, max_memory)
@@ -111,6 +123,63 @@ def veff_deriv1(hessobj, dm0, atmlst):
         v1[ia][:, :nao, :nao] += vxca[ia]
         v1[ia][:, nao:, nao:] += vxcb[ia]
     return v1
+
+
+def _xc_grad_fixed_dm(mf, mol, grids, dm):
+    '''Exchange-correlation energy gradient (natm, 3) at a fixed AO density
+    matrix, with the full response of the grid (points and Becke weights).'''
+    from socutils.grad import gks_grad
+    nao = mol.nao_nr()
+    # Kramers closed shell: the collinear functional is exact (m = 0)
+    with lib.temporary_env(mf._numint, collinear='col'):
+        excsum, vxc = gks_grad.get_vxc_full_response(mf._numint, mol, grids, mf.xc, dm)
+    aoslices = mol.aoslice_by_atom()
+    de = numpy.array(excsum, dtype=float)
+    for ia in range(mol.natm):
+        p0, p1 = aoslices[ia][2:]
+        for q0 in (0, nao):
+            de[ia] += 2 * numpy.einsum('xij,ji->x', vxc[:, q0 + p0:q0 + p1],
+                                       dm[:, q0 + p0:q0 + p1]).real
+    return de
+
+
+def _displaced_grids(grids, mol):
+    import copy
+    g = copy.copy(grids)
+    g.reset(mol)
+    g.build(with_non0tab=True)
+    return g
+
+
+def xc_geometric_derivs_fd(hessobj, dm0, step=1e-3):
+    '''Semi-numerical exchange-correlation derivatives with the grid response.
+
+    At fixed AO density dm0, the atoms (and their grids) are displaced by
+    +-step, +-2 step; a five-point difference of (a) the analytic XC gradient
+    with full grid response and (b) the Vxc matrix gives the XC partial
+    Hessian (natm, natm, 3, 3) and the XC part of the first-order Fock
+    matrices {atom: (3, 2n, 2n)}.'''
+    mf = hessobj.base
+    mol = hessobj.mol
+    natm = mol.natm
+    coords = mol.atom_coords()
+    ni = mf._numint
+    hxc = numpy.zeros((natm, natm, 3, 3))
+    vxc1 = {ia: numpy.zeros((3,) + dm0.shape, dtype=numpy.complex128) for ia in range(natm)}
+    coef = ((2, -1 / 12.), (1, 8 / 12.), (-1, -8 / 12.), (-2, 1 / 12.))
+    for jb in range(natm):
+        for y in range(3):
+            for n, c in coef:
+                xyz = coords.copy()
+                xyz[jb, y] += n * step
+                mold = mol.set_geom_(xyz, unit='Bohr', inplace=False)
+                gridd = _displaced_grids(mf.grids, mold)
+                g = _xc_grad_fixed_dm(mf, mold, gridd, dm0)
+                hxc[:, jb, :, y] += c * g / step
+                with lib.temporary_env(ni, collinear='col'):
+                    v = ni.get_vxc(mold, gridd, mf.xc, dm0, hermi=1)[2]
+                vxc1[jb][y] += c * v / step
+    return hxc, vxc1
 
 
 def enforce_translation_sum_rule(hess):
@@ -131,23 +200,47 @@ def enforce_translation_sum_rule(hess):
 
 
 class Hessian(ghf_hess.Hessian):
-    '''GKS Hessian (Kramers closed shell; no grid response, see
-    translation_sum_rule)'''
+    '''GKS Hessian (Kramers closed shell)'''
 
-    # rebuild the diagonal blocks from the translational sum rule (needs all atoms)
+    # rebuild the diagonal blocks from the translational sum rule (needs all
+    # atoms); used when grid_response is off
     translation_sum_rule = True
+    # include the response of the integration grid in the exchange-correlation
+    # terms: 'analytic' (socutils.hessian.xc_grid_response: Becke weight
+    # derivatives and the motion of the points) or 'fd' (finite differences of
+    # the analytic grid-response gradient and of Vxc at fixed density)
+    grid_response = True
+    grid_response_method = 'analytic'
+    grid_fd_step = 1e-3
 
     def __init__(self, mf):
         ghf_hess.Hessian.__init__(self, mf)
         self.grids = None
-        self._keys = self._keys.union(['grids', 'translation_sum_rule'])
+        self._xc_fd_cache = None
+        self._keys = self._keys.union(['grids', 'translation_sum_rule', 'grid_response',
+                                       'grid_response_method', 'grid_fd_step'])
 
     partial_hess_veff = partial_hess_veff
     veff_deriv1 = veff_deriv1
 
+    def xc_fd(self, dm0):
+        '''(XC partial Hessian, XC first-order Fock matrices) with the grid
+        response, computed once per density.'''
+        cache = self._xc_fd_cache
+        if cache is None or cache[0].shape != dm0.shape or abs(cache[0] - dm0).max() > 1e-12:
+            if self.grid_response_method == 'fd':
+                hxc, vxc1 = xc_geometric_derivs_fd(self, dm0, self.grid_fd_step)
+            elif self.grid_response_method == 'analytic':
+                from socutils.hessian import xc_grid_response
+                hxc, vxc1 = xc_grid_response.xc_derivs_grid_response(self.base, dm0)
+            else:
+                raise ValueError('grid_response_method %s' % self.grid_response_method)
+            self._xc_fd_cache = cache = (dm0.copy(), hxc, vxc1)
+        return cache[1], cache[2]
+
     def kernel(self, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
         de = ghf_hess.Hessian.kernel(self, mo_energy, mo_coeff, mo_occ, atmlst)
-        if self.translation_sum_rule:
+        if self.translation_sum_rule and not self.grid_response:
             if atmlst is not None and len(atmlst) != self.mol.natm:
                 logger.warn(self, 'translation_sum_rule needs all atoms; not applied')
             else:

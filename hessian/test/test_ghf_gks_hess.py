@@ -89,11 +89,33 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(abs(hess[:, 1, :, 2] - col).max(), 0, 6)
 
     def test_gks_pbe_x2camf(self):
+        # analytic grid response (default)
         mf = _scf(_hbr(), 'pbe')
         hess = mf.Hessian().kernel()
         self.assertAlmostEqual(abs(hess.sum(axis=1)).max(), 0, 8)
         col = _fd_column('pbe', mf.make_rdm1())
-        # no grid response in the off-diagonal blocks: ~1e-6
+        self.assertAlmostEqual(abs(hess[:, 1, :, 2] - col).max(), 0, 8)
+
+    def test_grid_response_analytic_vs_fd(self):
+        from socutils.hessian import gks as gks_hess
+        from socutils.hessian import xc_grid_response
+        for xc in ('lda,vwn', 'pbe'):
+            mf = gks.GKS(_hbr(), xc=xc).x2camf()
+            mf.grids.atom_grid = (50, 194)
+            mf.kernel()
+            dm0 = mf.make_rdm1()
+            h_fd, v_fd = gks_hess.xc_geometric_derivs_fd(mf.Hessian(), dm0)
+            h_an, v_an = xc_grid_response.xc_derivs_grid_response(mf, dm0)
+            self.assertAlmostEqual(abs(h_an - h_fd).max(), 0, 9)
+            self.assertAlmostEqual(max(abs(v_an[a] - v_fd[a]).max() for a in range(2)), 0, 9)
+
+    def test_gks_no_grid_response_sum_rule(self):
+        # pyscf-style XC Hessian (no grid response) + translational sum rule
+        mf = _scf(_hbr(), 'pbe')
+        hobj = mf.Hessian()
+        hobj.grid_response = False
+        hess = hobj.kernel()
+        col = _fd_column('pbe', mf.make_rdm1())
         self.assertAlmostEqual(abs(hess[:, 1, :, 2] - col).max(), 0, 5)
 
 
