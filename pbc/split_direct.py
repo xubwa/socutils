@@ -174,6 +174,9 @@ def periodic(mf, jk):
                 mol = self.mol
             if dm is None:
                 dm = self.make_rdm1()
+            if self._use_mo(dm):                                      # occ-RI: full builds
+                self._veff_last = None
+                return spinor_scf._PeriodicSpinorSCF.get_veff(self, mol, dm, hermi=hermi)
             dm = np.asarray(dm)
             last = self._veff_last
             if (self.incremental and hermi and last is not None and last[0].shape == dm.shape
@@ -190,12 +193,21 @@ def periodic(mf, jk):
                 self._veff_last = (dm.copy(), v.copy())
             return v
 
+        def _use_mo(self, dm):
+            return (hasattr(self.with_df, 'get_jk_mo') and getattr(dm, 'mo_coeff', None) is not None
+                    and getattr(dm, 'mo_occ', None) is not None and np.ndim(dm) == 2
+                    and np.min(dm.mo_occ) >= -1e-12)
+
         def get_jk(self, mol=None, dm=None, hermi=1, with_j=True, with_k=True, omega=None):
             if mol is None:
                 mol = self.mol
             if dm is None:
                 dm = self.make_rdm1()
             t0 = (logger.process_clock(), logger.perf_counter())
+            if self._use_mo(dm):
+                vj, vk = self.with_df.get_jk_mo(mol, dm.mo_coeff, dm.mo_occ)
+                logger.timer(self, 'vj and vk (occ-RI)', *t0)
+                return (vj if with_j else None), (vk if with_k else None)
 
             def jkbuild(mol, dms, hermi, with_j, with_k, omega=None):
                 dms = np.asarray(dms)

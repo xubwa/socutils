@@ -389,11 +389,77 @@ class THCExchange:
             self._Pg = Pg
         return self._Pg
 
-    def _metric_inv(self):
-        if getattr(self, '_Minv', None) is None:
+    def _fit_vectors(self):
+        '''L = W J3 (W = M^-1/2 on the kept space), the fitted SR vectors of all pairs, cached: RI-J as L^T (L d)
+        passes the roundoff through sqrt(cond M) instead of cond M (M^-1 b differed by 4e-3 in J between equivalent
+        evaluation orders for EuOCl).'''
+        if getattr(self, '_Lfit', None) is None:
             v, e = _inv_metric(self.M)
-            self._Minv = (v / e) @ v.T
-        return self._Minv
+            self._Lfit = np.asarray((v / np.sqrt(e)).T @ self.J, order='C')
+        return self._Lfit
+
+    def get_k_occ(self, cs, blk=64):
+        '''K from occupied factors (occ-RI), split basis: cs = [C^s] (nao, nocc) per spin component s (occupations
+        absorbed, D^{ss'} = C^s C^s'^H); returns K[s][s'] (nao, nao).  Every factor pair is applied as
+        K^{ss'} = sum_P (A_P C^s)(B_P C^s')^H, the half transforms shared by all spin blocks; the (J3, C) term is the
+        conjugate transpose of the (C, J3) one; the SS columns of J3 come from THC per block of aux rows.'''
+        nao, sm, ns = self.nao, self.smooth, len(cs)
+        t = time.time()
+        K = [[np.zeros((nao, nao), dtype=complex) for _ in range(ns)] for _ in range(ns)]
+        Pm = self.phimu
+        U = [Pm @ c[sm] for c in cs]                                  # (N_mu, nocc)
+        for s in range(ns):
+            for s2 in range(ns):
+                M = (U[s] @ U[s2].conj().T) * self.V
+                K[s][s2][np.ix_(sm, sm)] += Pm.T @ M @ Pm
+        t_ss = time.time() - t
+        t = time.time()
+        pos = -np.ones(nao, dtype=int)
+        pos[sm] = np.arange(len(sm))
+        X = Pm[:, pos[self.ti[self.ss]]] * Pm[:, pos[self.tj[self.ss]]]   # (N_mu, nSS)
+        Lss = self.Llr.copy()
+        Lss[:, self.cx] = 0.
+
+        nocc = cs[0].shape[1]
+        cri = [np.hstack([c.real, c.imag]) for c in cs]               # (nao, 2 nocc) real
+
+        def half(F):
+            # (A_P C^s)_a,i for a block of factor rows, as one real GEMM per spin: (nP nao, nao) x (nao, 2 nocc)
+            f = lib.unpack_tril(F).reshape(-1, nao)
+            out = []
+            for c in cri:
+                h = (f @ c).reshape(len(F), nao, 2, nocc)
+                out.append(np.ascontiguousarray((h[:, :, 0] + 1j * h[:, :, 1]).transpose(1, 0, 2)).reshape(nao, -1))
+            return out                                                 # [(nao, nP nocc)] complex
+
+        def acc(HA, HB, sign, swap=False):
+            for s in range(ns):
+                for s2 in range(ns):
+                    k = HA[s] @ HB[s2].conj().T
+                    if swap:
+                        K[s2][s] += sign * k.conj().T
+                    K[s][s2] += sign * k
+
+        naux = len(self.C)
+        for p0 in range(0, naux, blk):
+            p1 = min(p0 + blk, naux)
+            Cb = self.C[p0:p1]
+            if not Cb.any():
+                continue
+            J3 = self.J[p0:p1].copy()
+            J3[:, self.ss] = self.A[p0:p1] @ X
+            HC = half(Cb)
+            acc(HC, half(J3), 1., swap=True)                           # (C, J3) + (J3, C)
+            HY = half(self.Y[p0:p1])
+            acc(HY, HY, -1.)
+        for p0 in range(0, len(self.Llr), blk):
+            p1 = min(p0 + blk, len(self.Llr))
+            HL = half(self.Llr[p0:p1])
+            acc(HL, HL, 1.)
+            HS = half(Lss[p0:p1])
+            acc(HS, HS, -1.)
+        self.timings.update({'K SS (THC, occ)': t_ss, 'K CX (occ-RI)': time.time() - t})
+        return K
 
     def get_j(self, dm):
         '''J (vector convention, split basis).  The pair-local CX fit is good for K but not for J: its residual
@@ -414,17 +480,16 @@ class THCExchange:
         ss = self.ss
         vol, ng, mesh = self.cell.vol, self.ng, self.mesh
         hshape = (mesh[0], mesh[1], mesh[2] // 2 + 1)
-        Minv = self._metric_inv()
-        b = self.J[:, cxi] @ d[cxi]                                 # (P|rho_CX)_SR
-        c_cx = Minv @ b
-        Pn = self.J[:, ss] @ d[ss]                                  # (P|n_SS)_SR, exact three-centre (local, sparse)
+        L = self._fit_vectors()
+        Lb = L[:, cxi] @ d[cxi]                                     # W (P|rho_CX)_SR
+        Ln = L[:, ss] @ d[ss]                                       # W (P|n_SS)_SR, exact three-centre (local, sparse)
         n = np.einsum('ri,ri->r', self.phi @ dm[np.ix_(sm, sm)], self.phi)
         nG = scipy.fft.rfftn(n.reshape(mesh), workers=-1).reshape(-1) * (vol / ng)
         vr = scipy.fft.irfftn((self.w_vec * nG).reshape(hshape), s=mesh, workers=-1).reshape(-1)   # v(r) vol / ng
         Jss = self.phi.T @ (vr[:, None] * self.phi)
         jp = np.zeros(len(d))
-        jp[ss] = Jss[np.searchsorted(sm, ti[ss]), np.searchsorted(sm, tj[ss])] + self.J[:, ss].T @ c_cx
-        jp[cxi] = self.J[:, cxi].T @ (Minv @ (b + Pn))
+        jp[ss] = Jss[np.searchsorted(sm, ti[ss]), np.searchsorted(sm, tj[ss])] + L[:, ss].T @ Lb
+        jp[cxi] = L[:, cxi].T @ (Lb + Ln)
         Lss = np.zeros_like(self.Llr)
         Lss[:, self.ss] = self.Llr[:, self.ss]
         jp += self.Llr.T @ (self.Llr @ d) - Lss.T @ (Lss @ d)
@@ -515,6 +580,31 @@ class THCJK:
 
     def energy_nuc(self):
         return self.th.r.energy_nuc()
+
+    def get_jk_mo(self, mol, mo_coeff, mo_occ):
+        '''Spinor J and K for the density sum_i n_i |i><i| (spinor MOs, n_i >= 0) by occ-RI (no G = 0 terms).'''
+        if not self._built:
+            self.build()
+        nao, T = self.cell.nao, self.T
+        if getattr(self, '_c2', None) is None:
+            self._c2 = np.vstack(mol.sph2spinor_coeff())              # (2 nao, n2c)
+        c2 = self._c2
+        mo_coeff = np.asarray(mo_coeff)
+        occ = np.broadcast_to(np.asarray(mo_occ, dtype=float), (mo_coeff.shape[1],))
+        sel = occ > 1e-12
+        Cs = (c2 @ mo_coeff[:, sel]) * np.sqrt(occ[sel])
+        cs = [T @ Cs[:nao], T @ Cs[nao:]]                              # spin components in the split basis
+        Ks = self.th.get_k_occ(cs)
+        dtr = cs[0] @ cs[0].conj().T + cs[1] @ cs[1].conj().T
+        Jsp = T.T @ self.th.get_j(dtr.real) @ T
+        ksph = np.zeros((2 * nao, 2 * nao), dtype=complex)
+        jsph = np.zeros((2 * nao, 2 * nao), dtype=complex)
+        for s in range(2):
+            jsph[s * nao:(s + 1) * nao, s * nao:(s + 1) * nao] = Jsp
+            for s2 in range(2):
+                ksph[s * nao:(s + 1) * nao, s2 * nao:(s2 + 1) * nao] = T.T @ Ks[s][s2] @ T
+        c2h = c2.conj().T
+        return c2h @ jsph @ c2, c2h @ ksph @ c2
 
     def get_jk(self, dm, hermi=1, with_j=True, with_k=True, direct_scf_tol=None, omega=None, exxdiv=None,
                with_g0=False):
