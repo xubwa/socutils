@@ -27,6 +27,7 @@ def _run(mf, xc):
         mf.grids.atom_grid = (40, 110)
     mf = mf.x2camf()
     mf.conv_tol = 1e-12
+    mf.conv_tol_grad = 1e-10    # orbitals, not just the energy (TDA energies to 1e-9)
     return mf.run()
 
 
@@ -62,6 +63,7 @@ class KnownValues(unittest.TestCase):
         tds, tdd = ms.TDA(), td_gks.TDA(md)
         for td in (tds, tdd):
             td.nstates = 4
+            td.conv_tol = 1e-9          # states 1-3 are near-degenerate
             td.kernel()
         self.assertAlmostEqual(abs(numpy.asarray(tds.e) - numpy.asarray(tdd.e)).max(), 0, 9)
         gs, gd = tds.Gradients(), tdd.Gradients()

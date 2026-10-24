@@ -324,3 +324,38 @@ void SOCmcol_sphere(double *exc, double *vxc, double *fxc,
 #undef FXC
         }
 }
+
+/*
+ * Kernel contraction of the TDDFT response (complex density, real kernel):
+ *   v[m, g] = sum_k f[k, m, g] * rho1[k, g]      k, m < n = 4 nvar
+ * rho1, v: complex (interleaved re/im), shape (n, ng);  f: (n, n, ng).
+ */
+#define FXC_BLK 128
+void SOCfxc_contract(double *v, const double *f, const double *rho1,
+                     int n, int ng)
+{
+        const size_t Ng = ng;
+        int nblk = (ng + FXC_BLK - 1) / FXC_BLK;
+#pragma omp parallel for schedule(static)
+        for (int ib = 0; ib < nblk; ib++) {
+                int g0 = ib * FXC_BLK;
+                int g1 = g0 + FXC_BLK < ng ? g0 + FXC_BLK : ng;
+                int g, k, m;
+                for (m = 0; m < n; m++) {
+                        double *vm = v + 2 * (m * Ng);
+                        for (g = g0; g < g1; g++) {
+                                vm[2*g] = 0;
+                                vm[2*g+1] = 0;
+                        }
+                        for (k = 0; k < n; k++) {
+                                const double *fkm = f + ((size_t)k * n + m) * Ng;
+                                const double *rk = rho1 + 2 * (k * Ng);
+                                for (g = g0; g < g1; g++) {
+                                        vm[2*g]   += fkm[g] * rk[2*g];
+                                        vm[2*g+1] += fkm[g] * rk[2*g+1];
+                                }
+                        }
+                }
+        }
+}
+#undef FXC_BLK

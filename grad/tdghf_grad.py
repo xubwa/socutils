@@ -135,12 +135,17 @@ def grad_elec(td_grad, z, atmlst=None, verbose=logger.INFO):
                             max_cycle=50, tol=mf.conv_tol_cpscf, verbose=verbose)[0][0][vi]
     log.timer_debug1('Z-vector')
 
+    # F^R enters only through Re Tr[F^R W], W = T - C_o Z^H C_v^H: contract
+    # the integral derivatives with W instead of building F^R per atom
+    W = T - Co.dot(Z.conj().T).dot(C[:, vi].conj().T)
     hessobj = mf.Hessian()
     if td_grad.grid_response and hasattr(hessobj, 'grid_response'):
         hessobj.grid_response = True
         hessobj.grid_response_method = td_grad.grid_response_method
-    h1ao = hessobj.make_h1(C, mo_occ, None, atmlst, verbose)
-    v1x = td_grad.veff_deriv1(X, atmlst)
+    hcore_deriv = mf.Gradients().hcore_generator(mol)
+    vxc1 = hessobj.vxc_deriv1(D0, atmlst)
+    de_jk = td_grad.jk_deriv1_energy([(D0, W, getattr(mf, 'xc', 'HF')),
+                                      (X, X.conj().T, td_grad.kernel_xc())])
     s1a = -mol.intor('int1e_ipovlp', comp=3)
     e_o = mo_energy[occ]
 
@@ -153,27 +158,40 @@ def grad_elec(td_grad, z, atmlst=None, verbose=logger.INFO):
 
     de = numpy.zeros((len(atmlst), 3))
     for k, ia in enumerate(atmlst):
+        h1 = hcore_deriv(ia)
+        if h1.shape[-1] == nao:
+            h1 = ghf_hess._block_diag(h1, nao)
+        if vxc1 is not None:
+            h1 = h1 + vxc1[ia]
+        de[k] = de_jk[ia]
         for xx in range(3):
-            Fr = C.conj().T.dot(h1ao[ia][xx]).dot(C)
             Sr = s1mo[ia][xx]
-            Bp = (Fr[vi[:, None], oi] - Sr[vi[:, None], oi] * e_o
-                  + C[:, vi].conj().T.dot(gdelta[k, xx]).dot(Co))
-            de[k, xx] = (numpy.einsum('pq,qp', h1ao[ia][xx], T).real
-                         + numpy.einsum('pq,qp', v1x[ia][xx], X.conj().T).real
-                         - numpy.vdot(Z, Bp).real
-                         + .5 * numpy.vdot(L, Sr[vi[:, None], oi]).real
-                         - .5 * numpy.einsum('pq,qp', Lam, Sr).real)
+            Bp = -Sr[vi[:, None], oi] * e_o + C[:, vi].conj().T.dot(gdelta[k, xx]).dot(Co)
+            de[k, xx] += (numpy.einsum('pq,qp', h1[xx], W).real
+                          - numpy.vdot(Z, Bp).real
+                          + .5 * numpy.vdot(L, Sr[vi[:, None], oi]).real
+                          - .5 * numpy.einsum('pq,qp', Lam, Sr).real)
     if is_ks:
         de += xc_kernel_terms(td_grad, X, D0, None, atmlst)
     log.timer('TDA-GHF excitation-energy gradient (Z-vector)')
     return de
 
 
+def _total_density(mol, ao, D0, mask, xctype):
+    '''Rows (nrow, ngrids) of the total density of a Hermitian GHF matrix.'''
+    from pyscf.dft import numint
+    nao = D0.shape[-1] // 2
+    rho = (D0[:nao, :nao] + D0[nao:, nao:]).real
+    r = numint.eval_rho(mol, ao, numpy.ascontiguousarray(rho), mask, xctype, hermi=1,
+                        with_lapl=False)
+    return r.reshape(1 if xctype == 'LDA' else 4, -1)
+
+
 def kxc_potential(td_grad, X, D0):
     '''AO potential matrix M[Y] of Y_w = sum_uv k_uvw rho_X^u* rho_X^v (charge
     channel), so that int Y rho[dD] = Tr[M[Y] dD] for the reference-density
     response through the kernel term.'''
-    from pyscf.dft import numint2c
+    from socutils.dft import noncollinear
     from socutils.hessian import xc_grid_response as xgr
     td = td_grad.base
     mf = td._scf
@@ -190,8 +208,8 @@ def kxc_potential(td_grad, X, D0):
     for ao, mask, weight, coords in ni.block_loop(mol, mf.grids, nao, 0 if xctype == 'LDA' else 1):
         a = ao if xctype == 'LDA' else ao[:4]
         rows = a.reshape(nrow, -1, nao)
-        rhoX = numint2c.eval_rho(mol, a, X, mask, xctype, 0, False).reshape(4, nrow, -1)
-        rho0 = numint2c.eval_rho(mol, a, D0, mask, xctype, 1, False).reshape(4, nrow, -1)[0].real
+        rhoX = noncollinear.eval_rho_2c(mol, a, X, mask, xctype, 0, False).reshape(4, nrow, -1)
+        rho0 = _total_density(mol, a, D0, mask, xctype)
         Y = _kernel_contractions(ni, xc, xctype, rhoX, rho0, spin_channels, weight, nrow)[1]
         m += xgr._vmat(rows, Y, xctype)
     out = numpy.zeros((2 * nao, 2 * nao))
@@ -291,7 +309,6 @@ def xc_kernel_terms(td_grad, X, D0, dD0s, atmlst):
     exact polarization identity for a quadratic form,
         d rho / dR = [rho(ao + dao) - rho(ao - dao)] / 2.
     No grid response.'''
-    from pyscf.dft import numint2c
     from socutils.dft import noncollinear
     td = td_grad.base
     mf = td._scf
@@ -309,7 +326,7 @@ def xc_kernel_terms(td_grad, X, D0, dD0s, atmlst):
     aoslices = mol.aoslice_by_atom()
     ao_deriv = 1 if xctype == 'LDA' else 2
     nrow = 1 if xctype == 'LDA' else 4
-    eval_rho = numint2c.eval_rho
+    eval_rho = noncollinear.eval_rho_2c
     max_memory = max(2000, mf.max_memory * .9 - lib.current_memory()[0])
 
     def rho_of(ao_rows, dm, mask, hermi):
@@ -317,19 +334,22 @@ def xc_kernel_terms(td_grad, X, D0, dD0s, atmlst):
         r = eval_rho(mol, a, dm, mask, xctype, hermi, False)
         return r.reshape(4, nrow, -1)
 
+    def rho0_of(ao_rows, mask):
+        return _total_density(mol, ao_rows[0] if xctype == 'LDA' else ao_rows, D0, mask, xctype)
+
     grid_response = td_grad.grid_response
     de = numpy.zeros((natm, 3))
     for ao, mask, weight, coords in ni.block_loop(mol, mf.grids, nao, ao_deriv, max_memory):
         a0 = ao[:nrow]
         rhoX = rho_of(a0, X, mask, 0)
-        rho0 = rho_of(a0, D0, mask, 1)[0].real
+        rho0 = _total_density(mol, a0[0] if xctype == 'LDA' else a0, D0, mask, xctype)
         W, Y = _kernel_contractions(ni, xc, xctype, rhoX, rho0, spin_channels, weight, nrow)[:2]
         for i0, ia in enumerate(atmlst):
             p0, p1 = aoslices[ia][2:]
             for x in range(3):
                 if dD0s is not None:
                     # reference-density response (the Z-vector code carries it in V_T)
-                    rho_resp = rho_of(a0, dD0s[ia][x], mask, 1)[0].real
+                    rho_resp = _total_density(mol, a0[0] if xctype == 'LDA' else a0, dD0s[ia][x], mask, xctype)
                     de[i0, x] += numpy.einsum('xg,xg', Y, rho_resp)
                 if grid_response:
                     continue            # AO and grid motion: finite difference of E_f below
@@ -337,7 +357,7 @@ def xc_kernel_terms(td_grad, X, D0, dD0s, atmlst):
                 for r in range(nrow):
                     dao[r][:, p0:p1] = -ao[_D1[r, x]][:, p0:p1]
                 dX = .5 * (rho_of(a0 + dao, X, mask, 0) - rho_of(a0 - dao, X, mask, 0))
-                drho0 = .5 * (rho_of(a0 + dao, D0, mask, 1) - rho_of(a0 - dao, D0, mask, 1))[0].real
+                drho0 = .5 * (rho0_of(a0 + dao, mask) - rho0_of(a0 - dao, mask))
                 de[i0, x] += 2 * numpy.einsum('uxg,uxg', W, dX).real
                 de[i0, x] += numpy.einsum('xg,xg', Y, drho0)
     if grid_response:
@@ -371,7 +391,7 @@ def _kernel_contractions(ni, xc, xctype, rhoX, rho0, spin_channels, weight, nrow
 
 def ef_energy(td_grad, mol, grids, X, D0, spin_channels, xc, xctype):
     '''E_f = int sum_uv rho_X^u* f_uv(rho0) rho_X^v on the given grid.'''
-    from pyscf.dft import numint2c
+    from socutils.dft import noncollinear
     mf = td_grad.base._scf
     ni = mf._numint
     nao = mol.nao_nr()
@@ -379,8 +399,8 @@ def ef_energy(td_grad, mol, grids, X, D0, spin_channels, xc, xctype):
     e = 0
     for ao, mask, weight, coords in ni.block_loop(mol, grids, nao, 0 if xctype == 'LDA' else 1):
         a = ao if xctype == 'LDA' else ao[:4]
-        rhoX = numint2c.eval_rho(mol, a, X, mask, xctype, 0, False).reshape(4, nrow, -1)
-        rho0 = numint2c.eval_rho(mol, a, D0, mask, xctype, 1, False).reshape(4, nrow, -1)[0].real
+        rhoX = noncollinear.eval_rho_2c(mol, a, X, mask, xctype, 0, False).reshape(4, nrow, -1)
+        rho0 = _total_density(mol, a, D0, mask, xctype)
         e += _kernel_contractions(ni, xc, xctype, rhoX, rho0, spin_channels, weight, nrow)[2]
     return e
 
@@ -390,7 +410,7 @@ def _ef_geometric_analytic(td_grad, X, D0, atmlst, spin_channels, xc, xctype):
     Becke weight derivatives and the motion of the points through the AO
     coefficients c_A = delta_A,owner - delta_A,atom(mu)
     (socutils.hessian.xc_grid_response).'''
-    from pyscf.dft import numint2c
+    from socutils.dft import noncollinear
     from socutils.hessian import xc_grid_response as xgr
     from socutils.grad import becke_deriv
     mf = td_grad.base._scf
@@ -402,7 +422,10 @@ def _ef_geometric_analytic(td_grad, X, D0, atmlst, spin_channels, xc, xctype):
 
     def rho_of(ao_rows, dm, hermi):
         a = ao_rows[0] if xctype == 'LDA' else ao_rows
-        return numint2c.eval_rho(mol, a, dm, None, xctype, hermi, False).reshape(4, nrow, -1)
+        return noncollinear.eval_rho_2c(mol, a, dm, None, xctype, hermi, False).reshape(4, nrow, -1)
+
+    def rho0_of(ao_rows):
+        return _total_density(mol, ao_rows[0] if xctype == 'LDA' else ao_rows, D0, None, xctype)
 
     natm = mol.natm
     de = numpy.zeros((natm, 3))
@@ -412,7 +435,7 @@ def _ef_geometric_analytic(td_grad, X, D0, atmlst, spin_channels, xc, xctype):
             ao = ni._to_numint1c().eval_ao(mol, coords[p0:p1], deriv=ao_deriv)
             ao0 = numpy.asarray([xgr._d(ao, r) for r in rows])
             rhoX = rho_of(ao0, X, 0)
-            rho0 = rho_of(ao0, D0, 1)[0].real
+            rho0 = rho0_of(ao0)
             W, Y, _ = _kernel_contractions(ni, xc, xctype, rhoX, rho0, spin_channels,
                                            numpy.ones(p1 - p0), nrow)
             cX = rhoX.conj()
@@ -422,7 +445,7 @@ def _ef_geometric_analytic(td_grad, X, D0, atmlst, spin_channels, xc, xctype):
                     ap = xgr._displaced_ao(ao, rows, c[A], x, 1.)
                     am = xgr._displaced_ao(ao, rows, c[A], x, -1.)
                     dX = .5 * (rho_of(ap, X, 0) - rho_of(am, X, 0))
-                    d0 = .5 * (rho_of(ap, D0, 1) - rho_of(am, D0, 1))[0].real
+                    d0 = .5 * (rho0_of(ap) - rho0_of(am))
                     dens = 2 * numpy.einsum('uxg,uxg->g', W, dX).real + numpy.einsum('xg,xg->g', Y, d0)
                     de[A, x] += numpy.dot(w1[A, x, p0:p1], e_f) + numpy.dot(w[p0:p1], dens)
             del cX
@@ -502,6 +525,29 @@ class Gradients(lib.StreamObject):
             for ia in atmlst:
                 v1[ia] += vlr[ia] - vj[ia]
         return v1
+
+    def jk_deriv1_energy(self, pairs):
+        '''d/dR Re sum Tr[V'[A] B] (natm, 3) of the Coulomb / exact-exchange
+        part V = J - c_x K (+ range separation) of functional xc, for a list
+        of (A, B, xc) at fixed A, B.'''
+        mf = self.base._scf
+        mol = self.mol
+        ni = getattr(mf, '_numint', None)
+        full, lr = [], {}
+        for A, B, xc in pairs:
+            if ni is None or xc.upper() == 'HF':
+                full.append((A, B, 1., 1.))
+                continue
+            omega, alpha, hyb = ni.rsh_and_hybrid_coeff(xc, spin=mol.spin)
+            hybrid = ni.libxc.is_hybrid_xc(xc)
+            full.append((A, B, 1., hyb if hybrid else 0.))
+            if hybrid and omega != 0:
+                lr.setdefault(omega, []).append((A, B, 0., alpha - hyb))
+        de = ghf_hess.veff_deriv1_energy(mol, full)
+        for omega, terms in lr.items():
+            with mol.with_range_coulomb(omega):
+                de += ghf_hess.veff_deriv1_energy(mol, terms)
+        return de
 
     def _response_env(self):
         '''The response settings of the TDA solve (socutils TDA: xc_kernel,

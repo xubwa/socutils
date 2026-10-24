@@ -128,6 +128,71 @@ def deriv1_matrix(mol, A, A_pair, out_pair, atmlst=None):
     return deriv1_matrices(mol, [(A, A_pair, out_pair)], atmlst)[0]
 
 
+# label permutations, symmetries of g(ab|cd) for real AOs, that bring the
+# derivative position to 'a'
+_TO_A = {'a': {'a': 'a', 'b': 'b', 'c': 'c', 'd': 'd'},
+         'b': {'a': 'b', 'b': 'a', 'c': 'c', 'd': 'd'},
+         'c': {'a': 'c', 'b': 'd', 'c': 'a', 'd': 'b'},
+         'd': {'a': 'd', 'b': 'c', 'c': 'b', 'd': 'a'}}
+
+
+def deriv1_energies(mol, terms):
+    '''First nuclear derivatives of E = sum_t coef_t sum g(ab|cd) A_t[A_pair]
+    B_t[B_pair] at fixed real A_t, B_t, (natm, 3).  The four derivative
+    positions are mapped onto the first by the permutational symmetry of g, so
+    all terms share one unsliced int2e_ip1 pass.'''
+    nao = mol.nao_nr()
+    terms = [(numpy.asarray(A, dtype=numpy.double, order='C'), ap,
+              numpy.asarray(B, dtype=numpy.double, order='C'), bp, c)
+             for A, ap, B, bp, c in terms]
+    terms = [t for t in terms if t[4] != 0 and _nonzero(t[0]) and _nonzero(t[2])]
+    g = numpy.zeros((3, nao))
+    if terms:
+        intor, comp, pi = _labels_map('a', None)
+        scripts, dms, outs = [], [], []
+        for A, ap, B, bp, c in terms:
+            for p in 'abcd':
+                s = _TO_A[p]
+                ap1, bp1 = s[ap[0]] + s[ap[1]], s[bp[0]] + s[bp[1]]
+                # contract the pair without the derivative index in the
+                # integral, keep the derivative index 'i' in the output
+                (D, dp), (O, op) = ((A, ap1), (B, bp1)) if 'a' in bp1 else ((B, bp1), (A, ap1))
+                scripts.append('%s%s->s1%s%s' % (pi[dp[0]], pi[dp[1]], pi[op[0]], pi[op[1]]))
+                dms.append(D)
+                outs.append((c, O, op[0] == 'a'))
+        vs = _contract(mol, intor, comp, scripts, dms, (0, mol.nbas) * 4)
+        for (c, O, first), v in zip(outs, vs):
+            v = v.reshape(3, nao, nao)
+            if first:
+                g += c * numpy.einsum('xpq,pq->xp', v, O)
+            else:
+                g += c * numpy.einsum('xqp,qp->xp', v, O)
+    de = numpy.zeros((mol.natm, 3))
+    for ia, (_, _, p0, p1) in enumerate(mol.aoslice_by_atom()):
+        de[ia] = -g[:, p0:p1].sum(axis=1)       # d/dR of an AO = -nabla
+    return de
+
+
+def veff_deriv1_energy(mol, terms):
+    '''d/dR_X Re sum_t Tr[(cj_t J - ck_t K)[A_t] B_t] at fixed GHF matrices
+    A_t, B_t (any symmetry), (natm, 3): the contraction of veff_deriv1 with a
+    density, without the per-atom derivative matrices.'''
+    nao = mol.nao_nr()
+    out = []
+    for A, B, cj, ck in terms:
+        ra = A[:nao, :nao] + A[nao:, nao:]
+        rb = B[:nao, :nao] + B[nao:, nao:]
+        # Re (x y) = Re x Re y - Im x Im y
+        out.append((ra.real, 'dc', rb.real, 'ba', cj))
+        out.append((ra.imag, 'dc', rb.imag, 'ba', -cj))
+        if ck != 0:
+            ba, bb = _spin_blocks(A, nao), _spin_blocks(B, nao)
+            for s, t in ('aa', 'bb', 'ab', 'ba'):
+                out.append((ba[s + t].real, 'bc', bb[t + s].real, 'da', -ck))
+                out.append((ba[s + t].imag, 'bc', bb[t + s].imag, 'da', ck))
+    return deriv1_energies(mol, out)
+
+
 def deriv2_energies(mol, terms, atmlst=None):
     '''Second nuclear derivatives of E = sum_t coef_t sum g(ab|cd) A_t[A_pair]
     B_t[B_pair] for a list of terms (A, A_pair, B, B_pair, coef), real A, B;
@@ -515,6 +580,10 @@ class Hessian(rhf_hess.HessianBase):
 
     def veff_deriv1(self, dm0, atmlst):
         return veff_deriv1(self.mol, dm0, atmlst)
+
+    def vxc_deriv1(self, dm0, atmlst):
+        '''XC part of veff_deriv1 (none for HF).'''
+        return None
 
     def hcore_generator(self, mol=None):
         if mol is None:

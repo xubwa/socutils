@@ -53,7 +53,8 @@
 import ctypes
 import numpy as np
 from pyscf import lib
-from pyscf.dft import numint2c, xc_deriv
+from pyscf.dft import numint, numint2c, xc_deriv
+from pyscf.dft.numint import _dot_ao_ao, _scale_ao, _tau_dot
 from pyscf.dft.LebedevGrid import MakeAngularGrid
 
 
@@ -428,6 +429,96 @@ _FXC_MAT = {'LDA': (numint2c._mcol_lda_fxc_mat, 0),
             'MGGA': (numint2c._mcol_mgga_fxc_mat, 1)}
 
 
+# Transition densities and response potentials with real AOs.  For a GHF
+# density matrix D = [[aa, ab], [ba, bb]] (complex, any symmetry) the density
+# and magnetization are  x_k(r) = sum_uv ao_u(r) D_k[u,v] ao_v(r)  with
+#     D_rho = aa + bb,  D_mx = ab + ba,  D_my = i (ab - ba),  D_mz = aa - bb,
+# and only the symmetric part of D_k contributes.  Each D_k is therefore split
+# into two real symmetric matrices and evaluated with the real, screened
+# routines of pyscf.dft.numint -- no complex AO arithmetic.
+
+def _rho_mag_dms(dm):
+    nao = dm.shape[-1] // 2
+    aa, ab = dm[:nao, :nao], dm[:nao, nao:]
+    ba, bb = dm[nao:, :nao], dm[nao:, nao:]
+    ds = []
+    for d in (aa + bb, ab + ba, 1j * (ab - ba), aa - bb):
+        d = np.asarray(d, dtype=np.complex128)
+        d = (d + d.T) * .5
+        ds.append(np.ascontiguousarray(d.real))
+        ds.append(np.ascontiguousarray(d.imag))
+    return ds
+
+
+def _eval_rho1_real_ao(mol, ao, ds, mask, xctype):
+    '''(rho, m) of a complex (transition) density matrix, as numint2c.eval_rho
+    with hermi=0, from the output of _rho_mag_dms.'''
+    rho = [numint.eval_rho(mol, ao, d, mask, xctype, hermi=1, with_lapl=False)
+           for d in ds]
+    rho = np.asarray(rho)
+    return rho[0::2] + rho[1::2] * 1j
+
+
+def eval_rho_2c(mol, ao, dm, non0tab=None, xctype='LDA', hermi=0,
+                with_lapl=False, verbose=None):
+    '''Drop-in for pyscf.dft.numint2c.eval_rho (real AOs, no laplacian):
+    (rho, mx, my, mz) rows of any GHF density matrix; real for hermi=1.'''
+    assert not with_lapl
+    rho = _eval_rho1_real_ao(mol, ao, _rho_mag_dms(dm), non0tab, xctype.upper())
+    return rho.real.copy() if hermi else rho
+
+
+def _vmat_real_ao(mol, ao, weight, v, mask, shls_slice, ao_loc, xctype):
+    '''GHF matrix of the (complex) potential v = dE/d(rho, mx, my, mz)
+    (layout (4, nvar, ngrids)), as numint2c._mcol_*_vxc_mat with hermi=0.'''
+    ao0 = ao if xctype == 'LDA' else ao[0]
+    mats = []
+    for vk in v:
+        wv = vk * weight
+        if xctype == 'LDA':
+            wv = wv.reshape(-1)
+        else:
+            wv = np.array(wv)
+            wv[0] *= .5
+        for w in (wv.real.copy(), wv.imag.copy()):
+            if xctype == 'LDA':
+                mat = _dot_ao_ao(mol, ao0, _scale_ao(ao0, w * .5), mask,
+                                 shls_slice, ao_loc)
+            else:
+                mat = _dot_ao_ao(mol, ao0, _scale_ao(ao[:4], w[:4]), mask,
+                                 shls_slice, ao_loc)
+                if xctype == 'MGGA':
+                    mat += _tau_dot(mol, ao, ao, w[4] * .25, mask, shls_slice,
+                                    ao_loc)
+            mats.append(mat + mat.T)
+    vr, vx, vy, vz = [mats[2 * k] + mats[2 * k + 1] * 1j for k in range(4)]
+    return np.block([[vr + vz, vx - vy * 1j], [vx + vy * 1j, vr - vz]])
+
+
+def _contract_fxc(rho1, fxc):
+    '''einsum('axg,axbyg->byg', rho1, fxc) for complex rho1, real fxc.'''
+    nvar = rho1.shape[1]
+    n = 4 * nvar
+    rho1 = np.asarray(rho1, dtype=np.complex128, order='C').reshape(n, -1)
+    ng = rho1.shape[1]
+    fxc = fxc.reshape(n, n, -1)
+    lib_c = _load_libsocdft()
+    if lib_c is not None and hasattr(lib_c, 'SOCfxc_contract'):
+        fxc = np.asarray(fxc, order='C')
+        v = np.empty((n, ng), dtype=np.complex128)
+        lib_c.SOCfxc_contract(v.ctypes.data_as(ctypes.c_void_p),
+                              fxc.ctypes.data_as(ctypes.c_void_p),
+                              rho1.ctypes.data_as(ctypes.c_void_p),
+                              ctypes.c_int(n), ctypes.c_int(ng))
+        return v.reshape(4, nvar, ng)
+    re = np.zeros(fxc.shape[1:])
+    im = np.zeros(fxc.shape[1:])
+    for k in range(4 * nvar):
+        re += fxc[k] * rho1[k].real
+        im += fxc[k] * rho1[k].imag
+    return (re + im * 1j).reshape(4, nvar, -1)
+
+
 def _gks_noncol_vxc(ni, mol, grids, xc_code, dms, relativity=0, hermi=0,
                     max_memory=2000, verbose=None):
     '''Vxc for ncol and mcol (both evaluators share the (rho, m) layout).'''
@@ -479,12 +570,14 @@ def _gks_noncol_fxc(ni, mol, grids, xc_code, dm0, dms, relativity=0, hermi=0,
         fxc = ni.cache_xc_kernel1(mol, grids, xc_code, dm0, max_memory=max_memory)[2]
     if xctype == 'LDA':
         fxc = fxc.reshape(4, 1, 4, 1, -1)
-    fmat, ao_deriv = _FXC_MAT[xctype]
+    ao_deriv = _FXC_MAT[xctype][1]
 
     shls_slice = (0, mol.nbas)
     ao_loc = mol.ao_loc_nr()
-    make_rho1, nset, n2c = ni._gen_rho_evaluator(mol, dms, hermi, False)
+    dms_ = np.asarray(dms).reshape(-1, *np.shape(dms)[-2:])
+    nset, n2c = dms_.shape[:2]
     nao = n2c // 2
+    ds = [_rho_mag_dms(dm) for dm in dms_]
     vmat = np.zeros((nset, n2c, n2c), dtype=np.complex128)
 
     p1 = 0
@@ -493,12 +586,12 @@ def _gks_noncol_fxc(ni, mol, grids, xc_code, dm0, dms, relativity=0, hermi=0,
         p0, p1 = p1, p1 + weight.size
         _fxc = fxc[..., p0:p1]
         for i in range(nset):
-            rho1 = make_rho1(i, ao, mask, xctype)
-            vmat[i] += fmat(mol, ao, weight, None, rho1, _fxc, mask, shls_slice,
-                            ao_loc, hermi)
-
-    if hermi:
-        vmat = vmat + vmat.conj().transpose(0, 2, 1)
+            rho1 = _eval_rho1_real_ao(mol, ao, ds[i], mask, xctype)
+            if xctype == 'LDA':
+                rho1 = rho1.reshape(4, 1, -1)
+            v1 = _contract_fxc(rho1, _fxc)
+            vmat[i] += _vmat_real_ao(mol, ao, weight, v1, mask, shls_slice,
+                                     ao_loc, xctype)
     if isinstance(dms, np.ndarray) and dms.ndim == 2:
         vmat = vmat[0]
     return vmat

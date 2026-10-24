@@ -109,19 +109,28 @@ def veff_deriv1(hessobj, dm0, atmlst):
         for ia in atmlst:
             v1[ia] += vlr[ia] - vj[ia]
 
-    if hessobj.grid_response:
-        vxc1 = hessobj.xc_fd(dm0, need_hess=False)[1]
-        for ia in atmlst:
-            v1[ia] += vxc1[ia]
-        return v1
+    vxc1 = vxc_deriv1(hessobj, dm0, atmlst)
+    for ia in atmlst:
+        v1[ia] += vxc1[ia]
+    return v1
 
+
+def vxc_deriv1(hessobj, dm0, atmlst):
+    '''d/dR_X of the XC matrix of the reference density, {atom: (3, 2n, 2n)}.'''
+    if hessobj.grid_response:
+        return hessobj.xc_fd(dm0, need_hess=False)[1]
+    mf = hessobj.base
+    mol = hessobj.mol
     proxy, mo_coeff, mo_occ, _ = _uks_proxy(hessobj, dm0)
     max_memory = max(2000, mf.max_memory * .9 - lib.current_memory()[0])
     vxca, vxcb = uks_hess._get_vxc_deriv1(proxy, mo_coeff, mo_occ, max_memory)
     nao = mol.nao_nr()
+    v1 = {}
     for ia in atmlst:
-        v1[ia][:, :nao, :nao] += vxca[ia]
-        v1[ia][:, nao:, nao:] += vxcb[ia]
+        v = numpy.zeros((3, 2 * nao, 2 * nao), dtype=numpy.complex128)
+        v[:, :nao, :nao] = vxca[ia]
+        v[:, nao:, nao:] = vxcb[ia]
+        v1[ia] = v
     return v1
 
 
@@ -222,6 +231,7 @@ class Hessian(ghf_hess.Hessian):
 
     partial_hess_veff = partial_hess_veff
     veff_deriv1 = veff_deriv1
+    vxc_deriv1 = vxc_deriv1
 
     def xc_fd(self, dm0, need_hess=True):
         '''(XC partial Hessian, XC first-order Fock matrices) with the grid
