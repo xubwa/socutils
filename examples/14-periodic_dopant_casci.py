@@ -62,6 +62,12 @@ p.add_argument('--guess-from', default=None,
                     'are projected through the isolated-atom overlap)')
 p.add_argument('--guess-supercell', default=None, help='supercell matrix of the --guess-from cell')
 p.add_argument('--guess-active-label', default=None, help='--active-label of the --guess-from run')
+p.add_argument('--jk', choices=('rsdf', 'thc'), default='rsdf',
+               help="mean-field J/K: 'rsdf' (global cderi) or 'thc' (socutils.pbc.thc.THCJK: compact pairs locally "
+                    "fitted, smooth pairs by THC, J by RI-J on the grid; no cderi; needs --lr gspace and "
+                    "--active-eri three-index)")
+p.add_argument('--thc-alpha-c', type=float, default=4., help='THCJK: compact/smooth exponent split')
+p.add_argument('--thc-nmu', type=float, default=16., help='THCJK: interpolation points per smooth function')
 p.add_argument('--active-eri', choices=('cderi', 'three-index'), default='cderi',
                help="CASCI (tu|vw): 'cderi' (_CDERIS on the stored vectors) or 'three-index' (RSDF.active_vectors: "
                     "SR B_P,tu fitted + exact LR rho_tu(G), no transformed global tensor; needs --lr gspace)")
@@ -182,9 +188,29 @@ def fold_guess():
     return dm
 
 
-# 1. RSDF (built once)
+# 1. RSDF (built once); with --jk thc only the object (CASCI three-index route, nothing stored) and THCJK
 t = time.time()
-if os.path.exists(f_cderi):
+if args.jk == 'thc':
+    if args.lr != 'gspace' or args.active_eri != 'three-index' or args.xc:
+        raise SystemExit('--jk thc needs --lr gspace and --active-eri three-index (HF only)')
+    from socutils.pbc.thc import THCJK
+    from socutils.pbc import split_direct
+    if basis:
+        aux = {}
+        for lab in sorted(set(cell.atom_symbol(i) for i in range(cell.natm))):
+            el = gto.mole._std_symbol(lab)
+            aux[lab] = auxgen_from_basis({el: basis[lab]}, contract=False, prune_lmax=False, threshold=1e-8)[el]
+    else:
+        aux = auxgen(cell, contract=False, prune_lmax=False, threshold=1e-8)
+    r = RSDF(cell, aux, omega=args.omega, precision=args.precision,
+             nuc_zeta=spinor_scf.nuclear_zeta(cell), lr=args.lr)
+    r.verbose = 4
+    r.stdout = sys.stdout
+    jkobj = THCJK(cell, aux, alpha_c=args.thc_alpha_c, nmu_factor=args.thc_nmu, omega=args.omega,
+                  nuc_zeta=spinor_scf.nuclear_zeta(cell)).build()
+    log('THCJK built in %.0f s: N_mu %d (smooth %d), %s' % (time.time() - t, len(jkobj.th.pts), len(jkobj.th.smooth),
+        ', '.join('%s %.0f s' % kv for kv in jkobj.th.timings.items())))
+elif os.path.exists(f_cderi):
     r = RSDF.load(cell, f_cderi)
     r.max_memory = args.max_memory
     log('RSDF loaded from %s (naux kept %d)' % (f_cderi, r.naux_kept))
@@ -211,7 +237,9 @@ else:
         % (time.time() - t, r.naux_kept, *r.metric_eig))
 
 # 2. KRHF + one-centre X2CAMF, dopant 4f shell fractionally occupied
-if args.xc:
+if args.jk == 'thc':
+    mf = split_direct.periodic(spinor_hf.KRHF(cell), jkobj)
+elif args.xc:
     mf = spinor_ks.periodic_ks(spinor_hf.KRHF(cell), r, xc=args.xc)
     mf.grids_level = args.grids_level
 else:
@@ -343,7 +371,7 @@ if args.active_eri == 'three-index':
     def _h2eff(mo_coeff=None):
         mo_coeff = mc.mo_coeff if mo_coeff is None else mo_coeff
         t_ = time.time()
-        e_ = eri_active.eri_active(mf, mo_coeff[:, mc.ncore:mc.ncore + mc.ncas])
+        e_ = r.active_eri(mo_coeff[:, mc.ncore:mc.ncore + mc.ncas])
         log('active (tu|vw) from the three-index route: %.0f s' % (time.time() - t_))
         return e_
     mc.get_h2eff = _h2eff

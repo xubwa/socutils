@@ -377,10 +377,12 @@ class THCExchange:
         return K
 
     def _aux_ft(self):
-        '''Analytic FTs of the aux functions on the half spectrum, (naux, nG) complex64, cached (prototype; a
-        production code would put the local SR potentials of the aux functions on the grid in real space).'''
+        '''Analytic FTs of the aux functions on the half spectrum, (naux, nG) complex128, cached (prototype; a
+        production code would put the local SR potentials of the aux functions on the grid in real space).  Double
+        precision is needed: the fitted compact density is dominated by the core charges (E_J ~ 1e4 Eh), and single
+        precision left ~1e-3 Eh of noise in J that is not linear in D (it broke the incremental Fock build).'''
         if getattr(self, '_Pg', None) is None:
-            Pg = np.empty((self.auxmol.nao, len(self.Gv)), dtype=np.complex64)
+            Pg = np.empty((self.auxmol.nao, len(self.Gv)), dtype=np.complex128)
             for g0 in range(0, len(self.Gv), 20000):
                 g1 = min(g0 + 20000, len(self.Gv))
                 Pg[:, g0:g1] = ft_ao(self.auxmol, self.Gv[g0:g1]).T
@@ -398,7 +400,7 @@ class THCExchange:
         densities add up over the pairs with one sign, so J is robust RI-J of the total densities instead:
             n_SS(r) on the uniform grid (exact for the smooth functions);
             rho_CX = sum_p d_p rho_p (p CX), b = (P|rho_CX)_SR exact three-centre, global fit c_CX = M^-1 b;
-            J_p (SS p) = (rho_p | n_SS)_grid + (rho_p | sum_P c_CX,P P)_SR      (potentials on the grid)
+            J_p (SS p) = (rho_p | n_SS)_grid + (rho_p | sum_P c_CX,P P)_SR      (the latter by the SR 3c integrals)
             J_p (CX p) = (rho_p | P)_SR . M^-1 [b + (P|n_SS)_SR]               (the global fit of all of rho)
         (the derivative of the robust (rho_CX|n_SS) + 1/2 (rho_CX|rho_CX); the error is quadratic in the fit
         error of the total density), plus the LR rows of the CX-involving blocks.'''
@@ -409,20 +411,19 @@ class THCExchange:
         d = (dm + dm.T)[ti, tj]
         d[ti == tj] *= .5                                           # packed density: D_mn + D_nm (m > n), D_mm
         cxi = np.where(self.cx)[0]
+        ss = self.ss
         vol, ng, mesh = self.cell.vol, self.ng, self.mesh
         hshape = (mesh[0], mesh[1], mesh[2] // 2 + 1)
-        Pg = self._aux_ft()
         Minv = self._metric_inv()
         b = self.J[:, cxi] @ d[cxi]                                 # (P|rho_CX)_SR
         c_cx = Minv @ b
+        Pn = self.J[:, ss] @ d[ss]                                  # (P|n_SS)_SR, exact three-centre (local, sparse)
         n = np.einsum('ri,ri->r', self.phi @ dm[np.ix_(sm, sm)], self.phi)
         nG = scipy.fft.rfftn(n.reshape(mesh), workers=-1).reshape(-1) * (vol / ng)
-        Pn = ((Pg.conj() * (self.fG * self.w_sr / vol)) @ nG).real   # (P|n_SS)_SR
-        vG = self.w_vec * nG + self.w_sr * (c_cx.astype(np.complex64) @ Pg)
-        vr = scipy.fft.irfftn(vG.reshape(hshape), s=mesh, workers=-1).reshape(-1)   # v(r) vol / ng
+        vr = scipy.fft.irfftn((self.w_vec * nG).reshape(hshape), s=mesh, workers=-1).reshape(-1)   # v(r) vol / ng
         Jss = self.phi.T @ (vr[:, None] * self.phi)
         jp = np.zeros(len(d))
-        jp[self.ss] = Jss[np.searchsorted(sm, ti[self.ss]), np.searchsorted(sm, tj[self.ss])]
+        jp[ss] = Jss[np.searchsorted(sm, ti[ss]), np.searchsorted(sm, tj[ss])] + self.J[:, ss].T @ c_cx
         jp[cxi] = self.J[:, cxi].T @ (Minv @ (b + Pn))
         Lss = np.zeros_like(self.Llr)
         Lss[:, self.ss] = self.Llr[:, self.ss]
