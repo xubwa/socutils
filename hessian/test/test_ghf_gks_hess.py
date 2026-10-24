@@ -96,10 +96,19 @@ class KnownValues(unittest.TestCase):
         col = _fd_column('pbe', mf.make_rdm1())
         self.assertAlmostEqual(abs(hess[:, 1, :, 2] - col).max(), 0, 8)
 
+    def test_gks_tpss_x2camf(self):
+        # meta-GGA, analytic grid response
+        mf = _scf(_hbr(), 'tpss')
+        hess = mf.Hessian().kernel()
+        self.assertAlmostEqual(abs(hess.sum(axis=1)).max(), 0, 8)
+        col = _fd_column('tpss', mf.make_rdm1())
+        # 5e-9: the finite difference of a meta-GGA is noisier than of PBE (1.5e-9)
+        self.assertAlmostEqual(abs(hess[:, 1, :, 2] - col).max(), 0, 7)
+
     def test_grid_response_analytic_vs_fd(self):
         from socutils.hessian import gks as gks_hess
         from socutils.hessian import xc_grid_response
-        for xc in ('lda,vwn', 'pbe'):
+        for xc in ('lda,vwn', 'pbe', 'tpss'):
             mf = gks.GKS(_hbr(), xc=xc).x2camf()
             mf.grids.atom_grid = (50, 194)
             mf.kernel()

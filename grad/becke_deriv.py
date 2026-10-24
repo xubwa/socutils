@@ -76,11 +76,42 @@ class _Jet:
         return _Jet(r, d, h)
 
 
+def _proton_numbers(mol):
+    '''Atomic numbers, as pyscf.dft.radi uses for the radii adjustment of the
+    grid itself.  mol.atom_charges() is the effective charge Z - n_core with an
+    ECP (pyscf.grad.rks.grids_response_becke uses it, which is wrong then).'''
+    from pyscf.data.elements import charge
+    return numpy.asarray([charge(x) for x in mol.elements])
+
+
+def proton_charge_mol(mol):
+    '''Copy of mol whose atom_charges() are the atomic numbers, for pyscf's
+    grid-response helpers (only the radii adjustment reads the charges).'''
+    from pyscf.gto.mole import CHARGE_OF
+    if not mol.has_ecp():
+        return mol
+    m = mol.copy()
+    m._atm = m._atm.copy()
+    m._atm[:, CHARGE_OF] = _proton_numbers(mol)
+    return m
+
+
+def grids_response_cc(grids):
+    '''pyscf.grad.rks.grids_response_cc with the radii adjustment of the grid
+    (atomic numbers, also with ECPs).'''
+    import copy
+    from pyscf.grad import rks as rks_grad
+    if grids.mol.has_ecp():
+        grids = copy.copy(grids)
+        grids.mol = proton_charge_mol(grids.mol)
+    return rks_grad.grids_response_cc(grids)
+
+
 def _radii_adjust_table(grids):
     mol = grids.mol
     if grids.radii_adjust is None or grids.atomic_radii is None:
         return None
-    charges = mol.atom_charges()
+    charges = _proton_numbers(mol)
     if grids.radii_adjust == radi.treutler_atomic_radii_adjust:
         rad = numpy.sqrt(grids.atomic_radii[charges]) + 1e-200
     elif grids.radii_adjust == radi.becke_atomic_radii_adjust:

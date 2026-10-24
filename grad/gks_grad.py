@@ -25,6 +25,7 @@ from pyscf.grad import rks as rks_grad
 from pyscf.dft import numint, gen_grid
 from pyscf import __config__
 from socutils.grad import ghf_grad
+from socutils.grad import becke_deriv
 
 
 def get_veff(ks_grad, mol=None, dm=None):
@@ -147,7 +148,7 @@ def get_vxc(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
     if xctype == 'LDA':
         ao_deriv = 1
         for atm_id, (coords, weight, weight1) \
-                in enumerate(rks_grad.grids_response_cc(grids)):
+                in enumerate(becke_deriv.grids_response_cc(grids)):
             sh0, sh1 = aoslices[atm_id][:2]
             mask = gen_grid.make_mask(mol, coords)
             ao = ni1c.eval_ao(mol, coords, deriv=ao_deriv, non0tab=mask,
@@ -222,7 +223,7 @@ def get_vxc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
     if xctype == 'LDA':
         ao_deriv = 1
         for atm_id, (coords, weight, weight1) \
-                in enumerate(rks_grad.grids_response_cc(grids)):
+                in enumerate(becke_deriv.grids_response_cc(grids)):
             sh0, sh1 = aoslices[atm_id][:2]
             mask = gen_grid.make_mask(mol, coords)
             ao = ni1c.eval_ao(mol, coords, deriv=ao_deriv, non0tab=mask,
@@ -248,7 +249,7 @@ def get_vxc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
     elif xctype == 'GGA':
         ao_deriv = 2
         for atm_id, (coords, weight, weight1) \
-                in enumerate(rks_grad.grids_response_cc(grids)):
+                in enumerate(becke_deriv.grids_response_cc(grids)):
             sh0, sh1 = aoslices[atm_id][:2]
             mask = gen_grid.make_mask(mol, coords)
             ao = ni1c.eval_ao(mol, coords, deriv=ao_deriv, non0tab=mask,
@@ -276,7 +277,7 @@ def get_vxc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
     elif xctype == 'MGGA':
         ao_deriv = 2
         for atm_id, (coords, weight, weight1) \
-                in enumerate(rks_grad.grids_response_cc(grids)):
+                in enumerate(becke_deriv.grids_response_cc(grids)):
             sh0, sh1 = aoslices[atm_id][:2]
             mask = gen_grid.make_mask(mol, coords)
             ao = ni1c.eval_ao(mol, coords, deriv=ao_deriv, non0tab=mask,

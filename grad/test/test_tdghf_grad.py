@@ -74,6 +74,17 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(abs(g.sum(axis=0)).max(), 0, 9)
         self.assertAlmostEqual(g[2, 2], _fd('pbe', mf.make_rdm1(), 2, 2), 7)
 
+    def test_tpss_grid_response(self):
+        '''meta-GGA: tau rows and third derivatives of the kernel'''
+        mf, td = _run(_mol(), 'tpss')
+        tg = tdghf_grad.Gradients(td)
+        tg.grid_response = True
+        g = tg.grad_omega(STATE)
+        tg.method = 'cphf'
+        self.assertAlmostEqual(abs(g - tg.grad_omega(STATE)).max(), 0, 9)
+        self.assertAlmostEqual(abs(g.sum(axis=0)).max(), 0, 9)
+        self.assertAlmostEqual(g[2, 2], _fd('tpss', mf.make_rdm1(), 2, 2), 7)
+
     def test_kernel_energy(self):
         '''E_f is the XC part of Tr[G_td[X] X^H]'''
         mf, td = _run(_mol(), 'pbe')

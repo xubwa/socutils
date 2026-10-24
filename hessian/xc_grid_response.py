@@ -25,7 +25,8 @@ be written out by hand.
     E''_AB = sum_g [ w''_AB eps + w'_A eps'_B + w'_B eps'_A + w eps''_AB ]
     eps'_A = v . rho'_A,   eps''_AB = rho'_A . f . rho'_B + v . rho''_AB
 
-LDA and GGA.
+LDA, GGA and meta-GGA.  tau = 1/2 sum_r d_r phi D d_r phi is a quadratic form
+of the same gradient rows, so the displaced AOs carry its derivatives as well.
 '''
 
 import itertools
@@ -48,7 +49,13 @@ def _d(ao, axes):
 
 
 def _rows(xctype):
+    '''AO derivative rows the densities are built from.'''
     return [()] if xctype == 'LDA' else [(), (0,), (1,), (2,)]
+
+
+def _nvar(xctype):
+    '''density rows: rho [, grad rho] [, tau]'''
+    return {'LDA': 1, 'GGA': 4, 'MGGA': 5}[xctype]
 
 
 def _displaced_ao(ao, rows, cA, x, e1, cB=None, y=None, e2=0.):
@@ -68,17 +75,20 @@ def _displaced_ao(ao, rows, cA, x, e1, cB=None, y=None, e2=0.):
 def _rho(mol, ao_rows, dm, xctype):
     a = ao_rows[0] if xctype == 'LDA' else ao_rows
     r = numint.eval_rho(mol, a, dm, xctype=xctype, hermi=1, with_lapl=False)
-    return r.reshape(len(ao_rows), -1)
+    return r.reshape(_nvar(xctype), -1)
 
 
 def _vmat(ao_rows, wv, xctype):
-    '''sum_g wv_r(g) d_r(phi_mu phi_nu) (r = value [, gradient rows])'''
+    '''sum_g wv_r(g) d rho_r / d D_mu,nu (r = value [, gradient rows] [, tau])'''
     a0 = ao_rows[0]
     m = a0.T.dot(a0 * wv[0][:, None])
     if xctype != 'LDA':
         for r in range(1, 4):
             t = ao_rows[r].T.dot(a0 * wv[r][:, None])
             m += t + t.T
+    if xctype == 'MGGA':
+        for r in range(1, 4):
+            m += .5 * ao_rows[r].T.dot(ao_rows[r] * wv[4][:, None])
     return m
 
 
@@ -107,14 +117,14 @@ def xc_derivs_grid_response(mf, dm0, with_hess=True, with_fock=True):
     ni1c = ni._to_numint1c()
     xc = mf.xc
     xctype = ni1c._xc_type(xc)
-    if xctype not in ('LDA', 'GGA'):
+    if xctype not in ('LDA', 'GGA', 'MGGA'):
         raise NotImplementedError('grid response for %s' % xctype)
     if mf.grids.becke_scheme is not gen_grid.original_becke:
         raise NotImplementedError('grid response with becke_scheme %s' % mf.grids.becke_scheme)
     natm = mol.natm
     nao = mol.nao_nr()
     rows = _rows(xctype)
-    nvar = len(rows)
+    nvar = _nvar(xctype)
     dms = (numpy.ascontiguousarray(dm0[:nao, :nao].real),
            numpy.ascontiguousarray(dm0[nao:, nao:].real))
     ao_deriv = 2 if xctype == 'LDA' else 3

@@ -590,7 +590,18 @@ class Hessian(rhf_hess.HessianBase):
             mol = self.mol
         if getattr(self.base, 'with_x2c', None) is not None:
             return x2c_hcore_deriv2_generator(self.base, mol, self.x2c_fd_step)
-        return rhf_hess.HessianBase.hcore_generator(self, mol)
+        hcore_deriv2 = rhf_hess.HessianBase.hcore_generator(self, mol)
+        if not (getattr(self.base, 'with_soc', False) and mol.has_ecp_soc()):
+            return hcore_deriv2
+        # scalar part (pyscf, incl. the scalar ECP) + spin-orbit ECP
+        from socutils.grad import ecp_so_deriv
+        gen = ecp_so_deriv.ecpso_deriv2_generator(mol)
+        nao = mol.nao_nr()
+
+        def hcore_deriv2_so(ia, ja):
+            h = _block_diag(numpy.asarray(hcore_deriv2(ia, ja), dtype=numpy.complex128), nao)
+            return h + ecp_so_deriv.ghf_hcore_deriv2(mol, ia, ja, gen)
+        return hcore_deriv2_so
 
     partial_hess_elec = partial_hess_elec
     hess_elec = hess_elec

@@ -207,6 +207,24 @@ class Gradients(rhf_grad.GradientsMixin):
         if mo_occ is None: mo_occ = self.base.mo_occ
         return make_rdm1e(mo_energy, mo_coeff, mo_occ)
 
+    def hcore_generator(self, mol=None):
+        '''X2C, or the scalar hcore derivative plus that of the spin-orbit ECP
+        (pyscf.scf.ghf: hcore += sum_s (-i/2) sigma_s <mu|U_SO^s|nu>).'''
+        if mol is None: mol = self.mol
+        hcore_deriv = rhf_grad.GradientsMixin.hcore_generator(self, mol)
+        mf = self.base
+        if (getattr(mf, 'with_x2c', None) is not None
+                or not (getattr(mf, 'with_soc', False) and mol.has_ecp_soc())):
+            return hcore_deriv
+        from socutils.grad import ecp_so_deriv
+        gen = ecp_so_deriv.ecpso_deriv_generator(mol)
+
+        def hcore_deriv_so(atm_id):
+            h1 = hcore_deriv(atm_id)
+            h1 = numpy.asarray([scipy.linalg.block_diag(h, h) for h in h1], dtype=numpy.complex128)
+            return h1 + ecp_so_deriv.ghf_hcore_deriv(mol, atm_id, gen)
+        return hcore_deriv_so
+
     grad_elec = grad_elec
 
 Grad = Gradients
