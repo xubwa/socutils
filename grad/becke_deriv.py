@@ -34,20 +34,22 @@ class _Jet:
         self.v, self.d, self.h = v, d, h
 
     @staticmethod
-    def const(v, K):
+    def const(v, K, order=2):
         v = numpy.asarray(v, dtype=float)
         ng = v.shape[-1] if v.ndim else 1
         v = numpy.broadcast_to(v, (ng,)).copy()
-        return _Jet(v, numpy.zeros((K, ng)), numpy.zeros((K, K, ng)))
+        return _Jet(v, numpy.zeros((K, ng)), numpy.zeros((K, K, ng)) if order > 1 else None)
 
+    # h is None: first-order jet (no second derivatives carried)
     def __add__(self, o):
         if isinstance(o, _Jet):
-            return _Jet(self.v + o.v, self.d + o.d, self.h + o.h)
+            h = None if self.h is None else self.h + o.h
+            return _Jet(self.v + o.v, self.d + o.d, h)
         return _Jet(self.v + o, self.d, self.h)
     __radd__ = __add__
 
     def __neg__(self):
-        return _Jet(-self.v, -self.d, -self.h)
+        return _Jet(-self.v, -self.d, None if self.h is None else -self.h)
 
     def __sub__(self, o):
         return self + (-o)
@@ -57,22 +59,28 @@ class _Jet:
 
     def __mul__(self, o):
         if isinstance(o, _Jet):
-            h = (self.h * o.v + self.v * o.h
-                 + self.d[:, None] * o.d[None] + o.d[:, None] * self.d[None])
+            h = None
+            if self.h is not None:
+                h = (self.h * o.v + self.v * o.h
+                     + self.d[:, None] * o.d[None] + o.d[:, None] * self.d[None])
             return _Jet(self.v * o.v, self.d * o.v + self.v * o.d, h)
-        return _Jet(self.v * o, self.d * o, self.h * o)
+        return _Jet(self.v * o, self.d * o, None if self.h is None else self.h * o)
     __rmul__ = __mul__
 
     def sqrt(self):
         s = numpy.sqrt(self.v)
         d = self.d / (2 * s)
-        h = self.h / (2 * s) - self.d[:, None] * self.d[None] / (4 * s**3)
+        h = None
+        if self.h is not None:
+            h = self.h / (2 * s) - self.d[:, None] * self.d[None] / (4 * s**3)
         return _Jet(s, d, h)
 
     def recip(self):
         r = 1 / self.v
         d = -self.d * r**2
-        h = -self.h * r**2 + 2 * self.d[:, None] * self.d[None] * r**3
+        h = None
+        if self.h is not None:
+            h = -self.h * r**2 + 2 * self.d[:, None] * self.d[None] * r**3
         return _Jet(r, d, h)
 
 
@@ -125,9 +133,10 @@ def _radii_adjust_table(grids):
     return a
 
 
-def becke_weight_derivs(grids):
+def becke_weight_derivs(grids, order=2):
     '''For each atom a: (coords, weights, w1, w2) of its atomic grid, with
-    w1 = dw/dR (natm, 3, ng) and w2 = d2w/dR dR (natm, 3, natm, 3, ng).'''
+    w1 = dw/dR (natm, 3, ng) and w2 = d2w/dR dR (natm, 3, natm, 3, ng);
+    order=1: first derivatives only (w2 is None).'''
     mol = grids.mol
     if grids.becke_scheme is not gen_grid.original_becke:
         raise NotImplementedError('becke_scheme %s' % grids.becke_scheme)
@@ -142,7 +151,7 @@ def becke_weight_derivs(grids):
     def coord_jet(i, x):
         d = numpy.zeros((K, 1))
         d[3 * i + x] = 1
-        return _Jet(numpy.array([R[i, x]]), d, numpy.zeros((K, K, 1)))
+        return _Jet(numpy.array([R[i, x]]), d, numpy.zeros((K, K, 1)) if order > 1 else None)
 
     Rj = [[coord_jet(i, x) for x in range(3)] for i in range(natm)]
     Rij = {}
@@ -158,14 +167,14 @@ def becke_weight_derivs(grids):
         dist = []
         for i in range(natm):
             if i == ia:
-                dist.append(_Jet.const(numpy.linalg.norm(u, axis=1), K))
+                dist.append(_Jet.const(numpy.linalg.norm(u, axis=1), K, order))
                 continue
             comp = []
             for x in range(3):
-                c = _Jet.const(u[:, x], K) + (Rj[ia][x] - Rj[i][x]) * _Jet.const(numpy.ones(ng), K)
+                c = _Jet.const(u[:, x], K, order) + (Rj[ia][x] - Rj[i][x]) * _Jet.const(numpy.ones(ng), K, order)
                 comp.append(c)
             dist.append(sum(c * c for c in comp).sqrt())
-        P = [_Jet.const(numpy.ones(ng), K) for _ in range(natm)]
+        P = [_Jet.const(numpy.ones(ng), K, order) for _ in range(natm)]
         for i in range(natm):
             for j in range(i):
                 g = (dist[i] - dist[j]) * Rij[i, j]
@@ -177,4 +186,4 @@ def becke_weight_derivs(grids):
                 P[j] = P[j] * (.5 * (1 + g))
         W = P[ia] * sum(P[1:], P[0]).recip() * vol
         yield (u + R[ia], W.v, W.d.reshape(natm, 3, ng),
-               W.h.reshape(natm, 3, natm, 3, ng))
+               None if W.h is None else W.h.reshape(natm, 3, natm, 3, ng))

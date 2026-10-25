@@ -193,10 +193,53 @@ def veff_deriv1_energy(mol, terms):
     return deriv1_energies(mol, out)
 
 
+def _symmetry_group():
+    '''The eight label permutations of g(ab|cd) = g(ba|cd) = g(ab|dc) = g(cd|ab)
+    (real AOs), as dicts letter -> letter.'''
+    gens = [dict(zip('abcd', 'bacd')), dict(zip('abcd', 'abdc')), dict(zip('abcd', 'cdab'))]
+    group = [dict(zip('abcd', 'abcd'))]
+    while True:
+        new = []
+        for s in group:
+            for t in gens:
+                st = {x: t[s[x]] for x in 'abcd'}
+                if st not in group and st not in new:
+                    new.append(st)
+        if not new:
+            return group
+        group += new
+
+
+_GROUP = _symmetry_group()
+# derivative position pairs (p, q): one representative per orbit of the group
+_PAIR_REPS = (('a', 'a'), ('a', 'b'), ('a', 'c'))
+
+
+def _fold_pairs():
+    '''{rep: [sigma, ...]}: for every ordered pair (p, q) of derivative
+    positions, one group element that maps it onto its representative.'''
+    out = {rep: [] for rep in _PAIR_REPS}
+    for p in 'abcd':
+        for q in 'abcd':
+            for rep in _PAIR_REPS:
+                s = next((s for s in _GROUP if s[p] == rep[0] and s[q] == rep[1]), None)
+                if s is not None:
+                    out[rep].append(s)
+                    break
+    assert sum(len(v) for v in out.values()) == 16
+    return out
+
+
+_FOLD = _fold_pairs()
+
+
 def deriv2_energies(mol, terms, atmlst=None):
     '''Second nuclear derivatives of E = sum_t coef_t sum g(ab|cd) A_t[A_pair]
-    B_t[B_pair] for a list of terms (A, A_pair, B, B_pair, coef), real A, B;
-    all terms share each integral pass.  Returns (natm, natm, 3, 3).'''
+    B_t[B_pair] for a list of terms (A, A_pair, B, B_pair, coef), real A, B.
+    The 16 ordered pairs of derivative positions are folded by the
+    permutational symmetry of g onto three (same AO, same electron, different
+    electrons), so all terms share three integral passes.  Returns
+    (natm, natm, 3, 3).'''
     if atmlst is None:
         atmlst = range(mol.natm)
     atmlst = list(atmlst)
@@ -208,30 +251,32 @@ def deriv2_energies(mol, terms, atmlst=None):
     hess = numpy.zeros((natm, natm, 3, 3))
     if not terms:
         return hess
-    for p in 'abcd':
-        for q in 'abcd':
-            intor, comp, pi = _labels_map(p, q)
-            qletter = None if p == q else pi[q]
-            for i0, ia in enumerate(atmlst):
-                for j0, ja in enumerate(atmlst):
-                    if qletter is None and ia != ja:
-                        continue
-                    restrict = {'i': ia}
-                    if qletter is not None:
-                        restrict[qletter] = ja
-                    shls_slice, rng = _slices(mol, restrict)
-                    scripts, dms, outs = [], [], []
-                    for A, ap, B, bp, c in terms:
-                        la, lb = pi[ap[0]], pi[ap[1]]
-                        lo1, lo2 = pi[bp[0]], pi[bp[1]]
-                        scripts.append('%s%s->s1%s%s' % (la, lb, lo1, lo2))
-                        dms.append(numpy.ascontiguousarray(A[rng[la], rng[lb]]))
-                        outs.append((c, B[rng[lo1], rng[lo2]]))
-                    vs = _contract(mol, intor, comp, scripts, dms, shls_slice)
-                    for (c, Bblk), v in zip(outs, vs):
-                        v = v.reshape(3, 3, *v.shape[-2:])
-                        # two AO derivatives: (-nabla)(-nabla) = + nabla nabla
-                        hess[i0, j0] += c * numpy.einsum('xypq,pq->xy', v, Bblk)
+    for (p, q), sigmas in _FOLD.items():
+        # relabelled terms: the derivatives sit at positions p and q
+        rterms = [(A, s[ap[0]] + s[ap[1]], B, s[bp[0]] + s[bp[1]], c)
+                  for A, ap, B, bp, c in terms for s in sigmas]
+        intor, comp, pi = _labels_map(p, q)
+        qletter = None if p == q else pi[q]
+        for i0, ia in enumerate(atmlst):
+            for j0, ja in enumerate(atmlst):
+                if qletter is None and ia != ja:
+                    continue
+                restrict = {'i': ia}
+                if qletter is not None:
+                    restrict[qletter] = ja
+                shls_slice, rng = _slices(mol, restrict)
+                scripts, dms, outs = [], [], []
+                for A, ap, B, bp, c in rterms:
+                    la, lb = pi[ap[0]], pi[ap[1]]
+                    lo1, lo2 = pi[bp[0]], pi[bp[1]]
+                    scripts.append('%s%s->s1%s%s' % (la, lb, lo1, lo2))
+                    dms.append(numpy.ascontiguousarray(A[rng[la], rng[lb]]))
+                    outs.append((c, B[rng[lo1], rng[lo2]]))
+                vs = _contract(mol, intor, comp, scripts, dms, shls_slice)
+                for (c, Bblk), v in zip(outs, vs):
+                    v = v.reshape(3, 3, *v.shape[-2:])
+                    # two AO derivatives: (-nabla)(-nabla) = + nabla nabla
+                    hess[i0, j0] += c * numpy.einsum('xypq,pq->xy', v, Bblk)
     return hess
 
 

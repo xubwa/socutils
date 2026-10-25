@@ -434,9 +434,15 @@ def _ef_geometric_analytic(td_grad, X, D0, atmlst, spin_channels, xc, xctype):
     def rho0_of(ao_rows):
         return _total_density(mol, ao_rows[0] if xctype == 'LDA' else ao_rows, D0, None, xctype)
 
+    # rho_X: (rho, mx, my, mz) of the eight real symmetric matrices of X;
+    # rho0: the total density.  Their derivatives along the displacement
+    # c_A d_x phi are bilinear forms (xc_grid_response._drho1), all atoms at once.
+    ds = noncollinear._rho_mag_dms(X)
+    nao = mol.nao_nr()
+    d0tot = numpy.ascontiguousarray((D0[:nao, :nao] + D0[nao:, nao:]).real)
     natm = mol.natm
     de = numpy.zeros((natm, 3))
-    for owner, (coords, w, w1, w2) in enumerate(becke_deriv.becke_weight_derivs(mf.grids)):
+    for owner, (coords, w, w1, _) in enumerate(becke_deriv.becke_weight_derivs(mf.grids, order=1)):
         c = xgr._coef(mol, owner)
         for p0, p1 in lib.prange(0, w.size, 2000):
             ao = ni._to_numint1c().eval_ao(mol, coords[p0:p1], deriv=ao_deriv)
@@ -445,17 +451,13 @@ def _ef_geometric_analytic(td_grad, X, D0, atmlst, spin_channels, xc, xctype):
             rho0 = rho0_of(ao0)
             W, Y, _ = _kernel_contractions(ni, xc, xctype, rhoX, rho0, spin_channels,
                                            numpy.ones(p1 - p0), nvar)
-            cX = rhoX.conj()
             e_f = numpy.einsum('uxg,uxg->g', W, rhoX).real
-            for A in range(natm):
-                for x in range(3):
-                    ap = xgr._displaced_ao(ao, rows, c[A], x, 1.)
-                    am = xgr._displaced_ao(ao, rows, c[A], x, -1.)
-                    dX = .5 * (rho_of(ap, X, 0) - rho_of(am, X, 0))
-                    d0 = .5 * (rho0_of(ap) - rho0_of(am))
-                    dens = 2 * numpy.einsum('uxg,uxg->g', W, dX).real + numpy.einsum('xg,xg->g', Y, d0)
-                    de[A, x] += numpy.dot(w1[A, x, p0:p1], e_f) + numpy.dot(w[p0:p1], dens)
-            del cX
+            d = [xgr._drho1(ao, rows, xctype, c, xgr._phid(ao0, m)) for m in ds]
+            dX = numpy.stack([d[2 * k] + 1j * d[2 * k + 1] for k in range(4)], axis=2)   # (natm, 3, 4, nvar, ng)
+            d0 = xgr._drho1(ao, rows, xctype, c, xgr._phid(ao0, d0tot))                  # (natm, 3, nvar, ng)
+            dens = (2 * numpy.einsum('uvg,Axuvg->Axg', W, dX).real
+                    + numpy.einsum('vg,Axvg->Axg', Y, d0))
+            de += numpy.einsum('Axg,g->Ax', w1[:, :, p0:p1], e_f) + numpy.einsum('g,Axg->Ax', w[p0:p1], dens)
     return de[atmlst]
 
 

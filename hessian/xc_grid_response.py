@@ -92,10 +92,88 @@ def _vmat(ao_rows, wv, xctype):
     return m
 
 
-def _blocks(mf, blksize=2000):
-    for coords, w, w1, w2 in becke_deriv.becke_weight_derivs(mf.grids):
+# Bilinear forms.  With Q(U, V) = U^T D V pointwise (D symmetric), the density
+# rows are B(phi, phi) of
+#     B_0 = Q(U_0, V_0),  B_r = Q(U_r, V_0) + Q(U_0, V_r),  B_tau = 1/2 sum_r Q(U_r, V_r),
+# so with the displacement delta = c_A d_x phi (a column scaling of the AOs)
+#     d rho = 2 B(delta, phi),   d2 rho = 2 B(delta_1, delta_2) + 2 B(delta_12, phi).
+# phi D is computed once per block; the per-atom work is element-wise.
+
+def _phid(ao_rows, dm):
+    return [a.dot(dm) for a in ao_rows]
+
+
+def _drho1(ao, rows, xctype, c, phid):
+    '''d rho / dR_A,x (natm, 3, nvar, ng) of a symmetric dm (phid = phi D),
+    all atoms at once.'''
+    nvar = _nvar(xctype)
+    ng = phid[0].shape[0]
+    out = numpy.empty((c.shape[0], 3, nvar, ng))
+    for x in range(3):
+        d = [_d(ao, r + (x,)) for r in rows]
+        t = [2 * d[0] * phid[0]]
+        if xctype != 'LDA':
+            t += [2 * (d[k] * phid[0] + d[0] * phid[k]) for k in range(1, 4)]
+        if xctype == 'MGGA':
+            t.append(sum(d[k] * phid[k] for k in range(1, 4)))
+        for v, tv in enumerate(t):
+            out[:, x, v] = c.dot(tv.T)
+    return out
+
+
+def _hess_bilinear(ao, rows, xctype, c, wv, dm, phid):
+    '''sum_g wv . d2 rho / dR_A,x dR_B,y  (natm, natm, 3, 3) for a symmetric dm,
+    weights wv (nvar, ng): 2 B(delta_1, delta_2) as c^T (M o D) c with
+    M = sum_ab (d_x phi_a)^T W_ab (d_y phi_b), and 2 B(delta_12, phi).'''
+    natm = c.shape[0]
+    h = numpy.zeros((natm, natm, 3, 3))
+    lda = xctype == 'LDA'
+    for x in range(3):
+        dx = [_d(ao, r + (x,)) for r in rows]
+        for y in range(3):
+            dy = [_d(ao, r + (y,)) for r in rows]
+            Y = [wv[0][:, None] * dy[0]]
+            if not lda:
+                for k in range(1, 4):
+                    Y[0] = Y[0] + wv[k][:, None] * dy[k]
+                    Y.append(wv[k][:, None] * dy[0])
+                    if xctype == 'MGGA':
+                        Y[k] = Y[k] + .5 * wv[4][:, None] * dy[k]
+            M = sum(dx[a].T.dot(Y[a]) for a in range(len(Y)))
+            h[:, :, x, y] += 2 * c.dot(M * dm).dot(c.T)
+            dxy = [_d(ao, r + (x, y)) for r in rows]
+            s0 = wv[0][:, None] * phid[0]
+            if not lda:
+                s0 = s0 + sum(wv[k][:, None] * phid[k] for k in range(1, 4))
+            q = numpy.einsum('gm,gm->m', dxy[0], s0)
+            if not lda:
+                for k in range(1, 4):
+                    sk = wv[k][:, None] * phid[0]
+                    if xctype == 'MGGA':
+                        sk = sk + .5 * wv[4][:, None] * phid[k]
+                    q += numpy.einsum('gm,gm->m', dxy[k], sk)
+            h[:, :, x, y] += 2 * numpy.einsum('Am,Bm,m->AB', c, c, q)
+    return h
+
+
+def _vmat_bilinear(U, V, wv, xctype):
+    '''m(U, V) with m(phi, phi) = _vmat(phi): the matrix of the bilinear
+    density form B(U, V) weighted with wv.'''
+    m = U[0].T.dot(V[0] * wv[0][:, None])
+    if xctype != 'LDA':
+        for k in range(1, 4):
+            m += U[k].T.dot(V[0] * wv[k][:, None]) + U[0].T.dot(V[k] * wv[k][:, None])
+    if xctype == 'MGGA':
+        for k in range(1, 4):
+            m += .5 * U[k].T.dot(V[k] * wv[4][:, None])
+    return m
+
+
+def _blocks(mf, blksize=2000, order=2):
+    for coords, w, w1, w2 in becke_deriv.becke_weight_derivs(mf.grids, order):
         for p0, p1 in lib.prange(0, w.size, blksize):
-            yield p0 == 0, coords[p0:p1], w[p0:p1], w1[..., p0:p1], w2[..., p0:p1]
+            yield (p0 == 0, coords[p0:p1], w[p0:p1], w1[..., p0:p1],
+                   None if w2 is None else w2[..., p0:p1])
 
 
 def _coef(mol, owner):
@@ -132,7 +210,7 @@ def xc_derivs_grid_response(mf, dm0, with_hess=True, with_fock=True):
     v1 = {ia: numpy.zeros((3, 2, nao, nao)) for ia in range(natm)}
 
     owner = -1
-    for first, coords, w, w1, w2 in _blocks(mf):
+    for first, coords, w, w1, w2 in _blocks(mf, order=2 if with_hess else 1):
         if first:
             owner += 1
             c = _coef(mol, owner)
@@ -145,14 +223,9 @@ def xc_derivs_grid_response(mf, dm0, with_hess=True, with_fock=True):
         fxc = fxc.reshape(2, nvar, 2, nvar, -1)
         eps = exc * (rho[0, 0] + rho[1, 0])
 
+        phid = [_phid(ao0, d) for d in dms]
         # first derivatives of the densities, (natm, 3, 2, nvar, ng)
-        drho = numpy.zeros((natm, 3, 2, nvar, w.size))
-        for A in range(natm):
-            for x in range(3):
-                ap = _displaced_ao(ao, rows, c[A], x, 1.)
-                am = _displaced_ao(ao, rows, c[A], x, -1.)
-                for s in range(2):
-                    drho[A, x, s] = .5 * (_rho(mol, ap, dms[s], xctype) - _rho(mol, am, dms[s], xctype))
+        drho = numpy.stack([_drho1(ao, rows, xctype, c, phid[s]) for s in range(2)], axis=2)
         deps = numpy.einsum('svg,Axsvg->Axg', vxc, drho)
         dv = numpy.einsum('svtug,Axtug->Axsvg', fxc, drho)                    # first-order potential
 
@@ -161,31 +234,19 @@ def xc_derivs_grid_response(mf, dm0, with_hess=True, with_fock=True):
             hess += numpy.einsum('Axg,Byg->ABxy', w1, deps)
             hess += numpy.einsum('Byg,Axg->ABxy', w1, deps)
             hess += numpy.einsum('g,Axsvg,Bysvg->ABxy', w, drho, dv)
-            for A in range(natm):
-                for x in range(3):
-                    for B in range(A, natm):
-                        for y in range(3):
-                            if B == A and y < x:
-                                continue
-                            d2 = 0
-                            for e1, e2, sg in ((1, 1, 1), (1, -1, -1), (-1, 1, -1), (-1, -1, 1)):
-                                a = _displaced_ao(ao, rows, c[A], x, e1, c[B], y, e2)
-                                d2 = d2 + sg * numpy.asarray([_rho(mol, a, d, xctype) for d in dms])
-                            val = .25 * numpy.einsum('g,svg,svg', w, vxc, d2)
-                            hess[A, B, x, y] += val
-                            if (B, y) != (A, x):
-                                hess[B, A, y, x] += val
+            for s in range(2):
+                hess += _hess_bilinear(ao, rows, xctype, c, w * vxc[s], dms[s], phid[s])
 
         if with_fock:
-            for A in range(natm):
-                for x in range(3):
-                    ap = _displaced_ao(ao, rows, c[A], x, 1.)
-                    am = _displaced_ao(ao, rows, c[A], x, -1.)
-                    for s in range(2):
+            for s in range(2):
+                # d/dR of the potential matrix at fixed weights: m(delta, phi) + its transpose
+                G = [_vmat_bilinear([_d(ao, r + (x,)) for r in rows], ao0, w * vxc[s], xctype)
+                     for x in range(3)]
+                for A in range(natm):
+                    for x in range(3):
                         wv = w1[A, x] * vxc[s] + w * dv[A, x, s]
-                        m = _vmat(ao0, wv, xctype)
-                        m += .5 * (_vmat(ap, w * vxc[s], xctype) - _vmat(am, w * vxc[s], xctype))
-                        v1[A][x, s] += m
+                        t = c[A][:, None] * G[x]
+                        v1[A][x, s] += _vmat(ao0, wv, xctype) + t + t.T
 
     fock1 = {}
     for ia in range(natm):
