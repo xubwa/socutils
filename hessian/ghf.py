@@ -61,13 +61,49 @@ def _labels_map(p, q):
     return 'int2e_ip1ip2', 9, {p: 'i', _PARTNER[p]: 'j', q: 'k', _PARTNER[q]: 'l'}
 
 
+# integrals symmetric in (k, l), and the scripts libcvhf provides for aosym s2kl
+_KL_SYMMETRIC = ('int2e_ip1', 'int2e_ipip1', 'int2e_ipvip1')
+_S2KL_SCRIPTS = ('ji->s1kl', 'jk->s1il', 'li->s1kj', 'lk->s1ij')
+
+
+def _to_s2kl(script):
+    '''(script', transpose dm, transpose output) with script' one of the s2kl
+    scripts: k <-> l relabelling (a symmetry of the integral), dm index order
+    (A -> A^T) and output index order (transpose).'''
+    dm, out = script.split('->s1')
+    swap = {'k': 'l', 'l': 'k', 'i': 'i', 'j': 'j'}
+    for relabel in (False, True):
+        d, o = (dm, out) if not relabel else (''.join(swap[x] for x in dm), ''.join(swap[x] for x in out))
+        for td in (False, True):
+            for to in (False, True):
+                s = '%s->s1%s' % (d[::-1] if td else d, o[::-1] if to else o)
+                if s in _S2KL_SCRIPTS:
+                    return s, td, to
+    return None
+
+
 def _contract(mol, intor, comp, scripts, dms, shls_slice):
-    '''One integral pass, several density contractions.'''
-    vs = _vhf.direct_bindm(mol._add_suffix(intor), 's1', scripts, dms, comp,
+    '''One integral pass, several density contractions.  Integrals symmetric
+    in (k, l) with the same k and l shells use aosym s2kl (half the
+    integrals), the scripts mapped onto those libcvhf provides.'''
+    mapped = None
+    if intor in _KL_SYMMETRIC and tuple(shls_slice[4:6]) == tuple(shls_slice[6:8]):
+        mapped = [_to_s2kl(s) for s in scripts]
+        if any(m is None for m in mapped):
+            mapped = None
+    if mapped is None:
+        vs = _vhf.direct_bindm(mol._add_suffix(intor), 's1', scripts, dms, comp,
+                               mol._atm, mol._bas, mol._env, shls_slice=shls_slice)
+        if isinstance(vs, numpy.ndarray) and len(scripts) == 1:
+            vs = [vs]
+        return vs
+    s2 = [m[0] for m in mapped]
+    d2 = [numpy.ascontiguousarray(d.T) if m[1] else d for d, m in zip(dms, mapped)]
+    vs = _vhf.direct_bindm(mol._add_suffix(intor), 's2kl', s2, d2, comp,
                            mol._atm, mol._bas, mol._env, shls_slice=shls_slice)
     if isinstance(vs, numpy.ndarray) and len(scripts) == 1:
         vs = [vs]
-    return vs
+    return [v.swapaxes(-1, -2) if m[2] else v for v, m in zip(vs, mapped)]
 
 
 def _nonzero(m, thresh=1e-14):
@@ -251,10 +287,28 @@ def deriv2_energies(mol, terms, atmlst=None):
     hess = numpy.zeros((natm, natm, 3, 3))
     if not terms:
         return hess
+    symmetric = {}
+    for A, ap, B, bp, c in terms:
+        for M in (A, B):
+            if id(M) not in symmetric:
+                symmetric[id(M)] = M.shape[0] == M.shape[1] and abs(M - M.T).max() < 1e-14
     for (p, q), sigmas in _FOLD.items():
-        # relabelled terms: the derivatives sit at positions p and q
-        rterms = [(A, s[ap[0]] + s[ap[1]], B, s[bp[0]] + s[bp[1]], c)
-                  for A, ap, B, bp, c in terms for s in sigmas]
+        # relabelled terms: the derivatives sit at positions p and q; identical
+        # ones (symmetric matrices, the same matrix on both sides) are merged
+        merged = {}
+        for A, ap, B, bp, c in terms:
+            for s in sigmas:
+                a1, b1 = s[ap[0]] + s[ap[1]], s[bp[0]] + s[bp[1]]
+                if symmetric[id(A)]:
+                    a1 = ''.join(sorted(a1))
+                if symmetric[id(B)]:
+                    b1 = ''.join(sorted(b1))
+                if A is B and b1 < a1:
+                    a1, b1 = b1, a1
+                key = (id(A), a1, id(B), b1)
+                c0 = merged[key][4] if key in merged else 0.
+                merged[key] = (A, a1, B, b1, c0 + c)
+        rterms = list(merged.values())
         intor, comp, pi = _labels_map(p, q)
         qletter = None if p == q else pi[q]
         for i0, ia in enumerate(atmlst):

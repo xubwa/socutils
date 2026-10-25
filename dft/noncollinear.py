@@ -597,6 +597,37 @@ def _gks_noncol_fxc(ni, mol, grids, xc_code, dm0, dms, relativity=0, hermi=0,
     return vmat
 
 
+def _col_fxc(ni, mol, grids, xc_code, dm0, dms, relativity=0, hermi=0,
+             rho0=None, vxc=None, fxc=None, max_memory=2000, verbose=None):
+    '''Collinear fxc response (numint2c.NumInt2C.nr_fxc) with real density
+    matrices only: the kernel is real and rho1 is linear in D, so
+    v[D] = v[Re D] + i v[Im D], and Im D of a Hermitian D (anti-symmetric)
+    gives no density.  pyscf's UKS kernel then runs its real, BLAS path
+    instead of contracting complex views element-wise.'''
+    dms = np.asarray(dms)
+    nao = dms.shape[-1] // 2
+    if dm0 is not None:
+        dm0 = (dm0[:nao, :nao].real.copy('C'), dm0[nao:, nao:].real.copy('C'))
+    lead = dms.shape[:-2]
+    dms = dms.reshape(-1, 2 * nao, 2 * nao)
+    parts = [dms.real]
+    with_imag = np.iscomplexobj(dms) and not hermi
+    if with_imag:
+        parts.append(dms.imag)
+    d = np.concatenate(parts)
+    dm1 = (np.ascontiguousarray(d[:, :nao, :nao]), np.ascontiguousarray(d[:, nao:, nao:]))
+    va, vb = ni._to_numint1c().nr_uks_fxc(mol, grids, xc_code, dm0, dm1, relativity, hermi,
+                                          rho0, vxc, fxc, max_memory, verbose)
+    nset = dms.shape[0]
+    out = np.zeros(dms.shape, dtype=np.result_type(dms.dtype, np.double))
+    out[:, :nao, :nao] = va[:nset]
+    out[:, nao:, nao:] = vb[:nset]
+    if with_imag:
+        out[:, :nao, :nao] += 1j * va[nset:]
+        out[:, nao:, nao:] += 1j * vb[nset:]
+    return out.reshape(lead + (2 * nao, 2 * nao))
+
+
 class NumInt2C(numint2c.NumInt2C):
     '''GKS numerical integration with native non-collinear schemes.
 
@@ -663,9 +694,8 @@ class NumInt2C(numint2c.NumInt2C):
         if self.collinear[0] in ('m', 'n'):
             return self._gks_mcol_fxc(mol, grids, xc_code, dm0, dms, relativity,
                                       hermi, rho0, vxc, fxc, max_memory, verbose)
-        return numint2c.NumInt2C.nr_fxc(self, mol, grids, xc_code, dm0, dms, spin,
-                                        relativity, hermi, rho0, vxc, fxc,
-                                        max_memory, verbose)
+        return _col_fxc(self, mol, grids, xc_code, dm0, dms, relativity, hermi,
+                        rho0, vxc, fxc, max_memory, verbose)
     get_fxc = nr_gks_fxc = nr_fxc
 
     def cache_xc_kernel(self, mol, grids, xc_code, mo_coeff, mo_occ, spin=0,

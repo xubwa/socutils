@@ -133,6 +133,151 @@ def _radii_adjust_table(grids):
     return a
 
 
+def _pair_mu(u, Ra, Ri, Rj):
+    '''mu_ij = (r_i - r_j) / R_ij on the points u + R_a and its derivatives
+    with respect to the role coordinates (R_a, R_i, R_j) (9 local variables):
+    mu (n,), dmu (9, n), and the pieces of d2mu (see _d2mu_contract).'''
+    p = u + Ra
+    di, dj = p - Ri, p - Rj
+    ri = numpy.linalg.norm(di, axis=1)
+    rj = numpy.linalg.norm(dj, axis=1)
+    ni, nj = di.T / ri, dj.T / rj                            # (3, n)
+    Rv = Ri - Rj
+    R = numpy.linalg.norm(Rv)
+    e = Rv / R
+    t = 1 / R
+    q = ri - rj
+    n = u.shape[0]
+    dq = numpy.vstack([ni - nj, -ni, nj])                     # (9, n)
+    dR = numpy.concatenate([numpy.zeros(3), e, -e])           # (9,)
+    dt = -t**2 * dR
+    mu = q * t
+    dmu = t * dq + q[None] * dt[:, None]
+    return mu, dmu, (ri, rj, ni, nj, q, dq, t, dt, dR, e, R, n)
+
+
+def _d2mu_contract(beta, parts):
+    '''sum_g beta_g d2mu_g (9, 9).'''
+    ri, rj, ni, nj, q, dq, t, dt, dR, e, R, n = parts
+    I3 = numpy.eye(3)
+
+    def msum(b, r, nn):
+        # sum_g b (I - n n^T) / r
+        br = b / r
+        return I3 * br.sum() - numpy.einsum('g,xg,yg->xy', br, nn, nn)
+    Mi, Mj = msum(beta, ri, ni), msum(beta, rj, nj)
+    d2q = numpy.zeros((9, 9))
+    d2q[0:3, 0:3] = Mi - Mj
+    d2q[0:3, 3:6] = d2q[3:6, 0:3] = -Mi
+    d2q[3:6, 3:6] = Mi
+    d2q[0:3, 6:9] = d2q[6:9, 0:3] = Mj
+    d2q[6:9, 6:9] = -Mj
+    N = (I3 - numpy.outer(e, e)) / R
+    d2R = numpy.zeros((9, 9))
+    d2R[3:6, 3:6] = d2R[6:9, 6:9] = N
+    d2R[3:6, 6:9] = d2R[6:9, 3:6] = -N
+    d2t = -t**2 * d2R + 2 * t**3 * numpy.outer(dR, dR)
+    bdq = dq.dot(beta)                                         # (9,)
+    return t * d2q + numpy.outer(bdq, dt) + numpy.outer(dt, bdq) + beta.dot(q) * d2t
+
+
+def _becke_log_s(nu_mu, a):
+    '''For s_- = (1 - p3(nu))/2 and s_+ = (1 + p3(nu))/2, nu = mu + a (1 - mu^2):
+    log s_+-, and their first and second derivatives with respect to mu.'''
+    mu = nu_mu
+    nu = mu + a * (1 - mu * mu)
+    dnu = 1 - 2 * a * mu
+    d2nu = -2 * a
+    g, dg, d2g = nu, numpy.ones_like(nu), numpy.zeros_like(nu)
+    for _ in range(3):
+        f1 = 1.5 * (1 - g * g)                                 # f(x) = (3 - x^2) x / 2
+        f2 = -3 * g
+        g, dg, d2g = (3 - g * g) * g * .5, f1 * dg, f2 * dg * dg + f1 * d2g
+    out = []
+    for sign in (-1, 1):
+        s = .5 * (1 + sign * g)
+        # s ~ (1 - |nu|)^8 -> 0: P_i is then negligible (< 1e-30) and so are its
+        # derivatives (~ s^(7/8)); treat the factor as constant there instead
+        # of forming d log s ~ 1/(1 - |nu|), which overflows when squared
+        small = s < 1e-30
+        s = numpy.where(small, 1e-30, s)
+        l1 = numpy.where(small, 0, sign * .5 * dg / s)          # d log s / d nu
+        l2 = numpy.where(small, 0, sign * .5 * d2g / s - l1 * l1)
+        out.append((numpy.log(s), l1 * dnu, l2 * dnu * dnu + l1 * d2nu))
+    return out                                                 # [(s_-), (s_+)]
+
+
+def weight_hess_contract(grids, eps_by_owner, blksize=1024):
+    '''sum_g eps_g d2 w_g / dR_A,x dR_B,y  (natm, 3, natm, 3) for the Becke
+    weights of becke_weight_derivs, without the per-point second derivatives:
+    with L_i = log P_i = sum_j log s_ij and W = P_a / Z,
+
+        d2 W / W = (G_a - z1)(G_a - z1)^T + H_a - sum_i (P_i / Z)(H_i + G_i G_i^T) + z1 z1^T,
+
+    G_i = dL_i, H_i = d2L_i, z1 = sum_i (P_i / Z) G_i.  Each log s_ij depends on
+    three atoms (owner a, i, j), so H_i is a sum of local 9 x 9 terms that are
+    contracted with their weights before being scattered.  eps_by_owner[a]:
+    the values on the points of atom a, in the order of becke_weight_derivs.'''
+    mol = grids.mol
+    if grids.becke_scheme is not gen_grid.original_becke:
+        raise NotImplementedError('becke_scheme %s' % grids.becke_scheme)
+    natm = mol.natm
+    K = 3 * natm
+    atom_grids_tab = grids.gen_atomic_grids(mol, grids.atom_grid, grids.radi_method,
+                                            grids.level, grids.prune)
+    R = mol.atom_coords()
+    a_adj = _radii_adjust_table(grids)
+    hess = numpy.zeros((K, K))
+    pairs = [(i, j) for i in range(natm) for j in range(i)]
+
+    def blocks(roles):
+        return [slice(3 * x, 3 * x + 3) for x in roles]
+
+    for ia in range(natm):
+        u_all, vol_all = atom_grids_tab[mol.atom_symbol(ia)]
+        eps_all = eps_by_owner[ia]
+        for p0 in range(0, vol_all.size, blksize):
+            u = u_all[p0:p0 + blksize]
+            vol = vol_all[p0:p0 + blksize]
+            eps = eps_all[p0:p0 + blksize]
+            n = vol.size
+            L = numpy.zeros((natm, n))
+            G = numpy.zeros((natm, K, n))
+            cache = []
+            for i, j in pairs:
+                mu, dmu, parts = _pair_mu(u, R[ia], R[i], R[j])
+                aij = 0. if a_adj is None else float(a_adj[i, j])
+                (lm, lm1, lm2), (lp, lp1, lp2) = _becke_log_s(mu, aij)
+                L[i] += lm
+                L[j] += lp
+                bl = blocks((ia, i, j))
+                for k, sl in enumerate(bl):
+                    G[i, sl] += lm1 * dmu[3 * k:3 * k + 3]
+                    G[j, sl] += lp1 * dmu[3 * k:3 * k + 3]
+                cache.append((i, j, dmu, parts, lm1, lm2, lp1, lp2, bl))
+            Lmax = L.max(axis=0)
+            P = numpy.exp(L - Lmax)                            # common factor cancels in P / Z
+            Z = P.sum(axis=0)
+            pz = P / Z                                         # (natm, n)
+            c = eps * vol * pz[ia]                             # eps_g w_g
+            z1 = numpy.einsum('ig,ikg->kg', pz, G)
+            D = G[ia] - z1
+            h = (D * c).dot(D.T) + (z1 * c).dot(z1.T)
+            for i in range(natm):
+                h -= (G[i] * (c * pz[i])).dot(G[i].T)
+            for i, j, dmu, parts, lm1, lm2, lp1, lp2, bl in cache:
+                wi = c * ((i == ia) - pz[i])
+                wj = c * ((j == ia) - pz[j])
+                alpha = wi * lm2 + wj * lp2
+                beta = wi * lm1 + wj * lp1
+                hl = (dmu * alpha).dot(dmu.T) + _d2mu_contract(beta, parts)
+                for k, sk in enumerate(bl):
+                    for m, sm in enumerate(bl):
+                        h[sk, sm] += hl[3 * k:3 * k + 3, 3 * m:3 * m + 3]
+            hess += h
+    return hess.reshape(natm, 3, natm, 3)
+
+
 def becke_weight_derivs(grids, order=2):
     '''For each atom a: (coords, weights, w1, w2) of its atomic grid, with
     w1 = dw/dR (natm, 3, ng) and w2 = d2w/dR dR (natm, 3, natm, 3, ng);

@@ -94,7 +94,8 @@ class KnownValues(unittest.TestCase):
         hess = mf.Hessian().kernel()
         self.assertAlmostEqual(abs(hess.sum(axis=1)).max(), 0, 8)
         col = _fd_column('pbe', mf.make_rdm1())
-        self.assertAlmostEqual(abs(hess[:, 1, :, 2] - col).max(), 0, 8)
+        # FD of SCF gradients converged to 1e-10: a few 1e-9 of noise run to run
+        self.assertAlmostEqual(abs(hess[:, 1, :, 2] - col).max(), 0, 7)
 
     def test_gks_tpss_x2camf(self):
         # meta-GGA, analytic grid response

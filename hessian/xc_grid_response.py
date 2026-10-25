@@ -209,8 +209,11 @@ def xc_derivs_grid_response(mf, dm0, with_hess=True, with_fock=True):
     hess = numpy.zeros((natm, natm, 3, 3))
     v1 = {ia: numpy.zeros((3, 2, nao, nao)) for ia in range(natm)}
 
+    # second derivatives of the weights only contracted with eps, after the
+    # loop (becke_deriv.weight_hess_contract): eps per point, by owner atom
+    eps_owner = [[] for _ in range(natm)]
     owner = -1
-    for first, coords, w, w1, w2 in _blocks(mf, order=2 if with_hess else 1):
+    for first, coords, w, w1, _ in _blocks(mf, order=1):
         if first:
             owner += 1
             c = _coef(mol, owner)
@@ -230,7 +233,7 @@ def xc_derivs_grid_response(mf, dm0, with_hess=True, with_fock=True):
         dv = numpy.einsum('svtug,Axtug->Axsvg', fxc, drho)                    # first-order potential
 
         if with_hess:
-            hess += numpy.einsum('AxByg,g->ABxy', w2, eps)
+            eps_owner[owner].append(eps)
             hess += numpy.einsum('Axg,Byg->ABxy', w1, deps)
             hess += numpy.einsum('Byg,Axg->ABxy', w1, deps)
             hess += numpy.einsum('g,Axsvg,Bysvg->ABxy', w, drho, dv)
@@ -247,6 +250,10 @@ def xc_derivs_grid_response(mf, dm0, with_hess=True, with_fock=True):
                         wv = w1[A, x] * vxc[s] + w * dv[A, x, s]
                         t = c[A][:, None] * G[x]
                         v1[A][x, s] += _vmat(ao0, wv, xctype) + t + t.T
+
+    if with_hess:
+        eps_owner = [numpy.concatenate(e) for e in eps_owner]
+        hess += becke_deriv.weight_hess_contract(mf.grids, eps_owner).transpose(0, 2, 1, 3)
 
     fock1 = {}
     for ia in range(natm):
