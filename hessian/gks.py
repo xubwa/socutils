@@ -28,6 +28,7 @@ from pyscf import lib, dft
 from pyscf.lib import logger
 from pyscf.hessian import uks as uks_hess
 from socutils.hessian import ghf as ghf_hess
+from socutils.hessian import df_gks
 import socutils.grad.gks_grad  # noqa: F401  (GKS.Gradients)
 
 
@@ -65,12 +66,17 @@ def partial_hess_veff(hessobj, dm0, atmlst):
         raise NotImplementedError('GKS Hessian for NLC functional')
     omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, spin=mol.spin)
     hybrid = ni.libxc.is_hybrid_xc(mf.xc)
-    de2 = ghf_hess.partial_hess_jk(mol, dm0, atmlst, with_k=hybrid, k_scale=hyb)
-    if hybrid and omega != 0:
-        with mol.with_range_coulomb(omega):
-            de2 += ghf_hess.partial_hess_jk(mol, dm0, atmlst, with_k=True,
-                                            k_scale=alpha - hyb) \
-                 - ghf_hess.partial_hess_jk(mol, dm0, atmlst, with_k=False)
+    if df_gks.is_density_fitted(mf):
+        if hybrid:
+            raise NotImplementedError('density-fitted GKS Hessian with exact exchange')
+        de2 = df_gks.partial_hess_j(hessobj, dm0, atmlst)
+    else:
+        de2 = ghf_hess.partial_hess_jk(mol, dm0, atmlst, with_k=hybrid, k_scale=hyb)
+        if hybrid and omega != 0:
+            with mol.with_range_coulomb(omega):
+                de2 += ghf_hess.partial_hess_jk(mol, dm0, atmlst, with_k=True,
+                                                k_scale=alpha - hyb) \
+                     - ghf_hess.partial_hess_jk(mol, dm0, atmlst, with_k=False)
 
     if hessobj.grid_response:
         hxc = hessobj.xc_fd(dm0)[0]
@@ -101,7 +107,12 @@ def veff_deriv1(hessobj, dm0, atmlst):
     ni = mf._numint
     omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, spin=mol.spin)
     hybrid = ni.libxc.is_hybrid_xc(mf.xc)
-    v1 = ghf_hess.veff_deriv1(mol, dm0, atmlst, with_k=hybrid, k_scale=hyb)
+    if df_gks.is_density_fitted(mf):
+        if hybrid:
+            raise NotImplementedError('density-fitted GKS Hessian with exact exchange')
+        v1 = df_gks.veff_deriv1_j(hessobj, dm0, atmlst)
+    else:
+        v1 = ghf_hess.veff_deriv1(mol, dm0, atmlst, with_k=hybrid, k_scale=hyb)
     if hybrid and omega != 0:
         with mol.with_range_coulomb(omega):
             vlr = ghf_hess.veff_deriv1(mol, dm0, atmlst, with_k=True, k_scale=alpha - hyb)

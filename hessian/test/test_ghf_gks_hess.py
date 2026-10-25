@@ -106,6 +106,40 @@ class KnownValues(unittest.TestCase):
         # 5e-9: the finite difference of a meta-GGA is noisier than of PBE (1.5e-9)
         self.assertAlmostEqual(abs(hess[:, 1, :, 2] - col).max(), 0, 7)
 
+    def test_gks_df(self):
+        '''density-fitted (RI-J) GKS Hessian of a non-relativistic closed
+        shell = FD of the DF-RKS gradient (the same energy)'''
+        from pyscf import dft
+        import pyscf.df.grad.rks  # noqa: F401
+        from socutils.hessian import gks as gks_hess
+        aux = 'def2-universal-jkfit'
+        geom = 'O 0 0 0; H 0 .757 .587; H 0 -.757 .587; O 3 0 0; H 3.6 .5 .3; H 2.4 0 .8'
+        mol = gto.M(atom=geom, basis='cc-pvdz', verbose=0)
+
+        def rks(m, dm0=None):
+            mf = dft.RKS(m, xc='pbe').density_fit(auxbasis=aux)
+            mf.grids.atom_grid = (50, 194)
+            mf.conv_tol = 1e-12
+            mf.conv_tol_grad = 1e-10
+            return mf.run(dm0=dm0)
+        mf = gks.GKS(mol, xc='pbe').density_fit(auxbasis=aux)
+        mf.grids.atom_grid = (50, 194)
+        mf.conv_tol = 1e-12
+        mf.conv_tol_grad = 1e-10
+        mf.kernel()
+        hess = gks_hess.Hessian(mf).kernel()
+        dm0 = rks(mol).make_rdm1()
+        c0 = mol.atom_coords()
+        g = []
+        for d in (2 * H, H, -H, -2 * H):
+            c = c0.copy()
+            c[3, 0] += d
+            gobj = rks(mol.set_geom_(c, unit='Bohr', inplace=False), dm0).Gradients()
+            gobj.grid_response = True
+            g.append(gobj.kernel())
+        col = (-g[0] + 8 * g[1] - 8 * g[2] + g[3]) / (12 * H)
+        self.assertAlmostEqual(abs(hess[:, 3, :, 0] - col).max(), 0, 7)
+
     def test_grid_response_analytic_vs_fd(self):
         from socutils.hessian import gks as gks_hess
         from socutils.hessian import xc_grid_response

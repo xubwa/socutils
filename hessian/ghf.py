@@ -483,7 +483,10 @@ def make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=None):
     mocc = mo_coeff[:, mo_occ > 0]
     dm0 = mocc.dot(mocc.conj().T)
     nao = mol.nao_nr()
-    hcore_deriv = hessobj.base.Gradients().hcore_generator(mol)
+    # the socutils GHF gradient class (also for a density-fitted object, whose
+    # .Gradients would be pyscf's): X2C / SO-ECP hcore derivatives
+    from socutils.grad import ghf_grad
+    hcore_deriv = ghf_grad.Gradients(hessobj.base).hcore_generator(mol)
     v1 = hessobj.veff_deriv1(dm0, atmlst)
     h1ao = [None] * mol.natm
     for ia in atmlst:
