@@ -442,7 +442,7 @@ def _ef_geometric_analytic(td_grad, X, D0, atmlst, spin_channels, xc, xctype):
     d0tot = numpy.ascontiguousarray((D0[:nao, :nao] + D0[nao:, nao:]).real)
     natm = mol.natm
     de = numpy.zeros((natm, 3))
-    for owner, (coords, w, w1, _) in enumerate(becke_deriv.becke_weight_derivs(mf.grids, order=1)):
+    for owner, (coords, w, w1) in enumerate(becke_deriv.becke_weight_derivs1(mf.grids)):
         c = xgr._coef(mol, owner)
         for p0, p1 in lib.prange(0, w.size, 2000):
             ao = ni._to_numint1c().eval_ao(mol, coords[p0:p1], deriv=ao_deriv)

@@ -657,16 +657,26 @@ def hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
 
     mocc = mo_coeff[:, mo_occ > 0]
     e_occ = mo_energy[mo_occ > 0]
+    nocc = mocc.shape[1]
+    natm = len(atmlst)
     s1a = -mol.intor('int1e_ipovlp', comp=3)
+    # Tr[h1_A dm1_B] = sum_i (C_o^H h1_A mo1_B)_ii etc.: project h1 and s1 onto
+    # the occupied orbitals once per atom, then all atom pairs in one product
+    A = numpy.empty((natm, 3, nocc, 2 * nao), dtype=numpy.complex128)
+    B = numpy.empty((natm, 3, nocc, 2 * nao), dtype=numpy.complex128)
+    Soo = numpy.empty((natm, 3, nocc, nocc), dtype=numpy.complex128)
     for i0, ia in enumerate(atmlst):
         s1ao = _s1ao(mol, ia, s1a, nao)
-        s1oo = numpy.einsum('xpq,pi,qj->xij', s1ao, mocc.conj(), mocc)
-        for j0, ja in enumerate(atmlst):
-            dm1 = numpy.einsum('ypi,qi->ypq', mo1[ja], mocc.conj())
-            de2[i0, j0] += 2 * numpy.einsum('xpq,yqp->xy', h1ao[ia], dm1).real
-            dm1 = numpy.einsum('ypi,qi,i->ypq', mo1[ja], mocc.conj(), e_occ)
-            de2[i0, j0] -= 2 * numpy.einsum('xpq,yqp->xy', s1ao, dm1).real
-            de2[i0, j0] -= numpy.einsum('xij,yji->xy', s1oo, mo_e1[ja]).real
+        A[i0] = numpy.einsum('pi,xpq->xiq', mocc.conj(), h1ao[ia])
+        B[i0] = numpy.einsum('pi,xpq->xiq', mocc.conj(), s1ao)
+        Soo[i0] = numpy.einsum('xiq,qj->xij', B[i0], mocc)
+    M1 = numpy.asarray([mo1[ja] for ja in atmlst]).transpose(0, 1, 3, 2)          # (natm, 3, nocc, 2n)
+    E1 = numpy.asarray([mo_e1[ja] for ja in atmlst])                              # (natm, 3, nocc, nocc)
+    M1f = M1.reshape(3 * natm, -1)
+    de = 2 * A.reshape(3 * natm, -1).dot(M1f.T).real
+    de -= 2 * (B * e_occ[None, None, :, None]).reshape(3 * natm, -1).dot(M1f.T).real
+    de -= Soo.reshape(3 * natm, -1).dot(E1.transpose(0, 1, 3, 2).reshape(3 * natm, -1).T).real
+    de2 += de.reshape(natm, 3, natm, 3).transpose(0, 2, 1, 3)
     log.timer('GHF hessian', *time0)
     return de2
 

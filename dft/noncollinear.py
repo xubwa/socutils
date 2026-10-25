@@ -597,6 +597,51 @@ def _gks_noncol_fxc(ni, mol, grids, xc_code, dm0, dms, relativity=0, hermi=0,
     return vmat
 
 
+def _col_fxc_spin_symmetric(ni, mol, grids, xc_code, dm0, dms, relativity, hermi, rho0,
+                            max_memory, verbose, thresh=1e-10):
+    '''Spin-symmetric response (Re D_aa = Re D_bb in dm0 and in every dm1,
+    e.g. the time-even perturbations of a Kramers closed shell): the collinear
+    kernel then reduces to the restricted one, v_aa = v_bb = f_RKS rho1 with
+    rho1 = Re(D_aa + D_bb), a single density channel.  None if not applicable.'''
+    if not hermi or (dm0 is None and rho0 is None):
+        return None
+    nao = dms.shape[-1] // 2
+    r1 = (dms[:, :nao, :nao] + dms[:, nao:, nao:]).real
+    if abs((dms[:, :nao, :nao] - dms[:, nao:, nao:]).real).max() > thresh * max(1e-300, abs(r1).max()):
+        return None
+    ni1c = ni._to_numint1c()
+    if dm0 is not None:
+        r0 = (dm0[:nao, :nao] + dm0[nao:, nao:]).real
+        if abs((dm0[:nao, :nao] - dm0[nao:, nao:]).real).max() > thresh * max(1, abs(r0).max()):
+            return None
+        r0 = np.ascontiguousarray(r0)
+        key = (id(grids), xc_code, 'dm', hash(r0.tobytes()))
+        make = lambda: ni1c.cache_xc_kernel1(mol, grids, xc_code, r0, spin=0, max_memory=max_memory)
+    else:
+        # the cached (UKS) reference rho0 of pyscf's GHF response function
+        rho0 = np.asarray(rho0)
+        if rho0.shape[0] != 2:
+            return None
+        if abs(rho0[0] - rho0[1]).max() > thresh * max(1, abs(rho0).max()):
+            return None
+        key = (id(grids), xc_code, 'rho', hash(rho0.tobytes()))
+        xctype = ni1c._xc_type(xc_code)
+
+        def make():
+            rt = rho0[0] + rho0[1]
+            v, f = ni1c.eval_xc_eff(xc_code, rt, deriv=2, xctype=xctype)[1:3]
+            return rt, v, f
+    cache = getattr(ni, '_rks_fxc_cache', None)
+    if cache is None or cache[0] != key:
+        ni._rks_fxc_cache = cache = (key,) + tuple(make())
+    v = ni1c.nr_rks_fxc(mol, grids, xc_code, None, np.ascontiguousarray(r1), relativity, 1,
+                        cache[1], cache[2], cache[3], max_memory, verbose)
+    out = np.zeros(dms.shape, dtype=np.result_type(dms.dtype, np.double))
+    out[:, :nao, :nao] = v
+    out[:, nao:, nao:] = v
+    return out
+
+
 def _col_fxc(ni, mol, grids, xc_code, dm0, dms, relativity=0, hermi=0,
              rho0=None, vxc=None, fxc=None, max_memory=2000, verbose=None):
     '''Collinear fxc response (numint2c.NumInt2C.nr_fxc) with real density
@@ -606,10 +651,14 @@ def _col_fxc(ni, mol, grids, xc_code, dm0, dms, relativity=0, hermi=0,
     instead of contracting complex views element-wise.'''
     dms = np.asarray(dms)
     nao = dms.shape[-1] // 2
-    if dm0 is not None:
-        dm0 = (dm0[:nao, :nao].real.copy('C'), dm0[nao:, nao:].real.copy('C'))
     lead = dms.shape[:-2]
     dms = dms.reshape(-1, 2 * nao, 2 * nao)
+    out = _col_fxc_spin_symmetric(ni, mol, grids, xc_code, dm0, dms, relativity, hermi, rho0,
+                                  max_memory, verbose)
+    if out is not None:
+        return out.reshape(lead + (2 * nao, 2 * nao))
+    if dm0 is not None:
+        dm0 = (dm0[:nao, :nao].real.copy('C'), dm0[nao:, nao:].real.copy('C'))
     parts = [dms.real]
     with_imag = np.iscomplexobj(dms) and not hermi
     if with_imag:

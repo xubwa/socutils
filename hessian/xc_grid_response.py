@@ -35,6 +35,11 @@ from pyscf import lib
 from pyscf.dft import numint, gen_grid
 from socutils.grad import becke_deriv
 
+# AOs below this (all derivative rows) on a block of points are dropped, and
+# per-atom potentials below WEIGHT_CUTOFF on a block are skipped
+AO_CUTOFF = 1e-13
+WEIGHT_CUTOFF = 1e-14
+
 # position of the derivative multi-index (sorted axes) in pyscf's AO array
 _AO_IDX = {(): 0}
 _n = 1
@@ -170,7 +175,11 @@ def _vmat_bilinear(U, V, wv, xctype):
 
 
 def _blocks(mf, blksize=2000, order=2):
-    for coords, w, w1, w2 in becke_deriv.becke_weight_derivs(mf.grids, order):
+    if order == 1:
+        gen = ((c, w, w1, None) for c, w, w1 in becke_deriv.becke_weight_derivs1(mf.grids))
+    else:
+        gen = becke_deriv.becke_weight_derivs(mf.grids, order)
+    for coords, w, w1, w2 in gen:
         for p0, p1 in lib.prange(0, w.size, blksize):
             yield (p0 == 0, coords[p0:p1], w[p0:p1], w1[..., p0:p1],
                    None if w2 is None else w2[..., p0:p1])
@@ -218,38 +227,60 @@ def xc_derivs_grid_response(mf, dm0, with_hess=True, with_fock=True):
             owner += 1
             c = _coef(mol, owner)
         ao = ni1c.eval_ao(mol, coords, deriv=ao_deriv)
+        # AO screening: only the AOs (any derivative row) significant on the block
+        idx = numpy.where(abs(ao).max(axis=(0, 1)) > AO_CUTOFF)[0]
+        ao = numpy.ascontiguousarray(ao[:, :, idx])
+        cb = c[:, idx]
+        dmb = [numpy.ascontiguousarray(d[idx[:, None], idx]) for d in dms]
+        ix = numpy.ix_(idx, idx)
+        ng = w.size
         ao0 = numpy.asarray([_d(ao, r) for r in rows])
-        rho = numpy.asarray([_rho(mol, ao0, d, xctype) for d in dms])         # (2, nvar, ng)
+        rho = numpy.asarray([_rho(mol, ao0, d, xctype) for d in dmb])         # (2, nvar, ng)
         rho_in = rho[:, 0] if xctype == 'LDA' else rho
         exc, vxc, fxc = ni1c.eval_xc_eff(xc, rho_in, deriv=2, xctype=xctype)[:3]
         vxc = vxc.reshape(2, nvar, -1)
-        fxc = fxc.reshape(2, nvar, 2, nvar, -1)
+        fxc = fxc.reshape(2 * nvar, 2 * nvar, -1)
         eps = exc * (rho[0, 0] + rho[1, 0])
 
-        phid = [_phid(ao0, d) for d in dms]
-        # first derivatives of the densities, (natm, 3, 2, nvar, ng)
-        drho = numpy.stack([_drho1(ao, rows, xctype, c, phid[s]) for s in range(2)], axis=2)
-        deps = numpy.einsum('svg,Axsvg->Axg', vxc, drho)
-        dv = numpy.einsum('svtug,Axtug->Axsvg', fxc, drho)                    # first-order potential
+        phid = [_phid(ao0, d) for d in dmb]
+        # first derivatives of the densities, (3 natm, 2 nvar, ng)
+        drho = numpy.stack([_drho1(ao, rows, xctype, cb, phid[s]) for s in range(2)], axis=2)
+        drho = drho.reshape(3 * natm, 2 * nvar, ng)
+        deps = (drho * vxc.reshape(1, 2 * nvar, ng)).sum(axis=1)               # (3 natm, ng)
+        dv = numpy.zeros_like(drho)                                            # first-order potential
+        for k in range(2 * nvar):
+            dv += fxc[None, :, k] * drho[:, k:k + 1]
+        w1f = w1.reshape(3 * natm, ng)
 
         if with_hess:
             eps_owner[owner].append(eps)
-            hess += numpy.einsum('Axg,Byg->ABxy', w1, deps)
-            hess += numpy.einsum('Byg,Axg->ABxy', w1, deps)
-            hess += numpy.einsum('g,Axsvg,Bysvg->ABxy', w, drho, dv)
+            # w1_A deps_B + deps_A w1_B + sum_g w drho_A . dv_B, as dgemms over (A, x)
+            t = w1f.dot(deps.T)
+            t = t + t.T + (drho * w).reshape(3 * natm, -1).dot(dv.reshape(3 * natm, -1).T)
+            hess += t.reshape(natm, 3, natm, 3).transpose(0, 2, 1, 3)
             for s in range(2):
-                hess += _hess_bilinear(ao, rows, xctype, c, w * vxc[s], dms[s], phid[s])
+                hess += _hess_bilinear(ao, rows, xctype, cb, w * vxc[s], dmb[s], phid[s])
 
         if with_fock:
+            dv = dv.reshape(natm, 3, 2, nvar, ng)
+            # skip (A, x) whose potential on the block is negligible
+            wmax = abs(w1).max(axis=2) * abs(vxc).max()                        # (natm, 3)
+            dvmax = abs(dv).max(axis=(3, 4)) * abs(w).max()                    # (natm, 3, 2)
             for s in range(2):
                 # d/dR of the potential matrix at fixed weights: m(delta, phi) + its transpose
                 G = [_vmat_bilinear([_d(ao, r + (x,)) for r in rows], ao0, w * vxc[s], xctype)
                      for x in range(3)]
                 for A in range(natm):
+                    has_c = abs(cb[A]).max() > 0
                     for x in range(3):
-                        wv = w1[A, x] * vxc[s] + w * dv[A, x, s]
-                        t = c[A][:, None] * G[x]
-                        v1[A][x, s] += _vmat(ao0, wv, xctype) + t + t.T
+                        m = 0
+                        if wmax[A, x] > WEIGHT_CUTOFF or dvmax[A, x, s] > WEIGHT_CUTOFF:
+                            m = _vmat(ao0, w1[A, x] * vxc[s] + w * dv[A, x, s], xctype)
+                        if has_c:
+                            t = cb[A][:, None] * G[x]
+                            m = m + t + t.T
+                        if not isinstance(m, int):
+                            v1[A][x, s][ix] += m
 
     if with_hess:
         eps_owner = [numpy.concatenate(e) for e in eps_owner]
