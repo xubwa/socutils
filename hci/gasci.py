@@ -83,6 +83,11 @@ def _load():
                                          ctypes.c_int, ip, ip, ip]
         lib_.zg_is_product.restype = ctypes.c_int
         lib_.zg_is_product.argtypes = [ctypes.c_void_p]
+        lib_.zg_is_mirror.restype = ctypes.c_int
+        lib_.zg_is_mirror.argtypes = [ctypes.c_void_p]
+        for name in ('zg_sigma_flip_d', 'zg_sigma_flip_z'):
+            getattr(lib_, name).restype = ctypes.c_int
+            getattr(lib_, name).argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int]
         lib_.zg_product_strings.restype = ctypes.c_int64
         lib_.zg_product_strings.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
         lib_.zg_product_info.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
@@ -381,6 +386,34 @@ class ProductPlan(Plan):
 
     def rdm2_pairs(self, bra, ket, kernel='blas'):
         return super().rdm2_pairs(bra, ket, kernel='blas')
+
+    @property
+    def mirror(self):
+        '''Whether both sides have the same strings and labels.'''
+        return bool(self._lib.zg_is_mirror(self._handle))
+
+    def flip_index(self):
+        '''For each determinant (a, b) of a mirror plan, the place of (b, a).'''
+        ia, ib = self.det_strings()
+        n = len(self.strings(1))
+        key = ia * n + ib
+        order = numpy.argsort(key, kind='stable')
+        return order[numpy.searchsorted(key[order], ib * n + ia)]
+
+    def sigma_flip(self, v, c, parity):
+        '''H c for c with C[b, a] = parity C[a, b] (zg_sigma_flip): without
+        the B-string half of the kernel.  None if the plan or the integrals
+        do not qualify (see zgasci.h).'''
+        v, complex_ = self._check_v(v)
+        complex_ = complex_ or numpy.iscomplexobj(c)
+        if complex_:
+            v = v.astype(numpy.complex128)
+        c = self._vector(c, complex_)
+        out = numpy.empty_like(c)
+        fn = self._lib.zg_sigma_flip_z if complex_ else self._lib.zg_sigma_flip_d
+        if not fn(self._handle, v.ctypes.data, c.ctypes.data, out.ctypes.data, int(parity)):
+            return None
+        return out
 
 
 class _SmallPlan:
@@ -1156,17 +1189,89 @@ class ProductSpaceCI(_ProductMixin, SpatialGASCI):
     an error.  CI vectors are in the order of the plan; without orbsym it is
     the matrix C[a, b] over the sorted strings, as in selected_ci
     (to_matrix / from_matrix convert in general).  ci0 may be such vectors or
-    (strings_a, strings_b, matrix) of another space (a warm start).  Only
-    the BLAS kernel (lib/zgasci/PRODUCT_SPACE.md); gas, restrictions,
-    subgroups do not apply.
+    (strings_a, strings_b, matrix) of another space (a warm start).
+    spin_flip = 1 (-1): with the same alpha and beta strings and nalpha =
+    nbeta, only states with C[b, a] = C[a, b] (= -C[a, b]), i.e. even
+    (odd) S, and a sigma without the beta-beta half.  Only the BLAS kernel
+    (lib/zgasci/PRODUCT_SPACE.md); gas, restrictions, subgroups do not
+    apply.
     '''
 
     def __init__(self, mol=None, ci_strs=None):
         super().__init__(mol)
         self.ci_strs = ci_strs
+        self.spin_flip = None
 
     def _nside(self, norb):
         return (norb, norb)
+
+    def _diagonalize(self, plan, v, ci0, nroots, log):
+        '''With spin_flip = +1 or -1 and the same alpha and beta strings
+        (nalpha = nbeta): only vectors with C[b, a] = spin_flip C[a, b] (even
+        or odd S), and sigma without its beta-beta half.'''
+        parity = self.spin_flip
+        if parity is None:
+            return SpatialGASCI._diagonalize(self, plan, v, ci0, nroots, log)
+        if parity not in (1, -1):
+            raise ValueError('spin_flip must be None, 1 or -1')
+        if not (plan.mirror and plan.nalpha == plan.nbeta):
+            raise ValueError('spin_flip needs the same alpha and beta strings')
+        flip = plan.flip_index()
+
+        def sym(x):
+            return 0.5 * (x + parity * x[flip])
+        hdiag = plan.hdiag(v)
+        # Basis of the subspace: (e_k + parity e_flip(k)) / sqrt(2), k <= flip(k).
+        keep = numpy.arange(plan.dim) <= flip
+        if parity < 0:
+            keep &= numpy.arange(plan.dim) != flip
+        nsub = int(keep.sum())
+        if nsub < nroots:
+            raise ValueError('%d roots asked for in a subspace of %d' % (nroots, nsub))
+        if nsub <= self.direct_dim:
+            basis = numpy.zeros((nsub, plan.dim))
+            for i, k in enumerate(numpy.nonzero(keep)[0]):
+                basis[i, k] = 1
+                basis[i, flip[k]] += parity
+                basis[i] /= numpy.linalg.norm(basis[i])
+            hmat = numpy.array([basis @ plan.sigma(v, x) for x in basis])
+            e, c = numpy.linalg.eigh(hmat)
+            self.converged = True
+            return e[:nroots], [basis.T @ c[:, k] for k in range(nroots)]
+
+        def hop(x):
+            out = plan.sigma_flip(v, sym(x), parity)
+            if out is None:
+                out = sym(plan.sigma(v, sym(x)))
+            return out
+        if ci0 is not None:
+            if isinstance(ci0, numpy.ndarray) and ci0.ndim == 1:
+                ci0 = [ci0]
+            ci0 = [sym(numpy.asarray(x).ravel()) for x in ci0]
+            ci0 = [x / numpy.linalg.norm(x) for x in ci0 if numpy.linalg.norm(x) > 1e-8]
+        x0 = list(ci0 or [])[:nroots]
+        rng = numpy.random.default_rng(1)
+        for k in numpy.argsort(hdiag, kind='stable'):
+            if len(x0) >= nroots:
+                break
+            if not keep[k]:
+                continue
+            x = 1e-6 * rng.standard_normal(plan.dim)
+            x[k] += 1
+            x[flip[k]] += parity
+            x = sym(x)
+            x0.append(x / numpy.linalg.norm(x))
+        precond = lib.make_diag_precond(hdiag, self.level_shift)
+        conv, e, c = lib.davidson1(
+            lambda xs: [hop(x) for x in xs], x0, precond, tol=self.conv_tol,
+            max_cycle=self.max_cycle, max_space=self.max_space, lindep=self.lindep,
+            nroots=nroots, max_memory=self.max_memory, verbose=log,
+            tol_residual=self.conv_tol_residual)
+        self.converged = all(conv)
+        if not self.converged:
+            log.warn('ProductSpaceCI: Davidson not converged for roots %s',
+                     [k for k, x in enumerate(conv) if not x])
+        return e, c
 
     def plan(self, norb, nelec):
         nalpha, nbeta = self._unpack_nelec(nelec)
