@@ -712,10 +712,20 @@ class VariationalH : private ElementSource<S> {
     for (uint8_t flag : direct_rows_) num_direct_rows_ += flag;
     stored_.AppendBlocks(std::move(blocks));
     // The one-sweep product, which reads the matrix once but takes a vector
-    // per thread, if the connections leave room for those.
-    one_sweep_ =
-        stored_.num_elements() * sizeof(DetIndex) + stored_.overhead_bytes() <=
-        HamiltonianBudget(n, true);
+    // per thread, if the connections leave room for those and it does not
+    // cost values: an element worked out in every product costs far more
+    // than reading the matrix twice (at 2.5e8 determinants on 48 threads
+    // the vectors would take 95 GB of a rank's 160).
+    const size_t connections =
+        stored_.num_elements() * sizeof(DetIndex) + stored_.overhead_bytes();
+    auto values_held = [&](bool one) {
+      const size_t room = HamiltonianBudget(n, one);
+      return room > connections ? std::min(room - connections,
+                                           stored_.num_elements() * sizeof(S))
+                                : size_t{0};
+    };
+    one_sweep_ = connections <= HamiltonianBudget(n, true) &&
+                 values_held(true) >= values_held(false);
     stored_.set_product(one_sweep_ ? SparseH<S>::Product::kAutomatic
                                    : SparseH<S>::Product::kTwoSweeps);
     const size_t budget = HamiltonianBudget(n, one_sweep_);
