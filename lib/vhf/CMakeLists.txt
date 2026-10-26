@@ -32,7 +32,7 @@ endif()
 
 # hess_screen.c, hess2e.c: two-electron derivative contractions of the
 # Hessian (socutils.hessian.ghf)
-add_library(socvhf SHARED mc_screen.c hess_screen.c hess2e.c)
+add_library(socvhf SHARED mc_screen.c hess_screen.c hess2e.c jk_multi.c fock1.c)
 target_include_directories(socvhf PRIVATE
   ${PYSCF_LIB_DIR} ${PYSCF_LIB_DIR}/deps/include)
 target_link_libraries(socvhf PRIVATE ${PYSCF_CVHF_LIB} ${PYSCF_CGTO_LIB} ${PYSCF_CINT_LIB}

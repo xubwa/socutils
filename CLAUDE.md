@@ -37,10 +37,14 @@ reuses C already compiled into an *installed* pyscf (`libao2mo`/`libnp_helper`/
 pyscf via the configuring Python interpreter at configure time — if upstreamed
 *into* pyscf it would simplify to an ordinary in-tree `target_link_libraries`.
 `lib/dft` (`libsocdft.so`) is the standalone OpenMP multi-collinear XC kernel
-of `dft/noncollinear.py` (falls back to numpy when not built).
-`lib/vhf` (`libsocvhf.so`, prescreen functions that skip one-centre shell
-quartets, used by `somf/x2cmp.py`) links against the installed pyscf's `libcvhf`
-the same way; without it `.x2cmp()` falls back to the full molecular J/K build.
+of `dft/noncollinear.py` plus the elementwise grid pass of the RKS XC Hessian
+(`xc_hess.c`, `hessian/rhf_fast.py`); both fall back to numpy when not built.
+`lib/vhf` (`libsocvhf.so`: prescreen functions that skip one-centre shell
+quartets, used by `somf/x2cmp.py`; the unique-quartet Hessian drivers
+`hess2e.c` (2e second derivatives), `fock1.c` (first-order J/K of all atoms),
+`jk_multi.c` (direct J/K of many densities, `scf/jk_multi.py`)) links against
+the installed pyscf's `libcvhf` the same way; without it `.x2cmp()` falls back
+to the full molecular J/K build and the Hessians to pyscf's integral passes.
 Each `.so` is emitted **flat into `lib/`**, next to its ctypes loader. They're
 optional — two-component code that doesn't call them runs without.
 

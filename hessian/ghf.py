@@ -446,8 +446,10 @@ def deriv2_energies_direct(mol, terms):
     '''deriv2_energies over the unique shell quartets with all second-derivative
     integrals of a quartet at once (lib/vhf/hess2e.c), contracted on the fly
     with the symmetrized density weight; screened by Schwarz-type estimates
-    times the densities.  None if lib/libsocvhf.so has no hess2e (or the basis
-    is Cartesian).'''
+    times the densities.  Terms (A, A_pair, B, B_pair, coef[, group]): with
+    groups, one Hessian per group from the same integrals,
+    (ngroup, natm, natm, 3, 3).  None if lib/libsocvhf.so has no hess2e (or
+    the basis is Cartesian).'''
     import ctypes
     from pyscf.gto import moleintor
     libv = _load_socvhf()
@@ -455,19 +457,25 @@ def deriv2_energies_direct(mol, terms):
         return None
     natm = mol.natm
     nao = mol.nao_nr()
+    grouped = bool(terms) and len(terms[0]) == 6
+    if not grouped:
+        terms = [tuple(t) + (0,) for t in terms]
+    ngroup = max([t[5] for t in terms], default=0) + 1
+    assert ngroup <= 8
     terms = [(numpy.asarray(A, dtype=numpy.double, order='C'), ap,
-              numpy.asarray(B, dtype=numpy.double, order='C'), bp, c)
-             for A, ap, B, bp, c in terms]
+              numpy.asarray(B, dtype=numpy.double, order='C'), bp, c, g)
+             for A, ap, B, bp, c, g in terms]
     terms = [t for t in terms if t[4] != 0 and _nonzero(t[0]) and _nonzero(t[2])]
-    hess = numpy.zeros((natm, natm, 3, 3))
+    hess = numpy.zeros((ngroup, natm, natm, 3, 3))
     if not terms:
-        return hess
+        return hess if grouped else hess[0]
     pos = {'a': 0, 'b': 1, 'c': 2, 'd': 3}
     mats_a = [t[0] for t in terms]
     mats_b = [t[2] for t in terms]
     pair_a = numpy.asarray([pos[x] for t in terms for x in t[1]], dtype=numpy.int32)
     pair_b = numpy.asarray([pos[x] for t in terms for x in t[3]], dtype=numpy.int32)
     coef = numpy.asarray([t[4] for t in terms])
+    group = numpy.asarray([t[5] for t in terms], dtype=numpy.int32)
     pa = (ctypes.c_void_p * len(terms))(*[m.ctypes.data for m in mats_a])
     pb = (ctypes.c_void_p * len(terms))(*[m.ctypes.data for m in mats_b])
     # integral estimate per shell pair, bounding every derivative type
@@ -483,13 +491,14 @@ def deriv2_energies_direct(mol, terms):
         hess.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(natm),
         ctypes.c_int(len(terms)), pa, pair_a.ctypes.data_as(ctypes.c_void_p),
         pb, pair_b.ctypes.data_as(ctypes.c_void_p), coef.ctypes.data_as(ctypes.c_void_p),
+        ctypes.c_int(ngroup), group.ctypes.data_as(ctypes.c_void_p),
         q.ctypes.data_as(ctypes.c_void_p), dcond.ctypes.data_as(ctypes.c_void_p),
         ctypes.c_double(HESS2E_TOL), opts[0], opts[1], opts[2],
         ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
         ctypes.c_int(natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas),
         env.ctypes.data_as(ctypes.c_void_p))
     assert nao == ao_loc[-1]
-    return hess
+    return hess if grouped else hess[0]
 
 
 def deriv2_energy(mol, A, A_pair, B, B_pair, atmlst=None):

@@ -24,6 +24,7 @@
 #include "cint.h"
 
 #define MAXTERM 64
+#define MAXGROUP 8
 
 int int2e_ipip1_sph(double *out, int *dims, int *shls, int *atm, int natm,
                     int *bas, int nbas, double *env, CINTOpt *opt, double *cache);
@@ -48,12 +49,15 @@ static double dmax3(double a, double b, double c)
 void SOCVHFhess2e_contract(double *hess, int natm_out,
                            int nterm, double **mats_a, int *pair_a,
                            double **mats_b, int *pair_b, double *coef,
+                           int ngroup, int *group,
                            double *qcond, double *dcond, double tol,
                            CINTOpt *opt_ipip, CINTOpt *opt_ipvip, CINTOpt *opt_ip1ip2,
                            int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env)
 {
         const size_t nao = ao_loc[nbas];
-        const size_t nh = (size_t)natm_out * natm_out * 9;
+        /* one Hessian per group of terms (e.g. J and K), from the same integrals */
+        const size_t nh1 = (size_t)natm_out * natm_out * 9;
+        const size_t nh = nh1 * ngroup;
         int dmax = 0;
         int i;
         for (i = 0; i < nbas; i++) {
@@ -83,8 +87,10 @@ void SOCVHFhess2e_contract(double *hess, int natm_out,
         double *b01 = buf + nbuf * 3, *b02 = buf + nbuf * 4, *b12 = buf + nbuf * 5;
         int ij, kl, ish, jsh, ksh, lsh, t, p, x, y, q;
         int shls[4];
-        double S[6][9];
+        double S[MAXGROUP][6][9];
         double F[4][4][9];
+        double gam[MAXGROUP];
+        int g;
 #pragma omp for schedule(dynamic, 4)
         for (ij = 0; ij < npair; ij++) {
                 ish = (int)((-1 + __builtin_sqrt(1. + 8. * ij)) / 2);
@@ -139,39 +145,43 @@ void SOCVHFhess2e_contract(double *hess, int natm_out,
                         for (i0 = 0; i0 < di; i0++) {
                                 size_t ao[4] = {ao_loc[ish] + i0, ao_loc[jsh] + j0,
                                                 ao_loc[ksh] + k0, ao_loc[lsh] + l0};
-                                double gam = 0;
+                                for (g = 0; g < ngroup; g++) gam[g] = 0;
                                 for (p = 0; p < 8; p++) {
                                         size_t a4[4];
                                         for (q = 0; q < 4; q++) a4[q] = ao[PERMS[p][q]];
                                         for (t = 0; t < nterm; t++) {
-                                                gam += coef[t]
+                                                gam[group[t]] += coef[t]
                                                      * mats_a[t][a4[pair_a[2*t]] * nao + a4[pair_a[2*t+1]]]
                                                      * mats_b[t][a4[pair_b[2*t]] * nao + a4[pair_b[2*t+1]]];
                                         }
                                 }
-                                gam *= fac;
                                 /* element offsets, buffers in libcint (Fortran) order */
                                 size_t o00 = ((l0 * dk + k0) * dj + j0) * di + i0;          /* (i j|k l) */
                                 size_t o11 = ((l0 * dk + k0) * di + i0) * dj + j0;          /* (j i|k l) */
                                 size_t o22 = ((j0 * di + i0) * dl + l0) * dk + k0;          /* (k l|i j) */
+                                for (g = 0; g < ngroup; g++) {
+                                double gm = gam[g] * fac;
                                 for (x = 0; x < 9; x++) {
-                                        S[0][x] += b00[x * nf + o00] * gam;
-                                        S[1][x] += b11[x * nf + o11] * gam;
-                                        S[2][x] += b22[x * nf + o22] * gam;
-                                        S[3][x] += b01[x * nf + o00] * gam;
-                                        S[4][x] += b02[x * nf + o00] * gam;
-                                        S[5][x] += b12[x * nf + o11] * gam;
-                                }
+                                        S[g][0][x] += b00[x * nf + o00] * gm;
+                                        S[g][1][x] += b11[x * nf + o11] * gm;
+                                        S[g][2][x] += b22[x * nf + o22] * gm;
+                                        S[g][3][x] += b01[x * nf + o00] * gm;
+                                        S[g][4][x] += b02[x * nf + o00] * gm;
+                                        S[g][5][x] += b12[x * nf + o11] * gm;
+                                } }
                         } } } }
+                        int at[4] = {bas[ATOM_OF + ish * BAS_SLOTS], bas[ATOM_OF + jsh * BAS_SLOTS],
+                                     bas[ATOM_OF + ksh * BAS_SLOTS], bas[ATOM_OF + lsh * BAS_SLOTS]};
+                        for (g = 0; g < ngroup; g++) {
                         /* the 4 x 4 position blocks from translational invariance */
                         for (x = 0; x < 9; x++) {
                                 int xt = (x % 3) * 3 + x / 3;      /* transpose */
-                                F[0][0][x] = S[0][x];
-                                F[1][1][x] = S[1][x];
-                                F[2][2][x] = S[2][x];
-                                F[0][1][x] = S[3][x];  F[1][0][xt] = S[3][x];
-                                F[0][2][x] = S[4][x];  F[2][0][xt] = S[4][x];
-                                F[1][2][x] = S[5][x];  F[2][1][xt] = S[5][x];
+                                F[0][0][x] = S[g][0][x];
+                                F[1][1][x] = S[g][1][x];
+                                F[2][2][x] = S[g][2][x];
+                                F[0][1][x] = S[g][3][x];  F[1][0][xt] = S[g][3][x];
+                                F[0][2][x] = S[g][4][x];  F[2][0][xt] = S[g][4][x];
+                                F[1][2][x] = S[g][5][x];  F[2][1][xt] = S[g][5][x];
                         }
                         for (p = 0; p < 3; p++) {
                                 for (x = 0; x < 9; x++) {
@@ -183,15 +193,14 @@ void SOCVHFhess2e_contract(double *hess, int natm_out,
                                         F[3][y][x] = -(F[0][y][x] + F[1][y][x] + F[2][y][x]);
                                 }
                         }
-                        int at[4] = {bas[ATOM_OF + ish * BAS_SLOTS], bas[ATOM_OF + jsh * BAS_SLOTS],
-                                     bas[ATOM_OF + ksh * BAS_SLOTS], bas[ATOM_OF + lsh * BAS_SLOTS]};
                         for (p = 0; p < 4; p++) {
                         for (y = 0; y < 4; y++) {
-                                double *h = hloc + ((size_t)at[p] * natm_out + at[y]) * 9;
+                                double *h = hloc + g * nh1 + ((size_t)at[p] * natm_out + at[y]) * 9;
                                 for (x = 0; x < 9; x++) {
                                         h[x] += F[p][y][x];
                                 }
                         } }
+                        }
                 }
         }
 #pragma omp critical
