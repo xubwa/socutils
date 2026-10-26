@@ -48,9 +48,7 @@ def _partial_hess_ejk(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     natm = len(atmlst)
     # J and K from the same integral pass (groups 0 and 1): the combined
     # Cartesian kernel up to g functions, else the libcint-based driver
-    out = None
-    if mol._bas[:, gto.ANG_OF].max() <= HESS2E_CART_LMAX:
-        out = hess2e_jk_cart(mol, dm0, [(1, 0), (0, 1)] if with_k else [(1, 0)])
+    out = hess2e_jk_cart(mol, dm0, [(1, 0), (0, 1)] if with_k else [(1, 0)])
     if out is None:
         terms = [(dm0, 'ba', dm0, 'dc', .5, 0)]
         if with_k:
@@ -77,22 +75,32 @@ def _partial_hess_ejk(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     return e1, ej, ek
 
 
-HESS2E_CART_LMAX = 4        # lib/vhf/hess2e_cart.c LMAX
+HESS2E_CART_LMAX = 4        # lib/vhf/hess2e_cart.c LMAX, MAXPRIM
+HESS2E_CART_MAXPRIM = 64
 
 
-def hess2e_jk_cart(mol, dm, groups, mode=0, tol=None):
+def hess2e_jk_cart(mol, dm, groups, mode=0, tol=None, prim_tol=None):
     '''Second derivatives of E_g = jfac E_J + kfac E_K at the symmetric
     density dm (E_J = 1/2 (ab|cd) D_ab D_cd, E_K = 1/4 (ab|cd) D_ad D_bc), one
     Rys quadrature per primitive quartet for all derivative components,
     contracted with the density in the Cartesian basis (lib/vhf/hess2e_cart.c).
-    groups: [(jfac, kfac), ...].  Returns (ngroup, natm, natm, 3, 3), or the
-    energies (ngroup,) for mode=1; None if the library is unavailable.'''
+    groups: [(jfac, kfac), ...].  Screening: shell quartets below tol
+    (default ghf.HESS2E_TOL), primitive quartets (prefactor x largest
+    primitive density weight) below prim_tol (default tol * 1e-2, i.e. 1e-15:
+    ~5e-11 in the Hessian of (H2O)_4; prim_tol=0 keeps every primitive).
+    Returns (ngroup, natm, natm, 3, 3), or the energies (ngroup,) for mode=1;
+    None if the library is unavailable.'''
     import ctypes
     libv = ghf_hess._load_socvhf()
     if not libv or not hasattr(libv, 'SOCVHFhess2e_jk_cart'):
         return None
+    if (mol._bas[:, gto.ANG_OF].max() > HESS2E_CART_LMAX
+            or mol._bas[:, gto.NPRIM_OF].max() > HESS2E_CART_MAXPRIM):
+        return None
     if tol is None:
         tol = ghf_hess.HESS2E_TOL
+    if prim_tol is None:
+        prim_tol = tol * 1e-2
     ngroup = len(groups)
     assert 0 < ngroup <= 4
     if mol.cart:
@@ -118,7 +126,7 @@ def hess2e_jk_cart(mol, dm, groups, mode=0, tol=None):
         out.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mode), ctypes.c_int(ngroup),
         jfac.ctypes.data_as(ctypes.c_void_p), kfac.ctypes.data_as(ctypes.c_void_p),
         dmc.ctypes.data_as(ctypes.c_void_p), q.ctypes.data_as(ctypes.c_void_p),
-        dcond.ctypes.data_as(ctypes.c_void_p), ctypes.c_double(tol),
+        dcond.ctypes.data_as(ctypes.c_void_p), ctypes.c_double(tol), ctypes.c_double(prim_tol),
         ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
         ctypes.c_int(natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(molc.nbas),
         env.ctypes.data_as(ctypes.c_void_p))

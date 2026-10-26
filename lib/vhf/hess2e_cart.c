@@ -27,6 +27,10 @@
  * normalisation in env's coefficients, CINTcommon_fac_sp for s and p).
  * Roots from pyscf's libcint (CINTrys_roots, which returns u = t^2/(1 - t^2)).
  *
+ * Shell quartets are skipped when q[ij] q[kl] times the density bound is
+ * below tol, primitive quartets when the Gaussian prefactor times the largest
+ * primitive density weight is below prim_tol (both set by the caller).
+ *
  * mode 0: hess (ngroup, natm, natm, 3, 3) += d^2 E_g;
  * mode 1: hess[g] += E_g (the energies, a check of the normalisation).
  */
@@ -36,9 +40,7 @@
 #include "cint.h"
 
 #define MAXGROUP 4
-#ifndef PRIM_TOL
-#define PRIM_TOL 1e-15                  /* primitive quartets: prefactor x |density weight| */
-#endif
+#define MAXPRIM 64
 #define LMAX 6
 #define NVRR (2 * LMAX + 3)            /* VRR orders 0 .. li + lj + 2 */
 #define MAXROOTS 16
@@ -186,7 +188,7 @@ static void tables_1d(double *T, const int *l, double c00, double c00p,
 static const int D2[3][3] = {{VAA, VAB, VAC}, {VAB, VBB, VBC}, {VAC, VBC, VCC}};
 
 void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, double *kfac,
-                          double *dm, double *qcond, double *dcond, double tol,
+                          double *dm, double *qcond, double *dcond, double tol, double prim_tol,
                           int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env)
 {
         const size_t nao = ao_loc[nbas];
@@ -210,6 +212,8 @@ void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, doub
         double *w = malloc(sizeof(double) * maxf4 * ngroup);      /* primitive weights */
         const int maxt = (LMAX + 1) * (LMAX + 1) * (LMAX + 1) * (LMAX + 1);
         double *T = malloc(sizeof(double) * 3 * maxt * NV);
+        double *cm = malloc(sizeof(double) * 4 * MAXPRIM);
+        double *eijs = malloc(sizeof(double) * MAXPRIM * MAXPRIM);
         QuartetShape qs;
         int ij, kl, ish, jsh, ksh, lsh;
 #pragma omp for schedule(dynamic, 2)
@@ -278,12 +282,38 @@ void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, doub
                         memset(G, 0, sizeof(G));
                         double E[MAXGROUP] = {0};
                         int pi, pj, pk, pl;
+                        /* bounds for the primitive screening (no thresholds of their own:
+                         * |w| <= ddmax prod_s nctr_s max_c |c_s|) */
+                        double ddmax = 0, *cmax[4];
+                        for (a = 0; a < (int)(nd * ngroup); a++) ddmax = dmax2(ddmax, fabs(dd[a]));
+                        ddmax *= nci * ncj * nck * ncl;
+                        for (s = 0; s < 4; s++) {
+                                cmax[s] = cm + s * MAXPRIM;
+                                for (a = 0; a < nprim[s]; a++) {
+                                        double m = 0;
+                                        for (b = 0; b < nctr[s]; b++) m = dmax2(m, fabs(cf[s][b * nprim[s] + a]));
+                                        cmax[s][a] = m;
+                                }
+                        }
+                        /* bra primitive pairs: exp(-ai aj / aij |AB|^2) and the largest
+                         * eij |ci cj| / aij for the ket-level bound */
+                        double bra_max = 0;
+                        for (pj = 0; pj < nprim[1]; pj++) {
+                                for (pi = 0; pi < nprim[0]; pi++) {
+                                        double ai = ex[0][pi], aj = ex[1][pj];
+                                        double e = exp(-ai * aj / (ai + aj) * rab2);
+                                        eijs[pj * nprim[0] + pi] = e;
+                                        bra_max = dmax2(bra_max, e * cmax[0][pi] * cmax[1][pj] / (ai + aj));
+                                }
+                        }
                         for (pl = 0; pl < nprim[3]; pl++) {
                         for (pk = 0; pk < nprim[2]; pk++) {
                                 double ak = ex[2][pk], al = ex[3][pl];
                                 double akl = ak + al;
                                 double ekl = exp(-ak * al / akl * rcd2);
-                                if (ekl < 1e-17) continue;
+                                /* 1 / (aij akl sqrt(aij + akl)) <= 1 / (aij akl sqrt(akl)) */
+                                if (34.986836655249725 * bra_max * ekl * cmax[2][pk] * cmax[3][pl] * ddmax
+                                    / (akl * sqrt(akl)) < prim_tol) continue;
                                 /* x1[g][a][b][fk][fl] = sum_{ck,cl} c_k c_l dd[g][a][b][ck fk][cl fl] */
                                 size_t nx1 = (size_t)NI * NJ * nfk * nfl;
                                 int ck, cl, fk, fl, ci, cj, fi, fj;
@@ -308,8 +338,11 @@ void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, doub
                                 for (pi = 0; pi < nprim[0]; pi++) {
                                         double ai = ex[0][pi], aj = ex[1][pj];
                                         double aij = ai + aj;
-                                        double eij = exp(-ai * aj / aij * rab2);
-                                        if (eij * ekl < 1e-17) continue;
+                                        double eij = eijs[pj * nprim[0] + pi];
+                                        double asum = aij + akl;
+                                        double pref = 34.986836655249725 /* 2 pi^(5/2) */ / (aij * akl * sqrt(asum)) * eij * ekl;
+                                        if (pref * ddmax * cmax[0][pi] * cmax[1][pj] * cmax[2][pk] * cmax[3][pl]
+                                            < prim_tol) continue;
                                         /* w[g][fi][fj][fk][fl] = sum_{ci,cj} c_i c_j x1[g][ci fi][cj fj][fk][fl] */
                                         double wmax = 0;
                                         for (g = 0; g < ngroup; g++) {
@@ -334,11 +367,9 @@ void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, doub
                                                 P[s] = (ai * R[0][s] + aj * R[1][s]) / aij;
                                                 PQ[s] = P[s] - Q[s];
                                         }
-                                        double asum = aij + akl;
                                         double rho = aij * akl / asum;
                                         double x = rho * (PQ[0] * PQ[0] + PQ[1] * PQ[1] + PQ[2] * PQ[2]);
-                                        double pref = 34.986836655249725 /* 2 pi^(5/2) */ / (aij * akl * sqrt(asum)) * eij * ekl;
-                                        if (pref * wmax < PRIM_TOL) continue;
+                                        if (pref * wmax < prim_tol) continue;
                                         double u[MAXROOTS], rw[MAXROOTS];
                                         CINTrys_roots(nroots, x, u, rw);
                                         int r;
@@ -455,5 +486,7 @@ void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, doub
         free(x1);
         free(w);
         free(T);
+        free(cm);
+        free(eijs);
 }
 }
