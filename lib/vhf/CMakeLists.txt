@@ -24,10 +24,19 @@ if(NOT PYSCF_CVHF_LIB)
   message(FATAL_ERROR "vhf/socvhf: could not find libcvhf under ${PYSCF_LIB_DIR}")
 endif()
 
-add_library(socvhf SHARED mc_screen.c hess_screen.c)
+find_library(PYSCF_CGTO_LIB NAMES cgto PATHS ${PYSCF_LIB_DIR} NO_DEFAULT_PATH)
+find_library(PYSCF_CINT_LIB NAMES cint PATHS ${PYSCF_LIB_DIR}/deps/lib ${PYSCF_LIB_DIR} NO_DEFAULT_PATH)
+if(NOT PYSCF_CGTO_LIB OR NOT PYSCF_CINT_LIB)
+  message(FATAL_ERROR "vhf/socvhf: could not find libcgto / libcint under ${PYSCF_LIB_DIR}")
+endif()
+
+# hess_screen.c, hess2e.c: two-electron derivative contractions of the
+# Hessian (socutils.hessian.ghf)
+add_library(socvhf SHARED mc_screen.c hess_screen.c hess2e.c)
 target_include_directories(socvhf PRIVATE
   ${PYSCF_LIB_DIR} ${PYSCF_LIB_DIR}/deps/include)
-target_link_libraries(socvhf PRIVATE ${PYSCF_CVHF_LIB})
+target_link_libraries(socvhf PRIVATE ${PYSCF_CVHF_LIB} ${PYSCF_CGTO_LIB} ${PYSCF_CINT_LIB}
+                      ${OPENMP_C_PROPERTIES} m)
 set_target_properties(socvhf PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}
   INSTALL_RPATH "$ORIGIN:${PYSCF_LIB_DIR}:${PYSCF_LIB_DIR}/deps/lib")

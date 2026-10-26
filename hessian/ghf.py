@@ -360,6 +360,11 @@ def deriv2_energies(mol, terms, atmlst=None):
         atmlst = range(mol.natm)
     atmlst = list(atmlst)
     natm = len(atmlst)
+    if atmlst == list(range(mol.natm)):
+        # unique shell quartets, all derivative integrals at once (lib/vhf/hess2e.c)
+        hess = deriv2_energies_direct(mol, terms)
+        if hess is not None:
+            return hess
     terms = [(numpy.asarray(A, dtype=numpy.double, order='C'), ap,
               numpy.asarray(B, dtype=numpy.double, order='C'), bp, c)
              for A, ap, B, bp, c in terms]
@@ -418,6 +423,72 @@ def deriv2_energies(mol, terms, atmlst=None):
                 for j0, ja in enumerate(atmlst):
                     q0, q1 = aoslices[ja][2:]
                     hess[i0, j0] += c * s[:, :, q0:q1].sum(axis=2)
+    return hess
+
+
+_libsocvhf = None
+HESS2E_TOL = 1e-13
+
+
+def _load_socvhf():
+    global _libsocvhf
+    if _libsocvhf is None:
+        from socutils.lib import load_library
+        try:
+            lib_ = load_library('libsocvhf', 'SOCUTILS_SOCVHF_LIBRARY')
+            _libsocvhf = lib_ if hasattr(lib_, 'SOCVHFhess2e_contract') else False
+        except OSError:
+            _libsocvhf = False
+    return _libsocvhf
+
+
+def deriv2_energies_direct(mol, terms):
+    '''deriv2_energies over the unique shell quartets with all second-derivative
+    integrals of a quartet at once (lib/vhf/hess2e.c), contracted on the fly
+    with the symmetrized density weight; screened by Schwarz-type estimates
+    times the densities.  None if lib/libsocvhf.so has no hess2e (or the basis
+    is Cartesian).'''
+    import ctypes
+    from pyscf.gto import moleintor
+    libv = _load_socvhf()
+    if not libv or mol.cart:
+        return None
+    natm = mol.natm
+    nao = mol.nao_nr()
+    terms = [(numpy.asarray(A, dtype=numpy.double, order='C'), ap,
+              numpy.asarray(B, dtype=numpy.double, order='C'), bp, c)
+             for A, ap, B, bp, c in terms]
+    terms = [t for t in terms if t[4] != 0 and _nonzero(t[0]) and _nonzero(t[2])]
+    hess = numpy.zeros((natm, natm, 3, 3))
+    if not terms:
+        return hess
+    pos = {'a': 0, 'b': 1, 'c': 2, 'd': 3}
+    mats_a = [t[0] for t in terms]
+    mats_b = [t[2] for t in terms]
+    pair_a = numpy.asarray([pos[x] for t in terms for x in t[1]], dtype=numpy.int32)
+    pair_b = numpy.asarray([pos[x] for t in terms for x in t[3]], dtype=numpy.int32)
+    coef = numpy.asarray([t[4] for t in terms])
+    pa = (ctypes.c_void_p * len(terms))(*[m.ctypes.data for m in mats_a])
+    pb = (ctypes.c_void_p * len(terms))(*[m.ctypes.data for m in mats_b])
+    # integral estimate per shell pair, bounding every derivative type
+    q = numpy.max([_q_cond(mol, intor)[k] for intor in ('int2e_ipip1', 'int2e_ipvip1', 'int2e_ip1ip2')
+                   for k in (0, 1)], axis=0)
+    q = numpy.ascontiguousarray(numpy.maximum(q, q.T))
+    dcond = _dm_cond(mol, mats_a + mats_b)
+    atm, bas, env = mol._atm, mol._bas, mol._env
+    opts = [moleintor.make_cintopt(atm, bas, env, name)
+            for name in ('int2e_ipip1_sph', 'int2e_ipvip1_sph', 'int2e_ip1ip2_sph')]
+    ao_loc = mol.ao_loc_nr().astype(numpy.int32)
+    libv.SOCVHFhess2e_contract(
+        hess.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(natm),
+        ctypes.c_int(len(terms)), pa, pair_a.ctypes.data_as(ctypes.c_void_p),
+        pb, pair_b.ctypes.data_as(ctypes.c_void_p), coef.ctypes.data_as(ctypes.c_void_p),
+        q.ctypes.data_as(ctypes.c_void_p), dcond.ctypes.data_as(ctypes.c_void_p),
+        ctypes.c_double(HESS2E_TOL), opts[0], opts[1], opts[2],
+        ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
+        ctypes.c_int(natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas),
+        env.ctypes.data_as(ctypes.c_void_p))
+    assert nao == ao_loc[-1]
     return hess
 
 
