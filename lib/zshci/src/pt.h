@@ -522,6 +522,94 @@ StochasticEstimate PtWalkerSample(const PtProblem<W, Filter, S>& problem,
   return estimate;
 }
 
+// One estimate from num_samples determinants drawn with `rng` (the same
+// stream on every rank, so that all draw the same), the terms of all ranks
+// and threads merged as in the deterministic sum. Collective.
+template <int W, class Filter, class Rng, typename S>
+StochasticEstimate PtPooledSample(const PtProblem<W, Filter, S>& problem,
+                                  double epsilon, double epsilon_large,
+                                  int num_samples,
+                                  const DeterminantSampler& sampler, Rng* rng) {
+  using Term = internal::SampleTerm<W, S>;
+  std::vector<size_t> draws, indices;
+  std::vector<int> multiplicities;
+  sampler.Draw(num_samples, rng, &draws, &indices, &multiplicities);
+  const double n = num_samples;
+  const SpinFlipLayout* flip = problem.flip;
+  const int lambda = flip != nullptr ? flip->lambda() : 1;
+  auto generate = [&](long sample, const auto& emit) {
+    const size_t i = indices[sample];
+    const S ci = problem.coefficients[i];
+    const double g = internal::GeneratorWeight(problem, i);
+    const double w = multiplicities[sample];
+    const double p = sampler.Probability(i);
+    const double linear = w / p;
+    const double quadratic = w * (n - 1.0) / p - w * w / (p * p);
+    std::vector<int> occ;
+    problem.dets[i].AppendOccupied(&occ);
+    // What this generator gives to one determinant is summed before it is
+    // squared; with spin_flip two of its terms can fold onto one.
+    std::vector<Term> mine;
+    auto visit = [&](const Det<W>& det, S element, bool is_large) {
+      S x = element * ci;
+      Term term;
+      term.det = det;
+      if (flip != nullptr) {
+        const double factor =
+            g * internal::FoldOntoCanonical(det, lambda, &term.det);
+        if (factor == 0.0) return;
+        x *= factor;
+      }
+      term.sum = x;
+      if (is_large) term.sum_large = x;
+      mine.push_back(term);
+    };
+    internal::ElementSink<W, decltype(visit), S> sink(
+        problem.dets[i], problem.ints, epsilon_large / std::abs(ci), visit);
+    ForEachExcitation(problem.dets[i], occ, epsilon / std::abs(ci),
+                      problem.ints, problem.heat_bath, problem.filter, &sink);
+    if (flip != nullptr) {
+      std::sort(mine.begin(), mine.end(),
+                [](const Term& a, const Term& b) { return a.det < b.det; });
+    }
+    size_t k = 0;
+    while (k < mine.size()) {
+      Term merged = mine[k];
+      size_t next = k + 1;
+      while (flip != nullptr && next < mine.size() &&
+             mine[next].det == merged.det) {
+        merged.sum += mine[next].sum;
+        merged.sum_large += mine[next].sum_large;
+        ++next;
+      }
+      k = next;
+      Term term;
+      term.det = merged.det;
+      term.sum = linear * merged.sum;
+      term.square = quadratic * std::norm(merged.sum);
+      term.sum_large = linear * merged.sum_large;
+      term.square_large = quadratic * std::norm(merged.sum_large);
+      emit(term);
+    }
+  };
+  auto contribution = [&](const Term& term, double energy_a,
+                          std::vector<double>* values) {
+    const double denominator =
+        (problem.energy - energy_a) * n * (n - 1.0) /
+        internal::ExternalWeight(term.det, flip != nullptr);
+    (*values)[0] = (std::norm(term.sum) + term.square) / denominator;
+    (*values)[1] =
+        (std::norm(term.sum_large) + term.square_large) / denominator;
+  };
+  const std::vector<double> sums = internal::SumOverExternalDets<W, Term>(
+      indices.size(), problem.sorted_dets, problem.ints, problem.num_batches, 2,
+      problem.comm, generate, contribution);
+  StochasticEstimate estimate;
+  estimate.small = sums[0];
+  estimate.large = sums[1];
+  return estimate;
+}
+
 struct PtResult {
   double correction = 0.0;  // E2
   double error = 0.0;       // standard error of the mean; 0 if deterministic
@@ -559,6 +647,43 @@ PtResult RunPerturbation(const PtProblem<W, Filter, S>& problem,
 
   const DeterminantSampler sampler(problem.coefficients, problem.comm,
                                    problem.flip);
+  if (pt.pooled) {
+    // One estimate per iteration from the samples drawn alike on every rank.
+    std::mt19937_64 stream(Mix64(pt.seed) ^
+                           Mix64(0x9e3779b97f4a7c15ULL * (root + 1)));
+    double sums[3] = {0.0, 0.0, 0.0};
+    result.converged = false;
+    for (int iter = 1; iter <= pt.max_iterations; ++iter) {
+      const StochasticEstimate estimate =
+          PtPooledSample(problem, pt.epsilon2, epsilon_large, pt.num_samples,
+                         sampler, &stream);
+      const double value =
+          pt.method == PtMethod::kSemistochastic
+              ? deterministic_part + estimate.small - estimate.large
+              : estimate.small;
+      sums[0] += 1.0;
+      sums[1] += value;
+      sums[2] += value * value;
+      result.num_iterations = iter;
+      result.num_estimates = iter;
+      result.correction = sums[1] / sums[0];
+      if (iter < pt.min_iterations) continue;
+      const double variance = std::max(
+          0.0, (sums[2] - sums[1] * sums[1] / sums[0]) / (sums[0] - 1.0));
+      result.error = std::sqrt(variance / sums[0]);
+      if (print) {
+        std::printf(
+            "  root %d iter %5d  this iteration %16.10f  average "
+            "%16.10f  error %.2e\n",
+            root, iter, value, result.correction, result.error);
+      }
+      if (result.error < pt.target_error) {
+        result.converged = true;
+        break;
+      }
+    }
+    return result;
+  }
   const int num_threads = omp_get_max_threads();
   // One random stream per walker, different on every rank and for every
   // root.

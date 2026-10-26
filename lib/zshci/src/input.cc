@@ -166,6 +166,7 @@ Json ToJson(const Input& in) {
              {"epsilon2", in.pt.epsilon2},
              {"epsilon2_large", in.pt.epsilon2_large},
              {"num_samples", in.pt.num_samples},
+             {"estimator", in.pt.pooled ? "pooled" : "walkers"},
              {"min_iterations", in.pt.min_iterations},
              {"max_iterations", in.pt.max_iterations},
              {"target_error", in.pt.target_error},
@@ -452,6 +453,12 @@ Input ParseInput(const std::string& text) {
     pt.Get("epsilon2", &in.pt.epsilon2);
     pt.Get("epsilon2_large", &in.pt.epsilon2_large);
     pt.Get("num_samples", &in.pt.num_samples);
+    std::string estimator = "walkers";
+    pt.Get("estimator", &estimator);
+    if (estimator != "walkers" && estimator != "pooled") {
+      pt.Fail("estimator", "must be \"walkers\" or \"pooled\"");
+    }
+    in.pt.pooled = estimator == "pooled";
     pt.Get("min_iterations", &in.pt.min_iterations);
     pt.Get("max_iterations", &in.pt.max_iterations);
     pt.Get("target_error", &in.pt.target_error);

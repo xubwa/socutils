@@ -3363,6 +3363,24 @@ void TestSpinFlip() {
     std::printf("      semistochastic - deterministic: %.2e\n", diff);
     Expect(std::abs(diff) < 1e-5,
            "spin_flip semistochastic PT agrees with the deterministic one");
+    // The pooled estimator, without and with spin_flip.
+    const std::string pooled =
+        ", \"pt\": {\"method\": \"semistochastic\", \"epsilon2\": 1e-7, "
+        "\"epsilon2_large\": 3e-4, \"target_error\": 2e-6, "
+        "\"num_samples\": 400, \"estimator\": \"pooled\"}";
+    double worst = 0.0;
+    for (int flip : {0, 1}) {
+      const SpinFlipRun run =
+          RunSpinFlipCase(big, base + "/sel_pooled" + std::to_string(flip), hf,
+                          1, flip, 2e-3, pooled, 6);
+      const double d = run.energies[0] - sel_plain.energies[0];
+      std::printf("      pooled (spin_flip %d) - deterministic: %.2e\n", flip,
+                  d);
+      worst = std::max(worst, std::abs(d));
+    }
+    Expect(worst < 1e-5,
+           "pooled semistochastic PT agrees with the deterministic one, "
+           "without and with spin_flip");
   }
   {
     RunSpinFlipCase(big, base + "/sel_resume", hf, 1, 1, 2e-3, det_pt, 3,

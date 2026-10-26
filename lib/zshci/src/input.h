@@ -155,6 +155,14 @@ struct PtInput {
   // estimate; the iterations stop when the standard error of all estimates
   // so far falls below target_error.
   int num_samples = 200;
+  // "estimator": "walkers" (default) as above; "pooled": in every iteration
+  // num_samples determinants are drawn in all (the same on every rank) and
+  // give one estimate, all ranks and threads generating and merging its
+  // terms as the deterministic sum does - Dice's way, with num_samples the
+  // samples of all its ranks together. The error is then that of the
+  // iteration estimates. Far less memory than walkers of that many samples,
+  // and with many samples per estimate the estimator varies much less.
+  bool pooled = false;
   int min_iterations = 5;
   int max_iterations = 1000;
   double target_error = 1e-4;
