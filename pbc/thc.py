@@ -370,10 +370,16 @@ class THCExchange:
         K[np.ix_(sm, sm)] = P.T @ Mmn @ P
         t_ss = time.time() - t
         t = time.time()
-        J3 = self.J.copy()
-        J3[:, self.ss] = self.j_thc_ss()
-        K += k_from_factors(self.C, J3, dm, nao) + k_from_factors(J3, self.C, dm, nao) \
-            - k_from_factors(self.Y, self.Y, dm, nao)
+        if getattr(self, 'nonrobust', False):                        # same form as get_k_occ
+            J3 = np.zeros_like(self.J)
+            J3[:, self.ss] = self.j_thc_ss()
+            K += k_from_factors(self.C, J3, dm, nao) + k_from_factors(J3, self.C, dm, nao) \
+                + k_from_factors(self.Y, self.Y, dm, nao)
+        else:
+            J3 = self.J.copy()
+            J3[:, self.ss] = self.j_thc_ss()
+            K += k_from_factors(self.C, J3, dm, nao) + k_from_factors(J3, self.C, dm, nao) \
+                - k_from_factors(self.Y, self.Y, dm, nao)
         Lss = np.zeros_like(self.Llr)
         Lss[:, self.ss] = self.Llr[:, self.ss]
         K += k_from_factors(self.Llr, self.Llr, dm, nao) - k_from_factors(Lss, Lss, dm, nao)
@@ -445,17 +451,21 @@ class THCExchange:
                     K[s][s2] += sign * k
 
         naux = len(self.C)
+        nonrobust = getattr(self, 'nonrobust', False)
         for p0 in range(0, naux, blk):
             p1 = min(p0 + blk, naux)
             Cb = self.C[p0:p1]
             if not Cb.any():
                 continue
-            J3 = self.J[p0:p1].copy()
+            if nonrobust:                                              # CX-SS one-sided, CX-CX C^T M C
+                J3 = np.zeros((p1 - p0, self.J.shape[1]))
+            else:
+                J3 = self.J[p0:p1].copy()
             J3[:, self.ss] = self.A[p0:p1] @ X
             HC = half(Cb)
             acc(HC, half(J3), 1., swap=True)                           # (C, J3) + (J3, C)
             HY = half(self.Y[p0:p1])
-            acc(HY, HY, -1.)
+            acc(HY, HY, 1. if nonrobust else -1.)
         for p0 in range(0, len(self.Llr), blk):
             p1 = min(p0 + blk, len(self.Llr))
             HL = half(self.Llr[p0:p1])
@@ -552,9 +562,10 @@ class THCJK:
     split_direct.periodic(mf, THCJK(...)) gives the periodic spinor SCF.'''
 
     def __init__(self, cell, aux, alpha_c=4., nmu_factor=16., selector='coarse', omega=OMEGA, nuc_zeta=1e12,
-                 verbose=True):
+                 verbose=True, local_rcut=None):
         self.cell, self.aux, self.alpha_c, self.nmu_factor = cell, aux, alpha_c, nmu_factor
         self.selector, self.omega, self.nuc_zeta, self.verbose = selector, omega, nuc_zeta, verbose
+        self.local_rcut = local_rcut   # Angstrom: pair-atom local fit of the CX pairs (thc_local), non-robust K
         self._built = False
 
     def build(self):
@@ -567,6 +578,15 @@ class THCJK:
         self.T = np.linalg.lstsq(cs.pbc_intor('int1e_ovlp'), pgto.intor_cross('int1e_ovlp', cs, cell), rcond=1e-12)[0]
         self.th = THCExchange(cs, self.aux, self.alpha_c, self.omega, self.verbose, self.selector,
                               self.nuc_zeta).build_common()
+        if self.local_rcut:
+            from socutils.pbc.thc_local import local_cx_fit
+            th = self.th
+            compact = np.ones(th.nao, bool)
+            compact[th.smooth] = False
+            th.C = local_cx_fit(cs, self.aux, compact, omega=self.omega, r_cut=self.local_rcut, verbose=self.verbose)[0]
+            ew, U = scipy.linalg.eigh(th.M)
+            th.Y = ((U * np.sqrt(np.maximum(ew, 0))) @ U.T) @ th.C
+            th.nonrobust = True
         self.th.build_thc(int(round(self.nmu_factor * len(self.th.smooth))))
         self.S = cell.pbc_intor('int1e_ovlp')
         self._built = True

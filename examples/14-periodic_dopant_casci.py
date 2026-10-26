@@ -68,6 +68,7 @@ p.add_argument('--jk', choices=('rsdf', 'thc'), default='rsdf',
                     "--active-eri three-index)")
 p.add_argument('--thc-alpha-c', type=float, default=4., help='THCJK: compact/smooth exponent split')
 p.add_argument('--thc-nmu', type=float, default=16., help='THCJK: interpolation points per smooth function')
+p.add_argument('--thc-local-rcut', type=float, default=0., help='THCJK: pair-atom local fit of the compact pairs within this distance (A), non-robust K (0: Gamma Bloch-domain fit)')
 p.add_argument('--active-eri', choices=('cderi', 'three-index'), default='cderi',
                help="CASCI (tu|vw): 'cderi' (_CDERIS on the stored vectors) or 'three-index' (RSDF.active_vectors: "
                     "SR B_P,tu fitted + exact LR rho_tu(G), no transformed global tensor; needs --lr gspace)")
@@ -207,7 +208,7 @@ if args.jk == 'thc':
     r.verbose = 4
     r.stdout = sys.stdout
     jkobj = THCJK(cell, aux, alpha_c=args.thc_alpha_c, nmu_factor=args.thc_nmu, omega=args.omega,
-                  nuc_zeta=spinor_scf.nuclear_zeta(cell)).build()
+                  nuc_zeta=spinor_scf.nuclear_zeta(cell), local_rcut=args.thc_local_rcut or None).build()
     log('THCJK built in %.0f s: N_mu %d (smooth %d), %s' % (time.time() - t, len(jkobj.th.pts), len(jkobj.th.smooth),
         ', '.join('%s %.0f s' % kv for kv in jkobj.th.timings.items())))
 elif os.path.exists(f_cderi):
