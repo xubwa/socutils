@@ -77,6 +77,12 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
     pidx[tj, ti] = np.arange(len(ti))
     C = np.zeros((naux, len(ti)))
     ncluster = nimgpair = 0
+    emin = np.array([min(cell.bas_exp(i).min() for i in range(cell.nbas) if cell.bas_atom(i) == at)
+                     for at in range(cell.natm)])
+    alpha_c = min(cell.bas_exp(i).min() for i in range(cell.nbas)
+                  if compact[cell.ao_loc_nr()[i]])
+    metric_cache = {}
+    nskip = 0
     for A in range(cell.natm):
         a0, a1 = ao_loc[A]
         cA = np.where(compact[a0:a1])[0] + a0
@@ -84,13 +90,25 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
             continue
         for B in range(cell.natm):
             b0, b1 = ao_loc[B]
+            xs_all = np.arange(b0, b1)
+            # pairs fitted from this side: c compact on A; for two compact functions only the packed
+            # (larger index first) orientation, i.e. skip (c, x) with x compact and x > c
+            keep = ~(compact[xs_all][None, :] & (xs_all[None, :] > cA[:, None]))
+            if not keep.any():
+                continue
             d = np.linalg.norm(X[B] + T - X[A], axis=1)
             for L in np.where(d <= rc)[0]:
+                # the product of a compact function (>= alpha_c) and the most diffuse function of B is negligible
+                ab = alpha_c * emin[B] / (alpha_c + emin[B])
+                if ab * d[L] ** 2 > 36.:
+                    nskip += 1
+                    continue
                 same = B == A and d[L] < 1e-8
                 atoms = [A] if same else [A, B]
                 coords = [X[A]] if same else [X[A], X[B] + T[L]]
                 mol = _atom_mol(cell, atoms, coords, basis)
-                # fit domain: the pair's atoms + the neighbours of A within r_dom
+                nbA = sum(1 for i in range(mol.nbas) if mol.bas_atom(i) == 0)
+                # fit domain in a canonical order (the metric of (A, B + L) and (B, A - L) is computed once)
                 datoms, dcoords = list(atoms), list(coords)
                 for E in range(cell.natm):
                     for t_ in T[np.linalg.norm(X[E] + T - X[A], axis=1) <= r_dom / BOHR]:
@@ -98,35 +116,36 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
                         if all(np.linalg.norm(xe - c_) > 1e-6 for c_ in dcoords):
                             datoms.append(E)
                             dcoords.append(xe)
+                order = sorted(range(len(datoms)), key=lambda k: (datoms[k], tuple(np.round(dcoords[k] - dcoords[0], 6))))
+                rel = [np.round(dcoords[k] - dcoords[order[0]], 6) for k in order]
+                key = tuple((datoms[k], tuple(r_)) for k, r_ in zip(order, rel))
+                if len(order) == 2 and datoms[order[0]] == datoms[order[1]] and tuple(rel[1]) < (0., 0., 0.):
+                    order = order[::-1]                                # images of one atom: one orientation
+                    key = tuple((datoms[k], tuple(np.round(dcoords[k] - dcoords[order[0]], 6))) for k in order)
+                datoms = [datoms[k] for k in order]
+                dcoords = [dcoords[k] for k in order]
                 amol = _atom_mol(auxcell, datoms, dcoords, abasis)
                 with mol.with_range_coulomb(-omega), amol.with_range_coulomb(-omega):
-                    j3 = df_incore.aux_e2(mol, amol, intor='int3c2e', aosym='s1')   # (nao_m, nao_m, naux_m)
-                    m2 = amol.intor('int2c2e')
-                nA = a1 - a0
-                ic = cA - a0                                      # compact functions of A in the cluster
-                jx = np.arange(nA) if same else nA + np.arange(b1 - b0)   # functions of B (+ L)
-                xs = np.arange(a0, a1) if same else np.arange(b0, b1)
-                blk = j3[np.ix_(ic, jx)]                         # (n_c, n_x, naux_m)
-                # pairs fitted from this side: c compact on A; for two compact functions only the packed
-                # (larger index first) orientation, i.e. skip (c, x) with x compact and x > c
-                keep = np.ones((len(cA), len(xs)), bool)
-                both = compact[xs][None, :] & np.ones((len(cA), 1), bool)
-                keep &= ~(both & (xs[None, :] > cA[:, None]))
-                if not keep.any():
-                    continue
-                v, e = _inv_metric(.5 * (m2 + m2.T), lindep)
+                    jsl = (0, nbA) if same else (nbA, mol.nbas)
+                    j3 = df_incore.aux_e2(mol, amol, intor='int3c2e', aosym='s1',
+                                          shls_slice=(0, nbA) + jsl + (0, amol.nbas))
+                    if key not in metric_cache:
+                        m2 = amol.intor('int2c2e')
+                        metric_cache[key] = _inv_metric(.5 * (m2 + m2.T), lindep)
+                v, e = metric_cache[key]
+                blk = j3[cA - a0]                                  # (n_c, n_x, naux_m)
                 coef = ((v / e) @ (v.T @ blk.reshape(-1, blk.shape[2]).T)).T.reshape(blk.shape)
-                # aux of the cluster -> cell aux index
                 pa = np.concatenate([np.arange(*aux_loc[at]) for at in datoms])
-                cols = pidx[cA[:, None], xs[None, :]]
+                cols = pidx[cA[:, None], xs_all[None, :]]
                 kk = np.where(keep)
                 Cblk = np.zeros((naux, len(kk[0])))
                 np.add.at(Cblk, pa, coef[kk[0], kk[1]].T)
                 C[:, cols[kk]] += Cblk
                 ncluster += 1
                 nimgpair += len(kk[0])
-    stats = {'clusters': ncluster, 'image pairs': nimgpair, 'time': time.time() - t0}
+        metric_cache.clear() if len(metric_cache) > 2000 else None
+    stats = {'clusters': ncluster, 'image pairs': nimgpair, 'skipped': nskip, 'time': time.time() - t0}
     if verbose:
-        print('local CX fit: %d two-atom clusters, %d image pairs, r_cut %.1f A (%.0f s)'
-              % (ncluster, nimgpair, r_cut, stats['time']), flush=True)
+        print('local CX fit: %d two-atom clusters (%d negligible skipped), %d image pairs, r_cut %.1f A (%.0f s)'
+              % (ncluster, nskip, nimgpair, r_cut, stats['time']), flush=True)
     return C, stats
