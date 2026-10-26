@@ -76,6 +76,11 @@ zg_plan *zg_plan_product(int nspinor, int nelec, int nside_a, int64_t nstr_a,
                          const int *mods, const int *targets);
 /* Whether the plan is a product space. */
 int zg_is_product(const zg_plan *plan);
+/* Whether a product plan is its own mirror image: the same number of
+ * spinors on both sides, the same strings, and spinor j of side B with the
+ * labels of spinor j of side A (the spin flip of a spatial product space
+ * with equal alpha and beta lists). */
+int zg_is_mirror(const zg_plan *plan);
 /* The strings of a side of a product plan in their order, words[n * nwords]
  * (nwords = ceil(nside / 64)), if words is not NULL; returns n. */
 int64_t zg_product_strings(const zg_plan *plan, int side, uint64_t *words);
@@ -122,6 +127,16 @@ void zg_sigma_blas_d(const zg_plan *plan, const double *v, const double *c,
                      double *sigma);
 void zg_sigma_blas_z(const zg_plan *plan, const double _Complex *v,
                      const double _Complex *c, double _Complex *sigma);
+/* sigma = H c for c with C[b][a] = parity C[a][b] (parity +1 or -1), on a
+ * mirror plan (zg_is_mirror) with integrals that the exchange of the sides
+ * maps to themselves and terms only of the kinds (AA,AA), (AB,AB), (BB,BB)
+ * (spatial orbitals): sigma = X + parity X^T + (AB,AB) c with X the (AA,AA)
+ * part, no transposed half.  Returns 1, or 0 (sigma untouched) if the plan
+ * or the integrals do not qualify. */
+int zg_sigma_flip_d(const zg_plan *plan, const double *v, const double *c,
+                    double *sigma, int parity);
+int zg_sigma_flip_z(const zg_plan *plan, const double _Complex *v,
+                    const double _Complex *c, double _Complex *sigma, int parity);
 /* out[npair * npair] = <bra| A+_P A_R |ket>, P the row. */
 void zg_rdm2_d(const zg_plan *plan, const double *bra, const double *ket,
                double *out);

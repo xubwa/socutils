@@ -1514,6 +1514,7 @@ void zg_dets(const zg_plan *p, uint64_t *words) {
 /* -- product spaces (PRODUCT_SPACE.md) ------------------------------------ */
 
 int zg_is_product(const zg_plan *p) { return p->product; }
+int zg_is_mirror(const zg_plan *p) { return p->mirror; }
 
 int64_t zg_product_strings(const zg_plan *p, int side, uint64_t *words) {
   if (!p->product) return 0;
@@ -1937,6 +1938,14 @@ zg_plan *zg_plan_product(int nspinor, int nelec, int nside_a, int64_t nstr_a,
   }
   p->tasks = NULL;
   p->ntask = 0;
+  /* Mirror image: the same strings and labels on both sides. */
+  p->mirror = nside[0] == nside[1] && sa->nsid == sb->nsid && sa->nbucket == sb->nbucket &&
+              memcmp(p->pstr[0], p->pstr[1], (size_t)sa->nsid * p->pwords[0] * 8) == 0;
+  for (int set = 0; set < nsets && p->mirror; ++set) {
+    for (int j = 0; j < nside[0] && p->mirror; ++j) {
+      p->mirror = labels[set * nspinor + j] == labels[set * nspinor + nside[0] + j];
+    }
+  }
   setup_block(p);
   setup_blas(p);
   /* The operator tables of the kinds of the BLAS kernel: rows on side h,

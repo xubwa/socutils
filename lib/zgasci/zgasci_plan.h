@@ -194,7 +194,7 @@ struct zg_plan {
   /* Product plans (zg_plan_product): the strings of each side in sid order
    * (pwords words each) and the operator tables.  The sub-groups are only
    * pseudo-sub-groups there, and a class is an electron count. */
-  int product;
+  int product, mirror;
   int pwords[2];
   uint64_t *pstr[2];
   int npat[2];
