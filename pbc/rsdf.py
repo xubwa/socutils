@@ -265,6 +265,9 @@ class RSDF(lib.StreamObject):
         self.aux_bound = 'max'       # aux bound units: 'max' (default), 'l2' or 'coulomb'
         self.cderi_to_disk = False   # force HDF5 storage (default: only when larger than max_memory/2)
         self.cderi_in_memory = False  # never HDF5 (also above max_memory/2): no temporary file on disk
+        self.lr_columns = None        # with sr_fit = False: keep the exact LR rows only for these packed pair columns
+                                      # (sorted int array; empty: none, the nuclear terms only); self.cderi is then
+                                      # (nlr, len(lr_columns)) and get_jk/loop do not apply
         self.sr_fit = True            # lr='gspace' only: False leaves the SR (erfc) part out of the vectors (no SR
                                       # fitted rows; the vectors are the exact LR rows), for a direct SR J/K
                                       # (socutils.pbc.split_direct); nuclear terms, S and c_g0 are unchanged
@@ -523,7 +526,12 @@ class RSDF(lib.StreamObject):
         self._cderi_file = None
         self._h5 = None
         too_big = nvec * npair * 8 > .5 * self.max_memory * 1e6 and not getattr(self, 'cderi_in_memory', False)
-        if _active is not None:
+        lr_cols = None if self.lr_columns is None else np.asarray(self.lr_columns, dtype=np.int64)
+        if lr_cols is not None and (self.sr_fit or not gspace or _active is not None):
+            raise ValueError('RSDF.lr_columns needs lr=gspace and sr_fit=False')
+        if lr_cols is not None:
+            cderi = np.empty((nlr, len(lr_cols)))
+        elif _active is not None:
             cderi = None
             act_sr = np.zeros((naux, _active['dsym_dim']), dtype=complex)
             act_lr = np.zeros((nlr, _active['dsym_dim']), dtype=complex) if gspace else None
@@ -619,7 +627,12 @@ class RSDF(lib.StreamObject):
                     if _active is not None:
                         act_lr[2 * g0:2 * g1] += rows.reshape(-1, p1 - p0) @ dsym
                     else:
-                        cderi[nkept + 2 * g0:nkept + 2 * g1, p0:p1] = rows.reshape(-1, p1 - p0)
+                        if lr_cols is not None:
+                            c0_, c1_ = np.searchsorted(lr_cols, (p0, p1))
+                            if c1_ > c0_:
+                                cderi[2 * g0:2 * g1, c0_:c1_] = rows.reshape(-1, p1 - p0)[:, lr_cols[c0_:c1_] - p0]
+                        else:
+                            cderi[nkept + 2 * g0:nkept + 2 * g1, p0:p1] = rows.reshape(-1, p1 - p0)
                     rows = None
                 PgR = PgI = fw = None
             # overlap at G = 0 (same pair list), for the SR G = 0 removal
@@ -629,7 +642,7 @@ class RSDF(lib.StreamObject):
             S[p0:p1] = Sb
             vnuc[p0:p1] = -Bp[naux:].sum(axis=0)
             tb = logger.perf_counter()
-            if _active is None:
+            if _active is None and lr_cols is None:
                 cderi[:nkept, p0:p1] = W @ Bp[:naux]
             if self.keep_raw and not gspace:
                 if self.int3c is None:
