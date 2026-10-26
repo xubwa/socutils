@@ -27,11 +27,14 @@
 #include "gas_space.h"
 #include "hamiltonian.h"
 #include "heat_bath.h"
+#include "highfive/H5File.hpp"
 #include "integrals.h"
+#include "output.h"
 #include "pt.h"
 #include "rdm.h"
 #include "select.h"
 #include "sparse_h.h"
+#include "spin_flip.h"
 
 namespace zshci {
 namespace {
@@ -3063,6 +3066,327 @@ void TestGasCi(const Integrals<Complex>& complex_ints) {
           "/zshci_test_" + ScalarTraits<S>::kName + ".ckpt");
 }
 
+// ---------------------------------------------------------------------------
+// Spin-flip symmetry ("spin_flip", spin_flip.h).
+
+// Random real integrals over n spatial orbitals with increasing orbital
+// energies, so that the low states are of the usual kind.
+Integrals<double> RandomSpatialIntegrals(int n, unsigned seed) {
+  Integrals<double> ints = Integrals<double>::Spatial(n, {});
+  std::mt19937 rng(seed);
+  std::uniform_real_distribution<double> uniform(-1.0, 1.0);
+  for (int p = 0; p < n; ++p) {
+    for (int q = 0; q <= p; ++q) {
+      const double h = p == q ? 0.5 * p - 2.0 : 0.08 * uniform(rng);
+      ints.SetSpatialOneBody(p, q, h);
+      ints.SetSpatialOneBody(q, p, h);
+      for (int r = 0; r <= p; ++r) {
+        for (int s = 0; s <= r; ++s) {
+          const double v = p == q && r == s ? 0.25 + 0.05 * uniform(rng)
+                                            : 0.04 * uniform(rng);
+          ints.SetSpatialTwoBody(p, q, r, s, v);
+        }
+      }
+    }
+  }
+  ints.Finalize();
+  return ints;
+}
+
+struct SpinFlipRun {
+  std::vector<double> energies;  // with the perturbative correction if any
+  std::vector<Det<1>> dets;      // of wfn.h5
+  std::vector<std::vector<double>> vectors;
+  std::string prefix;
+};
+
+// A select-mode run over spatial orbitals; reads shci.e and wfn.h5.
+SpinFlipRun RunSpinFlipCase(const Integrals<double>& ints,
+                            const std::string& prefix, const std::string& dets,
+                            int nroots, int spin_flip, double epsilon1,
+                            const std::string& extra, int max_iter = 12,
+                            const std::string& select_extra = "") {
+  std::system(("mkdir -p " + prefix).c_str());
+  char schedule[128];
+  std::snprintf(schedule, sizeof(schedule), "[[0, %.3e]]",
+                std::max(epsilon1, 1e-14));
+  const std::string text =
+      "{\"mode\": \"select\", \"integrals\": \"unused\", \"orbitals\": "
+      "\"spatial\", \"nroots\": " +
+      std::to_string(nroots) + ", \"prefix\": \"" + prefix +
+      "\", \"dets\": " + dets +
+      ", \"spin_flip\": " + std::to_string(spin_flip) +
+      ", \"select\": {\"schedule\": " + schedule +
+      ", \"max_iter\": " + std::to_string(max_iter) +
+      ", \"energy_tol\": 1e-13" + select_extra +
+      "}, \"davidson\": {\"tol\": 1e-10, \"checkpoint_every\": 1}, "
+      "\"output_level\": 0" +
+      extra + "}";
+  RunSelect<1, double>(ParseInput(text), ints, Comm());
+  SpinFlipRun run;
+  run.prefix = prefix;
+  run.energies.assign(nroots, 0.0);
+  std::FILE* file = std::fopen((prefix + "/shci.e").c_str(), "rb");
+  if (file != nullptr) {
+    if (std::fread(run.energies.data(), sizeof(double), nroots, file) !=
+        static_cast<size_t>(nroots)) {
+      run.energies.assign(nroots, 0.0);
+    }
+    std::fclose(file);
+  }
+  int width = 0;
+  const std::vector<uint64_t> words = ReadDetWords(prefix + "/wfn.h5", &width);
+  for (uint64_t word : words) {
+    Det<1> det;
+    det.words[0] = word;
+    run.dets.push_back(det);
+  }
+  ReadCoefficients(prefix + "/wfn.h5", run.dets.size(), nroots, &run.vectors);
+  return run;
+}
+
+// <psi|S^2|psi> for a normalized vector over determinants of Ms = 0:
+// |S+ psi|^2, S+ = sum_P a+(2P) a(2P+1), which has no signs in this order.
+double SpinSquared(const std::vector<Det<1>>& dets,
+                   const std::vector<double>& c) {
+  std::map<uint64_t, double> raised;
+  for (size_t i = 0; i < dets.size(); ++i) {
+    const uint64_t x = dets[i].words[0];
+    for (int p = 0; p < 32; ++p) {
+      const uint64_t alpha = 1ULL << (2 * p), beta = 1ULL << (2 * p + 1);
+      if ((x & beta) && !(x & alpha)) raised[(x ^ beta) | alpha] += c[i];
+    }
+  }
+  double sum = 0.0;
+  for (const auto& item : raised) sum += item.second * item.second;
+  return sum;
+}
+
+double MaxDatasetDifference(const std::string& a, const std::string& b,
+                            const std::string& name) {
+  HighFive::File fa(a, HighFive::File::ReadOnly);
+  HighFive::File fb(b, HighFive::File::ReadOnly);
+  HighFive::DataSet da = fa.getDataSet(name), db = fb.getDataSet(name);
+  if (da.getDimensions() != db.getDimensions()) return 1e300;
+  size_t size = 1;
+  for (size_t d : da.getDimensions()) size *= d;
+  std::vector<double> va(size), vb(size);
+  da.read(va.data());
+  db.read(vb.data());
+  double diff = 0.0;
+  for (size_t k = 0; k < size; ++k) {
+    diff = std::max(diff, std::abs(va[k] - vb[k]));
+  }
+  return diff;
+}
+
+void TestSpinFlip() {
+  const std::string base =
+      std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") +
+      "/zshci_test_flip";
+  std::system(("rm -rf " + base).c_str());
+
+  // Layout: pairs come together, canonical first; expanding and projecting
+  // a vector over the functions returns it.
+  {
+    std::vector<Det<1>> dets(4);
+    for (int p : {0, 1, 2, 5}) dets[0].Set(p);  // (0a 0b 1a 2b)
+    for (int p : {0, 1, 2, 3}) dets[1].Set(p);  // closed shell
+    for (int p : {0, 1, 3, 4}) dets[2].Set(p);  // flip of dets[0]
+    for (int p : {0, 2, 4, 7}) dets[3].Set(p);  // (0a 1a 2a 3b): Ms != 0
+    std::vector<Det<1>> paired;
+    std::vector<long> source;
+    AppendPairs(std::vector<Det<1>>(dets.begin(), dets.begin() + 3),
+                SpinFlipLambda(1, 4), &paired, &source);
+    SpinFlipLayout layout(1, 4);
+    layout.Extend(MakeSpan(paired), 0);
+    std::vector<double> x = {0.3, -0.7};
+    const std::vector<double> back = layout.Project(layout.Expand(x).data());
+    bool ok = paired.size() == 3 && layout.num_functions() == 2 &&
+              std::abs(back[0] - x[0]) + std::abs(back[1] - x[1]) < 1e-15;
+    for (size_t j = 0; j < paired.size(); ++j) {
+      ok = ok && source[j] >= 0 && dets[source[j]] == paired[j];
+    }
+    std::vector<Det<1>> triplet;
+    AppendPairs(std::vector<Det<1>>{dets[1]}, SpinFlipLambda(-1, 4), &triplet);
+    bool rejects_ms = false;
+    try {
+      SpinFlipLayout other(1, 4);
+      other.Extend(Span<Det<1>>(&dets[3], 1), 0);
+    } catch (const std::exception&) {
+      rejects_ms = true;
+    }
+    Expect(ok && triplet.empty() && rejects_ms,
+           "spin_flip layout: pairs together, expand and project invert each "
+           "other, a closed shell has no odd-spin function, Ms != 0 rejected");
+  }
+
+  // Full spaces (epsilon1 = 0 fills the space): 6 electrons in 8 orbitals.
+  const Integrals<double> ints = RandomSpatialIntegrals(8, 7);
+  const std::string closed = "[[0,1,2,3,4,5]]";
+  const std::string open = "[[0,1,2,3,4,7]]";  // 0, 1 doubly, 2a 3b
+  const std::string high = "[[0,1,2,3,4,6]]";  // Ms = 1
+  const std::string rdm = ", \"rdm\": {\"one\": true, \"two\": true}";
+  const SpinFlipRun plain =
+      RunSpinFlipCase(ints, base + "/plain", closed, 6, 0, 0.0, rdm);
+  // The lowest singlet and triplet of the plain run.
+  int singlet = -1, triplet = -1;
+  std::string spins;
+  for (int k = 0; k < 6; ++k) {
+    const double s2 = SpinSquared(plain.dets, plain.vectors[k]);
+    char text[64];
+    std::snprintf(text, sizeof(text), " %.4f", s2);
+    spins += text;
+    if (singlet < 0 && std::abs(s2) < 1e-6) singlet = k;
+    if (triplet < 0 && std::abs(s2 - 2.0) < 1e-6) triplet = k;
+  }
+  std::printf("      plain roots: S^2 =%s\n", spins.c_str());
+  const SpinFlipRun even =
+      RunSpinFlipCase(ints, base + "/even", closed, 1, 1, 0.0, rdm);
+  const SpinFlipRun odd =
+      RunSpinFlipCase(ints, base + "/odd", open, 1, -1, 0.0, "");
+  const SpinFlipRun ms1 =
+      RunSpinFlipCase(ints, base + "/ms1", high, 1, 0, 0.0, "");
+  const bool found = singlet >= 0 && triplet >= 0;
+  const double e_singlet = found ? plain.energies[singlet] : 0.0;
+  const double e_triplet = found ? plain.energies[triplet] : 0.0;
+  std::printf(
+      "      singlet %.12f (+1: %.12f), triplet %.12f (-1: %.12f, "
+      "Ms = 1: %.12f)\n",
+      e_singlet, even.energies[0], e_triplet, odd.energies[0], ms1.energies[0]);
+  Expect(found && std::abs(even.energies[0] - e_singlet) < 1e-10 &&
+             even.dets.size() == plain.dets.size(),
+         "spin_flip +1 in the full space gives the lowest singlet of the "
+         "plain calculation");
+  Expect(found && std::abs(odd.energies[0] - e_triplet) < 1e-10 &&
+             std::abs(ms1.energies[0] - e_triplet) < 1e-10,
+         "spin_flip -1 gives the lowest triplet, as the Ms = 1 calculation");
+  const double s2_even = SpinSquared(even.dets, even.vectors[0]);
+  const double s2_odd = SpinSquared(odd.dets, odd.vectors[0]);
+  Expect(std::abs(s2_even) < 1e-8 && std::abs(s2_odd - 2.0) < 1e-8,
+         "the expanded vectors have S^2 = 0 and 2");
+  // The convention: c(Dbar) = lambda p(D) c(D), lambda = (-1)^(S + N/2), in
+  // the eigenvectors of the plain calculation.
+  {
+    std::map<uint64_t, size_t> where;
+    for (size_t i = 0; i < plain.dets.size(); ++i) {
+      where[plain.dets[i].words[0]] = i;
+    }
+    double worst = 0.0;
+    for (int k : {singlet, triplet}) {
+      if (k < 0) continue;
+      const int lambda = SpinFlipLambda(k == singlet ? 1 : -1, 6);
+      for (size_t i = 0; i < plain.dets.size(); ++i) {
+        const Det<1> flipped = FlipSpins(plain.dets[i]);
+        const int p = NumDoublyOccupied(plain.dets[i]) % 2 == 0 ? 1 : -1;
+        const double expected = lambda * p * plain.vectors[k][i];
+        worst = std::max(
+            worst,
+            std::abs(plain.vectors[k][where[flipped.words[0]]] - expected));
+      }
+    }
+    Expect(found && worst < 1e-8,
+           "plain eigenvectors obey c(Dbar) = (-1)^(S + N/2) p(D) c(D)");
+  }
+  {
+    const std::string a = base + "/plain/rdm_" + std::to_string(singlet) + "_" +
+                          std::to_string(singlet) + ".h5";
+    const std::string b = base + "/even/rdm_0_0.h5";
+    const double d1 = found ? MaxDatasetDifference(a, b, "dm1") : 1.0;
+    const double d2 = found ? MaxDatasetDifference(a, b, "dm2") : 1.0;
+    std::printf("      density matrices: largest differences %.1e, %.1e\n", d1,
+                d2);
+    Expect(d1 < 1e-10 && d2 < 1e-10,
+           "density matrices of the expanded vector equal those of the plain "
+           "singlet");
+  }
+
+  // Every way of holding the Hamiltonian, the one-function-per-pair space
+  // being half the size.
+  {
+    double worst = 0.0;
+    for (const std::string& mode : {"connections", "direct", "adapt"}) {
+      const std::string extra = ", \"hamiltonian\": \"" + mode + "\"" +
+                                (mode == "adapt" ? ", \"memory\": 0.0012" : "");
+      const SpinFlipRun run =
+          RunSpinFlipCase(ints, base + "/" + mode, closed, 1, 1, 0.0, extra);
+      worst = std::max(worst, std::abs(run.energies[0] - e_singlet));
+    }
+    Expect(found && worst < 1e-10,
+           "spin_flip: stored, connections, direct and adapt agree");
+  }
+
+  // Selected spaces, perturbation theory, resuming: 8 electrons in 12
+  // orbitals.
+  const Integrals<double> big = RandomSpatialIntegrals(12, 11);
+  const std::string hf = "[[0,1,2,3,4,5,6,7]]";
+  const std::string det_pt =
+      ", \"pt\": {\"method\": \"deterministic\", \"epsilon2\": 1e-7}";
+  const SpinFlipRun sel_plain =
+      RunSpinFlipCase(big, base + "/sel_plain", hf, 1, 0, 2e-3, det_pt, 6);
+  const SpinFlipRun sel_flip =
+      RunSpinFlipCase(big, base + "/sel_flip", hf, 1, 1, 2e-3, det_pt, 6);
+  std::set<uint64_t> set_plain, set_flip;
+  bool closed_under_flip = true;
+  for (const Det<1>& d : sel_plain.dets) set_plain.insert(d.words[0]);
+  for (const Det<1>& d : sel_flip.dets) set_flip.insert(d.words[0]);
+  for (const Det<1>& d : sel_flip.dets) {
+    closed_under_flip =
+        closed_under_flip && set_flip.count(FlipSpins(d).words[0]) == 1;
+  }
+  // Energies from shci.e include PT; the variational ones are in wfn.h5.
+  std::printf(
+      "      selected: %zu determinants (plain %zu), E + PT %.12f "
+      "(plain %.12f)\n",
+      sel_flip.dets.size(), sel_plain.dets.size(), sel_flip.energies[0],
+      sel_plain.energies[0]);
+  Expect(set_plain == set_flip && closed_under_flip &&
+             sel_plain.dets.size() > 1000 &&
+             std::abs(sel_plain.energies[0] - sel_flip.energies[0]) < 1e-10,
+         "selected space closed under the flip and equal to the plain one, "
+         "with the same energy and deterministic PT correction");
+  {
+    // A selected space is closed under the flip but not complete in spin:
+    // S^2 is near, not at, its value.
+    const double s2 = SpinSquared(sel_flip.dets, sel_flip.vectors[0]);
+    std::printf("      selected spin_flip +1: S^2 = %.2e\n", s2);
+    Expect(std::abs(s2) < 0.05, "selected spin_flip +1 vector has S^2 near 0");
+  }
+  {
+    const std::string ss =
+        ", \"pt\": {\"method\": \"semistochastic\", \"epsilon2\": 1e-7, "
+        "\"epsilon2_large\": 3e-4, \"target_error\": 2e-6, "
+        "\"num_samples\": 100}";
+    const SpinFlipRun stochastic =
+        RunSpinFlipCase(big, base + "/sel_ss", hf, 1, 1, 2e-3, ss, 6);
+    const double diff = stochastic.energies[0] - sel_plain.energies[0];
+    std::printf("      semistochastic - deterministic: %.2e\n", diff);
+    Expect(std::abs(diff) < 1e-5,
+           "spin_flip semistochastic PT agrees with the deterministic one");
+  }
+  {
+    RunSpinFlipCase(big, base + "/sel_resume", hf, 1, 1, 2e-3, det_pt, 3,
+                    ", \"checkpoint\": true");
+    const SpinFlipRun resumed =
+        RunSpinFlipCase(big, base + "/sel_resume", hf, 1, 1, 2e-3, det_pt, 6,
+                        ", \"checkpoint\": true, \"resume\": true");
+    Expect(std::abs(resumed.energies[0] - sel_flip.energies[0]) < 1e-10 &&
+               resumed.dets.size() == sel_flip.dets.size(),
+           "spin_flip selection resumed from its checkpoint ends as an "
+           "uninterrupted one");
+  }
+  {
+    // Odd spin from an open-shell start.
+    const SpinFlipRun sel_odd = RunSpinFlipCase(
+        big, base + "/sel_odd", "[[0,1,2,3,4,5,6,9]]", 1, -1, 2e-3, "", 6);
+    const double s2 = SpinSquared(sel_odd.dets, sel_odd.vectors[0]);
+    std::printf("      selected spin_flip -1: S^2 = %.4f, %zu determinants\n",
+                s2, sel_odd.dets.size());
+    Expect(std::abs(s2 - 2.0) < 0.05 && sel_odd.dets.size() > 1000,
+           "selected spin_flip -1 vector has S^2 near 2");
+  }
+  std::system(("rm -rf " + base).c_str());
+}
 }  // namespace
 }  // namespace zshci
 
@@ -3109,6 +3433,7 @@ int main(int argc, char** argv) {
     zshci::TestGasCi<zshci::Complex>(ints);
     zshci::TestBlockedIntegrals(ints);
     zshci::TestSpatialIntegrals();
+    zshci::TestSpinFlip();
     zshci::TestSpinStringConnections<1>(
         10, 0,
         "group string tables find the connected pairs of spin-conserving "
