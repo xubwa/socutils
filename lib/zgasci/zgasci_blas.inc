@@ -1078,6 +1078,55 @@ void ZG_NAME(zg_sigma_blas)(const zg_plan *p, const ZG_SCALAR *v,
   for (int k = 0; k < 9; ++k) free(w[k]);
 }
 
+int ZG_NAME(zg_sigma_flip)(const zg_plan *p, const ZG_SCALAR *v, const ZG_SCALAR *c,
+                           ZG_SCALAR *sigma, int parity) {
+  if (!p->product || !p->mirror || (parity != 1 && parity != -1)) return 0;
+  ZG_SCALAR *w[9];
+  int live[9];
+  for (int k = 0; k < 9; ++k) w[k] = ZG_NAME(term_matrix)(p, &p->terms[k], v, &live[k]);
+  /* Only (AA,AA) = 0, (AB,AB) = 4, (BB,BB) = 8, and W of (BB,BB) that of
+   * (AA,AA). */
+  int good = p->terms[0].nx == p->terms[8].ny;
+  for (int k = 0; k < 9 && good; ++k) good = !live[k] || k == 0 || k == 4 || k == 8;
+  for (int64_t i = 0; good && i < p->terms[0].nx; ++i) good = w[0][i] == w[8][i];
+  if (good) {
+    double stat[4] = {0, 0, 0, 0};
+    const double t0 = omp_get_wtime();
+    ZG_SCALAR *x = malloc(((size_t)p->dim + 1) * sizeof(ZG_SCALAR));
+#pragma omp parallel for schedule(static)
+    for (int64_t i = 0; i < p->dim; ++i) x[i] = 0;
+    for (int k = 0; k < p->nbkind[0]; ++k) {
+      const zg_bkind *kd = &p->bkinds[0][k];
+      if (kd->kc == 0 && live[kd->term]) ZG_NAME(blas_rows)(p, 0, kd, w[kd->term], c, x, stat);
+    }
+    /* The transposed layout of a mirror plan is the native one of X^T. */
+    ZG_NAME(blas_transpose)(p, x, sigma, 0);
+#pragma omp parallel for schedule(static)
+    for (int64_t i = 0; i < p->dim; ++i) sigma[i] = x[i] + (parity > 0 ? sigma[i] : -sigma[i]);
+    free(x);
+    const double t1 = omp_get_wtime();
+    int only[9] = {0, 0, 0, 0, live[4], 0, 0, 0, 0};
+    int64_t cols = 256;
+    double direct_ratio = 16.0, direct_small = 512.0;
+    const char *text = getenv("ZGASCI_BLAS_COLS");
+    if (text && atol(text) > 0) cols = atol(text);
+    text = getenv("ZGASCI_BLAS_DIRECT");
+    if (text) direct_ratio = atof(text);
+    text = getenv("ZGASCI_BLAS_SMALL");
+    if (text) direct_small = atof(text);
+    if (only[4]) {
+      ZG_NAME(blas_half)(p, 0, w, only, c, sigma, cols, direct_ratio, direct_small, stat,
+                         NULL, NULL);
+    }
+    if (getenv("ZGASCI_STATS")) {
+      fprintf(stderr, "zgasci flip: %.2f s for X + X^T, %.2f s for (AB,AB)\n", t1 - t0,
+              omp_get_wtime() - t1);
+    }
+  }
+  for (int k = 0; k < 9; ++k) free(w[k]);
+  return good;
+}
+
 /* g[P,R] = <bra| A+_P A_R |ket> by the loops of blas_half in density mode:
  * G[x][y] = <bra| O_A(x) O_B(y) (with the sign of the kind) |ket> for each
  * kind, then g[P,R] = sign * G[x][y] as term_matrix maps them. */
