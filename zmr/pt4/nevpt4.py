@@ -31,11 +31,17 @@ energies E2 = <V x>, E3 = <x|V - E1|x>, E4 = <w|R|w>, w = Q (V - E1) x.
                          of |J> and of the reference functions degenerate
                          with it (QD-NEVPT2); CAS eigenstates as reference
                          functions (H1 diagonal), no renormalization term.
-                         At fourth order the second-order wave functions of
-                         the columns lie in different spaces, and energy
-                         differences are unbalanced (O2 X, PVDZ-X2C-TP: the
-                         fourth-order terms of 0+ and +-1 differ by 6.6e-4 Eh,
-                         against 2e-7 with 'union'); for comparisons only
+                         At fourth order the second-order wave function of
+                         each column is truncated to its own first-order
+                         space, and the loss differs between reference
+                         functions of different structure (O2 X,
+                         PVDZ-X2C-TP: the fourth-order terms of 0+ and +-1
+                         differ by 6.6e-4 Eh, against 2e-7 with 'union');
+                         for comparisons only.  The contracted spaces of
+                         'union' depend on the model space (spinor
+                         excitations change the symmetry, so every reference
+                         function adds functions to every sector);
+                         docs/derivations/nevpt4-sd.md
 
 The space is zmr's MRCI product basis (zmr.mrci.basis) in quasi-canonical
 core and virtual orbitals of the averaged density, where H_D is diagonal
