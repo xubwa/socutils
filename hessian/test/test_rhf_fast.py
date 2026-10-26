@@ -55,6 +55,22 @@ class KnownValues(unittest.TestCase):
             self.assertAlmostEqual(abs(vj[ia] - numpy.einsum('xabcd,cd->xab', g, dm)).max(), 0, 11)
             self.assertAlmostEqual(abs(vk[ia] - numpy.einsum('xabcd,bc->xad', g, dm)).max(), 0, 11)
 
+    def test_hess2e_cart(self):
+        # combined Cartesian kernel vs the libcint-based unique-quartet driver
+        from socutils.hessian import ghf as ghf_hess
+        for basis in ('cc-pvdz', 'cc-pvtz'):
+            mol = gto.M(atom='O 0 0 0; H .757 .1 .586; H -.757 0 .586', basis=basis, verbose=0)
+            mf = _mf(mol, 'hf')
+            dm = mf.make_rdm1()
+            e = rhf_fast.hess2e_jk_cart(mol, dm, [(1, 0), (0, 1)], mode=1)
+            vj, vk = mf.get_jk(mol, dm)
+            self.assertAlmostEqual(e[0], .5 * numpy.einsum('ij,ji', dm, vj), 9)
+            self.assertAlmostEqual(e[1], .25 * numpy.einsum('ij,ji', dm, vk), 9)
+            h = rhf_fast.hess2e_jk_cart(mol, dm, [(1, 0), (0, 1)])
+            ref = ghf_hess.deriv2_energies_direct(
+                mol, [(dm, 'ba', dm, 'dc', .5, 0), (dm, 'bc', dm, 'da', .25, 1)])
+            self.assertAlmostEqual(abs(h - ref).max(), 0, 9)
+
     def test_jk_multi(self):
         mol = self.mol
         rs = numpy.random.RandomState(0)

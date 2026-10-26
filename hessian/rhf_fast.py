@@ -19,7 +19,7 @@ the 1e terms, XC and the CPHF solver are pyscf's.
 
 import ctypes
 import numpy
-from pyscf import lib
+from pyscf import gto, lib
 from pyscf.lib import logger
 from pyscf.hessian import rhf as rhf_hess
 from pyscf.hessian import rks as rks_hess
@@ -46,11 +46,16 @@ def _partial_hess_ejk(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     dm0 = numpy.dot(mocc, mocc.T) * 2
     dme0 = numpy.einsum('pi,qi,i->pq', mocc, mocc, mo_energy[mo_occ > 0]) * 2
     natm = len(atmlst)
-    # J and K from the same integral pass (groups 0 and 1)
-    terms = [(dm0, 'ba', dm0, 'dc', .5, 0)]
-    if with_k:
-        terms.append((dm0, 'bc', dm0, 'da', .25, 1))
-    out = ghf_hess.deriv2_energies_direct(mol, terms)
+    # J and K from the same integral pass (groups 0 and 1): the combined
+    # Cartesian kernel up to g functions, else the libcint-based driver
+    out = None
+    if mol._bas[:, gto.ANG_OF].max() <= HESS2E_CART_LMAX:
+        out = hess2e_jk_cart(mol, dm0, [(1, 0), (0, 1)] if with_k else [(1, 0)])
+    if out is None:
+        terms = [(dm0, 'ba', dm0, 'dc', .5, 0)]
+        if with_k:
+            terms.append((dm0, 'bc', dm0, 'da', .25, 1))
+        out = ghf_hess.deriv2_energies_direct(mol, terms)
     ej = out[0]
     ek = out[1] if with_k else numpy.zeros_like(ej)
     log.timer_debug1('two-electron second derivatives (unique quartets)', *time0)
@@ -70,6 +75,54 @@ def _partial_hess_ejk(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
             e1[j0, i0] = e1[i0, j0].T
     log.timer('RHF partial hessian (unique quartets)', *time0)
     return e1, ej, ek
+
+
+HESS2E_CART_LMAX = 4        # lib/vhf/hess2e_cart.c LMAX
+
+
+def hess2e_jk_cart(mol, dm, groups, mode=0, tol=None):
+    '''Second derivatives of E_g = jfac E_J + kfac E_K at the symmetric
+    density dm (E_J = 1/2 (ab|cd) D_ab D_cd, E_K = 1/4 (ab|cd) D_ad D_bc), one
+    Rys quadrature per primitive quartet for all derivative components,
+    contracted with the density in the Cartesian basis (lib/vhf/hess2e_cart.c).
+    groups: [(jfac, kfac), ...].  Returns (ngroup, natm, natm, 3, 3), or the
+    energies (ngroup,) for mode=1; None if the library is unavailable.'''
+    import ctypes
+    libv = ghf_hess._load_socvhf()
+    if not libv or not hasattr(libv, 'SOCVHFhess2e_jk_cart'):
+        return None
+    if tol is None:
+        tol = ghf_hess.HESS2E_TOL
+    ngroup = len(groups)
+    assert 0 < ngroup <= 4
+    if mol.cart:
+        molc, dmc = mol, numpy.asarray(dm, dtype=numpy.double)
+    else:
+        molc = mol.copy(deep=False)
+        molc.cart = True
+        c = mol.cart2sph_coeff()
+        dmc = c.dot(dm).dot(c.T)
+    dmc = numpy.ascontiguousarray(dmc)
+    # integral estimate per shell pair, bounding every derivative type
+    q = numpy.max([ghf_hess._q_cond(molc, intor)[k] for intor in ('int2e_ipip1', 'int2e_ipvip1', 'int2e_ip1ip2')
+                   for k in (0, 1)], axis=0)
+    q = numpy.ascontiguousarray(numpy.maximum(q, q.T))
+    dcond = ghf_hess._dm_cond(molc, [dmc])
+    jfac = numpy.asarray([g[0] for g in groups], dtype=numpy.double)
+    kfac = numpy.asarray([g[1] for g in groups], dtype=numpy.double)
+    natm = mol.natm
+    out = numpy.zeros((ngroup, natm, natm, 3, 3)) if mode == 0 else numpy.zeros(ngroup)
+    ao_loc = molc.ao_loc_nr().astype(numpy.int32)
+    atm, bas, env = molc._atm, molc._bas, molc._env
+    libv.SOCVHFhess2e_jk_cart(
+        out.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mode), ctypes.c_int(ngroup),
+        jfac.ctypes.data_as(ctypes.c_void_p), kfac.ctypes.data_as(ctypes.c_void_p),
+        dmc.ctypes.data_as(ctypes.c_void_p), q.ctypes.data_as(ctypes.c_void_p),
+        dcond.ctypes.data_as(ctypes.c_void_p), ctypes.c_double(tol),
+        ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
+        ctypes.c_int(natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(molc.nbas),
+        env.ctypes.data_as(ctypes.c_void_p))
+    return out
 
 
 def rhf_partial_hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
