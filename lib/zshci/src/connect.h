@@ -44,6 +44,7 @@
 #include "integrals.h"
 #include "parallel.h"
 #include "sparse_h.h"
+#include "spin_flip.h"
 
 namespace zshci {
 
@@ -670,11 +671,23 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(
     Span<Det<W>> dets, size_t first_new, const Integrals<S>& ints,
     double threshold, const GroupStringTables<W>& tables, ConnectStats* stats,
     bool store_values = true, size_t max_bytes = SIZE_MAX,
-    uint8_t* left_out = nullptr) {
+    uint8_t* left_out = nullptr, const SpinFlipLayout* flip = nullptr) {
   // Rows of this rank are stored as long as the elements take no more than
   // max_bytes; the others are left out and left_out[j - first_new] is set
   // to 1 for each of them.
+  //
+  // With `flip` the matrix is that over the functions of the layout
+  // (spin_flip.h): only the rows of canonical determinants are made, and
+  // their columns are folded onto the functions.
   const size_t n = dets.size();
+  const size_t dim_out = flip != nullptr ? flip->num_functions() : n;
+  const size_t first_out = flip == nullptr ? first_new
+                           : first_new < n
+                               ? static_cast<size_t>(flip->rep(first_new))
+                               : dim_out;
+  auto wanted_row = [&](size_t j) {
+    return flip == nullptr || flip->is_canonical(j);
+  };
   const size_t element_bytes =
       sizeof(DetIndex) + (store_values ? sizeof(S) : 0);
   size_t bytes_used = 0;
@@ -708,14 +721,25 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(
           return;
         }
       }
+      if (flip != nullptr) {
+        const double scale = 1.0 / flip->weight(j);
+        for (std::pair<DetIndex, S>& element : *row) {
+          element.second *= scale * flip->weight(element.first);
+          element.first = flip->rep(element.first);
+        }
+      }
       std::sort(
           row->begin(), row->end(),
           [](const std::pair<DetIndex, S>& a, const std::pair<DetIndex, S>& b) {
             return a.first < b.first;
           });
+      if (flip != nullptr) {
+        MergeEqualColumns(row);
+        j = flip->rep(j);
+      }
       if (tables.has_chunks()) {
-        buckets[omp_get_thread_num()].Append(static_cast<DetIndex>(j),
-                                             first_new, n, store_values, *row);
+        buckets[omp_get_thread_num()].Append(
+            static_cast<DetIndex>(j), first_out, dim_out, store_values, *row);
         return;
       }
       if (num_elements + row->size() > cols.size()) {
@@ -742,7 +766,7 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(
       for (long c = 0; c < num_chunks; ++c) {
         if (!tables.OwnsChunk(c)) continue;
         tables.ForEachConnectedOfChunk(
-            c, [&](DetIndex j) { return j >= first_new; },
+            c, [&](DetIndex j) { return j >= first_new && wanted_row(j); },
             [&](int k, DetIndex j, DetIndex i) {
               ++connected;
               const S value = Hij(dets[j], dets[i], ints);
@@ -763,7 +787,7 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(
 #pragma omp for schedule(dynamic, 64) nowait
       for (long j = static_cast<long>(first_new); j < static_cast<long>(n);
            ++j) {
-        if (!tables.Owns(j)) continue;
+        if (!tables.Owns(j) || !wanted_row(j)) continue;
         row.clear();
         tables.ForEachConnected(
             j,
@@ -785,8 +809,8 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(
     cols.Resize(num_elements);
     if (store_values) vals.Resize(num_elements);
     CsrBlock<S>& block = blocks[omp_get_thread_num()];
-    block.dim = n;
-    block.first_row = first_new;
+    block.dim = dim_out;
+    block.first_row = first_out;
     block.row = RawArray<DetIndex>(rows.size());
     std::copy(rows.begin(), rows.end(), block.row.begin());
     block.row_ptr = std::move(row_ptr);
@@ -799,7 +823,7 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(
   }
   const double time_filled = omp_get_wtime();
   if (tables.has_chunks()) {
-    filled = BlocksOfRanges(&buckets, first_new, n, store_values);
+    filled = BlocksOfRanges(&buckets, first_out, dim_out, store_values);
   }
   if (stats != nullptr) {
     // Every reported pair counts as tested, as with the other methods.

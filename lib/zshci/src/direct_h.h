@@ -36,6 +36,7 @@
 #include "parallel.h"
 #include "scalar.h"
 #include "sparse_h.h"
+#include "spin_flip.h"
 
 namespace zshci {
 
@@ -54,11 +55,16 @@ class DirectH : public LinearOperator<S> {
   // directions, and with with_diagonal = false no diagonal element: the
   // part of a Hamiltonian
   // whose other rows are stored.
+  //
+  // With `flip` the operator is that over the functions of the layout
+  // (spin_flip.h): x and y are over the functions, `diagonal` too, and only
+  // the rows of canonical determinants are visited.
   DirectH(Span<Det<W>> dets, const Integrals<S>& ints,
           const internal::GroupStringTables<W>& tables, double threshold,
           const std::vector<double>& diagonal,
           size_t scratch_bytes = kDefaultScratchBytes,
-          const std::vector<uint8_t>* rows = nullptr, bool with_diagonal = true)
+          const std::vector<uint8_t>* rows = nullptr, bool with_diagonal = true,
+          const SpinFlipLayout* flip = nullptr)
       : dets_(dets),
         ints_(ints),
         tables_(tables),
@@ -66,17 +72,21 @@ class DirectH : public LinearOperator<S> {
         diagonal_(diagonal),
         scratch_bytes_(scratch_bytes),
         rows_(rows),
-        with_diagonal_(with_diagonal) {}
+        with_diagonal_(with_diagonal),
+        flip_(flip) {}
 
   static constexpr size_t kDefaultScratchBytes = size_t{1} << 30;
 
-  size_t dim() const override { return dets_.size(); }
+  size_t dim() const override {
+    return flip_ != nullptr ? flip_->num_functions() : dets_.size();
+  }
   const std::vector<double>& diagonal() const override { return diagonal_; }
 
   // The part of H x that comes from the rows this rank owns: for each of
   // them the diagonal element and the elements with the determinants before
   // it, used in both directions. The sum over the ranks is H x.
   void Apply(const S* x, S* y) const override {
+    if (flip_ != nullptr) return ApplyFlip(x, y);
     const size_t dim = dets_.size();
     const long n = static_cast<long>(dim);
     const bool keep_all = threshold_ < 0.0;
@@ -178,6 +188,97 @@ class DirectH : public LinearOperator<S> {
   }
 
  private:
+  // Apply over the functions of flip_: the pairs (j, i) with j > i and j
+  // canonical, folded as in spin_flip.h.
+  void ApplyFlip(const S* x, S* y) const {
+    const SpinFlipLayout& flip = *flip_;
+    const size_t dim = flip.num_functions();
+    const long m = static_cast<long>(dim);
+    const long n = static_cast<long>(dets_.size());
+    const bool keep_all = threshold_ < 0.0;
+    const bool have_diagonal = diagonal_.size() == dim;
+    const size_t num_threads = omp_get_max_threads();
+    const bool own_vectors =
+        num_threads > 1 && num_threads * dim * sizeof(S) <= scratch_bytes_;
+    if (own_vectors && scratch_.size() != num_threads * dim) {
+      scratch_ = RawArray<S>(num_threads * dim);
+    }
+    auto add = [&](S* target, size_t k, S term) {
+      if (own_vectors) {
+        target[k] += term;
+      } else {
+        AtomicAdd(&target[k], term);
+      }
+    };
+    // The element of canonical row hi and column lo < hi, both ways.
+    auto pair = [&](S* target, size_t hi, size_t lo) {
+      const S value = Hij(dets_[hi], dets_[lo], ints_);
+      if (!keep_all && std::abs(value) <= threshold_) return;
+      const S folded = value * (flip.weight(lo) / flip.weight(hi));
+      const size_t J = flip.rep(hi);
+      const size_t I = flip.rep(lo);
+      add(target, J, folded * x[I]);
+      add(target, I, Conj(folded) * x[J]);
+    };
+#pragma omp parallel
+    {
+      S* const target =
+          own_vectors ? scratch_.data() + omp_get_thread_num() * dim : y;
+      if (own_vectors) {
+        std::fill(target, target + dim, S(0.0));
+      } else {
+#pragma omp for schedule(static)
+        for (long J = 0; J < m; ++J) y[J] = S(0.0);
+      }
+      if (with_diagonal_) {
+#pragma omp for schedule(static)
+        for (long J = 0; J < m; ++J) {
+          if (!tables_.Owns(flip.canonical(J))) continue;
+          const double d =
+              have_diagonal ? diagonal_[J] : flip.Diagonal(dets_, J, ints_);
+          add(target, J, d * x[J]);
+        }
+      }
+      if (tables_.has_blocks()) {
+        const long num_tasks = static_cast<long>(tables_.num_tasks());
+#pragma omp for schedule(dynamic, 16)
+        for (long t = 0; t < num_tasks; ++t) {
+          if (!tables_.OwnsTask(t)) continue;
+          uint64_t tested = 0;
+          tables_.ForEachConnectedOfTask(
+              t,
+              [&](DetIndex j, DetIndex i) {
+                const size_t hi = std::max(j, i);
+                const size_t lo = std::min(j, i);
+                if (!flip.is_canonical(hi)) return;
+                if (rows_ != nullptr && !(*rows_)[hi]) return;
+                pair(target, hi, lo);
+              },
+              &tested);
+        }
+      } else {
+#pragma omp for schedule(dynamic, 64)
+        for (long j = 0; j < n; ++j) {
+          if (!tables_.Owns(j) || !flip.is_canonical(j)) continue;
+          if (rows_ != nullptr && !(*rows_)[j]) continue;
+          uint64_t tested = 0;
+          tables_.ForEachConnected(
+              j, [&](DetIndex i) { pair(target, j, i); }, &tested);
+        }
+      }
+      if (own_vectors) {
+#pragma omp for schedule(static)
+        for (long J = 0; J < m; ++J) {
+          S total(0.0);
+          for (size_t t = 0; t < num_threads; ++t) {
+            total += scratch_[t * dim + J];
+          }
+          y[J] = total;
+        }
+      }
+    }
+  }
+
   Span<Det<W>> dets_;
   const Integrals<S>& ints_;
   const internal::GroupStringTables<W>& tables_;
@@ -186,6 +287,7 @@ class DirectH : public LinearOperator<S> {
   size_t scratch_bytes_;
   const std::vector<uint8_t>* rows_;
   bool with_diagonal_;
+  const SpinFlipLayout* flip_;
   // One vector per thread, when they fit the budget.
   mutable RawArray<S> scratch_;
 };

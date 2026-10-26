@@ -16,6 +16,20 @@
 // first term evaluated deterministically and the bracket stochastically, both
 // of its parts from the same samples so that their fluctuations largely
 // cancel.
+//
+// With spin_flip (spin_flip.h) the vector is symmetric under the exchange
+// of the spins, c(Dbar) = lambda p(D) c(D), and so is V_a = sum_i H(a,i) c_i:
+// V(abar) = lambda p(a) V_a, and the sum over D_a may run over canonical
+// determinants A only, each counted twice unless it is its own flip. V_A
+// itself comes from the canonical generators D_i alone: the term of the
+// partner ibar for A equals lambda p(Abar) times that of i for Abar, so a
+// term generated from i for a determinant a counts for its canonical member
+// A with the factor
+//   1 (a = A != Abar),   lambda p(a) (a != A),   1 + lambda p(a) (a = abar),
+// and the terms of a generator that is its own flip with one half (it is
+// then reached twice). The stochastic estimator draws the canonical
+// generators with probability proportional to |c_i| times their number of
+// members and sums, before squaring, what one generator gives to one A.
 
 #ifndef ZSHCI_SRC_PT_H_
 #define ZSHCI_SRC_PT_H_
@@ -37,6 +51,7 @@
 #include "input.h"
 #include "integrals.h"
 #include "parallel.h"
+#include "spin_flip.h"
 
 namespace zshci {
 
@@ -206,6 +221,24 @@ std::vector<double> SumOverExternalDets(
   return total;
 }
 
+// With spin_flip: the canonical member of `det` and the factor with which a
+// term of det counts for it (see above); lambda as in spin_flip.h.
+template <int W>
+double FoldOntoCanonical(const Det<W>& det, int lambda, Det<W>* canonical) {
+  const Det<W> flipped = FlipSpins(det);
+  const int p = NumDoublyOccupied(det) % 2 == 0 ? 1 : -1;
+  if (flipped == det) {
+    *canonical = det;
+    return 1.0 + lambda * p;
+  }
+  if (det < flipped) {
+    *canonical = det;
+    return 1.0;
+  }
+  *canonical = flipped;
+  return lambda * p;
+}
+
 }  // namespace internal
 
 // Everything the perturbative routines need to know about the wave function.
@@ -220,21 +253,52 @@ struct PtProblem {
   const Filter& filter;
   int num_batches;
   const Comm& comm;
+  // With spin_flip: the layout of `dets`, whose coefficients are then those
+  // of the expanded vector; the sums use the symmetry (see above).
+  const SpinFlipLayout* flip = nullptr;
 };
+
+namespace internal {
+
+// The weight of generator i: 0 for a partner, 1/2 for a determinant that is
+// its own flip, 1 otherwise (and always 1 without spin_flip).
+template <int W, class Filter, typename S>
+double GeneratorWeight(const PtProblem<W, Filter, S>& problem, size_t i) {
+  if (problem.flip == nullptr) return 1.0;
+  if (!problem.flip->is_canonical(i)) return 0.0;
+  return problem.flip->is_pair(problem.flip->rep(i)) ? 1.0 : 0.5;
+}
+
+// The number of members of the pair of a canonical external determinant.
+template <int W>
+double ExternalWeight(const Det<W>& det, bool with_flip) {
+  return with_flip && FlipSpins(det) != det ? 2.0 : 1.0;
+}
+
+}  // namespace internal
 
 // E2(epsilon), deterministically.
 template <int W, class Filter, typename S>
 double PtDeterministic(const PtProblem<W, Filter, S>& problem, double epsilon) {
   using Term = internal::DetTerm<W, S>;
+  const SpinFlipLayout* flip = problem.flip;
+  const int lambda = flip != nullptr ? flip->lambda() : 1;
   auto generate = [&](long i, const auto& emit) {
     const S ci = problem.coefficients[i];
-    if (std::abs(ci) == 0.0) return;
+    const double g = internal::GeneratorWeight(problem, i);
+    if (std::abs(ci) == 0.0 || g == 0.0) return;
     std::vector<int> occ;
     problem.dets[i].AppendOccupied(&occ);
     auto visit = [&](const Det<W>& det, S element, bool /*is_large*/) {
       Term term;
       term.det = det;
       term.sum = element * ci;
+      if (flip != nullptr) {
+        const double factor =
+            g * internal::FoldOntoCanonical(det, lambda, &term.det);
+        if (factor == 0.0) return;
+        term.sum *= factor;
+      }
       emit(term);
     };
     internal::ElementSink<W, decltype(visit), S> sink(problem.dets[i],
@@ -244,7 +308,8 @@ double PtDeterministic(const PtProblem<W, Filter, S>& problem, double epsilon) {
   };
   auto contribution = [&](const Term& term, double energy_a,
                           std::vector<double>* values) {
-    (*values)[0] = std::norm(term.sum) / (problem.energy - energy_a);
+    (*values)[0] = internal::ExternalWeight(term.det, flip != nullptr) *
+                   std::norm(term.sum) / (problem.energy - energy_a);
   };
   return internal::SumOverExternalDets<W, Term>(
              problem.dets.size(), problem.sorted_dets, problem.ints,
@@ -263,13 +328,22 @@ struct StochasticEstimate {
 // per node. Construction is collective.
 class DeterminantSampler {
  public:
+  // With `flip`, only canonical determinants are drawn, with |c_i| times
+  // the number of members of their pair.
   template <typename S>
-  DeterminantSampler(Span<S> coefficients, const Comm& comm)
+  DeterminantSampler(Span<S> coefficients, const Comm& comm,
+                     const SpinFlipLayout* flip = nullptr)
       : cumulative_(coefficients.size(), comm) {
     if (comm.is_root()) {
       double sum = 0.0;
       for (size_t i = 0; i < coefficients.size(); ++i) {
-        sum += std::abs(coefficients[i]);
+        double weight = std::abs(coefficients[i]);
+        if (flip != nullptr) {
+          weight = !flip->is_canonical(i)        ? 0.0
+                   : flip->is_pair(flip->rep(i)) ? 2.0 * weight
+                                                 : weight;
+        }
+        sum += weight;
         cumulative_[i] = sum;
       }
     }
@@ -324,6 +398,8 @@ struct WalkerWorkspace {
   std::vector<size_t> indices;
   std::vector<int> multiplicities;
   std::vector<int> occ;
+  // spin_flip: the terms of one generator, merged before they are squared.
+  std::vector<internal::SampleTerm<W, S>> of_generator;
 };
 
 // One walker: draws `num_samples` determinants and evaluates the estimator
@@ -347,6 +423,9 @@ StochasticEstimate PtWalkerSample(const PtProblem<W, Filter, S>& problem,
   sampler.Draw(num_samples, rng, &workspace->draws, &indices, &multiplicities);
   const double n = num_samples;
   const uint64_t batches = std::max(1, problem.num_batches);
+  const SpinFlipLayout* flip = problem.flip;
+  const int lambda = flip != nullptr ? flip->lambda() : 1;
+  std::vector<Term>& of_generator = workspace->of_generator;
 
   StochasticEstimate estimate;
   for (uint64_t batch = 0; batch < batches; ++batch) {
@@ -354,17 +433,32 @@ StochasticEstimate PtWalkerSample(const PtProblem<W, Filter, S>& problem,
     for (size_t sample = 0; sample < indices.size(); ++sample) {
       const size_t i = indices[sample];
       const S ci = problem.coefficients[i];
+      const double g = internal::GeneratorWeight(problem, i);
       const double w = multiplicities[sample];
       const double p = sampler.Probability(i);
       const double linear = w / p;
       const double quadratic = w * (n - 1.0) / p - w * w / (p * p);
       occ.clear();
       problem.dets[i].AppendOccupied(&occ);
+      if (flip != nullptr) of_generator.clear();
       auto visit = [&](const Det<W>& det, S element, bool is_large) {
-        if (batches > 1 && det.Hash() % batches != batch) return;
-        const S x = element * ci;
+        S x = element * ci;
         Term term;
         term.det = det;
+        if (flip != nullptr) {
+          const double factor =
+              g * internal::FoldOntoCanonical(det, lambda, &term.det);
+          if (factor == 0.0) return;
+          x *= factor;
+        }
+        if (batches > 1 && term.det.Hash() % batches != batch) return;
+        if (flip != nullptr) {
+          // Squared below, once the terms of this generator are summed.
+          term.sum = x;
+          if (is_large) term.sum_large = x;
+          of_generator.push_back(term);
+          return;
+        }
         term.sum = linear * x;
         term.square = quadratic * std::norm(x);
         if (is_large) {
@@ -377,6 +471,29 @@ StochasticEstimate PtWalkerSample(const PtProblem<W, Filter, S>& problem,
           problem.dets[i], problem.ints, epsilon_large / std::abs(ci), visit);
       ForEachExcitation(problem.dets[i], occ, epsilon / std::abs(ci),
                         problem.ints, problem.heat_bath, problem.filter, &sink);
+      if (flip != nullptr) {
+        std::sort(of_generator.begin(), of_generator.end(),
+                  [](const Term& a, const Term& b) { return a.det < b.det; });
+        size_t k = 0;
+        while (k < of_generator.size()) {
+          Term merged = of_generator[k];
+          size_t next = k + 1;
+          while (next < of_generator.size() &&
+                 of_generator[next].det == merged.det) {
+            merged.sum += of_generator[next].sum;
+            merged.sum_large += of_generator[next].sum_large;
+            ++next;
+          }
+          k = next;
+          Term term;
+          term.det = merged.det;
+          term.sum = linear * merged.sum;
+          term.square = quadratic * std::norm(merged.sum);
+          term.sum_large = linear * merged.sum_large;
+          term.square_large = quadratic * std::norm(merged.sum_large);
+          terms->push_back(term);
+        }
+      }
     }
 
     std::sort(terms->begin(), terms->end(),
@@ -396,7 +513,7 @@ StochasticEstimate PtWalkerSample(const PtProblem<W, Filter, S>& problem,
       }
       const double denominator =
           (problem.energy - DiagonalEnergy(merged.det, problem.ints)) * n *
-          (n - 1.0);
+          (n - 1.0) / internal::ExternalWeight(merged.det, flip != nullptr);
       estimate.small += (std::norm(merged.sum) + merged.square) / denominator;
       estimate.large +=
           (std::norm(merged.sum_large) + merged.square_large) / denominator;
@@ -440,7 +557,8 @@ PtResult RunPerturbation(const PtProblem<W, Filter, S>& problem,
     }
   }
 
-  const DeterminantSampler sampler(problem.coefficients, problem.comm);
+  const DeterminantSampler sampler(problem.coefficients, problem.comm,
+                                   problem.flip);
   const int num_threads = omp_get_max_threads();
   // One random stream per walker, different on every rank and for every
   // root.

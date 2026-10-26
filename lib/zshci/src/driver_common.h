@@ -30,6 +30,7 @@
 #include "pt.h"
 #include "rdm.h"
 #include "sparse_h.h"
+#include "spin_flip.h"
 
 namespace zshci {
 
@@ -360,6 +361,7 @@ class VariationalH : private ElementSource<S> {
                             1) * input.nroots +
                                2),
         incremental_(input.incremental),
+        spin_flip_(input.spin_flip),
         connect_(MakeConnectOptions(input)) {
     ResetStored();
   }
@@ -367,6 +369,65 @@ class VariationalH : private ElementSource<S> {
   VariationalH& operator=(const VariationalH&) = delete;
 
   bool direct() const { return direct_; }
+  // The functions of definite spin-flip symmetry over the list, or null
+  // without "spin_flip" (spin_flip.h).
+  const SpinFlipLayout* flip() const { return flip_.get(); }
+  // Dimension of the eigenproblem: the functions, or the determinants.
+  size_t dim() const {
+    return flip_ != nullptr ? flip_->num_functions() : dets_.size();
+  }
+  // Root: vectors over the functions as vectors over the list, and back.
+  std::vector<std::vector<S>> Expand(
+      const std::vector<std::vector<S>>& vectors) const {
+    if (flip_ == nullptr) return vectors;
+    std::vector<std::vector<S>> out;
+    for (const std::vector<S>& v : vectors) out.push_back(flip_->Expand(v));
+    return out;
+  }
+  std::vector<std::vector<S>> Project(
+      const std::vector<std::vector<S>>& vectors) const {
+    if (flip_ == nullptr) return vectors;
+    std::vector<std::vector<S>> out;
+    for (const std::vector<S>& v : vectors) {
+      out.push_back(flip_->Project(v.data()));
+    }
+    return out;
+  }
+  // Root: starting vectors, eigenvectors of H in the span of the lowest
+  // diagonal elements.
+  std::vector<std::vector<S>> Guess(int num_roots) const {
+    if (flip_ == nullptr) {
+      return GuessVectors(dets_, stored_, ints_, num_roots);
+    }
+    const size_t m = dim();
+    const size_t guess_dim =
+        std::min(m, static_cast<size_t>(std::max(100, 20 * num_roots)));
+    std::vector<size_t> order(m);
+    std::iota(order.begin(), order.end(), 0);
+    const std::vector<double>& diagonal = stored_.diagonal();
+    std::partial_sort(
+        order.begin(), order.begin() + guess_dim, order.end(),
+        [&](size_t a, size_t b) {
+          return diagonal[a] != diagonal[b] ? diagonal[a] < diagonal[b] : a < b;
+        });
+    using Matrix = Eigen::Matrix<S, Eigen::Dynamic, Eigen::Dynamic>;
+    Matrix small(guess_dim, guess_dim);
+    for (size_t a = 0; a < guess_dim; ++a) {
+      small(a, a) = diagonal[order[a]];
+      for (size_t b = a + 1; b < guess_dim; ++b) {
+        small(a, b) = flip_->Element(dets_, order[a], order[b], ints_);
+        small(b, a) = Conj(small(a, b));
+      }
+    }
+    Eigen::SelfAdjointEigenSolver<Matrix> solver(small);
+    std::vector<std::vector<S>> guess(num_roots, std::vector<S>(m, S(0.0)));
+    for (int k = 0; k < num_roots && k < static_cast<int>(guess_dim); ++k) {
+      for (size_t a = 0; a < guess_dim; ++a) {
+        guess[k][order[a]] = solver.eigenvectors()(a, k);
+      }
+    }
+    return guess;
+  }
   // The diagonal (on the root) and, unless direct, the stored elements.
   const SparseH<S>& stored() const { return stored_; }
   const ConnectOptions& connect() const { return connect_; }
@@ -380,7 +441,26 @@ class VariationalH : private ElementSource<S> {
       ResetStored();
     }
     dets_ = dets;
-    AppendDiagonal(dets, first_new, ints_, comm_, &stored_);
+    if (spin_flip_ != 0) {
+      if (first_new == 0) {
+        flip_ = std::make_unique<SpinFlipLayout>(spin_flip_, dets[0].Count());
+      }
+      const size_t first_function = flip_->num_functions();
+      flip_->Extend(dets, first_new);
+      if (comm_.is_root()) {
+        std::vector<double> diagonal(flip_->num_functions() - first_function);
+        const long count = static_cast<long>(diagonal.size());
+#pragma omp parallel for schedule(static)
+        for (long J = 0; J < count; ++J) {
+          diagonal[J] = flip_->Diagonal(dets, first_function + J, ints_);
+        }
+        stored_.AppendDiagonal(diagonal);
+      } else {
+        stored_.Grow(flip_->num_functions());
+      }
+    } else {
+      AppendDiagonal(dets, first_new, ints_, comm_, &stored_);
+    }
     if (connect_.method != ConnectMethod::kGroups) {
       stored_.AppendBlocks(
           BuildBlocks(dets, first_new, ints_, connect_, comm_, &stats_));
@@ -406,9 +486,9 @@ class VariationalH : private ElementSource<S> {
     if (adapt_) {
       ExtendWithinMemory(first_new);
     } else if (!direct_) {
-      stored_.AppendBlocks(
-          internal::BuildGroupBlocks(dets, first_new, ints_, connect_.threshold,
-                                     *tables_, &stats_, store_values_));
+      stored_.AppendBlocks(internal::BuildGroupBlocks(
+          dets, first_new, ints_, connect_.threshold, *tables_, &stats_,
+          store_values_, SIZE_MAX, nullptr, flip_.get()));
     }
   }
 
@@ -431,15 +511,17 @@ class VariationalH : private ElementSource<S> {
     }
     if (direct_) {
       const DirectH<W, S> h(dets_, ints_, *tables_, connect_.threshold,
-                            stored_.diagonal());
+                            stored_.diagonal(),
+                            DirectH<W, S>::kDefaultScratchBytes, nullptr,
+                            /*with_diagonal=*/true, flip_.get());
       return SolveDistributed<S>(h, options, comm_, root_vectors, active);
     }
     if (!all_rows_stored()) {
       // The stored rows, which include the diagonal, and the others.
-      const DirectH<W, S> rest(dets_, ints_, *tables_, connect_.threshold,
-                               stored_.diagonal(),
-                               DirectH<W, S>::kDefaultScratchBytes,
-                               &direct_rows_, /*with_diagonal=*/false);
+      const DirectH<W, S> rest(
+          dets_, ints_, *tables_, connect_.threshold, stored_.diagonal(),
+          DirectH<W, S>::kDefaultScratchBytes, &direct_rows_,
+          /*with_diagonal=*/false, flip_.get());
       const SumOperator sum(stored_, rest);
       return SolveDistributed<S>(sum, options, comm_, root_vectors, active);
     }
@@ -449,7 +531,9 @@ class VariationalH : private ElementSource<S> {
   // Collective: the density matrices between two vectors.
   DensityMatrices<S> Density(Span<S> bra, Span<S> ket, bool with_two) const {
     const int num_orbs = ints_.num_orbs();
-    if (!direct_ && all_rows_stored()) {
+    // With spin_flip the stored matrix is over the functions; the vectors
+    // given here are over the determinants.
+    if (!direct_ && all_rows_stored() && flip_ == nullptr) {
       return ComputeDensityMatricesFrom(dets_, StoredPairs<S>(stored_),
                                         num_orbs, bra, ket, with_two, comm_,
                                         ints_.is_spatial());
@@ -580,9 +664,11 @@ class VariationalH : private ElementSource<S> {
   // product of the stored part, a vector per thread. Only the larger of
   // the two counts.
   size_t OtherBytes(size_t n, bool one_sweep) const {
+    // The vectors are over the functions with spin_flip.
+    const size_t v = flip_ != nullptr ? flip_->num_functions() : n;
     const size_t solving =
-        num_vectors_ * n * sizeof(S) +
-        (one_sweep ? static_cast<size_t>(omp_get_max_threads()) * n * sizeof(S)
+        num_vectors_ * v * sizeof(S) +
+        (one_sweep ? static_cast<size_t>(omp_get_max_threads()) * v * sizeof(S)
                    : 0);
     return table_memory_.shared + table_memory_.kept + 3 * n * sizeof(Det<W>) +
            memory_limit_ / 20 + std::max(table_memory_.transient, solving);
@@ -613,7 +699,7 @@ class VariationalH : private ElementSource<S> {
     std::vector<uint8_t> left_out(n - first_new, 0);
     std::vector<CsrBlock<S>> blocks = internal::BuildGroupBlocks(
         dets_, first_new, ints_, connect_.threshold, *tables_, &stats_,
-        /*store_values=*/false, room, left_out.data());
+        /*store_values=*/false, room, left_out.data(), flip_.get());
     // Every rank must know which rows the others left out.
     if (comm_.size() > 1) {
       std::vector<double> flags(left_out.begin(), left_out.end());
@@ -659,6 +745,12 @@ class VariationalH : private ElementSource<S> {
   // The elements of stored blocks that hold columns only.
   void Fill(DetIndex row, const DetIndex* cols, size_t count,
             S* values) const override {
+    if (flip_ != nullptr) {
+      for (size_t k = 0; k < count; ++k) {
+        values[k] = flip_->Element(dets_, row, cols[k], ints_);
+      }
+      return;
+    }
     const Det<W>& bra = dets_[row];
     for (size_t k = 0; k < count; ++k) {
       values[k] = Hij(bra, dets_[cols[k]], ints_);
@@ -688,6 +780,8 @@ class VariationalH : private ElementSource<S> {
   // Whether the stored part may use the one-sweep product.
   bool one_sweep_ = true;
   bool incremental_;
+  int spin_flip_;
+  std::unique_ptr<SpinFlipLayout> flip_;
   typename internal::GroupStringTables<W>::Memory table_memory_;
   ConnectOptions connect_;
   Span<Det<W>> dets_;
@@ -720,8 +814,8 @@ template <int W, typename S>
 std::vector<PtResult> ComputePerturbation(
     const Input& input, const Integrals<S>& ints, Span<Det<W>> dets,
     const std::vector<double>& result_energies, const SharedVectors<S>& vectors,
-    const HeatBath* heat_bath, const RestrictedFilter& filter,
-    const Comm& comm) {
+    const HeatBath* heat_bath, const RestrictedFilter& filter, const Comm& comm,
+    const SpinFlipLayout* flip = nullptr) {
   std::vector<PtResult> results;
   if (input.pt.method == PtMethod::kNone) return results;
 
@@ -735,10 +829,16 @@ std::vector<PtResult> ComputePerturbation(
   const SharedArray<Det<W>> sorted_dets = ShareSorted(dets, comm);
 
   for (int k = 0; k < input.nroots; ++k) {
-    const PtProblem<W, RestrictedFilter, S> problem{
-        dets, sorted_dets.span(), vectors.Root(k), result_energies[k],
-        ints, *heat_bath,         filter,          input.pt.num_batches,
-        comm};
+    const PtProblem<W, RestrictedFilter, S> problem{dets,
+                                                    sorted_dets.span(),
+                                                    vectors.Root(k),
+                                                    result_energies[k],
+                                                    ints,
+                                                    *heat_bath,
+                                                    filter,
+                                                    input.pt.num_batches,
+                                                    comm,
+                                                    flip};
     results.push_back(
         RunPerturbation(problem, input.pt, k, input.output_level > 1));
     const PtResult& pt = results.back();
