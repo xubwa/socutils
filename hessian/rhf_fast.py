@@ -523,17 +523,99 @@ def gen_vind(mf, mo_coeff, mo_occ):
     return fx
 
 
+class _FxcBatched:
+    '''numint.nr_rks_fxc for many symmetric first-order densities (CPHF): the
+    same flops as pyscf's per-density sparse loops, but as two GEMMs over all
+    densities per grid block, c = D phi^T (densities stacked) and
+    V = aow phi, with the elementwise rho1 / aow passes in OpenMP C
+    (lib/dft/fxc_multi.c).  LDA / GGA with hermi=1 and a cached fxc; other
+    calls go to pyscf.'''
+
+    def __init__(self, ni, max_memory=4000):
+        self.ni = ni
+        self.orig = ni.nr_rks_fxc
+        self.max_memory = max_memory
+
+    def __call__(self, mol, grids, xc_code, dm0, dms, relativity=0, hermi=0,
+                 rho0=None, vxc=None, fxc=None, max_memory=2000, verbose=None):
+        ni = self.ni
+        xctype = ni._xc_type(xc_code)
+        libdft = _load_socdft()
+        dms_a = numpy.asarray(dms)
+        if (hermi != 1 or fxc is None or xctype not in ('LDA', 'GGA') or libdft is None
+                or not hasattr(libdft, 'SOCDFTfxc_rho1') or numpy.iscomplexobj(dms_a) or mol.cart):
+            return self.orig(mol, grids, xc_code, dm0, dms, relativity, hermi, rho0, vxc, fxc,
+                             max_memory, verbose)
+        nao = dms_a.shape[-1]
+        d = numpy.ascontiguousarray(dms_a.reshape(-1, nao, nao))
+        n = d.shape[0]
+        ncomp = 1 if xctype == 'LDA' else 4
+        d2 = d.reshape(n * nao, nao)
+        vmat = numpy.zeros((n * nao, nao))
+        # grid block: c and aow (n, nao, g) within ~40% of max_memory
+        ng_blk = max(BLKSIZE_FXC, int(self.max_memory * .2e6 / (8 * n * nao)) // BLKSIZE_FXC * BLKSIZE_FXC)
+        blk_mem = ng_blk * (ncomp + 1) * nao * 8 / 1e6
+        # one buffer for c / aow, reused by every block (a fresh (n*nao, g)
+        # array per block costs more in page faults than the GEMM itself)
+        cbuf = numpy.empty(n * nao * ng_blk)
+        p1 = 0
+        for ao, mask, weight, coords in ni.block_loop(mol, grids, nao, ncomp // 4, blk_mem):
+            ng = weight.size
+            p0, p1 = p1, p1 + ng
+            aoT = (ao if ao.ndim == 3 else ao[None]).transpose(0, 2, 1)  # (ncomp, nao, g)
+            if not aoT.flags.c_contiguous:
+                aoT = numpy.ascontiguousarray(aoT)
+            if ng > ng_blk:
+                cbuf = numpy.empty(n * nao * ng)
+            c = cbuf[:n * nao * ng].reshape(n * nao, ng)
+            lib.dot(d2, aoT[0], c=c)                                   # (n*nao, g) = D phi^T (MKL via pyscf)
+            rho1 = numpy.empty((n, ncomp, ng))
+            libdft.SOCDFTfxc_rho1(rho1.ctypes, c.ctypes, aoT.ctypes, ctypes.c_int(n), ctypes.c_int(ncomp),
+                                  ctypes.c_int(nao), ctypes.c_int(ng))
+            if xctype == 'LDA':
+                wv = rho1 * (weight * fxc[0, 0, p0:p1])
+            else:
+                wv = numpy.einsum('myg,xyg->mxg', rho1, fxc[:, :, p0:p1] * weight)
+                wv[:, 0] *= .5                                         # *.5 for V + V^T
+            wv = numpy.ascontiguousarray(wv)
+            aow = c                                                    # reuse the buffer
+            libdft.SOCDFTfxc_aow(aow.ctypes, wv.ctypes, aoT.ctypes, ctypes.c_int(n), ctypes.c_int(ncomp),
+                                 ctypes.c_int(nao), ctypes.c_int(ng))
+            lib.dot(aow, aoT[0].T, beta=1, c=vmat)                      # += sum_g aow phi
+        vmat = vmat.reshape(n, nao, nao)
+        if xctype != 'LDA':
+            vmat = vmat + vmat.transpose(0, 2, 1)
+        return vmat.reshape(dms_a.shape)
+
+
+BLKSIZE_FXC = 128
+
+
 class _MultiJKCPHF:
-    '''solve_mo1 with the response J / K of jk_multi and the MO-basis XC
-    response of gen_vind'''
+    '''solve_mo1 with the response J / K of jk_multi and the batched (or, for
+    nao > 8 nocc, MO-basis) XC response'''
 
     def solve_mo1(self, mo_energy, mo_coeff, mo_occ, h1ao_or_chkfile, fx=None, atmlst=None,
                   max_memory=4000, verbose=None):
+        from pyscf.dft import numint
+        env_xc = {}
+        ni = getattr(self.base, '_numint', None)
+        if isinstance(ni, numint.NumInt):
+            env_xc = dict(nr_rks_fxc=_FxcBatched(ni, max_memory))
         with lib.temporary_env(self.base, **_multi_jk_env(self.base)):
-            if fx is None:
-                fx = gen_vind(self.base, mo_coeff, mo_occ)
-            return super().solve_mo1(mo_energy, mo_coeff, mo_occ, h1ao_or_chkfile, fx,
-                                     atmlst, max_memory, verbose)
+            with lib.temporary_env(ni, **env_xc) if env_xc else _nullcontext():
+                if fx is None:
+                    fx = gen_vind(self.base, mo_coeff, mo_occ)
+                return super().solve_mo1(mo_energy, mo_coeff, mo_occ, h1ao_or_chkfile, fx,
+                                         atmlst, max_memory, verbose)
+
+
+class _nullcontext:
+    def __enter__(self):
+        return None
+
+    def __exit__(self, *a):
+        return False
 
 
 class RHFHessian(_MultiJKCPHF, rhf_hess.Hessian):

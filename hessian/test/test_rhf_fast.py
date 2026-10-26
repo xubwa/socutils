@@ -71,6 +71,19 @@ class KnownValues(unittest.TestCase):
                 mol, [(dm, 'ba', dm, 'dc', .5, 0), (dm, 'bc', dm, 'da', .25, 1)])
             self.assertAlmostEqual(abs(h - ref).max(), 0, 9)
 
+    def test_fxc_batched(self):
+        mol = self.mol
+        rs = numpy.random.RandomState(2)
+        for xc in ('lda,vwn', 'pbe'):
+            mf = _mf(mol, xc)
+            ni = mf._numint
+            rho0, vxc, fxc = ni.cache_xc_kernel(mol, mf.grids, mf.xc, mf.mo_coeff, mf.mo_occ, 0)
+            dms = rs.randn(5, mol.nao, mol.nao) * 1e-2
+            dms = dms + dms.transpose(0, 2, 1)
+            ref = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms, 0, 1, rho0, vxc, fxc)
+            v = rhf_fast._FxcBatched(ni)(mol, mf.grids, mf.xc, None, dms, 0, 1, rho0, vxc, fxc)
+            self.assertAlmostEqual(abs(v - ref).max(), 0, 12)
+
     def test_jk_multi(self):
         mol = self.mol
         rs = numpy.random.RandomState(0)
