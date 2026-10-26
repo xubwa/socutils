@@ -10,6 +10,8 @@ Roadmap:
    Hamiltonian and a Laplace-transformed treatment of the external indices.
 2. Partially contracted NEVPT2 (PC-NEVPT2) from a Wick-theorem engine.
 3. Internally contracted MRCI.
+4. Multi-state NEVPT4(SD), uncontracted or internally contracted, on the MRCI
+   product basis (`zmr/pt4`, `docs/derivations/nevpt4-sd.md`).
 
 The working equations are written for complex spin-orbitals / spinors
 (`docs/derivations/conventions.md`).  A non-relativistic Hamiltonian can be
@@ -26,6 +28,7 @@ Start with `docs/usage.md` (how to run a calculation) and
     zmr/active/     active-space sectors, operator strings, symmetry-adapted active orbitals
     zmr/uc/         UC-NEVPT2, perturber classes, contraction engines
     zmr/interface/  PySCF / socutils adapters (the only place importing them), AO -> MO transformation
+    zmr/pt4/        multi-state NEVPT4(SD) on the MRCI product basis
     zmr/pc/         PC-NEVPT2 (contracted spaces from CI vectors or from RDMs)
     zmr/nr/         non-relativistic spin-free UC- and PC-NEVPT2 (real spatial orbitals; CI-vector and density-matrix routes)
     zmr/wick/       Wick engine and generated PC-NEVPT2 terms

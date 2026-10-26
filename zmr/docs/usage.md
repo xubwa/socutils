@@ -135,6 +135,20 @@ that is exact to round-off (theory in
 `ZMR_NO_INTERPOLATION=1` in the environment uses exact denominators
 throughout, for checking.
 
+### NEVPT4(SD)
+
+    from socutils.zmr.pt4 import NEVPT4SD
+    pt = NEVPT4SD(eris, nelec, nstate=3, e0='state', contraction='union')
+    pt.kernel()            # eigenvalues of the Hermitized fourth-order H_eff
+    pt.e2, pt.e3, pt.e4    # the same to second, third and fourth order
+
+`contraction`: 'union' (default; all states in one space), 'none'
+(uncontracted) or 'state' (QD-NEVPT2-type; unbalanced at fourth order, for
+comparisons only); `e0`: 'state' or 'average';
+`renormalization=True` adds the fourth-order renormalization term (not size
+consistent with the SD truncation).  Four MRCI sigma evaluations per state
+(`docs/derivations/nevpt4-sd.md`).
+
 ### MRCI
 
     from socutils.zmr.mrci import MRCI
