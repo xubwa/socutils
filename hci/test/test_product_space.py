@@ -282,7 +282,9 @@ class AgainstSelectedCI(unittest.TestCase):
         strs = cistring.make_strings(range(cls.norb), 5)
         mo_e = mf.mo_energy[mc.ncore:mc.ncore + cls.norb]
         occ = [[p for p in range(cls.norb) if s >> p & 1] for s in strs]
-        cost = numpy.array([sum(mo_e[o]) for o in occ])
+        # (Rounded: degenerate orbitals tie, and the space does not depend on
+        # the last digits of their energies.)
+        cost = numpy.round(numpy.array([sum(mo_e[o]) for o in occ]), 6)
         cls.top = numpy.sort(strs[numpy.argsort(cost, kind='stable')[:180]])
         rng = numpy.random.default_rng(1)
         cls.rand_a = numpy.sort(rng.choice(strs, 150, replace=False))
@@ -312,9 +314,9 @@ class AgainstSelectedCI(unittest.TestCase):
                 x = selected_ci._as_SCIvector(numpy.reshape(x, (len(sa), len(sb))), (sa, sb))
                 return numpy.asarray(selected_ci.contract_2e(h2e, x, norb, nelec, link)).ravel()
             e_ref, vecs = eigsh(LinearOperator((dim, dim), matvec=hop, dtype=float),
-                                k=nroots, which='SA', tol=1e-14,
-                                v0=numpy.ones(dim) / dim ** .5)
-            order = numpy.argsort(e_ref)
+                                k=nroots + 2, which='SA', tol=1e-14,
+                                v0=numpy.random.default_rng(5).standard_normal(dim))
+            order = numpy.argsort(e_ref)[:nroots]
             e_ref = e_ref[order] + self.ecore
             # (selected_ci.make_rdm2s needs C-contiguous vectors.)
             c_ref = [selected_ci._as_SCIvector(
@@ -328,7 +330,8 @@ class AgainstSelectedCI(unittest.TestCase):
         e, c = solver.kernel(self.h1, self.eri, norb, nelec, nroots=nroots, ecore=self.ecore)
         if nroots == 1:
             e, c = [e], [c]
-        self.assertLess(abs(numpy.asarray(e) - e_ref).max(), 1e-10)
+        self.assertLess(abs(numpy.asarray(e) - e_ref).max(), 1e-10,
+                        msg='%s %s' % (numpy.asarray(e), e_ref))
         return solver, c, c_ref
 
     def test_top_strings(self):
@@ -401,6 +404,57 @@ class AgainstSelectedCI(unittest.TestCase):
         e_cold, _ = cold.kernel(self.h1, self.eri, self.norb, self.nelec, ecore=self.ecore)
         self.assertLess(e, e_small)
         self.assertAlmostEqual(e, e_cold, 9)
+
+
+class SpinFlip(unittest.TestCase):
+    '''spin_flip = +1 / -1 with the same alpha and beta strings: the
+    eigenvalues of the even and the odd part of the full product space, and
+    sigma_flip against sigma on vectors of the subspace.'''
+
+    def run_case(self, nstr, orbsym, seed):
+        norb, nelec = 8, (4, 4)
+        h1, eri = random_spatial(norb, seed=seed)
+        rng = numpy.random.default_rng(seed)
+        strs = subset(sub_strings(norb, [4]), nstr, rng)
+        full = gasci.ProductSpaceCI(ci_strs=(strs, strs))
+        full.orbsym = orbsym
+        plan = full.plan(norb, nelec)
+        self.assertTrue(plan.mirror)
+        v = full._hamiltonian(h1, eri, norb, 8, plan)
+        hmat = numpy.array([plan.sigma(v, x) for x in numpy.eye(plan.dim)]).T
+        e_all, vecs = numpy.linalg.eigh(hmat)
+        flip = plan.flip_index()
+        parity_of = numpy.einsum('ik,ik->k', vecs[flip], vecs)
+        self.assertLess(abs(abs(parity_of) - 1).max(), 1e-8)
+        for parity in (1, -1):
+            c = rng.standard_normal(plan.dim)
+            c = c + parity * c[flip]
+            self.assertLess(abs(plan.sigma_flip(v, c, parity) - plan.sigma(v, c)).max(), 1e-12)
+            solver = gasci.ProductSpaceCI(ci_strs=(strs, strs))
+            solver.orbsym = orbsym
+            solver.spin_flip = parity
+            solver.conv_tol = 1e-12
+            solver.conv_tol_residual = 1e-7
+            solver.max_space = 30
+            solver.max_cycle = 300
+            e, c = solver.kernel(h1, eri, norb, nelec, nroots=3)
+            expect = e_all[parity_of * parity > 0][:3]
+            self.assertLess(abs(numpy.asarray(e) - expect).max(), 1e-10)
+            self.assertLess(abs(c[0][flip] - parity * c[0]).max(), 1e-10)
+
+    def test_davidson(self):
+        self.run_case(40, None, 21)
+        self.run_case(48, [0, 1, 2, 3, 0, 1, 2, 3], 22)
+
+    def test_direct(self):
+        self.run_case(14, None, 23)
+
+    def test_not_mirror(self):
+        solver = gasci.ProductSpaceCI(ci_strs=([15, 23, 27], [15, 23, 29]))
+        solver.spin_flip = 1
+        h1, eri = random_spatial(6, seed=1)
+        with self.assertRaises(ValueError):
+            solver.kernel(h1, eri, 6, (4, 4))
 
 
 class DensityMode(unittest.TestCase):
