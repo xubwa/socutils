@@ -72,8 +72,20 @@ def _load():
         lib_.zg_block_ok.argtypes = [ctypes.c_void_p]
         for name in ('zg_sigma_d', 'zg_sigma_z', 'zg_rdm2_d', 'zg_rdm2_z',
                      'zg_sigma_block_d', 'zg_sigma_block_z',
-                     'zg_sigma_blas_d', 'zg_sigma_blas_z'):
+                     'zg_sigma_blas_d', 'zg_sigma_blas_z',
+                     'zg_rdm2_blas_d', 'zg_rdm2_blas_z', 'zg_det_strings'):
             getattr(lib_, name).argtypes = [ctypes.c_void_p] + [ctypes.c_void_p] * 3
+        lib_.zg_det_strings.argtypes = [ctypes.c_void_p] * 3
+        lib_.zg_plan_product.restype = ctypes.c_void_p
+        lib_.zg_plan_product.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                         ctypes.c_int64, ctypes.c_void_p,
+                                         ctypes.c_int64, ctypes.c_void_p,
+                                         ctypes.c_int, ip, ip, ip]
+        lib_.zg_is_product.restype = ctypes.c_int
+        lib_.zg_is_product.argtypes = [ctypes.c_void_p]
+        lib_.zg_product_strings.restype = ctypes.c_int64
+        lib_.zg_product_strings.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+        lib_.zg_product_info.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         _lib = lib_
     return _lib
 
@@ -245,14 +257,130 @@ class Plan:
         fn(self._handle, v.ctypes.data, c.ctypes.data, out.ctypes.data)
         return out
 
-    def rdm2_pairs(self, bra, ket):
-        '''g[P,R] = <bra| a+_p a+_q a_s a_r |ket>.'''
+    def rdm2_pairs(self, bra, ket, kernel='reference'):
+        '''g[P,R] = <bra| a+_p a+_q a_s a_r |ket>.  kernel: 'reference' or
+        'blas' (the loops of the BLAS kernel; product plans always).'''
         complex_ = numpy.iscomplexobj(bra) or numpy.iscomplexobj(ket)
         bra, ket = self._vector(bra, complex_), self._vector(ket, complex_)
         out = numpy.empty((self.npair, self.npair), dtype=bra.dtype)
-        fn = self._lib.zg_rdm2_z if complex_ else self._lib.zg_rdm2_d
+        if kernel == 'blas':
+            fn = self._lib.zg_rdm2_blas_z if complex_ else self._lib.zg_rdm2_blas_d
+        else:
+            fn = self._lib.zg_rdm2_z if complex_ else self._lib.zg_rdm2_d
         fn(self._handle, bra.ctypes.data, ket.ctypes.data, out.ctypes.data)
         return out
+
+    def det_strings(self):
+        '''ia[dim], ib[dim]: the A and the B string of each determinant
+        (numbers within each side).'''
+        ia = numpy.empty(self.dim, dtype=numpy.int64)
+        ib = numpy.empty(self.dim, dtype=numpy.int64)
+        self._lib.zg_det_strings(self._handle, ia.ctypes.data, ib.ctypes.data)
+        return ia, ib
+
+
+def string_words(strs, nbits):
+    '''Strings as 64-bit words, (len(strs), ceil(nbits / 64)) uint64: from a
+    sequence of integers (bit j: orbital j occupied) or a 2-D array of
+    occupations (len(strs), nbits) of 0 and 1.'''
+    nw = (nbits + 63) // 64
+    if isinstance(strs, numpy.ndarray) and strs.ndim == 2:
+        if strs.shape[1] != nbits:
+            raise ValueError('occupation arrays need %d columns' % nbits)
+        occ = numpy.asarray(strs != 0)
+        out = numpy.zeros((len(occ), nw), dtype=numpy.uint64)
+        for j in range(nbits):
+            out[occ[:, j], j // 64] |= numpy.uint64(1) << numpy.uint64(j % 64)
+        return out
+    if isinstance(strs, numpy.ndarray) and strs.dtype.kind in 'iu' and nw == 1:
+        if strs.dtype.kind == 'i' and (strs < 0).any():
+            raise ValueError('negative string')
+        return strs.astype(numpy.uint64).reshape(-1, 1)
+    out = numpy.zeros((len(strs), nw), dtype=numpy.uint64)
+    mask = (1 << 64) - 1
+    for i, x in enumerate(strs):
+        x = int(x)
+        if x < 0 or x >> nbits:
+            raise ValueError('string %d does not fit in %d bits' % (x, nbits))
+        for j in range(nw):
+            out[i, j] = (x >> (64 * j)) & mask
+    return out
+
+
+def words_to_ints(words):
+    '''The strings of string_words as Python integers (a uint64 array if they
+    are one word each).'''
+    words = numpy.asarray(words, dtype=numpy.uint64)
+    if words.shape[1] == 1:
+        return words[:, 0].copy()
+    return [sum(int(w) << (64 * j) for j, w in enumerate(row)) for row in words]
+
+
+class ProductPlan(Plan):
+    '''The plan of a product space (lib/zgasci/PRODUCT_SPACE.md): every A
+    string of words_a times every B string of words_b with nelec electrons
+    together and the labels adding up to the targets.  Side A holds the
+    spinors 0 .. nside_a - 1, side B the others; words_x as string_words over
+    the spinors of the side (bit j: spinor j of the side).  The strings are
+    renumbered (electron count, labels, value): strings(side).'''
+
+    def __init__(self, n, nelec, nside_a, words_a, words_b, labels=None,
+                 mods=(), targets=()):
+        self._lib = _load()
+        self.n, self.nelec, self.nside_a = int(n), int(nelec), int(nside_a)
+        self.npair = self.n * (self.n - 1) // 2
+        nw = [(self.nside_a + 63) // 64, (self.n - self.nside_a + 63) // 64]
+        words = []
+        for side, w in enumerate((words_a, words_b)):
+            w = numpy.ascontiguousarray(w, dtype=numpy.uint64)
+            if w.ndim != 2 or w.shape[1] != nw[side]:
+                raise ValueError('strings of side %s need %d words each'
+                                 % ('AB'[side], nw[side]))
+            words.append(w)
+        if labels is None:
+            labels = numpy.zeros((0, self.n), dtype=numpy.intc)
+        labels = numpy.ascontiguousarray(numpy.reshape(labels, (-1, self.n)),
+                                         dtype=numpy.intc)
+        nsets = labels.shape[0]
+        mods = numpy.asarray(list(mods) + [0], dtype=numpy.intc)
+        targets = numpy.asarray(list(targets) + [0], dtype=numpy.intc)
+        flat = labels.reshape(-1) if nsets else numpy.zeros(1, dtype=numpy.intc)
+        self._keep = (words, flat, mods, targets)
+        handle = self._lib.zg_plan_product(
+            self.n, self.nelec, self.nside_a, len(words[0]), words[0].ctypes.data,
+            len(words[1]), words[1].ctypes.data, nsets, _intp(flat), _intp(mods),
+            _intp(targets))
+        if not handle:
+            raise ValueError('zgasci: ' + self._lib.zg_error().decode())
+        self._handle = ctypes.c_void_p(handle)
+        self._keep = None
+        self.dim = int(self._lib.zg_dim(self._handle))
+        self.nwords = int(self._lib.zg_nwords(self._handle))
+        self.block_ok = True
+        self.side_words = nw
+
+    def info(self):
+        out = super().info()
+        extra = numpy.zeros(4, dtype=numpy.int64)
+        self._lib.zg_product_info(self._handle, extra.ctypes.data)
+        out.pop('tasks')
+        out['table_entries_a'], out['table_entries_b'] = int(extra[2]), int(extra[3])
+        return out
+
+    def strings(self, side):
+        '''The strings of side 0 (A) or 1 (B) in the order of the plan, as
+        words (n, nwords).'''
+        count = self._lib.zg_product_strings(self._handle, side, None)
+        out = numpy.zeros((count, self.side_words[side]), dtype=numpy.uint64)
+        self._lib.zg_product_strings(self._handle, side, out.ctypes.data)
+        return out
+
+    def sigma(self, v, c, kernel='blas'):
+        '''H c (the BLAS kernel whatever kernel says).'''
+        return super().sigma(v, c, kernel='blas')
+
+    def rdm2_pairs(self, bra, ket, kernel='blas'):
+        return super().rdm2_pairs(bra, ket, kernel='blas')
 
 
 class _SmallPlan:
@@ -949,3 +1077,200 @@ class SpatialGASCI(GASCI):
                 inversions += occ[:, i] > occ[:, j]
         coef = numpy.asarray(fcivec).ravel() * (1 - 2 * (inversions % 2))
         return [tuple(sorted(x)) for x in occ], coef
+
+
+def _string_key(words):
+    return hash(numpy.ascontiguousarray(words).tobytes())
+
+
+class _ProductMixin:
+    '''What the product-space solvers share: the strings (ci_strs), the
+    vectors as matrices over them, the start vector from another space.'''
+
+    def _product_words(self, norb, nside):
+        if self.ci_strs is None:
+            raise ValueError('a product space needs ci_strs = (strings_a, strings_b)')
+        strs_a, strs_b = self.ci_strs
+        return (string_words(strs_a, nside[0]), string_words(strs_b, nside[1]))
+
+    def strings(self, norb, nelec):
+        '''The A and the B strings in the order of the plan, as integers.'''
+        plan = self.plan(norb, nelec)
+        return words_to_ints(plan.strings(0)), words_to_ints(plan.strings(1))
+
+    def to_matrix(self, fcivec, norb, nelec):
+        '''The CI vector as the matrix C[a, b] over strings(norb, nelec) (zero
+        where (a, b) is not a determinant of the space: other labels).'''
+        plan = self.plan(norb, nelec)
+        ia, ib = plan.det_strings()
+        fcivec = numpy.asarray(fcivec).ravel()
+        out = numpy.zeros((len(plan.strings(0)), len(plan.strings(1))), dtype=fcivec.dtype)
+        out[ia, ib] = fcivec
+        return out
+
+    def from_matrix(self, matrix, strs, norb, nelec):
+        '''A vector of the space from the matrix C[a, b] over the strings
+        strs = (strings_a, strings_b) of another space (integers or occupation
+        arrays as ci_strs): the elements of the determinants that both spaces
+        have, zero elsewhere.  For warm starts between SQD iterations.'''
+        plan = self.plan(norb, nelec)
+        nside = self._nside(norb)
+        maps = []
+        for side in range(2):
+            old = {row.tobytes(): i for i, row in
+                   enumerate(string_words(strs[side], nside[side]))}
+            maps.append(numpy.array([old.get(row.tobytes(), -1)
+                                     for row in plan.strings(side)], dtype=numpy.int64))
+        ia, ib = plan.det_strings()
+        ra, rb = maps[0][ia], maps[1][ib]
+        matrix = numpy.asarray(matrix)
+        out = numpy.zeros(plan.dim, dtype=matrix.dtype)
+        good = (ra >= 0) & (rb >= 0)
+        out[good] = matrix[ra[good], rb[good]]
+        return out
+
+    def _start(self, ci0, norb, nelec):
+        '''ci0 as (strings_a, strings_b, matrix) or a list of them: mapped by
+        from_matrix; anything else as it is.'''
+        def one(x):
+            if isinstance(x, tuple) and len(x) == 3:
+                return self.from_matrix(x[2], x[:2], norb, nelec)
+            return x
+        if isinstance(ci0, tuple) and len(ci0) == 3:
+            return one(ci0)
+        if isinstance(ci0, list):
+            return [one(x) for x in ci0]
+        return ci0
+
+
+class ProductSpaceCI(_ProductMixin, SpatialGASCI):
+    '''CI in a product space over spatial orbitals (SQD / QSCI, the space of
+    pyscf.fci.selected_ci): every alpha string of ci_strs[0] times every beta
+    string of ci_strs[1], with the interface of SpatialGASCI and
+    pyscf.fci.direct_spin1 (energies, vectors, spin-traced and spin-resolved
+    density matrices, spin_square, orbsym / wfnsym).
+
+    ci_strs = (alpha strings, beta strings): integers (bit p: orbital p
+    occupied, the convention of pyscf.fci.cistring) or 0/1 occupation arrays
+    (n, norb); each string must have nalpha (nbeta) electrons, repeats are
+    an error.  CI vectors are in the order of the plan; without orbsym it is
+    the matrix C[a, b] over the sorted strings, as in selected_ci
+    (to_matrix / from_matrix convert in general).  ci0 may be such vectors or
+    (strings_a, strings_b, matrix) of another space (a warm start).  Only
+    the BLAS kernel (lib/zgasci/PRODUCT_SPACE.md); gas, restrictions,
+    subgroups do not apply.
+    '''
+
+    def __init__(self, mol=None, ci_strs=None):
+        super().__init__(mol)
+        self.ci_strs = ci_strs
+
+    def _nside(self, norb):
+        return (norb, norb)
+
+    def plan(self, norb, nelec):
+        nalpha, nbeta = self._unpack_nelec(nelec)
+        words = self._product_words(norb, (norb, norb))
+        for side, (w, k) in enumerate(zip(words, (nalpha, nbeta))):
+            counts = numpy.unpackbits(numpy.ascontiguousarray(w).view(numpy.uint8),
+                                      axis=1).sum(axis=1)
+            if len(w) and (counts != k).any():
+                raise ValueError('ci_strs[%d]: %d strings without %d electrons'
+                                 % (side, int((counts != k).sum()), k))
+        orbsym = None if self.orbsym is None else numpy.asarray(self.orbsym, dtype=int)
+        if orbsym is not None and len(orbsym) == 0:
+            orbsym = None
+        wfnsym = self._wfnsym_id()
+        key = repr(('product', norb, nalpha, nbeta, _string_key(words[0]),
+                    _string_key(words[1]), None if orbsym is None else orbsym.tolist(),
+                    wfnsym))
+        if self._plan_cache[0] == key:
+            return self._plan_cache[1]
+        if nalpha + nbeta < 2:
+            raise ValueError('a product space needs at least two electrons')
+        n = 2 * norb
+        labels, mods, targets = None, [], []
+        if orbsym is not None:
+            if orbsym.size != norb or orbsym.min() < 0 or orbsym.max() > 7:
+                raise ValueError('orbsym must give one irreducible representation '
+                                 'of D2h or a subgroup (0 to 7) per orbital')
+            if wfnsym is None:
+                wfnsym = 0
+                for p in list(range(nalpha)) + list(range(nbeta)):
+                    wfnsym ^= int(orbsym[p])
+            rows = []
+            for bit in range(3):
+                bits = (orbsym >> bit) & 1
+                if bits.any():
+                    rows.append(numpy.concatenate([bits, bits]))
+                    mods.append(2)
+                    targets.append((wfnsym >> bit) & 1)
+            if rows:
+                labels = numpy.array(rows)
+        plan = ProductPlan(n, nalpha + nbeta, norb, words[0], words[1], labels, mods,
+                           targets)
+        plan.sperm = numpy.arange(norb)
+        plan.perm = numpy.arange(n)
+        plan.nalpha, plan.nbeta = nalpha, nbeta
+        self._plan_cache = (key, plan)
+        return plan
+
+    def kernel(self, h1e, eri, norb, nelec, ci0=None, nroots=None, ecore=0,
+               verbose=None, ci_strs=None, **kwargs):
+        if ci_strs is not None:
+            self.ci_strs = ci_strs
+        if 'orbsym' in kwargs and kwargs['orbsym'] is not None:
+            self.orbsym = kwargs['orbsym']
+        if 'wfnsym' in kwargs and kwargs['wfnsym'] is not None:
+            self.wfnsym = kwargs['wfnsym']
+        ci0 = self._start(ci0, norb, nelec)
+        return SpatialGASCI.kernel(self, h1e, eri, norb, nelec, ci0=ci0, nroots=nroots,
+                                   ecore=ecore, verbose=verbose)
+
+
+class ProductSpinorCI(_ProductMixin, GASCI):
+    '''CI in a product space over spinors: every A string of ci_strs[0]
+    (over the spinors 0 .. nside_a - 1) times every B string of ci_strs[1]
+    (over the spinors nside_a .. norb - 1, bit j: spinor nside_a + j), with
+    nelec electrons together and, if orbsym is given, the labels adding up to
+    target (as GASCI; 2 Omega, parity, ...).  The strings of a side may have
+    different electron counts.  nside_a defaults to norb // 2.  The interface
+    of GASCI (density matrices in its conventions); vectors as in
+    ProductSpaceCI.
+    '''
+
+    def __init__(self, mol=None, ci_strs=None, nside_a=None):
+        super().__init__(mol)
+        self.ci_strs = ci_strs
+        self.nside_a = nside_a
+
+    def _nside(self, norb):
+        a = norb // 2 if self.nside_a is None else int(self.nside_a)
+        return (a, norb - a)
+
+    def plan(self, norb, nelec):
+        nelec = self._nelec(nelec)
+        nside = self._nside(norb)
+        words = self._product_words(norb, nside)
+        labels, mods, targets = self._label_sets(norb)
+        key = repr(('product', norb, nelec, nside, _string_key(words[0]),
+                    _string_key(words[1]), labels.tolist(), mods, targets))
+        if self._plan_cache[0] == key:
+            return self._plan_cache[1]
+        if nelec < 2:
+            raise ValueError('a product space needs at least two electrons')
+        if targets is None and len(labels):
+            targets = [int(x) for x in labels[:, :nelec].sum(axis=1)]
+        plan = ProductPlan(norb, nelec, nside[0], words[0], words[1],
+                           labels if len(labels) else None, mods, targets or [])
+        plan.perm = numpy.arange(norb)
+        self._plan_cache = (key, plan)
+        return plan
+
+    def kernel(self, h1e, eri, norb, nelec, ci0=None, nroots=None, ecore=0,
+               verbose=None, ci_strs=None, **kwargs):
+        if ci_strs is not None:
+            self.ci_strs = ci_strs
+        ci0 = self._start(ci0, norb, nelec)
+        return GASCI.kernel(self, h1e, eri, norb, nelec, ci0=ci0, nroots=nroots,
+                            ecore=ecore, verbose=verbose)
