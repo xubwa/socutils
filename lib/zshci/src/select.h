@@ -43,6 +43,7 @@
 #include "integrals.h"
 #include "output.h"
 #include "sparse_h.h"
+#include "spin_flip.h"
 
 namespace zshci {
 
@@ -149,6 +150,41 @@ SharedArray<double> ShareWeights(
       for (const std::vector<S>& v : root_vectors) sum += std::norm(v[i]);
       weights[i] = root_vectors.empty() ? std::sqrt(double(num_roots))
                                         : std::sqrt(sum);
+    }
+  }
+  weights.ShareFromRoot(comm);
+  return weights;
+}
+
+// Collective: as ShareWeights, for the determinants of the list when the
+// root's vectors are over the functions of `h`'s spin-flip layout: the
+// canonical member of a function gets the weight of its coefficient in the
+// expanded vector, its partner none. Its partner's candidates are the flips
+// of its own, which the layout adds anyway.
+template <int W, typename S, class H>
+SharedArray<double> ShareSelectionWeights(
+    const H& h, const std::vector<std::vector<S>>& root_vectors, size_t dim,
+    int num_roots, const Comm& comm) {
+  if (h.flip() == nullptr) {
+    return ShareWeights(root_vectors, dim, num_roots, comm);
+  }
+  SharedArray<double> weights(dim, comm);
+  if (comm.is_root()) {
+    const SpinFlipLayout& flip = *h.flip();
+    const long n = static_cast<long>(dim);
+#pragma omp parallel for schedule(static)
+    for (long j = 0; j < n; ++j) {
+      if (!flip.is_canonical(j)) {
+        weights[j] = 0.0;
+        continue;
+      }
+      double sum = 0.0;
+      for (const std::vector<S>& v : root_vectors) {
+        sum += std::norm(v[flip.rep(j)]);
+      }
+      weights[j] = root_vectors.empty()
+                       ? std::sqrt(double(num_roots))
+                       : std::abs(flip.weight(j)) * std::sqrt(sum);
     }
   }
   weights.ShareFromRoot(comm);
@@ -708,8 +744,13 @@ void RunSelect(const Input& given, const Integrals<S>& ints, const Comm& comm) {
 
   // The root owns the growing list; `shared_dets` is its copy on every node.
   std::vector<Det<W>> root_dets;
+  // With spin_flip: the size of the loaded list and, for every determinant
+  // of the list in the layout, its position there (-1: added).
+  size_t num_loaded = 0;
+  std::vector<long> loaded_source;
   if (comm.is_root()) {
     root_dets = LoadDeterminants<W>(input, num_orbs);
+    num_loaded = root_dets.size();
     // The starting determinants fix the symmetry block; mixing blocks is
     // almost certainly an input mistake.
     const std::vector<int> block_label =
@@ -726,6 +767,22 @@ void RunSelect(const Input& given, const Integrals<S>& ints, const Comm& comm) {
         throw std::runtime_error("starting determinant " + std::to_string(d) +
                                  " violates an occupation restriction");
       }
+    }
+    if (input.spin_flip != 0) {
+      std::vector<Det<W>> paired;
+      AppendPairs(root_dets,
+                  SpinFlipLambda(input.spin_flip, root_dets[0].Count()),
+                  &paired, &loaded_source);
+      if (paired.empty()) {
+        throw std::runtime_error(
+            "spin_flip: no starting determinant has the asked symmetry "
+            "(-1 needs an open-shell determinant)");
+      }
+      std::printf(
+          "spin_flip %+d: %zu starting determinants with their "
+          "flips make %zu\n",
+          input.spin_flip, root_dets.size(), paired.size());
+      root_dets = std::move(paired);
     }
     std::printf(
         "starting determinants: %zu, electrons: %d, spinors: %d, "
@@ -756,17 +813,33 @@ void RunSelect(const Input& given, const Integrals<S>& ints, const Comm& comm) {
   std::vector<double> energies;
   DavidsonOptions loose = input.davidson;
   loose.tol = std::max(input.davidson.tol, input.select.davidson_tol_loose);
-  bool have_vectors = shared_dets.size() >= static_cast<size_t>(num_roots);
+  bool have_vectors = h.dim() >= static_cast<size_t>(num_roots);
   if (have_vectors) {
     if (comm.is_root()) {
-      const bool from_file = !input.detfile.empty() &&
-                             ReadCoefficients(input.detfile, shared_dets.size(),
-                                              num_roots, &root_vectors);
+      bool from_file = false;
+      if (!input.detfile.empty()) {
+        std::vector<std::vector<S>> file_vectors;
+        from_file = ReadCoefficients(
+            input.detfile,
+            h.flip() != nullptr ? num_loaded : shared_dets.size(), num_roots,
+            &file_vectors);
+        if (from_file && h.flip() != nullptr) {
+          // In the order of the layout, then onto the functions.
+          for (std::vector<S>& v : file_vectors) {
+            std::vector<S> full(loaded_source.size(), S(0.0));
+            for (size_t j = 0; j < full.size(); ++j) {
+              if (loaded_source[j] >= 0) full[j] = v[loaded_source[j]];
+            }
+            v = std::move(full);
+          }
+          file_vectors = h.Project(file_vectors);
+        }
+        if (from_file) root_vectors = std::move(file_vectors);
+      }
       if (from_file) {
         std::printf("starting vectors: read from %s\n", input.detfile.c_str());
       } else {
-        root_vectors =
-            GuessVectors(shared_dets.span(), h.stored(), ints, num_roots);
+        root_vectors = h.Guess(num_roots);
       }
     }
     // On resuming, the eigensolver may go on from its own checkpoint; the
@@ -786,8 +859,9 @@ void RunSelect(const Input& given, const Integrals<S>& ints, const Comm& comm) {
           result.num_iterations, result.num_products, result.seconds_total,
           result.restarted ? " from the checkpoint of the eigensolver" : "");
       if (input.select.checkpoint && comm.is_root()) {
-        WriteSelectCheckpoint(input, ints, shared_dets.span(), root_vectors,
-                              result.energies, resume_iter, true);
+        WriteSelectCheckpoint(input, ints, shared_dets.span(),
+                              h.Expand(root_vectors), result.energies,
+                              resume_iter, true);
       }
     }
     energies = result.energies;
@@ -849,7 +923,7 @@ void RunSelect(const Input& given, const Integrals<S>& ints, const Comm& comm) {
     Selection<W> selection;
     {
       const SharedArray<double> weights =
-          ShareWeights(root_vectors, old_size, num_roots, comm);
+          ShareSelectionWeights<W>(h, root_vectors, old_size, num_roots, comm);
       const SharedArray<uint8_t> active =
           SharedArray<uint8_t>::FromRoot(root_active, comm);
       const SharedArray<Det<W>> sorted_dets =
@@ -887,6 +961,13 @@ void RunSelect(const Input& given, const Integrals<S>& ints, const Comm& comm) {
       num_out = selection.drop.size();
       if (num_inactive + num_out == 0) {
         fresh = std::move(selection.add);
+        if (h.flip() != nullptr) {
+          // The new determinants are none of the list, and neither are
+          // their flips: the list is closed under the flip.
+          std::vector<Det<W>> paired;
+          AppendPairs(fresh, h.flip()->lambda(), &paired);
+          fresh = std::move(paired);
+        }
       } else {
         // The positions of the list in the order of the determinants.
         std::vector<size_t> order(old_size);
@@ -935,16 +1016,15 @@ void RunSelect(const Input& given, const Integrals<S>& ints, const Comm& comm) {
 
     if (comm.is_root()) {
       if (!have_vectors) {
-        root_vectors =
-            GuessVectors(shared_dets.span(), h.stored(), ints, num_roots);
+        root_vectors = h.Guess(num_roots);
       } else {
-        for (std::vector<S>& v : root_vectors) v.resize(new_size, 0.0);
+        for (std::vector<S>& v : root_vectors) v.resize(h.dim(), 0.0);
       }
     }
     have_vectors = true;
     if (input.select.checkpoint && comm.is_root()) {
-      WriteSelectCheckpoint(input, ints, shared_dets.span(), root_vectors,
-                            energies, iter, false);
+      WriteSelectCheckpoint(input, ints, shared_dets.span(),
+                            h.Expand(root_vectors), energies, iter, false);
     }
 
     // The last epsilon1 has been reached and the space or the energies have
@@ -1021,8 +1101,8 @@ void RunSelect(const Input& given, const Integrals<S>& ints, const Comm& comm) {
     energies = result.energies;
     const double solve_end = omp_get_wtime();
     if (input.select.checkpoint && comm.is_root()) {
-      WriteSelectCheckpoint(input, ints, shared_dets.span(), root_vectors,
-                            energies, iter, true);
+      WriteSelectCheckpoint(input, ints, shared_dets.span(),
+                            h.Expand(root_vectors), energies, iter, true);
     }
     for (int k = 0; k < num_roots; ++k) {
       std::printf(
@@ -1040,6 +1120,9 @@ void RunSelect(const Input& given, const Integrals<S>& ints, const Comm& comm) {
       std::printf(
           "      peak memory so far (GB): root %.1f, largest rank %.1f\n",
           peaks[0], *std::max_element(peaks.begin(), peaks.end()));
+    }
+    if (h.flip() != nullptr) {
+      std::printf("      spin-flip functions: %zu\n", h.dim());
     }
     if (num_back + num_out + num_small + num_inactive > 0) {
       std::printf("      space: %zu new, %zu back in, %zu taken out", num_fresh,
@@ -1065,6 +1148,9 @@ void RunSelect(const Input& given, const Integrals<S>& ints, const Comm& comm) {
       "variational space: %zu determinants, %zu stored Hamiltonian "
       "elements on the root\n",
       shared_dets.size(), h.stored().num_elements());
+  if (h.flip() != nullptr) {
+    std::printf("spin_flip %+d: %zu functions\n", input.spin_flip, h.dim());
+  }
   h.PrintStats();
   std::printf(
       "eigensolver (root): %d products H*x in %.2f s, %.2f s in the "
@@ -1072,12 +1158,14 @@ void RunSelect(const Input& given, const Integrals<S>& ints, const Comm& comm) {
       num_products, seconds_products, seconds_solver - seconds_products);
 
   root_dets = std::vector<Det<W>>();
+  // Perturbation theory, density matrices and the files take the vectors
+  // over the determinants.
   const SharedVectors<S> vectors =
-      ShareVectors(root_vectors, shared_dets.size(), comm);
+      ShareVectors(h.Expand(root_vectors), shared_dets.size(), comm);
   root_vectors = std::vector<std::vector<S>>();
   const std::vector<PtResult> pt =
       ComputePerturbation(input, ints, shared_dets.span(), energies, vectors,
-                          &heat_bath, filter, comm);
+                          &heat_bath, filter, comm, h.flip());
   WriteResults(input, ints, shared_dets.span(), h, labels, energies, vectors,
                pt, comm);
 }
