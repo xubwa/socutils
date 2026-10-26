@@ -121,8 +121,164 @@ Python (`socutils.hci.gasci`):
   N_alpha is one more constraint, constraints name spatial orbitals.
   `trans_rdm1` follows pyscf: `t[p,q] = <bra|q^+ p|ket>`.
 * `Plan` — the C plan: `dim`, `dets()`, `occslst()`, `hdiag(v)`,
-  `sigma(v, c, kernel='blas')`, `rdm2_pairs(bra, ket)`; `antisymmetrized(h1, eri, n, nelec)`
+  `sigma(v, c, kernel='blas')`, `rdm2_pairs(bra, ket, kernel='reference')`
+  (`'blas'`: `zg_rdm2_blas`), `det_strings()`; `antisymmetrized(h1, eri, n, nelec)`
   builds `v`.
+
+## Product spaces (SQD / QSCI, TBSCI)
+
+Design: `PRODUCT_SPACE.md`. The space is every A string of one list times
+every B string of another. The determinants must also have N electrons and
+the target labels. It is the space of sample-based quantum diagonalization
+and of `pyscf.fci.selected_ci`.
+
+* A class is an electron count. A bucket adds the labels. Blocks (A bucket
+  x the matching B bucket) are dense.
+* The operators of each side come from string-level tables, built once with
+  hash look-ups. The BLAS kernel uses them in place of its placement
+  enumeration. Otherwise it is unchanged: gather – GEMM or dot products –
+  scatter, rows owned by one thread.
+* The pair density comes from the same loops in a density mode
+  (`zg_rdm2_blas`).
+
+C (`zgasci.h`):
+* `zg_plan_product(nspinor, nelec, nside_a, nstr_a, str_a, nstr_b, str_b,
+  nsets, labels, mods, targets)`: strings as 64-bit words over the spinors
+  of their side.
+* `zg_is_product`, `zg_is_mirror`, `zg_product_strings`, `zg_product_info`,
+  `zg_det_strings`, `zg_flip_vector_*`, `zg_sigma_flip_*`.
+* `zg_hdiag_*`, `zg_sigma_blas_*` (`zg_sigma_*` and `zg_sigma_block_*` call
+  it), `zg_rdm2_*` (calls `zg_rdm2_blas_*`).
+
+Python (`socutils.hci.gasci`):
+
+* `ProductSpaceCI(mol, ci_strs=(alpha strings, beta strings))` — spatial
+  orbitals, the interface of `SpatialGASCI` / `direct_spin1`.
+  * Strings are integers (bit p = orbital p, as `pyscf.fci.cistring`) or 0/1
+    occupation arrays.
+  * `kernel(h1e, eri, norb, nelec, ci0, nroots, ecore, ci_strs=...)`.
+  * Density matrices: spin-traced and spin-resolved 1- and 2-RDMs,
+    transition ones, `spin_square`; `orbsym` / `wfnsym` (D2h).
+  * Without `orbsym` the vector is `C[a, b]` over the sorted lists, the
+    layout and phases of `selected_ci`.
+  * `strings`, `to_matrix`, `from_matrix(matrix, strs, ...)`. `ci0` may be
+    `(strings_a, strings_b, matrix)` of another space, a warm start between
+    SQD iterations.
+  * `spin_flip = 1` (`-1`): with equal alpha and beta lists, only states
+    with `C[b, a] = C[a, b]` (`-C[a, b]`), that is even (odd) S. Sigma then
+    runs without its beta-beta half.
+* `ProductSpinorCI(mol, ci_strs, nside_a)` — spinors.
+  * The A strings are over the spinors `0 .. nside_a - 1` (default
+    `norb // 2`), the B strings over the rest. A side may hold several
+    electron counts.
+  * Labels (`orbsym`, `orbsym_mod`, `target`) and density matrices as
+    `GASCI`.
+* `ProductPlan(n, nelec, nside_a, words_a, words_b, labels, mods, targets)`
+  with `strings(side)`, `det_strings()`, `mirror`, `flip_index()`,
+  `flip_vector(c)`, `sigma_flip(v, c, parity)`; `string_words`,
+  `words_to_ints`.
+
+Limits:
+* At most 215 spinors per side (operator numbers in 32 bits).
+* Fewer than 2^31 strings per side, at least 2 electrons.
+* Table memory is 8 bytes per entry. Each entry is an operator from a
+  string to a string of the list, including the diagonal ones. The count
+  is printed by `info()`.
+* Spin flip: `ProductSpaceCI.spin_flip = ±1` with equal alpha and beta
+  lists (`zg_sigma_flip`). Time reversal for spinors is not implemented.
+
+Tests: `python hci/test/test_product_space.py` (14 tests; also with
+`ZGASCI_NO_BLAS`):
+* All strings against `SpatialGASCI` / `GASCI` full CI: sigma and hdiag
+  element by element to 1e-12, energies to 1e-12, with labels.
+* Random subsets against H built from the operators on the bit strings:
+  sigma, hdiag and the pair density (`sum v g = <b|H|c>`) to 1e-12.
+  Spatial and spinor, real and complex, labels with and without modulus;
+  GEMM path forced, dot path forced, AXPY path forced.
+* A side of 66 spinors (two words) against the combinatorial plan of the
+  same space.
+* Against `selected_ci.contract_2e` to 1e-12.
+* N2 / cc-pVDZ, 10 electrons in 12 orbitals, 180 chosen and 150 x 140
+  random strings, against `selected_ci`. Energies to 1e-10, three roots
+  (by ARPACK on `selected_ci.contract_2e`: its own Davidson starts from a
+  singlet guess and misses a triplet root, which ours finds). 1- and 2-RDMs
+  (spin-resolved) and `spin_square` to 1e-12 on the same vectors. D2h
+  labels, warm start, `to_matrix` / `from_matrix`.
+* `spin_flip` against the even and odd eigenvalues of the full product
+  space (Davidson and direct).
+* `zg_rdm2_blas` against `zg_rdm2` in combinatorial spaces.
+
+### Timings, product spaces (one node)
+
+One sigma, best of three, 48 threads, Xeon Gold 6248R (parallel
+partition), MKL; the same list on both sides.
+* **N2**: cc-pVDZ, 1s frozen, 10 electrons in 26 orbitals (65 780 strings
+  of 5 electrons).
+* **Fe–S-like**: random integrals, 54 electrons in 36 orbitals (27 + 27).
+* **top**: the strings with the lowest sums of orbital energies (for
+  Fe–S, among those within three excitations of the aufbau string), a
+  stand-in for the most important strings of a wavefunction, so they are
+  close to each other.
+* **random**: a random subset.
+* "table": entries of the operator tables of a side.
+
+pyscf is `selected_ci.contract_2e` on the same space with its link tables
+precomputed. The results agree to 1e-15.
+
+| system | strings | M per side | determinants | table | zgasci (s) | spin flip (s) | pyscf (s) | pyscf / zgasci |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| N2 | top | 1 000 | 1.0e6 | 4.3e5 | 0.089 | | 0.296 | 3.3 |
+| N2 | random | 1 000 | 1.0e6 | 5.4e4 | 0.058 | | 0.634 | 11 |
+| N2 | top | 3 162 | 1.0e7 | 2.2e6 | 0.554 | | 2.77 | 5.0 |
+| N2 | random | 3 162 | 1.0e7 | 4.5e5 | 0.161 | | 3.28 | 20 |
+| N2 | top | 6 325 | 4.0e7 | 5.8e6 | 2.60 | 2.08 | 10.1 | 3.9 |
+| N2 | random | 6 325 | 4.0e7 | 1.7e6 | 1.12 | 0.89 | 10.1 | 9.1 |
+| Fe–S | top | 1 000 | 1.0e6 | 1.4e6 | 0.239 | | 133 | 560 |
+| Fe–S | random | 1 000 | 1.0e6 | 3.8e5 | 0.178 | | 233 | 1300 |
+| Fe–S | top | 3 162 | 1.0e7 | 5.6e6 | 1.02 | | — | |
+| Fe–S | random | 3 162 | 1.0e7 | 1.2e6 | 0.330 | | — | |
+| Fe–S | top | 6 325 | 4.0e7 | 1.3e7 | 4.4 | 3.75 | — | |
+| Fe–S | random | 6 325 | 4.0e7 | | 0.52 | 0.48 | — | |
+
+Run-to-run variation on different nodes is up to 6 %. The spin-flip
+column is from a second job, which measured the plain sigma at 2.6–2.75,
+1.22, 4.44 and 0.52 s on the same cases.
+
+Other costs:
+* Plan creation (tables): 0.05–0.4 s.
+* hdiag: 0.5 s (N2) and 0.8 s (Fe–S) at 4e7.
+
+Where the time goes (`ZGASCI_STATS`, N2 top 4e7):
+* (AB,AB) is about 55 %. Its GEMMs run at 40–50 GF/s per thread but do
+  about 9 times the needed multiply-adds. The column operators, collected
+  again for each piece of rows, and the scatter take 12 % and 12 %.
+* (AA,AA) and (BB,BB) in `blas_rows` are about 30 %.
+* The two transpositions are the rest.
+
+Before `blas_rows` (one AXPY per operator, as the combinatorial kernel
+does) the same sigma took 5.46 s on 32 threads of a 6448Y; with it, 2.48 s.
+
+pyscf's `selected_ci` builds its intermediate strings over N - 1 and N - 2
+electrons. With 27 electrons a side these lists are long, hence the factor
+500–1300 for Fe–S.
+
+Davidson (`pyscf.lib.davidson1` in both, conv_tol 1e-9, N2 top, 48
+threads, `max_memory` 150 GB):
+
+| determinants | zgasci | pyscf `kernel_fixed_space` | iterations | E difference |
+|---:|---:|---:|---:|---:|
+| 1.0e7 | 29.7 s | 59.5 s | 14 / 14 | 3e-13 |
+| 4.0e7 | 92.8 s (92.0 s in a rerun; 99.0 s with `spin_flip = 1`) | 185.8 s | 14 / 14 | 9e-13 |
+
+At 4e7 the sigma calls are 36 s of the 93 s. The rest is the vector algebra
+of `davidson1` in numpy, 12 vectors of 0.32 GB, 11.5 GB peak. With the
+default `max_memory` (4000 MB) `davidson1` keeps the vectors in a file:
+175 s, and 272 s for pyscf.
+
+`spin_flip` saves 0.5 s per sigma here. It costs two vector flips per
+iteration and needs one more vector, so it does not shorten the run. Its
+use is the restriction to even or odd S: no triplet roots among the
+singlets.
 
 ## Limits
 
