@@ -205,14 +205,32 @@ int2eJK int_sph_get_h2e_JK_gauge_compact(const INT_SPH* self,
                array_angular_Kpm[LmaxK[2] - LminK[2] + 1][size_tmp_p][size_tmp_q];
         double array_angular_Jpp[LmaxJ[3] - LminJ[3] + 1][size_tmp_p][size_tmp_q],
                array_angular_Kpp[LmaxK[3] - LminK[3] + 1][size_tmp_p][size_tmp_q];
-        double radial_2e_list_Jmm[LmaxJ[0] - LminJ[0] + 1][size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4];
-        double radial_2e_list_Kmm[LmaxK[0] - LminK[0] + 1][size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4];
-        double radial_2e_list_Jmp[LmaxJ[1] - LminJ[1] + 1][size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4];
-        double radial_2e_list_Kmp[LmaxK[1] - LminK[1] + 1][size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4];
-        double radial_2e_list_Jpm[LmaxJ[2] - LminJ[2] + 1][size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4];
-        double radial_2e_list_Kpm[LmaxK[2] - LminK[2] + 1][size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4];
-        double radial_2e_list_Jpp[LmaxJ[3] - LminJ[3] + 1][size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4];
-        double radial_2e_list_Kpp[LmaxK[3] - LminK[3] + 1][size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4];
+        /* heap, not VLAs: (L+1) n^4 4 doubles each overflow the default stack
+           for uncontracted heavy-atom shells */
+        double (*radial_2e_list_Jmm)[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4] =
+            malloc(sizeof(double[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4]) *
+                   (size_t)(LmaxJ[0] - LminJ[0] + 1));
+        double (*radial_2e_list_Kmm)[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4] =
+            malloc(sizeof(double[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4]) *
+                   (size_t)(LmaxK[0] - LminK[0] + 1));
+        double (*radial_2e_list_Jmp)[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4] =
+            malloc(sizeof(double[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4]) *
+                   (size_t)(LmaxJ[1] - LminJ[1] + 1));
+        double (*radial_2e_list_Kmp)[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4] =
+            malloc(sizeof(double[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4]) *
+                   (size_t)(LmaxK[1] - LminK[1] + 1));
+        double (*radial_2e_list_Jpm)[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4] =
+            malloc(sizeof(double[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4]) *
+                   (size_t)(LmaxJ[2] - LminJ[2] + 1));
+        double (*radial_2e_list_Kpm)[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4] =
+            malloc(sizeof(double[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4]) *
+                   (size_t)(LmaxK[2] - LminK[2] + 1));
+        double (*radial_2e_list_Jpp)[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4] =
+            malloc(sizeof(double[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4]) *
+                   (size_t)(LmaxJ[3] - LminJ[3] + 1));
+        double (*radial_2e_list_Kpp)[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4] =
+            malloc(sizeof(double[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4]) *
+                   (size_t)(LmaxK[3] - LminK[3] + 1));
 
         #pragma omp parallel  for
         for (int tt = 0; tt < size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q; tt++)
@@ -707,6 +725,14 @@ int2eJK int_sph_get_h2e_JK_gauge_compact(const INT_SPH* self,
                 }
             }
         }
+        free(radial_2e_list_Jmm);
+        free(radial_2e_list_Kmm);
+        free(radial_2e_list_Jmp);
+        free(radial_2e_list_Kmp);
+        free(radial_2e_list_Jpm);
+        free(radial_2e_list_Kpm);
+        free(radial_2e_list_Jpp);
+        free(radial_2e_list_Kpp);
         int_tmp1_q += (l_q == 0) ? 1 : 2;
     }
     int_tmp1_p += (l_p == 0) ? 1 : 2;

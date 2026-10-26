@@ -268,10 +268,16 @@ int2eJK int_sph_get_h2e_JK_compact(const INT_SPH* self, const char* intType,
         int size_tmp_p = (l_p == 0) ? 1 : 2, size_tmp_q = (l_q == 0) ? 1 : 2;
         double array_angular_J[LmaxJ + 1][size_tmp_p][size_tmp_q],
             array_angular_K[LmaxK + 1][size_tmp_p][size_tmp_q];
-        double radial_2e_list_J[size_gtos_p * size_gtos_p * size_gtos_q *
-                                size_gtos_q][LmaxJ + 1][3][3];
-        double radial_2e_list_K[size_gtos_p * size_gtos_p * size_gtos_q *
-                                size_gtos_q][LmaxK + 1][3][3];
+        /* heap, not a VLA: n^4 (L+1) 9 doubles overflow the default stack
+           for uncontracted heavy-atom shells (I: ~20 s primitives) */
+        double (*radial_2e_list_J)[LmaxJ + 1][3][3] =
+            malloc(sizeof(double[LmaxJ + 1][3][3]) *
+                   (size_t)(size_gtos_p * size_gtos_p * size_gtos_q *
+                            size_gtos_q));
+        double (*radial_2e_list_K)[LmaxK + 1][3][3] =
+            malloc(sizeof(double[LmaxK + 1][3][3]) *
+                   (size_t)(size_gtos_p * size_gtos_p * size_gtos_q *
+                            size_gtos_q));
 
         #pragma omp parallel for
         for (int tt = 0; tt < size_gtos_p * size_gtos_p * size_gtos_q *
@@ -634,6 +640,8 @@ int2eJK int_sph_get_h2e_JK_compact(const INT_SPH* self, const char* intType,
                 }
             }
         }
+        free(radial_2e_list_J);
+        free(radial_2e_list_K);
         int_tmp1_q += (l_q == 0) ? 1 : 2;
     }
     int_tmp1_p += (l_p == 0) ? 1 : 2;
@@ -709,10 +717,16 @@ void int_sph_get_h2e_JK_direct(INT_SPH* self, int2eJK* LLLL, int2eJK* SSLL,
         int size_tmp_p = (l_p == 0) ? 1 : 2, size_tmp_q = (l_q == 0) ? 1 : 2;
         double array_angular_J[LmaxJ + 1][size_tmp_p][size_tmp_q],
             array_angular_K[LmaxK + 1][size_tmp_p][size_tmp_q];
-        double radial_2e_list_J[size_gtos_p * size_gtos_p * size_gtos_q *
-                                size_gtos_q][LmaxJ + 1][3][3];
-        double radial_2e_list_K[size_gtos_p * size_gtos_p * size_gtos_q *
-                                size_gtos_q][LmaxK + 1][3][3];
+        /* heap, not a VLA: n^4 (L+1) 9 doubles overflow the default stack
+           for uncontracted heavy-atom shells (I: ~20 s primitives) */
+        double (*radial_2e_list_J)[LmaxJ + 1][3][3] =
+            malloc(sizeof(double[LmaxJ + 1][3][3]) *
+                   (size_t)(size_gtos_p * size_gtos_p * size_gtos_q *
+                            size_gtos_q));
+        double (*radial_2e_list_K)[LmaxK + 1][3][3] =
+            malloc(sizeof(double[LmaxK + 1][3][3]) *
+                   (size_t)(size_gtos_p * size_gtos_p * size_gtos_q *
+                            size_gtos_q));
 
         #pragma omp parallel for
         for (int tt = 0; tt < size_gtos_p * size_gtos_p * size_gtos_q *
@@ -994,6 +1008,8 @@ void int_sph_get_h2e_JK_direct(INT_SPH* self, int2eJK* LLLL, int2eJK* SSLL,
                 }
             }
         }
+        free(radial_2e_list_J);
+        free(radial_2e_list_K);
         int_tmp1_q += (l_q == 0) ? 1 : 2;
     }
     int_tmp1_p += (l_p == 0) ? 1 : 2;
