@@ -34,7 +34,7 @@ cross-atom combinations would show up as |dF|_orth ~ <dF>/w_min and as a
 lowest eigenvalue far below the X2C-1e one.
 
 Usage:  python 36-x2camf_diffuse_stability.py kmax geom basis [dhf=1]
-  basis: one name, or 'H:cc-pvdz,Cl:cc-pvdz'
+  basis: one name (unc-<name> = fully uncontracted), or 'H:cc-pvdz,Cl:cc-pvdz'
 '''
 
 import os
@@ -85,8 +85,11 @@ x2camf.libx2camf.atm_integrals = atm_integrals_cached
 def make_basis(k):
     bas = {}
     for el in elems:
-        b = gto.basis.load(base[el], el)
+        name = base[el]
+        b = gto.basis.load(name[4:] if name.startswith('unc-') else name, el)
         raw = gto.mole.uncontracted_basis(b)
+        if name.startswith('unc-'):
+            b = raw
         extra = []
         for l in (0, 1):
             emin = min(x[-1][0] for x in raw if x[0] == l)
