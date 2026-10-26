@@ -111,6 +111,31 @@ The label filter of the row operators is not used. Operators whose source
 bucket pairs with no candidate column bucket fall out at the candidate step,
 as they do now.
 
+**Kinds without column operators** ((AA,AA), and (BB,BB) on the transposed
+vector) are, in a product space, `sigma = H_AA C`: a sparse matrix between
+the strings of the row side, with typically 4–15 % of its elements nonzero,
+times the vector as a matrix. One AXPY of a whole row per operator, as the
+combinatorial kernel does, is limited by memory bandwidth. For example,
+6325 x 6325 N2 strings took 80 thread-s in AXPYs, about half of the sigma.
+
+Instead (`blas_rows`):
+* Tiles are 128 rows of a row bucket x 256 columns of one of their blocks,
+  each written by one thread.
+* For each source bucket, the operators of the tile's rows are summed into
+  a dense slab `H(rows, source strings)`, and the GEMM
+  `slab x C(source rows, tile columns)` follows. This is done when the slab
+  has at least one entry in 16 of its elements (`ZGASCI_ROWS_DENSE`) and at
+  most 2^21 elements.
+* Otherwise it is one AXPY per *distinct* (row, source row). Operators
+  that connect the same two strings are summed first: the diagonal ones,
+  and the single excitations with each spectator.
+
+Thresholds (measured):
+* `ZGASCI_ROWS_DENSE`: 8–16 is best or near best everywhere.
+* The GEMM / dot-product threshold of the other kinds is 16 for product
+  plans (4 for the combinatorial ones). Between 4 and 16 it gains 16 % on
+  the N2 "top" space, and nothing is lost elsewhere.
+
 ## 4. hdiag, density matrices
 
 * **hdiag**: a determinant at a time, from the stored words.
@@ -137,7 +162,11 @@ as they do now.
   While it runs, the BLAS kernel needs two more vectors for the transposed
   half.
 
-## 6. Spin flip (M_s = 0, identical lists): not implemented
+## 6. Spin flip (M_s = 0, identical lists): implemented
+
+`zg_sigma_flip`, `ProductSpaceCI.spin_flip = ±1`. The rest of this section
+is the design as written before. Measured gain: 18 % (N2 "top", 4e7),
+31 % (N2 random), 10–12 % (Fe–S-like).
 
 If `L_A = L_B` (same strings, same labels per spatial orbital) and
 `N_alpha = N_beta`, the spin flip maps `C[a][b]` to `C[b][a]`. Eigenvectors
@@ -152,19 +181,42 @@ under the flip and could be halved by computing only blocks on one side of
 the diagonal.
 
 This fits the plan directly. With identical lists the A and B buckets
-coincide, so the transposition is a plain block transpose. It needs:
+coincide, and the transposed layout of a mirror plan is the native layout
+of the transpose. It needs:
 * a check that the lists and labels mirror each other;
 * a flag that runs half 0 kinds {AA,AA} into X and {AB,AB} into sigma, then
   adds `±X^T`;
 * the Davidson to stay in the symmetric subspace (symmetrize the guess and
   each new vector, as `direct_spin0` does).
 
-Expected gain: the share of half 1, measured below as part of the timings.
+As built:
+* `zg_is_mirror` is set when the plan is made.
+* `zg_sigma_flip` checks that only (AA,AA), (AB,AB) and (BB,BB) are
+  nonzero and that W of (BB,BB) equals W of (AA,AA). Otherwise it returns 0
+  and the driver uses the full sigma.
+* `zg_flip_vector` is the parallel exchange of the sides (the transposition
+  of the kernel).
+* The driver symmetrizes the guess, the input of sigma, *and the output of
+  the preconditioner*. Without the last one, the antisymmetric rounding
+  noise, which the projected sigma does not see, grew by two orders of
+  magnitude per iteration once the residual was small (measured), and the
+  Davidson stalled: 18 instead of 12 iterations at 1e6.
+
+Measured gain: see the top of this section.
 This is the same structure as the Kramers plan in README.md (stage 1). For
 spinors, time reversal pairs A and B halves in the same way when `L_B` is
 the time-reversed image of `L_A`.
 
 ## 7. What stays for later
+
+* **(AB,AB)** is the larger half of a sigma. Its GEMMs do about 9 times
+  the needed multiply-adds: F is formed for every y of a run of 256 source
+  columns. The column operators are collected again for every piece of
+  rows, 12 % of the time, although in a product space they could be sorted
+  once per target block and shared.
+* **Davidson**: at 4e7 determinants the numpy vector algebra of
+  `davidson1` takes 60 % of a run. A low-memory Davidson in C, such as
+  zshci's, would remove most of it.
 
 * **MPI / distributed vectors** (zshci sync): the unit of work (rows of a
   bucket) and the source reads per piece are unchanged. The string tables
