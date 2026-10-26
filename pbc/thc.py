@@ -336,11 +336,15 @@ class THCExchange:
         W = None
         # A_P,mu = (P|xi_mu)_SR, analytic FT of the aux functions, G blocks
         A = np.zeros((self.auxmol.nao, nmu))
+        A_lr = np.zeros((self.auxmol.nao, nmu))
         sw = self.fG * self.w_sr / vol
+        swl = self.fG * (self.w_vec - self.w_sr) / vol                # LR (G != 0; the G = 0 terms cancel)
         for g0 in range(0, len(self.Gv), 20000):
             g1 = min(g0 + 20000, len(self.Gv))
             Pg = ft_ao(self.auxmol, self.Gv[g0:g1])                 # (nG, naux)
             A += ((Pg.conj() * sw[g0:g1, None]).T @ Xh[:, g0:g1].T).real
+            A_lr += ((Pg.conj() * swl[g0:g1, None]).T @ Xh[:, g0:g1].T).real
+        self.A_lr = A_lr                                            # (P|xi_mu)_LR
         t_v = time.time() - t
         self.pts, self.V, self.A = pts, V, A
         self.phimu = self.phi[pts]                                  # (N_mu, nao_s)
