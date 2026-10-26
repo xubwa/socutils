@@ -331,6 +331,12 @@ struct Input {
   // implementations; for testing on small cases.
   bool check = false;
   int output_level = 1;
+  // "spin_flip": +1 or -1 works in the functions of definite behaviour under
+  // the exchange of alpha and beta spin (spin_flip.h): +1 for states of even
+  // total spin S (singlet, quintet, ...), -1 for odd S (triplet, ...), with
+  // Ms = 0. Only with "orbitals": "spatial", the select and diag modes and
+  // the connection method "groups". 0 (default): plain determinants.
+  int spin_flip = 0;
 
   // The input with all defaults filled in, as JSON text.
   std::string resolved;

@@ -1,5 +1,6 @@
 #include "input.h"
 
+#include <algorithm>
 #include <fstream>
 #include <set>
 #include <sstream>
@@ -190,6 +191,7 @@ Json ToJson(const Input& in) {
   j["incremental"] = in.incremental;
   j["check"] = in.check;
   j["output_level"] = in.output_level;
+  if (in.spin_flip != 0) j["spin_flip"] = in.spin_flip;
   return j;
 }
 
@@ -544,6 +546,40 @@ Input ParseInput(const std::string& text) {
   top.Get("incremental", &in.incremental);
   top.Get("check", &in.check);
   top.Get("output_level", &in.output_level);
+  top.Get("spin_flip", &in.spin_flip);
+  if (in.spin_flip != 0) {
+    if (in.spin_flip != 1 && in.spin_flip != -1) {
+      top.Fail("spin_flip", "must be 1, -1 or 0");
+    }
+    if (!in.spatial_orbitals) {
+      top.Fail("spin_flip", "needs \"orbitals\": \"spatial\"");
+    }
+    if (in.mode == Mode::kFci) {
+      top.Fail("spin_flip", "is for the select and diag modes");
+    }
+    if (!in.connect_by_groups) {
+      top.Fail("spin_flip", "needs the connection method \"groups\"");
+    }
+    if (in.select.method != SelectMethod::kHeatBath) {
+      top.Fail("spin_flip", "works with the heat-bath selection only");
+    }
+    if (in.select.prune_coefficient > 0.0) {
+      top.Fail("spin_flip", "does not work with \"prune_coefficient\"");
+    }
+    if (!in.connect_group_a.empty()) {
+      top.Fail("spin_flip", "needs the default groups (alpha and beta)");
+    }
+    for (const RestrictionInput& r : in.restrictions) {
+      for (int p : r.orbitals) {
+        if (std::find(r.orbitals.begin(), r.orbitals.end(), p ^ 1) ==
+            r.orbitals.end()) {
+          top.Fail("spin_flip",
+                   "needs occupation restrictions that hold both spins of "
+                   "every orbital they name");
+        }
+      }
+    }
+  }
 
   if (top.Has("fci")) {
     if (in.mode != Mode::kFci) top.Fail("fci", "is for \"mode\": \"fci\"");
