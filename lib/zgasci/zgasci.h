@@ -137,6 +137,11 @@ int zg_sigma_flip_d(const zg_plan *plan, const double *v, const double *c,
                     double *sigma, int parity);
 int zg_sigma_flip_z(const zg_plan *plan, const double _Complex *v,
                     const double _Complex *c, double _Complex *sigma, int parity);
+/* out = the vector with the sides exchanged, C'[a][b] = C[b][a], on a
+ * mirror plan (in parallel); returns 0 (out untouched) on other plans. */
+int zg_flip_vector_d(const zg_plan *plan, const double *in, double *out);
+int zg_flip_vector_z(const zg_plan *plan, const double _Complex *in,
+                     double _Complex *out);
 /* out[npair * npair] = <bra| A+_P A_R |ket>, P the row. */
 void zg_rdm2_d(const zg_plan *plan, const double *bra, const double *ket,
                double *out);

@@ -1078,6 +1078,12 @@ void ZG_NAME(zg_sigma_blas)(const zg_plan *p, const ZG_SCALAR *v,
   for (int k = 0; k < 9; ++k) free(w[k]);
 }
 
+int ZG_NAME(zg_flip_vector)(const zg_plan *p, const ZG_SCALAR *in, ZG_SCALAR *out) {
+  if (!p->product || !p->mirror) return 0;
+  ZG_NAME(blas_transpose)(p, in, out, 0);
+  return 1;
+}
+
 int ZG_NAME(zg_sigma_flip)(const zg_plan *p, const ZG_SCALAR *v, const ZG_SCALAR *c,
                            ZG_SCALAR *sigma, int parity) {
   if (!p->product || !p->mirror || (parity != 1 && parity != -1)) return 0;
