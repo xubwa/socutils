@@ -390,6 +390,54 @@ the datasets as they are. `wfn.h5` can be given as `"detfile"` to restart from
 a previous space; a selection then also starts the eigensolver from the CI
 vectors of that file, if it holds one per root.
 
+## Spin-flip symmetry: `"spin_flip"`
+
+For `"orbitals": "spatial"` and Ms = 0, `"spin_flip": 1` (states of even
+total spin S: singlet, quintet, ...) or `-1` (odd S: triplet, ...) works in
+functions of definite behaviour under the exchange of the two spins, as the
+time-reversal option `Treversal` of Dice does, which halves the eigenproblem
+(`src/spin_flip.h`). Default 0: plain determinants.
+
+Convention. The spin orbitals of spatial orbital P are 2P (alpha) and 2P+1
+(beta) and a determinant is the product of its creation operators in
+increasing order. The exchange P_s: a+(2P) <-> a+(2P+1) commutes with the
+spin-free Hamiltonian, squares to one and takes D (alpha string a, beta
+string b) to p(D) Dbar (alpha string b, beta string a), p(D) = (-1)^(number of
+doubly occupied orbitals). On Ms = 0 states of N electrons it is (-1)^(N/2)
+times the rotation by pi about y, so a state of spin S has P_s = lambda =
+(-1)^(S + N/2) and coefficients c(Dbar) = lambda p(D) c(D). The basis is
+(|D> + lambda p(D) |Dbar>)/sqrt(2) for D != Dbar, labelled by the canonical
+member (the smaller bit string), and |D> for D = Dbar, which exists only for
+even S. Everything is checked against plain runs: equal energies, spaces,
+density matrices and perturbative corrections (below).
+
+Design. The determinant list keeps both members of every pair, the
+canonical one first and its partner right after it. The string tables, the
+connection search, perturbation theory, density matrices, `wfn.h5` and
+`select.h5` therefore see an ordinary list closed under the flip and the
+expanded vector c_j = w(j) x_J (w = 1/sqrt(2), lambda p/sqrt(2) or 1); the
+eigensolver works on the vector x over the functions, of half the length,
+and the Hamiltonian over the functions is
+<Phi_J|H|Phi_I> = (1/w(c_J)) sum_{i in I} w(i) H(c_J, i), diagonal
+H(c,c) + lambda p(c) H(c, cbar). Both members of I precede c_J when I < J,
+so its lower triangle comes from the lower-triangle rows of the canonical
+determinants alone: those rows are searched (half the work), their columns
+folded onto the functions (half the elements), in every Hamiltonian mode
+(stored, connections, direct, adapt) and over MPI. Selection: only the
+canonical determinants generate, with the weight of their coefficient in the
+expanded vector (their partners would give the flips of the same
+candidates), and every new determinant enters with its flip. Perturbation
+theory: only canonical determinants generate and only canonical external
+determinants are kept; a term for a determinant a counts for its canonical
+member A with 1 (a = A), lambda p(a) (a = Abar) or 1 + lambda p(a) (a its own
+flip), a generator that is its own flip with one half, and the sum over A
+counts each pair twice; the stochastic estimator draws canonical generators
+with |c_i| times the size of their pair (`src/pt.h`). Starting lists
+(`"dets"`, `"detfile"`) are completed by the flips and brought into this
+order; a resumed selection and the diag mode project the vectors of the file
+onto the functions. Restrictions must treat both spins of an orbital alike;
+the heat-bath selection only, no pruning, connection method "groups".
+
 ## Full and GAS CI: `"mode": "fci"`
 
 Full CI, or CI in a space bounded by generalized-active-space constraints,
