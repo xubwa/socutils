@@ -85,6 +85,9 @@ def _load():
         lib_.zg_is_product.argtypes = [ctypes.c_void_p]
         lib_.zg_is_mirror.restype = ctypes.c_int
         lib_.zg_is_mirror.argtypes = [ctypes.c_void_p]
+        for name in ('zg_flip_vector_d', 'zg_flip_vector_z'):
+            getattr(lib_, name).restype = ctypes.c_int
+            getattr(lib_, name).argtypes = [ctypes.c_void_p] * 3
         for name in ('zg_sigma_flip_d', 'zg_sigma_flip_z'):
             getattr(lib_, name).restype = ctypes.c_int
             getattr(lib_, name).argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int]
@@ -399,6 +402,16 @@ class ProductPlan(Plan):
         key = ia * n + ib
         order = numpy.argsort(key, kind='stable')
         return order[numpy.searchsorted(key[order], ib * n + ia)]
+
+    def flip_vector(self, c):
+        '''C'[a, b] = C[b, a] on a mirror plan (zg_flip_vector).'''
+        complex_ = numpy.iscomplexobj(c)
+        c = self._vector(c, complex_)
+        out = numpy.empty_like(c)
+        fn = self._lib.zg_flip_vector_z if complex_ else self._lib.zg_flip_vector_d
+        if not fn(self._handle, c.ctypes.data, out.ctypes.data):
+            raise ValueError('flip_vector needs a mirror plan')
+        return out
 
     def sigma_flip(self, v, c, parity):
         '''H c for c with C[b, a] = parity C[a, b] (zg_sigma_flip): without
@@ -1219,7 +1232,11 @@ class ProductSpaceCI(_ProductMixin, SpatialGASCI):
         flip = plan.flip_index()
 
         def sym(x):
-            return 0.5 * (x + parity * x[flip])
+            y = plan.flip_vector(x)
+            y *= parity
+            y += x
+            y *= 0.5
+            return y
         hdiag = plan.hdiag(v)
         # Basis of the subspace: (e_k + parity e_flip(k)) / sqrt(2), k <= flip(k).
         keep = numpy.arange(plan.dim) <= flip
@@ -1261,7 +1278,13 @@ class ProductSpaceCI(_ProductMixin, SpatialGASCI):
             x[flip[k]] += parity
             x = sym(x)
             x0.append(x / numpy.linalg.norm(x))
-        precond = lib.make_diag_precond(hdiag, self.level_shift)
+        # The new directions symmetrized as well: otherwise the
+        # antisymmetric rounding noise, untouched by hop, grows by orders of
+        # magnitude per iteration once the residual is small.
+        base = lib.make_diag_precond(hdiag, self.level_shift)
+
+        def precond(dx, e, *args):
+            return sym(base(dx, e, *args))
         conv, e, c = lib.davidson1(
             lambda xs: [hop(x) for x in xs], x0, precond, tol=self.conv_tol,
             max_cycle=self.max_cycle, max_space=self.max_space, lindep=self.lindep,

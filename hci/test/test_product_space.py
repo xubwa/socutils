@@ -424,6 +424,8 @@ class SpinFlip(unittest.TestCase):
         hmat = numpy.array([plan.sigma(v, x) for x in numpy.eye(plan.dim)]).T
         e_all, vecs = numpy.linalg.eigh(hmat)
         flip = plan.flip_index()
+        x = numpy.random.default_rng(1).standard_normal(plan.dim)
+        self.assertEqual(abs(plan.flip_vector(x) - x[flip]).max(), 0)
         parity_of = numpy.einsum('ik,ik->k', vecs[flip], vecs)
         self.assertLess(abs(abs(parity_of) - 1).max(), 1e-8)
         for parity in (1, -1):
