@@ -149,7 +149,7 @@ class Subsets(unittest.TestCase):
             b = b + 1j * rng.standard_normal(plan.dim)
         self.assertLess(abs(plan.hdiag(v) - hmat.diagonal().real).max(), 1e-12)
         ref = hmat @ c
-        settings = ({}, {'ZGASCI_BLAS_DIRECT': '0'},
+        settings = ({}, {'ZGASCI_BLAS_DIRECT': '0', 'ZGASCI_ROWS_DENSE': '0'},
                     {'ZGASCI_BLAS_DIRECT': '1e300', 'ZGASCI_BLAS_SMALL': '0',
                      'ZGASCI_BLAS_COLS': '3'})
         for setting in settings:
