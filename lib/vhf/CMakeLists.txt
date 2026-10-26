@@ -24,7 +24,7 @@ if(NOT PYSCF_CVHF_LIB)
   message(FATAL_ERROR "vhf/socvhf: could not find libcvhf under ${PYSCF_LIB_DIR}")
 endif()
 
-add_library(socvhf SHARED mc_screen.c)
+add_library(socvhf SHARED mc_screen.c hess_screen.c)
 target_include_directories(socvhf PRIVATE
   ${PYSCF_LIB_DIR} ${PYSCF_LIB_DIR}/deps/include)
 target_link_libraries(socvhf PRIVATE ${PYSCF_CVHF_LIB})

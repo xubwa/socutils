@@ -82,10 +82,86 @@ def _to_s2kl(script):
     return None
 
 
-def _contract(mol, intor, comp, scripts, dms, shls_slice):
+# Density-based integral screening (lib/vhf/hess_screen.c, SOCVHFderiv_prescreen):
+# q_cond[0] for the pair carrying the derivatives, q_cond[1] for the other,
+# from pyscf's estimates; dm_cond from all densities of the contraction.
+_Q_COND = {'int2e_ip1': ('pp', 'int2e_ip1ip2', False),
+           'int2e_ipip1': ('pppp', 'int2e_ipip1ipip2', False),
+           'int2e_ipvip1': ('pppp', 'int2e_ipvip1ipvip2', False),
+           'int2e_ip1ip2': ('pp', 'int2e_ip1ip2', True)}       # derivatives on both pairs
+_q_cond_cache = {}
+_prescreen_ptr = None
+SCREEN_TOL = 1e-14
+
+
+def _deriv_prescreen():
+    global _prescreen_ptr
+    if _prescreen_ptr is None:
+        import ctypes
+        import _ctypes
+        from socutils.lib import load_library
+        try:
+            lib_ = load_library('libsocvhf', 'SOCUTILS_SOCVHF_LIBRARY')
+            _prescreen_ptr = ctypes.c_void_p(_ctypes.dlsym(lib_._handle, 'SOCVHFderiv_prescreen'))
+        except (OSError, AttributeError):
+            _prescreen_ptr = False
+    return _prescreen_ptr
+
+
+def _q_cond(mol, intor):
+    import ctypes
+    key = (id(mol), mol._bas.tobytes(), mol._env.tobytes(), intor)
+    if key in _q_cond_cache:
+        return _q_cond_cache[key]
+    libcvhf = _vhf.libcvhf
+    kind, vhf_intor, both = _Q_COND[intor]
+    ao_loc = mol.ao_loc_nr()
+    nbas = mol.nbas
+    q = numpy.empty((2, nbas, nbas))
+    fq = libcvhf.CVHFnr_int2e_pppp_q_cond if kind == 'pppp' else libcvhf.CVHFnr_int2e_pp_q_cond
+    args = (ao_loc.ctypes, mol._atm.ctypes, ctypes.c_int(mol.natm),
+            mol._bas.ctypes, ctypes.c_int(nbas), mol._env.ctypes)
+    with mol.with_integral_screen(SCREEN_TOL**2):
+        fq(getattr(libcvhf, mol._add_suffix(vhf_intor)), lib.c_null_ptr(), q[0].ctypes, *args)
+        if both:
+            q[1] = q[0]
+        else:
+            libcvhf.CVHFnr_int2e_q_cond(getattr(libcvhf, mol._add_suffix('int2e')),
+                                        lib.c_null_ptr(), q[1].ctypes, *args)
+    _q_cond_cache.clear()
+    _q_cond_cache[key] = q
+    return q
+
+
+def _dm_cond(mol, mats):
+    '''shell-pair maxima of |M| over the matrices, symmetrized (nbas, nbas)'''
+    loc = mol.ao_loc_nr()[:-1]
+    m = numpy.zeros((mol.nao_nr(),) * 2)
+    for M in mats:
+        numpy.maximum(m, abs(M), out=m)
+    d = numpy.maximum.reduceat(numpy.maximum.reduceat(m, loc, axis=0), loc, axis=1)
+    return numpy.ascontiguousarray(numpy.maximum(d, d.T))
+
+
+def _deriv_vhfopt(mol, intor, mats):
+    '''vhfopt screening the derivative integrals intor (canonical: derivatives
+    on the first pair, and for ip1ip2 also on the second) contracted with the
+    densities mats; None if lib/libsocvhf.so is not built.'''
+    ptr = _deriv_prescreen()
+    if not ptr or intor not in _Q_COND:
+        return None
+    opt = _vhf._VHFOpt(mol, intor, 'CVHFnoscreen', direct_scf_tol=SCREEN_TOL)
+    opt._this.fprescreen = ptr
+    opt.q_cond = _q_cond(mol, intor)
+    opt.dm_cond = _dm_cond(mol, mats)
+    return opt
+
+
+def _contract(mol, intor, comp, scripts, dms, shls_slice, vhfopt=None):
     '''One integral pass, several density contractions.  Integrals symmetric
     in (k, l) with the same k and l shells use aosym s2kl (half the
-    integrals), the scripts mapped onto those libcvhf provides.'''
+    integrals), the scripts mapped onto those libcvhf provides.  vhfopt:
+    density-based screening (_deriv_vhfopt).'''
     mapped = None
     if intor in _KL_SYMMETRIC and tuple(shls_slice[4:6]) == tuple(shls_slice[6:8]):
         mapped = [_to_s2kl(s) for s in scripts]
@@ -93,14 +169,16 @@ def _contract(mol, intor, comp, scripts, dms, shls_slice):
             mapped = None
     if mapped is None:
         vs = _vhf.direct_bindm(mol._add_suffix(intor), 's1', scripts, dms, comp,
-                               mol._atm, mol._bas, mol._env, shls_slice=shls_slice)
+                               mol._atm, mol._bas, mol._env, shls_slice=shls_slice,
+                               vhfopt=vhfopt)
         if isinstance(vs, numpy.ndarray) and len(scripts) == 1:
             vs = [vs]
         return vs
     s2 = [m[0] for m in mapped]
     d2 = [numpy.ascontiguousarray(d.T) if m[1] else d for d, m in zip(dms, mapped)]
     vs = _vhf.direct_bindm(mol._add_suffix(intor), 's2kl', s2, d2, comp,
-                           mol._atm, mol._bas, mol._env, shls_slice=shls_slice)
+                           mol._atm, mol._bas, mol._env, shls_slice=shls_slice,
+                           vhfopt=vhfopt)
     if isinstance(vs, numpy.ndarray) and len(scripts) == 1:
         vs = [vs]
     return [v.swapaxes(-1, -2) if m[2] else v for v, m in zip(vs, mapped)]
@@ -141,6 +219,7 @@ def deriv1_matrices(mol, terms, atmlst=None):
     live = [t for t, (A, ap, op) in enumerate(terms) if _nonzero(A)]
     if not live:
         return res
+    vhfopt = _deriv_vhfopt(mol, 'int2e_ip1', [terms[t][0] for t in live])
     for ia in atmlst:
         for p in 'abcd':
             intor, comp, pi = _labels_map(p, None)
@@ -153,7 +232,7 @@ def deriv1_matrices(mol, terms, atmlst=None):
                 scripts.append('%s%s->s1%s%s' % (la, lb, lo1, lo2))
                 dms.append(numpy.ascontiguousarray(A[rng[la], rng[lb]]))
                 outs.append((t, rng[lo1], rng[lo2]))
-            vs = _contract(mol, intor, comp, scripts, dms, shls_slice)
+            vs = _contract(mol, intor, comp, scripts, dms, shls_slice, vhfopt)
             for (t, r1, r2), v in zip(outs, vs):
                 # d/dR of an AO = -nabla
                 res[t][ia][:, r1, r2] -= v.reshape(3, *v.shape[-2:])
@@ -196,7 +275,8 @@ def deriv1_energies(mol, terms):
                 scripts.append('%s%s->s1%s%s' % (pi[dp[0]], pi[dp[1]], pi[op[0]], pi[op[1]]))
                 dms.append(D)
                 outs.append((c, O, op[0] == 'a'))
-        vs = _contract(mol, intor, comp, scripts, dms, (0, mol.nbas) * 4)
+        vhfopt = _deriv_vhfopt(mol, intor, [t[0] for t in terms] + [t[2] for t in terms])
+        vs = _contract(mol, intor, comp, scripts, dms, (0, mol.nbas) * 4, vhfopt)
         for (c, O, first), v in zip(outs, vs):
             v = v.reshape(3, nao, nao)
             if first:
@@ -287,6 +367,7 @@ def deriv2_energies(mol, terms, atmlst=None):
     hess = numpy.zeros((natm, natm, 3, 3))
     if not terms:
         return hess
+    aoslices = mol.aoslice_by_atom()
     symmetric = {}
     for A, ap, B, bp, c in terms:
         for M in (A, B):
@@ -310,27 +391,33 @@ def deriv2_energies(mol, terms, atmlst=None):
                 merged[key] = (A, a1, B, b1, c0 + c)
         rterms = list(merged.values())
         intor, comp, pi = _labels_map(p, q)
-        qletter = None if p == q else pi[q]
+        qletter = pi[q]                       # 'i' as well for the same-AO pass
+        vhfopt = _deriv_vhfopt(mol, intor, [t[0] for t in terms] + [t[2] for t in terms])
+        # one integral pass per atom of the first derivative index (like
+        # pyscf's RHF Hessian): the output pair always carries the second
+        # derivative index, which is resolved by atoms afterwards
         for i0, ia in enumerate(atmlst):
-            for j0, ja in enumerate(atmlst):
-                if qletter is None and ia != ja:
+            shls_slice, rng = _slices(mol, {'i': ia})
+            scripts, dms, outs = [], [], []
+            for A, ap, B, bp, c in rterms:
+                la, lb = pi[ap[0]], pi[ap[1]]
+                lo1, lo2 = pi[bp[0]], pi[bp[1]]
+                if qletter not in (lo1, lo2):
+                    A, B, la, lb, lo1, lo2 = B, A, lo1, lo2, la, lb
+                scripts.append('%s%s->s1%s%s' % (la, lb, lo1, lo2))
+                dms.append(numpy.ascontiguousarray(A[rng[la], rng[lb]]))
+                outs.append((c, B[rng[lo1], rng[lo2]], 3 if lo1 == qletter else 2))
+            vs = _contract(mol, intor, comp, scripts, dms, shls_slice, vhfopt)
+            for (c, Bblk, other), v in zip(outs, vs):
+                # two AO derivatives: (-nabla)(-nabla) = + nabla nabla
+                v = v.reshape(3, 3, *v.shape[-2:]) * Bblk
+                if p == q:
+                    hess[i0, i0] += c * v.sum(axis=(2, 3))
                     continue
-                restrict = {'i': ia}
-                if qletter is not None:
-                    restrict[qletter] = ja
-                shls_slice, rng = _slices(mol, restrict)
-                scripts, dms, outs = [], [], []
-                for A, ap, B, bp, c in rterms:
-                    la, lb = pi[ap[0]], pi[ap[1]]
-                    lo1, lo2 = pi[bp[0]], pi[bp[1]]
-                    scripts.append('%s%s->s1%s%s' % (la, lb, lo1, lo2))
-                    dms.append(numpy.ascontiguousarray(A[rng[la], rng[lb]]))
-                    outs.append((c, B[rng[lo1], rng[lo2]]))
-                vs = _contract(mol, intor, comp, scripts, dms, shls_slice)
-                for (c, Bblk), v in zip(outs, vs):
-                    v = v.reshape(3, 3, *v.shape[-2:])
-                    # two AO derivatives: (-nabla)(-nabla) = + nabla nabla
-                    hess[i0, j0] += c * numpy.einsum('xypq,pq->xy', v, Bblk)
+                s = v.sum(axis=other)                          # (3, 3, n of the second index)
+                for j0, ja in enumerate(atmlst):
+                    q0, q1 = aoslices[ja][2:]
+                    hess[i0, j0] += c * s[:, :, q0:q1].sum(axis=2)
     return hess
 
 
@@ -350,11 +437,20 @@ def partial_hess_jk(mol, dm, atmlst=None, with_k=True, k_scale=1.):
     terms = [(rho, 'ba', rho, 'dc', .5)]
     if with_k:
         blk = _spin_blocks(dm, nao)
-        for s, t in ('aa', 'bb', 'ab', 'ba'):
+        # time-reversal-even dm (Kramers closed shell): the bb and ba terms
+        # equal the aa and ab ones
+        pairs, w = (('aa', 'ab'), 2.) if _kramers_even(dm, nao) else (('aa', 'bb', 'ab', 'ba'), 1.)
+        for s, t in pairs:
             dst, dts = blk[s + t], blk[t + s]
-            terms.append((dst.real, 'bc', dts.real, 'da', -.5 * k_scale))
-            terms.append((dst.imag, 'bc', dts.imag, 'da', .5 * k_scale))
+            terms.append((dst.real, 'bc', dts.real, 'da', -.5 * k_scale * w))
+            terms.append((dst.imag, 'bc', dts.imag, 'da', .5 * k_scale * w))
     return deriv2_energies(mol, terms, atmlst)
+
+
+def _kramers_even(dm, nao):
+    from socutils.scf.ghf import _is_kramers_even
+    dm = numpy.asarray(dm)
+    return dm.ndim == 2 and _is_kramers_even(dm[None], nao)
 
 
 def veff_deriv1(mol, dm, atmlst=None, with_k=True, k_scale=1., hermi=1):
@@ -373,9 +469,13 @@ def veff_deriv1(mol, dm, atmlst=None, with_k=True, k_scale=1., hermi=1):
         terms = [(rho.real, 'dc', 'ab'), (rho.imag, 'dc', 'ab')]
         jphase = [1., 1j]
     keys = [None] * len(terms)
+    # time-reversal-even Hermitian dm: K'_bb = (K'_aa)^*, K'_ba = (K'_ab)^H
+    kramers = with_k and hermi and _kramers_even(dm, nao)
     if with_k:
         blk = _spin_blocks(dm, nao)
         for st, d in blk.items():
+            if kramers and st in ('bb', 'ba'):
+                continue
             terms += [(d.real, 'bc', 'ad'), (d.imag, 'bc', 'ad')]
             keys += [(st, 1.), (st, 1j)]
     out = deriv1_matrices(mol, terms, atmlst)
@@ -390,6 +490,11 @@ def veff_deriv1(mol, dm, atmlst=None, with_k=True, k_scale=1., hermi=1):
         for key, m in zip(keys[nj:], out[nj:]):
             st, phase = key
             v[:, off[st[0]], off[st[1]]] -= k_scale * phase * m[ia]
+        if kramers:
+            # vj sits on aa and bb: subtract it to transform the K parts only
+            kaa = v[:, :nao, :nao] - vj
+            v[:, nao:, nao:] = vj + kaa.conj()
+            v[:, nao:, :nao] = v[:, :nao, nao:].conj().transpose(0, 2, 1)
         res[ia] = v
     return res
 
