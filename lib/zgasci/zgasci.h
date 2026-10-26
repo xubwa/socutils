@@ -55,6 +55,34 @@ zg_plan *zg_plan_new(int nspinor, int nelec, int nsub, int nsub_a,
 void zg_plan_free(zg_plan *plan);
 const char *zg_error(void);
 
+/*
+ * A product space (PRODUCT_SPACE.md): the determinants |a, b> of every A
+ * string a of str_a and every B string b of str_b with n(a) + n(b) = nelec
+ * and the labels of the occupied spinors adding up to targets (labels,
+ * mods, targets as in zg_plan_new).  Side A holds the spinors 0 .. nside_a
+ * - 1, side B the others.  A string of a side is ceil(nside / 64) 64-bit
+ * words, bit j (word j / 64) set if spinor j of the side is occupied.
+ * Strings come in any order and must not repeat; those whose electron count
+ * and labels pair with no string of the other side are left out.  Within a
+ * side, strings are numbered by electron count, then labels, then value
+ * (the highest word first); without labels and with one electron count per
+ * side, the CI vector is the matrix C[a][b] over the sorted lists.  At most
+ * 215 spinors on a side.  The kernels: hdiag, sigma (the BLAS kernel; the
+ * reference and block entry points call it), rdm2 (by zg_rdm2_blas).
+ */
+zg_plan *zg_plan_product(int nspinor, int nelec, int nside_a, int64_t nstr_a,
+                         const uint64_t *str_a, int64_t nstr_b,
+                         const uint64_t *str_b, int nsets, const int *labels,
+                         const int *mods, const int *targets);
+/* Whether the plan is a product space. */
+int zg_is_product(const zg_plan *plan);
+/* The strings of a side of a product plan in their order, words[n * nwords]
+ * (nwords = ceil(nside / 64)), if words is not NULL; returns n. */
+int64_t zg_product_strings(const zg_plan *plan, int side, uint64_t *words);
+/* out[0..3]: words of a string of A and of B, entries of the operator
+ * tables of A and of B. */
+void zg_product_info(const zg_plan *plan, int64_t *out);
+
 /* Number of determinants, and of 64-bit words that hold one. */
 int64_t zg_dim(const zg_plan *plan);
 int zg_nwords(const zg_plan *plan);
@@ -67,6 +95,9 @@ void zg_info(const zg_plan *plan, int64_t *out);
  * creation operators in increasing order of the spinor applied to the
  * vacuum, a+_p1 a+_p2 ... |0> with p1 < p2 < ... */
 void zg_dets(const zg_plan *plan, uint64_t *words);
+/* ia[dim], ib[dim]: the A and the B string (sid) of each determinant; for a
+ * product plan, their places in zg_product_strings. */
+void zg_det_strings(const zg_plan *plan, int64_t *ia, int64_t *ib);
 
 /* out[dim]: the diagonal of H. */
 void zg_hdiag_d(const zg_plan *plan, const double *v, double *out);
@@ -96,5 +127,12 @@ void zg_rdm2_d(const zg_plan *plan, const double *bra, const double *ket,
                double *out);
 void zg_rdm2_z(const zg_plan *plan, const double _Complex *bra,
                const double _Complex *ket, double _Complex *out);
+/* The same by the loops of the BLAS kernel (dot products, a W-shaped array
+ * per kind of term and thread); any plan.  zg_rdm2 calls it for product
+ * plans. */
+void zg_rdm2_blas_d(const zg_plan *plan, const double *bra, const double *ket,
+                    double *out);
+void zg_rdm2_blas_z(const zg_plan *plan, const double _Complex *bra,
+                    const double _Complex *ket, double _Complex *out);
 
 #endif

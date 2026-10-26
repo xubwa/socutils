@@ -40,6 +40,10 @@ void ZG_NAME(zg_hdiag)(const zg_plan *p, const ZG_SCALAR *v, double *out) {
 
 void ZG_NAME(zg_sigma)(const zg_plan *p, const ZG_SCALAR *v,
                        const ZG_SCALAR *c, ZG_SCALAR *sigma) {
+  if (p->product) {
+    ZG_NAME(zg_sigma_blas)(p, v, c, sigma);
+    return;
+  }
   const size_t npair = (size_t)p->npair;
   memset(sigma, 0, (size_t)p->dim * sizeof(ZG_SCALAR));
 #pragma omp parallel
@@ -79,6 +83,10 @@ void ZG_NAME(zg_sigma)(const zg_plan *p, const ZG_SCALAR *v,
 
 void ZG_NAME(zg_rdm2)(const zg_plan *p, const ZG_SCALAR *bra,
                       const ZG_SCALAR *ket, ZG_SCALAR *out) {
+  if (p->product) {
+    ZG_NAME(zg_rdm2_blas)(p, bra, ket, out);
+    return;
+  }
   const size_t npair = (size_t)p->npair;
   memset(out, 0, npair * npair * sizeof(ZG_SCALAR));
 #pragma omp parallel
