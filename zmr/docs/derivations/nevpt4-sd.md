@@ -53,7 +53,8 @@ virtual orbitals of the averaged density.  Its block vectors diagonalize
 `H_act` within their span, so `H_D` (projected on the span for the
 contracted blocks) is diagonal there: `MRCI.hdiag`, and `R_J` is a division.
 
-    contraction='none'   all determinants of every sector (uncontracted)
+    contraction='none'   all determinants of every sector (uncontracted);
+                         diagnostic only, see below
     contraction='union'  PC functions of all model states (rotation invariant
                          with e0='average' and equal weights)
     contraction='state'  column J in the PC functions of |J> and of the
@@ -106,3 +107,27 @@ reference functions are in the model space.  'none' has no such dependence.
 * one state: 'state' and 'union' coincide;
 * 'average' with 'union' is invariant under unitary rotations of the model
   states.
+
+## 6. The uncontracted variant is not NEVPT4(SD)
+
+The omission of the renormalization term rests on the cancellation, in the
+SD truncation, between that term and the disconnected part of the left-out
+quadruples (Grimme 2001), for the space of the internally contracted
+functions E_pqrs |Psi> (PC; the FIC space of ORCA).  The uncontracted space
+of the singles and doubles of every CAS determinant is larger: relative to
+the reference it contains higher excitations with rearrangements of the
+active electrons, which enter the second-order wave function without the
+terms that would balance them.  O2 X, X2C-TP, e0='state', D minus the
+reference (FCI at DZ, SDTQ at TZ and QZ), cm-1:
+
+    contraction   DZ       TZ       QZ
+    union        +0.023   +0.023   +0.011
+    none         +0.000   -0.031   -0.053
+
+The uncontracted error drifts with the basis (its total energy falls below
+SDTQ by 1 - 2 mEh at TZ and QZ), the union error does not; the second- and
+third-order terms of the two are identical here (PC = UC for two electrons
+in four spinors), the difference is the space of the second-order wave
+function alone.  Adding the renormalization term to the uncontracted variant
+makes it worse (+0.12 / +0.17 at DZ / TZ).  Use 'union'.
+

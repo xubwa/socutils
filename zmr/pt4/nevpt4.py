@@ -26,7 +26,15 @@ energies E2 = <V x>, E3 = <x|V - E1|x>, E4 = <w|R|w>, w = Q (V - E1) x.
 
     contraction='union'  (default) the PC functions of all reference
                          functions, one space for every column
-                'none'   the uncontracted singles and doubles
+                'none'   the uncontracted singles and doubles: diagnostic only.
+                         Leaving out the renormalization term is justified
+                         for the internally contracted (PC = FIC) space; in
+                         the larger determinant space of the singles and
+                         doubles of every CAS determinant the second-order
+                         wave function picks up higher excitations relative
+                         to the reference without their counterpart, and the
+                         error drifts with the basis (O2 X, D - SDTQ:
+                         -0.03 / -0.05 cm-1 with TZ / QZ, union +0.02 / +0.01)
                 'state'  the first-order space of column J: the PC functions
                          of |J> and of the reference functions degenerate
                          with it (QD-NEVPT2); CAS eigenstates as reference
