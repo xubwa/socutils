@@ -58,7 +58,8 @@ def _partial_hess_ejk(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     ek = out[1] if with_k else numpy.zeros_like(ej)
     log.timer_debug1('two-electron second derivatives (unique quartets)', *time0)
 
-    hcore_deriv = hessobj.hcore_generator(mol)
+    eh = _hcore_e1(hessobj, dm0)
+    hcore_deriv = hessobj.hcore_generator(mol) if eh is None else None
     s1aa, s1ab, s1a = rhf_hess.get_ovlp(mol)
     aoslices = mol.aoslice_by_atom()
     e1 = numpy.zeros((natm, natm, 3, 3))
@@ -68,7 +69,10 @@ def _partial_hess_ejk(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
         for j0, ja in enumerate(atmlst[:i0 + 1]):
             q0, q1 = aoslices[ja][2:]
             e1[i0, j0] -= numpy.einsum('xypq,pq->xy', s1ab[:, :, p0:p1, q0:q1], dme0[p0:p1, q0:q1]) * 2
-            e1[i0, j0] += numpy.einsum('xypq,pq->xy', hcore_deriv(ia, ja), dm0)
+            if eh is None:
+                e1[i0, j0] += numpy.einsum('xypq,pq->xy', hcore_deriv(ia, ja), dm0)
+            else:
+                e1[i0, j0] += eh[ia, ja]
         for j0 in range(i0):
             e1[j0, i0] = e1[i0, j0].T
     log.timer('RHF partial hessian (unique quartets)', *time0)
@@ -131,6 +135,111 @@ def hess2e_jk_cart(mol, dm, groups, mode=0, tol=None, prim_tol=None):
         ctypes.c_int(natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(molc.nbas),
         env.ctypes.data_as(ctypes.c_void_p))
     return out
+
+
+def _hcore_e1(hessobj, dm0):
+    """sum_pq d^2 h_pq / dR_A dR_B (dm0)_pq for all atom pairs, (natm, natm, 3, 3),
+    the hcore part of pyscf's _partial_hess_ejk: the second-derivative rinv
+    integrals once per nucleus (2 natm intor calls, not ~4 per atom pair as
+    hcore_generator) and contracted with the symmetric dm0 row by row.  None
+    (use pyscf's generator) with ECP or X2C."""
+    mol = hessobj.mol
+    if mol.has_ecp() or getattr(hessobj.base, 'with_x2c', None) or mol._pseudo:
+        return None
+    natm = mol.natm
+    nao = mol.nao_nr()
+    aoslices = mol.aoslice_by_atom()
+    h1aa, h1ab = hessobj.get_hcore(mol)                  # (3, 3, nao, nao)
+    D = numpy.asarray(dm0)
+    S = numpy.zeros((nao, natm))
+    for ia in range(natm):
+        S[aoslices[ia][2]:aoslices[ia][3], ia] = 1
+    e1 = numpy.zeros((natm, natm, 3, 3))
+    # kinetic + nuclear-attraction second derivatives on the basis centres:
+    # h1aa (same centre) on the diagonal, h1ab (bra on A, ket on B) per block
+    raa = numpy.einsum('xypq,pq->xyp', h1aa, D)
+    for ia in range(natm):
+        p0, p1 = aoslices[ia][2:]
+        e1[ia, ia] += raa[:, :, p0:p1].sum(axis=2)
+    hab = h1ab * D                                       # (3, 3, nao, nao)
+    e1 += numpy.einsum('xypq,pA,qB->ABxy', hab, S, S)
+    # operator (nucleus C) derivatives
+    for ic in range(natm):
+        zc = mol.atom_charge(ic)
+        c0, c1 = aoslices[ic][2:]
+        with mol.with_rinv_at_nucleus(ic):
+            aa = mol.intor('int1e_ipiprinv', comp=9).reshape(3, 3, nao, nao) * zc
+            ab = mol.intor('int1e_iprinvip', comp=9).reshape(3, 3, nao, nao) * zc
+        xa = numpy.einsum('xypq,pq->xyp', aa, D)         # row sums
+        xb = numpy.einsum('xypq,pq->xyp', ab, D)
+        yb = numpy.einsum('xypq,pq->xyq', ab, D)         # column sums
+        per_atom_a = xa.dot(S)                           # (3, 3, natm): rows of atom B
+        per_atom_b = xb.dot(S)
+        per_atom_bT = numpy.einsum('xypq,pq->yxp', ab, D).dot(S)
+        # i == j == C: -aa - ab overall, + the C-row / C-column blocks
+        e1[ic, ic] += -xa.sum(axis=2) - xb.sum(axis=2)
+        e1[ic, ic] += xa[:, :, c0:c1].sum(axis=2) + xb[:, :, c0:c1].sum(axis=2)
+        e1[ic, ic] += xa[:, :, c0:c1].sum(axis=2) + yb[:, :, c0:c1].sum(axis=2)
+        # i = C, j = B != C: rows of B, aa + ab^T(x<->y);  i = B, j = C: rows of B, aa + ab
+        for ib in range(natm):
+            if ib == ic:
+                continue
+            e1[ic, ib] += per_atom_a[:, :, ib] + per_atom_bT[:, :, ib]
+            e1[ib, ic] += per_atom_a[:, :, ib] + per_atom_b[:, :, ib]
+    # hcore + hcore^T contracted with the symmetric dm0
+    return e1 * 2
+
+
+def hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None, mo1=None, mo_e1=None, h1ao=None,
+              atmlst=None, max_memory=4000, verbose=None):
+    """pyscf.hessian.rhf.hess_elec with the response terms of all atom pairs as
+    three GEMMs over (atom, x) (pyscf: einsums per atom pair, rebuilding the
+    first-order density of atom B for every A).  Same lower-triangle-and-mirror
+    convention as pyscf."""
+    log = logger.new_logger(hessobj, verbose)
+    time0 = (logger.process_clock(), logger.perf_counter())
+    mol = hessobj.mol
+    mf = hessobj.base
+    if mo_energy is None: mo_energy = mf.mo_energy
+    if mo_occ is None: mo_occ = mf.mo_occ
+    if mo_coeff is None: mo_coeff = mf.mo_coeff
+    if atmlst is not None and list(atmlst) != list(range(mol.natm)):
+        return rhf_hess.hess_elec(hessobj, mo_energy, mo_coeff, mo_occ, mo1, mo_e1, h1ao, atmlst,
+                                  max_memory, verbose)
+    natm = mol.natm
+    de2 = hessobj.partial_hess_elec(mo_energy, mo_coeff, mo_occ, None, max_memory, log)
+    if h1ao is None:
+        h1ao = hessobj.make_h1(mo_coeff, mo_occ, None, None, log)
+    if mo1 is None or mo_e1 is None:
+        mo1, mo_e1 = hessobj.solve_mo1(mo_energy, mo_coeff, mo_occ, h1ao, None, None, max_memory, log)
+    nao = mo_coeff.shape[0]
+    mocc = mo_coeff[:, mo_occ > 0]
+    nocc = mocc.shape[1]
+    e_o = mo_energy[mo_occ > 0]
+    s1a = -mol.intor('int1e_ipovlp', comp=3)
+    aoslices = mol.aoslice_by_atom()
+    s1ao = numpy.zeros((natm, 3, nao, nao))
+    for ia in range(natm):
+        p0, p1 = aoslices[ia][2:]
+        s1ao[ia, :, p0:p1] += s1a[:, p0:p1]
+        s1ao[ia, :, :, p0:p1] += s1a[:, p0:p1].transpose(0, 2, 1)
+    mo1 = numpy.asarray(mo1).reshape(natm * 3 * nao, nocc)
+    dm1 = lib.dot(mo1, mocc.T).reshape(natm * 3, nao * nao)
+    dme1 = lib.dot(mo1, (mocc * e_o).T).reshape(natm * 3, nao * nao)
+    h1 = numpy.asarray(h1ao).reshape(natm * 3, nao * nao)
+    s1 = s1ao.reshape(natm * 3, nao * nao)
+    s1oo = numpy.einsum('xpi,pj->xij', lib.dot(s1ao.reshape(-1, nao), mocc).reshape(natm * 3, nao, nocc),
+                        mocc).reshape(natm * 3, nocc * nocc)
+    me1 = numpy.asarray(mo_e1).reshape(natm * 3, nocc * nocc)
+    # *2 for double occupancy, *2 for +c.c.
+    r = 4 * lib.dot(h1, dm1.T) - 4 * lib.dot(s1, dme1.T) - 2 * lib.dot(s1oo, me1.T)
+    de2 += r.reshape(natm, 3, natm, 3).transpose(0, 2, 1, 3)
+    # pyscf keeps the lower triangle (i >= j) and mirrors it
+    for i0 in range(natm):
+        for j0 in range(i0):
+            de2[j0, i0] = de2[i0, j0].T
+    log.timer('RHF hessian (fast assembly)', *time0)
+    return de2
 
 
 def rhf_partial_hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
@@ -857,10 +966,12 @@ class _nullcontext:
 
 
 class RHFHessian(_MultiJKCPHF, rhf_hess.Hessian):
+    hess_elec = hess_elec
     partial_hess_elec = rhf_partial_hess_elec
     make_h1 = rhf_make_h1
 
 
 class RKSHessian(_MultiJKCPHF, rks_hess.Hessian):
+    hess_elec = hess_elec
     partial_hess_elec = rks_partial_hess_elec
     make_h1 = rks_make_h1
