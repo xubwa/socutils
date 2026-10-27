@@ -12,7 +12,9 @@
  * symmetric, so the eight permutations collapse to two J and four K updates
  * per integral (W += ...; V = W + W^T at the end), accumulated in
  * quartet-local blocks and added to the matrices of the four atoms.
- * Outputs (natm, 3, nao, nao).  Spherical AOs.
+ * Outputs (atm1 - atm0, 3, nao, nao) for the atoms of [atm0, atm1) (the caller
+ * batches the atoms to bound the per-thread buffers; quartets touching no atom
+ * of the range are skipped before their integrals).  Spherical AOs.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -66,11 +68,13 @@ static inline void add_block(double *W, size_t nao, size_t r0, size_t c0,
 
 void SOCVHFfock1_jk(double *vj, double *vk, double *dm, int with_k,
                     double *qcond, double *dcond, double tol, CINTOpt *opt,
-                    int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env)
+                    int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
+                    int atm0, int atm1)
 {
         const size_t nao = ao_loc[nbas];
         const size_t nn = nao * nao;
-        const size_t nv = (size_t)natm * 3 * nn;
+        const int nbat = atm1 - atm0;
+        const size_t nv = (size_t)nbat * 3 * nn;
         int dmax = 0, i;
         for (i = 0; i < nbas; i++) {
                 int d = ao_loc[i + 1] - ao_loc[i];
@@ -114,6 +118,15 @@ void SOCVHFfock1_jk(double *vj, double *vk, double *dm, int with_k,
                                          dmax2(dmax2(dcond[ish * nbas + ksh], dcond[ish * nbas + lsh]),
                                                dmax2(dcond[jsh * nbas + ksh], dcond[jsh * nbas + lsh])));
                         if (q4 * d < tol) {
+                                continue;
+                        }
+                        int at[4] = {bas[ATOM_OF + ish * BAS_SLOTS], bas[ATOM_OF + jsh * BAS_SLOTS],
+                                     bas[ATOM_OF + ksh * BAS_SLOTS], bas[ATOM_OF + lsh * BAS_SLOTS]};
+                        int in_range = 0;
+                        for (pos = 0; pos < 4; pos++) {
+                                in_range |= at[pos] >= atm0 && at[pos] < atm1;
+                        }
+                        if (!in_range) {
                                 continue;
                         }
                         int di = ao_loc[ish + 1] - ao_loc[ish];
@@ -174,16 +187,15 @@ void SOCVHFfock1_jk(double *vj, double *vk, double *dm, int with_k,
                                         }
                                 }
                         } } } }
-                        int at[4] = {bas[ATOM_OF + ish * BAS_SLOTS], bas[ATOM_OF + jsh * BAS_SLOTS],
-                                     bas[ATOM_OF + ksh * BAS_SLOTS], bas[ATOM_OF + lsh * BAS_SLOTS]};
                         for (pos = 0; pos < 4; pos++) {
+                        if (at[pos] < atm0 || at[pos] >= atm1) continue;
                         for (x = 0; x < 3; x++) {
                                 size_t base = (size_t)(pos * 3 + x) * nblk;
-                                double *WJ = wj + ((size_t)at[pos] * 3 + x) * nn;
+                                double *WJ = wj + ((size_t)(at[pos] - atm0) * 3 + x) * nn;
                                 add_block(WJ, nao, i0s, j0s, Jij + base, di, dj);
                                 add_block(WJ, nao, k0s, l0s, Jkl + base, dk, dl);
                                 if (with_k) {
-                                        double *WK = wk + ((size_t)at[pos] * 3 + x) * nn;
+                                        double *WK = wk + ((size_t)(at[pos] - atm0) * 3 + x) * nn;
                                         add_block(WK, nao, i0s, l0s, Kil + base, di, dl);
                                         add_block(WK, nao, j0s, l0s, Kjl + base, dj, dl);
                                         add_block(WK, nao, i0s, k0s, Kik + base, di, dk);
@@ -206,7 +218,7 @@ void SOCVHFfock1_jk(double *vj, double *vk, double *dm, int with_k,
         /* V = W + W^T */
         size_t a, p, q;
 #pragma omp parallel for private(p, q)
-        for (a = 0; a < (size_t)natm * 3; a++) {
+        for (a = 0; a < (size_t)nbat * 3; a++) {
                 double *v = vj + a * nn;
                 for (p = 0; p < nao; p++) {
                         for (q = 0; q < p; q++) {

@@ -394,11 +394,14 @@ def rks_partial_hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     return de2
 
 
-def fock1_jk(mol, dm, with_k=True, tol=ghf_hess.HESS2E_TOL):
+def fock1_jk(mol, dm, with_k=True, tol=ghf_hess.HESS2E_TOL, max_memory=None):
     '''First-order VJ^{A,x}_ab = d/dR_{A,x} (ab|cd) D_cd and
     VK^{A,x}_ad = d/dR_{A,x} (ab|cd) D_bc of all atoms at a symmetric D, in one
-    pass over the unique quartets (lib/vhf/fock1.c).  Returns (natm, 3, nao, nao)
-    arrays, or None if the library is unavailable.'''
+    pass over the unique quartets (lib/vhf/fock1.c).  The atoms are batched so
+    that nthreads x the per-thread buffers stay within half of max_memory (MB,
+    default mol.max_memory); a batch skips the quartets touching none of its
+    atoms.  Returns (natm, 3, nao, nao) arrays, or None if the library is
+    unavailable.'''
     import ctypes
     from pyscf.gto import moleintor
     from socutils.scf import jk_multi
@@ -414,14 +417,21 @@ def fock1_jk(mol, dm, with_k=True, tol=ghf_hess.HESS2E_TOL):
     atm, bas, env = mol._atm, mol._bas, mol._env
     opt = moleintor.make_cintopt(atm, bas, env, 'int2e_ip1_sph')
     ao_loc = mol.ao_loc_nr().astype(numpy.int32)
-    libv.SOCVHFfock1_jk(
-        vj.ctypes.data_as(ctypes.c_void_p), vk.ctypes.data_as(ctypes.c_void_p),
-        dm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(int(with_k)),
-        q.ctypes.data_as(ctypes.c_void_p), dcond.ctypes.data_as(ctypes.c_void_p),
-        ctypes.c_double(tol), opt,
-        ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
-        ctypes.c_int(mol.natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas),
-        env.ctypes.data_as(ctypes.c_void_p))
+    if max_memory is None:
+        max_memory = mol.max_memory
+    per_atom = (1 + int(with_k)) * 3 * nao * nao * 8 * lib.num_threads()
+    nbatch = max(1, min(mol.natm, int(max_memory * .5e6 / per_atom)))
+    for a0 in range(0, mol.natm, nbatch):
+        a1 = min(mol.natm, a0 + nbatch)
+        libv.SOCVHFfock1_jk(
+            vj[a0:a1].ctypes.data_as(ctypes.c_void_p),
+            vk[a0:a1].ctypes.data_as(ctypes.c_void_p) if with_k else vk.ctypes.data_as(ctypes.c_void_p),
+            dm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(int(with_k)),
+            q.ctypes.data_as(ctypes.c_void_p), dcond.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_double(tol), opt,
+            ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_int(mol.natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas),
+            env.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(a0), ctypes.c_int(a1))
     return vj, (vk if with_k else None)
 
 
@@ -432,7 +442,7 @@ def rhf_make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=No
         return rhf_hess.make_h1(hessobj, mo_coeff, mo_occ, chkfile, atmlst, verbose)
     mocc = mo_coeff[:, mo_occ > 0]
     dm0 = numpy.dot(mocc, mocc.T) * 2
-    v = fock1_jk(mol, dm0)
+    v = fock1_jk(mol, dm0, max_memory=max(1000, hessobj.base.max_memory - lib.current_memory()[0]))
     if v is None:
         return rhf_hess.make_h1(hessobj, mo_coeff, mo_occ, chkfile, atmlst, verbose)
     vj, vk = v
@@ -567,7 +577,7 @@ def rks_make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=No
     hybrid = ni.libxc.is_hybrid_xc(mf.xc)
     mocc = mo_coeff[:, mo_occ > 0]
     dm0 = numpy.dot(mocc, mocc.T) * 2
-    v = fock1_jk(mol, dm0, with_k=hybrid)
+    v = fock1_jk(mol, dm0, with_k=hybrid, max_memory=max(1000, mf.max_memory - lib.current_memory()[0]))
     if v is None:
         return rks_hess.make_h1(hessobj, mo_coeff, mo_occ, chkfile, atmlst, verbose)
     vj, vk = v
@@ -598,7 +608,8 @@ def _multi_jk_env(mf):
         dm = numpy.asarray(dm)
         if numpy.iscomplexobj(dm):
             return orig_jk(mol_, dm, hermi, with_j, with_k, omega)
-        return jk_multi.get_jk(mol, dm, with_j, with_k, hermi=hermi)
+        return jk_multi.get_jk(mol, dm, with_j, with_k, hermi=hermi,
+                               max_memory=max(1000, mf.max_memory - lib.current_memory()[0]))
 
     def get_j(mol_=None, dm=None, hermi=1, omega=None):
         return get_jk(mol_, dm, hermi, True, False, omega)[0]

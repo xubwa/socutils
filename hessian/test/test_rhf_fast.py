@@ -46,6 +46,10 @@ class KnownValues(unittest.TestCase):
         dm = numpy.random.RandomState(1).randn(nao, nao)
         dm = dm + dm.T
         vj, vk = rhf_fast.fock1_jk(mol, dm)
+        # a tiny budget: one atom per batch
+        vj1, vk1 = rhf_fast.fock1_jk(mol, dm, max_memory=1)
+        self.assertAlmostEqual(abs(vj1 - vj).max(), 0, 13)
+        self.assertAlmostEqual(abs(vk1 - vk).max(), 0, 13)
         eri1 = mol.intor('int2e_ip1', comp=3)
         for ia, (_, _, p0, p1) in enumerate(mol.aoslice_by_atom()):
             g = numpy.zeros((3, nao, nao, nao, nao))
@@ -122,6 +126,11 @@ class KnownValues(unittest.TestCase):
         vj, vk = jk_multi.get_jk(mol, d, hermi=1)
         self.assertAlmostEqual(abs(vj - rj).max(), 0, 10)
         self.assertAlmostEqual(abs(vk - rk).max(), 0, 10)
+        # a tiny budget: one density per batch (each batch screened by its own
+        # densities: differences at the screening threshold)
+        vj1, vk1 = jk_multi.get_jk(mol, d, hermi=1, max_memory=1)
+        self.assertAlmostEqual(abs(vj1 - vj).max(), 0, 11)
+        self.assertAlmostEqual(abs(vk1 - vk).max(), 0, 11)
 
     def _check(self, mol, xc):
         mf = _mf(mol, xc)

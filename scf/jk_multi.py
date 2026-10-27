@@ -45,9 +45,11 @@ def available(mol):
     return bool(libv) and hasattr(libv, 'SOCVHFjk_multi') and not mol.cart
 
 
-def get_jk(mol, dms, with_j=True, with_k=True, tol=TOL, hermi=0):
+def get_jk(mol, dms, with_j=True, with_k=True, tol=TOL, hermi=0, max_memory=None):
     '''J_ab = (ab|cd) D_dc, K_ad = (ab|cd) D_bc for dms (ndm, nao, nao) (real).
-    hermi=1 asserts symmetric dms (as pyscf's get_jk).'''
+    hermi=1 asserts symmetric dms (as pyscf's get_jk).  The densities are
+    batched so that nthreads x the per-thread J / K buffers stay within half of
+    max_memory (MB, default mol.max_memory); every batch repeats the integrals.'''
     from pyscf.gto import moleintor
     from socutils.hessian import ghf as ghf_hess
     libv = ghf_hess._load_socvhf()
@@ -55,6 +57,16 @@ def get_jk(mol, dms, with_j=True, with_k=True, tol=TOL, hermi=0):
     shape = dms.shape
     dms = dms.reshape(-1, shape[-2], shape[-1])
     ndm, nao = dms.shape[:2]
+    if max_memory is None:
+        max_memory = mol.max_memory
+    per_dm = (int(with_j) + int(with_k)) * nao * nao * 8 * lib.num_threads()
+    nbatch = max(1, int(max_memory * .5e6 / per_dm))
+    if nbatch < ndm:
+        outs = [get_jk(mol, dms[b0:b0 + nbatch], with_j, with_k, tol, hermi, max_memory)
+                for b0 in range(0, ndm, nbatch)]
+        out_j = numpy.concatenate([o[0] for o in outs]).reshape(shape) if with_j else None
+        out_k = numpy.concatenate([o[1] for o in outs]).reshape(shape) if with_k else None
+        return out_j, out_k
     d = numpy.ascontiguousarray(dms.transpose(1, 2, 0))
     vj = numpy.empty((nao, nao, ndm)) if with_j else numpy.empty(1)
     vk = numpy.empty((nao, nao, ndm)) if with_k else numpy.empty(1)
