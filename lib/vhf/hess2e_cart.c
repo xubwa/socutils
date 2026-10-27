@@ -14,7 +14,10 @@
  * + kfac (D_ac D_bd + D_ad D_bc).  Per primitive quartet: one set of Rys
  * roots for L + 2, one VRR table per root with the bra (i + j) and the ket
  * (k + l) raised by two, HRR to I[i][j][k][l] with i, j, k raised by up to
- * two, and per Cartesian direction a table of the 1D values
+ * two, and per Cartesian direction a table of the 1D values (all of it for
+ * VL = 8 (primitive quartet, root) lanes at once, the lane index innermost,
+ * runtime-dispatched to AVX-512 / AVX2 / baseline code; the lanes are summed
+ * once per shell quartet)
  *
  *     I, d_A I, d_B I, d_C I, d_AA I, d_BB I, d_CC I, d_AB I, d_AC I, d_BC I
  *
@@ -41,7 +44,7 @@
 
 #define MAXGROUP 4
 #define MAXPRIM 64
-#define LMAX 6
+#define LMAX 4                          /* up to g functions */
 #define NVRR (2 * LMAX + 3)            /* VRR orders 0 .. li + lj + 2 */
 #define MAXROOTS 16
 
@@ -91,101 +94,283 @@ typedef struct {
         int pz[4][(LMAX + 1) * (LMAX + 2) / 2];
 } QuartetShape;
 
+/* index of the symmetric second-derivative value for centres s, t in {A,B,C} */
+static const int D2[3][3] = {{VAA, VAB, VAC}, {VAB, VBB, VBC}, {VAC, VBC, VCC}};
+
+/* ---- lane-vectorized core: VL (primitive quartet, Rys root) pairs at once ---- */
+
+#define VL 8
+#if defined(__GNUC__) && !defined(__clang__) && defined(__x86_64__)
+#define MULTIVERSION __attribute__((target_clones("avx512f", "avx2", "default")))
+#else
+#define MULTIVERSION
+#endif
+
+typedef struct {
+        double c00[3][VL], c00p[3][VL];
+        double b00[VL], b10[VL], b01[VL];
+        double gz[VL], one[VL];
+        double ai2[VL], aj2[VL], ak2[VL];
+} Lanes;
+
+/* per-thread workspace of tables_dir (doubles) */
+#define WSV_G (NVRR * NVRR * VL)
+#define WSV_HB (NVRR * (LMAX + 3) * NVRR * VL)
+#define WSV_I4 ((LMAX + 3) * (LMAX + 3) * (LMAX + 3) * (LMAX + 1) * VL)
+#define WSV_E (NVRR * (LMAX + 1) * VL)
+#define WSV_SIZE (WSV_G + WSV_HB + WSV_I4 + WSV_E)
+#define MAXT ((LMAX + 1) * (LMAX + 1) * (LMAX + 1) * (LMAX + 1))
+#define TSZV (MAXT * NV * VL)            /* one direction of T */
+#define NTERM 46                         /* 18 diagonal + 27 off-diagonal + energy */
+
 /*
- * 1D integrals I[i][j][k][l] (i <= li+2, j <= lj+2, k <= lk+2, l <= ll) of one
- * direction for one root, and from them the NV derivative values for every
- * power tuple (i <= li, j <= lj, k <= lk, l <= ll), stored at
- * T[((i * (lj+1) + j) * (lk+1) + k) * (ll+1) + l][NV].
+ * One Cartesian direction for VL lanes: VRR, HRR to I[i][j][k][l] and the NV
+ * derivative values of every power tuple, T[(t * NV + v) * VL + lane].
  */
-static void tables_1d(double *T, const int *l, double c00, double c00p,
-                      double b10, double b01, double b00, double ab, double cd,
-                      double g00, double ai, double aj, double ak)
+MULTIVERSION
+static void tables_dir(double *T, double *ws, const int *l,
+                       const double *c00, const double *c00p, const double *b10,
+                       const double *b01, const double *b00, const double ab, const double cd,
+                       const double *g00, const double *ai2, const double *aj2, const double *ak2)
 {
         const int li = l[0], lj = l[1], lk = l[2], ll = l[3];
         const int nmax = li + lj + 2, mmax = lk + ll + 2;
-        double g[NVRR][NVRR];
-        int n, m, i, j, k, q;
-        /* VRR */
-        g[0][0] = g00;
-        if (nmax > 0) g[1][0] = c00 * g00;
-        for (n = 1; n < nmax; n++) g[n + 1][0] = c00 * g[n][0] + n * b10 * g[n - 1][0];
+        const int Dm = mmax + 1, Dj = lj + 3, Dk = lk + 3, Dl = ll + 1;
+        double *g = ws, *hb = ws + WSV_G, *I4 = hb + WSV_HB, *e = I4 + WSV_I4;
+        int n, m, i, j, k, q, v;
+#define GV(n, m) (g + ((n) * Dm + (m)) * VL)
+        for (v = 0; v < VL; v++) GV(0, 0)[v] = g00[v];
+        for (v = 0; v < VL; v++) GV(1, 0)[v] = c00[v] * g00[v];
+        for (n = 1; n < nmax; n++) {
+                double *g2 = GV(n + 1, 0), *g1 = GV(n, 0), *g0 = GV(n - 1, 0);
+#pragma omp simd
+                for (v = 0; v < VL; v++) g2[v] = c00[v] * g1[v] + n * b10[v] * g0[v];
+        }
         for (n = 0; n <= nmax; n++) {
-                if (mmax > 0) g[n][1] = c00p * g[n][0] + (n > 0 ? n * b00 * g[n - 1][0] : 0);
+                double *gn1 = GV(n, 1), *gn0 = GV(n, 0);
+                if (n == 0) {
+#pragma omp simd
+                        for (v = 0; v < VL; v++) gn1[v] = c00p[v] * gn0[v];
+                } else {
+                        double *gp0 = GV(n - 1, 0);
+#pragma omp simd
+                        for (v = 0; v < VL; v++) gn1[v] = c00p[v] * gn0[v] + n * b00[v] * gp0[v];
+                }
                 for (m = 1; m < mmax; m++) {
-                        g[n][m + 1] = c00p * g[n][m] + m * b01 * g[n][m - 1]
-                                    + (n > 0 ? n * b00 * g[n - 1][m] : 0);
+                        double *g2 = GV(n, m + 1), *g1 = GV(n, m), *g0 = GV(n, m - 1);
+                        if (n == 0) {
+#pragma omp simd
+                                for (v = 0; v < VL; v++) g2[v] = c00p[v] * g1[v] + m * b01[v] * g0[v];
+                        } else {
+                                double *gp = GV(n - 1, m);
+#pragma omp simd
+                                for (v = 0; v < VL; v++)
+                                        g2[v] = c00p[v] * g1[v] + m * b01[v] * g0[v] + n * b00[v] * gp[v];
+                        }
                 }
         }
-        /* bra HRR: hb[i][j][m] for i + j <= nmax, j <= lj + 2 */
-        double hb[NVRR][LMAX + 3][NVRR];
-        for (i = 0; i <= nmax; i++)
-                for (m = 0; m <= mmax; m++) hb[i][0][m] = g[i][m];
+#define HB(i, j) (hb + ((i) * Dj + (j)) * Dm * VL)
+        for (i = 0; i <= nmax; i++) memcpy(HB(i, 0), GV(i, 0), sizeof(double) * Dm * VL);
         for (j = 1; j <= lj + 2 && j <= nmax; j++) {
                 for (i = 0; i + j <= nmax; i++) {
-                        for (m = 0; m <= mmax; m++)
-                                hb[i][j][m] = hb[i + 1][j - 1][m] + ab * hb[i][j - 1][m];
+                        double *h2 = HB(i, j), *h1 = HB(i + 1, j - 1), *h0 = HB(i, j - 1);
+#pragma omp simd
+                        for (v = 0; v < Dm * VL; v++) h2[v] = h1[v] + ab * h0[v];
                 }
         }
-        /* ket HRR: I[i][j][k][l] for k <= lk + 2, l <= ll, k + l <= mmax */
-        const int nk = lk + 3, nl = ll + 1;
-#define IDX(i, j, k, q) ((((i) * (lj + 3) + (j)) * nk + (k)) * nl + (q))
-        double I4[(LMAX + 3) * (LMAX + 3) * (LMAX + 3) * (LMAX + 1)];
-        double e[NVRR][LMAX + 1];
+#undef GV
+#define IDX(i, j, k, q) (((((i) * Dj + (j)) * Dk + (k)) * Dl + (q)) * VL)
+#define EV(k, q) (e + ((k) * Dl + (q)) * VL)
         for (i = 0; i <= li + 2; i++) {
                 for (j = 0; j <= lj + 2; j++) {
                         if (i + j > nmax) continue;
-                        for (m = 0; m <= mmax; m++) e[m][0] = hb[i][j][m];
-                        for (q = 1; q <= ll; q++)
-                                for (k = 0; k + q <= mmax; k++)
-                                        e[k][q] = e[k + 1][q - 1] + cd * e[k][q - 1];
+                        double *h = HB(i, j);
+                        for (k = 0; k <= mmax; k++) memcpy(EV(k, 0), h + k * VL, sizeof(double) * VL);
+                        for (q = 1; q <= ll; q++) {
+                                for (k = 0; k + q <= mmax; k++) {
+                                        double *e2 = EV(k, q), *e1 = EV(k + 1, q - 1), *e0 = EV(k, q - 1);
+#pragma omp simd
+                                        for (v = 0; v < VL; v++) e2[v] = e1[v] + cd * e0[v];
+                                }
+                        }
                         for (k = 0; k <= lk + 2; k++)
                                 for (q = 0; q <= ll; q++)
-                                        if (k + q <= mmax) I4[IDX(i, j, k, q)] = e[k][q];
+                                        if (k + q <= mmax)
+                                                memcpy(I4 + IDX(i, j, k, q), EV(k, q), sizeof(double) * VL);
                 }
         }
-        /* derivative values */
-        const double ai2 = 2 * ai, aj2 = 2 * aj, ak2 = 2 * ak;
+#undef HB
+#undef EV
         int t = 0;
         for (i = 0; i <= li; i++) {
         for (j = 0; j <= lj; j++) {
         for (k = 0; k <= lk; k++) {
         for (q = 0; q <= ll; q++, t++) {
-                double *v = T + (size_t)t * NV;
-#define G(a, b, c) I4[IDX(a, b, c, q)]
-                v[V0] = G(i, j, k);
-                v[VA] = ai2 * G(i + 1, j, k) - (i ? i * G(i - 1, j, k) : 0);
-                v[VB] = aj2 * G(i, j + 1, k) - (j ? j * G(i, j - 1, k) : 0);
-                v[VC] = ak2 * G(i, j, k + 1) - (k ? k * G(i, j, k - 1) : 0);
-                v[VAA] = ai2 * ai2 * G(i + 2, j, k) - ai2 * (2 * i + 1) * G(i, j, k)
-                       + (i > 1 ? i * (i - 1) * G(i - 2, j, k) : 0);
-                v[VBB] = aj2 * aj2 * G(i, j + 2, k) - aj2 * (2 * j + 1) * G(i, j, k)
-                       + (j > 1 ? j * (j - 1) * G(i, j - 2, k) : 0);
-                v[VCC] = ak2 * ak2 * G(i, j, k + 2) - ak2 * (2 * k + 1) * G(i, j, k)
-                       + (k > 1 ? k * (k - 1) * G(i, j, k - 2) : 0);
-                {
-                        double s = ai2 * aj2 * G(i + 1, j + 1, k);
-                        if (j) s -= ai2 * j * G(i + 1, j - 1, k);
-                        if (i) s -= aj2 * i * G(i - 1, j + 1, k);
-                        if (i && j) s += i * j * G(i - 1, j - 1, k);
-                        v[VAB] = s;
-                        s = ai2 * ak2 * G(i + 1, j, k + 1);
-                        if (k) s -= ai2 * k * G(i + 1, j, k - 1);
-                        if (i) s -= ak2 * i * G(i - 1, j, k + 1);
-                        if (i && k) s += i * k * G(i - 1, j, k - 1);
-                        v[VAC] = s;
-                        s = aj2 * ak2 * G(i, j + 1, k + 1);
-                        if (k) s -= aj2 * k * G(i, j + 1, k - 1);
-                        if (j) s -= ak2 * j * G(i, j - 1, k + 1);
-                        if (j && k) s += j * k * G(i, j - 1, k - 1);
-                        v[VBC] = s;
+                double *val = T + (size_t)t * NV * VL;
+#define G(a, b, c) (I4 + IDX(a, b, c, q))
+#define VAL(x) (val + (x) * VL)
+                const double *g0 = G(i, j, k);
+                const double *gi1 = G(i + 1, j, k), *gj1 = G(i, j + 1, k), *gk1 = G(i, j, k + 1);
+                const double *gi2 = G(i + 2, j, k), *gj2 = G(i, j + 2, k), *gk2 = G(i, j, k + 2);
+                const double *gij = G(i + 1, j + 1, k), *gik = G(i + 1, j, k + 1), *gjk = G(i, j + 1, k + 1);
+#pragma omp simd
+                for (v = 0; v < VL; v++) {
+                        VAL(V0)[v] = g0[v];
+                        VAL(VA)[v] = ai2[v] * gi1[v];
+                        VAL(VB)[v] = aj2[v] * gj1[v];
+                        VAL(VC)[v] = ak2[v] * gk1[v];
+                        VAL(VAA)[v] = ai2[v] * ai2[v] * gi2[v] - ai2[v] * (2 * i + 1) * g0[v];
+                        VAL(VBB)[v] = aj2[v] * aj2[v] * gj2[v] - aj2[v] * (2 * j + 1) * g0[v];
+                        VAL(VCC)[v] = ak2[v] * ak2[v] * gk2[v] - ak2[v] * (2 * k + 1) * g0[v];
+                        VAL(VAB)[v] = ai2[v] * aj2[v] * gij[v];
+                        VAL(VAC)[v] = ai2[v] * ak2[v] * gik[v];
+                        VAL(VBC)[v] = aj2[v] * ak2[v] * gjk[v];
+                }
+                if (i) {
+                        const double *gim = G(i - 1, j, k), *gimj = G(i - 1, j + 1, k), *gimk = G(i - 1, j, k + 1);
+#pragma omp simd
+                        for (v = 0; v < VL; v++) {
+                                VAL(VA)[v] -= i * gim[v];
+                                VAL(VAB)[v] -= aj2[v] * i * gimj[v];
+                                VAL(VAC)[v] -= ak2[v] * i * gimk[v];
+                        }
+                        if (i > 1) {
+                                const double *gi2m = G(i - 2, j, k);
+#pragma omp simd
+                                for (v = 0; v < VL; v++) VAL(VAA)[v] += i * (i - 1) * gi2m[v];
+                        }
+                }
+                if (j) {
+                        const double *gjm = G(i, j - 1, k), *gijm = G(i + 1, j - 1, k), *gjmk = G(i, j - 1, k + 1);
+#pragma omp simd
+                        for (v = 0; v < VL; v++) {
+                                VAL(VB)[v] -= j * gjm[v];
+                                VAL(VAB)[v] -= ai2[v] * j * gijm[v];
+                                VAL(VBC)[v] -= ak2[v] * j * gjmk[v];
+                        }
+                        if (j > 1) {
+                                const double *gj2m = G(i, j - 2, k);
+#pragma omp simd
+                                for (v = 0; v < VL; v++) VAL(VBB)[v] += j * (j - 1) * gj2m[v];
+                        }
+                }
+                if (k) {
+                        const double *gkm = G(i, j, k - 1), *gikm = G(i + 1, j, k - 1), *gjkm = G(i, j + 1, k - 1);
+#pragma omp simd
+                        for (v = 0; v < VL; v++) {
+                                VAL(VC)[v] -= k * gkm[v];
+                                VAL(VAC)[v] -= ai2[v] * k * gikm[v];
+                                VAL(VBC)[v] -= aj2[v] * k * gjkm[v];
+                        }
+                        if (k > 1) {
+                                const double *gk2m = G(i, j, k - 2);
+#pragma omp simd
+                                for (v = 0; v < VL; v++) VAL(VCC)[v] += k * (k - 1) * gk2m[v];
+                        }
+                }
+                if (i && j) {
+                        const double *gm = G(i - 1, j - 1, k);
+#pragma omp simd
+                        for (v = 0; v < VL; v++) VAL(VAB)[v] += i * j * gm[v];
+                }
+                if (i && k) {
+                        const double *gm = G(i - 1, j, k - 1);
+#pragma omp simd
+                        for (v = 0; v < VL; v++) VAL(VAC)[v] += i * k * gm[v];
+                }
+                if (j && k) {
+                        const double *gm = G(i, j - 1, k - 1);
+#pragma omp simd
+                        for (v = 0; v < VL; v++) VAL(VBC)[v] += j * k * gm[v];
                 }
 #undef G
+#undef VAL
         } } } }
 #undef IDX
 }
 
-/* index of the symmetric second-derivative value for centres s, t in {A,B,C} */
-static const int D2[3][3] = {{VAA, VAB, VAC}, {VAB, VBB, VBC}, {VAC, VBC, VCC}};
+/* pair index of s <= t in {A, B, C} */
+static const int PAIR[3][3] = {{0, 1, 2}, {1, 3, 4}, {2, 4, 5}};
+
+/*
+ * acc[g][term][lane] += w[g][f][lane] * products of the three directions for
+ * every Cartesian component f: terms 0..17 the diagonal-direction blocks
+ * (x * 6 + pair(s, t)), 18..44 the off-diagonal ones (18 + c * 9 + s * 3 + t,
+ * c = xy, xz, yz), 45 the energy.
+ */
+MULTIVERSION
+static void assemble(double *acc, const double *T, const QuartetShape *qs, const double *wl,
+                     int ngroup, int nf4, int mode)
+{
+        const int l1 = qs->l[1] + 1, l2 = qs->l[2] + 1, l3 = qs->l[3] + 1;
+        const int nfi = qs->nf[0], nfj = qs->nf[1], nfk = qs->nf[2], nfl = qs->nf[3];
+        int fi, fj, fk, fl, f = 0, g, v, s, t;
+        double P[NTERM][VL];
+        for (fi = 0; fi < nfi; fi++)
+        for (fj = 0; fj < nfj; fj++)
+        for (fk = 0; fk < nfk; fk++)
+        for (fl = 0; fl < nfl; fl++, f++) {
+                const double *X = T + (size_t)(((qs->px[0][fi] * l1 + qs->px[1][fj]) * l2
+                                  + qs->px[2][fk]) * l3 + qs->px[3][fl]) * NV * VL;
+                const double *Y = T + TSZV + (size_t)(((qs->py[0][fi] * l1 + qs->py[1][fj]) * l2
+                                  + qs->py[2][fk]) * l3 + qs->py[3][fl]) * NV * VL;
+                const double *Z = T + 2 * TSZV + (size_t)(((qs->pz[0][fi] * l1 + qs->pz[1][fj]) * l2
+                                  + qs->pz[2][fk]) * l3 + qs->pz[3][fl]) * NV * VL;
+                if (mode == 1) {
+#pragma omp simd
+                        for (v = 0; v < VL; v++) P[45][v] = X[v] * Y[v] * Z[v];
+                        for (g = 0; g < ngroup; g++) {
+                                const double *w = wl + ((size_t)g * nf4 + f) * VL;
+                                double *a = acc + ((size_t)g * NTERM + 45) * VL;
+#pragma omp simd
+                                for (v = 0; v < VL; v++) a[v] += w[v] * P[45][v];
+                        }
+                        continue;
+                }
+                double yz[VL], xz[VL], xy[VL];
+#pragma omp simd
+                for (v = 0; v < VL; v++) {
+                        yz[v] = Y[v] * Z[v];
+                        xz[v] = X[v] * Z[v];
+                        xy[v] = X[v] * Y[v];
+                }
+                for (s = 0; s < 3; s++) {
+                        for (t = s; t < 3; t++) {
+                                const int k2 = D2[s][t], pr = PAIR[s][t];
+                                const double *Xk = X + k2 * VL, *Yk = Y + k2 * VL, *Zk = Z + k2 * VL;
+#pragma omp simd
+                                for (v = 0; v < VL; v++) {
+                                        P[pr][v] = Xk[v] * yz[v];
+                                        P[6 + pr][v] = Yk[v] * xz[v];
+                                        P[12 + pr][v] = Zk[v] * xy[v];
+                                }
+                        }
+                }
+                for (s = 0; s < 3; s++) {
+                        const double *Xs = X + (1 + s) * VL, *Ys = Y + (1 + s) * VL;
+                        for (t = 0; t < 3; t++) {
+                                const double *Yt = Y + (1 + t) * VL, *Zt = Z + (1 + t) * VL;
+                                const int c = s * 3 + t;
+#pragma omp simd
+                                for (v = 0; v < VL; v++) {
+                                        P[18 + c][v] = Xs[v] * Yt[v] * Z[v];
+                                        P[27 + c][v] = Xs[v] * Y[v] * Zt[v];
+                                        P[36 + c][v] = X[v] * Ys[v] * Zt[v];
+                                }
+                        }
+                }
+                for (g = 0; g < ngroup; g++) {
+                        const double *w = wl + ((size_t)g * nf4 + f) * VL;
+                        double *a = acc + (size_t)g * NTERM * VL;
+                        int k;
+                        for (k = 0; k < 45; k++) {
+#pragma omp simd
+                                for (v = 0; v < VL; v++) a[k * VL + v] += w[v] * P[k][v];
+                        }
+                }
+        }
+}
+
 
 void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, double *kfac,
                           double *dm, double *qcond, double *dcond, double tol, double prim_tol,
@@ -210,8 +395,13 @@ void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, doub
         double *dd = malloc(sizeof(double) * maxf4 * ngroup);     /* contracted weights */
         double *x1 = malloc(sizeof(double) * maxf4 * ngroup);     /* kl-primitive weights */
         double *w = malloc(sizeof(double) * maxf4 * ngroup);      /* primitive weights */
-        const int maxt = (LMAX + 1) * (LMAX + 1) * (LMAX + 1) * (LMAX + 1);
-        double *T = malloc(sizeof(double) * 3 * maxt * NV);
+        double *T = malloc(sizeof(double) * 3 * TSZV);
+        double *ws = malloc(sizeof(double) * WSV_SIZE);
+        double *wl = malloc(sizeof(double) * maxf4 * ngroup * VL);     /* lane weights */
+        double *acc = malloc(sizeof(double) * MAXGROUP * NTERM * VL);
+        Lanes lanes;
+        int nlane = 0, v;
+        for (v = 0; v < VL; v++) lanes.one[v] = 1.;
         double *cm = malloc(sizeof(double) * 4 * MAXPRIM);
         double *eijs = malloc(sizeof(double) * MAXPRIM * MAXPRIM);
         QuartetShape qs;
@@ -282,6 +472,15 @@ void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, doub
                         memset(G, 0, sizeof(G));
                         double E[MAXGROUP] = {0};
                         int pi, pj, pk, pl;
+                        memset(acc, 0, sizeof(double) * ngroup * NTERM * VL);
+                        nlane = 0;
+#define FLUSH_LANES() do { \
+                                for (s = 0; s < 3; s++) \
+                                        tables_dir(T + (size_t)s * TSZV, ws, qs.l, lanes.c00[s], lanes.c00p[s], \
+                                                   lanes.b10, lanes.b01, lanes.b00, ab[s], cdv[s], \
+                                                   s == 2 ? lanes.gz : lanes.one, lanes.ai2, lanes.aj2, lanes.ak2); \
+                                assemble(acc, T, &qs, wl, ngroup, nf4, mode); \
+                                nlane = 0; } while (0)
                         /* bounds for the primitive screening (no thresholds of their own:
                          * |w| <= ddmax prod_s nctr_s max_c |c_s|) */
                         double ddmax = 0, *cmax[4];
@@ -375,59 +574,56 @@ void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, doub
                                         int r;
                                         for (r = 0; r < nroots; r++) {
                                                 double t2 = u[r] / (1 + u[r]);
-                                                double b00 = .5 * t2 / asum;
-                                                double b10 = .5 / aij - .5 * akl * t2 / (aij * asum);
-                                                double b01 = .5 / akl - .5 * aij * t2 / (akl * asum);
+                                                lanes.b00[nlane] = .5 * t2 / asum;
+                                                lanes.b10[nlane] = .5 / aij - .5 * akl * t2 / (aij * asum);
+                                                lanes.b01[nlane] = .5 / akl - .5 * aij * t2 / (akl * asum);
                                                 for (s = 0; s < 3; s++) {
-                                                        double c00 = P[s] - R[0][s] - akl * t2 / asum * PQ[s];
-                                                        double c00p = Q[s] - R[2][s] + aij * t2 / asum * PQ[s];
-                                                        tables_1d(T + (size_t)s * maxt * NV, qs.l, c00, c00p,
-                                                                  b10, b01, b00, ab[s], cdv[s],
-                                                                  s == 2 ? pref * rw[r] : 1., ai, aj, ak);
+                                                        lanes.c00[s][nlane] = P[s] - R[0][s] - akl * t2 / asum * PQ[s];
+                                                        lanes.c00p[s][nlane] = Q[s] - R[2][s] + aij * t2 / asum * PQ[s];
                                                 }
-                                                const double *TX = T, *TY = T + (size_t)maxt * NV,
-                                                             *TZ = T + (size_t)2 * maxt * NV;
-                                                const int l1 = qs.l[1] + 1, l2 = qs.l[2] + 1, l3 = qs.l[3] + 1;
-                                                int f = 0;
-                                                for (fi = 0; fi < nfi; fi++)
-                                                for (fj = 0; fj < nfj; fj++)
-                                                for (fk = 0; fk < nfk; fk++)
-                                                for (fl = 0; fl < nfl; fl++, f++) {
-                                                        const double *X = TX + (size_t)(((qs.px[0][fi] * l1 + qs.px[1][fj]) * l2
-                                                                         + qs.px[2][fk]) * l3 + qs.px[3][fl]) * NV;
-                                                        const double *Y = TY + (size_t)(((qs.py[0][fi] * l1 + qs.py[1][fj]) * l2
-                                                                         + qs.py[2][fk]) * l3 + qs.py[3][fl]) * NV;
-                                                        const double *Z = TZ + (size_t)(((qs.pz[0][fi] * l1 + qs.pz[1][fj]) * l2
-                                                                         + qs.pz[2][fk]) * l3 + qs.pz[3][fl]) * NV;
-                                                        for (g = 0; g < ngroup; g++) {
-                                                                double wv = w[g * nf4 + f];
-                                                                if (mode == 1) {
-                                                                        E[g] += wv * X[V0] * Y[V0] * Z[V0];
-                                                                        continue;
-                                                                }
-                                                                double yz = wv * Y[V0] * Z[V0];
-                                                                double xz = wv * X[V0] * Z[V0];
-                                                                double xy = wv * X[V0] * Y[V0];
-                                                                int s1, t1;
-                                                                for (s1 = 0; s1 < 3; s1++) {
-                                                                        for (t1 = s1; t1 < 3; t1++) {
-                                                                                int k2 = D2[s1][t1];
-                                                                                G[g][s1][t1][0][0] += X[k2] * yz;
-                                                                                G[g][s1][t1][1][1] += Y[k2] * xz;
-                                                                                G[g][s1][t1][2][2] += Z[k2] * xy;
-                                                                        }
-                                                                        double xs = wv * X[1 + s1], ys = wv * Y[1 + s1];
-                                                                        for (t1 = 0; t1 < 3; t1++) {
-                                                                                G[g][s1][t1][0][1] += xs * Y[1 + t1] * Z[V0];
-                                                                                G[g][s1][t1][0][2] += xs * Y[V0] * Z[1 + t1];
-                                                                                G[g][s1][t1][1][2] += ys * X[V0] * Z[1 + t1];
-                                                                        }
-                                                                }
-                                                        }
-                                                }
+                                                lanes.gz[nlane] = pref * rw[r];
+                                                lanes.ai2[nlane] = 2 * ai;
+                                                lanes.aj2[nlane] = 2 * aj;
+                                                lanes.ak2[nlane] = 2 * ak;
+                                                for (a = 0; a < ngroup * nf4; a++) wl[(size_t)a * VL + nlane] = w[a];
+                                                if (++nlane == VL) FLUSH_LANES();
                                         }
                                 } }
                         } }
+                        if (nlane > 0) {
+                                for (v = nlane; v < VL; v++) {
+                                        for (s = 0; s < 3; s++) lanes.c00[s][v] = lanes.c00p[s][v] = 0;
+                                        lanes.b00[v] = lanes.b10[v] = lanes.b01[v] = lanes.gz[v] = 0;
+                                        lanes.ai2[v] = lanes.aj2[v] = lanes.ak2[v] = 0;
+                                        for (a = 0; a < ngroup * nf4; a++) wl[(size_t)a * VL + v] = 0;
+                                }
+                                FLUSH_LANES();
+                        }
+                        {
+                                int s1, t1, x;
+                                for (g = 0; g < ngroup; g++) {
+                                        const double *ag = acc + (size_t)g * NTERM * VL;
+                                        double sum[NTERM];
+                                        int k;
+                                        for (k = 0; k < NTERM; k++) {
+                                                double t3 = 0;
+                                                for (v = 0; v < VL; v++) t3 += ag[k * VL + v];
+                                                sum[k] = t3;
+                                        }
+                                        for (s1 = 0; s1 < 3; s1++)
+                                                for (t1 = s1; t1 < 3; t1++)
+                                                        for (x = 0; x < 3; x++)
+                                                                G[g][s1][t1][x][x] = sum[x * 6 + PAIR[s1][t1]];
+                                        for (s1 = 0; s1 < 3; s1++)
+                                                for (t1 = 0; t1 < 3; t1++) {
+                                                        G[g][s1][t1][0][1] = sum[18 + s1 * 3 + t1];
+                                                        G[g][s1][t1][0][2] = sum[27 + s1 * 3 + t1];
+                                                        G[g][s1][t1][1][2] = sum[36 + s1 * 3 + t1];
+                                                }
+                                        E[g] = sum[45];
+                                }
+                        }
+#undef FLUSH_LANES
                         if (mode == 1) {
                                 for (g = 0; g < ngroup; g++) hloc[g] += E[g];
                                 continue;
@@ -486,6 +682,9 @@ void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, doub
         free(x1);
         free(w);
         free(T);
+        free(ws);
+        free(wl);
+        free(acc);
         free(cm);
         free(eijs);
 }
