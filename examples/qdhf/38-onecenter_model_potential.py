@@ -21,7 +21,7 @@ values, SS with sigma.p AO values);
 'Jfit+Kx' (fit check: molecular K).  Reported against x2cmp itself:
 E - E(x2cmp), max |d eps_occ|, lowest h_core eigenvalue.
 
-Usage:  python 38-onecenter_model_potential.py kmax geom basis [fit_ratio=1.2] [jgrid=200,1202]
+Usage:  python 38-onecenter_model_potential.py kmax geom basis [fit_ratio=1.2] [jgrid=0,0 (off); e.g. 200,1202]
 '''
 
 import os
@@ -47,8 +47,9 @@ kmax = int(sys.argv[1]) if len(sys.argv) > 1 else 8
 geom = sys.argv[2] if len(sys.argv) > 2 else 'H 0 0 0; Cl 0 0 1.275'
 base = sys.argv[3] if len(sys.argv) > 3 else 'unc-cc-pvdz'
 fit_ratio = float(sys.argv[4]) if len(sys.argv) > 4 else 1.2
-# Becke grid (radial, angular) for the short-range part of the numerical J; 0 = skip
-jgrid = tuple(int(x) for x in sys.argv[5].split(',')) if len(sys.argv) > 5 else (200, 1202)
+# Becke grid (radial, angular) for the short-range part of the numerical J; off by
+# default: ~6 min per k for HCl with the current (unscreened, per-atom) quadrature
+jgrid = tuple(int(x) for x in sys.argv[5].split(',')) if len(sys.argv) > 5 else (0, 0)
 os.environ['X2CAMF_TIMING'] = '0'
 elems = sorted(set(a.split()[0] for a in geom.split(';')))
 base = dict(x.split(':') for x in base.split(',')) if ':' in base else {el: base for el in elems}
