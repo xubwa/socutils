@@ -506,6 +506,13 @@ class DiskERIs(ERIsBase):
     share it.'''
 
     factorized = False
+    # vvvv_rows needs the virtual orbitals of the file, so integrals written in
+    # quasi-canonical orbitals are kept as they are up to this off-diagonal
+    # Fock element (zmr.fock.quasi_canonicalize): H0 takes the diagonal and the
+    # rest goes to V, which changes the energies by about x^2 over an orbital
+    # energy difference (O2 cc-pV5Z-X2C-TP, x = 1.8e-8: E(0+) of NEVPT4(SD)
+    # equal to 1e-10 Eh to the run in rotated orbitals)
+    quasi_canonical_tol = 1e-7
 
     def __init__(self, path, u=None, _file=None):
         import h5py

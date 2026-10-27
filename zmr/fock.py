@@ -42,17 +42,18 @@ def quasi_canonicalize(eris, gamma_act):
     '''Diagonalize the core-core and virtual-virtual blocks of the generalized
     Fock matrix; the active orbitals are left untouched.  Orbitals that are
     already quasi-canonical (off-diagonal elements of both blocks below
-    QUASI_CANONICAL_TOL) are kept as they are, without the four-index
-    rotation of the integrals.'''
+    QUASI_CANONICAL_TOL, or the quasi_canonical_tol of the integral source)
+    are kept as they are, without the four-index rotation of the integrals.'''
     sp = eris.spaces
     f = generalized_fock(eris, gamma_act)
+    tol = getattr(eris, 'quasi_canonical_tol', QUASI_CANONICAL_TOL)
     off = 0.0
     for label in 'cv':
         s = sp.slice(label)
         b = f[s, s]
         if b.size:
             off = max(off, float(abs(b - numpy.diag(b.diagonal())).max()))
-    if off < QUASI_CANONICAL_TOL:
+    if off < tol:
         c, v = sp.slice('c'), sp.slice('v')
         return QuasiCanonical(eris, f, f.diagonal()[c].real.copy(), f.diagonal()[v].real.copy(),
                               numpy.eye(sp.nmo, dtype=f.dtype))
