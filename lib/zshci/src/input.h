@@ -163,6 +163,23 @@ struct PtInput {
   // iteration estimates. Far less memory than walkers of that many samples,
   // and with many samples per estimate the estimator varies much less.
   bool pooled = false;
+  // Time every step of the deterministic part and of two pooled iterations
+  // before the calculation (pt.h, ProfileSumOverExternalDets).
+  bool profile = false;
+  // Chosen by the program (RunPerturbation, "auto" in pt.h) when set,
+  // which the input does by default: epsilon2_large and num_samples from
+  // the memory per rank (`memory_gb`, 0: what the node has available) and
+  // a short pilot; epsilon2_large and num_samples in the input are expert
+  // overrides (benchmarks, tests). max_batches bounds the passes over the
+  // external space the deterministic part may take to fit; pilot_samples
+  // and pilot_batches are those of the pilot, max_samples bounds a batch.
+  bool auto_large = false;
+  bool auto_samples = false;
+  double memory_gb = 0.0;
+  int max_batches = 8;
+  int max_samples = 2000000;
+  int pilot_samples = 2400;
+  int pilot_batches = 10;
   int min_iterations = 5;
   int max_iterations = 1000;
   double target_error = 1e-4;

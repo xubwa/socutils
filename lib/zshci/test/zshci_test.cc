@@ -3356,7 +3356,7 @@ void TestSpinFlip() {
     const std::string ss =
         ", \"pt\": {\"method\": \"semistochastic\", \"epsilon2\": 1e-7, "
         "\"epsilon2_large\": 3e-4, \"target_error\": 2e-6, "
-        "\"num_samples\": 100}";
+        "\"num_samples\": 100, \"estimator\": \"walkers\"}";
     const SpinFlipRun stochastic =
         RunSpinFlipCase(big, base + "/sel_ss", hf, 1, 1, 2e-3, ss, 6);
     const double diff = stochastic.energies[0] - sel_plain.energies[0];
@@ -3402,6 +3402,177 @@ void TestSpinFlip() {
                 s2, sel_odd.dets.size());
     Expect(std::abs(s2 - 2.0) < 0.05 && sel_odd.dets.size() > 1000,
            "selected spin_flip -1 vector has S^2 near 2");
+  }
+  std::system(("rm -rf " + base).c_str());
+}
+
+// ---------------------------------------------------------------------------
+// epsilon2_large and num_samples chosen by the program (pt.h, "auto").
+
+void TestPtAuto() {
+  // HyperLogLog against exact counts.
+  {
+    double worst = 0.0;
+    for (uint64_t n : {1000ULL, 100000ULL, 2000000ULL}) {
+      internal::HyperLogLog sketch, half_a, half_b;
+      for (uint64_t k = 0; k < n; ++k) {
+        sketch.Add(Mix64(k + 17));
+        (k % 2 == 0 ? half_a : half_b).Add(Mix64(k + 17));
+      }
+      half_a.Merge(half_b);
+      worst = std::max({worst, std::abs(sketch.Estimate() / n - 1.0),
+                        std::abs(half_a.Estimate() / n - 1.0)});
+    }
+    std::printf("      HyperLogLog: largest relative error %.2e\n", worst);
+    Expect(worst < 0.03,
+           "HyperLogLog sketches count 1e3 to 2e6 distinct hashes within 3%, "
+           "also merged");
+  }
+
+  const std::string base =
+      std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") +
+      "/zshci_test_ptauto";
+  std::system(("rm -rf " + base).c_str());
+  const Integrals<double> ints = RandomSpatialIntegrals(12, 11);
+  const int n = ints.num_orbs();
+  const HeatBath heat_bath(ints, 1e-12);
+  const LabelFilter filter(std::vector<int>(n, 0), 0);
+  const Comm serial;
+  for (int flip_mode : {0, 1}) {
+    const std::string tag = flip_mode ? " (spin_flip)" : " (plain)";
+    const SpinFlipRun run =
+        RunSpinFlipCase(ints, base + "/sel" + std::to_string(flip_mode),
+                        "[[0,1,2,3,4,5,6,7]]", 1, flip_mode, 2e-3, "", 6);
+    std::vector<Det<1>> sorted = run.dets;
+    std::sort(sorted.begin(), sorted.end());
+    SpinFlipLayout layout(1, 8);
+    if (flip_mode) layout.Extend(MakeSpan(run.dets), 0);
+    const double energy = run.energies[0] - ints.core_energy();
+    PtProblem<1, LabelFilter, double> problem{
+        run.dets,       sorted,
+        run.vectors[0], energy,
+        ints,           heat_bath,
+        filter,         1,
+        serial,         flip_mode ? &layout : nullptr};
+
+    // Counting against the terms themselves.
+    const std::vector<double> thresholds = {1e-3, 3e-4, 1e-4, 3e-5};
+    ExternalCounter<1, LabelFilter, double> counter(problem, thresholds);
+    double worst_terms = 0.0, worst_distinct = 0.0;
+    for (size_t k = 0; k < thresholds.size(); ++k) {
+      counter.Next();
+      double terms = 0.0;
+      std::set<Det<1>> distinct;
+      for (size_t i = 0; i < run.dets.size(); ++i) {
+        const double c = std::abs(run.vectors[0][i]);
+        if (c == 0.0 || internal::GeneratorWeight(problem, i) == 0.0) continue;
+        std::vector<int> occ;
+        run.dets[i].AppendOccupied(&occ);
+        auto visit = [&](const Det<1>& det, double, bool) {
+          Det<1> canonical = det;
+          if (flip_mode && internal::FoldOntoCanonical(det, layout.lambda(),
+                                                       &canonical) == 0.0) {
+            return;
+          }
+          terms += 1.0;
+          distinct.insert(canonical);
+        };
+        internal::ElementSink<1, decltype(visit), double> sink(
+            run.dets[i], ints, 0.0, visit);
+        ForEachExcitation(run.dets[i], occ, thresholds[k] / c, ints, heat_bath,
+                          filter, &sink);
+      }
+      worst_terms =
+          std::max(worst_terms, std::abs(counter.terms(k) - terms) / terms);
+      worst_distinct =
+          std::max(worst_distinct,
+                   std::abs(counter.distinct(k) / distinct.size() - 1.0));
+    }
+    std::printf(
+        "      counting%s: terms off by %.1e, distinct by %.1e "
+        "(relative)\n",
+        tag.c_str(), worst_terms, worst_distinct);
+    Expect(worst_terms < 1e-9 && worst_distinct < 0.03,
+           "band-by-band counting gives the terms of the deterministic sum and "
+           "their distinct determinants within 3%" +
+               tag);
+
+    // Batches and the guard do not change the deterministic sum.
+    {
+      const double one = PtDeterministic(problem, 1e-5);
+      PtProblem<1, LabelFilter, double> batched = problem;
+      batched.num_batches = 3;
+      const double three = PtDeterministic(batched, 1e-5);
+      int slices = 0;
+      const double guarded =
+          PtDeterministic(problem, 1e-5, nullptr, /*max_terms=*/2000, &slices);
+      const double diff =
+          std::max(std::abs(three - one), std::abs(guarded - one));
+      std::printf(
+          "      batches%s: 3 passes and %d guarded slices differ by "
+          "%.1e\n",
+          tag.c_str(), slices, diff);
+      Expect(diff < 1e-12 * std::abs(one) && slices > 1,
+             "the deterministic sum in 3 passes and in slices split by the "
+             "memory guard equals that in one pass" +
+                 tag);
+    }
+
+    // auto against the chosen values given explicitly, same seed.
+    {
+      PtInput pt;
+      pt.method = PtMethod::kSemistochastic;
+      pt.epsilon2 = 1e-7;
+      pt.auto_large = true;
+      pt.auto_samples = true;
+      pt.pooled = true;
+      pt.memory_gb = 0.05;  // several candidates, the smaller in passes
+      pt.min_iterations = 8;
+      pt.max_iterations = 8;
+      pt.target_error = 1e-12;
+      pt.pilot_samples = 200;
+      pt.pilot_batches = 4;
+      pt.max_samples = 5000;
+      const DeterminantSampler sampler(problem.coefficients, serial,
+                                       problem.flip);
+      const PtAutoChoice choice = ChoosePtParameters(problem, pt, sampler, 0);
+      const PtResult automatic = RunPerturbation(problem, pt, 0, false);
+      PtInput fixed = pt;
+      fixed.auto_large = false;
+      fixed.auto_samples = false;
+      fixed.epsilon2_large = choice.epsilon_large;
+      fixed.num_samples = choice.num_samples;
+      const PtResult given = RunPerturbation(problem, fixed, 0, false);
+      const double det_diff =
+          std::abs(PtDeterministic(problem, choice.epsilon_large) - [&] {
+            PtProblem<1, LabelFilter, double> b = problem;
+            b.num_batches = choice.det_batches;
+            return PtDeterministic(b, choice.epsilon_large);
+          }());
+      std::printf(
+          "      auto%s: epsilon2_large %.1e, %d samples, %d "
+          "pass(es); auto %.12f, given %.12f\n",
+          tag.c_str(), choice.epsilon_large, choice.num_samples,
+          choice.det_batches, automatic.correction, given.correction);
+      Expect(det_diff < 1e-12 * std::abs(automatic.correction) &&
+                 std::abs(automatic.correction - given.correction) <
+                     1e-10 * std::abs(given.correction) &&
+                 choice.epsilon_large > pt.epsilon2,
+             "PT with epsilon2_large and num_samples chosen by the program "
+             "equals PT with the chosen values given, same seed" +
+                 tag);
+      // With room and a tight target the stochastic part dominates and a
+      // small epsilon2_large must win (regression: the choice once stopped
+      // at the largest candidate).
+      PtInput roomy = pt;
+      roomy.memory_gb = 1.0;
+      roomy.target_error = 1e-7;
+      const PtAutoChoice small = ChoosePtParameters(problem, roomy, sampler, 0);
+      std::printf("      auto%s with room: epsilon2_large %.1e\n", tag.c_str(),
+                  small.epsilon_large);
+      Expect(small.epsilon_large <= 1e-6,
+             "with memory to spare a small epsilon2_large is chosen" + tag);
+    }
   }
   std::system(("rm -rf " + base).c_str());
 }
@@ -3452,6 +3623,7 @@ int main(int argc, char** argv) {
     zshci::TestBlockedIntegrals(ints);
     zshci::TestSpatialIntegrals();
     zshci::TestSpinFlip();
+    zshci::TestPtAuto();
     zshci::TestSpinStringConnections<1>(
         10, 0,
         "group string tables find the connected pairs of spin-conserving "

@@ -164,8 +164,12 @@ Json ToJson(const Input& in) {
                                          "stochastic", "semistochastic"};
   j["pt"] = {{"method", kPtNames[static_cast<int>(in.pt.method)]},
              {"epsilon2", in.pt.epsilon2},
-             {"epsilon2_large", in.pt.epsilon2_large},
-             {"num_samples", in.pt.num_samples},
+             {"epsilon2_large",
+              in.pt.auto_large ? Json("auto") : Json(in.pt.epsilon2_large)},
+             {"num_samples",
+              in.pt.auto_samples ? Json("auto") : Json(in.pt.num_samples)},
+             {"memory", in.pt.memory_gb},
+             {"max_batches", in.pt.max_batches},
              {"estimator", in.pt.pooled ? "pooled" : "walkers"},
              {"min_iterations", in.pt.min_iterations},
              {"max_iterations", in.pt.max_iterations},
@@ -451,14 +455,37 @@ Input ParseInput(const std::string& text) {
                         "\"stochastic\" or \"semistochastic\"");
     }
     pt.Get("epsilon2", &in.pt.epsilon2);
-    pt.Get("epsilon2_large", &in.pt.epsilon2_large);
-    pt.Get("num_samples", &in.pt.num_samples);
-    std::string estimator = "walkers";
+    // epsilon2_large and num_samples are chosen by the program unless given
+    // (expert overrides); the pooled estimator is the default.
+    in.pt.auto_large = true;
+    in.pt.auto_samples = true;
+    in.pt.pooled = true;
+    if (pt.Has("epsilon2_large") && !pt.At("epsilon2_large").is_string()) {
+      pt.Get("epsilon2_large", &in.pt.epsilon2_large);
+      in.pt.auto_large = false;
+    } else if (pt.Has("epsilon2_large") &&
+               pt.At("epsilon2_large").get<std::string>() != "auto") {
+      pt.Fail("epsilon2_large", "must be a number or \"auto\"");
+    }
+    if (pt.Has("num_samples") && !pt.At("num_samples").is_string()) {
+      pt.Get("num_samples", &in.pt.num_samples);
+      in.pt.auto_samples = false;
+    } else if (pt.Has("num_samples") &&
+               pt.At("num_samples").get<std::string>() != "auto") {
+      pt.Fail("num_samples", "must be a number or \"auto\"");
+    }
+    pt.Get("memory", &in.pt.memory_gb);
+    pt.Get("max_batches", &in.pt.max_batches);
+    pt.Get("max_samples", &in.pt.max_samples);
+    pt.Get("pilot_samples", &in.pt.pilot_samples);
+    pt.Get("pilot_batches", &in.pt.pilot_batches);
+    std::string estimator = "pooled";
     pt.Get("estimator", &estimator);
     if (estimator != "walkers" && estimator != "pooled") {
       pt.Fail("estimator", "must be \"walkers\" or \"pooled\"");
     }
     in.pt.pooled = estimator == "pooled";
+    pt.Get("profile", &in.pt.profile);
     pt.Get("min_iterations", &in.pt.min_iterations);
     pt.Get("max_iterations", &in.pt.max_iterations);
     pt.Get("target_error", &in.pt.target_error);
@@ -466,13 +493,21 @@ Input ParseInput(const std::string& text) {
     pt.Get("num_batches", &in.pt.num_batches);
     pt.CheckNoUnknownKeys();
     if (in.pt.epsilon2 <= 0.0) pt.Fail("epsilon2", "must be positive");
-    if (in.pt.method == PtMethod::kSemistochastic &&
+    if (in.pt.method == PtMethod::kSemistochastic && !in.pt.auto_large &&
         in.pt.epsilon2_large <= in.pt.epsilon2) {
       pt.Fail("epsilon2_large",
               "is required for the semistochastic method and must exceed "
               "epsilon2");
     }
     if (in.pt.num_samples < 2) pt.Fail("num_samples", "must be at least 2");
+    if (in.pt.auto_samples && !in.pt.pooled) {
+      pt.Fail("estimator", "\"walkers\" needs \"num_samples\"");
+    }
+    if (in.pt.memory_gb < 0.0) pt.Fail("memory", "must not be negative");
+    if (in.pt.max_batches < 1) pt.Fail("max_batches", "must be at least 1");
+    if (in.pt.pilot_samples < 2 || in.pt.pilot_batches < 2) {
+      pt.Fail("pilot_samples", "and pilot_batches must be at least 2");
+    }
     if (in.pt.min_iterations < 2) {
       pt.Fail("min_iterations", "must be at least 2");
     }

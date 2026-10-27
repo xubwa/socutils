@@ -37,10 +37,12 @@
 #include <omp.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <random>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "comm.h"
@@ -129,48 +131,99 @@ struct SampleTerm {
 };
 
 // Runs generate(parent, emit) for parent = 0 .. num_parents-1, where emit
-// takes a Term (DetTerm or SampleTerm); merges the terms of equal determinants; drops the
-// determinants of the variational space; and returns the sum over the
+// takes a Term (DetTerm or SampleTerm); merges the terms of equal determinants;
+// drops the determinants of the variational space; and returns the sum over the
 // remaining ones of contribution(term, E_a).
 //
 // Every determinant is owned by one rank and, there, by one part, both
 // chosen from its hash: each rank generates the terms of its share of the
 // parents, sends them to their owners, and the parts are merged in parallel.
 // To bound the memory, the whole procedure is repeated `num_batches` times,
-// each pass keeping one slice of the hash range.
+// each pass keeping one slice of the hash range (hash % num_batches).
+//
+// With max_terms > 0 a rank stops storing the terms of a slice once it
+// holds more than that many (the guard of the memory estimates, pt_auto in
+// RunPerturbation); the slice is then split in two (hash % 2m == r and
+// r + m) and done again, so that an estimate that was too low costs time
+// instead of the run. `slices`, if given, receives the number of slices
+// done.
 template <int W, class Term, class Generate, class Contribution, typename S>
 std::vector<double> SumOverExternalDets(
     size_t num_parents, Span<Det<W>> sorted_dets, const Integrals<S>& ints,
     int num_batches, int num_values, const Comm& comm, const Generate& generate,
-    const Contribution& contribution) {
+    const Contribution& contribution, uint64_t max_terms = 0,
+    int* slices = nullptr) {
   const uint64_t num_ranks = comm.size();
   const uint64_t batches = std::max(1, num_batches);
   // More parts than threads, so that uneven parts even out.
   const uint64_t num_parts = 8 * static_cast<uint64_t>(omp_get_max_threads());
   std::vector<double> total(num_values, 0.0);
+  // Slices still to do: (modulus, residue).
+  std::vector<std::pair<uint64_t, uint64_t>> todo;
+  for (uint64_t b = batches; b-- > 0;) todo.emplace_back(batches, b);
+  int num_slices = 0;
 
-  for (uint64_t batch = 0; batch < batches; ++batch) {
+  while (!todo.empty()) {
+    const uint64_t modulus = todo.back().first;
+    const uint64_t residue = todo.back().second;
+    todo.pop_back();
     // Generate, one chunk per thread.
     std::vector<std::vector<Term>> chunks(omp_get_max_threads());
+    uint64_t stored = 0;
+    bool full = false;
 #pragma omp parallel
     {
       std::vector<Term>& mine = chunks[omp_get_thread_num()];
+      uint64_t unreported = 0;
       auto emit = [&](const Term& term) {
-        if (term.det.Hash() % batches == batch) mine.push_back(term);
+        if (term.det.Hash() % modulus != residue) return;
+        mine.push_back(term);
+        if (max_terms > 0 && ++unreported == 4096) {
+          uint64_t now;
+#pragma omp atomic capture
+          now = stored += unreported;
+          unreported = 0;
+          if (now > max_terms) {
+#pragma omp atomic write
+            full = true;
+          }
+        }
       };
       const long count = static_cast<long>(num_parents);
       const long rank = comm.rank();
       const long ranks = comm.size();
 #pragma omp for schedule(dynamic, 8)
       for (long parent = 0; parent < count; ++parent) {
-        if (parent % ranks == rank) generate(parent, emit);
+        bool stop;
+#pragma omp atomic read
+        stop = full;
+        if (!stop && parent % ranks == rank) generate(parent, emit);
       }
     }
+    if (max_terms > 0 && modulus < (uint64_t{1} << 20)) {
+      double any = full ? 1.0 : 0.0;
+      comm.Sum(&any, 1);
+      if (any > 0.0) {
+        for (std::vector<Term>& chunk : chunks) std::vector<Term>().swap(chunk);
+        todo.emplace_back(2 * modulus, residue + modulus);
+        todo.emplace_back(2 * modulus, residue);
+        if (comm.is_root()) {
+          std::printf(
+              "note: a slice of the external determinants held more "
+              "than the %llu terms estimated per rank; split in two "
+              "(1/%llu of the hash range each)\n",
+              static_cast<unsigned long long>(max_terms),
+              static_cast<unsigned long long>(2 * modulus));
+        }
+        continue;
+      }
+    }
+    ++num_slices;
 
     // Send every term to the rank that owns its determinant, then group
     // what arrived into parts that one thread each can merge.
     auto part_of = [&](const Term& term) {
-      return (term.det.Hash() / batches / num_ranks) % num_parts;
+      return (term.det.Hash() / modulus / num_ranks) % num_parts;
     };
     Partitioned<Term> terms;
     if (num_ranks == 1) {
@@ -178,7 +231,7 @@ std::vector<double> SumOverExternalDets(
     } else {
       Partitioned<Term> by_rank =
           PartitionChunks(&chunks, num_ranks, [&](const Term& term) {
-            return (term.det.Hash() / batches) % num_ranks;
+            return (term.det.Hash() / modulus) % num_ranks;
           });
       const RawArray<Term> received = comm.ExchangeParts(&by_rank);
       terms = PartitionArray(received, num_parts, part_of);
@@ -217,6 +270,7 @@ std::vector<double> SumOverExternalDets(
       for (int v = 0; v < num_values; ++v) total[v] += local[v];
     }
   }
+  if (slices != nullptr) *slices = num_slices;
   comm.Sum(total.data(), total.size());
   return total;
 }
@@ -237,6 +291,361 @@ double FoldOntoCanonical(const Det<W>& det, int lambda, Det<W>* canonical) {
   }
   *canonical = flipped;
   return lambda * p;
+}
+
+}  // namespace internal
+
+namespace internal {
+
+// ---------------------------------------------------------------------------
+// Profile of one sum over external determinants ("pt": {"profile": true}).
+//
+// The same generate and contribution as SumOverExternalDets, in one batch,
+// with every step timed on its own: the singles of the excitation generator
+// (whose elements it evaluates for every candidate), the walk of the
+// heat-bath lists for the doubles, the Slater-Condon elements of the doubles
+// with the fold onto canonical determinants (spin_flip), storing the terms,
+// partitioning by owner, the exchange between ranks, sorting, merging equal
+// determinants, removing those of the variational space, the denominators
+// and the sum. The first three are measured by generating again with sinks
+// that stop after the step. Times: thread-seconds (busy, summed over all
+// threads and ranks) and wall seconds (largest rank).
+
+struct SumProfile {
+  std::vector<std::string> steps;
+  std::vector<double> busy;  // thread-seconds
+  std::vector<double> wall;
+  double generated = 0.0, distinct = 0.0, external = 0.0;
+  double singles = 0.0, doubles = 0.0;
+  double bytes_partitioned = 0.0, bytes_exchanged = 0.0;
+  size_t term_bytes = 0;
+
+  void Add(const std::string& step, double thread_seconds, double seconds) {
+    steps.push_back(step);
+    busy.push_back(thread_seconds);
+    wall.push_back(seconds);
+  }
+};
+
+template <class S>
+struct CountSink {
+  double singles = 0.0, doubles = 0.0;
+  void Single(int, int, S) { singles += 1.0; }
+  void Double(int, int, int, int, double) { doubles += 1.0; }
+};
+
+// Sink of the third step: the elements of the doubles and the fold.
+template <int W, typename S>
+struct ElementOnlySink {
+  const Det<W>& parent;
+  const Integrals<S>& ints;
+  const SpinFlipLayout* flip;
+  int lambda;
+  double sum = 0.0;
+  void Single(int, int, S element) { sum += std::abs(element); }
+  void Double(int i, int j, int a, int b, double /*magnitude*/) {
+    Excitation exc;
+    exc.rank = 2;
+    exc.holes[0] = i;
+    exc.holes[1] = j;
+    exc.particles[0] = a;
+    exc.particles[1] = b;
+    S value = OffDiagonalElement(parent, exc, ints);
+    if (flip != nullptr) {
+      Det<W> det = parent, canonical;
+      det.Clear(i);
+      det.Clear(j);
+      det.Set(a);
+      det.Set(b);
+      value *= FoldOntoCanonical(det, lambda, &canonical);
+      sum += static_cast<double>(canonical.words[0] & 1);
+    }
+    sum += std::abs(value);
+  }
+};
+
+// parent(p, &i, &cutoff) gives the determinant of parent p and the cutoff
+// on |H(a,i)| (false: the parent generates nothing).
+template <int W, class Term, class Parent, class Generate, class Contribution,
+          class Filter, typename S>
+std::vector<double> ProfileSumOverExternalDets(
+    size_t num_parents, Span<Det<W>> dets, Span<Det<W>> sorted_dets,
+    const Integrals<S>& ints, const HeatBath& heat_bath, const Filter& filter,
+    const SpinFlipLayout* flip, int num_values, const Comm& comm,
+    const Parent& parent, const Generate& generate,
+    const Contribution& contribution, SumProfile* profile) {
+  const int num_threads = omp_get_max_threads();
+  const long count = static_cast<long>(num_parents);
+  const long rank = comm.rank(), ranks = comm.size();
+  const int lambda = flip != nullptr ? flip->lambda() : 1;
+  profile->term_bytes = sizeof(Term);
+  std::vector<double> busy(num_threads);
+  // Runs body(p) over this rank's parents; returns the wall seconds and adds
+  // the busy thread-seconds to *thread_seconds.
+  auto timed_loop = [&](const auto& body, double* thread_seconds) {
+    std::fill(busy.begin(), busy.end(), 0.0);
+    const double start = omp_get_wtime();
+#pragma omp parallel
+    {
+      const int t = omp_get_thread_num();
+#pragma omp for schedule(dynamic, 8)
+      for (long p = 0; p < count; ++p) {
+        if (p % ranks != rank) continue;
+        const double t0 = omp_get_wtime();
+        body(p, t);
+        busy[t] += omp_get_wtime() - t0;
+      }
+    }
+    *thread_seconds = 0.0;
+    for (double b : busy) *thread_seconds += b;
+    return omp_get_wtime() - start;
+  };
+  std::vector<double> step_busy, step_wall;
+  auto record = [&](double thread_seconds, double wall) {
+    step_busy.push_back(thread_seconds);
+    step_wall.push_back(wall);
+  };
+  // Steps 1-3: generation stopped after singles, after the doubles' walk,
+  // after their elements.
+  std::vector<double> singles(num_threads, 0.0), doubles(num_threads, 0.0),
+      dummy(num_threads, 0.0);
+  double ts = 0.0, wall = 0.0;
+  for (int variant = 0; variant < 3; ++variant) {
+    wall = timed_loop(
+        [&](long p, int t) {
+          size_t i;
+          double cutoff;
+          if (!parent(p, &i, &cutoff)) return;
+          std::vector<int> occ;
+          dets[i].AppendOccupied(&occ);
+          if (variant == 0) {
+            CountSink<S> sink;
+            ForEachExcitation(dets[i], occ, 1e300, ints, heat_bath, filter,
+                              &sink);
+          } else if (variant == 1) {
+            CountSink<S> sink;
+            ForEachExcitation(dets[i], occ, cutoff, ints, heat_bath, filter,
+                              &sink);
+            singles[t] += sink.singles;
+            doubles[t] += sink.doubles;
+          } else {
+            ElementOnlySink<W, S> sink{dets[i], ints, flip, lambda};
+            ForEachExcitation(dets[i], occ, cutoff, ints, heat_bath, filter,
+                              &sink);
+            dummy[t] += sink.sum;
+          }
+        },
+        &ts);
+    record(ts, wall);
+  }
+  for (int t = 0; t < num_threads; ++t) {
+    profile->singles += singles[t];
+    profile->doubles += doubles[t];
+  }
+  // Step 4: the real generation, terms stored.
+  std::vector<std::vector<Term>> chunks(num_threads);
+  wall = timed_loop(
+      [&](long p, int t) {
+        generate(p, [&](const Term& term) { chunks[t].push_back(term); });
+      },
+      &ts);
+  record(ts, wall);
+  double generated = 0.0;
+  for (const std::vector<Term>& chunk : chunks) generated += chunk.size();
+  // Step 5: waiting for the slowest rank; step 6: partition by owner and
+  // exchange; then the parts.
+  double start = omp_get_wtime();
+  comm.Barrier();
+  record(0.0, omp_get_wtime() - start);
+  const uint64_t num_parts = 8 * static_cast<uint64_t>(num_threads);
+  auto part_of = [&](const Term& term) {
+    return (term.det.Hash() / ranks) % num_parts;
+  };
+  Partitioned<Term> terms;
+  start = omp_get_wtime();
+  double exchanged = 0.0;
+  if (ranks == 1) {
+    terms = PartitionChunks(&chunks, num_parts, part_of);
+    record(0.0, omp_get_wtime() - start);
+    record(0.0, 0.0);
+  } else {
+    Partitioned<Term> by_rank = PartitionChunks(
+        &chunks, ranks,
+        [&](const Term& term) { return term.det.Hash() % ranks; });
+    exchanged = (generated - by_rank.size(rank)) * sizeof(Term);
+    record(0.0, omp_get_wtime() - start);
+    start = omp_get_wtime();
+    const RawArray<Term> received = comm.ExchangeParts(&by_rank);
+    const double exchange_wall = omp_get_wtime() - start;
+    start = omp_get_wtime();
+    terms = PartitionArray(received, num_parts, part_of);
+    step_wall.back() += omp_get_wtime() - start;
+    record(0.0, exchange_wall);
+  }
+  // Steps 8-12, timed per part.
+  std::vector<double> t_sort(num_threads, 0.0), t_merge(num_threads, 0.0),
+      t_space(num_threads, 0.0), t_diag(num_threads, 0.0),
+      t_sum(num_threads, 0.0);
+  std::vector<double> total(num_values, 0.0);
+  double distinct = 0.0, external = 0.0;
+  start = omp_get_wtime();
+#pragma omp parallel reduction(+ : distinct, external)
+  {
+    const int t = omp_get_thread_num();
+    std::vector<double> local(num_values, 0.0), values(num_values);
+    std::vector<Term> merged_terms;
+#pragma omp for schedule(dynamic, 1) nowait
+    for (long part = 0; part < static_cast<long>(num_parts); ++part) {
+      Term* const first = terms.begin(part);
+      Term* const last = terms.end(part);
+      double t0 = omp_get_wtime();
+      std::sort(first, last,
+                [](const Term& a, const Term& b) { return a.det < b.det; });
+      double t1 = omp_get_wtime();
+      t_sort[t] += t1 - t0;
+      merged_terms.clear();
+      Term* run = first;
+      while (run != last) {
+        Term merged = *run;
+        Term* next = run + 1;
+        while (next != last && next->det == merged.det) {
+          merged.Add(*next);
+          ++next;
+        }
+        run = next;
+        merged_terms.push_back(merged);
+      }
+      t0 = omp_get_wtime();
+      t_merge[t] += t0 - t1;
+      distinct += merged_terms.size();
+      size_t kept = 0;
+      for (const Term& term : merged_terms) {
+        if (!std::binary_search(sorted_dets.begin(), sorted_dets.end(),
+                                term.det)) {
+          merged_terms[kept++] = term;
+        }
+      }
+      merged_terms.resize(kept);
+      external += kept;
+      t1 = omp_get_wtime();
+      t_space[t] += t1 - t0;
+      std::vector<double> energies(kept);
+      for (size_t k = 0; k < kept; ++k) {
+        energies[k] = DiagonalEnergy(merged_terms[k].det, ints);
+      }
+      t0 = omp_get_wtime();
+      t_diag[t] += t0 - t1;
+      for (size_t k = 0; k < kept; ++k) {
+        contribution(merged_terms[k], energies[k], &values);
+        for (int v = 0; v < num_values; ++v) local[v] += values[v];
+      }
+      t_sum[t] += omp_get_wtime() - t0;
+    }
+#pragma omp critical
+    for (int v = 0; v < num_values; ++v) total[v] += local[v];
+  }
+  const double parts_wall = omp_get_wtime() - start;
+  auto sum_of = [](const std::vector<double>& v) {
+    double x = 0.0;
+    for (double y : v) x += y;
+    return x;
+  };
+  const double parts_busy = sum_of(t_sort) + sum_of(t_merge) + sum_of(t_space) +
+                            sum_of(t_diag) + sum_of(t_sum);
+  // Wall of each part step in proportion to its busy time.
+  for (const std::vector<double>* v :
+       {&t_sort, &t_merge, &t_space, &t_diag, &t_sum}) {
+    const double b = sum_of(*v);
+    record(b, parts_busy > 0.0 ? parts_wall * b / parts_busy : 0.0);
+  }
+  start = omp_get_wtime();
+  comm.Sum(total.data(), total.size());
+  record(0.0, omp_get_wtime() - start);
+
+  // Over the ranks: busy and counts summed, wall the largest.
+  std::vector<double> sums = step_busy;
+  sums.insert(sums.end(),
+              {generated, distinct, external, profile->singles,
+               profile->doubles, generated * 2.0 * sizeof(Term), exchanged});
+  comm.Sum(sums.data(), sums.size());
+  std::vector<double> walls = comm.GatherAll(step_wall);
+  const size_t n = step_wall.size();
+  static const char* const kNames[] = {
+      "singles (elements of all candidates)",
+      "doubles: heat-bath walk",
+      "doubles: Slater-Condon elements, fold",
+      "storing the terms (incl. per-generator merge)",
+      "waiting for the slowest rank",
+      "partition by owner",
+      "exchange between ranks",
+      "sort",
+      "merge equal determinants",
+      "remove variational determinants",
+      "denominators H_aa",
+      "contributions, sum",
+      "reduction over ranks"};
+  for (size_t k = 0; k < n; ++k) {
+    double w = 0.0;
+    for (int r = 0; r < comm.size(); ++r) w = std::max(w, walls[r * n + k]);
+    profile->Add(kNames[k], sums[k], w);
+  }
+  // The generation steps were run cumulatively: report the differences.
+  for (int k = 3; k >= 1; --k) {
+    profile->busy[k] = std::max(0.0, profile->busy[k] - profile->busy[k - 1]);
+    profile->wall[k] = std::max(0.0, profile->wall[k] - profile->wall[k - 1]);
+  }
+  profile->generated = sums[n];
+  profile->distinct = sums[n + 1];
+  profile->external = sums[n + 2];
+  profile->singles = sums[n + 3];
+  profile->doubles = sums[n + 4];
+  profile->bytes_partitioned = sums[n + 5];
+  profile->bytes_exchanged = sums[n + 6];
+  if (sum_of(dummy) == -1.0) std::printf(" ");  // keep the work
+  return total;
+}
+
+inline void PrintSumProfile(const char* title, const SumProfile& p,
+                            int num_threads_total, const Comm& comm) {
+  if (!comm.is_root()) return;
+  double busy = 0.0, wall = 0.0;
+  for (size_t k = 0; k < p.steps.size(); ++k) {
+    busy += p.busy[k];
+    wall += p.wall[k];
+  }
+  std::printf("profile: %s\n", title);
+  std::printf("  %-46s %12s %10s\n", "step", "thread-s", "wall s");
+  for (size_t k = 0; k < p.steps.size(); ++k) {
+    std::printf("  %-46s %12.2f %10.3f\n", p.steps[k].c_str(), p.busy[k],
+                p.wall[k]);
+  }
+  std::printf("  %-46s %12.2f %10.3f  (idle: %.1f%% of %d threads x wall)\n",
+              "total", busy, wall,
+              100.0 * (1.0 - busy / (num_threads_total * wall)),
+              num_threads_total);
+  std::printf(
+      "  terms generated %.4g (%zu bytes each), distinct %.4g, outside the "
+      "space %.4g; singles passing %.4g, doubles passing %.4g; bytes "
+      "partitioned %.4g, exchanged %.4g\n",
+      p.generated, p.term_bytes, p.distinct, p.external, p.singles, p.doubles,
+      p.bytes_partitioned, p.bytes_exchanged);
+}
+
+// Bytes per second of a parallel copy of a large array (read + write).
+inline double MeasureBandwidth() {
+  const size_t n = size_t{1} << 28;  // 2 GB of doubles
+  RawArray<double> a(n), b(n);
+  const long count = static_cast<long>(n);
+#pragma omp parallel for schedule(static)
+  for (long k = 0; k < count; ++k) a[k] = static_cast<double>(k);
+  double best = 1e300;
+  for (int rep = 0; rep < 3; ++rep) {
+    const double start = omp_get_wtime();
+#pragma omp parallel for schedule(static)
+    for (long k = 0; k < count; ++k) b[k] = a[k];
+    best = std::min(best, omp_get_wtime() - start);
+  }
+  return 2.0 * n * sizeof(double) / best;
 }
 
 }  // namespace internal
@@ -279,7 +688,9 @@ double ExternalWeight(const Det<W>& det, bool with_flip) {
 
 // E2(epsilon), deterministically.
 template <int W, class Filter, typename S>
-double PtDeterministic(const PtProblem<W, Filter, S>& problem, double epsilon) {
+double PtDeterministic(const PtProblem<W, Filter, S>& problem, double epsilon,
+                       internal::SumProfile* profile = nullptr,
+                       uint64_t max_terms = 0, int* slices = nullptr) {
   using Term = internal::DetTerm<W, S>;
   const SpinFlipLayout* flip = problem.flip;
   const int lambda = flip != nullptr ? flip->lambda() : 1;
@@ -311,9 +722,22 @@ double PtDeterministic(const PtProblem<W, Filter, S>& problem, double epsilon) {
     (*values)[0] = internal::ExternalWeight(term.det, flip != nullptr) *
                    std::norm(term.sum) / (problem.energy - energy_a);
   };
+  if (profile != nullptr) {
+    auto parent = [&](long p, size_t* i, double* cutoff) {
+      *i = p;
+      const double c = std::abs(problem.coefficients[p]);
+      *cutoff = c > 0.0 ? epsilon / c : 0.0;
+      return c > 0.0 && internal::GeneratorWeight(problem, p) > 0.0;
+    };
+    return internal::ProfileSumOverExternalDets<W, Term>(
+        problem.dets.size(), problem.dets, problem.sorted_dets, problem.ints,
+        problem.heat_bath, problem.filter, problem.flip, 1, problem.comm,
+        parent, generate, contribution, profile)[0];
+  }
   return internal::SumOverExternalDets<W, Term>(
-             problem.dets.size(), problem.sorted_dets, problem.ints,
-             problem.num_batches, 1, problem.comm, generate, contribution)[0];
+      problem.dets.size(), problem.sorted_dets, problem.ints,
+      problem.num_batches, 1, problem.comm, generate, contribution, max_terms,
+      slices)[0];
 }
 
 // One stochastic estimate of E2(epsilon) and of E2(epsilon_large), both from
@@ -529,11 +953,17 @@ template <int W, class Filter, class Rng, typename S>
 StochasticEstimate PtPooledSample(const PtProblem<W, Filter, S>& problem,
                                   double epsilon, double epsilon_large,
                                   int num_samples,
-                                  const DeterminantSampler& sampler, Rng* rng) {
+                                  const DeterminantSampler& sampler, Rng* rng,
+                                  internal::SumProfile* profile = nullptr,
+                                  uint64_t max_terms = 0) {
   using Term = internal::SampleTerm<W, S>;
   std::vector<size_t> draws, indices;
   std::vector<int> multiplicities;
+  const double draw_start = omp_get_wtime();
   sampler.Draw(num_samples, rng, &draws, &indices, &multiplicities);
+  if (profile != nullptr) {
+    profile->Add("drawing the samples", 0.0, omp_get_wtime() - draw_start);
+  }
   const double n = num_samples;
   const SpinFlipLayout* flip = problem.flip;
   const int lambda = flip != nullptr ? flip->lambda() : 1;
@@ -601,13 +1031,420 @@ StochasticEstimate PtPooledSample(const PtProblem<W, Filter, S>& problem,
     (*values)[1] =
         (std::norm(term.sum_large) + term.square_large) / denominator;
   };
-  const std::vector<double> sums = internal::SumOverExternalDets<W, Term>(
-      indices.size(), problem.sorted_dets, problem.ints, problem.num_batches, 2,
-      problem.comm, generate, contribution);
+  std::vector<double> sums;
+  if (profile != nullptr) {
+    auto parent = [&](long p, size_t* i, double* cutoff) {
+      *i = indices[p];
+      *cutoff = epsilon / std::abs(problem.coefficients[*i]);
+      return true;
+    };
+    sums = internal::ProfileSumOverExternalDets<W, Term>(
+        indices.size(), problem.dets, problem.sorted_dets, problem.ints,
+        problem.heat_bath, problem.filter, problem.flip, 2, problem.comm,
+        parent, generate, contribution, profile);
+  } else {
+    sums = internal::SumOverExternalDets<W, Term>(
+        indices.size(), problem.sorted_dets, problem.ints, problem.num_batches,
+        2, problem.comm, generate, contribution, max_terms);
+  }
   StochasticEstimate estimate;
   estimate.small = sums[0];
   estimate.large = sums[1];
   return estimate;
+}
+
+// ---------------------------------------------------------------------------
+// epsilon2_large and num_samples chosen by the program ("auto").
+//
+// Memory model: a sum over external determinants holds, per rank, its terms
+// about three times (the per-thread lists, which grow by doubling, and the
+// partitioned copy, or the exchanged one), so kTermCopies * sizeof(Term)
+// bytes per term held; the terms of the deterministic part at a threshold t
+// are counted without being stored, those of a stochastic batch per sample
+// from a pilot. Distinct external determinants are estimated with
+// HyperLogLog sketches, for the output.
+//
+// Choice of epsilon2_large: candidates from 1e-4 down by factors of about
+// 3, above epsilon2. A short pilot (pilot_batches batches of pilot_samples
+// samples at epsilon2) gives, from the same samples, the spread of the
+// stochastic correction E2(eps2) - E2(t) for every candidate t (each term
+// carries the band of its strength |H(a,i) c_i|), and the time per sample.
+// Then the terms of the deterministic part are counted band by band from
+// the largest candidate down (singles once, the heat-bath lists walked from
+// the previous threshold only, so that the counting adds up to one walk at
+// the last threshold counted), and counting stops when the next candidate
+// would not fit the memory in max_batches passes, or when its predicted
+// deterministic cost exceeds what it saves in stochastic batches. The
+// candidate of least predicted total time is taken. num_samples: the
+// largest batch whose terms fit the memory per rank, at most max_samples.
+
+constexpr double kTermCopies = 3.0;
+constexpr int kMaxCandidates = 9;
+
+namespace internal {
+
+// HyperLogLog sketch of a set of 64-bit hashes (2^14 registers, about 1 %
+// standard error).
+class HyperLogLog {
+ public:
+  static constexpr int kBits = 14;
+  HyperLogLog() : registers_(size_t{1} << kBits, 0) {}
+  void Add(uint64_t hash) {
+    hash = Mix64(hash ^ 0x2545f4914f6cdd1dULL);
+    const size_t index = hash >> (64 - kBits);
+    const uint64_t rest = (hash << kBits) | (uint64_t{1} << (kBits - 1));
+    const uint8_t rank = static_cast<uint8_t>(__builtin_clzll(rest) + 1);
+    if (rank > registers_[index]) registers_[index] = rank;
+  }
+  void Merge(const HyperLogLog& other) {
+    for (size_t k = 0; k < registers_.size(); ++k) {
+      registers_[k] = std::max(registers_[k], other.registers_[k]);
+    }
+  }
+  double Estimate() const {
+    const double m = static_cast<double>(registers_.size());
+    double sum = 0.0;
+    size_t zeros = 0;
+    for (uint8_t r : registers_) {
+      sum += std::ldexp(1.0, -r);
+      zeros += r == 0;
+    }
+    const double estimate = 0.7213 / (1.0 + 1.079 / m) * m * m / sum;
+    if (estimate <= 2.5 * m && zeros > 0) return m * std::log(m / zeros);
+    return estimate;
+  }
+  // Collective: the union over the ranks.
+  void MergeOverRanks(const Comm& comm) {
+    if (comm.size() == 1) return;
+    const std::vector<uint8_t> all = comm.GatherAll(registers_);
+    for (size_t k = 0; k < all.size(); ++k) {
+      uint8_t& r = registers_[k % registers_.size()];
+      r = std::max(r, all[k]);
+    }
+  }
+
+ private:
+  std::vector<uint8_t> registers_;
+};
+
+// What a stochastic pilot term accumulates, by band of its strength: band b
+// < num_bands - 1 holds the terms above candidate b and not above b - 1,
+// the last band those below all candidates.
+template <int W, typename S>
+struct BandTerm {
+  Det<W> det;
+  std::array<S, kMaxCandidates + 1> sum{};
+  std::array<double, kMaxCandidates + 1> square{};
+  void Add(const BandTerm& other) {
+    for (int b = 0; b <= kMaxCandidates; ++b) {
+      sum[b] += other.sum[b];
+      square[b] += other.square[b];
+    }
+  }
+};
+
+inline int BandOf(double strength, const std::vector<double>& thresholds) {
+  int b = 0;
+  while (b < static_cast<int>(thresholds.size()) && strength <= thresholds[b]) {
+    ++b;
+  }
+  return b;
+}
+
+// Bytes this rank may use for one sum over external determinants.
+inline double PtMemoryBudget(const PtInput& pt, const Comm& comm) {
+  if (pt.memory_gb > 0.0) return pt.memory_gb * 1024.0 * 1024.0 * 1024.0;
+  double available = 0.0;
+  if (std::FILE* f = std::fopen("/proc/meminfo", "r")) {
+    char key[64];
+    double value;
+    char unit[16];
+    while (std::fscanf(f, "%63s %lf %15s", key, &value, unit) == 3) {
+      if (std::string(key) == "MemAvailable:") available = value * 1024.0;
+    }
+    std::fclose(f);
+  }
+  double nodes = comm.is_node_leader() ? 1.0 : 0.0;
+  comm.Sum(&nodes, 1);
+  const double ranks_per_node = comm.size() / std::max(1.0, nodes);
+  // The smallest over the ranks.
+  const std::vector<double> all =
+      comm.GatherAll(std::vector<double>{available / ranks_per_node});
+  return 0.6 * *std::min_element(all.begin(), all.end());
+}
+
+}  // namespace internal
+
+// Counts, band by band from the largest threshold down, the terms of the
+// deterministic sum at each threshold and estimates the distinct external
+// determinants; nothing is stored. Collective.
+template <int W, class Filter, typename S>
+class ExternalCounter {
+ public:
+  ExternalCounter(const PtProblem<W, Filter, S>& problem,
+                  const std::vector<double>& thresholds)
+      : problem_(problem),
+        thresholds_(thresholds),
+        singles_(thresholds.size(), 0.0),
+        single_sketches_(thresholds.size()),
+        terms_(thresholds.size(), 0.0),
+        distinct_(thresholds.size(), 0.0),
+        seconds_(thresholds.size(), 0.0) {}
+
+  int num_counted() const { return counted_; }
+  double terms(int k) const { return terms_[k]; }
+  double distinct(int k) const { return distinct_[k]; }
+  // Seconds of the counting up to threshold k.
+  double seconds(int k) const { return seconds_[k]; }
+
+  // Counts the band of the next threshold.
+  void Next() {
+    const int k = counted_;
+    const int num = static_cast<int>(thresholds_.size());
+    const double start = omp_get_wtime();
+    const int num_threads = omp_get_max_threads();
+    const SpinFlipLayout* flip = problem_.flip;
+    const int lambda = flip != nullptr ? flip->lambda() : 1;
+    std::vector<std::vector<double>> singles(num_threads,
+                                             std::vector<double>(num, 0.0));
+    std::vector<double> doubles(num_threads, 0.0);
+    std::vector<std::vector<internal::HyperLogLog>> single_sketches(
+        k == 0 ? num_threads : 0, std::vector<internal::HyperLogLog>(num));
+    std::vector<internal::HyperLogLog> band_sketches(num_threads);
+    const long count = static_cast<long>(problem_.dets.size());
+    const long rank = problem_.comm.rank(), ranks = problem_.comm.size();
+    const double upper = k == 0 ? HeatBath::kNoBound : thresholds_[k - 1];
+#pragma omp parallel
+    {
+      const int t = omp_get_thread_num();
+      std::vector<int> occ;
+      // The hash of the determinant a term counts for, or 0 if none.
+      auto fold = [&](const Det<W>& det, uint64_t* hash) {
+        Det<W> canonical = det;
+        if (flip != nullptr &&
+            internal::FoldOntoCanonical(det, lambda, &canonical) == 0.0) {
+          return false;
+        }
+        *hash = canonical.Hash();
+        return true;
+      };
+#pragma omp for schedule(dynamic, 64)
+      for (long i = 0; i < count; ++i) {
+        if (i % ranks != rank) continue;
+        const double c = std::abs(problem_.coefficients[i]);
+        if (c == 0.0 || internal::GeneratorWeight(problem_, i) == 0.0) continue;
+        const Det<W>& det = problem_.dets[i];
+        occ.clear();
+        det.AppendOccupied(&occ);
+        const auto& view = problem_.filter.ForDeterminant(occ);
+        if (k == 0) {
+          Excitation single;
+          single.rank = 1;
+          for (int h : occ) {
+            single.holes[0] = h;
+            for (int a = 0; a < problem_.ints.num_orbs(); ++a) {
+              if (det.Occupied(a) || !view.Single(h, a)) continue;
+              single.particles[0] = a;
+              const double strength =
+                  std::abs(OffDiagonalElement(det, single, problem_.ints)) * c;
+              if (strength <= thresholds_[num - 1]) continue;
+              Det<W> excited = det;
+              excited.Clear(h);
+              excited.Set(a);
+              uint64_t hash;
+              if (!fold(excited, &hash)) continue;
+              for (int m = num - 1; m >= 0 && strength > thresholds_[m]; --m) {
+                singles[t][m] += 1.0;
+                single_sketches[t][m].Add(hash);
+              }
+            }
+          }
+        }
+        const double lower = thresholds_[k] / c;
+        if (problem_.heat_bath.max_magnitude() < lower) continue;
+        const double below = upper >= HeatBath::kNoBound ? upper : upper / c;
+        for (size_t n = 1; n < occ.size(); ++n) {
+          const int j = occ[n];
+          for (size_t m = 0; m < n; ++m) {
+            const int i2 = occ[m];
+            problem_.heat_bath.ForEachDouble(
+                i2, j, lower,
+                [&](int a, int b, double /*magnitude*/) {
+                  if (det.Occupied(a) || det.Occupied(b)) return;
+                  if (!view.Double(i2, j, a, b)) return;
+                  Det<W> excited = det;
+                  excited.Clear(i2);
+                  excited.Clear(j);
+                  excited.Set(a);
+                  excited.Set(b);
+                  uint64_t hash;
+                  if (!fold(excited, &hash)) return;
+                  doubles[t] += 1.0;
+                  band_sketches[t].Add(hash);
+                },
+                below);
+          }
+        }
+      }
+    }
+    // Over the threads and the ranks.
+    std::vector<double> sums(num + 1, 0.0);
+    for (int t = 0; t < num_threads; ++t) {
+      for (int m = 0; m < num; ++m) sums[m] += singles[t][m];
+      sums[num] += doubles[t];
+    }
+    problem_.comm.Sum(sums.data(), sums.size());
+    if (k == 0) {
+      for (int m = 0; m < num; ++m) {
+        singles_[m] = sums[m];
+        for (int t = 0; t < num_threads; ++t) {
+          single_sketches_[m].Merge(single_sketches[t][m]);
+        }
+        single_sketches_[m].MergeOverRanks(problem_.comm);
+      }
+    }
+    for (int t = 0; t < num_threads; ++t) band_sketch_.Merge(band_sketches[t]);
+    band_sketch_.MergeOverRanks(problem_.comm);
+    doubles_ += sums[num];
+    terms_[k] = singles_[k] + doubles_;
+    internal::HyperLogLog all = band_sketch_;
+    all.Merge(single_sketches_[k]);
+    distinct_[k] = all.Estimate();
+    seconds_[k] = (k > 0 ? seconds_[k - 1] : 0.0) + omp_get_wtime() - start;
+    ++counted_;
+  }
+
+ private:
+  const PtProblem<W, Filter, S>& problem_;
+  std::vector<double> thresholds_;
+  std::vector<double> singles_;  // singles above each threshold
+  std::vector<internal::HyperLogLog> single_sketches_;
+  double doubles_ = 0.0;  // doubles above the last threshold counted
+  internal::HyperLogLog band_sketch_;
+  std::vector<double> terms_, distinct_, seconds_;
+  int counted_ = 0;
+};
+
+// The pilot: batches of num_samples samples at epsilon2, each giving, for
+// every threshold, the stochastic correction E2(eps2) - E2(threshold).
+struct PilotResult {
+  std::vector<double>
+      sigma;  // spread of the correction per batch, by threshold
+  std::vector<double> mean;
+  double sigma_total = 0.0;       // spread of E2(eps2) itself per batch
+  double terms_per_sample = 0.0;  // over all ranks
+  double seconds_per_batch = 0.0;
+  double seconds = 0.0;
+};
+
+template <int W, class Filter, class Rng, typename S>
+PilotResult PtPilot(const PtProblem<W, Filter, S>& problem, double epsilon,
+                    const std::vector<double>& thresholds, int num_samples,
+                    int num_batches, const DeterminantSampler& sampler,
+                    Rng* rng) {
+  using Term = internal::BandTerm<W, S>;
+  const int num = static_cast<int>(thresholds.size());
+  const SpinFlipLayout* flip = problem.flip;
+  const int lambda = flip != nullptr ? flip->lambda() : 1;
+  const double n = num_samples;
+  const double start_all = omp_get_wtime();
+  std::vector<std::vector<double>> values(num_batches);
+  double terms = 0.0;
+  for (int batch = 0; batch < num_batches; ++batch) {
+    std::vector<size_t> draws, indices;
+    std::vector<int> multiplicities;
+    sampler.Draw(num_samples, rng, &draws, &indices, &multiplicities);
+    std::vector<double> generated(omp_get_max_threads(), 0.0);
+    auto generate = [&](long sample, const auto& emit) {
+      const size_t i = indices[sample];
+      const S ci = problem.coefficients[i];
+      const double g = internal::GeneratorWeight(problem, i);
+      const double w = multiplicities[sample];
+      const double p = sampler.Probability(i);
+      const double linear = w / p;
+      const double quadratic = w * (n - 1.0) / p - w * w / (p * p);
+      std::vector<int> occ;
+      problem.dets[i].AppendOccupied(&occ);
+      std::vector<Term> mine;
+      auto visit = [&](const Det<W>& det, S element, bool /*is_large*/) {
+        const double strength = std::abs(element) * std::abs(ci);
+        S x = element * ci;
+        Term term;
+        term.det = det;
+        if (flip != nullptr) {
+          const double factor =
+              g * internal::FoldOntoCanonical(det, lambda, &term.det);
+          if (factor == 0.0) return;
+          x *= factor;
+        }
+        term.sum[internal::BandOf(strength, thresholds)] = x;
+        mine.push_back(term);
+      };
+      internal::ElementSink<W, decltype(visit), S> sink(
+          problem.dets[i], problem.ints, 0.0, visit);
+      ForEachExcitation(problem.dets[i], occ, epsilon / std::abs(ci),
+                        problem.ints, problem.heat_bath, problem.filter, &sink);
+      generated[omp_get_thread_num()] += mine.size();
+      std::sort(mine.begin(), mine.end(),
+                [](const Term& a, const Term& b) { return a.det < b.det; });
+      size_t k = 0;
+      while (k < mine.size()) {
+        Term merged = mine[k];
+        size_t next = k + 1;
+        while (next < mine.size() && mine[next].det == merged.det) {
+          for (int b = 0; b <= num; ++b) merged.sum[b] += mine[next].sum[b];
+          ++next;
+        }
+        k = next;
+        for (int b = 0; b <= num; ++b) {
+          merged.square[b] = quadratic * std::norm(merged.sum[b]);
+          merged.sum[b] *= linear;
+        }
+        emit(merged);
+      }
+    };
+    auto contribution = [&](const Term& term, double energy_a,
+                            std::vector<double>* out) {
+      const double denominator =
+          (problem.energy - energy_a) * n * (n - 1.0) /
+          internal::ExternalWeight(term.det, flip != nullptr);
+      S partial(0.0);
+      double squares = 0.0;
+      // out[m]: the part above threshold m; out[num]: all of it.
+      for (int b = 0; b <= num; ++b) {
+        partial += term.sum[b];
+        squares += term.square[b];
+        (*out)[b] = (std::norm(partial) + squares) / denominator;
+      }
+    };
+    values[batch] = internal::SumOverExternalDets<W, Term>(
+        indices.size(), problem.sorted_dets, problem.ints, 1, num + 1,
+        problem.comm, generate, contribution);
+    for (double x : generated) terms += x;
+  }
+  problem.comm.Sum(&terms, 1);
+  PilotResult result;
+  result.seconds = omp_get_wtime() - start_all;
+  result.seconds_per_batch = result.seconds / num_batches;
+  result.terms_per_sample = terms / (double(num_samples) * num_batches);
+  for (int m = 0; m <= num; ++m) {
+    double sum = 0.0, sum2 = 0.0;
+    for (const std::vector<double>& v : values) {
+      const double x = m == num ? v[num] : v[num] - v[m];
+      sum += x;
+      sum2 += x * x;
+    }
+    const double mean = sum / num_batches;
+    const double sigma = std::sqrt(
+        std::max(0.0, (sum2 - num_batches * mean * mean) / (num_batches - 1)));
+    if (m == num) {
+      result.sigma_total = sigma;
+    } else {
+      result.mean.push_back(mean);
+      result.sigma.push_back(sigma);
+    }
+  }
+  return result;
 }
 
 struct PtResult {
@@ -624,6 +1461,222 @@ struct PtResult {
 // draws its own samples with its own random stream and produces its own
 // estimate in each iteration, without communication. The result is the mean
 // over all walker estimates, and its error their standard error.
+
+// What the program chose (see "auto" above).
+struct PtAutoChoice {
+  double epsilon_large = 0.0;
+  int num_samples = 0;
+  int det_batches = 1;
+  uint64_t det_max_terms = 0;    // guard of the deterministic part
+  uint64_t batch_max_terms = 0;  // guard of a stochastic batch
+};
+
+template <int W, class Filter, typename S>
+PtAutoChoice ChoosePtParameters(const PtProblem<W, Filter, S>& problem,
+                                const PtInput& pt,
+                                const DeterminantSampler& sampler, int root) {
+  using DetTermT = internal::DetTerm<W, S>;
+  using SampleTermT = internal::SampleTerm<W, S>;
+  const Comm& comm = problem.comm;
+  const bool semistochastic = pt.method == PtMethod::kSemistochastic;
+  const bool talk = comm.is_root();
+  const double ranks = comm.size();
+  const double imbalance = 1.1;  // the largest rank over the mean
+  const double gb = 1024.0 * 1024.0 * 1024.0;
+  const double budget = internal::PtMemoryBudget(pt, comm);
+  PtAutoChoice choice;
+  choice.epsilon_large = pt.epsilon2_large;
+  choice.num_samples = pt.num_samples;
+  choice.det_batches = std::max(1, problem.num_batches);
+
+  // Candidates of epsilon2_large, largest first.
+  std::vector<double> candidates;
+  if (semistochastic && pt.auto_large) {
+    for (double t :
+         {1e-4, 3e-5, 1e-5, 3e-6, 1e-6, 3e-7, 1e-7, 3e-8, 1e-8, 3e-9, 1e-9}) {
+      if (t > pt.epsilon2 * 1.5 &&
+          static_cast<int>(candidates.size()) < kMaxCandidates) {
+        candidates.push_back(t);
+      }
+    }
+    if (candidates.empty()) candidates.push_back(10.0 * pt.epsilon2);
+  } else if (semistochastic) {
+    candidates.push_back(pt.epsilon2_large);
+  }
+  if (talk) {
+    std::printf("pt auto (root %d): memory per rank %.1f GB (%s)\n", root,
+                budget / gb,
+                pt.memory_gb > 0.0 ? "pt.memory"
+                                   : "60 % of what the node has available");
+  }
+
+  // The pilot, at two batch sizes: the variance of a batch falls between
+  // 1/samples and 1/samples^2 (the second where the samples rarely meet
+  // at one external determinant), and its time grows less than linearly.
+  std::mt19937_64 stream(Mix64(pt.seed ^ 0x51ed270b7a3e0f1dULL) ^
+                         Mix64(root + 1));
+  const PilotResult small_pilot =
+      PtPilot(problem, pt.epsilon2, candidates, pt.pilot_samples,
+              pt.pilot_batches, sampler, &stream);
+  const double n0 = 4.0 * pt.pilot_samples;
+  const PilotResult pilot =
+      PtPilot(problem, pt.epsilon2, candidates, static_cast<int>(n0),
+              pt.pilot_batches, sampler, &stream);
+  const double bytes_per_sample = pilot.terms_per_sample / ranks * imbalance *
+                                  kTermCopies * sizeof(SampleTermT);
+  // Seconds per batch t(n) = t(n0) (n / n0)^q, q from the two sizes
+  // (between 0.7 and 1).
+  const double time_exponent =
+      small_pilot.seconds_per_batch > 0.0
+          ? std::min(1.0,
+                     std::max(0.7, std::log(pilot.seconds_per_batch /
+                                            small_pilot.seconds_per_batch) /
+                                       std::log(4.0)))
+          : 1.0;
+  // Exponent of the variance in the samples between the two pilot sizes
+  // (for the output). Beyond the larger pilot the variance is taken to fall
+  // as 1/samples only: the faster fall of small batches (samples that
+  // rarely meet at one external determinant) slows down as they grow, and
+  // the conservative guess only favours a smaller epsilon2_large.
+  auto exponent = [&](double sigma_small, double sigma_large) {
+    if (sigma_small <= 0.0 || sigma_large <= 0.0) return 1.0;
+    const double p = 2.0 * std::log(sigma_small / sigma_large) / std::log(4.0);
+    return std::min(2.0, std::max(1.0, p));
+  };
+  if (talk) {
+    std::printf(
+        "pt auto: pilot of %d + %d batches of %d and %.0f samples in %.2f s: "
+        "%.0f terms per sample, %.0f bytes per sample and rank in a batch; "
+        "%.2f and %.2f s per batch (as samples^%.2f); spread of E2 per batch "
+        "%.2e and %.2e (variance as samples^-%.2f between them)\n",
+        pt.pilot_batches, pt.pilot_batches, pt.pilot_samples, n0,
+        small_pilot.seconds + pilot.seconds, pilot.terms_per_sample,
+        bytes_per_sample, small_pilot.seconds_per_batch,
+        pilot.seconds_per_batch, time_exponent, small_pilot.sigma_total,
+        pilot.sigma_total,
+        exponent(small_pilot.sigma_total, pilot.sigma_total));
+  }
+  if (pt.auto_samples) {
+    double n = std::floor(budget / bytes_per_sample / 100.0) * 100.0;
+    n = std::min<double>(n, pt.max_samples);
+    n = std::max(n, 100.0);
+    choice.num_samples = static_cast<int>(n);
+    if (talk) {
+      std::printf("pt auto: num_samples = %d, %s\n", choice.num_samples,
+                  n >= pt.max_samples ? "max_samples"
+                  : n <= 100.0        ? "the least allowed (memory is short)"
+                                      : "the largest batch that fits");
+    }
+  }
+  const double n = choice.num_samples;
+  choice.batch_max_terms = static_cast<uint64_t>(1.5 * pilot.terms_per_sample *
+                                                 n / ranks * imbalance);
+  // Batches to the target and their time (not bounded by min_iterations:
+  // the comparison is of the time to the target error).
+  const double seconds_per_batch =
+      pilot.seconds_per_batch * std::pow(n / n0, time_exponent);
+  auto sigma_at = [&](double sigma_small, double sigma0) {
+    const double p = n > n0 ? 1.0 : exponent(sigma_small, sigma0);
+    return sigma0 * std::pow(n0 / n, 0.5 * p);
+  };
+  auto stochastic_seconds = [&](double sigma_small, double sigma0,
+                                double* batches) {
+    const double sigma = sigma_at(sigma_small, sigma0);
+    *batches = std::pow(sigma / pt.target_error, 2);
+    return *batches * seconds_per_batch;
+  };
+  if (!semistochastic) {
+    double batches;
+    stochastic_seconds(small_pilot.sigma_total, pilot.sigma_total, &batches);
+    if (talk) {
+      std::printf("pt auto: about %.0f batches of %.1f s to %.1e\n", batches,
+                  seconds_per_batch, pt.target_error);
+    }
+    return choice;
+  }
+  if (!pt.auto_large) {
+    return choice;
+  }
+
+  // The deterministic part, threshold by threshold.
+  ExternalCounter<W, Filter, S> counter(problem, candidates);
+  const double det_bytes = kTermCopies * sizeof(DetTermT) * imbalance / ranks;
+  // The deterministic part costs about this many times its counting
+  // (elements, storing, merging; measured on Cr2, 1.3 to 1.6).
+  const double det_over_count = 1.6;
+  const int num = static_cast<int>(candidates.size());
+  std::vector<double> det_time(num), stoch_time(num), passes(num), batches(num),
+      memory(num);
+  std::string stop = "all candidates counted";
+  int best = -1;
+  for (int k = 0; k < num; ++k) {
+    counter.Next();
+    memory[k] = counter.terms(k) * det_bytes;
+    passes[k] = std::max(1.0, std::ceil(memory[k] / budget));
+    det_time[k] = det_over_count * counter.seconds(k) * passes[k];
+    stoch_time[k] =
+        stochastic_seconds(small_pilot.sigma[k], pilot.sigma[k], &batches[k]);
+    if (passes[k] > pt.max_batches) {
+      stop = "candidate does not fit in max_batches passes";
+      break;
+    }
+    if (best < 0 ||
+        det_time[k] + stoch_time[k] < det_time[best] + stoch_time[best]) {
+      best = k;
+    }
+    if (k + 1 == num) break;
+    // The next threshold, from the growth so far: stop when it would not
+    // fit, or when its deterministic part alone would take longer than the
+    // best total so far.
+    const double growth =
+        k > 0 ? counter.terms(k) / std::max(1.0, counter.terms(k - 1)) : 3.0;
+    const double next_passes =
+        std::max(1.0, std::ceil(memory[k] * growth / budget));
+    if (next_passes > pt.max_batches) {
+      stop = "the next candidate would not fit in max_batches passes";
+      break;
+    }
+    const double next_det =
+        det_over_count * counter.seconds(k) * growth * next_passes;
+    if (next_det > det_time[best] + stoch_time[best]) {
+      stop =
+          "the deterministic part of the next candidate alone would take "
+          "longer than the best total";
+      break;
+    }
+  }
+  if (best < 0) best = 0;  // even the largest does not fit: take it batched
+  const int counted = counter.num_counted();
+  if (talk) {
+    std::printf(
+        "pt auto: candidates of epsilon2_large (counting %.2f s; terms, "
+        "distinct externals (HyperLogLog, variational ones included), memory "
+        "per rank, passes, predicted deterministic seconds, spread of the "
+        "stochastic correction per batch of %d samples, batches to %.1e, "
+        "predicted stochastic seconds):\n",
+        counter.seconds(counted - 1), choice.num_samples, pt.target_error);
+    std::printf("  %9s %11s %11s %9s %6s %9s %10s %8s %9s %9s\n", "eps2_large",
+                "terms", "distinct", "GB/rank", "passes", "det s", "sigma",
+                "batches", "stoch s", "total s");
+    for (int k = 0; k < counted; ++k) {
+      std::printf(
+          "  %9.1e %11.4g %11.4g %9.2f %6.0f %9.1f %10.2e %8.0f %9.1f "
+          "%9.1f%s\n",
+          candidates[k], counter.terms(k), counter.distinct(k), memory[k] / gb,
+          passes[k], det_time[k],
+          sigma_at(small_pilot.sigma[k], pilot.sigma[k]), batches[k],
+          stoch_time[k], det_time[k] + stoch_time[k],
+          k == best ? "  <- chosen" : "");
+    }
+    std::printf("  counting stopped: %s\n", stop.c_str());
+  }
+  choice.epsilon_large = candidates[best];
+  choice.det_batches = static_cast<int>(passes[best]);
+  choice.det_max_terms = static_cast<uint64_t>(
+      1.5 * counter.terms(best) * imbalance / ranks / passes[best]);
+  return choice;
+}
+
 template <int W, class Filter, typename S>
 PtResult RunPerturbation(const PtProblem<W, Filter, S>& problem,
                          const PtInput& pt, int root, bool print) {
@@ -635,18 +1688,71 @@ PtResult RunPerturbation(const PtProblem<W, Filter, S>& problem,
 
   double deterministic_part = 0.0;
   double epsilon_large = pt.epsilon2;  // pure stochastic: nothing subtracted
-  if (pt.method == PtMethod::kSemistochastic) {
-    epsilon_large = pt.epsilon2_large;
-    deterministic_part = PtDeterministic(problem, epsilon_large);
-    if (print) {
-      std::printf("  root %d: deterministic part (epsilon2_large = %.1e): "
-                  "%.10f\n",
-                  root, epsilon_large, deterministic_part);
+  int num_samples = pt.num_samples;
+  const DeterminantSampler sampler(problem.coefficients, problem.comm,
+                                   problem.flip);
+  const bool semistochastic = pt.method == PtMethod::kSemistochastic;
+  if (semistochastic) epsilon_large = pt.epsilon2_large;
+  PtProblem<W, Filter, S> det_problem = problem;
+  uint64_t det_max_terms = 0, batch_max_terms = 0;
+  if (pt.auto_large || pt.auto_samples) {
+    const PtAutoChoice choice = ChoosePtParameters(problem, pt, sampler, root);
+    if (semistochastic) epsilon_large = choice.epsilon_large;
+    num_samples = choice.num_samples;
+    det_problem.num_batches = choice.det_batches;
+    det_max_terms = choice.det_max_terms;
+    batch_max_terms = choice.batch_max_terms;
+  }
+  if (semistochastic) {
+    const double start = omp_get_wtime();
+    int slices = 0;
+    deterministic_part = PtDeterministic(det_problem, epsilon_large, nullptr,
+                                         det_max_terms, &slices);
+    if (print || pt.auto_large) {
+      std::printf(
+          "  root %d: deterministic part (epsilon2_large = %.1e): "
+          "%.10f, %.2f s, %d pass(es)\n",
+          root, epsilon_large, deterministic_part, omp_get_wtime() - start,
+          slices);
     }
   }
 
-  const DeterminantSampler sampler(problem.coefficients, problem.comm,
-                                   problem.flip);
+  if (pt.profile) {
+    // Step by step, before the calculation proper: the deterministic part
+    // and two pooled iterations.
+    const int threads = omp_get_max_threads() * problem.comm.size();
+    const double bandwidth = internal::MeasureBandwidth();
+    if (problem.comm.is_root()) {
+      std::printf(
+          "profile: copy bandwidth %.1f GB/s per node (read + "
+          "write)\n",
+          bandwidth / 1e9);
+    }
+    internal::SumProfile det_profile;
+    const double det_start = omp_get_wtime();
+    const double det_value =
+        PtDeterministic(problem, epsilon_large, &det_profile);
+    char title[160];
+    std::snprintf(title, sizeof(title),
+                  "deterministic part, epsilon2_large = %.1e: %.10f in %.2f s",
+                  epsilon_large, det_value, omp_get_wtime() - det_start);
+    internal::PrintSumProfile(title, det_profile, threads, problem.comm);
+    std::mt19937_64 probe(Mix64(pt.seed + 12345));
+    for (int k = 0; k < 2; ++k) {
+      internal::SumProfile profile;
+      const double start = omp_get_wtime();
+      const StochasticEstimate e =
+          PtPooledSample(problem, pt.epsilon2, epsilon_large, num_samples,
+                         sampler, &probe, &profile);
+      // The draw was recorded first; move it after the generation steps.
+      std::snprintf(title, sizeof(title),
+                    "pooled stochastic iteration %d, %d samples, epsilon2 = "
+                    "%.1e: %.10f - %.10f in %.2f s",
+                    k + 1, num_samples, pt.epsilon2, e.small, e.large,
+                    omp_get_wtime() - start);
+      internal::PrintSumProfile(title, profile, threads, problem.comm);
+    }
+  }
   if (pt.pooled) {
     // One estimate per iteration from the samples drawn alike on every rank.
     std::mt19937_64 stream(Mix64(pt.seed) ^
@@ -654,9 +1760,11 @@ PtResult RunPerturbation(const PtProblem<W, Filter, S>& problem,
     double sums[3] = {0.0, 0.0, 0.0};
     result.converged = false;
     for (int iter = 1; iter <= pt.max_iterations; ++iter) {
+      const double iter_start = omp_get_wtime();
       const StochasticEstimate estimate =
-          PtPooledSample(problem, pt.epsilon2, epsilon_large, pt.num_samples,
-                         sampler, &stream);
+          PtPooledSample(problem, pt.epsilon2, epsilon_large, num_samples,
+                         sampler, &stream, nullptr, batch_max_terms);
+      const double iter_seconds = omp_get_wtime() - iter_start;
       const double value =
           pt.method == PtMethod::kSemistochastic
               ? deterministic_part + estimate.small - estimate.large
@@ -674,8 +1782,8 @@ PtResult RunPerturbation(const PtProblem<W, Filter, S>& problem,
       if (print) {
         std::printf(
             "  root %d iter %5d  this iteration %16.10f  average "
-            "%16.10f  error %.2e\n",
-            root, iter, value, result.correction, result.error);
+            "%16.10f  error %.2e  %.2f s\n",
+            root, iter, value, result.correction, result.error, iter_seconds);
       }
       if (result.error < pt.target_error) {
         result.converged = true;
