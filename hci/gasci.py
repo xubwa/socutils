@@ -123,6 +123,28 @@ def antisymmetrized(h1, eri, n, nelec):
     return numpy.ascontiguousarray(w[p[:, None], q[:, None], p[None, :], q[None, :]])
 
 
+def s2_antisymmetrized(norb, nalpha, nbeta):
+    '''v[P,R] of S^2 over the spin orbitals of a spatial plan (alpha P = P,
+    beta P = norb + P) on states of nalpha + nbeta electrons, in the format of
+    antisymmetrized: S^2 = N_beta + S_z (S_z + 1)
+    - sum_pq a+_{p alpha} a+_{q beta} a_{p beta} a_{q alpha}.  No integrals:
+    the coefficients are -1 and the constant.'''
+    n = 2 * norb
+    nelec = nalpha + nbeta
+    sz = 0.5 * (nalpha - nbeta)
+    w = numpy.zeros((n, n, n, n))
+    p = numpy.arange(norb)
+    # w[x, y, r, s]: coefficient of a+_x a+_y a_s a_r
+    w[p[:, None], norb + p[None, :], p[None, :], norb + p[:, None]] = -1
+    w = w - w.transpose(1, 0, 2, 3) - w.transpose(0, 1, 3, 2) + w.transpose(1, 0, 3, 2)
+    h = numpy.eye(n) * ((nbeta + sz * (sz + 1)) / nelec)
+    hd = numpy.einsum('pr,qs->pqrs', h, numpy.eye(n))
+    w += (hd - hd.transpose(0, 1, 3, 2) - hd.transpose(1, 0, 2, 3)
+          + hd.transpose(1, 0, 3, 2)) / (nelec - 1)
+    a, b = pair_indices(n)
+    return numpy.ascontiguousarray(w[a[:, None], b[:, None], a[None, :], b[None, :]])
+
+
 def unpack_rdm2(g, n, nelec):
     '''dm1[p,r] = <p^+ r>, dm2[p,r,q,s] = <p^+ q^+ s r> from
     g[P,R] = <a+_p a+_q a_s a_r>.'''
@@ -1208,23 +1230,83 @@ class ProductSpaceCI(_ProductMixin, SpatialGASCI):
     (odd) S, and a sigma without the beta-beta half.  Only the BLAS kernel
     (lib/zgasci/PRODUCT_SPACE.md); gas, restrictions, subgroups do not
     apply.
+    ss_penalty = shift (with ss_value, default S_z (S_z + 1)): the spin
+    penalty of pyscf.fci.addons.fix_spin_ (as SQD uses it): H + shift (S^2 -
+    ss) if ss_value is the lowest possible value (within 0.1), else H + shift
+    (S^2 - ss)^2.  S^2 is applied by the same kernel as H, from its
+    coefficients over the strings (s2_antisymmetrized); spin_flip still
+    applies.  The energies returned are <H> of the vectors, the eigenvalues
+    of the penalized operator are in self.e_penalized.
     '''
 
     def __init__(self, mol=None, ci_strs=None):
         super().__init__(mol)
         self.ci_strs = ci_strs
         self.spin_flip = None
+        self.ss_penalty = None
+        self.ss_value = None
+        self.e_penalized = None
 
     def _nside(self, norb):
         return (norb, norb)
 
+    def contract_ss(self, fcivec, norb, nelec):
+        '''S^2 |c> in the space (the vector in the order of the plan).'''
+        plan = self.plan(norb, nelec)
+        vs = s2_antisymmetrized(norb, plan.nalpha, plan.nbeta)
+        return plan.sigma(vs, numpy.asarray(fcivec).ravel())
+
     def _diagonalize(self, plan, v, ci0, nroots, log):
         '''With spin_flip = +1 or -1 and the same alpha and beta strings
         (nalpha = nbeta): only vectors with C[b, a] = spin_flip C[a, b] (even
-        or odd S), and sigma without its beta-beta half.'''
+        or odd S), and sigma without its beta-beta half.  With ss_penalty:
+        the penalized operator (see the class), then <H> of the vectors.'''
+        if self.ss_penalty is None:
+            self.e_penalized = None
+            return self._diagonalize_v(plan, v, ci0, nroots, log)
+        norb = len(plan.sperm)
+        nelec = plan.nalpha + plan.nbeta
+        sz = 0.5 * abs(plan.nalpha - plan.nbeta)
+        ss = sz * (sz + 1) if self.ss_value is None else float(self.ss_value)
+        shift = float(self.ss_penalty)
+        vs = s2_antisymmetrized(norb, plan.nalpha, plan.nbeta)
+        one = antisymmetrized(numpy.eye(2 * norb) / nelec, numpy.zeros((2 * norb,) * 4),
+                              2 * norb, nelec)
+        if ss < sz * (sz + 1) + .1:
+            e, c = self._diagonalize_v(plan, v + shift * (vs - ss * one), ci0, nroots, log)
+        else:
+            def extra(x, sig):
+                t = sig(vs, x) - ss * x
+                return shift * (sig(vs, t) - ss * t)
+            hs = plan.hdiag(vs) - ss
+            e, c = self._diagonalize_v(plan, v, ci0, nroots, log, extra=extra,
+                                       hdiag_extra=shift * hs * hs)
+        self.e_penalized = numpy.asarray(e)
+        e = [numpy.vdot(x, plan.sigma(v, x)).real / numpy.vdot(x, x).real for x in c]
+        return e, c
+
+    def _diagonalize_v(self, plan, v, ci0, nroots, log, extra=None, hdiag_extra=None):
+        '''The Davidson of _diagonalize for the operator v (+ extra(x, sigma),
+        sigma(v, x) the sigma of the space, with hdiag_extra added to the
+        diagonal of the preconditioner).'''
         parity = self.spin_flip
-        if parity is None:
+        if parity is None and extra is None:
             return SpatialGASCI._diagonalize(self, plan, v, ci0, nroots, log)
+        if parity is None:
+            sig = lambda vv, x: plan.sigma(vv, x, self.sigma_kernel)
+            hdiag = plan.hdiag(v) + hdiag_extra
+            x0 = self._guess(plan, hdiag, ci0, nroots, v.dtype)
+            conv, e, c = lib.davidson1(
+                lambda xs: [sig(v, x) + extra(x, sig) for x in xs], x0,
+                lib.make_diag_precond(hdiag, self.level_shift), tol=self.conv_tol,
+                max_cycle=self.max_cycle, max_space=self.max_space, lindep=self.lindep,
+                nroots=nroots, max_memory=self.max_memory, verbose=log,
+                tol_residual=self.conv_tol_residual)
+            self.converged = all(conv)
+            if not self.converged:
+                log.warn('ProductSpaceCI: Davidson not converged for roots %s',
+                         [k for k, x in enumerate(conv) if not x])
+            return e, c
         if parity not in (1, -1):
             raise ValueError('spin_flip must be None, 1 or -1')
         if not (plan.mirror and plan.nalpha == plan.nbeta):
@@ -1237,7 +1319,12 @@ class ProductSpaceCI(_ProductMixin, SpatialGASCI):
             y += x
             y *= 0.5
             return y
+        def sig(vv, x):
+            out = plan.sigma_flip(vv, x, parity)
+            return sym(plan.sigma(vv, x)) if out is None else out
         hdiag = plan.hdiag(v)
+        if hdiag_extra is not None:
+            hdiag = hdiag + hdiag_extra
         # Basis of the subspace: (e_k + parity e_flip(k)) / sqrt(2), k <= flip(k).
         keep = numpy.arange(plan.dim) <= flip
         if parity < 0:
@@ -1251,15 +1338,17 @@ class ProductSpaceCI(_ProductMixin, SpatialGASCI):
                 basis[i, k] = 1
                 basis[i, flip[k]] += parity
                 basis[i] /= numpy.linalg.norm(basis[i])
-            hmat = numpy.array([basis @ plan.sigma(v, x) for x in basis])
+            hmat = numpy.array([basis @ (plan.sigma(v, x) if extra is None else
+                                         sig(v, x) + extra(x, sig)) for x in basis])
             e, c = numpy.linalg.eigh(hmat)
             self.converged = True
             return e[:nroots], [basis.T @ c[:, k] for k in range(nroots)]
 
         def hop(x):
-            out = plan.sigma_flip(v, sym(x), parity)
-            if out is None:
-                out = sym(plan.sigma(v, sym(x)))
+            x = sym(x)
+            out = sig(v, x)
+            if extra is not None:
+                out += extra(x, sig)
             return out
         if ci0 is not None:
             if isinstance(ci0, numpy.ndarray) and ci0.ndim == 1:
