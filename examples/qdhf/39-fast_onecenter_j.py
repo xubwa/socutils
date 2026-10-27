@@ -40,7 +40,9 @@ the atomic densities, J only, + the 2c J), of the X2C decoupling, the error of
 the fast J against exact J (max matrix element), and dE: the SCF energy with
 h = to_2c(X(h4 + J4), h4 + J4) - J2 using the fast J minus the same with exact J.
 
-Usage:  python 39-fast_onecenter_j.py
+Usage:  python 39-fast_onecenter_j.py [small|large]
+  large: chloro-/bromobenzene, 1,4-dibromobenzene, 1-bromonaphthalene; dE (an
+  SCF per variant) only up to n2c = 400, max |dh_core| always
 '''
 
 import os
@@ -265,10 +267,42 @@ systems = [
     ('CH2Br2', 'C 0 0 0.94; Br 1.59 0 -0.18; Br -1.59 0 -0.18; H 0 0.9 1.55; H 0 -0.9 1.55', 'unc-cc-pvdz-dk'),
 ]
 
+
+def aromatic(ring_x, subst):
+    '''benzene (ring_x = 1) or naphthalene (ring_x = 2) in the xy plane; the
+    outer C-H positions listed in subst are replaced: {index: (symbol, bond / A)}'''
+    cc, ch = 1.39, 1.08
+    h = cc * numpy.sqrt(3) / 2
+    if ring_x == 1:
+        ang = numpy.arange(6) * numpy.pi / 3
+        cs = numpy.c_[cc * numpy.cos(ang), cc * numpy.sin(ang), numpy.zeros(6)]
+        outer = list(range(6))
+        centre = lambda x: numpy.zeros(3)
+    else:
+        cs = numpy.array([[0, cc / 2, 0], [0, -cc / 2, 0], [h, cc, 0], [2 * h, cc / 2, 0], [2 * h, -cc / 2, 0],
+                          [h, -cc, 0], [-h, -cc, 0], [-2 * h, -cc / 2, 0], [-2 * h, cc / 2, 0], [-h, cc, 0]])
+        outer = [2, 3, 4, 5, 6, 7, 8, 9]
+        centre = lambda x: numpy.array([numpy.sign(x[0]) * h, 0., 0.])
+    atoms = ['C %.4f %.4f %.4f' % tuple(x) for x in cs]
+    for n, i in enumerate(outer):
+        d = cs[i] - centre(cs[i])
+        d /= numpy.linalg.norm(d)
+        symb, r = subst.get(n, ('H', ch))
+        atoms.append('%s %.4f %.4f %.4f' % ((symb,) + tuple(cs[i] + r * d)))
+    return '; '.join(atoms)
+
+if len(sys.argv) > 1 and sys.argv[1] == 'large':
+    systems = [
+        ('PhCl', aromatic(1, {0: ('Cl', 1.74)}), 'unc-cc-pvdz'),
+        ('PhBr', aromatic(1, {0: ('Br', 1.90)}), 'unc-cc-pvdz-dk'),
+        ('C6H4Br2', aromatic(1, {0: ('Br', 1.90), 3: ('Br', 1.90)}), 'unc-cc-pvdz-dk'),
+        ('C10H7Br', aromatic(2, {0: ('Br', 1.90)}), 'unc-cc-pvdz-dk'),
+    ]
+
 print('# fast one-center J; times in s; dE = E(fast J) - E(exact J), Eh')
-print('%-7s %5s | %6s %8s %6s | %-4s %5s %6s %6s %6s %6s %6s | %9s %9s %9s' % (
+print('%-7s %5s | %6s %8s %6s | %-4s %5s %6s %6s %6s %6s %6s | %9s %9s %9s %9s' % (
     'mol', 'n2c', 'NR JK', 'exact J', 'X2C', 'J', 'ngrid', 'radial', 'analyt', 'grid', 'total', '/NR JK',
-    'max dJ LL', 'max dJ SS', 'dE'))
+    'max dJ LL', 'max dJ SS', 'max dh', 'dE'))
 for name, geom, base in systems:
     mol = gto.M(atom=geom, basis=base[4:], verbose=0)
     mol = gto.M(atom=geom, basis={e: gto.mole.uncontracted_basis(gto.basis.load(base[4:], e))
@@ -301,17 +335,24 @@ for name, geom, base in systems:
     X.x2c1e_hfw0_4cmat(h4, s4, mol=xmol)
     t_x2c = time.perf_counter() - t0
 
-    def energy(j4, j2):
+    def hcore(j4, j2):
         x, _, r, _ = X.x2c1e_hfw0_4cmat(h4 + j4, s4, mol=xmol)
-        hc = contr.conj().T @ (X.to_2c(x, r, h4 + j4) - j2) @ contr
+        return contr.conj().T @ (X.to_2c(x, r, h4 + j4) - j2) @ contr
+    h_ex = hcore(vj4, vj2)
+
+    def energy(j4, j2):
+        hc = hcore(j4, j2)
         m = spinor_hf.SCF(mol)
         m.get_hcore = lambda *a: hc.copy()
         m.conv_tol = 1e-11
         m.verbose = 0
         return quiet(m.kernel)
-    e_ex = energy(vj4, vj2)
+    do_e = n2c <= 400
+    e_ex = energy(vj4, vj2) if do_e else None
     for method in ('erf', 'fit'):
         j4, j2, tt, ng = j_fast(xmol, d4, d2, method)
-        print('%-7s %5d | %6.2f %8.2f %6.2f | %-4s %4dk %6.2f %6.2f %6.2f %6.2f %6.1f | %9.1e %9.1e % 9.1e' % (
+        de = '% 9.1e' % (energy(j4, j2) - e_ex) if do_e else '%9s' % '-'
+        print('%-7s %5d | %6.2f %8.2f %6.2f | %-4s %4dk %6.2f %6.2f %6.2f %6.2f %6.1f | %9.1e %9.1e %9.1e %s' % (
             name, n2c, t_nr, t_ex, t_x2c, method, ng // 1000, tt[0], tt[1], tt[2], tt.sum(), tt.sum() / t_nr,
-            abs(j4 - vj4)[:n2c, :n2c].max(), abs(j4 - vj4)[n2c:, n2c:].max(), energy(j4, j2) - e_ex), flush=True)
+            abs(j4 - vj4)[:n2c, :n2c].max(), abs(j4 - vj4)[n2c:, n2c:].max(), abs(hcore(j4, j2) - h_ex).max(), de),
+            flush=True)
