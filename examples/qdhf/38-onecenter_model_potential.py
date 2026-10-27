@@ -13,10 +13,15 @@ and subtracts the 2c counterpart (J - K)[sum_K D2_K].  Here
   * K: one-center, block-diagonal (atom-only 2e integrals).
 Variants:  'Jfit+K1c' (the scheme), 'Jx+K1c' (exact molecular J, one-center K),
 'Jfit+K1cP' (one-center K in projector form S_.K S_K^-1 K_K S_K^-1 S_K.),
+'Jnum+K1c(P)': J numerically exact instead of fitted -- the spherical atomic
+density's Hartree potential from the radial Poisson equation (cumulative
+Simpson on a fine log grid), N erf(r)/r long range analytic (rinv_zeta), the
+bounded short-range remainder on the molecular Becke grid (LL with spinor AO
+values, SS with sigma.p AO values);
 'Jfit+Kx' (fit check: molecular K).  Reported against x2cmp itself:
 E - E(x2cmp), max |d eps_occ|, lowest h_core eigenvalue.
 
-Usage:  python 38-onecenter_model_potential.py kmax geom basis [fit_ratio=1.2]
+Usage:  python 38-onecenter_model_potential.py kmax geom basis [fit_ratio=1.2] [jgrid=200,1202]
 '''
 
 import os
@@ -42,6 +47,8 @@ kmax = int(sys.argv[1]) if len(sys.argv) > 1 else 8
 geom = sys.argv[2] if len(sys.argv) > 2 else 'H 0 0 0; Cl 0 0 1.275'
 base = sys.argv[3] if len(sys.argv) > 3 else 'unc-cc-pvdz'
 fit_ratio = float(sys.argv[4]) if len(sys.argv) > 4 else 1.2
+# Becke grid (radial, angular) for the short-range part of the numerical J; 0 = skip
+jgrid = tuple(int(x) for x in sys.argv[5].split(',')) if len(sys.argv) > 5 else (200, 1202)
 os.environ['X2CAMF_TIMING'] = '0'
 elems = sorted(set(a.split()[0] for a in geom.split(';')))
 base = dict(x.split(':') for x in base.split(',')) if ':' in base else {el: base for el in elems}
@@ -137,6 +144,53 @@ def jfit_matrices(xmol, ia, q, zetas):
     return v, w * (.25 / c**2)
 
 
+from scipy.integrate import cumulative_simpson
+from pyscf.dft import gen_grid
+import scipy.interpolate
+
+
+def radial_hartree(r, rad):
+    '''V(r) of the spherical density rad = 4 pi r^2 rho on the log grid r:
+    V(r) = 1/r int_0^r rad dr' + int_r^inf rad/r' dr'  (cumulative trapezoid in ln r)'''
+    lnr = numpy.log(r)
+    c1 = cumulative_simpson(rad * r, x=lnr, initial=0.)     # int_0^r rad dr'
+    c2 = cumulative_simpson(rad, x=lnr, initial=0.)         # int_0^r rad/r' dr'
+    return c1 / r + (c2[-1] - c2), c1[-1]
+
+def jexact_onecenter(xmol, ia, am, dl, ds, zeta0=1.0, nrad=150, nang=590, nlog=20000):
+    '''one-center numerically exact J of atom ia's spherical density
+    (dl: LL block, ds: SS block or None) as 2c (LL) and SS matrices'''
+    c = param.LIGHT_SPEED
+    r, rad = radial_density(am, dl, 'L', nrad=nlog)
+    if ds is not None:
+        rad = rad + radial_density(am, ds, 'S', nrad=nlog)[1]
+    v, ntot = radial_hartree(r, rad)
+    vsr = v - ntot * scipy.special.erf(numpy.sqrt(zeta0) * r) / r
+    spl = scipy.interpolate.CubicSpline(numpy.log(r), vsr)
+    # analytic long-range part
+    with xmol.with_rinv_origin(xmol.atom_coord(ia)), xmol.with_rinv_zeta(zeta0):
+        vll = ntot * xmol.intor('int1e_rinv_spinor')
+        vss = ntot * xmol.intor('int1e_sprinvsp_spinor') * (.25 / c**2)
+    # short-range part on the molecular (Becke) grid
+    g = gen_grid.Grids(xmol)
+    g.atom_grid = (nrad, nang)
+    g.prune = None
+    g.build(with_non0tab=False)
+    dist = numpy.linalg.norm(g.coords - xmol.atom_coord(ia), axis=1)
+    vq = numpy.where(dist < r[-1], spl(numpy.log(numpy.maximum(dist, r[0]))), 0.)
+    coords = g.coords
+    wv = g.weights * vq
+    n2c = xmol.nao_2c()
+    for p0 in range(0, len(wv), 20000):
+        sl = slice(p0, p0 + 20000)
+        ao = xmol.eval_gto('GTOval_spinor', coords[sl])
+        vll += numpy.einsum('xgm,g,xgn->mn', ao.conj(), wv[sl], ao)
+        if ds is not None:
+            ao = xmol.eval_gto('GTOval_sp_spinor', coords[sl]) * (.5 / c)
+            vss += numpy.einsum('xgm,g,xgn->mn', ao.conj(), wv[sl], ao)
+    return vll, vss, ntot
+
+
 def one_k(k):
     mol = gto.M(atom=geom, basis=make_basis(k), verbose=0)
     mf = spinor_hf.SCF(mol)
@@ -159,7 +213,7 @@ def one_k(k):
     d2 = gm(12, False)
     vj4, vk4 = m4.get_jk(xmol, d4)
     vj2, vk2 = spinor_hf.SCF(xmol).get_jk(xmol, d2)
-    k4b, k2b, j4f, j2f = [numpy.zeros_like(a) for a in (vk4, vk2, vj4, vj2)]
+    k4b, k2b, j4f, j2f, j4n, j2n = [numpy.zeros_like(a) for a in (vk4, vk2, vj4, vj2, vj4, vj2)]
     k4blocks, k2blocks = [], []
     errn = 0.
     for ia, (i2, i4) in enumerate(zip(idx2, idx4)):
@@ -183,6 +237,11 @@ def one_k(k):
         v, w = jfit_matrices(xmol, ia, q4, z)
         j4f += scipy.linalg.block_diag(v, w)
         j2f += jfit_matrices(xmol, ia, q2, z)[0]
+        if jgrid[0]:
+            vll, vss, _ = jexact_onecenter(xmol, ia, am, b4[:nk, :nk], b4[nk:, nk:], 1.0, *jgrid)
+            j4n += scipy.linalg.block_diag(vll, vss)
+            j2n += jexact_onecenter(xmol, ia, am, b2, None, 1.0, *jgrid)[0]
+    errj = (abs(j4n - vj4).max(), abs(j2n - vj2).max()) if jgrid[0] else (numpy.nan, numpy.nan)
     k4p = projector_form(k4blocks, s4, idx4)
     k2p = projector_form(k2blocks, s2, idx2)
 
@@ -193,6 +252,9 @@ def one_k(k):
         return cc(X.to_2c(x, r, h4 + veff4) - veff2)
     hs = {'x2cmp': h_mp, 'Jfit+K1c': build(j4f - k4b, j2f - k2b), 'Jx+K1c': build(vj4 - k4b, vj2 - k2b),
           'Jfit+K1cP': build(j4f - k4p, j2f - k2p), 'Jfit+Kx': build(j4f - vk4, j2f - vk2)}
+    if jgrid[0]:
+        hs['Jnum+K1c'] = build(j4n - k4b, j2n - k2b)
+        hs['Jnum+K1cP'] = build(j4n - k4p, j2n - k2p)
     sc = mol.intor('int1e_ovlp_spinor')
     res = {}
     for key, hc in hs.items():
@@ -204,10 +266,10 @@ def one_k(k):
         e = quiet(m.kernel)
         res[key] = (e, m.converged, numpy.sort(m.mo_energy[m.mo_occ > 0])[::2],
                     scipy.linalg.eigh(hc, sc, eigvals_only=True).min())
-    return smin, errn, res
+    return smin, (errn,) + errj, res
 
 
-keys = ['x2cmp', 'Jfit+K1c', 'Jx+K1c', 'Jfit+K1cP', 'Jfit+Kx']
+keys = ['x2cmp', 'Jfit+K1c', 'Jx+K1c', 'Jfit+K1cP', 'Jfit+Kx'] + (['Jnum+K1c', 'Jnum+K1cP'] if jgrid[0] else [])
 print('# %s, %s + k diffuse s,p (ratio 2.5); Dirac-Coulomb; J fit ratio %.2f' % (geom, base, fit_ratio))
 rows = []
 for k in range(kmax + 1):
@@ -219,7 +281,7 @@ for k in range(kmax + 1):
         break
     k_, smin, errn, res = rows[-1]
     e0 = res['x2cmp'][0]
-    print('# k=%d %.0f s Smin %.2e |N_fit - Z| %.1e  E-E(x2cmp): ' % (k, time.time() - t0, smin, errn) +
+    print('# k=%d %.0f s Smin %.2e |N_fit - Z| %.1e |Jnum - J| 4c %.1e 2c %.1e  E-E(x2cmp): ' % ((k, time.time() - t0, smin) + errn) +
           ' '.join('%s % .3e%s' % (s, res[s][0] - e0, '' if res[s][1] else '*') for s in keys[1:]), flush=True)
 
 print('\n## E - E(x2cmp) / Eh  (* = not converged);  E(x2cmp) itself in column 3')
