@@ -459,6 +459,63 @@ class SpinFlip(unittest.TestCase):
             solver.kernel(h1, eri, 6, (4, 4))
 
 
+class SpinPenalty(unittest.TestCase):
+    '''contract_ss against spin_square and pyscf.fci.selected_ci.contract_ss;
+    ss_penalty (the forms of pyscf.fci.addons.fix_spin_: linear for the lowest
+    S, squared above) against the dense penalized operator, with and without
+    spin_flip.'''
+
+    def setUp(self):
+        self.norb, self.nelec = 8, (4, 4)
+        self.h1, self.eri = random_spatial(self.norb, seed=31)
+        self.strs = sorted(subset(sub_strings(self.norb, [4]), 40, numpy.random.default_rng(31)))
+        solver = gasci.ProductSpaceCI(ci_strs=(self.strs, self.strs))
+        self.plan = plan = solver.plan(self.norb, self.nelec)
+        self.v = solver._hamiltonian(self.h1, self.eri, self.norb, 8, plan)
+        eye = numpy.eye(plan.dim)
+        self.hmat = numpy.array([plan.sigma(self.v, x) for x in eye]).T
+        vs = gasci.s2_antisymmetrized(self.norb, 4, 4)
+        self.smat = numpy.array([plan.sigma(vs, x) for x in eye]).T
+
+    def test_contract_ss(self):
+        from pyscf.fci import selected_ci
+        solver = gasci.ProductSpaceCI(ci_strs=(self.strs, self.strs))
+        n = len(self.strs)
+        c = numpy.random.default_rng(2).standard_normal((n, n))
+        ref = selected_ci.contract_ss(selected_ci._as_SCIvector(c, (numpy.array(self.strs),) * 2),
+                                      self.norb, self.nelec)
+        mine = solver.contract_ss(c.ravel(), self.norb, self.nelec).reshape(n, n)
+        self.assertLess(abs(mine - ref).max(), 1e-12)
+        c = c.ravel() / numpy.linalg.norm(c)
+        ss = numpy.dot(c, solver.contract_ss(c, self.norb, self.nelec))
+        self.assertAlmostEqual(ss, solver.spin_square(c, self.norb, self.nelec)[0], 10)
+
+    def lowest(self, pmat, parity):
+        e, vecs = numpy.linalg.eigh(pmat)
+        if parity is None:
+            return e[0]
+        p = numpy.einsum('ik,ik->k', vecs[self.plan.flip_index()], vecs)
+        return e[p * parity > 0][0]
+
+    def test_penalty(self):
+        eye = numpy.eye(self.plan.dim)
+        linear = self.hmat + 0.1 * self.smat
+        squared = self.hmat + 0.3 * (self.smat - 2 * eye) @ (self.smat - 2 * eye)
+        for shift, ss, pmat, parities in ((0.1, 0, linear, (None, 1)),
+                                          (0.3, 2, squared, (None, -1))):
+            for parity in parities:
+                solver = gasci.ProductSpaceCI(ci_strs=(self.strs, self.strs))
+                solver.spin_flip = parity
+                solver.ss_penalty, solver.ss_value = shift, ss
+                solver.conv_tol = 1e-12
+                solver.conv_tol_residual = 1e-7
+                solver.max_space = 30
+                solver.max_cycle = 300
+                e, c = solver.kernel(self.h1, self.eri, self.norb, self.nelec)
+                self.assertAlmostEqual(solver.e_penalized[0], self.lowest(pmat, parity), 9)
+                self.assertAlmostEqual(e, numpy.dot(c, self.hmat @ c), 10)
+
+
 class DensityMode(unittest.TestCase):
     '''zg_rdm2_blas against the reference zg_rdm2 in combinatorial spaces.'''
 

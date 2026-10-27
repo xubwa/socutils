@@ -207,6 +207,26 @@ This is the same structure as the Kramers plan in README.md (stage 1). For
 spinors, time reversal pairs A and B halves in the same way when `L_B` is
 the time-reversed image of `L_A`.
 
+## 6b. Spin penalty (Python driver only): `ProductSpaceCI.ss_penalty`
+
+A product space is in general not closed under S^2 (a spin exchange of two
+open-shell orbitals, (a - p + q, b - q + p), need not be in the lists), so
+its eigenvectors are not spin eigenfunctions.  SQD adds the penalty of
+`pyscf.fci.addons.fix_spin_`: `ss_penalty = shift`, `ss_value = ss`
+(default S_z (S_z + 1)); H + shift (S^2 - ss) when ss is the lowest value
+(within 0.1), H + shift (S^2 - ss)^2 otherwise.  No integrals are involved:
+S^2 = N_beta + S_z (S_z + 1) - sum_pq a+_{p a} a+_{q b} a_{p b} a_{q a}
+has coefficients -1 and a constant, and is packed like a Hamiltonian
+(`s2_antisymmetrized`) and applied by the same BLAS kernel (`contract_ss`).
+The linear form is folded into v (one sigma per step), the squared form
+applies S^2 twice.  spin_flip still applies (S^2 commutes with the flip).
+The returned energies are <H> of the vectors; the penalized eigenvalues
+are in `e_penalized`.  With qiskit-addon-sqd 0.3.0 (`solve_fermion`,
+`fix_spin_(myci, ss=0)`) SQD uses the linear form with shift 0.1.
+Tests: `SpinPenalty` in hci/test/test_product_space.py (contract_ss against
+pyscf selected_ci.contract_ss; penalized eigenvalues against the dense
+operator; pyscf's own Davidson may stop at a higher root of the squared form).
+
 ## 7. What stays for later
 
 * **(AB,AB)** is the larger half of a sigma. Its GEMMs do about 9 times
