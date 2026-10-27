@@ -25,7 +25,7 @@ existing libcint integrals only, and its cost against one scalar NR JK build.
 Checked against the exact molecular J (pyscf DHF get_jk / spinor get_jk):
 1e-12 in LL and 2c, ~1e-8 absolute in SS.
 
-Usage:  python 40-analytic_onecenter_j.py [small|large]
+Usage:  python 40-analytic_onecenter_j.py [small|large|c60]
 '''
 
 import os
@@ -248,6 +248,21 @@ def potential_terms(expn):
     return erf, loc
 
 
+def ksum(mol, kmol, intor, nset=2, budget=5e8):
+    '''sum over the k shells of (mu nu|k), lower triangle, k shells interleaved in nset
+    sets (shell k belongs to set k % nset); chunked over k to bound memory'''
+    nao = mol.nao
+    npair = nao * (nao + 1) // 2
+    chunk = max(nset, int(budget / 8 / npair) // nset * nset)
+    acc = numpy.zeros((nset, npair))
+    for k0 in range(0, kmol.nbas, chunk):
+        k1 = min(k0 + chunk, kmol.nbas)
+        v = incore.aux_e2(mol, kmol, intor=intor, aosym='s2ij', shls_slice=(0, mol.nbas, 0, mol.nbas, k0, k1))
+        for st in range(nset):
+            acc[st] += v[:, (st - k0) % nset::nset].sum(axis=1)
+    return [lib.unpack_tril(a) for a in acc]
+
+
 def j_analytic_exact(xmol, atom_expn, timing=None):
     '''exact J of superposed spherical atomic densities.  atom_expn[ia] = (expansion of
     the 4c density L+S, expansion of the 2c density), each {(n, zeta): c}.
@@ -267,11 +282,7 @@ def j_analytic_exact(xmol, atom_expn, timing=None):
     kerf = kmol_s(kco, prims)
     kerf_c = kmol_s(kco, prims, cart=True)
     # (mu nu|k) is symmetric in mu, nu: lower triangle only (aosym s2ij), unpacked after the k sum
-    tri = lambda v, sel: lib.unpack_tril(v[:, sel].sum(axis=1))
-    ev, od = numpy.arange(0, 2 * natm, 2), numpy.arange(1, 2 * natm, 2)
-    v = incore.aux_e2(xmol, kerf, intor='int3c2e_sph', aosym='s2ij')
-    ll4 = tri(v, ev)
-    ll2 = tri(v, od)
+    ll4, ll2 = ksum(xmol, kerf, 'int3c2e_sph')
     t1 = time.perf_counter()
     mmax = max(max(list(t[0][1].keys()) + [-1]) for t in terms)
     kloc = {}
@@ -283,17 +294,17 @@ def j_analytic_exact(xmol, atom_expn, timing=None):
                 z = numpy.array(sorted(d)) if d else numpy.array([1.])
                 prims.append((z, numpy.array([d[x] for x in z]) if d else numpy.zeros(1)))
         kloc[m] = (kmol_s(kco, prims), kmol_s(kco, prims, cart=True))
-        v = incore.aux_e2(xmol, kloc[m][0], intor=_LOC_INTOR[m] + '_sph', aosym='s2ij')
-        ll4 += tri(v, ev)
-        ll2 += tri(v, od)
+        a4, a2 = ksum(xmol, kloc[m][0], _LOC_INTOR[m] + '_sph')
+        ll4 += a4
+        ll2 += a2
     t2 = time.perf_counter()
     # SS: sum_ij <d_i phi|V|d_j phi> s_i s_j via the l+-1 derivative shells (cart), 4c shells only
     dm, D, _ = deriv_mol(xmol)
     c2s = xmol.cart2sph_coeff()
     Dc = [D[i] @ c2s for i in range(3)]
-    tss = tri(incore.aux_e2(dm, kerf_c, intor='int3c2e_cart', aosym='s2ij'), ev)
+    tss = ksum(dm, kerf_c, 'int3c2e_cart')[0]
     for m, km in kloc.items():
-        tss += tri(incore.aux_e2(dm, km[1], intor=_LOC_INTOR[m] + '_cart', aosym='s2ij'), ev)
+        tss += ksum(dm, km[1], _LOC_INTOR[m] + '_cart')[0]
     a = [[Dc[i].T @ tss @ Dc[j] for j in range(3)] for i in range(3)]
     t3 = time.perf_counter()
     w0 = a[0][0] + a[1][1] + a[2][2]
@@ -340,6 +351,26 @@ def aromatic(ring_x, subst):
         atoms.append('%s %.4f %.4f %.4f' % ((symb,) + tuple(cs[i] + r * d)))
     return '; '.join(atoms)
 
+def c60(bond=1.42):
+    '''truncated icosahedron: even permutations of (0, +-1, +-3p), (+-1, +-(2+p), +-2p),
+    (+-p, +-2, +-p^3), p the golden ratio; edge 2 scaled to bond (A)'''
+    p = (1 + 5**.5) / 2
+    base = [(0, 1, 3 * p), (1, 2 + p, 2 * p), (p, 2, p**3)]
+    pts = set()
+    for b in base:
+        for sx in (1, -1):
+            for sy in (1, -1):
+                for sz in (1, -1):
+                    v = (b[0] * sx, b[1] * sy, b[2] * sz)
+                    for perm in ((0, 1, 2), (1, 2, 0), (2, 0, 1)):
+                        pts.add(tuple(round(v[i] * bond / 2, 6) for i in perm))
+    pts = sorted(pts)
+    assert len(pts) == 60
+    return '; '.join('C %.6f %.6f %.6f' % x for x in pts)
+
+
+if len(sys.argv) > 1 and sys.argv[1] == 'c60':
+    systems = [('C60', c60(), 'unc-cc-pvdz')]
 if len(sys.argv) > 1 and sys.argv[1] == 'large':
     systems = [
         ('PhCl', aromatic(1, {0: ('Cl', 1.74)}), 'unc-cc-pvdz'),
@@ -373,6 +404,26 @@ def aromatic(ring_x, subst):
     return '; '.join(atoms)
 
 
+def c60(bond=1.42):
+    '''truncated icosahedron: even permutations of (0, +-1, +-3p), (+-1, +-(2+p), +-2p),
+    (+-p, +-2, +-p^3), p the golden ratio; edge 2 scaled to bond (A)'''
+    p = (1 + 5**.5) / 2
+    base = [(0, 1, 3 * p), (1, 2 + p, 2 * p), (p, 2, p**3)]
+    pts = set()
+    for b in base:
+        for sx in (1, -1):
+            for sy in (1, -1):
+                for sz in (1, -1):
+                    v = (b[0] * sx, b[1] * sy, b[2] * sz)
+                    for perm in ((0, 1, 2), (1, 2, 0), (2, 0, 1)):
+                        pts.add(tuple(round(v[i] * bond / 2, 6) for i in perm))
+    pts = sorted(pts)
+    assert len(pts) == 60
+    return '; '.join('C %.6f %.6f %.6f' % x for x in pts)
+
+
+if len(sys.argv) > 1 and sys.argv[1] == 'c60':
+    systems = [('C60', c60(), 'unc-cc-pvdz')]
 if len(sys.argv) > 1 and sys.argv[1] == 'large':
     systems = [
         ('PhCl', aromatic(1, {0: ('Cl', 1.74)}), 'unc-cc-pvdz'),
@@ -427,7 +478,7 @@ def atomic_densities(mol):
     return xmol, contr, gm(11, True), gm(12, False)
 
 
-large = len(sys.argv) > 1 and sys.argv[1] == 'large'
+large = len(sys.argv) > 1 and sys.argv[1] in ('large', 'c60')
 print('# exact analytic one-center J; times in s; NR J(K): one scalar direct J (JK) build, same basis')
 print('# err: max |J - J_exact| over LL, SS and 2c blocks (small: exact molecular 4c and 2c J; large: 2c only, exact')
 print('#      2c J from one scalar J build)')
