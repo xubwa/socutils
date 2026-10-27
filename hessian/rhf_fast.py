@@ -560,64 +560,65 @@ class _FxcBatched:
         fxc = numpy.asarray(fxc).reshape(ncomp, ncomp, -1)
         from pyscf.dft.numint import BLKSIZE
         ao_loc = mol.ao_loc_nr()
+        nf_shell = ao_loc[1:] - ao_loc[:-1]
         non0tab = getattr(grids, 'non0tab', None)
         vmat = numpy.zeros((n, nao, nao))
-        # grid block: c / aow (n, nao, g) within ~20% of max_memory
-        ng_blk = max(BLKSIZE_FXC, int(self.max_memory * .2e6 / (8 * n * nao)) // BLKSIZE_FXC * BLKSIZE_FXC)
+        nsub = max(1, FXC_SUBBLOCK // BLKSIZE) * BLKSIZE              # grid points per sub-block
+        # pyscf blocks (AO evaluation) of ~20% of max_memory; c / aow per sub-block
+        ng_blk = max(nsub, int(self.max_memory * .2e6 / (8 * (ncomp + 1) * nao)) // nsub * nsub)
         blk_mem = ng_blk * (ncomp + 1) * nao * 8 / 1e6
-        # one buffer for c / aow, reused by every block (a fresh (n*nao, g)
-        # array per block costs more in page faults than the GEMM itself)
-        cbuf = numpy.empty(n * nao * ng_blk)
+        cbuf = numpy.empty(n * nao * nsub)
         p1 = 0
         for ao, mask, weight, coords in ni.block_loop(mol, grids, nao, ncomp // 4, blk_mem):
             ng = weight.size
             p0, p1 = p1, p1 + ng
             aoT = (ao if ao.ndim == 3 else ao[None]).transpose(0, 2, 1)  # (ncomp, nao, g)
-            if not aoT.flags.c_contiguous:
-                aoT = numpy.ascontiguousarray(aoT)
-            # AOs of the shells significant anywhere on this block
-            idx = None
-            if non0tab is not None:
-                sh = numpy.nonzero(non0tab[p0 // BLKSIZE:(p1 + BLKSIZE - 1) // BLKSIZE].any(axis=0))[0]
-                if sh.size == 0:
-                    continue
-                nsig = (ao_loc[sh + 1] - ao_loc[sh]).sum()
-                if nsig < FXC_SUBSET_FRACTION * nao:
-                    idx = numpy.hstack([numpy.arange(ao_loc[i], ao_loc[i + 1]) for i in sh]).astype(numpy.int32)
-            if idx is None:
-                nl = nao
-                dl = d.reshape(n * nao, nao)
-            else:
-                nl = idx.size
-                aoT = numpy.ascontiguousarray(aoT[:, idx])           # whole rows
-                dl = numpy.empty((n * nl, nl))
-                libdft.SOCDFTgather_dm(dl.ctypes, d.ctypes, idx.ctypes, ctypes.c_int(nl), ctypes.c_int(n),
-                                       ctypes.c_int(nao))
-            if n * nl * ng > cbuf.size:
-                cbuf = numpy.empty(n * nl * ng)
-            c = cbuf[:n * nl * ng].reshape(n * nl, ng)
-            lib.dot(dl, aoT[0], c=c)                                   # D phi^T
-            fw = fxc[:, :, p0:p1] * weight
+            fwb = fxc[:, :, p0:p1] * weight
             if xctype != 'LDA':
-                fw[0] *= .5                                            # *.5 for V + V^T
-            fw = numpy.ascontiguousarray(fw)
-            libdft.SOCDFTfxc_fused(c.ctypes, aoT.ctypes, fw.ctypes, ctypes.c_int(n), ctypes.c_int(ncomp),
-                                   ctypes.c_int(nl), ctypes.c_int(ng))  # c <- aow
-            if idx is None:
-                lib.dot(c, aoT[0].T, beta=1, c=vmat.reshape(n * nao, nao))
-            else:
-                vl = lib.dot(c, aoT[0].T)
-                libdft.SOCDFTscatter_add_dm(vmat.ctypes, vl.ctypes, idx.ctypes, ctypes.c_int(nl), ctypes.c_int(n),
-                                            ctypes.c_int(nao))
+                fwb[0] *= .5                                           # *.5 for V + V^T
+            for s0 in range(0, ng, nsub):
+                s1 = min(ng, s0 + nsub)
+                gs = s1 - s0
+                # AOs of the shells significant on this sub-block
+                idx = None
+                if non0tab is not None:
+                    shm = non0tab[(p0 + s0) // BLKSIZE:(p0 + s1 + BLKSIZE - 1) // BLKSIZE].any(axis=0)
+                    aom = numpy.repeat(shm, nf_shell)
+                    nl = int(aom.sum())
+                    if nl == 0:
+                        continue
+                    if nl < nao:
+                        idx = numpy.nonzero(aom)[0].astype(numpy.int32)
+                if idx is None:
+                    nl = nao
+                    aos = numpy.ascontiguousarray(aoT[:, :, s0:s1])
+                    dl = d.reshape(n * nao, nao)
+                else:
+                    aos = numpy.ascontiguousarray(aoT[:, idx, s0:s1])
+                    dl = numpy.empty((n * nl, nl))
+                    libdft.SOCDFTgather_dm(dl.ctypes, d.ctypes, idx.ctypes, ctypes.c_int(nl), ctypes.c_int(n),
+                                           ctypes.c_int(nao))
+                c = cbuf[:n * nl * gs].reshape(n * nl, gs)
+                lib.dot(dl, aos[0], c=c)                               # D phi^T
+                fws = numpy.ascontiguousarray(fwb[:, :, s0:s1])
+                libdft.SOCDFTfxc_fused(c.ctypes, aos.ctypes, fws.ctypes, ctypes.c_int(n), ctypes.c_int(ncomp),
+                                       ctypes.c_int(nl), ctypes.c_int(gs))  # c <- aow
+                if idx is None:
+                    lib.dot(c, aos[0].T, beta=1, c=vmat.reshape(n * nao, nao))
+                else:
+                    vl = lib.dot(c, aos[0].T)
+                    libdft.SOCDFTscatter_add_dm(vmat.ctypes, vl.ctypes, idx.ctypes, ctypes.c_int(nl),
+                                                ctypes.c_int(n), ctypes.c_int(nao))
         if xctype != 'LDA':
             vmat = vmat + vmat.transpose(0, 2, 1)
         return vmat.reshape(dms_a.shape)
 
 
-BLKSIZE_FXC = 128
-# block-local AO subsets only when they are this much smaller than nao (the
-# gather / scatter is not free and the GEMMs scale with the square)
-FXC_SUBSET_FRACTION = .95
+# grid points per sub-block of the batched XC response: small enough that the
+# sub-block sees only the AOs near it (the GEMMs scale with their square), large
+# enough for efficient GEMMs (the sub-matrix gather costs ~1 / (2 FXC_SUBBLOCK)
+# of them)
+FXC_SUBBLOCK = 448
 
 
 class _MultiJKCPHF:

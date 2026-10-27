@@ -11,9 +11,9 @@
  *
  * c is (ndm, nao, ngrid) (in: D phi^T, out: aow), ao the AO derivative stack in
  * memory order (ncomp, nao, ngrid), fw (ncomp, ncomp, ngrid); ncomp = 1 (LDA)
- * or 4 (GGA).  OpenMP over chunks of GCHUNK grid points, all densities inside
- * a chunk: the chunk of ao (ncomp x nao x GCHUNK) stays in cache for every
- * density, and the chunk of c of one density between its rho1 and aow passes.
+ * or 4 (GGA).  OpenMP over (chunk of GCHUNK grid points, density), chunk-major
+ * so that the threads share the chunk of ao (ncomp x nao x GCHUNK); the chunk of
+ * c of one density stays in cache between its rho1 and aow passes.
  *
  * SOCDFTgather_dm / SOCDFTscatter_add_dm: the sub-matrices on the AOs idx of
  * all densities, out[m][i][j] = d[m][idx_i][idx_j], and v[m][idx_i][idx_j] +=
@@ -30,14 +30,17 @@ void SOCDFTfxc_fused(double *c, double *ao, double *fw, int ndm, int ncomp, int 
 {
         const size_t G = ngrid;
         const int nchunk = (ngrid + GCHUNK - 1) / GCHUNK;
-        int ic;
-#pragma omp parallel for schedule(dynamic, 1)
-        for (ic = 0; ic < nchunk; ic++) {
+        const long ntask = (long)nchunk * ndm;
+        long it;
+#pragma omp parallel for schedule(dynamic, 2)
+        for (it = 0; it < ntask; it++) {
+                /* chunk-major: consecutive tasks share the chunk of ao */
+                const int ic = it / ndm, m = it % ndm;
                 const int g0 = ic * GCHUNK;
                 const int ng = (g0 + GCHUNK < ngrid ? g0 + GCHUNK : ngrid) - g0;
                 double r[4][GCHUNK], w[4][GCHUNK];
-                int m, k, x, mu, g;
-                for (m = 0; m < ndm; m++) {
+                int k, x, mu, g;
+                {
                         for (k = 0; k < ncomp; k++)
                                 for (g = 0; g < ng; g++) r[k][g] = 0;
                         for (mu = 0; mu < nao; mu++) {
