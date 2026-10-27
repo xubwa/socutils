@@ -133,6 +133,13 @@ block-diagonal one-center K.  **J from the spherical atomic density + one-center
 form reproduces x2cmp to 3e-6 Eh / 1e-7 Eh in orbital energies and is stable to Smin = 3e-7**,
 with no multi-center 2e integrals.
 
+HBr (`38-…hbr_unc.out`), same columns: k = 0 −1.20e-5 / −4.30e-6; k = 5 −5.11e-5 / −4.09e-6;
+k = 7 −1.20e-4 / −4.08e-6; k = 10 **−2.47e-4** / −4.09e-6 (block K / projector K); max \|Δε_occ\|
+block 2.6e-6 → 5.9e-5, projector ≤ 4e-7.  The block one-center K drifts faster for the heavier
+atom (its exchange reaches a larger valence region); projector form stays flat.  Numerical J at
+(150, 590) has a 7e-3 SS matrix error for Br (tight functions; use (200, 1202) for heavy atoms)
+but is exact in energy (Jnum = Jx to 1e-9).
+
 Native x2camf against the same reference, E(x2camf) − E(x2cmp) / Eh (from the 36 outputs):
 
 | k | Smin (HCl) | HCl, DC AMF | HCl, Gaunt+Breit AMF | HBr, DC AMF | HBr, Gaunt+Breit AMF |
