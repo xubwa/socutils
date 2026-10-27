@@ -1,0 +1,4 @@
+# fast one-center J; times in s; dE = E(fast J) - E(exact J), Eh
+mol       n2c |  NR JK  exact J    X2C | J    ngrid radial analyt   grid  total /NR JK | max dJ LL max dJ SS        dE
+HCl        96 |   0.03     0.44   0.45 | erf    94k   0.50   0.05   0.83   1.38   50.3 |   2.2e-08   2.4e-06   1.1e-11
+HCl        96 |   0.03     0.44   0.45 | fit    19k   0.43   0.10   0.12   0.65   23.5 |   1.4e-05   7.4e-05  -4.9e-11
