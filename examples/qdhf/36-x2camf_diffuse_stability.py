@@ -33,7 +33,7 @@ A spurious state from the block form acting on near-linearly-dependent
 cross-atom combinations would show up as |dF|_orth ~ <dF>/w_min and as a
 lowest eigenvalue far below the X2C-1e one.
 
-Usage:  python 36-x2camf_diffuse_stability.py kmax geom basis [dhf=1]
+Usage:  python 36-x2camf_diffuse_stability.py kmax geom basis [dhf=1] [gaunt_breit=0]
   basis: one name (unc-<name> = fully uncontracted), or 'H:cc-pvdz,Cl:cc-pvdz'
 '''
 
@@ -59,6 +59,8 @@ kmax = int(sys.argv[1]) if len(sys.argv) > 1 else 8
 geom = sys.argv[2] if len(sys.argv) > 2 else 'H 0 0 0; Cl 0 0 1.275'
 base = sys.argv[3] if len(sys.argv) > 3 else 'cc-pvdz'
 do_dhf = int(sys.argv[4]) if len(sys.argv) > 4 else 1
+# 1: Gaunt + Breit in the atomic AMF calculation (the .x2camf() default)
+gb = bool(int(sys.argv[5])) if len(sys.argv) > 5 else False
 os.environ['X2CAMF_TIMING'] = '0'
 elems = sorted(set(a.split()[0] for a in geom.split(';')))
 if ':' in base:
@@ -140,7 +142,7 @@ def one_k(k):
     smin_c = numpy.linalg.eigvalsh(mol.intor('int1e_ovlp')).min()
 
     mf = spinor_hf.SCF(mol)
-    mf.x2cmp(flavor='x2cmp', with_gaunt=False, with_breit=False, with_pcc=False)
+    mf.x2cmp(flavor='x2cmp', with_gaunt=gb, with_breit=gb, with_pcc=False)
     xo = mf.with_x2c
     h_x2cmp_c = quiet(lambda: xo.get_hcore(mol))       # contracted, also fills the atomic cache
     atm = xo.atomic_integrals
@@ -185,7 +187,7 @@ def one_k(k):
            'aX2C': cc(hax['block']), 'aX2CP': cc(hax['projector'])}
     # consistency: the hand-built block x2camf == x2cmp(flavor='x2camf')
     mfa = spinor_hf.SCF(mol)
-    mfa.x2cmp(flavor='x2camf', with_gaunt=False, with_breit=False, with_pcc=False)
+    mfa.x2cmp(flavor='x2camf', with_gaunt=gb, with_breit=gb, with_pcc=False)
     dev = abs(quiet(lambda: mfa.with_x2c.get_hcore(mol)) - hcs['amf']).max()
 
     sc = mol.intor('int1e_ovlp_spinor')
@@ -211,7 +213,8 @@ def one_k(k):
 
 
 keys = ['1e', 'amf', 'p1e-6', 'p1e-5', 'amfP', 'x2cmp', 'aX2C', 'aX2CP']
-print('# %s, %s + k diffuse s,p (ratio 2.5); point nucleus, Dirac-Coulomb, no Gaunt/Breit/pcc' % (geom, base))
+print('# %s, %s + k diffuse s,p (ratio 2.5); point nucleus, no pcc, atomic AMF %s' % (geom, base,
+      'Dirac-Coulomb-Breit (Gaunt + gauge)' if gb else 'Dirac-Coulomb'))
 rows = []
 for k in range(kmax + 1):
     t0 = time.time()
