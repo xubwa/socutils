@@ -154,6 +154,20 @@ class KnownValues(unittest.TestCase):
     def test_tpss(self):
         self._check(self.mol, 'tpss')
 
+    def test_sum_rule_cpscf_grids(self):
+        # the options of socutils.dft.grids.hessian, on the fast classes
+        from socutils.dft import grids as sgrids
+        mol = self.mol
+        mf = dft.RKS(mol, xc='pbe')
+        mf.grids = sgrids.Grids(mol)
+        mf.conv_tol = 1e-12
+        mf.kernel()
+        ref = sgrids.hessian(mf, sum_rule=True, cpscf_grids=sgrids.hessian_grids(mol, angular_grid=2, intacc=3.467))
+        h = rhf_fast.RKSHessian(mf)
+        h.sum_rule = True
+        h.cpscf_grids = sgrids.hessian_grids(mol, angular_grid=2, intacc=3.467)
+        self.assertAlmostEqual(abs(h.kernel() - ref).max(), 0, 9)
+
     def test_mo_xc_response(self):
         # nao > 8 nocc: the MO-basis GGA response of gen_vind is active
         mol = gto.M(atom='O 0 0 0; H .757 0 .586; H -.757 0 .586', basis='cc-pvtz', verbose=0)

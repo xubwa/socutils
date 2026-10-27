@@ -940,7 +940,28 @@ FXC_SUBBLOCK = 448
 
 class _MultiJKCPHF:
     '''solve_mo1 with the response J / K of jk_multi and the batched (or, for
-    nao > 8 nocc, MO-basis) XC response'''
+    nao > 8 nocc, MO-basis) XC response.
+
+    Options (off by default, so that the result equals pyscf's):
+        sum_rule : impose translational invariance on the final Hessian,
+            H_AA = -sum_{B!=A} H_AB (socutils.dft.grids.translational_sum_rule);
+            pyscf's RKS Hessian has no grid response, and on finite grids its
+            error sits almost entirely in H_AA.
+        cpscf_grids : a (coarser) Grids object for the XC response inside the
+            CP-SCF equations only (socutils.dft.grids.hessian_grids(mol,
+            angular_grid=2, intacc=3.467) is ~5x smaller than the SCF grid at
+            <= 0.15 cm-1 in the frequencies); the explicit terms and the
+            right-hand sides keep the SCF grid.'''
+    sum_rule = False
+    cpscf_grids = None
+    _keys = {'sum_rule', 'cpscf_grids'}
+
+    def kernel(self, *args, **kwargs):
+        de = super().kernel(*args, **kwargs)
+        if self.sum_rule:
+            from socutils.dft.grids import translational_sum_rule
+            self.de = de = translational_sum_rule(de)
+        return de
 
     def solve_mo1(self, mo_energy, mo_coeff, mo_occ, h1ao_or_chkfile, fx=None, atmlst=None,
                   max_memory=4000, verbose=None):
@@ -949,7 +970,12 @@ class _MultiJKCPHF:
         ni = getattr(self.base, '_numint', None)
         if isinstance(ni, numint.NumInt):
             env_xc = dict(nr_rks_fxc=_FxcBatched(ni, max_memory))
-        with lib.temporary_env(self.base, **_multi_jk_env(self.base)):
+        env_grid = {}
+        if self.cpscf_grids is not None and hasattr(self.base, 'grids'):
+            if self.cpscf_grids.coords is None:
+                self.cpscf_grids.build(with_non0tab=True)
+            env_grid = dict(grids=self.cpscf_grids)
+        with lib.temporary_env(self.base, **_multi_jk_env(self.base), **env_grid):
             with lib.temporary_env(ni, **env_xc) if env_xc else _nullcontext():
                 if fx is None:
                     fx = gen_vind(self.base, mo_coeff, mo_occ)
