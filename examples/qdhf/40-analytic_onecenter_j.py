@@ -25,7 +25,7 @@ existing libcint integrals only, and its cost against one scalar NR JK build.
 Checked against the exact molecular J (pyscf DHF get_jk / spinor get_jk):
 1e-12 in LL and 2c, ~1e-8 absolute in SS.
 
-Usage:  python 40-analytic_onecenter_j.py [small|large|c60]
+Usage:  python 40-analytic_onecenter_j.py [small|large|c60|gold]
 '''
 
 import os
@@ -248,6 +248,108 @@ def potential_terms(expn):
     return erf, loc
 
 
+def _submol(mol, shells):
+    '''mol restricted to the given shells (same atoms), and the AO indices they cover'''
+    sub = mol.copy(deep=False)
+    sub._bas = mol._bas[shells]
+    loc = mol.ao_loc_nr(cart=mol.cart)
+    idx = numpy.concatenate([numpy.arange(loc[i], loc[i + 1]) for i in shells])
+    return sub, idx
+
+
+def _relevant(mol, centre, zeta, eps):
+    '''shells whose Gaussian reaches a potential decaying as exp(-zeta |r - centre|^2):
+    exp(-a zeta / (a + zeta) |A - centre|^2) > eps'''
+    cut = -numpy.log(eps)
+    out = []
+    for ib in range(mol.nbas):
+        a = mol.bas_exp(ib).min()
+        d2 = numpy.sum((mol.bas_coord(ib) - centre)**2)
+        if a * zeta / (a + zeta) * d2 < cut:
+            out.append(ib)
+    return numpy.array(out, dtype=int)
+
+
+def j_neutral_atom(xmol, atom_expn, eps=1e-13, timing=None):
+    '''J of superposed spherical neutral-atom densities through the neutral-atom
+    potential V_na,K = -Z_K/r + J_K = -sum_z E_z erfc(sqrt(z) r)/r + local Gaussians,
+    which is short-ranged: per atom K only the shells reaching K enter (screening),
+    O(N) for large systems.  The point-nucleus part -Z_K/r_K is the exact rinv integral
+    over the same screened shell pairs (a 1e16 Gaussian is not point-like enough for
+    the tight s functions of Br: 3e-6 error).  Returns J4, J2 =
+    V_na - V_nuc (V_nuc: pyscf point-nucleus integrals) for comparison with exact J;
+    a model-potential code would use V_na itself (h4 + J4 = T4 + V_na4).'''
+    t0 = time.perf_counter()
+    c = param.LIGHT_SPEED
+    n2c = xmol.nao_2c()
+    nao = xmol.nao
+    dm, D, _ = deriv_mol(xmol)
+    c2s = xmol.cart2sph_coeff()
+    Dc = [D[i] @ c2s for i in range(3)]
+    ll4 = numpy.zeros((nao, nao))
+    ll2 = numpy.zeros((nao, nao))
+    tss = numpy.zeros((dm.nao, dm.nao))
+    norm = lambda z: 1 / (4 * numpy.pi * gaussian_int(2, z))     # unit-charge Gaussian
+    nsh = [0, 0]
+    for ia in range(xmol.natm):
+        rk = xmol.atom_coord(ia)
+        zk = xmol.atom_charge(ia)
+        (erf4, loc4), (erf2, loc2) = [potential_terms(e) for e in atom_expn[ia]]
+        prims = []
+        for erf in (erf4, erf2):
+            z = numpy.array(sorted(erf))
+            prims.append((z, numpy.array([erf[x] * norm(x) for x in z])))
+        kna = kmol_s([rk, rk], prims)
+        kna_c = kmol_s([rk, rk], prims, cart=True)
+        zmin = min(min(erf4), min(erf2))
+        klocs = {}
+        for m in sorted(set(loc4) | set(loc2)):
+            pr = []
+            for loc in (loc4, loc2):
+                d = loc.get(m, {})
+                z = numpy.array(sorted(d)) if d else numpy.array([1.])
+                pr.append((z, numpy.array([d[x] for x in z]) if d else numpy.zeros(1)))
+            klocs[m] = (kmol_s([rk, rk], pr), kmol_s([rk, rk], pr, cart=True))
+        # LL
+        sh = _relevant(xmol, rk, zmin, eps)
+        nsh[0] += len(sh)
+        sub, idx = _submol(xmol, sh)
+        ix = numpy.ix_(idx, idx)
+        v = incore.aux_e2(sub, kna, intor='int3c2e_sph', aosym='s2ij')
+        for m, (km, _) in klocs.items():
+            v = v + incore.aux_e2(sub, km, intor=_LOC_INTOR[m] + '_sph', aosym='s2ij')
+        with sub.with_rinv_origin(rk):
+            vn = zk * sub.intor('int1e_rinv_sph')
+        ll4[ix] += lib.unpack_tril(v[:, 0]) - vn
+        ll2[ix] += lib.unpack_tril(v[:, 1]) - vn
+        # SS (derivative shells), 4c density only
+        sh = _relevant(dm, rk, zmin, eps)
+        nsh[1] += len(sh)
+        sub, idx = _submol(dm, sh)
+        v = incore.aux_e2(sub, kna_c, intor='int3c2e_cart', aosym='s2ij', shls_slice=(0, sub.nbas, 0, sub.nbas, 0, 1))
+        for m, (_, km) in klocs.items():
+            v = v + incore.aux_e2(sub, km, intor=_LOC_INTOR[m] + '_cart', aosym='s2ij', shls_slice=(0, sub.nbas, 0, sub.nbas, 0, 1))
+        with sub.with_rinv_origin(rk):
+            vn = zk * sub.intor('int1e_rinv_cart')
+        tss[numpy.ix_(idx, idx)] += lib.unpack_tril(v[:, 0]) - vn
+    t1 = time.perf_counter()
+    a = [[Dc[i].T @ tss @ Dc[j] for j in range(3)] for i in range(3)]
+    w0 = a[0][0] + a[1][1] + a[2][2]
+    wx, wy, wz = a[1][2] - a[2][1], a[2][0] - a[0][2], a[0][1] - a[1][0]
+    ca, cb = xmol.sph2spinor_coeff()
+    sc = lambda mm: ca.conj().T @ mm @ ca + cb.conj().T @ mm @ cb
+    ss = (ca.conj().T @ (w0 + 1j * wz) @ ca + ca.conj().T @ (1j * wx + wy) @ cb
+          + cb.conj().T @ (1j * wx - wy) @ ca + cb.conj().T @ (w0 - 1j * wz) @ cb) * (.25 / c**2)
+    vna_ll4, vna_ll2 = sc(ll4), sc(ll2)
+    t2 = time.perf_counter()
+    vnuc_ll = xmol.intor('int1e_nuc_spinor')
+    vnuc_ss = xmol.intor('int1e_spnucsp_spinor') * (.25 / c**2)
+    if timing is not None:
+        timing.extend([t1 - t0, t2 - t1, time.perf_counter() - t2, nsh[0] / xmol.natm / xmol.nbas,
+                       nsh[1] / xmol.natm / dm.nbas])
+    return (scipy.linalg.block_diag(vna_ll4 - vnuc_ll, ss - vnuc_ss), vna_ll2 - vnuc_ll)
+
+
 def ksum(mol, kmol, intor, nset=2, budget=5e8):
     '''sum over the k shells of (mu nu|k), lower triangle, k shells interleaved in nset
     sets (shell k belongs to set k % nset); chunked over k to bound memory'''
@@ -369,6 +471,12 @@ def c60(bond=1.42):
     return '; '.join('C %.6f %.6f %.6f' % x for x in pts)
 
 
+if len(sys.argv) > 1 and sys.argv[1] == 'gold':
+    a = 2.7 / numpy.sqrt(2)          # Au4: regular tetrahedron, Au-Au 2.7 A
+    tet = numpy.array([[1, 1, 1], [1, -1, -1], [-1, 1, -1], [-1, -1, 1]]) * a / 2
+    cube = numpy.array([[x, y, z] for x in (0, 1) for y in (0, 1) for z in (0, 1)]) * 2.9
+    systems = [('Au4', '; '.join('Au %.4f %.4f %.4f' % tuple(x) for x in tet), 'unc-dyall-v2z'),
+               ('Au8', '; '.join('Au %.4f %.4f %.4f' % tuple(x) for x in cube), 'unc-dyall-v2z')]
 if len(sys.argv) > 1 and sys.argv[1] == 'c60':
     systems = [('C60', c60(), 'unc-cc-pvdz')]
 if len(sys.argv) > 1 and sys.argv[1] == 'large':
@@ -422,6 +530,12 @@ def c60(bond=1.42):
     return '; '.join('C %.6f %.6f %.6f' % x for x in pts)
 
 
+if len(sys.argv) > 1 and sys.argv[1] == 'gold':
+    a = 2.7 / numpy.sqrt(2)          # Au4: regular tetrahedron, Au-Au 2.7 A
+    tet = numpy.array([[1, 1, 1], [1, -1, -1], [-1, 1, -1], [-1, -1, 1]]) * a / 2
+    cube = numpy.array([[x, y, z] for x in (0, 1) for y in (0, 1) for z in (0, 1)]) * 2.9
+    systems = [('Au4', '; '.join('Au %.4f %.4f %.4f' % tuple(x) for x in tet), 'unc-dyall-v2z'),
+               ('Au8', '; '.join('Au %.4f %.4f %.4f' % tuple(x) for x in cube), 'unc-dyall-v2z')]
 if len(sys.argv) > 1 and sys.argv[1] == 'c60':
     systems = [('C60', c60(), 'unc-cc-pvdz')]
 if len(sys.argv) > 1 and sys.argv[1] == 'large':
@@ -478,12 +592,15 @@ def atomic_densities(mol):
     return xmol, contr, gm(11, True), gm(12, False)
 
 
-large = len(sys.argv) > 1 and sys.argv[1] in ('large', 'c60')
+large = len(sys.argv) > 1 and sys.argv[1] in ('large', 'c60', 'gold')
 print('# exact analytic one-center J; times in s; NR J(K): one scalar direct J (JK) build, same basis')
 print('# err: max |J - J_exact| over LL, SS and 2c blocks (small: exact molecular 4c and 2c J; large: 2c only, exact')
 print('#      2c J from one scalar J build)')
-print('%-7s %5s %4s | %6s %6s %6s | %6s %6s %6s %6s %6s %6s | %7s %7s | %8s %8s %8s' % (
-    'mol', 'n2c', 'natm', 'NR J', 'NR JK', 'X2C', 'expand', 'erf', 'local', 'SS', 'total', 'integr',
+no_nr = os.environ.get('NO_NR', '0') == '1'
+print('# J via the screened neutral-atom potential (j_neutral_atom, eps 1e-13); shells: share of')
+print('# AO shells kept per atom (LL basis; pairs ~ its square); NO_NR=1 skips the NR JK and X2C timings')
+print('%-7s %5s %4s | %6s %6s %6s | %6s %6s %6s %6s %6s | %7s %7s | %8s %8s %8s' % (
+    'mol', 'n2c', 'natm', 'NR J', 'NR JK', 'X2C', 'expand', 'integr', 'spinor', 'shells', 'total',
     'tot/JK', 'int/JK', 'err LL', 'err SS', 'err 2c'))
 for name, geom, base in systems:
     mol = gto.M(atom=geom, basis=base[4:], verbose=0)
@@ -491,26 +608,28 @@ for name, geom, base in systems:
                                   for e in set(a[0] for a in mol._atom)}, verbose=0)
     xmol, contr, d4, d2 = atomic_densities(mol)
     n2c = xmol.nao_2c()
-    mfnr = scf.RHF(mol)
-    dmnr = mfnr.get_init_guess()
-    opt = mfnr.init_direct_scf(mol)
-    t0 = time.perf_counter()
-    scf.hf.get_jk(mol, dmnr, vhfopt=opt, with_k=False)
-    t_nrj = time.perf_counter() - t0
-    t0 = time.perf_counter()
-    scf.hf.get_jk(mol, dmnr, vhfopt=opt)
-    t_nr = time.perf_counter() - t0
     m4 = scf.DHF(xmol)
     m4.verbose = 0
-    t0 = time.perf_counter()
-    X.x2c1e_hfw0_4cmat(m4.get_hcore(), m4.get_ovlp(), mol=xmol)
-    t_x2c = time.perf_counter() - t0
+    t_nrj = t_nr = t_x2c = numpy.nan
+    if not no_nr:
+        mfnr = scf.RHF(mol)
+        dmnr = mfnr.get_init_guess()
+        opt = mfnr.init_direct_scf(mol)
+        t0 = time.perf_counter()
+        scf.hf.get_jk(mol, dmnr, vhfopt=opt, with_k=False)
+        t_nrj = time.perf_counter() - t0
+        t0 = time.perf_counter()
+        scf.hf.get_jk(mol, dmnr, vhfopt=opt)
+        t_nr = time.perf_counter() - t0
+        t0 = time.perf_counter()
+        X.x2c1e_hfw0_4cmat(m4.get_hcore(), m4.get_ovlp(), mol=xmol)
+        t_x2c = time.perf_counter() - t0
     t0 = time.perf_counter()
     ae = element_expansions(xmol, d4, d2)
     t_exp = time.perf_counter() - t0
     tt = []
-    j4, j2 = j_analytic_exact(xmol, ae, tt)
-    t_int = sum(tt)
+    j4, j2 = j_neutral_atom(xmol, ae, 1e-13, tt)
+    t_int = tt[0]
     ca, cb = xmol.sph2spinor_coeff()
     p2 = sum((c.conj() @ d2 @ c.T) for c in (ca, cb)).real
     vjs = scf.hf.get_jk(xmol, p2, with_k=False)[0]
@@ -521,6 +640,7 @@ for name, geom, base in systems:
         e_ss = '%8.1e' % abs(j4 - vj4)[n2c:, n2c:].max()
     else:
         e_ll = e_ss = '%8s' % '-'
-    print('%-7s %5d %4d | %6.2f %6.2f %6.2f | %6.2f %6.2f %6.2f %6.2f %6.2f %6.2f | %7.2f %7.2f | %s %s %8.1e' % (
-        name, n2c, mol.natm, t_nrj, t_nr, t_x2c, t_exp, tt[0], tt[1], tt[2] + tt[3], t_exp + t_int, t_int,
-        (t_exp + t_int) / t_nr, t_int / t_nr, e_ll, e_ss, abs(j2 - vj2).max()), flush=True)
+    t_tot = t_exp + tt[0] + tt[1]
+    print('%-7s %5d %4d | %6.2f %6.2f %6.2f | %6.2f %6.2f %6.2f %5.0f%% %6.2f | %7.2f %7.2f | %s %s %8.1e' % (
+        name, n2c, mol.natm, t_nrj, t_nr, t_x2c, t_exp, tt[0], tt[1], 100 * tt[3], t_tot,
+        t_tot / t_nr, t_int / t_nr, e_ll, e_ss, abs(j2 - vj2).max()), flush=True)
