@@ -897,12 +897,14 @@ def rks_make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=No
 
 def _multi_jk_env(mf):
     '''mf.get_jk / get_j through socutils.scf.jk_multi (all CPHF densities in
-    one direct pass; with density-fitted J only K, J from the DF object);
-    range-separated calls and fitted K unchanged.'''
+    one direct pass); with density fitting J from the stored three-index
+    tensor (_df_get_j) and exact K from jk_multi; range-separated calls and
+    fitted K unchanged.'''
     from socutils.scf import jk_multi
     mol = mf.mol
     dfm = _df_mode(mf)
-    if dfm == 'jk' or not jk_multi.available(mol):
+    multi_k = jk_multi.available(mol)
+    if dfm is None and not multi_k:
         return {}
     orig_jk = mf.get_jk
 
@@ -910,13 +912,18 @@ def _multi_jk_env(mf):
         if (mol_ is not None and mol_ is not mol) or omega is not None or dm is None:
             return orig_jk(mol_, dm, hermi, with_j, with_k, omega)
         dm = numpy.asarray(dm)
-        if numpy.iscomplexobj(dm):
+        if numpy.iscomplexobj(dm) or (dfm == 'jk' and with_k):
             return orig_jk(mol_, dm, hermi, with_j, with_k, omega)
         max_memory = max(1000, mf.max_memory - lib.current_memory()[0])
         if dfm is None:
             return jk_multi.get_jk(mol, dm, with_j, with_k, hermi=hermi, max_memory=max_memory)
-        vj = mf.with_df.get_jk(dm, hermi, True, False)[0] if with_j else None
-        vk = jk_multi.get_jk(mol, dm, False, True, hermi=hermi, max_memory=max_memory)[1] if with_k else None
+        vj = _df_get_j(mf.with_df, dm) if with_j else None
+        vk = None
+        if with_k:
+            if multi_k:
+                vk = jk_multi.get_jk(mol, dm, False, True, hermi=hermi, max_memory=max_memory)[1]
+            else:
+                vk = orig_jk(mol_, dm, hermi, False, True, omega)[1]
         return vj, vk
 
     def get_j(mol_=None, dm=None, hermi=1, omega=None):
@@ -925,6 +932,95 @@ def _multi_jk_env(mf):
     def get_k(mol_=None, dm=None, hermi=1, omega=None):
         return get_jk(mol_, dm, hermi, False, True, omega)[1]
     return dict(get_jk=get_jk, get_j=get_j, get_k=get_k)
+
+
+def _df_get_j(with_df, dm):
+    '''Density-fitted J of many densities from the stored three-index tensor
+    (with_df._cderi, built by the SCF): rho = D L^T, J = rho L, two GEMMs per
+    auxiliary block over all densities (pyscf's DF get_j for a pure functional
+    evaluates the 3c integrals again on every call).  The symmetric part of
+    each D (all J sees).'''
+    dm = numpy.asarray(dm)
+    shape = dm.shape
+    nao = shape[-1]
+    dms = dm.reshape(-1, nao, nao)
+    dmtril = lib.pack_tril(dms + dms.transpose(0, 2, 1))
+    diag = numpy.arange(nao) * (numpy.arange(nao) + 3) // 2      # diagonal of the packed triangle
+    dmtril[:, diag] *= .5
+    vj = numpy.zeros_like(dmtril)
+    if with_df._cderi is None:
+        with_df.build()
+    for eri1 in with_df.loop():
+        rho = lib.dot(dmtril, eri1.T)
+        vj += lib.dot(rho, eri1)
+    return lib.unpack_tril(vj, 1).reshape(shape)
+
+
+def _krylov(aop, b, x0=None, tol=1e-10, max_cycle=30, dot=numpy.dot, lindep=None, callback=None,
+            hermi=False, max_memory=None, verbose=logger.WARN):
+    '''pyscf.lib.krylov (Pople's method for (1 + a) x = b, all right-hand sides
+    together, converged directions dropped) with the projections onto the trial
+    space, the subspace matrix and the solution as GEMMs over the stacked trial
+    vectors; pyscf loops over the vectors in Python with one dot product each,
+    which dominates for the 3 natm right-hand sides of a Hessian.  Same
+    iterations and result.'''
+    from pyscf.lib import linalg_helper
+    if lindep is None:
+        lindep = linalg_helper.DSOLVE_LINDEP
+    if isinstance(aop, numpy.ndarray) and aop.ndim == 2:
+        return numpy.linalg.solve(aop + numpy.eye(aop.shape[0]), b)
+    log = logger.new_logger(verbose=verbose)
+    b = numpy.asarray(b)
+    if x0 is not None:
+        b = b - (x0 + aop(x0))
+    b1d = b.ndim == 1
+    x1 = b.reshape(1, -1) if b1d else b
+    nroots, ndim = x1.shape
+    x1, rmat = linalg_helper._qr(x1, dot)
+    x1 *= rmat.diagonal()[:, None]
+    innerprod = list(rmat.diagonal().real ** 2)
+    if not innerprod or max(innerprod) < lindep or max(innerprod) < tol ** 2:
+        return numpy.zeros_like(b) if x0 is None else x0
+    xs = []
+    ax = []
+    XS = numpy.empty((0, ndim), dtype=x1.dtype)
+    max_cycle = min(max_cycle, ndim)
+    for cycle in range(max_cycle):
+        axt = aop(x1).reshape(-1, ndim)
+        xs.append(x1)
+        ax.append(axt)
+        XS = numpy.vstack([XS, x1])
+        if callable(callback):
+            callback(cycle, list(XS), list(numpy.vstack(ax)))
+        # x1 = axt - sum_i <axt, xs_i> / <xs_i, xs_i> xs_i (classical Gram-Schmidt)
+        w = lib.dot(axt, XS.conj().T) / numpy.asarray(innerprod)[None, :]
+        x1 = axt - lib.dot(w, XS)
+        axt = None
+        x1, rmat = linalg_helper._qr(x1, dot)
+        x1 *= rmat.diagonal()[:, None]
+        innerprod1 = rmat.diagonal().real ** 2
+        max_innerprod = max(innerprod1, default=0.)
+        log.debug('krylov cycle %d  r = %g', cycle, max_innerprod ** .5)
+        if max_innerprod < lindep or max_innerprod < tol ** 2:
+            break
+        mask = (innerprod1 > lindep) & (innerprod1 > tol ** 2)
+        x1 = x1[mask]
+        innerprod.extend(innerprod1[mask])
+    else:
+        raise RuntimeError("Krylov solver failed to converge.")
+    AX = numpy.vstack(ax)
+    h = lib.dot(XS.conj(), AX.T)
+    if hermi:
+        h = numpy.tril(h) + numpy.tril(h, -1).conj().T
+    h[numpy.diag_indices_from(h)] += innerprod
+    g = lib.dot(XS.conj(), numpy.ascontiguousarray(b.reshape(-1, ndim).T))
+    c = numpy.linalg.solve(h, g)
+    x = lib.dot(c.T, XS)
+    if b1d:
+        x = x[0]
+    if x0 is not None:
+        x += x0
+    return x
 
 
 XC_AO_CUTOFF = 1e-13
@@ -1138,8 +1234,9 @@ FXC_SUBBLOCK = 448
 
 
 class _MultiJKCPHF:
-    '''solve_mo1 with the response J / K of jk_multi and the batched (or, for
-    nao > 8 nocc, MO-basis) XC response.
+    '''solve_mo1 with the response J / K of jk_multi (density fitting:
+    _df_get_j), the batched (or, for nao > 8 nocc, MO-basis) XC response, and
+    the Krylov solver as GEMMs (_krylov).
 
     Options (off by default, so that the result equals pyscf's):
         sum_rule : impose translational invariance on the final Hessian,
@@ -1174,7 +1271,8 @@ class _MultiJKCPHF:
             if self.cpscf_grids.coords is None:
                 self.cpscf_grids.build(with_non0tab=True)
             env_grid = dict(grids=self.cpscf_grids)
-        with lib.temporary_env(self.base, **_multi_jk_env(self.base), **env_grid):
+        with lib.temporary_env(self.base, **_multi_jk_env(self.base), **env_grid), \
+                lib.temporary_env(lib, krylov=_krylov):
             with lib.temporary_env(ni, **env_xc) if env_xc else _nullcontext():
                 if fx is None:
                     fx = gen_vind(self.base, mo_coeff, mo_occ)
