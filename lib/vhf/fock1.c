@@ -16,12 +16,30 @@
  */
 #include <stdlib.h>
 #include <string.h>
+#include <omp.h>
 #include "cint.h"
 
 int int2e_ip1_sph(double *out, int *dims, int *shls, int *atm, int natm,
                   int *bas, int nbas, double *env, CINTOpt *opt, double *cache);
-int GTOmax_cache_size(int (*intor)(), int *shls_slice, int ncenter,
-                      int *atm, int natm, int *bas, int nbas, double *env);
+size_t GTOmax_cache_size(int (*intor)(), int *shls_slice, int ncenter,
+                         int *atm, int natm, int *bas, int nbas, double *env);
+
+/* out[0:n] = sum_t bufs[t][0:n], each thread of the enclosing parallel region
+ * summing its own slice */
+static void reduce_thread_buffers(double *out, double **bufs, int nbuf, size_t n)
+{
+        const int t = omp_get_thread_num(), nt = omp_get_num_threads();
+        const size_t chunk = (n + nt - 1) / nt;
+        const size_t s0 = chunk * t < n ? chunk * t : n;
+        const size_t s1 = s0 + chunk < n ? s0 + chunk : n;
+        size_t i;
+        int k;
+        for (i = s0; i < s1; i++) out[i] = 0;
+        for (k = 0; k < nbuf; k++) {
+                const double *b = bufs[k];
+                for (i = s0; i < s1; i++) out[i] += b[i];
+        }
+}
 
 static inline double dmax2(double a, double b) { return a > b ? a : b; }
 
@@ -59,16 +77,23 @@ void SOCVHFfock1_jk(double *vj, double *vk, double *dm, int with_k,
                 dmax = d > dmax ? d : dmax;
         }
         int shls_slice[8] = {0, nbas, 0, nbas, 0, nbas, 0, nbas};
-        int cache_size = GTOmax_cache_size(int2e_ip1_sph, shls_slice, 4, atm, natm, bas, nbas, env);
+        size_t cache_size = GTOmax_cache_size(int2e_ip1_sph, shls_slice, 4, atm, natm, bas, nbas, env);
         const size_t nbuf = (size_t)3 * dmax * dmax * dmax * dmax;
         const size_t nblk = (size_t)dmax * dmax;
         const int npair = nbas * (nbas + 1) / 2;
-        memset(vj, 0, sizeof(double) * nv);
-        if (with_k) memset(vk, 0, sizeof(double) * nv);
+        const int nthmax = omp_get_max_threads();
+        double **jbufs = calloc(nthmax, sizeof(double *));
+        double **kbufs = calloc(nthmax, sizeof(double *));
+        int nth_used = 1;
 #pragma omp parallel
 {
+        const int tid = omp_get_thread_num();
+#pragma omp single
+        nth_used = omp_get_num_threads();
         double *wj = calloc(nv, sizeof(double));
         double *wk = with_k ? calloc(nv, sizeof(double)) : NULL;
+        jbufs[tid] = wj;
+        kbufs[tid] = wk;
         double *buf = malloc(sizeof(double) * (nbuf * 3 + cache_size));
         double *b0 = buf, *b1 = buf + nbuf, *b2 = buf + nbuf * 2;
         double *cache = buf + nbuf * 3;
@@ -167,17 +192,17 @@ void SOCVHFfock1_jk(double *vj, double *vk, double *dm, int with_k,
                         } }
                 }
         }
-#pragma omp critical
-        {
-                size_t n;
-                for (n = 0; n < nv; n++) vj[n] += wj[n];
-                if (with_k) for (n = 0; n < nv; n++) vk[n] += wk[n];
-        }
+#pragma omp barrier
+        reduce_thread_buffers(vj, jbufs, nth_used, nv);
+        if (with_k) reduce_thread_buffers(vk, kbufs, nth_used, nv);
+#pragma omp barrier
         free(wj);
         free(wk);
         free(buf);
         free(loc);
 }
+        free(jbufs);
+        free(kbufs);
         /* V = W + W^T */
         size_t a, p, q;
 #pragma omp parallel for private(p, q)
