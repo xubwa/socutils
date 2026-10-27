@@ -133,6 +133,21 @@ block-diagonal one-center K.  **J from the spherical atomic density + one-center
 form reproduces x2cmp to 3e-6 Eh / 1e-7 Eh in orbital energies and is stable to Smin = 3e-7**,
 with no multi-center 2e integrals.
 
+Native x2camf against the same reference, E(x2camf) − E(x2cmp) / Eh (from the 36 outputs):
+
+| k | Smin (HCl) | HCl, DC AMF | HCl, Gaunt+Breit AMF | HBr, DC AMF | HBr, Gaunt+Breit AMF |
+|---|---|---|---|---|---|
+| 0 | 6.8e-3 | 0.0831791 | 0.08312 | 0.885327 | 0.8848 |
+| 4 | 6.2e-5 | 0.0831798 | 0.08311 | 0.885333 | 0.8848 |
+| 7 | 1.3e-6 | 0.0831798 | 0.08303 | 0.885333 | 0.8846 |
+| 10 | 3.2e-7 | 0.0831798 | 0.08299 | 0.885333 | 0.8844 |
+
+The large constant is the scalar 2e picture change that x2camf (X2C-1e decoupling) does not
+have and x2cmp does; it is k-independent, so not a diffuse-function effect (in the orbital
+energies it sits in the core: Cl 1s 0.031 Eh, valence ~1e-6).  With the DC AMF native x2camf
+is as stable as the projector-form one-center MP (constant to 1e-8 for k ≥ 1); with the
+default Gaunt + Breit AMF it drifts like the block one-center K.
+
 ## Conclusion
 
 * X2CAMF with a **Dirac-Coulomb** atomic AMF is stable with diffuse functions down to
