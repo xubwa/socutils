@@ -226,6 +226,9 @@ for k in range(kmax + 1):
     k_, smc, smu, e4, res, norms, dev = rows[-1]
     print('# k=%d done in %.0f s; |h(block, here) - h(x2cmp flavor x2camf)|max = %.1e' % (k, time.time() - t0, dev),
           flush=True)
+    print('#   Smin %.2e  dE_amf: block %.6e p1e-5 %.6e projf %.6e  |dF|orth: block %.4e projf %.4e  aX2C %.3e%s'
+          % (smu, res['amf'][0] - res['1e'][0], res['p1e-5'][0] - res['1e'][0], res['amfP'][0] - res['1e'][0],
+             norms[0], norms[2], res['aX2C'][0] - res['1e'][0], '' if res['aX2C'][1] else '*'), flush=True)
 
 
 def f(x, conv=True):
