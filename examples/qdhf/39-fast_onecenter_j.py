@@ -41,8 +41,9 @@ the fast J against exact J (max matrix element), and dE: the SCF energy with
 h = to_2c(X(h4 + J4), h4 + J4) - J2 using the fast J minus the same with exact J.
 
 Usage:  python 39-fast_onecenter_j.py [small|large]
-  large: chloro-/bromobenzene, 1,4-dibromobenzene, 1-bromonaphthalene; dE (an
-  SCF per variant) only up to n2c = 400, max |dh_core| always
+  large: chloro-/bromobenzene, 1,4-dibromobenzene, 1-bromonaphthalene; no exact
+  4c J and no SCF: accuracy from the 2c J only, whose exact value is one scalar
+  J build, J2 = sph2spinor(J_scalar[P]), P = sum_x C_x^* D2 C_x^T
 '''
 
 import os
@@ -299,10 +300,18 @@ if len(sys.argv) > 1 and sys.argv[1] == 'large':
         ('C10H7Br', aromatic(2, {0: ('Br', 1.90)}), 'unc-cc-pvdz-dk'),
     ]
 
-print('# fast one-center J; times in s; dE = E(fast J) - E(exact J), Eh')
-print('%-7s %5s | %6s %8s %6s | %-4s %5s %6s %6s %6s %6s %6s | %9s %9s %9s %9s' % (
-    'mol', 'n2c', 'NR JK', 'exact J', 'X2C', 'J', 'ngrid', 'radial', 'analyt', 'grid', 'total', '/NR JK',
-    'max dJ LL', 'max dJ SS', 'max dh', 'dE'))
+large = len(sys.argv) > 1 and sys.argv[1] == 'large'
+print('# fast one-center J; times in s; NR J(K): one scalar direct J (JK) build, same uncontracted basis')
+if large:
+    print('# exact 2c J from one scalar J build; dJ2 = J2(fast) - J2(exact)')
+    print('%-7s %5s %4s | %6s %6s %6s | %-4s %5s %6s %6s %6s %6s %7s | %9s %9s' % (
+        'mol', 'n2c', 'natm', 'NR J', 'NR JK', 'X2C', 'J', 'ngrid', 'radial', 'analyt', 'grid', 'total',
+        '/NR JK', 'max dJ2', 'TrD2 dJ2'))
+else:
+    print('# dE = E(fast J) - E(exact J), Eh')
+    print('%-7s %5s | %6s %8s %6s | %-4s %5s %6s %6s %6s %6s %6s | %9s %9s %9s %9s' % (
+        'mol', 'n2c', 'NR JK', 'exact J', 'X2C', 'J', 'ngrid', 'radial', 'analyt', 'grid', 'total', '/NR JK',
+        'max dJ LL', 'max dJ SS', 'max dh', 'dE'))
 for name, geom, base in systems:
     mol = gto.M(atom=geom, basis=base[4:], verbose=0)
     mol = gto.M(atom=geom, basis={e: gto.mole.uncontracted_basis(gto.basis.load(base[4:], e))
@@ -310,8 +319,21 @@ for name, geom, base in systems:
     mf = spinor_hf.SCF(mol)
     mf.x2cmp(flavor='x2cmp', with_gaunt=False, with_breit=False, with_pcc=False)
     xo = mf.with_x2c
-    quiet(lambda: xo.get_hcore(mol))
-    ints = xo.atomic_integrals
+    if large:
+        # only the atomic densities are needed; skip the molecular 4c work of x2cmp
+        from socutils.somf.x2cmp import x2camf as _x2camf_mod
+        ints = {}
+        from pyscf.data import elements
+        for atom in set(a[0] for a in mol._atom):
+            raw = gto.mole.uncontracted_basis(mol._basis[atom])
+            sh = numpy.array([b[0] for b in raw])
+            ex = numpy.array([b[-1][0] for b in raw])
+            ints[atom] = quiet(lambda: _x2camf_mod.libx2camf.atm_integrals(
+                0, elements.charge(gto.mole._std_symbol(atom)), sh[-1] + 1, len(sh), 0, sh, ex,
+                speed_of_light=param.LIGHT_SPEED))
+    else:
+        quiet(lambda: xo.get_hcore(mol))
+        ints = xo.atomic_integrals
     xmol, contr = _decontract_spinor(mol, xo.xuncontract)
     n2c = xmol.nao_2c()
     sl = xmol.aoslice_2c_by_atom()
@@ -325,15 +347,29 @@ for name, geom, base in systems:
     dmnr = mfnr.get_init_guess()
     opt = mfnr.init_direct_scf(mol)
     t0 = time.perf_counter()
+    scf.hf.get_jk(mol, dmnr, vhfopt=opt, with_k=False)
+    t_nrj = time.perf_counter() - t0
+    t0 = time.perf_counter()
     scf.hf.get_jk(mol, dmnr, vhfopt=opt)
     t_nr = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    X.x2c1e_hfw0_4cmat(h4, s4, mol=xmol)
+    t_x2c = time.perf_counter() - t0
+    if large:
+        ca, cb = xmol.sph2spinor_coeff()
+        p2 = sum((c.conj() @ d2 @ c.T) for c in (ca, cb)).real
+        vjs = scf.hf.get_jk(xmol, p2, with_k=False)[0]
+        vj2 = ca.conj().T @ vjs @ ca + cb.conj().T @ vjs @ cb
+        for method in ('fit',):
+            j4, j2, tt, ng = j_fast(xmol, d4, d2, method)
+            print('%-7s %5d %4d | %6.2f %6.2f %6.2f | %-4s %4dk %6.2f %6.2f %6.2f %6.2f %7.1f | %9.1e % 9.1e' % (
+                name, n2c, mol.natm, t_nrj, t_nr, t_x2c, method, ng // 1000, tt[0], tt[1], tt[2], tt.sum(),
+                tt.sum() / t_nr, abs(j2 - vj2).max(), numpy.einsum('ij,ji', d2, j2 - vj2).real), flush=True)
+        continue
     t0 = time.perf_counter()
     vj4 = m4.get_jk(xmol, d4, with_k=False)[0]
     vj2 = spinor_hf.SCF(xmol).get_jk(xmol, d2, with_k=False)[0]
     t_ex = time.perf_counter() - t0
-    t0 = time.perf_counter()
-    X.x2c1e_hfw0_4cmat(h4, s4, mol=xmol)
-    t_x2c = time.perf_counter() - t0
 
     def hcore(j4, j2):
         x, _, r, _ = X.x2c1e_hfw0_4cmat(h4 + j4, s4, mol=xmol)
