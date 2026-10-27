@@ -100,6 +100,29 @@ def _pack_axes(a, first, n):
     return kernels.pair_gather(_contig(a), first)
 
 
+def _pack_antisymmetrized(w, axis, scale):
+    '''scale * (w - w with the axes axis and axis + 1 exchanged) with these two axes, both of
+    dimension n, replaced by one axis over the pairs i < j; w may be any view, it is read in
+    slices of one of its other axes (no copy of its full size).'''
+    n = w.shape[axis]
+    i, j = numpy.triu_indices(n, k=1)
+    out = numpy.empty(w.shape[:axis] + (len(i),) + w.shape[axis + 2:], dtype=numpy.complex128)
+    if w.ndim == 2:
+        out[:] = w[i, j]
+        out -= w[j, i]
+        out *= scale
+        return out
+    for k in range(w.shape[0 if axis > 0 else 2]):
+        if axis > 0:          # slice k of the first axis; the pair at axis - 1 within it
+            wk, lead, dst = w[k], (slice(None),) * (axis - 1), (k,)
+        else:                 # slice k of the third axis; the pair first
+            wk, lead, dst = w[:, :, k], (), (slice(None), k)
+        res = wk[lead + (i, j)] - wk[lead + (j, i)]
+        res *= scale
+        out[dst] = res
+    return out
+
+
 def _unpack_axis(a, axis, n):
     '''The antisymmetric array whose pairs i < j along `axis` are a.'''
     return kernels.pair_scatter(_contig(a), axis, n)
@@ -156,11 +179,6 @@ class _Contraction:
             bra_pairs = ket_pairs = ()
         kpack = [p for p in ket_pairs if p[0] in con and p[1] in con]
         bpack = [p for p in bra_pairs if p[0] in wown and p[1] in wown]
-        letters = list(wsub)
-        for x, y in kpack:
-            w = _antisymmetrized(w, letters.index(x), letters.index(y))
-        for x, y in bpack:
-            w = _antisymmetrized(w, letters.index(x), letters.index(y), 0.5)
 
         def grouped(names, pairs):
             single = [x for x in names if not any(x in p for p in pairs)]
@@ -170,10 +188,12 @@ class _Contraction:
         con_groups = grouped(con, kpack)
         order = [x for g in own_groups + con_groups for x in g]
         w = w.transpose([wsub.index(x) for x in order])
+        # every pair antisymmetrized and packed in one step, so that no antisymmetrized copy
+        # of the full W is formed (vvvv of a large basis)
         axis = 0
         for g in own_groups + con_groups:
             if len(g) == 2:
-                w = _pack_axes(w, axis, w.shape[axis])
+                w = _pack_antisymmetrized(w, axis, 0.5 if g in [tuple(p) for p in bpack] else 1.0)
             axis += 1
         self.w_shape = w.shape[:len(own_groups)]
         w = _contig(w)
