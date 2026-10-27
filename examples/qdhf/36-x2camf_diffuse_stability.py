@@ -134,7 +134,7 @@ def scf_run(mol, hc):
     mf.max_cycle = 100
     mf.verbose = 0
     e = quiet(mf.kernel)
-    return e, mf.converged, mf.mo_energy.min()
+    return e, mf.converged, mf.mo_energy.min(), numpy.sort(mf.mo_energy[mf.mo_occ > 0])
 
 
 def one_k(k):
@@ -193,9 +193,9 @@ def one_k(k):
     sc = mol.intor('int1e_ovlp_spinor')
     res = {}
     for key, hc in hcs.items():
-        e, conv, emin = scf_run(mol, hc)
+        e, conv, emin, eocc = scf_run(mol, hc)
         hmin = scipy.linalg.eigh(hc, sc, eigvals_only=True).min()
-        res[key] = (e, conv, emin, hmin)
+        res[key] = (e, conv, emin, hmin, eocc)
 
     e4 = numpy.nan
     if do_dhf:
@@ -266,3 +266,9 @@ print('%2s %9s %-12s %-12s %-12s %-12s %-12s' % ('k', 'Smin(2cu)', 'SO block', '
                                                   'aX2C dF', 'aX2C h-h1e'))
 for k, smc, smu, e4, res, norms, dev in rows:
     print('%2d %9.2e ' % (k, smu) + ''.join('%11.4e ' % n for n in norms))
+
+print('\n## occupied orbital energies (one per Kramers pair) / Eh')
+for k, smc, smu, e4, res, norms, dev in rows:
+    print('k=%d  Smin %.2e' % (k, smu))
+    for key in ('1e', 'amf', 'p1e-5', 'amfP', 'x2cmp', 'aX2CP'):
+        print('  %-6s' % key + ''.join('%12.6f' % x for x in res[key][4][::2]))
