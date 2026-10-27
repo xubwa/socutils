@@ -20,6 +20,7 @@
 #ifndef ZSHCI_SRC_HEAT_BATH_H_
 #define ZSHCI_SRC_HEAT_BATH_H_
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -47,11 +48,17 @@ class HeatBath {
   // Calls visit(a, b, magnitude), a < b, for the double excitations
   // (i, j) -> (a, b) of the spinors i < j with magnitude >= cutoff, in order
   // of decreasing magnitude.
+  //
+  // With `below` finite only the excitations with magnitude < below are
+  // visited (the band [cutoff, below)); the entries above are skipped by
+  // bisection, so that walking consecutive bands costs one walk in all.
   template <class Visit>
-  void ForEachDouble(int i, int j, double cutoff, const Visit& visit) const {
+  void ForEachDouble(int i, int j, double cutoff, const Visit& visit,
+                     double below = kNoBound) const {
     if (!spatial_) {
       const Entry* const end = entries_.data() + start_[PairIndex(i, j) + 1];
-      for (const Entry* e = entries_.data() + start_[PairIndex(i, j)];
+      for (const Entry* e =
+               First(entries_.data() + start_[PairIndex(i, j)], end, below);
            e != end && e->magnitude >= cutoff; ++e) {
         visit(e->a, e->b, e->magnitude);
       }
@@ -64,7 +71,8 @@ class HeatBath {
     if (spin_i == spin_j) {
       const Entry* const end =
           entries_.data() + start_[PairIndex(orb_i, orb_j) + 1];
-      for (const Entry* e = entries_.data() + start_[PairIndex(orb_i, orb_j)];
+      for (const Entry* e = First(
+               entries_.data() + start_[PairIndex(orb_i, orb_j)], end, below);
            e != end && e->magnitude >= cutoff; ++e) {
         visit(2 * e->a + spin_i, 2 * e->b + spin_i, e->magnitude);
       }
@@ -74,7 +82,7 @@ class HeatBath {
     // that of j, and the entry (a, b) moves i to a and j to b.
     const size_t pair = opposite_offset_ + PairIndexWithDiagonal(orb_i, orb_j);
     const Entry* const end = entries_.data() + start_[pair + 1];
-    for (const Entry* e = entries_.data() + start_[pair];
+    for (const Entry* e = First(entries_.data() + start_[pair], end, below);
          e != end && e->magnitude >= cutoff; ++e) {
       const int a = 2 * e->a + spin_i;
       const int b = 2 * e->b + spin_j;
@@ -90,7 +98,17 @@ class HeatBath {
   double max_magnitude() const { return max_magnitude_; }
   size_t num_entries() const { return entries_.size(); }
 
+  static constexpr double kNoBound = 1e300;
+
  private:
+  // The first entry of [begin, end) below `below`.
+  static const Entry* First(const Entry* begin, const Entry* end,
+                            double below) {
+    if (below >= kNoBound) return begin;
+    return std::partition_point(
+        begin, end, [&](const Entry& e) { return e.magnitude >= below; });
+  }
+
   // Index of the pair i < j, and of the pair i <= j.
   static size_t PairIndex(int i, int j) {
     return static_cast<size_t>(j) * (j - 1) / 2 + i;
