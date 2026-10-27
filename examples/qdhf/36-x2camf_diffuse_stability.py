@@ -33,7 +33,7 @@ A spurious state from the block form acting on near-linearly-dependent
 cross-atom combinations would show up as |dF|_orth ~ <dF>/w_min and as a
 lowest eigenvalue far below the X2C-1e one.
 
-Usage:  python 36-x2camf_diffuse_stability.py kmax geom basis [dhf=1] [gaunt_breit=0]
+Usage:  python 36-x2camf_diffuse_stability.py kmax geom basis [dhf=1] [gaunt_breit=0] [kmin=0]
   basis: one name (unc-<name> = fully uncontracted), or 'H:cc-pvdz,Cl:cc-pvdz'
 '''
 
@@ -46,6 +46,9 @@ import scipy.linalg
 from functools import reduce
 from pyscf import gto, scf, lib
 lib.einsum = lambda s, *o, **k: numpy.einsum(s, *o, optimize=True)
+# pyscf.lib.diis catches numpy.linalg.linalg.LinAlgError (gone in numpy 2.x) when the
+# DIIS matrix turns singular -- with near-linearly-dependent bases it does
+numpy.linalg.linalg = numpy.linalg
 import socutils
 import x2camf
 from pyscf.data import elements
@@ -61,6 +64,7 @@ base = sys.argv[3] if len(sys.argv) > 3 else 'cc-pvdz'
 do_dhf = int(sys.argv[4]) if len(sys.argv) > 4 else 1
 # 1: Gaunt + Breit in the atomic AMF calculation (the .x2camf() default)
 gb = bool(int(sys.argv[5])) if len(sys.argv) > 5 else False
+kmin = int(sys.argv[6]) if len(sys.argv) > 6 else 0
 os.environ['X2CAMF_TIMING'] = '0'
 elems = sorted(set(a.split()[0] for a in geom.split(';')))
 if ':' in base:
@@ -216,7 +220,7 @@ keys = ['1e', 'amf', 'p1e-6', 'p1e-5', 'amfP', 'x2cmp', 'aX2C', 'aX2CP']
 print('# %s, %s + k diffuse s,p (ratio 2.5); point nucleus, no pcc, atomic AMF %s' % (geom, base,
       'Dirac-Coulomb-Breit (Gaunt + gauge)' if gb else 'Dirac-Coulomb'))
 rows = []
-for k in range(kmax + 1):
+for k in range(kmin, kmax + 1):
     t0 = time.time()
     try:
         rows.append((k,) + one_k(k))

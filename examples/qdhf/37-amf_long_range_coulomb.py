@@ -42,6 +42,9 @@ import scipy.linalg
 from functools import reduce
 from pyscf import gto, scf, lib
 lib.einsum = lambda s, *o, **k: numpy.einsum(s, *o, optimize=True)
+# pyscf.lib.diis catches numpy.linalg.linalg.LinAlgError (gone in numpy 2.x) when the
+# DIIS matrix turns singular -- with near-linearly-dependent bases it does
+numpy.linalg.linalg = numpy.linalg
 import socutils
 import x2camf
 from pyscf.data import elements
