@@ -138,16 +138,17 @@ void SOCDFTaow_multi(double *aow, double *wv, double *ao, int ndm, int ncomp, in
 }
 
 /* out[k][i][g] = ao[k][idx_i][s0 + g] (idx NULL: all AOs), (ncomp, nl, gs) from
- * the AO stack (ncomp, nao, ngrid): a sub-block in contiguous memory. */
+ * the AO stack (ncomp, nao, ngrid) with cs doubles between components: a
+ * sub-block in contiguous memory. */
 void SOCDFTgather_ao(double *out, double *ao, int *idx, int ncomp, int nao, int nl,
-                     int ngrid, int s0, int gs)
+                     int ngrid, int s0, int gs, long cs)
 {
         long it;
 #pragma omp parallel for schedule(static)
         for (it = 0; it < (long)ncomp * nl; it++) {
                 const int k = it / nl, i = it % nl;
                 const int mu = idx ? idx[i] : i;
-                memcpy(out + it * gs, ao + ((size_t)k * nao + mu) * ngrid + s0, sizeof(double) * gs);
+                memcpy(out + it * gs, ao + (size_t)k * cs + (size_t)mu * ngrid + s0, sizeof(double) * gs);
         }
 }
 
@@ -186,5 +187,35 @@ void SOCDFTfxc_contract_R(double *wv, double *wf, double *R, int natm, int nvar,
                         }
                         for (g = 0; g < G; g++) ox[g] *= s;
                 }
+        }
+}
+
+/* out[a][i][k][g] = R[i][k][a][g]: the per-atom density derivatives (3, nvar,
+ * natm, ngrid) as rows (atom, direction) x columns (component, grid point). */
+void SOCDFTreorder_R(double *out, double *R, int natm, int nvar, int ngrid)
+{
+        const size_t G = ngrid;
+        long it;
+#pragma omp parallel for schedule(static)
+        for (it = 0; it < (long)natm * 3 * nvar; it++) {
+                const int a = it / (3 * nvar), i = (it / nvar) % 3, k = it % nvar;
+                memcpy(out + (size_t)it * G, R + (((size_t)i * nvar + k) * natm + a) * G, sizeof(double) * G);
+        }
+}
+
+/* out[k][i] = [A[k][idx_i][s0:s0+gs], B[k][idx_i][s0:s0+gs]] for k < 3: rows of
+ * the two operands of one GEMM over 2 gs columns; A, B the first of three
+ * components, ca / cb doubles apart, each (nao, ngrid). */
+void SOCDFTgather_rows2(double *out, double *A, long ca, double *B, long cb, int *idx,
+                        int nao, int nl, int ngrid, int s0, int gs)
+{
+        long it;
+#pragma omp parallel for schedule(static)
+        for (it = 0; it < 3L * nl; it++) {
+                const int k = it / nl, i = it % nl;
+                const int mu = idx ? idx[i] : i;
+                double *o = out + (size_t)it * 2 * gs;
+                memcpy(o, A + (size_t)k * ca + (size_t)mu * ngrid + s0, sizeof(double) * gs);
+                memcpy(o + gs, B + (size_t)k * cb + (size_t)mu * ngrid + s0, sizeof(double) * gs);
         }
 }

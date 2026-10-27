@@ -10,7 +10,8 @@
  *
  * with e0 = 2 w v0 (D phi) + 2 sum_j w v_j (D d_j phi),
  *      f_j = 2 w v_j (D phi) + w v_tau (D d_j phi).
- * ao is pyscf's AO derivative stack in memory order (ncomp, nao, ngrid), d the
+ * ao is pyscf's AO derivative stack in memory order (ncomp, nao, ngrid), with
+ * cs doubles between components (nao * ngrid if contiguous), d the
  * D-contracted AOs (nd, nao, ngrid), wv the weighted vxc (nvar, ngrid).
  * xctype 0 LDA (ncomp >= 10), 1 GGA, 2 MGGA (ncomp >= 20).  y >= x in diag.
  */
@@ -28,7 +29,7 @@ static const int D3[3][3][3] = {
 void SOCDFTrks_xc_hess_elem(double *R, double *diag, double *ab,
                             double *ao, double *d, double *wv,
                             int xctype, int nvar, int ngrid, int nao,
-                            int *atom_of, int natm)
+                            int *atom_of, int natm, long cs)
 {
         const size_t G = ngrid;
         const int gga = xctype >= 1;
@@ -46,7 +47,7 @@ void SOCDFTrks_xc_hess_elem(double *R, double *diag, double *ab,
                 const int np = (p0 + BLK < ngrid ? p0 + BLK : ngrid) - p0;
                 for (mu = 0; mu < nao; mu++) {
                         const int A = atom_of[mu];
-#define AO(k) (ao + ((size_t)(k) * nao + mu) * G + p0)
+#define AO(k) (ao + (size_t)(k) * cs + (size_t)mu * G + p0)
 #define DD(k) (d + ((size_t)(k) * nao + mu) * G + p0)
 #define WV(k) (wv + (size_t)(k) * G + p0)
 #define RR(x, k) (R + (((size_t)(x) * nvar + (k)) * natm + A) * G + p0)
@@ -134,7 +135,7 @@ void SOCDFTrks_xc_hess_elem(double *R, double *diag, double *ab,
  * (GGA) / 1 (LDA) only.  OpenMP over grid sub-blocks.
  */
 void SOCDFTrks_dR_rho(double *R, double *ao, double *d, int xctype, int nvar,
-                      int ngrid, int nao, int *atom_of, int natm)
+                      int ngrid, int nao, int *atom_of, int natm, long cs)
 {
         const size_t G = ngrid;
         const int gga = xctype >= 1;
@@ -151,12 +152,12 @@ void SOCDFTrks_dR_rho(double *R, double *ao, double *d, int xctype, int nvar,
                         const int A = atom_of[mu];
                         const double *d0 = d + (size_t)mu * G + p0;
                         for (x = 0; x < 3; x++) {
-                                const double *ax = ao + ((size_t)(1 + x) * nao + mu) * G + p0;
+                                const double *ax = ao + (size_t)(1 + x) * cs + (size_t)mu * G + p0;
                                 double *r = R + (((size_t)x * nvar) * natm + A) * G + p0;
                                 for (p = 0; p < np; p++) r[p] += ax[p] * d0[p];
                                 if (gga) {
                                         for (j = 0; j < 3; j++) {
-                                                const double *a2 = ao + ((size_t)D2[x][j] * nao + mu) * G + p0;
+                                                const double *a2 = ao + (size_t)D2[x][j] * cs + (size_t)mu * G + p0;
                                                 const double *dj = d + ((size_t)(1 + j) * nao + mu) * G + p0;
                                                 r = R + (((size_t)x * nvar + 1 + j) * natm + A) * G + p0;
                                                 for (p = 0; p < np; p++) r[p] += a2[p] * d0[p] + ax[p] * dj[p];
