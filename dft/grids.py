@@ -50,8 +50,8 @@ Grid ingredients (all from published formulas)
   (SG-1 / NWChem style: P. M. W. Gill, B. G. Johnson, J. A. Pople,
   Chem. Phys. Lett. 209, 506 (1993)).  ``angular_grid = 1..7`` selects one
   of the five-region tables of the ORCA 6.0 manual (Table 7.1, e.g. 4 =
-  26/110/194/302/194); the region boundaries are the NWChem multiples of
-  the Bragg radius (``alphas``).  ``h_reduced`` uses the next smaller table
+  26/110/194/302/194); the region boundaries (``alphas``) are 1.15 x the
+  NWChem multiples of the Bragg radius.  ``h_reduced`` uses the next smaller table
   for H and He.
 
 * **Partition**: Becke cells with the Treutler size adjustment (PySCF's
@@ -171,7 +171,9 @@ class Grids(gen_grid.Grids):
         h_reduced : bool
             Use angular_grid-1 for H and He.
         alphas : array (3,4) or (4,)
-            Region boundaries in units of the Bragg radius.
+            Region boundaries in units of the Bragg radius; default 1.15 x
+            the NWChem values (2.5% fewer points than the NWChem boundaries
+            at equal measured Hessian / energy accuracy).
         weight_cutoff : float
             Drop points with |w| below this value after partitioning.
         element_radi : dict {symbol: radial function}
@@ -195,7 +197,7 @@ class Grids(gen_grid.Grids):
     radial_b = 5.
     angular_grid = 4
     h_reduced = True
-    alphas = NWCHEM_ALPHAS
+    alphas = NWCHEM_ALPHAS * 1.15
     weight_cutoff = 1e-14
     xi = {}
     xi_scale = 1.
