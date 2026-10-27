@@ -525,11 +525,18 @@ def gen_vind(mf, mo_coeff, mo_occ):
 
 class _FxcBatched:
     '''numint.nr_rks_fxc for many symmetric first-order densities (CPHF): the
-    same flops as pyscf's per-density sparse loops, but as two GEMMs over all
-    densities per grid block, c = D phi^T (densities stacked) and
-    V = aow phi, with the elementwise rho1 / aow passes in OpenMP C
-    (lib/dft/fxc_multi.c).  LDA / GGA with hermi=1 and a cached fxc; other
-    calls go to pyscf.'''
+    same flops as pyscf's per-density sparse loops, but per grid block
+
+        c   = D phi^T                       one GEMM, all densities stacked
+        aow = f(rho1[c], fxc) phi           one fused OpenMP C pass over c
+        V  += aow phi                       one GEMM
+
+    restricted to the AOs that are significant on the block (grids.non0tab), so that the cost follows the local AO count of every block, not
+    nao.  The fused pass (lib/dft/fxc_multi.c) evaluates rho1, contracts it
+    with fxc and overwrites c with aow chunk by chunk while the chunk is in
+    cache.  The GEMMs go through pyscf's lib.dot (MKL): numpy's own OpenBLAS
+    runs the small-K product D phi^T at a third of the speed.  LDA / GGA with
+    hermi=1 and a cached fxc; other calls go to pyscf.'''
 
     def __init__(self, ni, max_memory=4000):
         self.ni = ni
@@ -543,16 +550,19 @@ class _FxcBatched:
         libdft = _load_socdft()
         dms_a = numpy.asarray(dms)
         if (hermi != 1 or fxc is None or xctype not in ('LDA', 'GGA') or libdft is None
-                or not hasattr(libdft, 'SOCDFTfxc_rho1') or numpy.iscomplexobj(dms_a) or mol.cart):
+                or not hasattr(libdft, 'SOCDFTfxc_fused') or numpy.iscomplexobj(dms_a) or mol.cart):
             return self.orig(mol, grids, xc_code, dm0, dms, relativity, hermi, rho0, vxc, fxc,
                              max_memory, verbose)
         nao = dms_a.shape[-1]
         d = numpy.ascontiguousarray(dms_a.reshape(-1, nao, nao))
         n = d.shape[0]
         ncomp = 1 if xctype == 'LDA' else 4
-        d2 = d.reshape(n * nao, nao)
-        vmat = numpy.zeros((n * nao, nao))
-        # grid block: c and aow (n, nao, g) within ~40% of max_memory
+        fxc = numpy.asarray(fxc).reshape(ncomp, ncomp, -1)
+        from pyscf.dft.numint import BLKSIZE
+        ao_loc = mol.ao_loc_nr()
+        non0tab = getattr(grids, 'non0tab', None)
+        vmat = numpy.zeros((n, nao, nao))
+        # grid block: c / aow (n, nao, g) within ~20% of max_memory
         ng_blk = max(BLKSIZE_FXC, int(self.max_memory * .2e6 / (8 * n * nao)) // BLKSIZE_FXC * BLKSIZE_FXC)
         blk_mem = ng_blk * (ncomp + 1) * nao * 8 / 1e6
         # one buffer for c / aow, reused by every block (a fresh (n*nao, g)
@@ -565,30 +575,49 @@ class _FxcBatched:
             aoT = (ao if ao.ndim == 3 else ao[None]).transpose(0, 2, 1)  # (ncomp, nao, g)
             if not aoT.flags.c_contiguous:
                 aoT = numpy.ascontiguousarray(aoT)
-            if ng > ng_blk:
-                cbuf = numpy.empty(n * nao * ng)
-            c = cbuf[:n * nao * ng].reshape(n * nao, ng)
-            lib.dot(d2, aoT[0], c=c)                                   # (n*nao, g) = D phi^T (MKL via pyscf)
-            rho1 = numpy.empty((n, ncomp, ng))
-            libdft.SOCDFTfxc_rho1(rho1.ctypes, c.ctypes, aoT.ctypes, ctypes.c_int(n), ctypes.c_int(ncomp),
-                                  ctypes.c_int(nao), ctypes.c_int(ng))
-            if xctype == 'LDA':
-                wv = rho1 * (weight * fxc[0, 0, p0:p1])
+            # AOs of the shells significant anywhere on this block
+            idx = None
+            if non0tab is not None:
+                sh = numpy.nonzero(non0tab[p0 // BLKSIZE:(p1 + BLKSIZE - 1) // BLKSIZE].any(axis=0))[0]
+                if sh.size == 0:
+                    continue
+                nsig = (ao_loc[sh + 1] - ao_loc[sh]).sum()
+                if nsig < FXC_SUBSET_FRACTION * nao:
+                    idx = numpy.hstack([numpy.arange(ao_loc[i], ao_loc[i + 1]) for i in sh]).astype(numpy.int32)
+            if idx is None:
+                nl = nao
+                dl = d.reshape(n * nao, nao)
             else:
-                wv = numpy.einsum('myg,xyg->mxg', rho1, fxc[:, :, p0:p1] * weight)
-                wv[:, 0] *= .5                                         # *.5 for V + V^T
-            wv = numpy.ascontiguousarray(wv)
-            aow = c                                                    # reuse the buffer
-            libdft.SOCDFTfxc_aow(aow.ctypes, wv.ctypes, aoT.ctypes, ctypes.c_int(n), ctypes.c_int(ncomp),
-                                 ctypes.c_int(nao), ctypes.c_int(ng))
-            lib.dot(aow, aoT[0].T, beta=1, c=vmat)                      # += sum_g aow phi
-        vmat = vmat.reshape(n, nao, nao)
+                nl = idx.size
+                aoT = numpy.ascontiguousarray(aoT[:, idx])           # whole rows
+                dl = numpy.empty((n * nl, nl))
+                libdft.SOCDFTgather_dm(dl.ctypes, d.ctypes, idx.ctypes, ctypes.c_int(nl), ctypes.c_int(n),
+                                       ctypes.c_int(nao))
+            if n * nl * ng > cbuf.size:
+                cbuf = numpy.empty(n * nl * ng)
+            c = cbuf[:n * nl * ng].reshape(n * nl, ng)
+            lib.dot(dl, aoT[0], c=c)                                   # D phi^T
+            fw = fxc[:, :, p0:p1] * weight
+            if xctype != 'LDA':
+                fw[0] *= .5                                            # *.5 for V + V^T
+            fw = numpy.ascontiguousarray(fw)
+            libdft.SOCDFTfxc_fused(c.ctypes, aoT.ctypes, fw.ctypes, ctypes.c_int(n), ctypes.c_int(ncomp),
+                                   ctypes.c_int(nl), ctypes.c_int(ng))  # c <- aow
+            if idx is None:
+                lib.dot(c, aoT[0].T, beta=1, c=vmat.reshape(n * nao, nao))
+            else:
+                vl = lib.dot(c, aoT[0].T)
+                libdft.SOCDFTscatter_add_dm(vmat.ctypes, vl.ctypes, idx.ctypes, ctypes.c_int(nl), ctypes.c_int(n),
+                                            ctypes.c_int(nao))
         if xctype != 'LDA':
             vmat = vmat + vmat.transpose(0, 2, 1)
         return vmat.reshape(dms_a.shape)
 
 
 BLKSIZE_FXC = 128
+# block-local AO subsets only when they are this much smaller than nao (the
+# gather / scatter is not free and the GEMMs scale with the square)
+FXC_SUBSET_FRACTION = .95
 
 
 class _MultiJKCPHF:

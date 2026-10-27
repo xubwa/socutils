@@ -84,6 +84,22 @@ class KnownValues(unittest.TestCase):
             v = rhf_fast._FxcBatched(ni)(mol, mf.grids, mf.xc, None, dms, 0, 1, rho0, vxc, fxc)
             self.assertAlmostEqual(abs(v - ref).max(), 0, 12)
 
+    def test_fxc_batched_subsets(self):
+        # a water chain: most grid blocks see a fraction of the AOs (block-local subsets)
+        atom = '; '.join('O %g 0 0; H %g .757 .586; H %g -.757 .586' % (3. * i, 3. * i, 3. * i) for i in range(4))
+        mol = gto.M(atom=atom, basis='6-31g', verbose=0)
+        mf = _mf(mol, 'pbe')
+        ni = mf._numint
+        nt = mf.grids.non0tab
+        w = mol.ao_loc_nr()[1:] - mol.ao_loc_nr()[:-1]
+        self.assertLess(((nt > 0) * w).sum(axis=1).mean(), .7 * mol.nao)
+        rho0, vxc, fxc = ni.cache_xc_kernel(mol, mf.grids, mf.xc, mf.mo_coeff, mf.mo_occ, 0)
+        dms = numpy.random.RandomState(3).randn(6, mol.nao, mol.nao) * 1e-2
+        dms = dms + dms.transpose(0, 2, 1)
+        ref = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms, 0, 1, rho0, vxc, fxc)
+        v = rhf_fast._FxcBatched(ni)(mol, mf.grids, mf.xc, None, dms, 0, 1, rho0, vxc, fxc)
+        self.assertAlmostEqual(abs(v - ref).max(), 0, 12)
+
     def test_jk_multi(self):
         mol = self.mol
         rs = numpy.random.RandomState(0)
