@@ -223,7 +223,11 @@ print('# %s, %s + k diffuse s,p (ratio 2.5); point nucleus' % (geom, base))
 rows = []
 for k in range(kmax + 1):
     t0 = time.time()
-    rows.append((k,) + one_k(k))
+    try:
+        rows.append((k,) + one_k(k))
+    except Exception as ex:
+        print('# k=%d failed: %r' % (k, ex), flush=True)
+        break
     k_, smin, errA, resB, resC = rows[-1]
     print('# k=%d %.0f s  Smin %.2e  |(J-K)[D_K]_KK - G4c_K| = %.1e  aX2C-LR %.6e%s  1st-order Gaunt block/projf '
           '%.6e %.6e' % (k, time.time() - t0, smin, errA, resB['LR'][0] - resB['1e'][0],
