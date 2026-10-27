@@ -168,6 +168,22 @@ class KnownValues(unittest.TestCase):
         h.cpscf_grids = sgrids.hessian_grids(mol, angular_grid=2, intacc=3.467)
         self.assertAlmostEqual(abs(h.kernel() - ref).max(), 0, 9)
 
+    def test_ri_j_deriv(self):
+        # explicit DF-J second derivatives and first-order J against pyscf.df.hessian
+        # (auxbasis_response = 2)
+        from pyscf.df.hessian import rhf as df_rhf_hess
+        mf = dft.RKS(self.mol, xc='pbe').density_fit(auxbasis='def2-universal-jfit')
+        mf.grids.level = 2
+        mf.conv_tol = 1e-12
+        mf.kernel()
+        h = mf.Hessian()
+        hess, vj1 = rhf_fast.ri_j_deriv(self.mol, rhf_fast._df_auxmol(mf), mf.make_rdm1())
+        ej = df_rhf_hess._partial_hess_ejk(h, with_k=False)[1]
+        self.assertAlmostEqual(abs(hess - ej).max(), 0, 9)
+        ref = numpy.array([v for _, _, v, _ in df_rhf_hess._gen_jk(h, mf.mo_coeff, mf.mo_occ, with_k=False)])
+        self.assertAlmostEqual(abs(vj1 - ref).max(), 0, 11)
+        self.assertAlmostEqual(abs(rhf_fast.RKSHessian(mf).kernel() - h.kernel()).max(), 0, 9)
+
     def test_mo_xc_response(self):
         # nao > 8 nocc: the MO-basis GGA response of gen_vind is active
         mol = gto.M(atom='O 0 0 0; H .757 0 .586; H -.757 0 .586', basis='cc-pvtz', verbose=0)

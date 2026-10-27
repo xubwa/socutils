@@ -39,23 +39,48 @@ def _partial_hess_ejk(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     if mo_coeff is None: mo_coeff = mf.mo_coeff
     if atmlst is None: atmlst = range(mol.natm)
     atmlst = list(atmlst)
-    if atmlst != list(range(mol.natm)) or ghf_hess.deriv2_energies_direct(mol, []) is None:
+    dfm = _df_mode(mf)
+    if (atmlst != list(range(mol.natm)) or ghf_hess.deriv2_energies_direct(mol, []) is None
+            or (dfm == 'jk' and with_k)):
+        if dfm is not None:
+            from pyscf.df.hessian import rhf as df_rhf_hess
+            return df_rhf_hess._partial_hess_ejk(hessobj, mo_energy, mo_coeff, mo_occ, atmlst,
+                                                 max_memory, verbose, with_k)
         return rhf_hess._partial_hess_ejk(hessobj, mo_energy, mo_coeff, mo_occ, atmlst,
                                           max_memory, verbose, with_k)
     mocc = mo_coeff[:, mo_occ > 0]
     dm0 = numpy.dot(mocc, mocc.T) * 2
     dme0 = numpy.einsum('pi,qi,i->pq', mocc, mocc, mo_energy[mo_occ > 0]) * 2
     natm = len(atmlst)
-    # J and K from the same integral pass (groups 0 and 1): the combined
-    # Cartesian kernel up to g functions, else the libcint-based driver
-    out = hess2e_jk_cart(mol, dm0, [(1, 0), (0, 1)] if with_k else [(1, 0)])
-    if out is None:
-        terms = [(dm0, 'ba', dm0, 'dc', .5, 0)]
-        if with_k:
-            terms.append((dm0, 'bc', dm0, 'da', .25, 1))
-        out = ghf_hess.deriv2_energies_direct(mol, terms)
-    ej = out[0]
-    ek = out[1] if with_k else numpy.zeros_like(ej)
+    ej = None
+    if dfm is not None:
+        # density-fitted J (exact derivatives of the DF energy), exact K below
+        r = ri_j_deriv(mol, _df_auxmol(mf), dm0, with_vj1=False,
+                       max_memory=max(1000, mf.max_memory - lib.current_memory()[0]))
+        if r is None:
+            from pyscf.df.hessian import rhf as df_rhf_hess
+            return df_rhf_hess._partial_hess_ejk(hessobj, mo_energy, mo_coeff, mo_occ, atmlst,
+                                                 max_memory, verbose, with_k)
+        ej = r[0]
+        groups = [(0, 1)] if with_k else []
+    else:
+        # J and K from the same integral pass (groups 0 and 1)
+        groups = [(1, 0), (0, 1)] if with_k else [(1, 0)]
+    out = []
+    if groups:
+        # the combined Cartesian kernel up to g functions, else the
+        # libcint-based driver
+        out = hess2e_jk_cart(mol, dm0, groups)
+        if out is None:
+            terms = [] if ej is not None else [(dm0, 'ba', dm0, 'dc', .5, 0)]
+            if with_k:
+                terms.append((dm0, 'bc', dm0, 'da', .25, len(terms)))
+            out = ghf_hess.deriv2_energies_direct(mol, terms)
+    if ej is None:
+        ej = out[0]
+        ek = out[1] if with_k else numpy.zeros_like(ej)
+    else:
+        ek = out[0] if with_k else numpy.zeros_like(ej)
     log.timer_debug1('two-electron second derivatives (unique quartets)', *time0)
 
     eh = _hcore_e1(hessobj, dm0)
@@ -486,6 +511,10 @@ def rks_partial_hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, spin=mol.spin)
     if (omega != 0 or mf.do_nlc()
             or (atmlst is not None and list(atmlst) != list(range(mol.natm)))):
+        if _df_mode(mf) is not None:
+            from pyscf.df.hessian import rks as df_rks_hess
+            return df_rks_hess.partial_hess_elec(hessobj, mo_energy, mo_coeff, mo_occ, atmlst,
+                                                 max_memory, verbose)
         with lib.temporary_env(rhf_hess, _partial_hess_ejk=_partial_hess_ejk):
             return rks_hess.partial_hess_elec(hessobj, mo_energy, mo_coeff, mo_occ, atmlst,
                                               max_memory, verbose)
@@ -544,19 +573,176 @@ def fock1_jk(mol, dm, with_k=True, tol=ghf_hess.HESS2E_TOL, max_memory=None):
     return vj, (vk if with_k else None)
 
 
+def _df_mode(mf):
+    '''None (no density fitting), 'j' (density-fitted J, exact K: mf.density_fit(
+    only_dfj=True)) or 'jk' (J and K fitted).'''
+    from pyscf.df import df_jk
+    if not isinstance(mf, df_jk._DFHF):
+        return None
+    return 'j' if mf.only_dfj else 'jk'
+
+
+def _df_auxmol(mf):
+    from pyscf import df
+    with_df = mf.with_df
+    if with_df.auxmol is None:
+        return df.addons.make_auxmol(with_df.mol, with_df.auxbasis)
+    return with_df.auxmol
+
+
+def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS2E_TOL, max_memory=None):
+    '''Nuclear derivatives of the density-fitted Coulomb energy
+    E_J = 1/2 rho^T M^{-1} rho at a fixed symmetric D (rho_P = (P|ij) D_ij,
+    M = (P|Q), d = M^{-1} rho), auxiliary-basis response included (the exact
+    derivatives of the DF energy, pyscf's auxbasis_response = 2):
+
+        hess^{xi eta} = d . rho^{xi eta} - 1/2 d M^{xi eta} d + Y^xi M^{-1} Y^eta,
+        vj1^xi_ij     = sum_P (ij|P)^xi d_P + (ij|P) (M^{-1} Y^xi)_P,
+        Y^xi          = rho^xi - M^xi d.
+
+    The three-centre derivative parts run in one pass over the shell triplets
+    with bra derivatives only (lib/vhf/ri_j_deriv.c); the metric terms and
+    (ij|P) M^{-1} Y are dense algebra over the auxiliary basis.  Returns
+    (hess (natm, natm, 3, 3) or None, vj1 (natm, 3, nao, nao) or None), or None
+    if the library is unavailable.'''
+    import ctypes
+    from pyscf import df
+    from pyscf.gto import moleintor
+    from pyscf.df.grad.rhf import _gen_metric_solver
+    from pyscf.ao2mo.outcore import balance_partition
+    libv = ghf_hess._load_socvhf()
+    if not libv or not hasattr(libv, 'SOCVHFri_j_deriv') or mol.cart:
+        return None
+    if max_memory is None:
+        max_memory = mol.max_memory
+    dm = numpy.ascontiguousarray(dm, dtype=numpy.double)
+    natm, nao, nbas = mol.natm, mol.nao, mol.nbas
+    naux = auxmol.nao
+    npair = nao * (nao + 1) // 2
+    blk = max(16, min(naux, int(max_memory * .2e6 / 8 / npair)))
+    aux_ranges = balance_partition(auxmol.ao_loc, blk)
+    # rho_P over the lower triangle of the s2ij integrals
+    dm_tril = lib.pack_tril(dm + dm.T - numpy.diag(numpy.diag(dm)))
+    rho = numpy.empty(naux)
+    for k0, k1, _ in aux_ranges:
+        p0, p1 = auxmol.ao_loc[k0], auxmol.ao_loc[k1]
+        int3c = df.incore.aux_e2(mol, auxmol, 'int3c2e', aosym='s2ij', shls_slice=(0, nbas, 0, nbas, k0, k1))
+        rho[p0:p1] = lib.dot(dm_tril[None], int3c)[0]
+    int3c = None
+    solve = _gen_metric_solver(auxmol.intor('int2c2e', aosym='s1'))
+    dfit = solve(rho.copy())
+
+    # Schwarz factors: AO pairs over the bra derivative types, sqrt((P|P))
+    q = numpy.max([ghf_hess._q_cond(mol, intor)[k] for intor in ('int2e_ip1', 'int2e_ipip1', 'int2e_ipvip1')
+                   for k in (0, 1)], axis=0)
+    q = numpy.ascontiguousarray(numpy.maximum(q, q.T))
+    aux_loc = auxmol.ao_loc_nr()
+    m2 = auxmol.intor('int2c2e', aosym='s1')
+    qP = numpy.sqrt(numpy.maximum.reduceat(abs(numpy.diag(m2)), aux_loc[:-1]))
+    m2 = None
+    dPcond = numpy.ascontiguousarray(numpy.maximum.reduceat(abs(dfit), aux_loc[:-1]))
+    dcond = ghf_hess._dm_cond(mol, [dm])
+    atm, bas, env = gto.conc_env(mol._atm, mol._bas, mol._env, auxmol._atm, auxmol._bas, auxmol._env)
+    ao_loc = moleintor.make_loc(bas, 'int3c2e_sph').astype(numpy.int32)
+    opts = [moleintor.make_cintopt(atm, bas, env, s) for s in ('int3c2e_ip1_sph', 'int3c2e_ipip1_sph',
+                                                               'int3c2e_ipvip1_sph')]
+    hess = numpy.zeros((natm, natm, 3, 3)) if with_hess else None
+    Y = numpy.zeros((natm * 3, naux))
+    W = numpy.zeros((natm, 3, nao, nao)) if with_vj1 else None
+    null = lib.c_null_ptr()
+    libv.SOCVHFri_j_deriv(
+        hess.ctypes.data_as(ctypes.c_void_p) if with_hess else null, Y.ctypes.data_as(ctypes.c_void_p),
+        W.ctypes.data_as(ctypes.c_void_p) if with_vj1 else null,
+        dm.ctypes.data_as(ctypes.c_void_p), dfit.ctypes.data_as(ctypes.c_void_p),
+        q.ctypes.data_as(ctypes.c_void_p), qP.ctypes.data_as(ctypes.c_void_p),
+        dcond.ctypes.data_as(ctypes.c_void_p), dPcond.ctypes.data_as(ctypes.c_void_p), ctypes.c_double(tol),
+        opts[0], opts[1], opts[2], ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
+        ctypes.c_int(natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nbas),
+        ctypes.c_int(auxmol.nbas), env.ctypes.data_as(ctypes.c_void_p))
+
+    # Y^{A,x} -= M^{A,x} d with M^{A,x}_PQ = d/dR_{A,x} (P|Q), int2c2e_ip1 = (nabla P|Q)
+    auxslices = auxmol.aoslice_by_atom()[:, 2:]
+    ip1 = auxmol.intor('int2c2e_ip1', aosym='s1')
+    v = numpy.einsum('xpq,q->xp', ip1, dfit)
+    Y = Y.reshape(natm, 3, naux)
+    for ia, (p0, p1) in enumerate(auxslices):
+        Y[ia, :, p0:p1] += v[:, p0:p1]
+        Y[ia] += numpy.einsum('xqp,q->xp', ip1[:, p0:p1], dfit[p0:p1])
+    ip1 = v = None
+    Y = Y.reshape(natm * 3, naux)
+    Z = solve(Y.T.copy())                                     # M^{-1} Y, (naux, 3 natm)
+    if with_hess:
+        hess += lib.dot(Y, Z).reshape(natm, 3, natm, 3).transpose(0, 2, 1, 3)
+        # -1/2 d M^{xi eta} d: for A != B, sum_{P in A, Q in B} d_P d_Q (nabla nabla P|Q)
+        # (translational invariance of (P|Q)); H_AA = -sum_{B != A} H_AB
+        ipip1 = auxmol.intor('int2c2e_ipip1', aosym='s1').reshape(9, naux, naux)
+        starts = auxslices[:, 0]
+        S = numpy.empty((9, natm, natm))
+        for x in range(9):
+            u = ipip1[x] * dfit[:, None] * dfit[None, :]
+            S[x] = numpy.add.reduceat(numpy.add.reduceat(u, starts, axis=0), starts, axis=1)
+        ipip1 = u = None
+        S = S.transpose(1, 2, 0).reshape(natm, natm, 3, 3)
+        for ia in range(natm):
+            S[ia, ia] = 0
+            S[ia, ia] = -S[ia].sum(axis=0)
+        hess += S
+    vj1 = None
+    if with_vj1:
+        vj1 = W + W.transpose(0, 1, 3, 2)
+        W = None
+        T = numpy.zeros((npair, natm * 3))
+        for k0, k1, _ in aux_ranges:
+            p0, p1 = auxmol.ao_loc[k0], auxmol.ao_loc[k1]
+            int3c = df.incore.aux_e2(mol, auxmol, 'int3c2e', aosym='s2ij', shls_slice=(0, nbas, 0, nbas, k0, k1))
+            T += lib.dot(int3c, Z[p0:p1])
+        int3c = None
+        vj1 += lib.unpack_tril(numpy.ascontiguousarray(T.T)).reshape(natm, 3, nao, nao)
+    return hess, vj1
+
+
 def rhf_make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=None):
-    '''pyscf.hessian.rhf.make_h1 with the 2e part from fock1_jk.'''
+    '''pyscf.hessian.rhf.make_h1 with the 2e part from fock1_jk (density-fitted
+    J: ri_j_deriv).'''
     mol = hessobj.mol
-    if atmlst is not None and list(atmlst) != list(range(mol.natm)):
+    mf = hessobj.base
+    dfm = _df_mode(mf)
+    if dfm == 'jk' or (atmlst is not None and list(atmlst) != list(range(mol.natm))):
+        if dfm is not None:
+            from pyscf.df.hessian import rhf as df_rhf_hess
+            return df_rhf_hess.make_h1(hessobj, mo_coeff, mo_occ, chkfile, atmlst, verbose)
         return rhf_hess.make_h1(hessobj, mo_coeff, mo_occ, chkfile, atmlst, verbose)
     mocc = mo_coeff[:, mo_occ > 0]
     dm0 = numpy.dot(mocc, mocc.T) * 2
-    v = fock1_jk(mol, dm0, max_memory=max(1000, hessobj.base.max_memory - lib.current_memory()[0]))
+    v = _fock1(hessobj, dm0, True)
     if v is None:
+        if dfm is not None:
+            from pyscf.df.hessian import rhf as df_rhf_hess
+            return df_rhf_hess.make_h1(hessobj, mo_coeff, mo_occ, chkfile, atmlst, verbose)
         return rhf_hess.make_h1(hessobj, mo_coeff, mo_occ, chkfile, atmlst, verbose)
     vj, vk = v
     hcore_deriv = hessobj.base.nuc_grad_method().hcore_generator(mol)
     return [vj[ia] - .5 * vk[ia] + hcore_deriv(ia) for ia in range(mol.natm)]
+
+
+def _fock1(hessobj, dm0, with_k):
+    '''(vj1, vk1) of all atoms: fock1_jk, or with density-fitted J ri_j_deriv
+    for J and fock1_jk for the exact K; None if a library is missing.'''
+    mol = hessobj.mol
+    mf = hessobj.base
+    max_memory = max(1000, mf.max_memory - lib.current_memory()[0])
+    if _df_mode(mf) is None:
+        return fock1_jk(mol, dm0, with_k=with_k, max_memory=max_memory)
+    r = ri_j_deriv(mol, _df_auxmol(mf), dm0, with_hess=False, max_memory=max_memory)
+    if r is None:
+        return None
+    vk = None
+    if with_k:
+        v = fock1_jk(mol, dm0, with_k=True, max_memory=max_memory)
+        if v is None:
+            return None
+        vk = v[1]
+    return r[1], vk
 
 
 def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000):
@@ -681,13 +867,21 @@ def rks_make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=No
     mf = hessobj.base
     ni = mf._numint
     omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, spin=mol.spin)
-    if omega != 0 or (atmlst is not None and list(atmlst) != list(range(mol.natm))):
-        return rks_hess.make_h1(hessobj, mo_coeff, mo_occ, chkfile, atmlst, verbose)
     hybrid = ni.libxc.is_hybrid_xc(mf.xc)
+    dfm = _df_mode(mf)
+    if (omega != 0 or (atmlst is not None and list(atmlst) != list(range(mol.natm)))
+            or (dfm == 'jk' and hybrid)):
+        if dfm is not None:
+            from pyscf.df.hessian import rks as df_rks_hess
+            return df_rks_hess.make_h1(hessobj, mo_coeff, mo_occ, chkfile, atmlst, verbose)
+        return rks_hess.make_h1(hessobj, mo_coeff, mo_occ, chkfile, atmlst, verbose)
     mocc = mo_coeff[:, mo_occ > 0]
     dm0 = numpy.dot(mocc, mocc.T) * 2
-    v = fock1_jk(mol, dm0, with_k=hybrid, max_memory=max(1000, mf.max_memory - lib.current_memory()[0]))
+    v = _fock1(hessobj, dm0, hybrid)
     if v is None:
+        if dfm is not None:
+            from pyscf.df.hessian import rks as df_rks_hess
+            return df_rks_hess.make_h1(hessobj, mo_coeff, mo_occ, chkfile, atmlst, verbose)
         return rks_hess.make_h1(hessobj, mo_coeff, mo_occ, chkfile, atmlst, verbose)
     vj, vk = v
     ni.libxc.test_deriv_order(mf.xc, 2, raise_error=True)
@@ -703,11 +897,12 @@ def rks_make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=No
 
 def _multi_jk_env(mf):
     '''mf.get_jk / get_j through socutils.scf.jk_multi (all CPHF densities in
-    one direct pass); range-separated calls and density fitting unchanged.'''
-    from pyscf.df import df_jk
+    one direct pass; with density-fitted J only K, J from the DF object);
+    range-separated calls and fitted K unchanged.'''
     from socutils.scf import jk_multi
     mol = mf.mol
-    if isinstance(mf, df_jk._DFHF) or not jk_multi.available(mol):
+    dfm = _df_mode(mf)
+    if dfm == 'jk' or not jk_multi.available(mol):
         return {}
     orig_jk = mf.get_jk
 
@@ -717,8 +912,12 @@ def _multi_jk_env(mf):
         dm = numpy.asarray(dm)
         if numpy.iscomplexobj(dm):
             return orig_jk(mol_, dm, hermi, with_j, with_k, omega)
-        return jk_multi.get_jk(mol, dm, with_j, with_k, hermi=hermi,
-                               max_memory=max(1000, mf.max_memory - lib.current_memory()[0]))
+        max_memory = max(1000, mf.max_memory - lib.current_memory()[0])
+        if dfm is None:
+            return jk_multi.get_jk(mol, dm, with_j, with_k, hermi=hermi, max_memory=max_memory)
+        vj = mf.with_df.get_jk(dm, hermi, True, False)[0] if with_j else None
+        vk = jk_multi.get_jk(mol, dm, False, True, hermi=hermi, max_memory=max_memory)[1] if with_k else None
+        return vj, vk
 
     def get_j(mol_=None, dm=None, hermi=1, omega=None):
         return get_jk(mol_, dm, hermi, True, False, omega)[0]
