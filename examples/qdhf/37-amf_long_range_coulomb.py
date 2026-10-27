@@ -21,6 +21,11 @@ block-diagonal remainder (exchange, ...) is short-ranged.
 Part A: J/K split check -- (J - K)[D_K]_KK from pyscf == atomic fock_4c_2e.
 Part B: amfX2C block / projector / long-range-corrected (LR), E - E(X2C-1e),
         lowest h_core eigenvalue, lowest orbital energy.
+        SAP variants: 'SAPX2C' = SAP-X2C of Surjuse and Valeev (arXiv:2601.04174,
+        cf. qdhf/x2c.py approx='sap1e'): X from V + V_SAP, V_SAP subtracted
+        untransformed (a 1e-type scheme, no atomic 2e correction);
+        'SAP+K' = amfX2C with the Coulomb part J_mol[sum D_K] replaced by
+        V_SAP (fitted local potential) and the rest block-diagonal.
 Part C: first-order energies Tr(D_X2C-1e dF) of the pieces of the x2camf
         spin-orbit AMF correction (DC SO, Gaunt, Breit gauge), block and
         projector form, and their |dF|_orth.
@@ -106,6 +111,28 @@ def atm_ints(mol, flavor):
     return out
 
 
+def sap_4c(xmol, sap_basis='sapgrasplarge'):
+    '''4c matrix (pyscf DHF convention: LL V, SS pV.p / 4c^2) of the electronic
+    part of the SAP of neutral atoms (Lehtola's Gaussian fit, as in pyscf
+    init_guess='sap' and qdhf.x2c.sap_charges): Gaussian charges q_k, sum -Z
+    per atom, V(r) = -sum_k q_k erf(sqrt(zeta_k) r) / r.'''
+    from pyscf.gto.basis import load
+    v = 0
+    w = 0
+    for ia in range(xmol.natm):
+        symb = xmol.atom_pure_symbol(ia)
+        b = load(sap_basis, symb)
+        b = b[symb] if isinstance(b, dict) else b
+        arr = numpy.asarray(b[0][1:], dtype=float)
+        q = arr[:, 1] * (-xmol.atom_charge(ia) / arr[:, 1].sum())
+        for zeta, qk in zip(arr[:, 0], q):
+            with xmol.with_rinv_origin(xmol.atom_coord(ia)), xmol.with_rinv_zeta(zeta):
+                v = v - qk * xmol.intor('int1e_rinv_spinor')
+                w = w - qk * xmol.intor('int1e_sprinvsp_spinor')
+    c = param.LIGHT_SPEED
+    return scipy.linalg.block_diag(v, w * (.25 / c**2))
+
+
 def scf_run(mol, hc):
     mf = spinor_hf.SCF(mol)
     mf.get_hcore = lambda *a: hc.copy()
@@ -155,8 +182,19 @@ def one_k(k):
     dfb = X.to_2c(gm(0, 0, False), gm(0, 1, False), g4b) - gm(0, 6, False)
     dfp = projector_form([dfb[numpy.ix_(i, i)] for i in idx2], s2, idx2)
     g4p = projector_form([g4b[numpy.ix_(i, i)] for i in idx4], s4, idx4)
-    hs = {'1e': h1e}
-    for key, g4, df in (('block', g4b, dfb), ('proj', g4p, dfp), ('LR', g4lr, dfb), ('LR+dfP', g4lr, dfp)):
+    # SAP: the Coulomb part as a fitted local potential (true molecular operator)
+    vs4 = sap_4c(xmol)
+    g4sap = vs4.copy()
+    for i4 in idx4:
+        dk = numpy.zeros_like(d4)
+        dk[numpy.ix_(i4, i4)] = d4[numpy.ix_(i4, i4)]
+        vj = m4.get_jk(xmol, dk, hermi=1, with_k=False)[0]
+        g4sap[numpy.ix_(i4, i4)] += g4b[numpy.ix_(i4, i4)] - vj[numpy.ix_(i4, i4)]
+    xs, _, rs, _ = X.x2c1e_hfw0_4cmat(h4 + vs4, s4, mol=xmol)
+    hs = {'1e': h1e,
+          # SAP-X2C (Surjuse, Valeev): X from V + V_scr, V_scr subtracted untransformed
+          'SAPX2C': X.to_2c(xs, rs, h4 + vs4) - vs4[:n2c, :n2c]}
+    for key, g4, df in (('block', g4b, dfb), ('proj', g4p, dfp), ('LR', g4lr, dfb), ('LR+dfP', g4lr, dfp), ('SAP+K', g4sap, dfb)):
         xa, _, ra, _ = X.x2c1e_hfw0_4cmat(h4 + g4, s4, mol=xmol)
         hs[key] = X.to_2c(xa, ra, h4) + df
     resB = {}
@@ -189,7 +227,7 @@ for k in range(kmax + 1):
                          '' if resB['LR'][1] else '*', resC['Gaunt'][0], resC['Gaunt'][1]), flush=True)
 
 f = lambda x, c=True: ('% .5e' % x) + (' ' if c else '*')
-keysB = ['block', 'proj', 'LR', 'LR+dfP']
+keysB = ['block', 'proj', 'LR', 'LR+dfP', 'SAPX2C', 'SAP+K']
 print('\n## amfX2C: E - E(X2C-1e) / Eh   (* = not converged)  [J/K check: max dev of (J-K)[D_K]_KK from atomic G4c_K]')
 print('%2s %9s %8s  ' % ('k', 'Smin', 'J/K chk') + ''.join('%-13s' % s for s in keysB))
 for k, smin, errA, resB, resC in rows:
