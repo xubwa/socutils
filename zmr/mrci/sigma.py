@@ -451,21 +451,26 @@ class _VVVVDense:
     With C antisymmetric in (p, q), sum_{p<q} G C[p, q] scattered with both
     signs is the antisymmetrized result: nv^4 / 4 per label x.'''
 
-    def __init__(self, coef, bvv):
-        naux, nv, _ = bvv.shape
+    def __init__(self, coef, bvv=None, rows=None):
+        '''bvv: three-index integrals B[L, A, p]; or rows: rows(a) = (ap|Bq) for
+        B > a as [B, q, p] (DiskERIs.vvvv_rows).'''
+        if bvv is not None:
+            naux, nv, _ = bvv.shape
+            bt = kernels.transposed(bvv, (1, 2, 0)).reshape(nv * nv, naux)     # [(B, q), L]
+
+            def rows(a):
+                nb = nv - a - 1
+                return la.gemm(bt[(a + 1) * nv:], _contig(bvv[:, a, :])).reshape(nb, nv, nv)
+        else:
+            nv = rows.nv
         self.coef, self.nv = coef, nv
         pp, qq = numpy.triu_indices(nv, k=1)
         npair = len(pp)
         self.g = numpy.empty((npair, npair), dtype=numpy.complex128)
-        bt = kernels.transposed(bvv, (1, 2, 0)).reshape(nv * nv, naux)     # [(B, q), L]
         row = 0
         for a in range(nv - 1):
             nb = nv - a - 1
-            # (ap|Bq) for B > a only, as [B, q, p]
-            m = la.gemm(bt[(a + 1) * nv:], _contig(bvv[:, a, :])).reshape(nb, nv, nv)
-            t = kernels.transposed(m, (0, 2, 1))                           # [B, p, q]
-            kernels.transpose_add(t, m, (0, 1, 2), alpha=-1.0)             # - (aq|Bp)
-            self.g[row:row + nb] = kernels.pair_gather(t, 1)
+            self.g[row:row + nb] = _vvvv_pair_rows(rows(a))
             row += nb
 
     def add(self, c, total, work=None):
@@ -484,10 +489,60 @@ class _VVVVDense:
         _step('result unpacked, added', t)
 
 
+
+def _vvvv_pair_rows(m):
+    '''Rows of G[(A < B), (p < q)] = (Ap|Bq) - (Aq|Bp) for one A from
+    m = (Ap|Bq) for B > A as [B, q, p].'''
+    t = kernels.transposed(m, (0, 2, 1))                           # [B, p, q]
+    kernels.transpose_add(t, m, (0, 1, 2), alpha=-1.0)             # - (Aq|Bp)
+    return kernels.pair_gather(t, 1)
+
+
+class _DiskRows:
+    '''rows(a) of the (vv|vv) block of a DiskERIs: (ap|Bq) for B > a as [B, q, p].'''
+
+    def __init__(self, eris):
+        self.eris = eris
+        self.nv = eris.spaces.nvirt
+
+    def __call__(self, a):
+        x = self.eris.vvvv_rows(a, a + 1)[0]                       # [p, B, q]
+        return numpy.ascontiguousarray(x[:, a + 1:, :].transpose(1, 2, 0))
+
+
+class _VVVVStream:
+    '''The term of _VVVVDense with G formed row block by row block in every
+    product from the rows of the file (nothing of the size of (vv|vv) in
+    memory; the block is read once per sigma).'''
+
+    def __init__(self, coef, rows):
+        self.coef, self.nv, self.rows = coef, rows.nv, rows
+
+    def add(self, c, total, work=None):
+        nv, nd = self.nv, c.ndim
+        t = time.perf_counter()
+        ct = kernels.transposed(c, [0] + list(range(3, nd)) + [1, 2])
+        lead = ct.shape[:-2]
+        cp = kernels.pair_gather(ct, nd - 2)
+        cp = cp.reshape(-1, cp.shape[-1])
+        t = _step('C transposed, packed', t)
+        r = numpy.empty((cp.shape[0], cp.shape[1]), dtype=numpy.complex128)
+        row = 0
+        for a in range(nv - 1):
+            nb = nv - a - 1
+            r[:, row:row + nb] = la.gemm(cp, _vvvv_pair_rows(self.rows(a)), 'N', 'T')
+            row += nb
+        t = _step('product (vv|vv) C, rows read', t)
+        out = kernels.pair_scatter(r.reshape(lead + (r.shape[-1],)), nd - 2, nv)
+        kernels.transpose_add(total, out, [0, nd - 2, nd - 1] + list(range(1, nd - 2)),
+                              alpha=self.coef)
+        _step('result unpacked, added', t)
+
+
 class Sigma:
-    # the (vv|vv) terms use the three-index integrals when the block would
-    # need more than this many bytes (factorized integrals only); True / False
-    # force one way
+    # the (vv|vv) terms use the three-index integrals (factorized integrals)
+    # or rows of the block read from the file (DiskERIs) when the block would
+    # need more than this many bytes; True / False force one way
     direct_vvvv = None
     vvvv_memory = 2e9
     # ... and keep (vv|vv) as one matrix over pairs, built from them, up to this
@@ -650,12 +705,16 @@ class Sigma:
                 npair = self.sp.nvirt * (self.sp.nvirt - 1) // 2
                 dense = (self.direct_vvvv is None
                          and 16.0 * npair**2 <= self.vvvv_dense_memory)
+                disk = not getattr(self.eris, 'factorized', False)
                 if dense and self._vvvv is None:
-                    self._vvvv = _VVVVDense(1.0, self.eris.cd_block('vv'))
+                    self._vvvv = (_VVVVDense(1.0, rows=_DiskRows(self.eris)) if disk
+                                  else _VVVVDense(1.0, self.eris.cd_block('vv')))
                 if dense:
                     shared = _VVVVDense.__new__(_VVVVDense)
                     shared.coef, shared.nv, shared.g = complex(t.coef), self.sp.nvirt, self._vvvv.g
                     direct.append(shared)
+                elif disk:
+                    direct.append(_VVVVStream(complex(t.coef), _DiskRows(self.eris)))
                 else:
                     direct.append(_VVVV(complex(t.coef), self.eris.cd_block('vv')))
                 continue
@@ -859,7 +918,7 @@ class Sigma:
         raise KeyError(letter)
 
     def _use_direct_vvvv(self):
-        if not getattr(self.eris, 'factorized', False):
+        if not (getattr(self.eris, 'factorized', False) or hasattr(self.eris, 'vvvv_rows')):
             return False
         if self.direct_vvvv is not None:
             return self.direct_vvvv

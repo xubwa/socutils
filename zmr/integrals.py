@@ -16,6 +16,9 @@ section 2).  Two implementations:
     MOERIs   blocks transformed on demand from MO coefficients and cached;
              mean-field terms built in the AO basis.  Density fitting will be
              another source of blocks.
+    DiskERIs MO blocks in an HDF5 file (write_h5), read when asked for; the
+             (vv|vv) block is read row by row (vvvv_rows) and never whole
+             (MO integrals without a factorized form, e.g. four-component).
 '''
 
 import numpy
@@ -421,3 +424,185 @@ class MOERIs(ERIsBase):
     def to_dense(self):
         '''Stored-integral Hamiltonian (computes the full (pp|pp) block).'''
         return ERIs(self.ecore, self.h1, self.eri_block('pppp'), self.spaces)
+
+
+# order of the space letters for the canonical (stored) form of a block
+_ORDER = {'c': 0, 'a': 1, 'v': 2}
+
+
+def _forms(labels):
+    '''The four labels of a block related by (pq|rs) = (rs|pq) and
+    (pq|rs) = (qp|sr)^*: (labels, axes of the stored array, conjugate).'''
+    p, q, r, s = labels
+    return [(p + q + r + s, (0, 1, 2, 3), False), (r + s + p + q, (2, 3, 0, 1), False),
+            (q + p + s + r, (1, 0, 3, 2), True), (s + r + q + p, (3, 2, 1, 0), True)]
+
+
+def canonical_label(labels):
+    '''(stored label, axes, conjugate): the stored block T and
+    block = T.transpose(axes) (conjugated if conjugate).'''
+    forms = _forms(labels)
+    best = min(forms, key=lambda f: [_ORDER[x] for x in f[0]])
+    stored, perm, conj = best
+    # every perm is its own inverse: block = stored.transpose(perm)
+    return stored, perm, conj
+
+
+def canonical_labels():
+    '''Every stored block label (one of each set of related blocks).'''
+    out = []
+    for p in 'cav':
+        for q in 'cav':
+            for r in 'cav':
+                for s in 'cav':
+                    lab = canonical_label(p + q + r + s)[0]
+                    if lab not in out:
+                        out.append(lab)
+    return out
+
+
+def write_h5(path, ecore, h1, spaces, block, rows=None, meta=None):
+    '''Write the integrals in the layout of DiskERIs.
+
+    block(labels, i0, i1): (pq|rs) of the four spaces with the first index in
+    [i0, i1) of its space, as an array (from memory, a memory map or a
+    generator); every stored block is written in slices of rows of its first
+    index of at most rows elements (default: 2^27 elements, 2 GB).  meta: small
+    arrays or scalars kept with the integrals (group 'meta').'''
+    import h5py
+    limit = rows or 2 ** 27
+    sp = spaces
+    with h5py.File(path, 'w') as f:
+        f.attrs['format'] = 'zmr-mo-1'
+        f.attrs['ecore'] = float(numpy.real(ecore))
+        f.attrs['ncore'], f.attrs['nact'], f.attrs['nvirt'] = sp.ncore, sp.nact, sp.nvirt
+        f['h1'] = numpy.asarray(h1, dtype=numpy.complex128)
+        for lab in canonical_labels():
+            shape = tuple(sp.size(x) for x in lab)
+            d = f.create_dataset(lab, shape, dtype=numpy.complex128)
+            if 0 in shape:
+                continue
+            per_row = int(numpy.prod(shape[1:]))
+            step = max(1, limit // per_row)
+            for i0 in range(0, shape[0], step):
+                i1 = min(shape[0], i0 + step)
+                d[i0:i1] = numpy.asarray(block(lab, i0, i1), dtype=numpy.complex128)
+        if meta:
+            g = f.create_group('meta')
+            for k, v in meta.items():
+                g[k] = v
+
+
+class DiskERIs(ERIsBase):
+    '''Integrals of an HDF5 file of write_h5: one dataset per stored block
+    (canonical_labels), the others by transposition and conjugation.
+
+    A block is read when it is asked for and kept (release_blocks() drops
+    them); vvvv_rows(a0, a1) reads rows of the (vv|vv) block, so that it is
+    never formed (zmr.mrci.sigma streams it).  Rotations within the core,
+    active and virtual spaces (rotate) are recorded and applied to every
+    block as it is read; vvvv_rows needs the virtual orbitals of the file.
+    The file stays open (read only) for the lifetime of the objects that
+    share it.'''
+
+    factorized = False
+
+    def __init__(self, path, u=None, _file=None):
+        import h5py
+        self.path = path
+        self._f = _file if _file is not None else h5py.File(path, 'r')
+        f = self._f
+        if f.attrs.get('format') != 'zmr-mo-1':
+            raise ValueError('%s is not a zmr MO integral file' % path)
+        self.spaces = OrbitalSpaces(int(f.attrs['ncore']), int(f.attrs['nact']),
+                                    int(f.attrs['nvirt']))
+        self.ecore = float(f.attrs['ecore'])
+        h1 = numpy.asarray(f['h1'][()], dtype=numpy.complex128)
+        # per space: unitary of the current orbitals in those of the file (None: unchanged)
+        self._u = dict(u) if u else {'c': None, 'a': None, 'v': None}
+        self.h1 = self._rotate_block(h1, 'pp') if u else h1
+        self._cache = {}
+        self.computed_blocks = []
+
+    @property
+    def meta(self):
+        return self._f['meta'] if 'meta' in self._f else {}
+
+    def _umat(self, label):
+        '''Unitary of the space label, or of all orbitals for p (None if none is set).'''
+        if label != 'p':
+            return self._u[label]
+        if all(self._u[x] is None for x in 'cav'):
+            return None
+        out = numpy.zeros((self.spaces.nmo,) * 2, dtype=numpy.complex128)
+        for x in 'cav':
+            s = self.spaces.slice(x)
+            out[s, s] = numpy.eye(s.stop - s.start) if self._u[x] is None else self._u[x]
+        return out
+
+    def _rotate_block(self, x, labels):
+        '''Axes k of x transformed with the unitary of labels[k]: conjugated on
+        the creation indices (even positions of an integral block, the first
+        of h1).'''
+        for k, lab in enumerate(labels):
+            u = self._umat(lab)
+            if u is None:
+                continue
+            m = u.conj() if (k % 2 == 0) else u
+            x = numpy.moveaxis(numpy.tensordot(x, m, axes=([k], [0])), -1, k)
+        return x
+
+    def _read(self, labels):
+        stored, axes, conj = canonical_label(labels)
+        x = numpy.asarray(self._f[stored][()]).transpose(axes)
+        return x.conj() if conj else x
+
+    def eri_block(self, labels):
+        if len(labels) != 4:
+            raise ValueError('eri_block needs four space labels')
+        if labels in self._cache:
+            return self._cache[labels]
+        if 'p' in labels:
+            k = labels.index('p')
+            parts = [self.eri_block(labels[:k] + x + labels[k + 1:]) for x in 'cav']
+            out = numpy.concatenate(parts, axis=k)
+        else:
+            out = self._rotate_block(self._read(labels), labels)
+            self.computed_blocks.append(labels)
+        self._cache[labels] = out
+        return out
+
+    def vvvv_rows(self, a0, a1):
+        '''(Ap|Bq) for the virtual orbitals A in [a0, a1), as [A, p, B, q].'''
+        if self._u['v'] is not None:
+            raise NotImplementedError('vvvv_rows needs the virtual orbitals of the file '
+                                      '(write quasi-canonical integrals)')
+        return numpy.asarray(self._f['vvvv'][a0:a1])
+
+    def release_blocks(self):
+        self._cache.clear()
+
+    def prefetch(self, groups):
+        pass
+
+    def rotate(self, u):
+        '''Integrals in the orbitals phi'_p = sum_q phi_q u_qp; u must not mix
+        the core, active and virtual spaces.'''
+        u = numpy.asarray(u, dtype=numpy.complex128)
+        self._check_block_diagonal(u)
+        new_u = {}
+        for x in 'cav':
+            s = self.spaces.slice(x)
+            ux = u[s, s]
+            if abs(ux - numpy.eye(ux.shape[0])).max(initial=0) < 1e-14:
+                new_u[x] = self._u[x]
+            else:
+                new_u[x] = ux if self._u[x] is None else self._u[x] @ ux
+        new = DiskERIs(self.path, new_u, _file=self._f)
+        return self._keep_charges(new, u)
+
+    def with_virtuals(self, u):
+        raise NotImplementedError('DiskERIs: no change of the virtual space')
+
+    core_energy = ERIs.core_energy
+    generalized_fock = ERIs.generalized_fock
