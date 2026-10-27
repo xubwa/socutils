@@ -11,8 +11,9 @@
  *
  * c is (ndm, nao, ngrid) (in: D phi^T, out: aow), ao the AO derivative stack in
  * memory order (ncomp, nao, ngrid), fw (ncomp, ncomp, ngrid); ncomp = 1 (LDA)
- * or 4 (GGA).  OpenMP over (chunk of GCHUNK grid points, density), chunk-major
- * so that the threads share the chunk of ao (ncomp x nao x GCHUNK); the chunk of
+ * or 4 (GGA).  OpenMP over (chunk of grid points, density), chunk-major so that
+ * the threads share the chunk of ao (ncomp x nao x chunk); the chunk length is
+ * chosen from the L2 size and nao (grid_chunk); the chunk of
  * c of one density stays in cache between its rho1 and aow passes.
  *
  * SOCDFTgather_dm / SOCDFTscatter_add_dm: the sub-matrices on the AOs idx of
@@ -21,14 +22,52 @@
  */
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+#include <unistd.h>
 
-#ifndef GCHUNK
-#define GCHUNK 64
+#define GCHUNK_MAX 256
+
+/* L2 cache size in bytes: SOCUTILS_L2_BYTES, else sysconf, else sysfs, else 512 kB */
+static long l2_bytes(void)
+{
+        static long cached = 0;
+        if (cached > 0) return cached;
+        long v = 0;
+        const char *e = getenv("SOCUTILS_L2_BYTES");
+        if (e) v = atol(e);
+#ifdef _SC_LEVEL2_CACHE_SIZE
+        if (v <= 0) v = sysconf(_SC_LEVEL2_CACHE_SIZE);
 #endif
+        if (v <= 0) {
+                FILE *f = fopen("/sys/devices/system/cpu/cpu0/cache/index2/size", "r");
+                if (f) {
+                        char unit = 0;
+                        long x = 0;
+                        if (fscanf(f, "%ld%c", &x, &unit) >= 1)
+                                v = x * (unit == 'K' ? 1024 : unit == 'M' ? 1024 * 1024 : 1);
+                        fclose(f);
+                }
+        }
+        if (v <= 0) v = 512 * 1024;
+        cached = v;
+        return v;
+}
+
+/* grid chunk: the chunk of the AO stack (ncomp x nao) plus that of c (nao) of one
+ * task in half of L2, a multiple of 8 in [8, GCHUNK_MAX] */
+static int grid_chunk(int ncomp, int nao)
+{
+        long gc = l2_bytes() / 2 / (8L * (ncomp + 1) * (nao > 0 ? nao : 1));
+        gc = gc / 8 * 8;
+        if (gc < 8) gc = 8;
+        if (gc > GCHUNK_MAX) gc = GCHUNK_MAX;
+        return (int)gc;
+}
 
 void SOCDFTfxc_fused(double *c, double *ao, double *fw, int ndm, int ncomp, int nao, int ngrid)
 {
         const size_t G = ngrid;
+        const int GCHUNK = grid_chunk(ncomp, nao);
         const int nchunk = (ngrid + GCHUNK - 1) / GCHUNK;
         const long ntask = (long)nchunk * ndm;
         long it;
@@ -38,7 +77,7 @@ void SOCDFTfxc_fused(double *c, double *ao, double *fw, int ndm, int ncomp, int 
                 const int ic = it / ndm, m = it % ndm;
                 const int g0 = ic * GCHUNK;
                 const int ng = (g0 + GCHUNK < ngrid ? g0 + GCHUNK : ngrid) - g0;
-                double r[4][GCHUNK], w[4][GCHUNK];
+                double r[4][GCHUNK_MAX], w[4][GCHUNK_MAX];
                 int k, x, mu, g;
                 {
                         for (k = 0; k < ncomp; k++)
@@ -112,6 +151,7 @@ void SOCDFTscatter_add_dm(double *v, double *x, int *idx, int nl, int ndm, int n
 void SOCDFTaow_multi(double *aow, double *wv, double *ao, int ndm, int ncomp, int nao, int ngrid)
 {
         const size_t G = ngrid;
+        const int GCHUNK = grid_chunk(ncomp, nao);
         const int nchunk = (ngrid + GCHUNK - 1) / GCHUNK;
         const long ntask = (long)nchunk * ndm;
         long it;
