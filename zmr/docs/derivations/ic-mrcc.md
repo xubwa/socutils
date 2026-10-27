@@ -1,6 +1,7 @@
 # Internally contracted MRCC (ic-MRCC(SD)): design
 
-Status: design, nothing implemented.  Conventions of `conventions.md`; the
+Status: design; the reference code of section 5 (`zmr/reference/icmrcc_bruteforce.py`,
+`tests/test_icmrcc_bruteforce.py`) answers section 3 for one state.  Conventions of `conventions.md`; the
 space and the product basis of `mrci.md`; integrals through the block
 interface of `zmr/integrals.py`.
 
@@ -75,6 +76,16 @@ With `H = H_D + V`, `H_D |Psi_0> = E_0 |Psi_0>` and `<Psi_0| T = 0`:
   (`<psi1| V - E_1 |psi1>` in the FIC space; `zmr.pt4.NEVPT4SD` with one state,
   `e3`) is the first open question; the answer decides how close the method
   stays to the exact series at third order (exact: `l^3` of SDTQ).
+
+Answer (reference code, model Hamiltonians `model_eris`, one state): `E2` is
+PC-NEVPT2 to 1e-15 in every case.  `E3` equals PC-NEVPT3 to 1e-17 when the FIC
+space is the whole singles-and-doubles space ((1, 4, 3) with 1 and 2 active
+electrons) and, for a reason not yet understood, also for (2, 4, 3) with 2
+electrons, where the FIC space is smaller (99 of 114 functions); otherwise the
+two differ by 1e-7 to 5e-5 Eh, of either sign (E3 itself about 1e-2 Eh), for
+1 to 4 active electrons.  The difference is a third-order effect of the
+contraction.  Commutator truncation: `m = 4` reproduces the untruncated
+series to 2e-8 Eh, `m = 2` differs by 2e-5 to 1.4e-4 Eh.
 
 ## 4. Evaluation
 
