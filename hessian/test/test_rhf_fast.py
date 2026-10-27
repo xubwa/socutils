@@ -100,6 +100,15 @@ class KnownValues(unittest.TestCase):
         v = rhf_fast._FxcBatched(ni)(mol, mf.grids, mf.xc, None, dms, 0, 1, rho0, vxc, fxc)
         self.assertAlmostEqual(abs(v - ref).max(), 0, 12)
 
+    def test_xc_deriv1_batched(self):
+        from pyscf.hessian import rks as rks_hess
+        for xc in ('lda,vwn', 'pbe'):
+            mf = _mf(self.mol, xc)
+            h = rhf_fast.RKSHessian(mf)
+            ref = rks_hess._get_vxc_deriv1(h, mf.mo_coeff, mf.mo_occ, 4000)
+            v = rhf_fast.xc_deriv1_batched(h, mf.mo_coeff, mf.mo_occ, 4000)
+            self.assertAlmostEqual(abs(v - ref).max(), 0, 11)
+
     def test_jk_multi(self):
         mol = self.mol
         rs = numpy.random.RandomState(0)

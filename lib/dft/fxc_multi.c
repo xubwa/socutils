@@ -103,3 +103,88 @@ void SOCDFTscatter_add_dm(double *v, double *x, int *idx, int nl, int ndm, int n
                 for (j = 0; j < nl; j++) dst[idx[j]] += src[j];
         }
 }
+
+/*
+ * aow[m,mu,g] = sum_k wv[m,k,g] ao[k,mu,g] for many weight sets m (e.g. the
+ * 3 natm first-order XC potentials of the CPHF right-hand sides); layouts as
+ * above, wv (ndm, ncomp, ngrid).  OpenMP over (grid chunk, m), chunk-major.
+ */
+void SOCDFTaow_multi(double *aow, double *wv, double *ao, int ndm, int ncomp, int nao, int ngrid)
+{
+        const size_t G = ngrid;
+        const int nchunk = (ngrid + GCHUNK - 1) / GCHUNK;
+        const long ntask = (long)nchunk * ndm;
+        long it;
+#pragma omp parallel for schedule(dynamic, 2)
+        for (it = 0; it < ntask; it++) {
+                const int ic = it / ndm, m = it % ndm;
+                const int g0 = ic * GCHUNK;
+                const int ng = (g0 + GCHUNK < ngrid ? g0 + GCHUNK : ngrid) - g0;
+                const double *w = wv + (size_t)m * ncomp * G + g0;
+                int k, mu, g;
+                for (mu = 0; mu < nao; mu++) {
+                        double *o = aow + ((size_t)m * nao + mu) * G + g0;
+                        const double *a0 = ao + (size_t)mu * G + g0;
+#pragma omp simd
+                        for (g = 0; g < ng; g++) o[g] = w[g] * a0[g];
+                        for (k = 1; k < ncomp; k++) {
+                                const double *a = ao + ((size_t)k * nao + mu) * G + g0;
+                                const double *wk = w + (size_t)k * G;
+#pragma omp simd
+                                for (g = 0; g < ng; g++) o[g] += wk[g] * a[g];
+                        }
+                }
+        }
+}
+
+/* out[k][i][g] = ao[k][idx_i][s0 + g] (idx NULL: all AOs), (ncomp, nl, gs) from
+ * the AO stack (ncomp, nao, ngrid): a sub-block in contiguous memory. */
+void SOCDFTgather_ao(double *out, double *ao, int *idx, int ncomp, int nao, int nl,
+                     int ngrid, int s0, int gs)
+{
+        long it;
+#pragma omp parallel for schedule(static)
+        for (it = 0; it < (long)ncomp * nl; it++) {
+                const int k = it / nl, i = it % nl;
+                const int mu = idx ? idx[i] : i;
+                memcpy(out + it * gs, ao + ((size_t)k * nao + mu) * ngrid + s0, sizeof(double) * gs);
+        }
+}
+
+/* out[r][g] = src[r][s0 + g], (nrow, gs) from (nrow, ngrid) */
+void SOCDFTslice_grid(double *out, double *src, long nrow, int ngrid, int s0, int gs)
+{
+        long r;
+#pragma omp parallel for schedule(static)
+        for (r = 0; r < nrow; r++)
+                memcpy(out + r * gs, src + r * ngrid + s0, sizeof(double) * gs);
+}
+
+/* wv[(a * 3 + i)][x][g] = scale sum_y wf[x][y][g] R[i][y][a][g], row x = 0 halved
+ * if halve0: the first-order XC potentials of all (atom, direction) from the
+ * per-atom density derivatives R (3, nvar, natm, ngrid) and fxc * weight. */
+void SOCDFTfxc_contract_R(double *wv, double *wf, double *R, int natm, int nvar,
+                          int ngrid, double scale, int halve0)
+{
+        const size_t G = ngrid;
+        long it;
+#pragma omp parallel for schedule(static)
+        for (it = 0; it < (long)natm * 3; it++) {
+                const int a = it / 3, i = it % 3;
+                double *o = wv + (size_t)it * nvar * G;
+                int x, y;
+                size_t g;
+                for (x = 0; x < nvar; x++) {
+                        double *ox = o + (size_t)x * G;
+                        const double s = (halve0 && x == 0) ? .5 * scale : scale;
+                        for (g = 0; g < G; g++) ox[g] = 0;
+                        for (y = 0; y < nvar; y++) {
+                                const double *f = wf + ((size_t)x * nvar + y) * G;
+                                const double *r = R + (((size_t)i * nvar + y) * natm + a) * G;
+#pragma omp simd
+                                for (g = 0; g < G; g++) ox[g] += f[g] * r[g];
+                        }
+                        for (g = 0; g < G; g++) ox[g] *= s;
+                }
+        }
+}

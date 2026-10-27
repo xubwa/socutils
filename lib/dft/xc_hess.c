@@ -126,3 +126,44 @@ void SOCDFTrks_xc_hess_elem(double *R, double *diag, double *ab,
         free(dg);
 }
 }
+
+/*
+ * Only the per-atom grid vectors R[x,k,A,g] = sum_{mu in A} d_x (...)_k (D ...)_mu
+ * of SOCDFTrks_xc_hess_elem (unscaled; d_A rho_k = -2 R), for the first-order
+ * XC matrices of the CPHF right-hand sides.  Needs the AO derivatives up to 2
+ * (GGA) / 1 (LDA) only.  OpenMP over grid sub-blocks.
+ */
+void SOCDFTrks_dR_rho(double *R, double *ao, double *d, int xctype, int nvar,
+                      int ngrid, int nao, int *atom_of, int natm)
+{
+        const size_t G = ngrid;
+        const int gga = xctype >= 1;
+        const int nblk = (ngrid + BLK - 1) / BLK;
+        memset(R, 0, sizeof(double) * 3 * nvar * natm * G);
+#pragma omp parallel
+{
+        int ib, mu, p, x, j;
+#pragma omp for schedule(static)
+        for (ib = 0; ib < nblk; ib++) {
+                const int p0 = ib * BLK;
+                const int np = (p0 + BLK < ngrid ? p0 + BLK : ngrid) - p0;
+                for (mu = 0; mu < nao; mu++) {
+                        const int A = atom_of[mu];
+                        const double *d0 = d + (size_t)mu * G + p0;
+                        for (x = 0; x < 3; x++) {
+                                const double *ax = ao + ((size_t)(1 + x) * nao + mu) * G + p0;
+                                double *r = R + (((size_t)x * nvar) * natm + A) * G + p0;
+                                for (p = 0; p < np; p++) r[p] += ax[p] * d0[p];
+                                if (gga) {
+                                        for (j = 0; j < 3; j++) {
+                                                const double *a2 = ao + ((size_t)D2[x][j] * nao + mu) * G + p0;
+                                                const double *dj = d + ((size_t)(1 + j) * nao + mu) * G + p0;
+                                                r = R + (((size_t)x * nvar + 1 + j) * natm + A) * G + p0;
+                                                for (p = 0; p < np; p++) r[p] += a2[p] * d0[p] + ax[p] * dj[p];
+                                        }
+                                }
+                        }
+                }
+        }
+}
+}
