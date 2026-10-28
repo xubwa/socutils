@@ -455,25 +455,30 @@ static void report_parts(dist *d, const char *what, int per) {
 
 /* ---- LOBPCG --------------------------------------------------------------- */
 
-/* The lowest state; *xout: its own rows (normalized), for the caller to free. */
-static double lobpcg(dist *d, int maxit, double tol, double rtol, double shift, int *cycles,
-                     int *converged, double **xout) {
+/* The lowest state; *xout: its own rows (normalized), for the caller to free.
+ * x0: own rows of a start vector (of the symmetry, normalized), or NULL. */
+static double lobpcg(dist *d, const double *x0, int maxit, double tol, double rtol, double shift,
+                     int *cycles, int *converged, double **xout) {
   const int64_t L = d->len;
   double *hd = malloc((size_t)(L + 1) * sizeof(double));
   if (d->nloc) zg_hdiag_d(d->lplan, d->v, hd);
   double *x = calloc((size_t)L + 1, sizeof(double)), *hx = malloc((size_t)(L + 1) * sizeof(double));
   double *t = malloc((size_t)(L + 1) * sizeof(double)), *ht = malloc((size_t)(L + 1) * sizeof(double));
   double *p = NULL, *hp = NULL;
-  /* start: the lowest diagonal element, symmetrized */
-  struct { double v; int r; } loc = {INFINITY, rank_}, glob;
-  int64_t imin = -1;
-  /* (odd parity: off the diagonal a = b, where the symmetrized vector vanishes) */
-  for (int64_t i = 0; i < L; ++i)
-    if (hd[i] < loc.v && (d->parity > 0 || d->lo + i / d->n != i % d->n)) loc.v = hd[i], imin = i;
-  MPI_Allreduce(&loc, &glob, 1, MPI_DOUBLE_INT, MPI_MINLOC, comm_);
-  if (rank_ == glob.r) x[imin] = 1;
-  symmetrize(d, x);
-  scal(1 / sqrt(gdot(x, x, L)), x, L);
+  if (x0) {
+    copy(x0, x, L);
+  } else {
+    /* start: the lowest diagonal element, symmetrized */
+    struct { double v; int r; } loc = {INFINITY, rank_}, glob;
+    int64_t imin = -1;
+    /* (odd parity: off the diagonal a = b, where the symmetrized vector vanishes) */
+    for (int64_t i = 0; i < L; ++i)
+      if (hd[i] < loc.v && (d->parity > 0 || d->lo + i / d->n != i % d->n)) loc.v = hd[i], imin = i;
+    MPI_Allreduce(&loc, &glob, 1, MPI_DOUBLE_INT, MPI_MINLOC, comm_);
+    if (rank_ == glob.r) x[imin] = 1;
+    symmetrize(d, x);
+    scal(1 / sqrt(gdot(x, x, L)), x, L);
+  }
   sigma(d, x, hx);
   double e = 0, e_old = NAN, rnorm = 0;
   const double t0 = now();
@@ -608,17 +613,159 @@ static void finish(dist *d, const double *x, double e_pen, double *out, double *
   free(gw), free(gm);
 }
 
+/* ---- warm start between calls ------------------------------------------ */
+
+/* A solution kept for the next calls: its sorted strings, the row ranges,
+ * the own rows of the vector (on this process). */
+typedef struct {
+  int64_t n, *strs, *rows, lo, nloc;
+  int size, parity;
+  double e, *x;
+} saved;
+static saved prev_, cand_; /* the start of this round, the best of this round */
+
+static void saved_free(saved *s) {
+  free(s->strs), free(s->rows), free(s->x);
+  memset(s, 0, sizeof *s);
+}
+
+/* Keep x (taking it over) as cand_ if cand_ is empty or e is lower. */
+static int keep_candidate(dist *d, double *x, double e) {
+  if (cand_.x && !(e < cand_.e)) return 0;
+  saved_free(&cand_);
+  cand_.n = d->n, cand_.lo = d->lo, cand_.nloc = d->nloc, cand_.size = size_;
+  cand_.parity = d->parity, cand_.e = e, cand_.x = x;
+  cand_.strs = malloc((size_t)(d->n + 1) * sizeof(int64_t));
+  memcpy(cand_.strs, d->strs, (size_t)d->n * sizeof(int64_t));
+  cand_.rows = malloc((size_t)(size_ + 1) * sizeof(int64_t));
+  memcpy(cand_.rows, d->rows, (size_t)(size_ + 1) * sizeof(int64_t));
+  return 1;
+}
+
+/* x0 (own rows) = the saved vector s restricted to the space of d (its
+ * elements whose alpha and beta strings are both in d), symmetrized and
+ * normalized.  Old rows are fetched from their owners in blocks of rows
+ * (pairwise exchanges).  Returns the squared norm of the restriction (the
+ * weight of the old vector kept), 0 if nothing of it is in the space. */
+static double warm_vector(dist *d, const saved *s, double *x0) {
+  const int64_t n = d->n, no = s->n;
+  memset(x0, 0, (size_t)d->len * sizeof(double));
+  int64_t *colmap = malloc((size_t)(n + 1) * sizeof(int64_t));
+#pragma omp parallel for schedule(static)
+  for (int64_t b = 0; b < n; ++b) colmap[b] = find(s->strs, no, d->strs[b]);
+  /* the old rows each own row needs, grouped by their owner */
+  int64_t *want_cnt = calloc(size_, sizeof(int64_t)), *want_off = calloc(size_ + 1, sizeof(int64_t));
+  int64_t *kold = malloc((size_t)(d->nloc + 1) * sizeof(int64_t));
+  int *owner = malloc((size_t)(d->nloc + 1) * sizeof(int));
+  for (int64_t a = 0; a < d->nloc; ++a) {
+    kold[a] = find(s->strs, no, d->strs[d->lo + a]);
+    owner[a] = -1;
+    if (kold[a] < 0) continue;
+    int q = 0;
+    while (kold[a] >= s->rows[q + 1]) ++q;
+    owner[a] = q;
+    want_cnt[q]++;
+  }
+  for (int q = 0; q < size_; ++q) want_off[q + 1] = want_off[q] + want_cnt[q];
+  int64_t *want = malloc((size_t)(want_off[size_] + 1) * sizeof(int64_t)); /* old row places */
+  int64_t *dst = malloc((size_t)(want_off[size_] + 1) * sizeof(int64_t));  /* own new rows */
+  {
+    int64_t *fill = calloc(size_, sizeof(int64_t));
+    for (int64_t a = 0; a < d->nloc; ++a)
+      if (owner[a] >= 0) {
+        const int64_t i = want_off[owner[a]] + fill[owner[a]]++;
+        want[i] = kold[a], dst[i] = a;
+      }
+    free(fill);
+  }
+  int64_t *give_cnt = calloc(size_, sizeof(int64_t)), *give_off = calloc(size_ + 1, sizeof(int64_t));
+  MPI_Alltoall(want_cnt, 1, MPI_INT64_T, give_cnt, 1, MPI_INT64_T, comm_);
+  for (int q = 0; q < size_; ++q) give_off[q + 1] = give_off[q] + give_cnt[q];
+  int64_t *give = malloc((size_t)(give_off[size_] + 1) * sizeof(int64_t));
+  {
+    int *sc = malloc(size_ * sizeof(int)), *so = malloc(size_ * sizeof(int));
+    int *rc = malloc(size_ * sizeof(int)), *ro = malloc(size_ * sizeof(int));
+    for (int q = 0; q < size_; ++q) {
+      sc[q] = (int)want_cnt[q], so[q] = (int)want_off[q];
+      rc[q] = (int)give_cnt[q], ro[q] = (int)give_off[q];
+    }
+    MPI_Alltoallv(want, sc, so, MPI_INT64_T, give, rc, ro, MPI_INT64_T, comm_);
+    free(sc), free(so), free(rc), free(ro);
+  }
+  /* blocks of B rows; every process makes the same number of steps */
+  const int64_t B = no > 0 && (CHUNK / no) > 0 ? CHUNK / no : 1;
+  int64_t mx = 0;
+  for (int q = 0; q < size_; ++q) {
+    if (want_cnt[q] > mx) mx = want_cnt[q];
+    if (give_cnt[q] > mx) mx = give_cnt[q];
+  }
+  MPI_Allreduce(MPI_IN_PLACE, &mx, 1, MPI_INT64_T, MPI_MAX, comm_);
+  const int64_t nblk = (mx + B - 1) / B;
+  const int64_t bl = B < mx ? B : mx;
+  double *sb = malloc((size_t)(bl * no + 1) * sizeof(double));
+  double *rb = malloc((size_t)(bl * no + 1) * sizeof(double));
+  for (int k = 0; k < size_; ++k) {
+    const int dest = (rank_ + k) % size_, src = (rank_ - k + size_) % size_;
+    for (int64_t j = 0; j < nblk; ++j) {
+      const int64_t s0 = j * B, r0 = j * B;
+      int64_t ns = give_cnt[dest] - s0, nr = want_cnt[src] - r0;
+      ns = ns < 0 ? 0 : (ns > B ? B : ns);
+      nr = nr < 0 ? 0 : (nr > B ? B : nr);
+      const int64_t *g = give + give_off[dest] + s0;
+#pragma omp parallel for schedule(static)
+      for (int64_t i = 0; i < ns; ++i)
+        memcpy(sb + i * no, s->x + (g[i] - s->lo) * no, (size_t)no * sizeof(double));
+      if (dest == rank_) memcpy(rb, sb, (size_t)(ns * no) * sizeof(double));
+      else sendrecv(sb, ns * no, dest, rb, nr * no, src);
+      const int64_t *t = dst + want_off[src] + r0;
+#pragma omp parallel for schedule(static)
+      for (int64_t i = 0; i < nr; ++i) {
+        double *row = x0 + t[i] * n;
+        const double *old = rb + i * no;
+        for (int64_t b = 0; b < n; ++b)
+          if (colmap[b] >= 0) row[b] = old[colmap[b]];
+      }
+    }
+  }
+  free(sb), free(rb), free(give), free(give_cnt), free(give_off), free(want), free(dst);
+  free(want_cnt), free(want_off), free(kold), free(owner), free(colmap);
+  symmetrize(d, x0);
+  const double w = gdot(x0, x0, d->len);
+  if (w > 0) scal(1 / sqrt(w), x0, d->len);
+  return w;
+}
+
+/* Start a new round: the best solution kept in the last one becomes the
+ * start of the next calls (zgd_solve with warm & 1). */
+void zgd_promote(void) {
+  if (!cand_.x) return;
+  saved_free(&prev_);
+  prev_ = cand_;
+  memset(&cand_, 0, sizeof cand_);
+}
+
+/* Forget the kept solutions. */
+void zgd_reset(void) {
+  saved_free(&prev_);
+  saved_free(&cand_);
+}
+
 /* The library entry: the lowest state of H (+ s2pen S^2) in the product
  * space strs x strs (nstr int64 strings, any order, no repeats; nalpha =
  * nbeta = nelec / 2) of the states with C[b][a] = parity C[a][b], on the
  * communicator comm_f (Fortran handle; every process calls with the same
  * arguments).  h1: norb^2, eri: norb^4 (pq|rs), no core energy.
- * out[6] = {E of H + s2pen S^2, <H>, <S^2> (NaN if s2pen = 0), iterations,
- * converged, seconds}; occ[norb], maxabs[nstr], wa[nstr] as finish (any may
- * be NULL), the same on every process.  Errors abort the communicator. */
+ * warm: bit 1, start from the solution of the last round (zgd_promote) if
+ * there is one, of the same parity and number of processes, and it keeps
+ * a weight >= 1e-4 in this space (else the lowest diagonal element); bit 2,
+ * keep this solution if it is the lowest of the round so far.
+ * out[7] = {E of H + s2pen S^2, <H>, <S^2> (NaN if s2pen = 0), iterations,
+ * converged, seconds, weight of the warm start (-1: none)}; occ[norb],
+ * maxabs[nstr], wa[nstr] as finish (any may be NULL), the same on every
+ * process.  Errors abort the communicator. */
 int zgd_solve(int comm_f, int norb, int nelec, const double *h1, const double *eri, int64_t nstr,
               const int64_t *strs, int parity, double s2pen, double tol, double rtol, int maxit,
-              int verbose, double *out, double *occ, double *maxabs, double *wa) {
+              int verbose, int warm, double *out, double *occ, double *maxabs, double *wa) {
   comm_ = MPI_Comm_f2c((MPI_Fint)comm_f);
   MPI_Comm_rank(comm_, &rank_);
   MPI_Comm_size(comm_, &size_);
@@ -639,11 +786,21 @@ int zgd_solve(int comm_f, int norb, int nelec, const double *h1, const double *e
     fflush(stdout);
   }
   int cycles, conv;
-  double *x;
-  const double e = lobpcg(&d, maxit, tol, rtol, 1e-3, &cycles, &conv, &x);
+  double *x, *x0 = NULL, w = -1;
+  if ((warm & 1) && prev_.x && prev_.parity == parity && prev_.size == size_) {
+    x0 = malloc((size_t)(d.len + 1) * sizeof(double));
+    w = warm_vector(&d, &prev_, x0);
+    if (rank_ == 0 && verbose_) {
+      printf("zgd_solve: warm start, weight of the last solution in this space %.6f\n", w);
+      fflush(stdout);
+    }
+    if (w < 1e-4) free(x0), x0 = NULL;
+  }
+  const double e = lobpcg(&d, x0, maxit, tol, rtol, 1e-3, &cycles, &conv, &x);
+  free(x0);
   finish(&d, x, e, out, occ, maxabs, wa);
-  out[3] = cycles, out[4] = conv, out[5] = now() - t0;
-  free(x);
+  out[3] = cycles, out[4] = conv, out[5] = now() - t0, out[6] = w;
+  if (!((warm & 2) && keep_candidate(&d, x, e))) free(x);
   dist_free(&d);
   return 0;
 }
@@ -718,7 +875,7 @@ int main(int argc, char **argv) {
   int cycles, conv;
   const double tl = now();
   double *x, res[3];
-  const double e = lobpcg(&d, maxit, tol, rtol, shift, &cycles, &conv, &x);
+  const double e = lobpcg(&d, NULL, maxit, tol, rtol, shift, &cycles, &conv, &x);
   const double t_solve = now() - tl;
   finish(&d, x, e, res, NULL, NULL, NULL);
   double pk = peak_gb();
