@@ -55,7 +55,7 @@ def _real_ylm(unit, lmax, wang):
 
 
 class GAPWJ:
-    def __init__(self, th, L=4, eta=2.0, lmax=12, nrad=150, nang=590):
+    def __init__(self, th, L=4, eta=2.0, lmax=12, nrad=600, nang=590):
         '''th: a THCExchange after build_common (split cell, smooth functions on the uniform grid, kernels).'''
         self.th, self.L, self.eta, self.lmax, self.nrad, self.nang = th, L, eta, lmax, nrad, nang
         self.S = th.cell.pbc_intor('int1e_ovlp')

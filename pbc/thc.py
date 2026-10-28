@@ -328,7 +328,70 @@ class THCExchange:
                     self.timings['rsdf'], self.timings['local fit'], self.timings['grid'], self.timings['pivots']))
 
     # ---- THC factors for N_mu points
+    def _build_thc_stream(self, pts, cut=1e-13, nb=None, gchunk=20000, rchunk=100000):
+        '''V, A, A_lr and the LR rows Xi of the ISDF vectors without storing xi (N_mu x ngrid). Blocks b of mu:
+        xi_b = G+[b] Gc with the Gram columns Gc[P, r] = (phi(r_P) . phi(r))^2 regenerated in grid chunks, its FFT
+        gives A[:, b], A_lr[:, b] and Xi[:, b] as in the full build, and V[b] = int (v * xi_b) Gc^T G+ (one G+ on
+        the right of an explicitly formed xi_b; V = G+ Z G+ from Z = Gc v Gc^T loses ~1e-3 Eh to the conditioning).'''
+        vol, ng, mesh = self.cell.vol, self.ng, self.mesh
+        hshape = (mesh[0], mesh[1], mesh[2] // 2 + 1)
+        phi = self.phi
+        PP = phi[pts]
+        nmu = len(pts)
+        e, v = scipy.linalg.eigh((PP @ PP.T) ** 2)
+        keep = e > cut * e.max()
+        Ginv = (v[:, keep] / e[keep]) @ v[:, keep].T
+        if nb is None:
+            nb = max(64, min(nmu, int(getattr(self, 'stream_gb', 30) * 1e9 / (8 * ng * 3))))
+        V = np.zeros((nmu, nmu))
+        A = np.zeros((self.auxmol.nao, nmu))
+        A_lr = np.zeros((self.auxmol.nao, nmu))
+        sw = self.fG * self.w_sr / vol
+        swl = self.fG * (self.w_vec - self.w_sr) / vol
+        local = getattr(self, 'local_rcut', None)
+        if local:
+            Xi = np.empty((2 * len(self.r.lr_G), nmu))
+        for b0 in range(0, nmu, nb):
+            b1 = min(b0 + nb, nmu)
+            xi = np.empty((b1 - b0, ng))
+            for g0 in range(0, ng, rchunk):
+                g1 = min(g0 + rchunk, ng)
+                xi[:, g0:g1] = Ginv[b0:b1] @ ((PP @ phi[g0:g1].T) ** 2)
+            Xh = scipy.fft.rfftn(xi.reshape(b1 - b0, *mesh), axes=(1, 2, 3), workers=-1).reshape(b1 - b0, -1)
+            Xh *= vol / ng                                              # xi(G) = int_cell xi(r) e^{-iGr}
+            for g0 in range(0, len(self.Gv), gchunk):
+                g1 = min(g0 + gchunk, len(self.Gv))
+                Pg = ft_ao(self.auxmol, self.Gv[g0:g1])               # (nG, naux)
+                A[:, b0:b1] += ((Pg.conj() * sw[g0:g1, None]).T @ Xh[:, g0:g1].T).real
+                A_lr[:, b0:b1] += ((Pg.conj() * swl[g0:g1, None]).T @ Xh[:, g0:g1].T).real
+            if local:
+                Xi[:, b0:b1] = self._lr_rows_of_xi(Xh)
+            # potential of the block in real space, (v * xi_b)(r) = irfft(w_vec xi_b(G)) ng / vol
+            xi = scipy.fft.irfftn((Xh * self.w_vec[None]).reshape((b1 - b0,) + hshape), s=tuple(mesh),
+                                  axes=(1, 2, 3), workers=-1).reshape(b1 - b0, -1)
+            Xh = None
+            Vb = np.zeros((b1 - b0, nmu))
+            for g0 in range(0, ng, rchunk):
+                g1 = min(g0 + rchunk, ng)
+                Vb += xi[:, g0:g1] @ ((PP @ phi[g0:g1].T) ** 2).T
+            V[b0:b1] = Vb @ Ginv                                        # int (v * xi_b) xi^T (Parseval)
+            xi = Vb = None
+        self.V = .5 * (V + V.T)
+        self.A, self.A_lr = A, A_lr
+        if local:
+            self.Xi_lr = Xi
+        return int(keep.sum())
+
     def build_thc(self, nmu):
+        if getattr(self, 'stream', False):
+            t = time.time()
+            pts = self.piv[:nmu]
+            rank = self._build_thc_stream(pts)
+            self.pts = pts
+            self.phimu = self.phi[pts]
+            self.pair_err = (np.nan, np.nan)
+            self.timings.update({'V, A (streamed)': time.time() - t})
+            return rank
         t = time.time()
         if self.selector in ('kmeans', 'kmeans+chol'):
             weight = np.einsum('ri,ri->r', self.phi, self.phi) ** 2
@@ -750,6 +813,8 @@ class THCJK:
                               self.nuc_zeta, local_rcut=self.local_rcut)
         self.th.dense_c = not self.local_rcut                          # route 1: the sparse C only
         self.th.gapw_opts = getattr(self, 'gapw_opts', {})
+        self.th.stream = getattr(self, 'stream', False)
+        self.th.stream_gb = getattr(self, 'stream_gb', 30)
         self.th.build_common()
         self.th.build_thc(int(round(self.nmu_factor * len(self.th.smooth))))
         self.S = cell.pbc_intor('int1e_ovlp')
