@@ -42,8 +42,9 @@ from pyscf import ao2mo
 
 from socutils.hci import gasci
 
-# Largest MPI message in elements (counts are C ints).
-_CHUNK = 1 << 28
+# Largest MPI message in elements (counts are C ints); ZGASCI_DIST_CHUNK overrides (tests).
+import os as _os
+_CHUNK = int(_os.environ.get('ZGASCI_DIST_CHUNK', 1 << 28))
 
 
 def _block(fn, src, dst):
@@ -158,17 +159,18 @@ class DistProductCI:
             self._sendrecv_var(send, dest, recv, src)
 
     def _sendrecv_var(self, send, dest, recv, src):
-        '''Sendrecv of buffers of any lengths in chunks of _CHUNK elements;
-        the partner's loop has as many steps (its lengths are these swapped).'''
+        '''Send to dest and receive from src, buffers of any lengths, in
+        chunks of _CHUNK elements, each chunk its own message tagged by its
+        index: the two sides need not agree on a number of steps (the
+        lengths of a pair differ, e.g. in the halo exchange).'''
         s = send.reshape(-1)
         rv = recv.reshape(-1)
-        n = max(s.size, rv.size)
-        i = 0
-        while True:
-            self.comm.Sendrecv(s[i:i + _CHUNK], dest=dest, recvbuf=rv[i:i + _CHUNK], source=src)
-            i += _CHUNK
-            if i >= n:
-                break
+        reqs = [self.comm.Irecv(rv[i:i + _CHUNK], source=src, tag=k)
+                for k, i in enumerate(range(0, rv.size, _CHUNK))]
+        reqs += [self.comm.Isend(s[i:i + _CHUNK], dest=dest, tag=k)
+                 for k, i in enumerate(range(0, s.size, _CHUNK))]
+        from mpi4py import MPI
+        MPI.Request.Waitall(reqs)
 
     # -- distributed vectors -------------------------------------------------
 
