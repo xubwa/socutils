@@ -27,6 +27,13 @@
  * Options: --tol E (energy, 1e-8)  --rtol R (residual norm, 1e-3)
  *          --maxit N (40)  --parity +-1 (1)  --bench K (time K products
  *          first, 3)  --shift S (preconditioner floor, 1e-3)
+ *          --s2pen L (linear spin penalty H + L S^2, 0)
+ *
+ * Library (libzgasci_dist.so): zgd_solve, the same solve on a communicator
+ * of the caller (a Fortran handle, mpi4py comm.py2f()) from integrals in
+ * memory, returning the energies, the orbital occupations and per string
+ * the largest |C| of its row and its marginal weight (for the carryover of
+ * SQD); socutils.hci.gasci_mpi.make_sci_solver wraps it.
  */
 #include <math.h>
 #include <mpi.h>
@@ -44,12 +51,14 @@ extern void dsygv_(const int *itype, const char *jobz, const char *uplo, const i
                    double *work, const int *lwork, int *info);
 
 static int rank_, size_;
+static MPI_Comm comm_;
+static int verbose_ = 1;
 /* Largest MPI message in doubles; ZGASCI_DIST_CHUNK overrides (tests). */
 static int64_t CHUNK = (int64_t)1 << 28;
 
 static void die(const char *msg) {
   fprintf(stderr, "zgasci_dist (rank %d): %s\n", rank_, msg);
-  MPI_Abort(MPI_COMM_WORLD, 1);
+  MPI_Abort(comm_, 1);
 }
 
 static double now(void) { return MPI_Wtime(); }
@@ -149,6 +158,23 @@ static double *spin_orbital_v(const fcidump *f, int beta_only) {
   return v;
 }
 
+/* v += lam S^2 (nalpha = nbeta: S_z = 0) in the format of spin_orbital_v, as
+ * socutils.hci.gasci.s2_antisymmetrized: S^2 = N_beta - sum_pq a+_{p alpha}
+ * a+_{q beta} a_{p beta} a_{q alpha}; N_beta = N / 2 folded in as the
+ * diagonal 2 (1/2) / (N - 1) of every pair.  beta_only: the beta-beta pairs. */
+static void add_s2(double *v, int norb, int nelec, double lam, int beta_only) {
+  const int ns = 2 * norb;
+  const int64_t npair = (int64_t)ns * (ns - 1) / 2;
+#define PAIR(a, b) ((int64_t)(b) * ((b) - 1) / 2 + (a))
+  for (int q = 1; q < ns; ++q)
+    for (int p = 0; p < q; ++p)
+      if (!beta_only || p >= norb) v[PAIR(p, q) * (npair + 1)] += lam / (nelec - 1);
+  if (!beta_only)
+    for (int p = 0; p < norb; ++p)
+      for (int q = 0; q < norb; ++q) v[PAIR(p, norb + q) * npair + PAIR(q, norb + p)] -= lam;
+#undef PAIR
+}
+
 /* ---- MPI helpers -------------------------------------------------------- */
 
 /* Send ns doubles to dest and receive nr from src, both in chunks of CHUNK
@@ -161,11 +187,11 @@ static void sendrecv(const double *s, int64_t ns, int dest, double *r, int64_t n
   int nreq = 0;
   for (int64_t k = 0; k < kr; ++k) {
     const int64_t i = k * CHUNK, b = nr - i < CHUNK ? nr - i : CHUNK;
-    MPI_Irecv(r + i, (int)b, MPI_DOUBLE, src, (int)k, MPI_COMM_WORLD, &req[nreq++]);
+    MPI_Irecv(r + i, (int)b, MPI_DOUBLE, src, (int)k, comm_, &req[nreq++]);
   }
   for (int64_t k = 0; k < ks; ++k) {
     const int64_t i = k * CHUNK, a = ns - i < CHUNK ? ns - i : CHUNK;
-    MPI_Isend(s + i, (int)a, MPI_DOUBLE, dest, (int)k, MPI_COMM_WORLD, &req[nreq++]);
+    MPI_Isend(s + i, (int)a, MPI_DOUBLE, dest, (int)k, comm_, &req[nreq++]);
   }
   MPI_Waitall(nreq, req, MPI_STATUSES_IGNORE);
   free(req);
@@ -175,7 +201,7 @@ static double gdot(const double *x, const double *y, int64_t len) {
   double s = 0;
 #pragma omp parallel for reduction(+ : s) schedule(static)
   for (int64_t i = 0; i < len; ++i) s += x[i] * y[i];
-  MPI_Allreduce(MPI_IN_PLACE, &s, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+  MPI_Allreduce(MPI_IN_PLACE, &s, 1, MPI_DOUBLE, MPI_SUM, comm_);
   return s;
 }
 
@@ -200,9 +226,12 @@ typedef struct {
   int norb, nalpha, parity;
   int64_t n, lo, hi, nloc, len; /* strings, own rows, own elements */
   int64_t *rows;                /* size + 1 */
-  int64_t *strs;
+  int64_t *strs;                /* sorted */
+  int64_t *perm;                /* strs[k] = the input string perm[k] */
   zg_plan *plan, *lplan;
-  double *v, *v_bb;
+  double *v, *v_bb;             /* H + s2pen S^2 */
+  double *v_h, *v_bb_h;         /* H, if s2pen != 0 */
+  double s2pen;
   /* halo */
   int64_t nhalo, *smap;
   int64_t *hsend_cnt, *hsend_off, *hsend_rows; /* rows I send to q (global places) */
@@ -264,7 +293,7 @@ static void halo_setup(dist *d) {
   for (int q = 0; q < size_; ++q) d->hrecv_off[q + 1] = d->hrecv_off[q] + d->hrecv_cnt[q];
   /* who wants which of my rows */
   d->hsend_cnt = calloc(size_, sizeof(int64_t));
-  MPI_Alltoall(d->hrecv_cnt, 1, MPI_INT64_T, d->hsend_cnt, 1, MPI_INT64_T, MPI_COMM_WORLD);
+  MPI_Alltoall(d->hrecv_cnt, 1, MPI_INT64_T, d->hsend_cnt, 1, MPI_INT64_T, comm_);
   d->hsend_off = calloc(size_ + 1, sizeof(int64_t));
   for (int q = 0; q < size_; ++q) d->hsend_off[q + 1] = d->hsend_off[q] + d->hsend_cnt[q];
   d->hsend_rows = malloc((size_t)(d->hsend_off[size_] + 1) * sizeof(int64_t));
@@ -276,16 +305,29 @@ static void halo_setup(dist *d) {
     sc[q] = (int)d->hrecv_cnt[q], so[q] = (int)d->hrecv_off[q];
     rc[q] = (int)d->hsend_cnt[q], ro[q] = (int)d->hsend_off[q];
   }
-  MPI_Alltoallv(want, sc, so, MPI_INT64_T, d->hsend_rows, rc, ro, MPI_INT64_T, MPI_COMM_WORLD);
+  MPI_Alltoallv(want, sc, so, MPI_INT64_T, d->hsend_rows, rc, ro, MPI_INT64_T, comm_);
   free(sc), free(so), free(rc), free(ro), free(want), free(reach);
 }
 
-static void dist_init(dist *d, const fcidump *f, int64_t *strs, int64_t n, int parity) {
+static int cmp_pair(const void *a, const void *b) { return cmp64(a, b); }
+
+static void dist_init(dist *d, const fcidump *f, const int64_t *strs_in, int64_t n, int parity,
+                      double s2pen) {
   memset(d, 0, sizeof *d);
   d->norb = f->norb;
   d->nalpha = f->nelec / 2;
   d->parity = parity;
-  qsort(strs, n, sizeof(int64_t), cmp64);
+  d->s2pen = s2pen;
+  /* sort a copy, keeping where each string came from */
+  int64_t *pairs = malloc((size_t)(2 * n + 1) * sizeof(int64_t));
+  for (int64_t k = 0; k < n; ++k) pairs[2 * k] = strs_in[k], pairs[2 * k + 1] = k;
+  qsort(pairs, n, 2 * sizeof(int64_t), cmp_pair);
+  int64_t *strs = malloc((size_t)(n + 1) * sizeof(int64_t));
+  d->perm = malloc((size_t)(n + 1) * sizeof(int64_t));
+  for (int64_t k = 0; k < n; ++k) strs[k] = pairs[2 * k], d->perm[k] = pairs[2 * k + 1];
+  free(pairs);
+  for (int64_t k = 1; k < n; ++k)
+    if (strs[k] == strs[k - 1]) die("repeated strings");
   d->strs = strs;
   d->n = n;
   d->rows = malloc((size_ + 1) * sizeof(int64_t));
@@ -306,6 +348,15 @@ static void dist_init(dist *d, const fcidump *f, int64_t *strs, int64_t n, int p
   }
   d->v = spin_orbital_v(f, 0);
   d->v_bb = spin_orbital_v(f, 1);
+  if (s2pen != 0) {
+    const int64_t np2 = (int64_t)ns * (ns - 1) / 2 * ((int64_t)ns * (ns - 1) / 2);
+    d->v_h = malloc((size_t)np2 * sizeof(double));
+    d->v_bb_h = malloc((size_t)np2 * sizeof(double));
+    memcpy(d->v_h, d->v, (size_t)np2 * sizeof(double));
+    memcpy(d->v_bb_h, d->v_bb, (size_t)np2 * sizeof(double));
+    add_s2(d->v, f->norb, f->nelec, s2pen, 0);
+    add_s2(d->v_bb, f->norb, f->nelec, s2pen, 1);
+  }
   halo_setup(d);
   d->zt = malloc((size_t)(d->len + 1) * sizeof(double));
   if (d->nhalo) d->hbuf = malloc((size_t)((d->nloc + d->nhalo) * n + 1) * sizeof(double));
@@ -320,6 +371,16 @@ static void dist_init(dist *d, const fcidump *f, int64_t *strs, int64_t n, int p
   d->sbuf_len = smax, d->rbuf_len = rmax;
   d->sbuf = malloc((size_t)smax * sizeof(double));
   d->rbuf = malloc((size_t)rmax * sizeof(double));
+}
+
+static void dist_free(dist *d) {
+  if (d->lplan && d->lplan != d->plan) zg_plan_free(d->lplan);
+  if (d->plan) zg_plan_free(d->plan);
+  free(d->strs), free(d->perm), free(d->rows);
+  free(d->v), free(d->v_bb), free(d->v_h), free(d->v_bb_h);
+  free(d->smap), free(d->hsend_cnt), free(d->hsend_off), free(d->hsend_rows);
+  free(d->hrecv_cnt), free(d->hrecv_off), free(d->hbuf), free(d->zt), free(d->sbuf), free(d->rbuf);
+  memset(d, 0, sizeof *d);
 }
 
 /* out = the own rows of X^T (X distributed by rows). */
@@ -384,7 +445,7 @@ static void sigma(dist *d, const double *c, double *out) {
 
 static void report_parts(dist *d, const char *what, int per) {
   double t[5] = {d->t_z, d->t_tr, d->t_halo, d->t_ab, d->t_sig};
-  MPI_Allreduce(MPI_IN_PLACE, t, 5, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+  MPI_Allreduce(MPI_IN_PLACE, t, 5, MPI_DOUBLE, MPI_MAX, comm_);
   const double k = per ? (d->nsig ? d->nsig : 1) : 1;
   if (rank_ == 0)
     printf("%s: sigma %.2f s (max over procs: Z %.2f  transpose %.2f  halo %.2f  (AB,AB) %.2f)%s\n",
@@ -394,8 +455,9 @@ static void report_parts(dist *d, const char *what, int per) {
 
 /* ---- LOBPCG --------------------------------------------------------------- */
 
+/* The lowest state; *xout: its own rows (normalized), for the caller to free. */
 static double lobpcg(dist *d, int maxit, double tol, double rtol, double shift, int *cycles,
-                     int *converged) {
+                     int *converged, double **xout) {
   const int64_t L = d->len;
   double *hd = malloc((size_t)(L + 1) * sizeof(double));
   if (d->nloc) zg_hdiag_d(d->lplan, d->v, hd);
@@ -405,8 +467,10 @@ static double lobpcg(dist *d, int maxit, double tol, double rtol, double shift, 
   /* start: the lowest diagonal element, symmetrized */
   struct { double v; int r; } loc = {INFINITY, rank_}, glob;
   int64_t imin = -1;
-  for (int64_t i = 0; i < L; ++i) if (hd[i] < loc.v) loc.v = hd[i], imin = i;
-  MPI_Allreduce(&loc, &glob, 1, MPI_DOUBLE_INT, MPI_MINLOC, MPI_COMM_WORLD);
+  /* (odd parity: off the diagonal a = b, where the symmetrized vector vanishes) */
+  for (int64_t i = 0; i < L; ++i)
+    if (hd[i] < loc.v && (d->parity > 0 || d->lo + i / d->n != i % d->n)) loc.v = hd[i], imin = i;
+  MPI_Allreduce(&loc, &glob, 1, MPI_DOUBLE_INT, MPI_MINLOC, comm_);
   if (rank_ == glob.r) x[imin] = 1;
   symmetrize(d, x);
   scal(1 / sqrt(gdot(x, x, L)), x, L);
@@ -420,7 +484,7 @@ static double lobpcg(dist *d, int maxit, double tol, double rtol, double shift, 
     copy(hx, t, L);
     axpy(-e, x, t, L);
     rnorm = sqrt(gdot(t, t, L));
-    if (rank_ == 0) {
+    if (rank_ == 0 && verbose_) {
       printf("  lobpcg %3d  E %.12f  dE %.2e  |r| %.2e  t %.1f s  peak %.1f GB\n", it, e,
              isnan(e_old) ? 0.0 : e - e_old, rnorm, now() - t0, peak_gb());
       fflush(stdout);
@@ -432,8 +496,9 @@ static double lobpcg(dist *d, int maxit, double tol, double rtol, double shift, 
     e_old = e;
 #pragma omp parallel for schedule(static)
     for (int64_t i = 0; i < L; ++i) {
-      double dd = hd[i] - e;
-      if (fabs(dd) < shift) dd = shift;
+      /* max(|hd - e|, shift): positive definite, as LOBPCG needs (hd - e
+       * changes sign e.g. with an S^2 penalty and odd parity) */
+      const double dd = fmax(fabs(hd[i] - e), shift);
       t[i] /= -dd;
     }
     symmetrize(d, t);
@@ -488,20 +553,107 @@ static double lobpcg(dist *d, int maxit, double tol, double rtol, double shift, 
     }
   }
   *cycles = it + 1;
-  if (rank_ == 0) {
+  if (rank_ == 0 && verbose_) {
     printf("lobpcg: %d iterations, converged %d, |r| %.2e, %.1f s\n", *cycles, *converged, rnorm,
            now() - t0);
     fflush(stdout);
   }
-  free(hd), free(x), free(hx), free(t), free(ht), free(p), free(hp);
+  free(hd), free(hx), free(t), free(ht), free(p), free(hp);
+  *xout = x;
   return e;
+}
+
+/* After the solve of x (own rows, normalized; e_pen = <x|H + s2pen S^2|x>):
+ * out = {e_pen, <H>, <S^2> (NaN without a penalty)}, one more product if
+ * penalized; per string in the input order the largest |C| of its row (=
+ * of its column) and its weight sum_b C[a][b]^2, and occ[p] = sum_a
+ * weight[a] n_p(a), the alpha (= beta) occupations. */
+static void finish(dist *d, const double *x, double e_pen, double *out, double *occ,
+                   double *maxabs, double *wa) {
+  const int64_t n = d->n, L = d->len;
+  out[0] = out[1] = e_pen, out[2] = NAN;
+  if (d->s2pen != 0) {
+    double *hx = malloc((size_t)(L + 1) * sizeof(double));
+    double *v = d->v, *v_bb = d->v_bb;
+    d->v = d->v_h, d->v_bb = d->v_bb_h;
+    sigma(d, x, hx);
+    d->v = v, d->v_bb = v_bb;
+    out[1] = gdot(x, hx, L);
+    out[2] = (e_pen - out[1]) / d->s2pen;
+    free(hx);
+  }
+  double *gw = calloc((size_t)n + 1, sizeof(double)), *gm = calloc((size_t)n + 1, sizeof(double));
+#pragma omp parallel for schedule(static)
+  for (int64_t a = d->lo; a < d->hi; ++a) {
+    const double *row = x + (a - d->lo) * n;
+    double w = 0, m = 0;
+    for (int64_t b = 0; b < n; ++b) {
+      w += row[b] * row[b];
+      if (fabs(row[b]) > m) m = fabs(row[b]);
+    }
+    gw[a] = w, gm[a] = m;
+  }
+  MPI_Allreduce(MPI_IN_PLACE, gw, (int)n, MPI_DOUBLE, MPI_SUM, comm_);
+  MPI_Allreduce(MPI_IN_PLACE, gm, (int)n, MPI_DOUBLE, MPI_MAX, comm_);
+  if (occ) {
+    for (int p = 0; p < d->norb; ++p) occ[p] = 0;
+    for (int64_t k = 0; k < n; ++k)
+      for (int p = 0; p < d->norb; ++p)
+        if ((d->strs[k] >> p) & 1) occ[p] += gw[k];
+  }
+  for (int64_t k = 0; k < n; ++k) {
+    if (wa) wa[d->perm[k]] = gw[k];
+    if (maxabs) maxabs[d->perm[k]] = gm[k];
+  }
+  free(gw), free(gm);
+}
+
+/* The library entry: the lowest state of H (+ s2pen S^2) in the product
+ * space strs x strs (nstr int64 strings, any order, no repeats; nalpha =
+ * nbeta = nelec / 2) of the states with C[b][a] = parity C[a][b], on the
+ * communicator comm_f (Fortran handle; every process calls with the same
+ * arguments).  h1: norb^2, eri: norb^4 (pq|rs), no core energy.
+ * out[6] = {E of H + s2pen S^2, <H>, <S^2> (NaN if s2pen = 0), iterations,
+ * converged, seconds}; occ[norb], maxabs[nstr], wa[nstr] as finish (any may
+ * be NULL), the same on every process.  Errors abort the communicator. */
+int zgd_solve(int comm_f, int norb, int nelec, const double *h1, const double *eri, int64_t nstr,
+              const int64_t *strs, int parity, double s2pen, double tol, double rtol, int maxit,
+              int verbose, double *out, double *occ, double *maxabs, double *wa) {
+  comm_ = MPI_Comm_f2c((MPI_Fint)comm_f);
+  MPI_Comm_rank(comm_, &rank_);
+  MPI_Comm_size(comm_, &size_);
+  verbose_ = verbose;
+  if (getenv("ZGASCI_DIST_CHUNK") && atol(getenv("ZGASCI_DIST_CHUNK")) > 0)
+    CHUNK = atol(getenv("ZGASCI_DIST_CHUNK"));
+  if (nelec % 2) die("nalpha = nbeta is required");
+  if (parity != 1 && parity != -1) die("parity must be +1 or -1");
+  if (nstr > INT32_MAX) die("more strings than an MPI count");
+  const double t0 = now();
+  fcidump f = {norb, nelec, 0.0, (double *)h1, (double *)eri};
+  dist d;
+  dist_init(&d, &f, strs, nstr, parity, s2pen);
+  if (rank_ == 0 && verbose_) {
+    printf("zgd_solve: %d processes x %d threads; norb %d nelec %d; strings %ld, dim %.4e; "
+           "setup %.1f s\n", size_, omp_get_max_threads(), norb, nelec, (long)nstr,
+           (double)nstr * nstr, now() - t0);
+    fflush(stdout);
+  }
+  int cycles, conv;
+  double *x;
+  const double e = lobpcg(&d, maxit, tol, rtol, 1e-3, &cycles, &conv, &x);
+  finish(&d, x, e, out, occ, maxabs, wa);
+  out[3] = cycles, out[4] = conv, out[5] = now() - t0;
+  free(x);
+  dist_free(&d);
+  return 0;
 }
 
 int main(int argc, char **argv) {
   int provided;
   MPI_Init_thread(&argc, &argv, MPI_THREAD_FUNNELED, &provided);
-  MPI_Comm_rank(MPI_COMM_WORLD, &rank_);
-  MPI_Comm_size(MPI_COMM_WORLD, &size_);
+  comm_ = MPI_COMM_WORLD;
+  MPI_Comm_rank(comm_, &rank_);
+  MPI_Comm_size(comm_, &size_);
   if (getenv("ZGASCI_DIST_CHUNK") && atol(getenv("ZGASCI_DIST_CHUNK")) > 0)
     CHUNK = atol(getenv("ZGASCI_DIST_CHUNK"));
   if (argc < 3) {
@@ -509,7 +661,7 @@ int main(int argc, char **argv) {
     MPI_Finalize();
     return 1;
   }
-  double tol = 1e-8, rtol = 1e-3, shift = 1e-3;
+  double tol = 1e-8, rtol = 1e-3, shift = 1e-3, s2pen = 0;
   int maxit = 40, parity = 1, bench = 3;
   for (int i = 3; i + 1 < argc; i += 2) {
     if (!strcmp(argv[i], "--tol")) tol = atof(argv[i + 1]);
@@ -518,6 +670,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(argv[i], "--parity")) parity = atoi(argv[i + 1]);
     else if (!strcmp(argv[i], "--bench")) bench = atoi(argv[i + 1]);
     else if (!strcmp(argv[i], "--shift")) shift = atof(argv[i + 1]);
+    else if (!strcmp(argv[i], "--s2pen")) s2pen = atof(argv[i + 1]);
     else die("unknown option");
   }
   const double t0 = now();
@@ -533,11 +686,12 @@ int main(int argc, char **argv) {
   if ((int64_t)fread(strs, 8, n, fp) != n) die("short read of the strings");
   fclose(fp);
   dist d;
-  dist_init(&d, &f, strs, n, parity);
+  dist_init(&d, &f, strs, n, parity, s2pen);
+  free(strs);
   const double t_setup = now() - t0;
   int64_t hmin = d.nhalo, hmax = d.nhalo;
-  MPI_Allreduce(MPI_IN_PLACE, &hmin, 1, MPI_INT64_T, MPI_MIN, MPI_COMM_WORLD);
-  MPI_Allreduce(MPI_IN_PLACE, &hmax, 1, MPI_INT64_T, MPI_MAX, MPI_COMM_WORLD);
+  MPI_Allreduce(MPI_IN_PLACE, &hmin, 1, MPI_INT64_T, MPI_MIN, comm_);
+  MPI_Allreduce(MPI_IN_PLACE, &hmax, 1, MPI_INT64_T, MPI_MAX, comm_);
   if (!rank_) {
     printf("zgasci_dist: %d processes x %d threads; norb %d nelec %d; strings %ld, dim %.4e; "
            "own rows %ld..%ld, halo rows %ld..%ld; setup %.1f s\n",
@@ -552,10 +706,10 @@ int main(int argc, char **argv) {
     symmetrize(&d, x);
     sigma(&d, x, y); /* warm-up */
     d.t_z = d.t_tr = d.t_halo = d.t_ab = d.t_sig = 0, d.nsig = 0;
-    MPI_Barrier(MPI_COMM_WORLD);
+    MPI_Barrier(comm_);
     const double tb = now();
     for (int k = 0; k < bench; ++k) sigma(&d, x, y);
-    MPI_Barrier(MPI_COMM_WORLD);
+    MPI_Barrier(comm_);
     if (!rank_) printf("bench: %d products, %.2f s each (wall)\n", bench, (now() - tb) / bench);
     report_parts(&d, "bench", 1);
     free(x), free(y);
@@ -563,17 +717,22 @@ int main(int argc, char **argv) {
   }
   int cycles, conv;
   const double tl = now();
-  const double e = lobpcg(&d, maxit, tol, rtol, shift, &cycles, &conv);
+  double *x, res[3];
+  const double e = lobpcg(&d, maxit, tol, rtol, shift, &cycles, &conv, &x);
   const double t_solve = now() - tl;
+  finish(&d, x, e, res, NULL, NULL, NULL);
   double pk = peak_gb();
-  MPI_Allreduce(MPI_IN_PLACE, &pk, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+  MPI_Allreduce(MPI_IN_PLACE, &pk, 1, MPI_DOUBLE, MPI_MAX, comm_);
   report_parts(&d, "solve", 0);
   if (!rank_) {
     printf("E %.12f  (E + ECORE; electronic %.12f)  iterations %d  converged %d  products %d  "
            "solve %.1f s (of which sigma %.1f s)  peak memory %.1f GB per process\n",
            e + f.ecore, e, cycles, conv, d.nsig, t_solve, d.t_sig, pk);
+    if (s2pen != 0) printf("<H> + ECORE %.12f  <S^2> %.8f\n", res[1] + f.ecore, res[2]);
     fflush(stdout);
   }
+  free(x);
+  dist_free(&d);
   MPI_Finalize();
   return 0;
 }
