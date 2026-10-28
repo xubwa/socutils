@@ -325,6 +325,57 @@ ProductSpaceCI; an SQD loop (N2 x = 1.00, hardware counts, 400 strings, 3
 batches, 4 iterations, penalty 0.2) on 4 processes follows sqd_run.py
 (ProductSpaceCI) to 5e-8 Eh at every iteration.
 
+Warm start (2026-10-28): zgd_solve keeps the lowest solution of a round
+(warm & 2) and starts the next round from it (zgd_promote, warm & 1): the
+old rows are fetched from their owners in blocks, columns mapped by string,
+the restriction to the new space symmetrized and normalized (used if its
+weight >= 1e-4).  make_sci_solver promotes at each call, i.e. each SQD
+iteration starts from the previous iteration's best.  [4Fe-4S] SQD, 20000
+strings, 4 nodes: iterations 3 and 4 need 10-20% fewer LOBPCG steps (60-62
+against 65-80); iteration 2 (started from the 3375-string space of
+iteration 1) needs more.
+
+### 6d. No symmetry: any alpha and beta lists, nalpha != nbeta, UHF integrals
+
+`zgd_solve_ab` (parity 0; `gasci_mpi.c_solve(..., spin_flip=None)`): the
+excitation tables are those of the strings, as before; only the identity
+(AA,AA) C = parity ((BB,BB) C)^T is lost (C is not symmetric).  So:
+sigma = Z + T_BA(Z_B(T_AB(C))) + Y, with Z_B the same kernel on C held by
+beta rows (a plan of the own beta strings and all alpha strings, the
+(AA,AA) block of v moved onto the beta-beta pairs) and T_AB, T_BA the
+distributed transposes between the two row layouts (`transpose_g`).  One
+more Z and two transposes per product than the symmetric path.  With the
+same lists and nalpha = nbeta the plan of the transposed layout is the
+plan of the own rows (reused).  All three blocks (Z's v_bb, Z_B's v_aa, Y's
+v) are cut from one spin-orbital v, so any operator works.
+UHF integrals (`uhf`): h1 = (h1a, h1b), eri = ((aa|aa), (aa|bb), (bb|bb))
+as pyscf direct_uhf; v takes each spin block from its integrals.  The S^2
+penalty is then H + lam (S^2 - ss), ss = |S_z| (|S_z| + 1), with S^2 = S-
+S+ + S_z (S_z + 1), S+ = sum_pq O_pq a+_{p a} a_{q b}, O = Ca^T S Cb
+(`ovlp`): one-electron (O^T O) on beta, two-electron -O_sr O_pq.  Without
+ovlp (same orbitals) the penalty is the symmetric form of 6b (the constant
+folded uniformly, as the spin flip needs).
+Outputs per side: occupations, max |C| and marginal weight of every alpha
+string (rows) and beta string (columns); `make_sci_solver` takes the
+carryover per sector or merged (symmetrize_spin), as qiskit-addon-sqd's
+default policy.  UHF tensors pass through
+`diagonalize_fermionic_hamiltonian` untouched (it only hands them to the
+solver), with `make_sci_solver(ovlp=...)` for the penalty.
+c_solve broadcasts the integrals and strings of rank 0: orbitals from
+separate SCF runs per process may differ (signs), which made the integrals
+inconsistent between processes in a first test.
+Checks (scripts/ucheck.py, uhfcheck.py, h2o_irreps.py in the SQD study; 1,
+3, 4 processes): N2, different alpha and beta lists, (5,5) and (6,4), with
+and without the penalty, against ProductSpaceCI: E to 4e-9, <S^2> to 2e-8,
+occupations, max |C|, weights to 3e-7.  H2O / 6-31G at twice the bonds, full
+space: UHF-triplet orbitals and RHF orbitals with rotated beta orbitals
+(ovlp = U) give the same energies, (5,5) -80.4761745501, (6,4)
+-80.4470153003 (with the penalty <S^2> 0 and 2), = the lowest roots of the
+C2v irreps (A1 and B1, direct_spin1_symm); pyscf's direct_uhf and
+direct_spin1 without symmetry ended in other irreps there.  With strongly
+rotated beta orbitals the diagonal preconditioner is poor (hundreds of
+LOBPCG steps).
+
 ## 7. What stays for later
 
 * **(AB,AB)** is the larger half of a sigma. Its GEMMs do about 9 times

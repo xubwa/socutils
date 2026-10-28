@@ -381,6 +381,10 @@ def _load_dist():
                                   ctypes.c_double, ctypes.c_int, ctypes.c_int, ctypes.c_int,
                                   p, p, p, p]
         lib.zgd_solve.restype = ctypes.c_int
+        lib.zgd_solve_ab.argtypes = ([ctypes.c_int] * 5 + [p, p, p, ctypes.c_int64, p,
+                                     ctypes.c_int64, p, ctypes.c_int] + [ctypes.c_double] * 3
+                                     + [ctypes.c_int] * 3 + [p] * 7)
+        lib.zgd_solve_ab.restype = ctypes.c_int
         lib.zgd_promote.argtypes = lib.zgd_reset.argtypes = []
         lib.zgd_promote.restype = lib.zgd_reset.restype = None
         _dist_lib = lib
@@ -388,55 +392,125 @@ def _load_dist():
 
 
 def c_solve(h1, eri, norb, nelec, strs, comm=None, spin_flip=1, ss_penalty=0.0, tol=1e-8,
-            rtol=1e-3, maxit=40, verbose=0, warm=0):
-    '''The lowest state in strs x strs by the C driver on comm (collective:
+            rtol=1e-3, maxit=40, verbose=0, warm=0, strs_b=None, ovlp=None):
+    '''The lowest state in strs x strs_b by the C driver on comm (collective:
     every process calls with the same arguments).  h1 (norb, norb), eri any
-    pyscf form of (pq|rs), no core energy; nelec total or (na, nb), na = nb.
-    ss_penalty: H + ss_penalty S^2 (the linear penalty of fix_spin_ with
-    ss = 0).  warm: bit 1, start from the solution kept in the last round
-    (zgd_promote) if it has weight >= 1e-4 in this space; bit 2, keep this
-    solution if it is the lowest of the round (zgasci_dist.c, zgd_solve).
-    Returns a dict: e (<H>), e_penalized, s2 (NaN without a
-    penalty), iterations, converged, time, warm_weight (the weight of the
-    last solution in this space, -1: no warm start), occ (norb, alpha = beta), maxabs
-    and weight (per string of strs: the largest |C| of its row and
-    sum_b C[a, b]^2), the same on every process.'''
+    pyscf form of (pq|rs), no core energy; or UHF integrals (different alpha
+    and beta orbitals): h1 = (h1a, h1b), eri = ((aa|aa), (aa|bb), (bb|bb))
+    (the pyscf direct_uhf order, (p_a q_a | r_b s_b) in the middle), with
+    ovlp[p, q] = <p alpha | q beta> (Ca^T S Cb) for the S^2 penalty; no
+    symmetry then.  nelec total (nalpha = nbeta) or (na, nb).  strs_b None: the same as strs (alpha strings).  spin_flip +-1
+    (same lists, na = nb): only the states with C[b, a] = spin_flip C[a, b];
+    None or 0: no symmetry (any lists, any na, nb).
+    ss_penalty: H + ss_penalty (S^2 - ss), ss = |S_z| (|S_z| + 1) (the
+    linear penalty of fix_spin_).  warm: bit 1, start from the solution kept
+    in the last round (zgd_promote) if it has weight >= 1e-4 in this space;
+    bit 2, keep this solution if it is the lowest of the round
+    (zgasci_dist.c, zgd_solve_ab).
+    Returns a dict: e (<H>), e_penalized, s2 (NaN without a penalty),
+    iterations, converged, time, warm_weight (the weight of the last
+    solution in this space, -1: no warm start); occ_a, occ_b (norb);
+    maxabs_a, weight_a per string of strs (the largest |C| of its row,
+    sum_b C[a, b]^2), maxabs_b, weight_b per string of strs_b (over its
+    column); occ, maxabs, weight: the alpha ones.  The same on every
+    process.'''
     if comm is None:
         from mpi4py import MPI
         comm = MPI.COMM_WORLD
-    if not isinstance(nelec, (int, numpy.integer)):
-        if nelec[0] != nelec[1]:
-            raise ValueError('nalpha = nbeta is required')
-        nelec = nelec[0] + nelec[1]
-    h1 = numpy.ascontiguousarray(h1, dtype=numpy.float64)
-    eri = numpy.ascontiguousarray(ao2mo.restore(1, numpy.asarray(eri), norb), dtype=numpy.float64)
-    strs = numpy.ascontiguousarray(strs, dtype=numpy.int64)
-    n = len(strs)
+    if isinstance(nelec, (int, numpy.integer)):
+        if nelec % 2:
+            raise ValueError('nelec as (nalpha, nbeta) for nalpha != nbeta')
+        nelec = (nelec // 2, nelec // 2)
+    na, nb = int(nelec[0]), int(nelec[1])
+    parity = int(spin_flip or 0)
+    uhf = isinstance(eri, (tuple, list)) or numpy.ndim(h1) == 3
+    if uhf:
+        if len(h1) != 2 or len(eri) != 3:
+            raise ValueError('uhf integrals: h1 = (h1a, h1b), eri = (aa, ab, bb)')
+        parity = 0
+        h1 = numpy.ascontiguousarray(numpy.stack([numpy.asarray(x, dtype=numpy.float64) for x in h1]))
+        eri = numpy.ascontiguousarray(numpy.stack(
+            [ao2mo.restore(1, numpy.asarray(x, dtype=numpy.float64), norb) for x in eri]))
+    else:
+        h1 = numpy.ascontiguousarray(h1, dtype=numpy.float64)
+        eri = numpy.ascontiguousarray(ao2mo.restore(1, numpy.asarray(eri), norb),
+                                      dtype=numpy.float64)
+    if ovlp is not None:
+        ovlp = numpy.ascontiguousarray(ovlp, dtype=numpy.float64)
+    if uhf and ss_penalty and ovlp is None:
+        raise ValueError('the S^2 penalty with uhf integrals needs ovlp')
+    sa = numpy.ascontiguousarray(strs, dtype=numpy.int64)
+    sb = sa if strs_b is None else numpy.ascontiguousarray(strs_b, dtype=numpy.int64)
+    # the arrays of rank 0 on every process (e.g. orbitals from separate SCF runs may differ in
+    # signs between processes, which would make the integrals inconsistent)
+    h1, eri, sa, sb = (comm.bcast(x, root=0) if x.nbytes < 1 << 28 else _bcast_array(comm, x)
+                       for x in (h1, eri, sa, sb))
+    if ovlp is not None:
+        ovlp = comm.bcast(ovlp, root=0)
+    if parity and not (na == nb and numpy.array_equal(sa, sb)):
+        raise ValueError('spin_flip needs the same alpha and beta strings and nalpha = nbeta')
     out = numpy.zeros(7)
-    occ = numpy.zeros(norb)
-    maxabs = numpy.zeros(n)
-    weight = numpy.zeros(n)
-    _load_dist().zgd_solve(comm.py2f(), norb, int(nelec), h1.ctypes.data, eri.ctypes.data, n,
-                           strs.ctypes.data, int(spin_flip), float(ss_penalty), tol, rtol, maxit,
-                           verbose, int(warm), out.ctypes.data, occ.ctypes.data, maxabs.ctypes.data,
-                           weight.ctypes.data)
+    occ_a, occ_b = numpy.zeros(norb), numpy.zeros(norb)
+    maxabs_a, weight_a = numpy.zeros(len(sa)), numpy.zeros(len(sa))
+    maxabs_b, weight_b = numpy.zeros(len(sb)), numpy.zeros(len(sb))
+    _load_dist().zgd_solve_ab(comm.py2f(), norb, na, nb, int(uhf), h1.ctypes.data,
+                              eri.ctypes.data, None if ovlp is None or not uhf else ovlp.ctypes.data,
+                              len(sa), sa.ctypes.data, len(sb), sb.ctypes.data, parity,
+                              float(ss_penalty), tol, rtol, maxit, verbose, int(warm),
+                              out.ctypes.data, occ_a.ctypes.data, occ_b.ctypes.data,
+                              maxabs_a.ctypes.data, maxabs_b.ctypes.data, weight_a.ctypes.data,
+                              weight_b.ctypes.data)
     return dict(e=out[1], e_penalized=out[0], s2=out[2], iterations=int(out[3]),
-                converged=bool(out[4]), time=out[5], warm_weight=out[6], occ=occ, maxabs=maxabs, weight=weight)
+                converged=bool(out[4]), time=out[5], warm_weight=out[6],
+                occ_a=occ_a, occ_b=occ_b, maxabs_a=maxabs_a, maxabs_b=maxabs_b,
+                weight_a=weight_a, weight_b=weight_b, occ=occ_a, maxabs=maxabs_a,
+                weight=weight_a)
+
+
+def _bcast_array(comm, x):
+    '''x of rank 0 on every process (same shape and dtype everywhere).'''
+    x = numpy.ascontiguousarray(x)
+    comm.Bcast(x, root=0)
+    return x
+
+
+def _carryover(sa, sb, r, threshold, merge):
+    '''The carryover of the default policy of qiskit-addon-sqd 0.14: the
+    strings with max |C| >= threshold, by descending marginal weight; merge
+    (symmetrize_spin): both sectors ranked together, repeats dropped, the
+    same list for both.'''
+    ka = numpy.nonzero(r['maxabs_a'] >= threshold)[0]
+    kb = numpy.nonzero(r['maxabs_b'] >= threshold)[0]
+    if merge:
+        strs = numpy.concatenate([sa[ka], sb[kb]]).astype(numpy.int64)
+        w = numpy.concatenate([r['weight_a'][ka], r['weight_b'][kb]])
+        strs = strs[numpy.argsort(-w, kind='stable')]
+        _, first = numpy.unique(strs, return_index=True)
+        strs = strs[numpy.sort(first)]
+        return strs, strs.copy()
+    ca = sa[ka[numpy.argsort(-r['weight_a'][ka], kind='stable')]].astype(numpy.int64)
+    cb = sb[kb[numpy.argsort(-r['weight_b'][kb], kind='stable')]].astype(numpy.int64)
+    return ca, cb
 
 
 def make_sci_solver(comm=None, carryover_threshold=1e-4, ss_penalty=0.0, spin_flip=1,
-                    log=None, warm_start=True, **kwargs):
+                    log=None, warm_start=True, symmetrize_spin=None, ovlp=None, **kwargs):
     '''An sci_solver for qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian
-    (0.14, symmetrize_spin=True: the same alpha and beta strings) run
-    collectively under MPI (every process runs the SQD script).  Each
-    subspace is solved by c_solve on all processes in turn; the results
-    carry no state (sci_state None) but the carryover the default policy
-    would choose: the strings whose largest |C| reaches carryover_threshold,
-    by descending marginal weight.  warm_start: each call (an SQD
-    iteration) starts its subspaces from the lowest solution of the
-    previous call, restricted to the new space (kept on the C side).
-    log(info) is called on every result on the control process; kwargs go
-    to c_solve.'''
+    (0.14) run collectively under MPI (every process runs the SQD script).
+    Each subspace is solved by c_solve on all processes in turn: with
+    spin_flip +-1 where its alpha and beta lists are the same and nalpha =
+    nbeta (the symmetric path), otherwise without symmetry (any lists,
+    nalpha != nbeta; spin_flip None forces it).  UHF integrals pass through
+    diagonalize_fermionic_hamiltonian untouched: give one_body_tensor =
+    (h1a, h1b), two_body_tensor = (aa, ab, bb) there (c_solve) and ovlp here
+    for the S^2 penalty.  The
+    results carry no state (sci_state None) but the carryover the default
+    policy would choose (_carryover); symmetrize_spin: as given to
+    diagonalize_fermionic_hamiltonian (None: whether the lists are the
+    same).  warm_start: each call (an SQD iteration) starts its subspaces
+    from the lowest solution of the previous call, restricted to the new
+    space (kept on the C side).  log(info) is called on every result on the
+    control process; kwargs go to c_solve.'''
     from qiskit_addon_sqd.fermion import SCIResult
     if comm is None:
         from mpi4py import MPI
@@ -450,18 +524,16 @@ def make_sci_solver(comm=None, carryover_threshold=1e-4, ss_penalty=0.0, spin_fl
         res = []
         for sa, sb in ci_strings:
             sa, sb = numpy.asarray(sa), numpy.asarray(sb)
-            if not numpy.array_equal(sa, sb):
-                raise ValueError('make_sci_solver needs the same alpha and beta strings '
-                                 '(symmetrize_spin=True)')
-            r = c_solve(one_body, two_body, norb, nelec, sa, comm=comm, spin_flip=spin_flip,
-                        ss_penalty=ss_penalty, warm=3 if warm_start else 0, **kwargs)
-            keep = numpy.nonzero(r['maxabs'] >= carryover_threshold)[0]
-            keep = keep[numpy.argsort(-r['weight'][keep], kind='stable')]
-            carry = sa[keep].astype(numpy.int64)
-            res.append(SCIResult(r['e'], None, orbital_occupancies=(r['occ'], r['occ'].copy()),
-                                 carryover=(carry, carry.copy())))
+            same = (nelec[0] == nelec[1] and numpy.array_equal(sa, sb)
+                    and not isinstance(two_body, (tuple, list)))
+            r = c_solve(one_body, two_body, norb, nelec, sa, comm=comm, strs_b=sb,
+                        spin_flip=spin_flip if same else None, ss_penalty=ss_penalty, ovlp=ovlp,
+                        warm=3 if warm_start else 0, **kwargs)
+            merge = numpy.array_equal(sa, sb) if symmetrize_spin is None else symmetrize_spin
+            res.append(SCIResult(r['e'], None, orbital_occupancies=(r['occ_a'], r['occ_b']),
+                                 carryover=_carryover(sa, sb, r, carryover_threshold, merge)))
             if log is not None and comm.Get_rank() == 0:
-                r['nstr'] = len(sa)
+                r['nstr'], r['nstr_b'] = len(sa), len(sb)
                 log(r)
         return res
     return solver
