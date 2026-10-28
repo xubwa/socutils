@@ -453,6 +453,7 @@ class RSDF(lib.StreamObject):
         G = G[half]
         G2 = np.einsum('gx,gx->g', G, G)
         vG = 2 * 4 * np.pi * np.exp(-G2 / (4 * omega**2)) / G2
+        self.lr_G, self.lr_vG = G, vG                 # the LR rows: 2g (cos) and 2g + 1 (sin) belong to G[g]
 
         # aux FTs (ng, nfit); computed once for all G when small enough
         cache_fit = len(G) * nfit * 16 < .1 * self.max_memory * 1e6

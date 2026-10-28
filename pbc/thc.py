@@ -194,7 +194,8 @@ def kernels(Gv, omega):
 
 
 class THCExchange:
-    def __init__(self, cell, aux, alpha_c, omega=OMEGA, verbose=True, selector='cholesky', nuc_zeta=1e12):
+    def __init__(self, cell, aux, alpha_c, omega=OMEGA, verbose=True, selector='cholesky', nuc_zeta=1e12,
+                 local_rcut=None):
         '''selector: 'cholesky' (column-by-column pivoted Cholesky of the grid Gram matrix, O(k^2 ngrid), reference),
         'coarse' (the same on the grid coarsened by self.coarsen per direction, least-squares xi on the full grid),
         'cholesky_blocked' (blocked candidates, BLAS-3; worse points, not faster), 'kmeans'
@@ -203,6 +204,7 @@ class THCExchange:
         pivoted Cholesky among them; least-squares xi).'''
         self.cell, self.aux, self.ac, self.omega = cell, aux, alpha_c, omega
         self.selector = selector
+        self.local_rcut = local_rcut   # route 1 (Angstrom): no global 3c tensor (local CX fit, GAPW J, CX LR rows)
         self.cand_factor = 4.        # kmeans+chol: K-means candidates per point
         self.coarsen = 2             # coarse: grid coarsening per direction for the point selection
         self.nuc_zeta = nuc_zeta
@@ -217,18 +219,37 @@ class THCExchange:
     def build_common(self, kmax_factor=20):
         cell, ac = self.cell, self.ac
         t = time.time()
-        r = RSDF(cell, self.aux, omega=self.omega, precision=1e-10, nuc_zeta=self.nuc_zeta, lr='gspace')
-        r.keep_raw = True
-        r.cderi_in_memory = True
-        r.verbose = 0
-        self.r = r.build()
         nao = self.nao = cell.nao
-        self.J = r.int3c_sr
-        self.M = r.metric_sr
-        self.nkept = r.cderi.shape[0] - r.nlr
-        self.Llr = r.cderi[self.nkept:]
-        self.timings['rsdf'] = time.time() - t
         aohard = np.repeat([cell.bas_exp(i).min() >= ac for i in range(cell.nbas)], np.diff(cell.ao_loc_nr()))
+        local = getattr(self, 'local_rcut', None)
+        if local:
+            # route 1: no global three-index tensor.  Nuclear terms, c0 and the exact LR rows of the CX pairs only
+            # from RSDF (sr_fit False, one s aux per atom); SR metric by pbc_intor; CX pairs fitted pair-atom locally
+            ti_, tj_ = np.tril_indices(nao)
+            cxc = np.where(aohard[ti_] | aohard[tj_])[0]
+            r = RSDF(cell, {l: [[0, [1., 1.]]] for l in cell._basis}, omega=self.omega, precision=1e-10,
+                     nuc_zeta=self.nuc_zeta, lr='gspace')
+            r.sr_fit = False
+            r.lr_columns = cxc
+            r.verbose = 0
+            self.r = r.build()
+            self.J = None
+            self.Llr_cx, self.lr_cols = r.cderi, cxc                   # (nlr, nCX)
+            self.nkept = 0
+            auxcell = df_addons.make_auxmol(cell, self.aux)
+            with auxcell.with_range_coulomb(-self.omega):
+                self.M = auxcell.pbc_intor('int2c2e', hermi=1)
+        else:
+            r = RSDF(cell, self.aux, omega=self.omega, precision=1e-10, nuc_zeta=self.nuc_zeta, lr='gspace')
+            r.keep_raw = True
+            r.cderi_in_memory = True
+            r.verbose = 0
+            self.r = r.build()
+            self.J = r.int3c_sr
+            self.M = r.metric_sr
+            self.nkept = r.cderi.shape[0] - r.nlr
+            self.Llr = r.cderi[self.nkept:]
+        self.timings['rsdf'] = time.time() - t
         self.aoat = np.repeat([cell.bas_atom(i) for i in range(cell.nbas)], np.diff(cell.ao_loc_nr()))
         self.smooth = np.where(~aohard)[0]
         ti, tj = np.tril_indices(nao)
@@ -238,6 +259,23 @@ class THCExchange:
         self.auxmol = df_addons.make_auxmol(cell, self.aux)
         # local fit of the CX pairs (level 2)
         t = time.time()
+        if local:
+            from socutils.pbc.thc_local import local_cx_fit
+            self.Cs = local_cx_fit(cell, self.aux, aohard, omega=self.omega, r_cut=local, verbose=self.verbose,
+                                   sparse=True)[0]
+            self.C = self.Cs.toarray() if getattr(self, 'dense_c', True) else None
+            self.nonrobust = True
+        else:
+            self._bloch_fit()
+        if self.C is not None:
+            ew, U = scipy.linalg.eigh(self.M)
+            self.Y = ((U * np.sqrt(np.maximum(ew, 0))) @ U.T) @ self.C
+        self.timings['local fit'] = time.time() - t
+        self._grid_and_points(kmax_factor)
+        return self
+
+    def _bloch_fit(self):
+        cell, ti, tj = self.cell, self.ti, self.tj
         pat = np.repeat([self.auxmol.bas_atom(i) for i in range(self.auxmol.nbas)], np.diff(self.auxmol.ao_loc_nr()))
         C = np.zeros_like(self.J)
         pa, pb = self.aoat[ti], self.aoat[tj]
@@ -250,9 +288,9 @@ class THCExchange:
                 vd, ed = _inv_metric(self.M[np.ix_(D, D)])
                 C[np.ix_(D, cols)] = (vd / ed) @ (vd.T @ self.J[np.ix_(D, cols)])
         self.C = C
-        ew, U = scipy.linalg.eigh(self.M)
-        self.Y = ((U * np.sqrt(np.maximum(ew, 0))) @ U.T) @ C
-        self.timings['local fit'] = time.time() - t
+
+    def _grid_and_points(self, kmax_factor):
+        cell, nao = self.cell, self.nao
         # smooth functions on the uniform grid
         t = time.time()
         sm_cell = _subcell(cell, self.smooth)
@@ -288,7 +326,6 @@ class THCExchange:
                  'RSDF %.0f s, local fit %.0f s, grid %.0f s, pivots %.0f s'
                  % (nao, len(self.smooth), self.cx.sum(), len(self.cx), self.ke, self.mesh, self.ng, len(self.piv),
                     self.timings['rsdf'], self.timings['local fit'], self.timings['grid'], self.timings['pivots']))
-        return self
 
     # ---- THC factors for N_mu points
     def build_thc(self, nmu):
@@ -345,11 +382,120 @@ class THCExchange:
             A += ((Pg.conj() * sw[g0:g1, None]).T @ Xh[:, g0:g1].T).real
             A_lr += ((Pg.conj() * swl[g0:g1, None]).T @ Xh[:, g0:g1].T).real
         self.A_lr = A_lr                                            # (P|xi_mu)_LR
+        if getattr(self, 'local_rcut', None):
+            self.Xi_lr = self._lr_rows_of_xi(Xh)                       # (nlr, N_mu): LR rows of the SS pairs = Xi X
         t_v = time.time() - t
         self.pts, self.V, self.A = pts, V, A
         self.phimu = self.phi[pts]                                  # (N_mu, nao_s)
         self.timings.update({'xi': t_xi, 'V, A (FFT)': t_v})
         return rank
+
+    def _lr_rows_of_xi(self, Xh):
+        '''The RSDF LR rows (sqrt(v_G / V) Re/Im rho(G) at RSDF's G vectors, rows 2g / 2g+1) of the interpolation
+        vectors xi_mu, from their FFT (Xh: (N_mu, half spectrum), xi(G) = int xi e^{-iGr}).'''
+        r, mesh = self.r, np.asarray(self.mesh)
+        b = self.cell.reciprocal_vectors()
+        m = np.rint(r.lr_G @ np.linalg.inv(b)).astype(int)
+        flip = m[:, 2] < 0
+        m[flip] *= -1
+        assert (np.abs(m) <= mesh // 2).all(), 'LR G vectors beyond the THC mesh'
+        i = np.mod(m, mesh)
+        flat = (i[:, 0] * mesh[1] + i[:, 1]) * (mesh[2] // 2 + 1) + i[:, 2]
+        xg = Xh[:, flat].T                                            # (nG, N_mu)
+        xg[flip] = xg[flip].conj()
+        sq = np.sqrt(r.lr_vG / self.cell.vol)[:, None]
+        rows = np.empty((2 * len(flat), Xh.shape[0]))
+        rows[0::2] = sq * xg.real
+        rows[1::2] = sq * xg.imag
+        return rows
+
+    def _lr_blocks(self, X, blk):
+        '''Row blocks (F_cx, F_ss) of the LR rows of the CX pairs (exact, RSDF) and of the SS pairs (THC), packed.'''
+        npair = len(self.ti)
+        nlr = self.Llr_cx.shape[0]
+        for p0 in range(0, nlr, blk):
+            p1 = min(p0 + blk, nlr)
+            Fcx = np.zeros((p1 - p0, npair))
+            Fcx[:, self.lr_cols] = self.Llr_cx[p0:p1]
+            Fss = np.zeros((p1 - p0, npair))
+            Fss[:, self.ss] = self.Xi_lr[p0:p1] @ X
+            yield Fcx, Fss
+
+    def get_k_sparse(self, dm, pblk=20000, kblk=64):
+        '''K (vector convention, split basis) for one density (any, complex allowed) with the sparse local CX fit
+        (route 1, self.Cs scipy.sparse (naux, npair)) and no N^3 intermediate:
+          SS-SS   THC;
+          CX-SS   sum_k F_k D G_k^T + G_k D F_k^T, F_k = C_k (SR aux) or the exact LR rows of the CX pairs, G_k = B_k X
+                  (B = A = (P|xi)_SR, or the LR rows Xi of xi): with E = D_{:,SS} Phi_mu^T and B_p = (F^T B)_p (built
+                  per block of CX pairs), H_a = sum_{p = (a, c)} B_p E_c and K = H Phi_mu (cost nnz(F) N_mu);
+          CX-CX   sum_kl M_kl C_k D C_l^T (non-robust SR) + sum_g L_g D L_g^T (LR), as sum_k (C_k D)(M C)_k^T.'''
+        import scipy.sparse as sps
+        t = time.time()
+        nao, sm = self.nao, self.smooth
+        dt = np.result_type(dm, float)
+        K = np.zeros((nao, nao), dtype=dt)
+        Pm = self.phimu
+        K[np.ix_(sm, sm)] = Pm.T @ ((Pm @ dm[np.ix_(sm, sm)] @ Pm.T) * self.V) @ Pm
+        t_ss = time.time() - t
+        t = time.time()
+        cxc = self.lr_cols                                            # packed CX pair indices
+        ii, jj = self.ti[cxc], self.tj[cxc]
+        off = ii != jj
+        Ccx = self.Cs[:, cxc].tocsc()                                 # (naux, nCX)
+        Lcx = self.Llr_cx                                             # (nlr, nCX) dense
+        Bsr, Blr = self.A, self.Xi_lr                                 # (naux, N_mu), (nlr, N_mu)
+
+        def cross(D):
+            E = D[:, sm] @ Pm.T                                       # (nao, N_mu)
+            H = np.zeros((nao, len(Pm)), dtype=np.result_type(D, float))
+            for p0 in range(0, len(cxc), pblk):
+                p1 = min(p0 + pblk, len(cxc))
+                Bp = np.asarray(Ccx[:, p0:p1].T @ Bsr) + Lcx[:, p0:p1].T @ Blr      # (np, N_mu)
+                i_, j_, o_ = ii[p0:p1], jj[p0:p1], off[p0:p1]
+                R = sps.csr_matrix((np.ones(p1 - p0), (i_, np.arange(p1 - p0))), shape=(nao, p1 - p0))
+                H += R @ (Bp * E[j_])
+                Ro = sps.csr_matrix((np.ones(o_.sum()), (j_[o_], np.where(o_)[0])), shape=(nao, p1 - p0))
+                H += Ro @ (Bp * E[i_])
+            return H @ Pm                                             # (nao, nao_s)
+        K1 = cross(dm)
+        K[:, sm] += K1
+        K[sm, :] += cross(dm.T).T                                     # G D F^T = (F D^T G^T)^T
+
+        def unpack(v):                                                # CX-pair vector -> sparse symmetric (nao, nao)
+            return sps.csr_matrix((np.concatenate([v, v[off]]), (np.concatenate([ii, jj[off]]),
+                                                                np.concatenate([jj, ii[off]]))), shape=(nao, nao))
+        # CX-CX, SR (non-robust: C^T M C) and LR (exact rows of the CX pairs): per factor k, dense blocks on the
+        # support U_k of C_k and V_k of (M C)_k:  K[U, V] += (C_k[U, U] D[U, :])[:, V] (M C)_k[V, V]^T
+        def dense(v, thr=0.):
+            nz = np.where(np.abs(v) > thr)[0]
+            U = np.unique(np.concatenate([ii[nz], jj[nz]]))
+            pos = np.full(nao, -1)
+            pos[U] = np.arange(len(U))
+            Mk = np.zeros((len(U), len(U)), dtype=v.dtype)
+            Mk[pos[ii[nz]], pos[jj[nz]]] = v[nz]
+            Mk[pos[jj[nz]], pos[ii[nz]]] = v[nz]
+            return U, Mk
+        Cr = self.Cs[:, cxc].tocsr()
+        naux = Cr.shape[0]
+        mthr = getattr(self, 'mc_threshold', 1e-12)
+        for k0 in range(0, naux, kblk):
+            k1 = min(k0 + kblk, naux)
+            MC = np.asarray(Cr.T @ self.M[k0:k1].T).T                 # (kb, nCX) = (M C)_k
+            for k in range(k0, k1):
+                row = Cr[k]
+                if row.nnz == 0:
+                    continue
+                ck = np.zeros(len(cxc))
+                ck[row.indices] = row.data
+                U, Ck = dense(ck)
+                V, Mk = dense(MC[k - k0], mthr * abs(MC[k - k0]).max())
+                Q = Ck @ dm[U]                                         # (u, nao) = (C_k D)[U, :]
+                K[np.ix_(U, V)] += Q[:, V] @ Mk.T
+        for g in range(len(Lcx)):
+            V, Lg = dense(Lcx[g])
+            K[np.ix_(V, V)] += Lg @ dm[np.ix_(V, V)] @ Lg.T
+        self.timings.update({'K SS (THC)': t_ss, 'K CX (sparse DM)': time.time() - t})
+        return K
 
     def j_thc_ss(self):
         '''(P|q)_SR for the SS pairs from THC: A X, X_mu,q = phi_m(r_mu) phi_n(r_mu)  (naux, nSS).'''
@@ -371,7 +517,7 @@ class THCExchange:
         t_ss = time.time() - t
         t = time.time()
         if getattr(self, 'nonrobust', False):                        # same form as get_k_occ
-            J3 = np.zeros_like(self.J)
+            J3 = np.zeros((len(self.C), len(self.ti)))
             J3[:, self.ss] = self.j_thc_ss()
             K += k_from_factors(self.C, J3, dm, nao) + k_from_factors(J3, self.C, dm, nao) \
                 + k_from_factors(self.Y, self.Y, dm, nao)
@@ -380,9 +526,17 @@ class THCExchange:
             J3[:, self.ss] = self.j_thc_ss()
             K += k_from_factors(self.C, J3, dm, nao) + k_from_factors(J3, self.C, dm, nao) \
                 - k_from_factors(self.Y, self.Y, dm, nao)
-        Lss = np.zeros_like(self.Llr)
-        Lss[:, self.ss] = self.Llr[:, self.ss]
-        K += k_from_factors(self.Llr, self.Llr, dm, nao) - k_from_factors(Lss, Lss, dm, nao)
+        if getattr(self, 'local_rcut', None):
+            pos = -np.ones(nao, dtype=int)
+            pos[sm] = np.arange(len(sm))
+            X = P[:, pos[self.ti[self.ss]]] * P[:, pos[self.tj[self.ss]]]
+            for Fcx, Fss in self._lr_blocks(X, 256):
+                K += k_from_factors(Fcx, Fcx, dm, nao) + k_from_factors(Fcx, Fss, dm, nao) \
+                    + k_from_factors(Fss, Fcx, dm, nao)
+        else:
+            Lss = np.zeros_like(self.Llr)
+            Lss[:, self.ss] = self.Llr[:, self.ss]
+            K += k_from_factors(self.Llr, self.Llr, dm, nao) - k_from_factors(Lss, Lss, dm, nao)
         self.timings.update({'K SS (THC)': t_ss, 'K CX (prototype, dense factors)': time.time() - t})
         return K
 
@@ -427,8 +581,10 @@ class THCExchange:
         pos = -np.ones(nao, dtype=int)
         pos[sm] = np.arange(len(sm))
         X = Pm[:, pos[self.ti[self.ss]]] * Pm[:, pos[self.tj[self.ss]]]   # (N_mu, nSS)
-        Lss = self.Llr.copy()
-        Lss[:, self.cx] = 0.
+        local = getattr(self, 'local_rcut', None)
+        if not local:
+            Lss = self.Llr.copy()
+            Lss[:, self.cx] = 0.
 
         nocc = cs[0].shape[1]
         cri = [np.hstack([c.real, c.imag]) for c in cs]               # (nao, 2 nocc) real
@@ -458,7 +614,7 @@ class THCExchange:
             if not Cb.any():
                 continue
             if nonrobust:                                              # CX-SS one-sided, CX-CX C^T M C
-                J3 = np.zeros((p1 - p0, self.J.shape[1]))
+                J3 = np.zeros((p1 - p0, len(self.ti)))
             else:
                 J3 = self.J[p0:p1].copy()
             J3[:, self.ss] = self.A[p0:p1] @ X
@@ -466,12 +622,18 @@ class THCExchange:
             acc(HC, half(J3), 1., swap=True)                           # (C, J3) + (J3, C)
             HY = half(self.Y[p0:p1])
             acc(HY, HY, 1. if nonrobust else -1.)
-        for p0 in range(0, len(self.Llr), blk):
-            p1 = min(p0 + blk, len(self.Llr))
-            HL = half(self.Llr[p0:p1])
-            acc(HL, HL, 1.)
-            HS = half(Lss[p0:p1])
-            acc(HS, HS, -1.)
+        if local:                                                      # LR of the CX-involving blocks
+            for Fcx, Fss in self._lr_blocks(X, blk):
+                HL = half(Fcx)
+                acc(HL, HL, 1.)
+                acc(HL, half(Fss), 1., swap=True)
+        else:
+            for p0 in range(0, len(self.Llr), blk):
+                p1 = min(p0 + blk, len(self.Llr))
+                HL = half(self.Llr[p0:p1])
+                acc(HL, HL, 1.)
+                HS = half(Lss[p0:p1])
+                acc(HS, HS, -1.)
         self.timings.update({'K SS (THC, occ)': t_ss, 'K CX (occ-RI)': time.time() - t})
         return K
 
@@ -486,6 +648,11 @@ class THCExchange:
         error of the total density), plus the LR rows of the CX-involving blocks.'''
         if np.iscomplexobj(dm):
             return self.get_j(dm.real) + 1j * self.get_j(dm.imag)
+        if getattr(self, 'local_rcut', None):                         # route 1: no three-centre integrals
+            if getattr(self, '_gapw', None) is None:
+                from socutils.pbc.thc_gapw import GAPWJ
+                self._gapw = GAPWJ(self, **getattr(self, 'gapw_opts', {}))
+            return self._gapw.get_j(dm)
         nao, sm = self.nao, self.smooth
         ti, tj = self.ti, self.tj
         d = (dm + dm.T)[ti, tj]
@@ -577,16 +744,9 @@ class THCJK:
         cs.build(False, False)
         self.T = np.linalg.lstsq(cs.pbc_intor('int1e_ovlp'), pgto.intor_cross('int1e_ovlp', cs, cell), rcond=1e-12)[0]
         self.th = THCExchange(cs, self.aux, self.alpha_c, self.omega, self.verbose, self.selector,
-                              self.nuc_zeta).build_common()
-        if self.local_rcut:
-            from socutils.pbc.thc_local import local_cx_fit
-            th = self.th
-            compact = np.ones(th.nao, bool)
-            compact[th.smooth] = False
-            th.C = local_cx_fit(cs, self.aux, compact, omega=self.omega, r_cut=self.local_rcut, verbose=self.verbose)[0]
-            ew, U = scipy.linalg.eigh(th.M)
-            th.Y = ((U * np.sqrt(np.maximum(ew, 0))) @ U.T) @ th.C
-            th.nonrobust = True
+                              self.nuc_zeta, local_rcut=self.local_rcut)
+        self.th.gapw_opts = getattr(self, 'gapw_opts', {})
+        self.th.build_common()
         self.th.build_thc(int(round(self.nmu_factor * len(self.th.smooth))))
         self.S = cell.pbc_intor('int1e_ovlp')
         self._built = True

@@ -22,7 +22,11 @@ aux = {e: auxgen_from_basis({e: B[e]}, contract=False, prune_lmax=False, thresho
 dm = pscf.RHF(cell).get_init_guess(key='minao')
 
 t = time.time()
-jk = THCJK(cell, aux, alpha_c=ac, nmu_factor=fac, selector=sel, nuc_zeta=nz).build()
+jk = THCJK(cell, aux, alpha_c=ac, nmu_factor=fac, selector=sel, nuc_zeta=nz,
+           local_rcut=float(os.environ['LOCAL']) if os.environ.get('LOCAL') else None)
+if os.environ.get('NRAD'):
+    jk.gapw_opts = {'nrad': int(os.environ['NRAD'])}
+jk.build()
 print('THCJK build %.0f s (N_mu %d, smooth %d; timings %s)' % (time.time() - t, len(jk.th.pts), len(jk.th.smooth),
       ', '.join('%s %.0f' % kv for kv in jk.th.timings.items())), flush=True)
 r = RSDF(cell, aux, omega=0.5, precision=1e-10, nuc_zeta=nz, lr='gspace')

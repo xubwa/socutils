@@ -47,7 +47,7 @@ def _atom_mol(cell, atoms, coords, basis):
     return m
 
 
-def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep=1e-12, verbose=True):
+def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep=1e-12, verbose=True, sparse=False):
     '''Gamma-point local fit coefficients of the CX pairs (dense (naux, npair) packed, for validation).
 
     Args:
@@ -57,7 +57,7 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
         r_cut : Angstrom, partner atoms (with images) within r_cut of the compact atom
         r_dom : Angstrom, the fit domain also takes the aux functions of the atoms (with images) within r_dom of
             the compact atom A (0: the pair's two atoms only)
-    Returns C (naux, nao (nao+1) / 2), stats dict.'''
+    Returns C (naux, nao (nao+1) / 2) (dense, or scipy.sparse CSR with sparse=True), stats dict.'''
     from pyscf.df import addons as df_addons
     t0 = time.time()
     BOHR = 0.52917721092
@@ -75,7 +75,8 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
     pidx = np.full((nao, nao), -1, dtype=np.int64)
     pidx[ti, tj] = np.arange(len(ti))
     pidx[tj, ti] = np.arange(len(ti))
-    C = np.zeros((naux, len(ti)))
+    C = None if sparse else np.zeros((naux, len(ti)))
+    coo = ([], [], [])                                                 # rows, cols, values (sparse)
     ncluster = nimgpair = 0
     emin = np.array([min(cell.bas_exp(i).min() for i in range(cell.nbas) if cell.bas_atom(i) == at)
                      for at in range(cell.natm)])
@@ -138,9 +139,15 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
                 pa = np.concatenate([np.arange(*aux_loc[at]) for at in datoms])
                 cols = pidx[cA[:, None], xs_all[None, :]]
                 kk = np.where(keep)
-                Cblk = np.zeros((naux, len(kk[0])))
-                np.add.at(Cblk, pa, coef[kk[0], kk[1]].T)
-                C[:, cols[kk]] += Cblk
+                if sparse:
+                    vals = coef[kk[0], kk[1]].T                         # (naux_m, nk)
+                    coo[0].append(np.repeat(pa, vals.shape[1]))
+                    coo[1].append(np.tile(cols[kk], len(pa)))
+                    coo[2].append(vals.ravel())
+                else:
+                    Cblk = np.zeros((naux, len(kk[0])))
+                    np.add.at(Cblk, pa, coef[kk[0], kk[1]].T)
+                    C[:, cols[kk]] += Cblk
                 ncluster += 1
                 nimgpair += len(kk[0])
         metric_cache.clear() if len(metric_cache) > 2000 else None
@@ -148,4 +155,10 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
     if verbose:
         print('local CX fit: %d two-atom clusters (%d negligible skipped), %d image pairs, r_cut %.1f A (%.0f s)'
               % (ncluster, nskip, nimgpair, r_cut, stats['time']), flush=True)
+    if sparse:
+        import scipy.sparse
+        C = scipy.sparse.coo_matrix((np.concatenate(coo[2]), (np.concatenate(coo[0]), np.concatenate(coo[1]))),
+                                    shape=(naux, len(ti))).tocsr()      # duplicates (images, repeated aux) summed
+        C.eliminate_zeros()
+        stats['nnz'] = C.nnz
     return C, stats

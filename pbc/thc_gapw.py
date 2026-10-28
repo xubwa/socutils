@@ -173,9 +173,17 @@ class GAPWJ:
                 out[idx] = (np.exp(1j * pts[idx] @ th.Gv.T) @ c).real
             return out
         if getattr(self, '_vr_cache', None) is None or self._vr_cache[0] is not vG:
-            self._vr_cache = (vG, self._oversampled(vG))
+            vr, mesh = self._oversampled(vG)
+            if getattr(self, 'interp', 'spline') == 'spline':
+                from scipy.ndimage import spline_filter
+                vr = spline_filter(vr, order=5, mode='grid-wrap')        # quintic B-spline coefficients, once
+            self._vr_cache = (vG, (vr, mesh))
         vr, mesh = self._vr_cache[1]
         frac = pts[sel] @ np.linalg.inv(np.asarray(th.cell.lattice_vectors())) * mesh   # grid units
+        if getattr(self, 'interp', 'spline') == 'spline':
+            from scipy.ndimage import map_coordinates
+            out[sel] = map_coordinates(vr, frac.T, order=5, mode='grid-wrap', prefilter=False)
+            return out
         i0 = np.floor(frac).astype(int)
         t = frac - i0                                                  # in [0, 1)
         nodes = np.arange(-2, 4)                                       # 6-point Lagrange (quintic)
@@ -223,49 +231,56 @@ class GAPWJ:
         vr = scipy.fft.irfftn(big, s=tuple(M), workers=-1) * (np.prod(M) / th.cell.vol)
         return vr, M
 
-    def _vloc_at(self, B, vlms, pts, r_max=10.):
-        '''Local potential of atom B (radial coefficients vlms from _poisson) at arbitrary points, with the periodic
-        images of B within r_max (bohr) of the points: radial cubic spline x real spherical harmonics.'''
-        cell = self.th.cell
+    def _vloc_spline(self, B, vlms, tol=None):
+        '''One cubic spline for all lm radial functions of B's local potential, and its support radius (beyond it
+        every |v_lm| < tol of the largest: the neutral rho_B - rho^_B has no potential there).'''
+        if tol is None:
+            tol = getattr(self, 'vloc_tol', 1e-9)
         r = self.rads[B]
-        if getattr(self, '_ytr', None) is None:
-            from socutils.pbc.thc_gapw import _ylm_transforms
-            self._ytr = _ylm_transforms(self.lmax, self.unit, self.wang)
+        V = np.hstack(vlms)                                             # (nrad, sum_l 2l+1)
+        big = np.abs(V).max(axis=1)
+        inside = np.where(big > tol * big.max())[0]
+        r_v = r[inside[-1]] if len(inside) else 0.
+        if getattr(self, 'debug', False):
+            prof = ' '.join('%.0e@%.1f' % (big[i], r[i]) for i in np.linspace(0, len(r) - 1, 12).astype(int))
+            print('   vloc atom %d: support %.1f bohr (rmax %.1f); max|v_lm|(r): %s' % (B, r_v, r[-1], prof), flush=True)
         rr = np.concatenate([[0.], r])
-        spl = [CubicSpline(rr, np.vstack([v[:1] if l == 0 else np.zeros((1, v.shape[1])), v]), axis=0)
-               for l, v in enumerate(vlms)]
-        A_ = np.asarray(cell.lattice_vectors())
-        T = np.array([[i, j, k] for i in (-1, 0, 1) for j in (-1, 0, 1) for k in (-1, 0, 1)]) @ A_
-        out = np.zeros(len(pts))
-        for t in T:
-            d = pts - (cell.atom_coord(B) + t)
-            dist = np.linalg.norm(d, axis=1)
-            sel = np.where((dist < r_max) & (dist > 1e-12))[0]
-            if len(sel) == 0:
-                continue
-            u = d[sel] / dist[sel, None]
-            ys = sph.real_sph_vec(u, self.lmax, reorder_p=True)
-            for l in range(self.lmax + 1):
-                out[sel] += np.einsum('pm,mp->p', spl[l](dist[sel]), self._ytr[l] @ np.asarray(ys[l], dtype=float))
-        return out
+        V0 = np.vstack([np.concatenate([vlms[0][:1].ravel(), np.zeros(V.shape[1] - 1)])[None], V])
+        return CubicSpline(rr, V0, axis=0), r_v
 
-    def _vloc_at_home(self, B, vlms, pts, r_max=10.):
-        '''The home copy of _vloc_at (no images).'''
-        cell = self.th.cell
-        save = cell.lattice_vectors
-        d = pts - cell.atom_coord(B)
+    def _vloc_eval(self, spl, d):
+        '''sum_lm v_lm(|d|) Y_lm(d/|d|) at displacements d (n, 3).'''
+        if getattr(self, '_ytr', None) is None:
+            self._ytr = _ylm_transforms(self.lmax, self.unit, self.wang)
         dist = np.linalg.norm(d, axis=1)
+        dist = np.maximum(dist, 1e-12)
+        ys = sph.real_sph_vec(d / dist[:, None], self.lmax, reorder_p=True)
+        Y = np.vstack([t @ np.asarray(y, dtype=float) for t, y in zip(self._ytr, ys)])   # (sum 2l+1, n)
+        return np.einsum('pm,mp->p', spl(dist), Y)
+
+    def _vloc_at(self, B, vlms, pts, home=True, center=None, radius=None):
+        '''Local potential of atom B and its periodic images at the points (only within B's support radius).'''
+        cell = self.th.cell
+        key = (B, id(vlms))
+        if getattr(self, '_vspl', None) is None or self._vspl[0] != key:
+            self._vspl = (key, self._vloc_spline(B, vlms))
+        spl, r_v = self._vspl[1]
         out = np.zeros(len(pts))
-        sel = np.where((dist < r_max) & (dist > 1e-12))[0]
-        if len(sel) == 0:
+        if r_v <= 0:
             return out
-        r = self.rads[B]
-        rr = np.concatenate([[0.], r])
-        u = d[sel] / dist[sel, None]
-        ys = sph.real_sph_vec(u, self.lmax, reorder_p=True)
-        for l, v in enumerate(vlms):
-            spl = CubicSpline(rr, np.vstack([v[:1] if l == 0 else np.zeros((1, v.shape[1])), v]), axis=0)
-            out[sel] += np.einsum('pm,mp->p', spl(dist[sel]), self._ytr[l] @ np.asarray(ys[l], dtype=float))
+        A_ = np.asarray(cell.lattice_vectors())
+        n = [int(np.ceil(r_v / np.linalg.norm(A_[i]))) + 1 for i in range(3)]
+        T = np.array([[i, j, k] for i in range(-n[0], n[0] + 1) for j in range(-n[1], n[1] + 1)
+                      for k in range(-n[2], n[2] + 1)]) @ A_
+        for t in T:
+            if not home and np.linalg.norm(t) < 1e-12:
+                continue
+            if center is not None and np.linalg.norm(cell.atom_coord(B) + t - center) > r_v + radius:
+                continue                                              # no point within the support of this image
+            d = pts - (cell.atom_coord(B) + t)
+            sel = np.where(np.einsum('px,px->p', d, d) < r_v ** 2)[0]
+            if len(sel):
+                out[sel] += self._vloc_eval(spl, d[sel])
         return out
 
     def get_j(self, dm):
@@ -311,16 +326,14 @@ class GAPWJ:
         for A in self.atoms:
             pts, w, phi, phi0 = self.grids[A]
             rad = np.repeat(self.rads[A], len(self.wang))
-            u = self._vgrid_at(vG, pts, rad)                          # smooth potential (interpolated)
+            u = self._vgrid_at(vG, pts, rad, r_max=self.r_compact)    # smooth potential where phi^(0) lives
             # neighbours' local potentials where the compact density of A lives
             vn = np.zeros_like(rad)
             near = np.where(rad < self.r_compact)[0]
             for B in self.atoms:
                 if B != A or True:
-                    vB = self._vloc_at(B, vlms[B], pts[near])
-                    if B == A:                                         # A's own: its images only (the home copy is vloc)
-                        vB -= self._vloc_at_home(A, vlms[A], pts[near])
-                    vn[near] += vB
+                    vn[near] += self._vloc_at(B, vlms[B], pts[near], home=(B != A), center=X[A],
+                                              radius=self.r_compact)   # A's own: images only
             # pairs owned by A: smooth + own local + neighbours' local potentials
             JA = phi0.T @ ((w * (u + vloc[A] + vn))[:, None] * phi)       # (home a, any b)
             own = (self.owner == A) & self.home
