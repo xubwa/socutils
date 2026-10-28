@@ -206,8 +206,8 @@ class THCExchange:
         self.selector = selector
         self.local_rcut = local_rcut   # route 1 (Angstrom): no global 3c tensor (local CX fit, GAPW J, CX LR rows)
         self.cand_factor = 4.        # kmeans+chol: K-means candidates per point
-        self.coarsen = 2             # coarse: grid coarsening per direction for the point selection (3: EuOCl E_x 2.7e-4)
-        self.blocked_pivots = False  # coarse: blocked (BLAS-3) pivoted Cholesky
+        self.coarsen = 3             # coarse: grid coarsening per direction for the point selection (4: EuOCl fails)
+        self.blocked_pivots = True   # coarse: blocked (BLAS-3) pivoted Cholesky
         self.nuc_zeta = nuc_zeta
         self.verbose = verbose
         self.timings = {}

@@ -35,4 +35,4 @@ for blocked, co in ((False, 1), (False, 2), (True, 2), (False, 3), (True, 1)):
     if ref is None:
         ref = K
     print('blocked %s coarsen %d: pivots %.0f s; K vs first (column-by-column, full grid) max %.2e, E_x %.2e'
-          % (blocked, co, jk.th.timings['pivots'], abs(K - ref).max(), -.25 * np.
+          % (blocked, co, jk.th.timings['pivots'], abs(K - ref).max(), -.25 * np.einsum('ij,ji', dm, K - ref)), flush=True)
