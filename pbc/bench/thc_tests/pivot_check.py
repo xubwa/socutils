@@ -21,7 +21,7 @@ aux = {e: auxgen_from_basis({gto.mole._std_symbol(e): B[e]}, contract=False, pru
                             threshold=1e-8)[gto.mole._std_symbol(e)] for e in els}
 dm = pscf.RHF(cell).get_init_guess(key='minao')
 ref = None
-for blocked, co in ((False, 2), (True, 3), (True, 4)):
+for blocked, co in ((False, 2), (True, 2), (False, 3)):
     orig = thc.THCExchange.build_common
     def bc(self, *a, **k):
         self.blocked_pivots, self.coarsen = blocked, co
