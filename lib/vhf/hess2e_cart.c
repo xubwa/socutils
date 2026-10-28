@@ -132,6 +132,8 @@ typedef struct {
 #define TSZV (MAXT * NV * VL)            /* one direction of T */
 #define NTERM 46                         /* 18 diagonal + 27 off-diagonal + energy */
 #define NCLASS ((LMAX + 1) * (LMAX + 1) * (LMAX + 1) * (LMAX + 1))
+/* primitive-pair table entries */
+enum { PP_A, PP_IA, PP_E, PP_EC, PP_ECS, PP_P, PP_PA = PP_P + 3, PPN = PP_PA + 3 };
 
 /*
  * One Cartesian direction for VL lanes: VRR, HRR to I[i][j][k][l] and the NV
@@ -610,6 +612,57 @@ static void deriv2e_drv(int order, double *hess, int mode, int ngroup, double *j
                         cmax_all[ib * MAXPRIM + ip] = m;
                 }
         }
+        /* primitive pairs (p_i, p_j) of every shell pair i >= j, index p_j np_i + p_i:
+         * a = a_i + a_j, 1 / a, e = exp(-a_i a_j / a |AB|^2), e max|c_i| max|c_j|,
+         * that / (a sqrt(a)) for the ket-level bound, P, P - A; and per pair the
+         * largest e max|c_i| max|c_j| / a for the bra side of that bound */
+        size_t *ppoff = malloc(sizeof(size_t) * (npair + 1));
+        double *brmax = malloc(sizeof(double) * npair);
+        {
+                size_t tot = 0;
+                int pq_, i_, j_;
+                for (pq_ = 0; pq_ < npair; pq_++) {
+                        shell_pair(pq_, &i_, &j_);
+                        ppoff[pq_] = tot;
+                        tot += (size_t)bas[i_ * BAS_SLOTS + NPRIM_OF] * bas[j_ * BAS_SLOTS + NPRIM_OF];
+                }
+                ppoff[npair] = tot;
+        }
+        double *ppd = malloc(sizeof(double) * ppoff[npair] * PPN);
+        {
+                int pq_;
+#pragma omp parallel for schedule(dynamic, 16)
+                for (pq_ = 0; pq_ < npair; pq_++) {
+                        int i_, j_, ip, jp, x;
+                        shell_pair(pq_, &i_, &j_);
+                        const int npi = bas[i_ * BAS_SLOTS + NPRIM_OF], npj = bas[j_ * BAS_SLOTS + NPRIM_OF];
+                        const double *exi = env + bas[i_ * BAS_SLOTS + PTR_EXP], *exj = env + bas[j_ * BAS_SLOTS + PTR_EXP];
+                        const double *Ri = env + atm[bas[i_ * BAS_SLOTS + ATOM_OF] * ATM_SLOTS + PTR_COORD];
+                        const double *Rj = env + atm[bas[j_ * BAS_SLOTS + ATOM_OF] * ATM_SLOTS + PTR_COORD];
+                        const double r2 = (Ri[0] - Rj[0]) * (Ri[0] - Rj[0]) + (Ri[1] - Rj[1]) * (Ri[1] - Rj[1])
+                                        + (Ri[2] - Rj[2]) * (Ri[2] - Rj[2]);
+                        double bm = 0;
+                        for (jp = 0; jp < npj; jp++) {
+                                for (ip = 0; ip < npi; ip++) {
+                                        double *d = ppd + (ppoff[pq_] + (size_t)jp * npi + ip) * PPN;
+                                        const double ai = exi[ip], aj = exj[jp], a = ai + aj, ia = 1. / a;
+                                        const double e = exp(-ai * aj * ia * r2);
+                                        const double ec = e * cmax_all[i_ * MAXPRIM + ip] * cmax_all[j_ * MAXPRIM + jp];
+                                        d[PP_A] = a;
+                                        d[PP_IA] = ia;
+                                        d[PP_E] = e;
+                                        d[PP_EC] = ec;
+                                        d[PP_ECS] = ec * ia / sqrt(a);
+                                        for (x = 0; x < 3; x++) {
+                                                d[PP_P + x] = (ai * Ri[x] + aj * Rj[x]) * ia;
+                                                d[PP_PA + x] = d[PP_P + x] - Ri[x];
+                                        }
+                                        bm = dmax2(bm, ec * ia);
+                                }
+                        }
+                        brmax[pq_] = bm;
+                }
+        }
 #pragma omp parallel
 {
         double *hloc = calloc(nh, sizeof(double));
@@ -619,33 +672,16 @@ static void deriv2e_drv(int order, double *hess, int mode, int ngroup, double *j
         double *T = malloc(sizeof(double) * 3 * TSZV);
         double *ws = malloc(sizeof(double) * WSV_SIZE);
         double *acc = malloc(sizeof(double) * MAXGROUP * NTERM * VL);
-        double *eijs = malloc(sizeof(double) * MAXPRIM * MAXPRIM);
+        int *plist = malloc(sizeof(int) * MAXPRIM * MAXPRIM);
+        double *prefl = malloc(sizeof(double) * MAXPRIM * MAXPRIM);
+        double *iasl = malloc(sizeof(double) * MAXPRIM * MAXPRIM);
         ClassBuf **cbs = calloc(NCLASS, sizeof(ClassBuf *));
         int ij, kl, ish, jsh, ksh, lsh, v;
 #pragma omp for schedule(dynamic, 2)
         for (ij = 0; ij < npair; ij++) {
                 shell_pair(ij, &ish, &jsh);
-                /* bra primitive pairs: exp(-ai aj / aij |AB|^2) and the largest
-                 * eij |ci cj| / aij for the ket-level bound, once per bra pair */
-                double bra_max = 0;
-                {
-                        const int npi = bas[ish * BAS_SLOTS + NPRIM_OF], npj = bas[jsh * BAS_SLOTS + NPRIM_OF];
-                        const double *exi = env + bas[ish * BAS_SLOTS + PTR_EXP], *exj = env + bas[jsh * BAS_SLOTS + PTR_EXP];
-                        const double *Ri = env + atm[bas[ish * BAS_SLOTS + ATOM_OF] * ATM_SLOTS + PTR_COORD];
-                        const double *Rj = env + atm[bas[jsh * BAS_SLOTS + ATOM_OF] * ATM_SLOTS + PTR_COORD];
-                        const double r2 = (Ri[0] - Rj[0]) * (Ri[0] - Rj[0]) + (Ri[1] - Rj[1]) * (Ri[1] - Rj[1])
-                                        + (Ri[2] - Rj[2]) * (Ri[2] - Rj[2]);
-                        int ip, jp;
-                        for (jp = 0; jp < npj; jp++) {
-                                for (ip = 0; ip < npi; ip++) {
-                                        double ai = exi[ip], aj = exj[jp];
-                                        double e = exp(-ai * aj / (ai + aj) * r2);
-                                        eijs[jp * npi + ip] = e;
-                                        bra_max = dmax2(bra_max, e * cmax_all[ish * MAXPRIM + ip]
-                                                                * cmax_all[jsh * MAXPRIM + jp] / (ai + aj));
-                                }
-                        }
-                }
+                const double bra_max = brmax[ij];
+                const double *ppij = ppd + ppoff[ij] * PPN;
                 for (kl = 0; kl <= ij; kl++) {
                         shell_pair(kl, &ksh, &lsh);
                         double q4 = qcond[ish * nbas + jsh] * qcond[ksh * nbas + lsh];
@@ -713,7 +749,6 @@ static void deriv2e_drv(int order, double *hess, int mode, int ngroup, double *j
                                 ab[s] = R[0][s] - R[1][s];
                                 cdv[s] = R[2][s] - R[3][s];
                         }
-                        double rcd2 = cdv[0] * cdv[0] + cdv[1] * cdv[1] + cdv[2] * cdv[2];
                         const int nroots = (l[0] + l[1] + l[2] + l[3] + order) / 2 + 1;
                         const int nf4 = nfi * nfj * nfk * nfl;
                         int pi, pj, pk, pl;
@@ -727,14 +762,29 @@ static void deriv2e_drv(int order, double *hess, int mode, int ngroup, double *j
                          * c_i c_j c_k c_l dd, the coefficients go into the z-direction
                          * prefactor and dd is the lane weight */
                         const int single = nci == 1 && ncj == 1 && nck == 1 && ncl == 1;
+                        const double *ppkl = ppd + ppoff[kl] * PPN;
+                        const int npij = nprim[0] * nprim[1];
                         for (pl = 0; pl < nprim[3]; pl++) {
                         for (pk = 0; pk < nprim[2]; pk++) {
-                                double ak = ex[2][pk], al = ex[3][pl];
-                                double akl = ak + al;
-                                double ekl = exp(-ak * al / akl * rcd2);
+                                const double *dk = ppkl + ((size_t)pl * nprim[2] + pk) * PPN;
+                                const double akl = dk[PP_A], iakl = dk[PP_IA];
                                 /* 1 / (aij akl sqrt(aij + akl)) <= 1 / (aij akl sqrt(akl)) */
-                                if (34.986836655249725 * bra_max * ekl * cmax[2][pk] * cmax[3][pl] * ddmax
-                                    / (akl * sqrt(akl)) < prim_tol) continue;
+                                if (34.986836655249725 * bra_max * dk[PP_ECS] * ddmax < prim_tol) continue;
+                                /* the bra primitive pairs passing the coefficient bound */
+                                const double eckl = dk[PP_EC] * ddmax, ekl = dk[PP_E];
+                                int nsurv = 0, pij, isv;
+                                for (pij = 0; pij < npij; pij++) {
+                                        const double *di = ppij + (size_t)pij * PPN;
+                                        const double ias = 1. / (di[PP_A] + akl);
+                                        /* 2 pi^(5/2) / (aij akl sqrt(aij + akl)) */
+                                        const double pr = 34.986836655249725 * di[PP_IA] * iakl * sqrt(ias);
+                                        if (pr * di[PP_EC] * eckl < prim_tol) continue;
+                                        plist[nsurv] = pij;
+                                        prefl[nsurv] = pr * di[PP_E] * ekl;
+                                        iasl[nsurv] = ias;
+                                        nsurv++;
+                                }
+                                if (nsurv == 0) continue;
                                 /* x1[g][a][b][fk][fl] = sum_{ck,cl} c_k c_l dd[g][a][b][ck fk][cl fl] */
                                 size_t nx1 = (size_t)NI * NJ * nfk * nfl;
                                 int ck, cl, fk, fl, ci, cj, fi, fj;
@@ -753,17 +803,15 @@ static void deriv2e_drv(int order, double *hess, int mode, int ngroup, double *j
                                                 }
                                         }
                                 }
-                                double Q[3];
-                                for (s = 0; s < 3; s++) Q[s] = (ak * R[2][s] + al * R[3][s]) / akl;
-                                for (pj = 0; pj < nprim[1]; pj++) {
-                                for (pi = 0; pi < nprim[0]; pi++) {
-                                        double ai = ex[0][pi], aj = ex[1][pj];
-                                        double aij = ai + aj;
-                                        double eij = eijs[pj * nprim[0] + pi];
-                                        double asum = aij + akl;
-                                        double pref = 34.986836655249725 /* 2 pi^(5/2) */ / (aij * akl * sqrt(asum)) * eij * ekl;
-                                        if (pref * ddmax * cmax[0][pi] * cmax[1][pj] * cmax[2][pk] * cmax[3][pl]
-                                            < prim_tol) continue;
+                                const double *Q = dk + PP_P, *QC = dk + PP_PA;
+                                const double ak2 = 2 * ex[2][pk];
+                                for (isv = 0; isv < nsurv; isv++) {
+                                        pij = plist[isv];
+                                        pi = pij % nprim[0];
+                                        pj = pij / nprim[0];
+                                        const double *di = ppij + (size_t)pij * PPN;
+                                        const double aij = di[PP_A], iaij = di[PP_IA];
+                                        const double ias = iasl[isv], pref = prefl[isv];
                                         /* w[g][fi][fj][fk][fl] = sum_{ci,cj} c_i c_j x1[g][ci fi][cj fj][fk][fl] */
                                         double wmax = 0, cc4 = 1;
                                         if (single) {
@@ -787,34 +835,32 @@ static void deriv2e_drv(int order, double *hess, int mode, int ngroup, double *j
                                                         for (a = 0; a < nfk * nfl; a++) wmax = dmax2(wmax, fabs(wo[a]));
                                                 }
                                         }
-                                        double P[3], PQ[3];
-                                        for (s = 0; s < 3; s++) {
-                                                P[s] = (ai * R[0][s] + aj * R[1][s]) / aij;
-                                                PQ[s] = P[s] - Q[s];
-                                        }
-                                        double rho = aij * akl / asum;
-                                        double x = rho * (PQ[0] * PQ[0] + PQ[1] * PQ[1] + PQ[2] * PQ[2]);
                                         if (pref * wmax < prim_tol) continue;
+                                        double PQ[3];
+                                        for (s = 0; s < 3; s++) PQ[s] = di[PP_P + s] - Q[s];
+                                        const double x = aij * akl * ias * (PQ[0] * PQ[0] + PQ[1] * PQ[1] + PQ[2] * PQ[2]);
                                         double u[MAXROOTS], rw[MAXROOTS];
                                         CINTrys_roots(nroots, x, u, rw);
                                         const double *wsrc = single ? dd : w;
+                                        const double ai2 = 2 * ex[0][pi], aj2 = 2 * ex[1][pj], pc = pref * cc4;
                                         int r;
                                         for (r = 0; r < nroots; r++) {
                                                 const int n = cb->nlane;
-                                                double t2 = u[r] / (1 + u[r]);
-                                                cb->lanes.b00[n] = .5 * t2 / asum;
-                                                cb->lanes.b10[n] = .5 / aij - .5 * akl * t2 / (aij * asum);
-                                                cb->lanes.b01[n] = .5 / akl - .5 * aij * t2 / (akl * asum);
+                                                /* t^2 / (aij + akl) */
+                                                const double ta = u[r] / (1 + u[r]) * ias;
+                                                cb->lanes.b00[n] = .5 * ta;
+                                                cb->lanes.b10[n] = .5 * iaij * (1 - akl * ta);
+                                                cb->lanes.b01[n] = .5 * iakl * (1 - aij * ta);
                                                 for (s = 0; s < 3; s++) {
-                                                        cb->lanes.c00[s][n] = P[s] - R[0][s] - akl * t2 / asum * PQ[s];
-                                                        cb->lanes.c00p[s][n] = Q[s] - R[2][s] + aij * t2 / asum * PQ[s];
+                                                        cb->lanes.c00[s][n] = di[PP_PA + s] - akl * ta * PQ[s];
+                                                        cb->lanes.c00p[s][n] = QC[s] + aij * ta * PQ[s];
                                                         cb->ab[s][n] = ab[s];
                                                         cb->cd[s][n] = cdv[s];
                                                 }
-                                                cb->lanes.gz[n] = pref * cc4 * rw[r];
-                                                cb->lanes.ai2[n] = 2 * ai;
-                                                cb->lanes.aj2[n] = 2 * aj;
-                                                cb->lanes.ak2[n] = 2 * ak;
+                                                cb->lanes.gz[n] = pc * rw[r];
+                                                cb->lanes.ai2[n] = ai2;
+                                                cb->lanes.aj2[n] = aj2;
+                                                cb->lanes.ak2[n] = ak2;
                                                 for (a = 0; a < ngroup * nf4; a++) cb->wl[(size_t)a * VL + n] = wsrc[a];
                                                 cb->slot[n] = qslot;
                                                 cb->nleft[qslot]++;
@@ -822,7 +868,7 @@ static void deriv2e_drv(int order, double *hess, int mode, int ngroup, double *j
                                                 if (++cb->nlane == VL)
                                                         flush_class(cb, T, ws, acc, ngroup, mode, natm, nh1, hloc, order);
                                         }
-                                } }
+                                }
                         } }
                         /* the quartet is complete once its buffered lanes are flushed */
                         cb->open[qslot] = 0;
@@ -854,9 +900,14 @@ static void deriv2e_drv(int order, double *hess, int mode, int ngroup, double *j
         free(T);
         free(ws);
         free(acc);
-        free(eijs);
+        free(plist);
+        free(prefl);
+        free(iasl);
 }
         free(cmax_all);
+        free(ppoff);
+        free(brmax);
+        free(ppd);
 }
 
 void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, double *kfac,
