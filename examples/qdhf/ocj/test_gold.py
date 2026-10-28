@@ -11,7 +11,10 @@ from pyscf import gto, scf
 from socutils.somf import x2cmp as X
 print('%-4s %5s | %7s %7s %7s | %7s %7s %7s %7s %7s | %7s | %8s' % (
     'mol', 'n2c', 'NR J', 'NR JK', 'X2C', 'expand', '3c', 'rinv', 'spinor', 'total', '/NR JK', 'err 2c'))
+only = os.environ.get('ONLY')
 for name, geom, base in g['systems']:
+    if only and name != only:
+        continue
     mol = gto.M(atom=geom, basis={'Au': gto.mole.uncontracted_basis(gto.basis.load(base[4:], 'Au'))}, verbose=0)
     t0 = time.perf_counter(); xmol, contr, d4, d2 = g['atomic_densities'](mol); t_atm = time.perf_counter() - t0
     n2c = xmol.nao_2c()
