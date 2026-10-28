@@ -3,17 +3,20 @@
  * distributed by rows over MPI processes, driven from C (the algorithm of
  * socutils.hci.gasci_mpi; PRODUCT_SPACE.md, section 6c).
  *
- * The space: every alpha string of a list times every beta string of the
- * same list, nalpha = nbeta, spatial orbitals from an FCIDUMP (no orbital
- * symmetry used), states of even (parity +1) or odd (-1) spin, C[b][a] =
- * parity C[a][b].  Process r holds the rows (alpha strings, places in the
- * sorted list) rows[r] .. rows[r+1]-1 of every vector, each row all beta
- * strings.  sigma = Z + parity Z^T + Y:
+ * The space: every alpha string of a list times every beta string of a
+ * list, spatial orbitals (no orbital symmetry used).  Process r holds the
+ * rows (alpha strings, places in the sorted list) rows[r] .. rows[r+1]-1 of
+ * every vector, each row all beta strings.
+ * Same lists, nalpha = nbeta (parity +-1): the states of even (+1) or odd
+ * (-1) spin, C[b][a] = parity C[a][b], and sigma = Z + parity Z^T + Y:
  *   Z = (BB,BB) C, row-local (a product plan of the own alpha strings and
  *       all beta strings, integrals of the beta-beta pairs only);
  *   Z^T by pairwise exchanges of blocks;
  *   Y = (AB,AB) C from the own rows and the halo (rows of other processes
  *       reached by alpha single excitations), zg_sigma_ab_rows.
+ * Any lists and electron counts (parity 0): Z as above; (AA,AA) C by the
+ * same kernel on C^T held by beta rows (a plan of the own beta strings and
+ * all alpha strings), transposed there and back; Y as above.
  * Eigensolver: LOBPCG-like iteration of one vector (X, the preconditioned
  * residual T, the previous direction P and their products: six vectors of
  * the own rows); vector operations with OpenMP, dot products summed by
@@ -25,15 +28,18 @@
  * orbital p occupied, the pyscf cistring convention), any order, no repeats.
  * Environment: ZGASCI_DIST_CHUNK, the largest message in doubles (2^28).
  * Options: --tol E (energy, 1e-8)  --rtol R (residual norm, 1e-3)
- *          --maxit N (40)  --parity +-1 (1)  --bench K (time K products
+ *          --maxit N (40)  --parity +-1 or 0 (1; 0: no symmetry, the
+ *          general path on the same lists)  --bench K (time K products
  *          first, 3)  --shift S (preconditioner floor, 1e-3)
- *          --s2pen L (linear spin penalty H + L S^2, 0)
+ *          --s2pen L (linear spin penalty H + L (S^2 - ss), 0)
  *
- * Library (libzgasci_dist.so): zgd_solve, the same solve on a communicator
- * of the caller (a Fortran handle, mpi4py comm.py2f()) from integrals in
- * memory, returning the energies, the orbital occupations and per string
- * the largest |C| of its row and its marginal weight (for the carryover of
- * SQD); socutils.hci.gasci_mpi.make_sci_solver wraps it.
+ * Library (libzgasci_dist.so): zgd_solve_ab (any lists) and zgd_solve
+ * (alpha = beta), the same solve on a communicator of the caller (a
+ * Fortran handle, mpi4py comm.py2f()) from integrals in memory, returning
+ * the energies, the orbital occupations and per string the largest |C| of
+ * its row (column) and its marginal weight (for the carryover of SQD), with
+ * a warm start between calls (zgd_promote, zgd_reset);
+ * socutils.hci.gasci_mpi.make_sci_solver wraps it.
  */
 #include <math.h>
 #include <mpi.h>
@@ -74,8 +80,10 @@ static double peak_gb(void) {
 typedef struct {
   int norb, nelec;
   double ecore;
-  double *h1;  /* norb^2 */
-  double *eri; /* norb^4, (pq|rs) */
+  double *h1;  /* norb^2 (alpha if uhf) */
+  double *eri; /* norb^4, (pq|rs) (alpha-alpha if uhf) */
+  int uhf;     /* different alpha and beta orbitals: */
+  double *h1b, *eri_ab, *eri_bb; /* (p_a q_a | r_b s_b), (beta beta | beta beta) */
 } fcidump;
 
 static void read_fcidump(const char *path, fcidump *f) {
@@ -83,6 +91,7 @@ static void read_fcidump(const char *path, fcidump *f) {
   if (!fp) die("cannot open the FCIDUMP");
   char line[4096];
   f->norb = f->nelec = -1;
+  f->uhf = 0, f->h1b = f->eri_ab = f->eri_bb = NULL;
   /* header up to &END or / */
   int done = 0;
   while (!done && fgets(line, sizeof line, fp)) {
@@ -121,8 +130,9 @@ static void read_fcidump(const char *path, fcidump *f) {
 
 /* v[P,R] = <pq||rs> + the one-electron part folded in over the spin orbitals
  * of a spatial plan (alpha P = P, beta P = norb + P), as
- * socutils.hci.gasci.antisymmetrized; beta_only: only the beta-beta pairs. */
-static double *spin_orbital_v(const fcidump *f, int beta_only) {
+ * socutils.hci.gasci.antisymmetrized; with f->uhf the integrals of each
+ * spin block. */
+static double *spin_orbital_v(const fcidump *f) {
   const int n = f->norb, ns = 2 * n, nel = f->nelec;
   const int64_t npair = (int64_t)ns * (ns - 1) / 2;
   double *v = calloc((size_t)(npair * npair), sizeof(double));
@@ -131,17 +141,22 @@ static double *spin_orbital_v(const fcidump *f, int beta_only) {
     for (int p = 0; p < q; ++p, ++P) pp[P] = p, qq[P] = q;
 #define SP(x) ((x) / n)
 #define SO(x) ((x) % n)
-#define ERI(a, b, c, d) f->eri[(((size_t)SO(a) * n + SO(b)) * n + SO(c)) * n + SO(d)]
+#define IDX(a, b, c, d) ((((size_t)SO(a) * n + SO(b)) * n + SO(c)) * n + SO(d))
+  /* (ab|cd), a, b of one spin and c, d of one spin */
+#define ERI(a, b, c, d)                                                          \
+  (!f->uhf || (SP(a) == 0 && SP(c) == 0) ? f->eri[IDX(a, b, c, d)]               \
+   : SP(a) == 1 && SP(c) == 1            ? f->eri_bb[IDX(a, b, c, d)]            \
+   : SP(a) == 0                          ? f->eri_ab[IDX(a, b, c, d)]            \
+                                         : f->eri_ab[IDX(c, d, a, b)])
   /* <pq|rs> = (pr|qs) if spin(p) = spin(r) and spin(q) = spin(s) */
 #define PHYS(p, q, r, s) ((SP(p) == SP(r) && SP(q) == SP(s)) ? ERI(p, r, q, s) : 0.0)
-#define H(p, r) (SP(p) == SP(r) ? f->h1[(size_t)SO(p) * n + SO(r)] : 0.0)
+#define H(p, r)                                                                  \
+  (SP(p) != SP(r) ? 0.0 : (f->uhf && SP(p) ? f->h1b : f->h1)[(size_t)SO(p) * n + SO(r)])
 #pragma omp parallel for schedule(dynamic, 16)
   for (int64_t P = 0; P < npair; ++P) {
     const int p = pp[P], q = qq[P];
-    if (beta_only && p < n) continue;
     for (int64_t R = 0; R < npair; ++R) {
       const int r = pp[R], s = qq[R];
-      if (beta_only && r < n) continue;
       double w = PHYS(p, q, r, s) - PHYS(p, q, s, r);
       w += ((q == s ? H(p, r) : 0) - (q == r ? H(p, s) : 0) - (p == s ? H(q, r) : 0) +
             (p == r ? H(q, s) : 0)) / (nel - 1);
@@ -150,6 +165,7 @@ static double *spin_orbital_v(const fcidump *f, int beta_only) {
   }
 #undef SP
 #undef SO
+#undef IDX
 #undef ERI
 #undef PHYS
 #undef H
@@ -158,21 +174,102 @@ static double *spin_orbital_v(const fcidump *f, int beta_only) {
   return v;
 }
 
-/* v += lam S^2 (nalpha = nbeta: S_z = 0) in the format of spin_orbital_v, as
- * socutils.hci.gasci.s2_antisymmetrized: S^2 = N_beta - sum_pq a+_{p alpha}
- * a+_{q beta} a_{p beta} a_{q alpha}; N_beta = N / 2 folded in as the
- * diagonal 2 (1/2) / (N - 1) of every pair.  beta_only: the beta-beta pairs. */
-static void add_s2(double *v, int norb, int nelec, double lam, int beta_only) {
+/* The (BB,BB) block of v (beta: the beta-beta pairs; zero elsewhere), or
+ * the (AA,AA) block moved to the beta-beta pairs (alpha pair (p, q) ->
+ * (norb + p, norb + q)): the integrals of the (AA,AA) part on vectors held
+ * by beta rows, whose plans have the alpha strings on side B. */
+static double *spin_block(const double *v, int norb, int beta) {
   const int ns = 2 * norb;
   const int64_t npair = (int64_t)ns * (ns - 1) / 2;
+  double *w = calloc((size_t)(npair * npair), sizeof(double));
 #define PAIR(a, b) ((int64_t)(b) * ((b) - 1) / 2 + (a))
-  for (int q = 1; q < ns; ++q)
-    for (int p = 0; p < q; ++p)
-      if (!beta_only || p >= norb) v[PAIR(p, q) * (npair + 1)] += lam / (nelec - 1);
-  if (!beta_only)
+#pragma omp parallel for schedule(dynamic, 1)
+  for (int q = 1; q < norb; ++q)
+    for (int p = 0; p < q; ++p) {
+      const int64_t P = PAIR(p, q), Pb = PAIR(norb + p, norb + q);
+      for (int s = 1; s < norb; ++s)
+        for (int r = 0; r < s; ++r) {
+          const int64_t R = PAIR(r, s), Rb = PAIR(norb + r, norb + s);
+          w[Pb * npair + Rb] = beta ? v[Pb * npair + Rb] : v[P * npair + R];
+        }
+    }
+#undef PAIR
+  return w;
+}
+
+/* v += lam / (N - 1) times the fold of the one-electron operator h (ns x ns
+ * over the spin orbitals) into the pairs, as in spin_orbital_v. */
+static void fold_h1(double *v, int ns, const double *h, int nel, double lam) {
+  const int64_t npair = (int64_t)ns * (ns - 1) / 2;
+  int *pp = malloc(npair * sizeof(int)), *qq = malloc(npair * sizeof(int));
+  for (int q = 1, P = 0; q < ns; ++q)
+    for (int p = 0; p < q; ++p, ++P) pp[P] = p, qq[P] = q;
+#define H(a, b) h[(size_t)(a) * ns + (b)]
+#pragma omp parallel for schedule(dynamic, 16)
+  for (int64_t P = 0; P < npair; ++P) {
+    const int p = pp[P], q = qq[P];
+    for (int64_t R = 0; R < npair; ++R) {
+      const int r = pp[R], s = qq[R];
+      const double w = (q == s ? H(p, r) : 0) - (q == r ? H(p, s) : 0) - (p == s ? H(q, r) : 0) +
+                       (p == r ? H(q, s) : 0);
+      if (w != 0) v[P * npair + R] += lam * w / (nel - 1);
+    }
+  }
+#undef H
+  free(pp);
+  free(qq);
+}
+
+/* v += lam (S^2 - ss) in the format of spin_orbital_v, ss = |S_z| (|S_z| + 1)
+ * the lowest value (the linear penalty of fix_spin_).
+ * ovlp NULL (the same alpha and beta orbitals), as
+ * socutils.hci.gasci.s2_antisymmetrized: S^2 = N_beta + S_z (S_z + 1) -
+ * sum_pq a+_{p alpha} a+_{q beta} a_{p beta} a_{q alpha}; the constant
+ * N_beta + S_z (S_z + 1) - ss = min(nalpha, nbeta) is folded in as the
+ * diagonal 2 min / (N (N - 1)) of every pair (the same for the alpha-alpha
+ * and the beta-beta pairs, as the spin flip needs).
+ * ovlp[p * norb + q] = <p alpha | q beta> (different orbitals): S^2 = S- S+
+ * + S_z (S_z + 1), S+ = sum_pq O_pq a+_{p alpha} a_{q beta}, S- S+ = sum_rq
+ * (O^T O)_rq a+_{r beta} a_{q beta} - sum_pqrs O_sr O_pq a+_{p alpha}
+ * a+_{r beta} a_{q beta} a_{s alpha}; S_z (S_z + 1) - ss folded in as a
+ * constant. */
+static void add_s2(double *v, int norb, int nalpha, int nbeta, double lam, const double *ovlp) {
+  const int ns = 2 * norb, nel = nalpha + nbeta;
+  const int64_t npair = (int64_t)ns * (ns - 1) / 2;
+#define PAIR(a, b) ((int64_t)(b) * ((b) - 1) / 2 + (a))
+  if (!ovlp) {
+    const double diag = lam * 2.0 * (nalpha < nbeta ? nalpha : nbeta) / ((double)nel * (nel - 1));
+    for (int q = 1; q < ns; ++q)
+      for (int p = 0; p < q; ++p) v[PAIR(p, q) * (npair + 1)] += diag;
     for (int p = 0; p < norb; ++p)
       for (int q = 0; q < norb; ++q) v[PAIR(p, norb + q) * npair + PAIR(q, norb + p)] -= lam;
+  } else {
+    const double sz = 0.5 * (nalpha - nbeta), az = fabs(sz);
+    const double c = (sz * (sz + 1) - az * (az + 1)) / nel;
+    double *h = calloc((size_t)ns * ns, sizeof(double));
+    for (int p = 0; p < ns; ++p) h[(size_t)p * ns + p] = c;
+    for (int r = 0; r < norb; ++r)
+      for (int q = 0; q < norb; ++q) {
+        double o = 0;
+        for (int p = 0; p < norb; ++p) o += ovlp[p * norb + r] * ovlp[p * norb + q];
+        h[(size_t)(norb + r) * ns + norb + q] += o;
+      }
+    fold_h1(v, ns, h, nel, lam);
+    free(h);
+#pragma omp parallel for collapse(2) schedule(static)
+    for (int p = 0; p < norb; ++p)
+      for (int r = 0; r < norb; ++r)
+        for (int s = 0; s < norb; ++s)
+          for (int q = 0; q < norb; ++q)
+            v[PAIR(p, norb + r) * npair + PAIR(s, norb + q)] -=
+                lam * ovlp[s * norb + r] * ovlp[p * norb + q];
+  }
 #undef PAIR
+}
+
+static double s2_lowest(int nalpha, int nbeta) {
+  const double sz = 0.5 * fabs((double)(nalpha - nbeta));
+  return sz * (sz + 1);
 }
 
 /* ---- MPI helpers -------------------------------------------------------- */
@@ -223,14 +320,21 @@ static void copy(const double *x, double *y, int64_t len) {
 /* ---- the distributed product space -------------------------------------- */
 
 typedef struct {
-  int norb, nalpha, parity;
-  int64_t n, lo, hi, nloc, len; /* strings, own rows, own elements */
+  int norb, nalpha, nbeta, parity; /* parity 0: no symmetry (any alpha, beta lists) */
+  int64_t n, lo, hi, nloc, len; /* alpha strings, own rows, own elements (nloc * nb) */
   int64_t *rows;                /* size + 1 */
   int64_t *strs;                /* sorted */
   int64_t *perm;                /* strs[k] = the input string perm[k] */
-  zg_plan *plan, *lplan;
-  double *v, *v_bb;             /* H + s2pen S^2 */
-  double *v_h, *v_bb_h;         /* H, if s2pen != 0 */
+  /* beta strings (the columns); with parity != 0 the same arrays as alpha.
+   * For the (AA,AA) part of parity 0, vectors are also held by beta rows
+   * (nloc_b rows of n): own beta strings lo_b .. hi_b - 1. */
+  int64_t nb, lo_b, hi_b, nloc_b, len_b;
+  int64_t *rows_b, *strs_b, *perm_b;
+  zg_plan *plan, *lplan, *lplan_b; /* all x all; own alpha x all beta; own beta x all alpha */
+  double *xb, *zb;                 /* parity 0: two vectors held by beta rows */
+  double *v, *v_bb, *v_aa;     /* H + s2pen S^2; its (BB,BB) block; its (AA,AA) block on the
+                                 * beta-beta pairs (parity 0) */
+  double *v_h, *v_bb_h, *v_aa_h; /* the same of H, if s2pen != 0 */
   double s2pen;
   /* halo */
   int64_t nhalo, *smap;
@@ -260,7 +364,7 @@ static int64_t find(const int64_t *s, int64_t n, int64_t x) {
 }
 
 static void halo_setup(dist *d) {
-  const int64_t n = d->n;
+  const int64_t n = d->n; /* alpha strings (rows) */
   unsigned char *reach = calloc((size_t)n, 1);
 #pragma omp parallel for schedule(dynamic, 64)
   for (int64_t a = d->lo; a < d->hi; ++a) {
@@ -311,62 +415,108 @@ static void halo_setup(dist *d) {
 
 static int cmp_pair(const void *a, const void *b) { return cmp64(a, b); }
 
-static void dist_init(dist *d, const fcidump *f, const int64_t *strs_in, int64_t n, int parity,
-                      double s2pen) {
-  memset(d, 0, sizeof *d);
-  d->norb = f->norb;
-  d->nalpha = f->nelec / 2;
-  d->parity = parity;
-  d->s2pen = s2pen;
-  /* sort a copy, keeping where each string came from */
+/* A sorted copy of strs_in (n strings, no repeats), perm[k]: the input place of
+ * string k; both newly allocated. */
+static int64_t *sorted_copy(const int64_t *strs_in, int64_t n, int64_t **perm) {
   int64_t *pairs = malloc((size_t)(2 * n + 1) * sizeof(int64_t));
   for (int64_t k = 0; k < n; ++k) pairs[2 * k] = strs_in[k], pairs[2 * k + 1] = k;
   qsort(pairs, n, 2 * sizeof(int64_t), cmp_pair);
   int64_t *strs = malloc((size_t)(n + 1) * sizeof(int64_t));
-  d->perm = malloc((size_t)(n + 1) * sizeof(int64_t));
-  for (int64_t k = 0; k < n; ++k) strs[k] = pairs[2 * k], d->perm[k] = pairs[2 * k + 1];
+  *perm = malloc((size_t)(n + 1) * sizeof(int64_t));
+  for (int64_t k = 0; k < n; ++k) strs[k] = pairs[2 * k], (*perm)[k] = pairs[2 * k + 1];
   free(pairs);
   for (int64_t k = 1; k < n; ++k)
     if (strs[k] == strs[k - 1]) die("repeated strings");
-  d->strs = strs;
+  return strs;
+}
+
+static int64_t *even_rows(int64_t n) {
+  int64_t *rows = malloc((size_ + 1) * sizeof(int64_t));
+  for (int r = 0; r <= size_; ++r) rows[r] = (n * r) / size_;
+  return rows;
+}
+
+/* The space strs_a x strs_b (nalpha, nbeta electrons; f->nelec their sum).
+ * parity +-1: strs_b must be strs_a (nalpha = nbeta), states with C[b][a] =
+ * parity C[a][b]; parity 0: any lists, no symmetry. */
+static void dist_init(dist *d, const fcidump *f, int nalpha, int nbeta, const int64_t *strs_a,
+                      int64_t n, const int64_t *strs_b, int64_t nb, int parity, double s2pen,
+                      const double *ovlp) {
+  memset(d, 0, sizeof *d);
+  d->norb = f->norb;
+  d->nalpha = nalpha, d->nbeta = nbeta;
+  d->parity = parity;
+  d->s2pen = s2pen;
+  if (nalpha + nbeta != f->nelec) die("nalpha + nbeta != nelec");
+  if (parity && (nalpha != nbeta || nb != n)) die("parity +-1 needs the same alpha and beta lists");
+  if (parity && f->uhf) die("parity +-1 needs the same alpha and beta orbitals (not uhf)");
+  if (s2pen != 0 && f->uhf && !ovlp) die("the S^2 penalty with uhf integrals needs the overlap");
+  d->strs = sorted_copy(strs_a, n, &d->perm);
   d->n = n;
-  d->rows = malloc((size_ + 1) * sizeof(int64_t));
-  for (int r = 0; r <= size_; ++r) d->rows[r] = (n * r) / size_;
+  d->rows = even_rows(n);
   d->lo = d->rows[rank_], d->hi = d->rows[rank_ + 1], d->nloc = d->hi - d->lo;
-  d->len = d->nloc * n;
+  if (parity) {
+    d->nb = n, d->strs_b = d->strs, d->perm_b = d->perm, d->rows_b = d->rows;
+  } else {
+    d->strs_b = sorted_copy(strs_b, nb, &d->perm_b);
+    d->nb = nb;
+    d->rows_b = even_rows(nb);
+  }
+  d->lo_b = d->rows_b[rank_], d->hi_b = d->rows_b[rank_ + 1], d->nloc_b = d->hi_b - d->lo_b;
+  d->len = d->nloc * d->nb;
+  d->len_b = d->nloc_b * n;
+  const int64_t *sa = d->strs, *sb = d->strs_b;
   const int ns = 2 * f->norb;
-  d->plan = zg_plan_product(ns, f->nelec, f->norb, n, (const uint64_t *)strs, n,
-                            (const uint64_t *)strs, 0, NULL, NULL, NULL);
+  d->plan = zg_plan_product(ns, f->nelec, f->norb, n, (const uint64_t *)sa, d->nb,
+                            (const uint64_t *)sb, 0, NULL, NULL, NULL);
   if (!d->plan) die(zg_error());
-  if (zg_dim(d->plan) != n * n) die("strings left out of the product plan (electron counts?)");
+  if (zg_dim(d->plan) != n * d->nb) die("strings left out of the product plan (electron counts?)");
   if (size_ == 1) {
     d->lplan = d->plan;
   } else if (d->nloc > 0) {
-    d->lplan = zg_plan_product(ns, f->nelec, f->norb, d->nloc, (const uint64_t *)(strs + d->lo),
-                               n, (const uint64_t *)strs, 0, NULL, NULL, NULL);
+    d->lplan = zg_plan_product(ns, f->nelec, f->norb, d->nloc, (const uint64_t *)(sa + d->lo),
+                               d->nb, (const uint64_t *)sb, 0, NULL, NULL, NULL);
     if (!d->lplan) die(zg_error());
   }
-  d->v = spin_orbital_v(f, 0);
-  d->v_bb = spin_orbital_v(f, 1);
+  /* (AA,AA) of parity 0: the kernel of (BB,BB) on vectors held by beta rows,
+   * a plan with the own beta strings on side A and all alpha strings on B */
+  const int same = !parity && nalpha == nbeta && nb == n &&
+                   !memcmp(sa, sb, (size_t)n * sizeof(int64_t));
+  if (same) { /* the same strings on both sides: the same plan (the excitation tables are
+               * those of the strings; only the integrals of the two parts differ) */
+    d->lplan_b = d->lplan;
+  } else if (!parity && d->nloc_b > 0) {
+    d->lplan_b = zg_plan_product(ns, f->nelec, f->norb, d->nloc_b, (const uint64_t *)(sb + d->lo_b),
+                                 n, (const uint64_t *)sa, 0, NULL, NULL, NULL);
+    if (!d->lplan_b) die(zg_error());
+  }
+  d->v = spin_orbital_v(f);
   if (s2pen != 0) {
     const int64_t np2 = (int64_t)ns * (ns - 1) / 2 * ((int64_t)ns * (ns - 1) / 2);
     d->v_h = malloc((size_t)np2 * sizeof(double));
-    d->v_bb_h = malloc((size_t)np2 * sizeof(double));
     memcpy(d->v_h, d->v, (size_t)np2 * sizeof(double));
-    memcpy(d->v_bb_h, d->v_bb, (size_t)np2 * sizeof(double));
-    add_s2(d->v, f->norb, f->nelec, s2pen, 0);
-    add_s2(d->v_bb, f->norb, f->nelec, s2pen, 1);
+    add_s2(d->v, f->norb, nalpha, nbeta, s2pen, f->uhf ? ovlp : NULL);
+    d->v_bb_h = spin_block(d->v_h, f->norb, 1);
+    if (!parity) d->v_aa_h = spin_block(d->v_h, f->norb, 0);
   }
+  d->v_bb = spin_block(d->v, f->norb, 1);
+  if (!parity) d->v_aa = spin_block(d->v, f->norb, 0);
   halo_setup(d);
   d->zt = malloc((size_t)(d->len + 1) * sizeof(double));
-  if (d->nhalo) d->hbuf = malloc((size_t)((d->nloc + d->nhalo) * n + 1) * sizeof(double));
-  /* the largest block of the transpose and of the halo */
+  if (!parity) {
+    d->xb = malloc((size_t)(d->len_b + 1) * sizeof(double));
+    d->zb = malloc((size_t)(d->len_b + 1) * sizeof(double));
+  }
+  if (d->nhalo) d->hbuf = malloc((size_t)((d->nloc + d->nhalo) * d->nb + 1) * sizeof(double));
+  /* the largest block of the transposes (both ways) and of the halo */
   int64_t smax = 1, rmax = 1;
   for (int q = 0; q < size_; ++q) {
-    const int64_t w = d->rows[q + 1] - d->rows[q];
-    if (d->nloc * w > smax) smax = d->nloc * w;
-    if (w * d->nloc > rmax) rmax = w * d->nloc;
-    if (d->hsend_cnt[q] * n > smax) smax = d->hsend_cnt[q] * n;
+    const int64_t wa = d->rows[q + 1] - d->rows[q], wb = d->rows_b[q + 1] - d->rows_b[q];
+    if (d->nloc * wb > smax) smax = d->nloc * wb;
+    if (d->nloc_b * wa > smax) smax = d->nloc_b * wa;
+    if (wa * d->nloc_b > rmax) rmax = wa * d->nloc_b;
+    if (wb * d->nloc > rmax) rmax = wb * d->nloc;
+    if (d->hsend_cnt[q] * d->nb > smax) smax = d->hsend_cnt[q] * d->nb;
   }
   d->sbuf_len = smax, d->rbuf_len = rmax;
   d->sbuf = malloc((size_t)smax * sizeof(double));
@@ -375,26 +525,36 @@ static void dist_init(dist *d, const fcidump *f, const int64_t *strs_in, int64_t
 
 static void dist_free(dist *d) {
   if (d->lplan && d->lplan != d->plan) zg_plan_free(d->lplan);
+  if (d->lplan_b && d->lplan_b != d->lplan) zg_plan_free(d->lplan_b);
   if (d->plan) zg_plan_free(d->plan);
+  if (d->strs_b != d->strs) free(d->strs_b), free(d->perm_b), free(d->rows_b);
+  free(d->xb), free(d->zb);
   free(d->strs), free(d->perm), free(d->rows);
-  free(d->v), free(d->v_bb), free(d->v_h), free(d->v_bb_h);
+  free(d->v), free(d->v_bb), free(d->v_aa), free(d->v_h), free(d->v_bb_h), free(d->v_aa_h);
   free(d->smap), free(d->hsend_cnt), free(d->hsend_off), free(d->hsend_rows);
   free(d->hrecv_cnt), free(d->hrecv_off), free(d->hbuf), free(d->zt), free(d->sbuf), free(d->rbuf);
   memset(d, 0, sizeof *d);
 }
 
-/* out = the own rows of X^T (X distributed by rows). */
-static void transpose(dist *d, const double *x, double *out) {
-  const int64_t n = d->n, lo = d->lo, nl = d->nloc;
-  zg_transpose_d(nl, nl, x + lo, n, out + lo, n);
+/* X (R x C) distributed by rows (rpart; own rows x, nlx of them) -> the own
+ * rows y (nly) of X^T distributed by rows by cpart (the columns of X). */
+static void transpose_g(dist *d, const double *x, int64_t nlx, const int64_t *rpart, double *y,
+                        int64_t nly, const int64_t *cpart) {
+  const int64_t C = cpart[size_], R = rpart[size_];
+  zg_transpose_d(nlx, nly, x + cpart[rank_], C, y + rpart[rank_], R);
   for (int k = 1; k < size_; ++k) {
     const int dest = (rank_ + k) % size_, src = (rank_ - k + size_) % size_;
-    const int64_t c0 = d->rows[dest], wd = d->rows[dest + 1] - c0;
-    const int64_t s0 = d->rows[src], ws = d->rows[src + 1] - s0;
-    zg_copy_block_d(nl, wd, x + c0, n, d->sbuf, wd);
-    sendrecv(d->sbuf, nl * wd, dest, d->rbuf, ws * nl, src);
-    zg_transpose_d(ws, nl, d->rbuf, nl, out + s0, n);
+    const int64_t c0 = cpart[dest], wd = cpart[dest + 1] - c0;
+    const int64_t s0 = rpart[src], ws = rpart[src + 1] - s0;
+    zg_copy_block_d(nlx, wd, x + c0, C, d->sbuf, wd);
+    sendrecv(d->sbuf, nlx * wd, dest, d->rbuf, ws * nly, src);
+    zg_transpose_d(ws, nly, d->rbuf, nly, y + s0, R);
   }
+}
+
+/* out = the own rows of X^T (X distributed by rows; parity != 0: square). */
+static void transpose(dist *d, const double *x, double *out) {
+  transpose_g(d, x, d->nloc, d->rows, out, d->nloc, d->rows);
 }
 
 /* x = (x + parity x^T) / 2 */
@@ -407,7 +567,7 @@ static void symmetrize(dist *d, double *x) {
 
 /* hbuf = own rows of c, then the halo rows */
 static void halo_exchange(dist *d, const double *c) {
-  const int64_t n = d->n;
+  const int64_t n = d->nb; /* row length */
   copy(c, d->hbuf, d->len);
   for (int k = 1; k < size_; ++k) {
     const int dest = (rank_ + k) % size_, src = (rank_ - k + size_) % size_;
@@ -421,13 +581,25 @@ static void halo_exchange(dist *d, const double *c) {
   }
 }
 
-/* out = H c for c of the symmetry. */
+/* out = H c for c of the symmetry.  (BB,BB) row-local; (AA,AA) = parity
+ * (BB,BB)^T, or with parity 0 the same kernel on c held by beta rows
+ * (transposed there and back); (AB,AB) from the own and the halo rows. */
 static void sigma(dist *d, const double *c, double *out) {
   const double t0 = now();
+  double tz = 0;
   if (d->nloc) zg_sigma_blas_d(d->lplan, d->v_bb, c, out);
   const double t1 = now();
-  transpose(d, out, d->zt);
-  axpy((double)d->parity, d->zt, out, d->len);
+  if (d->parity) {
+    transpose(d, out, d->zt);
+    axpy((double)d->parity, d->zt, out, d->len);
+  } else {
+    transpose_g(d, c, d->nloc, d->rows, d->xb, d->nloc_b, d->rows_b);
+    const double ta = now();
+    if (d->nloc_b) zg_sigma_blas_d(d->lplan_b, d->v_aa, d->xb, d->zb);
+    tz = now() - ta;
+    transpose_g(d, d->zb, d->nloc_b, d->rows_b, d->zt, d->nloc, d->rows);
+    axpy(1.0, d->zt, out, d->len);
+  }
   const double t2 = now();
   const double *src = c;
   if (d->nhalo) {
@@ -438,7 +610,7 @@ static void sigma(dist *d, const double *c, double *out) {
   if (d->nloc && !zg_sigma_ab_rows_d(d->plan, d->v, src, d->smap, out, d->lo, d->hi))
     die("zg_sigma_ab_rows does not apply to this plan");
   const double t4 = now();
-  d->t_z += t1 - t0, d->t_tr += t2 - t1, d->t_halo += t3 - t2, d->t_ab += t4 - t3;
+  d->t_z += t1 - t0 + tz, d->t_tr += t2 - t1 - tz, d->t_halo += t3 - t2, d->t_ab += t4 - t3;
   d->t_sig += t4 - t0;
   d->nsig++;
 }
@@ -473,10 +645,10 @@ static double lobpcg(dist *d, const double *x0, int maxit, double tol, double rt
     int64_t imin = -1;
     /* (odd parity: off the diagonal a = b, where the symmetrized vector vanishes) */
     for (int64_t i = 0; i < L; ++i)
-      if (hd[i] < loc.v && (d->parity > 0 || d->lo + i / d->n != i % d->n)) loc.v = hd[i], imin = i;
+      if (hd[i] < loc.v && (d->parity >= 0 || d->lo + i / d->n != i % d->n)) loc.v = hd[i], imin = i;
     MPI_Allreduce(&loc, &glob, 1, MPI_DOUBLE_INT, MPI_MINLOC, comm_);
     if (rank_ == glob.r) x[imin] = 1;
-    symmetrize(d, x);
+    if (d->parity) symmetrize(d, x);
     scal(1 / sqrt(gdot(x, x, L)), x, L);
   }
   sigma(d, x, hx);
@@ -506,7 +678,7 @@ static double lobpcg(dist *d, const double *x0, int maxit, double tol, double rt
       const double dd = fmax(fabs(hd[i] - e), shift);
       t[i] /= -dd;
     }
-    symmetrize(d, t);
+    if (d->parity) symmetrize(d, t);
     axpy(-gdot(x, t, L), x, t, L);
     if (p) axpy(-gdot(p, t, L), p, t, L);
     const double nt = sqrt(gdot(t, t, L));
@@ -568,31 +740,32 @@ static double lobpcg(dist *d, const double *x0, int maxit, double tol, double rt
   return e;
 }
 
-/* After the solve of x (own rows, normalized; e_pen = <x|H + s2pen S^2|x>):
- * out = {e_pen, <H>, <S^2> (NaN without a penalty)}, one more product if
- * penalized; per string in the input order the largest |C| of its row (=
- * of its column) and its weight sum_b C[a][b]^2, and occ[p] = sum_a
- * weight[a] n_p(a), the alpha (= beta) occupations. */
-static void finish(dist *d, const double *x, double e_pen, double *out, double *occ,
-                   double *maxabs, double *wa) {
-  const int64_t n = d->n, L = d->len;
+/* After the solve of x (own rows, normalized; e_pen = <x|H + s2pen (S^2 -
+ * ss)|x>): out = {e_pen, <H>, <S^2> (NaN without a penalty)}, one more
+ * product if penalized; per alpha string in the input order the largest |C|
+ * of its row and its weight sum_b C[a][b]^2 (maxabs, wa), the same per beta
+ * string over its column (maxabs_b, wb; = alpha for parity != 0), and the
+ * occupations occ[p] = sum_a wa[a] n_p(a), occ_b likewise. */
+static void finish(dist *d, const double *x, double e_pen, double *out, double *occ, double *occ_b,
+                   double *maxabs, double *maxabs_b, double *wa, double *wb) {
+  const int64_t n = d->n, nb = d->nb, L = d->len;
   out[0] = out[1] = e_pen, out[2] = NAN;
   if (d->s2pen != 0) {
     double *hx = malloc((size_t)(L + 1) * sizeof(double));
-    double *v = d->v, *v_bb = d->v_bb;
-    d->v = d->v_h, d->v_bb = d->v_bb_h;
+    double *v = d->v, *v_bb = d->v_bb, *v_aa = d->v_aa;
+    d->v = d->v_h, d->v_bb = d->v_bb_h, d->v_aa = d->v_aa_h;
     sigma(d, x, hx);
-    d->v = v, d->v_bb = v_bb;
+    d->v = v, d->v_bb = v_bb, d->v_aa = v_aa;
     out[1] = gdot(x, hx, L);
-    out[2] = (e_pen - out[1]) / d->s2pen;
+    out[2] = (e_pen - out[1]) / d->s2pen + s2_lowest(d->nalpha, d->nbeta);
     free(hx);
   }
   double *gw = calloc((size_t)n + 1, sizeof(double)), *gm = calloc((size_t)n + 1, sizeof(double));
 #pragma omp parallel for schedule(static)
   for (int64_t a = d->lo; a < d->hi; ++a) {
-    const double *row = x + (a - d->lo) * n;
+    const double *row = x + (a - d->lo) * nb;
     double w = 0, m = 0;
-    for (int64_t b = 0; b < n; ++b) {
+    for (int64_t b = 0; b < nb; ++b) {
       w += row[b] * row[b];
       if (fabs(row[b]) > m) m = fabs(row[b]);
     }
@@ -600,16 +773,43 @@ static void finish(dist *d, const double *x, double e_pen, double *out, double *
   }
   MPI_Allreduce(MPI_IN_PLACE, gw, (int)n, MPI_DOUBLE, MPI_SUM, comm_);
   MPI_Allreduce(MPI_IN_PLACE, gm, (int)n, MPI_DOUBLE, MPI_MAX, comm_);
+  double *bw = gw, *bm = gm;
+  if (!d->parity) { /* over the columns: own rows, then summed over the processes */
+    bw = calloc((size_t)nb + 1, sizeof(double)), bm = calloc((size_t)nb + 1, sizeof(double));
+#pragma omp parallel for schedule(static)
+    for (int64_t b = 0; b < nb; ++b) {
+      double w = 0, m = 0;
+      for (int64_t a = 0; a < d->nloc; ++a) {
+        const double y = x[a * nb + b];
+        w += y * y;
+        if (fabs(y) > m) m = fabs(y);
+      }
+      bw[b] = w, bm[b] = m;
+    }
+    MPI_Allreduce(MPI_IN_PLACE, bw, (int)nb, MPI_DOUBLE, MPI_SUM, comm_);
+    MPI_Allreduce(MPI_IN_PLACE, bm, (int)nb, MPI_DOUBLE, MPI_MAX, comm_);
+  }
   if (occ) {
     for (int p = 0; p < d->norb; ++p) occ[p] = 0;
     for (int64_t k = 0; k < n; ++k)
       for (int p = 0; p < d->norb; ++p)
         if ((d->strs[k] >> p) & 1) occ[p] += gw[k];
   }
+  if (occ_b) {
+    for (int p = 0; p < d->norb; ++p) occ_b[p] = 0;
+    for (int64_t k = 0; k < nb; ++k)
+      for (int p = 0; p < d->norb; ++p)
+        if ((d->strs_b[k] >> p) & 1) occ_b[p] += bw[k];
+  }
   for (int64_t k = 0; k < n; ++k) {
     if (wa) wa[d->perm[k]] = gw[k];
     if (maxabs) maxabs[d->perm[k]] = gm[k];
   }
+  for (int64_t k = 0; k < nb; ++k) {
+    if (wb) wb[d->perm_b[k]] = bw[k];
+    if (maxabs_b) maxabs_b[d->perm_b[k]] = bm[k];
+  }
+  if (bw != gw) free(bw), free(bm);
   free(gw), free(gm);
 }
 
@@ -618,13 +818,14 @@ static void finish(dist *d, const double *x, double e_pen, double *out, double *
 /* A solution kept for the next calls: its sorted strings, the row ranges,
  * the own rows of the vector (on this process). */
 typedef struct {
-  int64_t n, *strs, *rows, lo, nloc;
-  int size, parity;
+  int64_t n, *strs, *rows, lo, nloc, nb, *strs_b; /* strs_b: own copy only for parity 0 */
+  int size, parity, nalpha, nbeta;
   double e, *x;
 } saved;
 static saved prev_, cand_; /* the start of this round, the best of this round */
 
 static void saved_free(saved *s) {
+  if (s->strs_b != s->strs) free(s->strs_b);
   free(s->strs), free(s->rows), free(s->x);
   memset(s, 0, sizeof *s);
 }
@@ -635,8 +836,14 @@ static int keep_candidate(dist *d, double *x, double e) {
   saved_free(&cand_);
   cand_.n = d->n, cand_.lo = d->lo, cand_.nloc = d->nloc, cand_.size = size_;
   cand_.parity = d->parity, cand_.e = e, cand_.x = x;
+  cand_.nalpha = d->nalpha, cand_.nbeta = d->nbeta, cand_.nb = d->nb;
   cand_.strs = malloc((size_t)(d->n + 1) * sizeof(int64_t));
   memcpy(cand_.strs, d->strs, (size_t)d->n * sizeof(int64_t));
+  cand_.strs_b = cand_.strs;
+  if (!d->parity) {
+    cand_.strs_b = malloc((size_t)(d->nb + 1) * sizeof(int64_t));
+    memcpy(cand_.strs_b, d->strs_b, (size_t)d->nb * sizeof(int64_t));
+  }
   cand_.rows = malloc((size_t)(size_ + 1) * sizeof(int64_t));
   memcpy(cand_.rows, d->rows, (size_t)(size_ + 1) * sizeof(int64_t));
   return 1;
@@ -648,17 +855,17 @@ static int keep_candidate(dist *d, double *x, double e) {
  * (pairwise exchanges).  Returns the squared norm of the restriction (the
  * weight of the old vector kept), 0 if nothing of it is in the space. */
 static double warm_vector(dist *d, const saved *s, double *x0) {
-  const int64_t n = d->n, no = s->n;
+  const int64_t n = d->nb, no = s->nb, nao = s->n; /* row lengths (beta strings); old alpha */
   memset(x0, 0, (size_t)d->len * sizeof(double));
   int64_t *colmap = malloc((size_t)(n + 1) * sizeof(int64_t));
 #pragma omp parallel for schedule(static)
-  for (int64_t b = 0; b < n; ++b) colmap[b] = find(s->strs, no, d->strs[b]);
+  for (int64_t b = 0; b < n; ++b) colmap[b] = find(s->strs_b, no, d->strs_b[b]);
   /* the old rows each own row needs, grouped by their owner */
   int64_t *want_cnt = calloc(size_, sizeof(int64_t)), *want_off = calloc(size_ + 1, sizeof(int64_t));
   int64_t *kold = malloc((size_t)(d->nloc + 1) * sizeof(int64_t));
   int *owner = malloc((size_t)(d->nloc + 1) * sizeof(int));
   for (int64_t a = 0; a < d->nloc; ++a) {
-    kold[a] = find(s->strs, no, d->strs[d->lo + a]);
+    kold[a] = find(s->strs, nao, d->strs[d->lo + a]);
     owner[a] = -1;
     if (kold[a] < 0) continue;
     int q = 0;
@@ -729,7 +936,7 @@ static double warm_vector(dist *d, const saved *s, double *x0) {
   }
   free(sb), free(rb), free(give), free(give_cnt), free(give_off), free(want), free(dst);
   free(want_cnt), free(want_off), free(kold), free(owner), free(colmap);
-  symmetrize(d, x0);
+  if (d->parity) symmetrize(d, x0);
   const double w = gdot(x0, x0, d->len);
   if (w > 0) scal(1 / sqrt(w), x0, d->len);
   return w;
@@ -750,44 +957,55 @@ void zgd_reset(void) {
   saved_free(&cand_);
 }
 
-/* The library entry: the lowest state of H (+ s2pen S^2) in the product
- * space strs x strs (nstr int64 strings, any order, no repeats; nalpha =
- * nbeta = nelec / 2) of the states with C[b][a] = parity C[a][b], on the
- * communicator comm_f (Fortran handle; every process calls with the same
- * arguments).  h1: norb^2, eri: norb^4 (pq|rs), no core energy.
+/* The library entry: the lowest state of H (+ s2pen (S^2 - ss), ss = |S_z|
+ * (|S_z| + 1)) in the product space strs_a x strs_b (n alpha strings of
+ * nalpha electrons, nb beta strings of nbeta; int64, bit p: orbital p; any
+ * order, no repeats), on the communicator comm_f (Fortran handle; every
+ * process calls with the same arguments).  parity +-1: strs_b = strs_a,
+ * nalpha = nbeta, the states with C[b][a] = parity C[a][b] (even / odd S);
+ * parity 0: no symmetry.  h1: norb^2, eri: norb^4 (pq|rs), no core energy;
+ * uhf (parity 0): different alpha and beta orbitals, h1 = (alpha, beta)
+ * 2 norb^2, eri = ((aa|aa), (aa|bb), (bb|bb)) 3 norb^4 ((p_a q_a | r_b s_b)
+ * in the middle), and ovlp[p * norb + q] = <p alpha | q beta> for the S^2
+ * penalty (NULL without one).
  * warm: bit 1, start from the solution of the last round (zgd_promote) if
- * there is one, of the same parity and number of processes, and it keeps
+ * there is one of the same kind (parity, electrons, processes) and it keeps
  * a weight >= 1e-4 in this space (else the lowest diagonal element); bit 2,
  * keep this solution if it is the lowest of the round so far.
- * out[7] = {E of H + s2pen S^2, <H>, <S^2> (NaN if s2pen = 0), iterations,
- * converged, seconds, weight of the warm start (-1: none)}; occ[norb],
- * maxabs[nstr], wa[nstr] as finish (any may be NULL), the same on every
- * process.  Errors abort the communicator. */
-int zgd_solve(int comm_f, int norb, int nelec, const double *h1, const double *eri, int64_t nstr,
-              const int64_t *strs, int parity, double s2pen, double tol, double rtol, int maxit,
-              int verbose, int warm, double *out, double *occ, double *maxabs, double *wa) {
+ * out[7] = {E of the penalized H, <H>, <S^2> (NaN if s2pen = 0), iterations,
+ * converged, seconds, weight of the warm start (-1: none)}; occ_a, occ_b
+ * [norb], maxabs_a, wa [n], maxabs_b, wb [nb] as finish (any may be NULL),
+ * the same on every process.  Errors abort the communicator. */
+int zgd_solve_ab(int comm_f, int norb, int nalpha, int nbeta, int uhf, const double *h1,
+                 const double *eri, const double *ovlp, int64_t n, const int64_t *strs_a,
+                 int64_t nb, const int64_t *strs_b, int parity, double s2pen, double tol,
+                 double rtol, int maxit, int verbose, int warm, double *out, double *occ_a,
+                 double *occ_b, double *maxabs_a, double *maxabs_b, double *wa, double *wb) {
   comm_ = MPI_Comm_f2c((MPI_Fint)comm_f);
   MPI_Comm_rank(comm_, &rank_);
   MPI_Comm_size(comm_, &size_);
   verbose_ = verbose;
   if (getenv("ZGASCI_DIST_CHUNK") && atol(getenv("ZGASCI_DIST_CHUNK")) > 0)
     CHUNK = atol(getenv("ZGASCI_DIST_CHUNK"));
-  if (nelec % 2) die("nalpha = nbeta is required");
-  if (parity != 1 && parity != -1) die("parity must be +1 or -1");
-  if (nstr > INT32_MAX) die("more strings than an MPI count");
+  if (parity != 1 && parity != -1 && parity != 0) die("parity must be +1, -1 or 0");
+  if (n > INT32_MAX || nb > INT32_MAX) die("more strings than an MPI count");
   const double t0 = now();
-  fcidump f = {norb, nelec, 0.0, (double *)h1, (double *)eri};
+  const size_t n2 = (size_t)norb * norb, n4 = n2 * n2;
+  fcidump f = {norb, nalpha + nbeta, 0.0, (double *)h1, (double *)eri, uhf != 0,
+               uhf ? (double *)h1 + n2 : NULL, uhf ? (double *)eri + n4 : NULL,
+               uhf ? (double *)eri + 2 * n4 : NULL};
   dist d;
-  dist_init(&d, &f, strs, nstr, parity, s2pen);
+  dist_init(&d, &f, nalpha, nbeta, strs_a, n, strs_b, nb, parity, s2pen, ovlp);
   if (rank_ == 0 && verbose_) {
-    printf("zgd_solve: %d processes x %d threads; norb %d nelec %d; strings %ld, dim %.4e; "
-           "setup %.1f s\n", size_, omp_get_max_threads(), norb, nelec, (long)nstr,
-           (double)nstr * nstr, now() - t0);
+    printf("zgd_solve: %d processes x %d threads; norb %d nalpha %d nbeta %d; strings %ld x %ld, "
+           "dim %.4e, parity %d; setup %.1f s\n", size_, omp_get_max_threads(), norb, nalpha, nbeta,
+           (long)n, (long)nb, (double)n * nb, parity, now() - t0);
     fflush(stdout);
   }
   int cycles, conv;
   double *x, *x0 = NULL, w = -1;
-  if ((warm & 1) && prev_.x && prev_.parity == parity && prev_.size == size_) {
+  if ((warm & 1) && prev_.x && prev_.parity == parity && prev_.size == size_ &&
+      prev_.nalpha == nalpha && prev_.nbeta == nbeta) {
     x0 = malloc((size_t)(d.len + 1) * sizeof(double));
     w = warm_vector(&d, &prev_, x0);
     if (rank_ == 0 && verbose_) {
@@ -798,11 +1016,29 @@ int zgd_solve(int comm_f, int norb, int nelec, const double *h1, const double *e
   }
   const double e = lobpcg(&d, x0, maxit, tol, rtol, 1e-3, &cycles, &conv, &x);
   free(x0);
-  finish(&d, x, e, out, occ, maxabs, wa);
+  finish(&d, x, e, out, occ_a, occ_b, maxabs_a, maxabs_b, wa, wb);
   out[3] = cycles, out[4] = conv, out[5] = now() - t0, out[6] = w;
   if (!((warm & 2) && keep_candidate(&d, x, e))) free(x);
   dist_free(&d);
   return 0;
+}
+
+/* zgd_solve_ab with strs_b = strs_a, nalpha = nbeta = nelec / 2, parity
+ * +-1 (occ, maxabs, wa: of the alpha = beta strings). */
+int zgd_solve(int comm_f, int norb, int nelec, const double *h1, const double *eri, int64_t nstr,
+              const int64_t *strs, int parity, double s2pen, double tol, double rtol, int maxit,
+              int verbose, int warm, double *out, double *occ, double *maxabs, double *wa) {
+  if (nelec % 2) {
+    fprintf(stderr, "zgd_solve: nalpha = nbeta is required\n");
+    MPI_Abort(MPI_Comm_f2c((MPI_Fint)comm_f), 1);
+  }
+  if (parity == 0) {
+    fprintf(stderr, "zgd_solve: parity +-1 (zgd_solve_ab for parity 0)\n");
+    MPI_Abort(MPI_Comm_f2c((MPI_Fint)comm_f), 1);
+  }
+  return zgd_solve_ab(comm_f, norb, nelec / 2, nelec / 2, 0, h1, eri, NULL, nstr, strs, nstr, strs, parity,
+                      s2pen, tol, rtol, maxit, verbose, warm, out, occ, NULL, maxabs, NULL, wa,
+                      NULL);
 }
 
 int main(int argc, char **argv) {
@@ -843,7 +1079,7 @@ int main(int argc, char **argv) {
   if ((int64_t)fread(strs, 8, n, fp) != n) die("short read of the strings");
   fclose(fp);
   dist d;
-  dist_init(&d, &f, strs, n, parity, s2pen);
+  dist_init(&d, &f, f.nelec / 2, f.nelec / 2, strs, n, strs, n, parity, s2pen, NULL);
   free(strs);
   const double t_setup = now() - t0;
   int64_t hmin = d.nhalo, hmax = d.nhalo;
@@ -860,7 +1096,7 @@ int main(int argc, char **argv) {
     double *x = malloc((size_t)(d.len + 1) * sizeof(double)), *y = malloc((size_t)(d.len + 1) * sizeof(double));
     srand(1 + rank_);
     for (int64_t i = 0; i < d.len; ++i) x[i] = rand() / (double)RAND_MAX - 0.5;
-    symmetrize(&d, x);
+    if (parity) symmetrize(&d, x);
     sigma(&d, x, y); /* warm-up */
     d.t_z = d.t_tr = d.t_halo = d.t_ab = d.t_sig = 0, d.nsig = 0;
     MPI_Barrier(comm_);
@@ -877,7 +1113,7 @@ int main(int argc, char **argv) {
   double *x, res[3];
   const double e = lobpcg(&d, NULL, maxit, tol, rtol, shift, &cycles, &conv, &x);
   const double t_solve = now() - tl;
-  finish(&d, x, e, res, NULL, NULL, NULL);
+  finish(&d, x, e, res, NULL, NULL, NULL, NULL, NULL, NULL);
   double pk = peak_gb();
   MPI_Allreduce(MPI_IN_PLACE, &pk, 1, MPI_DOUBLE, MPI_MAX, comm_);
   report_parts(&d, "solve", 0);
