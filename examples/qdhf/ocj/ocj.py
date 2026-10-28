@@ -4,11 +4,26 @@ from pyscf.lib import param
 from pyscf.gto.mole import (ATM_SLOTS, BAS_SLOTS, PTR_COORD, ATOM_OF, ANG_OF, NPRIM_OF, NCTR_OF, PTR_EXP, PTR_COEFF,
                             PTR_ENV_START, gaussian_int, conc_env)
 _here = os.path.dirname(os.path.abspath(__file__))
-# the libcint built with spsp3c1e.cl (see README) and the kernel library
-_cint = ctypes.CDLL(os.environ.get('OCJ_LIBCINT', os.path.join(_here, 'libcint.so.6')), mode=os.RTLD_LOCAL)
+# kernel library; optionally a libcint built with spsp3c1e.cl (see README) for std=False
 _ocj = ctypes.CDLL(os.environ.get('OCJ_LIB', os.path.join(_here, 'libocj.so')))
+try:
+    _cint = ctypes.CDLL(os.environ.get('OCJ_LIBCINT', os.path.join(_here, 'libcint.so.6')), mode=os.RTLD_LOCAL)
+except OSError:
+    _cint = None
+import pyscf
+# pyscf's own libcint (already loaded by pyscf; same handle): enough for std=True
+_cint_std = ctypes.CDLL(os.path.join(os.path.dirname(pyscf.__file__), 'lib', 'deps', 'lib', 'libcint.so'))
 _LOC = {0: 'int3c1e', 1: 'int3c1e_r2_origk', 2: 'int3c1e_r4_origk', 3: 'int3c1e_r6_origk'}
 ptr = lambda a: a.ctypes.data_as(ctypes.c_void_p)
+
+
+def _deriv_mol(mol):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('_a40', os.path.join(_here, '..', '40-analytic_onecenter_j.py'))
+    src = open(spec.origin).read().split("\nlarge = len(sys.argv)")[0]
+    g = {'__name__': '_a40'}
+    exec(src, g)
+    return g['deriv_mol'](mol)
 
 
 def kshells(coords, prims, nctr):
@@ -63,10 +78,12 @@ def _groups(zs, width):
     return [zs[lab == g] for g in numpy.unique(lab)]
 
 
-def j_kernel(xmol, terms, eps=1e-13, timing=None, width=1.):
+def j_kernel(xmol, terms, eps=1e-13, timing=None, width=1., std=False):
     '''neutral-atom potentials V_na (4c: LL and SS = sigma.p V sigma.p, not yet / 4c^2;
     2c: LL) as spinor matrices from per-atom potential terms
     terms[K] = ((erf4, loc4), (erf2, loc2)): erf {z: E}, loc {m: {z: L}}.
+    std=True: only integrals of pyscf's own libcint; the SS local terms <d_a phi|g|d_b phi>
+    are assembled in the kernel from cartesian l+-1 shells (OCJ_3c_dshell_drv).
     Every atom's exponents are split into groups of width `width` decades; each erf group
     with its share of the nuclear charge, -sum_g E_z erfc(sqrt(z) r)/r, and each local group
     is screened with its own smallest exponent.'''
@@ -90,7 +107,38 @@ def j_kernel(xmol, terms, eps=1e-13, timing=None, width=1.):
                 kinds.append(('loc', ia, m)); kz.append(z.min())
     kz = numpy.array(kz)
     katm, kbas, kenv = kshells([coords[k[1]] for k in kinds], prims, 2)
-    atm, bas, env = conc_env(xmol._atm, xmol._bas, xmol._env, katm, kbas, kenv)
+    lib = _cint_std if std else _cint
+    if std:
+        import sys as _s
+        _s.path.insert(0, os.path.join(_here, '..'))
+        dm, D, dinfo = _deriv_mol(xmol)
+        datm, dbas, denv = conc_env(xmol._atm, xmol._bas, xmol._env, dm._atm, dm._bas, dm._env)
+        atm, bas, env = conc_env(datm, dbas, denv, katm, kbas, kenv)
+        koff = xmol.nbas + dm.nbas
+        # per AO shell: derivative shells (up, down) and their coefficient blocks M_X[a] (ncart x di)
+        c2s = xmol.cart2sph_coeff()
+        Dc = [D[a] @ c2s for a in range(3)]
+        sph_loc = xmol.ao_loc_nr()
+        dloc = dm.ao_loc_nr(cart=True)
+        where = {(dm.bas_atom(jb), dm.bas_angular(jb), dm.bas_exp(jb)[0]): jb for jb in range(dm.nbas)}
+        dsh = -numpy.ones(2 * xmol.nbas, numpy.int32)
+        moff = numpy.zeros(2 * xmol.nbas, numpy.int64)
+        blocks, off = [], 0
+        for ib in range(xmol.nbas):
+            l, a = xmol.bas_angular(ib), xmol.bas_exp(ib)[0]
+            for x, lx in enumerate((l + 1, l - 1)):
+                if lx < 0:
+                    continue
+                jb = where[(xmol.bas_atom(ib), lx, a)]
+                dsh[2 * ib + x] = xmol.nbas + jb
+                blk = numpy.array([Dc[c][dloc[jb]:dloc[jb + 1], sph_loc[ib]:sph_loc[ib + 1]] for c in range(3)])
+                moff[2 * ib + x] = off
+                blocks.append(blk.ravel())
+                off += blk.size
+        mcoef = numpy.concatenate(blocks)
+    else:
+        atm, bas, env = conc_env(xmol._atm, xmol._bas, xmol._env, katm, kbas, kenv)
+        koff = xmol.nbas
     atm = numpy.asarray(atm, numpy.int32); bas = numpy.asarray(bas, numpy.int32); env = numpy.asarray(env)
     nbas_ao = xmol.nbas
     ao_loc = numpy.asarray(xmol.ao_loc_nr(), dtype=numpy.int32)
@@ -103,10 +151,10 @@ def j_kernel(xmol, terms, eps=1e-13, timing=None, width=1.):
     kept = [0]
 
     def run3c(name, out, comp, tmap, ksel):
-        ksh = numpy.asarray(nbas_ao + ksel, numpy.int32)
+        ksh = numpy.asarray(koff + ksel, numpy.int32)
         kc = numpy.ascontiguousarray(coords[[kinds[i][1] for i in ksel]])
         kzs = numpy.ascontiguousarray(kz[ksel])
-        _ocj.OCJ_3c_drv(getattr(_cint, name + '_sph'), ptr(out), ctypes.c_int(2), ctypes.c_int(comp), ptr(tmap),
+        _ocj.OCJ_3c_drv(getattr(lib, name + '_sph'), ptr(out), ctypes.c_int(2), ctypes.c_int(comp), ptr(tmap),
                         ctypes.c_int(nao), ptr(ao_loc), ctypes.c_int(nbas_ao), ptr(amin), ctypes.c_int(len(ksel)),
                         ptr(ksh), ptr(kc), ptr(kzs), ctypes.c_double(cut), ptr(atm), ctypes.c_int(len(atm)),
                         ptr(bas), ctypes.c_int(len(bas)), ptr(env), ctypes.byref(cnt))
@@ -117,7 +165,18 @@ def j_kernel(xmol, terms, eps=1e-13, timing=None, width=1.):
     for m in sorted(set(k[2] for k in kinds if k[0] == 'loc')):
         sel = numpy.array([i for i, k in enumerate(kinds) if k[0] == 'loc' and k[2] == m])
         run3c(_LOC[m], ll, 1, _TMAP1, sel)
-        run3c(_LOC_SS[m], a9, 9, _TMAP9, sel)
+        if not std:
+            run3c(_LOC_SS[m], a9, 9, _TMAP9, sel)
+        else:
+            ksh = numpy.asarray(koff + sel, numpy.int32)
+            kc = numpy.ascontiguousarray(coords[[kinds[i][1] for i in sel]])
+            kzs = numpy.ascontiguousarray(kz[sel])
+            _ocj.OCJ_3c_dshell_drv(getattr(lib, _LOC[m] + '_cart'), ptr(a9), ctypes.c_int(2), ctypes.c_int(nao),
+                                   ptr(ao_loc), ctypes.c_int(nbas_ao), ptr(amin), ptr(dsh), ptr(mcoef), ptr(moff),
+                                   ctypes.c_int(len(sel)), ptr(ksh), ptr(kc), ptr(kzs), ctypes.c_double(cut),
+                                   ptr(atm), ctypes.c_int(len(atm)), ptr(bas), ctypes.c_int(len(bas)), ptr(env),
+                                   ctypes.byref(cnt))
+            kept[0] += cnt.value
     t1 = time.perf_counter()
     pc = numpy.ascontiguousarray(coords[[p[0] for p in pts]])
     pz = numpy.array([p[1] for p in pts])
@@ -127,7 +186,7 @@ def j_kernel(xmol, terms, eps=1e-13, timing=None, width=1.):
                                      ('int1e_rinv', vn[1], 1, _TMAP1, [p[3] for p in pts]),
                                      ('int1e_iprinvip', vn9, 9, _TMAP9, [p[2] for p in pts])):
         q = numpy.array(q)
-        _ocj.OCJ_rinv_drv(getattr(_cint, name + '_sph'), ptr(out), ctypes.c_int(comp), ptr(tmap), ctypes.c_int(nao),
+        _ocj.OCJ_rinv_drv(getattr(lib, name + '_sph'), ptr(out), ctypes.c_int(comp), ptr(tmap), ctypes.c_int(nao),
                           ptr(ao_loc), ctypes.c_int(nbas_ao), ptr(amin), ctypes.c_int(len(pts)), ptr(pc), ptr(pz),
                           ptr(q), ctypes.c_double(cut), ptr(atm), ctypes.c_int(len(atm)), ptr(bas), ctypes.c_int(len(bas)),
                           ptr(env), ctypes.c_int(len(env)))
