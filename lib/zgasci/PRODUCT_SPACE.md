@@ -289,6 +289,15 @@ LOBPCG-like eigensolver, 4 nodes: 4e8 one product 3.81 s, eigensolver 52 s
 1.51, (AB,AB) 5.08), eigensolver 129.5 s, 26 GB per node.  One node without
 MPI (ProductSpaceCI, pyscf davidson1): 1.02e9 in 2327 s, 89 GB.
 
+C driver (`lib/zgasci/dist/zgasci_dist.c`, `make` there; C99 + MPI + OpenMP,
+links libzgasci and LAPACK): the same algorithm without Python (FCIDUMP,
+the antisymmetrized v, the plans, sigma, the transpose, the halo, the
+LOBPCG-like solver with OpenMP vector operations and dsygv), strings from a
+file of int64.  Energies agree with ProductSpaceCI (N2 400 strings, [2Fe-2S]
+1000, [4Fe-4S] 6000; 1, 3, 4 processes).  [4Fe-4S] 6000 strings (3.6e7), one
+node: one product 1.51 s, solve 12.7 s (7 iterations), against 31.8 s with the
+Python driver and 70 s with ProductSpaceCI (pyscf davidson1).
+
 ## 7. What stays for later
 
 * **(AB,AB)** is the larger half of a sigma. Its GEMMs do about 9 times
