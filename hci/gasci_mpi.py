@@ -91,8 +91,11 @@ class DistProductCI:
         self.plan = full.plan(norb, (na, nb))
         if self.plan.side_count(0) != n or self.plan.side_count(1) != n:
             raise ValueError('strings left out of the product plan')
-        own = gasci.ProductSpaceCI(ci_strs=(strs[self.lo:self.hi], strs))
-        self.lplan = own.plan(norb, (na, nb)) if self.nloc > 0 else None
+        if self.nloc == n:  # one process: the full plan is the plan of the own rows
+            self.lplan = self.plan
+        else:
+            own = gasci.ProductSpaceCI(ci_strs=(strs[self.lo:self.hi], strs))
+            self.lplan = own.plan(norb, (na, nb)) if self.nloc > 0 else None
         eri = ao2mo.restore(1, numpy.asarray(eri, dtype=float), norb)
         self.v = full._hamiltonian(h1, eri, norb, na + nb, self.plan)
         a, b = gasci.pair_indices(2 * norb)
@@ -218,12 +221,16 @@ class DistProductCI:
         z += zt
         del zt
         t2 = time.time()
-        if not hasattr(self, '_hbuf'):
-            self._hbuf = numpy.empty((self.nloc + self.nhalo, self.n))
-        self._halo_exchange(c, self._hbuf)
+        if self.nhalo:
+            if not hasattr(self, '_hbuf'):
+                self._hbuf = numpy.empty((self.nloc + self.nhalo, self.n))
+            self._halo_exchange(c, self._hbuf)
+            src = self._hbuf
+        else:  # no halo (one process): the own rows in place
+            src = numpy.ascontiguousarray(c)
         t3 = time.time()
         if self.nloc:  # z += Y
-            self.plan.sigma_ab_rows(self.v, self._hbuf, self.smap, z, self.lo, self.hi)
+            self.plan.sigma_ab_rows(self.v, src, self.smap, z, self.lo, self.hi)
         t4 = time.time()
         st = self.stat
         st['z'] += t1 - t0
