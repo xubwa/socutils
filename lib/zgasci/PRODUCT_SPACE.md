@@ -283,6 +283,12 @@ per node, Xeon Gold 6248R; one product, seconds; numpy transpose):
 | 4e8 | 15.4 | 9.31 | 4.95 |
 | 1.02e9 | | | 13.8 (eigensolver 240 s, 46 GB per node) |
 
+With the transposition in C (zg_transpose_d / zg_copy_block_d) and the
+LOBPCG-like eigensolver, 4 nodes: 4e8 one product 3.81 s, eigensolver 52 s
+(7 iterations); 1.02e9 one product 9.90 s (Z 2.17, transpose 1.75, halo
+1.51, (AB,AB) 5.08), eigensolver 129.5 s, 26 GB per node.  One node without
+MPI (ProductSpaceCI, pyscf davidson1): 1.02e9 in 2327 s, 89 GB.
+
 ## 7. What stays for later
 
 * **(AB,AB)** is the larger half of a sigma. Its GEMMs do about 9 times
