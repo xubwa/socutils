@@ -78,10 +78,12 @@ def _groups(zs, width):
     return [zs[lab == g] for g in numpy.unique(lab)]
 
 
-def j_kernel(xmol, terms, eps=1e-13, timing=None, width=1., std=False):
+def j_kernel(xmol, terms, eps=1e-13, timing=None, width=1., std=False, screen='estimate'):
     '''neutral-atom potentials V_na (4c: LL and SS = sigma.p V sigma.p, not yet / 4c^2;
     2c: LL) as spinor matrices from per-atom potential terms
     terms[K] = ((erf4, loc4), (erf2, loc2)): erf {z: E}, loc {m: {z: L}}.
+    screen='estimate': (i j|k) triples skipped when an amplitude-aware Gaussian-overlap
+    estimate of the integral is below eps (absolute); 'decay': the decay-only criterion.
     std=True: only integrals of pyscf's own libcint; the SS local terms <d_a phi|g|d_b phi>
     are assembled in the kernel from cartesian l+-1 shells (OCJ_3c_dshell_drv).
     Every atom's exponents are split into groups of width `width` decades; each erf group
@@ -91,7 +93,7 @@ def j_kernel(xmol, terms, eps=1e-13, timing=None, width=1., std=False):
     natm = xmol.natm
     norm = lambda z: 1 / (4 * numpy.pi * gaussian_int(2, z))
     coords = numpy.array([xmol.atom_coord(ia) for ia in range(natm)])
-    prims, kinds, kz = [], [], []
+    prims, kinds, kz, ka = [], [], [], []
     pts = []                                   # point-charge entries: (atom, zeta, q4, q2)
     for ia, ((erf4, loc4), (erf2, loc2)) in enumerate(terms):
         for z in _groups(set(erf4) | set(erf2), width):
@@ -99,13 +101,19 @@ def j_kernel(xmol, terms, eps=1e-13, timing=None, width=1., std=False):
             e2 = numpy.array([erf2.get(x, 0.) for x in z])
             prims.append((z, numpy.c_[e4 * norm(z), e2 * norm(z)]))
             kinds.append(('erf', ia)); kz.append(z.min())
+            # erf(sqrt(z) r)/r of a unit-charge Gaussian is at most 2 sqrt(z/pi)
+            ka.append(max(numpy.abs(e4) @ (2 * numpy.sqrt(z / numpy.pi)), numpy.abs(e2) @ (2 * numpy.sqrt(z / numpy.pi))))
             pts.append((ia, z.min(), -e4.sum(), -e2.sum()))
         for m in sorted(set(loc4) | set(loc2)):
             d4, d2 = loc4.get(m, {}), loc2.get(m, {})
             for z in _groups(set(d4) | set(d2), width):
-                prims.append((z, numpy.array([[d4.get(x, 0.), d2.get(x, 0.)] for x in z])))
+                cf = numpy.array([[d4.get(x, 0.), d2.get(x, 0.)] for x in z])
+                prims.append((z, cf))
                 kinds.append(('loc', ia, m)); kz.append(z.min())
+                rmax = (m / (numpy.e * z))**m if m else numpy.ones_like(z)     # max of r^2m exp(-z r^2)
+                ka.append(max(numpy.abs(cf[:, 0]) @ rmax, numpy.abs(cf[:, 1]) @ rmax))
     kz = numpy.array(kz)
+    lnka = numpy.log(numpy.maximum(numpy.array(ka), 1e-300))
     katm, kbas, kenv = kshells([coords[k[1]] for k in kinds], prims, 2)
     lib = _cint_std if std else _cint
     if std:
@@ -145,6 +153,16 @@ def j_kernel(xmol, terms, eps=1e-13, timing=None, width=1., std=False):
     nao = ao_loc[-1]
     amin = numpy.array([xmol.bas_exp(i).min() for i in range(nbas_ao)])
     cut = -numpy.log(eps)
+    # shell amplitudes: normalization times the maximum of r^l exp(-a r^2); x (2+l) sqrt(a)
+    # for the gradient integrals (SS)
+    lsh = numpy.array([xmol.bas_angular(i) for i in range(nbas_ao)])
+    amp = numpy.array([gto.gto_norm(l, a) * max(1., (l / (2 * a * numpy.e))**(l / 2)) for l, a in zip(lsh, amin)])
+    lnb_ll = numpy.log(amp)
+    lnb_ss = numpy.log(amp * (2 + lsh) * numpy.sqrt(amin))
+    if screen != 'estimate':
+        lnb_ll = lnb_ss = None
+    nul = ctypes.c_void_p()
+    lp = lambda a: nul if a is None else ptr(a)
     ll = numpy.zeros((1, 2, nao, nao))          # [comp][4c/2c]
     a9 = numpy.zeros((9, 2, nao, nao))
     cnt = ctypes.c_long(0)
@@ -154,8 +172,11 @@ def j_kernel(xmol, terms, eps=1e-13, timing=None, width=1., std=False):
         ksh = numpy.asarray(koff + ksel, numpy.int32)
         kc = numpy.ascontiguousarray(coords[[kinds[i][1] for i in ksel]])
         kzs = numpy.ascontiguousarray(kz[ksel])
+        lnk = numpy.ascontiguousarray(lnka[ksel])
+        lnb = lnb_ll if comp == 1 else lnb_ss
         _ocj.OCJ_3c_drv(getattr(lib, name + '_sph'), ptr(out), ctypes.c_int(2), ctypes.c_int(comp), ptr(tmap),
-                        ctypes.c_int(nao), ptr(ao_loc), ctypes.c_int(nbas_ao), ptr(amin), ctypes.c_int(len(ksel)),
+                        ctypes.c_int(nao), ptr(ao_loc), ctypes.c_int(nbas_ao), ptr(amin), lp(lnb), ptr(lnk),
+                        ctypes.c_int(len(ksel)),
                         ptr(ksh), ptr(kc), ptr(kzs), ctypes.c_double(cut), ptr(atm), ctypes.c_int(len(atm)),
                         ptr(bas), ctypes.c_int(len(bas)), ptr(env), ctypes.byref(cnt))
         kept[0] += cnt.value
@@ -171,8 +192,10 @@ def j_kernel(xmol, terms, eps=1e-13, timing=None, width=1., std=False):
             ksh = numpy.asarray(koff + sel, numpy.int32)
             kc = numpy.ascontiguousarray(coords[[kinds[i][1] for i in sel]])
             kzs = numpy.ascontiguousarray(kz[sel])
+            lnk = numpy.ascontiguousarray(lnka[sel])
             _ocj.OCJ_3c_dshell_drv(getattr(lib, _LOC[m] + '_cart'), ptr(a9), ctypes.c_int(2), ctypes.c_int(nao),
-                                   ptr(ao_loc), ctypes.c_int(nbas_ao), ptr(amin), ptr(dsh), ptr(mcoef), ptr(moff),
+                                   ptr(ao_loc), ctypes.c_int(nbas_ao), ptr(amin), lp(lnb_ss), ptr(lnk),
+                                   ptr(dsh), ptr(mcoef), ptr(moff),
                                    ctypes.c_int(len(sel)), ptr(ksh), ptr(kc), ptr(kzs), ctypes.c_double(cut),
                                    ptr(atm), ctypes.c_int(len(atm)), ptr(bas), ctypes.c_int(len(bas)), ptr(env),
                                    ctypes.byref(cnt))
@@ -180,14 +203,15 @@ def j_kernel(xmol, terms, eps=1e-13, timing=None, width=1., std=False):
     t1 = time.perf_counter()
     pc = numpy.ascontiguousarray(coords[[p[0] for p in pts]])
     pz = numpy.array([p[1] for p in pts])
+    lnk_pts = numpy.ascontiguousarray(lnka[erf_sel])       # same decision as the erf groups
     vn = numpy.zeros((2, 1, nao, nao))
     vn9 = numpy.zeros((9, nao, nao))
-    for name, out, comp, tmap, q in (('int1e_rinv', vn[0], 1, _TMAP1, [p[2] for p in pts]),
-                                     ('int1e_rinv', vn[1], 1, _TMAP1, [p[3] for p in pts]),
-                                     ('int1e_iprinvip', vn9, 9, _TMAP9, [p[2] for p in pts])):
+    for name, out, comp, tmap, q, lnb in (('int1e_rinv', vn[0], 1, _TMAP1, [p[2] for p in pts], lnb_ll),
+                                          ('int1e_rinv', vn[1], 1, _TMAP1, [p[3] for p in pts], lnb_ll),
+                                          ('int1e_iprinvip', vn9, 9, _TMAP9, [p[2] for p in pts], lnb_ss)):
         q = numpy.array(q)
         _ocj.OCJ_rinv_drv(getattr(lib, name + '_sph'), ptr(out), ctypes.c_int(comp), ptr(tmap), ctypes.c_int(nao),
-                          ptr(ao_loc), ctypes.c_int(nbas_ao), ptr(amin), ctypes.c_int(len(pts)), ptr(pc), ptr(pz),
+                          ptr(ao_loc), ctypes.c_int(nbas_ao), ptr(amin), lp(lnb), ptr(lnk_pts), ctypes.c_int(len(pts)), ptr(pc), ptr(pz),
                           ptr(q), ctypes.c_double(cut), ptr(atm), ctypes.c_int(len(atm)), ptr(bas), ctypes.c_int(len(bas)),
                           ptr(env), ctypes.c_int(len(env)))
     t2 = time.perf_counter()

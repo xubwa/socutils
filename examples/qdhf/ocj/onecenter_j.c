@@ -8,9 +8,11 @@
  *                 int3c1e[_r2m_origk]_sph, int3c1e_ipvip1[_r2m_origk]_sph   (local Gaussians)
  *  OCJ_rinv_drv : q_K / |r - R_K|:  int1e_rinv_sph, int1e_iprinvip_sph
  *
- * Screening per shell pair (i, j) and atom K: the K term decays as exp(-z_K |r - R_K|^2), so
- *     a_i z/(a_i + z) |A_i - R_K|^2 + a_j z/(a_j + z) |A_j - R_K|^2 > cut   ->  skipped
- * (a: smallest exponent of the shell).  OpenMP over shell pairs i >= j; the (j, i) block is
+ * Screening per shell pair (i, j) and k entry K (decaying as exp(-z_K |r - R_K|^2)): skipped when
+ * the estimate ln|(i j|k)| ~ lnb_i + lnb_j + lnk_K + 3/2 ln(pi/(a+b+z))
+ *                              - (ab |A-B|^2 + az |A-R_K|^2 + bz |B-R_K|^2)/(a+b+z)
+ * is below -cut (a, b: smallest exponents of the shells; lnb, lnk: log amplitudes from the
+ * caller).  lnb = NULL: the decay-only criterion a z/(a+z) |A-R_K|^2 + b z/(b+z) |B-R_K|^2 > cut.  OpenMP over shell pairs i >= j; the (j, i) block is
  * written as the transpose (component tmap[comp] for the derivative integrals, where
  * <d_a i|V|d_b j> = <d_b j|V|d_a i>), so every block has a single writer.
  */
@@ -62,6 +64,33 @@ static void add_block(double *out, int n, int i0, int j0, int di, int dj, double
         } }
 }
 
+/* ln of an estimate of |(i j|k)|: s-type Gaussian product overlap with amplitudes,
+ * lnb_i + lnb_j + lnk_k + 3/2 ln(pi/(a+b+z)) - (ab |AB|^2 + az |AK|^2 + bz |BK|^2)/(a+b+z) */
+static double ln_estimate(double a, const double *ra, double lna, double b, const double *rb,
+                          double lnb, double z, const double *rk, double lnk)
+{
+        double ab = 0, ak = 0, bk = 0, t, s = a + b + z;
+        int x;
+        for (x = 0; x < 3; x++) {
+                t = ra[x] - rb[x]; ab += t * t;
+                t = ra[x] - rk[x]; ak += t * t;
+                t = rb[x] - rk[x]; bk += t * t;
+        }
+        return lna + lnb + lnk + 1.5 * log(M_PI / s) - (a * b * ab + a * z * ak + b * z * bk) / s;
+}
+
+/* skip the (i, j, K) triple: with amplitudes (lnb != NULL) when the estimate is below exp(-cut),
+ * else the old decay-only criterion */
+static int skip_triple(double *amin, double *lnb, double *lnk, int ish, int jsh, int K,
+                       const double *ri, const double *rj, double *kzeta, double *kcoord, double cut)
+{
+        if (lnb == NULL) {
+                return pair_exponent(amin[ish], ri, amin[jsh], rj, kzeta[K], kcoord + 3 * K) > cut;
+        }
+        return ln_estimate(amin[ish], ri, lnb[ish], amin[jsh], rj, lnb[jsh], kzeta[K],
+                           kcoord + 3 * K, lnk[K]) < -cut;
+}
+
 static int *tmap9(void)
 {
         static int m[9] = {0, 3, 6, 1, 4, 7, 2, 5, 8};
@@ -87,7 +116,7 @@ static int max_shell_dim(int *ao_loc, int nbas)
 }
 
 void OCJ_3c_drv(Intor intor, double *out, int nctr, int comp, int *tmap, int nao, int *ao_loc,
-                int nbas_ao, double *amin, int natmk, int *ksh, double *kcoord, double *kzeta,
+                int nbas_ao, double *amin, double *lnb, double *lnk, int natmk, int *ksh, double *kcoord, double *kzeta,
                 double cut, int *atm, int natm, int *bas, int nbas, double *env, long *counter)
 {
         int npair = nbas_ao * (nbas_ao + 1) / 2;
@@ -108,7 +137,7 @@ void OCJ_3c_drv(Intor intor, double *out, int nctr, int comp, int *tmap, int nao
                 double *ri = env + atm[bas[ish * BAS_SLOTS] * ATM_SLOTS + 1];
                 double *rj = env + atm[bas[jsh * BAS_SLOTS] * ATM_SLOTS + 1];
                 for (K = 0; K < natmk; K++) {
-                        if (pair_exponent(amin[ish], ri, amin[jsh], rj, kzeta[K], kcoord + 3 * K) > cut) {
+                        if (skip_triple(amin, lnb, lnk, ish, jsh, K, ri, rj, kzeta, kcoord, cut)) {
                                 continue;
                         }
                         nkept++;
@@ -131,7 +160,7 @@ void OCJ_3c_drv(Intor intor, double *out, int nctr, int comp, int *tmap, int nao
 }
 
 void OCJ_rinv_drv(Intor intor, double *out, int comp, int *tmap, int nao, int *ao_loc,
-                  int nbas_ao, double *amin, int natmk, double *kcoord, double *kzeta,
+                  int nbas_ao, double *amin, double *lnb, double *lnk, int natmk, double *kcoord, double *kzeta,
                   double *kcharge, double cut, int *atm, int natm, int *bas, int nbas,
                   double *env, int nenv)
 {
@@ -154,7 +183,7 @@ void OCJ_rinv_drv(Intor intor, double *out, int comp, int *tmap, int nao, int *a
                 double *ri = env + atm[bas[ish * BAS_SLOTS] * ATM_SLOTS + 1];
                 double *rj = env + atm[bas[jsh * BAS_SLOTS] * ATM_SLOTS + 1];
                 for (K = 0; K < natmk; K++) {
-                        if (pair_exponent(amin[ish], ri, amin[jsh], rj, kzeta[K], kcoord + 3 * K) > cut) {
+                        if (skip_triple(amin, lnb, lnk, ish, jsh, K, ri, rj, kzeta, kcoord, cut)) {
                                 continue;
                         }
                         memcpy(envt + PTR_RINV_ORIG, kcoord + 3 * K, sizeof(double) * 3);
@@ -187,7 +216,7 @@ void OCJ_rinv_drv(Intor intor, double *out, int comp, int *tmap, int nao, int *a
  * function).  Output and screening as OCJ_3c_drv.
  */
 void OCJ_3c_dshell_drv(Intor intor, double *out, int nctr, int nao, int *ao_loc, int nbas_ao,
-                       double *amin, int *dsh, double *mcoef, long *moff, int natmk, int *ksh,
+                       double *amin, double *lnb, double *lnk, int *dsh, double *mcoef, long *moff, int natmk, int *ksh,
                        double *kcoord, double *kzeta, double cut, int *atm, int natm, int *bas,
                        int nbas, double *env, long *counter)
 {
@@ -216,7 +245,7 @@ void OCJ_3c_dshell_drv(Intor intor, double *out, int nctr, int nao, int *ao_loc,
                 double *ri = env + atm[bas[ish * BAS_SLOTS] * ATM_SLOTS + 1];
                 double *rj = env + atm[bas[jsh * BAS_SLOTS] * ATM_SLOTS + 1];
                 for (K = 0; K < natmk; K++) {
-                        if (pair_exponent(amin[ish], ri, amin[jsh], rj, kzeta[K], kcoord + 3 * K) > cut) {
+                        if (skip_triple(amin, lnb, lnk, ish, jsh, K, ri, rj, kzeta, kcoord, cut)) {
                                 continue;
                         }
                         nkept++;
