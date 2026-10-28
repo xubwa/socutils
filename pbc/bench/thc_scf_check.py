@@ -27,6 +27,7 @@ jk = THCJK(cell, aux, alpha_c=ac, nmu_factor=fac, selector=sel, nuc_zeta=nz,
 if os.environ.get('NRAD'):
     jk.gapw_opts = {'nrad': int(os.environ['NRAD'])}
 jk.build()
+print('THCJK storage (doubles): %s' % jk.th.storage()) if hasattr(jk.th, 'storage') else None
 print('THCJK build %.0f s (N_mu %d, smooth %d; timings %s)' % (time.time() - t, len(jk.th.pts), len(jk.th.smooth),
       ', '.join('%s %.0f' % kv for kv in jk.th.timings.items())), flush=True)
 r = RSDF(cell, aux, omega=0.5, precision=1e-10, nuc_zeta=nz, lr='gspace')

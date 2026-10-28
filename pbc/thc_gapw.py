@@ -60,6 +60,8 @@ class GAPWJ:
         self.th, self.L, self.eta, self.lmax, self.nrad, self.nang = th, L, eta, lmax, nrad, nang
         self.S = th.cell.pbc_intor('int1e_ovlp')
         self.r_compact = 4.0          # bohr: where the compact densities live (neighbours' local potentials there)
+        self.r_store = 7.0            # bohr: atomic-grid points kept (densities and local potentials live inside)
+        self.f_thr = 1e-10            # functions kept on an atomic grid: max |phi| above this
         cell = th.cell
         nao = cell.nao
         compact = np.ones(nao, bool)
@@ -97,9 +99,16 @@ class GAPWJ:
             self.wrs[A] = wr
             pts = (r[:, None, None] * self.unit[None]).reshape(-1, 3) + X[A]
             w = (wr[:, None] * self.wang[None]).ravel()
-            phi0 = cell.eval_gto('GTOval_sph', pts)                 # cell-0 functions (no lattice sum)
-            phi0[:, ~(compact & (aoat == A))] = 0.                     # only A's compact functions are home factors
-            self.grids[A] = (pts, w, cell.pbc_eval_gto('GTOval_sph', pts), phi0)
+            # stored: the points within r_store (the compact densities and the local potentials live there) and
+            # the functions not negligible on them; the home factors are A's compact functions (cell 0 only)
+            rad_ = np.repeat(r, len(self.wang))
+            inner = np.where(rad_ < self.r_store)[0]
+            cA = np.where(compact & (aoat == A))[0]
+            phi_in = cell.pbc_eval_gto('GTOval_sph', pts[inner])
+            cols = np.where(np.abs(phi_in).max(axis=0) > self.f_thr)[0]
+            phi_in = np.ascontiguousarray(phi_in[:, cols])
+            phi0c = np.ascontiguousarray(cell.eval_gto('GTOval_sph', pts[inner])[:, cA])
+            self.grids[A] = (pts, w, inner, cols, cA, phi_in, phi0c)
         # compensation Gaussians: normalisation N_l (int N_l r^l e^{-eta r^2} Y_lm r^l Y_lm = 1)
         self.Nl = np.array([1. / (scipy.special.gamma(l + 1.5) / (2 * eta ** (l + 1.5))) for l in range(L + 1)])
         # their FTs on the THC half spectrum (without the phase e^{-iG.R_A}), per l (2l+1, nG)
@@ -296,10 +305,12 @@ class GAPWJ:
         # compact densities on the atomic grids, multipoles, compensation charges
         rhoA, QA = {}, {}
         for A in self.atoms:
-            pts, w, phi, phi0 = self.grids[A]
-            DA = np.where((self.owner == A) & self.home, dm, 0.)
-            DA[np.diag_indices(nao)] *= .5                             # diagonal pairs counted once
-            rho = 2 * np.einsum('ri,ri->r', phi0 @ DA, phi)
+            pts, w, inner, cols, cA, phi_in, phi0c = self.grids[A]
+            msk = (self.owner[np.ix_(cA, cols)] == A) & self.home[np.ix_(cA, cols)]
+            DA = np.where(msk, dm[np.ix_(cA, cols)], 0.)
+            DA[cA[:, None] == cols[None, :]] *= .5                      # diagonal pairs counted once
+            rho = np.zeros(len(pts))
+            rho[inner] = 2 * np.einsum('ri,ri->r', phi0c @ DA, phi_in)
             rhoA[A] = rho
             rad = np.repeat(self.rads[A], len(self.wang))
             QA[A] = [((rho * w * rad ** l)[None] * np.tile(self.Y[l], len(self.rads[A]))).sum(1) for l in range(L + 1)]
@@ -324,7 +335,7 @@ class GAPWJ:
             c_avg += 2 * np.pi / (3 * vol) * (self.grids[A][1] * rad ** 2 * (rhoA[A] - rhat)).sum()
         X = cell.atom_coords()
         for A in self.atoms:
-            pts, w, phi, phi0 = self.grids[A]
+            pts, w, inner, cols, cA, phi_in, phi0c = self.grids[A]
             rad = np.repeat(self.rads[A], len(self.wang))
             u = self._vgrid_at(vG, pts, rad, r_max=self.r_compact)    # smooth potential where phi^(0) lives
             # neighbours' local potentials where the compact density of A lives
@@ -335,14 +346,16 @@ class GAPWJ:
                     vn[near] += self._vloc_at(B, vlms[B], pts[near], home=(B != A), center=X[A],
                                               radius=self.r_compact)   # A's own: images only
             # pairs owned by A: smooth + own local + neighbours' local potentials
-            JA = phi0.T @ ((w * (u + vloc[A] + vn))[:, None] * phi)       # (home a, any b)
-            own = (self.owner == A) & self.home
-            J[own] += JA[own]
-            J[own.T] += JA.T[own.T]
-            dg = np.diag(own)
-            J[dg, dg] -= np.diag(JA)[dg]                               # diagonal added twice above
-            # SS pairs: the local potential of A (all space, on A's grid)
-            JS = phi[:, sm].T @ ((w * vloc[A])[:, None] * phi[:, sm])
-            J[np.ix_(sm, sm)] += JS
+            wv = (w * (u + vloc[A] + vn))[inner]
+            JA = phi0c.T @ (wv[:, None] * phi_in)                       # (home a in cA, b in cols)
+            own = (self.owner[np.ix_(cA, cols)] == A) & self.home[np.ix_(cA, cols)]
+            ia, ib = np.nonzero(own)
+            J[cA[ia], cols[ib]] += JA[ia, ib]
+            od = cA[ia] != cols[ib]
+            J[cols[ib[od]], cA[ia[od]]] += JA[ia[od], ib[od]]
+            # SS pairs: the local potential of A (all space, on A's grid; it lives within r_store)
+            sc = np.where(np.isin(cols, sm))[0]
+            ps = phi_in[:, sc]
+            J[np.ix_(cols[sc], cols[sc])] += ps.T @ ((w * vloc[A])[inner][:, None] * ps)
         J += c_avg * self.S                                           # constant potential: c S_ab
         return J

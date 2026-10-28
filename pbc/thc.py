@@ -703,14 +703,17 @@ class THCExchange:
 
     def get_jk(self, dms, with_j=True, with_k=True):
         dms = np.asarray(dms)
+        kf = self.get_k_sparse if getattr(self, 'local_rcut', None) else self.get_k
         vj = np.array([self.get_j(d) for d in dms]) if with_j else None
-        vk = np.array([self.get_k(d) for d in dms]) if with_k else None
+        vk = np.array([kf(d) for d in dms]) if with_k else None
         return vj, vk
 
     def storage(self):
         nmu, nao_s = len(self.pts), len(self.smooth)
         return {'V': nmu * nmu, 'phi(r_mu)': nmu * nao_s, '(P|xi)': self.A.size,
-                'CX local C (nonzero)': int(np.count_nonzero(self.C)),
+                'CX local C (nonzero)': int(self.Cs.nnz) if getattr(self, 'Cs', None) is not None
+                else int(np.count_nonzero(self.C)),
+                'CX LR rows': int(self.Llr_cx.size) if getattr(self, 'Llr_cx', None) is not None else 0,
                 'RSDF cderi (SR rows)': self.nkept * len(self.cx)}
 
 
@@ -745,6 +748,7 @@ class THCJK:
         self.T = np.linalg.lstsq(cs.pbc_intor('int1e_ovlp'), pgto.intor_cross('int1e_ovlp', cs, cell), rcond=1e-12)[0]
         self.th = THCExchange(cs, self.aux, self.alpha_c, self.omega, self.verbose, self.selector,
                               self.nuc_zeta, local_rcut=self.local_rcut)
+        self.th.dense_c = not self.local_rcut                          # route 1: the sparse C only
         self.th.gapw_opts = getattr(self, 'gapw_opts', {})
         self.th.build_common()
         self.th.build_thc(int(round(self.nmu_factor * len(self.th.smooth))))
@@ -778,7 +782,10 @@ class THCJK:
         sel = occ > 1e-12
         Cs = (c2 @ mo_coeff[:, sel]) * np.sqrt(occ[sel])
         cs = [T @ Cs[:nao], T @ Cs[nao:]]                              # spin components in the split basis
-        Ks = self.th.get_k_occ(cs)
+        if getattr(self.th, 'local_rcut', None):                      # route 1: sparse DM-contracted K
+            Ks = [[self.th.get_k_sparse(cs[s] @ cs[s2].conj().T) for s2 in range(2)] for s in range(2)]
+        else:
+            Ks = self.th.get_k_occ(cs)
         dtr = cs[0] @ cs[0].conj().T + cs[1] @ cs[1].conj().T
         Jsp = T.T @ self.th.get_j(dtr.real) @ T
         ksph = np.zeros((2 * nao, 2 * nao), dtype=complex)
