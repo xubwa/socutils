@@ -307,7 +307,8 @@ class THCExchange:
             mc = np.maximum(np.asarray(self.mesh) // self.coarsen, 1)
             cc = cell.get_uniform_grids(mc)
             phic = cell.pbc_eval_gto('GTOval_sph', cc)[:, self.smooth]
-            pc, _ = pivots(phic, min(len(cc), kmax_factor * len(self.smooth)))
+            f = pivots_blocked if getattr(self, 'blocked_pivots', False) else pivots
+            pc, _ = f(phic, min(len(cc), int(getattr(self, 'kmax_factor', kmax_factor) * len(self.smooth))))
             ijk = np.stack(np.unravel_index(pc, mc), -1)
             fine = np.rint(ijk * (np.asarray(self.mesh) / mc)).astype(int) % np.asarray(self.mesh)
             fidx = np.ravel_multi_index(fine.T, self.mesh)
@@ -815,6 +816,7 @@ class THCJK:
         self.th.gapw_opts = getattr(self, 'gapw_opts', {})
         self.th.stream = getattr(self, 'stream', False)
         self.th.stream_gb = getattr(self, 'stream_gb', 30)
+        self.th.kmax_factor = self.nmu_factor                         # pivots: only the N_mu prefix is used
         self.th.build_common()
         self.th.build_thc(int(round(self.nmu_factor * len(self.th.smooth))))
         self.S = cell.pbc_intor('int1e_ovlp')
