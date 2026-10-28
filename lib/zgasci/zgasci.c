@@ -2110,3 +2110,27 @@ static void zg_blas_restore(int before) {
 #include "zgasci_kernel.inc"
 #include "zgasci_block.inc"
 #include "zgasci_blas.inc"
+
+/* Dense helpers for vectors distributed by rows (socutils.hci.gasci_mpi):
+ * strided transposition and copy of a block, in parallel. */
+#define ZG_TILE 32
+void zg_transpose_d(int64_t nr, int64_t nc, const double *in, int64_t ldi, double *out,
+                    int64_t ldo) {
+#pragma omp parallel for collapse(2) schedule(static)
+  for (int64_t r0 = 0; r0 < nr; r0 += ZG_TILE) {
+    for (int64_t c0 = 0; c0 < nc; c0 += ZG_TILE) {
+      const int64_t r1 = r0 + ZG_TILE < nr ? r0 + ZG_TILE : nr;
+      const int64_t c1 = c0 + ZG_TILE < nc ? c0 + ZG_TILE : nc;
+      for (int64_t c = c0; c < c1; ++c) {
+        for (int64_t r = r0; r < r1; ++r) out[c * ldo + r] = in[r * ldi + c];
+      }
+    }
+  }
+}
+
+void zg_copy_block_d(int64_t nr, int64_t nc, const double *in, int64_t ldi, double *out,
+                     int64_t ldo) {
+#pragma omp parallel for schedule(static)
+  for (int64_t r = 0; r < nr; ++r) memcpy(out + r * ldo, in + r * ldi, (size_t)nc * sizeof(double));
+}
+#undef ZG_TILE

@@ -516,6 +516,83 @@ class SpinPenalty(unittest.TestCase):
                 self.assertAlmostEqual(e, numpy.dot(c, self.hmat @ c), 10)
 
 
+class RowsAndMPI(unittest.TestCase):
+    '''zg_sigma_ab_rows (target rows, source rows by smap) against sigma with
+    the alpha-beta pairs of v only; sigma = Z + parity Z^T + Y on vectors of
+    the symmetry; the dense helpers; DistProductCI on one process
+    (MPI.COMM_SELF, if mpi4py is there) against ProductSpaceCI.'''
+
+    def setUp(self):
+        self.norb, self.nelec = 8, (4, 4)
+        self.h1, self.eri = random_spatial(self.norb, seed=41)
+        self.strs = sorted(subset(sub_strings(self.norb, [4]), 44, numpy.random.default_rng(41)))
+        solver = gasci.ProductSpaceCI(ci_strs=(self.strs, self.strs))
+        self.plan = solver.plan(self.norb, self.nelec)
+        self.v = solver._hamiltonian(self.h1, self.eri, self.norb, 8, self.plan)
+        a, b = gasci.pair_indices(2 * self.norb)
+        self.mixed = (a < self.norb) != (b < self.norb)
+        self.bb = (a >= self.norb) & (b >= self.norb)
+
+    def test_ab_rows(self):
+        plan, n = self.plan, len(self.strs)
+        c = numpy.random.default_rng(3).standard_normal((n, n))
+        ref = plan.sigma(self.v * numpy.outer(self.mixed, self.mixed), c.ravel()).reshape(n, n)
+        cuts = [0, 5, 6, 20, 44]
+        y = numpy.zeros((n, n))
+        for t0, t1 in zip(cuts[:-1], cuts[1:]):
+            sig = numpy.zeros((t1 - t0, n))
+            for s0, s1 in zip(cuts[:-1], cuts[1:]):
+                smap = numpy.full(n, -1)
+                smap[s0:s1] = numpy.arange(s1 - s0)
+                self.assertTrue(plan.sigma_ab_rows(self.v, c[s0:s1], smap, sig, t0, t1))
+            y[t0:t1] = sig
+        self.assertLess(abs(y - ref).max(), 1e-11)
+        # rows held out of order: reversed buffer
+        sig = numpy.zeros((n, n))
+        plan.sigma_ab_rows(self.v, c[::-1].copy(), numpy.arange(n)[::-1].copy(), sig, 0, n)
+        self.assertLess(abs(sig - ref).max(), 1e-11)
+
+    def test_identity(self):
+        plan, n = self.plan, len(self.strs)
+        for parity in (1, -1):
+            c = numpy.random.default_rng(4).standard_normal((n, n))
+            c = c + parity * c.T
+            z = plan.sigma(self.v * numpy.outer(self.bb, self.bb), c.ravel()).reshape(n, n)
+            y = numpy.zeros((n, n))
+            plan.sigma_ab_rows(self.v, c, numpy.arange(n), y, 0, n)
+            full = plan.sigma(self.v, c.ravel()).reshape(n, n)
+            self.assertLess(abs(full - (z + parity * z.T + y)).max(), 1e-11)
+
+    def test_dense_helpers(self):
+        from socutils.hci import gasci_mpi
+        lib_ = gasci._load()
+        x = numpy.random.default_rng(5).standard_normal((70, 90))
+        out = numpy.zeros((90, 100))
+        gasci_mpi._block(lib_.zg_transpose_d, x[3:50, 7:80], out[10:83, 20:67])
+        self.assertEqual(abs(out[10:83, 20:67] - x[3:50, 7:80].T).max(), 0)
+        out2 = numpy.zeros((60, 80))
+        gasci_mpi._block(lib_.zg_copy_block_d, x[3:50, 7:80], out2[:47, :73])
+        self.assertEqual(abs(out2[:47, :73] - x[3:50, 7:80]).max(), 0)
+
+    def test_dist_one_process(self):
+        try:
+            from mpi4py import MPI
+        except ImportError:
+            self.skipTest('mpi4py not available')
+        from socutils.hci import gasci_mpi
+        solver = gasci.ProductSpaceCI(ci_strs=(self.strs, self.strs))
+        solver.spin_flip = 1
+        solver.conv_tol = 1e-12
+        solver.max_space = 30
+        solver.max_cycle = 300
+        e_ref, _ = solver.kernel(self.h1, self.eri, self.norb, self.nelec)
+        e, c, info = gasci_mpi.kernel(self.h1, self.eri, self.norb, self.nelec, self.strs,
+                                      comm=MPI.COMM_SELF, tol=1e-12, tol_residual=1e-7,
+                                      max_cycle=400, verbose=False)
+        self.assertTrue(info['converged'])
+        self.assertAlmostEqual(e, e_ref, 9)
+
+
 class DensityMode(unittest.TestCase):
     '''zg_rdm2_blas against the reference zg_rdm2 in combinatorial spaces.'''
 

@@ -142,6 +142,20 @@ int zg_sigma_flip_z(const zg_plan *plan, const double _Complex *v,
 int zg_flip_vector_d(const zg_plan *plan, const double *in, double *out);
 int zg_flip_vector_z(const zg_plan *plan, const double _Complex *in,
                      double _Complex *out);
+/* The (AB,AB) terms of a product plan with one bucket per side (no labels,
+ * one electron count per side) into some target rows, from the source rows
+ * held: sig holds the target rows (A strings, places) t_lo .. t_hi - 1, row
+ * s of the plan is row smap[s] of c if smap[s] >= 0 (smap: one entry per A
+ * string), each row all B strings; sig += (AB,AB) c restricted to them.  The
+ * rest of sigma (the kinds within a side, and with zg_sigma_flip's identity
+ * the (AA,AA) part as the transpose of (BB,BB)) is row-local; this is the
+ * part that couples rows held by different processes.  Returns 1, or 0 if
+ * the plan does not qualify. */
+int zg_sigma_ab_rows_d(const zg_plan *plan, const double *v, const double *c,
+                       const int64_t *smap, double *sig, int64_t t_lo, int64_t t_hi);
+int zg_sigma_ab_rows_z(const zg_plan *plan, const double _Complex *v,
+                       const double _Complex *c, const int64_t *smap,
+                       double _Complex *sig, int64_t t_lo, int64_t t_hi);
 /* out[npair * npair] = <bra| A+_P A_R |ket>, P the row. */
 void zg_rdm2_d(const zg_plan *plan, const double *bra, const double *ket,
                double *out);
@@ -154,5 +168,13 @@ void zg_rdm2_blas_d(const zg_plan *plan, const double *bra, const double *ket,
                     double *out);
 void zg_rdm2_blas_z(const zg_plan *plan, const double _Complex *bra,
                     const double _Complex *ket, double _Complex *out);
+
+/* Dense helpers (no plan) for vectors distributed by rows: out[c * ldo + r]
+ * = in[r * ldi + c] (transpose), out[r * ldo + c] = in[r * ldi + c] (copy),
+ * r < nr, c < nc, in parallel. */
+void zg_transpose_d(int64_t nr, int64_t nc, const double *in, int64_t ldi, double *out,
+                    int64_t ldo);
+void zg_copy_block_d(int64_t nr, int64_t nc, const double *in, int64_t ldi, double *out,
+                     int64_t ldo);
 
 #endif

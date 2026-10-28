@@ -91,6 +91,12 @@ def _load():
         for name in ('zg_sigma_flip_d', 'zg_sigma_flip_z'):
             getattr(lib_, name).restype = ctypes.c_int
             getattr(lib_, name).argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int]
+        for name in ('zg_transpose_d', 'zg_copy_block_d'):
+            getattr(lib_, name).argtypes = [ctypes.c_int64, ctypes.c_int64, ctypes.c_void_p,
+                                            ctypes.c_int64, ctypes.c_void_p, ctypes.c_int64]
+        for name in ('zg_sigma_ab_rows_d', 'zg_sigma_ab_rows_z'):
+            getattr(lib_, name).restype = ctypes.c_int
+            getattr(lib_, name).argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_int64] * 2
         lib_.zg_product_strings.restype = ctypes.c_int64
         lib_.zg_product_strings.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
         lib_.zg_product_info.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
@@ -449,6 +455,34 @@ class ProductPlan(Plan):
         if not fn(self._handle, v.ctypes.data, c.ctypes.data, out.ctypes.data, int(parity)):
             return None
         return out
+
+    def sigma_ab_rows(self, v, c, smap, sig, t_lo, t_hi):
+        '''sig += the (AB,AB) terms into the target rows t_lo .. t_hi - 1
+        (sig, rows of all B strings) from the source rows held in c: row s of
+        the plan is row smap[s] of c where smap[s] >= 0 (zg_sigma_ab_rows;
+        product plans with one bucket per side).  Rows are A strings in the
+        order of the plan.  False if the plan does not qualify.'''
+        v, complex_ = self._check_v(v)
+        complex_ = complex_ or numpy.iscomplexobj(c) or numpy.iscomplexobj(sig)
+        dtype = numpy.complex128 if complex_ else numpy.float64
+        if complex_:
+            v = v.astype(numpy.complex128)
+        c = numpy.ascontiguousarray(c, dtype=dtype)
+        smap = numpy.ascontiguousarray(smap, dtype=numpy.int64)
+        if sig.dtype != dtype or not sig.flags.c_contiguous:
+            raise ValueError('sig must be a C-contiguous array of %s' % dtype)
+        na, nb = self.side_count(0), self.side_count(1)
+        if smap.size != na or sig.size != (t_hi - t_lo) * nb or c.size % nb:
+            raise ValueError('smap, c or sig of the wrong size')
+        if smap.max(initial=-1) >= c.size // nb:
+            raise ValueError('smap points past the rows of c')
+        fn = self._lib.zg_sigma_ab_rows_z if complex_ else self._lib.zg_sigma_ab_rows_d
+        return bool(fn(self._handle, v.ctypes.data, c.ctypes.data, smap.ctypes.data,
+                       sig.ctypes.data, int(t_lo), int(t_hi)))
+
+    def side_count(self, side):
+        '''Number of strings of side 0 (A) or 1 (B) in the plan.'''
+        return int(self._lib.zg_product_strings(self._handle, side, None))
 
 
 class _SmallPlan:
