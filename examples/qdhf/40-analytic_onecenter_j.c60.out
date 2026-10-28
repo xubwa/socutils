@@ -1,0 +1,5 @@
+# exact analytic one-center J; times in s; NR J(K): one scalar direct J (JK) build, same basis
+# err: max |J - J_exact| over LL, SS and 2c blocks (small: exact molecular 4c and 2c J; large: 2c only, exact
+#      2c J from one scalar J build)
+mol       n2c natm |   NR J  NR JK    X2C | expand    erf  local     SS  total integr |  tot/JK  int/JK |   err LL   err SS   err 2c
+C60      3120   60 | 483.07 575.15 237.58 |   0.14  20.05  12.71 130.30 163.20 163.07 |    0.28    0.28 |        -        -  1.1e-13
