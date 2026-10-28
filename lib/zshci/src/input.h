@@ -180,6 +180,10 @@ struct PtInput {
   int max_samples = 2000000;
   int pilot_samples = 2400;
   int pilot_batches = 10;
+  // Set by the drivers, not read: epsilon1 of the selection that made the
+  // determinants (0: unknown); the thresholds of the deterministic part
+  // start at a tenth of it.
+  double start_threshold = 0.0;
   int min_iterations = 5;
   int max_iterations = 1000;
   double target_error = 1e-4;

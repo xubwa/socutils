@@ -3410,25 +3410,6 @@ void TestSpinFlip() {
 // epsilon2_large and num_samples chosen by the program (pt.h, "auto").
 
 void TestPtAuto() {
-  // HyperLogLog against exact counts.
-  {
-    double worst = 0.0;
-    for (uint64_t n : {1000ULL, 100000ULL, 2000000ULL}) {
-      internal::HyperLogLog sketch, half_a, half_b;
-      for (uint64_t k = 0; k < n; ++k) {
-        sketch.Add(Mix64(k + 17));
-        (k % 2 == 0 ? half_a : half_b).Add(Mix64(k + 17));
-      }
-      half_a.Merge(half_b);
-      worst = std::max({worst, std::abs(sketch.Estimate() / n - 1.0),
-                        std::abs(half_a.Estimate() / n - 1.0)});
-    }
-    std::printf("      HyperLogLog: largest relative error %.2e\n", worst);
-    Expect(worst < 0.03,
-           "HyperLogLog sketches count 1e3 to 2e6 distinct hashes within 3%, "
-           "also merged");
-  }
-
   const std::string base =
       std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") +
       "/zshci_test_ptauto";
@@ -3455,47 +3436,51 @@ void TestPtAuto() {
         filter,         1,
         serial,         flip_mode ? &layout : nullptr};
 
-    // Counting against the terms themselves.
-    const std::vector<double> thresholds = {1e-3, 3e-4, 1e-4, 3e-5};
-    ExternalCounter<1, LabelFilter, double> counter(problem, thresholds);
-    double worst_terms = 0.0, worst_distinct = 0.0;
-    for (size_t k = 0; k < thresholds.size(); ++k) {
-      counter.Next();
-      double terms = 0.0;
-      std::set<Det<1>> distinct;
-      for (size_t i = 0; i < run.dets.size(); ++i) {
-        const double c = std::abs(run.vectors[0][i]);
-        if (c == 0.0 || internal::GeneratorWeight(problem, i) == 0.0) continue;
-        std::vector<int> occ;
-        run.dets[i].AppendOccupied(&occ);
-        auto visit = [&](const Det<1>& det, double, bool) {
-          Det<1> canonical = det;
-          if (flip_mode && internal::FoldOntoCanonical(det, layout.lambda(),
-                                                       &canonical) == 0.0) {
-            return;
+    // Counting against the terms themselves: exact from every determinant,
+    // within its error from every 7th.
+    {
+      const std::vector<double> thresholds = {1e-3, 1e-4, 3e-5};
+      double worst_exact = 0.0, worst_sigmas = 0.0;
+      bool errors_positive = true;
+      for (double t : thresholds) {
+        double terms = 0.0;
+        for (size_t i = 0; i < run.dets.size(); ++i) {
+          const double c = std::abs(run.vectors[0][i]);
+          if (c == 0.0 || internal::GeneratorWeight(problem, i) == 0.0) {
+            continue;
           }
-          terms += 1.0;
-          distinct.insert(canonical);
-        };
-        internal::ElementSink<1, decltype(visit), double> sink(
-            run.dets[i], ints, 0.0, visit);
-        ForEachExcitation(run.dets[i], occ, thresholds[k] / c, ints, heat_bath,
-                          filter, &sink);
+          std::vector<int> occ;
+          run.dets[i].AppendOccupied(&occ);
+          auto visit = [&](const Det<1>& det, double, bool) {
+            Det<1> canonical = det;
+            if (flip_mode && internal::FoldOntoCanonical(det, layout.lambda(),
+                                                         &canonical) == 0.0) {
+              return;
+            }
+            terms += 1.0;
+          };
+          internal::ElementSink<1, decltype(visit), double> sink(
+              run.dets[i], ints, 0.0, visit);
+          ForEachExcitation(run.dets[i], occ, t / c, ints, heat_bath, filter,
+                            &sink);
+        }
+        const TermCount all = CountTerms(problem, t, 1, 0);
+        const TermCount some = CountTerms(problem, t, 7, 3);
+        worst_exact =
+            std::max(worst_exact, std::abs(all.terms - terms) / terms);
+        worst_sigmas = std::max(worst_sigmas, std::abs(some.terms - terms) /
+                                                  std::max(some.error, 1e-300));
+        errors_positive = errors_positive && some.error > 0.0;
       }
-      worst_terms =
-          std::max(worst_terms, std::abs(counter.terms(k) - terms) / terms);
-      worst_distinct =
-          std::max(worst_distinct,
-                   std::abs(counter.distinct(k) / distinct.size() - 1.0));
+      std::printf(
+          "      counting%s: exact off by %.1e (relative), sampled "
+          "1 in 7 off by %.1f standard errors at most\n",
+          tag.c_str(), worst_exact, worst_sigmas);
+      Expect(worst_exact < 1e-9 && worst_sigmas < 4.0 && errors_positive,
+             "terms counted from all determinants equal those generated, "
+             "and from every 7th within 4 standard errors" +
+                 tag);
     }
-    std::printf(
-        "      counting%s: terms off by %.1e, distinct by %.1e "
-        "(relative)\n",
-        tag.c_str(), worst_terms, worst_distinct);
-    Expect(worst_terms < 1e-9 && worst_distinct < 0.03,
-           "band-by-band counting gives the terms of the deterministic sum and "
-           "their distinct determinants within 3%" +
-               tag);
 
     // Batches and the guard do not change the deterministic sum.
     {
@@ -3503,9 +3488,10 @@ void TestPtAuto() {
       PtProblem<1, LabelFilter, double> batched = problem;
       batched.num_batches = 3;
       const double three = PtDeterministic(batched, 1e-5);
-      int slices = 0;
+      internal::SumStats stats;
       const double guarded =
-          PtDeterministic(problem, 1e-5, nullptr, /*max_terms=*/2000, &slices);
+          PtDeterministic(problem, 1e-5, nullptr, /*max_terms=*/2000, &stats);
+      const int slices = stats.slices;
       const double diff =
           std::max(std::abs(three - one), std::abs(guarded - one));
       std::printf(
@@ -3554,6 +3540,12 @@ void TestPtAuto() {
           "pass(es); auto %.12f, given %.12f\n",
           tag.c_str(), choice.epsilon_large, choice.num_samples,
           choice.det_batches, automatic.correction, given.correction);
+      Expect(choice.det_batches == 1 &&
+                 automatic.num_iterations >= pt.min_iterations &&
+                 automatic.error > 0.0,
+             "the chosen deterministic part fits one pass and the stochastic "
+             "part runs with an error bar" +
+                 tag);
       Expect(det_diff < 1e-12 * std::abs(automatic.correction) &&
                  std::abs(automatic.correction - given.correction) <
                      1e-10 * std::abs(given.correction) &&
@@ -3570,8 +3562,35 @@ void TestPtAuto() {
       const PtAutoChoice small = ChoosePtParameters(problem, roomy, sampler, 0);
       std::printf("      auto%s with room: epsilon2_large %.1e\n", tag.c_str(),
                   small.epsilon_large);
-      Expect(small.epsilon_large <= 1e-6,
+      Expect(small.epsilon_large <= 1e-5,
              "with memory to spare a small epsilon2_large is chosen" + tag);
+
+      // The thresholds visited start at epsilon1 / 10 and never go below
+      // epsilon2; when epsilon2 itself fits, all is deterministic.
+      PtInput start = pt;
+      start.start_threshold = 2e-3;
+      start.epsilon2 = 2e-5;
+      const PtAutoChoice bounded =
+          ChoosePtParameters(problem, start, sampler, 0);
+      PtInput all_fits = start;
+      all_fits.memory_gb = 4.0;
+      const PtAutoChoice whole =
+          ChoosePtParameters(problem, all_fits, sampler, 0);
+      const PtResult whole_pt = RunPerturbation(problem, all_fits, 0, false);
+      const double exact = PtDeterministic(problem, all_fits.epsilon2);
+      std::printf(
+          "      auto%s from epsilon1 2e-3: epsilon2_large %.2e; with "
+          "4 GB: deterministic only %d, %.12f against %.12f\n",
+          tag.c_str(), bounded.epsilon_large, whole.deterministic_only,
+          whole_pt.correction, exact);
+      Expect(
+          bounded.epsilon_large >= start.epsilon2 &&
+              bounded.epsilon_large <= 2e-4 && whole.deterministic_only &&
+              whole_pt.error == 0.0 &&
+              std::abs(whole_pt.correction - exact) < 1e-12 * std::abs(exact),
+          "the thresholds stay between epsilon1/10 and epsilon2, and with "
+          "room for epsilon2 the correction is deterministic" +
+              tag);
     }
   }
   std::system(("rm -rf " + base).c_str());

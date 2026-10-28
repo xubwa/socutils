@@ -143,9 +143,15 @@ void RunDiag(const Input& input, const Integrals<S>& ints, const Comm& comm) {
   // respects the occupation restrictions.
   const RestrictedFilter filter =
       MakeFilter(input, labels, num_orbs, /*with_restrictions=*/true);
-  const std::vector<PtResult> pt =
-      ComputePerturbation(input, ints, dets, result.energies, vectors,
-                          /*heat_bath=*/nullptr, filter, comm, h.flip());
+  // epsilon1 of the selection that made the list, if its file says.
+  double start_threshold = 0.0;
+  if (comm.is_root() && !input.detfile.empty()) {
+    start_threshold = ReadSelectionThreshold(input.detfile);
+  }
+  comm.BcastValue(&start_threshold);
+  const std::vector<PtResult> pt = ComputePerturbation(
+      input, ints, dets, result.energies, vectors,
+      /*heat_bath=*/nullptr, filter, comm, h.flip(), start_threshold);
   WriteResults(input, ints, dets, h, labels, result.energies, vectors, pt,
                comm);
 }

@@ -914,9 +914,17 @@ void RunSelect(const Input& given, const Integrals<S>& ints, const Comm& comm) {
     num_inactive = 0;
   };
 
+  // epsilon1 of the last iteration, for perturbation theory; on a resumed
+  // selection that has nothing left to do, that of the file.
+  double last_epsilon = 0.0;
+  if (comm.is_root() && !input.detfile.empty()) {
+    last_epsilon = ReadSelectionThreshold(input.detfile);
+  }
+  comm.BcastValue(&last_epsilon);
   for (int iter = first_iter; iter < input.select.max_iter && !finished;
        ++iter) {
     const double epsilon = selector->Parameter(iter);
+    if (input.select.method == SelectMethod::kHeatBath) last_epsilon = epsilon;
     const size_t old_size = shared_dets.size();
 
     const double select_start = omp_get_wtime();
@@ -1165,7 +1173,7 @@ void RunSelect(const Input& given, const Integrals<S>& ints, const Comm& comm) {
   root_vectors = std::vector<std::vector<S>>();
   const std::vector<PtResult> pt =
       ComputePerturbation(input, ints, shared_dets.span(), energies, vectors,
-                          &heat_bath, filter, comm, h.flip());
+                          &heat_bath, filter, comm, h.flip(), last_epsilon);
   WriteResults(input, ints, shared_dets.span(), h, labels, energies, vectors,
                pt, comm);
 }

@@ -825,7 +825,9 @@ std::vector<PtResult> ComputePerturbation(
     const Input& input, const Integrals<S>& ints, Span<Det<W>> dets,
     const std::vector<double>& result_energies, const SharedVectors<S>& vectors,
     const HeatBath* heat_bath, const RestrictedFilter& filter, const Comm& comm,
-    const SpinFlipLayout* flip = nullptr) {
+    const SpinFlipLayout* flip = nullptr, double start_threshold = 0.0) {
+  PtInput pt_input = input.pt;
+  pt_input.start_threshold = start_threshold;
   std::vector<PtResult> results;
   if (input.pt.method == PtMethod::kNone) return results;
 
@@ -850,7 +852,7 @@ std::vector<PtResult> ComputePerturbation(
                                                     comm,
                                                     flip};
     results.push_back(
-        RunPerturbation(problem, input.pt, k, input.output_level > 1));
+        RunPerturbation(problem, pt_input, k, input.output_level > 1));
     const PtResult& pt = results.back();
     if (pt.error > 0.0 || input.pt.method != PtMethod::kDeterministic) {
       std::printf("State %3d  PT correction = %16.10f +/- %.2e  (%d "

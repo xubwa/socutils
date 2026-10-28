@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "highfive/H5File.hpp"
+#include "nlohmann/json.hpp"
 
 namespace zshci {
 namespace {
@@ -125,6 +126,37 @@ bool ReadSelectState(const std::string& path, int* iteration, int* solved) {
   file.getAttribute("select_iteration").read(*iteration);
   file.getAttribute("select_solved").read(*solved);
   return true;
+}
+
+double ReadSelectionThreshold(const std::string& path) {
+  HighFive::File file(path, HighFive::File::ReadOnly);
+  if (!file.hasAttribute("input")) return 0.0;
+  std::string text;
+  file.getAttribute("input").read(text);
+  try {
+    const nlohmann::json input = nlohmann::json::parse(text);
+    if (input.value("mode", "") != "select" || !input.contains("select")) {
+      return 0.0;
+    }
+    const nlohmann::json& select = input.at("select");
+    if (select.value("method", "heat_bath") != "heat_bath" ||
+        !select.contains("schedule") || select.at("schedule").empty()) {
+      return 0.0;
+    }
+    int iteration = 1 << 30;  // the last entry, unless the file says
+    if (file.hasAttribute("select_iteration")) {
+      file.getAttribute("select_iteration").read(iteration);
+    }
+    double epsilon = 0.0;
+    for (const nlohmann::json& entry : select.at("schedule")) {
+      if (entry.at(0).get<int>() <= iteration) {
+        epsilon = entry.at(1).get<double>();
+      }
+    }
+    return epsilon;
+  } catch (const std::exception&) {
+    return 0.0;
+  }
 }
 
 std::vector<uint64_t> ReadDetWords(const std::string& path, int* det_width) {

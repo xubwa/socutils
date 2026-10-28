@@ -67,6 +67,11 @@ void WriteWaveFunction(const std::string& path, const WaveFunction<S>& wfn);
 // false if it has none.
 bool ReadSelectState(const std::string& path, int* iteration, int* solved);
 
+// The epsilon1 of the heat-bath selection that made the determinants of a
+// wfn.h5 or select.h5 file (of the iteration it was written in, or of the
+// last entry of the schedule); 0 if the file does not say.
+double ReadSelectionThreshold(const std::string& path);
+
 // Reads the determinant table of a wfn.h5 file; sets *det_width.
 std::vector<uint64_t> ReadDetWords(const std::string& path, int* det_width);
 
