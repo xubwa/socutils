@@ -298,6 +298,33 @@ file of int64.  Energies agree with ProductSpaceCI (N2 400 strings, [2Fe-2S]
 node: one product 1.51 s, solve 12.7 s (7 iterations), against 31.8 s with the
 Python driver and 70 s with ProductSpaceCI (pyscf davidson1).
 
+As an SQD solver (2026-10-28): `make` also builds `libzgasci_dist.so` with
+`zgd_solve` (the same solve on a communicator of the caller, a Fortran
+handle; integrals from memory; strings in any order, outputs in the input
+order).  It returns E of H + s2pen S^2, <H> (one more product with the
+unpenalized v), <S^2>, and per string the largest |C| of its row and its
+marginal weight, and the orbital occupations; no vector leaves the C side.
+The linear penalty of 6b is folded into v and v_bb in C (`add_s2`: the
+diagonal 1 / (N - 1) of every pair, -1 at ((p, q'), (q, p')); equal to
+`s2_antisymmetrized` for S_z = 0).  `gasci_mpi.c_solve` calls it through
+ctypes, `gasci_mpi.make_sci_solver` wraps it as a collective `sci_solver` of
+qiskit-addon-sqd 0.14 (`SCIResult` with `sci_state=None` and the carryover
+of the default policy: strings with max |C| >= threshold, by descending
+marginal weight); the whole SQD script runs under mpirun.
+Two fixes to the eigensolver (C and Python): the start for parity -1 skips
+the diagonal a = b (there the antisymmetrized vector is zero: NaN before),
+and the preconditioner is 1 / max(|hd - E|, shift) (positive definite, as
+LOBPCG needs; with 1 / (hd - E), the S^2 penalty and parity -1 it stalled at
+|r| 4e-2).  The start (one diagonal element) keeps the point-group irrep of
+that determinant, as does ProductSpaceCI's Davidson: N2 parity -1 ends at the
+lowest triplet of that irrep, -31.3413, not -31.3778.
+Checks (scripts/csolver_check.py, csolver_test.sbatch in the SQD study): N2
+356 strings, 1 and 4 processes, parity +1 with and without the penalty and -1
+without: <H> to 3e-9 Eh, occupations, max |C| and weights to 6e-8 against
+ProductSpaceCI; an SQD loop (N2 x = 1.00, hardware counts, 400 strings, 3
+batches, 4 iterations, penalty 0.2) on 4 processes follows sqd_run.py
+(ProductSpaceCI) to 5e-8 Eh at every iteration.
+
 ## 7. What stays for later
 
 * **(AB,AB)** is the larger half of a sigma. Its GEMMs do about 9 times
