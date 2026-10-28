@@ -32,6 +32,13 @@ share of the nuclear charge (-sum E erfc(sqrt(z) r)/r, short-ranged) and is scre
 its own smallest exponent.  The screening bound ignores prefactors, so eps = 1e-20
 (error 1e-11) is needed; 1e-13 gives 2e-4 in SS.
 
-C60 (unc-cc-pVDZ, n2c 3120, 4 cores): kernel 63 s against 575 s for one scalar NR JK
-build (164 s for the unscreened Python version, 483 s NR J, 238 s X2C decoupling);
-9e-12 from the exact J.
+Timings (4 cores, eps 1e-20; against one scalar direct NR JK build in the same uncontracted
+basis, `test_c60.py`, `test_gold.py` -> `test_gold.out`):
+
+| system | n2c | NR JK | X2C decoupling | kernel J (patched libcint) | kernel J (std) | err 2c |
+|---|---|---|---|---|---|---|
+| C60, unc-cc-pVDZ | 3120 | 575 s | 238 s | 63 s (0.11x) | 75 s (0.13x) | 9e-12 |
+| Au4, unc-dyall-v2z | 1632 | 48 s | 42 s | 11.5 s (0.24x) | | 1.8e-8 |
+| Au8 (cube), unc-dyall-v2z | 3264 | 293 s | 292 s | 40 s (0.14x) | | 1.8e-8 |
+
+The unscreened pure-Python analytic J (`../40-analytic_onecenter_j.py`) takes 164 s for C60.

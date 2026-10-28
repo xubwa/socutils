@@ -1,8 +1,12 @@
+import os
 import sys, time, numpy, scipy.linalg
 sys.argv = ['x', 'c60']
-src = open('/home/user/socutils/examples/qdhf/40-analytic_onecenter_j.py').read().split("\nlarge = len(sys.argv)")[0]
+src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../40-analytic_onecenter_j.py')).read().split("\nlarge = len(sys.argv)")[0]
 g = {'__name__': 'x'}; exec(src, g)
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ocj import j_kernel
+STD = os.environ.get('STD', '0') == '1'
 from pyscf import gto
 from pyscf.lib import param
 c = param.LIGHT_SPEED
@@ -15,7 +19,7 @@ terms = [(g['potential_terms'](e4), g['potential_terms'](e2)) for e4, e2 in ae]
 t = time.perf_counter(); vnll = xmol.intor('int1e_nuc_spinor'); vnss = xmol.intor('int1e_spnucsp_spinor'); tvn = time.perf_counter() - t
 res = {}
 for eps in (1e-20,):
-    tt = []; t = time.perf_counter(); l4, s4, l2 = j_kernel(xmol, terms, eps, tt); tk = time.perf_counter() - t
+    tt = []; t = time.perf_counter(); l4, s4, l2 = j_kernel(xmol, terms, eps, tt, std=STD); tk = time.perf_counter() - t
     res[eps] = (l4, s4, l2)
     npair = xmol.nbas * (xmol.nbas + 1) // 2
     print('kernel eps %.0e  %.2f s (3c %.2f, rinv %.2f, spinor %.2f)  (ij,k) triples kept per k-entry: %.1f%% of pairs' % (
