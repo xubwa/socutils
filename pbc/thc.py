@@ -357,9 +357,14 @@ class THCExchange:
         A_lr = np.zeros((self.auxmol.nao, nmu))
         sw = self.fG * self.w_sr / vol
         swl = self.fG * (self.w_vec - self.w_sr) / vol
+        lrg = np.where(np.abs(swl) > 1e-14 * np.abs(swl).max())[0]       # the LR kernel lives at small G only
+        Pl = ft_ao(self.auxmol, self.Gv[lrg]) * swl[lrg, None]           # (nG_lr, naux)
+        Plr, Pli = np.ascontiguousarray(Pl.real.T), np.ascontiguousarray(Pl.imag.T)
+        Pl = None
         local = getattr(self, 'local_rcut', None)
         if local:
             Xi = np.empty((2 * len(self.r.lr_G), nmu))
+        t0 = time.time()
         for b0 in range(0, nmu, nb):
             b1 = min(b0 + nb, nmu)
             xi = np.empty((b1 - b0, ng))
@@ -371,9 +376,12 @@ class THCExchange:
             Xh *= vol / ng                                              # xi(G) = int_cell xi(r) e^{-iGr}
             for g0 in range(0, len(self.Gv), gchunk):
                 g1 = min(g0 + gchunk, len(self.Gv))
-                Pg = ft_ao(self.auxmol, self.Gv[g0:g1])               # (nG, naux)
-                A[:, b0:b1] += ((Pg.conj() * sw[g0:g1, None]).T @ Xh[:, g0:g1].T).real
-                A_lr[:, b0:b1] += ((Pg.conj() * swl[g0:g1, None]).T @ Xh[:, g0:g1].T).real
+                Pg = ft_ao(self.auxmol, self.Gv[g0:g1]) * sw[g0:g1, None]   # (nG, naux); Re(P^* X) = PrXr + PiXi
+                Xc = Xh[:, g0:g1]
+                A[:, b0:b1] += Pg.real.T @ Xc.real.T + Pg.imag.T @ Xc.imag.T
+            Xc = Xh[:, lrg]
+            A_lr[:, b0:b1] = Plr @ Xc.real.T + Pli @ Xc.imag.T
+            Xc = Pg = None
             if local:
                 Xi[:, b0:b1] = self._lr_rows_of_xi(Xh)
             # potential of the block in real space, (v * xi_b)(r) = irfft(w_vec xi_b(G)) ng / vol
@@ -387,6 +395,7 @@ class THCExchange:
                 Vb += xi[:, g0:g1] @ ((PP @ phi[g0:g1].T) ** 2).T
             V[b0:b1] = Vb @ Ginv                                        # int (v * xi_b) xi^T (Parseval)
             xi = Vb = None
+            self.log('   streamed THC: mu block %d-%d of %d, %.0f s' % (b0, b1, nmu, time.time() - t0))
         self.V = .5 * (V + V.T)
         self.A, self.A_lr = A, A_lr
         if local:

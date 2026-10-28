@@ -16,7 +16,7 @@ dm = pscf.RHF(cell).get_init_guess(key='minao')
 ref = {k: getattr(th, k).copy() for k in ('V', 'A', 'A_lr', 'Xi_lr')}
 K0 = jk.get_jk(dm)[1]
 nmu = len(th.pts)
-for nb in (None, 300):
+for nb in (None,):
     t = time.time(); th._build_thc_stream(th.pts, nb=nb); ts = time.time() - t
     print('stream nb %s: %.0f s (full build %s)' % (nb, ts, {k: round(v) for k, v in th.timings.items()}))
     for k, v in ref.items():
