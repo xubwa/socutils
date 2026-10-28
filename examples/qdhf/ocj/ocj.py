@@ -4,8 +4,9 @@ from pyscf.lib import param
 from pyscf.gto.mole import (ATM_SLOTS, BAS_SLOTS, PTR_COORD, ATOM_OF, ANG_OF, NPRIM_OF, NCTR_OF, PTR_EXP, PTR_COEFF,
                             PTR_ENV_START, gaussian_int, conc_env)
 _here = os.path.dirname(os.path.abspath(__file__))
-_cint = ctypes.CDLL(os.path.join(_here, '../libcint-src/build/libcint.so.6.2.0'), mode=os.RTLD_LOCAL)
-_ocj = ctypes.CDLL(os.path.join(_here, 'libocj.so'))
+# the libcint built with spsp3c1e.cl (see README) and the kernel library
+_cint = ctypes.CDLL(os.environ.get('OCJ_LIBCINT', os.path.join(_here, 'libcint.so.6')), mode=os.RTLD_LOCAL)
+_ocj = ctypes.CDLL(os.environ.get('OCJ_LIB', os.path.join(_here, 'libocj.so')))
 _LOC = {0: 'int3c1e', 1: 'int3c1e_r2_origk', 2: 'int3c1e_r4_origk', 3: 'int3c1e_r6_origk'}
 ptr = lambda a: a.ctypes.data_as(ctypes.c_void_p)
 

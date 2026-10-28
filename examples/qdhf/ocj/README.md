@@ -22,7 +22,8 @@ variants, unused: libcint has no spinor 3c1e driver).  Build:
     gcc -O2 -fopenmp -fPIC -shared -o libocj.so onecenter_j.c -lm
 
 `ocj.py` loads that libcint by absolute path (RTLD_LOCAL, next to pyscf's own libcint)
-and passes function pointers to the kernel; adjust the path at the top of `ocj.py`.
+and passes function pointers to the kernel: set `OCJ_LIBCINT` (path of the new
+libcint.so) and `OCJ_LIB` (libocj.so), default: next to `ocj.py`.
 
 Each atom's exponents are split into groups of one decade; every erf group carries its
 share of the nuclear charge (-sum E erfc(sqrt(z) r)/r, short-ranged) and is screened with
