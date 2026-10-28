@@ -12,13 +12,15 @@ sph->spinor maps):
 | LL | int3c2e | int3c1e, int3c1e_r{2,4,6}_origk | int1e_rinv |
 | SS | int3c2e_ipvip1 | int3c1e_ipvip1, **int3c1e_ipvip1_r{2,4,6}_origk** | int1e_iprinvip |
 
-The bold ones are not in libcint; `spsp3c1e.cl` adds them (and spinor sigma.p sigma.p
-variants, unused: libcint has no spinor 3c1e driver).  Build:
+The bold ones are not in libcint: `libcint-patch/0001-*.patch` adds them (generator entries,
+regenerated `src/autocode/int3c1e.c`, declarations, finite-difference tests; PR text in
+`libcint-patch/PR.md`).  Without it, `j_kernel(..., std=True)` uses pyscf's own libcint
+only and assembles those terms in the kernel from cartesian l+-1 shells
+(`OCJ_3c_dshell_drv`), with identical results (~1.5x slower on small molecules).  Build:
 
-    git clone https://github.com/sunqm/libcint && cd libcint/scripts
-    cp .../spsp3c1e.cl . && clisp spsp3c1e.cl && cp int3c1e_spsp.c ../src/autocode/
-    # add src/autocode/int3c1e_spsp.c next to src/autocode/int3c1e.c in CMakeLists.txt
-    mkdir ../build && cd ../build && cmake .. && make
+    git clone https://github.com/sunqm/libcint && cd libcint
+    git am .../libcint-patch/0001-Add-int3c1e_ipvip1_r-2-4-6-_origk.patch
+    mkdir build && cd build && cmake .. && make
     gcc -O2 -fopenmp -fPIC -shared -o libocj.so onecenter_j.c -lm
 
 `ocj.py` loads that libcint by absolute path (RTLD_LOCAL, next to pyscf's own libcint)
