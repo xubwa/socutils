@@ -43,7 +43,8 @@ of `dft/noncollinear.py` plus the elementwise grid pass of the RKS XC Hessian
 quartets, used by `somf/x2cmp.py`; the unique-quartet Hessian drivers
 `hess2e.c` (2e second derivatives), `fock1.c` (first-order J/K of all atoms),
 `jk_multi.c` (direct J/K of many densities, `scf/jk_multi.py`), `ri_j_deriv.c`
-(three-centre derivative contractions of the density-fitted J Hessian)) links against
+(three-centre derivative contractions of the density-fitted J Hessian), `md_j.c`
+(McMurchie-Davidson J engine on decontracted primitives, exact J gradient)) links against
 the installed pyscf's `libcvhf` the same way; without it `.x2cmp()` falls back
 to the full molecular J/K build and the Hessians to pyscf's integral passes.
 Each `.so` is emitted **flat into `lib/`**, next to its ctypes loader. They're
