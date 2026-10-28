@@ -6,7 +6,8 @@ Branch `claude/x2camf-diffuse-stability`.  Scripts and outputs in `examples/qdhf
 |---|---|
 | `36-x2camf_diffuse_stability.py` | k scan: X2C-1e, x2camf (block / projected 1e-6, 1e-5 / projector form), x2cmp, amfX2C (block / projector form); energies, lowest h_core eigenvalue, orbital energies, max\|eig\| of the AMF correction in the canonically orthonormalized basis |
 | `37-amf_long_range_coulomb.py` | amfX2C with the Coulomb part as a true molecular operator (exact J of the atomic densities, or SAP); first-order breakdown of the x2camf AMF into DC-SO / Gaunt / gauge pieces |
-| `38-onecenter_model_potential.py` | x2cmp rebuilt from one-center quantities: J from the spherical atomic density (Coulomb fit, or numerically exact radial Poisson), one-center K (block or projector form) |
+| `38-onecenter_model_potential.py` | x2cmp rebuilt from one-center quantities: J from the spherical atomic density (Coulomb fit), one-center K (block or projector form) |
+| `40-analytic_onecenter_j.py`, `ocj/` | exact analytic J of the atomic densities (existing libcint integrals), screened neutral-atom C kernel; cost against one scalar NR JK build |
 
 ## Setup
 
@@ -110,12 +111,9 @@ E − E(X2C-1e) / Eh, HCl, DC (`37-…hcl_unc.out`):
 x2cmp decouples with F4 = h4 + (J − K)[Σ_K D4_K] from molecular 2e integrals and subtracts the 2c
 counterpart; this is why it was stable in every scan.  Rebuilt from one-center quantities:
 
-* J: the atomic densities are spherical.  (a) Coulomb fit (charge-conserving, s Gaussians,
-  ratio 1.2) → Σ q erf(√ζ r)/r, SAP form from our own density, 1e integrals only; or
-  (b) numerically exact: radial Poisson (cumulative Simpson on a 20000-point log grid; E_H to
-  1e-11), N erf(r)/r long range analytic (rinv_zeta), the bounded short-range rest on one
-  molecular Becke grid with real scalar AOs + gradients (SS via Σ_ij ⟨∂_iφ|V|∂_jφ⟩ σ_iσ_j).
-  (150, 590) grid: 1e-11 Eh vs exact J, ~1 s per k.
+* J: the atomic densities are spherical.  Coulomb fit (charge-conserving, s Gaussians,
+  ratio 1.2) → Σ q erf(√ζ r)/r, SAP form from our own density, 1e integrals only.  (The
+  exact analytic J, no fit, is section 5.)
 * K: one-center (atom-only 2e integrals), block or projector form.
 
 E − E(x2cmp) / Eh, HCl, DC (`38-…hcl_unc.out`):
@@ -128,7 +126,7 @@ E − E(x2cmp) / Eh, HCl, DC (`38-…hcl_unc.out`):
 | 10 | 3.2e-7 | **−1.93e-4** | −1.92e-4 | −2.68e-6 | −4e-10 |
 
 Max \|Δε_occ\| vs x2cmp: block K 1.6e-6 → 4.3e-5; projector K ≤ 2.6e-7 at every k (1.3e-7 from k = 2 on).  The fitted
-(or numerical) J is exact for this purpose at every k; the residual drift is entirely the
+J is exact for this purpose at every k; the residual drift is entirely the
 block-diagonal one-center K.  **J from the spherical atomic density + one-center K in projector
 form reproduces x2cmp to 3e-6 Eh / 1e-7 Eh in orbital energies and is stable to Smin = 3e-7**,
 with no multi-center 2e integrals.
@@ -136,9 +134,7 @@ with no multi-center 2e integrals.
 HBr (`38-…hbr_unc.out`), same columns: k = 0 −1.20e-5 / −4.30e-6; k = 5 −5.11e-5 / −4.09e-6;
 k = 7 −1.20e-4 / −4.08e-6; k = 10 **−2.47e-4** / −4.09e-6 (block K / projector K); max \|Δε_occ\|
 block 2.6e-6 → 5.9e-5, projector ≤ 4e-7.  The block one-center K drifts faster for the heavier
-atom (its exchange reaches a larger valence region); projector form stays flat.  Numerical J at
-(150, 590) has a 7e-3 SS matrix error for Br (tight functions; use (200, 1202) for heavy atoms)
-but is exact in energy (Jnum = Jx to 1e-9).
+atom (its exchange reaches a larger valence region); projector form stays flat.
 
 Native x2camf against the same reference, E(x2camf) − E(x2cmp) / Eh (from the 36 outputs):
 
@@ -154,6 +150,33 @@ have and x2cmp does; it is k-independent, so not a diffuse-function effect (in t
 energies it sits in the core: Cl 1s 0.031 Eh, valence ~1e-6).  With the DC AMF native x2camf
 is as stable as the projector-form one-center MP (constant to 1e-8 for k ≥ 1); with the
 default Gaunt + Breit AMF it drifts like the block one-center K.
+
+## 5. Exact analytic J of the atomic densities, and a C kernel (script 40, `ocj/`)
+
+The J of section 4 without fit and without grid:
+
+* the spherically averaged atomic density is exactly Σ c t_{n,ζ}, t = r^2n e^{-ζ r²}, ζ the
+  sums of primitive exponents (angular averages of cartesian monomials; SS through the exact
+  l±1 expansion of ∂φ); 1e-14 against the radial density;
+* V[t_n] by the Laplacian recursion V[t_{n+1}] = ((8n+6)ζ V[t_n] − 2n(2n+1) V[t_{n−1}] −
+  4π t_n)/(4ζ²): erf(√ζ r)/r plus r^2m e^{-ζ r²};
+* integrals: int3c2e (erf part, one contracted s shell per atom), int3c1e and
+  int3c1e_r{2,4,6}_origk (local part); SS from the gradient integrals.  1e-12 against the exact
+  molecular J.
+* with the nuclear attraction folded in, the neutral-atom potential −Σ E erfc(√ζ r)/r + local is
+  short-ranged and screenable; `ocj/onecenter_j.c` contracts the k index on the fly, OpenMP
+  over shell pairs, exponents grouped per decade, screening by an amplitude-aware
+  Gaussian-overlap estimate (eps absolute).  SS gradients from int3c1e_ipvip1_r{2,4,6}_origk
+  (libcint patch in `ocj/libcint-patch/`) or, with pyscf's own libcint, assembled in the
+  kernel from cartesian l±1 shells (std mode, same result).
+
+Cost against one scalar direct NR JK build in the same uncontracted basis (4 cores):
+
+| system | n2c | NR JK | X2C decoupling | J, Python (40) | J, kernel | max err |
+|---|---|---|---|---|---|---|
+| PhCl / C10H7Br | 464 / 772 | 1.3 / 6.5 s | 2.0 / 5.0 s | 0.89x / 0.60x (integrals 0.62x / 0.55x) | | 4e-12 |
+| C60, unc-cc-pVDZ | 3120 | 575 s | 238 s | 164 s (0.28x) | 49 s (0.09x), eps 1e-12 | 5e-10 |
+| Au8 (cube), unc-dyall-v2z | 3264 | 293 s | 292 s | | 40 s (0.14x), decay screening | 1.8e-8 |
 
 ## Conclusion
 
