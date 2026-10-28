@@ -119,9 +119,22 @@ def hess2e_jk_cart(mol, dm, groups, mode=0, tol=None, prim_tol=None):
     ~5e-11 in the Hessian of (H2O)_4; prim_tol=0 keeps every primitive).
     Returns (ngroup, natm, natm, 3, 3), or the energies (ngroup,) for mode=1;
     None if the library is unavailable.'''
+    return _deriv2e_cart(mol, dm, groups, 2, mode, tol, prim_tol)
+
+
+def grad2e_jk_cart(mol, dm, groups, mode=0, tol=None, prim_tol=None):
+    '''First derivatives of E_g = jfac E_J + kfac E_K (conventions of
+    hess2e_jk_cart, e.g. [(1, -1)] for the RHF 2e energy), the same kernel at
+    derivative order 1.  Returns (ngroup, natm, 3), or the energies (ngroup,)
+    for mode=1; None if the library is unavailable.'''
+    return _deriv2e_cart(mol, dm, groups, 1, mode, tol, prim_tol)
+
+
+def _deriv2e_cart(mol, dm, groups, order, mode, tol, prim_tol):
     import ctypes
     libv = ghf_hess._load_socvhf()
-    if not libv or not hasattr(libv, 'SOCVHFhess2e_jk_cart'):
+    fname = 'SOCVHFhess2e_jk_cart' if order == 2 else 'SOCVHFgrad2e_jk_cart'
+    if not libv or not hasattr(libv, fname):
         return None
     if (mol._bas[:, gto.ANG_OF].max() > HESS2E_CART_LMAX
             or mol._bas[:, gto.NPRIM_OF].max() > HESS2E_CART_MAXPRIM):
@@ -141,17 +154,22 @@ def hess2e_jk_cart(mol, dm, groups, mode=0, tol=None, prim_tol=None):
         dmc = c.dot(dm).dot(c.T)
     dmc = numpy.ascontiguousarray(dmc)
     # integral estimate per shell pair, bounding every derivative type
-    q = numpy.max([ghf_hess._q_cond(molc, intor)[k] for intor in ('int2e_ipip1', 'int2e_ipvip1', 'int2e_ip1ip2')
-                   for k in (0, 1)], axis=0)
+    intors = ('int2e_ipip1', 'int2e_ipvip1', 'int2e_ip1ip2') if order == 2 else ('int2e_ip1',)
+    q = numpy.max([ghf_hess._q_cond(molc, intor)[k] for intor in intors for k in (0, 1)], axis=0)
     q = numpy.ascontiguousarray(numpy.maximum(q, q.T))
     dcond = ghf_hess._dm_cond(molc, [dmc])
     jfac = numpy.asarray([g[0] for g in groups], dtype=numpy.double)
     kfac = numpy.asarray([g[1] for g in groups], dtype=numpy.double)
     natm = mol.natm
-    out = numpy.zeros((ngroup, natm, natm, 3, 3)) if mode == 0 else numpy.zeros(ngroup)
+    if mode == 1:
+        out = numpy.zeros(ngroup)
+    elif order == 2:
+        out = numpy.zeros((ngroup, natm, natm, 3, 3))
+    else:
+        out = numpy.zeros((ngroup, natm, 3))
     ao_loc = molc.ao_loc_nr().astype(numpy.int32)
     atm, bas, env = molc._atm, molc._bas, molc._env
-    libv.SOCVHFhess2e_jk_cart(
+    getattr(libv, fname)(
         out.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mode), ctypes.c_int(ngroup),
         jfac.ctypes.data_as(ctypes.c_void_p), kfac.ctypes.data_as(ctypes.c_void_p),
         dmc.ctypes.data_as(ctypes.c_void_p), q.ctypes.data_as(ctypes.c_void_p),

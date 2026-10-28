@@ -168,3 +168,76 @@ void SOCDFTrks_dR_rho(double *R, double *ao, double *d, int xctype, int nvar,
         }
 }
 }
+
+/*
+ * XC part of the RKS gradient as the contracted energy derivative, without the
+ * (3, nao, nao) derivative matrices of pyscf.grad.rks.get_vxc:
+ *
+ *     out[x][mu] += sum_g d_x phi_mu U_mu
+ *                 + (w0 d_x phi_mu + sum_k w_k d_x d_k phi_mu) V_mu       (GGA, MGGA)
+ *                 + sum_k d_x d_k phi_mu T_k,mu                            (MGGA)
+ *
+ * with U = D aow, aow = sum_k w_k d_k phi (k = 0 the value), V = D phi and
+ * T_k = D (w_tau d_k phi), all (nao, ngrid); the gradient is
+ * -2 sum_{mu in A} out[x][mu].  ao as in SOCDFTrks_xc_hess_elem (components
+ * cs doubles apart), wv the weighted vxc (pyscf's conventions: w0 and w_tau
+ * halved for GGA / MGGA), xctype 0 LDA, 1 GGA, 2 MGGA.  The rows mu are
+ * independent (OpenMP over mu).
+ */
+void SOCDFTrks_xc_grad(double *out, double *ao, double *U, double *V, double *wv, double *Tt,
+                       int xctype, int ngrid, int nao, long cs)
+{
+        const size_t G = ngrid;
+        int mu;
+#pragma omp parallel for schedule(static)
+        for (mu = 0; mu < nao; mu++) {
+                const double *u = U + (size_t)mu * G;
+                int x, k;
+                size_t p;
+                for (x = 0; x < 3; x++) {
+                        const double *ax = ao + (size_t)(1 + x) * cs + (size_t)mu * G;
+                        double s = 0;
+                        if (xctype == 0) {
+                                for (p = 0; p < G; p++) s += ax[p] * u[p];
+                        } else {
+                                const double *v = V + (size_t)mu * G;
+                                const double *w0 = wv;
+                                const double *a0 = ao + (size_t)D2[x][0] * cs + (size_t)mu * G;
+                                const double *a1 = ao + (size_t)D2[x][1] * cs + (size_t)mu * G;
+                                const double *a2 = ao + (size_t)D2[x][2] * cs + (size_t)mu * G;
+                                const double *w1 = wv + G, *w2 = wv + 2 * G, *w3 = wv + 3 * G;
+                                for (p = 0; p < G; p++)
+                                        s += ax[p] * (u[p] + w0[p] * v[p])
+                                           + (a0[p] * w1[p] + a1[p] * w2[p] + a2[p] * w3[p]) * v[p];
+                                if (xctype == 2) {
+                                        for (k = 0; k < 3; k++) {
+                                                const double *ak = ao + (size_t)D2[x][k] * cs + (size_t)mu * G;
+                                                const double *t = Tt + ((size_t)k * nao + mu) * G;
+                                                for (p = 0; p < G; p++) s += ak[p] * t[p];
+                                        }
+                                }
+                        }
+                        out[(size_t)x * nao + mu] += s;
+                }
+        }
+}
+
+/* aow[mu][g] = sum_{k < nw} wv[k][g] ao[k][mu][g] (ao as above) */
+void SOCDFTxc_grad_aow(double *aow, double *ao, double *wv, int nw, int ngrid, int nao, long cs)
+{
+        const size_t G = ngrid;
+        int mu;
+#pragma omp parallel for schedule(static)
+        for (mu = 0; mu < nao; mu++) {
+                double *o = aow + (size_t)mu * G;
+                int k;
+                size_t p;
+                const double *a = ao + (size_t)mu * G;
+                for (p = 0; p < G; p++) o[p] = wv[p] * a[p];
+                for (k = 1; k < nw; k++) {
+                        const double *ak = ao + (size_t)k * cs + (size_t)mu * G;
+                        const double *wk = wv + (size_t)k * G;
+                        for (p = 0; p < G; p++) o[p] += wk[p] * ak[p];
+                }
+        }
+}

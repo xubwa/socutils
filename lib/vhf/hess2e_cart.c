@@ -41,6 +41,10 @@
  *
  * mode 0: hess (ngroup, natm, natm, 3, 3) += d^2 E_g;
  * mode 1: hess[g] += E_g (the energies, a check of the normalisation).
+ *
+ * SOCVHFgrad2e_jk_cart: the same driver at derivative order 1 (VRR / HRR
+ * raised by one, the four values I, d_A I, d_B I, d_C I per direction, nine
+ * terms), grad (ngroup, natm, 3) += d E_g, the 2e part of SCF gradients.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -134,14 +138,14 @@ typedef struct {
  * derivative values of every power tuple, T[(t * NV + v) * VL + lane].
  */
 MULTIVERSION
-static void tables_dir(double *T, double *ws, const int *l,
+static void tables_dir(double *T, double *ws, const int *l, const int order,
                        const double *c00, const double *c00p, const double *b10,
                        const double *b01, const double *b00, const double *ab, const double *cd,
                        const double *g00, const double *ai2, const double *aj2, const double *ak2)
 {
         const int li = l[0], lj = l[1], lk = l[2], ll = l[3];
-        const int nmax = li + lj + 2, mmax = lk + ll + 2;
-        const int Dm = mmax + 1, Dj = lj + 3, Dk = lk + 3, Dl = ll + 1;
+        const int nmax = li + lj + order, mmax = lk + ll + order;
+        const int Dm = mmax + 1, Dj = lj + 1 + order, Dk = lk + 1 + order, Dl = ll + 1;
         double *g = ws, *hb = ws + WSV_G, *I4 = hb + WSV_HB, *e = I4 + WSV_I4;
         int n, m, i, j, k, q, v;
 #define GV(n, m) (g + ((n) * Dm + (m)) * VL)
@@ -177,7 +181,7 @@ static void tables_dir(double *T, double *ws, const int *l,
         }
 #define HB(i, j) (hb + ((i) * Dj + (j)) * Dm * VL)
         for (i = 0; i <= nmax; i++) memcpy(HB(i, 0), GV(i, 0), sizeof(double) * Dm * VL);
-        for (j = 1; j <= lj + 2 && j <= nmax; j++) {
+        for (j = 1; j <= lj + order && j <= nmax; j++) {
                 for (i = 0; i + j <= nmax; i++) {
                         double *h2 = HB(i, j), *h1 = HB(i + 1, j - 1), *h0 = HB(i, j - 1);
                         for (m = 0; m < Dm; m++) {
@@ -190,8 +194,8 @@ static void tables_dir(double *T, double *ws, const int *l,
 #undef GV
 #define IDX(i, j, k, q) (((((i) * Dj + (j)) * Dk + (k)) * Dl + (q)) * VL)
 #define EV(k, q) (e + ((k) * Dl + (q)) * VL)
-        for (i = 0; i <= li + 2; i++) {
-                for (j = 0; j <= lj + 2; j++) {
+        for (i = 0; i <= li + order; i++) {
+                for (j = 0; j <= lj + order; j++) {
                         if (i + j > nmax) continue;
                         double *h = HB(i, j);
                         for (k = 0; k <= mmax; k++) memcpy(EV(k, 0), h + k * VL, sizeof(double) * VL);
@@ -202,7 +206,7 @@ static void tables_dir(double *T, double *ws, const int *l,
                                         for (v = 0; v < VL; v++) e2[v] = e1[v] + cd[v] * e0[v];
                                 }
                         }
-                        for (k = 0; k <= lk + 2; k++)
+                        for (k = 0; k <= lk + order; k++)
                                 for (q = 0; q <= ll; q++)
                                         if (k + q <= mmax)
                                                 memcpy(I4 + IDX(i, j, k, q), EV(k, q), sizeof(double) * VL);
@@ -220,6 +224,31 @@ static void tables_dir(double *T, double *ws, const int *l,
 #define VAL(x) (val + (x) * VL)
                 const double *g0 = G(i, j, k);
                 const double *gi1 = G(i + 1, j, k), *gj1 = G(i, j + 1, k), *gk1 = G(i, j, k + 1);
+                if (order == 1) {
+#pragma omp simd
+                        for (v = 0; v < VL; v++) {
+                                VAL(V0)[v] = g0[v];
+                                VAL(VA)[v] = ai2[v] * gi1[v];
+                                VAL(VB)[v] = aj2[v] * gj1[v];
+                                VAL(VC)[v] = ak2[v] * gk1[v];
+                        }
+                        if (i) {
+                                const double *gim = G(i - 1, j, k);
+#pragma omp simd
+                                for (v = 0; v < VL; v++) VAL(VA)[v] -= i * gim[v];
+                        }
+                        if (j) {
+                                const double *gjm = G(i, j - 1, k);
+#pragma omp simd
+                                for (v = 0; v < VL; v++) VAL(VB)[v] -= j * gjm[v];
+                        }
+                        if (k) {
+                                const double *gkm = G(i, j, k - 1);
+#pragma omp simd
+                                for (v = 0; v < VL; v++) VAL(VC)[v] -= k * gkm[v];
+                        }
+                        continue;
+                }
                 const double *gi2 = G(i + 2, j, k), *gj2 = G(i, j + 2, k), *gk2 = G(i, j, k + 2);
                 const double *gij = G(i + 1, j + 1, k), *gik = G(i + 1, j, k + 1), *gjk = G(i, j + 1, k + 1);
 #pragma omp simd
@@ -309,7 +338,7 @@ static const int PAIR[3][3] = {{0, 1, 2}, {1, 3, 4}, {2, 4, 5}};
  */
 MULTIVERSION
 static void assemble(double *acc, const double *T, const QuartetShape *qs, const double *wl,
-                     int ngroup, int nf4, int mode, int uniform)
+                     int ngroup, int nf4, int mode, int uniform, int order)
 {
         const int l1 = qs->l[1] + 1, l2 = qs->l[2] + 1, l3 = qs->l[3] + 1;
         const int nfi = qs->nf[0], nfj = qs->nf[1], nfk = qs->nf[2], nfl = qs->nf[3];
@@ -348,6 +377,28 @@ static void assemble(double *acc, const double *T, const QuartetShape *qs, const
                         yz[v] = Y[v] * Z[v];
                         xz[v] = X[v] * Z[v];
                         xy[v] = X[v] * Y[v];
+                }
+                if (order == 1) {
+                        /* term x * 3 + s: d/dS_x, S = A, B, C */
+                        for (s = 0; s < 3; s++) {
+                                const double *Xs = X + (VA + s) * VL, *Ys = Y + (VA + s) * VL, *Zs = Z + (VA + s) * VL;
+#pragma omp simd
+                                for (v = 0; v < VL; v++) {
+                                        P[s][v] = Xs[v] * yz[v];
+                                        P[3 + s][v] = Ys[v] * xz[v];
+                                        P[6 + s][v] = Zs[v] * xy[v];
+                                }
+                        }
+                        for (g = 0; g < ngroup; g++) {
+                                double *a = acc + (size_t)g * NTERM * VL;
+                                const double *w = wl + ((size_t)g * nf4 + f) * VL;
+                                int k;
+                                for (k = 0; k < 9; k++) {
+#pragma omp simd
+                                        for (v = 0; v < VL; v++) a[k * VL + v] += w[v] * P[k][v];
+                                }
+                        }
+                        continue;
                 }
                 for (s = 0; s < 3; s++) {
                         for (t = s; t < 3; t++) {
@@ -428,11 +479,27 @@ static ClassBuf *class_new(const int *l, int ngroup)
 /* G[g][s][t][x][y] from the term sums of a shell quartet, the fourth centre
  * by translational invariance, added to the atom blocks (mode 1: energies) */
 static void finalize(const double *sum, const int *at, int ngroup, int mode, int natm, size_t nh1,
-                     double *hloc)
+                     double *hloc, int order)
 {
         int g, s1, t1, x, y;
         if (mode == 1) {
                 for (g = 0; g < ngroup; g++) hloc[g] += sum[g * NTERM + 45];
+                return;
+        }
+        if (order == 1) {
+                /* d/dS_x for S = A, B, C; the fourth centre d_D = -(d_A + d_B + d_C) */
+                for (g = 0; g < ngroup; g++) {
+                        const double *sm = sum + g * NTERM;
+                        double *hg = hloc + g * nh1;
+                        for (x = 0; x < 3; x++) {
+                                double dsum = 0;
+                                for (s1 = 0; s1 < 3; s1++) {
+                                        hg[at[s1] * 3 + x] += sm[x * 3 + s1];
+                                        dsum += sm[x * 3 + s1];
+                                }
+                                hg[at[3] * 3 + x] -= dsum;
+                        }
+                }
                 return;
         }
         for (g = 0; g < ngroup; g++) {
@@ -481,7 +548,7 @@ static void finalize(const double *sum, const int *at, int ngroup, int mode, int
 /* Rys core for the buffered lanes of a class (unused lanes padded with zero
  * weight), lane sums to their shell quartets, finished quartets finalized */
 static void flush_class(ClassBuf *cb, double *T, double *ws, double *acc, int ngroup, int mode,
-                        int natm, size_t nh1, double *hloc)
+                        int natm, size_t nh1, double *hloc, int order)
 {
         const int nl = cb->nlane;
         int s, v, g, k, a;
@@ -496,30 +563,30 @@ static void flush_class(ClassBuf *cb, double *T, double *ws, double *acc, int ng
                 for (a = 0; a < ngroup * cb->nf4; a++) cb->wl[(size_t)a * VL + v] = 0;
         }
         for (s = 0; s < 3; s++)
-                tables_dir(T + (size_t)s * TSZV, ws, cb->qs.l, cb->lanes.c00[s], cb->lanes.c00p[s],
+                tables_dir(T + (size_t)s * TSZV, ws, cb->qs.l, order, cb->lanes.c00[s], cb->lanes.c00p[s],
                            cb->lanes.b10, cb->lanes.b01, cb->lanes.b00, cb->ab[s], cb->cd[s],
                            s == 2 ? cb->lanes.gz : cb->lanes.one, cb->lanes.ai2, cb->lanes.aj2, cb->lanes.ak2);
         memset(acc, 0, sizeof(double) * ngroup * NTERM * VL);
-        assemble(acc, T, &cb->qs, cb->wl, ngroup, cb->nf4, mode, 0);
+        assemble(acc, T, &cb->qs, cb->wl, ngroup, cb->nf4, mode, 0, order);
         for (v = 0; v < nl; v++) {
                 const int q = cb->slot[v];
                 double *sm = cb->sum[q];
                 for (g = 0; g < ngroup; g++)
                         for (k = 0; k < NTERM; k++) sm[g * NTERM + k] += acc[((size_t)g * NTERM + k) * VL + v];
                 if (--cb->nleft[q] == 0 && !cb->open[q]) {
-                        finalize(sm, cb->at[q], ngroup, mode, natm, nh1, hloc);
+                        finalize(sm, cb->at[q], ngroup, mode, natm, nh1, hloc, order);
                         cb->busy[q] = 0;
                 }
         }
         cb->nlane = 0;
 }
 
-void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, double *kfac,
-                          double *dm, double *qcond, double *dcond, double tol, double prim_tol,
-                          int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env)
+static void deriv2e_drv(int order, double *hess, int mode, int ngroup, double *jfac, double *kfac,
+                        double *dm, double *qcond, double *dcond, double tol, double prim_tol,
+                        int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env)
 {
         const size_t nao = ao_loc[nbas];
-        const size_t nh1 = mode == 0 ? (size_t)natm * natm * 9 : 1;
+        const size_t nh1 = mode == 1 ? 1 : (order == 2 ? (size_t)natm * natm * 9 : (size_t)natm * 3);
         const size_t nh = nh1 * ngroup;
         const int npair = nbas * (nbas + 1) / 2;
         int maxf = 0, ib;
@@ -647,7 +714,7 @@ void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, doub
                                 cdv[s] = R[2][s] - R[3][s];
                         }
                         double rcd2 = cdv[0] * cdv[0] + cdv[1] * cdv[1] + cdv[2] * cdv[2];
-                        const int nroots = (l[0] + l[1] + l[2] + l[3] + 2) / 2 + 1;
+                        const int nroots = (l[0] + l[1] + l[2] + l[3] + order) / 2 + 1;
                         const int nf4 = nfi * nfj * nfk * nfl;
                         int pi, pj, pk, pl;
                         /* bounds for the primitive screening (no thresholds of their own:
@@ -753,7 +820,7 @@ void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, doub
                                                 cb->nleft[qslot]++;
                                                 cb->used[qslot] = 1;
                                                 if (++cb->nlane == VL)
-                                                        flush_class(cb, T, ws, acc, ngroup, mode, natm, nh1, hloc);
+                                                        flush_class(cb, T, ws, acc, ngroup, mode, natm, nh1, hloc, order);
                                         }
                                 } }
                         } }
@@ -761,7 +828,7 @@ void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, doub
                         cb->open[qslot] = 0;
                         if (cb->nleft[qslot] == 0) {
                                 if (cb->used[qslot])
-                                        finalize(cb->sum[qslot], cb->at[qslot], ngroup, mode, natm, nh1, hloc);
+                                        finalize(cb->sum[qslot], cb->at[qslot], ngroup, mode, natm, nh1, hloc, order);
                                 cb->busy[qslot] = 0;
                         }
                 }
@@ -769,7 +836,7 @@ void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, doub
         /* the partly filled buffers of this thread */
         for (v = 0; v < NCLASS; v++) {
                 if (cbs[v] != NULL) {
-                        flush_class(cbs[v], T, ws, acc, ngroup, mode, natm, nh1, hloc);
+                        flush_class(cbs[v], T, ws, acc, ngroup, mode, natm, nh1, hloc, order);
                         free(cbs[v]->wl);
                         free(cbs[v]);
                 }
@@ -790,4 +857,20 @@ void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, doub
         free(eijs);
 }
         free(cmax_all);
+}
+
+void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, double *kfac,
+                          double *dm, double *qcond, double *dcond, double tol, double prim_tol,
+                          int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env)
+{
+        deriv2e_drv(2, hess, mode, ngroup, jfac, kfac, dm, qcond, dcond, tol, prim_tol,
+                    ao_loc, atm, natm, bas, nbas, env);
+}
+
+void SOCVHFgrad2e_jk_cart(double *grad, int mode, int ngroup, double *jfac, double *kfac,
+                          double *dm, double *qcond, double *dcond, double tol, double prim_tol,
+                          int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env)
+{
+        deriv2e_drv(1, grad, mode, ngroup, jfac, kfac, dm, qcond, dcond, tol, prim_tol,
+                    ao_loc, atm, natm, bas, nbas, env);
 }
