@@ -1,7 +1,8 @@
 '''THCJK (pbc/thc.py) in the periodic spinor SCF: J/K against RSDF on a minao density (real, and four complex spin
 blocks against SplitDirectJK's exact-SR reference), then spinor HF energies with THCJK and RSDF.
 
-usage: thc_scf_check.py SYSTEM ALPHA_C NMU_FACTOR [SELECTOR]     (env NO_SCF=1 skips the SCF; REF_E: a reference E)'''
+usage: thc_scf_check.py SYSTEM ALPHA_C NMU_FACTOR [SELECTOR]     (env NO_SCF=1 skips the SCF; REF_E: a reference E;
+    LOCAL, NRAD, COARSEN, BLOCKED, STREAM: THCJK options)'''
 import os, sys, time, runpy, numpy as np
 from pyscf.pbc import scf as pscf
 from socutils.pbc.bench import cells
@@ -24,6 +25,11 @@ dm = pscf.RHF(cell).get_init_guess(key='minao')
 t = time.time()
 jk = THCJK(cell, aux, alpha_c=ac, nmu_factor=fac, selector=sel, nuc_zeta=nz,
            local_rcut=float(os.environ['LOCAL']) if os.environ.get('LOCAL') else None)
+if os.environ.get('COARSEN'):
+    jk.coarsen = int(os.environ['COARSEN'])
+if os.environ.get('BLOCKED'):
+    jk.blocked_pivots = os.environ['BLOCKED'] == '1'
+jk.stream = bool(os.environ.get('STREAM'))
 if os.environ.get('NRAD'):
     jk.gapw_opts = {'nrad': int(os.environ['NRAD'])}
 jk.build()

@@ -206,7 +206,8 @@ class THCExchange:
         self.selector = selector
         self.local_rcut = local_rcut   # route 1 (Angstrom): no global 3c tensor (local CX fit, GAPW J, CX LR rows)
         self.cand_factor = 4.        # kmeans+chol: K-means candidates per point
-        self.coarsen = 2             # coarse: grid coarsening per direction for the point selection
+        self.coarsen = 3             # coarse: grid coarsening per direction for the point selection
+        self.blocked_pivots = True   # coarse: blocked (BLAS-3) pivoted Cholesky
         self.nuc_zeta = nuc_zeta
         self.verbose = verbose
         self.timings = {}
@@ -307,7 +308,7 @@ class THCExchange:
             mc = np.maximum(np.asarray(self.mesh) // self.coarsen, 1)
             cc = cell.get_uniform_grids(mc)
             phic = cell.pbc_eval_gto('GTOval_sph', cc)[:, self.smooth]
-            f = pivots_blocked if getattr(self, 'blocked_pivots', False) else pivots
+            f = pivots_blocked if self.blocked_pivots else pivots
             kmax = min(len(cc), int(getattr(self, 'kmax_factor', kmax_factor) * len(self.smooth)))
             pf = getattr(self, 'piv_file', None)                      # cache of the coarse pivots (restarts)
             if pf and os.path.exists(pf) and len(np.load(pf)) >= kmax:
@@ -826,6 +827,9 @@ class THCJK:
         self.th.stream = getattr(self, 'stream', False)
         self.th.stream_gb = getattr(self, 'stream_gb', 30)
         self.th.piv_file = getattr(self, 'piv_file', None)
+        for k in ('coarsen', 'blocked_pivots'):                        # point-selection options, if set
+            if hasattr(self, k):
+                setattr(self.th, k, getattr(self, k))
         self.th.kmax_factor = self.nmu_factor                         # pivots: only the N_mu prefix is used
         self.th.build_common()
         self.th.build_thc(int(round(self.nmu_factor * len(self.th.smooth))))
