@@ -144,7 +144,7 @@ two-electron corrections on) and only then require the `x2camf` integral backend
   **`fci/`** (`zfci`), **`gw/`** (spinor G0W0 / RPA), **`tdscf/`**,
   **`prop/`** (properties: HFC, EFG, g-factor, contact density, effective field),
   **`grad/`** (analytic gradients; `grad/rhf_fast.py`: fast RHF / RKS gradients, the
-  order-1 `hess2e_cart` kernel for exact J/K and the contracted XC part), **`cd/`** (Cholesky decomposition),
+  MD J engine `lib/vhf/md_j.c` for exact J, the order-1 `hess2e_cart` kernel for K, the contracted XC part), **`cd/`** (Cholesky decomposition),
   **`lo/`**, **`tools/`** (`spinor2sph`, `fragmo_guess`) — all built on the
   spinor/GHF SCF objects above.
 

@@ -597,9 +597,13 @@ static void deriv2e_drv(int order, double *hess, int mode, int ngroup, double *j
                 maxf = nf > maxf ? nf : maxf;
         }
         const size_t maxf4 = (size_t)maxf * maxf * maxf * maxf;
-        double ksum = 0;
+        /* |dd| <= jw |D_ab D_cd| + kw max(|D_ac D_bd|, |D_ad D_bc|) */
+        double jw = 0, kw = 0;
         int g;
-        for (g = 0; g < ngroup; g++) ksum = dmax2(ksum, fabs(jfac[g]) * 4 + fabs(kfac[g]) * 2);
+        for (g = 0; g < ngroup; g++) {
+                jw = dmax2(jw, fabs(jfac[g]) * 4);
+                kw = dmax2(kw, fabs(kfac[g]) * 2);
+        }
         /* max_c |c| of every primitive of every shell */
         double *cmax_all = malloc(sizeof(double) * nbas * MAXPRIM);
         for (ib = 0; ib < nbas; ib++) {
@@ -685,9 +689,11 @@ static void deriv2e_drv(int order, double *hess, int mode, int ngroup, double *j
                 for (kl = 0; kl <= ij; kl++) {
                         shell_pair(kl, &ksh, &lsh);
                         double q4 = qcond[ish * nbas + jsh] * qcond[ksh * nbas + lsh];
-                        double dbound = ksum * dmax2(dmax2(dcond[ish * nbas + jsh] * dcond[ksh * nbas + lsh],
-                                                           dcond[ish * nbas + ksh] * dcond[jsh * nbas + lsh]),
-                                                     dcond[ish * nbas + lsh] * dcond[jsh * nbas + ksh]);
+                        /* J and K density bounds apart: a K-only call skips the
+                         * quartets with only a large Coulomb weight */
+                        double dbound = jw * dcond[ish * nbas + jsh] * dcond[ksh * nbas + lsh]
+                                      + kw * dmax2(dcond[ish * nbas + ksh] * dcond[jsh * nbas + lsh],
+                                                   dcond[ish * nbas + lsh] * dcond[jsh * nbas + ksh]);
                         if (q4 * dbound < tol) {
                                 continue;
                         }

@@ -7,10 +7,13 @@ pyscf RHF / RKS nuclear gradients with the exact two-electron part and the XC
 part as contracted energy derivatives instead of (3, nao, nao) derivative
 matrices contracted with the density atom by atom:
 
-* 2e: the unique-quartet Rys kernel of the Hessian at derivative order 1
+* exact J: the McMurchie-Davidson J engine (lib/vhf/md_j.c,
+  socutils.hessian.rhf_fast.md_j_grad): decontracted Cartesian primitives,
+  the density in Hermite form once per primitive pair, no Cartesian integrals;
+* exact K: the unique-quartet Rys kernel of the Hessian at derivative order 1
   (lib/vhf/hess2e_cart.c, socutils.hessian.rhf_fast.grad2e_jk_cart): one
   pass, density contracted on the fly, the fourth centre by translational
-  invariance, d(E_J - hyb E_K)/dR directly;
+  invariance, K-only density screening;
 * XC (fixed grid, LDA / GGA / MGGA): per grid block U = D aow, V = D phi
   (two GEMMs, pyscf: six) and one C pass (lib/dft/xc_hess.c
   SOCDFTrks_xc_grad) for sum_{mu in A} d_A phi_mu ... of every atom.
@@ -113,6 +116,13 @@ def _fast_terms(grad, mol, dm):
     jf = 1. if dfm is None else 0.
     kf = -hyb if hybrid else 0.
     de = numpy.zeros((mol.natm, 3))
+    if jf != 0:
+        # exact J from the McMurchie-Davidson J engine
+        r = hess_fast.md_j_grad(mol, dm)
+        if r is not None:
+            de += r[0]
+            jf = 0.
+            t0 = logger.timer(grad, 'exact J gradient (MD J engine)', *t0)
     if jf != 0 or kf != 0:
         g = hess_fast.grad2e_jk_cart(mol, dm, [(jf, kf)])
         if g is None:

@@ -130,6 +130,35 @@ def grad2e_jk_cart(mol, dm, groups, mode=0, tol=None, prim_tol=None):
     return _deriv2e_cart(mol, dm, groups, 1, mode, tol, prim_tol)
 
 
+MD_J_LMAX = 4               # lib/vhf/md_j.c LMAX
+
+
+def md_j_grad(mol, dm, tol=None):
+    '''Gradient of the exact Coulomb energy E_J = 1/2 (ab|cd) D_ab D_cd from the
+    McMurchie-Davidson J engine (lib/vhf/md_j.c): the basis decontracted to
+    Cartesian primitives, the density in Hermite form once per primitive pair,
+    no Cartesian integrals.  Returns (grad (natm, 3), E_J), or None if the
+    library is unavailable or the basis has l > MD_J_LMAX.'''
+    import ctypes
+    libv = ghf_hess._load_socvhf()
+    if not libv or not hasattr(libv, 'SOCVHFmd_j_grad') or mol._bas[:, gto.ANG_OF].max() > MD_J_LMAX:
+        return None
+    if tol is None:
+        tol = ghf_hess.HESS2E_TOL
+    pmol, c = mol.decontract_basis(to_cart=True, aggregate=True)
+    dmp = numpy.ascontiguousarray(c.dot(numpy.asarray(dm, dtype=numpy.double)).dot(c.T))
+    grad = numpy.zeros((mol.natm, 3))
+    e = numpy.zeros(1)
+    ao_loc = pmol.ao_loc_nr().astype(numpy.int32)
+    libv.SOCVHFmd_j_grad(
+        grad.ctypes.data_as(ctypes.c_void_p), e.ctypes.data_as(ctypes.c_void_p),
+        dmp.ctypes.data_as(ctypes.c_void_p), ctypes.c_double(tol),
+        ao_loc.ctypes.data_as(ctypes.c_void_p), pmol._atm.ctypes.data_as(ctypes.c_void_p),
+        ctypes.c_int(pmol.natm), pmol._bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(pmol.nbas),
+        pmol._env.ctypes.data_as(ctypes.c_void_p))
+    return grad, e[0]
+
+
 def _deriv2e_cart(mol, dm, groups, order, mode, tol, prim_tol):
     import ctypes
     libv = ghf_hess._load_socvhf()
