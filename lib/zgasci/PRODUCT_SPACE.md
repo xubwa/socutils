@@ -227,6 +227,62 @@ Tests: `SpinPenalty` in hci/test/test_product_space.py (contract_ss against
 pyscf selected_ci.contract_ss; penalized eigenvalues against the dense
 operator; pyscf's own Davidson may stop at a higher root of the squared form).
 
+## 6c. MPI: vectors distributed by rows (`socutils.hci.gasci_mpi`)
+
+For alpha = beta string lists (spatial, nalpha = nbeta, no labels: one
+bucket per side), process r holds the rows (alpha strings, places in the
+sorted list) `rows[r] .. rows[r+1]-1` of C and of every vector, each row all
+beta strings.  With the identity of `zg_sigma_flip`,
+
+    sigma = Z + parity Z^T + Y,   Z = (BB,BB) C,   Y = (AB,AB) C:
+
+* Z is row-local: the kernel of a product plan of the own alpha strings and
+  all beta strings with the integrals of the beta-beta pairs only (the W of
+  (BB,BB) is that of the full v).  No communication.
+* Z^T: a distributed transpose, pairwise exchanges of blocks; packing and
+  transposition by `zg_copy_block_d` / `zg_transpose_d` (OpenMP).
+* Y couples rows only through alpha single excitations (with the diagonal).
+  The rows of other processes that the own rows reach (the halo) are found
+  once (bit operations on the strings); at each product they are fetched by
+  pairwise exchanges, and `zg_sigma_ab_rows` applies the (AB,AB) terms once,
+  from the own rows and the halo, to the own rows.  Since the strings are
+  sorted as integers and a single excitation mostly keeps the high bits, the
+  halo is small: [4Fe-4S] 54e/36o, 4 processes, 1500..8000 own rows each,
+  500..3100 halo rows.
+* Eigensolver: a LOBPCG-like iteration of one vector (X, preconditioned
+  residual T, previous direction P and their products: six vectors of the
+  own rows), symmetrized by the same transpose; dot products summed over
+  processes.
+
+Changes to the C kernel for this (2026-10-27, SQD session; to be re-synced
+into zshci's copy):
+* `blas_half` takes two more arguments, `rng` (target rows rng[0] ..
+  rng[1]-1 of the row bucket; NULL: all) and `smap` (source rows: place ->
+  row of cv, or -1 to skip; NULL: all, read in place).  Every existing call
+  passes NULL, NULL.  The target restriction clamps the rows of each row
+  task; the source restriction drops the row operators (from the product
+  tables) whose source is not held, and reads the others from row
+  smap[place] of cv.
+* New: `zg_sigma_ab_rows_{d,z}(plan, v, c, smap, sig, t_lo, t_hi)` (product
+  plans with one bucket per side; half 0, kind (AB,AB) only).
+* New: `zg_transpose_d`, `zg_copy_block_d` (no plan).
+
+Correctness: `RowsAndMPI` in hci/test/test_product_space.py (blocks of rows
+against sigma with the alpha-beta pairs only, the identity for parity +-1,
+the helpers, the solver on MPI.COMM_SELF); with mpirun on 1, 3 (unequal
+rows) and 4 processes the energies agree with ProductSpaceCI to 1e-11 Eh.
+
+Measured ([4Fe-4S], IBM archive FCIDUMP, strings: the most frequent
+27-electron half-strings of IBM's hardware counts; 1 process x 48 threads
+per node, Xeon Gold 6248R; one product, seconds; numpy transpose):
+
+| d | 1 node | 2 nodes | 4 nodes |
+|---|---:|---:|---:|
+| 3.6e7 | 2.06 | 1.38 | 0.82 |
+| 1e8 | 4.15 | 2.63 | 1.63 |
+| 4e8 | 15.4 | 9.31 | 4.95 |
+| 1.02e9 | | | 13.8 (eigensolver 240 s, 46 GB per node) |
+
 ## 7. What stays for later
 
 * **(AB,AB)** is the larger half of a sigma. Its GEMMs do about 9 times

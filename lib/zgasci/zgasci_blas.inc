@@ -104,6 +104,11 @@ static void ZG_NAME(blas_transpose)(const zg_plan *p, const ZG_SCALAR *in,
 
 /* One half: sv += (the kinds of half h) cv, both seen with the strings of
  * side h as rows.  w[k], live[k]: the matrices of the nine kinds.
+ * rng, smap (product plans with one bucket per side, for zg_sigma_ab_rows;
+ * NULL: everything): only the target rows rng[0] .. rng[1] - 1 (places in the
+ * row bucket; sv may hold only those, the caller shifts the pointer), and
+ * only the source rows with smap[place] >= 0, read from row smap[place] of
+ * cv.
  * Density mode (gacc not NULL; w and sv unused): the same loops add
  * conj(bv[target]) s_x s_y cv[source] to G[x][y] of the kind, gacc[k] in the
  * layout of w[k] (zg_rdm2_blas), by dot products. */
@@ -111,7 +116,8 @@ static void ZG_NAME(blas_half)(const zg_plan *p, int h, ZG_SCALAR *const *w,
                                const int *live, const ZG_SCALAR *cv,
                                ZG_SCALAR *sv, int64_t cols, double direct_ratio,
                                double direct_small, double *stat,
-                               const ZG_SCALAR *bv, ZG_SCALAR *const *gacc) {
+                               const ZG_SCALAR *bv, ZG_SCALAR *const *gacc,
+                               const int64_t *rng, const int64_t *smap) {
   const int rdm = gacc != NULL;
   const int rs = h, cs = 1 - h;
   const zg_side *sr = &p->s[rs], *sc = &p->s[cs];
@@ -235,8 +241,13 @@ static void ZG_NAME(blas_half)(const zg_plan *p, int h, ZG_SCALAR *const *w,
     for (int64_t it = 0; it < p->nrtask[h]; ++it) {
       const zg_rtask *task = &p->rtasks[h][it];
       const int bt = task->bucket;
-      const int64_t r0 = task->r0;
-      const int m = (int)(task->r1 - task->r0);
+      int64_t r0 = task->r0, r1 = task->r1;
+      if (rng) { /* only the target rows of the range */
+        if (r0 < rng[0]) r0 = rng[0];
+        if (r1 > rng[1]) r1 = rng[1];
+        if (r1 <= r0) continue;
+      }
+      const int m = (int)(r1 - r0);
       if (prof) last = omp_get_wtime();
       int ntb = 0;
       for (int64_t i = pair_ptr[bt]; i < pair_ptr[bt + 1]; ++i) {
@@ -289,6 +300,17 @@ static void ZG_NAME(blas_half)(const zg_plan *p, int h, ZG_SCALAR *const *w,
           if (p->product) {
             erow = sr->tuple_elec[sr->bucket_class[bt]];
             n = zg_prod_ops(p, rs, kd->pat_r, rsid, xs, xsid, xsign, 0);
+            if (smap) { /* only the source rows held */
+              int keep = 0;
+              for (int e = 0; e < n; ++e) {
+                const int64_t place = (int64_t)(bpr[xsid[e]] & 0xffffffffu);
+                if (smap[place] < 0) continue;
+                xs[keep] = xs[e];
+                xsid[keep] = xsid[e];
+                xsign[keep++] = xsign[e];
+              }
+              n = keep;
+            }
           } else {
             erow = zg_side_masks(p, rs, rsid, sm);
             zg_string_ranks(p, rs, sm, rk);
@@ -314,6 +336,7 @@ static void ZG_NAME(blas_half)(const zg_plan *p, int h, ZG_SCALAR *const *w,
             const uint64_t where = bpr[xsid[e]];
             const int b = (int)(where >> 32);
             xsid[e] = (int64_t)(where & 0xffffffffu); /* now the place */
+            if (smap) xsid[e] = smap[xsid[e]]; /* the row of cv that holds it */
             if (rstamp[b] != stamp) {
               rstamp[b] = stamp;
               rlocal[b] = nl;
@@ -1048,7 +1071,7 @@ void ZG_NAME(zg_sigma_blas)(const zg_plan *p, const ZG_SCALAR *v,
 #pragma omp parallel for schedule(static)
     for (int64_t i = 0; i < p->dim; ++i) st[i] = 0;
     ZG_NAME(blas_half)(p, 1, w, live, ct, st, cols, direct_ratio, direct_small, stat,
-                       NULL, NULL);
+                       NULL, NULL, NULL, NULL);
     for (int k = 0; p->product && k < p->nbkind[1]; ++k) {
       const zg_bkind *kd = &p->bkinds[1][k];
       if (kd->kc == 0 && live[kd->term]) ZG_NAME(blas_rows)(p, 1, kd, w[kd->term], ct, st, stat);
@@ -1062,7 +1085,7 @@ void ZG_NAME(zg_sigma_blas)(const zg_plan *p, const ZG_SCALAR *v,
     for (int64_t i = 0; i < p->dim; ++i) sigma[i] = 0;
   }
   ZG_NAME(blas_half)(p, 0, w, live, c, sigma, cols, direct_ratio, direct_small, stat,
-                     NULL, NULL);
+                     NULL, NULL, NULL, NULL);
   for (int k = 0; p->product && k < p->nbkind[0]; ++k) {
     const zg_bkind *kd = &p->bkinds[0][k];
     if (kd->kc == 0 && live[kd->term]) ZG_NAME(blas_rows)(p, 0, kd, w[kd->term], c, sigma, stat);
@@ -1122,7 +1145,7 @@ int ZG_NAME(zg_sigma_flip)(const zg_plan *p, const ZG_SCALAR *v, const ZG_SCALAR
     if (text) direct_small = atof(text);
     if (only[4]) {
       ZG_NAME(blas_half)(p, 0, w, only, c, sigma, cols, direct_ratio, direct_small, stat,
-                         NULL, NULL);
+                         NULL, NULL, NULL, NULL);
     }
     if (getenv("ZGASCI_STATS")) {
       fprintf(stderr, "zgasci flip: %.2f s for X + X^T, %.2f s for (AB,AB)\n", t1 - t0,
@@ -1131,6 +1154,41 @@ int ZG_NAME(zg_sigma_flip)(const zg_plan *p, const ZG_SCALAR *v, const ZG_SCALAR
   }
   for (int k = 0; k < 9; ++k) free(w[k]);
   return good;
+}
+
+/* The (AB,AB) part of sigma for some target rows of a product plan with one
+ * bucket per side (no labels, one electron count per side), from the source
+ * rows held: sig[t - t_lo][b] += sum over the rows s with smap[s] >= 0 of the
+ * (AB,AB) terms applied to c[smap[s]][b]; rows are A strings (places in the
+ * sorted list), each row holds all B strings, smap has one entry per A
+ * string.  For vectors distributed by rows over processes
+ * (socutils.hci.gasci_mpi); returns 1, or 0 if the plan does not qualify. */
+int ZG_NAME(zg_sigma_ab_rows)(const zg_plan *p, const ZG_SCALAR *v, const ZG_SCALAR *c,
+                              const int64_t *smap, ZG_SCALAR *sig, int64_t t_lo,
+                              int64_t t_hi) {
+  if (!p->product || p->s[0].nbucket != 1 || p->s[1].nbucket != 1) return 0;
+  if (t_hi <= t_lo) return 1;
+  ZG_SCALAR *w[9];
+  int live[9];
+  for (int k = 0; k < 9; ++k) w[k] = ZG_NAME(term_matrix)(p, &p->terms[k], v, &live[k]);
+  int only[9] = {0, 0, 0, 0, live[4], 0, 0, 0, 0};
+  if (only[4]) {
+    double stat[4] = {0, 0, 0, 0};
+    int64_t cols = 256;
+    double direct_ratio = 16.0, direct_small = 512.0;
+    const char *text = getenv("ZGASCI_BLAS_COLS");
+    if (text && atol(text) > 0) cols = atol(text);
+    text = getenv("ZGASCI_BLAS_DIRECT");
+    if (text) direct_ratio = atof(text);
+    text = getenv("ZGASCI_BLAS_SMALL");
+    if (text) direct_small = atof(text);
+    const int64_t nb = p->s[1].bucket_size[0];
+    const int64_t rng[2] = {t_lo, t_hi};
+    ZG_NAME(blas_half)(p, 0, w, only, c, sig - t_lo * nb, cols, direct_ratio, direct_small,
+                       stat, NULL, NULL, rng, smap);
+  }
+  for (int k = 0; k < 9; ++k) free(w[k]);
+  return 1;
 }
 
 /* g[P,R] = <bra| A+_P A_R |ket> by the loops of blas_half in density mode:
@@ -1157,11 +1215,11 @@ void ZG_NAME(zg_rdm2_blas)(const zg_plan *p, const ZG_SCALAR *bra,
     ZG_SCALAR *bt = malloc(((size_t)p->dim + 1) * sizeof(ZG_SCALAR));
     ZG_NAME(blas_transpose)(p, ket, kt, 0);
     ZG_NAME(blas_transpose)(p, bra, bt, 0);
-    ZG_NAME(blas_half)(p, 1, g, live, kt, NULL, 256, 0.0, 0.0, stat, bt, g);
+    ZG_NAME(blas_half)(p, 1, g, live, kt, NULL, 256, 0.0, 0.0, stat, bt, g, NULL, NULL);
     free(kt);
     free(bt);
   }
-  ZG_NAME(blas_half)(p, 0, g, live, ket, NULL, 256, 0.0, 0.0, stat, bra, g);
+  ZG_NAME(blas_half)(p, 0, g, live, ket, NULL, 256, 0.0, 0.0, stat, bra, g, NULL, NULL);
   /* The kinds of half 1 back to the A index first. */
   for (int i = 0; i < p->nbkind[1]; ++i) {
     const zg_term *t = &p->terms[p->bkinds[1][i].term];
