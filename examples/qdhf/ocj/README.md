@@ -28,17 +28,23 @@ and passes function pointers to the kernel: set `OCJ_LIBCINT` (path of the new
 libcint.so) and `OCJ_LIB` (libocj.so), default: next to `ocj.py`.
 
 Each atom's exponents are split into groups of one decade; every erf group carries its
-share of the nuclear charge (-sum E erfc(sqrt(z) r)/r, short-ranged) and is screened with
-its own smallest exponent.  The screening bound ignores prefactors, so eps = 1e-20
-(error 1e-11) is needed; 1e-13 gives 2e-4 in SS.
+share of the nuclear charge (-sum E erfc(sqrt(z) r)/r, short-ranged).  Screening per
+(shell pair, k group): the integral is estimated by the s-type Gaussian-product overlap
+with shell amplitudes (normalization x max of r^l exp(-a r^2), x (2+l) sqrt(a) for the
+gradient integrals) and group amplitudes (sum |E| 2 sqrt(z/pi), sum |L| max r^2m exp(-z r^2));
+triples below eps (absolute) are skipped, the erf group and its point charge together.
+eps 1e-12 gives ~1e-10 in J, 1e-10 gives ~1e-8 (`screen='decay'`, the earlier decay-only
+criterion, needed eps 1e-20 for 1e-11).
 
-Timings (4 cores, eps 1e-20; against one scalar direct NR JK build in the same uncontracted
-basis, `test_c60.py`, `test_gold.py` -> `test_gold.out`):
+Timings (4 cores; against one scalar direct NR JK build in the same uncontracted basis;
+`test_c60.py`, `test_gold.py` -> `test_gold.out`):
 
-| system | n2c | NR JK | X2C decoupling | kernel J (patched libcint) | kernel J (std) | err 2c |
-|---|---|---|---|---|---|---|
-| C60, unc-cc-pVDZ | 3120 | 575 s | 238 s | 63 s (0.11x) | 75 s (0.13x) | 9e-12 |
-| Au4, unc-dyall-v2z | 1632 | 48 s | 42 s | 11.5 s (0.24x) | | 1.8e-8 |
-| Au8 (cube), unc-dyall-v2z | 3264 | 293 s | 292 s | 40 s (0.14x) | | 1.8e-8 |
+| system | n2c | NR JK | X2C decoupling | kernel J | max err J |
+|---|---|---|---|---|---|
+| C60, unc-cc-pVDZ, decay screening eps 1e-20, patched / std | 3120 | 575 s | 238 s | 63 s / 75 s | 9e-12 |
+| C60, estimate screening eps 1e-12, patched / std | 3120 | 575 s | 238 s | **49 s / 52 s** (0.09x) | 5e-10 |
+| C60, estimate screening eps 1e-10, patched / std | 3120 | 575 s | 238 s | 40 s / 41 s (0.07x) | 8e-9 |
+| Au4, unc-dyall-v2z, decay 1e-20, patched | 1632 | 48 s | 42 s | 11.5 s (0.24x) | 1.8e-8 |
+| Au8 (cube), unc-dyall-v2z, decay 1e-20, patched | 3264 | 293 s | 292 s | 40 s (0.14x) | 1.8e-8 |
 
 The unscreened pure-Python analytic J (`../40-analytic_onecenter_j.py`) takes 164 s for C60.
