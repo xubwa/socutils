@@ -61,6 +61,10 @@ void CINTrys_roots(int nroots, double x, double *u, double *w);
 
 static inline double dmax2(double a, double b) { return a > b ? a : b; }
 
+/* quartets with l_i + l_j + l_k + l_l in [cart_lmin, cart_lmax] only (default all) */
+static int cart_lmin = 0, cart_lmax = 1000;
+void SOCVHFcart_set_lrange(int lo, int hi) { cart_lmin = lo; cart_lmax = hi; }
+
 static inline void shell_pair(int ij, int *i, int *j)
 {
         int a = (int)((sqrt(1. + 8. * ij) - 1) / 2);
@@ -333,19 +337,24 @@ static void tables_dir(double *T, double *ws, const int *l, const int order,
 static const int PAIR[3][3] = {{0, 1, 2}, {1, 3, 4}, {2, 4, 5}};
 
 /*
- * acc[g][term][lane] += w[g][f][lane] (uniform: w[g][f] for all lanes) * products of the three directions for
- * every Cartesian component f: terms 0..17 the diagonal-direction blocks
- * (x * 6 + pair(s, t)), 18..44 the off-diagonal ones (18 + c * 9 + s * 3 + t,
- * c = xy, xz, yz), 45 the energy.
+ * acc[g][term][lane] += w[g][f][lane] * products of the three directions for
+ * every Cartesian component f, with the weights of lane v in row ridx[v] of
+ * rows (ngroup * nf4 each; the lanes of a quartet share a row): terms 0..17
+ * the diagonal-direction blocks (x * 6 + pair(s, t)), 18..44 the off-diagonal
+ * ones (18 + c * 9 + s * 3 + t, c = xy, xz, yz), 45 the energy; order 1: terms
+ * 0..8 = x * 3 + s.
  */
 MULTIVERSION
-static void assemble(double *acc, const double *T, const QuartetShape *qs, const double *wl,
-                     int ngroup, int nf4, int mode, int uniform, int order)
+static void assemble(double *acc, const double *T, const QuartetShape *qs, const double *rows,
+                     const int *ridx, int ngroup, int nf4, int mode, int order)
 {
         const int l1 = qs->l[1] + 1, l2 = qs->l[2] + 1, l3 = qs->l[3] + 1;
         const int nfi = qs->nf[0], nfj = qs->nf[1], nfk = qs->nf[2], nfl = qs->nf[3];
-        int fi, fj, fk, fl, f = 0, g, v, s, t;
-        double P[NTERM][VL];
+        const size_t nw = (size_t)ngroup * nf4;
+        int fi, fj, fk, fl, f = 0, g, v, s, t, k;
+        double P[NTERM][VL], wv[VL];
+        const double *rb[VL];
+        for (v = 0; v < VL; v++) rb[v] = rows + ridx[v] * nw;
         for (fi = 0; fi < nfi; fi++)
         for (fj = 0; fj < nfj; fj++)
         for (fk = 0; fk < nfk; fk++)
@@ -356,92 +365,68 @@ static void assemble(double *acc, const double *T, const QuartetShape *qs, const
                                   + qs->py[2][fk]) * l3 + qs->py[3][fl]) * NV * VL;
                 const double *Z = T + 2 * TSZV + (size_t)(((qs->pz[0][fi] * l1 + qs->pz[1][fj]) * l2
                                   + qs->pz[2][fk]) * l3 + qs->pz[3][fl]) * NV * VL;
+                int nterm;
                 if (mode == 1) {
 #pragma omp simd
-                        for (v = 0; v < VL; v++) P[45][v] = X[v] * Y[v] * Z[v];
-                        for (g = 0; g < ngroup; g++) {
-                                double *a = acc + ((size_t)g * NTERM + 45) * VL;
-                                if (uniform) {
-                                        const double w1 = wl[(size_t)g * nf4 + f];
+                        for (v = 0; v < VL; v++) P[0][v] = X[v] * Y[v] * Z[v];
+                        nterm = 1;
+                } else {
+                        double yz[VL], xz[VL], xy[VL];
 #pragma omp simd
-                                        for (v = 0; v < VL; v++) a[v] += w1 * P[45][v];
-                                } else {
-                                        const double *w = wl + ((size_t)g * nf4 + f) * VL;
-#pragma omp simd
-                                        for (v = 0; v < VL; v++) a[v] += w[v] * P[45][v];
-                                }
+                        for (v = 0; v < VL; v++) {
+                                yz[v] = Y[v] * Z[v];
+                                xz[v] = X[v] * Z[v];
+                                xy[v] = X[v] * Y[v];
                         }
-                        continue;
-                }
-                double yz[VL], xz[VL], xy[VL];
+                        if (order == 1) {
+                                /* term x * 3 + s: d/dS_x, S = A, B, C */
+                                for (s = 0; s < 3; s++) {
+                                        const double *Xs = X + (VA + s) * VL, *Ys = Y + (VA + s) * VL, *Zs = Z + (VA + s) * VL;
 #pragma omp simd
-                for (v = 0; v < VL; v++) {
-                        yz[v] = Y[v] * Z[v];
-                        xz[v] = X[v] * Z[v];
-                        xy[v] = X[v] * Y[v];
-                }
-                if (order == 1) {
-                        /* term x * 3 + s: d/dS_x, S = A, B, C */
-                        for (s = 0; s < 3; s++) {
-                                const double *Xs = X + (VA + s) * VL, *Ys = Y + (VA + s) * VL, *Zs = Z + (VA + s) * VL;
-#pragma omp simd
-                                for (v = 0; v < VL; v++) {
-                                        P[s][v] = Xs[v] * yz[v];
-                                        P[3 + s][v] = Ys[v] * xz[v];
-                                        P[6 + s][v] = Zs[v] * xy[v];
+                                        for (v = 0; v < VL; v++) {
+                                                P[s][v] = Xs[v] * yz[v];
+                                                P[3 + s][v] = Ys[v] * xz[v];
+                                                P[6 + s][v] = Zs[v] * xy[v];
+                                        }
                                 }
-                        }
-                        for (g = 0; g < ngroup; g++) {
-                                double *a = acc + (size_t)g * NTERM * VL;
-                                const double *w = wl + ((size_t)g * nf4 + f) * VL;
-                                int k;
-                                for (k = 0; k < 9; k++) {
-#pragma omp simd
-                                        for (v = 0; v < VL; v++) a[k * VL + v] += w[v] * P[k][v];
-                                }
-                        }
-                        continue;
-                }
-                for (s = 0; s < 3; s++) {
-                        for (t = s; t < 3; t++) {
-                                const int k2 = D2[s][t], pr = PAIR[s][t];
-                                const double *Xk = X + k2 * VL, *Yk = Y + k2 * VL, *Zk = Z + k2 * VL;
-#pragma omp simd
-                                for (v = 0; v < VL; v++) {
-                                        P[pr][v] = Xk[v] * yz[v];
-                                        P[6 + pr][v] = Yk[v] * xz[v];
-                                        P[12 + pr][v] = Zk[v] * xy[v];
-                                }
-                        }
-                }
-                for (s = 0; s < 3; s++) {
-                        const double *Xs = X + (1 + s) * VL, *Ys = Y + (1 + s) * VL;
-                        for (t = 0; t < 3; t++) {
-                                const double *Yt = Y + (1 + t) * VL, *Zt = Z + (1 + t) * VL;
-                                const int c = s * 3 + t;
-#pragma omp simd
-                                for (v = 0; v < VL; v++) {
-                                        P[18 + c][v] = Xs[v] * Yt[v] * Z[v];
-                                        P[27 + c][v] = Xs[v] * Y[v] * Zt[v];
-                                        P[36 + c][v] = X[v] * Ys[v] * Zt[v];
-                                }
-                        }
-                }
-                for (g = 0; g < ngroup; g++) {
-                        double *a = acc + (size_t)g * NTERM * VL;
-                        int k;
-                        if (uniform) {
-                                const double w1 = wl[(size_t)g * nf4 + f];
-                                for (k = 0; k < 45; k++) {
-#pragma omp simd
-                                        for (v = 0; v < VL; v++) a[k * VL + v] += w1 * P[k][v];
-                                }
+                                nterm = 9;
                         } else {
-                                const double *w = wl + ((size_t)g * nf4 + f) * VL;
-                                for (k = 0; k < 45; k++) {
+                                for (s = 0; s < 3; s++) {
+                                        for (t = s; t < 3; t++) {
+                                                const int k2 = D2[s][t], pr = PAIR[s][t];
+                                                const double *Xk = X + k2 * VL, *Yk = Y + k2 * VL, *Zk = Z + k2 * VL;
 #pragma omp simd
-                                        for (v = 0; v < VL; v++) a[k * VL + v] += w[v] * P[k][v];
+                                                for (v = 0; v < VL; v++) {
+                                                        P[pr][v] = Xk[v] * yz[v];
+                                                        P[6 + pr][v] = Yk[v] * xz[v];
+                                                        P[12 + pr][v] = Zk[v] * xy[v];
+                                                }
+                                        }
                                 }
+                                for (s = 0; s < 3; s++) {
+                                        const double *Xs = X + (1 + s) * VL, *Ys = Y + (1 + s) * VL;
+                                        for (t = 0; t < 3; t++) {
+                                                const double *Yt = Y + (1 + t) * VL, *Zt = Z + (1 + t) * VL;
+                                                const int c = s * 3 + t;
+#pragma omp simd
+                                                for (v = 0; v < VL; v++) {
+                                                        P[18 + c][v] = Xs[v] * Yt[v] * Z[v];
+                                                        P[27 + c][v] = Xs[v] * Y[v] * Zt[v];
+                                                        P[36 + c][v] = X[v] * Ys[v] * Zt[v];
+                                                }
+                                        }
+                                }
+                                nterm = 45;
+                        }
+                }
+                const int k0 = mode == 1 ? 45 : 0;
+                for (g = 0; g < ngroup; g++) {
+                        double *a = acc + ((size_t)g * NTERM + k0) * VL;
+                        const size_t gf = (size_t)g * nf4 + f;
+                        for (v = 0; v < VL; v++) wv[v] = rb[v][gf];
+                        for (k = 0; k < nterm; k++) {
+#pragma omp simd
+                                for (v = 0; v < VL; v++) a[k * VL + v] += wv[v] * P[k][v];
                         }
                 }
         }
@@ -457,7 +442,11 @@ typedef struct {
         Lanes lanes;
         double ab[3][VL], cd[3][VL];
         int slot[VL];
-        double *wl;                             /* (ngroup, nf4, VL) */
+        /* density weights by reference: row ridx[v] of rows (ngroup * nf4 each) for
+         * lane v; a single-contraction quartet fills one row per flush window
+         * (slotrow), a primitive quartet of general contraction one of its own */
+        double *rows;
+        int ridx[VL], nrow, slotrow[VL];
         int busy[VL], open[VL], nleft[VL], used[VL];
         int at[VL][4];
         double sum[VL][MAXGROUP * NTERM];
@@ -473,8 +462,11 @@ static ClassBuf *class_new(const int *l, int ngroup)
                 cb->qs.nf[s] = cart_powers(l[s], cb->qs.px[s], cb->qs.py[s], cb->qs.pz[s]);
                 cb->nf4 *= cb->qs.nf[s];
         }
-        for (v = 0; v < VL; v++) cb->lanes.one[v] = 1.;
-        cb->wl = malloc(sizeof(double) * cb->nf4 * ngroup * VL);
+        for (v = 0; v < VL; v++) {
+                cb->lanes.one[v] = 1.;
+                cb->slotrow[v] = -1;
+        }
+        cb->rows = malloc(sizeof(double) * cb->nf4 * ngroup * VL);
         return cb;
 }
 
@@ -553,7 +545,7 @@ static void flush_class(ClassBuf *cb, double *T, double *ws, double *acc, int ng
                         int natm, size_t nh1, double *hloc, int order)
 {
         const int nl = cb->nlane;
-        int s, v, g, k, a;
+        int s, v, g, k;
         if (nl == 0) return;
         for (v = nl; v < VL; v++) {
                 for (s = 0; s < 3; s++) {
@@ -562,25 +554,29 @@ static void flush_class(ClassBuf *cb, double *T, double *ws, double *acc, int ng
                 }
                 cb->lanes.b00[v] = cb->lanes.b10[v] = cb->lanes.b01[v] = cb->lanes.gz[v] = 0;
                 cb->lanes.ai2[v] = cb->lanes.aj2[v] = cb->lanes.ak2[v] = 0;
-                for (a = 0; a < ngroup * cb->nf4; a++) cb->wl[(size_t)a * VL + v] = 0;
+                cb->ridx[v] = 0;
         }
         for (s = 0; s < 3; s++)
                 tables_dir(T + (size_t)s * TSZV, ws, cb->qs.l, order, cb->lanes.c00[s], cb->lanes.c00p[s],
                            cb->lanes.b10, cb->lanes.b01, cb->lanes.b00, cb->ab[s], cb->cd[s],
                            s == 2 ? cb->lanes.gz : cb->lanes.one, cb->lanes.ai2, cb->lanes.aj2, cb->lanes.ak2);
         memset(acc, 0, sizeof(double) * ngroup * NTERM * VL);
-        assemble(acc, T, &cb->qs, cb->wl, ngroup, cb->nf4, mode, 0, order);
+        assemble(acc, T, &cb->qs, cb->rows, cb->ridx, ngroup, cb->nf4, mode, order);
+        /* the terms in use: 0..8 (gradient), 0..44 (Hessian), 45 (energy) */
+        const int k0 = mode == 1 ? 45 : 0, k1 = mode == 1 ? 46 : (order == 1 ? 9 : 45);
         for (v = 0; v < nl; v++) {
                 const int q = cb->slot[v];
                 double *sm = cb->sum[q];
                 for (g = 0; g < ngroup; g++)
-                        for (k = 0; k < NTERM; k++) sm[g * NTERM + k] += acc[((size_t)g * NTERM + k) * VL + v];
+                        for (k = k0; k < k1; k++) sm[g * NTERM + k] += acc[((size_t)g * NTERM + k) * VL + v];
                 if (--cb->nleft[q] == 0 && !cb->open[q]) {
                         finalize(sm, cb->at[q], ngroup, mode, natm, nh1, hloc, order);
                         cb->busy[q] = 0;
                 }
         }
         cb->nlane = 0;
+        cb->nrow = 0;
+        for (v = 0; v < VL; v++) cb->slotrow[v] = -1;
 }
 
 static void deriv2e_drv(int order, double *hess, int mode, int ngroup, double *jfac, double *kfac,
@@ -713,6 +709,7 @@ static void deriv2e_drv(int order, double *hess, int mode, int ngroup, double *j
                                 R[s] = env + atm[at[s] * ATM_SLOTS + PTR_COORD];
                                 fac *= common_fac_sp(l[s]);
                         }
+                        if (l[0] + l[1] + l[2] + l[3] < cart_lmin || l[0] + l[1] + l[2] + l[3] > cart_lmax) continue;
                         if (ish == jsh) fac *= .5;
                         if (ksh == lsh) fac *= .5;
                         if (ij == kl) fac *= .5;
@@ -748,6 +745,7 @@ static void deriv2e_drv(int order, double *hess, int mode, int ngroup, double *j
                         while (cb->busy[qslot]) qslot++;
                         cb->busy[qslot] = cb->open[qslot] = 1;
                         cb->nleft[qslot] = cb->used[qslot] = 0;
+                        cb->slotrow[qslot] = -1;
                         for (s = 0; s < 4; s++) cb->at[qslot][s] = at[s];
                         memset(cb->sum[qslot], 0, sizeof(double) * ngroup * NTERM);
                         double ab[3], cdv[3];
@@ -847,7 +845,9 @@ static void deriv2e_drv(int order, double *hess, int mode, int ngroup, double *j
                                         const double x = aij * akl * ias * (PQ[0] * PQ[0] + PQ[1] * PQ[1] + PQ[2] * PQ[2]);
                                         double u[MAXROOTS], rw[MAXROOTS];
                                         CINTrys_roots(nroots, x, u, rw);
-                                        const double *wsrc = single ? dd : w;
+                                        /* the weight row of this primitive quartet (general
+                                         * contraction) or of the quartet (single) */
+                                        int wrow = -1;
                                         const double ai2 = 2 * ex[0][pi], aj2 = 2 * ex[1][pj], pc = pref * cc4;
                                         int r;
                                         for (r = 0; r < nroots; r++) {
@@ -867,12 +867,24 @@ static void deriv2e_drv(int order, double *hess, int mode, int ngroup, double *j
                                                 cb->lanes.ai2[n] = ai2;
                                                 cb->lanes.aj2[n] = aj2;
                                                 cb->lanes.ak2[n] = ak2;
-                                                for (a = 0; a < ngroup * nf4; a++) cb->wl[(size_t)a * VL + n] = wsrc[a];
+                                                if (wrow < 0) {
+                                                        if (single && cb->slotrow[qslot] >= 0) {
+                                                                wrow = cb->slotrow[qslot];
+                                                        } else {
+                                                                wrow = cb->nrow++;
+                                                                memcpy(cb->rows + (size_t)wrow * ngroup * nf4, single ? dd : w,
+                                                                       sizeof(double) * ngroup * nf4);
+                                                                if (single) cb->slotrow[qslot] = wrow;
+                                                        }
+                                                }
+                                                cb->ridx[n] = wrow;
                                                 cb->slot[n] = qslot;
                                                 cb->nleft[qslot]++;
                                                 cb->used[qslot] = 1;
-                                                if (++cb->nlane == VL)
+                                                if (++cb->nlane == VL) {
                                                         flush_class(cb, T, ws, acc, ngroup, mode, natm, nh1, hloc, order);
+                                                        wrow = -1;      /* the rows start over */
+                                                }
                                         }
                                 }
                         } }
@@ -889,7 +901,7 @@ static void deriv2e_drv(int order, double *hess, int mode, int ngroup, double *j
         for (v = 0; v < NCLASS; v++) {
                 if (cbs[v] != NULL) {
                         flush_class(cbs[v], T, ws, acc, ngroup, mode, natm, nh1, hloc, order);
-                        free(cbs[v]->wl);
+                        free(cbs[v]->rows);
                         free(cbs[v]);
                 }
         }

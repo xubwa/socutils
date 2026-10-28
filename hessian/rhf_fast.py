@@ -159,12 +159,57 @@ def md_j_grad(mol, dm, tol=None):
     return grad, e[0]
 
 
+SPLIT_GENERAL = True
+GRAD2E_HGP = True           # order 1: the HGP kernel (lib/vhf/hgp.c) for the low-l quartets
+HGP_LMAX = 1                # quartets with l_i + l_j + l_k + l_l <= HGP_LMAX to HGP, the others to Rys
+
+
+def _split_general(mol):
+    '''mol with every generally contracted shell (nctr > 1) replaced by its
+    primitive shells, in place (the AO blocks keep their order), and C
+    (nao_new, nao) with phi_old = sum_new C phi_new.  Segmented shells are kept.'''
+    import scipy.linalg
+    from pyscf.gto.mole import gto_norm
+    bas = []
+    env = [mol._env]
+    blocks = []
+    ptr = mol._env.size
+    for ib in range(mol.nbas):
+        b = mol._bas[ib]
+        l = b[gto.ANG_OF]
+        nf = (l + 1) * (l + 2) // 2 if mol.cart else 2 * l + 1
+        if b[gto.NCTR_OF] == 1:
+            bas.append(b)
+            blocks.append(numpy.eye(nf))
+            continue
+        es = mol.bas_exp(ib)
+        cs = mol._libcint_ctr_coeff(ib)          # (nprim, nctr), radial normalisation included
+        norm = gto_norm(l, es)
+        nprim = es.size
+        for p in range(nprim):
+            r = b.copy()
+            r[gto.NPRIM_OF] = r[gto.NCTR_OF] = 1
+            r[gto.PTR_EXP] = ptr + p
+            r[gto.PTR_COEFF] = ptr + nprim + p
+            bas.append(r)
+        env.append(es)
+        env.append(norm)
+        ptr += 2 * nprim
+        blocks.append(numpy.einsum('pi,p,xm->pxim', cs, 1. / norm, numpy.eye(nf)).reshape(nprim * nf, -1))
+    pmol = mol.copy(deep=False)
+    pmol._bas = numpy.asarray(bas, dtype=numpy.int32)
+    pmol._env = numpy.hstack(env)
+    return pmol, scipy.linalg.block_diag(*blocks)
+
+
 def _deriv2e_cart(mol, dm, groups, order, mode, tol, prim_tol):
     import ctypes
     libv = ghf_hess._load_socvhf()
     fname = 'SOCVHFhess2e_jk_cart' if order == 2 else 'SOCVHFgrad2e_jk_cart'
     if not libv or not hasattr(libv, fname):
         return None
+    hgp = (order == 1 and GRAD2E_HGP and hasattr(libv, 'SOCVHFhgp_grad2e')
+           and mol._bas[:, gto.NCTR_OF].max() <= 4)       # hgp.c MAXCTR
     if (mol._bas[:, gto.ANG_OF].max() > HESS2E_CART_LMAX
             or mol._bas[:, gto.NPRIM_OF].max() > HESS2E_CART_MAXPRIM):
         return None
@@ -181,6 +226,11 @@ def _deriv2e_cart(mol, dm, groups, order, mode, tol, prim_tol):
         molc.cart = True
         c = mol.cart2sph_coeff()
         dmc = c.dot(dm).dot(c.T)
+    if not hgp and SPLIT_GENERAL and order == 1 and (molc._bas[:, gto.NCTR_OF] > 1).any():
+        # generally contracted shells as primitive shells: every quartet on the
+        # single-contraction path, no primitive is evaluated twice
+        molc, cg = _split_general(molc)
+        dmc = cg.dot(dmc).dot(cg.T)
     dmc = numpy.ascontiguousarray(dmc)
     # integral estimate per shell pair, bounding every derivative type
     intors = ('int2e_ipip1', 'int2e_ipvip1', 'int2e_ip1ip2') if order == 2 else ('int2e_ip1',)
@@ -198,15 +248,27 @@ def _deriv2e_cart(mol, dm, groups, order, mode, tol, prim_tol):
         out = numpy.zeros((ngroup, natm, 3))
     ao_loc = molc.ao_loc_nr().astype(numpy.int32)
     atm, bas, env = molc._atm, molc._bas, molc._env
-    getattr(libv, fname)(
-        out.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mode), ctypes.c_int(ngroup),
-        jfac.ctypes.data_as(ctypes.c_void_p), kfac.ctypes.data_as(ctypes.c_void_p),
-        dmc.ctypes.data_as(ctypes.c_void_p), q.ctypes.data_as(ctypes.c_void_p),
-        dcond.ctypes.data_as(ctypes.c_void_p), ctypes.c_double(tol), ctypes.c_double(prim_tol),
-        ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
-        ctypes.c_int(natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(molc.nbas),
-        env.ctypes.data_as(ctypes.c_void_p))
-    return out
+    args = (ctypes.c_int(mode), ctypes.c_int(ngroup),
+            jfac.ctypes.data_as(ctypes.c_void_p), kfac.ctypes.data_as(ctypes.c_void_p),
+            dmc.ctypes.data_as(ctypes.c_void_p), q.ctypes.data_as(ctypes.c_void_p),
+            dcond.ctypes.data_as(ctypes.c_void_p), ctypes.c_double(tol), ctypes.c_double(prim_tol),
+            ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_int(natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(molc.nbas),
+            env.ctypes.data_as(ctypes.c_void_p))
+    if not hgp:
+        getattr(libv, fname)(out.ctypes.data_as(ctypes.c_void_p), *args)
+        return out
+    # low total l by HGP (contraction before the horizontal recursion), the rest by Rys
+    out2 = numpy.zeros_like(out)
+    try:
+        libv.SOCVHFhgp_set_lrange(ctypes.c_int(0), ctypes.c_int(HGP_LMAX))
+        libv.SOCVHFcart_set_lrange(ctypes.c_int(HGP_LMAX + 1), ctypes.c_int(1000))
+        libv.SOCVHFhgp_grad2e(out.ctypes.data_as(ctypes.c_void_p), *args)
+        getattr(libv, fname)(out2.ctypes.data_as(ctypes.c_void_p), *args)
+    finally:
+        libv.SOCVHFhgp_set_lrange(ctypes.c_int(0), ctypes.c_int(1000))
+        libv.SOCVHFcart_set_lrange(ctypes.c_int(0), ctypes.c_int(1000))
+    return out + out2
 
 
 def _hcore_e1(hessobj, dm0):
