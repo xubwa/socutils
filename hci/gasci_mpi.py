@@ -257,7 +257,11 @@ class DistProductCI:
         axpy = blas.daxpy
         hd = self.hdiag()
         if ci0 is None:
-            local_min = (float(hd.min()), self.rank, int(hd.argmin())) if self.nloc else (numpy.inf, self.rank, -1)
+            hs = hd
+            if self.parity < 0:  # off the diagonal a = b, where the symmetrized vector vanishes
+                hs = hd.copy()
+                hs[numpy.arange(self.nloc), self.lo + numpy.arange(self.nloc)] = numpy.inf
+            local_min = (float(hs.min()), self.rank, int(hs.argmin())) if self.nloc else (numpy.inf, self.rank, -1)
             _, owner, idx = min(self.comm.allgather(local_min))
             x = self.zeros()
             if self.rank == owner:
@@ -274,7 +278,9 @@ class DistProductCI:
         xf = x.reshape(-1)
         for it in range(max_cycle):
             e = self.dot(x, hx)
-            # T = -(HX - e X) / (hd - e), by rows (no full-length temporary)
+            # T = -(HX - e X) / max(|hd - e|, level_shift), by rows (no full-length
+            # temporary); positive definite, as LOBPCG needs (hd - e changes sign
+            # e.g. with an S^2 penalty and odd parity)
             t = numpy.array(hx)
             axpy(xf, t.reshape(-1), a=-e)
             rnorm = numpy.sqrt(self.dot(t, t))
@@ -288,8 +294,7 @@ class DistProductCI:
                 break
             e_old = e
             for r0 in range(0, self.nloc, 256):
-                d = hd[r0:r0 + 256] - e
-                d[numpy.abs(d) < level_shift] = level_shift
+                d = numpy.maximum(numpy.abs(hd[r0:r0 + 256] - e), level_shift)
                 t[r0:r0 + 256] /= -d
             t = self.symmetrize(t)
             basis = [x, t] if p is None else [x, t, p]
@@ -353,3 +358,96 @@ def kernel(h1, eri, norb, nelec, strs, comm=None, spin_flip=1, **kwargs):
     info['t_setup'] = solver.t_setup
     info['rows'] = solver.rows
     return e, c, info
+
+
+# ---- the C driver (lib/zgasci/dist, zgd_solve) as an SQD solver ----------
+
+_dist_lib = None
+
+
+def _load_dist():
+    '''libzgasci_dist.so: SOCUTILS_ZGASCI_DIST_LIBRARY or
+    socutils/lib/zgasci/dist (make there, Makefile).'''
+    global _dist_lib
+    if _dist_lib is None:
+        import ctypes
+        from socutils.lib import library_dir
+        path = _os.environ.get('SOCUTILS_ZGASCI_DIST_LIBRARY') or _os.path.join(
+            library_dir(), 'zgasci', 'dist', 'libzgasci_dist.so')
+        lib = ctypes.CDLL(path)
+        p = ctypes.c_void_p
+        lib.zgd_solve.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, p, p, ctypes.c_int64,
+                                  p, ctypes.c_int, ctypes.c_double, ctypes.c_double,
+                                  ctypes.c_double, ctypes.c_int, ctypes.c_int, p, p, p, p]
+        lib.zgd_solve.restype = ctypes.c_int
+        _dist_lib = lib
+    return _dist_lib
+
+
+def c_solve(h1, eri, norb, nelec, strs, comm=None, spin_flip=1, ss_penalty=0.0, tol=1e-8,
+            rtol=1e-3, maxit=40, verbose=0):
+    '''The lowest state in strs x strs by the C driver on comm (collective:
+    every process calls with the same arguments).  h1 (norb, norb), eri any
+    pyscf form of (pq|rs), no core energy; nelec total or (na, nb), na = nb.
+    ss_penalty: H + ss_penalty S^2 (the linear penalty of fix_spin_ with
+    ss = 0).  Returns a dict: e (<H>), e_penalized, s2 (NaN without a
+    penalty), iterations, converged, time, occ (norb, alpha = beta), maxabs
+    and weight (per string of strs: the largest |C| of its row and
+    sum_b C[a, b]^2), the same on every process.'''
+    if comm is None:
+        from mpi4py import MPI
+        comm = MPI.COMM_WORLD
+    if not isinstance(nelec, (int, numpy.integer)):
+        if nelec[0] != nelec[1]:
+            raise ValueError('nalpha = nbeta is required')
+        nelec = nelec[0] + nelec[1]
+    h1 = numpy.ascontiguousarray(h1, dtype=numpy.float64)
+    eri = numpy.ascontiguousarray(ao2mo.restore(1, numpy.asarray(eri), norb), dtype=numpy.float64)
+    strs = numpy.ascontiguousarray(strs, dtype=numpy.int64)
+    n = len(strs)
+    out = numpy.zeros(6)
+    occ = numpy.zeros(norb)
+    maxabs = numpy.zeros(n)
+    weight = numpy.zeros(n)
+    _load_dist().zgd_solve(comm.py2f(), norb, int(nelec), h1.ctypes.data, eri.ctypes.data, n,
+                           strs.ctypes.data, int(spin_flip), float(ss_penalty), tol, rtol, maxit,
+                           verbose, out.ctypes.data, occ.ctypes.data, maxabs.ctypes.data,
+                           weight.ctypes.data)
+    return dict(e=out[1], e_penalized=out[0], s2=out[2], iterations=int(out[3]),
+                converged=bool(out[4]), time=out[5], occ=occ, maxabs=maxabs, weight=weight)
+
+
+def make_sci_solver(comm=None, carryover_threshold=1e-4, ss_penalty=0.0, spin_flip=1,
+                    log=None, **kwargs):
+    '''An sci_solver for qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian
+    (0.14, symmetrize_spin=True: the same alpha and beta strings) run
+    collectively under MPI (every process runs the SQD script).  Each
+    subspace is solved by c_solve on all processes in turn; the results
+    carry no state (sci_state None) but the carryover the default policy
+    would choose: the strings whose largest |C| reaches carryover_threshold,
+    by descending marginal weight.  log(info) is called on every result on
+    the control process; kwargs go to c_solve.'''
+    from qiskit_addon_sqd.fermion import SCIResult
+    if comm is None:
+        from mpi4py import MPI
+        comm = MPI.COMM_WORLD
+
+    def solver(ci_strings, one_body, two_body, norb, nelec):
+        res = []
+        for sa, sb in ci_strings:
+            sa, sb = numpy.asarray(sa), numpy.asarray(sb)
+            if not numpy.array_equal(sa, sb):
+                raise ValueError('make_sci_solver needs the same alpha and beta strings '
+                                 '(symmetrize_spin=True)')
+            r = c_solve(one_body, two_body, norb, nelec, sa, comm=comm, spin_flip=spin_flip,
+                        ss_penalty=ss_penalty, **kwargs)
+            keep = numpy.nonzero(r['maxabs'] >= carryover_threshold)[0]
+            keep = keep[numpy.argsort(-r['weight'][keep], kind='stable')]
+            carry = sa[keep].astype(numpy.int64)
+            res.append(SCIResult(r['e'], None, orbital_occupancies=(r['occ'], r['occ'].copy()),
+                                 carryover=(carry, carry.copy())))
+            if log is not None and comm.Get_rank() == 0:
+                r['nstr'] = len(sa)
+                log(r)
+        return res
+    return solver
