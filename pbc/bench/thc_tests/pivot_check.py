@@ -21,7 +21,7 @@ aux = {e: auxgen_from_basis({gto.mole._std_symbol(e): B[e]}, contract=False, pru
                             threshold=1e-8)[gto.mole._std_symbol(e)] for e in els}
 dm = pscf.RHF(cell).get_init_guess(key='minao')
 ref = None
-for blocked, co in ((False, 2), (True, 2), (False, 3)):
+for blocked, co in ((False, 1), (False, 2), (True, 2), (False, 3), (True, 1)):
     orig = thc.THCExchange.build_common
     def bc(self, *a, **k):
         self.blocked_pivots, self.coarsen = blocked, co
@@ -34,5 +34,5 @@ for blocked, co in ((False, 2), (True, 2), (False, 3)):
     K = jk.get_jk(dm)[1]
     if ref is None:
         ref = K
-    print('blocked %s coarsen %d: pivots %.0f s; K vs column-by-column max %.2e, E_x %.2e'
-          % (blocked, co, jk.th.timings['pivots'], abs(K - ref).max(), -.25 * np.einsum('ij,ji', dm, K - ref)), flush=True)
+    print('blocked %s coarsen %d: pivots %.0f s; K vs first (column-by-column, full grid) max %.2e, E_x %.2e'
+          % (blocked, co, jk.th.timings['pivots'], abs(K - ref).max(), -.25 * np.
