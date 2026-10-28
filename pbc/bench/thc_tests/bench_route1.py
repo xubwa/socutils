@@ -1,6 +1,6 @@
 '''Route-1 THCJK on a production cell: build time, peak memory, storage, one J+K (minao density), vs nothing else.
 
-usage: bench_route1.py CIF NX,NY,NZ BASIS_PY [ACTIVE_LABEL]   (env RCUT, NRAD, NMU, STREAM_GB)'''
+usage: bench_route1.py CIF NX,NY,NZ BASIS_PY [ACTIVE_LABEL]   (env RCUT, NRAD, NMU, STREAM_GB, PIV_FILE)'''
 import os, sys, time, resource, runpy, numpy as np
 from pyscf import gto
 from pyscf.pbc import scf as pscf
@@ -35,6 +35,7 @@ jk = THCJK(cell, aux, alpha_c=4., nmu_factor=float(os.environ.get('NMU', 16)), n
 jk.gapw_opts = {'nrad': int(os.environ.get('NRAD', 600))}
 jk.stream = True                      # V, A, Xi in mu blocks, no full xi
 jk.stream_gb = float(os.environ.get('STREAM_GB', 30))
+jk.piv_file = os.environ.get('PIV_FILE')
 jk.build()
 print('build %.0f s, peak memory %.1f GB; %s' % (time.time() - t, mem(), ', '.join('%s %.0f' % kv for kv in jk.th.timings.items())),
       flush=True)

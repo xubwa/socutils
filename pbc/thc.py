@@ -22,7 +22,7 @@ THCExchange.get_k returns K in this vector convention (before the -c0 S D S term
 
 This is a validation prototype on small cells: the SR three-centre integrals, metric and LR rows come from an
 RSDF build with keep_raw (the CX columns are what a production code would compute locally).'''
-import time
+import os, time
 import numpy as np
 import scipy.linalg
 import scipy.fft
@@ -308,7 +308,14 @@ class THCExchange:
             cc = cell.get_uniform_grids(mc)
             phic = cell.pbc_eval_gto('GTOval_sph', cc)[:, self.smooth]
             f = pivots_blocked if getattr(self, 'blocked_pivots', False) else pivots
-            pc, _ = f(phic, min(len(cc), int(getattr(self, 'kmax_factor', kmax_factor) * len(self.smooth))))
+            kmax = min(len(cc), int(getattr(self, 'kmax_factor', kmax_factor) * len(self.smooth)))
+            pf = getattr(self, 'piv_file', None)                      # cache of the coarse pivots (restarts)
+            if pf and os.path.exists(pf) and len(np.load(pf)) >= kmax:
+                pc = np.load(pf)[:kmax]
+            else:
+                pc, _ = f(phic, kmax)
+                if pf:
+                    np.save(pf, pc)
             ijk = np.stack(np.unravel_index(pc, mc), -1)
             fine = np.rint(ijk * (np.asarray(self.mesh) / mc)).astype(int) % np.asarray(self.mesh)
             fidx = np.ravel_multi_index(fine.T, self.mesh)
@@ -343,7 +350,7 @@ class THCExchange:
         keep = e > cut * e.max()
         Ginv = (v[:, keep] / e[keep]) @ v[:, keep].T
         if nb is None:
-            nb = max(64, min(nmu, int(getattr(self, 'stream_gb', 30) * 1e9 / (8 * ng * 3))))
+            nb = max(64, min(nmu, int(getattr(self, 'stream_gb', 30) * 1e9 / (8 * ng * 3))))   # ~2-3 (nb, ng) live
         V = np.zeros((nmu, nmu))
         A = np.zeros((self.auxmol.nao, nmu))
         A_lr = np.zeros((self.auxmol.nao, nmu))
@@ -359,6 +366,7 @@ class THCExchange:
                 g1 = min(g0 + rchunk, ng)
                 xi[:, g0:g1] = Ginv[b0:b1] @ ((PP @ phi[g0:g1].T) ** 2)
             Xh = scipy.fft.rfftn(xi.reshape(b1 - b0, *mesh), axes=(1, 2, 3), workers=-1).reshape(b1 - b0, -1)
+            xi = None
             Xh *= vol / ng                                              # xi(G) = int_cell xi(r) e^{-iGr}
             for g0 in range(0, len(self.Gv), gchunk):
                 g1 = min(g0 + gchunk, len(self.Gv))
@@ -368,8 +376,9 @@ class THCExchange:
             if local:
                 Xi[:, b0:b1] = self._lr_rows_of_xi(Xh)
             # potential of the block in real space, (v * xi_b)(r) = irfft(w_vec xi_b(G)) ng / vol
-            xi = scipy.fft.irfftn((Xh * self.w_vec[None]).reshape((b1 - b0,) + hshape), s=tuple(mesh),
-                                  axes=(1, 2, 3), workers=-1).reshape(b1 - b0, -1)
+            Xh *= self.w_vec[None]
+            xi = scipy.fft.irfftn(Xh.reshape((b1 - b0,) + hshape), s=tuple(mesh), axes=(1, 2, 3),
+                                  workers=-1, overwrite_x=True).reshape(b1 - b0, -1)
             Xh = None
             Vb = np.zeros((b1 - b0, nmu))
             for g0 in range(0, ng, rchunk):
@@ -816,6 +825,7 @@ class THCJK:
         self.th.gapw_opts = getattr(self, 'gapw_opts', {})
         self.th.stream = getattr(self, 'stream', False)
         self.th.stream_gb = getattr(self, 'stream_gb', 30)
+        self.th.piv_file = getattr(self, 'piv_file', None)
         self.th.kmax_factor = self.nmu_factor                         # pivots: only the N_mu prefix is used
         self.th.build_common()
         self.th.build_thc(int(round(self.nmu_factor * len(self.th.smooth))))
