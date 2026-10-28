@@ -378,20 +378,27 @@ def _load_dist():
         p = ctypes.c_void_p
         lib.zgd_solve.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, p, p, ctypes.c_int64,
                                   p, ctypes.c_int, ctypes.c_double, ctypes.c_double,
-                                  ctypes.c_double, ctypes.c_int, ctypes.c_int, p, p, p, p]
+                                  ctypes.c_double, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                  p, p, p, p]
         lib.zgd_solve.restype = ctypes.c_int
+        lib.zgd_promote.argtypes = lib.zgd_reset.argtypes = []
+        lib.zgd_promote.restype = lib.zgd_reset.restype = None
         _dist_lib = lib
     return _dist_lib
 
 
 def c_solve(h1, eri, norb, nelec, strs, comm=None, spin_flip=1, ss_penalty=0.0, tol=1e-8,
-            rtol=1e-3, maxit=40, verbose=0):
+            rtol=1e-3, maxit=40, verbose=0, warm=0):
     '''The lowest state in strs x strs by the C driver on comm (collective:
     every process calls with the same arguments).  h1 (norb, norb), eri any
     pyscf form of (pq|rs), no core energy; nelec total or (na, nb), na = nb.
     ss_penalty: H + ss_penalty S^2 (the linear penalty of fix_spin_ with
-    ss = 0).  Returns a dict: e (<H>), e_penalized, s2 (NaN without a
-    penalty), iterations, converged, time, occ (norb, alpha = beta), maxabs
+    ss = 0).  warm: bit 1, start from the solution kept in the last round
+    (zgd_promote) if it has weight >= 1e-4 in this space; bit 2, keep this
+    solution if it is the lowest of the round (zgasci_dist.c, zgd_solve).
+    Returns a dict: e (<H>), e_penalized, s2 (NaN without a
+    penalty), iterations, converged, time, warm_weight (the weight of the
+    last solution in this space, -1: no warm start), occ (norb, alpha = beta), maxabs
     and weight (per string of strs: the largest |C| of its row and
     sum_b C[a, b]^2), the same on every process.'''
     if comm is None:
@@ -405,34 +412,41 @@ def c_solve(h1, eri, norb, nelec, strs, comm=None, spin_flip=1, ss_penalty=0.0, 
     eri = numpy.ascontiguousarray(ao2mo.restore(1, numpy.asarray(eri), norb), dtype=numpy.float64)
     strs = numpy.ascontiguousarray(strs, dtype=numpy.int64)
     n = len(strs)
-    out = numpy.zeros(6)
+    out = numpy.zeros(7)
     occ = numpy.zeros(norb)
     maxabs = numpy.zeros(n)
     weight = numpy.zeros(n)
     _load_dist().zgd_solve(comm.py2f(), norb, int(nelec), h1.ctypes.data, eri.ctypes.data, n,
                            strs.ctypes.data, int(spin_flip), float(ss_penalty), tol, rtol, maxit,
-                           verbose, out.ctypes.data, occ.ctypes.data, maxabs.ctypes.data,
+                           verbose, int(warm), out.ctypes.data, occ.ctypes.data, maxabs.ctypes.data,
                            weight.ctypes.data)
     return dict(e=out[1], e_penalized=out[0], s2=out[2], iterations=int(out[3]),
-                converged=bool(out[4]), time=out[5], occ=occ, maxabs=maxabs, weight=weight)
+                converged=bool(out[4]), time=out[5], warm_weight=out[6], occ=occ, maxabs=maxabs, weight=weight)
 
 
 def make_sci_solver(comm=None, carryover_threshold=1e-4, ss_penalty=0.0, spin_flip=1,
-                    log=None, **kwargs):
+                    log=None, warm_start=True, **kwargs):
     '''An sci_solver for qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian
     (0.14, symmetrize_spin=True: the same alpha and beta strings) run
     collectively under MPI (every process runs the SQD script).  Each
     subspace is solved by c_solve on all processes in turn; the results
     carry no state (sci_state None) but the carryover the default policy
     would choose: the strings whose largest |C| reaches carryover_threshold,
-    by descending marginal weight.  log(info) is called on every result on
-    the control process; kwargs go to c_solve.'''
+    by descending marginal weight.  warm_start: each call (an SQD
+    iteration) starts its subspaces from the lowest solution of the
+    previous call, restricted to the new space (kept on the C side).
+    log(info) is called on every result on the control process; kwargs go
+    to c_solve.'''
     from qiskit_addon_sqd.fermion import SCIResult
     if comm is None:
         from mpi4py import MPI
         comm = MPI.COMM_WORLD
 
+    lib = _load_dist()
+    lib.zgd_reset()
+
     def solver(ci_strings, one_body, two_body, norb, nelec):
+        lib.zgd_promote()
         res = []
         for sa, sb in ci_strings:
             sa, sb = numpy.asarray(sa), numpy.asarray(sb)
@@ -440,7 +454,7 @@ def make_sci_solver(comm=None, carryover_threshold=1e-4, ss_penalty=0.0, spin_fl
                 raise ValueError('make_sci_solver needs the same alpha and beta strings '
                                  '(symmetrize_spin=True)')
             r = c_solve(one_body, two_body, norb, nelec, sa, comm=comm, spin_flip=spin_flip,
-                        ss_penalty=ss_penalty, **kwargs)
+                        ss_penalty=ss_penalty, warm=3 if warm_start else 0, **kwargs)
             keep = numpy.nonzero(r['maxabs'] >= carryover_threshold)[0]
             keep = keep[numpy.argsort(-r['weight'][keep], kind='stable')]
             carry = sa[keep].astype(numpy.int64)
