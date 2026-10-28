@@ -23,6 +23,7 @@
  *   mpirun -np P -ppn 1 zgasci_dist FCIDUMP STRINGS [options]
  * STRINGS: the alpha (= beta) strings as little-endian int64 (bit p:
  * orbital p occupied, the pyscf cistring convention), any order, no repeats.
+ * Environment: ZGASCI_DIST_CHUNK, the largest message in doubles (2^28).
  * Options: --tol E (energy, 1e-8)  --rtol R (residual norm, 1e-3)
  *          --maxit N (40)  --parity +-1 (1)  --bench K (time K products
  *          first, 3)  --shift S (preconditioner floor, 1e-3)
@@ -43,7 +44,8 @@ extern void dsygv_(const int *itype, const char *jobz, const char *uplo, const i
                    double *work, const int *lwork, int *info);
 
 static int rank_, size_;
-#define CHUNK ((int64_t)1 << 28)
+/* Largest MPI message in doubles; ZGASCI_DIST_CHUNK overrides (tests). */
+static int64_t CHUNK = (int64_t)1 << 28;
 
 static void die(const char *msg) {
   fprintf(stderr, "zgasci_dist (rank %d): %s\n", rank_, msg);
@@ -149,18 +151,24 @@ static double *spin_orbital_v(const fcidump *f, int beta_only) {
 
 /* ---- MPI helpers -------------------------------------------------------- */
 
-/* Sendrecv of buffers of any lengths, in chunks; the partner's loop has as
- * many steps (its lengths are these swapped). */
+/* Send ns doubles to dest and receive nr from src, both in chunks of CHUNK
+ * (counts are C ints): every chunk is its own message, tagged by its index,
+ * so that the two sides need not agree on a number of steps (the lengths of
+ * a pair differ, e.g. in the halo exchange). */
 static void sendrecv(const double *s, int64_t ns, int dest, double *r, int64_t nr, int src) {
-  const int64_t n = ns > nr ? ns : nr;
-  int64_t i = 0;
-  do {
-    const int a = (int)(ns - i > CHUNK ? CHUNK : (ns > i ? ns - i : 0));
-    const int b = (int)(nr - i > CHUNK ? CHUNK : (nr > i ? nr - i : 0));
-    MPI_Sendrecv(s + (a ? i : 0), a, MPI_DOUBLE, dest, 7, r + (b ? i : 0), b, MPI_DOUBLE, src, 7,
-                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-    i += CHUNK;
-  } while (i < n);
+  const int64_t ks = (ns + CHUNK - 1) / CHUNK, kr = (nr + CHUNK - 1) / CHUNK;
+  MPI_Request *req = malloc((size_t)(ks + kr + 1) * sizeof(MPI_Request));
+  int nreq = 0;
+  for (int64_t k = 0; k < kr; ++k) {
+    const int64_t i = k * CHUNK, b = nr - i < CHUNK ? nr - i : CHUNK;
+    MPI_Irecv(r + i, (int)b, MPI_DOUBLE, src, (int)k, MPI_COMM_WORLD, &req[nreq++]);
+  }
+  for (int64_t k = 0; k < ks; ++k) {
+    const int64_t i = k * CHUNK, a = ns - i < CHUNK ? ns - i : CHUNK;
+    MPI_Isend(s + i, (int)a, MPI_DOUBLE, dest, (int)k, MPI_COMM_WORLD, &req[nreq++]);
+  }
+  MPI_Waitall(nreq, req, MPI_STATUSES_IGNORE);
+  free(req);
 }
 
 static double gdot(const double *x, const double *y, int64_t len) {
@@ -494,6 +502,8 @@ int main(int argc, char **argv) {
   MPI_Init_thread(&argc, &argv, MPI_THREAD_FUNNELED, &provided);
   MPI_Comm_rank(MPI_COMM_WORLD, &rank_);
   MPI_Comm_size(MPI_COMM_WORLD, &size_);
+  if (getenv("ZGASCI_DIST_CHUNK") && atol(getenv("ZGASCI_DIST_CHUNK")) > 0)
+    CHUNK = atol(getenv("ZGASCI_DIST_CHUNK"));
   if (argc < 3) {
     if (!rank_) fprintf(stderr, "usage: zgasci_dist FCIDUMP STRINGS [options]\n");
     MPI_Finalize();
