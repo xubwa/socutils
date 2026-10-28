@@ -5,7 +5,7 @@ import numpy
 import pytest
 
 from socutils.zmr import fock
-from socutils.zmr.integrals import DiskERIs, ERIs, canonical_labels, write_h5
+from socutils.zmr.integrals import DiskERIs, ERIs, add_vvvv_pairs, canonical_labels, write_h5
 from socutils.zmr.interface import npz
 from socutils.zmr.mrci import sigma as sg
 from socutils.zmr.pt4 import NEVPT4SD
@@ -76,8 +76,21 @@ def test_npz_conversion(tmp_path):
     assert int(disk.meta['nelec'][()]) == sp.ncore + 2
 
 
+def test_vvvv_pairs(tmp_path):
+    eris = model_eris(2, 3, 5, seed=4)
+    disk = _write(eris, tmp_path / 'p.h5')
+    disk._f.close()
+    add_vvvv_pairs(str(tmp_path / 'p.h5'), rows=7)
+    disk = DiskERIs(str(tmp_path / 'p.h5'))
+    w = eris.eri_block('vvvv')
+    i, j = numpy.triu_indices(5, k=1)
+    ref = w[i[:, None], i[None, :], j[:, None], j[None, :]] - w[i[:, None], j[None, :], j[:, None], i[None, :]]
+    assert abs(disk.vvvv_pairs[()] - ref).max() < 1e-14
+
+
+@pytest.mark.parametrize('pairs', [False, True])
 @pytest.mark.parametrize('dense', [True, False])
-def test_nevpt4_vvvv_rows(tmp_path, dense):
+def test_nevpt4_vvvv_rows(tmp_path, dense, pairs):
     '''NEVPT4(SD) with the (vv|vv) term from rows of the file, the matrix over
     pairs in memory (dense) or formed again in every product, against the
     stored integrals (quasi-canonical orbitals in the file).'''
@@ -86,6 +99,10 @@ def test_nevpt4_vvvv_rows(tmp_path, dense):
     ref.verbose = 0
     ref.kernel()
     disk = _write(ref.eris, tmp_path / 'q.h5')
+    if pairs:
+        disk._f.close()
+        add_vvvv_pairs(str(tmp_path / 'q.h5'))
+        disk = DiskERIs(str(tmp_path / 'q.h5'))
     calls = []
     rows = disk.vvvv_rows
     disk.vvvv_rows = lambda a0, a1: calls.append(a0) or rows(a0, a1)
@@ -98,6 +115,6 @@ def test_nevpt4_vvvv_rows(tmp_path, dense):
         pt.kernel()
     finally:
         sg.Sigma.direct_vvvv, sg.Sigma.vvvv_dense_memory = saved
-    assert calls and 'vvvv' not in disk.computed_blocks
+    assert bool(calls) != pairs and 'vvvv' not in disk.computed_blocks
     for a, b in ((pt.e2, ref.e2), (pt.e3, ref.e3), (pt.e4, ref.e4)):
         assert abs(a - b).max() < 1e-10

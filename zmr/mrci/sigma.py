@@ -451,9 +451,18 @@ class _VVVVDense:
     With C antisymmetric in (p, q), sum_{p<q} G C[p, q] scattered with both
     signs is the antisymmetrized result: nv^4 / 4 per label x.'''
 
-    def __init__(self, coef, bvv=None, rows=None):
+    def __init__(self, coef, bvv=None, rows=None, pairs=None):
         '''bvv: three-index integrals B[L, A, p]; or rows: rows(a) = (ap|Bq) for
-        B > a as [B, q, p] (DiskERIs.vvvv_rows).'''
+        B > a as [B, q, p] (DiskERIs.vvvv_rows); or pairs: the matrix itself
+        (DiskERIs.vvvv_pairs), read in slices.'''
+        if pairs is not None:
+            npair = pairs.shape[0]
+            self.coef = coef
+            self.nv = int(round((1 + numpy.sqrt(1 + 8 * npair)) / 2))
+            self.g = numpy.empty((npair, npair), dtype=numpy.complex128)
+            for r0, r1 in _row_slices(npair, npair):
+                pairs.read_direct(self.g, numpy.s_[r0:r1], numpy.s_[r0:r1])
+            return
         if bvv is not None:
             naux, nv, _ = bvv.shape
             bt = kernels.transposed(bvv, (1, 2, 0)).reshape(nv * nv, naux)     # [(B, q), L]
@@ -510,13 +519,20 @@ class _DiskRows:
         return numpy.ascontiguousarray(x[:, a + 1:, :].transpose(1, 2, 0))
 
 
-class _VVVVStream:
-    '''The term of _VVVVDense with G formed row block by row block in every
-    product from the rows of the file (nothing of the size of (vv|vv) in
-    memory; the block is read once per sigma).'''
+def _row_slices(nrow, ncol, limit=2 ** 27):
+    '''Slices of rows of a (nrow, ncol) matrix of about limit elements.'''
+    step = max(1, limit // max(ncol, 1))
+    return [(r0, min(nrow, r0 + step)) for r0 in range(0, nrow, step)]
 
-    def __init__(self, coef, rows):
-        self.coef, self.nv, self.rows = coef, rows.nv, rows
+
+class _VVVVStream:
+    '''The term of _VVVVDense with G read slice by slice in every product
+    (nothing of the size of (vv|vv) in memory): from the dataset of the pairs
+    (DiskERIs.vvvv_pairs, contiguous slices) or, without it, formed again from
+    the rows of vvvv.'''
+
+    def __init__(self, coef, rows, pairs=None):
+        self.coef, self.nv, self.rows, self.pairs = coef, rows.nv, rows, pairs
 
     def add(self, c, total, work=None):
         nv, nd = self.nv, c.ndim
@@ -527,11 +543,18 @@ class _VVVVStream:
         cp = cp.reshape(-1, cp.shape[-1])
         t = _step('C transposed, packed', t)
         r = numpy.empty((cp.shape[0], cp.shape[1]), dtype=numpy.complex128)
-        row = 0
-        for a in range(nv - 1):
-            nb = nv - a - 1
-            r[:, row:row + nb] = la.gemm(cp, _vvvv_pair_rows(self.rows(a)), 'N', 'T')
-            row += nb
+        if self.pairs is not None:
+            npair = cp.shape[1]
+            for r0, r1 in _row_slices(npair, npair):
+                g = numpy.empty((r1 - r0, npair), dtype=numpy.complex128)
+                self.pairs.read_direct(g, numpy.s_[r0:r1])
+                r[:, r0:r1] = la.gemm(cp, g, 'N', 'T')
+        else:
+            row = 0
+            for a in range(nv - 1):
+                nb = nv - a - 1
+                r[:, row:row + nb] = la.gemm(cp, _vvvv_pair_rows(self.rows(a)), 'N', 'T')
+                row += nb
         t = _step('product (vv|vv) C, rows read', t)
         out = kernels.pair_scatter(r.reshape(lead + (r.shape[-1],)), nd - 2, nv)
         kernels.transpose_add(total, out, [0, nd - 2, nd - 1] + list(range(1, nd - 2)),
@@ -706,15 +729,20 @@ class Sigma:
                 dense = (self.direct_vvvv is None
                          and 16.0 * npair**2 <= self.vvvv_dense_memory)
                 disk = not getattr(self.eris, 'factorized', False)
+                pairs = getattr(self.eris, 'vvvv_pairs', None) if disk else None
                 if dense and self._vvvv is None:
-                    self._vvvv = (_VVVVDense(1.0, rows=_DiskRows(self.eris)) if disk
-                                  else _VVVVDense(1.0, self.eris.cd_block('vv')))
+                    if pairs is not None:
+                        self._vvvv = _VVVVDense(1.0, pairs=pairs)
+                    elif disk:
+                        self._vvvv = _VVVVDense(1.0, rows=_DiskRows(self.eris))
+                    else:
+                        self._vvvv = _VVVVDense(1.0, self.eris.cd_block('vv'))
                 if dense:
                     shared = _VVVVDense.__new__(_VVVVDense)
                     shared.coef, shared.nv, shared.g = complex(t.coef), self.sp.nvirt, self._vvvv.g
                     direct.append(shared)
                 elif disk:
-                    direct.append(_VVVVStream(complex(t.coef), _DiskRows(self.eris)))
+                    direct.append(_VVVVStream(complex(t.coef), _DiskRows(self.eris), pairs))
                 else:
                     direct.append(_VVVV(complex(t.coef), self.eris.cd_block('vv')))
                 continue

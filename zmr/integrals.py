@@ -586,6 +586,14 @@ class DiskERIs(ERIsBase):
                                       '(write quasi-canonical integrals)')
         return numpy.asarray(self._f['vvvv'][a0:a1])
 
+    @property
+    def vvvv_pairs(self):
+        '''The dataset G[(A < B), (p < q)] = (Ap|Bq) - (Aq|Bp) written by
+        add_vvvv_pairs (pairs in the order of numpy.triu_indices), or None.'''
+        if 'vvvv_pairs' not in self._f or self._u['v'] is not None:
+            return None
+        return self._f['vvvv_pairs']
+
     def release_blocks(self):
         self._cache.clear()
 
@@ -613,3 +621,29 @@ class DiskERIs(ERIsBase):
 
     core_energy = ERIs.core_energy
     generalized_fock = ERIs.generalized_fock
+
+
+def add_vvvv_pairs(path, rows=2 ** 27):
+    '''Add the dataset vvvv_pairs, G[(A < B), (p < q)] = (Ap|Bq) - (Aq|Bp),
+    to an integral file of write_h5: the (vv|vv) term of the sigma reads it in
+    contiguous slices instead of forming it from rows of vvvv in every
+    evaluation (a quarter of the size).  One pass over vvvv; written in slices
+    of about rows elements.'''
+    import h5py
+    from socutils.zmr.mrci.sigma import _vvvv_pair_rows
+    with h5py.File(path, 'r+') as f:
+        nv = int(f.attrs['nvirt'])
+        npair = nv * (nv - 1) // 2
+        if 'vvvv_pairs' in f:
+            del f['vvvv_pairs']
+        d = f.create_dataset('vvvv_pairs', (npair, npair), dtype=numpy.complex128)
+        vvvv = f['vvvv']
+        buf, row0, row = [], 0, 0
+        for a in range(nv - 1):
+            x = numpy.asarray(vvvv[a])                              # [p, B, q]
+            m = numpy.ascontiguousarray(x[:, a + 1:, :].transpose(1, 2, 0))
+            buf.append(_vvvv_pair_rows(m))
+            row += nv - a - 1
+            if (row - row0) * npair >= rows or a == nv - 2:
+                d[row0:row] = numpy.concatenate(buf)
+                buf, row0 = [], row
