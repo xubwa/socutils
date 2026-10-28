@@ -16,8 +16,13 @@
  * (k + l) raised by two, HRR to I[i][j][k][l] with i, j, k raised by up to
  * two, and per Cartesian direction a table of the 1D values (all of it for
  * VL = 8 (primitive quartet, root) lanes at once, the lane index innermost,
- * runtime-dispatched to AVX-512 / AVX2 / baseline code; the lanes are summed
- * once per shell quartet)
+ * runtime-dispatched to AVX-512 / AVX2 / baseline code).  The lanes of a
+ * flush may come from different shell quartets of the same angular class
+ * (l_i, l_j, l_k, l_l): each thread keeps one lane buffer per class with the
+ * geometry and density weights per lane, adds the lane sums of a flush to
+ * the shell quartets they belong to, and finalizes a shell quartet when its
+ * last lane has been flushed (an s/p shell quartet has only a few lanes, so
+ * per-quartet flushes ran mostly empty)
  *
  *     I, d_A I, d_B I, d_C I, d_AA I, d_BB I, d_CC I, d_AB I, d_AC I, d_BC I
  *
@@ -122,6 +127,7 @@ typedef struct {
 #define MAXT ((LMAX + 1) * (LMAX + 1) * (LMAX + 1) * (LMAX + 1))
 #define TSZV (MAXT * NV * VL)            /* one direction of T */
 #define NTERM 46                         /* 18 diagonal + 27 off-diagonal + energy */
+#define NCLASS ((LMAX + 1) * (LMAX + 1) * (LMAX + 1) * (LMAX + 1))
 
 /*
  * One Cartesian direction for VL lanes: VRR, HRR to I[i][j][k][l] and the NV
@@ -130,7 +136,7 @@ typedef struct {
 MULTIVERSION
 static void tables_dir(double *T, double *ws, const int *l,
                        const double *c00, const double *c00p, const double *b10,
-                       const double *b01, const double *b00, const double ab, const double cd,
+                       const double *b01, const double *b00, const double *ab, const double *cd,
                        const double *g00, const double *ai2, const double *aj2, const double *ak2)
 {
         const int li = l[0], lj = l[1], lk = l[2], ll = l[3];
@@ -174,8 +180,11 @@ static void tables_dir(double *T, double *ws, const int *l,
         for (j = 1; j <= lj + 2 && j <= nmax; j++) {
                 for (i = 0; i + j <= nmax; i++) {
                         double *h2 = HB(i, j), *h1 = HB(i + 1, j - 1), *h0 = HB(i, j - 1);
+                        for (m = 0; m < Dm; m++) {
 #pragma omp simd
-                        for (v = 0; v < Dm * VL; v++) h2[v] = h1[v] + ab * h0[v];
+                                for (v = 0; v < VL; v++)
+                                        h2[m * VL + v] = h1[m * VL + v] + ab[v] * h0[m * VL + v];
+                        }
                 }
         }
 #undef GV
@@ -190,7 +199,7 @@ static void tables_dir(double *T, double *ws, const int *l,
                                 for (k = 0; k + q <= mmax; k++) {
                                         double *e2 = EV(k, q), *e1 = EV(k + 1, q - 1), *e0 = EV(k, q - 1);
 #pragma omp simd
-                                        for (v = 0; v < VL; v++) e2[v] = e1[v] + cd * e0[v];
+                                        for (v = 0; v < VL; v++) e2[v] = e1[v] + cd[v] * e0[v];
                                 }
                         }
                         for (k = 0; k <= lk + 2; k++)
@@ -386,6 +395,125 @@ static void assemble(double *acc, const double *T, const QuartetShape *qs, const
 }
 
 
+/* lanes of one angular class waiting for a flush, and the (at most VL) shell
+ * quartets they belong to */
+typedef struct {
+        QuartetShape qs;
+        int nf4;
+        int nlane;
+        Lanes lanes;
+        double ab[3][VL], cd[3][VL];
+        int slot[VL];
+        double *wl;                             /* (ngroup, nf4, VL) */
+        int busy[VL], open[VL], nleft[VL], used[VL];
+        int at[VL][4];
+        double sum[VL][MAXGROUP * NTERM];
+} ClassBuf;
+
+static ClassBuf *class_new(const int *l, int ngroup)
+{
+        ClassBuf *cb = calloc(1, sizeof(ClassBuf));
+        int s, v;
+        cb->nf4 = 1;
+        for (s = 0; s < 4; s++) {
+                cb->qs.l[s] = l[s];
+                cb->qs.nf[s] = cart_powers(l[s], cb->qs.px[s], cb->qs.py[s], cb->qs.pz[s]);
+                cb->nf4 *= cb->qs.nf[s];
+        }
+        for (v = 0; v < VL; v++) cb->lanes.one[v] = 1.;
+        cb->wl = malloc(sizeof(double) * cb->nf4 * ngroup * VL);
+        return cb;
+}
+
+/* G[g][s][t][x][y] from the term sums of a shell quartet, the fourth centre
+ * by translational invariance, added to the atom blocks (mode 1: energies) */
+static void finalize(const double *sum, const int *at, int ngroup, int mode, int natm, size_t nh1,
+                     double *hloc)
+{
+        int g, s1, t1, x, y;
+        if (mode == 1) {
+                for (g = 0; g < ngroup; g++) hloc[g] += sum[g * NTERM + 45];
+                return;
+        }
+        for (g = 0; g < ngroup; g++) {
+                const double *sm = sum + g * NTERM;
+                double Gf[4][4][3][3];
+                for (s1 = 0; s1 < 3; s1++)
+                for (t1 = 0; t1 < 3; t1++)
+                for (x = 0; x < 3; x++)
+                for (y = 0; y < 3; y++) {
+                        double v;
+                        if (x == y) {
+                                v = sm[x * 6 + (s1 <= t1 ? PAIR[s1][t1] : PAIR[t1][s1])];
+                        } else if (x < y) {
+                                v = sm[18 + (x + y - 1) * 9 + s1 * 3 + t1];
+                        } else {
+                                v = sm[18 + (x + y - 1) * 9 + t1 * 3 + s1];
+                        }
+                        Gf[s1][t1][x][y] = v;
+                }
+                /* fourth centre: d_D = -(d_A + d_B + d_C) */
+                for (x = 0; x < 3; x++)
+                for (y = 0; y < 3; y++) {
+                        double dd3 = 0;
+                        for (s1 = 0; s1 < 3; s1++) {
+                                double r3 = 0, c3 = 0;
+                                for (t1 = 0; t1 < 3; t1++) {
+                                        r3 += Gf[s1][t1][x][y];
+                                        c3 += Gf[t1][s1][x][y];
+                                }
+                                Gf[s1][3][x][y] = -r3;
+                                Gf[3][s1][x][y] = -c3;
+                                dd3 += r3;
+                        }
+                        Gf[3][3][x][y] = dd3;
+                }
+                double *hg = hloc + g * nh1;
+                for (s1 = 0; s1 < 4; s1++)
+                for (t1 = 0; t1 < 4; t1++) {
+                        double *hp = hg + ((size_t)at[s1] * natm + at[t1]) * 9;
+                        for (x = 0; x < 3; x++)
+                                for (y = 0; y < 3; y++) hp[x * 3 + y] += Gf[s1][t1][x][y];
+                }
+        }
+}
+
+/* Rys core for the buffered lanes of a class (unused lanes padded with zero
+ * weight), lane sums to their shell quartets, finished quartets finalized */
+static void flush_class(ClassBuf *cb, double *T, double *ws, double *acc, int ngroup, int mode,
+                        int natm, size_t nh1, double *hloc)
+{
+        const int nl = cb->nlane;
+        int s, v, g, k, a;
+        if (nl == 0) return;
+        for (v = nl; v < VL; v++) {
+                for (s = 0; s < 3; s++) {
+                        cb->lanes.c00[s][v] = cb->lanes.c00p[s][v] = 0;
+                        cb->ab[s][v] = cb->cd[s][v] = 0;
+                }
+                cb->lanes.b00[v] = cb->lanes.b10[v] = cb->lanes.b01[v] = cb->lanes.gz[v] = 0;
+                cb->lanes.ai2[v] = cb->lanes.aj2[v] = cb->lanes.ak2[v] = 0;
+                for (a = 0; a < ngroup * cb->nf4; a++) cb->wl[(size_t)a * VL + v] = 0;
+        }
+        for (s = 0; s < 3; s++)
+                tables_dir(T + (size_t)s * TSZV, ws, cb->qs.l, cb->lanes.c00[s], cb->lanes.c00p[s],
+                           cb->lanes.b10, cb->lanes.b01, cb->lanes.b00, cb->ab[s], cb->cd[s],
+                           s == 2 ? cb->lanes.gz : cb->lanes.one, cb->lanes.ai2, cb->lanes.aj2, cb->lanes.ak2);
+        memset(acc, 0, sizeof(double) * ngroup * NTERM * VL);
+        assemble(acc, T, &cb->qs, cb->wl, ngroup, cb->nf4, mode, 0);
+        for (v = 0; v < nl; v++) {
+                const int q = cb->slot[v];
+                double *sm = cb->sum[q];
+                for (g = 0; g < ngroup; g++)
+                        for (k = 0; k < NTERM; k++) sm[g * NTERM + k] += acc[((size_t)g * NTERM + k) * VL + v];
+                if (--cb->nleft[q] == 0 && !cb->open[q]) {
+                        finalize(sm, cb->at[q], ngroup, mode, natm, nh1, hloc);
+                        cb->busy[q] = 0;
+                }
+        }
+        cb->nlane = 0;
+}
+
 void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, double *kfac,
                           double *dm, double *qcond, double *dcond, double tol, double prim_tol,
                           int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env)
@@ -423,14 +551,10 @@ void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, doub
         double *w = malloc(sizeof(double) * maxf4 * ngroup);      /* primitive weights */
         double *T = malloc(sizeof(double) * 3 * TSZV);
         double *ws = malloc(sizeof(double) * WSV_SIZE);
-        double *wl = malloc(sizeof(double) * maxf4 * ngroup * VL);     /* lane weights */
         double *acc = malloc(sizeof(double) * MAXGROUP * NTERM * VL);
-        Lanes lanes;
-        int nlane = 0, v;
-        for (v = 0; v < VL; v++) lanes.one[v] = 1.;
         double *eijs = malloc(sizeof(double) * MAXPRIM * MAXPRIM);
-        QuartetShape qs;
-        int ij, kl, ish, jsh, ksh, lsh;
+        ClassBuf **cbs = calloc(NCLASS, sizeof(ClassBuf *));
+        int ij, kl, ish, jsh, ksh, lsh, v;
 #pragma omp for schedule(dynamic, 2)
         for (ij = 0; ij < npair; ij++) {
                 shell_pair(ij, &ish, &jsh);
@@ -465,25 +589,28 @@ void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, doub
                                 continue;
                         }
                         int sh[4] = {ish, jsh, ksh, lsh};
-                        int nprim[4], nctr[4], at[4], s;
+                        int l[4], nf[4], nprim[4], nctr[4], at[4], s;
                         double *ex[4], *cf[4], *R[4];
                         double fac = 1;
                         for (s = 0; s < 4; s++) {
                                 int *b = bas + sh[s] * BAS_SLOTS;
-                                qs.l[s] = b[ANG_OF];
+                                l[s] = b[ANG_OF];
+                                nf[s] = (l[s] + 1) * (l[s] + 2) / 2;
                                 nprim[s] = b[NPRIM_OF];
                                 nctr[s] = b[NCTR_OF];
                                 at[s] = b[ATOM_OF];
                                 ex[s] = env + b[PTR_EXP];
                                 cf[s] = env + b[PTR_COEFF];
                                 R[s] = env + atm[at[s] * ATM_SLOTS + PTR_COORD];
-                                qs.nf[s] = cart_powers(qs.l[s], qs.px[s], qs.py[s], qs.pz[s]);
-                                fac *= common_fac_sp(qs.l[s]);
+                                fac *= common_fac_sp(l[s]);
                         }
                         if (ish == jsh) fac *= .5;
                         if (ksh == lsh) fac *= .5;
                         if (ij == kl) fac *= .5;
-                        const int nfi = qs.nf[0], nfj = qs.nf[1], nfk = qs.nf[2], nfl = qs.nf[3];
+                        const int ckey = ((l[0] * (LMAX + 1) + l[1]) * (LMAX + 1) + l[2]) * (LMAX + 1) + l[3];
+                        ClassBuf *cb = cbs[ckey];
+                        if (cb == NULL) cb = cbs[ckey] = class_new(l, ngroup);
+                        const int nfi = nf[0], nfj = nf[1], nfk = nf[2], nfl = nf[3];
                         const int nci = nctr[0], ncj = nctr[1], nck = nctr[2], ncl = nctr[3];
                         /* contracted functions: index (c, f) -> c * nf + f; dd[g][I][J][K][L] */
                         const int NI = nci * nfi, NJ = ncj * nfj, NK = nck * nfk, NL = ncl * nfl;
@@ -494,38 +621,35 @@ void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, doub
                                 double *ddg = dd + g * nd;
                                 double jf = 4 * jfac[g] * fac, kf = kfac[g] * fac;
                                 for (a = 0; a < NI; a++)
-                                for (b = 0; b < NJ; b++)
-                                for (c = 0; c < NK; c++)
-                                for (d = 0; d < NL; d++) {
-                                        size_t A = a0 + a, B = b0 + b, C = c0 + c, D = e0 + d;
-                                        ddg[((a * NJ + b) * NK + c) * NL + d] =
-                                                jf * dm[A * nao + B] * dm[C * nao + D]
-                                              + kf * (dm[A * nao + C] * dm[B * nao + D]
-                                                      + dm[A * nao + D] * dm[B * nao + C]);
+                                for (b = 0; b < NJ; b++) {
+                                        const double dab = jf * dm[(a0 + a) * nao + b0 + b];
+                                        const double *dA = dm + (a0 + a) * nao, *dB = dm + (b0 + b) * nao;
+                                        for (c = 0; c < NK; c++) {
+                                                const double dbc = dB[c0 + c], dac = dA[c0 + c];
+                                                const double *dC = dm + (c0 + c) * nao;
+                                                double *o = ddg + ((a * NJ + b) * NK + c) * NL;
+                                                for (d = 0; d < NL; d++)
+                                                        o[d] = dab * dC[e0 + d] + kf * (dac * dB[e0 + d] + dA[e0 + d] * dbc);
+                                        }
                                 }
                         }
+                        /* a free slot of the class buffer: every pending quartet
+                         * has a lane in the buffer, which holds fewer than VL */
+                        int qslot = 0;
+                        while (cb->busy[qslot]) qslot++;
+                        cb->busy[qslot] = cb->open[qslot] = 1;
+                        cb->nleft[qslot] = cb->used[qslot] = 0;
+                        for (s = 0; s < 4; s++) cb->at[qslot][s] = at[s];
+                        memset(cb->sum[qslot], 0, sizeof(double) * ngroup * NTERM);
                         double ab[3], cdv[3];
                         for (s = 0; s < 3; s++) {
                                 ab[s] = R[0][s] - R[1][s];
                                 cdv[s] = R[2][s] - R[3][s];
                         }
                         double rcd2 = cdv[0] * cdv[0] + cdv[1] * cdv[1] + cdv[2] * cdv[2];
-                        const int nroots = (qs.l[0] + qs.l[1] + qs.l[2] + qs.l[3] + 2) / 2 + 1;
+                        const int nroots = (l[0] + l[1] + l[2] + l[3] + 2) / 2 + 1;
                         const int nf4 = nfi * nfj * nfk * nfl;
-                        /* G[g][s][t][x][y] */
-                        double G[MAXGROUP][3][3][3][3];
-                        memset(G, 0, sizeof(G));
-                        double E[MAXGROUP] = {0};
                         int pi, pj, pk, pl;
-                        memset(acc, 0, sizeof(double) * ngroup * NTERM * VL);
-                        nlane = 0;
-#define FLUSH_LANES() do { \
-                                for (s = 0; s < 3; s++) \
-                                        tables_dir(T + (size_t)s * TSZV, ws, qs.l, lanes.c00[s], lanes.c00p[s], \
-                                                   lanes.b10, lanes.b01, lanes.b00, ab[s], cdv[s], \
-                                                   s == 2 ? lanes.gz : lanes.one, lanes.ai2, lanes.aj2, lanes.ak2); \
-                                assemble(acc, T, &qs, single ? dd : wl, ngroup, nf4, mode, single); \
-                                nlane = 0; } while (0)
                         /* bounds for the primitive screening (no thresholds of their own:
                          * |w| <= ddmax prod_s nctr_s max_c |c_s|) */
                         double ddmax = 0, *cmax[4];
@@ -534,7 +658,7 @@ void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, doub
                         for (s = 0; s < 4; s++) cmax[s] = cmax_all + sh[s] * MAXPRIM;
                         /* all four shells singly contracted: the primitive weights are
                          * c_i c_j c_k c_l dd, the coefficients go into the z-direction
-                         * prefactor and dd serves all lanes */
+                         * prefactor and dd is the lane weight */
                         const int single = nci == 1 && ncj == 1 && nck == 1 && ncl == 1;
                         for (pl = 0; pl < nprim[3]; pl++) {
                         for (pk = 0; pk < nprim[2]; pk++) {
@@ -552,13 +676,13 @@ void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, doub
                                         for (a = 0; a < NI * NJ; a++) {
                                                 for (fk = 0; fk < nfk; fk++)
                                                 for (fl = 0; fl < nfl; fl++) {
-                                                        double v = 0;
+                                                        double v1 = 0;
                                                         for (ck = 0; ck < nck; ck++)
                                                         for (cl = 0; cl < ncl; cl++)
-                                                                v += cf[2][ck * nprim[2] + pk] * cf[3][cl * nprim[3] + pl]
-                                                                   * ddg[(size_t)a * NK * NL + (ck * nfk + fk) * NL
-                                                                         + cl * nfl + fl];
-                                                        xg[((size_t)a * nfk + fk) * nfl + fl] = v;
+                                                                v1 += cf[2][ck * nprim[2] + pk] * cf[3][cl * nprim[3] + pl]
+                                                                    * ddg[(size_t)a * NK * NL + (ck * nfk + fk) * NL
+                                                                          + cl * nfl + fl];
+                                                        xg[((size_t)a * nfk + fk) * nfl + fl] = v1;
                                                 }
                                         }
                                 }
@@ -606,109 +730,51 @@ void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, doub
                                         if (pref * wmax < prim_tol) continue;
                                         double u[MAXROOTS], rw[MAXROOTS];
                                         CINTrys_roots(nroots, x, u, rw);
+                                        const double *wsrc = single ? dd : w;
                                         int r;
                                         for (r = 0; r < nroots; r++) {
+                                                const int n = cb->nlane;
                                                 double t2 = u[r] / (1 + u[r]);
-                                                lanes.b00[nlane] = .5 * t2 / asum;
-                                                lanes.b10[nlane] = .5 / aij - .5 * akl * t2 / (aij * asum);
-                                                lanes.b01[nlane] = .5 / akl - .5 * aij * t2 / (akl * asum);
+                                                cb->lanes.b00[n] = .5 * t2 / asum;
+                                                cb->lanes.b10[n] = .5 / aij - .5 * akl * t2 / (aij * asum);
+                                                cb->lanes.b01[n] = .5 / akl - .5 * aij * t2 / (akl * asum);
                                                 for (s = 0; s < 3; s++) {
-                                                        lanes.c00[s][nlane] = P[s] - R[0][s] - akl * t2 / asum * PQ[s];
-                                                        lanes.c00p[s][nlane] = Q[s] - R[2][s] + aij * t2 / asum * PQ[s];
+                                                        cb->lanes.c00[s][n] = P[s] - R[0][s] - akl * t2 / asum * PQ[s];
+                                                        cb->lanes.c00p[s][n] = Q[s] - R[2][s] + aij * t2 / asum * PQ[s];
+                                                        cb->ab[s][n] = ab[s];
+                                                        cb->cd[s][n] = cdv[s];
                                                 }
-                                                lanes.gz[nlane] = pref * cc4 * rw[r];
-                                                lanes.ai2[nlane] = 2 * ai;
-                                                lanes.aj2[nlane] = 2 * aj;
-                                                lanes.ak2[nlane] = 2 * ak;
-                                                if (!single)
-                                                        for (a = 0; a < ngroup * nf4; a++) wl[(size_t)a * VL + nlane] = w[a];
-                                                if (++nlane == VL) FLUSH_LANES();
+                                                cb->lanes.gz[n] = pref * cc4 * rw[r];
+                                                cb->lanes.ai2[n] = 2 * ai;
+                                                cb->lanes.aj2[n] = 2 * aj;
+                                                cb->lanes.ak2[n] = 2 * ak;
+                                                for (a = 0; a < ngroup * nf4; a++) cb->wl[(size_t)a * VL + n] = wsrc[a];
+                                                cb->slot[n] = qslot;
+                                                cb->nleft[qslot]++;
+                                                cb->used[qslot] = 1;
+                                                if (++cb->nlane == VL)
+                                                        flush_class(cb, T, ws, acc, ngroup, mode, natm, nh1, hloc);
                                         }
                                 } }
                         } }
-                        if (nlane > 0) {
-                                for (v = nlane; v < VL; v++) {
-                                        for (s = 0; s < 3; s++) lanes.c00[s][v] = lanes.c00p[s][v] = 0;
-                                        lanes.b00[v] = lanes.b10[v] = lanes.b01[v] = lanes.gz[v] = 0;
-                                        lanes.ai2[v] = lanes.aj2[v] = lanes.ak2[v] = 0;
-                                        if (!single)
-                                                for (a = 0; a < ngroup * nf4; a++) wl[(size_t)a * VL + v] = 0;
-                                }
-                                FLUSH_LANES();
-                        }
-                        {
-                                int s1, t1, x;
-                                for (g = 0; g < ngroup; g++) {
-                                        const double *ag = acc + (size_t)g * NTERM * VL;
-                                        double sum[NTERM];
-                                        int k;
-                                        for (k = 0; k < NTERM; k++) {
-                                                double t3 = 0;
-                                                for (v = 0; v < VL; v++) t3 += ag[k * VL + v];
-                                                sum[k] = t3;
-                                        }
-                                        for (s1 = 0; s1 < 3; s1++)
-                                                for (t1 = s1; t1 < 3; t1++)
-                                                        for (x = 0; x < 3; x++)
-                                                                G[g][s1][t1][x][x] = sum[x * 6 + PAIR[s1][t1]];
-                                        for (s1 = 0; s1 < 3; s1++)
-                                                for (t1 = 0; t1 < 3; t1++) {
-                                                        G[g][s1][t1][0][1] = sum[18 + s1 * 3 + t1];
-                                                        G[g][s1][t1][0][2] = sum[27 + s1 * 3 + t1];
-                                                        G[g][s1][t1][1][2] = sum[36 + s1 * 3 + t1];
-                                                }
-                                        E[g] = sum[45];
-                                }
-                        }
-#undef FLUSH_LANES
-                        if (mode == 1) {
-                                for (g = 0; g < ngroup; g++) hloc[g] += E[g];
-                                continue;
-                        }
-                        /* complete G: symmetric diagonal blocks, G[s][t][y][x] = G[t][s][x][y] */
-                        for (g = 0; g < ngroup; g++) {
-                                double Gf[4][4][3][3];
-                                int s1, t1, x, y;
-                                for (s1 = 0; s1 < 3; s1++)
-                                for (t1 = 0; t1 < 3; t1++)
-                                for (x = 0; x < 3; x++)
-                                for (y = 0; y < 3; y++) {
-                                        double v;
-                                        if (x == y) {
-                                                v = s1 <= t1 ? G[g][s1][t1][x][x] : G[g][t1][s1][x][x];
-                                        } else if (x < y) {
-                                                v = G[g][s1][t1][x][y];
-                                        } else {
-                                                v = G[g][t1][s1][y][x];
-                                        }
-                                        Gf[s1][t1][x][y] = v;
-                                }
-                                /* fourth centre: d_D = -(d_A + d_B + d_C) */
-                                for (x = 0; x < 3; x++)
-                                for (y = 0; y < 3; y++) {
-                                        double dd3 = 0;
-                                        for (s1 = 0; s1 < 3; s1++) {
-                                                double r3 = 0, c3 = 0;
-                                                for (t1 = 0; t1 < 3; t1++) {
-                                                        r3 += Gf[s1][t1][x][y];
-                                                        c3 += Gf[t1][s1][x][y];
-                                                }
-                                                Gf[s1][3][x][y] = -r3;
-                                                Gf[3][s1][x][y] = -c3;
-                                                dd3 += r3;
-                                        }
-                                        Gf[3][3][x][y] = dd3;
-                                }
-                                double *hg = hloc + g * nh1;
-                                for (s1 = 0; s1 < 4; s1++)
-                                for (t1 = 0; t1 < 4; t1++) {
-                                        double *hp = hg + ((size_t)at[s1] * natm + at[t1]) * 9;
-                                        for (x = 0; x < 3; x++)
-                                                for (y = 0; y < 3; y++) hp[x * 3 + y] += Gf[s1][t1][x][y];
-                                }
+                        /* the quartet is complete once its buffered lanes are flushed */
+                        cb->open[qslot] = 0;
+                        if (cb->nleft[qslot] == 0) {
+                                if (cb->used[qslot])
+                                        finalize(cb->sum[qslot], cb->at[qslot], ngroup, mode, natm, nh1, hloc);
+                                cb->busy[qslot] = 0;
                         }
                 }
         }
+        /* the partly filled buffers of this thread */
+        for (v = 0; v < NCLASS; v++) {
+                if (cbs[v] != NULL) {
+                        flush_class(cbs[v], T, ws, acc, ngroup, mode, natm, nh1, hloc);
+                        free(cbs[v]->wl);
+                        free(cbs[v]);
+                }
+        }
+        free(cbs);
 #pragma omp critical
         {
                 size_t n;
@@ -720,7 +786,6 @@ void SOCVHFhess2e_jk_cart(double *hess, int mode, int ngroup, double *jfac, doub
         free(w);
         free(T);
         free(ws);
-        free(wl);
         free(acc);
         free(eijs);
 }
