@@ -6,6 +6,7 @@
 #include <cstdio>
 
 #include "fci_davidson.h"
+#include "profile.h"
 
 namespace zshci {
 
@@ -102,14 +103,14 @@ void DistributedH<S>::Apply(const S* x, S* y) const {
     x_.ShareFromRoot(comm_);
   }
   double now = omp_get_wtime();
-  seconds_comm_ += now - t;
+  seconds_share_ += now - t;
   t = now;
   local_.Apply(x, y);
   now = omp_get_wtime();
   seconds_local_ += now - t;
   t = now;
   comm_.SumToRoot(AsDoubles(y), kDoublesPerScalar<S> * dim());
-  seconds_comm_ += omp_get_wtime() - t;
+  seconds_reduce_ += omp_get_wtime() - t;
 }
 
 template <typename S>
@@ -121,14 +122,14 @@ void DistributedH<S>::Serve() const {
     if (command == kStop) return;
     x_.ShareFromRoot(comm_);
     double now = omp_get_wtime();
-    seconds_comm_ += now - t;
+    seconds_share_ += now - t;
     t = now;
     local_.Apply(x_.data(), y_.data());
     now = omp_get_wtime();
     seconds_local_ += now - t;
     t = now;
     comm_.SumToRoot(AsDoubles(y_.data()), kDoublesPerScalar<S> * dim());
-    seconds_comm_ += omp_get_wtime() - t;
+    seconds_reduce_ += omp_get_wtime() - t;
   }
 }
 
@@ -161,14 +162,24 @@ DavidsonResult SolveDistributed(const LinearOperator<S>& local,
   if (comm.size() > 1) {
     // How the products divided: the local work of every rank and, on the
     // root, the communication (with the wait for the slowest rank).
-    const std::vector<double> local =
-        comm.GatherAll(std::vector<double>{h.seconds_local()});
+    const std::vector<double> times = comm.GatherAll(std::vector<double>{
+        h.seconds_local(), h.seconds_share(), h.seconds_reduce()});
     if (comm.is_root() && result.num_products > 0) {
+      std::vector<double> local;
+      for (size_t r = 0; r < times.size(); r += 3) local.push_back(times[r]);
       std::printf(
           "distributed products: %d, local work per rank %.1f to "
           "%.1f s, root communicating and waiting %.1f s\n",
           result.num_products, *std::min_element(local.begin(), local.end()),
           *std::max_element(local.begin(), local.end()), h.seconds_comm());
+      if (ProfileOn()) {
+        std::printf("  profile dav: per rank local/share/reduce (s):");
+        for (size_t r = 0; r < times.size(); r += 3) {
+          std::printf(" [%.1f %.1f %.1f]", times[r], times[r + 1],
+                      times[r + 2]);
+        }
+        std::printf("\n");
+      }
     }
   }
   comm.Bcast(&result.energies);

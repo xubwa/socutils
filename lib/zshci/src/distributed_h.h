@@ -45,7 +45,11 @@ class DistributedH : public LinearOperator<S> {
 
   // Seconds this rank spent in its local products, and in communication.
   double seconds_local() const { return seconds_local_; }
-  double seconds_comm() const { return seconds_comm_; }
+  double seconds_comm() const { return seconds_share_ + seconds_reduce_; }
+  // Of the communication: sending x, and summing the products (with the
+  // wait for the slowest rank).
+  double seconds_share() const { return seconds_share_; }
+  double seconds_reduce() const { return seconds_reduce_; }
 
  private:
   enum Command : int { kStop = 0, kApply = 1 };
@@ -57,7 +61,8 @@ class DistributedH : public LinearOperator<S> {
   mutable SharedArray<S> x_;
   mutable std::vector<S> y_;
   mutable double seconds_local_ = 0.0;
-  mutable double seconds_comm_ = 0.0;
+  mutable double seconds_share_ = 0.0;
+  mutable double seconds_reduce_ = 0.0;
 };
 
 // Solves for the lowest eigenpairs with all ranks. On entry the root's

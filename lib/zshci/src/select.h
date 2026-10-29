@@ -42,6 +42,8 @@
 #include "input.h"
 #include "integrals.h"
 #include "output.h"
+#include "parallel_sort.h"
+#include "profile.h"
 #include "sparse_h.h"
 #include "spin_flip.h"
 
@@ -91,6 +93,7 @@ std::vector<Det<W>> SelectNewDeterminants(
     Span<Det<W>> dets, Span<Det<W>> sorted_dets, Span<double> weights,
     double epsilon, const Ints& ints, const HeatBath& heat_bath,
     const Filter& filter, const Comm& comm = Comm()) {
+  StageTimer timer(comm.is_root());
   std::vector<Det<W>> candidates;
   const long num_dets = static_cast<long>(dets.size());
   const long num_ranks = comm.size();
@@ -113,6 +116,7 @@ std::vector<Det<W>> SelectNewDeterminants(
 #pragma omp critical
     candidates.insert(candidates.end(), local.begin(), local.end());
   }
+  timer.Mark("sel: generate candidates");
   if (num_ranks > 1) {
     std::vector<std::vector<Det<W>>> outgoing(num_ranks);
     for (const Det<W>& det : candidates) {
@@ -120,17 +124,22 @@ std::vector<Det<W>> SelectNewDeterminants(
     }
     candidates = comm.Exchange(outgoing);
   }
-  std::sort(candidates.begin(), candidates.end());
+  timer.Mark("sel: exchange candidates");
+  ParallelSort(candidates.begin(), candidates.end());
   candidates.erase(std::unique(candidates.begin(), candidates.end()),
                    candidates.end());
+  timer.Mark("sel: sort candidates");
 
   std::vector<Det<W>> fresh;
   std::set_difference(candidates.begin(), candidates.end(),
                       sorted_dets.begin(), sorted_dets.end(),
                       std::back_inserter(fresh));
+  timer.Mark("sel: remove known");
   if (num_ranks > 1) {
     fresh = comm.GatherAll(fresh);
-    std::sort(fresh.begin(), fresh.end());
+    timer.Mark("sel: gather new");
+    ParallelSort(fresh.begin(), fresh.end());
+    timer.Mark("sel: sort new");
   }
   return fresh;
 }
@@ -929,14 +938,17 @@ void RunSelect(const Input& given, const Ints& ints, const Comm& comm) {
     const size_t old_size = shared_dets.size();
 
     const double select_start = omp_get_wtime();
+    StageTimer timer(comm.is_root());
     Selection<W> selection;
     {
       const SharedArray<double> weights =
           ShareSelectionWeights<W>(h, root_vectors, old_size, num_roots, comm);
+      timer.Mark("sel: weights");
       const SharedArray<uint8_t> active =
           SharedArray<uint8_t>::FromRoot(root_active, comm);
       const SharedArray<Det<W>> sorted_dets =
           ShareSortedActive(shared_dets.span(), root_active, comm);
+      timer.Mark("sel: sorted list");
       // The eigenvectors go to all ranks only for selectors that use them.
       SharedVectors<S> vectors;
       const bool with_vectors = selector->needs_vectors() && have_vectors;
@@ -955,6 +967,7 @@ void RunSelect(const Input& given, const Ints& ints, const Comm& comm) {
                                               old_size - num_inactive};
       selection = selector->Select(context);
     }
+    timer.Mark("sel: rest");
     const double build_start = omp_get_wtime();
 
     // The root applies the selection to the list: determinants taken out
@@ -1013,15 +1026,18 @@ void RunSelect(const Input& given, const Ints& ints, const Comm& comm) {
           "the space holds fewer determinants than roots; give more "
           "starting determinants or select more");
     }
+    timer.Mark("ham: new list (root)");
     if (num_fresh > 0) {
       if (comm.is_root()) {
         root_dets.insert(root_dets.end(), fresh.begin(), fresh.end());
         root_active.resize(new_size, 1);
       }
       shared_dets = SharedArray<Det<W>>::FromRoot(root_dets, comm);
+      timer.Mark("ham: share list");
       h.Extend(shared_dets.span(), old_size);
     }
     fresh = std::vector<Det<W>>();
+    timer.Mark("ham: extend");
 
     if (comm.is_root()) {
       if (!have_vectors) {
