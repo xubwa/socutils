@@ -27,6 +27,7 @@
 #include "input.h"
 #include "integrals.h"
 #include "output.h"
+#include "profile.h"
 #include "pt.h"
 #include "rdm.h"
 #include "sparse_h.h"
@@ -441,6 +442,7 @@ class VariationalH : private ElementSource<S> {
       ResetStored();
     }
     dets_ = dets;
+    StageTimer timer(comm_.is_root());
     if (spin_flip_ != 0) {
       if (first_new == 0) {
         flip_ = std::make_unique<SpinFlipLayout>(spin_flip_, dets[0].Count());
@@ -477,7 +479,9 @@ class VariationalH : private ElementSource<S> {
       // again.
       tables_->set_block_search((direct_ || adapt_) && connect_.blocks);
     }
+    timer.Mark("ham: diagonal");
     tables_->Extend(dets, first_new);
+    timer.Mark("ham: string tables");
     table_memory_ = tables_->memory();
     if (!incremental_) tables_->DropExtensionState();
     stats_.seconds_prepare += omp_get_wtime() - time;
@@ -681,6 +685,7 @@ class VariationalH : private ElementSource<S> {
   // Adds the rows of the determinants from first_new on within the memory
   // limit (see "adapt" in input.h). Collective.
   void ExtendWithinMemory(size_t first_new) {
+    StageTimer timer(comm_.is_root());
     const size_t n = dets_.size();
     // The connections are judged against the larger budget, that of the
     // two-sweep product, which needs no vectors of its own.
@@ -700,17 +705,20 @@ class VariationalH : private ElementSource<S> {
     std::vector<CsrBlock<S>> blocks = internal::BuildGroupBlocks(
         dets_, first_new, ints_, connect_.threshold, *tables_, &stats_,
         /*store_values=*/false, room, left_out.data(), flip_.get());
+    timer.Mark("ham: connections");
     // Every rank must know which rows the others left out.
     if (comm_.size() > 1) {
       std::vector<double> flags(left_out.begin(), left_out.end());
       comm_.Sum(flags.data(), flags.size());
       for (size_t k = 0; k < flags.size(); ++k) left_out[k] = flags[k] > 0.0;
     }
+    timer.Mark("ham: rows left out (sum)");
     direct_rows_.resize(first_new);
     direct_rows_.insert(direct_rows_.end(), left_out.begin(), left_out.end());
     num_direct_rows_ = 0;
     for (uint8_t flag : direct_rows_) num_direct_rows_ += flag;
     stored_.AppendBlocks(std::move(blocks));
+    timer.Mark("ham: append blocks");
     // The one-sweep product, which reads the matrix once but takes a vector
     // per thread, if the connections leave room for those and it does not
     // cost values: an element worked out in every product costs far more
@@ -728,6 +736,7 @@ class VariationalH : private ElementSource<S> {
                  values_held(true) >= values_held(false);
     stored_.set_product(one_sweep_ ? SparseH<S>::Product::kAutomatic
                                    : SparseH<S>::Product::kTwoSweeps);
+    timer.Mark("ham: partition rows");
     const size_t budget = HamiltonianBudget(n, one_sweep_);
     // Values: released from the newest blocks until the budget is kept,
     // then worked out for the blocks that have none while they fit.
@@ -746,10 +755,12 @@ class VariationalH : private ElementSource<S> {
       stored_.FillBlockValues(b);
       bytes += needed;
     }
+    timer.Mark("ham: values");
     // The rows are divided among the threads by their work, which depends
     // on which blocks hold values: once more, now that this is settled.
     stored_.set_product(one_sweep_ ? SparseH<S>::Product::kAutomatic
                                    : SparseH<S>::Product::kTwoSweeps);
+    timer.Mark("ham: partition rows again");
   }
 
   // The elements of stored blocks that hold columns only.
