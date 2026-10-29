@@ -35,6 +35,7 @@
  *          first, 3)  --shift S (preconditioner floor, 1e-3)
  *          --s2pen L (linear spin penalty H + L (S^2 - ss), 0)
  *          --solver lobpcg | davidson (lobpcg)  --max-space M (Davidson, 12)
+ *          --pspace K (the P-space preconditioner on K x K strings, 0: off)
  *
  * Library (libzgasci_dist.so): zgd_solve_ab (any lists) and zgd_solve
  * (alpha = beta), the same solve on a communicator of the caller (a
@@ -58,6 +59,12 @@
 extern void dsygv_(const int *itype, const char *jobz, const char *uplo, const int *n,
                    double *a, const int *lda, double *b, const int *ldb, double *w,
                    double *work, const int *lwork, int *info);
+extern void dsyevd_(const char *jobz, const char *uplo, const int *n, double *a, const int *lda,
+                    double *w, double *work, const int *lwork, int *iwork, const int *liwork,
+                    int *info);
+extern void dgemv_(const char *trans, const int *m, const int *n, const double *alpha,
+                   const double *a, const int *lda, const double *x, const int *incx,
+                   const double *beta, double *y, const int *incy);
 
 static int rank_, size_;
 static MPI_Comm comm_;
@@ -335,6 +342,7 @@ typedef struct {
   int64_t *rows_b, *strs_b, *perm_b;
   zg_plan *plan, *lplan, *lplan_b; /* all x all; own alpha x all beta; own beta x all alpha */
   double *xb, *zb;                 /* parity 0: two vectors held by beta rows */
+  struct pspace *ps;               /* the P-space preconditioner, or NULL */
   double *v, *v_bb, *v_aa;     /* H + s2pen S^2; its (BB,BB) block; its (AA,AA) block on the
                                  * beta-beta pairs (parity 0) */
   double *v_h, *v_bb_h, *v_aa_h; /* the same of H, if s2pen != 0 */
@@ -671,11 +679,189 @@ static void start_vector(dist *d, const double *hd, const double *x0, double *x)
   scal(1 / sqrt(gdot(x, x, L)), x, L);
 }
 
-/* t = -t / max(|hd - e|, shift): positive definite, as LOBPCG needs (hd - e
- * changes sign e.g. with an S^2 penalty and odd parity). */
-static void precondition(const double *hd, double e, double shift, double *t, int64_t L) {
+/* ---- the P-space preconditioner ------------------------------------------ */
+
+/* P = the product of k alpha and k beta strings (m = k^2 determinants): H_PP
+ * exact (the kernel on a plan of these strings), the rest diagonal.  The
+ * preconditioner is U max(|Lambda - E|, shift)^-1 U^T on P (H_PP = U Lambda
+ * U^T, once per solve) and 1 / max(|hd - E|, shift) elsewhere: positive
+ * definite, one vector in, one out; the basis of the eigensolver does not
+ * grow.  Per step: an Allreduce of m numbers and two m x m products.
+ * Strings: those of the largest marginal weights of the start vector if it
+ * is given (a warm start), else those of the lowest diagonal elements.
+ * zgd_set_pspace(k), ZGASCI_DIST_PSPACE, --pspace; 0: off. */
+static int pspace_k_ = 0, pspace_set_ = 0;
+
+void zgd_set_pspace(int k) {
+  pspace_set_ = 1;
+  pspace_k_ = k > 0 ? k : 0;
+}
+
+static void pspace_env(void) {
+  if (pspace_set_) return;
+  pspace_set_ = 1;
+  if (getenv("ZGASCI_DIST_PSPACE")) pspace_k_ = atoi(getenv("ZGASCI_DIST_PSPACE"));
+  if (pspace_k_ < 0) pspace_k_ = 0;
+}
+
+typedef struct pspace {
+  int ka, kb, m;
+  double *U, *lam;          /* m x m (column-major eigenvectors), m */
+  int64_t nown, *pos, *idx; /* own P elements: place in the own rows, index in P */
+  double *buf, *y;          /* m */
+} pspace;
+
+/* the k places of the smallest key[], ascending by place */
+static int64_t *pick(const double *key, int64_t n, int k) {
+  int64_t *order = malloc((size_t)(n + 1) * sizeof(int64_t));
+  for (int64_t i = 0; i < n; ++i) order[i] = i;
+  /* partial selection sort is enough for small k; n log n for safety */
+  for (int64_t i = 0; i < k; ++i) {
+    int64_t best = i;
+    for (int64_t j = i + 1; j < n; ++j)
+      if (key[order[j]] < key[order[best]]) best = j;
+    const int64_t t = order[i];
+    order[i] = order[best], order[best] = t;
+  }
+  qsort(order, k, sizeof(int64_t), cmp64);
+  return order;
+}
+
+static void pspace_free(dist *d) {
+  pspace *ps = d->ps;
+  if (!ps) return;
+  free(ps->U), free(ps->lam), free(ps->pos), free(ps->idx), free(ps->buf), free(ps->y);
+  free(ps);
+  d->ps = NULL;
+}
+
+static void pspace_build(dist *d, const double *hd, const double *x0) {
+  const int64_t n = d->n, nb = d->nb;
+  int ka = pspace_k_ < n ? pspace_k_ : (int)n, kb = pspace_k_ < nb ? pspace_k_ : (int)nb;
+  if (pspace_k_ <= 0 || (int64_t)ka * kb < 2) return;
+  const double t0 = now();
+  /* a key per string: -(marginal weight of x0), or the lowest diagonal element of its row /
+   * column; min over the processes */
+  double *keya = malloc((size_t)(n + 1) * sizeof(double)), *keyb = malloc((size_t)(nb + 1) * sizeof(double));
+  for (int64_t a = 0; a < n; ++a) keya[a] = INFINITY;
+  for (int64_t b = 0; b < nb; ++b) keyb[b] = INFINITY;
+  for (int64_t i = 0; i < d->nloc; ++i) {
+    const double *row = (x0 ? x0 : hd) + i * nb;
+    double ka_ = x0 ? 0 : INFINITY;
+    for (int64_t b = 0; b < nb; ++b) {
+      if (x0) {
+        ka_ -= row[b] * row[b];
+        keyb[b] = (keyb[b] == INFINITY ? 0 : keyb[b]) - row[b] * row[b];
+      } else {
+        if (row[b] < ka_) ka_ = row[b];
+        if (row[b] < keyb[b]) keyb[b] = row[b];
+      }
+    }
+    keya[d->lo + i] = ka_;
+  }
+  if (x0) { /* sums: the untouched entries are 0 */
+    for (int64_t a = 0; a < n; ++a) if (keya[a] == INFINITY) keya[a] = 0;
+    for (int64_t b = 0; b < nb; ++b) if (keyb[b] == INFINITY) keyb[b] = 0;
+    MPI_Allreduce(MPI_IN_PLACE, keya, (int)n, MPI_DOUBLE, MPI_SUM, comm_);
+    MPI_Allreduce(MPI_IN_PLACE, keyb, (int)nb, MPI_DOUBLE, MPI_SUM, comm_);
+  } else {
+    MPI_Allreduce(MPI_IN_PLACE, keya, (int)n, MPI_DOUBLE, MPI_MIN, comm_);
+    MPI_Allreduce(MPI_IN_PLACE, keyb, (int)nb, MPI_DOUBLE, MPI_MIN, comm_);
+  }
+  if (d->parity) { /* the same strings on both sides (P closed under the transpose) */
+    for (int64_t a = 0; a < n; ++a) keya[a] = fmin(keya[a], keyb[a]);
+    memcpy(keyb, keya, (size_t)n * sizeof(double));
+  }
+  int64_t *pa = pick(keya, n, ka), *pb = pick(keyb, nb, kb);
+  free(keya), free(keyb);
+  pspace *ps = calloc(1, sizeof(pspace));
+  ps->ka = ka, ps->kb = kb, ps->m = ka * kb;
+  const int m = ps->m;
+  /* H_PP by the kernel on a plan of the P strings, columns split over the processes */
+  int64_t *sa = malloc((size_t)ka * sizeof(int64_t)), *sb = malloc((size_t)kb * sizeof(int64_t));
+  for (int i = 0; i < ka; ++i) sa[i] = d->strs[pa[i]];
+  for (int j = 0; j < kb; ++j) sb[j] = d->strs_b[pb[j]];
+  zg_plan *sp = zg_plan_product(2 * d->norb, d->nalpha + d->nbeta, d->norb, ka, (const uint64_t *)sa,
+                                kb, (const uint64_t *)sb, 0, NULL, NULL, NULL);
+  if (!sp || zg_dim(sp) != m) die("pspace: plan");
+  ps->U = calloc((size_t)m * m, sizeof(double));
+  double *e = calloc(m, sizeof(double));
+  for (int j = rank_; j < m; j += size_) {
+    e[j] = 1;
+    zg_sigma_blas_d(sp, d->v, e, ps->U + (size_t)j * m);
+    e[j] = 0;
+  }
+  free(e);
+  zg_plan_free(sp);
+  free(sa), free(sb);
+  for (int64_t off = 0; off < (int64_t)m * m; off += CHUNK) {
+    const int64_t c = (int64_t)m * m - off < CHUNK ? (int64_t)m * m - off : CHUNK;
+    MPI_Allreduce(MPI_IN_PLACE, ps->U + off, (int)c, MPI_DOUBLE, MPI_SUM, comm_);
+  }
+  /* symmetrize (round-off) and diagonalize */
+  for (int i = 0; i < m; ++i)
+    for (int j = 0; j < i; ++j) {
+      const double a = 0.5 * (ps->U[(size_t)i * m + j] + ps->U[(size_t)j * m + i]);
+      ps->U[(size_t)i * m + j] = ps->U[(size_t)j * m + i] = a;
+    }
+  ps->lam = malloc(m * sizeof(double));
+  {
+    int info, lw = -1, liw = -1, iwq;
+    double wq;
+    dsyevd_("V", "U", &m, ps->U, &m, ps->lam, &wq, &lw, &iwq, &liw, &info);
+    lw = (int)wq + 1, liw = iwq + 1;
+    double *work = malloc((size_t)lw * sizeof(double));
+    int *iwork = malloc((size_t)liw * sizeof(int));
+    dsyevd_("V", "U", &m, ps->U, &m, ps->lam, work, &lw, iwork, &liw, &info);
+    if (info) die("pspace: dsyevd failed");
+    free(work), free(iwork);
+  }
+  /* the own P elements */
+  int64_t *amap = malloc((size_t)(n + 1) * sizeof(int64_t));
+  for (int64_t a = 0; a < n; ++a) amap[a] = -1;
+  for (int i = 0; i < ka; ++i) amap[pa[i]] = i;
+  ps->pos = malloc((size_t)(d->nloc * kb + 1) * sizeof(int64_t));
+  ps->idx = malloc((size_t)(d->nloc * kb + 1) * sizeof(int64_t));
+  ps->nown = 0;
+  for (int64_t i = 0; i < d->nloc; ++i) {
+    const int64_t ia = amap[d->lo + i];
+    if (ia < 0) continue;
+    for (int j = 0; j < kb; ++j) {
+      ps->pos[ps->nown] = i * nb + pb[j];
+      ps->idx[ps->nown] = ia * kb + j;
+      ps->nown++;
+    }
+  }
+  free(amap), free(pa), free(pb);
+  ps->buf = malloc(m * sizeof(double));
+  ps->y = malloc(m * sizeof(double));
+  d->ps = ps;
+  if (rank_ == 0 && verbose_) {
+    printf("pspace: %d x %d strings, %d determinants (by %s), E_P %.10f, %.1f s\n", ka, kb, m,
+           x0 ? "the weights of the start" : "the diagonal", ps->lam[0], now() - t0);
+    fflush(stdout);
+  }
+}
+
+/* t = -M^-1 t: on P, U max(|Lambda - e|, shift)^-1 U^T; elsewhere 1 / max(|hd
+ * - e|, shift).  Positive definite, as LOBPCG needs (hd - e changes sign e.g.
+ * with an S^2 penalty and odd parity). */
+static void precondition(dist *d, const double *hd, double e, double shift, double *t, int64_t L) {
+  pspace *ps = d->ps;
+  if (ps) {
+    memset(ps->buf, 0, ps->m * sizeof(double));
+    for (int64_t k = 0; k < ps->nown; ++k) ps->buf[ps->idx[k]] = t[ps->pos[k]];
+    MPI_Allreduce(MPI_IN_PLACE, ps->buf, ps->m, MPI_DOUBLE, MPI_SUM, comm_);
+    const int m = ps->m, one = 1;
+    const double o = 1.0, z = 0.0;
+    dgemv_("T", &m, &m, &o, ps->U, &m, ps->buf, &one, &z, ps->y, &one);
+    for (int i = 0; i < m; ++i) ps->y[i] /= -fmax(fabs(ps->lam[i] - e), shift);
+    dgemv_("N", &m, &m, &o, ps->U, &m, ps->y, &one, &z, ps->buf, &one);
+  }
 #pragma omp parallel for schedule(static)
   for (int64_t i = 0; i < L; ++i) t[i] /= -fmax(fabs(hd[i] - e), shift);
+  if (ps)
+    for (int64_t k = 0; k < ps->nown; ++k) t[ps->pos[k]] = ps->buf[ps->idx[k]];
 }
 
 /* The lowest state; *xout: its own rows (normalized), for the caller to free.
@@ -689,6 +875,7 @@ static double lobpcg(dist *d, const double *x0, int maxit, double tol, double rt
   double *t = malloc((size_t)(L + 1) * sizeof(double)), *ht = malloc((size_t)(L + 1) * sizeof(double));
   double *p = NULL, *hp = NULL;
   start_vector(d, hd, x0, x);
+  pspace_build(d, hd, x0);
   sigma(d, x, hx);
   double e = 0, e_old = NAN, rnorm = 0;
   const double t0 = now();
@@ -709,7 +896,7 @@ static double lobpcg(dist *d, const double *x0, int maxit, double tol, double rt
       break;
     }
     e_old = e;
-    precondition(hd, e, shift, t, L);
+    precondition(d, hd, e, shift, t, L);
     if (d->parity) symmetrize(d, t);
     axpy(-gdot(x, t, L), x, t, L);
     if (p) axpy(-gdot(p, t, L), p, t, L);
@@ -768,6 +955,7 @@ static double lobpcg(dist *d, const double *x0, int maxit, double tol, double rt
     fflush(stdout);
   }
   free(hd), free(hx), free(t), free(ht), free(p), free(hp);
+  pspace_free(d);
   *xout = x;
   return e;
 }
@@ -829,6 +1017,7 @@ static double davidson(dist *d, const double *x0, int maxit, double tol, double 
     for (int i_ = 0; i_ <= (j); ++i_) ss[i_ * msp + (j)] = ss[(j) * msp + i_] = c[i_]; \
   } while (0)
   start_vector(d, hd, x0, V[0]);
+  pspace_build(d, hd, x0);
   sigma(d, V[0], HV[0]);
   PROJECT(0);
   int m = 1, have_old = 0, collapse = 0, just_collapsed = 0;
@@ -883,7 +1072,7 @@ static double davidson(dist *d, const double *x0, int maxit, double tol, double 
       collapse = 0, just_collapsed = 1;
     }
     /* the new direction */
-    precondition(hd, e, shift, r, L);
+    precondition(d, hd, e, shift, r, L);
     if (d->parity) symmetrize(d, r);
     const double n0 = sqrt(gdot(r, r, L));
     for (int pass = 0; pass < 2; ++pass) {
@@ -921,6 +1110,7 @@ static double davidson(dist *d, const double *x0, int maxit, double tol, double 
   if (xo != last) free(xo);
   free(V), free(HV), free(hd), free(hx), free(hxo), free(r), free(hs), free(ss), free(a);
   free(b), free(w), free(c), free(work);
+  pspace_free(d);
   *xout = last;
   return e;
 }
@@ -1182,6 +1372,7 @@ int zgd_solve_ab(int comm_f, int norb, int nalpha, int nbeta, int uhf, const dou
     CHUNK = atol(getenv("ZGASCI_DIST_CHUNK"));
   if (parity != 1 && parity != -1 && parity != 0) die("parity must be +1, -1 or 0");
   eigensolver_env();
+  pspace_env();
   if (n > INT32_MAX || nb > INT32_MAX) die("more strings than an MPI count");
   const double t0 = now();
   const size_t n2 = (size_t)norb * norb, n4 = n2 * n2;
@@ -1240,6 +1431,7 @@ int main(int argc, char **argv) {
   MPI_Init_thread(&argc, &argv, MPI_THREAD_FUNNELED, &provided);
   comm_ = MPI_COMM_WORLD;
   eigensolver_env();
+  pspace_env();
   MPI_Comm_rank(comm_, &rank_);
   MPI_Comm_size(comm_, &size_);
   if (getenv("ZGASCI_DIST_CHUNK") && atol(getenv("ZGASCI_DIST_CHUNK")) > 0)
@@ -1261,6 +1453,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(argv[i], "--s2pen")) s2pen = atof(argv[i + 1]);
     else if (!strcmp(argv[i], "--solver")) esolver_ = !strcmp(argv[i + 1], "davidson");
     else if (!strcmp(argv[i], "--max-space")) max_space_ = atoi(argv[i + 1]);
+    else if (!strcmp(argv[i], "--pspace")) pspace_k_ = atoi(argv[i + 1]);
     else die("unknown option");
   }
   const double t0 = now();

@@ -403,6 +403,23 @@ of the start where LOBPCG stayed in it (UHF-triplet orbitals, (5,5): LOBPCG
 -80.4470, the B1 state; Davidson -80.4762, the ground state).  Default:
 LOBPCG (memory).
 
+P-space preconditioner (`--pspace k`, ZGASCI_DIST_PSPACE, c_solve
+`pspace=`; default off): P = k alpha x k beta strings (the lowest diagonal
+elements, or the largest marginal weights of a warm start), H_PP exact (the
+kernel on a plan of these strings, columns split over the processes; one
+dsyevd), U max(|Lambda - E|, shift)^-1 U^T on P and the diagonal elsewhere;
+the basis of the eigensolver does not grow (one vector in, one out); per
+step an Allreduce of k^2 numbers and two k^2 x k^2 products.  The build is
+O(k^4) products of the small plan.  Measured on the [4Fe-4S] subspace above
+(LOBPCG; build / iterations / whole solve): no P 39 it 985 s; k = 32 (1024
+determinants) 33 s / 37 / 949 s; k = 64 129 s / 36 / 1023 s; k = 96 (9216)
+316 s / 35 / 1194 s; Davidson with k = 64: 36 / 1029 s.  E_P only reaches
+-326.587 .. -326.611 against -326.7786: the correlation of this space is
+spread far beyond a few thousand determinants, so no gain there.  Checks
+(csolver_check, ucheck, uhfcheck with k = 8, 16, both solvers): correct; on
+H2O with rotated beta orbitals Davidson 376 instead of 613 iterations in one
+case, LOBPCG less robust (two runs not converged in 800).
+
 ## 7. What stays for later
 
 * **(AB,AB)** is the larger half of a sigma. Its GEMMs do about 9 times
