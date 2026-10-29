@@ -11,7 +11,7 @@ plus C passes over the elements:
               (c_k = C^T d_k phi, nocc instead of nao: rho = sum_i c_0 c_0,
               d_k rho = 2 sum_i c_0 c_k, tau = 1/2 sum_k sum_i c_k c_k),
               else from c = D phi;
-    aow       = sum_k w_k d_k phi           (lib/dft/fxc_multi.c SOCDFTaow_multi)
+    aow       = sum_k w_k d_k phi           (lib/dft/xc_hess.c SOCDFTxc_grad_aow)
     V        += phi_0 aow^T                  (GEMM; GGA / MGGA: V + V^T at the end)
     V1       += sum_k d_k phi (w_tau d_k phi)^T   (MGGA)
 
@@ -80,7 +80,7 @@ def nr_rks(ni, mol, grids, xc_code, dms, relativity=0, hermi=1, max_memory=2000,
     xctype = ni._xc_type(xc_code)
     # meta-GGA keeps pyscf's (the tau products are slower here, 2.5 vs 2.1 s for
     # (H2O)_16 TPSS); the MGGA branches below are kept for completeness
-    if (libdft is None or not hasattr(libdft, 'SOCDFTaow_multi') or hermi != 1 or mol.cart
+    if (libdft is None or not hasattr(libdft, 'SOCDFTxc_grad_aow') or hermi != 1 or mol.cart
             or xctype not in ('LDA', 'GGA', 'MGGA') or (xctype == 'MGGA' and not USE_MGGA)
             or (xctype == 'MGGA' and any(x in xc_code.upper() for x in ('CC06', 'CS', 'BR89', 'MK00')))):
         return numint.nr_rks(ni, mol, grids, xc_code, dms, relativity, hermi, max_memory, verbose)
@@ -103,8 +103,6 @@ def nr_rks(ni, mol, grids, xc_code, dms, relativity=0, hermi=1, max_memory=2000,
     for ao, mask, weight, coords in ni.block_loop(mol, grids, nao, ao_deriv, max_memory=max_memory):
         ng = weight.size
         aoT, cs = _ao_stack(ao)
-        if cs != nao * ng:              # SOCDFTaow_multi takes a contiguous stack
-            aoT = numpy.ascontiguousarray(aoT)
         if aow is None or aow.shape[1] != ng:
             aow = numpy.empty((nao, ng))
         for i in range(nset):
@@ -118,9 +116,11 @@ def nr_rks(ni, mol, grids, xc_code, dms, relativity=0, hermi=1, max_memory=2000,
             wv = numpy.ascontiguousarray(numpy.asarray(vxc).reshape(-1, ng)[:ncomp] * weight)
             if xctype != 'LDA':
                 wv[0] *= .5             # *.5 for V + V^T
-            libdft.SOCDFTaow_multi(aow.ctypes.data_as(ctypes.c_void_p), wv.ctypes.data_as(ctypes.c_void_p),
-                                   aoT.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(1), ctypes.c_int(ncomp),
-                                   ctypes.c_int(nao), ctypes.c_int(ng))
+            # by AO rows, each a contiguous stream (lib/dft/xc_hess.c; 2.3x the
+            # grid-chunked SOCDFTaow_multi on large blocks, which are bandwidth bound)
+            libdft.SOCDFTxc_grad_aow(aow.ctypes.data_as(ctypes.c_void_p), aoT.ctypes.data_as(ctypes.c_void_p),
+                                     wv.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(ncomp), ctypes.c_int(ng),
+                                     ctypes.c_int(nao), ctypes.c_long(cs))
             lib.dot(aoT[0], aow.T, beta=1, c=vmat[i])
             if xctype == 'MGGA':
                 wt = numpy.asarray(vxc)[4] * weight * .5        # *.5 for 1/2 in tau
