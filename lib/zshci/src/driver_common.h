@@ -732,10 +732,22 @@ class VariationalH : private ElementSource<S> {
                                            stored_.num_elements() * sizeof(S))
                                 : size_t{0};
     };
-    one_sweep_ = connections <= HamiltonianBudget(n, true) &&
+    // It is also the faster one as long as its vectors take no more than the
+    // elements: zeroing and summing them streams through memory, while the
+    // second sweep reads the elements again at random places. (The rule of
+    // SparseH alone asks for four times less, which a rank holding a part
+    // of the matrix with full-length vectors does not meet; on four nodes
+    // the one-sweep product was 1.5 times as fast there.)
+    const size_t v = flip_ != nullptr ? flip_->num_functions() : n;
+    const bool faster =
+        static_cast<size_t>(omp_get_max_threads()) * v * sizeof(S) <=
+        stored_.num_elements() * (sizeof(DetIndex) + sizeof(S));
+    one_sweep_ = faster && connections <= HamiltonianBudget(n, true) &&
                  values_held(true) >= values_held(false);
-    stored_.set_product(one_sweep_ ? SparseH<S>::Product::kAutomatic
-                                   : SparseH<S>::Product::kTwoSweeps);
+    const typename SparseH<S>::Product product =
+        one_sweep_ ? SparseH<S>::Product::kOneSweep
+                   : SparseH<S>::Product::kTwoSweeps;
+    stored_.set_product(product);
     timer.Mark("ham: partition rows");
     const size_t budget = HamiltonianBudget(n, one_sweep_);
     // Values: released from the newest blocks until the budget is kept,
@@ -758,8 +770,7 @@ class VariationalH : private ElementSource<S> {
     timer.Mark("ham: values");
     // The rows are divided among the threads by their work, which depends
     // on which blocks hold values: once more, now that this is settled.
-    stored_.set_product(one_sweep_ ? SparseH<S>::Product::kAutomatic
-                                   : SparseH<S>::Product::kTwoSweeps);
+    stored_.set_product(product);
     timer.Mark("ham: partition rows again");
   }
 

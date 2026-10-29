@@ -257,15 +257,37 @@ void SparseH<S>::Multiply(const S* x, S* y) const {
       }
     }
     // Element i received contributions from the threads whose range ends
-    // above i: its owner and those after it.
-#pragma omp parallel for schedule(static, 1)
+    // above i: its owner and those after it. The first range thus sums all
+    // vectors and the last range one, so that a thread per range would
+    // leave most threads waiting; and going through the vectors element by
+    // element touches as many places in memory as there are vectors. So
+    // the ranges are summed in pieces, vector after vector, by whichever
+    // thread is free. Each element is summed in the same order as before.
+    constexpr size_t kPiece = 2048;
+    std::vector<size_t> first_task(num_segments + 1, 0);
     for (int t = 0; t < num_segments; ++t) {
-      for (size_t i = segment_[t]; i < segment_[t + 1]; ++i) {
-        S sum(0.0);
+      first_task[t + 1] =
+          first_task[t] + (segment_[t + 1] - segment_[t] + kPiece - 1) / kPiece;
+    }
+    const long num_tasks = static_cast<long>(first_task[num_segments]);
+#pragma omp parallel
+    {
+      std::vector<S> sum(kPiece);
+#pragma omp for schedule(dynamic, 1)
+      for (long k = 0; k < num_tasks; ++k) {
+        const int t = static_cast<int>(
+            std::upper_bound(first_task.begin(), first_task.end(),
+                             static_cast<size_t>(k)) -
+            first_task.begin() - 1);
+        const size_t begin = segment_[t] + (k - first_task[t]) * kPiece;
+        const size_t count = std::min(kPiece, segment_[t + 1] - begin);
+        std::fill(sum.begin(), sum.begin() + count, S(0.0));
         for (int u = t; u < num_segments; ++u) {
-          sum += scratch_[static_cast<size_t>(u) * n + i];
+          const S* const part =
+              scratch_.data() + static_cast<size_t>(u) * n + begin;
+          for (size_t i = 0; i < count; ++i) sum[i] += part[i];
         }
-        y[i] += sum;
+        for (size_t i = 0; i < count; ++i) y[begin + i] += sum[i];
       }
     }
     return;
