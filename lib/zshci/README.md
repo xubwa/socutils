@@ -44,6 +44,13 @@ Then
 Both programs do everything; `zshci_mpi` is only needed to use more than one
 node. Any combination of ranks and threads gives the same results.
 
+A determinant takes up to `MAX_DET_WORDS` 64-bit words, 256 spinors (128
+spatial orbitals) by default; `make MAX_DET_WORDS=6` builds a program for
+up to 384 spinors as `bin/zshci_w6` (in a build directory of its own).
+Every width up to the maximum is compiled for every kind of integrals,
+which costs compile time (the default build about 400 s for `main.o` on one
+core, width 6 about 900 s) and binary size (209 MB, width 6 308 MB).
+
 ## Running
 
     bin/zshci input.json

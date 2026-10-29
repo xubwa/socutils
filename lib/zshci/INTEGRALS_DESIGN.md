@@ -1,7 +1,7 @@
 # One integral class per kind of orbitals
 
-Status: design, approved; refactor of the spinor and restricted (spatial)
-kinds first, the unrestricted kind afterwards as a third class.
+Status: spinor and restricted (spatial) kinds done (304d6b4); the
+unrestricted kind next, as a third class.
 
 ## Today
 
@@ -28,7 +28,7 @@ matrices (`rdm.h`) and the output (`main.cc`).
     IntegralTables<S>                   common data, inline: one-body h,
        |                                pair energies, singles bound
        +-- SpinorIntegrals<S>           label blocks of <pq||rs>
-       +-- SpatialIntegrals             (PQ|RS), real, eightfold
+       +-- SpatialIntegrals<double>     (PQ|RS), real only, eightfold
        +-- UnrestrictedIntegrals        later: aa, bb (eightfold), ab
                                         (fourfold), real
 
@@ -84,11 +84,14 @@ refactor; `driver_common.h` changes only in its template parameters.
 
 ## Cost
 
-Instantiations of the select/diag drivers: today 4 widths x 2 number types
-= 8; afterwards 4 x (spinor double, spinor complex, spatial) = 12, so
-`main.cc` and the test program compile about 1.5 times as long and the
-binaries grow; restricting the spatial class to 1 and 2 words (up to 64
-spatial orbitals) keeps it at 10. Run time: the branch on the kind leaves
+Instantiations of the select/diag drivers: before, 4 widths x 2 number
+types = 8; now 4 x (spinor double, spinor complex, spatial double) = 12,
+all widths for every kind (cases of 128 spatial orbitals need 4 words).
+Measured: `main.o` 311 -> 393 s on one core (550 s with complex spatial
+integrals as well, dropped), `bin/zshci` 180 -> 209 MB. The width is a build
+option (`make MAX_DET_WORDS=N`, dispatched by a compile-time recursion);
+more words cost compile time and size roughly in proportion (width 6: 923 s,
+308 MB) and nothing at run time for small determinants. Run time: the branch on the kind leaves
 `AntisymOrdered`, otherwise the same arithmetic in the same order, so
 energies, PT2 with a fixed seed and density matrices must be bitwise the
 same (checked, with the speed on the 1.2e7 Cr2 point, spin_flip and plain).
