@@ -41,12 +41,23 @@ print('C^T A: sparse %.1f s, atom blocks %.1f s (+%.1f s setup), max diff %.2e' 
       flush=True)
 ref = Bp = None
 t = time.time(); vj = jk.get_jk(dm, with_k=False)[0]; print('J %.0f s' % (time.time() - t), flush=True)
+import os
 Ks = {}
-for mode in ('dense', 'cross'):
+t = time.time(); vj = jk.get_jk(dm, with_k=False)[0]; print('J (second call) %.0f s' % (time.time() - t), flush=True)
+for mode in (('dense',) if os.environ.get('SKIP_OLD') else ('dense', 'cross')):
     th.k_lr = mode
     t = time.time(); Ks[mode] = jk.get_jk(dm, with_j=False)[1]
     print('K (%s) %.0f s: %s' % (mode, time.time() - t, {k: round(v, 1) for k, v in th.timings.items() if k.startswith('K')}),
           flush=True)
+if os.environ.get('SKIP_OLD'):
+    t = time.time(); K2 = jk.get_jk(dm, with_j=False)[1]
+    print('K again %.0f s: %s, |K - K2| %.1e' % (time.time() - t, {k: round(v, 1) for k, v in th.timings.items() if k.startswith('K')},
+          abs(K2 - Ks['dense']).max()), flush=True)
+    X = 1e-2 * (np.random.default_rng(1).standard_normal(dm.shape) + 1j * np.random.default_rng(2).standard_normal(dm.shape))
+    a = jk.get_jk(X, with_j=False)[1]
+    b = jk.get_jk(X.real, with_j=False)[1] + 1j * jk.get_jk(X.imag, with_j=False)[1]
+    print('complex dm: |K(X) - K(Re X) - i K(Im X)| %.1e' % abs(a - b).max(), flush=True)
+    sys.exit()
 th.k_lr, th.k_cc = 'dense', 'loop'
 t = time.time(); Ks['loop'] = jk.get_jk(dm, with_j=False)[1]
 print('K (CX-CX per-aux loop) %.0f s: %s' % (time.time() - t, {k: round(v, 1) for k, v in th.timings.items() if k.startswith('K')}),

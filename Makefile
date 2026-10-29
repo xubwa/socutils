@@ -12,6 +12,7 @@
 #               against whatever pyscf the configuring Python resolves)
 #   vhf     ->  lib/libsocvhf.so      (socutils.somf.x2cmp; links against
 #               the same pyscf)
+#   thc     ->  lib/libsocthc.so      (socutils.pbc.thc; OpenMP, standalone)
 #   pbcdf   ->  lib/libsocpbcdf.so    (socutils.pbc.rsdf; links against
 #               the same pyscf's libcint)
 #

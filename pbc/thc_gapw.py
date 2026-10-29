@@ -56,7 +56,7 @@ def _real_ylm(unit, lmax, wang):
 
 
 class GAPWJ:
-    def __init__(self, th, L=4, eta=2.0, lmax=12, nrad=600, nang=590):
+    def __init__(self, th, L=4, eta=2.0, lmax=12, nrad=600, nang=302):
         '''th: a THCExchange after build_common (split cell, smooth functions on the uniform grid, kernels).'''
         self.th, self.L, self.eta, self.lmax, self.nrad, self.nang = th, L, eta, lmax, nrad, nang
         self.S = th.cell.pbc_intor('int1e_ovlp')
@@ -93,7 +93,7 @@ class GAPWJ:
         X = cell.atom_coords()
         self.grids, self.rads, self.wrs = {}, {}, {}
         for A in self.atoms:
-            r, dr = radi.treutler_ahlrichs(nrad, cell.atom_charge(A))
+            r, dr = getattr(radi, getattr(self, 'radial', 'treutler_ahlrichs'))(nrad, cell.atom_charge(A))
             o = np.argsort(r)
             r, wr = r[o], (dr * r ** 2)[o]
             self.rads[A] = r
@@ -332,13 +332,18 @@ class GAPWJ:
         if getattr(self, '_nss', None) is not None:
             return
         sm = self.th.smooth
-        self._nss = {}
+        self._nss, self._compact_pts = {}, {}
         for A in self.atoms:
             pts, w, inner, cols, cA, phi_in, phi0c = self.grids[A]
             ss = np.isin(cols, sm)
             perm = np.concatenate([np.where(ss)[0], np.where(~ss)[0]])
-            self.grids[A] = (pts, w, inner, cols[perm], cA, np.ascontiguousarray(phi_in[:, perm]), phi0c)
+            phi_in = np.ascontiguousarray(phi_in[:, perm])
+            self.grids[A] = (pts, w, inner, cols[perm], cA, phi_in, phi0c)
             self._nss[A] = int(ss.sum())
+            # the compact home functions (exponents >= alpha_c) vanish within a few bohr: their rows of the grid
+            big = np.abs(phi0c).max(axis=1) if phi0c.shape[1] else np.zeros(len(phi0c))
+            ci = np.where(big > getattr(self, 'c_thr', 1e-14) * max(big.max(), 1e-300))[0]
+            self._compact_pts[A] = (ci, np.ascontiguousarray(phi0c[ci]), np.ascontiguousarray(phi_in[ci]))
 
     def get_j(self, dm):
         '''J (vector convention) in the split basis for a real symmetric dm.'''
@@ -359,7 +364,8 @@ class GAPWJ:
             DA = np.where(msk, dm[np.ix_(cA, cols)], 0.)
             DA[cA[:, None] == cols[None, :]] *= .5                      # diagonal pairs counted once
             rho = np.zeros(len(pts))
-            rho[inner] = 2 * np.einsum('ri,ri->r', phi0c @ DA, phi_in)
+            ci, p0c, pic = self._compact_pts[A]                          # points where phi^(0) is non-negligible
+            rho[inner[ci]] = 2 * np.einsum('ri,ri->r', p0c @ DA, pic)
             rhoA[A] = rho
             rad = np.repeat(self.rads[A], len(self.wang))
             QA[A] = [((rho * w * rad ** l)[None] * np.tile(self.Y[l], len(self.rads[A]))).sum(1) for l in range(L + 1)]
@@ -391,12 +397,13 @@ class GAPWJ:
             vn = np.zeros_like(rad)
             near = np.where(rad < self.r_compact)[0]
             for B in self.atoms:
-                if B != A or True:
+                if getattr(self, 'neighbours', False):    # quartz: E_J changes 5e-7 without them
                     vn[near] += self._vloc_at(B, vlms[B], pts[near], home=(B != A), center=X[A],
                                               radius=self.r_compact)   # A's own: images only
             # pairs owned by A: smooth + own local + neighbours' local potentials
-            wv = (w * (u + vloc[A] + vn))[inner]
-            JA = phi0c.T @ (wv[:, None] * phi_in)                       # (home a in cA, b in cols)
+            ci, p0c, pic = self._compact_pts[A]
+            wv = (w * (u + vloc[A] + vn))[inner[ci]]
+            JA = p0c.T @ (wv[:, None] * pic)                            # (home a in cA, b in cols)
             own = (self.owner[np.ix_(cA, cols)] == A) & self.home[np.ix_(cA, cols)]
             ia, ib = np.nonzero(own)
             J[cA[ia], cols[ib]] += JA[ia, ib]

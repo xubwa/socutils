@@ -100,6 +100,7 @@ add_subdirectory(zquatev)
 add_subdirectory(ao2mo)
 add_subdirectory(vhf)
 add_subdirectory(pbcdf)
+add_subdirectory(thc)
 
 option(ENABLE_QDHF "Quadruple precision HF kernels (requires libquadmath)" ON)
 if(ENABLE_QDHF)

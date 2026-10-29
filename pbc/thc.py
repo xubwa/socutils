@@ -168,6 +168,80 @@ def isdf_xi_ls(phi, pts, cut=1e-13, blk=200000):
     return xi, int(keep.sum())
 
 
+_THCLIB = []
+
+
+def _libthc():
+    '''lib/libsocthc.so (OpenMP kernels of the route-1 exchange), or None if it is not built.'''
+    if not _THCLIB:
+        try:
+            from socutils.lib import load_library
+            _THCLIB.append(load_library('libsocthc', 'SOCUTILS_THC_LIBRARY'))
+        except OSError:
+            _THCLIB.append(None)
+    return _THCLIB[0]
+
+
+def _ptr(a):
+    import ctypes
+    return a.ctypes.data_as(ctypes.c_void_p)
+
+
+def pair_accum(H, B, E, pi, pj, off):
+    '''H[pi_p] += B[p] * E[pj_p], and H[pj_p] += B[p] * E[pi_p] where off_p (H, B, E real C-contiguous).'''
+    lib_ = _libthc()
+    if lib_ is None:
+        np.add.at(H, pi, B * E[pj])
+        np.add.at(H, pj[off], B[off] * E[pi[off]])
+        return H
+    import ctypes
+    pi, pj = np.ascontiguousarray(pi, dtype=np.int32), np.ascontiguousarray(pj, dtype=np.int32)
+    off = np.ascontiguousarray(off, dtype=np.int8)
+    B = np.ascontiguousarray(B)
+    lib_.SOCTHCpair_accum(_ptr(H), _ptr(B), _ptr(E), _ptr(pi), _ptr(pj), _ptr(off),
+                          ctypes.c_int(len(pi)), ctypes.c_int(B.shape[1]))
+    return H
+
+
+def unpack_sym(V, ii, jj, n):
+    '''(nb, npair) packed pair values -> (nb, n, n) symmetric matrices (zero elsewhere).'''
+    V = np.ascontiguousarray(V, dtype=float)
+    nb = V.shape[0]
+    lib_ = _libthc()
+    W = np.empty((nb, n, n)) if lib_ is not None else np.zeros((nb, n, n))
+    if lib_ is None:
+        W[:, ii, jj] = V
+        W[:, jj, ii] = V
+        return W
+    import ctypes
+    ii, jj = np.ascontiguousarray(ii, dtype=np.int32), np.ascontiguousarray(jj, dtype=np.int32)
+    lib_.SOCTHCunpack_sym(_ptr(W), _ptr(V), _ptr(ii), _ptr(jj), ctypes.c_int(nb), ctypes.c_int(len(ii)),
+                          ctypes.c_int(n))
+    return W
+
+
+def embed(W, S, idx):
+    '''W[k][idx, idx] = S[k] in place (W (nb, n, n), S (nb, ns, ns)).'''
+    lib_ = _libthc()
+    if lib_ is None:
+        for k in range(len(W)):
+            W[k][np.ix_(idx, idx)] = S[k]
+        return W
+    import ctypes
+    S = np.ascontiguousarray(S, dtype=float)
+    idx = np.ascontiguousarray(idx, dtype=np.int32)
+    lib_.SOCTHCembed(_ptr(W), _ptr(S), _ptr(idx), ctypes.c_int(len(W)), ctypes.c_int(len(idx)),
+                     ctypes.c_int(W.shape[1]))
+    return W
+
+
+def _mm_split(A, B):
+    '''A @ B with a real A and a possibly complex B, without promoting A.'''
+    if np.iscomplexobj(B):
+        return A @ np.ascontiguousarray(B.real) + 1j * (A @ np.ascontiguousarray(B.imag))
+    return A @ B
+
+
 def half_gv(cell, mesh):
     '''G vectors of the rfftn half spectrum, (nG, 3), and the multiplicity f (1 or 2) of each.'''
     b = cell.reciprocal_vectors()
@@ -365,26 +439,36 @@ class THCExchange:
         if local:
             Xi = np.empty((2 * len(self.r.lr_G), nmu))
         t0 = time.time()
+        tt = dict.fromkeys(('xi', 'FFT', 'ft_ao', 'A GEMM', 'V'), 0.)
         for b0 in range(0, nmu, nb):
             b1 = min(b0 + nb, nmu)
+            ta = time.time()
             xi = np.empty((b1 - b0, ng))
             for g0 in range(0, ng, rchunk):
                 g1 = min(g0 + rchunk, ng)
                 xi[:, g0:g1] = Ginv[b0:b1] @ ((PP @ phi[g0:g1].T) ** 2)
+            tt['xi'] += time.time() - ta
+            ta = time.time()
             Xh = scipy.fft.rfftn(xi.reshape(b1 - b0, *mesh), axes=(1, 2, 3), workers=-1).reshape(b1 - b0, -1)
             xi = None
             Xh *= vol / ng                                              # xi(G) = int_cell xi(r) e^{-iGr}
+            tt['FFT'] += time.time() - ta
             for g0 in range(0, len(self.Gv), gchunk):
                 g1 = min(g0 + gchunk, len(self.Gv))
+                ta = time.time()
                 Pg = ft_ao(self.auxmol, self.Gv[g0:g1]) * sw[g0:g1, None]   # (nG, naux); Re(P^* X) = PrXr + PiXi
+                tt['ft_ao'] += time.time() - ta
+                ta = time.time()
                 Xc = Xh[:, g0:g1]
                 A[:, b0:b1] += Pg.real.T @ Xc.real.T + Pg.imag.T @ Xc.imag.T
+                tt['A GEMM'] += time.time() - ta
             Xc = Xh[:, lrg]
             A_lr[:, b0:b1] = Plr @ Xc.real.T + Pli @ Xc.imag.T
             Xc = Pg = None
             if local:
                 Xi[:, b0:b1] = self._lr_rows_of_xi(Xh)
             # potential of the block in real space, (v * xi_b)(r) = irfft(w_vec xi_b(G)) ng / vol
+            ta = time.time()
             Xh *= self.w_vec[None]
             xi = scipy.fft.irfftn(Xh.reshape((b1 - b0,) + hshape), s=tuple(mesh), axes=(1, 2, 3),
                                   workers=-1, overwrite_x=True).reshape(b1 - b0, -1)
@@ -394,8 +478,10 @@ class THCExchange:
                 g1 = min(g0 + rchunk, ng)
                 Vb += xi[:, g0:g1] @ ((PP @ phi[g0:g1].T) ** 2).T
             V[b0:b1] = Vb @ Ginv                                        # int (v * xi_b) xi^T (Parseval)
+            tt['V'] += time.time() - ta
             xi = Vb = None
-            self.log('   streamed THC: mu block %d-%d of %d, %.0f s' % (b0, b1, nmu, time.time() - t0))
+            self.log('   streamed THC: mu block %d-%d of %d, %.0f s (%s)'
+                     % (b0, b1, nmu, time.time() - t0, ', '.join('%s %.0f' % kv for kv in tt.items())))
         self.V = .5 * (V + V.T)
         self.A, self.A_lr = A, A_lr
         if local:
@@ -529,10 +615,14 @@ class THCExchange:
         Bsr, Blr = self.A, self.Xi_lr                                 # (naux, N_mu), (nlr, N_mu)
         lr_cross = getattr(self, 'k_lr', 'dense') == 'cross'          # old path: LR of CX-SS through Lcx^T Xi
         blocks = self._cx_atom_blocks(Ccx)
+        ii32, jj32 = ii.astype(np.int32), jj.astype(np.int32)
 
         def cross(D):
             E = D[:, sm] @ Pm.T                                       # (nao, N_mu)
-            H = np.zeros((nao, len(Pm)), dtype=np.result_type(D, float))
+            cplx = np.iscomplexobj(E)
+            Es = [np.ascontiguousarray(E.real)] + ([np.ascontiguousarray(E.imag)] if cplx else [])
+            Hs = [np.zeros((nao, len(Pm))) for _ in Es]
+            E = None
             for p0 in range(0, len(cxc), pblk):
                 p1 = min(p0 + pblk, len(cxc))
                 Bp = np.zeros((p1 - p0, Bsr.shape[1]))                # (np, N_mu) = (C^T A)_p, per aux atom GEMMs
@@ -542,12 +632,10 @@ class THCExchange:
                         Bp[cols[a:b] - p0] += Cd[:, a:b].T @ Bsr[rows]
                 if lr_cross:
                     Bp += Lcx[:, p0:p1].T @ Blr
-                i_, j_, o_ = ii[p0:p1], jj[p0:p1], off[p0:p1]
-                R = sps.csr_matrix((np.ones(p1 - p0), (i_, np.arange(p1 - p0))), shape=(nao, p1 - p0))
-                H += R @ (Bp * E[j_])
-                Ro = sps.csr_matrix((np.ones(o_.sum()), (j_[o_], np.where(o_)[0])), shape=(nao, p1 - p0))
-                H += Ro @ (Bp * E[i_])
-            return H @ Pm                                             # (nao, nao_s)
+                for H, E in zip(Hs, Es):                              # H[i] += Bp E[j] (+ H[j] += Bp E[i]), C kernel
+                    pair_accum(H, Bp, E, ii32[p0:p1], jj32[p0:p1], off[p0:p1])
+            H = Hs[0] @ Pm
+            return H + 1j * (Hs[1] @ Pm) if cplx else H                # (nao, nao_s)
         K1 = cross(dm)
         K[:, sm] += K1
         K[sm, :] += cross(dm.T).T                                     # G D F^T = (F D^T G^T)^T
@@ -587,15 +675,12 @@ class THCExchange:
                     MC = np.zeros((nb, nCX))
                     for rows2, cols2, Cd2 in blocks:
                         MC[:, cols2] += self.M[np.ix_(rows[c0:c1], rows2)] @ Cd2
-                    W = np.zeros((nb, nao, nao))
-                    W[:, ii, jj] = MC
-                    W[:, jj, ii] = MC
+                    W = unpack_sym(MC, ii32, jj32, nao).reshape(nb * nao, nao)   # C kernels
                     MC = None
-                    Cf = np.zeros((nb, len(S), len(S)))
-                    Cf[:, li, lj] = Cd[c0:c1]
-                    Cf[:, lj, li] = Cd[c0:c1]
-                    CD = Cf @ DS                                      # (nb, |S|, nao)
-                    K[S] += CD.transpose(1, 0, 2).reshape(len(S), nb * nao) @ W.reshape(nb * nao, nao)
+                    Cf = unpack_sym(Cd[c0:c1], li, lj, len(S))
+                    CD = _mm_split(Cf, DS)                            # (nb, |S|, nao)
+                    CD = CD.transpose(1, 0, 2).reshape(len(S), nb * nao)
+                    K[S] += _mm_split(W.T, CD.T).T                    # CD W (W real)
                     W = CD = Cf = None
         for k0 in range(0, naux if getattr(self, 'k_cc', 'blocks') != 'blocks' else 0, kblk):
             k1 = min(k0 + kblk, naux)
@@ -619,15 +704,17 @@ class THCExchange:
         else:
             # LR of every block through the full LR rows L_g (nao, nao): exact for the CX pairs, THC for the SS
             # pairs (Phi_mu^T diag(Xi_g) Phi_mu); the SS-SS LR is in V already, so its L^SS D L^SS is taken out
-            Lg = np.zeros((nao, nao))
             Dss = dm[np.ix_(sm, sm)]
-            for g in range(len(Lcx)):
-                Lg[ii, jj] = Lcx[g]
-                Lg[jj, ii] = Lcx[g]
-                Ls = (Pm.T * Blr[g]) @ Pm                              # (nao_s, nao_s)
-                Lg[np.ix_(sm, sm)] = Ls
-                K += Lg @ dm @ Lg
-                K[np.ix_(sm, sm)] -= Ls @ Dss @ Ls
+            sm32 = np.asarray(sm, dtype=np.int32)
+            gb = getattr(self, 'lr_batch', 16)
+            for g0 in range(0, len(Lcx), gb):
+                g1 = min(g0 + gb, len(Lcx))
+                Ls = np.stack([(Pm.T * Blr[g]) @ Pm for g in range(g0, g1)])   # (gb, nao_s, nao_s)
+                Lg = embed(unpack_sym(Lcx[g0:g1], ii32, jj32, nao), Ls, sm32)   # C kernels
+                for g in range(g1 - g0):
+                    K += _mm_split(Lg[g], _mm_split(Lg[g], dm.T).T)          # Lg D Lg (Lg symmetric)
+                    K[np.ix_(sm, sm)] -= _mm_split(Ls[g], _mm_split(Ls[g], Dss.T).T)
+                Lg = Ls = None
         self.timings.update({'K SS (THC)': t_ss, 'K CX-SS (SR)': t_cross, 'K CX-CX (SR)': t_cc,
                              'K LR': time.time() - t})
         return K
