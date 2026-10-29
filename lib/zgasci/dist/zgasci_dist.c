@@ -17,10 +17,12 @@
  * Any lists and electron counts (parity 0): Z as above; (AA,AA) C by the
  * same kernel on C^T held by beta rows (a plan of the own beta strings and
  * all alpha strings), transposed there and back; Y as above.
- * Eigensolver: LOBPCG-like iteration of one vector (X, the preconditioned
+ * Eigensolvers: LOBPCG-like iteration of one vector (X, the preconditioned
  * residual T, the previous direction P and their products: six vectors of
- * the own rows); vector operations with OpenMP, dot products summed by
- * MPI_Allreduce, the 3 x 3 Rayleigh-Ritz problem by LAPACK dsygv.
+ * the own rows; the 3 x 3 Rayleigh-Ritz problem by LAPACK dsygv), or
+ * Davidson (a basis of up to max_space vectors and their products,
+ * collapsed to two); vector operations with OpenMP, dot products summed by
+ * MPI_Allreduce.
  *
  * Usage (one process per node, all threads):
  *   mpirun -np P -ppn 1 zgasci_dist FCIDUMP STRINGS [options]
@@ -32,6 +34,7 @@
  *          general path on the same lists)  --bench K (time K products
  *          first, 3)  --shift S (preconditioner floor, 1e-3)
  *          --s2pen L (linear spin penalty H + L (S^2 - ss), 0)
+ *          --solver lobpcg | davidson (lobpcg)  --max-space M (Davidson, 12)
  *
  * Library (libzgasci_dist.so): zgd_solve_ab (any lists) and zgd_solve
  * (alpha = beta), the same solve on a communicator of the caller (a
@@ -625,7 +628,55 @@ static void report_parts(dist *d, const char *what, int per) {
   fflush(stdout);
 }
 
-/* ---- LOBPCG --------------------------------------------------------------- */
+/* ---- eigensolvers ---------------------------------------------------------- */
+
+/* 0: LOBPCG-like (6 vectors), 1: Davidson (max_space_ vectors and their
+ * products); zgd_set_eigensolver, or ZGASCI_DIST_SOLVER = lobpcg | davidson
+ * and ZGASCI_DIST_MAX_SPACE. */
+static int esolver_ = 0, max_space_ = 12, esolver_set_ = 0;
+
+/* (an explicit choice wins over the environment) */
+void zgd_set_eigensolver(int kind, int max_space) {
+  esolver_set_ = 1;
+  esolver_ = kind == 1;
+  if (max_space >= 3) max_space_ = max_space;
+}
+
+static void eigensolver_env(void) {
+  if (esolver_set_) return;
+  esolver_set_ = 1;
+  const char *s = getenv("ZGASCI_DIST_SOLVER");
+  if (s && !strcmp(s, "davidson")) esolver_ = 1;
+  if (s && !strcmp(s, "lobpcg")) esolver_ = 0;
+  if (getenv("ZGASCI_DIST_MAX_SPACE") && atoi(getenv("ZGASCI_DIST_MAX_SPACE")) >= 3)
+    max_space_ = atoi(getenv("ZGASCI_DIST_MAX_SPACE"));
+}
+
+/* x = x0, or the lowest diagonal element (symmetrized), normalized. */
+static void start_vector(dist *d, const double *hd, const double *x0, double *x) {
+  const int64_t L = d->len;
+  if (x0) {
+    copy(x0, x, L);
+    return;
+  }
+  memset(x, 0, (size_t)L * sizeof(double));
+  struct { double v; int r; } loc = {INFINITY, rank_}, glob;
+  int64_t imin = -1;
+  /* (odd parity: off the diagonal a = b, where the symmetrized vector vanishes) */
+  for (int64_t i = 0; i < L; ++i)
+    if (hd[i] < loc.v && (d->parity >= 0 || d->lo + i / d->nb != i % d->nb)) loc.v = hd[i], imin = i;
+  MPI_Allreduce(&loc, &glob, 1, MPI_DOUBLE_INT, MPI_MINLOC, comm_);
+  if (rank_ == glob.r) x[imin] = 1;
+  if (d->parity) symmetrize(d, x);
+  scal(1 / sqrt(gdot(x, x, L)), x, L);
+}
+
+/* t = -t / max(|hd - e|, shift): positive definite, as LOBPCG needs (hd - e
+ * changes sign e.g. with an S^2 penalty and odd parity). */
+static void precondition(const double *hd, double e, double shift, double *t, int64_t L) {
+#pragma omp parallel for schedule(static)
+  for (int64_t i = 0; i < L; ++i) t[i] /= -fmax(fabs(hd[i] - e), shift);
+}
 
 /* The lowest state; *xout: its own rows (normalized), for the caller to free.
  * x0: own rows of a start vector (of the symmetry, normalized), or NULL. */
@@ -637,20 +688,7 @@ static double lobpcg(dist *d, const double *x0, int maxit, double tol, double rt
   double *x = calloc((size_t)L + 1, sizeof(double)), *hx = malloc((size_t)(L + 1) * sizeof(double));
   double *t = malloc((size_t)(L + 1) * sizeof(double)), *ht = malloc((size_t)(L + 1) * sizeof(double));
   double *p = NULL, *hp = NULL;
-  if (x0) {
-    copy(x0, x, L);
-  } else {
-    /* start: the lowest diagonal element, symmetrized */
-    struct { double v; int r; } loc = {INFINITY, rank_}, glob;
-    int64_t imin = -1;
-    /* (odd parity: off the diagonal a = b, where the symmetrized vector vanishes) */
-    for (int64_t i = 0; i < L; ++i)
-      if (hd[i] < loc.v && (d->parity >= 0 || d->lo + i / d->n != i % d->n)) loc.v = hd[i], imin = i;
-    MPI_Allreduce(&loc, &glob, 1, MPI_DOUBLE_INT, MPI_MINLOC, comm_);
-    if (rank_ == glob.r) x[imin] = 1;
-    if (d->parity) symmetrize(d, x);
-    scal(1 / sqrt(gdot(x, x, L)), x, L);
-  }
+  start_vector(d, hd, x0, x);
   sigma(d, x, hx);
   double e = 0, e_old = NAN, rnorm = 0;
   const double t0 = now();
@@ -671,13 +709,7 @@ static double lobpcg(dist *d, const double *x0, int maxit, double tol, double rt
       break;
     }
     e_old = e;
-#pragma omp parallel for schedule(static)
-    for (int64_t i = 0; i < L; ++i) {
-      /* max(|hd - e|, shift): positive definite, as LOBPCG needs (hd - e
-       * changes sign e.g. with an S^2 penalty and odd parity) */
-      const double dd = fmax(fabs(hd[i] - e), shift);
-      t[i] /= -dd;
-    }
+    precondition(hd, e, shift, t, L);
     if (d->parity) symmetrize(d, t);
     axpy(-gdot(x, t, L), x, t, L);
     if (p) axpy(-gdot(p, t, L), p, t, L);
@@ -738,6 +770,167 @@ static double lobpcg(dist *d, const double *x0, int maxit, double tol, double rt
   free(hd), free(hx), free(t), free(ht), free(p), free(hp);
   *xout = x;
   return e;
+}
+
+
+/* out[i] = <v[i], t> for i < m, summed over the processes (one Allreduce). */
+static void gdots(double *const *v, int m, const double *t, int64_t L, double *out) {
+  for (int i = 0; i < m; ++i) {
+    double s = 0;
+    const double *vi = v[i];
+#pragma omp parallel for reduction(+ : s) schedule(static)
+    for (int64_t k = 0; k < L; ++k) s += vi[k] * t[k];
+    out[i] = s;
+  }
+  MPI_Allreduce(MPI_IN_PLACE, out, m, MPI_DOUBLE, MPI_SUM, comm_);
+}
+
+/* out = sum_i y[i] v[i], i < m. */
+static void combine(double *const *v, const double *y, int m, int64_t L, double *out) {
+#pragma omp parallel for schedule(static)
+  for (int64_t k = 0; k < L; ++k) {
+    double s = 0;
+    for (int i = 0; i < m; ++i) s += y[i] * v[i][k];
+    out[k] = s;
+  }
+}
+
+/* Davidson for the lowest state: a basis V of at most msp vectors (own
+ * rows) with HV, the projections of H and of the overlap (Rayleigh-Ritz by
+ * dsygv, so that a small loss of orthogonality does no harm); the Ritz
+ * vector X, the preconditioned residual (as LOBPCG), symmetrized,
+ * orthogonalized to V twice and added unless it is linearly dependent on V
+ * (norm below lindep of its norm before); a full basis, or a dependent new
+ * direction, collapses the basis to X and the previous Ritz vector (no
+ * extra products); a dependent direction right after a collapse ends the
+ * iteration (stagnation).  2 msp + 5 vectors of the own rows.  As lobpcg
+ * otherwise. */
+static double davidson(dist *d, const double *x0, int maxit, double tol, double rtol, double shift,
+                       int msp, int *cycles, int *converged, double **xout) {
+  const double lindep = 1e-8;
+  const int64_t L = d->len;
+  const size_t vb = (size_t)(L + 1) * sizeof(double);
+  double *hd = malloc(vb);
+  if (d->nloc) zg_hdiag_d(d->lplan, d->v, hd);
+  double **V = calloc(msp, sizeof(double *)), **HV = calloc(msp, sizeof(double *));
+  for (int i = 0; i < msp; ++i) V[i] = malloc(vb), HV[i] = malloc(vb);
+  double *x = malloc(vb), *hx = malloc(vb), *xo = malloc(vb), *hxo = malloc(vb), *r = malloc(vb);
+  double *hs = calloc((size_t)msp * msp, sizeof(double)), *ss = calloc((size_t)msp * msp, sizeof(double));
+  double *a = malloc((size_t)msp * msp * sizeof(double)), *b = malloc((size_t)msp * msp * sizeof(double));
+  double *w = malloc(msp * sizeof(double)), *c = malloc((msp + 1) * sizeof(double));
+  const int lw = 64 * msp + 64;
+  double *work = malloc(lw * sizeof(double));
+  /* row / column j of the projections (V[0..j] against V[j], HV[j]) */
+#define PROJECT(j)                                                                     \
+  do {                                                                                 \
+    gdots(V, (j) + 1, HV[j], L, c);                                                    \
+    for (int i_ = 0; i_ <= (j); ++i_) hs[i_ * msp + (j)] = hs[(j) * msp + i_] = c[i_]; \
+    gdots(V, (j) + 1, V[j], L, c);                                                     \
+    for (int i_ = 0; i_ <= (j); ++i_) ss[i_ * msp + (j)] = ss[(j) * msp + i_] = c[i_]; \
+  } while (0)
+  start_vector(d, hd, x0, V[0]);
+  sigma(d, V[0], HV[0]);
+  PROJECT(0);
+  int m = 1, have_old = 0, collapse = 0, just_collapsed = 0;
+  double *last = NULL; /* the buffer of the last Ritz vector */
+  double e = 0, e_old = NAN, rnorm = 0;
+  const double t0 = now();
+  *converged = 0;
+  int it;
+  for (it = 0; it < maxit; ++it) {
+    /* the lowest Ritz pair of the basis */
+    for (int i = 0; i < m; ++i)
+      for (int j = 0; j < m; ++j) a[i * m + j] = hs[i * msp + j], b[i * m + j] = ss[i * msp + j];
+    const int one = 1;
+    int info;
+    dsygv_(&one, "V", "U", &m, a, &m, b, &m, w, work, &lw, &info);
+    if (info) die("davidson: dsygv failed (basis not independent)");
+    e = w[0];
+    combine(V, a, m, L, x); /* the first eigenvector (y^T S y = 1) */
+    last = x;
+    combine(HV, a, m, L, hx);
+    copy(hx, r, L);
+    axpy(-e, x, r, L);
+    rnorm = sqrt(gdot(r, r, L));
+    if (rank_ == 0 && verbose_) {
+      printf("  davidson %3d  E %.12f  dE %.2e  |r| %.2e  space %2d  t %.1f s  peak %.1f GB\n", it,
+             e, isnan(e_old) ? 0.0 : e - e_old, rnorm, m, now() - t0, peak_gb());
+      fflush(stdout);
+    }
+    if ((!isnan(e_old) && fabs(e - e_old) < tol && rnorm < rtol) || rnorm < 1e-12) {
+      *converged = 1;
+      break;
+    }
+    e_old = e;
+    just_collapsed = 0;
+    if (m == msp || collapse) { /* X and the part of the previous X orthogonal to it */
+      const double nx = sqrt(gdot(x, x, L));
+      copy(x, V[0], L), copy(hx, HV[0], L);
+      scal(1 / nx, V[0], L), scal(1 / nx, HV[0], L);
+      m = 1;
+      if (have_old) {
+        const double ov = gdot(V[0], xo, L);
+        axpy(-ov, V[0], xo, L);
+        axpy(-ov, HV[0], hxo, L);
+        const double nn = sqrt(gdot(xo, xo, L));
+        if (nn > lindep) {
+          copy(xo, V[1], L), copy(hxo, HV[1], L);
+          scal(1 / nn, V[1], L), scal(1 / nn, HV[1], L);
+          m = 2;
+        }
+      }
+      for (int j = 0; j < m; ++j) PROJECT(j);
+      collapse = 0, just_collapsed = 1;
+    }
+    /* the new direction */
+    precondition(hd, e, shift, r, L);
+    if (d->parity) symmetrize(d, r);
+    const double n0 = sqrt(gdot(r, r, L));
+    for (int pass = 0; pass < 2; ++pass) {
+      gdots(V, m, r, L, c);
+      for (int i = 0; i < m; ++i) axpy(-c[i], V[i], r, L);
+    }
+    const double nt = sqrt(gdot(r, r, L));
+    double *tmp = xo;
+    xo = x, x = tmp;
+    tmp = hxo, hxo = hx, hx = tmp;
+    have_old = 1;
+    if (!(nt > lindep * n0) || !(nt > 1e-14)) {
+      if (just_collapsed) break; /* stagnation: no new direction even in the small basis */
+      collapse = 1;              /* retry from the collapsed basis */
+      --it;                      /* (the same Ritz pair again: not an iteration) */
+      e_old = NAN;
+      continue;
+    }
+    copy(r, V[m], L);
+    scal(1 / nt, V[m], L);
+    sigma(d, V[m], HV[m]);
+    PROJECT(m);
+    ++m;
+  }
+#undef PROJECT
+  *cycles = it + 1;
+  if (rank_ == 0 && verbose_) {
+    printf("davidson: %d iterations, converged %d, |r| %.2e, %.1f s (max space %d)\n", *cycles,
+           *converged, rnorm, now() - t0, msp);
+    fflush(stdout);
+  }
+  for (int i = 0; i < msp; ++i) free(V[i]), free(HV[i]);
+  if (!last) last = x;
+  if (x != last) free(x);
+  if (xo != last) free(xo);
+  free(V), free(HV), free(hd), free(hx), free(hxo), free(r), free(hs), free(ss), free(a);
+  free(b), free(w), free(c), free(work);
+  *xout = last;
+  return e;
+}
+
+/* The chosen eigensolver (esolver_). */
+static double eigensolve(dist *d, const double *x0, int maxit, double tol, double rtol,
+                         double shift, int *cycles, int *converged, double **xout) {
+  if (esolver_ == 1)
+    return davidson(d, x0, maxit, tol, rtol, shift, max_space_, cycles, converged, xout);
+  return lobpcg(d, x0, maxit, tol, rtol, shift, cycles, converged, xout);
 }
 
 /* After the solve of x (own rows, normalized; e_pen = <x|H + s2pen (S^2 -
@@ -988,6 +1181,7 @@ int zgd_solve_ab(int comm_f, int norb, int nalpha, int nbeta, int uhf, const dou
   if (getenv("ZGASCI_DIST_CHUNK") && atol(getenv("ZGASCI_DIST_CHUNK")) > 0)
     CHUNK = atol(getenv("ZGASCI_DIST_CHUNK"));
   if (parity != 1 && parity != -1 && parity != 0) die("parity must be +1, -1 or 0");
+  eigensolver_env();
   if (n > INT32_MAX || nb > INT32_MAX) die("more strings than an MPI count");
   const double t0 = now();
   const size_t n2 = (size_t)norb * norb, n4 = n2 * n2;
@@ -1014,7 +1208,7 @@ int zgd_solve_ab(int comm_f, int norb, int nalpha, int nbeta, int uhf, const dou
     }
     if (w < 1e-4) free(x0), x0 = NULL;
   }
-  const double e = lobpcg(&d, x0, maxit, tol, rtol, 1e-3, &cycles, &conv, &x);
+  const double e = eigensolve(&d, x0, maxit, tol, rtol, 1e-3, &cycles, &conv, &x);
   free(x0);
   finish(&d, x, e, out, occ_a, occ_b, maxabs_a, maxabs_b, wa, wb);
   out[3] = cycles, out[4] = conv, out[5] = now() - t0, out[6] = w;
@@ -1045,6 +1239,7 @@ int main(int argc, char **argv) {
   int provided;
   MPI_Init_thread(&argc, &argv, MPI_THREAD_FUNNELED, &provided);
   comm_ = MPI_COMM_WORLD;
+  eigensolver_env();
   MPI_Comm_rank(comm_, &rank_);
   MPI_Comm_size(comm_, &size_);
   if (getenv("ZGASCI_DIST_CHUNK") && atol(getenv("ZGASCI_DIST_CHUNK")) > 0)
@@ -1064,6 +1259,8 @@ int main(int argc, char **argv) {
     else if (!strcmp(argv[i], "--bench")) bench = atoi(argv[i + 1]);
     else if (!strcmp(argv[i], "--shift")) shift = atof(argv[i + 1]);
     else if (!strcmp(argv[i], "--s2pen")) s2pen = atof(argv[i + 1]);
+    else if (!strcmp(argv[i], "--solver")) esolver_ = !strcmp(argv[i + 1], "davidson");
+    else if (!strcmp(argv[i], "--max-space")) max_space_ = atoi(argv[i + 1]);
     else die("unknown option");
   }
   const double t0 = now();
@@ -1111,7 +1308,7 @@ int main(int argc, char **argv) {
   int cycles, conv;
   const double tl = now();
   double *x, res[3];
-  const double e = lobpcg(&d, NULL, maxit, tol, rtol, shift, &cycles, &conv, &x);
+  const double e = eigensolve(&d, NULL, maxit, tol, rtol, shift, &cycles, &conv, &x);
   const double t_solve = now() - tl;
   finish(&d, x, e, res, NULL, NULL, NULL, NULL, NULL, NULL);
   double pk = peak_gb();

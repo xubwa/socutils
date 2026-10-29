@@ -376,6 +376,32 @@ direct_spin1 without symmetry ended in other irreps there.  With strongly
 rotated beta orbitals the diagonal preconditioner is poor (hundreds of
 LOBPCG steps).
 
+### 6e. Eigensolvers: LOBPCG and Davidson
+
+`zgd_set_eigensolver(kind, max_space)` (or ZGASCI_DIST_SOLVER = lobpcg |
+davidson, ZGASCI_DIST_MAX_SPACE; `--solver`, `--max-space`; c_solve
+`eigensolver=`, `max_space=`; an explicit choice wins over the
+environment).  Both share the start (warm vector or the lowest diagonal
+element), the preconditioner 1 / max(|hd - E|, shift) and the
+symmetrization.  LOBPCG: 6 vectors of the own rows.  Davidson: a basis of
+up to max_space vectors with their products and the projections of H and
+of the overlap (Rayleigh-Ritz by dsygv, so that a small loss of
+orthogonality does no harm), new directions orthogonalized twice and
+dropped when dependent (norm below 1e-8 of the norm before), collapse to
+the Ritz vector and the previous one (no extra products); 2 max_space + 5
+vectors.  (A first version with dsyev, an absolute dependence threshold
+and no renormalization at the collapse diverged near convergence: E far
+below the spectrum.)
+Measured: [4Fe-4S] SQD subspace (20000 strings, d = 4e8, 4 nodes, penalty
+0.2, rtol 1e-5): LOBPCG 39 iterations 954 s, Davidson (max space 24) 39
+iterations 974 s, the same energies step by step: there the convergence is
+set by the diagonal preconditioner, not by the size of the subspace.  H2O
+full space with rotated beta orbitals: Davidson 205-613 iterations against
+LOBPCG 252-801 (one LOBPCG run not converged), and Davidson left the irrep
+of the start where LOBPCG stayed in it (UHF-triplet orbitals, (5,5): LOBPCG
+-80.4470, the B1 state; Davidson -80.4762, the ground state).  Default:
+LOBPCG (memory).
+
 ## 7. What stays for later
 
 * **(AB,AB)** is the larger half of a sigma. Its GEMMs do about 9 times
