@@ -136,6 +136,21 @@ def _unpack(r, axes):
     return r
 
 
+def _pair_place(a, axis, n):
+    '''Adjoint of pair_gather: the array with the axis over pairs i < j of a
+    replaced by two axes of dimension n, a at (i, j), i < j, zero elsewhere.'''
+    i, j = numpy.triu_indices(n, k=1)
+    src = numpy.moveaxis(a, axis, 0)
+    out = numpy.zeros((n * n,) + src.shape[1:], dtype=numpy.complex128)
+    out[i * n + j] = src
+    return numpy.ascontiguousarray(
+        numpy.moveaxis(out.reshape((n, n) + src.shape[1:]), (0, 1), (axis, axis + 1)))
+
+
+def _npair_dim(npair):
+    return int(round((1 + numpy.sqrt(1 + 8 * npair)) / 2))
+
+
 def _collect(acc, total, r, perm, axes):
     '''Add the result r (pair axes `axes` still packed) to the results of
     the same layout, or to total at once if there is no accumulator.'''
@@ -163,13 +178,17 @@ class _Contraction:
       (W[A, B] - W[B, A]) / 2, and the product is scattered with both signs:
       that is the antisymmetrized contribution itself.'''
 
-    def __init__(self, expr, w, bra_pairs=(), ket_pairs=()):
+    def __init__(self, expr, w, bra_pairs=(), ket_pairs=(), scale=1.0):
+        '''scale multiplies W; it is applied where W is copied anyway (the
+        packing or the contiguous copy), so a view of the integrals is never
+        copied twice.'''
         ops, out = expr.split('->')
         wsub, csub = ops.split(',')
         self.expr, self.w = expr, None
         if set(wsub) & set(csub) & set(out):
-            self.w = w                       # an index in all three: plain einsum
+            self.w = w if scale == 1.0 else scale * w    # an index in all three: plain einsum
             return
+        source = w
         con = [x for x in csub if x in wsub]                 # contracted
         wown = [x for x in wsub if x not in con]
         cown = [x for x in csub if x not in con]
@@ -193,10 +212,16 @@ class _Contraction:
         axis = 0
         for g in own_groups + con_groups:
             if len(g) == 2:
-                w = _pack_antisymmetrized(w, axis, 0.5 if g in [tuple(p) for p in bpack] else 1.0)
+                w = _pack_antisymmetrized(w, axis, scale * (0.5 if g in [tuple(p) for p in bpack] else 1.0))
+                scale = 1.0
             axis += 1
         self.w_shape = w.shape[:len(own_groups)]
         w = _contig(w)
+        if scale != 1.0:
+            if numpy.may_share_memory(w, source):
+                w = scale * w
+            else:
+                w *= scale
         # W as (own, contracted), used transposed in the product: no transposed
         # copy of the full matrix
         self.mat = w.reshape(int(numpy.prod(self.w_shape)), -1)
@@ -210,6 +235,36 @@ class _Contraction:
         own_order = [x for g in own_groups for x in g]
         self.ncown = len(cown)
         self.out_perm = [(cown + own_order).index(x) for x in out]
+        self.con_sizes = [len(g) for g in con_groups]
+
+    def adjoint_add(self, y, target, alpha=1.0):
+        '''target += alpha A^+ y for the map A: C -> the contribution to the
+        result (inner product over the full ranges of the indices; y has the
+        shape of the result, target that of C).'''
+        if self.w is not None:
+            ops, out = self.expr.split('->')
+            wsub, csub = ops.split(',')
+            target += alpha * numpy.einsum('%s,%s->%s' % (wsub, out, csub), self.w, y.conj(),
+                                           optimize=True).conj()
+            return
+        r = kernels.transposed(y, numpy.argsort(self.out_perm))      # [cown.., own_order..]
+        for k in self.bpos:                       # adjoint of the scatter with both signs
+            r = _pack_antisymmetrized(r, self.ncown + k, 1.0)
+        own = r.shape[:self.ncown]
+        r2 = r.reshape(int(numpy.prod(own)), -1)
+        ct = la.gemm(_contig(r2.conj()), self.mat).conj()           # r conj(W): [own, con]
+        # the contracted axes of C after the permutation, the pairs packed
+        cshape = [target.shape[p] for p in self.c_perm]
+        con_shape, pos = [], self.ncown
+        for size in self.con_sizes:
+            n = cshape[pos]
+            con_shape.append(n if size == 1 else n * (n - 1) // 2)
+            pos += size
+        ct = ct.reshape(own + tuple(con_shape))
+        for k in reversed(self.kpos):             # adjoint of the gather of the pairs
+            ax = self.ncown + k
+            ct = _pair_place(ct, ax, _npair_dim(ct.shape[ax]))
+        kernels.transpose_add(target, ct, numpy.argsort(self.c_perm), alpha=alpha)
 
     def _c_matrix(self, c, cache):
         key = tuple(self.c_perm), tuple(self.kpos)
@@ -265,6 +320,26 @@ def _slices(c, total, spect, size, limit):
                total[(slice(None),) * axis_o + (sl,)])
 
 
+def _twostage_adjoint(self, y, target, alpha=1.0):
+    '''target += alpha A^+ y for _TwoStage (see _Contraction.adjoint_add).'''
+    if self.g3 is not None:
+        raise NotImplementedError('adjoint of the loop over active indices')
+    nlead = 1 + self.nspect
+    res = kernels.transposed(y, numpy.argsort(self.out_perm))      # [Z, S.., own.., L]
+    for k in self.bpos:
+        res = _pack_antisymmetrized(res, nlead + k, 1.0)
+    cshape = [target.shape[p] for p in self.c_perm]                # [Z, S.., D.., K]
+    nrow = int(numpy.prod(cshape[:nlead]))
+    m = cshape[-1]
+    nd = int(numpy.prod(cshape[nlead:-1]))
+    res = res.reshape(nrow, -1, self.nl)
+    ct = numpy.empty((nrow, nd, m), dtype=numpy.complex128)
+    for r in range(nrow):
+        x = la.gemm(self.gmat2, _contig(res[r]), 'C', 'N')            # [(D, t..), L]
+        ct[r] = la.gemm(x.reshape(nd, -1), self.gmat, 'N', 'C')        # [D, K]
+    kernels.transpose_add(target, ct.reshape(cshape), numpy.argsort(self.c_perm), alpha=alpha)
+
+
 class _TwoStage:
     '''A term whose dressed integral would be large: the matrix Gamma acts on
     the coefficients first, X[Z, ket.., t.., L] = sum_K Gamma[L, t.., K] C[Z,
@@ -313,6 +388,8 @@ class _TwoStage:
         self.ndummy = len(dummy)
         self.out_perm2 = [(own + ['Z'] + spect + ['L']).index(x) for x in 'Z' + out + 'L']
         self.g3 = self.gam3 = None
+
+    adjoint_add = _twostage_adjoint
 
     def _by_active_index(self, c, total, work):
         '''sum over the active indices a of G_a C Gamma_a: two matrix
@@ -394,6 +471,28 @@ class _IntegralFirst:
         dims.update(zip(self.c_letters, c.shape))
         return numpy.zeros([dims[x] for x in self.y_letters], dtype=numpy.complex128)
 
+    def adjoint_add(self, y, target, alpha=1.0):
+        '''target += alpha A^+ y: the two contractions adjoint, in reverse.'''
+        dims = dict(self.dims)
+        dims.update(zip(self.c_letters, target.shape))
+        size = numpy.prod([float(dims[x]) for x in self.y_letters])
+        if size > Sigma.x_limit and self.spect is not None:
+            axis_c, axis_o = self.spect
+            n = target.shape[axis_c]
+            step = max(1, int(n * Sigma.x_limit / size))
+            for k0 in range(0, n, step):
+                sl = slice(k0, k0 + step)
+                tsl = target[(slice(None),) * axis_c + (sl,)]
+                part = numpy.zeros(tsl.shape, dtype=numpy.complex128)
+                inter = self._y(part)
+                self.second.adjoint_add(_contig(y[(slice(None),) * axis_o + (sl,)]), inter)
+                self.first.adjoint_add(inter, part, alpha)
+                tsl += part
+            return
+        inter = self._y(target)
+        self.second.adjoint_add(y, inter)
+        self.first.adjoint_add(inter, target, alpha)
+
     def add(self, c, total, work=None):
         dims = dict(self.dims)
         dims.update(zip(self.c_letters, c.shape))
@@ -445,6 +544,50 @@ class _VVVV:
         t = _step('products B C B^T, %d labels' % len(ct), t)
         total += self.coef * numpy.moveaxis(r.reshape(lead + (nv, nv)), (-2, -1), (1, 2))
         _step('result added', t)
+
+
+def _adjointable(compiled):
+    '''Every contraction of a compiled block pair has an exact adjoint.'''
+    full, staged = compiled
+    cons = list(full) + [c for _, cs in staged for c in cs]
+    for con in cons:
+        if not hasattr(con, 'adjoint_add'):
+            return False
+        if isinstance(con, _TwoStage) and (con.g3 is not None or Sigma.loop_limit != float('inf')):
+            return False
+    return True
+
+
+class _Scaled:
+    '''coef * w with w a view of the integrals, not formed.'''
+
+    def __init__(self, coef, w):
+        self.coef, self.w = coef, w
+
+
+def _accumulate(acc, key, w, inplace=True):
+    '''acc[key] += w for arrays or _Scaled, without a temporary of the full size
+    when a scaled view is added (added slice by slice of its first axis).
+    inplace=False: acc[key] = acc[key] + w, for an entry that may be shared
+    (the streamed matrices are added to the dressed integrals this way).'''
+    if key not in acc:
+        acc[key] = w
+        return
+    a = acc[key]
+    if isinstance(a, _Scaled):
+        a = acc[key] = a.coef * a.w
+    if not inplace:
+        acc[key] = a + (w.coef * w.w if isinstance(w, _Scaled) else w)
+        return
+    if isinstance(w, _Scaled):
+        if a.ndim == 0:
+            acc[key] = a + w.coef * w.w
+            return
+        for i in range(a.shape[0]):
+            a[i] += w.coef * w.w[i]
+    else:
+        a += w
+        acc[key] = a            # a numpy scalar (a W without indices) is not updated in place
 
 
 def _eri_class(labels):
@@ -645,6 +788,10 @@ class Sigma:
     string_limit = 1e8
     # matrices with fewer elements are not packed over antisymmetric pairs
     pack_limit = 5e6
+    # of the two block pairs (bra, ket) and (ket, bra), compile the first one
+    # only and apply the second as its adjoint (H is Hermitian in the packed
+    # basis), when every contraction of the first has an adjoint
+    share_adjoint = True
 
     def __init__(self, eris, act, basis, active_eri=None):
         self.eris = eris
@@ -660,6 +807,8 @@ class Sigma:
         self._blocks = {}
         self._compiled = {}
         self._vvvv = None
+        self._adjoint = {}                   # (bra, ket) -> applied as the adjoint of (ket, bra)
+        self._all_compiled = False
         self._bvv_t = None                   # B[L, A, p] as [A, L, p], shared by the direct (vv|vv) terms
         self.timings = {}
         self.wall, self.calls = 0.0, 0
@@ -875,33 +1024,33 @@ class Sigma:
                     two[key] = [gam, g]
                 continue
             if rest:
-                # (a single operand comes back as a view of the integrals: no
-                # in-place scaling)
+                # a single operand comes back as a view of the integrals: kept
+                # with its coefficient (_Scaled) until it is copied anyway
                 w = _einsum([x for x, _ in rest], [a for _, a in rest],
                             wsub + ('' if plain else 'LK'))
                 if (w.dtype == numpy.complex128
                         and not any(numpy.may_share_memory(w, a) for _, a in rest)):
                     w *= complex(t.coef)
                 else:
-                    w = complex(t.coef) * w
+                    w = _Scaled(complex(t.coef), w)
             else:
                 w = numpy.asarray(complex(t.coef))
             if plain:
                 acc, expr = ext[kind], '%s,Z%sK->Z%sK' % (wsub, csub, out)
             else:
                 acc, expr = full, '%sLK,Z%sK->Z%sL' % (wsub, csub, out)
-            if expr in acc:
-                acc[expr] += w
-            else:
-                acc[expr] = w
+            _accumulate(acc, expr, w)
 
         def build(d):
             # each dressed integral dropped once its contraction holds it
             out = []
             for expr in list(d):
                 w = d.pop(expr)
-                if w.any():
-                    out.append(_Contraction(expr, w, *self._pairs(bra, ket, expr)))
+                scale = 1.0
+                if isinstance(w, _Scaled):
+                    w, scale = w.w, w.coef
+                if scale != 0 and w.any():
+                    out.append(_Contraction(expr, w, *self._pairs(bra, ket, expr), scale=scale))
                 del w
             return out
 
@@ -918,7 +1067,7 @@ class Sigma:
             staged.append((None, direct))
         for (ncre, nann), items in streamed.items():
             for expr, w in self._streamed(bra, ket, ncre, nann, items).items():
-                full[expr] = full[expr] + w if expr in full else w
+                _accumulate(full, expr, w, inplace=False)
         # one at a time, each dressed integral dropped as soon as its contraction
         # holds it in its own layout
         stages = []
@@ -1067,6 +1216,12 @@ class Sigma:
             total = numpy.zeros(c[bra].shape, dtype=numpy.complex128)
             acc = {}
             for ket in self.basis.names:
+                if (bra, ket) in self._adjoint:
+                    t0 = time.perf_counter()
+                    _CONTEXT[0] = bra, ket, 'adjoint'
+                    self._add_adjoint(bra, ket, c, total)
+                    self._tick(bra, ket, 'adjoint', t0)
+                    continue
                 full, staged = self.compiled(bra, ket)
                 cache = caches[ket]
                 for con in full:
@@ -1155,16 +1310,46 @@ class Sigma:
             need[pair] = used
             for k in used:
                 left[k] = left.get(k, 0) + 1
+        names = list(self.basis.names)
         for pair in pairs:
-            self.compiled(*pair)
+            bra, ket = pair
+            if pair not in self._adjoint:
+                compiled = self.compiled(bra, ket)
+                if (self.share_adjoint and names.index(bra) < names.index(ket)
+                        and (ket, bra) not in self._compiled and _adjointable(compiled)):
+                    self._adjoint[ket, bra] = True
             for k in need[pair]:
                 left[k] -= 1
                 if left[k] == 0:
                     self._release_eri(k)
+        self._all_compiled = True
         self._gamma.clear()
         self._blocks.clear()
         if hasattr(self.eris, 'release_blocks'):
             self.eris.release_blocks()
+
+    def _add_adjoint(self, bra, ket, c, total):
+        '''total (block bra) += H[bra, ket] C[ket] as the adjoint of the
+        compiled pair (ket, bra).  With A the map of that pair over the full
+        index ranges and n the number of antisymmetric index pairs of a block,
+        H[bra, ket] = (H[ket, bra])^+ in the packed basis becomes
+        2^(n_bra - n_ket) A^+ before the antisymmetrization of the result.'''
+        full, staged = self.compiled(ket, bra)
+        npair = lambda b: sum(int(x == 2) for x in terms.BLOCKS[b])
+        alpha = 2.0 ** (npair(bra) - npair(ket))
+        y = c[ket]
+        for con in full:
+            con.adjoint_add(y, total, alpha)
+        for m, cons in staged:
+            if m is not None:
+                # the pair applies M[L, K] to the last index: y conj(M)
+                nl, nk = m.shape
+                ym = la.gemm(_contig(y.conj()).reshape(-1, nl), m).conj()
+                ym = ym.reshape(y.shape[:-1] + (nk,))
+            else:
+                ym = y
+            for con in cons:
+                con.adjoint_add(ym, total, alpha)
 
     def _release_eri(self, k):
         '''Drop the integral blocks of the class k (_eri_class) from this
@@ -1240,7 +1425,7 @@ class Sigma:
     def matvec(self, x):
         '''H x for packed vectors x (nvec, dim).'''
         x = numpy.atleast_2d(x)
-        if len(self._compiled) < len(self.basis.names)**2:
+        if not self._all_compiled:
             self.compile_all()
         self._rss = max(self._rss, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1048576.0)
         t0 = time.perf_counter()
