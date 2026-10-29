@@ -36,6 +36,7 @@
  *          --s2pen L (linear spin penalty H + L (S^2 - ss), 0)
  *          --solver lobpcg | davidson (lobpcg)  --max-space M (Davidson, 12)
  *          --pspace K (the P-space preconditioner on K x K strings, 0: off)
+ *          --olsen 0 | 1 (Olsen's correction of the new direction, 0)
  *
  * Library (libzgasci_dist.so): zgd_solve_ab (any lists) and zgd_solve
  * (alpha = beta), the same solve on a communicator of the caller (a
@@ -691,10 +692,26 @@ static void start_vector(dist *d, const double *hd, const double *x0, double *x)
  * is given (a warm start), else those of the lowest diagonal elements.
  * zgd_set_pspace(k), ZGASCI_DIST_PSPACE, --pspace; 0: off. */
 static int pspace_k_ = 0, pspace_set_ = 0;
+/* Olsen's correction (zgd_set_olsen, ZGASCI_DIST_OLSEN, --olsen): t = -M^-1 (r -
+ * eps x), eps = x.M^-1 r / x.M^-1 x, so that t is M-orthogonal to x; without
+ * it a preconditioner close to H - E (the exact P block) mostly returns -x
+ * on P after the first steps, which the orthogonalization then removes. */
+static int olsen_ = 0, olsen_set_ = 0;
+
+void zgd_set_olsen(int on) {
+  olsen_set_ = 1;
+  olsen_ = on != 0;
+}
 
 void zgd_set_pspace(int k) {
   pspace_set_ = 1;
   pspace_k_ = k > 0 ? k : 0;
+}
+
+static void olsen_env(void) {
+  if (olsen_set_) return;
+  olsen_set_ = 1;
+  if (getenv("ZGASCI_DIST_OLSEN")) olsen_ = atoi(getenv("ZGASCI_DIST_OLSEN")) != 0;
 }
 
 static void pspace_env(void) {
@@ -864,6 +881,18 @@ static void precondition(dist *d, const double *hd, double e, double shift, doub
     for (int64_t k = 0; k < ps->nown; ++k) t[ps->pos[k]] = ps->buf[ps->idx[k]];
 }
 
+/* r <- the new direction from the residual r of the Ritz vector x (e):
+ * -M^-1 r, with Olsen's correction if olsen_ (tmp: a work vector). */
+static void correction(dist *d, const double *hd, double e, double shift, double *r,
+                       const double *x, double *tmp, int64_t L) {
+  precondition(d, hd, e, shift, r, L);
+  if (!olsen_) return;
+  copy(x, tmp, L);
+  precondition(d, hd, e, shift, tmp, L);
+  const double xb = gdot(x, tmp, L);
+  if (xb != 0) axpy(-gdot(x, r, L) / xb, tmp, r, L);
+}
+
 /* The lowest state; *xout: its own rows (normalized), for the caller to free.
  * x0: own rows of a start vector (of the symmetry, normalized), or NULL. */
 static double lobpcg(dist *d, const double *x0, int maxit, double tol, double rtol, double shift,
@@ -873,7 +902,7 @@ static double lobpcg(dist *d, const double *x0, int maxit, double tol, double rt
   if (d->nloc) zg_hdiag_d(d->lplan, d->v, hd);
   double *x = calloc((size_t)L + 1, sizeof(double)), *hx = malloc((size_t)(L + 1) * sizeof(double));
   double *t = malloc((size_t)(L + 1) * sizeof(double)), *ht = malloc((size_t)(L + 1) * sizeof(double));
-  double *p = NULL, *hp = NULL;
+  double *p = NULL, *hp = NULL, *ob = olsen_ ? malloc((size_t)(L + 1) * sizeof(double)) : NULL;
   start_vector(d, hd, x0, x);
   pspace_build(d, hd, x0);
   sigma(d, x, hx);
@@ -896,7 +925,7 @@ static double lobpcg(dist *d, const double *x0, int maxit, double tol, double rt
       break;
     }
     e_old = e;
-    precondition(d, hd, e, shift, t, L);
+    correction(d, hd, e, shift, t, x, ob, L);
     if (d->parity) symmetrize(d, t);
     axpy(-gdot(x, t, L), x, t, L);
     if (p) axpy(-gdot(p, t, L), p, t, L);
@@ -954,7 +983,7 @@ static double lobpcg(dist *d, const double *x0, int maxit, double tol, double rt
            now() - t0);
     fflush(stdout);
   }
-  free(hd), free(hx), free(t), free(ht), free(p), free(hp);
+  free(hd), free(hx), free(t), free(ht), free(p), free(hp), free(ob);
   pspace_free(d);
   *xout = x;
   return e;
@@ -1003,6 +1032,7 @@ static double davidson(dist *d, const double *x0, int maxit, double tol, double 
   double **V = calloc(msp, sizeof(double *)), **HV = calloc(msp, sizeof(double *));
   for (int i = 0; i < msp; ++i) V[i] = malloc(vb), HV[i] = malloc(vb);
   double *x = malloc(vb), *hx = malloc(vb), *xo = malloc(vb), *hxo = malloc(vb), *r = malloc(vb);
+  double *ob = olsen_ ? malloc(vb) : NULL;
   double *hs = calloc((size_t)msp * msp, sizeof(double)), *ss = calloc((size_t)msp * msp, sizeof(double));
   double *a = malloc((size_t)msp * msp * sizeof(double)), *b = malloc((size_t)msp * msp * sizeof(double));
   double *w = malloc(msp * sizeof(double)), *c = malloc((msp + 1) * sizeof(double));
@@ -1072,7 +1102,7 @@ static double davidson(dist *d, const double *x0, int maxit, double tol, double 
       collapse = 0, just_collapsed = 1;
     }
     /* the new direction */
-    precondition(d, hd, e, shift, r, L);
+    correction(d, hd, e, shift, r, last, ob, L);
     if (d->parity) symmetrize(d, r);
     const double n0 = sqrt(gdot(r, r, L));
     for (int pass = 0; pass < 2; ++pass) {
@@ -1109,7 +1139,7 @@ static double davidson(dist *d, const double *x0, int maxit, double tol, double 
   if (x != last) free(x);
   if (xo != last) free(xo);
   free(V), free(HV), free(hd), free(hx), free(hxo), free(r), free(hs), free(ss), free(a);
-  free(b), free(w), free(c), free(work);
+  free(b), free(w), free(c), free(work), free(ob);
   pspace_free(d);
   *xout = last;
   return e;
@@ -1373,6 +1403,7 @@ int zgd_solve_ab(int comm_f, int norb, int nalpha, int nbeta, int uhf, const dou
   if (parity != 1 && parity != -1 && parity != 0) die("parity must be +1, -1 or 0");
   eigensolver_env();
   pspace_env();
+  olsen_env();
   if (n > INT32_MAX || nb > INT32_MAX) die("more strings than an MPI count");
   const double t0 = now();
   const size_t n2 = (size_t)norb * norb, n4 = n2 * n2;
@@ -1432,6 +1463,7 @@ int main(int argc, char **argv) {
   comm_ = MPI_COMM_WORLD;
   eigensolver_env();
   pspace_env();
+  olsen_env();
   MPI_Comm_rank(comm_, &rank_);
   MPI_Comm_size(comm_, &size_);
   if (getenv("ZGASCI_DIST_CHUNK") && atol(getenv("ZGASCI_DIST_CHUNK")) > 0)
@@ -1454,6 +1486,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(argv[i], "--solver")) esolver_ = !strcmp(argv[i + 1], "davidson");
     else if (!strcmp(argv[i], "--max-space")) max_space_ = atoi(argv[i + 1]);
     else if (!strcmp(argv[i], "--pspace")) pspace_k_ = atoi(argv[i + 1]);
+    else if (!strcmp(argv[i], "--olsen")) olsen_ = atoi(argv[i + 1]) != 0;
     else die("unknown option");
   }
   const double t0 = now();
