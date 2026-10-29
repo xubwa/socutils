@@ -22,7 +22,8 @@ void SortList(std::vector<HeatBath::Entry>* list) {
 }  // namespace
 
 template <typename S>
-void HeatBath::BuildSpinorLists(const Integrals<S>& ints, double threshold,
+void HeatBath::BuildSpinorLists(const SpinorIntegrals<S>& ints,
+                                double threshold,
                                 std::vector<std::vector<Entry>>* lists) const {
   const int n = ints.num_orbs();
   lists->resize(static_cast<size_t>(n) * (n - 1) / 2);
@@ -46,7 +47,8 @@ void HeatBath::BuildSpinorLists(const Integrals<S>& ints, double threshold,
 }
 
 template <typename S>
-void HeatBath::BuildSpatialLists(const Integrals<S>& ints, double threshold,
+void HeatBath::BuildSpatialLists(const SpatialIntegrals<S>& ints,
+                                 double threshold,
                                  std::vector<std::vector<Entry>>* lists) const {
   const int n = ints.num_spatial();
   const size_t num_same = static_cast<size_t>(n) * (n - 1) / 2;
@@ -85,21 +87,20 @@ void HeatBath::BuildSpatialLists(const Integrals<S>& ints, double threshold,
   }
 }
 
-template <typename S>
-HeatBath::HeatBath(const Integrals<S>& ints, double threshold,
-                   const Comm& comm) {
+template <class Ints>
+HeatBath::HeatBath(const Ints& ints, double threshold, const Comm& comm) {
   if (ints.num_orbs() > UINT16_MAX) {
     throw std::length_error("HeatBath: too many spinors");
   }
-  spatial_ = ints.is_spatial();
-  if (spatial_) {
+  spatial_ = Ints::kSpatial;
+  if constexpr (Ints::kSpatial) {
     const size_t n = ints.num_spatial();
     opposite_offset_ = n * (n - 1) / 2;
   }
   std::vector<std::vector<Entry>> lists;
   size_t num_lists = 0;
   if (comm.is_root()) {
-    if (spatial_) {
+    if constexpr (Ints::kSpatial) {
       BuildSpatialLists(ints, threshold, &lists);
     } else {
       BuildSpinorLists(ints, threshold, &lists);
@@ -127,7 +128,11 @@ HeatBath::HeatBath(const Integrals<S>& ints, double threshold,
   entries_.ShareFromRoot(comm);
 }
 
-template HeatBath::HeatBath(const Integrals<double>&, double, const Comm&);
-template HeatBath::HeatBath(const Integrals<Complex>&, double, const Comm&);
+template HeatBath::HeatBath(const SpinorIntegrals<double>&, double,
+                            const Comm&);
+template HeatBath::HeatBath(const SpinorIntegrals<Complex>&, double,
+                            const Comm&);
+template HeatBath::HeatBath(const SpatialIntegrals<double>&, double,
+                            const Comm&);
 
 }  // namespace zshci

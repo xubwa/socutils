@@ -40,7 +40,7 @@
 
 namespace zshci {
 
-template <int W, typename S>
+template <int W, class Ints, typename S = typename Ints::Scalar>
 class DirectH : public LinearOperator<S> {
  public:
   // `diagonal` holds <D|H|D> of every determinant on the rank that runs the
@@ -59,7 +59,7 @@ class DirectH : public LinearOperator<S> {
   // With `flip` the operator is that over the functions of the layout
   // (spin_flip.h): x and y are over the functions, `diagonal` too, and only
   // the rows of canonical determinants are visited.
-  DirectH(Span<Det<W>> dets, const Integrals<S>& ints,
+  DirectH(Span<Det<W>> dets, const Ints& ints,
           const internal::GroupStringTables<W>& tables, double threshold,
           const std::vector<double>& diagonal,
           size_t scratch_bytes = kDefaultScratchBytes,
@@ -280,7 +280,7 @@ class DirectH : public LinearOperator<S> {
   }
 
   Span<Det<W>> dets_;
-  const Integrals<S>& ints_;
+  const Ints& ints_;
   const internal::GroupStringTables<W>& tables_;
   double threshold_;
   const std::vector<double>& diagonal_;

@@ -451,9 +451,10 @@ void ForEachConnectedPair(Span<Det<W>> dets, size_t first_new,
 // must call visit(i, j) once for every connected pair i < j with
 // j >= first_new, possibly from several threads at once; it is called twice,
 // the second time with stats == nullptr.
-template <int W, typename S, class ForEachPair>
+template <int W, class Ints, typename S = typename Ints::Scalar,
+          class ForEachPair>
 CsrBlock<S> BuildBlockFromPairs(Span<Det<W>> dets, size_t first_new,
-                                const Integrals<S>& ints, double threshold,
+                                const Ints& ints, double threshold,
                                 const ForEachPair& for_each_pair,
                                 ConnectStats* stats) {
   const size_t n = dets.size();
@@ -666,10 +667,10 @@ std::vector<CsrBlock<S>> BlocksOfRanges(std::vector<RowBuckets<S>>* threads,
 // of its own. Where the tables find the connections of the determinants of
 // a string together, a rank owns chunks of determinants in the order of the
 // strings instead. Returns the blocks that hold elements.
-template <int W, typename S>
+template <int W, class Ints, typename S = typename Ints::Scalar>
 std::vector<CsrBlock<S>> BuildGroupBlocks(
-    Span<Det<W>> dets, size_t first_new, const Integrals<S>& ints,
-    double threshold, const GroupStringTables<W>& tables, ConnectStats* stats,
+    Span<Det<W>> dets, size_t first_new, const Ints& ints, double threshold,
+    const GroupStringTables<W>& tables, ConnectStats* stats,
     bool store_values = true, size_t max_bytes = SIZE_MAX,
     uint8_t* left_out = nullptr, const SpinFlipLayout* flip = nullptr) {
   // Rows of this rank are stored as long as the elements take no more than
@@ -878,9 +879,9 @@ CsrBlock<S> MergeBlocks(std::vector<CsrBlock<S>> blocks, size_t dim,
 }
 
 // Builds the block from the pairs a bucket finder reports.
-template <int W, class Finder, typename S>
+template <int W, class Finder, class Ints, typename S = typename Ints::Scalar>
 CsrBlock<S> BuildBlockWith(Span<Det<W>> dets, size_t first_new,
-                           const Integrals<S>& ints, double threshold,
+                           const Ints& ints, double threshold,
                            const Finder& finder, ConnectStats* stats) {
   const int num_passes = finder.num_passes();
   // A single pass keeps its entries for the second round.
@@ -933,9 +934,9 @@ Det<W> GroupMask(const ConnectOptions& options, int num_orbs) {
 // the elements found there. The blocks of all ranks together hold each
 // element once; no communication is needed. `stats`, if given, is updated
 // with what this rank's search did.
-template <int W, typename S>
+template <int W, class Ints, typename S = typename Ints::Scalar>
 std::vector<CsrBlock<S>> BuildBlocks(Span<Det<W>> dets, size_t first_new,
-                                     const Integrals<S>& ints,
+                                     const Ints& ints,
                                      const ConnectOptions& options,
                                      const Comm& comm = Comm(),
                                      ConnectStats* stats = nullptr) {
@@ -969,10 +970,9 @@ std::vector<CsrBlock<S>> BuildBlocks(Span<Det<W>> dets, size_t first_new,
 }
 
 // The same as a single block.
-template <int W, typename S>
-CsrBlock<S> BuildBlock(Span<Det<W>> dets, size_t first_new,
-                       const Integrals<S>& ints, const ConnectOptions& options,
-                       const Comm& comm = Comm(),
+template <int W, class Ints, typename S = typename Ints::Scalar>
+CsrBlock<S> BuildBlock(Span<Det<W>> dets, size_t first_new, const Ints& ints,
+                       const ConnectOptions& options, const Comm& comm = Comm(),
                        ConnectStats* stats = nullptr) {
   std::vector<CsrBlock<S>> blocks =
       BuildBlocks(dets, first_new, ints, options, comm, stats);
@@ -982,9 +982,9 @@ CsrBlock<S> BuildBlock(Span<Det<W>> dets, size_t first_new,
 
 // Reference implementation: tests every pair of determinants. Quadratic; used
 // only to check BuildBlock on small cases.
-template <int W, typename S>
+template <int W, class Ints, typename S = typename Ints::Scalar>
 CsrBlock<S> BuildBlockBruteForce(Span<Det<W>> dets, size_t first_new,
-                                 const Integrals<S>& ints,
+                                 const Ints& ints,
                                  const ConnectOptions& options) {
   const size_t n = dets.size();
   CsrBlock<S> block;

@@ -153,8 +153,8 @@ DensityMatrices<S> GasDensity(const GasSpace& space, const S* bra, const S* ket,
 // wfn.h5 as the other modes write it: the determinants over the original
 // spinors and the coefficients in their phase convention (creation
 // operators in increasing order of the original spinors).
-template <typename S>
-void WriteGasWaveFunction(const Input& input, const Integrals<S>& ints,
+template <class Ints, typename S = typename Ints::Scalar>
+void WriteGasWaveFunction(const Input& input, const Ints& ints,
                           const GasSpace& space,
                           const std::vector<BigArray<S>>& vectors,
                           const std::vector<double>& energies) {
@@ -198,8 +198,8 @@ void WriteGasWaveFunction(const Input& input, const Integrals<S>& ints,
 
 }  // namespace
 
-template <typename S>
-void RunFci(const Input& input, const Integrals<S>& ints, const Comm& comm) {
+template <class Ints, typename S = typename Ints::Scalar>
+void RunFci(const Input& input, const Ints& ints, const Comm& comm) {
   if (MKL_Set_Threading_Layer) {
     MKL_Set_Threading_Layer(kMklThreadingSequential);
   }
@@ -518,7 +518,10 @@ void RunFci(const Input& input, const Integrals<S>& ints, const Comm& comm) {
   }
 }
 
-template void RunFci(const Input&, const Integrals<double>&, const Comm&);
-template void RunFci(const Input&, const Integrals<Complex>&, const Comm&);
+template void RunFci(const Input&, const SpinorIntegrals<double>&, const Comm&);
+template void RunFci(const Input&, const SpinorIntegrals<Complex>&,
+                     const Comm&);
+template void RunFci(const Input&, const SpatialIntegrals<double>&,
+                     const Comm&);
 
 }  // namespace zshci

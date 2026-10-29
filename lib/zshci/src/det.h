@@ -117,8 +117,13 @@ static_assert(sizeof(Det<2>) == 16, "Det must hold nothing but its words");
 // Number of 64-bit words needed for num_orbs spinors.
 inline int WordsForOrbitals(int num_orbs) { return (num_orbs + 63) / 64; }
 
-// Largest width instantiated by the driver.
-constexpr int kMaxDetWords = 4;
+// Largest width instantiated by the driver: 64 * kMaxDetWords spinors. A
+// build option (make MAX_DET_WORDS=N); every width from 1 to N is compiled
+// for every kind of integrals.
+#ifndef ZSHCI_MAX_DET_WORDS
+#define ZSHCI_MAX_DET_WORDS 4
+#endif
+constexpr int kMaxDetWords = ZSHCI_MAX_DET_WORDS;
 
 }  // namespace zshci
 

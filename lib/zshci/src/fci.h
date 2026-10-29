@@ -12,8 +12,8 @@
 namespace zshci {
 
 // Instantiated for double and Complex.
-template <typename S>
-void RunFci(const Input& input, const Integrals<S>& ints, const Comm& comm);
+template <class Ints, typename S = typename Ints::Scalar>
+void RunFci(const Input& input, const Ints& ints, const Comm& comm);
 
 }  // namespace zshci
 

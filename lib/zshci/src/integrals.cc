@@ -50,9 +50,13 @@ std::vector<int> NamelistInts(const std::string& header,
 }  // namespace
 
 template <typename S>
-Integrals<S>::Integrals(int num_orbs, std::vector<LabelSet> symmetry,
-                        const Comm& comm)
-    : num_orbs_(num_orbs), symmetry_(std::move(symmetry)) {
+SpinorIntegrals<S>::SpinorIntegrals(int num_orbs,
+                                    std::vector<LabelSet> symmetry,
+                                    const Comm& comm) {
+  this->num_orbs_ = num_orbs;
+  this->symmetry_ = std::move(symmetry);
+  const std::vector<LabelSet>& symmetry_ = this->symmetry_;
+  std::vector<S>& one_body_ = this->one_body_;
   const size_t n = num_orbs;
   if (n > UINT16_MAX) throw std::length_error("too many spinors");
   for (const LabelSet& set : symmetry_) {
@@ -138,51 +142,51 @@ std::vector<LabelSet> SpinOrbitalSymmetry(
 }  // namespace
 
 template <typename S>
-Integrals<S> Integrals<S>::SpinOrbitals(
+SpinorIntegrals<S> SpinorIntegrals<S>::SpinOrbitals(
     int num_spatial, const std::vector<LabelSet>& spatial_symmetry,
     const Comm& comm) {
-  Integrals ints(2 * num_spatial,
-                 SpinOrbitalSymmetry(num_spatial, spatial_symmetry), comm);
+  SpinorIntegrals ints(2 * num_spatial,
+                       SpinOrbitalSymmetry(num_spatial, spatial_symmetry),
+                       comm);
   ints.spin_orbitals_ = true;
   return ints;
 }
 
 template <typename S>
-Integrals<S> Integrals<S>::Spatial(
+SpatialIntegrals<S>::SpatialIntegrals(
     int num_spatial, const std::vector<LabelSet>& spatial_symmetry,
     const Comm& comm) {
-  Integrals ints;
   const size_t n = num_spatial;
   if (2 * n > UINT16_MAX) throw std::length_error("too many orbitals");
-  ints.num_spatial_ = num_spatial;
-  ints.num_orbs_ = 2 * num_spatial;
-  ints.spin_orbitals_ = true;
-  ints.symmetry_ = SpinOrbitalSymmetry(num_spatial, spatial_symmetry);
-  ints.one_body_.assign(4 * n * n, S(0.0));
+  num_spatial_ = num_spatial;
+  this->num_orbs_ = 2 * num_spatial;
+  this->spin_orbitals_ = true;
+  this->symmetry_ = SpinOrbitalSymmetry(num_spatial, spatial_symmetry);
+  this->one_body_.assign(4 * n * n, S(0.0));
   const size_t num_products = n * (n + 1) / 2;
-  ints.two_body_ = SharedArray<S>(num_products * (num_products + 1) / 2, comm);
+  two_body_ = SharedArray<S>(num_products * (num_products + 1) / 2, comm);
   if (comm.is_node_leader()) {
-    std::fill(ints.two_body_.data(),
-              ints.two_body_.data() + ints.two_body_.size(), S(0.0));
+    std::fill(two_body_.data(), two_body_.data() + two_body_.size(), S(0.0));
   }
-  return ints;
 }
 
 template <typename S>
-void Integrals<S>::SetSpatialOneBody(int p, int q, S value) {
-  SetOneBody(2 * p, 2 * q, value);
-  SetOneBody(2 * p + 1, 2 * q + 1, value);
+void SpatialIntegrals<S>::SetSpatialOneBody(int p, int q, S value) {
+  this->SetOneBody(2 * p, 2 * q, value);
+  this->SetOneBody(2 * p + 1, 2 * q + 1, value);
 }
 
 template <typename S>
-void Integrals<S>::SetSpatialTwoBody(int p, int q, int r, int s, S value) {
+void SpatialIntegrals<S>::SetSpatialTwoBody(int p, int q, int r, int s,
+                                            S value) {
   // (pq|rs) moves electrons from q, s to p, r. The first set is the spin.
-  for (size_t k = 1; k < symmetry_.size(); ++k) {
-    const std::vector<int>& labels = symmetry_[k].labels;
+  const std::vector<LabelSet>& symmetry = this->symmetry_;
+  for (size_t k = 1; k < symmetry.size(); ++k) {
+    const std::vector<int>& labels = symmetry[k].labels;
     const int change =
         labels[2 * p] + labels[2 * r] - labels[2 * q] - labels[2 * s];
-    if (!LabelConserved(change, symmetry_[k].mod)) {
-      NoteForbidden(value);
+    if (!LabelConserved(change, symmetry[k].mod)) {
+      this->NoteForbidden(value);
       return;
     }
   }
@@ -190,12 +194,7 @@ void Integrals<S>::SetSpatialTwoBody(int p, int q, int r, int s, S value) {
 }
 
 template <typename S>
-void Integrals<S>::NoteForbidden(S value) {
-  max_forbidden_ = std::max(max_forbidden_, std::abs(value));
-}
-
-template <typename S>
-S* Integrals<S>::Stored(size_t bra, size_t ket, bool* conjugated) {
+S* SpinorIntegrals<S>::Stored(size_t bra, size_t ket, bool* conjugated) {
   const PairSlot a = pair_slot_[bra];
   const PairSlot b = pair_slot_[ket];
   if (a.block != b.block) return nullptr;
@@ -208,7 +207,7 @@ S* Integrals<S>::Stored(size_t bra, size_t ket, bool* conjugated) {
 }
 
 template <typename S>
-void Integrals<S>::SetOneBody(int p, int q, S value) {
+void IntegralTables<S>::SetOneBody(int p, int q, S value) {
   for (const LabelSet& set : symmetry_) {
     if (!LabelConserved(set.labels[p] - set.labels[q], set.mod)) {
       NoteForbidden(value);
@@ -219,21 +218,19 @@ void Integrals<S>::SetOneBody(int p, int q, S value) {
 }
 
 template <typename S>
-void Integrals<S>::SetAntisymOrdered(int p, int q, int r, int s, S value) {
-  if (is_spatial()) {
-    throw std::logic_error("spatial integrals are set by SetSpatialTwoBody");
-  }
+void SpinorIntegrals<S>::SetAntisymOrdered(int p, int q, int r, int s,
+                                           S value) {
   bool conjugated = false;
   S* const stored = Stored(PairIndex(p, q), PairIndex(r, s), &conjugated);
   if (stored == nullptr) {
-    NoteForbidden(value);
+    this->NoteForbidden(value);
     return;
   }
   *stored = conjugated ? Conj(value) : value;
 }
 
 template <typename S>
-void Integrals<S>::AddChemist(int p, int q, int r, int s, S value) {
+void SpinorIntegrals<S>::AddChemist(int p, int q, int r, int s, S value) {
   // (pq|rs) is the first term of <pr||qs>, and the second, with a minus
   // sign, of <pr||sq> = -<pr||qs>: either way it adds to <pr||qs>.
   if (p == r || q == s) return;
@@ -247,27 +244,25 @@ void Integrals<S>::AddChemist(int p, int q, int r, int s, S value) {
     negative = !negative;
   }
   if (negative) value = -value;
-  if (is_spatial()) {
-    throw std::logic_error("spatial integrals are set by SetSpatialTwoBody");
-  }
   // The Hermitian partner (qp|sr) adds conj(value) to <qs||pr>, which is the
   // same stored number seen from the other side; one of the two is added.
   bool conjugated = false;
   S* const stored = Stored(PairIndex(p, r), PairIndex(q, s), &conjugated);
   if (stored == nullptr) {
-    NoteForbidden(value);
+    this->NoteForbidden(value);
     return;
   }
   *stored += conjugated ? Conj(value) : value;
 }
 
 template <typename S>
-void Integrals<S>::Finalize() {
+template <class Kind>
+void IntegralTables<S>::FillTables(const Kind& kind) {
   const size_t n = num_orbs_;
   pair_energy_.assign(n * n, 0.0);
   for (int p = 0; p < num_orbs_; ++p) {
     for (int q = 0; q < num_orbs_; ++q) {
-      pair_energy_[p * n + q] = Real(Antisym(p, q, p, q));
+      pair_energy_[p * n + q] = Real(kind.Antisym(p, q, p, q));
     }
   }
   // At most num_elec - 1 occupied spinors besides p contribute to the
@@ -282,7 +277,7 @@ void Integrals<S>::Finalize() {
     for (int p = 0; p < num_orbs_; ++p) {
       for (int q = 0; q < num_orbs_; ++q) {
         for (int k = 0; k < num_orbs_; ++k) {
-          terms[k] = std::abs(Antisym(q, k, p, k));
+          terms[k] = std::abs(kind.Antisym(q, k, p, k));
         }
         const int m = std::min(contributing, num_orbs_);
         std::nth_element(terms.begin(), terms.begin() + (m - 1), terms.end(),
@@ -297,14 +292,57 @@ void Integrals<S>::Finalize() {
 }
 
 template <typename S>
-void Integrals<S>::Share(const Comm& comm) {
+void IntegralTables<S>::ShareTables(const Comm& comm) {
   comm.BcastValue(&num_elec_);
   comm.BcastValue(&core_energy_);
   comm.BcastValue(&max_forbidden_);
   comm.Bcast(&one_body_);
-  two_body_.ShareFromRoot(comm);
   comm.Bcast(&pair_energy_);
   comm.Bcast(&single_bound_);
+}
+
+template <typename S>
+void SpinorIntegrals<S>::Share(const Comm& comm) {
+  this->ShareTables(comm);
+  two_body_.ShareFromRoot(comm);
+}
+
+template <typename S>
+void SpatialIntegrals<S>::Share(const Comm& comm) {
+  this->ShareTables(comm);
+  two_body_.ShareFromRoot(comm);
+}
+
+namespace {
+
+// The share of what spinors without labels would need, in percent.
+inline double StoredShare(size_t stored, int num_orbs) {
+  const double pairs = static_cast<double>(num_orbs) * (num_orbs - 1) / 2.0;
+  return 100.0 * stored / (pairs * (pairs + 1) / 2.0);
+}
+
+}  // namespace
+
+template <typename S>
+std::string SpinorIntegrals<S>::Describe() const {
+  char text[256];
+  std::snprintf(text, sizeof(text),
+                "%s, %d spinors; two-electron integrals: %zu stored, %.1f%% "
+                "of what spinors without symmetry would need",
+                ScalarTraits<S>::kName, this->num_orbs_, num_stored(),
+                StoredShare(num_stored(), this->num_orbs_));
+  return text;
+}
+
+template <typename S>
+std::string SpatialIntegrals<S>::Describe() const {
+  char text[256];
+  std::snprintf(text, sizeof(text),
+                "%s, %d spatial orbitals; two-electron integrals: %zu "
+                "stored, %.1f%% of what spinors without symmetry would need",
+                ScalarTraits<S>::kName, num_spatial_, num_stored(),
+                StoredShare(num_stored(), this->num_orbs_));
+  return text;
 }
 
 namespace {
@@ -402,9 +440,10 @@ bool IsHdf5(const std::string& path) {
 
 // Reads the binary file of antisymmetrized integrals (integrals.h).
 template <typename S>
-Integrals<S> ReadAntisymFile(const std::string& path,
-                             const std::vector<LabelSet>& symmetry,
-                             double symmetry_tolerance, const Comm& comm) {
+SpinorIntegrals<S> ReadAntisymFile(const std::string& path,
+                                   const std::vector<LabelSet>& symmetry,
+                                   double symmetry_tolerance,
+                                   const Comm& comm) {
   int n = 0;
   int num_elec = 0;
   double ecore = 0.0;
@@ -470,7 +509,7 @@ Integrals<S> ReadAntisymFile(const std::string& path,
     sets.push_back(std::move(set));
   }
 
-  Integrals<S> ints(n, std::move(sets), comm);
+  SpinorIntegrals<S> ints(n, std::move(sets), comm);
   if (!comm.is_root()) {
     ints.Share(comm);
     return ints;
@@ -544,9 +583,9 @@ bool FcidumpIsComplex(const std::string& path, const Comm& comm) {
 }
 
 template <typename S>
-Integrals<S> ReadFcidump(const std::string& path,
-                         const std::vector<LabelSet>& symmetry,
-                         double symmetry_tolerance, const Comm& comm) {
+SpinorIntegrals<S> ReadFcidump(const std::string& path,
+                               const std::vector<LabelSet>& symmetry,
+                               double symmetry_tolerance, const Comm& comm) {
   int binary = comm.is_root() && IsHdf5(path) ? 1 : 0;
   comm.BcastValue(&binary);
   if (binary != 0) {
@@ -571,7 +610,7 @@ Integrals<S> ReadFcidump(const std::string& path,
     sets.push_back(std::move(set));
   }
 
-  Integrals<S> ints(header.num_orbs, std::move(sets), comm);
+  SpinorIntegrals<S> ints(header.num_orbs, std::move(sets), comm);
   if (!comm.is_root()) {
     ints.Share(comm);
     return ints;
@@ -648,9 +687,10 @@ Integrals<S> ReadFcidump(const std::string& path,
 }
 
 template <typename S>
-Integrals<S> ReadSpatialFcidump(const std::string& path,
-                                const std::vector<LabelSet>& symmetry,
-                                double symmetry_tolerance, const Comm& comm) {
+SpatialIntegrals<S> ReadSpatialFcidump(const std::string& path,
+                                       const std::vector<LabelSet>& symmetry,
+                                       double symmetry_tolerance,
+                                       const Comm& comm) {
   std::ifstream file;
   FcidumpHeader header;
   if (comm.is_root()) header = ReadHeader(path, &file);
@@ -683,7 +723,7 @@ Integrals<S> ReadSpatialFcidump(const std::string& path,
     }
   }
 
-  Integrals<S> ints = Integrals<S>::Spatial(n, sets, comm);
+  SpatialIntegrals<S> ints(n, sets, comm);
   if (!comm.is_root()) {
     ints.Share(comm);
     return ints;
@@ -744,10 +784,9 @@ Integrals<S> ReadSpatialFcidump(const std::string& path,
 }
 
 template <typename S>
-Integrals<S> ReadUnrestrictedIntegrals(const std::string& path,
-                                       const std::vector<LabelSet>& symmetry,
-                                       double symmetry_tolerance,
-                                       const Comm& comm) {
+SpinorIntegrals<S> ReadUnrestrictedIntegrals(
+    const std::string& path, const std::vector<LabelSet>& symmetry,
+    double symmetry_tolerance, const Comm& comm) {
   int n = 0;
   std::vector<double> h1[2];
   std::vector<double> eri_aa, eri_bb, eri_ab;
@@ -789,7 +828,7 @@ Integrals<S> ReadUnrestrictedIntegrals(const std::string& path,
     }
   }
 
-  Integrals<S> ints = Integrals<S>::SpinOrbitals(n, symmetry, comm);
+  SpinorIntegrals<S> ints = SpinorIntegrals<S>::SpinOrbitals(n, symmetry, comm);
   if (!comm.is_root()) {
     ints.Share(comm);
     return ints;
@@ -844,23 +883,26 @@ Integrals<S> ReadUnrestrictedIntegrals(const std::string& path,
   return ints;
 }
 
-template class Integrals<double>;
-template class Integrals<Complex>;
-template Integrals<double> ReadFcidump<double>(const std::string&,
-                                               const std::vector<LabelSet>&,
-                                               double, const Comm&);
-template Integrals<Complex> ReadFcidump<Complex>(const std::string&,
-                                                 const std::vector<LabelSet>&,
-                                                 double, const Comm&);
-
-template Integrals<double> ReadSpatialFcidump<double>(
+template class IntegralTables<double>;
+template class IntegralTables<Complex>;
+template class SpinorIntegrals<double>;
+template class SpinorIntegrals<Complex>;
+template class SpatialIntegrals<double>;
+template void IntegralTables<double>::FillTables(
+    const SpinorIntegrals<double>&);
+template void IntegralTables<Complex>::FillTables(
+    const SpinorIntegrals<Complex>&);
+template void IntegralTables<double>::FillTables(
+    const SpatialIntegrals<double>&);
+template SpinorIntegrals<double> ReadFcidump<double>(
     const std::string&, const std::vector<LabelSet>&, double, const Comm&);
-template Integrals<Complex> ReadSpatialFcidump<Complex>(
+template SpinorIntegrals<Complex> ReadFcidump<Complex>(
     const std::string&, const std::vector<LabelSet>&, double, const Comm&);
-
-template Integrals<double> ReadUnrestrictedIntegrals<double>(
+template SpatialIntegrals<double> ReadSpatialFcidump<double>(
     const std::string&, const std::vector<LabelSet>&, double, const Comm&);
-template Integrals<Complex> ReadUnrestrictedIntegrals<Complex>(
+template SpinorIntegrals<double> ReadUnrestrictedIntegrals<double>(
+    const std::string&, const std::vector<LabelSet>&, double, const Comm&);
+template SpinorIntegrals<Complex> ReadUnrestrictedIntegrals<Complex>(
     const std::string&, const std::vector<LabelSet>&, double, const Comm&);
 
 }  // namespace zshci

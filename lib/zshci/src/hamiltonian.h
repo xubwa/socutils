@@ -75,8 +75,8 @@ double DoubleSign(const Det<W>& ket, int i, int j, int a, int b) {
 // <det|H|det> without the core energy. Called once per candidate determinant
 // in perturbation theory, so it must not allocate: memory allocation is a
 // point of contention between threads.
-template <int W, typename S>
-double DiagonalEnergy(const Det<W>& det, const Integrals<S>& ints) {
+template <int W, class Ints, typename S = typename Ints::Scalar>
+double DiagonalEnergy(const Det<W>& det, const Ints& ints) {
   int occ[64 * W];
   int num_occ = 0;
   for (int k = 0; k < W; ++k) {
@@ -98,9 +98,9 @@ double DiagonalEnergy(const Det<W>& det, const Integrals<S>& ints) {
 }
 
 // <bra|H|ket> for a bra that differs from the ket by `exc` (rank 1 or 2).
-template <int W, typename S>
+template <int W, class Ints, typename S = typename Ints::Scalar>
 S OffDiagonalElement(const Det<W>& ket, const Excitation& exc,
-                     const Integrals<S>& ints) {
+                     const Ints& ints) {
   if (exc.rank == 1) {
     const int i = exc.holes[0];
     const int a = exc.particles[0];
@@ -126,8 +126,8 @@ S OffDiagonalElement(const Det<W>& ket, const Excitation& exc,
 }
 
 // <bra|H|ket> for two different determinants; zero beyond double excitations.
-template <int W, typename S>
-S Hij(const Det<W>& bra, const Det<W>& ket, const Integrals<S>& ints) {
+template <int W, class Ints, typename S = typename Ints::Scalar>
+S Hij(const Det<W>& bra, const Det<W>& ket, const Ints& ints) {
   return OffDiagonalElement(ket, FindExcitation(bra, ket), ints);
 }
 

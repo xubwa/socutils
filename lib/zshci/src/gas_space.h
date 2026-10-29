@@ -115,8 +115,8 @@ class GasSpace {
 
 // v[P * npair + R] over the spinors of the plan (perm), P = q (q - 1) / 2 + p:
 // <pq||rs> + (h_pr d_qs - h_ps d_qr - h_qr d_ps + h_qs d_pr) / (N - 1).
-template <typename S>
-std::vector<S> AntisymmetrizedPairs(const Integrals<S>& ints,
+template <class Ints, typename S = typename Ints::Scalar>
+std::vector<S> AntisymmetrizedPairs(const Ints& ints,
                                     const std::vector<int>& perm, int num_elec);
 
 }  // namespace zshci

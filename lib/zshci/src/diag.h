@@ -23,8 +23,8 @@
 
 namespace zshci {
 
-template <int W, typename S>
-void RunDiag(const Input& input, const Integrals<S>& ints, const Comm& comm) {
+template <int W, class Ints, typename S = typename Ints::Scalar>
+void RunDiag(const Input& input, const Ints& ints, const Comm& comm) {
   const int num_orbs = ints.num_orbs();
   std::vector<Det<W>> root_dets;
   // With spin_flip the list is completed by the flips of its determinants
@@ -80,7 +80,7 @@ void RunDiag(const Input& input, const Integrals<S>& ints, const Comm& comm) {
   }
 
   double time = omp_get_wtime();
-  VariationalH<W, S> h(input, ints, comm);
+  VariationalH<W, Ints> h(input, ints, comm);
   h.Extend(dets, 0);
   if (static_cast<size_t>(input.nroots) > h.dim()) {
     throw std::runtime_error("nroots exceeds the dimension of the space");

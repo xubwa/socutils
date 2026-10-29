@@ -89,9 +89,10 @@ std::vector<Det<W>> ToDets(const std::vector<std::vector<int>>& occupations,
 }
 
 // The same integrals with every spinor index increased by `shift`.
-Integrals<Complex> ShiftIntegrals(const Integrals<Complex>& ints, int shift) {
+SpinorIntegrals<Complex> ShiftIntegrals(const SpinorIntegrals<Complex>& ints,
+                                        int shift) {
   const int n = ints.num_orbs();
-  Integrals<Complex> shifted(n + shift);
+  SpinorIntegrals<Complex> shifted(n + shift);
   for (int p = 0; p < n; ++p) {
     for (int q = 0; q < n; ++q) {
       shifted.SetOneBody(p + shift, q + shift, ints.OneBody(p, q));
@@ -163,7 +164,7 @@ void TestCountBetween() {
   Expect(ok, "Det<3>::CountBetween agrees with a bit-by-bit count");
 }
 
-void TestHamiltonian(const Integrals<Complex>& ints) {
+void TestHamiltonian(const SpinorIntegrals<Complex>& ints) {
   const int n = ints.num_orbs();
   const std::vector<std::vector<int>> occupations =
       RandomOccupations(n, ints.num_elec(), 500, 3, 11);
@@ -234,7 +235,7 @@ void TestHamiltonian(const Integrals<Complex>& ints) {
 
   // Shifting all spinors across a word boundary must not change anything.
   const int shift = 66 - n;
-  const Integrals<Complex> shifted = ShiftIntegrals(ints, shift);
+  const SpinorIntegrals<Complex> shifted = ShiftIntegrals(ints, shift);
   const std::vector<Det<2>> dets2 = ToDets<2>(occupations, shift);
   const CsrBlock<Complex> block2 =
       BuildBlock(MakeSpan(dets2), 0, shifted, keep_all);
@@ -356,7 +357,7 @@ void TestHamiltonian(const Integrals<Complex>& ints) {
 // The few-vector solver of the select and diag modes against the classic one
 // and the dense eigenvalues: several roots, a space that grows (vectors
 // padded with zeros), determinants out of the space, checkpoint and restart.
-void TestFewVectorSolver(const Integrals<Complex>& ints) {
+void TestFewVectorSolver(const SpinorIntegrals<Complex>& ints) {
   const int n = ints.num_orbs();
   const std::vector<Det<1>> dets =
       ToDets<1>(RandomOccupations(n, ints.num_elec(), 500, 3, 11), 0);
@@ -502,7 +503,7 @@ void TestFewVectorSolver(const Integrals<Complex>& ints) {
 }
 
 // The energies of a select-mode run in the directory `prefix`.
-std::vector<double> RunSelectCase(const Integrals<Complex>& ints,
+std::vector<double> RunSelectCase(const SpinorIntegrals<Complex>& ints,
                                   const std::string& prefix,
                                   const std::string& extra,
                                   const std::string& solver, int max_iter) {
@@ -519,7 +520,7 @@ std::vector<double> RunSelectCase(const Integrals<Complex>& ints,
       "\"solver\": \"" +
       solver + "\"}}";
   Input input = ParseInput(text);
-  RunSelect<1, Complex>(input, ints, Comm());
+  RunSelect<1, SpinorIntegrals<Complex>>(input, ints, Comm());
   std::vector<double> energies(2, 0.0);
   std::FILE* file = std::fopen((prefix + "/shci.e").c_str(), "rb");
   if (file != nullptr) {
@@ -533,7 +534,7 @@ std::vector<double> RunSelectCase(const Integrals<Complex>& ints,
 
 // A whole selection with the few-vector solver against the classic one, and
 // one stopped after two iterations and resumed from its checkpoint.
-void TestSelectSolvers(const Integrals<Complex>& ints) {
+void TestSelectSolvers(const SpinorIntegrals<Complex>& ints) {
   const std::string base =
       std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") +
       "/zshci_test_select";
@@ -569,7 +570,7 @@ void TestSelectSolvers(const Integrals<Complex>& ints) {
 // Selection through the heat-bath tables against a direct evaluation of
 // |H(a,i)| w_i for every single and double excitation. `restrictions` bound
 // the number of electrons in sets of spinors.
-void TestSelection(const Integrals<Complex>& ints,
+void TestSelection(const SpinorIntegrals<Complex>& ints,
                    const std::vector<LabelSet>& symmetry,
                    const std::vector<OccupationRestriction>& restrictions,
                    const std::string& what) {
@@ -662,7 +663,7 @@ void TestSelection(const Integrals<Complex>& ints,
 }
 
 // Perturbation theory against a direct sum over all excitations.
-void TestPerturbation(const Integrals<Complex>& ints) {
+void TestPerturbation(const SpinorIntegrals<Complex>& ints) {
   const int n = ints.num_orbs();
   const std::vector<Det<1>> dets =
       ToDets<1>(RandomOccupations(n, ints.num_elec(), 60, 2, 23), 0);
@@ -739,7 +740,7 @@ void TestPerturbation(const Integrals<Complex>& ints) {
   const HeatBath heat_bath(ints, 1e-12);
   const LabelFilter filter(std::vector<int>(n, 0), 0);
   const Comm serial;
-  PtProblem<1, LabelFilter, Complex> problem{
+  PtProblem<1, LabelFilter, SpinorIntegrals<Complex>> problem{
       dets, sorted_dets, c, energy, ints, heat_bath, filter, 1, serial};
   const double exact = direct(epsilon);
   const double exact_large = direct(epsilon_large);
@@ -805,7 +806,7 @@ void TestPerturbation(const Integrals<Complex>& ints) {
 // lambda, and no coupling inside Q, the exact energy is
 // E0 + lambda^2 E2 + O(lambda^4). This fixes which of H(a,i) and its complex
 // conjugate enters the numerator, independently of the PT code.
-void TestSecondOrderLimit(const Integrals<Complex>& ints) {
+void TestSecondOrderLimit(const SpinorIntegrals<Complex>& ints) {
   const int n = ints.num_orbs();
   const std::vector<Det<1>> dets =
       ToDets<1>(RandomOccupations(n, ints.num_elec(), 300, 2, 31), 0);
@@ -898,7 +899,7 @@ bool Create(int p, Det<1>* det, double* sign) {
 // applied to every determinant one operator at a time, with none of the
 // logic of rdm.h. Unlike the energy, this tells a density matrix from its
 // complex conjugate and from its transpose.
-void TestDensityMatricesFromDefinition(const Integrals<Complex>& ints) {
+void TestDensityMatricesFromDefinition(const SpinorIntegrals<Complex>& ints) {
   const int n = ints.num_orbs();
   const std::vector<Det<1>> dets =
       ToDets<1>(RandomOccupations(n, ints.num_elec(), 120, 2, 41), 0);
@@ -1006,9 +1007,9 @@ void TestDensityMatricesFromDefinition(const Integrals<Complex>& ints) {
 // The real part of a Hamiltonian, which is again a Hamiltonian, as numbers
 // of type S.
 template <typename S>
-Integrals<S> RealPart(const Integrals<Complex>& ints) {
+SpinorIntegrals<S> RealPart(const SpinorIntegrals<Complex>& ints) {
   const int n = ints.num_orbs();
-  Integrals<S> out(n);
+  SpinorIntegrals<S> out(n);
   for (int p = 0; p < n; ++p) {
     for (int q = 0; q < n; ++q) {
       out.SetOneBody(p, q, S(ints.OneBody(p, q).real()));
@@ -1043,7 +1044,7 @@ struct ScalarResults {
 // the stochastic sample compares only between runs that draw from exactly
 // the same coefficients.
 template <typename S>
-ScalarResults SmallCalculation(const Integrals<S>& ints,
+ScalarResults SmallCalculation(const SpinorIntegrals<S>& ints,
                                const std::vector<double>* pt_vector) {
   const int n = ints.num_orbs();
   const std::vector<Det<1>> dets =
@@ -1088,7 +1089,7 @@ ScalarResults SmallCalculation(const Integrals<S>& ints,
   const HeatBath heat_bath(ints, 1e-12);
   const LabelFilter filter(std::vector<int>(n, 0), 0);
   const Comm serial;
-  const PtProblem<1, LabelFilter, S> problem{
+  const PtProblem<1, LabelFilter, SpinorIntegrals<S>> problem{
       dets,   sorted_dets, pt_state, results.energies[0], ints, heat_bath,
       filter, 1,           serial};
   results.pt = PtDeterministic(problem, 1e-5);
@@ -1110,7 +1111,7 @@ ScalarResults SmallCalculation(const Integrals<S>& ints,
 
 // Integrals held in symmetry blocks against the same integrals held in one
 // block.
-void TestBlockedIntegrals(const Integrals<Complex>& ints) {
+void TestBlockedIntegrals(const SpinorIntegrals<Complex>& ints) {
   const int n = ints.num_orbs();
   std::vector<int> axis(n), parity(n);
   for (int p = 0; p < n; ++p) {
@@ -1120,8 +1121,8 @@ void TestBlockedIntegrals(const Integrals<Complex>& ints) {
   const std::vector<LabelSet> sets = {{axis, 4}, {parity, 2}};
 
   // Dropping what the labels forbid makes a Hamiltonian with the symmetry.
-  Integrals<Complex> blocked(n, sets);
-  Integrals<Complex> plain(n);
+  SpinorIntegrals<Complex> blocked(n, sets);
+  SpinorIntegrals<Complex> plain(n);
   for (int p = 0; p < n; ++p) {
     for (int q = 0; q < n; ++q) blocked.SetOneBody(p, q, ints.OneBody(p, q));
   }
@@ -1153,7 +1154,7 @@ void TestBlockedIntegrals(const Integrals<Complex>& ints) {
       }
     }
   }
-  for (Integrals<Complex>* each : {&blocked, &plain}) {
+  for (SpinorIntegrals<Complex>* each : {&blocked, &plain}) {
     each->set_num_elec(ints.num_elec());
     each->Finalize();
   }
@@ -1270,7 +1271,7 @@ void TestSpatialIntegrals() {
     return value;
   };
 
-  Integrals<double> spatial = Integrals<double>::Spatial(n, {});
+  SpatialIntegrals<double> spatial(n, {});
   for (int p = 0; p < n; ++p) {
     for (int q = 0; q < n; ++q) {
       spatial.SetSpatialOneBody(p, q, h[p * n + q]);
@@ -1284,7 +1285,7 @@ void TestSpatialIntegrals() {
   // Spin orbital 2P + sigma; <pq||rs> = (pr|qs) - (ps|qr) with the spins of
   // each charge distribution equal.
   const int m = 2 * n;
-  Integrals<double> spinor(m, spatial.symmetry());
+  SpinorIntegrals<double> spinor(m, spatial.symmetry());
   auto chemist = [&](int p, int q, int r, int s) {
     return (p % 2 == q % 2 && r % 2 == s % 2) ? eri(p / 2, q / 2, r / 2, s / 2)
                                               : 0.0;
@@ -1304,10 +1305,10 @@ void TestSpatialIntegrals() {
       }
     }
   }
-  for (Integrals<double>* each : {&spatial, &spinor}) {
-    each->set_num_elec(num_elec);
-    each->Finalize();
-  }
+  spatial.set_num_elec(num_elec);
+  spatial.Finalize();
+  spinor.set_num_elec(num_elec);
+  spinor.Finalize();
   std::printf(
       "      %zu numbers over spatial orbitals, %zu over spin "
       "orbitals in spin blocks\n",
@@ -1458,7 +1459,7 @@ void TestSpinStringConnections(int num_spatial, int shift,
   std::mt19937 rng(43);
   // Random integrals; only the pattern of connections is tested here, and
   // every connected pair gets an element since no threshold is set.
-  Integrals<double> ints = Integrals<double>::Spatial(num_spatial + shift, {});
+  SpatialIntegrals<double> ints(num_spatial + shift, {});
   std::uniform_real_distribution<double> uniform(-1.0, 1.0);
   for (int p = 0; p < num_spatial + shift; ++p) {
     for (int q = 0; q <= p; ++q) {
@@ -1661,7 +1662,7 @@ void TestByteConnections(int num_orbs, int num_elec, int shift, int count,
 
 // The group string tables for spinors, where electrons move between the
 // groups, against a comparison of all pairs.
-void TestGroupConnections(const Integrals<Complex>& ints) {
+void TestGroupConnections(const SpinorIntegrals<Complex>& ints) {
   const int n = ints.num_orbs();
   const std::vector<std::vector<int>> occupations =
       RandomOccupations(n, ints.num_elec(), 700, 3, 61);
@@ -1749,7 +1750,7 @@ void TestGroupConnections(const Integrals<Complex>& ints) {
   }
 
   const int shift = 66 - n;
-  const Integrals<Complex> shifted = ShiftIntegrals(ints, shift);
+  const SpinorIntegrals<Complex> shifted = ShiftIntegrals(ints, shift);
   const std::vector<Det<2>> dets2 = ToDets<2>(occupations, shift);
   ConnectOptions grouped = reference;
   grouped.method = ConnectMethod::kGroups;
@@ -1911,7 +1912,7 @@ void TestGroupConnections(const Integrals<Complex>& ints) {
       // The same with the values dropped and worked out in every product.
       struct Source : ElementSource<Complex> {
         const std::vector<Det<1>>* dets;
-        const Integrals<Complex>* ints;
+        const SpinorIntegrals<Complex>* ints;
         void Fill(DetIndex row, const DetIndex* cols, size_t count,
                   Complex* values) const override {
           for (size_t k = 0; k < count; ++k) {
@@ -1960,9 +1961,11 @@ void TestGroupConnections(const Integrals<Complex>& ints) {
     for (const std::vector<double>* given : diagonals) {
       // With the diagonal given: per-thread vectors; without: atomic
       // additions into y.
-      const DirectH<1, Complex> direct(
+      const DirectH<1, SpinorIntegrals<Complex>> direct(
           MakeSpan(dets), ints, tables, threshold, *given,
-          given->empty() ? 0 : DirectH<1, Complex>::kDefaultScratchBytes);
+          given->empty()
+              ? 0
+              : DirectH<1, SpinorIntegrals<Complex>>::kDefaultScratchBytes);
       std::vector<Complex> x(dets.size()), y(dets.size()), y_ref(dets.size());
       for (size_t i = 0; i < x.size(); ++i) {
         x[i] = Complex(std::sin(0.3 * i + 0.2), std::cos(1.7 * i));
@@ -1994,9 +1997,10 @@ void TestGroupConnections(const Integrals<Complex>& ints) {
         blocked.Extend(MakeSpan(dets), 0);
         num_tasks += blocked.num_tasks();
         for (size_t budget :
-             {size_t{0}, DirectH<1, Complex>::kDefaultScratchBytes}) {
-          const DirectH<1, Complex> direct(MakeSpan(dets), ints, blocked,
-                                           threshold, diagonal, budget);
+             {size_t{0},
+              DirectH<1, SpinorIntegrals<Complex>>::kDefaultScratchBytes}) {
+          const DirectH<1, SpinorIntegrals<Complex>> direct(
+              MakeSpan(dets), ints, blocked, threshold, diagonal, budget);
           std::vector<Complex> x(dets.size()), y(dets.size()),
               y_ref(dets.size());
           for (size_t i = 0; i < x.size(); ++i) {
@@ -2037,9 +2041,10 @@ void TestGroupConnections(const Integrals<Complex>& ints) {
           composed.Extend(MakeSpan(dets), 0);
           num_tasks += composed.num_tasks();
           for (size_t budget :
-               {size_t{0}, DirectH<1, Complex>::kDefaultScratchBytes}) {
-            const DirectH<1, Complex> direct(MakeSpan(dets), ints, composed,
-                                             threshold, diagonal, budget);
+               {size_t{0},
+                DirectH<1, SpinorIntegrals<Complex>>::kDefaultScratchBytes}) {
+            const DirectH<1, SpinorIntegrals<Complex>> direct(
+                MakeSpan(dets), ints, composed, threshold, diagonal, budget);
             direct.Apply(x.data(), y.data());
             for (size_t i = 0; i < x.size(); ++i) {
               worst = std::max(worst, std::abs(y[i] - y_ref[i]));
@@ -2102,7 +2107,7 @@ void TestGroupConnections(const Integrals<Complex>& ints) {
 
 // The selectors that score external determinants by perturbation theory
 // against scores worked out determinant by determinant.
-void TestPtScoreSelection(const Integrals<Complex>& ints) {
+void TestPtScoreSelection(const SpinorIntegrals<Complex>& ints) {
   const int n = ints.num_orbs();
   const std::vector<Det<1>> dets =
       ToDets<1>(RandomOccupations(n, ints.num_elec(), 60, 2, 71), 0);
@@ -2174,18 +2179,19 @@ void TestPtScoreSelection(const Integrals<Complex>& ints) {
   const HeatBath heat_bath(ints, 0.0);
   const RestrictedFilter filter(LabelFilter(std::vector<int>(n, 0), 0), {}, n);
   const std::vector<uint8_t> all_active(dets.size(), 1);
-  const SelectionContext<1, Complex> context{0,
-                                             MakeSpan(dets),
-                                             MakeSpan(sorted_dets),
-                                             weights.span(),
-                                             &vectors,
-                                             energies,
-                                             ints,
-                                             heat_bath,
-                                             filter,
-                                             serial,
-                                             MakeSpan(all_active),
-                                             dets.size()};
+  const SelectionContext<1, SpinorIntegrals<Complex>> context{
+      0,
+      MakeSpan(dets),
+      MakeSpan(sorted_dets),
+      weights.span(),
+      &vectors,
+      energies,
+      ints,
+      heat_bath,
+      filter,
+      serial,
+      MakeSpan(all_active),
+      dets.size()};
 
   // By count: the space grows from 60 to 150 determinants.
   for (SelectMethod method : {SelectMethod::kCipsi, SelectMethod::kAsci}) {
@@ -2193,7 +2199,7 @@ void TestPtScoreSelection(const Integrals<Complex>& ints) {
     select.method = method;
     select.growth = 2.5;
     select.target_dets = 1000;
-    PtScoreSelector<1, Complex> selector(select);
+    PtScoreSelector<1, SpinorIntegrals<Complex>> selector(select);
     const std::vector<Det<1>> chosen = selector.Select(context).add;
     const bool amplitude = method == SelectMethod::kAsci;
     std::sort(reference.begin(), reference.end(),
@@ -2233,7 +2239,7 @@ void TestPtScoreSelection(const Integrals<Complex>& ints) {
       }
     }
     std::sort(expected.begin(), expected.end());
-    PtScoreSelector<1, Complex> selector(select);
+    PtScoreSelector<1, SpinorIntegrals<Complex>> selector(select);
     const std::vector<Det<1>> chosen = selector.Select(context).add;
     Expect(expected.size() > 20 && expected.size() + 20 < reference.size() &&
                chosen == expected,
@@ -2282,7 +2288,7 @@ void TestPtScoreSelection(const Integrals<Complex>& ints) {
     }
     std::sort(expected_add.begin(), expected_add.end());
     std::sort(expected_drop.begin(), expected_drop.end());
-    PtScoreSelector<1, Complex> selector(select);
+    PtScoreSelector<1, SpinorIntegrals<Complex>> selector(select);
     const Selection<1> selection = selector.Select(context);
     Expect(!expected_drop.empty() && expected_drop.size() < dets.size() &&
                selection.add == expected_add && selection.drop == expected_drop,
@@ -2386,7 +2392,7 @@ void TestPtScoreSelection(const Integrals<Complex>& ints) {
         expected_drop.push_back(i);
       }
     }
-    PtScoreSelector<1, Complex> selector(select);
+    PtScoreSelector<1, SpinorIntegrals<Complex>> selector(select);
     const Selection<1> selection = selector.Select(context);
     Expect(ranking.size() > 200 && !expected_drop.empty() &&
                selection.add == expected_add && selection.drop == expected_drop,
@@ -2461,7 +2467,7 @@ void TestPtScoreSelection(const Integrals<Complex>& ints) {
         expected_drop.push_back(i);
       }
     }
-    PtScoreSelector<1, Complex> selector(select);
+    PtScoreSelector<1, SpinorIntegrals<Complex>> selector(select);
     const Selection<1> selection = selector.Select(context);
     Expect(generators.size() < dets.size() && !expected_drop.empty() &&
                !expected_add.empty() && kept.size() < ranking.size() &&
@@ -2477,7 +2483,7 @@ void TestPtScoreSelection(const Integrals<Complex>& ints) {
 }
 
 // A real Hamiltonian treated with real numbers and with complex numbers.
-void TestRealScalar(const Integrals<Complex>& ints) {
+void TestRealScalar(const SpinorIntegrals<Complex>& ints) {
   const ScalarResults real = SmallCalculation(RealPart<double>(ints), nullptr);
   const ScalarResults complex =
       SmallCalculation(RealPart<Complex>(ints), &real.real_vector);
@@ -2521,8 +2527,8 @@ void TestRealScalar(const Integrals<Complex>& ints) {
 
 // The first m spinors of `ints`; the real parts only if S is double.
 template <typename S>
-Integrals<S> FirstSpinors(const Integrals<Complex>& ints, int m) {
-  Integrals<S> out(m);
+SpinorIntegrals<S> FirstSpinors(const SpinorIntegrals<Complex>& ints, int m) {
+  SpinorIntegrals<S> out(m);
   auto take = [](Complex z) {
     return ScalarTraits<S>::Make(z.real(), z.imag());
   };
@@ -2549,7 +2555,8 @@ using DenseMatrix = Eigen::Matrix<S, Eigen::Dynamic, Eigen::Dynamic>;
 // of the plan (creation operators in the order of the plan's spinors), from
 // the Slater-Condon rules of hamiltonian.h, without the core energy.
 template <typename S>
-DenseMatrix<S> ExplicitGasH(const Integrals<S>& ints, const GasSpace& space) {
+DenseMatrix<S> ExplicitGasH(const SpinorIntegrals<S>& ints,
+                            const GasSpace& space) {
   int nwords = 0;
   const std::vector<uint64_t> words = space.PlanDets(&nwords);
   const std::vector<int>& perm = space.layout().perm;
@@ -2603,7 +2610,7 @@ Complex RandomScalar<Complex>(std::mt19937* rng) {
 // The kernels against the explicit matrix: the diagonal and H c for a
 // random c, element by element, with each of the three kernels.
 template <typename S>
-void TestGasKernels(const Integrals<S>& ints, const GasCase<S>& c,
+void TestGasKernels(const SpinorIntegrals<S>& ints, const GasCase<S>& c,
                     const std::string& what, long min_dim) {
   const GasLayout layout =
       MakeGasLayout(ints.num_orbs(), c.constraints, c.max_subgroup);
@@ -2667,7 +2674,7 @@ class DenseOperator : public CiOperator<S> {
 // The Davidson of the fci mode against the eigenvalues of the explicit
 // matrix, several roots, a small subspace, a checkpoint and a restart.
 template <typename S>
-void TestFciDavidson(const Integrals<S>& ints, const GasCase<S>& c,
+void TestFciDavidson(const SpinorIntegrals<S>& ints, const GasCase<S>& c,
                      const std::string& path) {
   const GasLayout layout =
       MakeGasLayout(ints.num_orbs(), c.constraints, c.max_subgroup);
@@ -2779,7 +2786,7 @@ void TestFciDavidson(const Integrals<S>& ints, const GasCase<S>& c,
 // The distributed sigma on one rank, with the vector sent round in several
 // slices, against the kernel in one piece; and the Davidson on it.
 template <typename S>
-void TestDistributedSigma(const Integrals<S>& ints, const GasCase<S>& c) {
+void TestDistributedSigma(const SpinorIntegrals<S>& ints, const GasCase<S>& c) {
   const GasLayout layout =
       MakeGasLayout(ints.num_orbs(), c.constraints, c.max_subgroup);
   std::vector<int> targets;
@@ -3006,11 +3013,11 @@ void TestGasKernelsWide() {
 }
 
 template <typename S>
-void TestGasCi(const Integrals<Complex>& complex_ints) {
+void TestGasCi(const SpinorIntegrals<Complex>& complex_ints) {
   const int n = complex_ints.num_orbs();
   // Full CI: 6 electrons in the first 12 spinors, no constraint.
   {
-    const Integrals<S> small = FirstSpinors<S>(complex_ints, 12);
+    const SpinorIntegrals<S> small = FirstSpinors<S>(complex_ints, 12);
     GasCase<S> fci;
     fci.nelec = 6;
     TestGasKernels(small, fci,
@@ -3018,7 +3025,7 @@ void TestGasCi(const Integrals<Complex>& complex_ints) {
     fci.max_subgroup = 4;
     TestGasKernels(small, fci, "the same with sub-groups of 4 spinors", 924);
   }
-  const Integrals<S> ints = FirstSpinors<S>(complex_ints, n);
+  const SpinorIntegrals<S> ints = FirstSpinors<S>(complex_ints, n);
   const int nelec = complex_ints.num_elec();
   // GAS: at most two holes in the lowest nelec spinors, at most one electron
   // above nelec + 4; labels as of an axis and of inversion.
@@ -3072,8 +3079,8 @@ void TestGasCi(const Integrals<Complex>& complex_ints) {
 
 // Random real integrals over n spatial orbitals with increasing orbital
 // energies, so that the low states are of the usual kind.
-Integrals<double> RandomSpatialIntegrals(int n, unsigned seed) {
-  Integrals<double> ints = Integrals<double>::Spatial(n, {});
+SpatialIntegrals<double> RandomSpatialIntegrals(int n, unsigned seed) {
+  SpatialIntegrals<double> ints(n, {});
   std::mt19937 rng(seed);
   std::uniform_real_distribution<double> uniform(-1.0, 1.0);
   for (int p = 0; p < n; ++p) {
@@ -3102,7 +3109,7 @@ struct SpinFlipRun {
 };
 
 // A select-mode run over spatial orbitals; reads shci.e and wfn.h5.
-SpinFlipRun RunSpinFlipCase(const Integrals<double>& ints,
+SpinFlipRun RunSpinFlipCase(const SpatialIntegrals<double>& ints,
                             const std::string& prefix, const std::string& dets,
                             int nroots, int spin_flip, double epsilon1,
                             const std::string& extra, int max_iter = 12,
@@ -3123,7 +3130,7 @@ SpinFlipRun RunSpinFlipCase(const Integrals<double>& ints,
       "}, \"davidson\": {\"tol\": 1e-10, \"checkpoint_every\": 1}, "
       "\"output_level\": 0" +
       extra + "}";
-  RunSelect<1, double>(ParseInput(text), ints, Comm());
+  RunSelect<1, SpatialIntegrals<double>>(ParseInput(text), ints, Comm());
   SpinFlipRun run;
   run.prefix = prefix;
   run.energies.assign(nroots, 0.0);
@@ -3223,7 +3230,7 @@ void TestSpinFlip() {
   }
 
   // Full spaces (epsilon1 = 0 fills the space): 6 electrons in 8 orbitals.
-  const Integrals<double> ints = RandomSpatialIntegrals(8, 7);
+  const SpatialIntegrals<double> ints = RandomSpatialIntegrals(8, 7);
   const std::string closed = "[[0,1,2,3,4,5]]";
   const std::string open = "[[0,1,2,3,4,7]]";  // 0, 1 doubly, 2a 3b
   const std::string high = "[[0,1,2,3,4,6]]";  // Ms = 1
@@ -3319,7 +3326,7 @@ void TestSpinFlip() {
 
   // Selected spaces, perturbation theory, resuming: 8 electrons in 12
   // orbitals.
-  const Integrals<double> big = RandomSpatialIntegrals(12, 11);
+  const SpatialIntegrals<double> big = RandomSpatialIntegrals(12, 11);
   const std::string hf = "[[0,1,2,3,4,5,6,7]]";
   const std::string det_pt =
       ", \"pt\": {\"method\": \"deterministic\", \"epsilon2\": 1e-7}";
@@ -3412,8 +3419,8 @@ void TestSpinFlip() {
 
 // The pieces of the faster PT2 kernels: the bound that screens singles, the
 // diagonal element carried from the parent, the hashed set of the space.
-void TestPtKernels(const Integrals<Complex>& complex_ints) {
-  const Integrals<double> ints = RandomSpatialIntegrals(12, 5);
+void TestPtKernels(const SpinorIntegrals<Complex>& complex_ints) {
+  const SpatialIntegrals<double> ints = RandomSpatialIntegrals(12, 5);
   std::mt19937 rng(9);
   double worst_bound = -1.0, worst_energy = 0.0;
   size_t num_singles = 0, num_doubles = 0;
@@ -3451,8 +3458,8 @@ void TestPtKernels(const Integrals<Complex>& complex_ints) {
     };
     const HeatBath heat_bath(ints, 1e-14);
     const LabelFilter filter(std::vector<int>(ints.num_orbs(), 0), 0);
-    internal::ElementEnergySink<1, decltype(visit), double> sink(det, occ, ints,
-                                                                 0.0, visit);
+    internal::ElementEnergySink<1, decltype(visit), SpatialIntegrals<double>>
+        sink(det, occ, ints, 0.0, visit);
     ForEachExcitation(det, occ, 1e-12, ints, heat_bath, filter, &sink);
   }
   std::printf(
@@ -3516,7 +3523,7 @@ void TestPtAuto() {
       std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") +
       "/zshci_test_ptauto";
   std::system(("rm -rf " + base).c_str());
-  const Integrals<double> ints = RandomSpatialIntegrals(12, 11);
+  const SpatialIntegrals<double> ints = RandomSpatialIntegrals(12, 11);
   const int n = ints.num_orbs();
   const HeatBath heat_bath(ints, 1e-12);
   const LabelFilter filter(std::vector<int>(n, 0), 0);
@@ -3531,7 +3538,7 @@ void TestPtAuto() {
     SpinFlipLayout layout(1, 8);
     if (flip_mode) layout.Extend(MakeSpan(run.dets), 0);
     const double energy = run.energies[0] - ints.core_energy();
-    PtProblem<1, LabelFilter, double> problem{
+    PtProblem<1, LabelFilter, SpatialIntegrals<double>> problem{
         run.dets,       sorted,
         run.vectors[0], energy,
         ints,           heat_bath,
@@ -3561,8 +3568,8 @@ void TestPtAuto() {
             }
             terms += 1.0;
           };
-          internal::ElementSink<1, decltype(visit), double> sink(
-              run.dets[i], ints, 0.0, visit);
+          internal::ElementSink<1, decltype(visit), SpatialIntegrals<double>>
+              sink(run.dets[i], ints, 0.0, visit);
           ForEachExcitation(run.dets[i], occ, t / c, ints, heat_bath, filter,
                             &sink);
         }
@@ -3587,7 +3594,7 @@ void TestPtAuto() {
     // Batches and the guard do not change the deterministic sum.
     {
       const double one = PtDeterministic(problem, 1e-5);
-      PtProblem<1, LabelFilter, double> batched = problem;
+      PtProblem<1, LabelFilter, SpatialIntegrals<double>> batched = problem;
       batched.num_batches = 3;
       const double three = PtDeterministic(batched, 1e-5);
       internal::SumStats stats;
@@ -3633,7 +3640,7 @@ void TestPtAuto() {
       const PtResult given = RunPerturbation(problem, fixed, 0, false);
       const double det_diff =
           std::abs(PtDeterministic(problem, choice.epsilon_large) - [&] {
-            PtProblem<1, LabelFilter, double> b = problem;
+            PtProblem<1, LabelFilter, SpatialIntegrals<double>> b = problem;
             b.num_batches = choice.det_batches;
             return PtDeterministic(b, choice.epsilon_large);
           }());
@@ -3706,7 +3713,7 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
   try {
-    const zshci::Integrals<zshci::Complex> ints =
+    const zshci::SpinorIntegrals<zshci::Complex> ints =
         zshci::ReadFcidump<zshci::Complex>(argv[1]);
     if (ints.num_orbs() > 32 || ints.num_orbs() < ints.num_elec() + 2) {
       throw std::runtime_error("the test needs NELEC + 2 <= NORB <= 32");

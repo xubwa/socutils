@@ -294,8 +294,8 @@ void GasSpace::Sigma(const std::vector<Complex>& v, const Complex* c,
   zg_sigma_z(plan_, zv, zc, zs);
 }
 
-template <typename S>
-std::vector<S> AntisymmetrizedPairs(const Integrals<S>& ints,
+template <class Ints, typename S = typename Ints::Scalar>
+std::vector<S> AntisymmetrizedPairs(const Ints& ints,
                                     const std::vector<int>& perm,
                                     int num_elec) {
   const int n = static_cast<int>(perm.size());
@@ -327,10 +327,11 @@ std::vector<S> AntisymmetrizedPairs(const Integrals<S>& ints,
   return v;
 }
 
-template std::vector<double> AntisymmetrizedPairs(const Integrals<double>&,
-                                                  const std::vector<int>&, int);
-template std::vector<Complex> AntisymmetrizedPairs(const Integrals<Complex>&,
-                                                   const std::vector<int>&,
-                                                   int);
+template std::vector<double> AntisymmetrizedPairs(
+    const SpinorIntegrals<double>&, const std::vector<int>&, int);
+template std::vector<Complex> AntisymmetrizedPairs(
+    const SpinorIntegrals<Complex>&, const std::vector<int>&, int);
+template std::vector<double> AntisymmetrizedPairs(
+    const SpatialIntegrals<double>&, const std::vector<int>&, int);
 
 }  // namespace zshci

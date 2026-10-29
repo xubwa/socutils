@@ -224,9 +224,10 @@ class RestrictedFilter {
 // Singles whose bound (Integrals::SingleBound) is not above the cutoff are
 // skipped without being evaluated. With doubles = false only the singles
 // are generated.
-template <int W, class Filter, class Sink, typename S>
+template <int W, class Filter, class Sink, class Ints,
+          typename S = typename Ints::Scalar>
 void ForEachExcitation(const Det<W>& det, const std::vector<int>& occ,
-                       double cutoff, const Integrals<S>& ints,
+                       double cutoff, const Ints& ints,
                        const HeatBath& heat_bath, const Filter& filter,
                        Sink* sink, bool doubles = true) {
   const int num_orbs = ints.num_orbs();

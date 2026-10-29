@@ -86,10 +86,10 @@ class CandidateSink {
 // candidates are sent to the rank that owns their hash, which removes
 // duplicates and known determinants, and the survivors are gathered so that
 // every rank returns the same list.
-template <int W, class Filter, typename S>
+template <int W, class Filter, class Ints, typename S = typename Ints::Scalar>
 std::vector<Det<W>> SelectNewDeterminants(
     Span<Det<W>> dets, Span<Det<W>> sorted_dets, Span<double> weights,
-    double epsilon, const Integrals<S>& ints, const HeatBath& heat_bath,
+    double epsilon, const Ints& ints, const HeatBath& heat_bath,
     const Filter& filter, const Comm& comm = Comm()) {
   std::vector<Det<W>> candidates;
   const long num_dets = static_cast<long>(dets.size());
@@ -193,7 +193,7 @@ SharedArray<double> ShareSelectionWeights(
 
 // What a selector is given in one iteration. Everything is the same on every
 // rank.
-template <int W, typename S>
+template <int W, class Ints, typename S = typename Ints::Scalar>
 struct SelectionContext {
   int iteration;
   // The list of determinants. All of them are in the space unless a
@@ -209,7 +209,7 @@ struct SelectionContext {
   // selectors that ask for them (needs_vectors), otherwise null and empty.
   const SharedVectors<S>* vectors;
   const std::vector<double>& energies;
-  const Integrals<S>& ints;
+  const Ints& ints;
   const HeatBath& heat_bath;
   const RestrictedFilter& filter;
   const Comm& comm;
@@ -231,7 +231,7 @@ struct Selection {
 };
 
 // One kind of selected CI: the rule by which the variational space changes.
-template <int W, typename S>
+template <int W, class Ints, typename S = typename Ints::Scalar>
 class Selector {
  public:
   virtual ~Selector() = default;
@@ -250,12 +250,12 @@ class Selector {
   virtual bool needs_vectors() const { return false; }
 
   // Collective: what to bring into the space and what to take out of it.
-  virtual Selection<W> Select(const SelectionContext<W, S>& context) = 0;
+  virtual Selection<W> Select(const SelectionContext<W, Ints>& context) = 0;
 };
 
 // Heat-bath selection with the epsilon1 schedule of the input.
-template <int W, typename S>
-class HeatBathSelector : public Selector<W, S> {
+template <int W, class Ints, typename S = typename Ints::Scalar>
+class HeatBathSelector : public Selector<W, Ints> {
  public:
   explicit HeatBathSelector(const SelectInput& select) : select_(select) {}
 
@@ -268,7 +268,7 @@ class HeatBathSelector : public Selector<W, S> {
     return iteration >= select_.schedule.back().first;
   }
 
-  Selection<W> Select(const SelectionContext<W, S>& context) override {
+  Selection<W> Select(const SelectionContext<W, Ints>& context) override {
     Selection<W> selection;
     selection.add = SelectNewDeterminants(
         context.dets, context.sorted_dets, context.weights,
@@ -311,8 +311,8 @@ class HeatBathSelector : public Selector<W, S> {
 // lowest ones whose scores sum to at most sigma.
 //
 // Without "prune" no determinant is ever removed.
-template <int W, typename S>
-class PtScoreSelector : public Selector<W, S> {
+template <int W, class Ints, typename S = typename Ints::Scalar>
+class PtScoreSelector : public Selector<W, Ints> {
  public:
   explicit PtScoreSelector(const SelectInput& select) : select_(select) {}
 
@@ -332,7 +332,7 @@ class PtScoreSelector : public Selector<W, S> {
   }
   bool needs_vectors() const override { return true; }
 
-  Selection<W> Select(const SelectionContext<W, S>& context) override {
+  Selection<W> Select(const SelectionContext<W, Ints>& context) override {
     const Comm& comm = context.comm;
     const size_t num_dets = context.num_active;
     const bool by_count = select_.method != SelectMethod::kAci;
@@ -497,7 +497,7 @@ class PtScoreSelector : public Selector<W, S> {
 
   // The scores from one state with the given coefficients and energy, of
   // the determinants not in `excluded` (sorted), sorted by determinant.
-  std::vector<Scored> ScoresOfRoot(const SelectionContext<W, S>& context,
+  std::vector<Scored> ScoresOfRoot(const SelectionContext<W, Ints>& context,
                                    Span<S> coefficients, double energy,
                                    double core_weight,
                                    Span<Det<W>> excluded) const {
@@ -515,7 +515,7 @@ class PtScoreSelector : public Selector<W, S> {
         term.sum = element * ci;
         emit(term);
       };
-      internal::ElementSink<W, decltype(visit), S> sink(
+      internal::ElementSink<W, decltype(visit), Ints> sink(
           context.dets[i], context.ints, 0.0, visit);
       ForEachExcitation(context.dets[i], occ, epsilon / std::abs(ci),
                         context.ints, context.heat_bath, context.filter, &sink);
@@ -660,15 +660,15 @@ class PtScoreSelector : public Selector<W, S> {
 };
 
 // The selector the input asks for.
-template <int W, typename S>
-std::unique_ptr<Selector<W, S>> MakeSelector(const Input& input) {
+template <int W, class Ints, typename S = typename Ints::Scalar>
+std::unique_ptr<Selector<W, Ints>> MakeSelector(const Input& input) {
   switch (input.select.method) {
     case SelectMethod::kHeatBath:
-      return std::make_unique<HeatBathSelector<W, S>>(input.select);
+      return std::make_unique<HeatBathSelector<W, Ints>>(input.select);
     case SelectMethod::kCipsi:
     case SelectMethod::kAsci:
     case SelectMethod::kAci:
-      return std::make_unique<PtScoreSelector<W, S>>(input.select);
+      return std::make_unique<PtScoreSelector<W, Ints>>(input.select);
   }
   throw std::logic_error("unknown selection method");
 }
@@ -676,8 +676,8 @@ std::unique_ptr<Selector<W, S>> MakeSelector(const Input& input) {
 // Root only: the list and the vectors to <prefix>/select.h5, written beside
 // it and renamed, so that a job killed meanwhile leaves the previous one.
 // `energies` are without the core energy.
-template <int W, typename S>
-void WriteSelectCheckpoint(const Input& input, const Integrals<S>& ints,
+template <int W, class Ints, typename S = typename Ints::Scalar>
+void WriteSelectCheckpoint(const Input& input, const Ints& ints,
                            Span<Det<W>> dets,
                            const std::vector<std::vector<S>>& vectors,
                            const std::vector<double>& energies, int iteration,
@@ -709,8 +709,8 @@ void WriteSelectCheckpoint(const Input& input, const Integrals<S>& ints,
       omp_get_wtime() - start);
 }
 
-template <int W, typename S>
-void RunSelect(const Input& given, const Integrals<S>& ints, const Comm& comm) {
+template <int W, class Ints, typename S = typename Ints::Scalar>
+void RunSelect(const Input& given, const Ints& ints, const Comm& comm) {
   // "resume": the determinants and vectors come from select.h5, if there is
   // one, and the iterations go on after the one it was written in.
   Input resumed;
@@ -798,7 +798,7 @@ void RunSelect(const Input& given, const Integrals<S>& ints, const Comm& comm) {
   std::printf("heat-bath tables: %zu entries, %.2f s\n",
               heat_bath.num_entries(), omp_get_wtime() - time);
 
-  VariationalH<W, S> h(input, ints, comm);
+  VariationalH<W, Ints> h(input, ints, comm);
   h.Extend(shared_dets.span(), 0);
 
   // The eigenvectors live on the root; the other ranks see only what is
@@ -872,7 +872,8 @@ void RunSelect(const Input& given, const Integrals<S>& ints, const Comm& comm) {
 
   // t_sel, t_ham and t_dav are the seconds spent in this iteration on the
   // selection, the Hamiltonian and the eigensolver.
-  const std::unique_ptr<Selector<W, S>> selector = MakeSelector<W, S>(input);
+  const std::unique_ptr<Selector<W, Ints>> selector =
+      MakeSelector<W, Ints>(input);
   // davidson: iterations of the last solve; products: H*x of the iteration.
   std::printf("%5s %10s %12s %5s %20s %9s %8s %8s %8s %8s %9s\n", "iter",
               selector->parameter_name(), "dets", "root", "energy", "davidson",
@@ -940,18 +941,18 @@ void RunSelect(const Input& given, const Integrals<S>& ints, const Comm& comm) {
       SharedVectors<S> vectors;
       const bool with_vectors = selector->needs_vectors() && have_vectors;
       if (with_vectors) vectors = ShareVectors(root_vectors, old_size, comm);
-      const SelectionContext<W, S> context{iter,
-                                           shared_dets.span(),
-                                           sorted_dets.span(),
-                                           weights.span(),
-                                           with_vectors ? &vectors : nullptr,
-                                           energies,
-                                           ints,
-                                           heat_bath,
-                                           filter,
-                                           comm,
-                                           active.span(),
-                                           old_size - num_inactive};
+      const SelectionContext<W, Ints> context{iter,
+                                              shared_dets.span(),
+                                              sorted_dets.span(),
+                                              weights.span(),
+                                              with_vectors ? &vectors : nullptr,
+                                              energies,
+                                              ints,
+                                              heat_bath,
+                                              filter,
+                                              comm,
+                                              active.span(),
+                                              old_size - num_inactive};
       selection = selector->Select(context);
     }
     const double build_start = omp_get_wtime();

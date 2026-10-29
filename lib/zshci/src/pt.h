@@ -64,11 +64,11 @@ namespace internal {
 // Sink of ForEachExcitation that evaluates the exact element <D_a|H|D_i> of
 // every excitation and calls visit(D_a, element, is_large), is_large telling
 // whether the element also passes the larger cutoff.
-template <int W, class Visit, typename S>
+template <int W, class Visit, class Ints, typename S = typename Ints::Scalar>
 class ElementSink {
  public:
-  ElementSink(const Det<W>& parent, const Integrals<S>& ints,
-              double large_cutoff, const Visit& visit)
+  ElementSink(const Det<W>& parent, const Ints& ints, double large_cutoff,
+              const Visit& visit)
       : parent_(parent),
         ints_(ints),
         large_cutoff_(large_cutoff),
@@ -98,7 +98,7 @@ class ElementSink {
 
  private:
   const Det<W>& parent_;
-  const Integrals<S>& ints_;
+  const Ints& ints_;
   double large_cutoff_;
   const Visit& visit_;
 };
@@ -107,12 +107,11 @@ class ElementSink {
 // diagonal element follows from that of the parent in a few operations,
 // with the sums row[p] = sum over the occupied k != p of the pair energies
 // <pk||pk> made once per parent.
-template <int W, class Visit, typename S>
+template <int W, class Visit, class Ints, typename S = typename Ints::Scalar>
 class ElementEnergySink {
  public:
   ElementEnergySink(const Det<W>& parent, const std::vector<int>& occ,
-                    const Integrals<S>& ints, double large_cutoff,
-                    const Visit& visit)
+                    const Ints& ints, double large_cutoff, const Visit& visit)
       : parent_(parent),
         ints_(ints),
         large_cutoff_(large_cutoff),
@@ -159,7 +158,7 @@ class ElementEnergySink {
   double H(int p) const { return Real(ints_.OneBody(p, p)); }
 
   const Det<W>& parent_;
-  const Integrals<S>& ints_;
+  const Ints& ints_;
   double large_cutoff_;
   const Visit& visit_;
   double energy_;
@@ -199,12 +198,12 @@ struct SampleTerm {
 
 // The diagonal element of the determinant of a term: carried by the terms
 // of the pooled estimator, worked out for the others.
-template <int W, typename S, class Term>
-double TermEnergy(const Term& term, const Integrals<S>& ints) {
+template <int W, class Ints, typename S = typename Ints::Scalar, class Term>
+double TermEnergy(const Term& term, const Ints& ints) {
   return DiagonalEnergy(term.det, ints);
 }
-template <int W, typename S>
-double TermEnergy(const SampleTerm<W, S>& term, const Integrals<S>&) {
+template <int W, class Ints, typename S = typename Ints::Scalar>
+double TermEnergy(const SampleTerm<W, S>& term, const Ints&) {
   return term.energy;
 }
 
@@ -250,9 +249,10 @@ struct SumStats {
   double distinct = 0.0;
 };
 
-template <int W, class Term, class Generate, class Contribution, typename S>
+template <int W, class Term, class Generate, class Contribution, class Ints,
+          typename S = typename Ints::Scalar>
 std::vector<double> SumOverExternalDets(
-    size_t num_parents, Span<Det<W>> sorted_dets, const Integrals<S>& ints,
+    size_t num_parents, Span<Det<W>> sorted_dets, const Ints& ints,
     int num_batches, int num_values, const Comm& comm, const Generate& generate,
     const Contribution& contribution, uint64_t max_terms = 0,
     SumStats* stats = nullptr, const DetSet<W>* space = nullptr,
@@ -377,7 +377,7 @@ std::vector<double> SumOverExternalDets(
           run = next;
           if (InSpace(merged.det, sorted_dets, space)) continue;
           num_distinct += 1.0;
-          contribution(merged, TermEnergy<W, S>(merged, ints), &values);
+          contribution(merged, TermEnergy<W>(merged, ints), &values);
           for (int v = 0; v < num_values; ++v) local[v] += values[v];
         }
       }
@@ -456,10 +456,10 @@ struct CountSink {
 };
 
 // Sink of the third step: the elements of the doubles and the fold.
-template <int W, typename S>
+template <int W, class Ints, typename S = typename Ints::Scalar>
 struct ElementOnlySink {
   const Det<W>& parent;
-  const Integrals<S>& ints;
+  const Ints& ints;
   const SpinFlipLayout* flip;
   int lambda;
   double sum = 0.0;
@@ -488,10 +488,10 @@ struct ElementOnlySink {
 // parent(p, &i, &cutoff) gives the determinant of parent p and the cutoff
 // on |H(a,i)| (false: the parent generates nothing).
 template <int W, class Term, class Parent, class Generate, class Contribution,
-          class Filter, typename S>
+          class Filter, class Ints, typename S = typename Ints::Scalar>
 std::vector<double> ProfileSumOverExternalDets(
     size_t num_parents, Span<Det<W>> dets, Span<Det<W>> sorted_dets,
-    const Integrals<S>& ints, const HeatBath& heat_bath, const Filter& filter,
+    const Ints& ints, const HeatBath& heat_bath, const Filter& filter,
     const SpinFlipLayout* flip, const DetSet<W>* space, int num_values,
     const Comm& comm, const Parent& parent, const Generate& generate,
     const Contribution& contribution, SumProfile* profile) {
@@ -550,7 +550,7 @@ std::vector<double> ProfileSumOverExternalDets(
             singles[t] += sink.singles;
             doubles[t] += sink.doubles;
           } else {
-            ElementOnlySink<W, S> sink{dets[i], ints, flip, lambda};
+            ElementOnlySink<W, Ints> sink{dets[i], ints, flip, lambda};
             ForEachExcitation(dets[i], occ, cutoff, ints, heat_bath, filter,
                               &sink);
             dummy[t] += sink.sum;
@@ -651,7 +651,7 @@ std::vector<double> ProfileSumOverExternalDets(
       t_space[t] += t1 - t0;
       std::vector<double> energies(kept);
       for (size_t k = 0; k < kept; ++k) {
-        energies[k] = TermEnergy<W, S>(merged_terms[k], ints);
+        energies[k] = TermEnergy<W>(merged_terms[k], ints);
       }
       t0 = omp_get_wtime();
       t_diag[t] += t0 - t1;
@@ -771,13 +771,13 @@ inline double MeasureBandwidth() {
 }  // namespace internal
 
 // Everything the perturbative routines need to know about the wave function.
-template <int W, class Filter, typename S>
+template <int W, class Filter, class Ints, typename S = typename Ints::Scalar>
 struct PtProblem {
   Span<Det<W>> dets;
   Span<Det<W>> sorted_dets;
   Span<S> coefficients;
   double energy;  // variational energy, without the core energy
-  const Integrals<S>& ints;
+  const Ints& ints;
   const HeatBath& heat_bath;
   const Filter& filter;
   int num_batches;
@@ -794,8 +794,8 @@ namespace internal {
 
 // The weight of generator i: 0 for a partner, 1/2 for a determinant that is
 // its own flip, 1 otherwise (and always 1 without spin_flip).
-template <int W, class Filter, typename S>
-double GeneratorWeight(const PtProblem<W, Filter, S>& problem, size_t i) {
+template <int W, class Filter, class Ints, typename S>
+double GeneratorWeight(const PtProblem<W, Filter, Ints, S>& problem, size_t i) {
   if (problem.flip == nullptr) return 1.0;
   if (!problem.flip->is_canonical(i)) return 0.0;
   return problem.flip->is_pair(problem.flip->rep(i)) ? 1.0 : 0.5;
@@ -810,9 +810,9 @@ double ExternalWeight(const Det<W>& det, bool with_flip) {
 }  // namespace internal
 
 // E2(epsilon), deterministically.
-template <int W, class Filter, typename S>
-double PtDeterministic(const PtProblem<W, Filter, S>& problem, double epsilon,
-                       internal::SumProfile* profile = nullptr,
+template <int W, class Filter, class Ints, typename S>
+double PtDeterministic(const PtProblem<W, Filter, Ints, S>& problem,
+                       double epsilon, internal::SumProfile* profile = nullptr,
                        uint64_t max_terms = 0,
                        internal::SumStats* stats = nullptr, long stride = 1) {
   // With stride > 1 only every stride-th determinant generates (a probe of
@@ -838,8 +838,8 @@ double PtDeterministic(const PtProblem<W, Filter, S>& problem, double epsilon,
       }
       emit(term);
     };
-    internal::ElementSink<W, decltype(visit), S> sink(problem.dets[i],
-                                                      problem.ints, 0.0, visit);
+    internal::ElementSink<W, decltype(visit), Ints> sink(
+        problem.dets[i], problem.ints, 0.0, visit);
     ForEachExcitation(problem.dets[i], occ, epsilon / std::abs(ci),
                       problem.ints, problem.heat_bath, problem.filter, &sink);
   };
@@ -966,8 +966,8 @@ struct WalkerWorkspace {
 // from them alone. The terms are generated, merged and summed inside the
 // caller's workspace, so any number of walkers run side by side without
 // exchanging data, on threads and on ranks alike.
-template <int W, class Filter, class Rng, typename S>
-StochasticEstimate PtWalkerSample(const PtProblem<W, Filter, S>& problem,
+template <int W, class Filter, class Rng, class Ints, typename S>
+StochasticEstimate PtWalkerSample(const PtProblem<W, Filter, Ints, S>& problem,
                                   double epsilon, double epsilon_large,
                                   int num_samples,
                                   const DeterminantSampler& sampler, Rng* rng,
@@ -1027,7 +1027,7 @@ StochasticEstimate PtWalkerSample(const PtProblem<W, Filter, S>& problem,
         }
         terms->push_back(term);
       };
-      internal::ElementSink<W, decltype(visit), S> sink(
+      internal::ElementSink<W, decltype(visit), Ints> sink(
           problem.dets[i], problem.ints, epsilon_large / std::abs(ci), visit);
       ForEachExcitation(problem.dets[i], occ, epsilon / std::abs(ci),
                         problem.ints, problem.heat_bath, problem.filter, &sink);
@@ -1085,9 +1085,9 @@ StochasticEstimate PtWalkerSample(const PtProblem<W, Filter, S>& problem,
 // One estimate from num_samples determinants drawn with `rng` (the same
 // stream on every rank, so that all draw the same), the terms of all ranks
 // and threads merged as in the deterministic sum. Collective.
-template <int W, class Filter, class Rng, typename S>
+template <int W, class Filter, class Rng, class Ints, typename S>
 StochasticEstimate PtPooledSample(
-    const PtProblem<W, Filter, S>& problem, double epsilon,
+    const PtProblem<W, Filter, Ints, S>& problem, double epsilon,
     double epsilon_large, int num_samples, const DeterminantSampler& sampler,
     Rng* rng, internal::SumProfile* profile = nullptr, uint64_t max_terms = 0,
     internal::SumWorkspace<internal::SampleTerm<W, S>>* workspace = nullptr) {
@@ -1131,7 +1131,7 @@ StochasticEstimate PtPooledSample(
       if (is_large) term.sum_large = x;
       mine.push_back(term);
     };
-    internal::ElementEnergySink<W, decltype(visit), S> sink(
+    internal::ElementEnergySink<W, decltype(visit), Ints> sink(
         problem.dets[i], occ, problem.ints, epsilon_large / std::abs(ci),
         visit);
     ForEachExcitation(problem.dets[i], occ, epsilon / std::abs(ci),
@@ -1297,9 +1297,9 @@ struct TermCount {
   long stride = 1;
 };
 
-template <int W, class Filter, typename S>
-TermCount CountTerms(const PtProblem<W, Filter, S>& problem, double threshold,
-                     long stride, long offset) {
+template <int W, class Filter, class Ints, typename S>
+TermCount CountTerms(const PtProblem<W, Filter, Ints, S>& problem,
+                     double threshold, long stride, long offset) {
   const double start = omp_get_wtime();
   const SpinFlipLayout* flip = problem.flip;
   const int lambda = flip != nullptr ? flip->lambda() : 1;
@@ -1404,11 +1404,11 @@ struct PilotResult {
   double seconds = 0.0;
 };
 
-template <int W, class Filter, class Rng, typename S>
-PilotResult PtPilot(const PtProblem<W, Filter, S>& problem, double epsilon,
-                    const std::vector<double>& thresholds, int num_samples,
-                    int num_batches, const DeterminantSampler& sampler,
-                    Rng* rng) {
+template <int W, class Filter, class Rng, class Ints, typename S>
+PilotResult PtPilot(const PtProblem<W, Filter, Ints, S>& problem,
+                    double epsilon, const std::vector<double>& thresholds,
+                    int num_samples, int num_batches,
+                    const DeterminantSampler& sampler, Rng* rng) {
   using Term = internal::BandTerm<W, S>;
   const int num = static_cast<int>(thresholds.size());
   const SpinFlipLayout* flip = problem.flip;
@@ -1448,7 +1448,7 @@ PilotResult PtPilot(const PtProblem<W, Filter, S>& problem, double epsilon,
             static_cast<typename Term::Value>(x);
         mine.push_back(term);
       };
-      internal::ElementSink<W, decltype(visit), S> sink(
+      internal::ElementSink<W, decltype(visit), Ints> sink(
           problem.dets[i], problem.ints, 0.0, visit);
       ForEachExcitation(problem.dets[i], occ, epsilon / std::abs(ci),
                         problem.ints, problem.heat_bath, problem.filter, &sink);
@@ -1547,8 +1547,8 @@ struct PtAutoChoice {
   double counted_terms = 0.0;    // at epsilon_large, for the output
 };
 
-template <int W, class Filter, typename S>
-PtAutoChoice ChoosePtParameters(const PtProblem<W, Filter, S>& problem,
+template <int W, class Filter, class Ints, typename S>
+PtAutoChoice ChoosePtParameters(const PtProblem<W, Filter, Ints, S>& problem,
                                 const PtInput& pt,
                                 const DeterminantSampler& sampler, int root) {
   using DetTermT = internal::DetTerm<W, S>;
@@ -1815,8 +1815,8 @@ PtAutoChoice ChoosePtParameters(const PtProblem<W, Filter, S>& problem,
   return choice;
 }
 
-template <int W, class Filter, typename S>
-PtResult RunPerturbation(const PtProblem<W, Filter, S>& problem,
+template <int W, class Filter, class Ints, typename S>
+PtResult RunPerturbation(const PtProblem<W, Filter, Ints, S>& problem,
                          const PtInput& pt, int root, bool print) {
   PtResult result;
   if (pt.method == PtMethod::kDeterministic) {
@@ -1831,7 +1831,7 @@ PtResult RunPerturbation(const PtProblem<W, Filter, S>& problem,
                                    problem.flip);
   const bool semistochastic = pt.method == PtMethod::kSemistochastic;
   if (semistochastic) epsilon_large = pt.epsilon2_large;
-  PtProblem<W, Filter, S> det_problem = problem;
+  PtProblem<W, Filter, Ints, S> det_problem = problem;
   uint64_t det_max_terms = 0, batch_max_terms = 0;
   double counted_terms = 0.0;
   if (pt.auto_large || pt.auto_samples) {
@@ -1840,7 +1840,7 @@ PtResult RunPerturbation(const PtProblem<W, Filter, S>& problem,
       // epsilon2 fits one pass: no stochastic part is needed.
       internal::SumStats stats;
       const double start = omp_get_wtime();
-      PtProblem<W, Filter, S> whole = problem;
+      PtProblem<W, Filter, Ints, S> whole = problem;
       result.correction = PtDeterministic(whole, pt.epsilon2, nullptr,
                                           choice.det_max_terms, &stats);
       if (problem.comm.is_root()) {

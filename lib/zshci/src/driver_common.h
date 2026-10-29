@@ -131,10 +131,9 @@ inline std::string FormatLabels(const std::vector<int>& values) {
 
 // Starting vectors: eigenvectors of H in the span of the `guess_dim`
 // determinants of lowest diagonal energy.
-template <int W, typename S>
+template <int W, class Ints, typename S = typename Ints::Scalar>
 std::vector<std::vector<S>> GuessVectors(Span<Det<W>> dets, const SparseH<S>& h,
-                                         const Integrals<S>& ints,
-                                         int num_roots) {
+                                         const Ints& ints, int num_roots) {
   const size_t n = dets.size();
   const size_t guess_dim =
       std::min(n, static_cast<size_t>(std::max(100, 20 * num_roots)));
@@ -168,9 +167,9 @@ std::vector<std::vector<S>> GuessVectors(Span<Det<W>> dets, const SparseH<S>& h,
 
 // Compares the block and the threaded product with their slow references.
 // Throws if they disagree.
-template <int W, typename S>
-void CheckHamiltonian(Span<Det<W>> dets, const SparseH<S>& h,
-                      const Integrals<S>& ints, const ConnectOptions& options) {
+template <int W, class Ints, typename S = typename Ints::Scalar>
+void CheckHamiltonian(Span<Det<W>> dets, const SparseH<S>& h, const Ints& ints,
+                      const ConnectOptions& options) {
   const CsrBlock<S> reference = BuildBlockBruteForce(dets, 0, ints, options);
   // The blocks of h may be one per thread; compare a single one.
   if (!SameBlock(BuildBlock(dets, 0, ints, options), reference, 0.0)) {
@@ -222,9 +221,9 @@ void PrintLeadingDeterminants(Span<Det<W>> dets, Span<S> vector, int num_orbs,
 
 // Extends h to all of `dets`. Only the root, which applies the diagonal and
 // runs the eigensolver, stores the diagonal elements of dets[first_new..].
-template <int W, typename S>
-void AppendDiagonal(Span<Det<W>> dets, size_t first_new,
-                    const Integrals<S>& ints, const Comm& comm, SparseH<S>* h) {
+template <int W, class Ints, typename S = typename Ints::Scalar>
+void AppendDiagonal(Span<Det<W>> dets, size_t first_new, const Ints& ints,
+                    const Comm& comm, SparseH<S>* h) {
   if (!comm.is_root()) {
     h->Grow(dets.size());
     return;
@@ -341,10 +340,10 @@ inline void PrintConnectStats(const ConnectStats& stats) {
 // it: grown when determinants are added, diagonalized, and asked for density
 // matrices. It is either stored (SparseH) or, with "hamiltonian": "direct",
 // applied from the group string tables without being stored (DirectH).
-template <int W, typename S>
+template <int W, class Ints, typename S = typename Ints::Scalar>
 class VariationalH : private ElementSource<S> {
  public:
-  VariationalH(const Input& input, const Integrals<S>& ints, const Comm& comm)
+  VariationalH(const Input& input, const Ints& ints, const Comm& comm)
       : ints_(ints),
         comm_(comm),
         direct_(input.direct_hamiltonian),
@@ -510,17 +509,17 @@ class VariationalH : private ElementSource<S> {
       options.fingerprint = Fingerprint(active);
     }
     if (direct_) {
-      const DirectH<W, S> h(dets_, ints_, *tables_, connect_.threshold,
-                            stored_.diagonal(),
-                            DirectH<W, S>::kDefaultScratchBytes, nullptr,
-                            /*with_diagonal=*/true, flip_.get());
+      const DirectH<W, Ints> h(dets_, ints_, *tables_, connect_.threshold,
+                               stored_.diagonal(),
+                               DirectH<W, Ints>::kDefaultScratchBytes, nullptr,
+                               /*with_diagonal=*/true, flip_.get());
       return SolveDistributed<S>(h, options, comm_, root_vectors, active);
     }
     if (!all_rows_stored()) {
       // The stored rows, which include the diagonal, and the others.
-      const DirectH<W, S> rest(
+      const DirectH<W, Ints> rest(
           dets_, ints_, *tables_, connect_.threshold, stored_.diagonal(),
-          DirectH<W, S>::kDefaultScratchBytes, &direct_rows_,
+          DirectH<W, Ints>::kDefaultScratchBytes, &direct_rows_,
           /*with_diagonal=*/false, flip_.get());
       const SumOperator sum(stored_, rest);
       return SolveDistributed<S>(sum, options, comm_, root_vectors, active);
@@ -775,7 +774,7 @@ class VariationalH : private ElementSource<S> {
     stored_.set_element_source(this);
   }
 
-  const Integrals<S>& ints_;
+  const Ints& ints_;
   const Comm& comm_;
   bool direct_;
   bool store_values_;
@@ -820,9 +819,9 @@ inline RestrictedFilter MakeFilter(const Input& input,
 
 // Runs the perturbative correction requested in the input for every root.
 // `heat_bath` may be null, in which case the tables are built here.
-template <int W, typename S>
+template <int W, class Ints, typename S = typename Ints::Scalar>
 std::vector<PtResult> ComputePerturbation(
-    const Input& input, const Integrals<S>& ints, Span<Det<W>> dets,
+    const Input& input, const Ints& ints, Span<Det<W>> dets,
     const std::vector<double>& result_energies, const SharedVectors<S>& vectors,
     const HeatBath* heat_bath, const RestrictedFilter& filter, const Comm& comm,
     const SpinFlipLayout* flip = nullptr, double start_threshold = 0.0) {
@@ -844,17 +843,17 @@ std::vector<PtResult> ComputePerturbation(
   const DetSet<W> space(dets, comm);
 
   for (int k = 0; k < input.nroots; ++k) {
-    const PtProblem<W, RestrictedFilter, S> problem{dets,
-                                                    sorted_dets.span(),
-                                                    vectors.Root(k),
-                                                    result_energies[k],
-                                                    ints,
-                                                    *heat_bath,
-                                                    filter,
-                                                    input.pt.num_batches,
-                                                    comm,
-                                                    flip,
-                                                    &space};
+    const PtProblem<W, RestrictedFilter, Ints> problem{dets,
+                                                       sorted_dets.span(),
+                                                       vectors.Root(k),
+                                                       result_energies[k],
+                                                       ints,
+                                                       *heat_bath,
+                                                       filter,
+                                                       input.pt.num_batches,
+                                                       comm,
+                                                       flip,
+                                                       &space};
     results.push_back(
         RunPerturbation(problem, pt_input, k, input.output_level > 1));
     const PtResult& pt = results.back();
@@ -880,9 +879,9 @@ std::vector<PtResult> ComputePerturbation(
 // matrices. `result_energies` are without the core energy; `pt` is empty if
 // no perturbative correction was computed. All ranks take part in the
 // density matrices; only the root writes.
-template <int W, typename S>
-void WriteResults(const Input& input, const Integrals<S>& ints,
-                  Span<Det<W>> dets, const VariationalH<W, S>& h,
+template <int W, class Ints, typename S = typename Ints::Scalar>
+void WriteResults(const Input& input, const Ints& ints, Span<Det<W>> dets,
+                  const VariationalH<W, Ints>& h,
                   const std::vector<LabelSet>& symmetry,
                   const std::vector<double>& result_energies,
                   const SharedVectors<S>& vectors,

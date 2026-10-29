@@ -306,8 +306,8 @@ class SpinFlipLayout {
   }
 
   // <Phi_J|H|Phi_J>.
-  template <int W, typename S>
-  double Diagonal(Span<Det<W>> dets, size_t J, const Integrals<S>& ints) const {
+  template <int W, class Ints, typename S = typename Ints::Scalar>
+  double Diagonal(Span<Det<W>> dets, size_t J, const Ints& ints) const {
     const size_t c = canonical_[J];
     double value = DiagonalEnergy(dets[c], ints);
     if (kind_[c] == kFirst) {
@@ -316,9 +316,8 @@ class SpinFlipLayout {
     return value;
   }
   // <Phi_J|H|Phi_I>, J != I.
-  template <int W, typename S>
-  S Element(Span<Det<W>> dets, size_t J, size_t I,
-            const Integrals<S>& ints) const {
+  template <int W, class Ints, typename S = typename Ints::Scalar>
+  S Element(Span<Det<W>> dets, size_t J, size_t I, const Ints& ints) const {
     const size_t c = canonical_[J];
     const size_t d = canonical_[I];
     S value = weight(d) * Hij(dets[c], dets[d], ints);

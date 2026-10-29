@@ -3,6 +3,9 @@
 #   make                      threads only (OpenMP)
 #   make MPI=1 CXX=mpicxx     MPI + threads
 #   make test                 self-checks
+#   make MAX_DET_WORDS=6      determinants of up to 6 x 64 spinors (default
+#                             4); built in a directory of its own, as
+#                             bin/zshci_w6
 #   make BLAS=none            without BLAS (the FCI kernel then does its
 #                             products as loops; FCI.md)
 #
@@ -52,6 +55,11 @@ LDFLAGS   := -fopenmp -L$(HDF5_ROOT)/lib -Wl,-rpath,$(HDF5_ROOT)/lib -lhdf5
 CFLAGS    := -std=c99 -O3 -g -funroll-loops -march=core-avx2 -fopenmp \
              -fcx-limited-range -MMD -MP
 
+# Largest determinant width in 64-bit words (64 spinors each); every width
+# up to it is compiled. Other values build into directories of their own.
+MAX_DET_WORDS ?= 4
+CXXFLAGS += -DZSHCI_MAX_DET_WORDS=$(MAX_DET_WORDS)
+
 # The objects of the two variants are kept apart.
 ifeq ($(MPI),1)
   CXXFLAGS += -DZSHCI_USE_MPI
@@ -68,6 +76,10 @@ ifeq ($(BLAS),none)
 else
   LDFLAGS  += -L$(MKL_LIB) -Wl,-rpath,$(MKL_LIB) -Wl,--no-as-needed -lmkl_rt \
               -Wl,--as-needed
+endif
+ifneq ($(MAX_DET_WORDS),4)
+  BUILD    := $(BUILD)_w$(MAX_DET_WORDS)
+  TARGET   := $(TARGET)_w$(MAX_DET_WORDS)
 endif
 LDFLAGS   += -lm
 SOURCES   := $(wildcard src/*.cc)

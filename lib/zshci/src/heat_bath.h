@@ -40,10 +40,10 @@ class HeatBath {
 
   // Entries with |g| <= threshold are left out. With several ranks this is
   // collective: the root builds the tables and they are held once per node.
-  // Instantiated for double and Complex.
-  template <typename S>
-  HeatBath(const Integrals<S>& ints, double threshold,
-           const Comm& comm = Comm());
+  // Instantiated for the spinor and the spatial integrals, real and
+  // complex.
+  template <class Ints>
+  HeatBath(const Ints& ints, double threshold, const Comm& comm = Comm());
 
   // Calls visit(a, b, magnitude), a < b, for the double excitations
   // (i, j) -> (a, b) of the spinors i < j with magnitude >= cutoff, in order
@@ -118,10 +118,10 @@ class HeatBath {
   }
 
   template <typename S>
-  void BuildSpinorLists(const Integrals<S>& ints, double threshold,
+  void BuildSpinorLists(const SpinorIntegrals<S>& ints, double threshold,
                         std::vector<std::vector<Entry>>* lists) const;
   template <typename S>
-  void BuildSpatialLists(const Integrals<S>& ints, double threshold,
+  void BuildSpatialLists(const SpatialIntegrals<S>& ints, double threshold,
                          std::vector<std::vector<Entry>>* lists) const;
 
   bool spatial_ = false;

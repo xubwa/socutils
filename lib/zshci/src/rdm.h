@@ -297,26 +297,28 @@ DensityMatrices<S> ComputeDensityMatrices(Span<Det<W>> dets,
 }
 
 // Energy (without the core energy) from the density matrices of one state.
-template <typename S>
+template <class Ints, typename S = typename Ints::Scalar>
 double EnergyFromDensityMatrices(const DensityMatrices<S>& dm,
-                                 const Integrals<S>& ints) {
+                                 const Ints& ints) {
   const int n = dm.num_orbs;
-  if (dm.spin_summed) {
-    // sum_PQ h(P,Q) D1(P,Q) + 1/2 sum_PQRS (PR|QS) D2(P,Q,R,S).
-    double total = 0.0;
+  if constexpr (Ints::kSpatial) {
+    if (dm.spin_summed) {
+      // sum_PQ h(P,Q) D1(P,Q) + 1/2 sum_PQRS (PR|QS) D2(P,Q,R,S).
+      double total = 0.0;
 #pragma omp parallel for reduction(+ : total) schedule(static)
-    for (int p = 0; p < n; ++p) {
-      for (int q = 0; q < n; ++q) {
-        total += Real(ints.OneBody(2 * p, 2 * q) * dm.One(p, q));
-        for (int r = 0; r < n; ++r) {
-          for (int s = 0; s < n; ++s) {
-            total += 0.5 *
-                     Real(ints.SpatialTwoBody(p, r, q, s) * dm.Two(p, q, r, s));
+      for (int p = 0; p < n; ++p) {
+        for (int q = 0; q < n; ++q) {
+          total += Real(ints.OneBody(2 * p, 2 * q) * dm.One(p, q));
+          for (int r = 0; r < n; ++r) {
+            for (int s = 0; s < n; ++s) {
+              total += 0.5 * Real(ints.SpatialTwoBody(p, r, q, s) *
+                                  dm.Two(p, q, r, s));
+            }
           }
         }
       }
+      return total;
     }
-    return total;
   }
   S energy(0.0);
   for (int p = 0; p < n; ++p) {

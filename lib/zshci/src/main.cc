@@ -10,6 +10,7 @@
 #include <exception>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 
 #ifdef __GLIBC__
 #include <malloc.h>
@@ -26,67 +27,75 @@
 namespace zshci {
 namespace {
 
-template <int W, typename S>
-void Run(const Input& input, const Integrals<S>& ints, const Comm& comm) {
+template <int W, class Ints>
+void Run(const Input& input, const Ints& ints, const Comm& comm) {
   switch (input.mode) {
     case Mode::kDiag:
-      RunDiag<W, S>(input, ints, comm);
+      RunDiag<W, Ints>(input, ints, comm);
       return;
     case Mode::kSelect:
-      RunSelect<W, S>(input, ints, comm);
+      RunSelect<W, Ints>(input, ints, comm);
       return;
     case Mode::kFci:
-      RunFci<S>(input, ints, comm);
+      RunFci(input, ints, comm);
       return;
   }
 }
 
-template <typename S>
-void RunWithWidth(const Input& input, const Integrals<S>& ints,
+// Runs with the determinant width W for `words` words, trying W = 1, 2, ...
+// up to kMaxDetWords; the widths are instantiated at compile time.
+template <int W, class Ints>
+void RunWithWidth(int words, const Input& input, const Ints& ints,
                   const Comm& comm) {
-  switch (WordsForOrbitals(ints.num_orbs())) {
-    case 1:
-      return Run<1, S>(input, ints, comm);
-    case 2:
-      return Run<2, S>(input, ints, comm);
-    case 3:
-      return Run<3, S>(input, ints, comm);
-    case 4:
-      return Run<4, S>(input, ints, comm);
-    default:
-      throw std::runtime_error(
-          "NORB = " + std::to_string(ints.num_orbs()) + " exceeds the " +
-          std::to_string(64 * kMaxDetWords) + " spinors this build supports");
+  if constexpr (W <= kMaxDetWords) {
+    if (words == W) return Run<W, Ints>(input, ints, comm);
+    return RunWithWidth<W + 1, Ints>(words, input, ints, comm);
+  } else {
+    throw std::runtime_error(
+        "NORB = " + std::to_string(ints.num_orbs()) + " spinors need " +
+        std::to_string(words) +
+        " 64-bit words per determinant; this build "
+        "supports " +
+        std::to_string(kMaxDetWords) + " (" +
+        std::to_string(64 * kMaxDetWords) +
+        " spinors): rebuild with make MAX_DET_WORDS=" + std::to_string(words));
   }
 }
 
-// Reads the integrals as numbers of type S and runs the calculation.
+// Prints what was read and runs with the width it needs.
+template <class Ints>
+void RunWithIntegrals(const Input& input, const Ints& ints, double seconds,
+                      const Comm& comm) {
+  std::printf("integrals: %s, %s, core energy %.12f, %.2f s\n",
+              input.integrals.c_str(), ints.Describe().c_str(),
+              ints.core_energy(), seconds);
+  std::printf("largest integral forbidden by the labels: %.1e\n",
+              ints.max_forbidden());
+  RunWithWidth<1, Ints>(WordsForOrbitals(ints.num_orbs()), input, ints, comm);
+}
+
+// Reads the integrals of the kind the input asks for, as numbers of type S,
+// and runs the calculation: the one place the kind is decided.
 template <typename S>
 void RunWithScalar(const Input& input, const Comm& comm) {
   const double time = omp_get_wtime();
-  const Integrals<S> ints =
-      input.spatial_orbitals
-          ? ReadSpatialFcidump<S>(input.integrals, input.symmetry,
-                                  input.symmetry_tolerance, comm)
-      : input.unrestricted_orbitals
+  if (input.spatial_orbitals) {
+    // Restricted spatial orbitals are real.
+    if constexpr (std::is_same<S, double>::value) {
+      const SpatialIntegrals<S> ints = ReadSpatialFcidump<S>(
+          input.integrals, input.symmetry, input.symmetry_tolerance, comm);
+      return RunWithIntegrals(input, ints, omp_get_wtime() - time, comm);
+    } else {
+      throw std::logic_error("spatial orbitals with complex numbers");
+    }
+  }
+  const SpinorIntegrals<S> ints =
+      input.unrestricted_orbitals
           ? ReadUnrestrictedIntegrals<S>(input.integrals, input.symmetry,
                                          input.symmetry_tolerance, comm)
           : ReadFcidump<S>(input.integrals, input.symmetry,
                            input.symmetry_tolerance, comm);
-  std::printf("integrals: %s, %s, %d %s, core energy %.12f, %.2f s\n",
-              input.integrals.c_str(), ScalarTraits<S>::kName,
-              ints.is_spatial() ? ints.num_spatial() : ints.num_orbs(),
-              ints.is_spatial() ? "spatial orbitals" : "spinors",
-              ints.core_energy(), omp_get_wtime() - time);
-  const size_t num_pairs =
-      static_cast<size_t>(ints.num_orbs()) * (ints.num_orbs() - 1) / 2;
-  std::printf(
-      "two-electron integrals: %zu stored, %.1f%% of what spinors without "
-      "symmetry would need; largest integral forbidden by the labels: %.1e\n",
-      ints.num_stored(),
-      100.0 * ints.num_stored() / (num_pairs * (num_pairs + 1) / 2.0),
-      ints.max_forbidden());
-  RunWithWidth(input, ints, comm);
+  RunWithIntegrals(input, ints, omp_get_wtime() - time, comm);
 }
 
 void Main(const char* input_path, const Comm& comm) {
@@ -106,6 +115,13 @@ void Main(const char* input_path, const Comm& comm) {
   std::printf("input:\n%s\n", input.resolved.c_str());
 
   bool is_complex = input.scalar == ScalarChoice::kComplex;
+  if (input.spatial_orbitals && FcidumpIsComplex(input.integrals, comm)) {
+    throw std::runtime_error(
+        input.integrals +
+        ": \"orbitals\": \"spatial\" needs real integrals, but the file is "
+        "in the complex format; give it as real numbers or use "
+        "\"orbitals\": \"spinor\"");
+  }
   if (input.spatial_orbitals || input.unrestricted_orbitals) {
     is_complex = false;
   } else if (input.scalar == ScalarChoice::kAuto) {
