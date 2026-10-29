@@ -527,13 +527,21 @@ class THCExchange:
         Ccx = self.Cs[:, cxc].tocsc()                                 # (naux, nCX)
         Lcx = self.Llr_cx                                             # (nlr, nCX) dense
         Bsr, Blr = self.A, self.Xi_lr                                 # (naux, N_mu), (nlr, N_mu)
+        lr_cross = getattr(self, 'k_lr', 'dense') == 'cross'          # old path: LR of CX-SS through Lcx^T Xi
+        blocks = self._cx_atom_blocks(Ccx)
 
         def cross(D):
             E = D[:, sm] @ Pm.T                                       # (nao, N_mu)
             H = np.zeros((nao, len(Pm)), dtype=np.result_type(D, float))
             for p0 in range(0, len(cxc), pblk):
                 p1 = min(p0 + pblk, len(cxc))
-                Bp = np.asarray(Ccx[:, p0:p1].T @ Bsr) + Lcx[:, p0:p1].T @ Blr      # (np, N_mu)
+                Bp = np.zeros((p1 - p0, Bsr.shape[1]))                # (np, N_mu) = (C^T A)_p, per aux atom GEMMs
+                for rows, cols, Cd in blocks:
+                    a, b = np.searchsorted(cols, (p0, p1))
+                    if b > a:
+                        Bp[cols[a:b] - p0] += Cd[:, a:b].T @ Bsr[rows]
+                if lr_cross:
+                    Bp += Lcx[:, p0:p1].T @ Blr
                 i_, j_, o_ = ii[p0:p1], jj[p0:p1], off[p0:p1]
                 R = sps.csr_matrix((np.ones(p1 - p0), (i_, np.arange(p1 - p0))), shape=(nao, p1 - p0))
                 H += R @ (Bp * E[j_])
@@ -543,6 +551,8 @@ class THCExchange:
         K1 = cross(dm)
         K[:, sm] += K1
         K[sm, :] += cross(dm.T).T                                     # G D F^T = (F D^T G^T)^T
+        t_cross = time.time() - t
+        t = time.time()
 
         def unpack(v):                                                # CX-pair vector -> sparse symmetric (nao, nao)
             return sps.csr_matrix((np.concatenate([v, v[off]]), (np.concatenate([ii, jj[off]]),
@@ -561,7 +571,33 @@ class THCExchange:
         Cr = self.Cs[:, cxc].tocsr()
         naux = Cr.shape[0]
         mthr = getattr(self, 'mc_threshold', 1e-12)
-        for k0 in range(0, naux, kblk):
+        if getattr(self, 'k_cc', 'blocks') == 'blocks':
+            # per aux atom X and chunk of its aux functions P: C_P dense on S_X x S_X (S_X: AOs of the CX pairs
+            # fitted on X), W_P = unpack((M C)_P) (nao, nao) from per-atom GEMMs, K[S_X, :] += sum_P (C_P D) W_P
+            nCX = len(cxc)
+            for rows, cols, Cd in blocks:
+                S = np.unique(np.concatenate([ii[cols], jj[cols]]))
+                pos = np.full(nao, -1)
+                pos[S] = np.arange(len(S))
+                li, lj = pos[ii[cols]], pos[jj[cols]]
+                DS = dm[S]
+                for c0 in range(0, len(rows), kblk):
+                    c1 = min(c0 + kblk, len(rows))
+                    nb = c1 - c0
+                    MC = np.zeros((nb, nCX))
+                    for rows2, cols2, Cd2 in blocks:
+                        MC[:, cols2] += self.M[np.ix_(rows[c0:c1], rows2)] @ Cd2
+                    W = np.zeros((nb, nao, nao))
+                    W[:, ii, jj] = MC
+                    W[:, jj, ii] = MC
+                    MC = None
+                    Cf = np.zeros((nb, len(S), len(S)))
+                    Cf[:, li, lj] = Cd[c0:c1]
+                    Cf[:, lj, li] = Cd[c0:c1]
+                    CD = Cf @ DS                                      # (nb, |S|, nao)
+                    K[S] += CD.transpose(1, 0, 2).reshape(len(S), nb * nao) @ W.reshape(nb * nao, nao)
+                    W = CD = Cf = None
+        for k0 in range(0, naux if getattr(self, 'k_cc', 'blocks') != 'blocks' else 0, kblk):
             k1 = min(k0 + kblk, naux)
             MC = np.asarray(Cr.T @ self.M[k0:k1].T).T                 # (kb, nCX) = (M C)_k
             for k in range(k0, k1):
@@ -574,11 +610,48 @@ class THCExchange:
                 V, Mk = dense(MC[k - k0], mthr * abs(MC[k - k0]).max())
                 Q = Ck @ dm[U]                                         # (u, nao) = (C_k D)[U, :]
                 K[np.ix_(U, V)] += Q[:, V] @ Mk.T
-        for g in range(len(Lcx)):
-            V, Lg = dense(Lcx[g])
-            K[np.ix_(V, V)] += Lg @ dm[np.ix_(V, V)] @ Lg.T
-        self.timings.update({'K SS (THC)': t_ss, 'K CX (sparse DM)': time.time() - t})
+        t_cc = time.time() - t
+        t = time.time()
+        if lr_cross:
+            for g in range(len(Lcx)):
+                V, Lg = dense(Lcx[g])
+                K[np.ix_(V, V)] += Lg @ dm[np.ix_(V, V)] @ Lg.T
+        else:
+            # LR of every block through the full LR rows L_g (nao, nao): exact for the CX pairs, THC for the SS
+            # pairs (Phi_mu^T diag(Xi_g) Phi_mu); the SS-SS LR is in V already, so its L^SS D L^SS is taken out
+            Lg = np.zeros((nao, nao))
+            Dss = dm[np.ix_(sm, sm)]
+            for g in range(len(Lcx)):
+                Lg[ii, jj] = Lcx[g]
+                Lg[jj, ii] = Lcx[g]
+                Ls = (Pm.T * Blr[g]) @ Pm                              # (nao_s, nao_s)
+                Lg[np.ix_(sm, sm)] = Ls
+                K += Lg @ dm @ Lg
+                K[np.ix_(sm, sm)] -= Ls @ Dss @ Ls
+        self.timings.update({'K SS (THC)': t_ss, 'K CX-SS (SR)': t_cross, 'K CX-CX (SR)': t_cc,
+                             'K LR': time.time() - t})
         return K
+
+    def _cx_atom_blocks(self, Ccx):
+        '''C (naux, nCX) as dense blocks per aux atom X: (aux rows of X, sorted CX columns with a nonzero in them,
+        C[rows, cols]); the local fit makes these blocks nearly dense, so C^T A is a few BLAS GEMMs (cached).'''
+        if getattr(self, '_cxb', None) is not None:
+            return self._cxb
+        Cr = Ccx.tocsr()
+        pat = np.repeat([self.auxmol.bas_atom(i) for i in range(self.auxmol.nbas)], np.diff(self.auxmol.ao_loc_nr()))
+        out = []
+        for X in range(self.auxmol.natm):
+            rows = np.where(pat == X)[0]
+            if len(rows) == 0:
+                continue
+            sub = Cr[rows]
+            cols = np.unique(sub.indices)
+            if len(cols):
+                out.append((rows, cols, np.ascontiguousarray(sub[:, cols].toarray())))
+        self._cxb = out
+        self.log('   CX atom blocks: %d, %.2e dense entries for %.2e nonzeros of C'
+                 % (len(out), sum(c.size for _, _, c in out), Cr.nnz))
+        return out
 
     def j_thc_ss(self):
         '''(P|q)_SR for the SS pairs from THC: A X, X_mu,q = phi_m(r_mu) phi_n(r_mu)  (naux, nSS).'''
