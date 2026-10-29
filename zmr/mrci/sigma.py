@@ -416,12 +416,13 @@ class _VVVV:
 
     two matrix products of cost naux nv^3.'''
 
-    def __init__(self, coef, bvv):
+    def __init__(self, coef, bvv, b=None):
+        '''b: bvv as [A, L, p] if already formed (shared by the terms).'''
         naux, nv, _ = bvv.shape
         self.coef = coef
         self.nv, self.naux = nv, naux
         # [A, L, p]: as ((A, L), p) for the first product, (B, (L, q)) for the second
-        self.b = numpy.ascontiguousarray(bvv.transpose(1, 0, 2))
+        self.b = numpy.ascontiguousarray(bvv.transpose(1, 0, 2)) if b is None else b
 
     def add(self, c, total, work=None):
         nv, naux = self.nv, self.naux
@@ -650,6 +651,7 @@ class Sigma:
         self._blocks = {}
         self._compiled = {}
         self._vvvv = None
+        self._bvv_t = None                   # B[L, A, p] as [A, L, p], shared by the direct (vv|vv) terms
         self.timings = {}
         self.wall, self.calls = 0.0, 0
         self.peak_growth, self._rss = {}, 0.0
@@ -791,7 +793,9 @@ class Sigma:
                 elif disk:
                     direct.append(_VVVVStream(complex(t.coef), _DiskRows(self.eris), pairs))
                 else:
-                    direct.append(_VVVV(complex(t.coef), self.eris.cd_block('vv')))
+                    con = _VVVV(complex(t.coef), self.eris.cd_block('vv'), self._bvv_t)
+                    self._bvv_t = con.b              # one copy for every (vv|vv) term
+                    direct.append(con)
                 continue
             rank = len(cre) + len(ann)
             bb, kb = self.basis.blocks[bra], self.basis.blocks[ket]
