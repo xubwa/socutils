@@ -44,7 +44,9 @@ quartets, used by `somf/x2cmp.py`; the unique-quartet Hessian drivers
 `hess2e.c` (2e second derivatives), `fock1.c` (first-order J/K of all atoms),
 `jk_multi.c` (direct J/K of many densities, `scf/jk_multi.py`), `ri_j_deriv.c`
 (three-centre derivative contractions of the density-fitted J Hessian), `md_j.c`
-(McMurchie-Davidson J engine on decontracted primitives, exact J gradient)) links against
+(McMurchie-Davidson J engine on decontracted primitives: exact J gradient and J
+matrices, `scf/md_j.py`, whose `apply(mf)` also routes J + K to `jk_multi` with
+incremental Fock builds)) links against
 the installed pyscf's `libcvhf` the same way; without it `.x2cmp()` falls back
 to the full molecular J/K build and the Hessians to pyscf's integral passes.
 Each `.so` is emitted **flat into `lib/`**, next to its ctypes loader. They're

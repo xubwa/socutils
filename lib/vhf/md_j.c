@@ -36,17 +36,18 @@
 #include <omp.h>
 #include "cint.h"
 
-/* f[n] = F_n(t), n = 0..m: for t < m + 10 the series of F_m,
- * F_m(t) = e^-t sum_k (2t)^k / ((2m+1)(2m+3)...(2m+2k+1)), and downward
- * recursion; otherwise F_0 from erf and upward recursion (stable for t > m) */
-static void boys_fn(double *f, double t, int m)
+/* f[n] = F_n(t), n = 0..m, to machine precision: for t < m + 10 the series of
+ * F_m, F_m(t) = e^-t sum_k (2t)^k / ((2m+1)(2m+3)...(2m+2k+1)), and downward
+ * recursion; otherwise F_0 from erf and upward recursion (stable for t > m).
+ * Generates the table of boys_fn. */
+static void boys_exact(double *f, double t, int m)
 {
         int n;
         const double et = exp(-t);
         if (t < m + 10) {
                 double term = 1. / (2 * m + 1), sum = term;
                 int k;
-                for (k = 1; k < 200; k++) {
+                for (k = 1; k < 400; k++) {
                         term *= 2 * t / (2 * m + 2 * k + 1);
                         sum += term;
                         if (term < 1e-17 * sum) break;
@@ -76,6 +77,33 @@ static int h_dir[NHMAX], h_m1[NHMAX], h_m2[NHMAX], h_c[NHMAX];
 static int h_add[NHOP * NHOP];
 static double h_sgn[NHMAX];
 
+/* Boys functions from a table: F_m(t) = sum_{j<=6} F_{m+j}(t_k) (t_k - t)^j / j!
+ * on the grid t_k = k / 20 (|t_k - t| <= 1/40, truncation ~1e-15), downward
+ * recursion to F_0; t >= 40: F_0 = sqrt(pi / t) / 2 and upward recursion */
+#define BOYS_TMAX 40.
+#define BOYS_NT 801
+#define BOYS_MT (DMAX + 8)
+static double boys_tab[BOYS_NT][BOYS_MT];
+static double boys_inv[BOYS_MT];
+
+static void boys_fn(double *f, double t, int m)
+{
+        int n;
+        const double et = exp(-t);
+        if (t < BOYS_TMAX) {
+                const int k = (int)(t * 20 + .5);
+                const double dl = k * .05 - t;
+                const double *b = boys_tab[k] + m;
+                f[m] = b[0] + dl * (b[1] + dl * .5 * (b[2] + dl * (1. / 3) * (b[3] + dl * .25 * (b[4]
+                     + dl * .2 * (b[5] + dl * (1. / 6) * b[6])))));
+                for (n = m; n > 0; n--) f[n - 1] = (2 * t * f[n] + et) * boys_inv[n];
+        } else {
+                f[0] = .886226925452758014 / sqrt(t);
+                const double h = .5 / t;
+                for (n = 0; n < m; n++) f[n + 1] = h * ((2 * n + 1) * f[n] - et);
+        }
+}
+
 static void hermite_tables(void)
 {
         int d, t, u, v, n = 0, a, b;
@@ -102,6 +130,8 @@ static void hermite_tables(void)
         for (a = 0; a < NHOP; a++)
                 for (b = 0; b < NHOP; b++)
                         h_add[a * NHOP + b] = h_idx[h_t[a] + h_t[b]][h_u[a] + h_u[b]][h_v[a] + h_v[b]];
+        for (n = 0; n < BOYS_NT; n++) boys_exact(boys_tab[n], n * .05, BOYS_MT - 1);
+        for (n = 1; n < BOYS_MT; n++) boys_inv[n] = 1. / (2 * n - 1);
         h_ready = 1;
 }
 
@@ -450,5 +480,253 @@ void SOCVHFmd_j_grad(double *grad, double *energy, double *dm, double tol,
         free(snorm);
         free(vbufs);
         free(gbufs);
+        free(order);
+}
+
+/* E^{ab}_tuv of all Cartesian pairs of a primitive pair, the libcint coefficients
+ * included: Et[(fa * nfb + fb) * NH(lij) + n] */
+static void pair_Et(double *Et, const MDPair *pp, const double *Ra, const double *Rb, int *bas, double *env,
+                    double *wk)
+{
+        const int li = pp->li, lj = pp->lj, lij = li + lj, nh = NH(lij);
+        const double ai = env[bas[pp->ish * BAS_SLOTS + PTR_EXP]], aj = env[bas[pp->jsh * BAS_SLOTS + PTR_EXP]];
+        const double cc = env[bas[pp->ish * BAS_SLOTS + PTR_COEFF]] * common_fac_sp(li)
+                        * env[bas[pp->jsh * BAS_SLOTS + PTR_COEFF]] * common_fac_sp(lj);
+        const int s2 = lij + 1, s1 = (lj + 1) * s2, sz = (li + 1) * s1;
+        double *Ex = wk, *Ey = Ex + sz, *Ez = Ey + sz;
+        const double r2 = (Ra[0] - Rb[0]) * (Ra[0] - Rb[0]) + (Ra[1] - Rb[1]) * (Ra[1] - Rb[1])
+                        + (Ra[2] - Rb[2]) * (Ra[2] - Rb[2]);
+        hermite_E(Ex, li, lj, ai, aj, Ra[0], Rb[0], 1.);
+        hermite_E(Ey, li, lj, ai, aj, Ra[1], Rb[1], 1.);
+        hermite_E(Ez, li, lj, ai, aj, Ra[2], Rb[2], cc * exp(-ai * aj / (ai + aj) * r2));
+        int ix, iy, jx, jy, n, fa = 0;
+        const int nfb = (lj + 1) * (lj + 2) / 2;
+        for (ix = li; ix >= 0; ix--)
+        for (iy = li - ix; iy >= 0; iy--, fa++) {
+                const int iz = li - ix - iy;
+                int fb = 0;
+                for (jx = lj; jx >= 0; jx--)
+                for (jy = lj - jx; jy >= 0; jy--, fb++) {
+                        const int jz = lj - jx - jy;
+                        double *e = Et + (size_t)(fa * nfb + fb) * nh;
+                        const double *ex = Ex + ix * s1 + jx * s2, *ey = Ey + iy * s1 + jy * s2;
+                        const double *ez = Ez + iz * s1 + jz * s2;
+                        for (n = 0; n < nh; n++) e[n] = ex[h_t[n]] * ey[h_u[n]] * ez[h_v[n]];
+                }
+        }
+}
+
+/*
+ * J matrices of ndm symmetric densities in the decontracted Cartesian basis,
+ * vj[d] = sum_cd (ab|cd) D[d]_cd, from the Hermite potentials:
+ *
+ *     rho^Q_s = w_Q sum_cd D_cd E^cd_s,   V^P_t = sum_Q T_PQ{t,s} rho^Q_s,
+ *     J_ab = sum_t E^ab_t V^P_t           (both a b and b a),
+ *
+ * one pass over the pairs of pairs P <= Q.  Screening: the contributions to
+ * J^P and J^Q are bounded by q_P |Omega_Q| and |Omega_P| q_Q, with q_P the
+ * Schwarz factor sqrt((ab|ab)) of the shell pair (qcond, nbas x nbas) and
+ * |Omega_P| = max_d sqrt((Omega^d_P|Omega^d_P)); pairs sorted by
+ * b_P = max(q_P, |Omega_P|), the inner loop stops at b_P b_Q < tol.
+ */
+void SOCVHFmd_j_matrix(double *vj, double *dm, int ndm, double *qcond, double tol,
+                       int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env)
+{
+        if (!h_ready) hermite_tables();
+        const size_t nao = ao_loc[nbas], nn = nao * nao;
+        const int npair = nbas * (nbas + 1) / 2;
+        int i;
+        for (i = 0; i < nbas; i++) {
+                if (bas[i * BAS_SLOTS + ANG_OF] > LMAX || bas[i * BAS_SLOTS + NPRIM_OF] != 1
+                    || bas[i * BAS_SLOTS + NCTR_OF] != 1) {
+                        return;
+                }
+        }
+        MDPair *pairs = malloc(sizeof(MDPair) * npair);
+        size_t oh = 0;          /* Hermite length of all pairs, per density */
+        {
+                int a, b, n = 0;
+                for (a = 0; a < nbas; a++)
+                        for (b = 0; b <= a; b++, n++) {
+                                MDPair *pp = pairs + n;
+                                pp->ish = a; pp->jsh = b;
+                                pp->li = bas[a * BAS_SLOTS + ANG_OF];
+                                pp->lj = bas[b * BAS_SLOTS + ANG_OF];
+                                pp->ia = bas[a * BAS_SLOTS + ATOM_OF];
+                                pp->ja = bas[b * BAS_SLOTS + ATOM_OF];
+                                const double ai = env[bas[a * BAS_SLOTS + PTR_EXP]], aj = env[bas[b * BAS_SLOTS + PTR_EXP]];
+                                const double *Ra = env + atm[pp->ia * ATM_SLOTS + PTR_COORD];
+                                const double *Rb = env + atm[pp->ja * ATM_SLOTS + PTR_COORD];
+                                int x;
+                                pp->p = ai + aj;
+                                for (x = 0; x < 3; x++) pp->P[x] = (ai * Ra[x] + aj * Rb[x]) / pp->p;
+                                pp->orho = oh;
+                                oh += NH(pp->li + pp->lj);
+                        }
+        }
+        /* rho[d * oh + orho + n] */
+        double *rho = malloc(sizeof(double) * oh * ndm);
+        double *bound = malloc(sizeof(double) * 2 * npair);
+        double *qv = malloc(sizeof(double) * npair);    /* q_P, |Omega_P| by pair */
+        double *sv = malloc(sizeof(double) * npair);
+        const int nthreads = omp_get_max_threads();
+        double **vbufs = malloc(sizeof(double *) * nthreads);
+        int *order = malloc(sizeof(int) * npair);
+        int nkeep = 0;
+        memset(vj, 0, sizeof(double) * nn * ndm);
+
+#pragma omp parallel num_threads(nthreads)
+{
+        const int tid = omp_get_thread_num();
+        const int sE = (LMAX + 1) * (LMAX + 1) * (2 * LMAX + 1);
+        const int ncmax = (LMAX + 1) * (LMAX + 2) / 2;
+        double *wk = malloc(sizeof(double) * (3 * sE + (DMAX + 2) * NHMAX));
+        double *wR = wk + 3 * sE;
+        double *Et = malloc(sizeof(double) * ncmax * ncmax * NH(2 * LMAX));
+        double *R0 = malloc(sizeof(double) * NHMAX);
+        int n, d;
+        /* Hermite densities and bounds */
+#pragma omp for schedule(dynamic, 16)
+        for (n = 0; n < npair; n++) {
+                const MDPair *pp = pairs + n;
+                const double *Ra = env + atm[pp->ia * ATM_SLOTS + PTR_COORD];
+                const double *Rb = env + atm[pp->ja * ATM_SLOTS + PTR_COORD];
+                const int lij = pp->li + pp->lj, nh = NH(lij);
+                const int nfa = (pp->li + 1) * (pp->li + 2) / 2, nfb = (pp->lj + 1) * (pp->lj + 2) / 2;
+                const double w = pp->ish == pp->jsh ? 1. : 2.;
+                pair_Et(Et, pp, Ra, Rb, bas, env, wk);
+                const size_t a0 = ao_loc[pp->ish], b0 = ao_loc[pp->jsh];
+                for (d = 0; d < ndm; d++) {
+                        double *r = rho + (size_t)d * oh + pp->orho;
+                        const double *D = dm + (size_t)d * nn;
+                        int fa, fb, k;
+                        for (k = 0; k < nh; k++) r[k] = 0;
+                        for (fa = 0; fa < nfa; fa++)
+                                for (fb = 0; fb < nfb; fb++) {
+                                        const double v = w * D[(a0 + fa) * nao + b0 + fb];
+                                        const double *e = Et + (size_t)(fa * nfb + fb) * nh;
+                                        for (k = 0; k < nh; k++) r[k] += v * e[k];
+                                }
+                }
+                const double pref = PI_FAC / (pp->p * pp->p * sqrt(2 * pp->p));
+                hermite_R(R0, wR, 2 * lij, pref, .5 * pp->p, 0, 0, 0);
+                double s = 0;
+                for (d = 0; d < ndm; d++) {
+                        const double *r = rho + (size_t)d * oh + pp->orho;
+                        const double v = hermite_quad(r, lij, r, lij, R0);
+                        if (v > s) s = v;
+                }
+                s = sqrt(fabs(s));
+                const double q = qcond[pp->ish * nbas + pp->jsh];
+                qv[n] = q;
+                sv[n] = s;
+                bound[2 * n] = q > s ? q : s;
+                bound[2 * n + 1] = n;
+        }
+#pragma omp single
+{
+        qsort(bound, npair, 2 * sizeof(double), cmp_desc);
+        const double bmax = npair ? bound[0] : 0;
+        for (n = 0; n < npair; n++) {
+                if (bound[2 * n] * bmax < tol) break;
+                order[n] = (int)bound[2 * n + 1];
+        }
+        nkeep = n;
+}
+        double *V = vbufs[tid] = calloc(oh * ndm, sizeof(double));
+        int ip;
+#pragma omp for schedule(dynamic, 1)
+        for (ip = 0; ip < nkeep; ip++) {
+                const MDPair *P = pairs + order[ip];
+                const int lp = P->li + P->lj, np = NH(lp);
+                const double bp = bound[2 * ip], qp = qv[order[ip]], sp = sv[order[ip]];
+                int iq;
+                for (iq = ip; iq < nkeep; iq++) {
+                        if (bp * bound[2 * iq] < tol) break;
+                        /* V^P needs rho^Q (bound q_P |Omega_Q|), V^Q needs rho^P */
+                        const int up = qp * sv[order[iq]] >= tol;
+                        const int uq = iq != ip && sp * qv[order[iq]] >= tol;
+                        if (!up && !uq) continue;
+                        const MDPair *Q = pairs + order[iq];
+                        const int lq = Q->li + Q->lj, nq = NH(lq);
+                        const double pq = P->p * Q->p, psum = P->p + Q->p;
+                        hermite_R(R0, wR, lp + lq, PI_FAC / (pq * sqrt(psum)), pq / psum,
+                                  P->P[0] - Q->P[0], P->P[1] - Q->P[1], P->P[2] - Q->P[2]);
+                        int a, b;
+                        for (d = 0; d < ndm; d++) {
+                                const double *rp = rho + (size_t)d * oh + P->orho;
+                                const double *rq = rho + (size_t)d * oh + Q->orho;
+                                double *vp = V + (size_t)d * oh + P->orho;
+                                double *vq = V + (size_t)d * oh + Q->orho;
+                                if (up) {
+                                        for (a = 0; a < np; a++) {
+                                                const int *ad = h_add + a * NHOP;
+                                                double s = 0;
+                                                for (b = 0; b < nq; b++) s += h_sgn[b] * R0[ad[b]] * rq[b];
+                                                vp[a] += s;
+                                        }
+                                }
+                                if (!uq) continue;
+                                for (b = 0; b < nq; b++) {
+                                        double s = 0;
+                                        for (a = 0; a < np; a++) s += R0[h_add[a * NHOP + b]] * rp[a];
+                                        vq[b] += h_sgn[b] * s;
+                                }
+                        }
+                }
+        }
+#pragma omp barrier
+        /* sum the thread buffers into vbufs[0], each thread a slice */
+        {
+                const size_t tot = oh * ndm;
+                const size_t chunk = (tot + nthreads - 1) / nthreads;
+                const size_t s0 = chunk * tid < tot ? chunk * tid : tot;
+                const size_t s1 = s0 + chunk < tot ? s0 + chunk : tot;
+                double *V0 = vbufs[0];
+                size_t k;
+                int t;
+                for (t = 1; t < nthreads; t++) {
+                        const double *vt = vbufs[t];
+                        for (k = s0; k < s1; k++) V0[k] += vt[k];
+                }
+        }
+#pragma omp barrier
+        /* J_ab = sum_t E^ab_t V^P_t for every kept pair (blocks of different pairs are disjoint) */
+        const double *V0 = vbufs[0];
+#pragma omp for schedule(dynamic, 16)
+        for (ip = 0; ip < nkeep; ip++) {
+                const MDPair *pp = pairs + order[ip];
+                const double *Ra = env + atm[pp->ia * ATM_SLOTS + PTR_COORD];
+                const double *Rb = env + atm[pp->ja * ATM_SLOTS + PTR_COORD];
+                const int lij = pp->li + pp->lj, nh = NH(lij);
+                const int nfa = (pp->li + 1) * (pp->li + 2) / 2, nfb = (pp->lj + 1) * (pp->lj + 2) / 2;
+                pair_Et(Et, pp, Ra, Rb, bas, env, wk);
+                const size_t a0 = ao_loc[pp->ish], b0 = ao_loc[pp->jsh];
+                for (d = 0; d < ndm; d++) {
+                        const double *v = V0 + (size_t)d * oh + pp->orho;
+                        double *J = vj + (size_t)d * nn;
+                        int fa, fb, k;
+                        for (fa = 0; fa < nfa; fa++)
+                                for (fb = 0; fb < nfb; fb++) {
+                                        const double *e = Et + (size_t)(fa * nfb + fb) * nh;
+                                        double s = 0;
+                                        for (k = 0; k < nh; k++) s += e[k] * v[k];
+                                        J[(a0 + fa) * nao + b0 + fb] = s;
+                                        J[(b0 + fb) * nao + a0 + fa] = s;
+                                }
+                }
+        }
+        free(wk);
+        free(Et);
+        free(R0);
+#pragma omp barrier
+        free(V);
+}
+        free(pairs);
+        free(rho);
+        free(bound);
+        free(qv);
+        free(sv);
+        free(vbufs);
         free(order);
 }
