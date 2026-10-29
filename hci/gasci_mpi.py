@@ -385,6 +385,8 @@ def _load_dist():
                                      ctypes.c_int64, p, ctypes.c_int] + [ctypes.c_double] * 3
                                      + [ctypes.c_int] * 3 + [p] * 7)
         lib.zgd_solve_ab.restype = ctypes.c_int
+        lib.zgd_set_eigensolver.argtypes = [ctypes.c_int, ctypes.c_int]
+        lib.zgd_set_eigensolver.restype = None
         lib.zgd_promote.argtypes = lib.zgd_reset.argtypes = []
         lib.zgd_promote.restype = lib.zgd_reset.restype = None
         _dist_lib = lib
@@ -392,7 +394,8 @@ def _load_dist():
 
 
 def c_solve(h1, eri, norb, nelec, strs, comm=None, spin_flip=1, ss_penalty=0.0, tol=1e-8,
-            rtol=1e-3, maxit=40, verbose=0, warm=0, strs_b=None, ovlp=None):
+            rtol=1e-3, maxit=40, verbose=0, warm=0, strs_b=None, ovlp=None, eigensolver=None,
+            max_space=12):
     '''The lowest state in strs x strs_b by the C driver on comm (collective:
     every process calls with the same arguments).  h1 (norb, norb), eri any
     pyscf form of (pq|rs), no core energy; or UHF integrals (different alpha
@@ -406,7 +409,9 @@ def c_solve(h1, eri, norb, nelec, strs, comm=None, spin_flip=1, ss_penalty=0.0, 
     linear penalty of fix_spin_).  warm: bit 1, start from the solution kept
     in the last round (zgd_promote) if it has weight >= 1e-4 in this space;
     bit 2, keep this solution if it is the lowest of the round
-    (zgasci_dist.c, zgd_solve_ab).
+    (zgasci_dist.c, zgd_solve_ab).  eigensolver: 'lobpcg' (6 vectors) or
+    'davidson' (2 max_space + 5 vectors); None: as before (default lobpcg,
+    or ZGASCI_DIST_SOLVER / ZGASCI_DIST_MAX_SPACE).
     Returns a dict: e (<H>), e_penalized, s2 (NaN without a penalty),
     iterations, converged, time, warm_weight (the weight of the last
     solution in this space, -1: no warm start); occ_a, occ_b (norb);
@@ -449,6 +454,10 @@ def c_solve(h1, eri, norb, nelec, strs, comm=None, spin_flip=1, ss_penalty=0.0, 
         ovlp = comm.bcast(ovlp, root=0)
     if parity and not (na == nb and numpy.array_equal(sa, sb)):
         raise ValueError('spin_flip needs the same alpha and beta strings and nalpha = nbeta')
+    if eigensolver is not None:
+        if eigensolver not in ('lobpcg', 'davidson'):
+            raise ValueError('eigensolver: lobpcg or davidson')
+        _load_dist().zgd_set_eigensolver(int(eigensolver == 'davidson'), int(max_space))
     out = numpy.zeros(7)
     occ_a, occ_b = numpy.zeros(norb), numpy.zeros(norb)
     maxabs_a, weight_a = numpy.zeros(len(sa)), numpy.zeros(len(sa))
