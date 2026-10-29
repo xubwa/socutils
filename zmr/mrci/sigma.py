@@ -444,24 +444,82 @@ class _VVVV:
         _step('result added', t)
 
 
+class _HermPairs:
+    '''G[(A < B), (p < q)] = (Ap|Bq) - (Aq|Bp) by its upper triangle: G is
+    Hermitian (<AB||pq> = <pq||AB>^*), so block row [r0, r1) keeps the columns
+    from r0 on only, half of the matrix.  product(cp) = cp G^T uses every
+    stored block twice, as itself for the rows r0..r1 of the result and
+    conjugated for the rows after r1.  The blocks are in memory, or read from
+    a dataset of the full matrix (DiskERIs.vvvv_pairs) in every product.'''
+
+    def __init__(self, npair, rows=None, dataset=None, stream=False, limit=2 ** 27):
+        '''rows: rows(a) = the rows of G for the pairs (a, B > a), in order;
+        dataset: the full matrix on disk; stream: read the dataset in every
+        product instead of holding the blocks.'''
+        self.npair = npair
+        step = max(1, limit // max(npair, 1))
+        self.ranges = [(r0, min(npair, r0 + step)) for r0 in range(0, npair, step)]
+        self.dataset = dataset
+        self.blocks = None
+        if stream:
+            return
+        self.blocks = [numpy.empty((r1 - r0, npair - r0), dtype=numpy.complex128)
+                       for r0, r1 in self.ranges]
+        if dataset is not None:
+            for (r0, r1), b in zip(self.ranges, self.blocks):
+                dataset.read_direct(b, numpy.s_[r0:r1, r0:])
+            return
+        k, row = 0, 0
+        nv = int(round((1 + numpy.sqrt(1 + 8 * npair)) / 2))
+        for a in range(nv - 1):
+            g = rows(a)
+            for i in range(len(g)):
+                while row >= self.ranges[k][1]:
+                    k += 1
+                r0 = self.ranges[k][0]
+                self.blocks[k][row - r0] = g[i, r0:]
+                row += 1
+
+    def _block(self, k):
+        if self.blocks is not None:
+            return self.blocks[k]
+        r0, r1 = self.ranges[k]
+        b = numpy.empty((r1 - r0, self.npair - r0), dtype=numpy.complex128)
+        self.dataset.read_direct(b, numpy.s_[r0:r1, r0:])
+        return b
+
+    def product(self, cp):
+        r = numpy.zeros(cp.shape, dtype=numpy.complex128)
+        for k, (r0, r1) in enumerate(self.ranges):
+            b = self._block(k)
+            # views with unit inner stride go to BLAS without copies
+            r[:, r0:r1] += cp[:, r0:] @ b.T
+            if r1 < self.npair:
+                # G[r1:, r0:r1] = G[r0:r1, r1:]^+:  cp[:, r0:r1] conj(G[r0:r1, r1:])
+                r[:, r1:] += (cp[:, r0:r1].conj() @ b[:, r1 - r0:]).conj()
+        return r
+
+    def arrays(self):
+        return self.blocks or []
+
+
 class _VVVVDense:
     '''The same term with the matrix in memory, over independent labels:
     G[(A < B), (p < q)] = (Ap|Bq) - (Aq|Bp), built row block by row block
-    from the three-index integrals (nothing else of that size is formed).
-    With C antisymmetric in (p, q), sum_{p<q} G C[p, q] scattered with both
-    signs is the antisymmetrized result: nv^4 / 4 per label x.'''
+    from the three-index integrals (nothing else of that size is formed) and
+    kept as its upper triangle (_HermPairs).  With C antisymmetric in (p, q),
+    sum_{p<q} G C[p, q] scattered with both signs is the antisymmetrized
+    result: nv^4 / 4 per label x.'''
 
     def __init__(self, coef, bvv=None, rows=None, pairs=None):
         '''bvv: three-index integrals B[L, A, p]; or rows: rows(a) = (ap|Bq) for
         B > a as [B, q, p] (DiskERIs.vvvv_rows); or pairs: the matrix itself
         (DiskERIs.vvvv_pairs), read in slices.'''
+        self.coef = coef
         if pairs is not None:
             npair = pairs.shape[0]
-            self.coef = coef
             self.nv = int(round((1 + numpy.sqrt(1 + 8 * npair)) / 2))
-            self.g = numpy.empty((npair, npair), dtype=numpy.complex128)
-            for r0, r1 in _row_slices(npair, npair):
-                pairs.read_direct(self.g, numpy.s_[r0:r1], numpy.s_[r0:r1])
+            self.h = _HermPairs(npair, dataset=pairs)
             return
         if bvv is not None:
             naux, nv, _ = bvv.shape
@@ -472,15 +530,8 @@ class _VVVVDense:
                 return la.gemm(bt[(a + 1) * nv:], _contig(bvv[:, a, :])).reshape(nb, nv, nv)
         else:
             nv = rows.nv
-        self.coef, self.nv = coef, nv
-        pp, qq = numpy.triu_indices(nv, k=1)
-        npair = len(pp)
-        self.g = numpy.empty((npair, npair), dtype=numpy.complex128)
-        row = 0
-        for a in range(nv - 1):
-            nb = nv - a - 1
-            self.g[row:row + nb] = _vvvv_pair_rows(rows(a))
-            row += nb
+        self.nv = nv
+        self.h = _HermPairs(nv * (nv - 1) // 2, rows=lambda a: _vvvv_pair_rows(rows(a)))
 
     def add(self, c, total, work=None):
         nv, nd = self.nv, c.ndim
@@ -490,13 +541,12 @@ class _VVVVDense:
         lead = ct.shape[:-2]
         cp = kernels.pair_gather(ct, nd - 2)
         t = _step('C transposed, packed', t)
-        r = la.gemm(cp.reshape(-1, cp.shape[-1]), self.g, 'N', 'T')
+        r = self.h.product(cp.reshape(-1, cp.shape[-1]))
         t = _step('product (vv|vv) C', t)
         out = kernels.pair_scatter(r.reshape(lead + (r.shape[-1],)), nd - 2, nv)
         kernels.transpose_add(total, out, [0, nd - 2, nd - 1] + list(range(1, nd - 2)),
                               alpha=self.coef)
         _step('result unpacked, added', t)
-
 
 
 def _vvvv_pair_rows(m):
@@ -542,14 +592,11 @@ class _VVVVStream:
         cp = kernels.pair_gather(ct, nd - 2)
         cp = cp.reshape(-1, cp.shape[-1])
         t = _step('C transposed, packed', t)
-        r = numpy.empty((cp.shape[0], cp.shape[1]), dtype=numpy.complex128)
         if self.pairs is not None:
-            npair = cp.shape[1]
-            for r0, r1 in _row_slices(npair, npair):
-                g = numpy.empty((r1 - r0, npair), dtype=numpy.complex128)
-                self.pairs.read_direct(g, numpy.s_[r0:r1])
-                r[:, r0:r1] = la.gemm(cp, g, 'N', 'T')
+            # the upper triangle of the matrix, read block by block
+            r = _HermPairs(cp.shape[1], dataset=self.pairs, stream=True).product(cp)
         else:
+            r = numpy.empty((cp.shape[0], cp.shape[1]), dtype=numpy.complex128)
             row = 0
             for a in range(nv - 1):
                 nb = nv - a - 1
@@ -569,7 +616,7 @@ class Sigma:
     direct_vvvv = None
     vvvv_memory = 2e9
     # ... and keep (vv|vv) as one matrix over pairs, built from them, up to this
-    # many bytes (16 npair^2, about 4 nv^4); beyond it every label costs two
+    # many bytes (its upper triangle, 8 npair^2, about 2 nv^4); beyond it every label costs two
     # products of naux nv^3, about 40 times more in all for 300 virtuals
     vvvv_dense_memory = 4e10
     # dressed integrals with more elements than this are not formed
@@ -724,10 +771,10 @@ class Sigma:
             cre, ann = t.rdm
             plain = not cre and not ann
             if kind == 'S' and self._use_direct_vvvv() and self._is_vvvv(t, bra, ket):
-                # bytes of the matrix over pairs A < B, p < q that is kept
+                # bytes of the upper triangle of the matrix over pairs A < B, p < q
                 npair = self.sp.nvirt * (self.sp.nvirt - 1) // 2
                 dense = (self.direct_vvvv is None
-                         and 16.0 * npair**2 <= self.vvvv_dense_memory)
+                         and 8.0 * npair**2 <= self.vvvv_dense_memory)
                 disk = not getattr(self.eris, 'factorized', False)
                 pairs = getattr(self.eris, 'vvvv_pairs', None) if disk else None
                 if dense and self._vvvv is None:
@@ -739,7 +786,7 @@ class Sigma:
                         self._vvvv = _VVVVDense(1.0, self.eris.cd_block('vv'))
                 if dense:
                     shared = _VVVVDense.__new__(_VVVVDense)
-                    shared.coef, shared.nv, shared.g = complex(t.coef), self.sp.nvirt, self._vvvv.g
+                    shared.coef, shared.nv, shared.h = complex(t.coef), self.sp.nvirt, self._vvvv.h
                     direct.append(shared)
                 elif disk:
                     direct.append(_VVVVStream(complex(t.coef), _DiskRows(self.eris), pairs))
@@ -1093,7 +1140,8 @@ class Sigma:
                 rows[label] = rows.get(label, 0) + size(a)
 
         if self._vvvv is not None:
-            add('(vv|vv) matrix', self._vvvv.g)
+            for b in self._vvvv.h.arrays():
+                add('(vv|vv) matrix', b)
         for (bra, ket), (full, staged) in self._compiled.items():
             cons = list(full) + [c for _, cs in staged for c in cs]
             for con in cons:

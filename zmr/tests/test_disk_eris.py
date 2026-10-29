@@ -118,3 +118,24 @@ def test_nevpt4_vvvv_rows(tmp_path, dense, pairs):
     assert bool(calls) != pairs and 'vvvv' not in disk.computed_blocks
     for a, b in ((pt.e2, ref.e2), (pt.e3, ref.e3), (pt.e4, ref.e4)):
         assert abs(a - b).max() < 1e-10
+
+
+@pytest.mark.parametrize('limit', [7, 2 ** 27])
+def test_hermitian_pairs(limit):
+    '''The upper triangle of the (vv|vv) pair matrix reproduces the full product
+    (blocks of a few rows, limit = 7 elements, and one block).'''
+    eris = model_eris(2, 3, 6, seed=9)
+    w = eris.eri_block('vvvv')
+    i, j = numpy.triu_indices(6, k=1)
+    g = w[i[:, None], i[None, :], j[:, None], j[None, :]] - w[i[:, None], j[None, :], j[:, None], i[None, :]]
+    assert abs(g - g.conj().T).max() < 1e-14
+
+    def rows(a):
+        sel = i == a
+        return g[sel]
+
+    h = sg._HermPairs(len(i), rows=rows, limit=limit)
+    rng = numpy.random.default_rng(3)
+    cp = rng.normal(size=(5, len(i))) + 1j * rng.normal(size=(5, len(i)))
+    assert abs(h.product(cp) - cp @ g.T).max() < 1e-13
+    assert sum(b.size for b in h.arrays()) < 0.75 * g.size or limit > g.size
