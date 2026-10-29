@@ -15,7 +15,8 @@ T = np.linalg.lstsq(cell.pbc_intor('int1e_ovlp'), pgto.intor_cross('int1e_ovlp',
 dm = T @ dm0 @ T.T
 th = THCExchange(cell, aux, ac, selector='kmeans').build_common()       # Bloch build: RSDF J reference
 Jr = th.r.get_jk(dm, hermi=1, with_k=False)[0]
-for nrad in (300, 600):
+for nrad in (600,):
     t = time.time(); g = GAPWJ(th, nrad=nrad); ts = time.time() - t
     t = time.time(); J = g.get_j(dm); tj = time.time() - t
+    t = time.time(); J2 = g.get_j(dm); print('second get_j (cached) %.1f s, |J - J2| %.1e' % (time.time() - t, abs(J - J2).max()))
     print('nrad %d: setup %.0f s, get_j %.0f s; vs RSDF max %.2e, E_J %.2e' % (nrad, ts, tj, abs(J - Jr).max(), .5 * np.einsum('ij,ji', dm, J - Jr)), flush=True)

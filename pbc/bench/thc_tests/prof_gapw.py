@@ -16,6 +16,10 @@ dm = T @ dm0 @ T.T
 th = THCExchange(cell, aux, ac, selector='kmeans', local_rcut=6.)
 th.build_common()
 g = GAPWJ(th, nrad=600)
-cProfile.run('g.get_j(dm)', '/tmp/gapw.prof') if False else None
+import time
+t = time.time(); J1 = g.get_j(dm); t1 = time.time() - t
+t = time.time(); J2 = g.get_j(dm); t2 = time.time() - t
+print('get_j first %.1f s, second (cached geometry) %.1f s, |J1 - J2| %.1e, cache %.2f GB'
+      % (t1, t2, abs(J1 - J2).max(), getattr(g, '_geo_bytes', 0) / 1e9), flush=True)
 pr = cProfile.Profile(); pr.enable(); g.get_j(dm); pr.disable()
 pstats.Stats(pr).sort_stats('cumulative').print_stats(25)

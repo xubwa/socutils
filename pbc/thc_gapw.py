@@ -25,6 +25,7 @@
 # 4.1e-6 at 150 / 300 / 600 radial points (RSDF vs exact: 1.7e-6).
 #
 import numpy as np
+from pyscf import lib
 import scipy.fft
 import scipy.special
 from scipy.interpolate import CubicSpline
@@ -191,7 +192,13 @@ class GAPWJ:
         frac = pts[sel] @ np.linalg.inv(np.asarray(th.cell.lattice_vectors())) * mesh   # grid units
         if getattr(self, 'interp', 'spline') == 'spline':
             from scipy.ndimage import map_coordinates
-            out[sel] = map_coordinates(vr, frac.T, order=5, mode='grid-wrap', prefilter=False)
+            from concurrent.futures import ThreadPoolExecutor
+            nt = lib.num_threads()
+            ch = np.array_split(np.arange(len(sel)), max(1, min(nt, len(sel) // 2000)))
+            f = lambda c: map_coordinates(vr, frac[c].T, order=5, mode='grid-wrap', prefilter=False)
+            with ThreadPoolExecutor(len(ch)) as ex:
+                for c, v in zip(ch, ex.map(f, ch)):
+                    out[sel[c]] = v
             return out
         i0 = np.floor(frac).astype(int)
         t = frac - i0                                                  # in [0, 1)
@@ -255,7 +262,8 @@ class GAPWJ:
             print('   vloc atom %d: support %.1f bohr (rmax %.1f); max|v_lm|(r): %s' % (B, r_v, r[-1], prof), flush=True)
         rr = np.concatenate([[0.], r])
         V0 = np.vstack([np.concatenate([vlms[0][:1].ravel(), np.zeros(V.shape[1] - 1)])[None], V])
-        return CubicSpline(rr, V0, axis=0), r_v
+        lm = np.where(np.abs(V).max(axis=0) > tol * big.max())[0]       # lm components above tol anywhere
+        return CubicSpline(rr, V0[:, lm], axis=0), r_v, lm
 
     def _vloc_eval(self, spl, d):
         '''sum_lm v_lm(|d|) Y_lm(d/|d|) at displacements d (n, 3).'''
@@ -273,7 +281,7 @@ class GAPWJ:
         key = (B, id(vlms))
         if getattr(self, '_vspl', None) is None or self._vspl[0] != key:
             self._vspl = (key, self._vloc_spline(B, vlms))
-        spl, r_v = self._vspl[1]
+        spl, r_v, lm = self._vspl[1]
         out = np.zeros(len(pts))
         if r_v <= 0:
             return out
@@ -286,11 +294,51 @@ class GAPWJ:
                 continue
             if center is not None and np.linalg.norm(cell.atom_coord(B) + t - center) > r_v + radius:
                 continue                                              # no point within the support of this image
-            d = pts - (cell.atom_coord(B) + t)
-            sel = np.where(np.einsum('px,px->p', d, d) < r_v ** 2)[0]
+            ck = (B, home, center is not None and tuple(np.round(center, 8)), len(pts), tuple(np.round(t, 8)), r_v)
+            geo = self._geo.get(ck) if getattr(self, '_geo', None) is not None else None
+            if geo is None:
+                d = pts - (cell.atom_coord(B) + t)
+                sel = np.where(np.einsum('px,px->p', d, d) < r_v ** 2)[0]
+                if len(sel) == 0:
+                    geo = (sel, None, None)
+                else:
+                    dist, Y = self._ylm_at(d[sel])
+                    geo = (sel, dist, Y)
+                    self._cache_geo(ck, geo)
+            sel, dist, Y = geo
             if len(sel):
-                out[sel] += self._vloc_eval(spl, d[sel])
+                out[sel] += np.einsum('pm,mp->p', spl(dist), Y if len(lm) == len(Y) else Y[lm])
         return out
+
+    def _ylm_at(self, d):
+        '''|d| and the (Loewdin-orthonormalised) real harmonics up to lmax at directions d (n, 3): (n,), (nlm, n).'''
+        if getattr(self, '_ytr', None) is None:
+            self._ytr = _ylm_transforms(self.lmax, self.unit, self.wang)
+        dist = np.maximum(np.linalg.norm(d, axis=1), 1e-12)
+        ys = sph.real_sph_vec(d / dist[:, None], self.lmax, reorder_p=True)
+        return dist, np.vstack([t @ np.asarray(y, dtype=float) for t, y in zip(self._ytr, ys)])
+
+    def _cache_geo(self, key, geo):
+        '''Keep the geometry of a neighbour-potential evaluation (fixed over the SCF) within cache_gb.'''
+        if getattr(self, '_geo', None) is None:
+            self._geo, self._geo_bytes = {}, 0
+        nb = geo[0].nbytes + geo[1].nbytes + geo[2].nbytes
+        if self._geo_bytes + nb <= getattr(self, 'cache_gb', 16.) * 1e9:
+            self._geo[key] = geo
+            self._geo_bytes += nb
+
+    def _ss_first(self):
+        '''Permute the stored functions of every atomic grid so that the smooth ones come first (once).'''
+        if getattr(self, '_nss', None) is not None:
+            return
+        sm = self.th.smooth
+        self._nss = {}
+        for A in self.atoms:
+            pts, w, inner, cols, cA, phi_in, phi0c = self.grids[A]
+            ss = np.isin(cols, sm)
+            perm = np.concatenate([np.where(ss)[0], np.where(~ss)[0]])
+            self.grids[A] = (pts, w, inner, cols[perm], cA, np.ascontiguousarray(phi_in[:, perm]), phi0c)
+            self._nss[A] = int(ss.sum())
 
     def get_j(self, dm):
         '''J (vector convention) in the split basis for a real symmetric dm.'''
@@ -299,6 +347,7 @@ class GAPWJ:
         vol, ng, mesh = cell.vol, th.ng, th.mesh
         hshape = (mesh[0], mesh[1], mesh[2] // 2 + 1)
         dm = .5 * (dm + dm.T)
+        self._ss_first()
         # smooth density on the uniform grid
         n = np.einsum('ri,ri->r', th.phi @ dm[np.ix_(sm, sm)], th.phi)
         nG = scipy.fft.rfftn(n.reshape(mesh), workers=-1).reshape(-1) * (vol / ng)
@@ -353,9 +402,10 @@ class GAPWJ:
             J[cA[ia], cols[ib]] += JA[ia, ib]
             od = cA[ia] != cols[ib]
             J[cols[ib[od]], cA[ia[od]]] += JA[ia[od], ib[od]]
-            # SS pairs: the local potential of A (all space, on A's grid; it lives within r_store)
-            sc = np.where(np.isin(cols, sm))[0]
-            ps = phi_in[:, sc]
-            J[np.ix_(cols[sc], cols[sc])] += ps.T @ ((w * vloc[A])[inner][:, None] * ps)
+            # SS pairs: the local potential of A (all space, on A's grid; it lives within r_store); the smooth
+            # columns come first in cols (see _ss_first), so their block is a view
+            nss = self._nss[A]
+            ps = phi_in[:, :nss]
+            J[np.ix_(cols[:nss], cols[:nss])] += ps.T @ ((w * vloc[A])[inner][:, None] * ps)
         J += c_avg * self.S                                           # constant potential: c S_ab
         return J
