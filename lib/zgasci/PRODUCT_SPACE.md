@@ -393,8 +393,9 @@ vectors.  (A first version with dsyev, an absolute dependence threshold
 and no renormalization at the collapse diverged near convergence: E far
 below the spectrum.)
 Measured: [4Fe-4S] SQD subspace (20000 strings, d = 4e8, 4 nodes, penalty
-0.2, rtol 1e-5): LOBPCG 39 iterations 954 s, Davidson (max space 24) 39
-iterations 974 s, the same energies step by step: there the convergence is
+0.2, rtol 1e-5): LOBPCG 39 iterations 954 s, Davidson (max space 8, 16,
+24) 39 iterations 963-974 s (the corrected version; no divergence), the
+same energies step by step, final E equal to 2e-11: there the convergence is
 set by the diagonal preconditioner, not by the size of the subspace.  H2O
 full space with rotated beta orbitals: Davidson 205-613 iterations against
 LOBPCG 252-801 (one LOBPCG run not converged), and Davidson left the irrep
