@@ -4,8 +4,11 @@
 #
 '''
 The SCF XC potential of RKS, pyscf.dft.numint.nr_rks (same conventions and
-results) with the grid work of every AO block as a few large threaded GEMMs
-plus C passes over the elements:
+results).  LDA / GGA: cache-blocked C passes (lib/dft/vxc_rks.c) over
+sub-blocks of SUBBLOCK grid points, each on the AOs with max |phi_k| >
+AO_CUTOFF on it (cc-pVDZ (H2O)_16: ~160 of 384 per box), one read of the AO
+block per pass; pass 1 rho, libxc, pass 2 V.  Meta-GGA (and without the
+library) the whole-block path below:
 
     rho       from the occupied orbitals when the density carries them
               (c_k = C^T d_k phi, nocc instead of nao: rho = sum_i c_0 c_0,
@@ -15,16 +18,11 @@ plus C passes over the elements:
     V        += phi_0 aow^T                  (GEMM; GGA / MGGA: V + V^T at the end)
     V1       += sum_k d_k phi (w_tau d_k phi)^T   (MGGA)
 
-For compact molecules in diffuse basis sets nearly every AO is significant on
-every grid box (cc-pVDZ (H2O)_16: 336 of 384 per 448 points), so pyscf's
-block-sparse products save little and cost Python-level loops; the dense
-GEMMs run near the BLAS peak.
 
     vxc_fast.apply(mf)      # mf._numint.nr_rks from here (RKS, LDA / GGA)
 
-At this size the XC is bound by memory bandwidth (the AO values written and
-read a few times); the gain over pyscf is mostly the orbital-based density in
-the SCF.
+On large AO blocks every whole-block pass is bound by memory bandwidth; the
+sub-blocks keep a pass's data in cache.
 '''
 
 import ctypes
@@ -99,6 +97,8 @@ def nr_rks(ni, mol, grids, xc_code, dms, relativity=0, hermi=1, max_memory=2000,
     v1 = numpy.zeros((nset, nao, nao)) if xctype == 'MGGA' else None
     if grids.coords is None:
         grids.build(with_non0tab=True)
+    if xctype != 'MGGA' and hasattr(libdft, 'SOCDFTvxc_mat'):
+        return _nr_rks_blocked(libdft, ni, mol, grids, xc_code, dms_a, d, xctype, max_memory)
     aow = None
     for ao, mask, weight, coords in ni.block_loop(mol, grids, nao, ao_deriv, max_memory=max_memory):
         ng = weight.size
@@ -130,6 +130,78 @@ def nr_rks(ni, mol, grids, xc_code, dms, relativity=0, hermi=1, max_memory=2000,
         vmat = vmat + vmat.transpose(0, 2, 1)
     if xctype == 'MGGA':
         vmat += v1
+    if dms_a.ndim == 2:
+        return nelec[0], excsum[0], vmat[0]
+    return nelec, excsum, vmat.reshape(dms_a.shape)
+
+
+SUBBLOCK = 128          # grid points per cache-blocked sub-block
+AO_CUTOFF = 1e-15       # max_g |phi_k| below which an AO is dropped from a sub-block
+_blas = None
+
+
+def _blas_ptrs():
+    '''dgemm_ and (MKL) MKL_Set_Num_Threads_Local of the BLAS pyscf has loaded'''
+    global _blas
+    if _blas is None:
+        from pyscf.lib import numpy_helper
+        h = numpy_helper._np_helper
+        dgemm = ctypes.cast(h.dgemm_, ctypes.c_void_p)
+        try:
+            # the C entry (by value); mkl_set_num_threads_local is the Fortran one
+            local = ctypes.cast(h.MKL_Set_Num_Threads_Local, ctypes.c_void_p)
+        except AttributeError:
+            local = ctypes.c_void_p(None)
+        _blas = (dgemm, local)
+    return _blas
+
+
+def _nr_rks_blocked(libdft, ni, mol, grids, xc_code, dms_a, d, xctype, max_memory):
+    '''LDA / GGA through the cache-blocked passes of lib/dft/vxc_rks.c: sub-blocks
+    of SUBBLOCK points, each on its AOs with max |phi_k| > AO_CUTOFF, one read
+    of the AO block per pass'''
+    from socutils.hessian.rhf_fast import _ao_stack
+    nao = d.shape[-1]
+    nset = d.shape[0]
+    ncomp = 1 if xctype == 'LDA' else 4
+    itype = 0 if xctype == 'LDA' else 1
+    nthreads = lib.num_threads()
+    nelec = numpy.zeros(nset)
+    excsum = numpy.zeros(nset)
+    vmat = numpy.zeros((nset, nao, nao))
+    vbuf = numpy.empty((nthreads, nao, nao))
+    blas = _blas_ptrs()
+    for i in range(nset):
+        dm = numpy.ascontiguousarray(d[i])
+        vbuf[:] = 0
+        for ao, mask, weight, coords in ni.block_loop(mol, grids, nao, 0 if xctype == 'LDA' else 1,
+                                                      max_memory=max_memory):
+            ng = weight.size
+            aoT, cs = _ao_stack(ao)
+            nsub = (ng + SUBBLOCK - 1) // SUBBLOCK
+            idx = numpy.empty((nsub, nao), dtype=numpy.int32)
+            nl = numpy.empty(nsub, dtype=numpy.int32)
+            rho = numpy.empty((ncomp, ng))
+            libdft.SOCDFTvxc_rho(
+                rho.ctypes.data_as(ctypes.c_void_p), idx.ctypes.data_as(ctypes.c_void_p),
+                nl.ctypes.data_as(ctypes.c_void_p), aoT.ctypes.data_as(ctypes.c_void_p), ctypes.c_long(cs),
+                dm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nao), ctypes.c_int(ng), ctypes.c_int(SUBBLOCK),
+                ctypes.c_double(AO_CUTOFF), ctypes.c_int(itype), *blas)
+            exc, vxc = ni.eval_xc_eff(xc_code, rho[0] if xctype == 'LDA' else rho, deriv=1, xctype=xctype,
+                                      spin=0)[:2]
+            den = rho[0] * weight
+            nelec[i] += den.sum()
+            excsum[i] += numpy.dot(den, exc)
+            wv = numpy.ascontiguousarray(numpy.asarray(vxc).reshape(-1, ng)[:ncomp] * weight)
+            if xctype != 'LDA':
+                wv[0] *= .5             # *.5 for V + V^T
+            libdft.SOCDFTvxc_mat(
+                vbuf.ctypes.data_as(ctypes.c_void_p), aoT.ctypes.data_as(ctypes.c_void_p), ctypes.c_long(cs),
+                wv.ctypes.data_as(ctypes.c_void_p), idx.ctypes.data_as(ctypes.c_void_p),
+                nl.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nao), ctypes.c_int(ng), ctypes.c_int(SUBBLOCK),
+                ctypes.c_int(itype), *blas)
+        v = vbuf.sum(axis=0)
+        vmat[i] = v + v.T if xctype != 'LDA' else v
     if dms_a.ndim == 2:
         return nelec[0], excsum[0], vmat[0]
     return nelec, excsum, vmat.reshape(dms_a.shape)
