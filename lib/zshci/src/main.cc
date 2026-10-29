@@ -18,23 +18,24 @@
 
 #include "comm.h"
 #include "det.h"
-#include "diag.h"
 #include "fci.h"
 #include "input.h"
 #include "integrals.h"
-#include "select.h"
+#include "run_modes.h"
 
 namespace zshci {
 namespace {
 
+// RunDiag and RunSelect are compiled elsewhere (run_modes.h).
 template <int W, class Ints>
 void Run(const Input& input, const Ints& ints, const Comm& comm) {
+  using S = typename Ints::Scalar;
   switch (input.mode) {
     case Mode::kDiag:
-      RunDiag<W, Ints>(input, ints, comm);
+      RunDiag<W, Ints, S>(input, ints, comm);
       return;
     case Mode::kSelect:
-      RunSelect<W, Ints>(input, ints, comm);
+      RunSelect<W, Ints, S>(input, ints, comm);
       return;
     case Mode::kFci:
       RunFci(input, ints, comm);

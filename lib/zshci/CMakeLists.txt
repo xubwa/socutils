@@ -50,8 +50,26 @@ if(NOT BLAS_FOUND)
 endif()
 
 file(GLOB ZSHCI_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc)
+list(REMOVE_ITEM ZSHCI_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/run_modes.cc)
 set(ZSHCI_LIBRARY_SOURCES ${ZSHCI_SOURCES})
 list(REMOVE_ITEM ZSHCI_LIBRARY_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cc)
+
+# The drivers of the diag and select modes, one file for each mode, kind of
+# integrals and width (src/run_modes.h), so that they compile in parallel.
+set(ZSHCI_MAX_DET_WORDS 4 CACHE STRING
+    "largest determinant width in 64-bit words")
+set(ZSHCI_RUN_SOURCES)
+foreach(mode select diag)
+  foreach(kind complexspinor realspinor unrestricted spatial)
+    foreach(width RANGE 1 ${ZSHCI_MAX_DET_WORDS})
+      set(file ${CMAKE_CURRENT_BINARY_DIR}/run/${mode}_${kind}_${width}.cc)
+      file(CONFIGURE OUTPUT ${file} CONTENT
+           "#define ZSHCI_RUN_MODE_${mode}\n#define ZSHCI_RUN_KIND_${kind}\n#define ZSHCI_RUN_WIDTH ${width}\n#include \"run_modes.cc\"\n")
+      list(APPEND ZSHCI_RUN_SOURCES ${file})
+    endforeach()
+  endforeach()
+endforeach()
+list(APPEND ZSHCI_SOURCES ${ZSHCI_RUN_SOURCES})
 
 function(zshci_program name)
   add_executable(${name} ${ARGN} $<TARGET_OBJECTS:zshci_zgasci>)
@@ -67,6 +85,8 @@ function(zshci_program name)
   target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_include_directories(${name} SYSTEM PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party ${HDF5_INCLUDE_DIRS})
+  target_compile_definitions(${name} PRIVATE
+    ZSHCI_MAX_DET_WORDS=${ZSHCI_MAX_DET_WORDS})
   target_link_libraries(${name} PRIVATE
     OpenMP::OpenMP_CXX Eigen3::Eigen ${HDF5_LIBRARIES} ${BLAS_LIBRARIES} m)
 endfunction()

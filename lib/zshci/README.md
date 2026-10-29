@@ -47,9 +47,27 @@ node. Any combination of ranks and threads gives the same results.
 A determinant takes up to `MAX_DET_WORDS` 64-bit words, 256 spinors (128
 spatial orbitals) by default; `make MAX_DET_WORDS=6` builds a program for
 up to 384 spinors as `bin/zshci_w6` (in a build directory of its own).
-Every width up to the maximum is compiled for every kind of integrals,
-which costs compile time (the default build about 400 s for `main.o` on one
-core, width 6 about 900 s) and binary size (209 MB, width 6 308 MB).
+Every width up to the maximum is compiled for every kind of integrals. The
+drivers of the diag and select modes, one per mode, kind of integrals and
+width (32 by default, 48 for width 6), are compiled each in a translation
+unit of its own from `src/run_modes.cc` (`src/run_modes.h`), so that
+`make -j` builds them in parallel; their debug information is line tables
+only (`RUN_DEBUG=-g` for the full one). Measured on one 48-core node:
+
+| | before (all in `main.o`) | now |
+|---|---|---|
+| clean build, `make -j16` | 563 s | 114 s |
+| clean build, `make -j48` | 558 s | 53 s |
+| rebuild after touching `main.cc` | 553 s | 4 s |
+| rebuild after touching `integrals.h`, `-j16` / `-j48` | 559 / 558 s | 84 / 49 s |
+| binary size | 246 MB | 193 MB |
+| width 6: clean build, `make -j48`; binary size | 923 s; 308 MB (*) | 90 s; 250 MB |
+
+Each driver takes 30-35 s to compile, all of them together
+960 s of CPU time (`main.o` was 540 s: the headers are compiled once for
+each unit); with `-j48` the build takes as long as the slowest file
+(`fci_davidson.o`, 44 s). (*) Measured before the unrestricted kind of
+integrals was added.
 
 ## Running
 

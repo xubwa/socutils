@@ -82,9 +82,29 @@ ifneq ($(MAX_DET_WORDS),4)
   TARGET   := $(TARGET)_w$(MAX_DET_WORDS)
 endif
 LDFLAGS   += -lm
-SOURCES   := $(wildcard src/*.cc)
-OBJECTS   := $(patsubst src/%.cc,$(BUILD)/%.o,$(SOURCES)) $(BUILD)/zgasci.o \
-             $(BUILD)/gas_dist.o
+
+# The drivers of the diag and select modes, one object for each mode, kind
+# of integrals and width up to MAX_DET_WORDS, all from src/run_modes.cc
+# (run_modes.h); they are most of the compile time and build in parallel.
+# The heaviest come first, so that make -j starts them first.
+RUN_MODES  := select diag
+RUN_KINDS  := complexspinor realspinor unrestricted spatial
+RUN_WIDTHS := $(shell seq $(MAX_DET_WORDS) -1 1)
+RUN_OBJECTS := $(foreach m,$(RUN_MODES),$(foreach k,$(RUN_KINDS),\
+               $(foreach w,$(RUN_WIDTHS),$(BUILD)/run/$(m)_$(k)_$(w).o)))
+# Their debug information is line tables only (enough for profilers and
+# backtraces): full -g would make each of them twice as slow to compile and
+# the program 640 MB instead of 190 MB, as every one carries its own copy of
+# the description of every type. RUN_DEBUG=-g gives the full one.
+RUN_DEBUG ?= -g1
+run_word  = $(word $2,$(subst _, ,$1))
+run_flags = -DZSHCI_RUN_MODE_$(call run_word,$1,1) \
+            -DZSHCI_RUN_KIND_$(call run_word,$1,2) \
+            -DZSHCI_RUN_WIDTH=$(call run_word,$1,3)
+
+SOURCES   := $(filter-out src/run_modes.cc,$(wildcard src/*.cc))
+OBJECTS   := $(RUN_OBJECTS) $(patsubst src/%.cc,$(BUILD)/%.o,$(SOURCES)) \
+             $(BUILD)/zgasci.o $(BUILD)/gas_dist.o
 
 TEST         := $(BUILD)/zshci_test
 TEST_FCIDUMP ?= test/data/o2_4c.fcidump
@@ -95,7 +115,9 @@ all: $(TARGET)
 test: $(TEST)
 	$(TEST) $(TEST_FCIDUMP)
 
-$(TEST): $(BUILD)/zshci_test.o $(filter-out $(BUILD)/main.o,$(OBJECTS))
+# The test compiles what it runs itself, without main.o and the drivers.
+$(TEST): $(BUILD)/zshci_test.o \
+         $(filter-out $(BUILD)/main.o $(RUN_OBJECTS),$(OBJECTS))
 	$(CXX) -o $@ $^ $(LDFLAGS)
 
 $(BUILD)/zshci_test.o: test/zshci_test.cc | $(BUILD)
@@ -107,6 +129,11 @@ $(TARGET): $(OBJECTS) | bin
 $(BUILD)/%.o: src/%.cc | $(BUILD)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+# A static pattern: as a plain pattern rule it would also offer itself, via
+# the built-in rule % : %.o, for remaking the .d files.
+$(RUN_OBJECTS): $(BUILD)/run/%.o: src/run_modes.cc | $(BUILD)/run
+	$(CXX) $(CXXFLAGS) $(RUN_DEBUG) $(call run_flags,$*) -c $< -o $@
+
 # zgasci.c includes the .inc files next to it.
 $(BUILD)/zgasci.o: src/zgasci/zgasci.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -114,7 +141,7 @@ $(BUILD)/zgasci.o: src/zgasci/zgasci.c | $(BUILD)
 $(BUILD)/gas_dist.o: src/gas_dist.c | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
-$(BUILD) bin:
+$(BUILD) $(BUILD)/run bin:
 	mkdir -p $@
 
 clean:
