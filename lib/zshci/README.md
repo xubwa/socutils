@@ -62,8 +62,7 @@ The input is a JSON file; comments are allowed and unknown keys are errors.
   "connect": {"method": "groups"},
   "select": {"schedule": [[0, 1e-3], [3, 1e-4]], "max_iter": 12},
   "davidson": {"tol": 1e-6},
-  "pt": {"method": "semistochastic", "epsilon2": 1e-7, "epsilon2_large": 1e-5,
-         "target_error": 1e-5},
+  "pt": {"method": "semistochastic", "epsilon2": 1e-7, "target_error": 1e-5},
   "rdm": {"one": true, "two": true, "transition": false}
 }
 ```
@@ -390,6 +389,50 @@ the datasets as they are. `wfn.h5` can be given as `"detfile"` to restart from
 a previous space; a selection then also starts the eigensolver from the CI
 vectors of that file, if it holds one per root.
 
+## Perturbation theory: what the program chooses
+
+`"pt"` takes `"method"` (`"deterministic"`, `"stochastic"`,
+`"semistochastic"`), `"epsilon2"`, `"target_error"` and optionally
+`"memory"`, the gigabytes one rank may use for it (default: 60 % of what
+its node has available when perturbation theory starts, shared by the
+ranks of the node). The rest is chosen by the program and printed
+(`src/pt.h`, `ChoosePtParameters`):
+
+- Memory model. A sum over external determinants holds its terms about
+  three times per rank (per-thread lists, the copy partitioned by owner or
+  received from the other ranks): 3 x 16 bytes per term of the
+  deterministic part (real numbers, one-word determinants), 3 x 40 per
+  term of a stochastic batch.
+- The threshold of the deterministic part, epsilon2_large. Its terms are
+  counted with their repetitions (the strict bound of what is held) from
+  every n-th determinant (about a twentieth; term counts add up over the
+  generating determinants, so the scaled count is unbiased, with its
+  sampling error printed). The first threshold is a tenth of the last
+  epsilon1 of the selection (read from the file in diag mode, else 1e-4),
+  never below epsilon2. When a count uses the share f of what one pass may
+  hold with a margin of 1.5, the next threshold is t f^(1/alpha), alpha the
+  exponent of terms ~ t^-alpha (1 at first, then from the last two
+  counts), at most a factor 10 per step and between the thresholds known
+  to fit and not to fit, until f lies in [0.5, 1] or epsilon2 is reached.
+  If epsilon2 fits, the whole correction is deterministic. Otherwise a
+  pilot at two batch sizes gives the spread of the stochastic correction
+  for every threshold visited that fits (the terms carry the band of their
+  strength) and the time per batch, a probe at the smallest such threshold
+  the time per term of the deterministic part, and of the thresholds within
+  20 % of the least predicted time to target_error the largest is taken.
+  The stochastic part then always runs, at least min_iterations batches.
+- The batch of the stochastic part (samples per estimate, drawn alike on
+  all ranks and merged as the deterministic sum is): the largest whose terms
+  fit the memory. The variance of a batch falls nearly as 1/samples^2
+  where samples rarely meet at one external determinant, the time grows
+  less than linearly, so a large batch converges far faster per second
+  (Cr2 1.2e7 determinants, spin_flip, one node, epsilon2 1e-7: 2400,
+  9600, 38400 samples take 0.29, 0.88, 3.10 s per batch with spreads
+  2.76e-3, 6.87e-4, 1.74e-4, i.e. 5485, 1039, 234 s to 2e-5).
+- Guard: a pass or a batch that holds more than its bound stops storing,
+  is split in two halves of its hash range and done again, so a low
+  estimate costs time instead of the run.
+
 ## Spin-flip symmetry: `"spin_flip"`
 
 For `"orbitals": "spatial"` and Ms = 0, `"spin_flip": 1` (states of even
@@ -597,3 +640,81 @@ epsilon1 = 5e-5, deterministic PT with epsilon2 = 1e-6):
 
 The two programs select slightly different spaces (673981 determinants in
 Dice) and agree to 4e-8 Eh in the energy with the perturbative correction.
+
+**Cr2 against Dice** (`bench/cr2/make_fcidump_rhf.py`: 1.68 Angstrom,
+def2-SVP, RHF orbitals, 24 electrons in 30 orbitals; Xeon Gold 6248R
+nodes, 48 cores). Both with the spin-flip symmetry (zshci `"spin_flip": 1`,
+Dice `Treversal 1`); the same epsilon1 schedule (2e-3 down to the point, two
+iterations per value, then one), Davidson 5e-5; Dice's epsilon1 times
+sqrt(2), since Dice applies it to the coefficient of the symmetric
+function, sqrt(2) that of a determinant (with the same epsilon1 it selects
+1.7 times the space). Perturbation theory alike: epsilon2 1e-7,
+epsilon2_large 1e-5, batches of 9600 samples (Dice: sampleN 200 on 48
+ranks), 50 batches. zshci one rank of 48 threads per node, "adapt" with
+170 GB; Dice 48 ranks per node. Variational: the whole selection from the
+Hartree-Fock determinant; product: of the last iteration; peak: memory in
+use on a node above what it held before.
+
+| determinants (functions) | nodes | variational s (zshci / Dice) | product s | peak GB per node | E + PT2 (zshci / Dice) |
+|---|---|---|---|---|---|
+| 1.2e7 (6.0e6) | 1 | 66 / 249 | 0.41 / 1.62 | 15 / 24 | -2086.45223(2) / -2086.45224(2) * |
+| 2.7e7 (1.37e7) | 1 | 116 / 483 | 1.04 / 3.27 | 32 / 59 | -2086.45306(2) / -2086.45308(2) * |
+| 5.8e7 (2.9e7) | 1 | 300 / 1375 | 2.99 / 9.9 | 72 / 128 | -2086.45357(10) / -2086.45373(17) |
+| 5.8e7 | 4 | 190 / 882 | 1.86 / 6.9 | 21 / 54 | -2086.45357(10) / -2086.45358(13) |
+| 1.2e8 (6.0e7) | 1 | 916 / out of memory in iteration 15 | 13.7 / - | 156 / >165 | -2086.45384(10) / - |
+| 1.2e8 | 4 | 400 / 1478 | 4.65 / 11.0 | 47 / 116 | -2086.45384(10) / -2086.45393(13) |
+
+(*: perturbation theory run to 2e-5 instead of 50 batches.) Perturbation
+theory at 5.8e7, one node: zshci 67 s for 50 batches of 1.3 s with a
+spread of 6.8e-4 per batch, its deterministic part empty (at epsilon1 =
+epsilon2_large nearly all such terms are in the space); Dice 172 s for the
+deterministic part, 1.73 s per batch, spread 1.19e-3. Time to 2e-5,
+t_batch (sigma / 2e-5)^2: 1500 s against 6100 s. With the spin-flip
+functions the zshci space is the plain one, halved (at 1.2e7, plain: 25
+GB, products 0.75 s, perturbation theory 1773 s instead of 1168 s to 2e-5).
+
+**zshci alone to 2.5e8** (the same system, 8 nodes, "adapt" with 160 GB per
+rank, plain determinants, one selection from Hartree-Fock: 32 minutes; a
+product: the local work of the slowest rank):
+
+| iteration | epsilon1 | determinants | products | selection s | Hamiltonian s | eigensolver s | product s | peak GB | energy |
+|---|---|---|---|---|---|---|---|---|---|
+| 12 | 3e-5 | 12.0 M | 29 | 1.5 | 3.7 | 12.8 | 0.28 | 4.1 | -2086.441533304 |
+| 13 | 1.7e-5 | 27.3 M | 31 | 3.7 | 9.9 | 35.4 | 0.86 | 9.7 | -2086.445676574 |
+| 14 | 1e-5 | 58.4 M | 31 | 8.4 | 24.2 | 85.1 | 2.16 | 22.4 | -2086.448487016 |
+| 15 | 6e-6 | 119.5 M | 29 | 18.2 | 59.5 | 183.2 | 5.13 | 49.7 | -2086.450405698 |
+| 16 | 3.5e-6 | 248.4 M | 27 | 42.4 | 155.7 | 1232.4 | 43.5 | 70.0 | -2086.451806477 |
+
+At 248 M the one-sweep product's vectors per thread had left room for the
+values of only 4 % of the elements (fixed since: the one-sweep product is
+taken only where it costs no values). One growth step to 58.4 M: "adapt"
+6.4, 4.2 and 2.2 s per product on 1, 4 and 8 nodes, "direct" 82.5 and
+21.4 s on 1 and 4 nodes; to 119.5 M on 8 nodes "adapt" 5.0, "direct" 30.4
+s.
+
+**Perturbation theory, step by step** (`"pt": {"profile": true}`; 1.2e7
+determinants, spin_flip, one node, epsilon2 1e-7, epsilon2_large 1e-5,
+9600 samples). Before the kernels of 810190d one batch took 1.22 s (0.86
+s outside the profile): storing and partitioning 4.5e7 terms of 40 bytes
+0.53 s (fresh pages every batch), denominators from scratch 0.31 s,
+membership by bisection 0.13 s, sorting and merging 0.18 s, generation
+0.06 s, 20 % idle; a lower bound from the memory traffic (about 9 GB at
+98 GB/s) and the generation is about 0.25 s. The deterministic part took
+4.16 s, of which 3.18 s evaluating every candidate single. With the
+kernels (singles screened by a bound, denominators carried from the
+parent, hashed membership, buffers kept): a batch 0.50 - 0.62 s, the
+deterministic part 2.56 s (plain: 8.30 -> 5.76 s). On two nodes a batch of
+9600 samples gains nothing: the exchange of 0.9 GB takes 0.47 s. Batch
+size (same point, 50 batches): 2400, 9600, 38400 samples take 0.29, 0.88,
+3.10 s with spreads 2.76e-3, 6.87e-4, 1.74e-4 per batch, 5485, 1039 and
+234 s to 2e-5.
+
+**The choices of the program** on the same point (memory 93 GB per rank,
+target 2e-5, 50 batches): thresholds visited 3e-6 (32 % of one pass),
+9.7e-7 (132 %), 1.21e-6 (102 %), 1.33e-6 (91 %); 3e-6 taken (counted 4.006e8
+terms, 4.036e8 generated), deterministic part 8.4 s (predicted 11.2 s),
+pilot 24.8 s, 159600 samples per batch; PT2 -0.01072688 +/- 4.99e-6 in
+737 s. Fixed epsilon2_large with that batch: 1e-5 7.27e-6 in 826 s, 1e-6
+2.16e-6 in 865 s. On 1 and 3 ranks (Cr2 168k, 2 GB per rank) the program
+takes 1.5e-5 and 5e-6 (the memory grows with the ranks), PT2
+-0.0548478(77) and -0.0549009(125).
