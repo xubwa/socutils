@@ -27,6 +27,7 @@
 #include "input.h"
 #include "integrals.h"
 #include "output.h"
+#include "parallel_sort.h"
 #include "profile.h"
 #include "pt.h"
 #include "rdm.h"
@@ -291,7 +292,7 @@ SharedArray<Det<W>> ShareSortedActive(Span<Det<W>> dets,
     for (size_t i = 0; i < dets.size(); ++i) {
       if (active[i]) sorted.push_back(dets[i]);
     }
-    std::sort(sorted.begin(), sorted.end());
+    ParallelSort(sorted.begin(), sorted.end());
   }
   return SharedArray<Det<W>>::FromRoot(sorted, comm);
 }
@@ -707,7 +708,10 @@ class VariationalH : private ElementSource<S> {
         /*store_values=*/false, room, left_out.data(), flip_.get());
     timer.Mark("ham: connections");
     // Every rank must know which rows the others left out.
-    if (comm_.size() > 1) {
+    double num_left_out = 0.0;
+    for (uint8_t flag : left_out) num_left_out += flag;
+    if (comm_.size() > 1) comm_.Sum(&num_left_out, 1);
+    if (comm_.size() > 1 && num_left_out > 0.0) {
       std::vector<double> flags(left_out.begin(), left_out.end());
       comm_.Sum(flags.data(), flags.size());
       for (size_t k = 0; k < flags.size(); ++k) left_out[k] = flags[k] > 0.0;

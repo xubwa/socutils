@@ -62,6 +62,7 @@
 #include "hamiltonian.h"
 #include "integrals.h"
 #include "parallel.h"
+#include "parallel_sort.h"
 #include "scalar.h"
 #include "sparse_h.h"
 
@@ -137,10 +138,12 @@ void AppendPairs(const std::vector<Det<W>>& dets, int lambda,
   for (size_t d = 0; d < dets.size(); ++d) {
     seen.emplace_back(CanonicalOfPair(dets[d]), static_cast<long>(d));
   }
-  std::stable_sort(
+  // Equal canonical members in the order of their positions, as a stable
+  // sort would leave them.
+  ParallelSort(
       seen.begin(), seen.end(),
       [](const std::pair<Det<W>, long>& a, const std::pair<Det<W>, long>& b) {
-        return a.first < b.first;
+        return a.first < b.first || (a.first == b.first && a.second < b.second);
       });
   // Positions in `dets` of each member, for `source`.
   std::vector<std::pair<Det<W>, long>> where;
@@ -169,9 +172,11 @@ void AppendPairs(const std::vector<Det<W>>& dets, int lambda,
     unique.emplace_back(seen[k].second, seen[k].first);
   }
   seen = std::vector<std::pair<Det<W>, long>>();
-  std::sort(unique.begin(), unique.end(),
-            [](const std::pair<long, Det<W>>& a,
-               const std::pair<long, Det<W>>& b) { return a.first < b.first; });
+  ParallelSort(unique.begin(), unique.end(),
+               [](const std::pair<long, Det<W>>& a,
+                  const std::pair<long, Det<W>>& b) {
+                 return a.first < b.first;
+               });
   for (const std::pair<long, Det<W>>& item : unique) {
     const Det<W>& canonical = item.second;
     if (skip != nullptr &&

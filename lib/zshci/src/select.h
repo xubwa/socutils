@@ -42,6 +42,7 @@
 #include "input.h"
 #include "integrals.h"
 #include "output.h"
+#include "parallel_sort.h"
 #include "profile.h"
 #include "sparse_h.h"
 #include "spin_flip.h"
@@ -124,7 +125,7 @@ std::vector<Det<W>> SelectNewDeterminants(
     candidates = comm.Exchange(outgoing);
   }
   timer.Mark("sel: exchange candidates");
-  std::sort(candidates.begin(), candidates.end());
+  ParallelSort(candidates.begin(), candidates.end());
   candidates.erase(std::unique(candidates.begin(), candidates.end()),
                    candidates.end());
   timer.Mark("sel: sort candidates");
@@ -137,7 +138,7 @@ std::vector<Det<W>> SelectNewDeterminants(
   if (num_ranks > 1) {
     fresh = comm.GatherAll(fresh);
     timer.Mark("sel: gather new");
-    std::sort(fresh.begin(), fresh.end());
+    ParallelSort(fresh.begin(), fresh.end());
     timer.Mark("sel: sort new");
   }
   return fresh;
