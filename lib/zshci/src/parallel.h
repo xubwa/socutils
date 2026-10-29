@@ -129,9 +129,12 @@ Span<T> MakeSpan(const std::vector<T>& items) {
 // Distributes the items of several spans into `num_parts` parts,
 // part_of(item) giving the part of an item. Both passes run in parallel over
 // the spans.
+//
+// PartitionSpansInto writes into `result`, whose array is kept if it is
+// large enough: a buffer used again and again is not paged in anew.
 template <class T, class PartOf>
-Partitioned<T> PartitionSpans(const std::vector<Span<T>>& spans,
-                              size_t num_parts, const PartOf& part_of) {
+void PartitionSpansInto(const std::vector<Span<T>>& spans, size_t num_parts,
+                        const PartOf& part_of, Partitioned<T>* out) {
   const long num_chunks = static_cast<long>(spans.size());
   // offset[c][p]: where span c writes its items of part p.
   std::vector<std::vector<size_t>> offset(
@@ -141,7 +144,7 @@ Partitioned<T> PartitionSpans(const std::vector<Span<T>>& spans,
     for (const T& item : spans[c]) ++offset[c][part_of(item)];
   }
 
-  Partitioned<T> result;
+  Partitioned<T>& result = *out;
   result.start.assign(num_parts + 1, 0);
   size_t total = 0;
   for (size_t p = 0; p < num_parts; ++p) {
@@ -153,7 +156,14 @@ Partitioned<T> PartitionSpans(const std::vector<Span<T>>& spans,
     }
   }
   result.start[num_parts] = total;
-  result.items = RawArray<T>(total);
+  // A fresh array holds exactly the items; a reused one keeps its size if
+  // that is enough (readers go by `start`), else grows with some room.
+  if (result.items.size() == 0) {
+    result.items = RawArray<T>(total);
+  } else if (result.items.size() < total) {
+    result.items = RawArray<T>();
+    result.items = RawArray<T>(total + total / 8);
+  }
 
 #pragma omp parallel for schedule(dynamic, 1)
   for (long c = 0; c < num_chunks; ++c) {
@@ -161,6 +171,13 @@ Partitioned<T> PartitionSpans(const std::vector<Span<T>>& spans,
       result.items[offset[c][part_of(item)]++] = item;
     }
   }
+}
+
+template <class T, class PartOf>
+Partitioned<T> PartitionSpans(const std::vector<Span<T>>& spans,
+                              size_t num_parts, const PartOf& part_of) {
+  Partitioned<T> result;
+  PartitionSpansInto(spans, num_parts, part_of, &result);
   return result;
 }
 

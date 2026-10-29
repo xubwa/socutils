@@ -124,6 +124,13 @@ class Integrals {
 
   // <pq||pq> = (pp|qq) - (pq|qp), the interaction energy of two occupied
   // spinors, from a table of its own.
+  // An upper bound of |<D'|H|D>| for the single excitation p -> q of any
+  // determinant: |h(q,p)| + sum_k |<qk||pk>|. Lets the excitation
+  // generator skip singles without evaluating them.
+  double SingleBound(int p, int q) const {
+    // Before Finalize there is no bound: nothing is skipped.
+    return single_bound_.empty() ? 1e300 : single_bound_[p * num_orbs_ + q];
+  }
   double PairEnergy(int p, int q) const {
     return pair_energy_[p * num_orbs_ + q];
   }
@@ -223,6 +230,7 @@ class Integrals {
   std::vector<S> one_body_;
   SharedArray<S> two_body_;
   std::vector<double> pair_energy_;
+  std::vector<double> single_bound_;
 };
 
 // FCIDUMP files: a namelist header with NORB, NELEC and (optionally) ORBSYM,

@@ -20,6 +20,7 @@
 #include "connect.h"
 #include "davidson.h"
 #include "det.h"
+#include "det_set.h"
 #include "direct_h.h"
 #include "excite.h"
 #include "fci_davidson.h"
@@ -3409,6 +3410,107 @@ void TestSpinFlip() {
 // ---------------------------------------------------------------------------
 // epsilon2_large and num_samples chosen by the program (pt.h, "auto").
 
+// The pieces of the faster PT2 kernels: the bound that screens singles, the
+// diagonal element carried from the parent, the hashed set of the space.
+void TestPtKernels(const Integrals<Complex>& complex_ints) {
+  const Integrals<double> ints = RandomSpatialIntegrals(12, 5);
+  std::mt19937 rng(9);
+  double worst_bound = -1.0, worst_energy = 0.0;
+  size_t num_singles = 0, num_doubles = 0;
+  std::vector<Det<1>> dets;
+  for (int trial = 0; trial < 200; ++trial) {
+    // Random determinant of 4 alpha and 4 beta electrons in 12 orbitals.
+    Det<1> det;
+    for (int spin = 0; spin < 2; ++spin) {
+      int placed = 0;
+      while (placed < 4) {
+        const int p = 2 * (rng() % 12) + spin;
+        if (!det.Occupied(p)) {
+          det.Set(p);
+          ++placed;
+        }
+      }
+    }
+    dets.push_back(det);
+    std::vector<int> occ;
+    det.AppendOccupied(&occ);
+    for (int i : occ) {
+      for (int a = 0; a < ints.num_orbs(); ++a) {
+        if (det.Occupied(a)) continue;
+        Det<1> other = det;
+        other.Clear(i);
+        other.Set(a);
+        const double element = std::abs(Hij(other, det, ints));
+        worst_bound = std::max(worst_bound, element - ints.SingleBound(i, a));
+      }
+    }
+    auto visit = [&](const Det<1>& d, double, bool, double energy) {
+      worst_energy =
+          std::max(worst_energy, std::abs(energy - DiagonalEnergy(d, ints)));
+      ++(d.NumDifferentBits(det) == 2 ? num_singles : num_doubles);
+    };
+    const HeatBath heat_bath(ints, 1e-14);
+    const LabelFilter filter(std::vector<int>(ints.num_orbs(), 0), 0);
+    internal::ElementEnergySink<1, decltype(visit), double> sink(det, occ, ints,
+                                                                 0.0, visit);
+    ForEachExcitation(det, occ, 1e-12, ints, heat_bath, filter, &sink);
+  }
+  std::printf(
+      "      single elements exceed their bound by at most %.1e; "
+      "diagonal elements from the parent off by %.1e (%zu singles, "
+      "%zu doubles)\n",
+      worst_bound, worst_energy, num_singles, num_doubles);
+  Expect(worst_bound <= 0.0 && worst_energy < 1e-11 && num_singles > 100 &&
+             num_doubles > 1000,
+         "singles stay within their screening bound and the diagonal "
+         "elements carried from the parent are exact");
+  // Complex spinor integrals: the bound holds too.
+  {
+    const int n = complex_ints.num_orbs();
+    const int nelec = complex_ints.num_elec();
+    double worst = -1.0;
+    for (int trial = 0; trial < 50; ++trial) {
+      Det<1> det;
+      int placed = 0;
+      while (placed < nelec) {
+        const int p = rng() % n;
+        if (!det.Occupied(p)) {
+          det.Set(p);
+          ++placed;
+        }
+      }
+      std::vector<int> occ;
+      det.AppendOccupied(&occ);
+      for (int i : occ) {
+        for (int a = 0; a < n; ++a) {
+          if (det.Occupied(a)) continue;
+          Det<1> other = det;
+          other.Clear(i);
+          other.Set(a);
+          worst = std::max(worst, std::abs(Hij(other, det, complex_ints)) -
+                                      complex_ints.SingleBound(i, a));
+        }
+      }
+    }
+    Expect(worst <= 0.0,
+           "the singles bound holds for complex spinor integrals");
+  }
+  // The hashed set against the sorted list.
+  {
+    std::sort(dets.begin(), dets.end());
+    dets.erase(std::unique(dets.begin(), dets.end()), dets.end());
+    std::vector<Det<1>> half(dets.begin(), dets.begin() + dets.size() / 2);
+    const DetSet<1> set(MakeSpan(half), Comm());
+    std::sort(half.begin(), half.end());
+    bool same = true;
+    for (const Det<1>& d : dets) {
+      same = same &&
+             set.Contains(d) == std::binary_search(half.begin(), half.end(), d);
+    }
+    Expect(same, "the hashed set of determinants answers as the sorted list");
+  }
+}
+
 void TestPtAuto() {
   const std::string base =
       std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") +
@@ -3642,6 +3744,7 @@ int main(int argc, char** argv) {
     zshci::TestBlockedIntegrals(ints);
     zshci::TestSpatialIntegrals();
     zshci::TestSpinFlip();
+    zshci::TestPtKernels(ints);
     zshci::TestPtAuto();
     zshci::TestSpinStringConnections<1>(
         10, 0,

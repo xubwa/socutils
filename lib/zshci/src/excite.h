@@ -221,11 +221,14 @@ class RestrictedFilter {
 //   sink.Double(i, j, a, b, magnitude) for (i, j) -> (a, b), i < j, a < b,
 //                                     if magnitude = |<new|H|det>| >= cutoff.
 // Excitations rejected by the filter are skipped.
+// Singles whose bound (Integrals::SingleBound) is not above the cutoff are
+// skipped without being evaluated. With doubles = false only the singles
+// are generated.
 template <int W, class Filter, class Sink, typename S>
 void ForEachExcitation(const Det<W>& det, const std::vector<int>& occ,
                        double cutoff, const Integrals<S>& ints,
                        const HeatBath& heat_bath, const Filter& filter,
-                       Sink* sink) {
+                       Sink* sink, bool doubles = true) {
   const int num_orbs = ints.num_orbs();
   const auto& view = filter.ForDeterminant(occ);
   Excitation single;
@@ -233,14 +236,17 @@ void ForEachExcitation(const Det<W>& det, const std::vector<int>& occ,
   for (int i : occ) {
     single.holes[0] = i;
     for (int a = 0; a < num_orbs; ++a) {
-      if (det.Occupied(a) || !view.Single(i, a)) continue;
+      if (det.Occupied(a) || ints.SingleBound(i, a) <= cutoff ||
+          !view.Single(i, a)) {
+        continue;
+      }
       single.particles[0] = a;
       const S element = OffDiagonalElement(det, single, ints);
       if (std::abs(element) > cutoff) sink->Single(i, a, element);
     }
   }
 
-  if (heat_bath.max_magnitude() < cutoff) return;
+  if (!doubles || heat_bath.max_magnitude() < cutoff) return;
   for (size_t n = 1; n < occ.size(); ++n) {
     const int j = occ[n];
     for (size_t m = 0; m < n; ++m) {

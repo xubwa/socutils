@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <sstream>
 #include <stdexcept>
@@ -269,6 +270,30 @@ void Integrals<S>::Finalize() {
       pair_energy_[p * n + q] = Real(Antisym(p, q, p, q));
     }
   }
+  // At most num_elec - 1 occupied spinors besides p contribute to the
+  // element of p -> q: the sum of the largest that many |<qk||pk>| bounds
+  // it (all of them if the electron number is not known).
+  single_bound_.assign(n * n, 0.0);
+  const int contributing = num_elec_ > 1 ? num_elec_ - 1 : num_orbs_;
+#pragma omp parallel
+  {
+    std::vector<double> terms(n);
+#pragma omp for schedule(dynamic, 4)
+    for (int p = 0; p < num_orbs_; ++p) {
+      for (int q = 0; q < num_orbs_; ++q) {
+        for (int k = 0; k < num_orbs_; ++k) {
+          terms[k] = std::abs(Antisym(q, k, p, k));
+        }
+        const int m = std::min(contributing, num_orbs_);
+        std::nth_element(terms.begin(), terms.begin() + (m - 1), terms.end(),
+                         std::greater<double>());
+        double bound = std::abs(OneBody(q, p));
+        for (int k = 0; k < m; ++k) bound += terms[k];
+        // A little room for the rounding of the sum the element is.
+        single_bound_[p * n + q] = bound * (1.0 + 1e-12) + 1e-300;
+      }
+    }
+  }
 }
 
 template <typename S>
@@ -279,6 +304,7 @@ void Integrals<S>::Share(const Comm& comm) {
   comm.Bcast(&one_body_);
   two_body_.ShareFromRoot(comm);
   comm.Bcast(&pair_energy_);
+  comm.Bcast(&single_bound_);
 }
 
 namespace {

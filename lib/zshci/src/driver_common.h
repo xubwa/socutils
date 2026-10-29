@@ -839,6 +839,9 @@ std::vector<PtResult> ComputePerturbation(
     heat_bath = owned.get();
   }
   const SharedArray<Det<W>> sorted_dets = ShareSorted(dets, comm);
+  // Membership in the variational space by hash (16 bytes a slot, at most
+  // half full), held once per node.
+  const DetSet<W> space(dets, comm);
 
   for (int k = 0; k < input.nroots; ++k) {
     const PtProblem<W, RestrictedFilter, S> problem{dets,
@@ -850,7 +853,8 @@ std::vector<PtResult> ComputePerturbation(
                                                     filter,
                                                     input.pt.num_batches,
                                                     comm,
-                                                    flip};
+                                                    flip,
+                                                    &space};
     results.push_back(
         RunPerturbation(problem, pt_input, k, input.output_level > 1));
     const PtResult& pt = results.back();

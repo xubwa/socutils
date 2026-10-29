@@ -48,6 +48,7 @@
 
 #include "comm.h"
 #include "det.h"
+#include "det_set.h"
 #include "excite.h"
 #include "hamiltonian.h"
 #include "heat_bath.h"
@@ -102,6 +103,69 @@ class ElementSink {
   const Visit& visit_;
 };
 
+// As ElementSink, and visit(D_a, element, is_large, <D_a|H|D_a>): the
+// diagonal element follows from that of the parent in a few operations,
+// with the sums row[p] = sum over the occupied k != p of the pair energies
+// <pk||pk> made once per parent.
+template <int W, class Visit, typename S>
+class ElementEnergySink {
+ public:
+  ElementEnergySink(const Det<W>& parent, const std::vector<int>& occ,
+                    const Integrals<S>& ints, double large_cutoff,
+                    const Visit& visit)
+      : parent_(parent),
+        ints_(ints),
+        large_cutoff_(large_cutoff),
+        visit_(visit),
+        energy_(DiagonalEnergy(parent, ints)),
+        row_(ints.num_orbs(), 0.0) {
+    for (int p = 0; p < ints.num_orbs(); ++p) {
+      double sum = 0.0;
+      for (int k : occ) sum += ints.PairEnergy(p, k);  // <pp||pp> = 0
+      row_[p] = sum;
+    }
+  }
+
+  void Single(int i, int a, S element) {
+    Det<W> det = parent_;
+    det.Clear(i);
+    det.Set(a);
+    const double energy =
+        energy_ - H(i) - row_[i] + H(a) + row_[a] - ints_.PairEnergy(a, i);
+    visit_(det, element, std::abs(element) > large_cutoff_, energy);
+  }
+  void Double(int i, int j, int a, int b, double magnitude) {
+    Det<W> det = parent_;
+    det.Clear(i);
+    det.Clear(j);
+    det.Set(a);
+    det.Set(b);
+    Excitation exc;
+    exc.rank = 2;
+    exc.holes[0] = i;
+    exc.holes[1] = j;
+    exc.particles[0] = a;
+    exc.particles[1] = b;
+    const double energy = energy_ - H(i) - H(j) - row_[i] - row_[j] +
+                          ints_.PairEnergy(i, j) + H(a) + H(b) + row_[a] -
+                          ints_.PairEnergy(a, i) - ints_.PairEnergy(a, j) +
+                          row_[b] - ints_.PairEnergy(b, i) -
+                          ints_.PairEnergy(b, j) + ints_.PairEnergy(a, b);
+    visit_(det, OffDiagonalElement(parent_, exc, ints_),
+           magnitude >= large_cutoff_, energy);
+  }
+
+ private:
+  double H(int p) const { return Real(ints_.OneBody(p, p)); }
+
+  const Det<W>& parent_;
+  const Integrals<S>& ints_;
+  double large_cutoff_;
+  const Visit& visit_;
+  double energy_;
+  std::vector<double> row_;
+};
+
 // What the deterministic sum accumulates for one external determinant:
 // sum_i H(a,i) c_i.
 template <int W, typename S>
@@ -122,6 +186,8 @@ struct SampleTerm {
   S sum_large = S(0.0);
   double square = 0.0;
   double square_large = 0.0;
+  // <D_a|H|D_a>, worked out when the term is made (pooled estimator).
+  double energy = 0.0;
 
   void Add(const SampleTerm& other) {
     sum += other.sum;
@@ -130,6 +196,35 @@ struct SampleTerm {
     square_large += other.square_large;
   }
 };
+
+// The diagonal element of the determinant of a term: carried by the terms
+// of the pooled estimator, worked out for the others.
+template <int W, typename S, class Term>
+double TermEnergy(const Term& term, const Integrals<S>& ints) {
+  return DiagonalEnergy(term.det, ints);
+}
+template <int W, typename S>
+double TermEnergy(const SampleTerm<W, S>& term, const Integrals<S>&) {
+  return term.energy;
+}
+
+// Buffers of SumOverExternalDets kept from one call to the next (the
+// batches of the stochastic part), so that their pages are not faulted in
+// again every time.
+template <class Term>
+struct SumWorkspace {
+  std::vector<std::vector<Term>> chunks;
+  Partitioned<Term> parts;
+};
+
+// Whether a determinant is in the variational space: by the hashed set if
+// there is one, else by bisection in the sorted list.
+template <int W>
+bool InSpace(const Det<W>& det, Span<Det<W>> sorted_dets,
+             const DetSet<W>* set) {
+  if (set != nullptr) return set->Contains(det);
+  return std::binary_search(sorted_dets.begin(), sorted_dets.end(), det);
+}
 
 // Runs generate(parent, emit) for parent = 0 .. num_parents-1, where emit
 // takes a Term (DetTerm or SampleTerm); merges the terms of equal determinants;
@@ -160,7 +255,8 @@ std::vector<double> SumOverExternalDets(
     size_t num_parents, Span<Det<W>> sorted_dets, const Integrals<S>& ints,
     int num_batches, int num_values, const Comm& comm, const Generate& generate,
     const Contribution& contribution, uint64_t max_terms = 0,
-    SumStats* stats = nullptr) {
+    SumStats* stats = nullptr, const DetSet<W>* space = nullptr,
+    SumWorkspace<Term>* workspace = nullptr) {
   const uint64_t num_ranks = comm.size();
   const uint64_t batches = std::max(1, num_batches);
   // More parts than threads, so that uneven parts even out.
@@ -177,7 +273,11 @@ std::vector<double> SumOverExternalDets(
     const uint64_t residue = todo.back().second;
     todo.pop_back();
     // Generate, one chunk per thread.
-    std::vector<std::vector<Term>> chunks(omp_get_max_threads());
+    std::vector<std::vector<Term>> own_chunks;
+    std::vector<std::vector<Term>>& chunks =
+        workspace != nullptr ? workspace->chunks : own_chunks;
+    chunks.resize(omp_get_max_threads());
+    for (std::vector<Term>& chunk : chunks) chunk.clear();
     uint64_t stored = 0;
     bool full = false;
 #pragma omp parallel
@@ -235,8 +335,15 @@ std::vector<double> SumOverExternalDets(
     auto part_of = [&](const Term& term) {
       return (term.det.Hash() / modulus / num_ranks) % num_parts;
     };
-    Partitioned<Term> terms;
-    if (num_ranks == 1) {
+    Partitioned<Term> own_terms;
+    Partitioned<Term>& terms =
+        workspace != nullptr ? workspace->parts : own_terms;
+    if (num_ranks == 1 && workspace != nullptr) {
+      // The chunks keep their memory for the next call.
+      std::vector<Span<Term>> spans;
+      for (const std::vector<Term>& chunk : chunks) spans.emplace_back(chunk);
+      PartitionSpansInto(spans, num_parts, part_of, &terms);
+    } else if (num_ranks == 1) {
       terms = PartitionChunks(&chunks, num_parts, part_of);
     } else {
       Partitioned<Term> by_rank =
@@ -268,12 +375,9 @@ std::vector<double> SumOverExternalDets(
             ++next;
           }
           run = next;
-          if (std::binary_search(sorted_dets.begin(), sorted_dets.end(),
-                                 merged.det)) {
-            continue;
-          }
+          if (InSpace(merged.det, sorted_dets, space)) continue;
           num_distinct += 1.0;
-          contribution(merged, DiagonalEnergy(merged.det, ints), &values);
+          contribution(merged, TermEnergy<W, S>(merged, ints), &values);
           for (int v = 0; v < num_values; ++v) local[v] += values[v];
         }
       }
@@ -388,8 +492,8 @@ template <int W, class Term, class Parent, class Generate, class Contribution,
 std::vector<double> ProfileSumOverExternalDets(
     size_t num_parents, Span<Det<W>> dets, Span<Det<W>> sorted_dets,
     const Integrals<S>& ints, const HeatBath& heat_bath, const Filter& filter,
-    const SpinFlipLayout* flip, int num_values, const Comm& comm,
-    const Parent& parent, const Generate& generate,
+    const SpinFlipLayout* flip, const DetSet<W>* space, int num_values,
+    const Comm& comm, const Parent& parent, const Generate& generate,
     const Contribution& contribution, SumProfile* profile) {
   const int num_threads = omp_get_max_threads();
   const long count = static_cast<long>(num_parents);
@@ -437,8 +541,8 @@ std::vector<double> ProfileSumOverExternalDets(
           dets[i].AppendOccupied(&occ);
           if (variant == 0) {
             CountSink<S> sink;
-            ForEachExcitation(dets[i], occ, 1e300, ints, heat_bath, filter,
-                              &sink);
+            ForEachExcitation(dets[i], occ, cutoff, ints, heat_bath, filter,
+                              &sink, /*doubles=*/false);
           } else if (variant == 1) {
             CountSink<S> sink;
             ForEachExcitation(dets[i], occ, cutoff, ints, heat_bath, filter,
@@ -537,8 +641,7 @@ std::vector<double> ProfileSumOverExternalDets(
       distinct += merged_terms.size();
       size_t kept = 0;
       for (const Term& term : merged_terms) {
-        if (!std::binary_search(sorted_dets.begin(), sorted_dets.end(),
-                                term.det)) {
+        if (!InSpace(term.det, sorted_dets, space)) {
           merged_terms[kept++] = term;
         }
       }
@@ -548,7 +651,7 @@ std::vector<double> ProfileSumOverExternalDets(
       t_space[t] += t1 - t0;
       std::vector<double> energies(kept);
       for (size_t k = 0; k < kept; ++k) {
-        energies[k] = DiagonalEnergy(merged_terms[k].det, ints);
+        energies[k] = TermEnergy<W, S>(merged_terms[k], ints);
       }
       t0 = omp_get_wtime();
       t_diag[t] += t0 - t1;
@@ -588,7 +691,7 @@ std::vector<double> ProfileSumOverExternalDets(
   std::vector<double> walls = comm.GatherAll(step_wall);
   const size_t n = step_wall.size();
   static const char* const kNames[] = {
-      "singles (elements of all candidates)",
+      "singles (screened by bound, then evaluated)",
       "doubles: heat-bath walk",
       "doubles: Slater-Condon elements, fold",
       "storing the terms (incl. per-generator merge)",
@@ -682,6 +785,9 @@ struct PtProblem {
   // With spin_flip: the layout of `dets`, whose coefficients are then those
   // of the expanded vector; the sums use the symmetry (see above).
   const SpinFlipLayout* flip = nullptr;
+  // The determinants of `dets` as a hashed set, for the membership tests
+  // (null: bisection in sorted_dets).
+  const DetSet<W>* space = nullptr;
 };
 
 namespace internal {
@@ -751,8 +857,8 @@ double PtDeterministic(const PtProblem<W, Filter, S>& problem, double epsilon,
     };
     return internal::ProfileSumOverExternalDets<W, Term>(
         problem.dets.size(), problem.dets, problem.sorted_dets, problem.ints,
-        problem.heat_bath, problem.filter, problem.flip, 1, problem.comm,
-        parent, generate, contribution, profile)[0];
+        problem.heat_bath, problem.filter, problem.flip, problem.space, 1,
+        problem.comm, parent, generate, contribution, profile)[0];
   }
   if (stride > 1) {
     const long n = static_cast<long>(problem.dets.size());
@@ -762,12 +868,12 @@ double PtDeterministic(const PtProblem<W, Filter, S>& problem, double epsilon,
     return internal::SumOverExternalDets<W, Term>(
         (n + stride - 1) / stride, problem.sorted_dets, problem.ints,
         problem.num_batches, 1, problem.comm, strided, contribution, max_terms,
-        stats)[0];
+        stats, problem.space)[0];
   }
   return internal::SumOverExternalDets<W, Term>(
       problem.dets.size(), problem.sorted_dets, problem.ints,
       problem.num_batches, 1, problem.comm, generate, contribution, max_terms,
-      stats)[0];
+      stats, problem.space)[0];
 }
 
 // One stochastic estimate of E2(epsilon) and of E2(epsilon_large), both from
@@ -980,12 +1086,11 @@ StochasticEstimate PtWalkerSample(const PtProblem<W, Filter, S>& problem,
 // stream on every rank, so that all draw the same), the terms of all ranks
 // and threads merged as in the deterministic sum. Collective.
 template <int W, class Filter, class Rng, typename S>
-StochasticEstimate PtPooledSample(const PtProblem<W, Filter, S>& problem,
-                                  double epsilon, double epsilon_large,
-                                  int num_samples,
-                                  const DeterminantSampler& sampler, Rng* rng,
-                                  internal::SumProfile* profile = nullptr,
-                                  uint64_t max_terms = 0) {
+StochasticEstimate PtPooledSample(
+    const PtProblem<W, Filter, S>& problem, double epsilon,
+    double epsilon_large, int num_samples, const DeterminantSampler& sampler,
+    Rng* rng, internal::SumProfile* profile = nullptr, uint64_t max_terms = 0,
+    internal::SumWorkspace<internal::SampleTerm<W, S>>* workspace = nullptr) {
   using Term = internal::SampleTerm<W, S>;
   std::vector<size_t> draws, indices;
   std::vector<int> multiplicities;
@@ -1010,10 +1115,12 @@ StochasticEstimate PtPooledSample(const PtProblem<W, Filter, S>& problem,
     // What this generator gives to one determinant is summed before it is
     // squared; with spin_flip two of its terms can fold onto one.
     std::vector<Term> mine;
-    auto visit = [&](const Det<W>& det, S element, bool is_large) {
+    auto visit = [&](const Det<W>& det, S element, bool is_large,
+                     double energy) {
       S x = element * ci;
       Term term;
       term.det = det;
+      term.energy = energy;
       if (flip != nullptr) {
         const double factor =
             g * internal::FoldOntoCanonical(det, lambda, &term.det);
@@ -1024,8 +1131,9 @@ StochasticEstimate PtPooledSample(const PtProblem<W, Filter, S>& problem,
       if (is_large) term.sum_large = x;
       mine.push_back(term);
     };
-    internal::ElementSink<W, decltype(visit), S> sink(
-        problem.dets[i], problem.ints, epsilon_large / std::abs(ci), visit);
+    internal::ElementEnergySink<W, decltype(visit), S> sink(
+        problem.dets[i], occ, problem.ints, epsilon_large / std::abs(ci),
+        visit);
     ForEachExcitation(problem.dets[i], occ, epsilon / std::abs(ci),
                       problem.ints, problem.heat_bath, problem.filter, &sink);
     if (flip != nullptr) {
@@ -1045,6 +1153,7 @@ StochasticEstimate PtPooledSample(const PtProblem<W, Filter, S>& problem,
       k = next;
       Term term;
       term.det = merged.det;
+      term.energy = merged.energy;
       term.sum = linear * merged.sum;
       term.square = quadratic * std::norm(merged.sum);
       term.sum_large = linear * merged.sum_large;
@@ -1070,12 +1179,13 @@ StochasticEstimate PtPooledSample(const PtProblem<W, Filter, S>& problem,
     };
     sums = internal::ProfileSumOverExternalDets<W, Term>(
         indices.size(), problem.dets, problem.sorted_dets, problem.ints,
-        problem.heat_bath, problem.filter, problem.flip, 2, problem.comm,
-        parent, generate, contribution, profile);
+        problem.heat_bath, problem.filter, problem.flip, problem.space, 2,
+        problem.comm, parent, generate, contribution, profile);
   } else {
     sums = internal::SumOverExternalDets<W, Term>(
         indices.size(), problem.sorted_dets, problem.ints, problem.num_batches,
-        2, problem.comm, generate, contribution, max_terms);
+        2, problem.comm, generate, contribution, max_terms, nullptr,
+        problem.space, workspace);
   }
   StochasticEstimate estimate;
   estimate.small = sums[0];
@@ -1221,7 +1331,11 @@ TermCount CountTerms(const PtProblem<W, Filter, S>& problem, double threshold,
       for (int h : occ) {
         single.holes[0] = h;
         for (int a = 0; a < problem.ints.num_orbs(); ++a) {
-          if (det.Occupied(a) || !view.Single(h, a)) continue;
+          if (det.Occupied(a) ||
+              problem.ints.SingleBound(h, a) * c <= threshold ||
+              !view.Single(h, a)) {
+            continue;
+          }
           single.particles[0] = a;
           if (std::abs(OffDiagonalElement(det, single, problem.ints)) * c <=
               threshold) {
@@ -1379,7 +1493,7 @@ PilotResult PtPilot(const PtProblem<W, Filter, S>& problem, double epsilon,
     };
     values[batch] = internal::SumOverExternalDets<W, Term>(
         indices.size(), problem.sorted_dets, problem.ints, 1, num + 1,
-        problem.comm, generate, contribution);
+        problem.comm, generate, contribution, 0, nullptr, problem.space);
     for (double x : generated) terms += x;
   }
   problem.comm.Sum(&terms, 1);
@@ -1813,16 +1927,18 @@ PtResult RunPerturbation(const PtProblem<W, Filter, S>& problem,
     }
   }
   if (pt.pooled) {
-    // One estimate per iteration from the samples drawn alike on every rank.
+    // One estimate per iteration from the samples drawn alike on every rank,
+    // in buffers kept from batch to batch.
+    internal::SumWorkspace<internal::SampleTerm<W, S>> workspace;
     std::mt19937_64 stream(Mix64(pt.seed) ^
                            Mix64(0x9e3779b97f4a7c15ULL * (root + 1)));
     double sums[3] = {0.0, 0.0, 0.0};
     result.converged = false;
     for (int iter = 1; iter <= pt.max_iterations; ++iter) {
       const double iter_start = omp_get_wtime();
-      const StochasticEstimate estimate =
-          PtPooledSample(problem, pt.epsilon2, epsilon_large, num_samples,
-                         sampler, &stream, nullptr, batch_max_terms);
+      const StochasticEstimate estimate = PtPooledSample(
+          problem, pt.epsilon2, epsilon_large, num_samples, sampler, &stream,
+          nullptr, batch_max_terms, &workspace);
       const double iter_seconds = omp_get_wtime() - iter_start;
       const double value =
           pt.method == PtMethod::kSemistochastic
