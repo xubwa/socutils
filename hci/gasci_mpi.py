@@ -389,6 +389,8 @@ def _load_dist():
         lib.zgd_set_eigensolver.restype = None
         lib.zgd_set_pspace.argtypes = [ctypes.c_int]
         lib.zgd_set_pspace.restype = None
+        lib.zgd_set_olsen.argtypes = [ctypes.c_int]
+        lib.zgd_set_olsen.restype = None
         lib.zgd_promote.argtypes = lib.zgd_reset.argtypes = []
         lib.zgd_promote.restype = lib.zgd_reset.restype = None
         _dist_lib = lib
@@ -397,7 +399,7 @@ def _load_dist():
 
 def c_solve(h1, eri, norb, nelec, strs, comm=None, spin_flip=1, ss_penalty=0.0, tol=1e-8,
             rtol=1e-3, maxit=40, verbose=0, warm=0, strs_b=None, ovlp=None, eigensolver=None,
-            max_space=12, pspace=None):
+            max_space=12, pspace=None, olsen=None):
     '''The lowest state in strs x strs_b by the C driver on comm (collective:
     every process calls with the same arguments).  h1 (norb, norb), eri any
     pyscf form of (pq|rs), no core energy; or UHF integrals (different alpha
@@ -416,6 +418,8 @@ def c_solve(h1, eri, norb, nelec, strs, comm=None, spin_flip=1, ss_penalty=0.0, 
     or ZGASCI_DIST_SOLVER / ZGASCI_DIST_MAX_SPACE).  pspace: k, the
     P-space preconditioner on k alpha x k beta strings (H_PP exact, the rest
     diagonal; 0 off; None: as before, default off, or ZGASCI_DIST_PSPACE).
+    olsen: Olsen's correction of the new direction (None: as before,
+    default off, or ZGASCI_DIST_OLSEN).
     Returns a dict: e (<H>), e_penalized, s2 (NaN without a penalty),
     iterations, converged, time, warm_weight (the weight of the last
     solution in this space, -1: no warm start); occ_a, occ_b (norb);
@@ -464,6 +468,8 @@ def c_solve(h1, eri, norb, nelec, strs, comm=None, spin_flip=1, ss_penalty=0.0, 
         _load_dist().zgd_set_eigensolver(int(eigensolver == 'davidson'), int(max_space))
     if pspace is not None:
         _load_dist().zgd_set_pspace(int(pspace))
+    if olsen is not None:
+        _load_dist().zgd_set_olsen(int(bool(olsen)))
     out = numpy.zeros(7)
     occ_a, occ_b = numpy.zeros(norb), numpy.zeros(norb)
     maxabs_a, weight_a = numpy.zeros(len(sa)), numpy.zeros(len(sa))

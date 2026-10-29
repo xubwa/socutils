@@ -419,6 +419,13 @@ spread far beyond a few thousand determinants, so no gain there.  Checks
 (csolver_check, ucheck, uhfcheck with k = 8, 16, both solvers): correct; on
 H2O with rotated beta orbitals Davidson 376 instead of 613 iterations in one
 case, LOBPCG less robust (two runs not converged in 800).
+Olsen's correction (`--olsen 1`, ZGASCI_DIST_OLSEN, c_solve `olsen=`;
+default off): t = -M^-1 (r - eps x), eps = x.M^-1 r / x.M^-1 x, against a
+preconditioner close to H - E on P that mostly returns -x there after the
+first steps.  [4Fe-4S] subspace: LOBPCG 39 it (k = 0) / 36 (k = 64),
+Davidson 39 / 36, the same as without it: neither the P block nor its
+interplay with x limits the convergence; the spectrum of this space (E 0.23
+Eh below the start, close excited states) does.
 
 ## 7. What stays for later
 
