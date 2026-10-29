@@ -197,7 +197,9 @@ class _Contraction:
             axis += 1
         self.w_shape = w.shape[:len(own_groups)]
         w = _contig(w)
-        self.mat = kernels.transposed(w.reshape(int(numpy.prod(self.w_shape)), -1), (1, 0))
+        # W as (own, contracted), used transposed in the product: no transposed
+        # copy of the full matrix
+        self.mat = w.reshape(int(numpy.prod(self.w_shape)), -1)
         con_order = [x for g in con_groups for x in g]
         self.c_perm = [csub.index(x) for x in cown + con_order]
         self.ncon = len(con_order)
@@ -237,7 +239,7 @@ class _Contraction:
         ct = self._c_matrix(c, cache)
         t = _step('C transposed, packed', t)
         own = ct.shape[:self.ncown]
-        r = la.gemm(ct.reshape(int(numpy.prod(own)), -1), self.mat)
+        r = la.gemm(ct.reshape(int(numpy.prod(own)), -1), self.mat, 'N', 'T')
         t = _step('product W C', t)
         r = r.reshape(own + self.w_shape)
         _collect(acc, total, r, self.out_perm, [self.ncown + k for k in self.bpos])
@@ -293,13 +295,13 @@ class _TwoStage:
         bpack = [p for p in bra_pairs if p[0] in own and p[1] in own]
         if g.size < Sigma.pack_limit:
             bpack = []
-        for x, y in bpack:
-            g = _antisymmetrized(g, g2.index(x), g2.index(y), 0.5)
         own = [x for x in own if not any(x in p for p in bpack)] + [x for p in bpack for x in p]
         gm = g.transpose([g2.index(x) for x in own + dummy + list(acts)])
         nsingle = len(own) - 2 * len(bpack)
+        # every pair antisymmetrized and packed in one step (no antisymmetrized
+        # copy of the full integrals)
         for k in range(len(bpack)):
-            gm = _pack_axes(gm, nsingle + k, gm.shape[nsingle + k])
+            gm = _pack_antisymmetrized(gm, nsingle + k, 0.5)
         self.bpos = [nsingle + k for k in range(len(bpack))]
         self.own_shape = gm.shape[:nsingle + len(bpack)]
         self.gmat2 = _contig(gm).reshape(int(numpy.prod(self.own_shape)), -1)
@@ -443,6 +445,13 @@ class _VVVV:
         t = _step('products B C B^T, %d labels' % len(ct), t)
         total += self.coef * numpy.moveaxis(r.reshape(lead + (nv, nv)), (-2, -1), (1, 2))
         _step('result added', t)
+
+
+def _eri_class(labels):
+    '''The block labels related to labels by (pq|rs) = (rs|pq) = (qp|sr)^*,
+    as one key.'''
+    p, q, r, t = labels
+    return min(labels, r + t + p + q, q + p + t + r, t + r + q + p)
 
 
 class _HermPairs:
@@ -843,8 +852,12 @@ class Sigma:
                 inner = set(''.join(x for x, _ in ints))
                 g2 = ''.join(x for x in out + ''.join(sorted(set(csub + acts) - set(out)))
                              if x in inner)
-                g = complex(t.coef) * numpy.einsum(','.join(x for x, _ in ints) + '->' + g2,
-                                                   *[a for _, a in ints], optimize=True)
+                g = numpy.einsum(','.join(x for x, _ in ints) + '->' + g2,
+                                 *[a for _, a in ints], optimize=True)
+                if any(numpy.may_share_memory(g, a) for _, a in ints) or g.dtype != numpy.complex128:
+                    g = complex(t.coef) * g
+                else:
+                    g *= complex(t.coef)            # in place: no second array of this size
                 # the smaller intermediate: Gamma first or integrals first
                 # an index of C that goes to the result untouched
                 spect = [(1 + csub.index(x), 1 + out.index(x))
@@ -857,6 +870,7 @@ class Sigma:
                     key = ('gam', gsub, id(gam), g2, spect, csub, out)
                 if key in two:
                     two[key][1] += g
+                    del g
                 else:
                     two[key] = [gam, g]
                 continue
@@ -882,8 +896,14 @@ class Sigma:
                 acc[expr] = w
 
         def build(d):
-            return [_Contraction(expr, w, *self._pairs(bra, ket, expr))
-                    for expr, w in d.items() if w.any()]
+            # each dressed integral dropped once its contraction holds it
+            out = []
+            for expr in list(d):
+                w = d.pop(expr)
+                if w.any():
+                    out.append(_Contraction(expr, w, *self._pairs(bra, ket, expr)))
+                del w
+            return out
 
         staged = []
         for kind in ('S', 'H'):
@@ -899,10 +919,18 @@ class Sigma:
         for (ncre, nann), items in streamed.items():
             for expr, w in self._streamed(bra, ket, ncre, nann, items).items():
                 full[expr] = full[expr] + w if expr in full else w
-        stages = [(_TwoStage(k[1], gam, k[3], g, k[5], k[6], self._pairs(bra, ket, None)[0])
-                   if k[0] == 'gam'
-                   else _IntegralFirst(k[1], g, k[3], gam, k[4], *self._pairs(bra, ket, k[1])))
-                  for k, (gam, g) in two.items() if g.any()]
+        # one at a time, each dressed integral dropped as soon as its contraction
+        # holds it in its own layout
+        stages = []
+        for k in list(two):
+            gam, g = two.pop(k)
+            if not g.any():
+                continue
+            if k[0] == 'gam':
+                stages.append(_TwoStage(k[1], gam, k[3], g, k[5], k[6], self._pairs(bra, ket, None)[0]))
+            else:
+                stages.append(_IntegralFirst(k[1], g, k[3], gam, k[4], *self._pairs(bra, ket, k[1])))
+            del g
         return build(full) + stages, staged
 
     @staticmethod
@@ -1114,14 +1142,39 @@ class Sigma:
     def compile_all(self):
         '''Prepare the contractions of all block pairs and release what was
         only needed for that: the cached matrices Gamma, the integral blocks
-        and the four-index blocks of the integral source.'''
-        for bra in self.basis.names:
-            for ket in self.basis.names:
-                self.compiled(bra, ket)
+        and the four-index blocks of the integral source.  An integral block
+        (with the blocks related to it by (pq|rs) = (rs|pq) = (qp|sr)^*) is
+        released after the last block pair that uses it, so that the raw
+        blocks with three virtual indices are not all held at once.'''
+        pairs = [(bra, ket) for bra in self.basis.names for ket in self.basis.names]
+        need, left = {}, {}
+        for pair in pairs:
+            derived, over = self.terms(*pair)
+            used = {_eri_class(''.join(i.space for i in idx))
+                    for t in list(derived) + list(over) for name, idx in t.tensors if name == 'eri'}
+            need[pair] = used
+            for k in used:
+                left[k] = left.get(k, 0) + 1
+        for pair in pairs:
+            self.compiled(*pair)
+            for k in need[pair]:
+                left[k] -= 1
+                if left[k] == 0:
+                    self._release_eri(k)
         self._gamma.clear()
         self._blocks.clear()
         if hasattr(self.eris, 'release_blocks'):
             self.eris.release_blocks()
+
+    def _release_eri(self, k):
+        '''Drop the integral blocks of the class k (_eri_class) from this
+        object and from the cache of the integral source.'''
+        for key in [x for x in self._blocks if x[0] == 'eri' and _eri_class(x[1]) == k]:
+            del self._blocks[key]
+        cache = getattr(self.eris, '_cache', None)
+        if isinstance(cache, dict):
+            for lab in [x for x in cache if _eri_class(x) == k]:
+                del cache[lab]
 
     def memory_report(self):
         '''Bytes of the arrays kept between iterations: [(label, bytes)],
