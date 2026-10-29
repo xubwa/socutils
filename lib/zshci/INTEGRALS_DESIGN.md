@@ -98,9 +98,10 @@ same (checked, with the speed on the 1.2e7 Cr2 point, spin_flip and plain).
 
 ## Unrestricted, afterwards
 
-`UnrestrictedIntegrals`: one-body h_a, h_b; eri_aa, eri_bb with eightfold
-symmetry (n^4/8 each), eri_ab with fourfold (n^4/4): n^4/2 numbers against
-about 1.5 n^4. `<pq||rs>` from the block of the spins of its two charge
+`UnrestrictedIntegrals` (done): one-body h_a, h_b; eri_aa, eri_bb with
+eightfold symmetry (n^4/8 each), eri_ab with fourfold (n^4/4): n^4/2 numbers
+against about 0.73 n^4 antisymmetrized in spin blocks (O2 cc-pVDZ, 26
+orbitals: 246753 against 334776). `<pq||rs>` from the block of the spins of its two charge
 distributions ((ab) or (ba) for opposite spins, the latter by swapping the
 distributions). Heat-bath lists per pair of spatial orbitals: alpha-alpha
 and beta-beta for I < J, alpha-beta for all (I, J) (no exchange of the

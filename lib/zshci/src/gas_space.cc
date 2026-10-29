@@ -333,5 +333,7 @@ template std::vector<Complex> AntisymmetrizedPairs(
     const SpinorIntegrals<Complex>&, const std::vector<int>&, int);
 template std::vector<double> AntisymmetrizedPairs(
     const SpatialIntegrals<double>&, const std::vector<int>&, int);
+template std::vector<double> AntisymmetrizedPairs(const UnrestrictedIntegrals&,
+                                                  const std::vector<int>&, int);
 
 }  // namespace zshci

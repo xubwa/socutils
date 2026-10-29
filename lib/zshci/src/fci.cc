@@ -523,5 +523,6 @@ template void RunFci(const Input&, const SpinorIntegrals<Complex>&,
                      const Comm&);
 template void RunFci(const Input&, const SpatialIntegrals<double>&,
                      const Comm&);
+template void RunFci(const Input&, const UnrestrictedIntegrals&, const Comm&);
 
 }  // namespace zshci

@@ -69,18 +69,24 @@ class HeatBath {
     const int orb_i = i >> 1;
     const int orb_j = j >> 1;
     if (spin_i == spin_j) {
-      const Entry* const end =
-          entries_.data() + start_[PairIndex(orb_i, orb_j) + 1];
-      for (const Entry* e = First(
-               entries_.data() + start_[PairIndex(orb_i, orb_j)], end, below);
+      // Unrestricted orbitals: the beta-beta lists follow the alpha-alpha
+      // ones (same_offset_[1]); restricted: one set for both.
+      const size_t list = same_offset_[spin_i] + PairIndex(orb_i, orb_j);
+      const Entry* const end = entries_.data() + start_[list + 1];
+      for (const Entry* e = First(entries_.data() + start_[list], end, below);
            e != end && e->magnitude >= cutoff; ++e) {
         visit(2 * e->a + spin_i, 2 * e->b + spin_i, e->magnitude);
       }
       return;
     }
     // Opposite spins. Since i < j the spatial orbital of i is not above
-    // that of j, and the entry (a, b) moves i to a and j to b.
-    const size_t pair = opposite_offset_ + PairIndexWithDiagonal(orb_i, orb_j);
+    // that of j, and the entry (a, b) moves i to a and j to b. Unrestricted
+    // orbitals keep the pairs with i beta (orbital of i below that of j) in
+    // lists of their own.
+    const size_t pair =
+        spin_i == 1 && unrestricted_
+            ? beta_first_offset_ + PairIndex(orb_i, orb_j)
+            : opposite_offset_ + PairIndexWithDiagonal(orb_i, orb_j);
     const Entry* const end = entries_.data() + start_[pair + 1];
     for (const Entry* e = First(entries_.data() + start_[pair], end, below);
          e != end && e->magnitude >= cutoff; ++e) {
@@ -123,8 +129,15 @@ class HeatBath {
   template <typename S>
   void BuildSpatialLists(const SpatialIntegrals<S>& ints, double threshold,
                          std::vector<std::vector<Entry>>* lists) const;
+  void BuildUnrestrictedLists(const UnrestrictedIntegrals& ints,
+                              double threshold,
+                              std::vector<std::vector<Entry>>* lists);
 
+  // Lists per pair of spatial orbitals (restricted or unrestricted).
   bool spatial_ = false;
+  bool unrestricted_ = false;
+  size_t same_offset_[2] = {0, 0};
+  size_t beta_first_offset_ = 0;
   // With spatial orbitals the opposite-spin lists follow the same-spin ones;
   // this is the index of the first.
   size_t opposite_offset_ = 0;

@@ -593,6 +593,11 @@ Input ParseInput(const std::string& text) {
     if (in.spin_flip != 1 && in.spin_flip != -1) {
       top.Fail("spin_flip", "must be 1, -1 or 0");
     }
+    if (in.unrestricted_orbitals) {
+      top.Fail("spin_flip",
+               "does not apply to \"orbitals\": \"unrestricted\": the two "
+               "spins see different orbitals");
+    }
     if (!in.spatial_orbitals) {
       top.Fail("spin_flip", "needs \"orbitals\": \"spatial\"");
     }

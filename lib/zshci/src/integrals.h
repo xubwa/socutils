@@ -299,6 +299,85 @@ class SpatialIntegrals : public IntegralTables<S> {
   SharedArray<S> two_body_;
 };
 
+// Integrals over n spatial orbitals of each spin that differ between the
+// spins (an unrestricted reference), real: (PQ|RS) with both charge
+// distributions alpha (aa) or beta (bb), eightfold symmetric, and with the
+// first alpha and the second beta (ab), fourfold symmetric - n^4 / 2
+// numbers, against about 0.73 n^4 for the same integrals antisymmetrized
+// over spin orbitals in the blocks of the spin projection. Presented as the
+// spin orbitals p = 2P (alpha), 2P + 1 (beta), <pq||rs> being put together on
+// each call from the block of the spins of the charge distributions; the spin
+// projection is the first label set. The spin-flip symmetry does not apply (the
+// spins see different orbitals).
+class UnrestrictedIntegrals : public IntegralTables<double> {
+ public:
+  using S = double;
+  static constexpr bool kSpatial = false;
+
+  UnrestrictedIntegrals() = default;
+  // Storage, zeroed; `spatial_symmetry` as for SpatialIntegrals.
+  // Collective.
+  UnrestrictedIntegrals(int num_spatial,
+                        const std::vector<LabelSet>& spatial_symmetry,
+                        const Comm& comm = Comm());
+
+  bool is_spatial() const { return false; }
+  int num_spatial() const { return num_spatial_; }
+  size_t num_stored() const { return two_body_.size(); }
+
+  // (PQ|RS) with P, Q of spin `first` and R, S of spin `second` (0: alpha,
+  // 1: beta), any of the two orders.
+  S TwoBody(int first, int second, int p, int q, int r, int s) const {
+    if (first == second) {
+      return two_body_[(first == 0 ? 0 : same_size_) +
+                       Triangle(Triangle(p, q), Triangle(r, s))];
+    }
+    if (first == 1) {  // (PQ|RS) with PQ beta = (RS|PQ) with RS alpha
+      std::swap(p, r);
+      std::swap(q, s);
+    }
+    return two_body_[2 * same_size_ + Triangle(p, q) * num_pairs_ +
+                     Triangle(r, s)];
+  }
+
+  // <pq||rs> = (pr|qs) - (ps|qr) over spin orbitals; p < q, r < s.
+  S AntisymOrdered(int p, int q, int r, int s) const {
+    const int sp = p & 1, sq = q & 1, sr = r & 1, ss = s & 1;
+    S value(0.0);
+    if (sp == sr && sq == ss) {
+      value += TwoBody(sp, sq, p >> 1, r >> 1, q >> 1, s >> 1);
+    }
+    if (sp == ss && sq == sr) {
+      value -= TwoBody(sp, sq, p >> 1, s >> 1, q >> 1, r >> 1);
+    }
+    return value;
+  }
+  S Antisym(int p, int q, int r, int s) const {
+    return this->AntisymOf(*this, p, q, r, s);
+  }
+
+  // h(P, Q) of one spin; (PQ|RS) of the spins (first, second): aa (0, 0),
+  // bb (1, 1), ab (0, 1), standing for all its permutations.
+  void SetOneBodyOfSpin(int spin, int p, int q, S value);
+  void SetTwoBody(int first, int second, int p, int q, int r, int s, S value);
+
+  void Finalize() { this->FillTables(*this); }
+  void Share(const Comm& comm);
+
+  std::string Describe() const override;
+  size_t MemoryBytes() const override { return two_body_.size() * sizeof(S); }
+
+ private:
+  static size_t Triangle(size_t a, size_t b) {
+    return a >= b ? a * (a + 1) / 2 + b : b * (b + 1) / 2 + a;
+  }
+
+  int num_spatial_ = 0;
+  size_t num_pairs_ = 0;     // n (n + 1) / 2
+  size_t same_size_ = 0;     // numbers of the aa block, and of the bb block
+  SharedArray<S> two_body_;  // aa, then bb, then ab (pairs of P,Q by R,S)
+};
+
 // FCIDUMP files: a namelist header with NORB, NELEC and (optionally) ORBSYM,
 // then one integral per line with 1-based indices, either
 //   "(re,im) p q r s"   complex format, or
@@ -373,13 +452,10 @@ SpatialIntegrals<S> ReadSpatialFcidump(const std::string& path,
 //   h1_a, h1_b                 (n, n)
 //   eri_aa, eri_bb, eri_ab     (n, n, n, n), (pq|rs) with p, q of the first
 //                              and r, s of the second spin named
-// and the optional attributes ecore (double) and nelec (int). The result
-// holds spin orbitals (SpinorIntegrals::SpinOrbitals); `symmetry` is per
-// spatial orbital, and a set without labels is not allowed.
-//
-// Collective. Instantiated for double and Complex.
-template <typename S>
-SpinorIntegrals<S> ReadUnrestrictedIntegrals(
+// and the optional attributes ecore (double) and nelec (int), into
+// UnrestrictedIntegrals; `symmetry` is per spatial orbital, and a set
+// without labels is not allowed. Collective.
+UnrestrictedIntegrals ReadUnrestrictedIntegrals(
     const std::string& path, const std::vector<LabelSet>& symmetry,
     double symmetry_tolerance, const Comm& comm = Comm());
 

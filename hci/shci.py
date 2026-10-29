@@ -527,9 +527,9 @@ class UnrestrictedSHCI(SpatialSHCI):
         eri = (eri_aa, eri_ab, eri_bb),  eri_ab[p,q,r,s] = (p_a q_a|r_b s_b)
         nelec = (nalpha, nbeta)
 
-    The program holds these integrals over spin orbitals in spin blocks, three
-    times what a restricted calculation of the same size takes, and returns
-    density matrices over the spin orbitals; meant for moderate active spaces.
+    The program holds the three blocks as given (n^4/2 numbers, four times
+    what a restricted calculation of the same size takes), antisymmetrizes
+    them as needed, and returns density matrices over the spin orbitals.
     orbsym (D2h-subgroup numbers) must then be the same for the alpha and the
     beta orbital of each index.
     '''

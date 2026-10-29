@@ -3109,10 +3109,11 @@ struct SpinFlipRun {
 };
 
 // A select-mode run over spatial orbitals; reads shci.e and wfn.h5.
-SpinFlipRun RunSpinFlipCase(const SpatialIntegrals<double>& ints,
-                            const std::string& prefix, const std::string& dets,
-                            int nroots, int spin_flip, double epsilon1,
-                            const std::string& extra, int max_iter = 12,
+template <class Ints>
+SpinFlipRun RunSpinFlipCase(const Ints& ints, const std::string& prefix,
+                            const std::string& dets, int nroots, int spin_flip,
+                            double epsilon1, const std::string& extra,
+                            int max_iter = 12,
                             const std::string& select_extra = "") {
   std::system(("mkdir -p " + prefix).c_str());
   char schedule[128];
@@ -3130,7 +3131,7 @@ SpinFlipRun RunSpinFlipCase(const SpatialIntegrals<double>& ints,
       "}, \"davidson\": {\"tol\": 1e-10, \"checkpoint_every\": 1}, "
       "\"output_level\": 0" +
       extra + "}";
-  RunSelect<1, SpatialIntegrals<double>>(ParseInput(text), ints, Comm());
+  RunSelect<1, Ints>(ParseInput(text), ints, Comm());
   SpinFlipRun run;
   run.prefix = prefix;
   run.energies.assign(nroots, 0.0);
@@ -3416,6 +3417,202 @@ void TestSpinFlip() {
 
 // ---------------------------------------------------------------------------
 // epsilon2_large and num_samples chosen by the program (pt.h, "auto").
+
+// ---------------------------------------------------------------------------
+// Unrestricted integrals (UnrestrictedIntegrals) against the same integrals
+// antisymmetrized over spin orbitals (the former unrestricted path) and, with
+// equal alpha and beta orbitals, against the restricted ones.
+
+struct UhfBlocks {
+  int n = 0;
+  std::vector<double> h[2];
+  std::vector<double> eri[3];  // aa, bb, ab: (pq|rs) at ((p n + q) n + r) n + s
+  double& Eri(int k, int p, int q, int r, int s) {
+    return eri[k][((p * n + q) * n + r) * n + s];
+  }
+};
+
+UhfBlocks RandomUhf(int n, unsigned seed, bool restricted) {
+  std::mt19937 rng(seed);
+  std::uniform_real_distribution<double> u(-1.0, 1.0);
+  UhfBlocks b;
+  b.n = n;
+  for (int spin = 0; spin < 2; ++spin) {
+    b.h[spin].assign(n * n, 0.0);
+    for (int p = 0; p < n; ++p) {
+      for (int q = 0; q <= p; ++q) {
+        const double v =
+            p == q ? 0.5 * p - 2.0 + 0.05 * spin * !restricted : 0.08 * u(rng);
+        b.h[spin][p * n + q] = b.h[spin][q * n + p] =
+            restricted && spin == 1 ? b.h[0][p * n + q] : v;
+      }
+    }
+  }
+  for (int k = 0; k < 3; ++k) b.eri[k].assign(n * n * n * n, 0.0);
+  for (int p = 0; p < n; ++p) {
+    for (int q = 0; q < n; ++q) {
+      for (int r = 0; r < n; ++r) {
+        for (int s = 0; s < n; ++s) {
+          // Only the canonical index orders draw a number; the others copy.
+          const bool pq = p >= q, rs = r >= s;
+          const size_t PQ = p * (p + 1) / 2 + q, RS = r * (r + 1) / 2 + s;
+          if (!pq || !rs) continue;
+          for (int k = 0; k < 3; ++k) {
+            if (k < 2 && PQ < RS) continue;
+            double v = p == q && r == s ? 0.25 + 0.05 * u(rng) : 0.04 * u(rng);
+            if (restricted && k > 0) v = b.Eri(0, p, q, r, s);
+            for (auto [a, c] : {std::pair<int, int>{p, q}, {q, p}}) {
+              for (auto [d, e] : {std::pair<int, int>{r, s}, {s, r}}) {
+                b.Eri(k, a, c, d, e) = v;
+                if (k < 2) b.Eri(k, d, e, a, c) = v;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  if (restricted) {
+    // eri_ab must equal eri_aa then; the loop above copied it.
+    b.eri[1] = b.eri[0];
+    b.eri[2] = b.eri[0];
+  }
+  return b;
+}
+
+void TestUnrestricted() {
+  const std::string base =
+      std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") +
+      "/zshci_test_uhf";
+  std::system(("rm -rf " + base).c_str());
+  const int n = 8;
+  const int spins[3][2] = {{0, 0}, {1, 1}, {0, 1}};
+  for (int restricted : {0, 1}) {
+    UhfBlocks b = RandomUhf(n, 21, restricted);
+    UnrestrictedIntegrals uhf(n, {});
+    SpinorIntegrals<double> spinor =
+        SpinorIntegrals<double>::SpinOrbitals(n, {});
+    for (int spin = 0; spin < 2; ++spin) {
+      for (int p = 0; p < n; ++p) {
+        for (int q = 0; q < n; ++q) {
+          uhf.SetOneBodyOfSpin(spin, p, q, b.h[spin][p * n + q]);
+          spinor.SetOneBody(2 * p + spin, 2 * q + spin, b.h[spin][p * n + q]);
+        }
+      }
+    }
+    for (int k = 0; k < 3; ++k) {
+      for (int p = 0; p < n; ++p) {
+        for (int q = 0; q < n; ++q) {
+          for (int r = 0; r < n; ++r) {
+            for (int s = 0; s < n; ++s) {
+              uhf.SetTwoBody(spins[k][0], spins[k][1], p, q, r, s,
+                             b.Eri(k, p, q, r, s));
+            }
+          }
+        }
+      }
+    }
+    // The spinor integrals as the former reader made them.
+    auto chemist = [&](int p, int q, int r, int s) {
+      const int spin1 = p & 1, spin2 = r & 1;
+      if ((q & 1) != spin1 || (s & 1) != spin2) return 0.0;
+      const int a = p >> 1, c = q >> 1, d = r >> 1, e = s >> 1;
+      if (spin1 != spin2) {
+        return spin1 == 0 ? b.Eri(2, a, c, d, e) : b.Eri(2, d, e, a, c);
+      }
+      return b.Eri(spin1, a, c, d, e);
+    };
+    const int m = 2 * n;
+    for (int q = 1; q < m; ++q) {
+      for (int p = 0; p < q; ++p) {
+        for (int s = 1; s <= q; ++s) {
+          for (int r = 0; r < s; ++r) {
+            const double v = chemist(p, r, q, s) - chemist(p, s, q, r);
+            if (v != 0.0) spinor.SetAntisymOrdered(p, q, r, s, v);
+          }
+        }
+      }
+    }
+    for (auto* each : {static_cast<IntegralTables<double>*>(&uhf),
+                       static_cast<IntegralTables<double>*>(&spinor)}) {
+      each->set_num_elec(6);
+    }
+    uhf.Finalize();
+    spinor.Finalize();
+    double worst = 0.0;
+    for (int p = 0; p < m; ++p) {
+      for (int q = 0; q < m; ++q) {
+        for (int r = 0; r < m; ++r) {
+          for (int s = 0; s < m; ++s) {
+            worst = std::max(worst, std::abs(uhf.Antisym(p, q, r, s) -
+                                             spinor.Antisym(p, q, r, s)));
+          }
+        }
+      }
+    }
+    const std::string tag = restricted ? " (alpha = beta)" : "";
+    std::printf(
+        "      unrestricted%s: %zu numbers against %zu, <pq||rs> "
+        "differ by %.1e\n",
+        tag.c_str(), uhf.num_stored(), spinor.num_stored(), worst);
+    Expect(worst < 1e-14 && uhf.num_stored() < spinor.num_stored(),
+           "unrestricted integrals give the antisymmetrized ones of the "
+           "former path in fewer numbers" +
+               tag);
+
+    // Calculations: full space (epsilon1 tiny) and a selected space with
+    // deterministic PT and density matrices.
+    const std::string dets = "[[0,1,2,3,4,5]]";
+    const std::string extra =
+        ", \"pt\": {\"method\": \"deterministic\", \"epsilon2\": 1e-7}, "
+        "\"rdm\": {\"one\": true, \"two\": true}";
+    double worst_e = 0.0, worst_rdm = 0.0;
+    for (double epsilon : {0.0, 5e-3}) {
+      const std::string tagdir =
+          std::to_string(restricted) + "_" + (epsilon == 0.0 ? "full" : "sel");
+      const SpinFlipRun a = RunSpinFlipCase(uhf, base + "/uhf" + tagdir, dets,
+                                            1, 0, epsilon, extra, 8);
+      const SpinFlipRun c = RunSpinFlipCase(spinor, base + "/spinor" + tagdir,
+                                            dets, 1, 0, epsilon, extra, 8);
+      worst_e = std::max(worst_e, std::abs(a.energies[0] - c.energies[0]));
+      worst_rdm =
+          std::max({worst_rdm,
+                    MaxDatasetDifference(a.prefix + "/rdm_0_0.h5",
+                                         c.prefix + "/rdm_0_0.h5", "dm1"),
+                    MaxDatasetDifference(a.prefix + "/rdm_0_0.h5",
+                                         c.prefix + "/rdm_0_0.h5", "dm2")});
+      if (restricted) {
+        // And the restricted class itself.
+        SpatialIntegrals<double> rhf(n, {});
+        for (int p = 0; p < n; ++p) {
+          for (int q = 0; q < n; ++q) {
+            rhf.SetSpatialOneBody(p, q, b.h[0][p * n + q]);
+            for (int r = 0; r < n; ++r) {
+              for (int s = 0; s < n; ++s) {
+                rhf.SetSpatialTwoBody(p, q, r, s, b.Eri(0, p, q, r, s));
+              }
+            }
+          }
+        }
+        rhf.set_num_elec(6);
+        rhf.Finalize();
+        const SpinFlipRun r = RunSpinFlipCase(
+            rhf, base + "/rhf" + tagdir, dets, 1, 0, epsilon,
+            ", \"pt\": {\"method\": \"deterministic\", \"epsilon2\": 1e-7}", 8);
+        worst_e = std::max(worst_e, std::abs(a.energies[0] - r.energies[0]));
+      }
+    }
+    std::printf(
+        "      unrestricted%s: energies with PT differ by %.1e, "
+        "density matrices by %.1e\n",
+        tag.c_str(), worst_e, worst_rdm);
+    Expect(worst_e < 1e-10 && worst_rdm < 1e-10,
+           "unrestricted integrals give the energies, PT corrections and "
+           "density matrices of the former path" +
+               std::string(restricted ? " and of restricted integrals" : ""));
+  }
+  std::system(("rm -rf " + base).c_str());
+}
 
 // The pieces of the faster PT2 kernels: the bound that screens singles, the
 // diagonal element carried from the parent, the hashed set of the space.
@@ -3752,6 +3949,7 @@ int main(int argc, char** argv) {
     zshci::TestSpatialIntegrals();
     zshci::TestSpinFlip();
     zshci::TestPtKernels(ints);
+    zshci::TestUnrestricted();
     zshci::TestPtAuto();
     zshci::TestSpinStringConnections<1>(
         10, 0,

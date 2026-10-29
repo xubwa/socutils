@@ -345,6 +345,71 @@ std::string SpatialIntegrals<S>::Describe() const {
   return text;
 }
 
+UnrestrictedIntegrals::UnrestrictedIntegrals(
+    int num_spatial, const std::vector<LabelSet>& spatial_symmetry,
+    const Comm& comm) {
+  const size_t n = num_spatial;
+  if (2 * n > UINT16_MAX) throw std::length_error("too many orbitals");
+  num_spatial_ = num_spatial;
+  num_pairs_ = n * (n + 1) / 2;
+  same_size_ = num_pairs_ * (num_pairs_ + 1) / 2;
+  num_orbs_ = 2 * num_spatial;
+  spin_orbitals_ = true;
+  symmetry_ = SpinOrbitalSymmetry(num_spatial, spatial_symmetry);
+  one_body_.assign(4 * n * n, 0.0);
+  two_body_ =
+      SharedArray<double>(2 * same_size_ + num_pairs_ * num_pairs_, comm);
+  if (comm.is_node_leader()) {
+    std::fill(two_body_.data(), two_body_.data() + two_body_.size(), 0.0);
+  }
+}
+
+void UnrestrictedIntegrals::SetOneBodyOfSpin(int spin, int p, int q,
+                                             double value) {
+  SetOneBody(2 * p + spin, 2 * q + spin, value);
+}
+
+void UnrestrictedIntegrals::SetTwoBody(int first, int second, int p, int q,
+                                       int r, int s, double value) {
+  // (pq|rs) moves electrons from q, s to p, r. The first set is the spin,
+  // conserved by every block.
+  for (size_t k = 1; k < symmetry_.size(); ++k) {
+    const std::vector<int>& labels = symmetry_[k].labels;
+    const int change =
+        labels[2 * p] + labels[2 * r] - labels[2 * q] - labels[2 * s];
+    if (!LabelConserved(change, symmetry_[k].mod)) {
+      NoteForbidden(value);
+      return;
+    }
+  }
+  if (first == second) {
+    two_body_[(first == 0 ? 0 : same_size_) +
+              Triangle(Triangle(p, q), Triangle(r, s))] = value;
+  } else if (first == 0) {
+    two_body_[2 * same_size_ + Triangle(p, q) * num_pairs_ + Triangle(r, s)] =
+        value;
+  } else {
+    two_body_[2 * same_size_ + Triangle(r, s) * num_pairs_ + Triangle(p, q)] =
+        value;
+  }
+}
+
+void UnrestrictedIntegrals::Share(const Comm& comm) {
+  ShareTables(comm);
+  two_body_.ShareFromRoot(comm);
+}
+
+std::string UnrestrictedIntegrals::Describe() const {
+  char text[256];
+  std::snprintf(text, sizeof(text),
+                "real, %d spatial orbitals of each spin (unrestricted); "
+                "two-electron integrals: %zu stored, %.1f%% of what spinors "
+                "without symmetry would need",
+                num_spatial_, num_stored(),
+                StoredShare(num_stored(), num_orbs_));
+  return text;
+}
+
 namespace {
 
 // The header of a FCIDUMP file, and the stream positioned after it.
@@ -783,8 +848,7 @@ SpatialIntegrals<S> ReadSpatialFcidump(const std::string& path,
   return ints;
 }
 
-template <typename S>
-SpinorIntegrals<S> ReadUnrestrictedIntegrals(
+UnrestrictedIntegrals ReadUnrestrictedIntegrals(
     const std::string& path, const std::vector<LabelSet>& symmetry,
     double symmetry_tolerance, const Comm& comm) {
   int n = 0;
@@ -828,7 +892,7 @@ SpinorIntegrals<S> ReadUnrestrictedIntegrals(
     }
   }
 
-  SpinorIntegrals<S> ints = SpinorIntegrals<S>::SpinOrbitals(n, symmetry, comm);
+  UnrestrictedIntegrals ints(n, symmetry, comm);
   if (!comm.is_root()) {
     ints.Share(comm);
     return ints;
@@ -837,34 +901,27 @@ SpinorIntegrals<S> ReadUnrestrictedIntegrals(
   ints.set_core_energy(ecore);
 
   const size_t size = n;
-  // (pq|rs) over spin orbitals.
-  auto chemist = [&](int p, int q, int r, int s) {
-    const int spin1 = p & 1;
-    const int spin2 = r & 1;
-    if ((q & 1) != spin1 || (s & 1) != spin2) return 0.0;
-    const size_t a = p >> 1, b = q >> 1, c = r >> 1, d = s >> 1;
-    if (spin1 != spin2) {
-      return spin1 == 0 ? eri_ab[((a * size + b) * size + c) * size + d]
-                        : eri_ab[((c * size + d) * size + a) * size + b];
-    }
-    return (spin1 == 0 ? eri_aa
-                       : eri_bb)[((a * size + b) * size + c) * size + d];
-  };
-  const int m = 2 * n;
-  for (int p = 0; p < m; ++p) {
-    for (int q = 0; q < m; ++q) {
-      if ((p & 1) != (q & 1)) continue;
-      ints.SetOneBody(p, q, S(h1[p & 1][(p >> 1) * size + (q >> 1)]));
+  for (int spin = 0; spin < 2; ++spin) {
+    for (int p = 0; p < n; ++p) {
+      for (int q = 0; q < n; ++q) {
+        ints.SetOneBodyOfSpin(spin, p, q, h1[spin][p * size + q]);
+      }
     }
   }
-  // Every pair of pairs is offered, so that integrals the labels forbid are
-  // noticed.
-  for (int q = 1; q < m; ++q) {
-    for (int p = 0; p < q; ++p) {
-      for (int s = 1; s <= q; ++s) {
-        for (int r = 0; r < s; ++r) {
-          const double value = chemist(p, r, q, s) - chemist(p, s, q, r);
-          if (value != 0.0) ints.SetAntisymOrdered(p, q, r, s, S(value));
+  // Every integral is offered, so that those the labels forbid are noticed.
+  const std::vector<double>* blocks[3] = {&eri_aa, &eri_bb, &eri_ab};
+  const int spins[3][2] = {{0, 0}, {1, 1}, {0, 1}};
+  for (int k = 0; k < 3; ++k) {
+    const std::vector<double>& eri = *blocks[k];
+    for (int p = 0; p < n; ++p) {
+      for (int q = 0; q < n; ++q) {
+        for (int r = 0; r < n; ++r) {
+          for (int t = 0; t < n; ++t) {
+            const double value = eri[((p * size + q) * size + r) * size + t];
+            if (value != 0.0) {
+              ints.SetTwoBody(spins[k][0], spins[k][1], p, q, r, t, value);
+            }
+          }
         }
       }
     }
@@ -900,9 +957,6 @@ template SpinorIntegrals<Complex> ReadFcidump<Complex>(
     const std::string&, const std::vector<LabelSet>&, double, const Comm&);
 template SpatialIntegrals<double> ReadSpatialFcidump<double>(
     const std::string&, const std::vector<LabelSet>&, double, const Comm&);
-template SpinorIntegrals<double> ReadUnrestrictedIntegrals<double>(
-    const std::string&, const std::vector<LabelSet>&, double, const Comm&);
-template SpinorIntegrals<Complex> ReadUnrestrictedIntegrals<Complex>(
-    const std::string&, const std::vector<LabelSet>&, double, const Comm&);
+template void IntegralTables<double>::FillTables(const UnrestrictedIntegrals&);
 
 }  // namespace zshci

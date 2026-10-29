@@ -90,6 +90,17 @@ spatial orbitals for the two spins: the integrals come from an HDF5 file
 over the spin orbitals in spin blocks, the density matrices are over the spin
 orbitals.
 
+With `"orbitals": "unrestricted"` the three blocks aa, bb (eightfold
+symmetric) and ab (fourfold) are held as given, n^4/2 numbers for n
+orbitals of each spin, and `<pq||rs>` is put together on every call from
+the block of the spins of its charge distributions (`UnrestrictedIntegrals`,
+`INTEGRALS_DESIGN.md`); the heat-bath tables keep alpha-alpha, beta-beta and
+alpha-beta lists. O2 triplet cc-pVDZ (12 electrons in 26 orbitals, 2.5e6
+determinants): 246753 integrals against 334776 antisymmetrized in spin
+blocks before, the same energies and perturbative correction, the same time
+and memory (the Hamiltonian dominates). The spin-flip symmetry does not
+apply and is refused.
+
 `"symmetry"` lists the conserved quantities, each an integer label per spinor
 and a modulus (0: none): `{"labels": [...], "mod": 4}` is the label of a
 twofold axis, a second entry `{"labels": [0, 1, ...], "mod": 2}` adds

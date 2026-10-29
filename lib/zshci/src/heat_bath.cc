@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <type_traits>
 
 namespace zshci {
 namespace {
@@ -87,21 +88,90 @@ void HeatBath::BuildSpatialLists(const SpatialIntegrals<S>& ints,
   }
 }
 
+void HeatBath::BuildUnrestrictedLists(const UnrestrictedIntegrals& ints,
+                                      double threshold,
+                                      std::vector<std::vector<Entry>>* lists) {
+  const int n = ints.num_spatial();
+  lists->resize(beta_first_offset_ + static_cast<size_t>(n) * (n - 1) / 2);
+  auto add = [&](std::vector<Entry>* list, int a, int b, double value) {
+    const double magnitude = std::abs(value);
+    if (magnitude > threshold) {
+      list->push_back(
+          {magnitude, static_cast<uint16_t>(a), static_cast<uint16_t>(b)});
+    }
+  };
+#pragma omp parallel for schedule(dynamic, 1)
+  for (int j = 0; j < n; ++j) {
+    for (int i = 0; i < n; ++i) {
+      // Same spin, I < J: <AB||IJ> = (AI|BJ) - (AJ|BI) within the spin.
+      if (i < j) {
+        for (int spin = 0; spin < 2; ++spin) {
+          std::vector<Entry>& same =
+              (*lists)[same_offset_[spin] + PairIndex(i, j)];
+          for (int b = 1; b < n; ++b) {
+            for (int a = 0; a < b; ++a) {
+              add(&same, a, b,
+                  ints.TwoBody(spin, spin, a, i, b, j) -
+                      ints.TwoBody(spin, spin, a, j, b, i));
+            }
+          }
+          SortList(&same);
+        }
+      }
+      // Opposite spins, the lower spin orbital i -> a, the other j -> b:
+      // i alpha (I <= J): (AI|BJ) ab; i beta (I < J): (BJ|AI) ab.
+      if (i <= j) {
+        std::vector<Entry>& alpha_first =
+            (*lists)[opposite_offset_ + PairIndexWithDiagonal(i, j)];
+        for (int b = 0; b < n; ++b) {
+          for (int a = 0; a < n; ++a) {
+            add(&alpha_first, a, b, ints.TwoBody(0, 1, a, i, b, j));
+          }
+        }
+        SortList(&alpha_first);
+      }
+      if (i < j) {
+        std::vector<Entry>& beta_first =
+            (*lists)[beta_first_offset_ + PairIndex(i, j)];
+        for (int b = 0; b < n; ++b) {
+          for (int a = 0; a < n; ++a) {
+            add(&beta_first, a, b, ints.TwoBody(1, 0, a, i, b, j));
+          }
+        }
+        SortList(&beta_first);
+      }
+    }
+  }
+}
+
 template <class Ints>
 HeatBath::HeatBath(const Ints& ints, double threshold, const Comm& comm) {
   if (ints.num_orbs() > UINT16_MAX) {
     throw std::length_error("HeatBath: too many spinors");
   }
-  spatial_ = Ints::kSpatial;
+  constexpr bool kUnrestricted =
+      std::is_same<Ints, UnrestrictedIntegrals>::value;
+  spatial_ = Ints::kSpatial || kUnrestricted;
+  unrestricted_ = kUnrestricted;
   if constexpr (Ints::kSpatial) {
     const size_t n = ints.num_spatial();
     opposite_offset_ = n * (n - 1) / 2;
   }
   std::vector<std::vector<Entry>> lists;
   size_t num_lists = 0;
+  if constexpr (kUnrestricted) {
+    // Layout, every rank: aa (I < J), bb (I < J), ab with i alpha (I <= J),
+    // ab with i beta (I < J).
+    const size_t n = ints.num_spatial();
+    same_offset_[1] = n * (n - 1) / 2;
+    opposite_offset_ = n * (n - 1);
+    beta_first_offset_ = opposite_offset_ + n * (n + 1) / 2;
+  }
   if (comm.is_root()) {
     if constexpr (Ints::kSpatial) {
       BuildSpatialLists(ints, threshold, &lists);
+    } else if constexpr (kUnrestricted) {
+      BuildUnrestrictedLists(ints, threshold, &lists);
     } else {
       BuildSpinorLists(ints, threshold, &lists);
     }
@@ -134,5 +204,6 @@ template HeatBath::HeatBath(const SpinorIntegrals<Complex>&, double,
                             const Comm&);
 template HeatBath::HeatBath(const SpatialIntegrals<double>&, double,
                             const Comm&);
+template HeatBath::HeatBath(const UnrestrictedIntegrals&, double, const Comm&);
 
 }  // namespace zshci

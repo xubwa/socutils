@@ -89,12 +89,18 @@ void RunWithScalar(const Input& input, const Comm& comm) {
       throw std::logic_error("spatial orbitals with complex numbers");
     }
   }
-  const SpinorIntegrals<S> ints =
-      input.unrestricted_orbitals
-          ? ReadUnrestrictedIntegrals<S>(input.integrals, input.symmetry,
-                                         input.symmetry_tolerance, comm)
-          : ReadFcidump<S>(input.integrals, input.symmetry,
-                           input.symmetry_tolerance, comm);
+  if (input.unrestricted_orbitals) {
+    // Unrestricted spatial orbitals are real.
+    if constexpr (std::is_same<S, double>::value) {
+      const UnrestrictedIntegrals ints = ReadUnrestrictedIntegrals(
+          input.integrals, input.symmetry, input.symmetry_tolerance, comm);
+      return RunWithIntegrals(input, ints, omp_get_wtime() - time, comm);
+    } else {
+      throw std::logic_error("unrestricted orbitals with complex numbers");
+    }
+  }
+  const SpinorIntegrals<S> ints = ReadFcidump<S>(
+      input.integrals, input.symmetry, input.symmetry_tolerance, comm);
   RunWithIntegrals(input, ints, omp_get_wtime() - time, comm);
 }
 
