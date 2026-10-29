@@ -32,7 +32,7 @@ print('%s %s: %d atoms, nao %d' % (os.path.basename(cif), sc, cell.natm, cell.na
 t = time.time()
 jk = THCJK(cell, aux, alpha_c=4., nmu_factor=float(os.environ.get('NMU', 16)), nuc_zeta=spinor_scf.nuclear_zeta(cell),
            local_rcut=float(os.environ.get('RCUT', 6)))
-jk.gapw_opts = {'nrad': int(os.environ.get('NRAD', 600))}
+jk.gapw_opts = {'nrad': int(os.environ['NRAD'])} if os.environ.get('NRAD') else {}   # default: per element
 jk.stream = True                      # V, A, Xi in mu blocks, no full xi
 jk.stream_gb = float(os.environ.get('STREAM_GB', 30))
 jk.piv_file = os.environ.get('PIV_FILE')

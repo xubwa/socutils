@@ -56,7 +56,7 @@ def _real_ylm(unit, lmax, wang):
 
 
 class GAPWJ:
-    def __init__(self, th, L=4, eta=2.0, lmax=12, nrad=600, nang=302):
+    def __init__(self, th, L=4, eta=2.0, lmax=12, nrad=None, nang=302):
         '''th: a THCExchange after build_common (split cell, smooth functions on the uniform grid, kernels).'''
         self.th, self.L, self.eta, self.lmax, self.nrad, self.nang = th, L, eta, lmax, nrad, nang
         self.S = th.cell.pbc_intor('int1e_ovlp')
@@ -93,7 +93,8 @@ class GAPWJ:
         X = cell.atom_coords()
         self.grids, self.rads, self.wrs = {}, {}, {}
         for A in self.atoms:
-            r, dr = getattr(radi, getattr(self, 'radial', 'treutler_ahlrichs'))(nrad, cell.atom_charge(A))
+            nr, scheme = self.radial_grid(cell.atom_charge(A))
+            r, dr = getattr(radi, scheme)(nr, cell.atom_charge(A))
             o = np.argsort(r)
             r, wr = r[o], (dr * r ** 2)[o]
             self.rads[A] = r
@@ -326,6 +327,14 @@ class GAPWJ:
         if self._geo_bytes + nb <= getattr(self, 'cache_gb', 16.) * 1e9:
             self._geo[key] = geo
             self._geo_bytes += nb
+
+    def radial_grid(self, Z):
+        '''(points, pyscf.dft.radi scheme) of the radial grid of an atom of charge Z: self.nrad (and self.radial)
+        if given, else Treutler-Ahlrichs 600 for Z <= 18 (quartz: E_J 2e-6 vs RSDF) and Mura-Knowles 2000 above
+        (EuOCl: E_J converged to ~3e-7; TA 600 is off by 1e-4 for the Eu core).'''
+        if self.nrad is not None:
+            return self.nrad, getattr(self, 'radial', 'treutler_ahlrichs')
+        return (600, 'treutler_ahlrichs') if Z <= 18 else (2000, 'mura_knowles')
 
     def _ss_first(self):
         '''Permute the stored functions of every atomic grid so that the smooth ones come first (once).'''
