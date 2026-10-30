@@ -16,7 +16,7 @@ section 2).  Two implementations:
     MOERIs   blocks transformed on demand from MO coefficients and cached;
              mean-field terms built in the AO basis.  Density fitting will be
              another source of blocks.
-    DiskERIs MO blocks in an HDF5 file (write_h5), read when asked for; the
+    DiskERIs MO blocks in an HDF5 file (create_h5 / add_rows, write_h5), read when asked for; the
              (vv|vv) block is read row by row (vvvv_rows) and never whole
              (MO integrals without a factorized form, e.g. four-component).
 '''
@@ -461,36 +461,63 @@ def canonical_labels():
     return out
 
 
-def write_h5(path, ecore, h1, spaces, block, rows=None, meta=None):
-    '''Write the integrals in the layout of DiskERIs.
-
-    block(labels, i0, i1): (pq|rs) of the four spaces with the first index in
-    [i0, i1) of its space, as an array (from memory, a memory map or a
-    generator); every stored block is written in slices of rows of its first
-    index of at most rows elements (default: 2^27 elements, 2 GB).  meta: small
-    arrays or scalars kept with the integrals (group 'meta').'''
+def create_h5(path, ecore, h1, spaces, meta=None):
+    '''An integral file of DiskERIs with every stored block (canonical_labels)
+    created and zero, open for writing (h5py.File, to be closed by the
+    caller); the blocks are filled by add_rows or written directly.  meta:
+    small arrays or scalars kept with the integrals (group 'meta').'''
     import h5py
-    limit = rows or 2 ** 27
     sp = spaces
-    with h5py.File(path, 'w') as f:
-        f.attrs['format'] = 'zmr-mo-1'
-        f.attrs['ecore'] = float(numpy.real(ecore))
-        f.attrs['ncore'], f.attrs['nact'], f.attrs['nvirt'] = sp.ncore, sp.nact, sp.nvirt
-        f['h1'] = numpy.asarray(h1, dtype=numpy.complex128)
+    f = h5py.File(path, 'w')
+    f.attrs['format'] = 'zmr-mo-1'
+    f.attrs['ecore'] = float(numpy.real(ecore))
+    f.attrs['ncore'], f.attrs['nact'], f.attrs['nvirt'] = sp.ncore, sp.nact, sp.nvirt
+    f['h1'] = numpy.asarray(h1, dtype=numpy.complex128)
+    for lab in canonical_labels():
+        # unwritten parts of a dataset read as zero (HDF5 fill value)
+        f.create_dataset(lab, tuple(sp.size(x) for x in lab), dtype=numpy.complex128)
+    if meta:
+        g = f.create_group('meta')
+        for k, v in meta.items():
+            g[k] = v
+    return f
+
+
+def add_rows(f, spaces, p0, p1, rows, coef=1.0):
+    '''Add coef (pq|rs) for the rows p in [p0, p1) of all correlated orbitals
+    (rows: array (p1 - p0, n, n, n)) to the stored blocks of an open file of
+    create_h5 (the pattern of socutils.cc.zccsd fill_eris: integrals that
+    come row block by row block, e.g. from ao2mo.general into a swap file).'''
+    sl = {x: spaces.slice(x) for x in 'cav'}
+    for lab in canonical_labels():
+        s0 = sl[lab[0]]
+        lo, hi = max(p0, s0.start), min(p1, s0.stop)
+        if lo >= hi:
+            continue
+        d = f[lab]
+        if 0 in d.shape:
+            continue
+        part = rows[lo - p0:hi - p0, sl[lab[1]], sl[lab[2]], sl[lab[3]]]
+        d[lo - s0.start:hi - s0.start] = d[lo - s0.start:hi - s0.start] + coef * part
+
+
+def write_h5(path, ecore, h1, spaces, block, rows=None, meta=None):
+    '''Write the integrals in the layout of DiskERIs from block(labels, i0, i1):
+    (pq|rs) of the four spaces with the first index in [i0, i1) of its space,
+    written in slices of rows of at most rows elements (default 2^27, 2 GB).'''
+    limit = rows or 2 ** 27
+    f = create_h5(path, ecore, h1, spaces, meta)
+    try:
         for lab in canonical_labels():
-            shape = tuple(sp.size(x) for x in lab)
-            d = f.create_dataset(lab, shape, dtype=numpy.complex128)
-            if 0 in shape:
+            d = f[lab]
+            if 0 in d.shape:
                 continue
-            per_row = int(numpy.prod(shape[1:]))
-            step = max(1, limit // per_row)
-            for i0 in range(0, shape[0], step):
-                i1 = min(shape[0], i0 + step)
+            step = max(1, limit // int(numpy.prod(d.shape[1:])))
+            for i0 in range(0, d.shape[0], step):
+                i1 = min(d.shape[0], i0 + step)
                 d[i0:i1] = numpy.asarray(block(lab, i0, i1), dtype=numpy.complex128)
-        if meta:
-            g = f.create_group('meta')
-            for k, v in meta.items():
-                g[k] = v
+    finally:
+        f.close()
 
 
 class DiskERIs(ERIsBase):

@@ -1,12 +1,11 @@
 '''Integrals read from an HDF5 file (DiskERIs) against the stored four-index
-integrals: blocks, rotations, the npz conversion and NEVPT4(SD) with the
+integrals: blocks, rotations, the four-component writer and NEVPT4(SD) with the
 (vv|vv) term from rows of the file.'''
 import numpy
 import pytest
 
 from socutils.zmr import fock
 from socutils.zmr.integrals import DiskERIs, ERIs, add_vvvv_pairs, canonical_labels, write_h5
-from socutils.zmr.interface import npz
 from socutils.zmr.mrci import sigma as sg
 from socutils.zmr.pt4 import NEVPT4SD
 from socutils.zmr.tests._helpers import model_eris
@@ -59,21 +58,6 @@ def test_rotation(tmp_path):
         assert abs(rot.eri_block(lab) - ref.eri_block(lab)).max() < 1e-12, lab
     with pytest.raises(NotImplementedError):
         rot.vvvv_rows(0, 1)
-
-
-def test_npz_conversion(tmp_path):
-    eris = model_eris(2, 3, 4, seed=7)
-    sp = eris.spaces
-    src = tmp_path / 'm.npz'
-    numpy.savez(src, h1=eris.h1, eri=eris.eri_block('pppp'), ecore=eris.ecore, ncore=sp.ncore,
-                nact=sp.nact, nvirt=sp.nvirt, nelec=sp.ncore + 2)
-    mm = npz.npz_memmap(str(src), 'eri')
-    assert abs(mm - eris.eri_block('pppp')).max() == 0
-    npz.convert(str(src), str(tmp_path / 'm.h5'), rows=11)
-    disk = DiskERIs(str(tmp_path / 'm.h5'))
-    for lab in LABELS:
-        assert abs(disk.eri_block(lab) - eris.eri_block(lab)).max() == 0, lab
-    assert int(disk.meta['nelec'][()]) == sp.ncore + 2
 
 
 def test_vvvv_pairs(tmp_path):
@@ -139,3 +123,35 @@ def test_hermitian_pairs(limit):
     cp = rng.normal(size=(5, len(i))) + 1j * rng.normal(size=(5, len(i)))
     assert abs(h.product(cp) - cp @ g.T).max() < 1e-13
     assert sum(b.size for b in h.arrays()) < 0.75 * g.size or limit > g.size
+
+
+def test_x2c_four_component_writer(tmp_path):
+    '''write_x2c_4c (ao2mo into swap files, added row block by row block)
+    against the incore four-component integrals of socutils.tools.fcidump_rel
+    (Coulomb + Gaunt + gauge), O2 / STO-3G, blocks of a few rows.'''
+    from socutils.tools import fcidump_rel
+    from socutils.zmr.interface import socutils_x2c
+    from socutils.zmr.spaces import OrbitalSpaces
+    from socutils.zmr.tests.systems_x2c import o2_dianion_orbitals
+    mf, mol = o2_dianion_orbitals('sto-3g', True)
+    c = mf.mo_coeff[:, 4:]
+    n = c.shape[1]
+    sp = OrbitalSpaces(6, 4, n - 10)
+    ref = numpy.asarray(fcidump_rel.x2c_active_eri_4c(mf, c, with_full_coulomb=True,
+                                                      with_gaunt=True, with_breit=True))
+    ref = ref.reshape(n, n, n, n)
+    rows = []
+    path = str(tmp_path / 'x.h5')
+    socutils_x2c.write_x2c_4c(path, mf, c, sp, numpy.zeros((n, n)), 0.0, max_memory=0.5,
+                              check=lambda p0, p1, r: rows.append((p0, p1)))
+    disk = DiskERIs(path)
+    assert len(rows) > 8                      # several blocks for each of the eight terms
+    ss = {x: sp.slice(x) for x in 'cav'}
+    for lab in LABELS:
+        blk = ref[tuple(ss[x] for x in lab)]
+        assert abs(disk.eri_block(lab) - blk).max() < 1e-12, lab
+    v = ss['v']
+    i, j = numpy.triu_indices(sp.nvirt, k=1)
+    w = ref[v, v, v, v]
+    g = w[i[:, None], i[None, :], j[:, None], j[None, :]] - w[i[:, None], j[None, :], j[:, None], i[None, :]]
+    assert abs(disk.vvvv_pairs[()] - g).max() < 1e-12

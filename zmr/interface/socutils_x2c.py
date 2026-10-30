@@ -131,3 +131,56 @@ def jz_mo(mol, mo_coeff):
         raise ValueError('all atoms must lie on the z axis')
     s = mol.intor('int1e_ovlp_spinor')
     return mo_coeff.conj().T @ (s * mj_of_spinor_aos(mol)[None, :]) @ mo_coeff
+
+
+def write_x2c_4c(path, mf, mo_coeff, spaces, h1, ecore, meta=None, with_gaunt=True,
+                 with_breit=True, max_memory=None, check=None):
+    '''Integral file of zmr.integrals.DiskERIs with the four-component
+    Coulomb (+ Gaunt, + gauge) interaction of the two-component X2C spinors
+    mo_coeff (the X2Ccorr Hamiltonian of socutils.tools.fcidump_rel
+    x2c_active_eri_4c, with_full_coulomb=True), without the integrals in
+    memory: as socutils.cc.zccsd _make_eris_outcore, every term is
+    transformed by ao2mo.general into a swap file and added row block by row
+    block (zmr.integrals.add_rows); the packed (vv|vv) matrix is added at the
+    end.  h1, ecore: the one-electron part and constant of the correlated
+    spinors.  check(p0, p1, rows): called with the full rows of every term
+    (e.g. a symmetry check).  max_memory (MB): rows of a block, default
+    mf.max_memory.'''
+    from pyscf import ao2mo, lib
+    from socutils.tools import fcidump_rel
+    from socutils.zmr.integrals import add_rows, add_vvvv_pairs, create_h5
+    n = mo_coeff.shape[1]
+    if n != spaces.nmo:
+        raise ValueError('mo_coeff does not match the orbital spaces')
+    xmol, mo_l, mo_s = fcidump_rel.x2c_4c_spinors(mf, mo_coeff)
+    mo_s = mo_s * (0.5 / lib.param.LIGHT_SPEED)
+    terms = [((mo_l, mo_l, mo_l, mo_l), 'int2e_spinor', 1.0, {}),
+             ((mo_l, mo_l, mo_s, mo_s), 'int2e_spsp2_spinor', 1.0, {}),
+             ((mo_s, mo_s, mo_l, mo_l), 'int2e_spsp1_spinor', 1.0, {}),
+             ((mo_s, mo_s, mo_s, mo_s), 'int2e_spsp1spsp2_spinor', 1.0, {})]
+    if with_gaunt:
+        p = 'int2e_breit_' if with_breit else 'int2e_'
+        sign = 1.0 if with_breit else -1.0
+        for mos, intor in (((mo_l, mo_s, mo_s, mo_l), p + 'ssp1sps2_spinor'),
+                           ((mo_l, mo_s, mo_l, mo_s), p + 'ssp1ssp2_spinor'),
+                           ((mo_s, mo_l, mo_s, mo_l), p + 'sps1sps2_spinor'),
+                           ((mo_s, mo_l, mo_l, mo_s), p + 'sps1ssp2_spinor')):
+            terms.append((mos, intor, sign, {'aosym': 's1', 'comp': 1}))
+    max_memory = mf.max_memory if max_memory is None else max_memory
+    # a block of rows, its part of one stored block and the stored block read back
+    blk = max(1, int(max_memory * 1e6 / 16 / (3 * n**3)))
+    f = create_h5(path, ecore, h1, spaces, meta)
+    try:
+        for mos, intor, coef, kw in terms:
+            fswap = lib.H5TmpFile()
+            ao2mo.general(xmol, mos, fswap, 'eri', intor=intor, max_memory=max_memory,
+                          verbose=0, **kw)
+            for p0, p1 in lib.prange(0, n, blk):
+                rows = numpy.asarray(fswap['eri'][p0 * n:p1 * n]).reshape(p1 - p0, n, n, n)
+                if check is not None:
+                    check(p0, p1, coef * rows)
+                add_rows(f, spaces, p0, p1, rows, coef)
+            fswap.close()
+    finally:
+        f.close()
+    add_vvvv_pairs(path)
