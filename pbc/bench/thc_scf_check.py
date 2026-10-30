@@ -2,7 +2,7 @@
 blocks against SplitDirectJK's exact-SR reference), then spinor HF energies with THCJK and RSDF.
 
 usage: thc_scf_check.py SYSTEM ALPHA_C NMU_FACTOR [SELECTOR]     (env NO_SCF=1 skips the SCF; REF_E: a reference E;
-    LOCAL, NRAD, COARSEN, BLOCKED, STREAM: THCJK options)'''
+    LOCAL, NRAD, COARSEN, BLOCKED, STREAM, OMEGA: THCJK options)'''
 import os, sys, time, runpy, numpy as np
 from pyscf.pbc import scf as pscf
 from socutils.pbc.bench import cells
@@ -16,14 +16,18 @@ name, ac, fac = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
 sel = sys.argv[4] if len(sys.argv) > 4 else 'coarse'
 sysm = cells.from_cif(name) if name.endswith('.cif') else cells.SYSTEMS[name]
 B = dict(runpy.run_path(RULES)['BASIS'])
+if os.environ.get('BASIS_PY'):
+    B = dict(runpy.run_path(os.environ['BASIS_PY'])['BASIS'])
 cell = cells.make_cell(sysm, 1e-10, nucmod='G', basis=B, max_memory=150000)
 nz = spinor_scf.nuclear_zeta(cell)
 els = sorted(set(cell.atom_symbol(i) for i in range(cell.natm)))
-aux = {e: auxgen_from_basis({e: B[e]}, contract=False, prune_lmax=False, threshold=1e-8)[e] for e in els}
+from pyscf import gto as _gto
+aux = {e: auxgen_from_basis({_gto.mole._std_symbol(e): B[e]}, contract=False, prune_lmax=False,
+                            threshold=1e-8)[_gto.mole._std_symbol(e)] for e in els}
 dm = pscf.RHF(cell).get_init_guess(key='minao')
 
 t = time.time()
-jk = THCJK(cell, aux, alpha_c=ac, nmu_factor=fac, selector=sel, nuc_zeta=nz,
+jk = THCJK(cell, aux, alpha_c=ac, nmu_factor=fac, selector=sel, nuc_zeta=nz, omega=float(os.environ.get('OMEGA', 0.5)),
            local_rcut=float(os.environ['LOCAL']) if os.environ.get('LOCAL') else None)
 if os.environ.get('COARSEN'):
     jk.coarsen = int(os.environ['COARSEN'])
@@ -36,6 +40,15 @@ jk.build()
 print('THCJK storage (doubles): %s' % jk.th.storage()) if hasattr(jk.th, 'storage') else None
 print('THCJK build %.0f s (N_mu %d, smooth %d; timings %s)' % (time.time() - t, len(jk.th.pts), len(jk.th.smooth),
       ', '.join('%s %.0f' % kv for kv in jk.th.timings.items())), flush=True)
+if os.environ.get('NO_RSDF'):                                       # THC only (production cells: RSDF is slow)
+    from socutils.pbc import split_direct as _sd
+    from socutils.scf import spinor_hf as _sh
+    mf = _sd.periodic(_sh.SpinorSCF(cell), jk)
+    mf.conv_tol = 1e-8
+    t = time.time(); e = mf.kernel()
+    print('spinor HF with THC (omega %s): E = %.10f, converged %s, %.0f s' % (os.environ.get('OMEGA', 0.5), e, mf.converged,
+          time.time() - t), flush=True)
+    sys.exit()
 r = RSDF(cell, aux, omega=0.5, precision=1e-10, nuc_zeta=nz, lr='gspace')
 r.cderi_in_memory = True
 r.build()
