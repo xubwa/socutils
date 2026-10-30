@@ -931,12 +931,11 @@ class THCExchange:
                 R = np.zeros((nD, nS, nao))
                 R[:, :nx] = Rx.reshape(nD, nx, nao)
                 if nx < nS:
-                    Y = np.empty((nD, nb, nx, nao))
-                    for k in range(nb):
-                        Y[:, k] = (Dx @ W[k]).reshape(nD, nx, nao)    # D[x] W_k (W symmetric)
+                    Y = np.matmul(Dx, W)                              # (nb, nD nx, nao): D[x] W_k
+                    Y = swap02(Y.reshape(nb, 1, nD, nx * nao)).reshape(nD, nb * nx, nao)   # (nD, (k, x), nao)
                     Cn = np.ascontiguousarray(Cf[:, nx:, :nx].transpose(1, 0, 2)).reshape(nS - nx, nb * nx)
                     for n in range(nD):
-                        R[n, nx:] = Cn @ Y[n].reshape(nb * nx, nao)
+                        R[n, nx:] = Cn @ Y[n]
                     Y = Cn = None
                 tc['GEMM'] += time.time() - ta
                 ta = time.time()
@@ -968,11 +967,11 @@ class THCExchange:
                 ta = time.time()
                 k = len(L)
                 L2 = L.reshape(k * n_, n_)
+                # two large GEMMs per batch (n ~ nao GEMMs per g run far below peak): T = [L_g D_d] rearranged
+                # to rows (d, a), columns (g, b), then T [L_1; ...; L_k]
                 T = swap02((L2 @ Dst).reshape(k, n_, nD, n_)).reshape(nD * n_, k * n_)
-                R = (T @ L2).reshape(nD, n_, n_)                      # sum_g L_g D L_g per density
-                tl['GEMM'] += time.time() - ta; ta = time.time()
-                acc += R
-                tl['add'] += time.time() - ta
+                acc += (T @ L2).reshape(nD, n_, n_)                   # sum_g L_g D L_g per density
+                tl['GEMM'] += time.time() - ta
             Lg = Ls = T = R = None
         for n in range(nD):
             Ks[n] += Racc[n]
