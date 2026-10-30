@@ -13,7 +13,8 @@
  *       all beta strings, integrals of the beta-beta pairs only);
  *   Z^T by pairwise exchanges of blocks;
  *   Y = (AB,AB) C from the own rows and the halo (rows of other processes
- *       reached by alpha single excitations), zg_sigma_ab_rows.
+ *       reached by alpha single excitations), zg_sigma_ab_rows, streamed:
+ *       the halo rows arrive one block at a time and are applied at once.
  * Any lists and electron counts (parity 0): Z as above; (AA,AA) C by the
  * same kernel on C^T held by beta rows (a plan of the own beta strings and
  * all alpha strings), transposed there and back; Y as above.
@@ -28,7 +29,9 @@
  *   mpirun -np P -ppn 1 zgasci_dist FCIDUMP STRINGS [options]
  * STRINGS: the alpha (= beta) strings as little-endian int64 (bit p:
  * orbital p occupied, the pyscf cistring convention), any order, no repeats.
- * Environment: ZGASCI_DIST_CHUNK, the largest message in doubles (2^28).
+ * Environment: ZGASCI_DIST_CHUNK, the largest message in doubles (2^28);
+ * ZGASCI_DIST_HALO_MB, the largest block of halo rows held at once (default:
+ * all the rows from one process); ZGASCI_DIST_HALO_ROWS, the same in rows (tests).
  * Options: --tol E (energy, 1e-8)  --rtol R (residual norm, 1e-3)
  *          --maxit N (40)  --parity +-1 or 0 (1; 0: no symmetry, the
  *          general path on the same lists)  --bench K (time K products
@@ -351,8 +354,9 @@ typedef struct {
   /* halo */
   int64_t nhalo, *smap;
   int64_t *hsend_cnt, *hsend_off, *hsend_rows; /* rows I send to q (global places) */
-  int64_t *hrecv_cnt, *hrecv_off;              /* rows I receive from q, in buf */
-  double *hbuf;                                /* own rows then halo rows */
+  int64_t *hrecv_cnt, *hrecv_off, *hrecv_rows; /* rows I receive from q (global places) */
+  int64_t hblk;                                /* halo rows per message block */
+  double *hrb;                                 /* one received block of halo rows */
   double *zt;                                  /* transpose buffer, len */
   double *sbuf, *rbuf;                         /* blocks of the transpose / halo */
   int64_t sbuf_len, rbuf_len;
@@ -403,7 +407,7 @@ static void halo_setup(dist *d) {
     if (!reach[a]) continue;
     while (a >= d->rows[owner + 1]) ++owner;
     d->hrecv_cnt[owner]++;
-    d->smap[a] = d->nloc + nh++;
+    nh++;
   }
   d->nhalo = nh;
   for (int q = 0; q < size_; ++q) d->hrecv_off[q + 1] = d->hrecv_off[q] + d->hrecv_cnt[q];
@@ -422,7 +426,8 @@ static void halo_setup(dist *d) {
     rc[q] = (int)d->hsend_cnt[q], ro[q] = (int)d->hsend_off[q];
   }
   MPI_Alltoallv(want, sc, so, MPI_INT64_T, d->hsend_rows, rc, ro, MPI_INT64_T, comm_);
-  free(sc), free(so), free(rc), free(ro), free(want), free(reach);
+  d->hrecv_rows = want; /* by owner, ascending: the rows of q at hrecv_off[q] */
+  free(sc), free(so), free(rc), free(ro), free(reach);
 }
 
 static int cmp_pair(const void *a, const void *b) { return cmp64(a, b); }
@@ -519,7 +524,25 @@ static void dist_init(dist *d, const fcidump *f, int nalpha, int nbeta, const in
     d->xb = malloc((size_t)(d->len_b + 1) * sizeof(double));
     d->zb = malloc((size_t)(d->len_b + 1) * sizeof(double));
   }
-  if (d->nhalo) d->hbuf = malloc((size_t)((d->nloc + d->nhalo) * d->nb + 1) * sizeof(double));
+  /* halo blocks: all rows from one process at a time, or at most ZGASCI_DIST_HALO_MB */
+  int64_t hmax = 1;
+  for (int q = 0; q < size_; ++q) {
+    if (d->hrecv_cnt[q] > hmax) hmax = d->hrecv_cnt[q];
+    if (d->hsend_cnt[q] > hmax) hmax = d->hsend_cnt[q];
+  }
+  MPI_Allreduce(MPI_IN_PLACE, &hmax, 1, MPI_INT64_T, MPI_MAX, comm_);
+  d->hblk = hmax;
+  if (getenv("ZGASCI_DIST_HALO_MB") && atol(getenv("ZGASCI_DIST_HALO_MB")) > 0) {
+    const int64_t b = atol(getenv("ZGASCI_DIST_HALO_MB")) * ((int64_t)1 << 20) / (8 * d->nb);
+    if (b < d->hblk) d->hblk = b > 0 ? b : 1;
+  }
+  if (getenv("ZGASCI_DIST_HALO_ROWS") && atol(getenv("ZGASCI_DIST_HALO_ROWS")) > 0 &&
+      atol(getenv("ZGASCI_DIST_HALO_ROWS")) < d->hblk)
+    d->hblk = atol(getenv("ZGASCI_DIST_HALO_ROWS")); /* (tests) */
+  if (getenv("ZGASCI_DIST_HALO_ROWS") && atol(getenv("ZGASCI_DIST_HALO_ROWS")) > 0 &&
+      atol(getenv("ZGASCI_DIST_HALO_ROWS")) < d->hblk)
+    d->hblk = atol(getenv("ZGASCI_DIST_HALO_ROWS")); /* (tests) */
+  if (d->nhalo || hmax > 1) d->hrb = malloc((size_t)(d->hblk * d->nb + 1) * sizeof(double));
   /* the largest block of the transposes (both ways) and of the halo */
   int64_t smax = 1, rmax = 1;
   for (int q = 0; q < size_; ++q) {
@@ -528,7 +551,8 @@ static void dist_init(dist *d, const fcidump *f, int nalpha, int nbeta, const in
     if (d->nloc_b * wa > smax) smax = d->nloc_b * wa;
     if (wa * d->nloc_b > rmax) rmax = wa * d->nloc_b;
     if (wb * d->nloc > rmax) rmax = wb * d->nloc;
-    if (d->hsend_cnt[q] * d->nb > smax) smax = d->hsend_cnt[q] * d->nb;
+    const int64_t hs = d->hsend_cnt[q] < d->hblk ? d->hsend_cnt[q] : d->hblk;
+    if (hs * d->nb > smax) smax = hs * d->nb;
   }
   d->sbuf_len = smax, d->rbuf_len = rmax;
   d->sbuf = malloc((size_t)smax * sizeof(double));
@@ -544,7 +568,8 @@ static void dist_free(dist *d) {
   free(d->strs), free(d->perm), free(d->rows);
   free(d->v), free(d->v_bb), free(d->v_aa), free(d->v_h), free(d->v_bb_h), free(d->v_aa_h);
   free(d->smap), free(d->hsend_cnt), free(d->hsend_off), free(d->hsend_rows);
-  free(d->hrecv_cnt), free(d->hrecv_off), free(d->hbuf), free(d->zt), free(d->sbuf), free(d->rbuf);
+  free(d->hrecv_cnt), free(d->hrecv_off), free(d->hrecv_rows), free(d->hrb), free(d->zt);
+  free(d->sbuf), free(d->rbuf);
   memset(d, 0, sizeof *d);
 }
 
@@ -577,20 +602,49 @@ static void symmetrize(dist *d, double *x) {
   for (int64_t i = 0; i < d->len; ++i) x[i] = 0.5 * (x[i] + p * d->zt[i]);
 }
 
-/* hbuf = own rows of c, then the halo rows */
-static void halo_exchange(dist *d, const double *c) {
-  const int64_t n = d->nb; /* row length */
-  copy(c, d->hbuf, d->len);
+/* out += (AB,AB) c on the own rows, streamed: first from the own rows (read
+ * in place), then the halo rows (other processes' rows reached by alpha
+ * single excitations) one block at a time, each block received from its
+ * owner by a pairwise exchange and applied at once, so that the halo never
+ * sits in memory as a whole (one block of hblk rows does).  Every process
+ * makes, per step, as many exchanges as its own two partners need; the
+ * pairs agree since a block count is the same on both sides.  th, tab:
+ * seconds in the exchanges and in the kernel. */
+static void sigma_ab(dist *d, const double *c, double *out, double *th, double *tab) {
+  const int64_t n = d->nb, B = d->hblk;
+  double t = now();
+  if (d->nloc && !zg_sigma_ab_rows_d(d->plan, d->v, c, d->smap, out, d->lo, d->hi))
+    die("zg_sigma_ab_rows does not apply to this plan");
+  *tab += now() - t;
+  if (size_ == 1) return;
+  for (int64_t a = d->lo; a < d->hi; ++a) d->smap[a] = -1;
   for (int k = 1; k < size_; ++k) {
     const int dest = (rank_ + k) % size_, src = (rank_ - k + size_) % size_;
-    const int64_t ns = d->hsend_cnt[dest];
-    const int64_t *rows = d->hsend_rows + d->hsend_off[dest];
+    const int64_t nsend = d->hsend_cnt[dest], nrecv = d->hrecv_cnt[src];
+    const int64_t nblk = ((nsend > nrecv ? nsend : nrecv) + B - 1) / B;
+    const int64_t *srows = d->hsend_rows + d->hsend_off[dest];
+    const int64_t *rrows = d->hrecv_rows + d->hrecv_off[src];
+    for (int64_t j = 0; j < nblk; ++j) {
+      int64_t ns = nsend - j * B, nr = nrecv - j * B;
+      ns = ns < 0 ? 0 : (ns > B ? B : ns);
+      nr = nr < 0 ? 0 : (nr > B ? B : nr);
+      t = now();
+      const int64_t *sr = srows + j * B;
 #pragma omp parallel for schedule(static)
-    for (int64_t i = 0; i < ns; ++i)
-      memcpy(d->sbuf + i * n, c + (rows[i] - d->lo) * n, (size_t)n * sizeof(double));
-    double *dst = d->hbuf + (d->nloc + d->hrecv_off[src]) * n;
-    sendrecv(d->sbuf, ns * n, dest, dst, d->hrecv_cnt[src] * n, src);
+      for (int64_t i = 0; i < ns; ++i)
+        memcpy(d->sbuf + i * n, c + (sr[i] - d->lo) * n, (size_t)n * sizeof(double));
+      sendrecv(d->sbuf, ns * n, dest, d->hrb, nr * n, src);
+      *th += now() - t;
+      if (!nr || !d->nloc) continue;
+      const int64_t *rr = rrows + j * B;
+      for (int64_t i = 0; i < nr; ++i) d->smap[rr[i]] = i;
+      t = now();
+      zg_sigma_ab_rows_d(d->plan, d->v, d->hrb, d->smap, out, d->lo, d->hi);
+      *tab += now() - t;
+      for (int64_t i = 0; i < nr; ++i) d->smap[rr[i]] = -1;
+    }
   }
+  for (int64_t a = d->lo; a < d->hi; ++a) d->smap[a] = a - d->lo;
 }
 
 /* out = H c for c of the symmetry.  (BB,BB) row-local; (AA,AA) = parity
@@ -613,16 +667,10 @@ static void sigma(dist *d, const double *c, double *out) {
     axpy(1.0, d->zt, out, d->len);
   }
   const double t2 = now();
-  const double *src = c;
-  if (d->nhalo) {
-    halo_exchange(d, c);
-    src = d->hbuf;
-  }
-  const double t3 = now();
-  if (d->nloc && !zg_sigma_ab_rows_d(d->plan, d->v, src, d->smap, out, d->lo, d->hi))
-    die("zg_sigma_ab_rows does not apply to this plan");
+  double th = 0, tab = 0;
+  sigma_ab(d, c, out, &th, &tab);
   const double t4 = now();
-  d->t_z += t1 - t0 + tz, d->t_tr += t2 - t1 - tz, d->t_halo += t3 - t2, d->t_ab += t4 - t3;
+  d->t_z += t1 - t0 + tz, d->t_tr += t2 - t1 - tz, d->t_halo += th, d->t_ab += tab;
   d->t_sig += t4 - t0;
   d->nsig++;
 }
