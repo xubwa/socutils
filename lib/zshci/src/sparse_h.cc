@@ -138,31 +138,45 @@ void SparseH<S>::PartitionRows() {
            num_elements() * (sizeof(DetIndex) + sizeof(S)));
   segment_.assign(num_threads + 1, n);
   segment_[0] = 0;
-  if (num_threads > 1) {
-    std::vector<uint64_t> weight(n, 1);
-    for (const CsrBlock<S>& block : blocks_) {
-      const long num_rows = static_cast<long>(block.num_stored_rows());
-      const uint64_t cost = block.has_values() ? 1 : 3;
-#pragma omp parallel for schedule(static)
-      for (long r = 0; r < num_rows; ++r) {
-        const uint64_t count = cost * (block.row_ptr[r + 1] - block.row_ptr[r]);
-#pragma omp atomic
-        weight[block.row[r]] += count;
-        if (one_sweep_) continue;
-        for (uint64_t k = block.row_ptr[r]; k < block.row_ptr[r + 1]; ++k) {
-#pragma omp atomic
-          weight[block.col[k]] += cost;
+  if (num_threads > 1 && n > 0) {
+    // The work is counted in buckets of consecutive rows, 256 per thread,
+    // by every thread on its own: an atomic addition per element (with two
+    // sweeps every element counts for its column too) took 14 s for 1.1e10
+    // elements. The segments end at bucket boundaries.
+    const size_t num_buckets =
+        std::min(n, static_cast<size_t>(256) * num_threads);
+    const size_t bucket = (n + num_buckets - 1) / num_buckets;
+    std::vector<uint64_t> weight(num_buckets, 0);
+    for (size_t b = 0; b < num_buckets; ++b) {
+      weight[b] = std::min(n, (b + 1) * bucket) - std::min(n, b * bucket);
+    }
+#pragma omp parallel
+    {
+      std::vector<uint64_t> local(num_buckets, 0);
+      for (const CsrBlock<S>& block : blocks_) {
+        const long num_rows = static_cast<long>(block.num_stored_rows());
+        const uint64_t cost = block.has_values() ? 1 : 3;
+#pragma omp for schedule(static) nowait
+        for (long r = 0; r < num_rows; ++r) {
+          local[block.row[r] / bucket] +=
+              cost * (block.row_ptr[r + 1] - block.row_ptr[r]);
+          if (one_sweep_) continue;
+          for (uint64_t k = block.row_ptr[r]; k < block.row_ptr[r + 1]; ++k) {
+            local[block.col[k] / bucket] += cost;
+          }
         }
       }
+#pragma omp critical
+      for (size_t b = 0; b < num_buckets; ++b) weight[b] += local[b];
     }
     uint64_t total = 0;
     for (uint64_t w : weight) total += w;
     uint64_t running = 0;
     int next = 1;
-    for (size_t i = 0; i < n && next < num_threads; ++i) {
-      running += weight[i];
+    for (size_t b = 0; b < num_buckets && next < num_threads; ++b) {
+      running += weight[b];
       while (next < num_threads && running * num_threads >= total * next) {
-        segment_[next++] = i + 1;
+        segment_[next++] = std::min(n, (b + 1) * bucket);
       }
     }
   }
