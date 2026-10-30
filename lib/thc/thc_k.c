@@ -8,6 +8,7 @@
  *   SOCTHCswap02      dst[i2, i1, i0, :] = src[i0, i1, i2, :]
  *   SOCTHCadd_cols    M[:, cols] += S
  *   SOCTHCadd_rows    M[rows] += S
+ *   SOCTHCrowdot / SOCTHCscale_rows   row-wise dot products and row scaling (GAPW J grid contractions)
  */
 #include <stdlib.h>
 #include <string.h>
@@ -127,6 +128,37 @@ void SOCTHCadd_rows(double *M, const double *S, const int *rows, int nr, int L)
                 int j;
                 for (j = 0; j < L; j++) {
                         m[j] += s[j];
+                }
+        }
+}
+
+/* out[r] = sum_j A[r, j] B[r, j]  (A, B (n, m) C order) */
+void SOCTHCrowdot(double *out, const double *A, const double *B, int n, int m)
+{
+        size_t r;
+#pragma omp parallel for schedule(static)
+        for (r = 0; r < (size_t)n; r++) {
+                const double *a = A + r * m, *b = B + r * m;
+                double s = 0;
+                int j;
+                for (j = 0; j < m; j++) {
+                        s += a[j] * b[j];
+                }
+                out[r] = s;
+        }
+}
+
+/* out = w[:, None] * A  (A, out (n, m) C order) */
+void SOCTHCscale_rows(double *out, const double *A, const double *w, int n, int m)
+{
+        size_t r;
+#pragma omp parallel for schedule(static)
+        for (r = 0; r < (size_t)n; r++) {
+                const double *a = A + r * m;
+                double *o = out + r * m, c = w[r];
+                int j;
+                for (j = 0; j < m; j++) {
+                        o[j] = c * a[j];
                 }
         }
 }

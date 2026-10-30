@@ -55,6 +55,50 @@ def _real_ylm(unit, lmax, wang):
     return _real_ylm_at(unit, lmax, unit, wang)
 
 
+def _rowdot(A, B):
+    '''sum_j A[r, j] B[r, j] (OpenMP kernel of libsocthc when built).'''
+    from socutils.pbc.thc import _libthc, _ptr
+    lib_ = _libthc()
+    if lib_ is None or not hasattr(lib_, 'SOCTHCrowdot'):
+        return np.einsum('ri,ri->r', A, B)
+    import ctypes
+    A, B = np.ascontiguousarray(A, dtype=float), np.ascontiguousarray(B, dtype=float)
+    out = np.empty(len(A))
+    lib_.SOCTHCrowdot(_ptr(out), _ptr(A), _ptr(B), ctypes.c_int(A.shape[0]), ctypes.c_int(A.shape[1]))
+    return out
+
+
+def _scale_rows(w, A):
+    '''w[:, None] * A (OpenMP kernel of libsocthc when built).'''
+    from socutils.pbc.thc import _libthc, _ptr
+    lib_ = _libthc()
+    if lib_ is None or not hasattr(lib_, 'SOCTHCscale_rows'):
+        return w[:, None] * A
+    import ctypes
+    A, w = np.ascontiguousarray(A, dtype=float), np.ascontiguousarray(w, dtype=float)
+    out = np.empty_like(A)
+    lib_.SOCTHCscale_rows(_ptr(out), _ptr(A), _ptr(w), ctypes.c_int(A.shape[0]), ctypes.c_int(A.shape[1]))
+    return out
+
+
+def _wdens(phi, D, blk=262144):
+    '''rho(r) = sum_ij phi_i(r) D_ij phi_j(r) in grid blocks.'''
+    out = np.empty(len(phi))
+    for g0 in range(0, len(phi), blk):
+        p = phi[g0:g0 + blk]
+        out[g0:g0 + blk] = _rowdot(p @ D, p)
+    return out
+
+
+def _wmat(phi_a, w, phi_b=None, blk=262144):
+    '''sum_r phi_a(r)^T w(r) phi_b(r) in grid blocks.'''
+    phi_b = phi_a if phi_b is None else phi_b
+    out = np.zeros((phi_a.shape[1], phi_b.shape[1]))
+    for g0 in range(0, len(phi_a), blk):
+        out += phi_a[g0:g0 + blk].T @ _scale_rows(w[g0:g0 + blk], phi_b[g0:g0 + blk])
+    return out
+
+
 class GAPWJ:
     def __init__(self, th, L=4, eta=2.0, lmax=12, nrad=None, nang=302):
         '''th: a THCExchange after build_common (split cell, smooth functions on the uniform grid, kernels).'''
@@ -346,9 +390,12 @@ class GAPWJ:
             pts, w, inner, cols, cA, phi_in, phi0c = self.grids[A]
             ss = np.isin(cols, sm)
             perm = np.concatenate([np.where(ss)[0], np.where(~ss)[0]])
-            phi_in = np.ascontiguousarray(phi_in[:, perm])
-            self.grids[A] = (pts, w, inner, cols[perm], cA, phi_in, phi0c)
-            self._nss[A] = int(ss.sum())
+            phi_in = phi_in[:, perm]
+            nss = int(ss.sum())
+            # stored: the smooth columns only (C order; the SS term with A's local potential), the compact rows
+            # below
+            self.grids[A] = (pts, w, inner, cols[perm], cA, np.ascontiguousarray(phi_in[:, :nss]), phi0c)
+            self._nss[A] = nss
             # the compact home functions (exponents >= alpha_c) vanish within a few bohr: their rows of the grid
             big = np.abs(phi0c).max(axis=1) if phi0c.shape[1] else np.zeros(len(phi0c))
             ci = np.where(big > getattr(self, 'c_thr', 1e-14) * max(big.max(), 1e-300))[0]
@@ -362,8 +409,10 @@ class GAPWJ:
         hshape = (mesh[0], mesh[1], mesh[2] // 2 + 1)
         dm = .5 * (dm + dm.T)
         self._ss_first()
+        if not th.phi.flags['C_CONTIGUOUS']:                            # row blocks of the grid functions
+            th.phi = np.ascontiguousarray(th.phi)
         # smooth density on the uniform grid
-        n = np.einsum('ri,ri->r', th.phi @ dm[np.ix_(sm, sm)], th.phi)
+        n = _wdens(th.phi, np.ascontiguousarray(dm[np.ix_(sm, sm)]))
         nG = scipy.fft.rfftn(n.reshape(mesh), workers=-1).reshape(-1) * (vol / ng)
         # compact densities on the atomic grids, multipoles, compensation charges
         rhoA, QA = {}, {}
@@ -374,7 +423,7 @@ class GAPWJ:
             DA[cA[:, None] == cols[None, :]] *= .5                      # diagonal pairs counted once
             rho = np.zeros(len(pts))
             ci, p0c, pic = self._compact_pts[A]                          # points where phi^(0) is non-negligible
-            rho[inner[ci]] = 2 * np.einsum('ri,ri->r', p0c @ DA, pic)
+            rho[inner[ci]] = 2 * _rowdot(p0c @ DA, pic)
             rhoA[A] = rho
             rad = np.repeat(self.rads[A], len(self.wang))
             QA[A] = [((rho * w * rad ** l)[None] * np.tile(self.Y[l], len(self.rads[A]))).sum(1) for l in range(L + 1)]
@@ -384,7 +433,7 @@ class GAPWJ:
         vG = th.w_vec * nG
         vr = scipy.fft.irfftn(vG.reshape(hshape), s=mesh, workers=-1).reshape(-1)   # v_grid(r) vol / ng
         J = np.zeros((nao, nao))
-        J[np.ix_(sm, sm)] = th.phi.T @ (vr[:, None] * th.phi)
+        J[np.ix_(sm, sm)] = _wmat(th.phi, vr)
         vloc, vlms = {}, {}
         c_avg = 0.
         for A in self.atoms:
@@ -412,7 +461,7 @@ class GAPWJ:
             # pairs owned by A: smooth + own local + neighbours' local potentials
             ci, p0c, pic = self._compact_pts[A]
             wv = (w * (u + vloc[A] + vn))[inner[ci]]
-            JA = p0c.T @ (wv[:, None] * pic)                            # (home a in cA, b in cols)
+            JA = _wmat(p0c, wv, pic)                                    # (home a in cA, b in cols)
             own = (self.owner[np.ix_(cA, cols)] == A) & self.home[np.ix_(cA, cols)]
             ia, ib = np.nonzero(own)
             J[cA[ia], cols[ib]] += JA[ia, ib]
@@ -421,7 +470,7 @@ class GAPWJ:
             # SS pairs: the local potential of A (all space, on A's grid; it lives within r_store); the smooth
             # columns come first in cols (see _ss_first), so their block is a view
             nss = self._nss[A]
-            ps = phi_in[:, :nss]
-            J[np.ix_(cols[:nss], cols[:nss])] += ps.T @ ((w * vloc[A])[inner][:, None] * ps)
+            ps = phi_in                                                  # (stored: the smooth columns only)
+            J[np.ix_(cols[:nss], cols[:nss])] += _wmat(ps, (w * vloc[A])[inner])
         J += c_avg * self.S                                           # constant potential: c S_ab
         return J
