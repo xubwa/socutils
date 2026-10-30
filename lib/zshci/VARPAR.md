@@ -221,3 +221,27 @@ PT2 takes the gathered root vectors (ShareVectors), unchanged.
 Used when: the few-vector solver, more than one rank, the ranks of each node
 consecutive, and a space above `dense_dim` and 4096 per rank; otherwise the
 root solver as before.
+
+## Measured after items b, c, d (one node so far)
+
+Cr2 1.2e8 point (k15 input, variational only), one node with 140 GB (the
+dev node holds 35 GB besides; 170 GB ran out of memory there): both runs
+on the same node, last two iterations.
+
+| | iteration | dets | t_sel | t_ham | t_dav | per product | peak RSS |
+|---|---|---|---|---|---|---|---|
+| before | 14 | 5.8e7 | 6.8 | 49.5 | 88.4 | 2.85 s | |
+| after | 14 | 5.8e7 | 6.1 | 45.6 | 90.3 | 2.91 s | |
+| before | 15 | 1.2e8 | 13.5 | 147.3 | 1437.6 | 49.6 s | 132 GB |
+| after | 15 | 1.2e8 | 13.1 | 130.9 | 1406.3 | 48.5 s | 132 GB |
+
+At 1.2e8 on one node 24 % of the values do not fit 140 GB and are worked
+out in every product: 49.6 s per product against 4.65 s on 4 nodes with
+all values held (README) - memory decides the speed.
+
+Fe4S4 1e7, one node, 160 GB: 799 s before, 804 s after (same node; item c
+saves 10.7 s of value evaluation at 7.6e6 but the search that keeps the
+values is 7.4 s slower).
+
+Items b on several nodes, and 4 and 8 nodes at 5.8e7 and 1.2e8: queued
+(jobs 32760557, 32760558; Fe4S4 to 1e8 on 8 nodes: 32761217).
