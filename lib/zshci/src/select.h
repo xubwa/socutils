@@ -1038,6 +1038,21 @@ void RunSelect(const Input& given, const Ints& ints, const Comm& comm) {
     }
     fresh = std::vector<Det<W>>();
     timer.Mark("ham: extend");
+    if (ProfileOn()) {
+      // The stored matrix over all ranks, for memory per determinant.
+      std::vector<double> held = {double(h.stored().num_elements()),
+                                  double(h.stored().num_values()),
+                                  double(h.stored().element_bytes() +
+                                         h.stored().overhead_bytes())};
+      comm.Sum(held.data(), held.size());
+      if (comm.is_root()) {
+        std::printf(
+            "  profile ham: %.4g elements (%.4g with values), %.1f GB, "
+            "%.1f per determinant\n",
+            held[0], held[1], held[2] / 1073741824.0,
+            held[0] / double(new_size));
+      }
+    }
 
     if (comm.is_root()) {
       if (!have_vectors) {
