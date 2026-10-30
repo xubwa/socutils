@@ -701,10 +701,44 @@ class VariationalH : private ElementSource<S> {
         (n - first_new) * static_cast<size_t>(omp_get_max_threads()) *
             sizeof(uint32_t);
     const size_t room = budget_two_sweeps > held ? budget_two_sweeps - held : 0;
+    // The search works out every element anyway; its values are kept when
+    // they are expected to fit, so that they need not be worked out again
+    // below. Expected: the new rows of this rank with twice the elements per
+    // row held so far (a new row holds its connections to all rows before
+    // it, about 1.5 times the average when the space doubles, and rows gain
+    // connections as the space grows), within the smaller budget, that of
+    // the one-sweep product. The rows left out are decided by the columns
+    // alone either way; values beyond the budget are released again below.
+    bool keep_values = false;
+    {
+      size_t stored_rows = 0;
+      for (const CsrBlock<S>& block : stored_.blocks()) {
+        stored_rows += block.num_stored_rows();
+      }
+      if (stored_rows > 0) {
+        const double per_row =
+            double(stored_.num_elements()) / double(stored_rows);
+        // Rows are functions with spin_flip.
+        const size_t first_row =
+            first_new >= n     ? dim()
+            : flip_ == nullptr ? first_new
+                               : static_cast<size_t>(flip_->rep(first_new));
+        const double new_rows = double(dim() - first_row) / comm_.size();
+        const double expected = 2.0 * per_row * new_rows *
+                                (sizeof(DetIndex) + sizeof(S));
+        const double now = stored_.element_bytes() + stored_.overhead_bytes();
+        keep_values = now + expected <= double(HamiltonianBudget(n, true));
+      }
+      // The same choice on every rank.
+      double all = keep_values ? 1.0 : 0.0;
+      comm_.Sum(&all, 1);
+      keep_values = all == double(comm_.size());
+    }
     std::vector<uint8_t> left_out(n - first_new, 0);
     std::vector<CsrBlock<S>> blocks = internal::BuildGroupBlocks(
         dets_, first_new, ints_, connect_.threshold, *tables_, &stats_,
-        /*store_values=*/false, room, left_out.data(), flip_.get());
+        keep_values, room, left_out.data(), flip_.get(),
+        /*budget_values=*/false);
     timer.Mark("ham: connections");
     // Every rank must know which rows the others left out.
     double num_left_out = 0.0;

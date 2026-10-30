@@ -672,10 +672,11 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(
     Span<Det<W>> dets, size_t first_new, const Ints& ints, double threshold,
     const GroupStringTables<W>& tables, ConnectStats* stats,
     bool store_values = true, size_t max_bytes = SIZE_MAX,
-    uint8_t* left_out = nullptr, const SpinFlipLayout* flip = nullptr) {
+    uint8_t* left_out = nullptr, const SpinFlipLayout* flip = nullptr,
+    bool budget_values = true) {
   // Rows of this rank are stored as long as the elements take no more than
-  // max_bytes; the others are left out and left_out[j - first_new] is set
-  // to 1 for each of them.
+  // max_bytes (their columns only, with budget_values = false); the others
+  // are left out and left_out[j - first_new] is set to 1 for each of them.
   //
   // With `flip` the matrix is that over the functions of the layout
   // (spin_flip.h): only the rows of canonical determinants are made, and
@@ -690,7 +691,7 @@ std::vector<CsrBlock<S>> BuildGroupBlocks(
     return flip == nullptr || flip->is_canonical(j);
   };
   const size_t element_bytes =
-      sizeof(DetIndex) + (store_values ? sizeof(S) : 0);
+      sizeof(DetIndex) + (store_values && budget_values ? sizeof(S) : 0);
   size_t bytes_used = 0;
   const bool keep_all = threshold < 0.0;
   const double time = omp_get_wtime();
