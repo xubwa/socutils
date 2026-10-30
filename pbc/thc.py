@@ -891,6 +891,11 @@ class THCExchange:
         t = time.time()
         # CX-CX (SR, non-robust): K[S_X] += sum_P (C_P D) W_P per aux atom X and chunk of P, all densities stacked
         nCX = len(cxc)
+        # (M C)_P is density independent: kept across calls when naux nCX doubles fit in k_cache_gb
+        if getattr(self, '_mc_cache', None) is None:
+            fits = self.auxmol.nao * nCX * 8 <= getattr(self, 'k_cache_gb', 32.) * 1e9
+            self._mc_cache = {} if fits else False
+        mc_cache = self._mc_cache if self._mc_cache is not False else None
         tc = dict.fromkeys(('MC', 'unpack', 'CD', 'swap', 'GEMM', 'add'), 0.)
         aoat = self.aoat
         for X, (rows, cols, Cd) in enumerate(blocks):
@@ -911,9 +916,13 @@ class THCExchange:
                 c1 = min(c0 + kblk, len(rows))
                 nb = c1 - c0
                 ta = time.time()
-                MC = np.zeros((nb, nCX))
-                for rows2, cols2, Cd2 in blocks:
-                    add_cols(MC, self.M[rows[c0:c1]][:, rows2] @ Cd2, cols2)
+                MC = mc_cache.get((X, c0)) if mc_cache is not None else None
+                if MC is None:
+                    MC = np.zeros((nb, nCX))
+                    for rows2, cols2, Cd2 in blocks:
+                        add_cols(MC, self.M[rows[c0:c1]][:, rows2] @ Cd2, cols2)
+                    if mc_cache is not None:
+                        mc_cache[X, c0] = MC
                 tc['MC'] += time.time() - ta; ta = time.time()
                 W = unpack_sym(MC, ii32, jj32, nao)                   # (nb, nao, nao)
                 MC = None
