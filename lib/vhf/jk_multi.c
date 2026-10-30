@@ -188,10 +188,12 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
         double *kri = with_k ? malloc(sizeof(double) * dmax * nao * ndm) : NULL;
         double *krj = with_k ? malloc(sizeof(double) * dmax * nao * ndm) : NULL;
         double *jij = with_j ? malloc(sizeof(double) * dmax * dmax * ndm) : NULL;
-        int ij, kl, ish, jsh, ksh, lsh, m;
+        int it, ij, kl, ish, jsh, ksh, lsh, m;
         int shls[4];
-#pragma omp for schedule(dynamic, 2)
-        for (ij = 0; ij < npair; ij++) {
+        /* the work of pair ij grows with ij (kl <= ij): largest first */
+#pragma omp for schedule(dynamic, 1)
+        for (it = 0; it < npair; it++) {
+                ij = npair - 1 - it;
                 shell_pair(ij, &ish, &jsh);
                 const int di = ao_loc[ish + 1] - ao_loc[ish];
                 const int dj = ao_loc[jsh + 1] - ao_loc[jsh];
