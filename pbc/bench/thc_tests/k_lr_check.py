@@ -2,7 +2,7 @@
 (k_lr 'cross'); timings of the K pieces and of J.
 
 usage: k_lr_check.py [CIF BASIS_PY [NX,NY,NZ]]   (default quartz)'''
-import sys, time, runpy, numpy as np
+import os, sys, time, runpy, numpy as np
 from pyscf import gto
 from pyscf.pbc import scf as pscf
 from socutils.pbc.bench import cells
@@ -24,6 +24,7 @@ aux = {e: auxgen_from_basis({gto.mole._std_symbol(e): B[e]}, contract=False, pru
 t = time.time()
 jk = THCJK(cell, aux, alpha_c=4., nmu_factor=16., nuc_zeta=spinor_scf.nuclear_zeta(cell), local_rcut=6.)
 jk.stream = True
+jk.stream_gb = float(os.environ.get('STREAM_GB', 30))
 jk.build()
 th = jk.th
 print('%d atoms, nao %d, N_mu %d, naux %d, nCX %d, nLR %d; build %.0f s (%s)'

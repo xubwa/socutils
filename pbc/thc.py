@@ -242,6 +242,15 @@ def _mm_split(A, B):
     return A @ B
 
 
+def _lr_batch(L, D):
+    '''sum_g L_g D L_g for a stack of real symmetric L (gb, n, n) and a (possibly complex) D, in two GEMMs.'''
+    gb, n, _ = L.shape
+    L2 = L.reshape(gb * n, n)
+    T = _mm_split(L2, D)                                        # (gb n, n): rows of L_g D
+    T = T.reshape(gb, n, n).transpose(1, 0, 2).reshape(n, gb * n)   # [L_1 D ... L_gb D]
+    return _mm_split(L2.T, T.T).T                               # [L_1 D ... ] [L_1; ...; L_gb]
+
+
 def half_gv(cell, mesh):
     '''G vectors of the rfftn half spectrum, (nG, 3), and the multiplicity f (1 or 2) of each.'''
     b = cell.reciprocal_vectors()
@@ -438,9 +447,14 @@ class THCExchange:
         local = getattr(self, 'local_rcut', None)
         if local:
             Xi = np.empty((2 * len(self.r.lr_G), nmu))
+        G2 = np.einsum('gx,gx->g', self.Gv, self.Gv)
+        gord = np.argsort(G2, kind='stable')
         t0 = time.time()
         tt = dict.fromkeys(('xi', 'FFT', 'ft_ao', 'A GEMM', 'V'), 0.)
-        for b0 in range(0, nmu, nb):
+        for ib, b0 in enumerate(range(0, nmu, nb)):
+            if ib >= getattr(self, 'stream_max_blocks', 1 << 30):     # timing runs: stop after a few blocks
+                self.log('   streamed THC: stopped after %d blocks (timing run; V, A incomplete)' % ib)
+                break
             b1 = min(b0 + nb, nmu)
             ta = time.time()
             xi = np.empty((b1 - b0, ng))
@@ -456,11 +470,18 @@ class THCExchange:
             for g0 in range(0, len(self.Gv), gchunk):
                 g1 = min(g0 + gchunk, len(self.Gv))
                 ta = time.time()
-                Pg = ft_ao(self.auxmol, self.Gv[g0:g1]) * sw[g0:g1, None]   # (nG, naux); Re(P^* X) = PrXr + PiXi
+                idx = gord[g0:g1]                                       # G sorted by |G|: chunks of growing |G|
+                sub, cols = self._aux_upto(G2[idx[0]])                  # aux shells not negligible at |G| >= G_min
+                if sub is None:
+                    continue
+                Pg = np.ascontiguousarray(ft_ao(sub, self.Gv[idx]) * sw[idx, None])   # (nG, naux_sub), C order
                 tt['ft_ao'] += time.time() - ta
                 ta = time.time()
-                Xc = Xh[:, g0:g1]
-                A[:, b0:b1] += Pg.real.T @ Xc.real.T + Pg.imag.T @ Xc.imag.T
+                # Re(P^* X) = Pr Xr + Pi Xi as one real GEMM over (G, re/im) with contiguous operands
+                P2 = np.ascontiguousarray(Pg.view(float).reshape(g1 - g0, -1, 2).transpose(0, 2, 1)).reshape(-1, Pg.shape[1])
+                Pg = None
+                X2 = np.ascontiguousarray(Xh[:, idx]).view(float)       # (nb, 2 nG)
+                A[cols, b0:b1] += (X2 @ P2).T
                 tt['A GEMM'] += time.time() - ta
             Xc = Xh[:, lrg]
             A_lr[:, b0:b1] = Plr @ Xc.real.T + Pli @ Xc.imag.T
@@ -487,6 +508,32 @@ class THCExchange:
         if local:
             self.Xi_lr = Xi
         return int(keep.sum())
+
+    def _aux_upto(self, g2min, eps=1e-15):
+        '''The aux shells whose FT is not negligible at |G|^2 >= g2min (exp(-G^2 / 4 alpha) > eps for the smallest
+        exponent of the shell), as a sub-molecule and the aux AO indices of its functions (cached per prefix).'''
+        am = self.auxmol
+        if getattr(self, '_aux_cut', None) is None:
+            amin = np.array([am.bas_exp(i).min() for i in range(am.nbas)])
+            cut = 4 * amin * np.log(1 / eps)                            # |G|^2 beyond which shell i is negligible
+            order = np.argsort(-cut, kind='stable')
+            self._aux_cut = (cut[order], order, {})
+        cut, order, cache = self._aux_cut
+        if not getattr(self, 'ft_prune', True):
+            k = am.nbas
+        else:
+            k = int(np.searchsorted(-cut, -g2min, side='right'))       # shells with cut >= g2min (a prefix)
+        if k == 0:
+            return None, None
+        if k not in cache:
+            sel = np.sort(order[:k])
+            sub = am.copy(deep=False)
+            sub._bas = am._bas[sel]
+            loc = am.ao_loc_nr()
+            cols = np.concatenate([np.arange(loc[i], loc[i + 1]) for i in sel])
+            cache.clear()                                               # keep one (consecutive chunks share it)
+            cache[k] = (sub, cols)
+        return cache[k]
 
     def build_thc(self, nmu):
         if getattr(self, 'stream', False):
@@ -590,7 +637,7 @@ class THCExchange:
             Fss[:, self.ss] = self.Xi_lr[p0:p1] @ X
             yield Fcx, Fss
 
-    def get_k_sparse(self, dm, pblk=20000, kblk=64):
+    def get_k_sparse_v1(self, dm, pblk=20000, kblk=64):
         '''K (vector convention, split basis) for one density (any, complex allowed) with the sparse local CX fit
         (route 1, self.Cs scipy.sparse (naux, npair)) and no N^3 intermediate:
           SS-SS   THC;
@@ -709,15 +756,129 @@ class THCExchange:
             gb = getattr(self, 'lr_batch', 16)
             for g0 in range(0, len(Lcx), gb):
                 g1 = min(g0 + gb, len(Lcx))
+                nb_ = g1 - g0
                 Ls = np.stack([(Pm.T * Blr[g]) @ Pm for g in range(g0, g1)])   # (gb, nao_s, nao_s)
                 Lg = embed(unpack_sym(Lcx[g0:g1], ii32, jj32, nao), Ls, sm32)   # C kernels
-                for g in range(g1 - g0):
-                    K += _mm_split(Lg[g], _mm_split(Lg[g], dm.T).T)          # Lg D Lg (Lg symmetric)
-                    K[np.ix_(sm, sm)] -= _mm_split(Ls[g], _mm_split(Ls[g], Dss.T).T)
+                # sum_g Lg D Lg as two GEMMs per batch: T = [Lg_1 D, ...] stacked, then [T_1 ... T_gb] [Lg_1; ...]
+                K += _lr_batch(Lg, dm)
+                K[np.ix_(sm, sm)] -= _lr_batch(Ls, Dss)
                 Lg = Ls = None
         self.timings.update({'K SS (THC)': t_ss, 'K CX-SS (SR)': t_cross, 'K CX-CX (SR)': t_cc,
                              'K LR': time.time() - t})
         return K
+
+    def get_k_sparse(self, dm):
+        '''K of one density (any, complex allowed): get_k_multi on its real and imaginary parts.'''
+        if getattr(self, 'k_lr', 'dense') != 'dense' or getattr(self, 'k_cc', 'blocks') != 'blocks':
+            return self.get_k_sparse_v1(dm)
+        if np.iscomplexobj(dm):
+            Kr, Ki = self.get_k_multi([dm.real, dm.imag])
+            return Kr + 1j * Ki
+        return self.get_k_multi([dm])[0]
+
+    def get_k_multi(self, dms, sym=None, pblk=20000, kblk=64):
+        '''K (vector convention, split basis) of several real densities at once (route 1).  The density-independent
+        intermediates -- B_p = (C^T A)_p of CX-SS, (M C)_P and C_P of CX-CX, the LR rows L_g -- are built once and
+        applied to all densities stacked.  sym[n] = +1 / -1 marks a symmetric / antisymmetric density (its CX-SS
+        transpose term follows from the direct one), 0 a general one.  Terms as in get_k_sparse_v1.'''
+        nD = len(dms)
+        dms = [np.ascontiguousarray(d, dtype=float) for d in dms]
+        sym = [0] * nD if sym is None else list(sym)
+        t = time.time()
+        nao, sm = self.nao, self.smooth
+        Pm = self.phimu
+        Ks = []
+        for d in dms:
+            K = np.zeros((nao, nao))
+            K[np.ix_(sm, sm)] = Pm.T @ ((Pm @ d[np.ix_(sm, sm)] @ Pm.T) * self.V) @ Pm
+            Ks.append(K)
+        t_ss = time.time() - t
+        t = time.time()
+        cxc = self.lr_cols
+        ii, jj = self.ti[cxc], self.tj[cxc]
+        off = ii != jj
+        ii32, jj32 = ii.astype(np.int32), jj.astype(np.int32)
+        Ccx = self.Cs[:, cxc].tocsc()
+        blocks = self._cx_atom_blocks(Ccx)
+        Bsr, Blr, Lcx = self.A, self.Xi_lr, self.Llr_cx
+        # CX-SS: cross(D) = H(D) Pm with H[a] = sum_{p=(a,c)} B_p E_c, E = D[:, SS] Pm^T; for each density the
+        # direct term and (unless sym) the transposed one
+        Es, owner = [], []
+        for n, d in enumerate(dms):
+            Es.append(np.ascontiguousarray(d[:, sm] @ Pm.T)); owner.append((n, 0))
+            if sym[n] == 0:
+                Es.append(np.ascontiguousarray(d.T[:, sm] @ Pm.T)); owner.append((n, 1))
+        Hs = [np.zeros((nao, len(Pm))) for _ in Es]
+        for p0 in range(0, len(cxc), pblk):
+            p1 = min(p0 + pblk, len(cxc))
+            Bp = np.zeros((p1 - p0, Bsr.shape[1]))
+            for rows, cols, Cd in blocks:
+                a, b = np.searchsorted(cols, (p0, p1))
+                if b > a:
+                    Bp[cols[a:b] - p0] += Cd[:, a:b].T @ Bsr[rows]
+            for H, E in zip(Hs, Es):
+                pair_accum(H, Bp, E, ii32[p0:p1], jj32[p0:p1], off[p0:p1])
+        Bp = Es = None
+        cr = {}
+        for (n, tr), H in zip(owner, Hs):
+            cr[n, tr] = H @ Pm                                        # (nao, nao_s)
+        Hs = None
+        for n in range(nD):
+            Ks[n][:, sm] += cr[n, 0]
+            Ks[n][sm, :] += (cr[n, 1] if sym[n] == 0 else sym[n] * cr[n, 0]).T
+        cr = None
+        t_cross = time.time() - t
+        t = time.time()
+        # CX-CX (SR, non-robust): K[S_X] += sum_P (C_P D) W_P per aux atom X and chunk of P, all densities stacked
+        nCX = len(cxc)
+        for rows, cols, Cd in blocks:
+            S = np.unique(np.concatenate([ii[cols], jj[cols]]))
+            pos = np.full(nao, -1)
+            pos[S] = np.arange(len(S))
+            li, lj = pos[ii[cols]], pos[jj[cols]]
+            DS = np.hstack([d[S] for d in dms])                       # (|S|, nD nao)
+            nS = len(S)
+            for c0 in range(0, len(rows), kblk):
+                c1 = min(c0 + kblk, len(rows))
+                nb = c1 - c0
+                MC = np.zeros((nb, nCX))
+                for rows2, cols2, Cd2 in blocks:
+                    MC[:, cols2] += self.M[np.ix_(rows[c0:c1], rows2)] @ Cd2
+                W = unpack_sym(MC, ii32, jj32, nao).reshape(nb * nao, nao)
+                MC = None
+                Cf = unpack_sym(Cd[c0:c1], li, lj, nS)
+                CD = (Cf.reshape(nb * nS, nS) @ DS).reshape(nb, nS, nD, nao)
+                CD = np.ascontiguousarray(CD.transpose(2, 1, 0, 3)).reshape(nD * nS, nb * nao)
+                R = (CD @ W).reshape(nD, nS, nao)
+                for n in range(nD):
+                    Ks[n][S] += R[n]
+                W = CD = Cf = R = None
+        t_cc = time.time() - t
+        t = time.time()
+        # LR: sum_g L_g D L_g - L^SS_g D_SS L^SS_g, L_g the full LR rows, all densities stacked
+        sm32 = np.asarray(sm, dtype=np.int32)
+        gb = getattr(self, 'lr_batch', 16)
+        Dh = np.hstack(dms)                                           # (nao, nD nao)
+        Dsh = np.hstack([d[np.ix_(sm, sm)] for d in dms])
+        nss = len(sm)
+        for g0 in range(0, len(Lcx), gb):
+            g1 = min(g0 + gb, len(Lcx))
+            Ls = np.stack([(Pm.T * Blr[g]) @ Pm for g in range(g0, g1)])
+            Lg = embed(unpack_sym(Lcx[g0:g1], ii32, jj32, nao), Ls, sm32)
+            for L, Dst, n_, sub in ((Lg, Dh, nao, None), (Ls, Dsh, nss, sm)):
+                k = len(L)
+                L2 = L.reshape(k * n_, n_)
+                T = (L2 @ Dst).reshape(k, n_, nD, n_).transpose(2, 1, 0, 3).reshape(nD * n_, k * n_)
+                R = (T @ L2).reshape(nD, n_, n_)                      # sum_g L_g D L_g per density
+                for n in range(nD):
+                    if sub is None:
+                        Ks[n] += R[n]
+                    else:
+                        Ks[n][np.ix_(sub, sub)] -= R[n]
+            Lg = Ls = T = R = None
+        self.timings.update({'K SS (THC)': t_ss, 'K CX-SS (SR)': t_cross, 'K CX-CX (SR)': t_cc,
+                             'K LR': time.time() - t})
+        return Ks
 
     def _cx_atom_blocks(self, Ccx):
         '''C (naux, nCX) as dense blocks per aux atom X: (aux rows of X, sorted CX columns with a nonzero in them,
@@ -995,6 +1156,7 @@ class THCJK:
         self.th.gapw_opts = getattr(self, 'gapw_opts', {})
         self.th.stream = getattr(self, 'stream', False)
         self.th.stream_gb = getattr(self, 'stream_gb', 30)
+        self.th.stream_max_blocks = getattr(self, 'stream_max_blocks', 1 << 30)
         self.th.piv_file = getattr(self, 'piv_file', None)
         for k in ('coarsen', 'blocked_pivots'):                        # point-selection options, if set
             if hasattr(self, k):
@@ -1033,7 +1195,13 @@ class THCJK:
         Cs = (c2 @ mo_coeff[:, sel]) * np.sqrt(occ[sel])
         cs = [T @ Cs[:nao], T @ Cs[nao:]]                              # spin components in the split basis
         if getattr(self.th, 'local_rcut', None):                      # route 1: sparse DM-contracted K
-            Ks = [[self.th.get_k_sparse(cs[s] @ cs[s2].conj().T) for s2 in range(2)] for s in range(2)]
+            # one batched K for the spin blocks: aa, bb Hermitian (real part symmetric, imaginary antisymmetric),
+            # ab general; ba = ab^H
+            Daa, Dbb, Dab = cs[0] @ cs[0].conj().T, cs[1] @ cs[1].conj().T, cs[0] @ cs[1].conj().T
+            Kr = self.th.get_k_multi([Daa.real, Daa.imag, Dbb.real, Dbb.imag, Dab.real, Dab.imag],
+                                     sym=[1, -1, 1, -1, 0, 0])
+            Kaa, Kbb, Kab = Kr[0] + 1j * Kr[1], Kr[2] + 1j * Kr[3], Kr[4] + 1j * Kr[5]
+            Ks = [[Kaa, Kab], [Kab.conj().T, Kbb]]
         else:
             Ks = self.th.get_k_occ(cs)
         dtr = cs[0] @ cs[0].conj().T + cs[1] @ cs[1].conj().T
