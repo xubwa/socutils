@@ -912,7 +912,7 @@ class THCExchange:
             pos[S] = np.arange(len(S))
             li, lj = pos[ii[cols]], pos[jj[cols]]
             DSh = np.hstack([d[S] for d in dms])                      # (|S|, nD nao)
-            Dx = np.vstack([d[S[:nx]] for d in dms])                  # (nD nx, nao)
+            DxT = np.ascontiguousarray(np.vstack([d[S[:nx]] for d in dms]).T)   # (nao, nD nx)
             nS = len(S)
             for c0 in range(0, len(rows), kblk):
                 c1 = min(c0 + kblk, len(rows))
@@ -942,12 +942,13 @@ class THCExchange:
                 R = np.zeros((nD, nS, nao))
                 R[:, :nx] = Rx.reshape(nD, nx, nao)
                 if nx < nS:
-                    Y = np.matmul(Dx, W)                              # (nb, nD nx, nao): D[x] W_k
-                    Y = swap02(Y.reshape(nb, 1, nD, nx * nao)).reshape(nD, nb * nx, nao)   # (nD, (k, x), nao)
-                    Cn = np.ascontiguousarray(Cf[:, nx:, :nx].transpose(1, 0, 2)).reshape(nS - nx, nb * nx)
+                    # (D[x] W_k)^T = W_k D[x]^T for all k in one GEMM: rows (k, b), columns (d, a) -> (d, b, k, a)
+                    Y = (W.reshape(nb * nao, nao) @ DxT).reshape(nb, nao, nD, nx)
+                    Y = swap02(Y).reshape(nD, nao, nb * nx)
+                    CnT = np.ascontiguousarray(Cf[:, nx:, :nx].transpose(0, 2, 1)).reshape(nb * nx, nS - nx)
                     for n in range(nD):
-                        R[n, nx:] = Cn @ Y[n]
-                    Y = Cn = None
+                        R[n, nx:] = (Y[n] @ CnT).T                    # sum_k C_k[n, x] D[x] W_k
+                    Y = CnT = None
                 tc['GEMM'] += time.time() - ta
                 ta = time.time()
                 for n in range(nD):
