@@ -57,6 +57,15 @@ t6 = time.time() - t
 print('spin blocks batched (6 real densities): %.0f s %s' % (t6, {k: round(v, 1) for k, v in th.timings.items() if k.startswith('K')}),
       flush=True)
 Kaa, Kbb, Kab = Kr[0] + 1j * Kr[1], Kr[2] + 1j * Kr[3], Kr[4] + 1j * Kr[5]
+F = [np.ascontiguousarray(c) for c in (ca.real, ca.imag, cb.real, cb.imag)]
+terms = [[(1., 0, 0), (1., 1, 1)], [(1., 1, 0), (-1., 0, 1)], [(1., 2, 2), (1., 3, 3)], [(1., 3, 2), (-1., 2, 3)],
+         [(1., 0, 2), (1., 1, 3)], [(1., 1, 2), (-1., 0, 3)]]
+t = time.time()
+Kf = th.get_k_multi([Daa.real, Daa.imag, Dbb.real, Dbb.imag, Dab.real, Dab.imag], sym=[1, -1, 1, -1, 0, 0],
+                    lr_factors=(F, terms))
+print('spin blocks batched, LR by occupied factors: %.0f s %s; max |K_f - K| %.2e' % (time.time() - t,
+      {k: round(v, 1) for k, v in th.timings.items() if k.startswith('K')}, max(abs(a - b).max() for a, b in zip(Kf, Kr))),
+      flush=True)
 if not os.environ.get('SKIP_REF'):
     t = time.time()
     ref = {k: th.get_k_sparse_v1(D) for k, D in (('aa', Daa), ('bb', Dbb), ('ab', Dab), ('ba', Dab.conj().T))}

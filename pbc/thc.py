@@ -828,11 +828,13 @@ class THCExchange:
             return Kr + 1j * Ki
         return self.get_k_multi([dm])[0]
 
-    def get_k_multi(self, dms, sym=None, pblk=20000, kblk=64):
+    def get_k_multi(self, dms, sym=None, pblk=20000, kblk=64, lr_factors=None):
         '''K (vector convention, split basis) of several real densities at once (route 1).  The density-independent
         intermediates -- B_p = (C^T A)_p of CX-SS, (M C)_P and C_P of CX-CX, the LR rows L_g -- are built once and
         applied to all densities stacked.  sym[n] = +1 / -1 marks a symmetric / antisymmetric density (its CX-SS
-        transpose term follows from the direct one), 0 a general one.  Terms as in get_k_sparse_v1.'''
+        transpose term follows from the direct one), 0 a general one.  Terms as in get_k_sparse_v1.
+        lr_factors = (F, terms): the densities as sums of real rank-r products, dms[n] = sum_(c, x, y) c F[x] F[y]^T
+        over terms[n]; the LR term then needs sum_g (L_g F[x]) (L_g F[y])^T per product only.'''
         nD = len(dms)
         dms = [np.ascontiguousarray(d, dtype=float) for d in dms]
         sym = [0] * nD if sym is None else list(sym)
@@ -965,6 +967,14 @@ class THCExchange:
         Racc = np.zeros((nD, nao, nao))                               # sum_g L_g D L_g
         Rss = np.zeros((nD, nss, nss))                                # sum_g L^SS_g D_SS L^SS_g
         tl = dict.fromkeys(('Ls', 'unpack', 'GEMM', 'add'), 0.)
+        if lr_factors is not None:
+            F, terms = lr_factors
+            prods = sorted({(x, y) for tn in terms for _, x, y in tn})
+            roff = np.cumsum([0] + [f.shape[1] for f in F])
+            Fc = np.hstack(F)                                           # (nao, sum r)
+            Fsc = np.ascontiguousarray(Fc[sm])
+            Mp = {xy: np.zeros((nao, nao)) for xy in prods}
+            Mps = {xy: np.zeros((nss, nss)) for xy in prods}
         for g0 in range(0, len(Lcx), gb):
             g1 = min(g0 + gb, len(Lcx))
             ta = time.time()
@@ -972,6 +982,20 @@ class THCExchange:
             tl['Ls'] += time.time() - ta; ta = time.time()
             Lg = embed(unpack_sym(Lcx[g0:g1], ii32, jj32, nao), Ls, sm32)
             tl['unpack'] += time.time() - ta
+            if lr_factors is not None:
+                # P_x = [L_1 F_x ... L_k F_x] (n, k r_x); sum_g (L_g x)(L_g y)^T = P_x P_y^T
+                ta = time.time()
+                for L, Fm, n_, Macc in ((Lg, Fc, nao, Mp), (Ls, Fsc, nss, Mps)):
+                    k = len(L)
+                    P = swap02((L.reshape(k * n_, n_) @ Fm).reshape(k, 1, n_, Fm.shape[1]))   # (n, 1, k, sum r)
+                    P = P.reshape(n_, k, Fm.shape[1])
+                    Ph = [np.ascontiguousarray(P[:, :, roff[x]:roff[x + 1]]).reshape(n_, -1) for x in range(len(F))]
+                    for x, y in prods:
+                        Macc[x, y] += Ph[x] @ Ph[y].T
+                    P = Ph = None
+                tl['GEMM'] += time.time() - ta
+                Lg = Ls = None
+                continue
             for L, Dst, n_, acc in ((Lg, Dh, nao, Racc), (Ls, Dsh, nss, Rss)):
                 ta = time.time()
                 k = len(L)
@@ -982,6 +1006,12 @@ class THCExchange:
                 acc += (T @ L2).reshape(nD, n_, n_)                   # sum_g L_g D L_g per density
                 tl['GEMM'] += time.time() - ta
             Lg = Ls = T = R = None
+        if lr_factors is not None:
+            for n in range(nD):
+                for c, x, y in terms[n]:
+                    Racc[n] += c * Mp[x, y]
+                    Rss[n] += c * Mps[x, y]
+            Mp = Mps = None
         for n in range(nD):
             Ks[n] += Racc[n]
             Ks[n][np.ix_(sm, sm)] -= Rss[n]
@@ -1325,8 +1355,15 @@ class THCJK:
             # one batched K for the spin blocks: aa, bb Hermitian (real part symmetric, imaginary antisymmetric),
             # ab general; ba = ab^H
             Daa, Dbb, Dab = cs[0] @ cs[0].conj().T, cs[1] @ cs[1].conj().T, cs[0] @ cs[1].conj().T
+            # real factors ar, ai, br, bi of the occupied spinor components (for the LR term)
+            F = [np.ascontiguousarray(cs[0].real), np.ascontiguousarray(cs[0].imag),
+                 np.ascontiguousarray(cs[1].real), np.ascontiguousarray(cs[1].imag)]
+            terms = [[(1., 0, 0), (1., 1, 1)], [(1., 1, 0), (-1., 0, 1)],          # aa: Re, Im
+                     [(1., 2, 2), (1., 3, 3)], [(1., 3, 2), (-1., 2, 3)],          # bb
+                     [(1., 0, 2), (1., 1, 3)], [(1., 1, 2), (-1., 0, 3)]]          # ab = ca cb^H
             Kr = self.th.get_k_multi([Daa.real, Daa.imag, Dbb.real, Dbb.imag, Dab.real, Dab.imag],
-                                     sym=[1, -1, 1, -1, 0, 0])
+                                     sym=[1, -1, 1, -1, 0, 0],
+                                     lr_factors=(F, terms) if getattr(self.th, 'lr_occ', True) else None)
             Kaa, Kbb, Kab = Kr[0] + 1j * Kr[1], Kr[2] + 1j * Kr[3], Kr[4] + 1j * Kr[5]
             Ks = [[Kaa, Kab], [Kab.conj().T, Kbb]]
         else:
