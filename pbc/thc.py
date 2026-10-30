@@ -904,7 +904,8 @@ class THCExchange:
             pos = np.full(nao, -1)
             pos[S] = np.arange(len(S))
             li, lj = pos[ii[cols]], pos[jj[cols]]
-            DSv = np.stack([d[S] for d in dms])                       # (nD, |S|, nao)
+            DSh = np.hstack([d[S] for d in dms])                      # (|S|, nD nao)
+            Dx = np.vstack([d[S[:nx]] for d in dms])                  # (nD nx, nao)
             nS = len(S)
             for c0 in range(0, len(rows), kblk):
                 c1 = min(c0 + kblk, len(rows))
@@ -918,19 +919,26 @@ class THCExchange:
                 MC = None
                 Cf = unpack_sym(Cd[c0:c1], li, lj, nS)
                 tc['unpack'] += time.time() - ta
-                # R_d = sum_k (C_k D_d[S]) W_k: per k the densities stacked as rows (d, a), no transposes
-                R = np.zeros((nD * nS, nao))
                 if c0 == 0 and nx < nS:
                     assert abs(Cf[:, nx:, nx:]).max() == 0, 'CX-CX: C_P not of the (X, any) pair form'
-                for k in range(nb):
-                    ta = time.time()
-                    CDk = np.matmul(Cf[k][:, :nx], DSv[:, :nx])        # (nD, nS, nao): C[:, x] D[x]
-                    CDk[:, :nx] += np.matmul(Cf[k][:nx, nx:], DSv[:, nx:])   # + C[x, n] D[n]
-                    CDk = CDk.reshape(nD * nS, nao)
-                    tc['CD'] += time.time() - ta; ta = time.time()
-                    blas.dgemm(1., W[k].T, CDk.T, beta=1., c=R.T, trans_a=1, trans_b=0, overwrite_c=1)   # R^T += W_k CDk^T
-                    tc['GEMM'] += time.time() - ta
-                R = R.reshape(nD, nS, nao)
+                # C_k = [[C_xx, C_xn], [C_nx, 0]]:  R[x] += sum_k (C_k[x, S] D[S]) W_k,  R[n] += sum_k C_k[n, x] (D[x] W_k)
+                ta = time.time()
+                Z = (Cf[:, :nx, :].reshape(nb * nx, nS) @ DSh).reshape(nb, nx, nD, nao)
+                Z = swap02(Z).reshape(nD * nx, nb * nao)              # (nD, nx, nb, nao)
+                Rx = Z @ W.reshape(nb * nao, nao)                     # (nD nx, nao)
+                Z = None
+                tc['CD'] += time.time() - ta; ta = time.time()
+                R = np.zeros((nD, nS, nao))
+                R[:, :nx] = Rx.reshape(nD, nx, nao)
+                if nx < nS:
+                    Y = np.empty((nD, nb, nx, nao))
+                    for k in range(nb):
+                        Y[:, k] = (Dx @ W[k]).reshape(nD, nx, nao)    # D[x] W_k (W symmetric)
+                    Cn = np.ascontiguousarray(Cf[:, nx:, :nx].transpose(1, 0, 2)).reshape(nS - nx, nb * nx)
+                    for n in range(nD):
+                        R[n, nx:] = Cn @ Y[n].reshape(nb * nx, nao)
+                    Y = Cn = None
+                tc['GEMM'] += time.time() - ta
                 ta = time.time()
                 for n in range(nD):
                     Ks[n][S] += R[n]
