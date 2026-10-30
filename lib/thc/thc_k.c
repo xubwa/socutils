@@ -5,6 +5,9 @@
  *                     threads own column ranges of H, so there are no write conflicts
  *   SOCTHCunpack_sym  W[k] = 0;  W[k, i_p, j_p] = W[k, j_p, i_p] = V[k, p]      (packed pairs -> symmetric)
  *   SOCTHCembed       W[k, idx[a], idx[b]] = S[k, a, b]
+ *   SOCTHCswap02      dst[i2, i1, i0, :] = src[i0, i1, i2, :]
+ *   SOCTHCadd_cols    M[:, cols] += S
+ *   SOCTHCadd_rows    M[rows] += S
  */
 #include <stdlib.h>
 #include <string.h>
@@ -81,6 +84,49 @@ void SOCTHCembed(double *W, const double *S, const int *idx, int nb, int ns, int
                 const double *s = S + k * ss + a * ns;
                 for (b = 0; b < (size_t)ns; b++) {
                         w[idx[b]] = s[b];
+                }
+        }
+}
+
+/* dst[i2, i1, i0, :] = src[i0, i1, i2, :]  (src (n0, n1, n2, L) C order; rows of length L copied in parallel) */
+void SOCTHCswap02(double *dst, const double *src, int n0, int n1, int n2, int L)
+{
+        size_t t, nt = (size_t)n0 * n1 * n2;
+#pragma omp parallel for schedule(static)
+        for (t = 0; t < nt; t++) {
+                size_t i0 = t / ((size_t)n1 * n2);
+                size_t i1 = (t / n2) % n1;
+                size_t i2 = t % n2;
+                memcpy(dst + ((i2 * n1 + i1) * n0 + i0) * (size_t)L, src + t * (size_t)L, sizeof(double) * L);
+        }
+}
+
+/* M[:, cols] += S  (M (nb, n), S (nb, ncol), C order; columns distinct within a call) */
+void SOCTHCadd_cols(double *M, const double *S, const int *cols, int nb, int ncol, int n)
+{
+        size_t t, nt = (size_t)nb;
+#pragma omp parallel for schedule(static)
+        for (t = 0; t < nt; t++) {
+                double *m = M + t * (size_t)n;
+                const double *s = S + t * (size_t)ncol;
+                int j;
+                for (j = 0; j < ncol; j++) {
+                        m[cols[j]] += s[j];
+                }
+        }
+}
+
+/* M[rows] += S  (M (n, L), S (nr, L), C order; rows distinct within a call) */
+void SOCTHCadd_rows(double *M, const double *S, const int *rows, int nr, int L)
+{
+        size_t t;
+#pragma omp parallel for schedule(static)
+        for (t = 0; t < (size_t)nr; t++) {
+                double *m = M + (size_t)rows[t] * L;
+                const double *s = S + t * (size_t)L;
+                int j;
+                for (j = 0; j < L; j++) {
+                        m[j] += s[j];
                 }
         }
 }

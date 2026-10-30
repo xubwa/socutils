@@ -25,6 +25,7 @@ RSDF build with keep_raw (the CX columns are what a production code would comput
 import os, time
 import numpy as np
 import scipy.linalg
+from scipy.linalg import blas
 import scipy.fft
 from pyscf import lib
 from pyscf.gto.ft_ao import ft_ao
@@ -233,6 +234,46 @@ def embed(W, S, idx):
     lib_.SOCTHCembed(_ptr(W), _ptr(S), _ptr(idx), ctypes.c_int(len(W)), ctypes.c_int(len(idx)),
                      ctypes.c_int(W.shape[1]))
     return W
+
+
+def add_cols(M, S, cols):
+    '''M[:, cols] += S in place (C kernel; distinct cols).'''
+    lib_ = _libthc()
+    if lib_ is None:
+        M[:, cols] += S
+        return M
+    import ctypes
+    S = np.ascontiguousarray(S, dtype=float)
+    cols = np.ascontiguousarray(cols, dtype=np.int32)
+    lib_.SOCTHCadd_cols(_ptr(M), _ptr(S), _ptr(cols), ctypes.c_int(M.shape[0]), ctypes.c_int(len(cols)),
+                        ctypes.c_int(M.shape[1]))
+    return M
+
+
+def add_rows(M, S, rows):
+    '''M[rows] += S in place (C kernel; distinct rows).'''
+    lib_ = _libthc()
+    if lib_ is None or not hasattr(lib_, 'SOCTHCadd_rows'):
+        M[rows] += S
+        return M
+    import ctypes
+    S = np.ascontiguousarray(S, dtype=float)
+    rows = np.ascontiguousarray(rows, dtype=np.int32)
+    lib_.SOCTHCadd_rows(_ptr(M), _ptr(S), _ptr(rows), ctypes.c_int(len(rows)), ctypes.c_int(M.shape[1]))
+    return M
+
+
+def swap02(src):
+    '''(n0, n1, n2, L) -> (n2, n1, n0, L), C order (rows of L copied in parallel by the C kernel).'''
+    n0, n1, n2, L = src.shape
+    lib_ = _libthc()
+    if lib_ is None:
+        return np.ascontiguousarray(src.transpose(2, 1, 0, 3))
+    import ctypes
+    src = np.ascontiguousarray(src, dtype=float)
+    dst = np.empty((n2, n1, n0, L))
+    lib_.SOCTHCswap02(_ptr(dst), _ptr(src), ctypes.c_int(n0), ctypes.c_int(n1), ctypes.c_int(n2), ctypes.c_int(L))
+    return dst
 
 
 def _mm_split(A, B):
@@ -447,8 +488,10 @@ class THCExchange:
         local = getattr(self, 'local_rcut', None)
         if local:
             Xi = np.empty((2 * len(self.r.lr_G), nmu))
+        # G chunks in the rfft order (contiguous columns of the block spectra); aux shells pruned per chunk by its
+        # smallest |G|^2
         G2 = np.einsum('gx,gx->g', self.Gv, self.Gv)
-        gord = np.argsort(G2, kind='stable')
+        g2c = np.array([G2[g0:g0 + gchunk].min() for g0 in range(0, len(G2), gchunk)])
         t0 = time.time()
         tt = dict.fromkeys(('xi', 'FFT', 'ft_ao', 'A GEMM', 'V'), 0.)
         for ib, b0 in enumerate(range(0, nmu, nb)):
@@ -463,6 +506,7 @@ class THCExchange:
                 xi[:, g0:g1] = Ginv[b0:b1] @ ((PP @ phi[g0:g1].T) ** 2)
             tt['xi'] += time.time() - ta
             ta = time.time()
+            As = np.zeros((self.auxmol.nao, b1 - b0))                 # A[:, b] in aux-cutoff order
             Xh = scipy.fft.rfftn(xi.reshape(b1 - b0, *mesh), axes=(1, 2, 3), workers=-1).reshape(b1 - b0, -1)
             xi = None
             Xh *= vol / ng                                              # xi(G) = int_cell xi(r) e^{-iGr}
@@ -470,19 +514,26 @@ class THCExchange:
             for g0 in range(0, len(self.Gv), gchunk):
                 g1 = min(g0 + gchunk, len(self.Gv))
                 ta = time.time()
-                idx = gord[g0:g1]                                       # G sorted by |G|: chunks of growing |G|
-                sub, cols = self._aux_upto(G2[idx[0]])                  # aux shells not negligible at |G| >= G_min
+                sub, nk = self._aux_upto(g2c[g0 // gchunk])               # the first nk aux functions (cutoff order)
                 if sub is None:
                     continue
-                Pg = np.ascontiguousarray(ft_ao(sub, self.Gv[idx]) * sw[idx, None])   # (nG, naux_sub), C order
+                Pg = np.ascontiguousarray(ft_ao(sub, self.Gv[g0:g1]) * sw[g0:g1, None])   # (nG, nk), C order
                 tt['ft_ao'] += time.time() - ta
                 ta = time.time()
-                # Re(P^* X) = Pr Xr + Pi Xi as one real GEMM over (G, re/im) with contiguous operands
-                P2 = np.ascontiguousarray(Pg.view(float).reshape(g1 - g0, -1, 2).transpose(0, 2, 1)).reshape(-1, Pg.shape[1])
+                # Re(P^* X) = Pr Xr + Pi Xi as one real GEMM over (G, re/im), accumulated in place (beta = 1) into
+                # the aux-cutoff-ordered A[:, b] (naux, nb), C order: its first nk rows are contiguous
+                P2 = Pg.view(float).reshape(g1 - g0, nk, 2).transpose(0, 2, 1).reshape(-1, nk)
+                P2 = np.ascontiguousarray(P2)
                 Pg = None
-                X2 = np.ascontiguousarray(Xh[:, idx]).view(float)       # (nb, 2 nG)
-                A[cols, b0:b1] += (X2 @ P2).T
+                X2 = np.ascontiguousarray(Xh[:, g0:g1]).view(float)     # (nb, 2 nG), contiguous copy of the chunk
+                # As[:nk] (C order) is the column-major (nb, nk) matrix X2 @ P2 accumulates into
+                c = As[:nk].T
+                r = blas.dgemm(1., X2.T, P2.T, beta=1., c=c, trans_a=1, trans_b=1, overwrite_c=1)
+                if not np.shares_memory(r, As):
+                    As[:nk] = r.T
                 tt['A GEMM'] += time.time() - ta
+            A[self._aux_perm, b0:b1] = As
+            As = None
             Xc = Xh[:, lrg]
             A_lr[:, b0:b1] = Plr @ Xc.real.T + Pli @ Xc.imag.T
             Xc = Pg = None
@@ -511,12 +562,16 @@ class THCExchange:
 
     def _aux_upto(self, g2min, eps=1e-15):
         '''The aux shells whose FT is not negligible at |G|^2 >= g2min (exp(-G^2 / 4 alpha) > eps for the smallest
-        exponent of the shell), as a sub-molecule and the aux AO indices of its functions (cached per prefix).'''
+        exponent of the shell): a prefix of the shells sorted by that cutoff.  Returns the sub-molecule of the prefix
+        and its number of functions nk; the functions of the sorted shells are self._aux_perm (aux AO indices), so
+        the sub-molecule's functions are aux AOs _aux_perm[:nk].'''
         am = self.auxmol
         if getattr(self, '_aux_cut', None) is None:
             amin = np.array([am.bas_exp(i).min() for i in range(am.nbas)])
             cut = 4 * amin * np.log(1 / eps)                            # |G|^2 beyond which shell i is negligible
             order = np.argsort(-cut, kind='stable')
+            loc = am.ao_loc_nr()
+            self._aux_perm = np.concatenate([np.arange(loc[i], loc[i + 1]) for i in order])
             self._aux_cut = (cut[order], order, {})
         cut, order, cache = self._aux_cut
         if not getattr(self, 'ft_prune', True):
@@ -524,15 +579,12 @@ class THCExchange:
         else:
             k = int(np.searchsorted(-cut, -g2min, side='right'))       # shells with cut >= g2min (a prefix)
         if k == 0:
-            return None, None
+            return None, 0
         if k not in cache:
-            sel = np.sort(order[:k])
             sub = am.copy(deep=False)
-            sub._bas = am._bas[sel]
-            loc = am.ao_loc_nr()
-            cols = np.concatenate([np.arange(loc[i], loc[i + 1]) for i in sel])
+            sub._bas = am._bas[order[:k]]                               # shells in cutoff order
             cache.clear()                                               # keep one (consecutive chunks share it)
-            cache[k] = (sub, cols)
+            cache[k] = (sub, int(sub.nao_nr()))
         return cache[k]
 
     def build_thc(self, nmu):
@@ -798,8 +850,8 @@ class THCExchange:
         ii, jj = self.ti[cxc], self.tj[cxc]
         off = ii != jj
         ii32, jj32 = ii.astype(np.int32), jj.astype(np.int32)
-        Ccx = self.Cs[:, cxc].tocsc()
-        blocks = self._cx_atom_blocks(Ccx)
+        blocks = self._cx_atom_blocks(None if getattr(self, '_cxb', None) is not None
+                                      else self.Cs[:, cxc].tocsc())
         Bsr, Blr, Lcx = self.A, self.Xi_lr, self.Llr_cx
         # CX-SS: cross(D) = H(D) Pm with H[a] = sum_{p=(a,c)} B_p E_c, E = D[:, SS] Pm^T; for each density the
         # direct term and (unless sym) the transposed one
@@ -809,16 +861,22 @@ class THCExchange:
             if sym[n] == 0:
                 Es.append(np.ascontiguousarray(d.T[:, sm] @ Pm.T)); owner.append((n, 1))
         Hs = [np.zeros((nao, len(Pm))) for _ in Es]
+        ts = dict.fromkeys(('E', 'Bp', 'accum', 'HPm'), 0.)
+        ts['E'] = time.time() - t
         for p0 in range(0, len(cxc), pblk):
+            ta = time.time()
             p1 = min(p0 + pblk, len(cxc))
             Bp = np.zeros((p1 - p0, Bsr.shape[1]))
             for rows, cols, Cd in blocks:
                 a, b = np.searchsorted(cols, (p0, p1))
                 if b > a:
-                    Bp[cols[a:b] - p0] += Cd[:, a:b].T @ Bsr[rows]
+                    add_rows(Bp, Cd[:, a:b].T @ Bsr[rows[0]:rows[-1] + 1], cols[a:b] - p0)   # rows: a range
+            ts['Bp'] += time.time() - ta; ta = time.time()
             for H, E in zip(Hs, Es):
                 pair_accum(H, Bp, E, ii32[p0:p1], jj32[p0:p1], off[p0:p1])
+            ts['accum'] += time.time() - ta
         Bp = Es = None
+        ta = time.time()
         cr = {}
         for (n, tr), H in zip(owner, Hs):
             cr[n, tr] = H @ Pm                                        # (nao, nao_s)
@@ -827,32 +885,58 @@ class THCExchange:
             Ks[n][:, sm] += cr[n, 0]
             Ks[n][sm, :] += (cr[n, 1] if sym[n] == 0 else sym[n] * cr[n, 0]).T
         cr = None
+        ts['HPm'] = time.time() - ta
+        self.cs_timings = ts
         t_cross = time.time() - t
         t = time.time()
         # CX-CX (SR, non-robust): K[S_X] += sum_P (C_P D) W_P per aux atom X and chunk of P, all densities stacked
         nCX = len(cxc)
-        for rows, cols, Cd in blocks:
+        tc = dict.fromkeys(('MC', 'unpack', 'CD', 'swap', 'GEMM', 'add'), 0.)
+        aoat = self.aoat
+        for X, (rows, cols, Cd) in enumerate(blocks):
             S = np.unique(np.concatenate([ii[cols], jj[cols]]))
+            # local fit: the pairs fitted on X's aux have an AO on atom X (cluster (X, B)), so C_P = [[C_xx, C_xn],
+            # [C_nx, 0]] with x the AOs of X: S ordered x first
+            Xat = self.auxmol.bas_atom(int(np.searchsorted(self.auxmol.ao_loc_nr(), rows[0], side='right') - 1))
+            onx = aoat[S] == Xat
+            S = np.concatenate([S[onx], S[~onx]])
+            nx = int(onx.sum())
             pos = np.full(nao, -1)
             pos[S] = np.arange(len(S))
             li, lj = pos[ii[cols]], pos[jj[cols]]
-            DS = np.hstack([d[S] for d in dms])                       # (|S|, nD nao)
+            DSv = np.stack([d[S] for d in dms])                       # (nD, |S|, nao)
             nS = len(S)
             for c0 in range(0, len(rows), kblk):
                 c1 = min(c0 + kblk, len(rows))
                 nb = c1 - c0
+                ta = time.time()
                 MC = np.zeros((nb, nCX))
                 for rows2, cols2, Cd2 in blocks:
-                    MC[:, cols2] += self.M[np.ix_(rows[c0:c1], rows2)] @ Cd2
-                W = unpack_sym(MC, ii32, jj32, nao).reshape(nb * nao, nao)
+                    add_cols(MC, self.M[rows[c0:c1]][:, rows2] @ Cd2, cols2)
+                tc['MC'] += time.time() - ta; ta = time.time()
+                W = unpack_sym(MC, ii32, jj32, nao)                   # (nb, nao, nao)
                 MC = None
                 Cf = unpack_sym(Cd[c0:c1], li, lj, nS)
-                CD = (Cf.reshape(nb * nS, nS) @ DS).reshape(nb, nS, nD, nao)
-                CD = np.ascontiguousarray(CD.transpose(2, 1, 0, 3)).reshape(nD * nS, nb * nao)
-                R = (CD @ W).reshape(nD, nS, nao)
+                tc['unpack'] += time.time() - ta
+                # R_d = sum_k (C_k D_d[S]) W_k: per k the densities stacked as rows (d, a), no transposes
+                R = np.zeros((nD * nS, nao))
+                if c0 == 0 and nx < nS:
+                    assert abs(Cf[:, nx:, nx:]).max() == 0, 'CX-CX: C_P not of the (X, any) pair form'
+                for k in range(nb):
+                    ta = time.time()
+                    CDk = np.matmul(Cf[k][:, :nx], DSv[:, :nx])        # (nD, nS, nao): C[:, x] D[x]
+                    CDk[:, :nx] += np.matmul(Cf[k][:nx, nx:], DSv[:, nx:])   # + C[x, n] D[n]
+                    CDk = CDk.reshape(nD * nS, nao)
+                    tc['CD'] += time.time() - ta; ta = time.time()
+                    blas.dgemm(1., W[k].T, CDk.T, beta=1., c=R.T, trans_a=1, trans_b=0, overwrite_c=1)   # R^T += W_k CDk^T
+                    tc['GEMM'] += time.time() - ta
+                R = R.reshape(nD, nS, nao)
+                ta = time.time()
                 for n in range(nD):
                     Ks[n][S] += R[n]
+                tc['add'] += time.time() - ta
                 W = CD = Cf = R = None
+        self.cc_timings = tc
         t_cc = time.time() - t
         t = time.time()
         # LR: sum_g L_g D L_g - L^SS_g D_SS L^SS_g, L_g the full LR rows, all densities stacked
@@ -861,24 +945,50 @@ class THCExchange:
         Dh = np.hstack(dms)                                           # (nao, nD nao)
         Dsh = np.hstack([d[np.ix_(sm, sm)] for d in dms])
         nss = len(sm)
+        Lss, si32, sj32 = self._lr_ss_rows()
+        Racc = np.zeros((nD, nao, nao))                               # sum_g L_g D L_g
+        Rss = np.zeros((nD, nss, nss))                                # sum_g L^SS_g D_SS L^SS_g
+        tl = dict.fromkeys(('Ls', 'unpack', 'GEMM', 'add'), 0.)
         for g0 in range(0, len(Lcx), gb):
             g1 = min(g0 + gb, len(Lcx))
-            Ls = np.stack([(Pm.T * Blr[g]) @ Pm for g in range(g0, g1)])
+            ta = time.time()
+            Ls = unpack_sym(Lss[g0:g1], si32, sj32, nss)              # cached THC LR rows of the SS pairs
+            tl['Ls'] += time.time() - ta; ta = time.time()
             Lg = embed(unpack_sym(Lcx[g0:g1], ii32, jj32, nao), Ls, sm32)
-            for L, Dst, n_, sub in ((Lg, Dh, nao, None), (Ls, Dsh, nss, sm)):
+            tl['unpack'] += time.time() - ta
+            for L, Dst, n_, acc in ((Lg, Dh, nao, Racc), (Ls, Dsh, nss, Rss)):
+                ta = time.time()
                 k = len(L)
                 L2 = L.reshape(k * n_, n_)
-                T = (L2 @ Dst).reshape(k, n_, nD, n_).transpose(2, 1, 0, 3).reshape(nD * n_, k * n_)
+                T = swap02((L2 @ Dst).reshape(k, n_, nD, n_)).reshape(nD * n_, k * n_)
                 R = (T @ L2).reshape(nD, n_, n_)                      # sum_g L_g D L_g per density
-                for n in range(nD):
-                    if sub is None:
-                        Ks[n] += R[n]
-                    else:
-                        Ks[n][np.ix_(sub, sub)] -= R[n]
+                tl['GEMM'] += time.time() - ta; ta = time.time()
+                acc += R
+                tl['add'] += time.time() - ta
             Lg = Ls = T = R = None
+        for n in range(nD):
+            Ks[n] += Racc[n]
+            Ks[n][np.ix_(sm, sm)] -= Rss[n]
+        Racc = Rss = None
+        self.lr_timings = tl
         self.timings.update({'K SS (THC)': t_ss, 'K CX-SS (SR)': t_cross, 'K CX-CX (SR)': t_cc,
                              'K LR': time.time() - t})
         return Ks
+
+    def _lr_ss_rows(self, pc=20000):
+        '''The LR rows of the SS pairs from THC, Xi_lr X_SS (nlr, nSS) with X_SS[mu, (a, b)] = phi_a(r_mu) phi_b(r_mu)
+        over the packed smooth pairs a >= b (local smooth indices): density independent, built once and cached.'''
+        if getattr(self, '_lrss', None) is not None:
+            return self._lrss
+        Pm = self.phimu
+        si, sj = np.tril_indices(Pm.shape[1])
+        out = np.empty((self.Xi_lr.shape[0], len(si)))
+        for p0 in range(0, len(si), pc):
+            p1 = min(p0 + pc, len(si))
+            out[:, p0:p1] = self.Xi_lr @ (Pm[:, si[p0:p1]] * Pm[:, sj[p0:p1]])
+        self._lrss = (out, si.astype(np.int32), sj.astype(np.int32))
+        self.log('   cached LR rows of the SS pairs: %s (%.1f GB)' % (out.shape, out.nbytes / 1e9))
+        return self._lrss
 
     def _cx_atom_blocks(self, Ccx):
         '''C (naux, nCX) as dense blocks per aux atom X: (aux rows of X, sorted CX columns with a nonzero in them,
@@ -892,6 +1002,7 @@ class THCExchange:
             rows = np.where(pat == X)[0]
             if len(rows) == 0:
                 continue
+            assert rows[-1] - rows[0] + 1 == len(rows)                 # the aux functions of an atom are a range
             sub = Cr[rows]
             cols = np.unique(sub.indices)
             if len(cols):
