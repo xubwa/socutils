@@ -75,3 +75,149 @@ thread vectors of the one-sweep product.)
   search needs the memory budget to count them up front.
 - **Root-side stages of the build** that do not shrink with nodes: new
   list and pairs, diagonal, string tables, together 4.6 s on 4 nodes.
+
+# Round 2: memory first, toward 1e9 to 1e10 determinants
+
+## Fe4S4 (54e,36o) measured, one node
+
+Natural orbitals of the SQD run (`fcidump_run3`), broken-symmetry start,
+schedule 1e-3 / 3e-4 / 1e-4 / 5e-5 / 2e-5, `"adapt"` with 160 GB, real,
+W = 2, no spin_flip. 1.006e7 determinants, E = -327.215992, 799 s.
+
+| | per determinant | at 1.006e7 |
+|---|---|---|
+| stored H (lower triangle, 4 + 8 bytes) | 1262 elements, 14.4 kB | 145.3 GB |
+| string tables (bytes, per node) | 40 B | 0.40 GB |
+| determinants, per copy (list, root copy, sorted copy) | 16 B | 0.15 GB |
+| eigensolver, root (9 vectors) | 72 B | 0.7 GB |
+| thread vectors of the one-sweep product (48) | 384 B | 3.9 GB |
+| peak RSS | 14.5 kB | 146 GB |
+
+Elements per determinant (lower triangle) grow as N^0.21: 676 at 5.4e5,
+883 at 1.8e6, 1205 at 7.6e6, 1262 at 1.0e7 (Cr2: 91 per spin-flip function
+at 2.9e7 functions; Fe4S4 has 14 times the connections of Cr2 at a sixth of
+the size). Of the D = 84807 single and double excitations of a determinant,
+2.97 % lie in the space at 1e7.
+
+Products: stored 1.55 s, direct 81.8 s (one product over 1.27e10 pairs:
+6.4 ns per pair per node). Of the direct product about 77 % is finding the
+connections (the byte-tree search tests 248 candidates per connected pair)
+and 23 % evaluating them (1.47 ns per element, from the value pass of the
+build). The build of iteration 12 (5.5e6 new rows, 7.3e9 new elements):
+68 s searching with evaluation, 10.7 s evaluating the values a second time.
+Selection: 7 s at 7.6e6, 17 s at 1e7 (heat-bath candidates).
+
+**Why PT2 ran out of memory at 1e7** (run3, `"stored"`, explicit
+`epsilon2_large` 1e-6, 20000 samples): the deterministic part at 1e-6 is
+2.39e9 terms (4.18e8 distinct outside the space) in one pass, 108 GB on top
+of the node's baseline (measured in diag mode with a direct H), while the
+stored Hamiltonian of the selection, 145 GB, was still held: it is kept
+past perturbation theory for the density matrices. 108 + 145 GB exceed the
+188 GB node. Two causes: the matrix is not released before PT2 (it is only
+needed by `WriteResults` for the density matrices, which can use the
+string tables), and an explicit epsilon2_large bypasses the memory-sized
+choice of "auto" (`pt auto` sizes the deterministic part to 60 % of the
+memory available, but would also not know of the 145 GB unless they are
+freed first). Fix (own item, not done yet): release the stored matrix
+before PT2 and compute density matrices from the tables, and size the
+deterministic part in batches when epsilon2_large is given.
+
+## Projection to 1e10 determinants (FeMoco)
+
+Connections per determinant c = D f(N): D from the orbital and electron
+counts, f the share of them inside the space, measured on Fe4S4 as
+f = 0.0297 (N / 1e7)^0.21. How f carries over to a much larger orbital
+space is the open question, so three cases: "dense", the Fe4S4 law at the
+same N; "dilute", the same law at the same N / N_FCI (N_FCI = 8.9e15 for
+Fe4S4, 3.5e30 and 3.6e35 below); "middle", their geometric mean. Direct
+product at Fe4S4's 6.4 ns per pair per node. Real numbers, no spin_flip.
+
+| | D | c (dense / middle / dilute) | stored H, TB (middle) | direct product, node-hours (middle) |
+|---|---|---|---|---|
+| Reiher (54e,54o), W = 2, Ms = 1 * | 777140 | 100561 / 2803 / 78 | 153 (920 nodes) | 25 |
+| Li-Chan (113e,76o), W = 3, S = 3/2 | 1772778 | 229396 / 1869 / 15 | 102 (615 nodes) | 17 |
+
+(*: 54 electrons cannot have S = 3/2; Ms = 1 taken.)
+
+Arrays over the determinants at N = 1e10, today held whole on every node
+or rank:
+
+| item | today | Reiher (W=2) | Li-Chan (W=3) |
+|---|---|---|---|
+| determinant list, per copy | per node (shared), root copy, sorted copy | 149 GB | 224 GB |
+| string tables (two groups) | per node | ~370 GB | ~520 GB |
+| eigensolver vectors | root, 9 | 670 GB | 670 GB |
+| x | per node | 75 GB | 75 GB |
+| y | per rank | 75 GB | 75 GB |
+| thread y of the one-sweep product | per rank, 48 | 3.5 TB | 3.5 TB |
+
+None of these fits a node of 170 GB on its own; each must be divided over
+the ranks. The matrix (100+ TB in the middle case) cannot be stored, so the
+product is direct, at 17 to 25 node-hours each in the middle case: some
+1000 node-hours per iteration of 40 products.
+
+## Ranking
+
+By what makes 1e10 feasible (memory), then by speed:
+
+1. **(e) the determinant list and string tables divided over the ranks** -
+   new; 0.5 to 0.75 TB per node today at 1e10, the largest replicated item.
+   A rank owns determinants (by string or hash), the connection search runs
+   over owned rows and looks up remote columns. Prerequisite for anything
+   past ~2e9 (W = 2).
+2. **(b) eigensolver vectors in segments** - removes the root's 9 full
+   vectors (72 B per determinant, 670 GB at 1e10). Done (below).
+3. **(a) rows owned in contiguous ranges equal to the vector segments, x
+   streamed in blocks, y only for owned rows, no thread y** - removes the
+   remaining full-length x per node and y per rank (16 B per determinant)
+   and the thread vectors; the product becomes: own block first, then the
+   blocks of x from the other ranks in turn (pairwise, overlapped with the
+   work on the previous block), the transposed contributions sent back to
+   the block's owner. An allgathered x per node (8 B per determinant) is
+   affordable to ~1e10 / 2 nodes' worth (75 GB at 1e10 real) and is kept
+   while it fits; the streamed form is the fallback.
+4. **Fast direct product** - the only product at 1e10; 77 % of it is the
+   search for connections (248 candidates per connected pair). Enumerating
+   doubles from the determinant through the heat-bath-like tables of the
+   space (string pairs) instead of testing tree candidates.
+5. **(c) values from the search kept** - 10.7 of 79 s in the build of
+   Fe4S4 at 7.6e6 (13 %), 21 of 156 s for Cr2 at 1.2e8 on one node. Done
+   (below), speed only.
+6. **(d) root-side serial stages** - partition of rows 2 x 14 s, new list,
+   diagonal, tables 8 s at 1.2e8 on one node; speed only.
+7. **PT2 memory** (own item) - release the stored H before PT2; batch the
+   deterministic part when epsilon2_large is given.
+## Design: Davidson vectors in segments (item b)
+
+Layout. Rank r holds elements [n r/p, n (r+1)/p) of every vector of the
+few-vector solver (`fci_davidson.cc`, `VectorLayout` with one segment): the
+basis, its products, the diagonal and, with a mask, the mask. Only the small
+projected matrices are replicated; every dot product is a local OpenMP sum
+and one `MPI_Allreduce` per projection (all columns batched), as the solver
+already did for the fci mode. The root's start vectors are scattered before
+and the eigenvectors gathered after a solve, so that selection, PT2, the
+checkpoints of the selection loop and `wfn.h5` see the same root vectors as
+before (memory on the root: those, once, as before).
+
+Product. x is gathered once per node into a shared array (leaders
+`MPI_Allgatherv`), every rank applies its part of H into a full-length y of
+its own, and the products are summed onto the owners of the segments
+(`Comm::SumScatter`, chunked `MPI_Reduce` to each owner). The operator, the
+stored or direct H, does not change.
+
+Stability (checked against the SQD list): the basis is orthonormalized
+with two-pass Gram-Schmidt and a relative dependence test (1e-10 of the
+norm before), collapse keeps the Ritz vectors and the previous ones
+orthogonalized (LOBPCG-like), a basis that cannot be extended stops the
+solver. The preconditioner is 1/(H_ii - E + shift) with |.| clamped at 1e-8,
+not 1/max(|H_ii - E|, 1e-3); unchanged here (it decides the iterates).
+
+Restart files: the eigensolver's checkpoint is written by every rank at
+its offsets (as in the fci mode); the fingerprint, computed on the root, is
+broadcast. The selection checkpoints are written from the gathered vectors.
+
+PT2 takes the gathered root vectors (ShareVectors), unchanged.
+
+Used when: the few-vector solver, more than one rank, the ranks of each node
+consecutive, and a space above `dense_dim` and 4096 per rank; otherwise the
+root solver as before.
