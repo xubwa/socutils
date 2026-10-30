@@ -1339,6 +1339,12 @@ class THCJK:
     def energy_nuc(self):
         return self.th.r.energy_nuc()
 
+    def _lr_occ(self, nocc):
+        '''LR exchange from the occupied factors: 10 products of rank nocc vs 6 dense densities, worth it for
+        nocc <~ 0.3 nao (EuOCl 2x1x1, nocc 0.52 nao: 44 s factored vs 30 s dense); th.lr_occ True / False forces.'''
+        f = getattr(self.th, 'lr_occ', 'auto')
+        return nocc <= 0.3 * self.th.nao if f == 'auto' else bool(f)
+
     def get_jk_mo(self, mol, mo_coeff, mo_occ):
         '''Spinor J and K for the density sum_i n_i |i><i| (spinor MOs, n_i >= 0) by occ-RI (no G = 0 terms).'''
         if not self._built:
@@ -1364,7 +1370,7 @@ class THCJK:
                      [(1., 0, 2), (1., 1, 3)], [(1., 1, 2), (-1., 0, 3)]]          # ab = ca cb^H
             Kr = self.th.get_k_multi([Daa.real, Daa.imag, Dbb.real, Dbb.imag, Dab.real, Dab.imag],
                                      sym=[1, -1, 1, -1, 0, 0],
-                                     lr_factors=(F, terms) if getattr(self.th, 'lr_occ', True) else None)
+                                     lr_factors=(F, terms) if self._lr_occ(F[0].shape[1]) else None)
             Kaa, Kbb, Kab = Kr[0] + 1j * Kr[1], Kr[2] + 1j * Kr[3], Kr[4] + 1j * Kr[5]
             Ks = [[Kaa, Kab], [Kab.conj().T, Kbb]]
         else:
