@@ -323,11 +323,15 @@ full length; on collapse the Ritz vectors and those of the previous
 iteration are kept (LOBPCG-like). `"solver": "classic"` gives the earlier
 block Davidson with `"max_space_per_root"` (20) vectors. Between selection
 iterations the eigenvectors, padded with zeros for the new determinants,
-start the solver again; its subspace is not carried over. The solver runs
-on the root, which holds all vectors, and the other ranks take part in
-each product (`src/distributed_h.*`); with 3 vectors per root that is 7
-vectors of 16 bytes per determinant for complex numbers, 22 GB at 2e8
-determinants. Same runs as above, 48 threads (both solvers converge in the
+start the solver again; its subspace is not carried over. With one rank
+the solver holds 7 vectors (3 per root, each with its product, and one
+more) of 16 bytes per determinant for complex numbers, 22 GB at 2e8
+determinants. With several ranks (one node's ranks consecutive, as with
+`mpirun -ppn`) every vector of the few-vector solver is held in segments,
+1/p of it per rank: x is gathered once per node for a product, every rank
+multiplies with its part of H, and the products are summed onto the owners
+of the segments (`src/distributed_h.*`, VARPAR.md); the classic solver
+runs on the root as before. Same runs as above, 48 threads (both solvers converge in the
 same number of products, 289 against 294 for the whole selection):
 
 | case | products | wall (s) | peak (GB) |

@@ -88,6 +88,23 @@ Comm Comm::Init(int* argc, char*** argv) {
                        comm.node_rank_ == 0 ? 0 : MPI_UNDEFINED, comm.rank_,
                        &g_leader_comm),
         "MPI_Comm_split");
+  // The leader of every rank's node; the nodes are contiguous if each rank
+  // either leads its node or has the leader of the rank before it.
+  int leader = comm.rank_;
+  MPI_Bcast(&leader, 1, MPI_INT, 0, g_node_comm);
+  std::vector<int> leaders(comm.size_);
+  Check(MPI_Allgather(&leader, 1, MPI_INT, leaders.data(), 1, MPI_INT,
+                      MPI_COMM_WORLD),
+        "MPI_Allgather");
+  comm.node_first_.clear();
+  for (int r = 0; r < comm.size_; ++r) {
+    if (leaders[r] == r) {
+      comm.node_first_.push_back(r);
+    } else if (r == 0 || leaders[r] != leaders[r - 1]) {
+      comm.nodes_contiguous_ = false;
+    }
+  }
+  comm.node_first_.push_back(comm.size_);
   return comm;
 }
 
@@ -306,6 +323,103 @@ void Comm::SumToRoot(double* data, size_t count) const {
   }
 }
 
+namespace {
+
+int CheckedInt(uint64_t value) {
+  if (value > static_cast<uint64_t>(std::numeric_limits<int>::max())) {
+    throw std::length_error("a segment exceeds 2^31 elements");
+  }
+  return static_cast<int>(value);
+}
+
+// Counts and displacements of the segments, in elements.
+void SegmentCounts(const std::vector<uint64_t>& begin, std::vector<int>* counts,
+                   std::vector<int>* displacements) {
+  const size_t num = begin.size() - 1;
+  counts->resize(num);
+  displacements->resize(num);
+  for (size_t r = 0; r < num; ++r) {
+    (*displacements)[r] = CheckedInt(begin[r]);
+    (*counts)[r] = CheckedInt(begin[r + 1] - begin[r]);
+  }
+}
+
+}  // namespace
+
+void Comm::GatherShared(void* base, const std::vector<uint64_t>& begin,
+                        size_t element_size) const {
+  if (size_ == 1) return;
+  if (!nodes_contiguous_) {
+    throw std::logic_error("GatherShared needs the ranks of a node together");
+  }
+  // Every rank of the node has written its segment before the leaders send
+  // the node's segments, and reads only after they have received the rest.
+  Check(MPI_Barrier(g_node_comm), "MPI_Barrier");
+  const int num_nodes = static_cast<int>(node_first_.size()) - 1;
+  if (is_node_leader() && num_nodes > 1) {
+    const ElementType type(element_size);
+    std::vector<uint64_t> node_begin(num_nodes + 1);
+    for (int k = 0; k <= num_nodes; ++k) node_begin[k] = begin[node_first_[k]];
+    std::vector<int> counts, displacements;
+    SegmentCounts(node_begin, &counts, &displacements);
+    Check(MPI_Allgatherv(MPI_IN_PLACE, 0, type.get(), base, counts.data(),
+                         displacements.data(), type.get(), g_leader_comm),
+          "MPI_Allgatherv");
+  }
+  Check(MPI_Barrier(g_node_comm), "MPI_Barrier");
+}
+
+void Comm::SumScatter(double* data, double* mine,
+                      const std::vector<uint64_t>& begin) const {
+  if (size_ == 1) {
+    std::copy(data + begin[0], data + begin[1], mine);
+    return;
+  }
+  // The segment of every rank summed onto it in pieces, as SumToRoot.
+  constexpr uint64_t kPiece = 1ULL << 19;
+  for (int owner = 0; owner < size_; ++owner) {
+    for (uint64_t done = begin[owner]; done < begin[owner + 1];
+         done += kPiece) {
+      const int piece =
+          static_cast<int>(std::min(kPiece, begin[owner + 1] - done));
+      Check(MPI_Reduce(data + done,
+                       rank_ == owner ? mine + (done - begin[owner]) : nullptr,
+                       piece, MPI_DOUBLE, MPI_SUM, owner, MPI_COMM_WORLD),
+            "MPI_Reduce");
+    }
+  }
+}
+
+void Comm::Scatter(const void* data, void* mine,
+                   const std::vector<uint64_t>& begin,
+                   size_t element_size) const {
+  std::vector<int> counts, displacements;
+  SegmentCounts(begin, &counts, &displacements);
+  if (size_ == 1) {
+    std::memcpy(mine, data, counts[0] * element_size);
+    return;
+  }
+  const ElementType type(element_size);
+  Check(MPI_Scatterv(data, counts.data(), displacements.data(), type.get(),
+                     mine, counts[rank_], type.get(), 0, MPI_COMM_WORLD),
+        "MPI_Scatterv");
+}
+
+void Comm::Gather(const void* mine, void* data,
+                  const std::vector<uint64_t>& begin,
+                  size_t element_size) const {
+  std::vector<int> counts, displacements;
+  SegmentCounts(begin, &counts, &displacements);
+  if (size_ == 1) {
+    std::memcpy(data, mine, counts[0] * element_size);
+    return;
+  }
+  const ElementType type(element_size);
+  Check(MPI_Gatherv(mine, counts[rank_], type.get(), data, counts.data(),
+                    displacements.data(), type.get(), 0, MPI_COMM_WORLD),
+        "MPI_Gatherv");
+}
+
 std::vector<uint64_t> Comm::ExchangeCounts(
     const std::vector<uint64_t>& send_counts) const {
   std::vector<uint64_t> receive_counts(size_);
@@ -385,6 +499,21 @@ void RemoteArray::Get(void* destination, int, uint64_t offset,
 void RemoteArray::Wait(int) const {}
 void Comm::Sum(double*, size_t) const {}
 void Comm::SumToRoot(double*, size_t) const {}
+void Comm::GatherShared(void*, const std::vector<uint64_t>&, size_t) const {}
+void Comm::SumScatter(double* data, double* mine,
+                      const std::vector<uint64_t>& begin) const {
+  std::copy(data + begin[0], data + begin[1], mine);
+}
+void Comm::Scatter(const void* data, void* mine,
+                   const std::vector<uint64_t>& begin,
+                   size_t element_size) const {
+  std::memcpy(mine, data, (begin[1] - begin[0]) * element_size);
+}
+void Comm::Gather(const void* mine, void* data,
+                  const std::vector<uint64_t>& begin,
+                  size_t element_size) const {
+  std::memcpy(data, mine, (begin[1] - begin[0]) * element_size);
+}
 std::vector<uint64_t> Comm::ExchangeCounts(
     const std::vector<uint64_t>& send_counts) const {
   return send_counts;

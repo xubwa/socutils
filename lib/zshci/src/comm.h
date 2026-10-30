@@ -83,6 +83,29 @@ class Comm {
   // of the other ranks are left unspecified.
   void SumToRoot(double* data, size_t count) const;
 
+  // Vectors held in segments: rank r holds elements [begin[r], begin[r+1])
+  // (begin has size() + 1 entries).
+  //
+  // Whether the ranks of every node are consecutive in rank order (block
+  // placement), which GatherShared needs.
+  bool nodes_contiguous() const { return nodes_contiguous_; }
+  // Collective. `base` is the memory of a SharedArray of begin.back()
+  // elements of `element_size` bytes, of which every rank has written its
+  // segment; on return every rank may read all of them.
+  void GatherShared(void* base, const std::vector<uint64_t>& begin,
+                    size_t element_size) const;
+  // Collective: the element-wise sum over the ranks of `data` (begin.back()
+  // numbers on every rank); rank r receives its segment of the sum in
+  // `mine`. `data` is left unspecified.
+  void SumScatter(double* data, double* mine,
+                  const std::vector<uint64_t>& begin) const;
+  // Collective: rank r receives in `mine` its segment of the root's `data`,
+  // and the reverse. `data` is read or written on the root only.
+  void Scatter(const void* data, void* mine, const std::vector<uint64_t>& begin,
+               size_t element_size) const;
+  void Gather(const void* mine, void* data, const std::vector<uint64_t>& begin,
+              size_t element_size) const;
+
   // Sends outgoing[r] to rank r and returns everything received, ordered by
   // source rank. `outgoing` must have size() entries.
   template <class T>
@@ -171,6 +194,9 @@ class Comm {
   int rank_ = 0;
   int size_ = 1;
   int node_rank_ = 0;
+  bool nodes_contiguous_ = true;
+  // The first rank of every node, and size() at the end.
+  std::vector<int> node_first_ = {0, 1};
 };
 
 // A local array that the other ranks read without its owner taking part
