@@ -27,7 +27,8 @@ if os.environ.get('LOAD') and os.path.exists(os.environ['LOAD']):     # a built 
         jk = pickle.load(f)
     print('loaded %s in %.0f s' % (os.environ['LOAD'], time.time() - t), flush=True)
 else:
-    jk = THCJK(cell, aux, alpha_c=4., nmu_factor=16., nuc_zeta=spinor_scf.nuclear_zeta(cell), local_rcut=6.)
+    jk = THCJK(cell, aux, alpha_c=4., nmu_factor=16., nuc_zeta=spinor_scf.nuclear_zeta(cell), local_rcut=6.,
+               omega=float(os.environ.get('OMEGA', 0.5)))
     jk.stream = True
     jk.stream_gb = float(os.environ.get('STREAM_GB', 30))
     jk.build()
