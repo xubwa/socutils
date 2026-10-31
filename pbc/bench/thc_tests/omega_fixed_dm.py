@@ -21,7 +21,7 @@ for arg in sys.argv[3:]:
     t = time.time()
     jk = THCJK(cell, aux, alpha_c=4., nmu_factor=16., nuc_zeta=spinor_scf.nuclear_zeta(cell), omega=om, local_rcut=rc)
     jk.stream = True
-    jk.far_fit = far    # (default True; the ':far' tag kept for the old r_cut-only runs: pass 'nofar' semantics by omission)
+    jk.far_fit = far                                           # explicit: the tag ':far' switches it on
     jk.build()
     mf = split_direct.periodic(spinor_hf.SpinorSCF(cell), jk)
     if dm is None:
