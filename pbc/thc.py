@@ -949,13 +949,13 @@ class THCExchange:
                     Y = (W.reshape(nb * nao, nao) @ DxT).reshape(nb, nao, nD, nx)
                     Y = swap02(Y).reshape(nD, nao, nb * nx)
                     CnT = np.ascontiguousarray(Cf[:, nx:, :nx].transpose(0, 2, 1)).reshape(nb * nx, nS - nx)
-                    for n in range(nD):
-                        R[n, nx:] = (Y[n] @ CnT).T                    # sum_k C_k[n, x] D[x] W_k
-                    Y = CnT = None
+                    Rn = (Y.reshape(nD * nao, nb * nx) @ CnT).reshape(nD, nao, nS - nx)
+                    R[:, nx:] = Rn.transpose(0, 2, 1)                 # sum_k C_k[n, x] D[x] W_k
+                    Y = CnT = Rn = None
                 tc['GEMM'] += time.time() - ta
                 ta = time.time()
                 for n in range(nD):
-                    Ks[n][S] += R[n]
+                    add_rows(Ks[n], R[n], S)                          # C kernel
                 tc['add'] += time.time() - ta
                 W = CD = Cf = R = None
         self.cc_timings = tc
