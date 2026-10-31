@@ -10,6 +10,7 @@
  *   SOCTHCadd_rows    M[rows] += S
  *   SOCTHCrowdot / SOCTHCscale_rows   row-wise dot products and row scaling (GAPW J grid contractions)
  *   SOCTHCft_post     weighted re/im layout of an F-order ft_ao block (streamed THC A)
+ *   SOCTHCsquare      in-place square (Gram columns of the streamed THC build)
  */
 #include <stdlib.h>
 #include <string.h>
@@ -183,5 +184,15 @@ void SOCTHCft_post(double *out, const double *P, const double *w, int g, int n)
                                 out[(size_t)(2 * i + 1) * n + j] = w[i] * p[2 * i + 1];
                         }
                 }
+        }
+}
+
+/* a[k] = a[k]^2 in place (n doubles) */
+void SOCTHCsquare(double *a, size_t n)
+{
+        size_t k;
+#pragma omp parallel for schedule(static)
+        for (k = 0; k < n; k++) {
+                a[k] *= a[k];
         }
 }

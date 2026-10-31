@@ -291,6 +291,17 @@ def ft_post(Pg, w):
     return out
 
 
+def gram_cols(PP, phi_blk):
+    '''(PP phi_blk^T)^2 elementwise (the Gram columns of the ISDF points), squared in place by the C kernel.'''
+    G = PP @ phi_blk.T
+    lib_ = _libthc()
+    if lib_ is None or not hasattr(lib_, 'SOCTHCsquare') or not G.flags['C_CONTIGUOUS']:
+        return np.square(G, out=G)
+    import ctypes
+    lib_.SOCTHCsquare(_ptr(G), ctypes.c_size_t(G.size))
+    return G
+
+
 def _mm_split(A, B):
     '''A @ B with a real A and a possibly complex B, without promoting A.'''
     if np.iscomplexobj(B):
@@ -518,7 +529,7 @@ class THCExchange:
             xi = np.empty((b1 - b0, ng))
             for g0 in range(0, ng, rchunk):
                 g1 = min(g0 + rchunk, ng)
-                xi[:, g0:g1] = Ginv[b0:b1] @ ((PP @ phi[g0:g1].T) ** 2)
+                xi[:, g0:g1] = Ginv[b0:b1] @ gram_cols(PP, phi[g0:g1])
             tt['xi'] += time.time() - ta
             ta = time.time()
             As = np.zeros((self.auxmol.nao, b1 - b0))                 # A[:, b] in aux-cutoff order
@@ -561,7 +572,7 @@ class THCExchange:
             Vb = np.zeros((b1 - b0, nmu))
             for g0 in range(0, ng, rchunk):
                 g1 = min(g0 + rchunk, ng)
-                Vb += xi[:, g0:g1] @ ((PP @ phi[g0:g1].T) ** 2).T
+                Vb += xi[:, g0:g1] @ gram_cols(PP, phi[g0:g1]).T
             V[b0:b1] = Vb @ Ginv                                        # int (v * xi_b) xi^T (Parseval)
             tt['V'] += time.time() - ta
             xi = Vb = None
