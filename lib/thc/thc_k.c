@@ -9,6 +9,7 @@
  *   SOCTHCadd_cols    M[:, cols] += S
  *   SOCTHCadd_rows    M[rows] += S
  *   SOCTHCrowdot / SOCTHCscale_rows   row-wise dot products and row scaling (GAPW J grid contractions)
+ *   SOCTHCft_post     weighted re/im layout of an F-order ft_ao block (streamed THC A)
  */
 #include <stdlib.h>
 #include <string.h>
@@ -159,6 +160,28 @@ void SOCTHCscale_rows(double *out, const double *A, const double *w, int n, int 
                 int j;
                 for (j = 0; j < m; j++) {
                         o[j] = c * a[j];
+                }
+        }
+}
+
+/* out[2i + r, j] = w[i] * (Re, Im)[r] P[i, j]  for P (g, n) complex in Fortran order (pyscf ft_ao), out (2g, n)
+ * C order: the weighted real/imaginary layout of the streamed THC A GEMM, one tiled pass */
+void SOCTHCft_post(double *out, const double *P, const double *w, int g, int n)
+{
+        const int TB = 64;
+        int nti = (g + TB - 1) / TB, ntj = (n + TB - 1) / TB;
+        int t;
+#pragma omp parallel for schedule(dynamic)
+        for (t = 0; t < nti * ntj; t++) {
+                int i0 = (t / ntj) * TB, j0 = (t % ntj) * TB;
+                int i1 = i0 + TB < g ? i0 + TB : g, j1 = j0 + TB < n ? j0 + TB : n;
+                int i, j;
+                for (j = j0; j < j1; j++) {
+                        const double *p = P + 2 * ((size_t)j * g);
+                        for (i = i0; i < i1; i++) {
+                                out[(size_t)(2 * i) * n + j] = w[i] * p[2 * i];
+                                out[(size_t)(2 * i + 1) * n + j] = w[i] * p[2 * i + 1];
+                        }
                 }
         }
 }

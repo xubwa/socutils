@@ -277,6 +277,20 @@ def swap02(src):
     return dst
 
 
+def ft_post(Pg, w):
+    '''(2 nG, n) real: rows 2i, 2i+1 = w_i (Re, Im) Pg[i] (OpenMP kernel for an F-order Pg, else numpy).'''
+    lib_ = _libthc()
+    g, n = Pg.shape
+    if lib_ is None or not hasattr(lib_, 'SOCTHCft_post') or not Pg.flags['F_CONTIGUOUS'] or Pg.dtype != complex:
+        Pg = np.ascontiguousarray(Pg * w[:, None])
+        return np.ascontiguousarray(Pg.view(float).reshape(g, n, 2).transpose(0, 2, 1)).reshape(2 * g, n)
+    import ctypes
+    out = np.empty((2 * g, n))
+    w = np.ascontiguousarray(w, dtype=float)
+    lib_.SOCTHCft_post(_ptr(out), _ptr(Pg), _ptr(w), ctypes.c_int(g), ctypes.c_int(n))
+    return out
+
+
 def _mm_split(A, B):
     '''A @ B with a real A and a possibly complex B, without promoting A.'''
     if np.iscomplexobj(B):
@@ -518,14 +532,12 @@ class THCExchange:
                 sub, nk = self._aux_upto(g2c[g0 // gchunk])               # the first nk aux functions (cutoff order)
                 if sub is None:
                     continue
-                Pg = np.ascontiguousarray(ft_ao(sub, self.Gv[g0:g1]) * sw[g0:g1, None])   # (nG, nk), C order
+                # Re(P^* X) = Pr Xr + Pi Xi as one real GEMM over (G, re/im), accumulated in place (beta = 1) into
+                # the aux-cutoff-ordered A[:, b] (naux, nb), C order: its first nk rows are contiguous; the weighted
+                # re/im layout of the F-order ft_ao block in one pass (C kernel)
+                P2 = ft_post(ft_ao(sub, self.Gv[g0:g1]), sw[g0:g1])          # (2 nG, nk)
                 tt['ft_ao'] += time.time() - ta
                 ta = time.time()
-                # Re(P^* X) = Pr Xr + Pi Xi as one real GEMM over (G, re/im), accumulated in place (beta = 1) into
-                # the aux-cutoff-ordered A[:, b] (naux, nb), C order: its first nk rows are contiguous
-                P2 = Pg.view(float).reshape(g1 - g0, nk, 2).transpose(0, 2, 1).reshape(-1, nk)
-                P2 = np.ascontiguousarray(P2)
-                Pg = None
                 X2 = np.ascontiguousarray(Xh[:, g0:g1]).view(float)     # (nb, 2 nG), contiguous copy of the chunk
                 # As[:nk] (C order) is the column-major (nb, nk) matrix X2 @ P2 accumulates into
                 c = As[:nk].T
