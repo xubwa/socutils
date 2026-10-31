@@ -47,7 +47,8 @@ def _atom_mol(cell, atoms, coords, basis):
     return m
 
 
-def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep=1e-12, verbose=True, sparse=False):
+def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep=1e-12, verbose=True, sparse=False,
+                 far=False, far_grid=(300, 302)):
     '''Gamma-point local fit coefficients of the CX pairs (dense (naux, npair) packed, for validation).
 
     Args:
@@ -57,6 +58,8 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
         r_cut : Angstrom, partner atoms (with images) within r_cut of the compact atom
         r_dom : Angstrom, the fit domain also takes the aux functions of the atoms (with images) within r_dom of
             the compact atom A (0: the pair's two atoms only)
+        far : also fit the images beyond the explicit (r_cut) clusters, on A's aux functions only (far_cx_fit):
+            c (compact, on A) times the lattice sum of the remaining images of x, which is smooth where c lives
     Returns C (naux, nao (nao+1) / 2) (dense, or scipy.sparse CSR with sparse=True), stats dict.'''
     from pyscf.df import addons as df_addons
     t0 = time.time()
@@ -84,6 +87,7 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
                   if compact[cell.ao_loc_nr()[i]])
     metric_cache = {}
     nskip = 0
+    near = {A: [] for A in range(cell.natm)}                          # explicit (B, translation) per compact atom
     for A in range(cell.natm):
         a0, a1 = ao_loc[A]
         cA = np.where(compact[a0:a1])[0] + a0
@@ -104,6 +108,7 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
                 if ab * d[L] ** 2 > 36.:
                     nskip += 1
                     continue
+                near[A].append((B, T[L]))
                 same = B == A and d[L] < 1e-8
                 atoms = [A] if same else [A, B]
                 coords = [X[A]] if same else [X[A], X[B] + T[L]]
@@ -151,6 +156,16 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
                 ncluster += 1
                 nimgpair += len(kk[0])
         metric_cache.clear() if len(metric_cache) > 2000 else None
+    if far:
+        tf = time.time()
+        rows_f, cols_f, vals_f = far_cx_fit(cell, auxcell, compact, omega, near, pidx, lindep, far_grid)
+        if sparse:
+            coo[0].append(rows_f); coo[1].append(cols_f); coo[2].append(vals_f)
+        else:
+            np.add.at(C, (rows_f, cols_f), vals_f)
+        if verbose:
+            print('far CX fit (beyond the clusters, one-centre aux): %d coefficients (%.0f s)'
+                  % (len(vals_f), time.time() - tf), flush=True)
     stats = {'clusters': ncluster, 'image pairs': nimgpair, 'skipped': nskip, 'time': time.time() - t0}
     if verbose:
         print('local CX fit: %d two-atom clusters (%d negligible skipped), %d image pairs, r_cut %.1f A (%.0f s)'
@@ -162,3 +177,85 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
         C.eliminate_zeros()
         stats['nnz'] = C.nnz
     return C, stats
+
+
+def _lebedev(nang):
+    '''Lebedev unit vectors and weights (summing to 4 pi; pyscf's sum to 1).'''
+    from pyscf.dft import gen_grid
+    ang = gen_grid.MakeAngularGrid(nang)
+    return ang[:, :3], 4 * np.pi * ang[:, 3]
+
+
+def _sr_potential_at(amol, pts, omega):
+    '''u_Q(g) = int Q(r) erfc(omega |r - g|) / |r - g| dr for the functions Q of amol at the points g, (npts, nQ):
+    int1e_grids of the pairs (Q, s0) with s0 an s function of negligible exponent (constant over Q), divided by its
+    value.'''
+    m = amol.copy(deep=True)
+    eps = 1e-14
+    xyz = m.atom_coord(0)
+    s0 = gto.M(atom=[('H', tuple(xyz))], basis={'H': [[0, [eps, 1.]]]}, unit='B', spin=None, verbose=0)
+    mm = gto.conc_mol(m, s0)
+    nQ = m.nbas
+    v0 = s0.eval_gto('GTOval_sph', xyz[None])[0, 0]
+    with mm.with_range_coulomb(-omega):
+        u = mm.intor('int1e_grids', grids=pts, shls_slice=(0, nQ, nQ, nQ + 1))      # (npts, nQ_ao, 1)
+    return u[:, :, 0] / v0
+
+
+def far_cx_fit(cell, auxcell, compact, omega, near, pidx, lindep=1e-12, grid=(300, 302), r_thr=36.):
+    '''Fit of the CX image pairs beyond the explicit clusters (near[A]: the (B, translation) fitted explicitly):
+    for c compact on A,  x_far(r) = sum over the remaining images of x (the lattice sum minus the explicit images)
+    is smooth where c lives, and the product c x_far is fitted with A's aux functions only (SR metric):
+        (Q | c x_far)_SR = int c(r) x_far(r) u_Q(r) dr   on an atomic grid of A (u_Q: SR potential of Q).
+    Returns the COO triplets (aux rows of the cell aux, packed pair columns, values).'''
+    from pyscf.dft import radi
+    X = cell.atom_coords()
+    ao_loc = cell.aoslice_by_atom()[:, 2:4]
+    aux_loc = auxcell.aoslice_by_atom()[:, 2:4]
+    nrad, nang = grid
+    alpha_c = min(cell.bas_exp(i).min() for i in range(cell.nbas) if compact[cell.ao_loc_nr()[i]])
+    r_max = np.sqrt(r_thr / alpha_c)                                   # where the compact functions live
+    xyz_ang, w_ang = _lebedev(nang)
+    xs_ok = ~compact                                                     # far partners: the non-compact functions
+    rows, cols, vals = [], [], []
+    for A in range(cell.natm):
+        a0, a1 = ao_loc[A]
+        cA = np.where(compact[a0:a1])[0] + a0
+        if len(cA) == 0:
+            continue
+        r, dr = radi.mura_knowles(nrad, cell.atom_charge(A))
+        sel = r < r_max
+        r, wr = r[sel], (dr * r ** 2)[sel]
+        pts = (r[:, None, None] * xyz_ang[None]).reshape(-1, 3) + X[A]
+        w = (wr[:, None] * w_ang[None]).ravel()
+        # c on A (home cell only)
+        molA = _atom_mol(cell, [A], [X[A]], cell._basis)
+        cv = molA.eval_gto('GTOval_sph', pts)[:, cA - a0]               # (npts, n_c)
+        # x_far: lattice sum minus the explicit images
+        xf = cell.pbc_eval_gto('GTOval_sph', pts)                       # (npts, nao)
+        for B, t in near[A]:
+            mB = _atom_mol(cell, [B], [X[B] + t], cell._basis)
+            xf[:, ao_loc[B][0]:ao_loc[B][1]] -= mB.eval_gto('GTOval_sph', pts)
+        xf[:, ~xs_ok] = 0.
+        xcols = np.where(xs_ok)[0]
+        xf = np.ascontiguousarray(xf[:, xcols])
+        # SR potentials of A's aux functions and the one-centre SR metric
+        amol = _atom_mol(auxcell, [A], [X[A]], auxcell._basis)
+        u = _sr_potential_at(amol, pts, omega)                           # (npts, nQ)
+        with amol.with_range_coulomb(-omega):
+            m2 = amol.intor('int2c2e')
+        v, e = _inv_metric(.5 * (m2 + m2.T), lindep)
+        Minv = (v / e) @ v.T
+        uw = u * w[:, None]
+        pa = np.arange(*aux_loc[A])
+        for k, c in enumerate(cA):
+            J = (uw * cv[:, k:k + 1]).T @ xf                             # (nQ, n_x) = (Q | c x_far)_SR
+            coef = Minv @ J
+            big = np.abs(coef) > 1e-14
+            qq, xx = np.nonzero(big)
+            rows.append(pa[qq])
+            cols.append(pidx[c, xcols[xx]])
+            vals.append(coef[qq, xx])
+    if not rows:
+        return np.zeros(0, int), np.zeros(0, int), np.zeros(0)
+    return np.concatenate(rows), np.concatenate(cols), np.concatenate(vals)

@@ -387,7 +387,7 @@ class THCExchange:
         if local:
             from socutils.pbc.thc_local import local_cx_fit
             self.Cs = local_cx_fit(cell, self.aux, aohard, omega=self.omega, r_cut=local, verbose=self.verbose,
-                                   sparse=True)[0]
+                                   sparse=True, far=getattr(self, 'far_fit', False))[0]
             self.C = self.Cs.toarray() if getattr(self, 'dense_c', True) else None
             self.nonrobust = True
         else:
@@ -1316,7 +1316,7 @@ class THCJK:
         self.th.stream_gb = getattr(self, 'stream_gb', 30)
         self.th.stream_max_blocks = getattr(self, 'stream_max_blocks', 1 << 30)
         self.th.piv_file = getattr(self, 'piv_file', None)
-        for k in ('coarsen', 'blocked_pivots'):                        # point-selection options, if set
+        for k in ('coarsen', 'blocked_pivots', 'far_fit'):             # options, if set
             if hasattr(self, k):
                 setattr(self.th, k, getattr(self, k))
         self.th.kmax_factor = self.nmu_factor                         # pivots: only the N_mu prefix is used
