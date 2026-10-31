@@ -852,7 +852,7 @@ class THCExchange:
             return Kr + 1j * Ki
         return self.get_k_multi([dm])[0]
 
-    def get_k_multi(self, dms, sym=None, pblk=20000, kblk=64, lr_factors=None):
+    def get_k_multi(self, dms, sym=None, pblk=20000, kblk=None, lr_factors=None):
         '''K (vector convention, split basis) of several real densities at once (route 1).  The density-independent
         intermediates -- B_p = (C^T A)_p of CX-SS, (M C)_P and C_P of CX-CX, the LR rows L_g -- are built once and
         applied to all densities stacked.  sym[n] = +1 / -1 marks a symmetric / antisymmetric density (its CX-SS
@@ -860,6 +860,8 @@ class THCExchange:
         lr_factors = (F, terms): the densities as sums of real rank-r products, dms[n] = sum_(c, x, y) c F[x] F[y]^T
         over terms[n]; the LR term then needs sum_g (L_g F[x]) (L_g F[y])^T per product only.'''
         nD = len(dms)
+        if kblk is None:
+            kblk = getattr(self, 'kblk', 256)                         # aux functions per CX-CX chunk (2x1x1: 64 -> 256, -12%)
         dms = [np.ascontiguousarray(d, dtype=float) for d in dms]
         sym = [0] * nD if sym is None else list(sym)
         t = time.time()
@@ -945,13 +947,13 @@ class THCExchange:
                 c1 = min(c0 + kblk, len(rows))
                 nb = c1 - c0
                 ta = time.time()
-                MC = mc_cache.get((X, c0)) if mc_cache is not None else None
+                MC = mc_cache.get((X, c0, c1)) if mc_cache is not None else None
                 if MC is None:
                     MC = np.zeros((nb, nCX))
                     for rows2, cols2, Cd2 in blocks:
                         add_cols(MC, self.M[rows[c0:c1]][:, rows2] @ Cd2, cols2)
                     if mc_cache is not None:
-                        mc_cache[X, c0] = MC
+                        mc_cache[X, c0, c1] = MC
                 tc['MC'] += time.time() - ta; ta = time.time()
                 W = unpack_sym(MC, ii32, jj32, nao)                   # (nb, nao, nao)
                 MC = None
