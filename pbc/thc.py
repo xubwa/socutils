@@ -893,9 +893,12 @@ class THCExchange:
         t = time.time()
         # CX-CX (SR, non-robust): K[S_X] += sum_P (C_P D) W_P per aux atom X and chunk of P, all densities stacked
         nCX = len(cxc)
-        # (M C)_P is density independent: kept across calls when naux nCX doubles fit in k_cache_gb
+        # (M C)_P is density independent: kept across calls when naux nCX doubles fit in k_cache_gb (GB)
         if getattr(self, '_mc_cache', None) is None:
-            fits = self.auxmol.nao * nCX * 8 <= getattr(self, 'k_cache_gb', 32.) * 1e9
+            budget = getattr(self, 'k_cache_gb', None)
+            if budget is None:                                         # default: 30% of the cell's max_memory (MB)
+                budget = 0.3 * self.cell.max_memory / 1e3
+            fits = self.auxmol.nao * nCX * 8 <= budget * 1e9
             self._mc_cache = {} if fits else False
         mc_cache = self._mc_cache if self._mc_cache is not False else None
         tc = dict.fromkeys(('MC', 'unpack', 'CD', 'swap', 'GEMM', 'add'), 0.)
