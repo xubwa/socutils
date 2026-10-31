@@ -27,7 +27,7 @@ aux = {e: auxgen_from_basis({_gto.mole._std_symbol(e): B[e]}, contract=False, pr
 dm = pscf.RHF(cell).get_init_guess(key='minao')
 
 t = time.time()
-jk = THCJK(cell, aux, alpha_c=ac, nmu_factor=fac, selector=sel, nuc_zeta=nz, omega=float(os.environ.get('OMEGA', 0.5)),
+jk = THCJK(cell, aux, alpha_c=ac, nmu_factor=fac, selector=sel, nuc_zeta=nz, omega=float(os.environ['OMEGA']) if os.environ.get('OMEGA') else None,
            local_rcut=float(os.environ['LOCAL']) if os.environ.get('LOCAL') else None)
 if os.environ.get('COARSEN'):
     jk.coarsen = int(os.environ['COARSEN'])

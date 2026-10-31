@@ -35,6 +35,7 @@ from socutils.pbc.bench.hybrid_k import _inv_metric, k_from_factors
 from socutils.pbc.rsdf import RSDF
 
 OMEGA = 0.5
+OMEGA_ROUTE1 = 0.35
 
 
 def pivots(phi, kmax):
@@ -1296,8 +1297,12 @@ class THCJK:
     mapped to the cell's basis (chi_cell = chi_split T); nuclei, S and c_g0 from its RSDF (lr='gspace').
     split_direct.periodic(mf, THCJK(...)) gives the periodic spinor SCF.'''
 
-    def __init__(self, cell, aux, alpha_c=4., nmu_factor=16., selector='coarse', omega=OMEGA, nuc_zeta=1e12,
+    def __init__(self, cell, aux, alpha_c=4., nmu_factor=16., selector='coarse', omega=None, nuc_zeta=1e12,
                  verbose=True, local_rcut=None):
+        # omega: 0.35 for route 1 (local_rcut; with the far-field fit, EuOCl E(D) within 4e-5 Eh of omega 0.5 at
+        # 35% of the LR rows), OMEGA otherwise
+        if omega is None:
+            omega = OMEGA_ROUTE1 if local_rcut else OMEGA
         self.cell, self.aux, self.alpha_c, self.nmu_factor = cell, aux, alpha_c, nmu_factor
         self.selector, self.omega, self.nuc_zeta, self.verbose = selector, omega, nuc_zeta, verbose
         self.local_rcut = local_rcut   # Angstrom: pair-atom local fit of the CX pairs (thc_local), non-robust K
