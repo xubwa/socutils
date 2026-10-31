@@ -1,23 +1,24 @@
-'''Minimization of the energy of an engine (energy and Cartesian gradient of a
+'''Geometry optimization of an engine (energy and Cartesian gradient of a
 geometry) in geomeTRIC's internal coordinates, with our own step logic:
 
   coordinates  TRIC (default; DLC, HDLC, Cartesian) from geometric.internal:
-               B matrix, iterative back-transformation, the model Hessian;
-               rebuilt when the bonding changes, the rotations grow large or
-               the back-transformation fails (Hessian carried over through the
-               Cartesian one)
-  Hessian      the model Hessian, or the exact one of the engine (hessian =
-               'exact'); BFGS updates with Powell damping
-  step         RFO, restricted to the trust radius by the shifted Newton step;
-               GEDIIS (Li, Frisch, JCTC 2, 835 (2006)) in the small-force
-               region: the energy-weighted interpolation of the last points,
-               then a Newton step from it
-  trust        ratio of the actual to the predicted energy change; a step
-               that raises the energy is rejected and replaced by the minimum
-               of the cubic through the two end points along it
-  convergence  geomeTRIC / Gaussian criteria (energy change, RMS / max
-               gradient, RMS / max displacement), or forces under 1/100 of the
-               gradient thresholds
+               B matrix, iterative back-transformation; rebuilt when the
+               bonding changes, the rotations grow large or the
+               back-transformation fails (Hessian carried over through the
+               Cartesian one; Cartesians when the new system is singular)
+  Hessian      Lindh's model Hessian (default for minima), geomeTRIC's, or
+               the exact one of the engine (default for transition states);
+               BFGS updates with Powell damping, Bofill for transition states
+  step         RFO / P-RFO (mode following by overlap), restricted to the
+               trust radius; GEDIIS (Li, Frisch, JCTC 2, 835 (2006)) in the
+               small-force region
+  trust        on the aligned RMS Cartesian displacement (as geomeTRIC),
+               from the ratio of the actual to the predicted energy change; a
+               minimization step that raises the energy is replaced by the
+               minimum of the cubic along it, a poor transition-state step
+               is rejected
+  convergence  Gaussian's criteria (internal forces, predicted step; default)
+               or geomeTRIC's (energy change, gradient, last displacement)
 
 Coordinates are flat arrays in Bohr, gradients in Hartree / Bohr.'''
 import itertools
@@ -95,8 +96,9 @@ def fast_engine(mf):
     return PySCFEngine(grad_fast.Gradients(mf).as_scanner(), hessian=lambda mf: hcls(mf).kernel())
 
 
-def make_coords(elem, x, coordsys='tric'):
-    '''geomeTRIC coordinate system of the geometry x (Bohr)'''
+def make_coords(elem, x, coordsys='tric', remove_tr=False):
+    '''geomeTRIC coordinate system of the geometry x (Bohr); remove_tr: the
+    overall translations and rotations projected out of the DLCs'''
     M = Molecule()
     M.elem = list(elem)
     M.xyzs = [x.reshape(-1, 3) * BOHR]
@@ -104,7 +106,64 @@ def make_coords(elem, x, coordsys='tric'):
     if coordsys == 'cart':
         return CartesianCoordinates(M)
     connect, addcart = {'tric': (False, False), 'dlc': (True, False), 'hdlc': (False, True)}[coordsys]
-    return DelocalizedInternalCoordinates(M, build=True, connect=connect, addcart=addcart)
+    return DelocalizedInternalCoordinates(M, build=True, connect=connect, addcart=addcart, remove_tr=remove_tr)
+
+
+LINDH_ALPHA = numpy.array([[1.0000, 0.3949, 0.3949], [0.3949, 0.2800, 0.2800], [0.3949, 0.2800, 0.2800]])
+LINDH_R0 = numpy.array([[1.35, 2.10, 2.53], [2.10, 2.87, 3.40], [2.53, 3.40, 3.40]])
+
+
+def lindh_hessian(elem, x, cutoff=1e-4):
+    '''Cartesian model Hessian of Lindh et al., CPL 241, 423 (1995): stretches,
+    bends and torsions over all atoms with force constants 0.45 rho_ij,
+    0.15 rho_ij rho_jk, 0.005 rho_ij rho_jk rho_kl, rho_ij = exp(alpha_ij
+    (r0_ij^2 - r_ij^2)) (Bohr); products below cutoff dropped'''
+    from geometric.internal import Distance, Angle, Dihedral
+    from pyscf.data import elements
+    xyz = x.reshape(-1, 3)
+    n = len(xyz)
+    z = [elements.charge(e) for e in elem]
+    row = numpy.array([0 if q <= 2 else (1 if q <= 10 else 2) for q in z])
+    r2 = ((xyz[:, None] - xyz[None]) ** 2).sum(-1)
+    rho = numpy.exp(LINDH_ALPHA[row[:, None], row[None]] * (LINDH_R0[row[:, None], row[None]] ** 2 - r2))
+    numpy.fill_diagonal(rho, 0)
+    H = numpy.zeros((3 * n, 3 * n))
+
+    def add(k, prim):
+        b = prim.derivative(x).ravel()
+        H[:] += k * numpy.outer(b, b)
+    for i in range(n):
+        for j in range(i + 1, n):
+            if rho[i, j] > cutoff:
+                add(.45 * rho[i, j], Distance(i, j))
+    for j in range(n):
+        nb = [i for i in range(n) if rho[i, j] > cutoff]
+        for ia, i in enumerate(nb):
+            for k in nb[ia + 1:]:
+                r = rho[i, j] * rho[j, k]
+                if r > cutoff:
+                    u, v = xyz[i] - xyz[j], xyz[k] - xyz[j]
+                    if abs(u.dot(v)) / numpy.sqrt(u.dot(u) * v.dot(v)) < .999:
+                        add(.15 * r, Angle(i, j, k))
+    for j in range(n):
+        for k in range(j + 1, n):
+            if rho[j, k] <= cutoff:
+                continue
+            for i in range(n):
+                if i in (j, k) or rho[i, j] * rho[j, k] <= cutoff:
+                    continue
+                for l in range(n):
+                    if l in (i, j, k):
+                        continue
+                    r = rho[i, j] * rho[j, k] * rho[k, l]
+                    if r <= cutoff:
+                        continue
+                    a1, a2 = xyz[i] - xyz[j], xyz[k] - xyz[j]
+                    b1, b2 = xyz[j] - xyz[k], xyz[l] - xyz[k]
+                    if (abs(a1.dot(a2)) / numpy.sqrt(a1.dot(a1) * a2.dot(a2)) < .99
+                            and abs(b1.dot(b2)) / numpy.sqrt(b1.dot(b1) * b2.dot(b2)) < .99):
+                        add(.005 * r, Dihedral(i, j, k, l))
+    return H
 
 
 def _ratio(a, d):
@@ -265,22 +324,28 @@ class Optimizer(lib.StreamObject):
 
     Attributes:
         coordsys : 'tric' (default), 'dlc', 'hdlc' or 'cart'
-        hessian : 'model' or 'exact' (the engine's Hessian at the start); default
-            model for minima, exact for transition states
+        hessian : 'model' (geomeTRIC's), 'lindh' (Lindh's model Hessian,
+            eigenvalues floored at hess_floor) or 'exact' (the engine's Hessian
+            at the start); default lindh for minima, exact for transition states
         transition : transition-state search: P-RFO following the mode of the
             lowest eigenvalue at the start (by overlap afterwards), Bofill
             updates; the exact Hessian again every hess_recalc steps, and
             (hess_adaptive) when the updated one has had a wrong number of
             negative eigenvalues for two steps
-        trust, tmax, tmin : trust radius in the internal coordinates (Bohr, rad)
+        trust, tmax, tmin : trust radius, on the RMS Cartesian displacement of
+            the step after alignment (Angstrom, as geomeTRIC): the internal step
+            is scaled until its back-transformed displacement fits
         gediis : GEDIIS steps when the RMS internal gradient is below
             gediis_grms, from the last nhist points
         max_cycle : maximum number of energy + gradient evaluations
         conv_params : CONV_PARAMS keys
-        criteria : 'geometric' (all five on the Cartesian gradient and the
-            last step) or 'gaussian' (Gaussian's: max / RMS internal force and
+        remove_tr : project the overall translations and rotations out of the
+            coordinates (default: for transition states, whose P-RFO step
+            otherwise runs into these zero-curvature directions)
+        criteria : 'gaussian' (default; Gaussian's: max / RMS internal force and
             max / RMS predicted next internal step, the gmax, grms, dmax, drms
-            thresholds read in Hartree, Bohr, rad; no energy criterion)
+            thresholds read in Hartree, Bohr, rad; no energy criterion) or
+            'geometric' (all five on the Cartesian gradient and the last step)
     '''
     coordsys = 'tric'
     hessian = None
@@ -288,12 +353,12 @@ class Optimizer(lib.StreamObject):
     hess_recalc = 0
     hess_adaptive = True
     neg_eig = 1e-3
-    criteria = 'geometric'
-    trust = 0.3
-    tmax = 0.5
-    tmin = 1e-3
-    trust_ts = 0.1
-    tmax_ts = 0.3
+    criteria = 'gaussian'
+    remove_tr = None
+    hess_floor = 2.3e-3
+    trust = 0.1
+    tmax = 0.3
+    tmin = 1.2e-3
     gediis = True
     gediis_grms = 1e-2
     nhist = 5
@@ -319,14 +384,32 @@ class Optimizer(lib.StreamObject):
     def _new_coords(self, x, gx, ic, H, vmode=None):
         '''coordinate system rebuilt at x; H and the followed mode carried over
         through Cartesian coordinates'''
-        ic1 = make_coords(self.elem, x, self.coordsys)
         gq = ic.calcGrad(x, gx)
         Hx = ic.calcHessCart(x, gq, H)
-        if vmode is not None:
-            vx = ic.wilsonB(x).T.dot(ic.GInverse(x)).dot(vmode)
+        vx = None if vmode is None else ic.wilsonB(x).T.dot(ic.GInverse(x)).dot(vmode)
+        # fall back to the coordinates with the overall rotations, then to Cartesians,
+        # when the new system is singular (the G matrix SVD of geomeTRIC fails)
+        for coordsys, remove_tr in ((self.coordsys, self._remove_tr), (self.coordsys, False), ('cart', False)):
+            try:
+                ic1 = make_coords(self.elem, x, coordsys, remove_tr)
+                H1 = ic1.calcHess(x, gx, Hx)
+                ic1.calcGrad(x, gx)
+                break
+            except RuntimeError as err:
+                logger.info(self, 'coordinates %s (remove_tr %s) failed: %s', coordsys, remove_tr, err)
+        if vx is not None:
             vmode = ic1.wilsonB(x).dot(vx)
             vmode /= numpy.linalg.norm(vmode)
-        return ic1, ic1.calcHess(x, gx, Hx), vmode
+        return ic1, H1, vmode
+
+    def _first_coords(self, x, gx):
+        for coordsys, remove_tr in ((self.coordsys, self._remove_tr), (self.coordsys, False), ('cart', False)):
+            try:
+                ic = make_coords(self.elem, x, coordsys, remove_tr)
+                ic.calcGrad(x, gx)
+                return ic
+            except RuntimeError as err:
+                logger.info(self, 'coordinates %s (remove_tr %s) failed: %s', coordsys, remove_tr, err)
 
     def _coords_changed(self, x, ic):
         M = Molecule()
@@ -339,31 +422,74 @@ class Optimizer(lib.StreamObject):
         ic1 = DelocalizedInternalCoordinates(M, build=False, connect=connect, addcart=addcart)
         return ic1 != ic or (hasattr(ic, 'largeRots') and ic.largeRots())
 
-    def _step(self, ic, H, x, gq, hist, trust):
-        '''internal-coordinate step and its kind'''
-        dq, _ = rfo_step(H, gq, trust)
+    def _restrict(self, ic, x, fn, trust):
+        """fn(qmax) -> internal step of length <= qmax; the step whose aligned
+        RMS Cartesian displacement is trust (or the full one if shorter).
+        Returns the step and the new geometry."""
+        dq = fn(numpy.inf)
+        xn = ic.newCartesian(x, dq, verbose=0)
+        r = calc_drms_dmax(xn, x)[0]
+        if r <= trust:
+            return dq, xn
+        lo, hi = 0., numpy.linalg.norm(dq)
+        for _ in range(40):
+            mid = .5 * (lo + hi)
+            dq = fn(mid)
+            xn = ic.newCartesian(x, dq, verbose=0)
+            r = calc_drms_dmax(xn, x)[0]
+            if abs(r - trust) < .05 * trust:
+                break
+            if r > trust:
+                hi = mid
+            else:
+                lo = mid
+        return dq, xn
+
+    def _gediis_step(self, ic, H, x, gq, hist):
+        """GEDIIS step, or None"""
         if not self.gediis or len(hist) < 3 or numpy.sqrt(numpy.mean(gq**2)) > self.gediis_grms:
-            return dq, 'rfo'
+            return None
         pts = hist[-self.nhist:]
         E = numpy.array([p[1] for p in pts])
         q = [ic.calcDiff(p[0], x) for p in pts]
         g = [ic.calcGrad(p[0], p[2]) for p in pts]
         c, _ = gediis_coeffs(E, q, g)
         if c.max() > 1 - 1e-12:
-            return dq, 'rfo'
+            return None
         qi = sum(ci * qq for ci, qq in zip(c, q))
         gi = sum(ci * gg for ci, gg in zip(c, g))
         try:
-            dqd = qi - numpy.linalg.solve(H, gi)
+            dq = qi - numpy.linalg.solve(H, gi)
         except numpy.linalg.LinAlgError:
-            return dq, 'rfo'
-        if numpy.linalg.norm(dqd) > trust or gq.dot(dqd) + .5 * dqd.dot(H).dot(dqd) >= 0:
-            return dq, 'rfo'
-        return dqd, 'gediis'
+            return None
+        if gq.dot(dq) + .5 * dq.dot(H).dot(dq) >= 0:
+            return None
+        return dq
+
+    def _lindh(self, ic, x):
+        '''Lindh's model Hessian in the internal coordinates; the translations
+        and rotations of TRIC take geomeTRIC's model force constants'''
+        G = ic.GInverse(x).dot(ic.wilsonB(x))
+        H = self._add_tr(ic, x, G.dot(lindh_hessian(self.elem, x)).dot(G.T))
+        h, v = numpy.linalg.eigh(H)
+        return (v * numpy.maximum(h, self.hess_floor)).dot(v.T)
+
+    def _add_tr(self, ic, x, H):
+        '''geomeTRIC's model force constants added on the translations and
+        rotations of TRIC, along which a Cartesian Hessian has no curvature'''
+        from geometric import internal
+        if hasattr(ic, 'Prims') and hasattr(ic, 'Vecs'):
+            tr = (internal.TranslationX, internal.TranslationY, internal.TranslationZ,
+                  internal.RotationA, internal.RotationB, internal.RotationC)
+            d = numpy.diag(ic.Prims.guess_hessian(x)).copy()
+            d[[not isinstance(p, tr) for p in ic.Prims.Internals]] = 0
+            H = H + ic.Vecs.T.dot(d[:, None] * ic.Vecs)
+        return H
 
     def _exact_hessian(self, ic, x, gx):
         self.nhess += 1
-        return ic.calcHess(x, gx, self.engine.hessian(x))
+        H = ic.calcHess(x, gx, self.engine.hessian(x))
+        return H if self.transition else self._add_tr(ic, x, H)
 
     def kernel(self, x0=None, elem=None):
         log = logger.new_logger(self)
@@ -372,15 +498,21 @@ class Optimizer(lib.StreamObject):
         self.elem = elem if elem is not None else eng.elements
         x = numpy.array(x0 if x0 is not None else eng.coords(), dtype=float).ravel()
         cp = self.conv_params
-        ic = make_coords(self.elem, x, self.coordsys)
+        self._remove_tr = (self.remove_tr if self.remove_tr is not None else ts) and self.coordsys != 'cart'
         E, gx = eng(x)
+        ic = self._first_coords(x, gx)
         ncalc = 1
         hist = [(x.copy(), E, gx.copy())]
-        hess = self.hessian if self.hessian is not None else ('exact' if ts else 'model')
-        H = self._exact_hessian(ic, x, gx) if hess == 'exact' else ic.guess_hessian(x)
+        hess = self.hessian if self.hessian is not None else ('exact' if ts else 'lindh')
+        if hess == 'exact':
+            H = self._exact_hessian(ic, x, gx)
+        elif hess == 'lindh':
+            H = self._lindh(ic, x)
+        else:
+            H = ic.guess_hessian(x)
         gq = ic.calcGrad(x, gx)
-        trust = self.trust_ts if ts else self.trust
-        tmax = self.tmax_ts if ts else self.tmax
+        trust = self.trust
+        tmax = self.tmax
         forced = None          # the line-search point after a rejected step
         vmode = None           # the followed mode (transition states)
         nwrong = 0             # consecutive steps with a wrong Hessian index
@@ -394,14 +526,21 @@ class Optimizer(lib.StreamObject):
             conv = True
 
         def step(ic, H, gq):
+            """internal step, its kind and the new geometry"""
             nonlocal vmode
             if not ts:
-                return self._step(ic, H, x, gq, hist, trust)
+                dq = self._gediis_step(ic, H, x, gq, hist)
+                if dq is not None:
+                    xn = ic.newCartesian(x, dq, verbose=0)
+                    if not ic.bork and calc_drms_dmax(xn, x)[0] <= trust:
+                        return dq, 'gediis', xn
+                dq, xn = self._restrict(ic, x, lambda qmax: rfo_step(H, gq, qmax)[0], trust)
+                return dq, 'rfo', xn
             h, v = numpy.linalg.eigh(H)
             k = 0 if vmode is None or vmode.size != gq.size else int(numpy.argmax(abs(v.T.dot(vmode))))
-            dq, v = prfo_step(H, gq, trust, k)
             vmode = v[:, k]
-            return dq, 'prfo%d' % k
+            dq, xn = self._restrict(ic, x, lambda qmax: prfo_step(H, gq, qmax, k)[0], trust)
+            return dq, 'prfo%d' % k, xn
 
         while not conv and ncalc < self.max_cycle:
             if forced is not None:
@@ -409,14 +548,18 @@ class Optimizer(lib.StreamObject):
                 xnew = forced
                 forced = None
             else:
-                dq, kind = step(ic, H, gq)
-                xnew = ic.newCartesian(x, dq, verbose=0)
+                try:
+                    dq, kind, xnew = step(ic, H, gq)
+                except RuntimeError as err:       # geomeTRIC's G matrix SVD
+                    log.info('step failed (%s); new coordinate system', err)
+                    ic, H, vmode = self._new_coords(x, gx, ic, H, vmode)
+                    gq = ic.calcGrad(x, gx)
+                    dq, kind, xnew = step(ic, H, gq)
                 if ic.bork:
                     log.info('back-transformation failed; new coordinate system')
                     ic, H, vmode = self._new_coords(x, gx, ic, H, vmode)
                     gq = ic.calcGrad(x, gx)
-                    dq, kind = step(ic, H, gq)
-                    xnew = ic.newCartesian(x, dq, verbose=0)
+                    dq, kind, xnew = step(ic, H, gq)
                     if ic.bork:
                         kind += '/linear'      # the first-order back-transformation
             dq = ic.calcDiff(xnew, x)
@@ -435,24 +578,29 @@ class Optimizer(lib.StreamObject):
             log.info('geomopt %3d %-7s E = %.10f dE %9.2e rho %6.2f |dq| %.3e trust %.3e '
                      'grms %.2e gmax %.2e drms %.2e dmax %.2e', ncalc, kind, Enew, dE, rho, dqn, trust,
                      grms, gmax, drms, dmax)
-            if not ts and dE > self.reject_de and dqn > self.tmin:
+            if not ts and dE > self.reject_de and drms > self.tmin:
                 s = xnew - x
                 a = cubic_min(E, gx.dot(s), Enew, gxnew.dot(s))
                 a = .5 if a is None else min(max(a, .1), .5)
                 forced = x + a * s
-                trust = max(a * dqn, self.tmin)
+                trust = max(a * drms, self.tmin)
+                continue
+            qual = 2 - rho if ts and rho > 1 else rho
+            if (ts and abs(pred) > 1e-8 and qual < 0 and drms > 1.2 * self.tmin and trust > self.tmin
+                    and abs(dE) > cp['convergence_energy']):
+                # rejected: back to x with a smaller trust radius (H keeps the information)
+                trust = max(.5 * min(trust, drms), self.tmin)
                 continue
             if abs(pred) > 1e-8:
-                good = rho > .75 and (not ts or rho < 1.25)
-                bad = rho < .25 or (ts and rho > 1.75)
-                if bad:
-                    trust = max(.25 * dqn, self.tmin)
-                elif good and dqn > .8 * trust:
-                    trust = min(2 * trust, tmax)
+                if qual < (.5 if ts else .25):
+                    trust = max(.5 * min(trust, drms), self.tmin)
+                elif qual > .75 and drms > .8 * trust:
+                    trust = min(numpy.sqrt(2) * trust, tmax)
             x, E, gx, gq = xnew, Enew, gxnew, gqnew
             if self.criteria == 'gaussian':
                 # Gaussian's: internal forces and the predicted next step
                 dqn_next = step(ic, H, gq)[0]
+                ic.clearCache()
                 conv = ((abs(gq).max() < cp['convergence_gmax'] and numpy.sqrt(numpy.mean(gq**2)) < cp['convergence_grms']
                          and abs(dqn_next).max() < cp['convergence_dmax']
                          and numpy.sqrt(numpy.mean(dqn_next**2)) < cp['convergence_drms'])

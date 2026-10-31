@@ -152,10 +152,11 @@ two-electron corrections on) and only then require the `x2camf` integral backend
   spinor/GHF SCF objects above.
 
 - **`geomopt/`** — geometry optimization (`optimizer.py`): our own step logic on
-  geomeTRIC's internal coordinates (TRIC; B matrix, back-transformation, model
-  Hessian from `geometric.internal`): RFO with a trust radius, GEDIIS in the
-  small-force region, cubic line search after a rejected step, damped BFGS;
-  transition states by P-RFO with mode following, Bofill updates and the exact
+  geomeTRIC's internal coordinates (TRIC; B matrix, back-transformation from
+  `geometric.internal`): Lindh model Hessian, RFO with a Cartesian-RMSD trust
+  radius, GEDIIS in the small-force region, cubic line search after a rejected
+  step, damped BFGS, Gaussian's convergence criteria; transition states
+  (prototype) by P-RFO with mode following, Bofill updates and the exact
   Hessian at the start (recomputed when the index goes wrong).
   `optimizer.fast_engine(mf)` runs it on the fast RHF / RKS SCF, gradient and
   Hessian paths; `geomopt.optimize(mf)` is the pyscf-style entry point.
