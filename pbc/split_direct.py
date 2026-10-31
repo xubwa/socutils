@@ -174,6 +174,7 @@ def periodic(mf, jk):
                 mol = self.mol
             if dm is None:
                 dm = self.make_rdm1()
+            dm = self._natural_orbitals(dm)                           # untagged (guess) densities -> MO path
             if self._use_mo(dm):                                      # occ-RI: full builds
                 self._veff_last = None
                 return spinor_scf._PeriodicSpinorSCF.get_veff(self, mol, dm, hermi=hermi)
@@ -192,6 +193,26 @@ def periodic(mf, jk):
             if self.incremental and hermi:
                 self._veff_last = (dm.copy(), v.copy())
             return v
+
+        def _natural_orbitals(self, dm, tol=1e-8):
+            '''Tag an untagged density with its natural orbitals (dm = C n C^H, C^H S C = 1) when its occupations
+            are >= -tol, so that a guess density takes the batched occupied-orbital J/K path too.'''
+            if (not getattr(self, 'guess_to_mo', True) or getattr(dm, 'mo_coeff', None) is not None
+                    or np.ndim(dm) != 2 or not hasattr(self.with_df, 'get_jk_mo')):
+                return dm
+            dm = np.asarray(dm)
+            if abs(dm - dm.conj().T).max() > 1e-10:
+                return dm
+            S = self.get_ovlp()
+            e, v = np.linalg.eigh(S)
+            s12 = (v * np.sqrt(e)) @ v.conj().T
+            sm12 = (v / np.sqrt(e)) @ v.conj().T
+            n, U = np.linalg.eigh(s12 @ dm @ s12)
+            if n.min() < -tol:
+                return dm
+            keep = n > tol
+            C = sm12 @ U[:, keep]
+            return lib.tag_array(dm, mo_coeff=C, mo_occ=np.maximum(n[keep], 0.))
 
         def _use_mo(self, dm):
             return (hasattr(self.with_df, 'get_jk_mo') and getattr(dm, 'mo_coeff', None) is not None
