@@ -14,11 +14,12 @@ static int jkg_0000(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -39,7 +40,7 @@ static int jkg_0000(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 1; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 1 + i] = y;
                         }
                 }
@@ -89,11 +90,12 @@ static int jkg_0010(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -120,7 +122,7 @@ static int jkg_0010(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 3; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 3 + i] = y;
                         }
                 }
@@ -174,11 +176,12 @@ static int jkg_0011(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -221,7 +224,7 @@ static int jkg_0011(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 9; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 9 + i] = y;
                         }
                 }
@@ -303,11 +306,12 @@ static int jkg_0020(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -347,7 +351,7 @@ static int jkg_0020(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 6; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 6 + i] = y;
                         }
                 }
@@ -406,11 +410,12 @@ static int jkg_0021(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -480,7 +485,7 @@ static int jkg_0021(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 16; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 16 + i] = y;
                         }
                 }
@@ -591,11 +596,12 @@ static int jkg_0022(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -715,7 +721,7 @@ static int jkg_0022(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 31; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 31 + i] = y;
                         }
                 }
@@ -970,11 +976,12 @@ static int jkg_1000(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -1001,7 +1008,7 @@ static int jkg_1000(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 3; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 3 + i] = y;
                         }
                 }
@@ -1053,11 +1060,12 @@ static int jkg_1010(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -1103,7 +1111,7 @@ static int jkg_1010(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 9; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 9 + i] = y;
                         }
                 }
@@ -1163,11 +1171,12 @@ static int jkg_1011(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -1265,7 +1274,7 @@ static int jkg_1011(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 27; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 27 + i] = y;
                         }
                 }
@@ -1365,11 +1374,12 @@ static int jkg_1020(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -1458,7 +1468,7 @@ static int jkg_1020(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 18; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 18 + i] = y;
                         }
                 }
@@ -1527,11 +1537,12 @@ static int jkg_1021(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -1720,7 +1731,7 @@ static int jkg_1021(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 48; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 48 + i] = y;
                         }
                 }
@@ -1861,11 +1872,12 @@ static int jkg_1022(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -2224,7 +2236,7 @@ static int jkg_1022(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 93; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 93 + i] = y;
                         }
                 }
@@ -2529,11 +2541,12 @@ static int jkg_1100(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -2576,7 +2589,7 @@ static int jkg_1100(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 9; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 9 + i] = y;
                         }
                 }
@@ -2643,11 +2656,12 @@ static int jkg_1110(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -2745,7 +2759,7 @@ static int jkg_1110(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 27; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 27 + i] = y;
                         }
                 }
@@ -2832,11 +2846,12 @@ static int jkg_1111(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -3082,7 +3097,7 @@ static int jkg_1111(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 81; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 81 + i] = y;
                         }
                 }
@@ -3245,11 +3260,12 @@ static int jkg_1120(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -3468,7 +3484,7 @@ static int jkg_1120(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 54; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 54 + i] = y;
                         }
                 }
@@ -3576,11 +3592,12 @@ static int jkg_1121(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -4079,7 +4096,7 @@ static int jkg_1121(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 144; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 144 + i] = y;
                         }
                 }
@@ -4319,11 +4336,12 @@ static int jkg_1122(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -5292,7 +5310,7 @@ static int jkg_1122(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 279; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 279 + i] = y;
                         }
                 }
@@ -5756,11 +5774,12 @@ static int jkg_2000(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -5800,7 +5819,7 @@ static int jkg_2000(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 6; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 6 + i] = y;
                         }
                 }
@@ -5854,11 +5873,12 @@ static int jkg_2010(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -5938,7 +5958,7 @@ static int jkg_2010(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 18; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 18 + i] = y;
                         }
                 }
@@ -6004,11 +6024,12 @@ static int jkg_2011(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -6197,7 +6218,7 @@ static int jkg_2011(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 54; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 54 + i] = y;
                         }
                 }
@@ -6315,11 +6336,12 @@ static int jkg_2020(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -6490,7 +6512,7 @@ static int jkg_2020(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 36; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 36 + i] = y;
                         }
                 }
@@ -6569,11 +6591,12 @@ static int jkg_2021(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -6958,7 +6981,7 @@ static int jkg_2021(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 96; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 96 + i] = y;
                         }
                 }
@@ -7129,11 +7152,12 @@ static int jkg_2022(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -7888,7 +7912,7 @@ static int jkg_2022(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 186; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 186 + i] = y;
                         }
                 }
@@ -8243,11 +8267,12 @@ static int jkg_2100(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -8317,7 +8342,7 @@ static int jkg_2100(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 16; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 16 + i] = y;
                         }
                 }
@@ -8399,11 +8424,12 @@ static int jkg_2110(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -8573,7 +8599,7 @@ static int jkg_2110(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 48; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 48 + i] = y;
                         }
                 }
@@ -8687,11 +8713,12 @@ static int jkg_2111(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -9130,7 +9157,7 @@ static int jkg_2111(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 144; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 144 + i] = y;
                         }
                 }
@@ -9356,11 +9383,12 @@ static int jkg_2120(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -9751,7 +9779,7 @@ static int jkg_2120(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 96; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 96 + i] = y;
                         }
                 }
@@ -9898,11 +9926,12 @@ static int jkg_2121(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -10807,7 +10836,7 @@ static int jkg_2121(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 256; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 256 + i] = y;
                         }
                 }
@@ -11146,11 +11175,12 @@ static int jkg_2122(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -12925,7 +12955,7 @@ static int jkg_2122(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 496; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 496 + i] = y;
                         }
                 }
@@ -13548,11 +13578,12 @@ static int jkg_2200(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -13672,7 +13703,7 @@ static int jkg_2200(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 31; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 31 + i] = y;
                         }
                 }
@@ -13868,11 +13899,12 @@ static int jkg_2210(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -14182,7 +14214,7 @@ static int jkg_2210(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 93; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 93 + i] = y;
                         }
                 }
@@ -14430,11 +14462,12 @@ static int jkg_2211(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -15253,7 +15286,7 @@ static int jkg_2211(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 279; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 279 + i] = y;
                         }
                 }
@@ -15673,11 +15706,12 @@ static int jkg_2220(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -16403,7 +16437,7 @@ static int jkg_2220(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 186; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 186 + i] = y;
                         }
                 }
@@ -16704,11 +16738,12 @@ static int jkg_2221(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -18398,7 +18433,7 @@ static int jkg_2221(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 496; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 496 + i] = y;
                         }
                 }
@@ -18991,11 +19026,12 @@ static int jkg_2222(double *out, const size_t *st, const int *pos, const GPair *
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-                for (b = 0; b < nb; b++) {
+                for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
@@ -22305,7 +22341,7 @@ static int jkg_2222(double *out, const size_t *st, const int *pos, const GPair *
                         for (i = 0; i < 961; i++) {
                                 const double *vi = v + (size_t)i * nb;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * vi[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * vi[b];
                                 w[cb * 961 + i] = y;
                         }
                 }

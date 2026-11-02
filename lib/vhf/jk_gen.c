@@ -36,6 +36,7 @@ typedef struct {
         double *rix, *riy, *riz;        /* P - R_i */
         double *rjx, *rjy, *rjz;        /* P - R_j */
         double *bnd;                    /* bound of the primitive pair (with the 1 / sqrt(p) of the other side) */
+        double *beta;                   /* the same without 1 / sqrt(p); the primitives sorted by it, descending */
         double *c;                      /* c[cb * ld + t], cb = c_j nc_i + c_i */
         double bmax, rij[3];            /* max bound without 1 / sqrt(p); R_i - R_j */
 } GPair;
@@ -64,6 +65,40 @@ static inline void boys_n(const double *tab, double t, int M, double *F)
                 F[0] = .886226925452758014 / sqrt(t);
                 for (m = 0; m < M; m++) F[m + 1] = F[m] * (2 * m + 1) * h;
         }
+}
+
+/* the n primitive pairs of a pair table in the order of beta, descending:
+ * every array of arrs (length n) and the nc columns of c (stride ld) */
+static void sort_prims(double **arrs, int narr, double *c, int nc, int ld, int n, const double *beta)
+{
+        int *idx = malloc(sizeof(int) * (n > 0 ? n : 1));
+        double *tmp = malloc(sizeof(double) * (n > 0 ? n : 1));
+        int i, j, a;
+        for (i = 0; i < n; i++) idx[i] = i;
+        for (i = 1; i < n; i++) {               /* insertion sort, n small */
+                const int v = idx[i];
+                for (j = i - 1; j >= 0 && beta[idx[j]] < beta[v]; j--) idx[j + 1] = idx[j];
+                idx[j + 1] = v;
+        }
+        for (a = 0; a < narr; a++) {
+                double *x = arrs[a];
+                for (i = 0; i < n; i++) tmp[i] = x[idx[i]];
+                memcpy(x, tmp, sizeof(double) * n);
+        }
+        for (a = 0; a < nc; a++) {
+                double *x = c + (size_t)a * ld;
+                for (i = 0; i < n; i++) tmp[i] = x[idx[i]];
+                memcpy(x, tmp, sizeof(double) * n);
+        }
+        free(idx);
+        free(tmp);
+}
+
+/* the leading bra primitives b with beta_b >= thr (beta descending) */
+static inline int n_above(const double *beta, int n, double thr)
+{
+        while (n > 0 && beta[n - 1] < thr) n--;
+        return n;
 }
 
 #include "jk_vrr_gen.c"
@@ -133,12 +168,13 @@ GenCtx *SOCVHFgen_ctx_build(int *atm, int natm, int *bas, int nbas, double *env)
                 P->nc = nc; P->nci = nci; P->ncj = ncj; P->ld = nmax;
                 P->li = bi[ANG_OF]; P->lj = bj[ANG_OF];
                 for (k = 0; k < 3; k++) P->rij[k] = Ri[k] - Rj[k];
-                P->p = malloc(sizeof(double) * nmax * (12 + nc));
+                P->p = malloc(sizeof(double) * nmax * (13 + nc));
                 P->px = P->p + nmax; P->py = P->px + nmax; P->pz = P->py + nmax;
                 P->kp = P->pz + nmax; P->bnd = P->kp + nmax;
                 P->rix = P->bnd + nmax; P->riy = P->rix + nmax; P->riz = P->riy + nmax;
                 P->rjx = P->riz + nmax; P->rjy = P->rjx + nmax; P->rjz = P->rjy + nmax;
-                P->c = P->rjz + nmax;
+                P->beta = P->rjz + nmax;
+                P->c = P->beta + nmax;
                 int pi, pj, a, b, t = 0, x;
                 double bmax = 0;
                 for (pj = 0; pj < npj; pj++)
@@ -165,6 +201,7 @@ GenCtx *SOCVHFgen_ctx_build(int *atm, int natm, int *bas, int nbas, double *env)
                         const double fi = sqrt(ni) + sqrt(ip) + 1, fj = sqrt(nj) + sqrt(ip) + 1;
                         const double pf = pow(fi, P->li) * pow(fj, P->lj);
                         P->bnd[t] = e * ip * cm * pf / sqrt(p);
+                        P->beta[t] = e * ip * cm * pf;
                         bmax = fmax(bmax, e * ip * cm * pf);
                         for (b = 0; b < ncj; b++)
                                 for (a = 0; a < nci; a++)
@@ -173,6 +210,12 @@ GenCtx *SOCVHFgen_ctx_build(int *atm, int natm, int *bas, int nbas, double *env)
                 }
                 P->n = t;
                 P->bmax = bmax;
+                double *arrs[13] = {P->p, P->px, P->py, P->pz, P->kp, P->bnd, P->rix, P->riy, P->riz,
+                                    P->rjx, P->rjy, P->rjz, P->beta};
+                double *bcopy = malloc(sizeof(double) * (t > 0 ? t : 1));
+                memcpy(bcopy, P->beta, sizeof(double) * t);
+                sort_prims(arrs, 13, P->c, nc, nmax, t, bcopy);
+                free(bcopy);
         }
         return cx;
 }

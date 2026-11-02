@@ -45,6 +45,7 @@ typedef struct {
         double *bx, *by, *bz;           /* P - R_j */
         double *c;                      /* c[cb * ld + t], cb = c_j nc_i + c_i */
         double *bnd;                    /* bound of the pair's primitive t (with the ket / bra factor) */
+        double *beta;                   /* the same without 1 / sqrt(p); the primitives sorted by it, descending */
         double bmax;                    /* max_t of the bra bound */
 } SSPair;
 
@@ -127,6 +128,40 @@ static inline void shell_pair(int ij, int *i, int *j)
         *j = ij - a * (a + 1) / 2;
 }
 
+/* the n primitive pairs of a pair table in the order of beta, descending:
+ * every array of arrs (length n) and the nc columns of c (stride ld) */
+static void sort_prims(double **arrs, int narr, double *c, int nc, int ld, int n, const double *beta)
+{
+        int *idx = malloc(sizeof(int) * (n > 0 ? n : 1));
+        double *tmp = malloc(sizeof(double) * (n > 0 ? n : 1));
+        int i, j, a;
+        for (i = 0; i < n; i++) idx[i] = i;
+        for (i = 1; i < n; i++) {               /* insertion sort, n small */
+                const int v = idx[i];
+                for (j = i - 1; j >= 0 && beta[idx[j]] < beta[v]; j--) idx[j + 1] = idx[j];
+                idx[j + 1] = v;
+        }
+        for (a = 0; a < narr; a++) {
+                double *x = arrs[a];
+                for (i = 0; i < n; i++) tmp[i] = x[idx[i]];
+                memcpy(x, tmp, sizeof(double) * n);
+        }
+        for (a = 0; a < nc; a++) {
+                double *x = c + (size_t)a * ld;
+                for (i = 0; i < n; i++) tmp[i] = x[idx[i]];
+                memcpy(x, tmp, sizeof(double) * n);
+        }
+        free(idx);
+        free(tmp);
+}
+
+/* the leading bra primitives b with beta_b >= thr (beta descending) */
+static inline int n_above(const double *beta, int n, double thr)
+{
+        while (n > 0 && beta[n - 1] < thr) n--;
+        return n;
+}
+
 SSCtx *SOCVHFss_ctx_build(int *atm, int natm, int *bas, int nbas, double *env)
 {
         SSCtx *cx = malloc(sizeof(SSCtx));
@@ -161,12 +196,13 @@ SSCtx *SOCVHFss_ctx_build(int *atm, int natm, int *bas, int nbas, double *env)
                 P->ld = nmax;
                 P->lsum = lsum;
                 P->pside = bj[ANG_OF] == 1 && bi[ANG_OF] == 0;
-                P->p = malloc(sizeof(double) * nmax * (12 + nc));
+                P->p = malloc(sizeof(double) * nmax * (13 + nc));
                 P->px = P->p + nmax; P->py = P->px + nmax; P->pz = P->py + nmax;
                 P->kp = P->pz + nmax; P->bnd = P->kp + nmax;
                 P->ax = P->bnd + nmax; P->ay = P->ax + nmax; P->az = P->ay + nmax;
                 P->bx = P->az + nmax; P->by = P->bx + nmax; P->bz = P->by + nmax;
-                P->c = P->bz + nmax;
+                P->beta = P->bz + nmax;
+                P->c = P->beta + nmax;
                 int pi, pj, a, b, t = 0;
                 double bmax = 0;
                 for (pj = 0; pj < npj; pj++)
@@ -196,6 +232,7 @@ SSCtx *SOCVHFss_ctx_build(int *atm, int natm, int *bas, int nbas, double *env)
                         const double pf = lsum == 0 ? 1. : (lsum == 1 ? na + sqrt(ip) :
                                           (na + sqrt(ip)) * (nb_ + sqrt(ip)) + ip);
                         P->bnd[t] = e * ip * cm * pf / sqrt(p);
+                        P->beta[t] = e * ip * cm * pf;
                         bmax = fmax(bmax, e * ip * cm * pf);
                         for (b = 0; b < ncj; b++)
                                 for (a = 0; a < nci; a++)
@@ -204,6 +241,13 @@ SSCtx *SOCVHFss_ctx_build(int *atm, int natm, int *bas, int nbas, double *env)
                 }
                 P->n = t;
                 P->bmax = bmax;
+                double *arrs[13] = {P->p, P->px, P->py, P->pz, P->kp, P->bnd, P->ax, P->ay, P->az,
+                                    P->bx, P->by, P->bz, NULL};
+                double *bcopy = malloc(sizeof(double) * (t > 0 ? t : 1));
+                memcpy(bcopy, P->beta, sizeof(double) * t);
+                arrs[12] = P->beta;
+                sort_prims(arrs, 13, P->c, nc, nmax, t, bcopy);
+                free(bcopy);
         }
         return cx;
 }
@@ -249,14 +293,14 @@ int SOCVHFss_takes(const int *shls, const int *bas)
  *   (ps|ps): QC_w e0_u + WQ_w e1_u + d_uw / (2 (p + q)) F_1
  * with e_m = PA F_m + WP F_(m+1) (pp, ps-ps) or QC F_m + WQ F_(m+1) (ss|pp).
  */
-static void two_p(double *v, const SSPair *B, const SSPair *K, int t, const double *tab)
+static void two_p(double *v, const SSPair *B, const SSPair *K, int t, const double *tab, int nbt)
 {
         const int nb = B->n, kind = B->lsum == 2 ? 0 : (K->lsum == 2 ? 1 : 2);
         const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
         const double kax = K->ax[t], kay = K->ay[t], kaz = K->az[t];
         const double kbx = K->bx[t], kby = K->by[t], kbz = K->bz[t];
         int b;
-        for (b = 0; b < nb; b++) {
+        for (b = 0; b < nbt; b++) {
                 const double p = B->p[b], s = 1. / (p + q);
                 const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                 const double rho = p * q * s;
@@ -322,8 +366,9 @@ int SOCVHFss_int2e(double *out, const int *shls, const SSCtx *cx, double dmax, d
                 for (t = 0; t < nk; t++) {
                         if (K->bnd[t] < cut) continue;
                         any = 1;
+                        const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                         const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
-                        for (b = 0; b < nb; b++) {
+                        for (b = 0; b < nbt; b++) {
                                 const double p = B->p[b], s = 1. / (p + q);
                                 const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                                 const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
@@ -332,7 +377,7 @@ int SOCVHFss_int2e(double *out, const int *shls, const SSCtx *cx, double dmax, d
                         for (cb = 0; cb < ncb; cb++) {
                                 const double *c = B->c + (size_t)cb * B->ld;
                                 double y = 0;
-                                for (b = 0; b < nb; b++) y += c[b] * v[b];
+                                for (b = 0; b < nbt; b++) y += c[b] * v[b];
                                 w[cb] = y;
                         }
                         const double kq = K->kp[t] * TWO_PI52 * fac;
@@ -351,13 +396,14 @@ int SOCVHFss_int2e(double *out, const int *shls, const SSCtx *cx, double dmax, d
                 for (t = 0; t < nk; t++) {
                         if (K->bnd[t] < cut) continue;
                         any = 1;
-                        two_p(v, B, K, t, tab);
+                        const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
+                        two_p(v, B, K, t, tab, nbt);
                         for (cb = 0; cb < ncb; cb++) {
                                 const double *c = B->c + (size_t)cb * B->ld;
                                 for (x = 0; x < 9; x++) {
                                         const double *vx = v + (size_t)x * nb;
                                         double y = 0;
-                                        for (b = 0; b < nb; b++) y += c[b] * vx[b];
+                                        for (b = 0; b < nbt; b++) y += c[b] * vx[b];
                                         w9[cb * 9 + x] = y;
                                 }
                         }
@@ -409,9 +455,10 @@ int SOCVHFss_int2e(double *out, const int *shls, const SSCtx *cx, double dmax, d
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
                 const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
                 if (pbra) {
-                        for (b = 0; b < nb; b++) {
+                        for (b = 0; b < nbt; b++) {
                                 const double p = B->p[b], s = 1. / (p + q);
                                 const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                                 const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
@@ -427,7 +474,7 @@ int SOCVHFss_int2e(double *out, const int *shls, const SSCtx *cx, double dmax, d
                         for (cb = 0; cb < ncb; cb++) {
                                 const double *c = B->c + (size_t)cb * B->ld;
                                 double sx = 0, sy = 0, sz = 0;
-                                for (b = 0; b < nb; b++) {
+                                for (b = 0; b < nbt; b++) {
                                         sx += c[b] * vx[b];
                                         sy += c[b] * vy[b];
                                         sz += c[b] * vz[b];
@@ -436,7 +483,7 @@ int SOCVHFss_int2e(double *out, const int *shls, const SSCtx *cx, double dmax, d
                         }
                 } else {
                         const double cx_ = K->ax[t], cy_ = K->ay[t], cz_ = K->az[t];
-                        for (b = 0; b < nb; b++) {
+                        for (b = 0; b < nbt; b++) {
                                 const double p = B->p[b], s = 1. / (p + q);
                                 const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                                 const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
@@ -453,7 +500,7 @@ int SOCVHFss_int2e(double *out, const int *shls, const SSCtx *cx, double dmax, d
                         for (cb = 0; cb < ncb; cb++) {
                                 const double *c = B->c + (size_t)cb * B->ld;
                                 double s0 = 0, sx = 0, sy = 0, sz = 0;
-                                for (b = 0; b < nb; b++) {
+                                for (b = 0; b < nbt; b++) {
                                         s0 += c[b] * v0[b];
                                         sx += c[b] * vx[b];
                                         sy += c[b] * vy[b];
