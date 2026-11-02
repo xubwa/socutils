@@ -221,3 +221,114 @@ void SOCDFTvxc_mat(double *vbuf, double *ao, long cs, double *wv, int *idx, int 
         if (mkl_set_num_threads_local) mkl_set_num_threads_local(mkl0);
 }
 }
+
+/*
+ * One pass over the grid (SOCDFTvxc_fused): per sub-block of gs points (a
+ * multiple of 56) one thread evaluates the AOs (pyscf's GTOval_sph /
+ * GTOval_sph_deriv1 with the grid's non0tab rows), keeps those of the flagged
+ * shells with max_g |phi_k| > cutoff, forms rho (and nabla rho), evaluates the
+ * functional on the sub-block (pyscf's LIBXC_eval_xc; its OpenMP region runs
+ * serially inside ours), forms wv = w (v_rho, 2 v_sigma nabla rho) and adds
+ * phi_0 aow^T into its V; no AO array is stored and the AOs are evaluated
+ * once.  vbuf (nthreads, nao, nao) (GGA: the caller adds V + V^T), ex / ne
+ * (nthreads) the per-thread E_xc and electron counts.  coords (3, ngrid),
+ * non0tab (ngrid / 56, nbas).  xctype 0 LDA, 1 GGA.
+ */
+#include <stdint.h>
+typedef void (*gtoval_t)(int ngrids, int *shls_slice, int *ao_loc, double *ao, double *coord,
+                         uint8_t *non0table, int *atm, int natm, int *bas, int nbas, double *env);
+typedef void (*libxc_t)(int nfn, void *fn_obj, const double *fac, int spin, int deriv, int nvar, int np,
+                        int outlen, double *rho, double *out);
+
+void SOCDFTvxc_fused(double *vbuf, double *ex, double *ne, double *dm, double *coords, double *weights,
+                     uint8_t *non0tab, int ngrid, int gs, double cutoff, int xctype, gtoval_t eval,
+                     int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
+                     libxc_t xcf, int nfn, void *xc_arr, double *facs,
+                     dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local)
+{
+        const int nao = ao_loc[nbas], ncomp = xctype == 0 ? 1 : 4;
+        const int nsub = (ngrid + gs - 1) / gs, outlen = xctype == 0 ? 2 : 3;
+        const double one = 1, zero = 0;
+        const size_t nn = (size_t)nao * nao;
+#pragma omp parallel
+{
+        const int tid = omp_get_thread_num();
+        const int mkl0 = mkl_set_num_threads_local ? mkl_set_num_threads_local(1) : 0;
+        double *V = vbuf + tid * nn;
+        double *full = malloc(sizeof(double) * ncomp * nao * gs);
+        double *a = malloc(sizeof(double) * ncomp * nao * gs);
+        double *c = malloc(sizeof(double) * nao * gs);
+        double *d = malloc(sizeof(double) * nn);
+        double *xyz = malloc(sizeof(double) * 3 * gs);
+        double *rho = malloc(sizeof(double) * ncomp * gs);
+        double *out = malloc(sizeof(double) * outlen * gs);
+        double *wv = malloc(sizeof(double) * ncomp * gs);
+        int *ix = malloc(sizeof(int) * nao);
+        int shls[2] = {0, nbas};
+        double exs = 0, nes = 0;
+        int s;
+#pragma omp for schedule(dynamic, 4)
+        for (s = 0; s < nsub; s++) {
+                const int g0 = s * gs, n = g0 + gs <= ngrid ? gs : ngrid - g0;
+                const uint8_t *msk = non0tab + (size_t)(g0 / MASK_BLK) * nbas;
+                int i, j, g, k;
+                for (k = 0; k < 3; k++) memcpy(xyz + k * n, coords + (size_t)k * ngrid + g0, sizeof(double) * n);
+                eval(n, shls, ao_loc, full, xyz, (uint8_t *)msk, atm, natm, bas, nbas, env);
+                const int nl = select_gather_mask(a, ix, full, (long)nao * n, n, nao, ncomp, 0, n, cutoff,
+                                                  msk, ao_loc, nbas);
+                if (nl == 0) continue;
+                for (i = 0; i < nl; i++)
+                        for (j = 0; j < nl; j++) d[i * nl + j] = dm[(size_t)ix[i] * nao + ix[j]];
+                /* c (nl, n) = D_sub phi_0; rho, nabla rho */
+                dgemm_("N", "N", &n, &nl, &nl, &one, a, &n, d, &nl, &zero, c, &n);
+                memset(rho, 0, sizeof(double) * ncomp * n);
+                for (i = 0; i < nl; i++) {
+                        const double *p = a + (size_t)i * n, *q = c + (size_t)i * n;
+                        for (g = 0; g < n; g++) rho[g] += p[g] * q[g];
+                }
+                for (k = 1; k < ncomp; k++) {
+                        double *rk = rho + (size_t)k * n;
+                        for (i = 0; i < nl; i++) {
+                                const double *p = a + ((size_t)k * nl + i) * n, *q = c + (size_t)i * n;
+                                for (g = 0; g < n; g++) rk[g] += 2 * p[g] * q[g];
+                        }
+                }
+                /* the functional: out (outlen, n) = exc, v_rho (, v_sigma); LIBXC_eval_xc
+                 * accumulates the functionals of the mixture into out */
+                memset(out, 0, sizeof(double) * outlen * n);
+                xcf(nfn, xc_arr, facs, 0, 1, ncomp, n, outlen, rho, out);
+                const double *w = weights + g0;
+                for (g = 0; g < n; g++) {
+                        const double den = w[g] * rho[g];
+                        nes += den;
+                        exs += den * out[g];
+                        wv[g] = w[g] * out[n + g];
+                }
+                if (ncomp == 4) {
+                        for (g = 0; g < n; g++) wv[g] *= .5;            /* V + V^T by the caller */
+                        for (k = 1; k < 4; k++)
+                                for (g = 0; g < n; g++)
+                                        wv[k * n + g] = 2 * w[g] * out[2 * n + g] * rho[k * n + g];
+                }
+                /* aow (nl, n) = sum_k wv_k d_k phi into c; V_sub += phi_0 aow^T */
+                for (i = 0; i < nl; i++) {
+                        double *o = c + (size_t)i * n;
+                        const double *p = a + (size_t)i * n;
+                        for (g = 0; g < n; g++) o[g] = wv[g] * p[g];
+                        for (k = 1; k < ncomp; k++) {
+                                const double *pk = a + ((size_t)k * nl + i) * n, *wk = wv + (size_t)k * n;
+                                for (g = 0; g < n; g++) o[g] += wk[g] * pk[g];
+                        }
+                }
+                dgemm_("T", "N", &nl, &nl, &n, &one, a, &n, c, &n, &zero, d, &nl);
+                for (i = 0; i < nl; i++) {
+                        double *row = V + (size_t)ix[i] * nao;
+                        for (j = 0; j < nl; j++) row[ix[j]] += d[i * nl + j];
+                }
+        }
+        ex[tid] = exs;
+        ne[tid] = nes;
+        free(full); free(a); free(c); free(d); free(xyz); free(rho); free(out); free(wv); free(ix);
+        if (mkl_set_num_threads_local) mkl_set_num_threads_local(mkl0);
+}
+}

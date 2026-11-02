@@ -97,6 +97,8 @@ def nr_rks(ni, mol, grids, xc_code, dms, relativity=0, hermi=1, max_memory=2000,
     v1 = numpy.zeros((nset, nao, nao)) if xctype == 'MGGA' else None
     if grids.coords is None:
         grids.build(with_non0tab=True)
+    if xctype != 'MGGA' and USE_FUSED and hasattr(libdft, 'SOCDFTvxc_fused') and _fusable(ni, xc_code, grids):
+        return _nr_rks_fused(libdft, ni, mol, grids, xc_code, dms_a, d, xctype)
     if xctype != 'MGGA' and hasattr(libdft, 'SOCDFTvxc_mat'):
         return _nr_rks_blocked(libdft, ni, mol, grids, xc_code, dms_a, d, xctype, max_memory)
     aow = None
@@ -208,6 +210,73 @@ def _nr_rks_blocked(libdft, ni, mol, grids, xc_code, dms_a, d, xctype, max_memor
                 wv.ctypes.data_as(ctypes.c_void_p), idx.ctypes.data_as(ctypes.c_void_p),
                 nl.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nao), ctypes.c_int(ng), ctypes.c_int(SUBBLOCK),
                 ctypes.c_int(itype), *blas)
+        v = vbuf.sum(axis=0)
+        vmat[i] = v + v.T if xctype != 'LDA' else v
+    if dms_a.ndim == 2:
+        return nelec[0], excsum[0], vmat[0]
+    return nelec, excsum, vmat.reshape(dms_a.shape)
+
+
+USE_FUSED = True        # one pass over the grid with the AOs per sub-block (SOCDFTvxc_fused)
+
+
+def _fusable(ni, xc_code, grids):
+    '''libxc functionals without range separation, grids with their non0tab'''
+    from pyscf.dft import libxc
+    if not isinstance(ni, numint.NumInt) or ni.libxc is not libxc:
+        return False
+    omega = ni.rsh_and_hybrid_coeff(xc_code)[0]
+    return omega == 0 and grids.non0tab is not None and grids.coords is not None
+
+
+def _nr_rks_fused(libdft, ni, mol, grids, xc_code, dms_a, d, xctype):
+    '''LDA / GGA in one pass over the grid (lib/dft/vxc_rks.c SOCDFTvxc_fused):
+    per sub-block of SUBBLOCK points the AOs (pyscf's GTOval with the grid's
+    non0tab), rho, the functional (pyscf's LIBXC_eval_xc) and V, in cache; no AO
+    array is stored and every AO is evaluated once'''
+    from pyscf.gto import moleintor
+    from pyscf.dft import libxc
+    nao = d.shape[-1]
+    nset = d.shape[0]
+    itype = 0 if xctype == 'LDA' else 1
+    nthreads = lib.num_threads()
+    xc = libxc._get_xc(xc_code, 0)
+    ngrid = grids.weights.size
+    coords = numpy.ascontiguousarray(grids.coords.T)
+    weights = numpy.ascontiguousarray(grids.weights)
+    non0tab = numpy.ascontiguousarray(grids.non0tab, dtype=numpy.uint8)
+    lcg = moleintor.libcgto
+    feval = ctypes.cast(lcg.GTOval_sph if xctype == 'LDA' else lcg.GTOval_sph_deriv1, ctypes.c_void_p)
+    fxc = ctypes.cast(libxc._itrf.LIBXC_eval_xc, ctypes.c_void_p)
+    facs = (ctypes.c_double * max(1, xc.nfunc))(*xc.facs)
+    atm = numpy.asarray(mol._atm, dtype=numpy.int32, order='C')
+    bas = numpy.asarray(mol._bas, dtype=numpy.int32, order='C')
+    env = numpy.asarray(mol._env, dtype=numpy.double, order='C')
+    ao_loc = mol.ao_loc_nr().astype(numpy.int32)
+    nelec = numpy.zeros(nset)
+    excsum = numpy.zeros(nset)
+    vmat = numpy.zeros((nset, nao, nao))
+    vbuf = numpy.empty((nthreads, nao, nao))
+    ex = numpy.zeros(nthreads)
+    ne = numpy.zeros(nthreads)
+    for i in range(nset):
+        dm = numpy.ascontiguousarray(d[i])
+        vbuf[:] = 0
+        ex[:] = 0
+        ne[:] = 0
+        if xc.nfunc > 0:
+            libdft.SOCDFTvxc_fused(
+                vbuf.ctypes.data_as(ctypes.c_void_p), ex.ctypes.data_as(ctypes.c_void_p),
+                ne.ctypes.data_as(ctypes.c_void_p), dm.ctypes.data_as(ctypes.c_void_p),
+                coords.ctypes.data_as(ctypes.c_void_p), weights.ctypes.data_as(ctypes.c_void_p),
+                non0tab.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(ngrid), ctypes.c_int(SUBBLOCK),
+                ctypes.c_double(AO_CUTOFF), ctypes.c_int(itype), feval,
+                ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
+                ctypes.c_int(mol.natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas),
+                env.ctypes.data_as(ctypes.c_void_p), fxc, ctypes.c_int(xc.nfunc), ctypes.cast(xc.xc_arr, ctypes.c_void_p),
+                facs, *_blas_ptrs())
+        nelec[i] = ne.sum()
+        excsum[i] = ex.sum()
         v = vbuf.sum(axis=0)
         vmat[i] = v + v.T if xctype != 'LDA' else v
     if dms_a.ndim == 2:
