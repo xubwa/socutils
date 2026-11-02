@@ -469,12 +469,16 @@ class THCExchange:
             f = pivots_blocked if self.blocked_pivots else pivots
             kmax = min(len(cc), int(getattr(self, 'kmax_factor', kmax_factor) * len(self.smooth)))
             pf = getattr(self, 'piv_file', None)                      # cache of the coarse pivots (restarts)
+            comm = getattr(self, 'comm', None)
+            rank = comm.Get_rank() if comm is not None else 0
             if pf and os.path.exists(pf) and len(np.load(pf)) >= kmax:
                 pc = np.load(pf)[:kmax]
-            else:
+            elif rank == 0:
                 pc, _ = f(phic, kmax)
                 if pf:
                     np.save(pf, pc)
+            if comm is not None:                                      # one point set for every rank
+                pc = comm.bcast(pc if rank == 0 else None, root=0)
             ijk = np.stack(np.unravel_index(pc, mc), -1)
             fine = np.rint(ijk * (np.asarray(self.mesh) / mc)).astype(int) % np.asarray(self.mesh)
             fidx = np.ravel_multi_index(fine.T, self.mesh)
@@ -507,9 +511,15 @@ class THCExchange:
         nmu = len(pts)
         if cut is None:                                               # relative eigenvalue cut of the Gram pseudo-inverse
             cut = getattr(self, 'isdf_cut', 1e-10)                    # 1e-13 amplifies BLAS rounding (EuOCl: 7e-5 Eh)
+        comm = getattr(self, 'comm', None)                            # MPI: mu blocks round-robin, Allreduce
+        rank, size = (comm.Get_rank(), comm.Get_size()) if comm is not None else (0, 1)
         e, v = scipy.linalg.eigh((PP @ PP.T) ** 2)
         keep = e > cut * e.max()
         Ginv = (v[:, keep] / e[keep]) @ v[:, keep].T
+        if comm is not None:                                          # rank 0's pseudo-inverse on every rank
+            Ginv = np.ascontiguousarray(Ginv)
+            comm.Bcast(Ginv, root=0)
+            keep = comm.bcast(keep, root=0)
         # sizes from the memory budget (cell.max_memory): grid chunks of the Gram columns (nmu, rchunk), G chunks
         # of the aux FT (complex + its real layout, 32 gchunk naux bytes), mu blocks (two (nb, ng) arrays live)
         avail = self.avail_bytes()
@@ -524,6 +534,9 @@ class THCExchange:
             else:
                 nb = int((0.75 * avail - 8 * nmu * rchunk * 2 - 32 * gchunk * naux) / (8 * ng * 2.2))
             nb = max(32, min(nmu, nb))
+        if comm is not None:                                          # the same blocks on every rank, >= 1 per rank
+            nb, rchunk, gchunk = (comm.allreduce(x, op=__import__('mpi4py').MPI.MIN) for x in (nb, rchunk, gchunk))
+            nb = min(nb, -(-nmu // size))
         self.log('   streamed THC: %d mu blocks of %d (budget %.0f GB, available %.0f GB), grid chunk %d, G chunk %d'
                  % (-(-nmu // nb), nb, self.cell.max_memory / 1e3, avail / 1e9, rchunk, gchunk))
         V = np.zeros((nmu, nmu))
@@ -537,7 +550,7 @@ class THCExchange:
         Pl = None
         local = getattr(self, 'local_rcut', None)
         if local:
-            Xi = np.empty((2 * len(self.r.lr_G), nmu))
+            Xi = np.zeros((2 * len(self.r.lr_G), nmu))                 # zeros: summed over the ranks
         # G chunks in the rfft order (contiguous columns of the block spectra); aux shells pruned per chunk by its
         # smallest |G|^2
         G2 = np.einsum('gx,gx->g', self.Gv, self.Gv)
@@ -548,6 +561,8 @@ class THCExchange:
             if ib >= getattr(self, 'stream_max_blocks', 1 << 30):     # timing runs: stop after a few blocks
                 self.log('   streamed THC: stopped after %d blocks (timing run; V, A incomplete)' % ib)
                 break
+            if ib % size != rank:
+                continue
             b1 = min(b0 + nb, nmu)
             ta = time.time()
             xi = np.empty((b1 - b0, ng))
@@ -602,6 +617,13 @@ class THCExchange:
             xi = Vb = None
             self.log('   streamed THC: mu block %d-%d of %d, %.0f s (%s)'
                      % (b0, b1, nmu, time.time() - t0, ', '.join('%s %.0f' % kv for kv in tt.items())))
+        if comm is not None:                                          # blocks of every rank -> full V, A, A_lr, Xi
+            from mpi4py import MPI
+            ta = time.time()
+            arrs = [V, A, A_lr] + ([Xi] if local else [])
+            for X_ in arrs:
+                comm.Allreduce(MPI.IN_PLACE, X_, op=MPI.SUM)
+            self.log('   streamed THC: Allreduce of V, A, A_lr, Xi %.0f s' % (time.time() - ta))
         self.V = .5 * (V + V.T)
         self.A, self.A_lr = A, A_lr
         if local:
@@ -1403,6 +1425,7 @@ class THCJK:
                               self.nuc_zeta, local_rcut=self.local_rcut)
         self.th.dense_c = not self.local_rcut                          # route 1: the sparse C only
         self.th.gapw_opts = getattr(self, 'gapw_opts', {})
+        self.th.comm = getattr(self, 'comm', None)                    # MPI: set jk.comm before build()
         self.th.stream = getattr(self, 'stream', False)
         if hasattr(self, 'isdf_cut'):
             self.th.isdf_cut = self.isdf_cut
