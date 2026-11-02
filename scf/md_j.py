@@ -91,9 +91,12 @@ def get_j(mol, dm, hermi=1, tol=TOL, max_memory=None):
 
 
 REBUILD_NSTEPS = 20     # incremental builds between two full J / K builds
+SCF_TOL = 1e-12         # quartet cutoff of the SCF builds (Gaussian's default 2e cutoff)
+SCF_TOL_LOOSE = 1e-10   # two-pass: the cutoff while the density still moves
+LOOSE_UNTIL = 1e-4      # two-pass: max |D - D_prev| below which the builds are tight
 
 
-def apply(mf, incremental=True):
+def apply(mf, incremental=True, two_pass=True):
     '''mf with get_jk computing J-only builds by the MD J engine and J + K (or
     K) builds by jk_multi in one pass; range-separated calls, complex
     densities, density fitting and l > LMAX keep the original.  Modifies and
@@ -103,7 +106,12 @@ def apply(mf, incremental=True):
     J, K plus those of the density change, J[D] = J[D_prev] + J[D - D_prev]
     (exact by linearity; the density screening of the change makes the late
     SCF cycles cheap), with a full build every REBUILD_NSTEPS calls and
-    whenever the molecule or the requested matrices change.'''
+    whenever the molecule or the requested matrices change.
+
+    two_pass (with incremental): the builds use the cutoff SCF_TOL_LOOSE
+    until max |D - D_prev| < LOOSE_UNTIL, then one full build at SCF_TOL
+    (which drops the accumulated loose errors) and SCF_TOL from there on, for
+    this molecule (as Gaussian's integral accuracy switch near convergence).'''
     from pyscf.df import df_jk
     from socutils.scf import jk_multi
     if isinstance(mf, df_jk._DFHF) or not available(mf.mol):
@@ -112,19 +120,19 @@ def apply(mf, incremental=True):
     mol0 = mf.mol
     last = {'key': None}
 
-    def build(mol, dm, hermi, with_j, with_k, omega, max_memory):
+    def build(mol, dm, hermi, with_j, with_k, omega, max_memory, tol=SCF_TOL):
         t0 = (logger.process_clock(), logger.perf_counter())
         if with_k:
             # J and K from one multi-density direct pass; a separate MD J does
             # not pay, K costs nearly the whole pass
             if not jk_multi.available(mol):
                 return orig_jk(mol, dm, hermi, with_j, with_k, omega)
-            vj, vk = jk_multi.get_jk(mol, dm, with_j, True, hermi=hermi, max_memory=max_memory)
+            vj, vk = jk_multi.get_jk(mol, dm, with_j, True, tol=tol, hermi=hermi, max_memory=max_memory)
             logger.timer_debug1(mf, 'vj, vk (jk_multi)', *t0)
             return vj, vk
         if not with_j:
             return orig_jk(mol, dm, hermi, with_j, with_k, omega)
-        vj = get_j(mol, dm, hermi, max_memory=max_memory)
+        vj = get_j(mol, dm, hermi, tol=tol, max_memory=max_memory)
         if vj is None:
             return orig_jk(mol, dm, hermi, with_j, with_k, omega)
         logger.timer_debug1(mf, 'vj (MD J engine)', *t0)
@@ -142,17 +150,25 @@ def apply(mf, incremental=True):
         if not (incremental and dm.ndim == 2 and hermi == 1):
             return build(mol, dm, hermi, with_j, with_k, omega, max_memory)
         key = (with_j, with_k, mol._atm.tobytes(), mol._bas.tobytes(), mol._env.tobytes())
-        if last['key'] == key and last['n'] < REBUILD_NSTEPS:
-            vj1, vk1 = build(mol, dm - last['dm'], hermi, with_j, with_k, omega, max_memory)
+        same = last['key'] == key
+        ddm = dm - last['dm'] if same else None
+        if not same:
+            last['tight'] = not two_pass
+        elif not last['tight'] and abs(ddm).max() < LOOSE_UNTIL:
+            last['tight'] = True
+        tol = SCF_TOL if last['tight'] else SCF_TOL_LOOSE
+        if same and last['n'] < REBUILD_NSTEPS and last['tol'] == tol:
+            vj1, vk1 = build(mol, ddm, hermi, with_j, with_k, omega, max_memory, tol)
             vj = last['vj'] + vj1 if with_j else None
             vk = last['vk'] + vk1 if with_k else None
             last['n'] += 1
-            logger.debug1(mf, 'incremental J / K (%d since the full build)', last['n'])
+            logger.debug1(mf, 'incremental J / K (%d since the full build), cutoff %.0e', last['n'], tol)
         else:
-            vj, vk = build(mol, dm, hermi, with_j, with_k, omega, max_memory)
+            vj, vk = build(mol, dm, hermi, with_j, with_k, omega, max_memory, tol)
             last['n'] = 0
+            logger.debug1(mf, 'full J / K build, cutoff %.0e', tol)
         # copies: callers scale the returned matrices in place (vk *= hyb)
-        last.update(key=key, dm=dm.copy(), vj=None if vj is None else vj.copy(),
+        last.update(key=key, dm=dm.copy(), tol=tol, vj=None if vj is None else vj.copy(),
                     vk=None if vk is None else vk.copy())
         return vj, vk
 
