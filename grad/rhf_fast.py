@@ -147,6 +147,14 @@ def _xc_grad_fused(libdft, ni, mol, grids, xc_code, dm, xctype):
     return de
 
 
+def _gen_grad_usable(mol):
+    '''the generated first-derivative kernels cover this basis (l <= 2, <= 4 contractions)'''
+    from socutils.hessian import ghf as ghf_hess
+    libv = ghf_hess._load_socvhf()
+    return (hess_fast.GRAD2E_GEN and bool(libv) and hasattr(libv, 'SOCVHFgen_grad2e')
+            and mol._bas[:, 1].max() <= 2 and mol._bas[:, 3].max() <= 4)
+
+
 def _fast_terms(grad, mol, dm):
     '''(natm, 3): the exact 2e (J unless density-fitted, K for hybrids) and XC
     parts of the gradient; None if this case keeps pyscf's code.'''
@@ -167,6 +175,14 @@ def _fast_terms(grad, mol, dm):
     jf = 1. if dfm is None else 0.
     kf = -hyb if hybrid else 0.
     de = numpy.zeros((mol.natm, 3))
+    if jf != 0 and kf != 0 and _gen_grad_usable(mol):
+        # hybrids: J and K in one pass of the generated kernels (J costs little more
+        # there than the separate MD J pass)
+        g = hess_fast.grad2e_jk_cart(mol, dm, [(jf, kf)])
+        if g is not None:
+            de += g[0]
+            jf = kf = 0.
+            t0 = logger.timer(grad, 'exact 2e gradient (generated kernels, J + K)', *t0)
     if jf != 0:
         # exact J from the McMurchie-Davidson J engine
         r = hess_fast.md_j_grad(mol, dm)
