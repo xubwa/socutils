@@ -278,6 +278,47 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
                         if (ksh == lsh) fac *= .5;
                         if (ij == kl) fac *= .5;
                         int i0, j0, k0, l0;
+                        if (ndm == 1) {
+                                /* one density: no density loop, row pointers, the j-row K and the
+                                 * ket J sums kept in registers over the inner loop */
+                                const size_t c00 = ao_loc[ksh], e00 = ao_loc[lsh];
+                                for (l0 = 0; l0 < dl; l0++) {
+                                const size_t e = e00 + l0;
+                                for (k0 = 0; k0 < dk; k0++) {
+                                        const size_t c = c00 + k0;
+                                        const double *gk = buf + (size_t)(l0 * dk + k0) * dj * di;
+                                        const double dce = 2 * fac * dms[c * nao + e];
+                                        double jce = 0;
+                                        for (j0 = 0; j0 < dj; j0++) {
+                                                const double *g = gk + (size_t)j0 * di;
+                                                const double *Db = dms + (b0 + j0) * nao;
+                                                const double dbc = fac * Db[c], dbe = fac * Db[e];
+                                                double kbe = 0, kbc = 0, jab = 0;
+                                                for (i0 = 0; i0 < di; i0++) {
+                                                        const double *Da = dms + (a0 + i0) * nao;
+                                                        if (do_j) {
+                                                                jij[i0 * dj + j0] += g[i0] * dce;
+                                                                jab += g[i0] * Da[b0 + j0];
+                                                        }
+                                                        if (do_k) {
+                                                                double *Ki = kri + (size_t)i0 * ncol;
+                                                                Ki[e] += g[i0] * dbc;
+                                                                Ki[c] += g[i0] * dbe;
+                                                                kbe += g[i0] * Da[c];
+                                                                kbc += g[i0] * Da[e];
+                                                        }
+                                                }
+                                                jce += jab;
+                                                if (do_k) {
+                                                        double *Kb = krb + (size_t)j0 * ncol;
+                                                        Kb[e] += fac * kbe;
+                                                        Kb[c] += fac * kbc;
+                                                }
+                                        }
+                                        if (do_j) jloc[c * nao + e] += 2 * fac * jce;
+                                } }
+                                continue;
+                        }
                         for (l0 = 0; l0 < dl; l0++) {
                         for (k0 = 0; k0 < dk; k0++) {
                         for (j0 = 0; j0 < dj; j0++) {
