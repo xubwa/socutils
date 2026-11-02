@@ -21,6 +21,17 @@ int int2e_sph(double *out, int *dims, int *shls, int *atm, int natm,
 size_t GTOmax_cache_size(int (*intor)(), int *shls_slice, int ncenter,
                          int *atm, int natm, int *bas, int nbas, double *env);
 
+/* jk_ssss.c: (ss|ss) quartets without libcint */
+typedef struct SSCtx SSCtx;
+SSCtx *SOCVHFss_ctx_build(int *atm, int natm, int *bas, int nbas, double *env);
+void SOCVHFss_ctx_free(SSCtx *cx);
+size_t SOCVHFss_wksize(int *bas, int nbas);
+int SOCVHFss_int2e(double *out, const int *shls, const SSCtx *cx, double dmax, double prim_tol, double *wk);
+
+/* SOCVHFjk_multi_sym: (ss|ss) quartets by jk_ssss.c (1, default) or libcint (0) */
+static int jk_use_ssss = 1;
+void SOCVHFjk_set_ssss(int on) { jk_use_ssss = on; }
+
 static const int PERMS[8][4] = {
         {0, 1, 2, 3}, {1, 0, 2, 3}, {0, 1, 3, 2}, {1, 0, 3, 2},
         {2, 3, 0, 1}, {3, 2, 0, 1}, {2, 3, 1, 0}, {3, 2, 1, 0}};
@@ -174,6 +185,10 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
         double **jbufs = calloc(nthmax, sizeof(double *));
         double **kbufs = calloc(nthmax, sizeof(double *));
         int nth_used = 1;
+        const int use_ss = jk_use_ssss;
+        SSCtx *scx = use_ss ? SOCVHFss_ctx_build(atm, natm, bas, nbas, env) : NULL;
+        const size_t sswk = use_ss ? SOCVHFss_wksize(bas, nbas) : 0;
+        const double prim_tol = tol * 1e-2;
 #pragma omp parallel
 {
         const int tid = omp_get_thread_num();
@@ -183,8 +198,9 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
         double *kloc = with_k ? calloc(nv, sizeof(double)) : NULL;
         jbufs[tid] = jloc;
         kbufs[tid] = kloc;
-        double *buf = malloc(sizeof(double) * (nbuf + cache_size));
+        double *buf = malloc(sizeof(double) * (nbuf + cache_size + sswk));
         double *cache = buf + nbuf;
+        double *swk = cache + cache_size;
         double *kri = with_k ? malloc(sizeof(double) * dmax * nao * ndm) : NULL;
         double *krj = with_k ? malloc(sizeof(double) * dmax * nao * ndm) : NULL;
         double *jij = with_j ? malloc(sizeof(double) * dmax * dmax * ndm) : NULL;
@@ -209,14 +225,22 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
                 for (kl = 0; kl <= ij; kl++) {
                         shell_pair(kl, &ksh, &lsh);
                         double q4 = qcond[ish * nbas + jsh] * qcond[ksh * nbas + lsh];
-                        int do_j = with_j && q4 * dmax2(dcond[ish * nbas + jsh], dcond[ksh * nbas + lsh]) >= tol;
-                        int do_k = with_k && q4 * dmax2(dmax2(dcond[ish * nbas + ksh], dcond[ish * nbas + lsh]),
-                                                        dmax2(dcond[jsh * nbas + ksh], dcond[jsh * nbas + lsh])) >= tol;
+                        const double dj_ = dmax2(dcond[ish * nbas + jsh], dcond[ksh * nbas + lsh]);
+                        const double dk_ = dmax2(dmax2(dcond[ish * nbas + ksh], dcond[ish * nbas + lsh]),
+                                                 dmax2(dcond[jsh * nbas + ksh], dcond[jsh * nbas + lsh]));
+                        int do_j = with_j && q4 * dj_ >= tol;
+                        int do_k = with_k && q4 * dk_ >= tol;
                         if (!do_j && !do_k) {
                                 continue;
                         }
                         shls[0] = ish; shls[1] = jsh; shls[2] = ksh; shls[3] = lsh;
-                        if (!int2e_sph(buf, NULL, shls, atm, natm, bas, nbas, env, opt, cache)) {
+                        if (use_ss && bas[ish * BAS_SLOTS + ANG_OF] == 0 && bas[jsh * BAS_SLOTS + ANG_OF] == 0
+                            && bas[ksh * BAS_SLOTS + ANG_OF] == 0 && bas[lsh * BAS_SLOTS + ANG_OF] == 0) {
+                                const double dq = dmax2(do_j ? dj_ : 0, do_k ? dk_ : 0);
+                                if (!SOCVHFss_int2e(buf, shls, scx, dq, prim_tol, swk)) {
+                                        continue;
+                                }
+                        } else if (!int2e_sph(buf, NULL, shls, atm, natm, bas, nbas, env, opt, cache)) {
                                 continue;
                         }
                         touched = 1;
@@ -307,6 +331,7 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
         free(krj);
         free(jij);
 }
+        SOCVHFss_ctx_free(scx);
         free(jbufs);
         free(kbufs);
         /* V = W + W^T over the two AO indices */
