@@ -20,6 +20,7 @@ letters of conventions.md, which this module does not use):
 Blocks are labelled by the spaces of their indices, c / a / v.
 '''
 
+import collections
 import time
 
 import numpy
@@ -78,6 +79,44 @@ class AntiBlocks(Blocks):
         if clab == lab:
             return blk, 1.0
         return blk.transpose(perm), sign
+
+
+class HermitianHP(AntiBlocks):
+    """Hermitian two-body operator with hole-particle blocks only, holding the canonical
+    excitation blocks X[ij, ab]; a de-excitation block is the conjugate transpose,
+    X[ab, ij] = X[ij, ab]^*, returned as (view, sign, conjugate)."""
+
+    def get(self, lab):
+        if all(x in "ca" for x in lab[:2]) and all(x in "av" for x in lab[2:]):
+            return AntiBlocks.get(self, lab)
+        x = AntiBlocks.get(self, lab[2:] + lab[:2])
+        if x is None:
+            return None
+        return x[0].transpose(2, 3, 0, 1), x[1], True
+
+    @classmethod
+    def from_blocks(cls, C):
+        """The hole-particle part of C + C^+ (C: AntiBlocks, emptied)."""
+        out = cls()
+        labs = set()
+        for lab in C:
+            for l in (lab, lab[2:] + lab[:2]):
+                if (all(x in "ca" for x in l[:2]) and all(x in "av" for x in l[2:])
+                        and l != "aaaa"):
+                    labs.add(canonical(l)[0])
+        for lab in sorted(labs):
+            blk = materialize(C.get(lab))
+            de = materialize(C.get(lab[2:] + lab[:2]))
+            if de is not None:
+                de = de.conj().transpose(2, 3, 0, 1)
+                blk = de.copy() if blk is None else blk + de
+            else:
+                blk = numpy.array(blk)
+            out[lab] = blk
+            # release the consumed blocks of C
+            C.pop(lab, None)
+            C.pop(canonical(lab[2:] + lab[:2])[0], None)
+        return out
 
 
 def _is_plain(a):
@@ -196,24 +235,58 @@ def contract(spec, *ops, dims, out=None, scale=1.0, keep=None, fix=""):
     return total
 
 
+# placements of an antisymmetric Hermitian two-body block C: X = sign * C.transpose(perm),
+# complex conjugated where marked (V[rs, pq] = conj(V[pq, rs]))
+_PLACEMENTS = (((0, 1, 2, 3), 1.0, False), ((1, 0, 2, 3), -1.0, False),
+               ((0, 1, 3, 2), -1.0, False), ((1, 0, 3, 2), 1.0, False),
+               ((2, 3, 0, 1), 1.0, True), ((3, 2, 0, 1), -1.0, True),
+               ((2, 3, 1, 0), -1.0, True), ((3, 2, 1, 0), 1.0, True))
+
+
+def hermitian_canonical(lab):
+    """(canonical label, perm, sign, conjugate) with block lab = sign * (conj)
+    canonical.transpose(perm), the canonical label the largest of the placements (virtual
+    indices first: V[vv, vx] is the placement the commutator mostly reads)."""
+    orbit = ["".join(lab[k] for k in perm) for perm, _, _ in _PLACEMENTS]
+    clab = max(orbit, key=lambda x: [_RANK[c] for c in x])
+    for perm, sign, cj in _PLACEMENTS:
+        if "".join(clab[k] for k in perm) == lab:
+            return clab, perm, sign, cj
+
+
+def materialize(x):
+    """A block as returned by get ((array, sign) or (array, sign, conjugate) included) as
+    an array."""
+    if x is None or isinstance(x, numpy.ndarray):
+        return x
+    blk, sign = x[0], x[1]
+    if len(x) == 3 and x[2]:
+        blk = blk.conj()
+    return sign * blk
+
+
 class BareV:
     """Two-electron integrals in the storage convention, block by block from the
     three-index tensors: V[pq, rs] = (pr|qs) - (ps|qr) with conjugated coefficients.
 
-    Blocks below `cache_size` elements are kept; larger ones are rebuilt when asked for
-    (only the most recent one is kept).  The block with four virtual indices is only
-    built when `dense_vvvv` is set (small systems); otherwise it is None here and the
-    solver uses the packed matrix of `packed_vvvv`.
+    Only one placement of every block is built (the others are views with a sign and a
+    complex conjugation, see hermitian_canonical); the most recently used blocks are kept
+    up to cache_memory (MB) and the others rebuilt when asked for.  The block with four
+    virtual indices is only built when `dense_vvvv` is set (small systems); otherwise it
+    is None here and the solver uses the pair-packed rows of `vvvv_rows`.
     """
 
-    def __init__(self, B, dense_vvvv=False, cache_size=2**26, extra=None):
+    def __init__(self, B, dense_vvvv=False, cache_memory=4000, extra=None):
         self.B = B
-        # blocks added to the factorized integrals (e.g. a correction of 'aaaa')
+        # blocks added to the factorized integrals (e.g. a correction of 'aaaa'), by
+        # canonical label
         self.extra = extra or {}
         self.dense_vvvv = dense_vvvv
-        self.cache_size = cache_size
-        self.cache = {}
-        self.last = (None, None)
+        self.cache_memory = cache_memory
+        self.cache = collections.OrderedDict()
+        self.nbuild = collections.Counter()
+        # blocks with three virtual indices left to the caller (vvvx_chunks)
+        self.skip_three_virtual = False
 
     def build(self, lab):
         p, q, r, s = lab
@@ -225,65 +298,87 @@ class BareV:
             v -= v.swapaxes(0, 1)
         else:
             v -= numpy.einsum("Pps,Pqr->pqrs", B[p + s], B[q + r], optimize=True)
+        if lab in self.extra:
+            v += self.extra[lab]
+        return v
+
+    def _canonical_block(self, clab):
+        if clab in self.cache:
+            self.cache.move_to_end(clab)
+            return self.cache[clab]
+        v = self.build(clab)
+        self.nbuild[clab] += 1
+        limit = self.cache_memory * 1e6
+        used = sum(x.nbytes for x in self.cache.values())
+        while self.cache and used + v.nbytes > limit:
+            used -= self.cache.popitem(last=False)[1].nbytes
+        if v.nbytes <= limit:
+            self.cache[clab] = v
         return v
 
     def get(self, lab):
         if lab == "vvvv" and not self.dense_vvvv:
             return None
-        if lab in self.cache:
-            return self.cache[lab]
-        if lab in self.extra:
-            self.cache[lab] = self.build(lab) + self.extra[lab]
-            return self.cache[lab]
-        if self.last[0] == lab:
-            return self.last[1]
-        self.last = (None, None)
-        if lab.count("v") == 3:
-            # one array per non-virtual space, V[vv, vx]; the other placements follow from
-            # antisymmetry and hermiticity (transient copies)
-            k = [i for i, x in enumerate(lab) if x != "v"][0]
-            canon = "vvv" + lab[k]
-            if canon not in self.cache:
-                self.cache[canon] = self.build(canon)
-            c = self.cache[canon]
-            # (view, sign, complex conjugate): no copy of the large array is made, the
-            # contraction applies sign and conjugation to the other factors
-            if k == 3:
-                return c
-            if k == 2:
-                return c.transpose(0, 1, 3, 2), -1.0, False
-            if k == 1:
-                return c.transpose(2, 3, 0, 1), 1.0, True
-            return c.transpose(3, 2, 0, 1), -1.0, True
-        v = self.build(lab)
-        if v.size <= self.cache_size or lab == "vvvv":
-            self.cache[lab] = v
-        else:
-            self.last = (lab, v)
-        return v
+        if self.skip_three_virtual and lab.count("v") == 3:
+            return None
+        clab, perm, sign, cj = hermitian_canonical(lab)
+        c = self._canonical_block(clab)
+        if perm == (0, 1, 2, 3):
+            return c
+        # (view, sign, complex conjugate): no copy is made, the contraction applies sign
+        # and conjugation to the other factors
+        return c.transpose(perm), sign, cj
 
-    def packed_vvvv(self, batch=8, single=False):
-        """V[ab, rs] for a < b, r < s as a matrix (npair, npair)."""
+    def vvvx_chunks(self, x, max_memory):
+        """V[ab, ek] (a, b, e virtual, k in the space x) in chunks of k within max_memory
+        (MB, the chunk and four copies of its size for the caller): yields (k0, k1,
+        block[a, b, e, k])."""
+        Bvv, Bvx = self.B["vv"], self.B["v" + x]
+        naux, nv, _ = Bvv.shape
+        nx = Bvx.shape[2]
+        left = numpy.ascontiguousarray(Bvv.reshape(naux, nv * nv).T)          # (a e), P
+        step = max(1, min(nx, int(max_memory * 1e6 / (5 * 16.0 * nv**3))))
+        for k0 in range(0, nx, step):
+            k1 = min(nx, k0 + step)
+            right = numpy.ascontiguousarray(Bvx[:, :, k0:k1]).reshape(naux, -1)  # P, (b k)
+            d = la.gemm(left, right).reshape(nv, nv, nv, k1 - k0)             # a, e, b, k
+            # V[ab, ek] = (ae|bk) - (ak|be) = d[a, e, b, k] - d[b, e, a, k]
+            v = kernels.transposed(d, (0, 2, 1, 3))
+            kernels.transpose_add(v, d, (2, 0, 1, 3), alpha=-1.0)
+            del d
+            yield k0, k1, v
+
+    def vvvv_rows(self, batch=8):
+        """V[ab, rs] for a < b, r < s, built from the three-index tensors: yields (first
+        row, rows) with the rows of `batch` values of a at a time (pairs in the order of
+        numpy.triu_indices)."""
         Bvv = self.B["vv"]
         naux, nv, _ = Bvv.shape
         iu = numpy.triu_indices(nv, 1)
-        npair = iu[0].size
-        w = numpy.empty((npair, npair), dtype=numpy.complex64 if single else complex)
         right = numpy.ascontiguousarray(Bvv.reshape(naux, nv * nv))
         left = numpy.ascontiguousarray(Bvv.transpose(1, 2, 0))  # a, r, P
         row = 0
         for a0 in range(0, nv - 1, batch):
             a1 = min(a0 + batch, nv - 1)
             # d[a, r, b, s] = sum_P B[P, a, r] B[P, b, s]
-            d = (left[a0:a1].reshape(-1, naux) @ right).reshape(a1 - a0, nv, nv, nv)
+            d = la.gemm(left[a0:a1].reshape(-1, naux), right).reshape(a1 - a0, nv, nv, nv)
+            n = sum(nv - a - 1 for a in range(a0, a1))
+            w = numpy.empty((n, iu[0].size), dtype=complex)
+            pos = 0
             for a in range(a0, a1):
                 x = d[a - a0].transpose(1, 0, 2)[a + 1:]  # b, r, s with b > a
-                x = x - x.transpose(0, 2, 1)
-                n = nv - a - 1
-                w[row:row + n] = x[:, iu[0], iu[1]]
-                row += n
-        assert row == npair
-        return w
+                m = nv - a - 1
+                w[pos:pos + m] = x[:, iu[0], iu[1]] - x[:, iu[1], iu[0]]
+                pos += m
+            del d
+            yield row, w
+            row += n
+
+    @staticmethod
+    def vvvv_batch(nv, max_memory):
+        """Values of a per block of vvvv_rows within max_memory (MB)."""
+        per_a = 16.0 * nv**3 * 1.5 / 1e6
+        return max(1, min(nv - 1, int(max_memory / per_a)))
 
 
 class DenseV:
@@ -362,13 +457,16 @@ def _scalar(O1, O2, T1, T2, G1, E1, L2, L3, con):
 
 
 def commutator(O1, O2, T1, T2, cum, dims, alpha, keep2, ladder=None, timings=None,
-               scalar=True, active=False):
+               scalar=True, active=False, keep1=None, large=None):
     """alpha * [O, T] -> (C0, C1, C2), all blocks (C2 restricted by keep2).
 
     Literal transcription of MRDSRG_SO::H?_T?_C? of forte.  `ladder`, if given, adds the
     particle-particle ladder of the four-virtual block of O2 (which is then absent from
     O2 itself).  scalar=False skips C0; active=True builds the active blocks of C1 and C2
-    only (intermediates included), as needed for the reference relaxation.
+    only (intermediates included), as needed for the reference relaxation.  keep1
+    restricts the blocks of C1 like keep2 those of C2.  `large(C1, C2, Y, T1, T2, alpha)`,
+    if given, adds the terms of the blocks of O2 that it does not return (Y: the
+    two-body terms before the antisymmetrization).
     """
     G1, E1, L2, L3 = cum["Gamma1"], cum["Eta1"], cum["Lambda2"], cum["Lambda3"]
     con = lambda spec, *ops, **kw: contract(spec, *ops, dims=dims, **kw)
@@ -389,58 +487,58 @@ def commutator(O1, O2, T1, T2, cum, dims, alpha, keep2, ladder=None, timings=Non
     lap("C0")
 
     # ---- one-body
-    con("ap,ia->ip", O1, T1, out=C1, scale=alpha, fix=A("ip"))
-    con("pi,ia->pa", O1, T1, out=C1, scale=-alpha, fix=A("pa"))
+    con("ap,ia->ip", O1, T1, out=C1, keep=keep1, scale=alpha, fix=A("ip"))
+    con("pi,ia->pa", O1, T1, out=C1, keep=keep1, scale=-alpha, fix=A("pa"))
 
-    con("ia,qapj,ji->qp", T1, O2, G1, out=C1, scale=alpha, fix=A("qp"))
-    con("mu,qvpm,uv->qp", T1, O2, G1, out=C1, scale=-alpha, fix=A("qp"))
+    con("ia,qapj,ji->qp", T1, O2, G1, out=C1, keep=keep1, scale=alpha, fix=A("qp"))
+    con("mu,qvpm,uv->qp", T1, O2, G1, out=C1, keep=keep1, scale=-alpha, fix=A("qp"))
 
-    con("ijab,bk,kj->ia", T2, O1, G1, out=C1, scale=alpha, fix=A("ia"))
-    con("ijau,vj,uv->ia", T2, O1, G1, out=C1, scale=-alpha, fix=A("ia"))
+    con("ijab,bk,kj->ia", T2, O1, G1, out=C1, keep=keep1, scale=alpha, fix=A("ia"))
+    con("ijau,vj,uv->ia", T2, O1, G1, out=C1, keep=keep1, scale=-alpha, fix=A("ia"))
     lap("C1 small")
 
     t1 = Blocks()
     con("abrk,ijab->ijrk", O2, T2, out=t1, fix=A("ir"))
-    con("ijrk,kj->ir", t1, G1, out=C1, scale=0.5 * alpha, fix=A("ir"))
+    con("ijrk,kj->ir", t1, G1, out=C1, keep=keep1, scale=0.5 * alpha, fix=A("ir"))
     t1 = Blocks()
     con("ijux,uv,xy->ijvy", T2, G1, G1, out=t1, fix=A("ir"))
-    con("ijvy,vyrj->ir", t1, O2, out=C1, scale=0.5 * alpha, fix=A("ir"))
+    con("ijvy,vyrj->ir", t1, O2, out=C1, keep=keep1, scale=0.5 * alpha, fix=A("ir"))
     t1 = Blocks()
     con("ijub,kj,uv->ikvb", T2, G1, G1, out=t1, fix=A("ir"))
-    con("ikvb,vbrk->ir", t1, O2, out=C1, scale=-alpha, fix=A("ir"))
+    con("ikvb,vbrk->ir", t1, O2, out=C1, keep=keep1, scale=-alpha, fix=A("ir"))
     t1 = Blocks()
     con("ijau,uv->ijav", T2, G1, out=t1, fix=A("pa"))
-    con("ijav,pvij->pa", t1, O2, out=C1, scale=-0.5 * alpha, fix=A("pa"))
+    con("ijav,pvij->pa", t1, O2, out=C1, keep=keep1, scale=-0.5 * alpha, fix=A("pa"))
     t1 = Blocks()
     con("ijab,ki,lj->klab", T2, G1, G1, out=t1, fix=A("pa"))
-    con("klab,pbkl->pa", t1, O2, out=C1, scale=-0.5 * alpha, fix=A("pa"))
+    con("klab,pbkl->pa", t1, O2, out=C1, keep=keep1, scale=-0.5 * alpha, fix=A("pa"))
     t1 = Blocks()
     con("ijau,uv,kj->ikav", T2, G1, G1, out=t1, fix=A("pa"))
-    con("ikav,pvik->pa", t1, O2, out=C1, scale=alpha, fix=A("pa"))
+    con("ikav,pvik->pa", t1, O2, out=C1, keep=keep1, scale=alpha, fix=A("pa"))
 
     t1 = Blocks()
     con("ijxy,xyuv->ijuv", T2, L2, out=t1, fix=A("ir"))
-    con("ijuv,uvrj->ir", t1, O2, out=C1, scale=0.25 * alpha, fix=A("ir"))
+    con("ijuv,uvrj->ir", t1, O2, out=C1, keep=keep1, scale=0.25 * alpha, fix=A("ir"))
     t1 = Blocks()
     con("uvab,xyuv->xyab", T2, L2, out=t1, fix=A("pa"))
-    con("xyab,pbxy->pa", t1, O2, out=C1, scale=-0.25 * alpha, fix=A("pa"))
+    con("xyab,pbxy->pa", t1, O2, out=C1, keep=keep1, scale=-0.25 * alpha, fix=A("pa"))
     t1 = Blocks()
     con("iyav,uvxy->iuax", T2, L2, out=t1)
-    con("iuax,axru->ir", t1, O2, out=C1, scale=alpha, fix=A("ir"))
-    con("iuax,pxiu->pa", t1, O2, out=C1, scale=-alpha, fix=A("pa"))
+    con("iuax,axru->ir", t1, O2, out=C1, keep=keep1, scale=alpha, fix=A("ir"))
+    con("iuax,pxiu->pa", t1, O2, out=C1, keep=keep1, scale=-alpha, fix=A("pa"))
 
     t1 = Blocks()
     con("avxy,xyuv->au", O2, L2, out=t1, fix=A("jb"))
-    con("au,ujab->jb", t1, T2, out=C1, scale=0.5 * alpha, fix=A("jb"))
+    con("au,ujab->jb", t1, T2, out=C1, keep=keep1, scale=0.5 * alpha, fix=A("jb"))
     t1 = Blocks()
     con("xyiv,uvxy->ui", O2, L2, out=t1, fix=A("jb"))
-    con("ui,ijub->jb", t1, T2, out=C1, scale=-0.5 * alpha, fix=A("jb"))
+    con("ui,ijub->jb", t1, T2, out=C1, keep=keep1, scale=-0.5 * alpha, fix=A("jb"))
     t1 = Blocks()
     con("uvey,xyuv->xe", T2, L2, out=t1, fix=A("qs"))
-    con("xe,eqxs->qs", t1, O2, out=C1, scale=0.5 * alpha, fix=A("qs"))
+    con("xe,eqxs->qs", t1, O2, out=C1, keep=keep1, scale=0.5 * alpha, fix=A("qs"))
     t1 = Blocks()
     con("myuv,uvxy->mx", T2, L2, out=t1, fix=A("qs"))
-    con("mx,xqms->qs", t1, O2, out=C1, scale=-0.5 * alpha, fix=A("qs"))
+    con("mx,xqms->qs", t1, O2, out=C1, keep=keep1, scale=-0.5 * alpha, fix=A("qs"))
     lap("C1 [O2,T2]")
 
     # ---- two-body: canonical placements only
@@ -480,6 +578,9 @@ def commutator(O1, O2, T1, T2, cum, dims, alpha, keep2, ladder=None, timings=Non
     con("ijvb,vqis->qjsb", t1, O2, scale=-1.0, **ky, fix=A("qjsb"))
     del t1
     lap("C2 ph")
+    if large is not None:
+        large(C1, C2, Y, T1, T2, alpha)
+        lap("C large")
     for lab in list(Y):
         y = Y.pop(lab)
         for perm, sign in (((0, 1, 2, 3), 1.0), ((1, 0, 2, 3), -1.0), ((0, 1, 3, 2), -1.0),

@@ -55,9 +55,13 @@ class _Renormalized:
     def get(self, lab):
         if not _hole_particle(lab):
             return self.V.get(lab)
-        if lab not in self.cache:
-            self.cache[lab] = self.V.get(lab) * (1.0 + self.rden(lab)[1])
-        return self.cache[lab]
+        # one placement of every block, as BareV
+        clab, perm, sign, cj = cm.hermitian_canonical(lab)
+        if clab not in self.cache:
+            self.cache[clab] = (cm.materialize(self.V.get(clab))
+                                * (1.0 + self.rden(clab)[1]))
+        c = self.cache[clab]
+        return c if perm == (0, 1, 2, 3) else (c.transpose(perm), sign, cj)
 
 
 class DSRGMRPT2(LDSRG2):
@@ -70,9 +74,8 @@ class DSRGMRPT2(LDSRG2):
         relax: False skips the reference relaxation (e_tot = e_dsrg)
     '''
 
-    packed_ladder = False
+    vvvv = None
     relax = True
-    ccvv_batch_bytes = 2.0e9
 
     def log(self, text):
         if self.verbose:
@@ -96,7 +99,7 @@ class DSRGMRPT2(LDSRG2):
         '''First-order T1, T2 and the renormalized F~, V~.'''
         t2 = cm.Blocks()
         for lab in self._t2_labels:
-            t2[lab] = self.V.get(lab) * self._rden(lab)[0]
+            t2[lab] = cm.materialize(self.V.get(lab)) * self._rden(lab)[0]
         x = cm.Blocks()
         f0 = cm.Blocks({'aa': self.F['aa']})
         con = lambda spec, *ops, **kw: cm.contract(spec, *ops, dims=self.dims, **kw)
@@ -121,7 +124,7 @@ class DSRGMRPT2(LDSRG2):
         if nc < 2 or nv < 2:
             return 0.0
         if not isinstance(self.V, cm.BareV):
-            v = self.V.get('ccvv')
+            v = cm.materialize(self.V.get('ccvv'))
             r, ex = LDSRG2._rden(self, 'ccvv')
             return 0.25 * float(numpy.sum(abs(v)**2 * (1.0 + ex) * r))
         b = self.V.B['cv']
@@ -168,7 +171,7 @@ class DSRGMRPT2(LDSRG2):
         cm.add_hc_2(c2)
         self.hbar1 = self.F['aa'] + c1['aa'] if 'aa' in c1 else self.F['aa'].copy()
         c, sign = c2.get('aaaa') if c2.get('aaaa') is not None else (0.0, 1.0)
-        self.hbar2 = self.V.get('aaaa') + sign * c
+        self.hbar2 = cm.materialize(self.V.get('aaaa')) + sign * c
         self.act_relaxed = self.relaxed_active_space()
         self.e_tot, self.civecs = self.act_relaxed.solve(self.nelec, self.nstate)
         self.heff = numpy.diag(self.e_tot).astype(numpy.complex128)

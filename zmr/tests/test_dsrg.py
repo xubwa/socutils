@@ -79,3 +79,18 @@ def test_active_rotation(name):
     b = run(METHODS[name], eris.rotate(u), 2, 3)
     assert abs(a.e_dsrg - b.e_dsrg) < 1e-10
     assert abs(numpy.asarray(a.e_tot) - b.e_tot).max() < 1e-10
+
+
+def test_vvvv_on_disk(water):
+    '''MR-LDSRG(2) with the (vv|vv) ladder in a temporary HDF5 file (max_memory too small
+    for memory) and rebuilt for every use, against memory.'''
+    _, chol, nelec = water
+    ref = run(LDSRG2, chol, nelec, 2)
+    for kw in (dict(max_memory=1e-3), dict(vvvv='direct')):
+        cls = type('LDSRG2x', (LDSRG2,), kw)
+        pt = run(cls, chol, nelec, 2)
+        if 'max_memory' in kw:
+            assert not isinstance(pt._w, numpy.ndarray)
+        # converged to 1e-9 in the amplitudes
+        assert abs(pt.e_corr - ref.e_corr) < 1e-8
+        assert abs(numpy.asarray(pt.e_tot) - ref.e_tot).max() < 1e-8

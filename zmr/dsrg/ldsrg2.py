@@ -14,7 +14,9 @@ Hbar (reference relaxation): one transformation for all model states.
 
 NIVO: the two-body blocks with three or four virtual indices of every commutator are
 dropped; those of the bare Hamiltonian enter the first commutator, from the three-index
-integrals (eris.cd_block).
+integrals (eris.cd_block).  The pair-packed (vv|vv) of that ladder is built once from the
+three-index integrals and kept in memory, or written to a temporary HDF5 file and read in
+row blocks, when it does not fit in max_memory.
 
     pt = LDSRG2(eris, nelec, civecs=civecs, s=0.5)
     pt.kernel()
@@ -26,10 +28,12 @@ NIVO: Li, Evangelista, J. Chem. Phys. 150, 144107 (2019).  The commutator expres
 are those of forte (zmr.dsrg.commutator).
 '''
 
+import resource
 import time
 from itertools import product
 
 import numpy
+from pyscf import lib
 
 from socutils.zmr.active import rdm
 from socutils.zmr.active.sectors import ActiveSpace
@@ -108,8 +112,10 @@ class LDSRG2:
     conv_tol_amp = 1e-6
     max_cycle = 60
     diis_space = 6
-    single_precision_above = 2.0e10    # bytes of the pair-packed (vv|vv)
-    packed_ladder = True
+    max_memory = lib.param.MAX_MEMORY  # MB
+    # (vv|vv) ladder: 'stored' (in memory or on disk, applied in every iteration),
+    # 'direct' (rebuilt from the three-index integrals for each use), None (not needed)
+    vvvv = 'stored'
     verbose = True
 
     def __init__(self, eris, nelec, civecs=None, nstate=None, weights=None, s=0.5,
@@ -139,6 +145,17 @@ class LDSRG2:
     def log(self, text):
         if self.verbose:
             print('LDSRG2 ' + text, flush=True)
+
+    def _available(self, fraction=0.5):
+        '''MB for a batch: fraction of max_memory less what is in use (at least 100).'''
+        return max(100.0, fraction * (self.max_memory - lib.current_memory()[0]))
+
+    def _stage(self, name, t0):
+        '''Record the time of a stage since t0 and log it with the memory in use.'''
+        self.timings[name] = self.timings.get(name, 0.0) + time.time() - t0
+        self.log('%-12s %8.1f s, memory %6.1f GB (peak %6.1f GB)' % (
+            name, time.time() - t0, lib.current_memory()[0] / 1e3,
+            resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1048576))
 
     # ------------------------------------------------------------------ setup
     def build(self):
@@ -198,11 +215,10 @@ class LDSRG2:
         self._w = None
         if getattr(sc, 'factorized', False):
             # three-index integrals, conjugated: V[pq, rs] = conj(<pq||rs>)
-            self.V = cm.BareV(_ConjB(sc), dense_vvvv=not self.nivo, extra=extra)
-            if self.nivo and self.packed_ladder and sp.nvirt > 1:
-                npair = sp.nvirt * (sp.nvirt - 1) // 2
-                self._w = self.V.packed_vvvv(
-                    single=16.0 * npair**2 > self.single_precision_above)
+            self.V = cm.BareV(_ConjB(sc), dense_vvvv=not self.nivo, extra=extra,
+                              cache_memory=0.2 * self.max_memory)
+            if self.nivo and self.vvvv and sp.nvirt > 1:
+                self._w = self._store_vvvv() if self.vvvv == 'stored' else 'direct'
         else:
             self.V = cm.DenseV(sc, extra=extra)
         self.log('reference: E(average) = %.10f; %d core + %d active + %d virtual; setup %.0f s'
@@ -236,7 +252,7 @@ class LDSRG2:
         for lab in self._t1_labels:
             t1[lab] = self.F[lab] * self._rden(lab)[0]
         for lab in self._t2_labels:
-            t2[lab] = self.V.get(lab) * self._rden(lab)[0]
+            t2[lab] = cm.materialize(self.V.get(lab)) * self._rden(lab)[0]
         return t1, t2
 
     def _update(self, t, h, labels):
@@ -248,20 +264,64 @@ class LDSRG2:
                 new[lab] += h[lab] * r
         return new
 
+    def _store_vvvv(self):
+        '''The pair-packed V[ab, rs] (a < b, r < s), in memory if it takes less than
+        half of max_memory, else in a temporary HDF5 file.'''
+        t0 = time.time()
+        nv = self.dims['v']
+        npair = nv * (nv - 1) // 2
+        size = 16.0 * npair**2 / 1e6
+        batch = cm.BareV.vvvv_batch(nv, self._available())
+        if size < 0.5 * self.max_memory:
+            w = numpy.empty((npair, npair), dtype=complex)
+            where = 'memory'
+        else:
+            self._vvvv_file = lib.H5TmpFile()
+            w = self._vvvv_file.create_dataset('vvvv', (npair, npair), 'c16')
+            where = 'file %s' % self._vvvv_file.filename
+        for r0, rows in self.V.vvvv_rows(batch):
+            w[r0:r0 + len(rows)] = rows
+        self.log('(vv|vv) of %d pairs (%.0f MB) in %s, %.0f s' % (
+            npair, size, where, time.time() - t0))
+        return w
+
+    def _vvvv_blocks(self):
+        '''(first row, rows) of the pair-packed V[ab, rs], within the free memory.'''
+        nv = self.dims['v']
+        if isinstance(self._w, str):
+            yield from self.V.vvvv_rows(cm.BareV.vvvv_batch(nv, self._available()))
+            return
+        if isinstance(self._w, numpy.ndarray):
+            yield 0, self._w
+            return
+        npair = self._w.shape[0]
+        step = max(1, int(self._available() * 1e6 / (16.0 * npair)))
+        for r0 in range(0, npair, step):
+            yield r0, self._w[r0:r0 + step]
+
     def _ladder(self, t2, c2, alpha):
-        '''c2[ij, rs] += alpha/2 sum_ab V[ab, rs] t2[ij, ab], four virtual indices.'''
+        '''c2[ij, rs] += alpha/2 sum_ab V[ab, rs] t2[ij, ab], four virtual indices: one
+        pass over the rows of the pair-packed (vv|vv) for all hole pairs.'''
         nv = self.dims['v']
         iu = numpy.triu_indices(nv, 1)
-        for hh in ('cc', 'ca', 'aa'):
-            t = t2.get(hh + 'vv')
-            if t is None or t.size == 0:
-                continue
-            n0, n1 = t.shape[:2]
-            tp = numpy.ascontiguousarray(t[:, :, iu[0], iu[1]]).reshape(n0 * n1, -1)
-            x = (tp.astype(self._w.dtype, copy=False) @ self._w).reshape(n0, n1, -1)
+        hhs = [hh for hh in ('cc', 'ca', 'aa')
+               if t2.get(hh + 'vv') is not None and t2[hh + 'vv'].size]
+        if not hhs:
+            return
+        tp = numpy.concatenate([t2[hh + 'vv'][:, :, iu[0], iu[1]].reshape(-1, iu[0].size)
+                                for hh in hhs])
+        x = numpy.zeros_like(tp)
+        for r0, rows in self._vvvv_blocks():
+            x += la.gemm(numpy.ascontiguousarray(tp[:, r0:r0 + len(rows)]), rows)
+        del tp
+        pos = 0
+        for hh in hhs:
+            n0, n1 = t2[hh + 'vv'].shape[:2]
+            xb = x[pos:pos + n0 * n1].reshape(n0, n1, -1)
+            pos += n0 * n1
             full = numpy.zeros((n0, n1, nv, nv), dtype=numpy.complex128)
-            full[:, :, iu[0], iu[1]] = x
-            full[:, :, iu[1], iu[0]] = -x
+            full[:, :, iu[0], iu[1]] = xb
+            full[:, :, iu[1], iu[0]] = -xb
             if hh + 'vv' in c2:
                 c2[hh + 'vv'] += alpha * full
             else:
@@ -278,7 +338,7 @@ class LDSRG2:
         hh_pp = set(self._t2_labels) | {'aaaa'}
         h0 = 0.0
         h1 = cm.Blocks({k: v.copy() for k, v in self.F.items()})
-        h2 = cm.Blocks({lab: self.V.get(lab).copy() for lab in hh_pp})
+        h2 = cm.Blocks({lab: numpy.array(cm.materialize(self.V.get(lab))) for lab in hh_pp})
         o1, o2 = self.F, self.V
         self.comm_norms = []
         for n in range(1, self.max_comm + 1):
@@ -312,7 +372,14 @@ class LDSRG2:
             t1, t2 = self.init_amps()
         else:
             t1, t2 = self.t1, self.t2
-        diis_t, diis_e = [], []
+        adiis = None
+        if self.diis_space > 0:
+            adiis = lib.diis.DIIS()
+            # vectors and errors in a temporary HDF5 file (pyscf.lib.diis keeps those
+            # below 80 MB in memory), read back one vector at a time
+            adiis.space, adiis.min_space = self.diis_space, 2
+            adiis.incore = False
+            adiis.verbose = 0
         e_old = self.e_ref
         self.converged = False
         self.log('%4s %20s %10s %9s %9s %8s %8s %5s %8s' % (
@@ -333,41 +400,18 @@ class LDSRG2:
                 self.converged = True
                 break
             e_old = e
-            if self.diis_space > 0:
+            if adiis is not None:
                 labs = [(self._t1_labels, t1, t1n), (self._t2_labels, t2, t2n)]
                 vec = numpy.concatenate([n[k].ravel() for ll, o, n in labs for k in ll])
                 old = numpy.concatenate([o[k].ravel() for ll, o, n in labs for k in ll])
-                # history in single precision when large; the extrapolation only takes
-                # differences from it
-                dt = numpy.complex64 if vec.nbytes > 2**30 else numpy.complex128
-                diis_t.append(vec.astype(dt))
-                diis_e.append((vec - old).astype(dt))
+                vec = adiis.update(vec, xerr=vec - old)
                 del old
-                if len(diis_t) > self.diis_space:
-                    diis_t.pop(0)
-                    diis_e.pop(0)
-                m = len(diis_t)
-                if m > 1:
-                    b = numpy.zeros((m + 1, m + 1))
-                    for x in range(m):
-                        for y in range(x, m):
-                            b[x, y] = b[y, x] = numpy.vdot(diis_e[x], diis_e[y]).real
-                    b[m, :m] = b[:m, m] = -1.0
-                    rhs = numpy.zeros(m + 1)
-                    rhs[m] = -1.0
-                    try:
-                        c = numpy.linalg.solve(b, rhs)[:m]
-                    except numpy.linalg.LinAlgError:
-                        c = numpy.zeros(m)
-                        c[-1] = 1.0
-                    for ck, tk in zip(c[:-1], diis_t[:-1]):
-                        vec += ck * (tk - diis_t[-1])
-                    pos = 0
-                    for ll, o, n in labs:
-                        for k in ll:
-                            size = n[k].size
-                            n[k] = vec[pos:pos + size].reshape(n[k].shape).copy()
-                            pos += size
+                pos = 0
+                for ll, o, n in labs:
+                    for k in ll:
+                        size = n[k].size
+                        n[k] = vec[pos:pos + size].reshape(n[k].shape).copy()
+                        pos += size
             t1, t2 = t1n, t2n
         if not self.converged:
             self.log('WARNING: amplitudes not converged in %d iterations' % self.max_cycle)
