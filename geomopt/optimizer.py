@@ -118,7 +118,7 @@ def lindh_hessian(elem, x, cutoff=1e-4):
     bends and torsions over all atoms with force constants 0.45 rho_ij,
     0.15 rho_ij rho_jk, 0.005 rho_ij rho_jk rho_kl, rho_ij = exp(alpha_ij
     (r0_ij^2 - r_ij^2)) (Bohr); products below cutoff dropped'''
-    from geometric.internal import Distance, Angle, Dihedral
+    from geometric.internal import Distance, Angle, Dihedral, LinearAngle
     from pyscf.data import elements
     xyz = x.reshape(-1, 3)
     n = len(xyz)
@@ -145,6 +145,12 @@ def lindh_hessian(elem, x, cutoff=1e-4):
                     u, v = xyz[i] - xyz[j], xyz[k] - xyz[j]
                     if abs(u.dot(v)) / numpy.sqrt(u.dot(u) * v.dot(v)) < .999:
                         add(.15 * r, Angle(i, j, k))
+                    else:
+                        # near-linear: the two linear bends
+                        for axis in (0, 1):
+                            lin = LinearAngle(i, j, k, axis)
+                            lin.reset(x)
+                            add(.15 * r, lin)
     for j in range(n):
         for k in range(j + 1, n):
             if rho[j, k] <= cutoff:
@@ -298,19 +304,19 @@ def gediis_coeffs(E, q, g):
     return best, fbest
 
 
-def cubic_min(e0, d0, e1, d1):
-    '''minimum in (0, 1] of the cubic with values e0, e1 and slopes d0, d1 at 0, 1
-    (None if it has none there)'''
+def cubic_min(e0, d0, e1, d1, amax=1.):
+    '''minimum in (0, amax] of the cubic with values e0, e1 and slopes d0, d1 at
+    0, 1 (None if it has none there)'''
     # p(a) = e0 + d0 a + b a^2 + c a^3
     c = d0 + d1 - 2 * (e1 - e0)
     b = 3 * (e1 - e0) - 2 * d0 - d1
     if abs(c) < 1e-14:
-        return -d0 / (2 * b) if b > 0 and 0 < -d0 / (2 * b) <= 1 else None
+        return -d0 / (2 * b) if b > 0 and 0 < -d0 / (2 * b) <= amax else None
     disc = b * b - 3 * c * d0
     if disc < 0:
         return None
     a = (-b + numpy.sqrt(disc)) / (3 * c)     # the root with p'' = 2b + 6ca > 0
-    return a if 0 < a <= 1 else None
+    return a if 0 < a <= amax else None
 
 
 def _grad_norms(gx):
@@ -324,14 +330,28 @@ class Optimizer(lib.StreamObject):
 
     Attributes:
         coordsys : 'tric' (default), 'dlc', 'hdlc' or 'cart'
-        hessian : 'model' (geomeTRIC's), 'lindh' (Lindh's model Hessian,
-            eigenvalues floored at hess_floor) or 'exact' (the engine's Hessian
-            at the start); default lindh for minima, exact for transition states
+        hessian : the starting Hessian: 'lindh' (Lindh's model, eigenvalues
+            floored at hess_floor; default for minima: gradient-only, as
+            Gaussian's default opt), 'model' (geomeTRIC's), 'exact' (the
+            engine's analytic Hessian, as Gaussian's CalcFC / ORCA's Calc_Hess;
+            default for transition states), 'xtb' (GFN2-xTB Hessian from the
+            xtb program) or a Cartesian (3N, 3N) array (as ReadFC)
+        hess_recalc : the exact Hessian again every hess_recalc steps (RecalcFC
+            = N, ORCA's Recalc_Hess; 1 is CalcAll); 0 never
+        hess_adaptive : the exact Hessian again when the updated one has gone
+            bad: two consecutive poor steps (trust ratio < 0.25; minima) or a
+            wrong number of negative eigenvalues (transition states), at most
+            every third step.  Default on for transition states, off for minima
         transition : transition-state search: P-RFO following the mode of the
             lowest eigenvalue at the start (by overlap afterwards), Bofill
-            updates; the exact Hessian again every hess_recalc steps, and
-            (hess_adaptive) when the updated one has had a wrong number of
-            negative eigenvalues for two steps
+            updates
+        linesearch : Berny-style interpolation along the last step before the
+            quasi-Newton step (no extra gradients; minima)
+        saddle_check : after convergence of a minimization, up to this many
+            probes of the curvature along the lowest mode of the updated
+            Hessian (one gradient each, probe_step Angstrom RMS); on negative
+            curvature the optimization continues from a point displaced
+            downhill along it
         trust, tmax, tmin : trust radius, on the RMS Cartesian displacement of
             the step after alignment (Angstrom, as geomeTRIC): the internal step
             is scaled until its back-transformed displacement fits
@@ -344,16 +364,24 @@ class Optimizer(lib.StreamObject):
             otherwise runs into these zero-curvature directions)
         criteria : 'gaussian' (default; Gaussian's: max / RMS internal force and
             max / RMS predicted next internal step, the gmax, grms, dmax, drms
-            thresholds read in Hartree, Bohr, rad; no energy criterion) or
+            thresholds read in Hartree, Bohr, rad; with flat_accept also
+            converged when the forces are and |dE| < convergence_energy, for
+            flat surfaces where the predicted step stays large) or
             'geometric' (all five on the Cartesian gradient and the last step)
     '''
     coordsys = 'tric'
     hessian = None
     transition = False
     hess_recalc = 0
-    hess_adaptive = True
+    hess_adaptive = None
     neg_eig = 1e-3
     criteria = 'gaussian'
+    linesearch = True
+    coord_check = 5
+    flat_accept = True
+    saddle_check = 0
+    probe_step = 0.01
+    neg_curv = 1e-4
     remove_tr = None
     hess_floor = 2.3e-3
     trust = 0.1
@@ -431,18 +459,20 @@ class Optimizer(lib.StreamObject):
         r = calc_drms_dmax(xn, x)[0]
         if r <= trust:
             return dq, xn
-        lo, hi = 0., numpy.linalg.norm(dq)
-        for _ in range(40):
-            mid = .5 * (lo + hi)
-            dq = fn(mid)
+        # the displacement is close to linear in the step length: secant iterations on it
+        q1, r1 = numpy.linalg.norm(dq), r
+        q0, r0 = 0., 0.
+        for _ in range(8):
+            q = q0 + (trust - r0) * (q1 - q0) / (r1 - r0) if r1 > r0 else .5 * (q0 + q1)
+            dq = fn(q)
             xn = ic.newCartesian(x, dq, verbose=0)
             r = calc_drms_dmax(xn, x)[0]
             if abs(r - trust) < .05 * trust:
                 break
             if r > trust:
-                hi = mid
+                q1, r1 = q, r
             else:
-                lo = mid
+                q0, r0 = q, r
         return dq, xn
 
     def _gediis_step(self, ic, H, x, gq, hist):
@@ -486,6 +516,44 @@ class Optimizer(lib.StreamObject):
             H = H + ic.Vecs.T.dot(d[:, None] * ic.Vecs)
         return H
 
+    def _model_hessian(self, ic, x, gx):
+        if self._hess_kind == 'model':
+            return ic.guess_hessian(x)
+        return self._lindh(ic, x)
+
+    def _line_search(self, ic, x, E, gq, prev):
+        '''Berny-style line search without extra gradients: the minimum of the
+        cubic through the previous and the current point along the last step,
+        if it lies in (0, 2] away from the current point.  Returns its offset
+        from x and the interpolated gradient, or None.'''
+        if prev is None:
+            return None
+        xp, Ep, gxp = prev
+        s = ic.calcDiff(x, xp)
+        gp = ic.calcGrad(xp, gxp)
+        a = cubic_min(Ep, gp.dot(s), E, gq.dot(s), amax=2.)
+        if a is None or abs(a - 1) < .1:
+            return None
+        return (a - 1) * s, gp + a * (gq - gp)
+
+    def _saddle_probe(self, ic, H, x, E, gx, trust):
+        '''curvature along the lowest mode of the updated Hessian by one
+        finite-difference gradient; if negative, the point displaced downhill
+        along it (trust as RMS displacement).  Returns (point or None, number
+        of gradients).'''
+        h, v = numpy.linalg.eigh(H)
+        dx = ic.wilsonB(x).T.dot(ic.GInverse(x)).dot(v[:, 0])
+        dx /= numpy.sqrt(numpy.mean(dx.reshape(-1, 3)**2) * 3)        # unit RMS per atom
+        step = self.probe_step / BOHR
+        E1, g1 = self.engine(x + step * dx)
+        curv = (g1 - gx).dot(dx) / step / dx.dot(dx)
+        logger.info(self, 'saddle check: curvature %.3e along the lowest mode (model %.3e), dE %.2e',
+                    curv, h[0], E1 - E)
+        if curv > -self.neg_curv:
+            return None, 1
+        sign = 1. if E1 <= E else -1.
+        return x + sign * (trust / BOHR) * dx, 1
+
     def _exact_hessian(self, ic, x, gx):
         self.nhess += 1
         H = ic.calcHess(x, gx, self.engine.hessian(x))
@@ -504,8 +572,21 @@ class Optimizer(lib.StreamObject):
         ncalc = 1
         hist = [(x.copy(), E, gx.copy())]
         hess = self.hessian if self.hessian is not None else ('exact' if ts else 'lindh')
-        if hess == 'exact':
+        self._hess_kind = hess
+        if isinstance(hess, numpy.ndarray):
+            # a given Cartesian Hessian (Gaussian's ReadFC)
+            H = ic.calcHess(x, gx, hess.reshape(x.size, x.size))
+            H = H if ts else self._add_tr(ic, x, H)
+        elif hess == 'exact':
             H = self._exact_hessian(ic, x, gx)
+        elif hess == 'xtb':
+            # a low-level (GFN2-xTB) Hessian as the start (ReadFC from a cheaper method)
+            from socutils.geomopt import xtb
+            mol = getattr(eng, 'mol', None)
+            charge = getattr(eng, 'charge', getattr(mol, 'charge', 0))
+            spin = getattr(eng, 'spin', getattr(mol, 'spin', 0))
+            H = ic.calcHess(x, gx, xtb.xtb_hessian(self.elem, x, charge, spin))
+            H = H if ts else self._add_tr(ic, x, H)
         elif hess == 'lindh':
             H = self._lindh(ic, x)
         else:
@@ -514,8 +595,12 @@ class Optimizer(lib.StreamObject):
         trust = self.trust
         tmax = self.tmax
         forced = None          # the line-search point after a rejected step
+        prev = None            # the previous accepted point (x, E, gx), for the line search
+        nprobe = 0             # saddle checks done
         vmode = None           # the followed mode (transition states)
-        nwrong = 0             # consecutive steps with a wrong Hessian index
+        nwrong = 0             # consecutive steps with a wrong Hessian index (TS) / poor quality (minima)
+        nstuck = 0             # consecutive poor steps at the smallest trust radius (minima)
+        adaptive = self.hess_adaptive if self.hess_adaptive is not None else ts
         nstep = 0
         last_exact = 0
         conv = False
@@ -534,6 +619,14 @@ class Optimizer(lib.StreamObject):
                     xn = ic.newCartesian(x, dq, verbose=0)
                     if not ic.bork and calc_drms_dmax(xn, x)[0] <= trust:
                         return dq, 'gediis', xn
+                ls = self._line_search(ic, x, E, gq, prev) if self.linesearch else None
+                if ls is not None:
+                    # quasi-Newton step from the interpolated minimum along the last step
+                    dq0, g0 = ls
+                    dqt = dq0 + rfo_step(H, g0, numpy.inf)[0]
+                    nt = numpy.linalg.norm(dqt)
+                    dq, xn = self._restrict(ic, x, lambda qmax: dqt * min(1., qmax / nt), trust)
+                    return dq, 'ls+rfo', xn
                 dq, xn = self._restrict(ic, x, lambda qmax: rfo_step(H, gq, qmax)[0], trust)
                 return dq, 'rfo', xn
             h, v = numpy.linalg.eigh(H)
@@ -591,11 +684,17 @@ class Optimizer(lib.StreamObject):
                 # rejected: back to x with a smaller trust radius (H keeps the information)
                 trust = max(.5 * min(trust, drms), self.tmin)
                 continue
+            if not ts:
+                nwrong = nwrong + 1 if abs(pred) > 1e-8 and qual < .25 else 0
+                # a quadratic model that keeps failing at the smallest trust radius:
+                # back to the model Hessian (geomeTRIC / Berny resets)
+                nstuck = nstuck + 1 if nwrong and trust <= 1.01 * self.tmin else 0
             if abs(pred) > 1e-8:
                 if qual < (.5 if ts else .25):
                     trust = max(.5 * min(trust, drms), self.tmin)
                 elif qual > .75 and drms > .8 * trust:
                     trust = min(numpy.sqrt(2) * trust, tmax)
+            prev = (x, E, gx)
             x, E, gx, gq = xnew, Enew, gxnew, gqnew
             if self.criteria == 'gaussian':
                 # Gaussian's: internal forces and the predicted next step
@@ -605,28 +704,46 @@ class Optimizer(lib.StreamObject):
                          and abs(dqn_next).max() < cp['convergence_dmax']
                          and numpy.sqrt(numpy.mean(dqn_next**2)) < cp['convergence_drms'])
                         or (abs(gq).max() < cp['convergence_gmax'] * .01
-                            and numpy.sqrt(numpy.mean(gq**2)) < cp['convergence_grms'] * .01))
+                            and numpy.sqrt(numpy.mean(gq**2)) < cp['convergence_grms'] * .01)
+                        # flat surface: forces converged and the energy no longer changes
+                        or (self.flat_accept and abs(gq).max() < cp['convergence_gmax']
+                            and numpy.sqrt(numpy.mean(gq**2)) < cp['convergence_grms']
+                            and abs(dE) < cp['convergence_energy']))
             else:
                 conv = ((abs(dE) < cp['convergence_energy'] and grms < cp['convergence_grms']
                          and gmax < cp['convergence_gmax'] and drms < cp['convergence_drms']
                          and dmax < cp['convergence_dmax'])
                         or (gmax < cp['convergence_gmax'] * .01 and grms < cp['convergence_grms'] * .01))
+            if conv and not ts and nprobe < self.saddle_check:
+                nprobe += 1
+                xd, n = self._saddle_probe(ic, H, x, E, gx, trust)
+                ncalc += n
+                if xd is not None:
+                    log.info('negative curvature at the stationary point; displaced along it')
+                    conv = False
+                    forced = xd
+                    prev = None
+                    continue
             if conv:
                 break
-            if self._coords_changed(x, ic):
+            if nstep % self.coord_check == 0 and self._coords_changed(x, ic):
                 log.info('coordinate system rebuilt')
                 ic, H, vmode = self._new_coords(x, gx, ic, H, vmode)
                 gq = ic.calcGrad(x, gx)
             if ts:
                 # the overall rotations / translations of TRIC carry ~zero curvature
-                nneg = int((numpy.linalg.eigvalsh(H) < -self.neg_eig).sum())
-                nwrong = nwrong + 1 if nneg != 1 else 0
-                if ((self.hess_recalc and nstep % self.hess_recalc == 0)
-                        or (self.hess_adaptive and nwrong >= 2 and nstep - last_exact >= 3)):
-                    log.info('exact Hessian recomputed (%d negative eigenvalues)', nneg)
-                    H = self._exact_hessian(ic, x, gx)
-                    nwrong = 0
-                    last_exact = nstep
+                nwrong = nwrong + 1 if int((numpy.linalg.eigvalsh(H) < -self.neg_eig).sum()) != 1 else 0
+            if not ts and nstuck >= 3:
+                log.info('Hessian reset to the model Hessian (poor steps at the smallest trust radius)')
+                H = self._model_hessian(ic, x, gx)
+                trust = self.trust
+                nstuck = nwrong = 0
+            if ((self.hess_recalc and nstep % self.hess_recalc == 0)
+                    or (adaptive and nwrong >= 2 and nstep - last_exact >= 3)):
+                log.info('exact Hessian recomputed (step %d)', nstep)
+                H = self._exact_hessian(ic, x, gx)
+                nwrong = 0
+                last_exact = nstep
         self.converged = conv
         self.e_tot = E
         self.x = x

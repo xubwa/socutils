@@ -153,11 +153,14 @@ two-electron corrections on) and only then require the `x2camf` integral backend
 
 - **`geomopt/`** — geometry optimization (`optimizer.py`): our own step logic on
   geomeTRIC's internal coordinates (TRIC; B matrix, back-transformation from
-  `geometric.internal`): Lindh model Hessian, RFO with a Cartesian-RMSD trust
-  radius, GEDIIS in the small-force region, cubic line search after a rejected
-  step, damped BFGS, Gaussian's convergence criteria; transition states
-  (prototype) by P-RFO with mode following, Bofill updates and the exact
-  Hessian at the start (recomputed when the index goes wrong).
+  `geometric.internal`). Minima, gradient-only by default (Gaussian's default
+  `opt`): Lindh model Hessian (with linear bends), damped BFGS, RFO with a
+  Cartesian-RMSD trust radius, Berny-style line search, GEDIIS, Gaussian's
+  convergence criteria (plus a flat-surface energy rule). With an exact
+  Hessian: `hessian='exact'` (CalcFC), `hess_recalc=N` (RecalcFC / CalcAll),
+  `hess_adaptive`, a given Cartesian array (ReadFC) or `hessian='xtb'` (GFN2-xTB
+  start, `geomopt/xtb.py`, which is also an xtb engine). Optional saddle check
+  after convergence. Transition states (parked prototype): P-RFO, Bofill.
   `optimizer.fast_engine(mf)` runs it on the fast RHF / RKS SCF, gradient and
   Hessian paths; `geomopt.optimize(mf)` is the pyscf-style entry point.
 
