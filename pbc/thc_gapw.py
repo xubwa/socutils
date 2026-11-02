@@ -130,13 +130,17 @@ class GAPWJ:
         home[both & (a_ == b_)] = True
         self.home = home
         self.atoms = sorted(set(owner[owner >= 0].ravel().tolist()))
+        # MPI (th.comm): each rank builds and integrates the atomic grids of its atoms only (round-robin)
+        self.comm = getattr(th, 'comm', None)
+        rank, size = (self.comm.Get_rank(), self.comm.Get_size()) if self.comm is not None else (0, 1)
+        self.my_atoms = [A for i, A in enumerate(self.atoms) if i % size == rank]
         # atomic grids: radial (Treutler-Ahlrichs) x Lebedev, centred on each owning atom
         ang = gen_grid.MakeAngularGrid(nang)
         self.unit, self.wang = ang[:, :3], 4 * np.pi * ang[:, 3]        # pyscf's Lebedev weights sum to 1
         self.Y = _real_ylm(self.unit, max(lmax, L), self.wang)                  # per l (2l+1, nang)
         X = cell.atom_coords()
         self.grids, self.rads, self.wrs = {}, {}, {}
-        for A in self.atoms:
+        for A in self.my_atoms:
             nr, scheme = self.radial_grid(cell.atom_charge(A))
             r, dr = getattr(radi, scheme)(nr, cell.atom_charge(A))
             o = np.argsort(r)
@@ -388,7 +392,7 @@ class GAPWJ:
             return
         sm = self.th.smooth
         self._nss, self._compact_pts = {}, {}
-        for A in self.atoms:
+        for A in self.my_atoms:
             pts, w, inner, cols, cA, phi_in, phi0c = self.grids[A]
             ss = np.isin(cols, sm)
             perm = np.concatenate([np.where(ss)[0], np.where(~ss)[0]])
@@ -413,12 +417,24 @@ class GAPWJ:
         self._ss_first()
         if not th.phi.flags['C_CONTIGUOUS']:                            # row blocks of the grid functions
             th.phi = np.ascontiguousarray(th.phi)
+        comm = self.comm
+        if comm is not None:
+            from mpi4py import MPI
+            rank, size = comm.Get_rank(), comm.Get_size()
+            assert not getattr(self, 'neighbours', False), 'GAPW neighbour potentials not distributed'
+        else:
+            rank, size = 0, 1
+        r0, r1 = ng * rank // size, ng * (rank + 1) // size            # this rank's rows of the uniform grid
         # smooth density on the uniform grid
-        n = _wdens(th.phi, np.ascontiguousarray(dm[np.ix_(sm, sm)]))
+        n = np.zeros(ng)
+        n[r0:r1] = _wdens(th.phi[r0:r1], np.ascontiguousarray(dm[np.ix_(sm, sm)]))
+        if comm is not None:
+            comm.Allreduce(MPI.IN_PLACE, n, op=MPI.SUM)
         nG = scipy.fft.rfftn(n.reshape(mesh), workers=-1).reshape(-1) * (vol / ng)
+        nGc = np.zeros_like(nG)                                       # compensation charges of this rank's atoms
         # compact densities on the atomic grids, multipoles, compensation charges
         rhoA, QA = {}, {}
-        for A in self.atoms:
+        for A in self.my_atoms:
             pts, w, inner, cols, cA, phi_in, phi0c = self.grids[A]
             msk = (self.owner[np.ix_(cA, cols)] == A) & self.home[np.ix_(cA, cols)]
             DA = np.where(msk, dm[np.ix_(cA, cols)], 0.)
@@ -431,14 +447,17 @@ class GAPWJ:
             QA[A] = [((rho * w * rad ** l)[None] * np.tile(self.Y[l], len(self.rads[A]))).sum(1) for l in range(L + 1)]
             ph = self._phase(A)
             for l in range(L + 1):
-                nG = nG + ph * (QA[A][l] @ self.gG[l])
+                nGc += ph * (QA[A][l] @ self.gG[l])
+        if comm is not None:
+            comm.Allreduce(MPI.IN_PLACE, nGc.view(float), op=MPI.SUM)
+        nG = nG + nGc
         vG = th.w_vec * nG
         vr = scipy.fft.irfftn(vG.reshape(hshape), s=mesh, workers=-1).reshape(-1)   # v_grid(r) vol / ng
         J = np.zeros((nao, nao))
-        J[np.ix_(sm, sm)] = _wmat(th.phi, vr)
+        J[np.ix_(sm, sm)] = _wmat(th.phi[r0:r1], vr[r0:r1])
         vloc, vlms = {}, {}
         c_avg = 0.
-        for A in self.atoms:
+        for A in self.my_atoms:
             rad = np.repeat(self.rads[A], len(self.wang))
             rhat = np.zeros_like(rhoA[A])
             for l in range(L + 1):
@@ -449,7 +468,7 @@ class GAPWJ:
             # rho^_A) over the cell; the kernel of the grid part has no G = 0 average: add the constant back
             c_avg += 2 * np.pi / (3 * vol) * (self.grids[A][1] * rad ** 2 * (rhoA[A] - rhat)).sum()
         X = cell.atom_coords()
-        for A in self.atoms:
+        for A in self.my_atoms:
             pts, w, inner, cols, cA, phi_in, phi0c = self.grids[A]
             rad = np.repeat(self.rads[A], len(self.wang))
             u = self._vgrid_at(vG, pts, rad, r_max=self.r_compact)    # smooth potential where phi^(0) lives
@@ -475,4 +494,6 @@ class GAPWJ:
             ps = phi_in                                                  # (stored: the smooth columns only)
             J[np.ix_(cols[:nss], cols[:nss])] += _wmat(ps, (w * vloc[A])[inner])
         J += c_avg * self.S                                           # constant potential: c S_ab
+        if comm is not None:                                          # partial J of every rank (grid rows, atoms)
+            comm.Allreduce(MPI.IN_PLACE, J, op=MPI.SUM)
         return J
