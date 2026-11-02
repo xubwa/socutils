@@ -162,6 +162,8 @@ def md_j_grad(mol, dm, tol=None):
 SPLIT_GENERAL = True
 GRAD2E_HGP = True           # order 1: the HGP kernel (lib/vhf/hgp.c) for the low-l quartets
 HGP_LMAX = 1                # quartets with l_i + l_j + l_k + l_l <= HGP_LMAX to HGP, the others to Rys
+GRAD2E_GEN = True           # order 1: the generated kernels (lib/vhf/jk_gen.c SOCVHFgen_grad2e), l <= 2
+GEN_GRAD_LMAX = 6           # quartets with total l <= GEN_GRAD_LMAX to them (gen_grad_vrr.py LSUM_MAX), the others to Rys
 
 
 def _split_general(mol):
@@ -208,7 +210,9 @@ def _deriv2e_cart(mol, dm, groups, order, mode, tol, prim_tol):
     fname = 'SOCVHFhess2e_jk_cart' if order == 2 else 'SOCVHFgrad2e_jk_cart'
     if not libv or not hasattr(libv, fname):
         return None
-    hgp = (order == 1 and GRAD2E_HGP and hasattr(libv, 'SOCVHFhgp_grad2e')
+    gen = (order == 1 and mode == 0 and GRAD2E_GEN and hasattr(libv, 'SOCVHFgen_grad2e')
+           and mol._bas[:, gto.ANG_OF].max() <= 2 and mol._bas[:, gto.NCTR_OF].max() <= 4)
+    hgp = (not gen and order == 1 and GRAD2E_HGP and hasattr(libv, 'SOCVHFhgp_grad2e')
            and mol._bas[:, gto.NCTR_OF].max() <= 4)       # hgp.c MAXCTR
     if (mol._bas[:, gto.ANG_OF].max() > HESS2E_CART_LMAX
             or mol._bas[:, gto.NPRIM_OF].max() > HESS2E_CART_MAXPRIM):
@@ -226,7 +230,7 @@ def _deriv2e_cart(mol, dm, groups, order, mode, tol, prim_tol):
         molc.cart = True
         c = mol.cart2sph_coeff()
         dmc = c.dot(dm).dot(c.T)
-    if not hgp and SPLIT_GENERAL and order == 1 and (molc._bas[:, gto.NCTR_OF] > 1).any():
+    if not hgp and not gen and SPLIT_GENERAL and order == 1 and (molc._bas[:, gto.NCTR_OF] > 1).any():
         # generally contracted shells as primitive shells: every quartet on the
         # single-contraction path, no primitive is evaluated twice
         molc, cg = _split_general(molc)
@@ -255,6 +259,19 @@ def _deriv2e_cart(mol, dm, groups, order, mode, tol, prim_tol):
             ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
             ctypes.c_int(natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(molc.nbas),
             env.ctypes.data_as(ctypes.c_void_p))
+    if gen:
+        # the generated kernels (native general contraction), the rest by Rys
+        out2 = numpy.zeros_like(out)
+        try:
+            libv.SOCVHFgen_grad_set_lrange(ctypes.c_int(0), ctypes.c_int(GEN_GRAD_LMAX))
+            libv.SOCVHFgen_grad2e(out.ctypes.data_as(ctypes.c_void_p), *args)
+            if GEN_GRAD_LMAX < 8:
+                libv.SOCVHFcart_set_lrange(ctypes.c_int(GEN_GRAD_LMAX + 1), ctypes.c_int(1000))
+                getattr(libv, fname)(out2.ctypes.data_as(ctypes.c_void_p), *args)
+        finally:
+            libv.SOCVHFgen_grad_set_lrange(ctypes.c_int(0), ctypes.c_int(1000))
+            libv.SOCVHFcart_set_lrange(ctypes.c_int(0), ctypes.c_int(1000))
+        return out + out2
     if not hgp:
         getattr(libv, fname)(out.ctypes.data_as(ctypes.c_void_p), *args)
         return out

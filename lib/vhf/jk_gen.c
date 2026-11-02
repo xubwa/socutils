@@ -22,35 +22,7 @@
 /* primitive pairs with exp(-ab/p R^2) below are dropped (0: none, for tests) */
 static double GEN_KCUT = 1e-24;
 void SOCVHFgen_set_kcut(double c) { GEN_KCUT = c; }
-#define GT_STEP 0.05
-#define GT_TMAX 40.
-#define GT_N ((int)(GT_TMAX / GT_STEP) + 2)
-#define GT_ORD 7                        /* Taylor terms */
-#define GT_TN (4 * 2 + GT_ORD + 1)      /* F_0 .. F_(4 lmax + GT_ORD) per grid point */
-#define TWO_PI52 34.986836655249725
-#define G_MAXCTR 4
-
-typedef struct {
-        int n, nc, nci, ncj, ld, li, lj;
-        double *p, *px, *py, *pz, *kp;  /* p, P, K_ab / p */
-        double *rix, *riy, *riz;        /* P - R_i */
-        double *rjx, *rjy, *rjz;        /* P - R_j */
-        double *bnd;                    /* bound of the primitive pair (with the 1 / sqrt(p) of the other side) */
-        double *beta;                   /* the same without 1 / sqrt(p); the primitives sorted by it, descending */
-        double *c;                      /* c[cb * ld + t], cb = c_j nc_i + c_i */
-        double bmax, rij[3];            /* max bound without 1 / sqrt(p); R_i - R_j */
-} GPair;
-
-static inline double taylor(const double *f, double dt)
-{
-        double s = f[6] * (dt / 6);
-        s = (f[5] + s) * (dt / 5);
-        s = (f[4] + s) * (dt / 4);
-        s = (f[3] + s) * (dt / 3);
-        s = (f[2] + s) * (dt / 2);
-        s = (f[1] + s) * dt;
-        return f[0] + s;
-}
+#include "jk_gen.h"
 
 /* F[m] = F_m(t), m <= M */
 static inline void boys_n(const double *tab, double t, int M, double *F)
@@ -94,12 +66,6 @@ static void sort_prims(double **arrs, int narr, double *c, int nc, int ld, int n
         free(tmp);
 }
 
-/* the leading bra primitives b with beta_b >= thr (beta descending) */
-static inline int n_above(const double *beta, int n, double thr)
-{
-        while (n > 0 && beta[n - 1] < thr) n--;
-        return n;
-}
 
 #include "jk_vrr_gen.c"
 
@@ -168,13 +134,14 @@ GenCtx *SOCVHFgen_ctx_build(int *atm, int natm, int *bas, int nbas, double *env)
                 P->nc = nc; P->nci = nci; P->ncj = ncj; P->ld = nmax;
                 P->li = bi[ANG_OF]; P->lj = bj[ANG_OF];
                 for (k = 0; k < 3; k++) P->rij[k] = Ri[k] - Rj[k];
-                P->p = malloc(sizeof(double) * nmax * (13 + nc));
+                P->p = malloc(sizeof(double) * nmax * (15 + nc));
                 P->px = P->p + nmax; P->py = P->px + nmax; P->pz = P->py + nmax;
                 P->kp = P->pz + nmax; P->bnd = P->kp + nmax;
                 P->rix = P->bnd + nmax; P->riy = P->rix + nmax; P->riz = P->riy + nmax;
                 P->rjx = P->riz + nmax; P->rjy = P->rjx + nmax; P->rjz = P->rjy + nmax;
                 P->beta = P->rjz + nmax;
-                P->c = P->beta + nmax;
+                P->ei = P->beta + nmax; P->ej = P->ei + nmax;
+                P->c = P->ej + nmax;
                 int pi, pj, a, b, t = 0, x;
                 double bmax = 0;
                 for (pj = 0; pj < npj; pj++)
@@ -197,6 +164,8 @@ GenCtx *SOCVHFgen_ctx_build(int *atm, int natm, int *bas, int nbas, double *env)
                         P->rix[t] = P_[0] - Ri[0]; P->riy[t] = P_[1] - Ri[1]; P->riz[t] = P_[2] - Ri[2];
                         P->rjx[t] = P_[0] - Rj[0]; P->rjy[t] = P_[1] - Rj[1]; P->rjz[t] = P_[2] - Rj[2];
                         P->kp[t] = e * ip;
+                        P->ei[t] = ai;
+                        P->ej[t] = aj;
                         /* a generous bound of the Obara-Saika factors: (|PA| + 1 / sqrt(p) + 1)^l per shell */
                         const double fi = sqrt(ni) + sqrt(ip) + 1, fj = sqrt(nj) + sqrt(ip) + 1;
                         const double pf = pow(fi, P->li) * pow(fj, P->lj);
@@ -210,11 +179,15 @@ GenCtx *SOCVHFgen_ctx_build(int *atm, int natm, int *bas, int nbas, double *env)
                 }
                 P->n = t;
                 P->bmax = bmax;
-                double *arrs[13] = {P->p, P->px, P->py, P->pz, P->kp, P->bnd, P->rix, P->riy, P->riz,
-                                    P->rjx, P->rjy, P->rjz, P->beta};
+                double *arrs[15] = {P->p, P->px, P->py, P->pz, P->kp, P->bnd, P->rix, P->riy, P->riz,
+                                    P->rjx, P->rjy, P->rjz, P->beta, P->ei, P->ej};
                 double *bcopy = malloc(sizeof(double) * (t > 0 ? t : 1));
                 memcpy(bcopy, P->beta, sizeof(double) * t);
-                sort_prims(arrs, 13, P->c, nc, nmax, t, bcopy);
+                sort_prims(arrs, 15, P->c, nc, nmax, t, bcopy);
+                double am = 0;
+                for (k = 0; k < npi; k++) am = fmax(am, ei[k]);
+                for (k = 0; k < npj; k++) am = fmax(am, ej[k]);
+                P->amax = am;
                 free(bcopy);
         }
         return cx;
@@ -281,4 +254,152 @@ int SOCVHFgen_int2e(double *out, const int *shls, const GenCtx *cx, double dmax,
         const size_t st[4] = {stp[pos[0]], stp[pos[1]], stp[pos[2]], stp[pos[3]]};
         (void)bas;
         return jkg_table[la][lb][lc][ld](out, st, pos, B, bs, K, ks, cut, fac, cx->tab, wk);
+}
+
+/* ------------------------------------------------------------------------
+ * First derivatives of E_g = jfac_g E_J + kfac_g E_K at a fixed symmetric
+ * density (the conventions of hess2e_cart.c / hgp.c), Cartesian basis, by the
+ * generated kernels of grad_vrr_gen_*.c (gen_grad_vrr.py) for the quartets of
+ * l <= GGD_LMAX whose total l is in [gen_lmin, gen_lmax]: the unique shell
+ * quartets with q_ij q_kl times the J / K density bounds >= tol, the
+ * symmetrized density weights dd of the quartet (as hgp.c), the derivatives
+ * of the roles A, B, C from the kernel, D by translational invariance.
+ * grad (ngroup, natm, 3) +=.  Same signature as SOCVHFhgp_grad2e (mode 0).
+ * ------------------------------------------------------------------------ */
+#include "grad_vrr_gen.h"
+#define GG_MAXGROUP 4
+static int gen_grad_lmin = 0, gen_grad_lmax = 1000;
+void SOCVHFgen_grad_set_lrange(int lo, int hi) { gen_grad_lmin = lo; gen_grad_lmax = hi; }
+
+int SOCVHFgen_grad_takes(const int *bas, int nbas)
+{
+        int i;
+        for (i = 0; i < nbas; i++)
+                if (bas[i * BAS_SLOTS + ANG_OF] > GGD_LMAX || bas[i * BAS_SLOTS + NCTR_OF] > G_MAXCTR) return 0;
+        return 1;
+}
+
+static inline double dmax2g(double a, double b) { return a > b ? a : b; }
+
+void SOCVHFgen_grad2e(double *grad, int mode, int ngroup, double *jfac, double *kfac,
+                      double *dm, double *qcond, double *dcond, double tol, double prim_tol,
+                      int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env)
+{
+        if (mode != 0 || ngroup > GG_MAXGROUP || !SOCVHFgen_grad_takes(bas, nbas)) return;
+        const size_t nao = ao_loc[nbas];
+        const size_t nh1 = (size_t)natm * 3, nh = nh1 * ngroup;
+        const int npair = nbas * (nbas + 1) / 2;
+        GenCtx *cx = SOCVHFgen_ctx_build(atm, natm, bas, nbas, env);
+        double jw = 0, kw = 0;
+        int g, ib, np = 1, maxf = 0;
+        for (g = 0; g < ngroup; g++) {
+                jw = dmax2g(jw, fabs(jfac[g]) * 4);
+                kw = dmax2g(kw, fabs(kfac[g]) * 2);
+        }
+        for (ib = 0; ib < nbas; ib++) {
+                if (bas[ib * BAS_SLOTS + NPRIM_OF] > np) np = bas[ib * BAS_SLOTS + NPRIM_OF];
+                const int nf = ao_loc[ib + 1] - ao_loc[ib];
+                if (nf > maxf) maxf = nf;
+        }
+        const size_t maxf4 = (size_t)maxf * maxf * maxf * maxf;
+        const size_t c2 = (size_t)G_MAXCTR * G_MAXCTR;
+        const size_t nwk = (size_t)GGD_NT * np * np + c2 * GGD_NW + c2 * c2 * GGD_NW
+                         + (size_t)(4 * GGD_LMAX + 2) * np * np;
+#pragma omp parallel
+{
+        double *hloc = calloc(nh, sizeof(double));
+        double *dd = malloc(sizeof(double) * maxf4 * ngroup);
+        double *wk = malloc(sizeof(double) * nwk);
+        double sum[GG_MAXGROUP * 9];
+        int ij, kl, ish, jsh, ksh, lsh;
+#pragma omp for schedule(dynamic, 1)
+        for (ij = npair - 1; ij >= 0; ij--) {
+                shell_pair(ij, &ish, &jsh);
+                shell_pair(0, &ksh, &lsh);
+                for (kl = 0; kl <= ij; kl++, (lsh == ksh ? (ksh++, lsh = 0) : lsh++)) {
+                        const double q4 = qcond[ish * nbas + jsh] * qcond[ksh * nbas + lsh];
+                        const double dbound = jw * dcond[ish * nbas + jsh] * dcond[ksh * nbas + lsh]
+                                            + kw * dmax2g(dcond[ish * nbas + ksh] * dcond[jsh * nbas + lsh],
+                                                          dcond[ish * nbas + lsh] * dcond[jsh * nbas + ksh]);
+                        if (q4 * dbound < tol) continue;
+                        const int sh[4] = {ish, jsh, ksh, lsh};
+                        int l[4], nf[4], nctr[4], at[4], s;
+                        double fac = 1;
+                        for (s = 0; s < 4; s++) {
+                                const int *b = bas + sh[s] * BAS_SLOTS;
+                                l[s] = b[ANG_OF];
+                                nf[s] = (l[s] + 1) * (l[s] + 2) / 2;
+                                nctr[s] = b[NCTR_OF];
+                                at[s] = b[ATOM_OF];
+                                fac *= common_fac(l[s]);
+                        }
+                        const int L = l[0] + l[1] + l[2] + l[3];
+                        if (L < gen_grad_lmin || L > gen_grad_lmax || L > GGD_LSUM_MAX) continue;
+                        if (ish == jsh) fac *= .5;
+                        if (ksh == lsh) fac *= .5;
+                        if (ij == kl) fac *= .5;
+                        const GPair *B = cx->pair + ij, *K = cx->pair + kl;
+                        if (B->n == 0 || K->n == 0) continue;
+                        const int NI = nctr[0] * nf[0], NJ = nctr[1] * nf[1], NK = nctr[2] * nf[2], NL = nctr[3] * nf[3];
+                        const size_t nd = (size_t)NI * NJ * NK * NL;
+                        const size_t a0 = ao_loc[ish], b0 = ao_loc[jsh], c0 = ao_loc[ksh], e0 = ao_loc[lsh];
+                        int a, b, c, d;
+                        double ddmax = 0;
+                        for (g = 0; g < ngroup; g++) {
+                                double *ddg = dd + g * nd;
+                                const double jf = 4 * jfac[g] * fac, kf = kfac[g] * fac;
+                                for (a = 0; a < NI; a++)
+                                for (b = 0; b < NJ; b++) {
+                                        const double dab = jf * dm[(a0 + a) * nao + b0 + b];
+                                        const double *dA = dm + (a0 + a) * nao, *dB = dm + (b0 + b) * nao;
+                                        for (c = 0; c < NK; c++) {
+                                                const double dbc = dB[c0 + c], dac = dA[c0 + c];
+                                                const double *dC = dm + (c0 + c) * nao;
+                                                double *o = ddg + ((a * NJ + b) * NK + c) * NL;
+                                                for (d = 0; d < NL; d++) {
+                                                        o[d] = dab * dC[e0 + d] + kf * (dac * dB[e0 + d] + dA[e0 + d] * dbc);
+                                                        ddmax = dmax2g(ddmax, fabs(o[d]));
+                                                }
+                                        }
+                                }
+                        }
+                        if (ddmax == 0) continue;
+                        const int bs = B->li < B->lj, ks = K->li < K->lj;
+                        const int la = bs ? B->lj : B->li, lb = bs ? B->li : B->lj;
+                        const int lc = ks ? K->lj : K->li, ld = ks ? K->li : K->lj;
+                        const int pos[4] = {bs ? 1 : 0, bs ? 0 : 1, ks ? 3 : 2, ks ? 2 : 3};
+                        const size_t stp[4] = {(size_t)NJ * NK * NL, (size_t)NK * NL, (size_t)NL, 1};
+                        const size_t ds[4] = {stp[pos[0]], stp[pos[1]], stp[pos[2]], stp[pos[3]]};
+                        /* derivative factors: 2 alpha and the extra power of the raised shell */
+                        const double der = (1 + 2 * B->amax) * (1 + 2 * K->amax);
+                        const double cut = prim_tol / (TWO_PI52 * B->bmax * ddmax * B->nc * K->nc * der);
+                        memset(sum, 0, sizeof(double) * ngroup * 9);
+                        const ggd_fn kern = ggd_table[la][lb][lc][ld];
+                        if (kern == NULL || !kern(sum, dd, ngroup, nd, ds, pos, B, bs, K, ks, cut, cx->tab, wk))
+                                continue;
+                        for (g = 0; g < ngroup; g++) {
+                                double *hg = hloc + g * nh1;
+                                int x;
+                                for (x = 0; x < 3; x++) {
+                                        const double gA = TWO_PI52 * sum[g * 9 + x * 3];
+                                        const double gB = TWO_PI52 * sum[g * 9 + x * 3 + 1];
+                                        const double gC = TWO_PI52 * sum[g * 9 + x * 3 + 2];
+                                        hg[at[pos[0]] * 3 + x] += gA;
+                                        hg[at[pos[1]] * 3 + x] += gB;
+                                        hg[at[pos[2]] * 3 + x] += gC;
+                                        hg[at[pos[3]] * 3 + x] -= gA + gB + gC;
+                                }
+                        }
+                }
+        }
+#pragma omp critical
+        {
+                size_t n;
+                for (n = 0; n < nh; n++) grad[n] += hloc[n];
+        }
+        free(hloc);
+        free(dd);
+        free(wk);
+}
+        SOCVHFgen_ctx_free(cx);
 }
