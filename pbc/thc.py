@@ -495,7 +495,7 @@ class THCExchange:
                     self.timings['rsdf'], self.timings['local fit'], self.timings['grid'], self.timings['pivots']))
 
     # ---- THC factors for N_mu points
-    def _build_thc_stream(self, pts, cut=1e-13, nb=None, gchunk=None, rchunk=None):
+    def _build_thc_stream(self, pts, cut=None, nb=None, gchunk=None, rchunk=None):
         '''V, A, A_lr and the LR rows Xi of the ISDF vectors without storing xi (N_mu x ngrid). Blocks b of mu:
         xi_b = G+[b] Gc with the Gram columns Gc[P, r] = (phi(r_P) . phi(r))^2 regenerated in grid chunks, its FFT
         gives A[:, b], A_lr[:, b] and Xi[:, b] as in the full build, and V[b] = int (v * xi_b) Gc^T G+ (one G+ on
@@ -505,6 +505,8 @@ class THCExchange:
         phi = self.phi
         PP = phi[pts]
         nmu = len(pts)
+        if cut is None:                                               # relative eigenvalue cut of the Gram pseudo-inverse
+            cut = getattr(self, 'isdf_cut', 1e-10)                    # 1e-13 amplifies BLAS rounding (EuOCl: 7e-5 Eh)
         e, v = scipy.linalg.eigh((PP @ PP.T) ** 2)
         keep = e > cut * e.max()
         Ginv = (v[:, keep] / e[keep]) @ v[:, keep].T
@@ -654,11 +656,11 @@ class THCExchange:
                 pts, crank = candidate_cholesky_points(self.phi, pts, nmu)
                 self.timings['candidate Cholesky (%d candidates, rank %d)' % (ncand, crank)] = time.time() - t
             t = time.time()
-            xi, rank = isdf_xi_ls(self.phi, pts)
+            xi, rank = isdf_xi_ls(self.phi, pts, cut=getattr(self, 'isdf_cut', 1e-10))
             nmu = len(pts)
         elif self.selector == 'coarse':
             pts = self.piv[:nmu]
-            xi, rank = isdf_xi_ls(self.phi, pts)
+            xi, rank = isdf_xi_ls(self.phi, pts, cut=getattr(self, 'isdf_cut', 1e-10))
         else:
             pts = self.piv[:nmu]
             xi, rank = isdf_xi(self.L, self.piv, nmu)
@@ -1402,6 +1404,8 @@ class THCJK:
         self.th.dense_c = not self.local_rcut                          # route 1: the sparse C only
         self.th.gapw_opts = getattr(self, 'gapw_opts', {})
         self.th.stream = getattr(self, 'stream', False)
+        if hasattr(self, 'isdf_cut'):
+            self.th.isdf_cut = self.isdf_cut
         self.th.stream_gb = getattr(self, 'stream_gb', None)       # GB; None: from the memory budget
         self.th.stream_max_blocks = getattr(self, 'stream_max_blocks', 1 << 30)
         self.th.piv_file = getattr(self, 'piv_file', None)
@@ -1438,6 +1442,12 @@ class THCJK:
         '''Spinor J and K for the density sum_i n_i |i><i| (spinor MOs, n_i >= 0) by occ-RI (no G = 0 terms).'''
         if not self._built:
             self.build()
+        comm = getattr(self.th, 'comm', None)
+        if comm is not None:                                          # every rank contracts rank 0's orbitals
+            mo_coeff = np.array(mo_coeff, dtype=complex, order='C')    # writable copies (Bcast fills them)
+            mo_occ = np.array(np.broadcast_to(np.asarray(mo_occ, dtype=float), (mo_coeff.shape[1],)), order='C')
+            comm.Bcast(mo_coeff, root=0)
+            comm.Bcast(mo_occ, root=0)
         nao, T = self.cell.nao, self.T
         if getattr(self, '_c2', None) is None:
             self._c2 = np.vstack(mol.sph2spinor_coeff())              # (2 nao, n2c)
@@ -1482,6 +1492,10 @@ class THCJK:
         if not self._built:
             self.build()
         dm = np.asarray(dm)
+        comm = getattr(self.th, 'comm', None)
+        if comm is not None:                                          # every rank contracts rank 0's density
+            dm = np.array(dm, dtype=np.result_type(dm, float), order='C')
+            comm.Bcast(dm, root=0)
         nao = self.cell.nao
         dms = dm.reshape(-1, nao, nao)
         T = self.T

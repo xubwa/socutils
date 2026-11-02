@@ -1,7 +1,7 @@
 '''THC route-1 total energy at a fixed density (minao guess) for several omega: exact Coulomb does not depend on omega,
 so the spread measures the omega dependence of the local fit / THC error (for cells where SCF energies are not
 comparable, e.g. open 4f shells).  usage: omega_fixed_dm.py CIF BASIS_PY OMEGA[:RCUT[:far]] ...   (RCUT Angstrom, default 6; far: far-field CX fit)'''
-import sys, time, runpy, numpy as np
+import os, sys, time, runpy, numpy as np
 from pyscf import gto
 from socutils.pbc.bench import cells
 from socutils.pbc.bench.auxgen_util import auxgen_from_basis
@@ -21,12 +21,14 @@ for arg in sys.argv[3:]:
     t = time.time()
     jk = THCJK(cell, aux, alpha_c=4., nmu_factor=16., nuc_zeta=spinor_scf.nuclear_zeta(cell), omega=om, local_rcut=rc)
     jk.stream = True
-    jk.far_fit = far                                           # explicit: the tag ':far' switches it on
+    jk.far_fit = far
+    if os.environ.get('ISDF_CUT'):
+        jk.isdf_cut = float(os.environ['ISDF_CUT'])                                           # explicit: the tag ':far' switches it on
     jk.build()
     mf = split_direct.periodic(spinor_hf.SpinorSCF(cell), jk)
     if dm is None:
         dm = mf.get_init_guess()
     vhf = mf.get_veff(cell, dm)
     e = mf.energy_tot(dm, h1e=mf.get_hcore(), vhf=vhf)
-    print('omega %.2f r_cut %.1f far %s: E(dm) = %.10f, LR rows %d, build+E %.0f s' % (om, rc, far, e, jk.th.Llr_cx.shape[0], time.time() - t),
+    print('ISDF cut %s, %s threads, omega %.2f r_cut %.1f far %s: E(dm) = %.10f, LR rows %d, build+E %.0f s' % (os.environ.get('ISDF_CUT', '1e-13'), os.environ.get('OMP_NUM_THREADS'), om, rc, far, e, jk.th.Llr_cx.shape[0], time.time() - t),
           flush=True)
