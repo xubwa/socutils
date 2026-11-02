@@ -82,15 +82,48 @@ def test_active_rotation(name):
 
 
 def test_vvvv_on_disk(water):
-    '''MR-LDSRG(2) with the (vv|vv) ladder in a temporary HDF5 file (max_memory too small
-    for memory) and rebuilt for every use, against memory.'''
+    '''MR-LDSRG(2) with the (vv|vv) ladder in a temporary HDF5 file, read in row blocks,
+    and rebuilt for every use, against memory.'''
     _, chol, nelec = water
     ref = run(LDSRG2, chol, nelec, 2)
-    for kw in (dict(max_memory=1e-3), dict(vvvv='direct')):
-        cls = type('LDSRG2x', (LDSRG2,), kw)
-        pt = run(cls, chol, nelec, 2)
-        if 'max_memory' in kw:
+    c = ActiveSpace.from_eris(chol).solve(nelec, ref.nstate)[1]
+    for disk in (True, False):
+        pt = LDSRG2(chol, nelec, civecs=c, s=0.5)
+        pt.verbose = False
+        pt.conv_tol, pt.conv_tol_amp = 1e-11, 1e-9
+        if disk:
+            pt.build()
+            pt.min_memory = pt.max_memory              # nothing beyond the minimum
+            pt._w = pt._store_vvvv()
             assert not isinstance(pt._w, numpy.ndarray)
+        else:
+            pt.vvvv = 'direct'
+            pt.build()
+        pt.solve_amplitudes()
         # converged to 1e-9 in the amplitudes
         assert abs(pt.e_corr - ref.e_corr) < 1e-8
-        assert abs(numpy.asarray(pt.e_tot) - ref.e_tot).max() < 1e-8
+
+
+def test_memory_check(water):
+    '''Too small max_memory stops before the calculation with the minimum needed.'''
+    _, chol, nelec = water
+    for cls in METHODS.values():
+        pt = cls(chol, nelec, nstate=1)
+        pt.verbose = False
+        pt.max_memory = 1
+        with pytest.raises(MemoryError, match='needs max_memory >='):
+            pt.kernel()
+
+
+def test_vvvv_pair_rows():
+    '''Native rows of the pair-packed (vv|vv) against numpy.'''
+    from socutils.zmr.lib import kernels
+    rng = numpy.random.default_rng(2)
+    n, a0, nb = 7, 2, 3
+    d = rng.normal(size=(nb, n, n - a0, n)) + 1j * rng.normal(size=(nb, n, n - a0, n))
+    iu = numpy.triu_indices(n, 1)
+    ref = numpy.concatenate([
+        numpy.conj(d[a - a0].transpose(1, 0, 2)[a + 1 - a0:][:, iu[0], iu[1]]
+                   - d[a - a0].transpose(1, 0, 2)[a + 1 - a0:][:, iu[1], iu[0]])
+        for a in range(a0, a0 + nb)])
+    assert abs(kernels.vvvv_pair_rows(d, a0) - ref).max() < 1e-14

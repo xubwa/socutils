@@ -616,6 +616,30 @@ def pair_gather(a, first):
     return out
 
 
+def vvvv_pair_rows(d, a0):
+    '''w[row(a, b), p(r, s)] = conj(d[a - a0, r, b - a0, s] - d[a - a0, s, b - a0, r])
+    for b > a and the pairs r < s (numpy.triu_indices order), rows in the order of (a, b):
+    d (nb, n, n - a0, n), the rows of the pair-packed (vv|vv) of zmr.dsrg.'''
+    nb, n = d.shape[0], d.shape[1]
+    nrow = sum(n - a - 1 for a in range(a0, a0 + nb))
+    np_ = n * (n - 1) // 2
+    z = _lib.zmr()
+    if z is None or not hasattr(z, 'zmr_vvvv_pair_rows') or not _plain(d):
+        iu = numpy.triu_indices(n, 1)
+        w = numpy.empty((nrow, np_), dtype=_c16)
+        pos = 0
+        for a in range(a0, a0 + nb):
+            x = d[a - a0].transpose(1, 0, 2)[a + 1 - a0:]
+            m = n - a - 1
+            numpy.conj(x[:, iu[0], iu[1]] - x[:, iu[1], iu[0]], out=w[pos:pos + m])
+            pos += m
+        return w
+    w = numpy.empty((nrow, np_), dtype=_c16)
+    z.zmr_vvvv_pair_rows(ctypes.c_int64(nb), ctypes.c_int64(n), ctypes.c_int64(a0),
+                         _p(d), _p(w))
+    return w
+
+
 def pair_scatter(a, axis, n):
     '''The antisymmetric array whose pairs i < j along `axis` are a: the
     axis becomes two axes of dimension n.'''

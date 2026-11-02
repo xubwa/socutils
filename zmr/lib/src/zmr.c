@@ -2474,6 +2474,41 @@ void zmr_pair_gather(int64_t nl, int64_t n, int64_t nt,
         free(flat);
 }
 
+/* Rows of the pair-packed (vv|vv) of zmr.dsrg: for a = a0 .. a0 + nb - 1 and b > a,
+ * w[row(a, b), p(r, s)] = conj(d[a - a0, r, b - a0, s] - d[a - a0, s, b - a0, r]) for the
+ * pairs r < s, rows in the order of (a, b); d (nb, n, nr, n) with nr = n - a0. */
+void zmr_vvvv_pair_rows(int64_t nb, int64_t n, int64_t a0, const double complex *d,
+                        double complex *w)
+{
+        const int64_t nr = n - a0;
+        const int64_t np = n * (n - 1) / 2;
+        int64_t nrow = 0;
+        for (int64_t a = a0; a < a0 + nb; a++) nrow += n - a - 1;
+        if (nrow * np == 0) return;
+        int64_t *ra = malloc(sizeof(int64_t) * nrow);
+        int64_t *rb = malloc(sizeof(int64_t) * nrow);
+        int64_t q = 0;
+        for (int64_t a = a0; a < a0 + nb; a++)
+                for (int64_t b = a + 1; b < n; b++) {
+                        ra[q] = a - a0;
+                        rb[q] = b - a0;
+                        q++;
+                }
+#pragma omp parallel for schedule(static) num_threads(threads_for((double)nrow * np * 2))
+        for (int64_t row = 0; row < nrow; row++) {
+                const double complex *x = d + ra[row] * n * nr * n + rb[row] * n;
+                double complex *out = w + row * np;
+                int64_t p = 0;
+                for (int64_t r = 0; r < n; r++) {
+                        const double complex *xr = x + r * nr * n;
+                        for (int64_t s = r + 1; s < n; s++)
+                                out[p++] = conj(xr[s] - x[s * nr * n + r]);
+                }
+        }
+        free(ra);
+        free(rb);
+}
+
 /* The antisymmetric array: dst[l, i, j, t] = src[l, p, t], dst[l, j, i, t] =
  * -src[l, p, t], zero on the diagonal; dst (nl, n, n, nt) is overwritten. */
 void zmr_pair_scatter(int64_t nl, int64_t n, int64_t nt,

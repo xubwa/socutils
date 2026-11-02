@@ -71,18 +71,6 @@ def cumulants(act, civecs, nelec, weights=None, max_order=3):
     return g1, l2, l3
 
 
-class _ConjB(dict):
-    """Conjugated three-index blocks of eris, read when first used."""
-
-    def __init__(self, eris):
-        super().__init__()
-        self.eris = eris
-
-    def __missing__(self, lab):
-        self[lab] = b = numpy.conj(self.eris.cd_block(lab))
-        return b
-
-
 class LDSRG2:
     '''MR-LDSRG(2) with reference relaxation for the model states civecs.
 
@@ -145,6 +133,36 @@ class LDSRG2:
     def log(self, text):
         if self.verbose:
             print('LDSRG2 ' + text, flush=True)
+
+    # arrays of the size of T2 held at the same time, and v^3 blocks of the smallest batch
+    # (memory_estimate)
+    mem_t2 = 8.0
+    mem_v3 = 1.5
+
+    read_memory = 200.0                # MB of three-index integrals read at a time, at least
+
+    def memory_estimate(self, naux):
+        '''MB the calculation needs beyond what is in use after the semicanonicalization:
+        mem_t2 arrays of the size of T2, mem_v3 blocks of v^3 (the smallest batch), the
+        largest three-index block while it is written to disk, the read buffer, the
+        integral blocks with at most two virtual indices (cached), 10 % for the rest.'''
+        sp = self.eris.spaces
+        nh, npart = sp.ncore + sp.nact, sp.nact + sp.nvirt
+        t2 = 16e-6 * nh**2 * npart**2
+        return 1.1 * (self.mem_t2 * t2 + self.mem_v3 * 16e-6 * sp.nvirt**3
+                      + 16e-6 * naux * sp.nvirt**2 + self.read_memory
+                      + self._cached_blocks(naux))
+
+    def _cached_blocks(self, naux):
+        '''MB of the integral blocks with at most two virtual indices (one placement each),
+        the working set of the cache.'''
+        if not naux:
+            return 0.0
+        n = {'c': self.eris.spaces.ncore, 'a': self.eris.spaces.nact,
+             'v': self.eris.spaces.nvirt}
+        labs = {cm.hermitian_canonical(''.join(x))[0] for x in product('cav', repeat=4)}
+        return sum(16e-6 * n[l[0]] * n[l[1]] * n[l[2]] * n[l[3]]
+                   for l in labs if l.count('v') <= 2)
 
     def _available(self, fraction=0.5):
         '''MB for a batch: fraction of max_memory less what is in use (at least 100).'''
@@ -213,10 +231,21 @@ class LDSRG2:
             dv = dv.transpose(0, 2, 1, 3)
             extra['aaaa'] = numpy.conj(dv - dv.transpose(0, 1, 3, 2))
         self._w = None
-        if getattr(sc, 'factorized', False):
-            # three-index integrals, conjugated: V[pq, rs] = conj(<pq||rs>)
-            self.V = cm.BareV(_ConjB(sc), dense_vvvv=not self.nivo, extra=extra,
-                              cache_memory=0.2 * self.max_memory)
+        factorized = getattr(sc, 'factorized', False)
+        naux = sc.cd_block('cc').shape[0] if factorized else 0
+        self.min_memory = lib.current_memory()[0] + self.memory_estimate(naux)
+        self.log('memory: at least %.0f MB needed (%.0f MB in use), max_memory %.0f MB'
+                 % (self.min_memory, lib.current_memory()[0], self.max_memory))
+        if self.max_memory < self.min_memory:
+            raise MemoryError('%s needs max_memory >= %.0f MB (max_memory = %.0f MB)'
+                              % (type(self).__name__, self.min_memory, self.max_memory))
+        if factorized:
+            # three-index integrals on disk (conjugated when read: V[pq, rs] = conj(<pq||rs>)); the
+            # cache of integral blocks gets half of the memory beyond the minimum
+            spare = self.max_memory - self.min_memory
+            self.V = cm.BareV(cm.ThreeIndexFile(sc), dense_vvvv=not self.nivo, extra=extra,
+                              cache_memory=self._cached_blocks(naux) + 0.5 * spare,
+                              read_memory=max(self.read_memory, min(4000.0, 0.1 * spare)))
             if self.nivo and self.vvvv and sp.nvirt > 1:
                 self._w = self._store_vvvv() if self.vvvv == 'stored' else 'direct'
         else:
@@ -266,13 +295,13 @@ class LDSRG2:
 
     def _store_vvvv(self):
         '''The pair-packed V[ab, rs] (a < b, r < s), in memory if it takes less than
-        half of max_memory, else in a temporary HDF5 file.'''
+        half of the memory beyond the minimum, else in a temporary HDF5 file.'''
         t0 = time.time()
         nv = self.dims['v']
         npair = nv * (nv - 1) // 2
         size = 16.0 * npair**2 / 1e6
         batch = cm.BareV.vvvv_batch(nv, self._available())
-        if size < 0.5 * self.max_memory:
+        if size < 0.5 * (self.max_memory - self.min_memory):
             w = numpy.empty((npair, npair), dtype=complex)
             where = 'memory'
         else:

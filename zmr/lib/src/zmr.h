@@ -167,5 +167,7 @@ void zmr_pair_gather(int64_t nl, int64_t n, int64_t nt,
                      const double complex *src, double complex *dst);
 void zmr_pair_scatter(int64_t nl, int64_t n, int64_t nt,
                       const double complex *src, double complex *dst);
+void zmr_vvvv_pair_rows(int64_t nb, int64_t n, int64_t a0, const double complex *d,
+                        double complex *w);
 
 #endif

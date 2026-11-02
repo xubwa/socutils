@@ -24,6 +24,7 @@ import collections
 import time
 
 import numpy
+from pyscf import lib
 
 from itertools import product
 
@@ -265,19 +266,64 @@ def materialize(x):
     return sign * blk
 
 
+class ThreeIndexFile:
+    """Three-index integrals B[P, p, q] of eris in a temporary HDF5 file, read in chunks
+    of P, in the conjugated form of this module: read(pq) = conj(B[pq]).  Only the pairs
+    of spaces in the order c, a, v are stored, as they are; B[qp] = conj(B[pq])^T (real
+    Cholesky vectors of a symmetric metric), so the other pairs are transposed views."""
+
+    def __init__(self, eris, spaces="cav"):
+        self.file = lib.H5TmpFile()
+        for x, y in product(spaces, repeat=2):
+            if _RANK[x] <= _RANK[y]:
+                self.file.create_dataset(x + y, data=eris.cd_block(x + y))
+                # the copy kept by eris is not needed
+                getattr(eris, "cd", {}).pop(x + y, None)
+        self.naux = self.file["cc"].shape[0]
+
+    def shape(self, lab):
+        x, y = lab
+        n = self.file[x + x].shape[1], self.file[y + y].shape[1]
+        return (self.naux,) + n
+
+    def read(self, lab, p0, p1, cols=slice(None)):
+        """conj(B[lab])[p0:p1, :, cols]"""
+        x, y = lab
+        if _RANK[x] <= _RANK[y]:
+            return numpy.conj(self.file[lab][p0:p1, :, cols])
+        # conj(B[yx]^*T) = B[xy]^T: no conjugation
+        return self.file[y + x][p0:p1, cols, :].transpose(0, 2, 1)
+
+    def __getitem__(self, lab):
+        return self.read(lab, 0, self.naux)
+
+    def step(self, nbytes_per_p, max_memory):
+        return max(1, min(self.naux, int(max_memory * 1e6 / max(nbytes_per_p, 1))))
+
+    def chunks(self, labs, max_memory):
+        """{lab: conj(B[lab])[P0:P1]} for consecutive chunks of P within max_memory (MB)."""
+        per_p = sum(16.0 * numpy.prod(self.shape(lab)[1:]) for lab in labs)
+        step = self.step(per_p, max_memory)
+        for p0 in range(0, self.naux, step):
+            yield {lab: self.read(lab, p0, p0 + step) for lab in labs}
+
+
 class BareV:
     """Two-electron integrals in the storage convention, block by block from the
     three-index tensors: V[pq, rs] = (pr|qs) - (ps|qr) with conjugated coefficients.
 
-    Only one placement of every block is built (the others are views with a sign and a
+    B: ThreeIndexFile.  Only one placement of every block is built (the others are views with a sign and a
     complex conjugation, see hermitian_canonical); the most recently used blocks are kept
     up to cache_memory (MB) and the others rebuilt when asked for.  The block with four
     virtual indices is only built when `dense_vvvv` is set (small systems); otherwise it
     is None here and the solver uses the pair-packed rows of `vvvv_rows`.
     """
 
-    def __init__(self, B, dense_vvvv=False, cache_memory=4000, extra=None):
+    def __init__(self, B, dense_vvvv=False, cache_memory=4000, extra=None, read_memory=500):
         self.B = B
+        # MB of three-index integrals read at a time
+        self.read_memory = read_memory
+        self.timings = collections.Counter()
         # blocks added to the factorized integrals (e.g. a correction of 'aaaa'), by
         # canonical label
         self.extra = extra or {}
@@ -290,14 +336,17 @@ class BareV:
 
     def build(self, lab):
         p, q, r, s = lab
-        B = self.B
-        v = numpy.einsum("Ppr,Pqs->pqrs", B[p + r], B[q + s], optimize=True)
+        exchange = not (r == s or p == q)
+        labs = {p + r, q + s} | ({p + s, q + r} if exchange else set())
+        v = 0.0
+        for b in self.B.chunks(labs, self.read_memory):
+            v = v + numpy.einsum("Ppr,Pqs->pqrs", b[p + r], b[q + s], optimize=True)
+            if exchange:
+                v -= numpy.einsum("Pps,Pqr->pqrs", b[p + s], b[q + r], optimize=True)
         if r == s:
             v -= v.swapaxes(2, 3)
         elif p == q:
             v -= v.swapaxes(0, 1)
-        else:
-            v -= numpy.einsum("Pps,Pqr->pqrs", B[p + s], B[q + r], optimize=True)
         if lab in self.extra:
             v += self.extra[lab]
         return v
@@ -333,46 +382,61 @@ class BareV:
         """V[ab, ek] (a, b, e virtual, k in the space x) in chunks of k within max_memory
         (MB, the chunk and four copies of its size for the caller): yields (k0, k1,
         block[a, b, e, k])."""
-        Bvv, Bvx = self.B["vv"], self.B["v" + x]
-        naux, nv, _ = Bvv.shape
-        nx = Bvx.shape[2]
-        left = numpy.ascontiguousarray(Bvv.reshape(naux, nv * nv).T)          # (a e), P
+        B = self.B
+        naux, nv, nx = B.shape("v" + x)
+        bvv = B.file["vv"]
         step = max(1, min(nx, int(max_memory * 1e6 / (5 * 16.0 * nv**3))))
+        pstep = self.B.step(16.0 * nv * (nv + step), self.read_memory)
         for k0 in range(0, nx, step):
             k1 = min(nx, k0 + step)
-            right = numpy.ascontiguousarray(Bvx[:, :, k0:k1]).reshape(naux, -1)  # P, (b k)
-            d = la.gemm(left, right).reshape(nv, nv, nv, k1 - k0)             # a, e, b, k
+            d = numpy.zeros((nv * nv, nv * (k1 - k0)), dtype=complex)
+            for p0 in range(0, naux, pstep):
+                t = time.time()
+                left = bvv[p0:p0 + pstep].reshape(-1, nv * nv)            # P, (a e), unconjugated
+                right = numpy.ascontiguousarray(B.read("v" + x, p0, p0 + pstep, slice(k0, k1)))
+                right = right.reshape(left.shape[0], -1)                  # P, (b k)
+                self.timings["read"] += time.time() - t
+                t = time.time()
+                la.gemm(left, right, opa="C", out=d, beta=1.0)            # conj(B[vv])^T B[vx]
+                self.timings["vvvx gemm"] += time.time() - t
+            t = time.time()
+            d = d.reshape(nv, nv, nv, k1 - k0)                                    # a, e, b, k
             # V[ab, ek] = (ae|bk) - (ak|be) = d[a, e, b, k] - d[b, e, a, k]
             v = kernels.transposed(d, (0, 2, 1, 3))
             kernels.transpose_add(v, d, (2, 0, 1, 3), alpha=-1.0)
             del d
+            self.timings["vvvx antisym"] += time.time() - t
             yield k0, k1, v
 
     def vvvv_rows(self, batch=8):
         """V[ab, rs] for a < b, r < s, built from the three-index tensors: yields (first
         row, rows) with the rows of `batch` values of a at a time (pairs in the order of
         numpy.triu_indices)."""
-        Bvv = self.B["vv"]
-        naux, nv, _ = Bvv.shape
-        iu = numpy.triu_indices(nv, 1)
-        right = numpy.ascontiguousarray(Bvv.reshape(naux, nv * nv))
-        left = numpy.ascontiguousarray(Bvv.transpose(1, 2, 0))  # a, r, P
+        naux, nv, _ = self.B.shape("vv")
+        bvv = self.B.file["vv"]                    # unconjugated
+        tim = self.timings
         row = 0
         for a0 in range(0, nv - 1, batch):
             a1 = min(a0 + batch, nv - 1)
-            # d[a, r, b, s] = sum_P B[P, a, r] B[P, b, s]
-            d = la.gemm(left[a0:a1].reshape(-1, naux), right).reshape(a1 - a0, nv, nv, nv)
-            n = sum(nv - a - 1 for a in range(a0, a1))
-            w = numpy.empty((n, iu[0].size), dtype=complex)
-            pos = 0
-            for a in range(a0, a1):
-                x = d[a - a0].transpose(1, 0, 2)[a + 1:]  # b, r, s with b > a
-                m = nv - a - 1
-                w[pos:pos + m] = x[:, iu[0], iu[1]] - x[:, iu[1], iu[0]]
-                pos += m
+            nb, nr = a1 - a0, nv - a0
+            # D[a, r, b, s] = sum_P B[P, a, r] B[P, b, s] for b >= a0 only (b > a is
+            # kept), one pass over B[vv]; V = conj(D - D^T(r, s))
+            pstep = self.B.step(16.0 * nr * nv, self.read_memory)
+            d = numpy.zeros((nb * nv, nr * nv), dtype=complex)
+            for p0 in range(0, naux, pstep):
+                t = time.time()
+                x = bvv[p0:p0 + pstep, a0:]
+                tim["read"] += time.time() - t
+                t = time.time()
+                la.gemm(x[:, :nb].reshape(x.shape[0], -1), x.reshape(x.shape[0], -1),
+                        opa="T", out=d, beta=1.0)
+                tim["vvvv gemm"] += time.time() - t
+            t = time.time()
+            w = kernels.vvvv_pair_rows(d.reshape(nb, nv, nr, nv), a0)
             del d
+            tim["vvvv gather"] += time.time() - t
             yield row, w
-            row += n
+            row += len(w)
 
     @staticmethod
     def vvvv_batch(nv, max_memory):

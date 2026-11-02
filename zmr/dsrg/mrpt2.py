@@ -75,6 +75,8 @@ class DSRGMRPT2(LDSRG2):
     '''
 
     vvvv = None
+    mem_t2 = 1.5
+    mem_v3 = 0.0
     relax = True
 
     def log(self, text):
@@ -127,7 +129,7 @@ class DSRGMRPT2(LDSRG2):
             v = cm.materialize(self.V.get('ccvv'))
             r, ex = LDSRG2._rden(self, 'ccvv')
             return 0.25 * float(numpy.sum(abs(v)**2 * (1.0 + ex) * r))
-        b = self.V.B['cv']
+        b = self.V.B['cv'][()]                        # (naux, nc, nv), read whole
         naux = b.shape[0]
         right = numpy.ascontiguousarray(b.reshape(naux, nc * nv))
         ec, ev = self.eps['c'], self.eps['v']

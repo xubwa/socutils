@@ -79,6 +79,8 @@ class DSRGMRPT3(DSRGMRPT2):
     '''
 
     vvvv = 'direct'
+    mem_t2 = 3.5
+    mem_v3 = 5.0
 
     def log(self, text):
         if self.verbose:
@@ -262,6 +264,9 @@ class DSRGMRPT3(DSRGMRPT2):
         if isinstance(self.V, cm.BareV):
             self.V.skip_three_virtual = False
         self._stage('[H1, A1]', t)
+        if getattr(self.V, 'timings', None):
+            self.log('three-index parts: ' + ', '.join(
+                '%s %.1f s' % kv for kv in sorted(self.V.timings.items())))
         rebuilt = {k: n for k, n in getattr(self.V, 'nbuild', {}).items() if n > 1}
         if rebuilt:
             self.log('integral blocks built more than once (cache_memory %.0f MB): %s'
