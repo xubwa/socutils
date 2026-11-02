@@ -26,8 +26,8 @@ ENGINES = {0: 'libcint', 1: 'jk_ssss'}
 
 
 def engines_for(cls):
-    '''jk_ssss.c: (ss|ss) and the quartets with one p shell'''
-    return [0, 1] if max(cls) <= 1 and sum(cls) <= 1 else [0]
+    '''jk_ssss.c: s / p quartets with at most two p shells'''
+    return [0, 1] if max(cls) <= 1 and sum(cls) <= 2 else [0]
 
 
 def run(mol, cls, engine, tol):

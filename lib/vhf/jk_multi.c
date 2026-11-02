@@ -21,7 +21,7 @@ int int2e_sph(double *out, int *dims, int *shls, int *atm, int natm,
 size_t GTOmax_cache_size(int (*intor)(), int *shls_slice, int ncenter,
                          int *atm, int natm, int *bas, int nbas, double *env);
 
-/* jk_ssss.c: (ss|ss) quartets without libcint */
+/* jk_ssss.c: s / p quartets with at most two p shells without libcint */
 typedef struct SSCtx SSCtx;
 SSCtx *SOCVHFss_ctx_build(int *atm, int natm, int *bas, int nbas, double *env);
 void SOCVHFss_ctx_free(SSCtx *cx);
@@ -29,7 +29,7 @@ size_t SOCVHFss_wksize(int *bas, int nbas);
 int SOCVHFss_int2e(double *out, const int *shls, const SSCtx *cx, double dmax, double prim_tol, double *wk);
 int SOCVHFss_takes(const int *shls, const int *bas);
 
-/* SOCVHFjk_multi_sym: (ss|ss) and one-p quartets by jk_ssss.c (1, default) or libcint (0) */
+/* SOCVHFjk_multi_sym: s / p quartets with at most two p shells by jk_ssss.c (1, default) or libcint (0) */
 static int jk_use_ssss = 1;
 void SOCVHFjk_set_ssss(int on) { jk_use_ssss = on; }
 
