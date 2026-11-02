@@ -69,6 +69,85 @@ artefact of that THC build, to recheck.
 478.1); do not use it.  The two YSO cells differ in structure and frame, so their W vectors are not
 comparable component by component.
 
+## Transition dipole d00 (7F0 -> 5D0)
+
+Operator and approximations (unlike W_NSM, not taken from CFOUR):
+* transition density of CASCI root 0 -> root 49 (the first state above the 49 7F_J states, ~20.5e3 cm-1),
+  active space only: T = C_cas gamma C_cas^H;
+* dipole `int1e_r_spinor` (r - R_Eu, no picture change) contracted with T over the AO blocks of the
+  atoms (with images) within rc of the active Eu: rc = 0 is the Eu block only (one-centre, like W_NSM),
+  rc = 2.6 / 2.9 / 3.5 A add the ligands.  r is not defined on Gamma-point AOs; this works because the
+  4f-4f transition density is local.  `q_trans` = the charge of T in the same region (an origin shift
+  Delta changes d by -q Delta); the global phase is removed as in the cluster `props_bypass.py`.
+
+| system | root 49 (cm-1) | \|d\| rc 0 | rc 2.6 A | rc 2.9 A | rc 3.5 A | \|q_trans\| rc 3.5 A |
+|---|---|---|---|---|---|---|
+| Eu:YSO `eu_yso_T10` (from `eu_yso_T10/d00_hf.npz`, computed by `d00_post.py`) | 20536.1 | 2.69e-4 | 4.04e-4 | 4.00e-4 | 3.97e-4 | -- |
+| Eu:YSO `yso_scan/prim` | 20495.7 | 3.02e-4 | 4.34e-4 | 4.11e-4 | 4.28e-4 | 6.6e-7 |
+| EuOCl primitive (`prim`) | 20431.4 | 8.29e-4 | 1.05e-3 | 1.05e-3 | 1.21e-3 | 7.2e-5 |
+| EuOCl sqrt2 x sqrt2 (`r2r2`) | 20500.8 | 6.83e-4 | 9.98e-4 | 9.98e-4 | 1.03e-3 | 1.9e-5 |
+| EuOCl 2x2x1 (`mix_221b`) | 20496.7 | 6.71e-4 | 9.37e-4 | 9.37e-4 | 9.33e-4 | 5.9e-6 |
+| EuOCl 2x2x2 (`mix_222`) | 20499.6 | 7.01e-4 | 9.59e-4 | 9.59e-4 | 9.24e-4 | 4.9e-6 |
+| EuCl3 | 20529.4 | 2.62e-4 | 3.82e-4 | 2.89e-4 | 2.88e-4 | 1.3e-6 |
+| EuBr3 | 20533.8 | 3.47e-4 | 4.58e-4 | 4.58e-4 | 3.15e-4 | 8.8e-8 |
+| Eu(NO3)3 | 20549.0 | 2.66e-4 | 3.23e-4 | 3.13e-4 | 3.20e-4 | 3.9e-7 |
+
+`eu_yso_T10` d (rc 2.9 A, cell frame) = (5.17e-5, -1.25e-4, 3.77e-4).  The ligand shells matter (rc 0 ->
+2.6 A: +30-50%).  Past the first shell d is stable within 2-4% for YSO and Eu(NO3)3.  In the EuOCl
+primitive cell it is still moving; EuBr3 jumps at 3.5 A.  Candidates for a cleaner d: larger rc, an X2C
+picture-change dipole, or a velocity-gauge (periodic) transition moment.
+
+## Code and file locations
+
+| what | where |
+|---|---|
+| W_NSM operator: read CFOUR, embed in the Eu block, trace | `pbc/atomic_prop.py`: `load_cfour_atom` (l. 19), `atomic_block_operator` (l. 45), `expectation` (l. 56) |
+| local dipole over an image cluster | `pbc/atomic_prop.py`: `image_cluster` (l. 61), `local_dipole` (l. 81), `real_axis` (l. 104) |
+| driver stages | `examples/14-periodic_dopant_casci.py`: W_NSM l. 397, d00 l. 413 |
+| CFOUR atomic integrals | `/scratch4/lcheng24/xwang405/zmcscf/Eu/aimp/basis_test/cfour_eu/ETB0T10/SOSFMO2C` (with `config.py`, `GENBAS`) |
+| per-run results | `<workdir>/wnsm_hf.npz` (w, w_core, dm), `<workdir>/d00_hf.npz` (root, gamma, d, rc_A, e_rel) |
+| d00 for a finished workdir | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/d00_post.py WORKDIR SYSTEM [--basis-py ...]` |
+
+## Full paths (all checked to exist on 2026-11-02)
+
+Root `P = /scratch4/lcheng24/xwang405/zmcscf/Eu/periodic`.  Every working directory holds `scf_hf.npz`,
+`cahf_hf.npz`, `cahf.log`, `casci_hf.npz` (with ci), `wnsm_hf.npz`, `d00_hf.npz`; some also hold
+`cahf_hf_partial.npz` or `cderi.h5`.
+
+| run | log | working directory | launch script |
+|---|---|---|---|
+| Eu:YSO bench cell | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/eu_yso_T10.log` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/eu_yso_T10/` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/run_T10.sh` |
+| Eu:YSO scan prim | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/yso_scan/prim.log` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/yso_scan/prim/` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/yso_scan/run.sbatch` |
+| EuOCl prim | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/prim.log` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/prim/` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/run.sbatch` |
+| EuOCl prim, mixed basis | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/prim_mixed.log` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/prim_mixed/` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/run_prim_mixed.sbatch` |
+| EuOCl prim, lr gspace + 3-index | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/prim_3ix.log` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/prim_3ix/` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/run_3ix.sbatch` |
+| EuOCl prim, lindep-scaled | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/prim_lds.log` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/prim_lds/` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/run_lds.sbatch` |
+| EuOCl prim, THC (Bloch) | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/prim_thc.log` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/prim_thc/` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/run_thc.sbatch` |
+| EuOCl prim, THC local fit | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/prim_thcloc.log` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/prim_thcloc/` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/run_thcloc.sbatch` |
+| EuOCl sqrt2 x sqrt2 x 1 | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/r2r2.log` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/r2r2/` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/run_r2r2.sbatch` |
+| EuOCl 2x2x1, mixed basis | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/mix_221b.log` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/mix_221b/` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/run_mix_221b.sbatch` |
+| EuOCl 2x2x2, mixed basis | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/mix_222.log` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/mix_222/` (guess from `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/mix_221/`) | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euocl/run_mix_222.sbatch` |
+| EuCl3 | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/eucl3/prim.log` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/eucl3/prim/` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/eucl3/run.sbatch` |
+| Eu(NO3)3 | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euno3/prim.log` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euno3/prim/` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/euno3/run.sbatch` |
+| EuBr3 | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/eubr3/prim.log` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/eubr3/prim/` | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/eubr3/run.sbatch` |
+
+Inputs:
+
+| input | full path |
+|---|---|
+| EuOCl CIF | `/scratch4/lcheng24/xwang405/zmcscf/Eu/aimp/struct/oxyhalides/COD_1542170.cif` |
+| EuCl3 CIF + relaxed xyz | `/scratch4/lcheng24/xwang405/zmcscf/Eu/aimp/refs/COD_1573333.cif`, `/scratch4/lcheng24/xwang405/zmcscf/Eu/aimp/periodic_cp2k/eucl3_hopt_r2scan/eucl3_r2scan_final.xyz` |
+| Eu(NO3)3 CIF + relaxed xyz | `/scratch4/lcheng24/xwang405/zmcscf/Eu/aimp/refs/COD_2200124.cif`, `/scratch4/lcheng24/xwang405/zmcscf/Eu/aimp/periodic_cp2k/euno3_hopt_r2scan/final.xyz` |
+| EuBr3 CIF + relaxed xyz | `/scratch4/lcheng24/xwang405/zmcscf/Eu/aimp/refs/COD_2218477.cif`, `/scratch4/lcheng24/xwang405/zmcscf/Eu/aimp/periodic_cp2k/eubr3_hopt_r2scan/final.xyz` |
+| Eu:YSO scan cell | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/yso_scan/eu_yso_scan_prim.cif` |
+| Eu:YSO bench cell | built in code: `SYSTEMS['eu_yso']` in `pbc/bench/cells.py` (l. 219) |
+| basis files | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/basis_T10.py`, `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/basis_rules.py`, `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/basis_mixed.py` |
+| atomic 4f reference (`--open-ref`) | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/ref4f_ETB0T10.npz` |
+| CFOUR NSM operator (`--nsm-dir`) | `/scratch4/lcheng24/xwang405/zmcscf/Eu/aimp/basis_test/cfour_eu/ETB0T10/SOSFMO2C` (dir also has `config.py`, `GENBAS`) |
+| d00 post-processing | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/d00_post.py` |
+| driver | `/home/xwang405/apps/socutils-git-pbc-env/socutils/examples/14-periodic_dopant_casci.py` |
+| operator code | `/home/xwang405/apps/socutils-git-pbc-env/socutils/pbc/atomic_prop.py` |
+
 ## Observations
 
 * **W is dominated by the core.** The active (4f) part is +1.5 to -25 against \|W\| ~ 3500-8600 in EuOCl.
