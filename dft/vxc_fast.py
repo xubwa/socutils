@@ -135,7 +135,7 @@ def nr_rks(ni, mol, grids, xc_code, dms, relativity=0, hermi=1, max_memory=2000,
     return nelec, excsum, vmat.reshape(dms_a.shape)
 
 
-SUBBLOCK = 128          # grid points per cache-blocked sub-block
+SUBBLOCK = 112          # grid points per cache-blocked sub-block (a multiple of pyscf's BLKSIZE, 56)
 AO_CUTOFF = 1e-15       # max_g |phi_k| below which an AO is dropped from a sub-block
 _blas = None
 
@@ -171,6 +171,9 @@ def _nr_rks_blocked(libdft, ni, mol, grids, xc_code, dms_a, d, xctype, max_memor
     vmat = numpy.zeros((nset, nao, nao))
     vbuf = numpy.empty((nthreads, nao, nao))
     blas = _blas_ptrs()
+    # the AO candidates of every sub-block from the block's non0tab (shells), not a scan of all AOs
+    use_mask = hasattr(libdft, 'SOCDFTvxc_rho_mask') and SUBBLOCK % 56 == 0
+    ao_loc = mol.ao_loc_nr().astype(numpy.int32)
     for i in range(nset):
         dm = numpy.ascontiguousarray(d[i])
         vbuf[:] = 0
@@ -182,11 +185,16 @@ def _nr_rks_blocked(libdft, ni, mol, grids, xc_code, dms_a, d, xctype, max_memor
             idx = numpy.empty((nsub, nao), dtype=numpy.int32)
             nl = numpy.empty(nsub, dtype=numpy.int32)
             rho = numpy.empty((ncomp, ng))
-            libdft.SOCDFTvxc_rho(
-                rho.ctypes.data_as(ctypes.c_void_p), idx.ctypes.data_as(ctypes.c_void_p),
-                nl.ctypes.data_as(ctypes.c_void_p), aoT.ctypes.data_as(ctypes.c_void_p), ctypes.c_long(cs),
-                dm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nao), ctypes.c_int(ng), ctypes.c_int(SUBBLOCK),
-                ctypes.c_double(AO_CUTOFF), ctypes.c_int(itype), *blas)
+            args = (rho.ctypes.data_as(ctypes.c_void_p), idx.ctypes.data_as(ctypes.c_void_p),
+                    nl.ctypes.data_as(ctypes.c_void_p), aoT.ctypes.data_as(ctypes.c_void_p), ctypes.c_long(cs),
+                    dm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nao), ctypes.c_int(ng),
+                    ctypes.c_int(SUBBLOCK), ctypes.c_double(AO_CUTOFF), ctypes.c_int(itype), *blas)
+            if use_mask and mask is not None:
+                m8 = numpy.ascontiguousarray(mask, dtype=numpy.uint8)
+                libdft.SOCDFTvxc_rho_mask(*args, m8.ctypes.data_as(ctypes.c_void_p),
+                                          ao_loc.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas))
+            else:
+                libdft.SOCDFTvxc_rho(*args)
             exc, vxc = ni.eval_xc_eff(xc_code, rho[0] if xctype == 'LDA' else rho, deriv=1, xctype=xctype,
                                       spin=0)[:2]
             den = rho[0] * weight

@@ -56,6 +56,40 @@ static int select_gather(double *a, int *ix, const double *ao, long cs, int ngri
         return nl;
 }
 
+#define MASK_BLK 56                     /* pyscf's BLKSIZE: rows of the non0tab mask */
+
+/* as select_gather, the candidates restricted to the shells non0tab flags on
+ * the 56-point rows of the sub-block (gs a multiple of 56, g0 too) */
+static int select_gather_mask(double *a, int *ix, const double *ao, long cs, int ngrid, int nao, int ncomp,
+                              int g0, int gs, double cutoff, const unsigned char *mask, const int *ao_loc,
+                              int nbas)
+{
+        const int r0 = g0 / MASK_BLK, r1 = (g0 + gs + MASK_BLK - 1) / MASK_BLK;
+        int sh, mu, k, g, r, nl = 0;
+        for (sh = 0; sh < nbas; sh++) {
+                int on = 0;
+                for (r = r0; r < r1 && !on; r++) on = mask[(size_t)r * nbas + sh] != 0;
+                if (!on) continue;
+                for (mu = ao_loc[sh]; mu < ao_loc[sh + 1]; mu++) {
+                        double m = 0;
+                        for (k = 0; k < ncomp; k++) {
+                                const double *p = ao + k * cs + (size_t)mu * ngrid + g0;
+                                for (g = 0; g < gs; g++) {
+                                        const double v = fabs(p[g]);
+                                        if (v > m) m = v;
+                                }
+                        }
+                        if (m > cutoff) ix[nl++] = mu;
+                }
+        }
+        for (k = 0; k < ncomp; k++)
+                for (mu = 0; mu < nl; mu++)
+                        memcpy(a + ((size_t)k * nl + mu) * gs, ao + k * cs + (size_t)ix[mu] * ngrid + g0,
+                               sizeof(double) * gs);
+        (void)nao;
+        return nl;
+}
+
 static void gather(double *a, const int *ix, int nl, const double *ao, long cs, int ngrid, int ncomp,
                    int g0, int gs)
 {
@@ -66,10 +100,34 @@ static void gather(double *a, const int *ix, int nl, const double *ao, long cs, 
                                sizeof(double) * gs);
 }
 
+static void rho_impl(double *rho, int *idx, int *nl_out, double *ao, long cs, double *dm, int nao,
+                     int ngrid, int gs, double cutoff, int xctype, dgemm_t dgemm_,
+                     mkl_local_t mkl_set_num_threads_local, const unsigned char *mask, const int *ao_loc,
+                     int nbas);
+
 /* rho (nvar, ngrid): LDA 1 row, GGA 4 (rho, nabla rho) */
 void SOCDFTvxc_rho(double *rho, int *idx, int *nl_out, double *ao, long cs, double *dm, int nao,
                    int ngrid, int gs, double cutoff, int xctype, dgemm_t dgemm_,
                    mkl_local_t mkl_set_num_threads_local)
+{
+        rho_impl(rho, idx, nl_out, ao, cs, dm, nao, ngrid, gs, cutoff, xctype, dgemm_,
+                 mkl_set_num_threads_local, NULL, NULL, 0);
+}
+
+/* the same with the AO candidates of every sub-block from the block's non0tab
+ * mask (rows of 56 points, (ngrid / 56, nbas)) and ao_loc; gs a multiple of 56 */
+void SOCDFTvxc_rho_mask(double *rho, int *idx, int *nl_out, double *ao, long cs, double *dm, int nao,
+                        int ngrid, int gs, double cutoff, int xctype, dgemm_t dgemm_,
+                        mkl_local_t mkl_set_num_threads_local, unsigned char *mask, int *ao_loc, int nbas)
+{
+        rho_impl(rho, idx, nl_out, ao, cs, dm, nao, ngrid, gs, cutoff, xctype, dgemm_,
+                 mkl_set_num_threads_local, mask, ao_loc, nbas);
+}
+
+static void rho_impl(double *rho, int *idx, int *nl_out, double *ao, long cs, double *dm, int nao,
+                     int ngrid, int gs, double cutoff, int xctype, dgemm_t dgemm_,
+                     mkl_local_t mkl_set_num_threads_local, const unsigned char *mask, const int *ao_loc,
+                     int nbas)
 {
         const int ncomp = xctype == 0 ? 1 : 4;
         const int nsub = (ngrid + gs - 1) / gs;
@@ -86,7 +144,9 @@ void SOCDFTvxc_rho(double *rho, int *idx, int *nl_out, double *ao, long cs, doub
                 const int g0 = s * gs, n = g0 + gs <= ngrid ? gs : ngrid - g0;
                 int *ix = idx + (size_t)s * nao;
                 int i, j, g, k;
-                const int nl = select_gather(a, ix, ao, cs, ngrid, nao, ncomp, g0, n, cutoff);
+                const int nl = mask ? select_gather_mask(a, ix, ao, cs, ngrid, nao, ncomp, g0, n, cutoff,
+                                                         mask, ao_loc, nbas)
+                                    : select_gather(a, ix, ao, cs, ngrid, nao, ncomp, g0, n, cutoff);
                 nl_out[s] = nl;
                 for (k = 0; k < ncomp; k++) memset(rho + (size_t)k * ngrid + g0, 0, sizeof(double) * n);
                 if (nl == 0) continue;
