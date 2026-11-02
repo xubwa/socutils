@@ -80,6 +80,7 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
     pidx[tj, ti] = np.arange(len(ti))
     C = None if sparse else np.zeros((naux, len(ti)))
     coo = ([], [], [])                                                 # rows, cols, values (sparse)
+    Cacc = None                                                        # CSR sum of the folded triplets
     ncluster = nimgpair = 0
     emin = np.array([min(cell.bas_exp(i).min() for i in range(cell.nbas) if cell.bas_atom(i) == at)
                      for at in range(cell.natm)])
@@ -156,11 +157,14 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
                 ncluster += 1
                 nimgpair += len(kk[0])
         metric_cache.clear() if len(metric_cache) > 2000 else None
+        if sparse and coo[0]:                                          # fold this atom's triplets into CSR (memory)
+            Cacc = _coo_add(Cacc, coo, naux, len(ti))
     if far:
         tf = time.time()
         rows_f, cols_f, vals_f = far_cx_fit(cell, auxcell, compact, omega, near, pidx, lindep, far_grid)
         if sparse:
             coo[0].append(rows_f); coo[1].append(cols_f); coo[2].append(vals_f)
+            Cacc = _coo_add(Cacc, coo, naux, len(ti))
         else:
             np.add.at(C, (rows_f, cols_f), vals_f)
         if verbose:
@@ -171,12 +175,22 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
         print('local CX fit: %d two-atom clusters (%d negligible skipped), %d image pairs, r_cut %.1f A (%.0f s)'
               % (ncluster, nskip, nimgpair, r_cut, stats['time']), flush=True)
     if sparse:
-        import scipy.sparse
-        C = scipy.sparse.coo_matrix((np.concatenate(coo[2]), (np.concatenate(coo[0]), np.concatenate(coo[1]))),
-                                    shape=(naux, len(ti))).tocsr()      # duplicates (images, repeated aux) summed
+        if coo[0]:
+            Cacc = _coo_add(Cacc, coo, naux, len(ti))
+        C = Cacc
         C.eliminate_zeros()
         stats['nnz'] = C.nnz
     return C, stats
+
+
+def _coo_add(Cacc, coo, nrow, ncol):
+    '''Cacc + the triplets in coo (duplicates summed), as CSR; empties coo.'''
+    import scipy.sparse
+    C = scipy.sparse.coo_matrix((np.concatenate(coo[2]), (np.concatenate(coo[0]), np.concatenate(coo[1]))),
+                                shape=(nrow, ncol)).tocsr()
+    for lst in coo:
+        lst.clear()
+    return C if Cacc is None else Cacc + C
 
 
 def _lebedev(nang):

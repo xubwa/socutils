@@ -366,6 +366,14 @@ class THCExchange:
         if self.verbose:
             print(msg, flush=True)
 
+    def avail_bytes(self):
+        '''Memory left in the budget (cell.max_memory, MB) beyond the current resident size of the process.'''
+        return max(0., self.cell.max_memory - lib.current_memory()[0]) * 1e6
+
+    def fits(self, nbytes, frac=0.5):
+        '''A cache of nbytes fits when it takes at most frac of the memory left in the budget.'''
+        return nbytes <= frac * self.avail_bytes()
+
     # ---- pieces independent of N_mu
     def build_common(self, kmax_factor=20):
         cell, ac = self.cell, self.ac
@@ -487,7 +495,7 @@ class THCExchange:
                     self.timings['rsdf'], self.timings['local fit'], self.timings['grid'], self.timings['pivots']))
 
     # ---- THC factors for N_mu points
-    def _build_thc_stream(self, pts, cut=1e-13, nb=None, gchunk=20000, rchunk=100000):
+    def _build_thc_stream(self, pts, cut=1e-13, nb=None, gchunk=None, rchunk=None):
         '''V, A, A_lr and the LR rows Xi of the ISDF vectors without storing xi (N_mu x ngrid). Blocks b of mu:
         xi_b = G+[b] Gc with the Gram columns Gc[P, r] = (phi(r_P) . phi(r))^2 regenerated in grid chunks, its FFT
         gives A[:, b], A_lr[:, b] and Xi[:, b] as in the full build, and V[b] = int (v * xi_b) Gc^T G+ (one G+ on
@@ -500,8 +508,22 @@ class THCExchange:
         e, v = scipy.linalg.eigh((PP @ PP.T) ** 2)
         keep = e > cut * e.max()
         Ginv = (v[:, keep] / e[keep]) @ v[:, keep].T
+        # sizes from the memory budget (cell.max_memory): grid chunks of the Gram columns (nmu, rchunk), G chunks
+        # of the aux FT (complex + its real layout, 32 gchunk naux bytes), mu blocks (two (nb, ng) arrays live)
+        avail = self.avail_bytes()
+        naux = self.auxmol.nao
+        if rchunk is None:
+            rchunk = int(min(100000, max(2000, 0.08 * avail / (8 * nmu * 2))))
+        if gchunk is None:
+            gchunk = int(min(20000, max(500, 0.08 * avail / (32 * naux))))
         if nb is None:
-            nb = max(64, min(nmu, int(getattr(self, 'stream_gb', 30) * 1e9 / (8 * ng * 3))))   # ~2-3 (nb, ng) live
+            if getattr(self, 'stream_gb', None):
+                nb = int(self.stream_gb * 1e9 / (8 * ng * 3))
+            else:
+                nb = int((0.75 * avail - 8 * nmu * rchunk * 2 - 32 * gchunk * naux) / (8 * ng * 2.2))
+            nb = max(32, min(nmu, nb))
+        self.log('   streamed THC: %d mu blocks of %d (budget %.0f GB, available %.0f GB), grid chunk %d, G chunk %d'
+                 % (-(-nmu // nb), nb, self.cell.max_memory / 1e3, avail / 1e9, rchunk, gchunk))
         V = np.zeros((nmu, nmu))
         A = np.zeros((self.auxmol.nao, nmu))
         A_lr = np.zeros((self.auxmol.nao, nmu))
@@ -860,8 +882,10 @@ class THCExchange:
         lr_factors = (F, terms): the densities as sums of real rank-r products, dms[n] = sum_(c, x, y) c F[x] F[y]^T
         over terms[n]; the LR term then needs sum_g (L_g F[x]) (L_g F[y])^T per product only.'''
         nD = len(dms)
-        if kblk is None:
-            kblk = getattr(self, 'kblk', 256)                         # aux functions per CX-CX chunk (2x1x1: 64 -> 256, -12%)
+        if kblk is None:                                              # aux functions per CX-CX chunk (2x1x1: 64 -> 256,
+            kblk = getattr(self, 'kblk', None)                        # -12%); W, Y, Z ~ 4 kblk nao^2 doubles
+            if kblk is None:
+                kblk = int(min(256, max(16, 0.1 * self.avail_bytes() / (4 * 8 * self.nao ** 2))))
         dms = [np.ascontiguousarray(d, dtype=float) for d in dms]
         sym = [0] * nD if sym is None else list(sym)
         t = time.time()
@@ -921,10 +945,9 @@ class THCExchange:
         nCX = len(cxc)
         # (M C)_P is density independent: kept across calls when naux nCX doubles fit in k_cache_gb (GB)
         if getattr(self, '_mc_cache', None) is None:
-            budget = getattr(self, 'k_cache_gb', None)
-            if budget is None:                                         # default: 30% of the cell's max_memory (MB)
-                budget = 0.3 * self.cell.max_memory / 1e3
-            fits = self.auxmol.nao * nCX * 8 <= budget * 1e9
+            budget = getattr(self, 'k_cache_gb', None)               # GB; default: half of what is left
+            nbytes = self.auxmol.nao * nCX * 8
+            fits = nbytes <= budget * 1e9 if budget is not None else self.fits(nbytes)
             self._mc_cache = {} if fits else False
         mc_cache = self._mc_cache if self._mc_cache is not False else None
         tc = dict.fromkeys(('MC', 'unpack', 'CD', 'swap', 'GEMM', 'add'), 0.)
@@ -989,7 +1012,9 @@ class THCExchange:
         t = time.time()
         # LR: sum_g L_g D L_g - L^SS_g D_SS L^SS_g, L_g the full LR rows, all densities stacked
         sm32 = np.asarray(sm, dtype=np.int32)
-        gb = getattr(self, 'lr_batch', 16)
+        gb = getattr(self, 'lr_batch', None)                          # LR rows per batch: L_g, T ~ (nD + 2) gb nao^2
+        if gb is None:
+            gb = int(min(16, max(1, 0.1 * self.avail_bytes() / ((nD + 2) * 8 * nao ** 2))))
         Dh = np.hstack(dms)                                           # (nao, nD nao)
         Dsh = np.hstack([d[np.ix_(sm, sm)] for d in dms])
         nss = len(sm)
@@ -1008,7 +1033,10 @@ class THCExchange:
         for g0 in range(0, len(Lcx), gb):
             g1 = min(g0 + gb, len(Lcx))
             ta = time.time()
-            Ls = unpack_sym(Lss[g0:g1], si32, sj32, nss)              # cached THC LR rows of the SS pairs
+            if Lss is not None:
+                Ls = unpack_sym(Lss[g0:g1], si32, sj32, nss)          # cached THC LR rows of the SS pairs
+            else:
+                Ls = np.stack([(Pm.T * Blr[g]) @ Pm for g in range(g0, g1)])
             tl['Ls'] += time.time() - ta; ta = time.time()
             Lg = embed(unpack_sym(Lcx[g0:g1], ii32, jj32, nao), Ls, sm32)
             tl['unpack'] += time.time() - ta
@@ -1058,6 +1086,10 @@ class THCExchange:
             return self._lrss
         Pm = self.phimu
         si, sj = np.tril_indices(Pm.shape[1])
+        if not self.fits(self.Xi_lr.shape[0] * len(si) * 8):         # not cached: per batch in get_k_multi
+            self.log('   LR rows of the SS pairs not cached (%.1f GB over the budget)'
+                     % (self.Xi_lr.shape[0] * len(si) * 8 / 1e9))
+            return None, si.astype(np.int32), sj.astype(np.int32)
         out = np.empty((self.Xi_lr.shape[0], len(si)))
         for p0 in range(0, len(si), pc):
             p1 = min(p0 + pc, len(si))
@@ -1346,7 +1378,7 @@ class THCJK:
         self.th.dense_c = not self.local_rcut                          # route 1: the sparse C only
         self.th.gapw_opts = getattr(self, 'gapw_opts', {})
         self.th.stream = getattr(self, 'stream', False)
-        self.th.stream_gb = getattr(self, 'stream_gb', 30)
+        self.th.stream_gb = getattr(self, 'stream_gb', None)       # GB; None: from the memory budget
         self.th.stream_max_blocks = getattr(self, 'stream_max_blocks', 1 << 30)
         self.th.piv_file = getattr(self, 'piv_file', None)
         for k in ('coarsen', 'blocked_pivots', 'far_fit'):             # options, if set

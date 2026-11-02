@@ -7,7 +7,7 @@ from socutils.pbc.bench.auxgen_util import auxgen_from_basis
 from socutils.pbc import spinor_scf
 from socutils.pbc.thc import THCJK
 B = dict(runpy.run_path(RULES)['BASIS'])
-cell = cells.make_cell(cells.SYSTEMS['quartz'], 1e-10, nucmod='G', basis=B, max_memory=150000)
+cell = cells.make_cell(cells.SYSTEMS['quartz'], 1e-10, nucmod='G', basis=B, max_memory=int(__import__('os').environ.get('MAXMEM', 150000)))
 aux = {e: auxgen_from_basis({e: B[e]}, contract=False, prune_lmax=False, threshold=1e-8)[e] for e in ('O', 'Si')}
 jk = THCJK(cell, aux, alpha_c=4., nmu_factor=16., nuc_zeta=spinor_scf.nuclear_zeta(cell), local_rcut=6.)
 jk.build()

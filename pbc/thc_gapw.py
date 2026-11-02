@@ -368,7 +368,9 @@ class GAPWJ:
         if getattr(self, '_geo', None) is None:
             self._geo, self._geo_bytes = {}, 0
         nb = geo[0].nbytes + geo[1].nbytes + geo[2].nbytes
-        if self._geo_bytes + nb <= getattr(self, 'cache_gb', 16.) * 1e9:
+        cap = getattr(self, 'cache_gb', None)
+        cap = cap * 1e9 if cap is not None else min(16e9, 0.1 * self.th.avail_bytes() + self._geo_bytes)
+        if self._geo_bytes + nb <= cap:
             self._geo[key] = geo
             self._geo_bytes += nb
 

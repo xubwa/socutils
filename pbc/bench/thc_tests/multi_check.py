@@ -16,7 +16,7 @@ if len(sys.argv) > 2:
         sysm = cells.supercell(sysm, [int(x) for x in sys.argv[3].split(',')])
 else:
     B, sysm = dict(runpy.run_path(RULES)['BASIS']), cells.SYSTEMS['quartz']
-cell = cells.make_cell(sysm, 1e-10, nucmod='G', basis=B, max_memory=150000)
+cell = cells.make_cell(sysm, 1e-10, nucmod='G', basis=B, max_memory=int(__import__('os').environ.get('MAXMEM', 150000)))
 els = sorted(set(cell.atom_symbol(i) for i in range(cell.natm)))
 aux = {e: auxgen_from_basis({gto.mole._std_symbol(e): B[e]}, contract=False, prune_lmax=False,
                             threshold=1e-8)[gto.mole._std_symbol(e)] for e in els}
