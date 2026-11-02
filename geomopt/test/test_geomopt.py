@@ -58,6 +58,22 @@ class KnownValues(unittest.TestCase):
         self.assertEqual(eng.nhess, 1)
         self.assertLess(opt.ncalc, 8)
 
+    def test_freq_restart(self):
+        # eclipsed ethane: the gradient keeps the D3h symmetry, a gradient-only
+        # optimization stops at the eclipsed saddle; opt + freq restarts from it
+        mol = gto.M(atom='''C 0 0 .765; C 0 0 -.765
+                    H 1.02 0 1.16; H -.51 .883 1.16; H -.51 -.883 1.16
+                    H 1.02 0 -1.16; H -.51 .883 -1.16; H -.51 -.883 -1.16''', basis='sto-3g', verbose=0)
+        mf = scf.RHF(mol)
+        mf.conv_tol = 1e-10
+        eng = geomopt.PySCFEngine(mf.nuc_grad_method().as_scanner())
+        opt = geomopt.Optimizer(eng, freq=True, verbose=0)
+        conv, x = opt.kernel()
+        self.assertTrue(conv)
+        self.assertGreaterEqual(opt.restarts, 1)
+        self.assertGreater(opt.freqs.min(), -20)
+        self.assertAlmostEqual(opt.e_tot, -78.30618, 4)    # staggered (Baker's reference)
+
     def test_ts_hcn(self):
         # HCN <-> HNC, TS 1 of Baker and Chan at HF/3-21G (-92.24604)
         mol = gto.M(atom='C 0 0 0; N 0 0 1.14838; H 1.58536 0 1.14838', basis='3-21g', verbose=0)

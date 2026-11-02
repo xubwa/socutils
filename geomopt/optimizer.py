@@ -338,6 +338,43 @@ def _qgrad(ic, point):
     return cache[_tag(ic)]
 
 
+# sqrt(Hartree / (Bohr^2 amu)) / (2 pi c) in cm^-1
+_AU2CM = 5140.4871
+
+
+def harmonic_modes(elem, x, hx):
+    '''harmonic frequencies (cm^-1, imaginary ones negative) and Cartesian
+    normal-mode displacements (columns, unit RMS per atom) of the Cartesian
+    Hessian hx at x, overall translations and rotations projected out'''
+    from pyscf.data import elements
+    m = numpy.array([elements.MASSES[elements.charge(e)] for e in elem])
+    n = len(m)
+    xyz = x.reshape(-1, 3)
+    com = (m[:, None] * xyz).sum(0) / m.sum()
+    r = xyz - com
+    sm = numpy.sqrt(numpy.repeat(m, 3))
+    tr = []
+    for k in range(3):
+        t = numpy.zeros((n, 3))
+        t[:, k] = 1
+        tr.append(t.ravel() * sm)
+        e = numpy.zeros(3)
+        e[k] = 1
+        tr.append(numpy.cross(e, r).ravel() * sm)
+    u, sv, _ = numpy.linalg.svd(numpy.array(tr).T, full_matrices=False)
+    u = u[:, sv > 1e-6 * sv.max()]
+    P = numpy.eye(3 * n) - u.dot(u.T)
+    hm = P.dot(hx / numpy.outer(sm, sm)).dot(P)
+    w, v = numpy.linalg.eigh(hm)
+    keep = numpy.argsort(abs(v.T.dot(u)).sum(1))[:3 * n - u.shape[1]]     # drop the TR null space
+    keep = numpy.sort(keep)
+    w, v = w[keep], v[:, keep]
+    freq = numpy.sign(w) * numpy.sqrt(abs(w)) * _AU2CM
+    modes = v / sm[:, None]
+    modes /= numpy.sqrt((modes.reshape(n, 3, -1)**2).sum(1).mean(0))
+    return freq, modes
+
+
 def _grad_norms(gx):
     atomgrad = numpy.linalg.norm(gx.reshape(-1, 3), axis=1)
     return numpy.sqrt(numpy.mean(atomgrad**2)), atomgrad.max()
@@ -366,6 +403,13 @@ class Optimizer(lib.StreamObject):
             updates
         linesearch : Berny-style interpolation along the last step before the
             quasi-Newton step (no extra gradients; minima)
+        freq : Gaussian's opt + freq: at convergence of a minimization the
+            engine's analytic Hessian and the harmonic frequencies; on
+            imaginary modes (below -imag_cutoff cm-1; smaller ones kept in
+            small_imag) a displacement of trust RMS along them (the sign of the
+            lower energy, one or two gradients), and the optimization continues
+            from the exact Hessian there, up to max_restarts times.  restarts,
+            freqs record the outcome
         saddle_check : after convergence of a minimization, up to this many
             probes of the curvature along the lowest mode of the updated
             Hessian (one gradient each, probe_step Angstrom RMS); on negative
@@ -396,6 +440,12 @@ class Optimizer(lib.StreamObject):
     neg_eig = 1e-3
     criteria = 'gaussian'
     linesearch = True
+    freq = False
+    max_restarts = 3
+    restart_de = 1e-4
+    restart_max = 0.3
+    restart_hold = 3
+    imag_cutoff = 20.
     coord_check = 5
     flat_accept = True
     saddle_check = 0
@@ -424,6 +474,9 @@ class Optimizer(lib.StreamObject):
             else:
                 setattr(self, k, v)
         self.converged = False
+        self.restarts = 0
+        self.freqs = None
+        self.small_imag = None
         self.e_tot = None
         self.ncalc = 0
         self.nhess = 0
@@ -617,6 +670,7 @@ class Optimizer(lib.StreamObject):
         forced = None          # the line-search point after a rejected step
         prev = None            # the previous accepted point (x, E, gx), for the line search
         nxt = None             # the next step, computed by the convergence check
+        hold = -1              # no convergence before this step (after a restart from a saddle)
         nprobe = 0             # saddle checks done
         vmode = None           # the followed mode (transition states)
         nwrong = 0             # consecutive steps with a wrong Hessian index (TS) / poor quality (minima)
@@ -691,7 +745,12 @@ class Optimizer(lib.StreamObject):
             hist.append((xnew.copy(), Enew, gxnew.copy(), {}))
             gqnew = ic.calcGrad(xnew, gxnew)
             hist[-1][3][_tag(ic)] = gqnew
-            H = (bofill_update if ts else bfgs_update)(H, dq, gqnew - gq)
+            if ts or numpy.linalg.eigvalsh(H)[0] < -self.neg_eig:
+                # Bofill for an indefinite Hessian (transition states; an exact Hessian
+                # with negative curvature at a non-stationary point): BFGS assumes s.H.s > 0
+                H = bofill_update(H, dq, gqnew - gq)
+            else:
+                H = bfgs_update(H, dq, gqnew - gq)
             dE = Enew - E
             dqn = numpy.linalg.norm(dq)
             rho = dE / pred if abs(pred) > 1e-12 else 1.
@@ -751,6 +810,49 @@ class Optimizer(lib.StreamObject):
                          and gmax < cp['convergence_gmax'] and drms < cp['convergence_drms']
                          and dmax < cp['convergence_dmax'])
                         or (gmax < cp['convergence_gmax'] * .01 and grms < cp['convergence_grms'] * .01))
+            if conv and nstep < hold:
+                conv = False
+            if conv and not ts and self.freq:
+                # Gaussian's opt + freq: the analytic Hessian at the stationary point;
+                # imaginary modes -> displace downhill along them and continue from
+                # the exact Hessian
+                hx = eng.hessian(x)
+                self.nhess += 1
+                f, modes = harmonic_modes(self.elem, x, hx)
+                imag = f < -self.imag_cutoff
+                self.freqs = f
+                self.small_imag = f[(f < 0) & ~imag]
+                log.info('freq: lowest %s cm-1, %d imaginary', numpy.array2string(f[:4], precision=0), imag.sum())
+                if imag.any() and self.restarts < self.max_restarts:
+                    self.restarts += 1
+                    d = modes[:, imag].sum(1)
+                    d /= numpy.sqrt((d.reshape(-1, 3)**2).sum(1).mean())
+                    # displacement: at least the trust radius (RMS), longer along a soft
+                    # mode until the quadratic model lowers the energy by restart_de
+                    curv = d.dot(hx).dot(d)
+                    t = max(self.trust / BOHR, numpy.sqrt(2 * self.restart_de / max(-curv, 1e-12)))
+                    t = min(t, self.restart_max / BOHR)
+                    best = None
+                    for sign in (1., -1.):
+                        xd = x + sign * t * d
+                        Ed, gd = eng(xd)
+                        ncalc += 1
+                        if best is None or Ed < best[1]:
+                            best = (xd, Ed, gd)
+                        if Ed < E - 1e-6:
+                            break
+                    log.info('restart %d from the saddle: dE %.2e along %d imaginary mode(s)',
+                             self.restarts, best[1] - E, imag.sum())
+                    x, E, gx = best
+                    hist.append((x.copy(), E, gx.copy(), {}))
+                    ic, _, vmode = self._new_coords(x, gx, ic, H, None)
+                    H = self._add_tr(ic, x, ic.calcHess(x, gx, hx))
+                    gq = ic.calcGrad(x, gx)
+                    trust = self.trust
+                    prev = nxt = None
+                    conv = False
+                    hold = nstep + self.restart_hold
+                    continue
             if conv and not ts and nprobe < self.saddle_check:
                 nprobe += 1
                 xd, n = self._saddle_probe(ic, H, x, E, gx, trust)
