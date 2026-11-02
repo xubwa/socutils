@@ -366,6 +366,23 @@ class THCExchange:
         if self.verbose:
             print(msg, flush=True)
 
+    def distribute(self):
+        '''MPI (self.comm): after the build, keep only what this rank uses: the rows of the uniform grid it integrates
+        in J (phi) and its contiguous range of LR rows (the exact CX rows; the SS rows are then built for it only).'''
+        comm = getattr(self, 'comm', None)
+        if comm is None or getattr(self, '_distributed', False):
+            return
+        rank, size = comm.Get_rank(), comm.Get_size()
+        r0, r1 = self.ng * rank // size, self.ng * (rank + 1) // size
+        self.phi = np.ascontiguousarray(self.phi[r0:r1])
+        self._phi_rows = (r0, r1)
+        if getattr(self, 'Llr_cx', None) is not None:
+            nlr = self.Llr_cx.shape[0]
+            g0, g1 = nlr * rank // size, nlr * (rank + 1) // size
+            self.Llr_cx = np.ascontiguousarray(self.Llr_cx[g0:g1])
+            self._lr_range = (g0, g1)
+        self._distributed = True
+
     def avail_bytes(self):
         '''Memory left in the budget (cell.max_memory, MB) beyond the current resident size of the process.'''
         return max(0., self.cell.max_memory - lib.current_memory()[0]) * 1e6
@@ -912,6 +929,8 @@ class THCExchange:
 
         def mine(part, i):
             return (i % size == rank) if part in split else rank == 0
+        if kblk is None:
+            kblk = getattr(self, '_kblk_fixed', None)                 # once other atoms' C dropped: the cached chunks
         if kblk is None:                                              # aux functions per CX-CX chunk (2x1x1: 64 -> 256,
             kblk = getattr(self, 'kblk', None)                        # -12%); W, Y, Z ~ 4 kblk nao^2 doubles
             if kblk is None:
@@ -938,6 +957,10 @@ class THCExchange:
         blocks = self._cx_atom_blocks(None if getattr(self, '_cxb', None) is not None
                                       else self.Cs[:, cxc].tocsc())
         Bsr, Blr, Lcx = self.A, self.Xi_lr, self.Llr_cx
+        xown = self._x_owner(blocks, size)                            # aux atom -> rank (greedy by work)
+
+        def mine_x(part, X):
+            return (xown[X] == rank) if part in split else rank == 0
         # CX-SS: cross(D) = H(D) Pm with H[a] = sum_{p=(a,c)} B_p E_c, E = D[:, SS] Pm^T; for each density the
         # direct term and (unless sym) the transposed one
         Es, owner = [], []
@@ -948,20 +971,18 @@ class THCExchange:
         Hs = [np.zeros((nao, len(Pm))) for _ in Es]
         ts = dict.fromkeys(('E', 'Bp', 'accum', 'HPm'), 0.)
         ts['E'] = time.time() - t
-        for ip, p0 in enumerate(range(0, len(cxc), pblk)):
-            if not mine('cs', ip):
+        # per aux atom X (its rank only): B_p restricted to X's aux, H += sum_{p in cols_X} B^X_p E (linear in B)
+        for X, (rows, cols, Cd) in enumerate(blocks):
+            if not mine_x('cs', X):
                 continue
-            ta = time.time()
-            p1 = min(p0 + pblk, len(cxc))
-            Bp = np.zeros((p1 - p0, Bsr.shape[1]))
-            for rows, cols, Cd in blocks:
-                a, b = np.searchsorted(cols, (p0, p1))
-                if b > a:
-                    add_rows(Bp, Cd[:, a:b].T @ Bsr[rows[0]:rows[-1] + 1], cols[a:b] - p0)   # rows: a range
-            ts['Bp'] += time.time() - ta; ta = time.time()
-            for H, E in zip(Hs, Es):
-                pair_accum(H, Bp, E, ii32[p0:p1], jj32[p0:p1], off[p0:p1])
-            ts['accum'] += time.time() - ta
+            for a in range(0, len(cols), pblk):
+                ta = time.time()
+                bcol = cols[a:a + pblk]
+                Bp = Cd[:, a:a + pblk].T @ Bsr[rows[0]:rows[-1] + 1]      # (np, N_mu); rows: a range
+                ts['Bp'] += time.time() - ta; ta = time.time()
+                for H, E in zip(Hs, Es):
+                    pair_accum(H, Bp, E, ii32[bcol], jj32[bcol], off[bcol])
+                ts['accum'] += time.time() - ta
         Bp = Es = None
         ta = time.time()
         cr = {}
@@ -987,8 +1008,9 @@ class THCExchange:
         mc_cache = self._mc_cache if self._mc_cache is not False else None
         tc = dict.fromkeys(('MC', 'unpack', 'CD', 'swap', 'GEMM', 'add'), 0.)
         aoat = self.aoat
-        ichunk = -1
         for X, (rows, cols, Cd) in enumerate(blocks):
+            if not mine_x('cc', X):
+                continue
             S = np.unique(np.concatenate([ii[cols], jj[cols]]))
             # local fit: the pairs fitted on X's aux have an AO on atom X (cluster (X, B)), so C_P = [[C_xx, C_xn],
             # [C_nx, 0]] with x the AOs of X: S ordered x first
@@ -1003,9 +1025,6 @@ class THCExchange:
             DxT = np.ascontiguousarray(np.vstack([d[S[:nx]] for d in dms]).T)   # (nao, nD nx)
             nS = len(S)
             for c0 in range(0, len(rows), kblk):
-                ichunk += 1
-                if not mine('cc', ichunk):
-                    continue
                 c1 = min(c0 + kblk, len(rows))
                 nb = c1 - c0
                 ta = time.time()
@@ -1013,6 +1032,7 @@ class THCExchange:
                 if MC is None:
                     MC = np.zeros((nb, nCX))
                     for rows2, cols2, Cd2 in blocks:
+                        assert Cd2 is not None, 'CX-CX: (M C) cache miss after the other atoms\' C were dropped'
                         add_cols(MC, self.M[rows[c0:c1]][:, rows2] @ Cd2, cols2)
                     if mc_cache is not None:
                         mc_cache[X, c0, c1] = MC
@@ -1047,6 +1067,14 @@ class THCExchange:
                 tc['add'] += time.time() - ta
                 W = CD = Cf = R = None
         self.cc_timings = tc
+        # MPI: with this rank's (M C)_P cached, the C blocks of the other aux atoms are not needed any more
+        if comm is not None and mc_cache is not None and not getattr(self, '_cx_dropped', False):
+            for X in range(len(blocks)):
+                if not (mine_x('cs', X) or mine_x('cc', X)):
+                    blocks[X] = (blocks[X][0], blocks[X][1], None)
+            self.Cs = None
+            self._cx_dropped = True
+            self._kblk_fixed = kblk
         t_cc = time.time() - t
         t = time.time()
         # LR: sum_g L_g D L_g - L^SS_g D_SS L^SS_g, L_g the full LR rows, all densities stacked
@@ -1059,7 +1087,17 @@ class THCExchange:
         Dh = np.hstack(dms)                                           # (nao, nD nao)
         Dsh = np.hstack([d[np.ix_(sm, sm)] for d in dms])
         nss = len(sm)
-        Lss, si32, sj32 = self._lr_ss_rows()
+        # this rank's LR rows: its range [g_lo, g_hi) of the RSDF LR rows (Lcx holds only them once distributed)
+        nlr_all = self.Xi_lr.shape[0]
+        if getattr(self, '_lr_range', None) is not None:
+            g_lo, g_hi = self._lr_range
+        elif 'lr' in split:
+            g_lo, g_hi = nlr_all * rank // size, nlr_all * (rank + 1) // size
+            Lcx = Lcx[g_lo:g_hi]
+        else:
+            g_lo, g_hi = (0, nlr_all) if rank == 0 else (0, 0)
+            Lcx = Lcx[g_lo:g_hi]
+        Lss, si32, sj32 = self._lr_ss_rows(g_lo, g_hi)
         Racc = np.zeros((nD, nao, nao))                               # sum_g L_g D L_g
         Rss = np.zeros((nD, nss, nss))                                # sum_g L^SS_g D_SS L^SS_g
         tl = dict.fromkeys(('Ls', 'unpack', 'GEMM', 'add'), 0.)
@@ -1071,15 +1109,13 @@ class THCExchange:
             Fsc = np.ascontiguousarray(Fc[sm])
             Mp = {xy: np.zeros((nao, nao)) for xy in prods}
             Mps = {xy: np.zeros((nss, nss)) for xy in prods}
-        for ib, g0 in enumerate(range(0, len(Lcx), gb)):
-            if not mine('lr', ib):
-                continue
+        for g0 in range(0, len(Lcx), gb):                             # local rows (global g_lo + g)
             g1 = min(g0 + gb, len(Lcx))
             ta = time.time()
             if Lss is not None:
                 Ls = unpack_sym(Lss[g0:g1], si32, sj32, nss)          # cached THC LR rows of the SS pairs
             else:
-                Ls = np.stack([(Pm.T * Blr[g]) @ Pm for g in range(g0, g1)])
+                Ls = np.stack([(Pm.T * Blr[g_lo + g]) @ Pm for g in range(g0, g1)])
             tl['Ls'] += time.time() - ta; ta = time.time()
             Lg = embed(unpack_sym(Lcx[g0:g1], ii32, jj32, nao), Ls, sm32)
             tl['unpack'] += time.time() - ta
@@ -1127,24 +1163,41 @@ class THCExchange:
                              'K LR': time.time() - t})
         return list(Kall)
 
-    def _lr_ss_rows(self, pc=20000):
+    def _lr_ss_rows(self, g_lo=0, g_hi=None, pc=20000):
         '''The LR rows of the SS pairs from THC, Xi_lr X_SS (nlr, nSS) with X_SS[mu, (a, b)] = phi_a(r_mu) phi_b(r_mu)
         over the packed smooth pairs a >= b (local smooth indices): density independent, built once and cached.'''
-        if getattr(self, '_lrss', None) is not None:
+        if g_hi is None:
+            g_hi = self.Xi_lr.shape[0]
+        if getattr(self, '_lrss', None) is not None and self._lrss_range == (g_lo, g_hi):
             return self._lrss
         Pm = self.phimu
         si, sj = np.tril_indices(Pm.shape[1])
-        if not self.fits(self.Xi_lr.shape[0] * len(si) * 8):         # not cached: per batch in get_k_multi
-            self.log('   LR rows of the SS pairs not cached (%.1f GB over the budget)'
-                     % (self.Xi_lr.shape[0] * len(si) * 8 / 1e9))
+        Xi = self.Xi_lr[g_lo:g_hi]
+        if not self.fits(Xi.shape[0] * len(si) * 8):                 # not cached: per batch in get_k_multi
+            self.log('   LR rows of the SS pairs not cached (%.1f GB over the budget)' % (Xi.shape[0] * len(si) * 8 / 1e9))
             return None, si.astype(np.int32), sj.astype(np.int32)
-        out = np.empty((self.Xi_lr.shape[0], len(si)))
+        out = np.empty((Xi.shape[0], len(si)))
         for p0 in range(0, len(si), pc):
             p1 = min(p0 + pc, len(si))
-            out[:, p0:p1] = self.Xi_lr @ (Pm[:, si[p0:p1]] * Pm[:, sj[p0:p1]])
+            out[:, p0:p1] = Xi @ (Pm[:, si[p0:p1]] * Pm[:, sj[p0:p1]])
         self._lrss = (out, si.astype(np.int32), sj.astype(np.int32))
+        self._lrss_range = (g_lo, g_hi)
         self.log('   cached LR rows of the SS pairs: %s (%.1f GB)' % (out.shape, out.nbytes / 1e9))
         return self._lrss
+
+    def _x_owner(self, blocks, size):
+        '''Aux atom (block index) -> rank, greedy by the block size (the work of CX-SS and CX-CX), cached.'''
+        if getattr(self, '_xown', None) is not None and len(self._xown) == len(blocks) and self._xown_size == size:
+            return self._xown
+        w = [len(r) * len(c) for r, c, _ in blocks]
+        load = np.zeros(size)
+        own = [0] * len(blocks)
+        for X in np.argsort(w)[::-1]:
+            k = int(np.argmin(load))
+            own[X] = k
+            load[k] += w[X]
+        self._xown, self._xown_size = own, size
+        return own
 
     def _cx_atom_blocks(self, Ccx):
         '''C (naux, nCX) as dense blocks per aux atom X: (aux rows of X, sorted CX columns with a nonzero in them,
@@ -1383,7 +1436,7 @@ class THCExchange:
         nmu, nao_s = len(self.pts), len(self.smooth)
         return {'V': nmu * nmu, 'phi(r_mu)': nmu * nao_s, '(P|xi)': self.A.size,
                 'CX local C (nonzero)': int(self.Cs.nnz) if getattr(self, 'Cs', None) is not None
-                else int(np.count_nonzero(self.C)),
+                else (int(np.count_nonzero(self.C)) if getattr(self, 'C', None) is not None else -1),
                 'CX LR rows': int(self.Llr_cx.size) if getattr(self, 'Llr_cx', None) is not None else 0,
                 'RSDF cderi (SR rows)': self.nkept * len(self.cx)}
 
@@ -1438,6 +1491,7 @@ class THCJK:
         self.th.kmax_factor = self.nmu_factor                         # pivots: only the N_mu prefix is used
         self.th.build_common()
         self.th.build_thc(int(round(self.nmu_factor * len(self.th.smooth))))
+        self.th.distribute()
         self.S = cell.pbc_intor('int1e_ovlp')
         self._built = True
         return self

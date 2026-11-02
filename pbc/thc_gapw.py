@@ -427,7 +427,8 @@ class GAPWJ:
         r0, r1 = ng * rank // size, ng * (rank + 1) // size            # this rank's rows of the uniform grid
         # smooth density on the uniform grid
         n = np.zeros(ng)
-        n[r0:r1] = _wdens(th.phi[r0:r1], np.ascontiguousarray(dm[np.ix_(sm, sm)]))
+        phi_loc = th.phi if getattr(th, '_phi_rows', None) == (r0, r1) else th.phi[r0:r1]   # distributed: own rows
+        n[r0:r1] = _wdens(phi_loc, np.ascontiguousarray(dm[np.ix_(sm, sm)]))
         if comm is not None:
             comm.Allreduce(MPI.IN_PLACE, n, op=MPI.SUM)
         nG = scipy.fft.rfftn(n.reshape(mesh), workers=-1).reshape(-1) * (vol / ng)
@@ -454,7 +455,7 @@ class GAPWJ:
         vG = th.w_vec * nG
         vr = scipy.fft.irfftn(vG.reshape(hshape), s=mesh, workers=-1).reshape(-1)   # v_grid(r) vol / ng
         J = np.zeros((nao, nao))
-        J[np.ix_(sm, sm)] = _wmat(th.phi[r0:r1], vr[r0:r1])
+        J[np.ix_(sm, sm)] = _wmat(phi_loc, vr[r0:r1])
         vloc, vlms = {}, {}
         c_avg = 0.
         for A in self.my_atoms:
