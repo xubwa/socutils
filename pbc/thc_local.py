@@ -48,7 +48,7 @@ def _atom_mol(cell, atoms, coords, basis):
 
 
 def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep=1e-12, verbose=True, sparse=False,
-                 far=False, far_grid=(300, 302)):
+                 far=False, far_grid=(300, 302), comm=None):
     '''Gamma-point local fit coefficients of the CX pairs (dense (naux, npair) packed, for validation).
 
     Args:
@@ -60,6 +60,8 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
             the compact atom A (0: the pair's two atoms only)
         far : also fit the images beyond the explicit (r_cut) clusters, on A's aux functions only (far_cx_fit):
             c (compact, on A) times the lattice sum of the remaining images of x, which is smooth where c lives
+        comm : MPI (mpi4py, sparse only): the compact atoms split over the ranks (greedy by size), the partial
+            CSR matrices summed on every rank
     Returns C (naux, nao (nao+1) / 2) (dense, or scipy.sparse CSR with sparse=True), stats dict.'''
     from pyscf.df import addons as df_addons
     t0 = time.time()
@@ -89,7 +91,10 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
     metric_cache = {}
     nskip = 0
     near = {A: [] for A in range(cell.natm)}                          # explicit (B, translation) per compact atom
+    my_atoms = _my_compact_atoms(cell, compact, comm)
     for A in range(cell.natm):
+        if A not in my_atoms:
+            continue
         a0, a1 = ao_loc[A]
         cA = np.where(compact[a0:a1])[0] + a0
         if len(cA) == 0:
@@ -161,7 +166,8 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
             Cacc = _coo_add(Cacc, coo, naux, len(ti))
     if far:
         tf = time.time()
-        rows_f, cols_f, vals_f = far_cx_fit(cell, auxcell, compact, omega, near, pidx, lindep, far_grid)
+        rows_f, cols_f, vals_f = far_cx_fit(cell, auxcell, compact, omega, near, pidx, lindep, far_grid,
+                                            atoms=my_atoms)
         if sparse:
             coo[0].append(rows_f); coo[1].append(cols_f); coo[2].append(vals_f)
             Cacc = _coo_add(Cacc, coo, naux, len(ti))
@@ -177,10 +183,63 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
     if sparse:
         if coo[0]:
             Cacc = _coo_add(Cacc, coo, naux, len(ti))
+        if Cacc is None:
+            import scipy.sparse
+            Cacc = scipy.sparse.csr_matrix((naux, len(ti)))
+        if comm is not None:                                          # sum of the ranks' partial matrices
+            tg = time.time()
+            Cacc = _allsum_csr(comm, Cacc)
+            if verbose:
+                print('local CX fit: partial C of %d ranks summed (%.0f s)' % (comm.Get_size(), time.time() - tg),
+                      flush=True)
         C = Cacc
         C.eliminate_zeros()
         stats['nnz'] = C.nnz
     return C, stats
+
+
+def _my_compact_atoms(cell, compact, comm):
+    '''The compact atoms of this rank: all without comm, else a greedy split by the number of compact functions.'''
+    loc = cell.aoslice_by_atom()[:, 2:4]
+    w = [int(compact[a0:a1].sum()) for a0, a1 in loc]
+    atoms = [A for A in range(cell.natm) if w[A] > 0]
+    if comm is None or comm.Get_size() == 1:
+        return set(atoms)
+    size, rank = comm.Get_size(), comm.Get_rank()
+    load = np.zeros(size)
+    own = {}
+    for A in sorted(atoms, key=lambda a: -w[a]):
+        k = int(np.argmin(load))
+        own[A] = k
+        load[k] += w[A]
+    return {A for A, k in own.items() if k == rank}
+
+
+def bcast_array(comm, a, root, chunk=1 << 28):
+    '''Bcast of a numpy array of any size (chunks below the 2^31-element MPI limit); a is None off the root.'''
+    meta = comm.bcast((a.shape, a.dtype.str) if comm.Get_rank() == root else None, root=root)
+    if comm.Get_rank() != root:
+        a = np.empty(meta[0], dtype=np.dtype(meta[1]))
+    flat = a.reshape(-1)
+    for i in range(0, flat.size, chunk):
+        comm.Bcast(flat[i:i + chunk], root=root)
+    return a
+
+
+def _allsum_csr(comm, C):
+    '''Sum over the ranks of CSR matrices of one shape, the result on every rank (one rank's arrays broadcast at a
+    time, so the peak is the sum plus one partial matrix).'''
+    import scipy.sparse
+    shape = C.shape
+    out = None
+    for r in range(comm.Get_size()):
+        mine = comm.Get_rank() == r
+        data = bcast_array(comm, C.data if mine else None, r)
+        indices = bcast_array(comm, C.indices if mine else None, r)
+        indptr = bcast_array(comm, C.indptr if mine else None, r)
+        Cr = scipy.sparse.csr_matrix((data, indices, indptr), shape=shape)
+        out = Cr if out is None else out + Cr
+    return out
 
 
 def _coo_add(Cacc, coo, nrow, ncol):
@@ -216,7 +275,7 @@ def _sr_potential_at(amol, pts, omega):
     return u[:, :, 0] / v0
 
 
-def far_cx_fit(cell, auxcell, compact, omega, near, pidx, lindep=1e-12, grid=(300, 302), r_thr=36.):
+def far_cx_fit(cell, auxcell, compact, omega, near, pidx, lindep=1e-12, grid=(300, 302), r_thr=36., atoms=None):
     '''Fit of the CX image pairs beyond the explicit clusters (near[A]: the (B, translation) fitted explicitly):
     for c compact on A,  x_far(r) = sum over the remaining images of x (the lattice sum minus the explicit images)
     is smooth where c lives, and the product c x_far is fitted with A's aux functions only (SR metric):
@@ -233,6 +292,8 @@ def far_cx_fit(cell, auxcell, compact, omega, near, pidx, lindep=1e-12, grid=(30
     xs_ok = ~compact                                                     # far partners: the non-compact functions
     rows, cols, vals = [], [], []
     for A in range(cell.natm):
+        if atoms is not None and A not in atoms:
+            continue
         a0, a1 = ao_loc[A]
         cA = np.where(compact[a0:a1])[0] + a0
         if len(cA) == 0:

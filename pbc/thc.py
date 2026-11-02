@@ -438,7 +438,8 @@ class THCExchange:
         if local:
             from socutils.pbc.thc_local import local_cx_fit
             self.Cs = local_cx_fit(cell, self.aux, aohard, omega=self.omega, r_cut=local, verbose=self.verbose,
-                                   sparse=True, far=getattr(self, 'far_fit', True))[0]   # far: r_cut-converged
+                                   sparse=True, far=getattr(self, 'far_fit', True),   # far: r_cut-converged
+                                   comm=getattr(self, 'comm', None))[0]
             self.C = self.Cs.toarray() if getattr(self, 'dense_c', True) else None
             self.nonrobust = True
         else:
