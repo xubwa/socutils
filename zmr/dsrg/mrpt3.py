@@ -79,7 +79,7 @@ class DSRGMRPT3(DSRGMRPT2):
     '''
 
     vvvv = 'direct'
-    mem_t2 = 3.5
+    mem_t2 = 4.5
     mem_v3 = 5.0
 
     def log(self, text):

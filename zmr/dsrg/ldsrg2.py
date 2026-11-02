@@ -139,7 +139,7 @@ class LDSRG2:
     mem_t2 = 8.0
     mem_v3 = 1.5
 
-    read_memory = 200.0                # MB of three-index integrals read at a time, at least
+    read_memory = 1000.0               # MB of three-index integrals read at a time, at least
 
     def memory_estimate(self, naux):
         '''MB the calculation needs beyond what is in use after the semicanonicalization:
@@ -171,9 +171,9 @@ class LDSRG2:
     def _stage(self, name, t0):
         '''Record the time of a stage since t0 and log it with the memory in use.'''
         self.timings[name] = self.timings.get(name, 0.0) + time.time() - t0
-        self.log('%-12s %8.1f s, memory %6.1f GB (peak %6.1f GB)' % (
-            name, time.time() - t0, lib.current_memory()[0] / 1e3,
-            resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1048576))
+        self.log('%-12s %8.1f s, memory %7.0f MB (peak %7.0f MB)' % (
+            name, time.time() - t0, lib.current_memory()[0],
+            resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024 / 1e6))
 
     # ------------------------------------------------------------------ setup
     def build(self):
