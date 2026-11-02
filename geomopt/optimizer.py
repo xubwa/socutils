@@ -319,6 +319,25 @@ def cubic_min(e0, d0, e1, d1, amax=1.):
     return a if 0 < a <= amax else None
 
 
+_TAGS = itertools.count()
+
+
+def _tag(ic):
+    '''a unique key of a coordinate system (id() can be reused)'''
+    if not hasattr(ic, '_geomopt_tag'):
+        ic._geomopt_tag = next(_TAGS)
+    return ic._geomopt_tag
+
+
+def _qgrad(ic, point):
+    '''internal gradient of a history point (x, E, gx, cache) in ic, cached per
+    coordinate system (each costs an SVD of the G matrix)'''
+    cache = point[3]
+    if _tag(ic) not in cache:
+        cache[_tag(ic)] = ic.calcGrad(point[0], point[2])
+    return cache[_tag(ic)]
+
+
 def _grad_norms(gx):
     atomgrad = numpy.linalg.norm(gx.reshape(-1, 3), axis=1)
     return numpy.sqrt(numpy.mean(atomgrad**2)), atomgrad.max()
@@ -392,6 +411,7 @@ class Optimizer(lib.StreamObject):
     nhist = 5
     max_cycle = 200
     reject_de = 1e-6
+    reject_quality = 0.
 
     def __init__(self, engine, **kwargs):
         self.engine = engine
@@ -482,7 +502,7 @@ class Optimizer(lib.StreamObject):
         pts = hist[-self.nhist:]
         E = numpy.array([p[1] for p in pts])
         q = [ic.calcDiff(p[0], x) for p in pts]
-        g = [ic.calcGrad(p[0], p[2]) for p in pts]
+        g = [_qgrad(ic, p) for p in pts]
         c, _ = gediis_coeffs(E, q, g)
         if c.max() > 1 - 1e-12:
             return None
@@ -528,9 +548,9 @@ class Optimizer(lib.StreamObject):
         from x and the interpolated gradient, or None.'''
         if prev is None:
             return None
-        xp, Ep, gxp = prev
+        xp, Ep, gxp = prev[:3]
         s = ic.calcDiff(x, xp)
-        gp = ic.calcGrad(xp, gxp)
+        gp = _qgrad(ic, prev)
         a = cubic_min(Ep, gp.dot(s), E, gq.dot(s), amax=2.)
         if a is None or abs(a - 1) < .1:
             return None
@@ -570,7 +590,7 @@ class Optimizer(lib.StreamObject):
         E, gx = eng(x)
         ic = self._first_coords(x, gx)
         ncalc = 1
-        hist = [(x.copy(), E, gx.copy())]
+        hist = [(x.copy(), E, gx.copy(), {})]
         hess = self.hessian if self.hessian is not None else ('exact' if ts else 'lindh')
         self._hess_kind = hess
         if isinstance(hess, numpy.ndarray):
@@ -596,6 +616,7 @@ class Optimizer(lib.StreamObject):
         tmax = self.tmax
         forced = None          # the line-search point after a rejected step
         prev = None            # the previous accepted point (x, E, gx), for the line search
+        nxt = None             # the next step, computed by the convergence check
         nprobe = 0             # saddle checks done
         vmode = None           # the followed mode (transition states)
         nwrong = 0             # consecutive steps with a wrong Hessian index (TS) / poor quality (minima)
@@ -626,7 +647,9 @@ class Optimizer(lib.StreamObject):
                     dqt = dq0 + rfo_step(H, g0, numpy.inf)[0]
                     nt = numpy.linalg.norm(dqt)
                     dq, xn = self._restrict(ic, x, lambda qmax: dqt * min(1., qmax / nt), trust)
-                    return dq, 'ls+rfo', xn
+                    # only a step downhill in the local quadratic model
+                    if gq.dot(dq) + .5 * dq.dot(H).dot(dq) < 0 and gq.dot(dq) < 0:
+                        return dq, 'ls+rfo', xn
                 dq, xn = self._restrict(ic, x, lambda qmax: rfo_step(H, gq, qmax)[0], trust)
                 return dq, 'rfo', xn
             h, v = numpy.linalg.eigh(H)
@@ -636,13 +659,18 @@ class Optimizer(lib.StreamObject):
             return dq, 'prfo%d' % k, xn
 
         while not conv and ncalc < self.max_cycle:
+            # geomeTRIC caches B matrices per geometry without bound
+            ic.clearCache()
             if forced is not None:
                 dq, kind = ic.calcDiff(forced, x), 'line'
                 xnew = forced
                 forced = None
             else:
                 try:
-                    dq, kind, xnew = step(ic, H, gq)
+                    if nxt is not None and nxt[0] == (_tag(ic), nstep):
+                        dq, kind, xnew = nxt[1]       # the step predicted by the convergence check
+                    else:
+                        dq, kind, xnew = step(ic, H, gq)
                 except RuntimeError as err:       # geomeTRIC's G matrix SVD
                     log.info('step failed (%s); new coordinate system', err)
                     ic, H, vmode = self._new_coords(x, gx, ic, H, vmode)
@@ -660,8 +688,9 @@ class Optimizer(lib.StreamObject):
             Enew, gxnew = eng(xnew)
             ncalc += 1
             nstep += 1
-            hist.append((xnew.copy(), Enew, gxnew.copy()))
+            hist.append((xnew.copy(), Enew, gxnew.copy(), {}))
             gqnew = ic.calcGrad(xnew, gxnew)
+            hist[-1][3][_tag(ic)] = gqnew
             H = (bofill_update if ts else bfgs_update)(H, dq, gqnew - gq)
             dE = Enew - E
             dqn = numpy.linalg.norm(dq)
@@ -671,12 +700,19 @@ class Optimizer(lib.StreamObject):
             log.info('geomopt %3d %-7s E = %.10f dE %9.2e rho %6.2f |dq| %.3e trust %.3e '
                      'grms %.2e gmax %.2e drms %.2e dmax %.2e', ncalc, kind, Enew, dE, rho, dqn, trust,
                      grms, gmax, drms, dmax)
-            if not ts and dE > self.reject_de and drms > self.tmin:
+            if (not ts and dE > self.reject_de and drms > self.tmin
+                    and (abs(pred) < 1e-12 or rho < self.reject_quality)):
                 s = xnew - x
-                a = cubic_min(E, gx.dot(s), Enew, gxnew.dot(s))
-                a = .5 if a is None else min(max(a, .1), .5)
-                forced = x + a * s
-                trust = max(a * drms, self.tmin)
+                if gx.dot(s) < 0:
+                    a = cubic_min(E, gx.dot(s), Enew, gxnew.dot(s))
+                    a = .5 if a is None else min(max(a, .1), .5)
+                    forced = x + a * s
+                    trust = max(a * drms, self.tmin)
+                else:
+                    # uphill from x already: a new quasi-Newton step (H has the information)
+                    trust = max(.5 * min(trust, drms), self.tmin)
+                prev = None
+                nxt = None
                 continue
             qual = 2 - rho if ts and rho > 1 else rho
             if (ts and abs(pred) > 1e-8 and qual < 0 and drms > 1.2 * self.tmin and trust > self.tmin
@@ -694,12 +730,13 @@ class Optimizer(lib.StreamObject):
                     trust = max(.5 * min(trust, drms), self.tmin)
                 elif qual > .75 and drms > .8 * trust:
                     trust = min(numpy.sqrt(2) * trust, tmax)
-            prev = (x, E, gx)
+            prev = (x, E, gx, {_tag(ic): gq})
             x, E, gx, gq = xnew, Enew, gxnew, gqnew
             if self.criteria == 'gaussian':
                 # Gaussian's: internal forces and the predicted next step
-                dqn_next = step(ic, H, gq)[0]
-                ic.clearCache()
+                stp = step(ic, H, gq)
+                nxt = ((_tag(ic), nstep), stp)
+                dqn_next = stp[0]
                 conv = ((abs(gq).max() < cp['convergence_gmax'] and numpy.sqrt(numpy.mean(gq**2)) < cp['convergence_grms']
                          and abs(dqn_next).max() < cp['convergence_dmax']
                          and numpy.sqrt(numpy.mean(dqn_next**2)) < cp['convergence_drms'])
@@ -737,6 +774,7 @@ class Optimizer(lib.StreamObject):
                 log.info('Hessian reset to the model Hessian (poor steps at the smallest trust radius)')
                 H = self._model_hessian(ic, x, gx)
                 trust = self.trust
+                nxt = None
                 nstuck = nwrong = 0
             if ((self.hess_recalc and nstep % self.hess_recalc == 0)
                     or (adaptive and nwrong >= 2 and nstep - last_exact >= 3)):
@@ -744,6 +782,7 @@ class Optimizer(lib.StreamObject):
                 H = self._exact_hessian(ic, x, gx)
                 nwrong = 0
                 last_exact = nstep
+                nxt = None
         self.converged = conv
         self.e_tot = E
         self.x = x
