@@ -109,3 +109,84 @@ double SOCVHFjk_bench_class(int engine, int *cls, double *qcond, double tol, CIN
         SOCVHFgen_ctx_free(gcx);
         return sum;
 }
+
+static inline double dmax2(double a, double b) { return a > b ? a : b; }
+
+/*
+ * How much of jk_multi_sym's work its screening could have skipped: the
+ * quartets passing its J / K tests (Schwarz q_ij q_kl times the block maxima
+ * dcond of the density), evaluated by libcint, and per total l (L < 9):
+ *   out[L * 6 + 0] quartets, 1 their function quartets,
+ *   2 / 3 those with max |(ab|cd)| times the same block bound below tol (Schwarz loose),
+ *   4 / 5 those with max over the elements of |(ab|cd)| times max(|D_ab|, |D_cd|,
+ *         |D_ac|, |D_ad|, |D_bc|, |D_bd|) below tol (Schwarz and the block maxima loose).
+ * dm (nao, nao) symmetric.
+ */
+void SOCVHFjk_screen_waste(double *out, double *dm, double *qcond, double *dcond, double tol, CINTOpt *opt,
+                           int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env)
+{
+        const size_t nao = ao_loc[nbas];
+        int dmax = 0, i;
+        for (i = 0; i < nbas; i++) {
+                int d = ao_loc[i + 1] - ao_loc[i];
+                dmax = d > dmax ? d : dmax;
+        }
+        int shls_slice[8] = {0, nbas, 0, nbas, 0, nbas, 0, nbas};
+        const size_t cache_size = GTOmax_cache_size(int2e_sph, shls_slice, 4, atm, natm, bas, nbas, env);
+        const size_t nbuf = (size_t)dmax * dmax * dmax * dmax;
+        const int npair = nbas * (nbas + 1) / 2;
+        memset(out, 0, sizeof(double) * 9 * 6);
+#pragma omp parallel
+{
+        double loc[9 * 6];
+        memset(loc, 0, sizeof(loc));
+        double *buf = malloc(sizeof(double) * (nbuf + cache_size));
+        double *cache = buf + nbuf;
+        int it, ij, kl, ish, jsh, ksh, lsh;
+        int shls[4];
+#pragma omp for schedule(dynamic, 1)
+        for (it = 0; it < npair; it++) {
+                ij = npair - 1 - it;
+                shell_pair(ij, &ish, &jsh);
+                for (kl = 0; kl <= ij; kl++) {
+                        shell_pair(kl, &ksh, &lsh);
+                        const double q4 = qcond[ish * nbas + jsh] * qcond[ksh * nbas + lsh];
+                        const double dj = dmax2(dcond[ish * nbas + jsh], dcond[ksh * nbas + lsh]);
+                        const double dk = dmax2(dmax2(dcond[ish * nbas + ksh], dcond[ish * nbas + lsh]),
+                                                dmax2(dcond[jsh * nbas + ksh], dcond[jsh * nbas + lsh]));
+                        if (q4 * dj < tol && q4 * dk < tol) continue;
+                        shls[0] = ish; shls[1] = jsh; shls[2] = ksh; shls[3] = lsh;
+                        const int L = bas[ish * BAS_SLOTS + ANG_OF] + bas[jsh * BAS_SLOTS + ANG_OF]
+                                    + bas[ksh * BAS_SLOTS + ANG_OF] + bas[lsh * BAS_SLOTS + ANG_OF];
+                        const int di = ao_loc[ish + 1] - ao_loc[ish], dj_ = ao_loc[jsh + 1] - ao_loc[jsh];
+                        const int dk_ = ao_loc[ksh + 1] - ao_loc[ksh], dl = ao_loc[lsh + 1] - ao_loc[lsh];
+                        const double nf = (double)di * dj_ * dk_ * dl;
+                        double gmax = 0, emax = 0;
+                        if (int2e_sph(buf, NULL, shls, atm, natm, bas, nbas, env, opt, cache)) {
+                                int a, b, c, d;
+                                for (d = 0; d < dl; d++)
+                                for (c = 0; c < dk_; c++)
+                                for (b = 0; b < dj_; b++)
+                                for (a = 0; a < di; a++) {
+                                        const double g = fabs(buf[((d * dk_ + c) * dj_ + b) * di + a]);
+                                        if (g > gmax) gmax = g;
+                                        const size_t A = ao_loc[ish] + a, B = ao_loc[jsh] + b;
+                                        const size_t C = ao_loc[ksh] + c, D = ao_loc[lsh] + d;
+                                        double dd = dmax2(dmax2(fabs(dm[A * nao + B]), fabs(dm[C * nao + D])),
+                                                          dmax2(dmax2(fabs(dm[A * nao + C]), fabs(dm[A * nao + D])),
+                                                                dmax2(fabs(dm[B * nao + C]), fabs(dm[B * nao + D]))));
+                                        if (g * dd > emax) emax = g * dd;
+                                }
+                        }
+                        double *o = loc + (L < 9 ? L : 8) * 6;
+                        o[0] += 1;
+                        o[1] += nf;
+                        if (gmax * dmax2(dj, dk) < tol) { o[2] += 1; o[3] += nf; }
+                        if (emax < tol) { o[4] += 1; o[5] += nf; }
+                }
+        }
+        free(buf);
+#pragma omp critical
+        for (i = 0; i < 9 * 6; i++) out[i] += loc[i];
+}
+}

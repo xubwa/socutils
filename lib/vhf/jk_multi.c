@@ -38,12 +38,17 @@ int SOCVHFgen_int2e(double *out, const int *shls, const GenCtx *cx, double dmax,
                     double *wk, const int *bas);
 int SOCVHFgen_takes(const int *shls, const int *bas);
 
-/* SOCVHFjk_multi_sym: s / p quartets with at most two p shells by jk_ssss.c (1, default) or libcint (0) */
-static int jk_use_ssss = 1;
+/*
+ * SOCVHFjk_multi_sym's engines by the total l of the quartet (cc-pVDZ
+ * per-class timings, scf/test/bench_jk_class.py): L <= 1 by jk_ssss.c, the
+ * other quartets of l <= 2 with L <= jk_gen_lmax by the generated kernels of
+ * jk_gen.c, the rest by libcint (on par with the generated ones from L = 6).
+ * SOCVHFjk_set_ssss(0) / SOCVHFjk_set_gen(0) send theirs to libcint.
+ */
+static int jk_use_ssss = 1, jk_use_gen = 1, jk_gen_lmax = 5;
 void SOCVHFjk_set_ssss(int on) { jk_use_ssss = on; }
-/* the remaining quartets of l <= 2 by jk_gen.c (1) or libcint (0, default) */
-static int jk_use_gen = 0;
 void SOCVHFjk_set_gen(int on) { jk_use_gen = on; }
+void SOCVHFjk_set_gen_lmax(int l) { jk_gen_lmax = l; }
 
 static const int PERMS[8][4] = {
         {0, 1, 2, 3}, {1, 0, 2, 3}, {0, 1, 3, 2}, {1, 0, 3, 2},
@@ -250,12 +255,14 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
                                 continue;
                         }
                         shls[0] = ish; shls[1] = jsh; shls[2] = ksh; shls[3] = lsh;
-                        if (use_ss && SOCVHFss_takes(shls, bas)) {
+                        const int lq = bas[ish * BAS_SLOTS + ANG_OF] + bas[jsh * BAS_SLOTS + ANG_OF]
+                                     + bas[ksh * BAS_SLOTS + ANG_OF] + bas[lsh * BAS_SLOTS + ANG_OF];
+                        if (use_ss && lq <= 1 && SOCVHFss_takes(shls, bas)) {
                                 const double dq = dmax2(do_j ? dj_ : 0, do_k ? dk_ : 0);
                                 if (!SOCVHFss_int2e(buf, shls, scx, dq, prim_tol, swk)) {
                                         continue;
                                 }
-                        } else if (use_gen && SOCVHFgen_takes(shls, bas)) {
+                        } else if (use_gen && lq <= jk_gen_lmax && SOCVHFgen_takes(shls, bas)) {
                                 const double dq = dmax2(do_j ? dj_ : 0, do_k ? dk_ : 0);
                                 if (!SOCVHFgen_int2e(buf, shls, gcx, dq, prim_tol, swk, bas)) {
                                         continue;

@@ -1,14 +1,10 @@
 /*
  * Shell quartets of l <= JKV_LMAX for the J / K builds of jk_multi.c by the
- * Head-Gordon-Pople scheme with generated primitive kernels (jk_vrr_gen.c,
- * from gen_jk_vrr.py):
- *
- *   per primitive quartet (generated, straight-line): F_m(T), the vertical
- *   recursions to [e0|f0]^(m=0) for deg e in la .. la + lb, deg f in lc ..
- *   lc + ld, the bra then the ket contraction;
- *   per contracted quartet (here): the horizontal recursions (hrr, as hgp.c),
- *   the Cartesian-to-spherical transform of the d shells (libcint's
- *   coefficients), the output in int2e_sph's layout.
+ * Head-Gordon-Pople scheme, one generated kernel per angular class
+ * (jk_vrr_gen.c, from gen_jk_vrr.py: the vertical recursions per primitive
+ * quartet, the contractions, the horizontal recursions, the d shells'
+ * Cartesian-to-spherical transform and the output at the role strides, all
+ * unrolled); here the pair tables, the F_m tables and the dispatch.
  *
  * A = the bra shell of the higher l (the pair's shells swapped when l_i <
  * l_j), likewise C, so that the recursions build on the higher l.  The
@@ -23,7 +19,9 @@
 #include <math.h>
 #include "cint.h"
 
-#define GEN_KCUT 1e-24
+/* primitive pairs with exp(-ab/p R^2) below are dropped (0: none, for tests) */
+static double GEN_KCUT = 1e-24;
+void SOCVHFgen_set_kcut(double c) { GEN_KCUT = c; }
 #define GT_STEP 0.05
 #define GT_TMAX 40.
 #define GT_N ((int)(GT_TMAX / GT_STEP) + 2)
@@ -76,104 +74,8 @@ typedef struct GenCtx {
         double *tab;
 } GenCtx;
 
-/* ---- Cartesian tables and the horizontal recursion (as hgp.c) ---- */
-#define EMAX (2 * JKV_LMAX + 1)
 #define N3(d) (((d) + 1) * ((d) + 2) * ((d) + 3) / 6)
 #define N2(d) (((d) + 1) * ((d) + 2) / 2)
-#define NE3 N3(EMAX)
-static int c_ready = 0;
-static int c_pow[NE3 + N2(EMAX + 1)][3];
-static int c_dir[NE3], c_dec1[NE3];
-static int c_inc[NE3][3];
-static int c_idx[EMAX + 2][EMAX + 2][EMAX + 2];
-
-static void tables_init(void)
-{
-        int d, x, y, n = 0, k;
-        for (d = 0; d <= EMAX + 1; d++)
-                for (x = d; x >= 0; x--)
-                        for (y = d - x; y >= 0; y--) {
-                                const int z = d - x - y;
-                                c_idx[x][y][z] = n;
-                                c_pow[n][0] = x; c_pow[n][1] = y; c_pow[n][2] = z;
-                                n++;
-                        }
-        for (n = 0; n < NE3; n++) {
-                for (k = 0; k < 3; k++) {
-                        int p[3] = {c_pow[n][0], c_pow[n][1], c_pow[n][2]};
-                        p[k] += 1;
-                        c_inc[n][k] = c_idx[p[0]][p[1]][p[2]];
-                }
-                if (n == 0) continue;
-                k = c_pow[n][0] ? 0 : (c_pow[n][1] ? 1 : 2);
-                c_dir[n] = k;
-                int p[3] = {c_pow[n][0], c_pow[n][1], c_pow[n][2]};
-                p[k] -= 1;
-                c_dec1[n] = c_idx[p[0]][p[1]][p[2]];
-        }
-        c_ready = 1;
-}
-
-/* src[e * ncol + col], e of degree l1 .. l1 + l2 (global) -> dst[(a * nb + b) * ncol + col] */
-static void hrr(double *dst, const double *src, int ncol, int l1, int l2, const double *R, double *wk)
-{
-        const int nb2 = N2(l2);
-        int j, a, b, col;
-        if (l2 == 0) {
-                memcpy(dst, src + (size_t)(l1 > 0 ? N3(l1 - 1) : 0) * ncol, sizeof(double) * N2(l1) * ncol);
-                return;
-        }
-        const int a0 = l1 > 0 ? N3(l1 - 1) : 0;
-        const int na = N3(l1 + l2) - a0;
-        double *prev = wk, *cur = wk + (size_t)na * nb2 * ncol;
-        memcpy(prev, src + (size_t)a0 * ncol, sizeof(double) * na * ncol);
-        int nbp = 1;
-        for (j = 1; j <= l2; j++) {
-                const int nbj = N2(j), amax = N3(l1 + l2 - j) - a0;
-                const int b0 = N3(j - 1), bp0 = j > 1 ? N3(j - 2) : 0;
-                for (a = 0; a < amax; a++) {
-                        const int ag = a0 + a;
-                        for (b = 0; b < nbj; b++) {
-                                const int bg = b0 + b, k = c_dir[bg], b1 = c_dec1[bg] - bp0;
-                                const int a1 = c_inc[ag][k] - a0;
-                                const double *u = prev + ((size_t)a1 * nbp + b1) * ncol;
-                                const double *v = prev + ((size_t)a * nbp + b1) * ncol;
-                                double *o = cur + ((size_t)a * nbj + b) * ncol;
-                                const double r = R[k];
-                                for (col = 0; col < ncol; col++) o[col] = u[col] + r * v[col];
-                        }
-                }
-                double *t = prev; prev = cur; cur = t;
-                nbp = nbj;
-        }
-        memcpy(dst, prev, sizeof(double) * N2(l1) * nb2 * ncol);
-}
-
-/* (la lb | lc ld) Cartesian from S[e * NF + f] (global e, f): out[((c * nd + d) * na + a) * nb + b] */
-static void stream_integrals(double *out, const double *S, int NF, int la, int lb, int lc, int ld,
-                             const double *AB, const double *CD, double *wk)
-{
-        const int f0 = lc > 0 ? N3(lc - 1) : 0, f1 = N3(lc + ld);
-        const int nf = f1 - f0, nab = N2(la) * N2(lb);
-        double *bra = wk, *t = bra + (size_t)nab * NF, *w2 = t + (size_t)NF * nab;
-        int e, f, ab;
-        double *src = w2;
-        const int e0 = la > 0 ? N3(la - 1) : 0, e1 = N3(la + lb);
-        for (e = e0; e < e1; e++)
-                for (f = 0; f < nf; f++) src[(size_t)e * nf + f] = S[(size_t)e * NF + f0 + f];
-        hrr(bra, src, nf, la, lb, AB, w2 + (size_t)e1 * nf);
-        for (ab = 0; ab < nab; ab++)
-                for (f = 0; f < nf; f++) t[(size_t)(f0 + f) * nab + ab] = bra[(size_t)ab * nf + f];
-        hrr(out, t, nab, lc, ld, CD, w2);
-}
-
-/* libcint's Cartesian-to-spherical coefficients of d (xx xy xz yy yz zz -> xy yz z2 xz x2-y2) */
-static const double C2S_D[5][6] = {
-        {0, 1.092548430592079070, 0, 0, 0, 0},
-        {0, 0, 0, 0, 1.092548430592079070, 0},
-        {-0.315391565252520002, 0, 0, -0.315391565252520002, 0, 0.630783130505040012},
-        {0, 0, 1.092548430592079070, 0, 0, 0},
-        {0.546274215296039535, 0, 0, -0.546274215296039535, 0, 0}};
 
 static inline void shell_pair(int ij, int *i, int *j)
 {
@@ -205,7 +107,6 @@ static double common_fac(int l)
 
 GenCtx *SOCVHFgen_ctx_build(int *atm, int natm, int *bas, int nbas, double *env)
 {
-        if (!c_ready) tables_init();
         GenCtx *cx = malloc(sizeof(GenCtx));
         const int npair = nbas * (nbas + 1) / 2;
         int k, pq;
@@ -298,41 +199,17 @@ int SOCVHFgen_takes(const int *shls, const int *bas)
         return 1;
 }
 
-/* doubles of workspace for SOCVHFgen_int2e */
+/* doubles of workspace for SOCVHFgen_int2e: v, w, SK of the generated kernels */
 size_t SOCVHFgen_wksize(int *bas, int nbas)
 {
         int i, np = 1;
         for (i = 0; i < nbas; i++)
                 if (bas[i * BAS_SLOTS + ANG_OF] <= JKV_LMAX && bas[i * BAS_SLOTS + NPRIM_OF] > np)
                         np = bas[i * BAS_SLOTS + NPRIM_OF];
-        const size_t NT = (size_t)(N3(2 * JKV_LMAX) - N3(JKV_LMAX - 1)) * (N3(2 * JKV_LMAX) - N3(JKV_LMAX - 1));
-        const size_t c4 = (size_t)G_MAXCTR * G_MAXCTR * G_MAXCTR * G_MAXCTR;
-        const size_t NE = N3(2 * JKV_LMAX + 1), nab = (size_t)N2(JKV_LMAX + 1) * N2(JKV_LMAX);
-        const size_t nhrr = 2 * nab * NE + NE * NE + 2 * NE * N2(JKV_LMAX + 1) * (NE > nab ? NE : nab);
-        const size_t n6 = (size_t)N2(JKV_LMAX) * N2(JKV_LMAX) * N2(JKV_LMAX) * N2(JKV_LMAX);
-        return NT * np * np                     /* v */
-             + G_MAXCTR * G_MAXCTR * NT         /* w */
-             + c4 * NT                          /* SK */
-             + NE * NE                          /* S */
-             + 2 * n6                           /* Cartesian, spherical integrals */
-             + nhrr;
-}
-
-/* one axis of a (n_out, d_axis, n_in) block from Cartesian d (6) to spherical (5) */
-static void c2s_axis(double *dst, const double *src, int nout, int nin)
-{
-        int o, m, c, i;
-        for (o = 0; o < nout; o++)
-                for (m = 0; m < 5; m++) {
-                        double *d = dst + ((size_t)o * 5 + m) * nin;
-                        for (i = 0; i < nin; i++) d[i] = 0;
-                        for (c = 0; c < 6; c++) {
-                                const double f = C2S_D[m][c];
-                                if (f == 0) continue;
-                                const double *s = src + ((size_t)o * 6 + c) * nin;
-                                for (i = 0; i < nin; i++) d[i] += f * s[i];
-                        }
-                }
+        const size_t ne = N3(2 * JKV_LMAX) - (JKV_LMAX > 0 ? N3(JKV_LMAX - 1) : 0);
+        const size_t NT = ne * ne;
+        return NT * np * np + (size_t)G_MAXCTR * G_MAXCTR * NT
+             + (size_t)G_MAXCTR * G_MAXCTR * G_MAXCTR * G_MAXCTR * NT;
 }
 
 /*
@@ -350,77 +227,14 @@ int SOCVHFgen_int2e(double *out, const int *shls, const GenCtx *cx, double dmax,
         const int bs = B->li < B->lj, ks = K->li < K->lj;
         const int la = bs ? B->lj : B->li, lb = bs ? B->li : B->lj;
         const int lc = ks ? K->lj : K->li, ld = ks ? K->li : K->lj;
-        const int ncb = B->nc, nck = K->nc;
         const double fac = TWO_PI52 * common_fac(la) * common_fac(lb) * common_fac(lc) * common_fac(ld);
-        const double cut = prim_tol / (fac * B->bmax * dmax * ncb * nck);
-        const int nt = jkv_nt[la][lb][lc][ld];
-        const size_t NT = (size_t)(N3(2 * JKV_LMAX) - N3(JKV_LMAX - 1)) * (N3(2 * JKV_LMAX) - N3(JKV_LMAX - 1));
-        double *SK = wk + NT * B->n + (size_t)G_MAXCTR * G_MAXCTR * NT;
-        double *S = SK + (size_t)G_MAXCTR * G_MAXCTR * G_MAXCTR * G_MAXCTR * NT;
-        const size_t NEsq = (size_t)N3(2 * JKV_LMAX + 1) * N3(2 * JKV_LMAX + 1);
-        const size_t n6 = (size_t)N2(JKV_LMAX) * N2(JKV_LMAX) * N2(JKV_LMAX) * N2(JKV_LMAX);
-        double *Ic = S + NEsq, *Is = Ic + n6, *hw = Is + n6;
-        if (!jkv_table[la][lb][lc][ld](SK, B, bs, K, ks, cut, cx->tab, wk)) return 0;
-        double AB[3], CD[3];
-        int x;
-        for (x = 0; x < 3; x++) {
-                AB[x] = bs ? -B->rij[x] : B->rij[x];
-                CD[x] = ks ? -K->rij[x] : K->rij[x];
-        }
-        const int NF = N3(lc + ld), e0 = la > 0 ? N3(la - 1) : 0, f0 = lc > 0 ? N3(lc - 1) : 0;
-        const int NFT = NF - f0, NET = N3(la + lb) - e0;
-        const int na = N2(la), nb_ = N2(lb), nc_ = N2(lc), nd = N2(ld);
-        /* spherical sizes and the shells' positions: role r (A, B, C, D) -> position */
-        const int lr[4] = {la, lb, lc, ld};
-        int nsph[4], r;
-        for (r = 0; r < 4; r++) nsph[r] = 2 * lr[r] + 1;
+        const double cut = prim_tol / (fac * B->bmax * dmax * B->nc * K->nc);
+        /* int2e_sph's layout ((l DK + k) DJ + j) DI + i; role (A, B, C, D) -> position */
+        const size_t DI = (size_t)B->nci * (2 * B->li + 1), DJ = (size_t)B->ncj * (2 * B->lj + 1);
+        const size_t DK = (size_t)K->nci * (2 * K->li + 1);
+        const size_t stp[4] = {1, DI, DI * DJ, DI * DJ * DK};
         const int pos[4] = {bs ? 1 : 0, bs ? 0 : 1, ks ? 3 : 2, ks ? 2 : 3};
-        int nfp[4], ncp[4];                     /* per position: spherical functions, contractions */
-        ncp[0] = B->nci; ncp[1] = B->ncj; ncp[2] = K->nci; ncp[3] = K->ncj;
-        for (r = 0; r < 4; r++) nfp[pos[r]] = nsph[r];
-        const size_t DI = (size_t)ncp[0] * nfp[0], DJ = (size_t)ncp[1] * nfp[1], DK = (size_t)ncp[2] * nfp[2];
-        int ci, cj, ck, cl, e, f;
-        for (cl = 0; cl < K->ncj; cl++)
-        for (ck = 0; ck < K->nci; ck++)
-        for (cj = 0; cj < B->ncj; cj++)
-        for (ci = 0; ci < B->nci; ci++) {
-                const int cb = cj * B->nci + ci, kc = cl * K->nci + ck;
-                const double *sk = SK + ((size_t)kc * ncb + cb) * nt;
-                for (e = 0; e < NET; e++)
-                        for (f = 0; f < NFT; f++) S[(size_t)(e0 + e) * NF + f0 + f] = fac * sk[e * NFT + f];
-                stream_integrals(Ic, S, NF, la, lb, lc, ld, AB, CD, hw);
-                /* Ic[((c * nd + d) * na + a) * nb + b] -> spherical along the d shells, in place order (C, D, A, B) */
-                const double *cur = Ic;
-                double *nxt = Is;
-                int dims[4] = {nc_, nd, na, nb_};       /* axis order C, D, A, B */
-                const int lax[4] = {lc, ld, la, lb};
-                int ax;
-                for (ax = 0; ax < 4; ax++) {
-                        if (lax[ax] != 2) continue;
-                        int nout = 1, nin = 1, q;
-                        for (q = 0; q < ax; q++) nout *= dims[q];
-                        for (q = ax + 1; q < 4; q++) nin *= dims[q];
-                        c2s_axis(nxt, cur, nout, nin);
-                        dims[ax] = 5;
-                        const double *tmp = cur;
-                        cur = nxt;
-                        nxt = (double *)tmp;
-                }
-                /* place: role (A, B, C, D) component m -> position pos[r], contraction of that position */
-                const int cpos[4] = {ci, cj, ck, cl};
-                int mc, md, ma, mb;
-                for (mc = 0; mc < dims[0]; mc++)
-                for (md = 0; md < dims[1]; md++)
-                for (ma = 0; ma < dims[2]; ma++)
-                for (mb = 0; mb < dims[3]; mb++) {
-                        int idx[4];
-                        idx[pos[0]] = cpos[pos[0]] * nfp[pos[0]] + ma;
-                        idx[pos[1]] = cpos[pos[1]] * nfp[pos[1]] + mb;
-                        idx[pos[2]] = cpos[pos[2]] * nfp[pos[2]] + mc;
-                        idx[pos[3]] = cpos[pos[3]] * nfp[pos[3]] + md;
-                        out[(((size_t)idx[3] * DK + idx[2]) * DJ + idx[1]) * DI + idx[0]]
-                                = cur[((mc * dims[1] + md) * dims[2] + ma) * dims[3] + mb];
-                }
-        }
-        return 1;
+        const size_t st[4] = {stp[pos[0]], stp[pos[1]], stp[pos[2]], stp[pos[3]]};
+        (void)bas;
+        return jkg_table[la][lb][lc][ld](out, st, pos, B, bs, K, ks, cut, fac, cx->tab, wk);
 }

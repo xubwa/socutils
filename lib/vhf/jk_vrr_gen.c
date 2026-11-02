@@ -2,13 +2,13 @@
 /* included by jk_gen.c, which defines GPair, boys_n */
 
 /* (00|00): 1 VRR nodes, 1 targets */
-static int jkv_0000(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_0000(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)1 * nb;
+        double *v = wk, *w = v + (size_t)1 * nb, *SK = w + (size_t)1 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 1);
         for (t = 0; t < nk; t++) {
@@ -18,7 +18,6 @@ static int jkv_0000(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -51,17 +50,40 @@ static int jkv_0000(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 1; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 1;
+                double *o = out + cpos[pos[0]] * 1 * st[0] + cpos[pos[1]] * 1 * st[1]
+                          + cpos[pos[2]] * 1 * st[2] + cpos[pos[3]] * 1 * st[3];
+                const double *HB = sk;
+                double R[1];
+                for (i = 0; i < 1; i++) {
+                        R[0 + i] = HB[i * 1 + 0];
+                }
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[0]);
+        }
+        return 1;
 }
 
 /* (00|10): 5 VRR nodes, 3 targets */
-static int jkv_0010(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_0010(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)3 * nb;
+        double *v = wk, *w = v + (size_t)3 * nb, *SK = w + (size_t)3 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 3);
         for (t = 0; t < nk; t++) {
@@ -71,7 +93,6 @@ static int jkv_0010(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -110,17 +131,44 @@ static int jkv_0010(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 3; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 3;
+                double *o = out + cpos[pos[0]] * 1 * st[0] + cpos[pos[1]] * 1 * st[1]
+                          + cpos[pos[2]] * 3 * st[2] + cpos[pos[3]] * 1 * st[3];
+                const double *HB = sk;
+                double R[3];
+                for (i = 0; i < 1; i++) {
+                        R[0 + i] = HB[i * 3 + 0];
+                        R[1 + i] = HB[i * 3 + 1];
+                        R[2 + i] = HB[i * 3 + 2];
+                }
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[0]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[1]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[2]);
+        }
+        return 1;
 }
 
 /* (00|11): 15 VRR nodes, 9 targets */
-static int jkv_0011(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_0011(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)9 * nb;
+        double *v = wk, *w = v + (size_t)9 * nb, *SK = w + (size_t)9 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 9);
         for (t = 0; t < nk; t++) {
@@ -130,7 +178,6 @@ static int jkv_0011(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -185,17 +232,72 @@ static int jkv_0011(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 9; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 9;
+                double *o = out + cpos[pos[0]] * 1 * st[0] + cpos[pos[1]] * 1 * st[1]
+                          + cpos[pos[2]] * 3 * st[2] + cpos[pos[3]] * 3 * st[3];
+                const double *HB = sk;
+                double R[9];
+                double kb200[1];
+                for (i = 0; i < 1; i++) kb200[i] = HB[i * 9 + 3];
+                double kb100[1];
+                for (i = 0; i < 1; i++) kb100[i] = HB[i * 9 + 0];
+                for (i = 0; i < 1; i++) (R + 0)[i] = (kb200)[i] + CD[0] * (kb100)[i];
+                double kb110[1];
+                for (i = 0; i < 1; i++) kb110[i] = HB[i * 9 + 4];
+                for (i = 0; i < 1; i++) (R + 1)[i] = (kb110)[i] + CD[1] * (kb100)[i];
+                double kb101[1];
+                for (i = 0; i < 1; i++) kb101[i] = HB[i * 9 + 5];
+                for (i = 0; i < 1; i++) (R + 2)[i] = (kb101)[i] + CD[2] * (kb100)[i];
+                double kb010[1];
+                for (i = 0; i < 1; i++) kb010[i] = HB[i * 9 + 1];
+                for (i = 0; i < 1; i++) (R + 3)[i] = (kb110)[i] + CD[0] * (kb010)[i];
+                double kb020[1];
+                for (i = 0; i < 1; i++) kb020[i] = HB[i * 9 + 6];
+                for (i = 0; i < 1; i++) (R + 4)[i] = (kb020)[i] + CD[1] * (kb010)[i];
+                double kb011[1];
+                for (i = 0; i < 1; i++) kb011[i] = HB[i * 9 + 7];
+                for (i = 0; i < 1; i++) (R + 5)[i] = (kb011)[i] + CD[2] * (kb010)[i];
+                double kb001[1];
+                for (i = 0; i < 1; i++) kb001[i] = HB[i * 9 + 2];
+                for (i = 0; i < 1; i++) (R + 6)[i] = (kb101)[i] + CD[0] * (kb001)[i];
+                for (i = 0; i < 1; i++) (R + 7)[i] = (kb011)[i] + CD[1] * (kb001)[i];
+                double kb002[1];
+                for (i = 0; i < 1; i++) kb002[i] = HB[i * 9 + 8];
+                for (i = 0; i < 1; i++) (R + 8)[i] = (kb002)[i] + CD[2] * (kb001)[i];
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[0]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1 * R[1]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1 * R[2]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[3]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1 * R[4]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1 * R[5]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[6]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1 * R[7]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1 * R[8]);
+        }
+        return 1;
 }
 
 /* (00|20): 15 VRR nodes, 6 targets */
-static int jkv_0020(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_0020(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)6 * nb;
+        double *v = wk, *w = v + (size_t)6 * nb, *SK = w + (size_t)6 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 6);
         for (t = 0; t < nk; t++) {
@@ -205,7 +307,6 @@ static int jkv_0020(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -257,17 +358,49 @@ static int jkv_0020(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 6; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 6;
+                double *o = out + cpos[pos[0]] * 1 * st[0] + cpos[pos[1]] * 1 * st[1]
+                          + cpos[pos[2]] * 5 * st[2] + cpos[pos[3]] * 1 * st[3];
+                const double *HB = sk;
+                double R[6];
+                for (i = 0; i < 1; i++) {
+                        R[0 + i] = HB[i * 6 + 0];
+                        R[1 + i] = HB[i * 6 + 1];
+                        R[2 + i] = HB[i * 6 + 2];
+                        R[3 + i] = HB[i * 6 + 3];
+                        R[4 + i] = HB[i * 6 + 4];
+                        R[5 + i] = HB[i * 6 + 5];
+                }
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[1]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[4]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[0] + -0.31539156525251999 * R[3] + 0.630783130505039979 * R[5]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[2]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[0] + -0.546274215296039589 * R[3]);
+        }
+        return 1;
 }
 
 /* (00|21): 35 VRR nodes, 16 targets */
-static int jkv_0021(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_0021(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)16 * nb;
+        double *v = wk, *w = v + (size_t)16 * nb, *SK = w + (size_t)16 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 16);
         for (t = 0; t < nk; t++) {
@@ -277,7 +410,6 @@ static int jkv_0021(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -359,17 +491,101 @@ static int jkv_0021(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 16; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 16;
+                double *o = out + cpos[pos[0]] * 1 * st[0] + cpos[pos[1]] * 1 * st[1]
+                          + cpos[pos[2]] * 5 * st[2] + cpos[pos[3]] * 3 * st[3];
+                const double *HB = sk;
+                double R[18];
+                double kb300[1];
+                for (i = 0; i < 1; i++) kb300[i] = HB[i * 16 + 6];
+                double kb200[1];
+                for (i = 0; i < 1; i++) kb200[i] = HB[i * 16 + 0];
+                for (i = 0; i < 1; i++) (R + 0)[i] = (kb300)[i] + CD[0] * (kb200)[i];
+                double kb210[1];
+                for (i = 0; i < 1; i++) kb210[i] = HB[i * 16 + 7];
+                for (i = 0; i < 1; i++) (R + 1)[i] = (kb210)[i] + CD[1] * (kb200)[i];
+                double kb201[1];
+                for (i = 0; i < 1; i++) kb201[i] = HB[i * 16 + 8];
+                for (i = 0; i < 1; i++) (R + 2)[i] = (kb201)[i] + CD[2] * (kb200)[i];
+                double kb110[1];
+                for (i = 0; i < 1; i++) kb110[i] = HB[i * 16 + 1];
+                for (i = 0; i < 1; i++) (R + 3)[i] = (kb210)[i] + CD[0] * (kb110)[i];
+                double kb120[1];
+                for (i = 0; i < 1; i++) kb120[i] = HB[i * 16 + 9];
+                for (i = 0; i < 1; i++) (R + 4)[i] = (kb120)[i] + CD[1] * (kb110)[i];
+                double kb111[1];
+                for (i = 0; i < 1; i++) kb111[i] = HB[i * 16 + 10];
+                for (i = 0; i < 1; i++) (R + 5)[i] = (kb111)[i] + CD[2] * (kb110)[i];
+                double kb101[1];
+                for (i = 0; i < 1; i++) kb101[i] = HB[i * 16 + 2];
+                for (i = 0; i < 1; i++) (R + 6)[i] = (kb201)[i] + CD[0] * (kb101)[i];
+                for (i = 0; i < 1; i++) (R + 7)[i] = (kb111)[i] + CD[1] * (kb101)[i];
+                double kb102[1];
+                for (i = 0; i < 1; i++) kb102[i] = HB[i * 16 + 11];
+                for (i = 0; i < 1; i++) (R + 8)[i] = (kb102)[i] + CD[2] * (kb101)[i];
+                double kb020[1];
+                for (i = 0; i < 1; i++) kb020[i] = HB[i * 16 + 3];
+                for (i = 0; i < 1; i++) (R + 9)[i] = (kb120)[i] + CD[0] * (kb020)[i];
+                double kb030[1];
+                for (i = 0; i < 1; i++) kb030[i] = HB[i * 16 + 12];
+                for (i = 0; i < 1; i++) (R + 10)[i] = (kb030)[i] + CD[1] * (kb020)[i];
+                double kb021[1];
+                for (i = 0; i < 1; i++) kb021[i] = HB[i * 16 + 13];
+                for (i = 0; i < 1; i++) (R + 11)[i] = (kb021)[i] + CD[2] * (kb020)[i];
+                double kb011[1];
+                for (i = 0; i < 1; i++) kb011[i] = HB[i * 16 + 4];
+                for (i = 0; i < 1; i++) (R + 12)[i] = (kb111)[i] + CD[0] * (kb011)[i];
+                for (i = 0; i < 1; i++) (R + 13)[i] = (kb021)[i] + CD[1] * (kb011)[i];
+                double kb012[1];
+                for (i = 0; i < 1; i++) kb012[i] = HB[i * 16 + 14];
+                for (i = 0; i < 1; i++) (R + 14)[i] = (kb012)[i] + CD[2] * (kb011)[i];
+                double kb002[1];
+                for (i = 0; i < 1; i++) kb002[i] = HB[i * 16 + 5];
+                for (i = 0; i < 1; i++) (R + 15)[i] = (kb102)[i] + CD[0] * (kb002)[i];
+                for (i = 0; i < 1; i++) (R + 16)[i] = (kb012)[i] + CD[1] * (kb002)[i];
+                double kb003[1];
+                for (i = 0; i < 1; i++) kb003[i] = HB[i * 16 + 15];
+                for (i = 0; i < 1; i++) (R + 17)[i] = (kb003)[i] + CD[2] * (kb002)[i];
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[3]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[4]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[5]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[12]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[13]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[14]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[0] + -0.31539156525251999 * R[9] + 0.630783130505039979 * R[15]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[1] + -0.31539156525251999 * R[10] + 0.630783130505039979 * R[16]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[2] + -0.31539156525251999 * R[11] + 0.630783130505039979 * R[17]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[6]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[7]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[8]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[0] + -0.546274215296039589 * R[9]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[1] + -0.546274215296039589 * R[10]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[2] + -0.546274215296039589 * R[11]);
+        }
+        return 1;
 }
 
 /* (00|22): 70 VRR nodes, 31 targets */
-static int jkv_0022(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_0022(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)31 * nb;
+        double *v = wk, *w = v + (size_t)31 * nb, *SK = w + (size_t)31 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 31);
         for (t = 0; t < nk; t++) {
@@ -379,7 +595,6 @@ static int jkv_0022(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -511,17 +726,245 @@ static int jkv_0022(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 31; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 31;
+                double *o = out + cpos[pos[0]] * 1 * st[0] + cpos[pos[1]] * 1 * st[1]
+                          + cpos[pos[2]] * 5 * st[2] + cpos[pos[3]] * 5 * st[3];
+                const double *HB = sk;
+                double R[36];
+                double kb400[1];
+                for (i = 0; i < 1; i++) kb400[i] = HB[i * 31 + 16];
+                double kb300[1];
+                for (i = 0; i < 1; i++) kb300[i] = HB[i * 31 + 6];
+                double hk300_100[1];
+                for (i = 0; i < 1; i++) (hk300_100)[i] = (kb400)[i] + CD[0] * (kb300)[i];
+                double kb200[1];
+                for (i = 0; i < 1; i++) kb200[i] = HB[i * 31 + 0];
+                double hk200_100[1];
+                for (i = 0; i < 1; i++) (hk200_100)[i] = (kb300)[i] + CD[0] * (kb200)[i];
+                for (i = 0; i < 1; i++) (R + 0)[i] = (hk300_100)[i] + CD[0] * (hk200_100)[i];
+                double kb310[1];
+                for (i = 0; i < 1; i++) kb310[i] = HB[i * 31 + 17];
+                double hk300_010[1];
+                for (i = 0; i < 1; i++) (hk300_010)[i] = (kb310)[i] + CD[1] * (kb300)[i];
+                double kb210[1];
+                for (i = 0; i < 1; i++) kb210[i] = HB[i * 31 + 7];
+                double hk200_010[1];
+                for (i = 0; i < 1; i++) (hk200_010)[i] = (kb210)[i] + CD[1] * (kb200)[i];
+                for (i = 0; i < 1; i++) (R + 1)[i] = (hk300_010)[i] + CD[0] * (hk200_010)[i];
+                double kb301[1];
+                for (i = 0; i < 1; i++) kb301[i] = HB[i * 31 + 18];
+                double hk300_001[1];
+                for (i = 0; i < 1; i++) (hk300_001)[i] = (kb301)[i] + CD[2] * (kb300)[i];
+                double kb201[1];
+                for (i = 0; i < 1; i++) kb201[i] = HB[i * 31 + 8];
+                double hk200_001[1];
+                for (i = 0; i < 1; i++) (hk200_001)[i] = (kb201)[i] + CD[2] * (kb200)[i];
+                for (i = 0; i < 1; i++) (R + 2)[i] = (hk300_001)[i] + CD[0] * (hk200_001)[i];
+                double kb220[1];
+                for (i = 0; i < 1; i++) kb220[i] = HB[i * 31 + 19];
+                double hk210_010[1];
+                for (i = 0; i < 1; i++) (hk210_010)[i] = (kb220)[i] + CD[1] * (kb210)[i];
+                for (i = 0; i < 1; i++) (R + 3)[i] = (hk210_010)[i] + CD[1] * (hk200_010)[i];
+                double kb211[1];
+                for (i = 0; i < 1; i++) kb211[i] = HB[i * 31 + 20];
+                double hk210_001[1];
+                for (i = 0; i < 1; i++) (hk210_001)[i] = (kb211)[i] + CD[2] * (kb210)[i];
+                for (i = 0; i < 1; i++) (R + 4)[i] = (hk210_001)[i] + CD[1] * (hk200_001)[i];
+                double kb202[1];
+                for (i = 0; i < 1; i++) kb202[i] = HB[i * 31 + 21];
+                double hk201_001[1];
+                for (i = 0; i < 1; i++) (hk201_001)[i] = (kb202)[i] + CD[2] * (kb201)[i];
+                for (i = 0; i < 1; i++) (R + 5)[i] = (hk201_001)[i] + CD[2] * (hk200_001)[i];
+                double hk210_100[1];
+                for (i = 0; i < 1; i++) (hk210_100)[i] = (kb310)[i] + CD[0] * (kb210)[i];
+                double kb110[1];
+                for (i = 0; i < 1; i++) kb110[i] = HB[i * 31 + 1];
+                double hk110_100[1];
+                for (i = 0; i < 1; i++) (hk110_100)[i] = (kb210)[i] + CD[0] * (kb110)[i];
+                for (i = 0; i < 1; i++) (R + 6)[i] = (hk210_100)[i] + CD[0] * (hk110_100)[i];
+                double kb120[1];
+                for (i = 0; i < 1; i++) kb120[i] = HB[i * 31 + 9];
+                double hk110_010[1];
+                for (i = 0; i < 1; i++) (hk110_010)[i] = (kb120)[i] + CD[1] * (kb110)[i];
+                for (i = 0; i < 1; i++) (R + 7)[i] = (hk210_010)[i] + CD[0] * (hk110_010)[i];
+                double kb111[1];
+                for (i = 0; i < 1; i++) kb111[i] = HB[i * 31 + 10];
+                double hk110_001[1];
+                for (i = 0; i < 1; i++) (hk110_001)[i] = (kb111)[i] + CD[2] * (kb110)[i];
+                for (i = 0; i < 1; i++) (R + 8)[i] = (hk210_001)[i] + CD[0] * (hk110_001)[i];
+                double kb130[1];
+                for (i = 0; i < 1; i++) kb130[i] = HB[i * 31 + 22];
+                double hk120_010[1];
+                for (i = 0; i < 1; i++) (hk120_010)[i] = (kb130)[i] + CD[1] * (kb120)[i];
+                for (i = 0; i < 1; i++) (R + 9)[i] = (hk120_010)[i] + CD[1] * (hk110_010)[i];
+                double kb121[1];
+                for (i = 0; i < 1; i++) kb121[i] = HB[i * 31 + 23];
+                double hk120_001[1];
+                for (i = 0; i < 1; i++) (hk120_001)[i] = (kb121)[i] + CD[2] * (kb120)[i];
+                for (i = 0; i < 1; i++) (R + 10)[i] = (hk120_001)[i] + CD[1] * (hk110_001)[i];
+                double kb112[1];
+                for (i = 0; i < 1; i++) kb112[i] = HB[i * 31 + 24];
+                double hk111_001[1];
+                for (i = 0; i < 1; i++) (hk111_001)[i] = (kb112)[i] + CD[2] * (kb111)[i];
+                for (i = 0; i < 1; i++) (R + 11)[i] = (hk111_001)[i] + CD[2] * (hk110_001)[i];
+                double hk201_100[1];
+                for (i = 0; i < 1; i++) (hk201_100)[i] = (kb301)[i] + CD[0] * (kb201)[i];
+                double kb101[1];
+                for (i = 0; i < 1; i++) kb101[i] = HB[i * 31 + 2];
+                double hk101_100[1];
+                for (i = 0; i < 1; i++) (hk101_100)[i] = (kb201)[i] + CD[0] * (kb101)[i];
+                for (i = 0; i < 1; i++) (R + 12)[i] = (hk201_100)[i] + CD[0] * (hk101_100)[i];
+                double hk201_010[1];
+                for (i = 0; i < 1; i++) (hk201_010)[i] = (kb211)[i] + CD[1] * (kb201)[i];
+                double hk101_010[1];
+                for (i = 0; i < 1; i++) (hk101_010)[i] = (kb111)[i] + CD[1] * (kb101)[i];
+                for (i = 0; i < 1; i++) (R + 13)[i] = (hk201_010)[i] + CD[0] * (hk101_010)[i];
+                double kb102[1];
+                for (i = 0; i < 1; i++) kb102[i] = HB[i * 31 + 11];
+                double hk101_001[1];
+                for (i = 0; i < 1; i++) (hk101_001)[i] = (kb102)[i] + CD[2] * (kb101)[i];
+                for (i = 0; i < 1; i++) (R + 14)[i] = (hk201_001)[i] + CD[0] * (hk101_001)[i];
+                double hk111_010[1];
+                for (i = 0; i < 1; i++) (hk111_010)[i] = (kb121)[i] + CD[1] * (kb111)[i];
+                for (i = 0; i < 1; i++) (R + 15)[i] = (hk111_010)[i] + CD[1] * (hk101_010)[i];
+                for (i = 0; i < 1; i++) (R + 16)[i] = (hk111_001)[i] + CD[1] * (hk101_001)[i];
+                double kb103[1];
+                for (i = 0; i < 1; i++) kb103[i] = HB[i * 31 + 25];
+                double hk102_001[1];
+                for (i = 0; i < 1; i++) (hk102_001)[i] = (kb103)[i] + CD[2] * (kb102)[i];
+                for (i = 0; i < 1; i++) (R + 17)[i] = (hk102_001)[i] + CD[2] * (hk101_001)[i];
+                double hk120_100[1];
+                for (i = 0; i < 1; i++) (hk120_100)[i] = (kb220)[i] + CD[0] * (kb120)[i];
+                double kb020[1];
+                for (i = 0; i < 1; i++) kb020[i] = HB[i * 31 + 3];
+                double hk020_100[1];
+                for (i = 0; i < 1; i++) (hk020_100)[i] = (kb120)[i] + CD[0] * (kb020)[i];
+                for (i = 0; i < 1; i++) (R + 18)[i] = (hk120_100)[i] + CD[0] * (hk020_100)[i];
+                double kb030[1];
+                for (i = 0; i < 1; i++) kb030[i] = HB[i * 31 + 12];
+                double hk020_010[1];
+                for (i = 0; i < 1; i++) (hk020_010)[i] = (kb030)[i] + CD[1] * (kb020)[i];
+                for (i = 0; i < 1; i++) (R + 19)[i] = (hk120_010)[i] + CD[0] * (hk020_010)[i];
+                double kb021[1];
+                for (i = 0; i < 1; i++) kb021[i] = HB[i * 31 + 13];
+                double hk020_001[1];
+                for (i = 0; i < 1; i++) (hk020_001)[i] = (kb021)[i] + CD[2] * (kb020)[i];
+                for (i = 0; i < 1; i++) (R + 20)[i] = (hk120_001)[i] + CD[0] * (hk020_001)[i];
+                double kb040[1];
+                for (i = 0; i < 1; i++) kb040[i] = HB[i * 31 + 26];
+                double hk030_010[1];
+                for (i = 0; i < 1; i++) (hk030_010)[i] = (kb040)[i] + CD[1] * (kb030)[i];
+                for (i = 0; i < 1; i++) (R + 21)[i] = (hk030_010)[i] + CD[1] * (hk020_010)[i];
+                double kb031[1];
+                for (i = 0; i < 1; i++) kb031[i] = HB[i * 31 + 27];
+                double hk030_001[1];
+                for (i = 0; i < 1; i++) (hk030_001)[i] = (kb031)[i] + CD[2] * (kb030)[i];
+                for (i = 0; i < 1; i++) (R + 22)[i] = (hk030_001)[i] + CD[1] * (hk020_001)[i];
+                double kb022[1];
+                for (i = 0; i < 1; i++) kb022[i] = HB[i * 31 + 28];
+                double hk021_001[1];
+                for (i = 0; i < 1; i++) (hk021_001)[i] = (kb022)[i] + CD[2] * (kb021)[i];
+                for (i = 0; i < 1; i++) (R + 23)[i] = (hk021_001)[i] + CD[2] * (hk020_001)[i];
+                double hk111_100[1];
+                for (i = 0; i < 1; i++) (hk111_100)[i] = (kb211)[i] + CD[0] * (kb111)[i];
+                double kb011[1];
+                for (i = 0; i < 1; i++) kb011[i] = HB[i * 31 + 4];
+                double hk011_100[1];
+                for (i = 0; i < 1; i++) (hk011_100)[i] = (kb111)[i] + CD[0] * (kb011)[i];
+                for (i = 0; i < 1; i++) (R + 24)[i] = (hk111_100)[i] + CD[0] * (hk011_100)[i];
+                double hk011_010[1];
+                for (i = 0; i < 1; i++) (hk011_010)[i] = (kb021)[i] + CD[1] * (kb011)[i];
+                for (i = 0; i < 1; i++) (R + 25)[i] = (hk111_010)[i] + CD[0] * (hk011_010)[i];
+                double kb012[1];
+                for (i = 0; i < 1; i++) kb012[i] = HB[i * 31 + 14];
+                double hk011_001[1];
+                for (i = 0; i < 1; i++) (hk011_001)[i] = (kb012)[i] + CD[2] * (kb011)[i];
+                for (i = 0; i < 1; i++) (R + 26)[i] = (hk111_001)[i] + CD[0] * (hk011_001)[i];
+                double hk021_010[1];
+                for (i = 0; i < 1; i++) (hk021_010)[i] = (kb031)[i] + CD[1] * (kb021)[i];
+                for (i = 0; i < 1; i++) (R + 27)[i] = (hk021_010)[i] + CD[1] * (hk011_010)[i];
+                for (i = 0; i < 1; i++) (R + 28)[i] = (hk021_001)[i] + CD[1] * (hk011_001)[i];
+                double kb013[1];
+                for (i = 0; i < 1; i++) kb013[i] = HB[i * 31 + 29];
+                double hk012_001[1];
+                for (i = 0; i < 1; i++) (hk012_001)[i] = (kb013)[i] + CD[2] * (kb012)[i];
+                for (i = 0; i < 1; i++) (R + 29)[i] = (hk012_001)[i] + CD[2] * (hk011_001)[i];
+                double hk102_100[1];
+                for (i = 0; i < 1; i++) (hk102_100)[i] = (kb202)[i] + CD[0] * (kb102)[i];
+                double kb002[1];
+                for (i = 0; i < 1; i++) kb002[i] = HB[i * 31 + 5];
+                double hk002_100[1];
+                for (i = 0; i < 1; i++) (hk002_100)[i] = (kb102)[i] + CD[0] * (kb002)[i];
+                for (i = 0; i < 1; i++) (R + 30)[i] = (hk102_100)[i] + CD[0] * (hk002_100)[i];
+                double hk102_010[1];
+                for (i = 0; i < 1; i++) (hk102_010)[i] = (kb112)[i] + CD[1] * (kb102)[i];
+                double hk002_010[1];
+                for (i = 0; i < 1; i++) (hk002_010)[i] = (kb012)[i] + CD[1] * (kb002)[i];
+                for (i = 0; i < 1; i++) (R + 31)[i] = (hk102_010)[i] + CD[0] * (hk002_010)[i];
+                double kb003[1];
+                for (i = 0; i < 1; i++) kb003[i] = HB[i * 31 + 15];
+                double hk002_001[1];
+                for (i = 0; i < 1; i++) (hk002_001)[i] = (kb003)[i] + CD[2] * (kb002)[i];
+                for (i = 0; i < 1; i++) (R + 32)[i] = (hk102_001)[i] + CD[0] * (hk002_001)[i];
+                double hk012_010[1];
+                for (i = 0; i < 1; i++) (hk012_010)[i] = (kb022)[i] + CD[1] * (kb012)[i];
+                for (i = 0; i < 1; i++) (R + 33)[i] = (hk012_010)[i] + CD[1] * (hk002_010)[i];
+                for (i = 0; i < 1; i++) (R + 34)[i] = (hk012_001)[i] + CD[1] * (hk002_001)[i];
+                double kb004[1];
+                for (i = 0; i < 1; i++) kb004[i] = HB[i * 31 + 30];
+                double hk003_001[1];
+                for (i = 0; i < 1; i++) (hk003_001)[i] = (kb004)[i] + CD[2] * (kb003)[i];
+                for (i = 0; i < 1; i++) (R + 35)[i] = (hk003_001)[i] + CD[2] * (hk002_001)[i];
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[7]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[10]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[6] + -0.344580559638620054 * R[9] + 0.689161119277240108 * R[11]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[8]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[6] + -0.596831036594607678 * R[9]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[25]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[28]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[24] + -0.344580559638620054 * R[27] + 0.689161119277240108 * R[29]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[26]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[24] + -0.596831036594607678 * R[27]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[1] + -0.344580559638620054 * R[19] + 0.689161119277240108 * R[31]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[4] + -0.344580559638620054 * R[22] + 0.689161119277240108 * R[34]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0994718394324345806 * R[0] + 0.0994718394324345806 * R[3] + -0.198943678864869161 * R[5] + 0.0994718394324345806 * R[18] + 0.0994718394324345806 * R[21] + -0.198943678864869161 * R[23] + -0.198943678864869161 * R[30] + -0.198943678864869161 * R[33] + 0.397887357729738322 * R[35]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.344580559638620054 * R[2] + -0.344580559638620054 * R[20] + 0.689161119277240108 * R[32]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.172290279819310027 * R[0] + 0.172290279819310027 * R[3] + -0.172290279819310027 * R[18] + 0.172290279819310027 * R[21] + 0.344580559638620054 * R[30] + -0.344580559638620054 * R[33]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[13]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[16]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[12] + -0.344580559638620054 * R[15] + 0.689161119277240108 * R[17]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[14]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[12] + -0.596831036594607678 * R[15]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[1] + -0.596831036594607678 * R[19]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[4] + -0.596831036594607678 * R[22]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[0] + -0.172290279819310027 * R[3] + 0.344580559638620054 * R[5] + 0.172290279819310027 * R[18] + 0.172290279819310027 * R[21] + -0.344580559638620054 * R[23]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.596831036594607678 * R[2] + -0.596831036594607678 * R[20]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.298415518297303839 * R[0] + -0.298415518297303839 * R[3] + -0.298415518297303839 * R[18] + 0.298415518297303839 * R[21]);
+        }
+        return 1;
 }
 
 /* (10|00): 5 VRR nodes, 3 targets */
-static int jkv_1000(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_1000(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)3 * nb;
+        double *v = wk, *w = v + (size_t)3 * nb, *SK = w + (size_t)3 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 3);
         for (t = 0; t < nk; t++) {
@@ -531,7 +974,6 @@ static int jkv_1000(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -570,17 +1012,42 @@ static int jkv_1000(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 3; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 3;
+                double *o = out + cpos[pos[0]] * 3 * st[0] + cpos[pos[1]] * 1 * st[1]
+                          + cpos[pos[2]] * 1 * st[2] + cpos[pos[3]] * 1 * st[3];
+                const double *HB = sk;
+                double R[3];
+                for (i = 0; i < 3; i++) {
+                        R[0 + i] = HB[i * 1 + 0];
+                }
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[0]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[1]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[2]);
+        }
+        return 1;
 }
 
 /* (10|10): 18 VRR nodes, 9 targets */
-static int jkv_1010(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_1010(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)9 * nb;
+        double *v = wk, *w = v + (size_t)9 * nb, *SK = w + (size_t)9 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 9);
         for (t = 0; t < nk; t++) {
@@ -590,7 +1057,6 @@ static int jkv_1010(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -648,17 +1114,50 @@ static int jkv_1010(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 9; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 9;
+                double *o = out + cpos[pos[0]] * 3 * st[0] + cpos[pos[1]] * 1 * st[1]
+                          + cpos[pos[2]] * 3 * st[2] + cpos[pos[3]] * 1 * st[3];
+                const double *HB = sk;
+                double R[9];
+                for (i = 0; i < 3; i++) {
+                        R[0 + i] = HB[i * 3 + 0];
+                        R[3 + i] = HB[i * 3 + 1];
+                        R[6 + i] = HB[i * 3 + 2];
+                }
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[0]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[1]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[2]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[3]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[4]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[5]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[6]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[7]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[8]);
+        }
+        return 1;
 }
 
 /* (10|11): 52 VRR nodes, 27 targets */
-static int jkv_1011(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_1011(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)27 * nb;
+        double *v = wk, *w = v + (size_t)27 * nb, *SK = w + (size_t)27 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 27);
         for (t = 0; t < nk; t++) {
@@ -668,7 +1167,6 @@ static int jkv_1011(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -778,17 +1276,90 @@ static int jkv_1011(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 27; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 27;
+                double *o = out + cpos[pos[0]] * 3 * st[0] + cpos[pos[1]] * 1 * st[1]
+                          + cpos[pos[2]] * 3 * st[2] + cpos[pos[3]] * 3 * st[3];
+                const double *HB = sk;
+                double R[27];
+                double kb200[3];
+                for (i = 0; i < 3; i++) kb200[i] = HB[i * 9 + 3];
+                double kb100[3];
+                for (i = 0; i < 3; i++) kb100[i] = HB[i * 9 + 0];
+                for (i = 0; i < 3; i++) (R + 0)[i] = (kb200)[i] + CD[0] * (kb100)[i];
+                double kb110[3];
+                for (i = 0; i < 3; i++) kb110[i] = HB[i * 9 + 4];
+                for (i = 0; i < 3; i++) (R + 3)[i] = (kb110)[i] + CD[1] * (kb100)[i];
+                double kb101[3];
+                for (i = 0; i < 3; i++) kb101[i] = HB[i * 9 + 5];
+                for (i = 0; i < 3; i++) (R + 6)[i] = (kb101)[i] + CD[2] * (kb100)[i];
+                double kb010[3];
+                for (i = 0; i < 3; i++) kb010[i] = HB[i * 9 + 1];
+                for (i = 0; i < 3; i++) (R + 9)[i] = (kb110)[i] + CD[0] * (kb010)[i];
+                double kb020[3];
+                for (i = 0; i < 3; i++) kb020[i] = HB[i * 9 + 6];
+                for (i = 0; i < 3; i++) (R + 12)[i] = (kb020)[i] + CD[1] * (kb010)[i];
+                double kb011[3];
+                for (i = 0; i < 3; i++) kb011[i] = HB[i * 9 + 7];
+                for (i = 0; i < 3; i++) (R + 15)[i] = (kb011)[i] + CD[2] * (kb010)[i];
+                double kb001[3];
+                for (i = 0; i < 3; i++) kb001[i] = HB[i * 9 + 2];
+                for (i = 0; i < 3; i++) (R + 18)[i] = (kb101)[i] + CD[0] * (kb001)[i];
+                for (i = 0; i < 3; i++) (R + 21)[i] = (kb011)[i] + CD[1] * (kb001)[i];
+                double kb002[3];
+                for (i = 0; i < 3; i++) kb002[i] = HB[i * 9 + 8];
+                for (i = 0; i < 3; i++) (R + 24)[i] = (kb002)[i] + CD[2] * (kb001)[i];
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[0]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[1]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[2]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1 * R[3]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1 * R[4]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1 * R[5]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1 * R[6]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1 * R[7]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1 * R[8]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[9]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[10]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[11]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1 * R[12]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1 * R[13]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1 * R[14]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1 * R[15]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1 * R[16]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1 * R[17]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[18]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[19]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[20]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1 * R[21]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1 * R[22]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1 * R[23]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1 * R[24]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1 * R[25]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1 * R[26]);
+        }
+        return 1;
 }
 
 /* (10|20): 52 VRR nodes, 18 targets */
-static int jkv_1020(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_1020(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)18 * nb;
+        double *v = wk, *w = v + (size_t)18 * nb, *SK = w + (size_t)18 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 18);
         for (t = 0; t < nk; t++) {
@@ -798,7 +1369,6 @@ static int jkv_1020(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -899,17 +1469,59 @@ static int jkv_1020(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 18; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 18;
+                double *o = out + cpos[pos[0]] * 3 * st[0] + cpos[pos[1]] * 1 * st[1]
+                          + cpos[pos[2]] * 5 * st[2] + cpos[pos[3]] * 1 * st[3];
+                const double *HB = sk;
+                double R[18];
+                for (i = 0; i < 3; i++) {
+                        R[0 + i] = HB[i * 6 + 0];
+                        R[3 + i] = HB[i * 6 + 1];
+                        R[6 + i] = HB[i * 6 + 2];
+                        R[9 + i] = HB[i * 6 + 3];
+                        R[12 + i] = HB[i * 6 + 4];
+                        R[15 + i] = HB[i * 6 + 5];
+                }
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[3]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[4]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[5]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[12]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[13]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[14]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[0] + -0.31539156525251999 * R[9] + 0.630783130505039979 * R[15]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[1] + -0.31539156525251999 * R[10] + 0.630783130505039979 * R[16]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[2] + -0.31539156525251999 * R[11] + 0.630783130505039979 * R[17]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[6]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[7]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[8]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[0] + -0.546274215296039589 * R[9]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[1] + -0.546274215296039589 * R[10]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[2] + -0.546274215296039589 * R[11]);
+        }
+        return 1;
 }
 
 /* (10|21): 122 VRR nodes, 48 targets */
-static int jkv_1021(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_1021(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)48 * nb;
+        double *v = wk, *w = v + (size_t)48 * nb, *SK = w + (size_t)48 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 48);
         for (t = 0; t < nk; t++) {
@@ -919,7 +1531,6 @@ static int jkv_1021(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -1120,17 +1731,131 @@ static int jkv_1021(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 48; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 48;
+                double *o = out + cpos[pos[0]] * 3 * st[0] + cpos[pos[1]] * 1 * st[1]
+                          + cpos[pos[2]] * 5 * st[2] + cpos[pos[3]] * 3 * st[3];
+                const double *HB = sk;
+                double R[54];
+                double kb300[3];
+                for (i = 0; i < 3; i++) kb300[i] = HB[i * 16 + 6];
+                double kb200[3];
+                for (i = 0; i < 3; i++) kb200[i] = HB[i * 16 + 0];
+                for (i = 0; i < 3; i++) (R + 0)[i] = (kb300)[i] + CD[0] * (kb200)[i];
+                double kb210[3];
+                for (i = 0; i < 3; i++) kb210[i] = HB[i * 16 + 7];
+                for (i = 0; i < 3; i++) (R + 3)[i] = (kb210)[i] + CD[1] * (kb200)[i];
+                double kb201[3];
+                for (i = 0; i < 3; i++) kb201[i] = HB[i * 16 + 8];
+                for (i = 0; i < 3; i++) (R + 6)[i] = (kb201)[i] + CD[2] * (kb200)[i];
+                double kb110[3];
+                for (i = 0; i < 3; i++) kb110[i] = HB[i * 16 + 1];
+                for (i = 0; i < 3; i++) (R + 9)[i] = (kb210)[i] + CD[0] * (kb110)[i];
+                double kb120[3];
+                for (i = 0; i < 3; i++) kb120[i] = HB[i * 16 + 9];
+                for (i = 0; i < 3; i++) (R + 12)[i] = (kb120)[i] + CD[1] * (kb110)[i];
+                double kb111[3];
+                for (i = 0; i < 3; i++) kb111[i] = HB[i * 16 + 10];
+                for (i = 0; i < 3; i++) (R + 15)[i] = (kb111)[i] + CD[2] * (kb110)[i];
+                double kb101[3];
+                for (i = 0; i < 3; i++) kb101[i] = HB[i * 16 + 2];
+                for (i = 0; i < 3; i++) (R + 18)[i] = (kb201)[i] + CD[0] * (kb101)[i];
+                for (i = 0; i < 3; i++) (R + 21)[i] = (kb111)[i] + CD[1] * (kb101)[i];
+                double kb102[3];
+                for (i = 0; i < 3; i++) kb102[i] = HB[i * 16 + 11];
+                for (i = 0; i < 3; i++) (R + 24)[i] = (kb102)[i] + CD[2] * (kb101)[i];
+                double kb020[3];
+                for (i = 0; i < 3; i++) kb020[i] = HB[i * 16 + 3];
+                for (i = 0; i < 3; i++) (R + 27)[i] = (kb120)[i] + CD[0] * (kb020)[i];
+                double kb030[3];
+                for (i = 0; i < 3; i++) kb030[i] = HB[i * 16 + 12];
+                for (i = 0; i < 3; i++) (R + 30)[i] = (kb030)[i] + CD[1] * (kb020)[i];
+                double kb021[3];
+                for (i = 0; i < 3; i++) kb021[i] = HB[i * 16 + 13];
+                for (i = 0; i < 3; i++) (R + 33)[i] = (kb021)[i] + CD[2] * (kb020)[i];
+                double kb011[3];
+                for (i = 0; i < 3; i++) kb011[i] = HB[i * 16 + 4];
+                for (i = 0; i < 3; i++) (R + 36)[i] = (kb111)[i] + CD[0] * (kb011)[i];
+                for (i = 0; i < 3; i++) (R + 39)[i] = (kb021)[i] + CD[1] * (kb011)[i];
+                double kb012[3];
+                for (i = 0; i < 3; i++) kb012[i] = HB[i * 16 + 14];
+                for (i = 0; i < 3; i++) (R + 42)[i] = (kb012)[i] + CD[2] * (kb011)[i];
+                double kb002[3];
+                for (i = 0; i < 3; i++) kb002[i] = HB[i * 16 + 5];
+                for (i = 0; i < 3; i++) (R + 45)[i] = (kb102)[i] + CD[0] * (kb002)[i];
+                for (i = 0; i < 3; i++) (R + 48)[i] = (kb012)[i] + CD[1] * (kb002)[i];
+                double kb003[3];
+                for (i = 0; i < 3; i++) kb003[i] = HB[i * 16 + 15];
+                for (i = 0; i < 3; i++) (R + 51)[i] = (kb003)[i] + CD[2] * (kb002)[i];
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[9]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[10]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[11]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[12]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[13]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[14]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[15]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[16]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[17]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[36]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[37]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[38]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[39]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[40]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[41]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[42]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[43]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[44]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[0] + -0.31539156525251999 * R[27] + 0.630783130505039979 * R[45]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[1] + -0.31539156525251999 * R[28] + 0.630783130505039979 * R[46]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[2] + -0.31539156525251999 * R[29] + 0.630783130505039979 * R[47]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[3] + -0.31539156525251999 * R[30] + 0.630783130505039979 * R[48]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[4] + -0.31539156525251999 * R[31] + 0.630783130505039979 * R[49]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[5] + -0.31539156525251999 * R[32] + 0.630783130505039979 * R[50]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[6] + -0.31539156525251999 * R[33] + 0.630783130505039979 * R[51]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[7] + -0.31539156525251999 * R[34] + 0.630783130505039979 * R[52]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[8] + -0.31539156525251999 * R[35] + 0.630783130505039979 * R[53]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[18]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[19]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[20]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[21]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[22]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[23]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[24]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[25]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[26]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[0] + -0.546274215296039589 * R[27]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[1] + -0.546274215296039589 * R[28]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[2] + -0.546274215296039589 * R[29]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[3] + -0.546274215296039589 * R[30]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[4] + -0.546274215296039589 * R[31]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[5] + -0.546274215296039589 * R[32]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[6] + -0.546274215296039589 * R[33]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[7] + -0.546274215296039589 * R[34]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[8] + -0.546274215296039589 * R[35]);
+        }
+        return 1;
 }
 
 /* (10|22): 247 VRR nodes, 93 targets */
-static int jkv_1022(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_1022(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)93 * nb;
+        double *v = wk, *w = v + (size_t)93 * nb, *SK = w + (size_t)93 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 93);
         for (t = 0; t < nk; t++) {
@@ -1140,7 +1865,6 @@ static int jkv_1022(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -1511,17 +2235,295 @@ static int jkv_1022(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 93; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 93;
+                double *o = out + cpos[pos[0]] * 3 * st[0] + cpos[pos[1]] * 1 * st[1]
+                          + cpos[pos[2]] * 5 * st[2] + cpos[pos[3]] * 5 * st[3];
+                const double *HB = sk;
+                double R[108];
+                double kb400[3];
+                for (i = 0; i < 3; i++) kb400[i] = HB[i * 31 + 16];
+                double kb300[3];
+                for (i = 0; i < 3; i++) kb300[i] = HB[i * 31 + 6];
+                double hk300_100[3];
+                for (i = 0; i < 3; i++) (hk300_100)[i] = (kb400)[i] + CD[0] * (kb300)[i];
+                double kb200[3];
+                for (i = 0; i < 3; i++) kb200[i] = HB[i * 31 + 0];
+                double hk200_100[3];
+                for (i = 0; i < 3; i++) (hk200_100)[i] = (kb300)[i] + CD[0] * (kb200)[i];
+                for (i = 0; i < 3; i++) (R + 0)[i] = (hk300_100)[i] + CD[0] * (hk200_100)[i];
+                double kb310[3];
+                for (i = 0; i < 3; i++) kb310[i] = HB[i * 31 + 17];
+                double hk300_010[3];
+                for (i = 0; i < 3; i++) (hk300_010)[i] = (kb310)[i] + CD[1] * (kb300)[i];
+                double kb210[3];
+                for (i = 0; i < 3; i++) kb210[i] = HB[i * 31 + 7];
+                double hk200_010[3];
+                for (i = 0; i < 3; i++) (hk200_010)[i] = (kb210)[i] + CD[1] * (kb200)[i];
+                for (i = 0; i < 3; i++) (R + 3)[i] = (hk300_010)[i] + CD[0] * (hk200_010)[i];
+                double kb301[3];
+                for (i = 0; i < 3; i++) kb301[i] = HB[i * 31 + 18];
+                double hk300_001[3];
+                for (i = 0; i < 3; i++) (hk300_001)[i] = (kb301)[i] + CD[2] * (kb300)[i];
+                double kb201[3];
+                for (i = 0; i < 3; i++) kb201[i] = HB[i * 31 + 8];
+                double hk200_001[3];
+                for (i = 0; i < 3; i++) (hk200_001)[i] = (kb201)[i] + CD[2] * (kb200)[i];
+                for (i = 0; i < 3; i++) (R + 6)[i] = (hk300_001)[i] + CD[0] * (hk200_001)[i];
+                double kb220[3];
+                for (i = 0; i < 3; i++) kb220[i] = HB[i * 31 + 19];
+                double hk210_010[3];
+                for (i = 0; i < 3; i++) (hk210_010)[i] = (kb220)[i] + CD[1] * (kb210)[i];
+                for (i = 0; i < 3; i++) (R + 9)[i] = (hk210_010)[i] + CD[1] * (hk200_010)[i];
+                double kb211[3];
+                for (i = 0; i < 3; i++) kb211[i] = HB[i * 31 + 20];
+                double hk210_001[3];
+                for (i = 0; i < 3; i++) (hk210_001)[i] = (kb211)[i] + CD[2] * (kb210)[i];
+                for (i = 0; i < 3; i++) (R + 12)[i] = (hk210_001)[i] + CD[1] * (hk200_001)[i];
+                double kb202[3];
+                for (i = 0; i < 3; i++) kb202[i] = HB[i * 31 + 21];
+                double hk201_001[3];
+                for (i = 0; i < 3; i++) (hk201_001)[i] = (kb202)[i] + CD[2] * (kb201)[i];
+                for (i = 0; i < 3; i++) (R + 15)[i] = (hk201_001)[i] + CD[2] * (hk200_001)[i];
+                double hk210_100[3];
+                for (i = 0; i < 3; i++) (hk210_100)[i] = (kb310)[i] + CD[0] * (kb210)[i];
+                double kb110[3];
+                for (i = 0; i < 3; i++) kb110[i] = HB[i * 31 + 1];
+                double hk110_100[3];
+                for (i = 0; i < 3; i++) (hk110_100)[i] = (kb210)[i] + CD[0] * (kb110)[i];
+                for (i = 0; i < 3; i++) (R + 18)[i] = (hk210_100)[i] + CD[0] * (hk110_100)[i];
+                double kb120[3];
+                for (i = 0; i < 3; i++) kb120[i] = HB[i * 31 + 9];
+                double hk110_010[3];
+                for (i = 0; i < 3; i++) (hk110_010)[i] = (kb120)[i] + CD[1] * (kb110)[i];
+                for (i = 0; i < 3; i++) (R + 21)[i] = (hk210_010)[i] + CD[0] * (hk110_010)[i];
+                double kb111[3];
+                for (i = 0; i < 3; i++) kb111[i] = HB[i * 31 + 10];
+                double hk110_001[3];
+                for (i = 0; i < 3; i++) (hk110_001)[i] = (kb111)[i] + CD[2] * (kb110)[i];
+                for (i = 0; i < 3; i++) (R + 24)[i] = (hk210_001)[i] + CD[0] * (hk110_001)[i];
+                double kb130[3];
+                for (i = 0; i < 3; i++) kb130[i] = HB[i * 31 + 22];
+                double hk120_010[3];
+                for (i = 0; i < 3; i++) (hk120_010)[i] = (kb130)[i] + CD[1] * (kb120)[i];
+                for (i = 0; i < 3; i++) (R + 27)[i] = (hk120_010)[i] + CD[1] * (hk110_010)[i];
+                double kb121[3];
+                for (i = 0; i < 3; i++) kb121[i] = HB[i * 31 + 23];
+                double hk120_001[3];
+                for (i = 0; i < 3; i++) (hk120_001)[i] = (kb121)[i] + CD[2] * (kb120)[i];
+                for (i = 0; i < 3; i++) (R + 30)[i] = (hk120_001)[i] + CD[1] * (hk110_001)[i];
+                double kb112[3];
+                for (i = 0; i < 3; i++) kb112[i] = HB[i * 31 + 24];
+                double hk111_001[3];
+                for (i = 0; i < 3; i++) (hk111_001)[i] = (kb112)[i] + CD[2] * (kb111)[i];
+                for (i = 0; i < 3; i++) (R + 33)[i] = (hk111_001)[i] + CD[2] * (hk110_001)[i];
+                double hk201_100[3];
+                for (i = 0; i < 3; i++) (hk201_100)[i] = (kb301)[i] + CD[0] * (kb201)[i];
+                double kb101[3];
+                for (i = 0; i < 3; i++) kb101[i] = HB[i * 31 + 2];
+                double hk101_100[3];
+                for (i = 0; i < 3; i++) (hk101_100)[i] = (kb201)[i] + CD[0] * (kb101)[i];
+                for (i = 0; i < 3; i++) (R + 36)[i] = (hk201_100)[i] + CD[0] * (hk101_100)[i];
+                double hk201_010[3];
+                for (i = 0; i < 3; i++) (hk201_010)[i] = (kb211)[i] + CD[1] * (kb201)[i];
+                double hk101_010[3];
+                for (i = 0; i < 3; i++) (hk101_010)[i] = (kb111)[i] + CD[1] * (kb101)[i];
+                for (i = 0; i < 3; i++) (R + 39)[i] = (hk201_010)[i] + CD[0] * (hk101_010)[i];
+                double kb102[3];
+                for (i = 0; i < 3; i++) kb102[i] = HB[i * 31 + 11];
+                double hk101_001[3];
+                for (i = 0; i < 3; i++) (hk101_001)[i] = (kb102)[i] + CD[2] * (kb101)[i];
+                for (i = 0; i < 3; i++) (R + 42)[i] = (hk201_001)[i] + CD[0] * (hk101_001)[i];
+                double hk111_010[3];
+                for (i = 0; i < 3; i++) (hk111_010)[i] = (kb121)[i] + CD[1] * (kb111)[i];
+                for (i = 0; i < 3; i++) (R + 45)[i] = (hk111_010)[i] + CD[1] * (hk101_010)[i];
+                for (i = 0; i < 3; i++) (R + 48)[i] = (hk111_001)[i] + CD[1] * (hk101_001)[i];
+                double kb103[3];
+                for (i = 0; i < 3; i++) kb103[i] = HB[i * 31 + 25];
+                double hk102_001[3];
+                for (i = 0; i < 3; i++) (hk102_001)[i] = (kb103)[i] + CD[2] * (kb102)[i];
+                for (i = 0; i < 3; i++) (R + 51)[i] = (hk102_001)[i] + CD[2] * (hk101_001)[i];
+                double hk120_100[3];
+                for (i = 0; i < 3; i++) (hk120_100)[i] = (kb220)[i] + CD[0] * (kb120)[i];
+                double kb020[3];
+                for (i = 0; i < 3; i++) kb020[i] = HB[i * 31 + 3];
+                double hk020_100[3];
+                for (i = 0; i < 3; i++) (hk020_100)[i] = (kb120)[i] + CD[0] * (kb020)[i];
+                for (i = 0; i < 3; i++) (R + 54)[i] = (hk120_100)[i] + CD[0] * (hk020_100)[i];
+                double kb030[3];
+                for (i = 0; i < 3; i++) kb030[i] = HB[i * 31 + 12];
+                double hk020_010[3];
+                for (i = 0; i < 3; i++) (hk020_010)[i] = (kb030)[i] + CD[1] * (kb020)[i];
+                for (i = 0; i < 3; i++) (R + 57)[i] = (hk120_010)[i] + CD[0] * (hk020_010)[i];
+                double kb021[3];
+                for (i = 0; i < 3; i++) kb021[i] = HB[i * 31 + 13];
+                double hk020_001[3];
+                for (i = 0; i < 3; i++) (hk020_001)[i] = (kb021)[i] + CD[2] * (kb020)[i];
+                for (i = 0; i < 3; i++) (R + 60)[i] = (hk120_001)[i] + CD[0] * (hk020_001)[i];
+                double kb040[3];
+                for (i = 0; i < 3; i++) kb040[i] = HB[i * 31 + 26];
+                double hk030_010[3];
+                for (i = 0; i < 3; i++) (hk030_010)[i] = (kb040)[i] + CD[1] * (kb030)[i];
+                for (i = 0; i < 3; i++) (R + 63)[i] = (hk030_010)[i] + CD[1] * (hk020_010)[i];
+                double kb031[3];
+                for (i = 0; i < 3; i++) kb031[i] = HB[i * 31 + 27];
+                double hk030_001[3];
+                for (i = 0; i < 3; i++) (hk030_001)[i] = (kb031)[i] + CD[2] * (kb030)[i];
+                for (i = 0; i < 3; i++) (R + 66)[i] = (hk030_001)[i] + CD[1] * (hk020_001)[i];
+                double kb022[3];
+                for (i = 0; i < 3; i++) kb022[i] = HB[i * 31 + 28];
+                double hk021_001[3];
+                for (i = 0; i < 3; i++) (hk021_001)[i] = (kb022)[i] + CD[2] * (kb021)[i];
+                for (i = 0; i < 3; i++) (R + 69)[i] = (hk021_001)[i] + CD[2] * (hk020_001)[i];
+                double hk111_100[3];
+                for (i = 0; i < 3; i++) (hk111_100)[i] = (kb211)[i] + CD[0] * (kb111)[i];
+                double kb011[3];
+                for (i = 0; i < 3; i++) kb011[i] = HB[i * 31 + 4];
+                double hk011_100[3];
+                for (i = 0; i < 3; i++) (hk011_100)[i] = (kb111)[i] + CD[0] * (kb011)[i];
+                for (i = 0; i < 3; i++) (R + 72)[i] = (hk111_100)[i] + CD[0] * (hk011_100)[i];
+                double hk011_010[3];
+                for (i = 0; i < 3; i++) (hk011_010)[i] = (kb021)[i] + CD[1] * (kb011)[i];
+                for (i = 0; i < 3; i++) (R + 75)[i] = (hk111_010)[i] + CD[0] * (hk011_010)[i];
+                double kb012[3];
+                for (i = 0; i < 3; i++) kb012[i] = HB[i * 31 + 14];
+                double hk011_001[3];
+                for (i = 0; i < 3; i++) (hk011_001)[i] = (kb012)[i] + CD[2] * (kb011)[i];
+                for (i = 0; i < 3; i++) (R + 78)[i] = (hk111_001)[i] + CD[0] * (hk011_001)[i];
+                double hk021_010[3];
+                for (i = 0; i < 3; i++) (hk021_010)[i] = (kb031)[i] + CD[1] * (kb021)[i];
+                for (i = 0; i < 3; i++) (R + 81)[i] = (hk021_010)[i] + CD[1] * (hk011_010)[i];
+                for (i = 0; i < 3; i++) (R + 84)[i] = (hk021_001)[i] + CD[1] * (hk011_001)[i];
+                double kb013[3];
+                for (i = 0; i < 3; i++) kb013[i] = HB[i * 31 + 29];
+                double hk012_001[3];
+                for (i = 0; i < 3; i++) (hk012_001)[i] = (kb013)[i] + CD[2] * (kb012)[i];
+                for (i = 0; i < 3; i++) (R + 87)[i] = (hk012_001)[i] + CD[2] * (hk011_001)[i];
+                double hk102_100[3];
+                for (i = 0; i < 3; i++) (hk102_100)[i] = (kb202)[i] + CD[0] * (kb102)[i];
+                double kb002[3];
+                for (i = 0; i < 3; i++) kb002[i] = HB[i * 31 + 5];
+                double hk002_100[3];
+                for (i = 0; i < 3; i++) (hk002_100)[i] = (kb102)[i] + CD[0] * (kb002)[i];
+                for (i = 0; i < 3; i++) (R + 90)[i] = (hk102_100)[i] + CD[0] * (hk002_100)[i];
+                double hk102_010[3];
+                for (i = 0; i < 3; i++) (hk102_010)[i] = (kb112)[i] + CD[1] * (kb102)[i];
+                double hk002_010[3];
+                for (i = 0; i < 3; i++) (hk002_010)[i] = (kb012)[i] + CD[1] * (kb002)[i];
+                for (i = 0; i < 3; i++) (R + 93)[i] = (hk102_010)[i] + CD[0] * (hk002_010)[i];
+                double kb003[3];
+                for (i = 0; i < 3; i++) kb003[i] = HB[i * 31 + 15];
+                double hk002_001[3];
+                for (i = 0; i < 3; i++) (hk002_001)[i] = (kb003)[i] + CD[2] * (kb002)[i];
+                for (i = 0; i < 3; i++) (R + 96)[i] = (hk102_001)[i] + CD[0] * (hk002_001)[i];
+                double hk012_010[3];
+                for (i = 0; i < 3; i++) (hk012_010)[i] = (kb022)[i] + CD[1] * (kb012)[i];
+                for (i = 0; i < 3; i++) (R + 99)[i] = (hk012_010)[i] + CD[1] * (hk002_010)[i];
+                for (i = 0; i < 3; i++) (R + 102)[i] = (hk012_001)[i] + CD[1] * (hk002_001)[i];
+                double kb004[3];
+                for (i = 0; i < 3; i++) kb004[i] = HB[i * 31 + 30];
+                double hk003_001[3];
+                for (i = 0; i < 3; i++) (hk003_001)[i] = (kb004)[i] + CD[2] * (kb003)[i];
+                for (i = 0; i < 3; i++) (R + 105)[i] = (hk003_001)[i] + CD[2] * (hk002_001)[i];
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[21]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[22]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[23]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[30]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[31]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[32]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[18] + -0.344580559638620054 * R[27] + 0.689161119277240108 * R[33]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[19] + -0.344580559638620054 * R[28] + 0.689161119277240108 * R[34]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[20] + -0.344580559638620054 * R[29] + 0.689161119277240108 * R[35]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[24]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[25]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[26]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[18] + -0.596831036594607678 * R[27]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[19] + -0.596831036594607678 * R[28]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[20] + -0.596831036594607678 * R[29]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[75]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[76]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[77]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[84]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[85]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[86]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[72] + -0.344580559638620054 * R[81] + 0.689161119277240108 * R[87]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[73] + -0.344580559638620054 * R[82] + 0.689161119277240108 * R[88]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[74] + -0.344580559638620054 * R[83] + 0.689161119277240108 * R[89]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[78]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[79]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[80]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[72] + -0.596831036594607678 * R[81]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[73] + -0.596831036594607678 * R[82]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[74] + -0.596831036594607678 * R[83]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[3] + -0.344580559638620054 * R[57] + 0.689161119277240108 * R[93]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[4] + -0.344580559638620054 * R[58] + 0.689161119277240108 * R[94]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[5] + -0.344580559638620054 * R[59] + 0.689161119277240108 * R[95]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[12] + -0.344580559638620054 * R[66] + 0.689161119277240108 * R[102]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[13] + -0.344580559638620054 * R[67] + 0.689161119277240108 * R[103]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[14] + -0.344580559638620054 * R[68] + 0.689161119277240108 * R[104]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0994718394324345806 * R[0] + 0.0994718394324345806 * R[9] + -0.198943678864869161 * R[15] + 0.0994718394324345806 * R[54] + 0.0994718394324345806 * R[63] + -0.198943678864869161 * R[69] + -0.198943678864869161 * R[90] + -0.198943678864869161 * R[99] + 0.397887357729738322 * R[105]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0994718394324345806 * R[1] + 0.0994718394324345806 * R[10] + -0.198943678864869161 * R[16] + 0.0994718394324345806 * R[55] + 0.0994718394324345806 * R[64] + -0.198943678864869161 * R[70] + -0.198943678864869161 * R[91] + -0.198943678864869161 * R[100] + 0.397887357729738322 * R[106]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0994718394324345806 * R[2] + 0.0994718394324345806 * R[11] + -0.198943678864869161 * R[17] + 0.0994718394324345806 * R[56] + 0.0994718394324345806 * R[65] + -0.198943678864869161 * R[71] + -0.198943678864869161 * R[92] + -0.198943678864869161 * R[101] + 0.397887357729738322 * R[107]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.344580559638620054 * R[6] + -0.344580559638620054 * R[60] + 0.689161119277240108 * R[96]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.344580559638620054 * R[7] + -0.344580559638620054 * R[61] + 0.689161119277240108 * R[97]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.344580559638620054 * R[8] + -0.344580559638620054 * R[62] + 0.689161119277240108 * R[98]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.172290279819310027 * R[0] + 0.172290279819310027 * R[9] + -0.172290279819310027 * R[54] + 0.172290279819310027 * R[63] + 0.344580559638620054 * R[90] + -0.344580559638620054 * R[99]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.172290279819310027 * R[1] + 0.172290279819310027 * R[10] + -0.172290279819310027 * R[55] + 0.172290279819310027 * R[64] + 0.344580559638620054 * R[91] + -0.344580559638620054 * R[100]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.172290279819310027 * R[2] + 0.172290279819310027 * R[11] + -0.172290279819310027 * R[56] + 0.172290279819310027 * R[65] + 0.344580559638620054 * R[92] + -0.344580559638620054 * R[101]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[39]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[40]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[41]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[48]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[49]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[50]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[36] + -0.344580559638620054 * R[45] + 0.689161119277240108 * R[51]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[37] + -0.344580559638620054 * R[46] + 0.689161119277240108 * R[52]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[38] + -0.344580559638620054 * R[47] + 0.689161119277240108 * R[53]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[42]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[43]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[44]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[36] + -0.596831036594607678 * R[45]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[37] + -0.596831036594607678 * R[46]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[38] + -0.596831036594607678 * R[47]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[3] + -0.596831036594607678 * R[57]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[4] + -0.596831036594607678 * R[58]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[5] + -0.596831036594607678 * R[59]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[12] + -0.596831036594607678 * R[66]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[13] + -0.596831036594607678 * R[67]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[14] + -0.596831036594607678 * R[68]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[0] + -0.172290279819310027 * R[9] + 0.344580559638620054 * R[15] + 0.172290279819310027 * R[54] + 0.172290279819310027 * R[63] + -0.344580559638620054 * R[69]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[1] + -0.172290279819310027 * R[10] + 0.344580559638620054 * R[16] + 0.172290279819310027 * R[55] + 0.172290279819310027 * R[64] + -0.344580559638620054 * R[70]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[2] + -0.172290279819310027 * R[11] + 0.344580559638620054 * R[17] + 0.172290279819310027 * R[56] + 0.172290279819310027 * R[65] + -0.344580559638620054 * R[71]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.596831036594607678 * R[6] + -0.596831036594607678 * R[60]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.596831036594607678 * R[7] + -0.596831036594607678 * R[61]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.596831036594607678 * R[8] + -0.596831036594607678 * R[62]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.298415518297303839 * R[0] + -0.298415518297303839 * R[9] + -0.298415518297303839 * R[54] + 0.298415518297303839 * R[63]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.298415518297303839 * R[1] + -0.298415518297303839 * R[10] + -0.298415518297303839 * R[55] + 0.298415518297303839 * R[64]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.298415518297303839 * R[2] + -0.298415518297303839 * R[11] + -0.298415518297303839 * R[56] + 0.298415518297303839 * R[65]);
+        }
+        return 1;
 }
 
 /* (11|00): 15 VRR nodes, 9 targets */
-static int jkv_1100(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_1100(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)9 * nb;
+        double *v = wk, *w = v + (size_t)9 * nb, *SK = w + (size_t)9 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 9);
         for (t = 0; t < nk; t++) {
@@ -1531,7 +2533,6 @@ static int jkv_1100(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -1586,17 +2587,57 @@ static int jkv_1100(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 9; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 9;
+                double *o = out + cpos[pos[0]] * 3 * st[0] + cpos[pos[1]] * 3 * st[1]
+                          + cpos[pos[2]] * 1 * st[2] + cpos[pos[3]] * 1 * st[3];
+                double HB[9];
+                for (i = 0; i < 1; i++) (HB + 0)[i] = (sk + 3)[i] + AB[0] * (sk + 0)[i];
+                for (i = 0; i < 1; i++) (HB + 1)[i] = (sk + 4)[i] + AB[1] * (sk + 0)[i];
+                for (i = 0; i < 1; i++) (HB + 2)[i] = (sk + 5)[i] + AB[2] * (sk + 0)[i];
+                for (i = 0; i < 1; i++) (HB + 3)[i] = (sk + 4)[i] + AB[0] * (sk + 1)[i];
+                for (i = 0; i < 1; i++) (HB + 4)[i] = (sk + 6)[i] + AB[1] * (sk + 1)[i];
+                for (i = 0; i < 1; i++) (HB + 5)[i] = (sk + 7)[i] + AB[2] * (sk + 1)[i];
+                for (i = 0; i < 1; i++) (HB + 6)[i] = (sk + 5)[i] + AB[0] * (sk + 2)[i];
+                for (i = 0; i < 1; i++) (HB + 7)[i] = (sk + 7)[i] + AB[1] * (sk + 2)[i];
+                for (i = 0; i < 1; i++) (HB + 8)[i] = (sk + 8)[i] + AB[2] * (sk + 2)[i];
+                double R[9];
+                for (i = 0; i < 9; i++) {
+                        R[0 + i] = HB[i * 1 + 0];
+                }
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[0]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[1]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[2]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[3]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[4]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[5]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[6]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[7]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[8]);
+        }
+        return 1;
 }
 
 /* (11|10): 52 VRR nodes, 27 targets */
-static int jkv_1110(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_1110(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)27 * nb;
+        double *v = wk, *w = v + (size_t)27 * nb, *SK = w + (size_t)27 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 27);
         for (t = 0; t < nk; t++) {
@@ -1606,7 +2647,6 @@ static int jkv_1110(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -1716,17 +2756,77 @@ static int jkv_1110(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 27; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 27;
+                double *o = out + cpos[pos[0]] * 3 * st[0] + cpos[pos[1]] * 3 * st[1]
+                          + cpos[pos[2]] * 3 * st[2] + cpos[pos[3]] * 1 * st[3];
+                double HB[27];
+                for (i = 0; i < 3; i++) (HB + 0)[i] = (sk + 9)[i] + AB[0] * (sk + 0)[i];
+                for (i = 0; i < 3; i++) (HB + 3)[i] = (sk + 12)[i] + AB[1] * (sk + 0)[i];
+                for (i = 0; i < 3; i++) (HB + 6)[i] = (sk + 15)[i] + AB[2] * (sk + 0)[i];
+                for (i = 0; i < 3; i++) (HB + 9)[i] = (sk + 12)[i] + AB[0] * (sk + 3)[i];
+                for (i = 0; i < 3; i++) (HB + 12)[i] = (sk + 18)[i] + AB[1] * (sk + 3)[i];
+                for (i = 0; i < 3; i++) (HB + 15)[i] = (sk + 21)[i] + AB[2] * (sk + 3)[i];
+                for (i = 0; i < 3; i++) (HB + 18)[i] = (sk + 15)[i] + AB[0] * (sk + 6)[i];
+                for (i = 0; i < 3; i++) (HB + 21)[i] = (sk + 21)[i] + AB[1] * (sk + 6)[i];
+                for (i = 0; i < 3; i++) (HB + 24)[i] = (sk + 24)[i] + AB[2] * (sk + 6)[i];
+                double R[27];
+                for (i = 0; i < 9; i++) {
+                        R[0 + i] = HB[i * 3 + 0];
+                        R[9 + i] = HB[i * 3 + 1];
+                        R[18 + i] = HB[i * 3 + 2];
+                }
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[0]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[1]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[2]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[3]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[4]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[5]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[6]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[7]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[8]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[9]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[10]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[11]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[12]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[13]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[14]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[15]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[16]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[17]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[18]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[19]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[20]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[21]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[22]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[23]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[24]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[25]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[26]);
+        }
+        return 1;
 }
 
 /* (11|11): 146 VRR nodes, 81 targets */
-static int jkv_1111(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_1111(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)81 * nb;
+        double *v = wk, *w = v + (size_t)81 * nb, *SK = w + (size_t)81 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 81);
         for (t = 0; t < nk; t++) {
@@ -1736,7 +2836,6 @@ static int jkv_1111(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -1994,17 +3093,153 @@ static int jkv_1111(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 81; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 81;
+                double *o = out + cpos[pos[0]] * 3 * st[0] + cpos[pos[1]] * 3 * st[1]
+                          + cpos[pos[2]] * 3 * st[2] + cpos[pos[3]] * 3 * st[3];
+                double HB[81];
+                for (i = 0; i < 9; i++) (HB + 0)[i] = (sk + 27)[i] + AB[0] * (sk + 0)[i];
+                for (i = 0; i < 9; i++) (HB + 9)[i] = (sk + 36)[i] + AB[1] * (sk + 0)[i];
+                for (i = 0; i < 9; i++) (HB + 18)[i] = (sk + 45)[i] + AB[2] * (sk + 0)[i];
+                for (i = 0; i < 9; i++) (HB + 27)[i] = (sk + 36)[i] + AB[0] * (sk + 9)[i];
+                for (i = 0; i < 9; i++) (HB + 36)[i] = (sk + 54)[i] + AB[1] * (sk + 9)[i];
+                for (i = 0; i < 9; i++) (HB + 45)[i] = (sk + 63)[i] + AB[2] * (sk + 9)[i];
+                for (i = 0; i < 9; i++) (HB + 54)[i] = (sk + 45)[i] + AB[0] * (sk + 18)[i];
+                for (i = 0; i < 9; i++) (HB + 63)[i] = (sk + 63)[i] + AB[1] * (sk + 18)[i];
+                for (i = 0; i < 9; i++) (HB + 72)[i] = (sk + 72)[i] + AB[2] * (sk + 18)[i];
+                double R[81];
+                double kb200[9];
+                for (i = 0; i < 9; i++) kb200[i] = HB[i * 9 + 3];
+                double kb100[9];
+                for (i = 0; i < 9; i++) kb100[i] = HB[i * 9 + 0];
+                for (i = 0; i < 9; i++) (R + 0)[i] = (kb200)[i] + CD[0] * (kb100)[i];
+                double kb110[9];
+                for (i = 0; i < 9; i++) kb110[i] = HB[i * 9 + 4];
+                for (i = 0; i < 9; i++) (R + 9)[i] = (kb110)[i] + CD[1] * (kb100)[i];
+                double kb101[9];
+                for (i = 0; i < 9; i++) kb101[i] = HB[i * 9 + 5];
+                for (i = 0; i < 9; i++) (R + 18)[i] = (kb101)[i] + CD[2] * (kb100)[i];
+                double kb010[9];
+                for (i = 0; i < 9; i++) kb010[i] = HB[i * 9 + 1];
+                for (i = 0; i < 9; i++) (R + 27)[i] = (kb110)[i] + CD[0] * (kb010)[i];
+                double kb020[9];
+                for (i = 0; i < 9; i++) kb020[i] = HB[i * 9 + 6];
+                for (i = 0; i < 9; i++) (R + 36)[i] = (kb020)[i] + CD[1] * (kb010)[i];
+                double kb011[9];
+                for (i = 0; i < 9; i++) kb011[i] = HB[i * 9 + 7];
+                for (i = 0; i < 9; i++) (R + 45)[i] = (kb011)[i] + CD[2] * (kb010)[i];
+                double kb001[9];
+                for (i = 0; i < 9; i++) kb001[i] = HB[i * 9 + 2];
+                for (i = 0; i < 9; i++) (R + 54)[i] = (kb101)[i] + CD[0] * (kb001)[i];
+                for (i = 0; i < 9; i++) (R + 63)[i] = (kb011)[i] + CD[1] * (kb001)[i];
+                double kb002[9];
+                for (i = 0; i < 9; i++) kb002[i] = HB[i * 9 + 8];
+                for (i = 0; i < 9; i++) (R + 72)[i] = (kb002)[i] + CD[2] * (kb001)[i];
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[0]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[1]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[2]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[3]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[4]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[5]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[6]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[7]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1 * R[8]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1 * R[9]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1 * R[10]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1 * R[11]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1 * R[12]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1 * R[13]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1 * R[14]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1 * R[15]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1 * R[16]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1 * R[17]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1 * R[18]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1 * R[19]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1 * R[20]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1 * R[21]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1 * R[22]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1 * R[23]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1 * R[24]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1 * R[25]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1 * R[26]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[27]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[28]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[29]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[30]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[31]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[32]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[33]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[34]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1 * R[35]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1 * R[36]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1 * R[37]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1 * R[38]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1 * R[39]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1 * R[40]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1 * R[41]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1 * R[42]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1 * R[43]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1 * R[44]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1 * R[45]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1 * R[46]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1 * R[47]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1 * R[48]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1 * R[49]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1 * R[50]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1 * R[51]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1 * R[52]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1 * R[53]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[54]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[55]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[56]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[57]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[58]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[59]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[60]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[61]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1 * R[62]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1 * R[63]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1 * R[64]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1 * R[65]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1 * R[66]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1 * R[67]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1 * R[68]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1 * R[69]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1 * R[70]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1 * R[71]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1 * R[72]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1 * R[73]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1 * R[74]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1 * R[75]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1 * R[76]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1 * R[77]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1 * R[78]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1 * R[79]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1 * R[80]);
+        }
+        return 1;
 }
 
 /* (11|20): 146 VRR nodes, 54 targets */
-static int jkv_1120(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_1120(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)54 * nb;
+        double *v = wk, *w = v + (size_t)54 * nb, *SK = w + (size_t)54 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 54);
         for (t = 0; t < nk; t++) {
@@ -2014,7 +3249,6 @@ static int jkv_1120(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -2245,17 +3479,98 @@ static int jkv_1120(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 54; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 54;
+                double *o = out + cpos[pos[0]] * 3 * st[0] + cpos[pos[1]] * 3 * st[1]
+                          + cpos[pos[2]] * 5 * st[2] + cpos[pos[3]] * 1 * st[3];
+                double HB[54];
+                for (i = 0; i < 6; i++) (HB + 0)[i] = (sk + 18)[i] + AB[0] * (sk + 0)[i];
+                for (i = 0; i < 6; i++) (HB + 6)[i] = (sk + 24)[i] + AB[1] * (sk + 0)[i];
+                for (i = 0; i < 6; i++) (HB + 12)[i] = (sk + 30)[i] + AB[2] * (sk + 0)[i];
+                for (i = 0; i < 6; i++) (HB + 18)[i] = (sk + 24)[i] + AB[0] * (sk + 6)[i];
+                for (i = 0; i < 6; i++) (HB + 24)[i] = (sk + 36)[i] + AB[1] * (sk + 6)[i];
+                for (i = 0; i < 6; i++) (HB + 30)[i] = (sk + 42)[i] + AB[2] * (sk + 6)[i];
+                for (i = 0; i < 6; i++) (HB + 36)[i] = (sk + 30)[i] + AB[0] * (sk + 12)[i];
+                for (i = 0; i < 6; i++) (HB + 42)[i] = (sk + 42)[i] + AB[1] * (sk + 12)[i];
+                for (i = 0; i < 6; i++) (HB + 48)[i] = (sk + 48)[i] + AB[2] * (sk + 12)[i];
+                double R[54];
+                for (i = 0; i < 9; i++) {
+                        R[0 + i] = HB[i * 6 + 0];
+                        R[9 + i] = HB[i * 6 + 1];
+                        R[18 + i] = HB[i * 6 + 2];
+                        R[27 + i] = HB[i * 6 + 3];
+                        R[36 + i] = HB[i * 6 + 4];
+                        R[45 + i] = HB[i * 6 + 5];
+                }
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[9]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[10]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[11]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[12]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[13]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[14]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[15]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[16]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[17]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[36]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[37]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[38]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[39]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[40]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[41]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[42]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[43]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[44]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[0] + -0.31539156525251999 * R[27] + 0.630783130505039979 * R[45]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[1] + -0.31539156525251999 * R[28] + 0.630783130505039979 * R[46]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[2] + -0.31539156525251999 * R[29] + 0.630783130505039979 * R[47]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[3] + -0.31539156525251999 * R[30] + 0.630783130505039979 * R[48]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[4] + -0.31539156525251999 * R[31] + 0.630783130505039979 * R[49]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[5] + -0.31539156525251999 * R[32] + 0.630783130505039979 * R[50]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[6] + -0.31539156525251999 * R[33] + 0.630783130505039979 * R[51]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[7] + -0.31539156525251999 * R[34] + 0.630783130505039979 * R[52]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[8] + -0.31539156525251999 * R[35] + 0.630783130505039979 * R[53]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[18]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[19]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[20]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[21]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[22]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[23]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[24]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[25]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[26]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[0] + -0.546274215296039589 * R[27]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[1] + -0.546274215296039589 * R[28]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[2] + -0.546274215296039589 * R[29]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[3] + -0.546274215296039589 * R[30]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[4] + -0.546274215296039589 * R[31]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[5] + -0.546274215296039589 * R[32]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[6] + -0.546274215296039589 * R[33]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[7] + -0.546274215296039589 * R[34]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[8] + -0.546274215296039589 * R[35]);
+        }
+        return 1;
 }
 
 /* (11|21): 336 VRR nodes, 144 targets */
-static int jkv_1121(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_1121(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)144 * nb;
+        double *v = wk, *w = v + (size_t)144 * nb, *SK = w + (size_t)144 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 144);
         for (t = 0; t < nk; t++) {
@@ -2265,7 +3580,6 @@ static int jkv_1121(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -2776,17 +4090,230 @@ static int jkv_1121(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 144; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 144;
+                double *o = out + cpos[pos[0]] * 3 * st[0] + cpos[pos[1]] * 3 * st[1]
+                          + cpos[pos[2]] * 5 * st[2] + cpos[pos[3]] * 3 * st[3];
+                double HB[144];
+                for (i = 0; i < 16; i++) (HB + 0)[i] = (sk + 48)[i] + AB[0] * (sk + 0)[i];
+                for (i = 0; i < 16; i++) (HB + 16)[i] = (sk + 64)[i] + AB[1] * (sk + 0)[i];
+                for (i = 0; i < 16; i++) (HB + 32)[i] = (sk + 80)[i] + AB[2] * (sk + 0)[i];
+                for (i = 0; i < 16; i++) (HB + 48)[i] = (sk + 64)[i] + AB[0] * (sk + 16)[i];
+                for (i = 0; i < 16; i++) (HB + 64)[i] = (sk + 96)[i] + AB[1] * (sk + 16)[i];
+                for (i = 0; i < 16; i++) (HB + 80)[i] = (sk + 112)[i] + AB[2] * (sk + 16)[i];
+                for (i = 0; i < 16; i++) (HB + 96)[i] = (sk + 80)[i] + AB[0] * (sk + 32)[i];
+                for (i = 0; i < 16; i++) (HB + 112)[i] = (sk + 112)[i] + AB[1] * (sk + 32)[i];
+                for (i = 0; i < 16; i++) (HB + 128)[i] = (sk + 128)[i] + AB[2] * (sk + 32)[i];
+                double R[162];
+                double kb300[9];
+                for (i = 0; i < 9; i++) kb300[i] = HB[i * 16 + 6];
+                double kb200[9];
+                for (i = 0; i < 9; i++) kb200[i] = HB[i * 16 + 0];
+                for (i = 0; i < 9; i++) (R + 0)[i] = (kb300)[i] + CD[0] * (kb200)[i];
+                double kb210[9];
+                for (i = 0; i < 9; i++) kb210[i] = HB[i * 16 + 7];
+                for (i = 0; i < 9; i++) (R + 9)[i] = (kb210)[i] + CD[1] * (kb200)[i];
+                double kb201[9];
+                for (i = 0; i < 9; i++) kb201[i] = HB[i * 16 + 8];
+                for (i = 0; i < 9; i++) (R + 18)[i] = (kb201)[i] + CD[2] * (kb200)[i];
+                double kb110[9];
+                for (i = 0; i < 9; i++) kb110[i] = HB[i * 16 + 1];
+                for (i = 0; i < 9; i++) (R + 27)[i] = (kb210)[i] + CD[0] * (kb110)[i];
+                double kb120[9];
+                for (i = 0; i < 9; i++) kb120[i] = HB[i * 16 + 9];
+                for (i = 0; i < 9; i++) (R + 36)[i] = (kb120)[i] + CD[1] * (kb110)[i];
+                double kb111[9];
+                for (i = 0; i < 9; i++) kb111[i] = HB[i * 16 + 10];
+                for (i = 0; i < 9; i++) (R + 45)[i] = (kb111)[i] + CD[2] * (kb110)[i];
+                double kb101[9];
+                for (i = 0; i < 9; i++) kb101[i] = HB[i * 16 + 2];
+                for (i = 0; i < 9; i++) (R + 54)[i] = (kb201)[i] + CD[0] * (kb101)[i];
+                for (i = 0; i < 9; i++) (R + 63)[i] = (kb111)[i] + CD[1] * (kb101)[i];
+                double kb102[9];
+                for (i = 0; i < 9; i++) kb102[i] = HB[i * 16 + 11];
+                for (i = 0; i < 9; i++) (R + 72)[i] = (kb102)[i] + CD[2] * (kb101)[i];
+                double kb020[9];
+                for (i = 0; i < 9; i++) kb020[i] = HB[i * 16 + 3];
+                for (i = 0; i < 9; i++) (R + 81)[i] = (kb120)[i] + CD[0] * (kb020)[i];
+                double kb030[9];
+                for (i = 0; i < 9; i++) kb030[i] = HB[i * 16 + 12];
+                for (i = 0; i < 9; i++) (R + 90)[i] = (kb030)[i] + CD[1] * (kb020)[i];
+                double kb021[9];
+                for (i = 0; i < 9; i++) kb021[i] = HB[i * 16 + 13];
+                for (i = 0; i < 9; i++) (R + 99)[i] = (kb021)[i] + CD[2] * (kb020)[i];
+                double kb011[9];
+                for (i = 0; i < 9; i++) kb011[i] = HB[i * 16 + 4];
+                for (i = 0; i < 9; i++) (R + 108)[i] = (kb111)[i] + CD[0] * (kb011)[i];
+                for (i = 0; i < 9; i++) (R + 117)[i] = (kb021)[i] + CD[1] * (kb011)[i];
+                double kb012[9];
+                for (i = 0; i < 9; i++) kb012[i] = HB[i * 16 + 14];
+                for (i = 0; i < 9; i++) (R + 126)[i] = (kb012)[i] + CD[2] * (kb011)[i];
+                double kb002[9];
+                for (i = 0; i < 9; i++) kb002[i] = HB[i * 16 + 5];
+                for (i = 0; i < 9; i++) (R + 135)[i] = (kb102)[i] + CD[0] * (kb002)[i];
+                for (i = 0; i < 9; i++) (R + 144)[i] = (kb012)[i] + CD[1] * (kb002)[i];
+                double kb003[9];
+                for (i = 0; i < 9; i++) kb003[i] = HB[i * 16 + 15];
+                for (i = 0; i < 9; i++) (R + 153)[i] = (kb003)[i] + CD[2] * (kb002)[i];
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[27]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[28]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[29]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[30]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[31]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[32]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[33]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[34]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[35]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[36]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[37]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[38]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[39]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[40]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[41]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[42]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[43]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[44]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[45]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[46]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[47]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[48]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[49]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[50]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[51]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[52]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[53]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[108]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[109]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[110]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[111]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[112]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[113]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[114]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[115]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[116]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[117]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[118]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[119]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[120]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[121]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[122]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[123]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[124]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[125]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[126]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[127]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[128]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[129]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[130]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[131]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[132]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[133]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[134]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[0] + -0.31539156525251999 * R[81] + 0.630783130505039979 * R[135]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[1] + -0.31539156525251999 * R[82] + 0.630783130505039979 * R[136]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[2] + -0.31539156525251999 * R[83] + 0.630783130505039979 * R[137]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[3] + -0.31539156525251999 * R[84] + 0.630783130505039979 * R[138]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[4] + -0.31539156525251999 * R[85] + 0.630783130505039979 * R[139]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[5] + -0.31539156525251999 * R[86] + 0.630783130505039979 * R[140]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[6] + -0.31539156525251999 * R[87] + 0.630783130505039979 * R[141]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[7] + -0.31539156525251999 * R[88] + 0.630783130505039979 * R[142]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[8] + -0.31539156525251999 * R[89] + 0.630783130505039979 * R[143]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[9] + -0.31539156525251999 * R[90] + 0.630783130505039979 * R[144]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[10] + -0.31539156525251999 * R[91] + 0.630783130505039979 * R[145]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[11] + -0.31539156525251999 * R[92] + 0.630783130505039979 * R[146]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[12] + -0.31539156525251999 * R[93] + 0.630783130505039979 * R[147]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[13] + -0.31539156525251999 * R[94] + 0.630783130505039979 * R[148]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[14] + -0.31539156525251999 * R[95] + 0.630783130505039979 * R[149]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[15] + -0.31539156525251999 * R[96] + 0.630783130505039979 * R[150]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[16] + -0.31539156525251999 * R[97] + 0.630783130505039979 * R[151]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[17] + -0.31539156525251999 * R[98] + 0.630783130505039979 * R[152]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[18] + -0.31539156525251999 * R[99] + 0.630783130505039979 * R[153]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[19] + -0.31539156525251999 * R[100] + 0.630783130505039979 * R[154]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[20] + -0.31539156525251999 * R[101] + 0.630783130505039979 * R[155]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[21] + -0.31539156525251999 * R[102] + 0.630783130505039979 * R[156]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[22] + -0.31539156525251999 * R[103] + 0.630783130505039979 * R[157]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[23] + -0.31539156525251999 * R[104] + 0.630783130505039979 * R[158]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[24] + -0.31539156525251999 * R[105] + 0.630783130505039979 * R[159]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[25] + -0.31539156525251999 * R[106] + 0.630783130505039979 * R[160]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[26] + -0.31539156525251999 * R[107] + 0.630783130505039979 * R[161]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[54]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[55]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[56]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[57]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[58]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[59]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[60]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[61]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[62]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[63]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[64]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[65]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[66]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[67]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[68]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[69]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[70]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[71]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[72]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[73]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[74]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[75]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[76]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[77]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[78]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[79]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[80]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[0] + -0.546274215296039589 * R[81]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[1] + -0.546274215296039589 * R[82]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[2] + -0.546274215296039589 * R[83]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[3] + -0.546274215296039589 * R[84]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[4] + -0.546274215296039589 * R[85]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[5] + -0.546274215296039589 * R[86]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[6] + -0.546274215296039589 * R[87]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[7] + -0.546274215296039589 * R[88]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[8] + -0.546274215296039589 * R[89]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[9] + -0.546274215296039589 * R[90]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[10] + -0.546274215296039589 * R[91]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[11] + -0.546274215296039589 * R[92]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[12] + -0.546274215296039589 * R[93]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[13] + -0.546274215296039589 * R[94]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[14] + -0.546274215296039589 * R[95]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[15] + -0.546274215296039589 * R[96]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[16] + -0.546274215296039589 * R[97]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[17] + -0.546274215296039589 * R[98]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[18] + -0.546274215296039589 * R[99]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[19] + -0.546274215296039589 * R[100]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[20] + -0.546274215296039589 * R[101]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[21] + -0.546274215296039589 * R[102]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[22] + -0.546274215296039589 * R[103]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[23] + -0.546274215296039589 * R[104]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[24] + -0.546274215296039589 * R[105]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[25] + -0.546274215296039589 * R[106]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[26] + -0.546274215296039589 * R[107]);
+        }
+        return 1;
 }
 
 /* (11|22): 671 VRR nodes, 279 targets */
-static int jkv_1122(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_1122(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)279 * nb;
+        double *v = wk, *w = v + (size_t)279 * nb, *SK = w + (size_t)279 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 279);
         for (t = 0; t < nk; t++) {
@@ -2796,7 +4323,6 @@ static int jkv_1122(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -3777,17 +5303,454 @@ static int jkv_1122(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 279; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 279;
+                double *o = out + cpos[pos[0]] * 3 * st[0] + cpos[pos[1]] * 3 * st[1]
+                          + cpos[pos[2]] * 5 * st[2] + cpos[pos[3]] * 5 * st[3];
+                double HB[279];
+                for (i = 0; i < 31; i++) (HB + 0)[i] = (sk + 93)[i] + AB[0] * (sk + 0)[i];
+                for (i = 0; i < 31; i++) (HB + 31)[i] = (sk + 124)[i] + AB[1] * (sk + 0)[i];
+                for (i = 0; i < 31; i++) (HB + 62)[i] = (sk + 155)[i] + AB[2] * (sk + 0)[i];
+                for (i = 0; i < 31; i++) (HB + 93)[i] = (sk + 124)[i] + AB[0] * (sk + 31)[i];
+                for (i = 0; i < 31; i++) (HB + 124)[i] = (sk + 186)[i] + AB[1] * (sk + 31)[i];
+                for (i = 0; i < 31; i++) (HB + 155)[i] = (sk + 217)[i] + AB[2] * (sk + 31)[i];
+                for (i = 0; i < 31; i++) (HB + 186)[i] = (sk + 155)[i] + AB[0] * (sk + 62)[i];
+                for (i = 0; i < 31; i++) (HB + 217)[i] = (sk + 217)[i] + AB[1] * (sk + 62)[i];
+                for (i = 0; i < 31; i++) (HB + 248)[i] = (sk + 248)[i] + AB[2] * (sk + 62)[i];
+                double R[324];
+                double kb400[9];
+                for (i = 0; i < 9; i++) kb400[i] = HB[i * 31 + 16];
+                double kb300[9];
+                for (i = 0; i < 9; i++) kb300[i] = HB[i * 31 + 6];
+                double hk300_100[9];
+                for (i = 0; i < 9; i++) (hk300_100)[i] = (kb400)[i] + CD[0] * (kb300)[i];
+                double kb200[9];
+                for (i = 0; i < 9; i++) kb200[i] = HB[i * 31 + 0];
+                double hk200_100[9];
+                for (i = 0; i < 9; i++) (hk200_100)[i] = (kb300)[i] + CD[0] * (kb200)[i];
+                for (i = 0; i < 9; i++) (R + 0)[i] = (hk300_100)[i] + CD[0] * (hk200_100)[i];
+                double kb310[9];
+                for (i = 0; i < 9; i++) kb310[i] = HB[i * 31 + 17];
+                double hk300_010[9];
+                for (i = 0; i < 9; i++) (hk300_010)[i] = (kb310)[i] + CD[1] * (kb300)[i];
+                double kb210[9];
+                for (i = 0; i < 9; i++) kb210[i] = HB[i * 31 + 7];
+                double hk200_010[9];
+                for (i = 0; i < 9; i++) (hk200_010)[i] = (kb210)[i] + CD[1] * (kb200)[i];
+                for (i = 0; i < 9; i++) (R + 9)[i] = (hk300_010)[i] + CD[0] * (hk200_010)[i];
+                double kb301[9];
+                for (i = 0; i < 9; i++) kb301[i] = HB[i * 31 + 18];
+                double hk300_001[9];
+                for (i = 0; i < 9; i++) (hk300_001)[i] = (kb301)[i] + CD[2] * (kb300)[i];
+                double kb201[9];
+                for (i = 0; i < 9; i++) kb201[i] = HB[i * 31 + 8];
+                double hk200_001[9];
+                for (i = 0; i < 9; i++) (hk200_001)[i] = (kb201)[i] + CD[2] * (kb200)[i];
+                for (i = 0; i < 9; i++) (R + 18)[i] = (hk300_001)[i] + CD[0] * (hk200_001)[i];
+                double kb220[9];
+                for (i = 0; i < 9; i++) kb220[i] = HB[i * 31 + 19];
+                double hk210_010[9];
+                for (i = 0; i < 9; i++) (hk210_010)[i] = (kb220)[i] + CD[1] * (kb210)[i];
+                for (i = 0; i < 9; i++) (R + 27)[i] = (hk210_010)[i] + CD[1] * (hk200_010)[i];
+                double kb211[9];
+                for (i = 0; i < 9; i++) kb211[i] = HB[i * 31 + 20];
+                double hk210_001[9];
+                for (i = 0; i < 9; i++) (hk210_001)[i] = (kb211)[i] + CD[2] * (kb210)[i];
+                for (i = 0; i < 9; i++) (R + 36)[i] = (hk210_001)[i] + CD[1] * (hk200_001)[i];
+                double kb202[9];
+                for (i = 0; i < 9; i++) kb202[i] = HB[i * 31 + 21];
+                double hk201_001[9];
+                for (i = 0; i < 9; i++) (hk201_001)[i] = (kb202)[i] + CD[2] * (kb201)[i];
+                for (i = 0; i < 9; i++) (R + 45)[i] = (hk201_001)[i] + CD[2] * (hk200_001)[i];
+                double hk210_100[9];
+                for (i = 0; i < 9; i++) (hk210_100)[i] = (kb310)[i] + CD[0] * (kb210)[i];
+                double kb110[9];
+                for (i = 0; i < 9; i++) kb110[i] = HB[i * 31 + 1];
+                double hk110_100[9];
+                for (i = 0; i < 9; i++) (hk110_100)[i] = (kb210)[i] + CD[0] * (kb110)[i];
+                for (i = 0; i < 9; i++) (R + 54)[i] = (hk210_100)[i] + CD[0] * (hk110_100)[i];
+                double kb120[9];
+                for (i = 0; i < 9; i++) kb120[i] = HB[i * 31 + 9];
+                double hk110_010[9];
+                for (i = 0; i < 9; i++) (hk110_010)[i] = (kb120)[i] + CD[1] * (kb110)[i];
+                for (i = 0; i < 9; i++) (R + 63)[i] = (hk210_010)[i] + CD[0] * (hk110_010)[i];
+                double kb111[9];
+                for (i = 0; i < 9; i++) kb111[i] = HB[i * 31 + 10];
+                double hk110_001[9];
+                for (i = 0; i < 9; i++) (hk110_001)[i] = (kb111)[i] + CD[2] * (kb110)[i];
+                for (i = 0; i < 9; i++) (R + 72)[i] = (hk210_001)[i] + CD[0] * (hk110_001)[i];
+                double kb130[9];
+                for (i = 0; i < 9; i++) kb130[i] = HB[i * 31 + 22];
+                double hk120_010[9];
+                for (i = 0; i < 9; i++) (hk120_010)[i] = (kb130)[i] + CD[1] * (kb120)[i];
+                for (i = 0; i < 9; i++) (R + 81)[i] = (hk120_010)[i] + CD[1] * (hk110_010)[i];
+                double kb121[9];
+                for (i = 0; i < 9; i++) kb121[i] = HB[i * 31 + 23];
+                double hk120_001[9];
+                for (i = 0; i < 9; i++) (hk120_001)[i] = (kb121)[i] + CD[2] * (kb120)[i];
+                for (i = 0; i < 9; i++) (R + 90)[i] = (hk120_001)[i] + CD[1] * (hk110_001)[i];
+                double kb112[9];
+                for (i = 0; i < 9; i++) kb112[i] = HB[i * 31 + 24];
+                double hk111_001[9];
+                for (i = 0; i < 9; i++) (hk111_001)[i] = (kb112)[i] + CD[2] * (kb111)[i];
+                for (i = 0; i < 9; i++) (R + 99)[i] = (hk111_001)[i] + CD[2] * (hk110_001)[i];
+                double hk201_100[9];
+                for (i = 0; i < 9; i++) (hk201_100)[i] = (kb301)[i] + CD[0] * (kb201)[i];
+                double kb101[9];
+                for (i = 0; i < 9; i++) kb101[i] = HB[i * 31 + 2];
+                double hk101_100[9];
+                for (i = 0; i < 9; i++) (hk101_100)[i] = (kb201)[i] + CD[0] * (kb101)[i];
+                for (i = 0; i < 9; i++) (R + 108)[i] = (hk201_100)[i] + CD[0] * (hk101_100)[i];
+                double hk201_010[9];
+                for (i = 0; i < 9; i++) (hk201_010)[i] = (kb211)[i] + CD[1] * (kb201)[i];
+                double hk101_010[9];
+                for (i = 0; i < 9; i++) (hk101_010)[i] = (kb111)[i] + CD[1] * (kb101)[i];
+                for (i = 0; i < 9; i++) (R + 117)[i] = (hk201_010)[i] + CD[0] * (hk101_010)[i];
+                double kb102[9];
+                for (i = 0; i < 9; i++) kb102[i] = HB[i * 31 + 11];
+                double hk101_001[9];
+                for (i = 0; i < 9; i++) (hk101_001)[i] = (kb102)[i] + CD[2] * (kb101)[i];
+                for (i = 0; i < 9; i++) (R + 126)[i] = (hk201_001)[i] + CD[0] * (hk101_001)[i];
+                double hk111_010[9];
+                for (i = 0; i < 9; i++) (hk111_010)[i] = (kb121)[i] + CD[1] * (kb111)[i];
+                for (i = 0; i < 9; i++) (R + 135)[i] = (hk111_010)[i] + CD[1] * (hk101_010)[i];
+                for (i = 0; i < 9; i++) (R + 144)[i] = (hk111_001)[i] + CD[1] * (hk101_001)[i];
+                double kb103[9];
+                for (i = 0; i < 9; i++) kb103[i] = HB[i * 31 + 25];
+                double hk102_001[9];
+                for (i = 0; i < 9; i++) (hk102_001)[i] = (kb103)[i] + CD[2] * (kb102)[i];
+                for (i = 0; i < 9; i++) (R + 153)[i] = (hk102_001)[i] + CD[2] * (hk101_001)[i];
+                double hk120_100[9];
+                for (i = 0; i < 9; i++) (hk120_100)[i] = (kb220)[i] + CD[0] * (kb120)[i];
+                double kb020[9];
+                for (i = 0; i < 9; i++) kb020[i] = HB[i * 31 + 3];
+                double hk020_100[9];
+                for (i = 0; i < 9; i++) (hk020_100)[i] = (kb120)[i] + CD[0] * (kb020)[i];
+                for (i = 0; i < 9; i++) (R + 162)[i] = (hk120_100)[i] + CD[0] * (hk020_100)[i];
+                double kb030[9];
+                for (i = 0; i < 9; i++) kb030[i] = HB[i * 31 + 12];
+                double hk020_010[9];
+                for (i = 0; i < 9; i++) (hk020_010)[i] = (kb030)[i] + CD[1] * (kb020)[i];
+                for (i = 0; i < 9; i++) (R + 171)[i] = (hk120_010)[i] + CD[0] * (hk020_010)[i];
+                double kb021[9];
+                for (i = 0; i < 9; i++) kb021[i] = HB[i * 31 + 13];
+                double hk020_001[9];
+                for (i = 0; i < 9; i++) (hk020_001)[i] = (kb021)[i] + CD[2] * (kb020)[i];
+                for (i = 0; i < 9; i++) (R + 180)[i] = (hk120_001)[i] + CD[0] * (hk020_001)[i];
+                double kb040[9];
+                for (i = 0; i < 9; i++) kb040[i] = HB[i * 31 + 26];
+                double hk030_010[9];
+                for (i = 0; i < 9; i++) (hk030_010)[i] = (kb040)[i] + CD[1] * (kb030)[i];
+                for (i = 0; i < 9; i++) (R + 189)[i] = (hk030_010)[i] + CD[1] * (hk020_010)[i];
+                double kb031[9];
+                for (i = 0; i < 9; i++) kb031[i] = HB[i * 31 + 27];
+                double hk030_001[9];
+                for (i = 0; i < 9; i++) (hk030_001)[i] = (kb031)[i] + CD[2] * (kb030)[i];
+                for (i = 0; i < 9; i++) (R + 198)[i] = (hk030_001)[i] + CD[1] * (hk020_001)[i];
+                double kb022[9];
+                for (i = 0; i < 9; i++) kb022[i] = HB[i * 31 + 28];
+                double hk021_001[9];
+                for (i = 0; i < 9; i++) (hk021_001)[i] = (kb022)[i] + CD[2] * (kb021)[i];
+                for (i = 0; i < 9; i++) (R + 207)[i] = (hk021_001)[i] + CD[2] * (hk020_001)[i];
+                double hk111_100[9];
+                for (i = 0; i < 9; i++) (hk111_100)[i] = (kb211)[i] + CD[0] * (kb111)[i];
+                double kb011[9];
+                for (i = 0; i < 9; i++) kb011[i] = HB[i * 31 + 4];
+                double hk011_100[9];
+                for (i = 0; i < 9; i++) (hk011_100)[i] = (kb111)[i] + CD[0] * (kb011)[i];
+                for (i = 0; i < 9; i++) (R + 216)[i] = (hk111_100)[i] + CD[0] * (hk011_100)[i];
+                double hk011_010[9];
+                for (i = 0; i < 9; i++) (hk011_010)[i] = (kb021)[i] + CD[1] * (kb011)[i];
+                for (i = 0; i < 9; i++) (R + 225)[i] = (hk111_010)[i] + CD[0] * (hk011_010)[i];
+                double kb012[9];
+                for (i = 0; i < 9; i++) kb012[i] = HB[i * 31 + 14];
+                double hk011_001[9];
+                for (i = 0; i < 9; i++) (hk011_001)[i] = (kb012)[i] + CD[2] * (kb011)[i];
+                for (i = 0; i < 9; i++) (R + 234)[i] = (hk111_001)[i] + CD[0] * (hk011_001)[i];
+                double hk021_010[9];
+                for (i = 0; i < 9; i++) (hk021_010)[i] = (kb031)[i] + CD[1] * (kb021)[i];
+                for (i = 0; i < 9; i++) (R + 243)[i] = (hk021_010)[i] + CD[1] * (hk011_010)[i];
+                for (i = 0; i < 9; i++) (R + 252)[i] = (hk021_001)[i] + CD[1] * (hk011_001)[i];
+                double kb013[9];
+                for (i = 0; i < 9; i++) kb013[i] = HB[i * 31 + 29];
+                double hk012_001[9];
+                for (i = 0; i < 9; i++) (hk012_001)[i] = (kb013)[i] + CD[2] * (kb012)[i];
+                for (i = 0; i < 9; i++) (R + 261)[i] = (hk012_001)[i] + CD[2] * (hk011_001)[i];
+                double hk102_100[9];
+                for (i = 0; i < 9; i++) (hk102_100)[i] = (kb202)[i] + CD[0] * (kb102)[i];
+                double kb002[9];
+                for (i = 0; i < 9; i++) kb002[i] = HB[i * 31 + 5];
+                double hk002_100[9];
+                for (i = 0; i < 9; i++) (hk002_100)[i] = (kb102)[i] + CD[0] * (kb002)[i];
+                for (i = 0; i < 9; i++) (R + 270)[i] = (hk102_100)[i] + CD[0] * (hk002_100)[i];
+                double hk102_010[9];
+                for (i = 0; i < 9; i++) (hk102_010)[i] = (kb112)[i] + CD[1] * (kb102)[i];
+                double hk002_010[9];
+                for (i = 0; i < 9; i++) (hk002_010)[i] = (kb012)[i] + CD[1] * (kb002)[i];
+                for (i = 0; i < 9; i++) (R + 279)[i] = (hk102_010)[i] + CD[0] * (hk002_010)[i];
+                double kb003[9];
+                for (i = 0; i < 9; i++) kb003[i] = HB[i * 31 + 15];
+                double hk002_001[9];
+                for (i = 0; i < 9; i++) (hk002_001)[i] = (kb003)[i] + CD[2] * (kb002)[i];
+                for (i = 0; i < 9; i++) (R + 288)[i] = (hk102_001)[i] + CD[0] * (hk002_001)[i];
+                double hk012_010[9];
+                for (i = 0; i < 9; i++) (hk012_010)[i] = (kb022)[i] + CD[1] * (kb012)[i];
+                for (i = 0; i < 9; i++) (R + 297)[i] = (hk012_010)[i] + CD[1] * (hk002_010)[i];
+                for (i = 0; i < 9; i++) (R + 306)[i] = (hk012_001)[i] + CD[1] * (hk002_001)[i];
+                double kb004[9];
+                for (i = 0; i < 9; i++) kb004[i] = HB[i * 31 + 30];
+                double hk003_001[9];
+                for (i = 0; i < 9; i++) (hk003_001)[i] = (kb004)[i] + CD[2] * (kb003)[i];
+                for (i = 0; i < 9; i++) (R + 315)[i] = (hk003_001)[i] + CD[2] * (hk002_001)[i];
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[63]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[64]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[65]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[66]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[67]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[68]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[69]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[70]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[71]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[90]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[91]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[92]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[93]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[94]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[95]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[96]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[97]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[98]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[54] + -0.344580559638620054 * R[81] + 0.689161119277240108 * R[99]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[55] + -0.344580559638620054 * R[82] + 0.689161119277240108 * R[100]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[56] + -0.344580559638620054 * R[83] + 0.689161119277240108 * R[101]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[57] + -0.344580559638620054 * R[84] + 0.689161119277240108 * R[102]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[58] + -0.344580559638620054 * R[85] + 0.689161119277240108 * R[103]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[59] + -0.344580559638620054 * R[86] + 0.689161119277240108 * R[104]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[60] + -0.344580559638620054 * R[87] + 0.689161119277240108 * R[105]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[61] + -0.344580559638620054 * R[88] + 0.689161119277240108 * R[106]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[62] + -0.344580559638620054 * R[89] + 0.689161119277240108 * R[107]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[72]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[73]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[74]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[75]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[76]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[77]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[78]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[79]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[80]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[54] + -0.596831036594607678 * R[81]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[55] + -0.596831036594607678 * R[82]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[56] + -0.596831036594607678 * R[83]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[57] + -0.596831036594607678 * R[84]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[58] + -0.596831036594607678 * R[85]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[59] + -0.596831036594607678 * R[86]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[60] + -0.596831036594607678 * R[87]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[61] + -0.596831036594607678 * R[88]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[62] + -0.596831036594607678 * R[89]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[225]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[226]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[227]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[228]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[229]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[230]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[231]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[232]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[233]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[252]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[253]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[254]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[255]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[256]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[257]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[258]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[259]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[260]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[216] + -0.344580559638620054 * R[243] + 0.689161119277240108 * R[261]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[217] + -0.344580559638620054 * R[244] + 0.689161119277240108 * R[262]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[218] + -0.344580559638620054 * R[245] + 0.689161119277240108 * R[263]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[219] + -0.344580559638620054 * R[246] + 0.689161119277240108 * R[264]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[220] + -0.344580559638620054 * R[247] + 0.689161119277240108 * R[265]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[221] + -0.344580559638620054 * R[248] + 0.689161119277240108 * R[266]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[222] + -0.344580559638620054 * R[249] + 0.689161119277240108 * R[267]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[223] + -0.344580559638620054 * R[250] + 0.689161119277240108 * R[268]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[224] + -0.344580559638620054 * R[251] + 0.689161119277240108 * R[269]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[234]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[235]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[236]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[237]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[238]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[239]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[240]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[241]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[242]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[216] + -0.596831036594607678 * R[243]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[217] + -0.596831036594607678 * R[244]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[218] + -0.596831036594607678 * R[245]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[219] + -0.596831036594607678 * R[246]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[220] + -0.596831036594607678 * R[247]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[221] + -0.596831036594607678 * R[248]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[222] + -0.596831036594607678 * R[249]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[223] + -0.596831036594607678 * R[250]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[224] + -0.596831036594607678 * R[251]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[9] + -0.344580559638620054 * R[171] + 0.689161119277240108 * R[279]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[10] + -0.344580559638620054 * R[172] + 0.689161119277240108 * R[280]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[11] + -0.344580559638620054 * R[173] + 0.689161119277240108 * R[281]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[12] + -0.344580559638620054 * R[174] + 0.689161119277240108 * R[282]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[13] + -0.344580559638620054 * R[175] + 0.689161119277240108 * R[283]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[14] + -0.344580559638620054 * R[176] + 0.689161119277240108 * R[284]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[15] + -0.344580559638620054 * R[177] + 0.689161119277240108 * R[285]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[16] + -0.344580559638620054 * R[178] + 0.689161119277240108 * R[286]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[17] + -0.344580559638620054 * R[179] + 0.689161119277240108 * R[287]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[36] + -0.344580559638620054 * R[198] + 0.689161119277240108 * R[306]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[37] + -0.344580559638620054 * R[199] + 0.689161119277240108 * R[307]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[38] + -0.344580559638620054 * R[200] + 0.689161119277240108 * R[308]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[39] + -0.344580559638620054 * R[201] + 0.689161119277240108 * R[309]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[40] + -0.344580559638620054 * R[202] + 0.689161119277240108 * R[310]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[41] + -0.344580559638620054 * R[203] + 0.689161119277240108 * R[311]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[42] + -0.344580559638620054 * R[204] + 0.689161119277240108 * R[312]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[43] + -0.344580559638620054 * R[205] + 0.689161119277240108 * R[313]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[44] + -0.344580559638620054 * R[206] + 0.689161119277240108 * R[314]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0994718394324345806 * R[0] + 0.0994718394324345806 * R[27] + -0.198943678864869161 * R[45] + 0.0994718394324345806 * R[162] + 0.0994718394324345806 * R[189] + -0.198943678864869161 * R[207] + -0.198943678864869161 * R[270] + -0.198943678864869161 * R[297] + 0.397887357729738322 * R[315]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0994718394324345806 * R[1] + 0.0994718394324345806 * R[28] + -0.198943678864869161 * R[46] + 0.0994718394324345806 * R[163] + 0.0994718394324345806 * R[190] + -0.198943678864869161 * R[208] + -0.198943678864869161 * R[271] + -0.198943678864869161 * R[298] + 0.397887357729738322 * R[316]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0994718394324345806 * R[2] + 0.0994718394324345806 * R[29] + -0.198943678864869161 * R[47] + 0.0994718394324345806 * R[164] + 0.0994718394324345806 * R[191] + -0.198943678864869161 * R[209] + -0.198943678864869161 * R[272] + -0.198943678864869161 * R[299] + 0.397887357729738322 * R[317]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0994718394324345806 * R[3] + 0.0994718394324345806 * R[30] + -0.198943678864869161 * R[48] + 0.0994718394324345806 * R[165] + 0.0994718394324345806 * R[192] + -0.198943678864869161 * R[210] + -0.198943678864869161 * R[273] + -0.198943678864869161 * R[300] + 0.397887357729738322 * R[318]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0994718394324345806 * R[4] + 0.0994718394324345806 * R[31] + -0.198943678864869161 * R[49] + 0.0994718394324345806 * R[166] + 0.0994718394324345806 * R[193] + -0.198943678864869161 * R[211] + -0.198943678864869161 * R[274] + -0.198943678864869161 * R[301] + 0.397887357729738322 * R[319]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0994718394324345806 * R[5] + 0.0994718394324345806 * R[32] + -0.198943678864869161 * R[50] + 0.0994718394324345806 * R[167] + 0.0994718394324345806 * R[194] + -0.198943678864869161 * R[212] + -0.198943678864869161 * R[275] + -0.198943678864869161 * R[302] + 0.397887357729738322 * R[320]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0994718394324345806 * R[6] + 0.0994718394324345806 * R[33] + -0.198943678864869161 * R[51] + 0.0994718394324345806 * R[168] + 0.0994718394324345806 * R[195] + -0.198943678864869161 * R[213] + -0.198943678864869161 * R[276] + -0.198943678864869161 * R[303] + 0.397887357729738322 * R[321]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0994718394324345806 * R[7] + 0.0994718394324345806 * R[34] + -0.198943678864869161 * R[52] + 0.0994718394324345806 * R[169] + 0.0994718394324345806 * R[196] + -0.198943678864869161 * R[214] + -0.198943678864869161 * R[277] + -0.198943678864869161 * R[304] + 0.397887357729738322 * R[322]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0994718394324345806 * R[8] + 0.0994718394324345806 * R[35] + -0.198943678864869161 * R[53] + 0.0994718394324345806 * R[170] + 0.0994718394324345806 * R[197] + -0.198943678864869161 * R[215] + -0.198943678864869161 * R[278] + -0.198943678864869161 * R[305] + 0.397887357729738322 * R[323]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.344580559638620054 * R[18] + -0.344580559638620054 * R[180] + 0.689161119277240108 * R[288]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.344580559638620054 * R[19] + -0.344580559638620054 * R[181] + 0.689161119277240108 * R[289]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.344580559638620054 * R[20] + -0.344580559638620054 * R[182] + 0.689161119277240108 * R[290]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.344580559638620054 * R[21] + -0.344580559638620054 * R[183] + 0.689161119277240108 * R[291]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.344580559638620054 * R[22] + -0.344580559638620054 * R[184] + 0.689161119277240108 * R[292]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.344580559638620054 * R[23] + -0.344580559638620054 * R[185] + 0.689161119277240108 * R[293]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.344580559638620054 * R[24] + -0.344580559638620054 * R[186] + 0.689161119277240108 * R[294]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.344580559638620054 * R[25] + -0.344580559638620054 * R[187] + 0.689161119277240108 * R[295]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.344580559638620054 * R[26] + -0.344580559638620054 * R[188] + 0.689161119277240108 * R[296]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.172290279819310027 * R[0] + 0.172290279819310027 * R[27] + -0.172290279819310027 * R[162] + 0.172290279819310027 * R[189] + 0.344580559638620054 * R[270] + -0.344580559638620054 * R[297]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.172290279819310027 * R[1] + 0.172290279819310027 * R[28] + -0.172290279819310027 * R[163] + 0.172290279819310027 * R[190] + 0.344580559638620054 * R[271] + -0.344580559638620054 * R[298]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.172290279819310027 * R[2] + 0.172290279819310027 * R[29] + -0.172290279819310027 * R[164] + 0.172290279819310027 * R[191] + 0.344580559638620054 * R[272] + -0.344580559638620054 * R[299]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.172290279819310027 * R[3] + 0.172290279819310027 * R[30] + -0.172290279819310027 * R[165] + 0.172290279819310027 * R[192] + 0.344580559638620054 * R[273] + -0.344580559638620054 * R[300]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.172290279819310027 * R[4] + 0.172290279819310027 * R[31] + -0.172290279819310027 * R[166] + 0.172290279819310027 * R[193] + 0.344580559638620054 * R[274] + -0.344580559638620054 * R[301]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.172290279819310027 * R[5] + 0.172290279819310027 * R[32] + -0.172290279819310027 * R[167] + 0.172290279819310027 * R[194] + 0.344580559638620054 * R[275] + -0.344580559638620054 * R[302]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.172290279819310027 * R[6] + 0.172290279819310027 * R[33] + -0.172290279819310027 * R[168] + 0.172290279819310027 * R[195] + 0.344580559638620054 * R[276] + -0.344580559638620054 * R[303]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.172290279819310027 * R[7] + 0.172290279819310027 * R[34] + -0.172290279819310027 * R[169] + 0.172290279819310027 * R[196] + 0.344580559638620054 * R[277] + -0.344580559638620054 * R[304]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.172290279819310027 * R[8] + 0.172290279819310027 * R[35] + -0.172290279819310027 * R[170] + 0.172290279819310027 * R[197] + 0.344580559638620054 * R[278] + -0.344580559638620054 * R[305]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[117]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[118]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[119]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[120]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[121]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[122]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[123]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[124]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[125]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[144]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[145]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[146]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[147]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[148]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[149]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[150]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[151]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[152]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[108] + -0.344580559638620054 * R[135] + 0.689161119277240108 * R[153]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[109] + -0.344580559638620054 * R[136] + 0.689161119277240108 * R[154]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[110] + -0.344580559638620054 * R[137] + 0.689161119277240108 * R[155]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[111] + -0.344580559638620054 * R[138] + 0.689161119277240108 * R[156]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[112] + -0.344580559638620054 * R[139] + 0.689161119277240108 * R[157]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[113] + -0.344580559638620054 * R[140] + 0.689161119277240108 * R[158]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[114] + -0.344580559638620054 * R[141] + 0.689161119277240108 * R[159]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[115] + -0.344580559638620054 * R[142] + 0.689161119277240108 * R[160]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[116] + -0.344580559638620054 * R[143] + 0.689161119277240108 * R[161]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[126]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[127]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[128]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[129]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[130]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[131]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[132]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[133]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.19366207318921536 * R[134]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[108] + -0.596831036594607678 * R[135]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[109] + -0.596831036594607678 * R[136]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[110] + -0.596831036594607678 * R[137]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[111] + -0.596831036594607678 * R[138]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[112] + -0.596831036594607678 * R[139]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[113] + -0.596831036594607678 * R[140]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[114] + -0.596831036594607678 * R[141]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[115] + -0.596831036594607678 * R[142]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.596831036594607678 * R[116] + -0.596831036594607678 * R[143]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[9] + -0.596831036594607678 * R[171]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[10] + -0.596831036594607678 * R[172]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[11] + -0.596831036594607678 * R[173]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[12] + -0.596831036594607678 * R[174]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[13] + -0.596831036594607678 * R[175]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[14] + -0.596831036594607678 * R[176]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[15] + -0.596831036594607678 * R[177]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[16] + -0.596831036594607678 * R[178]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[17] + -0.596831036594607678 * R[179]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[36] + -0.596831036594607678 * R[198]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[37] + -0.596831036594607678 * R[199]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[38] + -0.596831036594607678 * R[200]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[39] + -0.596831036594607678 * R[201]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[40] + -0.596831036594607678 * R[202]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[41] + -0.596831036594607678 * R[203]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[42] + -0.596831036594607678 * R[204]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[43] + -0.596831036594607678 * R[205]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[44] + -0.596831036594607678 * R[206]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[0] + -0.172290279819310027 * R[27] + 0.344580559638620054 * R[45] + 0.172290279819310027 * R[162] + 0.172290279819310027 * R[189] + -0.344580559638620054 * R[207]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[1] + -0.172290279819310027 * R[28] + 0.344580559638620054 * R[46] + 0.172290279819310027 * R[163] + 0.172290279819310027 * R[190] + -0.344580559638620054 * R[208]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[2] + -0.172290279819310027 * R[29] + 0.344580559638620054 * R[47] + 0.172290279819310027 * R[164] + 0.172290279819310027 * R[191] + -0.344580559638620054 * R[209]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[3] + -0.172290279819310027 * R[30] + 0.344580559638620054 * R[48] + 0.172290279819310027 * R[165] + 0.172290279819310027 * R[192] + -0.344580559638620054 * R[210]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[4] + -0.172290279819310027 * R[31] + 0.344580559638620054 * R[49] + 0.172290279819310027 * R[166] + 0.172290279819310027 * R[193] + -0.344580559638620054 * R[211]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[5] + -0.172290279819310027 * R[32] + 0.344580559638620054 * R[50] + 0.172290279819310027 * R[167] + 0.172290279819310027 * R[194] + -0.344580559638620054 * R[212]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[6] + -0.172290279819310027 * R[33] + 0.344580559638620054 * R[51] + 0.172290279819310027 * R[168] + 0.172290279819310027 * R[195] + -0.344580559638620054 * R[213]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[7] + -0.172290279819310027 * R[34] + 0.344580559638620054 * R[52] + 0.172290279819310027 * R[169] + 0.172290279819310027 * R[196] + -0.344580559638620054 * R[214]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[8] + -0.172290279819310027 * R[35] + 0.344580559638620054 * R[53] + 0.172290279819310027 * R[170] + 0.172290279819310027 * R[197] + -0.344580559638620054 * R[215]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.596831036594607678 * R[18] + -0.596831036594607678 * R[180]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.596831036594607678 * R[19] + -0.596831036594607678 * R[181]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.596831036594607678 * R[20] + -0.596831036594607678 * R[182]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.596831036594607678 * R[21] + -0.596831036594607678 * R[183]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.596831036594607678 * R[22] + -0.596831036594607678 * R[184]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.596831036594607678 * R[23] + -0.596831036594607678 * R[185]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.596831036594607678 * R[24] + -0.596831036594607678 * R[186]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.596831036594607678 * R[25] + -0.596831036594607678 * R[187]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.596831036594607678 * R[26] + -0.596831036594607678 * R[188]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.298415518297303839 * R[0] + -0.298415518297303839 * R[27] + -0.298415518297303839 * R[162] + 0.298415518297303839 * R[189]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.298415518297303839 * R[1] + -0.298415518297303839 * R[28] + -0.298415518297303839 * R[163] + 0.298415518297303839 * R[190]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.298415518297303839 * R[2] + -0.298415518297303839 * R[29] + -0.298415518297303839 * R[164] + 0.298415518297303839 * R[191]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.298415518297303839 * R[3] + -0.298415518297303839 * R[30] + -0.298415518297303839 * R[165] + 0.298415518297303839 * R[192]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.298415518297303839 * R[4] + -0.298415518297303839 * R[31] + -0.298415518297303839 * R[166] + 0.298415518297303839 * R[193]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.298415518297303839 * R[5] + -0.298415518297303839 * R[32] + -0.298415518297303839 * R[167] + 0.298415518297303839 * R[194]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.298415518297303839 * R[6] + -0.298415518297303839 * R[33] + -0.298415518297303839 * R[168] + 0.298415518297303839 * R[195]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.298415518297303839 * R[7] + -0.298415518297303839 * R[34] + -0.298415518297303839 * R[169] + 0.298415518297303839 * R[196]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.298415518297303839 * R[8] + -0.298415518297303839 * R[35] + -0.298415518297303839 * R[170] + 0.298415518297303839 * R[197]);
+        }
+        return 1;
 }
 
 /* (20|00): 15 VRR nodes, 6 targets */
-static int jkv_2000(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_2000(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)6 * nb;
+        double *v = wk, *w = v + (size_t)6 * nb, *SK = w + (size_t)6 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 6);
         for (t = 0; t < nk; t++) {
@@ -3797,7 +5760,6 @@ static int jkv_2000(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -3849,17 +5811,44 @@ static int jkv_2000(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 6; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 6;
+                double *o = out + cpos[pos[0]] * 5 * st[0] + cpos[pos[1]] * 1 * st[1]
+                          + cpos[pos[2]] * 1 * st[2] + cpos[pos[3]] * 1 * st[3];
+                const double *HB = sk;
+                double R[6];
+                for (i = 0; i < 6; i++) {
+                        R[0 + i] = HB[i * 1 + 0];
+                }
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[1]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[4]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[0] + -0.31539156525251999 * R[3] + 0.630783130505039979 * R[5]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[2]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[0] + -0.546274215296039589 * R[3]);
+        }
+        return 1;
 }
 
 /* (20|10): 43 VRR nodes, 18 targets */
-static int jkv_2010(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_2010(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)18 * nb;
+        double *v = wk, *w = v + (size_t)18 * nb, *SK = w + (size_t)18 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 18);
         for (t = 0; t < nk; t++) {
@@ -3869,7 +5858,6 @@ static int jkv_2010(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -3961,17 +5949,56 @@ static int jkv_2010(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 18; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 18;
+                double *o = out + cpos[pos[0]] * 5 * st[0] + cpos[pos[1]] * 1 * st[1]
+                          + cpos[pos[2]] * 3 * st[2] + cpos[pos[3]] * 1 * st[3];
+                const double *HB = sk;
+                double R[18];
+                for (i = 0; i < 6; i++) {
+                        R[0 + i] = HB[i * 3 + 0];
+                        R[6 + i] = HB[i * 3 + 1];
+                        R[12 + i] = HB[i * 3 + 2];
+                }
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[1]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[4]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[0] + -0.31539156525251999 * R[3] + 0.630783130505039979 * R[5]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[2]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[0] + -0.546274215296039589 * R[3]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[7]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[10]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[6] + -0.31539156525251999 * R[9] + 0.630783130505039979 * R[11]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[8]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[6] + -0.546274215296039589 * R[9]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[13]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[16]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[12] + -0.31539156525251999 * R[15] + 0.630783130505039979 * R[17]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[14]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[12] + -0.546274215296039589 * R[15]);
+        }
+        return 1;
 }
 
 /* (20|11): 116 VRR nodes, 54 targets */
-static int jkv_2011(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_2011(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)54 * nb;
+        double *v = wk, *w = v + (size_t)54 * nb, *SK = w + (size_t)54 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 54);
         for (t = 0; t < nk; t++) {
@@ -3981,7 +6008,6 @@ static int jkv_2011(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -4182,17 +6208,108 @@ static int jkv_2011(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 54; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 54;
+                double *o = out + cpos[pos[0]] * 5 * st[0] + cpos[pos[1]] * 1 * st[1]
+                          + cpos[pos[2]] * 3 * st[2] + cpos[pos[3]] * 3 * st[3];
+                const double *HB = sk;
+                double R[54];
+                double kb200[6];
+                for (i = 0; i < 6; i++) kb200[i] = HB[i * 9 + 3];
+                double kb100[6];
+                for (i = 0; i < 6; i++) kb100[i] = HB[i * 9 + 0];
+                for (i = 0; i < 6; i++) (R + 0)[i] = (kb200)[i] + CD[0] * (kb100)[i];
+                double kb110[6];
+                for (i = 0; i < 6; i++) kb110[i] = HB[i * 9 + 4];
+                for (i = 0; i < 6; i++) (R + 6)[i] = (kb110)[i] + CD[1] * (kb100)[i];
+                double kb101[6];
+                for (i = 0; i < 6; i++) kb101[i] = HB[i * 9 + 5];
+                for (i = 0; i < 6; i++) (R + 12)[i] = (kb101)[i] + CD[2] * (kb100)[i];
+                double kb010[6];
+                for (i = 0; i < 6; i++) kb010[i] = HB[i * 9 + 1];
+                for (i = 0; i < 6; i++) (R + 18)[i] = (kb110)[i] + CD[0] * (kb010)[i];
+                double kb020[6];
+                for (i = 0; i < 6; i++) kb020[i] = HB[i * 9 + 6];
+                for (i = 0; i < 6; i++) (R + 24)[i] = (kb020)[i] + CD[1] * (kb010)[i];
+                double kb011[6];
+                for (i = 0; i < 6; i++) kb011[i] = HB[i * 9 + 7];
+                for (i = 0; i < 6; i++) (R + 30)[i] = (kb011)[i] + CD[2] * (kb010)[i];
+                double kb001[6];
+                for (i = 0; i < 6; i++) kb001[i] = HB[i * 9 + 2];
+                for (i = 0; i < 6; i++) (R + 36)[i] = (kb101)[i] + CD[0] * (kb001)[i];
+                for (i = 0; i < 6; i++) (R + 42)[i] = (kb011)[i] + CD[1] * (kb001)[i];
+                double kb002[6];
+                for (i = 0; i < 6; i++) kb002[i] = HB[i * 9 + 8];
+                for (i = 0; i < 6; i++) (R + 48)[i] = (kb002)[i] + CD[2] * (kb001)[i];
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[1]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[4]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[0] + -0.31539156525251999 * R[3] + 0.630783130505039979 * R[5]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[2]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[0] + -0.546274215296039589 * R[3]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[7]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[10]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[6] + -0.31539156525251999 * R[9] + 0.630783130505039979 * R[11]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[8]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[6] + -0.546274215296039589 * R[9]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[13]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[16]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[12] + -0.31539156525251999 * R[15] + 0.630783130505039979 * R[17]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[14]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[12] + -0.546274215296039589 * R[15]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[19]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[22]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[18] + -0.31539156525251999 * R[21] + 0.630783130505039979 * R[23]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[20]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[18] + -0.546274215296039589 * R[21]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[25]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[28]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[24] + -0.31539156525251999 * R[27] + 0.630783130505039979 * R[29]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[26]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[24] + -0.546274215296039589 * R[27]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[31]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[34]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[30] + -0.31539156525251999 * R[33] + 0.630783130505039979 * R[35]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[32]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[30] + -0.546274215296039589 * R[33]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[37]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[40]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[36] + -0.31539156525251999 * R[39] + 0.630783130505039979 * R[41]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[38]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[36] + -0.546274215296039589 * R[39]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[43]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[46]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[42] + -0.31539156525251999 * R[45] + 0.630783130505039979 * R[47]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[44]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[42] + -0.546274215296039589 * R[45]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[49]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[52]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[48] + -0.31539156525251999 * R[51] + 0.630783130505039979 * R[53]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[50]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[48] + -0.546274215296039589 * R[51]);
+        }
+        return 1;
 }
 
 /* (20|20): 116 VRR nodes, 36 targets */
-static int jkv_2020(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_2020(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)36 * nb;
+        double *v = wk, *w = v + (size_t)36 * nb, *SK = w + (size_t)36 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 36);
         for (t = 0; t < nk; t++) {
@@ -4202,7 +6319,6 @@ static int jkv_2020(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -4385,17 +6501,69 @@ static int jkv_2020(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 36; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 36;
+                double *o = out + cpos[pos[0]] * 5 * st[0] + cpos[pos[1]] * 1 * st[1]
+                          + cpos[pos[2]] * 5 * st[2] + cpos[pos[3]] * 1 * st[3];
+                const double *HB = sk;
+                double R[36];
+                for (i = 0; i < 6; i++) {
+                        R[0 + i] = HB[i * 6 + 0];
+                        R[6 + i] = HB[i * 6 + 1];
+                        R[12 + i] = HB[i * 6 + 2];
+                        R[18 + i] = HB[i * 6 + 3];
+                        R[24 + i] = HB[i * 6 + 4];
+                        R[30 + i] = HB[i * 6 + 5];
+                }
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[7]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[10]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[6] + -0.344580559638620054 * R[9] + 0.689161119277240108 * R[11]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[8]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[6] + -0.596831036594607678 * R[9]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[25]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[28]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[24] + -0.344580559638620054 * R[27] + 0.689161119277240108 * R[29]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[26]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[24] + -0.596831036594607678 * R[27]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[1] + -0.344580559638620054 * R[19] + 0.689161119277240108 * R[31]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[4] + -0.344580559638620054 * R[22] + 0.689161119277240108 * R[34]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.0994718394324345806 * R[0] + 0.0994718394324345806 * R[18] + -0.198943678864869161 * R[30] + 0.0994718394324345806 * R[3] + 0.0994718394324345806 * R[21] + -0.198943678864869161 * R[33] + -0.198943678864869161 * R[5] + -0.198943678864869161 * R[23] + 0.397887357729738322 * R[35]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[2] + -0.344580559638620054 * R[20] + 0.689161119277240108 * R[32]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[0] + -0.172290279819310027 * R[18] + 0.344580559638620054 * R[30] + 0.172290279819310027 * R[3] + 0.172290279819310027 * R[21] + -0.344580559638620054 * R[33]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[13]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[16]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[12] + -0.344580559638620054 * R[15] + 0.689161119277240108 * R[17]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[14]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[12] + -0.596831036594607678 * R[15]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[1] + -0.596831036594607678 * R[19]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[4] + -0.596831036594607678 * R[22]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[0] + 0.172290279819310027 * R[18] + -0.172290279819310027 * R[3] + 0.172290279819310027 * R[21] + 0.344580559638620054 * R[5] + -0.344580559638620054 * R[23]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[2] + -0.596831036594607678 * R[20]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.298415518297303839 * R[0] + -0.298415518297303839 * R[18] + -0.298415518297303839 * R[3] + 0.298415518297303839 * R[21]);
+        }
+        return 1;
 }
 
 /* (20|21): 270 VRR nodes, 96 targets */
-static int jkv_2021(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_2021(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)96 * nb;
+        double *v = wk, *w = v + (size_t)96 * nb, *SK = w + (size_t)96 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 96);
         for (t = 0; t < nk; t++) {
@@ -4405,7 +6573,6 @@ static int jkv_2021(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -4802,17 +6969,161 @@ static int jkv_2021(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 96; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 96;
+                double *o = out + cpos[pos[0]] * 5 * st[0] + cpos[pos[1]] * 1 * st[1]
+                          + cpos[pos[2]] * 5 * st[2] + cpos[pos[3]] * 3 * st[3];
+                const double *HB = sk;
+                double R[108];
+                double kb300[6];
+                for (i = 0; i < 6; i++) kb300[i] = HB[i * 16 + 6];
+                double kb200[6];
+                for (i = 0; i < 6; i++) kb200[i] = HB[i * 16 + 0];
+                for (i = 0; i < 6; i++) (R + 0)[i] = (kb300)[i] + CD[0] * (kb200)[i];
+                double kb210[6];
+                for (i = 0; i < 6; i++) kb210[i] = HB[i * 16 + 7];
+                for (i = 0; i < 6; i++) (R + 6)[i] = (kb210)[i] + CD[1] * (kb200)[i];
+                double kb201[6];
+                for (i = 0; i < 6; i++) kb201[i] = HB[i * 16 + 8];
+                for (i = 0; i < 6; i++) (R + 12)[i] = (kb201)[i] + CD[2] * (kb200)[i];
+                double kb110[6];
+                for (i = 0; i < 6; i++) kb110[i] = HB[i * 16 + 1];
+                for (i = 0; i < 6; i++) (R + 18)[i] = (kb210)[i] + CD[0] * (kb110)[i];
+                double kb120[6];
+                for (i = 0; i < 6; i++) kb120[i] = HB[i * 16 + 9];
+                for (i = 0; i < 6; i++) (R + 24)[i] = (kb120)[i] + CD[1] * (kb110)[i];
+                double kb111[6];
+                for (i = 0; i < 6; i++) kb111[i] = HB[i * 16 + 10];
+                for (i = 0; i < 6; i++) (R + 30)[i] = (kb111)[i] + CD[2] * (kb110)[i];
+                double kb101[6];
+                for (i = 0; i < 6; i++) kb101[i] = HB[i * 16 + 2];
+                for (i = 0; i < 6; i++) (R + 36)[i] = (kb201)[i] + CD[0] * (kb101)[i];
+                for (i = 0; i < 6; i++) (R + 42)[i] = (kb111)[i] + CD[1] * (kb101)[i];
+                double kb102[6];
+                for (i = 0; i < 6; i++) kb102[i] = HB[i * 16 + 11];
+                for (i = 0; i < 6; i++) (R + 48)[i] = (kb102)[i] + CD[2] * (kb101)[i];
+                double kb020[6];
+                for (i = 0; i < 6; i++) kb020[i] = HB[i * 16 + 3];
+                for (i = 0; i < 6; i++) (R + 54)[i] = (kb120)[i] + CD[0] * (kb020)[i];
+                double kb030[6];
+                for (i = 0; i < 6; i++) kb030[i] = HB[i * 16 + 12];
+                for (i = 0; i < 6; i++) (R + 60)[i] = (kb030)[i] + CD[1] * (kb020)[i];
+                double kb021[6];
+                for (i = 0; i < 6; i++) kb021[i] = HB[i * 16 + 13];
+                for (i = 0; i < 6; i++) (R + 66)[i] = (kb021)[i] + CD[2] * (kb020)[i];
+                double kb011[6];
+                for (i = 0; i < 6; i++) kb011[i] = HB[i * 16 + 4];
+                for (i = 0; i < 6; i++) (R + 72)[i] = (kb111)[i] + CD[0] * (kb011)[i];
+                for (i = 0; i < 6; i++) (R + 78)[i] = (kb021)[i] + CD[1] * (kb011)[i];
+                double kb012[6];
+                for (i = 0; i < 6; i++) kb012[i] = HB[i * 16 + 14];
+                for (i = 0; i < 6; i++) (R + 84)[i] = (kb012)[i] + CD[2] * (kb011)[i];
+                double kb002[6];
+                for (i = 0; i < 6; i++) kb002[i] = HB[i * 16 + 5];
+                for (i = 0; i < 6; i++) (R + 90)[i] = (kb102)[i] + CD[0] * (kb002)[i];
+                for (i = 0; i < 6; i++) (R + 96)[i] = (kb012)[i] + CD[1] * (kb002)[i];
+                double kb003[6];
+                for (i = 0; i < 6; i++) kb003[i] = HB[i * 16 + 15];
+                for (i = 0; i < 6; i++) (R + 102)[i] = (kb003)[i] + CD[2] * (kb002)[i];
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[19]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[22]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[18] + -0.344580559638620054 * R[21] + 0.689161119277240108 * R[23]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[20]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[18] + -0.596831036594607678 * R[21]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[25]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[28]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[24] + -0.344580559638620054 * R[27] + 0.689161119277240108 * R[29]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[26]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[24] + -0.596831036594607678 * R[27]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[31]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[34]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[30] + -0.344580559638620054 * R[33] + 0.689161119277240108 * R[35]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[32]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[30] + -0.596831036594607678 * R[33]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[73]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[76]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[72] + -0.344580559638620054 * R[75] + 0.689161119277240108 * R[77]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[74]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[72] + -0.596831036594607678 * R[75]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[79]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[82]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[78] + -0.344580559638620054 * R[81] + 0.689161119277240108 * R[83]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[80]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[78] + -0.596831036594607678 * R[81]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[85]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[88]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[84] + -0.344580559638620054 * R[87] + 0.689161119277240108 * R[89]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[86]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[84] + -0.596831036594607678 * R[87]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[1] + -0.344580559638620054 * R[55] + 0.689161119277240108 * R[91]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[4] + -0.344580559638620054 * R[58] + 0.689161119277240108 * R[94]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.0994718394324345806 * R[0] + 0.0994718394324345806 * R[54] + -0.198943678864869161 * R[90] + 0.0994718394324345806 * R[3] + 0.0994718394324345806 * R[57] + -0.198943678864869161 * R[93] + -0.198943678864869161 * R[5] + -0.198943678864869161 * R[59] + 0.397887357729738322 * R[95]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[2] + -0.344580559638620054 * R[56] + 0.689161119277240108 * R[92]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[0] + -0.172290279819310027 * R[54] + 0.344580559638620054 * R[90] + 0.172290279819310027 * R[3] + 0.172290279819310027 * R[57] + -0.344580559638620054 * R[93]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[7] + -0.344580559638620054 * R[61] + 0.689161119277240108 * R[97]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[10] + -0.344580559638620054 * R[64] + 0.689161119277240108 * R[100]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.0994718394324345806 * R[6] + 0.0994718394324345806 * R[60] + -0.198943678864869161 * R[96] + 0.0994718394324345806 * R[9] + 0.0994718394324345806 * R[63] + -0.198943678864869161 * R[99] + -0.198943678864869161 * R[11] + -0.198943678864869161 * R[65] + 0.397887357729738322 * R[101]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[8] + -0.344580559638620054 * R[62] + 0.689161119277240108 * R[98]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.172290279819310027 * R[6] + -0.172290279819310027 * R[60] + 0.344580559638620054 * R[96] + 0.172290279819310027 * R[9] + 0.172290279819310027 * R[63] + -0.344580559638620054 * R[99]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[13] + -0.344580559638620054 * R[67] + 0.689161119277240108 * R[103]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[16] + -0.344580559638620054 * R[70] + 0.689161119277240108 * R[106]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0994718394324345806 * R[12] + 0.0994718394324345806 * R[66] + -0.198943678864869161 * R[102] + 0.0994718394324345806 * R[15] + 0.0994718394324345806 * R[69] + -0.198943678864869161 * R[105] + -0.198943678864869161 * R[17] + -0.198943678864869161 * R[71] + 0.397887357729738322 * R[107]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[14] + -0.344580559638620054 * R[68] + 0.689161119277240108 * R[104]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[12] + -0.172290279819310027 * R[66] + 0.344580559638620054 * R[102] + 0.172290279819310027 * R[15] + 0.172290279819310027 * R[69] + -0.344580559638620054 * R[105]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[37]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[40]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[36] + -0.344580559638620054 * R[39] + 0.689161119277240108 * R[41]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[38]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[36] + -0.596831036594607678 * R[39]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[43]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[46]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[42] + -0.344580559638620054 * R[45] + 0.689161119277240108 * R[47]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[44]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[42] + -0.596831036594607678 * R[45]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[49]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[52]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[48] + -0.344580559638620054 * R[51] + 0.689161119277240108 * R[53]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[50]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[48] + -0.596831036594607678 * R[51]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[1] + -0.596831036594607678 * R[55]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[4] + -0.596831036594607678 * R[58]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[0] + 0.172290279819310027 * R[54] + -0.172290279819310027 * R[3] + 0.172290279819310027 * R[57] + 0.344580559638620054 * R[5] + -0.344580559638620054 * R[59]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[2] + -0.596831036594607678 * R[56]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.298415518297303839 * R[0] + -0.298415518297303839 * R[54] + -0.298415518297303839 * R[3] + 0.298415518297303839 * R[57]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[7] + -0.596831036594607678 * R[61]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[10] + -0.596831036594607678 * R[64]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (-0.172290279819310027 * R[6] + 0.172290279819310027 * R[60] + -0.172290279819310027 * R[9] + 0.172290279819310027 * R[63] + 0.344580559638620054 * R[11] + -0.344580559638620054 * R[65]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[8] + -0.596831036594607678 * R[62]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.298415518297303839 * R[6] + -0.298415518297303839 * R[60] + -0.298415518297303839 * R[9] + 0.298415518297303839 * R[63]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[13] + -0.596831036594607678 * R[67]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[16] + -0.596831036594607678 * R[70]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[12] + 0.172290279819310027 * R[66] + -0.172290279819310027 * R[15] + 0.172290279819310027 * R[69] + 0.344580559638620054 * R[17] + -0.344580559638620054 * R[71]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[14] + -0.596831036594607678 * R[68]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.298415518297303839 * R[12] + -0.298415518297303839 * R[66] + -0.298415518297303839 * R[15] + 0.298415518297303839 * R[69]);
+        }
+        return 1;
 }
 
 /* (20|22): 550 VRR nodes, 186 targets */
-static int jkv_2022(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_2022(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)186 * nb;
+        double *v = wk, *w = v + (size_t)186 * nb, *SK = w + (size_t)186 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 186);
         for (t = 0; t < nk; t++) {
@@ -4822,7 +7133,6 @@ static int jkv_2022(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -5589,17 +7899,345 @@ static int jkv_2022(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 186; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 186;
+                double *o = out + cpos[pos[0]] * 5 * st[0] + cpos[pos[1]] * 1 * st[1]
+                          + cpos[pos[2]] * 5 * st[2] + cpos[pos[3]] * 5 * st[3];
+                const double *HB = sk;
+                double R[216];
+                double kb400[6];
+                for (i = 0; i < 6; i++) kb400[i] = HB[i * 31 + 16];
+                double kb300[6];
+                for (i = 0; i < 6; i++) kb300[i] = HB[i * 31 + 6];
+                double hk300_100[6];
+                for (i = 0; i < 6; i++) (hk300_100)[i] = (kb400)[i] + CD[0] * (kb300)[i];
+                double kb200[6];
+                for (i = 0; i < 6; i++) kb200[i] = HB[i * 31 + 0];
+                double hk200_100[6];
+                for (i = 0; i < 6; i++) (hk200_100)[i] = (kb300)[i] + CD[0] * (kb200)[i];
+                for (i = 0; i < 6; i++) (R + 0)[i] = (hk300_100)[i] + CD[0] * (hk200_100)[i];
+                double kb310[6];
+                for (i = 0; i < 6; i++) kb310[i] = HB[i * 31 + 17];
+                double hk300_010[6];
+                for (i = 0; i < 6; i++) (hk300_010)[i] = (kb310)[i] + CD[1] * (kb300)[i];
+                double kb210[6];
+                for (i = 0; i < 6; i++) kb210[i] = HB[i * 31 + 7];
+                double hk200_010[6];
+                for (i = 0; i < 6; i++) (hk200_010)[i] = (kb210)[i] + CD[1] * (kb200)[i];
+                for (i = 0; i < 6; i++) (R + 6)[i] = (hk300_010)[i] + CD[0] * (hk200_010)[i];
+                double kb301[6];
+                for (i = 0; i < 6; i++) kb301[i] = HB[i * 31 + 18];
+                double hk300_001[6];
+                for (i = 0; i < 6; i++) (hk300_001)[i] = (kb301)[i] + CD[2] * (kb300)[i];
+                double kb201[6];
+                for (i = 0; i < 6; i++) kb201[i] = HB[i * 31 + 8];
+                double hk200_001[6];
+                for (i = 0; i < 6; i++) (hk200_001)[i] = (kb201)[i] + CD[2] * (kb200)[i];
+                for (i = 0; i < 6; i++) (R + 12)[i] = (hk300_001)[i] + CD[0] * (hk200_001)[i];
+                double kb220[6];
+                for (i = 0; i < 6; i++) kb220[i] = HB[i * 31 + 19];
+                double hk210_010[6];
+                for (i = 0; i < 6; i++) (hk210_010)[i] = (kb220)[i] + CD[1] * (kb210)[i];
+                for (i = 0; i < 6; i++) (R + 18)[i] = (hk210_010)[i] + CD[1] * (hk200_010)[i];
+                double kb211[6];
+                for (i = 0; i < 6; i++) kb211[i] = HB[i * 31 + 20];
+                double hk210_001[6];
+                for (i = 0; i < 6; i++) (hk210_001)[i] = (kb211)[i] + CD[2] * (kb210)[i];
+                for (i = 0; i < 6; i++) (R + 24)[i] = (hk210_001)[i] + CD[1] * (hk200_001)[i];
+                double kb202[6];
+                for (i = 0; i < 6; i++) kb202[i] = HB[i * 31 + 21];
+                double hk201_001[6];
+                for (i = 0; i < 6; i++) (hk201_001)[i] = (kb202)[i] + CD[2] * (kb201)[i];
+                for (i = 0; i < 6; i++) (R + 30)[i] = (hk201_001)[i] + CD[2] * (hk200_001)[i];
+                double hk210_100[6];
+                for (i = 0; i < 6; i++) (hk210_100)[i] = (kb310)[i] + CD[0] * (kb210)[i];
+                double kb110[6];
+                for (i = 0; i < 6; i++) kb110[i] = HB[i * 31 + 1];
+                double hk110_100[6];
+                for (i = 0; i < 6; i++) (hk110_100)[i] = (kb210)[i] + CD[0] * (kb110)[i];
+                for (i = 0; i < 6; i++) (R + 36)[i] = (hk210_100)[i] + CD[0] * (hk110_100)[i];
+                double kb120[6];
+                for (i = 0; i < 6; i++) kb120[i] = HB[i * 31 + 9];
+                double hk110_010[6];
+                for (i = 0; i < 6; i++) (hk110_010)[i] = (kb120)[i] + CD[1] * (kb110)[i];
+                for (i = 0; i < 6; i++) (R + 42)[i] = (hk210_010)[i] + CD[0] * (hk110_010)[i];
+                double kb111[6];
+                for (i = 0; i < 6; i++) kb111[i] = HB[i * 31 + 10];
+                double hk110_001[6];
+                for (i = 0; i < 6; i++) (hk110_001)[i] = (kb111)[i] + CD[2] * (kb110)[i];
+                for (i = 0; i < 6; i++) (R + 48)[i] = (hk210_001)[i] + CD[0] * (hk110_001)[i];
+                double kb130[6];
+                for (i = 0; i < 6; i++) kb130[i] = HB[i * 31 + 22];
+                double hk120_010[6];
+                for (i = 0; i < 6; i++) (hk120_010)[i] = (kb130)[i] + CD[1] * (kb120)[i];
+                for (i = 0; i < 6; i++) (R + 54)[i] = (hk120_010)[i] + CD[1] * (hk110_010)[i];
+                double kb121[6];
+                for (i = 0; i < 6; i++) kb121[i] = HB[i * 31 + 23];
+                double hk120_001[6];
+                for (i = 0; i < 6; i++) (hk120_001)[i] = (kb121)[i] + CD[2] * (kb120)[i];
+                for (i = 0; i < 6; i++) (R + 60)[i] = (hk120_001)[i] + CD[1] * (hk110_001)[i];
+                double kb112[6];
+                for (i = 0; i < 6; i++) kb112[i] = HB[i * 31 + 24];
+                double hk111_001[6];
+                for (i = 0; i < 6; i++) (hk111_001)[i] = (kb112)[i] + CD[2] * (kb111)[i];
+                for (i = 0; i < 6; i++) (R + 66)[i] = (hk111_001)[i] + CD[2] * (hk110_001)[i];
+                double hk201_100[6];
+                for (i = 0; i < 6; i++) (hk201_100)[i] = (kb301)[i] + CD[0] * (kb201)[i];
+                double kb101[6];
+                for (i = 0; i < 6; i++) kb101[i] = HB[i * 31 + 2];
+                double hk101_100[6];
+                for (i = 0; i < 6; i++) (hk101_100)[i] = (kb201)[i] + CD[0] * (kb101)[i];
+                for (i = 0; i < 6; i++) (R + 72)[i] = (hk201_100)[i] + CD[0] * (hk101_100)[i];
+                double hk201_010[6];
+                for (i = 0; i < 6; i++) (hk201_010)[i] = (kb211)[i] + CD[1] * (kb201)[i];
+                double hk101_010[6];
+                for (i = 0; i < 6; i++) (hk101_010)[i] = (kb111)[i] + CD[1] * (kb101)[i];
+                for (i = 0; i < 6; i++) (R + 78)[i] = (hk201_010)[i] + CD[0] * (hk101_010)[i];
+                double kb102[6];
+                for (i = 0; i < 6; i++) kb102[i] = HB[i * 31 + 11];
+                double hk101_001[6];
+                for (i = 0; i < 6; i++) (hk101_001)[i] = (kb102)[i] + CD[2] * (kb101)[i];
+                for (i = 0; i < 6; i++) (R + 84)[i] = (hk201_001)[i] + CD[0] * (hk101_001)[i];
+                double hk111_010[6];
+                for (i = 0; i < 6; i++) (hk111_010)[i] = (kb121)[i] + CD[1] * (kb111)[i];
+                for (i = 0; i < 6; i++) (R + 90)[i] = (hk111_010)[i] + CD[1] * (hk101_010)[i];
+                for (i = 0; i < 6; i++) (R + 96)[i] = (hk111_001)[i] + CD[1] * (hk101_001)[i];
+                double kb103[6];
+                for (i = 0; i < 6; i++) kb103[i] = HB[i * 31 + 25];
+                double hk102_001[6];
+                for (i = 0; i < 6; i++) (hk102_001)[i] = (kb103)[i] + CD[2] * (kb102)[i];
+                for (i = 0; i < 6; i++) (R + 102)[i] = (hk102_001)[i] + CD[2] * (hk101_001)[i];
+                double hk120_100[6];
+                for (i = 0; i < 6; i++) (hk120_100)[i] = (kb220)[i] + CD[0] * (kb120)[i];
+                double kb020[6];
+                for (i = 0; i < 6; i++) kb020[i] = HB[i * 31 + 3];
+                double hk020_100[6];
+                for (i = 0; i < 6; i++) (hk020_100)[i] = (kb120)[i] + CD[0] * (kb020)[i];
+                for (i = 0; i < 6; i++) (R + 108)[i] = (hk120_100)[i] + CD[0] * (hk020_100)[i];
+                double kb030[6];
+                for (i = 0; i < 6; i++) kb030[i] = HB[i * 31 + 12];
+                double hk020_010[6];
+                for (i = 0; i < 6; i++) (hk020_010)[i] = (kb030)[i] + CD[1] * (kb020)[i];
+                for (i = 0; i < 6; i++) (R + 114)[i] = (hk120_010)[i] + CD[0] * (hk020_010)[i];
+                double kb021[6];
+                for (i = 0; i < 6; i++) kb021[i] = HB[i * 31 + 13];
+                double hk020_001[6];
+                for (i = 0; i < 6; i++) (hk020_001)[i] = (kb021)[i] + CD[2] * (kb020)[i];
+                for (i = 0; i < 6; i++) (R + 120)[i] = (hk120_001)[i] + CD[0] * (hk020_001)[i];
+                double kb040[6];
+                for (i = 0; i < 6; i++) kb040[i] = HB[i * 31 + 26];
+                double hk030_010[6];
+                for (i = 0; i < 6; i++) (hk030_010)[i] = (kb040)[i] + CD[1] * (kb030)[i];
+                for (i = 0; i < 6; i++) (R + 126)[i] = (hk030_010)[i] + CD[1] * (hk020_010)[i];
+                double kb031[6];
+                for (i = 0; i < 6; i++) kb031[i] = HB[i * 31 + 27];
+                double hk030_001[6];
+                for (i = 0; i < 6; i++) (hk030_001)[i] = (kb031)[i] + CD[2] * (kb030)[i];
+                for (i = 0; i < 6; i++) (R + 132)[i] = (hk030_001)[i] + CD[1] * (hk020_001)[i];
+                double kb022[6];
+                for (i = 0; i < 6; i++) kb022[i] = HB[i * 31 + 28];
+                double hk021_001[6];
+                for (i = 0; i < 6; i++) (hk021_001)[i] = (kb022)[i] + CD[2] * (kb021)[i];
+                for (i = 0; i < 6; i++) (R + 138)[i] = (hk021_001)[i] + CD[2] * (hk020_001)[i];
+                double hk111_100[6];
+                for (i = 0; i < 6; i++) (hk111_100)[i] = (kb211)[i] + CD[0] * (kb111)[i];
+                double kb011[6];
+                for (i = 0; i < 6; i++) kb011[i] = HB[i * 31 + 4];
+                double hk011_100[6];
+                for (i = 0; i < 6; i++) (hk011_100)[i] = (kb111)[i] + CD[0] * (kb011)[i];
+                for (i = 0; i < 6; i++) (R + 144)[i] = (hk111_100)[i] + CD[0] * (hk011_100)[i];
+                double hk011_010[6];
+                for (i = 0; i < 6; i++) (hk011_010)[i] = (kb021)[i] + CD[1] * (kb011)[i];
+                for (i = 0; i < 6; i++) (R + 150)[i] = (hk111_010)[i] + CD[0] * (hk011_010)[i];
+                double kb012[6];
+                for (i = 0; i < 6; i++) kb012[i] = HB[i * 31 + 14];
+                double hk011_001[6];
+                for (i = 0; i < 6; i++) (hk011_001)[i] = (kb012)[i] + CD[2] * (kb011)[i];
+                for (i = 0; i < 6; i++) (R + 156)[i] = (hk111_001)[i] + CD[0] * (hk011_001)[i];
+                double hk021_010[6];
+                for (i = 0; i < 6; i++) (hk021_010)[i] = (kb031)[i] + CD[1] * (kb021)[i];
+                for (i = 0; i < 6; i++) (R + 162)[i] = (hk021_010)[i] + CD[1] * (hk011_010)[i];
+                for (i = 0; i < 6; i++) (R + 168)[i] = (hk021_001)[i] + CD[1] * (hk011_001)[i];
+                double kb013[6];
+                for (i = 0; i < 6; i++) kb013[i] = HB[i * 31 + 29];
+                double hk012_001[6];
+                for (i = 0; i < 6; i++) (hk012_001)[i] = (kb013)[i] + CD[2] * (kb012)[i];
+                for (i = 0; i < 6; i++) (R + 174)[i] = (hk012_001)[i] + CD[2] * (hk011_001)[i];
+                double hk102_100[6];
+                for (i = 0; i < 6; i++) (hk102_100)[i] = (kb202)[i] + CD[0] * (kb102)[i];
+                double kb002[6];
+                for (i = 0; i < 6; i++) kb002[i] = HB[i * 31 + 5];
+                double hk002_100[6];
+                for (i = 0; i < 6; i++) (hk002_100)[i] = (kb102)[i] + CD[0] * (kb002)[i];
+                for (i = 0; i < 6; i++) (R + 180)[i] = (hk102_100)[i] + CD[0] * (hk002_100)[i];
+                double hk102_010[6];
+                for (i = 0; i < 6; i++) (hk102_010)[i] = (kb112)[i] + CD[1] * (kb102)[i];
+                double hk002_010[6];
+                for (i = 0; i < 6; i++) (hk002_010)[i] = (kb012)[i] + CD[1] * (kb002)[i];
+                for (i = 0; i < 6; i++) (R + 186)[i] = (hk102_010)[i] + CD[0] * (hk002_010)[i];
+                double kb003[6];
+                for (i = 0; i < 6; i++) kb003[i] = HB[i * 31 + 15];
+                double hk002_001[6];
+                for (i = 0; i < 6; i++) (hk002_001)[i] = (kb003)[i] + CD[2] * (kb002)[i];
+                for (i = 0; i < 6; i++) (R + 192)[i] = (hk102_001)[i] + CD[0] * (hk002_001)[i];
+                double hk012_010[6];
+                for (i = 0; i < 6; i++) (hk012_010)[i] = (kb022)[i] + CD[1] * (kb012)[i];
+                for (i = 0; i < 6; i++) (R + 198)[i] = (hk012_010)[i] + CD[1] * (hk002_010)[i];
+                for (i = 0; i < 6; i++) (R + 204)[i] = (hk012_001)[i] + CD[1] * (hk002_001)[i];
+                double kb004[6];
+                for (i = 0; i < 6; i++) kb004[i] = HB[i * 31 + 30];
+                double hk003_001[6];
+                for (i = 0; i < 6; i++) (hk003_001)[i] = (kb004)[i] + CD[2] * (kb003)[i];
+                for (i = 0; i < 6; i++) (R + 210)[i] = (hk003_001)[i] + CD[2] * (hk002_001)[i];
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[43]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[46]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[42] + -0.376470949645714703 * R[45] + 0.752941899291429406 * R[47]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[44]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[42] + -0.652066812360082348 * R[45]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[61]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[64]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[60] + -0.376470949645714703 * R[63] + 0.752941899291429406 * R[65]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[62]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[60] + -0.652066812360082348 * R[63]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[37] + -0.376470949645714703 * R[55] + 0.752941899291429406 * R[67]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[40] + -0.376470949645714703 * R[58] + 0.752941899291429406 * R[70]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[36] + 0.108677802060013692 * R[54] + -0.217355604120027385 * R[66] + 0.108677802060013692 * R[39] + 0.108677802060013692 * R[57] + -0.217355604120027385 * R[69] + -0.217355604120027385 * R[41] + -0.217355604120027385 * R[59] + 0.434711208240054769 * R[71]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[38] + -0.376470949645714703 * R[56] + 0.752941899291429406 * R[68]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[36] + -0.188235474822857352 * R[54] + 0.376470949645714703 * R[66] + 0.188235474822857352 * R[39] + 0.188235474822857352 * R[57] + -0.376470949645714703 * R[69]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[49]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[52]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (-0.376470949645714703 * R[48] + -0.376470949645714703 * R[51] + 0.752941899291429406 * R[53]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[50]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (0.652066812360082348 * R[48] + -0.652066812360082348 * R[51]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[37] + -0.652066812360082348 * R[55]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[40] + -0.652066812360082348 * R[58]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (-0.188235474822857352 * R[36] + 0.188235474822857352 * R[54] + -0.188235474822857352 * R[39] + 0.188235474822857352 * R[57] + 0.376470949645714703 * R[41] + -0.376470949645714703 * R[59]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[38] + -0.652066812360082348 * R[56]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.326033406180041174 * R[36] + -0.326033406180041174 * R[54] + -0.326033406180041174 * R[39] + 0.326033406180041174 * R[57]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[151]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[154]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[150] + -0.376470949645714703 * R[153] + 0.752941899291429406 * R[155]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[152]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[150] + -0.652066812360082348 * R[153]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[169]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[172]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[168] + -0.376470949645714703 * R[171] + 0.752941899291429406 * R[173]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[170]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[168] + -0.652066812360082348 * R[171]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[145] + -0.376470949645714703 * R[163] + 0.752941899291429406 * R[175]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[148] + -0.376470949645714703 * R[166] + 0.752941899291429406 * R[178]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[144] + 0.108677802060013692 * R[162] + -0.217355604120027385 * R[174] + 0.108677802060013692 * R[147] + 0.108677802060013692 * R[165] + -0.217355604120027385 * R[177] + -0.217355604120027385 * R[149] + -0.217355604120027385 * R[167] + 0.434711208240054769 * R[179]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[146] + -0.376470949645714703 * R[164] + 0.752941899291429406 * R[176]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[144] + -0.188235474822857352 * R[162] + 0.376470949645714703 * R[174] + 0.188235474822857352 * R[147] + 0.188235474822857352 * R[165] + -0.376470949645714703 * R[177]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[157]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[160]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (-0.376470949645714703 * R[156] + -0.376470949645714703 * R[159] + 0.752941899291429406 * R[161]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[158]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (0.652066812360082348 * R[156] + -0.652066812360082348 * R[159]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[145] + -0.652066812360082348 * R[163]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[148] + -0.652066812360082348 * R[166]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (-0.188235474822857352 * R[144] + 0.188235474822857352 * R[162] + -0.188235474822857352 * R[147] + 0.188235474822857352 * R[165] + 0.376470949645714703 * R[149] + -0.376470949645714703 * R[167]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[146] + -0.652066812360082348 * R[164]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.326033406180041174 * R[144] + -0.326033406180041174 * R[162] + -0.326033406180041174 * R[147] + 0.326033406180041174 * R[165]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[7] + -0.376470949645714703 * R[115] + 0.752941899291429406 * R[187]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[10] + -0.376470949645714703 * R[118] + 0.752941899291429406 * R[190]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.108677802060013692 * R[6] + 0.108677802060013692 * R[114] + -0.217355604120027385 * R[186] + 0.108677802060013692 * R[9] + 0.108677802060013692 * R[117] + -0.217355604120027385 * R[189] + -0.217355604120027385 * R[11] + -0.217355604120027385 * R[119] + 0.434711208240054769 * R[191]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[8] + -0.376470949645714703 * R[116] + 0.752941899291429406 * R[188]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[6] + -0.188235474822857352 * R[114] + 0.376470949645714703 * R[186] + 0.188235474822857352 * R[9] + 0.188235474822857352 * R[117] + -0.376470949645714703 * R[189]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[25] + -0.376470949645714703 * R[133] + 0.752941899291429406 * R[205]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[28] + -0.376470949645714703 * R[136] + 0.752941899291429406 * R[208]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.108677802060013692 * R[24] + 0.108677802060013692 * R[132] + -0.217355604120027385 * R[204] + 0.108677802060013692 * R[27] + 0.108677802060013692 * R[135] + -0.217355604120027385 * R[207] + -0.217355604120027385 * R[29] + -0.217355604120027385 * R[137] + 0.434711208240054769 * R[209]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[26] + -0.376470949645714703 * R[134] + 0.752941899291429406 * R[206]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[24] + -0.188235474822857352 * R[132] + 0.376470949645714703 * R[204] + 0.188235474822857352 * R[27] + 0.188235474822857352 * R[135] + -0.376470949645714703 * R[207]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[1] + 0.108677802060013692 * R[19] + -0.217355604120027385 * R[31] + 0.108677802060013692 * R[109] + 0.108677802060013692 * R[127] + -0.217355604120027385 * R[139] + -0.217355604120027385 * R[181] + -0.217355604120027385 * R[199] + 0.434711208240054769 * R[211]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[4] + 0.108677802060013692 * R[22] + -0.217355604120027385 * R[34] + 0.108677802060013692 * R[112] + 0.108677802060013692 * R[130] + -0.217355604120027385 * R[142] + -0.217355604120027385 * R[184] + -0.217355604120027385 * R[202] + 0.434711208240054769 * R[214]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.031372579137142885 * R[0] + -0.031372579137142885 * R[18] + 0.06274515827428577 * R[30] + -0.031372579137142885 * R[108] + -0.031372579137142885 * R[126] + 0.06274515827428577 * R[138] + 0.06274515827428577 * R[180] + 0.06274515827428577 * R[198] + -0.12549031654857154 * R[210] + -0.031372579137142885 * R[3] + -0.031372579137142885 * R[21] + 0.06274515827428577 * R[33] + -0.031372579137142885 * R[111] + -0.031372579137142885 * R[129] + 0.06274515827428577 * R[141] + 0.06274515827428577 * R[183] + 0.06274515827428577 * R[201] + -0.12549031654857154 * R[213] + 0.06274515827428577 * R[5] + 0.06274515827428577 * R[23] + -0.12549031654857154 * R[35] + 0.06274515827428577 * R[113] + 0.06274515827428577 * R[131] + -0.12549031654857154 * R[143] + -0.12549031654857154 * R[185] + -0.12549031654857154 * R[203] + 0.25098063309714308 * R[215]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[2] + 0.108677802060013692 * R[20] + -0.217355604120027385 * R[32] + 0.108677802060013692 * R[110] + 0.108677802060013692 * R[128] + -0.217355604120027385 * R[140] + -0.217355604120027385 * R[182] + -0.217355604120027385 * R[200] + 0.434711208240054769 * R[212]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0543389010300068462 * R[0] + 0.0543389010300068462 * R[18] + -0.108677802060013692 * R[30] + 0.0543389010300068462 * R[108] + 0.0543389010300068462 * R[126] + -0.108677802060013692 * R[138] + -0.108677802060013692 * R[180] + -0.108677802060013692 * R[198] + 0.217355604120027385 * R[210] + -0.0543389010300068462 * R[3] + -0.0543389010300068462 * R[21] + 0.108677802060013692 * R[33] + -0.0543389010300068462 * R[111] + -0.0543389010300068462 * R[129] + 0.108677802060013692 * R[141] + 0.108677802060013692 * R[183] + 0.108677802060013692 * R[201] + -0.217355604120027385 * R[213]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.376470949645714703 * R[13] + -0.376470949645714703 * R[121] + 0.752941899291429406 * R[193]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.376470949645714703 * R[16] + -0.376470949645714703 * R[124] + 0.752941899291429406 * R[196]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (0.108677802060013692 * R[12] + 0.108677802060013692 * R[120] + -0.217355604120027385 * R[192] + 0.108677802060013692 * R[15] + 0.108677802060013692 * R[123] + -0.217355604120027385 * R[195] + -0.217355604120027385 * R[17] + -0.217355604120027385 * R[125] + 0.434711208240054769 * R[197]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.376470949645714703 * R[14] + -0.376470949645714703 * R[122] + 0.752941899291429406 * R[194]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.188235474822857352 * R[12] + -0.188235474822857352 * R[120] + 0.376470949645714703 * R[192] + 0.188235474822857352 * R[15] + 0.188235474822857352 * R[123] + -0.376470949645714703 * R[195]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.188235474822857352 * R[1] + 0.188235474822857352 * R[19] + -0.188235474822857352 * R[109] + 0.188235474822857352 * R[127] + 0.376470949645714703 * R[181] + -0.376470949645714703 * R[199]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.188235474822857352 * R[4] + 0.188235474822857352 * R[22] + -0.188235474822857352 * R[112] + 0.188235474822857352 * R[130] + 0.376470949645714703 * R[184] + -0.376470949645714703 * R[202]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (0.0543389010300068462 * R[0] + -0.0543389010300068462 * R[18] + 0.0543389010300068462 * R[108] + -0.0543389010300068462 * R[126] + -0.108677802060013692 * R[180] + 0.108677802060013692 * R[198] + 0.0543389010300068462 * R[3] + -0.0543389010300068462 * R[21] + 0.0543389010300068462 * R[111] + -0.0543389010300068462 * R[129] + -0.108677802060013692 * R[183] + 0.108677802060013692 * R[201] + -0.108677802060013692 * R[5] + 0.108677802060013692 * R[23] + -0.108677802060013692 * R[113] + 0.108677802060013692 * R[131] + 0.217355604120027385 * R[185] + -0.217355604120027385 * R[203]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.188235474822857352 * R[2] + 0.188235474822857352 * R[20] + -0.188235474822857352 * R[110] + 0.188235474822857352 * R[128] + 0.376470949645714703 * R[182] + -0.376470949645714703 * R[200]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.0941177374114286758 * R[0] + 0.0941177374114286758 * R[18] + -0.0941177374114286758 * R[108] + 0.0941177374114286758 * R[126] + 0.188235474822857352 * R[180] + -0.188235474822857352 * R[198] + 0.0941177374114286758 * R[3] + -0.0941177374114286758 * R[21] + 0.0941177374114286758 * R[111] + -0.0941177374114286758 * R[129] + -0.188235474822857352 * R[183] + 0.188235474822857352 * R[201]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[79]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[82]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[78] + -0.376470949645714703 * R[81] + 0.752941899291429406 * R[83]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[80]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[78] + -0.652066812360082348 * R[81]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[97]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[100]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[96] + -0.376470949645714703 * R[99] + 0.752941899291429406 * R[101]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[98]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[96] + -0.652066812360082348 * R[99]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[73] + -0.376470949645714703 * R[91] + 0.752941899291429406 * R[103]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[76] + -0.376470949645714703 * R[94] + 0.752941899291429406 * R[106]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[72] + 0.108677802060013692 * R[90] + -0.217355604120027385 * R[102] + 0.108677802060013692 * R[75] + 0.108677802060013692 * R[93] + -0.217355604120027385 * R[105] + -0.217355604120027385 * R[77] + -0.217355604120027385 * R[95] + 0.434711208240054769 * R[107]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[74] + -0.376470949645714703 * R[92] + 0.752941899291429406 * R[104]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[72] + -0.188235474822857352 * R[90] + 0.376470949645714703 * R[102] + 0.188235474822857352 * R[75] + 0.188235474822857352 * R[93] + -0.376470949645714703 * R[105]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[85]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[88]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (-0.376470949645714703 * R[84] + -0.376470949645714703 * R[87] + 0.752941899291429406 * R[89]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[86]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (0.652066812360082348 * R[84] + -0.652066812360082348 * R[87]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[73] + -0.652066812360082348 * R[91]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[76] + -0.652066812360082348 * R[94]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (-0.188235474822857352 * R[72] + 0.188235474822857352 * R[90] + -0.188235474822857352 * R[75] + 0.188235474822857352 * R[93] + 0.376470949645714703 * R[77] + -0.376470949645714703 * R[95]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[74] + -0.652066812360082348 * R[92]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.326033406180041174 * R[72] + -0.326033406180041174 * R[90] + -0.326033406180041174 * R[75] + 0.326033406180041174 * R[93]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[7] + -0.652066812360082348 * R[115]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[10] + -0.652066812360082348 * R[118]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[6] + 0.188235474822857352 * R[114] + -0.188235474822857352 * R[9] + 0.188235474822857352 * R[117] + 0.376470949645714703 * R[11] + -0.376470949645714703 * R[119]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[8] + -0.652066812360082348 * R[116]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.326033406180041174 * R[6] + -0.326033406180041174 * R[114] + -0.326033406180041174 * R[9] + 0.326033406180041174 * R[117]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[25] + -0.652066812360082348 * R[133]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[28] + -0.652066812360082348 * R[136]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[24] + 0.188235474822857352 * R[132] + -0.188235474822857352 * R[27] + 0.188235474822857352 * R[135] + 0.376470949645714703 * R[29] + -0.376470949645714703 * R[137]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[26] + -0.652066812360082348 * R[134]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.326033406180041174 * R[24] + -0.326033406180041174 * R[132] + -0.326033406180041174 * R[27] + 0.326033406180041174 * R[135]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[1] + -0.188235474822857352 * R[19] + 0.376470949645714703 * R[31] + 0.188235474822857352 * R[109] + 0.188235474822857352 * R[127] + -0.376470949645714703 * R[139]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[4] + -0.188235474822857352 * R[22] + 0.376470949645714703 * R[34] + 0.188235474822857352 * R[112] + 0.188235474822857352 * R[130] + -0.376470949645714703 * R[142]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.0543389010300068462 * R[0] + 0.0543389010300068462 * R[18] + -0.108677802060013692 * R[30] + -0.0543389010300068462 * R[108] + -0.0543389010300068462 * R[126] + 0.108677802060013692 * R[138] + 0.0543389010300068462 * R[3] + 0.0543389010300068462 * R[21] + -0.108677802060013692 * R[33] + -0.0543389010300068462 * R[111] + -0.0543389010300068462 * R[129] + 0.108677802060013692 * R[141] + -0.108677802060013692 * R[5] + -0.108677802060013692 * R[23] + 0.217355604120027385 * R[35] + 0.108677802060013692 * R[113] + 0.108677802060013692 * R[131] + -0.217355604120027385 * R[143]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[2] + -0.188235474822857352 * R[20] + 0.376470949645714703 * R[32] + 0.188235474822857352 * R[110] + 0.188235474822857352 * R[128] + -0.376470949645714703 * R[140]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.0941177374114286758 * R[0] + -0.0941177374114286758 * R[18] + 0.188235474822857352 * R[30] + 0.0941177374114286758 * R[108] + 0.0941177374114286758 * R[126] + -0.188235474822857352 * R[138] + 0.0941177374114286758 * R[3] + 0.0941177374114286758 * R[21] + -0.188235474822857352 * R[33] + -0.0941177374114286758 * R[111] + -0.0941177374114286758 * R[129] + 0.188235474822857352 * R[141]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.652066812360082348 * R[13] + -0.652066812360082348 * R[121]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.652066812360082348 * R[16] + -0.652066812360082348 * R[124]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (-0.188235474822857352 * R[12] + 0.188235474822857352 * R[120] + -0.188235474822857352 * R[15] + 0.188235474822857352 * R[123] + 0.376470949645714703 * R[17] + -0.376470949645714703 * R[125]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.652066812360082348 * R[14] + -0.652066812360082348 * R[122]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.326033406180041174 * R[12] + -0.326033406180041174 * R[120] + -0.326033406180041174 * R[15] + 0.326033406180041174 * R[123]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.326033406180041174 * R[1] + -0.326033406180041174 * R[19] + -0.326033406180041174 * R[109] + 0.326033406180041174 * R[127]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.326033406180041174 * R[4] + -0.326033406180041174 * R[22] + -0.326033406180041174 * R[112] + 0.326033406180041174 * R[130]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (-0.0941177374114286758 * R[0] + 0.0941177374114286758 * R[18] + 0.0941177374114286758 * R[108] + -0.0941177374114286758 * R[126] + -0.0941177374114286758 * R[3] + 0.0941177374114286758 * R[21] + 0.0941177374114286758 * R[111] + -0.0941177374114286758 * R[129] + 0.188235474822857352 * R[5] + -0.188235474822857352 * R[23] + -0.188235474822857352 * R[113] + 0.188235474822857352 * R[131]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.326033406180041174 * R[2] + -0.326033406180041174 * R[20] + -0.326033406180041174 * R[110] + 0.326033406180041174 * R[128]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.163016703090020587 * R[0] + -0.163016703090020587 * R[18] + -0.163016703090020587 * R[108] + 0.163016703090020587 * R[126] + -0.163016703090020587 * R[3] + 0.163016703090020587 * R[21] + 0.163016703090020587 * R[111] + -0.163016703090020587 * R[129]);
+        }
+        return 1;
 }
 
 /* (21|00): 35 VRR nodes, 16 targets */
-static int jkv_2100(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_2100(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)16 * nb;
+        double *v = wk, *w = v + (size_t)16 * nb, *SK = w + (size_t)16 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 16);
         for (t = 0; t < nk; t++) {
@@ -5609,7 +8247,6 @@ static int jkv_2100(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -5691,17 +8328,72 @@ static int jkv_2100(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 16; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 16;
+                double *o = out + cpos[pos[0]] * 5 * st[0] + cpos[pos[1]] * 3 * st[1]
+                          + cpos[pos[2]] * 1 * st[2] + cpos[pos[3]] * 1 * st[3];
+                double HB[18];
+                for (i = 0; i < 1; i++) (HB + 0)[i] = (sk + 6)[i] + AB[0] * (sk + 0)[i];
+                for (i = 0; i < 1; i++) (HB + 1)[i] = (sk + 7)[i] + AB[1] * (sk + 0)[i];
+                for (i = 0; i < 1; i++) (HB + 2)[i] = (sk + 8)[i] + AB[2] * (sk + 0)[i];
+                for (i = 0; i < 1; i++) (HB + 3)[i] = (sk + 7)[i] + AB[0] * (sk + 1)[i];
+                for (i = 0; i < 1; i++) (HB + 4)[i] = (sk + 9)[i] + AB[1] * (sk + 1)[i];
+                for (i = 0; i < 1; i++) (HB + 5)[i] = (sk + 10)[i] + AB[2] * (sk + 1)[i];
+                for (i = 0; i < 1; i++) (HB + 6)[i] = (sk + 8)[i] + AB[0] * (sk + 2)[i];
+                for (i = 0; i < 1; i++) (HB + 7)[i] = (sk + 10)[i] + AB[1] * (sk + 2)[i];
+                for (i = 0; i < 1; i++) (HB + 8)[i] = (sk + 11)[i] + AB[2] * (sk + 2)[i];
+                for (i = 0; i < 1; i++) (HB + 9)[i] = (sk + 9)[i] + AB[0] * (sk + 3)[i];
+                for (i = 0; i < 1; i++) (HB + 10)[i] = (sk + 12)[i] + AB[1] * (sk + 3)[i];
+                for (i = 0; i < 1; i++) (HB + 11)[i] = (sk + 13)[i] + AB[2] * (sk + 3)[i];
+                for (i = 0; i < 1; i++) (HB + 12)[i] = (sk + 10)[i] + AB[0] * (sk + 4)[i];
+                for (i = 0; i < 1; i++) (HB + 13)[i] = (sk + 13)[i] + AB[1] * (sk + 4)[i];
+                for (i = 0; i < 1; i++) (HB + 14)[i] = (sk + 14)[i] + AB[2] * (sk + 4)[i];
+                for (i = 0; i < 1; i++) (HB + 15)[i] = (sk + 11)[i] + AB[0] * (sk + 5)[i];
+                for (i = 0; i < 1; i++) (HB + 16)[i] = (sk + 14)[i] + AB[1] * (sk + 5)[i];
+                for (i = 0; i < 1; i++) (HB + 17)[i] = (sk + 15)[i] + AB[2] * (sk + 5)[i];
+                double R[18];
+                for (i = 0; i < 18; i++) {
+                        R[0 + i] = HB[i * 1 + 0];
+                }
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[3]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[4]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[5]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[12]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[13]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[14]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[0] + -0.31539156525251999 * R[9] + 0.630783130505039979 * R[15]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[1] + -0.31539156525251999 * R[10] + 0.630783130505039979 * R[16]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[2] + -0.31539156525251999 * R[11] + 0.630783130505039979 * R[17]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[6]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[7]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[8]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[0] + -0.546274215296039589 * R[9]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[1] + -0.546274215296039589 * R[10]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[2] + -0.546274215296039589 * R[11]);
+        }
+        return 1;
 }
 
 /* (21|10): 103 VRR nodes, 48 targets */
-static int jkv_2110(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_2110(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)48 * nb;
+        double *v = wk, *w = v + (size_t)48 * nb, *SK = w + (size_t)48 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 48);
         for (t = 0; t < nk; t++) {
@@ -5711,7 +8403,6 @@ static int jkv_2110(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -5893,17 +8584,104 @@ static int jkv_2110(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 48; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 48;
+                double *o = out + cpos[pos[0]] * 5 * st[0] + cpos[pos[1]] * 3 * st[1]
+                          + cpos[pos[2]] * 3 * st[2] + cpos[pos[3]] * 1 * st[3];
+                double HB[54];
+                for (i = 0; i < 3; i++) (HB + 0)[i] = (sk + 18)[i] + AB[0] * (sk + 0)[i];
+                for (i = 0; i < 3; i++) (HB + 3)[i] = (sk + 21)[i] + AB[1] * (sk + 0)[i];
+                for (i = 0; i < 3; i++) (HB + 6)[i] = (sk + 24)[i] + AB[2] * (sk + 0)[i];
+                for (i = 0; i < 3; i++) (HB + 9)[i] = (sk + 21)[i] + AB[0] * (sk + 3)[i];
+                for (i = 0; i < 3; i++) (HB + 12)[i] = (sk + 27)[i] + AB[1] * (sk + 3)[i];
+                for (i = 0; i < 3; i++) (HB + 15)[i] = (sk + 30)[i] + AB[2] * (sk + 3)[i];
+                for (i = 0; i < 3; i++) (HB + 18)[i] = (sk + 24)[i] + AB[0] * (sk + 6)[i];
+                for (i = 0; i < 3; i++) (HB + 21)[i] = (sk + 30)[i] + AB[1] * (sk + 6)[i];
+                for (i = 0; i < 3; i++) (HB + 24)[i] = (sk + 33)[i] + AB[2] * (sk + 6)[i];
+                for (i = 0; i < 3; i++) (HB + 27)[i] = (sk + 27)[i] + AB[0] * (sk + 9)[i];
+                for (i = 0; i < 3; i++) (HB + 30)[i] = (sk + 36)[i] + AB[1] * (sk + 9)[i];
+                for (i = 0; i < 3; i++) (HB + 33)[i] = (sk + 39)[i] + AB[2] * (sk + 9)[i];
+                for (i = 0; i < 3; i++) (HB + 36)[i] = (sk + 30)[i] + AB[0] * (sk + 12)[i];
+                for (i = 0; i < 3; i++) (HB + 39)[i] = (sk + 39)[i] + AB[1] * (sk + 12)[i];
+                for (i = 0; i < 3; i++) (HB + 42)[i] = (sk + 42)[i] + AB[2] * (sk + 12)[i];
+                for (i = 0; i < 3; i++) (HB + 45)[i] = (sk + 33)[i] + AB[0] * (sk + 15)[i];
+                for (i = 0; i < 3; i++) (HB + 48)[i] = (sk + 42)[i] + AB[1] * (sk + 15)[i];
+                for (i = 0; i < 3; i++) (HB + 51)[i] = (sk + 45)[i] + AB[2] * (sk + 15)[i];
+                double R[54];
+                for (i = 0; i < 18; i++) {
+                        R[0 + i] = HB[i * 3 + 0];
+                        R[18 + i] = HB[i * 3 + 1];
+                        R[36 + i] = HB[i * 3 + 2];
+                }
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[3]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[4]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[5]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[12]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[13]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[14]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[0] + -0.31539156525251999 * R[9] + 0.630783130505039979 * R[15]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[1] + -0.31539156525251999 * R[10] + 0.630783130505039979 * R[16]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[2] + -0.31539156525251999 * R[11] + 0.630783130505039979 * R[17]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[6]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[7]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[8]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[0] + -0.546274215296039589 * R[9]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[1] + -0.546274215296039589 * R[10]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[2] + -0.546274215296039589 * R[11]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[21]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[22]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[23]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[30]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[31]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[32]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[18] + -0.31539156525251999 * R[27] + 0.630783130505039979 * R[33]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[19] + -0.31539156525251999 * R[28] + 0.630783130505039979 * R[34]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[20] + -0.31539156525251999 * R[29] + 0.630783130505039979 * R[35]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[24]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[25]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[26]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[18] + -0.546274215296039589 * R[27]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[19] + -0.546274215296039589 * R[28]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[20] + -0.546274215296039589 * R[29]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[39]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[40]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[41]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[48]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[49]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[50]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[36] + -0.31539156525251999 * R[45] + 0.630783130505039979 * R[51]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[37] + -0.31539156525251999 * R[46] + 0.630783130505039979 * R[52]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[38] + -0.31539156525251999 * R[47] + 0.630783130505039979 * R[53]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[42]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[43]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[44]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[36] + -0.546274215296039589 * R[45]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[37] + -0.546274215296039589 * R[46]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[38] + -0.546274215296039589 * R[47]);
+        }
+        return 1;
 }
 
 /* (21|11): 276 VRR nodes, 144 targets */
-static int jkv_2111(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_2111(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)144 * nb;
+        double *v = wk, *w = v + (size_t)144 * nb, *SK = w + (size_t)144 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 144);
         for (t = 0; t < nk; t++) {
@@ -5913,7 +8691,6 @@ static int jkv_2111(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -6364,17 +9141,216 @@ static int jkv_2111(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 144; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 144;
+                double *o = out + cpos[pos[0]] * 5 * st[0] + cpos[pos[1]] * 3 * st[1]
+                          + cpos[pos[2]] * 3 * st[2] + cpos[pos[3]] * 3 * st[3];
+                double HB[162];
+                for (i = 0; i < 9; i++) (HB + 0)[i] = (sk + 54)[i] + AB[0] * (sk + 0)[i];
+                for (i = 0; i < 9; i++) (HB + 9)[i] = (sk + 63)[i] + AB[1] * (sk + 0)[i];
+                for (i = 0; i < 9; i++) (HB + 18)[i] = (sk + 72)[i] + AB[2] * (sk + 0)[i];
+                for (i = 0; i < 9; i++) (HB + 27)[i] = (sk + 63)[i] + AB[0] * (sk + 9)[i];
+                for (i = 0; i < 9; i++) (HB + 36)[i] = (sk + 81)[i] + AB[1] * (sk + 9)[i];
+                for (i = 0; i < 9; i++) (HB + 45)[i] = (sk + 90)[i] + AB[2] * (sk + 9)[i];
+                for (i = 0; i < 9; i++) (HB + 54)[i] = (sk + 72)[i] + AB[0] * (sk + 18)[i];
+                for (i = 0; i < 9; i++) (HB + 63)[i] = (sk + 90)[i] + AB[1] * (sk + 18)[i];
+                for (i = 0; i < 9; i++) (HB + 72)[i] = (sk + 99)[i] + AB[2] * (sk + 18)[i];
+                for (i = 0; i < 9; i++) (HB + 81)[i] = (sk + 81)[i] + AB[0] * (sk + 27)[i];
+                for (i = 0; i < 9; i++) (HB + 90)[i] = (sk + 108)[i] + AB[1] * (sk + 27)[i];
+                for (i = 0; i < 9; i++) (HB + 99)[i] = (sk + 117)[i] + AB[2] * (sk + 27)[i];
+                for (i = 0; i < 9; i++) (HB + 108)[i] = (sk + 90)[i] + AB[0] * (sk + 36)[i];
+                for (i = 0; i < 9; i++) (HB + 117)[i] = (sk + 117)[i] + AB[1] * (sk + 36)[i];
+                for (i = 0; i < 9; i++) (HB + 126)[i] = (sk + 126)[i] + AB[2] * (sk + 36)[i];
+                for (i = 0; i < 9; i++) (HB + 135)[i] = (sk + 99)[i] + AB[0] * (sk + 45)[i];
+                for (i = 0; i < 9; i++) (HB + 144)[i] = (sk + 126)[i] + AB[1] * (sk + 45)[i];
+                for (i = 0; i < 9; i++) (HB + 153)[i] = (sk + 135)[i] + AB[2] * (sk + 45)[i];
+                double R[162];
+                double kb200[18];
+                for (i = 0; i < 18; i++) kb200[i] = HB[i * 9 + 3];
+                double kb100[18];
+                for (i = 0; i < 18; i++) kb100[i] = HB[i * 9 + 0];
+                for (i = 0; i < 18; i++) (R + 0)[i] = (kb200)[i] + CD[0] * (kb100)[i];
+                double kb110[18];
+                for (i = 0; i < 18; i++) kb110[i] = HB[i * 9 + 4];
+                for (i = 0; i < 18; i++) (R + 18)[i] = (kb110)[i] + CD[1] * (kb100)[i];
+                double kb101[18];
+                for (i = 0; i < 18; i++) kb101[i] = HB[i * 9 + 5];
+                for (i = 0; i < 18; i++) (R + 36)[i] = (kb101)[i] + CD[2] * (kb100)[i];
+                double kb010[18];
+                for (i = 0; i < 18; i++) kb010[i] = HB[i * 9 + 1];
+                for (i = 0; i < 18; i++) (R + 54)[i] = (kb110)[i] + CD[0] * (kb010)[i];
+                double kb020[18];
+                for (i = 0; i < 18; i++) kb020[i] = HB[i * 9 + 6];
+                for (i = 0; i < 18; i++) (R + 72)[i] = (kb020)[i] + CD[1] * (kb010)[i];
+                double kb011[18];
+                for (i = 0; i < 18; i++) kb011[i] = HB[i * 9 + 7];
+                for (i = 0; i < 18; i++) (R + 90)[i] = (kb011)[i] + CD[2] * (kb010)[i];
+                double kb001[18];
+                for (i = 0; i < 18; i++) kb001[i] = HB[i * 9 + 2];
+                for (i = 0; i < 18; i++) (R + 108)[i] = (kb101)[i] + CD[0] * (kb001)[i];
+                for (i = 0; i < 18; i++) (R + 126)[i] = (kb011)[i] + CD[1] * (kb001)[i];
+                double kb002[18];
+                for (i = 0; i < 18; i++) kb002[i] = HB[i * 9 + 8];
+                for (i = 0; i < 18; i++) (R + 144)[i] = (kb002)[i] + CD[2] * (kb001)[i];
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[3]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[4]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[5]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[12]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[13]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[14]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[0] + -0.31539156525251999 * R[9] + 0.630783130505039979 * R[15]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[1] + -0.31539156525251999 * R[10] + 0.630783130505039979 * R[16]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[2] + -0.31539156525251999 * R[11] + 0.630783130505039979 * R[17]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[6]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[7]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[8]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[0] + -0.546274215296039589 * R[9]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[1] + -0.546274215296039589 * R[10]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[2] + -0.546274215296039589 * R[11]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[21]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[22]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[23]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[30]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[31]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[32]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[18] + -0.31539156525251999 * R[27] + 0.630783130505039979 * R[33]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[19] + -0.31539156525251999 * R[28] + 0.630783130505039979 * R[34]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[20] + -0.31539156525251999 * R[29] + 0.630783130505039979 * R[35]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[24]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[25]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[26]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[18] + -0.546274215296039589 * R[27]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[19] + -0.546274215296039589 * R[28]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[20] + -0.546274215296039589 * R[29]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[39]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[40]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[41]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[48]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[49]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[50]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[36] + -0.31539156525251999 * R[45] + 0.630783130505039979 * R[51]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[37] + -0.31539156525251999 * R[46] + 0.630783130505039979 * R[52]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[38] + -0.31539156525251999 * R[47] + 0.630783130505039979 * R[53]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[42]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[43]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[44]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[36] + -0.546274215296039589 * R[45]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[37] + -0.546274215296039589 * R[46]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[38] + -0.546274215296039589 * R[47]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[57]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[58]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[59]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[66]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[67]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[68]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[54] + -0.31539156525251999 * R[63] + 0.630783130505039979 * R[69]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[55] + -0.31539156525251999 * R[64] + 0.630783130505039979 * R[70]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[56] + -0.31539156525251999 * R[65] + 0.630783130505039979 * R[71]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[60]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[61]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[62]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[54] + -0.546274215296039589 * R[63]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[55] + -0.546274215296039589 * R[64]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[56] + -0.546274215296039589 * R[65]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[75]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[76]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[77]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[84]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[85]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[86]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[72] + -0.31539156525251999 * R[81] + 0.630783130505039979 * R[87]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[73] + -0.31539156525251999 * R[82] + 0.630783130505039979 * R[88]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[74] + -0.31539156525251999 * R[83] + 0.630783130505039979 * R[89]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[78]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[79]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[80]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[72] + -0.546274215296039589 * R[81]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[73] + -0.546274215296039589 * R[82]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[74] + -0.546274215296039589 * R[83]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[93]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[94]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[95]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[102]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[103]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[104]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[90] + -0.31539156525251999 * R[99] + 0.630783130505039979 * R[105]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[91] + -0.31539156525251999 * R[100] + 0.630783130505039979 * R[106]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[92] + -0.31539156525251999 * R[101] + 0.630783130505039979 * R[107]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[96]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[97]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[98]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[90] + -0.546274215296039589 * R[99]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[91] + -0.546274215296039589 * R[100]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[92] + -0.546274215296039589 * R[101]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[111]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[112]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[113]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[120]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[121]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[122]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[108] + -0.31539156525251999 * R[117] + 0.630783130505039979 * R[123]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[109] + -0.31539156525251999 * R[118] + 0.630783130505039979 * R[124]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.31539156525251999 * R[110] + -0.31539156525251999 * R[119] + 0.630783130505039979 * R[125]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[114]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[115]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.09254843059207918 * R[116]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[108] + -0.546274215296039589 * R[117]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[109] + -0.546274215296039589 * R[118]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.546274215296039589 * R[110] + -0.546274215296039589 * R[119]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[129]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[130]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[131]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[138]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[139]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[140]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[126] + -0.31539156525251999 * R[135] + 0.630783130505039979 * R[141]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[127] + -0.31539156525251999 * R[136] + 0.630783130505039979 * R[142]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.31539156525251999 * R[128] + -0.31539156525251999 * R[137] + 0.630783130505039979 * R[143]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[132]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[133]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1.09254843059207918 * R[134]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[126] + -0.546274215296039589 * R[135]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[127] + -0.546274215296039589 * R[136]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.546274215296039589 * R[128] + -0.546274215296039589 * R[137]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[147]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[148]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[149]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[156]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[157]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[158]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[144] + -0.31539156525251999 * R[153] + 0.630783130505039979 * R[159]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[145] + -0.31539156525251999 * R[154] + 0.630783130505039979 * R[160]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.31539156525251999 * R[146] + -0.31539156525251999 * R[155] + 0.630783130505039979 * R[161]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[150]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[151]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1.09254843059207918 * R[152]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[144] + -0.546274215296039589 * R[153]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[145] + -0.546274215296039589 * R[154]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.546274215296039589 * R[146] + -0.546274215296039589 * R[155]);
+        }
+        return 1;
 }
 
 /* (21|20): 276 VRR nodes, 96 targets */
-static int jkv_2120(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_2120(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)96 * nb;
+        double *v = wk, *w = v + (size_t)96 * nb, *SK = w + (size_t)96 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 96);
         for (t = 0; t < nk; t++) {
@@ -6384,7 +9360,6 @@ static int jkv_2120(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -6787,17 +9762,137 @@ static int jkv_2120(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 96; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 96;
+                double *o = out + cpos[pos[0]] * 5 * st[0] + cpos[pos[1]] * 3 * st[1]
+                          + cpos[pos[2]] * 5 * st[2] + cpos[pos[3]] * 1 * st[3];
+                double HB[108];
+                for (i = 0; i < 6; i++) (HB + 0)[i] = (sk + 36)[i] + AB[0] * (sk + 0)[i];
+                for (i = 0; i < 6; i++) (HB + 6)[i] = (sk + 42)[i] + AB[1] * (sk + 0)[i];
+                for (i = 0; i < 6; i++) (HB + 12)[i] = (sk + 48)[i] + AB[2] * (sk + 0)[i];
+                for (i = 0; i < 6; i++) (HB + 18)[i] = (sk + 42)[i] + AB[0] * (sk + 6)[i];
+                for (i = 0; i < 6; i++) (HB + 24)[i] = (sk + 54)[i] + AB[1] * (sk + 6)[i];
+                for (i = 0; i < 6; i++) (HB + 30)[i] = (sk + 60)[i] + AB[2] * (sk + 6)[i];
+                for (i = 0; i < 6; i++) (HB + 36)[i] = (sk + 48)[i] + AB[0] * (sk + 12)[i];
+                for (i = 0; i < 6; i++) (HB + 42)[i] = (sk + 60)[i] + AB[1] * (sk + 12)[i];
+                for (i = 0; i < 6; i++) (HB + 48)[i] = (sk + 66)[i] + AB[2] * (sk + 12)[i];
+                for (i = 0; i < 6; i++) (HB + 54)[i] = (sk + 54)[i] + AB[0] * (sk + 18)[i];
+                for (i = 0; i < 6; i++) (HB + 60)[i] = (sk + 72)[i] + AB[1] * (sk + 18)[i];
+                for (i = 0; i < 6; i++) (HB + 66)[i] = (sk + 78)[i] + AB[2] * (sk + 18)[i];
+                for (i = 0; i < 6; i++) (HB + 72)[i] = (sk + 60)[i] + AB[0] * (sk + 24)[i];
+                for (i = 0; i < 6; i++) (HB + 78)[i] = (sk + 78)[i] + AB[1] * (sk + 24)[i];
+                for (i = 0; i < 6; i++) (HB + 84)[i] = (sk + 84)[i] + AB[2] * (sk + 24)[i];
+                for (i = 0; i < 6; i++) (HB + 90)[i] = (sk + 66)[i] + AB[0] * (sk + 30)[i];
+                for (i = 0; i < 6; i++) (HB + 96)[i] = (sk + 84)[i] + AB[1] * (sk + 30)[i];
+                for (i = 0; i < 6; i++) (HB + 102)[i] = (sk + 90)[i] + AB[2] * (sk + 30)[i];
+                double R[108];
+                for (i = 0; i < 18; i++) {
+                        R[0 + i] = HB[i * 6 + 0];
+                        R[18 + i] = HB[i * 6 + 1];
+                        R[36 + i] = HB[i * 6 + 2];
+                        R[54 + i] = HB[i * 6 + 3];
+                        R[72 + i] = HB[i * 6 + 4];
+                        R[90 + i] = HB[i * 6 + 5];
+                }
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[21]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[22]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[23]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[30]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[31]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[32]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[18] + -0.344580559638620054 * R[27] + 0.689161119277240108 * R[33]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[19] + -0.344580559638620054 * R[28] + 0.689161119277240108 * R[34]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[20] + -0.344580559638620054 * R[29] + 0.689161119277240108 * R[35]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[24]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[25]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[26]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[18] + -0.596831036594607678 * R[27]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[19] + -0.596831036594607678 * R[28]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[20] + -0.596831036594607678 * R[29]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[75]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[76]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[77]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[84]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[85]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[86]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[72] + -0.344580559638620054 * R[81] + 0.689161119277240108 * R[87]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[73] + -0.344580559638620054 * R[82] + 0.689161119277240108 * R[88]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[74] + -0.344580559638620054 * R[83] + 0.689161119277240108 * R[89]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[78]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[79]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[80]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[72] + -0.596831036594607678 * R[81]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[73] + -0.596831036594607678 * R[82]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[74] + -0.596831036594607678 * R[83]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[3] + -0.344580559638620054 * R[57] + 0.689161119277240108 * R[93]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[4] + -0.344580559638620054 * R[58] + 0.689161119277240108 * R[94]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[5] + -0.344580559638620054 * R[59] + 0.689161119277240108 * R[95]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[12] + -0.344580559638620054 * R[66] + 0.689161119277240108 * R[102]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[13] + -0.344580559638620054 * R[67] + 0.689161119277240108 * R[103]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[14] + -0.344580559638620054 * R[68] + 0.689161119277240108 * R[104]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.0994718394324345806 * R[0] + 0.0994718394324345806 * R[54] + -0.198943678864869161 * R[90] + 0.0994718394324345806 * R[9] + 0.0994718394324345806 * R[63] + -0.198943678864869161 * R[99] + -0.198943678864869161 * R[15] + -0.198943678864869161 * R[69] + 0.397887357729738322 * R[105]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.0994718394324345806 * R[1] + 0.0994718394324345806 * R[55] + -0.198943678864869161 * R[91] + 0.0994718394324345806 * R[10] + 0.0994718394324345806 * R[64] + -0.198943678864869161 * R[100] + -0.198943678864869161 * R[16] + -0.198943678864869161 * R[70] + 0.397887357729738322 * R[106]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.0994718394324345806 * R[2] + 0.0994718394324345806 * R[56] + -0.198943678864869161 * R[92] + 0.0994718394324345806 * R[11] + 0.0994718394324345806 * R[65] + -0.198943678864869161 * R[101] + -0.198943678864869161 * R[17] + -0.198943678864869161 * R[71] + 0.397887357729738322 * R[107]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[6] + -0.344580559638620054 * R[60] + 0.689161119277240108 * R[96]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[7] + -0.344580559638620054 * R[61] + 0.689161119277240108 * R[97]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[8] + -0.344580559638620054 * R[62] + 0.689161119277240108 * R[98]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[0] + -0.172290279819310027 * R[54] + 0.344580559638620054 * R[90] + 0.172290279819310027 * R[9] + 0.172290279819310027 * R[63] + -0.344580559638620054 * R[99]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[1] + -0.172290279819310027 * R[55] + 0.344580559638620054 * R[91] + 0.172290279819310027 * R[10] + 0.172290279819310027 * R[64] + -0.344580559638620054 * R[100]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[2] + -0.172290279819310027 * R[56] + 0.344580559638620054 * R[92] + 0.172290279819310027 * R[11] + 0.172290279819310027 * R[65] + -0.344580559638620054 * R[101]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[39]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[40]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[41]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[48]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[49]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[50]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[36] + -0.344580559638620054 * R[45] + 0.689161119277240108 * R[51]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[37] + -0.344580559638620054 * R[46] + 0.689161119277240108 * R[52]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[38] + -0.344580559638620054 * R[47] + 0.689161119277240108 * R[53]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[42]);
+                o[3 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[43]);
+                o[3 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[44]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[36] + -0.596831036594607678 * R[45]);
+                o[4 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[37] + -0.596831036594607678 * R[46]);
+                o[4 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[38] + -0.596831036594607678 * R[47]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[3] + -0.596831036594607678 * R[57]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[4] + -0.596831036594607678 * R[58]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[5] + -0.596831036594607678 * R[59]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[12] + -0.596831036594607678 * R[66]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[13] + -0.596831036594607678 * R[67]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[14] + -0.596831036594607678 * R[68]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[0] + 0.172290279819310027 * R[54] + -0.172290279819310027 * R[9] + 0.172290279819310027 * R[63] + 0.344580559638620054 * R[15] + -0.344580559638620054 * R[69]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[1] + 0.172290279819310027 * R[55] + -0.172290279819310027 * R[10] + 0.172290279819310027 * R[64] + 0.344580559638620054 * R[16] + -0.344580559638620054 * R[70]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[2] + 0.172290279819310027 * R[56] + -0.172290279819310027 * R[11] + 0.172290279819310027 * R[65] + 0.344580559638620054 * R[17] + -0.344580559638620054 * R[71]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[6] + -0.596831036594607678 * R[60]);
+                o[3 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[7] + -0.596831036594607678 * R[61]);
+                o[3 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[8] + -0.596831036594607678 * R[62]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.298415518297303839 * R[0] + -0.298415518297303839 * R[54] + -0.298415518297303839 * R[9] + 0.298415518297303839 * R[63]);
+                o[4 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.298415518297303839 * R[1] + -0.298415518297303839 * R[55] + -0.298415518297303839 * R[10] + 0.298415518297303839 * R[64]);
+                o[4 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.298415518297303839 * R[2] + -0.298415518297303839 * R[56] + -0.298415518297303839 * R[11] + 0.298415518297303839 * R[65]);
+        }
+        return 1;
 }
 
 /* (21|21): 630 VRR nodes, 256 targets */
-static int jkv_2121(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_2121(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)256 * nb;
+        double *v = wk, *w = v + (size_t)256 * nb, *SK = w + (size_t)256 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 256);
         for (t = 0; t < nk; t++) {
@@ -6807,7 +9902,6 @@ static int jkv_2121(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -7724,17 +10818,329 @@ static int jkv_2121(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 256; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 256;
+                double *o = out + cpos[pos[0]] * 5 * st[0] + cpos[pos[1]] * 3 * st[1]
+                          + cpos[pos[2]] * 5 * st[2] + cpos[pos[3]] * 3 * st[3];
+                double HB[288];
+                for (i = 0; i < 16; i++) (HB + 0)[i] = (sk + 96)[i] + AB[0] * (sk + 0)[i];
+                for (i = 0; i < 16; i++) (HB + 16)[i] = (sk + 112)[i] + AB[1] * (sk + 0)[i];
+                for (i = 0; i < 16; i++) (HB + 32)[i] = (sk + 128)[i] + AB[2] * (sk + 0)[i];
+                for (i = 0; i < 16; i++) (HB + 48)[i] = (sk + 112)[i] + AB[0] * (sk + 16)[i];
+                for (i = 0; i < 16; i++) (HB + 64)[i] = (sk + 144)[i] + AB[1] * (sk + 16)[i];
+                for (i = 0; i < 16; i++) (HB + 80)[i] = (sk + 160)[i] + AB[2] * (sk + 16)[i];
+                for (i = 0; i < 16; i++) (HB + 96)[i] = (sk + 128)[i] + AB[0] * (sk + 32)[i];
+                for (i = 0; i < 16; i++) (HB + 112)[i] = (sk + 160)[i] + AB[1] * (sk + 32)[i];
+                for (i = 0; i < 16; i++) (HB + 128)[i] = (sk + 176)[i] + AB[2] * (sk + 32)[i];
+                for (i = 0; i < 16; i++) (HB + 144)[i] = (sk + 144)[i] + AB[0] * (sk + 48)[i];
+                for (i = 0; i < 16; i++) (HB + 160)[i] = (sk + 192)[i] + AB[1] * (sk + 48)[i];
+                for (i = 0; i < 16; i++) (HB + 176)[i] = (sk + 208)[i] + AB[2] * (sk + 48)[i];
+                for (i = 0; i < 16; i++) (HB + 192)[i] = (sk + 160)[i] + AB[0] * (sk + 64)[i];
+                for (i = 0; i < 16; i++) (HB + 208)[i] = (sk + 208)[i] + AB[1] * (sk + 64)[i];
+                for (i = 0; i < 16; i++) (HB + 224)[i] = (sk + 224)[i] + AB[2] * (sk + 64)[i];
+                for (i = 0; i < 16; i++) (HB + 240)[i] = (sk + 176)[i] + AB[0] * (sk + 80)[i];
+                for (i = 0; i < 16; i++) (HB + 256)[i] = (sk + 224)[i] + AB[1] * (sk + 80)[i];
+                for (i = 0; i < 16; i++) (HB + 272)[i] = (sk + 240)[i] + AB[2] * (sk + 80)[i];
+                double R[324];
+                double kb300[18];
+                for (i = 0; i < 18; i++) kb300[i] = HB[i * 16 + 6];
+                double kb200[18];
+                for (i = 0; i < 18; i++) kb200[i] = HB[i * 16 + 0];
+                for (i = 0; i < 18; i++) (R + 0)[i] = (kb300)[i] + CD[0] * (kb200)[i];
+                double kb210[18];
+                for (i = 0; i < 18; i++) kb210[i] = HB[i * 16 + 7];
+                for (i = 0; i < 18; i++) (R + 18)[i] = (kb210)[i] + CD[1] * (kb200)[i];
+                double kb201[18];
+                for (i = 0; i < 18; i++) kb201[i] = HB[i * 16 + 8];
+                for (i = 0; i < 18; i++) (R + 36)[i] = (kb201)[i] + CD[2] * (kb200)[i];
+                double kb110[18];
+                for (i = 0; i < 18; i++) kb110[i] = HB[i * 16 + 1];
+                for (i = 0; i < 18; i++) (R + 54)[i] = (kb210)[i] + CD[0] * (kb110)[i];
+                double kb120[18];
+                for (i = 0; i < 18; i++) kb120[i] = HB[i * 16 + 9];
+                for (i = 0; i < 18; i++) (R + 72)[i] = (kb120)[i] + CD[1] * (kb110)[i];
+                double kb111[18];
+                for (i = 0; i < 18; i++) kb111[i] = HB[i * 16 + 10];
+                for (i = 0; i < 18; i++) (R + 90)[i] = (kb111)[i] + CD[2] * (kb110)[i];
+                double kb101[18];
+                for (i = 0; i < 18; i++) kb101[i] = HB[i * 16 + 2];
+                for (i = 0; i < 18; i++) (R + 108)[i] = (kb201)[i] + CD[0] * (kb101)[i];
+                for (i = 0; i < 18; i++) (R + 126)[i] = (kb111)[i] + CD[1] * (kb101)[i];
+                double kb102[18];
+                for (i = 0; i < 18; i++) kb102[i] = HB[i * 16 + 11];
+                for (i = 0; i < 18; i++) (R + 144)[i] = (kb102)[i] + CD[2] * (kb101)[i];
+                double kb020[18];
+                for (i = 0; i < 18; i++) kb020[i] = HB[i * 16 + 3];
+                for (i = 0; i < 18; i++) (R + 162)[i] = (kb120)[i] + CD[0] * (kb020)[i];
+                double kb030[18];
+                for (i = 0; i < 18; i++) kb030[i] = HB[i * 16 + 12];
+                for (i = 0; i < 18; i++) (R + 180)[i] = (kb030)[i] + CD[1] * (kb020)[i];
+                double kb021[18];
+                for (i = 0; i < 18; i++) kb021[i] = HB[i * 16 + 13];
+                for (i = 0; i < 18; i++) (R + 198)[i] = (kb021)[i] + CD[2] * (kb020)[i];
+                double kb011[18];
+                for (i = 0; i < 18; i++) kb011[i] = HB[i * 16 + 4];
+                for (i = 0; i < 18; i++) (R + 216)[i] = (kb111)[i] + CD[0] * (kb011)[i];
+                for (i = 0; i < 18; i++) (R + 234)[i] = (kb021)[i] + CD[1] * (kb011)[i];
+                double kb012[18];
+                for (i = 0; i < 18; i++) kb012[i] = HB[i * 16 + 14];
+                for (i = 0; i < 18; i++) (R + 252)[i] = (kb012)[i] + CD[2] * (kb011)[i];
+                double kb002[18];
+                for (i = 0; i < 18; i++) kb002[i] = HB[i * 16 + 5];
+                for (i = 0; i < 18; i++) (R + 270)[i] = (kb102)[i] + CD[0] * (kb002)[i];
+                for (i = 0; i < 18; i++) (R + 288)[i] = (kb012)[i] + CD[1] * (kb002)[i];
+                double kb003[18];
+                for (i = 0; i < 18; i++) kb003[i] = HB[i * 16 + 15];
+                for (i = 0; i < 18; i++) (R + 306)[i] = (kb003)[i] + CD[2] * (kb002)[i];
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[57]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[58]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[59]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[66]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[67]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[68]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[54] + -0.344580559638620054 * R[63] + 0.689161119277240108 * R[69]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[55] + -0.344580559638620054 * R[64] + 0.689161119277240108 * R[70]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[56] + -0.344580559638620054 * R[65] + 0.689161119277240108 * R[71]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[60]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[61]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[62]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[54] + -0.596831036594607678 * R[63]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[55] + -0.596831036594607678 * R[64]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[56] + -0.596831036594607678 * R[65]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[75]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[76]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[77]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[84]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[85]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[86]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[72] + -0.344580559638620054 * R[81] + 0.689161119277240108 * R[87]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[73] + -0.344580559638620054 * R[82] + 0.689161119277240108 * R[88]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[74] + -0.344580559638620054 * R[83] + 0.689161119277240108 * R[89]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[78]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[79]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[80]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[72] + -0.596831036594607678 * R[81]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[73] + -0.596831036594607678 * R[82]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[74] + -0.596831036594607678 * R[83]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[93]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[94]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[95]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[102]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[103]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[104]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[90] + -0.344580559638620054 * R[99] + 0.689161119277240108 * R[105]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[91] + -0.344580559638620054 * R[100] + 0.689161119277240108 * R[106]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[92] + -0.344580559638620054 * R[101] + 0.689161119277240108 * R[107]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[96]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[97]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[98]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[90] + -0.596831036594607678 * R[99]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[91] + -0.596831036594607678 * R[100]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[92] + -0.596831036594607678 * R[101]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[219]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[220]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[221]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[228]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[229]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[230]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[216] + -0.344580559638620054 * R[225] + 0.689161119277240108 * R[231]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[217] + -0.344580559638620054 * R[226] + 0.689161119277240108 * R[232]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[218] + -0.344580559638620054 * R[227] + 0.689161119277240108 * R[233]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[222]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[223]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[224]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[216] + -0.596831036594607678 * R[225]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[217] + -0.596831036594607678 * R[226]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[218] + -0.596831036594607678 * R[227]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[237]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[238]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[239]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[246]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[247]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[248]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[234] + -0.344580559638620054 * R[243] + 0.689161119277240108 * R[249]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[235] + -0.344580559638620054 * R[244] + 0.689161119277240108 * R[250]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[236] + -0.344580559638620054 * R[245] + 0.689161119277240108 * R[251]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[240]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[241]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[242]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[234] + -0.596831036594607678 * R[243]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[235] + -0.596831036594607678 * R[244]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[236] + -0.596831036594607678 * R[245]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[255]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[256]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[257]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[264]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[265]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[266]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[252] + -0.344580559638620054 * R[261] + 0.689161119277240108 * R[267]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[253] + -0.344580559638620054 * R[262] + 0.689161119277240108 * R[268]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[254] + -0.344580559638620054 * R[263] + 0.689161119277240108 * R[269]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[258]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[259]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[260]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[252] + -0.596831036594607678 * R[261]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[253] + -0.596831036594607678 * R[262]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[254] + -0.596831036594607678 * R[263]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[3] + -0.344580559638620054 * R[165] + 0.689161119277240108 * R[273]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[4] + -0.344580559638620054 * R[166] + 0.689161119277240108 * R[274]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[5] + -0.344580559638620054 * R[167] + 0.689161119277240108 * R[275]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[12] + -0.344580559638620054 * R[174] + 0.689161119277240108 * R[282]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[13] + -0.344580559638620054 * R[175] + 0.689161119277240108 * R[283]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[14] + -0.344580559638620054 * R[176] + 0.689161119277240108 * R[284]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.0994718394324345806 * R[0] + 0.0994718394324345806 * R[162] + -0.198943678864869161 * R[270] + 0.0994718394324345806 * R[9] + 0.0994718394324345806 * R[171] + -0.198943678864869161 * R[279] + -0.198943678864869161 * R[15] + -0.198943678864869161 * R[177] + 0.397887357729738322 * R[285]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.0994718394324345806 * R[1] + 0.0994718394324345806 * R[163] + -0.198943678864869161 * R[271] + 0.0994718394324345806 * R[10] + 0.0994718394324345806 * R[172] + -0.198943678864869161 * R[280] + -0.198943678864869161 * R[16] + -0.198943678864869161 * R[178] + 0.397887357729738322 * R[286]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.0994718394324345806 * R[2] + 0.0994718394324345806 * R[164] + -0.198943678864869161 * R[272] + 0.0994718394324345806 * R[11] + 0.0994718394324345806 * R[173] + -0.198943678864869161 * R[281] + -0.198943678864869161 * R[17] + -0.198943678864869161 * R[179] + 0.397887357729738322 * R[287]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[6] + -0.344580559638620054 * R[168] + 0.689161119277240108 * R[276]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[7] + -0.344580559638620054 * R[169] + 0.689161119277240108 * R[277]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[8] + -0.344580559638620054 * R[170] + 0.689161119277240108 * R[278]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[0] + -0.172290279819310027 * R[162] + 0.344580559638620054 * R[270] + 0.172290279819310027 * R[9] + 0.172290279819310027 * R[171] + -0.344580559638620054 * R[279]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[1] + -0.172290279819310027 * R[163] + 0.344580559638620054 * R[271] + 0.172290279819310027 * R[10] + 0.172290279819310027 * R[172] + -0.344580559638620054 * R[280]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[2] + -0.172290279819310027 * R[164] + 0.344580559638620054 * R[272] + 0.172290279819310027 * R[11] + 0.172290279819310027 * R[173] + -0.344580559638620054 * R[281]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[21] + -0.344580559638620054 * R[183] + 0.689161119277240108 * R[291]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[22] + -0.344580559638620054 * R[184] + 0.689161119277240108 * R[292]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[23] + -0.344580559638620054 * R[185] + 0.689161119277240108 * R[293]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[30] + -0.344580559638620054 * R[192] + 0.689161119277240108 * R[300]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[31] + -0.344580559638620054 * R[193] + 0.689161119277240108 * R[301]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[32] + -0.344580559638620054 * R[194] + 0.689161119277240108 * R[302]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.0994718394324345806 * R[18] + 0.0994718394324345806 * R[180] + -0.198943678864869161 * R[288] + 0.0994718394324345806 * R[27] + 0.0994718394324345806 * R[189] + -0.198943678864869161 * R[297] + -0.198943678864869161 * R[33] + -0.198943678864869161 * R[195] + 0.397887357729738322 * R[303]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.0994718394324345806 * R[19] + 0.0994718394324345806 * R[181] + -0.198943678864869161 * R[289] + 0.0994718394324345806 * R[28] + 0.0994718394324345806 * R[190] + -0.198943678864869161 * R[298] + -0.198943678864869161 * R[34] + -0.198943678864869161 * R[196] + 0.397887357729738322 * R[304]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.0994718394324345806 * R[20] + 0.0994718394324345806 * R[182] + -0.198943678864869161 * R[290] + 0.0994718394324345806 * R[29] + 0.0994718394324345806 * R[191] + -0.198943678864869161 * R[299] + -0.198943678864869161 * R[35] + -0.198943678864869161 * R[197] + 0.397887357729738322 * R[305]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[24] + -0.344580559638620054 * R[186] + 0.689161119277240108 * R[294]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[25] + -0.344580559638620054 * R[187] + 0.689161119277240108 * R[295]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[26] + -0.344580559638620054 * R[188] + 0.689161119277240108 * R[296]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.172290279819310027 * R[18] + -0.172290279819310027 * R[180] + 0.344580559638620054 * R[288] + 0.172290279819310027 * R[27] + 0.172290279819310027 * R[189] + -0.344580559638620054 * R[297]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.172290279819310027 * R[19] + -0.172290279819310027 * R[181] + 0.344580559638620054 * R[289] + 0.172290279819310027 * R[28] + 0.172290279819310027 * R[190] + -0.344580559638620054 * R[298]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.172290279819310027 * R[20] + -0.172290279819310027 * R[182] + 0.344580559638620054 * R[290] + 0.172290279819310027 * R[29] + 0.172290279819310027 * R[191] + -0.344580559638620054 * R[299]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[39] + -0.344580559638620054 * R[201] + 0.689161119277240108 * R[309]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[40] + -0.344580559638620054 * R[202] + 0.689161119277240108 * R[310]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[41] + -0.344580559638620054 * R[203] + 0.689161119277240108 * R[311]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[48] + -0.344580559638620054 * R[210] + 0.689161119277240108 * R[318]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[49] + -0.344580559638620054 * R[211] + 0.689161119277240108 * R[319]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[50] + -0.344580559638620054 * R[212] + 0.689161119277240108 * R[320]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0994718394324345806 * R[36] + 0.0994718394324345806 * R[198] + -0.198943678864869161 * R[306] + 0.0994718394324345806 * R[45] + 0.0994718394324345806 * R[207] + -0.198943678864869161 * R[315] + -0.198943678864869161 * R[51] + -0.198943678864869161 * R[213] + 0.397887357729738322 * R[321]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0994718394324345806 * R[37] + 0.0994718394324345806 * R[199] + -0.198943678864869161 * R[307] + 0.0994718394324345806 * R[46] + 0.0994718394324345806 * R[208] + -0.198943678864869161 * R[316] + -0.198943678864869161 * R[52] + -0.198943678864869161 * R[214] + 0.397887357729738322 * R[322]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0994718394324345806 * R[38] + 0.0994718394324345806 * R[200] + -0.198943678864869161 * R[308] + 0.0994718394324345806 * R[47] + 0.0994718394324345806 * R[209] + -0.198943678864869161 * R[317] + -0.198943678864869161 * R[53] + -0.198943678864869161 * R[215] + 0.397887357729738322 * R[323]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[42] + -0.344580559638620054 * R[204] + 0.689161119277240108 * R[312]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[43] + -0.344580559638620054 * R[205] + 0.689161119277240108 * R[313]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[44] + -0.344580559638620054 * R[206] + 0.689161119277240108 * R[314]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[36] + -0.172290279819310027 * R[198] + 0.344580559638620054 * R[306] + 0.172290279819310027 * R[45] + 0.172290279819310027 * R[207] + -0.344580559638620054 * R[315]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[37] + -0.172290279819310027 * R[199] + 0.344580559638620054 * R[307] + 0.172290279819310027 * R[46] + 0.172290279819310027 * R[208] + -0.344580559638620054 * R[316]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[38] + -0.172290279819310027 * R[200] + 0.344580559638620054 * R[308] + 0.172290279819310027 * R[47] + 0.172290279819310027 * R[209] + -0.344580559638620054 * R[317]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[111]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[112]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[113]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[120]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[121]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[122]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[108] + -0.344580559638620054 * R[117] + 0.689161119277240108 * R[123]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[109] + -0.344580559638620054 * R[118] + 0.689161119277240108 * R[124]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[110] + -0.344580559638620054 * R[119] + 0.689161119277240108 * R[125]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[114]);
+                o[3 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[115]);
+                o[3 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[116]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[108] + -0.596831036594607678 * R[117]);
+                o[4 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[109] + -0.596831036594607678 * R[118]);
+                o[4 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[110] + -0.596831036594607678 * R[119]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[129]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[130]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[131]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[138]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[139]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[140]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[126] + -0.344580559638620054 * R[135] + 0.689161119277240108 * R[141]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[127] + -0.344580559638620054 * R[136] + 0.689161119277240108 * R[142]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[128] + -0.344580559638620054 * R[137] + 0.689161119277240108 * R[143]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[132]);
+                o[3 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[133]);
+                o[3 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[134]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[126] + -0.596831036594607678 * R[135]);
+                o[4 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[127] + -0.596831036594607678 * R[136]);
+                o[4 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[128] + -0.596831036594607678 * R[137]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[147]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[148]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[149]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[156]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[157]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[158]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[144] + -0.344580559638620054 * R[153] + 0.689161119277240108 * R[159]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[145] + -0.344580559638620054 * R[154] + 0.689161119277240108 * R[160]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[146] + -0.344580559638620054 * R[155] + 0.689161119277240108 * R[161]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[150]);
+                o[3 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[151]);
+                o[3 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[152]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[144] + -0.596831036594607678 * R[153]);
+                o[4 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[145] + -0.596831036594607678 * R[154]);
+                o[4 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[146] + -0.596831036594607678 * R[155]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[3] + -0.596831036594607678 * R[165]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[4] + -0.596831036594607678 * R[166]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[5] + -0.596831036594607678 * R[167]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[12] + -0.596831036594607678 * R[174]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[13] + -0.596831036594607678 * R[175]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[14] + -0.596831036594607678 * R[176]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[0] + 0.172290279819310027 * R[162] + -0.172290279819310027 * R[9] + 0.172290279819310027 * R[171] + 0.344580559638620054 * R[15] + -0.344580559638620054 * R[177]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[1] + 0.172290279819310027 * R[163] + -0.172290279819310027 * R[10] + 0.172290279819310027 * R[172] + 0.344580559638620054 * R[16] + -0.344580559638620054 * R[178]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[2] + 0.172290279819310027 * R[164] + -0.172290279819310027 * R[11] + 0.172290279819310027 * R[173] + 0.344580559638620054 * R[17] + -0.344580559638620054 * R[179]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[6] + -0.596831036594607678 * R[168]);
+                o[3 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[7] + -0.596831036594607678 * R[169]);
+                o[3 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[8] + -0.596831036594607678 * R[170]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.298415518297303839 * R[0] + -0.298415518297303839 * R[162] + -0.298415518297303839 * R[9] + 0.298415518297303839 * R[171]);
+                o[4 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.298415518297303839 * R[1] + -0.298415518297303839 * R[163] + -0.298415518297303839 * R[10] + 0.298415518297303839 * R[172]);
+                o[4 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.298415518297303839 * R[2] + -0.298415518297303839 * R[164] + -0.298415518297303839 * R[11] + 0.298415518297303839 * R[173]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[21] + -0.596831036594607678 * R[183]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[22] + -0.596831036594607678 * R[184]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[23] + -0.596831036594607678 * R[185]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[30] + -0.596831036594607678 * R[192]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[31] + -0.596831036594607678 * R[193]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[32] + -0.596831036594607678 * R[194]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (-0.172290279819310027 * R[18] + 0.172290279819310027 * R[180] + -0.172290279819310027 * R[27] + 0.172290279819310027 * R[189] + 0.344580559638620054 * R[33] + -0.344580559638620054 * R[195]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (-0.172290279819310027 * R[19] + 0.172290279819310027 * R[181] + -0.172290279819310027 * R[28] + 0.172290279819310027 * R[190] + 0.344580559638620054 * R[34] + -0.344580559638620054 * R[196]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (-0.172290279819310027 * R[20] + 0.172290279819310027 * R[182] + -0.172290279819310027 * R[29] + 0.172290279819310027 * R[191] + 0.344580559638620054 * R[35] + -0.344580559638620054 * R[197]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[24] + -0.596831036594607678 * R[186]);
+                o[3 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[25] + -0.596831036594607678 * R[187]);
+                o[3 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[26] + -0.596831036594607678 * R[188]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.298415518297303839 * R[18] + -0.298415518297303839 * R[180] + -0.298415518297303839 * R[27] + 0.298415518297303839 * R[189]);
+                o[4 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.298415518297303839 * R[19] + -0.298415518297303839 * R[181] + -0.298415518297303839 * R[28] + 0.298415518297303839 * R[190]);
+                o[4 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.298415518297303839 * R[20] + -0.298415518297303839 * R[182] + -0.298415518297303839 * R[29] + 0.298415518297303839 * R[191]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[39] + -0.596831036594607678 * R[201]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[40] + -0.596831036594607678 * R[202]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[41] + -0.596831036594607678 * R[203]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[48] + -0.596831036594607678 * R[210]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[49] + -0.596831036594607678 * R[211]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[50] + -0.596831036594607678 * R[212]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[36] + 0.172290279819310027 * R[198] + -0.172290279819310027 * R[45] + 0.172290279819310027 * R[207] + 0.344580559638620054 * R[51] + -0.344580559638620054 * R[213]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[37] + 0.172290279819310027 * R[199] + -0.172290279819310027 * R[46] + 0.172290279819310027 * R[208] + 0.344580559638620054 * R[52] + -0.344580559638620054 * R[214]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[38] + 0.172290279819310027 * R[200] + -0.172290279819310027 * R[47] + 0.172290279819310027 * R[209] + 0.344580559638620054 * R[53] + -0.344580559638620054 * R[215]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[42] + -0.596831036594607678 * R[204]);
+                o[3 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[43] + -0.596831036594607678 * R[205]);
+                o[3 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[44] + -0.596831036594607678 * R[206]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.298415518297303839 * R[36] + -0.298415518297303839 * R[198] + -0.298415518297303839 * R[45] + 0.298415518297303839 * R[207]);
+                o[4 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.298415518297303839 * R[37] + -0.298415518297303839 * R[199] + -0.298415518297303839 * R[46] + 0.298415518297303839 * R[208]);
+                o[4 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.298415518297303839 * R[38] + -0.298415518297303839 * R[200] + -0.298415518297303839 * R[47] + 0.298415518297303839 * R[209]);
+        }
+        return 1;
 }
 
 /* (21|22): 1260 VRR nodes, 496 targets */
-static int jkv_2122(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_2122(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)496 * nb;
+        double *v = wk, *w = v + (size_t)496 * nb, *SK = w + (size_t)496 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 496);
         for (t = 0; t < nk; t++) {
@@ -7744,7 +11150,6 @@ static int jkv_2122(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -9531,17 +12936,613 @@ static int jkv_2122(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 496; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 496;
+                double *o = out + cpos[pos[0]] * 5 * st[0] + cpos[pos[1]] * 3 * st[1]
+                          + cpos[pos[2]] * 5 * st[2] + cpos[pos[3]] * 5 * st[3];
+                double HB[558];
+                for (i = 0; i < 31; i++) (HB + 0)[i] = (sk + 186)[i] + AB[0] * (sk + 0)[i];
+                for (i = 0; i < 31; i++) (HB + 31)[i] = (sk + 217)[i] + AB[1] * (sk + 0)[i];
+                for (i = 0; i < 31; i++) (HB + 62)[i] = (sk + 248)[i] + AB[2] * (sk + 0)[i];
+                for (i = 0; i < 31; i++) (HB + 93)[i] = (sk + 217)[i] + AB[0] * (sk + 31)[i];
+                for (i = 0; i < 31; i++) (HB + 124)[i] = (sk + 279)[i] + AB[1] * (sk + 31)[i];
+                for (i = 0; i < 31; i++) (HB + 155)[i] = (sk + 310)[i] + AB[2] * (sk + 31)[i];
+                for (i = 0; i < 31; i++) (HB + 186)[i] = (sk + 248)[i] + AB[0] * (sk + 62)[i];
+                for (i = 0; i < 31; i++) (HB + 217)[i] = (sk + 310)[i] + AB[1] * (sk + 62)[i];
+                for (i = 0; i < 31; i++) (HB + 248)[i] = (sk + 341)[i] + AB[2] * (sk + 62)[i];
+                for (i = 0; i < 31; i++) (HB + 279)[i] = (sk + 279)[i] + AB[0] * (sk + 93)[i];
+                for (i = 0; i < 31; i++) (HB + 310)[i] = (sk + 372)[i] + AB[1] * (sk + 93)[i];
+                for (i = 0; i < 31; i++) (HB + 341)[i] = (sk + 403)[i] + AB[2] * (sk + 93)[i];
+                for (i = 0; i < 31; i++) (HB + 372)[i] = (sk + 310)[i] + AB[0] * (sk + 124)[i];
+                for (i = 0; i < 31; i++) (HB + 403)[i] = (sk + 403)[i] + AB[1] * (sk + 124)[i];
+                for (i = 0; i < 31; i++) (HB + 434)[i] = (sk + 434)[i] + AB[2] * (sk + 124)[i];
+                for (i = 0; i < 31; i++) (HB + 465)[i] = (sk + 341)[i] + AB[0] * (sk + 155)[i];
+                for (i = 0; i < 31; i++) (HB + 496)[i] = (sk + 434)[i] + AB[1] * (sk + 155)[i];
+                for (i = 0; i < 31; i++) (HB + 527)[i] = (sk + 465)[i] + AB[2] * (sk + 155)[i];
+                double R[648];
+                double kb400[18];
+                for (i = 0; i < 18; i++) kb400[i] = HB[i * 31 + 16];
+                double kb300[18];
+                for (i = 0; i < 18; i++) kb300[i] = HB[i * 31 + 6];
+                double hk300_100[18];
+                for (i = 0; i < 18; i++) (hk300_100)[i] = (kb400)[i] + CD[0] * (kb300)[i];
+                double kb200[18];
+                for (i = 0; i < 18; i++) kb200[i] = HB[i * 31 + 0];
+                double hk200_100[18];
+                for (i = 0; i < 18; i++) (hk200_100)[i] = (kb300)[i] + CD[0] * (kb200)[i];
+                for (i = 0; i < 18; i++) (R + 0)[i] = (hk300_100)[i] + CD[0] * (hk200_100)[i];
+                double kb310[18];
+                for (i = 0; i < 18; i++) kb310[i] = HB[i * 31 + 17];
+                double hk300_010[18];
+                for (i = 0; i < 18; i++) (hk300_010)[i] = (kb310)[i] + CD[1] * (kb300)[i];
+                double kb210[18];
+                for (i = 0; i < 18; i++) kb210[i] = HB[i * 31 + 7];
+                double hk200_010[18];
+                for (i = 0; i < 18; i++) (hk200_010)[i] = (kb210)[i] + CD[1] * (kb200)[i];
+                for (i = 0; i < 18; i++) (R + 18)[i] = (hk300_010)[i] + CD[0] * (hk200_010)[i];
+                double kb301[18];
+                for (i = 0; i < 18; i++) kb301[i] = HB[i * 31 + 18];
+                double hk300_001[18];
+                for (i = 0; i < 18; i++) (hk300_001)[i] = (kb301)[i] + CD[2] * (kb300)[i];
+                double kb201[18];
+                for (i = 0; i < 18; i++) kb201[i] = HB[i * 31 + 8];
+                double hk200_001[18];
+                for (i = 0; i < 18; i++) (hk200_001)[i] = (kb201)[i] + CD[2] * (kb200)[i];
+                for (i = 0; i < 18; i++) (R + 36)[i] = (hk300_001)[i] + CD[0] * (hk200_001)[i];
+                double kb220[18];
+                for (i = 0; i < 18; i++) kb220[i] = HB[i * 31 + 19];
+                double hk210_010[18];
+                for (i = 0; i < 18; i++) (hk210_010)[i] = (kb220)[i] + CD[1] * (kb210)[i];
+                for (i = 0; i < 18; i++) (R + 54)[i] = (hk210_010)[i] + CD[1] * (hk200_010)[i];
+                double kb211[18];
+                for (i = 0; i < 18; i++) kb211[i] = HB[i * 31 + 20];
+                double hk210_001[18];
+                for (i = 0; i < 18; i++) (hk210_001)[i] = (kb211)[i] + CD[2] * (kb210)[i];
+                for (i = 0; i < 18; i++) (R + 72)[i] = (hk210_001)[i] + CD[1] * (hk200_001)[i];
+                double kb202[18];
+                for (i = 0; i < 18; i++) kb202[i] = HB[i * 31 + 21];
+                double hk201_001[18];
+                for (i = 0; i < 18; i++) (hk201_001)[i] = (kb202)[i] + CD[2] * (kb201)[i];
+                for (i = 0; i < 18; i++) (R + 90)[i] = (hk201_001)[i] + CD[2] * (hk200_001)[i];
+                double hk210_100[18];
+                for (i = 0; i < 18; i++) (hk210_100)[i] = (kb310)[i] + CD[0] * (kb210)[i];
+                double kb110[18];
+                for (i = 0; i < 18; i++) kb110[i] = HB[i * 31 + 1];
+                double hk110_100[18];
+                for (i = 0; i < 18; i++) (hk110_100)[i] = (kb210)[i] + CD[0] * (kb110)[i];
+                for (i = 0; i < 18; i++) (R + 108)[i] = (hk210_100)[i] + CD[0] * (hk110_100)[i];
+                double kb120[18];
+                for (i = 0; i < 18; i++) kb120[i] = HB[i * 31 + 9];
+                double hk110_010[18];
+                for (i = 0; i < 18; i++) (hk110_010)[i] = (kb120)[i] + CD[1] * (kb110)[i];
+                for (i = 0; i < 18; i++) (R + 126)[i] = (hk210_010)[i] + CD[0] * (hk110_010)[i];
+                double kb111[18];
+                for (i = 0; i < 18; i++) kb111[i] = HB[i * 31 + 10];
+                double hk110_001[18];
+                for (i = 0; i < 18; i++) (hk110_001)[i] = (kb111)[i] + CD[2] * (kb110)[i];
+                for (i = 0; i < 18; i++) (R + 144)[i] = (hk210_001)[i] + CD[0] * (hk110_001)[i];
+                double kb130[18];
+                for (i = 0; i < 18; i++) kb130[i] = HB[i * 31 + 22];
+                double hk120_010[18];
+                for (i = 0; i < 18; i++) (hk120_010)[i] = (kb130)[i] + CD[1] * (kb120)[i];
+                for (i = 0; i < 18; i++) (R + 162)[i] = (hk120_010)[i] + CD[1] * (hk110_010)[i];
+                double kb121[18];
+                for (i = 0; i < 18; i++) kb121[i] = HB[i * 31 + 23];
+                double hk120_001[18];
+                for (i = 0; i < 18; i++) (hk120_001)[i] = (kb121)[i] + CD[2] * (kb120)[i];
+                for (i = 0; i < 18; i++) (R + 180)[i] = (hk120_001)[i] + CD[1] * (hk110_001)[i];
+                double kb112[18];
+                for (i = 0; i < 18; i++) kb112[i] = HB[i * 31 + 24];
+                double hk111_001[18];
+                for (i = 0; i < 18; i++) (hk111_001)[i] = (kb112)[i] + CD[2] * (kb111)[i];
+                for (i = 0; i < 18; i++) (R + 198)[i] = (hk111_001)[i] + CD[2] * (hk110_001)[i];
+                double hk201_100[18];
+                for (i = 0; i < 18; i++) (hk201_100)[i] = (kb301)[i] + CD[0] * (kb201)[i];
+                double kb101[18];
+                for (i = 0; i < 18; i++) kb101[i] = HB[i * 31 + 2];
+                double hk101_100[18];
+                for (i = 0; i < 18; i++) (hk101_100)[i] = (kb201)[i] + CD[0] * (kb101)[i];
+                for (i = 0; i < 18; i++) (R + 216)[i] = (hk201_100)[i] + CD[0] * (hk101_100)[i];
+                double hk201_010[18];
+                for (i = 0; i < 18; i++) (hk201_010)[i] = (kb211)[i] + CD[1] * (kb201)[i];
+                double hk101_010[18];
+                for (i = 0; i < 18; i++) (hk101_010)[i] = (kb111)[i] + CD[1] * (kb101)[i];
+                for (i = 0; i < 18; i++) (R + 234)[i] = (hk201_010)[i] + CD[0] * (hk101_010)[i];
+                double kb102[18];
+                for (i = 0; i < 18; i++) kb102[i] = HB[i * 31 + 11];
+                double hk101_001[18];
+                for (i = 0; i < 18; i++) (hk101_001)[i] = (kb102)[i] + CD[2] * (kb101)[i];
+                for (i = 0; i < 18; i++) (R + 252)[i] = (hk201_001)[i] + CD[0] * (hk101_001)[i];
+                double hk111_010[18];
+                for (i = 0; i < 18; i++) (hk111_010)[i] = (kb121)[i] + CD[1] * (kb111)[i];
+                for (i = 0; i < 18; i++) (R + 270)[i] = (hk111_010)[i] + CD[1] * (hk101_010)[i];
+                for (i = 0; i < 18; i++) (R + 288)[i] = (hk111_001)[i] + CD[1] * (hk101_001)[i];
+                double kb103[18];
+                for (i = 0; i < 18; i++) kb103[i] = HB[i * 31 + 25];
+                double hk102_001[18];
+                for (i = 0; i < 18; i++) (hk102_001)[i] = (kb103)[i] + CD[2] * (kb102)[i];
+                for (i = 0; i < 18; i++) (R + 306)[i] = (hk102_001)[i] + CD[2] * (hk101_001)[i];
+                double hk120_100[18];
+                for (i = 0; i < 18; i++) (hk120_100)[i] = (kb220)[i] + CD[0] * (kb120)[i];
+                double kb020[18];
+                for (i = 0; i < 18; i++) kb020[i] = HB[i * 31 + 3];
+                double hk020_100[18];
+                for (i = 0; i < 18; i++) (hk020_100)[i] = (kb120)[i] + CD[0] * (kb020)[i];
+                for (i = 0; i < 18; i++) (R + 324)[i] = (hk120_100)[i] + CD[0] * (hk020_100)[i];
+                double kb030[18];
+                for (i = 0; i < 18; i++) kb030[i] = HB[i * 31 + 12];
+                double hk020_010[18];
+                for (i = 0; i < 18; i++) (hk020_010)[i] = (kb030)[i] + CD[1] * (kb020)[i];
+                for (i = 0; i < 18; i++) (R + 342)[i] = (hk120_010)[i] + CD[0] * (hk020_010)[i];
+                double kb021[18];
+                for (i = 0; i < 18; i++) kb021[i] = HB[i * 31 + 13];
+                double hk020_001[18];
+                for (i = 0; i < 18; i++) (hk020_001)[i] = (kb021)[i] + CD[2] * (kb020)[i];
+                for (i = 0; i < 18; i++) (R + 360)[i] = (hk120_001)[i] + CD[0] * (hk020_001)[i];
+                double kb040[18];
+                for (i = 0; i < 18; i++) kb040[i] = HB[i * 31 + 26];
+                double hk030_010[18];
+                for (i = 0; i < 18; i++) (hk030_010)[i] = (kb040)[i] + CD[1] * (kb030)[i];
+                for (i = 0; i < 18; i++) (R + 378)[i] = (hk030_010)[i] + CD[1] * (hk020_010)[i];
+                double kb031[18];
+                for (i = 0; i < 18; i++) kb031[i] = HB[i * 31 + 27];
+                double hk030_001[18];
+                for (i = 0; i < 18; i++) (hk030_001)[i] = (kb031)[i] + CD[2] * (kb030)[i];
+                for (i = 0; i < 18; i++) (R + 396)[i] = (hk030_001)[i] + CD[1] * (hk020_001)[i];
+                double kb022[18];
+                for (i = 0; i < 18; i++) kb022[i] = HB[i * 31 + 28];
+                double hk021_001[18];
+                for (i = 0; i < 18; i++) (hk021_001)[i] = (kb022)[i] + CD[2] * (kb021)[i];
+                for (i = 0; i < 18; i++) (R + 414)[i] = (hk021_001)[i] + CD[2] * (hk020_001)[i];
+                double hk111_100[18];
+                for (i = 0; i < 18; i++) (hk111_100)[i] = (kb211)[i] + CD[0] * (kb111)[i];
+                double kb011[18];
+                for (i = 0; i < 18; i++) kb011[i] = HB[i * 31 + 4];
+                double hk011_100[18];
+                for (i = 0; i < 18; i++) (hk011_100)[i] = (kb111)[i] + CD[0] * (kb011)[i];
+                for (i = 0; i < 18; i++) (R + 432)[i] = (hk111_100)[i] + CD[0] * (hk011_100)[i];
+                double hk011_010[18];
+                for (i = 0; i < 18; i++) (hk011_010)[i] = (kb021)[i] + CD[1] * (kb011)[i];
+                for (i = 0; i < 18; i++) (R + 450)[i] = (hk111_010)[i] + CD[0] * (hk011_010)[i];
+                double kb012[18];
+                for (i = 0; i < 18; i++) kb012[i] = HB[i * 31 + 14];
+                double hk011_001[18];
+                for (i = 0; i < 18; i++) (hk011_001)[i] = (kb012)[i] + CD[2] * (kb011)[i];
+                for (i = 0; i < 18; i++) (R + 468)[i] = (hk111_001)[i] + CD[0] * (hk011_001)[i];
+                double hk021_010[18];
+                for (i = 0; i < 18; i++) (hk021_010)[i] = (kb031)[i] + CD[1] * (kb021)[i];
+                for (i = 0; i < 18; i++) (R + 486)[i] = (hk021_010)[i] + CD[1] * (hk011_010)[i];
+                for (i = 0; i < 18; i++) (R + 504)[i] = (hk021_001)[i] + CD[1] * (hk011_001)[i];
+                double kb013[18];
+                for (i = 0; i < 18; i++) kb013[i] = HB[i * 31 + 29];
+                double hk012_001[18];
+                for (i = 0; i < 18; i++) (hk012_001)[i] = (kb013)[i] + CD[2] * (kb012)[i];
+                for (i = 0; i < 18; i++) (R + 522)[i] = (hk012_001)[i] + CD[2] * (hk011_001)[i];
+                double hk102_100[18];
+                for (i = 0; i < 18; i++) (hk102_100)[i] = (kb202)[i] + CD[0] * (kb102)[i];
+                double kb002[18];
+                for (i = 0; i < 18; i++) kb002[i] = HB[i * 31 + 5];
+                double hk002_100[18];
+                for (i = 0; i < 18; i++) (hk002_100)[i] = (kb102)[i] + CD[0] * (kb002)[i];
+                for (i = 0; i < 18; i++) (R + 540)[i] = (hk102_100)[i] + CD[0] * (hk002_100)[i];
+                double hk102_010[18];
+                for (i = 0; i < 18; i++) (hk102_010)[i] = (kb112)[i] + CD[1] * (kb102)[i];
+                double hk002_010[18];
+                for (i = 0; i < 18; i++) (hk002_010)[i] = (kb012)[i] + CD[1] * (kb002)[i];
+                for (i = 0; i < 18; i++) (R + 558)[i] = (hk102_010)[i] + CD[0] * (hk002_010)[i];
+                double kb003[18];
+                for (i = 0; i < 18; i++) kb003[i] = HB[i * 31 + 15];
+                double hk002_001[18];
+                for (i = 0; i < 18; i++) (hk002_001)[i] = (kb003)[i] + CD[2] * (kb002)[i];
+                for (i = 0; i < 18; i++) (R + 576)[i] = (hk102_001)[i] + CD[0] * (hk002_001)[i];
+                double hk012_010[18];
+                for (i = 0; i < 18; i++) (hk012_010)[i] = (kb022)[i] + CD[1] * (kb012)[i];
+                for (i = 0; i < 18; i++) (R + 594)[i] = (hk012_010)[i] + CD[1] * (hk002_010)[i];
+                for (i = 0; i < 18; i++) (R + 612)[i] = (hk012_001)[i] + CD[1] * (hk002_001)[i];
+                double kb004[18];
+                for (i = 0; i < 18; i++) kb004[i] = HB[i * 31 + 30];
+                double hk003_001[18];
+                for (i = 0; i < 18; i++) (hk003_001)[i] = (kb004)[i] + CD[2] * (kb003)[i];
+                for (i = 0; i < 18; i++) (R + 630)[i] = (hk003_001)[i] + CD[2] * (hk002_001)[i];
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[129]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[130]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[131]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[138]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[139]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[140]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[126] + -0.376470949645714703 * R[135] + 0.752941899291429406 * R[141]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[127] + -0.376470949645714703 * R[136] + 0.752941899291429406 * R[142]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[128] + -0.376470949645714703 * R[137] + 0.752941899291429406 * R[143]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[132]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[133]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[134]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[126] + -0.652066812360082348 * R[135]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[127] + -0.652066812360082348 * R[136]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[128] + -0.652066812360082348 * R[137]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[183]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[184]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[185]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[192]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[193]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[194]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[180] + -0.376470949645714703 * R[189] + 0.752941899291429406 * R[195]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[181] + -0.376470949645714703 * R[190] + 0.752941899291429406 * R[196]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[182] + -0.376470949645714703 * R[191] + 0.752941899291429406 * R[197]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[186]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[187]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[188]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[180] + -0.652066812360082348 * R[189]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[181] + -0.652066812360082348 * R[190]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[182] + -0.652066812360082348 * R[191]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[111] + -0.376470949645714703 * R[165] + 0.752941899291429406 * R[201]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[112] + -0.376470949645714703 * R[166] + 0.752941899291429406 * R[202]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[113] + -0.376470949645714703 * R[167] + 0.752941899291429406 * R[203]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[120] + -0.376470949645714703 * R[174] + 0.752941899291429406 * R[210]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[121] + -0.376470949645714703 * R[175] + 0.752941899291429406 * R[211]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[122] + -0.376470949645714703 * R[176] + 0.752941899291429406 * R[212]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[108] + 0.108677802060013692 * R[162] + -0.217355604120027385 * R[198] + 0.108677802060013692 * R[117] + 0.108677802060013692 * R[171] + -0.217355604120027385 * R[207] + -0.217355604120027385 * R[123] + -0.217355604120027385 * R[177] + 0.434711208240054769 * R[213]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[109] + 0.108677802060013692 * R[163] + -0.217355604120027385 * R[199] + 0.108677802060013692 * R[118] + 0.108677802060013692 * R[172] + -0.217355604120027385 * R[208] + -0.217355604120027385 * R[124] + -0.217355604120027385 * R[178] + 0.434711208240054769 * R[214]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[110] + 0.108677802060013692 * R[164] + -0.217355604120027385 * R[200] + 0.108677802060013692 * R[119] + 0.108677802060013692 * R[173] + -0.217355604120027385 * R[209] + -0.217355604120027385 * R[125] + -0.217355604120027385 * R[179] + 0.434711208240054769 * R[215]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[114] + -0.376470949645714703 * R[168] + 0.752941899291429406 * R[204]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[115] + -0.376470949645714703 * R[169] + 0.752941899291429406 * R[205]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[116] + -0.376470949645714703 * R[170] + 0.752941899291429406 * R[206]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[108] + -0.188235474822857352 * R[162] + 0.376470949645714703 * R[198] + 0.188235474822857352 * R[117] + 0.188235474822857352 * R[171] + -0.376470949645714703 * R[207]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[109] + -0.188235474822857352 * R[163] + 0.376470949645714703 * R[199] + 0.188235474822857352 * R[118] + 0.188235474822857352 * R[172] + -0.376470949645714703 * R[208]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[110] + -0.188235474822857352 * R[164] + 0.376470949645714703 * R[200] + 0.188235474822857352 * R[119] + 0.188235474822857352 * R[173] + -0.376470949645714703 * R[209]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[147]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[148]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[149]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[156]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[157]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[158]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (-0.376470949645714703 * R[144] + -0.376470949645714703 * R[153] + 0.752941899291429406 * R[159]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (-0.376470949645714703 * R[145] + -0.376470949645714703 * R[154] + 0.752941899291429406 * R[160]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (-0.376470949645714703 * R[146] + -0.376470949645714703 * R[155] + 0.752941899291429406 * R[161]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[150]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[151]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[152]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (0.652066812360082348 * R[144] + -0.652066812360082348 * R[153]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (0.652066812360082348 * R[145] + -0.652066812360082348 * R[154]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (0.652066812360082348 * R[146] + -0.652066812360082348 * R[155]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[111] + -0.652066812360082348 * R[165]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[112] + -0.652066812360082348 * R[166]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[113] + -0.652066812360082348 * R[167]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[120] + -0.652066812360082348 * R[174]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[121] + -0.652066812360082348 * R[175]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[122] + -0.652066812360082348 * R[176]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (-0.188235474822857352 * R[108] + 0.188235474822857352 * R[162] + -0.188235474822857352 * R[117] + 0.188235474822857352 * R[171] + 0.376470949645714703 * R[123] + -0.376470949645714703 * R[177]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (-0.188235474822857352 * R[109] + 0.188235474822857352 * R[163] + -0.188235474822857352 * R[118] + 0.188235474822857352 * R[172] + 0.376470949645714703 * R[124] + -0.376470949645714703 * R[178]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (-0.188235474822857352 * R[110] + 0.188235474822857352 * R[164] + -0.188235474822857352 * R[119] + 0.188235474822857352 * R[173] + 0.376470949645714703 * R[125] + -0.376470949645714703 * R[179]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[114] + -0.652066812360082348 * R[168]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[115] + -0.652066812360082348 * R[169]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[116] + -0.652066812360082348 * R[170]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.326033406180041174 * R[108] + -0.326033406180041174 * R[162] + -0.326033406180041174 * R[117] + 0.326033406180041174 * R[171]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.326033406180041174 * R[109] + -0.326033406180041174 * R[163] + -0.326033406180041174 * R[118] + 0.326033406180041174 * R[172]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.326033406180041174 * R[110] + -0.326033406180041174 * R[164] + -0.326033406180041174 * R[119] + 0.326033406180041174 * R[173]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[453]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[454]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[455]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[462]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[463]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[464]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[450] + -0.376470949645714703 * R[459] + 0.752941899291429406 * R[465]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[451] + -0.376470949645714703 * R[460] + 0.752941899291429406 * R[466]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[452] + -0.376470949645714703 * R[461] + 0.752941899291429406 * R[467]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[456]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[457]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[458]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[450] + -0.652066812360082348 * R[459]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[451] + -0.652066812360082348 * R[460]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[452] + -0.652066812360082348 * R[461]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[507]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[508]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[509]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[516]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[517]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[518]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[504] + -0.376470949645714703 * R[513] + 0.752941899291429406 * R[519]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[505] + -0.376470949645714703 * R[514] + 0.752941899291429406 * R[520]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[506] + -0.376470949645714703 * R[515] + 0.752941899291429406 * R[521]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[510]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[511]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[512]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[504] + -0.652066812360082348 * R[513]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[505] + -0.652066812360082348 * R[514]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[506] + -0.652066812360082348 * R[515]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[435] + -0.376470949645714703 * R[489] + 0.752941899291429406 * R[525]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[436] + -0.376470949645714703 * R[490] + 0.752941899291429406 * R[526]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[437] + -0.376470949645714703 * R[491] + 0.752941899291429406 * R[527]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[444] + -0.376470949645714703 * R[498] + 0.752941899291429406 * R[534]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[445] + -0.376470949645714703 * R[499] + 0.752941899291429406 * R[535]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[446] + -0.376470949645714703 * R[500] + 0.752941899291429406 * R[536]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[432] + 0.108677802060013692 * R[486] + -0.217355604120027385 * R[522] + 0.108677802060013692 * R[441] + 0.108677802060013692 * R[495] + -0.217355604120027385 * R[531] + -0.217355604120027385 * R[447] + -0.217355604120027385 * R[501] + 0.434711208240054769 * R[537]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[433] + 0.108677802060013692 * R[487] + -0.217355604120027385 * R[523] + 0.108677802060013692 * R[442] + 0.108677802060013692 * R[496] + -0.217355604120027385 * R[532] + -0.217355604120027385 * R[448] + -0.217355604120027385 * R[502] + 0.434711208240054769 * R[538]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[434] + 0.108677802060013692 * R[488] + -0.217355604120027385 * R[524] + 0.108677802060013692 * R[443] + 0.108677802060013692 * R[497] + -0.217355604120027385 * R[533] + -0.217355604120027385 * R[449] + -0.217355604120027385 * R[503] + 0.434711208240054769 * R[539]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[438] + -0.376470949645714703 * R[492] + 0.752941899291429406 * R[528]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[439] + -0.376470949645714703 * R[493] + 0.752941899291429406 * R[529]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[440] + -0.376470949645714703 * R[494] + 0.752941899291429406 * R[530]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[432] + -0.188235474822857352 * R[486] + 0.376470949645714703 * R[522] + 0.188235474822857352 * R[441] + 0.188235474822857352 * R[495] + -0.376470949645714703 * R[531]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[433] + -0.188235474822857352 * R[487] + 0.376470949645714703 * R[523] + 0.188235474822857352 * R[442] + 0.188235474822857352 * R[496] + -0.376470949645714703 * R[532]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[434] + -0.188235474822857352 * R[488] + 0.376470949645714703 * R[524] + 0.188235474822857352 * R[443] + 0.188235474822857352 * R[497] + -0.376470949645714703 * R[533]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[471]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[472]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[473]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[480]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[481]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[482]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (-0.376470949645714703 * R[468] + -0.376470949645714703 * R[477] + 0.752941899291429406 * R[483]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (-0.376470949645714703 * R[469] + -0.376470949645714703 * R[478] + 0.752941899291429406 * R[484]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (-0.376470949645714703 * R[470] + -0.376470949645714703 * R[479] + 0.752941899291429406 * R[485]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[474]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[475]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[476]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (0.652066812360082348 * R[468] + -0.652066812360082348 * R[477]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (0.652066812360082348 * R[469] + -0.652066812360082348 * R[478]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (0.652066812360082348 * R[470] + -0.652066812360082348 * R[479]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[435] + -0.652066812360082348 * R[489]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[436] + -0.652066812360082348 * R[490]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[437] + -0.652066812360082348 * R[491]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[444] + -0.652066812360082348 * R[498]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[445] + -0.652066812360082348 * R[499]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[446] + -0.652066812360082348 * R[500]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (-0.188235474822857352 * R[432] + 0.188235474822857352 * R[486] + -0.188235474822857352 * R[441] + 0.188235474822857352 * R[495] + 0.376470949645714703 * R[447] + -0.376470949645714703 * R[501]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (-0.188235474822857352 * R[433] + 0.188235474822857352 * R[487] + -0.188235474822857352 * R[442] + 0.188235474822857352 * R[496] + 0.376470949645714703 * R[448] + -0.376470949645714703 * R[502]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (-0.188235474822857352 * R[434] + 0.188235474822857352 * R[488] + -0.188235474822857352 * R[443] + 0.188235474822857352 * R[497] + 0.376470949645714703 * R[449] + -0.376470949645714703 * R[503]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[438] + -0.652066812360082348 * R[492]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[439] + -0.652066812360082348 * R[493]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[440] + -0.652066812360082348 * R[494]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.326033406180041174 * R[432] + -0.326033406180041174 * R[486] + -0.326033406180041174 * R[441] + 0.326033406180041174 * R[495]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.326033406180041174 * R[433] + -0.326033406180041174 * R[487] + -0.326033406180041174 * R[442] + 0.326033406180041174 * R[496]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.326033406180041174 * R[434] + -0.326033406180041174 * R[488] + -0.326033406180041174 * R[443] + 0.326033406180041174 * R[497]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[21] + -0.376470949645714703 * R[345] + 0.752941899291429406 * R[561]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[22] + -0.376470949645714703 * R[346] + 0.752941899291429406 * R[562]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[23] + -0.376470949645714703 * R[347] + 0.752941899291429406 * R[563]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[30] + -0.376470949645714703 * R[354] + 0.752941899291429406 * R[570]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[31] + -0.376470949645714703 * R[355] + 0.752941899291429406 * R[571]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[32] + -0.376470949645714703 * R[356] + 0.752941899291429406 * R[572]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.108677802060013692 * R[18] + 0.108677802060013692 * R[342] + -0.217355604120027385 * R[558] + 0.108677802060013692 * R[27] + 0.108677802060013692 * R[351] + -0.217355604120027385 * R[567] + -0.217355604120027385 * R[33] + -0.217355604120027385 * R[357] + 0.434711208240054769 * R[573]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.108677802060013692 * R[19] + 0.108677802060013692 * R[343] + -0.217355604120027385 * R[559] + 0.108677802060013692 * R[28] + 0.108677802060013692 * R[352] + -0.217355604120027385 * R[568] + -0.217355604120027385 * R[34] + -0.217355604120027385 * R[358] + 0.434711208240054769 * R[574]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.108677802060013692 * R[20] + 0.108677802060013692 * R[344] + -0.217355604120027385 * R[560] + 0.108677802060013692 * R[29] + 0.108677802060013692 * R[353] + -0.217355604120027385 * R[569] + -0.217355604120027385 * R[35] + -0.217355604120027385 * R[359] + 0.434711208240054769 * R[575]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[24] + -0.376470949645714703 * R[348] + 0.752941899291429406 * R[564]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[25] + -0.376470949645714703 * R[349] + 0.752941899291429406 * R[565]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[26] + -0.376470949645714703 * R[350] + 0.752941899291429406 * R[566]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[18] + -0.188235474822857352 * R[342] + 0.376470949645714703 * R[558] + 0.188235474822857352 * R[27] + 0.188235474822857352 * R[351] + -0.376470949645714703 * R[567]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[19] + -0.188235474822857352 * R[343] + 0.376470949645714703 * R[559] + 0.188235474822857352 * R[28] + 0.188235474822857352 * R[352] + -0.376470949645714703 * R[568]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[20] + -0.188235474822857352 * R[344] + 0.376470949645714703 * R[560] + 0.188235474822857352 * R[29] + 0.188235474822857352 * R[353] + -0.376470949645714703 * R[569]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[75] + -0.376470949645714703 * R[399] + 0.752941899291429406 * R[615]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[76] + -0.376470949645714703 * R[400] + 0.752941899291429406 * R[616]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[77] + -0.376470949645714703 * R[401] + 0.752941899291429406 * R[617]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[84] + -0.376470949645714703 * R[408] + 0.752941899291429406 * R[624]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[85] + -0.376470949645714703 * R[409] + 0.752941899291429406 * R[625]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[86] + -0.376470949645714703 * R[410] + 0.752941899291429406 * R[626]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.108677802060013692 * R[72] + 0.108677802060013692 * R[396] + -0.217355604120027385 * R[612] + 0.108677802060013692 * R[81] + 0.108677802060013692 * R[405] + -0.217355604120027385 * R[621] + -0.217355604120027385 * R[87] + -0.217355604120027385 * R[411] + 0.434711208240054769 * R[627]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.108677802060013692 * R[73] + 0.108677802060013692 * R[397] + -0.217355604120027385 * R[613] + 0.108677802060013692 * R[82] + 0.108677802060013692 * R[406] + -0.217355604120027385 * R[622] + -0.217355604120027385 * R[88] + -0.217355604120027385 * R[412] + 0.434711208240054769 * R[628]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.108677802060013692 * R[74] + 0.108677802060013692 * R[398] + -0.217355604120027385 * R[614] + 0.108677802060013692 * R[83] + 0.108677802060013692 * R[407] + -0.217355604120027385 * R[623] + -0.217355604120027385 * R[89] + -0.217355604120027385 * R[413] + 0.434711208240054769 * R[629]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[78] + -0.376470949645714703 * R[402] + 0.752941899291429406 * R[618]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[79] + -0.376470949645714703 * R[403] + 0.752941899291429406 * R[619]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[80] + -0.376470949645714703 * R[404] + 0.752941899291429406 * R[620]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[72] + -0.188235474822857352 * R[396] + 0.376470949645714703 * R[612] + 0.188235474822857352 * R[81] + 0.188235474822857352 * R[405] + -0.376470949645714703 * R[621]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[73] + -0.188235474822857352 * R[397] + 0.376470949645714703 * R[613] + 0.188235474822857352 * R[82] + 0.188235474822857352 * R[406] + -0.376470949645714703 * R[622]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[74] + -0.188235474822857352 * R[398] + 0.376470949645714703 * R[614] + 0.188235474822857352 * R[83] + 0.188235474822857352 * R[407] + -0.376470949645714703 * R[623]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[3] + 0.108677802060013692 * R[57] + -0.217355604120027385 * R[93] + 0.108677802060013692 * R[327] + 0.108677802060013692 * R[381] + -0.217355604120027385 * R[417] + -0.217355604120027385 * R[543] + -0.217355604120027385 * R[597] + 0.434711208240054769 * R[633]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[4] + 0.108677802060013692 * R[58] + -0.217355604120027385 * R[94] + 0.108677802060013692 * R[328] + 0.108677802060013692 * R[382] + -0.217355604120027385 * R[418] + -0.217355604120027385 * R[544] + -0.217355604120027385 * R[598] + 0.434711208240054769 * R[634]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[5] + 0.108677802060013692 * R[59] + -0.217355604120027385 * R[95] + 0.108677802060013692 * R[329] + 0.108677802060013692 * R[383] + -0.217355604120027385 * R[419] + -0.217355604120027385 * R[545] + -0.217355604120027385 * R[599] + 0.434711208240054769 * R[635]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[12] + 0.108677802060013692 * R[66] + -0.217355604120027385 * R[102] + 0.108677802060013692 * R[336] + 0.108677802060013692 * R[390] + -0.217355604120027385 * R[426] + -0.217355604120027385 * R[552] + -0.217355604120027385 * R[606] + 0.434711208240054769 * R[642]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[13] + 0.108677802060013692 * R[67] + -0.217355604120027385 * R[103] + 0.108677802060013692 * R[337] + 0.108677802060013692 * R[391] + -0.217355604120027385 * R[427] + -0.217355604120027385 * R[553] + -0.217355604120027385 * R[607] + 0.434711208240054769 * R[643]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[14] + 0.108677802060013692 * R[68] + -0.217355604120027385 * R[104] + 0.108677802060013692 * R[338] + 0.108677802060013692 * R[392] + -0.217355604120027385 * R[428] + -0.217355604120027385 * R[554] + -0.217355604120027385 * R[608] + 0.434711208240054769 * R[644]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.031372579137142885 * R[0] + -0.031372579137142885 * R[54] + 0.06274515827428577 * R[90] + -0.031372579137142885 * R[324] + -0.031372579137142885 * R[378] + 0.06274515827428577 * R[414] + 0.06274515827428577 * R[540] + 0.06274515827428577 * R[594] + -0.12549031654857154 * R[630] + -0.031372579137142885 * R[9] + -0.031372579137142885 * R[63] + 0.06274515827428577 * R[99] + -0.031372579137142885 * R[333] + -0.031372579137142885 * R[387] + 0.06274515827428577 * R[423] + 0.06274515827428577 * R[549] + 0.06274515827428577 * R[603] + -0.12549031654857154 * R[639] + 0.06274515827428577 * R[15] + 0.06274515827428577 * R[69] + -0.12549031654857154 * R[105] + 0.06274515827428577 * R[339] + 0.06274515827428577 * R[393] + -0.12549031654857154 * R[429] + -0.12549031654857154 * R[555] + -0.12549031654857154 * R[609] + 0.25098063309714308 * R[645]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.031372579137142885 * R[1] + -0.031372579137142885 * R[55] + 0.06274515827428577 * R[91] + -0.031372579137142885 * R[325] + -0.031372579137142885 * R[379] + 0.06274515827428577 * R[415] + 0.06274515827428577 * R[541] + 0.06274515827428577 * R[595] + -0.12549031654857154 * R[631] + -0.031372579137142885 * R[10] + -0.031372579137142885 * R[64] + 0.06274515827428577 * R[100] + -0.031372579137142885 * R[334] + -0.031372579137142885 * R[388] + 0.06274515827428577 * R[424] + 0.06274515827428577 * R[550] + 0.06274515827428577 * R[604] + -0.12549031654857154 * R[640] + 0.06274515827428577 * R[16] + 0.06274515827428577 * R[70] + -0.12549031654857154 * R[106] + 0.06274515827428577 * R[340] + 0.06274515827428577 * R[394] + -0.12549031654857154 * R[430] + -0.12549031654857154 * R[556] + -0.12549031654857154 * R[610] + 0.25098063309714308 * R[646]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.031372579137142885 * R[2] + -0.031372579137142885 * R[56] + 0.06274515827428577 * R[92] + -0.031372579137142885 * R[326] + -0.031372579137142885 * R[380] + 0.06274515827428577 * R[416] + 0.06274515827428577 * R[542] + 0.06274515827428577 * R[596] + -0.12549031654857154 * R[632] + -0.031372579137142885 * R[11] + -0.031372579137142885 * R[65] + 0.06274515827428577 * R[101] + -0.031372579137142885 * R[335] + -0.031372579137142885 * R[389] + 0.06274515827428577 * R[425] + 0.06274515827428577 * R[551] + 0.06274515827428577 * R[605] + -0.12549031654857154 * R[641] + 0.06274515827428577 * R[17] + 0.06274515827428577 * R[71] + -0.12549031654857154 * R[107] + 0.06274515827428577 * R[341] + 0.06274515827428577 * R[395] + -0.12549031654857154 * R[431] + -0.12549031654857154 * R[557] + -0.12549031654857154 * R[611] + 0.25098063309714308 * R[647]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[6] + 0.108677802060013692 * R[60] + -0.217355604120027385 * R[96] + 0.108677802060013692 * R[330] + 0.108677802060013692 * R[384] + -0.217355604120027385 * R[420] + -0.217355604120027385 * R[546] + -0.217355604120027385 * R[600] + 0.434711208240054769 * R[636]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[7] + 0.108677802060013692 * R[61] + -0.217355604120027385 * R[97] + 0.108677802060013692 * R[331] + 0.108677802060013692 * R[385] + -0.217355604120027385 * R[421] + -0.217355604120027385 * R[547] + -0.217355604120027385 * R[601] + 0.434711208240054769 * R[637]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[8] + 0.108677802060013692 * R[62] + -0.217355604120027385 * R[98] + 0.108677802060013692 * R[332] + 0.108677802060013692 * R[386] + -0.217355604120027385 * R[422] + -0.217355604120027385 * R[548] + -0.217355604120027385 * R[602] + 0.434711208240054769 * R[638]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0543389010300068462 * R[0] + 0.0543389010300068462 * R[54] + -0.108677802060013692 * R[90] + 0.0543389010300068462 * R[324] + 0.0543389010300068462 * R[378] + -0.108677802060013692 * R[414] + -0.108677802060013692 * R[540] + -0.108677802060013692 * R[594] + 0.217355604120027385 * R[630] + -0.0543389010300068462 * R[9] + -0.0543389010300068462 * R[63] + 0.108677802060013692 * R[99] + -0.0543389010300068462 * R[333] + -0.0543389010300068462 * R[387] + 0.108677802060013692 * R[423] + 0.108677802060013692 * R[549] + 0.108677802060013692 * R[603] + -0.217355604120027385 * R[639]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0543389010300068462 * R[1] + 0.0543389010300068462 * R[55] + -0.108677802060013692 * R[91] + 0.0543389010300068462 * R[325] + 0.0543389010300068462 * R[379] + -0.108677802060013692 * R[415] + -0.108677802060013692 * R[541] + -0.108677802060013692 * R[595] + 0.217355604120027385 * R[631] + -0.0543389010300068462 * R[10] + -0.0543389010300068462 * R[64] + 0.108677802060013692 * R[100] + -0.0543389010300068462 * R[334] + -0.0543389010300068462 * R[388] + 0.108677802060013692 * R[424] + 0.108677802060013692 * R[550] + 0.108677802060013692 * R[604] + -0.217355604120027385 * R[640]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0543389010300068462 * R[2] + 0.0543389010300068462 * R[56] + -0.108677802060013692 * R[92] + 0.0543389010300068462 * R[326] + 0.0543389010300068462 * R[380] + -0.108677802060013692 * R[416] + -0.108677802060013692 * R[542] + -0.108677802060013692 * R[596] + 0.217355604120027385 * R[632] + -0.0543389010300068462 * R[11] + -0.0543389010300068462 * R[65] + 0.108677802060013692 * R[101] + -0.0543389010300068462 * R[335] + -0.0543389010300068462 * R[389] + 0.108677802060013692 * R[425] + 0.108677802060013692 * R[551] + 0.108677802060013692 * R[605] + -0.217355604120027385 * R[641]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.376470949645714703 * R[39] + -0.376470949645714703 * R[363] + 0.752941899291429406 * R[579]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.376470949645714703 * R[40] + -0.376470949645714703 * R[364] + 0.752941899291429406 * R[580]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.376470949645714703 * R[41] + -0.376470949645714703 * R[365] + 0.752941899291429406 * R[581]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.376470949645714703 * R[48] + -0.376470949645714703 * R[372] + 0.752941899291429406 * R[588]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.376470949645714703 * R[49] + -0.376470949645714703 * R[373] + 0.752941899291429406 * R[589]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.376470949645714703 * R[50] + -0.376470949645714703 * R[374] + 0.752941899291429406 * R[590]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (0.108677802060013692 * R[36] + 0.108677802060013692 * R[360] + -0.217355604120027385 * R[576] + 0.108677802060013692 * R[45] + 0.108677802060013692 * R[369] + -0.217355604120027385 * R[585] + -0.217355604120027385 * R[51] + -0.217355604120027385 * R[375] + 0.434711208240054769 * R[591]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (0.108677802060013692 * R[37] + 0.108677802060013692 * R[361] + -0.217355604120027385 * R[577] + 0.108677802060013692 * R[46] + 0.108677802060013692 * R[370] + -0.217355604120027385 * R[586] + -0.217355604120027385 * R[52] + -0.217355604120027385 * R[376] + 0.434711208240054769 * R[592]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (0.108677802060013692 * R[38] + 0.108677802060013692 * R[362] + -0.217355604120027385 * R[578] + 0.108677802060013692 * R[47] + 0.108677802060013692 * R[371] + -0.217355604120027385 * R[587] + -0.217355604120027385 * R[53] + -0.217355604120027385 * R[377] + 0.434711208240054769 * R[593]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.376470949645714703 * R[42] + -0.376470949645714703 * R[366] + 0.752941899291429406 * R[582]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.376470949645714703 * R[43] + -0.376470949645714703 * R[367] + 0.752941899291429406 * R[583]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.376470949645714703 * R[44] + -0.376470949645714703 * R[368] + 0.752941899291429406 * R[584]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.188235474822857352 * R[36] + -0.188235474822857352 * R[360] + 0.376470949645714703 * R[576] + 0.188235474822857352 * R[45] + 0.188235474822857352 * R[369] + -0.376470949645714703 * R[585]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.188235474822857352 * R[37] + -0.188235474822857352 * R[361] + 0.376470949645714703 * R[577] + 0.188235474822857352 * R[46] + 0.188235474822857352 * R[370] + -0.376470949645714703 * R[586]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.188235474822857352 * R[38] + -0.188235474822857352 * R[362] + 0.376470949645714703 * R[578] + 0.188235474822857352 * R[47] + 0.188235474822857352 * R[371] + -0.376470949645714703 * R[587]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.188235474822857352 * R[3] + 0.188235474822857352 * R[57] + -0.188235474822857352 * R[327] + 0.188235474822857352 * R[381] + 0.376470949645714703 * R[543] + -0.376470949645714703 * R[597]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.188235474822857352 * R[4] + 0.188235474822857352 * R[58] + -0.188235474822857352 * R[328] + 0.188235474822857352 * R[382] + 0.376470949645714703 * R[544] + -0.376470949645714703 * R[598]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.188235474822857352 * R[5] + 0.188235474822857352 * R[59] + -0.188235474822857352 * R[329] + 0.188235474822857352 * R[383] + 0.376470949645714703 * R[545] + -0.376470949645714703 * R[599]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.188235474822857352 * R[12] + 0.188235474822857352 * R[66] + -0.188235474822857352 * R[336] + 0.188235474822857352 * R[390] + 0.376470949645714703 * R[552] + -0.376470949645714703 * R[606]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.188235474822857352 * R[13] + 0.188235474822857352 * R[67] + -0.188235474822857352 * R[337] + 0.188235474822857352 * R[391] + 0.376470949645714703 * R[553] + -0.376470949645714703 * R[607]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.188235474822857352 * R[14] + 0.188235474822857352 * R[68] + -0.188235474822857352 * R[338] + 0.188235474822857352 * R[392] + 0.376470949645714703 * R[554] + -0.376470949645714703 * R[608]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (0.0543389010300068462 * R[0] + -0.0543389010300068462 * R[54] + 0.0543389010300068462 * R[324] + -0.0543389010300068462 * R[378] + -0.108677802060013692 * R[540] + 0.108677802060013692 * R[594] + 0.0543389010300068462 * R[9] + -0.0543389010300068462 * R[63] + 0.0543389010300068462 * R[333] + -0.0543389010300068462 * R[387] + -0.108677802060013692 * R[549] + 0.108677802060013692 * R[603] + -0.108677802060013692 * R[15] + 0.108677802060013692 * R[69] + -0.108677802060013692 * R[339] + 0.108677802060013692 * R[393] + 0.217355604120027385 * R[555] + -0.217355604120027385 * R[609]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (0.0543389010300068462 * R[1] + -0.0543389010300068462 * R[55] + 0.0543389010300068462 * R[325] + -0.0543389010300068462 * R[379] + -0.108677802060013692 * R[541] + 0.108677802060013692 * R[595] + 0.0543389010300068462 * R[10] + -0.0543389010300068462 * R[64] + 0.0543389010300068462 * R[334] + -0.0543389010300068462 * R[388] + -0.108677802060013692 * R[550] + 0.108677802060013692 * R[604] + -0.108677802060013692 * R[16] + 0.108677802060013692 * R[70] + -0.108677802060013692 * R[340] + 0.108677802060013692 * R[394] + 0.217355604120027385 * R[556] + -0.217355604120027385 * R[610]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (0.0543389010300068462 * R[2] + -0.0543389010300068462 * R[56] + 0.0543389010300068462 * R[326] + -0.0543389010300068462 * R[380] + -0.108677802060013692 * R[542] + 0.108677802060013692 * R[596] + 0.0543389010300068462 * R[11] + -0.0543389010300068462 * R[65] + 0.0543389010300068462 * R[335] + -0.0543389010300068462 * R[389] + -0.108677802060013692 * R[551] + 0.108677802060013692 * R[605] + -0.108677802060013692 * R[17] + 0.108677802060013692 * R[71] + -0.108677802060013692 * R[341] + 0.108677802060013692 * R[395] + 0.217355604120027385 * R[557] + -0.217355604120027385 * R[611]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.188235474822857352 * R[6] + 0.188235474822857352 * R[60] + -0.188235474822857352 * R[330] + 0.188235474822857352 * R[384] + 0.376470949645714703 * R[546] + -0.376470949645714703 * R[600]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.188235474822857352 * R[7] + 0.188235474822857352 * R[61] + -0.188235474822857352 * R[331] + 0.188235474822857352 * R[385] + 0.376470949645714703 * R[547] + -0.376470949645714703 * R[601]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.188235474822857352 * R[8] + 0.188235474822857352 * R[62] + -0.188235474822857352 * R[332] + 0.188235474822857352 * R[386] + 0.376470949645714703 * R[548] + -0.376470949645714703 * R[602]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.0941177374114286758 * R[0] + 0.0941177374114286758 * R[54] + -0.0941177374114286758 * R[324] + 0.0941177374114286758 * R[378] + 0.188235474822857352 * R[540] + -0.188235474822857352 * R[594] + 0.0941177374114286758 * R[9] + -0.0941177374114286758 * R[63] + 0.0941177374114286758 * R[333] + -0.0941177374114286758 * R[387] + -0.188235474822857352 * R[549] + 0.188235474822857352 * R[603]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.0941177374114286758 * R[1] + 0.0941177374114286758 * R[55] + -0.0941177374114286758 * R[325] + 0.0941177374114286758 * R[379] + 0.188235474822857352 * R[541] + -0.188235474822857352 * R[595] + 0.0941177374114286758 * R[10] + -0.0941177374114286758 * R[64] + 0.0941177374114286758 * R[334] + -0.0941177374114286758 * R[388] + -0.188235474822857352 * R[550] + 0.188235474822857352 * R[604]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.0941177374114286758 * R[2] + 0.0941177374114286758 * R[56] + -0.0941177374114286758 * R[326] + 0.0941177374114286758 * R[380] + 0.188235474822857352 * R[542] + -0.188235474822857352 * R[596] + 0.0941177374114286758 * R[11] + -0.0941177374114286758 * R[65] + 0.0941177374114286758 * R[335] + -0.0941177374114286758 * R[389] + -0.188235474822857352 * R[551] + 0.188235474822857352 * R[605]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[237]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[238]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[239]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[246]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[247]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[248]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[234] + -0.376470949645714703 * R[243] + 0.752941899291429406 * R[249]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[235] + -0.376470949645714703 * R[244] + 0.752941899291429406 * R[250]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[236] + -0.376470949645714703 * R[245] + 0.752941899291429406 * R[251]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[240]);
+                o[3 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[241]);
+                o[3 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[242]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[234] + -0.652066812360082348 * R[243]);
+                o[4 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[235] + -0.652066812360082348 * R[244]);
+                o[4 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[236] + -0.652066812360082348 * R[245]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[291]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[292]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[293]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[300]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[301]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[302]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[288] + -0.376470949645714703 * R[297] + 0.752941899291429406 * R[303]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[289] + -0.376470949645714703 * R[298] + 0.752941899291429406 * R[304]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[290] + -0.376470949645714703 * R[299] + 0.752941899291429406 * R[305]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[294]);
+                o[3 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[295]);
+                o[3 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[296]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[288] + -0.652066812360082348 * R[297]);
+                o[4 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[289] + -0.652066812360082348 * R[298]);
+                o[4 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[290] + -0.652066812360082348 * R[299]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[219] + -0.376470949645714703 * R[273] + 0.752941899291429406 * R[309]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[220] + -0.376470949645714703 * R[274] + 0.752941899291429406 * R[310]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[221] + -0.376470949645714703 * R[275] + 0.752941899291429406 * R[311]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[228] + -0.376470949645714703 * R[282] + 0.752941899291429406 * R[318]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[229] + -0.376470949645714703 * R[283] + 0.752941899291429406 * R[319]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[230] + -0.376470949645714703 * R[284] + 0.752941899291429406 * R[320]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[216] + 0.108677802060013692 * R[270] + -0.217355604120027385 * R[306] + 0.108677802060013692 * R[225] + 0.108677802060013692 * R[279] + -0.217355604120027385 * R[315] + -0.217355604120027385 * R[231] + -0.217355604120027385 * R[285] + 0.434711208240054769 * R[321]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[217] + 0.108677802060013692 * R[271] + -0.217355604120027385 * R[307] + 0.108677802060013692 * R[226] + 0.108677802060013692 * R[280] + -0.217355604120027385 * R[316] + -0.217355604120027385 * R[232] + -0.217355604120027385 * R[286] + 0.434711208240054769 * R[322]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[218] + 0.108677802060013692 * R[272] + -0.217355604120027385 * R[308] + 0.108677802060013692 * R[227] + 0.108677802060013692 * R[281] + -0.217355604120027385 * R[317] + -0.217355604120027385 * R[233] + -0.217355604120027385 * R[287] + 0.434711208240054769 * R[323]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[222] + -0.376470949645714703 * R[276] + 0.752941899291429406 * R[312]);
+                o[3 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[223] + -0.376470949645714703 * R[277] + 0.752941899291429406 * R[313]);
+                o[3 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[224] + -0.376470949645714703 * R[278] + 0.752941899291429406 * R[314]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[216] + -0.188235474822857352 * R[270] + 0.376470949645714703 * R[306] + 0.188235474822857352 * R[225] + 0.188235474822857352 * R[279] + -0.376470949645714703 * R[315]);
+                o[4 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[217] + -0.188235474822857352 * R[271] + 0.376470949645714703 * R[307] + 0.188235474822857352 * R[226] + 0.188235474822857352 * R[280] + -0.376470949645714703 * R[316]);
+                o[4 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[218] + -0.188235474822857352 * R[272] + 0.376470949645714703 * R[308] + 0.188235474822857352 * R[227] + 0.188235474822857352 * R[281] + -0.376470949645714703 * R[317]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[255]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[256]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[257]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[264]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[265]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[266]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (-0.376470949645714703 * R[252] + -0.376470949645714703 * R[261] + 0.752941899291429406 * R[267]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (-0.376470949645714703 * R[253] + -0.376470949645714703 * R[262] + 0.752941899291429406 * R[268]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (-0.376470949645714703 * R[254] + -0.376470949645714703 * R[263] + 0.752941899291429406 * R[269]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[258]);
+                o[3 * st[0] + 1 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[259]);
+                o[3 * st[0] + 2 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.3041336247201647 * R[260]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (0.652066812360082348 * R[252] + -0.652066812360082348 * R[261]);
+                o[4 * st[0] + 1 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (0.652066812360082348 * R[253] + -0.652066812360082348 * R[262]);
+                o[4 * st[0] + 2 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (0.652066812360082348 * R[254] + -0.652066812360082348 * R[263]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[219] + -0.652066812360082348 * R[273]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[220] + -0.652066812360082348 * R[274]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[221] + -0.652066812360082348 * R[275]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[228] + -0.652066812360082348 * R[282]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[229] + -0.652066812360082348 * R[283]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[230] + -0.652066812360082348 * R[284]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (-0.188235474822857352 * R[216] + 0.188235474822857352 * R[270] + -0.188235474822857352 * R[225] + 0.188235474822857352 * R[279] + 0.376470949645714703 * R[231] + -0.376470949645714703 * R[285]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (-0.188235474822857352 * R[217] + 0.188235474822857352 * R[271] + -0.188235474822857352 * R[226] + 0.188235474822857352 * R[280] + 0.376470949645714703 * R[232] + -0.376470949645714703 * R[286]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (-0.188235474822857352 * R[218] + 0.188235474822857352 * R[272] + -0.188235474822857352 * R[227] + 0.188235474822857352 * R[281] + 0.376470949645714703 * R[233] + -0.376470949645714703 * R[287]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[222] + -0.652066812360082348 * R[276]);
+                o[3 * st[0] + 1 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[223] + -0.652066812360082348 * R[277]);
+                o[3 * st[0] + 2 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.652066812360082348 * R[224] + -0.652066812360082348 * R[278]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.326033406180041174 * R[216] + -0.326033406180041174 * R[270] + -0.326033406180041174 * R[225] + 0.326033406180041174 * R[279]);
+                o[4 * st[0] + 1 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.326033406180041174 * R[217] + -0.326033406180041174 * R[271] + -0.326033406180041174 * R[226] + 0.326033406180041174 * R[280]);
+                o[4 * st[0] + 2 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.326033406180041174 * R[218] + -0.326033406180041174 * R[272] + -0.326033406180041174 * R[227] + 0.326033406180041174 * R[281]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[21] + -0.652066812360082348 * R[345]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[22] + -0.652066812360082348 * R[346]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[23] + -0.652066812360082348 * R[347]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[30] + -0.652066812360082348 * R[354]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[31] + -0.652066812360082348 * R[355]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[32] + -0.652066812360082348 * R[356]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[18] + 0.188235474822857352 * R[342] + -0.188235474822857352 * R[27] + 0.188235474822857352 * R[351] + 0.376470949645714703 * R[33] + -0.376470949645714703 * R[357]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[19] + 0.188235474822857352 * R[343] + -0.188235474822857352 * R[28] + 0.188235474822857352 * R[352] + 0.376470949645714703 * R[34] + -0.376470949645714703 * R[358]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[20] + 0.188235474822857352 * R[344] + -0.188235474822857352 * R[29] + 0.188235474822857352 * R[353] + 0.376470949645714703 * R[35] + -0.376470949645714703 * R[359]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[24] + -0.652066812360082348 * R[348]);
+                o[3 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[25] + -0.652066812360082348 * R[349]);
+                o[3 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[26] + -0.652066812360082348 * R[350]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.326033406180041174 * R[18] + -0.326033406180041174 * R[342] + -0.326033406180041174 * R[27] + 0.326033406180041174 * R[351]);
+                o[4 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.326033406180041174 * R[19] + -0.326033406180041174 * R[343] + -0.326033406180041174 * R[28] + 0.326033406180041174 * R[352]);
+                o[4 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.326033406180041174 * R[20] + -0.326033406180041174 * R[344] + -0.326033406180041174 * R[29] + 0.326033406180041174 * R[353]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[75] + -0.652066812360082348 * R[399]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[76] + -0.652066812360082348 * R[400]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[77] + -0.652066812360082348 * R[401]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[84] + -0.652066812360082348 * R[408]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[85] + -0.652066812360082348 * R[409]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[86] + -0.652066812360082348 * R[410]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[72] + 0.188235474822857352 * R[396] + -0.188235474822857352 * R[81] + 0.188235474822857352 * R[405] + 0.376470949645714703 * R[87] + -0.376470949645714703 * R[411]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[73] + 0.188235474822857352 * R[397] + -0.188235474822857352 * R[82] + 0.188235474822857352 * R[406] + 0.376470949645714703 * R[88] + -0.376470949645714703 * R[412]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[74] + 0.188235474822857352 * R[398] + -0.188235474822857352 * R[83] + 0.188235474822857352 * R[407] + 0.376470949645714703 * R[89] + -0.376470949645714703 * R[413]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[78] + -0.652066812360082348 * R[402]);
+                o[3 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[79] + -0.652066812360082348 * R[403]);
+                o[3 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[80] + -0.652066812360082348 * R[404]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.326033406180041174 * R[72] + -0.326033406180041174 * R[396] + -0.326033406180041174 * R[81] + 0.326033406180041174 * R[405]);
+                o[4 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.326033406180041174 * R[73] + -0.326033406180041174 * R[397] + -0.326033406180041174 * R[82] + 0.326033406180041174 * R[406]);
+                o[4 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.326033406180041174 * R[74] + -0.326033406180041174 * R[398] + -0.326033406180041174 * R[83] + 0.326033406180041174 * R[407]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[3] + -0.188235474822857352 * R[57] + 0.376470949645714703 * R[93] + 0.188235474822857352 * R[327] + 0.188235474822857352 * R[381] + -0.376470949645714703 * R[417]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[4] + -0.188235474822857352 * R[58] + 0.376470949645714703 * R[94] + 0.188235474822857352 * R[328] + 0.188235474822857352 * R[382] + -0.376470949645714703 * R[418]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[5] + -0.188235474822857352 * R[59] + 0.376470949645714703 * R[95] + 0.188235474822857352 * R[329] + 0.188235474822857352 * R[383] + -0.376470949645714703 * R[419]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[12] + -0.188235474822857352 * R[66] + 0.376470949645714703 * R[102] + 0.188235474822857352 * R[336] + 0.188235474822857352 * R[390] + -0.376470949645714703 * R[426]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[13] + -0.188235474822857352 * R[67] + 0.376470949645714703 * R[103] + 0.188235474822857352 * R[337] + 0.188235474822857352 * R[391] + -0.376470949645714703 * R[427]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[14] + -0.188235474822857352 * R[68] + 0.376470949645714703 * R[104] + 0.188235474822857352 * R[338] + 0.188235474822857352 * R[392] + -0.376470949645714703 * R[428]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.0543389010300068462 * R[0] + 0.0543389010300068462 * R[54] + -0.108677802060013692 * R[90] + -0.0543389010300068462 * R[324] + -0.0543389010300068462 * R[378] + 0.108677802060013692 * R[414] + 0.0543389010300068462 * R[9] + 0.0543389010300068462 * R[63] + -0.108677802060013692 * R[99] + -0.0543389010300068462 * R[333] + -0.0543389010300068462 * R[387] + 0.108677802060013692 * R[423] + -0.108677802060013692 * R[15] + -0.108677802060013692 * R[69] + 0.217355604120027385 * R[105] + 0.108677802060013692 * R[339] + 0.108677802060013692 * R[393] + -0.217355604120027385 * R[429]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.0543389010300068462 * R[1] + 0.0543389010300068462 * R[55] + -0.108677802060013692 * R[91] + -0.0543389010300068462 * R[325] + -0.0543389010300068462 * R[379] + 0.108677802060013692 * R[415] + 0.0543389010300068462 * R[10] + 0.0543389010300068462 * R[64] + -0.108677802060013692 * R[100] + -0.0543389010300068462 * R[334] + -0.0543389010300068462 * R[388] + 0.108677802060013692 * R[424] + -0.108677802060013692 * R[16] + -0.108677802060013692 * R[70] + 0.217355604120027385 * R[106] + 0.108677802060013692 * R[340] + 0.108677802060013692 * R[394] + -0.217355604120027385 * R[430]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.0543389010300068462 * R[2] + 0.0543389010300068462 * R[56] + -0.108677802060013692 * R[92] + -0.0543389010300068462 * R[326] + -0.0543389010300068462 * R[380] + 0.108677802060013692 * R[416] + 0.0543389010300068462 * R[11] + 0.0543389010300068462 * R[65] + -0.108677802060013692 * R[101] + -0.0543389010300068462 * R[335] + -0.0543389010300068462 * R[389] + 0.108677802060013692 * R[425] + -0.108677802060013692 * R[17] + -0.108677802060013692 * R[71] + 0.217355604120027385 * R[107] + 0.108677802060013692 * R[341] + 0.108677802060013692 * R[395] + -0.217355604120027385 * R[431]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[6] + -0.188235474822857352 * R[60] + 0.376470949645714703 * R[96] + 0.188235474822857352 * R[330] + 0.188235474822857352 * R[384] + -0.376470949645714703 * R[420]);
+                o[3 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[7] + -0.188235474822857352 * R[61] + 0.376470949645714703 * R[97] + 0.188235474822857352 * R[331] + 0.188235474822857352 * R[385] + -0.376470949645714703 * R[421]);
+                o[3 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[8] + -0.188235474822857352 * R[62] + 0.376470949645714703 * R[98] + 0.188235474822857352 * R[332] + 0.188235474822857352 * R[386] + -0.376470949645714703 * R[422]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.0941177374114286758 * R[0] + -0.0941177374114286758 * R[54] + 0.188235474822857352 * R[90] + 0.0941177374114286758 * R[324] + 0.0941177374114286758 * R[378] + -0.188235474822857352 * R[414] + 0.0941177374114286758 * R[9] + 0.0941177374114286758 * R[63] + -0.188235474822857352 * R[99] + -0.0941177374114286758 * R[333] + -0.0941177374114286758 * R[387] + 0.188235474822857352 * R[423]);
+                o[4 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.0941177374114286758 * R[1] + -0.0941177374114286758 * R[55] + 0.188235474822857352 * R[91] + 0.0941177374114286758 * R[325] + 0.0941177374114286758 * R[379] + -0.188235474822857352 * R[415] + 0.0941177374114286758 * R[10] + 0.0941177374114286758 * R[64] + -0.188235474822857352 * R[100] + -0.0941177374114286758 * R[334] + -0.0941177374114286758 * R[388] + 0.188235474822857352 * R[424]);
+                o[4 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.0941177374114286758 * R[2] + -0.0941177374114286758 * R[56] + 0.188235474822857352 * R[92] + 0.0941177374114286758 * R[326] + 0.0941177374114286758 * R[380] + -0.188235474822857352 * R[416] + 0.0941177374114286758 * R[11] + 0.0941177374114286758 * R[65] + -0.188235474822857352 * R[101] + -0.0941177374114286758 * R[335] + -0.0941177374114286758 * R[389] + 0.188235474822857352 * R[425]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.652066812360082348 * R[39] + -0.652066812360082348 * R[363]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.652066812360082348 * R[40] + -0.652066812360082348 * R[364]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.652066812360082348 * R[41] + -0.652066812360082348 * R[365]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.652066812360082348 * R[48] + -0.652066812360082348 * R[372]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.652066812360082348 * R[49] + -0.652066812360082348 * R[373]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.652066812360082348 * R[50] + -0.652066812360082348 * R[374]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (-0.188235474822857352 * R[36] + 0.188235474822857352 * R[360] + -0.188235474822857352 * R[45] + 0.188235474822857352 * R[369] + 0.376470949645714703 * R[51] + -0.376470949645714703 * R[375]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (-0.188235474822857352 * R[37] + 0.188235474822857352 * R[361] + -0.188235474822857352 * R[46] + 0.188235474822857352 * R[370] + 0.376470949645714703 * R[52] + -0.376470949645714703 * R[376]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (-0.188235474822857352 * R[38] + 0.188235474822857352 * R[362] + -0.188235474822857352 * R[47] + 0.188235474822857352 * R[371] + 0.376470949645714703 * R[53] + -0.376470949645714703 * R[377]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.652066812360082348 * R[42] + -0.652066812360082348 * R[366]);
+                o[3 * st[0] + 1 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.652066812360082348 * R[43] + -0.652066812360082348 * R[367]);
+                o[3 * st[0] + 2 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.652066812360082348 * R[44] + -0.652066812360082348 * R[368]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.326033406180041174 * R[36] + -0.326033406180041174 * R[360] + -0.326033406180041174 * R[45] + 0.326033406180041174 * R[369]);
+                o[4 * st[0] + 1 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.326033406180041174 * R[37] + -0.326033406180041174 * R[361] + -0.326033406180041174 * R[46] + 0.326033406180041174 * R[370]);
+                o[4 * st[0] + 2 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.326033406180041174 * R[38] + -0.326033406180041174 * R[362] + -0.326033406180041174 * R[47] + 0.326033406180041174 * R[371]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.326033406180041174 * R[3] + -0.326033406180041174 * R[57] + -0.326033406180041174 * R[327] + 0.326033406180041174 * R[381]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.326033406180041174 * R[4] + -0.326033406180041174 * R[58] + -0.326033406180041174 * R[328] + 0.326033406180041174 * R[382]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.326033406180041174 * R[5] + -0.326033406180041174 * R[59] + -0.326033406180041174 * R[329] + 0.326033406180041174 * R[383]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.326033406180041174 * R[12] + -0.326033406180041174 * R[66] + -0.326033406180041174 * R[336] + 0.326033406180041174 * R[390]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.326033406180041174 * R[13] + -0.326033406180041174 * R[67] + -0.326033406180041174 * R[337] + 0.326033406180041174 * R[391]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.326033406180041174 * R[14] + -0.326033406180041174 * R[68] + -0.326033406180041174 * R[338] + 0.326033406180041174 * R[392]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (-0.0941177374114286758 * R[0] + 0.0941177374114286758 * R[54] + 0.0941177374114286758 * R[324] + -0.0941177374114286758 * R[378] + -0.0941177374114286758 * R[9] + 0.0941177374114286758 * R[63] + 0.0941177374114286758 * R[333] + -0.0941177374114286758 * R[387] + 0.188235474822857352 * R[15] + -0.188235474822857352 * R[69] + -0.188235474822857352 * R[339] + 0.188235474822857352 * R[393]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (-0.0941177374114286758 * R[1] + 0.0941177374114286758 * R[55] + 0.0941177374114286758 * R[325] + -0.0941177374114286758 * R[379] + -0.0941177374114286758 * R[10] + 0.0941177374114286758 * R[64] + 0.0941177374114286758 * R[334] + -0.0941177374114286758 * R[388] + 0.188235474822857352 * R[16] + -0.188235474822857352 * R[70] + -0.188235474822857352 * R[340] + 0.188235474822857352 * R[394]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (-0.0941177374114286758 * R[2] + 0.0941177374114286758 * R[56] + 0.0941177374114286758 * R[326] + -0.0941177374114286758 * R[380] + -0.0941177374114286758 * R[11] + 0.0941177374114286758 * R[65] + 0.0941177374114286758 * R[335] + -0.0941177374114286758 * R[389] + 0.188235474822857352 * R[17] + -0.188235474822857352 * R[71] + -0.188235474822857352 * R[341] + 0.188235474822857352 * R[395]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.326033406180041174 * R[6] + -0.326033406180041174 * R[60] + -0.326033406180041174 * R[330] + 0.326033406180041174 * R[384]);
+                o[3 * st[0] + 1 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.326033406180041174 * R[7] + -0.326033406180041174 * R[61] + -0.326033406180041174 * R[331] + 0.326033406180041174 * R[385]);
+                o[3 * st[0] + 2 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.326033406180041174 * R[8] + -0.326033406180041174 * R[62] + -0.326033406180041174 * R[332] + 0.326033406180041174 * R[386]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.163016703090020587 * R[0] + -0.163016703090020587 * R[54] + -0.163016703090020587 * R[324] + 0.163016703090020587 * R[378] + -0.163016703090020587 * R[9] + 0.163016703090020587 * R[63] + 0.163016703090020587 * R[333] + -0.163016703090020587 * R[387]);
+                o[4 * st[0] + 1 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.163016703090020587 * R[1] + -0.163016703090020587 * R[55] + -0.163016703090020587 * R[325] + 0.163016703090020587 * R[379] + -0.163016703090020587 * R[10] + 0.163016703090020587 * R[64] + 0.163016703090020587 * R[334] + -0.163016703090020587 * R[388]);
+                o[4 * st[0] + 2 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.163016703090020587 * R[2] + -0.163016703090020587 * R[56] + -0.163016703090020587 * R[326] + 0.163016703090020587 * R[380] + -0.163016703090020587 * R[11] + 0.163016703090020587 * R[65] + 0.163016703090020587 * R[335] + -0.163016703090020587 * R[389]);
+        }
+        return 1;
 }
 
 /* (22|00): 70 VRR nodes, 31 targets */
-static int jkv_2200(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_2200(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)31 * nb;
+        double *v = wk, *w = v + (size_t)31 * nb, *SK = w + (size_t)31 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 31);
         for (t = 0; t < nk; t++) {
@@ -9551,7 +13552,6 @@ static int jkv_2200(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -9683,17 +13683,186 @@ static int jkv_2200(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 31; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 31;
+                double *o = out + cpos[pos[0]] * 5 * st[0] + cpos[pos[1]] * 5 * st[1]
+                          + cpos[pos[2]] * 1 * st[2] + cpos[pos[3]] * 1 * st[3];
+                double HB[36];
+                double hb300_100[1];
+                for (i = 0; i < 1; i++) (hb300_100)[i] = (sk + 16)[i] + AB[0] * (sk + 6)[i];
+                double hb200_100[1];
+                for (i = 0; i < 1; i++) (hb200_100)[i] = (sk + 6)[i] + AB[0] * (sk + 0)[i];
+                for (i = 0; i < 1; i++) (HB + 0)[i] = (hb300_100)[i] + AB[0] * (hb200_100)[i];
+                double hb300_010[1];
+                for (i = 0; i < 1; i++) (hb300_010)[i] = (sk + 17)[i] + AB[1] * (sk + 6)[i];
+                double hb200_010[1];
+                for (i = 0; i < 1; i++) (hb200_010)[i] = (sk + 7)[i] + AB[1] * (sk + 0)[i];
+                for (i = 0; i < 1; i++) (HB + 1)[i] = (hb300_010)[i] + AB[0] * (hb200_010)[i];
+                double hb300_001[1];
+                for (i = 0; i < 1; i++) (hb300_001)[i] = (sk + 18)[i] + AB[2] * (sk + 6)[i];
+                double hb200_001[1];
+                for (i = 0; i < 1; i++) (hb200_001)[i] = (sk + 8)[i] + AB[2] * (sk + 0)[i];
+                for (i = 0; i < 1; i++) (HB + 2)[i] = (hb300_001)[i] + AB[0] * (hb200_001)[i];
+                double hb210_010[1];
+                for (i = 0; i < 1; i++) (hb210_010)[i] = (sk + 19)[i] + AB[1] * (sk + 7)[i];
+                for (i = 0; i < 1; i++) (HB + 3)[i] = (hb210_010)[i] + AB[1] * (hb200_010)[i];
+                double hb210_001[1];
+                for (i = 0; i < 1; i++) (hb210_001)[i] = (sk + 20)[i] + AB[2] * (sk + 7)[i];
+                for (i = 0; i < 1; i++) (HB + 4)[i] = (hb210_001)[i] + AB[1] * (hb200_001)[i];
+                double hb201_001[1];
+                for (i = 0; i < 1; i++) (hb201_001)[i] = (sk + 21)[i] + AB[2] * (sk + 8)[i];
+                for (i = 0; i < 1; i++) (HB + 5)[i] = (hb201_001)[i] + AB[2] * (hb200_001)[i];
+                double hb210_100[1];
+                for (i = 0; i < 1; i++) (hb210_100)[i] = (sk + 17)[i] + AB[0] * (sk + 7)[i];
+                double hb110_100[1];
+                for (i = 0; i < 1; i++) (hb110_100)[i] = (sk + 7)[i] + AB[0] * (sk + 1)[i];
+                for (i = 0; i < 1; i++) (HB + 6)[i] = (hb210_100)[i] + AB[0] * (hb110_100)[i];
+                double hb110_010[1];
+                for (i = 0; i < 1; i++) (hb110_010)[i] = (sk + 9)[i] + AB[1] * (sk + 1)[i];
+                for (i = 0; i < 1; i++) (HB + 7)[i] = (hb210_010)[i] + AB[0] * (hb110_010)[i];
+                double hb110_001[1];
+                for (i = 0; i < 1; i++) (hb110_001)[i] = (sk + 10)[i] + AB[2] * (sk + 1)[i];
+                for (i = 0; i < 1; i++) (HB + 8)[i] = (hb210_001)[i] + AB[0] * (hb110_001)[i];
+                double hb120_010[1];
+                for (i = 0; i < 1; i++) (hb120_010)[i] = (sk + 22)[i] + AB[1] * (sk + 9)[i];
+                for (i = 0; i < 1; i++) (HB + 9)[i] = (hb120_010)[i] + AB[1] * (hb110_010)[i];
+                double hb120_001[1];
+                for (i = 0; i < 1; i++) (hb120_001)[i] = (sk + 23)[i] + AB[2] * (sk + 9)[i];
+                for (i = 0; i < 1; i++) (HB + 10)[i] = (hb120_001)[i] + AB[1] * (hb110_001)[i];
+                double hb111_001[1];
+                for (i = 0; i < 1; i++) (hb111_001)[i] = (sk + 24)[i] + AB[2] * (sk + 10)[i];
+                for (i = 0; i < 1; i++) (HB + 11)[i] = (hb111_001)[i] + AB[2] * (hb110_001)[i];
+                double hb201_100[1];
+                for (i = 0; i < 1; i++) (hb201_100)[i] = (sk + 18)[i] + AB[0] * (sk + 8)[i];
+                double hb101_100[1];
+                for (i = 0; i < 1; i++) (hb101_100)[i] = (sk + 8)[i] + AB[0] * (sk + 2)[i];
+                for (i = 0; i < 1; i++) (HB + 12)[i] = (hb201_100)[i] + AB[0] * (hb101_100)[i];
+                double hb201_010[1];
+                for (i = 0; i < 1; i++) (hb201_010)[i] = (sk + 20)[i] + AB[1] * (sk + 8)[i];
+                double hb101_010[1];
+                for (i = 0; i < 1; i++) (hb101_010)[i] = (sk + 10)[i] + AB[1] * (sk + 2)[i];
+                for (i = 0; i < 1; i++) (HB + 13)[i] = (hb201_010)[i] + AB[0] * (hb101_010)[i];
+                double hb101_001[1];
+                for (i = 0; i < 1; i++) (hb101_001)[i] = (sk + 11)[i] + AB[2] * (sk + 2)[i];
+                for (i = 0; i < 1; i++) (HB + 14)[i] = (hb201_001)[i] + AB[0] * (hb101_001)[i];
+                double hb111_010[1];
+                for (i = 0; i < 1; i++) (hb111_010)[i] = (sk + 23)[i] + AB[1] * (sk + 10)[i];
+                for (i = 0; i < 1; i++) (HB + 15)[i] = (hb111_010)[i] + AB[1] * (hb101_010)[i];
+                for (i = 0; i < 1; i++) (HB + 16)[i] = (hb111_001)[i] + AB[1] * (hb101_001)[i];
+                double hb102_001[1];
+                for (i = 0; i < 1; i++) (hb102_001)[i] = (sk + 25)[i] + AB[2] * (sk + 11)[i];
+                for (i = 0; i < 1; i++) (HB + 17)[i] = (hb102_001)[i] + AB[2] * (hb101_001)[i];
+                double hb120_100[1];
+                for (i = 0; i < 1; i++) (hb120_100)[i] = (sk + 19)[i] + AB[0] * (sk + 9)[i];
+                double hb020_100[1];
+                for (i = 0; i < 1; i++) (hb020_100)[i] = (sk + 9)[i] + AB[0] * (sk + 3)[i];
+                for (i = 0; i < 1; i++) (HB + 18)[i] = (hb120_100)[i] + AB[0] * (hb020_100)[i];
+                double hb020_010[1];
+                for (i = 0; i < 1; i++) (hb020_010)[i] = (sk + 12)[i] + AB[1] * (sk + 3)[i];
+                for (i = 0; i < 1; i++) (HB + 19)[i] = (hb120_010)[i] + AB[0] * (hb020_010)[i];
+                double hb020_001[1];
+                for (i = 0; i < 1; i++) (hb020_001)[i] = (sk + 13)[i] + AB[2] * (sk + 3)[i];
+                for (i = 0; i < 1; i++) (HB + 20)[i] = (hb120_001)[i] + AB[0] * (hb020_001)[i];
+                double hb030_010[1];
+                for (i = 0; i < 1; i++) (hb030_010)[i] = (sk + 26)[i] + AB[1] * (sk + 12)[i];
+                for (i = 0; i < 1; i++) (HB + 21)[i] = (hb030_010)[i] + AB[1] * (hb020_010)[i];
+                double hb030_001[1];
+                for (i = 0; i < 1; i++) (hb030_001)[i] = (sk + 27)[i] + AB[2] * (sk + 12)[i];
+                for (i = 0; i < 1; i++) (HB + 22)[i] = (hb030_001)[i] + AB[1] * (hb020_001)[i];
+                double hb021_001[1];
+                for (i = 0; i < 1; i++) (hb021_001)[i] = (sk + 28)[i] + AB[2] * (sk + 13)[i];
+                for (i = 0; i < 1; i++) (HB + 23)[i] = (hb021_001)[i] + AB[2] * (hb020_001)[i];
+                double hb111_100[1];
+                for (i = 0; i < 1; i++) (hb111_100)[i] = (sk + 20)[i] + AB[0] * (sk + 10)[i];
+                double hb011_100[1];
+                for (i = 0; i < 1; i++) (hb011_100)[i] = (sk + 10)[i] + AB[0] * (sk + 4)[i];
+                for (i = 0; i < 1; i++) (HB + 24)[i] = (hb111_100)[i] + AB[0] * (hb011_100)[i];
+                double hb011_010[1];
+                for (i = 0; i < 1; i++) (hb011_010)[i] = (sk + 13)[i] + AB[1] * (sk + 4)[i];
+                for (i = 0; i < 1; i++) (HB + 25)[i] = (hb111_010)[i] + AB[0] * (hb011_010)[i];
+                double hb011_001[1];
+                for (i = 0; i < 1; i++) (hb011_001)[i] = (sk + 14)[i] + AB[2] * (sk + 4)[i];
+                for (i = 0; i < 1; i++) (HB + 26)[i] = (hb111_001)[i] + AB[0] * (hb011_001)[i];
+                double hb021_010[1];
+                for (i = 0; i < 1; i++) (hb021_010)[i] = (sk + 27)[i] + AB[1] * (sk + 13)[i];
+                for (i = 0; i < 1; i++) (HB + 27)[i] = (hb021_010)[i] + AB[1] * (hb011_010)[i];
+                for (i = 0; i < 1; i++) (HB + 28)[i] = (hb021_001)[i] + AB[1] * (hb011_001)[i];
+                double hb012_001[1];
+                for (i = 0; i < 1; i++) (hb012_001)[i] = (sk + 29)[i] + AB[2] * (sk + 14)[i];
+                for (i = 0; i < 1; i++) (HB + 29)[i] = (hb012_001)[i] + AB[2] * (hb011_001)[i];
+                double hb102_100[1];
+                for (i = 0; i < 1; i++) (hb102_100)[i] = (sk + 21)[i] + AB[0] * (sk + 11)[i];
+                double hb002_100[1];
+                for (i = 0; i < 1; i++) (hb002_100)[i] = (sk + 11)[i] + AB[0] * (sk + 5)[i];
+                for (i = 0; i < 1; i++) (HB + 30)[i] = (hb102_100)[i] + AB[0] * (hb002_100)[i];
+                double hb102_010[1];
+                for (i = 0; i < 1; i++) (hb102_010)[i] = (sk + 24)[i] + AB[1] * (sk + 11)[i];
+                double hb002_010[1];
+                for (i = 0; i < 1; i++) (hb002_010)[i] = (sk + 14)[i] + AB[1] * (sk + 5)[i];
+                for (i = 0; i < 1; i++) (HB + 31)[i] = (hb102_010)[i] + AB[0] * (hb002_010)[i];
+                double hb002_001[1];
+                for (i = 0; i < 1; i++) (hb002_001)[i] = (sk + 15)[i] + AB[2] * (sk + 5)[i];
+                for (i = 0; i < 1; i++) (HB + 32)[i] = (hb102_001)[i] + AB[0] * (hb002_001)[i];
+                double hb012_010[1];
+                for (i = 0; i < 1; i++) (hb012_010)[i] = (sk + 28)[i] + AB[1] * (sk + 14)[i];
+                for (i = 0; i < 1; i++) (HB + 33)[i] = (hb012_010)[i] + AB[1] * (hb002_010)[i];
+                for (i = 0; i < 1; i++) (HB + 34)[i] = (hb012_001)[i] + AB[1] * (hb002_001)[i];
+                double hb003_001[1];
+                for (i = 0; i < 1; i++) (hb003_001)[i] = (sk + 30)[i] + AB[2] * (sk + 15)[i];
+                for (i = 0; i < 1; i++) (HB + 35)[i] = (hb003_001)[i] + AB[2] * (hb002_001)[i];
+                double R[36];
+                for (i = 0; i < 36; i++) {
+                        R[0 + i] = HB[i * 1 + 0];
+                }
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[7]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[10]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[6] + -0.344580559638620054 * R[9] + 0.689161119277240108 * R[11]);
+                o[0 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[8]);
+                o[0 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[6] + -0.596831036594607678 * R[9]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[25]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[28]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[24] + -0.344580559638620054 * R[27] + 0.689161119277240108 * R[29]);
+                o[1 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[26]);
+                o[1 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[24] + -0.596831036594607678 * R[27]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[1] + -0.344580559638620054 * R[19] + 0.689161119277240108 * R[31]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[4] + -0.344580559638620054 * R[22] + 0.689161119277240108 * R[34]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.0994718394324345806 * R[0] + 0.0994718394324345806 * R[3] + -0.198943678864869161 * R[5] + 0.0994718394324345806 * R[18] + 0.0994718394324345806 * R[21] + -0.198943678864869161 * R[23] + -0.198943678864869161 * R[30] + -0.198943678864869161 * R[33] + 0.397887357729738322 * R[35]);
+                o[2 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[2] + -0.344580559638620054 * R[20] + 0.689161119277240108 * R[32]);
+                o[2 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[0] + 0.172290279819310027 * R[3] + -0.172290279819310027 * R[18] + 0.172290279819310027 * R[21] + 0.344580559638620054 * R[30] + -0.344580559638620054 * R[33]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[13]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[16]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[12] + -0.344580559638620054 * R[15] + 0.689161119277240108 * R[17]);
+                o[3 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[14]);
+                o[3 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[12] + -0.596831036594607678 * R[15]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[1] + -0.596831036594607678 * R[19]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[4] + -0.596831036594607678 * R[22]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[0] + -0.172290279819310027 * R[3] + 0.344580559638620054 * R[5] + 0.172290279819310027 * R[18] + 0.172290279819310027 * R[21] + -0.344580559638620054 * R[23]);
+                o[4 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[2] + -0.596831036594607678 * R[20]);
+                o[4 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.298415518297303839 * R[0] + -0.298415518297303839 * R[3] + -0.298415518297303839 * R[18] + 0.298415518297303839 * R[21]);
+        }
+        return 1;
 }
 
 /* (22|10): 198 VRR nodes, 93 targets */
-static int jkv_2210(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_2210(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)93 * nb;
+        double *v = wk, *w = v + (size_t)93 * nb, *SK = w + (size_t)93 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 93);
         for (t = 0; t < nk; t++) {
@@ -9703,7 +13872,6 @@ static int jkv_2210(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -10025,17 +14193,238 @@ static int jkv_2210(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 93; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 93;
+                double *o = out + cpos[pos[0]] * 5 * st[0] + cpos[pos[1]] * 5 * st[1]
+                          + cpos[pos[2]] * 3 * st[2] + cpos[pos[3]] * 1 * st[3];
+                double HB[108];
+                double hb300_100[3];
+                for (i = 0; i < 3; i++) (hb300_100)[i] = (sk + 48)[i] + AB[0] * (sk + 18)[i];
+                double hb200_100[3];
+                for (i = 0; i < 3; i++) (hb200_100)[i] = (sk + 18)[i] + AB[0] * (sk + 0)[i];
+                for (i = 0; i < 3; i++) (HB + 0)[i] = (hb300_100)[i] + AB[0] * (hb200_100)[i];
+                double hb300_010[3];
+                for (i = 0; i < 3; i++) (hb300_010)[i] = (sk + 51)[i] + AB[1] * (sk + 18)[i];
+                double hb200_010[3];
+                for (i = 0; i < 3; i++) (hb200_010)[i] = (sk + 21)[i] + AB[1] * (sk + 0)[i];
+                for (i = 0; i < 3; i++) (HB + 3)[i] = (hb300_010)[i] + AB[0] * (hb200_010)[i];
+                double hb300_001[3];
+                for (i = 0; i < 3; i++) (hb300_001)[i] = (sk + 54)[i] + AB[2] * (sk + 18)[i];
+                double hb200_001[3];
+                for (i = 0; i < 3; i++) (hb200_001)[i] = (sk + 24)[i] + AB[2] * (sk + 0)[i];
+                for (i = 0; i < 3; i++) (HB + 6)[i] = (hb300_001)[i] + AB[0] * (hb200_001)[i];
+                double hb210_010[3];
+                for (i = 0; i < 3; i++) (hb210_010)[i] = (sk + 57)[i] + AB[1] * (sk + 21)[i];
+                for (i = 0; i < 3; i++) (HB + 9)[i] = (hb210_010)[i] + AB[1] * (hb200_010)[i];
+                double hb210_001[3];
+                for (i = 0; i < 3; i++) (hb210_001)[i] = (sk + 60)[i] + AB[2] * (sk + 21)[i];
+                for (i = 0; i < 3; i++) (HB + 12)[i] = (hb210_001)[i] + AB[1] * (hb200_001)[i];
+                double hb201_001[3];
+                for (i = 0; i < 3; i++) (hb201_001)[i] = (sk + 63)[i] + AB[2] * (sk + 24)[i];
+                for (i = 0; i < 3; i++) (HB + 15)[i] = (hb201_001)[i] + AB[2] * (hb200_001)[i];
+                double hb210_100[3];
+                for (i = 0; i < 3; i++) (hb210_100)[i] = (sk + 51)[i] + AB[0] * (sk + 21)[i];
+                double hb110_100[3];
+                for (i = 0; i < 3; i++) (hb110_100)[i] = (sk + 21)[i] + AB[0] * (sk + 3)[i];
+                for (i = 0; i < 3; i++) (HB + 18)[i] = (hb210_100)[i] + AB[0] * (hb110_100)[i];
+                double hb110_010[3];
+                for (i = 0; i < 3; i++) (hb110_010)[i] = (sk + 27)[i] + AB[1] * (sk + 3)[i];
+                for (i = 0; i < 3; i++) (HB + 21)[i] = (hb210_010)[i] + AB[0] * (hb110_010)[i];
+                double hb110_001[3];
+                for (i = 0; i < 3; i++) (hb110_001)[i] = (sk + 30)[i] + AB[2] * (sk + 3)[i];
+                for (i = 0; i < 3; i++) (HB + 24)[i] = (hb210_001)[i] + AB[0] * (hb110_001)[i];
+                double hb120_010[3];
+                for (i = 0; i < 3; i++) (hb120_010)[i] = (sk + 66)[i] + AB[1] * (sk + 27)[i];
+                for (i = 0; i < 3; i++) (HB + 27)[i] = (hb120_010)[i] + AB[1] * (hb110_010)[i];
+                double hb120_001[3];
+                for (i = 0; i < 3; i++) (hb120_001)[i] = (sk + 69)[i] + AB[2] * (sk + 27)[i];
+                for (i = 0; i < 3; i++) (HB + 30)[i] = (hb120_001)[i] + AB[1] * (hb110_001)[i];
+                double hb111_001[3];
+                for (i = 0; i < 3; i++) (hb111_001)[i] = (sk + 72)[i] + AB[2] * (sk + 30)[i];
+                for (i = 0; i < 3; i++) (HB + 33)[i] = (hb111_001)[i] + AB[2] * (hb110_001)[i];
+                double hb201_100[3];
+                for (i = 0; i < 3; i++) (hb201_100)[i] = (sk + 54)[i] + AB[0] * (sk + 24)[i];
+                double hb101_100[3];
+                for (i = 0; i < 3; i++) (hb101_100)[i] = (sk + 24)[i] + AB[0] * (sk + 6)[i];
+                for (i = 0; i < 3; i++) (HB + 36)[i] = (hb201_100)[i] + AB[0] * (hb101_100)[i];
+                double hb201_010[3];
+                for (i = 0; i < 3; i++) (hb201_010)[i] = (sk + 60)[i] + AB[1] * (sk + 24)[i];
+                double hb101_010[3];
+                for (i = 0; i < 3; i++) (hb101_010)[i] = (sk + 30)[i] + AB[1] * (sk + 6)[i];
+                for (i = 0; i < 3; i++) (HB + 39)[i] = (hb201_010)[i] + AB[0] * (hb101_010)[i];
+                double hb101_001[3];
+                for (i = 0; i < 3; i++) (hb101_001)[i] = (sk + 33)[i] + AB[2] * (sk + 6)[i];
+                for (i = 0; i < 3; i++) (HB + 42)[i] = (hb201_001)[i] + AB[0] * (hb101_001)[i];
+                double hb111_010[3];
+                for (i = 0; i < 3; i++) (hb111_010)[i] = (sk + 69)[i] + AB[1] * (sk + 30)[i];
+                for (i = 0; i < 3; i++) (HB + 45)[i] = (hb111_010)[i] + AB[1] * (hb101_010)[i];
+                for (i = 0; i < 3; i++) (HB + 48)[i] = (hb111_001)[i] + AB[1] * (hb101_001)[i];
+                double hb102_001[3];
+                for (i = 0; i < 3; i++) (hb102_001)[i] = (sk + 75)[i] + AB[2] * (sk + 33)[i];
+                for (i = 0; i < 3; i++) (HB + 51)[i] = (hb102_001)[i] + AB[2] * (hb101_001)[i];
+                double hb120_100[3];
+                for (i = 0; i < 3; i++) (hb120_100)[i] = (sk + 57)[i] + AB[0] * (sk + 27)[i];
+                double hb020_100[3];
+                for (i = 0; i < 3; i++) (hb020_100)[i] = (sk + 27)[i] + AB[0] * (sk + 9)[i];
+                for (i = 0; i < 3; i++) (HB + 54)[i] = (hb120_100)[i] + AB[0] * (hb020_100)[i];
+                double hb020_010[3];
+                for (i = 0; i < 3; i++) (hb020_010)[i] = (sk + 36)[i] + AB[1] * (sk + 9)[i];
+                for (i = 0; i < 3; i++) (HB + 57)[i] = (hb120_010)[i] + AB[0] * (hb020_010)[i];
+                double hb020_001[3];
+                for (i = 0; i < 3; i++) (hb020_001)[i] = (sk + 39)[i] + AB[2] * (sk + 9)[i];
+                for (i = 0; i < 3; i++) (HB + 60)[i] = (hb120_001)[i] + AB[0] * (hb020_001)[i];
+                double hb030_010[3];
+                for (i = 0; i < 3; i++) (hb030_010)[i] = (sk + 78)[i] + AB[1] * (sk + 36)[i];
+                for (i = 0; i < 3; i++) (HB + 63)[i] = (hb030_010)[i] + AB[1] * (hb020_010)[i];
+                double hb030_001[3];
+                for (i = 0; i < 3; i++) (hb030_001)[i] = (sk + 81)[i] + AB[2] * (sk + 36)[i];
+                for (i = 0; i < 3; i++) (HB + 66)[i] = (hb030_001)[i] + AB[1] * (hb020_001)[i];
+                double hb021_001[3];
+                for (i = 0; i < 3; i++) (hb021_001)[i] = (sk + 84)[i] + AB[2] * (sk + 39)[i];
+                for (i = 0; i < 3; i++) (HB + 69)[i] = (hb021_001)[i] + AB[2] * (hb020_001)[i];
+                double hb111_100[3];
+                for (i = 0; i < 3; i++) (hb111_100)[i] = (sk + 60)[i] + AB[0] * (sk + 30)[i];
+                double hb011_100[3];
+                for (i = 0; i < 3; i++) (hb011_100)[i] = (sk + 30)[i] + AB[0] * (sk + 12)[i];
+                for (i = 0; i < 3; i++) (HB + 72)[i] = (hb111_100)[i] + AB[0] * (hb011_100)[i];
+                double hb011_010[3];
+                for (i = 0; i < 3; i++) (hb011_010)[i] = (sk + 39)[i] + AB[1] * (sk + 12)[i];
+                for (i = 0; i < 3; i++) (HB + 75)[i] = (hb111_010)[i] + AB[0] * (hb011_010)[i];
+                double hb011_001[3];
+                for (i = 0; i < 3; i++) (hb011_001)[i] = (sk + 42)[i] + AB[2] * (sk + 12)[i];
+                for (i = 0; i < 3; i++) (HB + 78)[i] = (hb111_001)[i] + AB[0] * (hb011_001)[i];
+                double hb021_010[3];
+                for (i = 0; i < 3; i++) (hb021_010)[i] = (sk + 81)[i] + AB[1] * (sk + 39)[i];
+                for (i = 0; i < 3; i++) (HB + 81)[i] = (hb021_010)[i] + AB[1] * (hb011_010)[i];
+                for (i = 0; i < 3; i++) (HB + 84)[i] = (hb021_001)[i] + AB[1] * (hb011_001)[i];
+                double hb012_001[3];
+                for (i = 0; i < 3; i++) (hb012_001)[i] = (sk + 87)[i] + AB[2] * (sk + 42)[i];
+                for (i = 0; i < 3; i++) (HB + 87)[i] = (hb012_001)[i] + AB[2] * (hb011_001)[i];
+                double hb102_100[3];
+                for (i = 0; i < 3; i++) (hb102_100)[i] = (sk + 63)[i] + AB[0] * (sk + 33)[i];
+                double hb002_100[3];
+                for (i = 0; i < 3; i++) (hb002_100)[i] = (sk + 33)[i] + AB[0] * (sk + 15)[i];
+                for (i = 0; i < 3; i++) (HB + 90)[i] = (hb102_100)[i] + AB[0] * (hb002_100)[i];
+                double hb102_010[3];
+                for (i = 0; i < 3; i++) (hb102_010)[i] = (sk + 72)[i] + AB[1] * (sk + 33)[i];
+                double hb002_010[3];
+                for (i = 0; i < 3; i++) (hb002_010)[i] = (sk + 42)[i] + AB[1] * (sk + 15)[i];
+                for (i = 0; i < 3; i++) (HB + 93)[i] = (hb102_010)[i] + AB[0] * (hb002_010)[i];
+                double hb002_001[3];
+                for (i = 0; i < 3; i++) (hb002_001)[i] = (sk + 45)[i] + AB[2] * (sk + 15)[i];
+                for (i = 0; i < 3; i++) (HB + 96)[i] = (hb102_001)[i] + AB[0] * (hb002_001)[i];
+                double hb012_010[3];
+                for (i = 0; i < 3; i++) (hb012_010)[i] = (sk + 84)[i] + AB[1] * (sk + 42)[i];
+                for (i = 0; i < 3; i++) (HB + 99)[i] = (hb012_010)[i] + AB[1] * (hb002_010)[i];
+                for (i = 0; i < 3; i++) (HB + 102)[i] = (hb012_001)[i] + AB[1] * (hb002_001)[i];
+                double hb003_001[3];
+                for (i = 0; i < 3; i++) (hb003_001)[i] = (sk + 90)[i] + AB[2] * (sk + 45)[i];
+                for (i = 0; i < 3; i++) (HB + 105)[i] = (hb003_001)[i] + AB[2] * (hb002_001)[i];
+                double R[108];
+                for (i = 0; i < 36; i++) {
+                        R[0 + i] = HB[i * 3 + 0];
+                        R[36 + i] = HB[i * 3 + 1];
+                        R[72 + i] = HB[i * 3 + 2];
+                }
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[7]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[10]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[6] + -0.344580559638620054 * R[9] + 0.689161119277240108 * R[11]);
+                o[0 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[8]);
+                o[0 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[6] + -0.596831036594607678 * R[9]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[25]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[28]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[24] + -0.344580559638620054 * R[27] + 0.689161119277240108 * R[29]);
+                o[1 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[26]);
+                o[1 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[24] + -0.596831036594607678 * R[27]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[1] + -0.344580559638620054 * R[19] + 0.689161119277240108 * R[31]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[4] + -0.344580559638620054 * R[22] + 0.689161119277240108 * R[34]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.0994718394324345806 * R[0] + 0.0994718394324345806 * R[3] + -0.198943678864869161 * R[5] + 0.0994718394324345806 * R[18] + 0.0994718394324345806 * R[21] + -0.198943678864869161 * R[23] + -0.198943678864869161 * R[30] + -0.198943678864869161 * R[33] + 0.397887357729738322 * R[35]);
+                o[2 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[2] + -0.344580559638620054 * R[20] + 0.689161119277240108 * R[32]);
+                o[2 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[0] + 0.172290279819310027 * R[3] + -0.172290279819310027 * R[18] + 0.172290279819310027 * R[21] + 0.344580559638620054 * R[30] + -0.344580559638620054 * R[33]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[13]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[16]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[12] + -0.344580559638620054 * R[15] + 0.689161119277240108 * R[17]);
+                o[3 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[14]);
+                o[3 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[12] + -0.596831036594607678 * R[15]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[1] + -0.596831036594607678 * R[19]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[4] + -0.596831036594607678 * R[22]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[0] + -0.172290279819310027 * R[3] + 0.344580559638620054 * R[5] + 0.172290279819310027 * R[18] + 0.172290279819310027 * R[21] + -0.344580559638620054 * R[23]);
+                o[4 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[2] + -0.596831036594607678 * R[20]);
+                o[4 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.298415518297303839 * R[0] + -0.298415518297303839 * R[3] + -0.298415518297303839 * R[18] + 0.298415518297303839 * R[21]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[43]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[46]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[42] + -0.344580559638620054 * R[45] + 0.689161119277240108 * R[47]);
+                o[0 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[44]);
+                o[0 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[42] + -0.596831036594607678 * R[45]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[61]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[64]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[60] + -0.344580559638620054 * R[63] + 0.689161119277240108 * R[65]);
+                o[1 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[62]);
+                o[1 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[60] + -0.596831036594607678 * R[63]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[37] + -0.344580559638620054 * R[55] + 0.689161119277240108 * R[67]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[40] + -0.344580559638620054 * R[58] + 0.689161119277240108 * R[70]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.0994718394324345806 * R[36] + 0.0994718394324345806 * R[39] + -0.198943678864869161 * R[41] + 0.0994718394324345806 * R[54] + 0.0994718394324345806 * R[57] + -0.198943678864869161 * R[59] + -0.198943678864869161 * R[66] + -0.198943678864869161 * R[69] + 0.397887357729738322 * R[71]);
+                o[2 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[38] + -0.344580559638620054 * R[56] + 0.689161119277240108 * R[68]);
+                o[2 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[36] + 0.172290279819310027 * R[39] + -0.172290279819310027 * R[54] + 0.172290279819310027 * R[57] + 0.344580559638620054 * R[66] + -0.344580559638620054 * R[69]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[49]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[52]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[48] + -0.344580559638620054 * R[51] + 0.689161119277240108 * R[53]);
+                o[3 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[50]);
+                o[3 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[48] + -0.596831036594607678 * R[51]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[37] + -0.596831036594607678 * R[55]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[40] + -0.596831036594607678 * R[58]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[36] + -0.172290279819310027 * R[39] + 0.344580559638620054 * R[41] + 0.172290279819310027 * R[54] + 0.172290279819310027 * R[57] + -0.344580559638620054 * R[59]);
+                o[4 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[38] + -0.596831036594607678 * R[56]);
+                o[4 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.298415518297303839 * R[36] + -0.298415518297303839 * R[39] + -0.298415518297303839 * R[54] + 0.298415518297303839 * R[57]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[79]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[82]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[78] + -0.344580559638620054 * R[81] + 0.689161119277240108 * R[83]);
+                o[0 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[80]);
+                o[0 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[78] + -0.596831036594607678 * R[81]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[97]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[100]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[96] + -0.344580559638620054 * R[99] + 0.689161119277240108 * R[101]);
+                o[1 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[98]);
+                o[1 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[96] + -0.596831036594607678 * R[99]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[73] + -0.344580559638620054 * R[91] + 0.689161119277240108 * R[103]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[76] + -0.344580559638620054 * R[94] + 0.689161119277240108 * R[106]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.0994718394324345806 * R[72] + 0.0994718394324345806 * R[75] + -0.198943678864869161 * R[77] + 0.0994718394324345806 * R[90] + 0.0994718394324345806 * R[93] + -0.198943678864869161 * R[95] + -0.198943678864869161 * R[102] + -0.198943678864869161 * R[105] + 0.397887357729738322 * R[107]);
+                o[2 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[74] + -0.344580559638620054 * R[92] + 0.689161119277240108 * R[104]);
+                o[2 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[72] + 0.172290279819310027 * R[75] + -0.172290279819310027 * R[90] + 0.172290279819310027 * R[93] + 0.344580559638620054 * R[102] + -0.344580559638620054 * R[105]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[85]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[88]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[84] + -0.344580559638620054 * R[87] + 0.689161119277240108 * R[89]);
+                o[3 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[86]);
+                o[3 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[84] + -0.596831036594607678 * R[87]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[73] + -0.596831036594607678 * R[91]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[76] + -0.596831036594607678 * R[94]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[72] + -0.172290279819310027 * R[75] + 0.344580559638620054 * R[77] + 0.172290279819310027 * R[90] + 0.172290279819310027 * R[93] + -0.344580559638620054 * R[95]);
+                o[4 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[74] + -0.596831036594607678 * R[92]);
+                o[4 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.298415518297303839 * R[72] + -0.298415518297303839 * R[75] + -0.298415518297303839 * R[90] + 0.298415518297303839 * R[93]);
+        }
+        return 1;
 }
 
 /* (22|11): 521 VRR nodes, 279 targets */
-static int jkv_2211(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_2211(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)279 * nb;
+        double *v = wk, *w = v + (size_t)279 * nb, *SK = w + (size_t)279 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 279);
         for (t = 0; t < nk; t++) {
@@ -10045,7 +14434,6 @@ static int jkv_2211(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -10876,17 +15264,410 @@ static int jkv_2211(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 279; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 279;
+                double *o = out + cpos[pos[0]] * 5 * st[0] + cpos[pos[1]] * 5 * st[1]
+                          + cpos[pos[2]] * 3 * st[2] + cpos[pos[3]] * 3 * st[3];
+                double HB[324];
+                double hb300_100[9];
+                for (i = 0; i < 9; i++) (hb300_100)[i] = (sk + 144)[i] + AB[0] * (sk + 54)[i];
+                double hb200_100[9];
+                for (i = 0; i < 9; i++) (hb200_100)[i] = (sk + 54)[i] + AB[0] * (sk + 0)[i];
+                for (i = 0; i < 9; i++) (HB + 0)[i] = (hb300_100)[i] + AB[0] * (hb200_100)[i];
+                double hb300_010[9];
+                for (i = 0; i < 9; i++) (hb300_010)[i] = (sk + 153)[i] + AB[1] * (sk + 54)[i];
+                double hb200_010[9];
+                for (i = 0; i < 9; i++) (hb200_010)[i] = (sk + 63)[i] + AB[1] * (sk + 0)[i];
+                for (i = 0; i < 9; i++) (HB + 9)[i] = (hb300_010)[i] + AB[0] * (hb200_010)[i];
+                double hb300_001[9];
+                for (i = 0; i < 9; i++) (hb300_001)[i] = (sk + 162)[i] + AB[2] * (sk + 54)[i];
+                double hb200_001[9];
+                for (i = 0; i < 9; i++) (hb200_001)[i] = (sk + 72)[i] + AB[2] * (sk + 0)[i];
+                for (i = 0; i < 9; i++) (HB + 18)[i] = (hb300_001)[i] + AB[0] * (hb200_001)[i];
+                double hb210_010[9];
+                for (i = 0; i < 9; i++) (hb210_010)[i] = (sk + 171)[i] + AB[1] * (sk + 63)[i];
+                for (i = 0; i < 9; i++) (HB + 27)[i] = (hb210_010)[i] + AB[1] * (hb200_010)[i];
+                double hb210_001[9];
+                for (i = 0; i < 9; i++) (hb210_001)[i] = (sk + 180)[i] + AB[2] * (sk + 63)[i];
+                for (i = 0; i < 9; i++) (HB + 36)[i] = (hb210_001)[i] + AB[1] * (hb200_001)[i];
+                double hb201_001[9];
+                for (i = 0; i < 9; i++) (hb201_001)[i] = (sk + 189)[i] + AB[2] * (sk + 72)[i];
+                for (i = 0; i < 9; i++) (HB + 45)[i] = (hb201_001)[i] + AB[2] * (hb200_001)[i];
+                double hb210_100[9];
+                for (i = 0; i < 9; i++) (hb210_100)[i] = (sk + 153)[i] + AB[0] * (sk + 63)[i];
+                double hb110_100[9];
+                for (i = 0; i < 9; i++) (hb110_100)[i] = (sk + 63)[i] + AB[0] * (sk + 9)[i];
+                for (i = 0; i < 9; i++) (HB + 54)[i] = (hb210_100)[i] + AB[0] * (hb110_100)[i];
+                double hb110_010[9];
+                for (i = 0; i < 9; i++) (hb110_010)[i] = (sk + 81)[i] + AB[1] * (sk + 9)[i];
+                for (i = 0; i < 9; i++) (HB + 63)[i] = (hb210_010)[i] + AB[0] * (hb110_010)[i];
+                double hb110_001[9];
+                for (i = 0; i < 9; i++) (hb110_001)[i] = (sk + 90)[i] + AB[2] * (sk + 9)[i];
+                for (i = 0; i < 9; i++) (HB + 72)[i] = (hb210_001)[i] + AB[0] * (hb110_001)[i];
+                double hb120_010[9];
+                for (i = 0; i < 9; i++) (hb120_010)[i] = (sk + 198)[i] + AB[1] * (sk + 81)[i];
+                for (i = 0; i < 9; i++) (HB + 81)[i] = (hb120_010)[i] + AB[1] * (hb110_010)[i];
+                double hb120_001[9];
+                for (i = 0; i < 9; i++) (hb120_001)[i] = (sk + 207)[i] + AB[2] * (sk + 81)[i];
+                for (i = 0; i < 9; i++) (HB + 90)[i] = (hb120_001)[i] + AB[1] * (hb110_001)[i];
+                double hb111_001[9];
+                for (i = 0; i < 9; i++) (hb111_001)[i] = (sk + 216)[i] + AB[2] * (sk + 90)[i];
+                for (i = 0; i < 9; i++) (HB + 99)[i] = (hb111_001)[i] + AB[2] * (hb110_001)[i];
+                double hb201_100[9];
+                for (i = 0; i < 9; i++) (hb201_100)[i] = (sk + 162)[i] + AB[0] * (sk + 72)[i];
+                double hb101_100[9];
+                for (i = 0; i < 9; i++) (hb101_100)[i] = (sk + 72)[i] + AB[0] * (sk + 18)[i];
+                for (i = 0; i < 9; i++) (HB + 108)[i] = (hb201_100)[i] + AB[0] * (hb101_100)[i];
+                double hb201_010[9];
+                for (i = 0; i < 9; i++) (hb201_010)[i] = (sk + 180)[i] + AB[1] * (sk + 72)[i];
+                double hb101_010[9];
+                for (i = 0; i < 9; i++) (hb101_010)[i] = (sk + 90)[i] + AB[1] * (sk + 18)[i];
+                for (i = 0; i < 9; i++) (HB + 117)[i] = (hb201_010)[i] + AB[0] * (hb101_010)[i];
+                double hb101_001[9];
+                for (i = 0; i < 9; i++) (hb101_001)[i] = (sk + 99)[i] + AB[2] * (sk + 18)[i];
+                for (i = 0; i < 9; i++) (HB + 126)[i] = (hb201_001)[i] + AB[0] * (hb101_001)[i];
+                double hb111_010[9];
+                for (i = 0; i < 9; i++) (hb111_010)[i] = (sk + 207)[i] + AB[1] * (sk + 90)[i];
+                for (i = 0; i < 9; i++) (HB + 135)[i] = (hb111_010)[i] + AB[1] * (hb101_010)[i];
+                for (i = 0; i < 9; i++) (HB + 144)[i] = (hb111_001)[i] + AB[1] * (hb101_001)[i];
+                double hb102_001[9];
+                for (i = 0; i < 9; i++) (hb102_001)[i] = (sk + 225)[i] + AB[2] * (sk + 99)[i];
+                for (i = 0; i < 9; i++) (HB + 153)[i] = (hb102_001)[i] + AB[2] * (hb101_001)[i];
+                double hb120_100[9];
+                for (i = 0; i < 9; i++) (hb120_100)[i] = (sk + 171)[i] + AB[0] * (sk + 81)[i];
+                double hb020_100[9];
+                for (i = 0; i < 9; i++) (hb020_100)[i] = (sk + 81)[i] + AB[0] * (sk + 27)[i];
+                for (i = 0; i < 9; i++) (HB + 162)[i] = (hb120_100)[i] + AB[0] * (hb020_100)[i];
+                double hb020_010[9];
+                for (i = 0; i < 9; i++) (hb020_010)[i] = (sk + 108)[i] + AB[1] * (sk + 27)[i];
+                for (i = 0; i < 9; i++) (HB + 171)[i] = (hb120_010)[i] + AB[0] * (hb020_010)[i];
+                double hb020_001[9];
+                for (i = 0; i < 9; i++) (hb020_001)[i] = (sk + 117)[i] + AB[2] * (sk + 27)[i];
+                for (i = 0; i < 9; i++) (HB + 180)[i] = (hb120_001)[i] + AB[0] * (hb020_001)[i];
+                double hb030_010[9];
+                for (i = 0; i < 9; i++) (hb030_010)[i] = (sk + 234)[i] + AB[1] * (sk + 108)[i];
+                for (i = 0; i < 9; i++) (HB + 189)[i] = (hb030_010)[i] + AB[1] * (hb020_010)[i];
+                double hb030_001[9];
+                for (i = 0; i < 9; i++) (hb030_001)[i] = (sk + 243)[i] + AB[2] * (sk + 108)[i];
+                for (i = 0; i < 9; i++) (HB + 198)[i] = (hb030_001)[i] + AB[1] * (hb020_001)[i];
+                double hb021_001[9];
+                for (i = 0; i < 9; i++) (hb021_001)[i] = (sk + 252)[i] + AB[2] * (sk + 117)[i];
+                for (i = 0; i < 9; i++) (HB + 207)[i] = (hb021_001)[i] + AB[2] * (hb020_001)[i];
+                double hb111_100[9];
+                for (i = 0; i < 9; i++) (hb111_100)[i] = (sk + 180)[i] + AB[0] * (sk + 90)[i];
+                double hb011_100[9];
+                for (i = 0; i < 9; i++) (hb011_100)[i] = (sk + 90)[i] + AB[0] * (sk + 36)[i];
+                for (i = 0; i < 9; i++) (HB + 216)[i] = (hb111_100)[i] + AB[0] * (hb011_100)[i];
+                double hb011_010[9];
+                for (i = 0; i < 9; i++) (hb011_010)[i] = (sk + 117)[i] + AB[1] * (sk + 36)[i];
+                for (i = 0; i < 9; i++) (HB + 225)[i] = (hb111_010)[i] + AB[0] * (hb011_010)[i];
+                double hb011_001[9];
+                for (i = 0; i < 9; i++) (hb011_001)[i] = (sk + 126)[i] + AB[2] * (sk + 36)[i];
+                for (i = 0; i < 9; i++) (HB + 234)[i] = (hb111_001)[i] + AB[0] * (hb011_001)[i];
+                double hb021_010[9];
+                for (i = 0; i < 9; i++) (hb021_010)[i] = (sk + 243)[i] + AB[1] * (sk + 117)[i];
+                for (i = 0; i < 9; i++) (HB + 243)[i] = (hb021_010)[i] + AB[1] * (hb011_010)[i];
+                for (i = 0; i < 9; i++) (HB + 252)[i] = (hb021_001)[i] + AB[1] * (hb011_001)[i];
+                double hb012_001[9];
+                for (i = 0; i < 9; i++) (hb012_001)[i] = (sk + 261)[i] + AB[2] * (sk + 126)[i];
+                for (i = 0; i < 9; i++) (HB + 261)[i] = (hb012_001)[i] + AB[2] * (hb011_001)[i];
+                double hb102_100[9];
+                for (i = 0; i < 9; i++) (hb102_100)[i] = (sk + 189)[i] + AB[0] * (sk + 99)[i];
+                double hb002_100[9];
+                for (i = 0; i < 9; i++) (hb002_100)[i] = (sk + 99)[i] + AB[0] * (sk + 45)[i];
+                for (i = 0; i < 9; i++) (HB + 270)[i] = (hb102_100)[i] + AB[0] * (hb002_100)[i];
+                double hb102_010[9];
+                for (i = 0; i < 9; i++) (hb102_010)[i] = (sk + 216)[i] + AB[1] * (sk + 99)[i];
+                double hb002_010[9];
+                for (i = 0; i < 9; i++) (hb002_010)[i] = (sk + 126)[i] + AB[1] * (sk + 45)[i];
+                for (i = 0; i < 9; i++) (HB + 279)[i] = (hb102_010)[i] + AB[0] * (hb002_010)[i];
+                double hb002_001[9];
+                for (i = 0; i < 9; i++) (hb002_001)[i] = (sk + 135)[i] + AB[2] * (sk + 45)[i];
+                for (i = 0; i < 9; i++) (HB + 288)[i] = (hb102_001)[i] + AB[0] * (hb002_001)[i];
+                double hb012_010[9];
+                for (i = 0; i < 9; i++) (hb012_010)[i] = (sk + 252)[i] + AB[1] * (sk + 126)[i];
+                for (i = 0; i < 9; i++) (HB + 297)[i] = (hb012_010)[i] + AB[1] * (hb002_010)[i];
+                for (i = 0; i < 9; i++) (HB + 306)[i] = (hb012_001)[i] + AB[1] * (hb002_001)[i];
+                double hb003_001[9];
+                for (i = 0; i < 9; i++) (hb003_001)[i] = (sk + 270)[i] + AB[2] * (sk + 135)[i];
+                for (i = 0; i < 9; i++) (HB + 315)[i] = (hb003_001)[i] + AB[2] * (hb002_001)[i];
+                double R[324];
+                double kb200[36];
+                for (i = 0; i < 36; i++) kb200[i] = HB[i * 9 + 3];
+                double kb100[36];
+                for (i = 0; i < 36; i++) kb100[i] = HB[i * 9 + 0];
+                for (i = 0; i < 36; i++) (R + 0)[i] = (kb200)[i] + CD[0] * (kb100)[i];
+                double kb110[36];
+                for (i = 0; i < 36; i++) kb110[i] = HB[i * 9 + 4];
+                for (i = 0; i < 36; i++) (R + 36)[i] = (kb110)[i] + CD[1] * (kb100)[i];
+                double kb101[36];
+                for (i = 0; i < 36; i++) kb101[i] = HB[i * 9 + 5];
+                for (i = 0; i < 36; i++) (R + 72)[i] = (kb101)[i] + CD[2] * (kb100)[i];
+                double kb010[36];
+                for (i = 0; i < 36; i++) kb010[i] = HB[i * 9 + 1];
+                for (i = 0; i < 36; i++) (R + 108)[i] = (kb110)[i] + CD[0] * (kb010)[i];
+                double kb020[36];
+                for (i = 0; i < 36; i++) kb020[i] = HB[i * 9 + 6];
+                for (i = 0; i < 36; i++) (R + 144)[i] = (kb020)[i] + CD[1] * (kb010)[i];
+                double kb011[36];
+                for (i = 0; i < 36; i++) kb011[i] = HB[i * 9 + 7];
+                for (i = 0; i < 36; i++) (R + 180)[i] = (kb011)[i] + CD[2] * (kb010)[i];
+                double kb001[36];
+                for (i = 0; i < 36; i++) kb001[i] = HB[i * 9 + 2];
+                for (i = 0; i < 36; i++) (R + 216)[i] = (kb101)[i] + CD[0] * (kb001)[i];
+                for (i = 0; i < 36; i++) (R + 252)[i] = (kb011)[i] + CD[1] * (kb001)[i];
+                double kb002[36];
+                for (i = 0; i < 36; i++) kb002[i] = HB[i * 9 + 8];
+                for (i = 0; i < 36; i++) (R + 288)[i] = (kb002)[i] + CD[2] * (kb001)[i];
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[7]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[10]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[6] + -0.344580559638620054 * R[9] + 0.689161119277240108 * R[11]);
+                o[0 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[8]);
+                o[0 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[6] + -0.596831036594607678 * R[9]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[25]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[28]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[24] + -0.344580559638620054 * R[27] + 0.689161119277240108 * R[29]);
+                o[1 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[26]);
+                o[1 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[24] + -0.596831036594607678 * R[27]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[1] + -0.344580559638620054 * R[19] + 0.689161119277240108 * R[31]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[4] + -0.344580559638620054 * R[22] + 0.689161119277240108 * R[34]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.0994718394324345806 * R[0] + 0.0994718394324345806 * R[3] + -0.198943678864869161 * R[5] + 0.0994718394324345806 * R[18] + 0.0994718394324345806 * R[21] + -0.198943678864869161 * R[23] + -0.198943678864869161 * R[30] + -0.198943678864869161 * R[33] + 0.397887357729738322 * R[35]);
+                o[2 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[2] + -0.344580559638620054 * R[20] + 0.689161119277240108 * R[32]);
+                o[2 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[0] + 0.172290279819310027 * R[3] + -0.172290279819310027 * R[18] + 0.172290279819310027 * R[21] + 0.344580559638620054 * R[30] + -0.344580559638620054 * R[33]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[13]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[16]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[12] + -0.344580559638620054 * R[15] + 0.689161119277240108 * R[17]);
+                o[3 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[14]);
+                o[3 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[12] + -0.596831036594607678 * R[15]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[1] + -0.596831036594607678 * R[19]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[4] + -0.596831036594607678 * R[22]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[0] + -0.172290279819310027 * R[3] + 0.344580559638620054 * R[5] + 0.172290279819310027 * R[18] + 0.172290279819310027 * R[21] + -0.344580559638620054 * R[23]);
+                o[4 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[2] + -0.596831036594607678 * R[20]);
+                o[4 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.298415518297303839 * R[0] + -0.298415518297303839 * R[3] + -0.298415518297303839 * R[18] + 0.298415518297303839 * R[21]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[43]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[46]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[42] + -0.344580559638620054 * R[45] + 0.689161119277240108 * R[47]);
+                o[0 * st[0] + 3 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[44]);
+                o[0 * st[0] + 4 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[42] + -0.596831036594607678 * R[45]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[61]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[64]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[60] + -0.344580559638620054 * R[63] + 0.689161119277240108 * R[65]);
+                o[1 * st[0] + 3 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[62]);
+                o[1 * st[0] + 4 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[60] + -0.596831036594607678 * R[63]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[37] + -0.344580559638620054 * R[55] + 0.689161119277240108 * R[67]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[40] + -0.344580559638620054 * R[58] + 0.689161119277240108 * R[70]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.0994718394324345806 * R[36] + 0.0994718394324345806 * R[39] + -0.198943678864869161 * R[41] + 0.0994718394324345806 * R[54] + 0.0994718394324345806 * R[57] + -0.198943678864869161 * R[59] + -0.198943678864869161 * R[66] + -0.198943678864869161 * R[69] + 0.397887357729738322 * R[71]);
+                o[2 * st[0] + 3 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[38] + -0.344580559638620054 * R[56] + 0.689161119277240108 * R[68]);
+                o[2 * st[0] + 4 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.172290279819310027 * R[36] + 0.172290279819310027 * R[39] + -0.172290279819310027 * R[54] + 0.172290279819310027 * R[57] + 0.344580559638620054 * R[66] + -0.344580559638620054 * R[69]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[49]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[52]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[48] + -0.344580559638620054 * R[51] + 0.689161119277240108 * R[53]);
+                o[3 * st[0] + 3 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[50]);
+                o[3 * st[0] + 4 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[48] + -0.596831036594607678 * R[51]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[37] + -0.596831036594607678 * R[55]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[40] + -0.596831036594607678 * R[58]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.172290279819310027 * R[36] + -0.172290279819310027 * R[39] + 0.344580559638620054 * R[41] + 0.172290279819310027 * R[54] + 0.172290279819310027 * R[57] + -0.344580559638620054 * R[59]);
+                o[4 * st[0] + 3 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[38] + -0.596831036594607678 * R[56]);
+                o[4 * st[0] + 4 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.298415518297303839 * R[36] + -0.298415518297303839 * R[39] + -0.298415518297303839 * R[54] + 0.298415518297303839 * R[57]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[79]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[82]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[78] + -0.344580559638620054 * R[81] + 0.689161119277240108 * R[83]);
+                o[0 * st[0] + 3 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[80]);
+                o[0 * st[0] + 4 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[78] + -0.596831036594607678 * R[81]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[97]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[100]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[96] + -0.344580559638620054 * R[99] + 0.689161119277240108 * R[101]);
+                o[1 * st[0] + 3 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[98]);
+                o[1 * st[0] + 4 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[96] + -0.596831036594607678 * R[99]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[73] + -0.344580559638620054 * R[91] + 0.689161119277240108 * R[103]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[76] + -0.344580559638620054 * R[94] + 0.689161119277240108 * R[106]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.0994718394324345806 * R[72] + 0.0994718394324345806 * R[75] + -0.198943678864869161 * R[77] + 0.0994718394324345806 * R[90] + 0.0994718394324345806 * R[93] + -0.198943678864869161 * R[95] + -0.198943678864869161 * R[102] + -0.198943678864869161 * R[105] + 0.397887357729738322 * R[107]);
+                o[2 * st[0] + 3 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[74] + -0.344580559638620054 * R[92] + 0.689161119277240108 * R[104]);
+                o[2 * st[0] + 4 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[72] + 0.172290279819310027 * R[75] + -0.172290279819310027 * R[90] + 0.172290279819310027 * R[93] + 0.344580559638620054 * R[102] + -0.344580559638620054 * R[105]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[85]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[88]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[84] + -0.344580559638620054 * R[87] + 0.689161119277240108 * R[89]);
+                o[3 * st[0] + 3 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[86]);
+                o[3 * st[0] + 4 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[84] + -0.596831036594607678 * R[87]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[73] + -0.596831036594607678 * R[91]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[76] + -0.596831036594607678 * R[94]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[72] + -0.172290279819310027 * R[75] + 0.344580559638620054 * R[77] + 0.172290279819310027 * R[90] + 0.172290279819310027 * R[93] + -0.344580559638620054 * R[95]);
+                o[4 * st[0] + 3 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[74] + -0.596831036594607678 * R[92]);
+                o[4 * st[0] + 4 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.298415518297303839 * R[72] + -0.298415518297303839 * R[75] + -0.298415518297303839 * R[90] + 0.298415518297303839 * R[93]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[115]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[118]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[114] + -0.344580559638620054 * R[117] + 0.689161119277240108 * R[119]);
+                o[0 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[116]);
+                o[0 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[114] + -0.596831036594607678 * R[117]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[133]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[136]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[132] + -0.344580559638620054 * R[135] + 0.689161119277240108 * R[137]);
+                o[1 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[134]);
+                o[1 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[132] + -0.596831036594607678 * R[135]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[109] + -0.344580559638620054 * R[127] + 0.689161119277240108 * R[139]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[112] + -0.344580559638620054 * R[130] + 0.689161119277240108 * R[142]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.0994718394324345806 * R[108] + 0.0994718394324345806 * R[111] + -0.198943678864869161 * R[113] + 0.0994718394324345806 * R[126] + 0.0994718394324345806 * R[129] + -0.198943678864869161 * R[131] + -0.198943678864869161 * R[138] + -0.198943678864869161 * R[141] + 0.397887357729738322 * R[143]);
+                o[2 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[110] + -0.344580559638620054 * R[128] + 0.689161119277240108 * R[140]);
+                o[2 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[108] + 0.172290279819310027 * R[111] + -0.172290279819310027 * R[126] + 0.172290279819310027 * R[129] + 0.344580559638620054 * R[138] + -0.344580559638620054 * R[141]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[121]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[124]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[120] + -0.344580559638620054 * R[123] + 0.689161119277240108 * R[125]);
+                o[3 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[122]);
+                o[3 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[120] + -0.596831036594607678 * R[123]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[109] + -0.596831036594607678 * R[127]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[112] + -0.596831036594607678 * R[130]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[108] + -0.172290279819310027 * R[111] + 0.344580559638620054 * R[113] + 0.172290279819310027 * R[126] + 0.172290279819310027 * R[129] + -0.344580559638620054 * R[131]);
+                o[4 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[110] + -0.596831036594607678 * R[128]);
+                o[4 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.298415518297303839 * R[108] + -0.298415518297303839 * R[111] + -0.298415518297303839 * R[126] + 0.298415518297303839 * R[129]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[151]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[154]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[150] + -0.344580559638620054 * R[153] + 0.689161119277240108 * R[155]);
+                o[0 * st[0] + 3 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[152]);
+                o[0 * st[0] + 4 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[150] + -0.596831036594607678 * R[153]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[169]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[172]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[168] + -0.344580559638620054 * R[171] + 0.689161119277240108 * R[173]);
+                o[1 * st[0] + 3 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[170]);
+                o[1 * st[0] + 4 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[168] + -0.596831036594607678 * R[171]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[145] + -0.344580559638620054 * R[163] + 0.689161119277240108 * R[175]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[148] + -0.344580559638620054 * R[166] + 0.689161119277240108 * R[178]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.0994718394324345806 * R[144] + 0.0994718394324345806 * R[147] + -0.198943678864869161 * R[149] + 0.0994718394324345806 * R[162] + 0.0994718394324345806 * R[165] + -0.198943678864869161 * R[167] + -0.198943678864869161 * R[174] + -0.198943678864869161 * R[177] + 0.397887357729738322 * R[179]);
+                o[2 * st[0] + 3 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[146] + -0.344580559638620054 * R[164] + 0.689161119277240108 * R[176]);
+                o[2 * st[0] + 4 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.172290279819310027 * R[144] + 0.172290279819310027 * R[147] + -0.172290279819310027 * R[162] + 0.172290279819310027 * R[165] + 0.344580559638620054 * R[174] + -0.344580559638620054 * R[177]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[157]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[160]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[156] + -0.344580559638620054 * R[159] + 0.689161119277240108 * R[161]);
+                o[3 * st[0] + 3 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[158]);
+                o[3 * st[0] + 4 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[156] + -0.596831036594607678 * R[159]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[145] + -0.596831036594607678 * R[163]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[148] + -0.596831036594607678 * R[166]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.172290279819310027 * R[144] + -0.172290279819310027 * R[147] + 0.344580559638620054 * R[149] + 0.172290279819310027 * R[162] + 0.172290279819310027 * R[165] + -0.344580559638620054 * R[167]);
+                o[4 * st[0] + 3 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[146] + -0.596831036594607678 * R[164]);
+                o[4 * st[0] + 4 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.298415518297303839 * R[144] + -0.298415518297303839 * R[147] + -0.298415518297303839 * R[162] + 0.298415518297303839 * R[165]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[187]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[190]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[186] + -0.344580559638620054 * R[189] + 0.689161119277240108 * R[191]);
+                o[0 * st[0] + 3 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[188]);
+                o[0 * st[0] + 4 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[186] + -0.596831036594607678 * R[189]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[205]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[208]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[204] + -0.344580559638620054 * R[207] + 0.689161119277240108 * R[209]);
+                o[1 * st[0] + 3 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[206]);
+                o[1 * st[0] + 4 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[204] + -0.596831036594607678 * R[207]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[181] + -0.344580559638620054 * R[199] + 0.689161119277240108 * R[211]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[184] + -0.344580559638620054 * R[202] + 0.689161119277240108 * R[214]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.0994718394324345806 * R[180] + 0.0994718394324345806 * R[183] + -0.198943678864869161 * R[185] + 0.0994718394324345806 * R[198] + 0.0994718394324345806 * R[201] + -0.198943678864869161 * R[203] + -0.198943678864869161 * R[210] + -0.198943678864869161 * R[213] + 0.397887357729738322 * R[215]);
+                o[2 * st[0] + 3 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[182] + -0.344580559638620054 * R[200] + 0.689161119277240108 * R[212]);
+                o[2 * st[0] + 4 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[180] + 0.172290279819310027 * R[183] + -0.172290279819310027 * R[198] + 0.172290279819310027 * R[201] + 0.344580559638620054 * R[210] + -0.344580559638620054 * R[213]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[193]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[196]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[192] + -0.344580559638620054 * R[195] + 0.689161119277240108 * R[197]);
+                o[3 * st[0] + 3 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[194]);
+                o[3 * st[0] + 4 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[192] + -0.596831036594607678 * R[195]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[181] + -0.596831036594607678 * R[199]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[184] + -0.596831036594607678 * R[202]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[180] + -0.172290279819310027 * R[183] + 0.344580559638620054 * R[185] + 0.172290279819310027 * R[198] + 0.172290279819310027 * R[201] + -0.344580559638620054 * R[203]);
+                o[4 * st[0] + 3 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[182] + -0.596831036594607678 * R[200]);
+                o[4 * st[0] + 4 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.298415518297303839 * R[180] + -0.298415518297303839 * R[183] + -0.298415518297303839 * R[198] + 0.298415518297303839 * R[201]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[223]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[226]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[222] + -0.344580559638620054 * R[225] + 0.689161119277240108 * R[227]);
+                o[0 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[224]);
+                o[0 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[222] + -0.596831036594607678 * R[225]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[241]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[244]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[240] + -0.344580559638620054 * R[243] + 0.689161119277240108 * R[245]);
+                o[1 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[242]);
+                o[1 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[240] + -0.596831036594607678 * R[243]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[217] + -0.344580559638620054 * R[235] + 0.689161119277240108 * R[247]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[220] + -0.344580559638620054 * R[238] + 0.689161119277240108 * R[250]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.0994718394324345806 * R[216] + 0.0994718394324345806 * R[219] + -0.198943678864869161 * R[221] + 0.0994718394324345806 * R[234] + 0.0994718394324345806 * R[237] + -0.198943678864869161 * R[239] + -0.198943678864869161 * R[246] + -0.198943678864869161 * R[249] + 0.397887357729738322 * R[251]);
+                o[2 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[218] + -0.344580559638620054 * R[236] + 0.689161119277240108 * R[248]);
+                o[2 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[216] + 0.172290279819310027 * R[219] + -0.172290279819310027 * R[234] + 0.172290279819310027 * R[237] + 0.344580559638620054 * R[246] + -0.344580559638620054 * R[249]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[229]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[232]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.344580559638620054 * R[228] + -0.344580559638620054 * R[231] + 0.689161119277240108 * R[233]);
+                o[3 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (1.19366207318921536 * R[230]);
+                o[3 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[228] + -0.596831036594607678 * R[231]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[217] + -0.596831036594607678 * R[235]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[220] + -0.596831036594607678 * R[238]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.172290279819310027 * R[216] + -0.172290279819310027 * R[219] + 0.344580559638620054 * R[221] + 0.172290279819310027 * R[234] + 0.172290279819310027 * R[237] + -0.344580559638620054 * R[239]);
+                o[4 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.596831036594607678 * R[218] + -0.596831036594607678 * R[236]);
+                o[4 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.298415518297303839 * R[216] + -0.298415518297303839 * R[219] + -0.298415518297303839 * R[234] + 0.298415518297303839 * R[237]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[259]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[262]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[258] + -0.344580559638620054 * R[261] + 0.689161119277240108 * R[263]);
+                o[0 * st[0] + 3 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[260]);
+                o[0 * st[0] + 4 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[258] + -0.596831036594607678 * R[261]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[277]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[280]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[276] + -0.344580559638620054 * R[279] + 0.689161119277240108 * R[281]);
+                o[1 * st[0] + 3 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[278]);
+                o[1 * st[0] + 4 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[276] + -0.596831036594607678 * R[279]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[253] + -0.344580559638620054 * R[271] + 0.689161119277240108 * R[283]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[256] + -0.344580559638620054 * R[274] + 0.689161119277240108 * R[286]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.0994718394324345806 * R[252] + 0.0994718394324345806 * R[255] + -0.198943678864869161 * R[257] + 0.0994718394324345806 * R[270] + 0.0994718394324345806 * R[273] + -0.198943678864869161 * R[275] + -0.198943678864869161 * R[282] + -0.198943678864869161 * R[285] + 0.397887357729738322 * R[287]);
+                o[2 * st[0] + 3 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[254] + -0.344580559638620054 * R[272] + 0.689161119277240108 * R[284]);
+                o[2 * st[0] + 4 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.172290279819310027 * R[252] + 0.172290279819310027 * R[255] + -0.172290279819310027 * R[270] + 0.172290279819310027 * R[273] + 0.344580559638620054 * R[282] + -0.344580559638620054 * R[285]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[265]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[268]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.344580559638620054 * R[264] + -0.344580559638620054 * R[267] + 0.689161119277240108 * R[269]);
+                o[3 * st[0] + 3 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (1.19366207318921536 * R[266]);
+                o[3 * st[0] + 4 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[264] + -0.596831036594607678 * R[267]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[253] + -0.596831036594607678 * R[271]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[256] + -0.596831036594607678 * R[274]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.172290279819310027 * R[252] + -0.172290279819310027 * R[255] + 0.344580559638620054 * R[257] + 0.172290279819310027 * R[270] + 0.172290279819310027 * R[273] + -0.344580559638620054 * R[275]);
+                o[4 * st[0] + 3 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.596831036594607678 * R[254] + -0.596831036594607678 * R[272]);
+                o[4 * st[0] + 4 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.298415518297303839 * R[252] + -0.298415518297303839 * R[255] + -0.298415518297303839 * R[270] + 0.298415518297303839 * R[273]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[295]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[298]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[294] + -0.344580559638620054 * R[297] + 0.689161119277240108 * R[299]);
+                o[0 * st[0] + 3 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[296]);
+                o[0 * st[0] + 4 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[294] + -0.596831036594607678 * R[297]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[313]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[316]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[312] + -0.344580559638620054 * R[315] + 0.689161119277240108 * R[317]);
+                o[1 * st[0] + 3 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[314]);
+                o[1 * st[0] + 4 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[312] + -0.596831036594607678 * R[315]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[289] + -0.344580559638620054 * R[307] + 0.689161119277240108 * R[319]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[292] + -0.344580559638620054 * R[310] + 0.689161119277240108 * R[322]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0994718394324345806 * R[288] + 0.0994718394324345806 * R[291] + -0.198943678864869161 * R[293] + 0.0994718394324345806 * R[306] + 0.0994718394324345806 * R[309] + -0.198943678864869161 * R[311] + -0.198943678864869161 * R[318] + -0.198943678864869161 * R[321] + 0.397887357729738322 * R[323]);
+                o[2 * st[0] + 3 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[290] + -0.344580559638620054 * R[308] + 0.689161119277240108 * R[320]);
+                o[2 * st[0] + 4 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[288] + 0.172290279819310027 * R[291] + -0.172290279819310027 * R[306] + 0.172290279819310027 * R[309] + 0.344580559638620054 * R[318] + -0.344580559638620054 * R[321]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[301]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[304]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.344580559638620054 * R[300] + -0.344580559638620054 * R[303] + 0.689161119277240108 * R[305]);
+                o[3 * st[0] + 3 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (1.19366207318921536 * R[302]);
+                o[3 * st[0] + 4 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[300] + -0.596831036594607678 * R[303]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[289] + -0.596831036594607678 * R[307]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[292] + -0.596831036594607678 * R[310]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.172290279819310027 * R[288] + -0.172290279819310027 * R[291] + 0.344580559638620054 * R[293] + 0.172290279819310027 * R[306] + 0.172290279819310027 * R[309] + -0.344580559638620054 * R[311]);
+                o[4 * st[0] + 3 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.596831036594607678 * R[290] + -0.596831036594607678 * R[308]);
+                o[4 * st[0] + 4 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.298415518297303839 * R[288] + -0.298415518297303839 * R[291] + -0.298415518297303839 * R[306] + 0.298415518297303839 * R[309]);
+        }
+        return 1;
 }
 
 /* (22|20): 521 VRR nodes, 186 targets */
-static int jkv_2220(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_2220(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)186 * nb;
+        double *v = wk, *w = v + (size_t)186 * nb, *SK = w + (size_t)186 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 186);
         for (t = 0; t < nk; t++) {
@@ -10896,7 +15677,6 @@ static int jkv_2220(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -11634,17 +16414,291 @@ static int jkv_2220(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 186; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 186;
+                double *o = out + cpos[pos[0]] * 5 * st[0] + cpos[pos[1]] * 5 * st[1]
+                          + cpos[pos[2]] * 5 * st[2] + cpos[pos[3]] * 1 * st[3];
+                double HB[216];
+                double hb300_100[6];
+                for (i = 0; i < 6; i++) (hb300_100)[i] = (sk + 96)[i] + AB[0] * (sk + 36)[i];
+                double hb200_100[6];
+                for (i = 0; i < 6; i++) (hb200_100)[i] = (sk + 36)[i] + AB[0] * (sk + 0)[i];
+                for (i = 0; i < 6; i++) (HB + 0)[i] = (hb300_100)[i] + AB[0] * (hb200_100)[i];
+                double hb300_010[6];
+                for (i = 0; i < 6; i++) (hb300_010)[i] = (sk + 102)[i] + AB[1] * (sk + 36)[i];
+                double hb200_010[6];
+                for (i = 0; i < 6; i++) (hb200_010)[i] = (sk + 42)[i] + AB[1] * (sk + 0)[i];
+                for (i = 0; i < 6; i++) (HB + 6)[i] = (hb300_010)[i] + AB[0] * (hb200_010)[i];
+                double hb300_001[6];
+                for (i = 0; i < 6; i++) (hb300_001)[i] = (sk + 108)[i] + AB[2] * (sk + 36)[i];
+                double hb200_001[6];
+                for (i = 0; i < 6; i++) (hb200_001)[i] = (sk + 48)[i] + AB[2] * (sk + 0)[i];
+                for (i = 0; i < 6; i++) (HB + 12)[i] = (hb300_001)[i] + AB[0] * (hb200_001)[i];
+                double hb210_010[6];
+                for (i = 0; i < 6; i++) (hb210_010)[i] = (sk + 114)[i] + AB[1] * (sk + 42)[i];
+                for (i = 0; i < 6; i++) (HB + 18)[i] = (hb210_010)[i] + AB[1] * (hb200_010)[i];
+                double hb210_001[6];
+                for (i = 0; i < 6; i++) (hb210_001)[i] = (sk + 120)[i] + AB[2] * (sk + 42)[i];
+                for (i = 0; i < 6; i++) (HB + 24)[i] = (hb210_001)[i] + AB[1] * (hb200_001)[i];
+                double hb201_001[6];
+                for (i = 0; i < 6; i++) (hb201_001)[i] = (sk + 126)[i] + AB[2] * (sk + 48)[i];
+                for (i = 0; i < 6; i++) (HB + 30)[i] = (hb201_001)[i] + AB[2] * (hb200_001)[i];
+                double hb210_100[6];
+                for (i = 0; i < 6; i++) (hb210_100)[i] = (sk + 102)[i] + AB[0] * (sk + 42)[i];
+                double hb110_100[6];
+                for (i = 0; i < 6; i++) (hb110_100)[i] = (sk + 42)[i] + AB[0] * (sk + 6)[i];
+                for (i = 0; i < 6; i++) (HB + 36)[i] = (hb210_100)[i] + AB[0] * (hb110_100)[i];
+                double hb110_010[6];
+                for (i = 0; i < 6; i++) (hb110_010)[i] = (sk + 54)[i] + AB[1] * (sk + 6)[i];
+                for (i = 0; i < 6; i++) (HB + 42)[i] = (hb210_010)[i] + AB[0] * (hb110_010)[i];
+                double hb110_001[6];
+                for (i = 0; i < 6; i++) (hb110_001)[i] = (sk + 60)[i] + AB[2] * (sk + 6)[i];
+                for (i = 0; i < 6; i++) (HB + 48)[i] = (hb210_001)[i] + AB[0] * (hb110_001)[i];
+                double hb120_010[6];
+                for (i = 0; i < 6; i++) (hb120_010)[i] = (sk + 132)[i] + AB[1] * (sk + 54)[i];
+                for (i = 0; i < 6; i++) (HB + 54)[i] = (hb120_010)[i] + AB[1] * (hb110_010)[i];
+                double hb120_001[6];
+                for (i = 0; i < 6; i++) (hb120_001)[i] = (sk + 138)[i] + AB[2] * (sk + 54)[i];
+                for (i = 0; i < 6; i++) (HB + 60)[i] = (hb120_001)[i] + AB[1] * (hb110_001)[i];
+                double hb111_001[6];
+                for (i = 0; i < 6; i++) (hb111_001)[i] = (sk + 144)[i] + AB[2] * (sk + 60)[i];
+                for (i = 0; i < 6; i++) (HB + 66)[i] = (hb111_001)[i] + AB[2] * (hb110_001)[i];
+                double hb201_100[6];
+                for (i = 0; i < 6; i++) (hb201_100)[i] = (sk + 108)[i] + AB[0] * (sk + 48)[i];
+                double hb101_100[6];
+                for (i = 0; i < 6; i++) (hb101_100)[i] = (sk + 48)[i] + AB[0] * (sk + 12)[i];
+                for (i = 0; i < 6; i++) (HB + 72)[i] = (hb201_100)[i] + AB[0] * (hb101_100)[i];
+                double hb201_010[6];
+                for (i = 0; i < 6; i++) (hb201_010)[i] = (sk + 120)[i] + AB[1] * (sk + 48)[i];
+                double hb101_010[6];
+                for (i = 0; i < 6; i++) (hb101_010)[i] = (sk + 60)[i] + AB[1] * (sk + 12)[i];
+                for (i = 0; i < 6; i++) (HB + 78)[i] = (hb201_010)[i] + AB[0] * (hb101_010)[i];
+                double hb101_001[6];
+                for (i = 0; i < 6; i++) (hb101_001)[i] = (sk + 66)[i] + AB[2] * (sk + 12)[i];
+                for (i = 0; i < 6; i++) (HB + 84)[i] = (hb201_001)[i] + AB[0] * (hb101_001)[i];
+                double hb111_010[6];
+                for (i = 0; i < 6; i++) (hb111_010)[i] = (sk + 138)[i] + AB[1] * (sk + 60)[i];
+                for (i = 0; i < 6; i++) (HB + 90)[i] = (hb111_010)[i] + AB[1] * (hb101_010)[i];
+                for (i = 0; i < 6; i++) (HB + 96)[i] = (hb111_001)[i] + AB[1] * (hb101_001)[i];
+                double hb102_001[6];
+                for (i = 0; i < 6; i++) (hb102_001)[i] = (sk + 150)[i] + AB[2] * (sk + 66)[i];
+                for (i = 0; i < 6; i++) (HB + 102)[i] = (hb102_001)[i] + AB[2] * (hb101_001)[i];
+                double hb120_100[6];
+                for (i = 0; i < 6; i++) (hb120_100)[i] = (sk + 114)[i] + AB[0] * (sk + 54)[i];
+                double hb020_100[6];
+                for (i = 0; i < 6; i++) (hb020_100)[i] = (sk + 54)[i] + AB[0] * (sk + 18)[i];
+                for (i = 0; i < 6; i++) (HB + 108)[i] = (hb120_100)[i] + AB[0] * (hb020_100)[i];
+                double hb020_010[6];
+                for (i = 0; i < 6; i++) (hb020_010)[i] = (sk + 72)[i] + AB[1] * (sk + 18)[i];
+                for (i = 0; i < 6; i++) (HB + 114)[i] = (hb120_010)[i] + AB[0] * (hb020_010)[i];
+                double hb020_001[6];
+                for (i = 0; i < 6; i++) (hb020_001)[i] = (sk + 78)[i] + AB[2] * (sk + 18)[i];
+                for (i = 0; i < 6; i++) (HB + 120)[i] = (hb120_001)[i] + AB[0] * (hb020_001)[i];
+                double hb030_010[6];
+                for (i = 0; i < 6; i++) (hb030_010)[i] = (sk + 156)[i] + AB[1] * (sk + 72)[i];
+                for (i = 0; i < 6; i++) (HB + 126)[i] = (hb030_010)[i] + AB[1] * (hb020_010)[i];
+                double hb030_001[6];
+                for (i = 0; i < 6; i++) (hb030_001)[i] = (sk + 162)[i] + AB[2] * (sk + 72)[i];
+                for (i = 0; i < 6; i++) (HB + 132)[i] = (hb030_001)[i] + AB[1] * (hb020_001)[i];
+                double hb021_001[6];
+                for (i = 0; i < 6; i++) (hb021_001)[i] = (sk + 168)[i] + AB[2] * (sk + 78)[i];
+                for (i = 0; i < 6; i++) (HB + 138)[i] = (hb021_001)[i] + AB[2] * (hb020_001)[i];
+                double hb111_100[6];
+                for (i = 0; i < 6; i++) (hb111_100)[i] = (sk + 120)[i] + AB[0] * (sk + 60)[i];
+                double hb011_100[6];
+                for (i = 0; i < 6; i++) (hb011_100)[i] = (sk + 60)[i] + AB[0] * (sk + 24)[i];
+                for (i = 0; i < 6; i++) (HB + 144)[i] = (hb111_100)[i] + AB[0] * (hb011_100)[i];
+                double hb011_010[6];
+                for (i = 0; i < 6; i++) (hb011_010)[i] = (sk + 78)[i] + AB[1] * (sk + 24)[i];
+                for (i = 0; i < 6; i++) (HB + 150)[i] = (hb111_010)[i] + AB[0] * (hb011_010)[i];
+                double hb011_001[6];
+                for (i = 0; i < 6; i++) (hb011_001)[i] = (sk + 84)[i] + AB[2] * (sk + 24)[i];
+                for (i = 0; i < 6; i++) (HB + 156)[i] = (hb111_001)[i] + AB[0] * (hb011_001)[i];
+                double hb021_010[6];
+                for (i = 0; i < 6; i++) (hb021_010)[i] = (sk + 162)[i] + AB[1] * (sk + 78)[i];
+                for (i = 0; i < 6; i++) (HB + 162)[i] = (hb021_010)[i] + AB[1] * (hb011_010)[i];
+                for (i = 0; i < 6; i++) (HB + 168)[i] = (hb021_001)[i] + AB[1] * (hb011_001)[i];
+                double hb012_001[6];
+                for (i = 0; i < 6; i++) (hb012_001)[i] = (sk + 174)[i] + AB[2] * (sk + 84)[i];
+                for (i = 0; i < 6; i++) (HB + 174)[i] = (hb012_001)[i] + AB[2] * (hb011_001)[i];
+                double hb102_100[6];
+                for (i = 0; i < 6; i++) (hb102_100)[i] = (sk + 126)[i] + AB[0] * (sk + 66)[i];
+                double hb002_100[6];
+                for (i = 0; i < 6; i++) (hb002_100)[i] = (sk + 66)[i] + AB[0] * (sk + 30)[i];
+                for (i = 0; i < 6; i++) (HB + 180)[i] = (hb102_100)[i] + AB[0] * (hb002_100)[i];
+                double hb102_010[6];
+                for (i = 0; i < 6; i++) (hb102_010)[i] = (sk + 144)[i] + AB[1] * (sk + 66)[i];
+                double hb002_010[6];
+                for (i = 0; i < 6; i++) (hb002_010)[i] = (sk + 84)[i] + AB[1] * (sk + 30)[i];
+                for (i = 0; i < 6; i++) (HB + 186)[i] = (hb102_010)[i] + AB[0] * (hb002_010)[i];
+                double hb002_001[6];
+                for (i = 0; i < 6; i++) (hb002_001)[i] = (sk + 90)[i] + AB[2] * (sk + 30)[i];
+                for (i = 0; i < 6; i++) (HB + 192)[i] = (hb102_001)[i] + AB[0] * (hb002_001)[i];
+                double hb012_010[6];
+                for (i = 0; i < 6; i++) (hb012_010)[i] = (sk + 168)[i] + AB[1] * (sk + 84)[i];
+                for (i = 0; i < 6; i++) (HB + 198)[i] = (hb012_010)[i] + AB[1] * (hb002_010)[i];
+                for (i = 0; i < 6; i++) (HB + 204)[i] = (hb012_001)[i] + AB[1] * (hb002_001)[i];
+                double hb003_001[6];
+                for (i = 0; i < 6; i++) (hb003_001)[i] = (sk + 180)[i] + AB[2] * (sk + 90)[i];
+                for (i = 0; i < 6; i++) (HB + 210)[i] = (hb003_001)[i] + AB[2] * (hb002_001)[i];
+                double R[216];
+                for (i = 0; i < 36; i++) {
+                        R[0 + i] = HB[i * 6 + 0];
+                        R[36 + i] = HB[i * 6 + 1];
+                        R[72 + i] = HB[i * 6 + 2];
+                        R[108 + i] = HB[i * 6 + 3];
+                        R[144 + i] = HB[i * 6 + 4];
+                        R[180 + i] = HB[i * 6 + 5];
+                }
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[43]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[46]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[42] + -0.376470949645714703 * R[45] + 0.752941899291429406 * R[47]);
+                o[0 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[44]);
+                o[0 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[42] + -0.652066812360082348 * R[45]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[61]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[64]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[60] + -0.376470949645714703 * R[63] + 0.752941899291429406 * R[65]);
+                o[1 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[62]);
+                o[1 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[60] + -0.652066812360082348 * R[63]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[37] + -0.376470949645714703 * R[55] + 0.752941899291429406 * R[67]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[40] + -0.376470949645714703 * R[58] + 0.752941899291429406 * R[70]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.108677802060013692 * R[36] + 0.108677802060013692 * R[39] + -0.217355604120027385 * R[41] + 0.108677802060013692 * R[54] + 0.108677802060013692 * R[57] + -0.217355604120027385 * R[59] + -0.217355604120027385 * R[66] + -0.217355604120027385 * R[69] + 0.434711208240054769 * R[71]);
+                o[2 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[38] + -0.376470949645714703 * R[56] + 0.752941899291429406 * R[68]);
+                o[2 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[36] + 0.188235474822857352 * R[39] + -0.188235474822857352 * R[54] + 0.188235474822857352 * R[57] + 0.376470949645714703 * R[66] + -0.376470949645714703 * R[69]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[49]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[52]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[48] + -0.376470949645714703 * R[51] + 0.752941899291429406 * R[53]);
+                o[3 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[50]);
+                o[3 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[48] + -0.652066812360082348 * R[51]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[37] + -0.652066812360082348 * R[55]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[40] + -0.652066812360082348 * R[58]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[36] + -0.188235474822857352 * R[39] + 0.376470949645714703 * R[41] + 0.188235474822857352 * R[54] + 0.188235474822857352 * R[57] + -0.376470949645714703 * R[59]);
+                o[4 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[38] + -0.652066812360082348 * R[56]);
+                o[4 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.326033406180041174 * R[36] + -0.326033406180041174 * R[39] + -0.326033406180041174 * R[54] + 0.326033406180041174 * R[57]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[151]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[154]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[150] + -0.376470949645714703 * R[153] + 0.752941899291429406 * R[155]);
+                o[0 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[152]);
+                o[0 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[150] + -0.652066812360082348 * R[153]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[169]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[172]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[168] + -0.376470949645714703 * R[171] + 0.752941899291429406 * R[173]);
+                o[1 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[170]);
+                o[1 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[168] + -0.652066812360082348 * R[171]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[145] + -0.376470949645714703 * R[163] + 0.752941899291429406 * R[175]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[148] + -0.376470949645714703 * R[166] + 0.752941899291429406 * R[178]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.108677802060013692 * R[144] + 0.108677802060013692 * R[147] + -0.217355604120027385 * R[149] + 0.108677802060013692 * R[162] + 0.108677802060013692 * R[165] + -0.217355604120027385 * R[167] + -0.217355604120027385 * R[174] + -0.217355604120027385 * R[177] + 0.434711208240054769 * R[179]);
+                o[2 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[146] + -0.376470949645714703 * R[164] + 0.752941899291429406 * R[176]);
+                o[2 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[144] + 0.188235474822857352 * R[147] + -0.188235474822857352 * R[162] + 0.188235474822857352 * R[165] + 0.376470949645714703 * R[174] + -0.376470949645714703 * R[177]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[157]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[160]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[156] + -0.376470949645714703 * R[159] + 0.752941899291429406 * R[161]);
+                o[3 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[158]);
+                o[3 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[156] + -0.652066812360082348 * R[159]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[145] + -0.652066812360082348 * R[163]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[148] + -0.652066812360082348 * R[166]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[144] + -0.188235474822857352 * R[147] + 0.376470949645714703 * R[149] + 0.188235474822857352 * R[162] + 0.188235474822857352 * R[165] + -0.376470949645714703 * R[167]);
+                o[4 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[146] + -0.652066812360082348 * R[164]);
+                o[4 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.326033406180041174 * R[144] + -0.326033406180041174 * R[147] + -0.326033406180041174 * R[162] + 0.326033406180041174 * R[165]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[7] + -0.376470949645714703 * R[115] + 0.752941899291429406 * R[187]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[10] + -0.376470949645714703 * R[118] + 0.752941899291429406 * R[190]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.108677802060013692 * R[6] + 0.108677802060013692 * R[114] + -0.217355604120027385 * R[186] + 0.108677802060013692 * R[9] + 0.108677802060013692 * R[117] + -0.217355604120027385 * R[189] + -0.217355604120027385 * R[11] + -0.217355604120027385 * R[119] + 0.434711208240054769 * R[191]);
+                o[0 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[8] + -0.376470949645714703 * R[116] + 0.752941899291429406 * R[188]);
+                o[0 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[6] + -0.188235474822857352 * R[114] + 0.376470949645714703 * R[186] + 0.188235474822857352 * R[9] + 0.188235474822857352 * R[117] + -0.376470949645714703 * R[189]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[25] + -0.376470949645714703 * R[133] + 0.752941899291429406 * R[205]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[28] + -0.376470949645714703 * R[136] + 0.752941899291429406 * R[208]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.108677802060013692 * R[24] + 0.108677802060013692 * R[132] + -0.217355604120027385 * R[204] + 0.108677802060013692 * R[27] + 0.108677802060013692 * R[135] + -0.217355604120027385 * R[207] + -0.217355604120027385 * R[29] + -0.217355604120027385 * R[137] + 0.434711208240054769 * R[209]);
+                o[1 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[26] + -0.376470949645714703 * R[134] + 0.752941899291429406 * R[206]);
+                o[1 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[24] + -0.188235474822857352 * R[132] + 0.376470949645714703 * R[204] + 0.188235474822857352 * R[27] + 0.188235474822857352 * R[135] + -0.376470949645714703 * R[207]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.108677802060013692 * R[1] + 0.108677802060013692 * R[109] + -0.217355604120027385 * R[181] + 0.108677802060013692 * R[19] + 0.108677802060013692 * R[127] + -0.217355604120027385 * R[199] + -0.217355604120027385 * R[31] + -0.217355604120027385 * R[139] + 0.434711208240054769 * R[211]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.108677802060013692 * R[4] + 0.108677802060013692 * R[112] + -0.217355604120027385 * R[184] + 0.108677802060013692 * R[22] + 0.108677802060013692 * R[130] + -0.217355604120027385 * R[202] + -0.217355604120027385 * R[34] + -0.217355604120027385 * R[142] + 0.434711208240054769 * R[214]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.031372579137142885 * R[0] + -0.031372579137142885 * R[108] + 0.06274515827428577 * R[180] + -0.031372579137142885 * R[3] + -0.031372579137142885 * R[111] + 0.06274515827428577 * R[183] + 0.06274515827428577 * R[5] + 0.06274515827428577 * R[113] + -0.12549031654857154 * R[185] + -0.031372579137142885 * R[18] + -0.031372579137142885 * R[126] + 0.06274515827428577 * R[198] + -0.031372579137142885 * R[21] + -0.031372579137142885 * R[129] + 0.06274515827428577 * R[201] + 0.06274515827428577 * R[23] + 0.06274515827428577 * R[131] + -0.12549031654857154 * R[203] + 0.06274515827428577 * R[30] + 0.06274515827428577 * R[138] + -0.12549031654857154 * R[210] + 0.06274515827428577 * R[33] + 0.06274515827428577 * R[141] + -0.12549031654857154 * R[213] + -0.12549031654857154 * R[35] + -0.12549031654857154 * R[143] + 0.25098063309714308 * R[215]);
+                o[2 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.108677802060013692 * R[2] + 0.108677802060013692 * R[110] + -0.217355604120027385 * R[182] + 0.108677802060013692 * R[20] + 0.108677802060013692 * R[128] + -0.217355604120027385 * R[200] + -0.217355604120027385 * R[32] + -0.217355604120027385 * R[140] + 0.434711208240054769 * R[212]);
+                o[2 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.0543389010300068462 * R[0] + 0.0543389010300068462 * R[108] + -0.108677802060013692 * R[180] + -0.0543389010300068462 * R[3] + -0.0543389010300068462 * R[111] + 0.108677802060013692 * R[183] + 0.0543389010300068462 * R[18] + 0.0543389010300068462 * R[126] + -0.108677802060013692 * R[198] + -0.0543389010300068462 * R[21] + -0.0543389010300068462 * R[129] + 0.108677802060013692 * R[201] + -0.108677802060013692 * R[30] + -0.108677802060013692 * R[138] + 0.217355604120027385 * R[210] + 0.108677802060013692 * R[33] + 0.108677802060013692 * R[141] + -0.217355604120027385 * R[213]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[13] + -0.376470949645714703 * R[121] + 0.752941899291429406 * R[193]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[16] + -0.376470949645714703 * R[124] + 0.752941899291429406 * R[196]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.108677802060013692 * R[12] + 0.108677802060013692 * R[120] + -0.217355604120027385 * R[192] + 0.108677802060013692 * R[15] + 0.108677802060013692 * R[123] + -0.217355604120027385 * R[195] + -0.217355604120027385 * R[17] + -0.217355604120027385 * R[125] + 0.434711208240054769 * R[197]);
+                o[3 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[14] + -0.376470949645714703 * R[122] + 0.752941899291429406 * R[194]);
+                o[3 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[12] + -0.188235474822857352 * R[120] + 0.376470949645714703 * R[192] + 0.188235474822857352 * R[15] + 0.188235474822857352 * R[123] + -0.376470949645714703 * R[195]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[1] + -0.188235474822857352 * R[109] + 0.376470949645714703 * R[181] + 0.188235474822857352 * R[19] + 0.188235474822857352 * R[127] + -0.376470949645714703 * R[199]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[4] + -0.188235474822857352 * R[112] + 0.376470949645714703 * R[184] + 0.188235474822857352 * R[22] + 0.188235474822857352 * R[130] + -0.376470949645714703 * R[202]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.0543389010300068462 * R[0] + 0.0543389010300068462 * R[108] + -0.108677802060013692 * R[180] + 0.0543389010300068462 * R[3] + 0.0543389010300068462 * R[111] + -0.108677802060013692 * R[183] + -0.108677802060013692 * R[5] + -0.108677802060013692 * R[113] + 0.217355604120027385 * R[185] + -0.0543389010300068462 * R[18] + -0.0543389010300068462 * R[126] + 0.108677802060013692 * R[198] + -0.0543389010300068462 * R[21] + -0.0543389010300068462 * R[129] + 0.108677802060013692 * R[201] + 0.108677802060013692 * R[23] + 0.108677802060013692 * R[131] + -0.217355604120027385 * R[203]);
+                o[4 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[2] + -0.188235474822857352 * R[110] + 0.376470949645714703 * R[182] + 0.188235474822857352 * R[20] + 0.188235474822857352 * R[128] + -0.376470949645714703 * R[200]);
+                o[4 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.0941177374114286758 * R[0] + -0.0941177374114286758 * R[108] + 0.188235474822857352 * R[180] + 0.0941177374114286758 * R[3] + 0.0941177374114286758 * R[111] + -0.188235474822857352 * R[183] + 0.0941177374114286758 * R[18] + 0.0941177374114286758 * R[126] + -0.188235474822857352 * R[198] + -0.0941177374114286758 * R[21] + -0.0941177374114286758 * R[129] + 0.188235474822857352 * R[201]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[79]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[82]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[78] + -0.376470949645714703 * R[81] + 0.752941899291429406 * R[83]);
+                o[0 * st[0] + 3 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[80]);
+                o[0 * st[0] + 4 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[78] + -0.652066812360082348 * R[81]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[97]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[100]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[96] + -0.376470949645714703 * R[99] + 0.752941899291429406 * R[101]);
+                o[1 * st[0] + 3 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[98]);
+                o[1 * st[0] + 4 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[96] + -0.652066812360082348 * R[99]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[73] + -0.376470949645714703 * R[91] + 0.752941899291429406 * R[103]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[76] + -0.376470949645714703 * R[94] + 0.752941899291429406 * R[106]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.108677802060013692 * R[72] + 0.108677802060013692 * R[75] + -0.217355604120027385 * R[77] + 0.108677802060013692 * R[90] + 0.108677802060013692 * R[93] + -0.217355604120027385 * R[95] + -0.217355604120027385 * R[102] + -0.217355604120027385 * R[105] + 0.434711208240054769 * R[107]);
+                o[2 * st[0] + 3 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[74] + -0.376470949645714703 * R[92] + 0.752941899291429406 * R[104]);
+                o[2 * st[0] + 4 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[72] + 0.188235474822857352 * R[75] + -0.188235474822857352 * R[90] + 0.188235474822857352 * R[93] + 0.376470949645714703 * R[102] + -0.376470949645714703 * R[105]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[85]);
+                o[3 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[88]);
+                o[3 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[84] + -0.376470949645714703 * R[87] + 0.752941899291429406 * R[89]);
+                o[3 * st[0] + 3 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[86]);
+                o[3 * st[0] + 4 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[84] + -0.652066812360082348 * R[87]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[73] + -0.652066812360082348 * R[91]);
+                o[4 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[76] + -0.652066812360082348 * R[94]);
+                o[4 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[72] + -0.188235474822857352 * R[75] + 0.376470949645714703 * R[77] + 0.188235474822857352 * R[90] + 0.188235474822857352 * R[93] + -0.376470949645714703 * R[95]);
+                o[4 * st[0] + 3 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[74] + -0.652066812360082348 * R[92]);
+                o[4 * st[0] + 4 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.326033406180041174 * R[72] + -0.326033406180041174 * R[75] + -0.326033406180041174 * R[90] + 0.326033406180041174 * R[93]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[7] + -0.652066812360082348 * R[115]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[10] + -0.652066812360082348 * R[118]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[6] + 0.188235474822857352 * R[114] + -0.188235474822857352 * R[9] + 0.188235474822857352 * R[117] + 0.376470949645714703 * R[11] + -0.376470949645714703 * R[119]);
+                o[0 * st[0] + 3 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[8] + -0.652066812360082348 * R[116]);
+                o[0 * st[0] + 4 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.326033406180041174 * R[6] + -0.326033406180041174 * R[114] + -0.326033406180041174 * R[9] + 0.326033406180041174 * R[117]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[25] + -0.652066812360082348 * R[133]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[28] + -0.652066812360082348 * R[136]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[24] + 0.188235474822857352 * R[132] + -0.188235474822857352 * R[27] + 0.188235474822857352 * R[135] + 0.376470949645714703 * R[29] + -0.376470949645714703 * R[137]);
+                o[1 * st[0] + 3 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[26] + -0.652066812360082348 * R[134]);
+                o[1 * st[0] + 4 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.326033406180041174 * R[24] + -0.326033406180041174 * R[132] + -0.326033406180041174 * R[27] + 0.326033406180041174 * R[135]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[1] + 0.188235474822857352 * R[109] + -0.188235474822857352 * R[19] + 0.188235474822857352 * R[127] + 0.376470949645714703 * R[31] + -0.376470949645714703 * R[139]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[4] + 0.188235474822857352 * R[112] + -0.188235474822857352 * R[22] + 0.188235474822857352 * R[130] + 0.376470949645714703 * R[34] + -0.376470949645714703 * R[142]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.0543389010300068462 * R[0] + -0.0543389010300068462 * R[108] + 0.0543389010300068462 * R[3] + -0.0543389010300068462 * R[111] + -0.108677802060013692 * R[5] + 0.108677802060013692 * R[113] + 0.0543389010300068462 * R[18] + -0.0543389010300068462 * R[126] + 0.0543389010300068462 * R[21] + -0.0543389010300068462 * R[129] + -0.108677802060013692 * R[23] + 0.108677802060013692 * R[131] + -0.108677802060013692 * R[30] + 0.108677802060013692 * R[138] + -0.108677802060013692 * R[33] + 0.108677802060013692 * R[141] + 0.217355604120027385 * R[35] + -0.217355604120027385 * R[143]);
+                o[2 * st[0] + 3 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[2] + 0.188235474822857352 * R[110] + -0.188235474822857352 * R[20] + 0.188235474822857352 * R[128] + 0.376470949645714703 * R[32] + -0.376470949645714703 * R[140]);
+                o[2 * st[0] + 4 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.0941177374114286758 * R[0] + 0.0941177374114286758 * R[108] + 0.0941177374114286758 * R[3] + -0.0941177374114286758 * R[111] + -0.0941177374114286758 * R[18] + 0.0941177374114286758 * R[126] + 0.0941177374114286758 * R[21] + -0.0941177374114286758 * R[129] + 0.188235474822857352 * R[30] + -0.188235474822857352 * R[138] + -0.188235474822857352 * R[33] + 0.188235474822857352 * R[141]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[13] + -0.652066812360082348 * R[121]);
+                o[3 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[16] + -0.652066812360082348 * R[124]);
+                o[3 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[12] + 0.188235474822857352 * R[120] + -0.188235474822857352 * R[15] + 0.188235474822857352 * R[123] + 0.376470949645714703 * R[17] + -0.376470949645714703 * R[125]);
+                o[3 * st[0] + 3 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[14] + -0.652066812360082348 * R[122]);
+                o[3 * st[0] + 4 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.326033406180041174 * R[12] + -0.326033406180041174 * R[120] + -0.326033406180041174 * R[15] + 0.326033406180041174 * R[123]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.326033406180041174 * R[1] + -0.326033406180041174 * R[109] + -0.326033406180041174 * R[19] + 0.326033406180041174 * R[127]);
+                o[4 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.326033406180041174 * R[4] + -0.326033406180041174 * R[112] + -0.326033406180041174 * R[22] + 0.326033406180041174 * R[130]);
+                o[4 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.0941177374114286758 * R[0] + 0.0941177374114286758 * R[108] + -0.0941177374114286758 * R[3] + 0.0941177374114286758 * R[111] + 0.188235474822857352 * R[5] + -0.188235474822857352 * R[113] + 0.0941177374114286758 * R[18] + -0.0941177374114286758 * R[126] + 0.0941177374114286758 * R[21] + -0.0941177374114286758 * R[129] + -0.188235474822857352 * R[23] + 0.188235474822857352 * R[131]);
+                o[4 * st[0] + 3 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.326033406180041174 * R[2] + -0.326033406180041174 * R[110] + -0.326033406180041174 * R[20] + 0.326033406180041174 * R[128]);
+                o[4 * st[0] + 4 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.163016703090020587 * R[0] + -0.163016703090020587 * R[108] + -0.163016703090020587 * R[3] + 0.163016703090020587 * R[111] + -0.163016703090020587 * R[18] + 0.163016703090020587 * R[126] + 0.163016703090020587 * R[21] + -0.163016703090020587 * R[129]);
+        }
+        return 1;
 }
 
 /* (22|21): 1175 VRR nodes, 496 targets */
-static int jkv_2221(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_2221(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)496 * nb;
+        double *v = wk, *w = v + (size_t)496 * nb, *SK = w + (size_t)496 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 496);
         for (t = 0; t < nk; t++) {
@@ -11654,7 +16708,6 @@ static int jkv_2221(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -13356,17 +18409,583 @@ static int jkv_2221(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 496; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 496;
+                double *o = out + cpos[pos[0]] * 5 * st[0] + cpos[pos[1]] * 5 * st[1]
+                          + cpos[pos[2]] * 5 * st[2] + cpos[pos[3]] * 3 * st[3];
+                double HB[576];
+                double hb300_100[16];
+                for (i = 0; i < 16; i++) (hb300_100)[i] = (sk + 256)[i] + AB[0] * (sk + 96)[i];
+                double hb200_100[16];
+                for (i = 0; i < 16; i++) (hb200_100)[i] = (sk + 96)[i] + AB[0] * (sk + 0)[i];
+                for (i = 0; i < 16; i++) (HB + 0)[i] = (hb300_100)[i] + AB[0] * (hb200_100)[i];
+                double hb300_010[16];
+                for (i = 0; i < 16; i++) (hb300_010)[i] = (sk + 272)[i] + AB[1] * (sk + 96)[i];
+                double hb200_010[16];
+                for (i = 0; i < 16; i++) (hb200_010)[i] = (sk + 112)[i] + AB[1] * (sk + 0)[i];
+                for (i = 0; i < 16; i++) (HB + 16)[i] = (hb300_010)[i] + AB[0] * (hb200_010)[i];
+                double hb300_001[16];
+                for (i = 0; i < 16; i++) (hb300_001)[i] = (sk + 288)[i] + AB[2] * (sk + 96)[i];
+                double hb200_001[16];
+                for (i = 0; i < 16; i++) (hb200_001)[i] = (sk + 128)[i] + AB[2] * (sk + 0)[i];
+                for (i = 0; i < 16; i++) (HB + 32)[i] = (hb300_001)[i] + AB[0] * (hb200_001)[i];
+                double hb210_010[16];
+                for (i = 0; i < 16; i++) (hb210_010)[i] = (sk + 304)[i] + AB[1] * (sk + 112)[i];
+                for (i = 0; i < 16; i++) (HB + 48)[i] = (hb210_010)[i] + AB[1] * (hb200_010)[i];
+                double hb210_001[16];
+                for (i = 0; i < 16; i++) (hb210_001)[i] = (sk + 320)[i] + AB[2] * (sk + 112)[i];
+                for (i = 0; i < 16; i++) (HB + 64)[i] = (hb210_001)[i] + AB[1] * (hb200_001)[i];
+                double hb201_001[16];
+                for (i = 0; i < 16; i++) (hb201_001)[i] = (sk + 336)[i] + AB[2] * (sk + 128)[i];
+                for (i = 0; i < 16; i++) (HB + 80)[i] = (hb201_001)[i] + AB[2] * (hb200_001)[i];
+                double hb210_100[16];
+                for (i = 0; i < 16; i++) (hb210_100)[i] = (sk + 272)[i] + AB[0] * (sk + 112)[i];
+                double hb110_100[16];
+                for (i = 0; i < 16; i++) (hb110_100)[i] = (sk + 112)[i] + AB[0] * (sk + 16)[i];
+                for (i = 0; i < 16; i++) (HB + 96)[i] = (hb210_100)[i] + AB[0] * (hb110_100)[i];
+                double hb110_010[16];
+                for (i = 0; i < 16; i++) (hb110_010)[i] = (sk + 144)[i] + AB[1] * (sk + 16)[i];
+                for (i = 0; i < 16; i++) (HB + 112)[i] = (hb210_010)[i] + AB[0] * (hb110_010)[i];
+                double hb110_001[16];
+                for (i = 0; i < 16; i++) (hb110_001)[i] = (sk + 160)[i] + AB[2] * (sk + 16)[i];
+                for (i = 0; i < 16; i++) (HB + 128)[i] = (hb210_001)[i] + AB[0] * (hb110_001)[i];
+                double hb120_010[16];
+                for (i = 0; i < 16; i++) (hb120_010)[i] = (sk + 352)[i] + AB[1] * (sk + 144)[i];
+                for (i = 0; i < 16; i++) (HB + 144)[i] = (hb120_010)[i] + AB[1] * (hb110_010)[i];
+                double hb120_001[16];
+                for (i = 0; i < 16; i++) (hb120_001)[i] = (sk + 368)[i] + AB[2] * (sk + 144)[i];
+                for (i = 0; i < 16; i++) (HB + 160)[i] = (hb120_001)[i] + AB[1] * (hb110_001)[i];
+                double hb111_001[16];
+                for (i = 0; i < 16; i++) (hb111_001)[i] = (sk + 384)[i] + AB[2] * (sk + 160)[i];
+                for (i = 0; i < 16; i++) (HB + 176)[i] = (hb111_001)[i] + AB[2] * (hb110_001)[i];
+                double hb201_100[16];
+                for (i = 0; i < 16; i++) (hb201_100)[i] = (sk + 288)[i] + AB[0] * (sk + 128)[i];
+                double hb101_100[16];
+                for (i = 0; i < 16; i++) (hb101_100)[i] = (sk + 128)[i] + AB[0] * (sk + 32)[i];
+                for (i = 0; i < 16; i++) (HB + 192)[i] = (hb201_100)[i] + AB[0] * (hb101_100)[i];
+                double hb201_010[16];
+                for (i = 0; i < 16; i++) (hb201_010)[i] = (sk + 320)[i] + AB[1] * (sk + 128)[i];
+                double hb101_010[16];
+                for (i = 0; i < 16; i++) (hb101_010)[i] = (sk + 160)[i] + AB[1] * (sk + 32)[i];
+                for (i = 0; i < 16; i++) (HB + 208)[i] = (hb201_010)[i] + AB[0] * (hb101_010)[i];
+                double hb101_001[16];
+                for (i = 0; i < 16; i++) (hb101_001)[i] = (sk + 176)[i] + AB[2] * (sk + 32)[i];
+                for (i = 0; i < 16; i++) (HB + 224)[i] = (hb201_001)[i] + AB[0] * (hb101_001)[i];
+                double hb111_010[16];
+                for (i = 0; i < 16; i++) (hb111_010)[i] = (sk + 368)[i] + AB[1] * (sk + 160)[i];
+                for (i = 0; i < 16; i++) (HB + 240)[i] = (hb111_010)[i] + AB[1] * (hb101_010)[i];
+                for (i = 0; i < 16; i++) (HB + 256)[i] = (hb111_001)[i] + AB[1] * (hb101_001)[i];
+                double hb102_001[16];
+                for (i = 0; i < 16; i++) (hb102_001)[i] = (sk + 400)[i] + AB[2] * (sk + 176)[i];
+                for (i = 0; i < 16; i++) (HB + 272)[i] = (hb102_001)[i] + AB[2] * (hb101_001)[i];
+                double hb120_100[16];
+                for (i = 0; i < 16; i++) (hb120_100)[i] = (sk + 304)[i] + AB[0] * (sk + 144)[i];
+                double hb020_100[16];
+                for (i = 0; i < 16; i++) (hb020_100)[i] = (sk + 144)[i] + AB[0] * (sk + 48)[i];
+                for (i = 0; i < 16; i++) (HB + 288)[i] = (hb120_100)[i] + AB[0] * (hb020_100)[i];
+                double hb020_010[16];
+                for (i = 0; i < 16; i++) (hb020_010)[i] = (sk + 192)[i] + AB[1] * (sk + 48)[i];
+                for (i = 0; i < 16; i++) (HB + 304)[i] = (hb120_010)[i] + AB[0] * (hb020_010)[i];
+                double hb020_001[16];
+                for (i = 0; i < 16; i++) (hb020_001)[i] = (sk + 208)[i] + AB[2] * (sk + 48)[i];
+                for (i = 0; i < 16; i++) (HB + 320)[i] = (hb120_001)[i] + AB[0] * (hb020_001)[i];
+                double hb030_010[16];
+                for (i = 0; i < 16; i++) (hb030_010)[i] = (sk + 416)[i] + AB[1] * (sk + 192)[i];
+                for (i = 0; i < 16; i++) (HB + 336)[i] = (hb030_010)[i] + AB[1] * (hb020_010)[i];
+                double hb030_001[16];
+                for (i = 0; i < 16; i++) (hb030_001)[i] = (sk + 432)[i] + AB[2] * (sk + 192)[i];
+                for (i = 0; i < 16; i++) (HB + 352)[i] = (hb030_001)[i] + AB[1] * (hb020_001)[i];
+                double hb021_001[16];
+                for (i = 0; i < 16; i++) (hb021_001)[i] = (sk + 448)[i] + AB[2] * (sk + 208)[i];
+                for (i = 0; i < 16; i++) (HB + 368)[i] = (hb021_001)[i] + AB[2] * (hb020_001)[i];
+                double hb111_100[16];
+                for (i = 0; i < 16; i++) (hb111_100)[i] = (sk + 320)[i] + AB[0] * (sk + 160)[i];
+                double hb011_100[16];
+                for (i = 0; i < 16; i++) (hb011_100)[i] = (sk + 160)[i] + AB[0] * (sk + 64)[i];
+                for (i = 0; i < 16; i++) (HB + 384)[i] = (hb111_100)[i] + AB[0] * (hb011_100)[i];
+                double hb011_010[16];
+                for (i = 0; i < 16; i++) (hb011_010)[i] = (sk + 208)[i] + AB[1] * (sk + 64)[i];
+                for (i = 0; i < 16; i++) (HB + 400)[i] = (hb111_010)[i] + AB[0] * (hb011_010)[i];
+                double hb011_001[16];
+                for (i = 0; i < 16; i++) (hb011_001)[i] = (sk + 224)[i] + AB[2] * (sk + 64)[i];
+                for (i = 0; i < 16; i++) (HB + 416)[i] = (hb111_001)[i] + AB[0] * (hb011_001)[i];
+                double hb021_010[16];
+                for (i = 0; i < 16; i++) (hb021_010)[i] = (sk + 432)[i] + AB[1] * (sk + 208)[i];
+                for (i = 0; i < 16; i++) (HB + 432)[i] = (hb021_010)[i] + AB[1] * (hb011_010)[i];
+                for (i = 0; i < 16; i++) (HB + 448)[i] = (hb021_001)[i] + AB[1] * (hb011_001)[i];
+                double hb012_001[16];
+                for (i = 0; i < 16; i++) (hb012_001)[i] = (sk + 464)[i] + AB[2] * (sk + 224)[i];
+                for (i = 0; i < 16; i++) (HB + 464)[i] = (hb012_001)[i] + AB[2] * (hb011_001)[i];
+                double hb102_100[16];
+                for (i = 0; i < 16; i++) (hb102_100)[i] = (sk + 336)[i] + AB[0] * (sk + 176)[i];
+                double hb002_100[16];
+                for (i = 0; i < 16; i++) (hb002_100)[i] = (sk + 176)[i] + AB[0] * (sk + 80)[i];
+                for (i = 0; i < 16; i++) (HB + 480)[i] = (hb102_100)[i] + AB[0] * (hb002_100)[i];
+                double hb102_010[16];
+                for (i = 0; i < 16; i++) (hb102_010)[i] = (sk + 384)[i] + AB[1] * (sk + 176)[i];
+                double hb002_010[16];
+                for (i = 0; i < 16; i++) (hb002_010)[i] = (sk + 224)[i] + AB[1] * (sk + 80)[i];
+                for (i = 0; i < 16; i++) (HB + 496)[i] = (hb102_010)[i] + AB[0] * (hb002_010)[i];
+                double hb002_001[16];
+                for (i = 0; i < 16; i++) (hb002_001)[i] = (sk + 240)[i] + AB[2] * (sk + 80)[i];
+                for (i = 0; i < 16; i++) (HB + 512)[i] = (hb102_001)[i] + AB[0] * (hb002_001)[i];
+                double hb012_010[16];
+                for (i = 0; i < 16; i++) (hb012_010)[i] = (sk + 448)[i] + AB[1] * (sk + 224)[i];
+                for (i = 0; i < 16; i++) (HB + 528)[i] = (hb012_010)[i] + AB[1] * (hb002_010)[i];
+                for (i = 0; i < 16; i++) (HB + 544)[i] = (hb012_001)[i] + AB[1] * (hb002_001)[i];
+                double hb003_001[16];
+                for (i = 0; i < 16; i++) (hb003_001)[i] = (sk + 480)[i] + AB[2] * (sk + 240)[i];
+                for (i = 0; i < 16; i++) (HB + 560)[i] = (hb003_001)[i] + AB[2] * (hb002_001)[i];
+                double R[648];
+                double kb300[36];
+                for (i = 0; i < 36; i++) kb300[i] = HB[i * 16 + 6];
+                double kb200[36];
+                for (i = 0; i < 36; i++) kb200[i] = HB[i * 16 + 0];
+                for (i = 0; i < 36; i++) (R + 0)[i] = (kb300)[i] + CD[0] * (kb200)[i];
+                double kb210[36];
+                for (i = 0; i < 36; i++) kb210[i] = HB[i * 16 + 7];
+                for (i = 0; i < 36; i++) (R + 36)[i] = (kb210)[i] + CD[1] * (kb200)[i];
+                double kb201[36];
+                for (i = 0; i < 36; i++) kb201[i] = HB[i * 16 + 8];
+                for (i = 0; i < 36; i++) (R + 72)[i] = (kb201)[i] + CD[2] * (kb200)[i];
+                double kb110[36];
+                for (i = 0; i < 36; i++) kb110[i] = HB[i * 16 + 1];
+                for (i = 0; i < 36; i++) (R + 108)[i] = (kb210)[i] + CD[0] * (kb110)[i];
+                double kb120[36];
+                for (i = 0; i < 36; i++) kb120[i] = HB[i * 16 + 9];
+                for (i = 0; i < 36; i++) (R + 144)[i] = (kb120)[i] + CD[1] * (kb110)[i];
+                double kb111[36];
+                for (i = 0; i < 36; i++) kb111[i] = HB[i * 16 + 10];
+                for (i = 0; i < 36; i++) (R + 180)[i] = (kb111)[i] + CD[2] * (kb110)[i];
+                double kb101[36];
+                for (i = 0; i < 36; i++) kb101[i] = HB[i * 16 + 2];
+                for (i = 0; i < 36; i++) (R + 216)[i] = (kb201)[i] + CD[0] * (kb101)[i];
+                for (i = 0; i < 36; i++) (R + 252)[i] = (kb111)[i] + CD[1] * (kb101)[i];
+                double kb102[36];
+                for (i = 0; i < 36; i++) kb102[i] = HB[i * 16 + 11];
+                for (i = 0; i < 36; i++) (R + 288)[i] = (kb102)[i] + CD[2] * (kb101)[i];
+                double kb020[36];
+                for (i = 0; i < 36; i++) kb020[i] = HB[i * 16 + 3];
+                for (i = 0; i < 36; i++) (R + 324)[i] = (kb120)[i] + CD[0] * (kb020)[i];
+                double kb030[36];
+                for (i = 0; i < 36; i++) kb030[i] = HB[i * 16 + 12];
+                for (i = 0; i < 36; i++) (R + 360)[i] = (kb030)[i] + CD[1] * (kb020)[i];
+                double kb021[36];
+                for (i = 0; i < 36; i++) kb021[i] = HB[i * 16 + 13];
+                for (i = 0; i < 36; i++) (R + 396)[i] = (kb021)[i] + CD[2] * (kb020)[i];
+                double kb011[36];
+                for (i = 0; i < 36; i++) kb011[i] = HB[i * 16 + 4];
+                for (i = 0; i < 36; i++) (R + 432)[i] = (kb111)[i] + CD[0] * (kb011)[i];
+                for (i = 0; i < 36; i++) (R + 468)[i] = (kb021)[i] + CD[1] * (kb011)[i];
+                double kb012[36];
+                for (i = 0; i < 36; i++) kb012[i] = HB[i * 16 + 14];
+                for (i = 0; i < 36; i++) (R + 504)[i] = (kb012)[i] + CD[2] * (kb011)[i];
+                double kb002[36];
+                for (i = 0; i < 36; i++) kb002[i] = HB[i * 16 + 5];
+                for (i = 0; i < 36; i++) (R + 540)[i] = (kb102)[i] + CD[0] * (kb002)[i];
+                for (i = 0; i < 36; i++) (R + 576)[i] = (kb012)[i] + CD[1] * (kb002)[i];
+                double kb003[36];
+                for (i = 0; i < 36; i++) kb003[i] = HB[i * 16 + 15];
+                for (i = 0; i < 36; i++) (R + 612)[i] = (kb003)[i] + CD[2] * (kb002)[i];
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[115]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[118]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[114] + -0.376470949645714703 * R[117] + 0.752941899291429406 * R[119]);
+                o[0 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[116]);
+                o[0 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[114] + -0.652066812360082348 * R[117]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[133]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[136]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[132] + -0.376470949645714703 * R[135] + 0.752941899291429406 * R[137]);
+                o[1 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[134]);
+                o[1 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[132] + -0.652066812360082348 * R[135]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[109] + -0.376470949645714703 * R[127] + 0.752941899291429406 * R[139]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[112] + -0.376470949645714703 * R[130] + 0.752941899291429406 * R[142]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.108677802060013692 * R[108] + 0.108677802060013692 * R[111] + -0.217355604120027385 * R[113] + 0.108677802060013692 * R[126] + 0.108677802060013692 * R[129] + -0.217355604120027385 * R[131] + -0.217355604120027385 * R[138] + -0.217355604120027385 * R[141] + 0.434711208240054769 * R[143]);
+                o[2 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[110] + -0.376470949645714703 * R[128] + 0.752941899291429406 * R[140]);
+                o[2 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[108] + 0.188235474822857352 * R[111] + -0.188235474822857352 * R[126] + 0.188235474822857352 * R[129] + 0.376470949645714703 * R[138] + -0.376470949645714703 * R[141]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[121]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[124]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[120] + -0.376470949645714703 * R[123] + 0.752941899291429406 * R[125]);
+                o[3 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[122]);
+                o[3 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[120] + -0.652066812360082348 * R[123]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[109] + -0.652066812360082348 * R[127]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[112] + -0.652066812360082348 * R[130]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[108] + -0.188235474822857352 * R[111] + 0.376470949645714703 * R[113] + 0.188235474822857352 * R[126] + 0.188235474822857352 * R[129] + -0.376470949645714703 * R[131]);
+                o[4 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[110] + -0.652066812360082348 * R[128]);
+                o[4 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.326033406180041174 * R[108] + -0.326033406180041174 * R[111] + -0.326033406180041174 * R[126] + 0.326033406180041174 * R[129]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[151]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[154]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[150] + -0.376470949645714703 * R[153] + 0.752941899291429406 * R[155]);
+                o[0 * st[0] + 3 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[152]);
+                o[0 * st[0] + 4 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[150] + -0.652066812360082348 * R[153]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[169]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[172]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[168] + -0.376470949645714703 * R[171] + 0.752941899291429406 * R[173]);
+                o[1 * st[0] + 3 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[170]);
+                o[1 * st[0] + 4 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[168] + -0.652066812360082348 * R[171]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[145] + -0.376470949645714703 * R[163] + 0.752941899291429406 * R[175]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[148] + -0.376470949645714703 * R[166] + 0.752941899291429406 * R[178]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.108677802060013692 * R[144] + 0.108677802060013692 * R[147] + -0.217355604120027385 * R[149] + 0.108677802060013692 * R[162] + 0.108677802060013692 * R[165] + -0.217355604120027385 * R[167] + -0.217355604120027385 * R[174] + -0.217355604120027385 * R[177] + 0.434711208240054769 * R[179]);
+                o[2 * st[0] + 3 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[146] + -0.376470949645714703 * R[164] + 0.752941899291429406 * R[176]);
+                o[2 * st[0] + 4 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[144] + 0.188235474822857352 * R[147] + -0.188235474822857352 * R[162] + 0.188235474822857352 * R[165] + 0.376470949645714703 * R[174] + -0.376470949645714703 * R[177]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[157]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[160]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[156] + -0.376470949645714703 * R[159] + 0.752941899291429406 * R[161]);
+                o[3 * st[0] + 3 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[158]);
+                o[3 * st[0] + 4 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[156] + -0.652066812360082348 * R[159]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[145] + -0.652066812360082348 * R[163]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[148] + -0.652066812360082348 * R[166]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[144] + -0.188235474822857352 * R[147] + 0.376470949645714703 * R[149] + 0.188235474822857352 * R[162] + 0.188235474822857352 * R[165] + -0.376470949645714703 * R[167]);
+                o[4 * st[0] + 3 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[146] + -0.652066812360082348 * R[164]);
+                o[4 * st[0] + 4 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.326033406180041174 * R[144] + -0.326033406180041174 * R[147] + -0.326033406180041174 * R[162] + 0.326033406180041174 * R[165]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[187]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[190]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[186] + -0.376470949645714703 * R[189] + 0.752941899291429406 * R[191]);
+                o[0 * st[0] + 3 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[188]);
+                o[0 * st[0] + 4 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[186] + -0.652066812360082348 * R[189]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[205]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[208]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[204] + -0.376470949645714703 * R[207] + 0.752941899291429406 * R[209]);
+                o[1 * st[0] + 3 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[206]);
+                o[1 * st[0] + 4 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[204] + -0.652066812360082348 * R[207]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[181] + -0.376470949645714703 * R[199] + 0.752941899291429406 * R[211]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[184] + -0.376470949645714703 * R[202] + 0.752941899291429406 * R[214]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[180] + 0.108677802060013692 * R[183] + -0.217355604120027385 * R[185] + 0.108677802060013692 * R[198] + 0.108677802060013692 * R[201] + -0.217355604120027385 * R[203] + -0.217355604120027385 * R[210] + -0.217355604120027385 * R[213] + 0.434711208240054769 * R[215]);
+                o[2 * st[0] + 3 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[182] + -0.376470949645714703 * R[200] + 0.752941899291429406 * R[212]);
+                o[2 * st[0] + 4 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[180] + 0.188235474822857352 * R[183] + -0.188235474822857352 * R[198] + 0.188235474822857352 * R[201] + 0.376470949645714703 * R[210] + -0.376470949645714703 * R[213]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[193]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[196]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[192] + -0.376470949645714703 * R[195] + 0.752941899291429406 * R[197]);
+                o[3 * st[0] + 3 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[194]);
+                o[3 * st[0] + 4 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[192] + -0.652066812360082348 * R[195]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[181] + -0.652066812360082348 * R[199]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[184] + -0.652066812360082348 * R[202]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[180] + -0.188235474822857352 * R[183] + 0.376470949645714703 * R[185] + 0.188235474822857352 * R[198] + 0.188235474822857352 * R[201] + -0.376470949645714703 * R[203]);
+                o[4 * st[0] + 3 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[182] + -0.652066812360082348 * R[200]);
+                o[4 * st[0] + 4 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.326033406180041174 * R[180] + -0.326033406180041174 * R[183] + -0.326033406180041174 * R[198] + 0.326033406180041174 * R[201]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[439]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[442]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[438] + -0.376470949645714703 * R[441] + 0.752941899291429406 * R[443]);
+                o[0 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[440]);
+                o[0 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[438] + -0.652066812360082348 * R[441]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[457]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[460]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[456] + -0.376470949645714703 * R[459] + 0.752941899291429406 * R[461]);
+                o[1 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[458]);
+                o[1 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[456] + -0.652066812360082348 * R[459]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[433] + -0.376470949645714703 * R[451] + 0.752941899291429406 * R[463]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[436] + -0.376470949645714703 * R[454] + 0.752941899291429406 * R[466]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.108677802060013692 * R[432] + 0.108677802060013692 * R[435] + -0.217355604120027385 * R[437] + 0.108677802060013692 * R[450] + 0.108677802060013692 * R[453] + -0.217355604120027385 * R[455] + -0.217355604120027385 * R[462] + -0.217355604120027385 * R[465] + 0.434711208240054769 * R[467]);
+                o[2 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[434] + -0.376470949645714703 * R[452] + 0.752941899291429406 * R[464]);
+                o[2 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[432] + 0.188235474822857352 * R[435] + -0.188235474822857352 * R[450] + 0.188235474822857352 * R[453] + 0.376470949645714703 * R[462] + -0.376470949645714703 * R[465]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[445]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[448]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[444] + -0.376470949645714703 * R[447] + 0.752941899291429406 * R[449]);
+                o[3 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[446]);
+                o[3 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[444] + -0.652066812360082348 * R[447]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[433] + -0.652066812360082348 * R[451]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[436] + -0.652066812360082348 * R[454]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[432] + -0.188235474822857352 * R[435] + 0.376470949645714703 * R[437] + 0.188235474822857352 * R[450] + 0.188235474822857352 * R[453] + -0.376470949645714703 * R[455]);
+                o[4 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[434] + -0.652066812360082348 * R[452]);
+                o[4 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.326033406180041174 * R[432] + -0.326033406180041174 * R[435] + -0.326033406180041174 * R[450] + 0.326033406180041174 * R[453]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[475]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[478]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[474] + -0.376470949645714703 * R[477] + 0.752941899291429406 * R[479]);
+                o[0 * st[0] + 3 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[476]);
+                o[0 * st[0] + 4 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[474] + -0.652066812360082348 * R[477]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[493]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[496]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[492] + -0.376470949645714703 * R[495] + 0.752941899291429406 * R[497]);
+                o[1 * st[0] + 3 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[494]);
+                o[1 * st[0] + 4 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[492] + -0.652066812360082348 * R[495]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[469] + -0.376470949645714703 * R[487] + 0.752941899291429406 * R[499]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[472] + -0.376470949645714703 * R[490] + 0.752941899291429406 * R[502]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.108677802060013692 * R[468] + 0.108677802060013692 * R[471] + -0.217355604120027385 * R[473] + 0.108677802060013692 * R[486] + 0.108677802060013692 * R[489] + -0.217355604120027385 * R[491] + -0.217355604120027385 * R[498] + -0.217355604120027385 * R[501] + 0.434711208240054769 * R[503]);
+                o[2 * st[0] + 3 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[470] + -0.376470949645714703 * R[488] + 0.752941899291429406 * R[500]);
+                o[2 * st[0] + 4 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[468] + 0.188235474822857352 * R[471] + -0.188235474822857352 * R[486] + 0.188235474822857352 * R[489] + 0.376470949645714703 * R[498] + -0.376470949645714703 * R[501]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[481]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[484]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[480] + -0.376470949645714703 * R[483] + 0.752941899291429406 * R[485]);
+                o[3 * st[0] + 3 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[482]);
+                o[3 * st[0] + 4 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[480] + -0.652066812360082348 * R[483]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[469] + -0.652066812360082348 * R[487]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[472] + -0.652066812360082348 * R[490]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[468] + -0.188235474822857352 * R[471] + 0.376470949645714703 * R[473] + 0.188235474822857352 * R[486] + 0.188235474822857352 * R[489] + -0.376470949645714703 * R[491]);
+                o[4 * st[0] + 3 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[470] + -0.652066812360082348 * R[488]);
+                o[4 * st[0] + 4 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.326033406180041174 * R[468] + -0.326033406180041174 * R[471] + -0.326033406180041174 * R[486] + 0.326033406180041174 * R[489]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[511]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[514]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[510] + -0.376470949645714703 * R[513] + 0.752941899291429406 * R[515]);
+                o[0 * st[0] + 3 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[512]);
+                o[0 * st[0] + 4 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[510] + -0.652066812360082348 * R[513]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[529]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[532]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[528] + -0.376470949645714703 * R[531] + 0.752941899291429406 * R[533]);
+                o[1 * st[0] + 3 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[530]);
+                o[1 * st[0] + 4 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[528] + -0.652066812360082348 * R[531]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[505] + -0.376470949645714703 * R[523] + 0.752941899291429406 * R[535]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[508] + -0.376470949645714703 * R[526] + 0.752941899291429406 * R[538]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[504] + 0.108677802060013692 * R[507] + -0.217355604120027385 * R[509] + 0.108677802060013692 * R[522] + 0.108677802060013692 * R[525] + -0.217355604120027385 * R[527] + -0.217355604120027385 * R[534] + -0.217355604120027385 * R[537] + 0.434711208240054769 * R[539]);
+                o[2 * st[0] + 3 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[506] + -0.376470949645714703 * R[524] + 0.752941899291429406 * R[536]);
+                o[2 * st[0] + 4 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[504] + 0.188235474822857352 * R[507] + -0.188235474822857352 * R[522] + 0.188235474822857352 * R[525] + 0.376470949645714703 * R[534] + -0.376470949645714703 * R[537]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[517]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[520]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[516] + -0.376470949645714703 * R[519] + 0.752941899291429406 * R[521]);
+                o[3 * st[0] + 3 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[518]);
+                o[3 * st[0] + 4 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[516] + -0.652066812360082348 * R[519]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[505] + -0.652066812360082348 * R[523]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[508] + -0.652066812360082348 * R[526]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[504] + -0.188235474822857352 * R[507] + 0.376470949645714703 * R[509] + 0.188235474822857352 * R[522] + 0.188235474822857352 * R[525] + -0.376470949645714703 * R[527]);
+                o[4 * st[0] + 3 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[506] + -0.652066812360082348 * R[524]);
+                o[4 * st[0] + 4 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.326033406180041174 * R[504] + -0.326033406180041174 * R[507] + -0.326033406180041174 * R[522] + 0.326033406180041174 * R[525]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[7] + -0.376470949645714703 * R[331] + 0.752941899291429406 * R[547]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[10] + -0.376470949645714703 * R[334] + 0.752941899291429406 * R[550]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.108677802060013692 * R[6] + 0.108677802060013692 * R[330] + -0.217355604120027385 * R[546] + 0.108677802060013692 * R[9] + 0.108677802060013692 * R[333] + -0.217355604120027385 * R[549] + -0.217355604120027385 * R[11] + -0.217355604120027385 * R[335] + 0.434711208240054769 * R[551]);
+                o[0 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[8] + -0.376470949645714703 * R[332] + 0.752941899291429406 * R[548]);
+                o[0 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[6] + -0.188235474822857352 * R[330] + 0.376470949645714703 * R[546] + 0.188235474822857352 * R[9] + 0.188235474822857352 * R[333] + -0.376470949645714703 * R[549]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[25] + -0.376470949645714703 * R[349] + 0.752941899291429406 * R[565]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[28] + -0.376470949645714703 * R[352] + 0.752941899291429406 * R[568]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.108677802060013692 * R[24] + 0.108677802060013692 * R[348] + -0.217355604120027385 * R[564] + 0.108677802060013692 * R[27] + 0.108677802060013692 * R[351] + -0.217355604120027385 * R[567] + -0.217355604120027385 * R[29] + -0.217355604120027385 * R[353] + 0.434711208240054769 * R[569]);
+                o[1 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[26] + -0.376470949645714703 * R[350] + 0.752941899291429406 * R[566]);
+                o[1 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[24] + -0.188235474822857352 * R[348] + 0.376470949645714703 * R[564] + 0.188235474822857352 * R[27] + 0.188235474822857352 * R[351] + -0.376470949645714703 * R[567]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.108677802060013692 * R[1] + 0.108677802060013692 * R[325] + -0.217355604120027385 * R[541] + 0.108677802060013692 * R[19] + 0.108677802060013692 * R[343] + -0.217355604120027385 * R[559] + -0.217355604120027385 * R[31] + -0.217355604120027385 * R[355] + 0.434711208240054769 * R[571]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.108677802060013692 * R[4] + 0.108677802060013692 * R[328] + -0.217355604120027385 * R[544] + 0.108677802060013692 * R[22] + 0.108677802060013692 * R[346] + -0.217355604120027385 * R[562] + -0.217355604120027385 * R[34] + -0.217355604120027385 * R[358] + 0.434711208240054769 * R[574]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.031372579137142885 * R[0] + -0.031372579137142885 * R[324] + 0.06274515827428577 * R[540] + -0.031372579137142885 * R[3] + -0.031372579137142885 * R[327] + 0.06274515827428577 * R[543] + 0.06274515827428577 * R[5] + 0.06274515827428577 * R[329] + -0.12549031654857154 * R[545] + -0.031372579137142885 * R[18] + -0.031372579137142885 * R[342] + 0.06274515827428577 * R[558] + -0.031372579137142885 * R[21] + -0.031372579137142885 * R[345] + 0.06274515827428577 * R[561] + 0.06274515827428577 * R[23] + 0.06274515827428577 * R[347] + -0.12549031654857154 * R[563] + 0.06274515827428577 * R[30] + 0.06274515827428577 * R[354] + -0.12549031654857154 * R[570] + 0.06274515827428577 * R[33] + 0.06274515827428577 * R[357] + -0.12549031654857154 * R[573] + -0.12549031654857154 * R[35] + -0.12549031654857154 * R[359] + 0.25098063309714308 * R[575]);
+                o[2 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.108677802060013692 * R[2] + 0.108677802060013692 * R[326] + -0.217355604120027385 * R[542] + 0.108677802060013692 * R[20] + 0.108677802060013692 * R[344] + -0.217355604120027385 * R[560] + -0.217355604120027385 * R[32] + -0.217355604120027385 * R[356] + 0.434711208240054769 * R[572]);
+                o[2 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.0543389010300068462 * R[0] + 0.0543389010300068462 * R[324] + -0.108677802060013692 * R[540] + -0.0543389010300068462 * R[3] + -0.0543389010300068462 * R[327] + 0.108677802060013692 * R[543] + 0.0543389010300068462 * R[18] + 0.0543389010300068462 * R[342] + -0.108677802060013692 * R[558] + -0.0543389010300068462 * R[21] + -0.0543389010300068462 * R[345] + 0.108677802060013692 * R[561] + -0.108677802060013692 * R[30] + -0.108677802060013692 * R[354] + 0.217355604120027385 * R[570] + 0.108677802060013692 * R[33] + 0.108677802060013692 * R[357] + -0.217355604120027385 * R[573]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[13] + -0.376470949645714703 * R[337] + 0.752941899291429406 * R[553]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[16] + -0.376470949645714703 * R[340] + 0.752941899291429406 * R[556]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.108677802060013692 * R[12] + 0.108677802060013692 * R[336] + -0.217355604120027385 * R[552] + 0.108677802060013692 * R[15] + 0.108677802060013692 * R[339] + -0.217355604120027385 * R[555] + -0.217355604120027385 * R[17] + -0.217355604120027385 * R[341] + 0.434711208240054769 * R[557]);
+                o[3 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[14] + -0.376470949645714703 * R[338] + 0.752941899291429406 * R[554]);
+                o[3 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[12] + -0.188235474822857352 * R[336] + 0.376470949645714703 * R[552] + 0.188235474822857352 * R[15] + 0.188235474822857352 * R[339] + -0.376470949645714703 * R[555]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[1] + -0.188235474822857352 * R[325] + 0.376470949645714703 * R[541] + 0.188235474822857352 * R[19] + 0.188235474822857352 * R[343] + -0.376470949645714703 * R[559]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[4] + -0.188235474822857352 * R[328] + 0.376470949645714703 * R[544] + 0.188235474822857352 * R[22] + 0.188235474822857352 * R[346] + -0.376470949645714703 * R[562]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.0543389010300068462 * R[0] + 0.0543389010300068462 * R[324] + -0.108677802060013692 * R[540] + 0.0543389010300068462 * R[3] + 0.0543389010300068462 * R[327] + -0.108677802060013692 * R[543] + -0.108677802060013692 * R[5] + -0.108677802060013692 * R[329] + 0.217355604120027385 * R[545] + -0.0543389010300068462 * R[18] + -0.0543389010300068462 * R[342] + 0.108677802060013692 * R[558] + -0.0543389010300068462 * R[21] + -0.0543389010300068462 * R[345] + 0.108677802060013692 * R[561] + 0.108677802060013692 * R[23] + 0.108677802060013692 * R[347] + -0.217355604120027385 * R[563]);
+                o[4 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[2] + -0.188235474822857352 * R[326] + 0.376470949645714703 * R[542] + 0.188235474822857352 * R[20] + 0.188235474822857352 * R[344] + -0.376470949645714703 * R[560]);
+                o[4 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.0941177374114286758 * R[0] + -0.0941177374114286758 * R[324] + 0.188235474822857352 * R[540] + 0.0941177374114286758 * R[3] + 0.0941177374114286758 * R[327] + -0.188235474822857352 * R[543] + 0.0941177374114286758 * R[18] + 0.0941177374114286758 * R[342] + -0.188235474822857352 * R[558] + -0.0941177374114286758 * R[21] + -0.0941177374114286758 * R[345] + 0.188235474822857352 * R[561]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[43] + -0.376470949645714703 * R[367] + 0.752941899291429406 * R[583]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[46] + -0.376470949645714703 * R[370] + 0.752941899291429406 * R[586]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.108677802060013692 * R[42] + 0.108677802060013692 * R[366] + -0.217355604120027385 * R[582] + 0.108677802060013692 * R[45] + 0.108677802060013692 * R[369] + -0.217355604120027385 * R[585] + -0.217355604120027385 * R[47] + -0.217355604120027385 * R[371] + 0.434711208240054769 * R[587]);
+                o[0 * st[0] + 3 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[44] + -0.376470949645714703 * R[368] + 0.752941899291429406 * R[584]);
+                o[0 * st[0] + 4 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[42] + -0.188235474822857352 * R[366] + 0.376470949645714703 * R[582] + 0.188235474822857352 * R[45] + 0.188235474822857352 * R[369] + -0.376470949645714703 * R[585]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[61] + -0.376470949645714703 * R[385] + 0.752941899291429406 * R[601]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[64] + -0.376470949645714703 * R[388] + 0.752941899291429406 * R[604]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.108677802060013692 * R[60] + 0.108677802060013692 * R[384] + -0.217355604120027385 * R[600] + 0.108677802060013692 * R[63] + 0.108677802060013692 * R[387] + -0.217355604120027385 * R[603] + -0.217355604120027385 * R[65] + -0.217355604120027385 * R[389] + 0.434711208240054769 * R[605]);
+                o[1 * st[0] + 3 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[62] + -0.376470949645714703 * R[386] + 0.752941899291429406 * R[602]);
+                o[1 * st[0] + 4 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[60] + -0.188235474822857352 * R[384] + 0.376470949645714703 * R[600] + 0.188235474822857352 * R[63] + 0.188235474822857352 * R[387] + -0.376470949645714703 * R[603]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.108677802060013692 * R[37] + 0.108677802060013692 * R[361] + -0.217355604120027385 * R[577] + 0.108677802060013692 * R[55] + 0.108677802060013692 * R[379] + -0.217355604120027385 * R[595] + -0.217355604120027385 * R[67] + -0.217355604120027385 * R[391] + 0.434711208240054769 * R[607]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.108677802060013692 * R[40] + 0.108677802060013692 * R[364] + -0.217355604120027385 * R[580] + 0.108677802060013692 * R[58] + 0.108677802060013692 * R[382] + -0.217355604120027385 * R[598] + -0.217355604120027385 * R[70] + -0.217355604120027385 * R[394] + 0.434711208240054769 * R[610]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.031372579137142885 * R[36] + -0.031372579137142885 * R[360] + 0.06274515827428577 * R[576] + -0.031372579137142885 * R[39] + -0.031372579137142885 * R[363] + 0.06274515827428577 * R[579] + 0.06274515827428577 * R[41] + 0.06274515827428577 * R[365] + -0.12549031654857154 * R[581] + -0.031372579137142885 * R[54] + -0.031372579137142885 * R[378] + 0.06274515827428577 * R[594] + -0.031372579137142885 * R[57] + -0.031372579137142885 * R[381] + 0.06274515827428577 * R[597] + 0.06274515827428577 * R[59] + 0.06274515827428577 * R[383] + -0.12549031654857154 * R[599] + 0.06274515827428577 * R[66] + 0.06274515827428577 * R[390] + -0.12549031654857154 * R[606] + 0.06274515827428577 * R[69] + 0.06274515827428577 * R[393] + -0.12549031654857154 * R[609] + -0.12549031654857154 * R[71] + -0.12549031654857154 * R[395] + 0.25098063309714308 * R[611]);
+                o[2 * st[0] + 3 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.108677802060013692 * R[38] + 0.108677802060013692 * R[362] + -0.217355604120027385 * R[578] + 0.108677802060013692 * R[56] + 0.108677802060013692 * R[380] + -0.217355604120027385 * R[596] + -0.217355604120027385 * R[68] + -0.217355604120027385 * R[392] + 0.434711208240054769 * R[608]);
+                o[2 * st[0] + 4 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.0543389010300068462 * R[36] + 0.0543389010300068462 * R[360] + -0.108677802060013692 * R[576] + -0.0543389010300068462 * R[39] + -0.0543389010300068462 * R[363] + 0.108677802060013692 * R[579] + 0.0543389010300068462 * R[54] + 0.0543389010300068462 * R[378] + -0.108677802060013692 * R[594] + -0.0543389010300068462 * R[57] + -0.0543389010300068462 * R[381] + 0.108677802060013692 * R[597] + -0.108677802060013692 * R[66] + -0.108677802060013692 * R[390] + 0.217355604120027385 * R[606] + 0.108677802060013692 * R[69] + 0.108677802060013692 * R[393] + -0.217355604120027385 * R[609]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[49] + -0.376470949645714703 * R[373] + 0.752941899291429406 * R[589]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[52] + -0.376470949645714703 * R[376] + 0.752941899291429406 * R[592]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.108677802060013692 * R[48] + 0.108677802060013692 * R[372] + -0.217355604120027385 * R[588] + 0.108677802060013692 * R[51] + 0.108677802060013692 * R[375] + -0.217355604120027385 * R[591] + -0.217355604120027385 * R[53] + -0.217355604120027385 * R[377] + 0.434711208240054769 * R[593]);
+                o[3 * st[0] + 3 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[50] + -0.376470949645714703 * R[374] + 0.752941899291429406 * R[590]);
+                o[3 * st[0] + 4 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[48] + -0.188235474822857352 * R[372] + 0.376470949645714703 * R[588] + 0.188235474822857352 * R[51] + 0.188235474822857352 * R[375] + -0.376470949645714703 * R[591]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[37] + -0.188235474822857352 * R[361] + 0.376470949645714703 * R[577] + 0.188235474822857352 * R[55] + 0.188235474822857352 * R[379] + -0.376470949645714703 * R[595]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[40] + -0.188235474822857352 * R[364] + 0.376470949645714703 * R[580] + 0.188235474822857352 * R[58] + 0.188235474822857352 * R[382] + -0.376470949645714703 * R[598]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.0543389010300068462 * R[36] + 0.0543389010300068462 * R[360] + -0.108677802060013692 * R[576] + 0.0543389010300068462 * R[39] + 0.0543389010300068462 * R[363] + -0.108677802060013692 * R[579] + -0.108677802060013692 * R[41] + -0.108677802060013692 * R[365] + 0.217355604120027385 * R[581] + -0.0543389010300068462 * R[54] + -0.0543389010300068462 * R[378] + 0.108677802060013692 * R[594] + -0.0543389010300068462 * R[57] + -0.0543389010300068462 * R[381] + 0.108677802060013692 * R[597] + 0.108677802060013692 * R[59] + 0.108677802060013692 * R[383] + -0.217355604120027385 * R[599]);
+                o[4 * st[0] + 3 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[38] + -0.188235474822857352 * R[362] + 0.376470949645714703 * R[578] + 0.188235474822857352 * R[56] + 0.188235474822857352 * R[380] + -0.376470949645714703 * R[596]);
+                o[4 * st[0] + 4 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.0941177374114286758 * R[36] + -0.0941177374114286758 * R[360] + 0.188235474822857352 * R[576] + 0.0941177374114286758 * R[39] + 0.0941177374114286758 * R[363] + -0.188235474822857352 * R[579] + 0.0941177374114286758 * R[54] + 0.0941177374114286758 * R[378] + -0.188235474822857352 * R[594] + -0.0941177374114286758 * R[57] + -0.0941177374114286758 * R[381] + 0.188235474822857352 * R[597]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[79] + -0.376470949645714703 * R[403] + 0.752941899291429406 * R[619]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[82] + -0.376470949645714703 * R[406] + 0.752941899291429406 * R[622]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[78] + 0.108677802060013692 * R[402] + -0.217355604120027385 * R[618] + 0.108677802060013692 * R[81] + 0.108677802060013692 * R[405] + -0.217355604120027385 * R[621] + -0.217355604120027385 * R[83] + -0.217355604120027385 * R[407] + 0.434711208240054769 * R[623]);
+                o[0 * st[0] + 3 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[80] + -0.376470949645714703 * R[404] + 0.752941899291429406 * R[620]);
+                o[0 * st[0] + 4 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[78] + -0.188235474822857352 * R[402] + 0.376470949645714703 * R[618] + 0.188235474822857352 * R[81] + 0.188235474822857352 * R[405] + -0.376470949645714703 * R[621]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[97] + -0.376470949645714703 * R[421] + 0.752941899291429406 * R[637]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[100] + -0.376470949645714703 * R[424] + 0.752941899291429406 * R[640]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[96] + 0.108677802060013692 * R[420] + -0.217355604120027385 * R[636] + 0.108677802060013692 * R[99] + 0.108677802060013692 * R[423] + -0.217355604120027385 * R[639] + -0.217355604120027385 * R[101] + -0.217355604120027385 * R[425] + 0.434711208240054769 * R[641]);
+                o[1 * st[0] + 3 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[98] + -0.376470949645714703 * R[422] + 0.752941899291429406 * R[638]);
+                o[1 * st[0] + 4 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[96] + -0.188235474822857352 * R[420] + 0.376470949645714703 * R[636] + 0.188235474822857352 * R[99] + 0.188235474822857352 * R[423] + -0.376470949645714703 * R[639]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[73] + 0.108677802060013692 * R[397] + -0.217355604120027385 * R[613] + 0.108677802060013692 * R[91] + 0.108677802060013692 * R[415] + -0.217355604120027385 * R[631] + -0.217355604120027385 * R[103] + -0.217355604120027385 * R[427] + 0.434711208240054769 * R[643]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[76] + 0.108677802060013692 * R[400] + -0.217355604120027385 * R[616] + 0.108677802060013692 * R[94] + 0.108677802060013692 * R[418] + -0.217355604120027385 * R[634] + -0.217355604120027385 * R[106] + -0.217355604120027385 * R[430] + 0.434711208240054769 * R[646]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.031372579137142885 * R[72] + -0.031372579137142885 * R[396] + 0.06274515827428577 * R[612] + -0.031372579137142885 * R[75] + -0.031372579137142885 * R[399] + 0.06274515827428577 * R[615] + 0.06274515827428577 * R[77] + 0.06274515827428577 * R[401] + -0.12549031654857154 * R[617] + -0.031372579137142885 * R[90] + -0.031372579137142885 * R[414] + 0.06274515827428577 * R[630] + -0.031372579137142885 * R[93] + -0.031372579137142885 * R[417] + 0.06274515827428577 * R[633] + 0.06274515827428577 * R[95] + 0.06274515827428577 * R[419] + -0.12549031654857154 * R[635] + 0.06274515827428577 * R[102] + 0.06274515827428577 * R[426] + -0.12549031654857154 * R[642] + 0.06274515827428577 * R[105] + 0.06274515827428577 * R[429] + -0.12549031654857154 * R[645] + -0.12549031654857154 * R[107] + -0.12549031654857154 * R[431] + 0.25098063309714308 * R[647]);
+                o[2 * st[0] + 3 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[74] + 0.108677802060013692 * R[398] + -0.217355604120027385 * R[614] + 0.108677802060013692 * R[92] + 0.108677802060013692 * R[416] + -0.217355604120027385 * R[632] + -0.217355604120027385 * R[104] + -0.217355604120027385 * R[428] + 0.434711208240054769 * R[644]);
+                o[2 * st[0] + 4 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0543389010300068462 * R[72] + 0.0543389010300068462 * R[396] + -0.108677802060013692 * R[612] + -0.0543389010300068462 * R[75] + -0.0543389010300068462 * R[399] + 0.108677802060013692 * R[615] + 0.0543389010300068462 * R[90] + 0.0543389010300068462 * R[414] + -0.108677802060013692 * R[630] + -0.0543389010300068462 * R[93] + -0.0543389010300068462 * R[417] + 0.108677802060013692 * R[633] + -0.108677802060013692 * R[102] + -0.108677802060013692 * R[426] + 0.217355604120027385 * R[642] + 0.108677802060013692 * R[105] + 0.108677802060013692 * R[429] + -0.217355604120027385 * R[645]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[85] + -0.376470949645714703 * R[409] + 0.752941899291429406 * R[625]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[88] + -0.376470949645714703 * R[412] + 0.752941899291429406 * R[628]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[84] + 0.108677802060013692 * R[408] + -0.217355604120027385 * R[624] + 0.108677802060013692 * R[87] + 0.108677802060013692 * R[411] + -0.217355604120027385 * R[627] + -0.217355604120027385 * R[89] + -0.217355604120027385 * R[413] + 0.434711208240054769 * R[629]);
+                o[3 * st[0] + 3 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[86] + -0.376470949645714703 * R[410] + 0.752941899291429406 * R[626]);
+                o[3 * st[0] + 4 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[84] + -0.188235474822857352 * R[408] + 0.376470949645714703 * R[624] + 0.188235474822857352 * R[87] + 0.188235474822857352 * R[411] + -0.376470949645714703 * R[627]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[73] + -0.188235474822857352 * R[397] + 0.376470949645714703 * R[613] + 0.188235474822857352 * R[91] + 0.188235474822857352 * R[415] + -0.376470949645714703 * R[631]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[76] + -0.188235474822857352 * R[400] + 0.376470949645714703 * R[616] + 0.188235474822857352 * R[94] + 0.188235474822857352 * R[418] + -0.376470949645714703 * R[634]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0543389010300068462 * R[72] + 0.0543389010300068462 * R[396] + -0.108677802060013692 * R[612] + 0.0543389010300068462 * R[75] + 0.0543389010300068462 * R[399] + -0.108677802060013692 * R[615] + -0.108677802060013692 * R[77] + -0.108677802060013692 * R[401] + 0.217355604120027385 * R[617] + -0.0543389010300068462 * R[90] + -0.0543389010300068462 * R[414] + 0.108677802060013692 * R[630] + -0.0543389010300068462 * R[93] + -0.0543389010300068462 * R[417] + 0.108677802060013692 * R[633] + 0.108677802060013692 * R[95] + 0.108677802060013692 * R[419] + -0.217355604120027385 * R[635]);
+                o[4 * st[0] + 3 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[74] + -0.188235474822857352 * R[398] + 0.376470949645714703 * R[614] + 0.188235474822857352 * R[92] + 0.188235474822857352 * R[416] + -0.376470949645714703 * R[632]);
+                o[4 * st[0] + 4 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.0941177374114286758 * R[72] + -0.0941177374114286758 * R[396] + 0.188235474822857352 * R[612] + 0.0941177374114286758 * R[75] + 0.0941177374114286758 * R[399] + -0.188235474822857352 * R[615] + 0.0941177374114286758 * R[90] + 0.0941177374114286758 * R[414] + -0.188235474822857352 * R[630] + -0.0941177374114286758 * R[93] + -0.0941177374114286758 * R[417] + 0.188235474822857352 * R[633]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[223]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[226]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[222] + -0.376470949645714703 * R[225] + 0.752941899291429406 * R[227]);
+                o[0 * st[0] + 3 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[224]);
+                o[0 * st[0] + 4 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[222] + -0.652066812360082348 * R[225]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[241]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[244]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[240] + -0.376470949645714703 * R[243] + 0.752941899291429406 * R[245]);
+                o[1 * st[0] + 3 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[242]);
+                o[1 * st[0] + 4 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[240] + -0.652066812360082348 * R[243]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[217] + -0.376470949645714703 * R[235] + 0.752941899291429406 * R[247]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[220] + -0.376470949645714703 * R[238] + 0.752941899291429406 * R[250]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.108677802060013692 * R[216] + 0.108677802060013692 * R[219] + -0.217355604120027385 * R[221] + 0.108677802060013692 * R[234] + 0.108677802060013692 * R[237] + -0.217355604120027385 * R[239] + -0.217355604120027385 * R[246] + -0.217355604120027385 * R[249] + 0.434711208240054769 * R[251]);
+                o[2 * st[0] + 3 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[218] + -0.376470949645714703 * R[236] + 0.752941899291429406 * R[248]);
+                o[2 * st[0] + 4 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[216] + 0.188235474822857352 * R[219] + -0.188235474822857352 * R[234] + 0.188235474822857352 * R[237] + 0.376470949645714703 * R[246] + -0.376470949645714703 * R[249]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[229]);
+                o[3 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[232]);
+                o[3 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.376470949645714703 * R[228] + -0.376470949645714703 * R[231] + 0.752941899291429406 * R[233]);
+                o[3 * st[0] + 3 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.3041336247201647 * R[230]);
+                o[3 * st[0] + 4 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[228] + -0.652066812360082348 * R[231]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[217] + -0.652066812360082348 * R[235]);
+                o[4 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[220] + -0.652066812360082348 * R[238]);
+                o[4 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[216] + -0.188235474822857352 * R[219] + 0.376470949645714703 * R[221] + 0.188235474822857352 * R[234] + 0.188235474822857352 * R[237] + -0.376470949645714703 * R[239]);
+                o[4 * st[0] + 3 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[218] + -0.652066812360082348 * R[236]);
+                o[4 * st[0] + 4 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.326033406180041174 * R[216] + -0.326033406180041174 * R[219] + -0.326033406180041174 * R[234] + 0.326033406180041174 * R[237]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[259]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[262]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[258] + -0.376470949645714703 * R[261] + 0.752941899291429406 * R[263]);
+                o[0 * st[0] + 3 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[260]);
+                o[0 * st[0] + 4 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[258] + -0.652066812360082348 * R[261]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[277]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[280]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[276] + -0.376470949645714703 * R[279] + 0.752941899291429406 * R[281]);
+                o[1 * st[0] + 3 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[278]);
+                o[1 * st[0] + 4 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[276] + -0.652066812360082348 * R[279]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[253] + -0.376470949645714703 * R[271] + 0.752941899291429406 * R[283]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[256] + -0.376470949645714703 * R[274] + 0.752941899291429406 * R[286]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (0.108677802060013692 * R[252] + 0.108677802060013692 * R[255] + -0.217355604120027385 * R[257] + 0.108677802060013692 * R[270] + 0.108677802060013692 * R[273] + -0.217355604120027385 * R[275] + -0.217355604120027385 * R[282] + -0.217355604120027385 * R[285] + 0.434711208240054769 * R[287]);
+                o[2 * st[0] + 3 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[254] + -0.376470949645714703 * R[272] + 0.752941899291429406 * R[284]);
+                o[2 * st[0] + 4 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[252] + 0.188235474822857352 * R[255] + -0.188235474822857352 * R[270] + 0.188235474822857352 * R[273] + 0.376470949645714703 * R[282] + -0.376470949645714703 * R[285]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[265]);
+                o[3 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[268]);
+                o[3 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (-0.376470949645714703 * R[264] + -0.376470949645714703 * R[267] + 0.752941899291429406 * R[269]);
+                o[3 * st[0] + 3 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.3041336247201647 * R[266]);
+                o[3 * st[0] + 4 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[264] + -0.652066812360082348 * R[267]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[253] + -0.652066812360082348 * R[271]);
+                o[4 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[256] + -0.652066812360082348 * R[274]);
+                o[4 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[252] + -0.188235474822857352 * R[255] + 0.376470949645714703 * R[257] + 0.188235474822857352 * R[270] + 0.188235474822857352 * R[273] + -0.376470949645714703 * R[275]);
+                o[4 * st[0] + 3 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[254] + -0.652066812360082348 * R[272]);
+                o[4 * st[0] + 4 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (0.326033406180041174 * R[252] + -0.326033406180041174 * R[255] + -0.326033406180041174 * R[270] + 0.326033406180041174 * R[273]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[295]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[298]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[294] + -0.376470949645714703 * R[297] + 0.752941899291429406 * R[299]);
+                o[0 * st[0] + 3 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[296]);
+                o[0 * st[0] + 4 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[294] + -0.652066812360082348 * R[297]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[313]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[316]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[312] + -0.376470949645714703 * R[315] + 0.752941899291429406 * R[317]);
+                o[1 * st[0] + 3 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[314]);
+                o[1 * st[0] + 4 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[312] + -0.652066812360082348 * R[315]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[289] + -0.376470949645714703 * R[307] + 0.752941899291429406 * R[319]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[292] + -0.376470949645714703 * R[310] + 0.752941899291429406 * R[322]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (0.108677802060013692 * R[288] + 0.108677802060013692 * R[291] + -0.217355604120027385 * R[293] + 0.108677802060013692 * R[306] + 0.108677802060013692 * R[309] + -0.217355604120027385 * R[311] + -0.217355604120027385 * R[318] + -0.217355604120027385 * R[321] + 0.434711208240054769 * R[323]);
+                o[2 * st[0] + 3 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[290] + -0.376470949645714703 * R[308] + 0.752941899291429406 * R[320]);
+                o[2 * st[0] + 4 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[288] + 0.188235474822857352 * R[291] + -0.188235474822857352 * R[306] + 0.188235474822857352 * R[309] + 0.376470949645714703 * R[318] + -0.376470949645714703 * R[321]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[301]);
+                o[3 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[304]);
+                o[3 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.376470949645714703 * R[300] + -0.376470949645714703 * R[303] + 0.752941899291429406 * R[305]);
+                o[3 * st[0] + 3 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (1.3041336247201647 * R[302]);
+                o[3 * st[0] + 4 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[300] + -0.652066812360082348 * R[303]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[289] + -0.652066812360082348 * R[307]);
+                o[4 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[292] + -0.652066812360082348 * R[310]);
+                o[4 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[288] + -0.188235474822857352 * R[291] + 0.376470949645714703 * R[293] + 0.188235474822857352 * R[306] + 0.188235474822857352 * R[309] + -0.376470949645714703 * R[311]);
+                o[4 * st[0] + 3 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[290] + -0.652066812360082348 * R[308]);
+                o[4 * st[0] + 4 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (0.326033406180041174 * R[288] + -0.326033406180041174 * R[291] + -0.326033406180041174 * R[306] + 0.326033406180041174 * R[309]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[7] + -0.652066812360082348 * R[331]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[10] + -0.652066812360082348 * R[334]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[6] + 0.188235474822857352 * R[330] + -0.188235474822857352 * R[9] + 0.188235474822857352 * R[333] + 0.376470949645714703 * R[11] + -0.376470949645714703 * R[335]);
+                o[0 * st[0] + 3 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[8] + -0.652066812360082348 * R[332]);
+                o[0 * st[0] + 4 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.326033406180041174 * R[6] + -0.326033406180041174 * R[330] + -0.326033406180041174 * R[9] + 0.326033406180041174 * R[333]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[25] + -0.652066812360082348 * R[349]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[28] + -0.652066812360082348 * R[352]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[24] + 0.188235474822857352 * R[348] + -0.188235474822857352 * R[27] + 0.188235474822857352 * R[351] + 0.376470949645714703 * R[29] + -0.376470949645714703 * R[353]);
+                o[1 * st[0] + 3 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[26] + -0.652066812360082348 * R[350]);
+                o[1 * st[0] + 4 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.326033406180041174 * R[24] + -0.326033406180041174 * R[348] + -0.326033406180041174 * R[27] + 0.326033406180041174 * R[351]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[1] + 0.188235474822857352 * R[325] + -0.188235474822857352 * R[19] + 0.188235474822857352 * R[343] + 0.376470949645714703 * R[31] + -0.376470949645714703 * R[355]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[4] + 0.188235474822857352 * R[328] + -0.188235474822857352 * R[22] + 0.188235474822857352 * R[346] + 0.376470949645714703 * R[34] + -0.376470949645714703 * R[358]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.0543389010300068462 * R[0] + -0.0543389010300068462 * R[324] + 0.0543389010300068462 * R[3] + -0.0543389010300068462 * R[327] + -0.108677802060013692 * R[5] + 0.108677802060013692 * R[329] + 0.0543389010300068462 * R[18] + -0.0543389010300068462 * R[342] + 0.0543389010300068462 * R[21] + -0.0543389010300068462 * R[345] + -0.108677802060013692 * R[23] + 0.108677802060013692 * R[347] + -0.108677802060013692 * R[30] + 0.108677802060013692 * R[354] + -0.108677802060013692 * R[33] + 0.108677802060013692 * R[357] + 0.217355604120027385 * R[35] + -0.217355604120027385 * R[359]);
+                o[2 * st[0] + 3 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[2] + 0.188235474822857352 * R[326] + -0.188235474822857352 * R[20] + 0.188235474822857352 * R[344] + 0.376470949645714703 * R[32] + -0.376470949645714703 * R[356]);
+                o[2 * st[0] + 4 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.0941177374114286758 * R[0] + 0.0941177374114286758 * R[324] + 0.0941177374114286758 * R[3] + -0.0941177374114286758 * R[327] + -0.0941177374114286758 * R[18] + 0.0941177374114286758 * R[342] + 0.0941177374114286758 * R[21] + -0.0941177374114286758 * R[345] + 0.188235474822857352 * R[30] + -0.188235474822857352 * R[354] + -0.188235474822857352 * R[33] + 0.188235474822857352 * R[357]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[13] + -0.652066812360082348 * R[337]);
+                o[3 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[16] + -0.652066812360082348 * R[340]);
+                o[3 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.188235474822857352 * R[12] + 0.188235474822857352 * R[336] + -0.188235474822857352 * R[15] + 0.188235474822857352 * R[339] + 0.376470949645714703 * R[17] + -0.376470949645714703 * R[341]);
+                o[3 * st[0] + 3 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.652066812360082348 * R[14] + -0.652066812360082348 * R[338]);
+                o[3 * st[0] + 4 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.326033406180041174 * R[12] + -0.326033406180041174 * R[336] + -0.326033406180041174 * R[15] + 0.326033406180041174 * R[339]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.326033406180041174 * R[1] + -0.326033406180041174 * R[325] + -0.326033406180041174 * R[19] + 0.326033406180041174 * R[343]);
+                o[4 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.326033406180041174 * R[4] + -0.326033406180041174 * R[328] + -0.326033406180041174 * R[22] + 0.326033406180041174 * R[346]);
+                o[4 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.0941177374114286758 * R[0] + 0.0941177374114286758 * R[324] + -0.0941177374114286758 * R[3] + 0.0941177374114286758 * R[327] + 0.188235474822857352 * R[5] + -0.188235474822857352 * R[329] + 0.0941177374114286758 * R[18] + -0.0941177374114286758 * R[342] + 0.0941177374114286758 * R[21] + -0.0941177374114286758 * R[345] + -0.188235474822857352 * R[23] + 0.188235474822857352 * R[347]);
+                o[4 * st[0] + 3 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.326033406180041174 * R[2] + -0.326033406180041174 * R[326] + -0.326033406180041174 * R[20] + 0.326033406180041174 * R[344]);
+                o[4 * st[0] + 4 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.163016703090020587 * R[0] + -0.163016703090020587 * R[324] + -0.163016703090020587 * R[3] + 0.163016703090020587 * R[327] + -0.163016703090020587 * R[18] + 0.163016703090020587 * R[342] + 0.163016703090020587 * R[21] + -0.163016703090020587 * R[345]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[43] + -0.652066812360082348 * R[367]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[46] + -0.652066812360082348 * R[370]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[42] + 0.188235474822857352 * R[366] + -0.188235474822857352 * R[45] + 0.188235474822857352 * R[369] + 0.376470949645714703 * R[47] + -0.376470949645714703 * R[371]);
+                o[0 * st[0] + 3 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[44] + -0.652066812360082348 * R[368]);
+                o[0 * st[0] + 4 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.326033406180041174 * R[42] + -0.326033406180041174 * R[366] + -0.326033406180041174 * R[45] + 0.326033406180041174 * R[369]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[61] + -0.652066812360082348 * R[385]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[64] + -0.652066812360082348 * R[388]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[60] + 0.188235474822857352 * R[384] + -0.188235474822857352 * R[63] + 0.188235474822857352 * R[387] + 0.376470949645714703 * R[65] + -0.376470949645714703 * R[389]);
+                o[1 * st[0] + 3 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[62] + -0.652066812360082348 * R[386]);
+                o[1 * st[0] + 4 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.326033406180041174 * R[60] + -0.326033406180041174 * R[384] + -0.326033406180041174 * R[63] + 0.326033406180041174 * R[387]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[37] + 0.188235474822857352 * R[361] + -0.188235474822857352 * R[55] + 0.188235474822857352 * R[379] + 0.376470949645714703 * R[67] + -0.376470949645714703 * R[391]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[40] + 0.188235474822857352 * R[364] + -0.188235474822857352 * R[58] + 0.188235474822857352 * R[382] + 0.376470949645714703 * R[70] + -0.376470949645714703 * R[394]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.0543389010300068462 * R[36] + -0.0543389010300068462 * R[360] + 0.0543389010300068462 * R[39] + -0.0543389010300068462 * R[363] + -0.108677802060013692 * R[41] + 0.108677802060013692 * R[365] + 0.0543389010300068462 * R[54] + -0.0543389010300068462 * R[378] + 0.0543389010300068462 * R[57] + -0.0543389010300068462 * R[381] + -0.108677802060013692 * R[59] + 0.108677802060013692 * R[383] + -0.108677802060013692 * R[66] + 0.108677802060013692 * R[390] + -0.108677802060013692 * R[69] + 0.108677802060013692 * R[393] + 0.217355604120027385 * R[71] + -0.217355604120027385 * R[395]);
+                o[2 * st[0] + 3 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[38] + 0.188235474822857352 * R[362] + -0.188235474822857352 * R[56] + 0.188235474822857352 * R[380] + 0.376470949645714703 * R[68] + -0.376470949645714703 * R[392]);
+                o[2 * st[0] + 4 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (-0.0941177374114286758 * R[36] + 0.0941177374114286758 * R[360] + 0.0941177374114286758 * R[39] + -0.0941177374114286758 * R[363] + -0.0941177374114286758 * R[54] + 0.0941177374114286758 * R[378] + 0.0941177374114286758 * R[57] + -0.0941177374114286758 * R[381] + 0.188235474822857352 * R[66] + -0.188235474822857352 * R[390] + -0.188235474822857352 * R[69] + 0.188235474822857352 * R[393]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[49] + -0.652066812360082348 * R[373]);
+                o[3 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[52] + -0.652066812360082348 * R[376]);
+                o[3 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (-0.188235474822857352 * R[48] + 0.188235474822857352 * R[372] + -0.188235474822857352 * R[51] + 0.188235474822857352 * R[375] + 0.376470949645714703 * R[53] + -0.376470949645714703 * R[377]);
+                o[3 * st[0] + 3 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.652066812360082348 * R[50] + -0.652066812360082348 * R[374]);
+                o[3 * st[0] + 4 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.326033406180041174 * R[48] + -0.326033406180041174 * R[372] + -0.326033406180041174 * R[51] + 0.326033406180041174 * R[375]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.326033406180041174 * R[37] + -0.326033406180041174 * R[361] + -0.326033406180041174 * R[55] + 0.326033406180041174 * R[379]);
+                o[4 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.326033406180041174 * R[40] + -0.326033406180041174 * R[364] + -0.326033406180041174 * R[58] + 0.326033406180041174 * R[382]);
+                o[4 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (-0.0941177374114286758 * R[36] + 0.0941177374114286758 * R[360] + -0.0941177374114286758 * R[39] + 0.0941177374114286758 * R[363] + 0.188235474822857352 * R[41] + -0.188235474822857352 * R[365] + 0.0941177374114286758 * R[54] + -0.0941177374114286758 * R[378] + 0.0941177374114286758 * R[57] + -0.0941177374114286758 * R[381] + -0.188235474822857352 * R[59] + 0.188235474822857352 * R[383]);
+                o[4 * st[0] + 3 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.326033406180041174 * R[38] + -0.326033406180041174 * R[362] + -0.326033406180041174 * R[56] + 0.326033406180041174 * R[380]);
+                o[4 * st[0] + 4 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.163016703090020587 * R[36] + -0.163016703090020587 * R[360] + -0.163016703090020587 * R[39] + 0.163016703090020587 * R[363] + -0.163016703090020587 * R[54] + 0.163016703090020587 * R[378] + 0.163016703090020587 * R[57] + -0.163016703090020587 * R[381]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[79] + -0.652066812360082348 * R[403]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[82] + -0.652066812360082348 * R[406]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[78] + 0.188235474822857352 * R[402] + -0.188235474822857352 * R[81] + 0.188235474822857352 * R[405] + 0.376470949645714703 * R[83] + -0.376470949645714703 * R[407]);
+                o[0 * st[0] + 3 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[80] + -0.652066812360082348 * R[404]);
+                o[0 * st[0] + 4 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.326033406180041174 * R[78] + -0.326033406180041174 * R[402] + -0.326033406180041174 * R[81] + 0.326033406180041174 * R[405]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[97] + -0.652066812360082348 * R[421]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[100] + -0.652066812360082348 * R[424]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[96] + 0.188235474822857352 * R[420] + -0.188235474822857352 * R[99] + 0.188235474822857352 * R[423] + 0.376470949645714703 * R[101] + -0.376470949645714703 * R[425]);
+                o[1 * st[0] + 3 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[98] + -0.652066812360082348 * R[422]);
+                o[1 * st[0] + 4 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.326033406180041174 * R[96] + -0.326033406180041174 * R[420] + -0.326033406180041174 * R[99] + 0.326033406180041174 * R[423]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[73] + 0.188235474822857352 * R[397] + -0.188235474822857352 * R[91] + 0.188235474822857352 * R[415] + 0.376470949645714703 * R[103] + -0.376470949645714703 * R[427]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[76] + 0.188235474822857352 * R[400] + -0.188235474822857352 * R[94] + 0.188235474822857352 * R[418] + 0.376470949645714703 * R[106] + -0.376470949645714703 * R[430]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.0543389010300068462 * R[72] + -0.0543389010300068462 * R[396] + 0.0543389010300068462 * R[75] + -0.0543389010300068462 * R[399] + -0.108677802060013692 * R[77] + 0.108677802060013692 * R[401] + 0.0543389010300068462 * R[90] + -0.0543389010300068462 * R[414] + 0.0543389010300068462 * R[93] + -0.0543389010300068462 * R[417] + -0.108677802060013692 * R[95] + 0.108677802060013692 * R[419] + -0.108677802060013692 * R[102] + 0.108677802060013692 * R[426] + -0.108677802060013692 * R[105] + 0.108677802060013692 * R[429] + 0.217355604120027385 * R[107] + -0.217355604120027385 * R[431]);
+                o[2 * st[0] + 3 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[74] + 0.188235474822857352 * R[398] + -0.188235474822857352 * R[92] + 0.188235474822857352 * R[416] + 0.376470949645714703 * R[104] + -0.376470949645714703 * R[428]);
+                o[2 * st[0] + 4 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.0941177374114286758 * R[72] + 0.0941177374114286758 * R[396] + 0.0941177374114286758 * R[75] + -0.0941177374114286758 * R[399] + -0.0941177374114286758 * R[90] + 0.0941177374114286758 * R[414] + 0.0941177374114286758 * R[93] + -0.0941177374114286758 * R[417] + 0.188235474822857352 * R[102] + -0.188235474822857352 * R[426] + -0.188235474822857352 * R[105] + 0.188235474822857352 * R[429]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[85] + -0.652066812360082348 * R[409]);
+                o[3 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[88] + -0.652066812360082348 * R[412]);
+                o[3 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.188235474822857352 * R[84] + 0.188235474822857352 * R[408] + -0.188235474822857352 * R[87] + 0.188235474822857352 * R[411] + 0.376470949645714703 * R[89] + -0.376470949645714703 * R[413]);
+                o[3 * st[0] + 3 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.652066812360082348 * R[86] + -0.652066812360082348 * R[410]);
+                o[3 * st[0] + 4 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.326033406180041174 * R[84] + -0.326033406180041174 * R[408] + -0.326033406180041174 * R[87] + 0.326033406180041174 * R[411]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.326033406180041174 * R[73] + -0.326033406180041174 * R[397] + -0.326033406180041174 * R[91] + 0.326033406180041174 * R[415]);
+                o[4 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.326033406180041174 * R[76] + -0.326033406180041174 * R[400] + -0.326033406180041174 * R[94] + 0.326033406180041174 * R[418]);
+                o[4 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.0941177374114286758 * R[72] + 0.0941177374114286758 * R[396] + -0.0941177374114286758 * R[75] + 0.0941177374114286758 * R[399] + 0.188235474822857352 * R[77] + -0.188235474822857352 * R[401] + 0.0941177374114286758 * R[90] + -0.0941177374114286758 * R[414] + 0.0941177374114286758 * R[93] + -0.0941177374114286758 * R[417] + -0.188235474822857352 * R[95] + 0.188235474822857352 * R[419]);
+                o[4 * st[0] + 3 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.326033406180041174 * R[74] + -0.326033406180041174 * R[398] + -0.326033406180041174 * R[92] + 0.326033406180041174 * R[416]);
+                o[4 * st[0] + 4 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.163016703090020587 * R[72] + -0.163016703090020587 * R[396] + -0.163016703090020587 * R[75] + 0.163016703090020587 * R[399] + -0.163016703090020587 * R[90] + 0.163016703090020587 * R[414] + 0.163016703090020587 * R[93] + -0.163016703090020587 * R[417]);
+        }
+        return 1;
 }
 
 /* (22|22): 2330 VRR nodes, 961 targets */
-static int jkv_2222(double *SK, const GPair *B, int bs, const GPair *K, int ks, double cut,
-                const double *tab, double *wk)
+static int jkg_2222(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
+                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
-        double *v = wk, *w = v + (size_t)961 * nb;
+        double *v = wk, *w = v + (size_t)961 * nb, *SK = w + (size_t)961 * ncb;
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 961);
         for (t = 0; t < nk; t++) {
@@ -13376,7 +18995,6 @@ static int jkv_2222(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nb; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
@@ -16698,130 +22316,997 @@ static int jkv_2222(double *SK, const GPair *B, int bs, const GPair *K, int ks, 
                         for (i = 0; i < ncb * 961; i++) so[i] += f * w[i];
                 }
         }
-        return any;
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        int ci, cj, ck, cl;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 961;
+                double *o = out + cpos[pos[0]] * 5 * st[0] + cpos[pos[1]] * 5 * st[1]
+                          + cpos[pos[2]] * 5 * st[2] + cpos[pos[3]] * 5 * st[3];
+                double HB[1116];
+                double hb300_100[31];
+                for (i = 0; i < 31; i++) (hb300_100)[i] = (sk + 496)[i] + AB[0] * (sk + 186)[i];
+                double hb200_100[31];
+                for (i = 0; i < 31; i++) (hb200_100)[i] = (sk + 186)[i] + AB[0] * (sk + 0)[i];
+                for (i = 0; i < 31; i++) (HB + 0)[i] = (hb300_100)[i] + AB[0] * (hb200_100)[i];
+                double hb300_010[31];
+                for (i = 0; i < 31; i++) (hb300_010)[i] = (sk + 527)[i] + AB[1] * (sk + 186)[i];
+                double hb200_010[31];
+                for (i = 0; i < 31; i++) (hb200_010)[i] = (sk + 217)[i] + AB[1] * (sk + 0)[i];
+                for (i = 0; i < 31; i++) (HB + 31)[i] = (hb300_010)[i] + AB[0] * (hb200_010)[i];
+                double hb300_001[31];
+                for (i = 0; i < 31; i++) (hb300_001)[i] = (sk + 558)[i] + AB[2] * (sk + 186)[i];
+                double hb200_001[31];
+                for (i = 0; i < 31; i++) (hb200_001)[i] = (sk + 248)[i] + AB[2] * (sk + 0)[i];
+                for (i = 0; i < 31; i++) (HB + 62)[i] = (hb300_001)[i] + AB[0] * (hb200_001)[i];
+                double hb210_010[31];
+                for (i = 0; i < 31; i++) (hb210_010)[i] = (sk + 589)[i] + AB[1] * (sk + 217)[i];
+                for (i = 0; i < 31; i++) (HB + 93)[i] = (hb210_010)[i] + AB[1] * (hb200_010)[i];
+                double hb210_001[31];
+                for (i = 0; i < 31; i++) (hb210_001)[i] = (sk + 620)[i] + AB[2] * (sk + 217)[i];
+                for (i = 0; i < 31; i++) (HB + 124)[i] = (hb210_001)[i] + AB[1] * (hb200_001)[i];
+                double hb201_001[31];
+                for (i = 0; i < 31; i++) (hb201_001)[i] = (sk + 651)[i] + AB[2] * (sk + 248)[i];
+                for (i = 0; i < 31; i++) (HB + 155)[i] = (hb201_001)[i] + AB[2] * (hb200_001)[i];
+                double hb210_100[31];
+                for (i = 0; i < 31; i++) (hb210_100)[i] = (sk + 527)[i] + AB[0] * (sk + 217)[i];
+                double hb110_100[31];
+                for (i = 0; i < 31; i++) (hb110_100)[i] = (sk + 217)[i] + AB[0] * (sk + 31)[i];
+                for (i = 0; i < 31; i++) (HB + 186)[i] = (hb210_100)[i] + AB[0] * (hb110_100)[i];
+                double hb110_010[31];
+                for (i = 0; i < 31; i++) (hb110_010)[i] = (sk + 279)[i] + AB[1] * (sk + 31)[i];
+                for (i = 0; i < 31; i++) (HB + 217)[i] = (hb210_010)[i] + AB[0] * (hb110_010)[i];
+                double hb110_001[31];
+                for (i = 0; i < 31; i++) (hb110_001)[i] = (sk + 310)[i] + AB[2] * (sk + 31)[i];
+                for (i = 0; i < 31; i++) (HB + 248)[i] = (hb210_001)[i] + AB[0] * (hb110_001)[i];
+                double hb120_010[31];
+                for (i = 0; i < 31; i++) (hb120_010)[i] = (sk + 682)[i] + AB[1] * (sk + 279)[i];
+                for (i = 0; i < 31; i++) (HB + 279)[i] = (hb120_010)[i] + AB[1] * (hb110_010)[i];
+                double hb120_001[31];
+                for (i = 0; i < 31; i++) (hb120_001)[i] = (sk + 713)[i] + AB[2] * (sk + 279)[i];
+                for (i = 0; i < 31; i++) (HB + 310)[i] = (hb120_001)[i] + AB[1] * (hb110_001)[i];
+                double hb111_001[31];
+                for (i = 0; i < 31; i++) (hb111_001)[i] = (sk + 744)[i] + AB[2] * (sk + 310)[i];
+                for (i = 0; i < 31; i++) (HB + 341)[i] = (hb111_001)[i] + AB[2] * (hb110_001)[i];
+                double hb201_100[31];
+                for (i = 0; i < 31; i++) (hb201_100)[i] = (sk + 558)[i] + AB[0] * (sk + 248)[i];
+                double hb101_100[31];
+                for (i = 0; i < 31; i++) (hb101_100)[i] = (sk + 248)[i] + AB[0] * (sk + 62)[i];
+                for (i = 0; i < 31; i++) (HB + 372)[i] = (hb201_100)[i] + AB[0] * (hb101_100)[i];
+                double hb201_010[31];
+                for (i = 0; i < 31; i++) (hb201_010)[i] = (sk + 620)[i] + AB[1] * (sk + 248)[i];
+                double hb101_010[31];
+                for (i = 0; i < 31; i++) (hb101_010)[i] = (sk + 310)[i] + AB[1] * (sk + 62)[i];
+                for (i = 0; i < 31; i++) (HB + 403)[i] = (hb201_010)[i] + AB[0] * (hb101_010)[i];
+                double hb101_001[31];
+                for (i = 0; i < 31; i++) (hb101_001)[i] = (sk + 341)[i] + AB[2] * (sk + 62)[i];
+                for (i = 0; i < 31; i++) (HB + 434)[i] = (hb201_001)[i] + AB[0] * (hb101_001)[i];
+                double hb111_010[31];
+                for (i = 0; i < 31; i++) (hb111_010)[i] = (sk + 713)[i] + AB[1] * (sk + 310)[i];
+                for (i = 0; i < 31; i++) (HB + 465)[i] = (hb111_010)[i] + AB[1] * (hb101_010)[i];
+                for (i = 0; i < 31; i++) (HB + 496)[i] = (hb111_001)[i] + AB[1] * (hb101_001)[i];
+                double hb102_001[31];
+                for (i = 0; i < 31; i++) (hb102_001)[i] = (sk + 775)[i] + AB[2] * (sk + 341)[i];
+                for (i = 0; i < 31; i++) (HB + 527)[i] = (hb102_001)[i] + AB[2] * (hb101_001)[i];
+                double hb120_100[31];
+                for (i = 0; i < 31; i++) (hb120_100)[i] = (sk + 589)[i] + AB[0] * (sk + 279)[i];
+                double hb020_100[31];
+                for (i = 0; i < 31; i++) (hb020_100)[i] = (sk + 279)[i] + AB[0] * (sk + 93)[i];
+                for (i = 0; i < 31; i++) (HB + 558)[i] = (hb120_100)[i] + AB[0] * (hb020_100)[i];
+                double hb020_010[31];
+                for (i = 0; i < 31; i++) (hb020_010)[i] = (sk + 372)[i] + AB[1] * (sk + 93)[i];
+                for (i = 0; i < 31; i++) (HB + 589)[i] = (hb120_010)[i] + AB[0] * (hb020_010)[i];
+                double hb020_001[31];
+                for (i = 0; i < 31; i++) (hb020_001)[i] = (sk + 403)[i] + AB[2] * (sk + 93)[i];
+                for (i = 0; i < 31; i++) (HB + 620)[i] = (hb120_001)[i] + AB[0] * (hb020_001)[i];
+                double hb030_010[31];
+                for (i = 0; i < 31; i++) (hb030_010)[i] = (sk + 806)[i] + AB[1] * (sk + 372)[i];
+                for (i = 0; i < 31; i++) (HB + 651)[i] = (hb030_010)[i] + AB[1] * (hb020_010)[i];
+                double hb030_001[31];
+                for (i = 0; i < 31; i++) (hb030_001)[i] = (sk + 837)[i] + AB[2] * (sk + 372)[i];
+                for (i = 0; i < 31; i++) (HB + 682)[i] = (hb030_001)[i] + AB[1] * (hb020_001)[i];
+                double hb021_001[31];
+                for (i = 0; i < 31; i++) (hb021_001)[i] = (sk + 868)[i] + AB[2] * (sk + 403)[i];
+                for (i = 0; i < 31; i++) (HB + 713)[i] = (hb021_001)[i] + AB[2] * (hb020_001)[i];
+                double hb111_100[31];
+                for (i = 0; i < 31; i++) (hb111_100)[i] = (sk + 620)[i] + AB[0] * (sk + 310)[i];
+                double hb011_100[31];
+                for (i = 0; i < 31; i++) (hb011_100)[i] = (sk + 310)[i] + AB[0] * (sk + 124)[i];
+                for (i = 0; i < 31; i++) (HB + 744)[i] = (hb111_100)[i] + AB[0] * (hb011_100)[i];
+                double hb011_010[31];
+                for (i = 0; i < 31; i++) (hb011_010)[i] = (sk + 403)[i] + AB[1] * (sk + 124)[i];
+                for (i = 0; i < 31; i++) (HB + 775)[i] = (hb111_010)[i] + AB[0] * (hb011_010)[i];
+                double hb011_001[31];
+                for (i = 0; i < 31; i++) (hb011_001)[i] = (sk + 434)[i] + AB[2] * (sk + 124)[i];
+                for (i = 0; i < 31; i++) (HB + 806)[i] = (hb111_001)[i] + AB[0] * (hb011_001)[i];
+                double hb021_010[31];
+                for (i = 0; i < 31; i++) (hb021_010)[i] = (sk + 837)[i] + AB[1] * (sk + 403)[i];
+                for (i = 0; i < 31; i++) (HB + 837)[i] = (hb021_010)[i] + AB[1] * (hb011_010)[i];
+                for (i = 0; i < 31; i++) (HB + 868)[i] = (hb021_001)[i] + AB[1] * (hb011_001)[i];
+                double hb012_001[31];
+                for (i = 0; i < 31; i++) (hb012_001)[i] = (sk + 899)[i] + AB[2] * (sk + 434)[i];
+                for (i = 0; i < 31; i++) (HB + 899)[i] = (hb012_001)[i] + AB[2] * (hb011_001)[i];
+                double hb102_100[31];
+                for (i = 0; i < 31; i++) (hb102_100)[i] = (sk + 651)[i] + AB[0] * (sk + 341)[i];
+                double hb002_100[31];
+                for (i = 0; i < 31; i++) (hb002_100)[i] = (sk + 341)[i] + AB[0] * (sk + 155)[i];
+                for (i = 0; i < 31; i++) (HB + 930)[i] = (hb102_100)[i] + AB[0] * (hb002_100)[i];
+                double hb102_010[31];
+                for (i = 0; i < 31; i++) (hb102_010)[i] = (sk + 744)[i] + AB[1] * (sk + 341)[i];
+                double hb002_010[31];
+                for (i = 0; i < 31; i++) (hb002_010)[i] = (sk + 434)[i] + AB[1] * (sk + 155)[i];
+                for (i = 0; i < 31; i++) (HB + 961)[i] = (hb102_010)[i] + AB[0] * (hb002_010)[i];
+                double hb002_001[31];
+                for (i = 0; i < 31; i++) (hb002_001)[i] = (sk + 465)[i] + AB[2] * (sk + 155)[i];
+                for (i = 0; i < 31; i++) (HB + 992)[i] = (hb102_001)[i] + AB[0] * (hb002_001)[i];
+                double hb012_010[31];
+                for (i = 0; i < 31; i++) (hb012_010)[i] = (sk + 868)[i] + AB[1] * (sk + 434)[i];
+                for (i = 0; i < 31; i++) (HB + 1023)[i] = (hb012_010)[i] + AB[1] * (hb002_010)[i];
+                for (i = 0; i < 31; i++) (HB + 1054)[i] = (hb012_001)[i] + AB[1] * (hb002_001)[i];
+                double hb003_001[31];
+                for (i = 0; i < 31; i++) (hb003_001)[i] = (sk + 930)[i] + AB[2] * (sk + 465)[i];
+                for (i = 0; i < 31; i++) (HB + 1085)[i] = (hb003_001)[i] + AB[2] * (hb002_001)[i];
+                double R[1296];
+                double kb400[36];
+                for (i = 0; i < 36; i++) kb400[i] = HB[i * 31 + 16];
+                double kb300[36];
+                for (i = 0; i < 36; i++) kb300[i] = HB[i * 31 + 6];
+                double hk300_100[36];
+                for (i = 0; i < 36; i++) (hk300_100)[i] = (kb400)[i] + CD[0] * (kb300)[i];
+                double kb200[36];
+                for (i = 0; i < 36; i++) kb200[i] = HB[i * 31 + 0];
+                double hk200_100[36];
+                for (i = 0; i < 36; i++) (hk200_100)[i] = (kb300)[i] + CD[0] * (kb200)[i];
+                for (i = 0; i < 36; i++) (R + 0)[i] = (hk300_100)[i] + CD[0] * (hk200_100)[i];
+                double kb310[36];
+                for (i = 0; i < 36; i++) kb310[i] = HB[i * 31 + 17];
+                double hk300_010[36];
+                for (i = 0; i < 36; i++) (hk300_010)[i] = (kb310)[i] + CD[1] * (kb300)[i];
+                double kb210[36];
+                for (i = 0; i < 36; i++) kb210[i] = HB[i * 31 + 7];
+                double hk200_010[36];
+                for (i = 0; i < 36; i++) (hk200_010)[i] = (kb210)[i] + CD[1] * (kb200)[i];
+                for (i = 0; i < 36; i++) (R + 36)[i] = (hk300_010)[i] + CD[0] * (hk200_010)[i];
+                double kb301[36];
+                for (i = 0; i < 36; i++) kb301[i] = HB[i * 31 + 18];
+                double hk300_001[36];
+                for (i = 0; i < 36; i++) (hk300_001)[i] = (kb301)[i] + CD[2] * (kb300)[i];
+                double kb201[36];
+                for (i = 0; i < 36; i++) kb201[i] = HB[i * 31 + 8];
+                double hk200_001[36];
+                for (i = 0; i < 36; i++) (hk200_001)[i] = (kb201)[i] + CD[2] * (kb200)[i];
+                for (i = 0; i < 36; i++) (R + 72)[i] = (hk300_001)[i] + CD[0] * (hk200_001)[i];
+                double kb220[36];
+                for (i = 0; i < 36; i++) kb220[i] = HB[i * 31 + 19];
+                double hk210_010[36];
+                for (i = 0; i < 36; i++) (hk210_010)[i] = (kb220)[i] + CD[1] * (kb210)[i];
+                for (i = 0; i < 36; i++) (R + 108)[i] = (hk210_010)[i] + CD[1] * (hk200_010)[i];
+                double kb211[36];
+                for (i = 0; i < 36; i++) kb211[i] = HB[i * 31 + 20];
+                double hk210_001[36];
+                for (i = 0; i < 36; i++) (hk210_001)[i] = (kb211)[i] + CD[2] * (kb210)[i];
+                for (i = 0; i < 36; i++) (R + 144)[i] = (hk210_001)[i] + CD[1] * (hk200_001)[i];
+                double kb202[36];
+                for (i = 0; i < 36; i++) kb202[i] = HB[i * 31 + 21];
+                double hk201_001[36];
+                for (i = 0; i < 36; i++) (hk201_001)[i] = (kb202)[i] + CD[2] * (kb201)[i];
+                for (i = 0; i < 36; i++) (R + 180)[i] = (hk201_001)[i] + CD[2] * (hk200_001)[i];
+                double hk210_100[36];
+                for (i = 0; i < 36; i++) (hk210_100)[i] = (kb310)[i] + CD[0] * (kb210)[i];
+                double kb110[36];
+                for (i = 0; i < 36; i++) kb110[i] = HB[i * 31 + 1];
+                double hk110_100[36];
+                for (i = 0; i < 36; i++) (hk110_100)[i] = (kb210)[i] + CD[0] * (kb110)[i];
+                for (i = 0; i < 36; i++) (R + 216)[i] = (hk210_100)[i] + CD[0] * (hk110_100)[i];
+                double kb120[36];
+                for (i = 0; i < 36; i++) kb120[i] = HB[i * 31 + 9];
+                double hk110_010[36];
+                for (i = 0; i < 36; i++) (hk110_010)[i] = (kb120)[i] + CD[1] * (kb110)[i];
+                for (i = 0; i < 36; i++) (R + 252)[i] = (hk210_010)[i] + CD[0] * (hk110_010)[i];
+                double kb111[36];
+                for (i = 0; i < 36; i++) kb111[i] = HB[i * 31 + 10];
+                double hk110_001[36];
+                for (i = 0; i < 36; i++) (hk110_001)[i] = (kb111)[i] + CD[2] * (kb110)[i];
+                for (i = 0; i < 36; i++) (R + 288)[i] = (hk210_001)[i] + CD[0] * (hk110_001)[i];
+                double kb130[36];
+                for (i = 0; i < 36; i++) kb130[i] = HB[i * 31 + 22];
+                double hk120_010[36];
+                for (i = 0; i < 36; i++) (hk120_010)[i] = (kb130)[i] + CD[1] * (kb120)[i];
+                for (i = 0; i < 36; i++) (R + 324)[i] = (hk120_010)[i] + CD[1] * (hk110_010)[i];
+                double kb121[36];
+                for (i = 0; i < 36; i++) kb121[i] = HB[i * 31 + 23];
+                double hk120_001[36];
+                for (i = 0; i < 36; i++) (hk120_001)[i] = (kb121)[i] + CD[2] * (kb120)[i];
+                for (i = 0; i < 36; i++) (R + 360)[i] = (hk120_001)[i] + CD[1] * (hk110_001)[i];
+                double kb112[36];
+                for (i = 0; i < 36; i++) kb112[i] = HB[i * 31 + 24];
+                double hk111_001[36];
+                for (i = 0; i < 36; i++) (hk111_001)[i] = (kb112)[i] + CD[2] * (kb111)[i];
+                for (i = 0; i < 36; i++) (R + 396)[i] = (hk111_001)[i] + CD[2] * (hk110_001)[i];
+                double hk201_100[36];
+                for (i = 0; i < 36; i++) (hk201_100)[i] = (kb301)[i] + CD[0] * (kb201)[i];
+                double kb101[36];
+                for (i = 0; i < 36; i++) kb101[i] = HB[i * 31 + 2];
+                double hk101_100[36];
+                for (i = 0; i < 36; i++) (hk101_100)[i] = (kb201)[i] + CD[0] * (kb101)[i];
+                for (i = 0; i < 36; i++) (R + 432)[i] = (hk201_100)[i] + CD[0] * (hk101_100)[i];
+                double hk201_010[36];
+                for (i = 0; i < 36; i++) (hk201_010)[i] = (kb211)[i] + CD[1] * (kb201)[i];
+                double hk101_010[36];
+                for (i = 0; i < 36; i++) (hk101_010)[i] = (kb111)[i] + CD[1] * (kb101)[i];
+                for (i = 0; i < 36; i++) (R + 468)[i] = (hk201_010)[i] + CD[0] * (hk101_010)[i];
+                double kb102[36];
+                for (i = 0; i < 36; i++) kb102[i] = HB[i * 31 + 11];
+                double hk101_001[36];
+                for (i = 0; i < 36; i++) (hk101_001)[i] = (kb102)[i] + CD[2] * (kb101)[i];
+                for (i = 0; i < 36; i++) (R + 504)[i] = (hk201_001)[i] + CD[0] * (hk101_001)[i];
+                double hk111_010[36];
+                for (i = 0; i < 36; i++) (hk111_010)[i] = (kb121)[i] + CD[1] * (kb111)[i];
+                for (i = 0; i < 36; i++) (R + 540)[i] = (hk111_010)[i] + CD[1] * (hk101_010)[i];
+                for (i = 0; i < 36; i++) (R + 576)[i] = (hk111_001)[i] + CD[1] * (hk101_001)[i];
+                double kb103[36];
+                for (i = 0; i < 36; i++) kb103[i] = HB[i * 31 + 25];
+                double hk102_001[36];
+                for (i = 0; i < 36; i++) (hk102_001)[i] = (kb103)[i] + CD[2] * (kb102)[i];
+                for (i = 0; i < 36; i++) (R + 612)[i] = (hk102_001)[i] + CD[2] * (hk101_001)[i];
+                double hk120_100[36];
+                for (i = 0; i < 36; i++) (hk120_100)[i] = (kb220)[i] + CD[0] * (kb120)[i];
+                double kb020[36];
+                for (i = 0; i < 36; i++) kb020[i] = HB[i * 31 + 3];
+                double hk020_100[36];
+                for (i = 0; i < 36; i++) (hk020_100)[i] = (kb120)[i] + CD[0] * (kb020)[i];
+                for (i = 0; i < 36; i++) (R + 648)[i] = (hk120_100)[i] + CD[0] * (hk020_100)[i];
+                double kb030[36];
+                for (i = 0; i < 36; i++) kb030[i] = HB[i * 31 + 12];
+                double hk020_010[36];
+                for (i = 0; i < 36; i++) (hk020_010)[i] = (kb030)[i] + CD[1] * (kb020)[i];
+                for (i = 0; i < 36; i++) (R + 684)[i] = (hk120_010)[i] + CD[0] * (hk020_010)[i];
+                double kb021[36];
+                for (i = 0; i < 36; i++) kb021[i] = HB[i * 31 + 13];
+                double hk020_001[36];
+                for (i = 0; i < 36; i++) (hk020_001)[i] = (kb021)[i] + CD[2] * (kb020)[i];
+                for (i = 0; i < 36; i++) (R + 720)[i] = (hk120_001)[i] + CD[0] * (hk020_001)[i];
+                double kb040[36];
+                for (i = 0; i < 36; i++) kb040[i] = HB[i * 31 + 26];
+                double hk030_010[36];
+                for (i = 0; i < 36; i++) (hk030_010)[i] = (kb040)[i] + CD[1] * (kb030)[i];
+                for (i = 0; i < 36; i++) (R + 756)[i] = (hk030_010)[i] + CD[1] * (hk020_010)[i];
+                double kb031[36];
+                for (i = 0; i < 36; i++) kb031[i] = HB[i * 31 + 27];
+                double hk030_001[36];
+                for (i = 0; i < 36; i++) (hk030_001)[i] = (kb031)[i] + CD[2] * (kb030)[i];
+                for (i = 0; i < 36; i++) (R + 792)[i] = (hk030_001)[i] + CD[1] * (hk020_001)[i];
+                double kb022[36];
+                for (i = 0; i < 36; i++) kb022[i] = HB[i * 31 + 28];
+                double hk021_001[36];
+                for (i = 0; i < 36; i++) (hk021_001)[i] = (kb022)[i] + CD[2] * (kb021)[i];
+                for (i = 0; i < 36; i++) (R + 828)[i] = (hk021_001)[i] + CD[2] * (hk020_001)[i];
+                double hk111_100[36];
+                for (i = 0; i < 36; i++) (hk111_100)[i] = (kb211)[i] + CD[0] * (kb111)[i];
+                double kb011[36];
+                for (i = 0; i < 36; i++) kb011[i] = HB[i * 31 + 4];
+                double hk011_100[36];
+                for (i = 0; i < 36; i++) (hk011_100)[i] = (kb111)[i] + CD[0] * (kb011)[i];
+                for (i = 0; i < 36; i++) (R + 864)[i] = (hk111_100)[i] + CD[0] * (hk011_100)[i];
+                double hk011_010[36];
+                for (i = 0; i < 36; i++) (hk011_010)[i] = (kb021)[i] + CD[1] * (kb011)[i];
+                for (i = 0; i < 36; i++) (R + 900)[i] = (hk111_010)[i] + CD[0] * (hk011_010)[i];
+                double kb012[36];
+                for (i = 0; i < 36; i++) kb012[i] = HB[i * 31 + 14];
+                double hk011_001[36];
+                for (i = 0; i < 36; i++) (hk011_001)[i] = (kb012)[i] + CD[2] * (kb011)[i];
+                for (i = 0; i < 36; i++) (R + 936)[i] = (hk111_001)[i] + CD[0] * (hk011_001)[i];
+                double hk021_010[36];
+                for (i = 0; i < 36; i++) (hk021_010)[i] = (kb031)[i] + CD[1] * (kb021)[i];
+                for (i = 0; i < 36; i++) (R + 972)[i] = (hk021_010)[i] + CD[1] * (hk011_010)[i];
+                for (i = 0; i < 36; i++) (R + 1008)[i] = (hk021_001)[i] + CD[1] * (hk011_001)[i];
+                double kb013[36];
+                for (i = 0; i < 36; i++) kb013[i] = HB[i * 31 + 29];
+                double hk012_001[36];
+                for (i = 0; i < 36; i++) (hk012_001)[i] = (kb013)[i] + CD[2] * (kb012)[i];
+                for (i = 0; i < 36; i++) (R + 1044)[i] = (hk012_001)[i] + CD[2] * (hk011_001)[i];
+                double hk102_100[36];
+                for (i = 0; i < 36; i++) (hk102_100)[i] = (kb202)[i] + CD[0] * (kb102)[i];
+                double kb002[36];
+                for (i = 0; i < 36; i++) kb002[i] = HB[i * 31 + 5];
+                double hk002_100[36];
+                for (i = 0; i < 36; i++) (hk002_100)[i] = (kb102)[i] + CD[0] * (kb002)[i];
+                for (i = 0; i < 36; i++) (R + 1080)[i] = (hk102_100)[i] + CD[0] * (hk002_100)[i];
+                double hk102_010[36];
+                for (i = 0; i < 36; i++) (hk102_010)[i] = (kb112)[i] + CD[1] * (kb102)[i];
+                double hk002_010[36];
+                for (i = 0; i < 36; i++) (hk002_010)[i] = (kb012)[i] + CD[1] * (kb002)[i];
+                for (i = 0; i < 36; i++) (R + 1116)[i] = (hk102_010)[i] + CD[0] * (hk002_010)[i];
+                double kb003[36];
+                for (i = 0; i < 36; i++) kb003[i] = HB[i * 31 + 15];
+                double hk002_001[36];
+                for (i = 0; i < 36; i++) (hk002_001)[i] = (kb003)[i] + CD[2] * (kb002)[i];
+                for (i = 0; i < 36; i++) (R + 1152)[i] = (hk102_001)[i] + CD[0] * (hk002_001)[i];
+                double hk012_010[36];
+                for (i = 0; i < 36; i++) (hk012_010)[i] = (kb022)[i] + CD[1] * (kb012)[i];
+                for (i = 0; i < 36; i++) (R + 1188)[i] = (hk012_010)[i] + CD[1] * (hk002_010)[i];
+                for (i = 0; i < 36; i++) (R + 1224)[i] = (hk012_001)[i] + CD[1] * (hk002_001)[i];
+                double kb004[36];
+                for (i = 0; i < 36; i++) kb004[i] = HB[i * 31 + 30];
+                double hk003_001[36];
+                for (i = 0; i < 36; i++) (hk003_001)[i] = (kb004)[i] + CD[2] * (kb003)[i];
+                for (i = 0; i < 36; i++) (R + 1260)[i] = (hk003_001)[i] + CD[2] * (hk002_001)[i];
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[259]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[262]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[258] + -0.411312745198935292 * R[261] + 0.822625490397870585 * R[263]);
+                o[0 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[260]);
+                o[0 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[258] + -0.712414572485187914 * R[261]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[277]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[280]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[276] + -0.411312745198935292 * R[279] + 0.822625490397870585 * R[281]);
+                o[1 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[278]);
+                o[1 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[276] + -0.712414572485187914 * R[279]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[253] + -0.411312745198935292 * R[271] + 0.822625490397870585 * R[283]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[256] + -0.411312745198935292 * R[274] + 0.822625490397870585 * R[286]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.118735762080864601 * R[252] + 0.118735762080864601 * R[255] + -0.237471524161729203 * R[257] + 0.118735762080864601 * R[270] + 0.118735762080864601 * R[273] + -0.237471524161729203 * R[275] + -0.237471524161729203 * R[282] + -0.237471524161729203 * R[285] + 0.474943048323458406 * R[287]);
+                o[2 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[254] + -0.411312745198935292 * R[272] + 0.822625490397870585 * R[284]);
+                o[2 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.205656372599467646 * R[252] + 0.205656372599467646 * R[255] + -0.205656372599467646 * R[270] + 0.205656372599467646 * R[273] + 0.411312745198935292 * R[282] + -0.411312745198935292 * R[285]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[265]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[268]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[264] + -0.411312745198935292 * R[267] + 0.822625490397870585 * R[269]);
+                o[3 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[266]);
+                o[3 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[264] + -0.712414572485187914 * R[267]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[253] + -0.712414572485187914 * R[271]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[256] + -0.712414572485187914 * R[274]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (-0.205656372599467646 * R[252] + -0.205656372599467646 * R[255] + 0.411312745198935292 * R[257] + 0.205656372599467646 * R[270] + 0.205656372599467646 * R[273] + -0.411312745198935292 * R[275]);
+                o[4 * st[0] + 3 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[254] + -0.712414572485187914 * R[272]);
+                o[4 * st[0] + 4 * st[1] + 0 * st[2] + 0 * st[3]] = fac * (0.356207286242593957 * R[252] + -0.356207286242593957 * R[255] + -0.356207286242593957 * R[270] + 0.356207286242593957 * R[273]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[367]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[370]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[366] + -0.411312745198935292 * R[369] + 0.822625490397870585 * R[371]);
+                o[0 * st[0] + 3 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[368]);
+                o[0 * st[0] + 4 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[366] + -0.712414572485187914 * R[369]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[385]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[388]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[384] + -0.411312745198935292 * R[387] + 0.822625490397870585 * R[389]);
+                o[1 * st[0] + 3 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[386]);
+                o[1 * st[0] + 4 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[384] + -0.712414572485187914 * R[387]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[361] + -0.411312745198935292 * R[379] + 0.822625490397870585 * R[391]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[364] + -0.411312745198935292 * R[382] + 0.822625490397870585 * R[394]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.118735762080864601 * R[360] + 0.118735762080864601 * R[363] + -0.237471524161729203 * R[365] + 0.118735762080864601 * R[378] + 0.118735762080864601 * R[381] + -0.237471524161729203 * R[383] + -0.237471524161729203 * R[390] + -0.237471524161729203 * R[393] + 0.474943048323458406 * R[395]);
+                o[2 * st[0] + 3 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[362] + -0.411312745198935292 * R[380] + 0.822625490397870585 * R[392]);
+                o[2 * st[0] + 4 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.205656372599467646 * R[360] + 0.205656372599467646 * R[363] + -0.205656372599467646 * R[378] + 0.205656372599467646 * R[381] + 0.411312745198935292 * R[390] + -0.411312745198935292 * R[393]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[373]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[376]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[372] + -0.411312745198935292 * R[375] + 0.822625490397870585 * R[377]);
+                o[3 * st[0] + 3 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[374]);
+                o[3 * st[0] + 4 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[372] + -0.712414572485187914 * R[375]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[361] + -0.712414572485187914 * R[379]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[364] + -0.712414572485187914 * R[382]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (-0.205656372599467646 * R[360] + -0.205656372599467646 * R[363] + 0.411312745198935292 * R[365] + 0.205656372599467646 * R[378] + 0.205656372599467646 * R[381] + -0.411312745198935292 * R[383]);
+                o[4 * st[0] + 3 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[362] + -0.712414572485187914 * R[380]);
+                o[4 * st[0] + 4 * st[1] + 0 * st[2] + 1 * st[3]] = fac * (0.356207286242593957 * R[360] + -0.356207286242593957 * R[363] + -0.356207286242593957 * R[378] + 0.356207286242593957 * R[381]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[223] + -0.411312745198935292 * R[331] + 0.822625490397870585 * R[403]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[226] + -0.411312745198935292 * R[334] + 0.822625490397870585 * R[406]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.118735762080864587 * R[222] + 0.118735762080864587 * R[330] + -0.237471524161729175 * R[402] + 0.118735762080864587 * R[225] + 0.118735762080864587 * R[333] + -0.237471524161729175 * R[405] + -0.237471524161729175 * R[227] + -0.237471524161729175 * R[335] + 0.47494304832345835 * R[407]);
+                o[0 * st[0] + 3 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[224] + -0.411312745198935292 * R[332] + 0.822625490397870585 * R[404]);
+                o[0 * st[0] + 4 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[222] + -0.205656372599467646 * R[330] + 0.411312745198935292 * R[402] + 0.205656372599467646 * R[225] + 0.205656372599467646 * R[333] + -0.411312745198935292 * R[405]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[241] + -0.411312745198935292 * R[349] + 0.822625490397870585 * R[421]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[244] + -0.411312745198935292 * R[352] + 0.822625490397870585 * R[424]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.118735762080864587 * R[240] + 0.118735762080864587 * R[348] + -0.237471524161729175 * R[420] + 0.118735762080864587 * R[243] + 0.118735762080864587 * R[351] + -0.237471524161729175 * R[423] + -0.237471524161729175 * R[245] + -0.237471524161729175 * R[353] + 0.47494304832345835 * R[425]);
+                o[1 * st[0] + 3 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[242] + -0.411312745198935292 * R[350] + 0.822625490397870585 * R[422]);
+                o[1 * st[0] + 4 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[240] + -0.205656372599467646 * R[348] + 0.411312745198935292 * R[420] + 0.205656372599467646 * R[243] + 0.205656372599467646 * R[351] + -0.411312745198935292 * R[423]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.118735762080864587 * R[217] + 0.118735762080864587 * R[325] + -0.237471524161729175 * R[397] + 0.118735762080864587 * R[235] + 0.118735762080864587 * R[343] + -0.237471524161729175 * R[415] + -0.237471524161729175 * R[247] + -0.237471524161729175 * R[355] + 0.47494304832345835 * R[427]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.118735762080864587 * R[220] + 0.118735762080864587 * R[328] + -0.237471524161729175 * R[400] + 0.118735762080864587 * R[238] + 0.118735762080864587 * R[346] + -0.237471524161729175 * R[418] + -0.237471524161729175 * R[250] + -0.237471524161729175 * R[358] + 0.47494304832345835 * R[430]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.0342760620999112628 * R[216] + -0.0342760620999112628 * R[324] + 0.0685521241998225256 * R[396] + -0.0342760620999112628 * R[219] + -0.0342760620999112628 * R[327] + 0.0685521241998225256 * R[399] + 0.0685521241998225256 * R[221] + 0.0685521241998225256 * R[329] + -0.137104248399645051 * R[401] + -0.0342760620999112628 * R[234] + -0.0342760620999112628 * R[342] + 0.0685521241998225256 * R[414] + -0.0342760620999112628 * R[237] + -0.0342760620999112628 * R[345] + 0.0685521241998225256 * R[417] + 0.0685521241998225256 * R[239] + 0.0685521241998225256 * R[347] + -0.137104248399645051 * R[419] + 0.0685521241998225256 * R[246] + 0.0685521241998225256 * R[354] + -0.137104248399645051 * R[426] + 0.0685521241998225256 * R[249] + 0.0685521241998225256 * R[357] + -0.137104248399645051 * R[429] + -0.137104248399645051 * R[251] + -0.137104248399645051 * R[359] + 0.274208496799290102 * R[431]);
+                o[2 * st[0] + 3 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.118735762080864587 * R[218] + 0.118735762080864587 * R[326] + -0.237471524161729175 * R[398] + 0.118735762080864587 * R[236] + 0.118735762080864587 * R[344] + -0.237471524161729175 * R[416] + -0.237471524161729175 * R[248] + -0.237471524161729175 * R[356] + 0.47494304832345835 * R[428]);
+                o[2 * st[0] + 4 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.0593678810404322937 * R[216] + 0.0593678810404322937 * R[324] + -0.118735762080864587 * R[396] + -0.0593678810404322937 * R[219] + -0.0593678810404322937 * R[327] + 0.118735762080864587 * R[399] + 0.0593678810404322937 * R[234] + 0.0593678810404322937 * R[342] + -0.118735762080864587 * R[414] + -0.0593678810404322937 * R[237] + -0.0593678810404322937 * R[345] + 0.118735762080864587 * R[417] + -0.118735762080864587 * R[246] + -0.118735762080864587 * R[354] + 0.237471524161729175 * R[426] + 0.118735762080864587 * R[249] + 0.118735762080864587 * R[357] + -0.237471524161729175 * R[429]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[229] + -0.411312745198935292 * R[337] + 0.822625490397870585 * R[409]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[232] + -0.411312745198935292 * R[340] + 0.822625490397870585 * R[412]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.118735762080864587 * R[228] + 0.118735762080864587 * R[336] + -0.237471524161729175 * R[408] + 0.118735762080864587 * R[231] + 0.118735762080864587 * R[339] + -0.237471524161729175 * R[411] + -0.237471524161729175 * R[233] + -0.237471524161729175 * R[341] + 0.47494304832345835 * R[413]);
+                o[3 * st[0] + 3 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[230] + -0.411312745198935292 * R[338] + 0.822625490397870585 * R[410]);
+                o[3 * st[0] + 4 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[228] + -0.205656372599467646 * R[336] + 0.411312745198935292 * R[408] + 0.205656372599467646 * R[231] + 0.205656372599467646 * R[339] + -0.411312745198935292 * R[411]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[217] + -0.205656372599467646 * R[325] + 0.411312745198935292 * R[397] + 0.205656372599467646 * R[235] + 0.205656372599467646 * R[343] + -0.411312745198935292 * R[415]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[220] + -0.205656372599467646 * R[328] + 0.411312745198935292 * R[400] + 0.205656372599467646 * R[238] + 0.205656372599467646 * R[346] + -0.411312745198935292 * R[418]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (0.0593678810404322937 * R[216] + 0.0593678810404322937 * R[324] + -0.118735762080864587 * R[396] + 0.0593678810404322937 * R[219] + 0.0593678810404322937 * R[327] + -0.118735762080864587 * R[399] + -0.118735762080864587 * R[221] + -0.118735762080864587 * R[329] + 0.237471524161729175 * R[401] + -0.0593678810404322937 * R[234] + -0.0593678810404322937 * R[342] + 0.118735762080864587 * R[414] + -0.0593678810404322937 * R[237] + -0.0593678810404322937 * R[345] + 0.118735762080864587 * R[417] + 0.118735762080864587 * R[239] + 0.118735762080864587 * R[347] + -0.237471524161729175 * R[419]);
+                o[4 * st[0] + 3 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[218] + -0.205656372599467646 * R[326] + 0.411312745198935292 * R[398] + 0.205656372599467646 * R[236] + 0.205656372599467646 * R[344] + -0.411312745198935292 * R[416]);
+                o[4 * st[0] + 4 * st[1] + 0 * st[2] + 2 * st[3]] = fac * (-0.102828186299733823 * R[216] + -0.102828186299733823 * R[324] + 0.205656372599467646 * R[396] + 0.102828186299733823 * R[219] + 0.102828186299733823 * R[327] + -0.205656372599467646 * R[399] + 0.102828186299733823 * R[234] + 0.102828186299733823 * R[342] + -0.205656372599467646 * R[414] + -0.102828186299733823 * R[237] + -0.102828186299733823 * R[345] + 0.205656372599467646 * R[417]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[295]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[298]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[294] + -0.411312745198935292 * R[297] + 0.822625490397870585 * R[299]);
+                o[0 * st[0] + 3 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[296]);
+                o[0 * st[0] + 4 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[294] + -0.712414572485187914 * R[297]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[313]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[316]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[312] + -0.411312745198935292 * R[315] + 0.822625490397870585 * R[317]);
+                o[1 * st[0] + 3 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[314]);
+                o[1 * st[0] + 4 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[312] + -0.712414572485187914 * R[315]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[289] + -0.411312745198935292 * R[307] + 0.822625490397870585 * R[319]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[292] + -0.411312745198935292 * R[310] + 0.822625490397870585 * R[322]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (0.118735762080864601 * R[288] + 0.118735762080864601 * R[291] + -0.237471524161729203 * R[293] + 0.118735762080864601 * R[306] + 0.118735762080864601 * R[309] + -0.237471524161729203 * R[311] + -0.237471524161729203 * R[318] + -0.237471524161729203 * R[321] + 0.474943048323458406 * R[323]);
+                o[2 * st[0] + 3 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[290] + -0.411312745198935292 * R[308] + 0.822625490397870585 * R[320]);
+                o[2 * st[0] + 4 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (-0.205656372599467646 * R[288] + 0.205656372599467646 * R[291] + -0.205656372599467646 * R[306] + 0.205656372599467646 * R[309] + 0.411312745198935292 * R[318] + -0.411312745198935292 * R[321]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[301]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[304]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[300] + -0.411312745198935292 * R[303] + 0.822625490397870585 * R[305]);
+                o[3 * st[0] + 3 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[302]);
+                o[3 * st[0] + 4 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[300] + -0.712414572485187914 * R[303]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[289] + -0.712414572485187914 * R[307]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[292] + -0.712414572485187914 * R[310]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (-0.205656372599467646 * R[288] + -0.205656372599467646 * R[291] + 0.411312745198935292 * R[293] + 0.205656372599467646 * R[306] + 0.205656372599467646 * R[309] + -0.411312745198935292 * R[311]);
+                o[4 * st[0] + 3 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[290] + -0.712414572485187914 * R[308]);
+                o[4 * st[0] + 4 * st[1] + 0 * st[2] + 3 * st[3]] = fac * (0.356207286242593957 * R[288] + -0.356207286242593957 * R[291] + -0.356207286242593957 * R[306] + 0.356207286242593957 * R[309]);
+                o[0 * st[0] + 0 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[223] + -0.712414572485187914 * R[331]);
+                o[0 * st[0] + 1 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[226] + -0.712414572485187914 * R[334]);
+                o[0 * st[0] + 2 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[222] + 0.205656372599467646 * R[330] + -0.205656372599467646 * R[225] + 0.205656372599467646 * R[333] + 0.411312745198935292 * R[227] + -0.411312745198935292 * R[335]);
+                o[0 * st[0] + 3 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[224] + -0.712414572485187914 * R[332]);
+                o[0 * st[0] + 4 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[222] + -0.356207286242593957 * R[330] + -0.356207286242593957 * R[225] + 0.356207286242593957 * R[333]);
+                o[1 * st[0] + 0 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[241] + -0.712414572485187914 * R[349]);
+                o[1 * st[0] + 1 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[244] + -0.712414572485187914 * R[352]);
+                o[1 * st[0] + 2 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[240] + 0.205656372599467646 * R[348] + -0.205656372599467646 * R[243] + 0.205656372599467646 * R[351] + 0.411312745198935292 * R[245] + -0.411312745198935292 * R[353]);
+                o[1 * st[0] + 3 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[242] + -0.712414572485187914 * R[350]);
+                o[1 * st[0] + 4 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[240] + -0.356207286242593957 * R[348] + -0.356207286242593957 * R[243] + 0.356207286242593957 * R[351]);
+                o[2 * st[0] + 0 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[217] + 0.205656372599467646 * R[325] + -0.205656372599467646 * R[235] + 0.205656372599467646 * R[343] + 0.411312745198935292 * R[247] + -0.411312745198935292 * R[355]);
+                o[2 * st[0] + 1 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[220] + 0.205656372599467646 * R[328] + -0.205656372599467646 * R[238] + 0.205656372599467646 * R[346] + 0.411312745198935292 * R[250] + -0.411312745198935292 * R[358]);
+                o[2 * st[0] + 2 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.0593678810404323007 * R[216] + -0.0593678810404323007 * R[324] + 0.0593678810404323007 * R[219] + -0.0593678810404323007 * R[327] + -0.118735762080864601 * R[221] + 0.118735762080864601 * R[329] + 0.0593678810404323007 * R[234] + -0.0593678810404323007 * R[342] + 0.0593678810404323007 * R[237] + -0.0593678810404323007 * R[345] + -0.118735762080864601 * R[239] + 0.118735762080864601 * R[347] + -0.118735762080864601 * R[246] + 0.118735762080864601 * R[354] + -0.118735762080864601 * R[249] + 0.118735762080864601 * R[357] + 0.237471524161729203 * R[251] + -0.237471524161729203 * R[359]);
+                o[2 * st[0] + 3 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[218] + 0.205656372599467646 * R[326] + -0.205656372599467646 * R[236] + 0.205656372599467646 * R[344] + 0.411312745198935292 * R[248] + -0.411312745198935292 * R[356]);
+                o[2 * st[0] + 4 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (-0.102828186299733823 * R[216] + 0.102828186299733823 * R[324] + 0.102828186299733823 * R[219] + -0.102828186299733823 * R[327] + -0.102828186299733823 * R[234] + 0.102828186299733823 * R[342] + 0.102828186299733823 * R[237] + -0.102828186299733823 * R[345] + 0.205656372599467646 * R[246] + -0.205656372599467646 * R[354] + -0.205656372599467646 * R[249] + 0.205656372599467646 * R[357]);
+                o[3 * st[0] + 0 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[229] + -0.712414572485187914 * R[337]);
+                o[3 * st[0] + 1 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[232] + -0.712414572485187914 * R[340]);
+                o[3 * st[0] + 2 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[228] + 0.205656372599467646 * R[336] + -0.205656372599467646 * R[231] + 0.205656372599467646 * R[339] + 0.411312745198935292 * R[233] + -0.411312745198935292 * R[341]);
+                o[3 * st[0] + 3 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[230] + -0.712414572485187914 * R[338]);
+                o[3 * st[0] + 4 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[228] + -0.356207286242593957 * R[336] + -0.356207286242593957 * R[231] + 0.356207286242593957 * R[339]);
+                o[4 * st[0] + 0 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[217] + -0.356207286242593957 * R[325] + -0.356207286242593957 * R[235] + 0.356207286242593957 * R[343]);
+                o[4 * st[0] + 1 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[220] + -0.356207286242593957 * R[328] + -0.356207286242593957 * R[238] + 0.356207286242593957 * R[346]);
+                o[4 * st[0] + 2 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (-0.102828186299733823 * R[216] + 0.102828186299733823 * R[324] + -0.102828186299733823 * R[219] + 0.102828186299733823 * R[327] + 0.205656372599467646 * R[221] + -0.205656372599467646 * R[329] + 0.102828186299733823 * R[234] + -0.102828186299733823 * R[342] + 0.102828186299733823 * R[237] + -0.102828186299733823 * R[345] + -0.205656372599467646 * R[239] + 0.205656372599467646 * R[347]);
+                o[4 * st[0] + 3 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[218] + -0.356207286242593957 * R[326] + -0.356207286242593957 * R[236] + 0.356207286242593957 * R[344]);
+                o[4 * st[0] + 4 * st[1] + 0 * st[2] + 4 * st[3]] = fac * (0.178103643121296978 * R[216] + -0.178103643121296978 * R[324] + -0.178103643121296978 * R[219] + 0.178103643121296978 * R[327] + -0.178103643121296978 * R[234] + 0.178103643121296978 * R[342] + 0.178103643121296978 * R[237] + -0.178103643121296978 * R[345]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[907]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[910]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[906] + -0.411312745198935292 * R[909] + 0.822625490397870585 * R[911]);
+                o[0 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[908]);
+                o[0 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[906] + -0.712414572485187914 * R[909]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[925]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[928]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[924] + -0.411312745198935292 * R[927] + 0.822625490397870585 * R[929]);
+                o[1 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[926]);
+                o[1 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[924] + -0.712414572485187914 * R[927]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[901] + -0.411312745198935292 * R[919] + 0.822625490397870585 * R[931]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[904] + -0.411312745198935292 * R[922] + 0.822625490397870585 * R[934]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.118735762080864601 * R[900] + 0.118735762080864601 * R[903] + -0.237471524161729203 * R[905] + 0.118735762080864601 * R[918] + 0.118735762080864601 * R[921] + -0.237471524161729203 * R[923] + -0.237471524161729203 * R[930] + -0.237471524161729203 * R[933] + 0.474943048323458406 * R[935]);
+                o[2 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[902] + -0.411312745198935292 * R[920] + 0.822625490397870585 * R[932]);
+                o[2 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.205656372599467646 * R[900] + 0.205656372599467646 * R[903] + -0.205656372599467646 * R[918] + 0.205656372599467646 * R[921] + 0.411312745198935292 * R[930] + -0.411312745198935292 * R[933]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[913]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[916]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[912] + -0.411312745198935292 * R[915] + 0.822625490397870585 * R[917]);
+                o[3 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[914]);
+                o[3 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[912] + -0.712414572485187914 * R[915]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[901] + -0.712414572485187914 * R[919]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[904] + -0.712414572485187914 * R[922]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (-0.205656372599467646 * R[900] + -0.205656372599467646 * R[903] + 0.411312745198935292 * R[905] + 0.205656372599467646 * R[918] + 0.205656372599467646 * R[921] + -0.411312745198935292 * R[923]);
+                o[4 * st[0] + 3 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[902] + -0.712414572485187914 * R[920]);
+                o[4 * st[0] + 4 * st[1] + 1 * st[2] + 0 * st[3]] = fac * (0.356207286242593957 * R[900] + -0.356207286242593957 * R[903] + -0.356207286242593957 * R[918] + 0.356207286242593957 * R[921]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[1015]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[1018]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[1014] + -0.411312745198935292 * R[1017] + 0.822625490397870585 * R[1019]);
+                o[0 * st[0] + 3 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[1016]);
+                o[0 * st[0] + 4 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[1014] + -0.712414572485187914 * R[1017]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[1033]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[1036]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[1032] + -0.411312745198935292 * R[1035] + 0.822625490397870585 * R[1037]);
+                o[1 * st[0] + 3 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[1034]);
+                o[1 * st[0] + 4 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[1032] + -0.712414572485187914 * R[1035]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[1009] + -0.411312745198935292 * R[1027] + 0.822625490397870585 * R[1039]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[1012] + -0.411312745198935292 * R[1030] + 0.822625490397870585 * R[1042]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.118735762080864601 * R[1008] + 0.118735762080864601 * R[1011] + -0.237471524161729203 * R[1013] + 0.118735762080864601 * R[1026] + 0.118735762080864601 * R[1029] + -0.237471524161729203 * R[1031] + -0.237471524161729203 * R[1038] + -0.237471524161729203 * R[1041] + 0.474943048323458406 * R[1043]);
+                o[2 * st[0] + 3 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[1010] + -0.411312745198935292 * R[1028] + 0.822625490397870585 * R[1040]);
+                o[2 * st[0] + 4 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.205656372599467646 * R[1008] + 0.205656372599467646 * R[1011] + -0.205656372599467646 * R[1026] + 0.205656372599467646 * R[1029] + 0.411312745198935292 * R[1038] + -0.411312745198935292 * R[1041]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[1021]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[1024]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[1020] + -0.411312745198935292 * R[1023] + 0.822625490397870585 * R[1025]);
+                o[3 * st[0] + 3 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[1022]);
+                o[3 * st[0] + 4 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[1020] + -0.712414572485187914 * R[1023]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[1009] + -0.712414572485187914 * R[1027]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[1012] + -0.712414572485187914 * R[1030]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (-0.205656372599467646 * R[1008] + -0.205656372599467646 * R[1011] + 0.411312745198935292 * R[1013] + 0.205656372599467646 * R[1026] + 0.205656372599467646 * R[1029] + -0.411312745198935292 * R[1031]);
+                o[4 * st[0] + 3 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[1010] + -0.712414572485187914 * R[1028]);
+                o[4 * st[0] + 4 * st[1] + 1 * st[2] + 1 * st[3]] = fac * (0.356207286242593957 * R[1008] + -0.356207286242593957 * R[1011] + -0.356207286242593957 * R[1026] + 0.356207286242593957 * R[1029]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[871] + -0.411312745198935292 * R[979] + 0.822625490397870585 * R[1051]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[874] + -0.411312745198935292 * R[982] + 0.822625490397870585 * R[1054]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.118735762080864587 * R[870] + 0.118735762080864587 * R[978] + -0.237471524161729175 * R[1050] + 0.118735762080864587 * R[873] + 0.118735762080864587 * R[981] + -0.237471524161729175 * R[1053] + -0.237471524161729175 * R[875] + -0.237471524161729175 * R[983] + 0.47494304832345835 * R[1055]);
+                o[0 * st[0] + 3 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[872] + -0.411312745198935292 * R[980] + 0.822625490397870585 * R[1052]);
+                o[0 * st[0] + 4 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[870] + -0.205656372599467646 * R[978] + 0.411312745198935292 * R[1050] + 0.205656372599467646 * R[873] + 0.205656372599467646 * R[981] + -0.411312745198935292 * R[1053]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[889] + -0.411312745198935292 * R[997] + 0.822625490397870585 * R[1069]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[892] + -0.411312745198935292 * R[1000] + 0.822625490397870585 * R[1072]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.118735762080864587 * R[888] + 0.118735762080864587 * R[996] + -0.237471524161729175 * R[1068] + 0.118735762080864587 * R[891] + 0.118735762080864587 * R[999] + -0.237471524161729175 * R[1071] + -0.237471524161729175 * R[893] + -0.237471524161729175 * R[1001] + 0.47494304832345835 * R[1073]);
+                o[1 * st[0] + 3 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[890] + -0.411312745198935292 * R[998] + 0.822625490397870585 * R[1070]);
+                o[1 * st[0] + 4 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[888] + -0.205656372599467646 * R[996] + 0.411312745198935292 * R[1068] + 0.205656372599467646 * R[891] + 0.205656372599467646 * R[999] + -0.411312745198935292 * R[1071]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.118735762080864587 * R[865] + 0.118735762080864587 * R[973] + -0.237471524161729175 * R[1045] + 0.118735762080864587 * R[883] + 0.118735762080864587 * R[991] + -0.237471524161729175 * R[1063] + -0.237471524161729175 * R[895] + -0.237471524161729175 * R[1003] + 0.47494304832345835 * R[1075]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.118735762080864587 * R[868] + 0.118735762080864587 * R[976] + -0.237471524161729175 * R[1048] + 0.118735762080864587 * R[886] + 0.118735762080864587 * R[994] + -0.237471524161729175 * R[1066] + -0.237471524161729175 * R[898] + -0.237471524161729175 * R[1006] + 0.47494304832345835 * R[1078]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.0342760620999112628 * R[864] + -0.0342760620999112628 * R[972] + 0.0685521241998225256 * R[1044] + -0.0342760620999112628 * R[867] + -0.0342760620999112628 * R[975] + 0.0685521241998225256 * R[1047] + 0.0685521241998225256 * R[869] + 0.0685521241998225256 * R[977] + -0.137104248399645051 * R[1049] + -0.0342760620999112628 * R[882] + -0.0342760620999112628 * R[990] + 0.0685521241998225256 * R[1062] + -0.0342760620999112628 * R[885] + -0.0342760620999112628 * R[993] + 0.0685521241998225256 * R[1065] + 0.0685521241998225256 * R[887] + 0.0685521241998225256 * R[995] + -0.137104248399645051 * R[1067] + 0.0685521241998225256 * R[894] + 0.0685521241998225256 * R[1002] + -0.137104248399645051 * R[1074] + 0.0685521241998225256 * R[897] + 0.0685521241998225256 * R[1005] + -0.137104248399645051 * R[1077] + -0.137104248399645051 * R[899] + -0.137104248399645051 * R[1007] + 0.274208496799290102 * R[1079]);
+                o[2 * st[0] + 3 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.118735762080864587 * R[866] + 0.118735762080864587 * R[974] + -0.237471524161729175 * R[1046] + 0.118735762080864587 * R[884] + 0.118735762080864587 * R[992] + -0.237471524161729175 * R[1064] + -0.237471524161729175 * R[896] + -0.237471524161729175 * R[1004] + 0.47494304832345835 * R[1076]);
+                o[2 * st[0] + 4 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.0593678810404322937 * R[864] + 0.0593678810404322937 * R[972] + -0.118735762080864587 * R[1044] + -0.0593678810404322937 * R[867] + -0.0593678810404322937 * R[975] + 0.118735762080864587 * R[1047] + 0.0593678810404322937 * R[882] + 0.0593678810404322937 * R[990] + -0.118735762080864587 * R[1062] + -0.0593678810404322937 * R[885] + -0.0593678810404322937 * R[993] + 0.118735762080864587 * R[1065] + -0.118735762080864587 * R[894] + -0.118735762080864587 * R[1002] + 0.237471524161729175 * R[1074] + 0.118735762080864587 * R[897] + 0.118735762080864587 * R[1005] + -0.237471524161729175 * R[1077]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[877] + -0.411312745198935292 * R[985] + 0.822625490397870585 * R[1057]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[880] + -0.411312745198935292 * R[988] + 0.822625490397870585 * R[1060]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.118735762080864587 * R[876] + 0.118735762080864587 * R[984] + -0.237471524161729175 * R[1056] + 0.118735762080864587 * R[879] + 0.118735762080864587 * R[987] + -0.237471524161729175 * R[1059] + -0.237471524161729175 * R[881] + -0.237471524161729175 * R[989] + 0.47494304832345835 * R[1061]);
+                o[3 * st[0] + 3 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[878] + -0.411312745198935292 * R[986] + 0.822625490397870585 * R[1058]);
+                o[3 * st[0] + 4 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[876] + -0.205656372599467646 * R[984] + 0.411312745198935292 * R[1056] + 0.205656372599467646 * R[879] + 0.205656372599467646 * R[987] + -0.411312745198935292 * R[1059]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[865] + -0.205656372599467646 * R[973] + 0.411312745198935292 * R[1045] + 0.205656372599467646 * R[883] + 0.205656372599467646 * R[991] + -0.411312745198935292 * R[1063]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[868] + -0.205656372599467646 * R[976] + 0.411312745198935292 * R[1048] + 0.205656372599467646 * R[886] + 0.205656372599467646 * R[994] + -0.411312745198935292 * R[1066]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (0.0593678810404322937 * R[864] + 0.0593678810404322937 * R[972] + -0.118735762080864587 * R[1044] + 0.0593678810404322937 * R[867] + 0.0593678810404322937 * R[975] + -0.118735762080864587 * R[1047] + -0.118735762080864587 * R[869] + -0.118735762080864587 * R[977] + 0.237471524161729175 * R[1049] + -0.0593678810404322937 * R[882] + -0.0593678810404322937 * R[990] + 0.118735762080864587 * R[1062] + -0.0593678810404322937 * R[885] + -0.0593678810404322937 * R[993] + 0.118735762080864587 * R[1065] + 0.118735762080864587 * R[887] + 0.118735762080864587 * R[995] + -0.237471524161729175 * R[1067]);
+                o[4 * st[0] + 3 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[866] + -0.205656372599467646 * R[974] + 0.411312745198935292 * R[1046] + 0.205656372599467646 * R[884] + 0.205656372599467646 * R[992] + -0.411312745198935292 * R[1064]);
+                o[4 * st[0] + 4 * st[1] + 1 * st[2] + 2 * st[3]] = fac * (-0.102828186299733823 * R[864] + -0.102828186299733823 * R[972] + 0.205656372599467646 * R[1044] + 0.102828186299733823 * R[867] + 0.102828186299733823 * R[975] + -0.205656372599467646 * R[1047] + 0.102828186299733823 * R[882] + 0.102828186299733823 * R[990] + -0.205656372599467646 * R[1062] + -0.102828186299733823 * R[885] + -0.102828186299733823 * R[993] + 0.205656372599467646 * R[1065]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[943]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[946]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[942] + -0.411312745198935292 * R[945] + 0.822625490397870585 * R[947]);
+                o[0 * st[0] + 3 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[944]);
+                o[0 * st[0] + 4 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[942] + -0.712414572485187914 * R[945]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[961]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[964]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[960] + -0.411312745198935292 * R[963] + 0.822625490397870585 * R[965]);
+                o[1 * st[0] + 3 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[962]);
+                o[1 * st[0] + 4 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[960] + -0.712414572485187914 * R[963]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[937] + -0.411312745198935292 * R[955] + 0.822625490397870585 * R[967]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[940] + -0.411312745198935292 * R[958] + 0.822625490397870585 * R[970]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (0.118735762080864601 * R[936] + 0.118735762080864601 * R[939] + -0.237471524161729203 * R[941] + 0.118735762080864601 * R[954] + 0.118735762080864601 * R[957] + -0.237471524161729203 * R[959] + -0.237471524161729203 * R[966] + -0.237471524161729203 * R[969] + 0.474943048323458406 * R[971]);
+                o[2 * st[0] + 3 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[938] + -0.411312745198935292 * R[956] + 0.822625490397870585 * R[968]);
+                o[2 * st[0] + 4 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (-0.205656372599467646 * R[936] + 0.205656372599467646 * R[939] + -0.205656372599467646 * R[954] + 0.205656372599467646 * R[957] + 0.411312745198935292 * R[966] + -0.411312745198935292 * R[969]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[949]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[952]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[948] + -0.411312745198935292 * R[951] + 0.822625490397870585 * R[953]);
+                o[3 * st[0] + 3 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[950]);
+                o[3 * st[0] + 4 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[948] + -0.712414572485187914 * R[951]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[937] + -0.712414572485187914 * R[955]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[940] + -0.712414572485187914 * R[958]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (-0.205656372599467646 * R[936] + -0.205656372599467646 * R[939] + 0.411312745198935292 * R[941] + 0.205656372599467646 * R[954] + 0.205656372599467646 * R[957] + -0.411312745198935292 * R[959]);
+                o[4 * st[0] + 3 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[938] + -0.712414572485187914 * R[956]);
+                o[4 * st[0] + 4 * st[1] + 1 * st[2] + 3 * st[3]] = fac * (0.356207286242593957 * R[936] + -0.356207286242593957 * R[939] + -0.356207286242593957 * R[954] + 0.356207286242593957 * R[957]);
+                o[0 * st[0] + 0 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[871] + -0.712414572485187914 * R[979]);
+                o[0 * st[0] + 1 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[874] + -0.712414572485187914 * R[982]);
+                o[0 * st[0] + 2 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[870] + 0.205656372599467646 * R[978] + -0.205656372599467646 * R[873] + 0.205656372599467646 * R[981] + 0.411312745198935292 * R[875] + -0.411312745198935292 * R[983]);
+                o[0 * st[0] + 3 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[872] + -0.712414572485187914 * R[980]);
+                o[0 * st[0] + 4 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[870] + -0.356207286242593957 * R[978] + -0.356207286242593957 * R[873] + 0.356207286242593957 * R[981]);
+                o[1 * st[0] + 0 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[889] + -0.712414572485187914 * R[997]);
+                o[1 * st[0] + 1 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[892] + -0.712414572485187914 * R[1000]);
+                o[1 * st[0] + 2 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[888] + 0.205656372599467646 * R[996] + -0.205656372599467646 * R[891] + 0.205656372599467646 * R[999] + 0.411312745198935292 * R[893] + -0.411312745198935292 * R[1001]);
+                o[1 * st[0] + 3 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[890] + -0.712414572485187914 * R[998]);
+                o[1 * st[0] + 4 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[888] + -0.356207286242593957 * R[996] + -0.356207286242593957 * R[891] + 0.356207286242593957 * R[999]);
+                o[2 * st[0] + 0 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[865] + 0.205656372599467646 * R[973] + -0.205656372599467646 * R[883] + 0.205656372599467646 * R[991] + 0.411312745198935292 * R[895] + -0.411312745198935292 * R[1003]);
+                o[2 * st[0] + 1 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[868] + 0.205656372599467646 * R[976] + -0.205656372599467646 * R[886] + 0.205656372599467646 * R[994] + 0.411312745198935292 * R[898] + -0.411312745198935292 * R[1006]);
+                o[2 * st[0] + 2 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.0593678810404323007 * R[864] + -0.0593678810404323007 * R[972] + 0.0593678810404323007 * R[867] + -0.0593678810404323007 * R[975] + -0.118735762080864601 * R[869] + 0.118735762080864601 * R[977] + 0.0593678810404323007 * R[882] + -0.0593678810404323007 * R[990] + 0.0593678810404323007 * R[885] + -0.0593678810404323007 * R[993] + -0.118735762080864601 * R[887] + 0.118735762080864601 * R[995] + -0.118735762080864601 * R[894] + 0.118735762080864601 * R[1002] + -0.118735762080864601 * R[897] + 0.118735762080864601 * R[1005] + 0.237471524161729203 * R[899] + -0.237471524161729203 * R[1007]);
+                o[2 * st[0] + 3 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[866] + 0.205656372599467646 * R[974] + -0.205656372599467646 * R[884] + 0.205656372599467646 * R[992] + 0.411312745198935292 * R[896] + -0.411312745198935292 * R[1004]);
+                o[2 * st[0] + 4 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (-0.102828186299733823 * R[864] + 0.102828186299733823 * R[972] + 0.102828186299733823 * R[867] + -0.102828186299733823 * R[975] + -0.102828186299733823 * R[882] + 0.102828186299733823 * R[990] + 0.102828186299733823 * R[885] + -0.102828186299733823 * R[993] + 0.205656372599467646 * R[894] + -0.205656372599467646 * R[1002] + -0.205656372599467646 * R[897] + 0.205656372599467646 * R[1005]);
+                o[3 * st[0] + 0 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[877] + -0.712414572485187914 * R[985]);
+                o[3 * st[0] + 1 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[880] + -0.712414572485187914 * R[988]);
+                o[3 * st[0] + 2 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[876] + 0.205656372599467646 * R[984] + -0.205656372599467646 * R[879] + 0.205656372599467646 * R[987] + 0.411312745198935292 * R[881] + -0.411312745198935292 * R[989]);
+                o[3 * st[0] + 3 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[878] + -0.712414572485187914 * R[986]);
+                o[3 * st[0] + 4 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[876] + -0.356207286242593957 * R[984] + -0.356207286242593957 * R[879] + 0.356207286242593957 * R[987]);
+                o[4 * st[0] + 0 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[865] + -0.356207286242593957 * R[973] + -0.356207286242593957 * R[883] + 0.356207286242593957 * R[991]);
+                o[4 * st[0] + 1 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[868] + -0.356207286242593957 * R[976] + -0.356207286242593957 * R[886] + 0.356207286242593957 * R[994]);
+                o[4 * st[0] + 2 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (-0.102828186299733823 * R[864] + 0.102828186299733823 * R[972] + -0.102828186299733823 * R[867] + 0.102828186299733823 * R[975] + 0.205656372599467646 * R[869] + -0.205656372599467646 * R[977] + 0.102828186299733823 * R[882] + -0.102828186299733823 * R[990] + 0.102828186299733823 * R[885] + -0.102828186299733823 * R[993] + -0.205656372599467646 * R[887] + 0.205656372599467646 * R[995]);
+                o[4 * st[0] + 3 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[866] + -0.356207286242593957 * R[974] + -0.356207286242593957 * R[884] + 0.356207286242593957 * R[992]);
+                o[4 * st[0] + 4 * st[1] + 1 * st[2] + 4 * st[3]] = fac * (0.178103643121296978 * R[864] + -0.178103643121296978 * R[972] + -0.178103643121296978 * R[867] + 0.178103643121296978 * R[975] + -0.178103643121296978 * R[882] + 0.178103643121296978 * R[990] + 0.178103643121296978 * R[885] + -0.178103643121296978 * R[993]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[43] + -0.411312745198935292 * R[691] + 0.822625490397870585 * R[1123]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[46] + -0.411312745198935292 * R[694] + 0.822625490397870585 * R[1126]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.118735762080864587 * R[42] + 0.118735762080864587 * R[690] + -0.237471524161729175 * R[1122] + 0.118735762080864587 * R[45] + 0.118735762080864587 * R[693] + -0.237471524161729175 * R[1125] + -0.237471524161729175 * R[47] + -0.237471524161729175 * R[695] + 0.47494304832345835 * R[1127]);
+                o[0 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[44] + -0.411312745198935292 * R[692] + 0.822625490397870585 * R[1124]);
+                o[0 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.205656372599467646 * R[42] + -0.205656372599467646 * R[690] + 0.411312745198935292 * R[1122] + 0.205656372599467646 * R[45] + 0.205656372599467646 * R[693] + -0.411312745198935292 * R[1125]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[61] + -0.411312745198935292 * R[709] + 0.822625490397870585 * R[1141]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[64] + -0.411312745198935292 * R[712] + 0.822625490397870585 * R[1144]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.118735762080864587 * R[60] + 0.118735762080864587 * R[708] + -0.237471524161729175 * R[1140] + 0.118735762080864587 * R[63] + 0.118735762080864587 * R[711] + -0.237471524161729175 * R[1143] + -0.237471524161729175 * R[65] + -0.237471524161729175 * R[713] + 0.47494304832345835 * R[1145]);
+                o[1 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[62] + -0.411312745198935292 * R[710] + 0.822625490397870585 * R[1142]);
+                o[1 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.205656372599467646 * R[60] + -0.205656372599467646 * R[708] + 0.411312745198935292 * R[1140] + 0.205656372599467646 * R[63] + 0.205656372599467646 * R[711] + -0.411312745198935292 * R[1143]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.118735762080864587 * R[37] + 0.118735762080864587 * R[685] + -0.237471524161729175 * R[1117] + 0.118735762080864587 * R[55] + 0.118735762080864587 * R[703] + -0.237471524161729175 * R[1135] + -0.237471524161729175 * R[67] + -0.237471524161729175 * R[715] + 0.47494304832345835 * R[1147]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.118735762080864587 * R[40] + 0.118735762080864587 * R[688] + -0.237471524161729175 * R[1120] + 0.118735762080864587 * R[58] + 0.118735762080864587 * R[706] + -0.237471524161729175 * R[1138] + -0.237471524161729175 * R[70] + -0.237471524161729175 * R[718] + 0.47494304832345835 * R[1150]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.0342760620999112628 * R[36] + -0.0342760620999112628 * R[684] + 0.0685521241998225256 * R[1116] + -0.0342760620999112628 * R[39] + -0.0342760620999112628 * R[687] + 0.0685521241998225256 * R[1119] + 0.0685521241998225256 * R[41] + 0.0685521241998225256 * R[689] + -0.137104248399645051 * R[1121] + -0.0342760620999112628 * R[54] + -0.0342760620999112628 * R[702] + 0.0685521241998225256 * R[1134] + -0.0342760620999112628 * R[57] + -0.0342760620999112628 * R[705] + 0.0685521241998225256 * R[1137] + 0.0685521241998225256 * R[59] + 0.0685521241998225256 * R[707] + -0.137104248399645051 * R[1139] + 0.0685521241998225256 * R[66] + 0.0685521241998225256 * R[714] + -0.137104248399645051 * R[1146] + 0.0685521241998225256 * R[69] + 0.0685521241998225256 * R[717] + -0.137104248399645051 * R[1149] + -0.137104248399645051 * R[71] + -0.137104248399645051 * R[719] + 0.274208496799290102 * R[1151]);
+                o[2 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.118735762080864587 * R[38] + 0.118735762080864587 * R[686] + -0.237471524161729175 * R[1118] + 0.118735762080864587 * R[56] + 0.118735762080864587 * R[704] + -0.237471524161729175 * R[1136] + -0.237471524161729175 * R[68] + -0.237471524161729175 * R[716] + 0.47494304832345835 * R[1148]);
+                o[2 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.0593678810404322937 * R[36] + 0.0593678810404322937 * R[684] + -0.118735762080864587 * R[1116] + -0.0593678810404322937 * R[39] + -0.0593678810404322937 * R[687] + 0.118735762080864587 * R[1119] + 0.0593678810404322937 * R[54] + 0.0593678810404322937 * R[702] + -0.118735762080864587 * R[1134] + -0.0593678810404322937 * R[57] + -0.0593678810404322937 * R[705] + 0.118735762080864587 * R[1137] + -0.118735762080864587 * R[66] + -0.118735762080864587 * R[714] + 0.237471524161729175 * R[1146] + 0.118735762080864587 * R[69] + 0.118735762080864587 * R[717] + -0.237471524161729175 * R[1149]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[49] + -0.411312745198935292 * R[697] + 0.822625490397870585 * R[1129]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[52] + -0.411312745198935292 * R[700] + 0.822625490397870585 * R[1132]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.118735762080864587 * R[48] + 0.118735762080864587 * R[696] + -0.237471524161729175 * R[1128] + 0.118735762080864587 * R[51] + 0.118735762080864587 * R[699] + -0.237471524161729175 * R[1131] + -0.237471524161729175 * R[53] + -0.237471524161729175 * R[701] + 0.47494304832345835 * R[1133]);
+                o[3 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[50] + -0.411312745198935292 * R[698] + 0.822625490397870585 * R[1130]);
+                o[3 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.205656372599467646 * R[48] + -0.205656372599467646 * R[696] + 0.411312745198935292 * R[1128] + 0.205656372599467646 * R[51] + 0.205656372599467646 * R[699] + -0.411312745198935292 * R[1131]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.205656372599467646 * R[37] + -0.205656372599467646 * R[685] + 0.411312745198935292 * R[1117] + 0.205656372599467646 * R[55] + 0.205656372599467646 * R[703] + -0.411312745198935292 * R[1135]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.205656372599467646 * R[40] + -0.205656372599467646 * R[688] + 0.411312745198935292 * R[1120] + 0.205656372599467646 * R[58] + 0.205656372599467646 * R[706] + -0.411312745198935292 * R[1138]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (0.0593678810404322937 * R[36] + 0.0593678810404322937 * R[684] + -0.118735762080864587 * R[1116] + 0.0593678810404322937 * R[39] + 0.0593678810404322937 * R[687] + -0.118735762080864587 * R[1119] + -0.118735762080864587 * R[41] + -0.118735762080864587 * R[689] + 0.237471524161729175 * R[1121] + -0.0593678810404322937 * R[54] + -0.0593678810404322937 * R[702] + 0.118735762080864587 * R[1134] + -0.0593678810404322937 * R[57] + -0.0593678810404322937 * R[705] + 0.118735762080864587 * R[1137] + 0.118735762080864587 * R[59] + 0.118735762080864587 * R[707] + -0.237471524161729175 * R[1139]);
+                o[4 * st[0] + 3 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.205656372599467646 * R[38] + -0.205656372599467646 * R[686] + 0.411312745198935292 * R[1118] + 0.205656372599467646 * R[56] + 0.205656372599467646 * R[704] + -0.411312745198935292 * R[1136]);
+                o[4 * st[0] + 4 * st[1] + 2 * st[2] + 0 * st[3]] = fac * (-0.102828186299733823 * R[36] + -0.102828186299733823 * R[684] + 0.205656372599467646 * R[1116] + 0.102828186299733823 * R[39] + 0.102828186299733823 * R[687] + -0.205656372599467646 * R[1119] + 0.102828186299733823 * R[54] + 0.102828186299733823 * R[702] + -0.205656372599467646 * R[1134] + -0.102828186299733823 * R[57] + -0.102828186299733823 * R[705] + 0.205656372599467646 * R[1137]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[151] + -0.411312745198935292 * R[799] + 0.822625490397870585 * R[1231]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[154] + -0.411312745198935292 * R[802] + 0.822625490397870585 * R[1234]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.118735762080864587 * R[150] + 0.118735762080864587 * R[798] + -0.237471524161729175 * R[1230] + 0.118735762080864587 * R[153] + 0.118735762080864587 * R[801] + -0.237471524161729175 * R[1233] + -0.237471524161729175 * R[155] + -0.237471524161729175 * R[803] + 0.47494304832345835 * R[1235]);
+                o[0 * st[0] + 3 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[152] + -0.411312745198935292 * R[800] + 0.822625490397870585 * R[1232]);
+                o[0 * st[0] + 4 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.205656372599467646 * R[150] + -0.205656372599467646 * R[798] + 0.411312745198935292 * R[1230] + 0.205656372599467646 * R[153] + 0.205656372599467646 * R[801] + -0.411312745198935292 * R[1233]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[169] + -0.411312745198935292 * R[817] + 0.822625490397870585 * R[1249]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[172] + -0.411312745198935292 * R[820] + 0.822625490397870585 * R[1252]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.118735762080864587 * R[168] + 0.118735762080864587 * R[816] + -0.237471524161729175 * R[1248] + 0.118735762080864587 * R[171] + 0.118735762080864587 * R[819] + -0.237471524161729175 * R[1251] + -0.237471524161729175 * R[173] + -0.237471524161729175 * R[821] + 0.47494304832345835 * R[1253]);
+                o[1 * st[0] + 3 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[170] + -0.411312745198935292 * R[818] + 0.822625490397870585 * R[1250]);
+                o[1 * st[0] + 4 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.205656372599467646 * R[168] + -0.205656372599467646 * R[816] + 0.411312745198935292 * R[1248] + 0.205656372599467646 * R[171] + 0.205656372599467646 * R[819] + -0.411312745198935292 * R[1251]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.118735762080864587 * R[145] + 0.118735762080864587 * R[793] + -0.237471524161729175 * R[1225] + 0.118735762080864587 * R[163] + 0.118735762080864587 * R[811] + -0.237471524161729175 * R[1243] + -0.237471524161729175 * R[175] + -0.237471524161729175 * R[823] + 0.47494304832345835 * R[1255]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.118735762080864587 * R[148] + 0.118735762080864587 * R[796] + -0.237471524161729175 * R[1228] + 0.118735762080864587 * R[166] + 0.118735762080864587 * R[814] + -0.237471524161729175 * R[1246] + -0.237471524161729175 * R[178] + -0.237471524161729175 * R[826] + 0.47494304832345835 * R[1258]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.0342760620999112628 * R[144] + -0.0342760620999112628 * R[792] + 0.0685521241998225256 * R[1224] + -0.0342760620999112628 * R[147] + -0.0342760620999112628 * R[795] + 0.0685521241998225256 * R[1227] + 0.0685521241998225256 * R[149] + 0.0685521241998225256 * R[797] + -0.137104248399645051 * R[1229] + -0.0342760620999112628 * R[162] + -0.0342760620999112628 * R[810] + 0.0685521241998225256 * R[1242] + -0.0342760620999112628 * R[165] + -0.0342760620999112628 * R[813] + 0.0685521241998225256 * R[1245] + 0.0685521241998225256 * R[167] + 0.0685521241998225256 * R[815] + -0.137104248399645051 * R[1247] + 0.0685521241998225256 * R[174] + 0.0685521241998225256 * R[822] + -0.137104248399645051 * R[1254] + 0.0685521241998225256 * R[177] + 0.0685521241998225256 * R[825] + -0.137104248399645051 * R[1257] + -0.137104248399645051 * R[179] + -0.137104248399645051 * R[827] + 0.274208496799290102 * R[1259]);
+                o[2 * st[0] + 3 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.118735762080864587 * R[146] + 0.118735762080864587 * R[794] + -0.237471524161729175 * R[1226] + 0.118735762080864587 * R[164] + 0.118735762080864587 * R[812] + -0.237471524161729175 * R[1244] + -0.237471524161729175 * R[176] + -0.237471524161729175 * R[824] + 0.47494304832345835 * R[1256]);
+                o[2 * st[0] + 4 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.0593678810404322937 * R[144] + 0.0593678810404322937 * R[792] + -0.118735762080864587 * R[1224] + -0.0593678810404322937 * R[147] + -0.0593678810404322937 * R[795] + 0.118735762080864587 * R[1227] + 0.0593678810404322937 * R[162] + 0.0593678810404322937 * R[810] + -0.118735762080864587 * R[1242] + -0.0593678810404322937 * R[165] + -0.0593678810404322937 * R[813] + 0.118735762080864587 * R[1245] + -0.118735762080864587 * R[174] + -0.118735762080864587 * R[822] + 0.237471524161729175 * R[1254] + 0.118735762080864587 * R[177] + 0.118735762080864587 * R[825] + -0.237471524161729175 * R[1257]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[157] + -0.411312745198935292 * R[805] + 0.822625490397870585 * R[1237]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[160] + -0.411312745198935292 * R[808] + 0.822625490397870585 * R[1240]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.118735762080864587 * R[156] + 0.118735762080864587 * R[804] + -0.237471524161729175 * R[1236] + 0.118735762080864587 * R[159] + 0.118735762080864587 * R[807] + -0.237471524161729175 * R[1239] + -0.237471524161729175 * R[161] + -0.237471524161729175 * R[809] + 0.47494304832345835 * R[1241]);
+                o[3 * st[0] + 3 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[158] + -0.411312745198935292 * R[806] + 0.822625490397870585 * R[1238]);
+                o[3 * st[0] + 4 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.205656372599467646 * R[156] + -0.205656372599467646 * R[804] + 0.411312745198935292 * R[1236] + 0.205656372599467646 * R[159] + 0.205656372599467646 * R[807] + -0.411312745198935292 * R[1239]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.205656372599467646 * R[145] + -0.205656372599467646 * R[793] + 0.411312745198935292 * R[1225] + 0.205656372599467646 * R[163] + 0.205656372599467646 * R[811] + -0.411312745198935292 * R[1243]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.205656372599467646 * R[148] + -0.205656372599467646 * R[796] + 0.411312745198935292 * R[1228] + 0.205656372599467646 * R[166] + 0.205656372599467646 * R[814] + -0.411312745198935292 * R[1246]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (0.0593678810404322937 * R[144] + 0.0593678810404322937 * R[792] + -0.118735762080864587 * R[1224] + 0.0593678810404322937 * R[147] + 0.0593678810404322937 * R[795] + -0.118735762080864587 * R[1227] + -0.118735762080864587 * R[149] + -0.118735762080864587 * R[797] + 0.237471524161729175 * R[1229] + -0.0593678810404322937 * R[162] + -0.0593678810404322937 * R[810] + 0.118735762080864587 * R[1242] + -0.0593678810404322937 * R[165] + -0.0593678810404322937 * R[813] + 0.118735762080864587 * R[1245] + 0.118735762080864587 * R[167] + 0.118735762080864587 * R[815] + -0.237471524161729175 * R[1247]);
+                o[4 * st[0] + 3 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.205656372599467646 * R[146] + -0.205656372599467646 * R[794] + 0.411312745198935292 * R[1226] + 0.205656372599467646 * R[164] + 0.205656372599467646 * R[812] + -0.411312745198935292 * R[1244]);
+                o[4 * st[0] + 4 * st[1] + 2 * st[2] + 1 * st[3]] = fac * (-0.102828186299733823 * R[144] + -0.102828186299733823 * R[792] + 0.205656372599467646 * R[1224] + 0.102828186299733823 * R[147] + 0.102828186299733823 * R[795] + -0.205656372599467646 * R[1227] + 0.102828186299733823 * R[162] + 0.102828186299733823 * R[810] + -0.205656372599467646 * R[1242] + -0.102828186299733823 * R[165] + -0.102828186299733823 * R[813] + 0.205656372599467646 * R[1245]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.118735762080864601 * R[7] + 0.118735762080864601 * R[115] + -0.237471524161729203 * R[187] + 0.118735762080864601 * R[655] + 0.118735762080864601 * R[763] + -0.237471524161729203 * R[835] + -0.237471524161729203 * R[1087] + -0.237471524161729203 * R[1195] + 0.474943048323458406 * R[1267]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.118735762080864601 * R[10] + 0.118735762080864601 * R[118] + -0.237471524161729203 * R[190] + 0.118735762080864601 * R[658] + 0.118735762080864601 * R[766] + -0.237471524161729203 * R[838] + -0.237471524161729203 * R[1090] + -0.237471524161729203 * R[1198] + 0.474943048323458406 * R[1270]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.0342760620999112628 * R[6] + -0.0342760620999112628 * R[114] + 0.0685521241998225256 * R[186] + -0.0342760620999112628 * R[654] + -0.0342760620999112628 * R[762] + 0.0685521241998225256 * R[834] + 0.0685521241998225256 * R[1086] + 0.0685521241998225256 * R[1194] + -0.137104248399645051 * R[1266] + -0.0342760620999112628 * R[9] + -0.0342760620999112628 * R[117] + 0.0685521241998225256 * R[189] + -0.0342760620999112628 * R[657] + -0.0342760620999112628 * R[765] + 0.0685521241998225256 * R[837] + 0.0685521241998225256 * R[1089] + 0.0685521241998225256 * R[1197] + -0.137104248399645051 * R[1269] + 0.0685521241998225256 * R[11] + 0.0685521241998225256 * R[119] + -0.137104248399645051 * R[191] + 0.0685521241998225256 * R[659] + 0.0685521241998225256 * R[767] + -0.137104248399645051 * R[839] + -0.137104248399645051 * R[1091] + -0.137104248399645051 * R[1199] + 0.274208496799290102 * R[1271]);
+                o[0 * st[0] + 3 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.118735762080864601 * R[8] + 0.118735762080864601 * R[116] + -0.237471524161729203 * R[188] + 0.118735762080864601 * R[656] + 0.118735762080864601 * R[764] + -0.237471524161729203 * R[836] + -0.237471524161729203 * R[1088] + -0.237471524161729203 * R[1196] + 0.474943048323458406 * R[1268]);
+                o[0 * st[0] + 4 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0593678810404323007 * R[6] + 0.0593678810404323007 * R[114] + -0.118735762080864601 * R[186] + 0.0593678810404323007 * R[654] + 0.0593678810404323007 * R[762] + -0.118735762080864601 * R[834] + -0.118735762080864601 * R[1086] + -0.118735762080864601 * R[1194] + 0.237471524161729203 * R[1266] + -0.0593678810404323007 * R[9] + -0.0593678810404323007 * R[117] + 0.118735762080864601 * R[189] + -0.0593678810404323007 * R[657] + -0.0593678810404323007 * R[765] + 0.118735762080864601 * R[837] + 0.118735762080864601 * R[1089] + 0.118735762080864601 * R[1197] + -0.237471524161729203 * R[1269]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.118735762080864601 * R[25] + 0.118735762080864601 * R[133] + -0.237471524161729203 * R[205] + 0.118735762080864601 * R[673] + 0.118735762080864601 * R[781] + -0.237471524161729203 * R[853] + -0.237471524161729203 * R[1105] + -0.237471524161729203 * R[1213] + 0.474943048323458406 * R[1285]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.118735762080864601 * R[28] + 0.118735762080864601 * R[136] + -0.237471524161729203 * R[208] + 0.118735762080864601 * R[676] + 0.118735762080864601 * R[784] + -0.237471524161729203 * R[856] + -0.237471524161729203 * R[1108] + -0.237471524161729203 * R[1216] + 0.474943048323458406 * R[1288]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.0342760620999112628 * R[24] + -0.0342760620999112628 * R[132] + 0.0685521241998225256 * R[204] + -0.0342760620999112628 * R[672] + -0.0342760620999112628 * R[780] + 0.0685521241998225256 * R[852] + 0.0685521241998225256 * R[1104] + 0.0685521241998225256 * R[1212] + -0.137104248399645051 * R[1284] + -0.0342760620999112628 * R[27] + -0.0342760620999112628 * R[135] + 0.0685521241998225256 * R[207] + -0.0342760620999112628 * R[675] + -0.0342760620999112628 * R[783] + 0.0685521241998225256 * R[855] + 0.0685521241998225256 * R[1107] + 0.0685521241998225256 * R[1215] + -0.137104248399645051 * R[1287] + 0.0685521241998225256 * R[29] + 0.0685521241998225256 * R[137] + -0.137104248399645051 * R[209] + 0.0685521241998225256 * R[677] + 0.0685521241998225256 * R[785] + -0.137104248399645051 * R[857] + -0.137104248399645051 * R[1109] + -0.137104248399645051 * R[1217] + 0.274208496799290102 * R[1289]);
+                o[1 * st[0] + 3 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.118735762080864601 * R[26] + 0.118735762080864601 * R[134] + -0.237471524161729203 * R[206] + 0.118735762080864601 * R[674] + 0.118735762080864601 * R[782] + -0.237471524161729203 * R[854] + -0.237471524161729203 * R[1106] + -0.237471524161729203 * R[1214] + 0.474943048323458406 * R[1286]);
+                o[1 * st[0] + 4 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0593678810404323007 * R[24] + 0.0593678810404323007 * R[132] + -0.118735762080864601 * R[204] + 0.0593678810404323007 * R[672] + 0.0593678810404323007 * R[780] + -0.118735762080864601 * R[852] + -0.118735762080864601 * R[1104] + -0.118735762080864601 * R[1212] + 0.237471524161729203 * R[1284] + -0.0593678810404323007 * R[27] + -0.0593678810404323007 * R[135] + 0.118735762080864601 * R[207] + -0.0593678810404323007 * R[675] + -0.0593678810404323007 * R[783] + 0.118735762080864601 * R[855] + 0.118735762080864601 * R[1107] + 0.118735762080864601 * R[1215] + -0.237471524161729203 * R[1287]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.0342760620999112628 * R[1] + -0.0342760620999112628 * R[109] + 0.0685521241998225256 * R[181] + -0.0342760620999112628 * R[649] + -0.0342760620999112628 * R[757] + 0.0685521241998225256 * R[829] + 0.0685521241998225256 * R[1081] + 0.0685521241998225256 * R[1189] + -0.137104248399645051 * R[1261] + -0.0342760620999112628 * R[19] + -0.0342760620999112628 * R[127] + 0.0685521241998225256 * R[199] + -0.0342760620999112628 * R[667] + -0.0342760620999112628 * R[775] + 0.0685521241998225256 * R[847] + 0.0685521241998225256 * R[1099] + 0.0685521241998225256 * R[1207] + -0.137104248399645051 * R[1279] + 0.0685521241998225256 * R[31] + 0.0685521241998225256 * R[139] + -0.137104248399645051 * R[211] + 0.0685521241998225256 * R[679] + 0.0685521241998225256 * R[787] + -0.137104248399645051 * R[859] + -0.137104248399645051 * R[1111] + -0.137104248399645051 * R[1219] + 0.274208496799290102 * R[1291]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.0342760620999112628 * R[4] + -0.0342760620999112628 * R[112] + 0.0685521241998225256 * R[184] + -0.0342760620999112628 * R[652] + -0.0342760620999112628 * R[760] + 0.0685521241998225256 * R[832] + 0.0685521241998225256 * R[1084] + 0.0685521241998225256 * R[1192] + -0.137104248399645051 * R[1264] + -0.0342760620999112628 * R[22] + -0.0342760620999112628 * R[130] + 0.0685521241998225256 * R[202] + -0.0342760620999112628 * R[670] + -0.0342760620999112628 * R[778] + 0.0685521241998225256 * R[850] + 0.0685521241998225256 * R[1102] + 0.0685521241998225256 * R[1210] + -0.137104248399645051 * R[1282] + 0.0685521241998225256 * R[34] + 0.0685521241998225256 * R[142] + -0.137104248399645051 * R[214] + 0.0685521241998225256 * R[682] + 0.0685521241998225256 * R[790] + -0.137104248399645051 * R[862] + -0.137104248399645051 * R[1114] + -0.137104248399645051 * R[1222] + 0.274208496799290102 * R[1294]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.00989464684007204665 * R[0] + 0.00989464684007204665 * R[108] + -0.0197892936801440933 * R[180] + 0.00989464684007204665 * R[648] + 0.00989464684007204665 * R[756] + -0.0197892936801440933 * R[828] + -0.0197892936801440933 * R[1080] + -0.0197892936801440933 * R[1188] + 0.0395785873602881866 * R[1260] + 0.00989464684007204665 * R[3] + 0.00989464684007204665 * R[111] + -0.0197892936801440933 * R[183] + 0.00989464684007204665 * R[651] + 0.00989464684007204665 * R[759] + -0.0197892936801440933 * R[831] + -0.0197892936801440933 * R[1083] + -0.0197892936801440933 * R[1191] + 0.0395785873602881866 * R[1263] + -0.0197892936801440933 * R[5] + -0.0197892936801440933 * R[113] + 0.0395785873602881866 * R[185] + -0.0197892936801440933 * R[653] + -0.0197892936801440933 * R[761] + 0.0395785873602881866 * R[833] + 0.0395785873602881866 * R[1085] + 0.0395785873602881866 * R[1193] + -0.0791571747205763732 * R[1265] + 0.00989464684007204665 * R[18] + 0.00989464684007204665 * R[126] + -0.0197892936801440933 * R[198] + 0.00989464684007204665 * R[666] + 0.00989464684007204665 * R[774] + -0.0197892936801440933 * R[846] + -0.0197892936801440933 * R[1098] + -0.0197892936801440933 * R[1206] + 0.0395785873602881866 * R[1278] + 0.00989464684007204665 * R[21] + 0.00989464684007204665 * R[129] + -0.0197892936801440933 * R[201] + 0.00989464684007204665 * R[669] + 0.00989464684007204665 * R[777] + -0.0197892936801440933 * R[849] + -0.0197892936801440933 * R[1101] + -0.0197892936801440933 * R[1209] + 0.0395785873602881866 * R[1281] + -0.0197892936801440933 * R[23] + -0.0197892936801440933 * R[131] + 0.0395785873602881866 * R[203] + -0.0197892936801440933 * R[671] + -0.0197892936801440933 * R[779] + 0.0395785873602881866 * R[851] + 0.0395785873602881866 * R[1103] + 0.0395785873602881866 * R[1211] + -0.0791571747205763732 * R[1283] + -0.0197892936801440933 * R[30] + -0.0197892936801440933 * R[138] + 0.0395785873602881866 * R[210] + -0.0197892936801440933 * R[678] + -0.0197892936801440933 * R[786] + 0.0395785873602881866 * R[858] + 0.0395785873602881866 * R[1110] + 0.0395785873602881866 * R[1218] + -0.0791571747205763732 * R[1290] + -0.0197892936801440933 * R[33] + -0.0197892936801440933 * R[141] + 0.0395785873602881866 * R[213] + -0.0197892936801440933 * R[681] + -0.0197892936801440933 * R[789] + 0.0395785873602881866 * R[861] + 0.0395785873602881866 * R[1113] + 0.0395785873602881866 * R[1221] + -0.0791571747205763732 * R[1293] + 0.0395785873602881866 * R[35] + 0.0395785873602881866 * R[143] + -0.0791571747205763732 * R[215] + 0.0395785873602881866 * R[683] + 0.0395785873602881866 * R[791] + -0.0791571747205763732 * R[863] + -0.0791571747205763732 * R[1115] + -0.0791571747205763732 * R[1223] + 0.158314349441152746 * R[1295]);
+                o[2 * st[0] + 3 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.0342760620999112628 * R[2] + -0.0342760620999112628 * R[110] + 0.0685521241998225256 * R[182] + -0.0342760620999112628 * R[650] + -0.0342760620999112628 * R[758] + 0.0685521241998225256 * R[830] + 0.0685521241998225256 * R[1082] + 0.0685521241998225256 * R[1190] + -0.137104248399645051 * R[1262] + -0.0342760620999112628 * R[20] + -0.0342760620999112628 * R[128] + 0.0685521241998225256 * R[200] + -0.0342760620999112628 * R[668] + -0.0342760620999112628 * R[776] + 0.0685521241998225256 * R[848] + 0.0685521241998225256 * R[1100] + 0.0685521241998225256 * R[1208] + -0.137104248399645051 * R[1280] + 0.0685521241998225256 * R[32] + 0.0685521241998225256 * R[140] + -0.137104248399645051 * R[212] + 0.0685521241998225256 * R[680] + 0.0685521241998225256 * R[788] + -0.137104248399645051 * R[860] + -0.137104248399645051 * R[1112] + -0.137104248399645051 * R[1220] + 0.274208496799290102 * R[1292]);
+                o[2 * st[0] + 4 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.0171380310499556314 * R[0] + -0.0171380310499556314 * R[108] + 0.0342760620999112628 * R[180] + -0.0171380310499556314 * R[648] + -0.0171380310499556314 * R[756] + 0.0342760620999112628 * R[828] + 0.0342760620999112628 * R[1080] + 0.0342760620999112628 * R[1188] + -0.0685521241998225256 * R[1260] + 0.0171380310499556314 * R[3] + 0.0171380310499556314 * R[111] + -0.0342760620999112628 * R[183] + 0.0171380310499556314 * R[651] + 0.0171380310499556314 * R[759] + -0.0342760620999112628 * R[831] + -0.0342760620999112628 * R[1083] + -0.0342760620999112628 * R[1191] + 0.0685521241998225256 * R[1263] + -0.0171380310499556314 * R[18] + -0.0171380310499556314 * R[126] + 0.0342760620999112628 * R[198] + -0.0171380310499556314 * R[666] + -0.0171380310499556314 * R[774] + 0.0342760620999112628 * R[846] + 0.0342760620999112628 * R[1098] + 0.0342760620999112628 * R[1206] + -0.0685521241998225256 * R[1278] + 0.0171380310499556314 * R[21] + 0.0171380310499556314 * R[129] + -0.0342760620999112628 * R[201] + 0.0171380310499556314 * R[669] + 0.0171380310499556314 * R[777] + -0.0342760620999112628 * R[849] + -0.0342760620999112628 * R[1101] + -0.0342760620999112628 * R[1209] + 0.0685521241998225256 * R[1281] + 0.0342760620999112628 * R[30] + 0.0342760620999112628 * R[138] + -0.0685521241998225256 * R[210] + 0.0342760620999112628 * R[678] + 0.0342760620999112628 * R[786] + -0.0685521241998225256 * R[858] + -0.0685521241998225256 * R[1110] + -0.0685521241998225256 * R[1218] + 0.137104248399645051 * R[1290] + -0.0342760620999112628 * R[33] + -0.0342760620999112628 * R[141] + 0.0685521241998225256 * R[213] + -0.0342760620999112628 * R[681] + -0.0342760620999112628 * R[789] + 0.0685521241998225256 * R[861] + 0.0685521241998225256 * R[1113] + 0.0685521241998225256 * R[1221] + -0.137104248399645051 * R[1293]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.118735762080864601 * R[13] + 0.118735762080864601 * R[121] + -0.237471524161729203 * R[193] + 0.118735762080864601 * R[661] + 0.118735762080864601 * R[769] + -0.237471524161729203 * R[841] + -0.237471524161729203 * R[1093] + -0.237471524161729203 * R[1201] + 0.474943048323458406 * R[1273]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.118735762080864601 * R[16] + 0.118735762080864601 * R[124] + -0.237471524161729203 * R[196] + 0.118735762080864601 * R[664] + 0.118735762080864601 * R[772] + -0.237471524161729203 * R[844] + -0.237471524161729203 * R[1096] + -0.237471524161729203 * R[1204] + 0.474943048323458406 * R[1276]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.0342760620999112628 * R[12] + -0.0342760620999112628 * R[120] + 0.0685521241998225256 * R[192] + -0.0342760620999112628 * R[660] + -0.0342760620999112628 * R[768] + 0.0685521241998225256 * R[840] + 0.0685521241998225256 * R[1092] + 0.0685521241998225256 * R[1200] + -0.137104248399645051 * R[1272] + -0.0342760620999112628 * R[15] + -0.0342760620999112628 * R[123] + 0.0685521241998225256 * R[195] + -0.0342760620999112628 * R[663] + -0.0342760620999112628 * R[771] + 0.0685521241998225256 * R[843] + 0.0685521241998225256 * R[1095] + 0.0685521241998225256 * R[1203] + -0.137104248399645051 * R[1275] + 0.0685521241998225256 * R[17] + 0.0685521241998225256 * R[125] + -0.137104248399645051 * R[197] + 0.0685521241998225256 * R[665] + 0.0685521241998225256 * R[773] + -0.137104248399645051 * R[845] + -0.137104248399645051 * R[1097] + -0.137104248399645051 * R[1205] + 0.274208496799290102 * R[1277]);
+                o[3 * st[0] + 3 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.118735762080864601 * R[14] + 0.118735762080864601 * R[122] + -0.237471524161729203 * R[194] + 0.118735762080864601 * R[662] + 0.118735762080864601 * R[770] + -0.237471524161729203 * R[842] + -0.237471524161729203 * R[1094] + -0.237471524161729203 * R[1202] + 0.474943048323458406 * R[1274]);
+                o[3 * st[0] + 4 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0593678810404323007 * R[12] + 0.0593678810404323007 * R[120] + -0.118735762080864601 * R[192] + 0.0593678810404323007 * R[660] + 0.0593678810404323007 * R[768] + -0.118735762080864601 * R[840] + -0.118735762080864601 * R[1092] + -0.118735762080864601 * R[1200] + 0.237471524161729203 * R[1272] + -0.0593678810404323007 * R[15] + -0.0593678810404323007 * R[123] + 0.118735762080864601 * R[195] + -0.0593678810404323007 * R[663] + -0.0593678810404323007 * R[771] + 0.118735762080864601 * R[843] + 0.118735762080864601 * R[1095] + 0.118735762080864601 * R[1203] + -0.237471524161729203 * R[1275]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0593678810404323007 * R[1] + 0.0593678810404323007 * R[109] + -0.118735762080864601 * R[181] + 0.0593678810404323007 * R[649] + 0.0593678810404323007 * R[757] + -0.118735762080864601 * R[829] + -0.118735762080864601 * R[1081] + -0.118735762080864601 * R[1189] + 0.237471524161729203 * R[1261] + -0.0593678810404323007 * R[19] + -0.0593678810404323007 * R[127] + 0.118735762080864601 * R[199] + -0.0593678810404323007 * R[667] + -0.0593678810404323007 * R[775] + 0.118735762080864601 * R[847] + 0.118735762080864601 * R[1099] + 0.118735762080864601 * R[1207] + -0.237471524161729203 * R[1279]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0593678810404323007 * R[4] + 0.0593678810404323007 * R[112] + -0.118735762080864601 * R[184] + 0.0593678810404323007 * R[652] + 0.0593678810404323007 * R[760] + -0.118735762080864601 * R[832] + -0.118735762080864601 * R[1084] + -0.118735762080864601 * R[1192] + 0.237471524161729203 * R[1264] + -0.0593678810404323007 * R[22] + -0.0593678810404323007 * R[130] + 0.118735762080864601 * R[202] + -0.0593678810404323007 * R[670] + -0.0593678810404323007 * R[778] + 0.118735762080864601 * R[850] + 0.118735762080864601 * R[1102] + 0.118735762080864601 * R[1210] + -0.237471524161729203 * R[1282]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (-0.0171380310499556314 * R[0] + -0.0171380310499556314 * R[108] + 0.0342760620999112628 * R[180] + -0.0171380310499556314 * R[648] + -0.0171380310499556314 * R[756] + 0.0342760620999112628 * R[828] + 0.0342760620999112628 * R[1080] + 0.0342760620999112628 * R[1188] + -0.0685521241998225256 * R[1260] + -0.0171380310499556314 * R[3] + -0.0171380310499556314 * R[111] + 0.0342760620999112628 * R[183] + -0.0171380310499556314 * R[651] + -0.0171380310499556314 * R[759] + 0.0342760620999112628 * R[831] + 0.0342760620999112628 * R[1083] + 0.0342760620999112628 * R[1191] + -0.0685521241998225256 * R[1263] + 0.0342760620999112628 * R[5] + 0.0342760620999112628 * R[113] + -0.0685521241998225256 * R[185] + 0.0342760620999112628 * R[653] + 0.0342760620999112628 * R[761] + -0.0685521241998225256 * R[833] + -0.0685521241998225256 * R[1085] + -0.0685521241998225256 * R[1193] + 0.137104248399645051 * R[1265] + 0.0171380310499556314 * R[18] + 0.0171380310499556314 * R[126] + -0.0342760620999112628 * R[198] + 0.0171380310499556314 * R[666] + 0.0171380310499556314 * R[774] + -0.0342760620999112628 * R[846] + -0.0342760620999112628 * R[1098] + -0.0342760620999112628 * R[1206] + 0.0685521241998225256 * R[1278] + 0.0171380310499556314 * R[21] + 0.0171380310499556314 * R[129] + -0.0342760620999112628 * R[201] + 0.0171380310499556314 * R[669] + 0.0171380310499556314 * R[777] + -0.0342760620999112628 * R[849] + -0.0342760620999112628 * R[1101] + -0.0342760620999112628 * R[1209] + 0.0685521241998225256 * R[1281] + -0.0342760620999112628 * R[23] + -0.0342760620999112628 * R[131] + 0.0685521241998225256 * R[203] + -0.0342760620999112628 * R[671] + -0.0342760620999112628 * R[779] + 0.0685521241998225256 * R[851] + 0.0685521241998225256 * R[1103] + 0.0685521241998225256 * R[1211] + -0.137104248399645051 * R[1283]);
+                o[4 * st[0] + 3 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0593678810404323007 * R[2] + 0.0593678810404323007 * R[110] + -0.118735762080864601 * R[182] + 0.0593678810404323007 * R[650] + 0.0593678810404323007 * R[758] + -0.118735762080864601 * R[830] + -0.118735762080864601 * R[1082] + -0.118735762080864601 * R[1190] + 0.237471524161729203 * R[1262] + -0.0593678810404323007 * R[20] + -0.0593678810404323007 * R[128] + 0.118735762080864601 * R[200] + -0.0593678810404323007 * R[668] + -0.0593678810404323007 * R[776] + 0.118735762080864601 * R[848] + 0.118735762080864601 * R[1100] + 0.118735762080864601 * R[1208] + -0.237471524161729203 * R[1280]);
+                o[4 * st[0] + 4 * st[1] + 2 * st[2] + 2 * st[3]] = fac * (0.0296839405202161503 * R[0] + 0.0296839405202161503 * R[108] + -0.0593678810404323007 * R[180] + 0.0296839405202161503 * R[648] + 0.0296839405202161503 * R[756] + -0.0593678810404323007 * R[828] + -0.0593678810404323007 * R[1080] + -0.0593678810404323007 * R[1188] + 0.118735762080864601 * R[1260] + -0.0296839405202161503 * R[3] + -0.0296839405202161503 * R[111] + 0.0593678810404323007 * R[183] + -0.0296839405202161503 * R[651] + -0.0296839405202161503 * R[759] + 0.0593678810404323007 * R[831] + 0.0593678810404323007 * R[1083] + 0.0593678810404323007 * R[1191] + -0.118735762080864601 * R[1263] + -0.0296839405202161503 * R[18] + -0.0296839405202161503 * R[126] + 0.0593678810404323007 * R[198] + -0.0296839405202161503 * R[666] + -0.0296839405202161503 * R[774] + 0.0593678810404323007 * R[846] + 0.0593678810404323007 * R[1098] + 0.0593678810404323007 * R[1206] + -0.118735762080864601 * R[1278] + 0.0296839405202161503 * R[21] + 0.0296839405202161503 * R[129] + -0.0593678810404323007 * R[201] + 0.0296839405202161503 * R[669] + 0.0296839405202161503 * R[777] + -0.0593678810404323007 * R[849] + -0.0593678810404323007 * R[1101] + -0.0593678810404323007 * R[1209] + 0.118735762080864601 * R[1281]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[79] + -0.411312745198935292 * R[727] + 0.822625490397870585 * R[1159]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[82] + -0.411312745198935292 * R[730] + 0.822625490397870585 * R[1162]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (0.118735762080864587 * R[78] + 0.118735762080864587 * R[726] + -0.237471524161729175 * R[1158] + 0.118735762080864587 * R[81] + 0.118735762080864587 * R[729] + -0.237471524161729175 * R[1161] + -0.237471524161729175 * R[83] + -0.237471524161729175 * R[731] + 0.47494304832345835 * R[1163]);
+                o[0 * st[0] + 3 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[80] + -0.411312745198935292 * R[728] + 0.822625490397870585 * R[1160]);
+                o[0 * st[0] + 4 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.205656372599467646 * R[78] + -0.205656372599467646 * R[726] + 0.411312745198935292 * R[1158] + 0.205656372599467646 * R[81] + 0.205656372599467646 * R[729] + -0.411312745198935292 * R[1161]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[97] + -0.411312745198935292 * R[745] + 0.822625490397870585 * R[1177]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[100] + -0.411312745198935292 * R[748] + 0.822625490397870585 * R[1180]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (0.118735762080864587 * R[96] + 0.118735762080864587 * R[744] + -0.237471524161729175 * R[1176] + 0.118735762080864587 * R[99] + 0.118735762080864587 * R[747] + -0.237471524161729175 * R[1179] + -0.237471524161729175 * R[101] + -0.237471524161729175 * R[749] + 0.47494304832345835 * R[1181]);
+                o[1 * st[0] + 3 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[98] + -0.411312745198935292 * R[746] + 0.822625490397870585 * R[1178]);
+                o[1 * st[0] + 4 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.205656372599467646 * R[96] + -0.205656372599467646 * R[744] + 0.411312745198935292 * R[1176] + 0.205656372599467646 * R[99] + 0.205656372599467646 * R[747] + -0.411312745198935292 * R[1179]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (0.118735762080864587 * R[73] + 0.118735762080864587 * R[721] + -0.237471524161729175 * R[1153] + 0.118735762080864587 * R[91] + 0.118735762080864587 * R[739] + -0.237471524161729175 * R[1171] + -0.237471524161729175 * R[103] + -0.237471524161729175 * R[751] + 0.47494304832345835 * R[1183]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (0.118735762080864587 * R[76] + 0.118735762080864587 * R[724] + -0.237471524161729175 * R[1156] + 0.118735762080864587 * R[94] + 0.118735762080864587 * R[742] + -0.237471524161729175 * R[1174] + -0.237471524161729175 * R[106] + -0.237471524161729175 * R[754] + 0.47494304832345835 * R[1186]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.0342760620999112628 * R[72] + -0.0342760620999112628 * R[720] + 0.0685521241998225256 * R[1152] + -0.0342760620999112628 * R[75] + -0.0342760620999112628 * R[723] + 0.0685521241998225256 * R[1155] + 0.0685521241998225256 * R[77] + 0.0685521241998225256 * R[725] + -0.137104248399645051 * R[1157] + -0.0342760620999112628 * R[90] + -0.0342760620999112628 * R[738] + 0.0685521241998225256 * R[1170] + -0.0342760620999112628 * R[93] + -0.0342760620999112628 * R[741] + 0.0685521241998225256 * R[1173] + 0.0685521241998225256 * R[95] + 0.0685521241998225256 * R[743] + -0.137104248399645051 * R[1175] + 0.0685521241998225256 * R[102] + 0.0685521241998225256 * R[750] + -0.137104248399645051 * R[1182] + 0.0685521241998225256 * R[105] + 0.0685521241998225256 * R[753] + -0.137104248399645051 * R[1185] + -0.137104248399645051 * R[107] + -0.137104248399645051 * R[755] + 0.274208496799290102 * R[1187]);
+                o[2 * st[0] + 3 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (0.118735762080864587 * R[74] + 0.118735762080864587 * R[722] + -0.237471524161729175 * R[1154] + 0.118735762080864587 * R[92] + 0.118735762080864587 * R[740] + -0.237471524161729175 * R[1172] + -0.237471524161729175 * R[104] + -0.237471524161729175 * R[752] + 0.47494304832345835 * R[1184]);
+                o[2 * st[0] + 4 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (0.0593678810404322937 * R[72] + 0.0593678810404322937 * R[720] + -0.118735762080864587 * R[1152] + -0.0593678810404322937 * R[75] + -0.0593678810404322937 * R[723] + 0.118735762080864587 * R[1155] + 0.0593678810404322937 * R[90] + 0.0593678810404322937 * R[738] + -0.118735762080864587 * R[1170] + -0.0593678810404322937 * R[93] + -0.0593678810404322937 * R[741] + 0.118735762080864587 * R[1173] + -0.118735762080864587 * R[102] + -0.118735762080864587 * R[750] + 0.237471524161729175 * R[1182] + 0.118735762080864587 * R[105] + 0.118735762080864587 * R[753] + -0.237471524161729175 * R[1185]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[85] + -0.411312745198935292 * R[733] + 0.822625490397870585 * R[1165]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[88] + -0.411312745198935292 * R[736] + 0.822625490397870585 * R[1168]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (0.118735762080864587 * R[84] + 0.118735762080864587 * R[732] + -0.237471524161729175 * R[1164] + 0.118735762080864587 * R[87] + 0.118735762080864587 * R[735] + -0.237471524161729175 * R[1167] + -0.237471524161729175 * R[89] + -0.237471524161729175 * R[737] + 0.47494304832345835 * R[1169]);
+                o[3 * st[0] + 3 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[86] + -0.411312745198935292 * R[734] + 0.822625490397870585 * R[1166]);
+                o[3 * st[0] + 4 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.205656372599467646 * R[84] + -0.205656372599467646 * R[732] + 0.411312745198935292 * R[1164] + 0.205656372599467646 * R[87] + 0.205656372599467646 * R[735] + -0.411312745198935292 * R[1167]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.205656372599467646 * R[73] + -0.205656372599467646 * R[721] + 0.411312745198935292 * R[1153] + 0.205656372599467646 * R[91] + 0.205656372599467646 * R[739] + -0.411312745198935292 * R[1171]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.205656372599467646 * R[76] + -0.205656372599467646 * R[724] + 0.411312745198935292 * R[1156] + 0.205656372599467646 * R[94] + 0.205656372599467646 * R[742] + -0.411312745198935292 * R[1174]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (0.0593678810404322937 * R[72] + 0.0593678810404322937 * R[720] + -0.118735762080864587 * R[1152] + 0.0593678810404322937 * R[75] + 0.0593678810404322937 * R[723] + -0.118735762080864587 * R[1155] + -0.118735762080864587 * R[77] + -0.118735762080864587 * R[725] + 0.237471524161729175 * R[1157] + -0.0593678810404322937 * R[90] + -0.0593678810404322937 * R[738] + 0.118735762080864587 * R[1170] + -0.0593678810404322937 * R[93] + -0.0593678810404322937 * R[741] + 0.118735762080864587 * R[1173] + 0.118735762080864587 * R[95] + 0.118735762080864587 * R[743] + -0.237471524161729175 * R[1175]);
+                o[4 * st[0] + 3 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.205656372599467646 * R[74] + -0.205656372599467646 * R[722] + 0.411312745198935292 * R[1154] + 0.205656372599467646 * R[92] + 0.205656372599467646 * R[740] + -0.411312745198935292 * R[1172]);
+                o[4 * st[0] + 4 * st[1] + 2 * st[2] + 3 * st[3]] = fac * (-0.102828186299733823 * R[72] + -0.102828186299733823 * R[720] + 0.205656372599467646 * R[1152] + 0.102828186299733823 * R[75] + 0.102828186299733823 * R[723] + -0.205656372599467646 * R[1155] + 0.102828186299733823 * R[90] + 0.102828186299733823 * R[738] + -0.205656372599467646 * R[1170] + -0.102828186299733823 * R[93] + -0.102828186299733823 * R[741] + 0.205656372599467646 * R[1173]);
+                o[0 * st[0] + 0 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[7] + 0.205656372599467646 * R[115] + -0.205656372599467646 * R[655] + 0.205656372599467646 * R[763] + 0.411312745198935292 * R[1087] + -0.411312745198935292 * R[1195]);
+                o[0 * st[0] + 1 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[10] + 0.205656372599467646 * R[118] + -0.205656372599467646 * R[658] + 0.205656372599467646 * R[766] + 0.411312745198935292 * R[1090] + -0.411312745198935292 * R[1198]);
+                o[0 * st[0] + 2 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (0.0593678810404322937 * R[6] + -0.0593678810404322937 * R[114] + 0.0593678810404322937 * R[654] + -0.0593678810404322937 * R[762] + -0.118735762080864587 * R[1086] + 0.118735762080864587 * R[1194] + 0.0593678810404322937 * R[9] + -0.0593678810404322937 * R[117] + 0.0593678810404322937 * R[657] + -0.0593678810404322937 * R[765] + -0.118735762080864587 * R[1089] + 0.118735762080864587 * R[1197] + -0.118735762080864587 * R[11] + 0.118735762080864587 * R[119] + -0.118735762080864587 * R[659] + 0.118735762080864587 * R[767] + 0.237471524161729175 * R[1091] + -0.237471524161729175 * R[1199]);
+                o[0 * st[0] + 3 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[8] + 0.205656372599467646 * R[116] + -0.205656372599467646 * R[656] + 0.205656372599467646 * R[764] + 0.411312745198935292 * R[1088] + -0.411312745198935292 * R[1196]);
+                o[0 * st[0] + 4 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.102828186299733823 * R[6] + 0.102828186299733823 * R[114] + -0.102828186299733823 * R[654] + 0.102828186299733823 * R[762] + 0.205656372599467646 * R[1086] + -0.205656372599467646 * R[1194] + 0.102828186299733823 * R[9] + -0.102828186299733823 * R[117] + 0.102828186299733823 * R[657] + -0.102828186299733823 * R[765] + -0.205656372599467646 * R[1089] + 0.205656372599467646 * R[1197]);
+                o[1 * st[0] + 0 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[25] + 0.205656372599467646 * R[133] + -0.205656372599467646 * R[673] + 0.205656372599467646 * R[781] + 0.411312745198935292 * R[1105] + -0.411312745198935292 * R[1213]);
+                o[1 * st[0] + 1 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[28] + 0.205656372599467646 * R[136] + -0.205656372599467646 * R[676] + 0.205656372599467646 * R[784] + 0.411312745198935292 * R[1108] + -0.411312745198935292 * R[1216]);
+                o[1 * st[0] + 2 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (0.0593678810404322937 * R[24] + -0.0593678810404322937 * R[132] + 0.0593678810404322937 * R[672] + -0.0593678810404322937 * R[780] + -0.118735762080864587 * R[1104] + 0.118735762080864587 * R[1212] + 0.0593678810404322937 * R[27] + -0.0593678810404322937 * R[135] + 0.0593678810404322937 * R[675] + -0.0593678810404322937 * R[783] + -0.118735762080864587 * R[1107] + 0.118735762080864587 * R[1215] + -0.118735762080864587 * R[29] + 0.118735762080864587 * R[137] + -0.118735762080864587 * R[677] + 0.118735762080864587 * R[785] + 0.237471524161729175 * R[1109] + -0.237471524161729175 * R[1217]);
+                o[1 * st[0] + 3 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[26] + 0.205656372599467646 * R[134] + -0.205656372599467646 * R[674] + 0.205656372599467646 * R[782] + 0.411312745198935292 * R[1106] + -0.411312745198935292 * R[1214]);
+                o[1 * st[0] + 4 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.102828186299733823 * R[24] + 0.102828186299733823 * R[132] + -0.102828186299733823 * R[672] + 0.102828186299733823 * R[780] + 0.205656372599467646 * R[1104] + -0.205656372599467646 * R[1212] + 0.102828186299733823 * R[27] + -0.102828186299733823 * R[135] + 0.102828186299733823 * R[675] + -0.102828186299733823 * R[783] + -0.205656372599467646 * R[1107] + 0.205656372599467646 * R[1215]);
+                o[2 * st[0] + 0 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (0.0593678810404322937 * R[1] + -0.0593678810404322937 * R[109] + 0.0593678810404322937 * R[649] + -0.0593678810404322937 * R[757] + -0.118735762080864587 * R[1081] + 0.118735762080864587 * R[1189] + 0.0593678810404322937 * R[19] + -0.0593678810404322937 * R[127] + 0.0593678810404322937 * R[667] + -0.0593678810404322937 * R[775] + -0.118735762080864587 * R[1099] + 0.118735762080864587 * R[1207] + -0.118735762080864587 * R[31] + 0.118735762080864587 * R[139] + -0.118735762080864587 * R[679] + 0.118735762080864587 * R[787] + 0.237471524161729175 * R[1111] + -0.237471524161729175 * R[1219]);
+                o[2 * st[0] + 1 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (0.0593678810404322937 * R[4] + -0.0593678810404322937 * R[112] + 0.0593678810404322937 * R[652] + -0.0593678810404322937 * R[760] + -0.118735762080864587 * R[1084] + 0.118735762080864587 * R[1192] + 0.0593678810404322937 * R[22] + -0.0593678810404322937 * R[130] + 0.0593678810404322937 * R[670] + -0.0593678810404322937 * R[778] + -0.118735762080864587 * R[1102] + 0.118735762080864587 * R[1210] + -0.118735762080864587 * R[34] + 0.118735762080864587 * R[142] + -0.118735762080864587 * R[682] + 0.118735762080864587 * R[790] + 0.237471524161729175 * R[1114] + -0.237471524161729175 * R[1222]);
+                o[2 * st[0] + 2 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.0171380310499556314 * R[0] + 0.0171380310499556314 * R[108] + -0.0171380310499556314 * R[648] + 0.0171380310499556314 * R[756] + 0.0342760620999112628 * R[1080] + -0.0342760620999112628 * R[1188] + -0.0171380310499556314 * R[3] + 0.0171380310499556314 * R[111] + -0.0171380310499556314 * R[651] + 0.0171380310499556314 * R[759] + 0.0342760620999112628 * R[1083] + -0.0342760620999112628 * R[1191] + 0.0342760620999112628 * R[5] + -0.0342760620999112628 * R[113] + 0.0342760620999112628 * R[653] + -0.0342760620999112628 * R[761] + -0.0685521241998225256 * R[1085] + 0.0685521241998225256 * R[1193] + -0.0171380310499556314 * R[18] + 0.0171380310499556314 * R[126] + -0.0171380310499556314 * R[666] + 0.0171380310499556314 * R[774] + 0.0342760620999112628 * R[1098] + -0.0342760620999112628 * R[1206] + -0.0171380310499556314 * R[21] + 0.0171380310499556314 * R[129] + -0.0171380310499556314 * R[669] + 0.0171380310499556314 * R[777] + 0.0342760620999112628 * R[1101] + -0.0342760620999112628 * R[1209] + 0.0342760620999112628 * R[23] + -0.0342760620999112628 * R[131] + 0.0342760620999112628 * R[671] + -0.0342760620999112628 * R[779] + -0.0685521241998225256 * R[1103] + 0.0685521241998225256 * R[1211] + 0.0342760620999112628 * R[30] + -0.0342760620999112628 * R[138] + 0.0342760620999112628 * R[678] + -0.0342760620999112628 * R[786] + -0.0685521241998225256 * R[1110] + 0.0685521241998225256 * R[1218] + 0.0342760620999112628 * R[33] + -0.0342760620999112628 * R[141] + 0.0342760620999112628 * R[681] + -0.0342760620999112628 * R[789] + -0.0685521241998225256 * R[1113] + 0.0685521241998225256 * R[1221] + -0.0685521241998225256 * R[35] + 0.0685521241998225256 * R[143] + -0.0685521241998225256 * R[683] + 0.0685521241998225256 * R[791] + 0.137104248399645051 * R[1115] + -0.137104248399645051 * R[1223]);
+                o[2 * st[0] + 3 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (0.0593678810404322937 * R[2] + -0.0593678810404322937 * R[110] + 0.0593678810404322937 * R[650] + -0.0593678810404322937 * R[758] + -0.118735762080864587 * R[1082] + 0.118735762080864587 * R[1190] + 0.0593678810404322937 * R[20] + -0.0593678810404322937 * R[128] + 0.0593678810404322937 * R[668] + -0.0593678810404322937 * R[776] + -0.118735762080864587 * R[1100] + 0.118735762080864587 * R[1208] + -0.118735762080864587 * R[32] + 0.118735762080864587 * R[140] + -0.118735762080864587 * R[680] + 0.118735762080864587 * R[788] + 0.237471524161729175 * R[1112] + -0.237471524161729175 * R[1220]);
+                o[2 * st[0] + 4 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (0.0296839405202161469 * R[0] + -0.0296839405202161469 * R[108] + 0.0296839405202161469 * R[648] + -0.0296839405202161469 * R[756] + -0.0593678810404322937 * R[1080] + 0.0593678810404322937 * R[1188] + -0.0296839405202161469 * R[3] + 0.0296839405202161469 * R[111] + -0.0296839405202161469 * R[651] + 0.0296839405202161469 * R[759] + 0.0593678810404322937 * R[1083] + -0.0593678810404322937 * R[1191] + 0.0296839405202161469 * R[18] + -0.0296839405202161469 * R[126] + 0.0296839405202161469 * R[666] + -0.0296839405202161469 * R[774] + -0.0593678810404322937 * R[1098] + 0.0593678810404322937 * R[1206] + -0.0296839405202161469 * R[21] + 0.0296839405202161469 * R[129] + -0.0296839405202161469 * R[669] + 0.0296839405202161469 * R[777] + 0.0593678810404322937 * R[1101] + -0.0593678810404322937 * R[1209] + -0.0593678810404322937 * R[30] + 0.0593678810404322937 * R[138] + -0.0593678810404322937 * R[678] + 0.0593678810404322937 * R[786] + 0.118735762080864587 * R[1110] + -0.118735762080864587 * R[1218] + 0.0593678810404322937 * R[33] + -0.0593678810404322937 * R[141] + 0.0593678810404322937 * R[681] + -0.0593678810404322937 * R[789] + -0.118735762080864587 * R[1113] + 0.118735762080864587 * R[1221]);
+                o[3 * st[0] + 0 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[13] + 0.205656372599467646 * R[121] + -0.205656372599467646 * R[661] + 0.205656372599467646 * R[769] + 0.411312745198935292 * R[1093] + -0.411312745198935292 * R[1201]);
+                o[3 * st[0] + 1 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[16] + 0.205656372599467646 * R[124] + -0.205656372599467646 * R[664] + 0.205656372599467646 * R[772] + 0.411312745198935292 * R[1096] + -0.411312745198935292 * R[1204]);
+                o[3 * st[0] + 2 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (0.0593678810404322937 * R[12] + -0.0593678810404322937 * R[120] + 0.0593678810404322937 * R[660] + -0.0593678810404322937 * R[768] + -0.118735762080864587 * R[1092] + 0.118735762080864587 * R[1200] + 0.0593678810404322937 * R[15] + -0.0593678810404322937 * R[123] + 0.0593678810404322937 * R[663] + -0.0593678810404322937 * R[771] + -0.118735762080864587 * R[1095] + 0.118735762080864587 * R[1203] + -0.118735762080864587 * R[17] + 0.118735762080864587 * R[125] + -0.118735762080864587 * R[665] + 0.118735762080864587 * R[773] + 0.237471524161729175 * R[1097] + -0.237471524161729175 * R[1205]);
+                o[3 * st[0] + 3 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[14] + 0.205656372599467646 * R[122] + -0.205656372599467646 * R[662] + 0.205656372599467646 * R[770] + 0.411312745198935292 * R[1094] + -0.411312745198935292 * R[1202]);
+                o[3 * st[0] + 4 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.102828186299733823 * R[12] + 0.102828186299733823 * R[120] + -0.102828186299733823 * R[660] + 0.102828186299733823 * R[768] + 0.205656372599467646 * R[1092] + -0.205656372599467646 * R[1200] + 0.102828186299733823 * R[15] + -0.102828186299733823 * R[123] + 0.102828186299733823 * R[663] + -0.102828186299733823 * R[771] + -0.205656372599467646 * R[1095] + 0.205656372599467646 * R[1203]);
+                o[4 * st[0] + 0 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.102828186299733823 * R[1] + 0.102828186299733823 * R[109] + -0.102828186299733823 * R[649] + 0.102828186299733823 * R[757] + 0.205656372599467646 * R[1081] + -0.205656372599467646 * R[1189] + 0.102828186299733823 * R[19] + -0.102828186299733823 * R[127] + 0.102828186299733823 * R[667] + -0.102828186299733823 * R[775] + -0.205656372599467646 * R[1099] + 0.205656372599467646 * R[1207]);
+                o[4 * st[0] + 1 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.102828186299733823 * R[4] + 0.102828186299733823 * R[112] + -0.102828186299733823 * R[652] + 0.102828186299733823 * R[760] + 0.205656372599467646 * R[1084] + -0.205656372599467646 * R[1192] + 0.102828186299733823 * R[22] + -0.102828186299733823 * R[130] + 0.102828186299733823 * R[670] + -0.102828186299733823 * R[778] + -0.205656372599467646 * R[1102] + 0.205656372599467646 * R[1210]);
+                o[4 * st[0] + 2 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (0.0296839405202161469 * R[0] + -0.0296839405202161469 * R[108] + 0.0296839405202161469 * R[648] + -0.0296839405202161469 * R[756] + -0.0593678810404322937 * R[1080] + 0.0593678810404322937 * R[1188] + 0.0296839405202161469 * R[3] + -0.0296839405202161469 * R[111] + 0.0296839405202161469 * R[651] + -0.0296839405202161469 * R[759] + -0.0593678810404322937 * R[1083] + 0.0593678810404322937 * R[1191] + -0.0593678810404322937 * R[5] + 0.0593678810404322937 * R[113] + -0.0593678810404322937 * R[653] + 0.0593678810404322937 * R[761] + 0.118735762080864587 * R[1085] + -0.118735762080864587 * R[1193] + -0.0296839405202161469 * R[18] + 0.0296839405202161469 * R[126] + -0.0296839405202161469 * R[666] + 0.0296839405202161469 * R[774] + 0.0593678810404322937 * R[1098] + -0.0593678810404322937 * R[1206] + -0.0296839405202161469 * R[21] + 0.0296839405202161469 * R[129] + -0.0296839405202161469 * R[669] + 0.0296839405202161469 * R[777] + 0.0593678810404322937 * R[1101] + -0.0593678810404322937 * R[1209] + 0.0593678810404322937 * R[23] + -0.0593678810404322937 * R[131] + 0.0593678810404322937 * R[671] + -0.0593678810404322937 * R[779] + -0.118735762080864587 * R[1103] + 0.118735762080864587 * R[1211]);
+                o[4 * st[0] + 3 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.102828186299733823 * R[2] + 0.102828186299733823 * R[110] + -0.102828186299733823 * R[650] + 0.102828186299733823 * R[758] + 0.205656372599467646 * R[1082] + -0.205656372599467646 * R[1190] + 0.102828186299733823 * R[20] + -0.102828186299733823 * R[128] + 0.102828186299733823 * R[668] + -0.102828186299733823 * R[776] + -0.205656372599467646 * R[1100] + 0.205656372599467646 * R[1208]);
+                o[4 * st[0] + 4 * st[1] + 2 * st[2] + 4 * st[3]] = fac * (-0.0514140931498669115 * R[0] + 0.0514140931498669115 * R[108] + -0.0514140931498669115 * R[648] + 0.0514140931498669115 * R[756] + 0.102828186299733823 * R[1080] + -0.102828186299733823 * R[1188] + 0.0514140931498669115 * R[3] + -0.0514140931498669115 * R[111] + 0.0514140931498669115 * R[651] + -0.0514140931498669115 * R[759] + -0.102828186299733823 * R[1083] + 0.102828186299733823 * R[1191] + 0.0514140931498669115 * R[18] + -0.0514140931498669115 * R[126] + 0.0514140931498669115 * R[666] + -0.0514140931498669115 * R[774] + -0.102828186299733823 * R[1098] + 0.102828186299733823 * R[1206] + -0.0514140931498669115 * R[21] + 0.0514140931498669115 * R[129] + -0.0514140931498669115 * R[669] + 0.0514140931498669115 * R[777] + 0.102828186299733823 * R[1101] + -0.102828186299733823 * R[1209]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[475]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[478]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[474] + -0.411312745198935292 * R[477] + 0.822625490397870585 * R[479]);
+                o[0 * st[0] + 3 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[476]);
+                o[0 * st[0] + 4 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[474] + -0.712414572485187914 * R[477]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[493]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[496]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[492] + -0.411312745198935292 * R[495] + 0.822625490397870585 * R[497]);
+                o[1 * st[0] + 3 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[494]);
+                o[1 * st[0] + 4 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[492] + -0.712414572485187914 * R[495]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[469] + -0.411312745198935292 * R[487] + 0.822625490397870585 * R[499]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[472] + -0.411312745198935292 * R[490] + 0.822625490397870585 * R[502]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.118735762080864601 * R[468] + 0.118735762080864601 * R[471] + -0.237471524161729203 * R[473] + 0.118735762080864601 * R[486] + 0.118735762080864601 * R[489] + -0.237471524161729203 * R[491] + -0.237471524161729203 * R[498] + -0.237471524161729203 * R[501] + 0.474943048323458406 * R[503]);
+                o[2 * st[0] + 3 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[470] + -0.411312745198935292 * R[488] + 0.822625490397870585 * R[500]);
+                o[2 * st[0] + 4 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.205656372599467646 * R[468] + 0.205656372599467646 * R[471] + -0.205656372599467646 * R[486] + 0.205656372599467646 * R[489] + 0.411312745198935292 * R[498] + -0.411312745198935292 * R[501]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[481]);
+                o[3 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[484]);
+                o[3 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.411312745198935292 * R[480] + -0.411312745198935292 * R[483] + 0.822625490397870585 * R[485]);
+                o[3 * st[0] + 3 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (1.42482914497037583 * R[482]);
+                o[3 * st[0] + 4 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[480] + -0.712414572485187914 * R[483]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[469] + -0.712414572485187914 * R[487]);
+                o[4 * st[0] + 1 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[472] + -0.712414572485187914 * R[490]);
+                o[4 * st[0] + 2 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (-0.205656372599467646 * R[468] + -0.205656372599467646 * R[471] + 0.411312745198935292 * R[473] + 0.205656372599467646 * R[486] + 0.205656372599467646 * R[489] + -0.411312745198935292 * R[491]);
+                o[4 * st[0] + 3 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[470] + -0.712414572485187914 * R[488]);
+                o[4 * st[0] + 4 * st[1] + 3 * st[2] + 0 * st[3]] = fac * (0.356207286242593957 * R[468] + -0.356207286242593957 * R[471] + -0.356207286242593957 * R[486] + 0.356207286242593957 * R[489]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[583]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[586]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[582] + -0.411312745198935292 * R[585] + 0.822625490397870585 * R[587]);
+                o[0 * st[0] + 3 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[584]);
+                o[0 * st[0] + 4 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[582] + -0.712414572485187914 * R[585]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[601]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[604]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[600] + -0.411312745198935292 * R[603] + 0.822625490397870585 * R[605]);
+                o[1 * st[0] + 3 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[602]);
+                o[1 * st[0] + 4 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[600] + -0.712414572485187914 * R[603]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[577] + -0.411312745198935292 * R[595] + 0.822625490397870585 * R[607]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[580] + -0.411312745198935292 * R[598] + 0.822625490397870585 * R[610]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (0.118735762080864601 * R[576] + 0.118735762080864601 * R[579] + -0.237471524161729203 * R[581] + 0.118735762080864601 * R[594] + 0.118735762080864601 * R[597] + -0.237471524161729203 * R[599] + -0.237471524161729203 * R[606] + -0.237471524161729203 * R[609] + 0.474943048323458406 * R[611]);
+                o[2 * st[0] + 3 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[578] + -0.411312745198935292 * R[596] + 0.822625490397870585 * R[608]);
+                o[2 * st[0] + 4 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (-0.205656372599467646 * R[576] + 0.205656372599467646 * R[579] + -0.205656372599467646 * R[594] + 0.205656372599467646 * R[597] + 0.411312745198935292 * R[606] + -0.411312745198935292 * R[609]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[589]);
+                o[3 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[592]);
+                o[3 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (-0.411312745198935292 * R[588] + -0.411312745198935292 * R[591] + 0.822625490397870585 * R[593]);
+                o[3 * st[0] + 3 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (1.42482914497037583 * R[590]);
+                o[3 * st[0] + 4 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[588] + -0.712414572485187914 * R[591]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[577] + -0.712414572485187914 * R[595]);
+                o[4 * st[0] + 1 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[580] + -0.712414572485187914 * R[598]);
+                o[4 * st[0] + 2 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (-0.205656372599467646 * R[576] + -0.205656372599467646 * R[579] + 0.411312745198935292 * R[581] + 0.205656372599467646 * R[594] + 0.205656372599467646 * R[597] + -0.411312745198935292 * R[599]);
+                o[4 * st[0] + 3 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[578] + -0.712414572485187914 * R[596]);
+                o[4 * st[0] + 4 * st[1] + 3 * st[2] + 1 * st[3]] = fac * (0.356207286242593957 * R[576] + -0.356207286242593957 * R[579] + -0.356207286242593957 * R[594] + 0.356207286242593957 * R[597]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[439] + -0.411312745198935292 * R[547] + 0.822625490397870585 * R[619]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[442] + -0.411312745198935292 * R[550] + 0.822625490397870585 * R[622]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (0.118735762080864587 * R[438] + 0.118735762080864587 * R[546] + -0.237471524161729175 * R[618] + 0.118735762080864587 * R[441] + 0.118735762080864587 * R[549] + -0.237471524161729175 * R[621] + -0.237471524161729175 * R[443] + -0.237471524161729175 * R[551] + 0.47494304832345835 * R[623]);
+                o[0 * st[0] + 3 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[440] + -0.411312745198935292 * R[548] + 0.822625490397870585 * R[620]);
+                o[0 * st[0] + 4 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[438] + -0.205656372599467646 * R[546] + 0.411312745198935292 * R[618] + 0.205656372599467646 * R[441] + 0.205656372599467646 * R[549] + -0.411312745198935292 * R[621]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[457] + -0.411312745198935292 * R[565] + 0.822625490397870585 * R[637]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[460] + -0.411312745198935292 * R[568] + 0.822625490397870585 * R[640]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (0.118735762080864587 * R[456] + 0.118735762080864587 * R[564] + -0.237471524161729175 * R[636] + 0.118735762080864587 * R[459] + 0.118735762080864587 * R[567] + -0.237471524161729175 * R[639] + -0.237471524161729175 * R[461] + -0.237471524161729175 * R[569] + 0.47494304832345835 * R[641]);
+                o[1 * st[0] + 3 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[458] + -0.411312745198935292 * R[566] + 0.822625490397870585 * R[638]);
+                o[1 * st[0] + 4 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[456] + -0.205656372599467646 * R[564] + 0.411312745198935292 * R[636] + 0.205656372599467646 * R[459] + 0.205656372599467646 * R[567] + -0.411312745198935292 * R[639]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (0.118735762080864587 * R[433] + 0.118735762080864587 * R[541] + -0.237471524161729175 * R[613] + 0.118735762080864587 * R[451] + 0.118735762080864587 * R[559] + -0.237471524161729175 * R[631] + -0.237471524161729175 * R[463] + -0.237471524161729175 * R[571] + 0.47494304832345835 * R[643]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (0.118735762080864587 * R[436] + 0.118735762080864587 * R[544] + -0.237471524161729175 * R[616] + 0.118735762080864587 * R[454] + 0.118735762080864587 * R[562] + -0.237471524161729175 * R[634] + -0.237471524161729175 * R[466] + -0.237471524161729175 * R[574] + 0.47494304832345835 * R[646]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.0342760620999112628 * R[432] + -0.0342760620999112628 * R[540] + 0.0685521241998225256 * R[612] + -0.0342760620999112628 * R[435] + -0.0342760620999112628 * R[543] + 0.0685521241998225256 * R[615] + 0.0685521241998225256 * R[437] + 0.0685521241998225256 * R[545] + -0.137104248399645051 * R[617] + -0.0342760620999112628 * R[450] + -0.0342760620999112628 * R[558] + 0.0685521241998225256 * R[630] + -0.0342760620999112628 * R[453] + -0.0342760620999112628 * R[561] + 0.0685521241998225256 * R[633] + 0.0685521241998225256 * R[455] + 0.0685521241998225256 * R[563] + -0.137104248399645051 * R[635] + 0.0685521241998225256 * R[462] + 0.0685521241998225256 * R[570] + -0.137104248399645051 * R[642] + 0.0685521241998225256 * R[465] + 0.0685521241998225256 * R[573] + -0.137104248399645051 * R[645] + -0.137104248399645051 * R[467] + -0.137104248399645051 * R[575] + 0.274208496799290102 * R[647]);
+                o[2 * st[0] + 3 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (0.118735762080864587 * R[434] + 0.118735762080864587 * R[542] + -0.237471524161729175 * R[614] + 0.118735762080864587 * R[452] + 0.118735762080864587 * R[560] + -0.237471524161729175 * R[632] + -0.237471524161729175 * R[464] + -0.237471524161729175 * R[572] + 0.47494304832345835 * R[644]);
+                o[2 * st[0] + 4 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (0.0593678810404322937 * R[432] + 0.0593678810404322937 * R[540] + -0.118735762080864587 * R[612] + -0.0593678810404322937 * R[435] + -0.0593678810404322937 * R[543] + 0.118735762080864587 * R[615] + 0.0593678810404322937 * R[450] + 0.0593678810404322937 * R[558] + -0.118735762080864587 * R[630] + -0.0593678810404322937 * R[453] + -0.0593678810404322937 * R[561] + 0.118735762080864587 * R[633] + -0.118735762080864587 * R[462] + -0.118735762080864587 * R[570] + 0.237471524161729175 * R[642] + 0.118735762080864587 * R[465] + 0.118735762080864587 * R[573] + -0.237471524161729175 * R[645]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[445] + -0.411312745198935292 * R[553] + 0.822625490397870585 * R[625]);
+                o[3 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[448] + -0.411312745198935292 * R[556] + 0.822625490397870585 * R[628]);
+                o[3 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (0.118735762080864587 * R[444] + 0.118735762080864587 * R[552] + -0.237471524161729175 * R[624] + 0.118735762080864587 * R[447] + 0.118735762080864587 * R[555] + -0.237471524161729175 * R[627] + -0.237471524161729175 * R[449] + -0.237471524161729175 * R[557] + 0.47494304832345835 * R[629]);
+                o[3 * st[0] + 3 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.411312745198935292 * R[446] + -0.411312745198935292 * R[554] + 0.822625490397870585 * R[626]);
+                o[3 * st[0] + 4 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[444] + -0.205656372599467646 * R[552] + 0.411312745198935292 * R[624] + 0.205656372599467646 * R[447] + 0.205656372599467646 * R[555] + -0.411312745198935292 * R[627]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[433] + -0.205656372599467646 * R[541] + 0.411312745198935292 * R[613] + 0.205656372599467646 * R[451] + 0.205656372599467646 * R[559] + -0.411312745198935292 * R[631]);
+                o[4 * st[0] + 1 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[436] + -0.205656372599467646 * R[544] + 0.411312745198935292 * R[616] + 0.205656372599467646 * R[454] + 0.205656372599467646 * R[562] + -0.411312745198935292 * R[634]);
+                o[4 * st[0] + 2 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (0.0593678810404322937 * R[432] + 0.0593678810404322937 * R[540] + -0.118735762080864587 * R[612] + 0.0593678810404322937 * R[435] + 0.0593678810404322937 * R[543] + -0.118735762080864587 * R[615] + -0.118735762080864587 * R[437] + -0.118735762080864587 * R[545] + 0.237471524161729175 * R[617] + -0.0593678810404322937 * R[450] + -0.0593678810404322937 * R[558] + 0.118735762080864587 * R[630] + -0.0593678810404322937 * R[453] + -0.0593678810404322937 * R[561] + 0.118735762080864587 * R[633] + 0.118735762080864587 * R[455] + 0.118735762080864587 * R[563] + -0.237471524161729175 * R[635]);
+                o[4 * st[0] + 3 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[434] + -0.205656372599467646 * R[542] + 0.411312745198935292 * R[614] + 0.205656372599467646 * R[452] + 0.205656372599467646 * R[560] + -0.411312745198935292 * R[632]);
+                o[4 * st[0] + 4 * st[1] + 3 * st[2] + 2 * st[3]] = fac * (-0.102828186299733823 * R[432] + -0.102828186299733823 * R[540] + 0.205656372599467646 * R[612] + 0.102828186299733823 * R[435] + 0.102828186299733823 * R[543] + -0.205656372599467646 * R[615] + 0.102828186299733823 * R[450] + 0.102828186299733823 * R[558] + -0.205656372599467646 * R[630] + -0.102828186299733823 * R[453] + -0.102828186299733823 * R[561] + 0.205656372599467646 * R[633]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[511]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[514]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[510] + -0.411312745198935292 * R[513] + 0.822625490397870585 * R[515]);
+                o[0 * st[0] + 3 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[512]);
+                o[0 * st[0] + 4 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[510] + -0.712414572485187914 * R[513]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[529]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[532]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[528] + -0.411312745198935292 * R[531] + 0.822625490397870585 * R[533]);
+                o[1 * st[0] + 3 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[530]);
+                o[1 * st[0] + 4 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[528] + -0.712414572485187914 * R[531]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[505] + -0.411312745198935292 * R[523] + 0.822625490397870585 * R[535]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[508] + -0.411312745198935292 * R[526] + 0.822625490397870585 * R[538]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (0.118735762080864601 * R[504] + 0.118735762080864601 * R[507] + -0.237471524161729203 * R[509] + 0.118735762080864601 * R[522] + 0.118735762080864601 * R[525] + -0.237471524161729203 * R[527] + -0.237471524161729203 * R[534] + -0.237471524161729203 * R[537] + 0.474943048323458406 * R[539]);
+                o[2 * st[0] + 3 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[506] + -0.411312745198935292 * R[524] + 0.822625490397870585 * R[536]);
+                o[2 * st[0] + 4 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (-0.205656372599467646 * R[504] + 0.205656372599467646 * R[507] + -0.205656372599467646 * R[522] + 0.205656372599467646 * R[525] + 0.411312745198935292 * R[534] + -0.411312745198935292 * R[537]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[517]);
+                o[3 * st[0] + 1 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[520]);
+                o[3 * st[0] + 2 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (-0.411312745198935292 * R[516] + -0.411312745198935292 * R[519] + 0.822625490397870585 * R[521]);
+                o[3 * st[0] + 3 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (1.42482914497037583 * R[518]);
+                o[3 * st[0] + 4 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[516] + -0.712414572485187914 * R[519]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[505] + -0.712414572485187914 * R[523]);
+                o[4 * st[0] + 1 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[508] + -0.712414572485187914 * R[526]);
+                o[4 * st[0] + 2 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (-0.205656372599467646 * R[504] + -0.205656372599467646 * R[507] + 0.411312745198935292 * R[509] + 0.205656372599467646 * R[522] + 0.205656372599467646 * R[525] + -0.411312745198935292 * R[527]);
+                o[4 * st[0] + 3 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[506] + -0.712414572485187914 * R[524]);
+                o[4 * st[0] + 4 * st[1] + 3 * st[2] + 3 * st[3]] = fac * (0.356207286242593957 * R[504] + -0.356207286242593957 * R[507] + -0.356207286242593957 * R[522] + 0.356207286242593957 * R[525]);
+                o[0 * st[0] + 0 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[439] + -0.712414572485187914 * R[547]);
+                o[0 * st[0] + 1 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[442] + -0.712414572485187914 * R[550]);
+                o[0 * st[0] + 2 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[438] + 0.205656372599467646 * R[546] + -0.205656372599467646 * R[441] + 0.205656372599467646 * R[549] + 0.411312745198935292 * R[443] + -0.411312745198935292 * R[551]);
+                o[0 * st[0] + 3 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[440] + -0.712414572485187914 * R[548]);
+                o[0 * st[0] + 4 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[438] + -0.356207286242593957 * R[546] + -0.356207286242593957 * R[441] + 0.356207286242593957 * R[549]);
+                o[1 * st[0] + 0 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[457] + -0.712414572485187914 * R[565]);
+                o[1 * st[0] + 1 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[460] + -0.712414572485187914 * R[568]);
+                o[1 * st[0] + 2 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[456] + 0.205656372599467646 * R[564] + -0.205656372599467646 * R[459] + 0.205656372599467646 * R[567] + 0.411312745198935292 * R[461] + -0.411312745198935292 * R[569]);
+                o[1 * st[0] + 3 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[458] + -0.712414572485187914 * R[566]);
+                o[1 * st[0] + 4 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[456] + -0.356207286242593957 * R[564] + -0.356207286242593957 * R[459] + 0.356207286242593957 * R[567]);
+                o[2 * st[0] + 0 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[433] + 0.205656372599467646 * R[541] + -0.205656372599467646 * R[451] + 0.205656372599467646 * R[559] + 0.411312745198935292 * R[463] + -0.411312745198935292 * R[571]);
+                o[2 * st[0] + 1 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[436] + 0.205656372599467646 * R[544] + -0.205656372599467646 * R[454] + 0.205656372599467646 * R[562] + 0.411312745198935292 * R[466] + -0.411312745198935292 * R[574]);
+                o[2 * st[0] + 2 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.0593678810404323007 * R[432] + -0.0593678810404323007 * R[540] + 0.0593678810404323007 * R[435] + -0.0593678810404323007 * R[543] + -0.118735762080864601 * R[437] + 0.118735762080864601 * R[545] + 0.0593678810404323007 * R[450] + -0.0593678810404323007 * R[558] + 0.0593678810404323007 * R[453] + -0.0593678810404323007 * R[561] + -0.118735762080864601 * R[455] + 0.118735762080864601 * R[563] + -0.118735762080864601 * R[462] + 0.118735762080864601 * R[570] + -0.118735762080864601 * R[465] + 0.118735762080864601 * R[573] + 0.237471524161729203 * R[467] + -0.237471524161729203 * R[575]);
+                o[2 * st[0] + 3 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[434] + 0.205656372599467646 * R[542] + -0.205656372599467646 * R[452] + 0.205656372599467646 * R[560] + 0.411312745198935292 * R[464] + -0.411312745198935292 * R[572]);
+                o[2 * st[0] + 4 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (-0.102828186299733823 * R[432] + 0.102828186299733823 * R[540] + 0.102828186299733823 * R[435] + -0.102828186299733823 * R[543] + -0.102828186299733823 * R[450] + 0.102828186299733823 * R[558] + 0.102828186299733823 * R[453] + -0.102828186299733823 * R[561] + 0.205656372599467646 * R[462] + -0.205656372599467646 * R[570] + -0.205656372599467646 * R[465] + 0.205656372599467646 * R[573]);
+                o[3 * st[0] + 0 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[445] + -0.712414572485187914 * R[553]);
+                o[3 * st[0] + 1 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[448] + -0.712414572485187914 * R[556]);
+                o[3 * st[0] + 2 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (-0.205656372599467646 * R[444] + 0.205656372599467646 * R[552] + -0.205656372599467646 * R[447] + 0.205656372599467646 * R[555] + 0.411312745198935292 * R[449] + -0.411312745198935292 * R[557]);
+                o[3 * st[0] + 3 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.712414572485187914 * R[446] + -0.712414572485187914 * R[554]);
+                o[3 * st[0] + 4 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[444] + -0.356207286242593957 * R[552] + -0.356207286242593957 * R[447] + 0.356207286242593957 * R[555]);
+                o[4 * st[0] + 0 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[433] + -0.356207286242593957 * R[541] + -0.356207286242593957 * R[451] + 0.356207286242593957 * R[559]);
+                o[4 * st[0] + 1 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[436] + -0.356207286242593957 * R[544] + -0.356207286242593957 * R[454] + 0.356207286242593957 * R[562]);
+                o[4 * st[0] + 2 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (-0.102828186299733823 * R[432] + 0.102828186299733823 * R[540] + -0.102828186299733823 * R[435] + 0.102828186299733823 * R[543] + 0.205656372599467646 * R[437] + -0.205656372599467646 * R[545] + 0.102828186299733823 * R[450] + -0.102828186299733823 * R[558] + 0.102828186299733823 * R[453] + -0.102828186299733823 * R[561] + -0.205656372599467646 * R[455] + 0.205656372599467646 * R[563]);
+                o[4 * st[0] + 3 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[434] + -0.356207286242593957 * R[542] + -0.356207286242593957 * R[452] + 0.356207286242593957 * R[560]);
+                o[4 * st[0] + 4 * st[1] + 3 * st[2] + 4 * st[3]] = fac * (0.178103643121296978 * R[432] + -0.178103643121296978 * R[540] + -0.178103643121296978 * R[435] + 0.178103643121296978 * R[543] + -0.178103643121296978 * R[450] + 0.178103643121296978 * R[558] + 0.178103643121296978 * R[453] + -0.178103643121296978 * R[561]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[43] + -0.712414572485187914 * R[691]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[46] + -0.712414572485187914 * R[694]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.205656372599467646 * R[42] + 0.205656372599467646 * R[690] + -0.205656372599467646 * R[45] + 0.205656372599467646 * R[693] + 0.411312745198935292 * R[47] + -0.411312745198935292 * R[695]);
+                o[0 * st[0] + 3 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[44] + -0.712414572485187914 * R[692]);
+                o[0 * st[0] + 4 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.356207286242593957 * R[42] + -0.356207286242593957 * R[690] + -0.356207286242593957 * R[45] + 0.356207286242593957 * R[693]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[61] + -0.712414572485187914 * R[709]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[64] + -0.712414572485187914 * R[712]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.205656372599467646 * R[60] + 0.205656372599467646 * R[708] + -0.205656372599467646 * R[63] + 0.205656372599467646 * R[711] + 0.411312745198935292 * R[65] + -0.411312745198935292 * R[713]);
+                o[1 * st[0] + 3 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[62] + -0.712414572485187914 * R[710]);
+                o[1 * st[0] + 4 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.356207286242593957 * R[60] + -0.356207286242593957 * R[708] + -0.356207286242593957 * R[63] + 0.356207286242593957 * R[711]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.205656372599467646 * R[37] + 0.205656372599467646 * R[685] + -0.205656372599467646 * R[55] + 0.205656372599467646 * R[703] + 0.411312745198935292 * R[67] + -0.411312745198935292 * R[715]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.205656372599467646 * R[40] + 0.205656372599467646 * R[688] + -0.205656372599467646 * R[58] + 0.205656372599467646 * R[706] + 0.411312745198935292 * R[70] + -0.411312745198935292 * R[718]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.0593678810404323007 * R[36] + -0.0593678810404323007 * R[684] + 0.0593678810404323007 * R[39] + -0.0593678810404323007 * R[687] + -0.118735762080864601 * R[41] + 0.118735762080864601 * R[689] + 0.0593678810404323007 * R[54] + -0.0593678810404323007 * R[702] + 0.0593678810404323007 * R[57] + -0.0593678810404323007 * R[705] + -0.118735762080864601 * R[59] + 0.118735762080864601 * R[707] + -0.118735762080864601 * R[66] + 0.118735762080864601 * R[714] + -0.118735762080864601 * R[69] + 0.118735762080864601 * R[717] + 0.237471524161729203 * R[71] + -0.237471524161729203 * R[719]);
+                o[2 * st[0] + 3 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.205656372599467646 * R[38] + 0.205656372599467646 * R[686] + -0.205656372599467646 * R[56] + 0.205656372599467646 * R[704] + 0.411312745198935292 * R[68] + -0.411312745198935292 * R[716]);
+                o[2 * st[0] + 4 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.102828186299733823 * R[36] + 0.102828186299733823 * R[684] + 0.102828186299733823 * R[39] + -0.102828186299733823 * R[687] + -0.102828186299733823 * R[54] + 0.102828186299733823 * R[702] + 0.102828186299733823 * R[57] + -0.102828186299733823 * R[705] + 0.205656372599467646 * R[66] + -0.205656372599467646 * R[714] + -0.205656372599467646 * R[69] + 0.205656372599467646 * R[717]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[49] + -0.712414572485187914 * R[697]);
+                o[3 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[52] + -0.712414572485187914 * R[700]);
+                o[3 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.205656372599467646 * R[48] + 0.205656372599467646 * R[696] + -0.205656372599467646 * R[51] + 0.205656372599467646 * R[699] + 0.411312745198935292 * R[53] + -0.411312745198935292 * R[701]);
+                o[3 * st[0] + 3 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.712414572485187914 * R[50] + -0.712414572485187914 * R[698]);
+                o[3 * st[0] + 4 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.356207286242593957 * R[48] + -0.356207286242593957 * R[696] + -0.356207286242593957 * R[51] + 0.356207286242593957 * R[699]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.356207286242593957 * R[37] + -0.356207286242593957 * R[685] + -0.356207286242593957 * R[55] + 0.356207286242593957 * R[703]);
+                o[4 * st[0] + 1 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.356207286242593957 * R[40] + -0.356207286242593957 * R[688] + -0.356207286242593957 * R[58] + 0.356207286242593957 * R[706]);
+                o[4 * st[0] + 2 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (-0.102828186299733823 * R[36] + 0.102828186299733823 * R[684] + -0.102828186299733823 * R[39] + 0.102828186299733823 * R[687] + 0.205656372599467646 * R[41] + -0.205656372599467646 * R[689] + 0.102828186299733823 * R[54] + -0.102828186299733823 * R[702] + 0.102828186299733823 * R[57] + -0.102828186299733823 * R[705] + -0.205656372599467646 * R[59] + 0.205656372599467646 * R[707]);
+                o[4 * st[0] + 3 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.356207286242593957 * R[38] + -0.356207286242593957 * R[686] + -0.356207286242593957 * R[56] + 0.356207286242593957 * R[704]);
+                o[4 * st[0] + 4 * st[1] + 4 * st[2] + 0 * st[3]] = fac * (0.178103643121296978 * R[36] + -0.178103643121296978 * R[684] + -0.178103643121296978 * R[39] + 0.178103643121296978 * R[687] + -0.178103643121296978 * R[54] + 0.178103643121296978 * R[702] + 0.178103643121296978 * R[57] + -0.178103643121296978 * R[705]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[151] + -0.712414572485187914 * R[799]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[154] + -0.712414572485187914 * R[802]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (-0.205656372599467646 * R[150] + 0.205656372599467646 * R[798] + -0.205656372599467646 * R[153] + 0.205656372599467646 * R[801] + 0.411312745198935292 * R[155] + -0.411312745198935292 * R[803]);
+                o[0 * st[0] + 3 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[152] + -0.712414572485187914 * R[800]);
+                o[0 * st[0] + 4 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.356207286242593957 * R[150] + -0.356207286242593957 * R[798] + -0.356207286242593957 * R[153] + 0.356207286242593957 * R[801]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[169] + -0.712414572485187914 * R[817]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[172] + -0.712414572485187914 * R[820]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (-0.205656372599467646 * R[168] + 0.205656372599467646 * R[816] + -0.205656372599467646 * R[171] + 0.205656372599467646 * R[819] + 0.411312745198935292 * R[173] + -0.411312745198935292 * R[821]);
+                o[1 * st[0] + 3 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[170] + -0.712414572485187914 * R[818]);
+                o[1 * st[0] + 4 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.356207286242593957 * R[168] + -0.356207286242593957 * R[816] + -0.356207286242593957 * R[171] + 0.356207286242593957 * R[819]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (-0.205656372599467646 * R[145] + 0.205656372599467646 * R[793] + -0.205656372599467646 * R[163] + 0.205656372599467646 * R[811] + 0.411312745198935292 * R[175] + -0.411312745198935292 * R[823]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (-0.205656372599467646 * R[148] + 0.205656372599467646 * R[796] + -0.205656372599467646 * R[166] + 0.205656372599467646 * R[814] + 0.411312745198935292 * R[178] + -0.411312745198935292 * R[826]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.0593678810404323007 * R[144] + -0.0593678810404323007 * R[792] + 0.0593678810404323007 * R[147] + -0.0593678810404323007 * R[795] + -0.118735762080864601 * R[149] + 0.118735762080864601 * R[797] + 0.0593678810404323007 * R[162] + -0.0593678810404323007 * R[810] + 0.0593678810404323007 * R[165] + -0.0593678810404323007 * R[813] + -0.118735762080864601 * R[167] + 0.118735762080864601 * R[815] + -0.118735762080864601 * R[174] + 0.118735762080864601 * R[822] + -0.118735762080864601 * R[177] + 0.118735762080864601 * R[825] + 0.237471524161729203 * R[179] + -0.237471524161729203 * R[827]);
+                o[2 * st[0] + 3 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (-0.205656372599467646 * R[146] + 0.205656372599467646 * R[794] + -0.205656372599467646 * R[164] + 0.205656372599467646 * R[812] + 0.411312745198935292 * R[176] + -0.411312745198935292 * R[824]);
+                o[2 * st[0] + 4 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (-0.102828186299733823 * R[144] + 0.102828186299733823 * R[792] + 0.102828186299733823 * R[147] + -0.102828186299733823 * R[795] + -0.102828186299733823 * R[162] + 0.102828186299733823 * R[810] + 0.102828186299733823 * R[165] + -0.102828186299733823 * R[813] + 0.205656372599467646 * R[174] + -0.205656372599467646 * R[822] + -0.205656372599467646 * R[177] + 0.205656372599467646 * R[825]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[157] + -0.712414572485187914 * R[805]);
+                o[3 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[160] + -0.712414572485187914 * R[808]);
+                o[3 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (-0.205656372599467646 * R[156] + 0.205656372599467646 * R[804] + -0.205656372599467646 * R[159] + 0.205656372599467646 * R[807] + 0.411312745198935292 * R[161] + -0.411312745198935292 * R[809]);
+                o[3 * st[0] + 3 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.712414572485187914 * R[158] + -0.712414572485187914 * R[806]);
+                o[3 * st[0] + 4 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.356207286242593957 * R[156] + -0.356207286242593957 * R[804] + -0.356207286242593957 * R[159] + 0.356207286242593957 * R[807]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.356207286242593957 * R[145] + -0.356207286242593957 * R[793] + -0.356207286242593957 * R[163] + 0.356207286242593957 * R[811]);
+                o[4 * st[0] + 1 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.356207286242593957 * R[148] + -0.356207286242593957 * R[796] + -0.356207286242593957 * R[166] + 0.356207286242593957 * R[814]);
+                o[4 * st[0] + 2 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (-0.102828186299733823 * R[144] + 0.102828186299733823 * R[792] + -0.102828186299733823 * R[147] + 0.102828186299733823 * R[795] + 0.205656372599467646 * R[149] + -0.205656372599467646 * R[797] + 0.102828186299733823 * R[162] + -0.102828186299733823 * R[810] + 0.102828186299733823 * R[165] + -0.102828186299733823 * R[813] + -0.205656372599467646 * R[167] + 0.205656372599467646 * R[815]);
+                o[4 * st[0] + 3 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.356207286242593957 * R[146] + -0.356207286242593957 * R[794] + -0.356207286242593957 * R[164] + 0.356207286242593957 * R[812]);
+                o[4 * st[0] + 4 * st[1] + 4 * st[2] + 1 * st[3]] = fac * (0.178103643121296978 * R[144] + -0.178103643121296978 * R[792] + -0.178103643121296978 * R[147] + 0.178103643121296978 * R[795] + -0.178103643121296978 * R[162] + 0.178103643121296978 * R[810] + 0.178103643121296978 * R[165] + -0.178103643121296978 * R[813]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[7] + -0.205656372599467646 * R[115] + 0.411312745198935292 * R[187] + 0.205656372599467646 * R[655] + 0.205656372599467646 * R[763] + -0.411312745198935292 * R[835]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[10] + -0.205656372599467646 * R[118] + 0.411312745198935292 * R[190] + 0.205656372599467646 * R[658] + 0.205656372599467646 * R[766] + -0.411312745198935292 * R[838]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.0593678810404322937 * R[6] + 0.0593678810404322937 * R[114] + -0.118735762080864587 * R[186] + -0.0593678810404322937 * R[654] + -0.0593678810404322937 * R[762] + 0.118735762080864587 * R[834] + 0.0593678810404322937 * R[9] + 0.0593678810404322937 * R[117] + -0.118735762080864587 * R[189] + -0.0593678810404322937 * R[657] + -0.0593678810404322937 * R[765] + 0.118735762080864587 * R[837] + -0.118735762080864587 * R[11] + -0.118735762080864587 * R[119] + 0.237471524161729175 * R[191] + 0.118735762080864587 * R[659] + 0.118735762080864587 * R[767] + -0.237471524161729175 * R[839]);
+                o[0 * st[0] + 3 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[8] + -0.205656372599467646 * R[116] + 0.411312745198935292 * R[188] + 0.205656372599467646 * R[656] + 0.205656372599467646 * R[764] + -0.411312745198935292 * R[836]);
+                o[0 * st[0] + 4 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.102828186299733823 * R[6] + -0.102828186299733823 * R[114] + 0.205656372599467646 * R[186] + 0.102828186299733823 * R[654] + 0.102828186299733823 * R[762] + -0.205656372599467646 * R[834] + 0.102828186299733823 * R[9] + 0.102828186299733823 * R[117] + -0.205656372599467646 * R[189] + -0.102828186299733823 * R[657] + -0.102828186299733823 * R[765] + 0.205656372599467646 * R[837]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[25] + -0.205656372599467646 * R[133] + 0.411312745198935292 * R[205] + 0.205656372599467646 * R[673] + 0.205656372599467646 * R[781] + -0.411312745198935292 * R[853]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[28] + -0.205656372599467646 * R[136] + 0.411312745198935292 * R[208] + 0.205656372599467646 * R[676] + 0.205656372599467646 * R[784] + -0.411312745198935292 * R[856]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.0593678810404322937 * R[24] + 0.0593678810404322937 * R[132] + -0.118735762080864587 * R[204] + -0.0593678810404322937 * R[672] + -0.0593678810404322937 * R[780] + 0.118735762080864587 * R[852] + 0.0593678810404322937 * R[27] + 0.0593678810404322937 * R[135] + -0.118735762080864587 * R[207] + -0.0593678810404322937 * R[675] + -0.0593678810404322937 * R[783] + 0.118735762080864587 * R[855] + -0.118735762080864587 * R[29] + -0.118735762080864587 * R[137] + 0.237471524161729175 * R[209] + 0.118735762080864587 * R[677] + 0.118735762080864587 * R[785] + -0.237471524161729175 * R[857]);
+                o[1 * st[0] + 3 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[26] + -0.205656372599467646 * R[134] + 0.411312745198935292 * R[206] + 0.205656372599467646 * R[674] + 0.205656372599467646 * R[782] + -0.411312745198935292 * R[854]);
+                o[1 * st[0] + 4 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.102828186299733823 * R[24] + -0.102828186299733823 * R[132] + 0.205656372599467646 * R[204] + 0.102828186299733823 * R[672] + 0.102828186299733823 * R[780] + -0.205656372599467646 * R[852] + 0.102828186299733823 * R[27] + 0.102828186299733823 * R[135] + -0.205656372599467646 * R[207] + -0.102828186299733823 * R[675] + -0.102828186299733823 * R[783] + 0.205656372599467646 * R[855]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.0593678810404322937 * R[1] + 0.0593678810404322937 * R[109] + -0.118735762080864587 * R[181] + -0.0593678810404322937 * R[649] + -0.0593678810404322937 * R[757] + 0.118735762080864587 * R[829] + 0.0593678810404322937 * R[19] + 0.0593678810404322937 * R[127] + -0.118735762080864587 * R[199] + -0.0593678810404322937 * R[667] + -0.0593678810404322937 * R[775] + 0.118735762080864587 * R[847] + -0.118735762080864587 * R[31] + -0.118735762080864587 * R[139] + 0.237471524161729175 * R[211] + 0.118735762080864587 * R[679] + 0.118735762080864587 * R[787] + -0.237471524161729175 * R[859]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.0593678810404322937 * R[4] + 0.0593678810404322937 * R[112] + -0.118735762080864587 * R[184] + -0.0593678810404322937 * R[652] + -0.0593678810404322937 * R[760] + 0.118735762080864587 * R[832] + 0.0593678810404322937 * R[22] + 0.0593678810404322937 * R[130] + -0.118735762080864587 * R[202] + -0.0593678810404322937 * R[670] + -0.0593678810404322937 * R[778] + 0.118735762080864587 * R[850] + -0.118735762080864587 * R[34] + -0.118735762080864587 * R[142] + 0.237471524161729175 * R[214] + 0.118735762080864587 * R[682] + 0.118735762080864587 * R[790] + -0.237471524161729175 * R[862]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.0171380310499556314 * R[0] + -0.0171380310499556314 * R[108] + 0.0342760620999112628 * R[180] + 0.0171380310499556314 * R[648] + 0.0171380310499556314 * R[756] + -0.0342760620999112628 * R[828] + -0.0171380310499556314 * R[3] + -0.0171380310499556314 * R[111] + 0.0342760620999112628 * R[183] + 0.0171380310499556314 * R[651] + 0.0171380310499556314 * R[759] + -0.0342760620999112628 * R[831] + 0.0342760620999112628 * R[5] + 0.0342760620999112628 * R[113] + -0.0685521241998225256 * R[185] + -0.0342760620999112628 * R[653] + -0.0342760620999112628 * R[761] + 0.0685521241998225256 * R[833] + -0.0171380310499556314 * R[18] + -0.0171380310499556314 * R[126] + 0.0342760620999112628 * R[198] + 0.0171380310499556314 * R[666] + 0.0171380310499556314 * R[774] + -0.0342760620999112628 * R[846] + -0.0171380310499556314 * R[21] + -0.0171380310499556314 * R[129] + 0.0342760620999112628 * R[201] + 0.0171380310499556314 * R[669] + 0.0171380310499556314 * R[777] + -0.0342760620999112628 * R[849] + 0.0342760620999112628 * R[23] + 0.0342760620999112628 * R[131] + -0.0685521241998225256 * R[203] + -0.0342760620999112628 * R[671] + -0.0342760620999112628 * R[779] + 0.0685521241998225256 * R[851] + 0.0342760620999112628 * R[30] + 0.0342760620999112628 * R[138] + -0.0685521241998225256 * R[210] + -0.0342760620999112628 * R[678] + -0.0342760620999112628 * R[786] + 0.0685521241998225256 * R[858] + 0.0342760620999112628 * R[33] + 0.0342760620999112628 * R[141] + -0.0685521241998225256 * R[213] + -0.0342760620999112628 * R[681] + -0.0342760620999112628 * R[789] + 0.0685521241998225256 * R[861] + -0.0685521241998225256 * R[35] + -0.0685521241998225256 * R[143] + 0.137104248399645051 * R[215] + 0.0685521241998225256 * R[683] + 0.0685521241998225256 * R[791] + -0.137104248399645051 * R[863]);
+                o[2 * st[0] + 3 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.0593678810404322937 * R[2] + 0.0593678810404322937 * R[110] + -0.118735762080864587 * R[182] + -0.0593678810404322937 * R[650] + -0.0593678810404322937 * R[758] + 0.118735762080864587 * R[830] + 0.0593678810404322937 * R[20] + 0.0593678810404322937 * R[128] + -0.118735762080864587 * R[200] + -0.0593678810404322937 * R[668] + -0.0593678810404322937 * R[776] + 0.118735762080864587 * R[848] + -0.118735762080864587 * R[32] + -0.118735762080864587 * R[140] + 0.237471524161729175 * R[212] + 0.118735762080864587 * R[680] + 0.118735762080864587 * R[788] + -0.237471524161729175 * R[860]);
+                o[2 * st[0] + 4 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.0296839405202161469 * R[0] + 0.0296839405202161469 * R[108] + -0.0593678810404322937 * R[180] + -0.0296839405202161469 * R[648] + -0.0296839405202161469 * R[756] + 0.0593678810404322937 * R[828] + -0.0296839405202161469 * R[3] + -0.0296839405202161469 * R[111] + 0.0593678810404322937 * R[183] + 0.0296839405202161469 * R[651] + 0.0296839405202161469 * R[759] + -0.0593678810404322937 * R[831] + 0.0296839405202161469 * R[18] + 0.0296839405202161469 * R[126] + -0.0593678810404322937 * R[198] + -0.0296839405202161469 * R[666] + -0.0296839405202161469 * R[774] + 0.0593678810404322937 * R[846] + -0.0296839405202161469 * R[21] + -0.0296839405202161469 * R[129] + 0.0593678810404322937 * R[201] + 0.0296839405202161469 * R[669] + 0.0296839405202161469 * R[777] + -0.0593678810404322937 * R[849] + -0.0593678810404322937 * R[30] + -0.0593678810404322937 * R[138] + 0.118735762080864587 * R[210] + 0.0593678810404322937 * R[678] + 0.0593678810404322937 * R[786] + -0.118735762080864587 * R[858] + 0.0593678810404322937 * R[33] + 0.0593678810404322937 * R[141] + -0.118735762080864587 * R[213] + -0.0593678810404322937 * R[681] + -0.0593678810404322937 * R[789] + 0.118735762080864587 * R[861]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[13] + -0.205656372599467646 * R[121] + 0.411312745198935292 * R[193] + 0.205656372599467646 * R[661] + 0.205656372599467646 * R[769] + -0.411312745198935292 * R[841]);
+                o[3 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[16] + -0.205656372599467646 * R[124] + 0.411312745198935292 * R[196] + 0.205656372599467646 * R[664] + 0.205656372599467646 * R[772] + -0.411312745198935292 * R[844]);
+                o[3 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.0593678810404322937 * R[12] + 0.0593678810404322937 * R[120] + -0.118735762080864587 * R[192] + -0.0593678810404322937 * R[660] + -0.0593678810404322937 * R[768] + 0.118735762080864587 * R[840] + 0.0593678810404322937 * R[15] + 0.0593678810404322937 * R[123] + -0.118735762080864587 * R[195] + -0.0593678810404322937 * R[663] + -0.0593678810404322937 * R[771] + 0.118735762080864587 * R[843] + -0.118735762080864587 * R[17] + -0.118735762080864587 * R[125] + 0.237471524161729175 * R[197] + 0.118735762080864587 * R[665] + 0.118735762080864587 * R[773] + -0.237471524161729175 * R[845]);
+                o[3 * st[0] + 3 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.205656372599467646 * R[14] + -0.205656372599467646 * R[122] + 0.411312745198935292 * R[194] + 0.205656372599467646 * R[662] + 0.205656372599467646 * R[770] + -0.411312745198935292 * R[842]);
+                o[3 * st[0] + 4 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.102828186299733823 * R[12] + -0.102828186299733823 * R[120] + 0.205656372599467646 * R[192] + 0.102828186299733823 * R[660] + 0.102828186299733823 * R[768] + -0.205656372599467646 * R[840] + 0.102828186299733823 * R[15] + 0.102828186299733823 * R[123] + -0.205656372599467646 * R[195] + -0.102828186299733823 * R[663] + -0.102828186299733823 * R[771] + 0.205656372599467646 * R[843]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.102828186299733823 * R[1] + -0.102828186299733823 * R[109] + 0.205656372599467646 * R[181] + 0.102828186299733823 * R[649] + 0.102828186299733823 * R[757] + -0.205656372599467646 * R[829] + 0.102828186299733823 * R[19] + 0.102828186299733823 * R[127] + -0.205656372599467646 * R[199] + -0.102828186299733823 * R[667] + -0.102828186299733823 * R[775] + 0.205656372599467646 * R[847]);
+                o[4 * st[0] + 1 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.102828186299733823 * R[4] + -0.102828186299733823 * R[112] + 0.205656372599467646 * R[184] + 0.102828186299733823 * R[652] + 0.102828186299733823 * R[760] + -0.205656372599467646 * R[832] + 0.102828186299733823 * R[22] + 0.102828186299733823 * R[130] + -0.205656372599467646 * R[202] + -0.102828186299733823 * R[670] + -0.102828186299733823 * R[778] + 0.205656372599467646 * R[850]);
+                o[4 * st[0] + 2 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (0.0296839405202161469 * R[0] + 0.0296839405202161469 * R[108] + -0.0593678810404322937 * R[180] + -0.0296839405202161469 * R[648] + -0.0296839405202161469 * R[756] + 0.0593678810404322937 * R[828] + 0.0296839405202161469 * R[3] + 0.0296839405202161469 * R[111] + -0.0593678810404322937 * R[183] + -0.0296839405202161469 * R[651] + -0.0296839405202161469 * R[759] + 0.0593678810404322937 * R[831] + -0.0593678810404322937 * R[5] + -0.0593678810404322937 * R[113] + 0.118735762080864587 * R[185] + 0.0593678810404322937 * R[653] + 0.0593678810404322937 * R[761] + -0.118735762080864587 * R[833] + -0.0296839405202161469 * R[18] + -0.0296839405202161469 * R[126] + 0.0593678810404322937 * R[198] + 0.0296839405202161469 * R[666] + 0.0296839405202161469 * R[774] + -0.0593678810404322937 * R[846] + -0.0296839405202161469 * R[21] + -0.0296839405202161469 * R[129] + 0.0593678810404322937 * R[201] + 0.0296839405202161469 * R[669] + 0.0296839405202161469 * R[777] + -0.0593678810404322937 * R[849] + 0.0593678810404322937 * R[23] + 0.0593678810404322937 * R[131] + -0.118735762080864587 * R[203] + -0.0593678810404322937 * R[671] + -0.0593678810404322937 * R[779] + 0.118735762080864587 * R[851]);
+                o[4 * st[0] + 3 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.102828186299733823 * R[2] + -0.102828186299733823 * R[110] + 0.205656372599467646 * R[182] + 0.102828186299733823 * R[650] + 0.102828186299733823 * R[758] + -0.205656372599467646 * R[830] + 0.102828186299733823 * R[20] + 0.102828186299733823 * R[128] + -0.205656372599467646 * R[200] + -0.102828186299733823 * R[668] + -0.102828186299733823 * R[776] + 0.205656372599467646 * R[848]);
+                o[4 * st[0] + 4 * st[1] + 4 * st[2] + 2 * st[3]] = fac * (-0.0514140931498669115 * R[0] + -0.0514140931498669115 * R[108] + 0.102828186299733823 * R[180] + 0.0514140931498669115 * R[648] + 0.0514140931498669115 * R[756] + -0.102828186299733823 * R[828] + 0.0514140931498669115 * R[3] + 0.0514140931498669115 * R[111] + -0.102828186299733823 * R[183] + -0.0514140931498669115 * R[651] + -0.0514140931498669115 * R[759] + 0.102828186299733823 * R[831] + 0.0514140931498669115 * R[18] + 0.0514140931498669115 * R[126] + -0.102828186299733823 * R[198] + -0.0514140931498669115 * R[666] + -0.0514140931498669115 * R[774] + 0.102828186299733823 * R[846] + -0.0514140931498669115 * R[21] + -0.0514140931498669115 * R[129] + 0.102828186299733823 * R[201] + 0.0514140931498669115 * R[669] + 0.0514140931498669115 * R[777] + -0.102828186299733823 * R[849]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[79] + -0.712414572485187914 * R[727]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[82] + -0.712414572485187914 * R[730]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (-0.205656372599467646 * R[78] + 0.205656372599467646 * R[726] + -0.205656372599467646 * R[81] + 0.205656372599467646 * R[729] + 0.411312745198935292 * R[83] + -0.411312745198935292 * R[731]);
+                o[0 * st[0] + 3 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[80] + -0.712414572485187914 * R[728]);
+                o[0 * st[0] + 4 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.356207286242593957 * R[78] + -0.356207286242593957 * R[726] + -0.356207286242593957 * R[81] + 0.356207286242593957 * R[729]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[97] + -0.712414572485187914 * R[745]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[100] + -0.712414572485187914 * R[748]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (-0.205656372599467646 * R[96] + 0.205656372599467646 * R[744] + -0.205656372599467646 * R[99] + 0.205656372599467646 * R[747] + 0.411312745198935292 * R[101] + -0.411312745198935292 * R[749]);
+                o[1 * st[0] + 3 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[98] + -0.712414572485187914 * R[746]);
+                o[1 * st[0] + 4 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.356207286242593957 * R[96] + -0.356207286242593957 * R[744] + -0.356207286242593957 * R[99] + 0.356207286242593957 * R[747]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (-0.205656372599467646 * R[73] + 0.205656372599467646 * R[721] + -0.205656372599467646 * R[91] + 0.205656372599467646 * R[739] + 0.411312745198935292 * R[103] + -0.411312745198935292 * R[751]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (-0.205656372599467646 * R[76] + 0.205656372599467646 * R[724] + -0.205656372599467646 * R[94] + 0.205656372599467646 * R[742] + 0.411312745198935292 * R[106] + -0.411312745198935292 * R[754]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.0593678810404323007 * R[72] + -0.0593678810404323007 * R[720] + 0.0593678810404323007 * R[75] + -0.0593678810404323007 * R[723] + -0.118735762080864601 * R[77] + 0.118735762080864601 * R[725] + 0.0593678810404323007 * R[90] + -0.0593678810404323007 * R[738] + 0.0593678810404323007 * R[93] + -0.0593678810404323007 * R[741] + -0.118735762080864601 * R[95] + 0.118735762080864601 * R[743] + -0.118735762080864601 * R[102] + 0.118735762080864601 * R[750] + -0.118735762080864601 * R[105] + 0.118735762080864601 * R[753] + 0.237471524161729203 * R[107] + -0.237471524161729203 * R[755]);
+                o[2 * st[0] + 3 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (-0.205656372599467646 * R[74] + 0.205656372599467646 * R[722] + -0.205656372599467646 * R[92] + 0.205656372599467646 * R[740] + 0.411312745198935292 * R[104] + -0.411312745198935292 * R[752]);
+                o[2 * st[0] + 4 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (-0.102828186299733823 * R[72] + 0.102828186299733823 * R[720] + 0.102828186299733823 * R[75] + -0.102828186299733823 * R[723] + -0.102828186299733823 * R[90] + 0.102828186299733823 * R[738] + 0.102828186299733823 * R[93] + -0.102828186299733823 * R[741] + 0.205656372599467646 * R[102] + -0.205656372599467646 * R[750] + -0.205656372599467646 * R[105] + 0.205656372599467646 * R[753]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[85] + -0.712414572485187914 * R[733]);
+                o[3 * st[0] + 1 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[88] + -0.712414572485187914 * R[736]);
+                o[3 * st[0] + 2 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (-0.205656372599467646 * R[84] + 0.205656372599467646 * R[732] + -0.205656372599467646 * R[87] + 0.205656372599467646 * R[735] + 0.411312745198935292 * R[89] + -0.411312745198935292 * R[737]);
+                o[3 * st[0] + 3 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.712414572485187914 * R[86] + -0.712414572485187914 * R[734]);
+                o[3 * st[0] + 4 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.356207286242593957 * R[84] + -0.356207286242593957 * R[732] + -0.356207286242593957 * R[87] + 0.356207286242593957 * R[735]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.356207286242593957 * R[73] + -0.356207286242593957 * R[721] + -0.356207286242593957 * R[91] + 0.356207286242593957 * R[739]);
+                o[4 * st[0] + 1 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.356207286242593957 * R[76] + -0.356207286242593957 * R[724] + -0.356207286242593957 * R[94] + 0.356207286242593957 * R[742]);
+                o[4 * st[0] + 2 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (-0.102828186299733823 * R[72] + 0.102828186299733823 * R[720] + -0.102828186299733823 * R[75] + 0.102828186299733823 * R[723] + 0.205656372599467646 * R[77] + -0.205656372599467646 * R[725] + 0.102828186299733823 * R[90] + -0.102828186299733823 * R[738] + 0.102828186299733823 * R[93] + -0.102828186299733823 * R[741] + -0.205656372599467646 * R[95] + 0.205656372599467646 * R[743]);
+                o[4 * st[0] + 3 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.356207286242593957 * R[74] + -0.356207286242593957 * R[722] + -0.356207286242593957 * R[92] + 0.356207286242593957 * R[740]);
+                o[4 * st[0] + 4 * st[1] + 4 * st[2] + 3 * st[3]] = fac * (0.178103643121296978 * R[72] + -0.178103643121296978 * R[720] + -0.178103643121296978 * R[75] + 0.178103643121296978 * R[723] + -0.178103643121296978 * R[90] + 0.178103643121296978 * R[738] + 0.178103643121296978 * R[93] + -0.178103643121296978 * R[741]);
+                o[0 * st[0] + 0 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[7] + -0.356207286242593957 * R[115] + -0.356207286242593957 * R[655] + 0.356207286242593957 * R[763]);
+                o[0 * st[0] + 1 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[10] + -0.356207286242593957 * R[118] + -0.356207286242593957 * R[658] + 0.356207286242593957 * R[766]);
+                o[0 * st[0] + 2 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (-0.102828186299733823 * R[6] + 0.102828186299733823 * R[114] + 0.102828186299733823 * R[654] + -0.102828186299733823 * R[762] + -0.102828186299733823 * R[9] + 0.102828186299733823 * R[117] + 0.102828186299733823 * R[657] + -0.102828186299733823 * R[765] + 0.205656372599467646 * R[11] + -0.205656372599467646 * R[119] + -0.205656372599467646 * R[659] + 0.205656372599467646 * R[767]);
+                o[0 * st[0] + 3 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[8] + -0.356207286242593957 * R[116] + -0.356207286242593957 * R[656] + 0.356207286242593957 * R[764]);
+                o[0 * st[0] + 4 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.178103643121296978 * R[6] + -0.178103643121296978 * R[114] + -0.178103643121296978 * R[654] + 0.178103643121296978 * R[762] + -0.178103643121296978 * R[9] + 0.178103643121296978 * R[117] + 0.178103643121296978 * R[657] + -0.178103643121296978 * R[765]);
+                o[1 * st[0] + 0 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[25] + -0.356207286242593957 * R[133] + -0.356207286242593957 * R[673] + 0.356207286242593957 * R[781]);
+                o[1 * st[0] + 1 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[28] + -0.356207286242593957 * R[136] + -0.356207286242593957 * R[676] + 0.356207286242593957 * R[784]);
+                o[1 * st[0] + 2 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (-0.102828186299733823 * R[24] + 0.102828186299733823 * R[132] + 0.102828186299733823 * R[672] + -0.102828186299733823 * R[780] + -0.102828186299733823 * R[27] + 0.102828186299733823 * R[135] + 0.102828186299733823 * R[675] + -0.102828186299733823 * R[783] + 0.205656372599467646 * R[29] + -0.205656372599467646 * R[137] + -0.205656372599467646 * R[677] + 0.205656372599467646 * R[785]);
+                o[1 * st[0] + 3 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[26] + -0.356207286242593957 * R[134] + -0.356207286242593957 * R[674] + 0.356207286242593957 * R[782]);
+                o[1 * st[0] + 4 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.178103643121296978 * R[24] + -0.178103643121296978 * R[132] + -0.178103643121296978 * R[672] + 0.178103643121296978 * R[780] + -0.178103643121296978 * R[27] + 0.178103643121296978 * R[135] + 0.178103643121296978 * R[675] + -0.178103643121296978 * R[783]);
+                o[2 * st[0] + 0 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (-0.102828186299733823 * R[1] + 0.102828186299733823 * R[109] + 0.102828186299733823 * R[649] + -0.102828186299733823 * R[757] + -0.102828186299733823 * R[19] + 0.102828186299733823 * R[127] + 0.102828186299733823 * R[667] + -0.102828186299733823 * R[775] + 0.205656372599467646 * R[31] + -0.205656372599467646 * R[139] + -0.205656372599467646 * R[679] + 0.205656372599467646 * R[787]);
+                o[2 * st[0] + 1 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (-0.102828186299733823 * R[4] + 0.102828186299733823 * R[112] + 0.102828186299733823 * R[652] + -0.102828186299733823 * R[760] + -0.102828186299733823 * R[22] + 0.102828186299733823 * R[130] + 0.102828186299733823 * R[670] + -0.102828186299733823 * R[778] + 0.205656372599467646 * R[34] + -0.205656372599467646 * R[142] + -0.205656372599467646 * R[682] + 0.205656372599467646 * R[790]);
+                o[2 * st[0] + 2 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.0296839405202161503 * R[0] + -0.0296839405202161503 * R[108] + -0.0296839405202161503 * R[648] + 0.0296839405202161503 * R[756] + 0.0296839405202161503 * R[3] + -0.0296839405202161503 * R[111] + -0.0296839405202161503 * R[651] + 0.0296839405202161503 * R[759] + -0.0593678810404323007 * R[5] + 0.0593678810404323007 * R[113] + 0.0593678810404323007 * R[653] + -0.0593678810404323007 * R[761] + 0.0296839405202161503 * R[18] + -0.0296839405202161503 * R[126] + -0.0296839405202161503 * R[666] + 0.0296839405202161503 * R[774] + 0.0296839405202161503 * R[21] + -0.0296839405202161503 * R[129] + -0.0296839405202161503 * R[669] + 0.0296839405202161503 * R[777] + -0.0593678810404323007 * R[23] + 0.0593678810404323007 * R[131] + 0.0593678810404323007 * R[671] + -0.0593678810404323007 * R[779] + -0.0593678810404323007 * R[30] + 0.0593678810404323007 * R[138] + 0.0593678810404323007 * R[678] + -0.0593678810404323007 * R[786] + -0.0593678810404323007 * R[33] + 0.0593678810404323007 * R[141] + 0.0593678810404323007 * R[681] + -0.0593678810404323007 * R[789] + 0.118735762080864601 * R[35] + -0.118735762080864601 * R[143] + -0.118735762080864601 * R[683] + 0.118735762080864601 * R[791]);
+                o[2 * st[0] + 3 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (-0.102828186299733823 * R[2] + 0.102828186299733823 * R[110] + 0.102828186299733823 * R[650] + -0.102828186299733823 * R[758] + -0.102828186299733823 * R[20] + 0.102828186299733823 * R[128] + 0.102828186299733823 * R[668] + -0.102828186299733823 * R[776] + 0.205656372599467646 * R[32] + -0.205656372599467646 * R[140] + -0.205656372599467646 * R[680] + 0.205656372599467646 * R[788]);
+                o[2 * st[0] + 4 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (-0.0514140931498669115 * R[0] + 0.0514140931498669115 * R[108] + 0.0514140931498669115 * R[648] + -0.0514140931498669115 * R[756] + 0.0514140931498669115 * R[3] + -0.0514140931498669115 * R[111] + -0.0514140931498669115 * R[651] + 0.0514140931498669115 * R[759] + -0.0514140931498669115 * R[18] + 0.0514140931498669115 * R[126] + 0.0514140931498669115 * R[666] + -0.0514140931498669115 * R[774] + 0.0514140931498669115 * R[21] + -0.0514140931498669115 * R[129] + -0.0514140931498669115 * R[669] + 0.0514140931498669115 * R[777] + 0.102828186299733823 * R[30] + -0.102828186299733823 * R[138] + -0.102828186299733823 * R[678] + 0.102828186299733823 * R[786] + -0.102828186299733823 * R[33] + 0.102828186299733823 * R[141] + 0.102828186299733823 * R[681] + -0.102828186299733823 * R[789]);
+                o[3 * st[0] + 0 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[13] + -0.356207286242593957 * R[121] + -0.356207286242593957 * R[661] + 0.356207286242593957 * R[769]);
+                o[3 * st[0] + 1 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[16] + -0.356207286242593957 * R[124] + -0.356207286242593957 * R[664] + 0.356207286242593957 * R[772]);
+                o[3 * st[0] + 2 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (-0.102828186299733823 * R[12] + 0.102828186299733823 * R[120] + 0.102828186299733823 * R[660] + -0.102828186299733823 * R[768] + -0.102828186299733823 * R[15] + 0.102828186299733823 * R[123] + 0.102828186299733823 * R[663] + -0.102828186299733823 * R[771] + 0.205656372599467646 * R[17] + -0.205656372599467646 * R[125] + -0.205656372599467646 * R[665] + 0.205656372599467646 * R[773]);
+                o[3 * st[0] + 3 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.356207286242593957 * R[14] + -0.356207286242593957 * R[122] + -0.356207286242593957 * R[662] + 0.356207286242593957 * R[770]);
+                o[3 * st[0] + 4 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.178103643121296978 * R[12] + -0.178103643121296978 * R[120] + -0.178103643121296978 * R[660] + 0.178103643121296978 * R[768] + -0.178103643121296978 * R[15] + 0.178103643121296978 * R[123] + 0.178103643121296978 * R[663] + -0.178103643121296978 * R[771]);
+                o[4 * st[0] + 0 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.178103643121296978 * R[1] + -0.178103643121296978 * R[109] + -0.178103643121296978 * R[649] + 0.178103643121296978 * R[757] + -0.178103643121296978 * R[19] + 0.178103643121296978 * R[127] + 0.178103643121296978 * R[667] + -0.178103643121296978 * R[775]);
+                o[4 * st[0] + 1 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.178103643121296978 * R[4] + -0.178103643121296978 * R[112] + -0.178103643121296978 * R[652] + 0.178103643121296978 * R[760] + -0.178103643121296978 * R[22] + 0.178103643121296978 * R[130] + 0.178103643121296978 * R[670] + -0.178103643121296978 * R[778]);
+                o[4 * st[0] + 2 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (-0.0514140931498669115 * R[0] + 0.0514140931498669115 * R[108] + 0.0514140931498669115 * R[648] + -0.0514140931498669115 * R[756] + -0.0514140931498669115 * R[3] + 0.0514140931498669115 * R[111] + 0.0514140931498669115 * R[651] + -0.0514140931498669115 * R[759] + 0.102828186299733823 * R[5] + -0.102828186299733823 * R[113] + -0.102828186299733823 * R[653] + 0.102828186299733823 * R[761] + 0.0514140931498669115 * R[18] + -0.0514140931498669115 * R[126] + -0.0514140931498669115 * R[666] + 0.0514140931498669115 * R[774] + 0.0514140931498669115 * R[21] + -0.0514140931498669115 * R[129] + -0.0514140931498669115 * R[669] + 0.0514140931498669115 * R[777] + -0.102828186299733823 * R[23] + 0.102828186299733823 * R[131] + 0.102828186299733823 * R[671] + -0.102828186299733823 * R[779]);
+                o[4 * st[0] + 3 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.178103643121296978 * R[2] + -0.178103643121296978 * R[110] + -0.178103643121296978 * R[650] + 0.178103643121296978 * R[758] + -0.178103643121296978 * R[20] + 0.178103643121296978 * R[128] + 0.178103643121296978 * R[668] + -0.178103643121296978 * R[776]);
+                o[4 * st[0] + 4 * st[1] + 4 * st[2] + 4 * st[3]] = fac * (0.0890518215606484892 * R[0] + -0.0890518215606484892 * R[108] + -0.0890518215606484892 * R[648] + 0.0890518215606484892 * R[756] + -0.0890518215606484892 * R[3] + 0.0890518215606484892 * R[111] + 0.0890518215606484892 * R[651] + -0.0890518215606484892 * R[759] + -0.0890518215606484892 * R[18] + 0.0890518215606484892 * R[126] + 0.0890518215606484892 * R[666] + -0.0890518215606484892 * R[774] + 0.0890518215606484892 * R[21] + -0.0890518215606484892 * R[129] + -0.0890518215606484892 * R[669] + 0.0890518215606484892 * R[777]);
+        }
+        return 1;
 }
 
-typedef int (*jkv_fn)(double *, const GPair *, int, const GPair *, int, double,
-                      const double *, double *);
+typedef int (*jkg_fn)(double *, const size_t *, const int *, const GPair *, int, const GPair *,
+                      int, double, double, const double *, double *);
 #define JKV_LMAX 2
-static const jkv_fn jkv_table[3][3][3][3] = {
-        [0][0][0][0] = jkv_0000,
-        [0][0][0][1] = NULL,
-        [0][0][0][2] = NULL,
-        [0][0][1][0] = jkv_0010,
-        [0][0][1][1] = jkv_0011,
-        [0][0][1][2] = NULL,
-        [0][0][2][0] = jkv_0020,
-        [0][0][2][1] = jkv_0021,
-        [0][0][2][2] = jkv_0022,
-        [0][1][0][0] = NULL,
-        [0][1][0][1] = NULL,
-        [0][1][0][2] = NULL,
-        [0][1][1][0] = NULL,
-        [0][1][1][1] = NULL,
-        [0][1][1][2] = NULL,
-        [0][1][2][0] = NULL,
-        [0][1][2][1] = NULL,
-        [0][1][2][2] = NULL,
-        [0][2][0][0] = NULL,
-        [0][2][0][1] = NULL,
-        [0][2][0][2] = NULL,
-        [0][2][1][0] = NULL,
-        [0][2][1][1] = NULL,
-        [0][2][1][2] = NULL,
-        [0][2][2][0] = NULL,
-        [0][2][2][1] = NULL,
-        [0][2][2][2] = NULL,
-        [1][0][0][0] = jkv_1000,
-        [1][0][0][1] = NULL,
-        [1][0][0][2] = NULL,
-        [1][0][1][0] = jkv_1010,
-        [1][0][1][1] = jkv_1011,
-        [1][0][1][2] = NULL,
-        [1][0][2][0] = jkv_1020,
-        [1][0][2][1] = jkv_1021,
-        [1][0][2][2] = jkv_1022,
-        [1][1][0][0] = jkv_1100,
-        [1][1][0][1] = NULL,
-        [1][1][0][2] = NULL,
-        [1][1][1][0] = jkv_1110,
-        [1][1][1][1] = jkv_1111,
-        [1][1][1][2] = NULL,
-        [1][1][2][0] = jkv_1120,
-        [1][1][2][1] = jkv_1121,
-        [1][1][2][2] = jkv_1122,
-        [1][2][0][0] = NULL,
-        [1][2][0][1] = NULL,
-        [1][2][0][2] = NULL,
-        [1][2][1][0] = NULL,
-        [1][2][1][1] = NULL,
-        [1][2][1][2] = NULL,
-        [1][2][2][0] = NULL,
-        [1][2][2][1] = NULL,
-        [1][2][2][2] = NULL,
-        [2][0][0][0] = jkv_2000,
-        [2][0][0][1] = NULL,
-        [2][0][0][2] = NULL,
-        [2][0][1][0] = jkv_2010,
-        [2][0][1][1] = jkv_2011,
-        [2][0][1][2] = NULL,
-        [2][0][2][0] = jkv_2020,
-        [2][0][2][1] = jkv_2021,
-        [2][0][2][2] = jkv_2022,
-        [2][1][0][0] = jkv_2100,
-        [2][1][0][1] = NULL,
-        [2][1][0][2] = NULL,
-        [2][1][1][0] = jkv_2110,
-        [2][1][1][1] = jkv_2111,
-        [2][1][1][2] = NULL,
-        [2][1][2][0] = jkv_2120,
-        [2][1][2][1] = jkv_2121,
-        [2][1][2][2] = jkv_2122,
-        [2][2][0][0] = jkv_2200,
-        [2][2][0][1] = NULL,
-        [2][2][0][2] = NULL,
-        [2][2][1][0] = jkv_2210,
-        [2][2][1][1] = jkv_2211,
-        [2][2][1][2] = NULL,
-        [2][2][2][0] = jkv_2220,
-        [2][2][2][1] = jkv_2221,
-        [2][2][2][2] = jkv_2222,
-};
-static const int jkv_nt[3][3][3][3] = {
-        [0][0][0][0] = 1,
-        [0][0][1][0] = 3,
-        [0][0][1][1] = 9,
-        [0][0][2][0] = 6,
-        [0][0][2][1] = 16,
-        [0][0][2][2] = 31,
-        [1][0][0][0] = 3,
-        [1][0][1][0] = 9,
-        [1][0][1][1] = 27,
-        [1][0][2][0] = 18,
-        [1][0][2][1] = 48,
-        [1][0][2][2] = 93,
-        [1][1][0][0] = 9,
-        [1][1][1][0] = 27,
-        [1][1][1][1] = 81,
-        [1][1][2][0] = 54,
-        [1][1][2][1] = 144,
-        [1][1][2][2] = 279,
-        [2][0][0][0] = 6,
-        [2][0][1][0] = 18,
-        [2][0][1][1] = 54,
-        [2][0][2][0] = 36,
-        [2][0][2][1] = 96,
-        [2][0][2][2] = 186,
-        [2][1][0][0] = 16,
-        [2][1][1][0] = 48,
-        [2][1][1][1] = 144,
-        [2][1][2][0] = 96,
-        [2][1][2][1] = 256,
-        [2][1][2][2] = 496,
-        [2][2][0][0] = 31,
-        [2][2][1][0] = 93,
-        [2][2][1][1] = 279,
-        [2][2][2][0] = 186,
-        [2][2][2][1] = 496,
-        [2][2][2][2] = 961,
+static const jkg_fn jkg_table[3][3][3][3] = {
+        [0][0][0][0] = jkg_0000,
+        [0][0][1][0] = jkg_0010,
+        [0][0][1][1] = jkg_0011,
+        [0][0][2][0] = jkg_0020,
+        [0][0][2][1] = jkg_0021,
+        [0][0][2][2] = jkg_0022,
+        [1][0][0][0] = jkg_1000,
+        [1][0][1][0] = jkg_1010,
+        [1][0][1][1] = jkg_1011,
+        [1][0][2][0] = jkg_1020,
+        [1][0][2][1] = jkg_1021,
+        [1][0][2][2] = jkg_1022,
+        [1][1][0][0] = jkg_1100,
+        [1][1][1][0] = jkg_1110,
+        [1][1][1][1] = jkg_1111,
+        [1][1][2][0] = jkg_1120,
+        [1][1][2][1] = jkg_1121,
+        [1][1][2][2] = jkg_1122,
+        [2][0][0][0] = jkg_2000,
+        [2][0][1][0] = jkg_2010,
+        [2][0][1][1] = jkg_2011,
+        [2][0][2][0] = jkg_2020,
+        [2][0][2][1] = jkg_2021,
+        [2][0][2][2] = jkg_2022,
+        [2][1][0][0] = jkg_2100,
+        [2][1][1][0] = jkg_2110,
+        [2][1][1][1] = jkg_2111,
+        [2][1][2][0] = jkg_2120,
+        [2][1][2][1] = jkg_2121,
+        [2][1][2][2] = jkg_2122,
+        [2][2][0][0] = jkg_2200,
+        [2][2][1][0] = jkg_2210,
+        [2][2][1][1] = jkg_2211,
+        [2][2][2][0] = jkg_2220,
+        [2][2][2][1] = jkg_2221,
+        [2][2][2][2] = jkg_2222,
 };

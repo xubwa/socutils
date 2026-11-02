@@ -24,7 +24,9 @@
 #include <math.h>
 #include "cint.h"
 
-#define SS_KCUT 1e-24                   /* primitive pairs with exp(-ab/p R^2) below are dropped */
+/* primitive pairs with exp(-ab/p R^2) below are dropped (0: none, for tests) */
+static double SS_KCUT = 1e-24;
+void SOCVHFss_set_kcut(double c) { SS_KCUT = c; }
 #define SS_STEP 0.05
 #define SS_TMAX 40.
 #define SS_N ((int)(SS_TMAX / SS_STEP) + 2)
