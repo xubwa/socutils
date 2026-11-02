@@ -243,8 +243,9 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
                         if (ish != jsh) memset(krj, 0, sizeof(double) * dj * ncol * ndm);
                 }
                 if (with_j) memset(jij, 0, sizeof(double) * di * dj * ndm);
-                for (kl = 0; kl <= ij; kl++) {
-                        shell_pair(kl, &ksh, &lsh);
+                /* (k, l) of kl = k (k + 1) / 2 + l walked incrementally */
+                for (kl = 0, ksh = 0, lsh = 0; kl <= ij;
+                     kl++, (lsh == ksh ? (ksh++, lsh = 0) : lsh++)) {
                         double q4 = qcond[ish * nbas + jsh] * qcond[ksh * nbas + lsh];
                         const double dj_ = dmax2(dcond[ish * nbas + jsh], dcond[ksh * nbas + lsh]);
                         const double dk_ = dmax2(dmax2(dcond[ish * nbas + ksh], dcond[ish * nbas + lsh]),

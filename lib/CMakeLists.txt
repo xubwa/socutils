@@ -44,6 +44,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
+# Target instruction set, e.g. -DSOCUTILS_MARCH=cascadelake (AVX-512; runs on
+# that and newer Intel CPUs, so a build on any Rockfish CPU node runs on all of
+# them) or native.  Empty (default): the compiler's generic target.
+set(SOCUTILS_MARCH "" CACHE STRING "-march= of the C / C++ libraries (empty: generic)")
+if(SOCUTILS_MARCH)
+  add_compile_options(-march=${SOCUTILS_MARCH})
+  message(STATUS "socutils: -march=${SOCUTILS_MARCH}")
+endif()
+
 # Architecture-specific overrides (optional), as in pyscf.
 if(EXISTS "${PROJECT_SOURCE_DIR}/cmake.arch.inc")
   include("${PROJECT_SOURCE_DIR}/cmake.arch.inc")

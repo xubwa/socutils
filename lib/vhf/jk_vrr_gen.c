@@ -9,6 +9,7 @@ static int jkg_0000(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)1 * nb, *SK = w + (size_t)1 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 1;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 1);
         for (t = 0; t < nk; t++) {
@@ -19,12 +20,24 @@ static int jkg_0000(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[1];
-                        boys_n(tab, T, 0, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -32,7 +45,7 @@ static int jkg_0000(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
+                        const double x000_000_0 = F0;
                         v[0 * nb + b] = g * x000_000_0;
                 }
                 for (cb = 0; cb < ncb; cb++) {
@@ -85,6 +98,7 @@ static int jkg_0010(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)3 * nb, *SK = w + (size_t)3 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 3;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 3);
         for (t = 0; t < nk; t++) {
@@ -95,12 +109,27 @@ static int jkg_0010(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[2];
-                        boys_n(tab, T, 1, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -108,8 +137,8 @@ static int jkg_0010(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x000_100_0 = QCx * x000_000_0 + WQx * x000_000_1;
                         const double x000_010_0 = QCy * x000_000_0 + WQy * x000_000_1;
                         const double x000_001_0 = QCz * x000_000_0 + WQz * x000_000_1;
@@ -171,6 +200,7 @@ static int jkg_0011(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)9 * nb, *SK = w + (size_t)9 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 9;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 9);
         for (t = 0; t < nk; t++) {
@@ -181,12 +211,30 @@ static int jkg_0011(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[3];
-                        boys_n(tab, T, 2, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -194,12 +242,12 @@ static int jkg_0011(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x000_100_0 = QCx * x000_000_0 + WQx * x000_000_1;
                         const double x000_010_0 = QCy * x000_000_0 + WQy * x000_000_1;
                         const double x000_001_0 = QCz * x000_000_0 + WQz * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x000_100_1 = QCx * x000_000_1 + WQx * x000_000_2;
                         const double x000_200_0 = QCx * x000_100_0 + WQx * x000_100_1 + 1 * h2q * (x000_000_0 - rq * x000_000_1);
                         const double x000_010_1 = QCy * x000_000_1 + WQy * x000_000_2;
@@ -301,6 +349,7 @@ static int jkg_0020(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)6 * nb, *SK = w + (size_t)6 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 6;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 6);
         for (t = 0; t < nk; t++) {
@@ -311,12 +360,30 @@ static int jkg_0020(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[3];
-                        boys_n(tab, T, 2, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -324,10 +391,10 @@ static int jkg_0020(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x000_100_0 = QCx * x000_000_0 + WQx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x000_100_1 = QCx * x000_000_1 + WQx * x000_000_2;
                         const double x000_200_0 = QCx * x000_100_0 + WQx * x000_100_1 + 1 * h2q * (x000_000_0 - rq * x000_000_1);
                         const double x000_010_0 = QCy * x000_000_0 + WQy * x000_000_1;
@@ -405,6 +472,7 @@ static int jkg_0021(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)16 * nb, *SK = w + (size_t)16 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 16;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 16);
         for (t = 0; t < nk; t++) {
@@ -415,12 +483,33 @@ static int jkg_0021(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[4];
-                        boys_n(tab, T, 3, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -428,10 +517,10 @@ static int jkg_0021(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x000_100_0 = QCx * x000_000_0 + WQx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x000_100_1 = QCx * x000_000_1 + WQx * x000_000_2;
                         const double x000_200_0 = QCx * x000_100_0 + WQx * x000_100_1 + 1 * h2q * (x000_000_0 - rq * x000_000_1);
                         const double x000_010_0 = QCy * x000_000_0 + WQy * x000_000_1;
@@ -443,7 +532,7 @@ static int jkg_0021(double *out, const size_t *st, const int *pos, const GPair *
                         const double x000_020_0 = QCy * x000_010_0 + WQy * x000_010_1 + 1 * h2q * (x000_000_0 - rq * x000_000_1);
                         const double x000_011_0 = QCy * x000_001_0 + WQy * x000_001_1;
                         const double x000_002_0 = QCz * x000_001_0 + WQz * x000_001_1 + 1 * h2q * (x000_000_0 - rq * x000_000_1);
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x000_100_2 = QCx * x000_000_2 + WQx * x000_000_3;
                         const double x000_200_1 = QCx * x000_100_1 + WQx * x000_100_2 + 1 * h2q * (x000_000_1 - rq * x000_000_2);
                         const double x000_300_0 = QCx * x000_200_0 + WQx * x000_200_1 + 2 * h2q * (x000_100_0 - rq * x000_100_1);
@@ -591,6 +680,7 @@ static int jkg_0022(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)31 * nb, *SK = w + (size_t)31 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 31;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 31);
         for (t = 0; t < nk; t++) {
@@ -601,12 +691,36 @@ static int jkg_0022(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[5];
-                        boys_n(tab, T, 4, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                        a *= 7 * h;
+                        FT[4 * nb + b] = inr ? taylor(f + 4, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
+                        const double F4 = FT[4 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -614,10 +728,10 @@ static int jkg_0022(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x000_100_0 = QCx * x000_000_0 + WQx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x000_100_1 = QCx * x000_000_1 + WQx * x000_000_2;
                         const double x000_200_0 = QCx * x000_100_0 + WQx * x000_100_1 + 1 * h2q * (x000_000_0 - rq * x000_000_1);
                         const double x000_010_0 = QCy * x000_000_0 + WQy * x000_000_1;
@@ -629,7 +743,7 @@ static int jkg_0022(double *out, const size_t *st, const int *pos, const GPair *
                         const double x000_020_0 = QCy * x000_010_0 + WQy * x000_010_1 + 1 * h2q * (x000_000_0 - rq * x000_000_1);
                         const double x000_011_0 = QCy * x000_001_0 + WQy * x000_001_1;
                         const double x000_002_0 = QCz * x000_001_0 + WQz * x000_001_1 + 1 * h2q * (x000_000_0 - rq * x000_000_1);
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x000_100_2 = QCx * x000_000_2 + WQx * x000_000_3;
                         const double x000_200_1 = QCx * x000_100_1 + WQx * x000_100_2 + 1 * h2q * (x000_000_1 - rq * x000_000_2);
                         const double x000_300_0 = QCx * x000_200_0 + WQx * x000_200_1 + 2 * h2q * (x000_100_0 - rq * x000_100_1);
@@ -649,7 +763,7 @@ static int jkg_0022(double *out, const size_t *st, const int *pos, const GPair *
                         const double x000_021_0 = QCy * x000_011_0 + WQy * x000_011_1 + 1 * h2q * (x000_001_0 - rq * x000_001_1);
                         const double x000_012_0 = QCy * x000_002_0 + WQy * x000_002_1;
                         const double x000_003_0 = QCz * x000_002_0 + WQz * x000_002_1 + 2 * h2q * (x000_001_0 - rq * x000_001_1);
-                        const double x000_000_4 = F[4];
+                        const double x000_000_4 = F4;
                         const double x000_100_3 = QCx * x000_000_3 + WQx * x000_000_4;
                         const double x000_200_2 = QCx * x000_100_2 + WQx * x000_100_3 + 1 * h2q * (x000_000_2 - rq * x000_000_3);
                         const double x000_300_1 = QCx * x000_200_1 + WQx * x000_200_2 + 2 * h2q * (x000_100_1 - rq * x000_100_2);
@@ -971,6 +1085,7 @@ static int jkg_1000(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)3 * nb, *SK = w + (size_t)3 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 3;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 3);
         for (t = 0; t < nk; t++) {
@@ -981,12 +1096,27 @@ static int jkg_1000(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[2];
-                        boys_n(tab, T, 1, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -994,8 +1124,8 @@ static int jkg_1000(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
                         const double x010_000_0 = PAy * x000_000_0 + WPy * x000_000_1;
                         const double x001_000_0 = PAz * x000_000_0 + WPz * x000_000_1;
@@ -1055,6 +1185,7 @@ static int jkg_1010(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)9 * nb, *SK = w + (size_t)9 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 9;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 9);
         for (t = 0; t < nk; t++) {
@@ -1065,12 +1196,30 @@ static int jkg_1010(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[3];
-                        boys_n(tab, T, 2, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -1078,10 +1227,10 @@ static int jkg_1010(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x100_100_0 = QCx * x100_000_0 + WQx * x100_000_1 + 1 * h2pq * x000_000_1;
                         const double x100_010_0 = QCy * x100_000_0 + WQy * x100_000_1;
@@ -1166,6 +1315,7 @@ static int jkg_1011(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)27 * nb, *SK = w + (size_t)27 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 27;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 27);
         for (t = 0; t < nk; t++) {
@@ -1176,12 +1326,33 @@ static int jkg_1011(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[4];
-                        boys_n(tab, T, 3, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -1189,15 +1360,15 @@ static int jkg_1011(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x100_100_0 = QCx * x100_000_0 + WQx * x100_000_1 + 1 * h2pq * x000_000_1;
                         const double x100_010_0 = QCy * x100_000_0 + WQy * x100_000_1;
                         const double x100_001_0 = QCz * x100_000_0 + WQz * x100_000_1;
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x100_100_1 = QCx * x100_000_1 + WQx * x100_000_2 + 1 * h2pq * x000_000_2;
                         const double x000_100_1 = QCx * x000_000_1 + WQx * x000_000_2;
@@ -1369,6 +1540,7 @@ static int jkg_1020(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)18 * nb, *SK = w + (size_t)18 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 18;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 18);
         for (t = 0; t < nk; t++) {
@@ -1379,12 +1551,33 @@ static int jkg_1020(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[4];
-                        boys_n(tab, T, 3, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -1392,13 +1585,13 @@ static int jkg_1020(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x100_100_0 = QCx * x100_000_0 + WQx * x100_000_1 + 1 * h2pq * x000_000_1;
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x100_100_1 = QCx * x100_000_1 + WQx * x100_000_2 + 1 * h2pq * x000_000_2;
                         const double x000_100_1 = QCx * x000_000_1 + WQx * x000_000_2;
@@ -1532,6 +1725,7 @@ static int jkg_1021(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)48 * nb, *SK = w + (size_t)48 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 48;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 48);
         for (t = 0; t < nk; t++) {
@@ -1542,12 +1736,36 @@ static int jkg_1021(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[5];
-                        boys_n(tab, T, 4, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                        a *= 7 * h;
+                        FT[4 * nb + b] = inr ? taylor(f + 4, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
+                        const double F4 = FT[4 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -1555,13 +1773,13 @@ static int jkg_1021(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x100_100_0 = QCx * x100_000_0 + WQx * x100_000_1 + 1 * h2pq * x000_000_1;
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x100_100_1 = QCx * x100_000_1 + WQx * x100_000_2 + 1 * h2pq * x000_000_2;
                         const double x000_100_1 = QCx * x000_000_1 + WQx * x000_000_2;
@@ -1577,7 +1795,7 @@ static int jkg_1021(double *out, const size_t *st, const int *pos, const GPair *
                         const double x100_020_0 = QCy * x100_010_0 + WQy * x100_010_1 + 1 * h2q * (x100_000_0 - rq * x100_000_1);
                         const double x100_011_0 = QCy * x100_001_0 + WQy * x100_001_1;
                         const double x100_002_0 = QCz * x100_001_0 + WQz * x100_001_1 + 1 * h2q * (x100_000_0 - rq * x100_000_1);
-                        const double x000_000_4 = F[4];
+                        const double x000_000_4 = F4;
                         const double x100_000_3 = PAx * x000_000_3 + WPx * x000_000_4;
                         const double x100_100_2 = QCx * x100_000_2 + WQx * x100_000_3 + 1 * h2pq * x000_000_3;
                         const double x000_100_2 = QCx * x000_000_2 + WQx * x000_000_3;
@@ -1867,6 +2085,7 @@ static int jkg_1022(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)93 * nb, *SK = w + (size_t)93 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 93;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 93);
         for (t = 0; t < nk; t++) {
@@ -1877,12 +2096,39 @@ static int jkg_1022(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[6];
-                        boys_n(tab, T, 5, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                        a *= 7 * h;
+                        FT[4 * nb + b] = inr ? taylor(f + 4, dt) : a;
+                        a *= 9 * h;
+                        FT[5 * nb + b] = inr ? taylor(f + 5, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
+                        const double F4 = FT[4 * nb + b];
+                        const double F5 = FT[5 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -1890,13 +2136,13 @@ static int jkg_1022(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x100_100_0 = QCx * x100_000_0 + WQx * x100_000_1 + 1 * h2pq * x000_000_1;
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x100_100_1 = QCx * x100_000_1 + WQx * x100_000_2 + 1 * h2pq * x000_000_2;
                         const double x000_100_1 = QCx * x000_000_1 + WQx * x000_000_2;
@@ -1912,7 +2158,7 @@ static int jkg_1022(double *out, const size_t *st, const int *pos, const GPair *
                         const double x100_020_0 = QCy * x100_010_0 + WQy * x100_010_1 + 1 * h2q * (x100_000_0 - rq * x100_000_1);
                         const double x100_011_0 = QCy * x100_001_0 + WQy * x100_001_1;
                         const double x100_002_0 = QCz * x100_001_0 + WQz * x100_001_1 + 1 * h2q * (x100_000_0 - rq * x100_000_1);
-                        const double x000_000_4 = F[4];
+                        const double x000_000_4 = F4;
                         const double x100_000_3 = PAx * x000_000_3 + WPx * x000_000_4;
                         const double x100_100_2 = QCx * x100_000_2 + WQx * x100_000_3 + 1 * h2pq * x000_000_3;
                         const double x000_100_2 = QCx * x000_000_2 + WQx * x000_000_3;
@@ -1942,7 +2188,7 @@ static int jkg_1022(double *out, const size_t *st, const int *pos, const GPair *
                         const double x100_021_0 = QCy * x100_011_0 + WQy * x100_011_1 + 1 * h2q * (x100_001_0 - rq * x100_001_1);
                         const double x100_012_0 = QCy * x100_002_0 + WQy * x100_002_1;
                         const double x100_003_0 = QCz * x100_002_0 + WQz * x100_002_1 + 2 * h2q * (x100_001_0 - rq * x100_001_1);
-                        const double x000_000_5 = F[5];
+                        const double x000_000_5 = F5;
                         const double x100_000_4 = PAx * x000_000_4 + WPx * x000_000_5;
                         const double x100_100_3 = QCx * x100_000_3 + WQx * x100_000_4 + 1 * h2pq * x000_000_4;
                         const double x000_100_3 = QCx * x000_000_3 + WQx * x000_000_4;
@@ -2536,6 +2782,7 @@ static int jkg_1100(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)9 * nb, *SK = w + (size_t)9 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 9;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 9);
         for (t = 0; t < nk; t++) {
@@ -2546,12 +2793,30 @@ static int jkg_1100(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[3];
-                        boys_n(tab, T, 2, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -2559,12 +2824,12 @@ static int jkg_1100(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
                         const double x010_000_0 = PAy * x000_000_0 + WPy * x000_000_1;
                         const double x001_000_0 = PAz * x000_000_0 + WPz * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x200_000_0 = PAx * x100_000_0 + WPx * x100_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
                         const double x010_000_1 = PAy * x000_000_1 + WPy * x000_000_2;
@@ -2651,6 +2916,7 @@ static int jkg_1110(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)27 * nb, *SK = w + (size_t)27 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 27;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 27);
         for (t = 0; t < nk; t++) {
@@ -2661,12 +2927,33 @@ static int jkg_1110(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[4];
-                        boys_n(tab, T, 3, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -2674,10 +2961,10 @@ static int jkg_1110(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x100_100_0 = QCx * x100_000_0 + WQx * x100_000_1 + 1 * h2pq * x000_000_1;
                         const double x100_010_0 = QCy * x100_000_0 + WQy * x100_000_1;
@@ -2693,7 +2980,7 @@ static int jkg_1110(double *out, const size_t *st, const int *pos, const GPair *
                         const double x001_010_0 = QCy * x001_000_0 + WQy * x001_000_1;
                         const double x001_001_0 = QCz * x001_000_0 + WQz * x001_000_1 + 1 * h2pq * x000_000_1;
                         const double x200_000_0 = PAx * x100_000_0 + WPx * x100_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x200_000_1 = PAx * x100_000_1 + WPx * x100_000_2 + 1 * h2p * (x000_000_1 - rp * x000_000_2);
                         const double x200_100_0 = QCx * x200_000_0 + WQx * x200_000_1 + 2 * h2pq * x100_000_1;
@@ -2841,6 +3128,7 @@ static int jkg_1111(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)81 * nb, *SK = w + (size_t)81 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 81;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 81);
         for (t = 0; t < nk; t++) {
@@ -2851,12 +3139,36 @@ static int jkg_1111(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[5];
-                        boys_n(tab, T, 4, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                        a *= 7 * h;
+                        FT[4 * nb + b] = inr ? taylor(f + 4, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
+                        const double F4 = FT[4 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -2864,15 +3176,15 @@ static int jkg_1111(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x100_100_0 = QCx * x100_000_0 + WQx * x100_000_1 + 1 * h2pq * x000_000_1;
                         const double x100_010_0 = QCy * x100_000_0 + WQy * x100_000_1;
                         const double x100_001_0 = QCz * x100_000_0 + WQz * x100_000_1;
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x100_100_1 = QCx * x100_000_1 + WQx * x100_000_2 + 1 * h2pq * x000_000_2;
                         const double x000_100_1 = QCx * x000_000_1 + WQx * x000_000_2;
@@ -2921,7 +3233,7 @@ static int jkg_1111(double *out, const size_t *st, const int *pos, const GPair *
                         const double x200_100_0 = QCx * x200_000_0 + WQx * x200_000_1 + 2 * h2pq * x100_000_1;
                         const double x200_010_0 = QCy * x200_000_0 + WQy * x200_000_1;
                         const double x200_001_0 = QCz * x200_000_0 + WQz * x200_000_1;
-                        const double x000_000_4 = F[4];
+                        const double x000_000_4 = F4;
                         const double x100_000_3 = PAx * x000_000_3 + WPx * x000_000_4;
                         const double x200_000_2 = PAx * x100_000_2 + WPx * x100_000_3 + 1 * h2p * (x000_000_2 - rp * x000_000_3);
                         const double x200_100_1 = QCx * x200_000_1 + WQx * x200_000_2 + 2 * h2pq * x100_000_2;
@@ -3255,6 +3567,7 @@ static int jkg_1120(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)54 * nb, *SK = w + (size_t)54 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 54;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 54);
         for (t = 0; t < nk; t++) {
@@ -3265,12 +3578,36 @@ static int jkg_1120(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[5];
-                        boys_n(tab, T, 4, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                        a *= 7 * h;
+                        FT[4 * nb + b] = inr ? taylor(f + 4, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
+                        const double F4 = FT[4 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -3278,13 +3615,13 @@ static int jkg_1120(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x100_100_0 = QCx * x100_000_0 + WQx * x100_000_1 + 1 * h2pq * x000_000_1;
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x100_100_1 = QCx * x100_000_1 + WQx * x100_000_2 + 1 * h2pq * x000_000_2;
                         const double x000_100_1 = QCx * x000_000_1 + WQx * x000_000_2;
@@ -3333,7 +3670,7 @@ static int jkg_1120(double *out, const size_t *st, const int *pos, const GPair *
                         const double x200_000_0 = PAx * x100_000_0 + WPx * x100_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
                         const double x200_000_1 = PAx * x100_000_1 + WPx * x100_000_2 + 1 * h2p * (x000_000_1 - rp * x000_000_2);
                         const double x200_100_0 = QCx * x200_000_0 + WQx * x200_000_1 + 2 * h2pq * x100_000_1;
-                        const double x000_000_4 = F[4];
+                        const double x000_000_4 = F4;
                         const double x100_000_3 = PAx * x000_000_3 + WPx * x000_000_4;
                         const double x200_000_2 = PAx * x100_000_2 + WPx * x100_000_3 + 1 * h2p * (x000_000_2 - rp * x000_000_3);
                         const double x200_100_1 = QCx * x200_000_1 + WQx * x200_000_2 + 2 * h2pq * x100_000_2;
@@ -3587,6 +3924,7 @@ static int jkg_1121(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)144 * nb, *SK = w + (size_t)144 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 144;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 144);
         for (t = 0; t < nk; t++) {
@@ -3597,12 +3935,39 @@ static int jkg_1121(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[6];
-                        boys_n(tab, T, 5, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                        a *= 7 * h;
+                        FT[4 * nb + b] = inr ? taylor(f + 4, dt) : a;
+                        a *= 9 * h;
+                        FT[5 * nb + b] = inr ? taylor(f + 5, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
+                        const double F4 = FT[4 * nb + b];
+                        const double F5 = FT[5 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -3610,13 +3975,13 @@ static int jkg_1121(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x100_100_0 = QCx * x100_000_0 + WQx * x100_000_1 + 1 * h2pq * x000_000_1;
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x100_100_1 = QCx * x100_000_1 + WQx * x100_000_2 + 1 * h2pq * x000_000_2;
                         const double x000_100_1 = QCx * x000_000_1 + WQx * x000_000_2;
@@ -3632,7 +3997,7 @@ static int jkg_1121(double *out, const size_t *st, const int *pos, const GPair *
                         const double x100_020_0 = QCy * x100_010_0 + WQy * x100_010_1 + 1 * h2q * (x100_000_0 - rq * x100_000_1);
                         const double x100_011_0 = QCy * x100_001_0 + WQy * x100_001_1;
                         const double x100_002_0 = QCz * x100_001_0 + WQz * x100_001_1 + 1 * h2q * (x100_000_0 - rq * x100_000_1);
-                        const double x000_000_4 = F[4];
+                        const double x000_000_4 = F4;
                         const double x100_000_3 = PAx * x000_000_3 + WPx * x000_000_4;
                         const double x100_100_2 = QCx * x100_000_2 + WQx * x100_000_3 + 1 * h2pq * x000_000_3;
                         const double x000_100_2 = QCx * x000_000_2 + WQx * x000_000_3;
@@ -3747,7 +4112,7 @@ static int jkg_1121(double *out, const size_t *st, const int *pos, const GPair *
                         const double x200_020_0 = QCy * x200_010_0 + WQy * x200_010_1 + 1 * h2q * (x200_000_0 - rq * x200_000_1);
                         const double x200_011_0 = QCy * x200_001_0 + WQy * x200_001_1;
                         const double x200_002_0 = QCz * x200_001_0 + WQz * x200_001_1 + 1 * h2q * (x200_000_0 - rq * x200_000_1);
-                        const double x000_000_5 = F[5];
+                        const double x000_000_5 = F5;
                         const double x100_000_4 = PAx * x000_000_4 + WPx * x000_000_5;
                         const double x200_000_3 = PAx * x100_000_3 + WPx * x100_000_4 + 1 * h2p * (x000_000_3 - rp * x000_000_4);
                         const double x200_100_2 = QCx * x200_000_2 + WQx * x200_000_3 + 2 * h2pq * x100_000_3;
@@ -4331,6 +4696,7 @@ static int jkg_1122(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)279 * nb, *SK = w + (size_t)279 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 279;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 279);
         for (t = 0; t < nk; t++) {
@@ -4341,12 +4707,42 @@ static int jkg_1122(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[7];
-                        boys_n(tab, T, 6, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                        a *= 7 * h;
+                        FT[4 * nb + b] = inr ? taylor(f + 4, dt) : a;
+                        a *= 9 * h;
+                        FT[5 * nb + b] = inr ? taylor(f + 5, dt) : a;
+                        a *= 11 * h;
+                        FT[6 * nb + b] = inr ? taylor(f + 6, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
+                        const double F4 = FT[4 * nb + b];
+                        const double F5 = FT[5 * nb + b];
+                        const double F6 = FT[6 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -4354,13 +4750,13 @@ static int jkg_1122(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x100_100_0 = QCx * x100_000_0 + WQx * x100_000_1 + 1 * h2pq * x000_000_1;
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x100_100_1 = QCx * x100_000_1 + WQx * x100_000_2 + 1 * h2pq * x000_000_2;
                         const double x000_100_1 = QCx * x000_000_1 + WQx * x000_000_2;
@@ -4376,7 +4772,7 @@ static int jkg_1122(double *out, const size_t *st, const int *pos, const GPair *
                         const double x100_020_0 = QCy * x100_010_0 + WQy * x100_010_1 + 1 * h2q * (x100_000_0 - rq * x100_000_1);
                         const double x100_011_0 = QCy * x100_001_0 + WQy * x100_001_1;
                         const double x100_002_0 = QCz * x100_001_0 + WQz * x100_001_1 + 1 * h2q * (x100_000_0 - rq * x100_000_1);
-                        const double x000_000_4 = F[4];
+                        const double x000_000_4 = F4;
                         const double x100_000_3 = PAx * x000_000_3 + WPx * x000_000_4;
                         const double x100_100_2 = QCx * x100_000_2 + WQx * x100_000_3 + 1 * h2pq * x000_000_3;
                         const double x000_100_2 = QCx * x000_000_2 + WQx * x000_000_3;
@@ -4406,7 +4802,7 @@ static int jkg_1122(double *out, const size_t *st, const int *pos, const GPair *
                         const double x100_021_0 = QCy * x100_011_0 + WQy * x100_011_1 + 1 * h2q * (x100_001_0 - rq * x100_001_1);
                         const double x100_012_0 = QCy * x100_002_0 + WQy * x100_002_1;
                         const double x100_003_0 = QCz * x100_002_0 + WQz * x100_002_1 + 2 * h2q * (x100_001_0 - rq * x100_001_1);
-                        const double x000_000_5 = F[5];
+                        const double x000_000_5 = F5;
                         const double x100_000_4 = PAx * x000_000_4 + WPx * x000_000_5;
                         const double x100_100_3 = QCx * x100_000_3 + WQx * x100_000_4 + 1 * h2pq * x000_000_4;
                         const double x000_100_3 = QCx * x000_000_3 + WQx * x000_000_4;
@@ -4636,7 +5032,7 @@ static int jkg_1122(double *out, const size_t *st, const int *pos, const GPair *
                         const double x200_021_0 = QCy * x200_011_0 + WQy * x200_011_1 + 1 * h2q * (x200_001_0 - rq * x200_001_1);
                         const double x200_012_0 = QCy * x200_002_0 + WQy * x200_002_1;
                         const double x200_003_0 = QCz * x200_002_0 + WQz * x200_002_1 + 2 * h2q * (x200_001_0 - rq * x200_001_1);
-                        const double x000_000_6 = F[6];
+                        const double x000_000_6 = F6;
                         const double x100_000_5 = PAx * x000_000_5 + WPx * x000_000_6;
                         const double x200_000_4 = PAx * x100_000_4 + WPx * x100_000_5 + 1 * h2p * (x000_000_4 - rp * x000_000_5);
                         const double x200_100_3 = QCx * x200_000_3 + WQx * x200_000_4 + 2 * h2pq * x100_000_4;
@@ -5769,6 +6165,7 @@ static int jkg_2000(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)6 * nb, *SK = w + (size_t)6 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 6;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 6);
         for (t = 0; t < nk; t++) {
@@ -5779,12 +6176,30 @@ static int jkg_2000(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[3];
-                        boys_n(tab, T, 2, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -5792,10 +6207,10 @@ static int jkg_2000(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x200_000_0 = PAx * x100_000_0 + WPx * x100_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
                         const double x010_000_0 = PAy * x000_000_0 + WPy * x000_000_1;
@@ -5868,6 +6283,7 @@ static int jkg_2010(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)18 * nb, *SK = w + (size_t)18 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 18;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 18);
         for (t = 0; t < nk; t++) {
@@ -5878,12 +6294,33 @@ static int jkg_2010(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[4];
-                        boys_n(tab, T, 3, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -5891,13 +6328,13 @@ static int jkg_2010(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x200_000_0 = PAx * x100_000_0 + WPx * x100_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x200_000_1 = PAx * x100_000_1 + WPx * x100_000_2 + 1 * h2p * (x000_000_1 - rp * x000_000_2);
                         const double x200_100_0 = QCx * x200_000_0 + WQx * x200_000_1 + 2 * h2pq * x100_000_1;
@@ -6019,6 +6456,7 @@ static int jkg_2011(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)54 * nb, *SK = w + (size_t)54 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 54;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 54);
         for (t = 0; t < nk; t++) {
@@ -6029,12 +6467,36 @@ static int jkg_2011(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[5];
-                        boys_n(tab, T, 4, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                        a *= 7 * h;
+                        FT[4 * nb + b] = inr ? taylor(f + 4, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
+                        const double F4 = FT[4 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -6042,19 +6504,19 @@ static int jkg_2011(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x200_000_0 = PAx * x100_000_0 + WPx * x100_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x200_000_1 = PAx * x100_000_1 + WPx * x100_000_2 + 1 * h2p * (x000_000_1 - rp * x000_000_2);
                         const double x200_100_0 = QCx * x200_000_0 + WQx * x200_000_1 + 2 * h2pq * x100_000_1;
                         const double x200_010_0 = QCy * x200_000_0 + WQy * x200_000_1;
                         const double x200_001_0 = QCz * x200_000_0 + WQz * x200_000_1;
-                        const double x000_000_4 = F[4];
+                        const double x000_000_4 = F4;
                         const double x100_000_3 = PAx * x000_000_3 + WPx * x000_000_4;
                         const double x200_000_2 = PAx * x100_000_2 + WPx * x100_000_3 + 1 * h2p * (x000_000_2 - rp * x000_000_3);
                         const double x200_100_1 = QCx * x200_000_1 + WQx * x200_000_2 + 2 * h2pq * x100_000_2;
@@ -6331,6 +6793,7 @@ static int jkg_2020(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)36 * nb, *SK = w + (size_t)36 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 36;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 36);
         for (t = 0; t < nk; t++) {
@@ -6341,12 +6804,36 @@ static int jkg_2020(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[5];
-                        boys_n(tab, T, 4, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                        a *= 7 * h;
+                        FT[4 * nb + b] = inr ? taylor(f + 4, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
+                        const double F4 = FT[4 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -6354,17 +6841,17 @@ static int jkg_2020(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x200_000_0 = PAx * x100_000_0 + WPx * x100_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x200_000_1 = PAx * x100_000_1 + WPx * x100_000_2 + 1 * h2p * (x000_000_1 - rp * x000_000_2);
                         const double x200_100_0 = QCx * x200_000_0 + WQx * x200_000_1 + 2 * h2pq * x100_000_1;
-                        const double x000_000_4 = F[4];
+                        const double x000_000_4 = F4;
                         const double x100_000_3 = PAx * x000_000_3 + WPx * x000_000_4;
                         const double x200_000_2 = PAx * x100_000_2 + WPx * x100_000_3 + 1 * h2p * (x000_000_2 - rp * x000_000_3);
                         const double x200_100_1 = QCx * x200_000_1 + WQx * x200_000_2 + 2 * h2pq * x100_000_2;
@@ -6586,6 +7073,7 @@ static int jkg_2021(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)96 * nb, *SK = w + (size_t)96 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 96;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 96);
         for (t = 0; t < nk; t++) {
@@ -6596,12 +7084,39 @@ static int jkg_2021(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[6];
-                        boys_n(tab, T, 5, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                        a *= 7 * h;
+                        FT[4 * nb + b] = inr ? taylor(f + 4, dt) : a;
+                        a *= 9 * h;
+                        FT[5 * nb + b] = inr ? taylor(f + 5, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
+                        const double F4 = FT[4 * nb + b];
+                        const double F5 = FT[5 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -6609,17 +7124,17 @@ static int jkg_2021(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x200_000_0 = PAx * x100_000_0 + WPx * x100_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x200_000_1 = PAx * x100_000_1 + WPx * x100_000_2 + 1 * h2p * (x000_000_1 - rp * x000_000_2);
                         const double x200_100_0 = QCx * x200_000_0 + WQx * x200_000_1 + 2 * h2pq * x100_000_1;
-                        const double x000_000_4 = F[4];
+                        const double x000_000_4 = F4;
                         const double x100_000_3 = PAx * x000_000_3 + WPx * x000_000_4;
                         const double x200_000_2 = PAx * x100_000_2 + WPx * x100_000_3 + 1 * h2p * (x000_000_2 - rp * x000_000_3);
                         const double x200_100_1 = QCx * x200_000_1 + WQx * x200_000_2 + 2 * h2pq * x100_000_2;
@@ -6636,7 +7151,7 @@ static int jkg_2021(double *out, const size_t *st, const int *pos, const GPair *
                         const double x200_020_0 = QCy * x200_010_0 + WQy * x200_010_1 + 1 * h2q * (x200_000_0 - rq * x200_000_1);
                         const double x200_011_0 = QCy * x200_001_0 + WQy * x200_001_1;
                         const double x200_002_0 = QCz * x200_001_0 + WQz * x200_001_1 + 1 * h2q * (x200_000_0 - rq * x200_000_1);
-                        const double x000_000_5 = F[5];
+                        const double x000_000_5 = F5;
                         const double x100_000_4 = PAx * x000_000_4 + WPx * x000_000_5;
                         const double x200_000_3 = PAx * x100_000_3 + WPx * x100_000_4 + 1 * h2p * (x000_000_3 - rp * x000_000_4);
                         const double x200_100_2 = QCx * x200_000_2 + WQx * x200_000_3 + 2 * h2pq * x100_000_3;
@@ -7147,6 +7662,7 @@ static int jkg_2022(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)186 * nb, *SK = w + (size_t)186 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 186;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 186);
         for (t = 0; t < nk; t++) {
@@ -7157,12 +7673,42 @@ static int jkg_2022(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[7];
-                        boys_n(tab, T, 6, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                        a *= 7 * h;
+                        FT[4 * nb + b] = inr ? taylor(f + 4, dt) : a;
+                        a *= 9 * h;
+                        FT[5 * nb + b] = inr ? taylor(f + 5, dt) : a;
+                        a *= 11 * h;
+                        FT[6 * nb + b] = inr ? taylor(f + 6, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
+                        const double F4 = FT[4 * nb + b];
+                        const double F5 = FT[5 * nb + b];
+                        const double F6 = FT[6 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -7170,17 +7716,17 @@ static int jkg_2022(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x200_000_0 = PAx * x100_000_0 + WPx * x100_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x200_000_1 = PAx * x100_000_1 + WPx * x100_000_2 + 1 * h2p * (x000_000_1 - rp * x000_000_2);
                         const double x200_100_0 = QCx * x200_000_0 + WQx * x200_000_1 + 2 * h2pq * x100_000_1;
-                        const double x000_000_4 = F[4];
+                        const double x000_000_4 = F4;
                         const double x100_000_3 = PAx * x000_000_3 + WPx * x000_000_4;
                         const double x200_000_2 = PAx * x100_000_2 + WPx * x100_000_3 + 1 * h2p * (x000_000_2 - rp * x000_000_3);
                         const double x200_100_1 = QCx * x200_000_1 + WQx * x200_000_2 + 2 * h2pq * x100_000_2;
@@ -7197,7 +7743,7 @@ static int jkg_2022(double *out, const size_t *st, const int *pos, const GPair *
                         const double x200_020_0 = QCy * x200_010_0 + WQy * x200_010_1 + 1 * h2q * (x200_000_0 - rq * x200_000_1);
                         const double x200_011_0 = QCy * x200_001_0 + WQy * x200_001_1;
                         const double x200_002_0 = QCz * x200_001_0 + WQz * x200_001_1 + 1 * h2q * (x200_000_0 - rq * x200_000_1);
-                        const double x000_000_5 = F[5];
+                        const double x000_000_5 = F5;
                         const double x100_000_4 = PAx * x000_000_4 + WPx * x000_000_5;
                         const double x200_000_3 = PAx * x100_000_3 + WPx * x100_000_4 + 1 * h2p * (x000_000_3 - rp * x000_000_4);
                         const double x200_100_2 = QCx * x200_000_2 + WQx * x200_000_3 + 2 * h2pq * x100_000_3;
@@ -7231,7 +7777,7 @@ static int jkg_2022(double *out, const size_t *st, const int *pos, const GPair *
                         const double x200_021_0 = QCy * x200_011_0 + WQy * x200_011_1 + 1 * h2q * (x200_001_0 - rq * x200_001_1);
                         const double x200_012_0 = QCy * x200_002_0 + WQy * x200_002_1;
                         const double x200_003_0 = QCz * x200_002_0 + WQz * x200_002_1 + 2 * h2q * (x200_001_0 - rq * x200_001_1);
-                        const double x000_000_6 = F[6];
+                        const double x000_000_6 = F6;
                         const double x100_000_5 = PAx * x000_000_5 + WPx * x000_000_6;
                         const double x200_000_4 = PAx * x100_000_4 + WPx * x100_000_5 + 1 * h2p * (x000_000_4 - rp * x000_000_5);
                         const double x200_100_3 = QCx * x200_000_3 + WQx * x200_000_4 + 2 * h2pq * x100_000_4;
@@ -8262,6 +8808,7 @@ static int jkg_2100(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)16 * nb, *SK = w + (size_t)16 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 16;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 16);
         for (t = 0; t < nk; t++) {
@@ -8272,12 +8819,33 @@ static int jkg_2100(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[4];
-                        boys_n(tab, T, 3, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -8285,10 +8853,10 @@ static int jkg_2100(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x200_000_0 = PAx * x100_000_0 + WPx * x100_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
                         const double x010_000_0 = PAy * x000_000_0 + WPy * x000_000_1;
@@ -8300,7 +8868,7 @@ static int jkg_2100(double *out, const size_t *st, const int *pos, const GPair *
                         const double x020_000_0 = PAy * x010_000_0 + WPy * x010_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
                         const double x011_000_0 = PAy * x001_000_0 + WPy * x001_000_1;
                         const double x002_000_0 = PAz * x001_000_0 + WPz * x001_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x200_000_1 = PAx * x100_000_1 + WPx * x100_000_2 + 1 * h2p * (x000_000_1 - rp * x000_000_2);
                         const double x300_000_0 = PAx * x200_000_0 + WPx * x200_000_1 + 2 * h2p * (x100_000_0 - rp * x100_000_1);
@@ -8419,6 +8987,7 @@ static int jkg_2110(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)48 * nb, *SK = w + (size_t)48 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 48;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 48);
         for (t = 0; t < nk; t++) {
@@ -8429,12 +8998,36 @@ static int jkg_2110(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[5];
-                        boys_n(tab, T, 4, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                        a *= 7 * h;
+                        FT[4 * nb + b] = inr ? taylor(f + 4, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
+                        const double F4 = FT[4 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -8442,13 +9035,13 @@ static int jkg_2110(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x200_000_0 = PAx * x100_000_0 + WPx * x100_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x200_000_1 = PAx * x100_000_1 + WPx * x100_000_2 + 1 * h2p * (x000_000_1 - rp * x000_000_2);
                         const double x200_100_0 = QCx * x200_000_0 + WQx * x200_000_1 + 2 * h2pq * x100_000_1;
@@ -8486,7 +9079,7 @@ static int jkg_2110(double *out, const size_t *st, const int *pos, const GPair *
                         const double x002_010_0 = QCy * x002_000_0 + WQy * x002_000_1;
                         const double x002_001_0 = QCz * x002_000_0 + WQz * x002_000_1 + 2 * h2pq * x001_000_1;
                         const double x300_000_0 = PAx * x200_000_0 + WPx * x200_000_1 + 2 * h2p * (x100_000_0 - rp * x100_000_1);
-                        const double x000_000_4 = F[4];
+                        const double x000_000_4 = F4;
                         const double x100_000_3 = PAx * x000_000_3 + WPx * x000_000_4;
                         const double x200_000_2 = PAx * x100_000_2 + WPx * x100_000_3 + 1 * h2p * (x000_000_2 - rp * x000_000_3);
                         const double x300_000_1 = PAx * x200_000_1 + WPx * x200_000_2 + 2 * h2p * (x100_000_1 - rp * x100_000_2);
@@ -8708,6 +9301,7 @@ static int jkg_2111(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)144 * nb, *SK = w + (size_t)144 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 144;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 144);
         for (t = 0; t < nk; t++) {
@@ -8718,12 +9312,39 @@ static int jkg_2111(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[6];
-                        boys_n(tab, T, 5, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                        a *= 7 * h;
+                        FT[4 * nb + b] = inr ? taylor(f + 4, dt) : a;
+                        a *= 9 * h;
+                        FT[5 * nb + b] = inr ? taylor(f + 5, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
+                        const double F4 = FT[4 * nb + b];
+                        const double F5 = FT[5 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -8731,19 +9352,19 @@ static int jkg_2111(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x200_000_0 = PAx * x100_000_0 + WPx * x100_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x200_000_1 = PAx * x100_000_1 + WPx * x100_000_2 + 1 * h2p * (x000_000_1 - rp * x000_000_2);
                         const double x200_100_0 = QCx * x200_000_0 + WQx * x200_000_1 + 2 * h2pq * x100_000_1;
                         const double x200_010_0 = QCy * x200_000_0 + WQy * x200_000_1;
                         const double x200_001_0 = QCz * x200_000_0 + WQz * x200_000_1;
-                        const double x000_000_4 = F[4];
+                        const double x000_000_4 = F4;
                         const double x100_000_3 = PAx * x000_000_3 + WPx * x000_000_4;
                         const double x200_000_2 = PAx * x100_000_2 + WPx * x100_000_3 + 1 * h2p * (x000_000_2 - rp * x000_000_3);
                         const double x200_100_1 = QCx * x200_000_1 + WQx * x200_000_2 + 2 * h2pq * x100_000_2;
@@ -8852,7 +9473,7 @@ static int jkg_2111(double *out, const size_t *st, const int *pos, const GPair *
                         const double x300_100_0 = QCx * x300_000_0 + WQx * x300_000_1 + 3 * h2pq * x200_000_1;
                         const double x300_010_0 = QCy * x300_000_0 + WQy * x300_000_1;
                         const double x300_001_0 = QCz * x300_000_0 + WQz * x300_000_1;
-                        const double x000_000_5 = F[5];
+                        const double x000_000_5 = F5;
                         const double x100_000_4 = PAx * x000_000_4 + WPx * x000_000_5;
                         const double x200_000_3 = PAx * x100_000_3 + WPx * x100_000_4 + 1 * h2p * (x000_000_3 - rp * x000_000_4);
                         const double x300_000_2 = PAx * x200_000_2 + WPx * x200_000_3 + 2 * h2p * (x100_000_2 - rp * x100_000_3);
@@ -9378,6 +9999,7 @@ static int jkg_2120(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)96 * nb, *SK = w + (size_t)96 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 96;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 96);
         for (t = 0; t < nk; t++) {
@@ -9388,12 +10010,39 @@ static int jkg_2120(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[6];
-                        boys_n(tab, T, 5, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                        a *= 7 * h;
+                        FT[4 * nb + b] = inr ? taylor(f + 4, dt) : a;
+                        a *= 9 * h;
+                        FT[5 * nb + b] = inr ? taylor(f + 5, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
+                        const double F4 = FT[4 * nb + b];
+                        const double F5 = FT[5 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -9401,17 +10050,17 @@ static int jkg_2120(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x200_000_0 = PAx * x100_000_0 + WPx * x100_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x200_000_1 = PAx * x100_000_1 + WPx * x100_000_2 + 1 * h2p * (x000_000_1 - rp * x000_000_2);
                         const double x200_100_0 = QCx * x200_000_0 + WQx * x200_000_1 + 2 * h2pq * x100_000_1;
-                        const double x000_000_4 = F[4];
+                        const double x000_000_4 = F4;
                         const double x100_000_3 = PAx * x000_000_3 + WPx * x000_000_4;
                         const double x200_000_2 = PAx * x100_000_2 + WPx * x100_000_3 + 1 * h2p * (x000_000_2 - rp * x000_000_3);
                         const double x200_100_1 = QCx * x200_000_1 + WQx * x200_000_2 + 2 * h2pq * x100_000_2;
@@ -9520,7 +10169,7 @@ static int jkg_2120(double *out, const size_t *st, const int *pos, const GPair *
                         const double x300_000_0 = PAx * x200_000_0 + WPx * x200_000_1 + 2 * h2p * (x100_000_0 - rp * x100_000_1);
                         const double x300_000_1 = PAx * x200_000_1 + WPx * x200_000_2 + 2 * h2p * (x100_000_1 - rp * x100_000_2);
                         const double x300_100_0 = QCx * x300_000_0 + WQx * x300_000_1 + 3 * h2pq * x200_000_1;
-                        const double x000_000_5 = F[5];
+                        const double x000_000_5 = F5;
                         const double x100_000_4 = PAx * x000_000_4 + WPx * x000_000_5;
                         const double x200_000_3 = PAx * x100_000_3 + WPx * x100_000_4 + 1 * h2p * (x000_000_3 - rp * x000_000_4);
                         const double x300_000_2 = PAx * x200_000_2 + WPx * x200_000_3 + 2 * h2p * (x100_000_2 - rp * x100_000_3);
@@ -9921,6 +10570,7 @@ static int jkg_2121(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)256 * nb, *SK = w + (size_t)256 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 256;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 256);
         for (t = 0; t < nk; t++) {
@@ -9931,12 +10581,42 @@ static int jkg_2121(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[7];
-                        boys_n(tab, T, 6, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                        a *= 7 * h;
+                        FT[4 * nb + b] = inr ? taylor(f + 4, dt) : a;
+                        a *= 9 * h;
+                        FT[5 * nb + b] = inr ? taylor(f + 5, dt) : a;
+                        a *= 11 * h;
+                        FT[6 * nb + b] = inr ? taylor(f + 6, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
+                        const double F4 = FT[4 * nb + b];
+                        const double F5 = FT[5 * nb + b];
+                        const double F6 = FT[6 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -9944,17 +10624,17 @@ static int jkg_2121(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x200_000_0 = PAx * x100_000_0 + WPx * x100_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x200_000_1 = PAx * x100_000_1 + WPx * x100_000_2 + 1 * h2p * (x000_000_1 - rp * x000_000_2);
                         const double x200_100_0 = QCx * x200_000_0 + WQx * x200_000_1 + 2 * h2pq * x100_000_1;
-                        const double x000_000_4 = F[4];
+                        const double x000_000_4 = F4;
                         const double x100_000_3 = PAx * x000_000_3 + WPx * x000_000_4;
                         const double x200_000_2 = PAx * x100_000_2 + WPx * x100_000_3 + 1 * h2p * (x000_000_2 - rp * x000_000_3);
                         const double x200_100_1 = QCx * x200_000_1 + WQx * x200_000_2 + 2 * h2pq * x100_000_2;
@@ -9971,7 +10651,7 @@ static int jkg_2121(double *out, const size_t *st, const int *pos, const GPair *
                         const double x200_020_0 = QCy * x200_010_0 + WQy * x200_010_1 + 1 * h2q * (x200_000_0 - rq * x200_000_1);
                         const double x200_011_0 = QCy * x200_001_0 + WQy * x200_001_1;
                         const double x200_002_0 = QCz * x200_001_0 + WQz * x200_001_1 + 1 * h2q * (x200_000_0 - rq * x200_000_1);
-                        const double x000_000_5 = F[5];
+                        const double x000_000_5 = F5;
                         const double x100_000_4 = PAx * x000_000_4 + WPx * x000_000_5;
                         const double x200_000_3 = PAx * x100_000_3 + WPx * x100_000_4 + 1 * h2p * (x000_000_3 - rp * x000_000_4);
                         const double x200_100_2 = QCx * x200_000_2 + WQx * x200_000_3 + 2 * h2pq * x100_000_3;
@@ -10229,7 +10909,7 @@ static int jkg_2121(double *out, const size_t *st, const int *pos, const GPair *
                         const double x300_020_0 = QCy * x300_010_0 + WQy * x300_010_1 + 1 * h2q * (x300_000_0 - rq * x300_000_1);
                         const double x300_011_0 = QCy * x300_001_0 + WQy * x300_001_1;
                         const double x300_002_0 = QCz * x300_001_0 + WQz * x300_001_1 + 1 * h2q * (x300_000_0 - rq * x300_000_1);
-                        const double x000_000_6 = F[6];
+                        const double x000_000_6 = F6;
                         const double x100_000_5 = PAx * x000_000_5 + WPx * x000_000_6;
                         const double x200_000_4 = PAx * x100_000_4 + WPx * x100_000_5 + 1 * h2p * (x000_000_4 - rp * x000_000_5);
                         const double x300_000_3 = PAx * x200_000_3 + WPx * x200_000_4 + 2 * h2p * (x100_000_3 - rp * x100_000_4);
@@ -11170,6 +11850,7 @@ static int jkg_2122(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)496 * nb, *SK = w + (size_t)496 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 496;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 496);
         for (t = 0; t < nk; t++) {
@@ -11180,12 +11861,45 @@ static int jkg_2122(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[8];
-                        boys_n(tab, T, 7, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                        a *= 7 * h;
+                        FT[4 * nb + b] = inr ? taylor(f + 4, dt) : a;
+                        a *= 9 * h;
+                        FT[5 * nb + b] = inr ? taylor(f + 5, dt) : a;
+                        a *= 11 * h;
+                        FT[6 * nb + b] = inr ? taylor(f + 6, dt) : a;
+                        a *= 13 * h;
+                        FT[7 * nb + b] = inr ? taylor(f + 7, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
+                        const double F4 = FT[4 * nb + b];
+                        const double F5 = FT[5 * nb + b];
+                        const double F6 = FT[6 * nb + b];
+                        const double F7 = FT[7 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -11193,17 +11907,17 @@ static int jkg_2122(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x200_000_0 = PAx * x100_000_0 + WPx * x100_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x200_000_1 = PAx * x100_000_1 + WPx * x100_000_2 + 1 * h2p * (x000_000_1 - rp * x000_000_2);
                         const double x200_100_0 = QCx * x200_000_0 + WQx * x200_000_1 + 2 * h2pq * x100_000_1;
-                        const double x000_000_4 = F[4];
+                        const double x000_000_4 = F4;
                         const double x100_000_3 = PAx * x000_000_3 + WPx * x000_000_4;
                         const double x200_000_2 = PAx * x100_000_2 + WPx * x100_000_3 + 1 * h2p * (x000_000_2 - rp * x000_000_3);
                         const double x200_100_1 = QCx * x200_000_1 + WQx * x200_000_2 + 2 * h2pq * x100_000_2;
@@ -11220,7 +11934,7 @@ static int jkg_2122(double *out, const size_t *st, const int *pos, const GPair *
                         const double x200_020_0 = QCy * x200_010_0 + WQy * x200_010_1 + 1 * h2q * (x200_000_0 - rq * x200_000_1);
                         const double x200_011_0 = QCy * x200_001_0 + WQy * x200_001_1;
                         const double x200_002_0 = QCz * x200_001_0 + WQz * x200_001_1 + 1 * h2q * (x200_000_0 - rq * x200_000_1);
-                        const double x000_000_5 = F[5];
+                        const double x000_000_5 = F5;
                         const double x100_000_4 = PAx * x000_000_4 + WPx * x000_000_5;
                         const double x200_000_3 = PAx * x100_000_3 + WPx * x100_000_4 + 1 * h2p * (x000_000_3 - rp * x000_000_4);
                         const double x200_100_2 = QCx * x200_000_2 + WQx * x200_000_3 + 2 * h2pq * x100_000_3;
@@ -11254,7 +11968,7 @@ static int jkg_2122(double *out, const size_t *st, const int *pos, const GPair *
                         const double x200_021_0 = QCy * x200_011_0 + WQy * x200_011_1 + 1 * h2q * (x200_001_0 - rq * x200_001_1);
                         const double x200_012_0 = QCy * x200_002_0 + WQy * x200_002_1;
                         const double x200_003_0 = QCz * x200_002_0 + WQz * x200_002_1 + 2 * h2q * (x200_001_0 - rq * x200_001_1);
-                        const double x000_000_6 = F[6];
+                        const double x000_000_6 = F6;
                         const double x100_000_5 = PAx * x000_000_5 + WPx * x000_000_6;
                         const double x200_000_4 = PAx * x100_000_4 + WPx * x100_000_5 + 1 * h2p * (x000_000_4 - rp * x000_000_5);
                         const double x200_100_3 = QCx * x200_000_3 + WQx * x200_000_4 + 2 * h2pq * x100_000_4;
@@ -11778,7 +12492,7 @@ static int jkg_2122(double *out, const size_t *st, const int *pos, const GPair *
                         const double x300_021_0 = QCy * x300_011_0 + WQy * x300_011_1 + 1 * h2q * (x300_001_0 - rq * x300_001_1);
                         const double x300_012_0 = QCy * x300_002_0 + WQy * x300_002_1;
                         const double x300_003_0 = QCz * x300_002_0 + WQz * x300_002_1 + 2 * h2q * (x300_001_0 - rq * x300_001_1);
-                        const double x000_000_7 = F[7];
+                        const double x000_000_7 = F7;
                         const double x100_000_6 = PAx * x000_000_6 + WPx * x000_000_7;
                         const double x200_000_5 = PAx * x100_000_5 + WPx * x100_000_6 + 1 * h2p * (x000_000_5 - rp * x000_000_6);
                         const double x300_000_4 = PAx * x200_000_4 + WPx * x200_000_5 + 2 * h2p * (x100_000_4 - rp * x100_000_5);
@@ -13573,6 +14287,7 @@ static int jkg_2200(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)31 * nb, *SK = w + (size_t)31 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 31;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 31);
         for (t = 0; t < nk; t++) {
@@ -13583,12 +14298,36 @@ static int jkg_2200(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[5];
-                        boys_n(tab, T, 4, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                        a *= 7 * h;
+                        FT[4 * nb + b] = inr ? taylor(f + 4, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
+                        const double F4 = FT[4 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -13596,10 +14335,10 @@ static int jkg_2200(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x200_000_0 = PAx * x100_000_0 + WPx * x100_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
                         const double x010_000_0 = PAy * x000_000_0 + WPy * x000_000_1;
@@ -13611,7 +14350,7 @@ static int jkg_2200(double *out, const size_t *st, const int *pos, const GPair *
                         const double x020_000_0 = PAy * x010_000_0 + WPy * x010_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
                         const double x011_000_0 = PAy * x001_000_0 + WPy * x001_000_1;
                         const double x002_000_0 = PAz * x001_000_0 + WPz * x001_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x200_000_1 = PAx * x100_000_1 + WPx * x100_000_2 + 1 * h2p * (x000_000_1 - rp * x000_000_2);
                         const double x300_000_0 = PAx * x200_000_0 + WPx * x200_000_1 + 2 * h2p * (x100_000_0 - rp * x100_000_1);
@@ -13631,7 +14370,7 @@ static int jkg_2200(double *out, const size_t *st, const int *pos, const GPair *
                         const double x021_000_0 = PAy * x011_000_0 + WPy * x011_000_1 + 1 * h2p * (x001_000_0 - rp * x001_000_1);
                         const double x012_000_0 = PAy * x002_000_0 + WPy * x002_000_1;
                         const double x003_000_0 = PAz * x002_000_0 + WPz * x002_000_1 + 2 * h2p * (x001_000_0 - rp * x001_000_1);
-                        const double x000_000_4 = F[4];
+                        const double x000_000_4 = F4;
                         const double x100_000_3 = PAx * x000_000_3 + WPx * x000_000_4;
                         const double x200_000_2 = PAx * x100_000_2 + WPx * x100_000_3 + 1 * h2p * (x000_000_2 - rp * x000_000_3);
                         const double x300_000_1 = PAx * x200_000_1 + WPx * x200_000_2 + 2 * h2p * (x100_000_1 - rp * x100_000_2);
@@ -13894,6 +14633,7 @@ static int jkg_2210(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)93 * nb, *SK = w + (size_t)93 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 93;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 93);
         for (t = 0; t < nk; t++) {
@@ -13904,12 +14644,39 @@ static int jkg_2210(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[6];
-                        boys_n(tab, T, 5, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                        a *= 7 * h;
+                        FT[4 * nb + b] = inr ? taylor(f + 4, dt) : a;
+                        a *= 9 * h;
+                        FT[5 * nb + b] = inr ? taylor(f + 5, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
+                        const double F4 = FT[4 * nb + b];
+                        const double F5 = FT[5 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -13917,13 +14684,13 @@ static int jkg_2210(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x200_000_0 = PAx * x100_000_0 + WPx * x100_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x200_000_1 = PAx * x100_000_1 + WPx * x100_000_2 + 1 * h2p * (x000_000_1 - rp * x000_000_2);
                         const double x200_100_0 = QCx * x200_000_0 + WQx * x200_000_1 + 2 * h2pq * x100_000_1;
@@ -13961,7 +14728,7 @@ static int jkg_2210(double *out, const size_t *st, const int *pos, const GPair *
                         const double x002_010_0 = QCy * x002_000_0 + WQy * x002_000_1;
                         const double x002_001_0 = QCz * x002_000_0 + WQz * x002_000_1 + 2 * h2pq * x001_000_1;
                         const double x300_000_0 = PAx * x200_000_0 + WPx * x200_000_1 + 2 * h2p * (x100_000_0 - rp * x100_000_1);
-                        const double x000_000_4 = F[4];
+                        const double x000_000_4 = F4;
                         const double x100_000_3 = PAx * x000_000_3 + WPx * x000_000_4;
                         const double x200_000_2 = PAx * x100_000_2 + WPx * x100_000_3 + 1 * h2p * (x000_000_2 - rp * x000_000_3);
                         const double x300_000_1 = PAx * x200_000_1 + WPx * x200_000_2 + 2 * h2p * (x100_000_1 - rp * x100_000_2);
@@ -14021,7 +14788,7 @@ static int jkg_2210(double *out, const size_t *st, const int *pos, const GPair *
                         const double x003_010_0 = QCy * x003_000_0 + WQy * x003_000_1;
                         const double x003_001_0 = QCz * x003_000_0 + WQz * x003_000_1 + 3 * h2pq * x002_000_1;
                         const double x400_000_0 = PAx * x300_000_0 + WPx * x300_000_1 + 3 * h2p * (x200_000_0 - rp * x200_000_1);
-                        const double x000_000_5 = F[5];
+                        const double x000_000_5 = F5;
                         const double x100_000_4 = PAx * x000_000_4 + WPx * x000_000_5;
                         const double x200_000_3 = PAx * x100_000_3 + WPx * x100_000_4 + 1 * h2p * (x000_000_3 - rp * x000_000_4);
                         const double x300_000_2 = PAx * x200_000_2 + WPx * x200_000_3 + 2 * h2p * (x100_000_2 - rp * x100_000_3);
@@ -14457,6 +15224,7 @@ static int jkg_2211(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)279 * nb, *SK = w + (size_t)279 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 279;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 279);
         for (t = 0; t < nk; t++) {
@@ -14467,12 +15235,42 @@ static int jkg_2211(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[7];
-                        boys_n(tab, T, 6, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                        a *= 7 * h;
+                        FT[4 * nb + b] = inr ? taylor(f + 4, dt) : a;
+                        a *= 9 * h;
+                        FT[5 * nb + b] = inr ? taylor(f + 5, dt) : a;
+                        a *= 11 * h;
+                        FT[6 * nb + b] = inr ? taylor(f + 6, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
+                        const double F4 = FT[4 * nb + b];
+                        const double F5 = FT[5 * nb + b];
+                        const double F6 = FT[6 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -14480,19 +15278,19 @@ static int jkg_2211(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x200_000_0 = PAx * x100_000_0 + WPx * x100_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x200_000_1 = PAx * x100_000_1 + WPx * x100_000_2 + 1 * h2p * (x000_000_1 - rp * x000_000_2);
                         const double x200_100_0 = QCx * x200_000_0 + WQx * x200_000_1 + 2 * h2pq * x100_000_1;
                         const double x200_010_0 = QCy * x200_000_0 + WQy * x200_000_1;
                         const double x200_001_0 = QCz * x200_000_0 + WQz * x200_000_1;
-                        const double x000_000_4 = F[4];
+                        const double x000_000_4 = F4;
                         const double x100_000_3 = PAx * x000_000_3 + WPx * x000_000_4;
                         const double x200_000_2 = PAx * x100_000_2 + WPx * x100_000_3 + 1 * h2p * (x000_000_2 - rp * x000_000_3);
                         const double x200_100_1 = QCx * x200_000_1 + WQx * x200_000_2 + 2 * h2pq * x100_000_2;
@@ -14601,7 +15399,7 @@ static int jkg_2211(double *out, const size_t *st, const int *pos, const GPair *
                         const double x300_100_0 = QCx * x300_000_0 + WQx * x300_000_1 + 3 * h2pq * x200_000_1;
                         const double x300_010_0 = QCy * x300_000_0 + WQy * x300_000_1;
                         const double x300_001_0 = QCz * x300_000_0 + WQz * x300_000_1;
-                        const double x000_000_5 = F[5];
+                        const double x000_000_5 = F5;
                         const double x100_000_4 = PAx * x000_000_4 + WPx * x000_000_5;
                         const double x200_000_3 = PAx * x100_000_3 + WPx * x100_000_4 + 1 * h2p * (x000_000_3 - rp * x000_000_4);
                         const double x300_000_2 = PAx * x200_000_2 + WPx * x200_000_3 + 2 * h2p * (x100_000_2 - rp * x100_000_3);
@@ -14761,7 +15559,7 @@ static int jkg_2211(double *out, const size_t *st, const int *pos, const GPair *
                         const double x400_100_0 = QCx * x400_000_0 + WQx * x400_000_1 + 4 * h2pq * x300_000_1;
                         const double x400_010_0 = QCy * x400_000_0 + WQy * x400_000_1;
                         const double x400_001_0 = QCz * x400_000_0 + WQz * x400_000_1;
-                        const double x000_000_6 = F[6];
+                        const double x000_000_6 = F6;
                         const double x100_000_5 = PAx * x000_000_5 + WPx * x000_000_6;
                         const double x200_000_4 = PAx * x100_000_4 + WPx * x100_000_5 + 1 * h2p * (x000_000_4 - rp * x000_000_5);
                         const double x300_000_3 = PAx * x200_000_3 + WPx * x200_000_4 + 2 * h2p * (x100_000_3 - rp * x100_000_4);
@@ -15701,6 +16499,7 @@ static int jkg_2220(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)186 * nb, *SK = w + (size_t)186 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 186;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 186);
         for (t = 0; t < nk; t++) {
@@ -15711,12 +16510,42 @@ static int jkg_2220(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[7];
-                        boys_n(tab, T, 6, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                        a *= 7 * h;
+                        FT[4 * nb + b] = inr ? taylor(f + 4, dt) : a;
+                        a *= 9 * h;
+                        FT[5 * nb + b] = inr ? taylor(f + 5, dt) : a;
+                        a *= 11 * h;
+                        FT[6 * nb + b] = inr ? taylor(f + 6, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
+                        const double F4 = FT[4 * nb + b];
+                        const double F5 = FT[5 * nb + b];
+                        const double F6 = FT[6 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -15724,17 +16553,17 @@ static int jkg_2220(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x200_000_0 = PAx * x100_000_0 + WPx * x100_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x200_000_1 = PAx * x100_000_1 + WPx * x100_000_2 + 1 * h2p * (x000_000_1 - rp * x000_000_2);
                         const double x200_100_0 = QCx * x200_000_0 + WQx * x200_000_1 + 2 * h2pq * x100_000_1;
-                        const double x000_000_4 = F[4];
+                        const double x000_000_4 = F4;
                         const double x100_000_3 = PAx * x000_000_3 + WPx * x000_000_4;
                         const double x200_000_2 = PAx * x100_000_2 + WPx * x100_000_3 + 1 * h2p * (x000_000_2 - rp * x000_000_3);
                         const double x200_100_1 = QCx * x200_000_1 + WQx * x200_000_2 + 2 * h2pq * x100_000_2;
@@ -15843,7 +16672,7 @@ static int jkg_2220(double *out, const size_t *st, const int *pos, const GPair *
                         const double x300_000_0 = PAx * x200_000_0 + WPx * x200_000_1 + 2 * h2p * (x100_000_0 - rp * x100_000_1);
                         const double x300_000_1 = PAx * x200_000_1 + WPx * x200_000_2 + 2 * h2p * (x100_000_1 - rp * x100_000_2);
                         const double x300_100_0 = QCx * x300_000_0 + WQx * x300_000_1 + 3 * h2pq * x200_000_1;
-                        const double x000_000_5 = F[5];
+                        const double x000_000_5 = F5;
                         const double x100_000_4 = PAx * x000_000_4 + WPx * x000_000_5;
                         const double x200_000_3 = PAx * x100_000_3 + WPx * x100_000_4 + 1 * h2p * (x000_000_3 - rp * x000_000_4);
                         const double x300_000_2 = PAx * x200_000_2 + WPx * x200_000_3 + 2 * h2p * (x100_000_2 - rp * x100_000_3);
@@ -16003,7 +16832,7 @@ static int jkg_2220(double *out, const size_t *st, const int *pos, const GPair *
                         const double x400_000_0 = PAx * x300_000_0 + WPx * x300_000_1 + 3 * h2p * (x200_000_0 - rp * x200_000_1);
                         const double x400_000_1 = PAx * x300_000_1 + WPx * x300_000_2 + 3 * h2p * (x200_000_1 - rp * x200_000_2);
                         const double x400_100_0 = QCx * x400_000_0 + WQx * x400_000_1 + 4 * h2pq * x300_000_1;
-                        const double x000_000_6 = F[6];
+                        const double x000_000_6 = F6;
                         const double x100_000_5 = PAx * x000_000_5 + WPx * x000_000_6;
                         const double x200_000_4 = PAx * x100_000_4 + WPx * x100_000_5 + 1 * h2p * (x000_000_4 - rp * x000_000_5);
                         const double x300_000_3 = PAx * x200_000_3 + WPx * x200_000_4 + 2 * h2p * (x100_000_3 - rp * x100_000_4);
@@ -16733,6 +17562,7 @@ static int jkg_2221(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)496 * nb, *SK = w + (size_t)496 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 496;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 496);
         for (t = 0; t < nk; t++) {
@@ -16743,12 +17573,45 @@ static int jkg_2221(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[8];
-                        boys_n(tab, T, 7, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                        a *= 7 * h;
+                        FT[4 * nb + b] = inr ? taylor(f + 4, dt) : a;
+                        a *= 9 * h;
+                        FT[5 * nb + b] = inr ? taylor(f + 5, dt) : a;
+                        a *= 11 * h;
+                        FT[6 * nb + b] = inr ? taylor(f + 6, dt) : a;
+                        a *= 13 * h;
+                        FT[7 * nb + b] = inr ? taylor(f + 7, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
+                        const double F4 = FT[4 * nb + b];
+                        const double F5 = FT[5 * nb + b];
+                        const double F6 = FT[6 * nb + b];
+                        const double F7 = FT[7 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -16756,17 +17619,17 @@ static int jkg_2221(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x200_000_0 = PAx * x100_000_0 + WPx * x100_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x200_000_1 = PAx * x100_000_1 + WPx * x100_000_2 + 1 * h2p * (x000_000_1 - rp * x000_000_2);
                         const double x200_100_0 = QCx * x200_000_0 + WQx * x200_000_1 + 2 * h2pq * x100_000_1;
-                        const double x000_000_4 = F[4];
+                        const double x000_000_4 = F4;
                         const double x100_000_3 = PAx * x000_000_3 + WPx * x000_000_4;
                         const double x200_000_2 = PAx * x100_000_2 + WPx * x100_000_3 + 1 * h2p * (x000_000_2 - rp * x000_000_3);
                         const double x200_100_1 = QCx * x200_000_1 + WQx * x200_000_2 + 2 * h2pq * x100_000_2;
@@ -16783,7 +17646,7 @@ static int jkg_2221(double *out, const size_t *st, const int *pos, const GPair *
                         const double x200_020_0 = QCy * x200_010_0 + WQy * x200_010_1 + 1 * h2q * (x200_000_0 - rq * x200_000_1);
                         const double x200_011_0 = QCy * x200_001_0 + WQy * x200_001_1;
                         const double x200_002_0 = QCz * x200_001_0 + WQz * x200_001_1 + 1 * h2q * (x200_000_0 - rq * x200_000_1);
-                        const double x000_000_5 = F[5];
+                        const double x000_000_5 = F5;
                         const double x100_000_4 = PAx * x000_000_4 + WPx * x000_000_5;
                         const double x200_000_3 = PAx * x100_000_3 + WPx * x100_000_4 + 1 * h2p * (x000_000_3 - rp * x000_000_4);
                         const double x200_100_2 = QCx * x200_000_2 + WQx * x200_000_3 + 2 * h2pq * x100_000_3;
@@ -17041,7 +17904,7 @@ static int jkg_2221(double *out, const size_t *st, const int *pos, const GPair *
                         const double x300_020_0 = QCy * x300_010_0 + WQy * x300_010_1 + 1 * h2q * (x300_000_0 - rq * x300_000_1);
                         const double x300_011_0 = QCy * x300_001_0 + WQy * x300_001_1;
                         const double x300_002_0 = QCz * x300_001_0 + WQz * x300_001_1 + 1 * h2q * (x300_000_0 - rq * x300_000_1);
-                        const double x000_000_6 = F[6];
+                        const double x000_000_6 = F6;
                         const double x100_000_5 = PAx * x000_000_5 + WPx * x000_000_6;
                         const double x200_000_4 = PAx * x100_000_4 + WPx * x100_000_5 + 1 * h2p * (x000_000_4 - rp * x000_000_5);
                         const double x300_000_3 = PAx * x200_000_3 + WPx * x200_000_4 + 2 * h2p * (x100_000_3 - rp * x100_000_4);
@@ -17401,7 +18264,7 @@ static int jkg_2221(double *out, const size_t *st, const int *pos, const GPair *
                         const double x400_020_0 = QCy * x400_010_0 + WQy * x400_010_1 + 1 * h2q * (x400_000_0 - rq * x400_000_1);
                         const double x400_011_0 = QCy * x400_001_0 + WQy * x400_001_1;
                         const double x400_002_0 = QCz * x400_001_0 + WQz * x400_001_1 + 1 * h2q * (x400_000_0 - rq * x400_000_1);
-                        const double x000_000_7 = F[7];
+                        const double x000_000_7 = F7;
                         const double x100_000_6 = PAx * x000_000_6 + WPx * x000_000_7;
                         const double x200_000_5 = PAx * x100_000_5 + WPx * x100_000_6 + 1 * h2p * (x000_000_5 - rp * x000_000_6);
                         const double x300_000_4 = PAx * x200_000_4 + WPx * x200_000_5 + 2 * h2p * (x100_000_4 - rp * x100_000_5);
@@ -19021,6 +19884,7 @@ static int jkg_2222(double *out, const size_t *st, const int *pos, const GPair *
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         double *v = wk, *w = v + (size_t)961 * nb, *SK = w + (size_t)961 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 961;     /* F_m of the bra primitives, FT[m * nb + b] */
         int t, b, cb, kc, i, any = 0;
         memset(SK, 0, sizeof(double) * nck * ncb * 961);
         for (t = 0; t < nk; t++) {
@@ -19031,12 +19895,48 @@ static int jkg_2222(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
-                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);
-                        double F[9];
-                        boys_n(tab, T, 8, F);
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                        a *= 3 * h;
+                        FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
+                        a *= 5 * h;
+                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
+                        a *= 7 * h;
+                        FT[4 * nb + b] = inr ? taylor(f + 4, dt) : a;
+                        a *= 9 * h;
+                        FT[5 * nb + b] = inr ? taylor(f + 5, dt) : a;
+                        a *= 11 * h;
+                        FT[6 * nb + b] = inr ? taylor(f + 6, dt) : a;
+                        a *= 13 * h;
+                        FT[7 * nb + b] = inr ? taylor(f + 7, dt) : a;
+                        a *= 15 * h;
+                        FT[8 * nb + b] = inr ? taylor(f + 8, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double F2 = FT[2 * nb + b];
+                        const double F3 = FT[3 * nb + b];
+                        const double F4 = FT[4 * nb + b];
+                        const double F5 = FT[5 * nb + b];
+                        const double F6 = FT[6 * nb + b];
+                        const double F7 = FT[7 * nb + b];
+                        const double F8 = FT[8 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -19044,17 +19944,17 @@ static int jkg_2222(double *out, const size_t *st, const int *pos, const GPair *
                         (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
                         (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
                         const double g = B->kp[b] * sqrt(s);
-                        const double x000_000_0 = F[0];
-                        const double x000_000_1 = F[1];
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
                         const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x000_000_2 = F[2];
+                        const double x000_000_2 = F2;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
                         const double x200_000_0 = PAx * x100_000_0 + WPx * x100_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
-                        const double x000_000_3 = F[3];
+                        const double x000_000_3 = F3;
                         const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
                         const double x200_000_1 = PAx * x100_000_1 + WPx * x100_000_2 + 1 * h2p * (x000_000_1 - rp * x000_000_2);
                         const double x200_100_0 = QCx * x200_000_0 + WQx * x200_000_1 + 2 * h2pq * x100_000_1;
-                        const double x000_000_4 = F[4];
+                        const double x000_000_4 = F4;
                         const double x100_000_3 = PAx * x000_000_3 + WPx * x000_000_4;
                         const double x200_000_2 = PAx * x100_000_2 + WPx * x100_000_3 + 1 * h2p * (x000_000_2 - rp * x000_000_3);
                         const double x200_100_1 = QCx * x200_000_1 + WQx * x200_000_2 + 2 * h2pq * x100_000_2;
@@ -19071,7 +19971,7 @@ static int jkg_2222(double *out, const size_t *st, const int *pos, const GPair *
                         const double x200_020_0 = QCy * x200_010_0 + WQy * x200_010_1 + 1 * h2q * (x200_000_0 - rq * x200_000_1);
                         const double x200_011_0 = QCy * x200_001_0 + WQy * x200_001_1;
                         const double x200_002_0 = QCz * x200_001_0 + WQz * x200_001_1 + 1 * h2q * (x200_000_0 - rq * x200_000_1);
-                        const double x000_000_5 = F[5];
+                        const double x000_000_5 = F5;
                         const double x100_000_4 = PAx * x000_000_4 + WPx * x000_000_5;
                         const double x200_000_3 = PAx * x100_000_3 + WPx * x100_000_4 + 1 * h2p * (x000_000_3 - rp * x000_000_4);
                         const double x200_100_2 = QCx * x200_000_2 + WQx * x200_000_3 + 2 * h2pq * x100_000_3;
@@ -19105,7 +20005,7 @@ static int jkg_2222(double *out, const size_t *st, const int *pos, const GPair *
                         const double x200_021_0 = QCy * x200_011_0 + WQy * x200_011_1 + 1 * h2q * (x200_001_0 - rq * x200_001_1);
                         const double x200_012_0 = QCy * x200_002_0 + WQy * x200_002_1;
                         const double x200_003_0 = QCz * x200_002_0 + WQz * x200_002_1 + 2 * h2q * (x200_001_0 - rq * x200_001_1);
-                        const double x000_000_6 = F[6];
+                        const double x000_000_6 = F6;
                         const double x100_000_5 = PAx * x000_000_5 + WPx * x000_000_6;
                         const double x200_000_4 = PAx * x100_000_4 + WPx * x100_000_5 + 1 * h2p * (x000_000_4 - rp * x000_000_5);
                         const double x200_100_3 = QCx * x200_000_3 + WQx * x200_000_4 + 2 * h2pq * x100_000_4;
@@ -19629,7 +20529,7 @@ static int jkg_2222(double *out, const size_t *st, const int *pos, const GPair *
                         const double x300_021_0 = QCy * x300_011_0 + WQy * x300_011_1 + 1 * h2q * (x300_001_0 - rq * x300_001_1);
                         const double x300_012_0 = QCy * x300_002_0 + WQy * x300_002_1;
                         const double x300_003_0 = QCz * x300_002_0 + WQz * x300_002_1 + 2 * h2q * (x300_001_0 - rq * x300_001_1);
-                        const double x000_000_7 = F[7];
+                        const double x000_000_7 = F7;
                         const double x100_000_6 = PAx * x000_000_6 + WPx * x000_000_7;
                         const double x200_000_5 = PAx * x100_000_5 + WPx * x100_000_6 + 1 * h2p * (x000_000_5 - rp * x000_000_6);
                         const double x300_000_4 = PAx * x200_000_4 + WPx * x200_000_5 + 2 * h2p * (x100_000_4 - rp * x100_000_5);
@@ -20339,7 +21239,7 @@ static int jkg_2222(double *out, const size_t *st, const int *pos, const GPair *
                         const double x400_021_0 = QCy * x400_011_0 + WQy * x400_011_1 + 1 * h2q * (x400_001_0 - rq * x400_001_1);
                         const double x400_012_0 = QCy * x400_002_0 + WQy * x400_002_1;
                         const double x400_003_0 = QCz * x400_002_0 + WQz * x400_002_1 + 2 * h2q * (x400_001_0 - rq * x400_001_1);
-                        const double x000_000_8 = F[8];
+                        const double x000_000_8 = F8;
                         const double x100_000_7 = PAx * x000_000_7 + WPx * x000_000_8;
                         const double x200_000_6 = PAx * x100_000_6 + WPx * x100_000_7 + 1 * h2p * (x000_000_6 - rp * x000_000_7);
                         const double x300_000_5 = PAx * x200_000_5 + WPx * x200_000_6 + 2 * h2p * (x100_000_5 - rp * x100_000_6);

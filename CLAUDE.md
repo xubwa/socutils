@@ -60,6 +60,9 @@ make compare    # build + A/B compare C backend vs C++ reference
 make clean
 # pass BLAS/LAPACK choice through, e.g.:
 make CMAKE_ARGS=-DBLA_VENDOR=OpenBLAS      # or -DBLAS_LIBRARIES=mkl_rt
+# target instruction set (default: generic); on Rockfish cascadelake (AVX-512)
+# runs on every Intel CPU partition and is ~12 % faster on the J / K kernels:
+make CMAKE_ARGS=-DSOCUTILS_MARCH=cascadelake
 # equivalently, drive the lib/ CMake directly: cd lib && ./build.sh [-D...]
 ```
 

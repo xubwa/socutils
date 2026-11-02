@@ -252,7 +252,8 @@ size_t SOCVHFgen_wksize(int *bas, int nbas)
         const size_t ne = N3(2 * JKV_LMAX) - (JKV_LMAX > 0 ? N3(JKV_LMAX - 1) : 0);
         const size_t NT = ne * ne;
         return NT * np * np + (size_t)G_MAXCTR * G_MAXCTR * NT
-             + (size_t)G_MAXCTR * G_MAXCTR * G_MAXCTR * G_MAXCTR * NT;
+             + (size_t)G_MAXCTR * G_MAXCTR * G_MAXCTR * G_MAXCTR * NT
+             + (size_t)(4 * JKV_LMAX + 1) * np * np;           /* F_m of the bra primitives */
 }
 
 /*

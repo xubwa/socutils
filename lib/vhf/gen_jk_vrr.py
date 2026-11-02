@@ -104,7 +104,7 @@ def vrr_plan(la, lb, lc, ld):
                 visit(e2, f, m + 1)
                 terms.append('%d * h2p * (%s - rp * %s)' % (e[k] - 1, vname(e2, f, m), vname(e2, f, m + 1)))
         else:
-            terms = ['F[%d]' % m]
+            terms = ['F%d' % m]
         exprs[key] = ' + '.join(terms)
         order.append(key)
 
@@ -160,6 +160,7 @@ def kernel(la, lb, lc, ld):
     w('        const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;')
     w('        const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;')
     w('        double *v = wk, *w = v + (size_t)%d * nb, *SK = w + (size_t)%d * ncb;' % (nt, nt))
+    w('        double *FT = SK + (size_t)nck * ncb * %d;     /* F_m of the bra primitives, FT[m * nb + b] */' % nt)
     w('        int t, b, cb, kc, i, any = 0;')
     w('        memset(SK, 0, sizeof(double) * nck * ncb * %d);' % nt)
     w('        for (t = 0; t < nk; t++) {')
@@ -170,12 +171,30 @@ def kernel(la, lb, lc, ld):
     w('                const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];')
     w('                const double h2q = .5 / q;')
     w('                (void)QCx; (void)QCy; (void)QCz; (void)h2q;')
+    # pass 1: T and F_0 .. F_L of every bra primitive, branch-free (vectorised with gathers)
+    w('#pragma omp simd')
     w('                for (b = 0; b < nbt; b++) {')
     w('                        const double p = B->p[b], s = 1. / (p + q);')
     w('                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;')
-    w('                        const double rho = p * q * s, T = rho * (dx * dx + dy * dy + dz * dz);')
-    w('                        double F[%d];' % (L + 1))
-    w('                        boys_n(tab, T, %d, F);' % L)
+    w('                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);')
+    w('                        const int inr = T < GT_TMAX;')
+    w('                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;')
+    w('                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;')
+    w('                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;')
+    w('                        double a = .886226925452758014 / sqrt(Ta);')
+    for m in range(L + 1):
+        if m > 0:
+            w('                        a *= %d * h;' % (2 * m - 1))
+        w('                        FT[%d * nb + b] = inr ? taylor(f + %d, dt) : a;' % (m, m))
+    w('                }')
+    # pass 2: the vertical recursions
+    w('#pragma omp simd')
+    w('                for (b = 0; b < nbt; b++) {')
+    w('                        const double p = B->p[b], s = 1. / (p + q);')
+    w('                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;')
+    w('                        const double rho = p * q * s;')
+    for m in range(L + 1):
+        w('                        const double F%d = FT[%d * nb + b];' % (m, m))
     w('                        const double PAx = pax[b], PAy = pay[b], PAz = paz[b];')
     w('                        const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;')
     w('                        const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;')
