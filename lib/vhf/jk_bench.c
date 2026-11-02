@@ -5,7 +5,7 @@
  * with nothing else done (no digestion, no density screening; the kernels get
  * dmax = 1), the OpenMP loop as jk_multi_sym's.
  *
- *   engine 0: libcint int2e_sph;  1: jk_ssss.c (s quartets only)
+ *   engine 0: libcint int2e_sph;  1: jk_ssss.c ((ss|ss) and one-p quartets only)
  *
  * stats[0] quartets, stats[1] primitive quartets (product of the nprim),
  * stats[2] contracted functions quartets, stats[3] wall seconds of the loop,

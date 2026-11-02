@@ -27,8 +27,9 @@ SSCtx *SOCVHFss_ctx_build(int *atm, int natm, int *bas, int nbas, double *env);
 void SOCVHFss_ctx_free(SSCtx *cx);
 size_t SOCVHFss_wksize(int *bas, int nbas);
 int SOCVHFss_int2e(double *out, const int *shls, const SSCtx *cx, double dmax, double prim_tol, double *wk);
+int SOCVHFss_takes(const int *shls, const int *bas);
 
-/* SOCVHFjk_multi_sym: (ss|ss) quartets by jk_ssss.c (1, default) or libcint (0) */
+/* SOCVHFjk_multi_sym: (ss|ss) and one-p quartets by jk_ssss.c (1, default) or libcint (0) */
 static int jk_use_ssss = 1;
 void SOCVHFjk_set_ssss(int on) { jk_use_ssss = on; }
 
@@ -234,8 +235,7 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
                                 continue;
                         }
                         shls[0] = ish; shls[1] = jsh; shls[2] = ksh; shls[3] = lsh;
-                        if (use_ss && bas[ish * BAS_SLOTS + ANG_OF] == 0 && bas[jsh * BAS_SLOTS + ANG_OF] == 0
-                            && bas[ksh * BAS_SLOTS + ANG_OF] == 0 && bas[lsh * BAS_SLOTS + ANG_OF] == 0) {
+                        if (use_ss && SOCVHFss_takes(shls, bas)) {
                                 const double dq = dmax2(do_j ? dj_ : 0, do_k ? dk_ : 0);
                                 if (!SOCVHFss_int2e(buf, shls, scx, dq, prim_tol, swk)) {
                                         continue;

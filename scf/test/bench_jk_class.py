@@ -22,11 +22,12 @@ from pyscf.gto import moleintor
 from socutils.scf import jk_multi
 from socutils.hessian import ghf as ghf_hess
 
-ENGINES = {0: 'libcint', 1: 'ssss'}
+ENGINES = {0: 'libcint', 1: 'jk_ssss'}
 
 
 def engines_for(cls):
-    return [0, 1] if cls == (0, 0, 0, 0) else [0]
+    '''jk_ssss.c: (ss|ss) and the quartets with one p shell'''
+    return [0, 1] if max(cls) <= 1 and sum(cls) <= 1 else [0]
 
 
 def run(mol, cls, engine, tol):
@@ -51,7 +52,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('xyz')
     ap.add_argument('basis')
-    ap.add_argument('--cls', default='all', help="e.g. 0000, 1000 (l_i l_j l_k l_l), or 'all'")
+    ap.add_argument('--cls', default='all', help="e.g. 0000, 1000 (l_i l_j l_k l_l), comma-separated, or 'all'")
     ap.add_argument('--keep', default=None, help='angular momenta of the basis to keep, e.g. 0 or 01')
     ap.add_argument('--tol', type=float, default=1e-12)
     ap.add_argument('--reps', type=int, default=3)
@@ -72,7 +73,7 @@ def main():
     if a.cls == 'all':
         classes = [c for c in itertools.product(ls, repeat=4)]
     else:
-        classes = [tuple(int(x) for x in a.cls)]
+        classes = [tuple(int(x) for x in c) for c in a.cls.split(',')]
     print('%-9s %11s %13s %8s %9s %10s %11s  %s' % (
         'class', 'quartets', 'prim-quart', 'engine', 'wall s', 'ns/quart', 'ns/prim', 'checksum'))
     nt = lib.num_threads()
