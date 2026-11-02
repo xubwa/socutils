@@ -39,6 +39,9 @@ from pyscf.grad import rks as rks_grad
 from socutils.hessian import rhf_fast as hess_fast
 
 
+USE_FUSED_XC = True     # LDA / GGA XC gradient by the fused one-pass kernel (_xc_grad_fused)
+
+
 def xc_grad(ks_grad, mol, dm, max_memory=2000):
     '''XC contribution to the RKS gradient on the fixed grid (pyscf's
     get_vxc contracted as in grad_elec), (natm, 3); None if not applicable.'''
@@ -51,6 +54,10 @@ def xc_grad(ks_grad, mol, dm, max_memory=2000):
     if xctype not in ('LDA', 'GGA', 'MGGA'):
         return None
     grids, _ = rks_grad._initialize_grids(ks_grad)
+    if xctype != 'MGGA' and USE_FUSED_XC and hasattr(libdft, 'SOCDFTxc_grad_fused'):
+        de = _xc_grad_fused(libdft, ni, mol, grids, mf.xc, dm, xctype)
+        if de is not None:
+            return de
     make_rho, nset, nao = ni._gen_rho_evaluator(mol, dm, 1, False, grids)
     D = numpy.ascontiguousarray(dm)
     ao_deriv = 1 if xctype == 'LDA' else 2
@@ -90,6 +97,50 @@ def xc_grad(ks_grad, mol, dm, max_memory=2000):
                                  wv.ctypes.data_as(ctypes.c_void_p),
                                  null if T is None else T.ctypes.data_as(ctypes.c_void_p),
                                  ctypes.c_int(itype), ctypes.c_int(ng), ctypes.c_int(nao), ctypes.c_long(cs))
+    de = numpy.zeros((mol.natm, 3))
+    for ia, (p0, p1) in enumerate(mol.aoslice_by_atom()[:, 2:]):
+        de[ia] = -2 * out[:, p0:p1].sum(axis=1)
+    return de
+
+
+def _xc_grad_fused(libdft, ni, mol, grids, xc_code, dm, xctype):
+    '''LDA / GGA XC gradient in one pass over the grid (lib/dft/vxc_rks.c
+    SOCDFTxc_grad_fused: the AOs to the second derivatives, rho, the functional
+    and the contraction per sub-block in cache); None if not applicable.'''
+    from pyscf.gto import moleintor
+    from socutils.dft import vxc_fast
+    if grids.non0tab is None:
+        grids.build(with_non0tab=True)
+    if not vxc_fast._fusable(ni, xc_code, grids):
+        return None
+    xc = ni.libxc._get_xc(xc_code, 0)
+    if xc.nfunc == 0:
+        return numpy.zeros((mol.natm, 3))
+    nao = mol.nao
+    nthreads = lib.num_threads()
+    ngrid = grids.weights.size
+    coords = numpy.ascontiguousarray(grids.coords.T)
+    weights = numpy.ascontiguousarray(grids.weights)
+    non0tab = numpy.ascontiguousarray(grids.non0tab, dtype=numpy.uint8)
+    lcg = moleintor.libcgto
+    feval = ctypes.cast(lcg.GTOval_sph_deriv1 if xctype == 'LDA' else lcg.GTOval_sph_deriv2, ctypes.c_void_p)
+    fxc = ctypes.cast(ni.libxc._itrf.LIBXC_eval_xc, ctypes.c_void_p)
+    facs = (ctypes.c_double * xc.nfunc)(*xc.facs)
+    atm = numpy.asarray(mol._atm, dtype=numpy.int32, order='C')
+    bas = numpy.asarray(mol._bas, dtype=numpy.int32, order='C')
+    env = numpy.asarray(mol._env, dtype=numpy.double, order='C')
+    ao_loc = mol.ao_loc_nr().astype(numpy.int32)
+    D = numpy.ascontiguousarray(dm)
+    out = numpy.zeros((nthreads, 3, nao))
+    libdft.SOCDFTxc_grad_fused(
+        out.ctypes.data_as(ctypes.c_void_p), D.ctypes.data_as(ctypes.c_void_p),
+        coords.ctypes.data_as(ctypes.c_void_p), weights.ctypes.data_as(ctypes.c_void_p),
+        non0tab.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(ngrid), ctypes.c_int(vxc_fast.SUBBLOCK),
+        ctypes.c_double(vxc_fast.AO_CUTOFF), ctypes.c_int(0 if xctype == 'LDA' else 1), feval,
+        ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.natm),
+        bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p),
+        fxc, ctypes.c_int(xc.nfunc), ctypes.cast(xc.xc_arr, ctypes.c_void_p), facs, *vxc_fast._blas_ptrs())
+    out = out.sum(axis=0)
     de = numpy.zeros((mol.natm, 3))
     for ia, (p0, p1) in enumerate(mol.aoslice_by_atom()[:, 2:]):
         de[ia] = -2 * out[:, p0:p1].sum(axis=1)
