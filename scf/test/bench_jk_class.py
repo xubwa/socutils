@@ -22,12 +22,17 @@ from pyscf.gto import moleintor
 from socutils.scf import jk_multi
 from socutils.hessian import ghf as ghf_hess
 
-ENGINES = {0: 'libcint', 1: 'jk_ssss'}
+ENGINES = {0: 'libcint', 1: 'jk_ssss', 2: 'jk_gen'}
 
 
 def engines_for(cls):
-    '''jk_ssss.c: s / p quartets with at most two p shells'''
-    return [0, 1] if max(cls) <= 1 and sum(cls) <= 2 else [0]
+    '''jk_ssss.c: s / p quartets with at most two p shells; jk_gen.c: l <= 2'''
+    e = [0]
+    if max(cls) <= 1 and sum(cls) <= 2:
+        e.append(1)
+    if max(cls) <= 2:
+        e.append(2)
+    return e
 
 
 def run(mol, cls, engine, tol):

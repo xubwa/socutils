@@ -5,7 +5,8 @@
  * with nothing else done (no digestion, no density screening; the kernels get
  * dmax = 1), the OpenMP loop as jk_multi_sym's.
  *
- *   engine 0: libcint int2e_sph;  1: jk_ssss.c (s / p quartets with at most two p shells)
+ *   engine 0: libcint int2e_sph;  1: jk_ssss.c (s / p quartets with at most two p shells);
+ *   2: jk_gen.c (l <= 2)
  *
  * stats[0] quartets, stats[1] primitive quartets (product of the nprim),
  * stats[2] contracted functions quartets, stats[3] wall seconds of the loop,
@@ -27,6 +28,12 @@ SSCtx *SOCVHFss_ctx_build(int *atm, int natm, int *bas, int nbas, double *env);
 void SOCVHFss_ctx_free(SSCtx *cx);
 size_t SOCVHFss_wksize(int *bas, int nbas);
 int SOCVHFss_int2e(double *out, const int *shls, const SSCtx *cx, double dmax, double prim_tol, double *wk);
+typedef struct GenCtx GenCtx;
+GenCtx *SOCVHFgen_ctx_build(int *atm, int natm, int *bas, int nbas, double *env);
+void SOCVHFgen_ctx_free(GenCtx *cx);
+size_t SOCVHFgen_wksize(int *bas, int nbas);
+int SOCVHFgen_int2e(double *out, const int *shls, const GenCtx *cx, double dmax, double prim_tol,
+                    double *wk, const int *bas);
 
 static inline void shell_pair(int ij, int *i, int *j)
 {
@@ -52,7 +59,8 @@ double SOCVHFjk_bench_class(int engine, int *cls, double *qcond, double tol, CIN
         const int npair = nbas * (nbas + 1) / 2;
         double t0 = omp_get_wtime();
         SSCtx *scx = engine == 1 ? SOCVHFss_ctx_build(atm, natm, bas, nbas, env) : NULL;
-        const size_t sswk = engine == 1 ? SOCVHFss_wksize(bas, nbas) : 0;
+        GenCtx *gcx = engine == 2 ? SOCVHFgen_ctx_build(atm, natm, bas, nbas, env) : NULL;
+        const size_t sswk = engine == 1 ? SOCVHFss_wksize(bas, nbas) : (engine == 2 ? SOCVHFgen_wksize(bas, nbas) : 0);
         stats[4] = omp_get_wtime() - t0;
         double nq = 0, npq = 0, nfq = 0, sum = 0;
         t0 = omp_get_wtime();
@@ -79,6 +87,8 @@ double SOCVHFjk_bench_class(int engine, int *cls, double *qcond, double tol, CIN
                         int ok;
                         if (engine == 1) {
                                 ok = SOCVHFss_int2e(buf, shls, scx, 1., tol * 1e-2, swk);
+                        } else if (engine == 2) {
+                                ok = SOCVHFgen_int2e(buf, shls, gcx, 1., tol * 1e-2, swk, bas);
                         } else {
                                 ok = int2e_sph(buf, NULL, shls, atm, natm, bas, nbas, env, opt, cache);
                         }
@@ -96,5 +106,6 @@ double SOCVHFjk_bench_class(int engine, int *cls, double *qcond, double tol, CIN
         stats[2] = nfq;
         stats[3] = omp_get_wtime() - t0;
         SOCVHFss_ctx_free(scx);
+        SOCVHFgen_ctx_free(gcx);
         return sum;
 }

@@ -29,9 +29,21 @@ size_t SOCVHFss_wksize(int *bas, int nbas);
 int SOCVHFss_int2e(double *out, const int *shls, const SSCtx *cx, double dmax, double prim_tol, double *wk);
 int SOCVHFss_takes(const int *shls, const int *bas);
 
+/* jk_gen.c: quartets of l <= 2 by the generated Head-Gordon-Pople kernels */
+typedef struct GenCtx GenCtx;
+GenCtx *SOCVHFgen_ctx_build(int *atm, int natm, int *bas, int nbas, double *env);
+void SOCVHFgen_ctx_free(GenCtx *cx);
+size_t SOCVHFgen_wksize(int *bas, int nbas);
+int SOCVHFgen_int2e(double *out, const int *shls, const GenCtx *cx, double dmax, double prim_tol,
+                    double *wk, const int *bas);
+int SOCVHFgen_takes(const int *shls, const int *bas);
+
 /* SOCVHFjk_multi_sym: s / p quartets with at most two p shells by jk_ssss.c (1, default) or libcint (0) */
 static int jk_use_ssss = 1;
 void SOCVHFjk_set_ssss(int on) { jk_use_ssss = on; }
+/* the remaining quartets of l <= 2 by jk_gen.c (1) or libcint (0, default) */
+static int jk_use_gen = 0;
+void SOCVHFjk_set_gen(int on) { jk_use_gen = on; }
 
 static const int PERMS[8][4] = {
         {0, 1, 2, 3}, {1, 0, 2, 3}, {0, 1, 3, 2}, {1, 0, 3, 2},
@@ -188,7 +200,10 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
         int nth_used = 1;
         const int use_ss = jk_use_ssss;
         SSCtx *scx = use_ss ? SOCVHFss_ctx_build(atm, natm, bas, nbas, env) : NULL;
-        const size_t sswk = use_ss ? SOCVHFss_wksize(bas, nbas) : 0;
+        const int use_gen = jk_use_gen;
+        GenCtx *gcx = use_gen ? SOCVHFgen_ctx_build(atm, natm, bas, nbas, env) : NULL;
+        size_t sswk = use_ss ? SOCVHFss_wksize(bas, nbas) : 0;
+        if (use_gen && SOCVHFgen_wksize(bas, nbas) > sswk) sswk = SOCVHFgen_wksize(bas, nbas);
         const double prim_tol = tol * 1e-2;
 #pragma omp parallel
 {
@@ -238,6 +253,11 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
                         if (use_ss && SOCVHFss_takes(shls, bas)) {
                                 const double dq = dmax2(do_j ? dj_ : 0, do_k ? dk_ : 0);
                                 if (!SOCVHFss_int2e(buf, shls, scx, dq, prim_tol, swk)) {
+                                        continue;
+                                }
+                        } else if (use_gen && SOCVHFgen_takes(shls, bas)) {
+                                const double dq = dmax2(do_j ? dj_ : 0, do_k ? dk_ : 0);
+                                if (!SOCVHFgen_int2e(buf, shls, gcx, dq, prim_tol, swk, bas)) {
                                         continue;
                                 }
                         } else if (!int2e_sph(buf, NULL, shls, atm, natm, bas, nbas, env, opt, cache)) {
@@ -332,6 +352,7 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
         free(jij);
 }
         SOCVHFss_ctx_free(scx);
+        SOCVHFgen_ctx_free(gcx);
         free(jbufs);
         free(kbufs);
         /* V = W + W^T over the two AO indices */
