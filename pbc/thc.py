@@ -882,20 +882,29 @@ class THCExchange:
         lr_factors = (F, terms): the densities as sums of real rank-r products, dms[n] = sum_(c, x, y) c F[x] F[y]^T
         over terms[n]; the LR term then needs sum_g (L_g F[x]) (L_g F[y])^T per product only.'''
         nD = len(dms)
+        comm = getattr(self, 'comm', None)                            # MPI (mpi4py): round-robin work split, Allreduce
+        rank, size = (comm.Get_rank(), comm.Get_size()) if comm is not None else (0, 1)
+        split = getattr(self, 'mpi_split', ('cs', 'cc', 'lr'))        # parts split over the ranks (others: rank 0)
+
+        def mine(part, i):
+            return (i % size == rank) if part in split else rank == 0
         if kblk is None:                                              # aux functions per CX-CX chunk (2x1x1: 64 -> 256,
             kblk = getattr(self, 'kblk', None)                        # -12%); W, Y, Z ~ 4 kblk nao^2 doubles
             if kblk is None:
                 kblk = int(min(256, max(16, 0.1 * self.avail_bytes() / (4 * 8 * self.nao ** 2))))
+        if comm is not None:                                          # the same chunking on every rank
+            from mpi4py import MPI
+            kblk = comm.allreduce(kblk, op=MPI.MIN)
         dms = [np.ascontiguousarray(d, dtype=float) for d in dms]
         sym = [0] * nD if sym is None else list(sym)
         t = time.time()
         nao, sm = self.nao, self.smooth
         Pm = self.phimu
-        Ks = []
-        for d in dms:
-            K = np.zeros((nao, nao))
-            K[np.ix_(sm, sm)] = Pm.T @ ((Pm @ d[np.ix_(sm, sm)] @ Pm.T) * self.V) @ Pm
-            Ks.append(K)
+        Kall = np.zeros((nD, nao, nao))                               # summed over the ranks at the end
+        Ks = list(Kall)
+        if rank == 0:
+            for K, d in zip(Ks, dms):
+                K[np.ix_(sm, sm)] = Pm.T @ ((Pm @ d[np.ix_(sm, sm)] @ Pm.T) * self.V) @ Pm
         t_ss = time.time() - t
         t = time.time()
         cxc = self.lr_cols
@@ -915,7 +924,9 @@ class THCExchange:
         Hs = [np.zeros((nao, len(Pm))) for _ in Es]
         ts = dict.fromkeys(('E', 'Bp', 'accum', 'HPm'), 0.)
         ts['E'] = time.time() - t
-        for p0 in range(0, len(cxc), pblk):
+        for ip, p0 in enumerate(range(0, len(cxc), pblk)):
+            if not mine('cs', ip):
+                continue
             ta = time.time()
             p1 = min(p0 + pblk, len(cxc))
             Bp = np.zeros((p1 - p0, Bsr.shape[1]))
@@ -952,6 +963,7 @@ class THCExchange:
         mc_cache = self._mc_cache if self._mc_cache is not False else None
         tc = dict.fromkeys(('MC', 'unpack', 'CD', 'swap', 'GEMM', 'add'), 0.)
         aoat = self.aoat
+        ichunk = -1
         for X, (rows, cols, Cd) in enumerate(blocks):
             S = np.unique(np.concatenate([ii[cols], jj[cols]]))
             # local fit: the pairs fitted on X's aux have an AO on atom X (cluster (X, B)), so C_P = [[C_xx, C_xn],
@@ -967,6 +979,9 @@ class THCExchange:
             DxT = np.ascontiguousarray(np.vstack([d[S[:nx]] for d in dms]).T)   # (nao, nD nx)
             nS = len(S)
             for c0 in range(0, len(rows), kblk):
+                ichunk += 1
+                if not mine('cc', ichunk):
+                    continue
                 c1 = min(c0 + kblk, len(rows))
                 nb = c1 - c0
                 ta = time.time()
@@ -1015,6 +1030,8 @@ class THCExchange:
         gb = getattr(self, 'lr_batch', None)                          # LR rows per batch: L_g, T ~ (nD + 2) gb nao^2
         if gb is None:
             gb = int(min(16, max(1, 0.1 * self.avail_bytes() / ((nD + 2) * 8 * nao ** 2))))
+        if comm is not None:
+            gb = comm.allreduce(gb, op=MPI.MIN)
         Dh = np.hstack(dms)                                           # (nao, nD nao)
         Dsh = np.hstack([d[np.ix_(sm, sm)] for d in dms])
         nss = len(sm)
@@ -1030,7 +1047,9 @@ class THCExchange:
             Fsc = np.ascontiguousarray(Fc[sm])
             Mp = {xy: np.zeros((nao, nao)) for xy in prods}
             Mps = {xy: np.zeros((nss, nss)) for xy in prods}
-        for g0 in range(0, len(Lcx), gb):
+        for ib, g0 in enumerate(range(0, len(Lcx), gb)):
+            if not mine('lr', ib):
+                continue
             g1 = min(g0 + gb, len(Lcx))
             ta = time.time()
             if Lss is not None:
@@ -1075,9 +1094,14 @@ class THCExchange:
             Ks[n][np.ix_(sm, sm)] -= Rss[n]
         Racc = Rss = None
         self.lr_timings = tl
+        if comm is not None:
+            from mpi4py import MPI
+            ta = time.time()
+            comm.Allreduce(MPI.IN_PLACE, Kall, op=MPI.SUM)
+            tl['allreduce'] = time.time() - ta
         self.timings.update({'K SS (THC)': t_ss, 'K CX-SS (SR)': t_cross, 'K CX-CX (SR)': t_cc,
                              'K LR': time.time() - t})
-        return Ks
+        return list(Kall)
 
     def _lr_ss_rows(self, pc=20000):
         '''The LR rows of the SS pairs from THC, Xi_lr X_SS (nlr, nSS) with X_SS[mu, (a, b)] = phi_a(r_mu) phi_b(r_mu)
