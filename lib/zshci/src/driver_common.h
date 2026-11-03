@@ -537,7 +537,7 @@ class VariationalH : private ElementSource<S> {
     const int num_orbs = ints_.num_orbs();
     // With spin_flip the stored matrix is over the functions; the vectors
     // given here are over the determinants.
-    if (!direct_ && all_rows_stored() && flip_ == nullptr) {
+    if (!direct_ && !released_ && all_rows_stored() && flip_ == nullptr) {
       return ComputeDensityMatricesFrom(dets_, StoredPairs<S>(stored_),
                                         num_orbs, bra, ket, with_two, comm_,
                                         ints_.is_spatial());
@@ -545,6 +545,17 @@ class VariationalH : private ElementSource<S> {
     return ComputeDensityMatricesFrom(
         dets_, TablePairs<W>(*tables_, dets_.size()), num_orbs, bra, ket,
         with_two, comm_, ints_.is_spatial());
+  }
+
+  // Collective: releases the stored elements before perturbation theory,
+  // which needs the memory; density matrices are then found from the
+  // string tables, and no more products may be taken. Kept (false) when
+  // there are no string tables (connection methods other than "groups").
+  bool ReleaseMatrix() {
+    if (tables_ == nullptr || direct_) return false;
+    stored_ = SparseH<S>();
+    released_ = true;
+    return true;
   }
 
   void PrintStats() const {
@@ -846,6 +857,8 @@ class VariationalH : private ElementSource<S> {
   size_t num_vectors_;
   std::vector<uint8_t> direct_rows_;
   size_t num_direct_rows_ = 0;
+  // The stored elements were released (ReleaseMatrix).
+  bool released_ = false;
   // Whether the stored part may use the one-sweep product.
   bool one_sweep_ = true;
   bool incremental_;

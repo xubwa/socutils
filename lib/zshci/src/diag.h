@@ -149,6 +149,9 @@ void RunDiag(const Input& input, const Ints& ints, const Comm& comm) {
     start_threshold = ReadSelectionThreshold(input.detfile);
   }
   comm.BcastValue(&start_threshold);
+  // As in the selection: the stored matrix makes way for perturbation
+  // theory.
+  if (input.pt.method != PtMethod::kNone) h.ReleaseMatrix();
   const std::vector<PtResult> pt = ComputePerturbation(
       input, ints, dets, result.energies, vectors,
       /*heat_bath=*/nullptr, filter, comm, h.flip(), start_threshold);

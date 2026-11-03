@@ -1672,9 +1672,12 @@ PtAutoChoice ChoosePtParameters(const PtProblem<W, Filter, Ints, S>& problem,
     }
     if (candidates.empty()) candidates.push_back(sorted.front());
   } else if (semistochastic) {
-    TermCount given;
-    given.threshold = pt.epsilon2_large;
-    candidates.push_back(given);
+    // epsilon2_large given: counted, so that its passes fit the memory.
+    const long n = static_cast<long>(problem.dets.size());
+    const long stride =
+        std::max<long>(1, std::min<long>(20, n / std::max<long>(1, 2000)));
+    const long offset = static_cast<long>(Mix64(pt.seed + root) % stride);
+    candidates.push_back(CountTerms(problem, pt.epsilon2_large, stride, offset));
   }
   std::vector<double> thresholds;
   for (const TermCount& c : candidates) thresholds.push_back(c.threshold);
@@ -1859,6 +1862,33 @@ PtResult RunPerturbation(const PtProblem<W, Filter, Ints, S>& problem,
     det_problem.num_batches = choice.det_batches;
     det_max_terms = choice.det_max_terms;
     batch_max_terms = choice.batch_max_terms;
+  } else if (semistochastic) {
+    // epsilon2_large given: its terms counted from a twentieth of the
+    // determinants, as "auto" does, set the passes that fit the memory per
+    // rank, and the guard of the sum splits a pass that would not fit.
+    using DetTermT = internal::DetTerm<W, S>;
+    const double ranks = problem.comm.size();
+    const double imbalance = 1.1;
+    const double budget = internal::PtMemoryBudget(pt, problem.comm);
+    const double det_bytes = kTermCopies * sizeof(DetTermT) * imbalance / ranks;
+    const double one_pass = budget / (kMemorySafety * det_bytes);
+    const long n = static_cast<long>(problem.dets.size());
+    const long stride =
+        std::max<long>(1, std::min<long>(20, n / std::max<long>(1, 2000)));
+    const long offset = static_cast<long>(Mix64(pt.seed + root) % stride);
+    counted_terms = CountTerms(problem, epsilon_large, stride, offset).terms;
+    det_problem.num_batches = std::max(
+        problem.num_batches,
+        static_cast<int>(std::max(1.0, std::ceil(counted_terms / one_pass))));
+    det_max_terms = static_cast<uint64_t>(
+        budget / (kTermCopies * sizeof(DetTermT)));
+    if (problem.comm.is_root()) {
+      std::printf(
+          "  root %d: epsilon2_large = %.2e given: %.4g terms counted, %d "
+          "pass(es) within %.1f GB per rank\n",
+          root, epsilon_large, counted_terms, det_problem.num_batches,
+          budget / (1024.0 * 1024.0 * 1024.0));
+    }
   }
   if (semistochastic) {
     const double start = omp_get_wtime();

@@ -1203,6 +1203,10 @@ void RunSelect(const Input& given, const Ints& ints, const Comm& comm) {
   const SharedVectors<S> vectors =
       ShareVectors(h.Expand(root_vectors), shared_dets.size(), comm);
   root_vectors = std::vector<std::vector<S>>();
+  // The stored matrix is not needed past this point but by the density
+  // matrices, which the string tables give as well: its memory goes to
+  // perturbation theory.
+  if (input.pt.method != PtMethod::kNone) h.ReleaseMatrix();
   const std::vector<PtResult> pt =
       ComputePerturbation(input, ints, shared_dets.span(), energies, vectors,
                           &heat_bath, filter, comm, h.flip(), last_epsilon);
