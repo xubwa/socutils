@@ -94,6 +94,7 @@ REBUILD_NSTEPS = 20     # incremental builds between two full J / K builds
 SCF_TOL = 1e-12         # quartet cutoff of the SCF builds (Gaussian's default 2e cutoff)
 TOL_PER_CONV = 1e-2     # ... and at most TOL_PER_CONV * mf.conv_tol, so that the screening (and its
                         # accumulation over incremental builds) stays below the convergence threshold
+J_BY_JK_MULTI_LMAX = 2  # J-only builds of bases with l <= this by jk_multi, not the MD J engine
 SCF_TOL_LOOSE = 1e-10   # two-pass: the cutoff while the density still moves
 LOOSE_UNTIL = 1e-4      # two-pass: max |D - D_prev| below which the builds are tight
 
@@ -142,6 +143,12 @@ def apply(mf, incremental=True, two_pass=True):
             return vj, vk
         if not with_j:
             return orig_jk(mol, dm, hermi, with_j, with_k, omega)
+        if mol._bas[:, gto.ANG_OF].max() <= J_BY_JK_MULTI_LMAX and jk_multi.available(mol):
+            # the generated J / K kernels beat the MD J engine for l <= 2 (cholesterol / cc-pVDZ,
+            # 4 threads, one full J: 39.6 s against 73.9 s)
+            vj = jk_multi.get_jk(mol, dm, True, False, tol=tol, hermi=hermi, max_memory=max_memory)[0]
+            logger.timer_debug1(mf, 'vj (jk_multi)', *t0)
+            return vj, None
         vj = get_j(mol, dm, hermi, tol=tol, max_memory=max_memory)
         if vj is None:
             return orig_jk(mol, dm, hermi, with_j, with_k, omega)
