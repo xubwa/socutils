@@ -48,10 +48,12 @@ int SOCVHFgen_takes(const int *shls, const int *bas);
  * (SOCVHFjk_set_lanes, SOCVHFjk_set_lane_np below).
  * SOCVHFjk_set_ssss(0) / SOCVHFjk_set_gen(0) send theirs to libcint.
  */
-static int jk_use_ssss = 1, jk_use_gen = 1, jk_gen_lmax = 5;
+static int jk_use_ssss = 1, jk_use_gen = 1, jk_gen_lmax = 5, jk_gen_f_lmax = 6;
 void SOCVHFjk_set_ssss(int on) { jk_use_ssss = on; }
 void SOCVHFjk_set_gen(int on) { jk_use_gen = on; }
 void SOCVHFjk_set_gen_lmax(int l) { jk_gen_lmax = l; }
+/* quartets with f shells: generated up to total l jk_gen_f_lmax (gen_jk_vrr.py F_LSUM_MAX), libcint above */
+void SOCVHFjk_set_gen_f_lmax(int l) { jk_gen_f_lmax = l; }
 
 static const int PERMS[8][4] = {
         {0, 1, 2, 3}, {1, 0, 2, 3}, {0, 1, 3, 2}, {1, 0, 3, 2},
@@ -427,19 +429,25 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
                                                 dkk[j0 * dk + i0] = dms[(c00 + i0) * nao + e00 + j0];
                                                 jkk[j0 * dk + i0] = 0;
                                         }
-                                if (!SOCVHFgen_j2e(jb, jkk, db, dkk, shls, gcx, dj_, prim_tol, swk)) continue;
-                                touched = 1;
-                                double fac = 2.;
-                                if (ish == jsh) fac *= .5;
-                                if (ksh == lsh) fac *= .5;
-                                if (ij == kl) fac *= .5;
-                                for (j0 = 0; j0 < dj; j0++)
-                                        for (i0 = 0; i0 < di; i0++) jij[i0 * dj + j0] += fac * jb[j0 * di + i0];
-                                for (j0 = 0; j0 < dl; j0++)
-                                        for (i0 = 0; i0 < dk; i0++)
-                                                jloc[(c00 + i0) * nao + e00 + j0] += fac * jkk[j0 * dk + i0];
-                                continue;
+                                const int r = SOCVHFgen_j2e(jb, jkk, db, dkk, shls, gcx, dj_, prim_tol, swk);
+                                if (r == 0) continue;
+                                if (r == 1) {
+                                        touched = 1;
+                                        double fac = 2.;
+                                        if (ish == jsh) fac *= .5;
+                                        if (ksh == lsh) fac *= .5;
+                                        if (ij == kl) fac *= .5;
+                                        for (j0 = 0; j0 < dj; j0++)
+                                                for (i0 = 0; i0 < di; i0++) jij[i0 * dj + j0] += fac * jb[j0 * di + i0];
+                                        for (j0 = 0; j0 < dl; j0++)
+                                                for (i0 = 0; i0 < dk; i0++)
+                                                        jloc[(c00 + i0) * nao + e00 + j0] += fac * jkk[j0 * dk + i0];
+                                        continue;
+                                }
+                                /* r < 0: no J form for the class, the full integrals below */
                         }
+                        const int hasf = bas[ish * BAS_SLOTS + ANG_OF] == 3 || bas[jsh * BAS_SLOTS + ANG_OF] == 3
+                                      || bas[ksh * BAS_SLOTS + ANG_OF] == 3 || bas[lsh * BAS_SLOTS + ANG_OF] == 3;
                         if (row_lanes && lq >= jk_lane_lmin && lq <= jk_gen_lmax
                             && row_np * bas[ksh * BAS_SLOTS + NPRIM_OF] * bas[lsh * BAS_SLOTS + NPRIM_OF] <= jk_lane_np
                             && SOCVHFgen_lane_ok(ksh, lsh, bas)) {
@@ -464,7 +472,8 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
                                 if (!SOCVHFss_int2e(buf, shls, scx, dq, prim_tol, swk)) {
                                         continue;
                                 }
-                        } else if (use_gen && lq <= jk_gen_lmax && SOCVHFgen_takes(shls, bas)) {
+                        } else if (use_gen && (hasf ? lq <= jk_gen_f_lmax : lq <= jk_gen_lmax)
+                                   && SOCVHFgen_takes(shls, bas)) {
                                 const double dq = dmax2(do_j ? dj_ : 0, do_k ? dk_ : 0);
                                 if (!SOCVHFgen_int2e(buf, shls, gcx, dq, prim_tol, swk, bas)) {
                                         continue;

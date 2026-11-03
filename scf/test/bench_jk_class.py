@@ -26,13 +26,19 @@ ENGINES = {0: 'libcint', 1: 'jk_ssss', 2: 'jk_gen', 3: 'lanes'}
 
 
 def engines_for(cls):
-    '''jk_ssss.c: s / p quartets with at most two p shells; jk_gen.c: l <= 2'''
+    '''jk_ssss.c: s / p quartets with at most two p shells; jk_gen.c: l <= 2, and f up to total l
+    F_LSUM_MAX (gen_jk_vrr.py); the lanes: l <= 2'''
     e = [0]
     if max(cls) <= 1 and sum(cls) <= 2:
         e.append(1)
     if max(cls) <= 2:
         e += [2, 3]
+    elif max(cls) == 3 and sum(cls) <= F_LSUM_MAX:
+        e.append(2)
     return e
+
+
+F_LSUM_MAX = 6
 
 
 def run(mol, cls, engine, tol):

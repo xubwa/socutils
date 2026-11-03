@@ -35,8 +35,9 @@ endif()
 # grad_vrr_gen_*.c: the generated first-derivative kernels (gen_grad_vrr.py), several
 # translation units so that they compile in parallel
 file(GLOB SOCVHF_GRAD_GEN ${CMAKE_CURRENT_SOURCE_DIR}/grad_vrr_gen_*.c)
+file(GLOB SOCVHF_JKF_GEN ${CMAKE_CURRENT_SOURCE_DIR}/jk_vrr_f_*.c)
 add_library(socvhf SHARED mc_screen.c hess_screen.c hess2e.c hess2e_cart.c jk_multi.c jk_ssss.c jk_gen.c jk_bench.c
-            fock1.c ri_j_deriv.c md_j.c hgp.c ${SOCVHF_GRAD_GEN})
+            fock1.c ri_j_deriv.c md_j.c hgp.c ${SOCVHF_GRAD_GEN} ${SOCVHF_JKF_GEN})
 target_include_directories(socvhf PRIVATE
   ${PYSCF_LIB_DIR} ${PYSCF_LIB_DIR}/deps/include)
 target_link_libraries(socvhf PRIVATE ${PYSCF_CVHF_LIB} ${PYSCF_CGTO_LIB} ${PYSCF_CINT_LIB}

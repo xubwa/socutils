@@ -209,7 +209,7 @@ def main():
            '/* included by jk_gen.c after jk_vrr_gen.c (GPair, LaneK, taylor, n_above) */', '']
     table = []
     mx = 0
-    for cls in classes():
+    for cls in classes(lmax_all=True):
         code, fn, nt = kernel(*cls)
         out.append(code)
         out.append('')
@@ -219,6 +219,7 @@ def main():
     out.append('typedef int (*jkl_fn)(double *, const size_t *, const int *, const GPair *, int, const LaneK *,')
     out.append('                      double, double, const double *, double *);')
     out.append('#define JKL_NT %d       /* the largest number of VRR targets */' % mx)
+    out.append('#define JKL_LMAX %d     /* the lanes take shells up to this l */' % max(max(c) for c, f in table))
     out.append('static const jkl_fn jkl_table[%d][%d][%d][%d] = {' % (n, n, n, n))
     for cls, fn in table:
         out.append('        [%d][%d][%d][%d] = %s,' % (cls + (fn,)))

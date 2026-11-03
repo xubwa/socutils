@@ -206,15 +206,19 @@ void SOCVHFgen_ctx_free(GenCtx *cx)
         free(cx);
 }
 
-/* 1 if SOCVHFgen_int2e takes the quartet (every l <= JKV_LMAX, contractions <= G_MAXCTR) */
+/* 1 if SOCVHFgen_int2e takes the quartet: every l <= JKV_LMAX, contractions <= G_MAXCTR, the class
+ * generated (gen_jk_vrr.py: all of l <= 2, those with f shells up to a total l) */
 int SOCVHFgen_takes(const int *shls, const int *bas)
 {
-        int s;
+        int s, l[4];
         for (s = 0; s < 4; s++) {
                 const int *b = bas + shls[s] * BAS_SLOTS;
                 if (b[ANG_OF] > JKV_LMAX || b[NCTR_OF] > G_MAXCTR) return 0;
+                l[s] = b[ANG_OF];
         }
-        return 1;
+        const int la = l[0] > l[1] ? l[0] : l[1], lb = l[0] > l[1] ? l[1] : l[0];
+        const int lc = l[2] > l[3] ? l[2] : l[3], ld = l[2] > l[3] ? l[3] : l[2];
+        return jkg_table[la][lb][lc][ld] != NULL;
 }
 
 /* doubles of workspace for SOCVHFgen_int2e: v, w, SK of the generated kernels */
@@ -224,11 +228,10 @@ size_t SOCVHFgen_wksize(int *bas, int nbas)
         for (i = 0; i < nbas; i++)
                 if (bas[i * BAS_SLOTS + ANG_OF] <= JKV_LMAX && bas[i * BAS_SLOTS + NPRIM_OF] > np)
                         np = bas[i * BAS_SLOTS + NPRIM_OF];
-        const size_t ne = N3(2 * JKV_LMAX) - (JKV_LMAX > 0 ? N3(JKV_LMAX - 1) : 0);
-        const size_t NT = ne * ne;
+        const size_t NT = JKG_NT;       /* the most VRR targets of a generated class */
         return NT * np * np + (size_t)G_MAXCTR * G_MAXCTR * NT
              + (size_t)G_MAXCTR * G_MAXCTR * G_MAXCTR * G_MAXCTR * NT
-             + (size_t)(4 * JKV_LMAX + 1) * np * np;           /* F_m of the bra primitives */
+             + (size_t)(JKG_LSUM + 1) * np * np;               /* F_m of the bra primitives */
 }
 
 /*
@@ -263,6 +266,7 @@ int SOCVHFgen_int2e(double *out, const int *shls, const GenCtx *cx, double dmax,
         const size_t st[4] = {stp[(pos[0] + sh) & 3], stp[(pos[1] + sh) & 3],
                               stp[(pos[2] + sh) & 3], stp[(pos[3] + sh) & 3]};
         (void)bas;
+        if (jkg_table[la][lb][lc][ld] == NULL) return 0;        /* not generated: callers check SOCVHFgen_takes */
         return jkg_table[la][lb][lc][ld](out, st, pos, B, bs, K, ks, cut, fac, cx->tab, wk);
 }
 
@@ -292,6 +296,7 @@ int SOCVHFgen_j2e(double *jb, double *jk, const double *db, const double *dk, co
         const int lc = ks ? K->lj : K->li, ld = ks ? K->li : K->lj;
         const double fac = TWO_PI52 * common_fac(la) * common_fac(lb) * common_fac(lc) * common_fac(ld);
         const double cut = prim_tol / (fac * B->bmax * dmax * B->nc * K->nc);
+        if (jjg_table[la][lb][lc][ld] == NULL) return -1;       /* no J form (f shells) */
         return jjg_table[la][lb][lc][ld](jb, jk, db, dk, DI, DK, B, bs, K, ks, cut, fac, cx->tab, wk);
 }
 
@@ -330,7 +335,7 @@ int SOCVHFgen_shell_types(int *type, const int *bas, int nbas)
 int SOCVHFgen_lane_ok(int ksh, int lsh, const int *bas)
 {
         const int *bk = bas + ksh * BAS_SLOTS, *bl = bas + lsh * BAS_SLOTS;
-        return bk[ANG_OF] <= JKV_LMAX && bl[ANG_OF] <= JKV_LMAX && bk[NCTR_OF] <= G_MAXCTR
+        return bk[ANG_OF] <= JKL_LMAX && bl[ANG_OF] <= JKL_LMAX && bk[NCTR_OF] <= G_MAXCTR
             && bl[NCTR_OF] <= G_MAXCTR && bk[NPRIM_OF] * bl[NPRIM_OF] <= GL_MAXP;
 }
 
@@ -341,9 +346,8 @@ size_t SOCVHFgen_lane_wksize(const int *bas, int nbas, int nbuf)
         for (i = 0; i < nbas; i++)
                 if (bas[i * BAS_SLOTS + NCTR_OF] > mc) mc = bas[i * BAS_SLOTS + NCTR_OF];
         if (mc > G_MAXCTR) mc = G_MAXCTR;
-        const size_t ne = N3(2 * JKV_LMAX) - (JKV_LMAX > 0 ? N3(JKV_LMAX - 1) : 0);
         return sizeof(LaneK) / sizeof(double) + 1 + (size_t)nbuf * GL_NL
-             + ne * ne * GL_NL * (1 + (size_t)mc * mc * mc * mc);
+             + (size_t)JKL_NT * GL_NL * (1 + (size_t)mc * mc * mc * mc);
 }
 
 /*
