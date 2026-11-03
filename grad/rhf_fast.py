@@ -38,6 +38,11 @@ from pyscf.grad import rhf as rhf_grad
 from pyscf.grad import rks as rks_grad
 from socutils.hessian import rhf_fast as hess_fast
 
+# quartet cutoff of the exact 2e gradient (Schwarz x density bounds); the Hessians keep
+# socutils.hessian.ghf.HESS2E_TOL (1e-13).  1e-11: max |g - g(1e-13)| 1.6e-9 (C16H34) /
+# 7.1e-9 (cholesterol) Eh/Bohr, the 2e part 17 / 22 % faster (HF / cc-pVDZ)
+GRAD2E_TOL = 1e-11
+
 
 USE_FUSED_XC = True     # LDA / GGA XC gradient by the fused one-pass kernel (_xc_grad_fused)
 
@@ -178,7 +183,7 @@ def _fast_terms(grad, mol, dm):
     if jf != 0 and kf != 0 and _gen_grad_usable(mol):
         # hybrids: J and K in one pass of the generated kernels (J costs little more
         # there than the separate MD J pass)
-        g = hess_fast.grad2e_jk_cart(mol, dm, [(jf, kf)])
+        g = hess_fast.grad2e_jk_cart(mol, dm, [(jf, kf)], tol=GRAD2E_TOL)
         if g is not None:
             de += g[0]
             jf = kf = 0.
@@ -191,7 +196,7 @@ def _fast_terms(grad, mol, dm):
             jf = 0.
             t0 = logger.timer(grad, 'exact J gradient (MD J engine)', *t0)
     if jf != 0 or kf != 0:
-        g = hess_fast.grad2e_jk_cart(mol, dm, [(jf, kf)])
+        g = hess_fast.grad2e_jk_cart(mol, dm, [(jf, kf)], tol=GRAD2E_TOL)
         if g is None:
             return None
         de += g[0]
