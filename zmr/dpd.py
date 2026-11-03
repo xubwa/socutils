@@ -280,8 +280,11 @@ class Tensor:
     def boxes(self):
         '''{sector tuple (one sector per leg): (base, strides, sizes)} of every block:
         the block is the box of self.data at element base with the element strides and
-        sizes of its legs (in the order of the legs).'''
+        sizes of its legs (in the order of the legs).  Kept on the structure.'''
         st = self.structure
+        cached = st.__dict__.get('_boxes')
+        if cached is not None:
+            return cached
         out = {}
         for h, (_, hc, off, nrow, ncol) in st.matrices.items():
             for rsec, roff, _ in st.rows.groups[h]:
@@ -294,6 +297,7 @@ class Tensor:
                     for k in range(len(cs)):
                         strides.append(int(numpy.prod(cs[k + 1:], dtype=int)))
                     out[rsec + csec] = (off + roff * ncol + coff, tuple(strides), tuple(rs + cs))
+        st._boxes = out
         return out
 
     # --------------------------------------------------------------- algebra
@@ -497,11 +501,18 @@ class View:
 
 
 def _permuted_boxes(t, perm):
-    '''{sector tuple in the order perm: (base, strides, sizes in the order perm)}.'''
+    '''{sector tuple in the order perm: (base, strides, sizes in the order perm)}; kept
+    on the structure for every perm.'''
+    st = t.structure
+    cache = st.__dict__.setdefault('_permuted', {})
+    perm = tuple(perm)
+    if perm in cache:
+        return cache[perm]
     out = {}
     for sec, (base, st, sz) in t.boxes().items():
         out[tuple(sec[k] for k in perm)] = (base, tuple(st[k] for k in perm),
                                             tuple(sz[k] for k in perm))
+    cache[perm] = out
     return out
 
 

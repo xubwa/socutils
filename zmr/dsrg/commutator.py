@@ -336,15 +336,11 @@ def _gather(x, boxes, nrow, buf):
     if not boxes:
         return
     if isinstance(x, dpd.View):
-        pb = dpd._permuted_boxes(x.t, x.perm)
-        keep = [b for b in boxes if b[0] in pb]
-        if len(keep) < len(boxes):
+        arrays, complete = _view_arrays(x.t.structure, x.perm, boxes)
+        if not complete:
             buf[...] = 0                      # blocks the tensor does not hold are zero
-        if keep:
-            kernels.box_copy_strided(0, x.t.data, buf, nrow, [pb[b[0]][0] for b in keep],
-                                     [pb[b[0]][1] for b in keep], [b[2] for b in keep],
-                                     [b[3] for b in keep], [b[4] for b in keep],
-                                     conj=x.conjugated)
+        if arrays[0].size:
+            kernels.box_copy_strided(0, x.t.data, buf, nrow, *arrays, conj=x.conjugated)
         return
     kernels.box_copy(0, x, buf, nrow, [b[1] for b in boxes], [b[2] for b in boxes],
                      [b[3] for b in boxes], [b[4] for b in boxes])
@@ -373,6 +369,31 @@ def _add_dense(t, arr, alpha=1.0, conj=False):
                              alpha=alpha, conj=conj)
 
 
+_VIEW_ARRAYS = {}
+
+
+def _view_arrays(structure, perm, boxes):
+    """(base, strides, sizes, offsets, ld) arrays of the boxes of a plan that a tensor of
+    this structure holds, read in the order perm, and whether it holds all of them;
+    cached by (structure, perm, boxes)."""
+    key = (id(structure), tuple(perm), id(boxes))
+    hit = _VIEW_ARRAYS.get(key)
+    if hit is not None and hit[0] is structure and hit[1] is boxes:
+        return hit[2], hit[3]
+    t = dpd.Tensor.__new__(dpd.Tensor)
+    t.structure = structure
+    pb = dpd._permuted_boxes(t, perm)
+    keep = [b for b in boxes if b[0] in pb]
+    i64 = lambda x: numpy.asarray(x, dtype=numpy.int64)
+    ndim = len(boxes[0][2]) if boxes else 0
+    arrays = (i64([pb[b[0]][0] for b in keep]),
+              i64([pb[b[0]][1] for b in keep]).reshape(len(keep), ndim),
+              i64([b[2] for b in keep]).reshape(len(keep), ndim),
+              i64([b[3] for b in keep]), i64([b[4] for b in keep]))
+    _VIEW_ARRAYS[key] = (structure, boxes, arrays, len(keep) == len(boxes))
+    return arrays, len(keep) == len(boxes)
+
+
 class _Packed:
     """The blocks of a product as rectangles of a packed buffer (the boxes of the result
     in the plan, axes aown + bown), not expanded."""
@@ -391,13 +412,10 @@ class _Packed:
     def add_to(self, t, perm, alpha=1.0, conj=False):
         """t += alpha (conj) result.transpose-to-t: axis j of the result is leg perm[j]
         of the dpd.Tensor t."""
-        pb = dpd._permuted_boxes(t, perm)
-        keep = [b for b in self.boxes if b[0] in pb]
-        if keep:
-            kernels.box_copy_strided(2, t.data, self.buf, self.nrow,
-                                     [pb[b[0]][0] for b in keep], [pb[b[0]][1] for b in keep],
-                                     [b[2] for b in keep], [b[3] for b in keep],
-                                     [b[4] for b in keep], alpha=alpha, conj=conj)
+        arrays, _ = _view_arrays(t.structure, perm, self.boxes)
+        if arrays[0].size:
+            kernels.box_copy_strided(2, t.data, self.buf, self.nrow, *arrays,
+                                     alpha=alpha, conj=conj)
 
 
 def _box_product(av, bv, shape, nown, plan, packed=False):
