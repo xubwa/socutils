@@ -415,7 +415,7 @@ class GAPWJ:
         hshape = (mesh[0], mesh[1], mesh[2] // 2 + 1)
         dm = .5 * (dm + dm.T)
         self._ss_first()
-        if not th.phi.flags['C_CONTIGUOUS']:                            # row blocks of the grid functions
+        if th.phi is not None and not th.phi.flags['C_CONTIGUOUS']:     # row blocks of the grid functions
             th.phi = np.ascontiguousarray(th.phi)
         comm = self.comm
         if comm is not None:
@@ -427,8 +427,16 @@ class GAPWJ:
         r0, r1 = ng * rank // size, ng * (rank + 1) // size            # this rank's rows of the uniform grid
         # smooth density on the uniform grid
         n = np.zeros(ng)
-        phi_loc = th.phi if getattr(th, '_phi_rows', None) == (r0, r1) else th.phi[r0:r1]   # distributed: own rows
-        n[r0:r1] = _wdens(phi_loc, np.ascontiguousarray(dm[np.ix_(sm, sm)]))
+        Dss = np.ascontiguousarray(dm[np.ix_(sm, sm)])
+        if th.phi is None:                                            # phi on demand: evaluated per grid block
+            blk = 56 * 4096                                           # whole eval_gto blocks
+            for g0 in range(r0, r1, blk):
+                g1 = min(g0 + blk, r1)
+                n[g0:g1] = _wdens(th.phi_at(slice(g0, g1)), Dss)
+            phi_loc = None
+        else:
+            phi_loc = th.phi if getattr(th, '_phi_rows', None) == (r0, r1) else th.phi[r0:r1]   # distributed: own rows
+            n[r0:r1] = _wdens(phi_loc, Dss)
         if comm is not None:
             comm.Allreduce(MPI.IN_PLACE, n, op=MPI.SUM)
         nG = scipy.fft.rfftn(n.reshape(mesh), workers=-1).reshape(-1) * (vol / ng)
@@ -455,7 +463,14 @@ class GAPWJ:
         vG = th.w_vec * nG
         vr = scipy.fft.irfftn(vG.reshape(hshape), s=mesh, workers=-1).reshape(-1)   # v_grid(r) vol / ng
         J = np.zeros((nao, nao))
-        J[np.ix_(sm, sm)] = _wmat(phi_loc, vr[r0:r1])
+        if phi_loc is None:
+            Jss = np.zeros((len(sm), len(sm)))
+            for g0 in range(r0, r1, blk):
+                g1 = min(g0 + blk, r1)
+                Jss += _wmat(th.phi_at(slice(g0, g1)), vr[g0:g1])
+            J[np.ix_(sm, sm)] = Jss
+        else:
+            J[np.ix_(sm, sm)] = _wmat(phi_loc, vr[r0:r1])
         vloc, vlms = {}, {}
         c_avg = 0.
         for A in self.my_atoms:

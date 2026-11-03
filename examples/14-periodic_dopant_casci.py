@@ -68,6 +68,9 @@ p.add_argument('--jk', choices=('rsdf', 'thc'), default='rsdf',
                     "--active-eri three-index)")
 p.add_argument('--thc-alpha-c', type=float, default=4., help='THCJK: compact/smooth exponent split')
 p.add_argument('--thc-nmu', type=float, default=16., help='THCJK: interpolation points per smooth function')
+p.add_argument('--thc-max-memory', type=float, default=None,
+               help='THCJK: memory budget per MPI rank (MB, default --max-memory); the streamed build, the phi '
+                    'storage and the K caches are sized to it')
 p.add_argument('--thc-local-rcut', type=float, default=0., help='THCJK: pair-atom local fit of the compact pairs within this distance (A), non-robust K (0: Gamma Bloch-domain fit)')
 p.add_argument('--active-eri', choices=('cderi', 'three-index'), default='cderi',
                help="CASCI (tu|vw): 'cderi' (_CDERIS on the stored vectors) or 'three-index' (RSDF.active_vectors: "
@@ -102,12 +105,28 @@ p.add_argument('--cahf-driver', choices=('fock', 'superci', 'diis'), default='fo
                     'superci: second-order (zmcscf.CASSCF.kernel); diis: cahf_diis.mc_diis')
 args = p.parse_args()
 
-os.makedirs(args.workdir, exist_ok=True)
+# MPI (SPMD, --jk thc only): every rank runs this script; the THC build and every J/K (SCF, CAHF, CASCI core) are
+# split over the ranks and summed, rank 0 broadcasts the orbitals/densities, so all ranks follow the same path.
+# Only rank 0 prints and writes files.   mpirun -np N python -m mpi4py 14-periodic_dopant_casci.py ... --jk thc
+comm = None
+if any(k in os.environ for k in ('PMI_SIZE', 'PMI_RANK', 'OMPI_COMM_WORLD_SIZE', 'PMIX_RANK')):
+    from mpi4py import MPI
+    if MPI.COMM_WORLD.Get_size() > 1:
+        comm = MPI.COMM_WORLD
+rank = comm.Get_rank() if comm is not None else 0
+root = rank == 0
+if comm is not None and args.jk != 'thc':
+    raise SystemExit('MPI runs need --jk thc')
+if root:
+    os.makedirs(args.workdir, exist_ok=True)
+if comm is not None:
+    comm.Barrier()
 f_cderi = os.path.join(args.workdir, 'cderi.h5')
 f_scf = os.path.join(args.workdir, 'scf_%s.npz' % (args.xc or 'hf'))
 f_cas = os.path.join(args.workdir, 'casci_%s.npz' % (args.xc or 'hf'))
 f_cahf = os.path.join(args.workdir, 'cahf_%s.npz' % (args.xc or 'hf'))
-log = lambda *a: print(*a, flush=True)
+log = (lambda *a: print(*a, flush=True)) if root else (lambda *a: None)
+devnull = open(os.devnull, 'w')
 
 basis = runpy.run_path(args.basis_py)['BASIS'] if args.basis_py else None
 if args.system.lower().endswith('.cif'):
@@ -205,12 +224,20 @@ if args.jk == 'thc':
         aux = auxgen(cell, contract=False, prune_lmax=False, threshold=1e-8)
     r = RSDF(cell, aux, omega=args.omega, precision=args.precision,
              nuc_zeta=spinor_scf.nuclear_zeta(cell), lr=args.lr)
-    r.verbose = 4
-    r.stdout = sys.stdout
+    r.verbose = 4 if root else 0
+    r.stdout = sys.stdout if root else devnull
+    if args.thc_max_memory:
+        cell.max_memory = args.thc_max_memory
     jkobj = THCJK(cell, aux, alpha_c=args.thc_alpha_c, nmu_factor=args.thc_nmu, omega=args.omega,
-                  nuc_zeta=spinor_scf.nuclear_zeta(cell), local_rcut=args.thc_local_rcut or None).build()
-    log('THCJK built in %.0f s: N_mu %d (smooth %d), %s' % (time.time() - t, len(jkobj.th.pts), len(jkobj.th.smooth),
-        ', '.join('%s %.0f s' % kv for kv in jkobj.th.timings.items())))
+                  nuc_zeta=spinor_scf.nuclear_zeta(cell), local_rcut=args.thc_local_rcut or None)
+    jkobj.stream = True                       # streamed V/A: memory bounded by the budget
+    jkobj.verbose = root
+    jkobj.comm = comm
+    jkobj.build()
+    cell.max_memory = args.max_memory
+    log('THCJK built in %.0f s on %d rank(s): N_mu %d (smooth %d), %s'
+        % (time.time() - t, comm.Get_size() if comm is not None else 1, len(jkobj.th.pts), len(jkobj.th.smooth),
+           ', '.join('%s %.0f s' % kv for kv in jkobj.th.timings.items())))
 elif os.path.exists(f_cderi):
     r = RSDF.load(cell, f_cderi)
     r.max_memory = args.max_memory
@@ -248,8 +275,8 @@ else:
 mf = mf.x2camf(with_gaunt=not args.no_gaunt, with_breit=not args.no_gaunt)
 mf.max_cycle = 100
 mf.conv_tol = args.scf_conv_tol
-mf.verbose = 4
-mf.stdout = sys.stdout
+mf.verbose = 4 if root else 0
+mf.stdout = sys.stdout if root else devnull
 idx = addons.spinor_ao_indices(cell, idop[0], l=args.open_l)
 idx_all = addons.spinor_ao_indices(cell, idop_all, l=args.open_l)
 if args.open_ref:
@@ -288,6 +315,8 @@ if dm0 is None and args.guess_from:
 
 
 def _checkpoint(envs):
+    if not root:
+        return
     numpy.savez(f_scf, mo_coeff=envs['mo_coeff'], mo_occ=envs['mo_occ'], mo_energy=envs['mo_energy'],
                 e_tot=envs['e_tot'], converged=False)
 
@@ -295,7 +324,10 @@ def _checkpoint(envs):
 mf.callback = _checkpoint
 t = time.time()
 e_scf = mf.kernel(dm0)
-numpy.savez(f_scf, mo_coeff=mf.mo_coeff, mo_occ=mf.mo_occ, mo_energy=mf.mo_energy, e_tot=e_scf)
+if comm is not None:                          # the same orbitals on every rank (rank 0's)
+    mf.mo_coeff, mf.mo_occ, mf.mo_energy = comm.bcast((mf.mo_coeff, mf.mo_occ, mf.mo_energy) if root else None, root=0)
+if root:
+    numpy.savez(f_scf, mo_coeff=mf.mo_coeff, mo_occ=mf.mo_occ, mo_energy=mf.mo_energy, e_tot=e_scf)
 w = addons.subspace_weights(mf.get_ovlp(), mf.mo_coeff, idx_all)
 log('SCF converged=%s E = %.10f (%.0f s, %d cycles); open-shell 4f weights %.3f..%.3f'
     % (mf.converged, e_scf, time.time() - t, mf.cycles, w[mf.open_shell_mo].min(), w[mf.open_shell_mo].max()))
@@ -323,28 +355,31 @@ if ndop > 1:
     else:
         mf = frozen_frac.FrozenFracSCF(mf_scf, blocks[1:], args.nelec_open * (ndop - 1))
     dm_frozen = mf.frac * mf.mo_frozen @ mf.mo_frozen.conj().T
+cahf_ran = False
 if not args.no_cahf:
     if os.path.exists(f_cahf):
         z = numpy.load(f_cahf)
         mo = z['mo_coeff']
         log('CAHF orbitals loaded from %s (E = %.10f)' % (f_cahf, float(z['e_tot'])))
     elif args.cahf_driver == 'fock':
+        cahf_ran = True
         mc = cahf_fock.CAHF(mf, args.norb_open, args.nelec_open, ncore=ncore)
         mc.max_cycle = args.cahf_max_cycle
         mc.conv_tol = args.cahf_conv_tol
         mc.conv_tol_grad = args.cahf_conv_grad
-        mc.verbose = 4
-        mc.chkfile = f_cahf.replace('.npz', '_partial.npz')
+        mc.verbose = 4 if root else 0
+        mc.chkfile = f_cahf.replace('.npz', '_partial.npz') if root else None
         if os.path.exists(mc.chkfile):
             zp = numpy.load(mc.chkfile)
-            if zp['mo_coeff'].shape == mo.shape:
+            if zp['mo_coeff'].shape == mo.shape and comm is None:
                 mo = zp['mo_coeff']
                 log('CAHF restarted from %s (cycle %d, |g| %.2e)' % (mc.chkfile, int(zp['cycle']), float(zp['gnorm'])))
         t = time.time()
-        with open(os.path.join(args.workdir, 'cahf.log'), 'a') as fcahf:
+        with open(os.path.join(args.workdir, 'cahf.log') if root else os.devnull, 'a') as fcahf:
             mc.stdout = fcahf
             mc.kernel(mo)
     else:
+        cahf_ran = True
         mc = zmcscf.CASSCF(mf, args.norb_open, args.nelec_open, ncore=ncore)
         mc.fcisolver = zcahf.CAHF(cell)
         mc.max_cycle_macro = args.cahf_max_cycle
@@ -357,9 +392,12 @@ if not args.no_cahf:
                 mc.kernel(mo)
             else:
                 cahf_diis.mc_diis(mc, mo, conv_tol=1e-9)
-    if not os.path.exists(f_cahf):
+    if cahf_ran:
         mo = mc.mo_coeff
-        numpy.savez(f_cahf, mo_coeff=mo, e_tot=mc.e_tot, ncore=ncore)
+        if comm is not None:                  # one set of orbitals on every rank
+            mo = comm.bcast(mo if root else None, root=0)
+        if root:
+            numpy.savez(f_cahf, mo_coeff=mo, e_tot=mc.e_tot, ncore=ncore)
         w = addons.subspace_weights(mf.get_ovlp(), mo[:, ncore:ncore + args.norb_open], idx)
         log('CAHF (%s) E = %.10f converged %s (%.0f s); active 4f weights %.3f..%.3f'
             % (args.cahf_driver, mc.e_tot, getattr(mc, 'converged', None), time.time() - t, w.min(), w.max()))
@@ -372,21 +410,24 @@ if args.active_eri == 'three-index':
     def _h2eff(mo_coeff=None):
         mo_coeff = mc.mo_coeff if mo_coeff is None else mo_coeff
         t_ = time.time()
-        e_ = r.active_eri(mo_coeff[:, mc.ncore:mc.ncore + mc.ncas])
+        e_ = r.active_eri(mo_coeff[:, mc.ncore:mc.ncore + mc.ncas]) if root else None
+        if comm is not None:                  # rank 0 only (the three-index route is not split)
+            e_ = comm.bcast(e_, root=0)
         log('active (tu|vw) from the three-index route: %.0f s' % (time.time() - t_))
         return e_
     mc.get_h2eff = _h2eff
 mc.fcisolver.nroots = args.nroots
-mc.verbose = 4
-mc.stdout = sys.stdout
+mc.verbose = 4 if root else 0
+mc.stdout = sys.stdout if root else devnull
 t = time.time()
 mc.kernel(mo)
 e_all = numpy.atleast_1d(mc.e_tot)
 e = numpy.sort(e_all)
 ci0 = mc.ci[int(numpy.argmin(e_all))] if isinstance(mc.ci, (list, tuple)) else mc.ci
 casdm1 = mc.fcisolver.make_rdm1(ci0, args.norb_open, args.nelec_open)   # <p^+ q>, ground state
-numpy.savez(f_cas, e_tot=e_all, mo_coeff=mo, ncore=ncore, casdm1_0=casdm1,
-            ci=numpy.asarray(mc.ci if isinstance(mc.ci, (list, tuple)) else [mc.ci]))
+if root:
+    numpy.savez(f_cas, e_tot=e_all, mo_coeff=mo, ncore=ncore, casdm1_0=casdm1,
+                ci=numpy.asarray(mc.ci if isinstance(mc.ci, (list, tuple)) else [mc.ci]))
 log('CASCI(%de,%d) %.0f s; E0 = %.10f; levels (cm-1): %s'
     % (args.nelec_open, args.norb_open, time.time() - t, e[0],
        numpy.array2string((e - e[0]) * 219474.63, precision=1, max_line_width=200)))
@@ -394,7 +435,7 @@ log('CASCI(%de,%d) %.0f s; E0 = %.10f; levels (cm-1): %s'
 # 5. W_NSM of the CASCI ground state: the dopant-atom X2C Schiff integrals (CFOUR
 # SOSFMO2C) in the dopant's diagonal AO block, traced with the full (core +
 # active) one-particle density
-if args.nsm_dir:
+if args.nsm_dir and root:
     from socutils.pbc import atomic_prop
     molatom, nsm_atom = atomic_prop.load_cfour_atom(args.nsm_dir, args.dopant)
     nsm = atomic_prop.atomic_block_operator(cell, idop[0], molatom, nsm_atom)
@@ -410,7 +451,7 @@ if args.nsm_dir:
 # 7F_J states).  r is not defined on Gamma-point AOs; the 4f-4f transition
 # density is local on the dopant, so the dipole is taken about its nucleus over
 # the AO images near it (atomic_prop.local_dipole; rc = 0: dopant block only)
-if len(e_all) > 50:
+if len(e_all) > 50 and root:
     from socutils.pbc import atomic_prop
     k = 49
     rel = (e_all - e_all[0]) * 219474.63

@@ -29,6 +29,7 @@ from scipy.linalg import blas
 import scipy.fft
 from pyscf import lib
 from pyscf.gto.ft_ao import ft_ao
+from pyscf.gto.eval_gto import BLKSIZE
 from pyscf.df import addons as df_addons
 from pyscf.pbc.gto.cell import estimate_ke_cutoff
 from socutils.pbc.bench.hybrid_k import _inv_metric, k_from_factors
@@ -374,7 +375,7 @@ class THCExchange:
             return
         rank, size = comm.Get_rank(), comm.Get_size()
         r0, r1 = self.ng * rank // size, self.ng * (rank + 1) // size
-        self.phi = np.ascontiguousarray(self.phi[r0:r1])
+        self.phi = np.ascontiguousarray(self.phi_at(slice(r0, r1)))
         self._phi_rows = (r0, r1)
         if getattr(self, 'Llr_cx', None) is not None:
             nlr = self.Llr_cx.shape[0]
@@ -382,6 +383,26 @@ class THCExchange:
             self.Llr_cx = np.ascontiguousarray(self.Llr_cx[g0:g1])
             self._lr_range = (g0, g1)
         self._distributed = True
+
+    def phi_at(self, idx):
+        '''Smooth functions at the uniform-grid points idx (a slice or an index array): from the stored phi, or
+        evaluated (phi on demand).'''
+        if self.phi is not None and not getattr(self, '_distributed', False):
+            return self.phi[idx]
+        # pbc_eval_gto screens the lattice sum per block of BLKSIZE consecutive points, so a value depends (~1e-12)
+        # on the block it falls in; the ISDF pseudo-inverse amplifies that to ~1e-6 Eh in K.  Evaluate whole blocks
+        # of the full grid: values bit-identical to the full-grid evaluation, whatever the chunking.
+        B, ng = BLKSIZE, self.ng
+        if isinstance(idx, slice):
+            g0, g1, _ = idx.indices(ng)
+            a0, a1 = g0 // B * B, min(-(-g1 // B) * B, ng)
+            v = self.cell.pbc_eval_gto('GTOval_sph', self.coords[a0:a1])
+            return np.ascontiguousarray(v[g0 - a0:g1 - a0][:, self.smooth])
+        idx = np.asarray(idx)
+        rows = (np.unique(idx // B)[:, None] * B + np.arange(B)).ravel()
+        rows = rows[rows < ng]                     # whole blocks (sorted; only the last one can be short)
+        v = self.cell.pbc_eval_gto('GTOval_sph', self.coords[rows])
+        return np.ascontiguousarray(v[np.searchsorted(rows, idx)][:, self.smooth])
 
     def avail_bytes(self):
         '''Memory left in the budget (cell.max_memory, MB) beyond the current resident size of the process.'''
@@ -474,8 +495,18 @@ class THCExchange:
         self.ke = estimate_ke_cutoff(sm_cell, 1e-10)
         self.mesh = cell.cutoff_to_mesh(self.ke)
         coords = self.coords = cell.get_uniform_grids(self.mesh)
-        self.phi = cell.pbc_eval_gto('GTOval_sph', coords)[:, self.smooth]  # (ng, nao_s)
         self.ng = len(coords)
+        # the smooth functions on the uniform grid: stored, or evaluated per grid block when they do not fit the
+        # budget (phi_ondemand True / False forces; then only the streamed THC build is available)
+        ondemand = getattr(self, 'phi_ondemand', None)
+        if ondemand is None:
+            ondemand = self.ng * len(self.smooth) * 8 > 0.3 * self.avail_bytes()
+        self.phi_ondemand = bool(ondemand)
+        if self.phi_ondemand:
+            self.phi = None
+            self.log('   phi on demand (%.1f GB not stored)' % (self.ng * len(self.smooth) * 8 / 1e9))
+        else:
+            self.phi = cell.pbc_eval_gto('GTOval_sph', coords)[:, self.smooth]  # (ng, nao_s)
         self.timings['grid'] = time.time() - t
         t = time.time()
         if self.selector == 'coarse':
@@ -524,8 +555,7 @@ class THCExchange:
         the right of an explicitly formed xi_b; V = G+ Z G+ from Z = Gc v Gc^T loses ~1e-3 Eh to the conditioning).'''
         vol, ng, mesh = self.cell.vol, self.ng, self.mesh
         hshape = (mesh[0], mesh[1], mesh[2] // 2 + 1)
-        phi = self.phi
-        PP = phi[pts]
+        PP = self.phi_at(pts)
         nmu = len(pts)
         if cut is None:                                               # relative eigenvalue cut of the Gram pseudo-inverse
             cut = getattr(self, 'isdf_cut', 1e-10)                    # 1e-13 amplifies BLAS rounding (EuOCl: 7e-5 Eh)
@@ -586,7 +616,7 @@ class THCExchange:
             xi = np.empty((b1 - b0, ng))
             for g0 in range(0, ng, rchunk):
                 g1 = min(g0 + rchunk, ng)
-                xi[:, g0:g1] = Ginv[b0:b1] @ gram_cols(PP, phi[g0:g1])
+                xi[:, g0:g1] = Ginv[b0:b1] @ gram_cols(PP, self.phi_at(slice(g0, g1)))
             tt['xi'] += time.time() - ta
             ta = time.time()
             As = np.zeros((self.auxmol.nao, b1 - b0))                 # A[:, b] in aux-cutoff order
@@ -629,7 +659,7 @@ class THCExchange:
             Vb = np.zeros((b1 - b0, nmu))
             for g0 in range(0, ng, rchunk):
                 g1 = min(g0 + rchunk, ng)
-                Vb += xi[:, g0:g1] @ gram_cols(PP, phi[g0:g1]).T
+                Vb += xi[:, g0:g1] @ gram_cols(PP, self.phi_at(slice(g0, g1))).T
             V[b0:b1] = Vb @ Ginv                                        # int (v * xi_b) xi^T (Parseval)
             tt['V'] += time.time() - ta
             xi = Vb = None
@@ -681,7 +711,7 @@ class THCExchange:
             pts = self.piv[:nmu]
             rank = self._build_thc_stream(pts)
             self.pts = pts
-            self.phimu = self.phi[pts]
+            self.phimu = self.phi_at(pts)
             self.pair_err = (np.nan, np.nan)
             self.timings.update({'V, A (streamed)': time.time() - t})
             return rank
@@ -1486,7 +1516,7 @@ class THCJK:
         self.th.stream_gb = getattr(self, 'stream_gb', None)       # GB; None: from the memory budget
         self.th.stream_max_blocks = getattr(self, 'stream_max_blocks', 1 << 30)
         self.th.piv_file = getattr(self, 'piv_file', None)
-        for k in ('coarsen', 'blocked_pivots', 'far_fit'):             # options, if set
+        for k in ('coarsen', 'blocked_pivots', 'far_fit', 'phi_ondemand'):   # options, if set
             if hasattr(self, k):
                 setattr(self.th, k, getattr(self, k))
         self.th.kmax_factor = self.nmu_factor                         # pivots: only the N_mu prefix is used
