@@ -351,3 +351,91 @@ def contract(a, b):
             continue
         mo += ma @ mb
     return out
+
+
+def contract_symmetric(a, b, structure):
+    '''a b (column legs of a = row legs of b, as in contract) for operands that do not
+    conserve symmetry (a leg without it, e.g. the auxiliary index of three-index
+    integrals) into a product that does: only the matrices of `structure` (the
+    symmetric structure of the result) are formed, from the rows of a and the columns
+    of b of the irreps they couple.'''
+    sa, sb = a.structure, b.structure
+    if sa.legs[sa.split:] != sb.legs[:sb.split]:
+        raise ValueError('the column legs of a are not the row legs of b')
+    ma, mb = a.matrix(None), b.matrix(None)
+    out = Tensor(structure.legs, structure.dirs, structure.split, structure.group,
+                 structure.irrep)
+    st = out.structure
+    if st.legs[:st.split] != sa.legs[:sa.split] or st.legs[st.split:] != sb.legs[sb.split:]:
+        raise ValueError('structure does not match the free legs of a and b')
+    # positions of the multi-indices of every irrep in the single groups of a and b
+    rpos = {sec: off for sec, off, _ in sa.rows.groups[None]}
+    cpos = {sec: off for sec, off, _ in sb.cols.groups[None]}
+    for h, (_, hc, _, _, _) in st.matrices.items():
+        rows = numpy.concatenate([numpy.arange(rpos[sec], rpos[sec] + n)
+                                  for sec, _, n in st.rows.groups[h]])
+        cols = numpy.concatenate([numpy.arange(cpos[sec], cpos[sec] + n)
+                                  for sec, _, n in st.cols.groups[hc]])
+        out.matrix(h)[...] = ma[rows] @ mb[:, cols]
+    return out
+
+
+def identity(leg, group=None, dirs=(1, -1)):
+    '''delta[p, q] on one leg (a density-like tensor: p created, q annihilated).'''
+    t = Tensor((leg, leg), dirs, 1, group)
+    for h, m in t.matrices():
+        m[...] = numpy.eye(m.shape[0])
+    return t
+
+
+def map_blocks(t, fn):
+    '''Apply fn(sectors, block) in place to every block (a view of shape
+    (sizes of the sectors of every leg)), e.g. a denominator from orbital energies.'''
+    st = t.structure
+    rank = len(st.legs)
+    for h, (_, hc, _, _, _) in st.matrices.items():
+        m = t.matrix(h)
+        for rsec, roff, rsize in st.rows.groups[h]:
+            for csec, coff, csize in st.cols.groups[hc]:
+                sec = rsec + csec
+                shape = [st.legs[k].sizes[sec[k]] for k in range(rank)]
+                view = m[roff:roff + rsize, coff:coff + csize]
+                blk = view.reshape(shape) if view.flags.c_contiguous else None
+                if blk is None:
+                    blk = view.copy().reshape(shape)
+                    fn(sec, blk)
+                    view[...] = blk.reshape(rsize, csize)
+                else:
+                    fn(sec, blk)
+
+
+def einsum(spec, a, b, out=None, alpha=1.0, split=None):
+    '''Two-operand einsum without traces: letters shared by a and b and absent from the
+    output are contracted (their legs equal, directions opposite).  The result has the
+    legs in the order of the output letters, split after `split` of them (default: the
+    split of out, else after the free letters of a); with out it is added, times alpha.'''
+    lhs, rhs = spec.replace(' ', '').split('->')
+    sa_, sb_ = lhs.split(',')
+    con = [x for x in sa_ if x in sb_ and x not in rhs]
+    aown = [x for x in sa_ if x not in con]
+    bown = [x for x in sb_ if x not in con]
+    if set(aown) & set(bown) or len(set(sa_)) != len(sa_) or len(set(sb_)) != len(sb_):
+        raise ValueError('einsum: no traces or Hadamard products (%s)' % spec)
+    if sorted(aown + bown) != sorted(rhs):
+        raise ValueError('einsum: output letters %r' % rhs)
+    ta = sort(a, [sa_.index(x) for x in aown + con], len(aown))
+    tb = sort(b, [sb_.index(x) for x in con + bown], len(con))
+    c = contract(ta, tb)
+    cur = aown + bown
+    order = [cur.index(x) for x in rhs]
+    if split is None:
+        split = out.split if out is not None else len(aown)
+    c = sort(c, order, split) if (order != list(range(len(order))) or split != c.split) else c
+    if out is None:
+        if alpha != 1.0:
+            c *= alpha
+        return c
+    if c.structure is not out.structure:
+        raise ValueError('einsum: the result does not have the structure of out')
+    out.data += alpha * c.data
+    return out

@@ -99,3 +99,57 @@ def test_leg_from_orbsym():
     assert leg.irreps == (2, -2, 6) and leg.sizes == (2, 3, 1)
     with pytest.raises(ValueError):
         dpd.Leg.from_orbsym([2, -2, 2])
+
+
+@pytest.mark.parametrize('group', ['C2h', 'Coov'])
+def test_einsum(group):
+    rng = numpy.random.default_rng(5)
+    i, j, a, b, c = (random_leg(group, rng, n) for n in 'ijabc')
+    ta, t = random_tensor([i, j, a, b], (-1, -1, 1, 1), 2, group, rng)
+    fa, f = random_tensor([b, c], (-1, 1), 1, group, rng)
+    va, v = random_tensor([a, b, c, j], (-1, -1, 1, 1), 2, group, rng)
+    out = dpd.einsum('ijab,bc->ijac', t, f)
+    assert abs(out.to_dense() - numpy.einsum('ijab,bc->ijac', ta, fa)).max() < 1e-12
+    # output letters in another order, accumulated
+    acc = dpd.einsum('ijab,bc->cjia', t, f, split=2)
+    dpd.einsum('ijab,bc->cjia', t, f, out=acc, alpha=-0.5)
+    ref = 0.5 * numpy.einsum('ijab,bc->cjia', ta, fa)
+    assert abs(acc.to_dense() - ref).max() < 1e-12
+    out = dpd.einsum('ijab,abcd->ijcd', t, v)
+    assert abs(out.to_dense() - numpy.einsum('ijab,abcd->ijcd', ta, va)).max() < 1e-12
+
+
+@pytest.mark.parametrize('group', ['C2h', 'Coov'])
+def test_contract_symmetric(group):
+    '''sum_P conj(B[P, p, r]) B[P, q, s] with an auxiliary index P without symmetry
+    (B = U X, X adapted, U orthogonal): only the allowed matrices are formed.'''
+    rng = numpy.random.default_rng(6)
+    boson = {'C2h': [0, 1, 4, 5], 'Coov': [-8, -4, 0, 4, 8]}[group]
+    k = dpd.Leg(boson, rng.integers(1, 4, size=len(boson)))
+    p, r = random_leg(group, rng), random_leg(group, rng)
+    x = rng.normal(size=(k.size, p.size, r.size)) + 1j * rng.normal(size=(k.size, p.size, r.size))
+    x = numpy.where(allowed([k, p, r], (1, -1, 1), group), x, 0)
+    u = numpy.linalg.qr(rng.normal(size=(k.size, k.size)))[0]
+    bmat = numpy.einsum('Pk,kpr->Ppr', u, x)
+    P = dpd.Leg.unsymmetric(k.size)
+    left = dpd.Tensor.from_dense(bmat.conj().transpose(1, 2, 0), [p, r, P], (1, -1, 1), 2, group)
+    right = dpd.Tensor.from_dense(bmat, [P, p, r], (-1, -1, 1), 1, group)
+    st = dpd.Tensor([p, r, p, r], (1, -1, -1, 1), 2, group).structure
+    out = dpd.contract_symmetric(left, right, st)
+    ref = numpy.einsum('Ppr,Pqs->prqs', bmat.conj(), bmat)
+    assert abs(out.to_dense() - ref).max() < 1e-12
+
+
+def test_identity_and_map_blocks():
+    rng = numpy.random.default_rng(7)
+    leg = random_leg('Coov', rng)
+    e = dpd.identity(leg, 'Coov')
+    assert abs(e.to_dense() - numpy.eye(leg.size)).max() == 0
+    eps = rng.normal(size=leg.size)
+    a, t = random_tensor([leg, leg], (-1, 1), 1, 'Coov', rng)
+
+    def scale(sec, blk):
+        blk *= (eps[leg.offsets[sec[0]]:leg.offsets[sec[0] + 1], None]
+                - eps[None, leg.offsets[sec[1]]:leg.offsets[sec[1] + 1]])
+    dpd.map_blocks(t, scale)
+    assert abs(t.to_dense() - a * (eps[:, None] - eps[None, :])).max() < 1e-13
