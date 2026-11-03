@@ -730,6 +730,50 @@ def box_copy(scatter, arr, mat, nrow, start, dims, doff, ld):
                    ptr(doff), ptr(ld), ptr(arr), ptr(mat))
 
 
+def box_copy_strided(mode, arr, mat, nrow, base, stride, dims, doff, ld, alpha=1.0,
+                     conj=False):
+    '''Boxes of the buffer arr (box b at element base[b] of arr, element strides
+    stride[b], sizes dims[b]; arr the 1-D buffer or an array whose first element is
+    element 0, contiguous) to rectangles of the flat buffer mat (offset doff[b], leading dimension
+    ld[b], the first nrow axes the rows): mode 0 mat <- arr, 1 arr <- mat, 2 arr +=
+    alpha mat; conj conjugates the copied values.'''
+    if not arr.flags.c_contiguous:
+        raise ValueError('box_copy_strided: arr must be a contiguous buffer')
+    arr = arr.reshape(-1)
+    dims = numpy.ascontiguousarray(dims, dtype=numpy.int64)
+    ndim = dims.shape[1] if dims.ndim == 2 else 0
+    i64 = lambda x: numpy.ascontiguousarray(x, dtype=numpy.int64)
+    base, stride, doff, ld = i64(base), i64(stride).reshape(-1, max(ndim, 1)), i64(doff), i64(ld)
+    z = _lib.zmr()
+    if z is None or not hasattr(z, 'zmr_box_copy_strided') or arr.dtype != _c16 \
+            or mat.dtype != _c16 or not mat.flags.c_contiguous:
+        for b in range(dims.shape[0]):
+            d = dims[b]
+            nr, nc = int(numpy.prod(d[:nrow])), int(numpy.prod(d[nrow:]))
+            if nr * nc == 0:
+                continue
+            box = numpy.lib.stride_tricks.as_strided(
+                arr[base[b]:], shape=tuple(d),
+                strides=tuple(int(x) * arr.itemsize for x in stride[b]))
+            rect = numpy.lib.stride_tricks.as_strided(
+                mat[doff[b]:], shape=(nr, nc), strides=(ld[b] * mat.itemsize, mat.itemsize))
+            src = rect.reshape(d) if mode else box.reshape(nr, nc)
+            src = src.conj() if conj else src
+            if mode == 0:
+                rect[...] = src
+            elif mode == 1:
+                box[...] = src
+            else:
+                box += alpha * src
+        return
+    a = complex(alpha)
+    ptr = lambda x: x.ctypes.data_as(ctypes.c_void_p)
+    z.zmr_box_copy_strided(ctypes.c_int(int(mode)), ctypes.c_int(int(bool(conj))),
+                           ctypes.c_int(ndim), ctypes.c_int(nrow), ctypes.c_int64(dims.shape[0]),
+                           ptr(base), ptr(stride), ptr(dims), ptr(doff), ptr(ld),
+                           (ctypes.c_double * 2)(a.real, a.imag), ptr(arr), ptr(mat))
+
+
 def pair_scatter(a, axis, n):
     '''The antisymmetric array whose pairs i < j along `axis` are a: the
     axis becomes two axes of dimension n.'''

@@ -276,6 +276,26 @@ class Tensor:
             out[numpy.ix_(ri, ci)] = self.matrix(h)
         return out.reshape(st.shape)
 
+    # ------------------------------------------------------------------ boxes
+    def boxes(self):
+        '''{sector tuple (one sector per leg): (base, strides, sizes)} of every block:
+        the block is the box of self.data at element base with the element strides and
+        sizes of its legs (in the order of the legs).'''
+        st = self.structure
+        out = {}
+        for h, (_, hc, off, nrow, ncol) in st.matrices.items():
+            for rsec, roff, _ in st.rows.groups[h]:
+                rs = [st.legs[k].sizes[x] for k, x in enumerate(rsec)]
+                for csec, coff, _ in st.cols.groups[hc]:
+                    cs = [st.legs[st.split + k].sizes[x] for k, x in enumerate(csec)]
+                    strides = []
+                    for k in range(len(rs)):
+                        strides.append(ncol * int(numpy.prod(rs[k + 1:], dtype=int)))
+                    for k in range(len(cs)):
+                        strides.append(int(numpy.prod(cs[k + 1:], dtype=int)))
+                    out[rsec + csec] = (off + roff * ncol + coff, tuple(strides), tuple(rs + cs))
+        return out
+
     # --------------------------------------------------------------- algebra
     def copy(self):
         st = self.structure

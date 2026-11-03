@@ -2630,6 +2630,49 @@ void zmr_box_copy(int scatter, int ndim, int nrow, int64_t nbox, const int64_t *
         }
 }
 
+/* zmr_box_copy with a base and strides per box: box b is the ndim-dimensional box of
+ * arr at element base[b] with element strides stride[b * ndim + k] and sizes
+ * dims[b * ndim + k] (e.g. a block of a matrix of a DPD tensor, or of a strided view).
+ * mode 0: rectangles of mat = boxes, 1: boxes = rectangles, 2: boxes += alpha
+ * rectangles; conj: the copied values complex conjugated. */
+void zmr_box_copy_strided(int mode, int conj_, int ndim, int nrow, int64_t nbox,
+                          const int64_t *base, const int64_t *stride, const int64_t *dims,
+                          const int64_t *doff, const int64_t *ld, const double *alpha,
+                          double complex *arr, double complex *mat)
+{
+        const double complex al = alpha[0] + I * alpha[1];
+#pragma omp parallel for schedule(dynamic, 1)
+        for (int64_t b = 0; b < nbox; b++) {
+                const int64_t *d = dims + b * ndim;
+                const int64_t *st = stride + b * ndim;
+                int64_t nr = 1, nc = 1;
+                for (int k = 0; k < nrow; k++) nr *= d[k];
+                for (int k = nrow; k < ndim; k++) nc *= d[k];
+                if (nr * nc == 0) continue;
+                for (int64_t r = 0; r < nr; r++) {
+                        int64_t rem = r, row = base[b];
+                        for (int k = nrow - 1; k >= 0; k--) {
+                                row += (rem % d[k]) * st[k];
+                                rem /= d[k];
+                        }
+                        double complex *m = mat + doff[b] + r * ld[b];
+                        for (int64_t c = 0; c < nc; c++) {
+                                int64_t rc = c, off = row;
+                                for (int k = ndim - 1; k >= nrow; k--) {
+                                        off += (rc % d[k]) * st[k];
+                                        rc /= d[k];
+                                }
+                                if (mode == 0)
+                                        m[c] = conj_ ? conj(arr[off]) : arr[off];
+                                else if (mode == 1)
+                                        arr[off] = conj_ ? conj(m[c]) : m[c];
+                                else
+                                        arr[off] += al * (conj_ ? conj(m[c]) : m[c]);
+                        }
+                }
+        }
+}
+
 /* The antisymmetric array: dst[l, i, j, t] = src[l, p, t], dst[l, j, i, t] =
  * -src[l, p, t], zero on the diagonal; dst (nl, n, n, nt) is overwritten. */
 void zmr_pair_scatter(int64_t nl, int64_t n, int64_t nt,

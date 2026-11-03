@@ -153,3 +153,39 @@ def test_identity_and_map_blocks():
                 - eps[None, leg.offsets[sec[1]]:leg.offsets[sec[1] + 1]])
     dpd.map_blocks(t, scale)
     assert abs(t.to_dense() - a * (eps[:, None] - eps[None, :])).max() < 1e-13
+
+
+@pytest.mark.parametrize('group', ['C2h', 'Coov'])
+def test_boxes(group):
+    '''Every block of a tensor through its box (base, strides) equals the dense block,
+    and the strided box copy reads, writes and adds them, also through a permutation.'''
+    from socutils.zmr.lib import kernels
+    rng = numpy.random.default_rng(9)
+    legs = [random_leg(group, rng) for _ in range(4)]
+    a, t = random_tensor(legs, (-1, -1, 1, 1), 2, group, rng)
+    boxes = t.boxes()
+    assert boxes
+    order = (2, 0, 3, 1)
+    base, stride, dims, doff, ld, ref = [], [], [], [], [], []
+    off = 0
+    for sec, (b0, st, sz) in boxes.items():
+        sl = tuple(slice(l.offsets[x], l.offsets[x + 1]) for l, x in zip(legs, sec))
+        blk = a[sl].transpose(order)
+        base.append(b0)
+        stride.append([st[k] for k in order])
+        dims.append([sz[k] for k in order])
+        nr, nc = sz[order[0]] * sz[order[1]], sz[order[2]] * sz[order[3]]
+        doff.append(off)
+        ld.append(nc)
+        ref.append(blk.reshape(nr, nc))
+        off += nr * nc
+    mat = numpy.empty(off, dtype=complex)
+    kernels.box_copy_strided(0, t.data, mat, 2, base, stride, dims, doff, ld, conj=True)
+    for r, d0, n in zip(ref, doff, ld):
+        assert abs(mat[d0:d0 + r.size].reshape(-1, n) - r.conj()).max() == 0
+    t2 = t.copy()
+    kernels.box_copy_strided(2, t2.data, mat, 2, base, stride, dims, doff, ld, alpha=0.5,
+                             conj=True)
+    assert abs(t2.to_dense() - 1.5 * a).max() < 1e-14
+    kernels.box_copy_strided(1, t2.data, mat, 2, base, stride, dims, doff, ld, conj=True)
+    assert abs(t2.to_dense() - a).max() < 1e-14
