@@ -17,13 +17,14 @@ e_spinor = mf.kernel()
 # turn the Gaunt/Breit two-electron SOC corrections off:
 e_dc = spinor_hf.SCF(mol).x2camf(with_gaunt=False, with_breit=False).kernel()
 ```
-Note: the C/C++ libraries these features need are **bundled** with socutils
-(under `socutils/lib`) -- no external packages to install. They are compiled
-once with a single `make` at the repo root (needs a BLAS/LAPACK):
+Note: the C/C++ libraries these features need are compiled once with a single
+`make` at the repo root (needs a BLAS/LAPACK) -- no external packages to
+install:
 ```
-make            # builds libx2camf_c (X2CAMF SOC integrals),
-                #        libzquatev   (Kramers-restricted spinor SCF), and
-                #        libccsdt_clib (spinor CCSDT kernels) into socutils/lib
+make            # builds libccsdt_clib (spinor CCSDT kernels) and others into
+                # socutils/lib, and fetches and builds libx2camf_c (X2CAMF SOC
+                # integrals, C implementation) and libzquatev (Kramers-
+                # restricted spinor SCF) into socutils/lib/deps/lib
 ```
 - **x2camf** (the SOC integrals) ships as a pure-C reimplementation exposed as
   `import x2camf`; an external upstream

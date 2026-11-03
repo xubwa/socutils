@@ -1,6 +1,6 @@
 '''
 ctypes binding to libzquatev -- Toru Shiozaki's quaternionic eigensolver,
-bundled into socutils.
+built from its own repository into socutils/lib/deps/lib by lib/CMakeLists.txt.
 
 This is a drop-in replacement for the external ``zquatev`` Python package
 (github.com/xubwa/zquatev, a pybind11 wrapper): it exposes ``eigh``,
@@ -11,8 +11,8 @@ signatures, so downstream code works unchanged.  The numerical solver
 
 The shared library is located in the following order:
   1. the path in the environment variable SOCUTILS_ZQUATEV_LIBRARY
-  2. libzquatev.so / .dylib / .dll in the socutils/lib directory (one level up:
-     all bundled libraries are built flat into lib/, pyscf-style)
+  2. libzquatev.so / .dylib / .dll in socutils/lib/deps/lib (ExternalProject),
+     then in socutils/lib (old in-tree build)
   3. the system library search path (ctypes.util.find_library)
 '''
 
@@ -37,8 +37,8 @@ def _candidate_paths():
     else:
         names = ["libzquatev.so"]
     for name in names:
-        yield os.path.join(libdir, name)
-        yield os.path.join(here, name)   # legacy in-place location
+        yield os.path.join(libdir, 'deps', 'lib', name)   # ExternalProject build
+        yield os.path.join(libdir, name)   # old in-tree build
     found = ctypes.util.find_library("zquatev")
     if found:
         yield found

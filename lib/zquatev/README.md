@@ -1,11 +1,11 @@
-# Bundled zquatev (ctypes)
+# zquatev (ctypes loader)
 
 Toru Shiozaki's quaternionic eigensolver
-([zquatev](https://github.com/qsimulate-open/zquatev)), vendored into socutils
-and exposed through `ctypes` so that no external `zquatev` package or pybind11
-is required.
-
-Import it as:
+([zquatev](https://github.com/qsimulate-open/zquatev)) for the
+Kramers-restricted spinor and Dirac SCF.  The C++ solver and its C API are a
+separate repository (BSD-2-Clause), built by `lib/CMakeLists.txt` with
+ExternalProject into `lib/deps/lib/libzquatev.so`; this directory only holds
+the ctypes loader.
 
 ```python
 from socutils.lib import zquatev
@@ -13,46 +13,6 @@ e, v = zquatev.eigh(mat)                 # Hermitian quaternionic (A,-B*;B,A*)
 e, c = zquatev.solve_KR_FCSCE(mol, f, s) # Kramers-restricted FC=SCE
 ```
 
-This is a drop-in replacement for the external `zquatev` Python module (same
-`eigh`, `geigh`, `solve_KR_FCSCE`, `check_kramers_structure`).
-
-## Building
-
-This is a thin subdirectory of the socutils `lib/` CMake (pyscf/lib style); it
-is built together with the other bundled libraries from the repo root
-(BLAS/LAPACK required):
-
-```sh
-make                                # auto-detect BLAS/LAPACK
-# or pass an explicit BLAS, e.g. OpenBLAS / MKL:
-make CMAKE_ARGS=-DBLAS_LIBRARIES=/path/to/libopenblas.so
-# equivalently: cd socutils/lib && ./build.sh
-```
-
-The resulting `libzquatev.so` is placed flat in `socutils/lib` (one level up),
-next to all the bundled libraries. At runtime the loader searches, in order:
-
-1. `$SOCUTILS_ZQUATEV_LIBRARY`
-2. `libzquatev.so` in `socutils/lib`
-3. `ctypes.util.find_library("zquatev")`
-
-## Local patch (`csrc/f77.h`)
-
-One change was made to the vendored source: `zdotc` is now computed directly
-in C++ instead of calling the Fortran BLAS `zdotc_`.  A `COMPLEX*16` Fortran
-*function* returns its value through a platform/library-dependent ABI (a hidden
-first pointer argument for gfortran-built reference LAPACK / OpenBLAS, vs.
-return-by-register for MKL).  The upstream wrapper hard-coded the
-hidden-pointer convention, so against OpenBLAS or reference LAPACK `zdotc`
-silently returned garbage and corrupted the Householder reduction — producing
-wrong eigenvalues (and `KRHF`/`RDHF` failures) on everything but MKL.
-Computing the dot product in C++ removes the ABI dependency, so the solver is
-correct against any BLAS (verified against OpenBLAS, reference LAPACK 3.9.1 and
-3.12, and MKL).
-
-## Licensing
-
-- `csrc/` — ZQUATEV, **BSD-2-Clause**, © 2013 Toru Shiozaki (see `LICENSE`
-  and the per-file headers), with the local `f77.h` patch noted above.
-  Reference: T. Shiozaki, *Mol. Phys.* **115**, 5 (2017).
-- `capi/zquatev_capi.cc` and `__init__.py` — part of socutils, **Apache-2.0**.
+Same functions as the external `zquatev` Python module (`eigh`, `geigh`,
+`solve_KR_FCSCE`, `check_kramers_structure`).  `SOCUTILS_ZQUATEV_LIBRARY`
+overrides the library path.
