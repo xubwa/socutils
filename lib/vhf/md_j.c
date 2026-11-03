@@ -104,6 +104,8 @@ static void boys_fn(double *f, double t, int m)
         }
 }
 
+#include "md_j_gen.c"
+
 static void hermite_tables(void)
 {
         int d, t, u, v, n = 0, a, b;
@@ -403,6 +405,15 @@ void SOCVHFmd_j_grad(double *grad, double *energy, double *dm, double tol,
                         const double *rq = rho + Q->orho;
                         double *vq = V + Q->ov;
                         const double pq = P->p * Q->p, psum = P->p + Q->p;
+                        if (lp + 1 <= MDC_LMAX && lq + 1 <= MDC_LMAX) {
+                                /* md_j_gen.c: V^P (degree lp + 1) by the up part of mdc_(lp+1)_lq,
+                                 * V^Q (degree lq + 1) by the uq part of mdc_lp_(lq+1) */
+                                mdr_table[lp + lq + 1](R0, PI_FAC / (pq * sqrt(psum)), pq / psum,
+                                                       P->P[0] - Q->P[0], P->P[1] - Q->P[1], P->P[2] - Q->P[2]);
+                                mdc_table[lp + 1][lq](R0, NULL, rq, vp, NULL, 1, 0);
+                                if (iq != ip) mdc_table[lp][lq + 1](R0, rp, NULL, NULL, vq, 0, 1);
+                                continue;
+                        }
                         hermite_R(R0, wR, lp + lq + 1, PI_FAC / (pq * sqrt(psum)), pq / psum,
                                   P->P[0] - Q->P[0], P->P[1] - Q->P[1], P->P[2] - Q->P[2]);
                         int a, b;
@@ -650,6 +661,16 @@ void SOCVHFmd_j_matrix(double *vj, double *dm, int ndm, double *qcond, double to
                         const MDPair *Q = pairs + order[iq];
                         const int lq = Q->li + Q->lj, nq = NH(lq);
                         const double pq = P->p * Q->p, psum = P->p + Q->p;
+                        if (lp <= MDC_LMAX && lq <= MDC_LMAX) {
+                                /* the unrolled R and contractions of md_j_gen.c */
+                                mdr_table[lp + lq](R0, PI_FAC / (pq * sqrt(psum)), pq / psum,
+                                                   P->P[0] - Q->P[0], P->P[1] - Q->P[1], P->P[2] - Q->P[2]);
+                                for (d = 0; d < ndm; d++)
+                                        mdc_table[lp][lq](R0, rho + (size_t)d * oh + P->orho,
+                                                          rho + (size_t)d * oh + Q->orho, V + (size_t)d * oh + P->orho,
+                                                          V + (size_t)d * oh + Q->orho, up, uq);
+                                continue;
+                        }
                         hermite_R(R0, wR, lp + lq, PI_FAC / (pq * sqrt(psum)), pq / psum,
                                   P->P[0] - Q->P[0], P->P[1] - Q->P[1], P->P[2] - Q->P[2]);
                         int a, b;

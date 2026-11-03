@@ -42,6 +42,25 @@ class KnownValues(unittest.TestCase):
             ref = scf.hf.get_jk(mol, a, hermi=0, with_k=False)[0]
             self.assertAlmostEqual(abs(md_j.get_j(mol, a, hermi=0) - ref).max(), 0, 10)
 
+    def test_j_grad(self):
+        '''the J-engine gradient of E_J = 1/2 (ab|cd) D_ab D_cd against pyscf's int2e_ip1 J'''
+        from pyscf.grad import rhf as rhf_grad
+        from socutils.hessian import rhf_fast as hess_fast
+        rng = numpy.random.default_rng(2)
+        for atom, basis in ((WATER2, 'cc-pvdz'), (PROPANE, 'sto-3g'),
+                            ('O 0 0 0; H .757 0 .586; H -.757 .1 .586', 'cc-pvtz')):
+            mol = gto.M(atom=atom, basis=basis, verbose=0)
+            d = rng.standard_normal((mol.nao, mol.nao))
+            d = d + d.T
+            r = hess_fast.md_j_grad(mol, d)
+            if r is None:
+                self.skipTest('no MD J gradient (lib/vhf not built)')
+            vj = rhf_grad.get_jk(mol, d)[0]            # -(nabla a b|cd) D_cd
+            ref = numpy.zeros((mol.natm, 3))
+            for k, (_, _, p0, p1) in enumerate(mol.aoslice_by_atom()):
+                ref[k] = 2 * numpy.einsum('xij,ij->x', vj[:, p0:p1], d[p0:p1])
+            self.assertAlmostEqual(abs(r[0] - ref).max(), 0, 8)
+
     def test_scf(self):
         mol = gto.M(atom=WATER2, basis='cc-pvdz', verbose=0)
         for xc in ('hf', 'pbe', 'pbe0'):
