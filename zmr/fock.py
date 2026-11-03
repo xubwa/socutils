@@ -5,7 +5,13 @@ quasi-canonical core / virtual orbitals (conventions.md section 7).
 
 import numpy
 
+from socutils.zmr import symmetry_sectors
 from socutils.zmr.lib import linalg as la
+
+
+def _sectors(eris, label):
+    sym = getattr(eris, 'orbsym', None)
+    return None if sym is None else numpy.asarray(sym)[eris.spaces.slice(label)]
 
 
 def generalized_fock(eris, gamma_act):
@@ -61,7 +67,8 @@ def quasi_canonicalize(eris, gamma_act):
     eps = {}
     for label in 'cv':
         s = sp.slice(label)
-        e, v = la.eigh(numpy.ascontiguousarray(f[s, s]))
+        # within the double-group sectors of the orbitals, if any
+        e, v, _ = symmetry_sectors.eigh(f[s, s], _sectors(eris, label))
         u[s, s] = v
         eps[label] = e
     new = eris.rotate(u)
@@ -74,7 +81,8 @@ def canonical_core(eris, gamma_act):
     orbitals (mo[:, :ncore] @ u), not among the orbitals of the SCF or
     CASSCF, which are defined up to a rotation.'''
     c = eris.spaces.slice('c')
-    return la.eigh(numpy.ascontiguousarray(generalized_fock(eris, gamma_act)[c, c]))
+    e, u, _ = symmetry_sectors.eigh(generalized_fock(eris, gamma_act)[c, c], _sectors(eris, 'c'))
+    return e, u
 
 
 def shells(eps, tol=5e-3):
@@ -105,7 +113,8 @@ def orbital_report(eris, gamma_act, stdout=None, tol=5e-3, tol_virt=0.1):
     eps = {}
     for label, name in (('c', 'core'), ('v', 'virtual')):
         s = sp.slice(label)
-        e = la.eigh(numpy.ascontiguousarray(f[s, s]))[0] if s.stop > s.start else numpy.zeros(0)
+        e = (symmetry_sectors.eigh(f[s, s], _sectors(eris, label))[0] if s.stop > s.start
+             else numpy.zeros(0))
         eps[label] = e
         out.write('\n Quasi-canonical %s orbitals (%d), energies in Eh\n' % (name, len(e)))
         out.write(' %7s %6s %8s  %14s %14s %12s\n'
@@ -137,7 +146,7 @@ def truncate_virtuals(eris, gamma_act, emax=None, window=0.2, nkeep=None):
     Returns (eris', kept energies, removed energies).'''
     sp = eris.spaces
     v = sp.slice('v')
-    e, c = la.eigh(numpy.ascontiguousarray(generalized_fock(eris, gamma_act)[v, v]))
+    e, c, _ = symmetry_sectors.eigh(generalized_fock(eris, gamma_act)[v, v], _sectors(eris, 'v'))
     n = len(e)
     if nkeep is not None:
         if not 0 <= nkeep <= n:

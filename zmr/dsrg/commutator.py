@@ -28,6 +28,7 @@ from pyscf import lib
 
 from itertools import product
 
+from socutils.symm import double_group as dg
 from socutils.zmr.lib import kernels
 from socutils.zmr.lib import linalg as la
 
@@ -120,33 +121,183 @@ class HermitianHP(AntiBlocks):
         return out
 
 
+class Dims(dict):
+    """Dimensions of the spaces c, a, v, and their double-group sectors:
+    sym = (doublegroupname, {space: irrep id of every orbital}) or None."""
+
+    def __init__(self, d, sym=None):
+        super().__init__(d)
+        self.sym = sym
+        # plans of the symmetry-blocked products (_pair_symmetric), by index pattern
+        self.plans = {}
+
+
+# Which indices of an operand are created (+1) and annihilated (-1): an element is
+# nonzero only if the product of the irreps of its orbitals, the annihilated ones
+# conjugated, is totally symmetric.  Operators X[annihilated..., created...] and
+# amplitudes are ONE_BODY / TWO_BODY; Gamma1[p, q] = <p^+ q>, Eta1, Lambda2, Lambda3 are
+# DENSITY, CUMULANT2, CUMULANT3.  An operand gives its own as the attribute `signs`
+# (None: not known, no symmetry is used with it); without it the rank decides.
+ONE_BODY = (-1, 1)
+TWO_BODY = (-1, -1, 1, 1)
+DENSITY = (1, -1)
+CUMULANT2 = (1, 1, -1, -1)
+CUMULANT3 = (1, 1, 1, -1, -1, -1)
+_DEFAULT_SIGNS = {2: ONE_BODY, 4: TWO_BODY}
+
+
+def _operand_signs(op, rank):
+    if hasattr(op, "signs"):
+        return op.signs
+    return _DEFAULT_SIGNS.get(rank)
+
+
+def _times(ir, c, group):
+    """The irreps ir taken c times (c a nonzero integer; negative: conjugated)."""
+    base = ir if c > 0 else numpy.asarray(dg.conj(ir, group))
+    if abs(c) == 1:
+        return base
+    out = numpy.empty_like(base)
+    for u in numpy.unique(base):
+        v = 0
+        for _ in range(abs(c)):
+            v = dg.direct_prod(v, int(u), group)
+        out[base == u] = v
+    return out
+
+
+def _composite(letters, coef, secs, group):
+    """Irrep of every element of the multi-index over letters (C order): the product of
+    coef[l] times the irrep of its orbital."""
+    acc = numpy.zeros(1, dtype=int)
+    for l in letters:
+        c = coef.get(l, 0)
+        sec = numpy.asarray(secs[l])
+        t = numpy.zeros(sec.size, dtype=int) if c == 0 else _times(sec, c, group)
+        acc = numpy.asarray(dg.direct_prod(acc, t, group)).reshape(-1)
+    return acc
+
+
+# products smaller than this (na * nc * nb) are done dense: the blocking does not pay
+SYMMETRY_MIN_SIZE = 1 << 18
+
+
+def _symmetry_plan(aown, con, bown, sa, sb, secs, group):
+    """(rows, cols, right) index arrays of the blocks of at (rows, cols) and bt (cols,
+    right) that do not vanish by symmetry, one per pair of irreps of the contracted
+    multi-index; the blocked product is the sum of their products."""
+    sig = _composite(con, sa, secs, group)
+    tau = _composite(con, sb, secs, group)
+    rho_a = _composite(aown, sa, secs, group)
+    rho_b = _composite(bown, sb, secs, group)
+    keys = numpy.stack([sig, tau], axis=1)
+    groups, inverse = numpy.unique(keys, axis=0, return_inverse=True)
+    inverse = inverse.reshape(-1)
+    plan = []
+    for g, (s1, t1) in enumerate(groups):
+        rows = numpy.nonzero(rho_a == dg.conj(int(s1), group))[0]
+        right = numpy.nonzero(rho_b == dg.conj(int(t1), group))[0]
+        if rows.size and right.size:
+            plan.append((rows, numpy.nonzero(inverse == g)[0], right))
+    return plan
+
+
+def _pair_symmetric(at, bt, plan):
+    """at (na, nc) times bt (nc, nb) as the sum of the products of the blocks of plan
+    (gathered and added back with the threaded pyscf.lib.take_2d / takebak_2d)."""
+    at = numpy.asarray(at, dtype=numpy.complex128, order="C")
+    bt = numpy.asarray(bt, dtype=numpy.complex128, order="C")
+    r = numpy.zeros((at.shape[0], bt.shape[1]), dtype=numpy.complex128)
+    for rows, cols, right in plan:
+        blk = la.gemm(lib.take_2d(at, rows, cols), lib.take_2d(bt, cols, right))
+        lib.takebak_2d(r, blk, rows, right)
+    return r
+
+
+def _combine_signs(sa, sb, con):
+    """Signs of the product of two operands with signs sa, sb (dicts letter -> +-1)
+    summed over con: the constraints of both, the contracted letters eliminated; None
+    if they cannot be eliminated together."""
+    if sa is None or sb is None:
+        return None
+    if not con:
+        return None
+    c0 = con[0]
+    if not sb.get(c0):
+        return None
+    ratio = -sa.get(c0, 0) / sb[c0]
+    if ratio not in (1.0, -1.0):
+        return None
+    out = {}
+    for l in set(sa) | set(sb):
+        v = sa.get(l, 0) + ratio * sb.get(l, 0)
+        if l in con:
+            if v != 0:
+                return None
+            continue
+        if v:
+            out[l] = int(v)
+    return out
+
+
+def with_signs(blocks, signs):
+    """blocks (a mapping label -> array) as Blocks with the given signs."""
+    out = Blocks(blocks)
+    out.signs = signs
+    return out
+
+
+def _record_signs(out, signs):
+    # the signs of an output are those of all its contributions; None if they differ
+    if "signs" not in out.__dict__:
+        out.signs = signs
+    elif out.signs != signs:
+        out.signs = None
+
+
 def _is_plain(a):
     return a.dtype == numpy.complex128 and a.flags.c_contiguous
 
 
-def _pair(asub, a, bsub, b, keepers):
+def _pair(asub, a, bsub, b, keepers, sa=None, sb=None, secs=None, group=None, plans=None,
+          spaces=None):
     """Contraction of two arrays over the letters they share that are not in
-    `keepers`: (subscripts, array).  One threaded matrix product between threaded
-    transpositions (zmr.lib); numpy.einsum for traces and outer products."""
+    `keepers`: (subscripts, array, signs).  One threaded matrix product between threaded
+    transpositions (zmr.lib); numpy.einsum for traces and outer products.  With the
+    signs sa, sb of the operands (dicts letter -> coefficient) and the irreps secs of
+    the orbitals of every letter, the product skips the blocks that vanish by symmetry
+    and the signs of the result are returned (None if not known)."""
     con = [x for x in asub if x in bsub and x not in keepers]
     aown = [x for x in asub if x not in con]
     bown = [x for x in bsub if x not in con]
     if (not con or len(set(asub)) != len(asub) or len(set(bsub)) != len(bsub)
             or set(aown) & set(bown)):
         osub = "".join(dict.fromkeys(x for x in asub + bsub if x in keepers))
-        return osub, numpy.einsum(asub + "," + bsub + "->" + osub, a, b, optimize=True)
+        return osub, numpy.einsum(asub + "," + bsub + "->" + osub, a, b, optimize=True), None
     pa = [asub.index(x) for x in aown + con]
     pb = [bsub.index(x) for x in con + bown]
     at = a if (pa == list(range(a.ndim)) and _is_plain(a)) else kernels.transposed(a, pa)
     bt = b if (pb == list(range(b.ndim)) and _is_plain(b)) else kernels.transposed(b, pb)
     na = int(numpy.prod(at.shape[:len(aown)], dtype=numpy.int64))
     nc = int(numpy.prod(at.shape[len(aown):], dtype=numpy.int64))
+    nb = int(bt.size // max(nc, 1))
+    symmetric = (group is not None and sa is not None and sb is not None
+                 and na * nc * nb >= SYMMETRY_MIN_SIZE)
     if at.size == 0 or bt.size == 0:
         r = numpy.zeros(at.shape[:len(aown)] + bt.shape[len(con):], dtype=numpy.complex128)
+    elif symmetric:
+        key = (tuple(aown), tuple(con), tuple(bown),
+               tuple(sorted(sa.items())), tuple(sorted(sb.items())),
+               tuple(spaces[x] for x in aown + con + bown))
+        plan = plans.get(key)
+        if plan is None:
+            plan = plans[key] = _symmetry_plan(aown, con, bown, sa, sb, secs, group)
+        r = _pair_symmetric(at.reshape(na, nc), bt.reshape(nc, -1), plan)
+        r = r.reshape(at.shape[:len(aown)] + bt.shape[len(con):])
     else:
         r = la.gemm(at.reshape(na, nc), bt.reshape(nc, -1))
         r = r.reshape(at.shape[:len(aown)] + bt.shape[len(con):])
-    return "".join(aown + bown), r
+    return "".join(aown + bown), r, _combine_signs(sa, sb, con)
 
 
 def contract(spec, *ops, dims, out=None, scale=1.0, keep=None, fix=""):
@@ -164,12 +315,14 @@ def contract(spec, *ops, dims, out=None, scale=1.0, keep=None, fix=""):
     subs = lhs.split(",")
     letters = sorted(set("".join(subs)))
     total = 0.0
+    sym = getattr(dims, "sym", None)
+    group, sectors = sym if sym is not None else (None, None)
     for spaces in product(*("a" if ch in fix else _CLASS[ch] for ch in letters)):
         sp = dict(zip(letters, spaces))
         olab = "".join(sp[ch] for ch in rhs)
         if rhs and keep is not None and olab not in out and not keep(olab):
             continue
-        arrays, asubs = [], []
+        arrays, asubs, signs = [], [], []
         ok = True
         fac = scale
         cj = False
@@ -196,6 +349,7 @@ def contract(spec, *ops, dims, out=None, scale=1.0, keep=None, fix=""):
                 if gone in rhs:
                     arrays.append(numpy.eye(dims[sp[sub[0]]]))
                     asubs.append(x + y)
+                    signs.append(_operand_signs(op, 2))
                     continue
                 for k in list(rename):
                     if rename[k] == gone:
@@ -204,18 +358,35 @@ def contract(spec, *ops, dims, out=None, scale=1.0, keep=None, fix=""):
                 continue
             arrays.append(blk)
             asubs.append(sub)
+            signs.append(_operand_signs(op, len(sub)))
         if not ok:
             continue
         asubs = ["".join(rename.get(ch, ch) for ch in s) for s in asubs]
+        secs = None
+        if group is not None:
+            secs = {ch: sectors[sp[ch]] for ch in letters}
+            sdicts = []
+            for sub_, sg_ in zip(asubs, signs):
+                if sg_ is None:
+                    sdicts.append(None)
+                    continue
+                d = {}
+                for ch, c in zip(sub_, sg_):
+                    d[ch] = d.get(ch, 0) + c
+                sdicts.append(d)
+        else:
+            sdicts = [None] * len(asubs)
         if PROFILE is not None:
             _t = time.time()
         if cj:
             # einsum(conj(A), B) = conj(einsum(A, conj(B)))
             arrays = [x if k in conj_ops else numpy.conj(x) for k, x in enumerate(arrays)]
-        csub, val = asubs[0], arrays[0]
+        csub, val, csgn = asubs[0], arrays[0], sdicts[0]
         for k in range(1, len(arrays)):
             later = set(rhs).union(*asubs[k + 1:])
-            csub, val = _pair(csub, val, asubs[k], arrays[k], later)
+            csub, val, csgn = _pair(csub, val, asubs[k], arrays[k], later,
+                                    csgn, sdicts[k], secs, group,
+                                    getattr(dims, "plans", None), sp)
         if PROFILE is not None:
             key = spec + " " + ",".join("".join(sp[ch] for ch in sub) for sub in subs)
             PROFILE[key] = PROFILE.get(key, 0.0) + time.time() - _t
@@ -226,11 +397,14 @@ def contract(spec, *ops, dims, out=None, scale=1.0, keep=None, fix=""):
         if len(set(csub)) != len(csub) or set(csub) != set(rhs):
             val = numpy.einsum(csub + "->" + rhs, val)
             csub = rhs
+            csgn = None
         if cj:
             val = numpy.conj(val)
         perm = [csub.index(x) for x in rhs]
         if olab not in out:
             out[olab] = numpy.zeros([val.shape[p] for p in perm], dtype=numpy.complex128)
+        if group is not None:
+            _record_signs(out, None if csgn is None else tuple(csgn.get(x, 0) for x in rhs))
         kernels.transpose_add(out[olab], numpy.asarray(val, dtype=numpy.complex128)
                               if val.dtype != numpy.complex128 else val, perm, alpha=fac)
     return total

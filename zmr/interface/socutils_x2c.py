@@ -100,14 +100,29 @@ def from_scf(mf, ncore, nact, nfrozen=0, mo_coeff=None, mol=None, lazy=True, cde
     '''Spinor Hamiltonian from a socutils spinor SCF object.  mol may differ
     from mf.mol in charge/spin only (e.g. orbitals of an ion).  lazy=True
     returns an MOERIs, otherwise all integrals are stored.  cderi: Cholesky
-    vectors that replace the exact two-electron integrals (see mo_eris).'''
+    vectors that replace the exact two-electron integrals (see mo_eris).
+    Orbitals of a double-group SCF or CASSCF (mo_coeff tagged with orbsym) give
+    eris.orbsym and eris.doublegroupname (zmr.symmetry_sectors).'''
     mol = mf.mol if mol is None else mol
     mo_coeff = mf.mo_coeff if mo_coeff is None else mo_coeff
     if lazy:
-        return mo_eris(mf, mol, mo_coeff, nfrozen, ncore, nact, cderi=cderi)
-    if cderi is not None:
-        return mo_eris(mf, mol, mo_coeff, nfrozen, ncore, nact, cderi=cderi).to_dense()
-    return from_mo_coeff(mol, mf.get_hcore(), mo_coeff, nfrozen, ncore, nact)
+        eris = mo_eris(mf, mol, mo_coeff, nfrozen, ncore, nact, cderi=cderi)
+    elif cderi is not None:
+        eris = mo_eris(mf, mol, mo_coeff, nfrozen, ncore, nact, cderi=cderi).to_dense()
+    else:
+        eris = from_mo_coeff(mol, mf.get_hcore(), mo_coeff, nfrozen, ncore, nact)
+    return _with_sectors(eris, mf, mo_coeff, nfrozen)
+
+
+def _with_sectors(eris, mf, mo_coeff, nfrozen):
+    '''Double-group sectors of the correlated orbitals from the orbsym tag of
+    mo_coeff (socutils double-group SCF / CASSCF) and the group of mf.'''
+    orbsym = getattr(mo_coeff, 'orbsym', None)
+    group = getattr(mf, 'doublegroupname', None) or getattr(mf.mol, 'doublegroupname', None)
+    if orbsym is not None and group is not None:
+        eris.orbsym = numpy.asarray(orbsym)[nfrozen:nfrozen + eris.spaces.nmo].copy()
+        eris.doublegroupname = group
+    return eris
 
 
 _MJ = re.compile(r',\s*(-?\d+)/2\s*$')

@@ -37,6 +37,7 @@ from pyscf import lib
 
 from socutils.zmr.active import rdm
 from socutils.zmr.active.sectors import ActiveSpace
+from socutils.zmr import symmetry_sectors
 from socutils.zmr.dsrg import commutator as cm
 from socutils.zmr.lib import linalg as la
 
@@ -89,6 +90,10 @@ class LDSRG2:
         max_comm, comm_tol: length of the BCH series, norm of the last commutator
         conv_tol, conv_tol_amp: convergence of the energy and of the amplitudes
         max_cycle, diis_space
+        use_symmetry: with eris.orbsym (double-group sectors, zmr.symmetry_sectors), the
+            contractions skip the blocks that vanish by symmetry (default False: the
+            (vv|vv), three-virtual and ccvv parts are not blocked yet, and at present the
+            blocked general contractions cost more than they save)
         e_corr: correlation energy of the ensemble (before relaxation)
         e_tot, civecs, heff: relaxed levels, their CI vectors, diag(e_tot)
     '''
@@ -101,6 +106,9 @@ class LDSRG2:
     max_cycle = 60
     diis_space = 6
     max_memory = lib.param.MAX_MEMORY  # MB
+    # skip the blocks that vanish by double-group symmetry (eris.orbsym); off by default
+    # until the fast paths (ladder, three-virtual terms, ccvv) are blocked as well
+    use_symmetry = False
     # (vv|vv) ladder: 'stored' (in memory or on disk, applied in every iteration),
     # 'direct' (rebuilt from the three-index integrals for each use), None (not needed)
     vvvv = 'stored'
@@ -197,17 +205,27 @@ class LDSRG2:
                            - numpy.einsum('putq,tu->pq', self._dv, g1))
         u = numpy.eye(sp.nmo, dtype=numpy.complex128)
         eps = {}
+        # semicanonical orbitals within the double-group sectors, if any
+        sym = getattr(eris, 'orbsym', None)
+        self.orbsym = {}
         for x in 'cav':
             sl = sp.slice(x)
             if sl.stop > sl.start:
-                eps[x], u[sl, sl] = la.eigh(numpy.ascontiguousarray(fock[sl, sl]))
+                eps[x], u[sl, sl], self.orbsym[x] = symmetry_sectors.eigh(
+                    fock[sl, sl], None if sym is None else numpy.asarray(sym)[sl])
             else:
-                eps[x] = numpy.zeros(0)
+                eps[x], self.orbsym[x] = numpy.zeros(0), None
+        if sym is None:
+            self.orbsym = None
         self.eps = eps
         self.u_act = ua = u[a, a].copy()
         sc = eris.rotate(u)
         fock = u.conj().T @ fock @ u
-        self.dims = dims = {'c': sp.ncore, 'a': sp.nact, 'v': sp.nvirt}
+        # with double-group sectors the contractions skip the blocks that vanish by symmetry
+        sym = None
+        if self.orbsym is not None and self.use_symmetry:
+            sym = (eris.doublegroupname, self.orbsym)
+        self.dims = dims = cm.Dims({'c': sp.ncore, 'a': sp.nact, 'v': sp.nvirt}, sym=sym)
         fs = numpy.conj(fock)
         self.F = cm.Blocks({x + y: fs[sp.slice(x), sp.slice(y)].copy()
                             for x, y in product('cav', repeat=2)})
@@ -220,10 +238,11 @@ class LDSRG2:
                               optimize=True)
         self.gamma1, self.lambda2 = g1, l2
         na = sp.nact
-        self.cum = {'Gamma1': {'cc': cm.EYE, 'aa': g1},
-                    'Eta1': {'aa': numpy.eye(na) - g1, 'vv': cm.EYE},
-                    'Lambda2': {'aaaa': l2},
-                    'Lambda3': None if l3 is None else {'aaaaaa': l3}}
+        self.cum = {'Gamma1': cm.with_signs({'cc': cm.EYE, 'aa': g1}, cm.DENSITY),
+                    'Eta1': cm.with_signs({'aa': numpy.eye(na) - g1, 'vv': cm.EYE}, cm.DENSITY),
+                    'Lambda2': cm.with_signs({'aaaa': l2}, cm.CUMULANT2),
+                    'Lambda3': None if l3 is None else cm.with_signs({'aaaaaa': l3},
+                                                                     cm.CUMULANT3)}
         extra = {}
         if self._dv is not None:
             # (tu|vw) -> semicanonical active spinors -> conj(<tv||uw>)

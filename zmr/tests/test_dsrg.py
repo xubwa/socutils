@@ -127,3 +127,43 @@ def test_vvvv_pair_rows():
                    - d[a - a0].transpose(1, 0, 2)[a + 1 - a0:][:, iu[1], iu[0]])
         for a in range(a0, a0 + nb)])
     assert abs(kernels.vvvv_pair_rows(d, a0) - ref).max() < 1e-14
+
+
+SYMMETRY_MOLECULES = {
+    'C2': 'O 0 0 0.1173; H 0 0.7572 -0.4692; H 0 -0.7572 -0.4692',            # H2O, C2v
+    'C2h': ('N 0 0.6123 0.0; N 0 -0.6123 0.0; H 0.9458 0.9214 0.0; '
+            'H -0.9458 -0.9214 0.0'),                                         # trans-N2H2
+    'Coov': 'H 0 0 0; Br 0 0 1.4144',                                         # HBr
+}
+
+
+@pytest.fixture(scope='module', params=sorted(SYMMETRY_MOLECULES))
+def double_group(request):
+    from pyscf.x2c import x2c
+    from socutils.scf import double_group_symm as dgs
+    from socutils.symm import spinor_basis as sb
+    from socutils.zmr.interface import socutils_x2c
+    mol = sb.to_symm_frame(gto.M(atom=SYMMETRY_MOLECULES[request.param], basis='6-31g',
+                                 symmetry=True, verbose=0))
+    mf = dgs.SymAdaptedRHF(mol)
+    mf.with_x2c = x2c.SpinorX2CHelper(mol)
+    mf.conv_tol = 1e-11
+    mf.verbose = 0
+    mf.kernel()
+    eris = socutils_x2c.from_scf(mf, ncore=mol.nelectron - 2, nact=4, lazy=False)
+    assert eris.doublegroupname == request.param
+    return eris
+
+
+@pytest.mark.parametrize('name', sorted(METHODS))
+def test_double_group_sectors(double_group, name):
+    '''Contractions blocked by the double-group sectors of a socutils double-group SCF
+    (C2*, C2h*, Coov*) against the same calculation without them.'''
+    out = []
+    for use in (True, False):
+        cls = type('X', (METHODS[name],), {'use_symmetry': use})
+        out.append(run(cls, double_group, 2, 2))
+    a, b = out
+    assert a.dims.sym is not None and b.dims.sym is None
+    assert abs(a.e_corr - b.e_corr) < 1e-9
+    assert abs(numpy.asarray(a.e_tot) - b.e_tot).max() < 1e-8

@@ -23,6 +23,7 @@ section 2).  Two implementations:
 
 import numpy
 
+from socutils.zmr import symmetry_sectors
 from socutils.zmr.lib import linalg as la
 from socutils.zmr.spaces import OrbitalSpaces
 
@@ -34,9 +35,14 @@ class ERIsBase:
     with_virtuals(u), generalized_fock(gamma_act) and core_energy().
 
     active_charges: symmetry charges of the active orbitals, set by
-    zmr.active.symmetry.adapt (None: no symmetry is used).'''
+    zmr.active.symmetry.adapt (None: no symmetry is used).
+    orbsym, doublegroupname: double-group sectors of all orbitals (core, active,
+    virtual) and the group (zmr.symmetry_sectors; None: no symmetry); kept by
+    rotate and with_virtuals as long as the rotation does not mix sectors.'''
 
     active_charges = None
+    orbsym = None
+    doublegroupname = None
     dtype = numpy.complex128
 
     def __getattr__(self, name):
@@ -70,7 +76,9 @@ class ERIsBase:
 
     def _keep_charges(self, new, u):
         '''Carry the active charges over to the rotated integrals if the
-        rotation leaves the active orbitals alone.'''
+        rotation leaves the active orbitals alone, and the double-group sectors
+        if it does not mix them.'''
+        symmetry_sectors.keep(new, self, u)
         a = self.spaces.slice('a')
         unchanged = numpy.array_equal(u[a, a], numpy.eye(self.spaces.nact))
         if self.active_charges is not None and unchanged:
@@ -145,7 +153,7 @@ class ERIs(ERIsBase):
                            full, optimize=True)
         new = ERIs(self.ecore, h1, eri, spaces)
         new.active_charges = self.active_charges
-        return new
+        return symmetry_sectors.keep(new, self, full)
 
     def core_energy(self):
         '''E_core = ecore + sum_i h_ii + 1/2 sum_ij [(ii|jj) - (ij|ji)]'''
@@ -392,7 +400,7 @@ class MOERIs(ERIsBase):
         if self.factorized:
             self._share_occupied(new, full)
         new.active_charges = self.active_charges
-        return new
+        return symmetry_sectors.keep(new, self, full)
 
     def _dm(self, gamma_act):
         '''AO density of the filled core plus the active density gamma
