@@ -333,6 +333,15 @@ def half_gv(cell, mesh):
     return K @ b, f
 
 
+def stc_factor(G, rc):
+    '''v_TC(G) / (4 pi / G^2) = 1 - cos(|G| R_c) for the spherically truncated Coulomb kernel (1 at G = 0: the
+    G = 0 term is handled separately).'''
+    g = np.sqrt(np.einsum('gx,gx->g', G, G))
+    f = 1 - np.cos(g * rc)
+    f[g < 1e-6] = 1.
+    return f
+
+
 def kernels(Gv, omega):
     G2 = np.einsum('gx,gx->g', Gv, Gv)
     w_vec = np.empty(len(G2))
@@ -430,6 +439,9 @@ class THCExchange:
             r.sr_fit = False
             r.lr_columns = cxc
             r.verbose = 0
+            if getattr(self, 'exx_trunc', None):                      # LR rows: K only (J by GAPW)
+                rc_ = self.exx_trunc
+                r.lr_row_factor = lambda G: stc_factor(G, rc_)
             self.r = r.build()
             self.J = None
             self.Llr_cx, self.lr_cols = r.cderi, cxc                   # (nlr, nCX)
@@ -546,6 +558,13 @@ class THCExchange:
         self.timings['pivots'] = time.time() - t
         self.Gv, self.fG = half_gv(cell, self.mesh)
         self.w_vec, self.w_sr = kernels(self.Gv, self.omega)
+        # exchange kernel w_k (V, A_lr, the LR rows): Coulomb (w_vec), or with exx_trunc = R_c (bohr) the smoothed
+        # truncated Coulomb  w_SR + v_TC(G) exp(-G^2 / 4 w^2),  v_TC = 4 pi (1 - cos G R_c) / G^2  (sphere; Yang,
+        # Bakry, Ye, arXiv:2609.00203): the LR weights times 1 - cos(G R_c) at G != 0; G = 0 as w_vec, its TC part
+        # 2 pi R_c^2 / V S D S added by the mean field (spinor_scf exxdiv 'stc').  J keeps w_vec.
+        self.w_k = self.w_vec
+        if getattr(self, 'exx_trunc', None):
+            self.w_k = self.w_sr + (self.w_vec - self.w_sr) * stc_factor(self.Gv, self.exx_trunc)
         self.log('   THC common: nao %d (smooth %d), CX pairs %d of %d, ke %.0f Eh, mesh %s = %d points, %d pivots; '
                  'RSDF %.0f s, local fit %.0f s, grid %.0f s, pivots %.0f s'
                  % (nao, len(self.smooth), self.cx.sum(), len(self.cx), self.ke, self.mesh, self.ng, len(self.piv),
@@ -613,7 +632,7 @@ class THCExchange:
         A = np.zeros((self.auxmol.nao, nmu))
         A_lr = np.zeros((self.auxmol.nao, nmu))
         sw = self.fG * self.w_sr / vol
-        swl = self.fG * (self.w_vec - self.w_sr) / vol
+        swl = self.fG * (self.w_k - self.w_sr) / vol
         lrg = np.where(np.abs(swl) > 1e-14 * np.abs(swl).max())[0]       # the LR kernel lives at small G only
         Pl = ft_ao(self.auxmol, self.Gv[lrg]) * swl[lrg, None]           # (nG_lr, naux)
         Plr, Pli = np.ascontiguousarray(Pl.real.T), np.ascontiguousarray(Pl.imag.T)
@@ -766,7 +785,7 @@ class THCExchange:
             As = Xq = X2 = P2 = None
             # potential of the own mu rows on the full grid
             ta = time.time()
-            Xh *= self.w_vec[None]
+            Xh *= self.w_k[None]
             vxi = scipy.fft.irfftn(Xh.reshape((m1 - m0,) + hshape), s=tuple(mesh), axes=(1, 2, 3),
                                    workers=-1, overwrite_x=True).reshape(m1 - m0, -1)
             Xh = None
@@ -834,7 +853,7 @@ class THCExchange:
             Xi[:, b0:b1] = self._lr_rows_of_xi(Xh)
         # potential of the block in real space, (v * xi_b)(r) = irfft(w_vec xi_b(G)) ng / vol
         ta = time.time()
-        Xh *= self.w_vec[None]
+        Xh *= self.w_k[None]
         vxi = scipy.fft.irfftn(Xh.reshape((n,) + hshape), s=tuple(mesh), axes=(1, 2, 3),
                                workers=-1, overwrite_x=True).reshape(n, -1)
         tt['V'] += time.time() - ta
@@ -915,7 +934,7 @@ class THCExchange:
         Xh = scipy.fft.rfftn(xi.reshape(nmu, *self.mesh), axes=(1, 2, 3), workers=-1).reshape(nmu, -1)
         Xh *= vol / ng                                              # xi(G) = int_cell xi(r) e^{-iGr}
         xi = None
-        s = np.sqrt(self.fG * self.w_vec / vol)
+        s = np.sqrt(self.fG * self.w_k / vol)
         W = Xh * s
         V = W.real @ W.real.T + W.imag @ W.imag.T                   # (xi_mu | xi_nu) with w_vec
         W = None
@@ -923,7 +942,7 @@ class THCExchange:
         A = np.zeros((self.auxmol.nao, nmu))
         A_lr = np.zeros((self.auxmol.nao, nmu))
         sw = self.fG * self.w_sr / vol
-        swl = self.fG * (self.w_vec - self.w_sr) / vol                # LR (G != 0; the G = 0 terms cancel)
+        swl = self.fG * (self.w_k - self.w_sr) / vol                  # LR (G != 0; the G = 0 terms cancel)
         for g0 in range(0, len(self.Gv), 20000):
             g1 = min(g0 + 20000, len(self.Gv))
             Pg = ft_ao(self.auxmol, self.Gv[g0:g1])                 # (nG, naux)
@@ -951,7 +970,7 @@ class THCExchange:
         flat = (i[:, 0] * mesh[1] + i[:, 1]) * (mesh[2] // 2 + 1) + i[:, 2]
         xg = Xh[:, flat].T                                            # (nG, N_mu)
         xg[flip] = xg[flip].conj()
-        sq = np.sqrt(r.lr_vG / self.cell.vol)[:, None]
+        sq = np.sqrt(getattr(r, 'lr_vG_rows', r.lr_vG) / self.cell.vol)[:, None]
         rows = np.empty((2 * len(flat), Xh.shape[0]))
         rows[0::2] = sq * xg.real
         rows[1::2] = sq * xg.imag
@@ -1681,6 +1700,15 @@ class THCJK:
         for k in ('coarsen', 'blocked_pivots', 'far_fit', 'phi_ondemand'):   # options, if set
             if hasattr(self, k):
                 setattr(self.th, k, getattr(self, k))
+        rc = getattr(self, 'exx_trunc', None)                         # smoothed truncated Coulomb exchange
+        if isinstance(rc, str) and rc == 'auto':
+            # the inradius of the Wigner-Seitz cell (half the shortest lattice vector): at Gamma the kernel is
+            # periodised over the cell's lattice, and a sphere beyond it overlaps its images (double-counted
+            # exchange; the Spencer-Alavi R_c = (3V / 4 pi)^(1/3) does that, and diverges for a 2x1x1 cell)
+            a_ = np.asarray(cell.lattice_vectors())
+            n_ = np.array([(i, j, k) for i in (-1, 0, 1) for j in (-1, 0, 1) for k in (-1, 0, 1) if (i, j, k) != (0, 0, 0)])
+            rc = .5 * np.linalg.norm(n_ @ a_, axis=1).min()
+        self.exx_trunc = self.th.exx_trunc = rc
         self.th.kmax_factor = self.nmu_factor                         # pivots: only the N_mu prefix is used
         self.th.build_common()
         self.th.build_thc(int(round(self.nmu_factor * len(self.th.smooth))))
@@ -1692,6 +1720,14 @@ class THCJK:
     @property
     def c_g0(self):
         return self.th.r.c_g0
+
+    def exx_g0(self):
+        '''G = 0 exchange coefficient of S D S for the truncated kernel: c0 (the SR part, as w_vec(0) / V) plus
+        v_TC(0) / V = 2 pi R_c^2 / V (spinor_scf exxdiv 'stc'); None without exx_trunc.'''
+        rc = getattr(self, 'exx_trunc', None)
+        if not rc:
+            return None
+        return self.c_g0 + 2 * np.pi * rc ** 2 / self.cell.vol
 
     def g0_constant(self, nelectron):
         return self.th.r.g0_constant(nelectron)

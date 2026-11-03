@@ -369,7 +369,7 @@ if not args.no_cahf:
         mc.conv_tol_grad = args.cahf_conv_grad
         mc.verbose = 4 if root else 0
         mc.chkfile = f_cahf.replace('.npz', '_partial.npz') if root else None
-        if os.path.exists(mc.chkfile):
+        if mc.chkfile and os.path.exists(mc.chkfile):
             zp = numpy.load(mc.chkfile)
             if zp['mo_coeff'].shape == mo.shape and comm is None:
                 mo = zp['mo_coeff']

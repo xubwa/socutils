@@ -468,9 +468,12 @@ class _PeriodicSpinorSCF(spinor_hf._DFJHF):
         return dvj, dvk
 
     def madelung(self):
-        '''nu_M for exxdiv='ewald', else 0.'''
+        '''nu_M for exxdiv='ewald'; for exxdiv='stc' (with_df with a truncated exchange kernel, THCJK(exx_trunc))
+        the kernel's own G = 0 term, with_df.exx_g0(); else 0.'''
         if self.exxdiv is None:
             return 0.
+        if self.exxdiv == 'stc':
+            return self.with_df.exx_g0()
         if self.exxdiv != 'ewald':
             raise NotImplementedError(self.exxdiv)
         if getattr(self, '_madelung', None) is None:

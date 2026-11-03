@@ -454,6 +454,10 @@ class RSDF(lib.StreamObject):
         G2 = np.einsum('gx,gx->g', G, G)
         vG = 2 * 4 * np.pi * np.exp(-G2 / (4 * omega**2)) / G2
         self.lr_G, self.lr_vG = G, vG                 # the LR rows: 2g (cos) and 2g + 1 (sin) belong to G[g]
+        # lr_row_factor (callable of G (n, 3) -> factor >= 0): the pair LR rows carry vG * factor (the nuclear LR
+        # terms keep vG), e.g. the truncated-Coulomb exchange kernel of THCJK(exx_trunc=...), whose LR rows serve K only
+        fac = getattr(self, 'lr_row_factor', None)
+        self.lr_vG_rows = vG * fac(G) if fac is not None else vG
 
         # aux FTs (ng, nfit); computed once for all G when small enough
         cache_fit = len(G) * nfit * 16 < .1 * self.max_memory * 1e6
@@ -621,7 +625,7 @@ class RSDF(lib.StreamObject):
                 Bp[f0:] += np.asarray(fw.real, order='C') @ PgR
                 Bp[f0:] += np.asarray(fw.imag, order='C') @ PgI
                 if gspace:
-                    sq = np.sqrt(vG[g0:g1] * vol)[:, None]
+                    sq = np.sqrt(self.lr_vG_rows[g0:g1] * vol)[:, None]
                     rows = np.empty((g1 - g0, 2, p1 - p0))
                     rows[:, 0] = sq * PgR
                     rows[:, 1] = sq * PgI
