@@ -169,6 +169,10 @@ def _times(ir, c, group):
 # products smaller than this (na * nc * nb) are done dense: the blocking does not pay
 # (Br2 cc-pVQZ, Dooh*: the general terms of DSRG-MRPT3 with 1 << 18 took 3x longer)
 SYMMETRY_MIN_SIZE = 1 << 28
+# ... and blocked only if the blocks need less than this fraction of the dense work, and
+# their average work is at least SYMMETRY_MIN_BLOCK
+SYMMETRY_MAX_FRACTION = 0.5
+SYMMETRY_MIN_BLOCK = 1 << 18
 
 
 def _sector_groups(letters, coefs, secs, group):
@@ -210,6 +214,14 @@ def _symmetry_plan(aown, con, bown, sa, sb, secs, group):
         right = bgroups.get((dg.conj(t1, group),))
         if rows is not None and right is not None:
             plan.append((rows, cols, right))
+    # the blocked product pays only if it saves at least half of the work and the blocks
+    # are not too small; otherwise None (dense)
+    na = sum(x.size for x in agroups.values())
+    nc = sum(x.size for x in cgroups.values())
+    nb = sum(x.size for x in bgroups.values())
+    work = sum(r.size * c.size * b.size for r, c, b in plan)
+    if work > SYMMETRY_MAX_FRACTION * na * nc * nb or (plan and work / len(plan) < SYMMETRY_MIN_BLOCK):
+        return None
     return plan
 
 
@@ -318,10 +330,13 @@ def _pair(asub, a, bsub, b, keepers, sa=None, sb=None, secs=None, group=None, pl
         key = (tuple(aown), tuple(con), tuple(bown),
                tuple(sorted(sa.items())), tuple(sorted(sb.items())),
                tuple(spaces[x] for x in aown + con + bown))
-        plan = plans.get(key)
+        if key not in plans:
+            plans[key] = _symmetry_plan(aown, con, bown, sa, sb, secs, group)
+        plan = plans[key]
         if plan is None:
-            plan = plans[key] = _symmetry_plan(aown, con, bown, sa, sb, secs, group)
-        r = _pair_symmetric(at.reshape(na, nc), bt.reshape(nc, -1), plan)
+            r = la.gemm(at.reshape(na, nc), bt.reshape(nc, -1))
+        else:
+            r = _pair_symmetric(at.reshape(na, nc), bt.reshape(nc, -1), plan)
         r = r.reshape(at.shape[:len(aown)] + bt.shape[len(con):])
     else:
         r = la.gemm(at.reshape(na, nc), bt.reshape(nc, -1))
