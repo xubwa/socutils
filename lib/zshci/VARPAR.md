@@ -137,7 +137,9 @@ product at Fe4S4's 6.4 ns per pair per node. Real numbers, no spin_flip.
 | Reiher (54e,54o), W = 2, Ms = 1 * | 777140 | 100561 / 2803 / 78 | 153 (920 nodes) | 25 |
 | Li-Chan (113e,76o), W = 3, S = 3/2 | 1772778 | 229396 / 1869 / 15 | 102 (615 nodes) | 17 |
 
-(*: 54 electrons cannot have S = 3/2; Ms = 1 taken.)
+(*: an assumption of the projection: 54 electrons cannot have S = 3/2, so
+Ms = 1 (28 alpha, 26 beta) is taken for the Reiher space; its D and FCI
+size differ from Ms = 0 or an odd-electron variant by a few per cent.)
 
 Arrays over the determinants at N = 1e10, today held whole on every node
 or rank:
@@ -243,5 +245,70 @@ Fe4S4 1e7, one node, 160 GB: 799 s before, 804 s after (same node; item c
 saves 10.7 s of value evaluation at 7.6e6 but the search that keeps the
 values is 7.4 s slower).
 
-Items b on several nodes, and 4 and 8 nodes at 5.8e7 and 1.2e8: queued
-(jobs 32760557, 32760558; Fe4S4 to 1e8 on 8 nodes: 32761217).
+## Measured after items b, c, d on 4 and 8 nodes
+
+Cr2 k15 input, variational only, "adapt" 170 GB, one rank of 48 threads
+per node; before and after on the same nodes, one after the other. Seconds;
+per product: t_dav over the products of the iteration; RSS: the root's
+peak (GB), node: memory in use above the node's baseline.
+
+| nodes | dets | | t_sel | t_ham | t_dav | per product | RSS root | node |
+|---|---|---|---|---|---|---|---|---|
+| 1 (140 GB) | 5.8e7 | before | 6.8 | 49.5 | 88.4 | 2.85 | 69.9 | |
+| 1 (140 GB) | 5.8e7 | after | 6.1 | 45.6 | 90.3 | 2.91 | 70.0 | |
+| 4 | 5.8e7 | before | 3.1 | 16.4 | 41.2 | 1.33 | 25.7 | |
+| 4 | 5.8e7 | after | 3.1 | 14.8 | 40.6 | 1.31 | 25.1 | |
+| 8 | 5.8e7 | before | 2.3 | 16.5 | 42.0 | 1.36 | 12.8 | |
+| 8 | 5.8e7 | after | 2.2 | 12.4 | 32.6 | 1.05 | 12.2 | |
+| 1 (140 GB) | 1.2e8 | before | 13.5 | 147.3 | 1437.6 | 49.6 | 131.7 | 132 |
+| 1 (140 GB) | 1.2e8 | after | 13.1 | 130.9 | 1406.3 | 48.5 | 131.8 | 132 |
+| 4 | 1.2e8 | before | 6.4 | 39.5 | 96.1 | 3.31 | 56.3 | 52-56 |
+| 4 | 1.2e8 | after | 6.4 | 35.5 | 95.8 | 3.30 | 55.0 | 53-57 |
+| 8 | 1.2e8 | before | 4.9 | 37.9 | 95.5 | 3.29 | 28.0 | 24-28 |
+| 8 | 1.2e8 | after | 4.7 | 28.3 | 75.0 | 2.58 | 26.7 | 24-29 |
+
+Per-rank product breakdown at 1.2e8 (s over 29 products, local / sending
+x / summing y with the wait for the slowest rank):
+4 nodes before 74.5-82.8 / 3.4-8.2 / 4.9-13.3, after 74.7-81.0 / 1.1 /
+10.4-16.7; 8 nodes before 56.7-74.4 / 2.5-12.8 / 9.4-27.0, after 57.2-63.9
+/ 1.3 / 7.1-13.8.
+
+What this says:
+- **Item b** gains 21 % of t_dav on 8 nodes (95.5 -> 75.0 s at 1.2e8,
+  42.0 -> 32.6 s at 5.8e7) and nothing on 4. The root no longer does the
+  solver's vector work while the other ranks wait (their "send x" time,
+  6-13 s, was that wait), and the bucketed partition (item d) evens out the
+  local work (spread 57-64 s instead of 57-74 s). The root's peak shrinks
+  by only 1.3 GB: other arrays dominate it at 1.2e8.
+- **4 to 8 nodes** gains little: local work per product 2.8 -> 2.2 s,
+  because at 8 nodes a rank holds too few elements for the one-sweep
+  product (its 48 thread vectors of 6e7 numbers, 23 GB, exceed its 18.6 GB
+  of elements) and reads its matrix twice. This is item a: no thread y.
+- **Item d** takes 4-10 s off t_ham (the row partition of the two-sweep
+  product); item c is not taken at 8 nodes either.
+
+Energies agree with the code before to 1.2e-11 or better (the difference
+grows with the space and stays far below the 5e-5 residual of the solver;
+1, 4 and 8 ranks of the old code differ among themselves by up to 3e-12
+at 1.2e8), with the same determinant counts in every iteration.
+
+## Fe4S4 toward 1e8 on 8 nodes
+
+From the 1e7 space, epsilon1 1e-5, 5e-6, 3e-6, "adapt" 160 GB per rank:
+
+| iteration | dets | elements per det | stored, all ranks | values held | t_sel | t_ham | per product | root RSS |
+|---|---|---|---|---|---|---|---|---|
+| 0 | 2.54e7 | 1528 | 434 GB | all | 4.4 | 49.8 | 2.45 s | 62.7 GB |
+| 1 | 7.37e7 | 1881 | 1102 GB | 56 % | 13.2 | 262.3 | 42.5 s | 145.8 GB |
+| 2 | (selected) | | | | 36.6 | out of memory in the build | | |
+
+Elements per determinant keep growing as N^0.20 (1262 at 1e7). At 7.4e7
+the matrix needs 22.6 kB per determinant (1.5 TB with values on 8 nodes);
+44 % of the values are worked out in every product, which is then 17
+times slower. The third iteration ran out of memory while building: with
+160 GB per rank on nodes of 188 GB with 25 GB in use beforehand there is no
+room for the transient memory of the build (the per-thread row arrays grow
+by doubling, the string tables are rebuilt beside the old ones). A limit
+of 150 GB, and a build that bounds its transient memory, are needed
+there. The rows-left-out sum took 17.5 s at 7.4e7: one collective waited
+for the slowest rank's search.

@@ -732,6 +732,25 @@ taken only where it costs no values). One growth step to 58.4 M: "adapt"
 21.4 s on 1 and 4 nodes; to 119.5 M on 8 nodes "adapt" 5.0, "direct" 30.4
 s.
 
+**Multi-node variational loop, current code** (Cr2 spin_flip, k15 input,
+"adapt" 170 GB, one rank of 48 threads per node; seconds of the iteration,
+per product: t_dav over its products; VARPAR.md has the breakdown and the
+code before):
+
+| determinants | nodes | t_sel | t_ham | t_dav | per product | root peak GB |
+|---|---|---|---|---|---|---|
+| 5.8e7 | 1 (140 GB) | 6.1 | 45.6 | 90.3 | 2.91 | 70.0 |
+| 5.8e7 | 4 | 3.1 | 14.8 | 40.6 | 1.31 | 25.1 |
+| 5.8e7 | 8 | 2.2 | 12.4 | 32.6 | 1.05 | 12.2 |
+| 1.2e8 | 1 (140 GB) | 13.1 | 130.9 | 1406.3 | 48.5 | 131.8 |
+| 1.2e8 | 4 | 6.4 | 35.5 | 95.8 | 3.30 | 55.0 |
+| 1.2e8 | 8 | 4.7 | 28.3 | 75.0 | 2.58 | 26.7 |
+
+On one node at 1.2e8 a quarter of the values do not fit and are worked out
+in every product. Fe4S4 (54e,36o) needs 14 times the elements per
+determinant of Cr2 (1262 at 1e7, 1881 at 7.4e7: 22.6 kB per determinant);
+VARPAR.md projects the memory to 1e10.
+
 **Perturbation theory, step by step** (`"pt": {"profile": true}`; 1.2e7
 determinants, spin_flip, one node, epsilon2 1e-7, epsilon2_large 1e-5,
 9600 samples). Before the kernels of 810190d one batch took 1.22 s (0.86
