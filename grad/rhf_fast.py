@@ -42,6 +42,7 @@ from socutils.hessian import rhf_fast as hess_fast
 # socutils.hessian.ghf.HESS2E_TOL (1e-13).  1e-11: max |g - g(1e-13)| 1.6e-9 (C16H34) /
 # 7.1e-9 (cholesterol) Eh/Bohr, the 2e part 17 / 22 % faster (HF / cc-pVDZ)
 GRAD2E_TOL = 1e-11
+GRAD_SUBBLOCK = 112     # grid points per sub-block of the fused XC gradient (10 AO components per AO)
 
 
 USE_FUSED_XC = True     # LDA / GGA XC gradient by the fused one-pass kernel (_xc_grad_fused)
@@ -140,7 +141,7 @@ def _xc_grad_fused(libdft, ni, mol, grids, xc_code, dm, xctype):
     libdft.SOCDFTxc_grad_fused(
         out.ctypes.data_as(ctypes.c_void_p), D.ctypes.data_as(ctypes.c_void_p),
         coords.ctypes.data_as(ctypes.c_void_p), weights.ctypes.data_as(ctypes.c_void_p),
-        non0tab.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(ngrid), ctypes.c_int(vxc_fast.SUBBLOCK),
+        non0tab.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(ngrid), ctypes.c_int(GRAD_SUBBLOCK),
         ctypes.c_double(vxc_fast.AO_CUTOFF), ctypes.c_int(0 if xctype == 'LDA' else 1), feval,
         ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.natm),
         bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p),

@@ -137,7 +137,7 @@ def nr_rks(ni, mol, grids, xc_code, dms, relativity=0, hermi=1, max_memory=2000,
     return nelec, excsum, vmat.reshape(dms_a.shape)
 
 
-SUBBLOCK = 112          # grid points per cache-blocked sub-block (a multiple of pyscf's BLKSIZE, 56)
+SUBBLOCK = 168          # grid points per cache-blocked sub-block (a multiple of pyscf's BLKSIZE, 56; 168 3 % faster than 112, 224 and 56 slower: cholesterol PBE)
 AO_CUTOFF = 1e-15       # max_g |phi_k| below which an AO is dropped from a sub-block
 _blas = None
 
