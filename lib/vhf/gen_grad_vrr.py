@@ -174,17 +174,37 @@ def emit_hrr(w, src, sidx, la_, lb_, lc_, ld_, out):
 def kernel(la, lb, lc, ld):
     L = la + lb + lc + ld + 1
     stg = stream_targets(la, lb, lc, ld)
-    union = []
-    for st in ('S0', 'SA', 'SB', 'SC'):
-        for t in stg[st]:
-            if t not in union:
-                union.append(t)
+    # the targets ordered so that those of each bra weight are one interval:
+    # X = S0 + SC (weight c), Y = SB (2 c a_B), Z = SA (2 c a_A), Z within Y;
+    # groups X\Y, (X^Y)\Z, X^Y^Z, Z\X, Y\(X+Z)
+    Xs = []
+    for t in stg['S0'] + stg['SC']:
+        if t not in Xs:
+            Xs.append(t)
+    Ys, Zs = list(stg['SB']), list(stg['SA'])
+    assert all(t in Ys for t in Zs)
+    inX, inY, inZ = set(Xs), set(Ys), set(Zs)
+    allt = Xs + [t for t in Ys if t not in inX]
+    groups = [[t for t in allt if t in inX and t not in inY],
+              [t for t in allt if t in inX and t in inY and t not in inZ],
+              [t for t in allt if t in inX and t in inZ],
+              [t for t in allt if t in inZ and t not in inX],
+              [t for t in allt if t in inY and t not in inX and t not in inZ]]
+    union = sum(groups, [])
+    assert len(union) == len(allt)
     uidx = {t: i for i, t in enumerate(union)}
     nt = len(union)
+    g0 = [0]
+    for g in groups:
+        g0.append(g0[-1] + len(g))
+    nX, nY, nZ = g0[3], g0[5] - g0[1], g0[4] - g0[2]
+    xb, yb, zb = 0, g0[1], g0[2]        # interval starts in the union
     order, exprs = vrr_plan_targets(union)
-    n0, nA, nB, nC = len(stg['S0']), len(stg['SA']), len(stg['SB']), len(stg['SC'])
-    nw = n0 + nA + nB + nC              # per combination: S0, SA, SB, SC rows
-    sidx = {st: {t: i for i, t in enumerate(stg[st])} for st in stg}
+    # per combination the rows X (S0, weight 1), XC (SC, 2 a_C), Z (SA), Y (SB)
+    n0, nA, nB, nC = nX, nZ, nY, nX
+    nw = 2 * nX + nZ + nY
+    sidx = {'S0': {t: uidx[t] - xb for t in stg['S0']}, 'SC': {t: uidx[t] - xb for t in stg['SC']},
+            'SA': {t: uidx[t] - zb for t in stg['SA']}, 'SB': {t: uidx[t] - yb for t in stg['SB']}}
     fn = 'ggd_%d%d%d%d' % (la, lb, lc, ld)
     o = []
     w = o.append
@@ -198,7 +218,7 @@ def kernel(la, lb, lc, ld):
     w('        const double *eA = bs ? B->ej : B->ei, *eB = bs ? B->ei : B->ej, *eC = ks ? K->ej : K->ei;')
     w('        double *v = wk, *w0 = v + (size_t)%d * nb;' % nt)
     w('        double *wA = w0 + (size_t)%d * ncb, *wB = wA + (size_t)%d * ncb, *SK = wB + (size_t)%d * ncb;' % (
-        n0 + nC, nA, nB))
+        nX, nZ, nY))
     w('        double *FT = SK + (size_t)nck * ncb * %d;' % nw)
     w('        int t, b, cb, kc, i, any = 0;')
     w('        memset(SK, 0, sizeof(double) * nck * ncb * %d);' % nw)
@@ -206,6 +226,7 @@ def kernel(la, lb, lc, ld):
     w('                if (K->bnd[t] < cut) continue;')
     w('                any = 1;')
     w('                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);')
+    w('                if (nbt == 0) continue;')
     w('                const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];')
     w('                const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];')
     w('                const double h2q = .5 / q;')
@@ -244,40 +265,64 @@ def kernel(la, lb, lc, ld):
     for i, (e, f) in enumerate(union):
         w('                        v[%d * nb + b] = g * %s;' % (i, vname(e, f, 0)))
     w('                }')
-    # bra contractions: w0 (S0 then SC targets, weight c), wA (c 2 a_A), wB (c 2 a_B)
-    w0list = stg['S0'] + stg['SC']
+    # bra contractions over the target groups, v read once per target:
+    # w0 = sum_b c v on X, wB = sum_b 2 c a_B v on Y, wA = sum_b 2 c a_A v on Z
+    gsums = [('0',), ('0', 'B'), ('0', 'B', 'A'), ('B', 'A'), ('B',)]
+    dst = {'0': ('w0', xb, nX), 'A': ('wA', zb, nZ), 'B': ('wB', yb, nY)}
     w('                for (cb = 0; cb < ncb; cb++) {')
     w('                        const double *c = B->c + (size_t)cb * B->ld;')
-    for nm, lst, wt in (('w0', w0list, None), ('wA', stg['SA'], 'eA'), ('wB', stg['SB'], 'eB')):
-        n = len(lst)
-        idx = ', '.join(str(uidx[t]) for t in lst)
-        w('                        {')
-        w('                                static const int ui[%d] = {%s};' % (n, idx))
-        w('                                for (i = 0; i < %d; i++) {' % n)
-        w('                                        const double *vi = v + (size_t)ui[i] * nb;')
-        w('                                        double y = 0;')
-        if wt is None:
-            w('                                        for (b = 0; b < nbt; b++) y += c[b] * vi[b];')
-        else:
-            w('                                        for (b = 0; b < nbt; b++) y += c[b] * %s[b] * vi[b];' % wt)
-            w('                                        y *= 2;')
-        w('                                        %s[cb * %d + i] = y;' % (nm, n))
+    w('                        double c0[nbt], cA[nbt], cB[nbt];')
+    w('                        for (b = 0; b < nbt; b++) {')
+    w('                                c0[b] = c[b];')
+    w('                                cA[b] = 2 * c[b] * eA[b];')
+    w('                                cB[b] = 2 * c[b] * eB[b];')
+    w('                        }')
+    w('                        double *y0 = w0 + cb * %d, *yA = wA + cb * %d, *yB = wB + cb * %d;' % (nX, nZ, nY))
+    w('                        (void)y0; (void)yA; (void)yB;')
+    for gi, sums in enumerate(gsums):
+        lo, hi = g0[gi], g0[gi + 1]
+        if hi == lo:
+            continue
+        outs = ['y%s[i - %d]' % (s, dst[s][1]) for s in sums]
+        w('                        if (nb == 1) {')
+        w('                                const double %s;' % ', '.join('k%s = c%s[0]' % (s, s) for s in sums))
+        w('#pragma omp simd')
+        w('                                for (i = %d; i < %d; i++) {' % (lo, hi))
+        w('                                        const double x = v[i];')
+        for s, ot in zip(sums, outs):
+            w('                                        %s = k%s * x;' % (ot, s))
+        w('                                }')
+        w('                        } else {')
+        w('                                for (i = %d; i < %d; i++) {' % (lo, hi))
+        w('                                        const double *vi = v + (size_t)i * nb;')
+        w('                                        double %s;' % ', '.join('s%s = 0' % s for s in sums))
+        w('                                        for (b = 0; b < nbt; b++) {')
+        w('                                                const double x = vi[b];')
+        for s in sums:
+            w('                                                s%s += c%s[b] * x;' % (s, s))
+        w('                                        }')
+        for s, ot in zip(sums, outs):
+            w('                                        %s = s%s;' % (ot, s))
         w('                                }')
         w('                        }')
     w('                }')
-    # ket accumulation: SK[(kc ncb + cb) nw + ...] rows S0 | SA | SB | SC
+    # ket accumulation: SK[(kc ncb + cb) nw + ...] rows X (S0) | XC (SC) | Z (SA) | Y (SB)
     w('                const double kq = K->kp[t], ac2 = 2 * eC[t];')
     w('                for (kc = 0; kc < nck; kc++) {')
-    w('                        const double f = K->c[(size_t)kc * K->ld + t] * kq;')
+    w('                        const double f = K->c[(size_t)kc * K->ld + t] * kq, fc = f * ac2;')
     w('                        for (cb = 0; cb < ncb; cb++) {')
     w('                                double *so = SK + ((size_t)kc * ncb + cb) * %d;' % nw)
     w('                                const double *x0 = w0 + cb * %d, *xa = wA + cb * %d, *xb = wB + cb * %d;' % (
-        n0 + nC, nA, nB))
-    w('                                for (i = 0; i < %d; i++) so[i] += f * x0[i];' % n0)
-    w('                                for (i = 0; i < %d; i++) so[%d + i] += f * xa[i];' % (nA, n0))
-    w('                                for (i = 0; i < %d; i++) so[%d + i] += f * xb[i];' % (nB, n0 + nA))
-    w('                                for (i = 0; i < %d; i++) so[%d + i] += f * ac2 * x0[%d + i];' % (
-        nC, n0 + nA + nB, n0))
+        nX, nZ, nY))
+    w('#pragma omp simd')
+    w('                                for (i = 0; i < %d; i++) {' % nX)
+    w('                                        so[i] += f * x0[i];')
+    w('                                        so[%d + i] += fc * x0[i];' % nX)
+    w('                                }')
+    w('#pragma omp simd')
+    w('                                for (i = 0; i < %d; i++) so[%d + i] += f * xa[i];' % (nZ, 2 * nX))
+    w('#pragma omp simd')
+    w('                                for (i = 0; i < %d; i++) so[%d + i] += f * xb[i];' % (nY, 2 * nX + nZ))
     w('                        }')
     w('                }')
     w('        }')
@@ -314,7 +359,8 @@ def kernel(la, lb, lc, ld):
     w('        for (ci = 0; ci < B->nci; ci++) {')
     w('                const int cpos[4] = {ci, cj, ck, cl};')
     w('                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * %d;' % nw)
-    w('                const double *s0 = sk, *sA = sk + %d, *sB = sk + %d, *sC = sk + %d;' % (n0, n0 + nA, n0 + nA + nB))
+    w('                const double *s0 = sk, *sC = sk + %d, *sA = sk + %d, *sB = sk + %d;' % (
+        nX, 2 * nX, 2 * nX + nZ))
     w('                (void)s0;')
     srcname = {'S0': 's0', 'SA': 'sA', 'SB': 'sB', 'SC': 'sC'}
     for nm, (st, a_, b_, c_, d_) in sh.items():
@@ -326,6 +372,21 @@ def kernel(la, lb, lc, ld):
     nAm = len(comps(la - 1)) if la > 0 else 0
     nBm = len(comps(lb - 1)) if lb > 0 else 0
     nCm = len(comps(lc - 1)) if lc > 0 else 0
+    # profiling builds: -DGGD_PROF=1 the HRR kept, the contraction replaced by a plain sum;
+    # -DGGD_PROF=2 the vertical recursions only
+    w('#if defined(GGD_PROF) && GGD_PROF == 1')
+    shp = [nm for nm in sh]
+    w('                { double s_ = 0;')
+    for nm in shp:
+        st_, a_, b_, c_, d_ = sh[nm]
+        n_ = len(comps(a_)) * len(comps(b_)) * len(comps(c_)) * len(comps(d_))
+        w('                  for (i = 0; i < %d; i++) s_ += %s[i];' % (n_, nm))
+    w('                  sum[0] += s_ * 1e-300; }')
+    w('                continue;')
+    w('#elif defined(GGD_PROF) && GGD_PROF == 2')
+    w('                sum[0] += sk[0] * 1e-300;')
+    w('                continue;')
+    w('#endif')
     w('                for (gi = 0; gi < ngroup; gi++) {')
     w('                        const double *dg = dd + gi * nd + base;')
     w('                        double gs[9] = {0};')

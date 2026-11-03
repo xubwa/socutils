@@ -71,7 +71,7 @@ typedef int (*ggd_fn)(double *, const double *, int, size_t, const size_t *, con
 #define GGD_LMAX 2
 #define GGD_LSUM_MAX 6   /* classes of larger total l: NULL (the Rys kernel) */
 #define GGD_NT 836       /* the largest union of VRR targets */
-#define GGD_NW 1746       /* the largest stream row per combination */
+#define GGD_NW 2176       /* the largest stream row per combination */
 static const ggd_fn ggd_table[3][3][3][3] = {
         [0][0][0][0] = ggd_0000,
         [0][0][1][0] = ggd_0010,
