@@ -240,6 +240,62 @@ typedef void (*gtoval_t)(int ngrids, int *shls_slice, int *ao_loc, double *ao, d
 typedef void (*libxc_t)(int nfn, void *fn_obj, const double *fac, int spin, int deriv, int nvar, int np,
                         int outlen, double *rho, double *out);
 
+/*
+ * The AOs of a sub-block of n points (n <= gs) for the shells non0tab flags on
+ * its 56-point rows only: eval per run of consecutive flagged shells (pyscf's
+ * GTOval reads non0tab by the absolute shell index) into full, run after run
+ * (layout (ncomp, nao_run, n) each), so that neither the evaluation nor the
+ * memory traffic touches the other shells; then those with max_g |phi| >
+ * cutoff into a (ncomp, nl, n), their indices into ix.  src: nao size_t.
+ */
+static int eval_select(double *a, int *ix, size_t *src, double *full, int n, double *xyz, uint8_t *msk,
+                       int ncomp, double cutoff, gtoval_t eval, int *ao_loc, int *atm, int natm, int *bas,
+                       int nbas, double *env)
+{
+        const int nrow = (n + MASK_BLK - 1) / MASK_BLK;
+        int sh = 0, nl = 0, r, k, g;
+        size_t off = 0;
+        int *str = (int *)(src + ao_loc[nbas]);         /* the comp stride of each kept AO, after src */
+        while (sh < nbas) {
+                int on = 0;
+                for (r = 0; r < nrow && !on; r++) on = msk[(size_t)r * nbas + sh] != 0;
+                if (!on) { sh++; continue; }
+                const int s0 = sh;
+                for (sh++; sh < nbas; sh++) {
+                        on = 0;
+                        for (r = 0; r < nrow && !on; r++) on = msk[(size_t)r * nbas + sh] != 0;
+                        if (!on) break;
+                }
+                int sl[2] = {s0, sh};
+                const int nr = ao_loc[sh] - ao_loc[s0];
+                double *f = full + off;
+                eval(n, sl, ao_loc, f, xyz, msk, atm, natm, bas, nbas, env);
+                int mu;
+                for (mu = 0; mu < nr; mu++) {
+                        double m = 0;
+                        for (k = 0; k < ncomp; k++) {
+                                const double *p = f + ((size_t)k * nr + mu) * n;
+                                for (g = 0; g < n; g++) {
+                                        const double v = fabs(p[g]);
+                                        if (v > m) m = v;
+                                }
+                        }
+                        if (m > cutoff) {
+                                ix[nl] = ao_loc[s0] + mu;
+                                src[nl] = off + (size_t)mu * n;
+                                str[nl] = nr * n;
+                                nl++;
+                        }
+                }
+                off += (size_t)ncomp * nr * n;
+        }
+        int i;
+        for (k = 0; k < ncomp; k++)
+                for (i = 0; i < nl; i++)
+                        memcpy(a + ((size_t)k * nl + i) * n, full + src[i] + (size_t)k * str[i], sizeof(double) * n);
+        return nl;
+}
+
 void SOCDFTvxc_fused(double *vbuf, double *ex, double *ne, double *dm, double *coords, double *weights,
                      uint8_t *non0tab, int ngrid, int gs, double cutoff, int xctype, gtoval_t eval,
                      int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
@@ -264,7 +320,7 @@ void SOCDFTvxc_fused(double *vbuf, double *ex, double *ne, double *dm, double *c
         double *out = malloc(sizeof(double) * outlen * gs);
         double *wv = malloc(sizeof(double) * ncomp * gs);
         int *ix = malloc(sizeof(int) * nao);
-        int shls[2] = {0, nbas};
+        size_t *src = malloc(sizeof(size_t) * 2 * nao);
         double exs = 0, nes = 0;
         int s;
 #pragma omp for schedule(dynamic, 4)
@@ -273,9 +329,8 @@ void SOCDFTvxc_fused(double *vbuf, double *ex, double *ne, double *dm, double *c
                 const uint8_t *msk = non0tab + (size_t)(g0 / MASK_BLK) * nbas;
                 int i, j, g, k;
                 for (k = 0; k < 3; k++) memcpy(xyz + k * n, coords + (size_t)k * ngrid + g0, sizeof(double) * n);
-                eval(n, shls, ao_loc, full, xyz, (uint8_t *)msk, atm, natm, bas, nbas, env);
-                const int nl = select_gather_mask(a, ix, full, (long)nao * n, n, nao, ncomp, 0, n, cutoff,
-                                                  msk, ao_loc, nbas);
+                const int nl = eval_select(a, ix, src, full, n, xyz, (uint8_t *)msk, ncomp, cutoff, eval,
+                                           ao_loc, atm, natm, bas, nbas, env);
                 if (nl == 0) continue;
                 for (i = 0; i < nl; i++)
                         for (j = 0; j < nl; j++) d[i * nl + j] = dm[(size_t)ix[i] * nao + ix[j]];
@@ -328,7 +383,7 @@ void SOCDFTvxc_fused(double *vbuf, double *ex, double *ne, double *dm, double *c
         }
         ex[tid] = exs;
         ne[tid] = nes;
-        free(full); free(a); free(c); free(d); free(xyz); free(rho); free(out); free(wv); free(ix);
+        free(full); free(a); free(c); free(d); free(xyz); free(rho); free(out); free(wv); free(ix); free(src);
         if (mkl_set_num_threads_local) mkl_set_num_threads_local(mkl0);
 }
 }
@@ -374,7 +429,7 @@ void SOCDFTxc_grad_fused(double *outb, double *dm, double *coords, double *weigh
         double *xo = malloc(sizeof(double) * outlen * gs);
         double *wv = malloc(sizeof(double) * nvar * gs);
         int *ix = malloc(sizeof(int) * nao);
-        int shls[2] = {0, nbas};
+        size_t *src = malloc(sizeof(size_t) * 2 * nao);
         int s;
 #pragma omp for schedule(dynamic, 4)
         for (s = 0; s < nsub; s++) {
@@ -382,9 +437,8 @@ void SOCDFTxc_grad_fused(double *outb, double *dm, double *coords, double *weigh
                 const uint8_t *msk = non0tab + (size_t)(g0 / MASK_BLK) * nbas;
                 int i, j, g, k, x;
                 for (k = 0; k < 3; k++) memcpy(xyz + k * n, coords + (size_t)k * ngrid + g0, sizeof(double) * n);
-                eval(n, shls, ao_loc, full, xyz, (uint8_t *)msk, atm, natm, bas, nbas, env);
-                const int nl = select_gather_mask(a, ix, full, (long)nao * n, n, nao, ncomp, 0, n, cutoff,
-                                                  msk, ao_loc, nbas);
+                const int nl = eval_select(a, ix, src, full, n, xyz, (uint8_t *)msk, ncomp, cutoff, eval,
+                                           ao_loc, atm, natm, bas, nbas, env);
                 if (nl == 0) continue;
                 for (i = 0; i < nl; i++)
                         for (j = 0; j < nl; j++) d[i * nl + j] = dm[(size_t)ix[i] * nao + ix[j]];
@@ -441,7 +495,7 @@ void SOCDFTxc_grad_fused(double *outb, double *dm, double *coords, double *weigh
                         }
                 }
         }
-        free(full); free(a); free(c); free(aw); free(u); free(d); free(xyz); free(rho); free(xo); free(wv);
+        free(full); free(a); free(c); free(aw); free(u); free(d); free(xyz); free(rho); free(xo); free(wv); free(src);
         free(ix);
         if (mkl_set_num_threads_local) mkl_set_num_threads_local(mkl0);
 }
