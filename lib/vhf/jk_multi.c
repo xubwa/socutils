@@ -43,6 +43,9 @@ int SOCVHFgen_takes(const int *shls, const int *bas);
  * per-class timings, scf/test/bench_jk_class.py): L <= 1 by jk_ssss.c, the
  * other quartets of l <= 2 with L <= jk_gen_lmax by the generated kernels of
  * jk_gen.c, the rest by libcint (on par with the generated ones from L = 6).
+ * Of the generated ones those of few primitives go in batches of GL_NL
+ * quartets sharing the bra pair and the ket shell types to the lane kernels
+ * (SOCVHFjk_set_lanes, SOCVHFjk_set_lane_np below).
  * SOCVHFjk_set_ssss(0) / SOCVHFjk_set_gen(0) send theirs to libcint.
  */
 static int jk_use_ssss = 1, jk_use_gen = 1, jk_gen_lmax = 5;
@@ -173,6 +176,134 @@ static void reduce_thread_buffers(double *out, double **bufs, int nbuf, size_t n
         }
 }
 
+/* lanes of jk_gen.c: GL_NL quartets sharing the bra pair and the ket shell types per call */
+int SOCVHFgen_shell_types(int *type, const int *bas, int nbas);
+int SOCVHFgen_lane_ok(int ksh, int lsh, const int *bas);
+size_t SOCVHFgen_lane_wksize(const int *bas, int nbas, int nbuf);
+int SOCVHFgen_int2e_lanes(double *out, size_t ostride, int ish, int jsh, const int *ksh, const int *lsh, int nl,
+                          const GenCtx *cx, double dmax, double prim_tol, double *wk,
+                          const int *atm, const int *bas, const double *env);
+#define JK_NL 8                 /* = GL_NL of jk_gen.h */
+/* the quartets of l <= 2 with jk_lane_lmin <= L <= jk_gen_lmax and at most jk_lane_np primitive
+ * quartets (product of the shells' nprim) go to the lanes (on 0: never); the per-quartet kernels
+ * vectorise over the bra primitives and screen them, better with many (bench_jk_class.py) */
+static int jk_use_lanes = 1, jk_lane_lmin = 2, jk_lane_np = 4;
+void SOCVHFjk_set_lanes(int on, int lmin) { jk_use_lanes = on; jk_lane_lmin = lmin; }
+void SOCVHFjk_set_lane_np(int np) { jk_lane_np = np; }
+
+/* the integrals buf (int2e_sph layout) of the quartet (ish jsh | ksh lsh) of
+ * jk_multi_sym into J_ij (jij), J (jloc), the K rows of i, j (kri, krb) */
+static inline void jk_digest(const double *buf, int ish, int jsh, int ksh, int lsh, int same, int do_j, int do_k,
+                             int ndm, size_t nao, const int *ao_loc, const double *dms,
+                             double *jij, double *jloc, double *kri, double *krb, size_t ncol)
+{
+        const int di = ao_loc[ish + 1] - ao_loc[ish];
+        const int dj = ao_loc[jsh + 1] - ao_loc[jsh];
+        const int dk = ao_loc[ksh + 1] - ao_loc[ksh];
+        const int dl = ao_loc[lsh + 1] - ao_loc[lsh];
+        const size_t a0 = ao_loc[ish], b0 = ao_loc[jsh];
+        double fac = 1.;
+        if (ish == jsh) fac *= .5;
+        if (ksh == lsh) fac *= .5;
+        if (same) fac *= .5;
+        int i0, j0, k0, l0, m;
+        if (ndm == 1) {
+                /* one density: no density loop, row pointers, the j-row K and the
+                 * ket J sums kept in registers over the inner loop */
+                const size_t c00 = ao_loc[ksh], e00 = ao_loc[lsh];
+                for (l0 = 0; l0 < dl; l0++) {
+                const size_t e = e00 + l0;
+                for (k0 = 0; k0 < dk; k0++) {
+                        const size_t c = c00 + k0;
+                        const double *gk = buf + (size_t)(l0 * dk + k0) * dj * di;
+                        const double dce = 2 * fac * dms[c * nao + e];
+                        double jce = 0;
+                        for (j0 = 0; j0 < dj; j0++) {
+                                const double *g = gk + (size_t)j0 * di;
+                                const double *Db = dms + (b0 + j0) * nao;
+                                const double dbc = fac * Db[c], dbe = fac * Db[e];
+                                double kbe = 0, kbc = 0, jab = 0;
+                                for (i0 = 0; i0 < di; i0++) {
+                                        const double *Da = dms + (a0 + i0) * nao;
+                                        if (do_j) {
+                                                jij[i0 * dj + j0] += g[i0] * dce;
+                                                jab += g[i0] * Da[b0 + j0];
+                                        }
+                                        if (do_k) {
+                                                double *Ki = kri + (size_t)i0 * ncol;
+                                                Ki[e] += g[i0] * dbc;
+                                                Ki[c] += g[i0] * dbe;
+                                                kbe += g[i0] * Da[c];
+                                                kbc += g[i0] * Da[e];
+                                        }
+                                }
+                                jce += jab;
+                                if (do_k) {
+                                        double *Kb = krb + (size_t)j0 * ncol;
+                                        Kb[e] += fac * kbe;
+                                        Kb[c] += fac * kbc;
+                                }
+                        }
+                        if (do_j) jloc[c * nao + e] += 2 * fac * jce;
+                } }
+                return;
+        }
+        for (l0 = 0; l0 < dl; l0++) {
+        for (k0 = 0; k0 < dk; k0++) {
+        for (j0 = 0; j0 < dj; j0++) {
+        for (i0 = 0; i0 < di; i0++) {
+                double g = buf[((l0 * dk + k0) * dj + j0) * di + i0] * fac;
+                if (g == 0) continue;
+                size_t a = a0 + i0, b = b0 + j0;
+                size_t c = ao_loc[ksh] + k0, e = ao_loc[lsh] + l0;
+                if (do_j) {
+                        double g2 = 2 * g;
+                        double *v0 = jij + ((size_t)i0 * dj + j0) * ndm;
+                        const double *d0 = dms + (c * nao + e) * ndm;
+                        double *v1 = jloc + (c * nao + e) * ndm;
+                        const double *d1 = dms + (a * nao + b) * ndm;
+#pragma omp simd
+                        for (m = 0; m < ndm; m++) {
+                                v0[m] += g2 * d0[m];
+                                v1[m] += g2 * d1[m];
+                        }
+                }
+                if (do_k) {
+                        /* K_ae += D_bc, K_be += D_ac, K_ac += D_be, K_bc += D_ae */
+                        double *v0 = kri + ((size_t)i0 * ncol + e) * ndm;
+                        double *v1 = krb + ((size_t)j0 * ncol + e) * ndm;
+                        double *v2 = kri + ((size_t)i0 * ncol + c) * ndm;
+                        double *v3 = krb + ((size_t)j0 * ncol + c) * ndm;
+                        const double *d0 = dms + (b * nao + c) * ndm;
+                        const double *d1 = dms + (a * nao + c) * ndm;
+                        const double *d2 = dms + (b * nao + e) * ndm;
+                        const double *d3 = dms + (a * nao + e) * ndm;
+#pragma omp simd
+                        for (m = 0; m < ndm; m++) {
+                                v0[m] += g * d0[m];
+                                v1[m] += g * d1[m];
+                                v2[m] += g * d2[m];
+                                v3[m] += g * d3[m];
+                        }
+                }
+        } } } }
+}
+
+/* a lane batch: nl quartets (ish jsh | ks[l] ls[l]), flags fl[l] = do_j | do_k << 1 | (ij == kl) << 2 */
+static int jk_run_lanes(double *lbuf, size_t nbuf, int ish, int jsh, const int *ks, const int *ls, const int *fl,
+                        int nl, double dq, const GenCtx *gcx, double prim_tol, double *swk,
+                        const int *atm, const int *bas, const double *env, int ndm, size_t nao, const int *ao_loc,
+                        const double *dms, double *jij, double *jloc, double *kri, double *krb, size_t ncol)
+{
+        if (!SOCVHFgen_int2e_lanes(lbuf, nbuf, ish, jsh, ks, ls, nl, gcx, dq, prim_tol, swk, atm, bas, env))
+                return 0;
+        int l;
+        for (l = 0; l < nl; l++)
+                jk_digest(lbuf + l * nbuf, ish, jsh, ks[l], ls[l], (fl[l] >> 2) & 1, fl[l] & 1, (fl[l] >> 1) & 1,
+                          ndm, nao, ao_loc, dms, jij, jloc, kri, krb, ncol);
+        return 1;
+}
+
 /*
  * The same for symmetric densities (D_cd = D_dc; CPHF): J and K are then
  * symmetric, the eight permutations collapse to two J and four K updates per
@@ -209,6 +340,11 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
         GenCtx *gcx = use_gen ? SOCVHFgen_ctx_build(atm, natm, bas, nbas, env) : NULL;
         size_t sswk = use_ss ? SOCVHFss_wksize(bas, nbas) : 0;
         if (use_gen && SOCVHFgen_wksize(bas, nbas) > sswk) sswk = SOCVHFgen_wksize(bas, nbas);
+        const int use_lanes = use_gen && jk_use_lanes;
+        if (use_lanes && SOCVHFgen_lane_wksize(bas, nbas, nbuf) > sswk) sswk = SOCVHFgen_lane_wksize(bas, nbas, nbuf);
+        int *stype = malloc(sizeof(int) * (nbas > 0 ? nbas : 1));
+        const int ntype = SOCVHFgen_shell_types(stype, bas, nbas);
+        const int nbk = use_lanes ? ntype * ntype : 1;
         const double prim_tol = tol * 1e-2;
 #pragma omp parallel
 {
@@ -222,6 +358,11 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
         double *buf = malloc(sizeof(double) * (nbuf + cache_size + sswk));
         double *cache = buf + nbuf;
         double *swk = cache + cache_size;
+        /* per ket type a lane batch of the row */
+        double *lbuf = use_lanes ? malloc(sizeof(double) * nbuf * JK_NL) : NULL;
+        int *bkk = malloc(sizeof(int) * nbk * JK_NL), *bkl = malloc(sizeof(int) * nbk * JK_NL);
+        int *bkf = malloc(sizeof(int) * nbk * JK_NL), *bkn = calloc(nbk, sizeof(int));
+        double *bkd = calloc(nbk, sizeof(double));
         double *kri = with_k ? malloc(sizeof(double) * dmax * nao * ndm) : NULL;
         double *krj = with_k ? malloc(sizeof(double) * dmax * nao * ndm) : NULL;
         double *jij = with_j ? malloc(sizeof(double) * dmax * dmax * ndm) : NULL;
@@ -243,6 +384,11 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
                         if (ish != jsh) memset(krj, 0, sizeof(double) * dj * ncol * ndm);
                 }
                 if (with_j) memset(jij, 0, sizeof(double) * di * dj * ndm);
+                const int row_lanes = use_lanes && bas[ish * BAS_SLOTS + ANG_OF] <= 2
+                                    && bas[jsh * BAS_SLOTS + ANG_OF] <= 2 && bas[ish * BAS_SLOTS + NCTR_OF] <= 4
+                                    && bas[jsh * BAS_SLOTS + NCTR_OF] <= 4;
+                const int row_np = bas[ish * BAS_SLOTS + NPRIM_OF] * bas[jsh * BAS_SLOTS + NPRIM_OF];
+                int kb;
                 /* (k, l) of kl = k (k + 1) / 2 + l walked incrementally */
                 for (kl = 0, ksh = 0, lsh = 0; kl <= ij;
                      kl++, (lsh == ksh ? (ksh++, lsh = 0) : lsh++)) {
@@ -258,6 +404,25 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
                         shls[0] = ish; shls[1] = jsh; shls[2] = ksh; shls[3] = lsh;
                         const int lq = bas[ish * BAS_SLOTS + ANG_OF] + bas[jsh * BAS_SLOTS + ANG_OF]
                                      + bas[ksh * BAS_SLOTS + ANG_OF] + bas[lsh * BAS_SLOTS + ANG_OF];
+                        if (row_lanes && lq >= jk_lane_lmin && lq <= jk_gen_lmax
+                            && row_np * bas[ksh * BAS_SLOTS + NPRIM_OF] * bas[lsh * BAS_SLOTS + NPRIM_OF] <= jk_lane_np
+                            && SOCVHFgen_lane_ok(ksh, lsh, bas)) {
+                                const int kb = stype[ksh] * ntype + stype[lsh];
+                                const int n_ = kb * JK_NL + bkn[kb];
+                                bkk[n_] = ksh;
+                                bkl[n_] = lsh;
+                                bkf[n_] = do_j | do_k << 1 | (ij == kl) << 2;
+                                bkd[kb] = dmax2(bkd[kb], dmax2(do_j ? dj_ : 0, do_k ? dk_ : 0));
+                                if (++bkn[kb] == JK_NL) {
+                                        touched |= jk_run_lanes(lbuf, nbuf, ish, jsh, bkk + kb * JK_NL,
+                                                                bkl + kb * JK_NL, bkf + kb * JK_NL, JK_NL, bkd[kb],
+                                                                gcx, prim_tol, swk, atm, bas, env, ndm, nao, ao_loc,
+                                                                dms, jij, jloc, kri, krb, ncol);
+                                        bkn[kb] = 0;
+                                        bkd[kb] = 0;
+                                }
+                                continue;
+                        }
                         if (use_ss && lq <= 1 && SOCVHFss_takes(shls, bas)) {
                                 const double dq = dmax2(do_j ? dj_ : 0, do_k ? dk_ : 0);
                                 if (!SOCVHFss_int2e(buf, shls, scx, dq, prim_tol, swk)) {
@@ -272,93 +437,17 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
                                 continue;
                         }
                         touched = 1;
-                        int dk = ao_loc[ksh + 1] - ao_loc[ksh];
-                        int dl = ao_loc[lsh + 1] - ao_loc[lsh];
-                        double fac = 1.;
-                        if (ish == jsh) fac *= .5;
-                        if (ksh == lsh) fac *= .5;
-                        if (ij == kl) fac *= .5;
-                        int i0, j0, k0, l0;
-                        if (ndm == 1) {
-                                /* one density: no density loop, row pointers, the j-row K and the
-                                 * ket J sums kept in registers over the inner loop */
-                                const size_t c00 = ao_loc[ksh], e00 = ao_loc[lsh];
-                                for (l0 = 0; l0 < dl; l0++) {
-                                const size_t e = e00 + l0;
-                                for (k0 = 0; k0 < dk; k0++) {
-                                        const size_t c = c00 + k0;
-                                        const double *gk = buf + (size_t)(l0 * dk + k0) * dj * di;
-                                        const double dce = 2 * fac * dms[c * nao + e];
-                                        double jce = 0;
-                                        for (j0 = 0; j0 < dj; j0++) {
-                                                const double *g = gk + (size_t)j0 * di;
-                                                const double *Db = dms + (b0 + j0) * nao;
-                                                const double dbc = fac * Db[c], dbe = fac * Db[e];
-                                                double kbe = 0, kbc = 0, jab = 0;
-                                                for (i0 = 0; i0 < di; i0++) {
-                                                        const double *Da = dms + (a0 + i0) * nao;
-                                                        if (do_j) {
-                                                                jij[i0 * dj + j0] += g[i0] * dce;
-                                                                jab += g[i0] * Da[b0 + j0];
-                                                        }
-                                                        if (do_k) {
-                                                                double *Ki = kri + (size_t)i0 * ncol;
-                                                                Ki[e] += g[i0] * dbc;
-                                                                Ki[c] += g[i0] * dbe;
-                                                                kbe += g[i0] * Da[c];
-                                                                kbc += g[i0] * Da[e];
-                                                        }
-                                                }
-                                                jce += jab;
-                                                if (do_k) {
-                                                        double *Kb = krb + (size_t)j0 * ncol;
-                                                        Kb[e] += fac * kbe;
-                                                        Kb[c] += fac * kbc;
-                                                }
-                                        }
-                                        if (do_j) jloc[c * nao + e] += 2 * fac * jce;
-                                } }
-                                continue;
-                        }
-                        for (l0 = 0; l0 < dl; l0++) {
-                        for (k0 = 0; k0 < dk; k0++) {
-                        for (j0 = 0; j0 < dj; j0++) {
-                        for (i0 = 0; i0 < di; i0++) {
-                                double g = buf[((l0 * dk + k0) * dj + j0) * di + i0] * fac;
-                                if (g == 0) continue;
-                                size_t a = a0 + i0, b = b0 + j0;
-                                size_t c = ao_loc[ksh] + k0, e = ao_loc[lsh] + l0;
-                                if (do_j) {
-                                        double g2 = 2 * g;
-                                        double *v0 = jij + ((size_t)i0 * dj + j0) * ndm;
-                                        double *d0 = dms + (c * nao + e) * ndm;
-                                        double *v1 = jloc + (c * nao + e) * ndm;
-                                        double *d1 = dms + (a * nao + b) * ndm;
-#pragma omp simd
-                                        for (m = 0; m < ndm; m++) {
-                                                v0[m] += g2 * d0[m];
-                                                v1[m] += g2 * d1[m];
-                                        }
-                                }
-                                if (do_k) {
-                                        /* K_ae += D_bc, K_be += D_ac, K_ac += D_be, K_bc += D_ae */
-                                        double *v0 = kri + ((size_t)i0 * ncol + e) * ndm;
-                                        double *v1 = krb + ((size_t)j0 * ncol + e) * ndm;
-                                        double *v2 = kri + ((size_t)i0 * ncol + c) * ndm;
-                                        double *v3 = krb + ((size_t)j0 * ncol + c) * ndm;
-                                        double *d0 = dms + (b * nao + c) * ndm;
-                                        double *d1 = dms + (a * nao + c) * ndm;
-                                        double *d2 = dms + (b * nao + e) * ndm;
-                                        double *d3 = dms + (a * nao + e) * ndm;
-#pragma omp simd
-                                        for (m = 0; m < ndm; m++) {
-                                                v0[m] += g * d0[m];
-                                                v1[m] += g * d1[m];
-                                                v2[m] += g * d2[m];
-                                                v3[m] += g * d3[m];
-                                        }
-                                }
-                        } } } }
+                        jk_digest(buf, ish, jsh, ksh, lsh, ij == kl, do_j, do_k, ndm, nao, ao_loc, dms,
+                                  jij, jloc, kri, krb, ncol);
+                }
+                /* the lane batches left of the row */
+                for (kb = 0; row_lanes && kb < nbk; kb++) {
+                        if (bkn[kb] == 0) continue;
+                        touched |= jk_run_lanes(lbuf, nbuf, ish, jsh, bkk + kb * JK_NL, bkl + kb * JK_NL,
+                                                bkf + kb * JK_NL, bkn[kb], bkd[kb], gcx, prim_tol, swk,
+                                                atm, bas, env, ndm, nao, ao_loc, dms, jij, jloc, kri, krb, ncol);
+                        bkn[kb] = 0;
+                        bkd[kb] = 0;
                 }
                 if (!touched) {
                         continue;
@@ -399,9 +488,16 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
         free(kri);
         free(krj);
         free(jij);
+        free(lbuf);
+        free(bkk);
+        free(bkl);
+        free(bkf);
+        free(bkn);
+        free(bkd);
 }
         SOCVHFss_ctx_free(scx);
         SOCVHFgen_ctx_free(gcx);
+        free(stype);
         free(jbufs);
         free(kbufs);
         /* V = W + W^T over the two AO indices */

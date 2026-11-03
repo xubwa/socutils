@@ -22,7 +22,7 @@ from pyscf.gto import moleintor
 from socutils.scf import jk_multi
 from socutils.hessian import ghf as ghf_hess
 
-ENGINES = {0: 'libcint', 1: 'jk_ssss', 2: 'jk_gen'}
+ENGINES = {0: 'libcint', 1: 'jk_ssss', 2: 'jk_gen', 3: 'lanes'}
 
 
 def engines_for(cls):
@@ -31,7 +31,7 @@ def engines_for(cls):
     if max(cls) <= 1 and sum(cls) <= 2:
         e.append(1)
     if max(cls) <= 2:
-        e.append(2)
+        e += [2, 3]
     return e
 
 

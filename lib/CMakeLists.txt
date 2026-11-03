@@ -32,7 +32,12 @@ if(CMAKE_COMPILER_IS_GNUCC)
     set(CMAKE_SHARED_LINKER_FLAGS "-Wl,--no-as-needed ${CMAKE_SHARED_LINKER_FLAGS}")
   endif()
 endif()
-set(CMAKE_C_FLAGS "-Wall ${CMAKE_C_FLAGS}")
+# -fno-math-errno: sqrt / exp without the errno branch, which keeps GCC from
+# vectorising the `omp simd` loops calling them (the vertical recursions of the
+# vhf/ integral kernels); results unchanged, J + K 3 - 8 % faster.
+# (-fno-trapping-math vectorises the F_m table loops too, with gathers: no
+# faster on Cascade Lake, same-node A/B.)
+set(CMAKE_C_FLAGS "-Wall -fno-math-errno ${CMAKE_C_FLAGS}")
 set(CMAKE_C_FLAGS_RELEASE "-O3 -funroll-loops")
 set(CMAKE_C_FLAGS_RELWITHDEBINFO "-O3 -funroll-loops -g")
 set(CMAKE_C_STANDARD 99)

@@ -58,6 +58,37 @@ def add(e, k):
     return tuple(e)
 
 
+def boys_lines(L, ind):
+    '''C lines (indent ind) defining F0 .. FL = F_m(T) of the double T in scope from the
+    tables tab (jk_gen.c): F_L by its Taylor series at the nearest grid point, e^-T =
+    e^-T_k e^dt, then downwards (stable), F_m = (2 T F_(m+1) + e^-T) / (2 m + 1); the
+    asymptotic form for T >= GT_TMAX.  Branch-free, the table read by indexed loads and
+    selects, which GCC vectorises (with gathers) given -fno-math-errno -fno-trapping-math.'''
+    o = []
+    w = o.append
+    w(ind + 'const int inr = T < GT_TMAX;')
+    w(ind + 'const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;')
+    w(ind + 'const int o = k * GT_TN;')
+    w(ind + 'const double dt = inr ? k * GT_STEP - T : 0;')
+    w(ind + 'const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;')
+    w(ind + 'const double a0 = .886226925452758014 / sqrt(Ta);')
+    for m in range(1, L + 1):
+        w(ind + 'const double a%d = a%d * (%d * h);' % (m, m - 1, 2 * m - 1))
+    t = 'tab[o + %d]' % (L + 6)
+    for j in range(6, 0, -1):
+        t = 'tab[o + %d] + dt * (1. / %d) * (%s)' % (L + j - 1, j, t)
+    w(ind + 'const double f%d = %s;' % (L, t))
+    if L > 0:
+        w(ind + 'const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3)'
+          ' * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));')
+        w(ind + 'const double T2 = 2 * T;')
+        for m in range(L - 1, -1, -1):
+            w(ind + 'const double f%d = (T2 * f%d + ex) * (1. / %d);' % (m, m + 1, 2 * m + 1))
+    for m in range(L + 1):
+        w(ind + 'const double F%d = inr ? f%d : a%d;' % (m, m, m))
+    return o
+
+
 def first_nz(e):
     return next(k for k in range(3) if e[k])
 
@@ -177,15 +208,10 @@ def kernel(la, lb, lc, ld):
     w('                        const double p = B->p[b], s = 1. / (p + q);')
     w('                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;')
     w('                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);')
-    w('                        const int inr = T < GT_TMAX;')
-    w('                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;')
-    w('                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;')
-    w('                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;')
-    w('                        double a = .886226925452758014 / sqrt(Ta);')
+    for line in boys_lines(L, ' ' * 24):
+        w(line)
     for m in range(L + 1):
-        if m > 0:
-            w('                        a *= %d * h;' % (2 * m - 1))
-        w('                        FT[%d * nb + b] = inr ? taylor(f + %d, dt) : a;' % (m, m))
+        w('                        FT[%d * nb + b] = F%d;' % (m, m))
     w('                }')
     # pass 2: the vertical recursions
     w('#pragma omp simd')

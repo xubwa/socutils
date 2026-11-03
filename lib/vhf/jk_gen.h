@@ -31,6 +31,20 @@ typedef struct {
         double amax;                    /* the largest exponent of the pair (derivative bounds) */
 } GPair;
 
+/* the kets of GL_NL shell quartets of one ket type (jk_lane_gen.c): per ket
+ * primitive pair t (canonical order) the scalars and the lane vectors */
+#define GL_NL 8
+#define GL_MAXP 64
+typedef struct {
+        int nk, nck, nci, ncj;
+        double q[GL_MAXP], bmx[GL_MAXP];        /* q; max over the lanes of the bound */
+        double c[G_MAXCTR * G_MAXCTR * GL_MAXP];  /* c[kc * GL_MAXP + t] */
+        double qx[GL_MAXP][GL_NL], qy[GL_MAXP][GL_NL], qz[GL_MAXP][GL_NL];
+        double qcx[GL_MAXP][GL_NL], qcy[GL_MAXP][GL_NL], qcz[GL_MAXP][GL_NL];
+        double kp[GL_MAXP][GL_NL];              /* K_cd / q */
+        double cd[3][GL_NL];                    /* R_C - R_D */
+} LaneK;
+
 static inline double taylor(const double *f, double dt)
 {
         double s = f[6] * (dt / 6);

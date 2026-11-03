@@ -68,6 +68,7 @@ static void sort_prims(double **arrs, int narr, double *c, int nc, int ld, int n
 
 
 #include "jk_vrr_gen.c"
+#include "jk_lane_gen.c"
 
 typedef struct GenCtx {
         int nbas;
@@ -112,8 +113,9 @@ GenCtx *SOCVHFgen_ctx_build(int *atm, int natm, int *bas, int nbas, double *env)
         const int npair = nbas * (nbas + 1) / 2;
         int k, pq;
         cx->nbas = nbas;
-        cx->tab = malloc(sizeof(double) * GT_N * GT_TN);
+        cx->tab = malloc(sizeof(double) * (GT_N * GT_TN + GT_N));     /* F_m rows, then e^-T_k */
         for (k = 0; k < GT_N; k++) f_series(cx->tab + k * GT_TN, k * GT_STEP, GT_TN - 1);
+        for (k = 0; k < GT_N; k++) cx->tab[GT_N * GT_TN + k] = exp(-k * GT_STEP);
         cx->pair = calloc(npair, sizeof(GPair));
 #pragma omp parallel for schedule(dynamic, 16)
         for (pq = 0; pq < npair; pq++) {
@@ -241,19 +243,169 @@ int SOCVHFgen_int2e(double *out, const int *shls, const GenCtx *cx, double dmax,
         const int kl = shls[2] * (shls[2] + 1) / 2 + shls[3];
         const GPair *B = cx->pair + ij, *K = cx->pair + kl;
         if (B->n == 0 || K->n == 0) return 0;
+        /* int2e_sph's layout ((l DK + k) DJ + j) DI + i */
+        const size_t DI = (size_t)B->nci * (2 * B->li + 1), DJ = (size_t)B->ncj * (2 * B->lj + 1);
+        const size_t DK = (size_t)K->nci * (2 * K->li + 1);
+        const size_t stp[4] = {1, DI, DI * DJ, DI * DJ * DK};
+        /* the kernels vectorise over the bra primitive pairs: the pair of more
+         * primitives goes to the bra, (ij|kl) = (kl|ij) (a d-containing pair of
+         * cc-pVDZ has 1 - 3 primitive pairs, an s pair up to 64) */
+        const int swap = B->n < K->n;
+        if (swap) { const GPair *t = B; B = K; K = t; }
         const int bs = B->li < B->lj, ks = K->li < K->lj;
         const int la = bs ? B->lj : B->li, lb = bs ? B->li : B->lj;
         const int lc = ks ? K->lj : K->li, ld = ks ? K->li : K->lj;
         const double fac = TWO_PI52 * common_fac(la) * common_fac(lb) * common_fac(lc) * common_fac(ld);
         const double cut = prim_tol / (fac * B->bmax * dmax * B->nc * K->nc);
-        /* int2e_sph's layout ((l DK + k) DJ + j) DI + i; role (A, B, C, D) -> position */
+        /* role (A, B, C, D) -> the kernel's slot (bra i, bra j, ket i, ket j) -> position in out */
+        const int pos[4] = {bs ? 1 : 0, bs ? 0 : 1, ks ? 3 : 2, ks ? 2 : 3};
+        const int sh = swap ? 2 : 0;
+        const size_t st[4] = {stp[(pos[0] + sh) & 3], stp[(pos[1] + sh) & 3],
+                              stp[(pos[2] + sh) & 3], stp[(pos[3] + sh) & 3]};
+        (void)bas;
+        return jkg_table[la][lb][lc][ld](out, st, pos, B, bs, K, ks, cut, fac, cx->tab, wk);
+}
+
+/* ------------------------------------------------------------------------
+ * Lanes: GL_NL quartets (ij | k_l l_l) sharing the bra pair ij and the ket
+ * shell types (jk_lane_gen.c, gen_jk_lanes.py).
+ * ------------------------------------------------------------------------ */
+
+/* type[i]: shells of one type have equal l, primitives, contractions, exponents and coefficients;
+ * returns the number of types */
+int SOCVHFgen_shell_types(int *type, const int *bas, int nbas)
+{
+        int i, j, nt = 0;
+        int *rep = malloc(sizeof(int) * (nbas > 0 ? nbas : 1));
+        for (i = 0; i < nbas; i++) {
+                const int *b = bas + i * BAS_SLOTS;
+                type[i] = -1;
+                for (j = 0; j < nt; j++) {
+                        const int *r = bas + rep[j] * BAS_SLOTS;
+                        if (r[ANG_OF] == b[ANG_OF] && r[NPRIM_OF] == b[NPRIM_OF] && r[NCTR_OF] == b[NCTR_OF]
+                            && r[PTR_EXP] == b[PTR_EXP] && r[PTR_COEFF] == b[PTR_COEFF]) {
+                                type[i] = j;
+                                break;
+                        }
+                }
+                if (type[i] < 0) {
+                        rep[nt] = i;
+                        type[i] = nt++;
+                }
+        }
+        free(rep);
+        return nt;
+}
+
+/* 1 if the ket pair (k, l) can be a lane (l <= JKV_LMAX, contractions <= G_MAXCTR, primitive pairs <= GL_MAXP) */
+int SOCVHFgen_lane_ok(int ksh, int lsh, const int *bas)
+{
+        const int *bk = bas + ksh * BAS_SLOTS, *bl = bas + lsh * BAS_SLOTS;
+        return bk[ANG_OF] <= JKV_LMAX && bl[ANG_OF] <= JKV_LMAX && bk[NCTR_OF] <= G_MAXCTR
+            && bl[NCTR_OF] <= G_MAXCTR && bk[NPRIM_OF] * bl[NPRIM_OF] <= GL_MAXP;
+}
+
+/* doubles of workspace of SOCVHFgen_int2e_lanes */
+size_t SOCVHFgen_lane_wksize(const int *bas, int nbas, int nbuf)
+{
+        int i, mc = 1;
+        for (i = 0; i < nbas; i++)
+                if (bas[i * BAS_SLOTS + NCTR_OF] > mc) mc = bas[i * BAS_SLOTS + NCTR_OF];
+        if (mc > G_MAXCTR) mc = G_MAXCTR;
+        const size_t ne = N3(2 * JKV_LMAX) - (JKV_LMAX > 0 ? N3(JKV_LMAX - 1) : 0);
+        return sizeof(LaneK) / sizeof(double) + 1 + (size_t)nbuf * GL_NL
+             + ne * ne * GL_NL * (1 + (size_t)mc * mc * mc * mc);
+}
+
+/*
+ * The quartets (ish jsh | ksh[l] lsh[l]), l < nl <= GL_NL, of one ket type
+ * (SOCVHFgen_shell_types) and SOCVHFgen_lane_ok kets, ish, jsh of l <=
+ * JKV_LMAX: quartet l into out + l * ostride in int2e_sph's layout.  dmax:
+ * the largest density bound of the quartets.  Returns 0 when every primitive
+ * was screened out (out not set).
+ */
+int SOCVHFgen_int2e_lanes(double *out, size_t ostride, int ish, int jsh, const int *ksh, const int *lsh, int nl,
+                          const GenCtx *cx, double dmax, double prim_tol, double *wk,
+                          const int *atm, const int *bas, const double *env)
+{
+        const int ij = ish * (ish + 1) / 2 + jsh;
+        const GPair *B = cx->pair + ij;
+        if (B->n == 0 || nl <= 0) return 0;
+        LaneK *K = (LaneK *)wk;
+        double *lout = wk + sizeof(LaneK) / sizeof(double) + 1;
+        const int *bk = bas + ksh[0] * BAS_SLOTS, *bl = bas + lsh[0] * BAS_SLOTS;
+        const int lk = bk[ANG_OF], ll = bl[ANG_OF];
+        const int npk = bk[NPRIM_OF], npl = bl[NPRIM_OF], nck_ = bk[NCTR_OF], ncl = bl[NCTR_OF];
+        const double *ek = env + bk[PTR_EXP], *el = env + bl[PTR_EXP];
+        const double *cK = env + bk[PTR_COEFF], *cL = env + bl[PTR_COEFF];
+        const int ks = lk < ll;
+        int t, l, pk, pl, a, b, x;
+        K->nk = npk * npl;
+        K->nci = nck_; K->ncj = ncl; K->nck = nck_ * ncl;
+        double Rk[GL_NL][3], Rl[GL_NL][3];
+        for (l = 0; l < GL_NL; l++) {
+                const int s = l < nl ? l : 0;
+                const double *rk = env + atm[bas[ksh[s] * BAS_SLOTS + ATOM_OF] * ATM_SLOTS + PTR_COORD];
+                const double *rl = env + atm[bas[lsh[s] * BAS_SLOTS + ATOM_OF] * ATM_SLOTS + PTR_COORD];
+                for (x = 0; x < 3; x++) {
+                        Rk[l][x] = rk[x];
+                        Rl[l][x] = rl[x];
+                        K->cd[x][l] = ks ? rl[x] - rk[x] : rk[x] - rl[x];
+                }
+        }
+        for (pl = 0; pl < npl; pl++)
+        for (pk = 0; pk < npk; pk++) {
+                t = pl * npk + pk;
+                const double ak = ek[pk], al = el[pl], q = ak + al, iq = 1. / q;
+                double cm = 0;
+                for (b = 0; b < ncl; b++)
+                        for (a = 0; a < nck_; a++) {
+                                const double c = cK[a * npk + pk] * cL[b * npl + pl];
+                                K->c[(b * nck_ + a) * GL_MAXP + t] = c;
+                                cm = fmax(cm, fabs(c));
+                        }
+                K->q[t] = q;
+                double bmx = 0;
+                for (l = 0; l < GL_NL; l++) {
+                        double P[3], r2 = 0, nk2 = 0, nl2 = 0;
+                        for (x = 0; x < 3; x++) {
+                                const double d = Rk[l][x] - Rl[l][x];
+                                r2 += d * d;
+                                P[x] = (ak * Rk[l][x] + al * Rl[l][x]) * iq;
+                                nk2 += (P[x] - Rk[l][x]) * (P[x] - Rk[l][x]);
+                                nl2 += (P[x] - Rl[l][x]) * (P[x] - Rl[l][x]);
+                        }
+                        const double e = l < nl ? exp(-ak * al * iq * r2) : 0;
+                        K->qx[t][l] = P[0]; K->qy[t][l] = P[1]; K->qz[t][l] = P[2];
+                        K->qcx[t][l] = P[0] - (ks ? Rl[l][0] : Rk[l][0]);
+                        K->qcy[t][l] = P[1] - (ks ? Rl[l][1] : Rk[l][1]);
+                        K->qcz[t][l] = P[2] - (ks ? Rl[l][2] : Rk[l][2]);
+                        K->kp[t][l] = e * iq;
+                        const double fi = sqrt(nk2) + sqrt(iq) + 1, fj = sqrt(nl2) + sqrt(iq) + 1;
+                        const double bnd = e * iq * cm * pow(fi, lk) * pow(fj, ll) / sqrt(q);
+                        if (bnd > bmx) bmx = bnd;
+                }
+                K->bmx[t] = bmx;
+        }
+        const int bs = B->li < B->lj;
+        const int la = bs ? B->lj : B->li, lb = bs ? B->li : B->lj;
+        const int lc = ks ? ll : lk, ld = ks ? lk : ll;
+        const double fac = TWO_PI52 * common_fac(la) * common_fac(lb) * common_fac(lc) * common_fac(ld);
+        const double cut = prim_tol / (fac * B->bmax * dmax * B->nc * K->nck);
         const size_t DI = (size_t)B->nci * (2 * B->li + 1), DJ = (size_t)B->ncj * (2 * B->lj + 1);
-        const size_t DK = (size_t)K->nci * (2 * K->li + 1);
+        const size_t DK = (size_t)nck_ * (2 * lk + 1), DL = (size_t)ncl * (2 * ll + 1);
         const size_t stp[4] = {1, DI, DI * DJ, DI * DJ * DK};
         const int pos[4] = {bs ? 1 : 0, bs ? 0 : 1, ks ? 3 : 2, ks ? 2 : 3};
         const size_t st[4] = {stp[pos[0]], stp[pos[1]], stp[pos[2]], stp[pos[3]]};
-        (void)bas;
-        return jkg_table[la][lb][lc][ld](out, st, pos, B, bs, K, ks, cut, fac, cx->tab, wk);
+        const size_t nf = DI * DJ * DK * DL;
+        double *kwk = lout + nf * GL_NL;
+        if (!jkl_table[la][lb][lc][ld](lout, st, pos, B, bs, K, cut, fac, cx->tab, kwk)) return 0;
+        size_t e;
+        for (l = 0; l < nl; l++) {
+                double *o = out + l * ostride;
+                for (e = 0; e < nf; e++) o[e] = lout[e * GL_NL + l];
+        }
+        return 1;
 }
 
 /* ------------------------------------------------------------------------
