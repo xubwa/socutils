@@ -446,6 +446,12 @@ class LDSRG2:
                 (1 + (k[0] != k[1])) * (1 + (k[2] != k[3])) * numpy.vdot(v, v).real
                 for k, v in c2.items()))
             self.comm_norms.append(norm)
+            if self.verbose > 1:
+                gb = lambda b: sum(x.nbytes for x in b.values()) / 1e9
+                cache = getattr(self.V, 'cache', {})
+                self.log('  commutator %2d: memory %7.0f MB; C2 %.1f GB, H2 %.1f GB, T2 %.1f GB, '
+                         'integral cache %.1f GB' % (n, lib.current_memory()[0], gb(c2), gb(h2),
+                                                     gb(t2), gb(cache)))
             o1, o2 = c1, c2
             if norm < comm_tol:
                 break
