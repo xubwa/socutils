@@ -92,6 +92,8 @@ def get_j(mol, dm, hermi=1, tol=TOL, max_memory=None):
 
 REBUILD_NSTEPS = 20     # incremental builds between two full J / K builds
 SCF_TOL = 1e-12         # quartet cutoff of the SCF builds (Gaussian's default 2e cutoff)
+TOL_PER_CONV = 1e-2     # ... and at most TOL_PER_CONV * mf.conv_tol, so that the screening (and its
+                        # accumulation over incremental builds) stays below the convergence threshold
 SCF_TOL_LOOSE = 1e-10   # two-pass: the cutoff while the density still moves
 LOOSE_UNTIL = 1e-4      # two-pass: max |D - D_prev| below which the builds are tight
 
@@ -111,7 +113,10 @@ def apply(mf, incremental=True, two_pass=True):
     two_pass (with incremental): the builds use the cutoff SCF_TOL_LOOSE
     until max |D - D_prev| < LOOSE_UNTIL, then one full build at SCF_TOL
     (which drops the accumulated loose errors) and SCF_TOL from there on, for
-    this molecule (as Gaussian's integral accuracy switch near convergence).'''
+    this molecule (as Gaussian's integral accuracy switch near convergence).
+    The tight cutoff is min(SCF_TOL, TOL_PER_CONV * mf.conv_tol): with conv_tol
+    1e-11 the 1e-12 cutoff's noise (accumulated over the incremental builds)
+    would keep the SCF from converging.'''
     from pyscf.df import df_jk
     from socutils.scf import jk_multi
     if isinstance(mf, df_jk._DFHF) or not available(mf.mol):
@@ -120,7 +125,12 @@ def apply(mf, incremental=True, two_pass=True):
     mol0 = mf.mol
     last = {'key': None}
 
-    def build(mol, dm, hermi, with_j, with_k, omega, max_memory, tol=SCF_TOL):
+    def tight_tol():
+        return min(SCF_TOL, TOL_PER_CONV * getattr(mf, 'conv_tol', 1e-9))
+
+    def build(mol, dm, hermi, with_j, with_k, omega, max_memory, tol=None):
+        if tol is None:
+            tol = tight_tol()
         t0 = (logger.process_clock(), logger.perf_counter())
         if with_k:
             # J and K from one multi-density direct pass; a separate MD J does
@@ -156,7 +166,7 @@ def apply(mf, incremental=True, two_pass=True):
             last['tight'] = not two_pass
         elif not last['tight'] and abs(ddm).max() < LOOSE_UNTIL:
             last['tight'] = True
-        tol = SCF_TOL if last['tight'] else SCF_TOL_LOOSE
+        tol = tight_tol() if last['tight'] else max(tight_tol(), SCF_TOL_LOOSE)
         if same and last['n'] < REBUILD_NSTEPS and last['tol'] == tol:
             vj1, vk1 = build(mol, ddm, hermi, with_j, with_k, omega, max_memory, tol)
             vj = last['vj'] + vj1 if with_j else None
