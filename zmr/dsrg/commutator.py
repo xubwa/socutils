@@ -225,6 +225,24 @@ def _pair_symmetric(at, bt, plan):
     return r
 
 
+def blocked_gemm(a, b, rows, mid, cols):
+    """a @ b for a (m, k) nonzero only where rows[i] == mid[j] and b (k, n) only where
+    mid[j] == cols[l] (irreps of the rows, the contracted index and the columns): one
+    product per irrep.  With rows None the plain product."""
+    if rows is None:
+        return la.gemm(a, b)
+    a = numpy.asarray(a, dtype=numpy.complex128, order="C")
+    b = numpy.asarray(b, dtype=numpy.complex128, order="C")
+    r = numpy.zeros((a.shape[0], b.shape[1]), dtype=numpy.complex128)
+    for ir in numpy.unique(mid):
+        i = numpy.nonzero(rows == ir)[0]
+        j = numpy.nonzero(mid == ir)[0]
+        l = numpy.nonzero(cols == ir)[0]
+        if i.size and l.size:
+            lib.takebak_2d(r, la.gemm(lib.take_2d(a, i, j), lib.take_2d(b, j, l)), i, l)
+    return r
+
+
 def _combine_signs(sa, sb, con):
     """Signs of the product of two operands with signs sa, sb (dicts letter -> +-1)
     summed over con: the constraints of both, the contracted letters eliminated; None
@@ -563,18 +581,35 @@ class BareV:
         # and conjugation to the other factors
         return c.transpose(perm), sign, cj
 
-    def vvvx_chunks(self, x, max_memory):
+    def vvvx_chunks(self, x, max_memory, sym=None):
         """V[ab, ek] (a, b, e virtual, k in the space x) in chunks of k within max_memory
         (MB, the chunk and four copies of its size for the caller): yields (k0, k1,
-        block[a, b, e, k])."""
+        block[a, b, e, k]).  sym = (doublegroupname, irreps of the virtual orbitals,
+        irreps of the orbitals of x): only the products of the transition irreps
+        conj(e) a, conj(b) k whose product is totally symmetric are formed."""
         B = self.B
         naux, nv, nx = B.shape("v" + x)
         bvv = B.file["vv"]
+        if sym is not None:
+            group, irv, irx = (numpy.asarray(y) if k else y for k, y in enumerate(sym))
+            # D = conj(<ab|ek>) = conj((ae|bk)) (both factors read conjugated): rows (a, e)
+            # of transition irrep conj(a) e, columns (b, k) of conj(b) k
+            t_ae = numpy.asarray(dg.direct_prod(dg.conj(irv, group), irv, group))
+            t_bk = numpy.asarray(dg.direct_prod(dg.conj(irv, group), irx, group))
         step = max(1, min(nx, int(max_memory * 1e6 / (5 * 16.0 * nv**3))))
         pstep = self.B.step(16.0 * nv * (nv + step), self.read_memory)
         for k0 in range(0, nx, step):
             k1 = min(nx, k0 + step)
             d = numpy.zeros((nv * nv, nv * (k1 - k0)), dtype=complex)
+            if sym is not None:
+                rl = t_ae.reshape(-1)
+                rr = t_bk[:, k0:k1].reshape(-1)
+                blocks = []
+                for t_ in numpy.unique(rl):
+                    cl = numpy.nonzero(rl == t_)[0]
+                    cr = numpy.nonzero(rr == dg.conj(int(t_), group))[0]
+                    if cl.size and cr.size:
+                        blocks.append((cl, cr, numpy.zeros((cl.size, cr.size), dtype=complex)))
             for p0 in range(0, naux, pstep):
                 t = time.time()
                 left = bvv[p0:p0 + pstep].reshape(-1, nv * nv)            # P, (a e), unconjugated
@@ -582,8 +617,19 @@ class BareV:
                 right = right.reshape(left.shape[0], -1)                  # P, (b k)
                 self.timings["read"] += time.time() - t
                 t = time.time()
-                la.gemm(left, right, opa="C", out=d, beta=1.0)            # conj(B[vv])^T B[vx]
+                if sym is None:
+                    la.gemm(left, right, opa="C", out=d, beta=1.0)        # conj(B[vv])^T B[vx]
+                else:
+                    left = numpy.ascontiguousarray(left)
+                    prow = numpy.arange(left.shape[0])
+                    for cl, cr, blk in blocks:
+                        la.gemm(lib.take_2d(left, prow, cl), lib.take_2d(right, prow, cr),
+                                opa="C", out=blk, beta=1.0)
                 self.timings["vvvx gemm"] += time.time() - t
+            if sym is not None:
+                for cl, cr, blk in blocks:
+                    lib.takebak_2d(d, blk, cl, cr)
+                del blocks
             t = time.time()
             d = d.reshape(nv, nv, nv, k1 - k0)                                    # a, e, b, k
             # V[ab, ek] = (ae|bk) - (ak|be) = d[a, e, b, k] - d[b, e, a, k]

@@ -29,6 +29,7 @@ import time
 
 import numpy
 
+from socutils.symm import double_group as dg
 from socutils.zmr.dsrg import commutator as cm
 from socutils.zmr.dsrg.ldsrg2 import LDSRG2
 from socutils.zmr.dsrg.mrpt2 import DSRGMRPT2, _hole_particle
@@ -137,6 +138,12 @@ class DSRGMRPT3(DSRGMRPT2):
         g = self.gamma1
         hs = [h for h in 'ca' if d[h]]
         hh = [x + y for x in hs for y in hs if cm.is_canonical(x + y + 'vv')]
+        sym = getattr(d, 'sym', None)
+        if sym is not None:
+            group, irs = sym
+            pr = lambda p, q: numpy.asarray(dg.direct_prod(p, q, group)).reshape(-1)
+            p_vv = pr(irs['v'], irs['v'])                               # (a, b)
+            p_hh = {lab: pr(irs[lab[0]], irs[lab[1]]) for lab in hh}    # (i, j)
         for x in hs:
             # W[k, i, a, b] = sum_j T2[i, j, a, b] gamma[k, j]
             w = {}
@@ -152,8 +159,12 @@ class DSRGMRPT3(DSRGMRPT2):
                     t = T2.get(lab + 'va')
                     if t is not None:
                         ty[lab] = numpy.einsum('ijbx,xy->ijby', t, g, optimize=True)
-            for k0, k1, v in self.V.vvvx_chunks(x, self._available()):                 # v[a, b, e, k]
+            vsym = None if sym is None else (group, irs['v'], irs[x])
+            for k0, k1, v in self.V.vvvx_chunks(x, self._available(), sym=vsym):  # v[a, b, e, k]
                 nk = k1 - k0
+                if sym is not None:
+                    p_vk = pr(irs['v'], irs[x][k0:k1])                  # (e, k)
+                    p_kv = pr(irs[x][k0:k1], irs['v'])                  # (k, e)
                 vm = v.reshape(nv * nv, nv * nk)
                 for i, wi in w.items():
                     ni = wi.shape[1]
@@ -176,8 +187,10 @@ class DSRGMRPT3(DSRGMRPT2):
                     t = T2.get(lab + 'vv')
                     if t is not None:
                         n0, n1 = t.shape[:2]
-                        c = -0.5 * alpha * la.gemm(
-                            numpy.ascontiguousarray(t.reshape(n0 * n1, -1)), vm)
+                        c = -0.5 * alpha * cm.blocked_gemm(
+                            numpy.ascontiguousarray(t.reshape(n0 * n1, -1)), vm,
+                            p_hh[lab] if sym else None, p_vv if sym else None,
+                            p_vk if sym else None)
                         c = c.reshape(n0, n1, nv, nk).transpose(0, 1, 3, 2)
                         if lab + 'av' not in C2:
                             C2[lab + 'av'] = numpy.zeros((n0, n1, d['a'], nv), dtype=complex)
@@ -189,7 +202,10 @@ class DSRGMRPT3(DSRGMRPT2):
                         n0, n1 = t.shape[:2]
                         tu = numpy.ascontiguousarray(t[:, :, k0:k1].conj()).reshape(n0 * n1, -1)
                         vu = kernels.transposed(v, (3, 2, 0, 1)).reshape(-1, nv * nv)
-                        c = -alpha * la.gemm(tu, vu).conj().reshape(n0, n1, nv, nv)
+                        c = -alpha * cm.blocked_gemm(
+                            tu, vu, p_hh[lab] if sym else None,
+                            p_kv if sym else None, p_vv if sym else None
+                        ).conj().reshape(n0, n1, nv, nv)
                         if lab + 'vv' not in C2:
                             C2[lab + 'vv'] = numpy.zeros((n0, n1, nv, nv), dtype=complex)
                         C2[lab + 'vv'] += c
@@ -198,7 +214,10 @@ class DSRGMRPT3(DSRGMRPT2):
                         # sum_by conj(ty)[ij, b, y] V[r, s, b, y], conjugated
                         tb = numpy.ascontiguousarray(ty[lab][:, :, :, k0:k1].conj()).reshape(n0 * n1, -1)
                         vb = kernels.transposed(v, (2, 3, 0, 1)).reshape(-1, nv * nv)
-                        c = -alpha * la.gemm(tb, vb).conj().reshape(n0, n1, nv, nv)
+                        c = -alpha * cm.blocked_gemm(
+                            tb, vb, p_hh[lab] if sym else None,
+                            p_vk if sym else None, p_vv if sym else None
+                        ).conj().reshape(n0, n1, nv, nv)
                         if lab + 'vv' not in C2:
                             C2[lab + 'vv'] = numpy.zeros((n0, n1, nv, nv), dtype=complex)
                         C2[lab + 'vv'] += c
