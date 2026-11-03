@@ -285,7 +285,11 @@ def _nr_rks_fused(libdft, ni, mol, grids, xc_code, dms_a, d, xctype):
 
 
 def apply(mf):
-    '''mf._numint.nr_rks from vxc_fast (RKS objects).  Modifies and returns mf.'''
+    '''mf._numint.nr_rks from vxc_fast (RKS objects).  Modifies and returns mf.
+    Also makes pyscf's grid build sort the points with socutils.dft.grids'
+    arg_group_grids (the same order, the 1.7 s of a ~1M-point build -> ~0.05 s).'''
+    from socutils.dft import grids as sgrids
+    sgrids.use_fast_grid_sort()
     ni = mf._numint
     if isinstance(ni, numint.NumInt):
         ni.nr_rks = lambda *a, **k: nr_rks(ni, *a, **k)

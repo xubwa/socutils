@@ -302,6 +302,36 @@ class Grids(gen_grid.Grids):
         return self
 
 
+def arg_group_grids(mol, coords, box_size=gen_grid.GROUP_BOX_SIZE):
+    '''pyscf.dft.gen_grid.arg_group_grids with the same result (the stable order
+    of the grid points by box, the boxes in lexicographic order) from one
+    stable sort of the linearised box index instead of numpy.unique(axis=0)
+    over the (N, 3) box indices (1.7 s of the 2.1 s build of ~1M points).'''
+    atom_coords = mol.atom_coords()
+    boundary = [atom_coords.min(axis=0) - gen_grid.GROUP_BOUNDARY_PENALTY,
+                atom_coords.max(axis=0) + gen_grid.GROUP_BOUNDARY_PENALTY]
+    boxes = ((boundary[1] - boundary[0]) * (1. / box_size)).round().astype(int)
+    box_size = (boundary[1] - boundary[0]) / boxes
+    frac_coords = (coords - boundary[0]) * (1. / box_size)
+    box_ids = numpy.floor(frac_coords).astype(numpy.int64)
+    box_ids[box_ids < -1] = -1
+    for k in range(3):
+        box_ids[box_ids[:, k] > boxes[k], k] = boxes[k]
+    # ids in -1 .. boxes[k]: shift by one, x-major linear index (= the lexicographic row order)
+    n = boxes.astype(numpy.int64) + 2
+    key = ((box_ids[:, 0] + 1) * n[1] + box_ids[:, 1] + 1) * n[2] + box_ids[:, 2] + 1
+    return key.argsort(kind='stable')
+
+
+def use_fast_grid_sort():
+    '''pyscf's Grids.build sorting the points with arg_group_grids above (same
+    permutation, ~30x faster); returns pyscf's original.'''
+    orig = gen_grid.arg_group_grids
+    if orig is not arg_group_grids:
+        gen_grid.arg_group_grids = arg_group_grids
+    return orig
+
+
 def hessian_grids(mol, **kwargs):
     '''The grid recommended for analytic Hessians (see the module docstring
     and dft/test/test_grids.py).  Keyword arguments override attributes.'''
