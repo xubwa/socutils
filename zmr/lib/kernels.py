@@ -640,6 +640,63 @@ def vvvv_pair_rows(d, a0):
     return w
 
 
+def vvvv_pair_rows_sym(d, a0, pirr):
+    '''vvvv_pair_rows where the irreps pirr of the pairs (numpy.triu_indices order) of
+    the row and of the column are equal, zero elsewhere; d is read only there.'''
+    nb, n = d.shape[0], d.shape[1]
+    nrow = sum(n - a - 1 for a in range(a0, a0 + nb))
+    np_ = n * (n - 1) // 2
+    pirr = numpy.ascontiguousarray(pirr, dtype=numpy.int64)
+    z = _lib.zmr()
+    if z is None or not hasattr(z, 'zmr_vvvv_pair_rows_sym') or not _plain(d):
+        iu = numpy.triu_indices(n, 1)
+        w = numpy.zeros((nrow, np_), dtype=_c16)
+        pos = 0
+        for a in range(a0, a0 + nb):
+            m = n - a - 1
+            x = d[a - a0].transpose(1, 0, 2)[a + 1 - a0:]
+            full = numpy.conj(x[:, iu[0], iu[1]] - x[:, iu[1], iu[0]])
+            first = a * n - a * (a + 1) // 2
+            mask = pirr[first:first + m, None] == pirr[None, :]
+            w[pos:pos + m] = numpy.where(mask, full, 0)
+            pos += m
+        return w
+    w = numpy.empty((nrow, np_), dtype=_c16)
+    z.zmr_vvvv_pair_rows_sym(ctypes.c_int64(nb), ctypes.c_int64(n), ctypes.c_int64(a0),
+                             _p(d), pirr.ctypes.data_as(ctypes.c_void_p), _p(w))
+    return w
+
+
+def vvvv_pair_rows_packed(packed, rowoff, coloff, nb, n, a0, pirr):
+    '''vvvv_pair_rows_sym with D in packed blocks: D[a, r, b, s] =
+    packed[rowoff[(a - a0) n + r] + coloff[(b - a0) n + s]] where symmetry allows it.'''
+    nrow = sum(n - a - 1 for a in range(a0, a0 + nb))
+    np_ = n * (n - 1) // 2
+    i64 = lambda x: numpy.ascontiguousarray(x, dtype=numpy.int64)
+    rowoff, coloff, pirr = i64(rowoff), i64(coloff), i64(pirr)
+    packed = numpy.ascontiguousarray(packed, dtype=_c16)
+    z = _lib.zmr()
+    if z is None or not hasattr(z, 'zmr_vvvv_pair_rows_packed'):
+        iu = numpy.triu_indices(n, 1)
+        w = numpy.zeros((nrow, np_), dtype=_c16)
+        pos = 0
+        for a in range(a0, a0 + nb):
+            ro = rowoff[(a - a0) * n:(a - a0 + 1) * n]
+            first = a * n - a * (a + 1) // 2
+            for k, b in enumerate(range(a + 1, n)):
+                co = coloff[(b - a0) * n:(b - a0 + 1) * n]
+                ok = pirr == pirr[first + k]
+                r, s_ = iu[0][ok], iu[1][ok]
+                w[pos + k, ok] = numpy.conj(packed[ro[r] + co[s_]] - packed[ro[s_] + co[r]])
+            pos += n - a - 1
+        return w
+    w = numpy.empty((nrow, np_), dtype=_c16)
+    ptr = lambda x: x.ctypes.data_as(ctypes.c_void_p)
+    z.zmr_vvvv_pair_rows_packed(ctypes.c_int64(nb), ctypes.c_int64(n), ctypes.c_int64(a0),
+                                _p(packed), ptr(rowoff), ptr(coloff), ptr(pirr), _p(w))
+    return w
+
+
 def pair_scatter(a, axis, n):
     '''The antisymmetric array whose pairs i < j along `axis` are a: the
     axis becomes two axes of dimension n.'''

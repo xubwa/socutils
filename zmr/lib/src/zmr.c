@@ -2509,6 +2509,87 @@ void zmr_vvvv_pair_rows(int64_t nb, int64_t n, int64_t a0, const double complex 
         free(rb);
 }
 
+/* zmr_vvvv_pair_rows with double-group sectors: pirr[p] is the irrep of the pair p of
+ * the n orbitals (numpy.triu_indices order); w[row(a, b), p(r, s)] is formed only where
+ * the irreps of (a, b) and (r, s) are equal and set to zero elsewhere, so d is read only
+ * on the blocks allowed by symmetry (its other elements may hold anything). */
+void zmr_vvvv_pair_rows_sym(int64_t nb, int64_t n, int64_t a0, const double complex *d,
+                            const int64_t *pirr, double complex *w)
+{
+        const int64_t nr = n - a0;
+        const int64_t np = n * (n - 1) / 2;
+        int64_t nrow = 0;
+        for (int64_t a = a0; a < a0 + nb; a++) nrow += n - a - 1;
+        if (nrow * np == 0) return;
+        int64_t *ra = malloc(sizeof(int64_t) * nrow);
+        int64_t *rb = malloc(sizeof(int64_t) * nrow);
+        int64_t *rp = malloc(sizeof(int64_t) * nrow);
+        int64_t q = 0;
+        for (int64_t a = a0; a < a0 + nb; a++)
+                for (int64_t b = a + 1; b < n; b++) {
+                        ra[q] = a - a0;
+                        rb[q] = b - a0;
+                        rp[q] = pirr[a * n - a * (a + 1) / 2 + (b - a - 1)];
+                        q++;
+                }
+#pragma omp parallel for schedule(static) num_threads(threads_for((double)nrow * np * 2))
+        for (int64_t row = 0; row < nrow; row++) {
+                const double complex *x = d + ra[row] * n * nr * n + rb[row] * n;
+                double complex *out = w + row * np;
+                const int64_t ir = rp[row];
+                int64_t p = 0;
+                for (int64_t r = 0; r < n; r++) {
+                        const double complex *xr = x + r * nr * n;
+                        for (int64_t s = r + 1; s < n; s++, p++)
+                                out[p] = (pirr[p] == ir) ? conj(xr[s] - x[s * nr * n + r]) : 0.0;
+                }
+        }
+        free(ra);
+        free(rb);
+        free(rp);
+}
+
+/* zmr_vvvv_pair_rows_sym with D in packed blocks: D[a, r, b, s] (a - a0 < nb, b >= a0)
+ * is packed[rowoff[(a - a0) n + r] + coloff[(b - a0) n + s]] wherever it is allowed by
+ * symmetry (the only elements read). */
+void zmr_vvvv_pair_rows_packed(int64_t nb, int64_t n, int64_t a0,
+                               const double complex *packed, const int64_t *rowoff,
+                               const int64_t *coloff, const int64_t *pirr, double complex *w)
+{
+        const int64_t np = n * (n - 1) / 2;
+        int64_t nrow = 0;
+        for (int64_t a = a0; a < a0 + nb; a++) nrow += n - a - 1;
+        if (nrow * np == 0) return;
+        int64_t *ra = malloc(sizeof(int64_t) * nrow);
+        int64_t *rb = malloc(sizeof(int64_t) * nrow);
+        int64_t *rp = malloc(sizeof(int64_t) * nrow);
+        int64_t q = 0;
+        for (int64_t a = a0; a < a0 + nb; a++)
+                for (int64_t b = a + 1; b < n; b++) {
+                        ra[q] = a - a0;
+                        rb[q] = b - a0;
+                        rp[q] = pirr[a * n - a * (a + 1) / 2 + (b - a - 1)];
+                        q++;
+                }
+#pragma omp parallel for schedule(static) num_threads(threads_for((double)nrow * np * 2))
+        for (int64_t row = 0; row < nrow; row++) {
+                const int64_t *ro = rowoff + ra[row] * n;
+                const int64_t *co = coloff + rb[row] * n;
+                double complex *out = w + row * np;
+                const int64_t ir = rp[row];
+                int64_t p = 0;
+                for (int64_t r = 0; r < n; r++) {
+                        for (int64_t s = r + 1; s < n; s++, p++)
+                                out[p] = (pirr[p] == ir)
+                                         ? conj(packed[ro[r] + co[s]] - packed[ro[s] + co[r]])
+                                         : 0.0;
+                }
+        }
+        free(ra);
+        free(rb);
+        free(rp);
+}
+
 /* The antisymmetric array: dst[l, i, j, t] = src[l, p, t], dst[l, j, i, t] =
  * -src[l, p, t], zero on the diagonal; dst (nl, n, n, nt) is overwritten. */
 void zmr_pair_scatter(int64_t nl, int64_t n, int64_t nt,

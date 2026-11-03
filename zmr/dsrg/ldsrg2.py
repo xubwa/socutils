@@ -37,6 +37,7 @@ from pyscf import lib
 
 from socutils.zmr.active import rdm
 from socutils.zmr.active.sectors import ActiveSpace
+from socutils.symm import double_group as dg
 from socutils.zmr import symmetry_sectors
 from socutils.zmr.dsrg import commutator as cm
 from socutils.zmr.lib import linalg as la
@@ -327,7 +328,7 @@ class LDSRG2:
             self._vvvv_file = lib.H5TmpFile()
             w = self._vvvv_file.create_dataset('vvvv', (npair, npair), 'c16')
             where = 'file %s' % self._vvvv_file.filename
-        for r0, rows in self.V.vvvv_rows(batch):
+        for r0, rows in self.V.vvvv_rows(batch, sym=self._virtual_sym()):
             w[r0:r0 + len(rows)] = rows
         self.log('(vv|vv) of %d pairs (%.0f MB) in %s, %.0f s' % (
             npair, size, where, time.time() - t0))
@@ -337,7 +338,8 @@ class LDSRG2:
         '''(first row, rows) of the pair-packed V[ab, rs], within the free memory.'''
         nv = self.dims['v']
         if isinstance(self._w, str):
-            yield from self.V.vvvv_rows(cm.BareV.vvvv_batch(nv, self._available()))
+            yield from self.V.vvvv_rows(cm.BareV.vvvv_batch(nv, self._available()),
+                                        sym=self._virtual_sym())
             return
         if isinstance(self._w, numpy.ndarray):
             yield 0, self._w
@@ -347,20 +349,54 @@ class LDSRG2:
         for r0 in range(0, npair, step):
             yield r0, self._w[r0:r0 + step]
 
+    def _virtual_sym(self):
+        '''(doublegroupname, irreps of the virtual orbitals) when the contractions use
+        the double-group sectors, else None.'''
+        sym = getattr(self.dims, 'sym', None)
+        return None if sym is None else (sym[0], sym[1]['v'])
+
     def _ladder(self, t2, c2, alpha):
         '''c2[ij, rs] += alpha/2 sum_ab V[ab, rs] t2[ij, ab], four virtual indices: one
-        pass over the rows of the pair-packed (vv|vv) for all hole pairs.'''
+        pass over the rows of the pair-packed (vv|vv) for all hole pairs.  With the
+        double-group sectors, the product is blocked by the irrep of the pairs: t2[ij, ab]
+        and V[ab, rs] vanish unless ij, ab, rs have the same pair irrep.'''
         nv = self.dims['v']
         iu = numpy.triu_indices(nv, 1)
         hhs = [hh for hh in ('cc', 'ca', 'aa')
                if t2.get(hh + 'vv') is not None and t2[hh + 'vv'].size]
         if not hhs:
             return
-        tp = numpy.concatenate([t2[hh + 'vv'][:, :, iu[0], iu[1]].reshape(-1, iu[0].size)
-                                for hh in hhs])
-        x = numpy.zeros_like(tp)
+        tp = numpy.ascontiguousarray(numpy.concatenate(
+            [t2[hh + 'vv'][:, :, iu[0], iu[1]].reshape(-1, iu[0].size) for hh in hhs]),
+            dtype=numpy.complex128)
+        x = numpy.zeros(tp.shape, dtype=numpy.complex128)
+        sym = self.dims.sym if getattr(self.dims, 'sym', None) else None
+        if sym is not None:
+            group, irs = sym
+            pv = numpy.asarray(dg.direct_prod(irs['v'], irs['v'], group))[iu]
+            ph = numpy.concatenate([numpy.asarray(dg.direct_prod(irs[hh[0]], irs[hh[1]],
+                                                                 group)).reshape(-1)
+                                    for hh in hhs])
+            blocks = [(numpy.nonzero(ph == p_)[0], numpy.nonzero(pv == p_)[0])
+                      for p_ in numpy.unique(pv)]
+            blocks = [(ij, ab) for ij, ab in blocks if ij.size]
+        tim = getattr(self.V, 'timings', {})
         for r0, rows in self._vvvv_blocks():
-            x += la.gemm(numpy.ascontiguousarray(tp[:, r0:r0 + len(rows)]), rows)
+            t = time.time()
+            if sym is None:
+                x += la.gemm(numpy.ascontiguousarray(tp[:, r0:r0 + len(rows)]), rows)
+                if isinstance(tim, dict):
+                    tim['vvvv apply'] = tim.get('vvvv apply', 0.0) + time.time() - t
+                continue
+            rows = numpy.asarray(rows)
+            for ij, ab in blocks:
+                loc = ab[(ab >= r0) & (ab < r0 + len(rows))]
+                if loc.size == 0:
+                    continue
+                lib.takebak_2d(x, la.gemm(lib.take_2d(tp, ij, loc),
+                                          lib.take_2d(rows, loc - r0, ab)), ij, ab)
+            if isinstance(tim, dict):
+                tim['vvvv apply'] = tim.get('vvvv apply', 0.0) + time.time() - t
         del tp
         pos = 0
         for hh in hhs:

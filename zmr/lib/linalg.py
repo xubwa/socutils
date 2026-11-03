@@ -59,6 +59,10 @@ def gemm(a, b, opa='N', opb='N', out=None, beta=0.0):
         fb = {'N': b, 'T': b.T, 'C': b.conj().T}[opb]
         if out is None:
             return fa @ fb
+        if beta == 0:
+            # out may hold anything (e.g. NaN): it is overwritten, not scaled
+            out[...] = fa @ fb
+            return out
         out *= beta
         out += fa @ fb
         return out

@@ -169,5 +169,10 @@ void zmr_pair_scatter(int64_t nl, int64_t n, int64_t nt,
                       const double complex *src, double complex *dst);
 void zmr_vvvv_pair_rows(int64_t nb, int64_t n, int64_t a0, const double complex *d,
                         double complex *w);
+void zmr_vvvv_pair_rows_sym(int64_t nb, int64_t n, int64_t a0, const double complex *d,
+                            const int64_t *pirr, double complex *w);
+void zmr_vvvv_pair_rows_packed(int64_t nb, int64_t n, int64_t a0,
+                               const double complex *packed, const int64_t *rowoff,
+                               const int64_t *coloff, const int64_t *pirr, double complex *w);
 
 #endif

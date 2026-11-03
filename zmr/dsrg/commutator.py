@@ -166,39 +166,50 @@ def _times(ir, c, group):
     return out
 
 
-def _composite(letters, coef, secs, group):
-    """Irrep of every element of the multi-index over letters (C order): the product of
-    coef[l] times the irrep of its orbital."""
-    acc = numpy.zeros(1, dtype=int)
-    for l in letters:
-        c = coef.get(l, 0)
-        sec = numpy.asarray(secs[l])
-        t = numpy.zeros(sec.size, dtype=int) if c == 0 else _times(sec, c, group)
-        acc = numpy.asarray(dg.direct_prod(acc, t, group)).reshape(-1)
-    return acc
-
-
 # products smaller than this (na * nc * nb) are done dense: the blocking does not pay
-SYMMETRY_MIN_SIZE = 1 << 18
+# (Br2 cc-pVQZ, Dooh*: the general terms of DSRG-MRPT3 with 1 << 18 took 3x longer)
+SYMMETRY_MIN_SIZE = 1 << 28
+
+
+def _sector_groups(letters, coefs, secs, group):
+    """{irreps: flat indices} of the multi-index over letters (C order), grouped by the
+    irreps sum_l coefs[k][l] Gamma_l for every coefficient dict of coefs; built from
+    the sectors of each letter, without sorting the multi-index."""
+    if not letters:
+        return {tuple(0 for _ in coefs): numpy.zeros(1, dtype=numpy.int64)}
+    per = []
+    for l in letters:
+        sec = numpy.asarray(secs[l])
+        per.append([(int(u), numpy.nonzero(sec == u)[0]) for u in numpy.unique(sec)])
+    shape = tuple(numpy.asarray(secs[l]).size for l in letters)
+    out = {}
+    for combo in product(*per):
+        key = []
+        for coef in coefs:
+            v = 0
+            for l, (u, _) in zip(letters, combo):
+                c = coef.get(l, 0)
+                if c:
+                    v = dg.direct_prod(v, int(_times(numpy.asarray([u]), c, group)[0]), group)
+            key.append(int(v))
+        idx = numpy.ravel_multi_index(numpy.ix_(*(ix for _, ix in combo)), shape).ravel()
+        out.setdefault(tuple(key), []).append(idx)
+    return {k: numpy.sort(numpy.concatenate(v)) for k, v in out.items()}
 
 
 def _symmetry_plan(aown, con, bown, sa, sb, secs, group):
     """(rows, cols, right) index arrays of the blocks of at (rows, cols) and bt (cols,
     right) that do not vanish by symmetry, one per pair of irreps of the contracted
     multi-index; the blocked product is the sum of their products."""
-    sig = _composite(con, sa, secs, group)
-    tau = _composite(con, sb, secs, group)
-    rho_a = _composite(aown, sa, secs, group)
-    rho_b = _composite(bown, sb, secs, group)
-    keys = numpy.stack([sig, tau], axis=1)
-    groups, inverse = numpy.unique(keys, axis=0, return_inverse=True)
-    inverse = inverse.reshape(-1)
+    cgroups = _sector_groups(con, (sa, sb), secs, group)
+    agroups = _sector_groups(aown, (sa,), secs, group)
+    bgroups = _sector_groups(bown, (sb,), secs, group)
     plan = []
-    for g, (s1, t1) in enumerate(groups):
-        rows = numpy.nonzero(rho_a == dg.conj(int(s1), group))[0]
-        right = numpy.nonzero(rho_b == dg.conj(int(t1), group))[0]
-        if rows.size and right.size:
-            plan.append((rows, numpy.nonzero(inverse == g)[0], right))
+    for (s1, t1), cols in cgroups.items():
+        rows = agroups.get((dg.conj(s1, group),))
+        right = bgroups.get((dg.conj(t1, group),))
+        if rows is not None and right is not None:
+            plan.append((rows, cols, right))
     return plan
 
 
@@ -582,32 +593,77 @@ class BareV:
             self.timings["vvvx antisym"] += time.time() - t
             yield k0, k1, v
 
-    def vvvv_rows(self, batch=8):
+    def vvvv_rows(self, batch=8, sym=None):
         """V[ab, rs] for a < b, r < s, built from the three-index tensors: yields (first
         row, rows) with the rows of `batch` values of a at a time (pairs in the order of
-        numpy.triu_indices)."""
+        numpy.triu_indices).  sym = (doublegroupname, irreps of the virtual orbitals):
+        only the products of the transition irreps conj(a) r, conj(b) s whose product is
+        totally symmetric are formed."""
         naux, nv, _ = self.B.shape("vv")
         bvv = self.B.file["vv"]                    # unconjugated
         tim = self.timings
         row = 0
+        if sym is not None:
+            group, irv = sym
+            irv = numpy.asarray(irv)
+            # transition irreps conj(p) q of the pairs (p, q) of virtual orbitals
+            trans = numpy.asarray(dg.direct_prod(dg.conj(irv, group), irv, group))
+            # irreps of the pairs p < q
+            pirr = numpy.asarray(dg.direct_prod(irv, irv, group))[numpy.triu_indices(nv, 1)]
+        else:
+            # D of the largest batch, reused (a new array per batch costs its page faults)
+            dbuf = numpy.empty(min(batch, nv - 1) * nv * nv * nv, dtype=complex)
         for a0 in range(0, nv - 1, batch):
             a1 = min(a0 + batch, nv - 1)
             nb, nr = a1 - a0, nv - a0
             # D[a, r, b, s] = sum_P B[P, a, r] B[P, b, s] for b >= a0 only (b > a is
             # kept), one pass over B[vv]; V = conj(D - D^T(r, s))
             pstep = self.B.step(16.0 * nr * nv, self.read_memory)
-            d = numpy.zeros((nb * nv, nr * nv), dtype=complex)
+            if sym is None:
+                d = dbuf[:nb * nv * nr * nv].reshape(nb * nv, nr * nv)
+            else:
+                # the blocks of D allowed by symmetry, one after the other in packed:
+                # (a, r) of transition irrep t times (b, s) of irrep conj(t)
+                t = time.time()
+                tl = trans[a0:a1].reshape(-1)       # (a, r)
+                tr = trans[a0:].reshape(-1)         # (b, s)
+                blocks, rowoff, coloff, size = [], numpy.zeros(tl.size, dtype=numpy.int64), \
+                    numpy.zeros(tr.size, dtype=numpy.int64), 0
+                for t_ in numpy.unique(tl):
+                    cl = numpy.nonzero(tl == t_)[0]
+                    cr = numpy.nonzero(tr == dg.conj(int(t_), group))[0]
+                    if cl.size and cr.size:
+                        rowoff[cl] = size + numpy.arange(cl.size) * cr.size
+                        coloff[cr] = numpy.arange(cr.size)
+                        blocks.append((cl, cr, size))
+                        size += cl.size * cr.size
+                packed = numpy.empty(size, dtype=complex)
+                tim["vvvv fill"] += time.time() - t
             for p0 in range(0, naux, pstep):
                 t = time.time()
                 x = bvv[p0:p0 + pstep, a0:]
                 tim["read"] += time.time() - t
                 t = time.time()
-                la.gemm(x[:, :nb].reshape(x.shape[0], -1), x.reshape(x.shape[0], -1),
-                        opa="T", out=d, beta=1.0)
+                right = x.reshape(x.shape[0], -1)
+                left = numpy.ascontiguousarray(x[:, :nb]).reshape(x.shape[0], -1)
+                # the first chunk of P overwrites D, the others add to it
+                beta = 0.0 if p0 == 0 else 1.0
+                if sym is None:
+                    la.gemm(left, right, opa="T", out=d, beta=beta)
+                else:
+                    rows = numpy.arange(x.shape[0])
+                    for cl, cr, off in blocks:
+                        la.gemm(lib.take_2d(left, rows, cl), lib.take_2d(right, rows, cr),
+                                opa="T", out=packed[off:off + cl.size * cr.size].reshape(
+                                    cl.size, cr.size), beta=beta)
                 tim["vvvv gemm"] += time.time() - t
             t = time.time()
-            w = kernels.vvvv_pair_rows(d.reshape(nb, nv, nr, nv), a0)
-            del d
+            if sym is None:
+                w = kernels.vvvv_pair_rows(d.reshape(nb, nv, nr, nv), a0)
+                del d
+            else:
+                w = kernels.vvvv_pair_rows_packed(packed, rowoff, coloff, nb, nv, a0, pirr)
+                del packed
             tim["vvvv gather"] += time.time() - t
             yield row, w
             row += len(w)

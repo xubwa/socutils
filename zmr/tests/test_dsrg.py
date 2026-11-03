@@ -150,20 +150,55 @@ def double_group(request):
     mf.conv_tol = 1e-11
     mf.verbose = 0
     mf.kernel()
-    eris = socutils_x2c.from_scf(mf, ncore=mol.nelectron - 2, nact=4, lazy=False)
-    assert eris.doublegroupname == request.param
-    return eris
+    dense = socutils_x2c.from_scf(mf, ncore=mol.nelectron - 2, nact=4, lazy=False)
+    chol = socutils_x2c.from_scf(mf, ncore=mol.nelectron - 2, nact=4, cderi=factorize(mol))
+    assert dense.doublegroupname == chol.doublegroupname == request.param
+    return dense, chol
 
 
+@pytest.mark.parametrize('integrals', ['dense', 'three-index'])
 @pytest.mark.parametrize('name', sorted(METHODS))
-def test_double_group_sectors(double_group, name):
+def test_double_group_sectors(double_group, name, integrals):
     '''Contractions blocked by the double-group sectors of a socutils double-group SCF
-    (C2*, C2h*, Coov*) against the same calculation without them.'''
+    (C2*, C2h*, Coov*) against the same calculation without them; with three-index
+    integrals also the blocked (vv|vv) rows and ladder.'''
+    eris = double_group[0 if integrals == 'dense' else 1]
     out = []
     for use in (True, False):
         cls = type('X', (METHODS[name],), {'use_symmetry': use})
-        out.append(run(cls, double_group, 2, 2))
+        out.append(run(cls, eris, 2, 2))
     a, b = out
     assert a.dims.sym is not None and b.dims.sym is None
     assert abs(a.e_corr - b.e_corr) < 1e-9
     assert abs(numpy.asarray(a.e_tot) - b.e_tot).max() < 1e-8
+
+
+def test_vvvv_pair_rows_sym():
+    '''Native pair rows with pair irreps against numpy (C2h*-like irreps 0..7).'''
+    from socutils.zmr.lib import kernels
+    rng = numpy.random.default_rng(3)
+    n, a0, nb = 7, 2, 3
+    d = rng.normal(size=(nb, n, n - a0, n)) + 1j * rng.normal(size=(nb, n, n - a0, n))
+    pirr = rng.integers(0, 3, size=n * (n - 1) // 2)
+    full = kernels.vvvv_pair_rows(d, a0)
+    first = a0 * n - a0 * (a0 + 1) // 2
+    rows = pirr[first:first + len(full)]
+    ref = numpy.where(rows[:, None] == pirr[None, :], full, 0)
+    assert abs(kernels.vvvv_pair_rows_sym(d, a0, pirr) - ref).max() < 1e-14
+
+
+def test_vvvv_pair_rows_packed():
+    '''Pair rows from D in packed blocks against the dense D (pair irreps of a group with
+    additive irreps 0..2 for the orbitals).'''
+    from socutils.zmr.lib import kernels
+    rng = numpy.random.default_rng(4)
+    n, a0, nb = 7, 2, 3
+    d = rng.normal(size=(nb, n, n - a0, n)) + 1j * rng.normal(size=(nb, n, n - a0, n))
+    pirr = rng.integers(0, 3, size=n * (n - 1) // 2)
+    # every element in its own one-element block: rowoff + coloff is the dense index
+    rowoff = numpy.arange(nb * n) * (n - a0) * n
+    coloff = numpy.arange((n - a0) * n)
+    dense = d.transpose(0, 1, 2, 3).reshape(-1)
+    ref = kernels.vvvv_pair_rows_sym(d, a0, pirr)
+    out = kernels.vvvv_pair_rows_packed(dense, rowoff, coloff, nb, n, a0, pirr)
+    assert abs(out - ref).max() < 1e-14
