@@ -413,3 +413,26 @@ determinant counts per iteration, PT2, the test suite):
 4. The search and products by blocks of remote B lists (item a); the
    replicated list and byte-table determinant arrays dropped.
 5. Files written and read piece by piece.
+
+### Item e, progress
+
+- **Step 2a (done):** the heat-bath selection checks its candidates
+  against the determinants each rank owns by hash (the rank its candidates
+  are sent to), sorted by every rank from the shared list: 1/p of the
+  space per rank instead of a sorted copy of all of it per node, made
+  without the root (`OwnedSortedActive`). The scored selectors (cipsi,
+  asci, aci), which look up any determinant, keep the whole sorted copy.
+  Ownership is by hash until step 1 brings the A-string ranges; the owner
+  function is the only thing that changes then.
+- **Step 1, the open point:** the stored matrix keeps one triangle in the
+  order in which determinants entered the list (a new row holds all its
+  connections to earlier rows, and the one- and two-sweep products rely
+  on columns below rows). Ownership by A-string ranges with Davidson
+  segments of owned determinants needs a second order, the position in
+  the A-string order. Either (A) the matrix stays in entry order and every
+  product permutes x into it and y out of it (two passes of n random
+  accesses per product and rank), or (B) the stored elements are
+  renumbered after each selection into the A-string order, each pair
+  stored in the row of its larger position (a pass over all elements and
+  a re-sort of the rows per iteration), which is the form the block-wise
+  product of step 4 needs anyway. (B) is the plan; (A) only as a stopgap.

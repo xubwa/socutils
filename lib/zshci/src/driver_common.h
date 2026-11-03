@@ -296,6 +296,31 @@ SharedArray<Det<W>> ShareSortedActive(Span<Det<W>> dets,
   return SharedArray<Det<W>>::FromRoot(sorted, comm);
 }
 
+// The determinants of the list that are marked in `active` and that this
+// rank owns by hash (Hash() % ranks == rank), sorted: what the heat-bath
+// selection checks its candidates against, 1/p of the space per rank
+// instead of a sorted copy of all of it per node.
+template <int W>
+std::vector<Det<W>> OwnedSortedActive(Span<Det<W>> dets, Span<uint8_t> active,
+                                      const Comm& comm) {
+  const uint64_t ranks = comm.size();
+  const uint64_t rank = comm.rank();
+  const long n = static_cast<long>(dets.size());
+  std::vector<Det<W>> owned;
+#pragma omp parallel
+  {
+    std::vector<Det<W>> local;
+#pragma omp for schedule(static) nowait
+    for (long i = 0; i < n; ++i) {
+      if (active[i] && dets[i].Hash() % ranks == rank) local.push_back(dets[i]);
+    }
+#pragma omp critical
+    owned.insert(owned.end(), local.begin(), local.end());
+  }
+  ParallelSort(owned.begin(), owned.end());
+  return owned;
+}
+
 // The connection search requested in the input.
 inline ConnectOptions MakeConnectOptions(const Input& input) {
   ConnectOptions options;

@@ -87,7 +87,9 @@ class CandidateSink {
 // With several ranks, each rank excites its share of the determinants, the
 // candidates are sent to the rank that owns their hash, which removes
 // duplicates and known determinants, and the survivors are gathered so that
-// every rank returns the same list.
+// every rank returns the same list. `sorted_dets` need only hold the
+// determinants this rank owns (Hash() % ranks == rank): the others are
+// never looked up here (OwnedSortedActive).
 template <int W, class Filter, class Ints, typename S = typename Ints::Scalar>
 std::vector<Det<W>> SelectNewDeterminants(
     Span<Det<W>> dets, Span<Det<W>> sorted_dets, Span<double> weights,
@@ -209,7 +211,9 @@ struct SelectionContext {
   // selector has taken some out (see Selection): those stay in the list,
   // with weight and coefficients zero, and count as outside the space.
   Span<Det<W>> dets;
-  // The determinants of the space, sorted.
+  // The determinants of the space, sorted: all of them for selectors that
+  // need the whole space, else only those this rank owns by hash
+  // (OwnedSortedActive).
   Span<Det<W>> sorted_dets;
   // For every determinant of the list, the root-sum-square of its
   // coefficients over the roots (see ShareWeights).
@@ -257,6 +261,9 @@ class Selector {
                             size_t num_changed) const = 0;
   // Whether Select uses the eigenvectors.
   virtual bool needs_vectors() const { return false; }
+  // Whether Select needs all determinants of the space in sorted_dets, or
+  // only those this rank owns by hash.
+  virtual bool needs_whole_space() const { return true; }
 
   // Collective: what to bring into the space and what to take out of it.
   virtual Selection<W> Select(const SelectionContext<W, Ints>& context) = 0;
@@ -268,6 +275,7 @@ class HeatBathSelector : public Selector<W, Ints> {
  public:
   explicit HeatBathSelector(const SelectInput& select) : select_(select) {}
 
+  bool needs_whole_space() const override { return false; }
   const char* parameter_name() const override { return "epsilon1"; }
   double Parameter(int iteration) const override {
     return select_.Epsilon(iteration);
@@ -946,8 +954,16 @@ void RunSelect(const Input& given, const Ints& ints, const Comm& comm) {
       timer.Mark("sel: weights");
       const SharedArray<uint8_t> active =
           SharedArray<uint8_t>::FromRoot(root_active, comm);
-      const SharedArray<Det<W>> sorted_dets =
-          ShareSortedActive(shared_dets.span(), root_active, comm);
+      // The space sorted, once per node, for the selectors that look up any
+      // determinant; for the others every rank sorts only those it owns.
+      SharedArray<Det<W>> sorted_dets;
+      std::vector<Det<W>> owned;
+      const bool whole = selector->needs_whole_space();
+      if (whole) {
+        sorted_dets = ShareSortedActive(shared_dets.span(), root_active, comm);
+      } else {
+        owned = OwnedSortedActive(shared_dets.span(), active.span(), comm);
+      }
       timer.Mark("sel: sorted list");
       // The eigenvectors go to all ranks only for selectors that use them.
       SharedVectors<S> vectors;
@@ -955,7 +971,8 @@ void RunSelect(const Input& given, const Ints& ints, const Comm& comm) {
       if (with_vectors) vectors = ShareVectors(root_vectors, old_size, comm);
       const SelectionContext<W, Ints> context{iter,
                                               shared_dets.span(),
-                                              sorted_dets.span(),
+                                              whole ? sorted_dets.span()
+                                                    : MakeSpan(owned),
                                               weights.span(),
                                               with_vectors ? &vectors : nullptr,
                                               energies,
