@@ -459,3 +459,77 @@ def einsum(spec, a, b, out=None, alpha=1.0, split=None):
         raise ValueError('einsum: the result does not have the structure of out')
     out.data += alpha * c.data
     return out
+
+
+class View:
+    '''t with its legs permuted (axis k of the view is leg perm[k] of t) and optionally
+    complex conjugated, without a copy; numpy.asarray gives the dense array.'''
+
+    def __init__(self, t, perm=None, conj=False):
+        self.t = t
+        self.perm = tuple(range(len(t.legs))) if perm is None else tuple(perm)
+        self.conjugated = bool(conj)
+
+    @property
+    def shape(self):
+        return tuple(self.t.legs[k].size for k in self.perm)
+
+    @property
+    def ndim(self):
+        return len(self.perm)
+
+    @property
+    def size(self):
+        return int(numpy.prod(self.shape, dtype=int))
+
+    dtype = numpy.dtype(numpy.complex128)
+
+    def transpose(self, perm):
+        return View(self.t, [self.perm[k] for k in perm], self.conjugated)
+
+    def conj(self):
+        return View(self.t, self.perm, not self.conjugated)
+
+    def __array__(self, dtype=None, copy=None):
+        d = self.t.to_dense().transpose(self.perm)
+        d = d.conj() if self.conjugated else d
+        return numpy.ascontiguousarray(d, dtype=dtype)
+
+
+def _permuted_boxes(t, perm):
+    '''{sector tuple in the order perm: (base, strides, sizes in the order perm)}.'''
+    out = {}
+    for sec, (base, st, sz) in t.boxes().items():
+        out[tuple(sec[k] for k in perm)] = (base, tuple(st[k] for k in perm),
+                                            tuple(sz[k] for k in perm))
+    return out
+
+
+def add_permuted(dst, src, perm, alpha=1.0, conj=False, assign=False):
+    '''dst += alpha (conj) src.transpose(perm), block by block (assign: dst = ...);
+    axis k of the permuted src is leg perm[k] of src.  The blocks of src must be blocks
+    of dst (same legs after the permutation).'''
+    from socutils.zmr.lib import kernels
+    sboxes = _permuted_boxes(src, perm)
+    dboxes = dst.boxes()
+    keys = [k for k in sboxes if k in dboxes]
+    if not keys:
+        return dst
+    rank = len(perm)
+    nrow = max(1, rank // 2) if rank > 1 else rank
+    nrow = min(nrow, rank)
+    doff, ld, off = [], [], 0
+    for k in keys:
+        sz = sboxes[k][2]
+        nc = int(numpy.prod(sz[nrow:], dtype=int))
+        doff.append(off)
+        ld.append(nc)
+        off += int(numpy.prod(sz, dtype=int))
+    buf = numpy.empty(off, dtype=numpy.complex128)
+    dims = [sboxes[k][2] for k in keys]
+    kernels.box_copy_strided(0, src.data, buf, nrow, [sboxes[k][0] for k in keys],
+                             [sboxes[k][1] for k in keys], dims, doff, ld, conj=conj)
+    kernels.box_copy_strided(1 if assign else 2, dst.data, buf, nrow,
+                             [dboxes[k][0] for k in keys], [dboxes[k][1] for k in keys],
+                             dims, doff, ld, alpha=alpha)
+    return dst

@@ -29,6 +29,7 @@ from pyscf import lib
 from itertools import product
 
 from socutils.symm import double_group as dg
+from socutils.zmr import dpd
 from socutils.zmr.lib import kernels
 from socutils.zmr.lib import linalg as la
 
@@ -78,6 +79,8 @@ class AntiBlocks(Blocks):
         blk = dict.get(self, clab)
         if blk is None:
             return None
+        if isinstance(blk, dpd.Tensor):
+            blk = dpd.View(blk)
         if clab == lab:
             return blk, 1.0
         return blk.transpose(perm), sign
@@ -130,6 +133,12 @@ class Dims(dict):
         self.sym = sym
         # plans of the symmetry-blocked products (_pair_symmetric), by index pattern
         self.plans = {}
+        # legs of the spaces for tensors in the DPD layout (orbitals grouped by sector)
+        self.legs = {}
+        if sym is not None:
+            for x, irs in sym[1].items():
+                if irs is not None and _runs(irs) is not None:
+                    self.legs[x] = dpd.Leg.from_orbsym(irs, x)
 
 
 # Which indices of an operand are created (+1) and annihilated (-1): an element is
@@ -241,105 +250,173 @@ def _runs(sec):
 
 
 def _tuples(letters, coefs, runs, group):
-    """[(irreps under every coefficient dict, starts, sizes)] of the sector tuples of the
-    letters (C order)."""
+    """[(irreps under every coefficient dict, sector indices, starts, sizes)] of the
+    sector tuples of the letters (C order)."""
     out = []
-    for combo in product(*(runs[l] for l in letters)):
+    for combo in product(*(list(enumerate(runs[l])) for l in letters)):
         keys = []
         for coef in coefs:
             v = 0
-            for l, (ir, _, _) in zip(letters, combo):
+            for l, (_, (ir, _, _)) in zip(letters, combo):
                 c = coef.get(l, 0)
                 if c:
                     v = dg.direct_prod(v, int(_times(numpy.asarray([ir]), c, group)[0]),
                                        group)
             keys.append(int(v))
-        out.append((tuple(keys), [x[1] for x in combo], [x[2] for x in combo]))
+        out.append((tuple(keys), tuple(k for k, _ in combo), [x[1] for _, x in combo],
+                    [x[2] for _, x in combo]))
     return out
 
 
 def _box_plan(aown, con, bown, sa, sb, secs, group):
     """Plan of a blocked product from sector ranges: for every pair (sig, tau) of irreps of
     the contracted multi-index, the boxes of a (rows of irrep conj(sig)) and of b
-    (columns of irrep conj(tau)) as rectangles of packed matrices.  None if the
-    orbitals of a letter are not grouped by sector."""
+    (columns of irrep conj(tau)) as rectangles of packed matrices, and the boxes of the
+    result.  Every box: (sector indices, starts, sizes, offset, leading dimension).
+    None if the orbitals of a letter are not grouped by sector; "dense" if the blocks
+    do not save enough work."""
     runs = {}
     for l in aown + con + bown:
         r = _runs(secs[l])
         if r is None:
             return None
         runs[l] = r
-    arows = _tuples(aown, (sa,), runs, group)
-    ccols = _tuples(con, (sa, sb), runs, group)
-    bcols = _tuples(bown, (sb,), runs, group)
+    size = lambda sz: int(numpy.prod(sz, dtype=numpy.int64))
+    arows = [x for x in _tuples(aown, (sa,), runs, group) if size(x[3])]
+    ccols = [x for x in _tuples(con, (sa, sb), runs, group) if size(x[3])]
+    bcols = [x for x in _tuples(bown, (sb,), runs, group) if size(x[3])]
     groups = {}
-    for keys, st, sz in ccols:
-        if int(numpy.prod(sz)):
-            groups.setdefault(keys, []).append((st, sz))
+    for keys, sec, st, sz in ccols:
+        groups.setdefault(keys, []).append((sec, st, sz))
     plan = {"a": [], "b": [], "r": [], "gemm": []}
     offs = {"a": 0, "b": 0, "r": 0}
     for (s1, t1), cs in groups.items():
-        rs = [(st, sz) for (k,), st, sz in arows if k == dg.conj(s1, group) and int(numpy.prod(sz))]
-        ls = [(st, sz) for (k,), st, sz in bcols if k == dg.conj(t1, group) and int(numpy.prod(sz))]
+        rs = [(sec, st, sz) for (k,), sec, st, sz in arows if k == dg.conj(s1, group)]
+        ls = [(sec, st, sz) for (k,), sec, st, sz in bcols if k == dg.conj(t1, group)]
         if not rs or not ls:
             continue
-        nr = sum(int(numpy.prod(sz)) for _, sz in rs)
-        nc = sum(int(numpy.prod(sz)) for _, sz in cs)
-        nl = sum(int(numpy.prod(sz)) for _, sz in ls)
+        nr = sum(size(x[2]) for x in rs)
+        nc = sum(size(x[2]) for x in cs)
+        nl = sum(size(x[2]) for x in ls)
         ga, gb, gr = offs["a"], offs["b"], offs["r"]
         r0 = 0
-        for rst, rsz in rs:
+        for rsec, rst, rsz in rs:
             c0 = 0
-            for cst, csz in cs:
-                plan["a"].append((rst + cst, rsz + csz, ga + r0 * nc + c0, nc))
-                c0 += int(numpy.prod(csz))
+            for csec, cst, csz in cs:
+                plan["a"].append((rsec + csec, rst + cst, rsz + csz, ga + r0 * nc + c0, nc))
+                c0 += size(csz)
             l0 = 0
-            for lst, lsz in ls:
-                plan["r"].append((rst + lst, rsz + lsz, gr + r0 * nl + l0, nl))
-                l0 += int(numpy.prod(lsz))
-            r0 += int(numpy.prod(rsz))
+            for lsec, lst, lsz in ls:
+                plan["r"].append((rsec + lsec, rst + lst, rsz + lsz, gr + r0 * nl + l0, nl))
+                l0 += size(lsz)
+            r0 += size(rsz)
         c0 = 0
-        for cst, csz in cs:
+        for csec, cst, csz in cs:
             l0 = 0
-            for lst, lsz in ls:
-                plan["b"].append((cst + lst, csz + lsz, gb + c0 * nl + l0, nl))
-                l0 += int(numpy.prod(lsz))
-            c0 += int(numpy.prod(csz))
+            for lsec, lst, lsz in ls:
+                plan["b"].append((csec + lsec, cst + lst, csz + lsz, gb + c0 * nl + l0, nl))
+                l0 += size(lsz)
+            c0 += size(csz)
         plan["gemm"].append((ga, gb, gr, nr, nc, nl))
         offs["a"] += nr * nc
         offs["b"] += nc * nl
         offs["r"] += nr * nl
     work = sum(m * k * n for _, _, _, m, k, n in plan["gemm"])
-    dense = (int(numpy.prod([len(secs[l]) for l in aown])) * int(numpy.prod([len(secs[l]) for l in con]))
-             * int(numpy.prod([len(secs[l]) for l in bown])))
+    dense = (size([len(secs[l]) for l in aown]) * size([len(secs[l]) for l in con])
+             * size([len(secs[l]) for l in bown]))
     if work > SYMMETRY_MAX_FRACTION * dense:
         return "dense"
-    for key in ("a", "b", "r"):
-        rows = plan[key]
-        plan[key] = (numpy.asarray([x[0] for x in rows], dtype=numpy.int64),
-                     numpy.asarray([x[1] for x in rows], dtype=numpy.int64),
-                     numpy.asarray([x[2] for x in rows], dtype=numpy.int64),
-                     numpy.asarray([x[3] for x in rows], dtype=numpy.int64))
     plan["size"] = dict(offs)
     return plan
 
 
-def _box_product(av, bv, shape, nown, plan):
-    """av (axes aown + con, any strides) times bv (axes con + bown) into the dense array of
-    shape (aown + bown), only the blocks allowed by symmetry; one copy of each operand
-    into packed matrices, one product per irrep, one copy back."""
+def _gather(x, boxes, nrow, buf):
+    """The boxes (sector indices, starts, sizes, offset, ld) of the operand x (a dense
+    array or view, or a dpd.View) into the packed matrices of buf."""
+    if not boxes:
+        return
+    if isinstance(x, dpd.View):
+        pb = dpd._permuted_boxes(x.t, x.perm)
+        keep = [b for b in boxes if b[0] in pb]
+        if len(keep) < len(boxes):
+            buf[...] = 0                      # blocks the tensor does not hold are zero
+        if keep:
+            kernels.box_copy_strided(0, x.t.data, buf, nrow, [pb[b[0]][0] for b in keep],
+                                     [pb[b[0]][1] for b in keep], [b[2] for b in keep],
+                                     [b[3] for b in keep], [b[4] for b in keep],
+                                     conj=x.conjugated)
+        return
+    kernels.box_copy(0, x, buf, nrow, [b[1] for b in boxes], [b[2] for b in boxes],
+                     [b[3] for b in boxes], [b[4] for b in boxes])
+
+
+def _add_dense(t, arr, alpha=1.0, conj=False):
+    """dpd.Tensor t += alpha (conj) arr on its blocks (arr dense in the order of the legs
+    of t, any strides)."""
+    boxes = t.boxes()
+    if not boxes:
+        return
+    keys = list(boxes)
+    rank = len(t.legs)
+    starts = [[t.legs[k].offsets[sec[k]] for k in range(rank)] for sec in keys]
+    dims = [boxes[sec][2] for sec in keys]
+    doff, ld, off = [], [], 0
+    for d in dims:
+        doff.append(off)
+        ld.append(1)
+        off += int(numpy.prod(d, dtype=numpy.int64))
+    buf = numpy.empty(off, dtype=numpy.complex128)
+    arr = numpy.asarray(arr, dtype=numpy.complex128)
+    kernels.box_copy(0, arr, buf, rank, starts, dims, doff, ld)
+    kernels.box_copy_strided(2, t.data, buf, rank, [boxes[sec][0] for sec in keys],
+                             [boxes[sec][1] for sec in keys], dims, doff, ld,
+                             alpha=alpha, conj=conj)
+
+
+class _Packed:
+    """The blocks of a product as rectangles of a packed buffer (the boxes of the result
+    in the plan, axes aown + bown), not expanded."""
+
+    def __init__(self, buf, boxes, nrow, shape):
+        self.buf, self.boxes, self.nrow, self.shape = buf, boxes, nrow, shape
+
+    def dense(self):
+        r = numpy.zeros(self.shape, dtype=numpy.complex128)
+        if self.boxes:
+            kernels.box_copy(1, r, self.buf, self.nrow, [b[1] for b in self.boxes],
+                             [b[2] for b in self.boxes], [b[3] for b in self.boxes],
+                             [b[4] for b in self.boxes])
+        return r
+
+    def add_to(self, t, perm, alpha=1.0, conj=False):
+        """t += alpha (conj) result.transpose-to-t: axis j of the result is leg perm[j]
+        of the dpd.Tensor t."""
+        pb = dpd._permuted_boxes(t, perm)
+        keep = [b for b in self.boxes if b[0] in pb]
+        if keep:
+            kernels.box_copy_strided(2, t.data, self.buf, self.nrow,
+                                     [pb[b[0]][0] for b in keep], [pb[b[0]][1] for b in keep],
+                                     [b[2] for b in keep], [b[3] for b in keep],
+                                     [b[4] for b in keep], alpha=alpha, conj=conj)
+
+
+def _box_product(av, bv, shape, nown, plan, packed=False):
+    """av (axes aown + con) times bv (axes con + bown): only the blocks allowed by
+    symmetry; one copy of each operand into packed matrices, one product per irrep.
+    The result dense of the given shape (aown + bown), a scalar for no free letters, or
+    with packed its _Packed blocks."""
     abuf = numpy.empty(plan["size"]["a"], dtype=numpy.complex128)
     bbuf = numpy.empty(plan["size"]["b"], dtype=numpy.complex128)
     rbuf = numpy.empty(plan["size"]["r"], dtype=numpy.complex128)
-    kernels.box_copy(0, av, abuf, nown, *plan["a"])
-    ncon = av.ndim - nown
-    kernels.box_copy(0, bv, bbuf, ncon, *plan["b"])
+    _gather(av, plan["a"], nown, abuf)
+    _gather(bv, plan["b"], av.ndim - nown, bbuf)
     for ga, gb, gr, m, k, n in plan["gemm"]:
         la.gemm(abuf[ga:ga + m * k].reshape(m, k), bbuf[gb:gb + k * n].reshape(k, n),
                 out=rbuf[gr:gr + m * n].reshape(m, n))
-    r = numpy.zeros(shape, dtype=numpy.complex128)
-    kernels.box_copy(1, r, rbuf, nown, *plan["r"])
-    return r
+    if not shape:
+        return complex(rbuf.sum())
+    res = _Packed(rbuf, plan["r"], nown, shape)
+    return res if packed else res.dense()
 
 
 def _pair_symmetric(at, bt, plan):
@@ -418,7 +495,7 @@ def _is_plain(a):
 
 
 def _pair(asub, a, bsub, b, keepers, sa=None, sb=None, secs=None, group=None, plans=None,
-          spaces=None):
+          spaces=None, packed=False):
     """Contraction of two arrays over the letters they share that are not in
     `keepers`: (subscripts, array, signs).  One threaded matrix product between threaded
     transpositions (zmr.lib); numpy.einsum for traces and outer products.  With the
@@ -439,7 +516,7 @@ def _pair(asub, a, bsub, b, keepers, sa=None, sb=None, secs=None, group=None, pl
                                  * b.size >= SYMMETRY_MIN_SIZE)
     dense = False
     if (group is not None and sa is not None and sb is not None and plans is not None
-            and big and (aown or bown)):
+            and big):
         key = ("box", tuple(aown), tuple(con), tuple(bown),
                tuple(sorted(sa.items())), tuple(sorted(sb.items())),
                tuple(spaces[x] for x in aown + con + bown))
@@ -447,12 +524,16 @@ def _pair(asub, a, bsub, b, keepers, sa=None, sb=None, secs=None, group=None, pl
             plans[key] = _box_plan(aown, con, bown, sa, sb, secs, group)
         plan = plans[key]
         if isinstance(plan, dict):
-            av = numpy.asarray(a, dtype=numpy.complex128).transpose(pa)
-            bv = numpy.asarray(b, dtype=numpy.complex128).transpose(pb)
+            av = a.transpose(pa) if isinstance(a, dpd.View) else \
+                numpy.asarray(a, dtype=numpy.complex128).transpose(pa)
+            bv = b.transpose(pb) if isinstance(b, dpd.View) else \
+                numpy.asarray(b, dtype=numpy.complex128).transpose(pb)
             shape = av.shape[:len(aown)] + bv.shape[len(con):]
-            r = _box_product(av, bv, shape, len(aown), plan)
+            r = _box_product(av, bv, shape, len(aown), plan, packed=packed)
             return "".join(aown + bown), r, _combine_signs(sa, sb, con)
         dense = plan == "dense"
+    a = numpy.asarray(a) if isinstance(a, dpd.View) else a
+    b = numpy.asarray(b) if isinstance(b, dpd.View) else b
     at = a if (pa == list(range(a.ndim)) and _is_plain(a)) else kernels.transposed(a, pa)
     bt = b if (pb == list(range(b.ndim)) and _is_plain(b)) else kernels.transposed(b, pb)
     na = int(numpy.prod(at.shape[:len(aown)], dtype=numpy.int64))
@@ -519,6 +600,8 @@ def contract(spec, *ops, dims, out=None, scale=1.0, keep=None, fix=""):
                     conj_ops.add(len(arrays))
                 blk, sg = blk[0], blk[1]
                 fac *= sg
+            if isinstance(blk, dpd.Tensor):
+                blk = dpd.View(blk)
             if blk is EYE:
                 x, y = sub
                 x, y = rename.get(x, x), rename.get(y, y)
@@ -560,13 +643,18 @@ def contract(spec, *ops, dims, out=None, scale=1.0, keep=None, fix=""):
             _t = time.time()
         if cj:
             # einsum(conj(A), B) = conj(einsum(A, conj(B)))
-            arrays = [x if k in conj_ops else numpy.conj(x) for k, x in enumerate(arrays)]
+            arrays = [x if k in conj_ops else (x.conj() if isinstance(x, dpd.View)
+                                               else numpy.conj(x))
+                      for k, x in enumerate(arrays)]
+        # the last product writes its blocks straight into a DPD output
+        to_dpd = bool(rhs) and getattr(out, "dpd", False) and group is not None
         csub, val, csgn = asubs[0], arrays[0], sdicts[0]
         for k in range(1, len(arrays)):
             later = set(rhs).union(*asubs[k + 1:])
             csub, val, csgn = _pair(csub, val, asubs[k], arrays[k], later,
                                     csgn, sdicts[k], secs, group,
-                                    getattr(dims, "plans", None), sp)
+                                    getattr(dims, "plans", None), sp,
+                                    packed=to_dpd and k == len(arrays) - 1)
         if PROFILE is not None:
             key = spec + " " + ",".join("".join(sp[ch] for ch in sub) for sub in subs)
             PROFILE[key] = PROFILE.get(key, 0.0) + time.time() - _t
@@ -574,18 +662,39 @@ def contract(spec, *ops, dims, out=None, scale=1.0, keep=None, fix=""):
             v = numpy.einsum(csub + "->", val) if csub else val
             total += fac * (numpy.conj(v) if cj else v)
             continue
+        if isinstance(val, dpd.View):
+            val = numpy.asarray(val)
         if len(set(csub)) != len(csub) or set(csub) != set(rhs):
+            val = val.dense() if isinstance(val, _Packed) else val
             val = numpy.einsum(csub + "->" + rhs, val)
             csub = rhs
             csgn = None
-        if cj:
-            val = numpy.conj(val)
         perm = [csub.index(x) for x in rhs]
         if olab not in out:
-            out[olab] = numpy.zeros([val.shape[p] for p in perm], dtype=numpy.complex128)
+            dirs = None if csgn is None else tuple(csgn.get(x, 0) for x in rhs)
+            if (to_dpd and dirs is not None and all(d in (1, -1) for d in dirs)
+                    and all(sp[x] in dims.legs for x in rhs)):
+                out[olab] = dpd.Tensor([dims.legs[sp[x]] for x in rhs], dirs,
+                                       len(rhs) // 2 or 1, group)
+            else:
+                shape = (val.shape if not isinstance(val, _Packed) else val.shape)
+                out[olab] = numpy.zeros([shape[p] for p in perm], dtype=numpy.complex128)
         if group is not None:
             _record_signs(out, None if csgn is None else tuple(csgn.get(x, 0) for x in rhs))
-        kernels.transpose_add(out[olab], numpy.asarray(val, dtype=numpy.complex128)
+        target = out[olab]
+        if isinstance(target, dpd.Tensor):
+            # axis j of the result is leg rhs.index(csub[j]) of the output tensor
+            back = [rhs.index(x) for x in csub]
+            if isinstance(val, _Packed):
+                val.add_to(target, back, alpha=fac, conj=cj)
+            else:
+                _add_dense(target, numpy.asarray(val).transpose(perm), fac, cj)
+            continue
+        if isinstance(val, _Packed):
+            val = val.dense()
+        if cj:
+            val = numpy.conj(val)
+        kernels.transpose_add(target, numpy.asarray(val, dtype=numpy.complex128)
                               if val.dtype != numpy.complex128 else val, perm, alpha=fac)
     return total
 
@@ -948,7 +1057,7 @@ def _scalar(O1, O2, T1, T2, G1, E1, L2, L3, con):
 
 
 def commutator(O1, O2, T1, T2, cum, dims, alpha, keep2, ladder=None, timings=None,
-               scalar=True, active=False, keep1=None, large=None):
+               scalar=True, active=False, keep1=None, large=None, dpd_out=False):
     """alpha * [O, T] -> (C0, C1, C2), all blocks (C2 restricted by keep2).
 
     Literal transcription of MRDSRG_SO::H?_T?_C? of forte.  `ladder`, if given, adds the
@@ -957,11 +1066,21 @@ def commutator(O1, O2, T1, T2, cum, dims, alpha, keep2, ladder=None, timings=Non
     only (intermediates included), as needed for the reference relaxation.  keep1
     restricts the blocks of C1 like keep2 those of C2.  `large(C1, C2, Y, T1, T2, alpha)`,
     if given, adds the terms of the blocks of O2 that it does not return (Y: the
-    two-body terms before the antisymmetrization).
+    two-body terms before the antisymmetrization).  dpd_out (with the double-group
+    sectors of dims): C2, Y and the intermediates are dpd.Tensors, only their blocks
+    allowed by symmetry are stored.
     """
     G1, E1, L2, L3 = cum["Gamma1"], cum["Eta1"], cum["Lambda2"], cum["Lambda3"]
     con = lambda spec, *ops, **kw: contract(spec, *ops, dims=dims, **kw)
-    C1, C2 = Blocks(), AntiBlocks()
+    use_dpd = dpd_out and getattr(dims, "legs", None)
+
+    def new(cls=Blocks):
+        x = cls()
+        if use_dpd:
+            x.dpd = True
+        return x
+
+    C1, C2 = Blocks(), new(AntiBlocks)
     t0 = time.time()
 
     def lap(name):
@@ -988,46 +1107,46 @@ def commutator(O1, O2, T1, T2, cum, dims, alpha, keep2, ladder=None, timings=Non
     con("ijau,vj,uv->ia", T2, O1, G1, out=C1, keep=keep1, scale=-alpha, fix=A("ia"))
     lap("C1 small")
 
-    t1 = Blocks()
+    t1 = new()
     con("abrk,ijab->ijrk", O2, T2, out=t1, fix=A("ir"))
     con("ijrk,kj->ir", t1, G1, out=C1, keep=keep1, scale=0.5 * alpha, fix=A("ir"))
-    t1 = Blocks()
+    t1 = new()
     con("ijux,uv,xy->ijvy", T2, G1, G1, out=t1, fix=A("ir"))
     con("ijvy,vyrj->ir", t1, O2, out=C1, keep=keep1, scale=0.5 * alpha, fix=A("ir"))
-    t1 = Blocks()
+    t1 = new()
     con("ijub,kj,uv->ikvb", T2, G1, G1, out=t1, fix=A("ir"))
     con("ikvb,vbrk->ir", t1, O2, out=C1, keep=keep1, scale=-alpha, fix=A("ir"))
-    t1 = Blocks()
+    t1 = new()
     con("ijau,uv->ijav", T2, G1, out=t1, fix=A("pa"))
     con("ijav,pvij->pa", t1, O2, out=C1, keep=keep1, scale=-0.5 * alpha, fix=A("pa"))
-    t1 = Blocks()
+    t1 = new()
     con("ijab,ki,lj->klab", T2, G1, G1, out=t1, fix=A("pa"))
     con("klab,pbkl->pa", t1, O2, out=C1, keep=keep1, scale=-0.5 * alpha, fix=A("pa"))
-    t1 = Blocks()
+    t1 = new()
     con("ijau,uv,kj->ikav", T2, G1, G1, out=t1, fix=A("pa"))
     con("ikav,pvik->pa", t1, O2, out=C1, keep=keep1, scale=alpha, fix=A("pa"))
 
-    t1 = Blocks()
+    t1 = new()
     con("ijxy,xyuv->ijuv", T2, L2, out=t1, fix=A("ir"))
     con("ijuv,uvrj->ir", t1, O2, out=C1, keep=keep1, scale=0.25 * alpha, fix=A("ir"))
-    t1 = Blocks()
+    t1 = new()
     con("uvab,xyuv->xyab", T2, L2, out=t1, fix=A("pa"))
     con("xyab,pbxy->pa", t1, O2, out=C1, keep=keep1, scale=-0.25 * alpha, fix=A("pa"))
-    t1 = Blocks()
+    t1 = new()
     con("iyav,uvxy->iuax", T2, L2, out=t1)
     con("iuax,axru->ir", t1, O2, out=C1, keep=keep1, scale=alpha, fix=A("ir"))
     con("iuax,pxiu->pa", t1, O2, out=C1, keep=keep1, scale=-alpha, fix=A("pa"))
 
-    t1 = Blocks()
+    t1 = new()
     con("avxy,xyuv->au", O2, L2, out=t1, fix=A("jb"))
     con("au,ujab->jb", t1, T2, out=C1, keep=keep1, scale=0.5 * alpha, fix=A("jb"))
-    t1 = Blocks()
+    t1 = new()
     con("xyiv,uvxy->ui", O2, L2, out=t1, fix=A("jb"))
     con("ui,ijub->jb", t1, T2, out=C1, keep=keep1, scale=-0.5 * alpha, fix=A("jb"))
-    t1 = Blocks()
+    t1 = new()
     con("uvey,xyuv->xe", T2, L2, out=t1, fix=A("qs"))
     con("xe,eqxs->qs", t1, O2, out=C1, keep=keep1, scale=0.5 * alpha, fix=A("qs"))
-    t1 = Blocks()
+    t1 = new()
     con("myuv,uvxy->mx", T2, L2, out=t1, fix=A("qs"))
     con("mx,xqms->qs", t1, O2, out=C1, keep=keep1, scale=-0.5 * alpha, fix=A("qs"))
     lap("C1 [O2,T2]")
@@ -1038,7 +1157,7 @@ def commutator(O1, O2, T1, T2, cum, dims, alpha, keep2, ladder=None, timings=Non
     # Y collects terms that still have to be antisymmetrized over both index pairs,
     # C2 += alpha (1 - P01)(1 - P23) Y; a term that is already antisymmetric in one
     # pair enters with a factor 1/2
-    Y = Blocks()
+    Y = new()
     ky = dict(out=Y, keep=keep2)
     con("ijab,ap->ijpb", T2, O1, scale=0.5, **ky, fix=A("ijpb"))
     con("ijab,qi->qjab", T2, O1, scale=-0.5, **ky, fix=A("qjab"))
@@ -1050,21 +1169,21 @@ def commutator(O1, O2, T1, T2, cum, dims, alpha, keep2, ladder=None, timings=Non
     con("abrs,ijab->ijrs", O2, T2, scale=0.5 * alpha, **k2, fix=A("ijrs"))
     if ladder is not None:
         ladder(T2, C2, alpha)
-    t1 = Blocks()
+    t1 = new()
     con("ijbx,xy->ijby", T2, G1, out=t1, fix=A("ijrs"))
     con("ijby,byrs->ijrs", t1, O2, scale=-alpha, **k2, fix=A("ijrs"))
     lap("C2 pp")
     # hole-hole
     con("pqij,ijab->pqab", O2, T2, scale=0.5 * alpha, **k2, fix=A("pqab"))
-    t1 = Blocks()
+    t1 = new()
     con("yjab,xy->xjab", T2, E1, out=t1, fix=A("pqab"))
     con("xjab,pqxj->pqab", t1, O2, scale=-alpha, **k2, fix=A("pqab"))
     lap("C2 hh")
     # particle-hole
-    t1 = Blocks()
+    t1 = new()
     con("ijab,ki->kjab", T2, G1, out=t1, fix=A("qjsb"))
     con("kjab,aqks->qjsb", t1, O2, **ky, fix=A("qjsb"))
-    t1 = Blocks()
+    t1 = new()
     con("ijub,uv->ijvb", T2, G1, out=t1, fix=A("qjsb"))
     con("ijvb,vqis->qjsb", t1, O2, scale=-1.0, **ky, fix=A("qjsb"))
     del t1
@@ -1079,9 +1198,19 @@ def commutator(O1, O2, T1, T2, cum, dims, alpha, keep2, ladder=None, timings=Non
             olab = "".join(lab[k] for k in perm)
             if not is_canonical(olab):
                 continue
+            if isinstance(y, dpd.Tensor):
+                if olab not in C2:
+                    C2[olab] = dpd.Tensor([y.legs[k] for k in perm], [y.dirs[k] for k in perm],
+                                          2, y.group)
+                dpd.add_permuted(C2[olab], y, perm, alpha=sign * alpha)
+                continue
             if olab not in C2:
                 C2[olab] = numpy.zeros([y.shape[k] for k in perm], dtype=numpy.complex128)
-            kernels.transpose_add(C2[olab], y, perm, alpha=sign * alpha)
+            target = C2[olab]
+            if isinstance(target, dpd.Tensor):
+                _add_dense(target, numpy.asarray(y).transpose(perm), sign * alpha)
+            else:
+                kernels.transpose_add(target, y, perm, alpha=sign * alpha)
         del y
     lap("C2 antisym")
     return C0, C1, C2
@@ -1103,20 +1232,36 @@ def add_hc_1(C):
 
 
 def add_hc_2(C):
+    """C + C^+ for a two-body operator (blocks by placement: C[rs, pq] = conj C[pq, rs]);
+    dense arrays or dpd.Tensors."""
     for lab in list(C):
         par = lab[2:] + lab[:2]
         if par not in C:
-            C[par] = numpy.zeros(tuple(C[lab].shape[k] for k in (2, 3, 0, 1)), dtype=complex)
+            x = dict.get(C, lab)
+            if isinstance(x, dpd.Tensor):
+                C[par] = dpd.Tensor([x.legs[k] for k in (2, 3, 0, 1)],
+                                    [x.dirs[k] for k in (2, 3, 0, 1)], 2, x.group)
+            else:
+                C[par] = numpy.zeros(tuple(x.shape[k] for k in (2, 3, 0, 1)), dtype=complex)
     done = set()
     for lab in list(C):
         if lab in done:
             continue
         par = lab[2:] + lab[:2]
-        t = kernels.transposed(C[par], (2, 3, 0, 1))
+        x, y = dict.get(C, lab), dict.get(C, par)
+        if isinstance(x, dpd.Tensor):
+            # conjugation reverses the directions, the permutation restores them
+            src = x.copy() if par == lab else y
+            dpd.add_permuted(x, src, (2, 3, 0, 1), conj=True)
+            if par != lab:
+                dpd.add_permuted(y, x, (2, 3, 0, 1), conj=True, assign=True)
+            done.update((lab, par))
+            continue
+        t = kernels.transposed(y, (2, 3, 0, 1))
         numpy.conj(t, out=t)
-        C[lab] += t
+        x += t
         if par != lab:
-            kernels.transpose_add(C[par], C[lab], (2, 3, 0, 1), assign=True)
-            numpy.conj(C[par], out=C[par])
+            kernels.transpose_add(y, x, (2, 3, 0, 1), assign=True)
+            numpy.conj(y, out=y)
         del t
         done.update((lab, par))

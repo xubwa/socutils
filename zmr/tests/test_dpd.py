@@ -189,3 +189,21 @@ def test_boxes(group):
     assert abs(t2.to_dense() - 1.5 * a).max() < 1e-14
     kernels.box_copy_strided(1, t2.data, mat, 2, base, stride, dims, doff, ld, conj=True)
     assert abs(t2.to_dense() - a).max() < 1e-14
+
+
+@pytest.mark.parametrize('group', ['C2h', 'Coov'])
+def test_view_and_add_permuted(group):
+    rng = numpy.random.default_rng(10)
+    p, q, r, s = (random_leg(group, rng) for _ in range(4))
+    a, t = random_tensor([p, q, r, s], (-1, -1, 1, 1), 2, group, rng)
+    v = dpd.View(t, (2, 3, 0, 1), conj=True)
+    assert abs(numpy.asarray(v) - a.transpose(2, 3, 0, 1).conj()).max() == 0
+    assert abs(numpy.asarray(v.transpose((1, 0, 2, 3))) -
+               a.transpose(2, 3, 0, 1).conj().transpose(1, 0, 2, 3)).max() == 0
+    # the Hermitian partner block: X[rs, pq] += conj(X[pq, rs]) (directions reversed by
+    # the conjugation, restored by the permutation)
+    b, u = random_tensor([r, s, p, q], (-1, -1, 1, 1), 2, group, rng)
+    dpd.add_permuted(u, t, (2, 3, 0, 1), alpha=0.5, conj=True)
+    assert abs(u.to_dense() - (b + 0.5 * a.transpose(2, 3, 0, 1).conj())).max() < 1e-14
+    dpd.add_permuted(u, t, (2, 3, 0, 1), conj=True, assign=True)
+    assert abs(u.to_dense() - a.transpose(2, 3, 0, 1).conj()).max() < 1e-14

@@ -38,7 +38,7 @@ from pyscf import lib
 from socutils.zmr.active import rdm
 from socutils.zmr.active.sectors import ActiveSpace
 from socutils.symm import double_group as dg
-from socutils.zmr import symmetry_sectors
+from socutils.zmr import dpd, symmetry_sectors
 from socutils.zmr.dsrg import commutator as cm
 from socutils.zmr.lib import linalg as la
 
@@ -95,6 +95,9 @@ class LDSRG2:
             orbitals of every space are grouped by sector and the contractions skip the
             blocks that vanish by symmetry (default True; NdO+, Coov*: MRPT3 1.6x,
             MR-LDSRG(2) iterations 3x faster, same energies)
+        dpd_storage: with use_symmetry, the two-body parts of the nested commutators and
+            their intermediates in the DPD layout (zmr.dpd: only the blocks allowed by
+            symmetry are stored; default True)
         e_corr: correlation energy of the ensemble (before relaxation)
         e_tot, civecs, heff: relaxed levels, their CI vectors, diag(e_tot)
     '''
@@ -109,6 +112,8 @@ class LDSRG2:
     max_memory = lib.param.MAX_MEMORY  # MB
     # skip the blocks that vanish by double-group symmetry (eris.orbsym)
     use_symmetry = True
+    # with the sectors: the two-body parts of the nested commutators in the DPD layout
+    dpd_storage = True
     # (vv|vv) ladder: 'stored' (in memory or on disk, applied in every iteration),
     # 'direct' (rebuilt from the three-index integrals for each use), None (not needed)
     vvvv = 'stored'
@@ -407,10 +412,18 @@ class LDSRG2:
             full = numpy.zeros((n0, n1, nv, nv), dtype=numpy.complex128)
             full[:, :, iu[0], iu[1]] = xb
             full[:, :, iu[1], iu[0]] = -xb
-            if hh + 'vv' in c2:
-                c2[hh + 'vv'] += alpha * full
+            lab = hh + 'vv'
+            cur = dict.get(c2, lab)
+            if cur is None and getattr(c2, 'dpd', False):
+                legs = self.dims.legs
+                cur = c2[lab] = dpd.Tensor([legs[x] for x in lab], cm.TWO_BODY, 2,
+                                           self.dims.sym[0])
+            if isinstance(cur, dpd.Tensor):
+                cm._add_dense(cur, full, alpha)
+            elif cur is not None:
+                cur += alpha * full
             else:
-                c2[hh + 'vv'] = alpha * full
+                c2[lab] = alpha * full
 
     # -------------------------------------------------------------------- Hbar
     def _keep2(self, lab):
@@ -429,7 +442,8 @@ class LDSRG2:
         for n in range(1, self.max_comm + 1):
             ladder = self._ladder if (n == 1 and self._w is not None) else None
             c0, c1, c2 = cm.commutator(o1, o2, t1, t2, self.cum, self.dims, 1.0 / n,
-                                       self._keep2, ladder=ladder, timings=self.timings)
+                                       self._keep2, ladder=ladder, timings=self.timings,
+                                       dpd_out=self.dpd_storage)
             cm.add_hc_1(c1)
             cm.add_hc_2(c2)
             h0 += 2.0 * numpy.real(c0)
@@ -438,16 +452,15 @@ class LDSRG2:
             for lab in hh_pp:
                 c = c2.get(lab)
                 if c is not None:
-                    if c[1] == 1.0:
-                        h2[lab] += c[0]
-                    else:
-                        h2[lab] -= c[0]
+                    h2[lab] += c[1] * numpy.asarray(c[0])
+            data = lambda v: v.data if isinstance(v, dpd.Tensor) else v
             norm = numpy.sqrt(c1.norm2() + sum(
-                (1 + (k[0] != k[1])) * (1 + (k[2] != k[3])) * numpy.vdot(v, v).real
+                (1 + (k[0] != k[1])) * (1 + (k[2] != k[3])) * numpy.vdot(data(v), data(v)).real
                 for k, v in c2.items()))
             self.comm_norms.append(norm)
             if self.verbose > 1:
-                gb = lambda b: sum(x.nbytes for x in b.values()) / 1e9
+                gb = lambda b: sum((x.data if isinstance(x, dpd.Tensor) else x).nbytes
+                                   for x in b.values()) / 1e9
                 cache = getattr(self.V, 'cache', {})
                 self.log('  commutator %2d: memory %7.0f MB; C2 %.1f GB, H2 %.1f GB, T2 %.1f GB, '
                          'integral cache %.1f GB' % (n, lib.current_memory()[0], gb(c2), gb(h2),
