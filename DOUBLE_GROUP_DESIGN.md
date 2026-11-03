@@ -253,6 +253,11 @@ K u = λ u, u ← √λ u, partner ← T u; accidentally degenerate u (same ener
 U ← U √(U^†SKU) (symmetric unitary).  4c: the same K on the L and S coefficients.
 C2*/Cs*/C2h*/Ci*/C1* molecules without such a G (point group C2, Cs, C2h, Ci, C1) stay complex.
 Downstream orbital rotations (CASSCF, localization) must be real orthogonal to keep the realness.
+In exact arithmetic they are: with K-invariant orbitals the integrals and (complete-degenerate-set) RDMs are
+real, so the gradient, Hessian and rotation are real.  CASSCF/CAHF accumulate roundoff (H2O CAS(4,6):
+|Ku - u| 3e-9), so `CASBase.realify_mo` is called at the end (phase, K projection, real Löwdin; then 3e-15).
+Upstream (user 2026-11-03): realification is NOT in the big PR (no consumer there); the SCF part (`_finalize`,
+`spinor_basis.realify_mo/apply_k/realification_op`) goes with the CC PR, the CASSCF hook with the MCSCF PR.
 (A first version realified the SALCs and solved real eigenproblems; dropped as not worth the complexity.)
 Tests (`scf/test/test_realification.py`): C2H4, H2O, HBr, Cl2 — X2CAMF RHF MO Fock, hcore and MO ERIs real
 to 1e-10, orbitals K invariant, energies equal C1; RDHF MO Fock real; UHF energy unchanged.

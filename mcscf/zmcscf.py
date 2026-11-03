@@ -307,6 +307,6 @@ class CASSCF(zcasci.CASCI):
         logger.note(self, 'CASSCF energy = %#.15g', self.e_tot)
         if self._orbsym is not None:
             self.check_orbsym(self.mo_coeff)
-            self.mo_coeff = lib.tag_array(numpy.asarray(self.mo_coeff), orbsym=self._orbsym)
+            self.mo_coeff = lib.tag_array(self.realify_mo(self.mo_coeff), orbsym=self._orbsym)
         self._finalize()
         return self.e_tot, self.e_cas, self.ci, self.mo_coeff, self.mo_energy

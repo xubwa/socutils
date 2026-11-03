@@ -291,6 +291,6 @@ def mc_diis(mc, mo_coeff, target_orbital=None, mo_cap=None, conv_tol=None,
         #mc.irrep = mo.orbsym
     if mc.orbsym is not None:
         mc.check_orbsym(mc.mo_coeff)
-        mc.mo_coeff = lib.tag_array(np.asarray(mc.mo_coeff), orbsym=mc.orbsym)
+        mc.mo_coeff = lib.tag_array(mc.realify_mo(mc.mo_coeff), orbsym=mc.orbsym)
     return mc, mo_unsrt, mo_energy
  

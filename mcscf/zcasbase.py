@@ -140,6 +140,31 @@ class CASBase(lib.StreamObject):
                         ' '.join(dg.irrep_id2name(gname, ir) for ir in act))
         return orbsym
 
+    def realify_mo(self, mo_coeff=None):
+        '''K-invariant orbitals (real MO integrals) for a Kramers-restricted
+        double-group SCF of a D2h, D2, C2v or linear molecule (see
+        socutils.symm.spinor_basis.realify_mo); the orbitals unchanged
+        otherwise.  Orbital optimization keeps K invariance in exact
+        arithmetic (real integrals and RDMs give real rotations); this removes
+        the roundoff it accumulates.'''
+        from socutils.symm import spinor_basis
+        if mo_coeff is None:
+            mo_coeff = self.mo_coeff
+        mf = self._scf
+        if not (isinstance(mf, double_group_symm.DoubleGroupSymm) and mf._kramers_restricted):
+            return mo_coeff
+        op = spinor_basis.realification_op(mf.mol, mf.doublegroupname)
+        if op is None:
+            return mo_coeff
+        try:
+            mo = spinor_basis.realify_mo(mf.mol, mo_coeff, mf.get_ovlp(), op)
+        except (ValueError, RuntimeError) as err:
+            logger.warn(self, 'orbitals not made K invariant: %s', err)
+            return mo_coeff
+        logger.info(self, 'orbitals made K invariant (K = %s T), change %.2e', op,
+                    abs(mo - numpy.asarray(mo_coeff)).max())
+        return mo
+
     def check_orbsym(self, mo_coeff=None, tol=None):
         '''Warn if the orbitals left their irreps .orbsym (double-group SCF
         only).  Returns the largest irrep mixing, or None.'''
