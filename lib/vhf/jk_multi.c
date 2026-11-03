@@ -184,6 +184,12 @@ int SOCVHFgen_int2e_lanes(double *out, size_t ostride, int ish, int jsh, const i
                           const GenCtx *cx, double dmax, double prim_tol, double *wk,
                           const int *atm, const int *bas, const double *env);
 #define JK_NL 8                 /* = GL_NL of jk_gen.h */
+/* J-only builds (with_k 0, one density): the generated quartets through the J forms, the density
+ * contracted before the horizontal recursions (0: the full integrals and jk_digest) */
+int SOCVHFgen_j2e(double *jb, double *jk, const double *db, const double *dk, const int *shls,
+                  const GenCtx *cx, double dmax, double prim_tol, double *wk);
+static int jk_use_jonly = 1;
+void SOCVHFjk_set_jonly(int on) { jk_use_jonly = on; }
 /* the quartets of l <= 2 with jk_lane_lmin <= L <= jk_gen_lmax and at most jk_lane_np primitive
  * quartets (product of the shells' nprim) go to the lanes (on 0: never); the per-quartet kernels
  * vectorise over the bra primitives and screen them, better with many (bench_jk_class.py) */
@@ -341,6 +347,7 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
         size_t sswk = use_ss ? SOCVHFss_wksize(bas, nbas) : 0;
         if (use_gen && SOCVHFgen_wksize(bas, nbas) > sswk) sswk = SOCVHFgen_wksize(bas, nbas);
         const int use_lanes = use_gen && jk_use_lanes;
+        const int jonly = use_gen && jk_use_jonly && with_j && !with_k && ndm == 1;
         if (use_lanes && SOCVHFgen_lane_wksize(bas, nbas, nbuf) > sswk) sswk = SOCVHFgen_lane_wksize(bas, nbas, nbuf);
         int *stype = malloc(sizeof(int) * (nbas > 0 ? nbas : 1));
         const int ntype = SOCVHFgen_shell_types(stype, bas, nbas);
@@ -404,6 +411,35 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
                         shls[0] = ish; shls[1] = jsh; shls[2] = ksh; shls[3] = lsh;
                         const int lq = bas[ish * BAS_SLOTS + ANG_OF] + bas[jsh * BAS_SLOTS + ANG_OF]
                                      + bas[ksh * BAS_SLOTS + ANG_OF] + bas[lsh * BAS_SLOTS + ANG_OF];
+                        if (jonly && lq >= 2 && lq <= jk_gen_lmax && SOCVHFgen_takes(shls, bas)) {
+                                const int dk = ao_loc[ksh + 1] - ao_loc[ksh];
+                                const int dl = ao_loc[lsh + 1] - ao_loc[lsh];
+                                const size_t c00 = ao_loc[ksh], e00 = ao_loc[lsh];
+                                double *db = buf, *dkk = db + di * dj, *jb = dkk + dk * dl, *jkk = jb + di * dj;
+                                int i0, j0;
+                                for (j0 = 0; j0 < dj; j0++)
+                                        for (i0 = 0; i0 < di; i0++) {
+                                                db[j0 * di + i0] = dms[(a0 + i0) * nao + b0 + j0];
+                                                jb[j0 * di + i0] = 0;
+                                        }
+                                for (j0 = 0; j0 < dl; j0++)
+                                        for (i0 = 0; i0 < dk; i0++) {
+                                                dkk[j0 * dk + i0] = dms[(c00 + i0) * nao + e00 + j0];
+                                                jkk[j0 * dk + i0] = 0;
+                                        }
+                                if (!SOCVHFgen_j2e(jb, jkk, db, dkk, shls, gcx, dj_, prim_tol, swk)) continue;
+                                touched = 1;
+                                double fac = 2.;
+                                if (ish == jsh) fac *= .5;
+                                if (ksh == lsh) fac *= .5;
+                                if (ij == kl) fac *= .5;
+                                for (j0 = 0; j0 < dj; j0++)
+                                        for (i0 = 0; i0 < di; i0++) jij[i0 * dj + j0] += fac * jb[j0 * di + i0];
+                                for (j0 = 0; j0 < dl; j0++)
+                                        for (i0 = 0; i0 < dk; i0++)
+                                                jloc[(c00 + i0) * nao + e00 + j0] += fac * jkk[j0 * dk + i0];
+                                continue;
+                        }
                         if (row_lanes && lq >= jk_lane_lmin && lq <= jk_gen_lmax
                             && row_np * bas[ksh * BAS_SLOTS + NPRIM_OF] * bas[lsh * BAS_SLOTS + NPRIM_OF] <= jk_lane_np
                             && SOCVHFgen_lane_ok(ksh, lsh, bas)) {

@@ -266,6 +266,35 @@ int SOCVHFgen_int2e(double *out, const int *shls, const GenCtx *cx, double dmax,
         return jkg_table[la][lb][lc][ld](out, st, pos, B, bs, K, ks, cut, fac, cx->tab, wk);
 }
 
+/*
+ * J only of the quartet shls (as SOCVHFgen_int2e): jb (DJ, DI) += (ij|kl) dk,
+ * jk (DL, DK) += (ij|kl) db, the blocks of the pairs (i, k fastest; DI = the
+ * functions of shell i, ...), the density contracted before the horizontal
+ * recursions (jjg_* of jk_vrr_gen.c).  Returns 0 when everything was screened
+ * out (jb, jk untouched).
+ */
+int SOCVHFgen_j2e(double *jb, double *jk, const double *db, const double *dk, const int *shls,
+                  const GenCtx *cx, double dmax, double prim_tol, double *wk)
+{
+        const int ij = shls[0] * (shls[0] + 1) / 2 + shls[1];
+        const int kl = shls[2] * (shls[2] + 1) / 2 + shls[3];
+        const GPair *B = cx->pair + ij, *K = cx->pair + kl;
+        if (B->n == 0 || K->n == 0) return 0;
+        size_t DI = (size_t)B->nci * (2 * B->li + 1), DK = (size_t)K->nci * (2 * K->li + 1);
+        if (B->n < K->n) {      /* the pair of more primitive pairs as the bra (vectorised over) */
+                const GPair *t = B; B = K; K = t;
+                double *o = jb; jb = jk; jk = o;
+                const double *d = db; db = dk; dk = d;
+                const size_t s = DI; DI = DK; DK = s;
+        }
+        const int bs = B->li < B->lj, ks = K->li < K->lj;
+        const int la = bs ? B->lj : B->li, lb = bs ? B->li : B->lj;
+        const int lc = ks ? K->lj : K->li, ld = ks ? K->li : K->lj;
+        const double fac = TWO_PI52 * common_fac(la) * common_fac(lb) * common_fac(lc) * common_fac(ld);
+        const double cut = prim_tol / (fac * B->bmax * dmax * B->nc * K->nc);
+        return jjg_table[la][lb][lc][ld](jb, jk, db, dk, DI, DK, B, bs, K, ks, cut, fac, cx->tab, wk);
+}
+
 /* ------------------------------------------------------------------------
  * Lanes: GL_NL quartets (ij | k_l l_l) sharing the bra pair ij and the ket
  * shell types (jk_lane_gen.c, gen_jk_lanes.py).

@@ -170,7 +170,143 @@ def hrr_plan(l1, l2, base_of):
     return order, deps
 
 
-def kernel(la, lb, lc, ld):
+def hrr_fwd_lines(ind, l1, l2, base, AB, tgt, pre='h'):
+    '''scalar forward HRR (a, b + 1_k) = (a + 1_k, b) + AB_k (a, b): base(a) the C expression of
+    (a, 0), the results tgt(a, b) for deg a = l1, deg b = l2 (C lvalue)'''
+    order, deps = hrr_plan(l1, l2, None)
+    o = []
+    nm = {}
+    for (a, b) in order:
+        d = deps[(a, b)]
+        if d is None:
+            nm[(a, b)] = base(a)
+            continue
+        k, n1, n2 = d
+        if sum(a) == l1 and sum(b) == l2:
+            nm[(a, b)] = tgt(a, b)
+            o.append(ind + '%s = %s + %s[%d] * %s;' % (nm[(a, b)], nm[n1], AB, k, nm[n2]))
+        else:
+            nm[(a, b)] = '%s%s_%s' % (pre, tag(a), tag(b))
+            o.append(ind + 'const double %s = %s + %s[%d] * %s;' % (nm[(a, b)], nm[n1], AB, k, nm[n2]))
+    return o
+
+
+def hrr_adj_lines(ind, l1, l2, src, AB, base, pre='g'):
+    '''the adjoint of hrr_fwd_lines: src(a, b) the C expression of the target weights (deg a = l1,
+    deg b = l2); base(a) the C lvalue receiving the weight of (a, 0) (assigned)'''
+    order, deps = hrr_plan(l1, l2, None)
+    o = []
+    nm = {(a, b): '%s%s_%s' % (pre, tag(a), tag(b)) for (a, b) in order}
+    for (a, b) in order:
+        if sum(a) == l1 and sum(b) == l2:
+            o.append(ind + 'double %s = %s;' % (nm[(a, b)], src(a, b)))
+        else:
+            o.append(ind + 'double %s = 0;' % nm[(a, b)])
+    for (a, b) in reversed(order):
+        d = deps[(a, b)]
+        if d is None:
+            continue
+        k, n1, n2 = d
+        o.append(ind + '%s += %s;' % (nm[n1], nm[(a, b)]))
+        o.append(ind + '%s += %s[%d] * %s;' % (nm[n2], AB, k, nm[(a, b)]))
+    for (a, b) in order:
+        if deps[(a, b)] is None:
+            o.append(ind + '%s = %s;' % (base(a), nm[(a, b)]))
+    return o
+
+
+def jpost_lines(la, lb, lc, ld, E, Fb, eidx, fidx):
+    '''J-only post part (names B, bs, K, ks, SK, db, dk, jb, jk, DI, DK, fac in scope): per contraction
+    combination the ket density (D_cd) taken through the transposed c2s and ket HRR to the f band,
+    W_e = sum_f [e|f] Dk_f, then the bra HRR and c2s of W into jb (J_ab += fac (ab|cd) D_cd); the same
+    the other way into jk.  db / jb (DJ, DI) and dk / jk (DL, DK): the pairs' blocks, index i (k) fastest.'''
+    NET, NFT = len(E), len(Fb)
+    nt = NET * NFT
+    A, Bc, Cc, Dc = comps(la), comps(lb), comps(lc), comps(ld)
+    cA, cB, cC, cD = C2S[la], C2S[lb], C2S[lc], C2S[ld]
+    o = []
+    w = o.append
+    I = ' ' * 16
+    w('        double AB[3], CD[3];')
+    w('        for (i = 0; i < 3; i++) {')
+    w('                AB[i] = bs ? -B->rij[i] : B->rij[i];')
+    w('                CD[i] = ks ? -K->rij[i] : K->rij[i];')
+    w('        }')
+    w('        (void)AB; (void)CD;')
+    # element (m_A, m_B) of the bra block at mA * sA + mB * sB from the combination's base
+    w('        const size_t sA = bs ? DI : 1, sB = bs ? 1 : DI, sC = ks ? DK : 1, sD = ks ? 1 : DK;')
+    w('        int ci, cj, ck, cl, e, f;')
+    w('        for (cl = 0; cl < K->ncj; cl++)')
+    w('        for (ck = 0; ck < K->nci; ck++)')
+    w('        for (cj = 0; cj < B->ncj; cj++)')
+    w('        for (ci = 0; ci < B->nci; ci++) {')
+    w('                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * %d;' % nt)
+    w('                const size_t ob = ci * (2 * B->li + 1) + cj * (2 * B->lj + 1) * DI;')
+    w('                const size_t ok = ck * (2 * K->li + 1) + cl * (2 * K->lj + 1) * DK;')
+    w('                const double *dbb = db + ob, *dkb = dk + ok;')
+    w('                double *jbb = jb + ob, *jkb = jk + ok;')
+    w('                double Dk[%d] = {0}, Db[%d] = {0}, W[%d], V[%d];' % (NFT, NET, NET, NFT))
+    # ket density: cartesian dc[ic][id] = sum_mc,md C2S_c[mc][ic] C2S_d[md][id] D[mc][md]
+    for side, (l1, l2, c1, c2, s1, s2, src, dst, X1, X2, band, idx, ABn) in enumerate([
+            (lc, ld, cC, cD, 'sC', 'sD', 'dkb', 'Dk', Cc, Dc, Fb, fidx, 'CD'),
+            (la, lb, cA, cB, 'sA', 'sB', 'dbb', 'Db', A, Bc, E, eidx, 'AB')]):
+        def cart(x1, x2, c1=c1, c2=c2, s1=s1, s2=s2, src=src, X1=X1, X2=X2):
+            i1, i2 = X1.index(x1), X2.index(x2)
+            t = []
+            for m1 in range(len(c1)):
+                for m2 in range(len(c2)):
+                    cf = c1[m1][i1] * c2[m2][i2]
+                    if cf != 0:
+                        t.append('%.18g * %s[%d * %s + %d * %s]' % (cf, src, m1, s1, m2, s2))
+            return '(%s)' % (' + '.join(t) if t else '0')
+        if l2 == 0:
+            for x1 in X1:
+                w(I + '%s[%d] = %s;' % (dst, idx[x1], cart(x1, (0, 0, 0))))
+        else:
+            for line in hrr_adj_lines(I, l1, l2, cart, ABn, lambda a, dst=dst, idx=idx: '%s[%d]' % (dst, idx[a]),
+                                      pre='g%d_' % side):
+                w(line)
+    w(I + 'for (e = 0; e < %d; e++) {' % NET)
+    w(I + '        double y = 0;')
+    w(I + '        for (f = 0; f < %d; f++) y += sk[e * %d + f] * Dk[f];' % (NFT, NFT))
+    w(I + '        W[e] = fac * y;')
+    w(I + '}')
+    w(I + 'for (f = 0; f < %d; f++) {' % NFT)
+    w(I + '        double y = 0;')
+    w(I + '        for (e = 0; e < %d; e++) y += Db[e] * sk[e * %d + f];' % (NET, NFT))
+    w(I + '        V[f] = fac * y;')
+    w(I + '}')
+    # forward HRR + c2s into the J blocks
+    for (l1, l2, c1, c2, s1, s2, src, dst, X1, X2, idx, ABn) in [
+            (la, lb, cA, cB, 'sA', 'sB', 'W', 'jbb', A, Bc, eidx, 'AB'),
+            (lc, ld, cC, cD, 'sC', 'sD', 'V', 'jkb', Cc, Dc, fidx, 'CD')]:
+        tgt = {}
+        if l2 == 0:
+            for x1 in X1:
+                tgt[(x1, (0, 0, 0))] = '%s[%d]' % (src, idx[x1])
+        else:
+            nmz = lambda a, b, ABn=ABn: 't%s%s_%s' % (ABn, tag(a), tag(b))
+            for x1 in X1:
+                for x2 in X2:
+                    w(I + 'double %s;' % nmz(x1, x2))
+                    tgt[(x1, x2)] = nmz(x1, x2)
+            for line in hrr_fwd_lines(I, l1, l2, lambda a, src=src, idx=idx: '%s[%d]' % (src, idx[a]), ABn,
+                                      nmz, pre='h%s' % ABn):
+                w(line)
+        for m1 in range(len(c1)):
+            for m2 in range(len(c2)):
+                t = []
+                for x1 in X1:
+                    for x2 in X2:
+                        cf = c1[m1][X1.index(x1)] * c2[m2][X2.index(x2)]
+                        if cf != 0:
+                            t.append('%.18g * %s' % (cf, tgt[(x1, x2)]))
+                w(I + '%s[%d * %s + %d * %s] += %s;' % (dst, m1, s1, m2, s2, ' + '.join(t)))
+    w('        }')
+    return o
+
+
+def kernel(la, lb, lc, ld, jonly=False):
     order, exprs, E, Fb = vrr_plan(la, lb, lc, ld)
     L = la + lb + lc + ld
     NET, NFT = len(E), len(Fb)
@@ -180,12 +316,17 @@ def kernel(la, lb, lc, ld):
     A, Bc, Cc, Dc = comps(la), comps(lb), comps(lc), comps(ld)
     NA, NB, NC, ND = len(A), len(Bc), len(Cc), len(Dc)
     NAB = NA * NB
-    fn = 'jkg_%d%d%d%d' % (la, lb, lc, ld)
+    fn = ('jjg_%d%d%d%d' if jonly else 'jkg_%d%d%d%d') % (la, lb, lc, ld)
     o = []
     w = o.append
-    w('/* (%d%d|%d%d): %d VRR nodes, %d targets */' % (la, lb, lc, ld, len(order), nt))
-    w('static int %s(double *out, const size_t *st, const int *pos, const GPair *B, int bs,' % fn)
-    w('                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)')
+    w('/* (%d%d|%d%d)%s: %d VRR nodes, %d targets */' % (la, lb, lc, ld, ' J only' if jonly else '', len(order), nt))
+    if jonly:
+        w('static int %s(double *jb, double *jk, const double *db, const double *dk, size_t DI, size_t DK,' % fn)
+        w('                const GPair *B, int bs, const GPair *K, int ks, double cut, double fac,')
+        w('                const double *tab, double *wk)')
+    else:
+        w('static int %s(double *out, const size_t *st, const int *pos, const GPair *B, int bs,' % fn)
+        w('                const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)')
     w('{')
     w('        const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;')
     w('        const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;')
@@ -253,6 +394,11 @@ def kernel(la, lb, lc, ld):
     w('                }')
     w('        }')
     w('        if (!any) return 0;')
+    if jonly:
+        o += jpost_lines(la, lb, lc, ld, E, Fb, eidx, fidx)
+        w('        return 1;')
+        w('}')
+        return '\n'.join(o), fn, nt
     # ---- per contraction combination: HRR, c2s, placement
     w('        double AB[3], CD[3];')
     w('        for (i = 0; i < 3; i++) {')
@@ -383,6 +529,19 @@ def main():
     out.append('#define JKV_LMAX %d' % LMAX)
     out.append('static const jkg_fn jkg_table[%d][%d][%d][%d] = {' % (n, n, n, n))
     for cls, fn, nt in table:
+        out.append('        [%d][%d][%d][%d] = %s,' % (cls + (fn,)))
+    out.append('};')
+    # the J-only forms (jk_gen.c SOCVHFgen_j2e)
+    jt = []
+    for cls in classes():
+        code, fn, nt = kernel(*cls, jonly=True)
+        out.append(code)
+        out.append('')
+        jt.append((cls, fn))
+    out.append('typedef int (*jjg_fn)(double *, double *, const double *, const double *, size_t, size_t,')
+    out.append('                      const GPair *, int, const GPair *, int, double, double, const double *, double *);')
+    out.append('static const jjg_fn jjg_table[%d][%d][%d][%d] = {' % (n, n, n, n))
+    for cls, fn in jt:
         out.append('        [%d][%d][%d][%d] = %s,' % (cls + (fn,)))
     out.append('};')
     sys.stdout.write('\n'.join(out) + '\n')
