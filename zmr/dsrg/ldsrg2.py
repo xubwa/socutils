@@ -212,8 +212,10 @@ class LDSRG2:
         for x in 'cav':
             sl = sp.slice(x)
             if sl.stop > sl.start:
+                # with sectors: grouped, every sector of a space a range of orbitals
                 eps[x], u[sl, sl], self.orbsym[x] = symmetry_sectors.eigh(
-                    fock[sl, sl], None if sym is None else numpy.asarray(sym)[sl])
+                    fock[sl, sl], None if sym is None else numpy.asarray(sym)[sl],
+                    grouped=True)
             else:
                 eps[x], self.orbsym[x] = numpy.zeros(0), None
         if sym is None:

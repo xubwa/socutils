@@ -158,10 +158,15 @@ def double_group(request):
 
 @pytest.mark.parametrize('integrals', ['dense', 'three-index'])
 @pytest.mark.parametrize('name', sorted(METHODS))
-def test_double_group_sectors(double_group, name, integrals):
+def test_double_group_sectors(double_group, name, integrals, monkeypatch):
     '''Contractions blocked by the double-group sectors of a socutils double-group SCF
     (C2*, C2h*, Coov*) against the same calculation without them; with three-index
     integrals also the blocked (vv|vv) rows and ladder.'''
+    from socutils.zmr.dsrg import commutator as cm
+    # every product blocked, whatever its size (the test systems are small)
+    monkeypatch.setattr(cm, 'SYMMETRY_MIN_SIZE', 0)
+    monkeypatch.setattr(cm, 'SYMMETRY_MAX_FRACTION', 1.0)
+    monkeypatch.setattr(cm, 'SYMMETRY_MIN_BLOCK', 0)
     eris = double_group[0 if integrals == 'dense' else 1]
     out = []
     for use in (True, False):
@@ -202,3 +207,24 @@ def test_vvvv_pair_rows_packed():
     ref = kernels.vvvv_pair_rows_sym(d, a0, pirr)
     out = kernels.vvvv_pair_rows_packed(dense, rowoff, coloff, nb, n, a0, pirr)
     assert abs(out - ref).max() < 1e-14
+
+
+def test_box_copy():
+    '''Boxes of a transposed view to packed rectangles and back, native against numpy.'''
+    from socutils.zmr.lib import kernels
+    rng = numpy.random.default_rng(8)
+    a = rng.normal(size=(5, 6, 4)) + 1j * rng.normal(size=(5, 6, 4))
+    av = a.transpose(2, 0, 1)                  # axes 4, 5, 6, not contiguous
+    start = numpy.array([[0, 1, 2], [1, 0, 0]])
+    dims = numpy.array([[2, 3, 2], [3, 2, 4]])
+    doff = numpy.array([0, 12])                # rows: first axis (nrow = 1)
+    ld = numpy.array([6, 8])
+    mat = numpy.zeros(12 + 3 * 8, dtype=complex)
+    kernels.box_copy(0, av, mat, 1, start, dims, doff, ld)
+    ref0 = av[0:2, 1:4, 2:4].reshape(2, 6)
+    ref1 = av[1:4, 0:2, 0:4].reshape(3, 8)
+    assert abs(mat[:12].reshape(2, 6) - ref0).max() == 0
+    assert abs(mat[12:].reshape(3, 8) - ref1).max() == 0
+    back = numpy.zeros_like(av)
+    kernels.box_copy(1, back, mat, 1, start, dims, doff, ld)
+    assert abs(back[0:2, 1:4, 2:4] - av[0:2, 1:4, 2:4]).max() == 0

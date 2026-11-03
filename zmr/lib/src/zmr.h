@@ -163,6 +163,9 @@ void zmr_fold_density(int64_t nao, int64_t n1, int64_t n2,
 void zmr_transpose_add(int ndim, const int64_t *dshape, const int64_t *sstride,
                        const double complex *src, double complex *dst,
                        int assign, const double *alpha);
+void zmr_box_copy(int scatter, int ndim, int nrow, int64_t nbox, const int64_t *start,
+                  const int64_t *dims, const int64_t *stride, const int64_t *doff,
+                  const int64_t *ld, double complex *arr, double complex *mat);
 void zmr_pair_gather(int64_t nl, int64_t n, int64_t nt,
                      const double complex *src, double complex *dst);
 void zmr_pair_scatter(int64_t nl, int64_t n, int64_t nt,

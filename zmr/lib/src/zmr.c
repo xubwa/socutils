@@ -2590,6 +2590,46 @@ void zmr_vvvv_pair_rows_packed(int64_t nb, int64_t n, int64_t a0,
         free(rp);
 }
 
+/* Boxes of an ndim-dimensional array arr (element strides stride) copied to rectangles
+ * of the buffer mat: box b starts at start[b * ndim + k] and has the sizes
+ * dims[b * ndim + k]; its first nrow axes (C order) are the rows and the others the
+ * columns of the rectangle at element doff[b] of mat with leading dimension ld[b].
+ * scatter = 1 copies the other way, rectangles to boxes. */
+void zmr_box_copy(int scatter, int ndim, int nrow, int64_t nbox, const int64_t *start,
+                  const int64_t *dims, const int64_t *stride, const int64_t *doff,
+                  const int64_t *ld, double complex *arr, double complex *mat)
+{
+#pragma omp parallel for schedule(dynamic, 1)
+        for (int64_t b = 0; b < nbox; b++) {
+                const int64_t *d = dims + b * ndim;
+                const int64_t *s0 = start + b * ndim;
+                int64_t nr = 1, nc = 1, origin = 0;
+                for (int k = 0; k < ndim; k++) origin += s0[k] * stride[k];
+                for (int k = 0; k < nrow; k++) nr *= d[k];
+                for (int k = nrow; k < ndim; k++) nc *= d[k];
+                if (nr * nc == 0) continue;
+                for (int64_t r = 0; r < nr; r++) {
+                        int64_t rem = r, base = origin;
+                        for (int k = nrow - 1; k >= 0; k--) {
+                                base += (rem % d[k]) * stride[k];
+                                rem /= d[k];
+                        }
+                        double complex *m = mat + doff[b] + r * ld[b];
+                        for (int64_t c = 0; c < nc; c++) {
+                                int64_t rc = c, off = base;
+                                for (int k = ndim - 1; k >= nrow; k--) {
+                                        off += (rc % d[k]) * stride[k];
+                                        rc /= d[k];
+                                }
+                                if (scatter)
+                                        arr[off] = m[c];
+                                else
+                                        m[c] = arr[off];
+                        }
+                }
+        }
+}
+
 /* The antisymmetric array: dst[l, i, j, t] = src[l, p, t], dst[l, j, i, t] =
  * -src[l, p, t], zero on the diagonal; dst (nl, n, n, nt) is overwritten. */
 void zmr_pair_scatter(int64_t nl, int64_t n, int64_t nt,

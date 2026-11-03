@@ -225,6 +225,123 @@ def _symmetry_plan(aown, con, bown, sa, sb, secs, group):
     return plan
 
 
+def _runs(sec):
+    """[(irrep, start, size)] of an index whose orbitals come sector by sector; None if a
+    sector is not one range (orbitals not grouped)."""
+    sec = numpy.asarray(sec)
+    if sec.size == 0:
+        return []
+    cut = numpy.nonzero(sec[1:] != sec[:-1])[0] + 1
+    starts = numpy.concatenate([[0], cut])
+    sizes = numpy.diff(numpy.concatenate([starts, [sec.size]]))
+    irs = sec[starts]
+    if numpy.unique(irs).size != irs.size:
+        return None
+    return [(int(i), int(a), int(n)) for i, a, n in zip(irs, starts, sizes)]
+
+
+def _tuples(letters, coefs, runs, group):
+    """[(irreps under every coefficient dict, starts, sizes)] of the sector tuples of the
+    letters (C order)."""
+    out = []
+    for combo in product(*(runs[l] for l in letters)):
+        keys = []
+        for coef in coefs:
+            v = 0
+            for l, (ir, _, _) in zip(letters, combo):
+                c = coef.get(l, 0)
+                if c:
+                    v = dg.direct_prod(v, int(_times(numpy.asarray([ir]), c, group)[0]),
+                                       group)
+            keys.append(int(v))
+        out.append((tuple(keys), [x[1] for x in combo], [x[2] for x in combo]))
+    return out
+
+
+def _box_plan(aown, con, bown, sa, sb, secs, group):
+    """Plan of a blocked product from sector ranges: for every pair (sig, tau) of irreps of
+    the contracted multi-index, the boxes of a (rows of irrep conj(sig)) and of b
+    (columns of irrep conj(tau)) as rectangles of packed matrices.  None if the
+    orbitals of a letter are not grouped by sector."""
+    runs = {}
+    for l in aown + con + bown:
+        r = _runs(secs[l])
+        if r is None:
+            return None
+        runs[l] = r
+    arows = _tuples(aown, (sa,), runs, group)
+    ccols = _tuples(con, (sa, sb), runs, group)
+    bcols = _tuples(bown, (sb,), runs, group)
+    groups = {}
+    for keys, st, sz in ccols:
+        if int(numpy.prod(sz)):
+            groups.setdefault(keys, []).append((st, sz))
+    plan = {"a": [], "b": [], "r": [], "gemm": []}
+    offs = {"a": 0, "b": 0, "r": 0}
+    for (s1, t1), cs in groups.items():
+        rs = [(st, sz) for (k,), st, sz in arows if k == dg.conj(s1, group) and int(numpy.prod(sz))]
+        ls = [(st, sz) for (k,), st, sz in bcols if k == dg.conj(t1, group) and int(numpy.prod(sz))]
+        if not rs or not ls:
+            continue
+        nr = sum(int(numpy.prod(sz)) for _, sz in rs)
+        nc = sum(int(numpy.prod(sz)) for _, sz in cs)
+        nl = sum(int(numpy.prod(sz)) for _, sz in ls)
+        ga, gb, gr = offs["a"], offs["b"], offs["r"]
+        r0 = 0
+        for rst, rsz in rs:
+            c0 = 0
+            for cst, csz in cs:
+                plan["a"].append((rst + cst, rsz + csz, ga + r0 * nc + c0, nc))
+                c0 += int(numpy.prod(csz))
+            l0 = 0
+            for lst, lsz in ls:
+                plan["r"].append((rst + lst, rsz + lsz, gr + r0 * nl + l0, nl))
+                l0 += int(numpy.prod(lsz))
+            r0 += int(numpy.prod(rsz))
+        c0 = 0
+        for cst, csz in cs:
+            l0 = 0
+            for lst, lsz in ls:
+                plan["b"].append((cst + lst, csz + lsz, gb + c0 * nl + l0, nl))
+                l0 += int(numpy.prod(lsz))
+            c0 += int(numpy.prod(csz))
+        plan["gemm"].append((ga, gb, gr, nr, nc, nl))
+        offs["a"] += nr * nc
+        offs["b"] += nc * nl
+        offs["r"] += nr * nl
+    work = sum(m * k * n for _, _, _, m, k, n in plan["gemm"])
+    dense = (int(numpy.prod([len(secs[l]) for l in aown])) * int(numpy.prod([len(secs[l]) for l in con]))
+             * int(numpy.prod([len(secs[l]) for l in bown])))
+    if work > SYMMETRY_MAX_FRACTION * dense:
+        return "dense"
+    for key in ("a", "b", "r"):
+        rows = plan[key]
+        plan[key] = (numpy.asarray([x[0] for x in rows], dtype=numpy.int64),
+                     numpy.asarray([x[1] for x in rows], dtype=numpy.int64),
+                     numpy.asarray([x[2] for x in rows], dtype=numpy.int64),
+                     numpy.asarray([x[3] for x in rows], dtype=numpy.int64))
+    plan["size"] = dict(offs)
+    return plan
+
+
+def _box_product(av, bv, shape, nown, plan):
+    """av (axes aown + con, any strides) times bv (axes con + bown) into the dense array of
+    shape (aown + bown), only the blocks allowed by symmetry; one copy of each operand
+    into packed matrices, one product per irrep, one copy back."""
+    abuf = numpy.empty(plan["size"]["a"], dtype=numpy.complex128)
+    bbuf = numpy.empty(plan["size"]["b"], dtype=numpy.complex128)
+    rbuf = numpy.empty(plan["size"]["r"], dtype=numpy.complex128)
+    kernels.box_copy(0, av, abuf, nown, *plan["a"])
+    ncon = av.ndim - nown
+    kernels.box_copy(0, bv, bbuf, ncon, *plan["b"])
+    for ga, gb, gr, m, k, n in plan["gemm"]:
+        la.gemm(abuf[ga:ga + m * k].reshape(m, k), bbuf[gb:gb + k * n].reshape(k, n),
+                out=rbuf[gr:gr + m * n].reshape(m, n))
+    r = numpy.zeros(shape, dtype=numpy.complex128)
+    kernels.box_copy(1, r, rbuf, nown, *plan["r"])
+    return r
+
+
 def _pair_symmetric(at, bt, plan):
     """at (na, nc) times bt (nc, nb) as the sum of the products of the blocks of plan
     (gathered and added back with the threaded pyscf.lib.take_2d / takebak_2d)."""
@@ -317,12 +434,31 @@ def _pair(asub, a, bsub, b, keepers, sa=None, sb=None, secs=None, group=None, pl
         return osub, numpy.einsum(asub + "," + bsub + "->" + osub, a, b, optimize=True), None
     pa = [asub.index(x) for x in aown + con]
     pb = [bsub.index(x) for x in con + bown]
+    big = a.size and b.size and (a.size // max(1, int(numpy.prod([a.shape[asub.index(x)]
+                                                                  for x in con])))
+                                 * b.size >= SYMMETRY_MIN_SIZE)
+    dense = False
+    if (group is not None and sa is not None and sb is not None and plans is not None
+            and big and (aown or bown)):
+        key = ("box", tuple(aown), tuple(con), tuple(bown),
+               tuple(sorted(sa.items())), tuple(sorted(sb.items())),
+               tuple(spaces[x] for x in aown + con + bown))
+        if key not in plans:
+            plans[key] = _box_plan(aown, con, bown, sa, sb, secs, group)
+        plan = plans[key]
+        if isinstance(plan, dict):
+            av = numpy.asarray(a, dtype=numpy.complex128).transpose(pa)
+            bv = numpy.asarray(b, dtype=numpy.complex128).transpose(pb)
+            shape = av.shape[:len(aown)] + bv.shape[len(con):]
+            r = _box_product(av, bv, shape, len(aown), plan)
+            return "".join(aown + bown), r, _combine_signs(sa, sb, con)
+        dense = plan == "dense"
     at = a if (pa == list(range(a.ndim)) and _is_plain(a)) else kernels.transposed(a, pa)
     bt = b if (pb == list(range(b.ndim)) and _is_plain(b)) else kernels.transposed(b, pb)
     na = int(numpy.prod(at.shape[:len(aown)], dtype=numpy.int64))
     nc = int(numpy.prod(at.shape[len(aown):], dtype=numpy.int64))
     nb = int(bt.size // max(nc, 1))
-    symmetric = (group is not None and sa is not None and sb is not None
+    symmetric = (group is not None and sa is not None and sb is not None and not dense
                  and na * nc * nb >= SYMMETRY_MIN_SIZE)
     if at.size == 0 or bt.size == 0:
         r = numpy.zeros(at.shape[:len(aown)] + bt.shape[len(con):], dtype=numpy.complex128)

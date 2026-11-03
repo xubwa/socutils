@@ -25,12 +25,13 @@ from socutils.zmr.lib import linalg as la
 TOL = 1e-8
 
 
-def eigh(h, orbsym=None):
-    '''Eigenvalues (ascending) and eigenvectors of the Hermitian matrix h given in
-    orbitals of the sectors orbsym; every eigenvector lies in one sector.  Returns
-    (e, v, sectors of the eigenvectors); with orbsym None the plain eigenproblem and
-    None.  Degenerate eigenvalues of different sectors (Kramers partners) are
-    ordered by their sector.'''
+def eigh(h, orbsym=None, grouped=False):
+    '''Eigenvalues and eigenvectors of the Hermitian matrix h given in orbitals of the
+    sectors orbsym; every eigenvector lies in one sector.  Returns (e, v, sectors of the
+    eigenvectors), ascending in e (degenerate eigenvalues of different sectors, e.g.
+    Kramers partners, ordered by their sector), or with grouped sector by sector (the
+    sectors ascending, e ascending within each: every sector a range); with orbsym None
+    the plain eigenproblem and None.'''
     h = numpy.ascontiguousarray(h)
     if orbsym is None:
         e, v = la.eigh(h)
@@ -46,7 +47,8 @@ def eigh(h, orbsym=None):
             vals.append(w[k])
             irs.append(ir)
             cols.append((idx, x[:, k]))
-    order = numpy.lexsort((numpy.asarray(irs), numpy.asarray(vals)))
+    keys = (numpy.asarray(irs), numpy.asarray(vals))
+    order = numpy.lexsort(keys[::-1] if grouped else keys)
     e = numpy.asarray(vals)[order]
     for j, k in enumerate(order):
         idx, x = cols[k]

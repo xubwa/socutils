@@ -697,6 +697,39 @@ def vvvv_pair_rows_packed(packed, rowoff, coloff, nb, n, a0, pirr):
     return w
 
 
+def box_copy(scatter, arr, mat, nrow, start, dims, doff, ld):
+    '''Boxes of arr (box b: the ranges start[b, k] : start[b, k] + dims[b, k] of every
+    axis k; arr may be any strided view) to rectangles of the flat buffer mat (element
+    offset doff[b], leading dimension ld[b]; the first nrow axes of a box are the rows,
+    C order), or back from mat to arr with scatter.'''
+    ndim = arr.ndim
+    start = numpy.ascontiguousarray(start, dtype=numpy.int64).reshape(-1, ndim)
+    dims = numpy.ascontiguousarray(dims, dtype=numpy.int64).reshape(-1, ndim)
+    doff = numpy.ascontiguousarray(doff, dtype=numpy.int64)
+    ld = numpy.ascontiguousarray(ld, dtype=numpy.int64)
+    z = _lib.zmr()
+    if (z is None or not hasattr(z, 'zmr_box_copy') or arr.dtype != _c16 or mat.dtype != _c16
+            or not mat.flags.c_contiguous or any(st % arr.itemsize for st in arr.strides)):
+        for b in range(start.shape[0]):
+            d = dims[b]
+            nr, nc = int(numpy.prod(d[:nrow])), int(numpy.prod(d[nrow:]))
+            if nr * nc == 0:
+                continue
+            box = tuple(slice(s0, s0 + n) for s0, n in zip(start[b], d))
+            rect = numpy.lib.stride_tricks.as_strided(
+                mat[doff[b]:], shape=(nr, nc), strides=(ld[b] * mat.itemsize, mat.itemsize))
+            if scatter:
+                arr[box] = rect.reshape(d)
+            else:
+                rect[...] = arr[box].reshape(nr, nc)
+        return
+    stride = numpy.asarray([st // arr.itemsize for st in arr.strides], dtype=numpy.int64)
+    ptr = lambda x: x.ctypes.data_as(ctypes.c_void_p)
+    z.zmr_box_copy(ctypes.c_int(int(scatter)), ctypes.c_int(ndim), ctypes.c_int(nrow),
+                   ctypes.c_int64(start.shape[0]), ptr(start), ptr(dims), ptr(stride),
+                   ptr(doff), ptr(ld), ptr(arr), ptr(mat))
+
+
 def pair_scatter(a, axis, n):
     '''The antisymmetric array whose pairs i < j along `axis` are a: the
     axis becomes two axes of dimension n.'''
