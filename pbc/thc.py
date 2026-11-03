@@ -375,7 +375,8 @@ class THCExchange:
             return
         rank, size = comm.Get_rank(), comm.Get_size()
         r0, r1 = self.ng * rank // size, self.ng * (rank + 1) // size
-        self.phi = np.ascontiguousarray(self.phi_at(slice(r0, r1)))
+        if getattr(self, '_phi_rows', None) != (r0, r1):              # (the grid-split build has them already)
+            self.phi = np.ascontiguousarray(self.phi_at(slice(r0, r1)))
         self._phi_rows = (r0, r1)
         if getattr(self, 'Llr_cx', None) is not None:
             nlr = self.Llr_cx.shape[0]
@@ -387,7 +388,7 @@ class THCExchange:
     def phi_at(self, idx):
         '''Smooth functions at the uniform-grid points idx (a slice or an index array): from the stored phi, or
         evaluated (phi on demand).'''
-        if self.phi is not None and not getattr(self, '_distributed', False):
+        if self.phi is not None and not getattr(self, '_distributed', False) and not getattr(self, '_phi_local', False):
             return self.phi[idx]
         # pbc_eval_gto screens the lattice sum per block of BLKSIZE consecutive points, so a value depends (~1e-12)
         # on the block it falls in; the ISDF pseudo-inverse amplifies that to ~1e-6 Eh in K.  Evaluate whole blocks
@@ -499,8 +500,11 @@ class THCExchange:
         # the smooth functions on the uniform grid: stored, or evaluated per grid block when they do not fit the
         # budget (phi_ondemand True / False forces; then only the streamed THC build is available)
         ondemand = getattr(self, 'phi_ondemand', None)
+        comm = getattr(self, 'comm', None)
         if ondemand is None:
-            ondemand = self.ng * len(self.smooth) * 8 > 0.3 * self.avail_bytes()
+            # MPI + streamed build: always distributed by grid rows (no full copy per rank); serial: if it fits
+            ondemand = ((comm is not None and comm.Get_size() > 1 and getattr(self, 'stream', False))
+                        or self.ng * len(self.smooth) * 8 > 0.3 * self.avail_bytes())
         self.phi_ondemand = bool(ondemand)
         if self.phi_ondemand:
             self.phi = None
@@ -568,8 +572,21 @@ class THCExchange:
             Ginv = np.ascontiguousarray(Ginv)
             comm.Bcast(Ginv, root=0)
             keep = comm.bcast(keep, root=0)
+        # MPI with phi not stored: phi distributed by grid rows (this rank's rows evaluated once); every mu block is
+        # shared by all ranks, xi_b formed on the own rows, transposed (Alltoallv) to own mu rows on the full grid
+        # for the FFT / A, and the potential transposed back for V
+        grid_split = comm is not None and size > 1 and self.phi is None
+        if grid_split:
+            r0, r1 = ng * rank // size, ng * (rank + 1) // size
+            ta = time.time()
+            phi_loc = self.phi_at(slice(r0, r1))
+            self.phi, self._phi_rows, self._phi_local = phi_loc, (r0, r1), True
+            phi_loc = None
+            self.log('   streamed THC: phi distributed by grid rows (%.1f GB per rank, %.0f s)'
+                     % (self.phi.nbytes / 1e9, time.time() - ta))
         # sizes from the memory budget (cell.max_memory): grid chunks of the Gram columns (nmu, rchunk), G chunks
-        # of the aux FT (complex + its real layout, 32 gchunk naux bytes), mu blocks (two (nb, ng) arrays live)
+        # of the aux FT (complex + its real layout, 32 gchunk naux bytes), mu blocks (two (nb, ng) arrays live;
+        # grid split: ~6 (nb, ng / size) arrays)
         avail = self.avail_bytes()
         naux = self.auxmol.nao
         if rchunk is None:
@@ -579,12 +596,17 @@ class THCExchange:
         if nb is None:
             if getattr(self, 'stream_gb', None):
                 nb = int(self.stream_gb * 1e9 / (8 * ng * 3))
+            elif grid_split:
+                nb = int((0.6 * avail - 8 * nmu * rchunk * 2 - 32 * gchunk * naux) * size / (8 * ng * 8))
             else:
                 nb = int((0.75 * avail - 8 * nmu * rchunk * 2 - 32 * gchunk * naux) / (8 * ng * 2.2))
+            if grid_split:                                            # Alltoallv counts / displacements < 2^31
+                nb = min(nb, size * ((2 ** 31 - 1) // ng))
             nb = max(32, min(nmu, nb))
         if comm is not None:                                          # the same blocks on every rank, >= 1 per rank
             nb, rchunk, gchunk = (comm.allreduce(x, op=__import__('mpi4py').MPI.MIN) for x in (nb, rchunk, gchunk))
-            nb = min(nb, -(-nmu // size))
+            if not grid_split:
+                nb = min(nb, -(-nmu // size))
         self.log('   streamed THC: %d mu blocks of %d (budget %.0f GB, available %.0f GB), grid chunk %d, G chunk %d'
                  % (-(-nmu // nb), nb, self.cell.max_memory / 1e3, avail / 1e9, rchunk, gchunk))
         V = np.zeros((nmu, nmu))
@@ -603,9 +625,12 @@ class THCExchange:
         # smallest |G|^2
         G2 = np.einsum('gx,gx->g', self.Gv, self.Gv)
         g2c = np.array([G2[g0:g0 + gchunk].min() for g0 in range(0, len(G2), gchunk)])
+        ctx = (sw, g2c, gchunk, lrg, Plr, Pli)
         t0 = time.time()
         tt = dict.fromkeys(('xi', 'FFT', 'ft_ao', 'A GEMM', 'V'), 0.)
-        for ib, b0 in enumerate(range(0, nmu, nb)):
+        if grid_split:
+            self._stream_grid_blocks(PP, Ginv, nb, rchunk, ctx, V, A, A_lr, Xi if local else None, tt, t0)
+        for ib, b0 in enumerate(range(0, nmu if not grid_split else 0, nb)):
             if ib >= getattr(self, 'stream_max_blocks', 1 << 30):     # timing runs: stop after a few blocks
                 self.log('   streamed THC: stopped after %d blocks (timing run; V, A incomplete)' % ib)
                 break
@@ -618,44 +643,8 @@ class THCExchange:
                 g1 = min(g0 + rchunk, ng)
                 xi[:, g0:g1] = Ginv[b0:b1] @ gram_cols(PP, self.phi_at(slice(g0, g1)))
             tt['xi'] += time.time() - ta
+            xi = self._block_spectra([xi], b0, b1, ctx, A, A_lr, Xi if local else None, tt)
             ta = time.time()
-            As = np.zeros((self.auxmol.nao, b1 - b0))                 # A[:, b] in aux-cutoff order
-            Xh = scipy.fft.rfftn(xi.reshape(b1 - b0, *mesh), axes=(1, 2, 3), workers=-1).reshape(b1 - b0, -1)
-            xi = None
-            Xh *= vol / ng                                              # xi(G) = int_cell xi(r) e^{-iGr}
-            tt['FFT'] += time.time() - ta
-            for g0 in range(0, len(self.Gv), gchunk):
-                g1 = min(g0 + gchunk, len(self.Gv))
-                ta = time.time()
-                sub, nk = self._aux_upto(g2c[g0 // gchunk])               # the first nk aux functions (cutoff order)
-                if sub is None:
-                    continue
-                # Re(P^* X) = Pr Xr + Pi Xi as one real GEMM over (G, re/im), accumulated in place (beta = 1) into
-                # the aux-cutoff-ordered A[:, b] (naux, nb), C order: its first nk rows are contiguous; the weighted
-                # re/im layout of the F-order ft_ao block in one pass (C kernel)
-                P2 = ft_post(ft_ao(sub, self.Gv[g0:g1]), sw[g0:g1])          # (2 nG, nk)
-                tt['ft_ao'] += time.time() - ta
-                ta = time.time()
-                X2 = np.ascontiguousarray(Xh[:, g0:g1]).view(float)     # (nb, 2 nG), contiguous copy of the chunk
-                # As[:nk] (C order) is the column-major (nb, nk) matrix X2 @ P2 accumulates into
-                c = As[:nk].T
-                r = blas.dgemm(1., X2.T, P2.T, beta=1., c=c, trans_a=1, trans_b=1, overwrite_c=1)
-                if not np.shares_memory(r, As):
-                    As[:nk] = r.T
-                tt['A GEMM'] += time.time() - ta
-            A[self._aux_perm, b0:b1] = As
-            As = None
-            Xc = Xh[:, lrg]
-            A_lr[:, b0:b1] = Plr @ Xc.real.T + Pli @ Xc.imag.T
-            Xc = Pg = None
-            if local:
-                Xi[:, b0:b1] = self._lr_rows_of_xi(Xh)
-            # potential of the block in real space, (v * xi_b)(r) = irfft(w_vec xi_b(G)) ng / vol
-            ta = time.time()
-            Xh *= self.w_vec[None]
-            xi = scipy.fft.irfftn(Xh.reshape((b1 - b0,) + hshape), s=tuple(mesh), axes=(1, 2, 3),
-                                  workers=-1, overwrite_x=True).reshape(b1 - b0, -1)
-            Xh = None
             Vb = np.zeros((b1 - b0, nmu))
             for g0 in range(0, ng, rchunk):
                 g1 = min(g0 + rchunk, ng)
@@ -677,6 +666,179 @@ class THCExchange:
         if local:
             self.Xi_lr = Xi
         return int(keep.sum())
+
+    def _stream_grid_blocks(self, PP, Ginv, nb, rchunk, ctx, V, A, A_lr, Xi, tt, t0):
+        '''Streamed V, A, A_lr, Xi with phi distributed by grid rows (self.phi: rows self._phi_rows): all ranks take
+        every mu block b together; xi_b on the own grid rows -> Alltoallv -> own mu rows of b on the full grid ->
+        FFT, A, A_lr, Xi columns, potential -> Alltoallv back -> own-row part of V[b] (summed by the caller).'''
+        from mpi4py import MPI
+        comm = self.comm
+        rank, size = comm.Get_rank(), comm.Get_size()
+        ng, nmu = self.ng, len(PP)
+        gs = [ng * p // size for p in range(size + 1)]                # grid rows of every rank
+        nr = gs[rank + 1] - gs[rank]
+        phi = self.phi
+        vol, mesh = self.cell.vol, self.mesh
+        hshape = (mesh[0], mesh[1], mesh[2] // 2 + 1)
+        sw, g2c, gchunk, lrg, Plr, Pli = ctx
+        nG = len(self.Gv)
+        nch = -(-nG // gchunk)
+        own = list(range(rank, nch, size))                            # G chunks of this rank (round robin: balance)
+        cols_of = [np.concatenate([np.arange(c * gchunk, min((c + 1) * gchunk, nG)) for c in range(q, nch, size)]
+                                  or [np.zeros(0, dtype=int)]) for q in range(size)]
+        p2cache = {}                                                  # aux FT of the own G chunks, kept if it fits
+        p2_left = 0.25 * self.avail_bytes()                           # its share of the budget (blocks: 0.6)
+        ta_comm = 0.
+        for b0 in range(0, nmu, nb):
+            b1 = min(b0 + nb, nmu)
+            nbk = b1 - b0
+            ms = [nbk * q // size for q in range(size + 1)]           # mu rows (within the block) of every rank
+            m0, m1 = ms[rank], ms[rank + 1]
+            ta = time.time()
+            xl = np.empty((nbk, nr))
+            for g0 in range(0, nr, rchunk):
+                g1 = min(g0 + rchunk, nr)
+                xl[:, g0:g1] = Ginv[b0:b1] @ gram_cols(PP, phi[g0:g1])
+            tt['xi'] += time.time() - ta
+            # forward: to rank q the rows ms[q]:ms[q+1] of xl (contiguous); from rank p its (m1 - m0, n_p) piece
+            ta = time.time()
+            sc = np.array([(ms[q + 1] - ms[q]) * nr for q in range(size)])
+            rc = np.array([(m1 - m0) * (gs[p + 1] - gs[p]) for p in range(size)])
+            rbuf = np.empty(rc.sum())
+            comm.Alltoallv([xl, (sc, np.r_[0, np.cumsum(sc)[:-1]]), MPI.DOUBLE],
+                           [rbuf, (rc, np.r_[0, np.cumsum(rc)[:-1]]), MPI.DOUBLE])
+            xl = None
+            xi = np.empty((m1 - m0, ng))
+            off = 0
+            for p in range(size):
+                n_p = gs[p + 1] - gs[p]
+                xi[:, gs[p]:gs[p + 1]] = rbuf[off:off + (m1 - m0) * n_p].reshape(m1 - m0, n_p)
+                off += (m1 - m0) * n_p
+            rbuf = None
+            ta_comm += time.time() - ta
+            # FFT of the own mu rows; A_lr, Xi (small G) from them
+            ta = time.time()
+            Xh = scipy.fft.rfftn(xi.reshape(m1 - m0, *mesh), axes=(1, 2, 3), workers=-1).reshape(m1 - m0, -1)
+            xi = None
+            Xh *= vol / ng
+            tt['FFT'] += time.time() - ta
+            if m1 > m0:
+                Xc = Xh[:, lrg]
+                A_lr[:, b0 + m0:b0 + m1] = Plr @ Xc.real.T + Pli @ Xc.imag.T
+                Xc = None
+                if Xi is not None:
+                    Xi[:, b0 + m0:b0 + m1] = self._lr_rows_of_xi(Xh)
+            # A: transpose the spectra to all mu rows of the block on the own G chunks, A[:, b] += Re(P^* X) there
+            ta = time.time()
+            sg = np.array([2 * (m1 - m0) * len(cols_of[q]) for q in range(size)])
+            rg = np.array([2 * (ms[p + 1] - ms[p]) * len(cols_of[rank]) for p in range(size)])
+            sbuf = np.concatenate([np.ascontiguousarray(Xh[:, cols_of[q]]).view(float).ravel() for q in range(size)])
+            Xq = np.empty((nbk, len(cols_of[rank])), dtype=complex)
+            comm.Alltoallv([sbuf, (sg, np.r_[0, np.cumsum(sg)[:-1]]), MPI.DOUBLE],
+                           [Xq.view(float), (rg, np.r_[0, np.cumsum(rg)[:-1]]), MPI.DOUBLE])
+            sbuf = None
+            ta_comm += time.time() - ta
+            As = np.zeros((self.auxmol.nao, nbk))                     # aux-cutoff order
+            off = 0
+            for c in own:
+                g0, g1 = c * gchunk, min((c + 1) * gchunk, nG)
+                ta = time.time()
+                sub, nk = self._aux_upto(g2c[c])
+                if sub is None:
+                    off += g1 - g0
+                    continue
+                P2 = p2cache.get(c)
+                if P2 is None:
+                    P2 = ft_post(ft_ao(sub, self.Gv[g0:g1]), sw[g0:g1])     # (2 nG, nk)
+                    if P2.nbytes < p2_left and b1 < nmu:                # reused by the later blocks
+                        p2cache[c] = P2
+                        p2_left -= P2.nbytes
+                tt['ft_ao'] += time.time() - ta
+                ta = time.time()
+                X2 = np.ascontiguousarray(Xq[:, off:off + g1 - g0]).view(float)
+                cc = As[:nk].T
+                r = blas.dgemm(1., X2.T, P2.T, beta=1., c=cc, trans_a=1, trans_b=1, overwrite_c=1)
+                if not np.shares_memory(r, As):
+                    As[:nk] = r.T
+                off += g1 - g0
+                tt['A GEMM'] += time.time() - ta
+            A[self._aux_perm, b0:b1] += As
+            As = Xq = X2 = P2 = None
+            # potential of the own mu rows on the full grid
+            ta = time.time()
+            Xh *= self.w_vec[None]
+            vxi = scipy.fft.irfftn(Xh.reshape((m1 - m0,) + hshape), s=tuple(mesh), axes=(1, 2, 3),
+                                   workers=-1, overwrite_x=True).reshape(m1 - m0, -1)
+            Xh = None
+            tt['V'] += time.time() - ta
+            # back: to rank p the (m1 - m0, n_p) columns of its rows; from rank q its mu rows on the own grid rows
+            ta = time.time()
+            sbuf = np.concatenate([vxi[:, gs[p]:gs[p + 1]].ravel() for p in range(size)])
+            vxi = None
+            vl = np.empty((nbk, nr))
+            comm.Alltoallv([sbuf, (rc, np.r_[0, np.cumsum(rc)[:-1]]), MPI.DOUBLE],
+                           [vl, (sc, np.r_[0, np.cumsum(sc)[:-1]]), MPI.DOUBLE])
+            sbuf = None
+            ta_comm += time.time() - ta
+            ta = time.time()
+            Vb = np.zeros((nbk, nmu))
+            for g0 in range(0, nr, rchunk):
+                g1 = min(g0 + rchunk, nr)
+                Vb += vl[:, g0:g1] @ gram_cols(PP, phi[g0:g1]).T
+            V[b0:b1] += Vb @ Ginv                                       # own-row part of int (v * xi_b) xi^T
+            vl = Vb = None
+            tt['V'] += time.time() - ta
+            self.log('   streamed THC (grid split): mu block %d-%d of %d, %.0f s (%s, transpose %.0f; aux FT cached '
+                     'for %d of %d own G chunks)' % (b0, b1, nmu, time.time() - t0,
+                     ', '.join('%s %.0f' % kv for kv in tt.items()), ta_comm, len(p2cache), len(own)))
+
+    def _block_spectra(self, xs, b0, b1, ctx, A, A_lr, Xi, tt):
+        '''xs = [xi], xi (b1 - b0, ng): ISDF vectors b0:b1 on the full grid (taken out of the list, so that it is
+        freed after its FFT).  Their FFT gives the columns b0:b1 of A, A_lr (and of the LR rows Xi); returns the
+        potential (v * xi)(r) (b1 - b0, ng).'''
+        vol, ng, mesh = self.cell.vol, self.ng, self.mesh
+        hshape = (mesh[0], mesh[1], mesh[2] // 2 + 1)
+        sw, g2c, gchunk, lrg, Plr, Pli = ctx
+        n = b1 - b0
+        ta = time.time()
+        xi = xs.pop()
+        As = np.zeros((self.auxmol.nao, n))                           # A[:, b] in aux-cutoff order
+        Xh = scipy.fft.rfftn(xi.reshape(n, *mesh), axes=(1, 2, 3), workers=-1).reshape(n, -1)
+        xi = None
+        Xh *= vol / ng                                                  # xi(G) = int_cell xi(r) e^{-iGr}
+        tt['FFT'] += time.time() - ta
+        for g0 in range(0, len(self.Gv), gchunk):
+            g1 = min(g0 + gchunk, len(self.Gv))
+            ta = time.time()
+            sub, nk = self._aux_upto(g2c[g0 // gchunk])                   # the first nk aux functions (cutoff order)
+            if sub is None:
+                continue
+            # Re(P^* X) = Pr Xr + Pi Xi as one real GEMM over (G, re/im), accumulated in place (beta = 1) into
+            # the aux-cutoff-ordered A[:, b] (naux, nb), C order: its first nk rows are contiguous; the weighted
+            # re/im layout of the F-order ft_ao block in one pass (C kernel)
+            P2 = ft_post(ft_ao(sub, self.Gv[g0:g1]), sw[g0:g1])              # (2 nG, nk)
+            tt['ft_ao'] += time.time() - ta
+            ta = time.time()
+            X2 = np.ascontiguousarray(Xh[:, g0:g1]).view(float)         # (nb, 2 nG), contiguous copy of the chunk
+            c = As[:nk].T                                               # column-major (nb, nk) view
+            r = blas.dgemm(1., X2.T, P2.T, beta=1., c=c, trans_a=1, trans_b=1, overwrite_c=1)
+            if not np.shares_memory(r, As):
+                As[:nk] = r.T
+            tt['A GEMM'] += time.time() - ta
+        A[self._aux_perm, b0:b1] = As
+        As = None
+        Xc = Xh[:, lrg]
+        A_lr[:, b0:b1] = Plr @ Xc.real.T + Pli @ Xc.imag.T
+        Xc = None
+        if Xi is not None:
+            Xi[:, b0:b1] = self._lr_rows_of_xi(Xh)
+        # potential of the block in real space, (v * xi_b)(r) = irfft(w_vec xi_b(G)) ng / vol
+        ta = time.time()
+        Xh *= self.w_vec[None]
+        vxi = scipy.fft.irfftn(Xh.reshape((n,) + hshape), s=tuple(mesh), axes=(1, 2, 3),
+                               workers=-1, overwrite_x=True).reshape(n, -1)
+        tt['V'] += time.time() - ta
+        return vxi
 
     def _aux_upto(self, g2min, eps=1e-15):
         '''The aux shells whose FT is not negligible at |G|^2 >= g2min (exp(-G^2 / 4 alpha) > eps for the smallest

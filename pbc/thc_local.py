@@ -83,6 +83,9 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
     C = None if sparse else np.zeros((naux, len(ti)))
     coo = ([], [], [])                                                 # rows, cols, values (sparse)
     Cacc = None                                                        # CSR sum of the folded triplets
+    # triplets (16 bytes; ~3x that transiently in the COO -> CSR fold) held at most to ~10% of the budget
+    from pyscf import lib as _lib
+    ncoo, coo_max = 0, int(max(2e7, 0.1 * max(0., cell.max_memory - _lib.current_memory()[0]) * 1e6 / 48))
     ncluster = nimgpair = 0
     emin = np.array([min(cell.bas_exp(i).min() for i in range(cell.nbas) if cell.bas_atom(i) == at)
                      for at in range(cell.natm)])
@@ -152,9 +155,13 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
                 kk = np.where(keep)
                 if sparse:
                     vals = coef[kk[0], kk[1]].T                         # (naux_m, nk)
-                    coo[0].append(np.repeat(pa, vals.shape[1]))
-                    coo[1].append(np.tile(cols[kk], len(pa)))
+                    coo[0].append(np.repeat(pa.astype(np.int32), vals.shape[1]))
+                    coo[1].append(np.tile(cols[kk].astype(np.int32), len(pa)))
                     coo[2].append(vals.ravel())
+                    ncoo += vals.size
+                    if ncoo > coo_max:                                 # fold into CSR within the memory budget
+                        Cacc = _coo_add(Cacc, coo, naux, len(ti))
+                        ncoo = 0
                 else:
                     Cblk = np.zeros((naux, len(kk[0])))
                     np.add.at(Cblk, pa, coef[kk[0], kk[1]].T)
@@ -164,6 +171,7 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
         metric_cache.clear() if len(metric_cache) > 2000 else None
         if sparse and coo[0]:                                          # fold this atom's triplets into CSR (memory)
             Cacc = _coo_add(Cacc, coo, naux, len(ti))
+            ncoo = 0
     if far:
         tf = time.time()
         rows_f, cols_f, vals_f = far_cx_fit(cell, auxcell, compact, omega, near, pidx, lindep, far_grid,
