@@ -424,15 +424,142 @@ determinant counts per iteration, PT2, the test suite):
   asci, aci), which look up any determinant, keep the whole sorted copy.
   Ownership is by hash until step 1 brings the A-string ranges; the owner
   function is the only thing that changes then.
-- **Step 1, the open point:** the stored matrix keeps one triangle in the
-  order in which determinants entered the list (a new row holds all its
-  connections to earlier rows, and the one- and two-sweep products rely
-  on columns below rows). Ownership by A-string ranges with Davidson
-  segments of owned determinants needs a second order, the position in
-  the A-string order. Either (A) the matrix stays in entry order and every
-  product permutes x into it and y out of it (two passes of n random
-  accesses per product and rank), or (B) the stored elements are
-  renumbered after each selection into the A-string order, each pair
-  stored in the row of its larger position (a pass over all elements and
-  a re-sort of the rows per iteration), which is the form the block-wise
-  product of step 4 needs anyway. (B) is the plan; (A) only as a stopgap.
+- **Step 1:** the layout of the global index, below (option C chosen
+  for evaluation; no implementation until it is picked).
+
+### Step 1: three layouts (A, B, C)
+
+The stored matrix keeps each pair once, in the row of the determinant that
+entered the list later, and grows by appending rows; the user wants that
+kept. Three ways to let ranks own determinants by A string:
+
+- **A**: one global list in entry order, the matrix as now; every product
+  permutes x into it and y out of it (two passes over n per product).
+- **B**: one global A-string order; after each selection the stored rows
+  and columns are renumbered (increasing map, one pass over all
+  elements). Throws away the append-only construction. Not taken.
+- **C**: each rank its own determinants in entry order; the matrix in
+  rows of the rank's own determinants, append-only, each pair in the row
+  of the later-entered determinant; nothing ever renumbered or moved. An
+  owner table over the A strings, `owner[A]` (4 bytes per distinct A
+  string, replicated), filled as strings appear: a new A string goes to
+  the rank with the least work (stored elements, or estimated), and
+  strings never move unless the imbalance passes a threshold.
+
+**What needs a global A-string order? Nothing.** The byte tables sort the
+determinants by string as a secondary index (det_index, block_dets): they
+map string order to the index of a determinant, whatever that index is,
+and are remade on every extension ("nothing here depends on the order in
+which determinants were added", connect_bytes.h). The relation lists are
+per string. The search's chunks are a unit of work, 256 consecutive
+determinants of the group-A order: they can as well be runs of whole A
+strings of one owner (a string of more than 256 determinants in pieces),
+which is what C needs; ForEachConnectedOfChunk already finds the strings
+of a range by bisection in the string starts. The kernels assume one
+thing: a stored column lies below its row in the index order (one-sweep
+scratch, two-sweep split tables). With columns as (owner, local index) a
+column of an earlier determinant on a later rank lies above, so the
+kernels must take columns anywhere (the change written for B, which also
+fits a y over owner segments).
+
+**Column numbers in C.** A column must name a determinant on any rank
+without changing when ranks grow, in 4 bytes if possible.
+- C1: the column is the determinant's global entry index (the order of
+  the selection across all ranks, which never changes, as today); a
+  rank's rows are its own determinants' entry indices. Columns lie below
+  rows, so the kernels stay as they are. The Davidson segments are the
+  ranks' own determinants in entry order; a product gathers x per node in
+  segment order and scatters it into entry order, and gathers y from
+  entry order into segment order before summing onto the owners: two
+  passes over n per product and rank, and a map of entry index to segment
+  position, 4 bytes per determinant per node. **C1 is an intermediate
+  stage only, up to about 4e9 determinants:** the global entry index
+  passes 2^32 at 4.3e9, so it has the same 32-bit limit as (owner, local)
+  does, and its map alone is 40 GB per node at 1e10.
+- C2: the column is the local index within the owner's list (fine up to
+  2^32 determinants per rank, 4.3e9 x p in all); within a row the columns
+  are sorted by (owner, local index), and a small table per row says
+  where each owner's columns start. A product then takes x per owner
+  block, which is the streamed product of step 4; no n-sized map. The
+  start tables, per row of k elements (12 bytes each), with owners spread
+  evenly (k = 90 for Cr2, 1300 for Fe4S4; at p ranks a row holds about
+  p (1 - (1 - 1/p)^k) owners):
+
+  | form | Cr2, p = 8 | Cr2, p = 64 | Fe4S4, p = 64 |
+  |---|---|---|---|
+  | a 2-byte count for every owner | 1.5 % | 11.9 % | 0.8 % |
+  | (owner, start) pairs of the owners present, 1 + 2 bytes | 2.2 % | 13.5 % | 1.2 % |
+  | owners present as runs, 1-byte owner + 1-byte count (255 + escape) | 1.5 % | 9.0 % | 0.8 % |
+
+  (The 50 % of the first draft was wrong.) An owner table that gives
+  related A strings the same owner would cut the owners per row further.
+- Wider columns instead: 5 bytes (40 bits) take an element from 12 to 13
+  bytes (+8 %), 8 bytes to 16 (+33 %).
+
+**At 1e10 the choice is C2 or wider columns**; C1 does not reach it.
+
+C1 is a small step from the code now; C2 is step 4. Recommended: C with
+C1 for steps 1 to 3, up to about 4e9 determinants (the selection and PT2
+already work by owner; the replicated tables stay), and C2 together with
+step 4, when the replicated list and its n-sized maps go; wider columns
+only if C2's run tables turn out larger than the 8 % of 5-byte columns
+(small spaces on many ranks).
+
+**Balance, measured offline** (`balance/drift.py`, `balance/owner_table.py`
+on the wfn.h5 of the Cr2 1.2e8 run and the Fe4S4 1e7 run: the list keeps
+the order of entry, so the first N determinants are the space when it had
+N; work counted as determinants; largest rank over the mean):
+
+| | ranks | at the size of the cuts | 2.7e7 | 5.8e7 | 1.2e8 |
+|---|---|---|---|---|---|
+| Cr2, contiguous cuts fixed at 1.2e7 | 4 / 8 / 64 | 1.00 / 1.00 / 1.13 | 1.07 / 1.09 / 1.21 | 1.14 / 1.17 / 1.38 | 1.20 / 1.24 / 1.57 |
+| Cr2, contiguous cuts fixed at 1.9e6 | 4 / 8 / 64 | 1.01 / 1.01 / 1.12 | 1.22 / 1.22 / 1.59 | 1.28 / 1.29 / 1.80 | 1.35 / 1.36 / 2.02 |
+| Cr2, owner table, new strings to the lightest rank | 4 / 8 / 64 | 1.000 | 1.000 | 1.000 | 1.000 |
+
+| Fe4S4 | ranks | 5.4e5 | 1.8e6 | 7.6e6 | 1.0e7 |
+|---|---|---|---|---|---|
+| contiguous cuts fixed at 5.4e5 | 4 / 8 / 64 | 1.00 / 1.01 / 4.72 | 1.18 / 1.19 / 3.23 | 1.32 / 1.34 / 2.08 | 1.38 / 1.40 / 2.22 |
+| owner table, lightest rank | 4 / 8 / 64 | 1.00 / 1.00 / 4.23 | 1.00 / 1.02 / 2.79 | 1.00 / 1.02 / 1.73 | 1.00 / 1.05 / 1.51 |
+
+- Contiguous cuts drift by 20-40 % on 4 to 8 ranks and 1.6-2.2x on 64
+  as the space grows tenfold; re-cutting them at the end would move
+  17-38 % of the determinants on 4 to 8 ranks and nearly all on 64.
+- The owner table keeps Cr2 balanced to 0.2 % on 4 to 64 ranks without
+  ever moving a string, and Fe4S4 to 5 % on 4 to 8 ranks.
+- Fe4S4 on 64 ranks cannot be balanced by whole A strings: a few A strings
+  hold more than a rank's share (with re-cut contiguous ranges the best
+  is 2.34x at 1e7). Such strings must be split between ranks by B strings
+  (owner by (A string, range of B strings) for the strings above a size),
+  which the owner table can hold as a second level for those few strings.
+- Balance is by determinants here; work per determinant differs between
+  strings (Fe4S4 has 14 times Cr2's elements per determinant), so the
+  table is to be filled by stored elements or estimated work, as planned.
+
+**Distinct A strings** (the owner table's length, 4 bytes each):
+
+| Cr2 | 1.9e6 | 5.5e6 | 1.2e7 | 2.7e7 | 5.8e7 | 1.2e8 |
+|---|---|---|---|---|---|---|
+| A strings | 95334 | 205391 | 351048 | 590200 | 945403 | 1444467 |
+| determinants each | 19.5 | 26.6 | 34.3 | 46.2 | 61.7 | 82.7 |
+
+| Fe4S4 | 5.4e5 | 1.8e6 | 2.1e6 | 7.6e6 | 1.0e7 |
+|---|---|---|---|---|---|
+| A strings | 37623 | 85308 | 93523 | 222043 | 254613 |
+| determinants each | 14.3 | 21.0 | 22.5 | 34.3 | 39.5 |
+
+They grow as N^0.6 (Cr2 0.59 between 5.8e7 and 1.2e8, Fe4S4 0.5-0.6):
+at 1e10, 2e7 for Cr2 (84 MB); for the FeMoco spaces, with more orbitals,
+some 1e7 to 1e8 (40-400 MB), and at most N / 10 = 1e9 (4 GB) if strings
+held only ten determinants each. Small against everything else.
+
+**Cost against B.** B: one pass over all elements per iteration (and
+the append-only construction lost), columns anywhere in the kernels, no
+communication. C1: nothing renumbered or moved, kernels unchanged, two
+passes over n per product and a 4-byte-per-determinant map per node,
+limited to ~4e9 determinants. C2: nothing renumbered or moved, no n-sized
+maps, run tables of 1-14 % of the matrix, the kernel of step 4, and
+x streamed per owner. All three keep each pair once.
+
+**Recommendation:** C, with the owner table filled greedily by work and
+a second level that splits the few very large A strings by B strings;
+C1 for steps 1-3 (up to ~4e9), C2 with step 4. B is dropped.
