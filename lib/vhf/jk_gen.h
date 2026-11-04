@@ -33,7 +33,9 @@ typedef struct {
 
 /* the kets of GL_NL shell quartets of one ket type (jk_lane_gen.c): per ket
  * primitive pair t (canonical order) the scalars and the lane vectors */
-#define GL_NL 8
+#ifndef GL_NL
+#define GL_NL 8                 /* quartets per lane call (jk_multi.c JK_NL, jk_bench.c BL_NL the same) */
+#endif
 #define GL_MAXP 64
 typedef struct {
         int nk, nck, nci, ncj;

@@ -40,7 +40,10 @@ size_t SOCVHFgen_lane_wksize(const int *bas, int nbas, int nbuf);
 int SOCVHFgen_int2e_lanes(double *out, size_t ostride, int ish, int jsh, const int *ksh, const int *lsh, int nl,
                           const GenCtx *cx, double dmax, double prim_tol, double *wk,
                           const int *atm, const int *bas, const double *env);
-#define BL_NL 8                 /* = GL_NL of jk_gen.h */
+#ifndef GL_NL
+#define GL_NL 8
+#endif
+#define BL_NL GL_NL             /* = GL_NL of jk_gen.h */
 
 static inline void shell_pair(int ij, int *i, int *j)
 {
