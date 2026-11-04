@@ -95,6 +95,9 @@ p.add_argument('--basis-py', default=None,
 p.add_argument('--nsm-dir', default=None,
                help='dopant-atom CFOUR directory (config.py with BASIS_MAP/GENBAS, SOSFMO2C): <W_NSM> of CASCI root 0')
 p.add_argument('--grids-level', type=int, default=4)
+p.add_argument('--stop-after-scf', action='store_true', help='stop after the SCF (scf_<xc>.npz written)')
+p.add_argument('--thc-no-far', action='store_true', help='THCJK: no far-field fit of the CX pairs beyond the clusters')
+p.add_argument('--thc-isdf-cut', type=float, default=None, help='THCJK: relative eigenvalue cut of the ISDF Gram matrix')
 p.add_argument('--no-cahf', action='store_true', help='CASCI directly on the fractional-occupation orbitals')
 p.add_argument('--cahf-max-cycle', type=int, default=100)
 p.add_argument('--scf-conv-tol', type=float, default=1e-9, help='SCF energy threshold (large cells: DF noise ~1e-9)')
@@ -231,6 +234,10 @@ if args.jk == 'thc':
     jkobj = THCJK(cell, aux, alpha_c=args.thc_alpha_c, nmu_factor=args.thc_nmu, omega=args.omega,
                   nuc_zeta=spinor_scf.nuclear_zeta(cell), local_rcut=args.thc_local_rcut or None)
     jkobj.stream = True                       # streamed V/A: memory bounded by the budget
+    if args.thc_no_far:
+        jkobj.far_fit = False
+    if args.thc_isdf_cut:
+        jkobj.isdf_cut = args.thc_isdf_cut
     jkobj.verbose = root
     jkobj.comm = comm
     jkobj.build()
@@ -331,6 +338,9 @@ if root:
 w = addons.subspace_weights(mf.get_ovlp(), mf.mo_coeff, idx_all)
 log('SCF converged=%s E = %.10f (%.0f s, %d cycles); open-shell 4f weights %.3f..%.3f'
     % (mf.converged, e_scf, time.time() - t, mf.cycles, w[mf.open_shell_mo].min(), w[mf.open_shell_mo].max()))
+
+if args.stop_after_scf:
+    sys.exit(0)
 
 # 3. CAHF: average-of-configuration (ensemble of all 4f^n determinants) orbital
 # optimisation with the true Hamiltonian, from the fractional-occupation
