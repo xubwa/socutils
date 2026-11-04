@@ -37,7 +37,7 @@ installed pyscf's `libcvhf` the same way (without it `.x2cmp()` falls back to
 the full molecular J/K build). These `.so` are emitted **flat into `lib/`**.
 
 The **x2camf C library** (C99 translation of the C++ X2CAMF, Apache-2.0,
-repo `~/apps/x2camf-c`) and **zquatev** (BSD-2, sunqm/zquatev; pinned to the
+repo github.com/xubwa/x2camf-c) and **zquatev** (BSD-2, sunqm/zquatev; pinned to the
 user's fork xubwa/zquatev `cmake-blas-install`, which adds BLAS_LIBRARIES and
 install() to its CMake) are separate repositories, built with `ExternalProject`
 (like pyscf's libcint/libxc) with the same BLAS into `lib/deps/lib/`
@@ -111,7 +111,7 @@ two-electron corrections on) and only then require the `x2camf` integral backend
   the upstream pybind11 C++ reference. `backend.py` selects: env
   `X2CAMF_BACKEND=c|cpp`, `backend.set_backend()`, or `with backend.using('cpp'):`.
   Default `c` if built, else falls back to `cpp`. The **C sources** live in
-  their own repository (`~/apps/x2camf-c`, built into `lib/deps/lib` by
+  their own repository (github.com/xubwa/x2camf-c, built into `lib/deps/lib` by
   ExternalProject): a 1:1 translation of the upstream C++ (`x2c_int_sph*.c` ↔
   integrals, `x2c_dhf_sph*.c` ↔ Dirac-HF SCF; see its
   `csrc/TRANSLATION_CONVENTIONS.md`).

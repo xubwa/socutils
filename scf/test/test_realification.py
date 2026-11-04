@@ -76,8 +76,9 @@ class KnownValues(unittest.TestCase):
             self.assertAlmostEqual(abs(sb.apply_k(mol, op, u) - u).max(), 0, 9, name)
             fock = c.conj().T.dot(mf.get_fock()).dot(c)
             hcore = c.conj().T.dot(mf.get_hcore()).dot(c)
-            self.assertAlmostEqual(abs(fock.imag).max(), 0, 10, name)
-            self.assertAlmostEqual(abs(hcore.imag).max(), 0, 10, name)
+            # relative to the matrix: roundoff of threaded BLAS reaches 1e-10 for |h| ~ 50
+            self.assertLess(abs(fock.imag).max() / abs(fock).max(), 1e-11, name)
+            self.assertLess(abs(hcore.imag).max() / abs(hcore).max(), 1e-11, name)
             # a few occupied/virtual orbitals of each kind, all four indices
             idx = numpy.r_[mf.mo_occ.nonzero()[0][-6:], (mf.mo_occ == 0).nonzero()[0][:6]]
             eri = mol.ao2mo(c[:, idx], intor='int2e_spinor')
