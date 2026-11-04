@@ -126,7 +126,7 @@ set(X2CAMF_SOURCE_DIR "" CACHE PATH "local x2camf (C) source tree instead of clo
 option(BUILD_ZQUATEV "Download and build zquatev" ON)
 # sunqm/zquatev with the CMake change of xubwa/zquatev cmake-blas-install (PR pending)
 set(ZQUATEV_GIT "https://github.com/xubwa/zquatev.git" CACHE STRING "zquatev repository")
-set(ZQUATEV_VERSION "3567bfce82cf2fae23538dabcd60c0ecbb42ac0b" CACHE STRING "zquatev git tag or commit")
+set(ZQUATEV_VERSION "f715cc3d7e11780291224a8f66ef067469318f7c" CACHE STRING "zquatev git tag or commit")
 set(ZQUATEV_SOURCE_DIR "" CACHE PATH "local zquatev source tree instead of cloning")
 
 foreach(_ext X2CAMF ZQUATEV)
