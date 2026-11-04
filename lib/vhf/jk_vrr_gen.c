@@ -2,6 +2,11 @@
 /* included by jk_gen.c, which defines GPair, boys_n */
 #include "jk_vrr_f.h"
 
+#ifdef JKG_NO_TRAP
+#pragma GCC push_options
+#pragma GCC optimize ("no-trapping-math")
+#endif
+
 /* (00|00): 1 VRR nodes, 1 targets */
 static int jkg_0000(double *out, const size_t *st, const int *pos, const GPair *B, int bs,
                 const GPair *K, int ks, double cut, double fac, const double *tab, double *wk)
@@ -24671,6 +24676,10 @@ static int jkg_2222(double *out, const size_t *st, const int *pos, const GPair *
         }
         return 1;
 }
+
+#ifdef JKG_NO_TRAP
+#pragma GCC pop_options
+#endif
 
 typedef int (*jkg_fn)(double *, const size_t *, const int *, const GPair *, int, const GPair *,
                       int, double, double, const double *, double *);

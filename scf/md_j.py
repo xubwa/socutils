@@ -95,7 +95,9 @@ SCF_TOL = 1e-12         # quartet cutoff of the SCF builds (Gaussian's default 2
 TOL_PER_CONV = 1e-2     # ... and at most TOL_PER_CONV * mf.conv_tol, so that the screening (and its
                         # accumulation over incremental builds) stays below the convergence threshold
 J_BY_JK_MULTI_LMAX = 2  # J-only builds of bases with l <= this by jk_multi, not the MD J engine
-SCF_TOL_LOOSE = 1e-10   # two-pass: the cutoff while the density still moves
+SCF_TOL_LOOSE = 1e-9    # two-pass: the cutoff while the density still moves (1e-10 -> 1e-9: caffeine / C16H34
+                        # HF / PBE0 SCF 5 - 11 % faster, same cycles, |dE| < 1e-9; 1e-8 costs cycles)
+LOOSE_PER_CONV = 10     # ... and at most LOOSE_PER_CONV * mf.conv_tol (tight SCFs keep 1e-10)
 LOOSE_UNTIL = 1e-4      # two-pass: max |D - D_prev| below which the builds are tight
 
 
@@ -173,7 +175,8 @@ def apply(mf, incremental=True, two_pass=True):
             last['tight'] = not two_pass
         elif not last['tight'] and abs(ddm).max() < LOOSE_UNTIL:
             last['tight'] = True
-        tol = tight_tol() if last['tight'] else max(tight_tol(), SCF_TOL_LOOSE)
+        loose = min(SCF_TOL_LOOSE, LOOSE_PER_CONV * getattr(mf, 'conv_tol', 1e-9))
+        tol = tight_tol() if last['tight'] else max(tight_tol(), loose)
         if same and last['n'] < REBUILD_NSTEPS and last['tol'] == tol:
             vj1, vk1 = build(mol, ddm, hermi, with_j, with_k, omega, max_memory, tol)
             vj = last['vj'] + vj1 if with_j else None

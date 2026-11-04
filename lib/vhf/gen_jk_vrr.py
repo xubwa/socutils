@@ -539,6 +539,10 @@ def main():
     here = os.path.dirname(os.path.abspath(__file__))
     table = []
     fk = []
+    # -DJKG_NO_TRAP: the per-quartet kernels with no-trapping-math too (their F_m loops then
+    # vectorise, with gathers)
+    out += ['#ifdef JKG_NO_TRAP', '#pragma GCC push_options', '#pragma GCC optimize ("no-trapping-math")',
+            '#endif', '']
     for cls in classes():
         if max(cls) <= LMAX_ALL:
             code, fn, nt = kernel(*cls)
@@ -548,6 +552,7 @@ def main():
             code, fn, nt = kernel(*cls, storage='int')
             fk.append((code, fn))
         table.append((cls, fn, nt))
+    out += ['#ifdef JKG_NO_TRAP', '#pragma GCC pop_options', '#endif', '']
     # the f kernels: own translation units, balanced by size; prototypes in jk_vrr_f.h
     files = [[] for _ in range(NFFILES)]
     size = [0] * NFFILES
