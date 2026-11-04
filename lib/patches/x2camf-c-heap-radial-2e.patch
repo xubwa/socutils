@@ -1,0 +1,138 @@
+x2camf-c (github.com/xubwa/x2camf-c, at fcfbd13 = X2CAMF_VERSION in
+lib/CMakeLists.txt): move the radial_2e_list_J/K arrays of
+int_sph_get_h2e_JK_compact, int_sph_get_h2e_JK_direct and
+int_sph_get_h2e_JK_gauge_compact from stack VLAs to the heap.
+
+n^4 (L+1) 9 doubles per shell pair overflow the default 8 MB stack for
+uncontracted heavy-atom shells: at fcfbd13, atm_integrals segfaults for Br
+with Gaunt + gauge (unc-cc-pVDZ-DK) and for I already with Dirac-Coulomb
+(dyall-v2z).  With this patch all of them run; results are unchanged
+elsewhere.
+
+Apply in an x2camf-c checkout:   git apply x2camf-c-heap-radial-2e.patch
+then point X2CAMF_VERSION at the new commit.
+
+diff --git a/csrc/x2c_int_sph.c b/csrc/x2c_int_sph.c
+index 088d281..2c1da2f 100644
+--- a/csrc/x2c_int_sph.c
++++ b/csrc/x2c_int_sph.c
+@@ -274,10 +274,16 @@ int2eJK int_sph_get_h2e_JK_compact(const INT_SPH* self, const char* intType,
+         int size_tmp_p = (l_p == 0) ? 1 : 2, size_tmp_q = (l_q == 0) ? 1 : 2;
+         double array_angular_J[LmaxJ + 1][size_tmp_p][size_tmp_q],
+             array_angular_K[LmaxK + 1][size_tmp_p][size_tmp_q];
+-        double radial_2e_list_J[size_gtos_p * size_gtos_p * size_gtos_q *
+-                                size_gtos_q][LmaxJ + 1][3][3];
+-        double radial_2e_list_K[size_gtos_p * size_gtos_p * size_gtos_q *
+-                                size_gtos_q][LmaxK + 1][3][3];
++        /* heap, not a VLA: n^4 (L+1) 9 doubles overflow the default stack
++           for uncontracted heavy-atom shells (I: ~20 s primitives) */
++        double (*radial_2e_list_J)[LmaxJ + 1][3][3] =
++            malloc(sizeof(double[LmaxJ + 1][3][3]) *
++                   (size_t)(size_gtos_p * size_gtos_p * size_gtos_q *
++                            size_gtos_q));
++        double (*radial_2e_list_K)[LmaxK + 1][3][3] =
++            malloc(sizeof(double[LmaxK + 1][3][3]) *
++                   (size_t)(size_gtos_p * size_gtos_p * size_gtos_q *
++                            size_gtos_q));
+ 
+         #pragma omp parallel for
+         for (int tt = 0; tt < size_gtos_p * size_gtos_p * size_gtos_q *
+@@ -640,6 +646,8 @@ int2eJK int_sph_get_h2e_JK_compact(const INT_SPH* self, const char* intType,
+                 }
+             }
+         }
++        free(radial_2e_list_J);
++        free(radial_2e_list_K);
+         int_tmp1_q += (l_q == 0) ? 1 : 2;
+     }
+     int_tmp1_p += (l_p == 0) ? 1 : 2;
+@@ -715,10 +723,16 @@ void int_sph_get_h2e_JK_direct(INT_SPH* self, int2eJK* LLLL, int2eJK* SSLL,
+         int size_tmp_p = (l_p == 0) ? 1 : 2, size_tmp_q = (l_q == 0) ? 1 : 2;
+         double array_angular_J[LmaxJ + 1][size_tmp_p][size_tmp_q],
+             array_angular_K[LmaxK + 1][size_tmp_p][size_tmp_q];
+-        double radial_2e_list_J[size_gtos_p * size_gtos_p * size_gtos_q *
+-                                size_gtos_q][LmaxJ + 1][3][3];
+-        double radial_2e_list_K[size_gtos_p * size_gtos_p * size_gtos_q *
+-                                size_gtos_q][LmaxK + 1][3][3];
++        /* heap, not a VLA: n^4 (L+1) 9 doubles overflow the default stack
++           for uncontracted heavy-atom shells (I: ~20 s primitives) */
++        double (*radial_2e_list_J)[LmaxJ + 1][3][3] =
++            malloc(sizeof(double[LmaxJ + 1][3][3]) *
++                   (size_t)(size_gtos_p * size_gtos_p * size_gtos_q *
++                            size_gtos_q));
++        double (*radial_2e_list_K)[LmaxK + 1][3][3] =
++            malloc(sizeof(double[LmaxK + 1][3][3]) *
++                   (size_t)(size_gtos_p * size_gtos_p * size_gtos_q *
++                            size_gtos_q));
+ 
+         #pragma omp parallel for
+         for (int tt = 0; tt < size_gtos_p * size_gtos_p * size_gtos_q *
+@@ -1000,6 +1014,8 @@ void int_sph_get_h2e_JK_direct(INT_SPH* self, int2eJK* LLLL, int2eJK* SSLL,
+                 }
+             }
+         }
++        free(radial_2e_list_J);
++        free(radial_2e_list_K);
+         int_tmp1_q += (l_q == 0) ? 1 : 2;
+     }
+     int_tmp1_p += (l_p == 0) ? 1 : 2;
+diff --git a/csrc/x2c_int_sph_gauge.c b/csrc/x2c_int_sph_gauge.c
+index faf4655..0ff1af3 100644
+--- a/csrc/x2c_int_sph_gauge.c
++++ b/csrc/x2c_int_sph_gauge.c
+@@ -211,14 +211,32 @@ int2eJK int_sph_get_h2e_JK_gauge_compact(const INT_SPH* self,
+                array_angular_Kpm[LmaxK[2] - LminK[2] + 1][size_tmp_p][size_tmp_q];
+         double array_angular_Jpp[LmaxJ[3] - LminJ[3] + 1][size_tmp_p][size_tmp_q],
+                array_angular_Kpp[LmaxK[3] - LminK[3] + 1][size_tmp_p][size_tmp_q];
+-        double radial_2e_list_Jmm[LmaxJ[0] - LminJ[0] + 1][size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4];
+-        double radial_2e_list_Kmm[LmaxK[0] - LminK[0] + 1][size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4];
+-        double radial_2e_list_Jmp[LmaxJ[1] - LminJ[1] + 1][size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4];
+-        double radial_2e_list_Kmp[LmaxK[1] - LminK[1] + 1][size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4];
+-        double radial_2e_list_Jpm[LmaxJ[2] - LminJ[2] + 1][size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4];
+-        double radial_2e_list_Kpm[LmaxK[2] - LminK[2] + 1][size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4];
+-        double radial_2e_list_Jpp[LmaxJ[3] - LminJ[3] + 1][size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4];
+-        double radial_2e_list_Kpp[LmaxK[3] - LminK[3] + 1][size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4];
++        /* heap, not VLAs: (L+1) n^4 4 doubles each overflow the default stack
++           for uncontracted heavy-atom shells */
++        double (*radial_2e_list_Jmm)[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4] =
++            malloc(sizeof(double[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4]) *
++                   (size_t)(LmaxJ[0] - LminJ[0] + 1));
++        double (*radial_2e_list_Kmm)[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4] =
++            malloc(sizeof(double[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4]) *
++                   (size_t)(LmaxK[0] - LminK[0] + 1));
++        double (*radial_2e_list_Jmp)[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4] =
++            malloc(sizeof(double[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4]) *
++                   (size_t)(LmaxJ[1] - LminJ[1] + 1));
++        double (*radial_2e_list_Kmp)[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4] =
++            malloc(sizeof(double[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4]) *
++                   (size_t)(LmaxK[1] - LminK[1] + 1));
++        double (*radial_2e_list_Jpm)[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4] =
++            malloc(sizeof(double[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4]) *
++                   (size_t)(LmaxJ[2] - LminJ[2] + 1));
++        double (*radial_2e_list_Kpm)[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4] =
++            malloc(sizeof(double[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4]) *
++                   (size_t)(LmaxK[2] - LminK[2] + 1));
++        double (*radial_2e_list_Jpp)[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4] =
++            malloc(sizeof(double[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4]) *
++                   (size_t)(LmaxJ[3] - LminJ[3] + 1));
++        double (*radial_2e_list_Kpp)[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4] =
++            malloc(sizeof(double[size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q][4]) *
++                   (size_t)(LmaxK[3] - LminK[3] + 1));
+ 
+         #pragma omp parallel  for
+         for (int tt = 0; tt < size_gtos_p * size_gtos_p * size_gtos_q * size_gtos_q; tt++)
+@@ -713,6 +731,14 @@ int2eJK int_sph_get_h2e_JK_gauge_compact(const INT_SPH* self,
+                 }
+             }
+         }
++        free(radial_2e_list_Jmm);
++        free(radial_2e_list_Kmm);
++        free(radial_2e_list_Jmp);
++        free(radial_2e_list_Kmp);
++        free(radial_2e_list_Jpm);
++        free(radial_2e_list_Kpm);
++        free(radial_2e_list_Jpp);
++        free(radial_2e_list_Kpp);
+         int_tmp1_q += (l_q == 0) ? 1 : 2;
+     }
+     int_tmp1_p += (l_p == 0) ? 1 : 2;

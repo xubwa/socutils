@@ -491,6 +491,48 @@ def _mc_prescreen_pointers():
     return {key: ctypes.c_void_p(_ctypes.dlsym(libsocvhf._handle, name))
             for key, name in _MC_PRESCREEN.items()}
 
+def _projector_form(blocks, s, slices):
+    '''sum_K S_.K S_KK^-1 A_K S_KK^-1 S_K.  for atom blocks A_K on the AO indices slices[K]'''
+    out = np.zeros(s.shape, dtype=np.result_type(s, *blocks))
+    for a, idx in zip(blocks, slices):
+        sk = s[np.ix_(idx, idx)]
+        m = scipy.linalg.solve(sk, scipy.linalg.solve(sk, a).conj().T).conj().T
+        sxk = s[:, idx]
+        out += sxk @ m @ sxk.conj().T
+    return out
+
+def _onecenter_k(xmol, density_4c, density_2c, s4c, gaunt=False, breit=False, proj=False):
+    '''Atom-only exchange matrices sum_K K_K[D_K] of the atom-block densities
+    (4c: Coulomb + Gaunt/Breit exchange; 2c: Coulomb), as atom blocks or, with
+    proj, in projector form.  Atoms sharing a label share one atomic build.'''
+    from socutils.somf import onecenter_j
+    n2c = xmol.nao_2c()
+    sl = xmol.aoslice_2c_by_atom()
+    idx2 = [np.arange(p0, p1) for p0, p1 in sl[:, 2:4]]
+    idx4 = [np.concatenate([i, i + n2c]) for i in idx2]
+    cache, k4, k2 = {}, [], []
+    for ia, (i2, i4) in enumerate(zip(idx2, idx4)):
+        label = xmol._atom[ia][0]
+        if label not in cache:
+            am = onecenter_j.atom_mol(xmol, ia)
+            ma4 = scf.DHF(am)
+            ma4.verbose = 0
+            ma4.with_gaunt = gaunt
+            ma4.with_breit = breit
+            ka4 = ma4.get_jk(am, density_4c[np.ix_(i4, i4)])[1]
+            ka2 = spinor_hf.SCF(am).get_jk(am, density_2c[np.ix_(i2, i2)])[1]
+            cache[label] = (ka4, ka2)
+        k4.append(cache[label][0])
+        k2.append(cache[label][1])
+    if proj:
+        return (_projector_form(k4, s4c, idx4), _projector_form(k2, s4c[:n2c, :n2c], idx2))
+    vk_4c = np.zeros_like(s4c, dtype=complex)
+    vk_2c = np.zeros((n2c, n2c), dtype=complex)
+    for a4, a2, i2, i4 in zip(k4, k2, idx2, idx4):
+        vk_4c[np.ix_(i4, i4)] = a4
+        vk_2c[np.ix_(i2, i2)] = a2
+    return vk_4c, vk_2c
+
 def get_veff_mc(mf_4c, xmol, density_4c, density_2c):
     '''Multi-centre part of J-K for a superposition of atomic densities.
 
@@ -680,6 +722,43 @@ def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, n
         fock_4c = x2cobj.h4c + veff_4c
         x, st, r, h2c = x2c1e_hfw0_4cmat(fock_4c, s4c, xmol)
         x2cobj.veff_2c=veff_2c
+        h_x2c = to_2c(x, r, fock_4c) - veff_2c
+        x2cobj.h4c = h1e_4c + veff_4c
+        x2cobj.soc_matrix = h_x2c - to_2c(x, r, h1e_4c)
+    elif x2cobj.amf_type in ('x2cmp_1x', 'x2cmp_1x_proj'):
+        # x2cmp-1x (cf. Neese's SOMF(1X)): x2cmp with the exchange of the atomic
+        # densities kept one-centre,
+        #   F4 = h4 + J[sum_K D4_K] - sum_K K_K[D4_K],
+        # J the molecular Coulomb matrix of the superposed (spherical) atomic
+        # densities, K_K the atom-only exchange (Coulomb, + Gaunt/Breit when
+        # enabled).  The 2c counterpart J[sum_K D2_K] - sum_K K_K[D2_K] is
+        # subtracted as in 'x2cmp'.
+        #   x2cobj.proj_1x (or flavor 'x2cmp_1x_proj'): K_K in projector form
+        #       S_.K S_KK^-1 K_K S_KK^-1 S_K.   instead of the atom block;
+        #   x2cobj.j_1x = 'analytic' (default; exact, one-electron-type libcint
+        #       integrals, see onecenter_j) or 'direct' (molecular get_j).
+        from socutils.somf import onecenter_j
+        density_4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 11), atom_slices, xmol, n2c, True)
+        proj = x2cobj.amf_type == 'x2cmp_1x_proj' or getattr(x2cobj, 'proj_1x', False)
+        j_method = getattr(x2cobj, 'j_1x', 'analytic')
+        if j_method == 'analytic' and not onecenter_j.is_primitive(xmol):
+            j_method = 'direct'
+        if j_method == 'analytic':
+            vj_4c, vj_2c = onecenter_j.get_j(xmol, density_4c, density_2c)
+        elif j_method == 'direct':
+            # Gaunt/Breit add no direct term for these densities
+            mf_j = scf.DHF(xmol)
+            mf_j.verbose = 0
+            vj_4c = mf_j.get_j(xmol, density_4c)
+            vj_2c = spinor_hf.SCF(xmol).get_j(xmol, density_2c)
+        else:
+            raise ValueError('j_1x = %s; expected analytic or direct' % j_method)
+        vk_4c, vk_2c = _onecenter_k(xmol, density_4c, density_2c, s4c, gaunt, breit, proj)
+        veff_4c = vj_4c - vk_4c
+        veff_2c = vj_2c - vk_2c
+        fock_4c = x2cobj.h4c + veff_4c
+        x, st, r, h2c = x2c1e_hfw0_4cmat(fock_4c, s4c, xmol)
+        x2cobj.veff_2c = veff_2c
         h_x2c = to_2c(x, r, fock_4c) - veff_2c
         x2cobj.h4c = h1e_4c + veff_4c
         x2cobj.soc_matrix = h_x2c - to_2c(x, r, h1e_4c)
@@ -960,6 +1039,12 @@ class SpinorX2CMPHelper(x2c.x2c.SpinorX2CHelper):
         self.pcc = with_pcc
         self.aoc = with_aoc
         self.amf_type = x2cmp # use this class to implement various flavors of approximations.
+        # 'x2cmp-1x' spelling accepted for 'x2cmp_1x' (and 'x2cmp-1x-proj')
+        if isinstance(x2cmp, str) and x2cmp.lower().startswith('x2cmp-1x'):
+            self.amf_type = x2cmp.lower().replace('-', '_')
+        # 'x2cmp_1x' switches: one-centre K in projector form; J 'analytic' or 'direct'
+        self.proj_1x = False
+        self.j_1x = 'analytic'
         # take the one-centre part of J-K from the atomic calculations ('x2cmp' flavor)
         self.atomic_1c = True
         self.nucmod = mol.nucmod
@@ -1105,6 +1190,12 @@ class SpinOrbitalX2CMPHelper(x2c.x2c.SpinOrbitalX2CHelper):
         self.pcc = with_pcc
         self.aoc = with_aoc
         self.amf_type = x2cmp # use this class to implement various flavors of approximations.
+        # 'x2cmp-1x' spelling accepted for 'x2cmp_1x' (and 'x2cmp-1x-proj')
+        if isinstance(x2cmp, str) and x2cmp.lower().startswith('x2cmp-1x'):
+            self.amf_type = x2cmp.lower().replace('-', '_')
+        # 'x2cmp_1x' switches: one-centre K in projector form; J 'analytic' or 'direct'
+        self.proj_1x = False
+        self.j_1x = 'analytic'
         # take the one-centre part of J-K from the atomic calculations ('x2cmp' flavor)
         self.atomic_1c = True
         self.nucmod = mol.nucmod

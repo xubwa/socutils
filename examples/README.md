@@ -20,6 +20,7 @@ They use the canonical `.x2camf()` / `.x2cmp()` driver API.
 | `12-tddft_core_excitation.py` | core-excitation (XAS) spectra with spinor TDDFT |
 | `13-cis_mo_driven.py` | spinor CIS, MO-driven (`mf.TDA()` on HF) |
 | `14-avas.py` | AVAS automated active space selection (spinor) |
+| `15-x2cmp_1x.py` | the `x2cmp_1x` flavor (one-centre exchange) and its projector form |
 
 The `fci/` subfolder has examples for the spinor CI module (`socutils.fci`):
 
