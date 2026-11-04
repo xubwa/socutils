@@ -210,8 +210,11 @@ def _deriv2e_cart(mol, dm, groups, order, mode, tol, prim_tol):
     fname = 'SOCVHFhess2e_jk_cart' if order == 2 else 'SOCVHFgrad2e_jk_cart'
     if not libv or not hasattr(libv, fname):
         return None
+    # the generated kernels take the quartets of l <= 2, <= 4 contractions, total l <= GEN_GRAD_LMAX;
+    # the Rys kernel the others (with SOCVHFcart_set_skip_gen, also when the basis has f shells)
+    skip_gen = hasattr(libv, 'SOCVHFcart_set_skip_gen')
     gen = (order == 1 and mode == 0 and GRAD2E_GEN and hasattr(libv, 'SOCVHFgen_grad2e')
-           and mol._bas[:, gto.ANG_OF].max() <= 2 and mol._bas[:, gto.NCTR_OF].max() <= 4)
+           and (skip_gen or (mol._bas[:, gto.ANG_OF].max() <= 2 and mol._bas[:, gto.NCTR_OF].max() <= 4)))
     hgp = (not gen and order == 1 and GRAD2E_HGP and hasattr(libv, 'SOCVHFhgp_grad2e')
            and mol._bas[:, gto.NCTR_OF].max() <= 4)       # hgp.c MAXCTR
     if (mol._bas[:, gto.ANG_OF].max() > HESS2E_CART_LMAX
@@ -265,12 +268,17 @@ def _deriv2e_cart(mol, dm, groups, order, mode, tol, prim_tol):
         try:
             libv.SOCVHFgen_grad_set_lrange(ctypes.c_int(0), ctypes.c_int(GEN_GRAD_LMAX))
             libv.SOCVHFgen_grad2e(out.ctypes.data_as(ctypes.c_void_p), *args)
-            if GEN_GRAD_LMAX < 8:
+            if skip_gen:
+                libv.SOCVHFcart_set_skip_gen(ctypes.c_int(GEN_GRAD_LMAX))
+                getattr(libv, fname)(out2.ctypes.data_as(ctypes.c_void_p), *args)
+            elif GEN_GRAD_LMAX < 8:
                 libv.SOCVHFcart_set_lrange(ctypes.c_int(GEN_GRAD_LMAX + 1), ctypes.c_int(1000))
                 getattr(libv, fname)(out2.ctypes.data_as(ctypes.c_void_p), *args)
         finally:
             libv.SOCVHFgen_grad_set_lrange(ctypes.c_int(0), ctypes.c_int(1000))
             libv.SOCVHFcart_set_lrange(ctypes.c_int(0), ctypes.c_int(1000))
+            if skip_gen:
+                libv.SOCVHFcart_set_skip_gen(ctypes.c_int(-1))
         return out + out2
     if not hgp:
         getattr(libv, fname)(out.ctypes.data_as(ctypes.c_void_p), *args)

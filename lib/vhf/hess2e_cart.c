@@ -64,6 +64,11 @@ static inline double dmax2(double a, double b) { return a > b ? a : b; }
 /* quartets with l_i + l_j + l_k + l_l in [cart_lmin, cart_lmax] only (default all) */
 static int cart_lmin = 0, cart_lmax = 1000;
 void SOCVHFcart_set_lrange(int lo, int hi) { cart_lmin = lo; cart_lmax = hi; }
+/* skip the quartets the generated gradient kernels take (jk_gen.c SOCVHFgen_grad2e: every l <= 2,
+ * contractions <= 4, total l <= skip_lmax); -1: none.  Bases with a few f shells then run the
+ * generated kernels on all other quartets. */
+static int cart_skip_gen = -1;
+void SOCVHFcart_set_skip_gen(int lmax) { cart_skip_gen = lmax; }
 
 static inline void shell_pair(int ij, int *i, int *j)
 {
@@ -710,6 +715,9 @@ static void deriv2e_drv(int order, double *hess, int mode, int ngroup, double *j
                                 fac *= common_fac_sp(l[s]);
                         }
                         if (l[0] + l[1] + l[2] + l[3] < cart_lmin || l[0] + l[1] + l[2] + l[3] > cart_lmax) continue;
+                        if (cart_skip_gen >= 0 && l[0] + l[1] + l[2] + l[3] <= cart_skip_gen
+                            && l[0] <= 2 && l[1] <= 2 && l[2] <= 2 && l[3] <= 2
+                            && nctr[0] <= 4 && nctr[1] <= 4 && nctr[2] <= 4 && nctr[3] <= 4) continue;
                         if (ish == jsh) fac *= .5;
                         if (ksh == lsh) fac *= .5;
                         if (ij == kl) fac *= .5;

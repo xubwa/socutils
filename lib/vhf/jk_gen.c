@@ -470,7 +470,9 @@ void SOCVHFgen_grad2e(double *grad, int mode, int ngroup, double *jfac, double *
                       double *dm, double *qcond, double *dcond, double tol, double prim_tol,
                       int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env)
 {
-        if (mode != 0 || ngroup > GG_MAXGROUP || !SOCVHFgen_grad_takes(bas, nbas)) return;
+        /* quartets with a shell of l > GGD_LMAX or more than G_MAXCTR contractions are skipped
+         * (the Rys kernel's, hess2e_cart.c SOCVHFcart_set_skip_gen) */
+        if (mode != 0 || ngroup > GG_MAXGROUP) return;
         const size_t nao = ao_loc[nbas];
         const size_t nh1 = (size_t)natm * 3, nh = nh1 * ngroup;
         const int npair = nbas * (nbas + 1) / 2;
@@ -520,6 +522,9 @@ void SOCVHFgen_grad2e(double *grad, int mode, int ngroup, double *jfac, double *
                         }
                         const int L = l[0] + l[1] + l[2] + l[3];
                         if (L < gen_grad_lmin || L > gen_grad_lmax || L > GGD_LSUM_MAX) continue;
+                        if (l[0] > GGD_LMAX || l[1] > GGD_LMAX || l[2] > GGD_LMAX || l[3] > GGD_LMAX
+                            || nctr[0] > G_MAXCTR || nctr[1] > G_MAXCTR || nctr[2] > G_MAXCTR
+                            || nctr[3] > G_MAXCTR) continue;
                         if (ish == jsh) fac *= .5;
                         if (ksh == lsh) fac *= .5;
                         if (ij == kl) fac *= .5;

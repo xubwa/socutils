@@ -154,11 +154,14 @@ def _xc_grad_fused(libdft, ni, mol, grids, xc_code, dm, xctype):
 
 
 def _gen_grad_usable(mol):
-    '''the generated first-derivative kernels cover this basis (l <= 2, <= 4 contractions)'''
+    '''the generated first-derivative kernels run for this basis: every shell l <= 2 and <= 4
+    contractions, or any basis when the Rys kernel can skip the generated quartets (the f shells'
+    quartets to Rys, the rest generated, J and K in one pass)'''
     from socutils.hessian import ghf as ghf_hess
     libv = ghf_hess._load_socvhf()
     return (hess_fast.GRAD2E_GEN and bool(libv) and hasattr(libv, 'SOCVHFgen_grad2e')
-            and mol._bas[:, 1].max() <= 2 and mol._bas[:, 3].max() <= 4)
+            and (hasattr(libv, 'SOCVHFcart_set_skip_gen')
+                 or (mol._bas[:, 1].max() <= 2 and mol._bas[:, 3].max() <= 4)))
 
 
 def _fast_terms(grad, mol, dm):
