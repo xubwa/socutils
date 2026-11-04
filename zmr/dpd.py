@@ -465,6 +465,10 @@ def einsum(spec, a, b, out=None, alpha=1.0, split=None):
     return out
 
 
+# [number, bytes] of the expansions of Views to dense arrays (a diagnostic)
+DENSIFIED = [0, 0]
+
+
 class View:
     '''t with its legs permuted (axis k of the view is leg perm[k] of t) and optionally
     complex conjugated, without a copy; numpy.asarray gives the dense array.'''
@@ -495,6 +499,9 @@ class View:
         return View(self.t, self.perm, not self.conjugated)
 
     def __array__(self, dtype=None, copy=None):
+        # counted: an expansion is a fallback that costs memory and time
+        DENSIFIED[0] += 1
+        DENSIFIED[1] += 16 * self.size
         d = self.t.to_dense().transpose(self.perm)
         d = d.conj() if self.conjugated else d
         return numpy.ascontiguousarray(d, dtype=dtype)

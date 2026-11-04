@@ -273,8 +273,8 @@ def _box_plan(aown, con, bown, sa, sb, secs, group):
     the contracted multi-index, the boxes of a (rows of irrep conj(sig)) and of b
     (columns of irrep conj(tau)) as rectangles of packed matrices, and the boxes of the
     result.  Every box: (sector indices, starts, sizes, offset, leading dimension).
-    None if the orbitals of a letter are not grouped by sector; "dense" if the blocks
-    do not save enough work."""
+    None if the orbitals of a letter are not grouped by sector.  plan["dense"]: the
+    blocks save too little work, the plan is then used only for DPD operands."""
     runs = {}
     for l in aown + con + bown:
         r = _runs(secs[l])
@@ -324,8 +324,8 @@ def _box_plan(aown, con, bown, sa, sb, secs, group):
     work = sum(m * k * n for _, _, _, m, k, n in plan["gemm"])
     dense = (size([len(secs[l]) for l in aown]) * size([len(secs[l]) for l in con])
              * size([len(secs[l]) for l in bown]))
-    if work > SYMMETRY_MAX_FRACTION * dense:
-        return "dense"
+    # blocks that save too little work: used only for operands in the DPD layout
+    plan["dense"] = work > SYMMETRY_MAX_FRACTION * dense
     plan["size"] = dict(offs)
     return plan
 
@@ -533,15 +533,17 @@ def _pair(asub, a, bsub, b, keepers, sa=None, sb=None, secs=None, group=None, pl
                                                                   for x in con])))
                                  * b.size >= SYMMETRY_MIN_SIZE)
     dense = False
+    # operands in the DPD layout are never expanded: their products always go by blocks
+    views = isinstance(a, dpd.View) or isinstance(b, dpd.View)
     if (group is not None and sa is not None and sb is not None and plans is not None
-            and big):
+            and (big or views)):
         key = ("box", tuple(aown), tuple(con), tuple(bown),
                tuple(sorted(sa.items())), tuple(sorted(sb.items())),
                tuple(spaces[x] for x in aown + con + bown))
         if key not in plans:
             plans[key] = _box_plan(aown, con, bown, sa, sb, secs, group)
         plan = plans[key]
-        if isinstance(plan, dict):
+        if isinstance(plan, dict) and (views or not plan["dense"]):
             av = a.transpose(pa) if isinstance(a, dpd.View) else \
                 numpy.asarray(a, dtype=numpy.complex128).transpose(pa)
             bv = b.transpose(pb) if isinstance(b, dpd.View) else \
@@ -549,7 +551,7 @@ def _pair(asub, a, bsub, b, keepers, sa=None, sb=None, secs=None, group=None, pl
             shape = av.shape[:len(aown)] + bv.shape[len(con):]
             r = _box_product(av, bv, shape, len(aown), plan, packed=packed)
             return "".join(aown + bown), r, _combine_signs(sa, sb, con)
-        dense = plan == "dense"
+        dense = isinstance(plan, dict) and plan["dense"]
     a = numpy.asarray(a) if isinstance(a, dpd.View) else a
     b = numpy.asarray(b) if isinstance(b, dpd.View) else b
     at = a if (pa == list(range(a.ndim)) and _is_plain(a)) else kernels.transposed(a, pa)

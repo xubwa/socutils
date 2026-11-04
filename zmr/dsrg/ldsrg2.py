@@ -463,8 +463,9 @@ class LDSRG2:
                                    for x in b.values()) / 1e9
                 cache = getattr(self.V, 'cache', {})
                 self.log('  commutator %2d: memory %7.0f MB; C2 %.1f GB, H2 %.1f GB, T2 %.1f GB, '
-                         'integral cache %.1f GB' % (n, lib.current_memory()[0], gb(c2), gb(h2),
-                                                     gb(t2), gb(cache)))
+                         'integral cache %.1f GB; dense expansions of DPD tensors %d (%.1f GB)'
+                         % (n, lib.current_memory()[0], gb(c2), gb(h2), gb(t2), gb(cache),
+                            dpd.DENSIFIED[0], dpd.DENSIFIED[1] / 1e9))
             o1, o2 = c1, c2
             if norm < comm_tol:
                 break
