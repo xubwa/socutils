@@ -121,7 +121,7 @@ endif()
 
 option(BUILD_X2CAMF "Download and build the x2camf C library" ON)
 set(X2CAMF_GIT "https://github.com/xubwa/x2camf-c.git" CACHE STRING "x2camf (C) repository")
-set(X2CAMF_VERSION "fcfbd1372a053f61da93b325606b384b1432eac0" CACHE STRING "x2camf (C) git tag or commit")
+set(X2CAMF_VERSION "a9b57cc8c03fe6a161b30b54af5fad56ea1150f4" CACHE STRING "x2camf (C) git tag or commit")
 set(X2CAMF_SOURCE_DIR "" CACHE PATH "local x2camf (C) source tree instead of cloning")
 option(BUILD_ZQUATEV "Download and build zquatev" ON)
 # sunqm/zquatev with the CMake change of xubwa/zquatev cmake-blas-install (PR pending)
