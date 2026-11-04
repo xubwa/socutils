@@ -262,9 +262,9 @@ int SOCVHFgen_int2e(double *out, const int *shls, const GenCtx *cx, double dmax,
         const double cut = prim_tol / (fac * B->bmax * dmax * B->nc * K->nc);
         /* role (A, B, C, D) -> the kernel's slot (bra i, bra j, ket i, ket j) -> position in out */
         const int pos[4] = {bs ? 1 : 0, bs ? 0 : 1, ks ? 3 : 2, ks ? 2 : 3};
-        const int sh = swap ? 2 : 0;
-        const size_t st[4] = {stp[(pos[0] + sh) & 3], stp[(pos[1] + sh) & 3],
-                              stp[(pos[2] + sh) & 3], stp[(pos[3] + sh) & 3]};
+        const int sw = swap ? 2 : 0;
+        const size_t st[4] = {stp[(pos[0] + sw) & 3], stp[(pos[1] + sw) & 3],
+                              stp[(pos[2] + sw) & 3], stp[(pos[3] + sw) & 3]};
         (void)bas;
         if (jkg_table[la][lb][lc][ld] == NULL) return 0;        /* not generated: callers check SOCVHFgen_takes */
         return jkg_table[la][lb][lc][ld](out, st, pos, B, bs, K, ks, cut, fac, cx->tab, wk);
@@ -549,12 +549,22 @@ void SOCVHFgen_grad2e(double *grad, int mode, int ngroup, double *jfac, double *
                                 }
                         }
                         if (ddmax == 0) continue;
+                        /* the pair of the higher l as the bra: its two derivative streams (A, B) share
+                         * the raised bra recursion, the ket's one (C) is then the cheap one (VRR of
+                         * (21|00) 575 operations against 938 for (00|21)) */
+                        const int swap = K->li + K->lj > B->li + B->lj;
+                        if (swap) { const GPair *t_ = B; B = K; K = t_; }
+                        const int sw = swap ? 2 : 0;
                         const int bs = B->li < B->lj, ks = K->li < K->lj;
                         const int la = bs ? B->lj : B->li, lb = bs ? B->li : B->lj;
                         const int lc = ks ? K->lj : K->li, ld = ks ? K->li : K->lj;
+                        /* role -> the kernel's slot (bra i, bra j, ket i, ket j); slot -> position (slot + sw) & 3 */
                         const int pos[4] = {bs ? 1 : 0, bs ? 0 : 1, ks ? 3 : 2, ks ? 2 : 3};
                         const size_t stp[4] = {(size_t)NJ * NK * NL, (size_t)NK * NL, (size_t)NL, 1};
-                        const size_t ds[4] = {stp[pos[0]], stp[pos[1]], stp[pos[2]], stp[pos[3]]};
+                        const size_t ds[4] = {stp[(pos[0] + sw) & 3], stp[(pos[1] + sw) & 3],
+                                              stp[(pos[2] + sw) & 3], stp[(pos[3] + sw) & 3]};
+                        const int ra[4] = {at[(pos[0] + sw) & 3], at[(pos[1] + sw) & 3],
+                                           at[(pos[2] + sw) & 3], at[(pos[3] + sw) & 3]};
                         /* derivative factors: 2 alpha and the extra power of the raised shell */
                         const double der = (1 + 2 * B->amax) * (1 + 2 * K->amax);
                         const double cut = prim_tol / (TWO_PI52 * B->bmax * ddmax * B->nc * K->nc * der);
@@ -569,10 +579,10 @@ void SOCVHFgen_grad2e(double *grad, int mode, int ngroup, double *jfac, double *
                                         const double gA = TWO_PI52 * sum[g * 9 + x * 3];
                                         const double gB = TWO_PI52 * sum[g * 9 + x * 3 + 1];
                                         const double gC = TWO_PI52 * sum[g * 9 + x * 3 + 2];
-                                        hg[at[pos[0]] * 3 + x] += gA;
-                                        hg[at[pos[1]] * 3 + x] += gB;
-                                        hg[at[pos[2]] * 3 + x] += gC;
-                                        hg[at[pos[3]] * 3 + x] -= gA + gB + gC;
+                                        hg[ra[0] * 3 + x] += gA;
+                                        hg[ra[1] * 3 + x] += gB;
+                                        hg[ra[2] * 3 + x] += gC;
+                                        hg[ra[3] * 3 + x] -= gA + gB + gC;
                                 }
                         }
                 }
