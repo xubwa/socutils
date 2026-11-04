@@ -63,11 +63,14 @@ def _load_library():
 
 _lib = _load_library()
 
-_lib.zquatev_eigh.restype = ctypes.c_int
-_lib.zquatev_eigh.argtypes = [
+# int eigh(complex<double>* D, double* eig, int n2, int ld2) of
+# sunqm/zquatev src/wrapper.cc; eig gets the n2/2 distinct eigenvalues
+_lib.eigh.restype = ctypes.c_int
+_lib.eigh.argtypes = [
+    ctypes.c_void_p,  # complex128 buffer (column major), in/out
+    ctypes.c_void_p,  # eigenvalues, out
     ctypes.c_int,
-    ctypes.POINTER(ctypes.c_double),  # complex128 buffer, in/out
-    ctypes.POINTER(ctypes.c_double),  # eigenvalues, out
+    ctypes.c_int,
 ]
 
 
@@ -77,10 +80,8 @@ def eigh(mat, iop=0):
     fmat = numpy.asarray(mat).T.copy()          # column-major layout of mat
     fmat = numpy.ascontiguousarray(fmat, dtype=numpy.complex128)
     eigs = numpy.zeros(2 * n, dtype=numpy.float64)
-    info = _lib.zquatev_eigh(
-        ctypes.c_int(2 * n),
-        fmat.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
-        eigs.ctypes.data_as(ctypes.POINTER(ctypes.c_double)))
+    info = _lib.eigh(fmat.ctypes.data, eigs.ctypes.data, 2 * n, 2 * n)
+    eigs[n:] = eigs[:n]
     if info:
         raise RuntimeError('zquatev failed (info=%d)' % info)
     fmat = fmat.T.copy()                         # back to C order

@@ -111,6 +111,7 @@ set(_ext_cmake_args
   -DCMAKE_BUILD_TYPE=Release
   -DCMAKE_C_COMPILER:STRING=${CMAKE_C_COMPILER}
   -DCMAKE_CXX_COMPILER:STRING=${CMAKE_CXX_COMPILER}
+  "-DCMAKE_CXX_FLAGS:STRING=${CMAKE_CXX_FLAGS}"
   -DCMAKE_INSTALL_PREFIX:PATH=<INSTALL_DIR>
   -DCMAKE_INSTALL_LIBDIR:PATH=lib
   -DBLAS_LIBRARIES=${_blas_pipe})
@@ -123,8 +124,9 @@ set(X2CAMF_GIT "/home/xwang405/apps/x2camf-c" CACHE STRING "x2camf (C) repositor
 set(X2CAMF_VERSION "master" CACHE STRING "x2camf (C) git tag or commit")
 set(X2CAMF_SOURCE_DIR "" CACHE PATH "local x2camf (C) source tree instead of cloning")
 option(BUILD_ZQUATEV "Download and build zquatev" ON)
-set(ZQUATEV_GIT "/home/xwang405/apps/zquatev-py" CACHE STRING "zquatev repository")
-set(ZQUATEV_VERSION "master" CACHE STRING "zquatev git tag or commit")
+# sunqm/zquatev with the CMake change of xubwa/zquatev cmake-blas-install (PR pending)
+set(ZQUATEV_GIT "https://github.com/xubwa/zquatev.git" CACHE STRING "zquatev repository")
+set(ZQUATEV_VERSION "3567bfce82cf2fae23538dabcd60c0ecbb42ac0b" CACHE STRING "zquatev git tag or commit")
 set(ZQUATEV_SOURCE_DIR "" CACHE PATH "local zquatev source tree instead of cloning")
 
 foreach(_ext X2CAMF ZQUATEV)
