@@ -195,7 +195,7 @@ void SOCVHFjk_set_jonly(int on) { jk_use_jonly = on; }
 /* the quartets of l <= 2 with jk_lane_lmin <= L <= jk_gen_lmax and at most jk_lane_np primitive
  * quartets (product of the shells' nprim) go to the lanes (on 0: never); the per-quartet kernels
  * vectorise over the bra primitives and screen them, better with many (bench_jk_class.py) */
-static int jk_use_lanes = 1, jk_lane_lmin = 2, jk_lane_np = 4;
+static int jk_use_lanes = 1, jk_lane_lmin = 2, jk_lane_np = 16;
 void SOCVHFjk_set_lanes(int on, int lmin) { jk_use_lanes = on; jk_lane_lmin = lmin; }
 void SOCVHFjk_set_lane_np(int np) { jk_lane_np = np; }
 
