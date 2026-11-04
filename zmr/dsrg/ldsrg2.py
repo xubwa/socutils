@@ -436,7 +436,10 @@ class LDSRG2:
         hh_pp = set(self._t2_labels) | {'aaaa'}
         h0 = 0.0
         h1 = cm.Blocks({k: v.copy() for k, v in self.F.items()})
-        h2 = cm.Blocks({lab: numpy.array(cm.materialize(self.V.get(lab))) for lab in hh_pp})
+        # contiguous copies: never the cached integral blocks themselves (h2 is updated in
+        # place), and C order (numpy.array keeps the layout of a transposed view)
+        h2 = cm.Blocks({lab: numpy.array(cm.materialize(self.V.get(lab)), dtype=numpy.complex128,
+                                         order='C', copy=True) for lab in hh_pp})
         o1, o2 = self.F, self.V
         self.comm_norms = []
         for n in range(1, self.max_comm + 1):
@@ -452,7 +455,7 @@ class LDSRG2:
             for lab in hh_pp:
                 c = c2.get(lab)
                 if c is not None:
-                    h2[lab] += c[1] * numpy.asarray(c[0])
+                    cm.add_to_dense(h2[lab], c[0], c[1])
             data = lambda v: v.data if isinstance(v, dpd.Tensor) else v
             norm = numpy.sqrt(c1.norm2() + sum(
                 (1 + (k[0] != k[1])) * (1 + (k[2] != k[3])) * numpy.vdot(data(v), data(v)).real

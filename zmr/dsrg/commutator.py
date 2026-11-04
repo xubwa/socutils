@@ -394,6 +394,37 @@ def _view_arrays(structure, perm, boxes):
     return arrays, len(keep) == len(boxes)
 
 
+def add_to_dense(dense, x, alpha=1.0):
+    """dense += alpha x for x a dpd.View (or Tensor) on its blocks, without expanding x:
+    the blocks are read into a packed buffer and added to the boxes of dense (a
+    contiguous array with the shape of x)."""
+    if isinstance(x, dpd.Tensor):
+        x = dpd.View(x)
+    if not isinstance(x, dpd.View):
+        dense += alpha * x
+        return dense
+    pb = dpd._permuted_boxes(x.t, x.perm)
+    if not pb:
+        return dense
+    legs = [x.t.legs[k] for k in x.perm]
+    stride = [st // dense.itemsize for st in dense.strides]
+    keys = list(pb)
+    dims = [pb[k][2] for k in keys]
+    base = [sum(int(legs[j].offsets[k[j]]) * stride[j] for j in range(len(k))) for k in keys]
+    doff, off = [], 0
+    for d in dims:
+        doff.append(off)
+        off += int(numpy.prod(d, dtype=numpy.int64))
+    ld = [1] * len(keys)
+    buf = numpy.empty(off, dtype=numpy.complex128)
+    rank = len(legs)
+    kernels.box_copy_strided(0, x.t.data, buf, rank, [pb[k][0] for k in keys],
+                             [pb[k][1] for k in keys], dims, doff, ld, conj=x.conjugated)
+    kernels.box_copy_strided(2, dense, buf, rank, base, [stride] * len(keys), dims, doff, ld,
+                             alpha=alpha)
+    return dense
+
+
 class _Packed:
     """The blocks of a product as rectangles of a packed buffer (the boxes of the result
     in the plan, axes aown + bown), not expanded."""
