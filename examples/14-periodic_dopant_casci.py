@@ -100,6 +100,8 @@ p.add_argument('--thc-symm-grid', action='store_true',
                help='THCJK: uniform grid and interpolation points with the space group symmetry (whole orbits); '
                     'the default when the cell has symmetry')
 p.add_argument('--thc-no-symm-grid', action='store_true', help='THCJK: no symmetric grid / points')
+p.add_argument('--thc-no-symm-pivots', action='store_true',
+               help='THCJK: symmetric grid but the plain (non-orbit) point selection (tests)')
 p.add_argument('--thc-no-far', action='store_true', help='THCJK: no far-field fit of the CX pairs beyond the clusters')
 p.add_argument('--thc-isdf-cut', type=float, default=None, help='THCJK: relative eigenvalue cut of the ISDF Gram matrix')
 p.add_argument('--no-cahf', action='store_true', help='CASCI directly on the fractional-occupation orbitals')
@@ -244,6 +246,8 @@ if args.jk == 'thc':
         jkobj.symm_grid = True
     if args.thc_no_symm_grid:
         jkobj.symm_grid = False
+    if args.thc_no_symm_pivots:
+        jkobj.symm_pivots = False
     if args.thc_isdf_cut:
         jkobj.isdf_cut = args.thc_isdf_cut
     jkobj.verbose = root

@@ -661,7 +661,7 @@ class THCExchange:
             cc = cell.get_uniform_grids(mc)
             phic = cell.pbc_eval_gto('GTOval_sph', cc)[:, self.smooth]
             f = pivots_blocked if self.blocked_pivots else pivots
-            if getattr(self, 'symm_grid', False):
+            if getattr(self, 'symm_grid', False) and getattr(self, 'symm_pivots', True):
                 orb, mem = grid_orbits(mc, self._ops[:2])
                 f = lambda ph, k_: pivots_orbits(ph, k_, orb, mem)
             kmax = min(len(cc), int(getattr(self, 'kmax_factor', kmax_factor) * len(self.smooth)))
@@ -1831,7 +1831,7 @@ class THCJK:
         self.th.stream_gb = getattr(self, 'stream_gb', None)       # GB; None: from the memory budget
         self.th.stream_max_blocks = getattr(self, 'stream_max_blocks', 1 << 30)
         self.th.piv_file = getattr(self, 'piv_file', None)
-        for k in ('coarsen', 'blocked_pivots', 'far_fit', 'phi_ondemand', 'symm_grid'):   # options, if set
+        for k in ('coarsen', 'blocked_pivots', 'far_fit', 'phi_ondemand', 'symm_grid', 'symm_pivots'):   # if set
             if hasattr(self, k):
                 setattr(self.th, k, getattr(self, k))
         rc = getattr(self, 'exx_trunc', None)                         # smoothed truncated Coulomb exchange
