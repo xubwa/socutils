@@ -26,20 +26,21 @@ static int jkg_0000(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double f0 = tab[o + 0] + dt * (1. / 1) * (tab[o + 1] + dt * (1. / 2) * (tab[o + 2] + dt * (1. / 3) * (tab[o + 3] + dt * (1. / 4) * (tab[o + 4] + dt * (1. / 5) * (tab[o + 5] + dt * (1. / 6) * (tab[o + 6]))))));
-                        const double F0 = inr ? f0 : a0;
-                        FT[0 * nb + b] = F0;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 0] + dt * (1. / 1) * (tab[o + 1] + dt * (1. / 2) * (tab[o + 2] + dt * (1. / 3) * (tab[o + 3] + dt * (1. / 4) * (tab[o + 4] + dt * (1. / 5) * (tab[o + 5] + dt * (1. / 6) * (tab[o + 6]))))));
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -118,26 +119,27 @@ static int jkg_0010(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double f1 = tab[o + 1] + dt * (1. / 1) * (tab[o + 2] + dt * (1. / 2) * (tab[o + 3] + dt * (1. / 3) * (tab[o + 4] + dt * (1. / 4) * (tab[o + 5] + dt * (1. / 5) * (tab[o + 6] + dt * (1. / 6) * (tab[o + 7]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 1] + dt * (1. / 1) * (tab[o + 2] + dt * (1. / 2) * (tab[o + 3] + dt * (1. / 3) * (tab[o + 4] + dt * (1. / 4) * (tab[o + 5] + dt * (1. / 5) * (tab[o + 6] + dt * (1. / 6) * (tab[o + 7]))))));
+                                FT[1 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -227,30 +229,31 @@ static int jkg_0011(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double f2 = tab[o + 2] + dt * (1. / 1) * (tab[o + 3] + dt * (1. / 2) * (tab[o + 4] + dt * (1. / 3) * (tab[o + 5] + dt * (1. / 4) * (tab[o + 6] + dt * (1. / 5) * (tab[o + 7] + dt * (1. / 6) * (tab[o + 8]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 2] + dt * (1. / 1) * (tab[o + 3] + dt * (1. / 2) * (tab[o + 4] + dt * (1. / 3) * (tab[o + 5] + dt * (1. / 4) * (tab[o + 6] + dt * (1. / 5) * (tab[o + 7] + dt * (1. / 6) * (tab[o + 8]))))));
+                                FT[2 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -385,30 +388,31 @@ static int jkg_0020(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double f2 = tab[o + 2] + dt * (1. / 1) * (tab[o + 3] + dt * (1. / 2) * (tab[o + 4] + dt * (1. / 3) * (tab[o + 5] + dt * (1. / 4) * (tab[o + 6] + dt * (1. / 5) * (tab[o + 7] + dt * (1. / 6) * (tab[o + 8]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 2] + dt * (1. / 1) * (tab[o + 3] + dt * (1. / 2) * (tab[o + 4] + dt * (1. / 3) * (tab[o + 5] + dt * (1. / 4) * (tab[o + 6] + dt * (1. / 5) * (tab[o + 7] + dt * (1. / 6) * (tab[o + 8]))))));
+                                FT[2 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -517,34 +521,35 @@ static int jkg_0021(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double f3 = tab[o + 3] + dt * (1. / 1) * (tab[o + 4] + dt * (1. / 2) * (tab[o + 5] + dt * (1. / 3) * (tab[o + 6] + dt * (1. / 4) * (tab[o + 7] + dt * (1. / 5) * (tab[o + 8] + dt * (1. / 6) * (tab[o + 9]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 3] + dt * (1. / 1) * (tab[o + 4] + dt * (1. / 2) * (tab[o + 5] + dt * (1. / 3) * (tab[o + 6] + dt * (1. / 4) * (tab[o + 7] + dt * (1. / 5) * (tab[o + 8] + dt * (1. / 6) * (tab[o + 9]))))));
+                                FT[3 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -736,38 +741,39 @@ static int jkg_0022(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double f4 = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
+                                FT[4 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -1154,26 +1160,27 @@ static int jkg_1000(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double f1 = tab[o + 1] + dt * (1. / 1) * (tab[o + 2] + dt * (1. / 2) * (tab[o + 3] + dt * (1. / 3) * (tab[o + 4] + dt * (1. / 4) * (tab[o + 5] + dt * (1. / 5) * (tab[o + 6] + dt * (1. / 6) * (tab[o + 7]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 1] + dt * (1. / 1) * (tab[o + 2] + dt * (1. / 2) * (tab[o + 3] + dt * (1. / 3) * (tab[o + 4] + dt * (1. / 4) * (tab[o + 5] + dt * (1. / 5) * (tab[o + 6] + dt * (1. / 6) * (tab[o + 7]))))));
+                                FT[1 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -1261,30 +1268,31 @@ static int jkg_1010(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double f2 = tab[o + 2] + dt * (1. / 1) * (tab[o + 3] + dt * (1. / 2) * (tab[o + 4] + dt * (1. / 3) * (tab[o + 5] + dt * (1. / 4) * (tab[o + 6] + dt * (1. / 5) * (tab[o + 7] + dt * (1. / 6) * (tab[o + 8]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 2] + dt * (1. / 1) * (tab[o + 3] + dt * (1. / 2) * (tab[o + 4] + dt * (1. / 3) * (tab[o + 5] + dt * (1. / 4) * (tab[o + 6] + dt * (1. / 5) * (tab[o + 7] + dt * (1. / 6) * (tab[o + 8]))))));
+                                FT[2 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -1400,34 +1408,35 @@ static int jkg_1011(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double f3 = tab[o + 3] + dt * (1. / 1) * (tab[o + 4] + dt * (1. / 2) * (tab[o + 5] + dt * (1. / 3) * (tab[o + 6] + dt * (1. / 4) * (tab[o + 7] + dt * (1. / 5) * (tab[o + 8] + dt * (1. / 6) * (tab[o + 9]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 3] + dt * (1. / 1) * (tab[o + 4] + dt * (1. / 2) * (tab[o + 5] + dt * (1. / 3) * (tab[o + 6] + dt * (1. / 4) * (tab[o + 7] + dt * (1. / 5) * (tab[o + 8] + dt * (1. / 6) * (tab[o + 9]))))));
+                                FT[3 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -1636,34 +1645,35 @@ static int jkg_1020(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double f3 = tab[o + 3] + dt * (1. / 1) * (tab[o + 4] + dt * (1. / 2) * (tab[o + 5] + dt * (1. / 3) * (tab[o + 6] + dt * (1. / 4) * (tab[o + 7] + dt * (1. / 5) * (tab[o + 8] + dt * (1. / 6) * (tab[o + 9]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 3] + dt * (1. / 1) * (tab[o + 4] + dt * (1. / 2) * (tab[o + 5] + dt * (1. / 3) * (tab[o + 6] + dt * (1. / 4) * (tab[o + 7] + dt * (1. / 5) * (tab[o + 8] + dt * (1. / 6) * (tab[o + 9]))))));
+                                FT[3 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -1832,38 +1842,39 @@ static int jkg_1021(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double f4 = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
+                                FT[4 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -2205,42 +2216,43 @@ static int jkg_1022(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double f5 = tab[o + 5] + dt * (1. / 1) * (tab[o + 6] + dt * (1. / 2) * (tab[o + 7] + dt * (1. / 3) * (tab[o + 8] + dt * (1. / 4) * (tab[o + 9] + dt * (1. / 5) * (tab[o + 10] + dt * (1. / 6) * (tab[o + 11]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 5] + dt * (1. / 1) * (tab[o + 6] + dt * (1. / 2) * (tab[o + 7] + dt * (1. / 3) * (tab[o + 8] + dt * (1. / 4) * (tab[o + 9] + dt * (1. / 5) * (tab[o + 10] + dt * (1. / 6) * (tab[o + 11]))))));
+                                FT[5 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -2917,30 +2929,31 @@ static int jkg_1100(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double f2 = tab[o + 2] + dt * (1. / 1) * (tab[o + 3] + dt * (1. / 2) * (tab[o + 4] + dt * (1. / 3) * (tab[o + 5] + dt * (1. / 4) * (tab[o + 6] + dt * (1. / 5) * (tab[o + 7] + dt * (1. / 6) * (tab[o + 8]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 2] + dt * (1. / 1) * (tab[o + 3] + dt * (1. / 2) * (tab[o + 4] + dt * (1. / 3) * (tab[o + 5] + dt * (1. / 4) * (tab[o + 6] + dt * (1. / 5) * (tab[o + 7] + dt * (1. / 6) * (tab[o + 8]))))));
+                                FT[2 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -3060,34 +3073,35 @@ static int jkg_1110(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double f3 = tab[o + 3] + dt * (1. / 1) * (tab[o + 4] + dt * (1. / 2) * (tab[o + 5] + dt * (1. / 3) * (tab[o + 6] + dt * (1. / 4) * (tab[o + 7] + dt * (1. / 5) * (tab[o + 8] + dt * (1. / 6) * (tab[o + 9]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 3] + dt * (1. / 1) * (tab[o + 4] + dt * (1. / 2) * (tab[o + 5] + dt * (1. / 3) * (tab[o + 6] + dt * (1. / 4) * (tab[o + 7] + dt * (1. / 5) * (tab[o + 8] + dt * (1. / 6) * (tab[o + 9]))))));
+                                FT[3 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -3283,38 +3297,39 @@ static int jkg_1111(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double f4 = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
+                                FT[4 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -3735,38 +3750,39 @@ static int jkg_1120(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double f4 = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
+                                FT[4 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -4105,42 +4121,43 @@ static int jkg_1121(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double f5 = tab[o + 5] + dt * (1. / 1) * (tab[o + 6] + dt * (1. / 2) * (tab[o + 7] + dt * (1. / 3) * (tab[o + 8] + dt * (1. / 4) * (tab[o + 9] + dt * (1. / 5) * (tab[o + 10] + dt * (1. / 6) * (tab[o + 11]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 5] + dt * (1. / 1) * (tab[o + 6] + dt * (1. / 2) * (tab[o + 7] + dt * (1. / 3) * (tab[o + 8] + dt * (1. / 4) * (tab[o + 9] + dt * (1. / 5) * (tab[o + 10] + dt * (1. / 6) * (tab[o + 11]))))));
+                                FT[5 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -4892,46 +4909,47 @@ static int jkg_1122(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double a6 = a5 * (11 * h);
-                        const double f6 = tab[o + 6] + dt * (1. / 1) * (tab[o + 7] + dt * (1. / 2) * (tab[o + 8] + dt * (1. / 3) * (tab[o + 9] + dt * (1. / 4) * (tab[o + 10] + dt * (1. / 5) * (tab[o + 11] + dt * (1. / 6) * (tab[o + 12]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f5 = (T2 * f6 + ex) * (1. / 11);
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        const double F6 = inr ? f6 : a6;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
-                        FT[6 * nb + b] = F6;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 6] + dt * (1. / 1) * (tab[o + 7] + dt * (1. / 2) * (tab[o + 8] + dt * (1. / 3) * (tab[o + 9] + dt * (1. / 4) * (tab[o + 10] + dt * (1. / 5) * (tab[o + 11] + dt * (1. / 6) * (tab[o + 12]))))));
+                                FT[6 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 11);
+                                FT[5 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                                a *= 11 * h;
+                                FT[6 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -6378,30 +6396,31 @@ static int jkg_2000(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double f2 = tab[o + 2] + dt * (1. / 1) * (tab[o + 3] + dt * (1. / 2) * (tab[o + 4] + dt * (1. / 3) * (tab[o + 5] + dt * (1. / 4) * (tab[o + 6] + dt * (1. / 5) * (tab[o + 7] + dt * (1. / 6) * (tab[o + 8]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 2] + dt * (1. / 1) * (tab[o + 3] + dt * (1. / 2) * (tab[o + 4] + dt * (1. / 3) * (tab[o + 5] + dt * (1. / 4) * (tab[o + 6] + dt * (1. / 5) * (tab[o + 7] + dt * (1. / 6) * (tab[o + 8]))))));
+                                FT[2 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -6505,34 +6524,35 @@ static int jkg_2010(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double f3 = tab[o + 3] + dt * (1. / 1) * (tab[o + 4] + dt * (1. / 2) * (tab[o + 5] + dt * (1. / 3) * (tab[o + 6] + dt * (1. / 4) * (tab[o + 7] + dt * (1. / 5) * (tab[o + 8] + dt * (1. / 6) * (tab[o + 9]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 3] + dt * (1. / 1) * (tab[o + 4] + dt * (1. / 2) * (tab[o + 5] + dt * (1. / 3) * (tab[o + 6] + dt * (1. / 4) * (tab[o + 7] + dt * (1. / 5) * (tab[o + 8] + dt * (1. / 6) * (tab[o + 9]))))));
+                                FT[3 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -6689,38 +6709,39 @@ static int jkg_2011(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double f4 = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
+                                FT[4 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -7039,38 +7060,39 @@ static int jkg_2020(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double f4 = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
+                                FT[4 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -7332,42 +7354,43 @@ static int jkg_2021(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double f5 = tab[o + 5] + dt * (1. / 1) * (tab[o + 6] + dt * (1. / 2) * (tab[o + 7] + dt * (1. / 3) * (tab[o + 8] + dt * (1. / 4) * (tab[o + 9] + dt * (1. / 5) * (tab[o + 10] + dt * (1. / 6) * (tab[o + 11]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 5] + dt * (1. / 1) * (tab[o + 6] + dt * (1. / 2) * (tab[o + 7] + dt * (1. / 3) * (tab[o + 8] + dt * (1. / 4) * (tab[o + 9] + dt * (1. / 5) * (tab[o + 10] + dt * (1. / 6) * (tab[o + 11]))))));
+                                FT[5 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -7936,46 +7959,47 @@ static int jkg_2022(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double a6 = a5 * (11 * h);
-                        const double f6 = tab[o + 6] + dt * (1. / 1) * (tab[o + 7] + dt * (1. / 2) * (tab[o + 8] + dt * (1. / 3) * (tab[o + 9] + dt * (1. / 4) * (tab[o + 10] + dt * (1. / 5) * (tab[o + 11] + dt * (1. / 6) * (tab[o + 12]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f5 = (T2 * f6 + ex) * (1. / 11);
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        const double F6 = inr ? f6 : a6;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
-                        FT[6 * nb + b] = F6;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 6] + dt * (1. / 1) * (tab[o + 7] + dt * (1. / 2) * (tab[o + 8] + dt * (1. / 3) * (tab[o + 9] + dt * (1. / 4) * (tab[o + 10] + dt * (1. / 5) * (tab[o + 11] + dt * (1. / 6) * (tab[o + 12]))))));
+                                FT[6 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 11);
+                                FT[5 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                                a *= 11 * h;
+                                FT[6 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -9099,34 +9123,35 @@ static int jkg_2100(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double f3 = tab[o + 3] + dt * (1. / 1) * (tab[o + 4] + dt * (1. / 2) * (tab[o + 5] + dt * (1. / 3) * (tab[o + 6] + dt * (1. / 4) * (tab[o + 7] + dt * (1. / 5) * (tab[o + 8] + dt * (1. / 6) * (tab[o + 9]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 3] + dt * (1. / 1) * (tab[o + 4] + dt * (1. / 2) * (tab[o + 5] + dt * (1. / 3) * (tab[o + 6] + dt * (1. / 4) * (tab[o + 7] + dt * (1. / 5) * (tab[o + 8] + dt * (1. / 6) * (tab[o + 9]))))));
+                                FT[3 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -9289,38 +9314,39 @@ static int jkg_2110(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double f4 = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
+                                FT[4 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -9616,42 +9642,43 @@ static int jkg_2111(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double f5 = tab[o + 5] + dt * (1. / 1) * (tab[o + 6] + dt * (1. / 2) * (tab[o + 7] + dt * (1. / 3) * (tab[o + 8] + dt * (1. / 4) * (tab[o + 9] + dt * (1. / 5) * (tab[o + 10] + dt * (1. / 6) * (tab[o + 11]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 5] + dt * (1. / 1) * (tab[o + 6] + dt * (1. / 2) * (tab[o + 7] + dt * (1. / 3) * (tab[o + 8] + dt * (1. / 4) * (tab[o + 9] + dt * (1. / 5) * (tab[o + 10] + dt * (1. / 6) * (tab[o + 11]))))));
+                                FT[5 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -10329,42 +10356,43 @@ static int jkg_2120(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double f5 = tab[o + 5] + dt * (1. / 1) * (tab[o + 6] + dt * (1. / 2) * (tab[o + 7] + dt * (1. / 3) * (tab[o + 8] + dt * (1. / 4) * (tab[o + 9] + dt * (1. / 5) * (tab[o + 10] + dt * (1. / 6) * (tab[o + 11]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 5] + dt * (1. / 1) * (tab[o + 6] + dt * (1. / 2) * (tab[o + 7] + dt * (1. / 3) * (tab[o + 8] + dt * (1. / 4) * (tab[o + 9] + dt * (1. / 5) * (tab[o + 10] + dt * (1. / 6) * (tab[o + 11]))))));
+                                FT[5 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -10915,46 +10943,47 @@ static int jkg_2121(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double a6 = a5 * (11 * h);
-                        const double f6 = tab[o + 6] + dt * (1. / 1) * (tab[o + 7] + dt * (1. / 2) * (tab[o + 8] + dt * (1. / 3) * (tab[o + 9] + dt * (1. / 4) * (tab[o + 10] + dt * (1. / 5) * (tab[o + 11] + dt * (1. / 6) * (tab[o + 12]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f5 = (T2 * f6 + ex) * (1. / 11);
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        const double F6 = inr ? f6 : a6;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
-                        FT[6 * nb + b] = F6;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 6] + dt * (1. / 1) * (tab[o + 7] + dt * (1. / 2) * (tab[o + 8] + dt * (1. / 3) * (tab[o + 9] + dt * (1. / 4) * (tab[o + 10] + dt * (1. / 5) * (tab[o + 11] + dt * (1. / 6) * (tab[o + 12]))))));
+                                FT[6 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 11);
+                                FT[5 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                                a *= 11 * h;
+                                FT[6 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -12212,50 +12241,51 @@ static int jkg_2122(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double a6 = a5 * (11 * h);
-                        const double a7 = a6 * (13 * h);
-                        const double f7 = tab[o + 7] + dt * (1. / 1) * (tab[o + 8] + dt * (1. / 2) * (tab[o + 9] + dt * (1. / 3) * (tab[o + 10] + dt * (1. / 4) * (tab[o + 11] + dt * (1. / 5) * (tab[o + 12] + dt * (1. / 6) * (tab[o + 13]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f6 = (T2 * f7 + ex) * (1. / 13);
-                        const double f5 = (T2 * f6 + ex) * (1. / 11);
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        const double F6 = inr ? f6 : a6;
-                        const double F7 = inr ? f7 : a7;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
-                        FT[6 * nb + b] = F6;
-                        FT[7 * nb + b] = F7;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 7] + dt * (1. / 1) * (tab[o + 8] + dt * (1. / 2) * (tab[o + 9] + dt * (1. / 3) * (tab[o + 10] + dt * (1. / 4) * (tab[o + 11] + dt * (1. / 5) * (tab[o + 12] + dt * (1. / 6) * (tab[o + 13]))))));
+                                FT[7 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 13);
+                                FT[6 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 11);
+                                FT[5 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                                a *= 11 * h;
+                                FT[6 * nb + b] = a;
+                                a *= 13 * h;
+                                FT[7 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -14668,38 +14698,39 @@ static int jkg_2200(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double f4 = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
+                                FT[4 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -15027,42 +15058,43 @@ static int jkg_2210(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double f5 = tab[o + 5] + dt * (1. / 1) * (tab[o + 6] + dt * (1. / 2) * (tab[o + 7] + dt * (1. / 3) * (tab[o + 8] + dt * (1. / 4) * (tab[o + 9] + dt * (1. / 5) * (tab[o + 10] + dt * (1. / 6) * (tab[o + 11]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 5] + dt * (1. / 1) * (tab[o + 6] + dt * (1. / 2) * (tab[o + 7] + dt * (1. / 3) * (tab[o + 8] + dt * (1. / 4) * (tab[o + 9] + dt * (1. / 5) * (tab[o + 10] + dt * (1. / 6) * (tab[o + 11]))))));
+                                FT[5 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -15633,46 +15665,47 @@ static int jkg_2211(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double a6 = a5 * (11 * h);
-                        const double f6 = tab[o + 6] + dt * (1. / 1) * (tab[o + 7] + dt * (1. / 2) * (tab[o + 8] + dt * (1. / 3) * (tab[o + 9] + dt * (1. / 4) * (tab[o + 10] + dt * (1. / 5) * (tab[o + 11] + dt * (1. / 6) * (tab[o + 12]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f5 = (T2 * f6 + ex) * (1. / 11);
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        const double F6 = inr ? f6 : a6;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
-                        FT[6 * nb + b] = F6;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 6] + dt * (1. / 1) * (tab[o + 7] + dt * (1. / 2) * (tab[o + 8] + dt * (1. / 3) * (tab[o + 9] + dt * (1. / 4) * (tab[o + 10] + dt * (1. / 5) * (tab[o + 11] + dt * (1. / 6) * (tab[o + 12]))))));
+                                FT[6 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 11);
+                                FT[5 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                                a *= 11 * h;
+                                FT[6 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -16925,46 +16958,47 @@ static int jkg_2220(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double a6 = a5 * (11 * h);
-                        const double f6 = tab[o + 6] + dt * (1. / 1) * (tab[o + 7] + dt * (1. / 2) * (tab[o + 8] + dt * (1. / 3) * (tab[o + 9] + dt * (1. / 4) * (tab[o + 10] + dt * (1. / 5) * (tab[o + 11] + dt * (1. / 6) * (tab[o + 12]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f5 = (T2 * f6 + ex) * (1. / 11);
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        const double F6 = inr ? f6 : a6;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
-                        FT[6 * nb + b] = F6;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 6] + dt * (1. / 1) * (tab[o + 7] + dt * (1. / 2) * (tab[o + 8] + dt * (1. / 3) * (tab[o + 9] + dt * (1. / 4) * (tab[o + 10] + dt * (1. / 5) * (tab[o + 11] + dt * (1. / 6) * (tab[o + 12]))))));
+                                FT[6 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 11);
+                                FT[5 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                                a *= 11 * h;
+                                FT[6 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -18005,50 +18039,51 @@ static int jkg_2221(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double a6 = a5 * (11 * h);
-                        const double a7 = a6 * (13 * h);
-                        const double f7 = tab[o + 7] + dt * (1. / 1) * (tab[o + 8] + dt * (1. / 2) * (tab[o + 9] + dt * (1. / 3) * (tab[o + 10] + dt * (1. / 4) * (tab[o + 11] + dt * (1. / 5) * (tab[o + 12] + dt * (1. / 6) * (tab[o + 13]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f6 = (T2 * f7 + ex) * (1. / 13);
-                        const double f5 = (T2 * f6 + ex) * (1. / 11);
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        const double F6 = inr ? f6 : a6;
-                        const double F7 = inr ? f7 : a7;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
-                        FT[6 * nb + b] = F6;
-                        FT[7 * nb + b] = F7;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 7] + dt * (1. / 1) * (tab[o + 8] + dt * (1. / 2) * (tab[o + 9] + dt * (1. / 3) * (tab[o + 10] + dt * (1. / 4) * (tab[o + 11] + dt * (1. / 5) * (tab[o + 12] + dt * (1. / 6) * (tab[o + 13]))))));
+                                FT[7 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 13);
+                                FT[6 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 11);
+                                FT[5 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                                a *= 11 * h;
+                                FT[6 * nb + b] = a;
+                                a *= 13 * h;
+                                FT[7 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -20346,54 +20381,55 @@ static int jkg_2222(double *out, const size_t *st, const int *pos, const GPair *
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double a6 = a5 * (11 * h);
-                        const double a7 = a6 * (13 * h);
-                        const double a8 = a7 * (15 * h);
-                        const double f8 = tab[o + 8] + dt * (1. / 1) * (tab[o + 9] + dt * (1. / 2) * (tab[o + 10] + dt * (1. / 3) * (tab[o + 11] + dt * (1. / 4) * (tab[o + 12] + dt * (1. / 5) * (tab[o + 13] + dt * (1. / 6) * (tab[o + 14]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f7 = (T2 * f8 + ex) * (1. / 15);
-                        const double f6 = (T2 * f7 + ex) * (1. / 13);
-                        const double f5 = (T2 * f6 + ex) * (1. / 11);
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        const double F6 = inr ? f6 : a6;
-                        const double F7 = inr ? f7 : a7;
-                        const double F8 = inr ? f8 : a8;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
-                        FT[6 * nb + b] = F6;
-                        FT[7 * nb + b] = F7;
-                        FT[8 * nb + b] = F8;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 8] + dt * (1. / 1) * (tab[o + 9] + dt * (1. / 2) * (tab[o + 10] + dt * (1. / 3) * (tab[o + 11] + dt * (1. / 4) * (tab[o + 12] + dt * (1. / 5) * (tab[o + 13] + dt * (1. / 6) * (tab[o + 14]))))));
+                                FT[8 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 15);
+                                FT[7 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 13);
+                                FT[6 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 11);
+                                FT[5 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                                a *= 11 * h;
+                                FT[6 * nb + b] = a;
+                                a *= 13 * h;
+                                FT[7 * nb + b] = a;
+                                a *= 15 * h;
+                                FT[8 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -24769,20 +24805,21 @@ static int jjg_0000(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double f0 = tab[o + 0] + dt * (1. / 1) * (tab[o + 1] + dt * (1. / 2) * (tab[o + 2] + dt * (1. / 3) * (tab[o + 3] + dt * (1. / 4) * (tab[o + 4] + dt * (1. / 5) * (tab[o + 5] + dt * (1. / 6) * (tab[o + 6]))))));
-                        const double F0 = inr ? f0 : a0;
-                        FT[0 * nb + b] = F0;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 0] + dt * (1. / 1) * (tab[o + 1] + dt * (1. / 2) * (tab[o + 2] + dt * (1. / 3) * (tab[o + 3] + dt * (1. / 4) * (tab[o + 4] + dt * (1. / 5) * (tab[o + 5] + dt * (1. / 6) * (tab[o + 6]))))));
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -24873,26 +24910,27 @@ static int jjg_0010(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double f1 = tab[o + 1] + dt * (1. / 1) * (tab[o + 2] + dt * (1. / 2) * (tab[o + 3] + dt * (1. / 3) * (tab[o + 4] + dt * (1. / 4) * (tab[o + 5] + dt * (1. / 5) * (tab[o + 6] + dt * (1. / 6) * (tab[o + 7]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 1] + dt * (1. / 1) * (tab[o + 2] + dt * (1. / 2) * (tab[o + 3] + dt * (1. / 3) * (tab[o + 4] + dt * (1. / 4) * (tab[o + 5] + dt * (1. / 5) * (tab[o + 6] + dt * (1. / 6) * (tab[o + 7]))))));
+                                FT[1 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -24994,30 +25032,31 @@ static int jjg_0011(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double f2 = tab[o + 2] + dt * (1. / 1) * (tab[o + 3] + dt * (1. / 2) * (tab[o + 4] + dt * (1. / 3) * (tab[o + 5] + dt * (1. / 4) * (tab[o + 6] + dt * (1. / 5) * (tab[o + 7] + dt * (1. / 6) * (tab[o + 8]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 2] + dt * (1. / 1) * (tab[o + 3] + dt * (1. / 2) * (tab[o + 4] + dt * (1. / 3) * (tab[o + 5] + dt * (1. / 4) * (tab[o + 6] + dt * (1. / 5) * (tab[o + 7] + dt * (1. / 6) * (tab[o + 8]))))));
+                                FT[2 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -25202,30 +25241,31 @@ static int jjg_0020(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double f2 = tab[o + 2] + dt * (1. / 1) * (tab[o + 3] + dt * (1. / 2) * (tab[o + 4] + dt * (1. / 3) * (tab[o + 5] + dt * (1. / 4) * (tab[o + 6] + dt * (1. / 5) * (tab[o + 7] + dt * (1. / 6) * (tab[o + 8]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 2] + dt * (1. / 1) * (tab[o + 3] + dt * (1. / 2) * (tab[o + 4] + dt * (1. / 3) * (tab[o + 5] + dt * (1. / 4) * (tab[o + 6] + dt * (1. / 5) * (tab[o + 7] + dt * (1. / 6) * (tab[o + 8]))))));
+                                FT[2 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -25346,34 +25386,35 @@ static int jjg_0021(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double f3 = tab[o + 3] + dt * (1. / 1) * (tab[o + 4] + dt * (1. / 2) * (tab[o + 5] + dt * (1. / 3) * (tab[o + 6] + dt * (1. / 4) * (tab[o + 7] + dt * (1. / 5) * (tab[o + 8] + dt * (1. / 6) * (tab[o + 9]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 3] + dt * (1. / 1) * (tab[o + 4] + dt * (1. / 2) * (tab[o + 5] + dt * (1. / 3) * (tab[o + 6] + dt * (1. / 4) * (tab[o + 7] + dt * (1. / 5) * (tab[o + 8] + dt * (1. / 6) * (tab[o + 9]))))));
+                                FT[3 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -25651,38 +25692,39 @@ static int jjg_0022(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double f4 = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
+                                FT[4 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -26313,26 +26355,27 @@ static int jjg_1000(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double f1 = tab[o + 1] + dt * (1. / 1) * (tab[o + 2] + dt * (1. / 2) * (tab[o + 3] + dt * (1. / 3) * (tab[o + 4] + dt * (1. / 4) * (tab[o + 5] + dt * (1. / 5) * (tab[o + 6] + dt * (1. / 6) * (tab[o + 7]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 1] + dt * (1. / 1) * (tab[o + 2] + dt * (1. / 2) * (tab[o + 3] + dt * (1. / 3) * (tab[o + 4] + dt * (1. / 4) * (tab[o + 5] + dt * (1. / 5) * (tab[o + 6] + dt * (1. / 6) * (tab[o + 7]))))));
+                                FT[1 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -26434,30 +26477,31 @@ static int jjg_1010(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double f2 = tab[o + 2] + dt * (1. / 1) * (tab[o + 3] + dt * (1. / 2) * (tab[o + 4] + dt * (1. / 3) * (tab[o + 5] + dt * (1. / 4) * (tab[o + 6] + dt * (1. / 5) * (tab[o + 7] + dt * (1. / 6) * (tab[o + 8]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 2] + dt * (1. / 1) * (tab[o + 3] + dt * (1. / 2) * (tab[o + 4] + dt * (1. / 3) * (tab[o + 5] + dt * (1. / 4) * (tab[o + 6] + dt * (1. / 5) * (tab[o + 7] + dt * (1. / 6) * (tab[o + 8]))))));
+                                FT[2 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -26583,34 +26627,35 @@ static int jjg_1011(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double f3 = tab[o + 3] + dt * (1. / 1) * (tab[o + 4] + dt * (1. / 2) * (tab[o + 5] + dt * (1. / 3) * (tab[o + 6] + dt * (1. / 4) * (tab[o + 7] + dt * (1. / 5) * (tab[o + 8] + dt * (1. / 6) * (tab[o + 9]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 3] + dt * (1. / 1) * (tab[o + 4] + dt * (1. / 2) * (tab[o + 5] + dt * (1. / 3) * (tab[o + 6] + dt * (1. / 4) * (tab[o + 7] + dt * (1. / 5) * (tab[o + 8] + dt * (1. / 6) * (tab[o + 9]))))));
+                                FT[3 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -26855,34 +26900,35 @@ static int jjg_1020(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double f3 = tab[o + 3] + dt * (1. / 1) * (tab[o + 4] + dt * (1. / 2) * (tab[o + 5] + dt * (1. / 3) * (tab[o + 6] + dt * (1. / 4) * (tab[o + 7] + dt * (1. / 5) * (tab[o + 8] + dt * (1. / 6) * (tab[o + 9]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 3] + dt * (1. / 1) * (tab[o + 4] + dt * (1. / 2) * (tab[o + 5] + dt * (1. / 3) * (tab[o + 6] + dt * (1. / 4) * (tab[o + 7] + dt * (1. / 5) * (tab[o + 8] + dt * (1. / 6) * (tab[o + 9]))))));
+                                FT[3 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -27057,38 +27103,39 @@ static int jjg_1021(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double f4 = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
+                                FT[4 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -27490,42 +27537,43 @@ static int jjg_1022(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double f5 = tab[o + 5] + dt * (1. / 1) * (tab[o + 6] + dt * (1. / 2) * (tab[o + 7] + dt * (1. / 3) * (tab[o + 8] + dt * (1. / 4) * (tab[o + 9] + dt * (1. / 5) * (tab[o + 10] + dt * (1. / 6) * (tab[o + 11]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 5] + dt * (1. / 1) * (tab[o + 6] + dt * (1. / 2) * (tab[o + 7] + dt * (1. / 3) * (tab[o + 8] + dt * (1. / 4) * (tab[o + 9] + dt * (1. / 5) * (tab[o + 10] + dt * (1. / 6) * (tab[o + 11]))))));
+                                FT[5 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -28400,30 +28448,31 @@ static int jjg_1100(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double f2 = tab[o + 2] + dt * (1. / 1) * (tab[o + 3] + dt * (1. / 2) * (tab[o + 4] + dt * (1. / 3) * (tab[o + 5] + dt * (1. / 4) * (tab[o + 6] + dt * (1. / 5) * (tab[o + 7] + dt * (1. / 6) * (tab[o + 8]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 2] + dt * (1. / 1) * (tab[o + 3] + dt * (1. / 2) * (tab[o + 4] + dt * (1. / 3) * (tab[o + 5] + dt * (1. / 4) * (tab[o + 6] + dt * (1. / 5) * (tab[o + 7] + dt * (1. / 6) * (tab[o + 8]))))));
+                                FT[2 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -28608,34 +28657,35 @@ static int jjg_1110(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double f3 = tab[o + 3] + dt * (1. / 1) * (tab[o + 4] + dt * (1. / 2) * (tab[o + 5] + dt * (1. / 3) * (tab[o + 6] + dt * (1. / 4) * (tab[o + 7] + dt * (1. / 5) * (tab[o + 8] + dt * (1. / 6) * (tab[o + 9]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 3] + dt * (1. / 1) * (tab[o + 4] + dt * (1. / 2) * (tab[o + 5] + dt * (1. / 3) * (tab[o + 6] + dt * (1. / 4) * (tab[o + 7] + dt * (1. / 5) * (tab[o + 8] + dt * (1. / 6) * (tab[o + 9]))))));
+                                FT[3 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -28880,38 +28930,39 @@ static int jjg_1111(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double f4 = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
+                                FT[4 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -29371,38 +29422,39 @@ static int jjg_1120(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double f4 = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
+                                FT[4 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -29774,42 +29826,43 @@ static int jjg_1121(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double f5 = tab[o + 5] + dt * (1. / 1) * (tab[o + 6] + dt * (1. / 2) * (tab[o + 7] + dt * (1. / 3) * (tab[o + 8] + dt * (1. / 4) * (tab[o + 9] + dt * (1. / 5) * (tab[o + 10] + dt * (1. / 6) * (tab[o + 11]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 5] + dt * (1. / 1) * (tab[o + 6] + dt * (1. / 2) * (tab[o + 7] + dt * (1. / 3) * (tab[o + 8] + dt * (1. / 4) * (tab[o + 9] + dt * (1. / 5) * (tab[o + 10] + dt * (1. / 6) * (tab[o + 11]))))));
+                                FT[5 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -30588,46 +30641,47 @@ static int jjg_1122(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double a6 = a5 * (11 * h);
-                        const double f6 = tab[o + 6] + dt * (1. / 1) * (tab[o + 7] + dt * (1. / 2) * (tab[o + 8] + dt * (1. / 3) * (tab[o + 9] + dt * (1. / 4) * (tab[o + 10] + dt * (1. / 5) * (tab[o + 11] + dt * (1. / 6) * (tab[o + 12]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f5 = (T2 * f6 + ex) * (1. / 11);
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        const double F6 = inr ? f6 : a6;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
-                        FT[6 * nb + b] = F6;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 6] + dt * (1. / 1) * (tab[o + 7] + dt * (1. / 2) * (tab[o + 8] + dt * (1. / 3) * (tab[o + 9] + dt * (1. / 4) * (tab[o + 10] + dt * (1. / 5) * (tab[o + 11] + dt * (1. / 6) * (tab[o + 12]))))));
+                                FT[6 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 11);
+                                FT[5 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                                a *= 11 * h;
+                                FT[6 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -32179,30 +32233,31 @@ static int jjg_2000(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double f2 = tab[o + 2] + dt * (1. / 1) * (tab[o + 3] + dt * (1. / 2) * (tab[o + 4] + dt * (1. / 3) * (tab[o + 5] + dt * (1. / 4) * (tab[o + 6] + dt * (1. / 5) * (tab[o + 7] + dt * (1. / 6) * (tab[o + 8]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 2] + dt * (1. / 1) * (tab[o + 3] + dt * (1. / 2) * (tab[o + 4] + dt * (1. / 3) * (tab[o + 5] + dt * (1. / 4) * (tab[o + 6] + dt * (1. / 5) * (tab[o + 7] + dt * (1. / 6) * (tab[o + 8]))))));
+                                FT[2 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -32323,34 +32378,35 @@ static int jjg_2010(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double f3 = tab[o + 3] + dt * (1. / 1) * (tab[o + 4] + dt * (1. / 2) * (tab[o + 5] + dt * (1. / 3) * (tab[o + 6] + dt * (1. / 4) * (tab[o + 7] + dt * (1. / 5) * (tab[o + 8] + dt * (1. / 6) * (tab[o + 9]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 3] + dt * (1. / 1) * (tab[o + 4] + dt * (1. / 2) * (tab[o + 5] + dt * (1. / 3) * (tab[o + 6] + dt * (1. / 4) * (tab[o + 7] + dt * (1. / 5) * (tab[o + 8] + dt * (1. / 6) * (tab[o + 9]))))));
+                                FT[3 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -32516,38 +32572,39 @@ static int jjg_2011(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double f4 = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
+                                FT[4 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -32889,38 +32946,39 @@ static int jjg_2020(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double f4 = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
+                                FT[4 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -33183,42 +33241,43 @@ static int jjg_2021(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double f5 = tab[o + 5] + dt * (1. / 1) * (tab[o + 6] + dt * (1. / 2) * (tab[o + 7] + dt * (1. / 3) * (tab[o + 8] + dt * (1. / 4) * (tab[o + 9] + dt * (1. / 5) * (tab[o + 10] + dt * (1. / 6) * (tab[o + 11]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 5] + dt * (1. / 1) * (tab[o + 6] + dt * (1. / 2) * (tab[o + 7] + dt * (1. / 3) * (tab[o + 8] + dt * (1. / 4) * (tab[o + 9] + dt * (1. / 5) * (tab[o + 10] + dt * (1. / 6) * (tab[o + 11]))))));
+                                FT[5 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -33822,46 +33881,47 @@ static int jjg_2022(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double a6 = a5 * (11 * h);
-                        const double f6 = tab[o + 6] + dt * (1. / 1) * (tab[o + 7] + dt * (1. / 2) * (tab[o + 8] + dt * (1. / 3) * (tab[o + 9] + dt * (1. / 4) * (tab[o + 10] + dt * (1. / 5) * (tab[o + 11] + dt * (1. / 6) * (tab[o + 12]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f5 = (T2 * f6 + ex) * (1. / 11);
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        const double F6 = inr ? f6 : a6;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
-                        FT[6 * nb + b] = F6;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 6] + dt * (1. / 1) * (tab[o + 7] + dt * (1. / 2) * (tab[o + 8] + dt * (1. / 3) * (tab[o + 9] + dt * (1. / 4) * (tab[o + 10] + dt * (1. / 5) * (tab[o + 11] + dt * (1. / 6) * (tab[o + 12]))))));
+                                FT[6 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 11);
+                                FT[5 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                                a *= 11 * h;
+                                FT[6 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -35138,34 +35198,35 @@ static int jjg_2100(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double f3 = tab[o + 3] + dt * (1. / 1) * (tab[o + 4] + dt * (1. / 2) * (tab[o + 5] + dt * (1. / 3) * (tab[o + 6] + dt * (1. / 4) * (tab[o + 7] + dt * (1. / 5) * (tab[o + 8] + dt * (1. / 6) * (tab[o + 9]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 3] + dt * (1. / 1) * (tab[o + 4] + dt * (1. / 2) * (tab[o + 5] + dt * (1. / 3) * (tab[o + 6] + dt * (1. / 4) * (tab[o + 7] + dt * (1. / 5) * (tab[o + 8] + dt * (1. / 6) * (tab[o + 9]))))));
+                                FT[3 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -35443,38 +35504,39 @@ static int jjg_2110(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double f4 = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
+                                FT[4 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -35857,42 +35919,43 @@ static int jjg_2111(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double f5 = tab[o + 5] + dt * (1. / 1) * (tab[o + 6] + dt * (1. / 2) * (tab[o + 7] + dt * (1. / 3) * (tab[o + 8] + dt * (1. / 4) * (tab[o + 9] + dt * (1. / 5) * (tab[o + 10] + dt * (1. / 6) * (tab[o + 11]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 5] + dt * (1. / 1) * (tab[o + 6] + dt * (1. / 2) * (tab[o + 7] + dt * (1. / 3) * (tab[o + 8] + dt * (1. / 4) * (tab[o + 9] + dt * (1. / 5) * (tab[o + 10] + dt * (1. / 6) * (tab[o + 11]))))));
+                                FT[5 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -36611,42 +36674,43 @@ static int jjg_2120(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double f5 = tab[o + 5] + dt * (1. / 1) * (tab[o + 6] + dt * (1. / 2) * (tab[o + 7] + dt * (1. / 3) * (tab[o + 8] + dt * (1. / 4) * (tab[o + 9] + dt * (1. / 5) * (tab[o + 10] + dt * (1. / 6) * (tab[o + 11]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 5] + dt * (1. / 1) * (tab[o + 6] + dt * (1. / 2) * (tab[o + 7] + dt * (1. / 3) * (tab[o + 8] + dt * (1. / 4) * (tab[o + 9] + dt * (1. / 5) * (tab[o + 10] + dt * (1. / 6) * (tab[o + 11]))))));
+                                FT[5 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -37256,46 +37320,47 @@ static int jjg_2121(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double a6 = a5 * (11 * h);
-                        const double f6 = tab[o + 6] + dt * (1. / 1) * (tab[o + 7] + dt * (1. / 2) * (tab[o + 8] + dt * (1. / 3) * (tab[o + 9] + dt * (1. / 4) * (tab[o + 10] + dt * (1. / 5) * (tab[o + 11] + dt * (1. / 6) * (tab[o + 12]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f5 = (T2 * f6 + ex) * (1. / 11);
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        const double F6 = inr ? f6 : a6;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
-                        FT[6 * nb + b] = F6;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 6] + dt * (1. / 1) * (tab[o + 7] + dt * (1. / 2) * (tab[o + 8] + dt * (1. / 3) * (tab[o + 9] + dt * (1. / 4) * (tab[o + 10] + dt * (1. / 5) * (tab[o + 11] + dt * (1. / 6) * (tab[o + 12]))))));
+                                FT[6 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 11);
+                                FT[5 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                                a *= 11 * h;
+                                FT[6 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -38546,50 +38611,51 @@ static int jjg_2122(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double a6 = a5 * (11 * h);
-                        const double a7 = a6 * (13 * h);
-                        const double f7 = tab[o + 7] + dt * (1. / 1) * (tab[o + 8] + dt * (1. / 2) * (tab[o + 9] + dt * (1. / 3) * (tab[o + 10] + dt * (1. / 4) * (tab[o + 11] + dt * (1. / 5) * (tab[o + 12] + dt * (1. / 6) * (tab[o + 13]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f6 = (T2 * f7 + ex) * (1. / 13);
-                        const double f5 = (T2 * f6 + ex) * (1. / 11);
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        const double F6 = inr ? f6 : a6;
-                        const double F7 = inr ? f7 : a7;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
-                        FT[6 * nb + b] = F6;
-                        FT[7 * nb + b] = F7;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 7] + dt * (1. / 1) * (tab[o + 8] + dt * (1. / 2) * (tab[o + 9] + dt * (1. / 3) * (tab[o + 10] + dt * (1. / 4) * (tab[o + 11] + dt * (1. / 5) * (tab[o + 12] + dt * (1. / 6) * (tab[o + 13]))))));
+                                FT[7 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 13);
+                                FT[6 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 11);
+                                FT[5 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                                a *= 11 * h;
+                                FT[6 * nb + b] = a;
+                                a *= 13 * h;
+                                FT[7 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -41013,38 +41079,39 @@ static int jjg_2200(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double f4 = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 4] + dt * (1. / 1) * (tab[o + 5] + dt * (1. / 2) * (tab[o + 6] + dt * (1. / 3) * (tab[o + 7] + dt * (1. / 4) * (tab[o + 8] + dt * (1. / 5) * (tab[o + 9] + dt * (1. / 6) * (tab[o + 10]))))));
+                                FT[4 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -41675,42 +41742,43 @@ static int jjg_2210(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double f5 = tab[o + 5] + dt * (1. / 1) * (tab[o + 6] + dt * (1. / 2) * (tab[o + 7] + dt * (1. / 3) * (tab[o + 8] + dt * (1. / 4) * (tab[o + 9] + dt * (1. / 5) * (tab[o + 10] + dt * (1. / 6) * (tab[o + 11]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 5] + dt * (1. / 1) * (tab[o + 6] + dt * (1. / 2) * (tab[o + 7] + dt * (1. / 3) * (tab[o + 8] + dt * (1. / 4) * (tab[o + 9] + dt * (1. / 5) * (tab[o + 10] + dt * (1. / 6) * (tab[o + 11]))))));
+                                FT[5 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -42536,46 +42604,47 @@ static int jjg_2211(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double a6 = a5 * (11 * h);
-                        const double f6 = tab[o + 6] + dt * (1. / 1) * (tab[o + 7] + dt * (1. / 2) * (tab[o + 8] + dt * (1. / 3) * (tab[o + 9] + dt * (1. / 4) * (tab[o + 10] + dt * (1. / 5) * (tab[o + 11] + dt * (1. / 6) * (tab[o + 12]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f5 = (T2 * f6 + ex) * (1. / 11);
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        const double F6 = inr ? f6 : a6;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
-                        FT[6 * nb + b] = F6;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 6] + dt * (1. / 1) * (tab[o + 7] + dt * (1. / 2) * (tab[o + 8] + dt * (1. / 3) * (tab[o + 9] + dt * (1. / 4) * (tab[o + 10] + dt * (1. / 5) * (tab[o + 11] + dt * (1. / 6) * (tab[o + 12]))))));
+                                FT[6 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 11);
+                                FT[5 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                                a *= 11 * h;
+                                FT[6 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -43977,46 +44046,47 @@ static int jjg_2220(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double a6 = a5 * (11 * h);
-                        const double f6 = tab[o + 6] + dt * (1. / 1) * (tab[o + 7] + dt * (1. / 2) * (tab[o + 8] + dt * (1. / 3) * (tab[o + 9] + dt * (1. / 4) * (tab[o + 10] + dt * (1. / 5) * (tab[o + 11] + dt * (1. / 6) * (tab[o + 12]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f5 = (T2 * f6 + ex) * (1. / 11);
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        const double F6 = inr ? f6 : a6;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
-                        FT[6 * nb + b] = F6;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 6] + dt * (1. / 1) * (tab[o + 7] + dt * (1. / 2) * (tab[o + 8] + dt * (1. / 3) * (tab[o + 9] + dt * (1. / 4) * (tab[o + 10] + dt * (1. / 5) * (tab[o + 11] + dt * (1. / 6) * (tab[o + 12]))))));
+                                FT[6 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 11);
+                                FT[5 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                                a *= 11 * h;
+                                FT[6 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -45264,50 +45334,51 @@ static int jjg_2221(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double a6 = a5 * (11 * h);
-                        const double a7 = a6 * (13 * h);
-                        const double f7 = tab[o + 7] + dt * (1. / 1) * (tab[o + 8] + dt * (1. / 2) * (tab[o + 9] + dt * (1. / 3) * (tab[o + 10] + dt * (1. / 4) * (tab[o + 11] + dt * (1. / 5) * (tab[o + 12] + dt * (1. / 6) * (tab[o + 13]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f6 = (T2 * f7 + ex) * (1. / 13);
-                        const double f5 = (T2 * f6 + ex) * (1. / 11);
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        const double F6 = inr ? f6 : a6;
-                        const double F7 = inr ? f7 : a7;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
-                        FT[6 * nb + b] = F6;
-                        FT[7 * nb + b] = F7;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 7] + dt * (1. / 1) * (tab[o + 8] + dt * (1. / 2) * (tab[o + 9] + dt * (1. / 3) * (tab[o + 10] + dt * (1. / 4) * (tab[o + 11] + dt * (1. / 5) * (tab[o + 12] + dt * (1. / 6) * (tab[o + 13]))))));
+                                FT[7 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 13);
+                                FT[6 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 11);
+                                FT[5 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                                a *= 11 * h;
+                                FT[6 * nb + b] = a;
+                                a *= 13 * h;
+                                FT[7 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -47646,54 +47717,55 @@ static int jjg_2222(double *jb, double *jk, const double *db, const double *dk, 
                 const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
                 const double h2q = .5 / q;
                 (void)QCx; (void)QCy; (void)QCz; (void)h2q;
-#pragma omp simd
                 for (b = 0; b < nbt; b++) {
                         const double p = B->p[b], s = 1. / (p + q);
                         const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
                         const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
-                        const int inr = T < GT_TMAX;
-                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
-                        const int o = k * GT_TN;
-                        const double dt = inr ? k * GT_STEP - T : 0;
-                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
-                        const double a0 = .886226925452758014 / sqrt(Ta);
-                        const double a1 = a0 * (1 * h);
-                        const double a2 = a1 * (3 * h);
-                        const double a3 = a2 * (5 * h);
-                        const double a4 = a3 * (7 * h);
-                        const double a5 = a4 * (9 * h);
-                        const double a6 = a5 * (11 * h);
-                        const double a7 = a6 * (13 * h);
-                        const double a8 = a7 * (15 * h);
-                        const double f8 = tab[o + 8] + dt * (1. / 1) * (tab[o + 9] + dt * (1. / 2) * (tab[o + 10] + dt * (1. / 3) * (tab[o + 11] + dt * (1. / 4) * (tab[o + 12] + dt * (1. / 5) * (tab[o + 13] + dt * (1. / 6) * (tab[o + 14]))))));
-                        const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
-                        const double T2 = 2 * T;
-                        const double f7 = (T2 * f8 + ex) * (1. / 15);
-                        const double f6 = (T2 * f7 + ex) * (1. / 13);
-                        const double f5 = (T2 * f6 + ex) * (1. / 11);
-                        const double f4 = (T2 * f5 + ex) * (1. / 9);
-                        const double f3 = (T2 * f4 + ex) * (1. / 7);
-                        const double f2 = (T2 * f3 + ex) * (1. / 5);
-                        const double f1 = (T2 * f2 + ex) * (1. / 3);
-                        const double f0 = (T2 * f1 + ex) * (1. / 1);
-                        const double F0 = inr ? f0 : a0;
-                        const double F1 = inr ? f1 : a1;
-                        const double F2 = inr ? f2 : a2;
-                        const double F3 = inr ? f3 : a3;
-                        const double F4 = inr ? f4 : a4;
-                        const double F5 = inr ? f5 : a5;
-                        const double F6 = inr ? f6 : a6;
-                        const double F7 = inr ? f7 : a7;
-                        const double F8 = inr ? f8 : a8;
-                        FT[0 * nb + b] = F0;
-                        FT[1 * nb + b] = F1;
-                        FT[2 * nb + b] = F2;
-                        FT[3 * nb + b] = F3;
-                        FT[4 * nb + b] = F4;
-                        FT[5 * nb + b] = F5;
-                        FT[6 * nb + b] = F6;
-                        FT[7 * nb + b] = F7;
-                        FT[8 * nb + b] = F8;
+                        if (T < GT_TMAX) {
+                                const int k = (int)(T * (1. / GT_STEP) + .5);
+                                const int o = k * GT_TN;
+                                const double dt = k * GT_STEP - T;
+                                double fm = tab[o + 8] + dt * (1. / 1) * (tab[o + 9] + dt * (1. / 2) * (tab[o + 10] + dt * (1. / 3) * (tab[o + 11] + dt * (1. / 4) * (tab[o + 12] + dt * (1. / 5) * (tab[o + 13] + dt * (1. / 6) * (tab[o + 14]))))));
+                                FT[8 * nb + b] = fm;
+                                const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3) * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));
+                                const double T2 = 2 * T;
+                                fm = (T2 * fm + ex) * (1. / 15);
+                                FT[7 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 13);
+                                FT[6 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 11);
+                                FT[5 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 9);
+                                FT[4 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 7);
+                                FT[3 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 5);
+                                FT[2 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 3);
+                                FT[1 * nb + b] = fm;
+                                fm = (T2 * fm + ex) * (1. / 1);
+                                FT[0 * nb + b] = fm;
+                        } else {
+                                const double h = .5 / T;
+                                double a = .886226925452758014 / sqrt(T);
+                                FT[0 * nb + b] = a;
+                                a *= 1 * h;
+                                FT[1 * nb + b] = a;
+                                a *= 3 * h;
+                                FT[2 * nb + b] = a;
+                                a *= 5 * h;
+                                FT[3 * nb + b] = a;
+                                a *= 7 * h;
+                                FT[4 * nb + b] = a;
+                                a *= 9 * h;
+                                FT[5 * nb + b] = a;
+                                a *= 11 * h;
+                                FT[6 * nb + b] = a;
+                                a *= 13 * h;
+                                FT[7 * nb + b] = a;
+                                a *= 15 * h;
+                                FT[8 * nb + b] = a;
+                        }
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {

@@ -27,6 +27,8 @@ import sys
 LMAX = 3            # shells up to f
 LMAX_ALL = 2        # every class of l <= LMAX_ALL; with f shells only those of total l <= F_LSUM_MAX
 F_LSUM_MAX = 6      # (above: libcint; at total l 7 the generated ones only tie it, caffeine / cc-pVTZ)
+BOYS_BRANCH = True  # the per-quartet kernels' scalar F_m loop with a branch (boys_branch_lines)
+jonly_pass1_selects = False
 NFFILES = 8         # translation units of the f kernels (jk_vrr_f_<k>.c, compiled in parallel)
 X = 'xyz'
 # libcint's Cartesian-to-spherical coefficients (xx xy xz yy yz zz -> xy yz z2 xz x2-y2)
@@ -97,6 +99,41 @@ def boys_lines(L, ind):
             w(ind + 'const double f%d = (T2 * f%d + ex) * (1. / %d);' % (m, m + 1, 2 * m + 1))
     for m in range(L + 1):
         w(ind + 'const double F%d = inr ? f%d : a%d;' % (m, m, m))
+    return o
+
+
+def boys_branch_lines(ind, L, store):
+    '''boys_lines with a branch instead of the selects, for the scalar F_m loops of the per-quartet
+    kernels: inside the table range only the Taylor series and the downward recursion, beyond it only
+    the asymptotic form (no sqrt and division of the other side per primitive quartet).  store(m, x):
+    the C statement storing F_m = x.'''
+    o = []
+    w = o.append
+    w(ind + 'if (T < GT_TMAX) {')
+    i2 = ind + '        '
+    w(i2 + 'const int k = (int)(T * (1. / GT_STEP) + .5);')
+    w(i2 + 'const int o = k * GT_TN;')
+    w(i2 + 'const double dt = k * GT_STEP - T;')
+    t = 'tab[o + %d]' % (L + 6)
+    for j in range(6, 0, -1):
+        t = 'tab[o + %d] + dt * (1. / %d) * (%s)' % (L + j - 1, j, t)
+    w(i2 + 'double fm = %s;' % t)
+    w(i2 + store(L, 'fm'))
+    if L > 0:
+        w(i2 + 'const double ex = tab[GT_N * GT_TN + k] * (1 + dt * (1 + dt * (1. / 2) * (1 + dt * (1. / 3)'
+          ' * (1 + dt * (1. / 4) * (1 + dt * (1. / 5) * (1 + dt * (1. / 6)))))));')
+        w(i2 + 'const double T2 = 2 * T;')
+        for m in range(L - 1, -1, -1):
+            w(i2 + 'fm = (T2 * fm + ex) * (1. / %d);' % (2 * m + 1))
+            w(i2 + store(m, 'fm'))
+    w(ind + '} else {')
+    w(i2 + 'const double h = .5 / T;')
+    w(i2 + 'double a = .886226925452758014 / sqrt(T);')
+    w(i2 + store(0, 'a'))
+    for m in range(1, L + 1):
+        w(i2 + 'a *= %d * h;' % (2 * m - 1))
+        w(i2 + store(m, 'a'))
+    w(ind + '}')
     return o
 
 
@@ -354,16 +391,25 @@ def kernel(la, lb, lc, ld, jonly=False, storage='static int'):
     w('                const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];')
     w('                const double h2q = .5 / q;')
     w('                (void)QCx; (void)QCy; (void)QCz; (void)h2q;')
-    # pass 1: T and F_0 .. F_L of every bra primitive, branch-free (vectorised with gathers)
-    w('#pragma omp simd')
-    w('                for (b = 0; b < nbt; b++) {')
+    # pass 1: T and F_0 .. F_L of every bra primitive.  The loop does not vectorise (the table
+    # loads); BOYS_BRANCH: a branch between the Taylor table and the asymptotic form instead of
+    # computing both for the selects
+    if BOYS_BRANCH and not jonly_pass1_selects:
+        w('                for (b = 0; b < nbt; b++) {')
+    else:
+        w('#pragma omp simd')
+        w('                for (b = 0; b < nbt; b++) {')
     w('                        const double p = B->p[b], s = 1. / (p + q);')
     w('                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;')
     w('                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);')
-    for line in boys_lines(L, ' ' * 24):
-        w(line)
-    for m in range(L + 1):
-        w('                        FT[%d * nb + b] = F%d;' % (m, m))
+    if BOYS_BRANCH and not jonly_pass1_selects:
+        for line in boys_branch_lines(' ' * 24, L, lambda m, x: 'FT[%d * nb + b] = %s;' % (m, x)):
+            w(line)
+    else:
+        for line in boys_lines(L, ' ' * 24):
+            w(line)
+        for m in range(L + 1):
+            w('                        FT[%d * nb + b] = F%d;' % (m, m))
     w('                }')
     # pass 2: the vertical recursions
     w('#pragma omp simd')
