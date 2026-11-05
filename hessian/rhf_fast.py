@@ -699,6 +699,8 @@ def fock1_jk(mol, dm, with_k=True, tol=ghf_hess.HESS2E_TOL, max_memory=None):
     libv = ghf_hess._load_socvhf()
     if not libv or not hasattr(libv, 'SOCVHFfock1_jk') or mol.cart:
         return None
+    if FOCK1_GEN and hasattr(libv, 'SOCVHFgen_fock1_jk'):
+        return _fock1_jk_gen(libv, mol, dm, with_k, tol, max_memory)
     dm = numpy.ascontiguousarray(dm, dtype=numpy.double)
     nao = dm.shape[0]
     vj = numpy.empty((mol.natm, 3, nao, nao))
@@ -724,6 +726,53 @@ def fock1_jk(mol, dm, with_k=True, tol=ghf_hess.HESS2E_TOL, max_memory=None):
             ctypes.c_int(mol.natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas),
             env.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(a0), ctypes.c_int(a1))
     return vj, (vk if with_k else None)
+
+
+FOCK1_GEN = True            # fock1_jk by the generated derivative-integral kernels (Cartesian), jk_gen.c
+
+
+def _fock1_jk_gen(libv, mol, dm, with_k, tol, max_memory, prim_tol=None):
+    '''fock1_jk in the Cartesian basis by SOCVHFgen_fock1_jk (the three role
+    derivatives of a quartet from one HGP pass; libcint for the classes
+    without a kernel), transformed to the spherical AOs.'''
+    import ctypes
+    from pyscf.gto import moleintor
+    from socutils.scf import jk_multi
+    if prim_tol is None:
+        prim_tol = tol * 1e-2
+    molc = mol.copy(deep=False)
+    molc.cart = True
+    c = mol.cart2sph_coeff()
+    dmc = numpy.ascontiguousarray(c.dot(numpy.asarray(dm, dtype=numpy.double)).dot(c.T))
+    nao, naoc = mol.nao, molc.nao
+    q = jk_multi._q_cond(molc)
+    dcond = ghf_hess._dm_cond(molc, [dmc])
+    atm, bas, env = molc._atm, molc._bas, molc._env
+    opt = moleintor.make_cintopt(atm, bas, env, 'int2e_ip1_cart')
+    ao_loc = molc.ao_loc_nr().astype(numpy.int32)
+    if max_memory is None:
+        max_memory = mol.max_memory
+    nk = 1 + int(with_k)
+    per_atom = nk * 3 * naoc * naoc * 8 * (lib.num_threads() + 1)
+    nbatch = max(1, min(mol.natm, int(max_memory * .5e6 / per_atom)))
+    vj = numpy.empty((mol.natm, 3, nao, nao))
+    vk = numpy.empty((mol.natm, 3, nao, nao)) if with_k else None
+    for a0 in range(0, mol.natm, nbatch):
+        a1 = min(mol.natm, a0 + nbatch)
+        vjc = numpy.empty((a1 - a0, 3, naoc, naoc))
+        vkc = numpy.empty((a1 - a0, 3, naoc, naoc)) if with_k else numpy.empty(1)
+        libv.SOCVHFgen_fock1_jk(
+            vjc.ctypes.data_as(ctypes.c_void_p), vkc.ctypes.data_as(ctypes.c_void_p),
+            dmc.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(int(with_k)),
+            q.ctypes.data_as(ctypes.c_void_p), dcond.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_double(tol), ctypes.c_double(prim_tol), opt,
+            ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_int(mol.natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(molc.nbas),
+            env.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(a0), ctypes.c_int(a1))
+        vj[a0:a1] = lib.einsum('pi,axpq,qj->axij', c, vjc, c)
+        if with_k:
+            vk[a0:a1] = lib.einsum('pi,axpq,qj->axij', c, vkc, c)
+    return vj, vk
 
 
 def _df_mode(mf):

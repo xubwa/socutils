@@ -2,69 +2,135 @@
 
 int ggd_0000(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_0000(double *out, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_0010(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_0010(double *out, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_0011(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_0011(double *out, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_0020(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_0020(double *out, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_0021(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_0021(double *out, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_0022(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_0022(double *out, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_1000(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_1000(double *out, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_1010(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_1010(double *out, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_1011(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_1011(double *out, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_1020(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_1020(double *out, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_1021(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_1021(double *out, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_1022(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_1022(double *out, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_1100(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_1100(double *out, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_1110(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_1110(double *out, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_1111(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_1111(double *out, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_1120(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_1120(double *out, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_1121(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_1121(double *out, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_1122(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_1122(double *out, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_2000(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_2000(double *out, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_2010(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_2010(double *out, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_2011(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_2011(double *out, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_2020(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_2020(double *out, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_2021(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_2021(double *out, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_2022(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_2022(double *out, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_2100(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_2100(double *out, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_2110(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_2110(double *out, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_2111(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_2111(double *out, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_2120(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_2120(double *out, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_2121(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_2121(double *out, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_2200(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_2200(double *out, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_2210(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_2210(double *out, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_2211(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_2211(double *out, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 int ggd_2220(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
+        const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
+int ggi_2220(double *out, size_t nd, const size_t *ds, const int *pos,
         const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk);
 typedef int (*ggd_fn)(double *, const double *, int, size_t, const size_t *, const int *,
                       const GPair *, int, const GPair *, int, double, const double *, double *);
@@ -106,4 +172,41 @@ static const ggd_fn ggd_table[3][3][3][3] = {
         [2][2][1][0] = ggd_2210,
         [2][2][1][1] = ggd_2211,
         [2][2][2][0] = ggd_2220,
+};
+typedef int (*ggi_fn)(double *, size_t, const size_t *, const int *,
+                      const GPair *, int, const GPair *, int, double, const double *, double *);
+static const ggi_fn ggi_table[3][3][3][3] = {
+        [0][0][0][0] = ggi_0000,
+        [0][0][1][0] = ggi_0010,
+        [0][0][1][1] = ggi_0011,
+        [0][0][2][0] = ggi_0020,
+        [0][0][2][1] = ggi_0021,
+        [0][0][2][2] = ggi_0022,
+        [1][0][0][0] = ggi_1000,
+        [1][0][1][0] = ggi_1010,
+        [1][0][1][1] = ggi_1011,
+        [1][0][2][0] = ggi_1020,
+        [1][0][2][1] = ggi_1021,
+        [1][0][2][2] = ggi_1022,
+        [1][1][0][0] = ggi_1100,
+        [1][1][1][0] = ggi_1110,
+        [1][1][1][1] = ggi_1111,
+        [1][1][2][0] = ggi_1120,
+        [1][1][2][1] = ggi_1121,
+        [1][1][2][2] = ggi_1122,
+        [2][0][0][0] = ggi_2000,
+        [2][0][1][0] = ggi_2010,
+        [2][0][1][1] = ggi_2011,
+        [2][0][2][0] = ggi_2020,
+        [2][0][2][1] = ggi_2021,
+        [2][0][2][2] = ggi_2022,
+        [2][1][0][0] = ggi_2100,
+        [2][1][1][0] = ggi_2110,
+        [2][1][1][1] = ggi_2111,
+        [2][1][2][0] = ggi_2120,
+        [2][1][2][1] = ggi_2121,
+        [2][2][0][0] = ggi_2200,
+        [2][2][1][0] = ggi_2210,
+        [2][2][1][1] = ggi_2211,
+        [2][2][2][0] = ggi_2220,
 };

@@ -769,3 +769,279 @@ void SOCVHFgen_hess2e(double *hess, int mode, int ngroup, double *jfac, double *
 }
         SOCVHFgen_ctx_free(cx);
 }
+#include <omp.h>
+
+/* ------------------------------------------------------------------------
+ * First-order J / K of all nuclear displacements (fock1.c SOCVHFfock1_jk) in
+ * the Cartesian basis: the derivative integrals of the three roles A, B, C of
+ * a quartet from one generated HGP pass (ggi_* of gen_grad_vrr.py raw), the
+ * fourth by translational invariance; the classes without a generated
+ * kernel (l > GGD_LMAX, more than G_MAXCTR contractions, total l above
+ * GGD_LSUM_MAX) by three libcint int2e_ip1_cart calls as fock1.c.  The
+ * digestion as fock1.c (W += ..., V = W + W^T).  vj, vk (atm1 - atm0, 3, nao,
+ * nao) of the Cartesian AOs; opt for int2e_ip1_cart.
+ * ------------------------------------------------------------------------ */
+int int2e_ip1_cart(double *out, int *dims, int *shls, int *atm, int natm,
+                   int *bas, int nbas, double *env, CINTOpt *opt, double *cache);
+size_t GTOmax_cache_size(int (*intor)(), int *shls_slice, int ncenter,
+                         int *atm, int natm, int *bas, int nbas, double *env);
+static int fock1_gen_on = 1;
+void SOCVHFgen_fock1_set(int on) { fock1_gen_on = on; }
+
+static void f1_reduce(double *out, double **bufs, int nbuf, size_t n)
+{
+        const int t = omp_get_thread_num(), nt = omp_get_num_threads();
+        const size_t chunk = (n + nt - 1) / nt;
+        const size_t s0 = chunk * t < n ? chunk * t : n;
+        const size_t s1 = s0 + chunk < n ? s0 + chunk : n;
+        size_t i;
+        int k;
+        for (i = s0; i < s1; i++) out[i] = 0;
+        for (k = 0; k < nbuf; k++) {
+                const double *b = bufs[k];
+                for (i = s0; i < s1; i++) out[i] += b[i];
+        }
+}
+
+static inline void f1_add_block(double *W, size_t nao, size_t r0, size_t c0, const double *L, int dr, int dc)
+{
+        int r, c;
+        for (r = 0; r < dr; r++) {
+                double *w = W + (r0 + r) * nao + c0;
+                const double *l = L + r * dc;
+                for (c = 0; c < dc; c++) w[c] += l[c];
+        }
+}
+
+void SOCVHFgen_fock1_jk(double *vj, double *vk, double *dm, int with_k,
+                        double *qcond, double *dcond, double tol, double prim_tol, CINTOpt *opt,
+                        int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
+                        int atm0, int atm1)
+{
+        const size_t nao = ao_loc[nbas];
+        const size_t nn = nao * nao;
+        const int nbat = atm1 - atm0;
+        const size_t nv = (size_t)nbat * 3 * nn;
+        int dmx = 0, i, np = 1;
+        for (i = 0; i < nbas; i++) {
+                int d = ao_loc[i + 1] - ao_loc[i];
+                dmx = d > dmx ? d : dmx;
+                if (bas[i * BAS_SLOTS + NPRIM_OF] > np) np = bas[i * BAS_SLOTS + NPRIM_OF];
+        }
+        int shls_slice[8] = {0, nbas, 0, nbas, 0, nbas, 0, nbas};
+        const size_t cache_size = GTOmax_cache_size(int2e_ip1_cart, shls_slice, 4, atm, natm, bas, nbas, env);
+        const size_t nf4 = (size_t)dmx * dmx * dmx * dmx;
+        const size_t nblk = (size_t)dmx * dmx;
+        const size_t c2 = (size_t)G_MAXCTR * G_MAXCTR;
+        const size_t nwk = (size_t)GGD_NT * np * np + c2 * GGD_NW + c2 * c2 * GGD_NW
+                         + (size_t)(4 * GGD_LMAX + 2) * np * np;
+        const int npair = nbas * (nbas + 1) / 2;
+        GenCtx *cx = SOCVHFgen_ctx_build(atm, natm, bas, nbas, env);
+        const int nthmax = omp_get_max_threads();
+        double **jbufs = calloc(nthmax, sizeof(double *));
+        double **kbufs = calloc(nthmax, sizeof(double *));
+        int nth_used = 1;
+#pragma omp parallel
+{
+        const int tid = omp_get_thread_num();
+#pragma omp single
+        nth_used = omp_get_num_threads();
+        double *wj = calloc(nv, sizeof(double));
+        double *wk = with_k ? calloc(nv, sizeof(double)) : NULL;
+        jbufs[tid] = wj;
+        kbufs[tid] = wk;
+        /* G[pos][x][((i NJ + j) NK + k) NL + l]: d/dR of the position's centre */
+        double *G = malloc(sizeof(double) * 12 * nf4);
+        double *lb = malloc(sizeof(double) * (9 * nf4 + cache_size));
+        double *gwk = malloc(sizeof(double) * nwk);
+        double *loc = malloc(sizeof(double) * 12 * nblk * 6);
+        double *Jij = loc, *Jkl = loc + 12 * nblk;
+        double *Kil = loc + 24 * nblk, *Kjl = loc + 36 * nblk;
+        double *Kik = loc + 48 * nblk, *Kjk = loc + 60 * nblk;
+        int ij, kl, ish, jsh, ksh, lsh, x, pos;
+#pragma omp for schedule(dynamic, 2)
+        for (ij = npair - 1; ij >= 0; ij--) {
+                shell_pair(ij, &ish, &jsh);
+                for (kl = 0; kl <= ij; kl++) {
+                        shell_pair(kl, &ksh, &lsh);
+                        const double q4 = qcond[ish * nbas + jsh] * qcond[ksh * nbas + lsh];
+                        const double dq = dmax2g(dmax2g(dcond[ish * nbas + jsh], dcond[ksh * nbas + lsh]),
+                                                 dmax2g(dmax2g(dcond[ish * nbas + ksh], dcond[ish * nbas + lsh]),
+                                                        dmax2g(dcond[jsh * nbas + ksh], dcond[jsh * nbas + lsh])));
+                        if (q4 * dq < tol) continue;
+                        const int sh[4] = {ish, jsh, ksh, lsh};
+                        int at[4], l[4], nctr[4], s, in_range = 0;
+                        double nfac = 1;
+                        for (s = 0; s < 4; s++) {
+                                const int *b = bas + sh[s] * BAS_SLOTS;
+                                at[s] = b[ATOM_OF];
+                                l[s] = b[ANG_OF];
+                                nctr[s] = b[NCTR_OF];
+                                nfac *= common_fac(l[s]);
+                                in_range |= at[s] >= atm0 && at[s] < atm1;
+                        }
+                        if (!in_range) continue;
+                        const int di = ao_loc[ish + 1] - ao_loc[ish], dj = ao_loc[jsh + 1] - ao_loc[jsh];
+                        const int dk = ao_loc[ksh + 1] - ao_loc[ksh], dl = ao_loc[lsh + 1] - ao_loc[lsh];
+                        const size_t nf = (size_t)di * dj * dk * dl;
+                        const int L = l[0] + l[1] + l[2] + l[3];
+                        int done = 0;
+                        if (fock1_gen_on && L <= GGD_LSUM_MAX && l[0] <= GGD_LMAX && l[1] <= GGD_LMAX
+                            && l[2] <= GGD_LMAX && l[3] <= GGD_LMAX && nctr[0] <= G_MAXCTR && nctr[1] <= G_MAXCTR
+                            && nctr[2] <= G_MAXCTR && nctr[3] <= G_MAXCTR) {
+                                const GPair *B = cx->pair + ij, *K = cx->pair + kl;
+                                if (B->n == 0 || K->n == 0) continue;
+                                const int swap = K->li + K->lj > B->li + B->lj;
+                                if (swap) { const GPair *t_ = B; B = K; K = t_; }
+                                const int sw = swap ? 2 : 0;
+                                const int bs = B->li < B->lj, ks = K->li < K->lj;
+                                const int la = bs ? B->lj : B->li, lb_ = bs ? B->li : B->lj;
+                                const int lc = ks ? K->lj : K->li, ld = ks ? K->li : K->lj;
+                                const int ps[4] = {bs ? 1 : 0, bs ? 0 : 1, ks ? 3 : 2, ks ? 2 : 3};
+                                const size_t stp[4] = {(size_t)dj * dk * dl, (size_t)dk * dl, (size_t)dl, 1};
+                                const size_t ds[4] = {stp[(ps[0] + sw) & 3], stp[(ps[1] + sw) & 3],
+                                                      stp[(ps[2] + sw) & 3], stp[(ps[3] + sw) & 3]};
+                                const double der = (1 + 2 * B->amax) * (1 + 2 * K->amax);
+                                const double cut = prim_tol / (TWO_PI52 * nfac * B->bmax * dmax2g(dq, 1e-300)
+                                                               * B->nc * K->nc * der);
+                                const ggi_fn kern = ggi_table[la][lb_][lc][ld];
+                                if (kern != NULL) {
+                                        if (!kern(lb, nf, ds, ps, B, bs, K, ks, cut, cx->tab, gwk)) continue;
+                                        /* kernel slot s -> position (ps[s] + sw) & 3 */
+                                        const double sc = TWO_PI52 * nfac;
+                                        const int p0 = (ps[0] + sw) & 3, p1 = (ps[1] + sw) & 3, p2 = (ps[2] + sw) & 3;
+                                        const int p3 = 6 - p0 - p1 - p2;
+                                        size_t n;
+                                        for (x = 0; x < 3; x++) {
+                                                double *g0 = G + (p0 * 3 + x) * nf, *g1 = G + (p1 * 3 + x) * nf;
+                                                double *g2 = G + (p2 * 3 + x) * nf, *g3 = G + (p3 * 3 + x) * nf;
+                                                const double *r0 = lb + x * nf, *r1 = lb + (3 + x) * nf, *r2 = lb + (6 + x) * nf;
+                                                for (n = 0; n < nf; n++) {
+                                                        g0[n] = sc * r0[n];
+                                                        g1[n] = sc * r1[n];
+                                                        g2[n] = sc * r2[n];
+                                                        g3[n] = -(g0[n] + g1[n] + g2[n]);
+                                                }
+                                        }
+                                        done = 1;
+                                }
+                        }
+                        if (!done) {
+                                /* libcint: (ij|kl), (ji|kl), (kl|ij), -nabla of the first centre */
+                                double *b0 = lb, *b1 = lb + 3 * nf, *b2 = lb + 6 * nf, *cache = lb + 9 * nf4;
+                                int shls[4] = {ish, jsh, ksh, lsh}, ok = 0;
+                                if (int2e_ip1_cart(b0, NULL, shls, atm, natm, bas, nbas, env, opt, cache)) ok = 1;
+                                else memset(b0, 0, sizeof(double) * 3 * nf);
+                                shls[0] = jsh; shls[1] = ish;
+                                if (int2e_ip1_cart(b1, NULL, shls, atm, natm, bas, nbas, env, opt, cache)) ok = 1;
+                                else memset(b1, 0, sizeof(double) * 3 * nf);
+                                shls[0] = ksh; shls[1] = lsh; shls[2] = ish; shls[3] = jsh;
+                                if (int2e_ip1_cart(b2, NULL, shls, atm, natm, bas, nbas, env, opt, cache)) ok = 1;
+                                else memset(b2, 0, sizeof(double) * 3 * nf);
+                                if (!ok) continue;
+                                int i0, j0, k0, l0;
+                                for (x = 0; x < 3; x++)
+                                for (i0 = 0; i0 < di; i0++)
+                                for (j0 = 0; j0 < dj; j0++)
+                                for (k0 = 0; k0 < dk; k0++)
+                                for (l0 = 0; l0 < dl; l0++) {
+                                        const size_t o = ((i0 * dj + j0) * dk + k0) * dl + l0;
+                                        const double g0 = -b0[x * nf + ((l0 * dk + k0) * dj + j0) * di + i0];
+                                        const double g1 = -b1[x * nf + ((l0 * dk + k0) * di + i0) * dj + j0];
+                                        const double g2 = -b2[x * nf + ((j0 * di + i0) * dl + l0) * dk + k0];
+                                        G[x * nf + o] = g0;
+                                        G[(3 + x) * nf + o] = g1;
+                                        G[(6 + x) * nf + o] = g2;
+                                        G[(9 + x) * nf + o] = -(g0 + g1 + g2);
+                                }
+                        }
+                        double fac = 1.;
+                        if (ish == jsh) fac *= .5;
+                        if (ksh == lsh) fac *= .5;
+                        if (ij == kl) fac *= .5;
+                        memset(loc, 0, sizeof(double) * 12 * nblk * 6);
+                        const size_t i0s = ao_loc[ish], j0s = ao_loc[jsh], k0s = ao_loc[ksh], l0s = ao_loc[lsh];
+                        int i0, j0, k0, l0;
+                        for (i0 = 0; i0 < di; i0++)
+                        for (j0 = 0; j0 < dj; j0++) {
+                                const size_t mu = i0s + i0, nu = j0s + j0;
+                                const double Dmn = dm[mu * nao + nu];
+                                for (k0 = 0; k0 < dk; k0++) {
+                                        const size_t la_ = k0s + k0;
+                                        const double Dnl = dm[nu * nao + la_], Dml = dm[mu * nao + la_];
+                                        for (l0 = 0; l0 < dl; l0++) {
+                                                const size_t si = l0s + l0;
+                                                const size_t o = ((i0 * dj + j0) * dk + k0) * dl + l0;
+                                                const double Dls = dm[la_ * nao + si];
+                                                const double Dns = dm[nu * nao + si], Dms = dm[mu * nao + si];
+                                                for (pos = 0; pos < 4; pos++)
+                                                for (x = 0; x < 3; x++) {
+                                                        const size_t base = (size_t)(pos * 3 + x) * nblk;
+                                                        const double gg = G[(pos * 3 + x) * nf + o] * fac;
+                                                        Jij[base + i0 * dj + j0] += 2 * gg * Dls;
+                                                        Jkl[base + k0 * dl + l0] += 2 * gg * Dmn;
+                                                        if (with_k) {
+                                                                Kil[base + i0 * dl + l0] += gg * Dnl;
+                                                                Kjl[base + j0 * dl + l0] += gg * Dml;
+                                                                Kik[base + i0 * dk + k0] += gg * Dns;
+                                                                Kjk[base + j0 * dk + k0] += gg * Dms;
+                                                        }
+                                                }
+                                        }
+                                }
+                        }
+                        for (pos = 0; pos < 4; pos++) {
+                                if (at[pos] < atm0 || at[pos] >= atm1) continue;
+                                for (x = 0; x < 3; x++) {
+                                        const size_t base = (size_t)(pos * 3 + x) * nblk;
+                                        double *WJ = wj + ((size_t)(at[pos] - atm0) * 3 + x) * nn;
+                                        f1_add_block(WJ, nao, i0s, j0s, Jij + base, di, dj);
+                                        f1_add_block(WJ, nao, k0s, l0s, Jkl + base, dk, dl);
+                                        if (with_k) {
+                                                double *WK = wk + ((size_t)(at[pos] - atm0) * 3 + x) * nn;
+                                                f1_add_block(WK, nao, i0s, l0s, Kil + base, di, dl);
+                                                f1_add_block(WK, nao, j0s, l0s, Kjl + base, dj, dl);
+                                                f1_add_block(WK, nao, i0s, k0s, Kik + base, di, dk);
+                                                f1_add_block(WK, nao, j0s, k0s, Kjk + base, dj, dk);
+                                        }
+                                }
+                        }
+                }
+        }
+#pragma omp barrier
+        f1_reduce(vj, jbufs, nth_used, nv);
+        if (with_k) f1_reduce(vk, kbufs, nth_used, nv);
+#pragma omp barrier
+        free(wj);
+        free(wk);
+        free(G);
+        free(lb);
+        free(gwk);
+        free(loc);
+}
+        free(jbufs);
+        free(kbufs);
+        SOCVHFgen_ctx_free(cx);
+        size_t a, p, q;
+#pragma omp parallel for private(p, q)
+        for (a = 0; a < (size_t)nbat * 3; a++) {
+                double *v = vj + a * nn;
+                for (p = 0; p < nao; p++) {
+                        for (q = 0; q < p; q++) {
+                                const double s = v[p * nao + q] + v[q * nao + p];
+                                v[p * nao + q] = v[q * nao + p] = s;
+                        }
+                        v[p * nao + p] *= 2;
+                }
+                if (with_k) {
+                        v = vk + a * nn;
+                        for (p = 0; p < nao; p++) {
+                                for (q = 0; q < p; q++) {
+                                        const double s = v[p * nao + q] + v[q * nao + p];
+                                        v[p * nao + q] = v[q * nao + p] = s;
+                                }
+                                v[p * nao + p] *= 2;
+                        }
+                }
+        }
+}
