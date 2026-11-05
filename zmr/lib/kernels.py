@@ -774,6 +774,52 @@ def box_copy_strided(mode, arr, mat, nrow, base, stride, dims, doff, ld, alpha=1
                            (ctypes.c_double * 2)(a.real, a.imag), ptr(arr), ptr(mat))
 
 
+def dpd_copy(src, dst, sbase, sstride, dbase, dstride, dims, alpha=1.0, beta=0.0,
+             conj=False):
+    '''Blocks of the flat buffer src (base sbase[b], element strides sstride[b] in the
+    axis order of the target) to the blocks of the flat buffer dst (dbase[b],
+    dstride[b]): dst = beta dst + alpha op(src), op the conjugate with conj; sizes
+    dims[b].  float64 or complex128 buffers of one type.'''
+    i64 = lambda x: numpy.ascontiguousarray(x, dtype=numpy.int64)
+    dims = i64(dims)
+    nblock = dims.shape[0] if dims.ndim == 2 else 0
+    if nblock == 0:
+        return dst
+    ndim = dims.shape[1]
+    sbase, dbase = i64(sbase), i64(dbase)
+    sstride, dstride = i64(sstride).reshape(nblock, ndim), i64(dstride).reshape(nblock, ndim)
+    if src.dtype != dst.dtype or not src.flags.c_contiguous or not dst.flags.c_contiguous:
+        raise ValueError('dpd_copy: contiguous buffers of one type')
+    z = _lib.zmr()
+    real = src.dtype == numpy.float64
+    name = 'zmr_dpd_copy_d' if real else ('zmr_dpd_copy_zc' if conj else 'zmr_dpd_copy_z')
+    if z is None or not hasattr(z, name) or ndim > 16:
+        sf, df = src.reshape(-1), dst.reshape(-1)
+        isz = src.itemsize
+        for b in range(nblock):
+            d = tuple(int(x) for x in dims[b])
+            if not all(d):
+                continue
+            sv = numpy.lib.stride_tricks.as_strided(sf[sbase[b]:], shape=d,
+                                                    strides=tuple(int(x) * isz for x in sstride[b]))
+            dv = numpy.lib.stride_tricks.as_strided(df[dbase[b]:], shape=d,
+                                                    strides=tuple(int(x) * isz for x in dstride[b]))
+            v = alpha * (sv.conj() if conj else sv)
+            dv[...] = v if beta == 0 else beta * dv + v
+        return dst
+    ptr = lambda x: x.ctypes.data_as(ctypes.c_void_p)
+    if real:
+        al, be = (ctypes.c_double * 1)(float(alpha)), (ctypes.c_double * 1)(float(beta))
+    else:
+        a_, b_ = complex(alpha), complex(beta)
+        al = (ctypes.c_double * 2)(a_.real, a_.imag)
+        be = (ctypes.c_double * 2)(b_.real, b_.imag)
+    getattr(z, name)(ctypes.c_int(ndim), ctypes.c_int64(nblock), ptr(sbase), ptr(sstride),
+                     ptr(dbase), ptr(dstride), ptr(dims), al, be, ctypes.c_int(int(conj)),
+                     ptr(src), ptr(dst))
+    return dst
+
+
 def pair_scatter(a, axis, n):
     '''The antisymmetric array whose pairs i < j along `axis` are a: the
     axis becomes two axes of dimension n.'''

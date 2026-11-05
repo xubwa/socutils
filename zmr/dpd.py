@@ -75,11 +75,114 @@ class Group:
         return out
 
 
+class XorGroup:
+    '''The single groups D2h and its subgroups of PySCF: irrep ids (pyscf.symm,
+    mo_coeff.orbsym) multiply by XOR, every irrep is its own conjugate.'''
+
+    name = 'xor'
+
+    def __eq__(self, other):
+        return isinstance(other, XorGroup)
+
+    def __hash__(self):
+        return hash('xor')
+
+    def conj(self, a):
+        return a
+
+    def prod(self, a, b):
+        return numpy.bitwise_xor(a, b) if (numpy.ndim(a) or numpy.ndim(b)) else int(a) ^ int(b)
+
+    def combine(self, irreps, dirs):
+        out = 0
+        for ir in irreps:
+            out = self.prod(out, ir)
+        return out
+
+
+class U1Group:
+    '''An additive integer quantum number (m_l of a linear molecule, 2 S_z, ...):
+    products add, the conjugate is the negative.'''
+
+    name = 'u1'
+
+    def __eq__(self, other):
+        return isinstance(other, U1Group)
+
+    def __hash__(self):
+        return hash('u1')
+
+    def conj(self, a):
+        return -numpy.asarray(a) if numpy.ndim(a) else -int(a)
+
+    def prod(self, a, b):
+        return numpy.add(a, b) if (numpy.ndim(a) or numpy.ndim(b)) else int(a) + int(b)
+
+    def combine(self, irreps, dirs):
+        out = 0
+        for ir, d in zip(irreps, dirs):
+            out = self.prod(out, ir if d > 0 else self.conj(ir))
+        return out
+
+
+class ProductGroup:
+    '''The direct product of groups (e.g. a spatial point group and 2 S_z for spin
+    orbitals): irreps are tuples, one irrep of every factor.'''
+
+    def __init__(self, *groups):
+        self.groups = tuple(groups)
+        self.name = 'x'.join(str(getattr(g, 'name', g)) for g in groups)
+
+    def __eq__(self, other):
+        return isinstance(other, ProductGroup) and self.groups == other.groups
+
+    def __hash__(self):
+        return hash(self.groups)
+
+    def conj(self, a):
+        if a == 0:
+            return 0
+        return tuple(g.conj(x) for g, x in zip(self.groups, a))
+
+    def prod(self, a, b):
+        if a == 0:
+            return b
+        if b == 0:
+            return a
+        return tuple(g.prod(x, y) for g, x, y in zip(self.groups, a, b))
+
+    def combine(self, irreps, dirs):
+        out = tuple(0 for _ in self.groups)
+        for ir, d in zip(irreps, dirs):
+            out = self.prod(out, ir if d > 0 else self.conj(ir))
+        return out
+
+    def identity(self):
+        return tuple(0 for _ in self.groups)
+
+
+def _irrep(x):
+    '''An irrep as a hashable key: int, or a tuple of ints for a product group.'''
+    if isinstance(x, tuple):
+        return tuple(int(y) for y in x)
+    return int(x)
+
+
+def as_group(group):
+    '''A group object: one with prod / conj / combine as is, a socutils double-group name
+    or None (no symmetry) as Group.'''
+    if hasattr(group, 'prod') and hasattr(group, 'combine'):
+        return group
+    return Group(group)
+
+
 class Leg:
     '''An index: sectors of one irrep each, in order (irrep None: no symmetry).'''
 
     def __init__(self, irreps, sizes, name=''):
-        self.irreps = tuple(None if x is None else int(x) for x in irreps)
+        self.irreps = tuple(None if x is None else (tuple(int(y) for y in x)
+                                                     if isinstance(x, tuple) else int(x))
+                            for x in irreps)
         self.sizes = tuple(int(n) for n in sizes)
         self.offsets = numpy.concatenate([[0], numpy.cumsum(self.sizes, dtype=int)])
         self.name = name
@@ -143,7 +246,7 @@ class _Side:
             if size == 0:
                 continue
             if symmetric:
-                h = int(group.combine([leg.irreps[s] for leg, s in zip(legs, sec)], dirs))
+                h = _irrep(group.combine([leg.irreps[s] for leg, s in zip(legs, sec)], dirs))
             else:
                 h = None
             off = self.total.get(h, 0)
@@ -184,7 +287,7 @@ class Structure:
         '''Composite irrep of the columns of M[h]: conj(h) x irrep.'''
         if h is None or not self.symmetric:
             return None
-        return int(self.group.prod(self.group.conj(h), self.irrep))
+        return _irrep(self.group.prod(self.group.conj(h), self.irrep))
 
     @property
     def shape(self):
@@ -194,13 +297,14 @@ class Structure:
 class Tensor:
     '''A tensor in the DPD layout (see the module documentation).'''
 
-    def __init__(self, legs, dirs, split, group=None, irrep=0, data=None):
-        group = group if isinstance(group, Group) else Group(group)
+    def __init__(self, legs, dirs, split, group=None, irrep=0, data=None,
+                 dtype=numpy.complex128):
+        group = as_group(group)
         self.structure = Structure(tuple(legs), tuple(int(d) for d in dirs), split, group,
                                    irrep)
         st = self.structure
         if data is None:
-            data = numpy.zeros(st.size, dtype=numpy.complex128)
+            data = numpy.zeros(st.size, dtype=dtype)
         if data.size != st.size:
             raise ValueError('data of size %d for a structure of size %d' % (data.size, st.size))
         self.data = data
@@ -250,12 +354,14 @@ class Tensor:
         return numpy.concatenate(out)
 
     @classmethod
-    def from_dense(cls, a, legs, dirs, split, group=None, irrep=0):
+    def from_dense(cls, a, legs, dirs, split, group=None, irrep=0, dtype=None):
         '''The elements of a allowed by symmetry (the others are dropped).'''
-        t = cls(legs, dirs, split, group, irrep)
+        a = numpy.asarray(a)
+        dtype = dtype or (numpy.float64 if a.dtype.kind in 'fiu' else numpy.complex128)
+        t = cls(legs, dirs, split, group, irrep, dtype=dtype)
         st = t.structure
         rl, cl = st.legs[:split], st.legs[split:]
-        a2 = numpy.asarray(a, dtype=numpy.complex128).reshape(
+        a2 = numpy.asarray(a, dtype=dtype).reshape(
             int(numpy.prod([x.size for x in rl], dtype=int)),
             int(numpy.prod([x.size for x in cl], dtype=int)))
         for h, (_, hc, _, _, _) in st.matrices.items():
@@ -269,7 +375,7 @@ class Tensor:
         rl, cl = st.legs[:st.split], st.legs[st.split:]
         nr = int(numpy.prod([x.size for x in rl], dtype=int))
         nc = int(numpy.prod([x.size for x in cl], dtype=int))
-        out = numpy.zeros((nr, nc), dtype=numpy.complex128)
+        out = numpy.zeros((nr, nc), dtype=self.data.dtype)
         for h, (_, hc, _, _, _) in st.matrices.items():
             ri = self._index_arrays(st.rows, rl, h)
             ci = self._index_arrays(st.cols, cl, hc)
@@ -305,6 +411,10 @@ class Tensor:
         st = self.structure
         return Tensor(st.legs, st.dirs, st.split, st.group, st.irrep, self.data.copy())
 
+    @property
+    def dtype(self):
+        return self.data.dtype
+
     def conj(self):
         '''Complex conjugate; the directions are reversed (and the irrep conjugated).'''
         st = self.structure
@@ -325,27 +435,42 @@ class Tensor:
         return self
 
 
-def sort(t, order, split):
+def sort_axpy(dst, src, perm, alpha=1.0, beta=1.0, conj=False):
+    '''dst = beta dst + alpha (conj) src.transpose(perm), block by block, one native call
+    (axis k of the permuted src is leg perm[k] of src).  Every block of src must be a
+    block of dst after the permutation; the blocks of dst that src does not have are
+    only scaled by beta.'''
+    from socutils.zmr.lib import kernels
+    perm = tuple(perm)
+    sb = _permuted_boxes(src, perm)
+    db = dst.boxes()
+    keys = [k for k in sb if k in db]
+    if not keys:
+        if beta != 1.0:
+            dst.data *= beta
+        return dst
+    if beta not in (0.0, 1.0) and len(keys) < len(db):
+        dst.data *= beta
+        beta = 1.0
+    if beta == 0.0 and len(keys) < len(db):
+        dst.data[...] = 0
+    kernels.dpd_copy(src.data, dst.data, [sb[k][0] for k in keys], [sb[k][1] for k in keys],
+                     [db[k][0] for k in keys], [db[k][1] for k in keys],
+                     [db[k][2] for k in keys], alpha, beta, conj)
+    return dst
+
+
+def sort(t, order, split, conj=False):
     '''t with its legs in the order `order` (a permutation of range(rank)) and the first
-    `split` of them as row legs.'''
+    `split` of them as row legs (the "sort" of DPD codes); one native call.'''
     st = t.structure
     legs = tuple(st.legs[k] for k in order)
     dirs = tuple(st.dirs[k] for k in order)
-    out = Tensor(legs, dirs, split, st.group, st.irrep)
-    new = out.structure
-    rank = len(order)
-    for h, (_, hc, _, _, _) in st.matrices.items():
-        m = t.matrix(h)
-        for rsec, roff, rsize in st.rows.groups[h]:
-            for csec, coff, csize in st.cols.groups[hc]:
-                sec = rsec + csec
-                blk = m[roff:roff + rsize, coff:coff + csize].reshape(
-                    [st.legs[k].sizes[sec[k]] for k in range(rank)])
-                nsec = tuple(sec[k] for k in order)
-                h2, r2, n2 = new.rows.where[nsec[:split]]
-                hc2, c2, m2 = new.cols.where[nsec[split:]]
-                out.matrix(h2)[r2:r2 + n2, c2:c2 + m2] = blk.transpose(order).reshape(n2, m2)
-    return out
+    if conj:
+        dirs = tuple(-d for d in dirs)
+    out = Tensor(legs, dirs, split, st.group, st.group.conj(st.irrep) if conj else st.irrep,
+                 dtype=t.data.dtype)
+    return sort_axpy(out, t, order, 1.0, 0.0, conj)
 
 
 def contract(a, b):
@@ -360,20 +485,22 @@ def contract(a, b):
     if sa.group != sb.group:
         raise ValueError('different groups')
     irrep = sa.group.prod(sa.irrep, sb.irrep) if sa.symmetric else 0
+    from socutils.zmr.lib import linalg as la
     out = Tensor(sa.legs[:sa.split] + sb.legs[sb.split:],
-                 sa.dirs[:sa.split] + sb.dirs[sb.split:], sa.split, sa.group, irrep)
+                 sa.dirs[:sa.split] + sb.dirs[sb.split:], sa.split, sa.group, irrep,
+                 dtype=numpy.result_type(a.data.dtype, b.data.dtype))
     for h, ma in a.matrices():
         if ma is None:
             continue
         # the columns of a (irrep hc of a) are rows of b of the conjugate irrep with
         # the reversed directions, i.e. of irrep conj(hc) in b
         hc = sa.matrices[h][1]
-        hb = None if hc is None else int(sa.group.conj(hc))
+        hb = None if hc is None else _irrep(sa.group.conj(hc))
         mb = b.matrix(hb)
         mo = out.matrix(h)
         if mb is None or mo is None:
             continue
-        mo += ma @ mb
+        la.gemm(ma, mb, out=mo, beta=1.0)
     return out
 
 
@@ -525,29 +652,5 @@ def _permuted_boxes(t, perm):
 
 def add_permuted(dst, src, perm, alpha=1.0, conj=False, assign=False):
     '''dst += alpha (conj) src.transpose(perm), block by block (assign: dst = ...);
-    axis k of the permuted src is leg perm[k] of src.  The blocks of src must be blocks
-    of dst (same legs after the permutation).'''
-    from socutils.zmr.lib import kernels
-    sboxes = _permuted_boxes(src, perm)
-    dboxes = dst.boxes()
-    keys = [k for k in sboxes if k in dboxes]
-    if not keys:
-        return dst
-    rank = len(perm)
-    nrow = max(1, rank // 2) if rank > 1 else rank
-    nrow = min(nrow, rank)
-    doff, ld, off = [], [], 0
-    for k in keys:
-        sz = sboxes[k][2]
-        nc = int(numpy.prod(sz[nrow:], dtype=int))
-        doff.append(off)
-        ld.append(nc)
-        off += int(numpy.prod(sz, dtype=int))
-    buf = numpy.empty(off, dtype=numpy.complex128)
-    dims = [sboxes[k][2] for k in keys]
-    kernels.box_copy_strided(0, src.data, buf, nrow, [sboxes[k][0] for k in keys],
-                             [sboxes[k][1] for k in keys], dims, doff, ld, conj=conj)
-    kernels.box_copy_strided(1 if assign else 2, dst.data, buf, nrow,
-                             [dboxes[k][0] for k in keys], [dboxes[k][1] for k in keys],
-                             dims, doff, ld, alpha=alpha)
-    return dst
+    axis k of the permuted src is leg perm[k] of src (sort_axpy).'''
+    return sort_axpy(dst, src, perm, alpha, 0.0 if assign else 1.0, conj)

@@ -170,6 +170,18 @@ void zmr_box_copy_strided(int mode, int conj_, int ndim, int nrow, int64_t nbox,
                           const int64_t *base, const int64_t *stride, const int64_t *dims,
                           const int64_t *doff, const int64_t *ld, const double *alpha,
                           double complex *arr, double complex *mat);
+void zmr_dpd_copy_d(int ndim, int64_t nblock, const int64_t *sbase, const int64_t *sstride,
+                    const int64_t *dbase, const int64_t *dstride, const int64_t *dims,
+                    const double *alpha, const double *beta, int conj_, const double *src,
+                    double *dst);
+void zmr_dpd_copy_z(int ndim, int64_t nblock, const int64_t *sbase, const int64_t *sstride,
+                    const int64_t *dbase, const int64_t *dstride, const int64_t *dims,
+                    const double complex *alpha, const double complex *beta, int conj_,
+                    const double complex *src, double complex *dst);
+void zmr_dpd_copy_zc(int ndim, int64_t nblock, const int64_t *sbase, const int64_t *sstride,
+                     const int64_t *dbase, const int64_t *dstride, const int64_t *dims,
+                     const double complex *alpha, const double complex *beta, int conj_,
+                     const double complex *src, double complex *dst);
 void zmr_pair_gather(int64_t nl, int64_t n, int64_t nt,
                      const double complex *src, double complex *dst);
 void zmr_pair_scatter(int64_t nl, int64_t n, int64_t nt,

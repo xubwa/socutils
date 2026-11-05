@@ -2673,6 +2673,58 @@ void zmr_box_copy_strided(int mode, int conj_, int ndim, int nrow, int64_t nbox,
         }
 }
 
+/* Block copies of the DPD layer (sort / sort_axpy): block b of src, at element
+ * sbase[b] with element strides sstride[b * ndim + k] along the axes of the target
+ * order, goes to the block of dst at dbase[b] with strides dstride[b * ndim + k];
+ * sizes dims[b * ndim + k].  dst = beta dst + alpha op(src), op the complex conjugate
+ * with conj_ (beta 0: dst is overwritten, whatever it held).  The axes are walked in
+ * C order of the target, the last one innermost; OpenMP over the blocks. */
+#define ZMR_BLOCK_COPY(NAME, T, CONJ)                                                    \
+void NAME(int ndim, int64_t nblock, const int64_t *sbase, const int64_t *sstride,       \
+          const int64_t *dbase, const int64_t *dstride, const int64_t *dims,            \
+          const T *alpha_, const T *beta_, int conj_, const T *src, T *dst)               \
+{                                                                                         \
+        const T alpha = *alpha_, beta = *beta_;                                           \
+        _Pragma("omp parallel for schedule(dynamic, 1)")                                  \
+        for (int64_t b = 0; b < nblock; b++) {                                            \
+                const int64_t *d = dims + b * ndim;                                       \
+                const int64_t *ss = sstride + b * ndim, *ds = dstride + b * ndim;         \
+                int64_t n = 1;                                                            \
+                for (int k = 0; k < ndim; k++) n *= d[k];                                 \
+                if (n == 0) continue;                                                     \
+                int64_t idx[16] = {0};                                                    \
+                const T *sp = src + sbase[b];                                             \
+                T *dp = dst + dbase[b];                                                   \
+                const int last = ndim - 1;                                                \
+                const int64_t nl = d[last], sl = ss[last], dl = ds[last];                 \
+                for (int64_t done = 0; done < n; done += nl) {                            \
+                        int64_t so = 0, dof = 0;                                          \
+                        for (int k = 0; k < last; k++) {                                  \
+                                so += idx[k] * ss[k];                                     \
+                                dof += idx[k] * ds[k];                                    \
+                        }                                                                 \
+                        const T *s0 = sp + so;                                            \
+                        T *d0 = dp + dof;                                                 \
+                        if (beta == 0) {                                                  \
+                                for (int64_t i = 0; i < nl; i++)                          \
+                                        d0[i * dl] = alpha * CONJ(s0[i * sl]);            \
+                        } else {                                                          \
+                                for (int64_t i = 0; i < nl; i++)                          \
+                                        d0[i * dl] = beta * d0[i * dl]                    \
+                                                     + alpha * CONJ(s0[i * sl]);          \
+                        }                                                                 \
+                        for (int k = last - 1; k >= 0; k--) {                             \
+                                if (++idx[k] < d[k]) break;                               \
+                                idx[k] = 0;                                               \
+                        }                                                                 \
+                }                                                                         \
+        }                                                                                 \
+}
+#define ZMR_ID(x) (x)
+ZMR_BLOCK_COPY(zmr_dpd_copy_d, double, ZMR_ID)
+ZMR_BLOCK_COPY(zmr_dpd_copy_z, double complex, ZMR_ID)
+ZMR_BLOCK_COPY(zmr_dpd_copy_zc, double complex, conj)
+
 /* The antisymmetric array: dst[l, i, j, t] = src[l, p, t], dst[l, j, i, t] =
  * -src[l, p, t], zero on the diagonal; dst (nl, n, n, nt) is overwritten. */
 void zmr_pair_scatter(int64_t nl, int64_t n, int64_t nt,

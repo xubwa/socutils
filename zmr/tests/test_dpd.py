@@ -207,3 +207,40 @@ def test_view_and_add_permuted(group):
     assert abs(u.to_dense() - (b + 0.5 * a.transpose(2, 3, 0, 1).conj())).max() < 1e-14
     dpd.add_permuted(u, t, (2, 3, 0, 1), conj=True, assign=True)
     assert abs(u.to_dense() - a.transpose(2, 3, 0, 1).conj()).max() < 1e-14
+
+
+@pytest.mark.parametrize('kind', ['xor', 'u1xu1', 'real'])
+def test_other_groups(kind):
+    '''The same tensors for a PySCF single group (XOR), a product of two additive groups
+    (e.g. m_l and 2 S_z of spin orbitals), and real data: round trip, sort, contract.'''
+    rng = numpy.random.default_rng(11)
+    if kind in ('xor', 'real'):
+        group, irs = dpd.XorGroup(), [0, 1, 2, 3, 5, 7]
+    else:
+        group = dpd.ProductGroup(dpd.U1Group(), dpd.U1Group())
+        irs = [(m, s) for m in (-2, 0, 2) for s in (-1, 1)]
+    def leg():
+        k = rng.integers(1, len(irs) + 1)
+        chosen = [irs[i] for i in sorted(rng.choice(len(irs), size=k, replace=False))]
+        return dpd.Leg(chosen, rng.integers(1, 4, size=k))
+    def mask(legs, dirs):
+        shape = [x.size for x in legs]
+        out = numpy.zeros(shape, dtype=bool)
+        orb = [[ir for ir, n in zip(x.irreps, x.sizes) for _ in range(n)] for x in legs]
+        for idx in numpy.ndindex(*shape):
+            out[idx] = group.combine([orb[k][i] for k, i in enumerate(idx)], dirs) in (0, (0, 0))
+        return out
+    i, j, a, b, c = (leg() for _ in range(5))
+    real = kind == 'real'
+    def rnd(legs, dirs):
+        shape = [x.size for x in legs]
+        x = rng.normal(size=shape) + (0 if real else 1j * rng.normal(size=shape))
+        x = numpy.where(mask(legs, dirs), x, 0)
+        return x, dpd.Tensor.from_dense(x, legs, dirs, 2, group)
+    ta, t = rnd([i, j, a, b], (-1, -1, 1, 1))
+    va, v = rnd([a, b, c, j], (-1, -1, 1, 1))
+    assert t.dtype == (numpy.float64 if real else numpy.complex128)
+    assert abs(t.to_dense() - ta).max() < 1e-14
+    assert abs(dpd.sort(t, (2, 3, 0, 1), 2).to_dense() - ta.transpose(2, 3, 0, 1)).max() < 1e-14
+    out = dpd.einsum('ijab,abcd->ijcd', t, v)
+    assert abs(out.to_dense() - numpy.einsum('ijab,abcd->ijcd', ta, va)).max() < 1e-12
