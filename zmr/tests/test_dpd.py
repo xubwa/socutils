@@ -276,6 +276,24 @@ def test_permuted_conversions_and_flipped(group):
     u = dpd.Tensor(legs, (-1, -1, 1, 1), 2, group)
     dpd.dense_to_tensor(x.transpose(perm), u)
     assert abs(u.data - t.data).max() == 0
+    # an array in Fortran order (read in place)
+    u = dpd.Tensor(legs, (-1, -1, 1, 1), 2, group)
+    xf = numpy.asfortranarray(x)
+    flat, _, _ = dpd._flat(xf.transpose(perm), u.data.dtype)
+    assert numpy.shares_memory(flat, xf)
+    dpd.dense_to_tensor(xf, u, perm=perm)
+    assert abs(u.data - t.data).max() == 0
+    # an owner of permuted axes (a ufunc of a transposed array keeps its layout)
+    xp = 1.0 * numpy.ascontiguousarray(a).transpose(1, 3, 0, 2)
+    assert xp.base is None and not xp.flags.c_contiguous and not xp.flags.f_contiguous
+    flat, _, _ = dpd._flat(xp, u.data.dtype)
+    assert numpy.shares_memory(flat, xp)
+    u = dpd.Tensor(legs, (-1, -1, 1, 1), 2, group)
+    dpd.dense_to_tensor(xp, u, perm=(2, 0, 3, 1))
+    assert abs(u.data - t.data).max() == 0
+    yf = numpy.zeros_like(xf)
+    dpd.tensor_to_dense(t, yf, perm=perm)
+    assert abs(yf - x).max() == 0
     y = numpy.zeros_like(x)
     dpd.tensor_to_dense(t, y, perm=perm, conj=True, beta=1.0)
     assert abs(y - x.conj()).max() == 0

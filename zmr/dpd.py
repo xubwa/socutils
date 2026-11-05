@@ -444,20 +444,61 @@ class Tensor:
         return self
 
 
+def _one_piece(x):
+    '''Whether the elements of x fill one contiguous piece of memory from its first
+    element on (positive strides that are a permutation of those of a dense array).'''
+    if x.flags.c_contiguous:
+        return True
+    dims = sorted((st, n) for st, n in zip(x.strides, x.shape) if n > 1)
+    want = x.itemsize
+    for st, n in dims:
+        if st != want:
+            return False
+        want *= n
+    return True
+
+
 def _flat(a, dtype):
-    '''(flat buffer, element strides) of a: a view of a C-contiguous array (a transpose
-    of one, say) keeps its base, anything else is copied.'''
+    '''(flat buffer, element strides, offset) of a: a view of an array in one contiguous
+    piece of memory (C or Fortran order, axes in any order) keeps its base,
+    anything else is copied.'''
     base = a
-    while isinstance(base, numpy.ndarray) and base.base is not None and \
-            isinstance(base.base, numpy.ndarray):
+    while isinstance(base, numpy.ndarray) and isinstance(base.base, numpy.ndarray):
         base = base.base
     if (a.dtype == dtype and isinstance(base, numpy.ndarray) and base.dtype == dtype
-            and base.flags.c_contiguous and all(st % a.itemsize == 0 for st in a.strides)):
-        off = (a.__array_interface__['data'][0] - base.__array_interface__['data'][0])
-        if off % a.itemsize == 0 and 0 <= off // a.itemsize < max(base.size, 1):
-            return base.reshape(-1), [st // a.itemsize for st in a.strides], off // a.itemsize
+            and _one_piece(base) and all(st % a.itemsize == 0 for st in a.strides)):
+        flat = numpy.lib.stride_tricks.as_strided(base, shape=(base.size,),
+                                                  strides=(base.itemsize,))
+        off = a.__array_interface__['data'][0] - flat.__array_interface__['data'][0]
+        if off % a.itemsize == 0 and 0 <= off // a.itemsize < max(flat.size, 1):
+            return flat, [st // a.itemsize for st in a.strides], off // a.itemsize
     a = numpy.ascontiguousarray(a, dtype=dtype)
     return a.reshape(-1), [st // a.itemsize for st in a.strides], 0
+
+
+def _dense_plan(t, stride):
+    '''(dense bases, dense strides, tensor bases, tensor strides, sizes) of the blocks of
+    t as int64 arrays, a dense array of the element strides `stride` in the order of
+    the legs; kept on the structure.'''
+    st = t.structure
+    cache = st.__dict__.setdefault('_dense_plans', {})
+    key = tuple(stride)
+    hit = cache.get(key)
+    if hit is not None:
+        return hit
+    boxes = t.boxes()
+    keys = list(boxes)
+    legs = t.legs
+    i64 = lambda x, n: numpy.asarray(x, dtype=numpy.int64).reshape(n)
+    nb, nd = len(keys), len(legs)
+    hit = (i64([sum(int(legs[k].offsets[sec[k]]) * stride[k] for k in range(nd))
+                for sec in keys], (nb,)),
+           numpy.ascontiguousarray(numpy.broadcast_to(i64(stride, (nd,)), (nb, nd))),
+           i64([boxes[k][0] for k in keys], (nb,)),
+           i64([boxes[k][1] for k in keys], (nb, nd)),
+           i64([boxes[k][2] for k in keys], (nb, nd)))
+    cache[key] = hit
+    return hit
 
 
 def dense_to_tensor(a, t, alpha=1.0, beta=0.0, conj=False, perm=None):
@@ -468,19 +509,14 @@ def dense_to_tensor(a, t, alpha=1.0, beta=0.0, conj=False, perm=None):
     a = numpy.asarray(a)
     if perm is not None:
         a = a.transpose(perm)
-    boxes = t.boxes()
-    if not boxes:
+    if not t.boxes():
         if beta != 1.0:
             t.data *= beta
         return t
     flat, stride, off = _flat(a, t.data.dtype)
-    keys = list(boxes)
-    legs = t.legs
-    sbase = [off + sum(int(legs[k].offsets[sec[k]]) * stride[k] for k in range(len(legs)))
-             for sec in keys]
-    kernels.dpd_copy(flat, t.data, sbase, [stride] * len(keys),
-                     [boxes[k][0] for k in keys], [boxes[k][1] for k in keys],
-                     [boxes[k][2] for k in keys], alpha, beta, conj)
+    dbase, dstride, tbase, tstride, dims = _dense_plan(t, stride)
+    kernels.dpd_copy(flat, t.data, dbase + off, dstride, tbase, tstride, dims,
+                     alpha, beta, conj)
     return t
 
 
@@ -494,20 +530,15 @@ def tensor_to_dense(t, out=None, alpha=1.0, beta=0.0, conj=False, perm=None):
             t.shape[k] for k in numpy.argsort(perm))
         out = numpy.zeros(shape, dtype=t.data.dtype)
         beta = 0.0
-    boxes = t.boxes()
-    if not boxes:
+    if not t.boxes():
         return out
     view = out if perm is None else out.transpose(perm)
     flat, stride, off = _flat(view, t.data.dtype)
     if not numpy.shares_memory(flat, out):
         raise ValueError('tensor_to_dense: out must be a view of a C-contiguous array')
-    keys = list(boxes)
-    legs = t.legs
-    dbase = [off + sum(int(legs[k].offsets[sec[k]]) * stride[k] for k in range(len(legs)))
-             for sec in keys]
-    kernels.dpd_copy(t.data, flat, [boxes[k][0] for k in keys],
-                     [boxes[k][1] for k in keys], dbase, [stride] * len(keys),
-                     [boxes[k][2] for k in keys], alpha, beta, conj)
+    dbase, dstride, tbase, tstride, dims = _dense_plan(t, stride)
+    kernels.dpd_copy(t.data, flat, tbase, tstride, dbase + off, dstride, dims,
+                     alpha, beta, conj)
     return out
 
 
@@ -518,22 +549,43 @@ def sort_axpy(dst, src, perm, alpha=1.0, beta=1.0, conj=False):
     only scaled by beta.'''
     from socutils.zmr.lib import kernels
     perm = tuple(perm)
-    sb = _permuted_boxes(src, perm)
-    db = dst.boxes()
-    keys = [k for k in sb if k in db]
-    if not keys:
+    plan = _sort_plan(src, perm, dst)
+    if plan is None:
         if beta != 1.0:
             dst.data *= beta
         return dst
-    if beta not in (0.0, 1.0) and len(keys) < len(db):
+    complete = plan[5]
+    if beta not in (0.0, 1.0) and not complete:
         dst.data *= beta
         beta = 1.0
-    if beta == 0.0 and len(keys) < len(db):
+    if beta == 0.0 and not complete:
         dst.data[...] = 0
-    kernels.dpd_copy(src.data, dst.data, [sb[k][0] for k in keys], [sb[k][1] for k in keys],
-                     [db[k][0] for k in keys], [db[k][1] for k in keys],
-                     [db[k][2] for k in keys], alpha, beta, conj)
+    kernels.dpd_copy(src.data, dst.data, *plan[:5], alpha, beta, conj)
     return dst
+
+
+_SORT_PLANS = {}
+
+
+def _sort_plan(src, perm, dst):
+    '''(src bases, src strides, dst bases, dst strides, sizes, whether every block of dst
+    is written) of sort_axpy as int64 arrays, None if no block is shared; cached by
+    the two structures and perm.'''
+    key = (src.structure, perm, dst.structure)
+    if key in _SORT_PLANS:
+        return _SORT_PLANS[key]
+    sb = _permuted_boxes(src, perm)
+    db = dst.boxes()
+    keys = [k for k in sb if k in db]
+    plan = None
+    if keys:
+        nb, nd = len(keys), len(perm)
+        i64 = lambda x, n: numpy.asarray(x, dtype=numpy.int64).reshape(n)
+        plan = (i64([sb[k][0] for k in keys], (nb,)), i64([sb[k][1] for k in keys], (nb, nd)),
+                i64([db[k][0] for k in keys], (nb,)), i64([db[k][1] for k in keys], (nb, nd)),
+                i64([db[k][2] for k in keys], (nb, nd)), len(keys) == len(db))
+    _SORT_PLANS[key] = plan
+    return plan
 
 
 def sort(t, order, split, conj=False):
