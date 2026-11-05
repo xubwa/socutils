@@ -96,6 +96,10 @@ p.add_argument('--nsm-dir', default=None,
                help='dopant-atom CFOUR directory (config.py with BASIS_MAP/GENBAS, SOSFMO2C): <W_NSM> of CASCI root 0')
 p.add_argument('--grids-level', type=int, default=4)
 p.add_argument('--stop-after-scf', action='store_true', help='stop after the SCF (scf_<xc>.npz written)')
+p.add_argument('--thc-symm-grid', action='store_true',
+               help='THCJK: uniform grid and interpolation points with the space group symmetry (whole orbits); '
+                    'the default when the cell has symmetry')
+p.add_argument('--thc-no-symm-grid', action='store_true', help='THCJK: no symmetric grid / points')
 p.add_argument('--thc-no-far', action='store_true', help='THCJK: no far-field fit of the CX pairs beyond the clusters')
 p.add_argument('--thc-isdf-cut', type=float, default=None, help='THCJK: relative eigenvalue cut of the ISDF Gram matrix')
 p.add_argument('--no-cahf', action='store_true', help='CASCI directly on the fractional-occupation orbitals')
@@ -236,6 +240,10 @@ if args.jk == 'thc':
     jkobj.stream = True                       # streamed V/A: memory bounded by the budget
     if args.thc_no_far:
         jkobj.far_fit = False
+    if args.thc_symm_grid:
+        jkobj.symm_grid = True
+    if args.thc_no_symm_grid:
+        jkobj.symm_grid = False
     if args.thc_isdf_cut:
         jkobj.isdf_cut = args.thc_isdf_cut
     jkobj.verbose = root

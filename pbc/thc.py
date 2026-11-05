@@ -103,6 +103,122 @@ def pivots_blocked(phi, kmax, b=64, over=4, tol=1e-14):
     return np.array(piv), L[:k]
 
 
+def space_group_ops(cell, symprec=1e-3):
+    '''Space group of the cell (spglib): rotations (n, 3, 3) on fractional coordinates, translations (n, 3).'''
+    try:
+        import spglib
+    except ImportError:                                                # no spglib: P1 (no symmetry used)
+        return np.eye(3, dtype=int)[None], np.zeros((1, 3)), 'P1 (no spglib)'
+    a = np.asarray(cell.lattice_vectors())
+    frac = cell.atom_coords() @ np.linalg.inv(a)
+    nums = [cell.atom_charge(i) * 1000 + sum(map(ord, cell.atom_symbol(i))) for i in range(cell.natm)]
+    ds = spglib.get_symmetry_dataset((a, frac, nums), symprec=symprec)  # basis labels distinguish (Eu vs Eu1)
+    if ds is None:
+        return np.eye(3, dtype=int)[None], np.zeros((1, 3)), 'P1 (spglib failed)'
+    return np.asarray(ds.rotations), np.asarray(ds.translations) % 1, ds.international
+
+
+def symmetric_mesh(mesh, ops, factor=1):
+    '''The smallest mesh >= mesh mapped onto itself by every space group operation (t * mesh integer, axes that a
+    rotation couples equal), every entry a multiple of factor (then mesh // factor is such a mesh as well).'''
+    R, T = ops
+    m = np.array(mesh, dtype=int)
+    den = np.ones(3, dtype=int)
+    for t in T:
+        for i in range(3):
+            for d in range(1, 49):
+                if abs(t[i] * d - round(t[i] * d)) < 1e-6:
+                    den[i] = np.lcm(den[i], d)
+                    break
+    step = den * factor
+    for _ in range(10):
+        m = -(-m // step) * step
+        m0 = m.copy()
+        for r in R:
+            for i in range(3):
+                for j in range(3):
+                    if r[i, j] != 0:
+                        m[i] = m[j] = max(m[i], m[j])
+        if (m == m0).all():
+            break
+    return m
+
+
+def grid_orbits(mesh, ops):
+    '''orbit[p]: index of the orbit of grid point p under the space group (the grid must be symmetric_mesh), and the
+    member list of every orbit.'''
+    R, T = ops
+    mesh = np.asarray(mesh)
+    ng = int(np.prod(mesh))
+    ijk = np.stack(np.unravel_index(np.arange(ng), mesh), -1)
+    imgs = np.empty((len(R), ng), dtype=np.int64)
+    for k, (r, t) in enumerate(zip(R, T)):
+        f = ijk @ r.T + np.rint(t * mesh).astype(int)
+        imgs[k] = np.ravel_multi_index((f % mesh).T, mesh)
+    rep = imgs.min(axis=0)                                           # orbit label: smallest member
+    _, orbit = np.unique(rep, return_inverse=True)
+    order = np.argsort(orbit, kind='stable')
+    bounds = np.searchsorted(orbit[order], np.arange(orbit.max() + 2))
+    members = [order[bounds[o]:bounds[o + 1]] for o in range(len(bounds) - 1)]
+    return orbit, members
+
+
+def pivots_orbits(phi, kmax, orbit, members, b=64, over=4, tol=1e-14):
+    '''pivots_blocked with whole symmetry orbits: the Gram kernel is invariant under the space group (phi spans
+    symmetry-closed shells), so a pivot set made of complete orbits keeps the residual symmetric and the point set
+    (and the ISDF fit on the symmetric grid) has the symmetry of the crystal.  Up to kmax points (whole orbits).'''
+    ng = len(phi)
+    L = np.zeros((kmax + 64, ng))
+    res = np.einsum('ri,ri->r', phi, phi) ** 2
+    dmax = res.max()
+    piv = []
+    k = 0
+    while k < kmax:
+        m = min(over * b, ng)
+        top = np.argpartition(-res, m - 1)[:m]
+        top = top[np.argsort(-res[top])]
+        if res[top[0]] <= tol * dmax:
+            break
+        _, first = np.unique(orbit[top], return_index=True)
+        orbs = orbit[top[np.sort(first)]]                            # candidate orbits, by residual
+        cand = np.concatenate([members[o] for o in orbs])
+        Cc = (phi @ phi[cand].T) ** 2
+        if k:
+            Cc -= L[:k].T @ L[:k][:, cand]
+        rc = res[cand].copy()
+        pos = {int(c): i for i, c in enumerate(cand)}
+        new = []
+        for o in orbs:
+            mem = members[o]
+            if k + len(new) + len(mem) > kmax + 63 or len(new) >= b:
+                break
+            if max(rc[pos[int(q)]] for q in mem) <= tol * dmax:
+                continue
+            for q in mem:
+                iq = pos[int(q)]
+                row = Cc[:, iq].copy()
+                for r_ in new:
+                    row -= r_ * r_[q]
+                d = rc[iq]
+                if d <= 1e-300:
+                    d = max(res[q] - sum(r_[q] ** 2 for r_ in new), 1e-300)
+                row /= np.sqrt(d)
+                new.append(row)
+                piv.append(int(q))
+                rc -= row[cand] ** 2
+                rc[iq] = 0.
+            if k + len(new) >= kmax:
+                break
+        if not new:
+            break
+        L[k:k + len(new)] = new
+        res -= (np.asarray(new) ** 2).sum(axis=0)
+        np.maximum(res, 0, out=res)
+        res[piv[-len(new):]] = 0.
+        k += len(new)
+    return np.array(piv), L[:k]
+
+
 def isdf_xi(L, piv, nmu):
     '''Lu-Ying least-squares interpolation vectors for the first nmu pivots, xi (nmu, ngrid):
     xi = G[:, P] G[P, P]^-1 = L^T L[:, P]^-T with the Cholesky factor (L[:, P] is upper triangular in pivot
@@ -507,6 +623,19 @@ class THCExchange:
         sm_cell = _subcell(cell, self.smooth)
         self.ke = estimate_ke_cutoff(sm_cell, 1e-10)
         self.mesh = cell.cutoff_to_mesh(self.ke)
+        if getattr(self, 'symm_grid', None) is None:                   # default: on when the cell has symmetry
+            self._ops = space_group_ops(cell)
+            self.symm_grid = len(self._ops[0]) > 1
+        if self.symm_grid:
+            # a uniform grid (and its coarse grid) mapped onto itself by the space group, pivots in whole orbits:
+            # the THC factors keep the crystal symmetry (otherwise broken by the grid and the greedy point choice;
+            # EuOCl prim: W_y 128.6 -> 0.46 = RSDF's 0.45, W_z -2975 -> -2959 vs RSDF -2957)
+            if getattr(self, '_ops', None) is None:
+                self._ops = space_group_ops(cell)
+            m0 = self.mesh
+            self.mesh = symmetric_mesh(m0, self._ops[:2], self.coarsen if self.selector == 'coarse' else 1)
+            self.log('   space group %s (%d ops): mesh %s -> %s' % (self._ops[2], len(self._ops[0]), list(m0),
+                                                                    list(self.mesh)))
         coords = self.coords = cell.get_uniform_grids(self.mesh)
         self.ng = len(coords)
         # the smooth functions on the uniform grid: stored, or evaluated per grid block when they do not fit the
@@ -532,6 +661,9 @@ class THCExchange:
             cc = cell.get_uniform_grids(mc)
             phic = cell.pbc_eval_gto('GTOval_sph', cc)[:, self.smooth]
             f = pivots_blocked if self.blocked_pivots else pivots
+            if getattr(self, 'symm_grid', False):
+                orb, mem = grid_orbits(mc, self._ops[:2])
+                f = lambda ph, k_: pivots_orbits(ph, k_, orb, mem)
             kmax = min(len(cc), int(getattr(self, 'kmax_factor', kmax_factor) * len(self.smooth)))
             pf = getattr(self, 'piv_file', None)                      # cache of the coarse pivots (restarts)
             comm = getattr(self, 'comm', None)
@@ -889,6 +1021,8 @@ class THCExchange:
     def build_thc(self, nmu):
         if getattr(self, 'stream', False):
             t = time.time()
+            if getattr(self, 'symm_grid', False):                    # whole orbits (the selection ends on one)
+                nmu = max(nmu, len(self.piv)) if len(self.piv) <= nmu + 64 else nmu
             pts = self.piv[:nmu]
             rank = self._build_thc_stream(pts)
             self.pts = pts
@@ -1697,7 +1831,7 @@ class THCJK:
         self.th.stream_gb = getattr(self, 'stream_gb', None)       # GB; None: from the memory budget
         self.th.stream_max_blocks = getattr(self, 'stream_max_blocks', 1 << 30)
         self.th.piv_file = getattr(self, 'piv_file', None)
-        for k in ('coarsen', 'blocked_pivots', 'far_fit', 'phi_ondemand'):   # options, if set
+        for k in ('coarsen', 'blocked_pivots', 'far_fit', 'phi_ondemand', 'symm_grid'):   # options, if set
             if hasattr(self, k):
                 setattr(self.th, k, getattr(self, k))
         rc = getattr(self, 'exx_trunc', None)                         # smoothed truncated Coulomb exchange
