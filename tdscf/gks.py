@@ -61,7 +61,6 @@ def _build_ab_jk_cderi(td, blksize=None):
     mol = mf.mol
     mask = td.get_frozen_mask()
     mo = mf.mo_coeff[:, mask]
-    moe = mf.mo_energy[mask]
     occ = mf.mo_occ[mask]
     occidx = numpy.where(occ == 1)[0]
     viridx = numpy.where(occ == 0)[0]
@@ -124,6 +123,22 @@ def _build_ab_jk_cderi(td, blksize=None):
     return A_JK, foo, fvv, orbo, orbv, hyb
 
 
+def picture_change_dipole(mf, origin=(0., 0., 0.)):
+    '''Picture-change-corrected electric dipole matrices (3, n2c, n2c) in the
+    contracted spinor basis, for an X2C mean field (``mf.with_x2c``) -- a
+    thin wrapper over the central property-integral layer
+    :func:`socutils.prop.int1e.prop_int1e`.
+
+    ``x_response=False`` gives the plain picture-change operator
+    [U+ D U]_++ of the field-free decoupling.  The X-response term it drops
+    is small -- 1.8e-7 relative against 7.4e-5 for the picture change
+    itself, measured on Sm3+ -- so the choice is a detail here; what would
+    be wrong is skipping the picture change altogether.
+    '''
+    from socutils.prop.int1e import prop_int1e
+    return prop_int1e(mf, 'r', x_response=False, origin=origin)
+
+
 class _KernelXCMixin:
     '''Allow the response (A) xc kernel to differ from the ground-state xc.
 
@@ -135,6 +150,15 @@ class _KernelXCMixin:
     ground-state density.  Leave it None to use the ground-state functional.
     '''
     xc_kernel = None
+
+    # For an X2C reference (mf.with_x2c present) compute transition dipoles
+    # with the picture-change-corrected operator (picture_change_dipole).
+    # The bare int1e_r_spinor is exact for a nonrelativistic spinor/GHF
+    # reference and is used automatically when there is no with_x2c.
+    # Measured PCE of the bare operator (HBr/cc-pVDZ, x2camf): valence f
+    # off by <~1e-3 relative, but K/L-edge (CVS) main lines off by 0.1-4%
+    # and weak SOC satellites by tens of percent.
+    picture_change = True
 
     def kernel(self, *args, **kwargs):
         # _gen_ghf_response returns a vind closure that reads mf.xc lazily (at
@@ -197,27 +221,38 @@ class _KernelXCMixin:
             x0 = x0 + [numpy.asarray(g).ravel() for g in extra[len(x0):nstates]]
         return x0
 
+    def _dipole_ints(self):
+        '''Electric-dipole matrices (3, n2c, n2c) in the spinor AO basis, in
+        the picture of the reference: picture-change corrected for an X2C
+        reference (see ``picture_change_dipole`` / the ``picture_change``
+        flag), bare int1e_r_spinor otherwise (exact there).  Gauge origin
+        (0,0,0), same as pyscf's int1e_r; transition moments between
+        orthogonal states are origin independent.'''
+        mol = self._scf.mol
+        n2c = mol.nao_2c()
+        if self.picture_change and getattr(self._scf, 'with_x2c', None) is not None:
+            ints = picture_change_dipole(self._scf)
+        else:
+            ints = mol.intor('int1e_r_spinor', comp=3)
+        return ints.reshape(3, n2c, n2c)
+
     def _contract_multipole(self, ints, hermi=True, xy=None):
         '''Transition multipole (e.g. dipole) for a spinor (2-component)
         reference -- pyscf's GHF stub raises NotImplementedError.
 
         ``oscillator_strength`` calls this with the spin-free electric-dipole
         integrals built in the *spherical* AO basis; the spinor MOs live in the
-        n2c basis, so rebuild the operator there (int1e_r_spinor) and contract
-        with the X (and Y) amplitudes over the active occupied/virtual spinors.
-        No factor of two: unlike closed-shell RHF the spinor basis carries no
-        spin degeneracy to sum over.
+        n2c basis, so rebuild the operator there (``_dipole_ints``) and
+        contract with the X (and Y) amplitudes over the active occupied/
+        virtual spinors.  No factor of two: unlike closed-shell RHF the spinor
+        basis carries no spin degeneracy to sum over.
         '''
         import numpy
         if xy is None:
             xy = self.xy
         nstates = len(xy)
         pol_shape = ints.shape[:-2]          # (3,) for the dipole
-        mol = self._scf.mol
-        n2c = mol.nao_2c()
-        # spin-free electric dipole in the spinor AO basis (same (0,0,0) gauge
-        # origin as pyscf's int1e_r)
-        ints = mol.intor('int1e_r_spinor', comp=3).reshape(-1, n2c, n2c)
+        ints = self._dipole_ints()
 
         mask = self.get_frozen_mask()
         mo = self._scf.mo_coeff[:, mask]
@@ -232,22 +267,86 @@ class _KernelXCMixin:
             pol = pol + ymo if hermi else pol - ymo
         return pol.reshape((nstates,) + pol_shape)
 
+    def _couple_ref_transition_dipole(self):
+        '''<Psi_0|r|Psi_k> for the reference-coupled solve: full matrix
+        elements of the (picture-changed) dipole in the model space
+        span{Phi_0, Phi_i^a}, between the *relaxed ground state* (root 0) and
+        every root k.  Uses
+
+            <Phi_0 |r| Phi_jb>  = r_jb
+            <Phi_ia|r| Phi_jb>  = d_ij r_ab - d_ab r_ji + d_ij d_ab mu_ref
+
+        (mu_ref = <Phi_0|r|Phi_0>, summed over *all* occupied spinors incl.
+        frozen), plus the c0 reference-amplitude cross terms.  For a
+        stationary reference (c0_0 = 1, X_0 = 0) this reduces exactly to the
+        plain singles contraction sum_ia X^k_ia r_ia.  Requires the c0
+        amplitudes stored by ``_direct_solve`` (couple_reference=True).'''
+        import numpy
+        xy = self.xy
+        c0 = self.c0
+        D = self._dipole_ints()
+        mask = self.get_frozen_mask()
+        mo = self._scf.mo_coeff[:, mask]
+        occ = self._scf.mo_occ[mask]
+        orbo = mo[:, occ == 1]
+        orbv = mo[:, occ == 0]
+        d_ov = lib.einsum('xpq,pi,qa->xia', D, orbo.conj(), orbv)
+        d_vv = lib.einsum('xpq,pa,qb->xab', D, orbv.conj(), orbv)
+        d_oo = lib.einsum('xpq,pi,qj->xij', D, orbo.conj(), orbo)
+        occ_all = self._scf.mo_coeff[:, self._scf.mo_occ == 1]
+        mu_ref = lib.einsum('xpq,pk,qk->x', D, occ_all.conj(), occ_all)
+        X = numpy.asarray([x for x, y in xy])
+        X0, c00 = X[0], c0[0]
+        s0 = lib.einsum('xia,ia->x', d_ov, X0)      # <Phi_0|r|singles(Psi_0)>
+        mu = (numpy.multiply.outer(numpy.conj(c00) * c0, mu_ref)
+              + numpy.conj(c00) * lib.einsum('xia,kia->kx', d_ov, X)
+              + numpy.multiply.outer(c0, s0.conj())
+              + lib.einsum('ia,xab,kib->kx', X0.conj(), d_vv, X)
+              - lib.einsum('ia,xji,kja->kx', X0.conj(), d_oo, X)
+              + numpy.multiply.outer(lib.einsum('ia,kia->k', X0.conj(), X),
+                                     mu_ref))
+        return mu
+
     def oscillator_strength(self, e=None, xy=None, gauge='length', order=0,
                             e_ground=None):
         '''f = (2/3) * dE * |mu|^2.  The spinor transition dipole is complex, so
         use |mu|^2 = mu . mu* -- pyscf's base routine forms mu . mu (real-dipole
         assumption), which underestimates and can even go negative here.
 
+        For a reference-coupled solve (couple_reference=True) the transition
+        moment is <Psi_0|r|Psi_k> with Psi_0 the *relaxed ground state* (root
+        0), evaluated with the full model-space matrix elements
+        (``_couple_ref_transition_dipole``), and the prefactor is the physical
+        dE = e_k - e_0.  The plain-CIS formula (bra = the reference
+        determinant, singles term only) is a first-order-in-|F_ia| error for a
+        non-stationary (CAHF / core-hole) reference -- on Ar L-edge CVS it is
+        off by factors 0.05-3.5 per line.
+
         ``e_ground``: pass a separately-converged ground-state total energy to
         use the *physical* transition energy dE = E_tot(state) - e_ground for the
         prefactor, instead of self.e (which is relative to the -- possibly
         ill-defined -- reference determinant E0).  Essential for a relaxed /
-        core-hole reference: the dipole mu = <Phi_0|r|Psi_k> is the right
-        (state-specific) transition moment, but the intensity needs the true dE.
+        core-hole reference without couple_reference: the dipole
+        mu = <Phi_0|r|Psi_k> is the right (state-specific) transition moment,
+        but the intensity needs the true dE.
         '''
         import numpy
         if e is None:
             e = self.e
+        e = numpy.asarray(e).real
+        couple = (getattr(self, 'couple_reference', False)
+                  and getattr(self, 'c0', None) is not None
+                  and (xy is None or xy is self.xy))
+        if couple:
+            de = e - e[0]
+            if e_ground is not None:
+                de = self.total_energy(e) - e_ground
+            if gauge == 'length' and order == 0:
+                mu = self._couple_ref_transition_dipole()
+                return (2. / 3. * numpy.einsum('s,sx,sx->s', de, mu,
+                                               mu.conj())).real
+            raise NotImplementedError(
+                'couple_reference oscillator strength: length gauge only')
         if e_ground is not None:
             e = self.total_energy(e) - e_ground       # physical transition energy
         if gauge == 'length' and order == 0:
@@ -443,6 +542,7 @@ class TDA(_KernelXCMixin, _ghf.TDA):
     # direct diagonalization).
     couple_reference = False
     reference_weight = None        # |c0|^2 (reference character) per state
+    c0 = None                      # reference amplitude per state (complex)
 
     def kernel(self, x0=None, nstates=None):
         if not (self.direct or self.couple_reference):
@@ -506,8 +606,8 @@ class TDA(_KernelXCMixin, _ghf.TDA):
             w, c = numpy.linalg.eigh(M)
             nstates = min(nstates, nov + 1)
             self.e = w[:nstates]
-            self.reference_weight = (c[0, :nstates].conj() *
-                                     c[0, :nstates]).real
+            self.c0 = c[0, :nstates].copy()   # reference amplitude per state
+            self.reference_weight = (self.c0.conj() * self.c0).real
             self.xy = [(c[1:, i].reshape(nocc, nvir), 0)
                        for i in range(nstates)]
         else:
@@ -517,6 +617,7 @@ class TDA(_KernelXCMixin, _ghf.TDA):
             w, c = numpy.linalg.eigh(A)
             nstates = min(nstates, nov)
             self.e = w[:nstates]
+            self.c0 = None
             self.reference_weight = None
             self.xy = [(c[:, i].reshape(nocc, nvir), 0)
                        for i in range(nstates)]

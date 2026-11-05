@@ -48,6 +48,7 @@ def int_hfc_4c(mol, atm_id, utm=False, h4c=None, m4c_inv=None):
 
 
 def kernel(method, hfc_nuc=None, utm=False, h4c_scheme='fock', dm=None):
+    mol = method.mol
     log = lib.logger.Logger(method.stdout, method.verbose)
     log.info('\n******** HFC for 4-component SCF methods (In testing) ********')
     if hfc_nuc is None:

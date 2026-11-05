@@ -90,11 +90,12 @@ class ZCCSD(gccsd.GCCSD):
     def __init__(self, mf, frozen=0, mo_coeff=None, mo_occ=None, with_mmf=False, erifile=None):
         #assert(isinstance(mf, x2c.RHF))
         ccsd.CCSD.__init__(self, mf, frozen, mo_coeff, mo_occ)
-        self.with_mmf = with_mmf
+        if with_mmf:
+            raise ValueError('with_mmf is removed: pass the X2CMMF reference instead, '
+                             'ZCCSD(mf.x2cmmf(), ...) after "from socutils.somf import x2cmmf"; '
+                             'frozen then counts the positive-energy orbitals only')
         self.feri = erifile
         self.eris = None
-        if not isinstance(mf, scf.dhf.DHF) and self.with_mmf:
-            print('WARNING! SCF reference is not four component, with_mmf option is doing nothing')
 
     update_amps = update_amps
 
@@ -174,26 +175,6 @@ class _PhysicistsERIs(gccsd._PhysicistsERIs):
         print(fock_ref.diagonal())
         import scipy
         #print(scipy.linalg.eigh(fockao, mycc._scf.get_ovlp())[0])
-        if isinstance(mycc._scf, scf.dhf.DHF) and mycc.with_mmf:
-            print('Initialize X2Cmmf Fock matrix')
-            print('X2C transformation 4c FOCK matrix')
-            n2c = fockao.shape[0]//2
-            from socutils.somf.x2c_grad import x2c1e_hfw0_block
-            ovlp = mycc._scf.get_ovlp()
-            print(fockao[0,0])
-            print(fockao[n2c,0])
-            print(fockao[0,n2c])
-            print(fockao[n2c,n2c])
-            _, _, _, _, r, l, _, _ = x2c1e_hfw0_block(fockao[:n2c,:n2c], fockao[n2c:,:n2c], fockao[:n2c,n2c:],
-                                                    fockao[n2c:,n2c:], ovlp[:n2c,:n2c], ovlp[n2c:,n2c:])
-            fock_x2c = reduce(np.dot, (r.T.conj(), l, r))
-            rinv = np.linalg.inv(r)
-            mo_l = mo_coeff[:n2c,:]
-            mo_x2c = np.dot(rinv,mo_l)
-            mo_coeff = mo_x2c
-        
-            fockao = fock_x2c 
-
         mo_idx = ccsd.get_frozen_mask(mycc)
         mo_coeff = mo_coeff[:,mo_idx]
         self.mo_coeff = mo_coeff
@@ -280,7 +261,7 @@ def _make_eris_outcore(mycc, mo_coeff=None, erifile=None, swapfile=None, mod='co
             eris.vvvv[p0-nocc:p1-nocc] += (tmp[:,nocc:,nocc:,nocc:].transpose(0,2,1,3)-tmp[:,nocc:,nocc:,nocc:].transpose(0,2,3,1))
             tmp = None
 
-    if isinstance(mf, scf.dhf.DHF) and not mycc.with_mmf:
+    if isinstance(mf, scf.dhf.DHF):
         c1 = 0.5 / lib.param.LIGHT_SPEED
         nao_2c = mo.shape[0]//2
         mo_l = mo[:nao_2c,:]

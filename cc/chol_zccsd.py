@@ -41,12 +41,9 @@ class DFIntegrals:
         (pq|rs) = sum_P Lpq[P,p,q] Lpq[P,r,s]
     '''
 
-    def __init__(self, mol, cderi=None, max_error=1e-5):
+    def __init__(self, mol, cderi):
         self.mol = mol
         nao = mol.nao_nr()
-        if cderi is None:
-            cderi = zmc_ao2mo.chunked_cholesky(mol, max_error=max_error,
-                                               verbose=False)
         self._cderi = np.asarray(cderi).reshape(-1, nao, nao)
         self.mf_type = 'g'
 
@@ -205,6 +202,10 @@ class DFCCSD(gccsd.GCCSD):
         ccsd.CCSD.__init__(self, mf, frozen, mo_coeff, mo_occ)
         self.mf_type = mf_type
         if with_df is None:
+            if cderi is None:
+                # the integrals come from the mean field (mf.cholesky() / mf.density_fit())
+                from socutils.cd.cd import get_cderi_ao
+                cderi = get_cderi_ao(mf)
             with_df = DFIntegrals(mf.mol, cderi=cderi)
         with_df.mf_type = mf_type
         self.with_df = with_df
@@ -327,7 +328,7 @@ if __name__ == '__main__':
     gcc = cc.GCCSD(mfg).run(conv_tol=1e-10)
     print('pyscf  GCCSD   Ecorr', gcc.e_corr, ' (T)', gcc.ccsd_t())
 
-    mf = spinor_hf.SCF(mol).run()
+    mf = spinor_hf.SCF(mol).cholesky(tau=1e-5).run()
     mycc = DFCCSD(mf, mf_type='j')
     ecc = mycc.kernel()[0]
     print('DF-CCSD        Ecorr', ecc, ' (T)', mycc.ccsd_t().real)

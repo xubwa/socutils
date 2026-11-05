@@ -78,9 +78,12 @@ if __name__ == '__main__':
     mol.charge = 1
     mol.unit='B'
     mol.spin = 1
+    mol.symmetry = True
     mol.build()
 
-    mf = spinor_hf.SymmJHF(mol, symmetry='linear', occup={'1/2':[4],'-1/2':[4],'3/2':[1]})
+    from socutils.scf import double_group_symm
+    mf = double_group_symm.SymAdaptedUHF(mol)
+    mf.irrep_nelec = {'1/2': 4, '-1/2': 4, '3/2': 1}
     #mf.with_x2c = amf.SpinorX2CAMFHelper(mol,with_gaunt=False,with_breit=False,with_aoc=False)
     mf.with_x2c = eamf.SpinorEAMFX2CHelper(mol, eamf='x2camf', with_gaunt=False, with_breit=False, with_aoc=True)
     #mf.with_x2c = eamf.SpinorEAMFX2CHelper(mol, eamf='x2camf', with_gaunt=False, with_breit=False, with_aoc=True)
