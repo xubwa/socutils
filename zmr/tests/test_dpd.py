@@ -303,3 +303,17 @@ def test_permuted_conversions_and_flipped(group):
     f = t.flipped()
     assert f.data is t.data and f.dirs == (1, 1, -1, -1)
     assert abs(f.to_dense() - a).max() == 0
+
+
+@pytest.mark.parametrize('dtype', [numpy.float64, numpy.complex128])
+def test_gemm_batch(dtype):
+    from socutils.zmr.lib import linalg as la
+    rng = numpy.random.default_rng(14)
+    rnd = lambda *s: (rng.normal(size=s) + (1j * rng.normal(size=s) if dtype == numpy.complex128
+                                            else 0)).astype(dtype)
+    shapes = [(3, 4, 5), (1, 7, 2), (6, 0, 3), (5, 5, 5), (0, 3, 2)]
+    prods = [(rnd(m, k), rnd(k, n), rnd(m, n)) for m, k, n in shapes]
+    want = [2.0 * c + a @ b for a, b, c in prods]
+    la.gemm_batch(prods, beta=2.0)
+    for (_, _, c), w in zip(prods, want):
+        assert c.size == 0 or abs(c - w).max() < 1e-12

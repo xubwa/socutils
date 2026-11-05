@@ -100,6 +100,54 @@ def gemm(a, b, opa='N', opb='N', out=None, beta=0.0):
     return c
 
 
+def gemm_batch(products, beta=1.0):
+    '''c = beta c + a @ b for every (a, b, c) of products, 2-D C-contiguous arrays of
+    one dtype (float64 or complex128; c the output); one batched MKL call
+    (cblas_?gemm_batch, one group per product), so small products run side by side.'''
+    products = [(a, b, c) for a, b, c in products if c.size]
+    if not products:
+        return
+    mkl = _lib.mkl()
+    real = products[0][2].dtype == numpy.float64
+    fn = None if mkl is None else getattr(mkl, 'cblas_dgemm_batch' if real
+                                          else 'cblas_zgemm_batch', None)
+    for a, b, c in products:
+        if not (a.flags.c_contiguous and b.flags.c_contiguous and c.flags.c_contiguous
+                and a.dtype == b.dtype == c.dtype and a.shape[1] == b.shape[0]
+                and c.shape == (a.shape[0], b.shape[1])):
+            raise ValueError('gemm_batch: C-contiguous operands of one dtype')
+    if fn is None:
+        for a, b, c in products:
+            gemm(a, b, out=c, beta=beta)
+        return
+    ng = len(products)
+    ints = lambda x: (ctypes.c_int * ng)(*x)
+    ptrs = lambda x: (ctypes.c_void_p * ng)(*(y.ctypes.data for y in x))
+    m = [c.shape[0] for _, _, c in products]
+    n = [c.shape[1] for _, _, c in products]
+    k = [a.shape[1] for a, _, _ in products]
+    # k = 0: the product is zero, c is only scaled
+    for (a, b, c), kk in zip(products, k):
+        if kk == 0:
+            c *= beta
+    keep = [i for i in range(ng) if k[i]]
+    if not keep:
+        return
+    products = [products[i] for i in keep]
+    m, n, k = ([x[i] for i in keep] for x in (m, n, k))
+    ng = len(products)
+    trans = ints([_TRANS['N']] * ng)
+    if real:
+        alpha = (ctypes.c_double * ng)(*([1.0] * ng))
+        bet = (ctypes.c_double * ng)(*([float(beta)] * ng))
+    else:
+        alpha = (ctypes.c_double * (2 * ng))(*([1.0, 0.0] * ng))
+        bet = (ctypes.c_double * (2 * ng))(*([float(beta), 0.0] * ng))
+    a_, b_, c_ = (ptrs([p[j] for p in products]) for j in range(3))
+    fn(ctypes.c_int(_ROW_MAJOR), trans, trans, ints(m), ints(n), ints(k), alpha,
+       a_, ints(k), b_, ints(n), bet, c_, ints(n), ctypes.c_int(ng), ints([1] * ng))
+
+
 def gemmt_lower(a, b):
     '''Lower triangle of a @ b^T for real a, b (n, k), at half the cost of
     the full product; the upper triangle of the result is zero.'''

@@ -1212,13 +1212,14 @@ def commutator(O1, O2, T1, T2, cum, dims, alpha, keep2, ladder=None, timings=Non
 
     # ---- one-body
     con("ap,ia->ip", O1, T1, out=C1, keep=keep1, scale=alpha, fix=A("ip"))
+    # three operands: the two small ones first (the products run left to right)
     con("pi,ia->pa", O1, T1, out=C1, keep=keep1, scale=-alpha, fix=A("pa"))
 
-    con("ia,qapj,ji->qp", T1, O2, G1, out=C1, keep=keep1, scale=alpha, fix=A("qp"))
-    con("mu,qvpm,uv->qp", T1, O2, G1, out=C1, keep=keep1, scale=-alpha, fix=A("qp"))
+    con("ia,ji,qapj->qp", T1, G1, O2, out=C1, keep=keep1, scale=alpha, fix=A("qp"))
+    con("mu,uv,qvpm->qp", T1, G1, O2, out=C1, keep=keep1, scale=-alpha, fix=A("qp"))
 
-    con("ijab,bk,kj->ia", T2, O1, G1, out=C1, keep=keep1, scale=alpha, fix=A("ia"))
-    con("ijau,vj,uv->ia", T2, O1, G1, out=C1, keep=keep1, scale=-alpha, fix=A("ia"))
+    con("bk,kj,ijab->ia", O1, G1, T2, out=C1, keep=keep1, scale=alpha, fix=A("ia"))
+    con("vj,uv,ijau->ia", O1, G1, T2, out=C1, keep=keep1, scale=-alpha, fix=A("ia"))
     lap("C1 small")
 
     t1 = new()

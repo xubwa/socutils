@@ -617,6 +617,7 @@ def contract(a, b):
     out = Tensor(sa.legs[:sa.split] + sb.legs[sb.split:],
                  sa.dirs[:sa.split] + sb.dirs[sb.split:], sa.split, sa.group, irrep,
                  dtype=numpy.result_type(a.data.dtype, b.data.dtype))
+    products = []
     for h, ma in a.matrices():
         if ma is None:
             continue
@@ -628,7 +629,12 @@ def contract(a, b):
         mo = out.matrix(h)
         if mb is None or mo is None:
             continue
-        la.gemm(ma, mb, out=mo, beta=1.0)
+        if ma.dtype != out.data.dtype:
+            ma = ma.astype(out.data.dtype)
+        if mb.dtype != out.data.dtype:
+            mb = mb.astype(out.data.dtype)
+        products.append((ma, mb, mo))
+    la.gemm_batch(products, beta=1.0)
     return out
 
 
