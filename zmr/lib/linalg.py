@@ -129,7 +129,11 @@ def gemm_batch(products, beta=1.0):
     # k = 0: the product is zero, c is only scaled
     for (a, b, c), kk in zip(products, k):
         if kk == 0:
-            c *= beta
+            # c may hold anything (NaN) for beta = 0: overwritten, not scaled
+            if beta == 0:
+                c[...] = 0
+            else:
+                c *= beta
     keep = [i for i in range(ng) if k[i]]
     if not keep:
         return

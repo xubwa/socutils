@@ -317,3 +317,9 @@ def test_gemm_batch(dtype):
     la.gemm_batch(prods, beta=2.0)
     for (_, _, c), w in zip(prods, want):
         assert c.size == 0 or abs(c - w).max() < 1e-12
+    # beta = 0: c is overwritten, whatever it holds
+    for _, _, c in prods:
+        c[...] = numpy.nan
+    la.gemm_batch(prods, beta=0.0)
+    for a, b, c in prods:
+        assert c.size == 0 or abs(c - a @ b).max() < 1e-12

@@ -298,13 +298,14 @@ class Tensor:
     '''A tensor in the DPD layout (see the module documentation).'''
 
     def __init__(self, legs, dirs, split, group=None, irrep=0, data=None,
-                 dtype=numpy.complex128):
+                 dtype=numpy.complex128, empty=False):
         group = as_group(group)
         self.structure = Structure(tuple(legs), tuple(int(d) for d in dirs), split, group,
                                    irrep)
         st = self.structure
         if data is None:
-            data = numpy.zeros(st.size, dtype=dtype)
+            # empty: not initialized, for a caller that writes every element
+            data = (numpy.empty if empty else numpy.zeros)(st.size, dtype=dtype)
         if data.size != st.size:
             raise ValueError('data of size %d for a structure of size %d' % (data.size, st.size))
         self.data = data
@@ -601,7 +602,8 @@ def sort(t, order, split, conj=False):
     if conj:
         dirs = tuple(-d for d in dirs)
     out = Tensor(legs, dirs, split, st.group, st.group.conj(st.irrep) if conj else st.irrep,
-                 dtype=t.data.dtype)
+                 dtype=t.data.dtype, empty=True)
+    # beta = 0: every block is written, those t does not have are set to zero
     return sort_axpy(out, t, order, 1.0, 0.0, conj)
 
 
@@ -620,8 +622,9 @@ def contract(a, b):
     from socutils.zmr.lib import linalg as la
     out = Tensor(sa.legs[:sa.split] + sb.legs[sb.split:],
                  sa.dirs[:sa.split] + sb.dirs[sb.split:], sa.split, sa.group, irrep,
-                 dtype=numpy.result_type(a.data.dtype, b.data.dtype))
+                 dtype=numpy.result_type(a.data.dtype, b.data.dtype), empty=True)
     products = []
+    written = set()
     for h, ma in a.matrices():
         if ma is None:
             continue
@@ -638,7 +641,11 @@ def contract(a, b):
         if mb.dtype != out.data.dtype:
             mb = mb.astype(out.data.dtype)
         products.append((ma, mb, mo))
-    la.gemm_batch(products, beta=1.0)
+        written.add(h)
+    for h in out.structure.matrices:
+        if h not in written:
+            out.matrix(h)[...] = 0
+    la.gemm_batch(products, beta=0.0)
     return out
 
 
