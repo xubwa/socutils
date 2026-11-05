@@ -244,3 +244,18 @@ def test_other_groups(kind):
     assert abs(dpd.sort(t, (2, 3, 0, 1), 2).to_dense() - ta.transpose(2, 3, 0, 1)).max() < 1e-14
     out = dpd.einsum('ijab,abcd->ijcd', t, v)
     assert abs(out.to_dense() - numpy.einsum('ijab,abcd->ijcd', ta, va)).max() < 1e-12
+
+
+@pytest.mark.parametrize('group', ['C2h', 'Coov'])
+def test_dense_conversions(group):
+    rng = numpy.random.default_rng(12)
+    legs = [random_leg(group, rng) for _ in range(4)]
+    a, t = random_tensor(legs, (-1, -1, 1, 1), 2, group, rng)
+    u = dpd.Tensor(legs, (-1, -1, 1, 1), 2, group)
+    dpd.dense_to_tensor(a, u)
+    assert abs(u.data - t.data).max() == 0
+    assert abs(dpd.tensor_to_dense(t) - a).max() == 0
+    b = rng.normal(size=a.shape) + 0j
+    b0 = b.copy()
+    dpd.tensor_to_dense(t, b, alpha=2.0, beta=1.0)
+    assert abs(b - (b0 + 2 * a)).max() < 1e-14

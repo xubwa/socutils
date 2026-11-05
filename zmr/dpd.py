@@ -435,6 +435,45 @@ class Tensor:
         return self
 
 
+def dense_to_tensor(a, t, alpha=1.0, beta=0.0, conj=False):
+    '''t = beta t + alpha (conj) a on the blocks of t, a dense array in the order of the
+    legs of t (any strides of a C-contiguous base; one native call).'''
+    from socutils.zmr.lib import kernels
+    a = numpy.ascontiguousarray(a, dtype=t.data.dtype)
+    boxes = t.boxes()
+    if not boxes:
+        return t
+    keys = list(boxes)
+    stride = [st // a.itemsize for st in a.strides]
+    legs = t.legs
+    sbase = [sum(int(legs[k].offsets[sec[k]]) * stride[k] for k in range(len(legs)))
+             for sec in keys]
+    kernels.dpd_copy(a.reshape(-1), t.data, sbase, [stride] * len(keys),
+                     [boxes[k][0] for k in keys], [boxes[k][1] for k in keys],
+                     [boxes[k][2] for k in keys], alpha, beta, conj)
+    return t
+
+
+def tensor_to_dense(t, out=None, alpha=1.0, beta=0.0):
+    '''out = beta out + alpha t on the blocks of t (zero elsewhere for a new out); out
+    dense, C-contiguous, in the order of the legs (one native call).'''
+    from socutils.zmr.lib import kernels
+    if out is None:
+        out = numpy.zeros(t.shape, dtype=t.data.dtype)
+    boxes = t.boxes()
+    if not boxes:
+        return out
+    keys = list(boxes)
+    stride = [st // out.itemsize for st in out.strides]
+    legs = t.legs
+    dbase = [sum(int(legs[k].offsets[sec[k]]) * stride[k] for k in range(len(legs)))
+             for sec in keys]
+    kernels.dpd_copy(t.data, out.reshape(-1), [boxes[k][0] for k in keys],
+                     [boxes[k][1] for k in keys], dbase, [stride] * len(keys),
+                     [boxes[k][2] for k in keys], alpha, beta)
+    return out
+
+
 def sort_axpy(dst, src, perm, alpha=1.0, beta=1.0, conj=False):
     '''dst = beta dst + alpha (conj) src.transpose(perm), block by block, one native call
     (axis k of the permuted src is leg perm[k] of src).  Every block of src must be a
@@ -560,6 +599,13 @@ def map_blocks(t, fn):
                     fn(sec, blk)
 
 
+def _sorted(t, order, split):
+    '''t itself if its legs are already in the order and split, else sort(t, ...).'''
+    if list(order) == list(range(len(order))) and split == t.split:
+        return t
+    return sort(t, order, split)
+
+
 def einsum(spec, a, b, out=None, alpha=1.0, split=None):
     '''Two-operand einsum without traces: letters shared by a and b and absent from the
     output are contracted (their legs equal, directions opposite).  The result has the
@@ -574,8 +620,8 @@ def einsum(spec, a, b, out=None, alpha=1.0, split=None):
         raise ValueError('einsum: no traces or Hadamard products (%s)' % spec)
     if sorted(aown + bown) != sorted(rhs):
         raise ValueError('einsum: output letters %r' % rhs)
-    ta = sort(a, [sa_.index(x) for x in aown + con], len(aown))
-    tb = sort(b, [sb_.index(x) for x in con + bown], len(con))
+    ta = _sorted(a, [sa_.index(x) for x in aown + con], len(aown))
+    tb = _sorted(b, [sb_.index(x) for x in con + bown], len(con))
     c = contract(ta, tb)
     cur = aown + bown
     order = [cur.index(x) for x in rhs]
