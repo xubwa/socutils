@@ -42,13 +42,13 @@ int SOCVHFgen_takes(const int *shls, const int *bas);
  * SOCVHFjk_multi_sym's engines by the total l of the quartet (cc-pVDZ
  * per-class timings, scf/test/bench_jk_class.py): L <= 1 by jk_ssss.c, the
  * other quartets of l <= 2 with L <= jk_gen_lmax by the generated kernels of
- * jk_gen.c, the rest by libcint (on par with the generated ones from L = 6).
+ * jk_gen.c, the rest by libcint (ahead from L = 7; at L = 6 the lanes are twice as fast, caffeine).
  * Of the generated ones those of few primitives go in batches of GL_NL
  * quartets sharing the bra pair and the ket shell types to the lane kernels
  * (SOCVHFjk_set_lanes, SOCVHFjk_set_lane_np below).
  * SOCVHFjk_set_ssss(0) / SOCVHFjk_set_gen(0) send theirs to libcint.
  */
-static int jk_use_ssss = 1, jk_use_gen = 1, jk_gen_lmax = 5, jk_gen_f_lmax = 6;
+static int jk_use_ssss = 1, jk_use_gen = 1, jk_gen_lmax = 6, jk_gen_f_lmax = 6;
 void SOCVHFjk_set_ssss(int on) { jk_use_ssss = on; }
 void SOCVHFjk_set_gen(int on) { jk_use_gen = on; }
 void SOCVHFjk_set_gen_lmax(int l) { jk_gen_lmax = l; }
