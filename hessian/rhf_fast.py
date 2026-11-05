@@ -27,9 +27,12 @@ from socutils.hessian import ghf as ghf_hess
 
 
 def _partial_hess_ejk(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
-                      atmlst=None, max_memory=4000, verbose=None, with_k=True):
+                      atmlst=None, max_memory=4000, verbose=None, with_k=True, hyb=None):
     '''pyscf.hessian.rhf._partial_hess_ejk with ej, ek from the unique-quartet
-    driver: E_J = 1/2 (ab|cd) D_ba D_dc, E_K = 1/4 (ab|cd) D_bc D_da.'''
+    driver: E_J = 1/2 (ab|cd) D_ba D_dc, E_K = 1/4 (ab|cd) D_bc D_da.  With hyb
+    (and with_k) the exact-integral path returns ej - hyb ek as ej and ek = 0
+    (one density group: the weights and contractions once); the other paths
+    ej, ek as pyscf (the caller's ej - hyb ek holds either way).'''
     log = logger.new_logger(hessobj, verbose)
     time0 = (logger.process_clock(), logger.perf_counter())
     mol = hessobj.mol
@@ -53,6 +56,7 @@ def _partial_hess_ejk(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     dme0 = numpy.einsum('pi,qi,i->pq', mocc, mocc, mo_energy[mo_occ > 0]) * 2
     natm = len(atmlst)
     ej = None
+    combine = False
     if dfm is not None:
         # density-fitted J (exact derivatives of the DF energy), exact K below
         r = ri_j_deriv(mol, _df_auxmol(mf), dm0, with_vj1=False,
@@ -64,8 +68,9 @@ def _partial_hess_ejk(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
         ej = r[0]
         groups = [(0, 1)] if with_k else []
     else:
-        # J and K from the same integral pass (groups 0 and 1)
-        groups = [(1, 0), (0, 1)] if with_k else [(1, 0)]
+        # J and K from the same integral pass (groups 0 and 1), or J - hyb K as one group
+        combine = with_k and hyb is not None and COMBINE_JK
+        groups = [(1, -hyb)] if combine else [(1, 0), (0, 1)] if with_k else [(1, 0)]
     out = []
     if groups:
         # the combined Cartesian kernel up to g functions, else the
@@ -74,11 +79,11 @@ def _partial_hess_ejk(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
         if out is None:
             terms = [] if ej is not None else [(dm0, 'ba', dm0, 'dc', .5, 0)]
             if with_k:
-                terms.append((dm0, 'bc', dm0, 'da', .25, len(terms)))
+                terms.append((dm0, 'bc', dm0, 'da', -.25 * hyb if combine else .25, 0 if combine else len(terms)))
             out = ghf_hess.deriv2_energies_direct(mol, terms)
     if ej is None:
         ej = out[0]
-        ek = out[1] if with_k else numpy.zeros_like(ej)
+        ek = out[1] if with_k and not combine else numpy.zeros_like(ej)
     else:
         ek = out[0] if with_k else numpy.zeros_like(ej)
     log.timer_debug1('two-electron second derivatives (unique quartets)', *time0)
@@ -104,6 +109,7 @@ def _partial_hess_ejk(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     return e1, ej, ek
 
 
+COMBINE_JK = True           # the explicit 2e part as one group J - hyb K (else J and K separately)
 HESS2E_CART_LMAX = 4        # lib/vhf/hess2e_cart.c LMAX, MAXPRIM
 HESS2E_CART_MAXPRIM = 64
 
@@ -164,6 +170,8 @@ GRAD2E_HGP = True           # order 1: the HGP kernel (lib/vhf/hgp.c) for the lo
 HGP_LMAX = 1                # quartets with l_i + l_j + l_k + l_l <= HGP_LMAX to HGP, the others to Rys
 GRAD2E_GEN = True           # order 1: the generated kernels (lib/vhf/jk_gen.c SOCVHFgen_grad2e), l <= 2
 GEN_GRAD_LMAX = 6           # quartets with total l <= GEN_GRAD_LMAX to them (gen_grad_vrr.py LSUM_MAX), the others to Rys
+HESS2E_GEN = True           # order 2: the generated kernels (jk_gen.c SOCVHFgen_hess2e), l <= 2, total l <=
+                            # gen_hess_vrr.py LSUM_MAX; the others to Rys
 
 
 def _split_general(mol):
@@ -262,6 +270,17 @@ def _deriv2e_cart(mol, dm, groups, order, mode, tol, prim_tol):
             ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
             ctypes.c_int(natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(molc.nbas),
             env.ctypes.data_as(ctypes.c_void_p))
+    if (order == 2 and mode == 0 and HESS2E_GEN and skip_gen and hasattr(libv, 'SOCVHFgen_hess2e')):
+        # the generated second-derivative kernels for l <= 2, the rest (larger l or total l) by Rys
+        lsum = libv.SOCVHFgen_hess_lsum_max()
+        out2 = numpy.zeros_like(out)
+        try:
+            libv.SOCVHFgen_hess2e(out.ctypes.data_as(ctypes.c_void_p), *args)
+            libv.SOCVHFcart_set_skip_gen(ctypes.c_int(lsum))
+            getattr(libv, fname)(out2.ctypes.data_as(ctypes.c_void_p), *args)
+        finally:
+            libv.SOCVHFcart_set_skip_gen(ctypes.c_int(-1))
+        return out + out2
     if gen:
         # the generated kernels (native general contraction), the rest by Rys
         out2 = numpy.zeros_like(out)
@@ -404,7 +423,7 @@ def hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None, mo1=None, mo_
 def rhf_partial_hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
                           atmlst=None, max_memory=4000, verbose=None):
     e1, ej, ek = _partial_hess_ejk(hessobj, mo_energy, mo_coeff, mo_occ, atmlst,
-                                   max_memory, verbose, True)
+                                   max_memory, verbose, True, hyb=1.)
     return e1 + ej - ek
 
 
@@ -656,7 +675,7 @@ def rks_partial_hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     time0 = (logger.process_clock(), logger.perf_counter())
     hybrid = ni.libxc.is_hybrid_xc(mf.xc)
     de2, ej, ek = _partial_hess_ejk(hessobj, mo_energy, mo_coeff, mo_occ, None, max_memory,
-                                    verbose, with_k=hybrid)
+                                    verbose, with_k=hybrid, hyb=hyb)
     de2 += ej - hyb * ek
     max_memory = max(2000, mf.max_memory * .9 - lib.current_memory()[0])
     t1 = log.timer_debug1('RKS partial hessian, 1e + 2e', *time0)

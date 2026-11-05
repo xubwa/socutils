@@ -603,3 +603,169 @@ void SOCVHFgen_grad2e(double *grad, int mode, int ngroup, double *jfac, double *
 }
         SOCVHFgen_ctx_free(cx);
 }
+
+/* ------------------------------------------------------------------------
+ * Second derivatives of E_g = jfac_g E_J + kfac_g E_K, the order-2 analogue of
+ * SOCVHFgen_grad2e by the generated kernels of hess_vrr_gen_*.c
+ * (gen_hess_vrr.py): the blocks AA, AB, AC, BB, BC, CC of the roles from the
+ * kernel, those with D by translational invariance.  hess (ngroup, natm,
+ * natm, 3, 3) +=.  Same signature as SOCVHFhess2e_jk_cart (mode 0).
+ * ------------------------------------------------------------------------ */
+#include "hess_vrr_gen.h"
+static int gen_hess_lmin = 0, gen_hess_lmax = 1000;
+void SOCVHFgen_hess_set_lrange(int lo, int hi) { gen_hess_lmin = lo; gen_hess_lmax = hi; }
+int SOCVHFgen_hess_lsum_max() { return GHD_LSUM_MAX; }
+
+void SOCVHFgen_hess2e(double *hess, int mode, int ngroup, double *jfac, double *kfac,
+                      double *dm, double *qcond, double *dcond, double tol, double prim_tol,
+                      int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env)
+{
+        if (mode != 0 || ngroup > GG_MAXGROUP) return;
+        const size_t nao = ao_loc[nbas];
+        const size_t nh1 = (size_t)natm * natm * 9, nh = nh1 * ngroup;
+        const int npair = nbas * (nbas + 1) / 2;
+        GenCtx *cx = SOCVHFgen_ctx_build(atm, natm, bas, nbas, env);
+        double jw = 0, kw = 0;
+        int g, ib, np = 1, maxf = 0;
+        for (g = 0; g < ngroup; g++) {
+                jw = dmax2g(jw, fabs(jfac[g]) * 4);
+                kw = dmax2g(kw, fabs(kfac[g]) * 2);
+        }
+        for (ib = 0; ib < nbas; ib++) {
+                if (bas[ib * BAS_SLOTS + NPRIM_OF] > np) np = bas[ib * BAS_SLOTS + NPRIM_OF];
+                const int nf = ao_loc[ib + 1] - ao_loc[ib];
+                if (nf > maxf) maxf = nf;
+        }
+        const size_t maxf4 = (size_t)maxf * maxf * maxf * maxf;
+        const size_t c2 = (size_t)G_MAXCTR * G_MAXCTR;
+        const size_t nwk = (size_t)GHD_NT * np * np + c2 * GHD_NY + c2 * c2 * GHD_NW
+                         + (size_t)GHD_NF * np * np;
+#pragma omp parallel
+{
+        double *hloc = calloc(nh, sizeof(double));
+        double *dd = malloc(sizeof(double) * maxf4 * ngroup);
+        double *wk = malloc(sizeof(double) * nwk);
+        double sum[GG_MAXGROUP * 54];
+        int ij, kl, ish, jsh, ksh, lsh;
+#pragma omp for schedule(dynamic, 1)
+        for (ij = npair - 1; ij >= 0; ij--) {
+                shell_pair(ij, &ish, &jsh);
+                shell_pair(0, &ksh, &lsh);
+                for (kl = 0; kl <= ij; kl++, (lsh == ksh ? (ksh++, lsh = 0) : lsh++)) {
+                        const double q4 = qcond[ish * nbas + jsh] * qcond[ksh * nbas + lsh];
+                        const double dbound = jw * dcond[ish * nbas + jsh] * dcond[ksh * nbas + lsh]
+                                            + kw * dmax2g(dcond[ish * nbas + ksh] * dcond[jsh * nbas + lsh],
+                                                          dcond[ish * nbas + lsh] * dcond[jsh * nbas + ksh]);
+                        if (q4 * dbound < tol) continue;
+                        const int sh[4] = {ish, jsh, ksh, lsh};
+                        int l[4], nf[4], nctr[4], at[4], s;
+                        double fac = 1;
+                        for (s = 0; s < 4; s++) {
+                                const int *b = bas + sh[s] * BAS_SLOTS;
+                                l[s] = b[ANG_OF];
+                                nf[s] = (l[s] + 1) * (l[s] + 2) / 2;
+                                nctr[s] = b[NCTR_OF];
+                                at[s] = b[ATOM_OF];
+                                fac *= common_fac(l[s]);
+                        }
+                        const int L = l[0] + l[1] + l[2] + l[3];
+                        if (L < gen_hess_lmin || L > gen_hess_lmax || L > GHD_LSUM_MAX) continue;
+                        if (l[0] > GHD_LMAX || l[1] > GHD_LMAX || l[2] > GHD_LMAX || l[3] > GHD_LMAX
+                            || nctr[0] > G_MAXCTR || nctr[1] > G_MAXCTR || nctr[2] > G_MAXCTR
+                            || nctr[3] > G_MAXCTR) continue;
+                        if (ish == jsh) fac *= .5;
+                        if (ksh == lsh) fac *= .5;
+                        if (ij == kl) fac *= .5;
+                        const GPair *B = cx->pair + ij, *K = cx->pair + kl;
+                        if (B->n == 0 || K->n == 0) continue;
+                        const int NI = nctr[0] * nf[0], NJ = nctr[1] * nf[1], NK = nctr[2] * nf[2], NL = nctr[3] * nf[3];
+                        const size_t nd = (size_t)NI * NJ * NK * NL;
+                        const size_t a0 = ao_loc[ish], b0 = ao_loc[jsh], c0 = ao_loc[ksh], e0 = ao_loc[lsh];
+                        int a, b, c, d;
+                        double ddmax = 0;
+                        for (g = 0; g < ngroup; g++) {
+                                double *ddg = dd + g * nd;
+                                const double jf = 4 * jfac[g] * fac, kf = kfac[g] * fac;
+                                for (a = 0; a < NI; a++)
+                                for (b = 0; b < NJ; b++) {
+                                        const double dab = jf * dm[(a0 + a) * nao + b0 + b];
+                                        const double *dA = dm + (a0 + a) * nao, *dB = dm + (b0 + b) * nao;
+                                        for (c = 0; c < NK; c++) {
+                                                const double dbc = dB[c0 + c], dac = dA[c0 + c];
+                                                const double *dC = dm + (c0 + c) * nao;
+                                                double *o = ddg + ((a * NJ + b) * NK + c) * NL;
+                                                for (d = 0; d < NL; d++) {
+                                                        o[d] = dab * dC[e0 + d] + kf * (dac * dB[e0 + d] + dA[e0 + d] * dbc);
+                                                        ddmax = dmax2g(ddmax, fabs(o[d]));
+                                                }
+                                        }
+                                }
+                        }
+                        if (ddmax == 0) continue;
+                        const int swap = K->li + K->lj > B->li + B->lj;
+                        if (swap) { const GPair *t_ = B; B = K; K = t_; }
+                        const int sw = swap ? 2 : 0;
+                        const int bs = B->li < B->lj, ks = K->li < K->lj;
+                        const int la = bs ? B->lj : B->li, lb = bs ? B->li : B->lj;
+                        const int lc = ks ? K->lj : K->li, ld = ks ? K->li : K->lj;
+                        const int pos[4] = {bs ? 1 : 0, bs ? 0 : 1, ks ? 3 : 2, ks ? 2 : 3};
+                        const size_t stp[4] = {(size_t)NJ * NK * NL, (size_t)NK * NL, (size_t)NL, 1};
+                        const size_t ds[4] = {stp[(pos[0] + sw) & 3], stp[(pos[1] + sw) & 3],
+                                              stp[(pos[2] + sw) & 3], stp[(pos[3] + sw) & 3]};
+                        const int ra[4] = {at[(pos[0] + sw) & 3], at[(pos[1] + sw) & 3],
+                                           at[(pos[2] + sw) & 3], at[(pos[3] + sw) & 3]};
+                        const double der = (1 + 2 * B->amax) * (1 + 2 * B->amax) * (1 + 2 * K->amax) * (1 + 2 * K->amax);
+                        const double cut = prim_tol / (TWO_PI52 * B->bmax * ddmax * B->nc * K->nc * der);
+                        memset(sum, 0, sizeof(double) * ngroup * 54);
+                        const ggd_fn kern = ghd_table[la][lb][lc][ld];
+                        if (kern == NULL || !kern(sum, dd, ngroup, nd, ds, pos, B, bs, K, ks, cut, cx->tab, wk))
+                                continue;
+                        /* the blocks in the slots AA AB AC BB BC CC */
+                        static const int blk[3][3] = {{0, 1, 2}, {1, 3, 4}, {2, 4, 5}};
+                        for (g = 0; g < ngroup; g++) {
+                                const double *sm = sum + g * 54;
+                                double Gf[4][4][3][3];
+                                int s1, t1, x, y;
+                                for (s1 = 0; s1 < 3; s1++)
+                                for (t1 = 0; t1 < 3; t1++) {
+                                        const double *hb = sm + blk[s1][t1] * 9;
+                                        for (x = 0; x < 3; x++)
+                                        for (y = 0; y < 3; y++)
+                                                Gf[s1][t1][x][y] = TWO_PI52 * (s1 <= t1 ? hb[x * 3 + y] : hb[y * 3 + x]);
+                                }
+                                for (x = 0; x < 3; x++)
+                                for (y = 0; y < 3; y++) {
+                                        double dd3 = 0;
+                                        for (s1 = 0; s1 < 3; s1++) {
+                                                double r3 = 0, c3 = 0;
+                                                for (t1 = 0; t1 < 3; t1++) {
+                                                        r3 += Gf[s1][t1][x][y];
+                                                        c3 += Gf[t1][s1][x][y];
+                                                }
+                                                Gf[s1][3][x][y] = -r3;
+                                                Gf[3][s1][x][y] = -c3;
+                                                dd3 += r3;
+                                        }
+                                        Gf[3][3][x][y] = dd3;
+                                }
+                                double *hg = hloc + g * nh1;
+                                for (s1 = 0; s1 < 4; s1++)
+                                for (t1 = 0; t1 < 4; t1++) {
+                                        double *hp = hg + ((size_t)ra[s1] * natm + ra[t1]) * 9;
+                                        for (x = 0; x < 3; x++)
+                                                for (y = 0; y < 3; y++) hp[x * 3 + y] += Gf[s1][t1][x][y];
+                                }
+                        }
+                }
+        }
+#pragma omp critical
+        {
+                size_t n;
+                for (n = 0; n < nh; n++) hess[n] += hloc[n];
+        }
+        free(hloc);
+        free(dd);
+        free(wk);
+}
+        SOCVHFgen_ctx_free(cx);
+}
