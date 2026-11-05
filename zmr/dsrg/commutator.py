@@ -837,7 +837,15 @@ def materialize(x):
     an array."""
     if x is None or isinstance(x, numpy.ndarray):
         return x
+    if isinstance(x, (dpd.Tensor, dpd.View)):
+        x = (x, 1.0)
     blk, sign = x[0], x[1]
+    if isinstance(blk, dpd.Tensor):
+        blk = dpd.View(blk)
+    if isinstance(blk, dpd.View):
+        # expanded on purpose (not counted as a fallback)
+        d = dpd.tensor_to_dense(blk.t).transpose(blk.perm)
+        blk = d.conj() if blk.conjugated else d
     if len(x) == 3 and x[2]:
         blk = blk.conj()
     return sign * blk
@@ -910,8 +918,65 @@ class BareV:
         self.nbuild = collections.Counter()
         # blocks with three virtual indices left to the caller (vvvx_chunks)
         self.skip_three_virtual = False
+        # legs of the spaces (Dims.legs) and the double group: the blocks are then built
+        # and kept as dpd.Tensors, only the elements allowed by symmetry
+        self.legs, self.group = None, None
+
+    def _dpd_ok(self, lab):
+        return self.group is not None and self.legs and all(x in self.legs for x in lab)
+
+    def _build_dpd(self, lab):
+        """build(lab) as a dpd.Tensor (legs p, q, r, s; directions -1, -1, 1, 1): the
+        direct and exchange products over P as one product per irrep of the pairs
+        (p r) and (q s), then sorted into place."""
+        p, q, r, s = lab
+        legs, group = self.legs, self.group
+        exchange = not (r == s or p == q)
+        labs = {p + r, q + s} | ({p + s, q + r} if exchange else set())
+        dirs = (-1, 1, -1, 1)
+        D = dpd.Tensor([legs[p], legs[r], legs[q], legs[s]], dirs, 2, group)
+        X = dpd.Tensor([legs[p], legs[s], legs[q], legs[r]], dirs, 2, group) if exchange \
+            else None
+
+        def add(out, b1, b2, x1, x2):
+            # out[h] += B1[irrep h]^T B2[irrep conj h], B[g]: (P, pairs of irrep g)
+            naux = b1.shape[0]
+            pleg = dpd.Leg([0], [naux])
+            cache = {}
+
+            def gathered(b, xy, g):
+                if (xy, g) not in cache:
+                    t = dpd.Tensor([pleg, legs[xy[0]], legs[xy[1]]], (1, -1, 1), 1, group,
+                                   irrep=g)
+                    cache[xy, g] = dpd.dense_to_tensor(b, t).matrix(0)
+                return cache[xy, g]
+            for h, (_, hc, _, _, _) in out.structure.matrices.items():
+                m1, m2 = gathered(b1, x1, h), gathered(b2, x2, hc)
+                if m1 is None or m2 is None:
+                    continue
+                la.gemm(m1, m2, opa="T", out=out.matrix(h), beta=1.0)
+        for b in self.B.chunks(labs, self.read_memory):
+            add(D, b[p + r], b[q + s], p + r, q + s)
+            if exchange:
+                add(X, b[p + s], b[q + r], p + s, q + r)
+        V = dpd.Tensor([legs[p], legs[q], legs[r], legs[s]], (-1, -1, 1, 1), 2, group)
+        # axis k of V is leg perm[k] of the product: D (p r q s), X (p s q r)
+        dpd.sort_axpy(V, D, (0, 2, 1, 3), beta=0.0)
+        del D
+        if exchange:
+            dpd.sort_axpy(V, X, (0, 2, 3, 1), alpha=-1.0)
+            del X
+        if r == s:
+            dpd.sort_axpy(V, V.copy(), (0, 1, 3, 2), alpha=-1.0)
+        elif p == q:
+            dpd.sort_axpy(V, V.copy(), (1, 0, 2, 3), alpha=-1.0)
+        if lab in self.extra:
+            dpd.dense_to_tensor(self.extra[lab], V, beta=1.0)
+        return V
 
     def build(self, lab):
+        if self._dpd_ok(lab):
+            return self._build_dpd(lab)
         p, q, r, s = lab
         exchange = not (r == s or p == q)
         labs = {p + r, q + s} | ({p + s, q + r} if exchange else set())
@@ -951,6 +1016,8 @@ class BareV:
         c = self._canonical_block(clab)
         if perm == (0, 1, 2, 3):
             return c
+        if isinstance(c, dpd.Tensor):
+            return dpd.View(c, perm), sign, cj
         # (view, sign, complex conjugate): no copy is made, the contraction applies sign
         # and conjugation to the other factors
         return c.transpose(perm), sign, cj

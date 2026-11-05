@@ -433,6 +433,10 @@ class Tensor:
     def norm(self):
         return float(numpy.linalg.norm(self.data))
 
+    @property
+    def nbytes(self):
+        return self.data.nbytes
+
     def __iadd__(self, other):
         if other.structure is not self.structure:
             raise ValueError('add needs tensors of one structure (sort first)')

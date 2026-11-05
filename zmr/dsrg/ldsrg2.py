@@ -272,6 +272,9 @@ class LDSRG2:
             self.V = cm.BareV(cm.ThreeIndexFile(sc), dense_vvvv=not self.nivo, extra=extra,
                               cache_memory=self._cached_blocks(naux) + 0.5 * spare,
                               read_memory=max(self.read_memory, min(4000.0, 0.1 * spare)))
+            if self.dpd_storage and dims.legs and dims.sym is not None:
+                # integral blocks in the DPD layout: only the elements allowed by symmetry
+                self.V.legs, self.V.group = dims.legs, dims.sym[0]
             if self.nivo and self.vvvv and sp.nvirt > 1:
                 self._w = self._store_vvvv() if self.vvvv == 'stored' else 'direct'
         else:
