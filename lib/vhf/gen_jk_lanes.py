@@ -63,26 +63,39 @@ def kernel(la, lb, lc, ld):
     w('                        const double gb = B->kp[b] * sqrt(s);')
     w('                        (void)h2p; (void)rp; (void)rq; (void)h2pq; (void)ws; (void)wq;')
     w('                        (void)PAx; (void)PAy; (void)PAz;')
-    w('#pragma omp simd')
-    w('                        for (l = 0; l < %s; l++) {' % NL)
-    w('                                const double dx = Px - QX[l], dy = Py - QY[l], dz = Pz - QZ[l];')
-    w('                                const double T = rho * (dx * dx + dy * dy + dz * dz);')
-    for line in boys_lines(L, ' ' * 32):
-        w(line)
-    w('                                const double WPx = ws * dx, WPy = ws * dy, WPz = ws * dz;')
-    w('                                const double WQx = wq * dx, WQy = wq * dy, WQz = wq * dz;')
-    w('                                const double QCx = QCX[l], QCy = QCY[l], QCz = QCZ[l];')
-    w('                                (void)WPx; (void)WPy; (void)WPz; (void)WQx; (void)WQy; (void)WQz;')
-    w('                                (void)QCx; (void)QCy; (void)QCz;')
-    w('                                const double g = gb * KP[l];')
-    for key in order:
-        w('                                const double %s = %s;' % (vname(*key), exprs[key]))
-    i = 0
-    for e in E:
-        for f in Fb:
-            w('                                v[%d * %s + l] = g * %s;' % (i, NL, vname(e, f, 0)))
-            i += 1
+    def lane_loop(single):
+        '''the lane loop; single: one contraction combination, the targets added to SK directly
+        (no v round trip), else stored to v for the contractions below'''
+        w('#pragma omp simd')
+        w('                        for (l = 0; l < %s; l++) {' % NL)
+        w('                                const double dx = Px - QX[l], dy = Py - QY[l], dz = Pz - QZ[l];')
+        w('                                const double T = rho * (dx * dx + dy * dy + dz * dz);')
+        for line in boys_lines(L, ' ' * 32):
+            w(line)
+        w('                                const double WPx = ws * dx, WPy = ws * dy, WPz = ws * dz;')
+        w('                                const double WQx = wq * dx, WQy = wq * dy, WQz = wq * dz;')
+        w('                                const double QCx = QCX[l], QCy = QCY[l], QCz = QCZ[l];')
+        w('                                (void)WPx; (void)WPy; (void)WPz; (void)WQx; (void)WQy; (void)WQz;')
+        w('                                (void)QCx; (void)QCy; (void)QCz;')
+        w('                                const double g = %s * KP[l];' % ('gw' if single else 'gb'))
+        for key in order:
+            w('                                const double %s = %s;' % (vname(*key), exprs[key]))
+        i = 0
+        for e in E:
+            for f in Fb:
+                if single:
+                    w('                                SK[%d * %s + l] += g * %s;' % (i, NL, vname(e, f, 0)))
+                else:
+                    w('                                v[%d * %s + l] = g * %s;' % (i, NL, vname(e, f, 0)))
+                i += 1
+        w('                        }')
+
+    w('                        if (ncb == 1 && nck == 1) {')
+    w('                                const double gw = gb * B->c[b] * K->c[t];')
+    lane_loop(True)
+    w('                                continue;')
     w('                        }')
+    lane_loop(False)
     w('                        for (cb = 0; cb < ncb; cb++) {')
     w('                                const double cbv = B->c[(size_t)cb * B->ld + b];')
     w('                                for (kc = 0; kc < nck; kc++) {')
