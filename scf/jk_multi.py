@@ -88,3 +88,28 @@ def get_jk(mol, dms, with_j=True, with_k=True, tol=TOL, hermi=0, max_memory=None
     out_j = vj.transpose(2, 0, 1).reshape(shape) if with_j else None
     out_k = vk.transpose(2, 0, 1).reshape(shape) if with_k else None
     return out_j, out_k
+
+
+ERI_TOL = 1e-15     # Schwarz cutoff of eri_s8 (q_ij q_kl below: zero)
+
+
+def eri_s8(mol, tol=ERI_TOL):
+    '''the s8 ERIs (layout of mol.intor('int2e', aosym='s8')) by the engines of the J / K builds
+    (lib/vhf/jk_multi.c SOCVHFjk_eri_s8); None if unavailable'''
+    from pyscf.gto import moleintor
+    from socutils.hessian import ghf as ghf_hess
+    libv = ghf_hess._load_socvhf()
+    if not available(mol) or not hasattr(libv, 'SOCVHFjk_eri_s8'):
+        return None
+    nao = mol.nao_nr()
+    npair = nao * (nao + 1) // 2
+    eri = numpy.zeros(npair * (npair + 1) // 2)
+    q = _q_cond(mol)
+    atm, bas, env = mol._atm, mol._bas, mol._env
+    opt = moleintor.make_cintopt(atm, bas, env, 'int2e_sph')
+    ao_loc = mol.ao_loc_nr().astype(numpy.int32)
+    libv.SOCVHFjk_eri_s8(
+        eri.ctypes.data_as(ctypes.c_void_p), q.ctypes.data_as(ctypes.c_void_p), ctypes.c_double(tol), opt,
+        ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.natm),
+        bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p))
+    return eri

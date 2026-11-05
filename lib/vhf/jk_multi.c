@@ -576,3 +576,85 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
                 }
         }
 }
+
+/*
+ * The s8 ERIs (pyscf's mol.intor('int2e', aosym='s8') layout: eri[ab (ab + 1) / 2 + cd],
+ * ab = a (a + 1) / 2 + b, a >= b, cd likewise, ab >= cd) by the engines of
+ * SOCVHFjk_multi_sym (jk_ssss.c, jk_gen.c per quartet, libcint for the rest), the
+ * quartets with q_ij q_kl < tol left zero (eri zeroed by the caller); for the in-core
+ * J / K of small molecules (scf/md_j.py INCORE).  Shells of the unique quartets in
+ * parallel over ij: every element is written by one quartet.
+ */
+void SOCVHFjk_eri_s8(double *eri, double *qcond, double tol, CINTOpt *opt,
+                     int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env)
+{
+        int dmax = 0, i;
+        for (i = 0; i < nbas; i++) {
+                int d = ao_loc[i + 1] - ao_loc[i];
+                dmax = d > dmax ? d : dmax;
+        }
+        int shls_slice[8] = {0, nbas, 0, nbas, 0, nbas, 0, nbas};
+        const size_t cache_size = GTOmax_cache_size(int2e_sph, shls_slice, 4, atm, natm, bas, nbas, env);
+        const size_t nbuf = (size_t)dmax * dmax * dmax * dmax;
+        const int npair = nbas * (nbas + 1) / 2;
+        SSCtx *scx = jk_use_ssss ? SOCVHFss_ctx_build(atm, natm, bas, nbas, env) : NULL;
+        GenCtx *gcx = jk_use_gen ? SOCVHFgen_ctx_build(atm, natm, bas, nbas, env) : NULL;
+        size_t sswk = scx ? SOCVHFss_wksize(bas, nbas) : 0;
+        if (gcx && SOCVHFgen_wksize(bas, nbas) > sswk) sswk = SOCVHFgen_wksize(bas, nbas);
+        const double prim_tol = tol * 1e-2;
+#pragma omp parallel
+{
+        double *buf = malloc(sizeof(double) * (nbuf + cache_size + sswk));
+        double *cache = buf + nbuf, *swk = cache + cache_size;
+        int it, ij, kl, ish, jsh, ksh, lsh;
+        int shls[4];
+#pragma omp for schedule(dynamic, 1)
+        for (it = 0; it < npair; it++) {
+                ij = npair - 1 - it;
+                shell_pair(ij, &ish, &jsh);
+                const int di = ao_loc[ish + 1] - ao_loc[ish], dj = ao_loc[jsh + 1] - ao_loc[jsh];
+                const size_t a0 = ao_loc[ish], b0 = ao_loc[jsh];
+                for (kl = 0, ksh = 0, lsh = 0; kl <= ij; kl++, (lsh == ksh ? (ksh++, lsh = 0) : lsh++)) {
+                        if (qcond[ish * nbas + jsh] * qcond[ksh * nbas + lsh] < tol) continue;
+                        shls[0] = ish; shls[1] = jsh; shls[2] = ksh; shls[3] = lsh;
+                        const int lq = bas[ish * BAS_SLOTS + ANG_OF] + bas[jsh * BAS_SLOTS + ANG_OF]
+                                     + bas[ksh * BAS_SLOTS + ANG_OF] + bas[lsh * BAS_SLOTS + ANG_OF];
+                        const int hasf = bas[ish * BAS_SLOTS + ANG_OF] == 3 || bas[jsh * BAS_SLOTS + ANG_OF] == 3
+                                      || bas[ksh * BAS_SLOTS + ANG_OF] == 3 || bas[lsh * BAS_SLOTS + ANG_OF] == 3;
+                        int ok;
+                        if (scx && lq <= 1 && SOCVHFss_takes(shls, bas)) {
+                                ok = SOCVHFss_int2e(buf, shls, scx, 1., prim_tol, swk);
+                        } else if (gcx && (hasf ? lq <= jk_gen_f_lmax : lq <= jk_gen_lmax)
+                                   && SOCVHFgen_takes(shls, bas)) {
+                                ok = SOCVHFgen_int2e(buf, shls, gcx, 1., prim_tol, swk, bas);
+                        } else {
+                                ok = int2e_sph(buf, NULL, shls, atm, natm, bas, nbas, env, opt, cache);
+                        }
+                        if (!ok) continue;
+                        const int dk = ao_loc[ksh + 1] - ao_loc[ksh], dl = ao_loc[lsh + 1] - ao_loc[lsh];
+                        const size_t c0 = ao_loc[ksh], e0 = ao_loc[lsh];
+                        int i0, j0, k0, l0;
+                        for (l0 = 0; l0 < dl; l0++)
+                        for (k0 = 0; k0 < dk; k0++) {
+                                const size_t c = c0 + k0, e = e0 + l0;
+                                if (ksh == lsh && e > c) continue;
+                                const size_t cd = c * (c + 1) / 2 + e;
+                                const double *g = buf + (size_t)(l0 * dk + k0) * dj * di;
+                                for (j0 = 0; j0 < dj; j0++)
+                                for (i0 = 0; i0 < di; i0++) {
+                                        const size_t a = a0 + i0, b = b0 + j0;
+                                        if (ish == jsh && b > a) continue;
+                                        const size_t ab = a * (a + 1) / 2 + b;
+                                        if (ij == kl && cd > ab) continue;
+                                        /* ab < cd happens for ish == ksh, jsh > lsh */
+                                        const size_t p = ab > cd ? ab : cd, q = ab > cd ? cd : ab;
+                                        eri[p * (p + 1) / 2 + q] = g[j0 * di + i0];
+                                }
+                        }
+                }
+        }
+        free(buf);
+}
+        SOCVHFss_ctx_free(scx);
+        SOCVHFgen_ctx_free(gcx);
+}

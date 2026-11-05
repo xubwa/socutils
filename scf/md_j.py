@@ -95,6 +95,30 @@ SCF_TOL = 1e-12         # quartet cutoff of the SCF builds (Gaussian's default 2
 TOL_PER_CONV = 1e-2     # ... and at most TOL_PER_CONV * mf.conv_tol, so that the screening (and its
                         # accumulation over incremental builds) stays below the convergence threshold
 J_BY_JK_MULTI_LMAX = 2  # J-only builds of bases with l <= this by jk_multi, not the MD J engine
+INCORE = True           # J + K builds from in-memory s8 ERIs when they fit (mf._is_mem_enough, as pyscf)
+
+
+INCORE_RESERVE = 500    # MB of mf.max_memory kept for the other arrays of the SCF
+
+
+def incore_fits(mf, mol):
+    '''the s8 ERIs (8 npair (npair + 1) / 2 bytes) within mf.max_memory - INCORE_RESERVE, max_memory
+    taken as the budget of the work arrays as Gaussian's %mem (which keeps caffeine / cc-pVDZ's
+    3.7 GB in memory at %mem=4GB); the process's own ~1 GB (Python, pyscf, MKL) not counted.
+    pyscf's _is_mem_enough asks nao^4 / 1e6 + the current RSS < 0.95 max_memory.'''
+    nao = mol.nao_nr()
+    npair = nao * (nao + 1) // 2
+    return npair * (npair + 1) // 2 * 8 / 1e6 < mf.max_memory - INCORE_RESERVE
+
+
+def incore_eri(mol):
+    '''the s8 ERIs: socutils.scf.jk_multi.eri_s8 (the generated kernels), else pyscf's
+    mol.intor int2e s8 (caffeine / cc-pVDZ, 4 threads: libcint 8.7 s)'''
+    from socutils.scf import jk_multi
+    eri = jk_multi.eri_s8(mol)
+    return mol.intor('int2e', aosym='s8') if eri is None else eri
+
+
 SCF_TOL_LOOSE = 1e-9    # two-pass: the cutoff while the density still moves (1e-10 -> 1e-9: caffeine / C16H34
                         # HF / PBE0 SCF 5 - 11 % faster, same cycles, |dE| < 1e-9; 1e-8 costs cycles)
 LOOSE_PER_CONV = 10     # ... and at most LOOSE_PER_CONV * mf.conv_tol (tight SCFs keep 1e-10)
@@ -165,6 +189,16 @@ def apply(mf, incremental=True, two_pass=True):
         dm = numpy.asarray(dm)
         if omega is not None or numpy.iscomplexobj(dm):
             return orig_jk(mol, dm, hermi, with_j, with_k, omega)
+        if INCORE and (with_j or with_k) and mol is mol0 and (mf._eri is not None or incore_fits(mf, mol)):
+            # the ERIs fit in memory: pyscf's in-core J / K (the s8 ERIs once, then a
+            # contraction per cycle), as Gaussian does then ("Keep R1 ints in memory");
+            # caffeine / cc-pVDZ HF, 4 threads: 18.6 s against 24.9 s direct
+            if mf._eri is None:
+                t0 = (logger.process_clock(), logger.perf_counter())
+                mf._eri = incore_eri(mol)
+                logger.timer(mf, 'in-core ERIs', *t0)
+            from pyscf.scf import hf as hf_mod
+            return hf_mod.dot_eri_dm(mf._eri, dm, hermi, with_j, with_k)
         max_memory = max(1000, mf.max_memory - lib.current_memory()[0])
         if not (incremental and dm.ndim == 2 and hermi == 1):
             return build(mol, dm, hermi, with_j, with_k, omega, max_memory)
