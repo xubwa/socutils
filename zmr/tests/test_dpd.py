@@ -259,3 +259,29 @@ def test_dense_conversions(group):
     b0 = b.copy()
     dpd.tensor_to_dense(t, b, alpha=2.0, beta=1.0)
     assert abs(b - (b0 + 2 * a)).max() < 1e-14
+
+
+@pytest.mark.parametrize('group', ['C2h', 'Coov', None])
+def test_permuted_conversions_and_flipped(group):
+    rng = numpy.random.default_rng(13)
+    legs = [random_leg(group, rng) for _ in range(4)]
+    a, t = random_tensor(legs, (-1, -1, 1, 1), 2, group, rng)
+    perm = (2, 0, 3, 1)
+    # a stored with its axes permuted: axis perm[k] of x is leg k of t
+    x = numpy.ascontiguousarray(a.transpose(numpy.argsort(perm)))
+    u = dpd.Tensor(legs, (-1, -1, 1, 1), 2, group)
+    dpd.dense_to_tensor(x, u, perm=perm)
+    assert abs(u.data - t.data).max() == 0
+    # read through a transposed view in place
+    u = dpd.Tensor(legs, (-1, -1, 1, 1), 2, group)
+    dpd.dense_to_tensor(x.transpose(perm), u)
+    assert abs(u.data - t.data).max() == 0
+    y = numpy.zeros_like(x)
+    dpd.tensor_to_dense(t, y, perm=perm, conj=True, beta=1.0)
+    assert abs(y - x.conj()).max() == 0
+    z = dpd.tensor_to_dense(t, perm=perm)
+    assert abs(z - x).max() == 0
+    # all directions reversed: the same elements in the same buffer
+    f = t.flipped()
+    assert f.data is t.data and f.dirs == (1, 1, -1, -1)
+    assert abs(f.to_dense() - a).max() == 0

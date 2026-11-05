@@ -533,9 +533,11 @@ def with_signs(blocks, signs):
 
 def _record_signs(out, signs):
     # the signs of an output are those of all its contributions; None if they differ
+    # (all signs reversed is the same pattern of blocks)
     if "signs" not in out.__dict__:
         out.signs = signs
-    elif out.signs != signs:
+    elif out.signs != signs and (signs is None or out.signs is None
+                                 or out.signs != tuple(-x for x in signs)):
         out.signs = None
 
 
@@ -543,8 +545,48 @@ def _is_plain(a):
     return a.dtype == numpy.complex128 and a.flags.c_contiguous
 
 
+def _as_tensor(sub, x, signs, order, split, spaces, legs, group):
+    """The operand x (subscripts sub; a dpd.View or a dense array with the signs of its
+    letters) as a dpd.Tensor with the letters `order` as legs, the first `split` of them
+    rows: a View is sorted (not at all if already in that layout), a dense array is
+    gathered on the blocks allowed by symmetry.  None if x cannot be (a letter of a
+    space without sectors, or a dense array without the signs of every letter)."""
+    perm = [sub.index(l) for l in order]
+    if isinstance(x, dpd.View):
+        t = x.t
+        tperm = [x.perm[k] for k in perm]
+        if x.conjugated or tperm != list(range(len(tperm))) or split != t.split:
+            return dpd.sort(t, tperm, split, conj=x.conjugated)
+        return t
+    if signs is None or any(signs.get(l) not in (1, -1) for l in order) \
+            or any(spaces[l] not in legs for l in order):
+        return None
+    t = dpd.Tensor([legs[spaces[l]] for l in order], [signs[l] for l in order], split, group)
+    return dpd.dense_to_tensor(x, t, perm=perm)
+
+
+def _pair_dpd(asub, a, bsub, b, con, aown, bown, sa, sb, spaces, legs, group):
+    """The product of _pair in the DPD layout: both operands as tensors (rows aown, columns
+    con; rows con, columns bown), one matrix product per irrep.  The result as a
+    dpd.View with axes aown + bown and its signs, or None if an operand cannot be put
+    in the DPD layout."""
+    ta = _as_tensor(asub, a, sa, aown + con, len(aown), spaces, legs, group)
+    if ta is None:
+        return None
+    tb = _as_tensor(bsub, b, sb, con + bown, len(con), spaces, legs, group)
+    if tb is None:
+        return None
+    da, db = ta.dirs[len(aown):], tb.dirs[:len(con)]
+    if all(x == y for x, y in zip(da, db)):
+        tb = tb.flipped()                 # the same pattern of blocks, reversed directions
+    elif not all(x == -y for x, y in zip(da, db)):
+        return None
+    c = dpd.contract(ta, tb)
+    return dpd.View(c), {l: d for l, d in zip(aown + bown, c.dirs)}
+
+
 def _pair(asub, a, bsub, b, keepers, sa=None, sb=None, secs=None, group=None, plans=None,
-          spaces=None, packed=False):
+          spaces=None, packed=False, legs=None):
     """Contraction of two arrays over the letters they share that are not in
     `keepers`: (subscripts, array, signs).  One threaded matrix product between threaded
     transpositions (zmr.lib); numpy.einsum for traces and outer products.  With the
@@ -566,6 +608,10 @@ def _pair(asub, a, bsub, b, keepers, sa=None, sb=None, secs=None, group=None, pl
     dense = False
     # operands in the DPD layout are never expanded: their products always go by blocks
     views = isinstance(a, dpd.View) or isinstance(b, dpd.View)
+    if group is not None and legs and (aown or bown) and (big or views):
+        r = _pair_dpd(asub, a, bsub, b, con, aown, bown, sa, sb, spaces, legs, group)
+        if r is not None:
+            return "".join(aown + bown), r[0], r[1]
     if (group is not None and sa is not None and sb is not None and plans is not None
             and (big or views)):
         key = ("box", tuple(aown), tuple(con), tuple(bown),
@@ -705,7 +751,8 @@ def contract(spec, *ops, dims, out=None, scale=1.0, keep=None, fix=""):
             csub, val, csgn = _pair(csub, val, asubs[k], arrays[k], later,
                                     csgn, sdicts[k], secs, group,
                                     getattr(dims, "plans", None), sp,
-                                    packed=to_dpd and k == len(arrays) - 1)
+                                    packed=to_dpd and k == len(arrays) - 1,
+                                    legs=getattr(dims, "legs", None))
         if PROFILE is not None:
             key = spec + " " + ",".join("".join(sp[ch] for ch in sub) for sub in subs)
             PROFILE[key] = PROFILE.get(key, 0.0) + time.time() - _t
@@ -713,7 +760,8 @@ def contract(spec, *ops, dims, out=None, scale=1.0, keep=None, fix=""):
             v = numpy.einsum(csub + "->", val) if csub else val
             total += fac * (numpy.conj(v) if cj else v)
             continue
-        if isinstance(val, dpd.View):
+        if isinstance(val, dpd.View) and (len(set(csub)) != len(csub)
+                                          or set(csub) != set(rhs)):
             val = numpy.asarray(val)
         if len(set(csub)) != len(csub) or set(csub) != set(rhs):
             val = val.dense() if isinstance(val, _Packed) else val
@@ -733,6 +781,21 @@ def contract(spec, *ops, dims, out=None, scale=1.0, keep=None, fix=""):
         if group is not None:
             _record_signs(out, None if csgn is None else tuple(csgn.get(x, 0) for x in rhs))
         target = out[olab]
+        if isinstance(val, dpd.View):
+            # the result is a tensor (axes csub = the legs of val.t through val.perm)
+            vt = val.t
+            if isinstance(target, dpd.Tensor):
+                # leg j of the permuted vt is leg back[j] of the target
+                src_perm = [val.perm[csub.index(x)] for x in rhs]
+                dpd.sort_axpy(target, vt, src_perm, alpha=fac,
+                              conj=cj != val.conjugated)
+            else:
+                # leg k of vt is axis rhs.index(csub[val.perm.index(k)]) of the target
+                inv = numpy.argsort(val.perm)
+                dpd.tensor_to_dense(vt, target, alpha=fac, beta=1.0,
+                                    conj=cj != val.conjugated,
+                                    perm=[rhs.index(csub[inv[k]]) for k in range(len(inv))])
+            continue
         if isinstance(target, dpd.Tensor):
             # axis j of the result is leg rhs.index(csub[j]) of the output tensor
             back = [rhs.index(x) for x in csub]

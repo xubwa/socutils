@@ -421,6 +421,15 @@ class Tensor:
         return Tensor(st.legs, tuple(-d for d in st.dirs), st.split, st.group,
                       st.group.conj(st.irrep), self.data.conj())
 
+    def flipped(self):
+        '''The same elements with all directions reversed (and the irrep conjugated):
+        the blocks of the reversed directions are those of the conjugate irreps, in the
+        same order, so the buffer is shared.'''
+        st = self.structure
+        return Tensor(st.legs, tuple(-d for d in st.dirs), st.split, st.group,
+                      _irrep(st.group.conj(st.irrep)) if st.symmetric else st.irrep,
+                      self.data)
+
     def norm(self):
         return float(numpy.linalg.norm(self.data))
 
@@ -435,42 +444,70 @@ class Tensor:
         return self
 
 
-def dense_to_tensor(a, t, alpha=1.0, beta=0.0, conj=False):
-    '''t = beta t + alpha (conj) a on the blocks of t, a dense array in the order of the
-    legs of t (any strides of a C-contiguous base; one native call).'''
+def _flat(a, dtype):
+    '''(flat buffer, element strides) of a: a view of a C-contiguous array (a transpose
+    of one, say) keeps its base, anything else is copied.'''
+    base = a
+    while isinstance(base, numpy.ndarray) and base.base is not None and \
+            isinstance(base.base, numpy.ndarray):
+        base = base.base
+    if (a.dtype == dtype and isinstance(base, numpy.ndarray) and base.dtype == dtype
+            and base.flags.c_contiguous and all(st % a.itemsize == 0 for st in a.strides)):
+        off = (a.__array_interface__['data'][0] - base.__array_interface__['data'][0])
+        if off % a.itemsize == 0 and 0 <= off // a.itemsize < max(base.size, 1):
+            return base.reshape(-1), [st // a.itemsize for st in a.strides], off // a.itemsize
+    a = numpy.ascontiguousarray(a, dtype=dtype)
+    return a.reshape(-1), [st // a.itemsize for st in a.strides], 0
+
+
+def dense_to_tensor(a, t, alpha=1.0, beta=0.0, conj=False, perm=None):
+    '''t = beta t + alpha (conj) a on the blocks of t, a dense array whose axis perm[k]
+    is leg k of t (default the same order); a view of a C-contiguous array is read
+    in place (one native call).'''
     from socutils.zmr.lib import kernels
-    a = numpy.ascontiguousarray(a, dtype=t.data.dtype)
+    a = numpy.asarray(a)
+    if perm is not None:
+        a = a.transpose(perm)
     boxes = t.boxes()
     if not boxes:
+        if beta != 1.0:
+            t.data *= beta
         return t
+    flat, stride, off = _flat(a, t.data.dtype)
     keys = list(boxes)
-    stride = [st // a.itemsize for st in a.strides]
     legs = t.legs
-    sbase = [sum(int(legs[k].offsets[sec[k]]) * stride[k] for k in range(len(legs)))
+    sbase = [off + sum(int(legs[k].offsets[sec[k]]) * stride[k] for k in range(len(legs)))
              for sec in keys]
-    kernels.dpd_copy(a.reshape(-1), t.data, sbase, [stride] * len(keys),
+    kernels.dpd_copy(flat, t.data, sbase, [stride] * len(keys),
                      [boxes[k][0] for k in keys], [boxes[k][1] for k in keys],
                      [boxes[k][2] for k in keys], alpha, beta, conj)
     return t
 
 
-def tensor_to_dense(t, out=None, alpha=1.0, beta=0.0):
-    '''out = beta out + alpha t on the blocks of t (zero elsewhere for a new out); out
-    dense, C-contiguous, in the order of the legs (one native call).'''
+def tensor_to_dense(t, out=None, alpha=1.0, beta=0.0, conj=False, perm=None):
+    '''out = beta out + alpha (conj) t on the blocks of t (zero elsewhere for a new out;
+    beta only scales the blocks of t); leg k of t is axis perm[k] of out (default the
+    same order); out any view of a C-contiguous array, written in place.'''
     from socutils.zmr.lib import kernels
     if out is None:
-        out = numpy.zeros(t.shape, dtype=t.data.dtype)
+        shape = t.shape if perm is None else tuple(
+            t.shape[k] for k in numpy.argsort(perm))
+        out = numpy.zeros(shape, dtype=t.data.dtype)
+        beta = 0.0
     boxes = t.boxes()
     if not boxes:
         return out
+    view = out if perm is None else out.transpose(perm)
+    flat, stride, off = _flat(view, t.data.dtype)
+    if not numpy.shares_memory(flat, out):
+        raise ValueError('tensor_to_dense: out must be a view of a C-contiguous array')
     keys = list(boxes)
-    stride = [st // out.itemsize for st in out.strides]
     legs = t.legs
-    dbase = [sum(int(legs[k].offsets[sec[k]]) * stride[k] for k in range(len(legs)))
+    dbase = [off + sum(int(legs[k].offsets[sec[k]]) * stride[k] for k in range(len(legs)))
              for sec in keys]
-    kernels.dpd_copy(t.data, out.reshape(-1), [boxes[k][0] for k in keys],
+    kernels.dpd_copy(t.data, flat, [boxes[k][0] for k in keys],
                      [boxes[k][1] for k in keys], dbase, [stride] * len(keys),
-                     [boxes[k][2] for k in keys], alpha, beta)
+                     [boxes[k][2] for k in keys], alpha, beta, conj)
     return out
 
 
