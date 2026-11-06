@@ -305,17 +305,81 @@ class LDSRG2:
         r = numpy.where(small, self.s * d, (1.0 - ex) / numpy.where(small, 1.0, d))
         return r, ex
 
+    def _dpd_amps(self, lab):
+        '''Whether the amplitudes (and Hbar) of the two-body block lab are kept in the DPD
+        layout: with dpd_storage and the double-group sectors of all its spaces.'''
+        return (self.dpd_storage and len(lab) == 4 and getattr(self.dims, 'sym', None)
+                is not None and all(x in self.dims.legs for x in lab))
+
+    def _t2_tensor(self, lab, x=None):
+        '''A dpd.Tensor of the two-body block lab (zero; with x, the block x as returned
+        by get).'''
+        legs = self.dims.legs
+        t = dpd.Tensor([legs[c] for c in lab], cm.TWO_BODY, 2, self.dims.sym[0],
+                       empty=x is not None)
+        if x is not None:
+            cm.add_block(t, x, beta=0.0)
+        return t
+
+    def _rden_dpd(self, lab):
+        '''_rden(lab) as two dpd.Tensors of the layout of _t2_tensor(lab), computed block
+        by block from the orbital energies; kept (the energies are fixed after build).'''
+        cache = self.__dict__.setdefault('_rden_cache', {})
+        key = (lab, id(self.eps))
+        if key in cache:
+            return cache[key]
+        legs = [self.dims.legs[x] for x in lab]
+        r, ex = self._t2_tensor(lab), self._t2_tensor(lab)
+
+        def den(sec):
+            d = 0.0
+            for k, x in enumerate(lab):
+                e = self.eps[x][legs[k].offsets[sec[k]]:legs[k].offsets[sec[k] + 1]]
+                shape = [1] * 4
+                shape[k] = -1
+                d = d + (e if k < 2 else -e).reshape(shape)
+            return d
+
+        def fill_r(sec, blk):
+            d = den(sec)
+            small = abs(d) < 1e-7
+            blk[...] = numpy.where(small, self.s * d, (1.0 - numpy.exp(-self.s * d * d))
+                                   / numpy.where(small, 1.0, d))
+
+        def fill_ex(sec, blk):
+            d = den(sec)
+            blk[...] = numpy.exp(-self.s * d * d)
+        dpd.map_blocks(r, fill_r)
+        dpd.map_blocks(ex, fill_ex)
+        cache[key] = r, ex
+        return r, ex
+
     def init_amps(self):
         t1, t2 = cm.Blocks(), cm.Blocks()
         for lab in self._t1_labels:
             t1[lab] = self.F[lab] * self._rden(lab)[0]
         for lab in self._t2_labels:
-            t2[lab] = cm.materialize(self.V.get(lab)) * self._rden(lab)[0]
+            if self._dpd_amps(lab):
+                t = self._t2_tensor(lab, self.V.get(lab))
+                t.data *= self._rden_dpd(lab)[0].data
+                t2[lab] = t
+            else:
+                t2[lab] = cm.materialize(self.V.get(lab)) * self._rden(lab)[0]
         return t1, t2
 
     def _update(self, t, h, labels):
         new = cm.Blocks()
         for lab in labels:
+            if isinstance(t[lab], dpd.Tensor):
+                r, ex = self._rden_dpd(lab)
+                n = new[lab] = self._t2_tensor(lab)
+                n.data[...] = t[lab].data * (1.0 - ex.data)
+                hl = h.get(lab)
+                if hl is not None:
+                    if not isinstance(hl, dpd.Tensor):
+                        hl = self._t2_tensor(lab, hl)
+                    n.data += hl.data * r.data
+                continue
             r, ex = self._rden(lab)
             new[lab] = t[lab] * (1.0 - ex)
             if h.get(lab) is not None:
@@ -371,6 +435,8 @@ class LDSRG2:
         and V[ab, rs] vanish unless ij, ab, rs have the same pair irrep.'''
         nv = self.dims['v']
         iu = numpy.triu_indices(nv, 1)
+        # the hole-hole-vv blocks dense (those kept in the DPD layout expanded here)
+        t2 = {hh + 'vv': cm.materialize(t2.get(hh + 'vv')) for hh in ('cc', 'ca', 'aa')}
         hhs = [hh for hh in ('cc', 'ca', 'aa')
                if t2.get(hh + 'vv') is not None and t2[hh + 'vv'].size]
         if not hhs:
@@ -441,8 +507,10 @@ class LDSRG2:
         h1 = cm.Blocks({k: v.copy() for k, v in self.F.items()})
         # contiguous copies: never the cached integral blocks themselves (h2 is updated in
         # place), and C order (numpy.array keeps the layout of a transposed view)
-        h2 = cm.Blocks({lab: numpy.array(cm.materialize(self.V.get(lab)), dtype=numpy.complex128,
-                                         order='C', copy=True) for lab in hh_pp})
+        h2 = cm.Blocks({lab: self._t2_tensor(lab, self.V.get(lab)) if (
+            self._dpd_amps(lab) and isinstance(t2.get(lab), dpd.Tensor))
+            else numpy.array(cm.materialize(self.V.get(lab)), dtype=numpy.complex128,
+                             order='C', copy=True) for lab in hh_pp})
         o1, o2 = self.F, self.V
         # T2 in the DPD layout once for all products of all commutators
         t2c = cm.dpd_blocks(t2, self.dims) if self.dpd_storage else None
@@ -460,7 +528,10 @@ class LDSRG2:
             for lab in hh_pp:
                 c = c2.get(lab)
                 if c is not None:
-                    cm.add_to_dense(h2[lab], c[0], c[1])
+                    if isinstance(h2[lab], dpd.Tensor):
+                        cm.add_block(h2[lab], c)
+                    else:
+                        cm.add_to_dense(h2[lab], c[0], c[1])
             data = lambda v: v.data if isinstance(v, dpd.Tensor) else v
             norm = numpy.sqrt(c1.norm2() + sum(
                 (1 + (k[0] != k[1])) * (1 + (k[2] != k[3])) * numpy.vdot(data(v), data(v)).real
@@ -503,8 +574,10 @@ class LDSRG2:
             e = self.e_ref + h0
             t1n = self._update(t1, h1, self._t1_labels)
             t2n = self._update(t2, h2, self._t2_labels)
+            data = lambda v: v.data if isinstance(v, dpd.Tensor) else v
             d1 = numpy.sqrt(sum(numpy.linalg.norm(t1n[k] - t1[k])**2 for k in t1n))
-            d2 = numpy.sqrt(sum(numpy.linalg.norm(t2n[k] - t2[k])**2 for k in t2n))
+            d2 = numpy.sqrt(sum(numpy.linalg.norm(data(t2n[k]) - data(t2[k]))**2
+                                for k in t2n))
             self.log('%4d %20.12f %10.2e %9.2e %9.2e %8.5f %8.5f %5d %8.1f' % (
                 it, e, e - e_old, d1, d2, numpy.sqrt(t1.norm2()), numpy.sqrt(t2.norm2()),
                 len(self.comm_norms), time.time() - t0))
@@ -515,15 +588,19 @@ class LDSRG2:
             e_old = e
             if adiis is not None:
                 labs = [(self._t1_labels, t1, t1n), (self._t2_labels, t2, t2n)]
-                vec = numpy.concatenate([n[k].ravel() for ll, o, n in labs for k in ll])
-                old = numpy.concatenate([o[k].ravel() for ll, o, n in labs for k in ll])
+                # DPD blocks as their stored elements only
+                vec = numpy.concatenate([data(n[k]).ravel() for ll, o, n in labs for k in ll])
+                old = numpy.concatenate([data(o[k]).ravel() for ll, o, n in labs for k in ll])
                 vec = adiis.update(vec, xerr=vec - old)
                 del old
                 pos = 0
                 for ll, o, n in labs:
                     for k in ll:
-                        size = n[k].size
-                        n[k] = vec[pos:pos + size].reshape(n[k].shape).copy()
+                        size = data(n[k]).size
+                        if isinstance(n[k], dpd.Tensor):
+                            n[k].data[...] = vec[pos:pos + size]
+                        else:
+                            n[k] = vec[pos:pos + size].reshape(n[k].shape).copy()
                         pos += size
             t1, t2 = t1n, t2n
         if not self.converged:
