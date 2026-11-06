@@ -904,6 +904,66 @@ def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS
     return hess, vj1
 
 
+def ri_j_grad(mol, auxmol, dm, tol=None, max_memory=None):
+    '''Gradient of the density-fitted Coulomb energy E_J = 1/2 rho^T M^{-1} rho
+    at a symmetric D, auxiliary-basis response included (pyscf's
+    auxbasis_response): g^xi = d . rho^xi - 1/2 d M^xi d, d = M^{-1} rho, the
+    three-centre part rho^xi by the pass of ri_j_deriv without the Hessian
+    and vj1 terms (lib/vhf/ri_j_deriv.c).  Returns (natm, 3), or None if the
+    library is unavailable.'''
+    import ctypes
+    from pyscf import df
+    from pyscf.gto import moleintor
+    from pyscf.df.grad.rhf import _gen_metric_solver
+    from pyscf.ao2mo.outcore import balance_partition
+    libv = ghf_hess._load_socvhf()
+    if not libv or not hasattr(libv, 'SOCVHFri_j_deriv') or mol.cart:
+        return None
+    if tol is None:
+        tol = ghf_hess.HESS2E_TOL
+    if max_memory is None:
+        max_memory = mol.max_memory
+    dm = numpy.ascontiguousarray(dm, dtype=numpy.double)
+    natm, nao, nbas = mol.natm, mol.nao, mol.nbas
+    naux = auxmol.nao
+    npair = nao * (nao + 1) // 2
+    blk = max(16, min(naux, int(max_memory * .2e6 / 8 / npair)))
+    dm_tril = lib.pack_tril(dm + dm.T - numpy.diag(numpy.diag(dm)))
+    rho = numpy.empty(naux)
+    for k0, k1, _ in balance_partition(auxmol.ao_loc, blk):
+        p0, p1 = auxmol.ao_loc[k0], auxmol.ao_loc[k1]
+        int3c = df.incore.aux_e2(mol, auxmol, 'int3c2e', aosym='s2ij', shls_slice=(0, nbas, 0, nbas, k0, k1))
+        rho[p0:p1] = lib.dot(dm_tril[None], int3c)[0]
+    int3c = None
+    dfit = _gen_metric_solver(auxmol.intor('int2c2e', aosym='s1'))(rho.copy())
+    q = numpy.max([ghf_hess._q_cond(mol, 'int2e_ip1')[k] for k in (0, 1)], axis=0)
+    q = numpy.ascontiguousarray(numpy.maximum(q, q.T))
+    aux_loc = auxmol.ao_loc_nr()
+    qP = numpy.sqrt(numpy.maximum.reduceat(abs(numpy.diag(auxmol.intor('int2c2e', aosym='s1'))), aux_loc[:-1]))
+    dPcond = numpy.ascontiguousarray(numpy.maximum.reduceat(abs(dfit), aux_loc[:-1]))
+    dcond = ghf_hess._dm_cond(mol, [dm])
+    atm, bas, env = gto.conc_env(mol._atm, mol._bas, mol._env, auxmol._atm, auxmol._bas, auxmol._env)
+    ao_loc = moleintor.make_loc(bas, 'int3c2e_sph').astype(numpy.int32)
+    opts = [moleintor.make_cintopt(atm, bas, env, s) for s in ('int3c2e_ip1_sph', 'int3c2e_ipip1_sph',
+                                                               'int3c2e_ipvip1_sph')]
+    Y = numpy.zeros((natm * 3, naux))
+    null = lib.c_null_ptr()
+    libv.SOCVHFri_j_deriv(
+        null, Y.ctypes.data_as(ctypes.c_void_p), null,
+        dm.ctypes.data_as(ctypes.c_void_p), dfit.ctypes.data_as(ctypes.c_void_p),
+        q.ctypes.data_as(ctypes.c_void_p), qP.ctypes.data_as(ctypes.c_void_p),
+        dcond.ctypes.data_as(ctypes.c_void_p), dPcond.ctypes.data_as(ctypes.c_void_p), ctypes.c_double(tol),
+        opts[0], opts[1], opts[2], ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
+        ctypes.c_int(natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nbas),
+        ctypes.c_int(auxmol.nbas), env.ctypes.data_as(ctypes.c_void_p))
+    g = Y.dot(dfit).reshape(natm, 3)                          # d . rho^xi
+    # -1/2 d M^{A,x} d = sum_{P in A} d_P (nabla P|Q)_x d_Q
+    v = numpy.einsum('xpq,q->xp', auxmol.intor('int2c2e_ip1', aosym='s1'), dfit)
+    for ia, (p0, p1) in enumerate(auxmol.aoslice_by_atom()[:, 2:]):
+        g[ia] += v[:, p0:p1].dot(dfit[p0:p1])
+    return g
+
+
 def rhf_make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=None):
     '''pyscf.hessian.rhf.make_h1 with the 2e part from fock1_jk (density-fitted
     J: ri_j_deriv).'''

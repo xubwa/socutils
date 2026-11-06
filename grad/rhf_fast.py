@@ -44,6 +44,7 @@ from socutils.hessian import rhf_fast as hess_fast
 # 6.3e-8 (H2O)_16 Eh/Bohr (Gaussian's Opt threshold 4.5e-4), the 2e part 10 / 12 / 20 % faster
 # than 1e-11 / 1e-13
 GRAD2E_TOL = 1e-10
+RIJ_GRAD_FAST = True    # RIJ (only_dfj): the DF-J gradient by hessian.rhf_fast.ri_j_grad, else pyscf's
 GRAD2E_PRIM_TOL = 1e-11
 GRAD_SUBBLOCK = 112     # grid points per sub-block of the fused XC gradient (10 AO components per AO)
 
@@ -187,6 +188,15 @@ def _fast_terms(grad, mol, dm):
     jf = 1. if dfm is None else 0.
     kf = -hyb if hybrid else 0.
     de = numpy.zeros((mol.natm, 3))
+    grad._rij_fast = False
+    if dfm == 'j' and RIJ_GRAD_FAST and grad.auxbasis_response:
+        # RIJ: the density-fitted J gradient (with its auxiliary-basis response) from the C pass
+        r = hess_fast.ri_j_grad(mol, hess_fast._df_auxmol(mf), dm, tol=GRAD2E_TOL,
+                                max_memory=max(1000, mf.max_memory - lib.current_memory()[0]))
+        if r is not None:
+            de += r
+            grad._rij_fast = True
+            t0 = logger.timer(grad, 'RIJ gradient (three-centre C pass)', *t0)
     if jf != 0 and kf != 0 and _gen_grad_usable(mol):
         # hybrids: J and K in one pass of the generated kernels (J costs little more
         # there than the separate MD J pass)
@@ -236,6 +246,9 @@ class _FastGradMixin:
         if hess_fast._df_mode(mf) is None:
             nao = dm.shape[-1]
             return lib.tag_array(numpy.zeros((3, nao, nao)), exc1_grid=None)
+        if getattr(self, '_rij_fast', False):
+            nao = dm.shape[-1]
+            return lib.tag_array(numpy.zeros((3, nao, nao)), exc1_grid=None, aux=numpy.zeros((mol.natm, 3)))
         vj = self.get_j(mol, dm)
         if self.auxbasis_response:
             return lib.tag_array(numpy.asarray(vj), exc1_grid=None, aux=vj.aux.sum((0, 1)))
