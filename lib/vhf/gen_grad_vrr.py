@@ -268,7 +268,7 @@ def kernel(la, lb, lc, ld, raw=False):
     for key in order:
         w('                        const double %s = %s;' % (vname(*key), exprs[key]))
     for i, (e, f) in enumerate(union):
-        w('                        v[%d * nb + b] = g * %s;' % (i, vname(e, f, 0)))
+        w('                        v[b * %d + %d] = g * %s;' % (nt, i, vname(e, f, 0)))
     w('                }')
     # bra contractions over the target groups, v read once per target:
     # w0 = sum_b c v on X, wB = sum_b 2 c a_B v on Y, wA = sum_b 2 c a_A v on Z
@@ -290,48 +290,40 @@ def kernel(la, lb, lc, ld, raw=False):
     w('                                nz++;')
     w('                        }')
     w('                        if (nz == 0) c0[0] = cA[0] = cB[0] = 0;')
-    w('                        const int dense = nz == nbt;')
+    w('                        (void)nbt;')
     w('                        double *y0 = w0 + cb * %d, *yA = wA + cb * %d, *yB = wB + cb * %d;' % (nX, nZ, nY))
     w('                        (void)y0; (void)yA; (void)yB;')
-    for gi, sums in enumerate(gsums):
-        lo, hi = g0[gi], g0[gi + 1]
-        if hi == lo:
-            continue
-        outs = ['y%s[i - %d]' % (s, dst[s][1]) for s in sums]
-        w('                        if (nb == 1) {')
-        w('                                const double %s;' % ', '.join('k%s = c%s[0]' % (s, s) for s in sums))
+    # the bra sums with the targets contiguous (v[b * nt + i]): per nonzero bra primitive one
+    # vectorised pass over each target group
+    grp = [(g0[gi], g0[gi + 1], sums) for gi, sums in enumerate(gsums) if g0[gi + 1] > g0[gi]]
+    w('                        if (nb == 1) {')
+    for lo, hi, sums in grp:
+        w('                                {')
+        w('                                const double %s;' % ', '.join('k%s = c%s[0]' % (s_, s_) for s_ in sums))
         w('#pragma omp simd')
         w('                                for (i = %d; i < %d; i++) {' % (lo, hi))
         w('                                        const double x = v[i];')
-        for s, ot in zip(sums, outs):
-            w('                                        %s = k%s * x;' % (ot, s))
+        for s_ in sums:
+            w('                                        y%s[i - %d] = k%s * x;' % (s_, dst[s_][1], s_))
         w('                                }')
-        w('                        } else if (dense) {')
-        w('                                for (i = %d; i < %d; i++) {' % (lo, hi))
-        w('                                        const double *vi = v + (size_t)i * nb;')
-        w('                                        double %s;' % ', '.join('s%s = 0' % s for s in sums))
-        w('                                        for (b = 0; b < nbt; b++) {')
-        w('                                                const double x = vi[b];')
-        for s in sums:
-            w('                                                s%s += c%s[b] * x;' % (s, s))
+        w('                                }')
+    w('                        } else {')
+    for nm_, (arr, off, n_) in dst.items():
+        w('                                memset(y%s, 0, sizeof(double) * %d);' % (nm_, n_))
+    w('                                int k_;')
+    w('                                for (k_ = 0; k_ < nz; k_++) {')
+    w('                                        const double *vb = v + (size_t)bi[k_] * %d;' % nt)
+    w('                                        const double k0 = c0[k_], kA = cA[k_], kB = cB[k_];')
+    w('                                        (void)k0; (void)kA; (void)kB;')
+    for lo, hi, sums in grp:
+        w('#pragma omp simd')
+        w('                                        for (i = %d; i < %d; i++) {' % (lo, hi))
+        w('                                                const double x = vb[i];')
+        for s_ in sums:
+            w('                                                y%s[i - %d] += k%s * x;' % (s_, dst[s_][1], s_))
         w('                                        }')
-        for s, ot in zip(sums, outs):
-            w('                                        %s = s%s;' % (ot, s))
-        w('                                }')
-        w('                        } else {')
-        w('                                for (i = %d; i < %d; i++) {' % (lo, hi))
-        w('                                        const double *vi = v + (size_t)i * nb;')
-        w('                                        double %s;' % ', '.join('s%s = 0' % s for s in sums))
-        w('                                        int k_;')
-        w('                                        for (k_ = 0; k_ < nz; k_++) {')
-        w('                                                const double x = vi[bi[k_]];')
-        for s in sums:
-            w('                                                s%s += c%s[k_] * x;' % (s, s))
-        w('                                        }')
-        for s, ot in zip(sums, outs):
-            w('                                        %s = s%s;' % (ot, s))
-        w('                                }')
-        w('                        }')
+    w('                                }')
+    w('                        }')
     w('                }')
     # ket accumulation: SK[(kc ncb + cb) nw + ...] rows X (S0) | XC (SC) | Z (SA) | Y (SB)
     w('                const double kq = K->kp[t], ac2 = 2 * eC[t];')
