@@ -163,10 +163,42 @@ Inputs:
 * **Lattice symmetry:** EuCl3 / EuBr3 have W along y only and EuOCl along z only (lattice symmetry);
   Eu(NO3)3 and YSO have no such constraint.
 
+## THC + MPI pipeline (2026-11)
+
+`examples/14-periodic_dopant_casci.py --jk thc` runs SCF -> CAHF -> CASCI -> W_NSM / d00 with the THC
+route-1 J/K (`pbc/thc.py` `THCJK`, `pbc/thc_gapw.py`, `pbc/thc_local.py`, `lib/thc` -> `lib/libsocthc.so`)
+and no cderi.  Under `mpirun` it is SPMD: every rank runs the script, the THC build and every J/K
+(SCF, CAHF, CASCI core) are split over the ranks, rank 0 broadcasts orbitals/densities and is the
+only one that prints and writes.  The active (tu|vw) come from the RSDF three-index route on rank 0.
+
+    export OMP_NUM_THREADS=24 OMP_PLACES=cores OMP_PROC_BIND=close I_MPI_PIN=1 I_MPI_PIN_DOMAIN=socket
+    mpirun -np 2 python -u -m mpi4py examples/14-periodic_dopant_casci.py CIF --basis-py B.py \
+        --workdir W --jk thc --thc-local-rcut 6 --thc-alpha-c 4 --omega 0.35 --max-memory 80000 \
+        --lr gspace --active-eri three-index --nroots 60 --open-ref REF.npz --nsm-dir CFOUR_DIR
+
+(2 ranks per node, one per socket; `--max-memory` is per rank; `python -m mpi4py` aborts all ranks
+on an exception.)  Defaults now: streamed build, phi distributed by grid rows under MPI, far-field CX
+fit, ISDF cut 1e-10, uniform-grid cutoff precision 1e-12, space-group-symmetric grid and orbit pivots
+whenever the cell has symmetry (spglib; P1 cells unchanged).
+
+EuOCl primitive, symmetric THC (N_mu 16) vs RSDF `prim_3ix` (run `euocl/prim_thcsym`, log
+`euocl/prim_thcsym.log`): 7F1 282.5 / 372.4 / 372.4 vs 282.6 / 372.3 / 372.3 cm-1, W (-0.262, 0.454,
+-3510.4) vs (-0.255, 0.445, -3508.6), d00 1.052383e-3 vs 1.052370e-3.  Without the symmetric grid
+the THC broke the C4 site symmetry (`euocl/prim_thcmpi`: W_y 122, 7F1 E split 3.3 cm-1; from the
+ISDF grid / greedy points, not MPI, omega or the far fit, `euocl/wabl_A..D`).  A P1 cell keeps that
+error: on the finer default grid the forbidden W_y of EuOCl is still -35 (`euocl/wabl_I`), so take
+~1% of |W| as the THC error of W at a site without symmetry (Eu:YSO).
+
+Caveats: BLAS thread count alone moves E_K by ~1e-6 Eh (ISDF cut 1e-10), so compare runs at equal
+thread counts.  The uniform-grid cutoff decides ~1e-4 Eh in Eu cells (smooth h shells; EuOCl +4.6e-4 at
+precision 1e-10, mesh 85x85x143); a mesh scan (`euocl/wabl_M88..M93`) was running at the hand-off.
+Validation scripts: `pbc/bench/thc_tests/` (`quartz_scf_mpi.py`, `fixed_density_mpi.py`,
+`w_nsm_scf_density.py`, `symm_pivots_check.py`, `gram_conditioning.py`, `pivot_residual_curve.py`).
+
 ## Open items
 
-1. Redo the EuOCl primitive THC check with the current THC defaults (far-field fit, omega 0.35,
-   ISDF cut 1e-10), then a THC 2x2x1 / 2x2x2 run (MPI driver `pbc/bench/thc_tests/thc_mpi_scf.py`).
+1. Eu:YSO 32 atoms with THC + MPI vs RSDF `eu_yso_T10` (queued: `run_yso_thcmpi.sbatch`, 4 nodes x 2
+   ranks), then the 64-atom supercell; EuOCl 2x2x1 / 2x2x2 with THC.
 2. EuOCl cell convergence beyond 2x2x2 (3x3x2 or larger, now feasible with THC), and the same
    cell-size check for EuCl3 / EuBr3 / Eu(NO3)3 (only primitive cells so far).
 3. Express W in a common frame (crystal-field axes of the Eu site) to compare compounds.

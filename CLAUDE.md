@@ -127,6 +127,14 @@ two-electron corrections on) and only then require the `x2camf` integral backend
 - **`somf/`** — spin-orbit mean-field machinery (`amf.py`, `snso.py`,
   `somf_pt.py`, `x2cmp.py`) underlying the `.x2camf()`/`.x2cmp()` shortcuts.
 
+- **`pbc/`** — Gamma-point periodic two-component SCF on cells: `spinor_scf.py`
+  (`periodic(mf, rsdf)`, exxdiv / G = 0 conventions), `rsdf.py` (range-separated
+  density fitting, `lr='gspace'`, C kernels `lib/pbcdf`), and the cderi-free THC
+  route-1 J/K `thc.py` (`THCJK`; with `thc_gapw.py` GAPW J, `thc_local.py` local CX
+  fit, OpenMP kernels `lib/thc` -> `libsocthc.so`), MPI SPMD via mpi4py
+  (`jk.comm`; `examples/14-periodic_dopant_casci.py --jk thc` under
+  `mpirun ... python -m mpi4py`). Status, results and run paths: `pbc/HANDOFF_WNSM.md`.
+
 - **`cc/`** — relativistic coupled cluster on a spinor reference: `zccsd.py`,
   `zccsd_direct.py`, `zccsdt.py` (triples), `gccsd_t.py`, `eom_zccsd_direct.py`,
   `chol_zccsd*.py` (Cholesky-decomposed ERIs). C kernels live in `lib/ccsdt`
