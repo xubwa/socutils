@@ -169,7 +169,8 @@ SPLIT_GENERAL = True
 GRAD2E_HGP = True           # order 1: the HGP kernel (lib/vhf/hgp.c) for the low-l quartets
 HGP_LMAX = 1                # quartets with l_i + l_j + l_k + l_l <= HGP_LMAX to HGP, the others to Rys
 GRAD2E_GEN = True           # order 1: the generated kernels (lib/vhf/jk_gen.c SOCVHFgen_grad2e), l <= 2
-GEN_GRAD_LMAX = 6           # quartets with total l <= GEN_GRAD_LMAX to them (gen_grad_vrr.py LSUM_MAX), the others to Rys
+GEN_GRAD_LMAX = 5           # quartets with total l <= GEN_GRAD_LMAX to them (<= gen_grad_vrr.py LSUM_MAX), the others to Rys;
+                            # at total l 6 the Rys kernel is the faster (cc-pVDZ, 4 threads: pterin 2.44 -> 2.37 s, C16H34 9.52 -> 9.31 s)
 HESS2E_GEN = True           # order 2: the generated kernels (jk_gen.c SOCVHFgen_hess2e), l <= 2, total l <=
                             # gen_hess_vrr.py LSUM_MAX; the others to Rys
 
