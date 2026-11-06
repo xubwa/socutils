@@ -10,7 +10,7 @@ which compute the same quantities.
 import unittest
 import numpy
 import socutils  # noqa: F401
-from pyscf import gto, scf, dft
+from pyscf import lib, gto, scf, dft
 from socutils.grad import rhf_fast
 from socutils.hessian import rhf_fast as hess_fast
 
@@ -45,7 +45,9 @@ class KnownValues(unittest.TestCase):
         mf = _mf(self.mol, xc, df)
         ref = mf.nuc_grad_method().kernel()
         g = rhf_fast.Gradients(mf)
-        de = g.kernel()
+        # tight cutoffs: the comparison with pyscf to 1e-9 (the defaults are looser)
+        with lib.temporary_env(rhf_fast, GRAD2E_TOL=1e-13, GRAD2E_PRIM_TOL=1e-15):
+            de = g.kernel()
         self.assertIsNotNone(g._de_fast)          # the fast path ran
         self.assertAlmostEqual(abs(de - ref).max(), 0, places)
 
