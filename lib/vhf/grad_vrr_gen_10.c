@@ -1591,12 +1591,18 @@ int ggd_1121(double *sum, const double *dd, int ngroup, size_t nd, const size_t 
                 }
                 for (cb = 0; cb < ncb; cb++) {
                         const double *c = B->c + (size_t)cb * B->ld;
-                        double c0[nbt], cA[nbt], cB[nbt];
+                        double c0[nbt + 1], cA[nbt + 1], cB[nbt + 1];
+                        int bi[nbt + 1], nz = 0;
                         for (b = 0; b < nbt; b++) {
-                                c0[b] = c[b];
-                                cA[b] = 2 * c[b] * eA[b];
-                                cB[b] = 2 * c[b] * eB[b];
+                                if (c[b] == 0) continue;
+                                bi[nz] = b;
+                                c0[nz] = c[b];
+                                cA[nz] = 2 * c[b] * eA[b];
+                                cB[nz] = 2 * c[b] * eB[b];
+                                nz++;
                         }
+                        if (nz == 0) c0[0] = cA[0] = cB[0] = 0;
+                        const int dense = nz == nbt;
                         double *y0 = w0 + cb * 322, *yA = wA + cb * 256, *yB = wB + cb * 304;
                         (void)y0; (void)yA; (void)yB;
                         if (nb == 1) {
@@ -1606,13 +1612,24 @@ int ggd_1121(double *sum, const double *dd, int ngroup, size_t nd, const size_t 
                                         const double x = v[i];
                                         y0[i - 0] = k0 * x;
                                 }
-                        } else {
+                        } else if (dense) {
                                 for (i = 0; i < 178; i++) {
                                         const double *vi = v + (size_t)i * nb;
                                         double s0 = 0;
                                         for (b = 0; b < nbt; b++) {
                                                 const double x = vi[b];
                                                 s0 += c0[b] * x;
+                                        }
+                                        y0[i - 0] = s0;
+                                }
+                        } else {
+                                for (i = 0; i < 178; i++) {
+                                        const double *vi = v + (size_t)i * nb;
+                                        double s0 = 0;
+                                        int k_;
+                                        for (k_ = 0; k_ < nz; k_++) {
+                                                const double x = vi[bi[k_]];
+                                                s0 += c0[k_] * x;
                                         }
                                         y0[i - 0] = s0;
                                 }
@@ -1625,7 +1642,7 @@ int ggd_1121(double *sum, const double *dd, int ngroup, size_t nd, const size_t 
                                         y0[i - 0] = k0 * x;
                                         yB[i - 178] = kB * x;
                                 }
-                        } else {
+                        } else if (dense) {
                                 for (i = 178; i < 226; i++) {
                                         const double *vi = v + (size_t)i * nb;
                                         double s0 = 0, sB = 0;
@@ -1633,6 +1650,19 @@ int ggd_1121(double *sum, const double *dd, int ngroup, size_t nd, const size_t 
                                                 const double x = vi[b];
                                                 s0 += c0[b] * x;
                                                 sB += cB[b] * x;
+                                        }
+                                        y0[i - 0] = s0;
+                                        yB[i - 178] = sB;
+                                }
+                        } else {
+                                for (i = 178; i < 226; i++) {
+                                        const double *vi = v + (size_t)i * nb;
+                                        double s0 = 0, sB = 0;
+                                        int k_;
+                                        for (k_ = 0; k_ < nz; k_++) {
+                                                const double x = vi[bi[k_]];
+                                                s0 += c0[k_] * x;
+                                                sB += cB[k_] * x;
                                         }
                                         y0[i - 0] = s0;
                                         yB[i - 178] = sB;
@@ -1647,7 +1677,7 @@ int ggd_1121(double *sum, const double *dd, int ngroup, size_t nd, const size_t 
                                         yB[i - 178] = kB * x;
                                         yA[i - 226] = kA * x;
                                 }
-                        } else {
+                        } else if (dense) {
                                 for (i = 226; i < 322; i++) {
                                         const double *vi = v + (size_t)i * nb;
                                         double s0 = 0, sB = 0, sA = 0;
@@ -1656,6 +1686,21 @@ int ggd_1121(double *sum, const double *dd, int ngroup, size_t nd, const size_t 
                                                 s0 += c0[b] * x;
                                                 sB += cB[b] * x;
                                                 sA += cA[b] * x;
+                                        }
+                                        y0[i - 0] = s0;
+                                        yB[i - 178] = sB;
+                                        yA[i - 226] = sA;
+                                }
+                        } else {
+                                for (i = 226; i < 322; i++) {
+                                        const double *vi = v + (size_t)i * nb;
+                                        double s0 = 0, sB = 0, sA = 0;
+                                        int k_;
+                                        for (k_ = 0; k_ < nz; k_++) {
+                                                const double x = vi[bi[k_]];
+                                                s0 += c0[k_] * x;
+                                                sB += cB[k_] * x;
+                                                sA += cA[k_] * x;
                                         }
                                         y0[i - 0] = s0;
                                         yB[i - 178] = sB;
@@ -1670,7 +1715,7 @@ int ggd_1121(double *sum, const double *dd, int ngroup, size_t nd, const size_t 
                                         yB[i - 178] = kB * x;
                                         yA[i - 226] = kA * x;
                                 }
-                        } else {
+                        } else if (dense) {
                                 for (i = 322; i < 482; i++) {
                                         const double *vi = v + (size_t)i * nb;
                                         double sB = 0, sA = 0;
@@ -1682,11 +1727,25 @@ int ggd_1121(double *sum, const double *dd, int ngroup, size_t nd, const size_t 
                                         yB[i - 178] = sB;
                                         yA[i - 226] = sA;
                                 }
+                        } else {
+                                for (i = 322; i < 482; i++) {
+                                        const double *vi = v + (size_t)i * nb;
+                                        double sB = 0, sA = 0;
+                                        int k_;
+                                        for (k_ = 0; k_ < nz; k_++) {
+                                                const double x = vi[bi[k_]];
+                                                sB += cB[k_] * x;
+                                                sA += cA[k_] * x;
+                                        }
+                                        yB[i - 178] = sB;
+                                        yA[i - 226] = sA;
+                                }
                         }
                 }
                 const double kq = K->kp[t], ac2 = 2 * eC[t];
                 for (kc = 0; kc < nck; kc++) {
                         const double f = K->c[(size_t)kc * K->ld + t] * kq, fc = f * ac2;
+                        if (f == 0) continue;
                         for (cb = 0; cb < ncb; cb++) {
                                 double *so = SK + ((size_t)kc * ncb + cb) * 1204;
                                 const double *x0 = w0 + cb * 322, *xa = wA + cb * 256, *xb = wB + cb * 304;
@@ -4904,12 +4963,18 @@ int ggi_2021(double *out, size_t nd, const size_t *ds, const int *pos,
                 }
                 for (cb = 0; cb < ncb; cb++) {
                         const double *c = B->c + (size_t)cb * B->ld;
-                        double c0[nbt], cA[nbt], cB[nbt];
+                        double c0[nbt + 1], cA[nbt + 1], cB[nbt + 1];
+                        int bi[nbt + 1], nz = 0;
                         for (b = 0; b < nbt; b++) {
-                                c0[b] = c[b];
-                                cA[b] = 2 * c[b] * eA[b];
-                                cB[b] = 2 * c[b] * eB[b];
+                                if (c[b] == 0) continue;
+                                bi[nz] = b;
+                                c0[nz] = c[b];
+                                cA[nz] = 2 * c[b] * eA[b];
+                                cB[nz] = 2 * c[b] * eB[b];
+                                nz++;
                         }
+                        if (nz == 0) c0[0] = cA[0] = cB[0] = 0;
+                        const int dense = nz == nbt;
                         double *y0 = w0 + cb * 252, *yA = wA + cb * 160, *yB = wB + cb * 256;
                         (void)y0; (void)yA; (void)yB;
                         if (nb == 1) {
@@ -4919,13 +4984,24 @@ int ggi_2021(double *out, size_t nd, const size_t *ds, const int *pos,
                                         const double x = v[i];
                                         y0[i - 0] = k0 * x;
                                 }
-                        } else {
+                        } else if (dense) {
                                 for (i = 0; i < 156; i++) {
                                         const double *vi = v + (size_t)i * nb;
                                         double s0 = 0;
                                         for (b = 0; b < nbt; b++) {
                                                 const double x = vi[b];
                                                 s0 += c0[b] * x;
+                                        }
+                                        y0[i - 0] = s0;
+                                }
+                        } else {
+                                for (i = 0; i < 156; i++) {
+                                        const double *vi = v + (size_t)i * nb;
+                                        double s0 = 0;
+                                        int k_;
+                                        for (k_ = 0; k_ < nz; k_++) {
+                                                const double x = vi[bi[k_]];
+                                                s0 += c0[k_] * x;
                                         }
                                         y0[i - 0] = s0;
                                 }
@@ -4938,7 +5014,7 @@ int ggi_2021(double *out, size_t nd, const size_t *ds, const int *pos,
                                         y0[i - 0] = k0 * x;
                                         yB[i - 156] = kB * x;
                                 }
-                        } else {
+                        } else if (dense) {
                                 for (i = 156; i < 252; i++) {
                                         const double *vi = v + (size_t)i * nb;
                                         double s0 = 0, sB = 0;
@@ -4946,6 +5022,19 @@ int ggi_2021(double *out, size_t nd, const size_t *ds, const int *pos,
                                                 const double x = vi[b];
                                                 s0 += c0[b] * x;
                                                 sB += cB[b] * x;
+                                        }
+                                        y0[i - 0] = s0;
+                                        yB[i - 156] = sB;
+                                }
+                        } else {
+                                for (i = 156; i < 252; i++) {
+                                        const double *vi = v + (size_t)i * nb;
+                                        double s0 = 0, sB = 0;
+                                        int k_;
+                                        for (k_ = 0; k_ < nz; k_++) {
+                                                const double x = vi[bi[k_]];
+                                                s0 += c0[k_] * x;
+                                                sB += cB[k_] * x;
                                         }
                                         y0[i - 0] = s0;
                                         yB[i - 156] = sB;
@@ -4959,7 +5048,7 @@ int ggi_2021(double *out, size_t nd, const size_t *ds, const int *pos,
                                         yB[i - 156] = kB * x;
                                         yA[i - 252] = kA * x;
                                 }
-                        } else {
+                        } else if (dense) {
                                 for (i = 252; i < 412; i++) {
                                         const double *vi = v + (size_t)i * nb;
                                         double sB = 0, sA = 0;
@@ -4971,11 +5060,25 @@ int ggi_2021(double *out, size_t nd, const size_t *ds, const int *pos,
                                         yB[i - 156] = sB;
                                         yA[i - 252] = sA;
                                 }
+                        } else {
+                                for (i = 252; i < 412; i++) {
+                                        const double *vi = v + (size_t)i * nb;
+                                        double sB = 0, sA = 0;
+                                        int k_;
+                                        for (k_ = 0; k_ < nz; k_++) {
+                                                const double x = vi[bi[k_]];
+                                                sB += cB[k_] * x;
+                                                sA += cA[k_] * x;
+                                        }
+                                        yB[i - 156] = sB;
+                                        yA[i - 252] = sA;
+                                }
                         }
                 }
                 const double kq = K->kp[t], ac2 = 2 * eC[t];
                 for (kc = 0; kc < nck; kc++) {
                         const double f = K->c[(size_t)kc * K->ld + t] * kq, fc = f * ac2;
+                        if (f == 0) continue;
                         for (cb = 0; cb < ncb; cb++) {
                                 double *so = SK + ((size_t)kc * ncb + cb) * 920;
                                 const double *x0 = w0 + cb * 252, *xa = wA + cb * 160, *xb = wB + cb * 256;
@@ -6802,12 +6905,18 @@ int ggi_1120(double *out, size_t nd, const size_t *ds, const int *pos,
                 }
                 for (cb = 0; cb < ncb; cb++) {
                         const double *c = B->c + (size_t)cb * B->ld;
-                        double c0[nbt], cA[nbt], cB[nbt];
+                        double c0[nbt + 1], cA[nbt + 1], cB[nbt + 1];
+                        int bi[nbt + 1], nz = 0;
                         for (b = 0; b < nbt; b++) {
-                                c0[b] = c[b];
-                                cA[b] = 2 * c[b] * eA[b];
-                                cB[b] = 2 * c[b] * eB[b];
+                                if (c[b] == 0) continue;
+                                bi[nz] = b;
+                                c0[nz] = c[b];
+                                cA[nz] = 2 * c[b] * eA[b];
+                                cB[nz] = 2 * c[b] * eB[b];
+                                nz++;
                         }
+                        if (nz == 0) c0[0] = cA[0] = cB[0] = 0;
+                        const int dense = nz == nbt;
                         double *y0 = w0 + cb * 141, *yA = wA + cb * 96, *yB = wB + cb * 114;
                         (void)y0; (void)yA; (void)yB;
                         if (nb == 1) {
@@ -6817,13 +6926,24 @@ int ggi_1120(double *out, size_t nd, const size_t *ds, const int *pos,
                                         const double x = v[i];
                                         y0[i - 0] = k0 * x;
                                 }
-                        } else {
+                        } else if (dense) {
                                 for (i = 0; i < 123; i++) {
                                         const double *vi = v + (size_t)i * nb;
                                         double s0 = 0;
                                         for (b = 0; b < nbt; b++) {
                                                 const double x = vi[b];
                                                 s0 += c0[b] * x;
+                                        }
+                                        y0[i - 0] = s0;
+                                }
+                        } else {
+                                for (i = 0; i < 123; i++) {
+                                        const double *vi = v + (size_t)i * nb;
+                                        double s0 = 0;
+                                        int k_;
+                                        for (k_ = 0; k_ < nz; k_++) {
+                                                const double x = vi[bi[k_]];
+                                                s0 += c0[k_] * x;
                                         }
                                         y0[i - 0] = s0;
                                 }
@@ -6836,7 +6956,7 @@ int ggi_1120(double *out, size_t nd, const size_t *ds, const int *pos,
                                         y0[i - 0] = k0 * x;
                                         yB[i - 123] = kB * x;
                                 }
-                        } else {
+                        } else if (dense) {
                                 for (i = 123; i < 141; i++) {
                                         const double *vi = v + (size_t)i * nb;
                                         double s0 = 0, sB = 0;
@@ -6844,6 +6964,19 @@ int ggi_1120(double *out, size_t nd, const size_t *ds, const int *pos,
                                                 const double x = vi[b];
                                                 s0 += c0[b] * x;
                                                 sB += cB[b] * x;
+                                        }
+                                        y0[i - 0] = s0;
+                                        yB[i - 123] = sB;
+                                }
+                        } else {
+                                for (i = 123; i < 141; i++) {
+                                        const double *vi = v + (size_t)i * nb;
+                                        double s0 = 0, sB = 0;
+                                        int k_;
+                                        for (k_ = 0; k_ < nz; k_++) {
+                                                const double x = vi[bi[k_]];
+                                                s0 += c0[k_] * x;
+                                                sB += cB[k_] * x;
                                         }
                                         y0[i - 0] = s0;
                                         yB[i - 123] = sB;
@@ -6857,7 +6990,7 @@ int ggi_1120(double *out, size_t nd, const size_t *ds, const int *pos,
                                         yB[i - 123] = kB * x;
                                         yA[i - 141] = kA * x;
                                 }
-                        } else {
+                        } else if (dense) {
                                 for (i = 141; i < 237; i++) {
                                         const double *vi = v + (size_t)i * nb;
                                         double sB = 0, sA = 0;
@@ -6869,11 +7002,25 @@ int ggi_1120(double *out, size_t nd, const size_t *ds, const int *pos,
                                         yB[i - 123] = sB;
                                         yA[i - 141] = sA;
                                 }
+                        } else {
+                                for (i = 141; i < 237; i++) {
+                                        const double *vi = v + (size_t)i * nb;
+                                        double sB = 0, sA = 0;
+                                        int k_;
+                                        for (k_ = 0; k_ < nz; k_++) {
+                                                const double x = vi[bi[k_]];
+                                                sB += cB[k_] * x;
+                                                sA += cA[k_] * x;
+                                        }
+                                        yB[i - 123] = sB;
+                                        yA[i - 141] = sA;
+                                }
                         }
                 }
                 const double kq = K->kp[t], ac2 = 2 * eC[t];
                 for (kc = 0; kc < nck; kc++) {
                         const double f = K->c[(size_t)kc * K->ld + t] * kq, fc = f * ac2;
+                        if (f == 0) continue;
                         for (cb = 0; cb < ncb; cb++) {
                                 double *so = SK + ((size_t)kc * ncb + cb) * 492;
                                 const double *x0 = w0 + cb * 141, *xa = wA + cb * 96, *xb = wB + cb * 114;
@@ -7847,12 +7994,18 @@ int ggd_0021(double *sum, const double *dd, int ngroup, size_t nd, const size_t 
                 }
                 for (cb = 0; cb < ncb; cb++) {
                         const double *c = B->c + (size_t)cb * B->ld;
-                        double c0[nbt], cA[nbt], cB[nbt];
+                        double c0[nbt + 1], cA[nbt + 1], cB[nbt + 1];
+                        int bi[nbt + 1], nz = 0;
                         for (b = 0; b < nbt; b++) {
-                                c0[b] = c[b];
-                                cA[b] = 2 * c[b] * eA[b];
-                                cB[b] = 2 * c[b] * eB[b];
+                                if (c[b] == 0) continue;
+                                bi[nz] = b;
+                                c0[nz] = c[b];
+                                cA[nz] = 2 * c[b] * eA[b];
+                                cB[nz] = 2 * c[b] * eB[b];
+                                nz++;
                         }
+                        if (nz == 0) c0[0] = cA[0] = cB[0] = 0;
+                        const int dense = nz == nbt;
                         double *y0 = w0 + cb * 34, *yA = wA + cb * 48, *yB = wB + cb * 64;
                         (void)y0; (void)yA; (void)yB;
                         if (nb == 1) {
@@ -7862,13 +8015,24 @@ int ggd_0021(double *sum, const double *dd, int ngroup, size_t nd, const size_t 
                                         const double x = v[i];
                                         y0[i - 0] = k0 * x;
                                 }
-                        } else {
+                        } else if (dense) {
                                 for (i = 0; i < 18; i++) {
                                         const double *vi = v + (size_t)i * nb;
                                         double s0 = 0;
                                         for (b = 0; b < nbt; b++) {
                                                 const double x = vi[b];
                                                 s0 += c0[b] * x;
+                                        }
+                                        y0[i - 0] = s0;
+                                }
+                        } else {
+                                for (i = 0; i < 18; i++) {
+                                        const double *vi = v + (size_t)i * nb;
+                                        double s0 = 0;
+                                        int k_;
+                                        for (k_ = 0; k_ < nz; k_++) {
+                                                const double x = vi[bi[k_]];
+                                                s0 += c0[k_] * x;
                                         }
                                         y0[i - 0] = s0;
                                 }
@@ -7881,7 +8045,7 @@ int ggd_0021(double *sum, const double *dd, int ngroup, size_t nd, const size_t 
                                         y0[i - 0] = k0 * x;
                                         yB[i - 18] = kB * x;
                                 }
-                        } else {
+                        } else if (dense) {
                                 for (i = 18; i < 34; i++) {
                                         const double *vi = v + (size_t)i * nb;
                                         double s0 = 0, sB = 0;
@@ -7889,6 +8053,19 @@ int ggd_0021(double *sum, const double *dd, int ngroup, size_t nd, const size_t 
                                                 const double x = vi[b];
                                                 s0 += c0[b] * x;
                                                 sB += cB[b] * x;
+                                        }
+                                        y0[i - 0] = s0;
+                                        yB[i - 18] = sB;
+                                }
+                        } else {
+                                for (i = 18; i < 34; i++) {
+                                        const double *vi = v + (size_t)i * nb;
+                                        double s0 = 0, sB = 0;
+                                        int k_;
+                                        for (k_ = 0; k_ < nz; k_++) {
+                                                const double x = vi[bi[k_]];
+                                                s0 += c0[k_] * x;
+                                                sB += cB[k_] * x;
                                         }
                                         y0[i - 0] = s0;
                                         yB[i - 18] = sB;
@@ -7902,7 +8079,7 @@ int ggd_0021(double *sum, const double *dd, int ngroup, size_t nd, const size_t 
                                         yB[i - 18] = kB * x;
                                         yA[i - 34] = kA * x;
                                 }
-                        } else {
+                        } else if (dense) {
                                 for (i = 34; i < 82; i++) {
                                         const double *vi = v + (size_t)i * nb;
                                         double sB = 0, sA = 0;
@@ -7914,11 +8091,25 @@ int ggd_0021(double *sum, const double *dd, int ngroup, size_t nd, const size_t 
                                         yB[i - 18] = sB;
                                         yA[i - 34] = sA;
                                 }
+                        } else {
+                                for (i = 34; i < 82; i++) {
+                                        const double *vi = v + (size_t)i * nb;
+                                        double sB = 0, sA = 0;
+                                        int k_;
+                                        for (k_ = 0; k_ < nz; k_++) {
+                                                const double x = vi[bi[k_]];
+                                                sB += cB[k_] * x;
+                                                sA += cA[k_] * x;
+                                        }
+                                        yB[i - 18] = sB;
+                                        yA[i - 34] = sA;
+                                }
                         }
                 }
                 const double kq = K->kp[t], ac2 = 2 * eC[t];
                 for (kc = 0; kc < nck; kc++) {
                         const double f = K->c[(size_t)kc * K->ld + t] * kq, fc = f * ac2;
+                        if (f == 0) continue;
                         for (cb = 0; cb < ncb; cb++) {
                                 double *so = SK + ((size_t)kc * ncb + cb) * 180;
                                 const double *x0 = w0 + cb * 34, *xa = wA + cb * 48, *xb = wB + cb * 64;
@@ -8343,19 +8534,19 @@ int ggd_0021(double *sum, const double *dd, int ngroup, size_t nd, const size_t 
         return 1;
 }
 
-/* (20|00) first derivatives: 53 VRR nodes, 37 targets */
-int ggi_2000(double *out, size_t nd, const size_t *ds, const int *pos,
+/* (00|10) first derivatives: 30 VRR nodes, 19 targets */
+int ggi_0010(double *out, size_t nd, const size_t *ds, const int *pos,
                const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk)
 {
         const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
         const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
         const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
         const double *eA = bs ? B->ej : B->ei, *eB = bs ? B->ei : B->ej, *eC = ks ? K->ej : K->ei;
-        double *v = wk, *w0 = v + (size_t)37 * nb;
-        double *wA = w0 + (size_t)21 * ncb, *wB = wA + (size_t)10 * ncb, *SK = wB + (size_t)16 * ncb;
-        double *FT = SK + (size_t)nck * ncb * 68;
+        double *v = wk, *w0 = v + (size_t)19 * nb;
+        double *wA = w0 + (size_t)7 * ncb, *wB = wA + (size_t)9 * ncb, *SK = wB + (size_t)12 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 35;
         int t, b, cb, kc, i, any = 0;
-        memset(SK, 0, sizeof(double) * nck * ncb * 68);
+        memset(SK, 0, sizeof(double) * nck * ncb * 35);
         for (t = 0; t < nk; t++) {
                 if (K->bnd[t] < cut) continue;
                 any = 1;
@@ -8380,8 +8571,6 @@ int ggi_2000(double *out, size_t nd, const size_t *ds, const int *pos,
                         FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
                         a *= 3 * h;
                         FT[2 * nb + b] = inr ? taylor(f + 2, dt) : a;
-                        a *= 5 * h;
-                        FT[3 * nb + b] = inr ? taylor(f + 3, dt) : a;
                 }
 #pragma omp simd
                 for (b = 0; b < nbt; b++) {
@@ -8391,7 +8580,6 @@ int ggi_2000(double *out, size_t nd, const size_t *ds, const int *pos,
                         const double F0 = FT[0 * nb + b];
                         const double F1 = FT[1 * nb + b];
                         const double F2 = FT[2 * nb + b];
-                        const double F3 = FT[3 * nb + b];
                         const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
                         const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
                         const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
@@ -8401,114 +8589,79 @@ int ggi_2000(double *out, size_t nd, const size_t *ds, const int *pos,
                         const double g = B->kp[b] * sqrt(s);
                         const double x000_000_0 = F0;
                         const double x000_000_1 = F1;
-                        const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
-                        const double x010_000_0 = PAy * x000_000_0 + WPy * x000_000_1;
-                        const double x001_000_0 = PAz * x000_000_0 + WPz * x000_000_1;
+                        const double x000_100_0 = QCx * x000_000_0 + WQx * x000_000_1;
                         const double x000_000_2 = F2;
+                        const double x000_100_1 = QCx * x000_000_1 + WQx * x000_000_2;
+                        const double x000_200_0 = QCx * x000_100_0 + WQx * x000_100_1 + 1 * h2q * (x000_000_0 - rq * x000_000_1);
+                        const double x000_010_0 = QCy * x000_000_0 + WQy * x000_000_1;
+                        const double x000_010_1 = QCy * x000_000_1 + WQy * x000_000_2;
+                        const double x000_110_0 = QCx * x000_010_0 + WQx * x000_010_1;
+                        const double x000_001_0 = QCz * x000_000_0 + WQz * x000_000_1;
+                        const double x000_001_1 = QCz * x000_000_1 + WQz * x000_000_2;
+                        const double x000_101_0 = QCx * x000_001_0 + WQx * x000_001_1;
+                        const double x000_020_0 = QCy * x000_010_0 + WQy * x000_010_1 + 1 * h2q * (x000_000_0 - rq * x000_000_1);
+                        const double x000_011_0 = QCy * x000_001_0 + WQy * x000_001_1;
+                        const double x000_002_0 = QCz * x000_001_0 + WQz * x000_001_1 + 1 * h2q * (x000_000_0 - rq * x000_000_1);
+                        const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
                         const double x100_000_1 = PAx * x000_000_1 + WPx * x000_000_2;
-                        const double x200_000_0 = PAx * x100_000_0 + WPx * x100_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
-                        const double x000_000_3 = F3;
-                        const double x100_000_2 = PAx * x000_000_2 + WPx * x000_000_3;
-                        const double x200_000_1 = PAx * x100_000_1 + WPx * x100_000_2 + 1 * h2p * (x000_000_1 - rp * x000_000_2);
-                        const double x200_100_0 = QCx * x200_000_0 + WQx * x200_000_1 + 2 * h2pq * x100_000_1;
-                        const double x200_010_0 = QCy * x200_000_0 + WQy * x200_000_1;
-                        const double x200_001_0 = QCz * x200_000_0 + WQz * x200_000_1;
+                        const double x100_100_0 = QCx * x100_000_0 + WQx * x100_000_1 + 1 * h2pq * x000_000_1;
+                        const double x100_010_0 = QCy * x100_000_0 + WQy * x100_000_1;
+                        const double x100_001_0 = QCz * x100_000_0 + WQz * x100_000_1;
+                        const double x010_000_0 = PAy * x000_000_0 + WPy * x000_000_1;
                         const double x010_000_1 = PAy * x000_000_1 + WPy * x000_000_2;
-                        const double x110_000_0 = PAx * x010_000_0 + WPx * x010_000_1;
-                        const double x010_000_2 = PAy * x000_000_2 + WPy * x000_000_3;
-                        const double x110_000_1 = PAx * x010_000_1 + WPx * x010_000_2;
-                        const double x110_100_0 = QCx * x110_000_0 + WQx * x110_000_1 + 1 * h2pq * x010_000_1;
-                        const double x110_010_0 = QCy * x110_000_0 + WQy * x110_000_1 + 1 * h2pq * x100_000_1;
-                        const double x110_001_0 = QCz * x110_000_0 + WQz * x110_000_1;
+                        const double x010_100_0 = QCx * x010_000_0 + WQx * x010_000_1;
+                        const double x010_010_0 = QCy * x010_000_0 + WQy * x010_000_1 + 1 * h2pq * x000_000_1;
+                        const double x010_001_0 = QCz * x010_000_0 + WQz * x010_000_1;
+                        const double x001_000_0 = PAz * x000_000_0 + WPz * x000_000_1;
                         const double x001_000_1 = PAz * x000_000_1 + WPz * x000_000_2;
-                        const double x101_000_0 = PAx * x001_000_0 + WPx * x001_000_1;
-                        const double x001_000_2 = PAz * x000_000_2 + WPz * x000_000_3;
-                        const double x101_000_1 = PAx * x001_000_1 + WPx * x001_000_2;
-                        const double x101_100_0 = QCx * x101_000_0 + WQx * x101_000_1 + 1 * h2pq * x001_000_1;
-                        const double x101_010_0 = QCy * x101_000_0 + WQy * x101_000_1;
-                        const double x101_001_0 = QCz * x101_000_0 + WQz * x101_000_1 + 1 * h2pq * x100_000_1;
-                        const double x020_000_0 = PAy * x010_000_0 + WPy * x010_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
-                        const double x020_000_1 = PAy * x010_000_1 + WPy * x010_000_2 + 1 * h2p * (x000_000_1 - rp * x000_000_2);
-                        const double x020_100_0 = QCx * x020_000_0 + WQx * x020_000_1;
-                        const double x020_010_0 = QCy * x020_000_0 + WQy * x020_000_1 + 2 * h2pq * x010_000_1;
-                        const double x020_001_0 = QCz * x020_000_0 + WQz * x020_000_1;
-                        const double x011_000_0 = PAy * x001_000_0 + WPy * x001_000_1;
-                        const double x011_000_1 = PAy * x001_000_1 + WPy * x001_000_2;
-                        const double x011_100_0 = QCx * x011_000_0 + WQx * x011_000_1;
-                        const double x011_010_0 = QCy * x011_000_0 + WQy * x011_000_1 + 1 * h2pq * x001_000_1;
-                        const double x011_001_0 = QCz * x011_000_0 + WQz * x011_000_1 + 1 * h2pq * x010_000_1;
-                        const double x002_000_0 = PAz * x001_000_0 + WPz * x001_000_1 + 1 * h2p * (x000_000_0 - rp * x000_000_1);
-                        const double x002_000_1 = PAz * x001_000_1 + WPz * x001_000_2 + 1 * h2p * (x000_000_1 - rp * x000_000_2);
-                        const double x002_100_0 = QCx * x002_000_0 + WQx * x002_000_1;
-                        const double x002_010_0 = QCy * x002_000_0 + WQy * x002_000_1;
-                        const double x002_001_0 = QCz * x002_000_0 + WQz * x002_000_1 + 2 * h2pq * x001_000_1;
-                        const double x300_000_0 = PAx * x200_000_0 + WPx * x200_000_1 + 2 * h2p * (x100_000_0 - rp * x100_000_1);
-                        const double x210_000_0 = PAx * x110_000_0 + WPx * x110_000_1 + 1 * h2p * (x010_000_0 - rp * x010_000_1);
-                        const double x201_000_0 = PAx * x101_000_0 + WPx * x101_000_1 + 1 * h2p * (x001_000_0 - rp * x001_000_1);
-                        const double x120_000_0 = PAx * x020_000_0 + WPx * x020_000_1;
-                        const double x111_000_0 = PAx * x011_000_0 + WPx * x011_000_1;
-                        const double x102_000_0 = PAx * x002_000_0 + WPx * x002_000_1;
-                        const double x030_000_0 = PAy * x020_000_0 + WPy * x020_000_1 + 2 * h2p * (x010_000_0 - rp * x010_000_1);
-                        const double x021_000_0 = PAy * x011_000_0 + WPy * x011_000_1 + 1 * h2p * (x001_000_0 - rp * x001_000_1);
-                        const double x012_000_0 = PAy * x002_000_0 + WPy * x002_000_1;
-                        const double x003_000_0 = PAz * x002_000_0 + WPz * x002_000_1 + 2 * h2p * (x001_000_0 - rp * x001_000_1);
-                        v[0 * nb + b] = g * x100_000_0;
-                        v[1 * nb + b] = g * x010_000_0;
-                        v[2 * nb + b] = g * x001_000_0;
-                        v[3 * nb + b] = g * x200_100_0;
-                        v[4 * nb + b] = g * x200_010_0;
-                        v[5 * nb + b] = g * x200_001_0;
-                        v[6 * nb + b] = g * x110_100_0;
-                        v[7 * nb + b] = g * x110_010_0;
-                        v[8 * nb + b] = g * x110_001_0;
-                        v[9 * nb + b] = g * x101_100_0;
-                        v[10 * nb + b] = g * x101_010_0;
-                        v[11 * nb + b] = g * x101_001_0;
-                        v[12 * nb + b] = g * x020_100_0;
-                        v[13 * nb + b] = g * x020_010_0;
-                        v[14 * nb + b] = g * x020_001_0;
-                        v[15 * nb + b] = g * x011_100_0;
-                        v[16 * nb + b] = g * x011_010_0;
-                        v[17 * nb + b] = g * x011_001_0;
-                        v[18 * nb + b] = g * x002_100_0;
-                        v[19 * nb + b] = g * x002_010_0;
-                        v[20 * nb + b] = g * x002_001_0;
-                        v[21 * nb + b] = g * x300_000_0;
-                        v[22 * nb + b] = g * x210_000_0;
-                        v[23 * nb + b] = g * x201_000_0;
-                        v[24 * nb + b] = g * x120_000_0;
-                        v[25 * nb + b] = g * x111_000_0;
-                        v[26 * nb + b] = g * x102_000_0;
-                        v[27 * nb + b] = g * x030_000_0;
-                        v[28 * nb + b] = g * x021_000_0;
-                        v[29 * nb + b] = g * x012_000_0;
-                        v[30 * nb + b] = g * x003_000_0;
-                        v[31 * nb + b] = g * x200_000_0;
-                        v[32 * nb + b] = g * x110_000_0;
-                        v[33 * nb + b] = g * x101_000_0;
-                        v[34 * nb + b] = g * x020_000_0;
-                        v[35 * nb + b] = g * x011_000_0;
-                        v[36 * nb + b] = g * x002_000_0;
+                        const double x001_100_0 = QCx * x001_000_0 + WQx * x001_000_1;
+                        const double x001_010_0 = QCy * x001_000_0 + WQy * x001_000_1;
+                        const double x001_001_0 = QCz * x001_000_0 + WQz * x001_000_1 + 1 * h2pq * x000_000_1;
+                        v[0 * nb + b] = g * x000_000_0;
+                        v[1 * nb + b] = g * x000_200_0;
+                        v[2 * nb + b] = g * x000_110_0;
+                        v[3 * nb + b] = g * x000_101_0;
+                        v[4 * nb + b] = g * x000_020_0;
+                        v[5 * nb + b] = g * x000_011_0;
+                        v[6 * nb + b] = g * x000_002_0;
+                        v[7 * nb + b] = g * x100_100_0;
+                        v[8 * nb + b] = g * x100_010_0;
+                        v[9 * nb + b] = g * x100_001_0;
+                        v[10 * nb + b] = g * x010_100_0;
+                        v[11 * nb + b] = g * x010_010_0;
+                        v[12 * nb + b] = g * x010_001_0;
+                        v[13 * nb + b] = g * x001_100_0;
+                        v[14 * nb + b] = g * x001_010_0;
+                        v[15 * nb + b] = g * x001_001_0;
+                        v[16 * nb + b] = g * x000_100_0;
+                        v[17 * nb + b] = g * x000_010_0;
+                        v[18 * nb + b] = g * x000_001_0;
                 }
                 for (cb = 0; cb < ncb; cb++) {
                         const double *c = B->c + (size_t)cb * B->ld;
-                        double c0[nbt], cA[nbt], cB[nbt];
+                        double c0[nbt + 1], cA[nbt + 1], cB[nbt + 1];
+                        int bi[nbt + 1], nz = 0;
                         for (b = 0; b < nbt; b++) {
-                                c0[b] = c[b];
-                                cA[b] = 2 * c[b] * eA[b];
-                                cB[b] = 2 * c[b] * eB[b];
+                                if (c[b] == 0) continue;
+                                bi[nz] = b;
+                                c0[nz] = c[b];
+                                cA[nz] = 2 * c[b] * eA[b];
+                                cB[nz] = 2 * c[b] * eB[b];
+                                nz++;
                         }
-                        double *y0 = w0 + cb * 21, *yA = wA + cb * 10, *yB = wB + cb * 16;
+                        if (nz == 0) c0[0] = cA[0] = cB[0] = 0;
+                        const int dense = nz == nbt;
+                        double *y0 = w0 + cb * 7, *yA = wA + cb * 9, *yB = wB + cb * 12;
                         (void)y0; (void)yA; (void)yB;
                         if (nb == 1) {
                                 const double k0 = c0[0];
 #pragma omp simd
-                                for (i = 0; i < 21; i++) {
+                                for (i = 0; i < 7; i++) {
                                         const double x = v[i];
                                         y0[i - 0] = k0 * x;
                                 }
-                        } else {
-                                for (i = 0; i < 21; i++) {
+                        } else if (dense) {
+                                for (i = 0; i < 7; i++) {
                                         const double *vi = v + (size_t)i * nb;
                                         double s0 = 0;
                                         for (b = 0; b < nbt; b++) {
@@ -8517,17 +8670,28 @@ int ggi_2000(double *out, size_t nd, const size_t *ds, const int *pos,
                                         }
                                         y0[i - 0] = s0;
                                 }
+                        } else {
+                                for (i = 0; i < 7; i++) {
+                                        const double *vi = v + (size_t)i * nb;
+                                        double s0 = 0;
+                                        int k_;
+                                        for (k_ = 0; k_ < nz; k_++) {
+                                                const double x = vi[bi[k_]];
+                                                s0 += c0[k_] * x;
+                                        }
+                                        y0[i - 0] = s0;
+                                }
                         }
                         if (nb == 1) {
                                 const double kB = cB[0], kA = cA[0];
 #pragma omp simd
-                                for (i = 21; i < 31; i++) {
+                                for (i = 7; i < 16; i++) {
                                         const double x = v[i];
-                                        yB[i - 21] = kB * x;
-                                        yA[i - 21] = kA * x;
+                                        yB[i - 7] = kB * x;
+                                        yA[i - 7] = kA * x;
                                 }
-                        } else {
-                                for (i = 21; i < 31; i++) {
+                        } else if (dense) {
+                                for (i = 7; i < 16; i++) {
                                         const double *vi = v + (size_t)i * nb;
                                         double sB = 0, sA = 0;
                                         for (b = 0; b < nbt; b++) {
@@ -8535,44 +8699,69 @@ int ggi_2000(double *out, size_t nd, const size_t *ds, const int *pos,
                                                 sB += cB[b] * x;
                                                 sA += cA[b] * x;
                                         }
-                                        yB[i - 21] = sB;
-                                        yA[i - 21] = sA;
+                                        yB[i - 7] = sB;
+                                        yA[i - 7] = sA;
+                                }
+                        } else {
+                                for (i = 7; i < 16; i++) {
+                                        const double *vi = v + (size_t)i * nb;
+                                        double sB = 0, sA = 0;
+                                        int k_;
+                                        for (k_ = 0; k_ < nz; k_++) {
+                                                const double x = vi[bi[k_]];
+                                                sB += cB[k_] * x;
+                                                sA += cA[k_] * x;
+                                        }
+                                        yB[i - 7] = sB;
+                                        yA[i - 7] = sA;
                                 }
                         }
                         if (nb == 1) {
                                 const double kB = cB[0];
 #pragma omp simd
-                                for (i = 31; i < 37; i++) {
+                                for (i = 16; i < 19; i++) {
                                         const double x = v[i];
-                                        yB[i - 21] = kB * x;
+                                        yB[i - 7] = kB * x;
                                 }
-                        } else {
-                                for (i = 31; i < 37; i++) {
+                        } else if (dense) {
+                                for (i = 16; i < 19; i++) {
                                         const double *vi = v + (size_t)i * nb;
                                         double sB = 0;
                                         for (b = 0; b < nbt; b++) {
                                                 const double x = vi[b];
                                                 sB += cB[b] * x;
                                         }
-                                        yB[i - 21] = sB;
+                                        yB[i - 7] = sB;
+                                }
+                        } else {
+                                for (i = 16; i < 19; i++) {
+                                        const double *vi = v + (size_t)i * nb;
+                                        double sB = 0;
+                                        int k_;
+                                        for (k_ = 0; k_ < nz; k_++) {
+                                                const double x = vi[bi[k_]];
+                                                sB += cB[k_] * x;
+                                        }
+                                        yB[i - 7] = sB;
                                 }
                         }
                 }
                 const double kq = K->kp[t], ac2 = 2 * eC[t];
                 for (kc = 0; kc < nck; kc++) {
                         const double f = K->c[(size_t)kc * K->ld + t] * kq, fc = f * ac2;
+                        if (f == 0) continue;
                         for (cb = 0; cb < ncb; cb++) {
-                                double *so = SK + ((size_t)kc * ncb + cb) * 68;
-                                const double *x0 = w0 + cb * 21, *xa = wA + cb * 10, *xb = wB + cb * 16;
+                                double *so = SK + ((size_t)kc * ncb + cb) * 35;
+                                const double *x0 = w0 + cb * 7, *xa = wA + cb * 9, *xb = wB + cb * 12;
 #pragma omp simd
-                                for (i = 0; i < 21; i++) {
+                                for (i = 0; i < 7; i++) {
                                         so[i] += f * x0[i];
-                                        so[21 + i] += fc * x0[i];
+                                        so[7 + i] += fc * x0[i];
                                 }
 #pragma omp simd
-                                for (i = 0; i < 10; i++) so[42 + i] += f * xa[i];
+                                for (i = 0; i < 9; i++) so[14 + i] += f * xa[i];
 #pragma omp simd
-                                for (i = 0; i < 16; i++) so[52 + i] += f * xb[i];
+                                for (i = 0; i < 12; i++) so[23 + i] += f * xb[i];
                         }
                 }
         }
@@ -8583,25 +8772,25 @@ int ggi_2000(double *out, size_t nd, const size_t *ds, const int *pos,
                 CD[i] = ks ? -K->rij[i] : K->rij[i];
         }
         (void)AB; (void)CD;
-        static const int tA_up[6][3] = {{0, 1, 2}, {1, 3, 4}, {2, 4, 5}, {3, 6, 7}, {4, 7, 8}, {5, 8, 9}};
-        static const int tA_dn[6][3] = {{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {0, 1, 0}, {0, 2, 1}, {0, 0, 2}};
-        static const int tA_pw[6][3] = {{2, 0, 0}, {1, 1, 0}, {1, 0, 1}, {0, 2, 0}, {0, 1, 1}, {0, 0, 2}};
+        static const int tA_up[1][3] = {{0, 1, 2}};
+        static const int tA_dn[1][3] = {{0, 0, 0}};
+        static const int tA_pw[1][3] = {{0, 0, 0}};
         static const int tB_up[1][3] = {{0, 1, 2}};
         static const int tB_dn[1][3] = {{0, 0, 0}};
         static const int tB_pw[1][3] = {{0, 0, 0}};
-        static const int tC_up[1][3] = {{0, 1, 2}};
-        static const int tC_dn[1][3] = {{0, 0, 0}};
-        static const int tC_pw[1][3] = {{0, 0, 0}};
+        static const int tC_up[3][3] = {{0, 1, 2}, {1, 3, 4}, {2, 4, 5}};
+        static const int tC_dn[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+        static const int tC_pw[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
         int ci, cj, ck, cl, ia, ib, ic, id, x;
         for (cl = 0; cl < K->ncj; cl++)
         for (ck = 0; ck < K->nci; ck++)
         for (cj = 0; cj < B->ncj; cj++)
         for (ci = 0; ci < B->nci; ci++) {
                 const int cpos[4] = {ci, cj, ck, cl};
-                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 68;
-                const double *s0 = sk, *sC = sk + 21, *sA = sk + 42, *sB = sk + 52;
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 35;
+                const double *s0 = sk, *sC = sk + 7, *sA = sk + 14, *sB = sk + 23;
                 (void)s0;
-                double IA_hb[10];
+                double IA_hb[9];
                 IA_hb[0] = sA[0];
                 IA_hb[1] = sA[1];
                 IA_hb[2] = sA[2];
@@ -8611,83 +8800,348 @@ int ggi_2000(double *out, size_t nd, const size_t *ds, const int *pos,
                 IA_hb[6] = sA[6];
                 IA_hb[7] = sA[7];
                 IA_hb[8] = sA[8];
-                IA_hb[9] = sA[9];
-                double IA[10];
-                for (i = 0; i < 10; i++) {
-                        IA[0 + i] = IA_hb[i * 1 + 0];
-                }
-                double IB_hb[18];
-                (IB_hb + 0)[0] = sB[0] + AB[0] * sB[10];
-                (IB_hb + 1)[0] = sB[1] + AB[1] * sB[10];
-                (IB_hb + 2)[0] = sB[2] + AB[2] * sB[10];
-                (IB_hb + 3)[0] = sB[1] + AB[0] * sB[11];
-                (IB_hb + 4)[0] = sB[3] + AB[1] * sB[11];
-                (IB_hb + 5)[0] = sB[4] + AB[2] * sB[11];
-                (IB_hb + 6)[0] = sB[2] + AB[0] * sB[12];
-                (IB_hb + 7)[0] = sB[4] + AB[1] * sB[12];
-                (IB_hb + 8)[0] = sB[5] + AB[2] * sB[12];
-                (IB_hb + 9)[0] = sB[3] + AB[0] * sB[13];
-                (IB_hb + 10)[0] = sB[6] + AB[1] * sB[13];
-                (IB_hb + 11)[0] = sB[7] + AB[2] * sB[13];
-                (IB_hb + 12)[0] = sB[4] + AB[0] * sB[14];
-                (IB_hb + 13)[0] = sB[7] + AB[1] * sB[14];
-                (IB_hb + 14)[0] = sB[8] + AB[2] * sB[14];
-                (IB_hb + 15)[0] = sB[5] + AB[0] * sB[15];
-                (IB_hb + 16)[0] = sB[8] + AB[1] * sB[15];
-                (IB_hb + 17)[0] = sB[9] + AB[2] * sB[15];
-                double IB[18];
-                for (i = 0; i < 18; i++) {
-                        IB[0 + i] = IB_hb[i * 1 + 0];
-                }
-                double IC_hb[18];
-                IC_hb[0] = sC[3];
-                IC_hb[1] = sC[4];
-                IC_hb[2] = sC[5];
-                IC_hb[3] = sC[6];
-                IC_hb[4] = sC[7];
-                IC_hb[5] = sC[8];
-                IC_hb[6] = sC[9];
-                IC_hb[7] = sC[10];
-                IC_hb[8] = sC[11];
-                IC_hb[9] = sC[12];
-                IC_hb[10] = sC[13];
-                IC_hb[11] = sC[14];
-                IC_hb[12] = sC[15];
-                IC_hb[13] = sC[16];
-                IC_hb[14] = sC[17];
-                IC_hb[15] = sC[18];
-                IC_hb[16] = sC[19];
-                IC_hb[17] = sC[20];
-                double IC[18];
-                for (i = 0; i < 6; i++) {
-                        IC[0 + i] = IC_hb[i * 3 + 0];
-                        IC[6 + i] = IC_hb[i * 3 + 1];
-                        IC[12 + i] = IC_hb[i * 3 + 2];
-                }
-                double Ia_hb[3];
-                Ia_hb[0] = s0[0];
-                Ia_hb[1] = s0[1];
-                Ia_hb[2] = s0[2];
-                double Ia[3];
+                double IA[9];
                 for (i = 0; i < 3; i++) {
-                        Ia[0 + i] = Ia_hb[i * 1 + 0];
+                        IA[0 + i] = IA_hb[i * 3 + 0];
+                        IA[3 + i] = IA_hb[i * 3 + 1];
+                        IA[6 + i] = IA_hb[i * 3 + 2];
                 }
-                const size_t base = cpos[pos[0]] * 6 * ds[0] + cpos[pos[1]] * 1 * ds[1]
-                                  + cpos[pos[2]] * 1 * ds[2] + cpos[pos[3]] * 1 * ds[3];
-                for (ic = 0; ic < 1; ic++)
+                double IB_hb[9];
+                (IB_hb + 0)[0] = sB[0] + AB[0] * sB[9];
+                (IB_hb + 0)[1] = sB[1] + AB[0] * sB[10];
+                (IB_hb + 0)[2] = sB[2] + AB[0] * sB[11];
+                (IB_hb + 3)[0] = sB[3] + AB[1] * sB[9];
+                (IB_hb + 3)[1] = sB[4] + AB[1] * sB[10];
+                (IB_hb + 3)[2] = sB[5] + AB[1] * sB[11];
+                (IB_hb + 6)[0] = sB[6] + AB[2] * sB[9];
+                (IB_hb + 6)[1] = sB[7] + AB[2] * sB[10];
+                (IB_hb + 6)[2] = sB[8] + AB[2] * sB[11];
+                double IB[9];
+                for (i = 0; i < 3; i++) {
+                        IB[0 + i] = IB_hb[i * 3 + 0];
+                        IB[3 + i] = IB_hb[i * 3 + 1];
+                        IB[6 + i] = IB_hb[i * 3 + 2];
+                }
+                double IC_hb[6];
+                IC_hb[0] = sC[1];
+                IC_hb[1] = sC[2];
+                IC_hb[2] = sC[3];
+                IC_hb[3] = sC[4];
+                IC_hb[4] = sC[5];
+                IC_hb[5] = sC[6];
+                double IC[6];
+                for (i = 0; i < 1; i++) {
+                        IC[0 + i] = IC_hb[i * 6 + 0];
+                        IC[1 + i] = IC_hb[i * 6 + 1];
+                        IC[2 + i] = IC_hb[i * 6 + 2];
+                        IC[3 + i] = IC_hb[i * 6 + 3];
+                        IC[4 + i] = IC_hb[i * 6 + 4];
+                        IC[5 + i] = IC_hb[i * 6 + 5];
+                }
+                double Ic_hb[1];
+                Ic_hb[0] = s0[0];
+                double Ic[1];
+                for (i = 0; i < 1; i++) {
+                        Ic[0 + i] = Ic_hb[i * 1 + 0];
+                }
+                const size_t base = cpos[pos[0]] * 1 * ds[0] + cpos[pos[1]] * 1 * ds[1]
+                                  + cpos[pos[2]] * 3 * ds[2] + cpos[pos[3]] * 1 * ds[3];
+                for (ic = 0; ic < 3; ic++)
                 for (id = 0; id < 1; id++)
-                for (ia = 0; ia < 6; ia++)
+                for (ia = 0; ia < 1; ia++)
                 for (ib = 0; ib < 1; ib++) {
                         const size_t o = base + ia * ds[0] + ib * ds[1] + ic * ds[2] + id * ds[3];
                         for (x = 0; x < 3; x++) {
-                                double vA = IA[(ic * 1 + id) * 10 + tA_up[ia][x] * 1 + ib];
-                                if (tA_pw[ia][x]) vA -= tA_pw[ia][x] * Ia[(ic * 1 + id) * 3 + tA_dn[ia][x] * 1 + ib];
-                                double vB = IB[(ic * 1 + id) * 18 + ia * 3 + tB_up[ib][x]];
-                                double vC = IC[(tC_up[ic][x] * 1 + id) * 6 + ia * 1 + ib];
+                                double vA = IA[(ic * 1 + id) * 3 + tA_up[ia][x] * 1 + ib];
+                                double vB = IB[(ic * 1 + id) * 3 + ia * 3 + tB_up[ib][x]];
+                                double vC = IC[(tC_up[ic][x] * 1 + id) * 1 + ia * 1 + ib];
+                                if (tC_pw[ic][x]) vC -= tC_pw[ic][x] * Ic[(tC_dn[ic][x] * 1 + id) * 1 + ia * 1 + ib];
                                 out[x * nd + o] = vA;
                                 out[(3 + x) * nd + o] = vB;
                                 out[(6 + x) * nd + o] = vC;
                         }
+                }
+        }
+        return 1;
+}
+
+/* (00|00) first derivatives: 8 VRR nodes, 7 targets */
+int ggd_0000(double *sum, const double *dd, int ngroup, size_t nd, const size_t *ds, const int *pos,
+               const GPair *B, int bs, const GPair *K, int ks, double cut, const double *tab, double *wk)
+{
+        const int nb = B->n, nk = K->n, ncb = B->nc, nck = K->nc;
+        const double *pax = bs ? B->rjx : B->rix, *pay = bs ? B->rjy : B->riy, *paz = bs ? B->rjz : B->riz;
+        const double *qcx = ks ? K->rjx : K->rix, *qcy = ks ? K->rjy : K->riy, *qcz = ks ? K->rjz : K->riz;
+        const double *eA = bs ? B->ej : B->ei, *eB = bs ? B->ei : B->ej, *eC = ks ? K->ej : K->ei;
+        double *v = wk, *w0 = v + (size_t)7 * nb;
+        double *wA = w0 + (size_t)3 * ncb, *wB = wA + (size_t)3 * ncb, *SK = wB + (size_t)4 * ncb;
+        double *FT = SK + (size_t)nck * ncb * 13;
+        int t, b, cb, kc, i, any = 0;
+        memset(SK, 0, sizeof(double) * nck * ncb * 13);
+        for (t = 0; t < nk; t++) {
+                if (K->bnd[t] < cut) continue;
+                any = 1;
+                const int nbt = n_above(B->beta, nb, cut * B->bmax / K->bnd[t]);
+                if (nbt == 0) continue;
+                const double q = K->p[t], qx = K->px[t], qy = K->py[t], qz = K->pz[t];
+                const double QCx = qcx[t], QCy = qcy[t], QCz = qcz[t];
+                const double h2q = .5 / q;
+                (void)QCx; (void)QCy; (void)QCz; (void)h2q;
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double T = p * q * s * (dx * dx + dy * dy + dz * dz);
+                        const int inr = T < GT_TMAX;
+                        const int k = inr ? (int)(T * (1. / GT_STEP) + .5) : 0;
+                        const double dt = k * GT_STEP - T, *f = tab + k * GT_TN;
+                        const double Ta = inr ? GT_TMAX : T, h = .5 / Ta;
+                        double a = .886226925452758014 / sqrt(Ta);
+                        FT[0 * nb + b] = inr ? taylor(f + 0, dt) : a;
+                        a *= 1 * h;
+                        FT[1 * nb + b] = inr ? taylor(f + 1, dt) : a;
+                }
+#pragma omp simd
+                for (b = 0; b < nbt; b++) {
+                        const double p = B->p[b], s = 1. / (p + q);
+                        const double dx = B->px[b] - qx, dy = B->py[b] - qy, dz = B->pz[b] - qz;
+                        const double rho = p * q * s;
+                        const double F0 = FT[0 * nb + b];
+                        const double F1 = FT[1 * nb + b];
+                        const double PAx = pax[b], PAy = pay[b], PAz = paz[b];
+                        const double WPx = -q * s * dx, WPy = -q * s * dy, WPz = -q * s * dz;
+                        const double WQx = p * s * dx, WQy = p * s * dy, WQz = p * s * dz;
+                        const double h2p = .5 / p, rp = rho / p, rq = rho / q, h2pq = .5 * s;
+                        (void)PAx; (void)PAy; (void)PAz; (void)WPx; (void)WPy; (void)WPz;
+                        (void)WQx; (void)WQy; (void)WQz; (void)h2p; (void)rp; (void)rq; (void)h2pq;
+                        const double g = B->kp[b] * sqrt(s);
+                        const double x000_000_0 = F0;
+                        const double x000_000_1 = F1;
+                        const double x000_100_0 = QCx * x000_000_0 + WQx * x000_000_1;
+                        const double x000_010_0 = QCy * x000_000_0 + WQy * x000_000_1;
+                        const double x000_001_0 = QCz * x000_000_0 + WQz * x000_000_1;
+                        const double x100_000_0 = PAx * x000_000_0 + WPx * x000_000_1;
+                        const double x010_000_0 = PAy * x000_000_0 + WPy * x000_000_1;
+                        const double x001_000_0 = PAz * x000_000_0 + WPz * x000_000_1;
+                        v[0 * nb + b] = g * x000_100_0;
+                        v[1 * nb + b] = g * x000_010_0;
+                        v[2 * nb + b] = g * x000_001_0;
+                        v[3 * nb + b] = g * x100_000_0;
+                        v[4 * nb + b] = g * x010_000_0;
+                        v[5 * nb + b] = g * x001_000_0;
+                        v[6 * nb + b] = g * x000_000_0;
+                }
+                for (cb = 0; cb < ncb; cb++) {
+                        const double *c = B->c + (size_t)cb * B->ld;
+                        double c0[nbt + 1], cA[nbt + 1], cB[nbt + 1];
+                        int bi[nbt + 1], nz = 0;
+                        for (b = 0; b < nbt; b++) {
+                                if (c[b] == 0) continue;
+                                bi[nz] = b;
+                                c0[nz] = c[b];
+                                cA[nz] = 2 * c[b] * eA[b];
+                                cB[nz] = 2 * c[b] * eB[b];
+                                nz++;
+                        }
+                        if (nz == 0) c0[0] = cA[0] = cB[0] = 0;
+                        const int dense = nz == nbt;
+                        double *y0 = w0 + cb * 3, *yA = wA + cb * 3, *yB = wB + cb * 4;
+                        (void)y0; (void)yA; (void)yB;
+                        if (nb == 1) {
+                                const double k0 = c0[0];
+#pragma omp simd
+                                for (i = 0; i < 3; i++) {
+                                        const double x = v[i];
+                                        y0[i - 0] = k0 * x;
+                                }
+                        } else if (dense) {
+                                for (i = 0; i < 3; i++) {
+                                        const double *vi = v + (size_t)i * nb;
+                                        double s0 = 0;
+                                        for (b = 0; b < nbt; b++) {
+                                                const double x = vi[b];
+                                                s0 += c0[b] * x;
+                                        }
+                                        y0[i - 0] = s0;
+                                }
+                        } else {
+                                for (i = 0; i < 3; i++) {
+                                        const double *vi = v + (size_t)i * nb;
+                                        double s0 = 0;
+                                        int k_;
+                                        for (k_ = 0; k_ < nz; k_++) {
+                                                const double x = vi[bi[k_]];
+                                                s0 += c0[k_] * x;
+                                        }
+                                        y0[i - 0] = s0;
+                                }
+                        }
+                        if (nb == 1) {
+                                const double kB = cB[0], kA = cA[0];
+#pragma omp simd
+                                for (i = 3; i < 6; i++) {
+                                        const double x = v[i];
+                                        yB[i - 3] = kB * x;
+                                        yA[i - 3] = kA * x;
+                                }
+                        } else if (dense) {
+                                for (i = 3; i < 6; i++) {
+                                        const double *vi = v + (size_t)i * nb;
+                                        double sB = 0, sA = 0;
+                                        for (b = 0; b < nbt; b++) {
+                                                const double x = vi[b];
+                                                sB += cB[b] * x;
+                                                sA += cA[b] * x;
+                                        }
+                                        yB[i - 3] = sB;
+                                        yA[i - 3] = sA;
+                                }
+                        } else {
+                                for (i = 3; i < 6; i++) {
+                                        const double *vi = v + (size_t)i * nb;
+                                        double sB = 0, sA = 0;
+                                        int k_;
+                                        for (k_ = 0; k_ < nz; k_++) {
+                                                const double x = vi[bi[k_]];
+                                                sB += cB[k_] * x;
+                                                sA += cA[k_] * x;
+                                        }
+                                        yB[i - 3] = sB;
+                                        yA[i - 3] = sA;
+                                }
+                        }
+                        if (nb == 1) {
+                                const double kB = cB[0];
+#pragma omp simd
+                                for (i = 6; i < 7; i++) {
+                                        const double x = v[i];
+                                        yB[i - 3] = kB * x;
+                                }
+                        } else if (dense) {
+                                for (i = 6; i < 7; i++) {
+                                        const double *vi = v + (size_t)i * nb;
+                                        double sB = 0;
+                                        for (b = 0; b < nbt; b++) {
+                                                const double x = vi[b];
+                                                sB += cB[b] * x;
+                                        }
+                                        yB[i - 3] = sB;
+                                }
+                        } else {
+                                for (i = 6; i < 7; i++) {
+                                        const double *vi = v + (size_t)i * nb;
+                                        double sB = 0;
+                                        int k_;
+                                        for (k_ = 0; k_ < nz; k_++) {
+                                                const double x = vi[bi[k_]];
+                                                sB += cB[k_] * x;
+                                        }
+                                        yB[i - 3] = sB;
+                                }
+                        }
+                }
+                const double kq = K->kp[t], ac2 = 2 * eC[t];
+                for (kc = 0; kc < nck; kc++) {
+                        const double f = K->c[(size_t)kc * K->ld + t] * kq, fc = f * ac2;
+                        if (f == 0) continue;
+                        for (cb = 0; cb < ncb; cb++) {
+                                double *so = SK + ((size_t)kc * ncb + cb) * 13;
+                                const double *x0 = w0 + cb * 3, *xa = wA + cb * 3, *xb = wB + cb * 4;
+#pragma omp simd
+                                for (i = 0; i < 3; i++) {
+                                        so[i] += f * x0[i];
+                                        so[3 + i] += fc * x0[i];
+                                }
+#pragma omp simd
+                                for (i = 0; i < 3; i++) so[6 + i] += f * xa[i];
+#pragma omp simd
+                                for (i = 0; i < 4; i++) so[9 + i] += f * xb[i];
+                        }
+                }
+        }
+        if (!any) return 0;
+        double AB[3], CD[3];
+        for (i = 0; i < 3; i++) {
+                AB[i] = bs ? -B->rij[i] : B->rij[i];
+                CD[i] = ks ? -K->rij[i] : K->rij[i];
+        }
+        (void)AB; (void)CD;
+        static const int tA_up[1][3] = {{0, 1, 2}};
+        static const int tA_dn[1][3] = {{0, 0, 0}};
+        static const int tA_pw[1][3] = {{0, 0, 0}};
+        static const int tB_up[1][3] = {{0, 1, 2}};
+        static const int tB_dn[1][3] = {{0, 0, 0}};
+        static const int tB_pw[1][3] = {{0, 0, 0}};
+        static const int tC_up[1][3] = {{0, 1, 2}};
+        static const int tC_dn[1][3] = {{0, 0, 0}};
+        static const int tC_pw[1][3] = {{0, 0, 0}};
+        int ci, cj, ck, cl, ia, ib, ic, id, x, gi;
+        for (cl = 0; cl < K->ncj; cl++)
+        for (ck = 0; ck < K->nci; ck++)
+        for (cj = 0; cj < B->ncj; cj++)
+        for (ci = 0; ci < B->nci; ci++) {
+                const int cpos[4] = {ci, cj, ck, cl};
+                const double *sk = SK + ((size_t)(cl * K->nci + ck) * ncb + cj * B->nci + ci) * 13;
+                const double *s0 = sk, *sC = sk + 3, *sA = sk + 6, *sB = sk + 9;
+                (void)s0;
+                double IA_hb[3];
+                IA_hb[0] = sA[0];
+                IA_hb[1] = sA[1];
+                IA_hb[2] = sA[2];
+                double IA[3];
+                for (i = 0; i < 3; i++) {
+                        IA[0 + i] = IA_hb[i * 1 + 0];
+                }
+                double IB_hb[3];
+                (IB_hb + 0)[0] = sB[0] + AB[0] * sB[3];
+                (IB_hb + 1)[0] = sB[1] + AB[1] * sB[3];
+                (IB_hb + 2)[0] = sB[2] + AB[2] * sB[3];
+                double IB[3];
+                for (i = 0; i < 3; i++) {
+                        IB[0 + i] = IB_hb[i * 1 + 0];
+                }
+                double IC_hb[3];
+                IC_hb[0] = sC[0];
+                IC_hb[1] = sC[1];
+                IC_hb[2] = sC[2];
+                double IC[3];
+                for (i = 0; i < 1; i++) {
+                        IC[0 + i] = IC_hb[i * 3 + 0];
+                        IC[1 + i] = IC_hb[i * 3 + 1];
+                        IC[2 + i] = IC_hb[i * 3 + 2];
+                }
+                const size_t base = cpos[pos[0]] * 1 * ds[0] + cpos[pos[1]] * 1 * ds[1]
+                                  + cpos[pos[2]] * 1 * ds[2] + cpos[pos[3]] * 1 * ds[3];
+#if defined(GGD_PROF) && GGD_PROF == 1
+                { double s_ = 0;
+                  for (i = 0; i < 3; i++) s_ += IA[i];
+                  for (i = 0; i < 3; i++) s_ += IB[i];
+                  for (i = 0; i < 3; i++) s_ += IC[i];
+                  sum[0] += s_ * 1e-300; }
+                continue;
+#elif defined(GGD_PROF) && GGD_PROF == 2
+                sum[0] += sk[0] * 1e-300;
+                continue;
+#endif
+                for (gi = 0; gi < ngroup; gi++) {
+                        const double *dg = dd + gi * nd + base;
+                        double gs[9] = {0};
+                        for (ic = 0; ic < 1; ic++)
+                        for (id = 0; id < 1; id++)
+                        for (ia = 0; ia < 1; ia++)
+                        for (ib = 0; ib < 1; ib++) {
+                                const double wd = dg[ia * ds[0] + ib * ds[1] + ic * ds[2] + id * ds[3]];
+                                if (wd == 0) continue;
+                                for (x = 0; x < 3; x++) {
+                                        double vA = IA[(ic * 1 + id) * 3 + tA_up[ia][x] * 1 + ib];
+                                        double vB = IB[(ic * 1 + id) * 3 + ia * 3 + tB_up[ib][x]];
+                                        double vC = IC[(tC_up[ic][x] * 1 + id) * 1 + ia * 1 + ib];
+                                        gs[x * 3] += wd * vA;
+                                        gs[x * 3 + 1] += wd * vB;
+                                        gs[x * 3 + 2] += wd * vC;
+                                }
+                        }
+                        for (x = 0; x < 9; x++) sum[gi * 9 + x] += gs[x];
                 }
         }
         return 1;

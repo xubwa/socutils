@@ -276,12 +276,21 @@ def kernel(la, lb, lc, ld, raw=False):
     dst = {'0': ('w0', xb, nX), 'A': ('wA', zb, nZ), 'B': ('wB', yb, nY)}
     w('                for (cb = 0; cb < ncb; cb++) {')
     w('                        const double *c = B->c + (size_t)cb * B->ld;')
-    w('                        double c0[nbt], cA[nbt], cB[nbt];')
+    # the nonzero coefficients of the combination (general contraction: a diffuse primitive as its
+    # own contraction leaves most primitive pairs of a combination at zero), compressed; dense
+    # combinations keep the contiguous loop
+    w('                        double c0[nbt + 1], cA[nbt + 1], cB[nbt + 1];')
+    w('                        int bi[nbt + 1], nz = 0;')
     w('                        for (b = 0; b < nbt; b++) {')
-    w('                                c0[b] = c[b];')
-    w('                                cA[b] = 2 * c[b] * eA[b];')
-    w('                                cB[b] = 2 * c[b] * eB[b];')
+    w('                                if (c[b] == 0) continue;')
+    w('                                bi[nz] = b;')
+    w('                                c0[nz] = c[b];')
+    w('                                cA[nz] = 2 * c[b] * eA[b];')
+    w('                                cB[nz] = 2 * c[b] * eB[b];')
+    w('                                nz++;')
     w('                        }')
+    w('                        if (nz == 0) c0[0] = cA[0] = cB[0] = 0;')
+    w('                        const int dense = nz == nbt;')
     w('                        double *y0 = w0 + cb * %d, *yA = wA + cb * %d, *yB = wB + cb * %d;' % (nX, nZ, nY))
     w('                        (void)y0; (void)yA; (void)yB;')
     for gi, sums in enumerate(gsums):
@@ -297,7 +306,7 @@ def kernel(la, lb, lc, ld, raw=False):
         for s, ot in zip(sums, outs):
             w('                                        %s = k%s * x;' % (ot, s))
         w('                                }')
-        w('                        } else {')
+        w('                        } else if (dense) {')
         w('                                for (i = %d; i < %d; i++) {' % (lo, hi))
         w('                                        const double *vi = v + (size_t)i * nb;')
         w('                                        double %s;' % ', '.join('s%s = 0' % s for s in sums))
@@ -309,12 +318,26 @@ def kernel(la, lb, lc, ld, raw=False):
         for s, ot in zip(sums, outs):
             w('                                        %s = s%s;' % (ot, s))
         w('                                }')
+        w('                        } else {')
+        w('                                for (i = %d; i < %d; i++) {' % (lo, hi))
+        w('                                        const double *vi = v + (size_t)i * nb;')
+        w('                                        double %s;' % ', '.join('s%s = 0' % s for s in sums))
+        w('                                        int k_;')
+        w('                                        for (k_ = 0; k_ < nz; k_++) {')
+        w('                                                const double x = vi[bi[k_]];')
+        for s in sums:
+            w('                                                s%s += c%s[k_] * x;' % (s, s))
+        w('                                        }')
+        for s, ot in zip(sums, outs):
+            w('                                        %s = s%s;' % (ot, s))
+        w('                                }')
         w('                        }')
     w('                }')
     # ket accumulation: SK[(kc ncb + cb) nw + ...] rows X (S0) | XC (SC) | Z (SA) | Y (SB)
     w('                const double kq = K->kp[t], ac2 = 2 * eC[t];')
     w('                for (kc = 0; kc < nck; kc++) {')
     w('                        const double f = K->c[(size_t)kc * K->ld + t] * kq, fc = f * ac2;')
+    w('                        if (f == 0) continue;')
     w('                        for (cb = 0; cb < ncb; cb++) {')
     w('                                double *so = SK + ((size_t)kc * ncb + cb) * %d;' % nw)
     w('                                const double *x0 = w0 + cb * %d, *xa = wA + cb * %d, *xb = wB + cb * %d;' % (
