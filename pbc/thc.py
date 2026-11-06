@@ -642,6 +642,8 @@ class THCExchange:
         # 1e-10, mesh 85x85x143; 1.4e-5 vs RSDF on 90x90x144)
         self.ke = estimate_ke_cutoff(sm_cell, getattr(self, 'ke_precision', 1e-12))
         self.mesh = cell.cutoff_to_mesh(self.ke)
+        if getattr(self, 'mesh_override', None) is not None:          # tests: an explicit uniform grid
+            self.mesh = np.asarray(self.mesh_override, dtype=int)
         if getattr(self, 'symm_grid', None) is None:                   # default: on when the cell has symmetry
             self._ops = space_group_ops(cell)
             self.symm_grid = len(self._ops[0]) > 1
@@ -1851,7 +1853,7 @@ class THCJK:
         self.th.stream_max_blocks = getattr(self, 'stream_max_blocks', 1 << 30)
         self.th.piv_file = getattr(self, 'piv_file', None)
         for k in ('coarsen', 'blocked_pivots', 'far_fit', 'phi_ondemand', 'symm_grid', 'symm_pivots',
-                  'ke_precision'):                                    # options, if set
+                  'ke_precision', 'mesh_override'):                   # options, if set
             if hasattr(self, k):
                 setattr(self.th, k, getattr(self, k))
         rc = getattr(self, 'exx_trunc', None)                         # smoothed truncated Coulomb exchange

@@ -102,6 +102,7 @@ p.add_argument('--thc-symm-grid', action='store_true',
 p.add_argument('--thc-no-symm-grid', action='store_true', help='THCJK: no symmetric grid / points')
 p.add_argument('--thc-ke-precision', type=float, default=None,
                help='THCJK: precision of the uniform-grid cutoff estimate (default 1e-12)')
+p.add_argument('--thc-mesh', default=None, help='THCJK: explicit uniform grid, e.g. 90,90,144 (tests)')
 p.add_argument('--thc-no-symm-pivots', action='store_true',
                help='THCJK: symmetric grid but the plain (non-orbit) point selection (tests)')
 p.add_argument('--thc-no-far', action='store_true', help='THCJK: no far-field fit of the CX pairs beyond the clusters')
@@ -252,6 +253,8 @@ if args.jk == 'thc':
         jkobj.symm_pivots = False
     if args.thc_ke_precision:
         jkobj.ke_precision = args.thc_ke_precision
+    if args.thc_mesh:
+        jkobj.mesh_override = [int(x) for x in args.thc_mesh.split(',')]
     if args.thc_isdf_cut:
         jkobj.isdf_cut = args.thc_isdf_cut
     jkobj.verbose = root
