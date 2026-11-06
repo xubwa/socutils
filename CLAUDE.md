@@ -38,10 +38,10 @@ the full molecular J/K build). These `.so` are emitted **flat into `lib/`**.
 
 The **x2camf C library** (C99 translation of the C++ X2CAMF, Apache-2.0,
 repo github.com/xubwa/x2camf-c) and **zquatev** (BSD-2, sunqm/zquatev; pinned to the
-user's fork xubwa/zquatev `cmake-blas-install`, which adds BLAS_LIBRARIES and
+user's fork xubwa/zquatev master (sunqm 0.2.1 + 2 commits), which adds BLAS_LIBRARIES and
 install() to its CMake) are separate repositories, built with `ExternalProject`
 (like pyscf's libcint/libxc) with the same BLAS into `lib/deps/lib/`
-(`libx2camf_c.so`, `libzquatev.so`); the fork branch also computes zdotc in
+(`libx2camf_c.so`, `libzquatev.so`); the fork also computes zdotc in
 C++ instead of cblas_zdotc_sub, so no CBLAS/cblas.h is needed. Cache variables `X2CAMF_GIT`/`X2CAMF_VERSION`,
 `ZQUATEV_GIT`/`ZQUATEV_VERSION`, or `X2CAMF_SOURCE_DIR`/`ZQUATEV_SOURCE_DIR`
 for a local checkout; `BUILD_X2CAMF`/`BUILD_ZQUATEV=OFF` to skip.
