@@ -163,7 +163,7 @@ def grid_orbits(mesh, ops):
     return orbit, members
 
 
-def pivots_orbits(phi, kmax, orbit, members, b=64, over=4, tol=1e-14):
+def pivots_orbits(phi, kmax, orbit, members, b=64, over=4, tol=1e-14, orbit_dep=1e-1):
     '''pivots_blocked with whole symmetry orbits: the Gram kernel is invariant under the space group (phi spans
     symmetry-closed shells), so a pivot set made of complete orbits keeps the residual symmetric and the point set
     (and the ISDF fit on the symmetric grid) has the symmetry of the crystal.  Up to kmax points (whole orbits).'''
@@ -188,28 +188,44 @@ def pivots_orbits(phi, kmax, orbit, members, b=64, over=4, tol=1e-14):
         rc = res[cand].copy()
         pos = {int(c): i for i, c in enumerate(cand)}
         new = []
+        dropped = []
         for o in orbs:
             mem = members[o]
             if k + len(new) + len(mem) > kmax + 63 or len(new) >= b:
                 break
             if max(rc[pos[int(q)]] for q in mem) <= tol * dmax:
                 continue
+            # the whole orbit or nothing: a member whose residual is far below the current largest one (a
+            # near-duplicate image close to a symmetry element, or nearly dependent on the orbits taken in this
+            # block) would make the Gram matrix singular (quartz: smallest eigenvalue 1e-19, E erratic by 1e-4);
+            # the greedy selection never takes such a point, so such orbits are rejected
+            rows, rc_try, ok = [], rc.copy(), True
+            top = rc.max()                                            # as the greedy choice: no pivot far below it
             for q in mem:
                 iq = pos[int(q)]
+                d = rc_try[iq]
+                if d <= orbit_dep * top or d <= tol * dmax:
+                    ok = False
+                    break
                 row = Cc[:, iq].copy()
-                for r_ in new:
+                for r_ in new + rows:
                     row -= r_ * r_[q]
-                d = rc[iq]
-                if d <= 1e-300:
-                    d = max(res[q] - sum(r_[q] ** 2 for r_ in new), 1e-300)
                 row /= np.sqrt(d)
-                new.append(row)
-                piv.append(int(q))
-                rc -= row[cand] ** 2
-                rc[iq] = 0.
+                rows.append(row)
+                rc_try -= row[cand] ** 2
+                rc_try[iq] = 0.
+            if not ok:
+                dropped.extend(int(q) for q in mem)
+                continue
+            new.extend(rows)
+            piv.extend(int(q) for q in mem)
+            rc = rc_try
             if k + len(new) >= kmax:
                 break
+        res[dropped] = 0.                                             # not candidates again
         if not new:
+            if dropped:
+                continue
             break
         L[k:k + len(new)] = new
         res -= (np.asarray(new) ** 2).sum(axis=0)
@@ -621,7 +637,10 @@ class THCExchange:
         # smooth functions on the uniform grid
         t = time.time()
         sm_cell = _subcell(cell, self.smooth)
-        self.ke = estimate_ke_cutoff(sm_cell, 1e-10)
+        # the grid carries smooth PAIR densities: products of high-l shells near alpha_c (Eu: h, exponent 2.4;
+        # products up to l = 10) need more than the single-function estimate at 1e-10 (EuOCl: +4.6e-4 Eh at
+        # 1e-10, mesh 85x85x143; 1.4e-5 vs RSDF on 90x90x144)
+        self.ke = estimate_ke_cutoff(sm_cell, getattr(self, 'ke_precision', 1e-12))
         self.mesh = cell.cutoff_to_mesh(self.ke)
         if getattr(self, 'symm_grid', None) is None:                   # default: on when the cell has symmetry
             self._ops = space_group_ops(cell)
@@ -663,7 +682,7 @@ class THCExchange:
             f = pivots_blocked if self.blocked_pivots else pivots
             if getattr(self, 'symm_grid', False) and getattr(self, 'symm_pivots', True):
                 orb, mem = grid_orbits(mc, self._ops[:2])
-                f = lambda ph, k_: pivots_orbits(ph, k_, orb, mem)
+                f = lambda ph, k_: pivots_orbits(ph, k_, orb, mem, orbit_dep=getattr(self, "orbit_dep", 1e-1))
             kmax = min(len(cc), int(getattr(self, 'kmax_factor', kmax_factor) * len(self.smooth)))
             pf = getattr(self, 'piv_file', None)                      # cache of the coarse pivots (restarts)
             comm = getattr(self, 'comm', None)
@@ -1831,7 +1850,8 @@ class THCJK:
         self.th.stream_gb = getattr(self, 'stream_gb', None)       # GB; None: from the memory budget
         self.th.stream_max_blocks = getattr(self, 'stream_max_blocks', 1 << 30)
         self.th.piv_file = getattr(self, 'piv_file', None)
-        for k in ('coarsen', 'blocked_pivots', 'far_fit', 'phi_ondemand', 'symm_grid', 'symm_pivots'):   # if set
+        for k in ('coarsen', 'blocked_pivots', 'far_fit', 'phi_ondemand', 'symm_grid', 'symm_pivots',
+                  'ke_precision'):                                    # options, if set
             if hasattr(self, k):
                 setattr(self.th, k, getattr(self, k))
         rc = getattr(self, 'exx_trunc', None)                         # smoothed truncated Coulomb exchange
