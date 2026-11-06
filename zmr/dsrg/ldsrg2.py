@@ -444,12 +444,14 @@ class LDSRG2:
         h2 = cm.Blocks({lab: numpy.array(cm.materialize(self.V.get(lab)), dtype=numpy.complex128,
                                          order='C', copy=True) for lab in hh_pp})
         o1, o2 = self.F, self.V
+        # T2 in the DPD layout once for all products of all commutators
+        t2c = cm.dpd_blocks(t2, self.dims) if self.dpd_storage else None
         self.comm_norms = []
         for n in range(1, self.max_comm + 1):
             ladder = self._ladder if (n == 1 and self._w is not None) else None
             c0, c1, c2 = cm.commutator(o1, o2, t1, t2, self.cum, self.dims, 1.0 / n,
                                        self._keep2, ladder=ladder, timings=self.timings,
-                                       dpd_out=self.dpd_storage)
+                                       dpd_out=self.dpd_storage, T2c=t2c)
             cm.add_hc_1(c1)
             cm.add_hc_2(c2)
             h0 += 2.0 * numpy.real(c0)

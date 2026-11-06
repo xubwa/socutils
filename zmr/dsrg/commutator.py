@@ -1237,8 +1237,27 @@ def _scalar(O1, O2, T1, T2, G1, E1, L2, L3, con):
     return C0
 
 
+def dpd_blocks(blocks, dims, signs=TWO_BODY):
+    """The dense blocks of `blocks` (label -> array, every placement held) as dpd.Tensors
+    with the given signs as directions, where the spaces of the label have sectors
+    (Dims.legs); the others are kept as they are.  For operands used in many products,
+    converted once."""
+    out = Blocks()
+    if "signs" in blocks.__dict__:
+        out.signs = blocks.signs
+    legs = getattr(dims, "legs", None)
+    group = dims.sym[0] if getattr(dims, "sym", None) is not None else None
+    for lab, x in blocks.items():
+        if (group is not None and legs and isinstance(x, numpy.ndarray)
+                and all(l in legs for l in lab) and x.ndim == len(signs)):
+            t = dpd.Tensor([legs[l] for l in lab], signs, len(lab) // 2, group)
+            x = dpd.dense_to_tensor(x, t)
+        out[lab] = x
+    return out
+
+
 def commutator(O1, O2, T1, T2, cum, dims, alpha, keep2, ladder=None, timings=None,
-               scalar=True, active=False, keep1=None, large=None, dpd_out=False):
+               scalar=True, active=False, keep1=None, large=None, dpd_out=False, T2c=None):
     """alpha * [O, T] -> (C0, C1, C2), all blocks (C2 restricted by keep2).
 
     Literal transcription of MRDSRG_SO::H?_T?_C? of forte.  `ladder`, if given, adds the
@@ -1249,9 +1268,11 @@ def commutator(O1, O2, T1, T2, cum, dims, alpha, keep2, ladder=None, timings=Non
     if given, adds the terms of the blocks of O2 that it does not return (Y: the
     two-body terms before the antisymmetrization).  dpd_out (with the double-group
     sectors of dims): C2, Y and the intermediates are dpd.Tensors, only their blocks
-    allowed by symmetry are stored.
+    allowed by symmetry are stored.  T2c: T2 as given by dpd_blocks, used in the
+    products (ladder and large get T2).
     """
     G1, E1, L2, L3 = cum["Gamma1"], cum["Eta1"], cum["Lambda2"], cum["Lambda3"]
+    T2d, T2 = T2, (T2 if T2c is None else T2c)
     con = lambda spec, *ops, **kw: contract(spec, *ops, dims=dims, **kw)
     use_dpd = dpd_out and getattr(dims, "legs", None)
 
@@ -1350,7 +1371,7 @@ def commutator(O1, O2, T1, T2, cum, dims, alpha, keep2, ladder=None, timings=Non
     # particle-particle
     con("abrs,ijab->ijrs", O2, T2, scale=0.5 * alpha, **k2, fix=A("ijrs"))
     if ladder is not None:
-        ladder(T2, C2, alpha)
+        ladder(T2d, C2, alpha)
     t1 = new()
     con("ijbx,xy->ijby", T2, G1, out=t1, fix=A("ijrs"))
     con("ijby,byrs->ijrs", t1, O2, scale=-alpha, **k2, fix=A("ijrs"))
@@ -1371,7 +1392,7 @@ def commutator(O1, O2, T1, T2, cum, dims, alpha, keep2, ladder=None, timings=Non
     del t1
     lap("C2 ph")
     if large is not None:
-        large(C1, C2, Y, T1, T2, alpha)
+        large(C1, C2, Y, T1, T2d, alpha)
         lap("C large")
     for lab in list(Y):
         y = Y.pop(lab)
@@ -1395,6 +1416,10 @@ def commutator(O1, O2, T1, T2, cum, dims, alpha, keep2, ladder=None, timings=Non
                 kernels.transpose_add(target, y, perm, alpha=sign * alpha)
         del y
     lap("C2 antisym")
+    if getattr(dims, "sym", None) is not None:
+        # O and T are totally symmetric, so is the one-body part of [O, T] (whatever the
+        # signs recorded from the single contributions); used when C1 is the next O1
+        C1.signs = ONE_BODY
     return C0, C1, C2
 
 
