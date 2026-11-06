@@ -8,10 +8,10 @@ downstream code such as socutils works unchanged.
 
 The shared library is located in the following order:
   1. the path in the environment variable X2CAMF_C_LIBRARY
-  2. libx2camf_c.so / .dylib / .dll in the socutils/lib directory (all bundled
-     libraries are built flat into lib/, pyscf-style)
-  3. libx2camf_c.* next to this file (legacy in-place location)
-  4. the system library search path (ctypes.util.find_library)
+  2. libx2camf_c.so / .dylib / .dll in socutils/lib/deps/lib (built from the
+     x2camf C repository by lib/CMakeLists.txt), then in socutils/lib (old
+     in-tree build)
+  3. the system library search path (ctypes.util.find_library)
 '''
 
 import ctypes
@@ -49,8 +49,8 @@ def _candidate_paths():
     else:
         names = ["libx2camf_c.so"]
     for name in names:
-        yield os.path.join(libdir, name)
-        yield os.path.join(here, name)   # legacy in-place location
+        yield os.path.join(libdir, "deps", "lib", name)   # ExternalProject build
+        yield os.path.join(libdir, name)   # old in-tree build
     found = ctypes.util.find_library("x2camf_c")
     if found:
         yield found

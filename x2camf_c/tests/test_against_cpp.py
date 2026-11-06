@@ -24,6 +24,13 @@ from x2camf import _c_backend as c_lib       # noqa: E402
 from x2camf import _cpp_backend as cpp_lib   # noqa: E402
 
 TOL = 1e-8
+# The average-of-configuration (aoc) SCF of the C library deliberately differs
+# from the C++ code: its open-shell coupling operator also treats the
+# negative-energy orbitals as virtual (x2camf-c, evaluateDensity_virtual in
+# x2c_dhf_sph_ca.c).  For open-shell atoms the AMF integrals then change at the
+# 1e-8..1e-10 relative level, so the aoc flavour is compared with a looser
+# tolerance.
+TOL_FLAVOR = {"aoc": 1e-6}
 
 
 def basis_O():
@@ -54,9 +61,10 @@ def compare(label, Z, shell, exp_a, flavors, do_atm=True):
         a = cpp_lib.amfi(flavor, Z, nshell, nbas, 0, shell_m, exp_m)[0]
         b = c_lib.amfi(flavor, Z, nshell, nbas, 0, shell, exp_a)[0]
         diff = abs(a - b).max()
-        worst = max(worst, diff)
         print(f"amfi[{name:15s}] max|diff| = {diff:.3e}")
-        assert a.shape == b.shape and diff < TOL, name
+        assert a.shape == b.shape and diff < TOL_FLAVOR.get(name, TOL), name
+        if name not in TOL_FLAVOR:
+            worst = max(worst, diff)
 
     a = cpp_lib.pcc_K(3, Z, nshell, nbas, 0, shell_m, exp_m)[0]
     b = c_lib.pcc_K(3, Z, nshell, nbas, 0, shell, exp_a)[0]

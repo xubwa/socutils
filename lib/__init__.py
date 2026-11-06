@@ -4,12 +4,16 @@ socutils.lib -- bundled C/C++ shared libraries and their ctypes loaders.
 All libraries are built by ``lib/CMakeLists.txt`` (a thin pyscf/lib-style
 top-level CMake) and emitted flat into this directory:
 
-  libx2camf_c.so   X2CAMF spin-orbit integrals   (exposed as ``import x2camf``)
   libccsdt_clib.so spinor CCSDT residual kernels  (socutils.cc)
-  libzquatev.so    quaternion eigensolver         (Kramers-restricted SCF)
   libnrr_opt.so    spinor AO2MO e1/e2 kernels      (socutils.lib.ao2mo.nrr_fast)
   libsocvhf.so     multi-centre J/K prescreen     (socutils.somf.x2cmp)
   libsocthc.so     route-1 THC exchange kernels   (socutils.pbc.thc)
+
+The x2camf C library and zquatev are separate repositories, built with
+ExternalProject into ``deps/lib`` (as pyscf/lib does for libcint, libxc):
+
+  deps/lib/libx2camf_c.so  X2CAMF spin-orbit integrals  (``import x2camf``)
+  deps/lib/libzquatev.so   quaternion eigensolver       (Kramers-restricted SCF)
 
 ``load_library`` mirrors ``pyscf.lib.load_library``: it loads a library by name
 from this directory.  A ``SOCUTILS_<NAME>_LIBRARY`` environment variable (e.g.

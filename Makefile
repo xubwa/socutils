@@ -5,9 +5,7 @@
 # emits each shared object flat into lib/, next to its Python ctypes loader, so
 # no extra configuration is needed:
 #
-#   x2camf  ->  lib/libx2camf_c.so    (import x2camf)
 #   ccsdt   ->  lib/libccsdt_clib.so  (socutils.cc)
-#   zquatev ->  lib/libzquatev.so     (spinor_hf.KRHF)
 #   ao2mo   ->  lib/libnrr_opt.so     (socutils.lib.ao2mo.nrr_fast; links
 #               against whatever pyscf the configuring Python resolves)
 #   vhf     ->  lib/libsocvhf.so      (socutils.somf.x2cmp; links against
@@ -15,6 +13,14 @@
 #   thc     ->  lib/libsocthc.so      (socutils.pbc.thc; OpenMP, standalone)
 #   pbcdf   ->  lib/libsocpbcdf.so    (socutils.pbc.rsdf; links against
 #               the same pyscf's libcint)
+#
+# and, from their own repositories (ExternalProject, like pyscf's libcint):
+#
+#   x2camf  ->  lib/deps/lib/libx2camf_c.so  (import x2camf)
+#   zquatev ->  lib/deps/lib/libzquatev.so   (Kramers-restricted spinor SCF)
+#
+# Local checkouts instead of cloning:
+#   make CMAKE_ARGS="-DX2CAMF_SOURCE_DIR=/path/x2camf-c -DZQUATEV_SOURCE_DIR=/path/zquatev"
 #
 # Targets:
 #   make            build all C/C++ libraries (default)
@@ -47,7 +53,8 @@ build:
 	@mkdir -p $(BUILDDIR)
 	cd $(BUILDDIR) && $(CMAKE) .. -DCMAKE_BUILD_TYPE=Release $(CMAKE_ARGS)
 	$(CMAKE) --build $(BUILDDIR) -- -j$(NPROC)
-	@for so in libx2camf_c.so libccsdt_clib.so libzquatev.so libnrr_opt.so libsocvhf.so libsocpbcdf.so libqdhf.so; do \
+	@for so in libccsdt_clib.so libnrr_opt.so libsocvhf.so libqdhf.so libsocpbcdf.so libsocthc.so \
+	           deps/lib/libx2camf_c.so deps/lib/libzquatev.so; do \
 	    test -f $(LIBDIR)/$$so && echo "built $(LIBDIR)/$$so" \
 	        || { echo "ERROR: $$so not produced"; exit 1; }; \
 	done
@@ -60,5 +67,5 @@ compare: build
 
 clean:
 	rm -rf $(BUILDDIR) \
-	    $(LIBDIR)/libx2camf_c.so $(LIBDIR)/libccsdt_clib.so $(LIBDIR)/libzquatev.so \
-	    $(LIBDIR)/libnrr_opt.so $(LIBDIR)/libsocvhf.so $(LIBDIR)/libsocpbcdf.so $(LIBDIR)/libqdhf.so
+	    $(LIBDIR)/libccsdt_clib.so $(LIBDIR)/libnrr_opt.so $(LIBDIR)/libsocvhf.so \
+	    $(LIBDIR)/libqdhf.so $(LIBDIR)/libsocpbcdf.so $(LIBDIR)/libsocthc.so $(LIBDIR)/deps
