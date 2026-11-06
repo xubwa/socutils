@@ -96,6 +96,7 @@ else()
 endif()
 
 add_subdirectory(ccsdt)
+add_subdirectory(zccsd)
 add_subdirectory(ao2mo)
 add_subdirectory(vhf)
 
