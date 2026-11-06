@@ -1435,24 +1435,30 @@ class _FxcBatched:
 FXC_SUBBLOCK = 448
 
 
+# the default ('auto') grid of the CP-SCF XC response: socutils.dft.grids.hessian_grids arguments
+CPSCF_GRID_ARGS = dict(angular_grid=2, intacc=3.467)
+
+
 class _MultiJKCPHF:
     '''solve_mo1 with the response J / K of jk_multi (density fitting:
     _df_get_j), the batched (or, for nao > 8 nocc, MO-basis) XC response, and
     the Krylov solver as GEMMs (_krylov).
 
-    Options (off by default, so that the result equals pyscf's):
+    Options:
         sum_rule : impose translational invariance on the final Hessian,
             H_AA = -sum_{B!=A} H_AB (socutils.dft.grids.translational_sum_rule);
             pyscf's RKS Hessian has no grid response, and on finite grids its
-            error sits almost entirely in H_AA.
-        cpscf_grids : a (coarser) Grids object for the XC response inside the
-            CP-SCF equations only (socutils.dft.grids.hessian_grids(mol,
-            angular_grid=2, intacc=3.467) is ~5x smaller than the SCF grid at
-            <= 0.15 cm-1 in the frequencies); the explicit terms and the
-            right-hand sides keep the SCF grid.'''
+            error sits almost entirely in H_AA.  Off by default.
+        cpscf_grids : the grid of the XC response inside the CP-SCF equations
+            only; the explicit terms and the right-hand sides keep the SCF grid.
+            'auto' (default): socutils.dft.grids.hessian_grids(mol,
+            **CPSCF_GRID_ARGS), a coarse grid as Gaussian's CPHF (SG-1 there,
+            the SCF on UltraFine); (H2O)_8 cc-pVDZ PBE0 on a level-4 SCF grid:
+            the CP-SCF 189 -> 37 s, the frequencies within 0.25 cm-1.  A Grids
+            object: that grid.  None: the SCF grid (the result equals pyscf's).'''
     sum_rule = False
-    cpscf_grids = None
-    _keys = {'sum_rule', 'cpscf_grids'}
+    cpscf_grids = 'auto'
+    _keys = {'sum_rule', 'cpscf_grids', '_cpscf_auto'}
 
     def kernel(self, *args, **kwargs):
         de = super().kernel(*args, **kwargs)
@@ -1469,10 +1475,18 @@ class _MultiJKCPHF:
         if isinstance(ni, numint.NumInt):
             env_xc = dict(nr_rks_fxc=_FxcBatched(ni, max_memory))
         env_grid = {}
-        if self.cpscf_grids is not None and hasattr(self.base, 'grids'):
-            if self.cpscf_grids.coords is None:
-                self.cpscf_grids.build(with_non0tab=True)
-            env_grid = dict(grids=self.cpscf_grids)
+        cg = self.cpscf_grids
+        if isinstance(cg, str) and cg == 'auto':
+            cg = None
+            if hasattr(self.base, 'grids'):
+                cg = getattr(self, '_cpscf_auto', None)
+                if cg is None or cg.mol is not self.mol:
+                    from socutils.dft.grids import hessian_grids
+                    cg = self._cpscf_auto = hessian_grids(self.mol, **CPSCF_GRID_ARGS)
+        if cg is not None and hasattr(self.base, 'grids'):
+            if cg.coords is None:
+                cg.build(with_non0tab=True)
+            env_grid = dict(grids=cg)
         with lib.temporary_env(self.base, **_multi_jk_env(self.base), **env_grid), \
                 lib.temporary_env(lib, krylov=_krylov):
             with lib.temporary_env(ni, **env_xc) if env_xc else _nullcontext():

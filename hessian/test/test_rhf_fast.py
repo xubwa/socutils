@@ -136,7 +136,9 @@ class KnownValues(unittest.TestCase):
         mf = _mf(mol, xc)
         ref = mf.Hessian().kernel()
         cls = rhf_fast.RHFHessian if xc == 'hf' else rhf_fast.RKSHessian
-        h = cls(mf).kernel()
+        h = cls(mf)
+        h.cpscf_grids = None            # the SCF grid in the CP-SCF too, as pyscf
+        h = h.kernel()
         self.assertAlmostEqual(abs(h - ref).max(), 0, 9)
 
     def test_rhf(self):
@@ -182,7 +184,19 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(abs(hess - ej).max(), 0, 9)
         ref = numpy.array([v for _, _, v, _ in df_rhf_hess._gen_jk(h, mf.mo_coeff, mf.mo_occ, with_k=False)])
         self.assertAlmostEqual(abs(vj1 - ref).max(), 0, 11)
-        self.assertAlmostEqual(abs(rhf_fast.RKSHessian(mf).kernel() - h.kernel()).max(), 0, 9)
+        hf_ = rhf_fast.RKSHessian(mf)
+        hf_.cpscf_grids = None
+        self.assertAlmostEqual(abs(hf_.kernel() - h.kernel()).max(), 0, 9)
+
+    def test_cpscf_grids_default(self):
+        # the default coarse CP-SCF grid: close to the SCF-grid Hessian, the RHF one unchanged
+        mf = _mf(self.mol, 'pbe')
+        h0 = rhf_fast.RKSHessian(mf)
+        h0.cpscf_grids = None
+        h1 = rhf_fast.RKSHessian(mf)
+        self.assertEqual(h1.cpscf_grids, 'auto')
+        self.assertAlmostEqual(abs(h1.kernel() - h0.kernel()).max(), 0, 4)
+        self.assertIsNotNone(h1._cpscf_auto)
 
     def test_mo_xc_response(self):
         # nao > 8 nocc: the MO-basis GGA response of gen_vind is active
