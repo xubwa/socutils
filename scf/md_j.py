@@ -145,10 +145,19 @@ def apply(mf, incremental=True, two_pass=True):
     1e-11 the 1e-12 cutoff's noise (accumulated over the incremental builds)
     would keep the SCF from converging.'''
     from pyscf.df import df_jk
+    from pyscf.scf import hf as hf_mod
     from socutils.scf import jk_multi
-    if isinstance(mf, df_jk._DFHF) or not available(mf.mol):
+    df_j = isinstance(mf, df_jk._DFHF)
+    if (df_j and not mf.only_dfj) or not available(mf.mol):
         return mf
-    orig_jk = mf.get_jk
+    if df_j:
+        # RIJ (density_fit(only_dfj=True)): J from the fitting, the exact K by the builds below
+        orig_df_jk = mf.get_jk
+
+        def orig_jk(mol, dm, hermi=1, with_j=True, with_k=True, omega=None):
+            return hf_mod.SCF.get_jk(mf, mol, dm, hermi, with_j, with_k, omega)
+    else:
+        orig_jk = mf.get_jk
     mol0 = mf.mol
     last = {'key': None}
 
@@ -226,5 +235,18 @@ def apply(mf, incremental=True, two_pass=True):
                     vk=None if vk is None else vk.copy())
         return vj, vk
 
+    if df_j:
+        def get_jk_rij(mol=None, dm=None, hermi=1, with_j=True, with_k=True, omega=None):
+            if mol is None:
+                mol = mol0
+            if dm is None:
+                dm = mf.make_rdm1()
+            if omega is not None or not with_k or mol is not mol0:
+                return orig_df_jk(mol, dm, hermi, with_j, with_k, omega)
+            vj = mf.with_df.get_jk(dm, hermi, with_j=True, with_k=False)[0] if with_j else None
+            vk = get_jk(mol, dm, hermi, False, True, omega)[1]
+            return vj, vk
+        mf.get_jk = get_jk_rij
+        return mf
     mf.get_jk = get_jk
     return mf
