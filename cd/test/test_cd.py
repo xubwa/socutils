@@ -53,6 +53,8 @@ class KnownValues(unittest.TestCase):
         ref = scf.RHF(mol)
         ref._eri = L.T.dot(L)
         self.assertAlmostEqual(e_cd, ref.run(conv_tol=1e-11).e_tot, 9)
+        # reference value of the validated version (3d9dea3)
+        self.assertAlmostEqual(e_cd, -76.02676639601, 8)
 
     def test_save_and_reuse(self):
         with tempfile.TemporaryDirectory() as tmp:
