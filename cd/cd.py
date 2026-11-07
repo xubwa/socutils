@@ -42,7 +42,7 @@ from pyscf.gto import moleintor
 from pyscf.lib import logger
 
 
-def cholesky(mf, tau=1e-4, sigma=1e-2, method='onestep',
+def cholesky(mf, tau=1e-4, sigma=1e-2, method='twostep',
              cderi=None, cderi_to_save=None, with_df=None, **kwargs):
     '''Attach Cholesky-decomposed ERIs to an SCF object -- the CD analogue of
     ``mf.density_fit()``.
@@ -391,8 +391,10 @@ class CD(df.DF):
         sigma : float
             Span factor of the in-block pivot selection.
         method : str
-            'onestep' (default) or 'twostep' ('threeloop' is accepted as an
-            old name of 'onestep').
+            'twostep' (default) or 'onestep' ('threeloop' is accepted as an
+            old name of 'onestep').  Both give the same decomposition; the
+            two-step pivot search works on the active pairs only and is the
+            faster one for larger molecules.
         pivots : list of (shell pairs, U) or None
             After build(): the pivot groups and their directions U
             (components x k) in the pair functions of the group.
@@ -402,7 +404,7 @@ class CD(df.DF):
 
     _keys = {'tau', 'sigma', 'method', 'pivots', 'metric_chol'}
 
-    def __init__(self, mol, tau=1e-4, sigma=1e-2, method='onestep', **kwargs):
+    def __init__(self, mol, tau=1e-4, sigma=1e-2, method='twostep', **kwargs):
         df.DF.__init__(self, mol)
         kwargs.pop('compress', None)   # accepted for backward compatibility
         if kwargs:

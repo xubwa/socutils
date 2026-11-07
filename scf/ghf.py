@@ -28,7 +28,7 @@ class GHF(ghf.GHF):
         ghf.GHF.__init__(self, mol)
         self.with_x2c = None
 
-    def cholesky(self, tau=1e-4, sigma=1e-2, method='onestep',
+    def cholesky(self, tau=1e-4, sigma=1e-2, method='twostep',
                  cderi=None, cderi_to_save=None, with_df=None, **kwargs):
         '''Cholesky-decomposed ERIs -- the CD analogue of ``mf.density_fit()``.'''
         from socutils.cd.cd import cholesky
