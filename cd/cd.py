@@ -21,11 +21,13 @@ Two algorithms (Folkestad, Kjønstad, Koch, J. Chem. Phys. 150, 194112 (2019)):
   exact integrals with the pivots as auxiliary functions (RI with the pivot
   metric J = K K^T); keeps ``pivots`` and ``metric_chol`` for gradients.
 
-Both work on shell-pair blocks: the integral column block (all pairs | shell
-pair) is computed once, its residual with respect to all previous vectors is
-formed with one matrix product, and the pivots inside the block are taken
-from it with a small in-block Cholesky (span factor ``sigma``, Koch et al.,
-J. Chem. Phys. 118, 9481 (2003)).
+Both use the same pivots: whole shell pairs (all components), taken from the
+eigen-directions of the residual block of a shell pair (or of a group of
+symmetry-equivalent shell pairs), largest first, with the span factor
+``sigma`` (Koch et al., J. Chem. Phys. 118, 9481 (2003)).  The decomposition
+is invariant under rotations of the molecule and keeps its point-group
+symmetry.  The integral columns of a batch of candidate shell pairs are
+computed once and their residual is formed with one matrix product.
 
 No pair is screened out of the vectors: dropping the pairs with small
 diagonals keeps every single integral within tau, but the dropped
@@ -103,7 +105,7 @@ class _Int2e:
     def diagonal(self):
         '''(mu nu|mu nu) for mu >= nu, in the pack_tril order.'''
         ao_loc = self.ao_loc
-        nao = ao_loc[-1]
+        nao = int(ao_loc[-1])
         diag = numpy.empty(nao*(nao+1)//2)
         for si in range(self.mol.nbas):
             i0, i1 = ao_loc[si], ao_loc[si+1]
@@ -132,136 +134,200 @@ def _shell_pair_columns(ao_loc, si, sj):
 
 # candidate columns of one macro iteration (bounded by the memory as well)
 MAX_CANDIDATES = 128
+# vectors made between two refreshes of the candidate residual block
+REFRESH = 32
+# relative difference of the block measure regarded as a tie (equivalent pairs)
+TIE = 1e-8
+
+
+def _pair_weights(ao_loc, blocks, bpairs, npair):
+    """sqrt(2) for chi_mu chi_nu (mu > nu) in a block of a shell with itself:
+    the orthonormal basis of the symmetric products.  With these weights a
+    rotation acts on every block by an orthogonal transformation."""
+    cw = numpy.ones(npair)
+    for (si, sj), p in zip(blocks, bpairs):
+        if si == sj:
+            i = ((numpy.sqrt(8*p+1) - 1) // 2).astype(int)
+            cw[p[i*(i+1)//2 + i != p]] = numpy.sqrt(2.)
+    return cw
 
 
 def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None):
-    '''Shell-pair blocked pivoted Cholesky decomposition of the ERIs.
+    """Shell-pair block pivoted Cholesky decomposition of the ERIs.
+
+    The pivots are whole shell pairs.  For a group of shell pairs (one pair,
+    or the symmetry-equivalent pairs with the same measure) with residual
+    block S (in the orthonormal basis of the pair functions, see
+    _pair_weights) the eigen-directions with eigenvalue >= cut give the new
+    vectors,
+
+        L_new = Lambda^-1/2 U^T R_(group, all pairs),
+
+    and the group is done once all its eigenvalues are below tau.  The blocks
+    are taken largest mean residual (trace / size) first; cut = max(tau,
+    sigma * largest measure).  Eigenvalues, traces and the groups are invariant
+    under rotations and permutations of equivalent atoms, so is the
+    decomposition.
 
     Returns:
         L : (nchol, nao_pair) array, the vectors
-        kept : (nao_pair,) pack_tril indices of the pairs (all of them)
-        pivots : (nchol,) pack_tril indices of the pivots, in order
-    '''
+        pivots : list of (shell pairs, U), U (components x k) the directions
+    """
     log = logger.new_logger(mol, verbose)
     t0 = (logger.process_clock(), logger.perf_counter())
     ints = _Int2e(mol)
     ao_loc = ints.ao_loc
-    nao = ao_loc[-1]
-    ao2shl = numpy.repeat(numpy.arange(mol.nbas), numpy.diff(ao_loc))
+    nbas = mol.nbas
+    nao = int(ao_loc[-1])
+    npair = nao*(nao+1)//2
 
-    diag = ints.diagonal()
-    # all pairs are kept (see the module docstring)
-    kept = numpy.arange(diag.size)
-    nk = kept.size
-    pos = numpy.full(diag.size, -1)
-    pos[kept] = numpy.arange(nk)
-    d = diag[kept].copy()
+    blocks = [(si, sj) for si in range(nbas) for sj in range(si+1)]
+    bpairs, blocal = [], []
+    bid = numpy.empty(npair, dtype=int)
+    for ib, (si, sj) in enumerate(blocks):
+        p, loc = _shell_pair_columns(ao_loc, si, sj)
+        bpairs.append(p)
+        blocal.append(loc)
+        bid[p] = ib
+    bsize = numpy.array([p.size for p in bpairs])
+    nblk = len(blocks)
+    cw = _pair_weights(ao_loc, blocks, bpairs, npair)
+    c2 = cw * cw
+
+    d = ints.diagonal()
+    done = numpy.zeros(nblk, dtype=bool)
     t1 = log.timer_debug1('CD diagonal', *t0)
+
+    def traces():
+        t = numpy.zeros(nblk)
+        numpy.add.at(t, bid, c2 * d)
+        t[done] = 0
+        return t
 
     def avail_mb():
         return max_memory - lib.current_memory()[0]
 
-    def grow(L, n):
-        cap = L.shape[0] + max(nao, L.shape[0] // 2)
-        need = (cap + L.shape[0]) * nk * 8 / 1e6      # new buffer + copy
+    def grow(L, n, k):
+        cap = L.shape[0] + max(nao, k, L.shape[0] // 2)
+        need = (cap + L.shape[0]) * npair * 8 / 1e6      # new buffer + copy
         if need > avail_mb():
             raise MemoryError(
                 'CD needs %.0f MB for %d+ vectors (tau = %g, max residual %.2e) '
                 'but only %.0f MB of max_memory are left; raise max_memory or tau.'
-                % (need, n, tau, d.max(), avail_mb()))
-        L1 = numpy.empty((cap, nk))
+                % (need, n + k, tau, d.max(), avail_mb()))
+        L1 = numpy.empty((cap, npair))
         L1[:n] = L[:n]
         return L1
 
-    # shell pair of every kept pair
-    i_of = ((numpy.sqrt(8*kept+1) - 1) // 2).astype(int)
-    j_of = kept - i_of*(i_of+1)//2
-    nbas = mol.nbas
-    sp_of = ao2shl[i_of] * nbas + ao2shl[j_of]
-
-    # vector buffer: room for ~6 nao vectors if memory allows, never above
-    # half of what is left (the rest is for the candidate block and growth)
-    cap0 = max(1, min(6 * nao, int(avail_mb() * 1e6 / 8 / nk / 2)))
-    L = numpy.empty((cap0, nk))
+    cap0 = max(64, min(6 * nao, int(avail_mb() * 1e6 / 8 / npair / 2)))
+    L = numpy.empty((cap0, npair))
     n = 0
     pivots = []
     nmacro = 0
-    NB = 32          # in-block vectors between two refreshes of the residual block
+    lam_seen = None
     while True:
-        dmax = d.max()
-        if dmax < tau:
+        t = traces()
+        tmax = t.max()
+        if tmax < tau:
             break
-        cut = max(tau, sigma * dmax)
+        # the trace bounds lambda_max from above; after an iteration that took
+        # nothing the cut is lowered to the largest eigenvalue seen
+        cut = max(tau, sigma * (tmax if lam_seen is None else lam_seen))
+        lam_seen = None
         nmacro += 1
-
-        # all shell pairs with a residual above cut, largest first; the number
-        # of candidate columns is capped by the memory of the residual block
-        spmax = numpy.zeros(nbas * nbas)
-        numpy.maximum.at(spmax, sp_of, d)
-        sps = numpy.where(spmax >= cut)[0]
-        sps = sps[numpy.argsort(-spmax[sps])]
-        kmax = max(1, min(MAX_CANDIDATES, int(avail_mb() * 1e6 / 8 / nk / 4)))
-        cols = []
-        cpos = []
+        cand = numpy.where(t >= cut)[0]
+        mean = t / numpy.maximum(bsize, 1)
+        cand = cand[numpy.argsort(-mean[cand])]
+        # whole groups of equal measure, never split between iterations
+        kmax = max(1, min(MAX_CANDIDATES, int(avail_mb() * 1e6 / 8 / npair / 4)))
+        sel = []
         ncol = 0
-        for sp in sps:
-            si, sj = divmod(int(sp), nbas)
-            pairs, local = _shell_pair_columns(ao_loc, si, sj)
-            cp = pos[pairs]
-            sel = cp >= 0
-            local, cp = local[sel], cp[sel]
-            sel = d[cp] >= cut
-            if not sel.any():
-                continue
-            if ncol and ncol + sel.sum() > kmax:
+        i = 0
+        while i < cand.size:
+            j = i + 1
+            while j < cand.size and mean[cand[i]] - mean[cand[j]] <= TIE * mean[cand[i]]:
+                j += 1
+            k = bsize[cand[i:j]].sum()
+            if ncol and ncol + k > kmax:
                 break
-            cols.append(ints.column(si, sj)[kept][:, local[sel]])
-            cpos.append(cp[sel])
-            ncol += sel.sum()
-        cpos = numpy.hstack(cpos)
-        # residual of the candidate columns w.r.t. all previous vectors (one
-        # pass over the vectors per macro iteration)
+            sel.extend(cand[i:j])
+            ncol += k
+            i = j
+
+        cols = []
+        off = {}
+        c0 = 0
+        for ib in sel:
+            si, sj = blocks[ib]
+            cols.append(ints.column(si, sj)[:, blocal[ib]])
+            off[ib] = (c0, c0 + bsize[ib])
+            c0 += bsize[ib]
+        # residual of the candidate columns w.r.t. all previous vectors
         B = numpy.asfortranarray(numpy.hstack(cols))
         del cols
         if n:
-            B -= lib.dot(L[:n].T, L[:n, cpos])
+            B -= lib.dot(L[:n].T, L[:n, numpy.hstack([bpairs[ib] for ib in sel])])
 
-        # pivoted Cholesky of the candidates: the chosen column is completed
-        # with the vectors made since the last refresh (m0..n); every NB
-        # vectors the whole residual block is refreshed with one gemm
         m0 = n
-        while True:
-            dc = d[cpos]
-            k = numpy.argmax(dc)
-            if dc[k] < cut:
+        n_start = n
+        lam_max_seen = 0.
+        live = list(sel)
+        while live:
+            tl = numpy.array([(c2[bpairs[ib]] * d[bpairs[ib]]).sum() for ib in live])
+            ml = tl / bsize[live]
+            j = int(numpy.argmax(ml))
+            if tl[j] < cut:
                 break
-            if n == L.shape[0]:
-                L = grow(L, n)
-            b = B[:, k]
+            grp = [live[i] for i in numpy.where(abs(ml - ml[j]) <= TIE * ml[j])[0]]
+            for ib in grp:
+                live.remove(ib)
+            cidx = numpy.hstack([numpy.arange(*off[ib]) for ib in grp])
+            p = numpy.hstack([bpairs[ib] for ib in grp])
+            Bb = B[:, cidx]
             if n > m0:
-                b = b - L[m0:n].T @ L[m0:n, cpos[k]]
-            v = b * (1. / numpy.sqrt(dc[k]))
-            L[n] = v
-            n += 1
-            pivots.append(kept[cpos[k]])
-            d -= v * v
-            d[cpos[k]] = 0
-            if n - m0 == NB:
-                live = d[cpos] >= cut
-                B = numpy.asfortranarray(B[:, live])
-                cpos = cpos[live]
-                if cpos.size == 0:
-                    break
-                B -= lib.dot(L[m0:n].T, L[m0:n, cpos])
+                Bb = Bb - L[m0:n].T @ L[m0:n][:, p]
+            cp = cw[p]
+            S = Bb[p] * cp[:, None] * cp
+            S = (S + S.T) * .5
+            w, W = numpy.linalg.eigh(S)
+            keep = w >= cut
+            rest = w[~keep]
+            if rest.size == 0 or rest.max() < tau:
+                done[grp] = True
+            elif not keep.any():
+                lam_max_seen = max(lam_max_seen, rest.max())
+            if not keep.any():
+                continue
+            U = W[:, keep] * cp[:, None]
+            Lnew = (Bb @ (U / numpy.sqrt(w[keep]))).T
+            k = Lnew.shape[0]
+            if n + k > L.shape[0]:
+                L = grow(L, n, k)
+            L[n:n+k] = Lnew
+            n += k
+            pivots.append(([blocks[ib] for ib in grp], U))
+            d -= numpy.einsum('kp,kp->p', Lnew, Lnew)
+            numpy.maximum(d, 0, out=d)
+            if n - m0 >= REFRESH and live:
+                idx = numpy.hstack([numpy.arange(*off[b]) for b in live])
+                newoff = {}
+                c0 = 0
+                for b in live:
+                    newoff[b] = (c0, c0 + bsize[b])
+                    c0 += bsize[b]
+                B = numpy.asfortranarray(B[:, idx])
+                off = newoff
+                B -= lib.dot(L[m0:n].T, L[m0:n, numpy.hstack([bpairs[b] for b in live])])
                 m0 = n
-        numpy.maximum(d, 0, out=d)
-        log.debug1('CD macro iteration %d: %d candidate columns, nchol = %d, '
-                   'max residual = %.2e', nmacro, ncol, n, d.max())
+        if n == n_start:
+            lam_seen = lam_max_seen
+        log.debug1('CD macro iteration %d: %d candidate columns, nchol = %d',
+                   nmacro, ncol, n)
 
-    log.info('CD: %d vectors (%.1f nao) in %d macro iterations, tau = %g',
-             n, n / max(nao, 1), nmacro, tau)
+    log.info('CD: %d vectors (%.1f nao) from %d pivot groups in %d macro iterations, tau = %g',
+             n, n / max(nao, 1), len(pivots), nmacro, tau)
     log.timer('CD pivoted decomposition', *t1)
-    return L[:n], kept, numpy.asarray(pivots, dtype=int)
+    return L[:n], pivots
 
 
 class CD(df.DF):
@@ -275,8 +341,9 @@ class CD(df.DF):
         method : str
             'onestep' (default) or 'twostep' ('threeloop' is accepted as an
             old name of 'onestep').
-        pivots : list of (shell_i, shell_j, func_i, func_j) or None
-            The pivot pairs after build().
+        pivots : list of (shell pairs, U) or None
+            After build(): the pivot groups and their directions U
+            (components x k) in the pair functions of the group.
         metric_chol : ndarray or None
             'twostep': Cholesky factor K of the pivot metric J = K K^T.
     '''
@@ -335,19 +402,13 @@ class CD(df.DF):
         self.dump_flags()
 
         mol = self.mol
-        L, kept, piv = pivoted_cholesky(mol, self.tau, self.sigma, self.max_memory, self.verbose)
-        self.pivots = self._pivot_labels(piv)
+        L, pivots = pivoted_cholesky(mol, self.tau, self.sigma, self.max_memory, self.verbose)
+        self.pivots = pivots
         if method == 'onestep':
-            nao = mol.nao_nr()
-            if kept.size == nao*(nao+1)//2:
-                cderi = L
-            else:
-                cderi = numpy.zeros((L.shape[0], nao*(nao+1)//2))
-                cderi[:, kept] = L
-            del L
+            cderi = L
         else:
             del L
-            cderi = self._rebuild(mol, piv, log)
+            cderi = self._rebuild(mol, pivots, log)
 
         if isinstance(self._cderi_to_save, str):
             import h5py
@@ -360,41 +421,40 @@ class CD(df.DF):
             self._cderi = cderi
         return self
 
-    def _pivot_labels(self, piv):
-        '''(shell_i, shell_j, func_i_in_shell, func_j_in_shell) of the pivots.'''
-        ao_loc = self.mol.ao_loc_nr()
-        ao2shl = numpy.repeat(numpy.arange(self.mol.nbas), numpy.diff(ao_loc))
-        i = ((numpy.sqrt(8*piv+1) - 1) // 2).astype(int)
-        j = piv - i*(i+1)//2
-        return [(ao2shl[a], ao2shl[b], a - ao_loc[ao2shl[a]], b - ao_loc[ao2shl[b]])
-                for a, b in zip(i, j)]
-
-    def _rebuild(self, mol, piv, log):
-        '''Two-step CD, step 2: L = K^-1 (pivots | pairs), J = K K^T.'''
+    def _rebuild(self, mol, pivots, log):
+        """Two-step CD, step 2: L = K^-1 T with T = U^T (pivot groups | pairs)
+        and J = T restricted to the pivot directions = K K^T."""
         t0 = (logger.process_clock(), logger.perf_counter())
         ints = _Int2e(mol)
         ao_loc = ints.ao_loc
-        npiv = piv.size
-        nao = ao_loc[-1]
+        nao = int(ao_loc[-1])
         npair = nao*(nao+1)//2
+        npiv = sum(U.shape[1] for _, U in pivots)
         need = 2 * npiv * npair * 8 / 1e6
         avail = self.max_memory - lib.current_memory()[0]
         if need > avail:
             raise MemoryError('two-step CD needs %.0f MB for %d pivots, %.0f MB left'
                               % (need, npiv, avail))
-        ao2shl = numpy.repeat(numpy.arange(mol.nbas), numpy.diff(ao_loc))
-        i = ((numpy.sqrt(8*piv+1) - 1) // 2).astype(int)
-        j = piv - i*(i+1)//2
-        blocks = {}
-        for k, (a, b) in enumerate(zip(i, j)):
-            blocks.setdefault((ao2shl[a], ao2shl[b]), []).append(k)
         T = numpy.empty((npiv, npair))
-        for (si, sj), ks in blocks.items():
-            pairs, local = _shell_pair_columns(ao_loc, si, sj)
-            col = ints.column(si, sj)
-            where = {p: c for p, c in zip(pairs, local)}
-            T[ks] = col[:, [where[piv[k]] for k in ks]].T
-        J = T[:, piv]
+        gpairs = []
+        r0 = 0
+        for grp, U in pivots:
+            cols = []
+            ps = []
+            for si, sj in grp:
+                p, loc = _shell_pair_columns(ao_loc, si, sj)
+                cols.append(ints.column(si, sj)[:, loc])
+                ps.append(p)
+            k = U.shape[1]
+            T[r0:r0+k] = (numpy.hstack(cols) @ U).T
+            gpairs.append(numpy.hstack(ps))
+            r0 += k
+        J = numpy.empty((npiv, npiv))
+        r0 = 0
+        for (grp, U), p in zip(pivots, gpairs):
+            k = U.shape[1]
+            J[:, r0:r0+k] = T[:, p] @ U
+            r0 += k
         J = (J + J.T) * .5
         try:
             K = scipy.linalg.cholesky(J, lower=True)
