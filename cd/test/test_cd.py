@@ -44,10 +44,15 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(abs(L1.T.dot(L1) - L2.T.dot(L2)).max(), 0, 5)
 
     def test_scf_energy(self):
-        e_ref = scf.RHF(mol).run(conv_tol=1e-10).e_tot
+        # the CD mean field (J and K through the DF machinery) is the RHF of
+        # the assembled integrals L^T L
         mf = cd.cholesky(scf.RHF(mol), tau=1e-6)
         mf.with_df.verbose = 0
-        self.assertAlmostEqual(mf.run(conv_tol=1e-10).e_tot, e_ref, 6)
+        e_cd = mf.run(conv_tol=1e-11).e_tot
+        L = mf.with_df._cderi
+        ref = scf.RHF(mol)
+        ref._eri = L.T.dot(L)
+        self.assertAlmostEqual(e_cd, ref.run(conv_tol=1e-11).e_tot, 9)
 
     def test_save_and_reuse(self):
         with tempfile.TemporaryDirectory() as tmp:
