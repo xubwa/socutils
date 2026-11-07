@@ -219,7 +219,9 @@ def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None):
         L1[:n] = L[:n]
         return L1
 
-    cap0 = max(64, min(6 * nao, int(avail_mb() * 1e6 / 8 / npair / 2)))
+    # numpy.empty reserves the buffer; pages are allocated when first written
+    # (by the gemm that makes the vectors), so a generous size costs nothing
+    cap0 = max(64, min(npair, int(avail_mb() * 1e6 / 8 / npair / 2)))
     L = numpy.empty((cap0, npair))
     n = 0
     pivots = []
@@ -254,19 +256,26 @@ def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None):
             ncol += k
             i = j
 
-        cols = []
+        # residual of the candidates, stored transposed: Bt[c, :] = R[:, c]
+        Bt = numpy.empty((ncol, npair))
         off = {}
         c0 = 0
         for ib in sel:
             si, sj = blocks[ib]
-            cols.append(ints.column(si, sj)[:, blocal[ib]])
-            off[ib] = (c0, c0 + bsize[ib])
-            c0 += bsize[ib]
-        # residual of the candidate columns w.r.t. all previous vectors
-        B = numpy.asfortranarray(numpy.hstack(cols))
-        del cols
+            k = bsize[ib]
+            # (all pairs | shell pair): libcint parallelizes over the pairs;
+            # transposed into the rows by the threaded lib.transpose
+            col = ints.column(si, sj)
+            if si == sj:
+                col = numpy.ascontiguousarray(col[:, blocal[ib]])
+            rows = lib.transpose(col, out=Bt[c0:c0+k])
+            if not numpy.shares_memory(rows, Bt):
+                Bt[c0:c0+k] = rows
+            off[ib] = (c0, c0 + k)
+            c0 += k
         if n:
-            B -= lib.dot(L[:n].T, L[:n, numpy.hstack([bpairs[ib] for ib in sel])])
+            cp_all = numpy.hstack([bpairs[ib] for ib in sel])
+            lib.dot(L[:n, cp_all].T, L[:n], -1, Bt, 1)
 
         m0 = n
         n_start = n
@@ -281,13 +290,15 @@ def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None):
             grp = [live[i] for i in numpy.where(abs(ml - ml[j]) <= TIE * ml[j])[0]]
             for ib in grp:
                 live.remove(ib)
-            cidx = numpy.hstack([numpy.arange(*off[ib]) for ib in grp])
             p = numpy.hstack([bpairs[ib] for ib in grp])
-            Bb = B[:, cidx]
+            if len(grp) == 1:
+                Bb = Bt[off[grp[0]][0]:off[grp[0]][1]]
+            else:
+                Bb = Bt[numpy.hstack([numpy.arange(*off[ib]) for ib in grp])]
             if n > m0:
-                Bb = Bb - L[m0:n].T @ L[m0:n][:, p]
+                Bb = lib.dot(L[m0:n, p].T, L[m0:n], -1, Bb.copy(), 1)
             cp = cw[p]
-            S = Bb[p] * cp[:, None] * cp
+            S = Bb[:, p] * cp[:, None] * cp
             S = (S + S.T) * .5
             w, W = numpy.linalg.eigh(S)
             keep = w >= cut
@@ -299,11 +310,11 @@ def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None):
             if not keep.any():
                 continue
             U = W[:, keep] * cp[:, None]
-            Lnew = (Bb @ (U / numpy.sqrt(w[keep]))).T
-            k = Lnew.shape[0]
+            k = U.shape[1]
             if n + k > L.shape[0]:
                 L = grow(L, n, k)
-            L[n:n+k] = Lnew
+            Lnew = L[n:n+k]
+            lib.dot(numpy.ascontiguousarray((U / numpy.sqrt(w[keep])).T), Bb, 1, Lnew, 0)
             n += k
             pivots.append(([blocks[ib] for ib in grp], U))
             d -= numpy.einsum('kp,kp->p', Lnew, Lnew)
@@ -315,9 +326,9 @@ def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None):
                 for b in live:
                     newoff[b] = (c0, c0 + bsize[b])
                     c0 += bsize[b]
-                B = numpy.asfortranarray(B[:, idx])
+                Bt = Bt[idx]
                 off = newoff
-                B -= lib.dot(L[m0:n].T, L[m0:n, numpy.hstack([bpairs[b] for b in live])])
+                lib.dot(L[m0:n, numpy.hstack([bpairs[b] for b in live])].T, L[m0:n], -1, Bt, 1)
                 m0 = n
         if n == n_start:
             lam_seen = lam_max_seen
