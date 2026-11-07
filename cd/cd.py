@@ -493,26 +493,24 @@ class CD(df.DF):
         gpairs = []
         r0 = 0
         for grp, U in pivots:
-            # integrals of the group, transposed (components x pairs) by the
-            # threaded lib.transpose / lib.take_2d, then T rows = U^T Ht by gemm
-            ps = []
-            locs = []
-            for si, sj in grp:
-                p, loc = _shell_pair_columns(ao_loc, si, sj)
-                ps.append(p)
-                locs.append(loc)
-            Ht = numpy.empty((sum(p.size for p in ps), npair))
-            c0 = 0
-            for (si, sj), p, loc in zip(grp, ps, locs):
-                col = ints.column(si, sj)
-                if si == sj:
-                    col = lib.take_2d(col, numpy.arange(npair), loc)
-                rows = lib.transpose(col, out=Ht[c0:c0+p.size])
-                if not numpy.shares_memory(rows, Ht):
-                    Ht[c0:c0+p.size] = rows
-                c0 += p.size
+            # T rows = U^T col^T, summed over the blocks of the group: the gemm
+            # takes the integral columns (pairs x components, as libcint makes
+            # them) transposed, without copies.  For a shell with itself the
+            # rows of U are spread over all di*dj components (zero for mu < nu).
             k = U.shape[1]
-            lib.dot(numpy.ascontiguousarray(U.T), Ht, 1, T[r0:r0+k], 0)
+            u0 = 0
+            ps = []
+            for ib, (si, sj) in enumerate(grp):
+                p, loc = _shell_pair_columns(ao_loc, si, sj)
+                col = ints.column(si, sj)
+                Ub = U[u0:u0+p.size]
+                if si == sj:
+                    Uf = numpy.zeros((col.shape[1], k))
+                    Uf[loc] = Ub
+                    Ub = Uf
+                lib.dot(numpy.ascontiguousarray(Ub.T), col.T, 1, T[r0:r0+k], 1 if ib else 0)
+                u0 += p.size
+                ps.append(p)
             gpairs.append(numpy.hstack(ps))
             r0 += k
         J = numpy.empty((npiv, npiv))
@@ -527,6 +525,12 @@ class CD(df.DF):
         except numpy.linalg.LinAlgError:
             raise RuntimeError('two-step CD: the pivot metric is not positive definite')
         self.metric_chol = K
-        cderi = scipy.linalg.solve_triangular(K, T, lower=True, overwrite_b=True)
+        # L = K^-1 T: T (C order) is T^T in Fortran order, so solve
+        # X K^T = T^T in place with dtrsm (scipy.linalg.solve_triangular would
+        # first copy T into Fortran order)
+        from scipy.linalg import blas
+        cderi = blas.dtrsm(1., K, T.T, side=1, lower=1, trans_a=1, overwrite_b=1).T
+        if not numpy.shares_memory(cderi, T):
+            raise RuntimeError('dtrsm did not work in place')
         log.timer('CD two-step reconstruction', *t0)
         return cderi
