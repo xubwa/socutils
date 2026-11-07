@@ -138,6 +138,8 @@ MAX_CANDIDATES = 128
 REFRESH = 32
 # relative difference of the block measure regarded as a tie (equivalent pairs)
 TIE = 1e-8
+# active set (two-step): compact once the done pairs exceed this fraction
+ACTIVE_COMPACT = .2
 
 
 def _pair_weights(ao_loc, blocks, bpairs, npair):
@@ -152,7 +154,8 @@ def _pair_weights(ao_loc, blocks, bpairs, npair):
     return cw
 
 
-def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None):
+def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None,
+                     active_set=False):
     """Shell-pair block pivoted Cholesky decomposition of the ERIs.
 
     The pivots are whole shell pairs.  For a group of shell pairs (one pair,
@@ -169,8 +172,14 @@ def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None):
     under rotations and permutations of equivalent atoms, so is the
     decomposition.
 
+    With active_set (for the two-step method, which needs the pivots only)
+    the vectors are kept on the pairs of the groups that are not done: a done
+    group never becomes a candidate again, and the residual of its pairs is
+    not needed any more.  The arrays over the pairs are compacted once the
+    done pairs exceed ACTIVE_COMPACT of them.  The pivots are the same.
+
     Returns:
-        L : (nchol, nao_pair) array, the vectors
+        L : (nchol, nao_pair) array, the vectors (None with active_set)
         pivots : list of (shell pairs, U), U (components x k) the directions
     """
     log = logger.new_logger(mol, verbose)
@@ -198,9 +207,19 @@ def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None):
     done = numpy.zeros(nblk, dtype=bool)
     t1 = log.timer_debug1('CD diagonal', *t0)
 
+    # active pairs: the arrays over pairs (d, the columns of L and Bt) are
+    # indexed by position in act; pos[p] is the position of pair p
+    act = numpy.arange(npair)
+    pos = numpy.arange(npair)
+    bid_a, c2_a, cw_a = bid, c2, cw
+    nact = npair
+
+    def bp(ib):
+        return pos[bpairs[ib]]
+
     def traces():
         t = numpy.zeros(nblk)
-        numpy.add.at(t, bid, c2 * d)
+        numpy.add.at(t, bid_a, c2_a * d)
         t[done] = 0
         return t
 
@@ -209,13 +228,13 @@ def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None):
 
     def grow(L, n, k):
         cap = L.shape[0] + max(nao, k, L.shape[0] // 2)
-        need = (cap + L.shape[0]) * npair * 8 / 1e6      # new buffer + copy
+        need = (cap + L.shape[0]) * nact * 8 / 1e6       # new buffer + copy
         if need > avail_mb():
             raise MemoryError(
                 'CD needs %.0f MB for %d+ vectors (tau = %g, max residual %.2e) '
                 'but only %.0f MB of max_memory are left; raise max_memory or tau.'
                 % (need, n + k, tau, d.max(), avail_mb()))
-        L1 = numpy.empty((cap, npair))
+        L1 = numpy.empty((cap, nact))
         L1[:n] = L[:n]
         return L1
 
@@ -228,6 +247,24 @@ def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None):
     nmacro = 0
     lam_seen = None
     while True:
+        # a block with residual trace below tau has every eigenvalue below tau:
+        # done (the trace only decreases)
+        done |= traces() < tau
+        if active_set:
+            alive = ~done[bid_a]
+            if (~alive).sum() > ACTIVE_COMPACT * nact:
+                keep_pos = numpy.where(alive)[0]
+                L1 = numpy.empty((L.shape[0], keep_pos.size))
+                lib.take_2d(L[:n], numpy.arange(n), keep_pos, out=L1[:n])   # threaded
+                L = L1
+                del L1
+                act = act[alive]
+                d = d[alive]
+                bid_a, c2_a, cw_a = bid[act], c2[act], cw[act]
+                pos = numpy.full(npair, -1)
+                pos[act] = numpy.arange(act.size)
+                log.debug1('CD active set: %d -> %d pairs', nact, act.size)
+                nact = act.size
         t = traces()
         tmax = t.max()
         if tmax < tau:
@@ -241,7 +278,7 @@ def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None):
         mean = t / numpy.maximum(bsize, 1)
         cand = cand[numpy.argsort(-mean[cand])]
         # whole groups of equal measure, never split between iterations
-        kmax = max(1, min(MAX_CANDIDATES, int(avail_mb() * 1e6 / 8 / npair / 4)))
+        kmax = max(1, min(MAX_CANDIDATES, int(avail_mb() * 1e6 / 8 / nact / 4)))
         sel = []
         ncol = 0
         i = 0
@@ -257,7 +294,7 @@ def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None):
             i = j
 
         # residual of the candidates, stored transposed: Bt[c, :] = R[:, c]
-        Bt = numpy.empty((ncol, npair))
+        Bt = numpy.empty((ncol, nact))
         off = {}
         c0 = 0
         for ib in sel:
@@ -266,15 +303,17 @@ def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None):
             # (all pairs | shell pair): libcint parallelizes over the pairs;
             # transposed into the rows by the threaded lib.transpose
             col = ints.column(si, sj)
-            if si == sj:
-                col = numpy.ascontiguousarray(col[:, blocal[ib]])
+            if nact < npair or si == sj:
+                rows_ = act if nact < npair else numpy.arange(npair)
+                cols_ = blocal[ib] if si == sj else numpy.arange(col.shape[1])
+                col = lib.take_2d(col, rows_, cols_)      # threaded, contiguous
             rows = lib.transpose(col, out=Bt[c0:c0+k])
             if not numpy.shares_memory(rows, Bt):
                 Bt[c0:c0+k] = rows
             off[ib] = (c0, c0 + k)
             c0 += k
         if n:
-            cp_all = numpy.hstack([bpairs[ib] for ib in sel])
+            cp_all = numpy.hstack([bp(ib) for ib in sel])
             lib.dot(L[:n, cp_all].T, L[:n], -1, Bt, 1)
 
         m0 = n
@@ -282,7 +321,7 @@ def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None):
         lam_max_seen = 0.
         live = list(sel)
         while live:
-            tl = numpy.array([(c2[bpairs[ib]] * d[bpairs[ib]]).sum() for ib in live])
+            tl = numpy.array([(c2_a[bp(ib)] * d[bp(ib)]).sum() for ib in live])
             ml = tl / bsize[live]
             j = int(numpy.argmax(ml))
             if tl[j] < cut:
@@ -290,14 +329,14 @@ def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None):
             grp = [live[i] for i in numpy.where(abs(ml - ml[j]) <= TIE * ml[j])[0]]
             for ib in grp:
                 live.remove(ib)
-            p = numpy.hstack([bpairs[ib] for ib in grp])
+            p = numpy.hstack([bp(ib) for ib in grp])
             if len(grp) == 1:
                 Bb = Bt[off[grp[0]][0]:off[grp[0]][1]]
             else:
                 Bb = Bt[numpy.hstack([numpy.arange(*off[ib]) for ib in grp])]
             if n > m0:
                 Bb = lib.dot(L[m0:n, p].T, L[m0:n], -1, Bb.copy(), 1)
-            cp = cw[p]
+            cp = cw_a[p]
             S = Bb[:, p] * cp[:, None] * cp
             S = (S + S.T) * .5
             w, W = numpy.linalg.eigh(S)
@@ -328,7 +367,7 @@ def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None):
                     c0 += bsize[b]
                 Bt = Bt[idx]
                 off = newoff
-                lib.dot(L[m0:n, numpy.hstack([bpairs[b] for b in live])].T, L[m0:n], -1, Bt, 1)
+                lib.dot(L[m0:n, numpy.hstack([bp(b) for b in live])].T, L[m0:n], -1, Bt, 1)
                 m0 = n
         if n == n_start:
             lam_seen = lam_max_seen
@@ -338,6 +377,8 @@ def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None):
     log.info('CD: %d vectors (%.1f nao) from %d pivot groups in %d macro iterations, tau = %g',
              n, n / max(nao, 1), len(pivots), nmacro, tau)
     log.timer('CD pivoted decomposition', *t1)
+    if active_set:
+        return None, pivots
     return L[:n], pivots
 
 
@@ -413,12 +454,12 @@ class CD(df.DF):
         self.dump_flags()
 
         mol = self.mol
-        L, pivots = pivoted_cholesky(mol, self.tau, self.sigma, self.max_memory, self.verbose)
+        L, pivots = pivoted_cholesky(mol, self.tau, self.sigma, self.max_memory, self.verbose,
+                                     active_set=(method == 'twostep'))
         self.pivots = pivots
         if method == 'onestep':
             cderi = L
         else:
-            del L
             cderi = self._rebuild(mol, pivots, log)
 
         if isinstance(self._cderi_to_save, str):
@@ -450,14 +491,26 @@ class CD(df.DF):
         gpairs = []
         r0 = 0
         for grp, U in pivots:
-            cols = []
+            # integrals of the group, transposed (components x pairs) by the
+            # threaded lib.transpose / lib.take_2d, then T rows = U^T Ht by gemm
             ps = []
+            locs = []
             for si, sj in grp:
                 p, loc = _shell_pair_columns(ao_loc, si, sj)
-                cols.append(ints.column(si, sj)[:, loc])
                 ps.append(p)
+                locs.append(loc)
+            Ht = numpy.empty((sum(p.size for p in ps), npair))
+            c0 = 0
+            for (si, sj), p, loc in zip(grp, ps, locs):
+                col = ints.column(si, sj)
+                if si == sj:
+                    col = lib.take_2d(col, numpy.arange(npair), loc)
+                rows = lib.transpose(col, out=Ht[c0:c0+p.size])
+                if not numpy.shares_memory(rows, Ht):
+                    Ht[c0:c0+p.size] = rows
+                c0 += p.size
             k = U.shape[1]
-            T[r0:r0+k] = (numpy.hstack(cols) @ U).T
+            lib.dot(numpy.ascontiguousarray(U.T), Ht, 1, T[r0:r0+k], 0)
             gpairs.append(numpy.hstack(ps))
             r0 += k
         J = numpy.empty((npiv, npiv))
