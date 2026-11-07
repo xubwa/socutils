@@ -4,6 +4,7 @@
 import os
 import tempfile
 import unittest
+import numpy
 from pyscf import gto, scf, lib
 from socutils.cd import cd
 
@@ -55,6 +56,24 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(e_cd, ref.run(conv_tol=1e-11).e_tot, 9)
         # reference value of the validated version (3d9dea3)
         self.assertAlmostEqual(e_cd, -76.02676639601, 8)
+
+    def test_point_group_symmetry(self):
+        # the pivots are closed under the point group, so the degeneracies
+        # of D6h benzene (e1g HOMO, e2u LUMO, ...) are exact in the CD mean
+        # field; pivots chosen per function split them by ~tau
+        r, R = 1.396, 2.479
+        ang = numpy.arange(6) * numpy.pi / 3
+        atoms = ([('C', (r*numpy.cos(a), r*numpy.sin(a), 0)) for a in ang]
+                 + [('H', (R*numpy.cos(a), R*numpy.sin(a), 0)) for a in ang])
+        benzene = gto.M(atom=atoms, basis='6-31g', verbose=0)
+        mf = cd.cholesky(scf.RHF(benzene), tau=1e-4)
+        mf.with_df.verbose = 0
+        e = mf.run(conv_tol=1e-11).mo_energy
+        de = numpy.diff(e)
+        pairs = numpy.where(de < 1e-5)[0]
+        nocc = benzene.nelectron // 2
+        self.assertIn(nocc - 2, pairs)
+        self.assertLess(de[pairs].max(), 1e-10)
 
     def test_save_and_reuse(self):
         with tempfile.TemporaryDirectory() as tmp:
