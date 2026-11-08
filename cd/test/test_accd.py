@@ -57,7 +57,7 @@ class KnownValues(unittest.TestCase):
     def test_scf(self):
         mol = gto.M(atom='O 0 0 0; H 0 .757 .587; H 0 -.757 .587', basis='cc-pvtz', verbose=0)
         mf = scf.RHF(mol).density_fit(auxbasis=accd.accd_basis(mol))
-        self.assertAlmostEqual(mf.run(conv_tol=1e-11).e_tot, -76.05711970563, 8)
+        self.assertAlmostEqual(mf.run(conv_tol=1e-11).e_tot, -76.05711316010, 8)
 
     def test_not_supported(self):
         mol = gto.M(atom='O 0 0 0', basis='cc-pvdz', spin=2, cart=True, verbose=0)

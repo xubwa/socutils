@@ -24,8 +24,11 @@ For every atom (basis) of the molecule:
    is uncontracted, the selected primitives are used uncontracted.
 
 The ERI error of the auxiliary basis is bounded from below by the two-centre
-products, which no one-centre basis represents exactly: a tau much below 1e-4
-adds functions without improving the integrals much.
+products, which no one-centre basis represents exactly.  At tau ~ 1e-3 the
+one-centre errors fall below this floor (H2O, AgH, TiCl4: max diagonal error
+2e-4 to 4e-4, 3e-5 for TiCl4, comparable to molecular CD with tau 1e-3 to
+1e-4); a smaller tau adds functions and improves mainly the one-centre part
+(e.g. correlation energies somewhat).
 
 Unlike the atom-centred rules of autoaux (Stoychev, Auer, Neese, J. Chem.
 Theory Comput. 13, 554 (2017)), which limit L to l_max + l_inc, the angular
@@ -154,7 +157,7 @@ def _atom_shells(amol, tau, max_memory, log):
     return shells
 
 
-def accd_basis(mol, tau=1e-4, max_memory=None, verbose=None):
+def accd_basis(mol, tau=1e-3, max_memory=None, verbose=None):
     '''acCD auxiliary basis of mol, as a basis dict for df.DF(mol, auxbasis=...).
 
     Args:
