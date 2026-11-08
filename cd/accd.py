@@ -36,11 +36,13 @@ momenta come from the pivots and the products of polarization functions are
 kept; they enter the virtual-virtual integrals (e.g. the particle-particle
 ladder of CCSD).
 
-The procedure follows S. Lehtola, J. Chem. Theory Comput. 17, 6886 (2021)
-and J. Chem. Theory Comput. 19, 6242 (2023) (also in basis_set_exchange.auxgen)
-and F. Aquilante, L. Gagliardi, T. B. Pedersen, R. Lindh, J. Chem. Phys. 130,
-154107 (2009); here the integrals come from libcint and the pivots from the
-contracted orbital basis.
+This is the acCD of F. Aquilante, T. B. Pedersen, L. Gagliardi, R. Lindh,
+J. Chem. Phys. 130, 154107 (2009): atomic CD of the contracted basis (aCD),
+reduction of the primitive products by a CD of their Coulomb integrals
+(absolute threshold), Coulomb fit of the pivot products.  From S. Lehtola,
+J. Chem. Theory Comput. 17, 6886 (2021) and 19, 6242 (2023) (also in
+basis_set_exchange.auxgen) come the effective exponents and the SVD
+compression of the fitted functions; the selection is done per L.
 '''
 
 from math import gamma
