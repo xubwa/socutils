@@ -29,7 +29,7 @@ from pyscf import lib
 from itertools import product
 
 from socutils.symm import double_group as dg
-from socutils.zmr import dpd
+from socutils.zmr import blockstore, dpd
 from socutils.zmr.lib import kernels
 from socutils.zmr.lib import linalg as la
 
@@ -395,24 +395,8 @@ def _view_arrays(structure, perm, boxes):
     return arrays, len(keep) == len(boxes)
 
 
-def add_block(t, x, alpha=1.0, beta=1.0):
-    """t = beta t + alpha x for the dpd.Tensor t and a block x as returned by get (an
-    array, a dpd.Tensor or View, or (block, sign) / (block, sign, conjugate)), in the
-    order of the legs of t; None adds nothing.  Only the blocks of t are written."""
-    if x is None:
-        if beta != 1.0:
-            t.data *= beta
-        return t
-    if isinstance(x, tuple):
-        blk, sign, cj = x[0], x[1], len(x) == 3 and bool(x[2])
-    else:
-        blk, sign, cj = x, 1.0, False
-    if isinstance(blk, dpd.Tensor):
-        blk = dpd.View(blk)
-    if isinstance(blk, dpd.View):
-        return dpd.sort_axpy(t, blk.t, blk.perm, alpha * sign, beta,
-                             conj=cj != blk.conjugated)
-    return dpd.dense_to_tensor(numpy.asarray(blk), t, alpha * sign, beta, conj=cj)
+# t = beta t + alpha x for a block in either storage (zmr.blockstore)
+add_block = blockstore.add_block
 
 
 def add_to_dense(dense, x, alpha=1.0):

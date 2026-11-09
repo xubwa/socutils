@@ -30,6 +30,7 @@ import time
 
 import numpy
 
+from socutils.zmr import blockstore as bs, dpd
 from socutils.zmr.dsrg import commutator as cm
 from socutils.zmr.dsrg.ldsrg2 import LDSRG2
 from socutils.zmr.lib import linalg as la
@@ -47,8 +48,9 @@ def _hole_particle(lab):
 class _Renormalized:
     '''Two-body operator V with the hole-particle blocks multiplied by 1 + exp(-s D^2).'''
 
-    def __init__(self, V, rden):
-        self.V, self.rden = V, rden
+    def __init__(self, V, rden, layout):
+        # rden(lab) -> (r, ex) in the layout of the blocks (zmr.blockstore.Layout)
+        self.V, self.rden, self.layout = V, rden, layout
         self.cache = {}
         self.dense_vvvv = V.dense_vvvv
 
@@ -58,10 +60,15 @@ class _Renormalized:
         # one placement of every block, as BareV
         clab, perm, sign, cj = cm.hermitian_canonical(lab)
         if clab not in self.cache:
-            self.cache[clab] = (cm.materialize(self.V.get(clab))
-                                * (1.0 + self.rden(clab)[1]))
+            c = self.layout.block(clab, self.V.get(clab))
+            bs.data(c)[...] *= 1.0 + bs.data(self.rden(clab)[1])
+            self.cache[clab] = c
         c = self.cache[clab]
-        return c if perm == (0, 1, 2, 3) else (c.transpose(perm), sign, cj)
+        if perm == (0, 1, 2, 3):
+            return c
+        if isinstance(c, dpd.Tensor):
+            return dpd.View(c, perm), sign, cj
+        return c.transpose(perm), sign, cj
 
 
 class DSRGMRPT2(LDSRG2):
@@ -87,6 +94,12 @@ class DSRGMRPT2(LDSRG2):
     def _t2_labels(self):
         return [lab for lab in LDSRG2._t2_labels.fget(self) if lab != 'ccvv']
 
+    def _rden2(self, lab):
+        # the label of a de-excitation has the Delta of its excitation
+        n = len(lab) // 2
+        flip = all(x in 'av' for x in lab[:n]) and all(x in 'ca' for x in lab[n:])
+        return self.layout.denominators(lab, self.eps, self.s, flip=flip)
+
     def _rden(self, lab):
         # the label of a de-excitation has the Delta of its excitation
         n = len(lab) // 2
@@ -101,7 +114,8 @@ class DSRGMRPT2(LDSRG2):
         '''First-order T1, T2 and the renormalized F~, V~.'''
         t2 = cm.Blocks()
         for lab in self._t2_labels:
-            t2[lab] = cm.materialize(self.V.get(lab)) * self._rden(lab)[0]
+            t = t2[lab] = self.layout.block(lab, self.V.get(lab))
+            bs.data(t)[...] *= bs.data(self._rden2(lab)[0])
         x = cm.Blocks()
         f0 = cm.Blocks({'aa': self.F['aa']})
         con = lambda spec, *ops, **kw: cm.contract(spec, *ops, dims=self.dims, **kw)
@@ -117,7 +131,7 @@ class DSRGMRPT2(LDSRG2):
             t1[lab] = fx * r
             ft[lab] = self.F[lab] + fx * ex
             ft[lab[::-1]] = ft[lab].conj().T.copy()
-        return t1, t2, ft, _Renormalized(self.V, self._rden)
+        return t1, t2, ft, _Renormalized(self.V, self._rden2, self.layout)
 
     def energy_ccvv(self):
         '''1/4 sum_mnef |<mn||ef>|^2 (1 + exp(-s D^2)) (1 - exp(-s D^2)) / D, one core

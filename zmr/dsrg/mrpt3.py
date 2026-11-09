@@ -30,7 +30,7 @@ import time
 import numpy
 
 from socutils.symm import double_group as dg
-from socutils.zmr import dpd
+from socutils.zmr import blockstore as bs, dpd
 from socutils.zmr.dsrg import commutator as cm
 from socutils.zmr.dsrg.ldsrg2 import LDSRG2
 from socutils.zmr.dsrg.mrpt2 import DSRGMRPT2, _hole_particle
@@ -96,10 +96,8 @@ class DSRGMRPT3(DSRGMRPT2):
         '''T from the hole-particle blocks of factor * O as T(1) from H1.'''
         t2 = cm.Blocks()
         for lab in self._t2_labels:
-            x = cm.materialize(o2.get(lab))
-            t2[lab] = (factor * x if x is not None else
-                       numpy.zeros(tuple(self.dims[c] for c in lab), dtype=complex)
-                       ) * self._rden(lab)[0]
+            t = t2[lab] = self.layout.block(lab, o2.get(lab), alpha=factor)
+            bs.data(t)[...] *= bs.data(self._rden2(lab)[0])
         x = cm.Blocks()
         f0 = cm.Blocks({'aa': self.F['aa']})
         keep = lambda lab: lab in self._t1_labels

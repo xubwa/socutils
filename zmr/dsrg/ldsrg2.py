@@ -38,7 +38,7 @@ from pyscf import lib
 from socutils.zmr.active import rdm
 from socutils.zmr.active.sectors import ActiveSpace
 from socutils.symm import double_group as dg
-from socutils.zmr import dpd, symmetry_sectors
+from socutils.zmr import blockstore as bs, dpd, symmetry_sectors
 from socutils.zmr.dsrg import commutator as cm
 from socutils.zmr.lib import linalg as la
 
@@ -233,6 +233,8 @@ class LDSRG2:
         if self.orbsym is not None and self.use_symmetry:
             sym = (eris.doublegroupname, self.orbsym)
         self.dims = dims = cm.Dims({'c': sp.ncore, 'a': sp.nact, 'v': sp.nvirt}, sym=sym)
+        # storage of the two-body blocks (amplitudes, Hbar, integrals)
+        self.layout = bs.Layout(dims, use_dpd=self.dpd_storage)
         fs = numpy.conj(fock)
         self.F = cm.Blocks({x + y: fs[sp.slice(x), sp.slice(y)].copy()
                             for x, y in product('cav', repeat=2)})
@@ -272,7 +274,7 @@ class LDSRG2:
             self.V = cm.BareV(cm.ThreeIndexFile(sc), dense_vvvv=not self.nivo, extra=extra,
                               cache_memory=self._cached_blocks(naux) + 0.5 * spare,
                               read_memory=max(self.read_memory, min(4000.0, 0.1 * spare)))
-            if self.dpd_storage and dims.legs and dims.sym is not None:
+            if self.layout.use_dpd:
                 # integral blocks in the DPD layout: only the elements allowed by symmetry
                 self.V.legs, self.V.group = dims.legs, dims.sym[0]
             if self.nivo and self.vvvv and sp.nvirt > 1:
@@ -305,85 +307,31 @@ class LDSRG2:
         r = numpy.where(small, self.s * d, (1.0 - ex) / numpy.where(small, 1.0, d))
         return r, ex
 
-    def _dpd_amps(self, lab):
-        '''Whether the amplitudes (and Hbar) of the two-body block lab are kept in the DPD
-        layout: with dpd_storage and the double-group sectors of all its spaces.'''
-        return (self.dpd_storage and len(lab) == 4 and getattr(self.dims, 'sym', None)
-                is not None and all(x in self.dims.legs for x in lab))
-
-    def _t2_tensor(self, lab, x=None):
-        '''A dpd.Tensor of the two-body block lab (zero; with x, the block x as returned
-        by get).'''
-        legs = self.dims.legs
-        t = dpd.Tensor([legs[c] for c in lab], cm.TWO_BODY, 2, self.dims.sym[0],
-                       empty=x is not None)
-        if x is not None:
-            cm.add_block(t, x, beta=0.0)
-        return t
-
-    def _rden_dpd(self, lab):
-        '''_rden(lab) as two dpd.Tensors of the layout of _t2_tensor(lab), computed block
-        by block from the orbital energies; kept (the energies are fixed after build).'''
-        cache = self.__dict__.setdefault('_rden_cache', {})
-        key = (lab, id(self.eps))
-        if key in cache:
-            return cache[key]
-        legs = [self.dims.legs[x] for x in lab]
-        r, ex = self._t2_tensor(lab), self._t2_tensor(lab)
-
-        def den(sec):
-            d = 0.0
-            for k, x in enumerate(lab):
-                e = self.eps[x][legs[k].offsets[sec[k]]:legs[k].offsets[sec[k] + 1]]
-                shape = [1] * 4
-                shape[k] = -1
-                d = d + (e if k < 2 else -e).reshape(shape)
-            return d
-
-        def fill_r(sec, blk):
-            d = den(sec)
-            small = abs(d) < 1e-7
-            blk[...] = numpy.where(small, self.s * d, (1.0 - numpy.exp(-self.s * d * d))
-                                   / numpy.where(small, 1.0, d))
-
-        def fill_ex(sec, blk):
-            d = den(sec)
-            blk[...] = numpy.exp(-self.s * d * d)
-        dpd.map_blocks(r, fill_r)
-        dpd.map_blocks(ex, fill_ex)
-        cache[key] = r, ex
-        return r, ex
-
     def init_amps(self):
         t1, t2 = cm.Blocks(), cm.Blocks()
         for lab in self._t1_labels:
             t1[lab] = self.F[lab] * self._rden(lab)[0]
         for lab in self._t2_labels:
-            if self._dpd_amps(lab):
-                t = self._t2_tensor(lab, self.V.get(lab))
-                t.data *= self._rden_dpd(lab)[0].data
-                t2[lab] = t
-            else:
-                t2[lab] = cm.materialize(self.V.get(lab)) * self._rden(lab)[0]
+            t = t2[lab] = self.layout.block(lab, self.V.get(lab))
+            bs.data(t)[...] *= bs.data(self._rden2(lab)[0])
         return t1, t2
+
+    def _rden2(self, lab):
+        '''_rden(lab) of a two-body block in the layout of its amplitudes.'''
+        return self.layout.denominators(lab, self.eps, self.s)
 
     def _update(self, t, h, labels):
         new = cm.Blocks()
         for lab in labels:
-            if isinstance(t[lab], dpd.Tensor):
-                r, ex = self._rden_dpd(lab)
-                n = new[lab] = self._t2_tensor(lab)
-                n.data[...] = t[lab].data * (1.0 - ex.data)
-                hl = h.get(lab)
-                if hl is not None:
-                    if not isinstance(hl, dpd.Tensor):
-                        hl = self._t2_tensor(lab, hl)
-                    n.data += hl.data * r.data
-                continue
-            r, ex = self._rden(lab)
-            new[lab] = t[lab] * (1.0 - ex)
-            if h.get(lab) is not None:
-                new[lab] += h[lab] * r
+            two = len(lab) == 4
+            r, ex = self._rden2(lab) if two else self._rden(lab)
+            n = new[lab] = self.layout.zeros(lab) if two else numpy.zeros_like(t[lab])
+            bs.data(n)[...] = bs.data(t[lab]) * (1.0 - bs.data(ex))
+            hl = h.get(lab)
+            if hl is not None:
+                if two and type(hl) is not type(n):
+                    hl = self.layout.block(lab, hl)
+                bs.data(n)[...] += bs.data(hl) * bs.data(r)
         return new
 
     def _vvvv_pair_groups(self):
@@ -585,10 +533,8 @@ class LDSRG2:
         h1 = cm.Blocks({k: v.copy() for k, v in self.F.items()})
         # contiguous copies: never the cached integral blocks themselves (h2 is updated in
         # place), and C order (numpy.array keeps the layout of a transposed view)
-        h2 = cm.Blocks({lab: self._t2_tensor(lab, self.V.get(lab)) if (
-            self._dpd_amps(lab) and isinstance(t2.get(lab), dpd.Tensor))
-            else numpy.array(cm.materialize(self.V.get(lab)), dtype=numpy.complex128,
-                             order='C', copy=True) for lab in hh_pp})
+        # copies (h2 is updated in place), in the layout of the amplitudes
+        h2 = cm.Blocks({lab: self.layout.block(lab, self.V.get(lab)) for lab in hh_pp})
         o1, o2 = self.F, self.V
         # T2 in the DPD layout once for all products of all commutators
         t2c = cm.dpd_blocks(t2, self.dims) if self.dpd_storage else None
@@ -606,10 +552,7 @@ class LDSRG2:
             for lab in hh_pp:
                 c = c2.get(lab)
                 if c is not None:
-                    if isinstance(h2[lab], dpd.Tensor):
-                        cm.add_block(h2[lab], c)
-                    else:
-                        cm.add_to_dense(h2[lab], c[0], c[1])
+                    bs.add_block(h2[lab], c)
             data = lambda v: v.data if isinstance(v, dpd.Tensor) else v
             norm = numpy.sqrt(c1.norm2() + sum(
                 (1 + (k[0] != k[1])) * (1 + (k[2] != k[3])) * numpy.vdot(data(v), data(v)).real
@@ -652,7 +595,7 @@ class LDSRG2:
             e = self.e_ref + h0
             t1n = self._update(t1, h1, self._t1_labels)
             t2n = self._update(t2, h2, self._t2_labels)
-            data = lambda v: v.data if isinstance(v, dpd.Tensor) else v
+            data = bs.data
             d1 = numpy.sqrt(sum(numpy.linalg.norm(t1n[k] - t1[k])**2 for k in t1n))
             d2 = numpy.sqrt(sum(numpy.linalg.norm(data(t2n[k]) - data(t2[k]))**2
                                 for k in t2n))
@@ -688,7 +631,7 @@ class LDSRG2:
         self.e_corr = h0
         self.e_dsrg = self.e_ref + h0
         self.hbar1 = h1['aa']
-        self.hbar2 = h2['aaaa']
+        self.hbar2 = cm.materialize(h2['aaaa'])
         return self.e_dsrg
 
     def relaxed_active_space(self):
