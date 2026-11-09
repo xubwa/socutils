@@ -98,6 +98,7 @@ J_BY_JK_MULTI_LMAX = 2  # J-only builds of bases with l <= this by jk_multi, not
 INCORE = True           # J + K builds from in-memory s8 ERIs when they fit (mf._is_mem_enough, as pyscf)
 
 
+RIJ_RESIDENT = True     # RIJ: L^{-1} (P|ij) built once and kept in memory when it fits, J = B^T (B d)
 INCORE_RESERVE = 500    # MB of mf.max_memory kept for the other arrays of the SCF
 
 
@@ -236,15 +237,55 @@ def apply(mf, incremental=True, two_pass=True):
         return vj, vk
 
     if df_j:
+        cache = {'key': None, 'B': None}
+
+        def rij_j(mol, dm, hermi):
+            '''J from B = L^{-1} (P|ij) (lower-triangle pairs) kept in memory: c = B d, J = B^T c;
+            None if B does not fit'''
+            if not RIJ_RESIDENT or hermi != 1 or numpy.iscomplexobj(dm):
+                return None
+            key = (mol._atm.tobytes(), mol._bas.tobytes(), mol._env.tobytes())
+            if cache['key'] != key:
+                from pyscf import df
+                from socutils.hessian.rhf_fast import _df_auxmol
+                auxmol = _df_auxmol(mf)
+                nao = mol.nao
+                npair = nao * (nao + 1) // 2
+                if auxmol.nao * npair * 8 / 1e6 > mf.max_memory - lib.current_memory()[0] - INCORE_RESERVE:
+                    cache.update(key=key, B=None)
+                    return None
+                t0 = (logger.process_clock(), logger.perf_counter())
+                cache['B'] = df.incore.cholesky_eri(mol, auxmol=auxmol, int3c='int3c2e', aosym='s2ij',
+                                                    max_memory=mf.max_memory)
+                cache['key'] = key
+                logger.timer(mf, 'RIJ: resident L^-1 (P|ij)', *t0)
+            B = cache['B']
+            if B is None:
+                return None
+            dms = numpy.asarray(dm)
+            nao = dms.shape[-1]
+            d = dms.reshape(-1, nao, nao)
+            d = d + d.transpose(0, 2, 1)
+            idx = numpy.arange(nao)
+            d[:, idx, idx] *= .5
+            dtril = lib.pack_tril(d)                                  # (nset, npair), off-diagonal doubled
+            c = lib.dot(dtril, B.T)                                   # (nset, naux)
+            vj = lib.unpack_tril(lib.dot(c, B))                       # (nset, nao, nao)
+            return vj.reshape(dms.shape)
+
         def get_jk_rij(mol=None, dm=None, hermi=1, with_j=True, with_k=True, omega=None):
             if mol is None:
                 mol = mol0
             if dm is None:
                 dm = mf.make_rdm1()
-            if omega is not None or not with_k or mol is not mol0:
+            if omega is not None or mol is not mol0:
                 return orig_df_jk(mol, dm, hermi, with_j, with_k, omega)
-            vj = mf.with_df.get_jk(dm, hermi, with_j=True, with_k=False)[0] if with_j else None
-            vk = get_jk(mol, dm, hermi, False, True, omega)[1]
+            vj = None
+            if with_j:
+                vj = rij_j(mol, dm, hermi)
+                if vj is None:
+                    vj = mf.with_df.get_jk(dm, hermi, with_j=True, with_k=False)[0]
+            vk = get_jk(mol, dm, hermi, False, True, omega)[1] if with_k else None
             return vj, vk
         mf.get_jk = get_jk_rij
         return mf
