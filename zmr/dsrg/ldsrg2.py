@@ -386,12 +386,27 @@ class LDSRG2:
                 new[lab] += h[lab] * r
         return new
 
+    def _vvvv_pair_groups(self):
+        '''{pair irrep: indices of the pairs a < b of that irrep (in the order of
+        numpy.triu_indices)} of the virtual orbitals, None without the sectors.'''
+        vsym = self._virtual_sym()
+        if vsym is None:
+            return None
+        nv = self.dims['v']
+        pirr = numpy.asarray(dg.direct_prod(vsym[1], vsym[1], vsym[0]))[numpy.triu_indices(nv, 1)]
+        return {int(g): numpy.nonzero(pirr == g)[0] for g in numpy.unique(pirr)}
+
     def _store_vvvv(self):
         '''The pair-packed V[ab, rs] (a < b, r < s), in memory if it takes less than
-        half of the memory beyond the minimum, else in a temporary HDF5 file.'''
+        half of the memory beyond the minimum, else in a temporary HDF5 file.  With the
+        double-group sectors only its diagonal blocks by the irrep of the pairs:
+        {pair irrep: V[ab, rs] of the pairs of that irrep}.'''
         t0 = time.time()
         nv = self.dims['v']
         npair = nv * (nv - 1) // 2
+        groups = self._vvvv_pair_groups()
+        if groups is not None:
+            return self._store_vvvv_sym(groups, t0)
         size = 16.0 * npair**2 / 1e6
         batch = cm.BareV.vvvv_batch(nv, self._available())
         if size < 0.5 * (self.max_memory - self.min_memory):
@@ -405,6 +420,48 @@ class LDSRG2:
             w[r0:r0 + len(rows)] = rows
         self.log('(vv|vv) of %d pairs (%.0f MB) in %s, %.0f s' % (
             npair, size, where, time.time() - t0))
+        return w
+
+    def _store_vvvv_sym(self, groups, t0):
+        nv = self.dims['v']
+        npair = nv * (nv - 1) // 2
+        size = sum(16.0 * len(ix)**2 for ix in groups.values()) / 1e6
+        pirr = numpy.empty(npair, dtype=int)
+        pos = numpy.empty(npair, dtype=numpy.int64)
+        for g, ix in groups.items():
+            pirr[ix] = g
+            pos[ix] = numpy.arange(len(ix))
+        if size < 0.5 * (self.max_memory - self.min_memory):
+            w = {g: numpy.empty((len(ix), len(ix)), dtype=complex) for g, ix in groups.items()}
+            where = 'memory'
+        else:
+            self._vvvv_file = lib.H5TmpFile()
+            w = {g: self._vvvv_file.create_dataset('vvvv%d' % g, (len(ix), len(ix)), 'c16')
+                 for g, ix in groups.items()}
+            where = 'file %s' % self._vvvv_file.filename
+        # the row batches of the construction within the memory left by the blocks
+        mem = self._available() - (size if where == 'memory' else 0.0)
+        batch = cm.BareV.vvvv_batch(nv, max(100.0, mem))
+        for r0, rows in self.V.vvvv_rows(batch, sym=self._virtual_sym()):
+            rows = numpy.ascontiguousarray(rows, dtype=complex)
+            rid = numpy.arange(r0, r0 + len(rows))
+            for g in numpy.unique(pirr[rid]):
+                sel = numpy.nonzero(pirr[rid] == g)[0]
+                blk = lib.take_2d(rows, sel, groups[int(g)])
+                p = pos[rid[sel]]
+                if where == 'memory':
+                    w[int(g)][p] = blk
+                else:
+                    # increasing positions: one write of the rows between the first and last
+                    lo, hi = int(p[0]), int(p[-1]) + 1
+                    if hi - lo == len(p):
+                        w[int(g)][lo:hi] = blk
+                    else:
+                        w[int(g)][list(p)] = blk
+        self.log('(vv|vv) of %d pairs in %d blocks by the irrep of the pairs (%.0f MB, %.0f MB '
+                 'without symmetry) in %s, %.0f s' % (npair, len(groups), size,
+                                                    16.0 * npair**2 / 1e6, where,
+                                                    time.time() - t0))
         return w
 
     def _vvvv_blocks(self):
@@ -456,7 +513,28 @@ class LDSRG2:
                       for p_ in numpy.unique(pv)]
             blocks = [(ij, ab) for ij, ab in blocks if ij.size]
         tim = getattr(self.V, 'timings', {})
-        for r0, rows in self._vvvv_blocks():
+        if isinstance(self._w, dict):
+            # the diagonal blocks by pair irrep: x[ij, rs] = sum_ab t[ij, ab] W_g[ab, rs]
+            groups = self._vvvv_pair_groups()
+            t = time.time()
+            for g, wg in self._w.items():
+                ij = numpy.nonzero(ph == g)[0]
+                ab = groups[g]
+                if ij.size == 0 or ab.size == 0:
+                    continue
+                tg = lib.take_2d(tp, ij, ab)
+                if isinstance(wg, numpy.ndarray):
+                    xg = la.gemm(tg, wg)
+                else:
+                    xg = numpy.zeros((ij.size, ab.size), dtype=numpy.complex128)
+                    step = max(1, int(self._available() * 1e6 / (16.0 * ab.size)))
+                    for r0 in range(0, ab.size, step):
+                        xg += la.gemm(numpy.ascontiguousarray(tg[:, r0:r0 + step]),
+                                      wg[r0:r0 + step])
+                lib.takebak_2d(x, xg, ij, ab)
+            if isinstance(tim, dict):
+                tim['vvvv apply'] = tim.get('vvvv apply', 0.0) + time.time() - t
+        for r0, rows in ([] if isinstance(self._w, dict) else self._vvvv_blocks()):
             t = time.time()
             if sym is None:
                 x += la.gemm(numpy.ascontiguousarray(tp[:, r0:r0 + len(rows)]), rows)

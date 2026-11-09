@@ -228,3 +228,34 @@ def test_box_copy():
     back = numpy.zeros_like(av)
     kernels.box_copy(1, back, mat, 1, start, dims, doff, ld)
     assert abs(back[0:2, 1:4, 2:4] - av[0:2, 1:4, 2:4]).max() == 0
+
+
+def test_vvvv_by_pair_irrep(double_group):
+    '''MR-LDSRG(2) with the (vv|vv) of the ladder stored as its diagonal blocks by the
+    irrep of the pairs, in memory and in a temporary HDF5 file, and rebuilt for every use
+    (blocked), against the calculation without the double-group sectors.'''
+    chol = double_group[1]
+    e, c = ActiveSpace.from_eris(chol).solve(2, 8)
+    c = c[:, :complete_levels(e, 2)]
+    ref = LDSRG2(chol, 2, civecs=c, s=0.5)
+    ref.use_symmetry = False
+    ref.verbose = False
+    ref.conv_tol, ref.conv_tol_amp = 1e-11, 1e-9
+    ref.build()
+    ref.solve_amplitudes()
+    for mode in ('memory', 'disk', 'direct'):
+        pt = LDSRG2(chol, 2, civecs=c, s=0.5)
+        pt.verbose = False
+        pt.conv_tol, pt.conv_tol_amp = 1e-11, 1e-9
+        if mode == 'direct':
+            pt.vvvv = 'direct'
+            pt.build()
+        else:
+            pt.build()
+            assert isinstance(pt._w, dict)
+            if mode == 'disk':
+                pt.min_memory = pt.max_memory          # nothing beyond the minimum
+                pt._w = pt._store_vvvv()
+                assert not any(isinstance(w, numpy.ndarray) for w in pt._w.values())
+        pt.solve_amplitudes()
+        assert abs(pt.e_corr - ref.e_corr) < 1e-8, mode
