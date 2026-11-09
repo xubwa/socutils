@@ -253,7 +253,7 @@ void SOCDFTgtoval_sph(int ngrids, int *shls_slice, int *ao_loc, double *ao, doub
 void SOCDFTgtoval_sph_deriv1(int ngrids, int *shls_slice, int *ao_loc, double *ao, double *coord,
                              uint8_t *non0table, int *atm, int natm, int *bas, int nbas, double *env);
 void SOCDFTgtoval_ld(int deriv, int ngrids, int sh0, int sh1, int *ao_loc, double *ao, size_t ld, size_t row0,
-                     double *coord, uint8_t *non0table, int *atm, int *bas, int nbas, double *env);
+                     double *coord, uint8_t *non0table, int *atm, int *bas, int nbas, double *env, double *rowmax);
 
 /* eval_select with gtoval.c's evaluator: the flagged runs straight into a in the layout
  * (ncomp, ntot, n), the AOs below the cutoff squeezed out in place (no copy when all stay) */
@@ -280,9 +280,12 @@ static int eval_select_own(double *a, int *ix, int *runs, int n, double *xyz, ui
         }
         if (ntot == 0) return 0;
         size_t row = 0;
+        /* the row maxima over the components from the evaluator (masked blocks: zero) */
+        double *rmx = malloc(sizeof(double) * ntot);
+        memset(rmx, 0, sizeof(double) * ntot);
         for (i = 0; i < nrun; i++) {
                 SOCDFTgtoval_ld(ncomp > 1, n, runs[2 * i], runs[2 * i + 1], ao_loc, a, ntot, row, xyz, msk, atm, bas,
-                                nbas, env);
+                                nbas, env, rmx);
                 row += ao_loc[runs[2 * i + 1]] - ao_loc[runs[2 * i]];
         }
         /* the kept AOs (max_g over the components above the cutoff), squeezed in place */
@@ -291,21 +294,14 @@ static int eval_select_own(double *a, int *ix, int *runs, int n, double *xyz, ui
         for (i = 0; i < nrun; i++) {
                 int mu;
                 for (mu = ao_loc[runs[2 * i]]; mu < ao_loc[runs[2 * i + 1]]; mu++, row++) {
-                        double m = 0;
-                        for (k = 0; k < ncomp; k++) {
-                                const double *p = a + ((size_t)k * ntot + row) * n;
-                                for (g = 0; g < n; g++) {
-                                        const double v = fabs(p[g]);
-                                        if (v > m) m = v;
-                                }
-                        }
-                        if (m > cutoff) {
+                        if (rmx[row] > cutoff) {
                                 ix[nl] = mu;
                                 runs[2 * nbas + nl] = (int)row;       /* the source row */
                                 nl++;
                         }
                 }
         }
+        free(rmx);
         if ((size_t)nl < ntot) {
                 const int *srow = runs + 2 * nbas;
                 for (k = 0; k < ncomp; k++)
