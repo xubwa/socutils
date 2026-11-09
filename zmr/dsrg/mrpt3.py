@@ -302,7 +302,9 @@ class DSRGMRPT3(DSRGMRPT2):
 
         t = time.time()
         large = None
-        if isinstance(self.V, cm.BareV):
+        # dense blocks with three virtual indices are not held: one pass over them in
+        # chunks; in the DPD layout (a fraction of the size) they are blocks like others
+        if isinstance(self.V, cm.BareV) and self.V.legs is None:
             self.V.skip_three_virtual = True
             large = self._three_virtual
         h1_1, h1_2 = self._comm(f1, self.V, t1, t2,
