@@ -850,11 +850,15 @@ def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS
     opts = [moleintor.make_cintopt(atm, bas, env, s) for s in ('int3c2e_ip1_sph', 'int3c2e_ipip1_sph',
                                                                'int3c2e_ipvip1_sph')]
     hess = numpy.zeros((natm, natm, 3, 3)) if with_hess else None
+    hess_md = None
+    if with_hess and RIJ_HESS_MD and auxmol.natm == natm:
+        hess_md = _md_rij_hess(libv, mol, auxmol, dm, dfit, tol)
     Y = numpy.zeros((natm * 3, naux))
     W = numpy.zeros((natm, 3, nao, nao)) if with_vj1 else None
     null = lib.c_null_ptr()
     libv.SOCVHFri_j_deriv(
-        hess.ctypes.data_as(ctypes.c_void_p) if with_hess else null, Y.ctypes.data_as(ctypes.c_void_p),
+        hess.ctypes.data_as(ctypes.c_void_p) if with_hess and hess_md is None else null,
+        Y.ctypes.data_as(ctypes.c_void_p),
         W.ctypes.data_as(ctypes.c_void_p) if with_vj1 else null,
         dm.ctypes.data_as(ctypes.c_void_p), dfit.ctypes.data_as(ctypes.c_void_p),
         q.ctypes.data_as(ctypes.c_void_p), qP.ctypes.data_as(ctypes.c_void_p),
@@ -874,6 +878,8 @@ def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS
     ip1 = v = None
     Y = Y.reshape(natm * 3, naux)
     Z = solve(Y.T.copy())                                     # M^{-1} Y, (naux, 3 natm)
+    if hess_md is not None:
+        hess += hess_md
     if with_hess:
         hess += lib.dot(Y, Z).reshape(natm, 3, natm, 3).transpose(0, 2, 1, 3)
         # -1/2 d M^{xi eta} d: for A != B, sum_{P in A, Q in B} d_P d_Q (nabla nabla P|Q)
@@ -907,15 +913,11 @@ def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS
 RIJ_GRAD_MD = True      # ri_j_grad's three-centre part by the McMurchie-Davidson J engine (lib/vhf/md_j.c)
 
 
-def _md_rij_grad(libv, mol, auxmol, dm, dfit, tol):
-    '''sum_P d_P sum_ij D_ij d(ij|P)/dR (natm, 3) by SOCVHFmd_rij_grad: the bra and the auxiliary basis
-    decontracted to Cartesian primitives, every auxiliary primitive paired with a zero-exponent s
-    function on its centre; None if unavailable'''
-    import ctypes
+def _md_rij_setup(mol, auxmol, dm, dfit):
+    '''the combined decontracted Cartesian basis of the J engine's RIJ passes: the bra, the auxiliary
+    primitives, one zero-exponent s shell per auxiliary atom; the density D (bra block dm, auxiliary
+    rows d / 2 in their s0 column).  (D, atm, bas, env, nbra, naux, s0sh, ao_loc, natm_total)'''
     from pyscf.gto import moleintor
-    if not hasattr(libv, 'SOCVHFmd_rij_grad') or max(mol._bas[:, gto.ANG_OF].max(),
-                                                       auxmol._bas[:, gto.ANG_OF].max()) > MD_J_LMAX:
-        return None
     pb, cb = mol.decontract_basis(to_cart=True, aggregate=True)
     pa, ca = auxmol.decontract_basis(to_cart=True, aggregate=True)
     dmb = cb.dot(numpy.asarray(dm, dtype=numpy.double)).dot(cb.T)
@@ -923,7 +925,6 @@ def _md_rij_grad(libv, mol, auxmol, dm, dfit, tol):
     natm = mol.natm
     atm, bas, env = gto.conc_env(pb._atm, pb._bas, pb._env, pa._atm, pa._bas, pa._env)
     nbra, naux = pb.nbas, pa.nbas
-    # one zero-exponent s shell per auxiliary atom (coefficient 1 / common_fac_sp(0): the constant 1)
     env = numpy.hstack([env, [0., numpy.sqrt(4 * numpy.pi)]])
     pexp, pcoef = env.size - 2, env.size - 1
     s0 = []
@@ -935,8 +936,7 @@ def _md_rij_grad(libv, mol, auxmol, dm, dfit, tol):
         b[gto.PTR_COEFF] = pcoef
         s0.append(b)
     bas = numpy.asarray(numpy.vstack([bas, numpy.asarray(s0)]), dtype=numpy.int32)
-    aux_atom = pa._bas[:, gto.ATOM_OF]
-    s0sh = numpy.asarray(nbra + naux + aux_atom, dtype=numpy.int32)
+    s0sh = numpy.asarray(nbra + naux + pa._bas[:, gto.ATOM_OF], dtype=numpy.int32)
     ao_loc = moleintor.make_loc(bas, 'cart').astype(numpy.int32)
     nao = ao_loc[-1]
     nb = ao_loc[nbra]
@@ -945,18 +945,52 @@ def _md_rij_grad(libv, mol, auxmol, dm, dfit, tol):
     for k in range(naux):
         r0, r1 = ao_loc[nbra + k], ao_loc[nbra + k + 1]
         D[r0:r1, ao_loc[s0sh[k]]] = .5 * dk[r0 - nb:r1 - nb]
-    grad = numpy.zeros((natm + pa.natm, 3))
+    return D, atm, bas, env, nbra, naux, s0sh, ao_loc, natm + pa.natm
+
+
+def _md_rij_grad(libv, mol, auxmol, dm, dfit, tol):
+    '''sum_P d_P sum_ij D_ij d(ij|P)/dR (natm, 3) by SOCVHFmd_rij_grad: the bra and the auxiliary basis
+    decontracted to Cartesian primitives, every auxiliary primitive paired with a zero-exponent s
+    function on its centre; None if unavailable'''
+    import ctypes
+    if not hasattr(libv, 'SOCVHFmd_rij_grad') or max(mol._bas[:, gto.ANG_OF].max(),
+                                                       auxmol._bas[:, gto.ANG_OF].max()) > MD_J_LMAX:
+        return None
+    D, atm, bas, env, nbra, naux, s0sh, ao_loc, ntot = _md_rij_setup(mol, auxmol, dm, dfit)
+    natm = mol.natm
+    grad = numpy.zeros((ntot, 3))
     ex = numpy.zeros(1)
     libv.SOCVHFmd_rij_grad(
         grad.ctypes.data_as(ctypes.c_void_p), ex.ctypes.data_as(ctypes.c_void_p),
         D.ctypes.data_as(ctypes.c_void_p), ctypes.c_double(tol), ctypes.c_int(nbra), ctypes.c_int(naux),
         s0sh.ctypes.data_as(ctypes.c_void_p), ao_loc.ctypes.data_as(ctypes.c_void_p),
-        atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(natm + pa.natm),
+        atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(ntot),
         bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(bas.shape[0]), env.ctypes.data_as(ctypes.c_void_p))
-    g = grad[:natm].copy()
-    for ia in range(pa.natm):           # the auxiliary centres are the molecule's atoms, in order
-        g[ia] += grad[natm + ia]
-    return g, ex[0]
+    return grad[:natm] + grad[natm:], ex[0]
+
+
+RIJ_HESS_MD = True      # ri_j_deriv's three-centre second derivatives by the J engine (SOCVHFmd_rij_hess)
+
+
+def _md_rij_hess(libv, mol, auxmol, dm, dfit, tol):
+    '''sum_P d_P sum_ij D_ij d2(ij|P)/dR dR' (natm, natm, 3, 3) by SOCVHFmd_rij_hess; None if unavailable'''
+    import ctypes
+    if not hasattr(libv, 'SOCVHFmd_rij_hess') or max(mol._bas[:, gto.ANG_OF].max(),
+                                                       auxmol._bas[:, gto.ANG_OF].max()) > MD_J_LMAX:
+        return None
+    D, atm, bas, env, nbra, naux, s0sh, ao_loc, ntot = _md_rij_setup(mol, auxmol, dm, dfit)
+    natm = mol.natm
+    hess = numpy.zeros((ntot, ntot, 3, 3))
+    libv.SOCVHFmd_rij_hess.restype = ctypes.c_int
+    ok = libv.SOCVHFmd_rij_hess(
+        hess.ctypes.data_as(ctypes.c_void_p), D.ctypes.data_as(ctypes.c_void_p), ctypes.c_double(tol),
+        ctypes.c_int(nbra), ctypes.c_int(naux), s0sh.ctypes.data_as(ctypes.c_void_p),
+        ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(ntot),
+        bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(bas.shape[0]), env.ctypes.data_as(ctypes.c_void_p))
+    if not ok:
+        return None
+    # the auxiliary centres are the molecule's atoms (natm + ia): fold
+    return hess[:natm, :natm] + hess[:natm, natm:] + hess[natm:, :natm] + hess[natm:, natm:]
 
 
 def ri_j_grad(mol, auxmol, dm, tol=None, max_memory=None, cderi=None):
