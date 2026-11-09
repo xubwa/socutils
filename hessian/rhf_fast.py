@@ -60,7 +60,7 @@ def _partial_hess_ejk(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     if dfm is not None:
         # density-fitted J (exact derivatives of the DF energy), exact K below
         r = ri_j_deriv(mol, _df_auxmol(mf), dm0, with_vj1=False,
-                       max_memory=max(1000, mf.max_memory - lib.current_memory()[0]))
+                       max_memory=max(1000, mf.max_memory - lib.current_memory()[0]), cderi=_rij_cderi(mf))
         if r is None:
             from pyscf.df.hessian import rhf as df_rhf_hess
             return df_rhf_hess._partial_hess_ejk(hessobj, mo_energy, mo_coeff, mo_occ, atmlst,
@@ -936,7 +936,14 @@ def _df_auxmol(mf):
     return with_df.auxmol
 
 
-def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS2E_TOL, max_memory=None):
+def _rij_cderi(mf):
+    '''the RIJ SCF's resident L^{-1} (P|ij) (socutils.scf.md_j), or None'''
+    cache = getattr(mf, '_rij_cache', None)
+    return cache.get('B') if cache else None
+
+
+def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS2E_TOL, max_memory=None,
+               cderi=None):
     '''Nuclear derivatives of the density-fitted Coulomb energy
     E_J = 1/2 rho^T M^{-1} rho at a fixed symmetric D (rho_P = (P|ij) D_ij,
     M = (P|Q), d = M^{-1} rho), auxiliary-basis response included (the exact
@@ -950,7 +957,9 @@ def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS
     with bra derivatives only (lib/vhf/ri_j_deriv.c); the metric terms and
     (ij|P) M^{-1} Y are dense algebra over the auxiliary basis.  Returns
     (hess (natm, natm, 3, 3) or None, vj1 (natm, 3, nao, nao) or None), or None
-    if the library is unavailable.'''
+    if the library is unavailable.  cderi: the SCF's L^{-1} (P|ij) (naux, npair)
+    (ri_j_grad): d = L^{-T} (cderi D) and (ij|P) M^{-1} Y = cderi^T L^{-1} Y
+    without the three-centre integrals.'''
     import ctypes
     from pyscf import df
     from pyscf.gto import moleintor
@@ -969,14 +978,26 @@ def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS
     aux_ranges = balance_partition(auxmol.ao_loc, blk)
     # rho_P over the lower triangle of the s2ij integrals
     dm_tril = lib.pack_tril(dm + dm.T - numpy.diag(numpy.diag(dm)))
-    rho = numpy.empty(naux)
-    for k0, k1, _ in aux_ranges:
-        p0, p1 = auxmol.ao_loc[k0], auxmol.ao_loc[k1]
-        int3c = df.incore.aux_e2(mol, auxmol, 'int3c2e', aosym='s2ij', shls_slice=(0, nbas, 0, nbas, k0, k1))
-        rho[p0:p1] = lib.dot(dm_tril[None], int3c)[0]
-    int3c = None
     solve = _gen_metric_solver(auxmol.intor('int2c2e', aosym='s1'))
-    dfit = solve(rho.copy())
+    low = None
+    if cderi is not None and getattr(cderi, 'shape', None) == (naux, npair):
+        import scipy.linalg
+        try:
+            # the Cholesky pyscf's cholesky_eri took (it falls back to eigh only where this fails)
+            low = scipy.linalg.cholesky(auxmol.intor('int2c2e', hermi=1), lower=True)
+        except scipy.linalg.LinAlgError:
+            low = None
+    if low is not None:
+        c = lib.dot(cderi, dm_tril[:, None])[:, 0]              # L^{-1} rho
+        dfit = scipy.linalg.solve_triangular(low, c, lower=True, trans='T')
+    else:
+        rho = numpy.empty(naux)
+        for k0, k1, _ in aux_ranges:
+            p0, p1 = auxmol.ao_loc[k0], auxmol.ao_loc[k1]
+            int3c = df.incore.aux_e2(mol, auxmol, 'int3c2e', aosym='s2ij', shls_slice=(0, nbas, 0, nbas, k0, k1))
+            rho[p0:p1] = lib.dot(dm_tril[None], int3c)[0]
+        int3c = None
+        dfit = solve(rho.copy())
 
     # Schwarz factors: AO pairs over the bra derivative types, sqrt((P|P))
     q = numpy.max([ghf_hess._q_cond(mol, intor)[k] for intor in ('int2e_ip1', 'int2e_ipip1', 'int2e_ipvip1')
@@ -1043,12 +1064,17 @@ def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS
     if with_vj1:
         vj1 = W + W.transpose(0, 1, 3, 2)
         W = None
-        T = numpy.zeros((npair, natm * 3))
-        for k0, k1, _ in aux_ranges:
-            p0, p1 = auxmol.ao_loc[k0], auxmol.ao_loc[k1]
-            int3c = df.incore.aux_e2(mol, auxmol, 'int3c2e', aosym='s2ij', shls_slice=(0, nbas, 0, nbas, k0, k1))
-            T += lib.dot(int3c, Z[p0:p1])
-        int3c = None
+        if low is not None:
+            # (ij|P) M^{-1} Y = cderi^T L^T L^{-T} L^{-1} Y
+            T = lib.dot(cderi.T, scipy.linalg.solve_triangular(low, Y.T, lower=True))
+        else:
+            T = numpy.zeros((npair, natm * 3))
+            for k0, k1, _ in aux_ranges:
+                p0, p1 = auxmol.ao_loc[k0], auxmol.ao_loc[k1]
+                int3c = df.incore.aux_e2(mol, auxmol, 'int3c2e', aosym='s2ij',
+                                         shls_slice=(0, nbas, 0, nbas, k0, k1))
+                T += lib.dot(int3c, Z[p0:p1])
+            int3c = None
         vj1 += lib.unpack_tril(numpy.ascontiguousarray(T.T)).reshape(natm, 3, nao, nao)
     return hess, vj1
 
@@ -1251,7 +1277,7 @@ def _fock1(hessobj, dm0, with_k):
     max_memory = max(1000, mf.max_memory - lib.current_memory()[0])
     if _df_mode(mf) is None:
         return fock1_jk(mol, dm0, with_k=with_k, max_memory=max_memory)
-    r = ri_j_deriv(mol, _df_auxmol(mf), dm0, with_hess=False, max_memory=max_memory)
+    r = ri_j_deriv(mol, _df_auxmol(mf), dm0, with_hess=False, max_memory=max_memory, cderi=_rij_cderi(mf))
     if r is None:
         return None
     vk = None

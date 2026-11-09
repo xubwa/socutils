@@ -128,7 +128,8 @@ def _q_cond(mol, intor):
         else:
             libcvhf.CVHFnr_int2e_q_cond(getattr(libcvhf, mol._add_suffix('int2e')),
                                         lib.c_null_ptr(), q[1].ctypes, *args)
-    _q_cond_cache.clear()
+    if any(k[:3] != key[:3] for k in _q_cond_cache):
+        _q_cond_cache.clear()           # entries of one molecule only
     _q_cond_cache[key] = q
     return q
 
