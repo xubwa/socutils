@@ -1264,6 +1264,88 @@ def _fock1(hessobj, dm0, with_k):
 
 
 XCD1_LOCAL_VIP = True   # xc_deriv1_batched: the vxc term per sub-block on its significant AOs (else pyscf's)
+XCD1_OCC_LOCAL = True   # xc_deriv1_batched(occ=True): D phi, rho, the functional, d_A rho per sub-block too
+
+
+def _xc_deriv1_occ_local(ni, xc_code, xctype, gga, nvar, ao, weight, p0, dm0, atom_of, non0tab, nf_shell,
+                         nsub, libdft, mocc, vmat, v_ip, dgemm, mkl_local):
+    '''one pyscf grid block of xc_deriv1_batched(occ=True), sub-block by sub-block on the AOs the grid's
+    non0tab flags on it and their atoms: D phi_k, rho and the functional, the vxc term v_ip, d_A rho
+    (SOCDFTrks_dR_rho), f_xc d_A rho and (V + V^T) C_occ (SOCDFTxcd1_occ); vmat (3 natm, nao, nocc)'''
+    from pyscf.dft.numint import BLKSIZE
+    ngrid = weight.size
+    aoT, cs = _ao_stack(ao)
+    ncomp = aoT.shape[0]
+    nao = aoT.shape[1]
+    nocc = mocc.shape[1]
+    for s0 in range(0, ngrid, nsub):
+        s1 = min(ngrid, s0 + nsub)
+        gs = s1 - s0
+        aom = numpy.repeat(non0tab[(p0 + s0) // BLKSIZE:(p0 + s1 + BLKSIZE - 1) // BLKSIZE].any(axis=0), nf_shell)
+        idx = numpy.nonzero(aom)[0].astype(numpy.int32)
+        nl = idx.size
+        if nl == 0:
+            continue
+        ca = nl * gs
+        aos = numpy.empty((ncomp, nl, gs))
+        libdft.SOCDFTgather_ao(aos.ctypes, aoT.ctypes, idx.ctypes, ctypes.c_int(ncomp), ctypes.c_int(nao),
+                               ctypes.c_int(nl), ctypes.c_int(ngrid), ctypes.c_int(s0), ctypes.c_int(gs),
+                               ctypes.c_long(cs))
+        dl = numpy.ascontiguousarray(dm0[idx[:, None], idx])
+        dT = numpy.empty((nvar, nl, gs))
+        for k in range(nvar):
+            lib.dot(dl, aos[k], c=dT[k])
+        rho = numpy.empty((nvar, gs))
+        rho[0] = numpy.einsum('ig,ig->g', aos[0], dT[0])
+        for j in range(1, nvar):
+            rho[j] = 2 * numpy.einsum('ig,ig->g', aos[j], dT[0])
+        vxc, fxc = ni.eval_xc_eff(xc_code, rho if gga else rho[0], 2, xctype=xctype)[1:3]
+        w = weight[s0:s1]
+        wv = w * vxc.reshape(nvar, gs)
+        if gga:
+            wv[0] *= .5
+        # v_ip[x] += sum_g dphi_x (sum_k wv_k phi_k)^T + (wv_0 dphi_x + sum_j wv_j d_xj phi) phi^T (GGA)
+        wv = numpy.ascontiguousarray(wv)
+        a0 = numpy.empty((nl, gs))
+        libdft.SOCDFTaow_multi(a0.ctypes, wv.ctypes, aos.ctypes, ctypes.c_int(1), ctypes.c_int(nvar),
+                               ctypes.c_int(nl), ctypes.c_int(gs))
+        if gga:
+            Lv = numpy.empty((3, nl, 2 * gs))
+            Rv = numpy.empty((nl, 2 * gs))
+            Lv[:, :, :gs] = aos[1:4]
+            for x in range(3):
+                t = Lv[x, :, gs:]
+                numpy.multiply(aos[1 + x], wv[0], out=t)
+                t += aos[_D2[x, 0]] * wv[1]
+                t += aos[_D2[x, 1]] * wv[2]
+                t += aos[_D2[x, 2]] * wv[3]
+            Rv[:, :gs] = a0
+            Rv[:, gs:] = aos[0]
+        else:
+            Lv, Rv = aos[1:4], a0
+        vl = lib.dot(Lv.reshape(3 * nl, -1), Rv.T)
+        libdft.SOCDFTscatter_add_dm(v_ip.ctypes, vl.ctypes, idx.ctypes, ctypes.c_int(nl), ctypes.c_int(3),
+                                    ctypes.c_int(nao))
+        # d_A rho of the sub-block's atoms (local numbering), f_xc d_A rho, (V + V^T) C_occ
+        atoms, atl = numpy.unique(atom_of[idx], return_inverse=True)
+        atl = numpy.ascontiguousarray(atl, dtype=numpy.int32)
+        na_l = atoms.size
+        R = numpy.empty((3, nvar, na_l, gs))
+        libdft.SOCDFTrks_dR_rho(R.ctypes, aos.ctypes, dT.ctypes, ctypes.c_int(int(gga)), ctypes.c_int(nvar),
+                                ctypes.c_int(gs), ctypes.c_int(nl), atl.ctypes, ctypes.c_int(na_l),
+                                ctypes.c_long(ca))
+        wf = numpy.ascontiguousarray(w * fxc.reshape(nvar, nvar, gs))
+        wv1 = numpy.empty((3 * na_l, nvar, gs))
+        libdft.SOCDFTfxc_contract_R(wv1.ctypes, wf.ctypes, R.ctypes, ctypes.c_int(na_l), ctypes.c_int(nvar),
+                                    ctypes.c_int(gs), ctypes.c_double(2. if gga else 1.), ctypes.c_int(int(gga)))
+        rows = numpy.asarray((3 * atoms[:, None] + numpy.arange(3)).ravel(), dtype=numpy.int32)
+        cl = numpy.ascontiguousarray(mocc[idx])
+        psi = numpy.empty((nvar, gs, nocc))
+        for k in range(nvar):
+            lib.dot(aos[k].T, cl, c=psi[k])
+        libdft.SOCDFTxcd1_occ(vmat.ctypes, wv1.ctypes, aos.ctypes, psi.ctypes, idx.ctypes, rows.ctypes,
+                              ctypes.c_int(rows.size), ctypes.c_int(nvar), ctypes.c_int(nl), ctypes.c_int(gs),
+                              ctypes.c_int(nocc), ctypes.c_int(nao), dgemm, mkl_local)
 
 
 def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000, occ=False):
@@ -1328,9 +1410,14 @@ def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000, occ=False):
     aos_buf = numpy.empty(nga * nao * nsub)
     ws_buf = numpy.empty(nd * nvar * nsub)
     p1 = 0
+    local_all = occ and XCD1_OCC_LOCAL and non0tab is not None and nao >= XCHE_LOCAL_MIN_NAO
     for ao, mask, weight, coords in ni.block_loop(mol, grids, nao, ao_deriv, blk_mem):
         ng = weight.size
         p0, p1 = p1, p1 + ng
+        if local_all:
+            _xc_deriv1_occ_local(ni, mf.xc, xctype, gga, nvar, ao, weight, p0, dm0, atom_of, non0tab, nf_shell,
+                                 nsub, libdft, mocc, vmat, v_ip, dgemm, mkl_local)
+            continue
         aoT, cs = _ao_stack(ao)
         dT = numpy.empty((nvar, nao, ng))                  # D phi_k^T (dm0 symmetric)
         for k in range(nvar):
