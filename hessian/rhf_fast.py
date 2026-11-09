@@ -904,6 +904,61 @@ def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS
     return hess, vj1
 
 
+RIJ_GRAD_MD = True      # ri_j_grad's three-centre part by the McMurchie-Davidson J engine (lib/vhf/md_j.c)
+
+
+def _md_rij_grad(libv, mol, auxmol, dm, dfit, tol):
+    '''sum_P d_P sum_ij D_ij d(ij|P)/dR (natm, 3) by SOCVHFmd_rij_grad: the bra and the auxiliary basis
+    decontracted to Cartesian primitives, every auxiliary primitive paired with a zero-exponent s
+    function on its centre; None if unavailable'''
+    import ctypes
+    from pyscf.gto import moleintor
+    if not hasattr(libv, 'SOCVHFmd_rij_grad') or max(mol._bas[:, gto.ANG_OF].max(),
+                                                       auxmol._bas[:, gto.ANG_OF].max()) > MD_J_LMAX:
+        return None
+    pb, cb = mol.decontract_basis(to_cart=True, aggregate=True)
+    pa, ca = auxmol.decontract_basis(to_cart=True, aggregate=True)
+    dmb = cb.dot(numpy.asarray(dm, dtype=numpy.double)).dot(cb.T)
+    dk = ca.dot(dfit)
+    natm = mol.natm
+    atm, bas, env = gto.conc_env(pb._atm, pb._bas, pb._env, pa._atm, pa._bas, pa._env)
+    nbra, naux = pb.nbas, pa.nbas
+    # one zero-exponent s shell per auxiliary atom (coefficient 1 / common_fac_sp(0): the constant 1)
+    env = numpy.hstack([env, [0., numpy.sqrt(4 * numpy.pi)]])
+    pexp, pcoef = env.size - 2, env.size - 1
+    s0 = []
+    for ia in range(pa.natm):
+        b = numpy.zeros(gto.BAS_SLOTS, dtype=numpy.int32)
+        b[gto.ATOM_OF] = natm + ia
+        b[gto.NPRIM_OF] = b[gto.NCTR_OF] = 1
+        b[gto.PTR_EXP] = pexp
+        b[gto.PTR_COEFF] = pcoef
+        s0.append(b)
+    bas = numpy.asarray(numpy.vstack([bas, numpy.asarray(s0)]), dtype=numpy.int32)
+    aux_atom = pa._bas[:, gto.ATOM_OF]
+    s0sh = numpy.asarray(nbra + naux + aux_atom, dtype=numpy.int32)
+    ao_loc = moleintor.make_loc(bas, 'cart').astype(numpy.int32)
+    nao = ao_loc[-1]
+    nb = ao_loc[nbra]
+    D = numpy.zeros((nao, nao))
+    D[:nb, :nb] = dmb
+    for k in range(naux):
+        r0, r1 = ao_loc[nbra + k], ao_loc[nbra + k + 1]
+        D[r0:r1, ao_loc[s0sh[k]]] = .5 * dk[r0 - nb:r1 - nb]
+    grad = numpy.zeros((natm + pa.natm, 3))
+    ex = numpy.zeros(1)
+    libv.SOCVHFmd_rij_grad(
+        grad.ctypes.data_as(ctypes.c_void_p), ex.ctypes.data_as(ctypes.c_void_p),
+        D.ctypes.data_as(ctypes.c_void_p), ctypes.c_double(tol), ctypes.c_int(nbra), ctypes.c_int(naux),
+        s0sh.ctypes.data_as(ctypes.c_void_p), ao_loc.ctypes.data_as(ctypes.c_void_p),
+        atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(natm + pa.natm),
+        bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(bas.shape[0]), env.ctypes.data_as(ctypes.c_void_p))
+    g = grad[:natm].copy()
+    for ia in range(pa.natm):           # the auxiliary centres are the molecule's atoms, in order
+        g[ia] += grad[natm + ia]
+    return g, ex[0]
+
+
 def ri_j_grad(mol, auxmol, dm, tol=None, max_memory=None, cderi=None):
     '''Gradient of the density-fitted Coulomb energy E_J = 1/2 rho^T M^{-1} rho
     at a symmetric D, auxiliary-basis response included (pyscf's
@@ -949,6 +1004,16 @@ def ri_j_grad(mol, auxmol, dm, tol=None, max_memory=None, cderi=None):
             rho[p0:p1] = lib.dot(dm_tril[None], int3c)[0]
         int3c = None
         dfit = _gen_metric_solver(auxmol.intor('int2c2e', aosym='s1'))(rho.copy())
+    g = None
+    if RIJ_GRAD_MD and auxmol.natm == mol.natm:
+        r = _md_rij_grad(libv, mol, auxmol, dm, dfit, tol)
+        if r is not None:
+            g = r[0]
+    if g is not None:
+        v = numpy.einsum('xpq,q->xp', auxmol.intor('int2c2e_ip1', aosym='s1'), dfit)
+        for ia, (p0, p1) in enumerate(auxmol.aoslice_by_atom()[:, 2:]):
+            g[ia] += v[:, p0:p1].dot(dfit[p0:p1])
+        return g
     q = numpy.max([ghf_hess._q_cond(mol, 'int2e_ip1')[k] for k in (0, 1)], axis=0)
     q = numpy.ascontiguousarray(numpy.maximum(q, q.T))
     aux_loc = auxmol.ao_loc_nr()
