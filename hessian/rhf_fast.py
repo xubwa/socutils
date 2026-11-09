@@ -369,6 +369,59 @@ def _hcore_e1(hessobj, dm0):
     return e1 * 2
 
 
+H1_OCC = True     # hess_elec: the RKS first-order Fock matrices as h1 C_occ (rks_make_h1 / xc_deriv1_batched)
+
+
+def _is_h1_occ(h1, mo_coeff, mo_occ):
+    nocc = int((mo_occ > 0).sum())
+    return h1.ndim == 4 and h1.shape[-1] == nocc and h1.shape[-2] == mo_coeff.shape[0] != nocc
+
+
+def _solve_mo1_occ(mf, mo_energy, mo_coeff, mo_occ, h1c, fx, atmlst=None, max_memory=4000,
+                   max_cycle=50, level_shift=0):
+    '''pyscf.hessian.rhf.solve_mo1 for h1 given as h1 C_occ (natm, 3, nao, nocc)'''
+    from pyscf.scf import cphf
+    mol = mf.mol
+    if atmlst is None:
+        atmlst = range(mol.natm)
+    nao, nmo = mo_coeff.shape
+    mocc = mo_coeff[:, mo_occ > 0]
+    nocc = mocc.shape[1]
+    s1a = -mol.intor('int1e_ipovlp', comp=3)
+    mem_now = lib.current_memory()[0]
+    max_memory = max(2000, max_memory * .9 - mem_now)
+    blksize = max(2, int(max_memory * 1e6 / 8 / (nmo * nocc * 3 * 6)))
+    mo1s = [None] * mol.natm
+    e1s = [None] * mol.natm
+    aoslices = mol.aoslice_by_atom()
+    for ia0, ia1 in lib.prange(0, len(atmlst), blksize):
+        s1vo = []
+        h1vo = []
+        for i0 in range(ia0, ia1):
+            ia = atmlst[i0]
+            p0, p1 = aoslices[ia][2:]
+            # s1 C_occ: rows of A (s1a C) plus (s1a^T restricted to A's columns)
+            s1c = numpy.zeros((3, nao, nocc))
+            s1c[:, p0:p1] += lib.dot(s1a[:, p0:p1].reshape(-1, nao), mocc).reshape(3, p1 - p0, nocc)
+            for x in range(3):
+                s1c[x] += lib.dot(s1a[x, p0:p1].T, mocc[p0:p1])
+            s1vo.append([lib.dot(mo_coeff.T, s1c[x]) for x in range(3)])
+            h1vo.append([lib.dot(mo_coeff.T, h1c[ia, x]) for x in range(3)])
+        h1vo = numpy.vstack(h1vo)
+        s1vo = numpy.vstack(s1vo)
+        tol = mf.conv_tol_cpscf * (ia1 - ia0)
+        mo1, e1 = cphf.solve(fx, mo_energy, mo_occ, h1vo, s1vo, max_cycle=max_cycle, level_shift=level_shift,
+                             tol=tol)
+        mo1 = numpy.einsum('pq,xqi->xpi', mo_coeff, mo1).reshape(-1, 3, nao, nocc)
+        e1 = e1.reshape(-1, 3, nocc, nocc)
+        for k in range(ia1 - ia0):
+            ia = atmlst[k + ia0]
+            mo1s[ia] = mo1[k]
+            e1s[ia] = e1[k].reshape(3, nocc, nocc)
+        mo1 = e1 = None
+    return mo1s, e1s
+
+
 def hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None, mo1=None, mo_e1=None, h1ao=None,
               atmlst=None, max_memory=4000, verbose=None):
     """pyscf.hessian.rhf.hess_elec with the response terms of all atom pairs as
@@ -388,7 +441,9 @@ def hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None, mo1=None, mo_
     natm = mol.natm
     de2 = hessobj.partial_hess_elec(mo_energy, mo_coeff, mo_occ, None, max_memory, log)
     if h1ao is None:
-        h1ao = hessobj.make_h1(mo_coeff, mo_occ, None, None, log)
+        # inside the Hessian only h1 C_occ is needed (the CP-SCF right-hand sides, h1 . dm1)
+        with lib.temporary_env(hessobj, _h1_occ=H1_OCC):
+            h1ao = hessobj.make_h1(mo_coeff, mo_occ, None, None, log)
     if mo1 is None or mo_e1 is None:
         mo1, mo_e1 = hessobj.solve_mo1(mo_energy, mo_coeff, mo_occ, h1ao, None, None, max_memory, log)
     nao = mo_coeff.shape[0]
@@ -405,13 +460,17 @@ def hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None, mo1=None, mo_
     mo1 = numpy.asarray(mo1).reshape(natm * 3 * nao, nocc)
     dm1 = lib.dot(mo1, mocc.T).reshape(natm * 3, nao * nao)
     dme1 = lib.dot(mo1, (mocc * e_o).T).reshape(natm * 3, nao * nao)
-    h1 = numpy.asarray(h1ao).reshape(natm * 3, nao * nao)
+    h1 = numpy.asarray(h1ao)
+    h1_occ = _is_h1_occ(h1, mo_coeff, mo_occ)
+    h1 = h1.reshape(natm * 3, -1)
     s1 = s1ao.reshape(natm * 3, nao * nao)
     s1oo = numpy.einsum('xpi,pj->xij', lib.dot(s1ao.reshape(-1, nao), mocc).reshape(natm * 3, nao, nocc),
                         mocc).reshape(natm * 3, nocc * nocc)
     me1 = numpy.asarray(mo_e1).reshape(natm * 3, nocc * nocc)
     # *2 for double occupancy, *2 for +c.c.
-    r = 4 * lib.dot(h1, dm1.T) - 4 * lib.dot(s1, dme1.T) - 2 * lib.dot(s1oo, me1.T)
+    # h1 . dm1 = sum_pi (h1 C_occ)_pi mo1_pi
+    r = (4 * lib.dot(h1, mo1.reshape(natm * 3, nao * nocc).T if h1_occ else dm1.T)
+         - 4 * lib.dot(s1, dme1.T) - 2 * lib.dot(s1oo, me1.T))
     de2 += r.reshape(natm, 3, natm, 3).transpose(0, 2, 1, 3)
     # pyscf keeps the lower triangle (i >= j) and mirrors it
     for i0 in range(natm):
@@ -1207,14 +1266,16 @@ def _fock1(hessobj, dm0, with_k):
 XCD1_LOCAL_VIP = True   # xc_deriv1_batched: the vxc term per sub-block on its significant AOs (else pyscf's)
 
 
-def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000):
+def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000, occ=False):
     """pyscf.hessian.rks._get_vxc_deriv1 (LDA / GGA): the first-order XC
     matrices d V_xc / dR_{A,x} of all atoms at fixed density.  The 3 natm
     first-order potentials f_xc d_A rho of a grid sub-block go through one
     batched aow pass (lib/dft/fxc_multi.c) and one GEMM, restricted to the AOs
     significant on the sub-block, instead of pyscf's three nao x nao GEMMs per
     atom and grid block; d_A rho for all atoms comes from one C pass
-    (lib/dft/xc_hess.c).  The vxc term (v_ip) is pyscf's.  (natm, 3, nao, nao)."""
+    (lib/dft/xc_hess.c).  (natm, 3, nao, nao); occ: projected on the occupied
+    orbitals, (natm, 3, nao, nocc), from one (nl x 2 gs) . (2 gs x nocc) GEMM
+    per (atom, x) and sub-block (SOCDFTxcd1_occ) instead of the nl x nl one."""
     from pyscf.dft import numint
     from pyscf.dft.numint import BLKSIZE
     from pyscf.grad import rks as rks_grad
@@ -1226,9 +1287,11 @@ def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000):
     ni = mf._numint
     xctype = ni._xc_type(mf.xc)
     libdft = _load_socdft()
+    mocc = numpy.ascontiguousarray(mo_coeff[:, mo_occ > 0])
     if (xctype not in ('LDA', 'GGA') or libdft is None or not hasattr(libdft, 'SOCDFTrks_dR_rho')
             or mol.cart):
-        return rks_hess._get_vxc_deriv1(hessobj, mo_coeff, mo_occ, max_memory)
+        v = rks_hess._get_vxc_deriv1(hessobj, mo_coeff, mo_occ, max_memory)
+        return lib.einsum('axpq,qi->axpi', v, mocc) if occ else v
     gga = xctype == 'GGA'
     nvar = 4 if gga else 1
     ao_deriv = 2 if gga else 1
@@ -1244,7 +1307,15 @@ def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000):
         atom_of[aoslices[ia][2]:aoslices[ia][3]] = ia
     dm0 = mf.make_rdm1(mo_coeff, mo_occ)
     v_ip = numpy.zeros((3, nao, nao))
-    vmat = numpy.zeros((nd, nao, nao))                  # index 3 * atom + x
+    occ = occ and hasattr(libdft, 'SOCDFTxcd1_occ')
+    nocc = mocc.shape[1]
+    if occ:
+        from socutils.dft.vxc_fast import _blas_ptrs
+        dgemm, mkl_local = _blas_ptrs()
+        vmat = numpy.zeros((nd, nao, nocc))
+        psi_buf = numpy.empty(nvar * (max(1, FXC_SUBBLOCK // BLKSIZE) * BLKSIZE) * nocc)
+    else:
+        vmat = numpy.zeros((nd, nao, nao))              # index 3 * atom + x
     nsub = max(1, FXC_SUBBLOCK // BLKSIZE) * BLKSIZE
     ncomp_ao = 10 if gga else 4
     # pyscf blocks: AO values, R and the weights within ~30% of max_memory
@@ -1332,6 +1403,20 @@ def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000):
                 else:
                     libdft.SOCDFTscatter_add_dm(v_ip.ctypes, vl.ctypes, idx.ctypes, ctypes.c_int(nl),
                                                 ctypes.c_int(3), ctypes.c_int(nao))
+            if occ:
+                if idx is None:
+                    idx = numpy.arange(nao, dtype=numpy.int32)
+                atoms = numpy.unique(atom_of[idx])
+                rows = numpy.asarray((3 * atoms[:, None] + numpy.arange(3)).ravel(), dtype=numpy.int32)
+                ws = numpy.ascontiguousarray(wv1[rows, :, s0:s1])
+                cl = numpy.ascontiguousarray(mocc[idx])
+                psi = psi_buf[:nvar * gs * nocc].reshape(nvar, gs, nocc)
+                for k in range(nvar):
+                    lib.dot(aos[k].T, cl, c=psi[k])
+                libdft.SOCDFTxcd1_occ(vmat.ctypes, ws.ctypes, aos.ctypes, psi.ctypes, idx.ctypes, rows.ctypes,
+                                      ctypes.c_int(rows.size), ctypes.c_int(nvar), ctypes.c_int(nl),
+                                      ctypes.c_int(gs), ctypes.c_int(nocc), ctypes.c_int(nao), dgemm, mkl_local)
+                continue
             if idx is None or not XCD1_LOCAL_ATOMS:
                 ws = ws_buf[:nd * nvar * gs].reshape(nd, nvar, gs)
                 libdft.SOCDFTslice_grid(ws.ctypes, wv1.ctypes, ctypes.c_long(nd * nvar), ctypes.c_int(ng),
@@ -1362,6 +1447,17 @@ def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000):
             for k, ia in enumerate(atoms):
                 libdft.SOCDFTscatter_add_dm(vmat_[ia].ctypes, vl_[k].ctypes, idx.ctypes, ctypes.c_int(nl),
                                             ctypes.c_int(3), ctypes.c_int(nao))
+    if occ:
+        # vmat already holds (V + V^T) C; the v_ip rows of atom A: (P v) C + (P v)^T C
+        vmat = vmat.reshape(natm, 3, nao, nocc)
+        vc = lib.dot(v_ip.reshape(3 * nao, nao), mocc).reshape(3, nao, nocc)
+        for ia in range(natm):
+            p0, p1 = aoslices[ia][2:]
+            vmat[ia, :, p0:p1] += vc[:, p0:p1]
+            for x in range(3):
+                vmat[ia, x] += lib.dot(v_ip[x, p0:p1].T, mocc[p0:p1])
+        vmat *= -1
+        return vmat
     vmat = vmat.reshape(natm, 3, nao, nao)
     for ia in range(natm):
         p0, p1 = aoslices[ia][2:]
@@ -1396,12 +1492,17 @@ def rks_make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=No
     vj, vk = v
     ni.libxc.test_deriv_order(mf.xc, 2, raise_error=True)
     max_memory = max(2000, mf.max_memory * .9 - lib.current_memory()[0])
-    h1ao = xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory)
+    occ = getattr(hessobj, '_h1_occ', False)
+    h1ao = xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory, occ=occ)
     hcore_deriv = hessobj.base.nuc_grad_method().hcore_generator(mol)
     for ia in range(mol.natm):
-        h1ao[ia] += vj[ia] + hcore_deriv(ia)
+        h = vj[ia] + hcore_deriv(ia)
         if hybrid:
-            h1ao[ia] -= .5 * hyb * vk[ia]
+            h -= .5 * hyb * vk[ia]
+        if occ:
+            h1ao[ia] += lib.dot(h.reshape(-1, h.shape[-1]), mocc).reshape(3, -1, mocc.shape[1])
+        else:
+            h1ao[ia] += h
     return h1ao
 
 
@@ -1801,6 +1902,10 @@ class _MultiJKCPHF:
             with lib.temporary_env(ni, **env_xc) if env_xc else _nullcontext():
                 if fx is None:
                     fx = gen_vind(self.base, mo_coeff, mo_occ)
+                if (isinstance(h1ao_or_chkfile, numpy.ndarray)
+                        and _is_h1_occ(h1ao_or_chkfile, mo_coeff, mo_occ)):
+                    return _solve_mo1_occ(self.base, mo_energy, mo_coeff, mo_occ, h1ao_or_chkfile, fx, atmlst,
+                                          max_memory, max_cycle=self.max_cycle, level_shift=self.level_shift)
                 return super().solve_mo1(mo_energy, mo_coeff, mo_occ, h1ao_or_chkfile, fx,
                                          atmlst, max_memory, verbose)
 

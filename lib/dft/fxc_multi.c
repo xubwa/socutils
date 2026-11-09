@@ -24,6 +24,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <omp.h>
 
 #define GCHUNK_MAX 256
 
@@ -258,4 +259,84 @@ void SOCDFTgather_rows2(double *out, double *A, long ca, double *B, long cb, int
                 memcpy(o, A + (size_t)k * ca + (size_t)mu * ngrid + s0, sizeof(double) * gs);
                 memcpy(o + gs, B + (size_t)k * cb + (size_t)mu * ngrid + s0, sizeof(double) * gs);
         }
+}
+
+/*
+ * SOCDFTxcd1_occ: the first-order XC matrices of one sub-block projected on the
+ * occupied orbitals, (V_r + V_r^T) C for every row r = (atom, x) of ws, where
+ * V_r[mu][nu] = sum_g aow_r[mu][g] phi_0[nu][g], aow_r = sum_k ws[r][k] phi_k:
+ *
+ *      T_r = [aow_r | phi_0] . [psi_0 ; Y_r],   Y_r[g][i] = sum_k ws[r][k][g] psi_k[g][i]
+ *
+ * one (nl x 2 gs) . (2 gs x nocc) GEMM per r (OpenMP over r, single-threaded
+ * dgemm), aow_r and Y_r built in the thread's buffers.  psi (nvar, gs, nocc) =
+ * phi_k^T C on the sub-block's AOs, ao (nvar, nl, gs), ws (nr, nvar, gs).
+ * out (*, nao, nocc): out[orow[r]][idx[mu]] += T_r[mu].
+ */
+typedef void (*xcd1_dgemm_t)(const char *ta, const char *tb, const int *m, const int *n, const int *k,
+                             const double *alpha, const double *a, const int *lda, const double *b,
+                             const int *ldb, const double *beta, double *c, const int *ldc);
+typedef int (*xcd1_mkl_local_t)(int nt);
+
+void SOCDFTxcd1_occ(double *out, double *ws, double *ao, double *psi, int *idx, int *orow, int nr,
+                    int nvar, int nl, int gs, int nocc, int nao, xcd1_dgemm_t dgemm_,
+                    xcd1_mkl_local_t mkl_set_num_threads_local)
+{
+        const size_t G = gs;
+        const int k2 = 2 * gs;
+        const double one = 1, zero = 0;
+#pragma omp parallel
+{
+        const int mkl0 = mkl_set_num_threads_local ? mkl_set_num_threads_local(1) : 0;
+        double *A = malloc(sizeof(double) * nl * 2 * G);        /* rows mu: [aow_r | phi_0] */
+        double *B = malloc(sizeof(double) * 2 * G * nocc);      /* [psi_0 ; Y_r] */
+        double *T = malloc(sizeof(double) * nl * nocc);
+        int mu, g, k, i, r;
+        for (mu = 0; mu < nl; mu++)
+                memcpy(A + (size_t)mu * k2 + G, ao + (size_t)mu * G, sizeof(double) * G);
+        memcpy(B, psi, sizeof(double) * G * nocc);
+#pragma omp for schedule(dynamic, 1)
+        for (r = 0; r < nr; r++) {
+                const double *w = ws + (size_t)r * nvar * G;
+                for (mu = 0; mu < nl; mu++) {
+                        double *o = A + (size_t)mu * k2;
+                        const double *a0 = ao + (size_t)mu * G;
+#pragma omp simd
+                        for (g = 0; g < gs; g++) o[g] = w[g] * a0[g];
+                        for (k = 1; k < nvar; k++) {
+                                const double *a = ao + ((size_t)k * nl + mu) * G;
+                                const double *wk = w + (size_t)k * G;
+#pragma omp simd
+                                for (g = 0; g < gs; g++) o[g] += wk[g] * a[g];
+                        }
+                }
+                double *Y = B + G * nocc;
+                for (g = 0; g < gs; g++) {
+                        double *y = Y + (size_t)g * nocc;
+                        const double *p0 = psi + (size_t)g * nocc;
+                        const double w0 = w[g];
+#pragma omp simd
+                        for (i = 0; i < nocc; i++) y[i] = w0 * p0[i];
+                        for (k = 1; k < nvar; k++) {
+                                const double *pk = psi + ((size_t)k * G + g) * nocc;
+                                const double wk = w[(size_t)k * G + g];
+#pragma omp simd
+                                for (i = 0; i < nocc; i++) y[i] += wk * pk[i];
+                        }
+                }
+                /* row-major T (nl, nocc) = A (nl, 2gs) . B (2gs, nocc) */
+                dgemm_("N", "N", &nocc, &nl, &k2, &one, B, &nocc, A, &k2, &zero, T, &nocc);
+                double *dst = out + (size_t)orow[r] * nao * nocc;
+                for (mu = 0; mu < nl; mu++) {
+                        double *d = dst + (size_t)idx[mu] * nocc;
+                        const double *t = T + (size_t)mu * nocc;
+#pragma omp simd
+                        for (i = 0; i < nocc; i++) d[i] += t[i];
+                }
+        }
+        free(A);
+        free(B);
+        free(T);
+        if (mkl_set_num_threads_local) mkl_set_num_threads_local(mkl0);
+}
 }
