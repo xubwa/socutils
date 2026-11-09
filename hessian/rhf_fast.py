@@ -1204,6 +1204,9 @@ def _fock1(hessobj, dm0, with_k):
     return r[1], vk
 
 
+XCD1_LOCAL_VIP = True   # xc_deriv1_batched: the vxc term per sub-block on its significant AOs (else pyscf's)
+
+
 def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000):
     """pyscf.hessian.rks._get_vxc_deriv1 (LDA / GGA): the first-order XC
     matrices d V_xc / dR_{A,x} of all atoms at fixed density.  The 3 natm
@@ -1249,7 +1252,9 @@ def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000):
     ng_blk = max(nsub, int(max_memory * .3e6 / per_point) // nsub * nsub)
     blk_mem = ng_blk * (ncomp_ao + 1) * nao * 8 / 1e6
     aow_buf = numpy.empty(nd * nao * nsub)
-    aos_buf = numpy.empty(nvar * nao * nsub)
+    local_vip = XCD1_LOCAL_VIP and nao >= XCHE_LOCAL_MIN_NAO
+    nga = ncomp_ao if local_vip else nvar               # AO components gathered per sub-block
+    aos_buf = numpy.empty(nga * nao * nsub)
     ws_buf = numpy.empty(nd * nvar * nsub)
     p1 = 0
     for ao, mask, weight, coords in ni.block_loop(mol, grids, nao, ao_deriv, blk_mem):
@@ -1267,10 +1272,12 @@ def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000):
         wv = weight * vxc.reshape(nvar, ng)
         if gga:
             wv[0] *= .5
-            rks_grad._gga_grad_sum_(v_ip, mol, ao, wv, mask, ao_loc)
-        else:
-            aow = numint._scale_ao(ao[0], wv[0])
-            rks_grad._d1_dot_(v_ip, mol, ao[1:4], aow, mask, ao_loc, True)
+        if not local_vip:
+            if gga:
+                rks_grad._gga_grad_sum_(v_ip, mol, ao, wv, mask, ao_loc)
+            else:
+                aow = numint._scale_ao(ao[0], wv[0])
+                rks_grad._d1_dot_(v_ip, mol, ao[1:4], aow, mask, ao_loc, True)
         R = numpy.empty((3, nvar, natm, ng))
         libdft.SOCDFTrks_dR_rho(R.ctypes, aoT.ctypes, dT.ctypes, ctypes.c_int(int(gga)), ctypes.c_int(nvar),
                                 ctypes.c_int(ng), ctypes.c_int(nao), atom_of.ctypes, ctypes.c_int(natm),
@@ -1295,10 +1302,36 @@ def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000):
                     idx = numpy.nonzero(aom)[0].astype(numpy.int32)
             if idx is None:
                 nl = nao
-            aos = aos_buf[:nvar * nl * gs].reshape(nvar, nl, gs)
-            libdft.SOCDFTgather_ao(aos.ctypes, aoT.ctypes, None if idx is None else idx.ctypes, ctypes.c_int(nvar),
+            aos = aos_buf[:nga * nl * gs].reshape(nga, nl, gs)
+            libdft.SOCDFTgather_ao(aos.ctypes, aoT.ctypes, None if idx is None else idx.ctypes, ctypes.c_int(nga),
                                    ctypes.c_int(nao), ctypes.c_int(nl), ctypes.c_int(ng), ctypes.c_int(s0),
                                    ctypes.c_int(gs), ctypes.c_long(cs))
+            if local_vip:
+                # v_ip[x] += sum_g dphi_x (sum_k wv_k phi_k)^T + (wv_0 dphi_x + sum_j wv_j d_xj phi) phi^T (GGA, wv_0 halved)
+                wvs = numpy.ascontiguousarray(wv[:, s0:s1])
+                a0 = numpy.empty((nl, gs))
+                libdft.SOCDFTaow_multi(a0.ctypes, wvs.ctypes, aos.ctypes, ctypes.c_int(1), ctypes.c_int(nvar),
+                                       ctypes.c_int(nl), ctypes.c_int(gs))
+                if gga:
+                    Lv = numpy.empty((3, nl, 2 * gs))
+                    Rv = numpy.empty((nl, 2 * gs))
+                    Lv[:, :, :gs] = aos[1:4]
+                    for x in range(3):
+                        t = Lv[x, :, gs:]
+                        numpy.multiply(aos[1 + x], wvs[0], out=t)
+                        t += aos[_D2[x, 0]] * wvs[1]
+                        t += aos[_D2[x, 1]] * wvs[2]
+                        t += aos[_D2[x, 2]] * wvs[3]
+                    Rv[:, :gs] = a0
+                    Rv[:, gs:] = aos[0]
+                else:
+                    Lv, Rv = aos[1:4], a0
+                vl = lib.dot(Lv.reshape(3 * nl, -1), Rv.T)
+                if idx is None:
+                    v_ip += vl.reshape(3, nao, nao)
+                else:
+                    libdft.SOCDFTscatter_add_dm(v_ip.ctypes, vl.ctypes, idx.ctypes, ctypes.c_int(nl),
+                                                ctypes.c_int(3), ctypes.c_int(nao))
             if idx is None or not XCD1_LOCAL_ATOMS:
                 ws = ws_buf[:nd * nvar * gs].reshape(nd, nvar, gs)
                 libdft.SOCDFTslice_grid(ws.ctypes, wv1.ctypes, ctypes.c_long(nd * nvar), ctypes.c_int(ng),
