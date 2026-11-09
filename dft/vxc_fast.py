@@ -292,14 +292,14 @@ def _nr_rks_fused(libdft, ni, mol, grids, xc_code, dms_a, d, xctype):
 
 def eval_ao(ni, mol, coords, deriv=0, shls_slice=None, non0tab=None, cutoff=None, out=None, verbose=None):
     '''NumInt.eval_ao by the SIMD evaluator (lib/dft/gtoval.c SOCDFTeval_ao) for spherical AOs of
-    l <= 3, deriv <= 2, all shells; else pyscf's.  The same values and layout ((ncomp,) ngrids, nao
+    l <= 3, deriv <= 3, all shells; else pyscf's.  The same values and layout ((ncomp,) ngrids, nao
     views of (ncomp, nao, ngrids)).'''
     from socutils.hessian.rhf_fast import _load_socdft
     libdft = _load_socdft()
-    if (not OWN_GTOVAL or libdft is None or not hasattr(libdft, 'SOCDFTeval_ao') or deriv > 2 or mol.cart
+    if (not OWN_GTOVAL or libdft is None or not hasattr(libdft, 'SOCDFTeval_ao') or deriv > 3 or mol.cart
             or shls_slice is not None or mol._bas[:, 1].max() > libdft.SOCDFTgtoval_lmax()):
         return numint.eval_ao(mol, coords, deriv, shls_slice, non0tab, cutoff, out, verbose)
-    ncomp = (1, 4, 10)[deriv]
+    ncomp = (1, 4, 10, 20)[deriv]
     ngrids = coords.shape[0]
     nao = mol.nao
     if out is not None and out.size >= ncomp * nao * ngrids:

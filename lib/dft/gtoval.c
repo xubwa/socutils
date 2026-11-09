@@ -62,11 +62,11 @@ static void eval_shells_s(int deriv, int ngrids, size_t ostride, size_t cstride,
 {
         const int sh0 = shls_slice[0], sh1 = shls_slice[1];
         const size_t nao = ld;
-        const int ncomp = deriv == 2 ? 10 : (deriv ? 4 : 1);
+        const int ncomp = deriv == 3 ? 20 : (deriv == 2 ? 10 : (deriv ? 4 : 1));
         const int nblk = (ngrids + GV_BLK - 1) / GV_BLK;
         const double *gx = coord, *gy = coord + cstride, *gz = coord + 2 * cstride;
-        double rad[GV_NCMAX][GV_BLK], rad1[GV_NCMAX][GV_BLK], rad2[GV_NCMAX][GV_BLK];
-        double cart[10][10][GV_BLK];
+        double rad[GV_NCMAX][GV_BLK], rad1[GV_NCMAX][GV_BLK], rad2[GV_NCMAX][GV_BLK], rad3[GV_NCMAX][GV_BLK];
+        double cart[20][10][GV_BLK];
         int sh, b;
         for (sh = sh0; sh < sh1; sh++) {
                 const int *bs = bas + sh * BAS_SLOTS;
@@ -110,7 +110,7 @@ static void eval_shells_s(int deriv, int ngrids, size_t ostride, size_t cstride,
                         double r2min = r2[0];
                         for (g = 1; g < bg; g++) r2min = r2[g] < r2min ? r2[g] : r2min;
                         for (c = 0; c < nc; c++)
-                                for (g = 0; g < bg; g++) rad[c][g] = rad1[c][g] = rad2[c][g] = 0;
+                                for (g = 0; g < bg; g++) rad[c][g] = rad1[c][g] = rad2[c][g] = rad3[c][g] = 0;
                         for (p = 0; p < np; p++) {
                                 const double a = al[p], m2a = -2 * a;
                                 /* the primitive below e^-GV_EXPCUT on the whole block: skipped */
@@ -119,8 +119,16 @@ static void eval_shells_s(int deriv, int ngrids, size_t ostride, size_t cstride,
 #pragma omp simd
                                 for (g = 0; g < bg; g++) e[g] = exp(-a * r2[g]) * fac;
                                 for (c = 0; c < nc; c++) {
-                                        const double cc = cf[c * np + p], cd = cc * m2a, cd2 = cd * m2a;
-                                        if (deriv == 2) {
+                                        const double cc = cf[c * np + p], cd = cc * m2a, cd2 = cd * m2a, cd3 = cd2 * m2a;
+                                        if (deriv == 3) {
+#pragma omp simd
+                                                for (g = 0; g < bg; g++) {
+                                                        rad[c][g] += cc * e[g];
+                                                        rad1[c][g] += cd * e[g];
+                                                        rad2[c][g] += cd2 * e[g];
+                                                        rad3[c][g] += cd3 * e[g];
+                                                }
+                                        } else if (deriv == 2) {
 #pragma omp simd
                                                 for (g = 0; g < bg; g++) {
                                                         rad[c][g] += cc * e[g];
@@ -137,7 +145,7 @@ static void eval_shells_s(int deriv, int ngrids, size_t ostride, size_t cstride,
                                 }
                         }
                         for (c = 0; c < nc; c++) {
-                                const double *f = rad[c], *f1 = rad1[c], *f2 = rad2[c];
+                                const double *f = rad[c], *f1 = rad1[c], *f2 = rad2[c], *f3 = rad3[c];
                                 /* cartesian x^i y^j z^k f (and the derivatives) in pyscf's order, from the
                                  * power tables of the block */
                                 int ic = 0, i, j;
@@ -148,6 +156,76 @@ static void eval_shells_s(int deriv, int ngrids, size_t ostride, size_t cstride,
                                         const double *xm = xp[i > 0 ? i - 1 : 0], *ym = yp[j > 0 ? j - 1 : 0];
                                         const double *zm = zp[kk > 0 ? kk - 1 : 0];
                                         const double fi = i, fj = j, fk = kk;
+                                        if (deriv == 3) {
+                                                /* the polynomial's derivatives Pd[tx][ty][tz] up to order 3, then
+                                                 * d^n (P f) by the chain rule (f_n = sum c (-2a)^n e) */
+                                                double Pd[4][4][4][GV_BLK];
+                                                int tx, ty, tz;
+                                                for (tx = 0; tx <= 3; tx++)
+                                                for (ty = 0; ty <= 3 - tx; ty++)
+                                                for (tz = 0; tz <= 3 - tx - ty; tz++) {
+                                                        double cx = 1, cy = 1, cz = 1;
+                                                        int t;
+                                                        for (t = 0; t < tx; t++) cx *= i - t;
+                                                        for (t = 0; t < ty; t++) cy *= j - t;
+                                                        for (t = 0; t < tz; t++) cz *= kk - t;
+                                                        const double cxyz = cx * cy * cz;
+                                                        double *o_ = Pd[tx][ty][tz];
+                                                        if (cxyz == 0) {
+                                                                for (g = 0; g < bg; g++) o_[g] = 0;
+                                                                continue;
+                                                        }
+                                                        const double *px = xp[i - tx], *py = yp[j - ty], *pz = zp[kk - tz];
+#pragma omp simd
+                                                        for (g = 0; g < bg; g++) o_[g] = cxyz * px[g] * py[g] * pz[g];
+                                                }
+                                                /* components: 0; x y z; xx xy xz yy yz zz; xxx xxy xxz xyy xyz xzz yyy yyz yzz zzz */
+                                                static const int ax3[10][3] = {{0,0,0},{0,0,1},{0,0,2},{0,1,1},{0,1,2},{0,2,2},
+                                                                               {1,1,1},{1,1,2},{1,2,2},{2,2,2}};
+                                                static const int ax2[6][2] = {{0,0},{0,1},{0,2},{1,1},{1,2},{2,2}};
+                                                const double *X[3] = {dx, dy, dz};
+#define PD1(a) Pd[(a) == 0][(a) == 1][(a) == 2]
+#define PD2(a, b) Pd[((a) == 0) + ((b) == 0)][((a) == 1) + ((b) == 1)][((a) == 2) + ((b) == 2)]
+#define PD3(a, b, c_) Pd[((a) == 0) + ((b) == 0) + ((c_) == 0)][((a) == 1) + ((b) == 1) + ((c_) == 1)][((a) == 2) + ((b) == 2) + ((c_) == 2)]
+                                                const double *P0 = Pd[0][0][0];
+#pragma omp simd
+                                                for (g = 0; g < bg; g++) cart[0][ic][g] = P0[g] * f[g];
+                                                int q;
+                                                for (q = 0; q < 3; q++) {
+                                                        const double *Pa = PD1(q), *Xa = X[q];
+#pragma omp simd
+                                                        for (g = 0; g < bg; g++) cart[1 + q][ic][g] = Pa[g] * f[g] + Xa[g] * P0[g] * f1[g];
+                                                }
+                                                for (q = 0; q < 6; q++) {
+                                                        const int a = ax2[q][0], b2 = ax2[q][1];
+                                                        const double *Pab = PD2(a, b2), *Pa = PD1(a), *Pb = PD1(b2);
+                                                        const double *Xa = X[a], *Xb = X[b2];
+                                                        const double dab = a == b2;
+#pragma omp simd
+                                                        for (g = 0; g < bg; g++)
+                                                                cart[4 + q][ic][g] = Pab[g] * f[g] + (Xa[g] * Pb[g] + Xb[g] * Pa[g] + dab * P0[g]) * f1[g]
+                                                                                   + Xa[g] * Xb[g] * P0[g] * f2[g];
+                                                }
+                                                for (q = 0; q < 10; q++) {
+                                                        const int a = ax3[q][0], b2 = ax3[q][1], c3 = ax3[q][2];
+                                                        const double *Pabc = PD3(a, b2, c3), *Pab = PD2(a, b2), *Pac = PD2(a, c3);
+                                                        const double *Pbc = PD2(b2, c3), *Pa = PD1(a), *Pb = PD1(b2), *Pc = PD1(c3);
+                                                        const double *Xa = X[a], *Xb = X[b2], *Xc = X[c3];
+                                                        const double dab = a == b2, dac = a == c3, dbc = b2 == c3;
+#pragma omp simd
+                                                        for (g = 0; g < bg; g++)
+                                                                cart[10 + q][ic][g] = Pabc[g] * f[g]
+                                                                        + (Pab[g] * Xc[g] + Pac[g] * Xb[g] + Pbc[g] * Xa[g]
+                                                                           + dbc * Pa[g] + dac * Pb[g] + dab * Pc[g]) * f1[g]
+                                                                        + (Pa[g] * Xb[g] * Xc[g] + Pb[g] * Xa[g] * Xc[g] + Pc[g] * Xa[g] * Xb[g]
+                                                                           + P0[g] * (dab * Xc[g] + dac * Xb[g] + dbc * Xa[g])) * f2[g]
+                                                                        + P0[g] * Xa[g] * Xb[g] * Xc[g] * f3[g];
+                                                }
+#undef PD1
+#undef PD2
+#undef PD3
+                                                continue;
+                                        }
                                         if (deriv == 2) {
                                                 /* d2 (P f) = P'' f + (x_a P_b + x_b P_a + delta_ab P) f1 + x_a x_b P f2 */
                                                 const double *xmm = xp[i > 1 ? i - 2 : 0], *ymm = yp[j > 1 ? j - 2 : 0];
@@ -271,6 +349,7 @@ void SOCDFTeval_ao(int deriv, int ngrids, double *ao, double *coord, uint8_t *no
                    int *bas, int nbas, double *env)
 {
         const int nblk = (ngrids + GV_BLK - 1) / GV_BLK, per = 4;      /* 4 blocks of 56 points per task */
+        (void)0;
         const size_t nao = ao_loc[nbas];
         uint8_t *ones = NULL;
         if (non0table == NULL) {
