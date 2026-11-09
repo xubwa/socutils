@@ -466,6 +466,84 @@ for _x in range(3):
                                (2, 2, 2): 19}[tuple(sorted((_x, _y, _z)))]
 
 
+XCHE_LOCAL = True       # xc_hess_explicit: per sub-block on its significant AOs (else the whole pyscf block, all AOs)
+XCHE_LOCAL_MIN_NAO = 200   # below this every AO is significant on most sub-blocks: the whole-block path
+
+
+def _xc_hess_explicit_local(ni, xc_code, xctype, gga, nvar, ao, weight, p0, dm0, atom_of, natm, non0tab,
+                            nf_shell, nsub, libdft, term1, diag, M9):
+    '''one pyscf grid block of xc_hess_explicit (LDA / GGA) sub-block by sub-block, each on the AOs the
+    grid's non0tab flags on it: D phi_k, rho and the functional, R / the on-atom sums / the M operands
+    (SOCDFTrks_xc_hess_elem), the R f R GEMM and the atom-pair GEMM over the local AOs only'''
+    from pyscf.dft.numint import BLKSIZE
+    ngrid = weight.size
+    aoT, cs = _ao_stack(ao)
+    ncomp = aoT.shape[0]
+    nao = aoT.shape[1]
+    nd_ = 4 if gga else 1
+    K = 2 if gga else 1
+    for s0 in range(0, ngrid, nsub):
+        s1 = min(ngrid, s0 + nsub)
+        gs = s1 - s0
+        aom = numpy.repeat(non0tab[(p0 + s0) // BLKSIZE:(p0 + s1 + BLKSIZE - 1) // BLKSIZE].any(axis=0), nf_shell)
+        idx = numpy.nonzero(aom)[0].astype(numpy.int32)
+        nl = idx.size
+        if nl == 0:
+            continue
+        aol = numpy.empty((ncomp, nl, gs))
+        libdft.SOCDFTgather_ao(aol.ctypes, aoT.ctypes, idx.ctypes, ctypes.c_int(ncomp), ctypes.c_int(nao),
+                               ctypes.c_int(nl), ctypes.c_int(ngrid), ctypes.c_int(s0), ctypes.c_int(gs),
+                               ctypes.c_long(cs))
+        dl = numpy.ascontiguousarray(dm0[idx[:, None], idx])
+        dT = numpy.empty((nd_, nl, gs))
+        for k in range(nd_):
+            lib.dot(dl, aol[k], c=dT[k])
+        rho = numpy.empty((nvar, gs))
+        rho[0] = numpy.einsum('ig,ig->g', aol[0], dT[0])
+        if gga:
+            for j in range(3):
+                rho[1 + j] = 2 * numpy.einsum('ig,ig->g', aol[1 + j], dT[0])
+        vxc, fxc = ni.eval_xc_eff(xc_code, rho if gga else rho[0], 2, xctype=xctype)[1:3]
+        w = weight[s0:s1]
+        wf = numpy.ascontiguousarray(w * fxc.reshape(nvar, nvar, gs))
+        wv = numpy.ascontiguousarray(w * vxc.reshape(nvar, gs))
+        atl = numpy.ascontiguousarray(atom_of[idx])
+        R = numpy.empty((3, nvar, natm, gs))
+        ab = numpy.empty((6 if gga else 3, nl, gs))
+        dg = numpy.zeros((3, 3, natm))
+        libdft.SOCDFTrks_xc_hess_elem(
+            R.ctypes, dg.ctypes, ab.ctypes, aol.ctypes, dT.ctypes, wv.ctypes, ctypes.c_int(int(gga)),
+            ctypes.c_int(nvar), ctypes.c_int(gs), ctypes.c_int(nl), atl.ctypes, ctypes.c_int(natm),
+            ctypes.c_long(nl * gs))
+        R *= -2
+        diag += dg
+        wR = numpy.empty((3 * natm, nvar, gs))
+        libdft.SOCDFTfxc_contract_R(wR.ctypes, wf.ctypes, R.ctypes, ctypes.c_int(natm), ctypes.c_int(nvar),
+                                    ctypes.c_int(gs), ctypes.c_double(1.), ctypes.c_int(0))
+        Rr = numpy.empty((3 * natm, nvar, gs))
+        libdft.SOCDFTreorder_R(Rr.ctypes, R.ctypes, ctypes.c_int(natm), ctypes.c_int(nvar), ctypes.c_int(gs))
+        t1 = lib.dot(Rr.reshape(3 * natm, -1), wR.reshape(3 * natm, -1).T)
+        term1 += t1.reshape(natm, 3, natm, 3).transpose(1, 0, 3, 2)
+        # atom-pair part over the local AOs: [a_x | dphi_x] . [dphi_y | b_y]^T
+        L = numpy.empty((3, nl, K * gs))
+        Rm = numpy.empty((3, nl, K * gs))
+        ca = nl * gs
+        if gga:
+            libdft.SOCDFTgather_rows2(L.ctypes, ab.ctypes, ctypes.c_long(ca), aol[1:].ctypes, ctypes.c_long(ca),
+                                      None, ctypes.c_int(nl), ctypes.c_int(nl), ctypes.c_int(gs),
+                                      ctypes.c_int(0), ctypes.c_int(gs))
+            libdft.SOCDFTgather_rows2(Rm.ctypes, aol[1:].ctypes, ctypes.c_long(ca), ab[3:].ctypes,
+                                      ctypes.c_long(ca), None, ctypes.c_int(nl), ctypes.c_int(nl),
+                                      ctypes.c_int(gs), ctypes.c_int(0), ctypes.c_int(gs))
+        else:
+            L[:] = ab
+            Rm[:] = aol[1:4]
+        mb = lib.dot(L.reshape(3 * nl, -1), Rm.reshape(3 * nl, -1).T)
+        mb = numpy.ascontiguousarray(mb.reshape(3, nl, 3, nl).transpose(0, 2, 1, 3))
+        libdft.SOCDFTscatter_add_dm(M9.ctypes, mb.ctypes, idx.ctypes, ctypes.c_int(nl), ctypes.c_int(9),
+                                    ctypes.c_int(nao))
+
+
 def xc_hess_explicit(hessobj, mo_coeff, mo_occ, max_memory=4000):
     '''Fixed-grid XC part of the explicit RKS Hessian (what pyscf builds from
     _get_vxc_diag and _get_vxc_deriv2), contracted with D on the grid:
@@ -510,9 +588,15 @@ def xc_hess_explicit(hessobj, mo_coeff, mo_occ, max_memory=4000):
     nsub = max(1, FXC_SUBBLOCK // BLKSIZE) * BLKSIZE
     M9 = M.reshape(9, nao, nao)
     p1 = 0
+    local = (XCHE_LOCAL and libdft is not None and not mgga and non0tab is not None
+             and nao >= XCHE_LOCAL_MIN_NAO)
     for ao, mask, weight, coords in ni.block_loop(mol, grids, nao, ao_deriv, max_memory):
         ngrid = weight.size
         p0, p1 = p1, p1 + ngrid
+        if local:
+            _xc_hess_explicit_local(ni, mf.xc, xctype, gga, nvar, ao, weight, p0, dm0, atom_of, natm, non0tab,
+                                    nf_shell, nsub, libdft, term1, diag, M9)
+            continue
         nd_ = 4 if gga else 1
         if libdft is not None:
             aoT, cs = _ao_stack(ao)
