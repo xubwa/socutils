@@ -235,6 +235,70 @@ def pivots_orbits(phi, kmax, orbit, members, b=64, over=4, tol=1e-14, orbit_dep=
     return np.array(piv), L[:k]
 
 
+def pivots_blocked_dist(phi_loc, r0, ng, kmax, comm, b=64, over=4, tol=1e-14):
+    '''pivots_blocked over MPI ranks: this rank holds the grid rows r0:r0 + len(phi_loc) (phi and its columns of the
+    factor L, kmax x own rows); per block the global candidates come from an allgather of every rank's best ones,
+    their phi rows and L columns from two Allreduce, and the small candidate Cholesky runs on every rank (same
+    pivots on all of them).  Returns the pivot order (global grid indices); the factor is not kept.'''
+    from mpi4py import MPI
+    nl, ns = phi_loc.shape
+    L = np.zeros((kmax + 64, nl))
+    res = np.einsum('ri,ri->r', phi_loc, phi_loc) ** 2
+    dmax = comm.allreduce(res.max() if nl else 0., op=MPI.MAX)
+    piv = []
+    k = 0
+    while k < kmax:
+        m = min(over * b, ng)
+        mm = min(m, nl)
+        top = np.argpartition(-res, mm - 1)[:mm] if mm else np.zeros(0, dtype=int)
+        vals = np.concatenate(comm.allgather(res[top]))
+        gidx = np.concatenate(comm.allgather(top + r0))
+        o = np.argsort(-vals, kind='stable')[:m]
+        cand, rc = gidx[o], vals[o].copy()
+        if rc[0] <= tol * dmax:
+            break
+        mine = (cand >= r0) & (cand < r0 + nl)
+        PC = np.zeros((len(cand), ns))
+        PC[mine] = phi_loc[cand[mine] - r0]
+        comm.Allreduce(MPI.IN_PLACE, PC, op=MPI.SUM)
+        Cc = (phi_loc @ PC.T) ** 2                                    # (own rows, m)
+        Ccc = (PC @ PC.T) ** 2                                        # (m, m)
+        if k:
+            Lc = np.zeros((k, len(cand)))
+            Lc[:, mine] = L[:k, cand[mine] - r0]
+            comm.Allreduce(MPI.IN_PLACE, Lc, op=MPI.SUM)
+            Cc -= L[:k].T @ Lc
+            Ccc -= Lc.T @ Lc
+        nb = min(b, kmax - k)
+        new, newc = [], []
+        for j in range(nb):
+            q = int(np.argmax(rc))
+            if rc[q] <= tol * dmax:
+                break
+            row, rowc = Cc[:, q].copy(), Ccc[:, q].copy()
+            for r_, c_ in zip(new, newc):
+                row -= r_ * c_[q]
+                rowc -= c_ * c_[q]
+            sq = np.sqrt(rc[q])
+            row /= sq
+            rowc /= sq
+            new.append(row)
+            newc.append(rowc)
+            piv.append(int(cand[q]))
+            rc -= rowc ** 2
+            rc[q] = 0.
+        if not new:
+            break
+        L[k:k + len(new)] = new
+        res -= (np.asarray(new) ** 2).sum(axis=0)
+        np.maximum(res, 0, out=res)
+        p_ = np.asarray(piv[-len(new):])
+        p_ = p_[(p_ >= r0) & (p_ < r0 + nl)] - r0
+        res[p_] = 0.
+        k += len(new)
+    return np.array(piv)
+
+
 def isdf_xi(L, piv, nmu):
     '''Lu-Ying least-squares interpolation vectors for the first nmu pivots, xi (nmu, ngrid):
     xi = G[:, P] G[P, P]^-1 = L^T L[:, P]^-T with the Cholesky factor (L[:, P] is upper triangular in pivot
@@ -465,6 +529,19 @@ def half_gv(cell, mesh):
     return K @ b, f
 
 
+def nyquist_mask(mesh):
+    '''The Nyquist bins of the rfftn half spectrum of an even mesh (k0 = -m0/2, k1 = -m1/2, k2 = m2/2).'''
+    k0 = np.fft.fftfreq(mesh[0]) * mesh[0]
+    k1 = np.fft.fftfreq(mesh[1]) * mesh[1]
+    k2 = np.arange(mesh[2] // 2 + 1)
+    K = np.stack(np.meshgrid(k0, k1, k2, indexing='ij'), -1).reshape(-1, 3)
+    m = np.zeros(len(K), dtype=bool)
+    for i, n in enumerate(mesh):
+        if n % 2 == 0:
+            m |= np.abs(K[:, i]) == n // 2
+    return m
+
+
 def stc_factor(G, rc):
     '''v_TC(G) / (4 pi / G^2) = 1 - cos(|G| R_c) for the spherically truncated Coulomb kernel (1 at G = 0: the
     G = 0 term is handled separately).'''
@@ -498,7 +575,8 @@ class THCExchange:
         self.selector = selector
         self.local_rcut = local_rcut   # route 1 (Angstrom): no global 3c tensor (local CX fit, GAPW J, CX LR rows)
         self.cand_factor = 4.        # kmeans+chol: K-means candidates per point
-        self.coarsen = 3             # coarse: grid coarsening per direction for the point selection (4: EuOCl fails)
+        self.coarsen = None          # coarse: grid coarsening per direction for the point selection; None: 2 if the
+                                     # Cholesky factor fits half the budget, else 3 (4: EuOCl fails)
         self.blocked_pivots = True   # coarse: blocked (BLAS-3) pivoted Cholesky
         self.nuc_zeta = nuc_zeta
         self.verbose = verbose
@@ -644,6 +722,37 @@ class THCExchange:
         self.mesh = cell.cutoff_to_mesh(self.ke)
         if getattr(self, 'mesh_override', None) is not None:          # tests: an explicit uniform grid
             self.mesh = np.asarray(self.mesh_override, dtype=int)
+        if self.selector == 'coarse' and self.coarsen is None:
+            # the coarse grid must resolve the smooth functions itself: EuOCl near its cutoff, coarsened 3x (29 points
+            # along a) gave pair-fit errors 1e-6..1e-5 jumping with the mesh (E +-2e-4, one mesh off by 2.7e-2 Eh);
+            # 2x gives 2.6e-8..3.6e-8 for every mesh.  The selection holds phi and the pivoted-Cholesky factor
+            # (kmax rows) on the coarse points, per rank its share under MPI (all of them for the orbit selection):
+            # the finest coarsening whose share fits half of every rank's budget (cell.max_memory)
+            comm_ = getattr(self, 'comm', None)
+            size_ = comm_.Get_size() if comm_ is not None else 1
+            avail = self.avail_bytes()
+            if comm_ is not None:
+                avail = comm_.allreduce(avail, op=__import__('mpi4py').MPI.MIN)
+            kmx = int(getattr(self, 'kmax_factor', kmax_factor) * len(self.smooth))
+            if getattr(self, 'symm_grid', None) is None:               # decided here: it sets the selection mode
+                self._ops = space_group_ops(cell)
+                self.symm_grid = len(self._ops[0]) > 1
+            orbit_ = self.symm_grid and getattr(self, 'symm_pivots', True)
+            serial = size_ == 1 or orbit_ or not self.blocked_pivots    # orbits: rank 0 alone
+            # whole-orbit selection: validated on the 3x grid (quartz -4e-6 vs exact; on the 2x grid +2.7e-4), and
+            # the symmetric mesh makes the coarse grid an exact sublattice anyway.  Plain selection: 2x (EuOCl
+            # meshes 85/88/91: E -4.9/-3.4/-5.0e-5 vs RSDF; 3x: +4.6e-4/-2.7e-2/+1.7e-4)
+            for c in ((3, 4) if orbit_ else (2, 3, 4)):
+                npts = np.prod(-(-np.asarray(self.mesh) // c))
+                need = (kmx + 64 + len(self.smooth)) * (npts if serial else -(-npts // size_)) * 8
+                if need < 0.5 * avail:
+                    break
+            else:
+                raise MemoryError('THC point selection: %.0f GB per rank even on the 4x coarser grid, budget %.0f GB '
+                                  '(cell.max_memory); use more MPI ranks or a larger max_memory'
+                                  % (need / 1e9, avail / 1e9))
+            self.coarsen = c
+            self.log('   point selection on the grid coarsened %dx (%.1f GB per rank)' % (c, need / 1e9))
         if getattr(self, 'symm_grid', None) is None:                   # default: on when the cell has symmetry
             self._ops = space_group_ops(cell)
             self.symm_grid = len(self._ops[0]) > 1
@@ -678,9 +787,14 @@ class THCExchange:
         if self.selector == 'coarse':
             # pivoted Cholesky on a grid coarsened by coarsen per direction, pivots snapped to the nearest point of
             # the full grid (the smooth pair densities are band-limited; xi is fitted on the full grid)
-            mc = np.maximum(np.asarray(self.mesh) // self.coarsen, 1)
+            mc = np.maximum(-(-np.asarray(self.mesh) // self.coarsen), 1)   # rounded up: never coarser
             cc = cell.get_uniform_grids(mc)
-            phic = cell.pbc_eval_gto('GTOval_sph', cc)[:, self.smooth]
+            comm = getattr(self, 'comm', None)
+            rank = comm.Get_rank() if comm is not None else 0
+            orbit_sel = getattr(self, 'symm_grid', False) and getattr(self, 'symm_pivots', True)
+            dist = comm is not None and comm.Get_size() > 1 and self.blocked_pivots and not orbit_sel
+            # serial selection: phi on the whole coarse grid on rank 0 only; distributed: per rank below
+            phic = cell.pbc_eval_gto('GTOval_sph', cc)[:, self.smooth] if (not dist and rank == 0) else None
             f = pivots_blocked if self.blocked_pivots else pivots
             if getattr(self, 'symm_grid', False) and getattr(self, 'symm_pivots', True):
                 orb, mem = grid_orbits(mc, self._ops[:2])
@@ -691,11 +805,20 @@ class THCExchange:
             rank = comm.Get_rank() if comm is not None else 0
             if pf and os.path.exists(pf) and len(np.load(pf)) >= kmax:
                 pc = np.load(pf)[:kmax]
+            elif dist:                                                # rows of the coarse grid per rank
+                ncg = len(cc)
+                q0, q1 = ncg * rank // comm.Get_size(), ncg * (rank + 1) // comm.Get_size()
+                phic = None
+                ph_loc = cell.pbc_eval_gto('GTOval_sph', cc[q0:q1])[:, self.smooth]
+                pc = pivots_blocked_dist(ph_loc, q0, ncg, kmax, comm)
+                ph_loc = None
+                if pf and rank == 0:
+                    np.save(pf, pc)
             elif rank == 0:
                 pc, _ = f(phic, kmax)
                 if pf:
                     np.save(pf, pc)
-            if comm is not None:                                      # one point set for every rank
+            if comm is not None and not dist:                         # one point set for every rank
                 pc = comm.bcast(pc if rank == 0 else None, root=0)
             ijk = np.stack(np.unravel_index(pc, mc), -1)
             fine = np.rint(ijk * (np.asarray(self.mesh) / mc)).astype(int) % np.asarray(self.mesh)
@@ -718,6 +841,21 @@ class THCExchange:
         self.w_k = self.w_vec
         if getattr(self, 'exx_trunc', None):
             self.w_k = self.w_sr + (self.w_vec - self.w_sr) * stc_factor(self.Gv, self.exx_trunc)
+        if getattr(self, 'g_sphere', False):
+            # the smooth pair densities live inside |G|^2 <= 2 ke; beyond it (the corners of the mesh box) the
+            # ISDF vectors carry only fit error, which the analytic FT of a compact aux function does not damp:
+            # A (and V) summed over the sphere only (EuOCl: A-terms of E_K moved 8e-3 Eh between meshes 88, 89)
+            out = np.einsum('gx,gx->g', self.Gv, self.Gv) > 2 * self.ke * (1 + 1e-12)
+            self.fG = np.where(out, 0., self.fG)
+            self.w_k = np.where(out, 0., self.w_k)
+            self.log('   G sphere: %d of %d half-spectrum G beyond 2 ke = %.0f dropped from A, V'
+                     % (out.sum(), len(out), 2 * self.ke))
+        if getattr(self, 'drop_nyquist', False):
+            # even mesh: the k = -m/2 bin stands for +-G_N; pairing it with the analytic FT of a compact aux
+            # function at -G_N only is ambiguous, so the Nyquist rows / planes are left out of A and V
+            nyq = nyquist_mask(self.mesh)
+            self.fG = np.where(nyq, 0., self.fG)
+            self.w_k = np.where(nyq, 0., self.w_k)
         self.log('   THC common: nao %d (smooth %d), CX pairs %d of %d, ke %.0f Eh, mesh %s = %d points, %d pivots; '
                  'RSDF %.0f s, local fit %.0f s, grid %.0f s, pivots %.0f s'
                  % (nao, len(self.smooth), self.cx.sum(), len(self.cx), self.ke, self.mesh, self.ng, len(self.piv),
@@ -1853,7 +1991,7 @@ class THCJK:
         self.th.stream_max_blocks = getattr(self, 'stream_max_blocks', 1 << 30)
         self.th.piv_file = getattr(self, 'piv_file', None)
         for k in ('coarsen', 'blocked_pivots', 'far_fit', 'phi_ondemand', 'symm_grid', 'symm_pivots',
-                  'ke_precision', 'mesh_override'):                   # options, if set
+                  'ke_precision', 'mesh_override', 'drop_nyquist', 'g_sphere'):   # options, if set
             if hasattr(self, k):
                 setattr(self.th, k, getattr(self, k))
         rc = getattr(self, 'exx_trunc', None)                         # smoothed truncated Coulomb exchange
