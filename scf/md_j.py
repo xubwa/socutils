@@ -238,6 +238,7 @@ def apply(mf, incremental=True, two_pass=True):
 
     if df_j:
         cache = {'key': None, 'B': None}
+        mf._rij_cache = cache            # the RIJ gradient reuses B (grad.rhf_fast)
 
         def rij_j(mol, dm, hermi):
             '''J from B = L^{-1} (P|ij) (lower-triangle pairs) kept in memory: c = B d, J = B^T c;

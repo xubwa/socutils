@@ -904,13 +904,15 @@ def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS
     return hess, vj1
 
 
-def ri_j_grad(mol, auxmol, dm, tol=None, max_memory=None):
+def ri_j_grad(mol, auxmol, dm, tol=None, max_memory=None, cderi=None):
     '''Gradient of the density-fitted Coulomb energy E_J = 1/2 rho^T M^{-1} rho
     at a symmetric D, auxiliary-basis response included (pyscf's
     auxbasis_response): g^xi = d . rho^xi - 1/2 d M^xi d, d = M^{-1} rho, the
     three-centre part rho^xi by the pass of ri_j_deriv without the Hessian
-    and vj1 terms (lib/vhf/ri_j_deriv.c).  Returns (natm, 3), or None if the
-    library is unavailable.'''
+    and vj1 terms (lib/vhf/ri_j_deriv.c).  cderi: L^{-1} (P|ij) (naux, npair)
+    of the SCF (Cholesky L of the metric, as pyscf's cholesky_eri) to take d
+    from, d = L^{-T} (cderi D), instead of the three-centre integrals.
+    Returns (natm, 3), or None if the library is unavailable.'''
     import ctypes
     from pyscf import df
     from pyscf.gto import moleintor
@@ -929,13 +931,24 @@ def ri_j_grad(mol, auxmol, dm, tol=None, max_memory=None):
     npair = nao * (nao + 1) // 2
     blk = max(16, min(naux, int(max_memory * .2e6 / 8 / npair)))
     dm_tril = lib.pack_tril(dm + dm.T - numpy.diag(numpy.diag(dm)))
-    rho = numpy.empty(naux)
-    for k0, k1, _ in balance_partition(auxmol.ao_loc, blk):
-        p0, p1 = auxmol.ao_loc[k0], auxmol.ao_loc[k1]
-        int3c = df.incore.aux_e2(mol, auxmol, 'int3c2e', aosym='s2ij', shls_slice=(0, nbas, 0, nbas, k0, k1))
-        rho[p0:p1] = lib.dot(dm_tril[None], int3c)[0]
-    int3c = None
-    dfit = _gen_metric_solver(auxmol.intor('int2c2e', aosym='s1'))(rho.copy())
+    dfit = None
+    if cderi is not None and getattr(cderi, 'shape', None) == (naux, npair):
+        import scipy.linalg
+        try:
+            low = scipy.linalg.cholesky(auxmol.intor('int2c2e', hermi=1), lower=True)
+        except scipy.linalg.LinAlgError:
+            low = None
+        if low is not None:
+            c = lib.dot(cderi, dm_tril[:, None])[:, 0]          # L^{-1} rho
+            dfit = scipy.linalg.solve_triangular(low, c, lower=True, trans='T')
+    if dfit is None:
+        rho = numpy.empty(naux)
+        for k0, k1, _ in balance_partition(auxmol.ao_loc, blk):
+            p0, p1 = auxmol.ao_loc[k0], auxmol.ao_loc[k1]
+            int3c = df.incore.aux_e2(mol, auxmol, 'int3c2e', aosym='s2ij', shls_slice=(0, nbas, 0, nbas, k0, k1))
+            rho[p0:p1] = lib.dot(dm_tril[None], int3c)[0]
+        int3c = None
+        dfit = _gen_metric_solver(auxmol.intor('int2c2e', aosym='s1'))(rho.copy())
     q = numpy.max([ghf_hess._q_cond(mol, 'int2e_ip1')[k] for k in (0, 1)], axis=0)
     q = numpy.ascontiguousarray(numpy.maximum(q, q.T))
     aux_loc = auxmol.ao_loc_nr()

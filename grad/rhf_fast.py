@@ -191,7 +191,10 @@ def _fast_terms(grad, mol, dm):
     grad._rij_fast = False
     if dfm == 'j' and RIJ_GRAD_FAST and grad.auxbasis_response:
         # RIJ: the density-fitted J gradient (with its auxiliary-basis response) from the C pass
-        r = hess_fast.ri_j_grad(mol, hess_fast._df_auxmol(mf), dm, tol=GRAD2E_TOL,
+        cache = getattr(mf, '_rij_cache', None) or {}
+        key = (mol._atm.tobytes(), mol._bas.tobytes(), mol._env.tobytes())
+        cderi = cache.get('B') if cache.get('key') == key else None
+        r = hess_fast.ri_j_grad(mol, hess_fast._df_auxmol(mf), dm, tol=GRAD2E_TOL, cderi=cderi,
                                 max_memory=max(1000, mf.max_memory - lib.current_memory()[0]))
         if r is not None:
             de += r
