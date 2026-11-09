@@ -252,6 +252,8 @@ void SOCDFTgtoval_sph(int ngrids, int *shls_slice, int *ao_loc, double *ao, doub
                       int *atm, int natm, int *bas, int nbas, double *env);
 void SOCDFTgtoval_sph_deriv1(int ngrids, int *shls_slice, int *ao_loc, double *ao, double *coord,
                              uint8_t *non0table, int *atm, int natm, int *bas, int nbas, double *env);
+void SOCDFTgtoval_sph_deriv2(int ngrids, int *shls_slice, int *ao_loc, double *ao, double *coord,
+                             uint8_t *non0table, int *atm, int natm, int *bas, int nbas, double *env);
 void SOCDFTgtoval_ld(int deriv, int ngrids, int sh0, int sh1, int *ao_loc, double *ao, size_t ld, size_t row0,
                      double *coord, uint8_t *non0table, int *atm, int *bas, int nbas, double *env, double *rowmax);
 
@@ -284,7 +286,7 @@ static int eval_select_own(double *a, int *ix, int *runs, int n, double *xyz, ui
         double *rmx = malloc(sizeof(double) * ntot);
         memset(rmx, 0, sizeof(double) * ntot);
         for (i = 0; i < nrun; i++) {
-                SOCDFTgtoval_ld(ncomp > 1, n, runs[2 * i], runs[2 * i + 1], ao_loc, a, ntot, row, xyz, msk, atm, bas,
+                SOCDFTgtoval_ld(ncomp == 10 ? 2 : (ncomp > 1), n, runs[2 * i], runs[2 * i + 1], ao_loc, a, ntot, row, xyz, msk, atm, bas,
                                 nbas, env, rmx);
                 row += ao_loc[runs[2 * i + 1]] - ao_loc[runs[2 * i]];
         }
@@ -318,7 +320,7 @@ static int eval_select(double *a, int *ix, size_t *src, double *full, int n, dou
                        int ncomp, double cutoff, gtoval_t eval, int *ao_loc, int *atm, int natm, int *bas,
                        int nbas, double *env)
 {
-        if (eval == SOCDFTgtoval_sph || eval == SOCDFTgtoval_sph_deriv1)
+        if (eval == SOCDFTgtoval_sph || eval == SOCDFTgtoval_sph_deriv1 || eval == SOCDFTgtoval_sph_deriv2)
                 /* src (2 nao size_t) as the runs (2 nbas) + the source rows (nao) */
                 return eval_select_own(a, ix, (int *)src, n, xyz, msk, ncomp, cutoff, ao_loc, atm, bas, nbas, env);
         const int nrow = (n + MASK_BLK - 1) / MASK_BLK;

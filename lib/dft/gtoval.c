@@ -47,11 +47,11 @@ static void eval_shells(int deriv, int ngrids, int *shls_slice, int *ao_loc, dou
 {
         const int sh0 = shls_slice[0], sh1 = shls_slice[1];
         const size_t nao = ld;
-        const int ncomp = deriv ? 4 : 1;
+        const int ncomp = deriv == 2 ? 10 : (deriv ? 4 : 1);
         const int nblk = (ngrids + GV_BLK - 1) / GV_BLK;
         const double *gx = coord, *gy = coord + ngrids, *gz = coord + 2 * ngrids;
-        double rad[GV_NCMAX][GV_BLK], rad1[GV_NCMAX][GV_BLK];
-        double cart[4][10][GV_BLK];
+        double rad[GV_NCMAX][GV_BLK], rad1[GV_NCMAX][GV_BLK], rad2[GV_NCMAX][GV_BLK];
+        double cart[10][10][GV_BLK];
         int sh, b;
         for (sh = sh0; sh < sh1; sh++) {
                 const int *bs = bas + sh * BAS_SLOTS;
@@ -95,7 +95,7 @@ static void eval_shells(int deriv, int ngrids, int *shls_slice, int *ao_loc, dou
                         double r2min = r2[0];
                         for (g = 1; g < bg; g++) r2min = r2[g] < r2min ? r2[g] : r2min;
                         for (c = 0; c < nc; c++)
-                                for (g = 0; g < bg; g++) rad[c][g] = rad1[c][g] = 0;
+                                for (g = 0; g < bg; g++) rad[c][g] = rad1[c][g] = rad2[c][g] = 0;
                         for (p = 0; p < np; p++) {
                                 const double a = al[p], m2a = -2 * a;
                                 /* the primitive below e^-GV_EXPCUT on the whole block: skipped */
@@ -104,16 +104,25 @@ static void eval_shells(int deriv, int ngrids, int *shls_slice, int *ao_loc, dou
 #pragma omp simd
                                 for (g = 0; g < bg; g++) e[g] = exp(-a * r2[g]) * fac;
                                 for (c = 0; c < nc; c++) {
-                                        const double cc = cf[c * np + p], cd = cc * m2a;
+                                        const double cc = cf[c * np + p], cd = cc * m2a, cd2 = cd * m2a;
+                                        if (deriv == 2) {
 #pragma omp simd
-                                        for (g = 0; g < bg; g++) {
-                                                rad[c][g] += cc * e[g];
-                                                rad1[c][g] += cd * e[g];
+                                                for (g = 0; g < bg; g++) {
+                                                        rad[c][g] += cc * e[g];
+                                                        rad1[c][g] += cd * e[g];
+                                                        rad2[c][g] += cd2 * e[g];
+                                                }
+                                        } else {
+#pragma omp simd
+                                                for (g = 0; g < bg; g++) {
+                                                        rad[c][g] += cc * e[g];
+                                                        rad1[c][g] += cd * e[g];
+                                                }
                                         }
                                 }
                         }
                         for (c = 0; c < nc; c++) {
-                                const double *f = rad[c], *f1 = rad1[c];
+                                const double *f = rad[c], *f1 = rad1[c], *f2 = rad2[c];
                                 /* cartesian x^i y^j z^k f (and the derivatives) in pyscf's order, from the
                                  * power tables of the block */
                                 int ic = 0, i, j;
@@ -124,6 +133,39 @@ static void eval_shells(int deriv, int ngrids, int *shls_slice, int *ao_loc, dou
                                         const double *xm = xp[i > 0 ? i - 1 : 0], *ym = yp[j > 0 ? j - 1 : 0];
                                         const double *zm = zp[kk > 0 ? kk - 1 : 0];
                                         const double fi = i, fj = j, fk = kk;
+                                        if (deriv == 2) {
+                                                /* d2 (P f) = P'' f + (x_a P_b + x_b P_a + delta_ab P) f1 + x_a x_b P f2 */
+                                                const double *xmm = xp[i > 1 ? i - 2 : 0], *ymm = yp[j > 1 ? j - 2 : 0];
+                                                const double *zmm = zp[kk > 1 ? kk - 2 : 0];
+                                                const double fii = i * (i - 1), fjj = j * (j - 1), fkk = kk * (kk - 1);
+                                                const double fij = i * j, fik = i * kk, fjk = j * kk;
+#pragma omp simd
+                                                for (g = 0; g < bg; g++) {
+                                                        const double X = dx[g], Y = dy[g], Z = dz[g];
+                                                        const double F = f[g], F1 = f1[g], F2 = f2[g];
+                                                        const double P = xi[g] * yj[g] * zk[g];
+                                                        const double Px = fi * xm[g] * yj[g] * zk[g];
+                                                        const double Py = fj * xi[g] * ym[g] * zk[g];
+                                                        const double Pz = fk * xi[g] * yj[g] * zm[g];
+                                                        const double Pxx = fii * xmm[g] * yj[g] * zk[g];
+                                                        const double Pyy = fjj * xi[g] * ymm[g] * zk[g];
+                                                        const double Pzz = fkk * xi[g] * yj[g] * zmm[g];
+                                                        const double Pxy = fij * xm[g] * ym[g] * zk[g];
+                                                        const double Pxz = fik * xm[g] * yj[g] * zm[g];
+                                                        const double Pyz = fjk * xi[g] * ym[g] * zm[g];
+                                                        cart[0][ic][g] = P * F;
+                                                        cart[1][ic][g] = Px * F + X * P * F1;
+                                                        cart[2][ic][g] = Py * F + Y * P * F1;
+                                                        cart[3][ic][g] = Pz * F + Z * P * F1;
+                                                        cart[4][ic][g] = Pxx * F + (2 * X * Px + P) * F1 + X * X * P * F2;
+                                                        cart[5][ic][g] = Pxy * F + (Y * Px + X * Py) * F1 + X * Y * P * F2;
+                                                        cart[6][ic][g] = Pxz * F + (Z * Px + X * Pz) * F1 + X * Z * P * F2;
+                                                        cart[7][ic][g] = Pyy * F + (2 * Y * Py + P) * F1 + Y * Y * P * F2;
+                                                        cart[8][ic][g] = Pyz * F + (Z * Py + Y * Pz) * F1 + Y * Z * P * F2;
+                                                        cart[9][ic][g] = Pzz * F + (2 * Z * Pz + P) * F1 + Z * Z * P * F2;
+                                                }
+                                                continue;
+                                        }
 #pragma omp simd
                                         for (g = 0; g < bg; g++) {
                                                 const double yz = yj[g] * zk[g], P = xi[g] * yz;
@@ -181,6 +223,14 @@ void SOCDFTgtoval_sph(int ngrids, int *shls_slice, int *ao_loc, double *ao, doub
 {
         (void)natm;
         eval_shells(0, ngrids, shls_slice, ao_loc, ao, ao_loc[shls_slice[1]] - ao_loc[shls_slice[0]], 0, coord,
+                    non0table, atm, bas, nbas, env, NULL);
+}
+
+void SOCDFTgtoval_sph_deriv2(int ngrids, int *shls_slice, int *ao_loc, double *ao, double *coord,
+                             uint8_t *non0table, int *atm, int natm, int *bas, int nbas, double *env)
+{
+        (void)natm;
+        eval_shells(2, ngrids, shls_slice, ao_loc, ao, ao_loc[shls_slice[1]] - ao_loc[shls_slice[0]], 0, coord,
                     non0table, atm, bas, nbas, env, NULL);
 }
 

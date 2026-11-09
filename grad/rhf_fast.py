@@ -134,6 +134,11 @@ def _xc_grad_fused(libdft, ni, mol, grids, xc_code, dm, xctype):
     non0tab = numpy.ascontiguousarray(grids.non0tab, dtype=numpy.uint8)
     lcg = moleintor.libcgto
     feval = ctypes.cast(lcg.GTOval_sph_deriv1 if xctype == 'LDA' else lcg.GTOval_sph_deriv2, ctypes.c_void_p)
+    if (vxc_fast.OWN_GTOVAL and hasattr(libdft, 'SOCDFTgtoval_sph_deriv2')
+            and mol._bas[:, 1].max() <= libdft.SOCDFTgtoval_lmax()):
+        # the SIMD evaluator of lib/dft/gtoval.c
+        feval = ctypes.cast(libdft.SOCDFTgtoval_sph_deriv1 if xctype == 'LDA' else libdft.SOCDFTgtoval_sph_deriv2,
+                            ctypes.c_void_p)
     fxc = ctypes.cast(ni.libxc._itrf.LIBXC_eval_xc, ctypes.c_void_p)
     facs = (ctypes.c_double * xc.nfunc)(*xc.facs)
     atm = numpy.asarray(mol._atm, dtype=numpy.int32, order='C')
