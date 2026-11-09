@@ -31,6 +31,7 @@ from pyscf import lib
 from pyscf.dft import numint
 
 USE_MGGA = False
+OWN_GTOVAL = True       # the AOs on the grid by lib/dft/gtoval.c (SIMD exp) instead of pyscf's GTOval
 
 
 def _orbitals(dm):
@@ -247,6 +248,11 @@ def _nr_rks_fused(libdft, ni, mol, grids, xc_code, dms_a, d, xctype):
     non0tab = numpy.ascontiguousarray(grids.non0tab, dtype=numpy.uint8)
     lcg = moleintor.libcgto
     feval = ctypes.cast(lcg.GTOval_sph if xctype == 'LDA' else lcg.GTOval_sph_deriv1, ctypes.c_void_p)
+    if (OWN_GTOVAL and hasattr(libdft, 'SOCDFTgtoval_sph_deriv1')
+            and mol._bas[:, 1].max() <= libdft.SOCDFTgtoval_lmax()):
+        # the SIMD evaluator of lib/dft/gtoval.c (vector exp), same values as pyscf's
+        feval = ctypes.cast(libdft.SOCDFTgtoval_sph if xctype == 'LDA' else libdft.SOCDFTgtoval_sph_deriv1,
+                            ctypes.c_void_p)
     fxc = ctypes.cast(libxc._itrf.LIBXC_eval_xc, ctypes.c_void_p)
     facs = (ctypes.c_double * max(1, xc.nfunc))(*xc.facs)
     atm = numpy.asarray(mol._atm, dtype=numpy.int32, order='C')

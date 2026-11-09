@@ -248,10 +248,83 @@ typedef void (*libxc_t)(int nfn, void *fn_obj, const double *fac, int spin, int 
  * memory traffic touches the other shells; then those with max_g |phi| >
  * cutoff into a (ncomp, nl, n), their indices into ix.  src: nao size_t.
  */
+void SOCDFTgtoval_sph(int ngrids, int *shls_slice, int *ao_loc, double *ao, double *coord, uint8_t *non0table,
+                      int *atm, int natm, int *bas, int nbas, double *env);
+void SOCDFTgtoval_sph_deriv1(int ngrids, int *shls_slice, int *ao_loc, double *ao, double *coord,
+                             uint8_t *non0table, int *atm, int natm, int *bas, int nbas, double *env);
+void SOCDFTgtoval_ld(int deriv, int ngrids, int sh0, int sh1, int *ao_loc, double *ao, size_t ld, size_t row0,
+                     double *coord, uint8_t *non0table, int *atm, int *bas, int nbas, double *env);
+
+/* eval_select with gtoval.c's evaluator: the flagged runs straight into a in the layout
+ * (ncomp, ntot, n), the AOs below the cutoff squeezed out in place (no copy when all stay) */
+static int eval_select_own(double *a, int *ix, int *runs, int n, double *xyz, uint8_t *msk, int ncomp,
+                           double cutoff, int *ao_loc, int *atm, int *bas, int nbas, double *env)
+{
+        const int nrow = (n + MASK_BLK - 1) / MASK_BLK;
+        int sh = 0, nrun = 0, r, k, g, i;
+        size_t ntot = 0;
+        while (sh < nbas) {
+                int on = 0;
+                for (r = 0; r < nrow && !on; r++) on = msk[(size_t)r * nbas + sh] != 0;
+                if (!on) { sh++; continue; }
+                const int s0 = sh;
+                for (sh++; sh < nbas; sh++) {
+                        on = 0;
+                        for (r = 0; r < nrow && !on; r++) on = msk[(size_t)r * nbas + sh] != 0;
+                        if (!on) break;
+                }
+                runs[2 * nrun] = s0;
+                runs[2 * nrun + 1] = sh;
+                nrun++;
+                ntot += ao_loc[sh] - ao_loc[s0];
+        }
+        if (ntot == 0) return 0;
+        size_t row = 0;
+        for (i = 0; i < nrun; i++) {
+                SOCDFTgtoval_ld(ncomp > 1, n, runs[2 * i], runs[2 * i + 1], ao_loc, a, ntot, row, xyz, msk, atm, bas,
+                                nbas, env);
+                row += ao_loc[runs[2 * i + 1]] - ao_loc[runs[2 * i]];
+        }
+        /* the kept AOs (max_g over the components above the cutoff), squeezed in place */
+        int nl = 0;
+        row = 0;
+        for (i = 0; i < nrun; i++) {
+                int mu;
+                for (mu = ao_loc[runs[2 * i]]; mu < ao_loc[runs[2 * i + 1]]; mu++, row++) {
+                        double m = 0;
+                        for (k = 0; k < ncomp; k++) {
+                                const double *p = a + ((size_t)k * ntot + row) * n;
+                                for (g = 0; g < n; g++) {
+                                        const double v = fabs(p[g]);
+                                        if (v > m) m = v;
+                                }
+                        }
+                        if (m > cutoff) {
+                                ix[nl] = mu;
+                                runs[2 * nbas + nl] = (int)row;       /* the source row */
+                                nl++;
+                        }
+                }
+        }
+        if ((size_t)nl < ntot) {
+                const int *srow = runs + 2 * nbas;
+                for (k = 0; k < ncomp; k++)
+                        for (i = 0; i < nl; i++) {
+                                double *dst = a + ((size_t)k * nl + i) * n;
+                                const double *src_ = a + ((size_t)k * ntot + srow[i]) * n;
+                                if (dst != src_) memmove(dst, src_, sizeof(double) * n);
+                        }
+        }
+        return nl;
+}
+
 static int eval_select(double *a, int *ix, size_t *src, double *full, int n, double *xyz, uint8_t *msk,
                        int ncomp, double cutoff, gtoval_t eval, int *ao_loc, int *atm, int natm, int *bas,
                        int nbas, double *env)
 {
+        if (eval == SOCDFTgtoval_sph || eval == SOCDFTgtoval_sph_deriv1)
+                /* src (2 nao size_t) as the runs (2 nbas) + the source rows (nao) */
+                return eval_select_own(a, ix, (int *)src, n, xyz, msk, ncomp, cutoff, ao_loc, atm, bas, nbas, env);
         const int nrow = (n + MASK_BLK - 1) / MASK_BLK;
         int sh = 0, nl = 0, r, k, g;
         size_t off = 0;
