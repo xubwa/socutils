@@ -341,7 +341,10 @@ def _hcore_e1(hessobj, dm0):
         p0, p1 = aoslices[ia][2:]
         e1[ia, ia] += raa[:, :, p0:p1].sum(axis=2)
     hab = h1ab * D                                       # (3, 3, nao, nao)
-    e1 += numpy.einsum('xypq,pA,qB->ABxy', hab, S, S)
+    # S^T hab[x, y] S as GEMMs (numpy's einsum without optimize loops over all of x y p q A B)
+    for x in range(3):
+        for y in range(3):
+            e1[:, :, x, y] += lib.dot(S.T, lib.dot(hab[x, y], S))
     # operator (nucleus C) derivatives
     for ic in range(natm):
         zc = mol.atom_charge(ic)
