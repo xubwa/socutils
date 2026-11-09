@@ -30,6 +30,7 @@ import time
 import numpy
 
 from socutils.symm import double_group as dg
+from socutils.zmr import dpd
 from socutils.zmr.dsrg import commutator as cm
 from socutils.zmr.dsrg.ldsrg2 import LDSRG2
 from socutils.zmr.dsrg.mrpt2 import DSRGMRPT2, _hole_particle
@@ -117,9 +118,18 @@ class DSRGMRPT3(DSRGMRPT2):
 
     def _comm(self, o1, o2, t1, t2, ladder=None, large=None):
         '''[O, A]' (one- and two-body hole-particle blocks).'''
+        t2c = None
+        if self.dpd_storage:
+            # T2 in the DPD layout, converted once per amplitude set
+            cache = self.__dict__.setdefault('_t2c', {})
+            if id(t2) not in cache or cache[id(t2)][0] is not t2:
+                cache.clear()
+                cache[id(t2)] = (t2, cm.dpd_blocks(t2, self.dims))
+            t2c = cache[id(t2)][1]
         _, c1, c2 = cm.commutator(o1, o2, t1, t2, self.cum, self.dims, 1.0, _od,
                                   ladder=ladder, timings=self.timings, scalar=False,
-                                  keep1=_od, large=large)
+                                  keep1=_od, large=large, dpd_out=self.dpd_storage,
+                                  T2c=t2c)
         cm.add_hc_1(c1)
         # the excitation blocks only; the de-excitation blocks are their conjugates
         return c1, cm.HermitianHP.from_blocks(c2)
@@ -137,6 +147,10 @@ class DSRGMRPT3(DSRGMRPT2):
         nv = d['v']
         g = self.gamma1
         hs = [h for h in 'ca' if d[h]]
+        # the two-body parts dense here (row slices of chunks), added to C2 and Y at the
+        # end (in the DPD layout where those keep it)
+        C2_out, Y_out = C2, Y
+        C2, Y = {}, {}
         hh = [x + y for x in hs for y in hs if cm.is_canonical(x + y + 'vv')]
         sym = getattr(d, 'sym', None)
         if sym is not None:
@@ -222,6 +236,20 @@ class DSRGMRPT3(DSRGMRPT2):
                             C2[lab + 'vv'] = numpy.zeros((n0, n1, nv, nv), dtype=complex)
                         C2[lab + 'vv'] += c
                 del v, vm
+        for out, part in ((C2_out, C2), (Y_out, Y)):
+            for lab in list(part):
+                x = part.pop(lab)
+                cur = dict.get(out, lab)
+                if cur is None and getattr(out, 'dpd', False) and all(
+                        c in getattr(d, 'legs', {}) for c in lab):
+                    cur = out[lab] = dpd.Tensor([d.legs[c] for c in lab], cm.TWO_BODY, 2,
+                                                d.sym[0])
+                if isinstance(cur, dpd.Tensor):
+                    cm.add_block(cur, x)
+                elif cur is None:
+                    out[lab] = x
+                else:
+                    cur += x
 
     def _scalar(self, o1, o2, t1, t2):
         return float(numpy.real(cm._scalar(

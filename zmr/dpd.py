@@ -43,6 +43,8 @@ class Group:
 
     def __init__(self, name=None):
         self.name = name
+        # products and conjugates of single irreps, memoized (the structures ask for many)
+        self._prod, self._conj = {}, {}
 
     def __eq__(self, other):
         return isinstance(other, Group) and self.name == other.name
@@ -53,6 +55,12 @@ class Group:
     def conj(self, a):
         if self.name is None:
             return numpy.zeros_like(a) if numpy.ndim(a) else 0
+        if isinstance(a, (int, numpy.integer)):
+            a = int(a)
+            hit = self._conj.get(a)
+            if hit is None:
+                hit = self._conj[a] = int(dg.conj(a, self.name))
+            return hit
         return dg.conj(a, self.name)
 
     def prod(self, a, b):
@@ -60,7 +68,11 @@ class Group:
             return numpy.zeros(numpy.broadcast(a, b).shape, dtype=int) if (
                 numpy.ndim(a) or numpy.ndim(b)) else 0
         if not numpy.ndim(a) and not numpy.ndim(b):
-            return dg.direct_prod(int(a), int(b), self.name)
+            key = (int(a), int(b))
+            hit = self._prod.get(key)
+            if hit is None:
+                hit = self._prod[key] = int(dg.direct_prod(key[0], key[1], self.name))
+            return hit
         a, b = numpy.broadcast_arrays(numpy.asarray(a), numpy.asarray(b))
         ua, ia = numpy.unique(a, return_inverse=True)
         ub, ib = numpy.unique(b, return_inverse=True)
@@ -173,7 +185,14 @@ def as_group(group):
     or None (no symmetry) as Group.'''
     if hasattr(group, 'prod') and hasattr(group, 'combine'):
         return group
-    return Group(group)
+    # one object per name: it keeps the memoized products
+    g = _GROUPS.get(group)
+    if g is None:
+        g = _GROUPS[group] = Group(group)
+    return g
+
+
+_GROUPS = {}
 
 
 class Leg:
