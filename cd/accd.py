@@ -7,7 +7,7 @@ Atomic compact Cholesky (acCD) auxiliary basis sets.
 For every atom (basis) of the molecule:
 
 1. two-step block pivoted Cholesky decomposition of the one-centre ERIs with
-   threshold ``tau`` (:func:`socutils.cd.cd.pivoted_cholesky`); the pivot
+   threshold ``tau`` (:func:`socutils.cd.cd.select_pivots`); the pivot
    shell pairs (a, b) define the product functions chi_a chi_b that the
    auxiliary basis has to represent;
 2. candidate primitives r^L exp(-z r^2) for L = |la-lb|, |la-lb|+2, ...,
@@ -106,7 +106,7 @@ def _is_uncontracted(amol):
 
 
 def _atom_shells(amol, tau, max_memory, log):
-    _, pivots = cd.pivoted_cholesky(amol, tau, 1e-2, max_memory, 0, active_set=True)
+    pivots = cd.select_pivots(amol, tau, 1e-2, max_memory, 0)
     pairs = sorted({b for grp, U in pivots for b in grp})
     ao_loc = amol.ao_loc_nr()
 

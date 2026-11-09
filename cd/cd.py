@@ -14,14 +14,12 @@ vectors in the (naux, nao_pair) lower-triangular layout of density fitting,
 so ``loop()``, ``get_jk()`` and every method that takes its integrals from
 ``mf.with_df`` work unchanged.
 
-Two algorithms (Folkestad, Kjønstad, Koch, J. Chem. Phys. 150, 194112 (2019)):
+Two-step algorithm (Folkestad, Kjønstad, Koch, J. Chem. Phys. 150, 194112
+(2019)): the pivots are selected first, then the vectors are built from the
+exact integrals with the pivots as auxiliary functions (RI with the pivot
+metric J = K K^T); ``pivots`` and ``metric_chol`` are kept.
 
-* ``'onestep'``: pivoted CD, the vectors built along with the pivots.
-* ``'twostep'``: the same pivot selection, then the vectors rebuilt from the
-  exact integrals with the pivots as auxiliary functions (RI with the pivot
-  metric J = K K^T); keeps ``pivots`` and ``metric_chol`` for gradients.
-
-Both use the same pivots: whole shell pairs (all components), taken from the
+The pivots are whole shell pairs (all components), taken from the
 eigen-directions of the residual block of a shell pair (or of a group of
 symmetry-equivalent shell pairs), largest first, with the span factor
 ``sigma`` (Koch et al., J. Chem. Phys. 118, 9481 (2003)).  The decomposition
@@ -33,16 +31,23 @@ No pair is screened out of the vectors: dropping the pairs with small
 diagonals keeps every single integral within tau, but the dropped
 contributions all lower the Coulomb repulsion, and in a large molecule they
 add up (C60/cc-pVDZ: 3.7 Eh too low with D_p * max(D) < tau**2 dropped).
+
+Usage, as any density-fitting object, or with the shortcut cholesky()::
+
+    mf = scf.RHF(mol).density_fit(with_df=CD(mol, tau=1e-5))
+    mf = spinor_hf.SCF(mol).x2camf().cholesky(tau=1e-5)
 '''
 
 import numpy
 import scipy.linalg
-from pyscf import df, lib
+from pyscf import lib
 from pyscf.gto import moleintor
 from pyscf.lib import logger
+from pyscf.df.df import DF
+from pyscf import __config__
 
 
-def cholesky(mf, tau=1e-4, sigma=1e-2, method='twostep',
+def cholesky(mf, tau=1e-4, sigma=1e-2, method=None,
              cderi=None, cderi_to_save=None, with_df=None, **kwargs):
     '''Attach Cholesky-decomposed ERIs to an SCF object -- the CD analogue of
     ``mf.density_fit()``.
@@ -60,10 +65,15 @@ def cholesky(mf, tau=1e-4, sigma=1e-2, method='twostep',
         mf = ....cholesky(cderi='cderi.h5')           # reuse
 
     Extra keyword arguments (e.g. ``only_dfj``) go to ``density_fit``.
+    ``method`` is accepted for old scripts: only the two-step algorithm is
+    left ('twostep' or None).
     '''
     kwargs.pop('compress', None)   # accepted for backward compatibility
+    if method not in (None, 'twostep'):
+        raise ValueError("CD method %r: only the two-step algorithm is available "
+                         "(the one-step one gave the same vectors, slower)" % method)
     if with_df is None:
-        with_df = CD(mf.mol, tau=tau, sigma=sigma, method=method)
+        with_df = CD(mf.mol, tau=tau, sigma=sigma)
     if cderi is not None:
         with_df._cderi = cderi
     if cderi_to_save is not None:
@@ -138,7 +148,7 @@ MAX_CANDIDATES = 128
 REFRESH = 32
 # relative difference of the block measure regarded as a tie (equivalent pairs)
 TIE = 1e-8
-# active set (two-step): compact once the done pairs exceed this fraction
+# active set: compact once the done pairs exceed this fraction
 ACTIVE_COMPACT = .2
 
 
@@ -154,9 +164,37 @@ def _pair_weights(ao_loc, blocks, bpairs, npair):
     return cw
 
 
-def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None,
-                     active_set=False):
-    """Shell-pair block pivoted Cholesky decomposition of the ERIs.
+def _compact_columns(buf, n, ncol, keep, blksize=None):
+    '''In place: the rows of buf viewed as (cap, ncol) keep only the columns
+    keep; returns buf viewed as (cap', len(keep)).  Row r moves to the front
+    (its new start r*len(keep) is not after its old start r*ncol), in blocks
+    of rows read into a temporary before they are written.'''
+    nkeep = keep.size
+    if nkeep == 0:
+        return buf[:0].reshape(0, 0)
+    old = buf[:n*ncol].reshape(n, ncol)
+    if blksize is None:
+        blksize = max(1, min(n, int(64e6 / 8 / max(nkeep, 1))))
+    rows = numpy.arange(blksize)
+    for r0 in range(0, n, blksize):
+        r1 = min(n, r0 + blksize)
+        tmp = lib.take_2d(old[r0:r1], rows[:r1-r0], keep)     # threaded copy
+        buf[r0*nkeep:r1*nkeep] = tmp.ravel()
+    cap = buf.size // nkeep
+    return buf[:cap*nkeep].reshape(cap, nkeep)
+
+
+def estimate_nvec(nao, tau):
+    '''Number of CD vectors, an estimate on the high side: the vectors per AO
+    grow by about 1.5 per decade of tau (3.4-4.3 at 1e-3, 8.4-8.9 at 1e-6, 16
+    at 1e-10 for TZ basis sets).'''
+    return int(min(nao*(nao+1)//2, (1.5 * -numpy.log10(tau) + 1) * nao))
+
+
+def select_pivots(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None,
+                  force=False):
+    """Pivots of the shell-pair block pivoted Cholesky decomposition of the
+    ERIs.
 
     The pivots are whole shell pairs.  For a group of shell pairs (one pair,
     or the symmetry-equivalent pairs with the same measure) with residual
@@ -172,14 +210,18 @@ def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None,
     under rotations and permutations of equivalent atoms, so is the
     decomposition.
 
-    With active_set (for the two-step method, which needs the pivots only)
-    the vectors are kept on the pairs of the groups that are not done: a done
-    group never becomes a candidate again, and the residual of its pairs is
-    not needed any more.  The arrays over the pairs are compacted once the
-    done pairs exceed ACTIVE_COMPACT of them.  The pivots are the same.
+    The vectors made on the way are kept only on the pairs of the groups
+    that are not done (the active set): a done group never becomes a
+    candidate again, and the residual of its pairs is not needed any more.
+    The arrays over the pairs are compacted once the done pairs exceed
+    ACTIVE_COMPACT of them.
+
+    Before the decomposition the memory of the vectors on the active pairs
+    is estimated (estimate_nvec, on the high side); MemoryError if it exceeds
+    max_memory, unless force.  The memory is checked again whenever vectors
+    are added.
 
     Returns:
-        L : (nchol, nao_pair) array, the vectors (None with active_set)
         pivots : list of (shell pairs, U), U (components x k) the directions
     """
     log = logger.new_logger(mol, verbose)
@@ -226,22 +268,34 @@ def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None,
     def avail_mb():
         return max_memory - lib.current_memory()[0]
 
-    def grow(L, n, k):
-        cap = L.shape[0] + max(nao, k, L.shape[0] // 2)
-        need = (cap + L.shape[0]) * nact * 8 / 1e6       # new buffer + copy
-        if need > avail_mb():
-            raise MemoryError(
-                'CD needs %.0f MB for %d+ vectors (tau = %g, max residual %.2e) '
-                'but only %.0f MB of max_memory are left; raise max_memory or tau.'
-                % (need, n + k, tau, d.max(), avail_mb()))
-        L1 = numpy.empty((cap, nact))
-        L1[:n] = L[:n]
-        return L1
+    def out_of_memory(n, k):
+        return MemoryError(
+            'CD needs memory for %d+ vectors (tau = %g, max residual %.2e) but '
+            'only %.0f MB of max_memory are left; raise max_memory or tau.'
+            % (n + k, tau, d.max(), avail_mb()))
 
-    # numpy.empty reserves the buffer; pages are allocated when first written
-    # (by the gemm that makes the vectors), so a generous size costs nothing
-    cap0 = max(64, min(npair, int(avail_mb() * 1e6 / 8 / npair / 2)))
-    L = numpy.empty((cap0, npair))
+    # blocks with residual trace below tau are done from the start (pairs of
+    # distant atoms): the active pairs bound the memory of the vectors
+    done |= traces() < tau
+    nact0 = int((~done[bid]).sum())
+    est = estimate_nvec(nao, tau) * nact0 * 8 / 1e6
+    log.info('CD: %d of %d pairs active; estimated memory of the vectors %.0f MB, '
+             '%.0f MB of max_memory left', nact0, npair, est, avail_mb())
+    if est > avail_mb() and not force:
+        raise MemoryError(
+            'CD: the vectors need an estimated %.0f MB (tau = %g, %d active pairs; the '
+            'estimate is on the high side), %.0f MB of max_memory are left.  Raise '
+            'max_memory or tau, or set force = True to run anyway.'
+            % (est, tau, nact0, avail_mb()))
+
+    # One buffer for the vectors, never reallocated: numpy.empty reserves the
+    # address space, the pages are allocated when first written (by the gemm
+    # that makes the vectors), so the largest size max_memory allows costs
+    # nothing up front.  The vectors live on the active pairs, L[:n, :nact],
+    # rows of length nact in the flat buffer.
+    cap = int(min(npair, max(1, avail_mb()) * 1e6 / 8 / npair))
+    buf = numpy.empty(cap * npair)
+    L = buf.reshape(cap, npair)
     n = 0
     pivots = []
     nmacro = 0
@@ -250,21 +304,17 @@ def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None,
         # a block with residual trace below tau has every eigenvalue below tau:
         # done (the trace only decreases)
         done |= traces() < tau
-        if active_set:
-            alive = ~done[bid_a]
-            if (~alive).sum() > ACTIVE_COMPACT * nact:
-                keep_pos = numpy.where(alive)[0]
-                L1 = numpy.empty((L.shape[0], keep_pos.size))
-                lib.take_2d(L[:n], numpy.arange(n), keep_pos, out=L1[:n])   # threaded
-                L = L1
-                del L1
-                act = act[alive]
-                d = d[alive]
-                bid_a, c2_a, cw_a = bid[act], c2[act], cw[act]
-                pos = numpy.full(npair, -1)
-                pos[act] = numpy.arange(act.size)
-                log.debug1('CD active set: %d -> %d pairs', nact, act.size)
-                nact = act.size
+        alive = ~done[bid_a]
+        if (~alive).sum() > ACTIVE_COMPACT * nact:
+            keep_pos = numpy.where(alive)[0]
+            L = _compact_columns(buf, n, nact, keep_pos)
+            act = act[alive]
+            d = d[alive]
+            bid_a, c2_a, cw_a = bid[act], c2[act], cw[act]
+            pos = numpy.full(npair, -1)
+            pos[act] = numpy.arange(act.size)
+            log.debug1('CD active set: %d -> %d pairs', nact, act.size)
+            nact = act.size
         t = traces()
         tmax = t.max()
         if tmax < tau:
@@ -350,8 +400,8 @@ def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None,
                 continue
             U = W[:, keep] * cp[:, None]
             k = U.shape[1]
-            if n + k > L.shape[0]:
-                L = grow(L, n, k)
+            if n + k > L.shape[0] or k * nact * 8 / 1e6 > avail_mb():
+                raise out_of_memory(n, k)
             Lnew = L[n:n+k]
             lib.dot(numpy.ascontiguousarray((U / numpy.sqrt(w[keep])).T), Bb, 1, Lnew, 0)
             n += k
@@ -374,15 +424,17 @@ def pivoted_cholesky(mol, tau=1e-4, sigma=1e-2, max_memory=4000, verbose=None,
         log.debug1('CD macro iteration %d: %d candidate columns, nchol = %d',
                    nmacro, ncol, n)
 
-    log.info('CD: %d vectors (%.1f nao) from %d pivot groups in %d macro iterations, tau = %g',
+    log.info('CD: %d pivots (%.1f nao) in %d groups from %d macro iterations, tau = %g',
              n, n / max(nao, 1), len(pivots), nmacro, tau)
-    log.timer('CD pivoted decomposition', *t1)
-    if active_set:
-        return None, pivots
-    return L[:n], pivots
+    log.timer('CD pivot selection', *t1)
+    return pivots
 
 
-class CD(df.DF):
+_NO_AUXMOL = ('CD has no atom-centred auxiliary basis (its auxiliary functions are '
+              'the pivot products); use df.DF for methods that need auxmol or auxbasis')
+
+
+class CD(DF):
     '''Cholesky decomposition of the ERIs as a DF object.
 
     Attributes:
@@ -390,36 +442,58 @@ class CD(df.DF):
             Decomposition threshold: all residual diagonals below tau.
         sigma : float
             Span factor of the in-block pivot selection.
-        method : str
-            'twostep' (default) or 'onestep' ('threeloop' is accepted as an
-            old name of 'onestep').  Both give the same decomposition; the
-            two-step pivot search works on the active pairs only and is the
-            faster one for larger molecules.
         pivots : list of (shell pairs, U) or None
             After build(): the pivot groups and their directions U
             (components x k) in the pair functions of the group.
         metric_chol : ndarray or None
-            'twostep': Cholesky factor K of the pivot metric J = K K^T.
+            After build(): Cholesky factor K of the pivot metric J = K K^T.
+        force : bool
+            The pivot search first estimates the memory of its vectors (on
+            the high side, see select_pivots) and raises MemoryError if it
+            exceeds max_memory.  force = True skips this check; the memory is
+            still checked while the vectors are made.  The final vectors are
+            written to _cderi_to_save in blocks (as df.DF) when they do not
+            fit in memory or _cderi_to_save is set.
     '''
 
-    _keys = {'tau', 'sigma', 'method', 'pivots', 'metric_chol'}
+    _keys = {'tau', 'sigma', 'pivots', 'metric_chol', 'force'}
 
-    def __init__(self, mol, tau=1e-4, sigma=1e-2, method='twostep', **kwargs):
-        df.DF.__init__(self, mol)
-        kwargs.pop('compress', None)   # accepted for backward compatibility
-        if kwargs:
-            raise TypeError('unexpected arguments %s' % list(kwargs))
+    def __init__(self, mol, tau=1e-4, sigma=1e-2):
+        DF.__init__(self, mol)
         self.tau = tau
         self.sigma = sigma
-        self.method = method
+        self.force = False
         self.pivots = None
         self.metric_chol = None
+
+    # CD has no atom-centred auxiliary basis (its auxiliary functions are the
+    # pivot products, see pivots and metric_chol).  Methods that need auxmol
+    # or set an auxbasis would otherwise build a DF object of their own.
+    @property
+    def auxmol(self):
+        raise NotImplementedError(_NO_AUXMOL)
+
+    @auxmol.setter
+    def auxmol(self, x):
+        if x is not None:
+            raise NotImplementedError(_NO_AUXMOL)
+
+    @property
+    def auxbasis(self):
+        raise NotImplementedError(_NO_AUXMOL)
+
+    @auxbasis.setter
+    def auxbasis(self, x):
+        if x is not None:
+            raise NotImplementedError(_NO_AUXMOL)
+
+    def range_coulomb(self, omega):
+        raise NotImplementedError('range-separated integrals with CD')
 
     def dump_flags(self, verbose=None):
         log = logger.new_logger(self, verbose)
         log.info('******** %s ********', self.__class__)
-        log.info('Cholesky decomposition: method = %s, tau = %g, sigma = %g',
-                 self.method, self.tau, self.sigma)
+        log.info('Cholesky decomposition: tau = %g, sigma = %g', self.tau, self.sigma)
         log.info('max_memory = %s', self.max_memory)
         return self
 
@@ -436,13 +510,15 @@ class CD(df.DF):
             return tuple(obj.shape)
 
     def get_jk(self, dm, hermi=1, with_j=True, with_k=True,
-               direct_scf_tol=1e-13, omega=None):
+               direct_scf_tol=getattr(__config__, 'scf_hf_SCF_direct_scf_tol', 1e-13),
+               omega=None):
+        if omega is not None:
+            raise NotImplementedError('range-separated integrals with CD')
         # build first: with _cderi unset, the J-only path of df_jk would make
         # its own even-tempered auxiliary basis instead of using the CD vectors
         if self._cderi is None:
             self.build()
-        return df.DF.get_jk(self, dm, hermi, with_j, with_k,
-                            direct_scf_tol, omega)
+        return DF.get_jk(self, dm, hermi, with_j, with_k, direct_scf_tol)
 
     def build(self):
         log = logger.new_logger(self)
@@ -450,87 +526,155 @@ class CD(df.DF):
             log.info('CD: using preset _cderi (%s); skipping the decomposition',
                      self._cderi if isinstance(self._cderi, str) else 'in-core array')
             return self
-        method = {'threeloop': 'onestep'}.get(self.method, self.method)
-        if method not in ('onestep', 'twostep'):
-            raise ValueError("CD.method must be 'onestep' or 'twostep', got %r" % self.method)
         self.dump_flags()
 
         mol = self.mol
-        L, pivots = pivoted_cholesky(mol, self.tau, self.sigma, self.max_memory, self.verbose,
-                                     active_set=(method == 'twostep'))
+        pivots = select_pivots(mol, self.tau, self.sigma, self.max_memory, self.verbose,
+                               self.force)
         self.pivots = pivots
-        if method == 'onestep':
-            cderi = L
-        else:
-            cderi = self._rebuild(mol, pivots, log)
 
-        if isinstance(self._cderi_to_save, str):
-            import h5py
-            dataname = getattr(self, '_dataname', 'j3c')
-            with h5py.File(self._cderi_to_save, 'w') as f:
-                f[dataname] = cderi
-            self._cderi = self._cderi_to_save
-            log.info('CD: saved %d vectors to %s', cderi.shape[0], self._cderi_to_save)
+        # step 2 as df.DF.build: the pivots are the auxiliary functions,
+        # T = U^T (pivot | pairs) the 3-index integrals, J = U^T (pivot |
+        # pivot) U the metric.  In memory if the vectors fit and no file is
+        # requested, else in blocks of pairs in _cderi_to_save.
+        nao = mol.nao_nr()
+        npiv = sum(U.shape[1] for _, U in pivots)
+        is_custom_storage = isinstance(self._cderi_to_save, str)
+        max_memory = self.max_memory - lib.current_memory()[0]
+        if npiv * nao*(nao+1)//2 * 8 / 1e6 < .9 * max_memory and not is_custom_storage:
+            self._cderi = self._rebuild(mol, pivots, log)
         else:
+            if self._cderi_to_save is None:
+                self._cderi_to_save = lib.NamedTemporaryFile(dir=lib.param.TMPDIR)
+            cderi = self._cderi_to_save
+            log.info('_cderi_to_save = %s', getattr(cderi, 'name', cderi))
+            self._rebuild_outcore(mol, pivots, cderi, max_memory, log)
             self._cderi = cderi
         return self
 
+    def _t_rows(self, ints, pivots, T, shell_range=None):
+        """T = U^T (pivot groups | pairs): rows for all pairs (shell_range
+        None) or for the pairs of the bra shells a0..a1 (all ket shells up to
+        a1).  The gemm takes the integral columns (pairs x components, as
+        libcint makes them) transposed, without copies.  For a shell with
+        itself the rows of U are spread over all di*dj components (zero for
+        mu < nu)."""
+        ao_loc = ints.ao_loc
+        if shell_range is not None:
+            a0, a1 = shell_range
+            i0, i1 = ao_loc[a0], ao_loc[a1]
+            # rows (i, j <= i) of the (i in block, j < i1) integrals, in the
+            # pack_tril order p = i*(i+1)/2 + j
+            rows = numpy.hstack([(i - i0) * i1 + numpy.arange(i + 1) for i in range(i0, i1)])
+        r0 = 0
+        for grp, U in pivots:
+            k = U.shape[1]
+            u0 = 0
+            for ig, (si, sj) in enumerate(grp):
+                p, loc = _shell_pair_columns(ao_loc, si, sj)
+                if shell_range is None:
+                    col = ints.column(si, sj)
+                else:
+                    buf = ints((a0, a1, 0, a1, si, si+1, sj, sj+1))
+                    col = buf.reshape(-1, buf.shape[2] * buf.shape[3])[rows]
+                Ub = U[u0:u0+p.size]
+                if si == sj:
+                    Uf = numpy.zeros((col.shape[1], k))
+                    Uf[loc] = Ub
+                    Ub = Uf
+                lib.dot(numpy.ascontiguousarray(Ub.T), col.T, 1, T[r0:r0+k], 1 if ig else 0)
+                u0 += p.size
+            r0 += k
+        return T
+
+    @staticmethod
+    def _solve(K, T):
+        """L = K^-1 T in place: T (C order) is T^T in Fortran order, so solve
+        X K^T = T^T with dtrsm (scipy.linalg.solve_triangular would first copy
+        T into Fortran order)."""
+        from scipy.linalg import blas
+        L = blas.dtrsm(1., K, T.T, side=1, lower=1, trans_a=1, overwrite_b=1).T
+        if not numpy.shares_memory(L, T):
+            raise RuntimeError('dtrsm did not work in place')
+        return L
+
+    def _metric_chol(self, J):
+        """Cholesky factor K of the pivot metric, J = K K^T."""
+        J = (J + J.T) * .5
+        try:
+            K = scipy.linalg.cholesky(J, lower=True)
+        except numpy.linalg.LinAlgError:
+            raise RuntimeError('CD: the pivot metric is not positive definite')
+        self.metric_chol = K
+        return K
+
     def _rebuild(self, mol, pivots, log):
-        """Two-step CD, step 2: L = K^-1 T with T = U^T (pivot groups | pairs)
-        and J = T restricted to the pivot directions = K K^T."""
+        """Step 2 in memory (as df.incore.cholesky_eri): T = U^T (pivot |
+        pairs), the metric J from the pivot rows of T, L = K^-1 T in place."""
+        t0 = (logger.process_clock(), logger.perf_counter())
+        ints = _Int2e(mol)
+        ao_loc = ints.ao_loc
+        nao = int(ao_loc[-1])
+        npiv = sum(U.shape[1] for _, U in pivots)
+        T = self._t_rows(ints, pivots, numpy.empty((npiv, nao*(nao+1)//2)))
+        J = numpy.empty((npiv, npiv))
+        r0 = 0
+        for grp, U in pivots:
+            k = U.shape[1]
+            p = numpy.hstack([_shell_pair_columns(ao_loc, si, sj)[0] for si, sj in grp])
+            J[:, r0:r0+k] = T[:, p] @ U
+            r0 += k
+        cderi = self._solve(self._metric_chol(J), T)
+        log.timer('CD vectors', *t0)
+        return cderi
+
+    def _rebuild_outcore(self, mol, pivots, cderi, max_memory, log, buflen=None):
+        """Step 2 in blocks of pairs (as df.outcore.cholesky_eri_b): the bra
+        shells are split into ranges of at most buflen pairs (default from
+        max_memory, as df.outcore); the metric J is collected from the pivot
+        rows of T over the ranges that hold pivot pairs, then for every range
+        L = K^-1 T is written to dataname/istep."""
+        from pyscf.df.outcore import _guess_shell_ranges, _create_h5file
         t0 = (logger.process_clock(), logger.perf_counter())
         ints = _Int2e(mol)
         ao_loc = ints.ao_loc
         nao = int(ao_loc[-1])
         npair = nao*(nao+1)//2
         npiv = sum(U.shape[1] for _, U in pivots)
-        need = 2 * npiv * npair * 8 / 1e6
-        avail = self.max_memory - lib.current_memory()[0]
-        if need > avail:
-            raise MemoryError('two-step CD needs %.0f MB for %d pivots, %.0f MB left'
-                              % (need, npiv, avail))
-        T = numpy.empty((npiv, npair))
-        gpairs = []
-        r0 = 0
-        for grp, U in pivots:
-            # T rows = U^T col^T, summed over the blocks of the group: the gemm
-            # takes the integral columns (pairs x components, as libcint makes
-            # them) transposed, without copies.  For a shell with itself the
-            # rows of U are spread over all di*dj components (zero for mu < nu).
-            k = U.shape[1]
-            u0 = 0
-            ps = []
-            for ib, (si, sj) in enumerate(grp):
-                p, loc = _shell_pair_columns(ao_loc, si, sj)
-                col = ints.column(si, sj)
-                Ub = U[u0:u0+p.size]
-                if si == sj:
-                    Uf = numpy.zeros((col.shape[1], k))
-                    Uf[loc] = Ub
-                    Ub = Uf
-                lib.dot(numpy.ascontiguousarray(Ub.T), col.T, 1, T[r0:r0+k], 1 if ib else 0)
-                u0 += p.size
-                ps.append(p)
-            gpairs.append(numpy.hstack(ps))
-            r0 += k
-        J = numpy.empty((npiv, npiv))
-        r0 = 0
-        for (grp, U), p in zip(pivots, gpairs):
-            k = U.shape[1]
-            J[:, r0:r0+k] = T[:, p] @ U
-            r0 += k
-        J = (J + J.T) * .5
-        try:
-            K = scipy.linalg.cholesky(J, lower=True)
-        except numpy.linalg.LinAlgError:
-            raise RuntimeError('two-step CD: the pivot metric is not positive definite')
-        self.metric_chol = K
-        # L = K^-1 T: T (C order) is T^T in Fortran order, so solve
-        # X K^T = T^T in place with dtrsm (scipy.linalg.solve_triangular would
-        # first copy T into Fortran order)
-        from scipy.linalg import blas
-        cderi = blas.dtrsm(1., K, T.T, side=1, lower=1, trans_a=1, overwrite_b=1).T
-        if not numpy.shares_memory(cderi, T):
-            raise RuntimeError('dtrsm did not work in place')
-        log.timer('CD two-step reconstruction', *t0)
-        return cderi
+        if buflen is None:
+            buflen = min(max(int(max_memory*.24e6/8/npiv), 1), npair)
+        shranges = _guess_shell_ranges(mol, buflen, 's2ij')
+        log.debug('cderi %.8g MB, IO buf size %.8g MB', npiv*npair*8/1e6, buflen*npiv*8/1e6)
+        npair_at = ao_loc * (ao_loc + 1) // 2           # first pair of shell a
+        gpairs = [numpy.hstack([_shell_pair_columns(ao_loc, si, sj)[0] for si, sj in grp])
+                  for grp, U in pivots]
+        allp = numpy.hstack(gpairs)
+
+        # the metric: pivot rows of T, over the ranges that hold pivot pairs
+        J = numpy.zeros((npiv, npiv))
+        for a0, a1, nrow in shranges:
+            p0, p1 = npair_at[a0], npair_at[a1]
+            if not numpy.any((allp >= p0) & (allp < p1)):
+                continue
+            Tb = self._t_rows(ints, pivots, numpy.empty((npiv, p1 - p0)), (a0, a1))
+            r0 = 0
+            for (grp, U), p in zip(pivots, gpairs):
+                k = U.shape[1]
+                m = (p >= p0) & (p < p1)
+                if m.any():
+                    J[:, r0:r0+k] += Tb[:, p[m] - p0] @ U[m]
+                r0 += k
+            Tb = None
+        K = self._metric_chol(J)
+        t1 = log.timer('CD pivot metric', *t0)
+
+        feri = _create_h5file(cderi, self._dataname)
+        for istep, (a0, a1, nrow) in enumerate(shranges):
+            Tb = self._t_rows(ints, pivots, numpy.empty((npiv, npair_at[a1] - npair_at[a0])),
+                              (a0, a1))
+            feri['%s/%d' % (self._dataname, istep)] = self._solve(K, Tb)
+            Tb = None
+            t1 = log.timer_debug1('CD vectors [%d/%d], AO shells [%d:%d]'
+                                  % (istep+1, len(shranges), a0, a1), *t1)
+        feri.close()
+        log.timer('CD vectors (%d blocks of pairs on disk)' % len(shranges), *t0)
