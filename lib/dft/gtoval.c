@@ -14,6 +14,7 @@
  *   56 points (as pyscf).
  */
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include "gtoval_c2s.h"
@@ -41,15 +42,29 @@ static inline double common_fac_sp(int l)
 
 /* ld: the row stride between components (pyscf: nao of the slice), row0: the row of the slice's
  * first AO */
+/* ostride: the point stride of the output rows, cstride: of the coordinate components (both ngrids
+ * for pyscf's convention) */
+static void eval_shells_s(int deriv, int ngrids, size_t ostride, size_t cstride, int *shls_slice, int *ao_loc,
+                          double *ao, size_t ld, size_t row0, double *coord, uint8_t *non0table, int *atm, int *bas,
+                          int nbas, double *env, double *rowmax);
+
 static void eval_shells(int deriv, int ngrids, int *shls_slice, int *ao_loc, double *ao, size_t ld, size_t row0,
                         double *coord, uint8_t *non0table, int *atm, int *bas, int nbas, double *env,
                         double *rowmax)
+{
+        eval_shells_s(deriv, ngrids, ngrids, ngrids, shls_slice, ao_loc, ao, ld, row0, coord, non0table, atm, bas,
+                      nbas, env, rowmax);
+}
+
+static void eval_shells_s(int deriv, int ngrids, size_t ostride, size_t cstride, int *shls_slice, int *ao_loc,
+                          double *ao, size_t ld, size_t row0, double *coord, uint8_t *non0table, int *atm, int *bas,
+                          int nbas, double *env, double *rowmax)
 {
         const int sh0 = shls_slice[0], sh1 = shls_slice[1];
         const size_t nao = ld;
         const int ncomp = deriv == 2 ? 10 : (deriv ? 4 : 1);
         const int nblk = (ngrids + GV_BLK - 1) / GV_BLK;
-        const double *gx = coord, *gy = coord + ngrids, *gz = coord + 2 * ngrids;
+        const double *gx = coord, *gy = coord + cstride, *gz = coord + 2 * cstride;
         double rad[GV_NCMAX][GV_BLK], rad1[GV_NCMAX][GV_BLK], rad2[GV_NCMAX][GV_BLK];
         double cart[10][10][GV_BLK];
         int sh, b;
@@ -67,7 +82,7 @@ static void eval_shells(int deriv, int ngrids, int *shls_slice, int *ao_loc, dou
                         if (!non0table[(size_t)b * nbas + sh]) {
                                 for (k = 0; k < ncomp; k++)
                                         for (c = 0; c < nc * deg; c++)
-                                                memset(ao + ((size_t)k * nao + aoid + c) * ngrids + g0, 0, sizeof(double) * bg);
+                                                memset(ao + ((size_t)k * nao + aoid + c) * ostride + g0, 0, sizeof(double) * bg);
                                 continue;
                         }
                         double dx[GV_BLK], dy[GV_BLK], dz[GV_BLK], r2[GV_BLK];
@@ -179,9 +194,9 @@ static void eval_shells(int deriv, int ngrids, int *shls_slice, int *ao_loc, dou
                                         }
                                 }
                                 for (k = 0; k < ncomp; k++) {
-                                        double *o = ao + ((size_t)k * nao + aoid + (size_t)c * deg) * ngrids + g0;
+                                        double *o = ao + ((size_t)k * nao + aoid + (size_t)c * deg) * ostride + g0;
                                         for (m = 0; m < deg; m++) {
-                                                double *om = o + (size_t)m * ngrids, mx = 0;
+                                                double *om = o + (size_t)m * ostride, mx = 0;
                                                 if (l <= 1) {
 #pragma omp simd reduction(max:mx)
                                                         for (g = 0; g < bg; g++) {
@@ -248,4 +263,29 @@ void SOCDFTgtoval_ld(int deriv, int ngrids, int sh0, int sh1, int *ao_loc, doubl
 {
         int sl[2] = {sh0, sh1};
         eval_shells(deriv, ngrids, sl, ao_loc, ao, ld, row0, coord, non0table, atm, bas, nbas, env, rowmax);
+}
+
+/* pyscf's eval_ao (GTOval_sph(_deriv1/2)) of all shells on ngrids points, OpenMP over runs of 56-point
+ * blocks: ao (ncomp, nao, ngrids), coord (3, ngrids), non0table (ngrids / 56, nbas) or NULL (all) */
+void SOCDFTeval_ao(int deriv, int ngrids, double *ao, double *coord, uint8_t *non0table, int *ao_loc, int *atm,
+                   int *bas, int nbas, double *env)
+{
+        const int nblk = (ngrids + GV_BLK - 1) / GV_BLK, per = 4;      /* 4 blocks of 56 points per task */
+        const size_t nao = ao_loc[nbas];
+        uint8_t *ones = NULL;
+        if (non0table == NULL) {
+                ones = malloc((size_t)nblk * nbas);
+                memset(ones, 1, (size_t)nblk * nbas);
+                non0table = ones;
+        }
+        int t;
+#pragma omp parallel for schedule(dynamic, 1)
+        for (t = 0; t < (nblk + per - 1) / per; t++) {
+                const int b0 = t * per, g0 = b0 * GV_BLK;
+                const int n = g0 + per * GV_BLK <= ngrids ? per * GV_BLK : ngrids - g0;
+                int sl[2] = {0, nbas};
+                eval_shells_s(deriv, n, ngrids, ngrids, sl, ao_loc, ao + g0, nao, 0, coord + g0,
+                              non0table + (size_t)b0 * nbas, atm, bas, nbas, env, NULL);
+        }
+        free(ones);
 }

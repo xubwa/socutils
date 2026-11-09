@@ -290,6 +290,38 @@ def _nr_rks_fused(libdft, ni, mol, grids, xc_code, dms_a, d, xctype):
     return nelec, excsum, vmat.reshape(dms_a.shape)
 
 
+def eval_ao(ni, mol, coords, deriv=0, shls_slice=None, non0tab=None, cutoff=None, out=None, verbose=None):
+    '''NumInt.eval_ao by the SIMD evaluator (lib/dft/gtoval.c SOCDFTeval_ao) for spherical AOs of
+    l <= 3, deriv <= 2, all shells; else pyscf's.  The same values and layout ((ncomp,) ngrids, nao
+    views of (ncomp, nao, ngrids)).'''
+    from socutils.hessian.rhf_fast import _load_socdft
+    libdft = _load_socdft()
+    if (not OWN_GTOVAL or libdft is None or not hasattr(libdft, 'SOCDFTeval_ao') or deriv > 2 or mol.cart
+            or shls_slice is not None or mol._bas[:, 1].max() > libdft.SOCDFTgtoval_lmax()):
+        return numint.eval_ao(mol, coords, deriv, shls_slice, non0tab, cutoff, out, verbose)
+    ncomp = (1, 4, 10)[deriv]
+    ngrids = coords.shape[0]
+    nao = mol.nao
+    if out is not None and out.size >= ncomp * nao * ngrids:
+        buf = numpy.ndarray((ncomp, nao, ngrids), buffer=out)
+    else:
+        buf = numpy.empty((ncomp, nao, ngrids))
+    xyz = numpy.ascontiguousarray(numpy.asarray(coords, dtype=numpy.double).T)
+    msk = None if non0tab is None else numpy.ascontiguousarray(non0tab, dtype=numpy.uint8)
+    atm = numpy.asarray(mol._atm, dtype=numpy.int32, order='C')
+    bas = numpy.asarray(mol._bas, dtype=numpy.int32, order='C')
+    env = numpy.asarray(mol._env, dtype=numpy.double, order='C')
+    ao_loc = mol.ao_loc_nr().astype(numpy.int32)
+    libdft.SOCDFTeval_ao(ctypes.c_int(deriv), ctypes.c_int(ngrids), buf.ctypes.data_as(ctypes.c_void_p),
+                         xyz.ctypes.data_as(ctypes.c_void_p),
+                         None if msk is None else msk.ctypes.data_as(ctypes.c_void_p),
+                         ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
+                         bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas),
+                         env.ctypes.data_as(ctypes.c_void_p))
+    ao = buf.transpose(0, 2, 1)
+    return ao[0] if deriv == 0 else ao
+
+
 def apply(mf):
     '''mf._numint.nr_rks from vxc_fast (RKS objects).  Modifies and returns mf.
     Also makes pyscf's grid build sort the points with socutils.dft.grids'
@@ -299,4 +331,6 @@ def apply(mf):
     ni = mf._numint
     if isinstance(ni, numint.NumInt):
         ni.nr_rks = lambda *a, **k: nr_rks(ni, *a, **k)
+        # block_loop's AOs (the Hessian / response XC terms) by the SIMD evaluator
+        ni.eval_ao = lambda *a, **k: eval_ao(ni, *a, **k)
     return mf

@@ -689,6 +689,12 @@ class NumInt2C(numint2c.NumInt2C):
                   instead (reference implementation).
     '''
 
+    def eval_ao(self, mol, coords, deriv=0, shls_slice=None, non0tab=None, cutoff=None, out=None, verbose=None):
+        '''the AOs of block_loop by the SIMD evaluator (socutils.dft.vxc_fast.eval_ao: lib/dft/gtoval.c,
+        spherical l <= 3, deriv <= 2; else pyscf's)'''
+        from socutils.dft import vxc_fast
+        return vxc_fast.eval_ao(self, mol, coords, deriv, shls_slice, non0tab, cutoff, out, verbose)
+
     mcol_backend = 'native'
     # native mcol GGA/MGGA sphere kernel: 'c' (lib/libsocdft.so, falls back to
     # numpy when it is not built) or 'numpy'
