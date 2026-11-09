@@ -1181,18 +1181,36 @@ def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000):
             libdft.SOCDFTgather_ao(aos.ctypes, aoT.ctypes, None if idx is None else idx.ctypes, ctypes.c_int(nvar),
                                    ctypes.c_int(nao), ctypes.c_int(nl), ctypes.c_int(ng), ctypes.c_int(s0),
                                    ctypes.c_int(gs), ctypes.c_long(cs))
-            ws = ws_buf[:nd * nvar * gs].reshape(nd, nvar, gs)
-            libdft.SOCDFTslice_grid(ws.ctypes, wv1.ctypes, ctypes.c_long(nd * nvar), ctypes.c_int(ng),
-                                    ctypes.c_int(s0), ctypes.c_int(gs))
-            aow = aow_buf[:nd * nl * gs].reshape(nd * nl, gs)
-            libdft.SOCDFTaow_multi(aow.ctypes, ws.ctypes, aos.ctypes, ctypes.c_int(nd), ctypes.c_int(nvar),
+            if idx is None or not XCD1_LOCAL_ATOMS:
+                ws = ws_buf[:nd * nvar * gs].reshape(nd, nvar, gs)
+                libdft.SOCDFTslice_grid(ws.ctypes, wv1.ctypes, ctypes.c_long(nd * nvar), ctypes.c_int(ng),
+                                        ctypes.c_int(s0), ctypes.c_int(gs))
+                aow = aow_buf[:nd * nl * gs].reshape(nd * nl, gs)
+                libdft.SOCDFTaow_multi(aow.ctypes, ws.ctypes, aos.ctypes, ctypes.c_int(nd), ctypes.c_int(nvar),
+                                       ctypes.c_int(nl), ctypes.c_int(gs))
+                if idx is None:
+                    lib.dot(aow, aos[0].T, beta=1, c=vmat.reshape(nd * nao, nao))
+                else:
+                    vl = lib.dot(aow, aos[0].T)
+                    libdft.SOCDFTscatter_add_dm(vmat.ctypes, vl.ctypes, idx.ctypes, ctypes.c_int(nl),
+                                                ctypes.c_int(nd), ctypes.c_int(nao))
+                continue
+            # d_A rho, hence the first-order potential of atom A, vanishes where none of A's AOs is
+            # significant: only the atoms of the sub-block's AOs (their 3 rows each)
+            atoms = numpy.unique(atom_of[idx])
+            na_l = atoms.size
+            nd_l = 3 * na_l
+            rows = (3 * atoms[:, None] + numpy.arange(3)).ravel()
+            ws = numpy.ascontiguousarray(wv1[rows, :, s0:s1])
+            aow = aow_buf[:nd_l * nl * gs].reshape(nd_l * nl, gs)
+            libdft.SOCDFTaow_multi(aow.ctypes, ws.ctypes, aos.ctypes, ctypes.c_int(nd_l), ctypes.c_int(nvar),
                                    ctypes.c_int(nl), ctypes.c_int(gs))
-            if idx is None:
-                lib.dot(aow, aos[0].T, beta=1, c=vmat.reshape(nd * nao, nao))
-            else:
-                vl = lib.dot(aow, aos[0].T)
-                libdft.SOCDFTscatter_add_dm(vmat.ctypes, vl.ctypes, idx.ctypes, ctypes.c_int(nl),
-                                            ctypes.c_int(nd), ctypes.c_int(nao))
+            vl = lib.dot(aow, aos[0].T)                              # (nd_l nl, nl)
+            vmat_ = vmat.reshape(natm, 3 * nao * nao)
+            vl_ = vl.reshape(na_l, 3 * nl * nl)
+            for k, ia in enumerate(atoms):
+                libdft.SOCDFTscatter_add_dm(vmat_[ia].ctypes, vl_[k].ctypes, idx.ctypes, ctypes.c_int(nl),
+                                            ctypes.c_int(3), ctypes.c_int(nao))
     vmat = vmat.reshape(natm, 3, nao, nao)
     for ia in range(natm):
         p0, p1 = aoslices[ia][2:]
@@ -1572,6 +1590,7 @@ class _FxcBatched:
 # enough for efficient GEMMs (the sub-matrix gather costs ~1 / (2 FXC_SUBBLOCK)
 # of them)
 FXC_SUBBLOCK = 448
+XCD1_LOCAL_ATOMS = True     # xc_deriv1_batched: per sub-block only the atoms with significant AOs on it
 
 
 # the default ('auto') grid of the CP-SCF XC response: socutils.dft.grids.hessian_grids arguments
