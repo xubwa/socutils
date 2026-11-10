@@ -36,16 +36,27 @@ void SOCDFTrks_xc_hess_elem(double *R, double *diag, double *ab,
         const int mgga = xctype == 2;
         const int nblk = (ngrid + BLK - 1) / BLK;
         memset(R, 0, sizeof(double) * 3 * nvar * natm * G);
+        /* tasks (point block, run of AOs of one atom): the AOs come grouped by atom, so
+         * different tasks write different R[.][.][A] slices and ab rows (a sub-block of a
+         * few hundred points alone would leave most threads idle) */
+        int *run0 = malloc(sizeof(int) * (nao + 1));
+        int nrun = 0, i0;
+        for (i0 = 0; i0 < nao; i0++)
+                if (i0 == 0 || atom_of[i0] != atom_of[i0 - 1]) run0[nrun++] = i0;
+        run0[nrun] = nao;
+        const long ntask = (long)nblk * nrun;
 #pragma omp parallel
 {
         double *dg = calloc(9 * natm, sizeof(double));
         double e0[BLK], f[3][BLK];
-        int ib, mu, p, x, y, j;
-#pragma omp for schedule(static)
-        for (ib = 0; ib < nblk; ib++) {
+        int mu, p, x, y, j;
+        long it;
+#pragma omp for schedule(dynamic, 4)
+        for (it = 0; it < ntask; it++) {
+                const int ib = it / nrun, ir = it % nrun;
                 const int p0 = ib * BLK;
                 const int np = (p0 + BLK < ngrid ? p0 + BLK : ngrid) - p0;
-                for (mu = 0; mu < nao; mu++) {
+                for (mu = run0[ir]; mu < run0[ir + 1]; mu++) {
                         const int A = atom_of[mu];
 #define AO(k) (ao + (size_t)(k) * cs + (size_t)mu * G + p0)
 #define DD(k) (d + ((size_t)(k) * nao + mu) * G + p0)
@@ -126,6 +137,7 @@ void SOCDFTrks_xc_hess_elem(double *R, double *diag, double *ab,
         }
         free(dg);
 }
+        free(run0);
 }
 
 /*
@@ -141,14 +153,23 @@ void SOCDFTrks_dR_rho(double *R, double *ao, double *d, int xctype, int nvar,
         const int gga = xctype >= 1;
         const int nblk = (ngrid + BLK - 1) / BLK;
         memset(R, 0, sizeof(double) * 3 * nvar * natm * G);
+        /* tasks (point block, run of AOs of one atom), as in SOCDFTrks_xc_hess_elem */
+        int *run0 = malloc(sizeof(int) * (nao + 1));
+        int nrun = 0, i0;
+        for (i0 = 0; i0 < nao; i0++)
+                if (i0 == 0 || atom_of[i0] != atom_of[i0 - 1]) run0[nrun++] = i0;
+        run0[nrun] = nao;
+        const long ntask = (long)nblk * nrun;
 #pragma omp parallel
 {
-        int ib, mu, p, x, j;
-#pragma omp for schedule(static)
-        for (ib = 0; ib < nblk; ib++) {
+        int mu, p, x, j;
+        long it;
+#pragma omp for schedule(dynamic, 4)
+        for (it = 0; it < ntask; it++) {
+                const int ib = it / nrun, ir = it % nrun;
                 const int p0 = ib * BLK;
                 const int np = (p0 + BLK < ngrid ? p0 + BLK : ngrid) - p0;
-                for (mu = 0; mu < nao; mu++) {
+                for (mu = run0[ir]; mu < run0[ir + 1]; mu++) {
                         const int A = atom_of[mu];
                         const double *d0 = d + (size_t)mu * G + p0;
                         for (x = 0; x < 3; x++) {
@@ -167,6 +188,7 @@ void SOCDFTrks_dR_rho(double *R, double *ao, double *d, int xctype, int nvar,
                 }
         }
 }
+        free(run0);
 }
 
 /*
