@@ -98,6 +98,11 @@ J_BY_JK_MULTI_LMAX = 2  # J-only builds of bases with l <= this by jk_multi, not
 INCORE = True           # J + K builds from in-memory s8 ERIs when they fit (mf._is_mem_enough, as pyscf)
 
 
+STORE = True            # semi-direct: the costliest integrals per byte kept over the builds (jk_multi.Store)
+STORE_FRAC = .7         # ... within this fraction of max_memory - the current RSS - INCORE_RESERVE
+STORE_MIN_MB = 200      # no store below this budget
+
+
 RIJ_RESIDENT = True     # RIJ: L^{-1} (P|ij) built once and kept in memory when it fits, J = B^T (B d)
 INCORE_RESERVE = 500    # MB of mf.max_memory kept for the other arrays of the SCF
 
@@ -165,6 +170,28 @@ def apply(mf, incremental=True, two_pass=True):
     def tight_tol():
         return min(SCF_TOL, TOL_PER_CONV * getattr(mf, 'conv_tol', 1e-9))
 
+    def store_of(mol):
+        '''the semi-direct store of mol0 (mf._jk_store, made on the first K build), or None'''
+        if not STORE or mol is not mol0 or not hasattr(jk_multi, 'Store'):
+            return None
+        st = getattr(mf, '_jk_store', None)
+        if st is None or not st.matches(mol):
+            st = mf._jk_store = jk_multi.Store(mol)
+        return st
+
+    def plan_store(st, dm, with_j):
+        '''after the first (measuring) full build: plan the store on the full density dm'''
+        if st is None or st.state != 0:
+            return
+        budget = STORE_FRAC * (mf.max_memory - lib.current_memory()[0] - INCORE_RESERVE)
+        if budget < STORE_MIN_MB:
+            logger.info(mf, 'semi-direct store: no room (%.0f MB of max_memory %d, RSS %.0f MB)',
+                        budget, mf.max_memory, lib.current_memory()[0])
+            return
+        t0 = (logger.process_clock(), logger.perf_counter())
+        mb = st.plan(dm, tight_tol(), budget, with_j=with_j)
+        logger.timer(mf, 'semi-direct store planned: %.0f MB, %d quartets' % (mb, st.nquartets), *t0)
+
     def build(mol, dm, hermi, with_j, with_k, omega, max_memory, tol=None):
         if tol is None:
             tol = tight_tol()
@@ -174,7 +201,9 @@ def apply(mf, incremental=True, two_pass=True):
             # not pay, K costs nearly the whole pass
             if not jk_multi.available(mol):
                 return orig_jk(mol, dm, hermi, with_j, with_k, omega)
-            vj, vk = jk_multi.get_jk(mol, dm, with_j, True, tol=tol, hermi=hermi, max_memory=max_memory)
+            st = store_of(mol) if hermi == 1 else None
+            vj, vk = jk_multi.get_jk(mol, dm, with_j, True, tol=tol, hermi=hermi, max_memory=max_memory,
+                                     store=st)
             logger.timer_debug1(mf, 'vj, vk (jk_multi)', *t0)
             return vj, vk
         if not with_j:
@@ -231,6 +260,8 @@ def apply(mf, incremental=True, two_pass=True):
             vj, vk = build(mol, dm, hermi, with_j, with_k, omega, max_memory, tol)
             last['n'] = 0
             logger.debug1(mf, 'full J / K build, cutoff %.0e', tol)
+            if with_k:
+                plan_store(store_of(mol), dm, with_j)
         # copies: callers scale the returned matrices in place (vk *= hyb)
         last.update(key=key, dm=dm.copy(), tol=tol, vj=None if vj is None else vj.copy(),
                     vk=None if vk is None else vk.copy())
