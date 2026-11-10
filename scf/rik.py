@@ -131,7 +131,7 @@ PAIR_TOL = 1e-13      # cholesky_eri: shell pairs with sqrt((ij|ij)) max sqrt((P
 def _load_socvhf():
     from socutils.hessian import ghf as ghf_hess
     libv = ghf_hess._load_socvhf()
-    return libv if libv and hasattr(libv, 'SOCVHFscatter_cols') else None
+    return libv if libv and hasattr(libv, 'SOCVHFzero_fill') else None
 
 
 class _Int3c:
@@ -320,8 +320,12 @@ def cholesky_eri_h5(mol, auxmol, filename, dataname='j3c', pair_tol=PAIR_TOL, ma
         except BaseException as e:      # re-raised by the main thread
             err.append(e)
     th = None
+    ranges = eng.ish_ranges(max_cols)
+    max_cols_blk = max(int(ao_loc[s1]) * (int(ao_loc[s1]) + 1) // 2 - int(ao_loc[s0]) * (int(ao_loc[s0]) + 1) // 2
+                       for s0, s1 in ranges)
+    bufs = [None, None]
     try:
-        for k, (s0, s1) in enumerate(eng.ish_ranges(max_cols)):
+        for k, (s0, s1) in enumerate(ranges):
             c0 = int(ao_loc[s0]) * (int(ao_loc[s0]) + 1) // 2
             c1 = int(ao_loc[s1]) * (int(ao_loc[s1]) + 1) // 2
             t1 = logger.perf_counter()
@@ -330,7 +334,12 @@ def cholesky_eri_h5(mol, auxmol, filename, dataname='j3c', pair_tol=PAIR_TOL, ma
             Y = scipy.linalg.solve_triangular(low, X.T, lower=True, overwrite_b=True, check_finite=False)
             X = None
             t3 = logger.perf_counter()
-            blk = numpy.zeros((naux, c1 - c0))
+            # two reused block buffers (this one's writer, of block k - 2, was joined at k - 1)
+            if bufs[k % 2] is None or bufs[k % 2].size < naux * (c1 - c0):
+                bufs[k % 2] = None
+                bufs[k % 2] = numpy.empty(naux * max_cols_blk)
+            blk = bufs[k % 2][:naux * (c1 - c0)].reshape(naux, c1 - c0)
+            _load_socvhf().SOCVHFzero_fill(blk.ctypes.data_as(ctypes.c_void_p), ctypes.c_size_t(blk.size))
             _scatter_cols(blk, Y, cols - c0)
             Y = None
             if resident is not None and len(resident):
