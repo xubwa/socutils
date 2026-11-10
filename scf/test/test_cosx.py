@@ -1,0 +1,85 @@
+#!/usr/bin/env python
+'''
+socutils.scf.cosx: the COSX kernel (lib/dft/cosx.c) against a numpy
+reference from libcint's int1e_grids on the same grid (no screening), the
+overlap-fitted K against the exact K, and the SCF hook (RIJ + COSX) against
+the exact-K SCF energy.
+
+    python scf/test/test_cosx.py
+'''
+
+import unittest
+import numpy
+import socutils  # noqa: F401
+from pyscf import gto, scf, dft
+from socutils.scf import cosx
+
+# general contractions (Cl), anion, an atom pair with coincident centres
+MOL = '''O 0 0 0.1; H 0 0.76 -0.5; H 0 -0.76 -0.5; C 2.5 0.3 0.2; Cl -1.6 1.1 0.7'''
+WATER2 = '''
+O  0.000000  0.000000  0.000000
+H  0.756950  0.000000  0.585882
+H -0.756950  0.000000  0.585882
+O  0.000000  0.000000  3.000000
+H  0.876934  0.133858  3.359583
+H -0.280961 -0.841423  3.359583
+'''
+
+
+def reference_k(mol, grids, dm):
+    '''K_mu nu = sum_g w phi_mu sum_lam (nu lam|g) sum_kap phi_kap D_kap lam (plain, unsymmetrised)'''
+    ao = dft.numint.eval_ao(mol, grids.coords)
+    w = grids.weights
+    ref = numpy.zeros_like(dm)
+    for g0 in range(0, w.size, 400):
+        sl = slice(g0, g0 + 400)
+        a = mol.intor('int1e_grids', grids=grids.coords[sl])
+        f = ao[sl] @ dm
+        ref += (ao[sl] * w[sl, None]).T @ numpy.einsum('gnl,gl->gn', a, f)
+    return ref
+
+
+@unittest.skipUnless(cosx.available(gto.M(atom='H 0 0 0; H 0 0 1', basis='sto-3g')), 'libsocdft without COSX')
+class KnownValues(unittest.TestCase):
+    def _check_kernel(self, basis):
+        mol = gto.M(atom=MOL, basis=basis, charge=-1, verbose=0)
+        dm = scf.RHF(mol).run().make_rdm1()
+        rng = numpy.random.default_rng(1)
+        dm2 = dm + .01 * rng.standard_normal(dm.shape)      # not symmetric
+        k = cosx.COSX(mol, cosx.make_grids(mol, **cosx.GRIDX[1]), fit=False)
+        k.tol = 0.
+        k.ao_cutoff = 0.
+        vk = k.get_k(numpy.array([dm, dm2]), hermi=0)
+        for v, d in zip(vk, (dm, dm2)):
+            ref = reference_k(mol, k.grids, d)
+            self.assertLess(abs(v - ref).max(), 1e-11 * abs(ref).max())
+
+    def test_kernel_dz(self):
+        self._check_kernel('cc-pvdz')
+
+    def test_kernel_tz(self):
+        self._check_kernel('def2-tzvp')        # f shells
+
+    def test_fit_vs_exact(self):
+        mol = gto.M(atom=WATER2, basis='cc-pvdz', verbose=0)
+        mf = scf.RHF(mol).run()
+        dm = mf.make_rdm1()
+        vk0 = mf.get_k(mol, dm)
+        e0 = -.25 * numpy.einsum('ij,ij', dm, vk0)
+        for lev, thr in ((2, 2e-4), (3, 1e-4)):
+            vk = cosx.COSX(mol, cosx.make_grids(mol, **cosx.GRIDX[lev])).get_k(dm)
+            self.assertLess(abs(-.25 * numpy.einsum('ij,ij', dm, vk) - e0), thr)
+            self.assertLess(abs(vk - vk.T).max(), 1e-14)
+
+    def test_scf(self):
+        mol = gto.M(atom=WATER2, basis='cc-pvdz', verbose=0)
+        mf0 = dft.RKS(mol, xc='pbe0').density_fit(only_dfj=True)
+        e0 = mf0.kernel()
+        mf = cosx.apply(dft.RKS(mol, xc='pbe0').density_fit(only_dfj=True))
+        e = mf.kernel()
+        self.assertTrue(mf.converged)
+        self.assertAlmostEqual(e, e0, 4)
+
+
+if __name__ == '__main__':
+    unittest.main()

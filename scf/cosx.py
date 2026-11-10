@@ -28,11 +28,16 @@ import numpy
 from pyscf import lib
 from pyscf.lib import logger
 
-# the COSX grid: dft.grids.Grids attributes (intacc, angular_grid); see the module docstring
-GRID = {'intacc': 3.467, 'angular_grid': 1}
+# the COSX grids, dft.grids.Grids attributes (intacc, angular_grid): ORCA 6's GRIDX1-3 (IntAcc 3.816 /
+# 4.020 / 4.338, Lebedev-50 / 110 / 194 at most); the SCF runs on GRIDX2 (GRIDX1 while the density
+# moves, SCF_GRID_SWITCH, off by default), the final exchange energy is recomputed on GRIDX3 (as ORCA)
+GRIDX = {1: {'intacc': 3.816, 'angular_grid': 1},
+         2: {'intacc': 4.020, 'angular_grid': 2},
+         3: {'intacc': 4.338, 'angular_grid': 3}}
+GRID = GRIDX[2]
 BLK = 112               # grid points per task of the kernel (a multiple of 56)
 AO_CUTOFF = 1e-10       # AO values below which an AO is dropped from a block
-TOL = 1e-11             # screening of the shell-pair contributions, B_IJ max|F_J| sum_g |w phi| < TOL
+TOL = 1e-7              # screening of the shell-pair contributions, B_IJ max|F_J| sum_g |w phi| < TOL
 TCUT = 36.              # p r^2 beyond which a one-centre primitive pair is in its far field
 PRIM_TOL = 1e-14
 PAIR_TOL = 1e-13
@@ -79,16 +84,15 @@ class COSX(lib.StreamObject):
         self._opt = None
         self._key = None
         self._proj = None
+        self._libdft = _lib()
 
     def __del__(self):
         self._free()
 
     def _free(self):
-        if self._opt is not None:
-            libdft = _lib()
-            if libdft is not None:
-                libdft.SOCDFTcosx_free(ctypes.c_void_p(self._opt))
-            self._opt = None
+        if self._opt is not None and self._libdft is not None:
+            self._libdft.SOCDFTcosx_free(ctypes.c_void_p(self._opt))
+        self._opt = None
 
     def build(self):
         mol = self.mol
@@ -182,3 +186,111 @@ def stats(reset=True):
     out = numpy.zeros(16)
     _lib().SOCDFTcosx_stats(out.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(int(reset)))
     return out
+
+
+REBUILD_NSTEPS = 10     # incremental K builds between two full builds
+SCF_GRID_SWITCH = 0     # max |D - D_prev| below which the SCF goes from GRIDX1 to GRIDX2 (0: GRIDX2 throughout;
+                        # c16 / cc-pVDZ PBE0 with 1e-3: 18 cycles instead of 12, the grid switch upsets DIIS)
+
+
+def apply(mf, grids=None, final_grid=3, incremental=True, fit=True, tol=None):
+    """mf (RHF / RKS, hybrid or HF) with K from COSX: J as before (RIJ through
+    socutils.scf.md_j for density_fit(only_dfj=True), else mf's own), K by
+    cosx on GRIDX1 / GRIDX2 (``grids``: one grid, or None for the switch at
+    SCF_GRID_SWITCH), incremental builds K[D] = K[D_prev] + K[D - D_prev]
+    (pyscf's own incremental Fock build switched off, mf.direct_scf = False)
+    with a full build every REBUILD_NSTEPS and at the grid switch;
+    final_grid: after the SCF the exchange energy is recomputed on that
+    grid (ORCA's GRIDX3) and mf.e_tot corrected (None: not).  Range-separated
+    calls, complex densities and other molecules keep mf's get_jk.  Modifies
+    and returns mf."""
+    from pyscf.df import df_jk
+    from socutils.scf import md_j
+    mol0 = mf.mol
+    if not available(mol0):
+        return mf
+    if isinstance(mf, df_jk._DFHF) and mf.only_dfj:
+        mf = md_j.apply(mf)
+    orig_jk = mf.get_jk
+    mf.direct_scf = False
+    tol = TOL if tol is None else tol
+    st = {'k': {}, 'last': None}
+
+    def kobj(level):
+        if level not in st['k']:
+            g = grids if isinstance(grids, lib.StreamObject) else make_grids(mol0, **GRIDX[level])
+            k = COSX(mol0, g, fit=fit, tol=tol)
+            k.verbose = mf.verbose
+            k.stdout = mf.stdout
+            st['k'][level] = k.build()
+        return st['k'][level]
+
+    def get_k(dm, hermi):
+        dm = numpy.asarray(dm)
+        if not incremental or dm.ndim != 2 or hermi != 1:
+            lev = 2 if grids is None else 0
+            return kobj(lev).get_k(dm, hermi)
+        last = st['last']
+        if grids is not None and not isinstance(grids, lib.StreamObject):
+            lev = int(grids)
+        elif isinstance(grids, lib.StreamObject):
+            lev = 0
+        elif last is None:
+            lev = 1 if SCF_GRID_SWITCH > 0 else 2
+        else:
+            lev = last['lev']
+            if lev == 1 and abs(dm - last['dm']).max() < SCF_GRID_SWITCH:
+                lev = 2
+        k = kobj(lev)
+        if last is not None and last['lev'] == lev and last['n'] < REBUILD_NSTEPS:
+            vk = last['vk'] + k.get_k(dm - last['dm'], hermi)
+            n = last['n'] + 1
+            logger.debug(mf, 'COSX: incremental K (%d since the full build), grid %d', n, lev)
+        else:
+            vk = k.get_k(dm, hermi)
+            n = 0
+            logger.debug(mf, 'COSX: full K, grid %d', lev)
+        st['last'] = {'lev': lev, 'dm': dm.copy(), 'vk': vk.copy(), 'n': n}
+        return vk
+
+    def get_jk(mol=None, dm=None, hermi=1, with_j=True, with_k=True, omega=None):
+        if mol is None:
+            mol = mol0
+        if dm is None:
+            dm = mf.make_rdm1()
+        if not with_k or omega is not None or mol is not mol0 or numpy.iscomplexobj(dm):
+            return orig_jk(mol, dm, hermi, with_j, with_k, omega)
+        t0 = (logger.process_clock(), logger.perf_counter())
+        vj = orig_jk(mol, dm, hermi, True, False, omega)[0] if with_j else None
+        t1 = logger.timer_debug1(mf, 'vj', *t0)
+        vk = get_k(dm, hermi)
+        logger.timer_debug1(mf, 'vk (COSX)', *t1)
+        return vj, vk
+
+    mf.get_jk = get_jk
+    mf._cosx = st
+    if final_grid is not None:
+        kernel0 = mf.kernel
+
+        def kernel(*args, **kwargs):
+            st['last'] = None
+            out = kernel0(*args, **kwargs)
+            last = st['last']
+            if last is None or last['lev'] == final_grid:
+                return out
+            t0 = (logger.process_clock(), logger.perf_counter())
+            # e_tot is that of the density of the last Fock build, whose K st['last'] holds
+            dm, k_scf = last['dm'], last['vk']
+            k_fin = kobj(final_grid).get_k(dm)
+            hyb = 1.
+            if hasattr(mf, 'xc'):
+                hyb = mf._numint.rsh_and_hybrid_coeff(mf.xc, spin=mf.mol.spin)[2]
+            de = -.25 * hyb * numpy.einsum('ij,ji', dm, k_fin - k_scf)
+            mf._cosx_de = de
+            logger.info(mf, 'COSX: exchange energy recomputed on GRIDX%d: change %.9f, E = %.12f',
+                        final_grid, de, mf.e_tot + de)
+            logger.timer(mf, 'COSX final grid', *t0)
+            mf.e_tot = mf.e_tot + de
+            return mf.e_tot
+        mf.kernel = kernel
+    return mf
