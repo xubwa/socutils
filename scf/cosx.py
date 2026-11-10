@@ -175,7 +175,7 @@ class COSX(lib.StreamObject):
         self._sg = sg
         return numpy.linalg.solve(sg.T, s.T).T          # s sg^-1 (sg symmetric)
 
-    def get_k(self, dm, hermi=1):
+    def get_k(self, dm, hermi=1, _onepass=False):
         '''K of real densities dm ((nset,) nao, nao); hermi=1: symmetrised'''
         self.build()
         libdft = _lib()
@@ -198,11 +198,16 @@ class COSX(lib.StreamObject):
             nt = lib.num_threads()
             per = ((4 if libdft.SOCDFTcosx_mfloat() else 12) * 2 * self.blk * nao * nt + 8 * 5 * nao * nao) / 1e6
             fixed = (4 if libdft.SOCDFTcosx_mfloat() else 8) * (nao * nao / 2 * self.blk + nao * nao) * nt / 1e6
-            avail = max(500, mol.max_memory - lib.current_memory()[0] - fixed)
-            nb = max(1, min(nset, MULTI_MAXSET, int(.8 * avail / per)))
-            if nb < nset:
-                vk = numpy.concatenate([self.get_k(dms[i:i + nb], hermi) for i in range(0, nset, nb)])
+            # (at least 2 GB: a pass costs the integrals of the whole grid, ~25 densities' worth on c16 TZVP)
+            avail = max(2000, mol.max_memory - lib.current_memory()[0] - fixed)
+            nb = max(MULTI_MIN, min(nset, MULTI_MAXSET, int(.8 * avail / per)))
+            if nb < nset and not _onepass:
+                npass = (nset + nb - 1) // nb
+                nb = (nset + npass - 1) // npass        # equal passes
+                vk = numpy.concatenate([self.get_k(dms[i:i + nb], hermi, _onepass=True) for i in range(0, nset, nb)])
                 return vk.reshape(shape)
+            PROFILE['passes'] = PROFILE.get('passes', 0) + 1
+            PROFILE['densities'] = PROFILE.get('densities', 0) + nset
             tp_ = logger.perf_counter()
             vl = 16 if libdft.SOCDFTcosx_mfloat() else 8
             nset8 = (nset + vl - 1) // vl * vl          # the kernel takes the densities 8 (16) at a time
