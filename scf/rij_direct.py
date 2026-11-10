@@ -21,6 +21,7 @@ FAR_EPS).
 '''
 
 import ctypes
+import time
 import numpy
 import scipy.linalg
 import scipy.sparse
@@ -165,18 +166,28 @@ class RIJDirect:
             ctypes.c_double(self.far_eps), *self._args())
         return self.cT.dot(self.cT.dot(vjp).T)                    # c^T J c, J symmetric
 
-    def get_vj_fit_multi(self, dfits):
-        '''J_ij of several fitted vectors dfits (nset, naux) in one pass (shared R tensors): (nset, nao, nao)'''
+    def get_vj_fit_multi(self, dfits, occ=None):
+        '''J_ij of several fitted vectors dfits (nset, naux) in one pass (shared R tensors): (nset, nao, nao),
+        or J C_occ (nset, nao, nocc) with occ'''
         dfits = numpy.asarray(dfits, dtype=numpy.double).reshape(-1, self.auxmol.nao)
         nset = dfits.shape[0]
         h = numpy.ascontiguousarray(numpy.asarray(self.A.dot(dfits.T)).T)          # (nset, nh)
         npao = self.c.shape[0]
         vjp = numpy.empty((nset, npao, npao))
+        t0 = time.perf_counter()
         hmax = float(abs(self.qaux * dfits).max()) if dfits.size else 0.
         self.libv.SOCVHFrij_direct_vj_multi(
             vjp.ctypes.data_as(ctypes.c_void_p), h.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nset),
             self.qcond.ctypes.data_as(ctypes.c_void_p), ctypes.c_double(self.tol), ctypes.c_double(hmax),
             ctypes.c_double(self.far_eps), *self._args())
+        self.t_multi_c = time.perf_counter() - t0
+        if occ is not None:
+            # c^T Jp (c C_occ): one GEMM over the sets, then the block-sparse c^T
+            cocc = numpy.asarray(self.c.dot(occ))                                     # (npao, nocc)
+            nocc = cocc.shape[1]
+            v = lib.dot(vjp.reshape(nset * npao, npao), cocc).reshape(nset, npao, nocc)
+            return numpy.asarray(self.cT.dot(v.transpose(1, 0, 2).reshape(npao, -1))).reshape(
+                -1, nset, nocc).transpose(1, 0, 2)
         return numpy.array([self.cT.dot(numpy.asarray(self.cT.dot(v)).T) for v in vjp])
 
     def fit(self, rho):
@@ -215,10 +226,10 @@ class RIJDirect:
             Y[ia, :, p0:p1] -= tot[:, p0:p1]
         return Y.reshape(natm * 3, -1)
 
-    def deriv_w(self, dfit, c0=0, c1=0):
+    def deriv_w(self, dfit, c0=0, c1=0, occ=None):
         '''(Wrows (3, nao, nao) = sum_P (d_x i j|P) d_P (derivative on the first function), Waux (c1 - c0, 3,
         nao, nao) with Waux + Waux^T = sum_{P in C} d(ij|P)/dC_x d_P for the auxiliary centres c0 <= C < c1,
-        or None if c1 <= c0)'''
+        or None if c1 <= c0).  occ: Waux as (Waux + Waux^T) C_occ (c1 - c0, 3, nao, nocc) instead.'''
         h = numpy.ascontiguousarray(self.A.dot(dfit))
         npao = self.c.shape[0]
         nc = max(0, c1 - c0)
@@ -235,7 +246,18 @@ class RIJDirect:
             return numpy.asarray(self.cT.dot(numpy.asarray(self.cT.dot(w.T)).T))   # c^T w c
         Wrows = numpy.array([to_ao(w) for w in Wp])
         Waux = None
-        if nc:
+        if nc and occ is not None:
+            # c^T (Wp + Wp^T) (c C_occ): GEMMs over the centres, then the block-sparse c^T
+            cocc = numpy.asarray(self.c.dot(occ))
+            nocc = cocc.shape[1]
+            Wa = Wa.reshape(nc * 3, npao, npao)
+            v = lib.dot(Wa.reshape(-1, npao), cocc).reshape(nc * 3, npao, nocc)
+            for k in range(nc * 3):
+                v[k] += lib.dot(Wa[k].T, cocc)
+            Wa = None
+            Waux = numpy.asarray(self.cT.dot(v.transpose(1, 0, 2).reshape(npao, -1))).reshape(
+                -1, nc, 3, nocc).transpose(1, 2, 0, 3)
+        elif nc:
             Waux = numpy.array([[to_ao(w) for w in wc] for wc in Wa])
         return Wrows, Waux
 
