@@ -455,25 +455,28 @@ def hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None, mo1=None, mo_
     e_o = mo_energy[mo_occ > 0]
     s1a = -mol.intor('int1e_ipovlp', comp=3)
     aoslices = mol.aoslice_by_atom()
-    s1ao = numpy.zeros((natm, 3, nao, nao))
+    # everything in the occupied form (natm 3, nao, nocc): s1 C_occ from s1a without the
+    # (natm, 3, nao, nao) s1ao, and no dm1 / dme1 (h1 . dm1 = sum mo1 (h1 C), s1 . dme1 = sum mo1 (s1 C e))
+    S1C = lib.dot(s1a.reshape(3 * nao, nao), mocc).reshape(3, nao, nocc)
+    s1c = numpy.zeros((natm, 3, nao, nocc))
     for ia in range(natm):
         p0, p1 = aoslices[ia][2:]
-        s1ao[ia, :, p0:p1] += s1a[:, p0:p1]
-        s1ao[ia, :, :, p0:p1] += s1a[:, p0:p1].transpose(0, 2, 1)
-    mo1 = numpy.asarray(mo1).reshape(natm * 3 * nao, nocc)
-    dm1 = lib.dot(mo1, mocc.T).reshape(natm * 3, nao * nao)
-    dme1 = lib.dot(mo1, (mocc * e_o).T).reshape(natm * 3, nao * nao)
+        s1c[ia, :, p0:p1] += S1C[:, p0:p1]
+        for x in range(3):
+            s1c[ia, x] += lib.dot(s1a[x, p0:p1].T, mocc[p0:p1])
+    S1C = None
+    mo1 = numpy.asarray(mo1).reshape(natm * 3, nao * nocc)
     h1 = numpy.asarray(h1ao)
-    h1_occ = _is_h1_occ(h1, mo_coeff, mo_occ)
-    h1 = h1.reshape(natm * 3, -1)
-    s1 = s1ao.reshape(natm * 3, nao * nao)
-    s1oo = numpy.einsum('xpi,pj->xij', lib.dot(s1ao.reshape(-1, nao), mocc).reshape(natm * 3, nao, nocc),
-                        mocc).reshape(natm * 3, nocc * nocc)
+    if not _is_h1_occ(h1, mo_coeff, mo_occ):
+        h1 = lib.dot(h1.reshape(-1, nao), mocc)               # AO h1 (symmetric) -> h1 C_occ
+    h1 = h1.reshape(natm * 3, nao * nocc)
+    s1oo = lib.dot(mocc.T, s1c.reshape(-1, nao, nocc).transpose(1, 0, 2).reshape(nao, -1))
+    s1oo = s1oo.reshape(nocc, natm * 3, nocc).transpose(1, 0, 2).reshape(natm * 3, nocc * nocc)
+    s1c *= e_o
     me1 = numpy.asarray(mo_e1).reshape(natm * 3, nocc * nocc)
     # *2 for double occupancy, *2 for +c.c.
-    # h1 . dm1 = sum_pi (h1 C_occ)_pi mo1_pi
-    r = (4 * lib.dot(h1, mo1.reshape(natm * 3, nao * nocc).T if h1_occ else dm1.T)
-         - 4 * lib.dot(s1, dme1.T) - 2 * lib.dot(s1oo, me1.T))
+    r = (4 * lib.dot(h1, mo1.T) - 4 * lib.dot(s1c.reshape(natm * 3, nao * nocc), mo1.T)
+         - 2 * lib.dot(s1oo, me1.T))
     de2 += r.reshape(natm, 3, natm, 3).transpose(0, 2, 1, 3)
     # pyscf keeps the lower triangle (i >= j) and mirrors it
     for i0 in range(natm):
