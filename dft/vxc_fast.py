@@ -328,6 +328,7 @@ def apply(mf):
     arg_group_grids (the same order, the 1.7 s of a ~1M-point build -> ~0.05 s).'''
     from socutils.dft import grids as sgrids
     sgrids.use_fast_grid_sort()
+    sgrids.use_fast_partition()
     ni = mf._numint
     if isinstance(ni, numint.NumInt):
         ni.nr_rks = lambda *a, **k: nr_rks(ni, *a, **k)

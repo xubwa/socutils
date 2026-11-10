@@ -332,6 +332,60 @@ def use_fast_grid_sort():
     return orig
 
 
+FAST_PARTITION = True   # get_partition_fast: the Becke weights by lib/dft/becke.c (else pyscf's VXCgen_grid)
+
+
+def get_partition_fast(mol, atom_grids_tab, radii_adjust=None, atomic_radii=radi.BRAGG_RADII,
+                       becke_scheme=gen_grid.original_becke, concat=True):
+    '''pyscf.dft.gen_grid.get_partition for Becke's scheme (with the Treutler / Becke size
+    adjustment or none): the owner atom's normalised weight P_A / sum_i P_i per point from
+    lib/dft/becke.c (SOCDFTbecke_owner: the same cell functions, OpenMP over point blocks, the
+    pair loop vectorised; no natm x ngrid array); other schemes go to pyscf.'''
+    import ctypes
+    from socutils.hessian.rhf_fast import _load_socdft
+    libdft = _load_socdft()
+    adjust_ok = radii_adjust in (None, radi.treutler_atomic_radii_adjust, radi.becke_atomic_radii_adjust)
+    if (not FAST_PARTITION or libdft is None or not hasattr(libdft, 'SOCDFTbecke_owner')
+            or becke_scheme is not gen_grid.original_becke or not adjust_ok):
+        return _pyscf_get_partition(mol, atom_grids_tab, radii_adjust, atomic_radii, becke_scheme, concat)
+    natm = mol.natm
+    atm = numpy.asarray(mol.atom_coords(), order='C')
+    radii = None
+    if callable(radii_adjust) and atomic_radii is not None:
+        f = radii_adjust(mol, atomic_radii)
+        radii = numpy.asarray([f(i, j, 0) for i in range(natm) for j in range(natm)])
+    pr = lib.c_null_ptr() if radii is None else radii.ctypes.data_as(ctypes.c_void_p)
+    coords_all = []
+    weights_all = []
+    for ia in range(natm):
+        c, vol = atom_grids_tab[mol.atom_symbol(ia)]
+        c = c + atm[ia]
+        cf = numpy.asarray(c, order='F')
+        w = numpy.empty(c.shape[0])
+        libdft.SOCDFTbecke_owner(w.ctypes.data_as(ctypes.c_void_p), cf.ctypes.data_as(ctypes.c_void_p),
+                                 ctypes.c_int(c.shape[0]), ctypes.c_int(ia),
+                                 atm.ctypes.data_as(ctypes.c_void_p), pr, ctypes.c_int(natm))
+        coords_all.append(c)
+        weights_all.append(vol * w)
+    if concat:
+        coords_all = numpy.vstack(coords_all)
+        weights_all = numpy.hstack(weights_all)
+    return coords_all, weights_all
+
+
+_pyscf_get_partition = gen_grid.get_partition
+
+
+def use_fast_partition():
+    '''pyscf's (and socutils') Grids.build partitioning with get_partition_fast above;
+    returns pyscf's original.'''
+    orig = gen_grid.get_partition
+    if orig is not get_partition_fast:
+        gen_grid.get_partition = get_partition_fast
+        gen_grid.gen_partition = get_partition_fast
+    return orig
+
+
 def hessian_grids(mol, **kwargs):
     '''The grid recommended for analytic Hessians (see the module docstring
     and dft/test/test_grids.py).  Keyword arguments override attributes.'''
