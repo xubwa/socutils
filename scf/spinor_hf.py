@@ -12,6 +12,7 @@ from pyscf import lib
 from pyscf.gto import mole
 from pyscf.lib import logger
 from pyscf.scf import hf, dhf, ghf, _vhf
+from socutils.prop.mixin import SpinorPropertyMixin
 import re
 try:
     from socutils.lib import zquatev
@@ -398,7 +399,7 @@ def get_hcore(mol, with_soc=None):
             h += -1.j*mat_spinor
     return h
 
-class SCF(hf.SCF):
+class SCF(SpinorPropertyMixin, hf.SCF):
     '''SCF in the j-adapted spinor basis (two-component).
 
     Without a relativistic Hamiltonian this is the nonrelativistic spinor SCF;
@@ -495,47 +496,6 @@ class SCF(hf.SCF):
         moments.'''
         from socutils.prop.int1e import prop_int1e
         return prop_int1e(self, op, x_response=x_response, origin=origin)
-
-    def dip_moment(self, mol=None, dm=None, unit='Debye', verbose=logger.NOTE,
-                   picture_change=True, x_response=True,
-                   origin=(0., 0., 0.), **kwargs):
-        '''Molecular dipole moment; on an X2C reference the electronic part
-        uses the picture-change-corrected dipole operator (cf. pyscf's
-        X2C1E_GSCF.dip_moment -- whose convention corresponds to
-        ``x_response=False``; the default True is the derivative of the X2C
-        energy w.r.t. the field, consistent with the prop/ kernels).  The
-        inherited hf.SCF.dip_moment would contract spherical-basis integrals
-        with the spinor density and cannot be used here.
-
-        ``picture_change=False`` forces the bare 2c operator even on an X2C
-        reference (for error estimates).'''
-        from pyscf.data import nist
-        if mol is None:
-            mol = self.mol
-        if dm is None:
-            dm = self.make_rdm1()
-        log = logger.new_logger(mol, verbose)
-        charges = mol.atom_charges()
-        coords = mol.atom_coords()
-        nucl_dip = numpy.einsum('i,ix->x', charges,
-                                coords - numpy.asarray(origin))
-        if picture_change and self.with_x2c is not None:
-            ao_dip = self.prop_int1e('r', x_response=x_response, origin=origin)
-        else:
-            n2c = mol.nao_2c()
-            with mol.with_common_orig(origin):
-                ao_dip = mol.intor('int1e_r_spinor',
-                                   comp=3).reshape(3, n2c, n2c)
-        el_dip = numpy.einsum('xij,ji->x', ao_dip, dm).real
-        mol_dip = nucl_dip - el_dip
-        if unit.upper() == 'DEBYE':
-            mol_dip *= nist.AU2DEBYE
-            log.note('Dipole moment(X, Y, Z, Debye): %8.5f, %8.5f, %8.5f',
-                     *mol_dip)
-        else:
-            log.note('Dipole moment(X, Y, Z, A.U.): %8.5f, %8.5f, %8.5f',
-                     *mol_dip)
-        return mol_dip
 
     def eig(self, h, s=None, *args, **kwargs):
         return hf.SCF.eig(self, h, s)

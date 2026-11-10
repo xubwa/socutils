@@ -16,10 +16,11 @@ precision; the GHF style stays close to PySCF's native GHF toolchain.
 '''
 
 from pyscf.scf import ghf
+from socutils.prop.mixin import SpinOrbitalPropertyMixin
 from pyscf.lib import logger
 
 
-class GHF(ghf.GHF):
+class GHF(SpinOrbitalPropertyMixin, ghf.GHF):
     '''GHF with an X2C spin-orbit Hamiltonian attached through ``with_x2c``.'''
 
     _keys = {'with_x2c'}
