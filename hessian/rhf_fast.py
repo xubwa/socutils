@@ -1624,7 +1624,7 @@ def rks_make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=No
 
 CPHF_COSX = None        # K of the CPHF densities by COSX (socutils.scf.cosx): None -> when the SCF ran COSX
 CPHF_COSX_GRID = 2      # its grid (cosx.GRIDX level)
-CPHF_COSX_FLOAT = True  # the many-density contraction in single precision (K within ~1e-6 relative, against
+CPHF_COSX_FLOAT = False # opt-in: the many-density contraction in single precision (K within ~1e-6 relative, against
                         # the COSX grid error ~1e-3; c16 / cc-pVDZ 64 densities 0.36 -> 0.25 s per density)
 
 
