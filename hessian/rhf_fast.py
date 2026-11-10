@@ -1891,6 +1891,41 @@ def _df_get_j(with_df, dm):
 KRYLOV_FAST_QR = True   # _krylov: Cholesky QR twice (GEMMs) instead of pyscf's Python-loop Gram-Schmidt
 
 
+KRYLOV_QR_BLOCKED = True   # _qr_fast: blocked Gram-Schmidt (also for nearly dependent vectors) rather than CholQR2
+QR_BLOCK = 32
+
+
+def _qr_blocked(X, lindep=1e-14):
+    '''pyscf.lib.linalg_helper._qr's modified Gram-Schmidt result (the vectors in order, one dropped when its
+    squared residual is <= lindep) for _krylov, which only uses the orthonormal rows and the residual norms
+    (the diagonal of r): blocks of QR_BLOCK vectors orthogonalised against the accepted ones by two GEMM
+    passes (classical Gram-Schmidt twice), within the block one vector after the other against the
+    block's accepted vectors.  Returns (qs, diag(residual norms)).'''
+    n, dim = X.shape
+    Q = numpy.empty((n, dim), dtype=X.dtype)
+    norms = numpy.empty(n)
+    nv = 0
+    for b0 in range(0, n, QR_BLOCK):
+        Xb = numpy.array(X[b0:b0 + QR_BLOCK], copy=True)
+        if nv:
+            Qa = Q[:nv]
+            for _ in range(2):
+                Xb -= lib.dot(lib.dot(Xb, Qa.conj().T), Qa)
+        nb0 = nv
+        for x in Xb:
+            if nv > nb0:
+                Qb = Q[nb0:nv]
+                for _ in range(2):
+                    x -= numpy.dot(numpy.dot(Qb.conj(), x), Qb)
+            ip = numpy.dot(x.conj(), x).real
+            if ip > lindep:
+                nrm = numpy.sqrt(ip)
+                Q[nv] = x / nrm
+                norms[nv] = nrm
+                nv += 1
+    return Q[:nv], numpy.diag(norms[:nv])
+
+
 def _qr_fast(xs, dot, lindep=1e-14):
     '''pyscf.lib.linalg_helper._qr (xs = r^T qs, qs orthonormal rows, r upper triangular with the
     Gram-Schmidt residual norms on its diagonal) by Cholesky QR applied twice (CholQR2): all GEMMs
@@ -1901,6 +1936,8 @@ def _qr_fast(xs, dot, lindep=1e-14):
     X = numpy.asarray(xs)
     if not KRYLOV_FAST_QR or X.ndim != 2 or X.shape[0] < 2:
         return linalg_helper._qr(xs, dot, lindep)
+    if KRYLOV_QR_BLOCKED:
+        return _qr_blocked(X, lindep)
     # rows scaled to unit norm first: CholQR's accuracy then depends on the vectors' (near) linear
     # dependence only, not on their very different lengths (converging and fresh directions)
     nrm = numpy.sqrt(numpy.einsum('ij,ij->i', X.conj(), X).real)
@@ -2190,7 +2227,8 @@ class _FxcBatched:
                     libdft.SOCDFTscatter_add_dm(vmat.ctypes, vl.ctypes, idx.ctypes, ctypes.c_int(nl),
                                                 ctypes.c_int(n), ctypes.c_int(nao))
         if xctype != 'LDA':
-            vmat = vmat + vmat.transpose(0, 2, 1)
+            # V + V^T in place (OpenMP C; numpy's vmat + vmat.transpose allocates and reads strided)
+            vmat = lib.hermi_sum(vmat, axes=(0, 2, 1), inplace=True)
         return vmat.reshape(dms_a.shape)
 
 
