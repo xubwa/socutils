@@ -744,6 +744,84 @@ static void e_times_r(double *A, const double *E, const double *R, int nab, int 
         }
 }
 
+typedef struct { int I0, J0, nI, nJ, cI, cJ; size_t off; } CXRec;
+
+#ifdef CX_FUSED
+#define V8 __m512d
+#define V8LOAD(p) _mm512_loadu_pd(p)
+#define V8STORE(p, v) _mm512_storeu_pd(p, v)
+#define V8FMA(a, b, c) _mm512_fmadd_pd(a, b, c)
+#define V8SET1(x) _mm512_set1_pd(x)
+#else
+typedef double V8 __attribute__((vector_size(64)));
+static inline V8 v8load(const double *p) { V8 v; memcpy(&v, p, sizeof(v)); return v; }
+static inline void v8store(double *p, V8 v) { memcpy(p, &v, sizeof(v)); }
+#define V8LOAD(p) v8load(p)
+#define V8STORE(p, v) v8store(p, v)
+#define V8FMA(a, b, c) ((a) * (b) + (c))
+#define V8SET1(x) ((V8){x, x, x, x, x, x, x, x})
+#endif
+
+/* multi-density contraction of the stored pair integrals (At[off + g nab + ab], point-major so that
+ * the integrals of one point are contiguous): G[g][a][d] += A_ab(g) F[g][b][d] (and the mirror),
+ * point by point so that F[g], G[g] (NQ = nao nset doubles each) stay in cache; the densities
+ * (nset a multiple of 8) are the vector dimension, 8 at a time.  The records come in runs of one
+ * shell I (the pair order): a row of G_I is accumulated in a register over the whole run. */
+static void multi_contract(double *Ga, const double *Fa, const double *Abuf, const CXRec *rec, int nrec,
+                           int nao, int n, int nset)
+{
+        const size_t NQ = (size_t)nao * nset;
+        int g, r, r1, rr;
+        for (g = 0; g < n; g++) {
+                const double *Fg = Fa + g * NQ;
+                double *Gg = Ga + g * NQ;
+                for (r = 0; r < nrec; r = r1) {
+                        const int I0 = rec[r].I0, nI = rec[r].nI;
+                        int anyI = 0;
+                        for (r1 = r; r1 < nrec && rec[r1].I0 == I0; r1++) anyI |= rec[r1].cI;
+                        const double *FI = Fg + (size_t)I0 * nset;
+                        double *GI = Gg + (size_t)I0 * nset;
+                        int ia, jb, c;
+                        if (anyI) {
+                                for (c = 0; c < nset; c += 8) {
+                                        for (ia = 0; ia < nI; ia++) {
+                                                double *ga = GI + (size_t)ia * nset + c;
+                                                V8 acc = V8LOAD(ga);
+                                                for (rr = r; rr < r1; rr++) {
+                                                        const CXRec *rc = rec + rr;
+                                                        if (!rc->cI) continue;
+                                                        const int nJ = rc->nJ;
+                                                        const double *ar = Abuf + rc->off + (size_t)g * nI * nJ + ia * nJ;
+                                                        const double *FJ = Fg + (size_t)rc->J0 * nset + c;
+                                                        for (jb = 0; jb < nJ; jb++)
+                                                                acc = V8FMA(V8SET1(ar[jb]), V8LOAD(FJ + (size_t)jb * nset), acc);
+                                                }
+                                                V8STORE(ga, acc);
+                                        }
+                                }
+                        }
+                        for (rr = r; rr < r1; rr++) {
+                                const CXRec *rc = rec + rr;
+                                if (!rc->cJ) continue;
+                                const int nJ = rc->nJ;
+                                const double *Ar = Abuf + rc->off + (size_t)g * nI * nJ;
+                                double *GJ = Gg + (size_t)rc->J0 * nset;
+                                for (c = 0; c < nset; c += 8) {
+                                        for (jb = 0; jb < nJ; jb++) {
+                                                double *gb = GJ + (size_t)jb * nset + c;
+                                                V8 acc = V8LOAD(gb);
+                                                for (ia = 0; ia < nI; ia++)
+                                                        acc = V8FMA(V8SET1(Ar[ia * nJ + jb]), V8LOAD(FI + (size_t)ia * nset + c), acc);
+                                                V8STORE(gb, acc);
+                                        }
+                                }
+                        }
+                }
+        }
+}
+
+#define CX_ABUF (2 << 20)       /* doubles of stored pair integrals per thread in the multi-density mode */
+
 /*
  * vk (nset, nao, nao) = the plain K of dms (nset, nao, nao), K_mu nu =
  * sum_g w_g phi_mu(g) sum_lam A_nu lam(g) F_lam(g), F_lam = sum_kap D_kap lam phi_kap.
@@ -753,8 +831,13 @@ static void e_times_r(double *A, const double *E, const double *R, int nab, int 
 void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords, double *weights,
                   uint8_t *non0tab, int ngrid, int blk, double cutoff, double tol, double tcut,
                   int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
-                  dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local, double *dmh, double *eout)
+                  dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local, double *dmh, double *eout,
+                  double *dtm)
 {
+        /* multi-density mode (dtm != NULL): dtm (nao, nao, nset) = the densities, dtm[l][n][d] = D_d[l][n],
+         * vk (nao, nao, nset); the integrals of a block's pairs stored, then contracted point by point
+         * with the densities as the vector dimension (multi_contract), F and K by one GEMM each */
+        const int multi = dtm != NULL;
         /* energy mode (dmh != NULL): eout[d] = sum_g w sum_ab H_a A_ab F_b, H = Dh_d^T phi, vk untouched;
          * the screening then weighs each pair by the densities on both sides */
         const int eonly = dmh != NULL;
@@ -782,6 +865,12 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
         const int mkl0 = mkl_set_num_threads_local ? mkl_set_num_threads_local(1) : 0;
         const double one = 1, zero = 0;
         double *Kt = kbufs[tid] = eonly ? NULL : calloc(nn * nset, sizeof(double));
+        const size_t NQ = (size_t)nao * nset;
+        double *Bm = NULL;
+        double *Abuf = multi ? malloc(sizeof(double) * CX_ABUF) : NULL;
+        CXRec *rec = multi ? malloc(sizeof(CXRec) * (opt->npair + 1)) : NULL;
+        int nrec = 0;
+        size_t aoff = 0;
         double *H = eonly ? malloc(sizeof(double) * (size_t)nset * nao * blk) : NULL;
         double *xs = malloc(sizeof(double) * nbas);
         double esum[nset > 0 ? nset : 1];
@@ -796,7 +885,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
         double *G = malloc(sizeof(double) * (size_t)nset * nao * blk);
         double *ktmp = malloc(sizeof(double) * (size_t)nao * nao);
         double *fmax = malloc(sizeof(double) * nbas);
-        double *A = malloc(sizeof(double) * (size_t)nab_max * blk);
+        double *A0 = malloc(sizeof(double) * (size_t)nab_max * blk), *A = A0;
         double *bk = malloc(sizeof(double) * 4096);
         double *R = malloc(sizeof(double) * (size_t)nhmax * blk);
         double *Rwk = malloc(sizeof(double) * 2 * (size_t)nhmax * blk);
@@ -835,7 +924,32 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                 }
                 /* F_d (nao, n) = D_d[ix, :]^T a */
                 for (i = 0; i < nbas; i++) fmax[i] = 0;
-                for (d = 0; d < nset; d++) {
+                if (multi) {
+                        /* F[g][nu][d] = sum_i phi_i(g) D_d[ix_i][nu]: one GEMM per run of consecutive AOs,
+                         * straight from the density rows */
+                        const int nq = (int)NQ;
+                        int r0 = 0, first = 1;
+                        while (r0 < nl) {
+                                int r1 = r0 + 1;
+                                while (r1 < nl && ix[r1] == ix[r1 - 1] + 1) r1++;
+                                const int nr = r1 - r0;
+                                dgemm_("N", "T", &nq, &n, &nr, &one, dtm + (size_t)ix[r0] * NQ, &nq, a + (size_t)r0 * n, &n,
+                                       first ? &zero : &one, F, &nq);
+                                first = 0;
+                                r0 = r1;
+                        }
+                        int mu;
+                        for (g = 0; g < n; g++)
+                                for (mu = 0; mu < nao; mu++) {
+                                        const double *f = F + (size_t)g * NQ + (size_t)mu * nset;
+                                        double m = fmax[shl_of[mu]];
+                                        for (d = 0; d < nset; d++) m = fabs(f[d]) > m ? fabs(f[d]) : m;
+                                        fmax[shl_of[mu]] = m;
+                                }
+                        nrec = 0;
+                        aoff = 0;
+                }
+                for (d = 0; d < nset && !multi; d++) {
                         const double *D = dms + nn * d;
                         double *Fd = F + (size_t)d * nao * n;
                         for (i = 0; i < nl; i++) memcpy(dr + (size_t)i * nao, D + (size_t)ix[i] * nao, sizeof(double) * nao);
@@ -945,6 +1059,11 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         const size_t sz = (size_t)nab * nh;
                         int k0 = 0;
                         PROF(const unsigned long long cp0 = __rdtsc());
+                        if (multi && aoff + (size_t)nab * n > CX_ABUF) {
+                                multi_contract(G, F, Abuf, rec, nrec, nao, n, nset);
+                                nrec = 0;
+                                aoff = 0;
+                        }
                         memset(A, 0, sizeof(double) * nab * n);
                         if (pp->onec) {
                                 at = pp->atom;
@@ -1034,6 +1153,25 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         PROF(st[25] += __rdtsc() - cp0; const unsigned long long cc0 = __rdtsc());
                         /* G_I += A F_J, G_J += A^T F_I */
                         const int I0 = ao_loc[pp->I], J0 = ao_loc[pp->J];
+                        if (multi) {
+                                /* point-major copy */
+                                double *at = Abuf + aoff;
+                                int ab;
+                                for (ab = 0; ab < nab; ab++) {
+                                        const double *ar = A + (size_t)ab * n;
+                                        for (g = 0; g < n; g++) at[(size_t)g * nab + ab] = ar[g];
+                                }
+                                rec[nrec].I0 = I0;
+                                rec[nrec].J0 = J0;
+                                rec[nrec].nI = nI;
+                                rec[nrec].nJ = nJ;
+                                rec[nrec].cI = cI2;
+                                rec[nrec].cJ = cJ2;
+                                rec[nrec].off = aoff;
+                                nrec++;
+                                aoff += (size_t)nab * n;
+                                continue;
+                        }
                         if (eonly) {
                                 for (d = 0; d < nset; d++) {
                                         const double *Fd = F + (size_t)d * nao * n, *Hd = H + (size_t)d * nao * n;
@@ -1089,8 +1227,25 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         }
                         PROF(st[26] += __rdtsc() - cc0);
                 }
+                if (multi && nrec) multi_contract(G, F, Abuf, rec, nrec, nao, n, nset);
                 tt1 = omp_get_wtime(); st[1] += tt1 - tt0; tt0 = tt1;
                 if (eonly) continue;
+                if (multi) {
+                        /* K[ix_i][nu][d] += sum_g wx_i(g) G[g][nu][d], one GEMM per run of consecutive AOs
+                         * straight into the thread's K */
+                        const int nq = (int)NQ;
+                        int r0 = 0;
+                        while (r0 < nl) {
+                                int r1 = r0 + 1;
+                                while (r1 < nl && ix[r1] == ix[r1 - 1] + 1) r1++;
+                                const int nr = r1 - r0;
+                                dgemm_("N", "N", &nq, &nr, &n, &one, G, &nq, wx + (size_t)r0 * n, &n, &one,
+                                       Kt + (size_t)ix[r0] * NQ, &nq);
+                                r0 = r1;
+                        }
+                        st[3] += omp_get_wtime() - tt0;
+                        continue;
+                }
                 /* K[ix, :] += wx G^T */
                 for (d = 0; d < nset; d++) {
                         const double *Gd = G + (size_t)d * nao * n;
@@ -1126,7 +1281,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
         }
 #pragma omp barrier
         free(Kt); free(H); free(xs); free(a); free(wx); free(rmx); free(ix); free(runs); free(dr); free(F); free(G); free(ktmp);
-        free(fmax); free(A); free(bk); free(R); free(Rwk); free(S); free(X); free(xyz);
+        free(fmax); free(A0); free(bk); free(Bm); free(Abuf); free(rec); free(R); free(Rwk); free(S); free(X); free(xyz);
         for (at = 0; at < natm; at++) free(farR[at]);
         free(farR); free(stamp); free(armin);
         if (mkl_set_num_threads_local) mkl_set_num_threads_local(mkl0);

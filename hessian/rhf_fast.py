@@ -1622,16 +1622,43 @@ def rks_make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=No
     return h1ao
 
 
+CPHF_COSX = None        # K of the CPHF densities by COSX (socutils.scf.cosx): None -> when the SCF ran COSX
+CPHF_COSX_GRID = 2      # its grid (cosx.GRIDX level)
+
+
+def _cphf_cosx(mf):
+    '''the COSX object for the CPHF K, or None'''
+    use = CPHF_COSX
+    st = getattr(mf, '_cosx', None)
+    if use is None:
+        use = bool(st)
+    if not use:
+        return None
+    from socutils.scf import cosx
+    if not cosx.available(mf.mol):
+        return None
+    if st and CPHF_COSX_GRID in st.get('k', {}):
+        return st['k'][CPHF_COSX_GRID]
+    k = cosx.COSX(mf.mol, cosx.make_grids(mf.mol, **cosx.GRIDX[CPHF_COSX_GRID]))
+    k.verbose = mf.verbose
+    k.stdout = mf.stdout
+    if st is not None:
+        st.setdefault('k', {})[CPHF_COSX_GRID] = k
+    return k.build()
+
+
 def _multi_jk_env(mf):
     '''mf.get_jk / get_j through socutils.scf.jk_multi (all CPHF densities in
     one direct pass); with density fitting J from the stored three-index
     tensor (_df_get_j) and exact K from jk_multi; range-separated calls and
-    fitted K unchanged.'''
+    fitted K unchanged.  K by COSX (all densities sharing the potential
+    integrals) when the SCF ran COSX (CPHF_COSX).'''
     from socutils.scf import jk_multi
     mol = mf.mol
     dfm = _df_mode(mf)
     multi_k = jk_multi.available(mol)
-    if dfm is None and not multi_k:
+    cx = _cphf_cosx(mf)
+    if dfm is None and not multi_k and cx is None:
         return {}
     orig_jk = mf.get_jk
 
@@ -1642,6 +1669,12 @@ def _multi_jk_env(mf):
         if numpy.iscomplexobj(dm) or (dfm == 'jk' and with_k):
             return orig_jk(mol_, dm, hermi, with_j, with_k, omega)
         max_memory = max(1000, mf.max_memory - lib.current_memory()[0])
+        if cx is not None and with_k:
+            if dfm is None:
+                vj = jk_multi.get_jk(mol, dm, True, False, hermi=hermi, max_memory=max_memory)[0] if with_j else None
+            else:
+                vj = _df_get_j(mf.with_df, dm) if with_j else None
+            return vj, cx.get_k(dm, hermi=hermi)
         if dfm is None:
             return jk_multi.get_jk(mol, dm, with_j, with_k, hermi=hermi, max_memory=max_memory)
         vj = _df_get_j(mf.with_df, dm) if with_j else None

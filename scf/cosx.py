@@ -18,9 +18,19 @@ point (McMurchie-Davidson, SIMD over the points of a block), the K of
 symmetric densities symmetrised.
 
     k = cosx.COSX(mol)                  # grid: ORCA-like (dft.grids.Grids), see GRID
-    vk = k.get_k(dm)                    # dm (nao, nao) or (nset, nao, nao)
+    vk = k.get_k(dm)                    # dm (nao, nao) or (nset, nao, nao); many densities
+                                        # share the integrals (the CPHF K, hessian.rhf_fast)
+    e = k.energy(dm)                    # tr(D K) without K (screened by D on both sides)
+    g = k.grad(dm)                      # d tr(D K) / dR at fixed D (no grid response)
     mf = cosx.apply(scf.RKS(mol, xc='pbe0').density_fit(only_dfj=True))
-                                        # RIJ J (md_j) + COSX K in the SCF
+                                        # RIJ J (md_j) + COSX K in the SCF, the final
+                                        # exchange energy on GRIDX3
+    socutils.grad.rhf_fast.Gradients(mf).kernel()   # the K part from grad_k
+
+The one-sided fit makes the bilinear form tr(D1 K[D2]) unsymmetric, so its K
+is not the derivative of the energy tr(D K[D]); apply(variational=True) uses
+that derivative (get_k_var) and the SCF gradient is then exact for the COSX
+energy on the grid.
 '''
 
 import ctypes
@@ -39,6 +49,7 @@ BLK = 112               # grid points per task of the kernel (a multiple of 56)
 AO_CUTOFF = 1e-10       # AO values below which an AO is dropped from a block
 TOL = 1e-9              # screening of the shell-pair contributions, B_IJ max|F_J| sum_g |w phi| < TOL
 TCUT = 36.              # p r^2 beyond which a one-centre primitive pair is in its far field
+MULTI_MIN = 4           # densities from which the multi-density contraction runs
 PRIM_TOL = 1e-14
 PAIR_TOL = 1e-13
 
@@ -157,18 +168,34 @@ class COSX(lib.StreamObject):
         nao = shape[-1]
         dms = numpy.ascontiguousarray(dm.reshape(-1, nao, nao))
         nset = dms.shape[0]
-        vk = numpy.empty_like(dms)
         atm, bas, env, ao_loc = self._env
         t0 = (logger.process_clock(), logger.perf_counter())
+        multi = nset >= MULTI_MIN
+        if multi:
+            # many densities: the densities as the vector dimension of the contraction, in batches whose
+            # per-thread buffers (K, the gathered density rows, F, G: ~2 nao^2 + 3 nao blk per density) fit
+            per = 8 * (2 * nao * nao + 3 * nao * self.blk) * lib.num_threads() / 1e6
+            nb = max(1, min(nset, int(.5 * max(1000, mol.max_memory - lib.current_memory()[0]) / per)))
+            if nb < nset:
+                vk = numpy.concatenate([self.get_k(dms[i:i + nb], hermi) for i in range(0, nset, nb)])
+                return vk.reshape(shape)
+            nset8 = (nset + 7) // 8 * 8                 # the kernel takes the densities 8 at a time
+            dtm = numpy.zeros((nao, nao, nset8))
+            dtm[:, :, :nset] = dms.transpose(1, 2, 0)
+            vkt = numpy.empty((nao, nao, nset8))
+        vk = numpy.empty_like(dms)
         libdft.SOCDFTcosx_k(
-            vk.ctypes.data_as(ctypes.c_void_p), dms.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nset),
+            (vkt if multi else vk).ctypes.data_as(ctypes.c_void_p), dms.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_int(nset8 if multi else nset),
             ctypes.c_void_p(self._opt), self._coords.ctypes.data_as(ctypes.c_void_p),
             self._weights.ctypes.data_as(ctypes.c_void_p), self._non0.ctypes.data_as(ctypes.c_void_p),
             ctypes.c_int(self._weights.size), ctypes.c_int(self.blk), ctypes.c_double(self.ao_cutoff),
             ctypes.c_double(self.tol), ctypes.c_double(self.tcut),
             ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.natm),
             bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p),
-            *_blas_ptrs(), None, None)
+            *_blas_ptrs(), None, None, dtm.ctypes.data_as(ctypes.c_void_p) if multi else None)
+        if multi:
+            vk = numpy.ascontiguousarray(vkt[:, :, :nset].transpose(2, 0, 1))
         if self._proj is not None:
             vk = lib.einsum('ij,xjk->xik', self._proj, vk)
         if hermi == 1:
@@ -204,7 +231,7 @@ class COSX(lib.StreamObject):
             ctypes.c_double(self.tol if tol is None else tol), ctypes.c_double(self.tcut),
             ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.natm),
             bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p),
-            *_blas_ptrs(), dmh.ctypes.data_as(ctypes.c_void_p), out.ctypes.data_as(ctypes.c_void_p))
+            *_blas_ptrs(), dmh.ctypes.data_as(ctypes.c_void_p), out.ctypes.data_as(ctypes.c_void_p), None)
         return out[0] if dm.ndim == 2 else out
 
 

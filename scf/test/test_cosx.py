@@ -60,6 +60,18 @@ class KnownValues(unittest.TestCase):
     def test_kernel_tz(self):
         self._check_kernel('def2-tzvp')        # f shells
 
+    def test_multi_density(self):
+        '''the multi-density contraction (nset >= MULTI_MIN) against one density at a time'''
+        mol = gto.M(atom=MOL, basis='def2-tzvp', charge=-1, verbose=0)
+        rng = numpy.random.default_rng(2)
+        dms = rng.standard_normal((6, mol.nao, mol.nao)) * .01
+        dms = dms + dms.transpose(0, 2, 1)
+        k = cosx.COSX(mol, cosx.make_grids(mol, **cosx.GRIDX[1]))
+        k.tol = 0.
+        vk = k.get_k(dms)
+        ref = numpy.array([k.get_k(d) for d in dms])
+        self.assertLess(abs(vk - ref).max(), 1e-12 * abs(ref).max())
+
     def test_fit_vs_exact(self):
         mol = gto.M(atom=WATER2, basis='cc-pvdz', verbose=0)
         mf = scf.RHF(mol).run()
