@@ -77,6 +77,14 @@ class KnownValues(unittest.TestCase):
         self.assertTrue(isinstance(mf.with_df._cderi, str))
         self.assertAlmostEqual(mf.e_tot, mf0.e_tot, 9)
 
+    def test_uks(self):
+        from pyscf import dft
+        mol = gto.M(atom='O 0 0 0; H 0 .757 .587', basis='cc-pvdz', spin=1, verbose=0)
+        for mk in (lambda: scf.UHF(mol), lambda: dft.UKS(mol, xc='b3lyp')):
+            e0 = mk().density_fit(auxbasis='cc-pvdz-jkfit').run(conv_tol=1e-11).e_tot
+            e1 = rik.apply(mk().density_fit(auxbasis='cc-pvdz-jkfit')).run(conv_tol=1e-11).e_tot
+            self.assertAlmostEqual(e1, e0, 9)
+
     def test_cd(self):
         from socutils.cd import cd
         mol = gto.M(atom='O 0 0 0; H 0 .757 .587; H 0 -.757 .587', basis='cc-pvdz', verbose=0)
