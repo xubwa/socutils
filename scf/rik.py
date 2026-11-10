@@ -627,7 +627,8 @@ def apply(mf):
         if dm is None:
             dm = mf.make_rdm1()
         if (omega is not None or mol is not mol0 or numpy.iscomplexobj(dm) or not mf.with_df
-                or not (with_j or with_k)):
+                or not (with_j or with_k) or numpy.shape(dm)[-1] != mol.nao_nr()):
+            # (GHF / spinor densities: pyscf's df_jk splits them into the spin blocks)
             return orig(mol, dm, hermi, with_j, with_k, omega)
         t0 = (logger.process_clock(), logger.perf_counter())
         _prebuild(mf)
