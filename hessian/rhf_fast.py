@@ -1813,7 +1813,10 @@ def rks_make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=No
 
 
 CPHF_COSX = None        # K of the CPHF densities by COSX (socutils.scf.cosx): None -> auto (SCF ran COSX, large basis)
-CPHF_COSX_GRID = 2      # its grid (cosx.GRIDX level)
+CPHF_COSX_GRID = 2      # its grid: a cosx.GRIDX level or a dict of cosx.make_grids arguments.  The CP-SCF
+                        # operator alone tolerates a coarse grid (C16H34 def2-TZVP, GRIDX1 for the CPHF only: freq
+                        # max 0.13 / rms 0.03 cm-1 against GRIDX2; the 5 cm-1 seen before came from Fock1 and the
+                        # explicit K on the same coarse grid, now HESS_COSX_GRID)
 CPHF_COSX_OCC = False   # the CPHF K as K C_occ (cosx.COSX.get_k_occ, one-sided fitted K, no K matrix)
 CPHF_COSX_NAO_PER_ATOM = 12     # auto mode: AOs per atom from which the CPHF K goes to COSX
 CPHF_COSX_FLOAT = True  # the many-density COSX contraction in single precision (False: double); K within ~1e-6
@@ -1824,16 +1827,22 @@ CPHF_COSX_FLOAT = True  # the many-density COSX contraction in single precision 
 
 HESS_COSX_FOCK1 = None  # the first-order K (make_h1) by COSX: None -> with the CPHF's auto mode (CPHF_COSX)
 HESS_COSX_EXPLICIT = None   # the K second derivatives of the explicit part by COSX: None -> likewise
+HESS_COSX_GRID = 2      # the grid of those two (Fock1, explicit K), as for CPHF_COSX_GRID; None -> CPHF_COSX_GRID
+CPHF_COSX_GRID_FINAL = None     # the grid of the CPHF's last response (after the Krylov solve, from which the
+                                # final U_vir and the occupied e1 follow): None -> CPHF_COSX_GRID
+_CPHF_STAGE = {'final': False}
 
 
 def _hess_cosx(mf, switch):
     '''the COSX object for a K term of the Hessian (switch None: as the CPHF), or None'''
     if switch is False:
         return None
-    if switch is None:
-        return _cphf_cosx(mf)
-    with lib.temporary_env(sys.modules[__name__], CPHF_COSX=True):
-        return _cphf_cosx(mf)
+    grid = CPHF_COSX_GRID if HESS_COSX_GRID is None else HESS_COSX_GRID
+    with lib.temporary_env(sys.modules[__name__], CPHF_COSX_GRID=grid):
+        if switch is None:
+            return _cphf_cosx(mf)
+        with lib.temporary_env(sys.modules[__name__], CPHF_COSX=True):
+            return _cphf_cosx(mf)
 
 
 def _cphf_cosx(mf):
@@ -1849,13 +1858,18 @@ def _cphf_cosx(mf):
     from socutils.scf import cosx
     if not cosx.available(mf.mol):
         return None
-    if st and CPHF_COSX_GRID in st.get('k', {}):
-        return st['k'][CPHF_COSX_GRID]
-    k = cosx.COSX(mf.mol, cosx.make_grids(mf.mol, **cosx.GRIDX[CPHF_COSX_GRID]))
+    grid = CPHF_COSX_GRID
+    if isinstance(grid, dict):
+        args, key = grid, repr(sorted(grid.items()))
+    else:
+        args, key = cosx.GRIDX[grid], grid
+    if st and key in st.get('k', {}):
+        return st['k'][key]
+    k = cosx.COSX(mf.mol, cosx.make_grids(mf.mol, **args))
     k.verbose = mf.verbose
     k.stdout = mf.stdout
     if st is not None:
-        st.setdefault('k', {})[CPHF_COSX_GRID] = k
+        st.setdefault('k', {})[key] = k
     return k.build()
 
 
@@ -1870,6 +1884,10 @@ def _multi_jk_env(mf):
     dfm = _df_mode(mf)
     multi_k = jk_multi.available(mol)
     cx = _cphf_cosx(mf)
+    cx_final = None
+    if cx is not None and CPHF_COSX_GRID_FINAL is not None and repr(CPHF_COSX_GRID_FINAL) != repr(CPHF_COSX_GRID):
+        with lib.temporary_env(sys.modules[__name__], CPHF_COSX_GRID=CPHF_COSX_GRID_FINAL):
+            cx_final = _cphf_cosx(mf)
     if dfm is None and not multi_k and cx is None:
         return {}
     orig_jk = mf.get_jk
@@ -1890,7 +1908,7 @@ def _multi_jk_env(mf):
             fl = cosx.MULTI_FLOAT
             cosx.set_multi_float(CPHF_COSX_FLOAT)
             try:
-                vk = cx.get_k(dm, hermi=hermi)
+                vk = (cx_final if cx_final is not None and _CPHF_STAGE['final'] else cx).get_k(dm, hermi=hermi)
             finally:
                 cosx.set_multi_float(fl)
             return vj, vk
@@ -2006,6 +2024,15 @@ def _qr_fast(xs, dot, lindep=1e-14):
         return linalg_helper._qr(xs, dot, lindep)
     rT = rn * nrm[:, None]                                # xs = r^T qs, r^T = diag(nrm) rn
     return Q, rT.conj().T
+
+
+def _krylov_staged(*args, **kwargs):
+    '''_krylov, then the CPHF stage set to 'final' (the response pyscf's solve_withs1 evaluates after it)'''
+    _CPHF_STAGE['final'] = False
+    try:
+        return _krylov(*args, **kwargs)
+    finally:
+        _CPHF_STAGE['final'] = True
 
 
 def _krylov(aop, b, x0=None, tol=1e-10, max_cycle=30, dot=numpy.dot, lindep=None, callback=None,
@@ -2360,10 +2387,11 @@ class _MultiJKCPHF:
                 cg.build(with_non0tab=True)
             env_grid = dict(grids=cg)
         with lib.temporary_env(self.base, **_multi_jk_env(self.base), **env_grid), \
-                lib.temporary_env(lib, krylov=_krylov):
+                lib.temporary_env(lib, krylov=_krylov_staged):
             with lib.temporary_env(ni, **env_xc) if env_xc else _nullcontext():
                 if fx is None:
                     fx = gen_vind(self.base, mo_coeff, mo_occ)
+                _CPHF_STAGE['final'] = False
                 if (isinstance(h1ao_or_chkfile, numpy.ndarray)
                         and _is_h1_occ(h1ao_or_chkfile, mo_coeff, mo_occ)):
                     return _solve_mo1_occ(self.base, mo_energy, mo_coeff, mo_occ, h1ao_or_chkfile, fx, atmlst,
