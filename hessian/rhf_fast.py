@@ -1708,6 +1708,8 @@ def rks_make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=No
 
 CPHF_COSX = None        # K of the CPHF densities by COSX (socutils.scf.cosx): None -> when the SCF ran COSX
 CPHF_COSX_GRID = 2      # its grid (cosx.GRIDX level)
+CPHF_COSX_FLOAT = True  # the many-density contraction in single precision (K within ~1e-6 relative, against
+                        # the COSX grid error ~1e-3; c16 / cc-pVDZ 64 densities 0.36 -> 0.25 s per density)
 
 
 def _cphf_cosx(mf):
@@ -1758,7 +1760,14 @@ def _multi_jk_env(mf):
                 vj = jk_multi.get_jk(mol, dm, True, False, hermi=hermi, max_memory=max_memory)[0] if with_j else None
             else:
                 vj = _df_get_j(mf.with_df, dm) if with_j else None
-            return vj, cx.get_k(dm, hermi=hermi)
+            from socutils.scf import cosx
+            fl = cosx.MULTI_FLOAT
+            cosx.set_multi_float(CPHF_COSX_FLOAT)
+            try:
+                vk = cx.get_k(dm, hermi=hermi)
+            finally:
+                cosx.set_multi_float(fl)
+            return vj, vk
         if dfm is None:
             return jk_multi.get_jk(mol, dm, with_j, with_k, hermi=hermi, max_memory=max_memory)
         vj = _df_get_j(mf.with_df, dm) if with_j else None

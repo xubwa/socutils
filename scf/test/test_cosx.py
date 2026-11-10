@@ -71,6 +71,14 @@ class KnownValues(unittest.TestCase):
         vk = k.get_k(dms)
         ref = numpy.array([k.get_k(d) for d in dms])
         self.assertLess(abs(vk - ref).max(), 1e-12 * abs(ref).max())
+        if k._libdft.SOCDFTcosx_mfloat is not None:
+            cosx.set_multi_float(True)
+            try:
+                if k._libdft.SOCDFTcosx_mfloat():
+                    vkf = k.get_k(dms)
+                    self.assertLess(abs(vkf - ref).max(), 1e-5 * abs(ref).max())
+            finally:
+                cosx.set_multi_float(False)
 
     def test_fit_vs_exact(self):
         mol = gto.M(atom=WATER2, basis='cc-pvdz', verbose=0)

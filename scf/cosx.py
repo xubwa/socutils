@@ -50,6 +50,7 @@ AO_CUTOFF = 1e-10       # AO values below which an AO is dropped from a block
 TOL = 1e-9              # screening of the shell-pair contributions, B_IJ max|F_J| sum_g |w phi| < TOL
 TCUT = 36.              # p r^2 beyond which a one-centre primitive pair is in its far field
 MULTI_MIN = 4           # densities from which the multi-density contraction runs
+MULTI_FLOAT = False     # its contraction in single precision (set_multi_float)
 PRIM_TOL = 1e-14
 PAIR_TOL = 1e-13
 
@@ -179,7 +180,8 @@ class COSX(lib.StreamObject):
             if nb < nset:
                 vk = numpy.concatenate([self.get_k(dms[i:i + nb], hermi) for i in range(0, nset, nb)])
                 return vk.reshape(shape)
-            nset8 = (nset + 7) // 8 * 8                 # the kernel takes the densities 8 at a time
+            vl = 16 if libdft.SOCDFTcosx_mfloat() else 8
+            nset8 = (nset + vl - 1) // vl * vl          # the kernel takes the densities 8 (16) at a time
             dtm = numpy.zeros((nao, nao, nset8))
             dtm[:, :, :nset] = dms.transpose(1, 2, 0)
             vkt = numpy.empty((nao, nao, nset8))
@@ -307,6 +309,13 @@ class COSX(lib.StreamObject):
 
 def get_k(mol, dm, hermi=1, grids=None, fit=True):
     return COSX(mol, grids, fit).get_k(dm, hermi)
+
+
+def set_multi_float(on=True):
+    """the multi-density contraction (CPHF K) in single precision (AVX-512 builds)"""
+    global MULTI_FLOAT
+    MULTI_FLOAT = bool(on)
+    _lib().SOCDFTcosx_set_opt(2, int(on))
 
 
 def stats(reset=True):
