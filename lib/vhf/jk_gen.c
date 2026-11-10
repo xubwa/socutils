@@ -813,10 +813,26 @@ static inline void f1_add_block(double *W, size_t nao, size_t r0, size_t c0, con
         }
 }
 
+void SOCVHFgen_fock1_jk2(double *vj, double *vk, double *dm, int with_j, int with_k,
+                         double *qcond, double *dcond, double tol, double prim_tol, CINTOpt *opt,
+                         int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
+                         int atm0, int atm1);
+
 void SOCVHFgen_fock1_jk(double *vj, double *vk, double *dm, int with_k,
                         double *qcond, double *dcond, double tol, double prim_tol, CINTOpt *opt,
                         int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
                         int atm0, int atm1)
+{
+        SOCVHFgen_fock1_jk2(vj, vk, dm, 1, with_k, qcond, dcond, tol, prim_tol, opt, ao_loc, atm, natm,
+                            bas, nbas, env, atm0, atm1);
+}
+
+/* with_j 0 (density-fitted J elsewhere): K only, the quartets screened by the K density pairs alone,
+ * vj untouched (may be NULL) */
+void SOCVHFgen_fock1_jk2(double *vj, double *vk, double *dm, int with_j, int with_k,
+                         double *qcond, double *dcond, double tol, double prim_tol, CINTOpt *opt,
+                         int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
+                         int atm0, int atm1)
 {
         const size_t nao = ao_loc[nbas];
         const size_t nn = nao * nao;
@@ -846,7 +862,7 @@ void SOCVHFgen_fock1_jk(double *vj, double *vk, double *dm, int with_k,
         const int tid = omp_get_thread_num();
 #pragma omp single
         nth_used = omp_get_num_threads();
-        double *wj = calloc(nv, sizeof(double));
+        double *wj = with_j ? calloc(nv, sizeof(double)) : NULL;
         double *wk = with_k ? calloc(nv, sizeof(double)) : NULL;
         jbufs[tid] = wj;
         kbufs[tid] = wk;
@@ -865,9 +881,10 @@ void SOCVHFgen_fock1_jk(double *vj, double *vk, double *dm, int with_k,
                 for (kl = 0; kl <= ij; kl++) {
                         shell_pair(kl, &ksh, &lsh);
                         const double q4 = qcond[ish * nbas + jsh] * qcond[ksh * nbas + lsh];
-                        const double dq = dmax2g(dmax2g(dcond[ish * nbas + jsh], dcond[ksh * nbas + lsh]),
-                                                 dmax2g(dmax2g(dcond[ish * nbas + ksh], dcond[ish * nbas + lsh]),
-                                                        dmax2g(dcond[jsh * nbas + ksh], dcond[jsh * nbas + lsh])));
+                        const double dkq = dmax2g(dmax2g(dcond[ish * nbas + ksh], dcond[ish * nbas + lsh]),
+                                                  dmax2g(dcond[jsh * nbas + ksh], dcond[jsh * nbas + lsh]));
+                        const double djq = with_j ? dmax2g(dcond[ish * nbas + jsh], dcond[ksh * nbas + lsh]) : 0;
+                        const double dq = dmax2g(djq, with_k ? dkq : 0);
                         if (q4 * dq < tol) continue;
                         const int sh[4] = {ish, jsh, ksh, lsh};
                         int at[4], l[4], nctr[4], s, in_range = 0;
@@ -978,8 +995,10 @@ void SOCVHFgen_fock1_jk(double *vj, double *vk, double *dm, int with_k,
                                                 for (x = 0; x < 3; x++) {
                                                         const size_t base = (size_t)(pos * 3 + x) * nblk;
                                                         const double gg = G[(pos * 3 + x) * nf + o] * fac;
-                                                        Jij[base + i0 * dj + j0] += 2 * gg * Dls;
-                                                        Jkl[base + k0 * dl + l0] += 2 * gg * Dmn;
+                                                        if (with_j) {
+                                                                Jij[base + i0 * dj + j0] += 2 * gg * Dls;
+                                                                Jkl[base + k0 * dl + l0] += 2 * gg * Dmn;
+                                                        }
                                                         if (with_k) {
                                                                 Kil[base + i0 * dl + l0] += gg * Dnl;
                                                                 Kjl[base + j0 * dl + l0] += gg * Dml;
@@ -994,9 +1013,11 @@ void SOCVHFgen_fock1_jk(double *vj, double *vk, double *dm, int with_k,
                                 if (at[pos] < atm0 || at[pos] >= atm1) continue;
                                 for (x = 0; x < 3; x++) {
                                         const size_t base = (size_t)(pos * 3 + x) * nblk;
-                                        double *WJ = wj + ((size_t)(at[pos] - atm0) * 3 + x) * nn;
-                                        f1_add_block(WJ, nao, i0s, j0s, Jij + base, di, dj);
-                                        f1_add_block(WJ, nao, k0s, l0s, Jkl + base, dk, dl);
+                                        if (with_j) {
+                                                double *WJ = wj + ((size_t)(at[pos] - atm0) * 3 + x) * nn;
+                                                f1_add_block(WJ, nao, i0s, j0s, Jij + base, di, dj);
+                                                f1_add_block(WJ, nao, k0s, l0s, Jkl + base, dk, dl);
+                                        }
                                         if (with_k) {
                                                 double *WK = wk + ((size_t)(at[pos] - atm0) * 3 + x) * nn;
                                                 f1_add_block(WK, nao, i0s, l0s, Kil + base, di, dl);
@@ -1009,7 +1030,7 @@ void SOCVHFgen_fock1_jk(double *vj, double *vk, double *dm, int with_k,
                 }
         }
 #pragma omp barrier
-        f1_reduce(vj, jbufs, nth_used, nv);
+        if (with_j) f1_reduce(vj, jbufs, nth_used, nv);
         if (with_k) f1_reduce(vk, kbufs, nth_used, nv);
 #pragma omp barrier
         free(wj);
@@ -1025,13 +1046,16 @@ void SOCVHFgen_fock1_jk(double *vj, double *vk, double *dm, int with_k,
         size_t a, p, q;
 #pragma omp parallel for private(p, q)
         for (a = 0; a < (size_t)nbat * 3; a++) {
-                double *v = vj + a * nn;
-                for (p = 0; p < nao; p++) {
-                        for (q = 0; q < p; q++) {
-                                const double s = v[p * nao + q] + v[q * nao + p];
-                                v[p * nao + q] = v[q * nao + p] = s;
+                double *v;
+                if (with_j) {
+                        v = vj + a * nn;
+                        for (p = 0; p < nao; p++) {
+                                for (q = 0; q < p; q++) {
+                                        const double s = v[p * nao + q] + v[q * nao + p];
+                                        v[p * nao + q] = v[q * nao + p] = s;
+                                }
+                                v[p * nao + p] *= 2;
                         }
-                        v[p * nao + p] *= 2;
                 }
                 if (with_k) {
                         v = vk + a * nn;

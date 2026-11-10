@@ -836,14 +836,15 @@ def rks_partial_hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     return de2
 
 
-def fock1_jk(mol, dm, with_k=True, tol=ghf_hess.HESS2E_TOL, max_memory=None):
+def fock1_jk(mol, dm, with_k=True, tol=ghf_hess.HESS2E_TOL, max_memory=None, with_j=True):
     '''First-order VJ^{A,x}_ab = d/dR_{A,x} (ab|cd) D_cd and
     VK^{A,x}_ad = d/dR_{A,x} (ab|cd) D_bc of all atoms at a symmetric D, in one
     pass over the unique quartets (lib/vhf/fock1.c).  The atoms are batched so
     that nthreads x the per-thread buffers stay within half of max_memory (MB,
     default mol.max_memory); a batch skips the quartets touching none of its
     atoms.  Returns (natm, 3, nao, nao) arrays, or None if the library is
-    unavailable.'''
+    unavailable.  with_j=False (K only, with_k): vj None, the quartets screened by K's density
+    pairs alone (the generated-kernel path; the libcint one computes J too).'''
     import ctypes
     from pyscf.gto import moleintor
     from socutils.scf import jk_multi
@@ -851,7 +852,7 @@ def fock1_jk(mol, dm, with_k=True, tol=ghf_hess.HESS2E_TOL, max_memory=None):
     if not libv or not hasattr(libv, 'SOCVHFfock1_jk') or mol.cart:
         return None
     if FOCK1_GEN and hasattr(libv, 'SOCVHFgen_fock1_jk'):
-        return _fock1_jk_gen(libv, mol, dm, with_k, tol, max_memory)
+        return _fock1_jk_gen(libv, mol, dm, with_k, tol, max_memory, with_j=with_j)
     dm = numpy.ascontiguousarray(dm, dtype=numpy.double)
     nao = dm.shape[0]
     vj = numpy.empty((mol.natm, 3, nao, nao))
@@ -882,7 +883,7 @@ def fock1_jk(mol, dm, with_k=True, tol=ghf_hess.HESS2E_TOL, max_memory=None):
 FOCK1_GEN = True            # fock1_jk by the generated derivative-integral kernels (Cartesian), jk_gen.c
 
 
-def _fock1_jk_gen(libv, mol, dm, with_k, tol, max_memory, prim_tol=None):
+def _fock1_jk_gen(libv, mol, dm, with_k, tol, max_memory, prim_tol=None, with_j=True):
     '''fock1_jk in the Cartesian basis by SOCVHFgen_fock1_jk (the three role
     derivatives of a quartet from one HGP pass; libcint for the classes
     without a kernel), transformed to the spherical AOs.'''
@@ -903,24 +904,28 @@ def _fock1_jk_gen(libv, mol, dm, with_k, tol, max_memory, prim_tol=None):
     ao_loc = molc.ao_loc_nr().astype(numpy.int32)
     if max_memory is None:
         max_memory = mol.max_memory
-    nk = 1 + int(with_k)
+    k_only = with_k and not with_j and hasattr(libv, 'SOCVHFgen_fock1_jk2')
+    nk = int(not k_only) + int(with_k)
     per_atom = nk * 3 * naoc * naoc * 8 * (lib.num_threads() + 1)
     nbatch = max(1, min(mol.natm, int(max_memory * .5e6 / per_atom)))
-    vj = numpy.empty((mol.natm, 3, nao, nao))
+    vj = None if k_only else numpy.empty((mol.natm, 3, nao, nao))
     vk = numpy.empty((mol.natm, 3, nao, nao)) if with_k else None
     for a0 in range(0, mol.natm, nbatch):
         a1 = min(mol.natm, a0 + nbatch)
-        vjc = numpy.empty((a1 - a0, 3, naoc, naoc))
+        vjc = numpy.empty(1) if k_only else numpy.empty((a1 - a0, 3, naoc, naoc))
         vkc = numpy.empty((a1 - a0, 3, naoc, naoc)) if with_k else numpy.empty(1)
-        libv.SOCVHFgen_fock1_jk(
+        drv = libv.SOCVHFgen_fock1_jk2 if k_only else libv.SOCVHFgen_fock1_jk
+        flags = (ctypes.c_int(0), ctypes.c_int(1)) if k_only else (ctypes.c_int(int(with_k)),)
+        drv(
             vjc.ctypes.data_as(ctypes.c_void_p), vkc.ctypes.data_as(ctypes.c_void_p),
-            dmc.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(int(with_k)),
+            dmc.ctypes.data_as(ctypes.c_void_p), *flags,
             q.ctypes.data_as(ctypes.c_void_p), dcond.ctypes.data_as(ctypes.c_void_p),
             ctypes.c_double(tol), ctypes.c_double(prim_tol), opt,
             ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
             ctypes.c_int(mol.natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(molc.nbas),
             env.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(a0), ctypes.c_int(a1))
-        vj[a0:a1] = lib.einsum('pi,axpq,qj->axij', c, vjc, c)
+        if not k_only:
+            vj[a0:a1] = lib.einsum('pi,axpq,qj->axij', c, vjc, c)
         if with_k:
             vk[a0:a1] = lib.einsum('pi,axpq,qj->axij', c, vkc, c)
     return vj, vk
@@ -1359,7 +1364,8 @@ def _fock1(hessobj, dm0, with_k, occ=None):
         return None
     vk = None
     if with_k:
-        v = fock1_jk(mol, dm0, with_k=True, max_memory=max_memory)
+        # K only: the density-fitted J comes from ri_j_deriv
+        v = fock1_jk(mol, dm0, with_k=True, max_memory=max_memory, with_j=False)
         if v is None:
             return None
         vk = v[1]
