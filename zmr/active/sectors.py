@@ -122,6 +122,11 @@ class ActiveSpace(SectorSpace):
     def apply_h(self, nelec, q):
         if self.is_dense(nelec):
             return SectorSpace.apply_h(self, nelec, q)
+        return self.sigma(nelec, q)
+
+    def sigma(self, nelec, q):
+        '''H_act q without the sector Hamiltonian (native sigma kernel), whatever the
+        size of the sector.'''
         out = kernels.sigma(self.norb, nelec, self.dim(nelec), self.heff, self.aaaa, q)
         if out is None:
             raise NotImplementedError('matrix-free sectors need libzmr (run make)')

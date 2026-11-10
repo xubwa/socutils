@@ -140,6 +140,9 @@ class NEVPT2Base:
         if getattr(eris, 'factorized', False):
             naux = _naux(eris)
             ints = mb * naux * nmo * (nc + na)
+            # the half-transformed vectors while cd_pc is built (measured: 200 core and
+            # 2000 virtual spinors)
+            ints += 0.5 * mb * naux * nmo * nc
             per_thread = max(mb * (2 * naux * nv + nv * nv),                       # ccvv
                              mb * (naux * nv + 2 * 48 * nv * na),                    # cavv
                              mb * (naux * (nv + na) + 2 * nv * na * nc))             # ccav
@@ -170,7 +173,16 @@ class NEVPT2Base:
                                     + 8 * mb * nstate ** 2 * na ** 6)
                 continue
             nx = sum(len(idx) for _, idx in ops)
-            functions = max(functions, 2 * mb * nstate * nx * dim)
+            dense_h = getattr(act, 'is_dense', lambda n: True)(act.target(self.nelec, pclass.dn))
+            if getattr(self, 'sector_h', 'auto') == 'matrix_free':
+                dense_h = False
+            if dense_h:
+                # the functions twice and the dense sector Hamiltonian
+                functions = max(functions, 2 * mb * nstate * nx * dim + mb * dim * dim)
+            else:
+                # matrix free (zmr.pc.nevpt2): functions, their orthonormal span, H_act
+                # applied to it, the final basis
+                functions = max(functions, 5 * mb * nstate * nx * dim)
         if rdm_route:
             # the transition RDMs up to rank three of all pairs of model states
             functions += mb * nstate ** 2 * (na ** 6 + na ** 4 + na ** 2)

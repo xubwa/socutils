@@ -197,3 +197,46 @@ def test_rdm_route_runs_matrix_free(contraction):
     pt.kernel()
     assert not pt.active_space._hmat
     assert abs(pt.heff - ref.heff).max() < 1e-9
+
+
+@pytest.mark.parametrize('contraction', ['union', 'state'])
+def test_spectral_route_runs_matrix_free(contraction):
+    '''The spectral route (CI vectors) with sectors above dense_limit: H_act applied to
+    the basis of the span of the functions only, no sector Hamiltonian.'''
+    eris = model_eris(2, 6, 2, seed=62)
+    _, c = ActiveSpace.from_eris(eris).solve(3, 2)
+    ref = PCNEVPT2(eris, 3, civecs=c, contraction=contraction)
+    ref.kernel()
+
+    class MatrixFree(PCNEVPT2):
+        def make_active_space(self, eris):
+            return _matrix_free(ActiveSpace.from_eris(eris))
+
+    pt = MatrixFree(eris, 3, civecs=c, contraction=contraction)
+    pt.kernel()
+    assert not pt.active_space._hmat
+    assert abs(pt.heff - ref.heff).max() < 1e-9
+
+
+@pytest.mark.parametrize('contraction', ['union', 'state'])
+def test_spectral_sector_h_switch(contraction):
+    '''sector_h='matrix_free' on sectors that could be dense gives the dense result;
+    'dense' above dense_limit is refused.'''
+    eris = model_eris(2, 6, 2, seed=63)
+    _, c = ActiveSpace.from_eris(eris).solve(3, 2)
+    ref = PCNEVPT2(eris, 3, civecs=c, contraction=contraction, sector_h='dense')
+    ref.kernel()
+    pt = PCNEVPT2(eris, 3, civecs=c, contraction=contraction, sector_h='matrix_free')
+    pt.kernel()
+    # no Hamiltonian of a target sector (that of the model space is used for the model
+    # states)
+    assert set(pt.active_space._hmat) <= {3}
+    assert abs(pt.heff - ref.heff).max() < 1e-9
+
+    class Small(PCNEVPT2):
+        def make_active_space(self, eris):
+            return _matrix_free(ActiveSpace.from_eris(eris))
+    with pytest.raises(ValueError, match='dense_limit'):
+        Small(eris, 3, civecs=c, contraction=contraction, sector_h='dense').kernel()
+    with pytest.raises(ValueError):
+        PCNEVPT2(eris, 3, civecs=c, sector_h='sparse')
