@@ -43,12 +43,18 @@ class KnownValues(unittest.TestCase):
     def test_cholesky_eri_h5(self):
         with tempfile.NamedTemporaryFile(dir=lib.param.TMPDIR) as f:
             # a tiny memory budget: several column blocks
-            self.assertTrue(rik.cholesky_eri_h5(self.mol, self.auxmol, f.name, max_cols=200))
+            npair = self.ref.shape[1]
+            resident = numpy.empty((45, npair))
+            self.assertTrue(rik.cholesky_eri_h5(self.mol, self.auxmol, f.name, max_cols=200, resident=resident))
             dfobj = df.DF(self.mol)
             dfobj._cderi = f.name
             B = numpy.vstack(list(dfobj.loop(50)))
             self.assertTrue(rik._h5_contiguous(dfobj) is not None)
             B1 = numpy.vstack([b.copy() for b in rik.iter_factor(dfobj, 37)])
+            self.assertEqual(abs(resident - B[:45]).max(), 0)
+            dfobj._rik_resident, dfobj._rik_resident_src = resident, f.name
+            B2 = numpy.vstack([b.copy() for b in rik.iter_factor(dfobj, 20)])
+            self.assertEqual(abs(B2 - B).max(), 0)
         self.assertAlmostEqual(abs(B - self.ref).max(), 0, 10)
         self.assertEqual(abs(B1 - B).max(), 0)
 
