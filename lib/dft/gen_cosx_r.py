@@ -99,12 +99,18 @@ def gen(L, idx, comps):
     return '\n'.join(o)
 
 
-def gen_full(L, idx, comps):
-    """cxp_L: per 8-point chunk T, the Boys values, R and A += E R in registers"""
+def gen_full(LE, idx, comps, store=False):
+    """cxp_L: per 8-point chunk T, the Boys values, R and A += E R in registers; store (cxs_L, the
+    gradient): R to degree L + 1 also written to Rout[i * n + g] (A from the first NH(L) of them)"""
     o = []
     w = o.append
-    n_ = nh(L)
-    w('static void cxp_%d(double *A, int nab, const double *E, double p, const double *P, const double *xyz, int n)' % L)
+    n_ = nh(LE)
+    L = LE + 1 if store else LE
+    if store:
+        w('static void cxs_%d(double *A, int nab, const double *E, double p, const double *P, const double *xyz, int n,'
+          ' double *Rout)' % LE)
+    else:
+        w('static void cxp_%d(double *A, int nab, const double *E, double p, const double *P, const double *xyz, int n)' % L)
     w('{')
     w('        int g0, ab;')
     w('        const __m512d vp = _mm512_set1_pd(p), px = _mm512_set1_pd(P[0]), py = _mm512_set1_pd(P[1]),'
@@ -179,6 +185,9 @@ def gen_full(L, idx, comps):
                 w('                const __m512d r%d_%d = _mm512_mul_pd(%s, %s);' % (m, i, xv, a))
     if L == 0:
         w('                (void)x; (void)y; (void)z;')
+    if store:
+        for i in range(nh(L)):
+            w('                _mm512_mask_storeu_pd(Rout + %d * (size_t)n + g0, mk, r0_%d);' % (i, i))
     emit_er(w, n_)
     w('        }')
     w('}')
@@ -223,6 +232,10 @@ def main():
         out.append(gen_full(L, idx, comps))
     out.append('typedef void (*cxp_fn)(double *, int, const double *, double, const double *, const double *, int);')
     out.append('static const cxp_fn cxp_table[CXR_LMAX + 1] = {%s};' % ', '.join('cxp_%d' % L for L in range(LMAX + 1)))
+    for L in range(LMAX):
+        out.append(gen_full(L, idx, comps, store=True))
+    out.append('typedef void (*cxs_fn)(double *, int, const double *, double, const double *, const double *, int, double *);')
+    out.append('static const cxs_fn cxs_table[CXR_LMAX] = {%s};' % ', '.join('cxs_%d' % L for L in range(LMAX)))
     sys.stdout.write('\n'.join(out) + '\n')
 
 

@@ -820,7 +820,8 @@ static void multi_contract(double *Ga, const double *Fa, const double *Abuf, con
         }
 }
 
-#define CX_ABUF (2 << 20)       /* doubles of stored pair integrals per thread in the multi-density mode */
+#define CX_ABUF (2 << 20)
+#define CX_KROWS 64             /* rows of K per GEMM in the multi-density mode */       /* doubles of stored pair integrals per thread in the multi-density mode */
 
 /*
  * vk (nset, nao, nao) = the plain K of dms (nset, nao, nao), K_mu nu =
@@ -866,7 +867,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
         const double one = 1, zero = 0;
         double *Kt = kbufs[tid] = eonly ? NULL : calloc(nn * nset, sizeof(double));
         const size_t NQ = (size_t)nao * nset;
-        double *Bm = NULL;
+        double *Bm = multi ? malloc(sizeof(double) * NQ * (nao > CX_KROWS ? nao : CX_KROWS)) : NULL;
         double *Abuf = multi ? malloc(sizeof(double) * CX_ABUF) : NULL;
         CXRec *rec = multi ? malloc(sizeof(CXRec) * (opt->npair + 1)) : NULL;
         int nrec = 0;
@@ -925,19 +926,11 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                 /* F_d (nao, n) = D_d[ix, :]^T a */
                 for (i = 0; i < nbas; i++) fmax[i] = 0;
                 if (multi) {
-                        /* F[g][nu][d] = sum_i phi_i(g) D_d[ix_i][nu]: one GEMM per run of consecutive AOs,
-                         * straight from the density rows */
+                        /* F[g][nu][d] = sum_i phi_i(g) D_d[ix_i][nu]: the density rows gathered, one GEMM
+                         * (a GEMM per run of consecutive AOs would stream F once per run) */
                         const int nq = (int)NQ;
-                        int r0 = 0, first = 1;
-                        while (r0 < nl) {
-                                int r1 = r0 + 1;
-                                while (r1 < nl && ix[r1] == ix[r1 - 1] + 1) r1++;
-                                const int nr = r1 - r0;
-                                dgemm_("N", "T", &nq, &n, &nr, &one, dtm + (size_t)ix[r0] * NQ, &nq, a + (size_t)r0 * n, &n,
-                                       first ? &zero : &one, F, &nq);
-                                first = 0;
-                                r0 = r1;
-                        }
+                        for (i = 0; i < nl; i++) memcpy(Bm + (size_t)i * NQ, dtm + (size_t)ix[i] * NQ, sizeof(double) * NQ);
+                        dgemm_("N", "T", &nq, &n, &nl, &one, Bm, &nq, a, &n, &zero, F, &nq);
                         int mu;
                         for (g = 0; g < n; g++)
                                 for (mu = 0; mu < nao; mu++) {
@@ -1231,17 +1224,19 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                 tt1 = omp_get_wtime(); st[1] += tt1 - tt0; tt0 = tt1;
                 if (eonly) continue;
                 if (multi) {
-                        /* K[ix_i][nu][d] += sum_g wx_i(g) G[g][nu][d], one GEMM per run of consecutive AOs
-                         * straight into the thread's K */
+                        /* K[ix_i][nu][d] += sum_g wx_i(g) G[g][nu][d]: GEMMs of CX_KROWS rows into Bm, then
+                         * the rows added to the thread's K */
                         const int nq = (int)NQ;
-                        int r0 = 0;
-                        while (r0 < nl) {
-                                int r1 = r0 + 1;
-                                while (r1 < nl && ix[r1] == ix[r1 - 1] + 1) r1++;
-                                const int nr = r1 - r0;
-                                dgemm_("N", "N", &nq, &nr, &n, &one, G, &nq, wx + (size_t)r0 * n, &n, &one,
-                                       Kt + (size_t)ix[r0] * NQ, &nq);
-                                r0 = r1;
+                        int r0;
+                        for (r0 = 0; r0 < nl; r0 += CX_KROWS) {
+                                const int nr = nl - r0 < CX_KROWS ? nl - r0 : CX_KROWS;
+                                dgemm_("N", "N", &nq, &nr, &n, &one, G, &nq, wx + (size_t)r0 * n, &n, &zero, Bm, &nq);
+                                for (i = 0; i < nr; i++) {
+                                        double *row = Kt + (size_t)ix[r0 + i] * NQ;
+                                        const double *src = Bm + (size_t)i * NQ;
+                                        size_t q;
+                                        for (q = 0; q < NQ; q++) row[q] += src[q];
+                                }
                         }
                         st[3] += omp_get_wtime() - tt0;
                         continue;
@@ -1444,6 +1439,28 @@ int SOCDFTcosx_build_grad(void *p, int *atm, int *bas, double *env)
         free(wk);
 }
         return 1;
+}
+
+/* Mm (nab, nh) = W (nab, n) R (nh, n)^T: dot products for the small cases (a GEMM call costs more
+ * there), GEMM beyond */
+static void w_dot_r(double *Mm, const double *W, const double *R, int nab, int nh, int n, dgemm_t dgemm_)
+{
+        if ((size_t)nab * nh >= 256) {
+                const double one = 1, zero = 0;
+                dgemm_("T", "N", &nh, &nab, &n, &one, R, &n, W, &n, &zero, Mm, &nh);
+                return;
+        }
+        int ab, t, g;
+        for (ab = 0; ab < nab; ab++) {
+                const double *w = W + (size_t)ab * n;
+                for (t = 0; t < nh; t++) {
+                        const double *r = R + (size_t)t * n;
+                        double s = 0;
+#pragma omp simd reduction(+:s)
+                        for (g = 0; g < n; g++) s += w[g] * r[g];
+                        Mm[(size_t)ab * nh + t] = s;
+                }
+        }
 }
 
 /* AO values and gradients (4, nl, n) of the significant AOs of a block (max_g |phi| > cutoff) */
@@ -1695,7 +1712,7 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
                                         const double *Mo = opt->mdata + pp->mo + sz * (k0 - 1);
                                         e_times_r(A, Mo, farR[at], nab, nh, n);
                                         /* Mm (nab, nh1) = W R^T */
-                                        dgemm_("T", "N", &nh1, &nab, &n, &one, farR[at], &n, W, &n, &zero, Mm, &nh1);
+                                        w_dot_r(Mm, W, farR[at], nab, nh1, n, dgemm_);
                                         int ab, t;
                                         for (ab = 0; ab < nab; ab++)
                                                 for (t = 0; t < nh; t++) {
@@ -1711,6 +1728,11 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
                                 if (bk[k] * wgt < tol) continue;
                                 const double p = opt->pp_p[pp->po + k];
                                 const double *P = opt->pp_P + 3 * (pp->po + k);
+                                const double *E = opt->edata + pp->eo + sz * k;
+#ifdef CX_FUSED
+                                /* R to L + 1 stored, A += E R, in one register pass */
+                                cxs_table[L](A, nab, E, p, P, xyz, n, R);
+#else
                                 double tmin = 1e300, tmax = 0;
                                 for (g = 0; g < n; g++) {
                                         X[g] = P[0] - xyz[g];
@@ -1729,9 +1751,9 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
                                         for (g = 0; g < n; g++) sm[g] *= sc;
                                 }
                                 hermite_R_vec(R, S, X, Y, Z, L + 1, n, Rwk);
-                                const double *E = opt->edata + pp->eo + sz * k;
                                 e_times_r(A, E, R, nab, nh, n);
-                                dgemm_("T", "N", &nh1, &nab, &n, &one, R, &n, W, &n, &zero, Mm, &nh1);
+#endif
+                                w_dot_r(Mm, W, R, nab, nh1, n, dgemm_);
                                 int ab, t;
                                 for (ab = 0; ab < nab; ab++)
                                         for (t = 0; t < nh; t++) {
