@@ -165,6 +165,20 @@ class RIJDirect:
             ctypes.c_double(self.far_eps), *self._args())
         return self.cT.dot(self.cT.dot(vjp).T)                    # c^T J c, J symmetric
 
+    def get_vj_fit_multi(self, dfits):
+        '''J_ij of several fitted vectors dfits (nset, naux) in one pass (shared R tensors): (nset, nao, nao)'''
+        dfits = numpy.asarray(dfits, dtype=numpy.double).reshape(-1, self.auxmol.nao)
+        nset = dfits.shape[0]
+        h = numpy.ascontiguousarray(numpy.asarray(self.A.dot(dfits.T)).T)          # (nset, nh)
+        npao = self.c.shape[0]
+        vjp = numpy.empty((nset, npao, npao))
+        hmax = float(abs(self.qaux * dfits).max()) if dfits.size else 0.
+        self.libv.SOCVHFrij_direct_vj_multi(
+            vjp.ctypes.data_as(ctypes.c_void_p), h.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nset),
+            self.qcond.ctypes.data_as(ctypes.c_void_p), ctypes.c_double(self.tol), ctypes.c_double(hmax),
+            ctypes.c_double(self.far_eps), *self._args())
+        return numpy.array([self.cT.dot(numpy.asarray(self.cT.dot(v)).T) for v in vjp])
+
     def fit(self, rho):
         return scipy.linalg.cho_solve(self.low, rho)
 

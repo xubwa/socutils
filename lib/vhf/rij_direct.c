@@ -1425,3 +1425,158 @@ int SOCVHFrij_direct_deriv_w(double *Wrows, double *Waux, int c0, int c1, double
         free(ax.lpre);
         return npair;
 }
+
+/* pass 2 of nset coefficient vectors: h (nset, nh), M (nset, naux + ncen, NHQ), Vl (nset, NH(lp), NL);
+ * the R tensors of a batch shared by the sets */
+static void flush_near_vjm(RJBatch *b, int lp, int lq, double p, const double *h, size_t nh, int nset,
+                           const int *hoff, double *Vl, double *R0, double *r, double *hl)
+{
+        const int L = lp + lq, nt = (lq + 1) * (lq + 2) / 2, nv = NH(lp) * RJ_NL;
+        const int n = b->n;
+        batch_pad(b);
+        nearv_table[L](r, p, b->q, b->r2);
+        rjrv_table[L](R0, r, b->X, b->Y, b->Z);
+        int d, i, s;
+        for (d = 0; d < nset; d++) {
+                const double *hd = h + d * nh;
+                for (i = 0; i < RJ_NL; i++)
+                        for (s = 0; s < nt; s++) hl[s * RJ_NL + i] = i < n ? hd[hoff[b->k[i]] + s] : 0;
+                rjyv_table[lp][lq](R0, hl, Vl + d * nv);
+        }
+        b->n = 0;
+}
+
+static void flush_far_vjm(RJBatch *b, int lp, int lm, double fp, const double *M, size_t nm, int nset,
+                          double *Vl, double *R0, double *r, double *hl)
+{
+        const int L = lp + lm, ns = NH(lm), nv = NH(lp) * RJ_NL;
+        const int n = b->n;
+        batch_pad(b);
+        farv(r, L, fp, b->r2);
+        rjrv_table[L](R0, r, b->X, b->Y, b->Z);
+        int d, i, s, l;
+        for (d = 0; d < nset; d++) {
+                const double *Md = M + d * nm;
+                for (i = 0; i < RJ_NL; i++)
+                        for (s = 0; s < ns; s++) hl[s * RJ_NL + i] = i < n ? Md[(size_t)b->k[i] * NHQ + s] : 0;
+                for (l = 0; l <= lm; l++) rjyv_table[lp][l](R0, hl + NH(l - 1) * RJ_NL, Vl + d * nv);
+        }
+        b->n = 0;
+}
+
+/*
+ * vj (nset, nao, nao) of nset auxiliary coefficient vectors h (nset, hoff[naux]) in one pass (pass 2
+ * with the R tensors shared), decontracted Cartesian basis.  hmax: the largest bound of the sets.
+ */
+int SOCVHFrij_direct_vj_multi(double *vj, double *h, int nset, double *qcond, double tol, double hmax,
+                              double far_eps,
+                              int naux, int ncen, double *aexp, int *al, int *hoff, int *cen_off, double *cxyz,
+                              int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env)
+{
+        rj_init(far_eps);
+        RJAux ax = {naux, ncen, aexp, cxyz, al, hoff, cen_off, NULL};
+        aux_prefix_l(&ax);
+        const size_t nao = ao_loc[nbas], nn = nao * nao, nh = hoff[naux];
+        const size_t nm = (size_t)(naux + ncen) * NHQ;
+        int npair;
+        RJPair *pairs = make_pairs(&npair, qcond, hmax, tol, atm, bas, nbas, env);
+        double *M = calloc(nm * nset, sizeof(double));
+        {
+                int c, d;
+                for (d = 0; d < nset; d++)
+                for (c = 0; c < ncen; c++) {
+                        const int k0 = cen_off[c], k1 = cen_off[c + 1];
+                        int k, s;
+                        for (k = k0; k < k1; k++) {
+                                const double *m0 = M + d * nm + (size_t)(k + c) * NHQ;
+                                double *m1 = M + d * nm + (size_t)(k + c + 1) * NHQ;
+                                for (s = 0; s < NHQ; s++) m1[s] = m0[s];
+                                const int l = al[k], nt = (l + 1) * (l + 2) / 2;
+                                const double q = aexp[k], fq = PI32 / (q * sqrt(q));
+                                for (s = 0; s < nt; s++) m1[NH(l - 1) + s] += fq * h[d * nh + hoff[k] + s];
+                        }
+                }
+        }
+        memset(vj, 0, sizeof(double) * nn * nset);
+#pragma omp parallel
+{
+        const int ncmax = (LP / 2 + 1) * (LP / 2 + 2) / 2;
+        double *Et = malloc(sizeof(double) * ncmax * ncmax * NH(LP));
+        double wk[3 * (LP + 1) * (LP + 1) * (LP + 1)];
+        double V[NH(LP)];
+        double *R0 = malloc(sizeof(double) * (NH(LT) + (LT + 1) + NHQ) * RJ_NL);
+        double *r = R0 + NH(LT) * RJ_NL, *hl = r + (LT + 1) * RJ_NL;
+        double *Vl = malloc(sizeof(double) * NH(LP) * RJ_NL * nset);
+        RJBatch bn[LQ + 1], bf[LQ + 1];
+        int ip;
+#pragma omp for schedule(dynamic, 16)
+        for (ip = 0; ip < npair; ip++) {
+                const RJPair *pp = pairs + ip;
+                const int lp = pp->lp, nh0 = NH(lp), nv = nh0 * RJ_NL;
+                const double p = pp->p, fp = PI32 / (p * sqrt(p));
+                int c, k, l, d;
+                for (k = 0; k < nv * nset; k++) Vl[k] = 0;
+                for (l = 0; l <= LQ; l++) bn[l].n = bf[l].n = 0;
+                for (c = 0; c < ncen; c++) {
+                        const double X0 = pp->P[0] - cxyz[3 * c], Y0 = pp->P[1] - cxyz[3 * c + 1];
+                        const double Z0 = pp->P[2] - cxyz[3 * c + 2];
+                        const double r2 = X0 * X0 + Y0 * Y0 + Z0 * Z0;
+                        double tf;
+                        const int nfar = far_count(&ax, c, p, r2, lp, &tf);
+                        const int k0 = cen_off[c], k1 = cen_off[c + 1];
+                        if (nfar > 0) {
+                                const int lm = ax.lpre[k0 + c + nfar];
+                                RJBatch *b = bf + lm;
+                                const int i = b->n++;
+                                b->X[i] = X0; b->Y[i] = Y0; b->Z[i] = Z0; b->r2[i] = r2;
+                                b->k[i] = k0 + c + nfar;
+                                if (b->n == RJ_NL) flush_far_vjm(b, lp, lm, fp, M, nm, nset, Vl, R0, r, hl);
+                        }
+                        for (k = k0 + nfar; k < k1; k++) {
+                                const int lq = al[k];
+                                RJBatch *b = bn + lq;
+                                const int i = b->n++;
+                                b->X[i] = X0; b->Y[i] = Y0; b->Z[i] = Z0; b->r2[i] = r2;
+                                b->q[i] = aexp[k];
+                                b->k[i] = k;
+                                if (b->n == RJ_NL) flush_near_vjm(b, lp, lq, p, h, nh, nset, hoff, Vl, R0, r, hl);
+                        }
+                }
+                for (l = 0; l <= LQ; l++) {
+                        if (bn[l].n) flush_near_vjm(bn + l, lp, l, p, h, nh, nset, hoff, Vl, R0, r, hl);
+                        if (bf[l].n) flush_far_vjm(bf + l, lp, l, fp, M, nm, nset, Vl, R0, r, hl);
+                }
+                const int ish = pp->ish, jsh = pp->jsh;
+                const int li = bas[ish * BAS_SLOTS + ANG_OF], lj = bas[jsh * BAS_SLOTS + ANG_OF];
+                const int nfa = (li + 1) * (li + 2) / 2, nfb = (lj + 1) * (lj + 2) / 2;
+                pair_Et(Et, pp, atm, bas, env, wk);
+                const size_t a0 = ao_loc[ish], b0 = ao_loc[jsh];
+                for (d = 0; d < nset; d++) {
+                        const double *vl = Vl + d * nv;
+                        for (k = 0; k < nh0; k++) {
+                                double s = 0;
+                                int i;
+                                for (i = 0; i < RJ_NL; i++) s += vl[k * RJ_NL + i];
+                                V[k] = s;
+                        }
+                        double *J = vj + d * nn;
+                        int fa, fb;
+                        for (fa = 0; fa < nfa; fa++)
+                                for (fb = 0; fb < nfb; fb++) {
+                                        const double *e = Et + (size_t)(fa * nfb + fb) * nh0;
+                                        double s = 0;
+                                        for (k = 0; k < nh0; k++) s += e[k] * V[k];
+                                        J[(a0 + fa) * nao + b0 + fb] = s;
+                                        J[(b0 + fb) * nao + a0 + fa] = s;
+                                }
+                }
+        }
+        free(Et);
+        free(R0);
+        free(Vl);
+}
+        free(M);
+        free(pairs);
+        free(ax.lpre);
+        return npair;
+}

@@ -1182,9 +1182,14 @@ def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS
                 T = lib.unpack_tril(numpy.ascontiguousarray(lib.dot(cderi.T, U[:, k0:k1]).T))
                 vf[k0:k1] += lib.dot(T.reshape(-1, nao), occ).reshape(k1 - k0, nao, nocc)
         elif direct is not None:
-            # J of each fitted vector by the direct engine (no three-centre tensor)
-            for k in range(natm * 3):
-                vf[k] += lib.dot(direct.get_vj_fit(numpy.ascontiguousarray(Z[:, k])), occ)
+            # J of the fitted vectors by the direct engine (no three-centre tensor), several per pass
+            npao = direct.c.shape[0]
+            kd = max(1, min(64, int(max_memory * .2e6 / ((npao * npao + 2 * nao * nao) * 8))))
+            for k0 in range(0, natm * 3, kd):
+                k1 = min(natm * 3, k0 + kd)
+                T = direct.get_vj_fit_multi(Z[:, k0:k1].T)
+                vf[k0:k1] += lib.dot(T.reshape(-1, nao), occ).reshape(k1 - k0, nao, nocc)
+            T = None
         else:
             T = numpy.zeros((npair, natm * 3))
             for k0_, k1_, _ in aux_ranges:
