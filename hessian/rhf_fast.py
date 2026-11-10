@@ -1072,19 +1072,15 @@ def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS
         Y = direct.deriv_y(dm)
         npao = direct.c.shape[0]
         # the auxiliary centres in blocks: Waux (primitive and AO) within a fifth of max_memory
-        nc = max(1, min(natm, int(max_memory * .2e6 / (3 * (npao * npao + nao * nao) * 8))))
+        nc = max(1, min(natm, int(max_memory * .2e6 / (3 * (npao * npao + 2 * npao * nocc) * 8))))
         Wrows = None
         for c0 in range(0, natm, nc):
             c1 = min(natm, c0 + nc)
-            Wr, Waux = direct.deriv_w(dfit, c0, c1)
+            Wr, Waux = direct.deriv_w(dfit, c0, c1, occ=occ)       # (V + V^T) C_occ of the block
             if Wrows is None:
                 Wrows = Wr
             Wr = None
-            for C in range(c0, c1):
-                V = Waux[C - c0]                                   # (V + V^T) C_occ
-                vj1c[C] += lib.dot(V.reshape(3 * nao, nao), occ).reshape(3, nao, nocc)
-                for x in range(3):
-                    vj1c[C, x] += lib.dot(V[x].T, occ)
+            vj1c[c0:c1] += Waux
             Waux = None
         aoslices = mol.aoslice_by_atom()
         for ia in range(natm):                                     # the i-derivative rows of atom A
@@ -1188,12 +1184,10 @@ def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS
         elif direct is not None:
             # J of the fitted vectors by the direct engine (no three-centre tensor), several per pass
             npao = direct.c.shape[0]
-            kd = max(1, min(64, int(max_memory * .2e6 / ((npao * npao + 2 * nao * nao) * 8))))
+            kd = max(1, min(256, int(max_memory * .2e6 / ((npao * npao + 2 * nao * nao) * 8))))
             for k0 in range(0, natm * 3, kd):
                 k1 = min(natm * 3, k0 + kd)
-                T = direct.get_vj_fit_multi(Z[:, k0:k1].T)
-                vf[k0:k1] += lib.dot(T.reshape(-1, nao), occ).reshape(k1 - k0, nao, nocc)
-            T = None
+                vf[k0:k1] += direct.get_vj_fit_multi(Z[:, k0:k1].T, occ)
         else:
             T = numpy.zeros((npair, natm * 3))
             for k0_, k1_, _ in aux_ranges:
