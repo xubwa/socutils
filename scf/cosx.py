@@ -54,7 +54,9 @@ MULTI_FLOAT = False     # its contraction in single precision (set_multi_float)
 HESS_FLOAT = False      # the Hessian passes' A C contraction (Fock1 / K second derivatives) in single precision
 PROFILE = {}            # wall seconds of get_k's phases (accumulated)
 MULTI_MAXSET = 512      # densities per pass (every pass computes the integrals again)
-DENSE_MIN = 0.          # a grid block contracts densely when its kept pairs are >= this fraction of nao^2/2
+DENSE_MIN = .2          # a grid block contracts densely when its kept pairs are >= this fraction of nao^2/2
+                        # (else record-wise; crossover measured ~0.19: Trp-cage SVP kept 0.14 record-wise 427 s
+                        # vs dense 508 s, trpn_1_5 SVP kept 0.24 dense 31.8 vs 35.7 s; same results)
 PRIM_TOL = 1e-14
 PAIR_TOL = 1e-13
 
