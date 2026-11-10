@@ -993,12 +993,24 @@ class THCExchange:
         sw, g2c, gchunk, lrg, Plr, Pli = ctx
         nG = len(self.Gv)
         nch = -(-nG // gchunk)
-        own = list(range(rank, nch, size))                            # G chunks of this rank (round robin: balance)
-        cols_of = [np.concatenate([np.arange(c * gchunk, min((c + 1) * gchunk, nG)) for c in range(q, nch, size)]
-                                  or [np.zeros(0, dtype=int)]) for q in range(size)]
+        # G chunks of every rank: contiguous ranges balanced by the cost of the A GEMM / aux FT of a chunk
+        # (aux functions kept at its |G| x its G points); contiguous columns pack by memcpy (round-robin chunks
+        # needed a fancy-index gather of the spectra: EuOCl np4 37 of 56 s per block)
+        cost = np.empty(nch)
+        for c in range(nch):
+            sub_, nk_ = self._aux_upto(g2c[c])
+            cost[c] = max(nk_, 1) * (min((c + 1) * gchunk, nG) - c * gchunk)
+        cum = np.concatenate([[0.], np.cumsum(cost)])
+        cuts = np.searchsorted(cum, cum[-1] * np.arange(1, size) / size)
+        cuts = np.concatenate([[0], np.clip(cuts, 0, nch), [nch]]).astype(int)
+        cuts = np.maximum.accumulate(cuts)
+        own = list(range(cuts[rank], cuts[rank + 1]))
+        gsl = [(cuts[q] * gchunk, min(cuts[q + 1] * gchunk, nG)) for q in range(size)]   # G columns of rank q
+        ncol = [b_ - a_ for a_, b_ in gsl]
         p2cache = {}                                                  # aux FT of the own G chunks, kept if it fits
         p2_left = 0.25 * self.avail_bytes()                           # its share of the budget (blocks: 0.6)
         ta_comm = 0.
+        tw = dict(wait=0., a2a=0., bytes=0.)                          # transpose: waiting, Alltoallv, bytes moved
         for b0 in range(0, nmu, nb):
             b1 = min(b0 + nb, nmu)
             nbk = b1 - b0
@@ -1012,11 +1024,17 @@ class THCExchange:
             tt['xi'] += time.time() - ta
             # forward: to rank q the rows ms[q]:ms[q+1] of xl (contiguous); from rank p its (m1 - m0, n_p) piece
             ta = time.time()
+            comm.Barrier()                                            # wait for the slowest rank (timed apart)
+            tw['wait'] += time.time() - ta
+            ta = time.time()
             sc = np.array([(ms[q + 1] - ms[q]) * nr for q in range(size)])
             rc = np.array([(m1 - m0) * (gs[p + 1] - gs[p]) for p in range(size)])
             rbuf = np.empty(rc.sum())
+            tb = time.time()
             comm.Alltoallv([xl, (sc, np.r_[0, np.cumsum(sc)[:-1]]), MPI.DOUBLE],
                            [rbuf, (rc, np.r_[0, np.cumsum(rc)[:-1]]), MPI.DOUBLE])
+            tw['a2a'] += time.time() - tb
+            tw['bytes'] += 8. * (sc.sum() + rc.sum())
             xl = None
             xi = np.empty((m1 - m0, ng))
             off = 0
@@ -1040,12 +1058,23 @@ class THCExchange:
                     Xi[:, b0 + m0:b0 + m1] = self._lr_rows_of_xi(Xh)
             # A: transpose the spectra to all mu rows of the block on the own G chunks, A[:, b] += Re(P^* X) there
             ta = time.time()
-            sg = np.array([2 * (m1 - m0) * len(cols_of[q]) for q in range(size)])
-            rg = np.array([2 * (ms[p + 1] - ms[p]) * len(cols_of[rank]) for p in range(size)])
-            sbuf = np.concatenate([np.ascontiguousarray(Xh[:, cols_of[q]]).view(float).ravel() for q in range(size)])
-            Xq = np.empty((nbk, len(cols_of[rank])), dtype=complex)
+            comm.Barrier()
+            tw['wait'] += time.time() - ta
+            ta = time.time()
+            sg = np.array([2 * (m1 - m0) * ncol[q] for q in range(size)])
+            rg = np.array([2 * (ms[p + 1] - ms[p]) * ncol[rank] for p in range(size)])
+            sbuf = np.empty(sg.sum())
+            o_ = 0
+            for q in range(size):                                     # contiguous column slices: memcpy
+                a_, b_ = gsl[q]
+                sbuf[o_:o_ + sg[q]].view(complex).reshape(m1 - m0, ncol[q])[:] = Xh[:, a_:b_]
+                o_ += sg[q]
+            Xq = np.empty((nbk, ncol[rank]), dtype=complex)
+            tb = time.time()
             comm.Alltoallv([sbuf, (sg, np.r_[0, np.cumsum(sg)[:-1]]), MPI.DOUBLE],
                            [Xq.view(float), (rg, np.r_[0, np.cumsum(rg)[:-1]]), MPI.DOUBLE])
+            tw['a2a'] += time.time() - tb
+            tw['bytes'] += 8. * (sg.sum() + rg.sum())
             sbuf = None
             ta_comm += time.time() - ta
             As = np.zeros((self.auxmol.nao, nbk))                     # aux-cutoff order
@@ -1083,11 +1112,22 @@ class THCExchange:
             tt['V'] += time.time() - ta
             # back: to rank p the (m1 - m0, n_p) columns of its rows; from rank q its mu rows on the own grid rows
             ta = time.time()
-            sbuf = np.concatenate([vxi[:, gs[p]:gs[p + 1]].ravel() for p in range(size)])
+            comm.Barrier()
+            tw['wait'] += time.time() - ta
+            ta = time.time()
+            sbuf = np.empty(rc.sum())
+            o_ = 0
+            for p in range(size):                                     # one copy into the send buffer
+                n_p = gs[p + 1] - gs[p]
+                sbuf[o_:o_ + rc[p]].reshape(m1 - m0, n_p)[:] = vxi[:, gs[p]:gs[p + 1]]
+                o_ += rc[p]
             vxi = None
             vl = np.empty((nbk, nr))
+            tb = time.time()
             comm.Alltoallv([sbuf, (rc, np.r_[0, np.cumsum(rc)[:-1]]), MPI.DOUBLE],
                            [vl, (sc, np.r_[0, np.cumsum(sc)[:-1]]), MPI.DOUBLE])
+            tw['a2a'] += time.time() - tb
+            tw['bytes'] += 8. * (sc.sum() + rc.sum())
             sbuf = None
             ta_comm += time.time() - ta
             ta = time.time()
@@ -1098,9 +1138,24 @@ class THCExchange:
             V[b0:b1] += Vb @ Ginv                                       # own-row part of int (v * xi_b) xi^T
             vl = Vb = None
             tt['V'] += time.time() - ta
-            self.log('   streamed THC (grid split): mu block %d-%d of %d, %.0f s (%s, transpose %.0f; aux FT cached '
-                     'for %d of %d own G chunks)' % (b0, b1, nmu, time.time() - t0,
-                     ', '.join('%s %.0f' % kv for kv in tt.items()), ta_comm, len(p2cache), len(own)))
+            self.log('   streamed THC (grid split): mu block %d-%d of %d, %.0f s (%s, transpose %.0f = wait %.0f + '
+                     'Alltoallv %.0f (%.2f GB/s) + pack; aux FT cached for %d of %d own G chunks)'
+                     % (b0, b1, nmu, time.time() - t0, ', '.join('%s %.0f' % kv for kv in tt.items()), ta_comm,
+                        tw['wait'], tw['a2a'], tw['bytes'] / max(tw['a2a'], 1e-9) / 1e9, len(p2cache), len(own)))
+        self._log_rank_spread(tt, tw)
+
+    def _log_rank_spread(self, tt, tw):
+        '''min / max over the ranks of the stream timings (load balance: the transpose waits for the slowest).'''
+        comm = self.comm
+        keys = list(tt) + ['wait', 'a2a']
+        loc = np.array([tt[k] for k in tt] + [tw['wait'], tw['a2a']])
+        allv = np.array(comm.allgather(loc))
+        import socket
+        hosts = comm.allgather(socket.gethostname())
+        self.log('   streamed THC (grid split), per rank min / max: ' + ', '.join(
+            '%s %.0f / %.0f' % (k, allv[:, i].min(), allv[:, i].max()) for i, k in enumerate(keys)))
+        for r, (h, v) in enumerate(zip(hosts, allv)):                 # slow node or imbalance
+            self.log('     rank %d (%s): %s' % (r, h, ', '.join('%s %.0f' % (k, x) for k, x in zip(keys, v))))
 
     def _block_spectra(self, xs, b0, b1, ctx, A, A_lr, Xi, tt):
         '''xs = [xi], xi (b1 - b0, ng): ISDF vectors b0:b1 on the full grid (taken out of the list, so that it is
