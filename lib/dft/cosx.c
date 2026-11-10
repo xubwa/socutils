@@ -34,7 +34,13 @@
 #include <string.h>
 #include <math.h>
 #include <omp.h>
+/* -DCX_PROFILE: per-pair counters and cycle counts in SOCDFTcosx_stats */
+#ifdef CX_PROFILE
 #include <x86intrin.h>
+#define PROF(x) x
+#else
+#define PROF(x)
+#endif
 #include "gtoval_c2s.h"
 
 #define ATM_SLOTS 6
@@ -77,12 +83,21 @@ void SOCDFTcosx_stats(double *out, int reset)
 
 static int cx_ready = 0;
 static double cx_damp[CX_DMAX + 1];
+static int cx_full = 1;     /* the all-in-register primitive kernels for L <= cx_full (c16 / def2-TZVP:
+                             * L = 0, 1 2.9 / 5.6 cycles per point against 3.7 / 6.1, L = 2 12.5 against 10.4) */
+static int cx_pairdamp = 1;  /* the pair-level distance damping */
+void SOCDFTcosx_set_full(int f) { cx_full = f; }
+void SOCDFTcosx_set_opt(int which, int v)
+{
+        if (which == 0) cx_full = v;
+        if (which == 1) cx_pairdamp = v;
+}
 static int h_t[CX_NHMAX], h_u[CX_NHMAX], h_v[CX_NHMAX], h_deg[CX_NHMAX];
 static int h_dir[CX_NHMAX], h_m1[CX_NHMAX], h_m2[CX_NHMAX], h_c[CX_NHMAX];
 static int h_idx[CX_DMAX + 1][CX_DMAX + 1][CX_DMAX + 1];
 
 #define BOYS_TMAX 40.
-#define BOYS_NT 801
+#define BOYS_NT 1281                     /* grid t_k = k / 32 */
 #define BOYS_MT (CX_DMAX + 8)
 static double boys_tab[BOYS_NT][BOYS_MT];
 static double boys_inv[BOYS_MT];
@@ -133,7 +148,7 @@ static void cx_tables(void)
                         h_c[n] = c[k] - 1;
                         h_m2[n] = c[k] >= 2 ? h_idx[m2[0]][m2[1]][m2[2]] : 0;
                 }
-                for (n = 0; n < BOYS_NT; n++) boys_exact(boys_tab[n], n * .05, BOYS_MT - 1);
+                for (n = 0; n < BOYS_NT; n++) boys_exact(boys_tab[n], n * (1. / 32), BOYS_MT - 1);
                 for (n = 1; n < BOYS_MT; n++) boys_inv[n] = 1. / (2 * n - 1);
                 {
                         double df = 1;
@@ -146,6 +161,8 @@ static void cx_tables(void)
         }
 }
 }
+
+#define BOYS_TSW (BOYS_TMAX - 1. / 32)      /* table below, asymptotic form from here */
 
 /* out[g] = 1 / sqrt(x[g]): AVX-512 rsqrt14 and two Newton steps (relative error ~1e-16), else libm */
 #if defined(__AVX512F__)
@@ -175,10 +192,10 @@ static void rsqrt_vec(double *out, const double *x, int n)
 }
 #endif
 
-#define BOYS_TSW (BOYS_TMAX - .05)      /* table below, asymptotic form from here */
 
 /* F[m * ld + g] = F_m(T_g), m = 0..L, g < n, tmin / tmax the range of T.  Below BOYS_TSW: F_L
- * from the table (Taylor to 6th order about the nearest grid point, gathered) and downward
+ * from the table (Taylor to 4th order about the nearest point of the grid k / 32, error < 1e-12,
+ * gathered) and downward
  * recursion (exp from libmvec); above, the asymptotic form F_m = (2m - 1)!! / (2t)^m
  * sqrt(pi / t) / 2 (e^-40 = 4e-18).  Branch-free SIMD loops, the two forms blended on mixed blocks. */
 static void boys_vec(double *F, int ld, const double *T, int L, int n, double tmin, double tmax)
@@ -193,16 +210,16 @@ static void boys_vec(double *F, int ld, const double *T, int L, int n, double tm
 #pragma omp simd
                 for (g = 0; g < n; g++) {
                         const double t = T[g] < BOYS_TSW ? T[g] : BOYS_TSW;
-                        const int k = (int)(t * 20 + .5);
+                        const int k = (int)(t * 32 + .5);
                         kk[g] = k * BOYS_MT + L;
-                        tt[g] = k * .05 - t;
+                        tt[g] = k * (1. / 32) - t;
                 }
 #pragma omp simd
                 for (g = 0; g < n; g++) {
                         const int k = kk[g];
                         const double dl = tt[g];
                         fl[g] = tab[k] + dl * (tab[k + 1] + dl * .5 * (tab[k + 2] + dl * (1. / 3) * (tab[k + 3]
-                              + dl * .25 * (tab[k + 4] + dl * .2 * (tab[k + 5] + dl * (1. / 6) * tab[k + 6])))));
+                              + dl * .25 * tab[k + 4])));
                 }
                 if (L > 0) {
 #pragma omp simd
@@ -291,6 +308,7 @@ static void hermite_R_vec(double *out, const double *S, const double *X, const d
 typedef struct {
         int I, J, nI, nJ, L, onec, atom, np;
         double bound;
+        double pc[3], ext, pmin;  /* centroid of the primitive centres, their max distance to it, min p */
         size_t po;      /* first primitive pair in pp_* */
         size_t eo;      /* E of primitive pair k at edata + eo + k nI nJ NH(L) */
         size_t mo;      /* one-centre: prefix moments at mdata + mo + k nI nJ NH(L) (after k + 1 pairs) */
@@ -586,6 +604,22 @@ void *SOCDFTcosx_build(double prim_tol, double pair_tol, int *ao_loc, int *atm, 
                         }
                 }
                 pp->bound = btot;
+                {
+                        double c[3] = {0, 0, 0}, e = 0, pm = 1e300;
+                        for (k = 0; k < pp->np; k++) {
+                                const double *P = opt->pp_P + 3 * (pp->po + k);
+                                c[0] += P[0]; c[1] += P[1]; c[2] += P[2];
+                                pm = fmin(pm, opt->pp_p[pp->po + k]);
+                        }
+                        for (c[0] /= pp->np, c[1] /= pp->np, c[2] /= pp->np, k = 0; k < pp->np; k++) {
+                                const double *P = opt->pp_P + 3 * (pp->po + k);
+                                e = fmax(e, sqrt((P[0] - c[0]) * (P[0] - c[0]) + (P[1] - c[1]) * (P[1] - c[1])
+                                                 + (P[2] - c[2]) * (P[2] - c[2])));
+                        }
+                        memcpy(pp->pc, c, sizeof(c));
+                        pp->ext = e;
+                        pp->pmin = pm;
+                }
         }
         free(wk);
         free(tmpE);
@@ -820,6 +854,28 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         const int cJ = pp->I != pp->J && bx * fmax[pp->I] >= tol;
                         if (!cI && !cJ) continue;
                         const int L = pp->L, nh = NH(L), nI = pp->nI, nJ = pp->nJ, nab = nI * nJ;
+                        {
+                                /* the pair's bound damped over the distance of its primitive centres to the
+                                 * block (the smallest p): one sqrt before the per-primitive bounds */
+                                const double dx = pp->pc[0] - cb[0], dy = pp->pc[1] - cb[1], dz = pp->pc[2] - cb[2];
+                                const double dmin = sqrt(dx * dx + dy * dy + dz * dz) - rb - pp->ext;
+                                if (cx_pairdamp && dmin > 0) {
+                                        const double T0 = pp->pmin * dmin * dmin;
+                                        if (T0 > 1) {
+                                                const double ir = 1 / sqrt(T0);
+                                                double rp = ir, mx = 0;
+                                                int dd;
+                                                for (dd = 0; dd <= L; dd++) {
+                                                        const double v = cx_damp[dd] * rp;
+                                                        if (v > mx) mx = v;
+                                                        rp *= ir;
+                                                }
+                                                if (mx < 1 && !((bx * mx * fmax[pp->J] >= tol && cI)
+                                                                || (bx * mx * fmax[pp->I] >= tol && cJ)))
+                                                        continue;
+                                        }
+                                }
+                        }
                         /* the bounds of the primitive pairs damped by their distance to the block:
                          * |(2 pi / p) R_t| <= (2p)^{d/2} min(1, c_d T^{-(d+1)/2}) (the far-field form) */
                         double bsum = 0;
@@ -850,10 +906,10 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         if (!cI2 && !cJ2) continue;
                         const double fm = cI2 && cJ2 ? (fmax[pp->J] > fmax[pp->I] ? fmax[pp->J] : fmax[pp->I])
                                         : (cI2 ? fmax[pp->J] : fmax[pp->I]);
-                        st[4] += 1;
+                        PROF(st[4] += 1);
                         const size_t sz = (size_t)nab * nh;
                         int k0 = 0;
-                        const unsigned long long cp0 = __rdtsc();
+                        PROF(const unsigned long long cp0 = __rdtsc());
                         memset(A, 0, sizeof(double) * nab * n);
                         if (pp->onec) {
                                 at = pp->atom;
@@ -892,18 +948,23 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                                         const double *pv = opt->pp_p + pp->po;
                                         while (k0 < pp->np && pv[k0] * rmin >= tcut) k0++;
                                 }
-                                st[6] += k0 > 0;
+                                PROF(st[6] += k0 > 0);
                                 if (k0 > 0)
                                         e_times_r(A, opt->mdata + pp->mo + sz * (k0 - 1), farR[at], nab, nh, n);
                         }
-                        st[24] += __rdtsc() - cp0;
+                        PROF(st[24] += __rdtsc() - cp0);
                         for (k = k0; k < pp->np; k++) {
                                 if (bk[k] * xsum * fm < tol) continue;
-                                st[5] += 1;
-                                st[8 + L] += n;
-                                const unsigned long long c0 = __rdtsc();
+                                PROF(st[5] += 1; st[8 + L] += n; const unsigned long long c0 = __rdtsc());
                                 const double p = opt->pp_p[pp->po + k];
                                 const double *P = opt->pp_P + 3 * (pp->po + k);
+#ifdef CX_FUSED
+                                if (L <= cx_full) {
+                                        cxp_table[L](A, nab, opt->edata + pp->eo + sz * k, p, P, xyz, n);
+                                        PROF(st[16 + L] += __rdtsc() - c0);
+                                        continue;
+                                }
+#endif
                                 double tmin = 1e300, tmax = 0;
 #pragma omp simd reduction(min:tmin) reduction(max:tmax)
                                 for (g = 0; g < n; g++) {
@@ -933,10 +994,9 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                                 else
                                         e_times_r(A, opt->edata + pp->eo + sz * k, R, nab, nh, n);
 #endif
-                                st[16 + L] += __rdtsc() - c0;
+                                PROF(st[16 + L] += __rdtsc() - c0);
                         }
-                        st[25] += __rdtsc() - cp0;
-                        tt1 = omp_get_wtime(); st[1] += tt1 - tt0; tt0 = tt1;
+                        PROF(st[25] += __rdtsc() - cp0; const unsigned long long cc0 = __rdtsc());
                         /* G_I += A F_J, G_J += A^T F_I */
                         const int I0 = ao_loc[pp->I], J0 = ao_loc[pp->J];
                         for (d = 0; d < nset; d++) {
@@ -966,9 +1026,9 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                                         }
                                 }
                         }
-                        tt1 = omp_get_wtime(); st[2] += tt1 - tt0; tt0 = tt1;
+                        PROF(st[26] += __rdtsc() - cc0);
                 }
-                tt0 = omp_get_wtime();
+                tt1 = omp_get_wtime(); st[1] += tt1 - tt0; tt0 = tt1;
                 /* K[ix, :] += wx G^T */
                 for (d = 0; d < nset; d++) {
                         const double *Gd = G + (size_t)d * nao * n;

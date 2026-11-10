@@ -181,14 +181,16 @@ def get_k(mol, dm, hermi=1, grids=None, fit=True):
 
 
 def stats(reset=True):
-    '''the kernel's profiling counters: thread-summed seconds of [AO + F, integrals, contraction, K GEMM],
-    counts [pairs, primitive pairs, far-field terms, sum of nl]'''
+    '''the kernel's profiling counters: thread-summed seconds of [AO + F, pairs (integrals + contraction), -, K GEMM],
+    with -DCX_PROFILE also counts [pairs, primitive pairs, far-field terms, sum of nl] and cycles'''
     out = numpy.zeros(32)
     _lib().SOCDFTcosx_stats(out.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(int(reset)))
     return out
 
 
-REBUILD_NSTEPS = 10     # incremental K builds between two full builds
+REBUILD_NSTEPS = 30     # incremental K builds between two full builds (a late full build is a whole K for nothing)
+TOL_FULL = 1e-7         # screening of the full builds: their error is a fixed offset the increments do not
+                        # touch (c16 / cc-pVDZ: E_x changes by 1e-6 against 1e-9; the increments keep tol)
 SCF_GRID_SWITCH = 0     # max |D - D_prev| below which the SCF goes from GRIDX1 to GRIDX2 (0: GRIDX2 throughout;
                         # c16 / cc-pVDZ PBE0 with 1e-3: 18 cycles instead of 12, the grid switch upsets DIIS)
 
@@ -250,7 +252,12 @@ def apply(mf, grids=None, final_grid=3, incremental=True, fit=True, tol=None):
             n = last['n'] + 1
             logger.debug(mf, 'COSX: incremental K (%d since the full build), grid %d', n, lev)
         else:
-            vk = k.get_k(dm, hermi)
+            tol0 = k.tol
+            k.tol = max(tol0, TOL_FULL)
+            try:
+                vk = k.get_k(dm, hermi)
+            finally:
+                k.tol = tol0
             n = 0
             logger.debug(mf, 'COSX: full K, grid %d', lev)
         st['last'] = {'lev': lev, 'dm': dm.copy(), 'vk': vk.copy(), 'n': n}
