@@ -41,7 +41,10 @@ from pyscf.lib import logger
 # the COSX grids, dft.grids.Grids attributes (intacc, angular_grid): ORCA 6's GRIDX1-3 (IntAcc 3.816 /
 # 4.020 / 4.338, Lebedev-50 / 110 / 194 at most); the SCF runs on GRIDX2 (GRIDX1 while the density
 # moves, SCF_GRID_SWITCH, off by default), the final exchange energy is recomputed on GRIDX3 (as ORCA)
-GRIDX = {1: {'intacc': 3.816, 'angular_grid': 1},
+# level 0: a CP-SCF operator grid (~1/5 of GRIDX2; C16H34 def2-TZVP 11872 points, CP-SCF K only: frequencies
+# within 0.22 / rms 0.06 cm-1 of GRIDX2, caffeine cc-pVDZ 0.18; rhf_fast.CPHF_COSX_GRID = 0)
+GRIDX = {0: {'intacc': 3.0, 'angular_grid': (14, 14, 26, 26, 14)},
+         1: {'intacc': 3.816, 'angular_grid': 1},
          2: {'intacc': 4.020, 'angular_grid': 2},
          3: {'intacc': 4.338, 'angular_grid': 3}}
 GRID = GRIDX[2]
