@@ -52,7 +52,8 @@ TCUT = 36.              # p r^2 beyond which a one-centre primitive pair is in i
 MULTI_MIN = 4           # densities from which the multi-density contraction runs
 MULTI_FLOAT = False     # its contraction in single precision (set_multi_float)
 HESS_FLOAT = False      # the Hessian passes' A C contraction (Fock1 / K second derivatives) in single precision
-MULTI_MAXSET = 64       # densities per pass (beyond, the buffers grow with no gain)
+PROFILE = {}            # wall seconds of get_k's phases (accumulated)
+MULTI_MAXSET = 512      # densities per pass (every pass computes the integrals again)
 PRIM_TOL = 1e-14
 PAIR_TOL = 1e-13
 
@@ -63,6 +64,20 @@ def _lib():
     if libdft is None or not hasattr(libdft, 'SOCDFTcosx_k'):
         return None
     libdft.SOCDFTcosx_build.restype = ctypes.c_void_p
+    if not getattr(libdft, '_cx_symm_set', False) and hasattr(libdft, 'SOCDFTcosx_set_symm'):
+        # dsymm_ / ssymm_ of the BLAS pyscf uses (MKL) for the dense multi-density contraction (else the
+        # record-wise one)
+        try:
+            for name in ('libmkl_rt.so.3', 'libmkl_rt.so.2', 'libmkl_rt.so'):
+                try:
+                    blas = ctypes.CDLL(name)
+                    libdft.SOCDFTcosx_set_symm(ctypes.cast(blas.dsymm_, ctypes.c_void_p),
+                                               ctypes.cast(blas.ssymm_, ctypes.c_void_p))
+                    break
+                except (OSError, AttributeError):
+                    continue
+        finally:
+            libdft._cx_symm_set = True
     return libdft
 
 
@@ -175,20 +190,27 @@ class COSX(lib.StreamObject):
         t0 = (logger.process_clock(), logger.perf_counter())
         multi = nset >= MULTI_MIN
         if multi:
-            # many densities: the densities as the vector dimension of the contraction, in batches whose
-            # per-thread buffers (K, the gathered density rows, F, G: ~2 nao^2 + 3 nao blk per density) fit
-            # per density: the threads' K and gathered rows (2 nao^2 each), F, G (and their float copies),
-            # plus the transposed input and output here (2 nao^2)
-            per = 8 * ((2 * nao * nao + 4 * nao * self.blk) * lib.num_threads() + 3 * nao * nao) / 1e6
-            nb = max(1, min(nset, MULTI_MAXSET, int(.4 * max(500, mol.max_memory - lib.current_memory()[0]) / per)))
+            # many densities: the densities as the vector dimension of the contraction, in as few passes as
+            # the memory allows (every pass evaluates the integrals again).  Per density: the threads' F, G
+            # (float: in float only), 2 blk nao each; the shared K, the transposed input and output and the
+            # copies here, ~5 nao^2.  Fixed: the threads' stored pair integrals of a block (dense
+            # contraction), at most nao^2/2 blk each
+            nt = lib.num_threads()
+            per = ((4 if libdft.SOCDFTcosx_mfloat() else 12) * 2 * self.blk * nao * nt + 8 * 5 * nao * nao) / 1e6
+            fixed = (4 if libdft.SOCDFTcosx_mfloat() else 8) * (nao * nao / 2 * self.blk + nao * nao) * nt / 1e6
+            avail = max(500, mol.max_memory - lib.current_memory()[0] - fixed)
+            nb = max(1, min(nset, MULTI_MAXSET, int(.8 * avail / per)))
             if nb < nset:
                 vk = numpy.concatenate([self.get_k(dms[i:i + nb], hermi) for i in range(0, nset, nb)])
                 return vk.reshape(shape)
+            tp_ = logger.perf_counter()
             vl = 16 if libdft.SOCDFTcosx_mfloat() else 8
             nset8 = (nset + vl - 1) // vl * vl          # the kernel takes the densities 8 (16) at a time
             dtm = numpy.zeros((nao, nao, nset8))
             dtm[:, :, :nset] = dms.transpose(1, 2, 0)
             vkt = numpy.empty((nao, nao, nset8))
+            PROFILE['prep'] = PROFILE.get('prep', 0) + logger.perf_counter() - tp_
+        tk_ = logger.perf_counter()
         vk = numpy.empty_like(dms)
         libdft.SOCDFTcosx_k(
             (vkt if multi else vk).ctypes.data_as(ctypes.c_void_p), dms.ctypes.data_as(ctypes.c_void_p),
@@ -202,12 +224,19 @@ class COSX(lib.StreamObject):
             *_blas_ptrs(), None, None, dtm.ctypes.data_as(ctypes.c_void_p) if multi else None)
         if libdft.SOCDFTcosx_error():
             raise MemoryError('COSX: a kernel buffer could not be allocated (%d densities, nao %d)' % (nset, nao))
+        tp_ = logger.perf_counter()
+        PROFILE['kernel'] = PROFILE.get('kernel', 0) + tp_ - tk_
         if multi:
             vk = numpy.ascontiguousarray(vkt[:, :, :nset].transpose(2, 0, 1))
+        tq_ = logger.perf_counter()
+        PROFILE['untranspose'] = PROFILE.get('untranspose', 0) + tq_ - tp_
         if self._proj is not None:
             vk = lib.einsum('ij,xjk->xik', self._proj, vk)
+        tp_ = logger.perf_counter()
+        PROFILE['proj'] = PROFILE.get('proj', 0) + tp_ - tq_
         if hermi == 1:
             vk = (vk + vk.transpose(0, 2, 1)) * .5
+        PROFILE['sym'] = PROFILE.get('sym', 0) + logger.perf_counter() - tp_
         logger.timer_debug1(self, 'COSX K (%d densities)' % nset, *t0)
         return vk.reshape(shape)
 
