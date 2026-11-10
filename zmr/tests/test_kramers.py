@@ -110,3 +110,16 @@ def test_nevpt2_kramers_pairs(hbr):
     assert classes.kramers_core_half(ctx) is not None
     for name in ('ccvv', 'cavv', 'ccav'):
         assert abs(pa.h2_by_class[name] - pb.h2_by_class[name]).max() < 1e-11, name
+
+
+def test_nevpt2_memory_check(hbr):
+    '''Too small max_memory stops NEVPT2 before the integrals, with the minimum needed.'''
+    from socutils.zmr.interface import socutils_x2c
+    from socutils.zmr.pc.nevpt2 import PCNEVPT2
+    mol, mf, cderi = hbr
+    eris = socutils_x2c.from_scf(mf, ncore=mol.nelectron - 2, nact=4, cderi=cderi)
+    pt = PCNEVPT2(eris, 2, nstate=1)
+    pt.verbose = 0
+    pt.max_memory = 1
+    with pytest.raises(MemoryError, match='needs max_memory >='):
+        pt.kernel()

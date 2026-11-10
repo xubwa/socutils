@@ -399,7 +399,12 @@ void zmr_w_aavv(const double complex *bva, int64_t ldva, int64_t naux, int64_t n
         }
 }
 
-/* cavv: tasks i, v[ab, t] = -((ai|bt) - (at|bi)), a < b */
+/* cavv: tasks (i, segment of a): for a in [a0, a1) and b > a,
+ *     v[ab, t] = -((ai|bt) - (at|bi)),   m1[a, (b, t)] = (ai|bt) for b >= a0,
+ *                                         m2[(b, a), t] = (bi|at) for b >= a0,
+ * two products per task, so that a thread holds 2 * seg * nv * na elements instead of
+ * nv^2 na (the products of all segments together cost one nv x nv na product). */
+#define CAVV_SEG 48
 void zmr_w_cavv(const double complex *bvc, int64_t ldvc, const double complex *bva,
                 int64_t ldva, int64_t naux,
                 int64_t nv, int64_t na, int64_t nc, const double *ev, const double *ec,
@@ -410,25 +415,46 @@ void zmr_w_cavv(const double complex *bvc, int64_t ldvc, const double complex *b
         if (nc < 1 || nv < 2 || na < 1 || nd == 0) {
                 return;
         }
-        int outer = outer_tasks(nc, mode);
+        int64_t nseg = (nv - 1 + CAVV_SEG - 1) / CAVV_SEG;
+        int64_t ntask = nc * nseg;
+        int outer = outer_tasks(ntask, mode);
+        const double complex one = 1.0, zero = 0.0;
 #pragma omp parallel if(outer)
         {
                 double complex *bi = malloc(sizeof(double complex) * naux * nv);
-                double complex *m = malloc(sizeof(double complex) * nv * nv * na);
+                double complex *m1 = malloc(sizeof(double complex) * CAVV_SEG * nv * na);
+                double complex *m2 = malloc(sizeof(double complex) * nv * CAVV_SEG * na);
                 double complex *loc = calloc(nw, sizeof(double complex));
+                int64_t icur = -1;
 #pragma omp for schedule(dynamic, 1)
-                for (int64_t i = 0; i < nc; i++) {
-                        core_slice(bvc, ldvc, naux, nv, nc, i, bi);
-                        product_t(naux, bi, nv, bva, nv * na, ldva, m);      /* m[a, b, t] = (ai|bt) */
+                for (int64_t task = 0; task < ntask; task++) {
+                        int64_t i = task / nseg;
+                        int64_t a0 = (task % nseg) * CAVV_SEG;
+                        int64_t a1 = a0 + CAVV_SEG < nv - 1 ? a0 + CAVV_SEG : nv - 1;
+                        int64_t na0 = a1 - a0, nb = nv - a0;
+                        if (i != icur) {
+                                core_slice(bvc, ldvc, naux, nv, nc, i, bi);   /* bi[L, a] */
+                                icur = i;
+                        }
+                        /* m1[a, (b, t)] = sum_L bi[L, a] bva[L, b, t], a in the segment, b >= a0 */
+                        cblas_zgemm(101, 112, 111, (int)na0, (int)(nb * na), (int)naux, &one,
+                                    bi + a0, (int)nv, bva + a0 * na, (int)ldva, &zero, m1,
+                                    (int)(nb * na));
+                        /* m2[b, (a, t)] = sum_L bi[L, b] bva[L, a, t], b >= a0, a in the segment */
+                        cblas_zgemm(101, 112, 111, (int)nb, (int)(na0 * na), (int)naux, &one,
+                                    bi + a0, (int)nv, bva + a0 * na, (int)ldva, &zero, m2,
+                                    (int)(na0 * na));
 #pragma omp parallel if(!outer)
                         {
                                 double complex *part = outer ? loc : calloc(nw, sizeof(double complex));
                                 double complex *x = malloc(sizeof(double complex) * na);
-#pragma omp for schedule(dynamic, 4)
-                                for (int64_t a = 0; a < nv; a++) {
+#pragma omp for schedule(dynamic, 1)
+                                for (int64_t a = a0; a < a1; a++) {
                                         for (int64_t b = a + 1; b < nv; b++) {
+                                                /* (bi|at) - (ai|bt) */
                                                 for (int64_t t = 0; t < na; t++) {
-                                                        x[t] = m[(b * nv + a) * na + t] - m[(a * nv + b) * na + t];
+                                                        x[t] = m2[((b - a0) * na0 + (a - a0)) * na + t]
+                                                               - m1[((a - a0) * nb + (b - a0)) * na + t];
                                                 }
                                                 add_outer(na, x, ev[a] + ev[b] - ec[i], d, nd, part);
                                         }
@@ -444,10 +470,12 @@ void zmr_w_cavv(const double complex *bvc, int64_t ldvc, const double complex *b
 #pragma omp critical
                 for (int64_t k = 0; k < nw; k++) w[k] += loc[k];
                 free(bi);
-                free(m);
+                free(m1);
+                free(m2);
                 free(loc);
         }
 }
+
 
 /* ----------------------------------------------------------------------
  * The same external sums for spin-restricted orbitals (zmr.nr.classes): real

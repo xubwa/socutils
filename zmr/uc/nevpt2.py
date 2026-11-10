@@ -13,12 +13,21 @@ import time
 import warnings
 
 import numpy
+from pyscf import lib as pyscf_lib
 
 from socutils.zmr import fock, output
 from socutils.zmr import lib as zlib
 from socutils.zmr.active.sectors import ActiveSpace
 from socutils.zmr.lib import linalg as la
 from socutils.zmr.uc import classes, engine
+
+
+def _naux(eris):
+    '''Number of three-index vectors of a factorized integral source (that of its
+    zmr.interface.cholesky.CholeskyAO2MO); 0 if it does not tell (nothing is built to
+    find out).'''
+    src = getattr(eris, 'eri_fn', None)
+    return int(getattr(src, 'naux', 0) or 0)
 
 
 class NEVPT2Base:
@@ -112,6 +121,59 @@ class NEVPT2Base:
     cvs_decay = True
     cvs_window = 0.05
     skip_classes = ()
+
+    # MB available to the calculation; it stops before the integrals are built if the
+    # estimate of memory_estimate does not fit (with the minimum it needs)
+    max_memory = pyscf_lib.param.MAX_MEMORY
+
+    def memory_estimate(self, eris, act):
+        '''MB the external sums and the active functions need at their peak, beyond
+        what is in use: the three-index integrals of the core and active orbitals
+        (cd_pc, cd_pa) or the prefetched four-index superblock, the work arrays of the
+        native kernels of ccvv, cavv and ccav (one set per thread), the largest
+        four-index block of the other classes, and the CI functions O_X |Psi_I> of the
+        largest class; 20 % for the rest.'''
+        sp = eris.spaces
+        nc, na, nv, nmo = sp.ncore, sp.nact, sp.nvirt, sp.nmo
+        nthread = max(1, pyscf_lib.num_threads())
+        mb = 16e-6
+        if getattr(eris, 'factorized', False):
+            naux = _naux(eris)
+            ints = mb * naux * nmo * (nc + na)
+            # cavv with Kramers pairs: a copy of the core half of cd_vc
+            ints += mb * naux * nv * nc / 2
+            per_thread = max(mb * (2 * naux * nv + nv * nv),                       # ccvv
+                             mb * (naux * nv + 2 * 48 * nv * na),                    # cavv
+                             mb * (naux * (nv + na) + 2 * nv * na * nc))             # ccav
+            work = nthread * per_thread
+        else:
+            ints = mb * (na + nv) ** 2 * (na + nc) ** 2
+            work = 0.0
+        blocks = 3 * mb * max(nc * nc * na * na, nv * nc * na * na, nc * na ** 3, nv * na ** 3)
+        nstate = self.civecs.shape[1]
+        functions = 0.0
+        for pclass in self.perturber_classes():
+            # spinor classes (an integer dn and the strings O_X); the spin-free classes
+            # of zmr.nr describe their functions otherwise and are not counted here
+            if not (isinstance(getattr(pclass, 'dn', None), int)
+                    and hasattr(pclass, 'operators')):
+                continue
+            dim = act.dim(act.target(self.nelec, pclass.dn))
+            nx = sum(len(idx) for _, idx in pclass.operators(na))
+            functions = max(functions, 2 * mb * nstate * nx * dim)
+        return 1.2 * (ints + work + blocks + functions)
+
+    def check_memory(self, eris, act, log=None):
+        '''Raise MemoryError before the expensive steps if max_memory is below what is
+        in use plus memory_estimate; the estimate is printed.'''
+        need = pyscf_lib.current_memory()[0] + self.memory_estimate(eris, act)
+        self.min_memory = need
+        if log is not None:
+            log.item('Memory (MB)', 'at least %.0f needed, max_memory %.0f'
+                     % (need, self.max_memory))
+        if self.max_memory < need:
+            raise MemoryError('%s needs max_memory >= %.0f MB (max_memory = %.0f MB)'
+                              % (self.name, need, self.max_memory))
 
     @zlib.single_threaded_numpy
     def __init__(self, eris, nelec, nstate=1, civecs=None, weights=None,
@@ -243,6 +305,7 @@ class NEVPT2Base:
         qc = fock.quasi_canonicalize(self.eris0, gamma)
         eris = qc.eris
         steps.append(('Fock matrix, quasi-canonical orbitals', log.done()))
+        self.check_memory(eris, act, log)
         for label, eps in (('Core orbital energies', qc.eps_core),
                            ('Virtual orbital energies', qc.eps_virt)):
             if len(eps):

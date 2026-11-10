@@ -35,6 +35,8 @@ parser.add_argument('--nstate', type=int, default=3)
 parser.add_argument('--naux', type=int, default=0, help='vectors (default 2.5 x orbitals)')
 parser.add_argument('--e0', default='state')
 parser.add_argument('--seed', type=int, default=0)
+parser.add_argument('--max-memory', type=float, default=0,
+                    help='MB for the calculation (default: pyscf.lib.param.MAX_MEMORY)')
 parser.add_argument('--kramers', action='store_true',
                     help='Kramers-paired orbitals (time-reversal symmetric one-electron '
                     'operator), so that the external sums use one of every pair of labels')
@@ -103,6 +105,8 @@ print('BENCH %d core + %d active + %d virtual spin-orbitals, %d vectors, %d stat
                                   time.time() - t0), flush=True)
 t0 = time.time()
 pt = PCNEVPT2(eris, args.nelec, civecs=civecs, e0=args.e0, contraction='union')
+if args.max_memory:
+    pt.max_memory = args.max_memory
 e = pt.kernel()
 print('BENCH NEVPT2 wall %.1f s, peak memory %.1f GB' % (
     time.time() - t0, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6))
