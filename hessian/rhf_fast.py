@@ -2167,10 +2167,13 @@ def gen_vind(mf, mo_coeff, mo_occ):
     cx = _cphf_cosx(mf) if hybrid and CPHF_COSX_OCC else None
 
     def fx(mo1):
+        # the MO <-> AO transforms as single GEMMs over all densities (MKL through lib.dot / lib.einsum;
+        # numpy.einsum without optimize is one thread, numpy.matmul runs numpy's own BLAS)
         mo1 = mo1.reshape(-1, nmo, nocc)
-        P = numpy.einsum('pq,mqi->mpi', mo_coeff, mo1 * 2)        # *2 for double occupancy
-        dm1 = numpy.matmul(P, mocc.T)
-        dm1 = dm1 + dm1.transpose(0, 2, 1)
+        nset = mo1.shape[0]
+        P = numpy.ascontiguousarray(lib.einsum('pq,mqi->mpi', mo_coeff, mo1 * 2))   # *2: double occupancy
+        dm1 = lib.dot(P.reshape(-1, nocc), mocc.T).reshape(nset, nao, nao)
+        dm1 = lib.hermi_sum(dm1, axes=(0, 2, 1), inplace=True)
         vq = _xc_response_mo(ni, mol, mf.grids, xctype, fxc, P, mocc, max_memory)
         if cx is not None:
             from socutils.scf import cosx
@@ -2188,8 +2191,8 @@ def gen_vind(mf, mo_coeff, mo_occ):
                 v = vj - .5 * hyb * vk
             else:
                 v = mf.get_j(mol, dm1, hermi=1)
-            vq += numpy.matmul(v, mocc)
-        return numpy.einsum('pq,mpi->mqi', mo_coeff, vq)
+            vq += lib.dot(v.reshape(-1, nao), mocc).reshape(nset, nao, nocc)
+        return lib.einsum('pq,mpi->mqi', mo_coeff, vq)
     return fx
 
 
