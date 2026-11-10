@@ -2360,7 +2360,13 @@ class _MultiJKCPHF:
         sum_rule : impose translational invariance on the final Hessian,
             H_AA = -sum_{B!=A} H_AB (socutils.dft.grids.translational_sum_rule);
             pyscf's RKS Hessian has no grid response, and on finite grids its
-            error sits almost entirely in H_AA.  Off by default.
+            error sits almost entirely in H_AA.  'auto' (default): on when the
+            SCF grid is a socutils.dft.grids.Grids (built for use with the sum
+            rule: without it every O of trpn_1_5 def2-SVP had |sum_B H_AB| =
+            0.136, frequencies 59 cm-1 off ORCA's above 500 cm-1; with it the
+            Hessian is within 5e-4 of ORCA's and the frequencies within 0.8
+            cm-1), off on pyscf grids (results unchanged there).  True / False:
+            always / never.  Needs the Hessian of all atoms.
         cpscf_grids : the grid of the XC response inside the CP-SCF equations
             only; the explicit terms and the right-hand sides keep the SCF grid.
             'auto' (default): socutils.dft.grids.hessian_grids(mol,
@@ -2368,7 +2374,7 @@ class _MultiJKCPHF:
             the SCF on UltraFine); (H2O)_8 cc-pVDZ PBE0 on a level-4 SCF grid:
             the CP-SCF 189 -> 37 s, the frequencies within 0.25 cm-1.  A Grids
             object: that grid.  None: the SCF grid (the result equals pyscf's).'''
-    sum_rule = False
+    sum_rule = 'auto'
     cpscf_grids = 'auto'
     auxbasis_response = 2   # the fitted-K (RI-JK) fallbacks to pyscf.df.hessian read it, as its DF Hessian
     _keys = {'sum_rule', 'cpscf_grids', '_cpscf_auto', 'auxbasis_response'}
@@ -2378,9 +2384,17 @@ class _MultiJKCPHF:
         if getattr(self.base, '_jk_store', None) is not None:
             self.base._jk_store = None
         de = super().kernel(*args, **kwargs)
-        if self.sum_rule:
-            from socutils.dft.grids import translational_sum_rule
-            self.de = de = translational_sum_rule(de)
+        use = self.sum_rule
+        if use == 'auto':
+            from socutils.dft import grids as sgrids
+            use = isinstance(getattr(self.base, 'grids', None), sgrids.Grids)
+        if use:
+            natm = self.mol.natm
+            if numpy.shape(de)[:2] != (natm, natm):
+                logger.warn(self, 'sum_rule needs the Hessian of all atoms; not applied')
+            else:
+                from socutils.dft.grids import translational_sum_rule
+                self.de = de = translational_sum_rule(de)
         return de
 
     def solve_mo1(self, mo_energy, mo_coeff, mo_occ, h1ao_or_chkfile, fx=None, atmlst=None,
