@@ -99,7 +99,8 @@ INCORE = True           # J + K builds from in-memory s8 ERIs when they fit (mf.
 
 
 RIK = True              # full DF-JK / CD: J and K by socutils.scf.rik (else pyscf's df_jk)
-RIJ_RESIDENT = True     # RIJ: L^{-1} (P|ij) built once and kept in memory when it fits, J = B^T (B d)
+RIJ_RESIDENT = True
+RIJ_RIK_BUILD = True    # RIJ factor by socutils.scf.rik (screened builder; HDF5 + resident rows + fast reader when large)     # RIJ: L^{-1} (P|ij) built once and kept in memory when it fits, J = B^T (B d)
 INCORE_RESERVE = 500    # MB of mf.max_memory kept for the other arrays of the SCF
 
 
@@ -258,14 +259,31 @@ def apply(mf, incremental=True, two_pass=True):
                 auxmol = _df_auxmol(mf)
                 nao = mol.nao
                 npair = nao * (nao + 1) // 2
-                if auxmol.nao * npair * 8 / 1e6 > mf.max_memory - lib.current_memory()[0] - INCORE_RESERVE:
-                    cache.update(key=key, B=None)
-                    return None
                 t0 = (logger.process_clock(), logger.perf_counter())
-                cache['B'] = df.incore.cholesky_eri(mol, auxmol=auxmol, int3c='int3c2e', aosym='s2ij',
-                                                    max_memory=mf.max_memory)
-                cache['key'] = key
-                logger.timer(mf, 'RIJ: resident L^-1 (P|ij)', *t0)
+                cache.update(key=key, B=None, h5=False)
+                if RIJ_RIK_BUILD and type(mf.with_df) is df.DF and mol is mf.with_df.mol:
+                    # rik's builders: screened pairs, in memory when it fits, else an HDF5
+                    # file with its first rows resident, read by os.preadv (rik.iter_factor)
+                    from socutils.scf import rik
+                    wdf = mf.with_df
+                    wdf._cderi = None
+                    wdf._rik_resident = None
+                    rik._prebuild(mf)
+                    if isinstance(wdf._cderi, numpy.ndarray):
+                        cache['B'] = wdf._cderi
+                        logger.timer(mf, 'RIJ: resident L^-1 (P|ij) (rik)', *t0)
+                    elif isinstance(wdf._cderi, str):
+                        cache['h5'] = True
+                        logger.timer(mf, 'RIJ: L^-1 (P|ij) to HDF5 (rik)', *t0)
+                if cache['B'] is None and not cache['h5']:
+                    if auxmol.nao * npair * 8 / 1e6 > mf.max_memory - lib.current_memory()[0] - INCORE_RESERVE:
+                        return None
+                    cache['B'] = df.incore.cholesky_eri(mol, auxmol=auxmol, int3c='int3c2e', aosym='s2ij',
+                                                        max_memory=mf.max_memory)
+                    logger.timer(mf, 'RIJ: resident L^-1 (P|ij)', *t0)
+            if cache.get('h5'):
+                from socutils.scf import rik
+                return rik.get_jk(mf.with_df, dm, hermi, True, False, max_memory=mf.max_memory)[0]
             B = cache['B']
             if B is None:
                 return None
