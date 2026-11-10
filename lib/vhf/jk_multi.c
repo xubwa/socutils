@@ -334,6 +334,287 @@ static int jk_run_lanes(double *lbuf, size_t nbuf, int ish, int jsh, const int *
 }
 
 /*
+ * Semi-direct integral store (Haser, Ahlrichs, J. Comput. Chem. 10, 104 (1989)):
+ * the shell quartets whose integrals cost the most per stored double kept in
+ * memory and reused by the later builds of the same molecule (the SCF cycles,
+ * the CP-SCF responses), exact.  The cost per integral of each class of
+ * quartets (shell types of the four shells, SOCVHFgen_shell_types) is measured
+ * in the builds made while the store is in state 0; SOCVHFjk_store_plan then
+ * picks the classes by measured cost per double, most expensive first, within
+ * a budget, over the quartets passing q_ij q_kl D >= tol with the density
+ * bounds dcond of a full density (state 1); the next build computes them (with
+ * the primitive screening of the full density at tol: dq = 2 max dcond,
+ * prim_tol = tol 1e-2, as accurate as any later build at a cutoff >= tol
+ * needs) and keeps them (state 2); every build from then on reads them.
+ */
+#if defined(__x86_64__)
+#include <x86intrin.h>
+#define JK_TICKS() ((double)__rdtsc())
+#else
+#define JK_TICKS() (omp_get_wtime() * 1e9)
+#endif
+
+typedef struct JKStore {
+        int state;              /* 0 measuring, 1 planned (the next build fills), 2 filled */
+        int nbas, ntype, npair;
+        size_t ncls;
+        int *stype, *tdim;
+        double *ctime, *ccount; /* per class: ticks and quartets of the measuring builds */
+        unsigned char *csel;
+        size_t *qoff;           /* npair + 1: the stored quartets of bra pair ij, ascending kl */
+        int *qkl;
+        size_t *eoff;           /* per stored quartet: its integrals at data + eoff */
+        double *data;
+        size_t nq, ndata;
+        double dq, prim_tol, tol;
+        int with_j;
+} JKStore;
+
+static inline size_t store_cls(const JKStore *st, int i, int j, int k, int l)
+{
+        const size_t n = st->ntype;
+        return ((st->stype[i] * n + st->stype[j]) * n + st->stype[k]) * n + st->stype[l];
+}
+
+JKStore *SOCVHFjk_store_new(int *ao_loc, int *bas, int nbas)
+{
+        JKStore *st = calloc(1, sizeof(JKStore));
+        int i;
+        st->nbas = nbas;
+        st->npair = nbas * (nbas + 1) / 2;
+        st->stype = malloc(sizeof(int) * (nbas > 0 ? nbas : 1));
+        st->ntype = SOCVHFgen_shell_types(st->stype, bas, nbas);
+        st->tdim = calloc(st->ntype + 1, sizeof(int));
+        for (i = 0; i < nbas; i++) st->tdim[st->stype[i]] = ao_loc[i + 1] - ao_loc[i];
+        st->ncls = (size_t)st->ntype * st->ntype * st->ntype * st->ntype;
+        st->ctime = calloc(st->ncls, sizeof(double));
+        st->ccount = calloc(st->ncls, sizeof(double));
+        st->csel = calloc(st->ncls, 1);
+        return st;
+}
+
+static void store_drop(JKStore *st)
+{
+        free(st->qoff);
+        free(st->qkl);
+        free(st->eoff);
+        free(st->data);
+        st->qoff = NULL;
+        st->qkl = NULL;
+        st->eoff = NULL;
+        st->data = NULL;
+        st->nq = st->ndata = 0;
+}
+
+void SOCVHFjk_store_free(JKStore *st)
+{
+        if (st == NULL) return;
+        store_drop(st);
+        free(st->stype);
+        free(st->tdim);
+        free(st->ctime);
+        free(st->ccount);
+        free(st->csel);
+        free(st);
+}
+
+int SOCVHFjk_store_state(JKStore *st) { return st->state; }
+double SOCVHFjk_store_mb(JKStore *st) { return st->ndata * 8e-6; }
+double SOCVHFjk_store_nquartets(JKStore *st) { return (double)st->nq; }
+
+typedef struct { double v; size_t c; } StoreCls;
+static int cmp_store_cls(const void *x, const void *y)
+{
+        const double a = ((const StoreCls *)x)->v, b = ((const StoreCls *)y)->v;
+        return a > b ? -1 : a < b ? 1 : 0;
+}
+
+static inline int store_pass(const double *qcond, const double *dcond, int nbas, int with_j, double tol,
+                             int ish, int jsh, int ksh, int lsh)
+{
+        const double q4 = qcond[ish * nbas + jsh] * qcond[ksh * nbas + lsh];
+        double d = dmax2(dmax2(dcond[ish * nbas + ksh], dcond[ish * nbas + lsh]),
+                         dmax2(dcond[jsh * nbas + ksh], dcond[jsh * nbas + lsh]));
+        if (with_j) d = dmax2(d, dmax2(dcond[ish * nbas + jsh], dcond[ksh * nbas + lsh]));
+        return q4 * d >= tol;
+}
+
+/* choose and lay out the stored quartets (state 0 -> 1); returns the MB to be stored */
+double SOCVHFjk_store_plan(JKStore *st, double budget_mb, double *qcond, double *dcond, double tol, int with_j)
+{
+        const int nbas = st->nbas, npair = st->npair;
+        const size_t ncls = st->ncls;
+        size_t c;
+        int ij;
+        store_drop(st);
+        double *ecls = calloc(ncls, sizeof(double));
+        /* the doubles of every class over the quartets passing the screening */
+#pragma omp parallel
+{
+        double *e = calloc(ncls, sizeof(double));
+        int ish, jsh, ksh, lsh, kl;
+#pragma omp for schedule(dynamic, 4)
+        for (ij = 0; ij < npair; ij++) {
+                shell_pair(ij, &ish, &jsh);
+                if (qcond[ish * nbas + jsh] == 0) continue;
+                for (kl = 0, ksh = 0, lsh = 0; kl <= ij; kl++, (lsh == ksh ? (ksh++, lsh = 0) : lsh++)) {
+                        if (!store_pass(qcond, dcond, nbas, with_j, tol, ish, jsh, ksh, lsh)) continue;
+                        const size_t cl = store_cls(st, ish, jsh, ksh, lsh);
+                        e[cl] += (double)st->tdim[st->stype[ish]] * st->tdim[st->stype[jsh]]
+                               * st->tdim[st->stype[ksh]] * st->tdim[st->stype[lsh]];
+                }
+        }
+#pragma omp critical
+        for (c = 0; c < ncls; c++) ecls[c] += e[c];
+        free(e);
+}
+        /* classes by measured cost per double, greedily within the budget */
+        StoreCls *order = malloc(sizeof(StoreCls) * (ncls > 0 ? ncls : 1));
+        size_t nc = 0;
+        for (c = 0; c < ncls; c++) {
+                st->csel[c] = 0;
+                if (st->ccount[c] > 0 && ecls[c] > 0) {
+                        const double nel = ecls[c] / 1.;
+                        const size_t i = c / ((size_t)st->ntype * st->ntype * st->ntype);
+                        const size_t j = c / ((size_t)st->ntype * st->ntype) % st->ntype;
+                        const size_t k = c / st->ntype % st->ntype, l = c % st->ntype;
+                        const double nf4 = (double)st->tdim[i] * st->tdim[j] * st->tdim[k] * st->tdim[l];
+                        order[nc].v = st->ctime[c] / (st->ccount[c] * nf4);
+                        order[nc].c = c;
+                        nc++;
+                        (void)nel;
+                }
+        }
+        qsort(order, nc, sizeof(StoreCls), cmp_store_cls);
+        /* whole classes while they fit, then the next one in part (bra pairs in order) */
+        double left = budget_mb * 1e6 / 8;
+        for (c = 0; c < nc; c++) {
+                const size_t cl = order[c].c;
+                if (ecls[cl] <= left) {
+                        st->csel[cl] = 1;
+                        left -= ecls[cl];
+                } else {
+                        st->csel[cl] = 2;
+                        break;
+                }
+        }
+        free(order);
+        free(ecls);
+        /* per bra pair: quartets and doubles, then the layout */
+        size_t *nqp = calloc(npair + 1, sizeof(size_t)), *nep = calloc(npair + 1, sizeof(size_t));
+        size_t *nqx = calloc(npair + 1, sizeof(size_t)), *nex = calloc(npair + 1, sizeof(size_t));
+        unsigned char *incl = calloc(npair + 1, 1);
+#pragma omp parallel
+{
+        int ish, jsh, ksh, lsh, kl;
+#pragma omp for schedule(dynamic, 4)
+        for (ij = 0; ij < npair; ij++) {
+                shell_pair(ij, &ish, &jsh);
+                if (qcond[ish * nbas + jsh] == 0) continue;
+                size_t nq = 0, ne = 0, nqp_ = 0, nep_ = 0;
+                for (kl = 0, ksh = 0, lsh = 0; kl <= ij; kl++, (lsh == ksh ? (ksh++, lsh = 0) : lsh++)) {
+                        const int sel = st->csel[store_cls(st, ish, jsh, ksh, lsh)];
+                        if (!sel) continue;
+                        if (!store_pass(qcond, dcond, nbas, with_j, tol, ish, jsh, ksh, lsh)) continue;
+                        const size_t nf = (size_t)st->tdim[st->stype[ish]] * st->tdim[st->stype[jsh]]
+                                        * st->tdim[st->stype[ksh]] * st->tdim[st->stype[lsh]];
+                        if (sel == 1) {
+                                nq++;
+                                ne += nf;
+                        } else {
+                                nqp_++;
+                                nep_ += nf;
+                        }
+                }
+                nqp[ij] = nq;
+                nep[ij] = ne;
+                nqx[ij] = nqp_;
+                nex[ij] = nep_;
+        }
+}
+        /* the part of the last class: bra pairs in order while the budget lasts */
+        for (ij = 0; ij < npair; ij++) {
+                if (nex[ij] > 0 && nex[ij] <= left) {
+                        incl[ij] = 1;
+                        left -= nex[ij];
+                        nqp[ij] += nqx[ij];
+                        nep[ij] += nex[ij];
+                }
+        }
+        free(nqx);
+        free(nex);
+        st->qoff = malloc(sizeof(size_t) * (npair + 1));
+        size_t *doff = malloc(sizeof(size_t) * (npair + 1));
+        st->qoff[0] = doff[0] = 0;
+        for (ij = 0; ij < npair; ij++) {
+                st->qoff[ij + 1] = st->qoff[ij] + nqp[ij];
+                doff[ij + 1] = doff[ij] + nep[ij];
+        }
+        st->nq = st->qoff[npair];
+        st->ndata = doff[npair];
+        st->qkl = malloc(sizeof(int) * (st->nq + 1));
+        st->eoff = malloc(sizeof(size_t) * (st->nq + 1));
+        st->data = malloc(sizeof(double) * (st->ndata + 1));
+        if (st->data == NULL || st->qkl == NULL || st->eoff == NULL) {
+                store_drop(st);
+                free(nqp);
+                free(nep);
+                free(doff);
+                free(incl);
+                return -1;
+        }
+#pragma omp parallel
+{
+        int ish, jsh, ksh, lsh, kl;
+#pragma omp for schedule(dynamic, 4)
+        for (ij = 0; ij < npair; ij++) {
+                if (nqp[ij] == 0) continue;
+                shell_pair(ij, &ish, &jsh);
+                size_t q = st->qoff[ij], e = doff[ij];
+                for (kl = 0, ksh = 0, lsh = 0; kl <= ij; kl++, (lsh == ksh ? (ksh++, lsh = 0) : lsh++)) {
+                        const int sel = st->csel[store_cls(st, ish, jsh, ksh, lsh)];
+                        if (!sel || (sel == 2 && !incl[ij])) continue;
+                        if (!store_pass(qcond, dcond, nbas, with_j, tol, ish, jsh, ksh, lsh)) continue;
+                        st->qkl[q] = kl;
+                        st->eoff[q] = e;
+                        q++;
+                        e += (size_t)st->tdim[st->stype[ish]] * st->tdim[st->stype[jsh]]
+                           * st->tdim[st->stype[ksh]] * st->tdim[st->stype[lsh]];
+                }
+        }
+}
+        free(nqp);
+        free(nep);
+        free(doff);
+        free(incl);
+        double dm = 0;
+        size_t n2 = (size_t)nbas * nbas, i;
+        for (i = 0; i < n2; i++) dm = dmax2(dm, dcond[i]);
+        st->dq = 2 * dm;
+        st->prim_tol = tol * 1e-2;
+        st->tol = tol;
+        st->with_j = with_j;
+        st->state = 1;
+        return st->ndata * 8e-6;
+}
+
+/* one quartet by the engines of jk_multi_sym (no lanes) into buf; 0 if it vanishes */
+static int jk_eval1(double *buf, int *shls, double dq, double prim_tol, int use_ss, const SSCtx *scx,
+                    int use_gen, const GenCtx *gcx, double *swk, double *cache, CINTOpt *opt,
+                    int *atm, int natm, int *bas, int nbas, double *env)
+{
+        const int l0 = bas[shls[0] * BAS_SLOTS + ANG_OF], l1 = bas[shls[1] * BAS_SLOTS + ANG_OF];
+        const int l2 = bas[shls[2] * BAS_SLOTS + ANG_OF], l3 = bas[shls[3] * BAS_SLOTS + ANG_OF];
+        const int lq = l0 + l1 + l2 + l3;
+        const int hasf = l0 == 3 || l1 == 3 || l2 == 3 || l3 == 3;
+        if (use_ss && lq <= 1 && SOCVHFss_takes(shls, bas))
+                return SOCVHFss_int2e(buf, shls, scx, dq, prim_tol, swk);
+        if (use_gen && (hasf ? lq <= jk_gen_f_lmax : lq <= jk_gen_lmax) && SOCVHFgen_takes(shls, bas))
+                return SOCVHFgen_int2e(buf, shls, gcx, dq, prim_tol, swk, bas);
+        return int2e_sph(buf, NULL, shls, atm, natm, bas, nbas, env, opt, cache);
+}
+
+/*
  * The same for symmetric densities (D_cd = D_dc; CPHF): J and K are then
  * symmetric, the eight permutations collapse to two J and four K updates per
  * integral, W += ..., and J = W + W^T at the end.  J and K are screened
@@ -343,10 +624,26 @@ static int jk_run_lanes(double *lbuf, size_t nbuf, int ish, int jsh, const int *
  * loop and added to the thread's matrices once per bra pair; the thread
  * matrices are reduced in parallel.
  */
+void SOCVHFjk_multi_sym_store(double *vj, double *vk, double *dms, int ndm,
+                              int with_j, int with_k,
+                              double *qcond, double *dcond, double tol, CINTOpt *opt,
+                              int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env, JKStore *st);
+
 void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
                         int with_j, int with_k,
                         double *qcond, double *dcond, double tol, CINTOpt *opt,
                         int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env)
+{
+        SOCVHFjk_multi_sym_store(vj, vk, dms, ndm, with_j, with_k, qcond, dcond, tol, opt,
+                                 ao_loc, atm, natm, bas, nbas, env, NULL);
+}
+
+/* SOCVHFjk_multi_sym with the semi-direct store st (NULL: none): state 0 measures the class costs,
+ * 1 computes and keeps the planned quartets, 2 reads them */
+void SOCVHFjk_multi_sym_store(double *vj, double *vk, double *dms, int ndm,
+                              int with_j, int with_k,
+                              double *qcond, double *dcond, double tol, CINTOpt *opt,
+                              int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env, JKStore *st)
 {
         const size_t nao = ao_loc[nbas];
         const size_t nv = nao * nao * ndm;
@@ -378,8 +675,13 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
         const double prim_tol = tol * 1e-2;
         const int onx = jk_use_onx && with_k && !with_j;
         ONXLists *onxl = onx ? SOCVHFonx_build(qcond, dcond, nbas) : NULL;
+        const int measure = st != NULL && st->state == 0;
+        const int stored = st != NULL && st->state >= 1 && st->nq > 0;
+        const int fill = stored && st->state == 1;
 #pragma omp parallel
 {
+        double *mt = measure ? calloc(st->ncls, sizeof(double)) : NULL;
+        double *mc = measure ? calloc(st->ncls, sizeof(double)) : NULL;
         const int tid = omp_get_thread_num();
 #pragma omp single
         nth_used = omp_get_num_threads();
@@ -423,6 +725,37 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
                                     && bas[jsh * BAS_SLOTS + NCTR_OF] <= 4;
                 const int row_np = bas[ish * BAS_SLOTS + NPRIM_OF] * bas[jsh * BAS_SLOTS + NPRIM_OF];
                 int kb, ic, nc = ij + 1;
+                size_t sp = 0, s1 = 0;
+                if (stored) {
+                        /* the stored quartets of the pair: computed and kept (fill), else read */
+                        size_t s;
+                        for (s = st->qoff[ij], s1 = st->qoff[ij + 1]; s < s1; s++) {
+                                kl = st->qkl[s];
+                                shell_pair(kl, &ksh, &lsh);
+                                const double q4 = qcond[ish * nbas + jsh] * qcond[ksh * nbas + lsh];
+                                const double dj_ = dmax2(dcond[ish * nbas + jsh], dcond[ksh * nbas + lsh]);
+                                const double dk_ = dmax2(dmax2(dcond[ish * nbas + ksh], dcond[ish * nbas + lsh]),
+                                                         dmax2(dcond[jsh * nbas + ksh], dcond[jsh * nbas + lsh]));
+                                const int do_j = with_j && q4 * dj_ >= tol;
+                                const int do_k = with_k && q4 * dk_ >= tol;
+                                double *g = st->data + st->eoff[s];
+                                if (fill) {
+                                        const size_t nf = (size_t)di * dj * (ao_loc[ksh + 1] - ao_loc[ksh])
+                                                        * (ao_loc[lsh + 1] - ao_loc[lsh]);
+                                        shls[0] = ish; shls[1] = jsh; shls[2] = ksh; shls[3] = lsh;
+                                        if (jk_eval1(buf, shls, st->dq, st->prim_tol, use_ss, scx, use_gen, gcx,
+                                                     swk, cache, opt, atm, natm, bas, nbas, env))
+                                                memcpy(g, buf, sizeof(double) * nf);
+                                        else
+                                                memset(g, 0, sizeof(double) * nf);
+                                }
+                                if (!do_j && !do_k) continue;
+                                touched = 1;
+                                jk_digest(g, ish, jsh, ksh, lsh, ij == kl, do_j, do_k, ndm, nao, ao_loc, dms,
+                                          jij, jloc, kri, krb, ncol);
+                        }
+                        sp = st->qoff[ij];
+                }
                 if (onx) {
                         const double qij = qcond[ish * nbas + jsh];
                         nc = qij > 0 ? SOCVHFonx_kpairs(onxl, onxs, ish, jsh, ij, tol / qij, dcond, cand) : 0;
@@ -435,6 +768,11 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
                         } else if (ic > 0) {
                                 kl = ic;
                                 if (lsh == ksh) { ksh++; lsh = 0; } else lsh++;
+                        }
+                        if (sp < s1) {
+                                /* done above */
+                                while (sp < s1 && st->qkl[sp] < kl) sp++;
+                                if (sp < s1 && st->qkl[sp] == kl) continue;
                         }
                         double q4 = qcond[ish * nbas + jsh] * qcond[ksh * nbas + lsh];
                         const double dj_ = dmax2(dcond[ish * nbas + jsh], dcond[ksh * nbas + lsh]);
@@ -493,29 +831,44 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
                                 bkf[n_] = do_j | do_k << 1 | (ij == kl) << 2;
                                 bkd[kb] = dmax2(bkd[kb], dmax2(do_j ? dj_ : 0, do_k ? dk_ : 0));
                                 if (++bkn[kb] == JK_NL) {
+                                        const double t0 = measure ? JK_TICKS() : 0;
                                         touched |= jk_run_lanes(lbuf, nbuf, ish, jsh, bkk + kb * JK_NL,
                                                                 bkl + kb * JK_NL, bkf + kb * JK_NL, JK_NL, bkd[kb],
                                                                 gcx, prim_tol, swk, atm, bas, env, ndm, nao, ao_loc,
                                                                 dms, jij, jloc, kri, krb, ncol);
+                                        if (measure) {
+                                                const double dt = (JK_TICKS() - t0) / JK_NL;
+                                                int n;
+                                                for (n = 0; n < JK_NL; n++) {
+                                                        const size_t cl = store_cls(st, ish, jsh, bkk[kb * JK_NL + n],
+                                                                                    bkl[kb * JK_NL + n]);
+                                                        mt[cl] += dt;
+                                                        mc[cl] += 1;
+                                                }
+                                        }
                                         bkn[kb] = 0;
                                         bkd[kb] = 0;
                                 }
                                 continue;
                         }
+                        const double t0 = measure ? JK_TICKS() : 0;
+                        int ok;
                         if (use_ss && lq <= 1 && SOCVHFss_takes(shls, bas)) {
                                 const double dq = dmax2(do_j ? dj_ : 0, do_k ? dk_ : 0);
-                                if (!SOCVHFss_int2e(buf, shls, scx, dq, prim_tol, swk)) {
-                                        continue;
-                                }
+                                ok = SOCVHFss_int2e(buf, shls, scx, dq, prim_tol, swk);
                         } else if (use_gen && (hasf ? lq <= jk_gen_f_lmax : lq <= jk_gen_lmax)
                                    && SOCVHFgen_takes(shls, bas)) {
                                 const double dq = dmax2(do_j ? dj_ : 0, do_k ? dk_ : 0);
-                                if (!SOCVHFgen_int2e(buf, shls, gcx, dq, prim_tol, swk, bas)) {
-                                        continue;
-                                }
-                        } else if (!int2e_sph(buf, NULL, shls, atm, natm, bas, nbas, env, opt, cache)) {
-                                continue;
+                                ok = SOCVHFgen_int2e(buf, shls, gcx, dq, prim_tol, swk, bas);
+                        } else {
+                                ok = int2e_sph(buf, NULL, shls, atm, natm, bas, nbas, env, opt, cache);
                         }
+                        if (measure) {
+                                const size_t cl = store_cls(st, ish, jsh, ksh, lsh);
+                                mt[cl] += JK_TICKS() - t0;
+                                mc[cl] += 1;
+                        }
+                        if (!ok) continue;
                         touched = 1;
                         jk_digest(buf, ish, jsh, ksh, lsh, ij == kl, do_j, do_k, ndm, nao, ao_loc, dms,
                                   jij, jloc, kri, krb, ncol);
@@ -523,9 +876,20 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
                 /* the lane batches left of the row */
                 for (kb = 0; row_lanes && kb < nbk; kb++) {
                         if (bkn[kb] == 0) continue;
+                        const double t0 = measure ? JK_TICKS() : 0;
                         touched |= jk_run_lanes(lbuf, nbuf, ish, jsh, bkk + kb * JK_NL, bkl + kb * JK_NL,
                                                 bkf + kb * JK_NL, bkn[kb], bkd[kb], gcx, prim_tol, swk,
                                                 atm, bas, env, ndm, nao, ao_loc, dms, jij, jloc, kri, krb, ncol);
+                        if (measure) {
+                                const double dt = (JK_TICKS() - t0) / bkn[kb];
+                                int n;
+                                for (n = 0; n < bkn[kb]; n++) {
+                                        const size_t cl = store_cls(st, ish, jsh, bkk[kb * JK_NL + n],
+                                                                    bkl[kb * JK_NL + n]);
+                                        mt[cl] += dt;
+                                        mc[cl] += 1;
+                                }
+                        }
                         bkn[kb] = 0;
                         bkd[kb] = 0;
                 }
@@ -583,7 +947,18 @@ void SOCVHFjk_multi_sym(double *vj, double *vk, double *dms, int ndm,
         free(bkd);
         free(cand);
         SOCVHFonx_scratch_free(onxs);
+        if (measure) {
+                size_t c;
+#pragma omp critical
+                for (c = 0; c < st->ncls; c++) {
+                        st->ctime[c] += mt[c];
+                        st->ccount[c] += mc[c];
+                }
+        }
+        free(mt);
+        free(mc);
 }
+        if (fill) st->state = 2;
         SOCVHFonx_free(onxl);
         SOCVHFss_ctx_free(scx);
         SOCVHFgen_ctx_free(gcx);

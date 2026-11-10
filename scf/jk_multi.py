@@ -45,7 +45,70 @@ def available(mol):
     return bool(libv) and hasattr(libv, 'SOCVHFjk_multi') and not mol.cart
 
 
-def get_jk(mol, dms, with_j=True, with_k=True, tol=TOL, hermi=0, max_memory=None):
+class Store:
+    '''Semi-direct integral store of SOCVHFjk_multi_sym_store (lib/vhf/jk_multi.c): the builds
+    while state == 0 measure the cost per integral of every class of shell quartets; plan(dm, tol,
+    budget_mb) picks the quartets of the costliest classes per stored double passing the
+    screening of the full density dm at tol within budget_mb; the next build computes and keeps
+    them, every later build of the molecule reads them (exact: stored with the primitive
+    screening of dm at tol, valid for any build at a cutoff >= tol).'''
+
+    def __init__(self, mol):
+        libv = _libv()
+        self.mol = mol
+        self.key = (mol._atm.tobytes(), mol._bas.tobytes(), mol._env.tobytes())
+        ao_loc = mol.ao_loc_nr().astype(numpy.int32)
+        libv.SOCVHFjk_store_new.restype = ctypes.c_void_p
+        self._ptr = ctypes.c_void_p(libv.SOCVHFjk_store_new(
+            ao_loc.ctypes.data_as(ctypes.c_void_p), mol._bas.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_int(mol.nbas)))
+        self.tol = None
+
+    @property
+    def state(self):
+        return _libv().SOCVHFjk_store_state(self._ptr)
+
+    @property
+    def mb(self):
+        f = _libv().SOCVHFjk_store_mb
+        f.restype = ctypes.c_double
+        return f(self._ptr)
+
+    @property
+    def nquartets(self):
+        f = _libv().SOCVHFjk_store_nquartets
+        f.restype = ctypes.c_double
+        return int(f(self._ptr))
+
+    def matches(self, mol):
+        return self.key == (mol._atm.tobytes(), mol._bas.tobytes(), mol._env.tobytes())
+
+    def plan(self, dm, tol, budget_mb, with_j=False):
+        from socutils.hessian import ghf as ghf_hess
+        dm = numpy.asarray(dm, dtype=numpy.double)
+        dms = dm.reshape(-1, dm.shape[-2], dm.shape[-1])
+        q = _q_cond(self.mol)
+        dcond = ghf_hess._dm_cond(self.mol, list(dms))
+        f = _libv().SOCVHFjk_store_plan
+        f.restype = ctypes.c_double
+        mb = f(self._ptr, ctypes.c_double(budget_mb), q.ctypes.data_as(ctypes.c_void_p),
+               dcond.ctypes.data_as(ctypes.c_void_p), ctypes.c_double(tol), ctypes.c_int(int(with_j)))
+        self.tol = tol
+        return mb
+
+    def __del__(self):
+        try:
+            _libv().SOCVHFjk_store_free(self._ptr)
+        except Exception:
+            pass
+
+
+def _libv():
+    from socutils.hessian import ghf as ghf_hess
+    return ghf_hess._load_socvhf()
+
+
+def get_jk(mol, dms, with_j=True, with_k=True, tol=TOL, hermi=0, max_memory=None, store=None):
     '''J_ab = (ab|cd) D_dc, K_ad = (ab|cd) D_bc for dms (ndm, nao, nao) (real).
     hermi=1 asserts symmetric dms (as pyscf's get_jk).  The densities are
     batched so that nthreads x the per-thread J / K buffers stay within half of
@@ -61,8 +124,11 @@ def get_jk(mol, dms, with_j=True, with_k=True, tol=TOL, hermi=0, max_memory=None
         max_memory = mol.max_memory
     per_dm = (int(with_j) + int(with_k)) * nao * nao * 8 * lib.num_threads()
     nbatch = max(1, int(max_memory * .5e6 / per_dm))
+    if store is not None and (hermi != 1 or not store.matches(mol)
+                              or (store.state > 0 and tol < store.tol * (1 - 1e-9))):
+        store = None        # the store serves symmetric builds of its molecule at cutoffs >= its own
     if nbatch < ndm:
-        outs = [get_jk(mol, dms[b0:b0 + nbatch], with_j, with_k, tol, hermi, max_memory)
+        outs = [get_jk(mol, dms[b0:b0 + nbatch], with_j, with_k, tol, hermi, max_memory, store)
                 for b0 in range(0, ndm, nbatch)]
         out_j = numpy.concatenate([o[0] for o in outs]).reshape(shape) if with_j else None
         out_k = numpy.concatenate([o[1] for o in outs]).reshape(shape) if with_k else None
@@ -75,7 +141,12 @@ def get_jk(mol, dms, with_j=True, with_k=True, tol=TOL, hermi=0, max_memory=None
     atm, bas, env = mol._atm, mol._bas, mol._env
     opt = moleintor.make_cintopt(atm, bas, env, 'int2e_sph')
     ao_loc = mol.ao_loc_nr().astype(numpy.int32)
-    drv = libv.SOCVHFjk_multi_sym if hermi == 1 else libv.SOCVHFjk_multi
+    extra = ()
+    if hermi == 1 and store is not None:
+        drv = libv.SOCVHFjk_multi_sym_store
+        extra = (store._ptr,)
+    else:
+        drv = libv.SOCVHFjk_multi_sym if hermi == 1 else libv.SOCVHFjk_multi
     drv(
         vj.ctypes.data_as(ctypes.c_void_p), vk.ctypes.data_as(ctypes.c_void_p),
         d.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(ndm),
@@ -84,7 +155,7 @@ def get_jk(mol, dms, with_j=True, with_k=True, tol=TOL, hermi=0, max_memory=None
         ctypes.c_double(tol), opt,
         ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
         ctypes.c_int(mol.natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas),
-        env.ctypes.data_as(ctypes.c_void_p))
+        env.ctypes.data_as(ctypes.c_void_p), *extra)
     out_j = vj.transpose(2, 0, 1).reshape(shape) if with_j else None
     out_k = vk.transpose(2, 0, 1).reshape(shape) if with_k else None
     return out_j, out_k
