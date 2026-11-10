@@ -1814,6 +1814,7 @@ def rks_make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=No
 
 CPHF_COSX = None        # K of the CPHF densities by COSX (socutils.scf.cosx): None -> auto (SCF ran COSX, large basis)
 CPHF_COSX_GRID = 2      # its grid (cosx.GRIDX level)
+CPHF_COSX_OCC = False   # the CPHF K as K C_occ (cosx.COSX.get_k_occ, one-sided fitted K, no K matrix)
 CPHF_COSX_NAO_PER_ATOM = 12     # auto mode: AOs per atom from which the CPHF K goes to COSX
 CPHF_COSX_FLOAT = True  # the many-density COSX contraction in single precision (False: double); K within ~1e-6
                         # relative (the COSX grid error ~1e-3), Hessians within 2e-9, harmonic frequencies within
@@ -2162,6 +2163,8 @@ def gen_vind(mf, mo_coeff, mo_occ):
         return rhf_hess.gen_vind(mf, mo_coeff, mo_occ)
     rho0, vxc, fxc = ni.cache_xc_kernel(mol, mf.grids, mf.xc, mo_coeff, mo_occ, 0)
     max_memory = max(2000, mf.max_memory * .8 - lib.current_memory()[0])
+    # K C_occ directly from COSX (CPHF_COSX_OCC): A C_occ per grid point shared by all densities
+    cx = _cphf_cosx(mf) if hybrid and CPHF_COSX_OCC else None
 
     def fx(mo1):
         mo1 = mo1.reshape(-1, nmo, nocc)
@@ -2169,12 +2172,23 @@ def gen_vind(mf, mo_coeff, mo_occ):
         dm1 = numpy.matmul(P, mocc.T)
         dm1 = dm1 + dm1.transpose(0, 2, 1)
         vq = _xc_response_mo(ni, mol, mf.grids, xctype, fxc, P, mocc, max_memory)
-        if hybrid:
-            vj, vk = mf.get_jk(mol, dm1, hermi=1)
-            v = vj - .5 * hyb * vk
+        if cx is not None:
+            from socutils.scf import cosx
+            vj = mf.get_j(mol, dm1, hermi=1)
+            fl = cosx.MULTI_FLOAT
+            cosx.set_multi_float(CPHF_COSX_FLOAT)
+            try:
+                vkc = cx.get_k_occ(dm1, mocc)
+            finally:
+                cosx.set_multi_float(fl)
+            vq += numpy.matmul(vj, mocc) - .5 * hyb * vkc
         else:
-            v = mf.get_j(mol, dm1, hermi=1)
-        vq += numpy.matmul(v, mocc)
+            if hybrid:
+                vj, vk = mf.get_jk(mol, dm1, hermi=1)
+                v = vj - .5 * hyb * vk
+            else:
+                v = mf.get_j(mol, dm1, hermi=1)
+            vq += numpy.matmul(v, mocc)
         return numpy.einsum('pq,mpi->mqi', mo_coeff, vq)
     return fx
 

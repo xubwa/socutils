@@ -251,6 +251,53 @@ class COSX(lib.StreamObject):
         finally:
             self._proj = proj
 
+    def get_k_occ(self, dms, mocc):
+        """K C_occ of many real densities ((nset,) nao, nao) (nset, nao, nocc), the one-sided fitted
+        P K_plain[D] C (not symmetrised): A C per grid point shared by all densities and Aoc^T F per
+        density, no K matrix; for the CPHF, whose response needs only K C_occ"""
+        self.build()
+        libdft = self._libdft
+        mol = self.mol
+        from socutils.dft.vxc_fast import _blas_ptrs
+        dms = numpy.asarray(dms, dtype=numpy.double)
+        nao = dms.shape[-1]
+        dms = dms.reshape(-1, nao, nao)
+        nset = len(dms)
+        nocc = mocc.shape[1]
+        vl = 16 if libdft.SOCDFTcosx_mfloat() else 8
+        no8 = (nocc + vl - 1) // vl * vl
+        ns8 = (nset + vl - 1) // vl * vl
+        # per density and thread: the gathered rows (nao^2) and K C (nao nocc), F (nao blk)
+        per = 8 * ((nao * nao + nao * no8 + 2 * nao * self.blk) * lib.num_threads() + 3 * nao * nao) / 1e6
+        nb = max(vl, min(ns8, int(.4 * max(500, mol.max_memory - lib.current_memory()[0]) / per) // vl * vl))
+        if nb < nset:
+            return numpy.concatenate([self.get_k_occ(dms[i:i + nb], mocc) for i in range(0, nset, nb)])
+        co = numpy.zeros((nao, no8))
+        co[:, :nocc] = mocc
+        dtm = numpy.zeros((nao, nao, ns8))
+        dtm[:, :, :nset] = dms.transpose(1, 2, 0)
+        out = numpy.empty((nao, no8, ns8))
+        atm, bas, env, ao_loc = self._env
+        libdft.SOCDFTcosx_set_occ(co.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(no8))
+        try:
+            libdft.SOCDFTcosx_k(
+                out.ctypes.data_as(ctypes.c_void_p), dms.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(ns8),
+                ctypes.c_void_p(self._opt), self._coords.ctypes.data_as(ctypes.c_void_p),
+                self._weights.ctypes.data_as(ctypes.c_void_p), self._non0.ctypes.data_as(ctypes.c_void_p),
+                ctypes.c_int(self._weights.size), ctypes.c_int(self.blk), ctypes.c_double(self.ao_cutoff),
+                ctypes.c_double(self.tol), ctypes.c_double(self.tcut),
+                ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.natm),
+                bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p),
+                *_blas_ptrs(), None, None, dtm.ctypes.data_as(ctypes.c_void_p))
+        finally:
+            libdft.SOCDFTcosx_set_occ(None, ctypes.c_int(0))
+        if libdft.SOCDFTcosx_error():
+            raise MemoryError('COSX: a kernel buffer could not be allocated (%d densities, nao %d)' % (nset, nao))
+        kc = out[:, :nocc, :nset].transpose(2, 0, 1)
+        if self._proj is not None:
+            kc = lib.einsum('ij,xjk->xik', self._proj, kc)
+        return numpy.ascontiguousarray(kc)
+
     def get_k_var(self, dm):
         """the Fock K of the variational COSX: the derivative of the energy tr(D P K_plain[D]) / 2,
         1/2 sym(P K_plain[D] + K_plain[P^T D]) (one pass, the integrals shared by both densities);
