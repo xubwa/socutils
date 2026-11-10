@@ -77,6 +77,75 @@ static void multi_contract_const(double *Ga, const double *Cm, const double *Abu
         }
 }
 
+#ifdef CX_FUSED
+/* the same in single precision, 16 orbitals per vector (SOCDFTcosx_set_opt(3, 1)) */
+static void multi_contract_const_f(float *Ga, const float *Cm, const float *Abuf, const CXRec *rec, int nrec,
+                                   int nao, int n, int nset)
+{
+        const size_t NQ = (size_t)nao * nset;
+        int g, r, r1, rr;
+        for (g = 0; g < n; g++) {
+                const float *Fg = Cm;
+                float *Gg = Ga + g * NQ;
+                for (r = 0; r < nrec; r = r1) {
+                        const int I0 = rec[r].I0, nI = rec[r].nI;
+                        int anyI = 0;
+                        for (r1 = r; r1 < nrec && rec[r1].I0 == I0; r1++) anyI |= rec[r1].cI;
+                        const float *FI = Fg + (size_t)I0 * nset;
+                        float *GI = Gg + (size_t)I0 * nset;
+                        int ia, jb, c;
+                        if (anyI) {
+                                for (c = 0; c < nset; c += 16) {
+                                        for (ia = 0; ia < nI; ia++) {
+                                                float *ga = GI + (size_t)ia * nset + c;
+                                                __m512 acc = _mm512_loadu_ps(ga);
+                                                for (rr = r; rr < r1; rr++) {
+                                                        const CXRec *rc = rec + rr;
+                                                        if (!rc->cI) continue;
+                                                        const int nJ = rc->nJ;
+                                                        const float *ar = Abuf + rc->off + (size_t)g * nI * nJ + ia * nJ;
+                                                        const float *FJ = Fg + (size_t)rc->J0 * nset + c;
+                                                        for (jb = 0; jb < nJ; jb++)
+                                                                acc = _mm512_fmadd_ps(_mm512_set1_ps(ar[jb]),
+                                                                                      _mm512_loadu_ps(FJ + (size_t)jb * nset), acc);
+                                                }
+                                                _mm512_storeu_ps(ga, acc);
+                                        }
+                                }
+                        }
+                        for (rr = r; rr < r1; rr++) {
+                                const CXRec *rc = rec + rr;
+                                if (!rc->cJ) continue;
+                                const int nJ = rc->nJ;
+                                const float *Ar = Abuf + rc->off + (size_t)g * nI * nJ;
+                                float *GJ = Gg + (size_t)rc->J0 * nset;
+                                for (c = 0; c < nset; c += 16) {
+                                        for (jb = 0; jb < nJ; jb++) {
+                                                float *gb = GJ + (size_t)jb * nset + c;
+                                                __m512 acc = _mm512_loadu_ps(gb);
+                                                for (ia = 0; ia < nI; ia++)
+                                                        acc = _mm512_fmadd_ps(_mm512_set1_ps(Ar[ia * nJ + jb]),
+                                                                              _mm512_loadu_ps(FI + (size_t)ia * nset + c), acc);
+                                                _mm512_storeu_ps(gb, acc);
+                                        }
+                                }
+                        }
+                }
+        }
+}
+#endif
+
+static int cx_hfloat = 0;   /* the Hessian passes' A C contraction in single precision */
+int SOCDFTcosx_hfloat(void)
+{
+#ifdef __AVX512F__
+        return cx_hfloat;
+#else
+        return 0;
+#endif
+}
+void SOCDFTcosx_set_hfloat(int v) { cx_hfloat = v; }
+
 /* dAC[x] (nab, n) -= sum_t E_t R_{t+1x}: the derivative of A with respect to the grid point */
 static void point_deriv(double *dAC, const double *E, const double *R, int nab, int nh, int n)
 {
@@ -437,6 +506,7 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
         double *dG = malloc(sizeof(double) * (size_t)natm * 3 * nao * blk);
         double *dGH = do_h ? malloc(sizeof(double) * (size_t)natm * 3 * nao * blk) : NULL;
         double *Bd = malloc(sizeof(double) * (size_t)3 * natm * nao * blk);
+        double *P2 = malloc(sizeof(double) * (size_t)3 * natm * nocc * blk);
         double *a = malloc(sizeof(double) * 10 * (size_t)nao * blk);
         double *full = malloc(sizeof(double) * 10 * (size_t)nao * blk);
         double *rmx = malloc(sizeof(double) * nao);
@@ -471,11 +541,20 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
         double *Abuf = malloc(sizeof(double) * CX_ABUF);
         CXRec *rec = malloc(sizeof(CXRec) * (opt->npair + 1));
         double *Aoc = malloc(sizeof(double) * NQ * blk);
+        const int hfl = SOCDFTcosx_hfloat();
+        float *Aocf = hfl ? malloc(sizeof(float) * NQ * blk) : NULL;
+        float *cof = hfl ? malloc(sizeof(float) * NQ) : NULL;
+        float *Abf = (float *)Abuf;
+        const size_t abcap = hfl ? 2 * (size_t)CX_ABUF : (size_t)CX_ABUF;
+        if (hfl) {
+                size_t q;
+                for (q = 0; q < NQ; q++) cof[q] = (float)co[q];
+        }
         double *Aoo = malloc(sizeof(double) * (size_t)nocc * nocc);
         double *Psi = malloc(sizeof(double) * (size_t)nocc * (3 * natm + 2));
         double *Out = malloc(sizeof(double) * (size_t)nao * (3 * natm + 2));
         double *Out2 = malloc(sizeof(double) * (size_t)nocc * (3 * natm + 2));
-        double *tmp = malloc(sizeof(double) * (size_t)nao * (nocc > 3 * natm ? nocc : 3 * natm));
+        double *tmp = malloc(sizeof(double) * ((size_t)nao * (nocc > 3 * natm ? nocc : 3 * natm) + (size_t)9 * natm * natm));
         double *Qm = malloc(sizeof(double) * (size_t)nao * blk);
         double **farR = calloc(natm, sizeof(double *));
         int *stamp = malloc(sizeof(int) * natm);
@@ -561,7 +640,8 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                         }
                 }
                 memset(touched, 0, natm);
-                memset(Aoc, 0, sizeof(double) * NQ * n);
+                if (hfl) memset(Aocf, 0, sizeof(float) * NQ * n);
+                else memset(Aoc, 0, sizeof(double) * NQ * n);
                 double cb[3] = {0, 0, 0}, rb = 0;
                 for (g = 0; g < n; g++) {
                         cb[0] += xyz[g]; cb[1] += xyz[n + g]; cb[2] += xyz[2 * n + g];
@@ -777,17 +857,29 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                                 }
                         }
                         /* the integrals, point-major, for Aoc */
-                        if (aoff + (size_t)nab * n > CX_ABUF) {
+                        if (aoff + (size_t)nab * n > abcap) {
+#ifdef CX_FUSED
+                                if (hfl) multi_contract_const_f(Aocf, cof, Abf, rec, nrec, nao, n, nocc);
+                                else
+#endif
                                 multi_contract_const(Aoc, co, Abuf, rec, nrec, nao, n, nocc);
                                 nrec = 0;
                                 aoff = 0;
                         }
                         {
-                                double *atp = Abuf + aoff;
                                 int ab;
-                                for (ab = 0; ab < nab; ab++) {
-                                        const double *ar = A + (size_t)ab * n;
-                                        for (g = 0; g < n; g++) atp[(size_t)g * nab + ab] = ar[g];
+                                if (hfl) {
+                                        float *atp = Abf + aoff;
+                                        for (ab = 0; ab < nab; ab++) {
+                                                const double *ar = A + (size_t)ab * n;
+                                                for (g = 0; g < n; g++) atp[(size_t)g * nab + ab] = (float)ar[g];
+                                        }
+                                } else {
+                                        double *atp = Abuf + aoff;
+                                        for (ab = 0; ab < nab; ab++) {
+                                                const double *ar = A + (size_t)ab * n;
+                                                for (g = 0; g < n; g++) atp[(size_t)g * nab + ab] = ar[g];
+                                        }
                                 }
                                 rec[nrec].I0 = I0; rec[nrec].J0 = J0; rec[nrec].nI = nI; rec[nrec].nJ = nJ;
                                 rec[nrec].cI = 1; rec[nrec].cJ = both; rec[nrec].off = aoff;
@@ -845,7 +937,17 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                                 }
                         }
                 }
-                if (nrec) multi_contract_const(Aoc, co, Abuf, rec, nrec, nao, n, nocc);
+                if (nrec) {
+#ifdef CX_FUSED
+                        if (hfl) multi_contract_const_f(Aocf, cof, Abf, rec, nrec, nao, n, nocc);
+                        else
+#endif
+                        multi_contract_const(Aoc, co, Abuf, rec, nrec, nao, n, nocc);
+                }
+                if (hfl) {
+                        size_t q;
+                        for (q = 0; q < NQ * n; q++) Aoc[q] = Aocf[q];
+                }
                 for (k = 0; k < nla; k++) {
                         const int aa = la[3 * k];
                         if (!touched[aa]) grow_rows(dG, dGH, aa, 0, 1, glo, ghi, touched, nao, n);
@@ -901,27 +1003,35 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                                 Ub[(size_t)i * n + g] = Out2[(size_t)i * ncol];
                                 Upb[(size_t)i * n + g] = Out2[(size_t)i * ncol + 1];
                         }
-                        /* (1c): 4 w eta^{d1} Aoo psi^{d2} = 2 (w eta^{d1}) . Out2[:, 2 + d2], plus the transpose */
-                        int d2;
-                        if (do_h)
-                        for (d = 0; d < nd; d++)
-                                for (d2 = 0; d2 < nd; d2++) {
-                                        double s = 0;
-                                        for (i = 0; i < nocc; i++)
-                                                s += wetad[((size_t)d * nocc + i) * n + g] * Out2[(size_t)i * ncol + 2 + d2];
-                                        s *= 2;
-                                        const int r1 = 3 * la[3 * (d / 3)] + d % 3, r2 = 3 * la[3 * (d2 / 3)] + d2 % 3;
-                                        HS(r1, r2) += s;
-                                        HS(r2, r1) += s;
-                                }
+                        /* P2[d] = 2 Aoo psi^{d} (nd, nocc, n): (1c) and (f2) after the points */
+                        for (i = 0; i < nocc; i++) {
+                                const double *o2 = Out2 + (size_t)i * ncol + 2;
+                                for (d = 0; d < nd; d++) P2[((size_t)d * nocc + i) * n + g] = o2[d];
+                        }
                         if (do_f1) {
-                                for (k = 0; k < nla; k++)
-                                        for (x = 0; x < 3; x++) {
-                                                double *Uy = U + ((size_t)la[3 * k] * 3 + x) * nocc * n;
-                                                for (i = 0; i < nocc; i++) Uy[(size_t)i * n + g] += Out2[(size_t)i * ncol + 2 + 3 * k + x];
-                                        }
                                 for (d = 0; d < nd; d++)            /* Bd (nd, n, nao) */
                                         memcpy(Bd + ((size_t)d * n + g) * nao, Out + (size_t)(2 + d) * nao, sizeof(double) * nao);
+                        }
+                }
+                if (do_h) {
+                        /* (1c): 4 sum_g w eta^{d1} Aoo psi^{d2} = 2 (w eta^{d1}) . P2[d2], plus the transpose */
+                        const int nk = nocc * n;
+                        dgemm_("T", "N", &nd, &nd, &nk, &two, P2, &nk, wetad, &nk, &zero, tmp, &nd);
+                        int d2;
+                        for (d = 0; d < nd; d++)
+                                for (d2 = 0; d2 < nd; d2++) {
+                                        const double v = tmp[(size_t)d * nd + d2];       /* (d1 = d, d2) */
+                                        const int r1 = 3 * la[3 * (d / 3)] + d % 3, r2 = 3 * la[3 * (d2 / 3)] + d2 % 3;
+                                        HS(r1, r2) += v;
+                                        HS(r2, r1) += v;
+                                }
+                }
+                if (do_f1) {
+                        for (d = 0; d < nd; d++) {
+                                double *Uy = U + ((size_t)la[3 * (d / 3)] * 3 + d % 3) * nocc * n;
+                                const double *p2 = P2 + (size_t)d * nocc * n;
+                                size_t q;
+                                for (q = 0; q < (size_t)nocc * n; q++) Uy[q] += p2[q];
                         }
                 }
                 /* (1ab): Q_rho = 2 (Y_rho U + C_rho U'), sum_g w d_x d_y phi_rho Q_rho per atom */
@@ -1014,11 +1124,11 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                 }
         }
 #pragma omp barrier
-        free(Vt); free(VTt); free(Ht); free(dG); free(dGH); free(Bd); free(a); free(full); free(rmx); free(ix); free(runs); free(cs); free(ys);
+        free(Vt); free(VTt); free(Ht); free(dG); free(dGH); free(Bd); free(P2); free(a); free(full); free(rmx); free(ix); free(runs); free(cs); free(ys);
         free(F); free(H); free(GFb); free(psi); free(eta); free(weta); free(Ub); free(Upb); free(psid); free(wpsid);
         free(wetad); free(la); free(U); free(Up); free(touched); free(glo); free(ghi); free(fmax); free(A); free(W); free(dA); free(rs);
         free(Mm); free(bk); free(R); free(Rwk); free(S); free(X); free(xyz); free(Abuf); free(rec); free(Aoc);
-        free(Aoo); free(Psi); free(Out); free(Out2); free(tmp); free(Qm);
+        free(Aoo); free(Aocf); free(cof); free(Psi); free(Out); free(Out2); free(tmp); free(Qm);
         for (at = 0; at < natm; at++) free(farR[at]);
         free(farR); free(stamp); free(armin);
         if (mkl_set_num_threads_local) mkl_set_num_threads_local(mkl0);

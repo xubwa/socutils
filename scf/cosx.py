@@ -51,6 +51,7 @@ TOL = 1e-9              # screening of the shell-pair contributions, B_IJ max|F_
 TCUT = 36.              # p r^2 beyond which a one-centre primitive pair is in its far field
 MULTI_MIN = 4           # densities from which the multi-density contraction runs
 MULTI_FLOAT = False     # its contraction in single precision (set_multi_float)
+HESS_FLOAT = False      # the Hessian passes' A C contraction (Fock1 / K second derivatives) in single precision
 MULTI_MAXSET = 64       # densities per pass (beyond, the buffers grow with no gain)
 PRIM_TOL = 1e-14
 PAIR_TOL = 1e-13
@@ -299,7 +300,9 @@ class COSX(lib.StreamObject):
                                            bas.ctypes.data_as(ctypes.c_void_p), env.ctypes.data_as(ctypes.c_void_p)):
             raise MemoryError('COSX gradient tables')
         nao, nocc = mocc.shape
-        n8 = (nocc + 7) // 8 * 8
+        vl = 16 if HESS_FLOAT and libdft.SOCDFTcosx_hfloat is not None else 8
+        libdft.SOCDFTcosx_set_hfloat(int(vl == 16))
+        n8 = (nocc + vl - 1) // vl * vl
         co = numpy.zeros((nao, n8))
         co[:, :nocc] = mocc
         yo = numpy.zeros((nao, n8))
@@ -422,7 +425,9 @@ class COSX(lib.StreamObject):
                                            bas.ctypes.data_as(ctypes.c_void_p), env.ctypes.data_as(ctypes.c_void_p)):
             raise MemoryError('COSX Hessian tables')
         nao, nocc = mocc.shape
-        n8 = (nocc + 7) // 8 * 8
+        vl = 16 if HESS_FLOAT and libdft.SOCDFTcosx_hfloat is not None else 8
+        libdft.SOCDFTcosx_set_hfloat(int(vl == 16))
+        n8 = (nocc + vl - 1) // vl * vl
         co = numpy.zeros((nao, n8))
         co[:, :nocc] = mocc
         yo = numpy.zeros((nao, n8))
