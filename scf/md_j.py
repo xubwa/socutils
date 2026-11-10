@@ -98,6 +98,7 @@ J_BY_JK_MULTI_LMAX = 2  # J-only builds of bases with l <= this by jk_multi, not
 INCORE = True           # J + K builds from in-memory s8 ERIs when they fit (mf._is_mem_enough, as pyscf)
 
 
+RIK = True              # full DF-JK / CD: J and K by socutils.scf.rik (else pyscf's df_jk)
 RIJ_RESIDENT = True     # RIJ: L^{-1} (P|ij) built once and kept in memory when it fits, J = B^T (B d)
 INCORE_RESERVE = 500    # MB of mf.max_memory kept for the other arrays of the SCF
 
@@ -129,7 +130,8 @@ LOOSE_UNTIL = 1e-4      # two-pass: max |D - D_prev| below which the builds are 
 def apply(mf, incremental=True, two_pass=True):
     '''mf with get_jk computing J-only builds by the MD J engine and J + K (or
     K) builds by jk_multi in one pass; range-separated calls, complex
-    densities, density fitting and l > LMAX keep the original.  Modifies and
+    densities and l > LMAX keep the original; RIJ (density_fit(only_dfj=True)): J from the
+    fitting, K as above; full DF-JK / CD: socutils.scf.rik.apply.  Modifies and
     returns mf.
 
     incremental: J, K of a single symmetric density from the previous call's
@@ -149,7 +151,11 @@ def apply(mf, incremental=True, two_pass=True):
     from pyscf.scf import hf as hf_mod
     from socutils.scf import jk_multi
     df_j = isinstance(mf, df_jk._DFHF)
-    if (df_j and not mf.only_dfj) or not available(mf.mol):
+    if df_j and not mf.only_dfj:
+        # RI-JK (density fitting or Cholesky vectors): J and K from the factor
+        from socutils.scf import rik
+        return rik.apply(mf) if RIK else mf
+    if not available(mf.mol):
         return mf
     if df_j:
         # RIJ (density_fit(only_dfj=True)): J from the fitting, the exact K by the builds below
