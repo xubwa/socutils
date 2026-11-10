@@ -276,32 +276,77 @@ def cholesky_eri_h5(mol, auxmol, filename, dataname='j3c', pair_tol=PAIR_TOL, ma
     j2c = None
     naux = auxmol.nao
     mem = max(500., max_memory - lib.current_memory()[0])
-    # per column: X (and its solve in place) and the dense block written
+    # per column: X (and its solve in place), the dense block, the previous block being written
     if max_cols is None:
-        max_cols = max(1, int(mem * .4e6 / 8 / naux / 2))
+        max_cols = max(1, int(mem * .4e6 / 8 / naux / 3))
     ao_loc = mol.ao_loc_nr()
     nao = mol.nao
     npair = nao * (nao + 1) // 2
+    # one contiguous (naux, npair) dataset, allocated at creation: a block of auxiliary rows is
+    # one contiguous read (iter_factor: os.preadv outside the GIL, prefetched), and the column
+    # slabs are written here with os.pwritev in a background thread while the next is computed
     with h5py.File(filename, 'a') as f:
         if dataname in f:
             del f[dataname]
-        # one contiguous (naux, npair) dataset: a block of auxiliary rows is one contiguous read
-        # (iter_factor reads it with os.preadv, outside the GIL, prefetched)
-        dset = f.create_dataset(dataname, (naux, npair), 'f8')
+        dcpl = h5py.h5p.create(h5py.h5p.DATASET_CREATE)
+        dcpl.set_alloc_time(h5py.h5d.ALLOC_TIME_EARLY)
+        dcpl.set_fill_time(h5py.h5d.FILL_TIME_NEVER)
+        dsid = h5py.h5d.create(f.id, dataname.encode(), h5py.h5t.IEEE_F64LE,
+                               h5py.h5s.create_simple((naux, npair)), dcpl=dcpl)
+        off = dsid.get_offset()
+        dsid.close()
+    import os
+    import threading
+    fd = os.open(filename, os.O_WRONLY)
+    tw = [0.] * 4      # wall: integrals, solve, scatter, waiting for the writer
+
+    def write(blk, c0):
+        ncol = blk.shape[1]
+        rows = memoryview(blk.reshape(-1)).cast('B')
+        rb = ncol * 8
+        for p in range(naux):
+            v = rows[p * rb:(p + 1) * rb]
+            pos = off + (p * npair + c0) * 8
+            n = 0
+            while n < rb:
+                n += os.pwritev(fd, [v[n:]], pos + n)
+    th = None
+    try:
         for k, (s0, s1) in enumerate(eng.ish_ranges(max_cols)):
             c0 = ao_loc[s0] * (ao_loc[s0] + 1) // 2
             c1 = ao_loc[s1] * (ao_loc[s1] + 1) // 2
+            t1 = logger.perf_counter()
             X, cols = eng.rows(s0, s1)
+            t2 = logger.perf_counter()
             Y = scipy.linalg.solve_triangular(low, X.T, lower=True, overwrite_b=True, check_finite=False)
             X = None
+            t3 = logger.perf_counter()
             blk = numpy.zeros((naux, c1 - c0))
             _scatter_cols(blk, Y, cols - c0)
             Y = None
-            dset[:, c0:c1] = blk
             if resident is not None and len(resident):
                 resident[:, c0:c1] = blk[:len(resident)]
+            t4 = logger.perf_counter()
+            if th is not None:
+                th.join()
+            t5 = logger.perf_counter()
+            th = threading.Thread(target=write, args=(blk, c0))
+            th.start()
             blk = None
+            tw[0] += t2 - t1
+            tw[1] += t3 - t2
+            tw[2] += t4 - t3
+            tw[3] += t5 - t4
             t0 = log.timer_debug1('rik.cholesky_eri_h5: block %d (shells %d:%d)' % (k, s0, s1), *t0)
+        if th is not None:
+            t5 = logger.perf_counter()
+            th.join()
+            tw[3] += logger.perf_counter() - t5
+    finally:
+        if th is not None:
+            th.join()
+        os.close(fd)
+    log.debug1('rik.cholesky_eri_h5 wall: integrals %.1f s, L^-1 %.1f s, scatter %.1f s, write wait %.1f s', *tw)
     return True
 
 
