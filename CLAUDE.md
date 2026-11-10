@@ -112,6 +112,10 @@ two-electron corrections on) and only then require the `x2camf` integral backend
     basis instead of spinor); spinor and GHF energies agree to numerical precision.
   - `x2camf_hf.py`: `X2CAMF_*` convenience classes + `x2camf_ghf(scf.GHF(mol))`.
   - `frac_dhf.py`: four-component Dirac-HF; `spinor_hf_df.py`: density fitting.
+  - `rik.py`: RI-JK (J and K from any three-index factor through `with_df.loop` /
+    `iter_factor`: pyscf DF in core or HDF5, socutils CD); `rik.apply(mf)` (also via
+    `md_j.apply` for full DF-JK), screened `cholesky_eri` / `cholesky_eri_h5` builders
+    (`lib/vhf/int3c_s2.c`), reusable `half_transform` / `mo_transform`.
 
 - **`x2camf_c/x2camf/`** — the bundled `x2camf` Python package: a dispatcher
   with **two interchangeable backends** behind one API (`amfi`/`atm_integrals`/
@@ -150,7 +154,8 @@ two-electron corrections on) and only then require the `x2camf` integral backend
   **`fci/`** (`zfci`), **`gw/`** (spinor G0W0 / RPA), **`tdscf/`**,
   **`prop/`** (properties: HFC, EFG, g-factor, contact density, effective field),
   **`grad/`** (analytic gradients; `grad/rhf_fast.py`: fast RHF / RKS gradients, the
-  MD J engine `lib/vhf/md_j.c` for exact J, the order-1 `hess2e_cart` kernel for K, the contracted XC part), **`cd/`** (Cholesky decomposition),
+  MD J engine `lib/vhf/md_j.c` for exact J, the order-1 `hess2e_cart` kernel for K, the contracted XC part; `grad/rik_grad.py`: the RI-K
+  gradient with auxiliary response, `lib/vhf/ri_k_grad.c`), **`cd/`** (Cholesky decomposition),
   **`lo/`**, **`tools/`** (`spinor2sph`, `fragmo_guess`) — all built on the
   spinor/GHF SCF objects above.
 
