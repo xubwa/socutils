@@ -72,6 +72,10 @@ void zmr_wsf_cavv(const double *bvc, int64_t ldvc, const double *bva, int64_t ld
                   int mode, double *w);
 void zmr_wsf_aavv(const double *bva, int64_t ldva, int64_t naux, int64_t nv, int64_t na,
                   const double *ev, const double *d, int64_t nd, double *w);
+void zmr_w_ccav(const double complex *bvc, int64_t ldvc, const double complex *bac,
+                int64_t ldac, int64_t naux, int64_t nv, int64_t na, int64_t nc,
+                const double *ev, const double *ec, const double *d, int64_t nd,
+                const signed char *sel, int mode, double complex *w, double complex *w2);
 void zmr_w_cavv(const double complex *bvc, int64_t ldvc, const double complex *bva,
                 int64_t ldva, int64_t naux,
                 int64_t nv, int64_t na, int64_t nc, const double *ev, const double *ec,

@@ -295,14 +295,54 @@ class CCAV(PerturberClass):
         nc, nv = ctx.sp.ncore, ctx.sp.nvirt
         if nc < 2 or nv < 1:
             return
-        # the block (vc|ac) has one virtual index only: small, taken whole
-        g = _antisym(ctx.eris, 'vacc')           # [a, t, i, j]
+        cd = _factors(ctx.eris)
         ii, jj = _pairs(nc)
         keep = _kept(ctx, 'ccav', ii, jj)
+        if cd is None:
+            g = _antisym(ctx.eris, 'vacc')       # [a, t, i, j]
+        else:
+            # (ai|tj) - (aj|ti) for one pair at a time: the whole block [a, t, i, j] has
+            # nv na nc^2 elements
+            bvc, bac = cd('vc'), cd('ac')
         for i, j in zip(ii[keep], jj[keep]):
-            v = g[:, :, i, j]                     # (a, t)
+            if cd is None:
+                v = g[:, :, i, j]                 # (a, t)
+            else:
+                v = (la.gemm(_slice(bvc, i), _slice(bac, j), 'T', 'N')
+                     - la.gemm(_slice(bvc, j), _slice(bac, i), 'T', 'N'))
             delta = ctx.eps_v - ctx.eps_c[i] - ctx.eps_c[j]
             yield delta, v
+
+    def external(self, ctx):
+        nc, nv, na = ctx.sp.ncore, ctx.sp.nvirt, ctx.sp.nact
+        if nc < 2 or nv < 1 or na < 1:
+            return None
+        from socutils.zmr.lib import kernels
+        ii, jj = _pairs(nc)
+        keep = _kept(ctx, 'ccav', ii, jj)
+        sel = numpy.zeros((nc, nc), dtype=numpy.int8)
+        sel[ii[keep], jj[keep]] = 1
+        th = None
+        half = kramers_core_half(ctx) if getattr(ctx, 'keep', None) is None else None
+        if half is not None:
+            # one pair of every Kramers-related couple: (i, Ti) as it is (1), the others
+            # (2) with their partners as Theta conj(W) Theta^+
+            pi, pj, wt = kramers_pairs(ctx)
+            sel[...] = 0
+            sel[pi, pj] = numpy.where(wt > 1.5, 2, 1)
+            th = half[1]
+
+        def kernel(d):
+            res = kernels.w_ccav(ctx.eris.cd_block('vc'), ctx.eris.cd_block('ac'), ctx.eps_v,
+                                 ctx.eps_c, d, sel=sel)
+            if res is None:
+                return None
+            w, w2 = res
+            if th is not None:
+                w = w + w2 + numpy.einsum('tx,mxy,uy->mtu', th, w2.conj(), th.conj())
+            return w
+        return _external(self, ctx, int(keep.sum()) * nv,
+                         ctx.eps_v.min() - _two_largest(ctx.eps_c), kernel)
 
     def operators(self, nact):
         return [((True,), _all(nact, 1))]

@@ -154,6 +154,33 @@ def w_ccvv(bvc, ev, ec, d, mode=-1, pairs=None):
     return w
 
 
+def w_ccav(bvc, bac, ev, ec, d, sel=None, mode=-1):
+    '''(W, W2), W[m, t, u] = sum_{i<j, a} conj(v[a, t]) v[a, u] / (d[m] + e_a - e_i - e_j),
+    v[a, t] = (ai|tj) - (aj|ti), from bvc[L, a, i] and bac[L, t, j]; the pairs with
+    sel[i, j] = 1 go into W, those with 2 into W2, 0 are left out (default: all pairs
+    i < j into W).  None without libzmr.'''
+    z = _lib.zmr()
+    if z is None or not hasattr(z, 'zmr_w_ccav'):
+        return None
+    naux, nv, nc = bvc.shape
+    na = bac.shape[1]
+    bvc, ldvc = _rows(bvc)
+    bac, ldac = _rows(bac)
+    ev, ec, d = _w_args(ev, ec, d)
+    if sel is None:
+        sel = numpy.triu(numpy.ones((nc, nc), dtype=numpy.int8), 1)
+    sel = numpy.ascontiguousarray(sel, dtype=numpy.int8)
+    if sel.shape != (nc, nc):
+        raise ValueError('w_ccav: sel of shape (ncore, ncore)')
+    w = numpy.empty((len(d), na, na), dtype=_c16)
+    w2 = numpy.empty((len(d), na, na), dtype=_c16)
+    z.zmr_w_ccav(_p(bvc), ctypes.c_int64(ldvc), _p(bac), ctypes.c_int64(ldac),
+                 ctypes.c_int64(naux), ctypes.c_int64(nv), ctypes.c_int64(na), ctypes.c_int64(nc),
+                 _p(ev), _p(ec), _p(d), ctypes.c_int64(len(d)), _p(sel), ctypes.c_int(mode),
+                 _p(w), _p(w2))
+    return w, w2
+
+
 def w_cavv(bvc, bva, ev, ec, d, mode=-1):
     '''W[m, t, u] = sum_{i, a<b} conj(v[ab, t]) v[ab, u] / (d[m] + e_a + e_b - e_i),
     v[ab, t] = -((ai|bt) - (at|bi)), from bvc[L, a, i] and bva[L, b, t].'''

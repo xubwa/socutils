@@ -108,5 +108,5 @@ def test_nevpt2_kramers_pairs(hbr):
     assert pb.quasi_canonical.eris.time_reversal is None
     assert abs(numpy.asarray(ea) - numpy.asarray(eb)).max() < 1e-10
     assert classes.kramers_core_half(ctx) is not None
-    for name in ('ccvv', 'cavv'):
+    for name in ('ccvv', 'cavv', 'ccav'):
         assert abs(pa.h2_by_class[name] - pb.h2_by_class[name]).max() < 1e-11, name

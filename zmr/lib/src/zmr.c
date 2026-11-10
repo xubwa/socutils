@@ -212,6 +212,87 @@ static inline void add_outer(int64_t na, const double complex *x, double del,
         }
 }
 
+/* ccav: tasks i; for the pairs j > i with sel[i * nc + j] = 1 or 2 (0: left out),
+ * v[a, t] = <at||ij> = (ai|tj) - (aj|ti), added to w (1) or to w2 (2):
+ *     w[m][t, u] += conj(v[a, t]) v[a, u] / (d[m] + e_a - e_i - e_j).
+ * Per task two products: first[a, (t, j)] = sum_L B[L, a, i] B[L, t, j] and
+ * second[(a, j), t] = sum_L B[L, a, j] B[L, t, i], from bvc[L, a, j] (naux, nv, nc) and
+ * bac[L, t, j] (naux, na, nc), rows L ldvc / ldac elements apart. */
+void zmr_w_ccav(const double complex *bvc, int64_t ldvc, const double complex *bac,
+                int64_t ldac, int64_t naux, int64_t nv, int64_t na, int64_t nc,
+                const double *ev, const double *ec, const double *d, int64_t nd,
+                const signed char *sel, int mode, double complex *w, double complex *w2)
+{
+        int64_t nw = nd * na * na;
+        memset(w, 0, sizeof(double complex) * nw);
+        memset(w2, 0, sizeof(double complex) * nw);
+        if (nc < 2 || nv < 1 || na < 1 || nd == 0) {
+                return;
+        }
+        int outer = outer_tasks(nc, mode);
+        const double complex one = 1.0, zero = 0.0;
+#pragma omp parallel if(outer)
+        {
+                double complex *bi = malloc(sizeof(double complex) * naux * nv);
+                double complex *bti = malloc(sizeof(double complex) * naux * na);
+                double complex *first = malloc(sizeof(double complex) * nv * na * nc);
+                double complex *second = malloc(sizeof(double complex) * nv * nc * na);
+                double complex *loc = calloc(nw, sizeof(double complex));
+                double complex *loc2 = calloc(nw, sizeof(double complex));
+#pragma omp for schedule(dynamic, 1)
+                for (int64_t i = 0; i < nc - 1; i++) {
+                        int any = 0;
+                        for (int64_t j = i + 1; j < nc; j++) any |= sel[i * nc + j];
+                        if (!any) continue;
+                        core_slice(bvc, ldvc, naux, nv, nc, i, bi);        /* bi[L, a] */
+                        core_slice(bac, ldac, naux, na, nc, i, bti);       /* bti[L, t] */
+                        product_t(naux, bi, nv, bac, na * nc, ldac, first);
+                        cblas_zgemm(101, 112, 111, (int)(nv * nc), (int)na, (int)naux, &one,
+                                    bvc, (int)ldvc, bti, (int)na, &zero, second, (int)na);
+#pragma omp parallel if(!outer)
+                        {
+                                double complex *part = outer ? loc : calloc(nw, sizeof(double complex));
+                                double complex *part2 = outer ? loc2 : calloc(nw, sizeof(double complex));
+                                double complex *x = malloc(sizeof(double complex) * na);
+#pragma omp for schedule(dynamic, 1)
+                                for (int64_t j = i + 1; j < nc; j++) {
+                                        signed char s = sel[i * nc + j];
+                                        if (!s) continue;
+                                        double e0 = -ec[i] - ec[j];
+                                        for (int64_t a = 0; a < nv; a++) {
+                                                for (int64_t t = 0; t < na; t++) {
+                                                        x[t] = first[a * na * nc + t * nc + j]
+                                                               - second[(a * nc + j) * na + t];
+                                                }
+                                                add_outer(na, x, ev[a] + e0, d, nd, s == 1 ? part : part2);
+                                        }
+                                }
+                                free(x);
+                                if (!outer) {
+#pragma omp critical
+                                        {
+                                                for (int64_t k = 0; k < nw; k++) loc[k] += part[k];
+                                                for (int64_t k = 0; k < nw; k++) loc2[k] += part2[k];
+                                        }
+                                        free(part);
+                                        free(part2);
+                                }
+                        }
+                }
+#pragma omp critical
+                {
+                        for (int64_t k = 0; k < nw; k++) w[k] += loc[k];
+                        for (int64_t k = 0; k < nw; k++) w2[k] += loc2[k];
+                }
+                free(bi);
+                free(bti);
+                free(first);
+                free(second);
+                free(loc);
+                free(loc2);
+        }
+}
+
 /* aavv: no core index; tasks are segments of the first virtual orbital a.
  * v[ab, tu] = (at|bu) - (au|bt), a < b, t < u.  A task multiplies its
  * segment of bva with all of bva, and for every a collects the rows b > a
