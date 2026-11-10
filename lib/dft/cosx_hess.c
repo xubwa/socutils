@@ -98,6 +98,40 @@ static void point_deriv(double *dAC, const double *E, const double *R, int nab, 
         }
 }
 
+
+/* U[i][g] += sum_a C[a][i] r[a][g]  (the per-pair products: GEMM calls of these sizes cost more than the work) */
+static void acc_ct_r(double *U, const double *C, const double *r, int na, int nocc, int n)
+{
+        int a_, i, g;
+        for (a_ = 0; a_ < na; a_++) {
+                const double *ra = r + (size_t)a_ * n, *ca = C + (size_t)a_ * nocc;
+                for (i = 0; i < nocc; i++) {
+                        const double c = ca[i];
+                        if (c == 0) continue;
+                        double *u = U + (size_t)i * n;
+#pragma omp simd
+                        for (g = 0; g < n; g++) u[g] += c * ra[g];
+                }
+        }
+}
+
+/* vt[a][i] += sum_g weta[i][g] r[a][g] */
+static void acc_r_wt(double *vt, const double *weta, const double *r, int na, int nocc, int n)
+{
+        int a_, i, g;
+        for (a_ = 0; a_ < na; a_++) {
+                const double *ra = r + (size_t)a_ * n;
+                double *v = vt + (size_t)a_ * nocc;
+                for (i = 0; i < nocc; i++) {
+                        const double *e = weta + (size_t)i * n;
+                        double s = 0;
+#pragma omp simd reduction(+:s)
+                        for (g = 0; g < n; g++) s += e[g] * ra[g];
+                        v[i] += s;
+                }
+        }
+}
+
 /* r_a = sum_b dA_ab F_b (nI, n); s_b = sum_a dA_ab F_a (nJ, n) */
 static void pair_rs(double *r, double *s, const double *dA, const double *F, int I0, int J0, int nI, int nJ,
                     int n, int both)
@@ -455,14 +489,14 @@ int SOCDFTcosx_fock1(double *V, double *VT, double *co, double *yo, int nocc, vo
                                                 touched[ya] = 1;
                                         }
                                         /* U^{y}(n, nocc cm) += r^T C_I + s^T C_J */
-                                        dgemm_("N", "T", &n, &nocc, &nI, &one, rr[q], &n, co + (size_t)I0 * nocc, &nocc, &one, Uy, &n);
+                                        acc_ct_r(Uy, co + (size_t)I0 * nocc, rr[q], nI, nocc, n);
                                         if (both)
-                                                dgemm_("N", "T", &n, &nocc, &nJ, &one, ss[q], &n, co + (size_t)J0 * nocc, &nocc, &one, Uy, &n);
+                                                acc_ct_r(Uy, co + (size_t)J0 * nocc, ss[q], nJ, nocc, n);
                                         /* VT rows a of atom ya: += r (w eta)^T */
                                         double *vt = VTt + (((size_t)ya * 3 + x) * nao) * nocc;
-                                        dgemm_("T", "N", &nocc, &nI, &n, &one, weta, &n, rr[q], &n, &one, vt + (size_t)I0 * nocc, &nocc);
+                                        acc_r_wt(vt + (size_t)I0 * nocc, weta, rr[q], nI, nocc, n);
                                         if (both)
-                                                dgemm_("T", "N", &nocc, &nJ, &n, &one, weta, &n, ss[q], &n, &one, vt + (size_t)J0 * nocc, &nocc);
+                                                acc_r_wt(vt + (size_t)J0 * nocc, weta, ss[q], nJ, nocc, n);
                                 }
                         }
                 }
@@ -1225,17 +1259,17 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                                                 touched[ya] = 1;
                                         }
                                         double *Uy = U + ((size_t)ya * 3 + x) * nocc * n, *Upy = Up + ((size_t)ya * 3 + x) * nocc * n;
-                                        dgemm_("N", "T", &n, &nocc, &nI, &one, rr[q], &n, co + (size_t)I0 * nocc, &nocc, &one, Uy, &n);
-                                        dgemm_("N", "T", &n, &nocc, &nI, &one, rq[q], &n, co + (size_t)I0 * nocc, &nocc, &one, Upy, &n);
+                                        acc_ct_r(Uy, co + (size_t)I0 * nocc, rr[q], nI, nocc, n);
+                                        acc_ct_r(Upy, co + (size_t)I0 * nocc, rq[q], nI, nocc, n);
                                         if (both) {
-                                                dgemm_("N", "T", &n, &nocc, &nJ, &one, ss[q], &n, co + (size_t)J0 * nocc, &nocc, &one, Uy, &n);
-                                                dgemm_("N", "T", &n, &nocc, &nJ, &one, sq[q], &n, co + (size_t)J0 * nocc, &nocc, &one, Upy, &n);
+                                                acc_ct_r(Uy, co + (size_t)J0 * nocc, ss[q], nJ, nocc, n);
+                                                acc_ct_r(Upy, co + (size_t)J0 * nocc, sq[q], nJ, nocc, n);
                                         }
                                         if (do_f1) {
                                                 double *vt = VTt + (((size_t)ya * 3 + x) * nao) * nocc;
-                                                dgemm_("T", "N", &nocc, &nI, &n, &one, weta, &n, rr[q], &n, &one, vt + (size_t)I0 * nocc, &nocc);
+                                                acc_r_wt(vt + (size_t)I0 * nocc, weta, rr[q], nI, nocc, n);
                                                 if (both)
-                                                        dgemm_("T", "N", &nocc, &nJ, &n, &one, weta, &n, ss[q], &n, &one, vt + (size_t)J0 * nocc, &nocc);
+                                                        acc_r_wt(vt + (size_t)J0 * nocc, weta, ss[q], nJ, nocc, n);
                                         }
                                 }
                         }

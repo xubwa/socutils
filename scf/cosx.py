@@ -448,7 +448,7 @@ class COSX(lib.StreamObject):
             v, vt = v[..., :nocc], vt[..., :nocc]
         return hs, v, vt
 
-    def hess(self, mocc, with_fock1=False, tol=None):
+    def hess(self, mocc, with_fock1=False, tol=None, sum_rule=True):
         """d^2 tr(D P K_plain[D]) / dR dR' (natm, natm, 3, 3) at fixed D = 2 C C^T on the fixed grid (no grid
         response), the derivatives of S and S_g in the fit P = S S_g^-1 included (fit=False: of
         tr(D K_plain[D])); with with_fock1 also fock1(mocc) from the same kernel pass, (hess, fock1)"""
@@ -459,6 +459,8 @@ class COSX(lib.StreamObject):
         if self._proj is None:
             hs, v, vt = self._hess_plain(mocc, mocc, with_fock1, tol)
             h = hs.reshape(natm, 3, natm, 3).transpose(0, 2, 1, 3)
+            if sum_rule:
+                h = _sum_rule(h)
             return (h, .5 * (v + vt)) if with_fock1 else h
         P = self._proj
         Q = numpy.linalg.inv(self._sg)
@@ -509,6 +511,8 @@ class COSX(lib.StreamObject):
         gaa, gab = self._sg2()
         x2 = u @ y.T
         h -= 2 * self._d2_contract(mol, gaa, gab, (x2 + x2.T) * .5)
+        if sum_rule:
+            h = _sum_rule(h)
         return (h, f1) if with_fock1 else h
 
     def grad(self, dm, tol=None):
@@ -554,6 +558,18 @@ class COSX(lib.StreamObject):
             bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p),
             *_blas_ptrs())
         return de + g
+
+
+def _sum_rule(h):
+    """the one-centre blocks from translational invariance, H_AA = -sum_{B != A} H_AB: on the grid fixed in
+    space the second derivatives of the AOs on the grid break the invariance, the error almost entirely
+    in H_AA (as the fixed-grid XC Hessian, socutils.dft.grids); the exact K second derivatives at fixed D
+    obey it to 1e-14 (H2O / CH3 cc-pVDZ, GRIDX3: max |H/4 - ek| 0.36 without, 1.3e-5 with)"""
+    h = numpy.array(h)
+    for a in range(h.shape[0]):
+        h[a, a] = 0
+        h[a, a] = -h[a].sum(axis=0)
+    return h
 
 
 def get_k(mol, dm, hermi=1, grids=None, fit=True):
