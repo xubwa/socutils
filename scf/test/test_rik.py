@@ -47,7 +47,10 @@ class KnownValues(unittest.TestCase):
             dfobj = df.DF(self.mol)
             dfobj._cderi = f.name
             B = numpy.vstack(list(dfobj.loop(50)))
+            self.assertTrue(rik._h5_contiguous(dfobj) is not None)
+            B1 = numpy.vstack([b.copy() for b in rik.iter_factor(dfobj, 37)])
         self.assertAlmostEqual(abs(B - self.ref).max(), 0, 10)
+        self.assertEqual(abs(B1 - B).max(), 0)
 
     def test_scf_outcore(self):
         mf0 = scf.RHF(self.mol).density_fit(auxbasis='cc-pvdz-jkfit').run(conv_tol=1e-11)
