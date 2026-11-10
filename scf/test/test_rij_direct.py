@@ -88,6 +88,29 @@ class KnownValues(unittest.TestCase):
             em = ej(mol.set_geom_(co, unit='bohr', inplace=False))
             self.assertAlmostEqual((ep - em) / (2 * h), g[ia, x], 6)
 
+    def test_deriv(self):
+        # ri_j_deriv's Hessian and occupied Fock1 terms by the engine against the libcint passes
+        from socutils.hessian import rhf_fast as hess_fast
+        mol = gto.M(atom=CHAIN, basis='cc-pvdz', verbose=0)
+        aux = df.addons.make_auxmol(mol, 'def2-universal-jfit')
+        rng = numpy.random.default_rng(7)
+        occ = rng.standard_normal((mol.nao, 8)) * .3
+        dm = occ.dot(occ.T) * 2
+        old = hess_fast.RIJ_DERIV_DIRECT
+        out = []
+        try:
+            for direct in (False, True):
+                hess_fast.RIJ_DERIV_DIRECT = direct
+                h = hess_fast.ri_j_deriv(mol, aux, dm, with_vj1=False)
+                v = hess_fast.ri_j_deriv(mol, aux, dm, with_hess=False, occ=occ)
+                if h is None or v is None:
+                    return
+                out.append((h[0], v[1]))
+        finally:
+            hess_fast.RIJ_DERIV_DIRECT = old
+        self.assertAlmostEqual(abs(out[0][0] - out[1][0]).max(), 0, 9)
+        self.assertAlmostEqual(abs(out[0][1] - out[1][1]).max(), 0, 9)
+
     def test_rij_scf(self):
         mol = gto.M(atom=CHAIN, basis='cc-pvdz', verbose=0)
         ref = dft.RKS(mol, xc='pbe').density_fit(auxbasis='def2-universal-jfit', only_dfj=True)

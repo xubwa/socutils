@@ -60,8 +60,10 @@ def _partial_hess_ejk(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     combine = False
     if dfm is not None:
         # density-fitted J (exact derivatives of the DF energy), exact K below
-        r = ri_j_deriv(mol, _df_auxmol(mf), dm0, with_vj1=False,
-                       max_memory=max(1000, mf.max_memory - lib.current_memory()[0]), cderi=_rij_cderi(mf))
+        eng = _rij_engine(mf)
+        r = ri_j_deriv(mol, eng.auxmol if eng is not None else _df_auxmol(mf), dm0, with_vj1=False,
+                       max_memory=max(1000, mf.max_memory - lib.current_memory()[0]), cderi=_rij_cderi(mf),
+                       engine=eng)
         if r is None:
             from pyscf.df.hessian import rhf as df_rhf_hess
             return df_rhf_hess._partial_hess_ejk(hessobj, mo_energy, mo_coeff, mo_occ, atmlst,
@@ -952,6 +954,13 @@ def _df_auxmol(mf):
     return with_df.auxmol
 
 
+def _rij_engine(mf):
+    '''the RIJ SCF's direct RI-J engine (socutils.scf.md_j, socutils.scf.rij_direct) for its molecule, or None'''
+    cache = getattr(mf, '_rij_cache', None)
+    eng = cache.get('direct') if cache else None
+    return eng if eng is not None and eng.mol is mf.mol else None
+
+
 def _rij_cderi(mf):
     '''the RIJ SCF's resident L^{-1} (P|ij) (socutils.scf.md_j), or None'''
     cache = getattr(mf, '_rij_cache', None)
@@ -959,7 +968,7 @@ def _rij_cderi(mf):
 
 
 def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS2E_TOL, max_memory=None,
-               cderi=None, occ=None):
+               cderi=None, occ=None, engine=None):
     '''Nuclear derivatives of the density-fitted Coulomb energy
     E_J = 1/2 rho^T M^{-1} rho at a fixed symmetric D (rho_P = (P|ij) D_ij,
     M = (P|Q), d = M^{-1} rho), auxiliary-basis response included (the exact
@@ -1005,9 +1014,22 @@ def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS
             low = scipy.linalg.cholesky(auxmol.intor('int2c2e', hermi=1), lower=True)
         except scipy.linalg.LinAlgError:
             low = None
+    # the direct RI-J engine (socutils.scf.rij_direct) for the three-centre parts: the Hessian call
+    # (no vj1) and the occupied Fock1 call
+    direct = None
+    if RIJ_DERIV_DIRECT and auxmol.natm == natm and (not with_vj1 or (occ is not None and not with_hess)):
+        from socutils.scf import rij_direct
+        if engine is not None and engine.mol is mol and engine.auxmol is auxmol:
+            direct = engine
+        elif rij_direct.available(mol, auxmol):
+            direct = rij_direct.RIJDirect(mol, auxmol)
+        if direct is not None:
+            direct.tol = min(direct.tol, rij_direct.TOL)
     if low is not None:
         c = lib.dot(cderi, dm_tril[:, None])[:, 0]              # L^{-1} rho
         dfit = scipy.linalg.solve_triangular(low, c, lower=True, trans='T')
+    elif direct is not None:
+        dfit = direct.fit(direct.get_rho(dm))
     else:
         rho = numpy.empty(naux)
         for k0, k1, _ in aux_ranges:
@@ -1041,7 +1063,38 @@ def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS
                and auxmol.natm == natm and bool(numpy.all(numpy.diff(aux_atom) >= 0)))
     W = numpy.zeros((natm, 3, nao, nao)) if with_vj1 and not blocked else None
     null = lib.c_null_ptr()
-    if blocked:
+    if direct is not None and not blocked and not with_vj1 and (not with_hess or hess_md is not None):
+        Y = direct.deriv_y(dm)
+    elif direct is not None and blocked:
+        occ = numpy.ascontiguousarray(occ)
+        nocc = occ.shape[1]
+        vj1c = numpy.zeros((natm, 3, nao, nocc))
+        Y = direct.deriv_y(dm)
+        npao = direct.c.shape[0]
+        # the auxiliary centres in blocks: Waux (primitive and AO) within a fifth of max_memory
+        nc = max(1, min(natm, int(max_memory * .2e6 / (3 * (npao * npao + nao * nao) * 8))))
+        Wrows = None
+        for c0 in range(0, natm, nc):
+            c1 = min(natm, c0 + nc)
+            Wr, Waux = direct.deriv_w(dfit, c0, c1)
+            if Wrows is None:
+                Wrows = Wr
+            Wr = None
+            for C in range(c0, c1):
+                V = Waux[C - c0]                                   # (V + V^T) C_occ
+                vj1c[C] += lib.dot(V.reshape(3 * nao, nao), occ).reshape(3, nao, nocc)
+                for x in range(3):
+                    vj1c[C, x] += lib.dot(V[x].T, occ)
+            Waux = None
+        aoslices = mol.aoslice_by_atom()
+        for ia in range(natm):                                     # the i-derivative rows of atom A
+            p0, p1 = aoslices[ia][2:]
+            R = numpy.ascontiguousarray(Wrows[:, p0:p1])
+            vj1c[ia, :, p0:p1] += lib.dot(R.reshape(-1, nao), occ).reshape(3, p1 - p0, nocc)
+            for x in range(3):
+                vj1c[ia, x] += lib.dot(R[x].T, occ[p0:p1])
+        Wrows = None
+    elif blocked:
         occ = numpy.ascontiguousarray(occ)
         nocc = occ.shape[1]
         vj1c = numpy.zeros((natm, 3, nao, nocc))
@@ -1132,6 +1185,10 @@ def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS
                 k1 = min(natm * 3, k0 + kc)
                 T = lib.unpack_tril(numpy.ascontiguousarray(lib.dot(cderi.T, U[:, k0:k1]).T))
                 vf[k0:k1] += lib.dot(T.reshape(-1, nao), occ).reshape(k1 - k0, nao, nocc)
+        elif direct is not None:
+            # J of each fitted vector by the direct engine (no three-centre tensor)
+            for k in range(natm * 3):
+                vf[k] += lib.dot(direct.get_vj_fit(numpy.ascontiguousarray(Z[:, k])), occ)
         else:
             T = numpy.zeros((npair, natm * 3))
             for k0_, k1_, _ in aux_ranges:
@@ -1164,6 +1221,7 @@ def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS
     return hess, vj1
 
 
+RIJ_DERIV_DIRECT = True  # ri_j_deriv's three-centre Y and W (Hessian, occupied Fock1 calls) by socutils.scf.rij_direct
 RIJ_GRAD_DIRECT = True  # ri_j_grad by socutils.scf.rij_direct (no three-centre integrals) when available
 RIJ_GRAD_MD = True      # ri_j_grad's three-centre part by the McMurchie-Davidson J engine (lib/vhf/md_j.c)
 
@@ -1374,8 +1432,9 @@ def _fock1(hessobj, dm0, with_k, occ=None):
     max_memory = max(1000, mf.max_memory - lib.current_memory()[0])
     if _df_mode(mf) is None:
         return fock1_jk(mol, dm0, with_k=with_k, max_memory=max_memory)
-    r = ri_j_deriv(mol, _df_auxmol(mf), dm0, with_hess=False, max_memory=max_memory, cderi=_rij_cderi(mf),
-                   occ=occ)
+    eng = _rij_engine(mf)
+    r = ri_j_deriv(mol, eng.auxmol if eng is not None else _df_auxmol(mf), dm0, with_hess=False,
+                   max_memory=max_memory, cderi=_rij_cderi(mf), occ=occ, engine=eng)
     if r is None:
         return None
     vk = None

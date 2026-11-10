@@ -183,6 +183,48 @@ class RIJDirect:
             ctypes.c_double(self.far_eps), *self._args())
         return gbra, gaux
 
+    def deriv_y(self, dm):
+        '''Y^xi_P = sum_ij D_ij d(ij|P)/dR_xi (natm * 3, naux) of a symmetric dm, the bra atoms by the
+        derivative densities, the auxiliary centres by translational invariance; auxmol's atoms those
+        of mol'''
+        dmp = numpy.ascontiguousarray(self.c.dot(self.c.dot(dm).T))
+        natm = self.pmol.natm
+        nx = self.hoff[-1]
+        Xh = numpy.empty((natm * 3, nx))
+        self.libv.SOCVHFrij_direct_deriv_y(
+            Xh.ctypes.data_as(ctypes.c_void_p), dmp.ctypes.data_as(ctypes.c_void_p),
+            self.qcond.ctypes.data_as(ctypes.c_void_p), ctypes.c_double(self.tol),
+            ctypes.c_double(self.qaux.max()), ctypes.c_double(self.far_eps), *self._args())
+        Y = numpy.asarray(self.AT.dot(Xh.T).T).reshape(natm, 3, -1)
+        tot = Y.sum(axis=0)                                   # (3, naux): -1 x the auxiliary centres' part
+        for ia, (p0, p1) in enumerate(self.auxmol.aoslice_by_atom()[:, 2:]):
+            Y[ia, :, p0:p1] -= tot[:, p0:p1]
+        return Y.reshape(natm * 3, -1)
+
+    def deriv_w(self, dfit, c0=0, c1=0):
+        '''(Wrows (3, nao, nao) = sum_P (d_x i j|P) d_P (derivative on the first function), Waux (c1 - c0, 3,
+        nao, nao) with Waux + Waux^T = sum_{P in C} d(ij|P)/dC_x d_P for the auxiliary centres c0 <= C < c1,
+        or None if c1 <= c0)'''
+        h = numpy.ascontiguousarray(self.A.dot(dfit))
+        npao = self.c.shape[0]
+        nc = max(0, c1 - c0)
+        Wp = numpy.zeros((3, npao, npao))
+        Wa = numpy.zeros((nc, 3, npao, npao)) if nc else None
+        hmax = float(abs(self.qaux * dfit).max())
+        self.libv.SOCVHFrij_direct_deriv_w(
+            Wp.ctypes.data_as(ctypes.c_void_p), Wa.ctypes.data_as(ctypes.c_void_p) if nc else None,
+            ctypes.c_int(c0), ctypes.c_int(c1), h.ctypes.data_as(ctypes.c_void_p),
+            self.qcond.ctypes.data_as(ctypes.c_void_p), ctypes.c_double(self.tol), ctypes.c_double(hmax),
+            ctypes.c_double(self.far_eps), *self._args())
+
+        def to_ao(w):
+            return numpy.asarray(self.cT.dot(numpy.asarray(self.cT.dot(w.T)).T))   # c^T w c
+        Wrows = numpy.array([to_ao(w) for w in Wp])
+        Waux = None
+        if nc:
+            Waux = numpy.array([[to_ao(w) for w in wc] for wc in Wa])
+        return Wrows, Waux
+
     def grad(self, dm, dfit=None):
         '''the RIJ Coulomb gradient d/dR 1/2 rho^T M^-1 rho (natm, 3), auxiliary-basis response included
         (pyscf's auxbasis_response): g = d . rho^xi - 1/2 d M^xi d, d = M^-1 rho; auxmol's atoms
