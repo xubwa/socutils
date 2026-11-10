@@ -56,6 +56,10 @@ void zmr_sigma_det(int norb, int nelec, int64_t dim, const double complex *h1,
 void zmr_w_ccvv(const double complex *bvc, int64_t ldvc, int64_t naux, int64_t nv, int64_t nc,
                 const double *ev, const double *ec, const double *d, int64_t nd,
                 int mode, double *w);
+void zmr_w_ccvv_pairs(const double complex *bvc, int64_t ldvc, int64_t naux, int64_t nv,
+                      int64_t nc, const double *ev, const double *ec, const double *d,
+                      int64_t nd, int64_t npair, const int64_t *ti, const int64_t *tj,
+                      const double *tw, int mode, double *w);
 void zmr_w_aavv(const double complex *bva, int64_t ldva, int64_t naux, int64_t nv, int64_t na,
                 const double *ev, const double *d, int64_t nd, double complex *w);
 /* the same for spin-restricted orbitals (real, spin-free classes) */

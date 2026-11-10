@@ -122,10 +122,12 @@ def _rows(b):
     return b, b.strides[0] // 16
 
 
-def w_ccvv(bvc, ev, ec, d, mode=-1):
+def w_ccvv(bvc, ev, ec, d, mode=-1, pairs=None):
     '''W[m] = sum_{i<j, a<b} |(ai|bj) - (aj|bi)|^2 / (d[m] + e_a + e_b - e_i - e_j)
     from bvc[L, a, i]; None without libzmr.  mode: 1 one thread per pair
-    (i, j), 0 threads inside a pair, -1 chosen from the number of pairs.'''
+    (i, j), 0 threads inside a pair, -1 chosen from the number of pairs.
+    pairs = (i, j, weight): the sum over these pairs i < j only, each with its weight
+    (one pair of every Kramers-related couple, weight 2).'''
     z = _lib.zmr()
     if z is None or not hasattr(z, 'zmr_w_ccvv'):
         return None
@@ -133,6 +135,19 @@ def w_ccvv(bvc, ev, ec, d, mode=-1):
     bvc, ld = _rows(bvc)
     ev, ec, d = _w_args(ev, ec, d)
     w = numpy.empty(len(d))
+    if pairs is not None:
+        if not hasattr(z, 'zmr_w_ccvv_pairs'):
+            return None
+        ti = numpy.ascontiguousarray(pairs[0], dtype=numpy.int64)
+        tj = numpy.ascontiguousarray(pairs[1], dtype=numpy.int64)
+        tw = numpy.ascontiguousarray(pairs[2], dtype=numpy.float64)
+        if not (len(ti) == len(tj) == len(tw)) or numpy.any(ti >= tj):
+            raise ValueError('w_ccvv: pairs i < j with one weight each')
+        z.zmr_w_ccvv_pairs(_p(bvc), ctypes.c_int64(ld), ctypes.c_int64(naux),
+                           ctypes.c_int64(nv), ctypes.c_int64(nc), _p(ev), _p(ec), _p(d),
+                           ctypes.c_int64(len(d)), ctypes.c_int64(len(ti)), _p(ti), _p(tj),
+                           _p(tw), ctypes.c_int(mode), _p(w))
+        return w
     z.zmr_w_ccvv(_p(bvc), ctypes.c_int64(ld), ctypes.c_int64(naux), ctypes.c_int64(nv),
                  ctypes.c_int64(nc), _p(ev), _p(ec), _p(d), ctypes.c_int64(len(d)),
                  ctypes.c_int(mode), _p(w))

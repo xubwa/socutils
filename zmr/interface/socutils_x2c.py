@@ -122,6 +122,12 @@ def _with_sectors(eris, mf, mo_coeff, nfrozen):
     if orbsym is not None and group is not None:
         eris.orbsym = numpy.asarray(orbsym)[nfrozen:nfrozen + eris.spaces.nmo].copy()
         eris.doublegroupname = group
+    # Kramers pairs of the correlated orbitals (zmr.kramers), if every one has its
+    # partner among them
+    from socutils.zmr.kramers import TimeReversal
+    c = numpy.asarray(mo_coeff)[:, nfrozen:nfrozen + eris.spaces.nmo]
+    if c.shape[0] == mf.mol.nao_2c():
+        eris.time_reversal = TimeReversal.from_orbitals(mf.mol, c)
     return eris
 
 

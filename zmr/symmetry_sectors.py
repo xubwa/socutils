@@ -79,10 +79,14 @@ def column_sectors(u, orbsym, tol=TOL):
 
 def keep(new, old, u):
     '''Give the integral source new (orbitals phi_i of old rotated by u) the sectors of
-    its orbitals; drops the symmetry if u mixes sectors.  Returns new.'''
+    its orbitals (and the time reversal of zmr.kramers); drops the symmetry if u mixes
+    sectors (the pairs if u does not keep them).  Returns new.'''
     sym = column_sectors(u, getattr(old, 'orbsym', None))
     new.orbsym = sym
     new.doublegroupname = getattr(old, 'doublegroupname', None) if sym is not None else None
+    # and the Kramers pairs (zmr.kramers)
+    from socutils.zmr import kramers
+    kramers.keep(new, old, u)
     return new
 
 

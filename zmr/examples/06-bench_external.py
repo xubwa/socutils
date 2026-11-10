@@ -13,7 +13,8 @@ versions of zmr (set PYTHONPATH to the checkout to be timed):
     PYTHONPATH=~/apps/zmr-dev  python 06-bench_external.py --nvirt 1000 --ncore 30
 
 Counts are spin-orbitals.  The energies of the two runs must agree (same
-seed); the NEVPT2 output has the wall time of every step.
+seed); the NEVPT2 output has the wall time of every step.  --kramers makes the
+orbitals Kramers pairs (time reversal used by the external sums).
 '''
 import argparse
 import resource
@@ -34,6 +35,9 @@ parser.add_argument('--nstate', type=int, default=3)
 parser.add_argument('--naux', type=int, default=0, help='vectors (default 2.5 x orbitals)')
 parser.add_argument('--e0', default='state')
 parser.add_argument('--seed', type=int, default=0)
+parser.add_argument('--kramers', action='store_true',
+                    help='Kramers-paired orbitals (time-reversal symmetric one-electron '
+                    'operator), so that the external sums use one of every pair of labels')
 args = parser.parse_args()
 
 nso = args.ncore + args.nact + args.nvirt
@@ -61,7 +65,23 @@ eps = numpy.concatenate([numpy.linspace(-3.0, -1.0, args.ncore),
                          numpy.linspace(-0.15, 0.15, args.nact),
                          numpy.geomspace(1.0, 40.0, args.nvirt)])
 # a random unitary coefficient matrix in the (alpha, beta) x spatial basis
-c = numpy.linalg.qr(rng.normal(size=(nso, nso)) + 1j * rng.normal(size=(nso, nso)))[0]
+if args.kramers:
+    # T|alpha mu> = |beta mu>, T|beta mu> = -|alpha mu>: the coefficients are the
+    # Kramers-paired eigenvectors of a random time-reversal symmetric matrix, and the
+    # orbital energies come in equal pairs
+    from socutils.zmr import kramers
+    t_ao = kramers.TimeReversal(numpy.concatenate([numpy.arange(nao, nso), numpy.arange(nao)]),
+                                numpy.concatenate([numpy.ones(nao), -numpy.ones(nao)]))
+    th = t_ao.matrix()
+    x = rng.normal(size=(nso, nso)) + 1j * rng.normal(size=(nso, nso))
+    x = x + x.conj().T
+    c = kramers.paired_eigh(0.5 * (x + th @ x.conj() @ th.conj().T), t_ao)[1]
+    for n in (args.ncore, args.nact, args.nvirt):
+        if n % 2:
+            raise SystemExit('--kramers needs even numbers of core, active and virtual orbitals')
+    eps = eps.reshape(-1, 2).mean(axis=1).repeat(2)
+else:
+    c = numpy.linalg.qr(rng.normal(size=(nso, nso)) + 1j * rng.normal(size=(nso, nso)))[0]
 hcore = c @ numpy.diag(eps) @ c.conj().T
 
 t0 = time.time()
@@ -73,6 +93,9 @@ from socutils.zmr.spaces import OrbitalSpaces
 
 source = CholeskyAO2MO(cderi, nao, lambda x: (x[:nao], x[nao:]))
 eris = MOERIs(0.0, hcore, c, OrbitalSpaces(args.ncore, args.nact, args.nvirt), source, source.veff)
+if args.kramers:
+    eris.time_reversal = t_ao.rotated(c)
+    assert eris.time_reversal is not None
 act = ActiveSpace.from_eris(eris)
 e_cas, civecs = act.solve(args.nelec, args.nstate)
 print('BENCH %d core + %d active + %d virtual spin-orbitals, %d vectors, %d states; '

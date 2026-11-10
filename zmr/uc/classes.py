@@ -187,6 +187,48 @@ def _all(nact, n):
     return numpy.indices((nact,) * n).reshape(n, -1).T
 
 
+def kramers_pairs(ctx):
+    '''(i, j, weight) of the core pairs i < j to sum over when the core orbitals are
+    Kramers pairs (eris.time_reversal) with equal energies: (i, j) and (Ti, Tj) give the
+    same terms of the external sums (|v|^2 and the denominator), so one of the two is
+    taken with weight 2 ((i, Ti) with weight 1).  None without the pairs: all pairs.'''
+    tr = getattr(ctx.eris, 'time_reversal', None)
+    nc = ctx.sp.ncore
+    if tr is None or nc < 2:
+        return None
+    sp = ctx.sp
+    core = tr.subset(numpy.arange(nc))
+    virt = tr.subset(numpy.arange(sp.ncore + sp.nact, sp.nmo))
+    if core is None or virt is None or len(ctx.eps_c) != nc or len(ctx.eps_v) != sp.nvirt:
+        return None
+    # the core and virtual spaces are time-reversal invariant with equal energies of the
+    # partners (the averaged Fock matrix commutes with T)
+    for e, part in ((ctx.eps_c, core.partner), (ctx.eps_v, virt.partner)):
+        if len(e) and abs(e - e[part]).max() > 1e-8 * max(1.0, abs(e).max()):
+            return None
+    p = core.partner
+    ii, jj = _pairs(nc)
+    a, b = numpy.minimum(p[ii], p[jj]), numpy.maximum(p[ii], p[jj])
+    key, image = ii * nc + jj, a * nc + b
+    keep = key <= image
+    return ii[keep], jj[keep], numpy.where(key[keep] == image[keep], 1.0, 2.0)
+
+
+def kramers_core_half(ctx):
+    '''(core orbitals of one member of every Kramers pair, Theta of the active
+    orbitals) when core, active and virtual orbitals are Kramers pairs (energies of the
+    partners equal): the external sum of a label with core orbital Ti is Theta conj(.)
+    Theta^+ of that with i.  None without the pairs.'''
+    if kramers_pairs(ctx) is None:
+        return None
+    sp = ctx.sp
+    tr = ctx.eris.time_reversal
+    act = tr.subset(numpy.arange(sp.ncore, sp.ncore + sp.nact))
+    if act is None:
+        return None
+    return tr.subset(numpy.arange(sp.ncore)).representatives(), act.matrix()
+
+
 class PerturberClass:
     name = None
     dn = 0
@@ -234,10 +276,12 @@ class CCVV(PerturberClass):
         if nc < 2 or nv < 2:
             return None
         from socutils.zmr.lib import kernels
+        pairs = kramers_pairs(ctx)
         return _external(
             self, ctx, nc * (nc - 1) // 2 * (nv * (nv - 1) // 2),
             _two_smallest(ctx.eps_v) - _two_largest(ctx.eps_c),
-            lambda d: _as3(kernels.w_ccvv(ctx.eris.cd_block('vc'), ctx.eps_v, ctx.eps_c, d)))
+            lambda d: _as3(kernels.w_ccvv(ctx.eris.cd_block('vc'), ctx.eps_v, ctx.eps_c, d,
+                                          pairs=pairs)))
 
     def operators(self, nact):
         return [((), _all(nact, 0))]
@@ -295,10 +339,23 @@ class CAVV(PerturberClass):
         if nc < 1 or nv < 2 or ctx.sp.nact < 1:
             return None
         from socutils.zmr.lib import kernels
+        half = kramers_core_half(ctx)
+
+        def kernel(d):
+            if half is None:
+                return kernels.w_cavv(ctx.eris.cd_block('vc'), ctx.eris.cd_block('va'),
+                                      ctx.eps_v, ctx.eps_c, d)
+            # the core orbitals of one member of every Kramers pair; their partners give
+            # Theta conj(W) Theta^+ (Theta: time reversal of the active orbitals)
+            idx, th = half
+            bvc = numpy.ascontiguousarray(ctx.eris.cd_block('vc')[:, :, idx])
+            w = kernels.w_cavv(bvc, ctx.eris.cd_block('va'), ctx.eps_v, ctx.eps_c[idx], d)
+            if w is None:
+                return None
+            return w + numpy.einsum('tx,mxy,uy->mtu', th, w.conj(), th.conj())
         return _external(
             self, ctx, nc * (nv * (nv - 1) // 2), _two_smallest(ctx.eps_v) - ctx.eps_c.max(),
-            lambda d: kernels.w_cavv(ctx.eris.cd_block('vc'), ctx.eris.cd_block('va'),
-                                     ctx.eps_v, ctx.eps_c, d))
+            kernel)
 
     def operators(self, nact):
         return [((False,), _all(nact, 1))]

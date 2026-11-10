@@ -113,13 +113,30 @@ static int outer_tasks(int64_t ntask, int mode)
         return 2 * ntask >= zmr_get_max_threads();
 }
 
-/* ccvv: tasks (i < j), v[ab] = (ai|bj) - (aj|bi), a < b; w[m] is real */
+/* ccvv: tasks (i < j), v[ab] = (ai|bj) - (aj|bi), a < b; w[m] is real.
+ * zmr_w_ccvv_pairs takes the pairs as a list ti[t] < tj[t] with weights tw[t] (e.g. one
+ * pair of each Kramers-related couple (i, j), (Ti, Tj) with weight 2); zmr_w_ccvv
+ * runs all pairs with weight 1. */
+void zmr_w_ccvv_pairs(const double complex *bvc, int64_t ldvc, int64_t naux, int64_t nv,
+                      int64_t nc, const double *ev, const double *ec, const double *d,
+                      int64_t nd, int64_t npair, const int64_t *ti, const int64_t *tj,
+                      const double *tw, int mode, double *w);
+
 void zmr_w_ccvv(const double complex *bvc, int64_t ldvc, int64_t naux, int64_t nv, int64_t nc,
                 const double *ev, const double *ec, const double *d, int64_t nd,
                 int mode, double *w)
 {
+        zmr_w_ccvv_pairs(bvc, ldvc, naux, nv, nc, ev, ec, d, nd, nc * (nc - 1) / 2, NULL,
+                         NULL, NULL, mode, w);
+}
+
+void zmr_w_ccvv_pairs(const double complex *bvc, int64_t ldvc, int64_t naux, int64_t nv,
+                      int64_t nc, const double *ev, const double *ec, const double *d,
+                      int64_t nd, int64_t npair, const int64_t *ti, const int64_t *tj,
+                      const double *tw, int mode, double *w)
+{
         memset(w, 0, sizeof(double) * nd);
-        int64_t ntask = nc * (nc - 1) / 2;
+        int64_t ntask = npair;
         if (ntask <= 0 || nv < 2 || nd == 0) {
                 return;
         }
@@ -132,10 +149,18 @@ void zmr_w_ccvv(const double complex *bvc, int64_t ldvc, int64_t naux, int64_t n
                 double *loc = calloc(nd, sizeof(double));
 #pragma omp for schedule(dynamic, 1)
                 for (int64_t task = 0; task < ntask; task++) {
-                        int64_t j = (int64_t)((1.0 + sqrt(1.0 + 8.0 * task)) / 2.0);
-                        while (j * (j - 1) / 2 > task) j--;
-                        while ((j + 1) * j / 2 <= task) j++;
-                        int64_t i = task - j * (j - 1) / 2;
+                        int64_t i, j;
+                        double wt = 1.0;
+                        if (ti != NULL) {
+                                i = ti[task];
+                                j = tj[task];
+                                wt = tw[task];
+                        } else {
+                                j = (int64_t)((1.0 + sqrt(1.0 + 8.0 * task)) / 2.0);
+                                while (j * (j - 1) / 2 > task) j--;
+                                while ((j + 1) * j / 2 <= task) j++;
+                                i = task - j * (j - 1) / 2;
+                        }
                         core_slice(bvc, ldvc, naux, nv, nc, i, bi);
                         core_slice(bvc, ldvc, naux, nv, nc, j, bj);
                         product_t(naux, bi, nv, bj, nv, nv, m);
@@ -147,7 +172,8 @@ void zmr_w_ccvv(const double complex *bvc, int64_t ldvc, int64_t naux, int64_t n
                                 for (int64_t a = 0; a < nv; a++) {
                                         for (int64_t b = a + 1; b < nv; b++) {
                                                 double complex v = m[a * nv + b] - m[b * nv + a];
-                                                double x = creal(v) * creal(v) + cimag(v) * cimag(v);
+                                                double x = wt * (creal(v) * creal(v)
+                                                                 + cimag(v) * cimag(v));
                                                 double del = ev[a] + ev[b] + e0;
 #pragma omp simd
                                                 for (int64_t k = 0; k < nd; k++) {

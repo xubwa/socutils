@@ -67,12 +67,28 @@ def quasi_canonicalize(eris, gamma_act):
     eps = {}
     for label in 'cv':
         s = sp.slice(label)
-        # within the double-group sectors of the orbitals, if any
-        e, v, _ = symmetry_sectors.eigh(f[s, s], _sectors(eris, label))
+        e, v = _eigh_block(eris, f[s, s], label)
         u[s, s] = v
         eps[label] = e
     new = eris.rotate(u)
     return QuasiCanonical(new, u.conj().T @ f @ u, eps['c'], eps['v'], u)
+
+
+def _eigh_block(eris, h, label):
+    '''(e, v) of the block h of the space label: within the double-group sectors of
+    its orbitals, if any, and as Kramers pairs (zmr.kramers.paired_eigh) if the
+    orbitals are paired and h is time-reversal symmetric.'''
+    tr = getattr(eris, 'time_reversal', None)
+    s = eris.spaces.slice(label)
+    if tr is not None and s.stop > s.start:
+        from socutils.zmr import kramers
+        sub = tr.subset(numpy.arange(s.start, s.stop))
+        if sub is not None:
+            res = kramers.paired_eigh(h, sub, _sectors(eris, label))
+            if res is not None:
+                return res
+    e, v, _ = symmetry_sectors.eigh(h, _sectors(eris, label))
+    return e, v
 
 
 def canonical_core(eris, gamma_act):

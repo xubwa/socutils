@@ -43,6 +43,9 @@ class ERIsBase:
     active_charges = None
     orbsym = None
     doublegroupname = None
+    # zmr.kramers.TimeReversal of the orbitals (None: no Kramers pairs are used); kept
+    # by rotate and with_virtuals as long as the rotation keeps the pairs
+    time_reversal = None
     dtype = numpy.complex128
 
     def __getattr__(self, name):
