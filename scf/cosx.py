@@ -227,7 +227,10 @@ class COSX(lib.StreamObject):
         tp_ = logger.perf_counter()
         PROFILE['kernel'] = PROFILE.get('kernel', 0) + tp_ - tk_
         if multi:
-            vk = numpy.ascontiguousarray(vkt[:, :, :nset].transpose(2, 0, 1))
+            vk = numpy.empty((nset, nao, nao))
+            libdft.SOCDFTcosx_untranspose(vk.ctypes.data_as(ctypes.c_void_p), vkt.ctypes.data_as(ctypes.c_void_p),
+                                          ctypes.c_int(nao), ctypes.c_int(nset), ctypes.c_int(nset8))
+            vkt = None
         tq_ = logger.perf_counter()
         PROFILE['untranspose'] = PROFILE.get('untranspose', 0) + tq_ - tp_
         if self._proj is not None:
@@ -235,7 +238,8 @@ class COSX(lib.StreamObject):
         tp_ = logger.perf_counter()
         PROFILE['proj'] = PROFILE.get('proj', 0) + tp_ - tq_
         if hermi == 1:
-            vk = (vk + vk.transpose(0, 2, 1)) * .5
+            vk = lib.hermi_sum(vk, axes=(0, 2, 1), inplace=True)
+            vk *= .5
         PROFILE['sym'] = PROFILE.get('sym', 0) + logger.perf_counter() - tp_
         logger.timer_debug1(self, 'COSX K (%d densities)' % nset, *t0)
         return vk.reshape(shape)
