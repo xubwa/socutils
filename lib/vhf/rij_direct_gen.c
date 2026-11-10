@@ -2543,6 +2543,3054 @@ static void rjy_4_4(const double *R0, const double *hq, double *vp)
         vp[34] += R0[150] * hq[0] + R0[151] * hq[1] + R0[152] * hq[2] + R0[153] * hq[3] + R0[154] * hq[4] + R0[155] * hq[5] + R0[156] * hq[6] + R0[157] * hq[7] + R0[158] * hq[8] + R0[159] * hq[9] + R0[160] * hq[10] + R0[161] * hq[11] + R0[162] * hq[12] + R0[163] * hq[13] + R0[164] * hq[14];
 }
 
+#define RJ_NL 8
+static void nearv_0(double *restrict r, double p, const double *restrict q, const double *restrict r2)
+{
+        int l;
+        const double *bt = &boys_tab[0][0];
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                const double pq = p * q[l], s = p + q[l], theta = pq / s, t = theta * r2[l];
+                const int k = (int)(t * 20 + .5);
+                const double dl = k * .05 - t;
+                const int o = k * BOYS_MT + 0;
+                const double f0 = bt[o] + dl * (bt[o + 1] + dl * .5 * (bt[o + 2] + dl * (1. / 3) * (bt[o + 3] + dl * .25 * (bt[o + 4] + dl * .2 * (bt[o + 5] + dl * (1. / 6) * bt[o + 6])))));
+                double g = PI_FAC / (pq * sqrt(s));
+                r[0 * RJ_NL + l] = g * f0;
+        }
+}
+
+static void nearv_1(double *restrict r, double p, const double *restrict q, const double *restrict r2)
+{
+        int l;
+        const double *bt = &boys_tab[0][0];
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                const double pq = p * q[l], s = p + q[l], theta = pq / s, t = theta * r2[l];
+                const int k = (int)(t * 20 + .5);
+                const double dl = k * .05 - t;
+                const int o = k * BOYS_MT + 1;
+                const double f1 = bt[o] + dl * (bt[o + 1] + dl * .5 * (bt[o + 2] + dl * (1. / 3) * (bt[o + 3] + dl * .25 * (bt[o + 4] + dl * .2 * (bt[o + 5] + dl * (1. / 6) * bt[o + 6])))));
+                const double et = boys_exp[k] * (1 + dl * (1 + dl * .5 * (1 + dl * (1. / 3) * (1 + dl * .25 * (1 + dl * .2 * (1 + dl * (1. / 6)))))));
+                const double f0 = (2 * t * f1 + et) * 1;
+                const double m2t = -2 * theta;
+                double g = PI_FAC / (pq * sqrt(s));
+                r[0 * RJ_NL + l] = g * f0;
+                g *= m2t;
+                r[1 * RJ_NL + l] = g * f1;
+        }
+}
+
+static void nearv_2(double *restrict r, double p, const double *restrict q, const double *restrict r2)
+{
+        int l;
+        const double *bt = &boys_tab[0][0];
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                const double pq = p * q[l], s = p + q[l], theta = pq / s, t = theta * r2[l];
+                const int k = (int)(t * 20 + .5);
+                const double dl = k * .05 - t;
+                const int o = k * BOYS_MT + 2;
+                const double f2 = bt[o] + dl * (bt[o + 1] + dl * .5 * (bt[o + 2] + dl * (1. / 3) * (bt[o + 3] + dl * .25 * (bt[o + 4] + dl * .2 * (bt[o + 5] + dl * (1. / 6) * bt[o + 6])))));
+                const double et = boys_exp[k] * (1 + dl * (1 + dl * .5 * (1 + dl * (1. / 3) * (1 + dl * .25 * (1 + dl * .2 * (1 + dl * (1. / 6)))))));
+                const double f1 = (2 * t * f2 + et) * 0.33333333333333331;
+                const double f0 = (2 * t * f1 + et) * 1;
+                const double m2t = -2 * theta;
+                double g = PI_FAC / (pq * sqrt(s));
+                r[0 * RJ_NL + l] = g * f0;
+                g *= m2t;
+                r[1 * RJ_NL + l] = g * f1;
+                g *= m2t;
+                r[2 * RJ_NL + l] = g * f2;
+        }
+}
+
+static void nearv_3(double *restrict r, double p, const double *restrict q, const double *restrict r2)
+{
+        int l;
+        const double *bt = &boys_tab[0][0];
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                const double pq = p * q[l], s = p + q[l], theta = pq / s, t = theta * r2[l];
+                const int k = (int)(t * 20 + .5);
+                const double dl = k * .05 - t;
+                const int o = k * BOYS_MT + 3;
+                const double f3 = bt[o] + dl * (bt[o + 1] + dl * .5 * (bt[o + 2] + dl * (1. / 3) * (bt[o + 3] + dl * .25 * (bt[o + 4] + dl * .2 * (bt[o + 5] + dl * (1. / 6) * bt[o + 6])))));
+                const double et = boys_exp[k] * (1 + dl * (1 + dl * .5 * (1 + dl * (1. / 3) * (1 + dl * .25 * (1 + dl * .2 * (1 + dl * (1. / 6)))))));
+                const double f2 = (2 * t * f3 + et) * 0.20000000000000001;
+                const double f1 = (2 * t * f2 + et) * 0.33333333333333331;
+                const double f0 = (2 * t * f1 + et) * 1;
+                const double m2t = -2 * theta;
+                double g = PI_FAC / (pq * sqrt(s));
+                r[0 * RJ_NL + l] = g * f0;
+                g *= m2t;
+                r[1 * RJ_NL + l] = g * f1;
+                g *= m2t;
+                r[2 * RJ_NL + l] = g * f2;
+                g *= m2t;
+                r[3 * RJ_NL + l] = g * f3;
+        }
+}
+
+static void nearv_4(double *restrict r, double p, const double *restrict q, const double *restrict r2)
+{
+        int l;
+        const double *bt = &boys_tab[0][0];
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                const double pq = p * q[l], s = p + q[l], theta = pq / s, t = theta * r2[l];
+                const int k = (int)(t * 20 + .5);
+                const double dl = k * .05 - t;
+                const int o = k * BOYS_MT + 4;
+                const double f4 = bt[o] + dl * (bt[o + 1] + dl * .5 * (bt[o + 2] + dl * (1. / 3) * (bt[o + 3] + dl * .25 * (bt[o + 4] + dl * .2 * (bt[o + 5] + dl * (1. / 6) * bt[o + 6])))));
+                const double et = boys_exp[k] * (1 + dl * (1 + dl * .5 * (1 + dl * (1. / 3) * (1 + dl * .25 * (1 + dl * .2 * (1 + dl * (1. / 6)))))));
+                const double f3 = (2 * t * f4 + et) * 0.14285714285714285;
+                const double f2 = (2 * t * f3 + et) * 0.20000000000000001;
+                const double f1 = (2 * t * f2 + et) * 0.33333333333333331;
+                const double f0 = (2 * t * f1 + et) * 1;
+                const double m2t = -2 * theta;
+                double g = PI_FAC / (pq * sqrt(s));
+                r[0 * RJ_NL + l] = g * f0;
+                g *= m2t;
+                r[1 * RJ_NL + l] = g * f1;
+                g *= m2t;
+                r[2 * RJ_NL + l] = g * f2;
+                g *= m2t;
+                r[3 * RJ_NL + l] = g * f3;
+                g *= m2t;
+                r[4 * RJ_NL + l] = g * f4;
+        }
+}
+
+static void nearv_5(double *restrict r, double p, const double *restrict q, const double *restrict r2)
+{
+        int l;
+        const double *bt = &boys_tab[0][0];
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                const double pq = p * q[l], s = p + q[l], theta = pq / s, t = theta * r2[l];
+                const int k = (int)(t * 20 + .5);
+                const double dl = k * .05 - t;
+                const int o = k * BOYS_MT + 5;
+                const double f5 = bt[o] + dl * (bt[o + 1] + dl * .5 * (bt[o + 2] + dl * (1. / 3) * (bt[o + 3] + dl * .25 * (bt[o + 4] + dl * .2 * (bt[o + 5] + dl * (1. / 6) * bt[o + 6])))));
+                const double et = boys_exp[k] * (1 + dl * (1 + dl * .5 * (1 + dl * (1. / 3) * (1 + dl * .25 * (1 + dl * .2 * (1 + dl * (1. / 6)))))));
+                const double f4 = (2 * t * f5 + et) * 0.1111111111111111;
+                const double f3 = (2 * t * f4 + et) * 0.14285714285714285;
+                const double f2 = (2 * t * f3 + et) * 0.20000000000000001;
+                const double f1 = (2 * t * f2 + et) * 0.33333333333333331;
+                const double f0 = (2 * t * f1 + et) * 1;
+                const double m2t = -2 * theta;
+                double g = PI_FAC / (pq * sqrt(s));
+                r[0 * RJ_NL + l] = g * f0;
+                g *= m2t;
+                r[1 * RJ_NL + l] = g * f1;
+                g *= m2t;
+                r[2 * RJ_NL + l] = g * f2;
+                g *= m2t;
+                r[3 * RJ_NL + l] = g * f3;
+                g *= m2t;
+                r[4 * RJ_NL + l] = g * f4;
+                g *= m2t;
+                r[5 * RJ_NL + l] = g * f5;
+        }
+}
+
+static void nearv_6(double *restrict r, double p, const double *restrict q, const double *restrict r2)
+{
+        int l;
+        const double *bt = &boys_tab[0][0];
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                const double pq = p * q[l], s = p + q[l], theta = pq / s, t = theta * r2[l];
+                const int k = (int)(t * 20 + .5);
+                const double dl = k * .05 - t;
+                const int o = k * BOYS_MT + 6;
+                const double f6 = bt[o] + dl * (bt[o + 1] + dl * .5 * (bt[o + 2] + dl * (1. / 3) * (bt[o + 3] + dl * .25 * (bt[o + 4] + dl * .2 * (bt[o + 5] + dl * (1. / 6) * bt[o + 6])))));
+                const double et = boys_exp[k] * (1 + dl * (1 + dl * .5 * (1 + dl * (1. / 3) * (1 + dl * .25 * (1 + dl * .2 * (1 + dl * (1. / 6)))))));
+                const double f5 = (2 * t * f6 + et) * 0.090909090909090912;
+                const double f4 = (2 * t * f5 + et) * 0.1111111111111111;
+                const double f3 = (2 * t * f4 + et) * 0.14285714285714285;
+                const double f2 = (2 * t * f3 + et) * 0.20000000000000001;
+                const double f1 = (2 * t * f2 + et) * 0.33333333333333331;
+                const double f0 = (2 * t * f1 + et) * 1;
+                const double m2t = -2 * theta;
+                double g = PI_FAC / (pq * sqrt(s));
+                r[0 * RJ_NL + l] = g * f0;
+                g *= m2t;
+                r[1 * RJ_NL + l] = g * f1;
+                g *= m2t;
+                r[2 * RJ_NL + l] = g * f2;
+                g *= m2t;
+                r[3 * RJ_NL + l] = g * f3;
+                g *= m2t;
+                r[4 * RJ_NL + l] = g * f4;
+                g *= m2t;
+                r[5 * RJ_NL + l] = g * f5;
+                g *= m2t;
+                r[6 * RJ_NL + l] = g * f6;
+        }
+}
+
+static void nearv_7(double *restrict r, double p, const double *restrict q, const double *restrict r2)
+{
+        int l;
+        const double *bt = &boys_tab[0][0];
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                const double pq = p * q[l], s = p + q[l], theta = pq / s, t = theta * r2[l];
+                const int k = (int)(t * 20 + .5);
+                const double dl = k * .05 - t;
+                const int o = k * BOYS_MT + 7;
+                const double f7 = bt[o] + dl * (bt[o + 1] + dl * .5 * (bt[o + 2] + dl * (1. / 3) * (bt[o + 3] + dl * .25 * (bt[o + 4] + dl * .2 * (bt[o + 5] + dl * (1. / 6) * bt[o + 6])))));
+                const double et = boys_exp[k] * (1 + dl * (1 + dl * .5 * (1 + dl * (1. / 3) * (1 + dl * .25 * (1 + dl * .2 * (1 + dl * (1. / 6)))))));
+                const double f6 = (2 * t * f7 + et) * 0.076923076923076927;
+                const double f5 = (2 * t * f6 + et) * 0.090909090909090912;
+                const double f4 = (2 * t * f5 + et) * 0.1111111111111111;
+                const double f3 = (2 * t * f4 + et) * 0.14285714285714285;
+                const double f2 = (2 * t * f3 + et) * 0.20000000000000001;
+                const double f1 = (2 * t * f2 + et) * 0.33333333333333331;
+                const double f0 = (2 * t * f1 + et) * 1;
+                const double m2t = -2 * theta;
+                double g = PI_FAC / (pq * sqrt(s));
+                r[0 * RJ_NL + l] = g * f0;
+                g *= m2t;
+                r[1 * RJ_NL + l] = g * f1;
+                g *= m2t;
+                r[2 * RJ_NL + l] = g * f2;
+                g *= m2t;
+                r[3 * RJ_NL + l] = g * f3;
+                g *= m2t;
+                r[4 * RJ_NL + l] = g * f4;
+                g *= m2t;
+                r[5 * RJ_NL + l] = g * f5;
+                g *= m2t;
+                r[6 * RJ_NL + l] = g * f6;
+                g *= m2t;
+                r[7 * RJ_NL + l] = g * f7;
+        }
+}
+
+static void nearv_8(double *restrict r, double p, const double *restrict q, const double *restrict r2)
+{
+        int l;
+        const double *bt = &boys_tab[0][0];
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                const double pq = p * q[l], s = p + q[l], theta = pq / s, t = theta * r2[l];
+                const int k = (int)(t * 20 + .5);
+                const double dl = k * .05 - t;
+                const int o = k * BOYS_MT + 8;
+                const double f8 = bt[o] + dl * (bt[o + 1] + dl * .5 * (bt[o + 2] + dl * (1. / 3) * (bt[o + 3] + dl * .25 * (bt[o + 4] + dl * .2 * (bt[o + 5] + dl * (1. / 6) * bt[o + 6])))));
+                const double et = boys_exp[k] * (1 + dl * (1 + dl * .5 * (1 + dl * (1. / 3) * (1 + dl * .25 * (1 + dl * .2 * (1 + dl * (1. / 6)))))));
+                const double f7 = (2 * t * f8 + et) * 0.066666666666666666;
+                const double f6 = (2 * t * f7 + et) * 0.076923076923076927;
+                const double f5 = (2 * t * f6 + et) * 0.090909090909090912;
+                const double f4 = (2 * t * f5 + et) * 0.1111111111111111;
+                const double f3 = (2 * t * f4 + et) * 0.14285714285714285;
+                const double f2 = (2 * t * f3 + et) * 0.20000000000000001;
+                const double f1 = (2 * t * f2 + et) * 0.33333333333333331;
+                const double f0 = (2 * t * f1 + et) * 1;
+                const double m2t = -2 * theta;
+                double g = PI_FAC / (pq * sqrt(s));
+                r[0 * RJ_NL + l] = g * f0;
+                g *= m2t;
+                r[1 * RJ_NL + l] = g * f1;
+                g *= m2t;
+                r[2 * RJ_NL + l] = g * f2;
+                g *= m2t;
+                r[3 * RJ_NL + l] = g * f3;
+                g *= m2t;
+                r[4 * RJ_NL + l] = g * f4;
+                g *= m2t;
+                r[5 * RJ_NL + l] = g * f5;
+                g *= m2t;
+                r[6 * RJ_NL + l] = g * f6;
+                g *= m2t;
+                r[7 * RJ_NL + l] = g * f7;
+                g *= m2t;
+                r[8 * RJ_NL + l] = g * f8;
+        }
+}
+
+static void rjrv_0(double *restrict R0, const double *restrict r, const double *restrict X, const double *restrict Y, const double *restrict Z)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                const double r0_0 = r[0 * RJ_NL + l];
+                R0[0 * RJ_NL + l] = r0_0;
+        }
+}
+
+static void rjrv_1(double *restrict R0, const double *restrict r, const double *restrict X, const double *restrict Y, const double *restrict Z)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                const double r0_0 = r[0 * RJ_NL + l];
+                const double r1_0 = r[1 * RJ_NL + l];
+                const double r0_1 = Z[l] * r1_0;
+                const double r0_2 = Y[l] * r1_0;
+                const double r0_3 = X[l] * r1_0;
+                R0[0 * RJ_NL + l] = r0_0;
+                R0[1 * RJ_NL + l] = r0_1;
+                R0[2 * RJ_NL + l] = r0_2;
+                R0[3 * RJ_NL + l] = r0_3;
+        }
+}
+
+static void rjrv_2(double *restrict R0, const double *restrict r, const double *restrict X, const double *restrict Y, const double *restrict Z)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                const double r0_0 = r[0 * RJ_NL + l];
+                const double r1_0 = r[1 * RJ_NL + l];
+                const double r2_0 = r[2 * RJ_NL + l];
+                const double r0_1 = Z[l] * r1_0;
+                const double r1_1 = Z[l] * r2_0;
+                const double r0_2 = Y[l] * r1_0;
+                const double r1_2 = Y[l] * r2_0;
+                const double r0_3 = X[l] * r1_0;
+                const double r1_3 = X[l] * r2_0;
+                const double r0_4 = Z[l] * r1_1 + 1 * r1_0;
+                const double r0_5 = Y[l] * r1_1;
+                const double r0_6 = Y[l] * r1_2 + 1 * r1_0;
+                const double r0_7 = X[l] * r1_1;
+                const double r0_8 = X[l] * r1_2;
+                const double r0_9 = X[l] * r1_3 + 1 * r1_0;
+                R0[0 * RJ_NL + l] = r0_0;
+                R0[1 * RJ_NL + l] = r0_1;
+                R0[2 * RJ_NL + l] = r0_2;
+                R0[3 * RJ_NL + l] = r0_3;
+                R0[4 * RJ_NL + l] = r0_4;
+                R0[5 * RJ_NL + l] = r0_5;
+                R0[6 * RJ_NL + l] = r0_6;
+                R0[7 * RJ_NL + l] = r0_7;
+                R0[8 * RJ_NL + l] = r0_8;
+                R0[9 * RJ_NL + l] = r0_9;
+        }
+}
+
+static void rjrv_3(double *restrict R0, const double *restrict r, const double *restrict X, const double *restrict Y, const double *restrict Z)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                const double r0_0 = r[0 * RJ_NL + l];
+                const double r1_0 = r[1 * RJ_NL + l];
+                const double r2_0 = r[2 * RJ_NL + l];
+                const double r3_0 = r[3 * RJ_NL + l];
+                const double r0_1 = Z[l] * r1_0;
+                const double r1_1 = Z[l] * r2_0;
+                const double r2_1 = Z[l] * r3_0;
+                const double r0_2 = Y[l] * r1_0;
+                const double r1_2 = Y[l] * r2_0;
+                const double r2_2 = Y[l] * r3_0;
+                const double r0_3 = X[l] * r1_0;
+                const double r1_3 = X[l] * r2_0;
+                const double r2_3 = X[l] * r3_0;
+                const double r0_4 = Z[l] * r1_1 + 1 * r1_0;
+                const double r1_4 = Z[l] * r2_1 + 1 * r2_0;
+                const double r0_5 = Y[l] * r1_1;
+                const double r1_5 = Y[l] * r2_1;
+                const double r0_6 = Y[l] * r1_2 + 1 * r1_0;
+                const double r1_6 = Y[l] * r2_2 + 1 * r2_0;
+                const double r0_7 = X[l] * r1_1;
+                const double r1_7 = X[l] * r2_1;
+                const double r0_8 = X[l] * r1_2;
+                const double r1_8 = X[l] * r2_2;
+                const double r0_9 = X[l] * r1_3 + 1 * r1_0;
+                const double r1_9 = X[l] * r2_3 + 1 * r2_0;
+                const double r0_10 = Z[l] * r1_4 + 2 * r1_1;
+                const double r0_11 = Y[l] * r1_4;
+                const double r0_12 = Y[l] * r1_5 + 1 * r1_1;
+                const double r0_13 = Y[l] * r1_6 + 2 * r1_2;
+                const double r0_14 = X[l] * r1_4;
+                const double r0_15 = X[l] * r1_5;
+                const double r0_16 = X[l] * r1_6;
+                const double r0_17 = X[l] * r1_7 + 1 * r1_1;
+                const double r0_18 = X[l] * r1_8 + 1 * r1_2;
+                const double r0_19 = X[l] * r1_9 + 2 * r1_3;
+                R0[0 * RJ_NL + l] = r0_0;
+                R0[1 * RJ_NL + l] = r0_1;
+                R0[2 * RJ_NL + l] = r0_2;
+                R0[3 * RJ_NL + l] = r0_3;
+                R0[4 * RJ_NL + l] = r0_4;
+                R0[5 * RJ_NL + l] = r0_5;
+                R0[6 * RJ_NL + l] = r0_6;
+                R0[7 * RJ_NL + l] = r0_7;
+                R0[8 * RJ_NL + l] = r0_8;
+                R0[9 * RJ_NL + l] = r0_9;
+                R0[10 * RJ_NL + l] = r0_10;
+                R0[11 * RJ_NL + l] = r0_11;
+                R0[12 * RJ_NL + l] = r0_12;
+                R0[13 * RJ_NL + l] = r0_13;
+                R0[14 * RJ_NL + l] = r0_14;
+                R0[15 * RJ_NL + l] = r0_15;
+                R0[16 * RJ_NL + l] = r0_16;
+                R0[17 * RJ_NL + l] = r0_17;
+                R0[18 * RJ_NL + l] = r0_18;
+                R0[19 * RJ_NL + l] = r0_19;
+        }
+}
+
+static void rjrv_4(double *restrict R0, const double *restrict r, const double *restrict X, const double *restrict Y, const double *restrict Z)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                const double r0_0 = r[0 * RJ_NL + l];
+                const double r1_0 = r[1 * RJ_NL + l];
+                const double r2_0 = r[2 * RJ_NL + l];
+                const double r3_0 = r[3 * RJ_NL + l];
+                const double r4_0 = r[4 * RJ_NL + l];
+                const double r0_1 = Z[l] * r1_0;
+                const double r1_1 = Z[l] * r2_0;
+                const double r2_1 = Z[l] * r3_0;
+                const double r3_1 = Z[l] * r4_0;
+                const double r0_2 = Y[l] * r1_0;
+                const double r1_2 = Y[l] * r2_0;
+                const double r2_2 = Y[l] * r3_0;
+                const double r3_2 = Y[l] * r4_0;
+                const double r0_3 = X[l] * r1_0;
+                const double r1_3 = X[l] * r2_0;
+                const double r2_3 = X[l] * r3_0;
+                const double r3_3 = X[l] * r4_0;
+                const double r0_4 = Z[l] * r1_1 + 1 * r1_0;
+                const double r1_4 = Z[l] * r2_1 + 1 * r2_0;
+                const double r2_4 = Z[l] * r3_1 + 1 * r3_0;
+                const double r0_5 = Y[l] * r1_1;
+                const double r1_5 = Y[l] * r2_1;
+                const double r2_5 = Y[l] * r3_1;
+                const double r0_6 = Y[l] * r1_2 + 1 * r1_0;
+                const double r1_6 = Y[l] * r2_2 + 1 * r2_0;
+                const double r2_6 = Y[l] * r3_2 + 1 * r3_0;
+                const double r0_7 = X[l] * r1_1;
+                const double r1_7 = X[l] * r2_1;
+                const double r2_7 = X[l] * r3_1;
+                const double r0_8 = X[l] * r1_2;
+                const double r1_8 = X[l] * r2_2;
+                const double r2_8 = X[l] * r3_2;
+                const double r0_9 = X[l] * r1_3 + 1 * r1_0;
+                const double r1_9 = X[l] * r2_3 + 1 * r2_0;
+                const double r2_9 = X[l] * r3_3 + 1 * r3_0;
+                const double r0_10 = Z[l] * r1_4 + 2 * r1_1;
+                const double r1_10 = Z[l] * r2_4 + 2 * r2_1;
+                const double r0_11 = Y[l] * r1_4;
+                const double r1_11 = Y[l] * r2_4;
+                const double r0_12 = Y[l] * r1_5 + 1 * r1_1;
+                const double r1_12 = Y[l] * r2_5 + 1 * r2_1;
+                const double r0_13 = Y[l] * r1_6 + 2 * r1_2;
+                const double r1_13 = Y[l] * r2_6 + 2 * r2_2;
+                const double r0_14 = X[l] * r1_4;
+                const double r1_14 = X[l] * r2_4;
+                const double r0_15 = X[l] * r1_5;
+                const double r1_15 = X[l] * r2_5;
+                const double r0_16 = X[l] * r1_6;
+                const double r1_16 = X[l] * r2_6;
+                const double r0_17 = X[l] * r1_7 + 1 * r1_1;
+                const double r1_17 = X[l] * r2_7 + 1 * r2_1;
+                const double r0_18 = X[l] * r1_8 + 1 * r1_2;
+                const double r1_18 = X[l] * r2_8 + 1 * r2_2;
+                const double r0_19 = X[l] * r1_9 + 2 * r1_3;
+                const double r1_19 = X[l] * r2_9 + 2 * r2_3;
+                const double r0_20 = Z[l] * r1_10 + 3 * r1_4;
+                const double r0_21 = Y[l] * r1_10;
+                const double r0_22 = Y[l] * r1_11 + 1 * r1_4;
+                const double r0_23 = Y[l] * r1_12 + 2 * r1_5;
+                const double r0_24 = Y[l] * r1_13 + 3 * r1_6;
+                const double r0_25 = X[l] * r1_10;
+                const double r0_26 = X[l] * r1_11;
+                const double r0_27 = X[l] * r1_12;
+                const double r0_28 = X[l] * r1_13;
+                const double r0_29 = X[l] * r1_14 + 1 * r1_4;
+                const double r0_30 = X[l] * r1_15 + 1 * r1_5;
+                const double r0_31 = X[l] * r1_16 + 1 * r1_6;
+                const double r0_32 = X[l] * r1_17 + 2 * r1_7;
+                const double r0_33 = X[l] * r1_18 + 2 * r1_8;
+                const double r0_34 = X[l] * r1_19 + 3 * r1_9;
+                R0[0 * RJ_NL + l] = r0_0;
+                R0[1 * RJ_NL + l] = r0_1;
+                R0[2 * RJ_NL + l] = r0_2;
+                R0[3 * RJ_NL + l] = r0_3;
+                R0[4 * RJ_NL + l] = r0_4;
+                R0[5 * RJ_NL + l] = r0_5;
+                R0[6 * RJ_NL + l] = r0_6;
+                R0[7 * RJ_NL + l] = r0_7;
+                R0[8 * RJ_NL + l] = r0_8;
+                R0[9 * RJ_NL + l] = r0_9;
+                R0[10 * RJ_NL + l] = r0_10;
+                R0[11 * RJ_NL + l] = r0_11;
+                R0[12 * RJ_NL + l] = r0_12;
+                R0[13 * RJ_NL + l] = r0_13;
+                R0[14 * RJ_NL + l] = r0_14;
+                R0[15 * RJ_NL + l] = r0_15;
+                R0[16 * RJ_NL + l] = r0_16;
+                R0[17 * RJ_NL + l] = r0_17;
+                R0[18 * RJ_NL + l] = r0_18;
+                R0[19 * RJ_NL + l] = r0_19;
+                R0[20 * RJ_NL + l] = r0_20;
+                R0[21 * RJ_NL + l] = r0_21;
+                R0[22 * RJ_NL + l] = r0_22;
+                R0[23 * RJ_NL + l] = r0_23;
+                R0[24 * RJ_NL + l] = r0_24;
+                R0[25 * RJ_NL + l] = r0_25;
+                R0[26 * RJ_NL + l] = r0_26;
+                R0[27 * RJ_NL + l] = r0_27;
+                R0[28 * RJ_NL + l] = r0_28;
+                R0[29 * RJ_NL + l] = r0_29;
+                R0[30 * RJ_NL + l] = r0_30;
+                R0[31 * RJ_NL + l] = r0_31;
+                R0[32 * RJ_NL + l] = r0_32;
+                R0[33 * RJ_NL + l] = r0_33;
+                R0[34 * RJ_NL + l] = r0_34;
+        }
+}
+
+static void rjrv_5(double *restrict R0, const double *restrict r, const double *restrict X, const double *restrict Y, const double *restrict Z)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                const double r0_0 = r[0 * RJ_NL + l];
+                const double r1_0 = r[1 * RJ_NL + l];
+                const double r2_0 = r[2 * RJ_NL + l];
+                const double r3_0 = r[3 * RJ_NL + l];
+                const double r4_0 = r[4 * RJ_NL + l];
+                const double r5_0 = r[5 * RJ_NL + l];
+                const double r0_1 = Z[l] * r1_0;
+                const double r1_1 = Z[l] * r2_0;
+                const double r2_1 = Z[l] * r3_0;
+                const double r3_1 = Z[l] * r4_0;
+                const double r4_1 = Z[l] * r5_0;
+                const double r0_2 = Y[l] * r1_0;
+                const double r1_2 = Y[l] * r2_0;
+                const double r2_2 = Y[l] * r3_0;
+                const double r3_2 = Y[l] * r4_0;
+                const double r4_2 = Y[l] * r5_0;
+                const double r0_3 = X[l] * r1_0;
+                const double r1_3 = X[l] * r2_0;
+                const double r2_3 = X[l] * r3_0;
+                const double r3_3 = X[l] * r4_0;
+                const double r4_3 = X[l] * r5_0;
+                const double r0_4 = Z[l] * r1_1 + 1 * r1_0;
+                const double r1_4 = Z[l] * r2_1 + 1 * r2_0;
+                const double r2_4 = Z[l] * r3_1 + 1 * r3_0;
+                const double r3_4 = Z[l] * r4_1 + 1 * r4_0;
+                const double r0_5 = Y[l] * r1_1;
+                const double r1_5 = Y[l] * r2_1;
+                const double r2_5 = Y[l] * r3_1;
+                const double r3_5 = Y[l] * r4_1;
+                const double r0_6 = Y[l] * r1_2 + 1 * r1_0;
+                const double r1_6 = Y[l] * r2_2 + 1 * r2_0;
+                const double r2_6 = Y[l] * r3_2 + 1 * r3_0;
+                const double r3_6 = Y[l] * r4_2 + 1 * r4_0;
+                const double r0_7 = X[l] * r1_1;
+                const double r1_7 = X[l] * r2_1;
+                const double r2_7 = X[l] * r3_1;
+                const double r3_7 = X[l] * r4_1;
+                const double r0_8 = X[l] * r1_2;
+                const double r1_8 = X[l] * r2_2;
+                const double r2_8 = X[l] * r3_2;
+                const double r3_8 = X[l] * r4_2;
+                const double r0_9 = X[l] * r1_3 + 1 * r1_0;
+                const double r1_9 = X[l] * r2_3 + 1 * r2_0;
+                const double r2_9 = X[l] * r3_3 + 1 * r3_0;
+                const double r3_9 = X[l] * r4_3 + 1 * r4_0;
+                const double r0_10 = Z[l] * r1_4 + 2 * r1_1;
+                const double r1_10 = Z[l] * r2_4 + 2 * r2_1;
+                const double r2_10 = Z[l] * r3_4 + 2 * r3_1;
+                const double r0_11 = Y[l] * r1_4;
+                const double r1_11 = Y[l] * r2_4;
+                const double r2_11 = Y[l] * r3_4;
+                const double r0_12 = Y[l] * r1_5 + 1 * r1_1;
+                const double r1_12 = Y[l] * r2_5 + 1 * r2_1;
+                const double r2_12 = Y[l] * r3_5 + 1 * r3_1;
+                const double r0_13 = Y[l] * r1_6 + 2 * r1_2;
+                const double r1_13 = Y[l] * r2_6 + 2 * r2_2;
+                const double r2_13 = Y[l] * r3_6 + 2 * r3_2;
+                const double r0_14 = X[l] * r1_4;
+                const double r1_14 = X[l] * r2_4;
+                const double r2_14 = X[l] * r3_4;
+                const double r0_15 = X[l] * r1_5;
+                const double r1_15 = X[l] * r2_5;
+                const double r2_15 = X[l] * r3_5;
+                const double r0_16 = X[l] * r1_6;
+                const double r1_16 = X[l] * r2_6;
+                const double r2_16 = X[l] * r3_6;
+                const double r0_17 = X[l] * r1_7 + 1 * r1_1;
+                const double r1_17 = X[l] * r2_7 + 1 * r2_1;
+                const double r2_17 = X[l] * r3_7 + 1 * r3_1;
+                const double r0_18 = X[l] * r1_8 + 1 * r1_2;
+                const double r1_18 = X[l] * r2_8 + 1 * r2_2;
+                const double r2_18 = X[l] * r3_8 + 1 * r3_2;
+                const double r0_19 = X[l] * r1_9 + 2 * r1_3;
+                const double r1_19 = X[l] * r2_9 + 2 * r2_3;
+                const double r2_19 = X[l] * r3_9 + 2 * r3_3;
+                const double r0_20 = Z[l] * r1_10 + 3 * r1_4;
+                const double r1_20 = Z[l] * r2_10 + 3 * r2_4;
+                const double r0_21 = Y[l] * r1_10;
+                const double r1_21 = Y[l] * r2_10;
+                const double r0_22 = Y[l] * r1_11 + 1 * r1_4;
+                const double r1_22 = Y[l] * r2_11 + 1 * r2_4;
+                const double r0_23 = Y[l] * r1_12 + 2 * r1_5;
+                const double r1_23 = Y[l] * r2_12 + 2 * r2_5;
+                const double r0_24 = Y[l] * r1_13 + 3 * r1_6;
+                const double r1_24 = Y[l] * r2_13 + 3 * r2_6;
+                const double r0_25 = X[l] * r1_10;
+                const double r1_25 = X[l] * r2_10;
+                const double r0_26 = X[l] * r1_11;
+                const double r1_26 = X[l] * r2_11;
+                const double r0_27 = X[l] * r1_12;
+                const double r1_27 = X[l] * r2_12;
+                const double r0_28 = X[l] * r1_13;
+                const double r1_28 = X[l] * r2_13;
+                const double r0_29 = X[l] * r1_14 + 1 * r1_4;
+                const double r1_29 = X[l] * r2_14 + 1 * r2_4;
+                const double r0_30 = X[l] * r1_15 + 1 * r1_5;
+                const double r1_30 = X[l] * r2_15 + 1 * r2_5;
+                const double r0_31 = X[l] * r1_16 + 1 * r1_6;
+                const double r1_31 = X[l] * r2_16 + 1 * r2_6;
+                const double r0_32 = X[l] * r1_17 + 2 * r1_7;
+                const double r1_32 = X[l] * r2_17 + 2 * r2_7;
+                const double r0_33 = X[l] * r1_18 + 2 * r1_8;
+                const double r1_33 = X[l] * r2_18 + 2 * r2_8;
+                const double r0_34 = X[l] * r1_19 + 3 * r1_9;
+                const double r1_34 = X[l] * r2_19 + 3 * r2_9;
+                const double r0_35 = Z[l] * r1_20 + 4 * r1_10;
+                const double r0_36 = Y[l] * r1_20;
+                const double r0_37 = Y[l] * r1_21 + 1 * r1_10;
+                const double r0_38 = Y[l] * r1_22 + 2 * r1_11;
+                const double r0_39 = Y[l] * r1_23 + 3 * r1_12;
+                const double r0_40 = Y[l] * r1_24 + 4 * r1_13;
+                const double r0_41 = X[l] * r1_20;
+                const double r0_42 = X[l] * r1_21;
+                const double r0_43 = X[l] * r1_22;
+                const double r0_44 = X[l] * r1_23;
+                const double r0_45 = X[l] * r1_24;
+                const double r0_46 = X[l] * r1_25 + 1 * r1_10;
+                const double r0_47 = X[l] * r1_26 + 1 * r1_11;
+                const double r0_48 = X[l] * r1_27 + 1 * r1_12;
+                const double r0_49 = X[l] * r1_28 + 1 * r1_13;
+                const double r0_50 = X[l] * r1_29 + 2 * r1_14;
+                const double r0_51 = X[l] * r1_30 + 2 * r1_15;
+                const double r0_52 = X[l] * r1_31 + 2 * r1_16;
+                const double r0_53 = X[l] * r1_32 + 3 * r1_17;
+                const double r0_54 = X[l] * r1_33 + 3 * r1_18;
+                const double r0_55 = X[l] * r1_34 + 4 * r1_19;
+                R0[0 * RJ_NL + l] = r0_0;
+                R0[1 * RJ_NL + l] = r0_1;
+                R0[2 * RJ_NL + l] = r0_2;
+                R0[3 * RJ_NL + l] = r0_3;
+                R0[4 * RJ_NL + l] = r0_4;
+                R0[5 * RJ_NL + l] = r0_5;
+                R0[6 * RJ_NL + l] = r0_6;
+                R0[7 * RJ_NL + l] = r0_7;
+                R0[8 * RJ_NL + l] = r0_8;
+                R0[9 * RJ_NL + l] = r0_9;
+                R0[10 * RJ_NL + l] = r0_10;
+                R0[11 * RJ_NL + l] = r0_11;
+                R0[12 * RJ_NL + l] = r0_12;
+                R0[13 * RJ_NL + l] = r0_13;
+                R0[14 * RJ_NL + l] = r0_14;
+                R0[15 * RJ_NL + l] = r0_15;
+                R0[16 * RJ_NL + l] = r0_16;
+                R0[17 * RJ_NL + l] = r0_17;
+                R0[18 * RJ_NL + l] = r0_18;
+                R0[19 * RJ_NL + l] = r0_19;
+                R0[20 * RJ_NL + l] = r0_20;
+                R0[21 * RJ_NL + l] = r0_21;
+                R0[22 * RJ_NL + l] = r0_22;
+                R0[23 * RJ_NL + l] = r0_23;
+                R0[24 * RJ_NL + l] = r0_24;
+                R0[25 * RJ_NL + l] = r0_25;
+                R0[26 * RJ_NL + l] = r0_26;
+                R0[27 * RJ_NL + l] = r0_27;
+                R0[28 * RJ_NL + l] = r0_28;
+                R0[29 * RJ_NL + l] = r0_29;
+                R0[30 * RJ_NL + l] = r0_30;
+                R0[31 * RJ_NL + l] = r0_31;
+                R0[32 * RJ_NL + l] = r0_32;
+                R0[33 * RJ_NL + l] = r0_33;
+                R0[34 * RJ_NL + l] = r0_34;
+                R0[35 * RJ_NL + l] = r0_35;
+                R0[36 * RJ_NL + l] = r0_36;
+                R0[37 * RJ_NL + l] = r0_37;
+                R0[38 * RJ_NL + l] = r0_38;
+                R0[39 * RJ_NL + l] = r0_39;
+                R0[40 * RJ_NL + l] = r0_40;
+                R0[41 * RJ_NL + l] = r0_41;
+                R0[42 * RJ_NL + l] = r0_42;
+                R0[43 * RJ_NL + l] = r0_43;
+                R0[44 * RJ_NL + l] = r0_44;
+                R0[45 * RJ_NL + l] = r0_45;
+                R0[46 * RJ_NL + l] = r0_46;
+                R0[47 * RJ_NL + l] = r0_47;
+                R0[48 * RJ_NL + l] = r0_48;
+                R0[49 * RJ_NL + l] = r0_49;
+                R0[50 * RJ_NL + l] = r0_50;
+                R0[51 * RJ_NL + l] = r0_51;
+                R0[52 * RJ_NL + l] = r0_52;
+                R0[53 * RJ_NL + l] = r0_53;
+                R0[54 * RJ_NL + l] = r0_54;
+                R0[55 * RJ_NL + l] = r0_55;
+        }
+}
+
+static void rjrv_6(double *restrict R0, const double *restrict r, const double *restrict X, const double *restrict Y, const double *restrict Z)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                const double r0_0 = r[0 * RJ_NL + l];
+                const double r1_0 = r[1 * RJ_NL + l];
+                const double r2_0 = r[2 * RJ_NL + l];
+                const double r3_0 = r[3 * RJ_NL + l];
+                const double r4_0 = r[4 * RJ_NL + l];
+                const double r5_0 = r[5 * RJ_NL + l];
+                const double r6_0 = r[6 * RJ_NL + l];
+                const double r0_1 = Z[l] * r1_0;
+                const double r1_1 = Z[l] * r2_0;
+                const double r2_1 = Z[l] * r3_0;
+                const double r3_1 = Z[l] * r4_0;
+                const double r4_1 = Z[l] * r5_0;
+                const double r5_1 = Z[l] * r6_0;
+                const double r0_2 = Y[l] * r1_0;
+                const double r1_2 = Y[l] * r2_0;
+                const double r2_2 = Y[l] * r3_0;
+                const double r3_2 = Y[l] * r4_0;
+                const double r4_2 = Y[l] * r5_0;
+                const double r5_2 = Y[l] * r6_0;
+                const double r0_3 = X[l] * r1_0;
+                const double r1_3 = X[l] * r2_0;
+                const double r2_3 = X[l] * r3_0;
+                const double r3_3 = X[l] * r4_0;
+                const double r4_3 = X[l] * r5_0;
+                const double r5_3 = X[l] * r6_0;
+                const double r0_4 = Z[l] * r1_1 + 1 * r1_0;
+                const double r1_4 = Z[l] * r2_1 + 1 * r2_0;
+                const double r2_4 = Z[l] * r3_1 + 1 * r3_0;
+                const double r3_4 = Z[l] * r4_1 + 1 * r4_0;
+                const double r4_4 = Z[l] * r5_1 + 1 * r5_0;
+                const double r0_5 = Y[l] * r1_1;
+                const double r1_5 = Y[l] * r2_1;
+                const double r2_5 = Y[l] * r3_1;
+                const double r3_5 = Y[l] * r4_1;
+                const double r4_5 = Y[l] * r5_1;
+                const double r0_6 = Y[l] * r1_2 + 1 * r1_0;
+                const double r1_6 = Y[l] * r2_2 + 1 * r2_0;
+                const double r2_6 = Y[l] * r3_2 + 1 * r3_0;
+                const double r3_6 = Y[l] * r4_2 + 1 * r4_0;
+                const double r4_6 = Y[l] * r5_2 + 1 * r5_0;
+                const double r0_7 = X[l] * r1_1;
+                const double r1_7 = X[l] * r2_1;
+                const double r2_7 = X[l] * r3_1;
+                const double r3_7 = X[l] * r4_1;
+                const double r4_7 = X[l] * r5_1;
+                const double r0_8 = X[l] * r1_2;
+                const double r1_8 = X[l] * r2_2;
+                const double r2_8 = X[l] * r3_2;
+                const double r3_8 = X[l] * r4_2;
+                const double r4_8 = X[l] * r5_2;
+                const double r0_9 = X[l] * r1_3 + 1 * r1_0;
+                const double r1_9 = X[l] * r2_3 + 1 * r2_0;
+                const double r2_9 = X[l] * r3_3 + 1 * r3_0;
+                const double r3_9 = X[l] * r4_3 + 1 * r4_0;
+                const double r4_9 = X[l] * r5_3 + 1 * r5_0;
+                const double r0_10 = Z[l] * r1_4 + 2 * r1_1;
+                const double r1_10 = Z[l] * r2_4 + 2 * r2_1;
+                const double r2_10 = Z[l] * r3_4 + 2 * r3_1;
+                const double r3_10 = Z[l] * r4_4 + 2 * r4_1;
+                const double r0_11 = Y[l] * r1_4;
+                const double r1_11 = Y[l] * r2_4;
+                const double r2_11 = Y[l] * r3_4;
+                const double r3_11 = Y[l] * r4_4;
+                const double r0_12 = Y[l] * r1_5 + 1 * r1_1;
+                const double r1_12 = Y[l] * r2_5 + 1 * r2_1;
+                const double r2_12 = Y[l] * r3_5 + 1 * r3_1;
+                const double r3_12 = Y[l] * r4_5 + 1 * r4_1;
+                const double r0_13 = Y[l] * r1_6 + 2 * r1_2;
+                const double r1_13 = Y[l] * r2_6 + 2 * r2_2;
+                const double r2_13 = Y[l] * r3_6 + 2 * r3_2;
+                const double r3_13 = Y[l] * r4_6 + 2 * r4_2;
+                const double r0_14 = X[l] * r1_4;
+                const double r1_14 = X[l] * r2_4;
+                const double r2_14 = X[l] * r3_4;
+                const double r3_14 = X[l] * r4_4;
+                const double r0_15 = X[l] * r1_5;
+                const double r1_15 = X[l] * r2_5;
+                const double r2_15 = X[l] * r3_5;
+                const double r3_15 = X[l] * r4_5;
+                const double r0_16 = X[l] * r1_6;
+                const double r1_16 = X[l] * r2_6;
+                const double r2_16 = X[l] * r3_6;
+                const double r3_16 = X[l] * r4_6;
+                const double r0_17 = X[l] * r1_7 + 1 * r1_1;
+                const double r1_17 = X[l] * r2_7 + 1 * r2_1;
+                const double r2_17 = X[l] * r3_7 + 1 * r3_1;
+                const double r3_17 = X[l] * r4_7 + 1 * r4_1;
+                const double r0_18 = X[l] * r1_8 + 1 * r1_2;
+                const double r1_18 = X[l] * r2_8 + 1 * r2_2;
+                const double r2_18 = X[l] * r3_8 + 1 * r3_2;
+                const double r3_18 = X[l] * r4_8 + 1 * r4_2;
+                const double r0_19 = X[l] * r1_9 + 2 * r1_3;
+                const double r1_19 = X[l] * r2_9 + 2 * r2_3;
+                const double r2_19 = X[l] * r3_9 + 2 * r3_3;
+                const double r3_19 = X[l] * r4_9 + 2 * r4_3;
+                const double r0_20 = Z[l] * r1_10 + 3 * r1_4;
+                const double r1_20 = Z[l] * r2_10 + 3 * r2_4;
+                const double r2_20 = Z[l] * r3_10 + 3 * r3_4;
+                const double r0_21 = Y[l] * r1_10;
+                const double r1_21 = Y[l] * r2_10;
+                const double r2_21 = Y[l] * r3_10;
+                const double r0_22 = Y[l] * r1_11 + 1 * r1_4;
+                const double r1_22 = Y[l] * r2_11 + 1 * r2_4;
+                const double r2_22 = Y[l] * r3_11 + 1 * r3_4;
+                const double r0_23 = Y[l] * r1_12 + 2 * r1_5;
+                const double r1_23 = Y[l] * r2_12 + 2 * r2_5;
+                const double r2_23 = Y[l] * r3_12 + 2 * r3_5;
+                const double r0_24 = Y[l] * r1_13 + 3 * r1_6;
+                const double r1_24 = Y[l] * r2_13 + 3 * r2_6;
+                const double r2_24 = Y[l] * r3_13 + 3 * r3_6;
+                const double r0_25 = X[l] * r1_10;
+                const double r1_25 = X[l] * r2_10;
+                const double r2_25 = X[l] * r3_10;
+                const double r0_26 = X[l] * r1_11;
+                const double r1_26 = X[l] * r2_11;
+                const double r2_26 = X[l] * r3_11;
+                const double r0_27 = X[l] * r1_12;
+                const double r1_27 = X[l] * r2_12;
+                const double r2_27 = X[l] * r3_12;
+                const double r0_28 = X[l] * r1_13;
+                const double r1_28 = X[l] * r2_13;
+                const double r2_28 = X[l] * r3_13;
+                const double r0_29 = X[l] * r1_14 + 1 * r1_4;
+                const double r1_29 = X[l] * r2_14 + 1 * r2_4;
+                const double r2_29 = X[l] * r3_14 + 1 * r3_4;
+                const double r0_30 = X[l] * r1_15 + 1 * r1_5;
+                const double r1_30 = X[l] * r2_15 + 1 * r2_5;
+                const double r2_30 = X[l] * r3_15 + 1 * r3_5;
+                const double r0_31 = X[l] * r1_16 + 1 * r1_6;
+                const double r1_31 = X[l] * r2_16 + 1 * r2_6;
+                const double r2_31 = X[l] * r3_16 + 1 * r3_6;
+                const double r0_32 = X[l] * r1_17 + 2 * r1_7;
+                const double r1_32 = X[l] * r2_17 + 2 * r2_7;
+                const double r2_32 = X[l] * r3_17 + 2 * r3_7;
+                const double r0_33 = X[l] * r1_18 + 2 * r1_8;
+                const double r1_33 = X[l] * r2_18 + 2 * r2_8;
+                const double r2_33 = X[l] * r3_18 + 2 * r3_8;
+                const double r0_34 = X[l] * r1_19 + 3 * r1_9;
+                const double r1_34 = X[l] * r2_19 + 3 * r2_9;
+                const double r2_34 = X[l] * r3_19 + 3 * r3_9;
+                const double r0_35 = Z[l] * r1_20 + 4 * r1_10;
+                const double r1_35 = Z[l] * r2_20 + 4 * r2_10;
+                const double r0_36 = Y[l] * r1_20;
+                const double r1_36 = Y[l] * r2_20;
+                const double r0_37 = Y[l] * r1_21 + 1 * r1_10;
+                const double r1_37 = Y[l] * r2_21 + 1 * r2_10;
+                const double r0_38 = Y[l] * r1_22 + 2 * r1_11;
+                const double r1_38 = Y[l] * r2_22 + 2 * r2_11;
+                const double r0_39 = Y[l] * r1_23 + 3 * r1_12;
+                const double r1_39 = Y[l] * r2_23 + 3 * r2_12;
+                const double r0_40 = Y[l] * r1_24 + 4 * r1_13;
+                const double r1_40 = Y[l] * r2_24 + 4 * r2_13;
+                const double r0_41 = X[l] * r1_20;
+                const double r1_41 = X[l] * r2_20;
+                const double r0_42 = X[l] * r1_21;
+                const double r1_42 = X[l] * r2_21;
+                const double r0_43 = X[l] * r1_22;
+                const double r1_43 = X[l] * r2_22;
+                const double r0_44 = X[l] * r1_23;
+                const double r1_44 = X[l] * r2_23;
+                const double r0_45 = X[l] * r1_24;
+                const double r1_45 = X[l] * r2_24;
+                const double r0_46 = X[l] * r1_25 + 1 * r1_10;
+                const double r1_46 = X[l] * r2_25 + 1 * r2_10;
+                const double r0_47 = X[l] * r1_26 + 1 * r1_11;
+                const double r1_47 = X[l] * r2_26 + 1 * r2_11;
+                const double r0_48 = X[l] * r1_27 + 1 * r1_12;
+                const double r1_48 = X[l] * r2_27 + 1 * r2_12;
+                const double r0_49 = X[l] * r1_28 + 1 * r1_13;
+                const double r1_49 = X[l] * r2_28 + 1 * r2_13;
+                const double r0_50 = X[l] * r1_29 + 2 * r1_14;
+                const double r1_50 = X[l] * r2_29 + 2 * r2_14;
+                const double r0_51 = X[l] * r1_30 + 2 * r1_15;
+                const double r1_51 = X[l] * r2_30 + 2 * r2_15;
+                const double r0_52 = X[l] * r1_31 + 2 * r1_16;
+                const double r1_52 = X[l] * r2_31 + 2 * r2_16;
+                const double r0_53 = X[l] * r1_32 + 3 * r1_17;
+                const double r1_53 = X[l] * r2_32 + 3 * r2_17;
+                const double r0_54 = X[l] * r1_33 + 3 * r1_18;
+                const double r1_54 = X[l] * r2_33 + 3 * r2_18;
+                const double r0_55 = X[l] * r1_34 + 4 * r1_19;
+                const double r1_55 = X[l] * r2_34 + 4 * r2_19;
+                const double r0_56 = Z[l] * r1_35 + 5 * r1_20;
+                const double r0_57 = Y[l] * r1_35;
+                const double r0_58 = Y[l] * r1_36 + 1 * r1_20;
+                const double r0_59 = Y[l] * r1_37 + 2 * r1_21;
+                const double r0_60 = Y[l] * r1_38 + 3 * r1_22;
+                const double r0_61 = Y[l] * r1_39 + 4 * r1_23;
+                const double r0_62 = Y[l] * r1_40 + 5 * r1_24;
+                const double r0_63 = X[l] * r1_35;
+                const double r0_64 = X[l] * r1_36;
+                const double r0_65 = X[l] * r1_37;
+                const double r0_66 = X[l] * r1_38;
+                const double r0_67 = X[l] * r1_39;
+                const double r0_68 = X[l] * r1_40;
+                const double r0_69 = X[l] * r1_41 + 1 * r1_20;
+                const double r0_70 = X[l] * r1_42 + 1 * r1_21;
+                const double r0_71 = X[l] * r1_43 + 1 * r1_22;
+                const double r0_72 = X[l] * r1_44 + 1 * r1_23;
+                const double r0_73 = X[l] * r1_45 + 1 * r1_24;
+                const double r0_74 = X[l] * r1_46 + 2 * r1_25;
+                const double r0_75 = X[l] * r1_47 + 2 * r1_26;
+                const double r0_76 = X[l] * r1_48 + 2 * r1_27;
+                const double r0_77 = X[l] * r1_49 + 2 * r1_28;
+                const double r0_78 = X[l] * r1_50 + 3 * r1_29;
+                const double r0_79 = X[l] * r1_51 + 3 * r1_30;
+                const double r0_80 = X[l] * r1_52 + 3 * r1_31;
+                const double r0_81 = X[l] * r1_53 + 4 * r1_32;
+                const double r0_82 = X[l] * r1_54 + 4 * r1_33;
+                const double r0_83 = X[l] * r1_55 + 5 * r1_34;
+                R0[0 * RJ_NL + l] = r0_0;
+                R0[1 * RJ_NL + l] = r0_1;
+                R0[2 * RJ_NL + l] = r0_2;
+                R0[3 * RJ_NL + l] = r0_3;
+                R0[4 * RJ_NL + l] = r0_4;
+                R0[5 * RJ_NL + l] = r0_5;
+                R0[6 * RJ_NL + l] = r0_6;
+                R0[7 * RJ_NL + l] = r0_7;
+                R0[8 * RJ_NL + l] = r0_8;
+                R0[9 * RJ_NL + l] = r0_9;
+                R0[10 * RJ_NL + l] = r0_10;
+                R0[11 * RJ_NL + l] = r0_11;
+                R0[12 * RJ_NL + l] = r0_12;
+                R0[13 * RJ_NL + l] = r0_13;
+                R0[14 * RJ_NL + l] = r0_14;
+                R0[15 * RJ_NL + l] = r0_15;
+                R0[16 * RJ_NL + l] = r0_16;
+                R0[17 * RJ_NL + l] = r0_17;
+                R0[18 * RJ_NL + l] = r0_18;
+                R0[19 * RJ_NL + l] = r0_19;
+                R0[20 * RJ_NL + l] = r0_20;
+                R0[21 * RJ_NL + l] = r0_21;
+                R0[22 * RJ_NL + l] = r0_22;
+                R0[23 * RJ_NL + l] = r0_23;
+                R0[24 * RJ_NL + l] = r0_24;
+                R0[25 * RJ_NL + l] = r0_25;
+                R0[26 * RJ_NL + l] = r0_26;
+                R0[27 * RJ_NL + l] = r0_27;
+                R0[28 * RJ_NL + l] = r0_28;
+                R0[29 * RJ_NL + l] = r0_29;
+                R0[30 * RJ_NL + l] = r0_30;
+                R0[31 * RJ_NL + l] = r0_31;
+                R0[32 * RJ_NL + l] = r0_32;
+                R0[33 * RJ_NL + l] = r0_33;
+                R0[34 * RJ_NL + l] = r0_34;
+                R0[35 * RJ_NL + l] = r0_35;
+                R0[36 * RJ_NL + l] = r0_36;
+                R0[37 * RJ_NL + l] = r0_37;
+                R0[38 * RJ_NL + l] = r0_38;
+                R0[39 * RJ_NL + l] = r0_39;
+                R0[40 * RJ_NL + l] = r0_40;
+                R0[41 * RJ_NL + l] = r0_41;
+                R0[42 * RJ_NL + l] = r0_42;
+                R0[43 * RJ_NL + l] = r0_43;
+                R0[44 * RJ_NL + l] = r0_44;
+                R0[45 * RJ_NL + l] = r0_45;
+                R0[46 * RJ_NL + l] = r0_46;
+                R0[47 * RJ_NL + l] = r0_47;
+                R0[48 * RJ_NL + l] = r0_48;
+                R0[49 * RJ_NL + l] = r0_49;
+                R0[50 * RJ_NL + l] = r0_50;
+                R0[51 * RJ_NL + l] = r0_51;
+                R0[52 * RJ_NL + l] = r0_52;
+                R0[53 * RJ_NL + l] = r0_53;
+                R0[54 * RJ_NL + l] = r0_54;
+                R0[55 * RJ_NL + l] = r0_55;
+                R0[56 * RJ_NL + l] = r0_56;
+                R0[57 * RJ_NL + l] = r0_57;
+                R0[58 * RJ_NL + l] = r0_58;
+                R0[59 * RJ_NL + l] = r0_59;
+                R0[60 * RJ_NL + l] = r0_60;
+                R0[61 * RJ_NL + l] = r0_61;
+                R0[62 * RJ_NL + l] = r0_62;
+                R0[63 * RJ_NL + l] = r0_63;
+                R0[64 * RJ_NL + l] = r0_64;
+                R0[65 * RJ_NL + l] = r0_65;
+                R0[66 * RJ_NL + l] = r0_66;
+                R0[67 * RJ_NL + l] = r0_67;
+                R0[68 * RJ_NL + l] = r0_68;
+                R0[69 * RJ_NL + l] = r0_69;
+                R0[70 * RJ_NL + l] = r0_70;
+                R0[71 * RJ_NL + l] = r0_71;
+                R0[72 * RJ_NL + l] = r0_72;
+                R0[73 * RJ_NL + l] = r0_73;
+                R0[74 * RJ_NL + l] = r0_74;
+                R0[75 * RJ_NL + l] = r0_75;
+                R0[76 * RJ_NL + l] = r0_76;
+                R0[77 * RJ_NL + l] = r0_77;
+                R0[78 * RJ_NL + l] = r0_78;
+                R0[79 * RJ_NL + l] = r0_79;
+                R0[80 * RJ_NL + l] = r0_80;
+                R0[81 * RJ_NL + l] = r0_81;
+                R0[82 * RJ_NL + l] = r0_82;
+                R0[83 * RJ_NL + l] = r0_83;
+        }
+}
+
+static void rjrv_7(double *restrict R0, const double *restrict r, const double *restrict X, const double *restrict Y, const double *restrict Z)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                const double r0_0 = r[0 * RJ_NL + l];
+                const double r1_0 = r[1 * RJ_NL + l];
+                const double r2_0 = r[2 * RJ_NL + l];
+                const double r3_0 = r[3 * RJ_NL + l];
+                const double r4_0 = r[4 * RJ_NL + l];
+                const double r5_0 = r[5 * RJ_NL + l];
+                const double r6_0 = r[6 * RJ_NL + l];
+                const double r7_0 = r[7 * RJ_NL + l];
+                const double r0_1 = Z[l] * r1_0;
+                const double r1_1 = Z[l] * r2_0;
+                const double r2_1 = Z[l] * r3_0;
+                const double r3_1 = Z[l] * r4_0;
+                const double r4_1 = Z[l] * r5_0;
+                const double r5_1 = Z[l] * r6_0;
+                const double r6_1 = Z[l] * r7_0;
+                const double r0_2 = Y[l] * r1_0;
+                const double r1_2 = Y[l] * r2_0;
+                const double r2_2 = Y[l] * r3_0;
+                const double r3_2 = Y[l] * r4_0;
+                const double r4_2 = Y[l] * r5_0;
+                const double r5_2 = Y[l] * r6_0;
+                const double r6_2 = Y[l] * r7_0;
+                const double r0_3 = X[l] * r1_0;
+                const double r1_3 = X[l] * r2_0;
+                const double r2_3 = X[l] * r3_0;
+                const double r3_3 = X[l] * r4_0;
+                const double r4_3 = X[l] * r5_0;
+                const double r5_3 = X[l] * r6_0;
+                const double r6_3 = X[l] * r7_0;
+                const double r0_4 = Z[l] * r1_1 + 1 * r1_0;
+                const double r1_4 = Z[l] * r2_1 + 1 * r2_0;
+                const double r2_4 = Z[l] * r3_1 + 1 * r3_0;
+                const double r3_4 = Z[l] * r4_1 + 1 * r4_0;
+                const double r4_4 = Z[l] * r5_1 + 1 * r5_0;
+                const double r5_4 = Z[l] * r6_1 + 1 * r6_0;
+                const double r0_5 = Y[l] * r1_1;
+                const double r1_5 = Y[l] * r2_1;
+                const double r2_5 = Y[l] * r3_1;
+                const double r3_5 = Y[l] * r4_1;
+                const double r4_5 = Y[l] * r5_1;
+                const double r5_5 = Y[l] * r6_1;
+                const double r0_6 = Y[l] * r1_2 + 1 * r1_0;
+                const double r1_6 = Y[l] * r2_2 + 1 * r2_0;
+                const double r2_6 = Y[l] * r3_2 + 1 * r3_0;
+                const double r3_6 = Y[l] * r4_2 + 1 * r4_0;
+                const double r4_6 = Y[l] * r5_2 + 1 * r5_0;
+                const double r5_6 = Y[l] * r6_2 + 1 * r6_0;
+                const double r0_7 = X[l] * r1_1;
+                const double r1_7 = X[l] * r2_1;
+                const double r2_7 = X[l] * r3_1;
+                const double r3_7 = X[l] * r4_1;
+                const double r4_7 = X[l] * r5_1;
+                const double r5_7 = X[l] * r6_1;
+                const double r0_8 = X[l] * r1_2;
+                const double r1_8 = X[l] * r2_2;
+                const double r2_8 = X[l] * r3_2;
+                const double r3_8 = X[l] * r4_2;
+                const double r4_8 = X[l] * r5_2;
+                const double r5_8 = X[l] * r6_2;
+                const double r0_9 = X[l] * r1_3 + 1 * r1_0;
+                const double r1_9 = X[l] * r2_3 + 1 * r2_0;
+                const double r2_9 = X[l] * r3_3 + 1 * r3_0;
+                const double r3_9 = X[l] * r4_3 + 1 * r4_0;
+                const double r4_9 = X[l] * r5_3 + 1 * r5_0;
+                const double r5_9 = X[l] * r6_3 + 1 * r6_0;
+                const double r0_10 = Z[l] * r1_4 + 2 * r1_1;
+                const double r1_10 = Z[l] * r2_4 + 2 * r2_1;
+                const double r2_10 = Z[l] * r3_4 + 2 * r3_1;
+                const double r3_10 = Z[l] * r4_4 + 2 * r4_1;
+                const double r4_10 = Z[l] * r5_4 + 2 * r5_1;
+                const double r0_11 = Y[l] * r1_4;
+                const double r1_11 = Y[l] * r2_4;
+                const double r2_11 = Y[l] * r3_4;
+                const double r3_11 = Y[l] * r4_4;
+                const double r4_11 = Y[l] * r5_4;
+                const double r0_12 = Y[l] * r1_5 + 1 * r1_1;
+                const double r1_12 = Y[l] * r2_5 + 1 * r2_1;
+                const double r2_12 = Y[l] * r3_5 + 1 * r3_1;
+                const double r3_12 = Y[l] * r4_5 + 1 * r4_1;
+                const double r4_12 = Y[l] * r5_5 + 1 * r5_1;
+                const double r0_13 = Y[l] * r1_6 + 2 * r1_2;
+                const double r1_13 = Y[l] * r2_6 + 2 * r2_2;
+                const double r2_13 = Y[l] * r3_6 + 2 * r3_2;
+                const double r3_13 = Y[l] * r4_6 + 2 * r4_2;
+                const double r4_13 = Y[l] * r5_6 + 2 * r5_2;
+                const double r0_14 = X[l] * r1_4;
+                const double r1_14 = X[l] * r2_4;
+                const double r2_14 = X[l] * r3_4;
+                const double r3_14 = X[l] * r4_4;
+                const double r4_14 = X[l] * r5_4;
+                const double r0_15 = X[l] * r1_5;
+                const double r1_15 = X[l] * r2_5;
+                const double r2_15 = X[l] * r3_5;
+                const double r3_15 = X[l] * r4_5;
+                const double r4_15 = X[l] * r5_5;
+                const double r0_16 = X[l] * r1_6;
+                const double r1_16 = X[l] * r2_6;
+                const double r2_16 = X[l] * r3_6;
+                const double r3_16 = X[l] * r4_6;
+                const double r4_16 = X[l] * r5_6;
+                const double r0_17 = X[l] * r1_7 + 1 * r1_1;
+                const double r1_17 = X[l] * r2_7 + 1 * r2_1;
+                const double r2_17 = X[l] * r3_7 + 1 * r3_1;
+                const double r3_17 = X[l] * r4_7 + 1 * r4_1;
+                const double r4_17 = X[l] * r5_7 + 1 * r5_1;
+                const double r0_18 = X[l] * r1_8 + 1 * r1_2;
+                const double r1_18 = X[l] * r2_8 + 1 * r2_2;
+                const double r2_18 = X[l] * r3_8 + 1 * r3_2;
+                const double r3_18 = X[l] * r4_8 + 1 * r4_2;
+                const double r4_18 = X[l] * r5_8 + 1 * r5_2;
+                const double r0_19 = X[l] * r1_9 + 2 * r1_3;
+                const double r1_19 = X[l] * r2_9 + 2 * r2_3;
+                const double r2_19 = X[l] * r3_9 + 2 * r3_3;
+                const double r3_19 = X[l] * r4_9 + 2 * r4_3;
+                const double r4_19 = X[l] * r5_9 + 2 * r5_3;
+                const double r0_20 = Z[l] * r1_10 + 3 * r1_4;
+                const double r1_20 = Z[l] * r2_10 + 3 * r2_4;
+                const double r2_20 = Z[l] * r3_10 + 3 * r3_4;
+                const double r3_20 = Z[l] * r4_10 + 3 * r4_4;
+                const double r0_21 = Y[l] * r1_10;
+                const double r1_21 = Y[l] * r2_10;
+                const double r2_21 = Y[l] * r3_10;
+                const double r3_21 = Y[l] * r4_10;
+                const double r0_22 = Y[l] * r1_11 + 1 * r1_4;
+                const double r1_22 = Y[l] * r2_11 + 1 * r2_4;
+                const double r2_22 = Y[l] * r3_11 + 1 * r3_4;
+                const double r3_22 = Y[l] * r4_11 + 1 * r4_4;
+                const double r0_23 = Y[l] * r1_12 + 2 * r1_5;
+                const double r1_23 = Y[l] * r2_12 + 2 * r2_5;
+                const double r2_23 = Y[l] * r3_12 + 2 * r3_5;
+                const double r3_23 = Y[l] * r4_12 + 2 * r4_5;
+                const double r0_24 = Y[l] * r1_13 + 3 * r1_6;
+                const double r1_24 = Y[l] * r2_13 + 3 * r2_6;
+                const double r2_24 = Y[l] * r3_13 + 3 * r3_6;
+                const double r3_24 = Y[l] * r4_13 + 3 * r4_6;
+                const double r0_25 = X[l] * r1_10;
+                const double r1_25 = X[l] * r2_10;
+                const double r2_25 = X[l] * r3_10;
+                const double r3_25 = X[l] * r4_10;
+                const double r0_26 = X[l] * r1_11;
+                const double r1_26 = X[l] * r2_11;
+                const double r2_26 = X[l] * r3_11;
+                const double r3_26 = X[l] * r4_11;
+                const double r0_27 = X[l] * r1_12;
+                const double r1_27 = X[l] * r2_12;
+                const double r2_27 = X[l] * r3_12;
+                const double r3_27 = X[l] * r4_12;
+                const double r0_28 = X[l] * r1_13;
+                const double r1_28 = X[l] * r2_13;
+                const double r2_28 = X[l] * r3_13;
+                const double r3_28 = X[l] * r4_13;
+                const double r0_29 = X[l] * r1_14 + 1 * r1_4;
+                const double r1_29 = X[l] * r2_14 + 1 * r2_4;
+                const double r2_29 = X[l] * r3_14 + 1 * r3_4;
+                const double r3_29 = X[l] * r4_14 + 1 * r4_4;
+                const double r0_30 = X[l] * r1_15 + 1 * r1_5;
+                const double r1_30 = X[l] * r2_15 + 1 * r2_5;
+                const double r2_30 = X[l] * r3_15 + 1 * r3_5;
+                const double r3_30 = X[l] * r4_15 + 1 * r4_5;
+                const double r0_31 = X[l] * r1_16 + 1 * r1_6;
+                const double r1_31 = X[l] * r2_16 + 1 * r2_6;
+                const double r2_31 = X[l] * r3_16 + 1 * r3_6;
+                const double r3_31 = X[l] * r4_16 + 1 * r4_6;
+                const double r0_32 = X[l] * r1_17 + 2 * r1_7;
+                const double r1_32 = X[l] * r2_17 + 2 * r2_7;
+                const double r2_32 = X[l] * r3_17 + 2 * r3_7;
+                const double r3_32 = X[l] * r4_17 + 2 * r4_7;
+                const double r0_33 = X[l] * r1_18 + 2 * r1_8;
+                const double r1_33 = X[l] * r2_18 + 2 * r2_8;
+                const double r2_33 = X[l] * r3_18 + 2 * r3_8;
+                const double r3_33 = X[l] * r4_18 + 2 * r4_8;
+                const double r0_34 = X[l] * r1_19 + 3 * r1_9;
+                const double r1_34 = X[l] * r2_19 + 3 * r2_9;
+                const double r2_34 = X[l] * r3_19 + 3 * r3_9;
+                const double r3_34 = X[l] * r4_19 + 3 * r4_9;
+                const double r0_35 = Z[l] * r1_20 + 4 * r1_10;
+                const double r1_35 = Z[l] * r2_20 + 4 * r2_10;
+                const double r2_35 = Z[l] * r3_20 + 4 * r3_10;
+                const double r0_36 = Y[l] * r1_20;
+                const double r1_36 = Y[l] * r2_20;
+                const double r2_36 = Y[l] * r3_20;
+                const double r0_37 = Y[l] * r1_21 + 1 * r1_10;
+                const double r1_37 = Y[l] * r2_21 + 1 * r2_10;
+                const double r2_37 = Y[l] * r3_21 + 1 * r3_10;
+                const double r0_38 = Y[l] * r1_22 + 2 * r1_11;
+                const double r1_38 = Y[l] * r2_22 + 2 * r2_11;
+                const double r2_38 = Y[l] * r3_22 + 2 * r3_11;
+                const double r0_39 = Y[l] * r1_23 + 3 * r1_12;
+                const double r1_39 = Y[l] * r2_23 + 3 * r2_12;
+                const double r2_39 = Y[l] * r3_23 + 3 * r3_12;
+                const double r0_40 = Y[l] * r1_24 + 4 * r1_13;
+                const double r1_40 = Y[l] * r2_24 + 4 * r2_13;
+                const double r2_40 = Y[l] * r3_24 + 4 * r3_13;
+                const double r0_41 = X[l] * r1_20;
+                const double r1_41 = X[l] * r2_20;
+                const double r2_41 = X[l] * r3_20;
+                const double r0_42 = X[l] * r1_21;
+                const double r1_42 = X[l] * r2_21;
+                const double r2_42 = X[l] * r3_21;
+                const double r0_43 = X[l] * r1_22;
+                const double r1_43 = X[l] * r2_22;
+                const double r2_43 = X[l] * r3_22;
+                const double r0_44 = X[l] * r1_23;
+                const double r1_44 = X[l] * r2_23;
+                const double r2_44 = X[l] * r3_23;
+                const double r0_45 = X[l] * r1_24;
+                const double r1_45 = X[l] * r2_24;
+                const double r2_45 = X[l] * r3_24;
+                const double r0_46 = X[l] * r1_25 + 1 * r1_10;
+                const double r1_46 = X[l] * r2_25 + 1 * r2_10;
+                const double r2_46 = X[l] * r3_25 + 1 * r3_10;
+                const double r0_47 = X[l] * r1_26 + 1 * r1_11;
+                const double r1_47 = X[l] * r2_26 + 1 * r2_11;
+                const double r2_47 = X[l] * r3_26 + 1 * r3_11;
+                const double r0_48 = X[l] * r1_27 + 1 * r1_12;
+                const double r1_48 = X[l] * r2_27 + 1 * r2_12;
+                const double r2_48 = X[l] * r3_27 + 1 * r3_12;
+                const double r0_49 = X[l] * r1_28 + 1 * r1_13;
+                const double r1_49 = X[l] * r2_28 + 1 * r2_13;
+                const double r2_49 = X[l] * r3_28 + 1 * r3_13;
+                const double r0_50 = X[l] * r1_29 + 2 * r1_14;
+                const double r1_50 = X[l] * r2_29 + 2 * r2_14;
+                const double r2_50 = X[l] * r3_29 + 2 * r3_14;
+                const double r0_51 = X[l] * r1_30 + 2 * r1_15;
+                const double r1_51 = X[l] * r2_30 + 2 * r2_15;
+                const double r2_51 = X[l] * r3_30 + 2 * r3_15;
+                const double r0_52 = X[l] * r1_31 + 2 * r1_16;
+                const double r1_52 = X[l] * r2_31 + 2 * r2_16;
+                const double r2_52 = X[l] * r3_31 + 2 * r3_16;
+                const double r0_53 = X[l] * r1_32 + 3 * r1_17;
+                const double r1_53 = X[l] * r2_32 + 3 * r2_17;
+                const double r2_53 = X[l] * r3_32 + 3 * r3_17;
+                const double r0_54 = X[l] * r1_33 + 3 * r1_18;
+                const double r1_54 = X[l] * r2_33 + 3 * r2_18;
+                const double r2_54 = X[l] * r3_33 + 3 * r3_18;
+                const double r0_55 = X[l] * r1_34 + 4 * r1_19;
+                const double r1_55 = X[l] * r2_34 + 4 * r2_19;
+                const double r2_55 = X[l] * r3_34 + 4 * r3_19;
+                const double r0_56 = Z[l] * r1_35 + 5 * r1_20;
+                const double r1_56 = Z[l] * r2_35 + 5 * r2_20;
+                const double r0_57 = Y[l] * r1_35;
+                const double r1_57 = Y[l] * r2_35;
+                const double r0_58 = Y[l] * r1_36 + 1 * r1_20;
+                const double r1_58 = Y[l] * r2_36 + 1 * r2_20;
+                const double r0_59 = Y[l] * r1_37 + 2 * r1_21;
+                const double r1_59 = Y[l] * r2_37 + 2 * r2_21;
+                const double r0_60 = Y[l] * r1_38 + 3 * r1_22;
+                const double r1_60 = Y[l] * r2_38 + 3 * r2_22;
+                const double r0_61 = Y[l] * r1_39 + 4 * r1_23;
+                const double r1_61 = Y[l] * r2_39 + 4 * r2_23;
+                const double r0_62 = Y[l] * r1_40 + 5 * r1_24;
+                const double r1_62 = Y[l] * r2_40 + 5 * r2_24;
+                const double r0_63 = X[l] * r1_35;
+                const double r1_63 = X[l] * r2_35;
+                const double r0_64 = X[l] * r1_36;
+                const double r1_64 = X[l] * r2_36;
+                const double r0_65 = X[l] * r1_37;
+                const double r1_65 = X[l] * r2_37;
+                const double r0_66 = X[l] * r1_38;
+                const double r1_66 = X[l] * r2_38;
+                const double r0_67 = X[l] * r1_39;
+                const double r1_67 = X[l] * r2_39;
+                const double r0_68 = X[l] * r1_40;
+                const double r1_68 = X[l] * r2_40;
+                const double r0_69 = X[l] * r1_41 + 1 * r1_20;
+                const double r1_69 = X[l] * r2_41 + 1 * r2_20;
+                const double r0_70 = X[l] * r1_42 + 1 * r1_21;
+                const double r1_70 = X[l] * r2_42 + 1 * r2_21;
+                const double r0_71 = X[l] * r1_43 + 1 * r1_22;
+                const double r1_71 = X[l] * r2_43 + 1 * r2_22;
+                const double r0_72 = X[l] * r1_44 + 1 * r1_23;
+                const double r1_72 = X[l] * r2_44 + 1 * r2_23;
+                const double r0_73 = X[l] * r1_45 + 1 * r1_24;
+                const double r1_73 = X[l] * r2_45 + 1 * r2_24;
+                const double r0_74 = X[l] * r1_46 + 2 * r1_25;
+                const double r1_74 = X[l] * r2_46 + 2 * r2_25;
+                const double r0_75 = X[l] * r1_47 + 2 * r1_26;
+                const double r1_75 = X[l] * r2_47 + 2 * r2_26;
+                const double r0_76 = X[l] * r1_48 + 2 * r1_27;
+                const double r1_76 = X[l] * r2_48 + 2 * r2_27;
+                const double r0_77 = X[l] * r1_49 + 2 * r1_28;
+                const double r1_77 = X[l] * r2_49 + 2 * r2_28;
+                const double r0_78 = X[l] * r1_50 + 3 * r1_29;
+                const double r1_78 = X[l] * r2_50 + 3 * r2_29;
+                const double r0_79 = X[l] * r1_51 + 3 * r1_30;
+                const double r1_79 = X[l] * r2_51 + 3 * r2_30;
+                const double r0_80 = X[l] * r1_52 + 3 * r1_31;
+                const double r1_80 = X[l] * r2_52 + 3 * r2_31;
+                const double r0_81 = X[l] * r1_53 + 4 * r1_32;
+                const double r1_81 = X[l] * r2_53 + 4 * r2_32;
+                const double r0_82 = X[l] * r1_54 + 4 * r1_33;
+                const double r1_82 = X[l] * r2_54 + 4 * r2_33;
+                const double r0_83 = X[l] * r1_55 + 5 * r1_34;
+                const double r1_83 = X[l] * r2_55 + 5 * r2_34;
+                const double r0_84 = Z[l] * r1_56 + 6 * r1_35;
+                const double r0_85 = Y[l] * r1_56;
+                const double r0_86 = Y[l] * r1_57 + 1 * r1_35;
+                const double r0_87 = Y[l] * r1_58 + 2 * r1_36;
+                const double r0_88 = Y[l] * r1_59 + 3 * r1_37;
+                const double r0_89 = Y[l] * r1_60 + 4 * r1_38;
+                const double r0_90 = Y[l] * r1_61 + 5 * r1_39;
+                const double r0_91 = Y[l] * r1_62 + 6 * r1_40;
+                const double r0_92 = X[l] * r1_56;
+                const double r0_93 = X[l] * r1_57;
+                const double r0_94 = X[l] * r1_58;
+                const double r0_95 = X[l] * r1_59;
+                const double r0_96 = X[l] * r1_60;
+                const double r0_97 = X[l] * r1_61;
+                const double r0_98 = X[l] * r1_62;
+                const double r0_99 = X[l] * r1_63 + 1 * r1_35;
+                const double r0_100 = X[l] * r1_64 + 1 * r1_36;
+                const double r0_101 = X[l] * r1_65 + 1 * r1_37;
+                const double r0_102 = X[l] * r1_66 + 1 * r1_38;
+                const double r0_103 = X[l] * r1_67 + 1 * r1_39;
+                const double r0_104 = X[l] * r1_68 + 1 * r1_40;
+                const double r0_105 = X[l] * r1_69 + 2 * r1_41;
+                const double r0_106 = X[l] * r1_70 + 2 * r1_42;
+                const double r0_107 = X[l] * r1_71 + 2 * r1_43;
+                const double r0_108 = X[l] * r1_72 + 2 * r1_44;
+                const double r0_109 = X[l] * r1_73 + 2 * r1_45;
+                const double r0_110 = X[l] * r1_74 + 3 * r1_46;
+                const double r0_111 = X[l] * r1_75 + 3 * r1_47;
+                const double r0_112 = X[l] * r1_76 + 3 * r1_48;
+                const double r0_113 = X[l] * r1_77 + 3 * r1_49;
+                const double r0_114 = X[l] * r1_78 + 4 * r1_50;
+                const double r0_115 = X[l] * r1_79 + 4 * r1_51;
+                const double r0_116 = X[l] * r1_80 + 4 * r1_52;
+                const double r0_117 = X[l] * r1_81 + 5 * r1_53;
+                const double r0_118 = X[l] * r1_82 + 5 * r1_54;
+                const double r0_119 = X[l] * r1_83 + 6 * r1_55;
+                R0[0 * RJ_NL + l] = r0_0;
+                R0[1 * RJ_NL + l] = r0_1;
+                R0[2 * RJ_NL + l] = r0_2;
+                R0[3 * RJ_NL + l] = r0_3;
+                R0[4 * RJ_NL + l] = r0_4;
+                R0[5 * RJ_NL + l] = r0_5;
+                R0[6 * RJ_NL + l] = r0_6;
+                R0[7 * RJ_NL + l] = r0_7;
+                R0[8 * RJ_NL + l] = r0_8;
+                R0[9 * RJ_NL + l] = r0_9;
+                R0[10 * RJ_NL + l] = r0_10;
+                R0[11 * RJ_NL + l] = r0_11;
+                R0[12 * RJ_NL + l] = r0_12;
+                R0[13 * RJ_NL + l] = r0_13;
+                R0[14 * RJ_NL + l] = r0_14;
+                R0[15 * RJ_NL + l] = r0_15;
+                R0[16 * RJ_NL + l] = r0_16;
+                R0[17 * RJ_NL + l] = r0_17;
+                R0[18 * RJ_NL + l] = r0_18;
+                R0[19 * RJ_NL + l] = r0_19;
+                R0[20 * RJ_NL + l] = r0_20;
+                R0[21 * RJ_NL + l] = r0_21;
+                R0[22 * RJ_NL + l] = r0_22;
+                R0[23 * RJ_NL + l] = r0_23;
+                R0[24 * RJ_NL + l] = r0_24;
+                R0[25 * RJ_NL + l] = r0_25;
+                R0[26 * RJ_NL + l] = r0_26;
+                R0[27 * RJ_NL + l] = r0_27;
+                R0[28 * RJ_NL + l] = r0_28;
+                R0[29 * RJ_NL + l] = r0_29;
+                R0[30 * RJ_NL + l] = r0_30;
+                R0[31 * RJ_NL + l] = r0_31;
+                R0[32 * RJ_NL + l] = r0_32;
+                R0[33 * RJ_NL + l] = r0_33;
+                R0[34 * RJ_NL + l] = r0_34;
+                R0[35 * RJ_NL + l] = r0_35;
+                R0[36 * RJ_NL + l] = r0_36;
+                R0[37 * RJ_NL + l] = r0_37;
+                R0[38 * RJ_NL + l] = r0_38;
+                R0[39 * RJ_NL + l] = r0_39;
+                R0[40 * RJ_NL + l] = r0_40;
+                R0[41 * RJ_NL + l] = r0_41;
+                R0[42 * RJ_NL + l] = r0_42;
+                R0[43 * RJ_NL + l] = r0_43;
+                R0[44 * RJ_NL + l] = r0_44;
+                R0[45 * RJ_NL + l] = r0_45;
+                R0[46 * RJ_NL + l] = r0_46;
+                R0[47 * RJ_NL + l] = r0_47;
+                R0[48 * RJ_NL + l] = r0_48;
+                R0[49 * RJ_NL + l] = r0_49;
+                R0[50 * RJ_NL + l] = r0_50;
+                R0[51 * RJ_NL + l] = r0_51;
+                R0[52 * RJ_NL + l] = r0_52;
+                R0[53 * RJ_NL + l] = r0_53;
+                R0[54 * RJ_NL + l] = r0_54;
+                R0[55 * RJ_NL + l] = r0_55;
+                R0[56 * RJ_NL + l] = r0_56;
+                R0[57 * RJ_NL + l] = r0_57;
+                R0[58 * RJ_NL + l] = r0_58;
+                R0[59 * RJ_NL + l] = r0_59;
+                R0[60 * RJ_NL + l] = r0_60;
+                R0[61 * RJ_NL + l] = r0_61;
+                R0[62 * RJ_NL + l] = r0_62;
+                R0[63 * RJ_NL + l] = r0_63;
+                R0[64 * RJ_NL + l] = r0_64;
+                R0[65 * RJ_NL + l] = r0_65;
+                R0[66 * RJ_NL + l] = r0_66;
+                R0[67 * RJ_NL + l] = r0_67;
+                R0[68 * RJ_NL + l] = r0_68;
+                R0[69 * RJ_NL + l] = r0_69;
+                R0[70 * RJ_NL + l] = r0_70;
+                R0[71 * RJ_NL + l] = r0_71;
+                R0[72 * RJ_NL + l] = r0_72;
+                R0[73 * RJ_NL + l] = r0_73;
+                R0[74 * RJ_NL + l] = r0_74;
+                R0[75 * RJ_NL + l] = r0_75;
+                R0[76 * RJ_NL + l] = r0_76;
+                R0[77 * RJ_NL + l] = r0_77;
+                R0[78 * RJ_NL + l] = r0_78;
+                R0[79 * RJ_NL + l] = r0_79;
+                R0[80 * RJ_NL + l] = r0_80;
+                R0[81 * RJ_NL + l] = r0_81;
+                R0[82 * RJ_NL + l] = r0_82;
+                R0[83 * RJ_NL + l] = r0_83;
+                R0[84 * RJ_NL + l] = r0_84;
+                R0[85 * RJ_NL + l] = r0_85;
+                R0[86 * RJ_NL + l] = r0_86;
+                R0[87 * RJ_NL + l] = r0_87;
+                R0[88 * RJ_NL + l] = r0_88;
+                R0[89 * RJ_NL + l] = r0_89;
+                R0[90 * RJ_NL + l] = r0_90;
+                R0[91 * RJ_NL + l] = r0_91;
+                R0[92 * RJ_NL + l] = r0_92;
+                R0[93 * RJ_NL + l] = r0_93;
+                R0[94 * RJ_NL + l] = r0_94;
+                R0[95 * RJ_NL + l] = r0_95;
+                R0[96 * RJ_NL + l] = r0_96;
+                R0[97 * RJ_NL + l] = r0_97;
+                R0[98 * RJ_NL + l] = r0_98;
+                R0[99 * RJ_NL + l] = r0_99;
+                R0[100 * RJ_NL + l] = r0_100;
+                R0[101 * RJ_NL + l] = r0_101;
+                R0[102 * RJ_NL + l] = r0_102;
+                R0[103 * RJ_NL + l] = r0_103;
+                R0[104 * RJ_NL + l] = r0_104;
+                R0[105 * RJ_NL + l] = r0_105;
+                R0[106 * RJ_NL + l] = r0_106;
+                R0[107 * RJ_NL + l] = r0_107;
+                R0[108 * RJ_NL + l] = r0_108;
+                R0[109 * RJ_NL + l] = r0_109;
+                R0[110 * RJ_NL + l] = r0_110;
+                R0[111 * RJ_NL + l] = r0_111;
+                R0[112 * RJ_NL + l] = r0_112;
+                R0[113 * RJ_NL + l] = r0_113;
+                R0[114 * RJ_NL + l] = r0_114;
+                R0[115 * RJ_NL + l] = r0_115;
+                R0[116 * RJ_NL + l] = r0_116;
+                R0[117 * RJ_NL + l] = r0_117;
+                R0[118 * RJ_NL + l] = r0_118;
+                R0[119 * RJ_NL + l] = r0_119;
+        }
+}
+
+static void rjrv_8(double *restrict R0, const double *restrict r, const double *restrict X, const double *restrict Y, const double *restrict Z)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                const double r0_0 = r[0 * RJ_NL + l];
+                const double r1_0 = r[1 * RJ_NL + l];
+                const double r2_0 = r[2 * RJ_NL + l];
+                const double r3_0 = r[3 * RJ_NL + l];
+                const double r4_0 = r[4 * RJ_NL + l];
+                const double r5_0 = r[5 * RJ_NL + l];
+                const double r6_0 = r[6 * RJ_NL + l];
+                const double r7_0 = r[7 * RJ_NL + l];
+                const double r8_0 = r[8 * RJ_NL + l];
+                const double r0_1 = Z[l] * r1_0;
+                const double r1_1 = Z[l] * r2_0;
+                const double r2_1 = Z[l] * r3_0;
+                const double r3_1 = Z[l] * r4_0;
+                const double r4_1 = Z[l] * r5_0;
+                const double r5_1 = Z[l] * r6_0;
+                const double r6_1 = Z[l] * r7_0;
+                const double r7_1 = Z[l] * r8_0;
+                const double r0_2 = Y[l] * r1_0;
+                const double r1_2 = Y[l] * r2_0;
+                const double r2_2 = Y[l] * r3_0;
+                const double r3_2 = Y[l] * r4_0;
+                const double r4_2 = Y[l] * r5_0;
+                const double r5_2 = Y[l] * r6_0;
+                const double r6_2 = Y[l] * r7_0;
+                const double r7_2 = Y[l] * r8_0;
+                const double r0_3 = X[l] * r1_0;
+                const double r1_3 = X[l] * r2_0;
+                const double r2_3 = X[l] * r3_0;
+                const double r3_3 = X[l] * r4_0;
+                const double r4_3 = X[l] * r5_0;
+                const double r5_3 = X[l] * r6_0;
+                const double r6_3 = X[l] * r7_0;
+                const double r7_3 = X[l] * r8_0;
+                const double r0_4 = Z[l] * r1_1 + 1 * r1_0;
+                const double r1_4 = Z[l] * r2_1 + 1 * r2_0;
+                const double r2_4 = Z[l] * r3_1 + 1 * r3_0;
+                const double r3_4 = Z[l] * r4_1 + 1 * r4_0;
+                const double r4_4 = Z[l] * r5_1 + 1 * r5_0;
+                const double r5_4 = Z[l] * r6_1 + 1 * r6_0;
+                const double r6_4 = Z[l] * r7_1 + 1 * r7_0;
+                const double r0_5 = Y[l] * r1_1;
+                const double r1_5 = Y[l] * r2_1;
+                const double r2_5 = Y[l] * r3_1;
+                const double r3_5 = Y[l] * r4_1;
+                const double r4_5 = Y[l] * r5_1;
+                const double r5_5 = Y[l] * r6_1;
+                const double r6_5 = Y[l] * r7_1;
+                const double r0_6 = Y[l] * r1_2 + 1 * r1_0;
+                const double r1_6 = Y[l] * r2_2 + 1 * r2_0;
+                const double r2_6 = Y[l] * r3_2 + 1 * r3_0;
+                const double r3_6 = Y[l] * r4_2 + 1 * r4_0;
+                const double r4_6 = Y[l] * r5_2 + 1 * r5_0;
+                const double r5_6 = Y[l] * r6_2 + 1 * r6_0;
+                const double r6_6 = Y[l] * r7_2 + 1 * r7_0;
+                const double r0_7 = X[l] * r1_1;
+                const double r1_7 = X[l] * r2_1;
+                const double r2_7 = X[l] * r3_1;
+                const double r3_7 = X[l] * r4_1;
+                const double r4_7 = X[l] * r5_1;
+                const double r5_7 = X[l] * r6_1;
+                const double r6_7 = X[l] * r7_1;
+                const double r0_8 = X[l] * r1_2;
+                const double r1_8 = X[l] * r2_2;
+                const double r2_8 = X[l] * r3_2;
+                const double r3_8 = X[l] * r4_2;
+                const double r4_8 = X[l] * r5_2;
+                const double r5_8 = X[l] * r6_2;
+                const double r6_8 = X[l] * r7_2;
+                const double r0_9 = X[l] * r1_3 + 1 * r1_0;
+                const double r1_9 = X[l] * r2_3 + 1 * r2_0;
+                const double r2_9 = X[l] * r3_3 + 1 * r3_0;
+                const double r3_9 = X[l] * r4_3 + 1 * r4_0;
+                const double r4_9 = X[l] * r5_3 + 1 * r5_0;
+                const double r5_9 = X[l] * r6_3 + 1 * r6_0;
+                const double r6_9 = X[l] * r7_3 + 1 * r7_0;
+                const double r0_10 = Z[l] * r1_4 + 2 * r1_1;
+                const double r1_10 = Z[l] * r2_4 + 2 * r2_1;
+                const double r2_10 = Z[l] * r3_4 + 2 * r3_1;
+                const double r3_10 = Z[l] * r4_4 + 2 * r4_1;
+                const double r4_10 = Z[l] * r5_4 + 2 * r5_1;
+                const double r5_10 = Z[l] * r6_4 + 2 * r6_1;
+                const double r0_11 = Y[l] * r1_4;
+                const double r1_11 = Y[l] * r2_4;
+                const double r2_11 = Y[l] * r3_4;
+                const double r3_11 = Y[l] * r4_4;
+                const double r4_11 = Y[l] * r5_4;
+                const double r5_11 = Y[l] * r6_4;
+                const double r0_12 = Y[l] * r1_5 + 1 * r1_1;
+                const double r1_12 = Y[l] * r2_5 + 1 * r2_1;
+                const double r2_12 = Y[l] * r3_5 + 1 * r3_1;
+                const double r3_12 = Y[l] * r4_5 + 1 * r4_1;
+                const double r4_12 = Y[l] * r5_5 + 1 * r5_1;
+                const double r5_12 = Y[l] * r6_5 + 1 * r6_1;
+                const double r0_13 = Y[l] * r1_6 + 2 * r1_2;
+                const double r1_13 = Y[l] * r2_6 + 2 * r2_2;
+                const double r2_13 = Y[l] * r3_6 + 2 * r3_2;
+                const double r3_13 = Y[l] * r4_6 + 2 * r4_2;
+                const double r4_13 = Y[l] * r5_6 + 2 * r5_2;
+                const double r5_13 = Y[l] * r6_6 + 2 * r6_2;
+                const double r0_14 = X[l] * r1_4;
+                const double r1_14 = X[l] * r2_4;
+                const double r2_14 = X[l] * r3_4;
+                const double r3_14 = X[l] * r4_4;
+                const double r4_14 = X[l] * r5_4;
+                const double r5_14 = X[l] * r6_4;
+                const double r0_15 = X[l] * r1_5;
+                const double r1_15 = X[l] * r2_5;
+                const double r2_15 = X[l] * r3_5;
+                const double r3_15 = X[l] * r4_5;
+                const double r4_15 = X[l] * r5_5;
+                const double r5_15 = X[l] * r6_5;
+                const double r0_16 = X[l] * r1_6;
+                const double r1_16 = X[l] * r2_6;
+                const double r2_16 = X[l] * r3_6;
+                const double r3_16 = X[l] * r4_6;
+                const double r4_16 = X[l] * r5_6;
+                const double r5_16 = X[l] * r6_6;
+                const double r0_17 = X[l] * r1_7 + 1 * r1_1;
+                const double r1_17 = X[l] * r2_7 + 1 * r2_1;
+                const double r2_17 = X[l] * r3_7 + 1 * r3_1;
+                const double r3_17 = X[l] * r4_7 + 1 * r4_1;
+                const double r4_17 = X[l] * r5_7 + 1 * r5_1;
+                const double r5_17 = X[l] * r6_7 + 1 * r6_1;
+                const double r0_18 = X[l] * r1_8 + 1 * r1_2;
+                const double r1_18 = X[l] * r2_8 + 1 * r2_2;
+                const double r2_18 = X[l] * r3_8 + 1 * r3_2;
+                const double r3_18 = X[l] * r4_8 + 1 * r4_2;
+                const double r4_18 = X[l] * r5_8 + 1 * r5_2;
+                const double r5_18 = X[l] * r6_8 + 1 * r6_2;
+                const double r0_19 = X[l] * r1_9 + 2 * r1_3;
+                const double r1_19 = X[l] * r2_9 + 2 * r2_3;
+                const double r2_19 = X[l] * r3_9 + 2 * r3_3;
+                const double r3_19 = X[l] * r4_9 + 2 * r4_3;
+                const double r4_19 = X[l] * r5_9 + 2 * r5_3;
+                const double r5_19 = X[l] * r6_9 + 2 * r6_3;
+                const double r0_20 = Z[l] * r1_10 + 3 * r1_4;
+                const double r1_20 = Z[l] * r2_10 + 3 * r2_4;
+                const double r2_20 = Z[l] * r3_10 + 3 * r3_4;
+                const double r3_20 = Z[l] * r4_10 + 3 * r4_4;
+                const double r4_20 = Z[l] * r5_10 + 3 * r5_4;
+                const double r0_21 = Y[l] * r1_10;
+                const double r1_21 = Y[l] * r2_10;
+                const double r2_21 = Y[l] * r3_10;
+                const double r3_21 = Y[l] * r4_10;
+                const double r4_21 = Y[l] * r5_10;
+                const double r0_22 = Y[l] * r1_11 + 1 * r1_4;
+                const double r1_22 = Y[l] * r2_11 + 1 * r2_4;
+                const double r2_22 = Y[l] * r3_11 + 1 * r3_4;
+                const double r3_22 = Y[l] * r4_11 + 1 * r4_4;
+                const double r4_22 = Y[l] * r5_11 + 1 * r5_4;
+                const double r0_23 = Y[l] * r1_12 + 2 * r1_5;
+                const double r1_23 = Y[l] * r2_12 + 2 * r2_5;
+                const double r2_23 = Y[l] * r3_12 + 2 * r3_5;
+                const double r3_23 = Y[l] * r4_12 + 2 * r4_5;
+                const double r4_23 = Y[l] * r5_12 + 2 * r5_5;
+                const double r0_24 = Y[l] * r1_13 + 3 * r1_6;
+                const double r1_24 = Y[l] * r2_13 + 3 * r2_6;
+                const double r2_24 = Y[l] * r3_13 + 3 * r3_6;
+                const double r3_24 = Y[l] * r4_13 + 3 * r4_6;
+                const double r4_24 = Y[l] * r5_13 + 3 * r5_6;
+                const double r0_25 = X[l] * r1_10;
+                const double r1_25 = X[l] * r2_10;
+                const double r2_25 = X[l] * r3_10;
+                const double r3_25 = X[l] * r4_10;
+                const double r4_25 = X[l] * r5_10;
+                const double r0_26 = X[l] * r1_11;
+                const double r1_26 = X[l] * r2_11;
+                const double r2_26 = X[l] * r3_11;
+                const double r3_26 = X[l] * r4_11;
+                const double r4_26 = X[l] * r5_11;
+                const double r0_27 = X[l] * r1_12;
+                const double r1_27 = X[l] * r2_12;
+                const double r2_27 = X[l] * r3_12;
+                const double r3_27 = X[l] * r4_12;
+                const double r4_27 = X[l] * r5_12;
+                const double r0_28 = X[l] * r1_13;
+                const double r1_28 = X[l] * r2_13;
+                const double r2_28 = X[l] * r3_13;
+                const double r3_28 = X[l] * r4_13;
+                const double r4_28 = X[l] * r5_13;
+                const double r0_29 = X[l] * r1_14 + 1 * r1_4;
+                const double r1_29 = X[l] * r2_14 + 1 * r2_4;
+                const double r2_29 = X[l] * r3_14 + 1 * r3_4;
+                const double r3_29 = X[l] * r4_14 + 1 * r4_4;
+                const double r4_29 = X[l] * r5_14 + 1 * r5_4;
+                const double r0_30 = X[l] * r1_15 + 1 * r1_5;
+                const double r1_30 = X[l] * r2_15 + 1 * r2_5;
+                const double r2_30 = X[l] * r3_15 + 1 * r3_5;
+                const double r3_30 = X[l] * r4_15 + 1 * r4_5;
+                const double r4_30 = X[l] * r5_15 + 1 * r5_5;
+                const double r0_31 = X[l] * r1_16 + 1 * r1_6;
+                const double r1_31 = X[l] * r2_16 + 1 * r2_6;
+                const double r2_31 = X[l] * r3_16 + 1 * r3_6;
+                const double r3_31 = X[l] * r4_16 + 1 * r4_6;
+                const double r4_31 = X[l] * r5_16 + 1 * r5_6;
+                const double r0_32 = X[l] * r1_17 + 2 * r1_7;
+                const double r1_32 = X[l] * r2_17 + 2 * r2_7;
+                const double r2_32 = X[l] * r3_17 + 2 * r3_7;
+                const double r3_32 = X[l] * r4_17 + 2 * r4_7;
+                const double r4_32 = X[l] * r5_17 + 2 * r5_7;
+                const double r0_33 = X[l] * r1_18 + 2 * r1_8;
+                const double r1_33 = X[l] * r2_18 + 2 * r2_8;
+                const double r2_33 = X[l] * r3_18 + 2 * r3_8;
+                const double r3_33 = X[l] * r4_18 + 2 * r4_8;
+                const double r4_33 = X[l] * r5_18 + 2 * r5_8;
+                const double r0_34 = X[l] * r1_19 + 3 * r1_9;
+                const double r1_34 = X[l] * r2_19 + 3 * r2_9;
+                const double r2_34 = X[l] * r3_19 + 3 * r3_9;
+                const double r3_34 = X[l] * r4_19 + 3 * r4_9;
+                const double r4_34 = X[l] * r5_19 + 3 * r5_9;
+                const double r0_35 = Z[l] * r1_20 + 4 * r1_10;
+                const double r1_35 = Z[l] * r2_20 + 4 * r2_10;
+                const double r2_35 = Z[l] * r3_20 + 4 * r3_10;
+                const double r3_35 = Z[l] * r4_20 + 4 * r4_10;
+                const double r0_36 = Y[l] * r1_20;
+                const double r1_36 = Y[l] * r2_20;
+                const double r2_36 = Y[l] * r3_20;
+                const double r3_36 = Y[l] * r4_20;
+                const double r0_37 = Y[l] * r1_21 + 1 * r1_10;
+                const double r1_37 = Y[l] * r2_21 + 1 * r2_10;
+                const double r2_37 = Y[l] * r3_21 + 1 * r3_10;
+                const double r3_37 = Y[l] * r4_21 + 1 * r4_10;
+                const double r0_38 = Y[l] * r1_22 + 2 * r1_11;
+                const double r1_38 = Y[l] * r2_22 + 2 * r2_11;
+                const double r2_38 = Y[l] * r3_22 + 2 * r3_11;
+                const double r3_38 = Y[l] * r4_22 + 2 * r4_11;
+                const double r0_39 = Y[l] * r1_23 + 3 * r1_12;
+                const double r1_39 = Y[l] * r2_23 + 3 * r2_12;
+                const double r2_39 = Y[l] * r3_23 + 3 * r3_12;
+                const double r3_39 = Y[l] * r4_23 + 3 * r4_12;
+                const double r0_40 = Y[l] * r1_24 + 4 * r1_13;
+                const double r1_40 = Y[l] * r2_24 + 4 * r2_13;
+                const double r2_40 = Y[l] * r3_24 + 4 * r3_13;
+                const double r3_40 = Y[l] * r4_24 + 4 * r4_13;
+                const double r0_41 = X[l] * r1_20;
+                const double r1_41 = X[l] * r2_20;
+                const double r2_41 = X[l] * r3_20;
+                const double r3_41 = X[l] * r4_20;
+                const double r0_42 = X[l] * r1_21;
+                const double r1_42 = X[l] * r2_21;
+                const double r2_42 = X[l] * r3_21;
+                const double r3_42 = X[l] * r4_21;
+                const double r0_43 = X[l] * r1_22;
+                const double r1_43 = X[l] * r2_22;
+                const double r2_43 = X[l] * r3_22;
+                const double r3_43 = X[l] * r4_22;
+                const double r0_44 = X[l] * r1_23;
+                const double r1_44 = X[l] * r2_23;
+                const double r2_44 = X[l] * r3_23;
+                const double r3_44 = X[l] * r4_23;
+                const double r0_45 = X[l] * r1_24;
+                const double r1_45 = X[l] * r2_24;
+                const double r2_45 = X[l] * r3_24;
+                const double r3_45 = X[l] * r4_24;
+                const double r0_46 = X[l] * r1_25 + 1 * r1_10;
+                const double r1_46 = X[l] * r2_25 + 1 * r2_10;
+                const double r2_46 = X[l] * r3_25 + 1 * r3_10;
+                const double r3_46 = X[l] * r4_25 + 1 * r4_10;
+                const double r0_47 = X[l] * r1_26 + 1 * r1_11;
+                const double r1_47 = X[l] * r2_26 + 1 * r2_11;
+                const double r2_47 = X[l] * r3_26 + 1 * r3_11;
+                const double r3_47 = X[l] * r4_26 + 1 * r4_11;
+                const double r0_48 = X[l] * r1_27 + 1 * r1_12;
+                const double r1_48 = X[l] * r2_27 + 1 * r2_12;
+                const double r2_48 = X[l] * r3_27 + 1 * r3_12;
+                const double r3_48 = X[l] * r4_27 + 1 * r4_12;
+                const double r0_49 = X[l] * r1_28 + 1 * r1_13;
+                const double r1_49 = X[l] * r2_28 + 1 * r2_13;
+                const double r2_49 = X[l] * r3_28 + 1 * r3_13;
+                const double r3_49 = X[l] * r4_28 + 1 * r4_13;
+                const double r0_50 = X[l] * r1_29 + 2 * r1_14;
+                const double r1_50 = X[l] * r2_29 + 2 * r2_14;
+                const double r2_50 = X[l] * r3_29 + 2 * r3_14;
+                const double r3_50 = X[l] * r4_29 + 2 * r4_14;
+                const double r0_51 = X[l] * r1_30 + 2 * r1_15;
+                const double r1_51 = X[l] * r2_30 + 2 * r2_15;
+                const double r2_51 = X[l] * r3_30 + 2 * r3_15;
+                const double r3_51 = X[l] * r4_30 + 2 * r4_15;
+                const double r0_52 = X[l] * r1_31 + 2 * r1_16;
+                const double r1_52 = X[l] * r2_31 + 2 * r2_16;
+                const double r2_52 = X[l] * r3_31 + 2 * r3_16;
+                const double r3_52 = X[l] * r4_31 + 2 * r4_16;
+                const double r0_53 = X[l] * r1_32 + 3 * r1_17;
+                const double r1_53 = X[l] * r2_32 + 3 * r2_17;
+                const double r2_53 = X[l] * r3_32 + 3 * r3_17;
+                const double r3_53 = X[l] * r4_32 + 3 * r4_17;
+                const double r0_54 = X[l] * r1_33 + 3 * r1_18;
+                const double r1_54 = X[l] * r2_33 + 3 * r2_18;
+                const double r2_54 = X[l] * r3_33 + 3 * r3_18;
+                const double r3_54 = X[l] * r4_33 + 3 * r4_18;
+                const double r0_55 = X[l] * r1_34 + 4 * r1_19;
+                const double r1_55 = X[l] * r2_34 + 4 * r2_19;
+                const double r2_55 = X[l] * r3_34 + 4 * r3_19;
+                const double r3_55 = X[l] * r4_34 + 4 * r4_19;
+                const double r0_56 = Z[l] * r1_35 + 5 * r1_20;
+                const double r1_56 = Z[l] * r2_35 + 5 * r2_20;
+                const double r2_56 = Z[l] * r3_35 + 5 * r3_20;
+                const double r0_57 = Y[l] * r1_35;
+                const double r1_57 = Y[l] * r2_35;
+                const double r2_57 = Y[l] * r3_35;
+                const double r0_58 = Y[l] * r1_36 + 1 * r1_20;
+                const double r1_58 = Y[l] * r2_36 + 1 * r2_20;
+                const double r2_58 = Y[l] * r3_36 + 1 * r3_20;
+                const double r0_59 = Y[l] * r1_37 + 2 * r1_21;
+                const double r1_59 = Y[l] * r2_37 + 2 * r2_21;
+                const double r2_59 = Y[l] * r3_37 + 2 * r3_21;
+                const double r0_60 = Y[l] * r1_38 + 3 * r1_22;
+                const double r1_60 = Y[l] * r2_38 + 3 * r2_22;
+                const double r2_60 = Y[l] * r3_38 + 3 * r3_22;
+                const double r0_61 = Y[l] * r1_39 + 4 * r1_23;
+                const double r1_61 = Y[l] * r2_39 + 4 * r2_23;
+                const double r2_61 = Y[l] * r3_39 + 4 * r3_23;
+                const double r0_62 = Y[l] * r1_40 + 5 * r1_24;
+                const double r1_62 = Y[l] * r2_40 + 5 * r2_24;
+                const double r2_62 = Y[l] * r3_40 + 5 * r3_24;
+                const double r0_63 = X[l] * r1_35;
+                const double r1_63 = X[l] * r2_35;
+                const double r2_63 = X[l] * r3_35;
+                const double r0_64 = X[l] * r1_36;
+                const double r1_64 = X[l] * r2_36;
+                const double r2_64 = X[l] * r3_36;
+                const double r0_65 = X[l] * r1_37;
+                const double r1_65 = X[l] * r2_37;
+                const double r2_65 = X[l] * r3_37;
+                const double r0_66 = X[l] * r1_38;
+                const double r1_66 = X[l] * r2_38;
+                const double r2_66 = X[l] * r3_38;
+                const double r0_67 = X[l] * r1_39;
+                const double r1_67 = X[l] * r2_39;
+                const double r2_67 = X[l] * r3_39;
+                const double r0_68 = X[l] * r1_40;
+                const double r1_68 = X[l] * r2_40;
+                const double r2_68 = X[l] * r3_40;
+                const double r0_69 = X[l] * r1_41 + 1 * r1_20;
+                const double r1_69 = X[l] * r2_41 + 1 * r2_20;
+                const double r2_69 = X[l] * r3_41 + 1 * r3_20;
+                const double r0_70 = X[l] * r1_42 + 1 * r1_21;
+                const double r1_70 = X[l] * r2_42 + 1 * r2_21;
+                const double r2_70 = X[l] * r3_42 + 1 * r3_21;
+                const double r0_71 = X[l] * r1_43 + 1 * r1_22;
+                const double r1_71 = X[l] * r2_43 + 1 * r2_22;
+                const double r2_71 = X[l] * r3_43 + 1 * r3_22;
+                const double r0_72 = X[l] * r1_44 + 1 * r1_23;
+                const double r1_72 = X[l] * r2_44 + 1 * r2_23;
+                const double r2_72 = X[l] * r3_44 + 1 * r3_23;
+                const double r0_73 = X[l] * r1_45 + 1 * r1_24;
+                const double r1_73 = X[l] * r2_45 + 1 * r2_24;
+                const double r2_73 = X[l] * r3_45 + 1 * r3_24;
+                const double r0_74 = X[l] * r1_46 + 2 * r1_25;
+                const double r1_74 = X[l] * r2_46 + 2 * r2_25;
+                const double r2_74 = X[l] * r3_46 + 2 * r3_25;
+                const double r0_75 = X[l] * r1_47 + 2 * r1_26;
+                const double r1_75 = X[l] * r2_47 + 2 * r2_26;
+                const double r2_75 = X[l] * r3_47 + 2 * r3_26;
+                const double r0_76 = X[l] * r1_48 + 2 * r1_27;
+                const double r1_76 = X[l] * r2_48 + 2 * r2_27;
+                const double r2_76 = X[l] * r3_48 + 2 * r3_27;
+                const double r0_77 = X[l] * r1_49 + 2 * r1_28;
+                const double r1_77 = X[l] * r2_49 + 2 * r2_28;
+                const double r2_77 = X[l] * r3_49 + 2 * r3_28;
+                const double r0_78 = X[l] * r1_50 + 3 * r1_29;
+                const double r1_78 = X[l] * r2_50 + 3 * r2_29;
+                const double r2_78 = X[l] * r3_50 + 3 * r3_29;
+                const double r0_79 = X[l] * r1_51 + 3 * r1_30;
+                const double r1_79 = X[l] * r2_51 + 3 * r2_30;
+                const double r2_79 = X[l] * r3_51 + 3 * r3_30;
+                const double r0_80 = X[l] * r1_52 + 3 * r1_31;
+                const double r1_80 = X[l] * r2_52 + 3 * r2_31;
+                const double r2_80 = X[l] * r3_52 + 3 * r3_31;
+                const double r0_81 = X[l] * r1_53 + 4 * r1_32;
+                const double r1_81 = X[l] * r2_53 + 4 * r2_32;
+                const double r2_81 = X[l] * r3_53 + 4 * r3_32;
+                const double r0_82 = X[l] * r1_54 + 4 * r1_33;
+                const double r1_82 = X[l] * r2_54 + 4 * r2_33;
+                const double r2_82 = X[l] * r3_54 + 4 * r3_33;
+                const double r0_83 = X[l] * r1_55 + 5 * r1_34;
+                const double r1_83 = X[l] * r2_55 + 5 * r2_34;
+                const double r2_83 = X[l] * r3_55 + 5 * r3_34;
+                const double r0_84 = Z[l] * r1_56 + 6 * r1_35;
+                const double r1_84 = Z[l] * r2_56 + 6 * r2_35;
+                const double r0_85 = Y[l] * r1_56;
+                const double r1_85 = Y[l] * r2_56;
+                const double r0_86 = Y[l] * r1_57 + 1 * r1_35;
+                const double r1_86 = Y[l] * r2_57 + 1 * r2_35;
+                const double r0_87 = Y[l] * r1_58 + 2 * r1_36;
+                const double r1_87 = Y[l] * r2_58 + 2 * r2_36;
+                const double r0_88 = Y[l] * r1_59 + 3 * r1_37;
+                const double r1_88 = Y[l] * r2_59 + 3 * r2_37;
+                const double r0_89 = Y[l] * r1_60 + 4 * r1_38;
+                const double r1_89 = Y[l] * r2_60 + 4 * r2_38;
+                const double r0_90 = Y[l] * r1_61 + 5 * r1_39;
+                const double r1_90 = Y[l] * r2_61 + 5 * r2_39;
+                const double r0_91 = Y[l] * r1_62 + 6 * r1_40;
+                const double r1_91 = Y[l] * r2_62 + 6 * r2_40;
+                const double r0_92 = X[l] * r1_56;
+                const double r1_92 = X[l] * r2_56;
+                const double r0_93 = X[l] * r1_57;
+                const double r1_93 = X[l] * r2_57;
+                const double r0_94 = X[l] * r1_58;
+                const double r1_94 = X[l] * r2_58;
+                const double r0_95 = X[l] * r1_59;
+                const double r1_95 = X[l] * r2_59;
+                const double r0_96 = X[l] * r1_60;
+                const double r1_96 = X[l] * r2_60;
+                const double r0_97 = X[l] * r1_61;
+                const double r1_97 = X[l] * r2_61;
+                const double r0_98 = X[l] * r1_62;
+                const double r1_98 = X[l] * r2_62;
+                const double r0_99 = X[l] * r1_63 + 1 * r1_35;
+                const double r1_99 = X[l] * r2_63 + 1 * r2_35;
+                const double r0_100 = X[l] * r1_64 + 1 * r1_36;
+                const double r1_100 = X[l] * r2_64 + 1 * r2_36;
+                const double r0_101 = X[l] * r1_65 + 1 * r1_37;
+                const double r1_101 = X[l] * r2_65 + 1 * r2_37;
+                const double r0_102 = X[l] * r1_66 + 1 * r1_38;
+                const double r1_102 = X[l] * r2_66 + 1 * r2_38;
+                const double r0_103 = X[l] * r1_67 + 1 * r1_39;
+                const double r1_103 = X[l] * r2_67 + 1 * r2_39;
+                const double r0_104 = X[l] * r1_68 + 1 * r1_40;
+                const double r1_104 = X[l] * r2_68 + 1 * r2_40;
+                const double r0_105 = X[l] * r1_69 + 2 * r1_41;
+                const double r1_105 = X[l] * r2_69 + 2 * r2_41;
+                const double r0_106 = X[l] * r1_70 + 2 * r1_42;
+                const double r1_106 = X[l] * r2_70 + 2 * r2_42;
+                const double r0_107 = X[l] * r1_71 + 2 * r1_43;
+                const double r1_107 = X[l] * r2_71 + 2 * r2_43;
+                const double r0_108 = X[l] * r1_72 + 2 * r1_44;
+                const double r1_108 = X[l] * r2_72 + 2 * r2_44;
+                const double r0_109 = X[l] * r1_73 + 2 * r1_45;
+                const double r1_109 = X[l] * r2_73 + 2 * r2_45;
+                const double r0_110 = X[l] * r1_74 + 3 * r1_46;
+                const double r1_110 = X[l] * r2_74 + 3 * r2_46;
+                const double r0_111 = X[l] * r1_75 + 3 * r1_47;
+                const double r1_111 = X[l] * r2_75 + 3 * r2_47;
+                const double r0_112 = X[l] * r1_76 + 3 * r1_48;
+                const double r1_112 = X[l] * r2_76 + 3 * r2_48;
+                const double r0_113 = X[l] * r1_77 + 3 * r1_49;
+                const double r1_113 = X[l] * r2_77 + 3 * r2_49;
+                const double r0_114 = X[l] * r1_78 + 4 * r1_50;
+                const double r1_114 = X[l] * r2_78 + 4 * r2_50;
+                const double r0_115 = X[l] * r1_79 + 4 * r1_51;
+                const double r1_115 = X[l] * r2_79 + 4 * r2_51;
+                const double r0_116 = X[l] * r1_80 + 4 * r1_52;
+                const double r1_116 = X[l] * r2_80 + 4 * r2_52;
+                const double r0_117 = X[l] * r1_81 + 5 * r1_53;
+                const double r1_117 = X[l] * r2_81 + 5 * r2_53;
+                const double r0_118 = X[l] * r1_82 + 5 * r1_54;
+                const double r1_118 = X[l] * r2_82 + 5 * r2_54;
+                const double r0_119 = X[l] * r1_83 + 6 * r1_55;
+                const double r1_119 = X[l] * r2_83 + 6 * r2_55;
+                const double r0_120 = Z[l] * r1_84 + 7 * r1_56;
+                const double r0_121 = Y[l] * r1_84;
+                const double r0_122 = Y[l] * r1_85 + 1 * r1_56;
+                const double r0_123 = Y[l] * r1_86 + 2 * r1_57;
+                const double r0_124 = Y[l] * r1_87 + 3 * r1_58;
+                const double r0_125 = Y[l] * r1_88 + 4 * r1_59;
+                const double r0_126 = Y[l] * r1_89 + 5 * r1_60;
+                const double r0_127 = Y[l] * r1_90 + 6 * r1_61;
+                const double r0_128 = Y[l] * r1_91 + 7 * r1_62;
+                const double r0_129 = X[l] * r1_84;
+                const double r0_130 = X[l] * r1_85;
+                const double r0_131 = X[l] * r1_86;
+                const double r0_132 = X[l] * r1_87;
+                const double r0_133 = X[l] * r1_88;
+                const double r0_134 = X[l] * r1_89;
+                const double r0_135 = X[l] * r1_90;
+                const double r0_136 = X[l] * r1_91;
+                const double r0_137 = X[l] * r1_92 + 1 * r1_56;
+                const double r0_138 = X[l] * r1_93 + 1 * r1_57;
+                const double r0_139 = X[l] * r1_94 + 1 * r1_58;
+                const double r0_140 = X[l] * r1_95 + 1 * r1_59;
+                const double r0_141 = X[l] * r1_96 + 1 * r1_60;
+                const double r0_142 = X[l] * r1_97 + 1 * r1_61;
+                const double r0_143 = X[l] * r1_98 + 1 * r1_62;
+                const double r0_144 = X[l] * r1_99 + 2 * r1_63;
+                const double r0_145 = X[l] * r1_100 + 2 * r1_64;
+                const double r0_146 = X[l] * r1_101 + 2 * r1_65;
+                const double r0_147 = X[l] * r1_102 + 2 * r1_66;
+                const double r0_148 = X[l] * r1_103 + 2 * r1_67;
+                const double r0_149 = X[l] * r1_104 + 2 * r1_68;
+                const double r0_150 = X[l] * r1_105 + 3 * r1_69;
+                const double r0_151 = X[l] * r1_106 + 3 * r1_70;
+                const double r0_152 = X[l] * r1_107 + 3 * r1_71;
+                const double r0_153 = X[l] * r1_108 + 3 * r1_72;
+                const double r0_154 = X[l] * r1_109 + 3 * r1_73;
+                const double r0_155 = X[l] * r1_110 + 4 * r1_74;
+                const double r0_156 = X[l] * r1_111 + 4 * r1_75;
+                const double r0_157 = X[l] * r1_112 + 4 * r1_76;
+                const double r0_158 = X[l] * r1_113 + 4 * r1_77;
+                const double r0_159 = X[l] * r1_114 + 5 * r1_78;
+                const double r0_160 = X[l] * r1_115 + 5 * r1_79;
+                const double r0_161 = X[l] * r1_116 + 5 * r1_80;
+                const double r0_162 = X[l] * r1_117 + 6 * r1_81;
+                const double r0_163 = X[l] * r1_118 + 6 * r1_82;
+                const double r0_164 = X[l] * r1_119 + 7 * r1_83;
+                R0[0 * RJ_NL + l] = r0_0;
+                R0[1 * RJ_NL + l] = r0_1;
+                R0[2 * RJ_NL + l] = r0_2;
+                R0[3 * RJ_NL + l] = r0_3;
+                R0[4 * RJ_NL + l] = r0_4;
+                R0[5 * RJ_NL + l] = r0_5;
+                R0[6 * RJ_NL + l] = r0_6;
+                R0[7 * RJ_NL + l] = r0_7;
+                R0[8 * RJ_NL + l] = r0_8;
+                R0[9 * RJ_NL + l] = r0_9;
+                R0[10 * RJ_NL + l] = r0_10;
+                R0[11 * RJ_NL + l] = r0_11;
+                R0[12 * RJ_NL + l] = r0_12;
+                R0[13 * RJ_NL + l] = r0_13;
+                R0[14 * RJ_NL + l] = r0_14;
+                R0[15 * RJ_NL + l] = r0_15;
+                R0[16 * RJ_NL + l] = r0_16;
+                R0[17 * RJ_NL + l] = r0_17;
+                R0[18 * RJ_NL + l] = r0_18;
+                R0[19 * RJ_NL + l] = r0_19;
+                R0[20 * RJ_NL + l] = r0_20;
+                R0[21 * RJ_NL + l] = r0_21;
+                R0[22 * RJ_NL + l] = r0_22;
+                R0[23 * RJ_NL + l] = r0_23;
+                R0[24 * RJ_NL + l] = r0_24;
+                R0[25 * RJ_NL + l] = r0_25;
+                R0[26 * RJ_NL + l] = r0_26;
+                R0[27 * RJ_NL + l] = r0_27;
+                R0[28 * RJ_NL + l] = r0_28;
+                R0[29 * RJ_NL + l] = r0_29;
+                R0[30 * RJ_NL + l] = r0_30;
+                R0[31 * RJ_NL + l] = r0_31;
+                R0[32 * RJ_NL + l] = r0_32;
+                R0[33 * RJ_NL + l] = r0_33;
+                R0[34 * RJ_NL + l] = r0_34;
+                R0[35 * RJ_NL + l] = r0_35;
+                R0[36 * RJ_NL + l] = r0_36;
+                R0[37 * RJ_NL + l] = r0_37;
+                R0[38 * RJ_NL + l] = r0_38;
+                R0[39 * RJ_NL + l] = r0_39;
+                R0[40 * RJ_NL + l] = r0_40;
+                R0[41 * RJ_NL + l] = r0_41;
+                R0[42 * RJ_NL + l] = r0_42;
+                R0[43 * RJ_NL + l] = r0_43;
+                R0[44 * RJ_NL + l] = r0_44;
+                R0[45 * RJ_NL + l] = r0_45;
+                R0[46 * RJ_NL + l] = r0_46;
+                R0[47 * RJ_NL + l] = r0_47;
+                R0[48 * RJ_NL + l] = r0_48;
+                R0[49 * RJ_NL + l] = r0_49;
+                R0[50 * RJ_NL + l] = r0_50;
+                R0[51 * RJ_NL + l] = r0_51;
+                R0[52 * RJ_NL + l] = r0_52;
+                R0[53 * RJ_NL + l] = r0_53;
+                R0[54 * RJ_NL + l] = r0_54;
+                R0[55 * RJ_NL + l] = r0_55;
+                R0[56 * RJ_NL + l] = r0_56;
+                R0[57 * RJ_NL + l] = r0_57;
+                R0[58 * RJ_NL + l] = r0_58;
+                R0[59 * RJ_NL + l] = r0_59;
+                R0[60 * RJ_NL + l] = r0_60;
+                R0[61 * RJ_NL + l] = r0_61;
+                R0[62 * RJ_NL + l] = r0_62;
+                R0[63 * RJ_NL + l] = r0_63;
+                R0[64 * RJ_NL + l] = r0_64;
+                R0[65 * RJ_NL + l] = r0_65;
+                R0[66 * RJ_NL + l] = r0_66;
+                R0[67 * RJ_NL + l] = r0_67;
+                R0[68 * RJ_NL + l] = r0_68;
+                R0[69 * RJ_NL + l] = r0_69;
+                R0[70 * RJ_NL + l] = r0_70;
+                R0[71 * RJ_NL + l] = r0_71;
+                R0[72 * RJ_NL + l] = r0_72;
+                R0[73 * RJ_NL + l] = r0_73;
+                R0[74 * RJ_NL + l] = r0_74;
+                R0[75 * RJ_NL + l] = r0_75;
+                R0[76 * RJ_NL + l] = r0_76;
+                R0[77 * RJ_NL + l] = r0_77;
+                R0[78 * RJ_NL + l] = r0_78;
+                R0[79 * RJ_NL + l] = r0_79;
+                R0[80 * RJ_NL + l] = r0_80;
+                R0[81 * RJ_NL + l] = r0_81;
+                R0[82 * RJ_NL + l] = r0_82;
+                R0[83 * RJ_NL + l] = r0_83;
+                R0[84 * RJ_NL + l] = r0_84;
+                R0[85 * RJ_NL + l] = r0_85;
+                R0[86 * RJ_NL + l] = r0_86;
+                R0[87 * RJ_NL + l] = r0_87;
+                R0[88 * RJ_NL + l] = r0_88;
+                R0[89 * RJ_NL + l] = r0_89;
+                R0[90 * RJ_NL + l] = r0_90;
+                R0[91 * RJ_NL + l] = r0_91;
+                R0[92 * RJ_NL + l] = r0_92;
+                R0[93 * RJ_NL + l] = r0_93;
+                R0[94 * RJ_NL + l] = r0_94;
+                R0[95 * RJ_NL + l] = r0_95;
+                R0[96 * RJ_NL + l] = r0_96;
+                R0[97 * RJ_NL + l] = r0_97;
+                R0[98 * RJ_NL + l] = r0_98;
+                R0[99 * RJ_NL + l] = r0_99;
+                R0[100 * RJ_NL + l] = r0_100;
+                R0[101 * RJ_NL + l] = r0_101;
+                R0[102 * RJ_NL + l] = r0_102;
+                R0[103 * RJ_NL + l] = r0_103;
+                R0[104 * RJ_NL + l] = r0_104;
+                R0[105 * RJ_NL + l] = r0_105;
+                R0[106 * RJ_NL + l] = r0_106;
+                R0[107 * RJ_NL + l] = r0_107;
+                R0[108 * RJ_NL + l] = r0_108;
+                R0[109 * RJ_NL + l] = r0_109;
+                R0[110 * RJ_NL + l] = r0_110;
+                R0[111 * RJ_NL + l] = r0_111;
+                R0[112 * RJ_NL + l] = r0_112;
+                R0[113 * RJ_NL + l] = r0_113;
+                R0[114 * RJ_NL + l] = r0_114;
+                R0[115 * RJ_NL + l] = r0_115;
+                R0[116 * RJ_NL + l] = r0_116;
+                R0[117 * RJ_NL + l] = r0_117;
+                R0[118 * RJ_NL + l] = r0_118;
+                R0[119 * RJ_NL + l] = r0_119;
+                R0[120 * RJ_NL + l] = r0_120;
+                R0[121 * RJ_NL + l] = r0_121;
+                R0[122 * RJ_NL + l] = r0_122;
+                R0[123 * RJ_NL + l] = r0_123;
+                R0[124 * RJ_NL + l] = r0_124;
+                R0[125 * RJ_NL + l] = r0_125;
+                R0[126 * RJ_NL + l] = r0_126;
+                R0[127 * RJ_NL + l] = r0_127;
+                R0[128 * RJ_NL + l] = r0_128;
+                R0[129 * RJ_NL + l] = r0_129;
+                R0[130 * RJ_NL + l] = r0_130;
+                R0[131 * RJ_NL + l] = r0_131;
+                R0[132 * RJ_NL + l] = r0_132;
+                R0[133 * RJ_NL + l] = r0_133;
+                R0[134 * RJ_NL + l] = r0_134;
+                R0[135 * RJ_NL + l] = r0_135;
+                R0[136 * RJ_NL + l] = r0_136;
+                R0[137 * RJ_NL + l] = r0_137;
+                R0[138 * RJ_NL + l] = r0_138;
+                R0[139 * RJ_NL + l] = r0_139;
+                R0[140 * RJ_NL + l] = r0_140;
+                R0[141 * RJ_NL + l] = r0_141;
+                R0[142 * RJ_NL + l] = r0_142;
+                R0[143 * RJ_NL + l] = r0_143;
+                R0[144 * RJ_NL + l] = r0_144;
+                R0[145 * RJ_NL + l] = r0_145;
+                R0[146 * RJ_NL + l] = r0_146;
+                R0[147 * RJ_NL + l] = r0_147;
+                R0[148 * RJ_NL + l] = r0_148;
+                R0[149 * RJ_NL + l] = r0_149;
+                R0[150 * RJ_NL + l] = r0_150;
+                R0[151 * RJ_NL + l] = r0_151;
+                R0[152 * RJ_NL + l] = r0_152;
+                R0[153 * RJ_NL + l] = r0_153;
+                R0[154 * RJ_NL + l] = r0_154;
+                R0[155 * RJ_NL + l] = r0_155;
+                R0[156 * RJ_NL + l] = r0_156;
+                R0[157 * RJ_NL + l] = r0_157;
+                R0[158 * RJ_NL + l] = r0_158;
+                R0[159 * RJ_NL + l] = r0_159;
+                R0[160 * RJ_NL + l] = r0_160;
+                R0[161 * RJ_NL + l] = r0_161;
+                R0[162 * RJ_NL + l] = r0_162;
+                R0[163 * RJ_NL + l] = r0_163;
+                R0[164 * RJ_NL + l] = r0_164;
+        }
+}
+
+static void rjxv_0_0(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[0 * RJ_NL + l] * rp[0];
+        }
+}
+
+static void rjyv_0_0(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[0 * RJ_NL + l] * hq[0 * RJ_NL + l];
+        }
+}
+
+static void rjxv_0_1(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[1 * RJ_NL + l] * rp[0];
+                out[1 * RJ_NL + l] = R0[2 * RJ_NL + l] * rp[0];
+                out[2 * RJ_NL + l] = R0[3 * RJ_NL + l] * rp[0];
+        }
+}
+
+static void rjyv_0_1(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[1 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[2 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[3 * RJ_NL + l] * hq[2 * RJ_NL + l];
+        }
+}
+
+static void rjxv_0_2(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[4 * RJ_NL + l] * rp[0];
+                out[1 * RJ_NL + l] = R0[5 * RJ_NL + l] * rp[0];
+                out[2 * RJ_NL + l] = R0[6 * RJ_NL + l] * rp[0];
+                out[3 * RJ_NL + l] = R0[7 * RJ_NL + l] * rp[0];
+                out[4 * RJ_NL + l] = R0[8 * RJ_NL + l] * rp[0];
+                out[5 * RJ_NL + l] = R0[9 * RJ_NL + l] * rp[0];
+        }
+}
+
+static void rjyv_0_2(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[4 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[5 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[6 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[7 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[8 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[9 * RJ_NL + l] * hq[5 * RJ_NL + l];
+        }
+}
+
+static void rjxv_0_3(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[10 * RJ_NL + l] * rp[0];
+                out[1 * RJ_NL + l] = R0[11 * RJ_NL + l] * rp[0];
+                out[2 * RJ_NL + l] = R0[12 * RJ_NL + l] * rp[0];
+                out[3 * RJ_NL + l] = R0[13 * RJ_NL + l] * rp[0];
+                out[4 * RJ_NL + l] = R0[14 * RJ_NL + l] * rp[0];
+                out[5 * RJ_NL + l] = R0[15 * RJ_NL + l] * rp[0];
+                out[6 * RJ_NL + l] = R0[16 * RJ_NL + l] * rp[0];
+                out[7 * RJ_NL + l] = R0[17 * RJ_NL + l] * rp[0];
+                out[8 * RJ_NL + l] = R0[18 * RJ_NL + l] * rp[0];
+                out[9 * RJ_NL + l] = R0[19 * RJ_NL + l] * rp[0];
+        }
+}
+
+static void rjyv_0_3(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[10 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[11 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[12 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[13 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[14 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[15 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[16 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[17 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[18 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[19 * RJ_NL + l] * hq[9 * RJ_NL + l];
+        }
+}
+
+static void rjxv_0_4(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[20 * RJ_NL + l] * rp[0];
+                out[1 * RJ_NL + l] = R0[21 * RJ_NL + l] * rp[0];
+                out[2 * RJ_NL + l] = R0[22 * RJ_NL + l] * rp[0];
+                out[3 * RJ_NL + l] = R0[23 * RJ_NL + l] * rp[0];
+                out[4 * RJ_NL + l] = R0[24 * RJ_NL + l] * rp[0];
+                out[5 * RJ_NL + l] = R0[25 * RJ_NL + l] * rp[0];
+                out[6 * RJ_NL + l] = R0[26 * RJ_NL + l] * rp[0];
+                out[7 * RJ_NL + l] = R0[27 * RJ_NL + l] * rp[0];
+                out[8 * RJ_NL + l] = R0[28 * RJ_NL + l] * rp[0];
+                out[9 * RJ_NL + l] = R0[29 * RJ_NL + l] * rp[0];
+                out[10 * RJ_NL + l] = R0[30 * RJ_NL + l] * rp[0];
+                out[11 * RJ_NL + l] = R0[31 * RJ_NL + l] * rp[0];
+                out[12 * RJ_NL + l] = R0[32 * RJ_NL + l] * rp[0];
+                out[13 * RJ_NL + l] = R0[33 * RJ_NL + l] * rp[0];
+                out[14 * RJ_NL + l] = R0[34 * RJ_NL + l] * rp[0];
+        }
+}
+
+static void rjyv_0_4(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[20 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[21 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[22 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[23 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[24 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[25 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[28 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[29 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[32 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[33 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[34 * RJ_NL + l] * hq[14 * RJ_NL + l];
+        }
+}
+
+static void rjxv_1_0(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[0 * RJ_NL + l] * rp[0] + R0[1 * RJ_NL + l] * rp[1] + R0[2 * RJ_NL + l] * rp[2] + R0[3 * RJ_NL + l] * rp[3];
+        }
+}
+
+static void rjyv_1_0(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[0 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[1 * RJ_NL + l] += R0[1 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[2 * RJ_NL + l] += R0[2 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[3 * RJ_NL + l] += R0[3 * RJ_NL + l] * hq[0 * RJ_NL + l];
+        }
+}
+
+static void rjxv_1_1(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[1 * RJ_NL + l] * rp[0] + R0[4 * RJ_NL + l] * rp[1] + R0[5 * RJ_NL + l] * rp[2] + R0[7 * RJ_NL + l] * rp[3];
+                out[1 * RJ_NL + l] = R0[2 * RJ_NL + l] * rp[0] + R0[5 * RJ_NL + l] * rp[1] + R0[6 * RJ_NL + l] * rp[2] + R0[8 * RJ_NL + l] * rp[3];
+                out[2 * RJ_NL + l] = R0[3 * RJ_NL + l] * rp[0] + R0[7 * RJ_NL + l] * rp[1] + R0[8 * RJ_NL + l] * rp[2] + R0[9 * RJ_NL + l] * rp[3];
+        }
+}
+
+static void rjyv_1_1(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[1 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[2 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[3 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[1 * RJ_NL + l] += R0[4 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[5 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[7 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[2 * RJ_NL + l] += R0[5 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[6 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[8 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[3 * RJ_NL + l] += R0[7 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[8 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[9 * RJ_NL + l] * hq[2 * RJ_NL + l];
+        }
+}
+
+static void rjxv_1_2(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[4 * RJ_NL + l] * rp[0] + R0[10 * RJ_NL + l] * rp[1] + R0[11 * RJ_NL + l] * rp[2] + R0[14 * RJ_NL + l] * rp[3];
+                out[1 * RJ_NL + l] = R0[5 * RJ_NL + l] * rp[0] + R0[11 * RJ_NL + l] * rp[1] + R0[12 * RJ_NL + l] * rp[2] + R0[15 * RJ_NL + l] * rp[3];
+                out[2 * RJ_NL + l] = R0[6 * RJ_NL + l] * rp[0] + R0[12 * RJ_NL + l] * rp[1] + R0[13 * RJ_NL + l] * rp[2] + R0[16 * RJ_NL + l] * rp[3];
+                out[3 * RJ_NL + l] = R0[7 * RJ_NL + l] * rp[0] + R0[14 * RJ_NL + l] * rp[1] + R0[15 * RJ_NL + l] * rp[2] + R0[17 * RJ_NL + l] * rp[3];
+                out[4 * RJ_NL + l] = R0[8 * RJ_NL + l] * rp[0] + R0[15 * RJ_NL + l] * rp[1] + R0[16 * RJ_NL + l] * rp[2] + R0[18 * RJ_NL + l] * rp[3];
+                out[5 * RJ_NL + l] = R0[9 * RJ_NL + l] * rp[0] + R0[17 * RJ_NL + l] * rp[1] + R0[18 * RJ_NL + l] * rp[2] + R0[19 * RJ_NL + l] * rp[3];
+        }
+}
+
+static void rjyv_1_2(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[4 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[5 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[6 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[7 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[8 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[9 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[1 * RJ_NL + l] += R0[10 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[11 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[12 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[14 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[15 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[17 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[2 * RJ_NL + l] += R0[11 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[12 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[13 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[15 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[16 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[18 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[3 * RJ_NL + l] += R0[14 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[15 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[16 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[17 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[18 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[19 * RJ_NL + l] * hq[5 * RJ_NL + l];
+        }
+}
+
+static void rjxv_1_3(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[10 * RJ_NL + l] * rp[0] + R0[20 * RJ_NL + l] * rp[1] + R0[21 * RJ_NL + l] * rp[2] + R0[25 * RJ_NL + l] * rp[3];
+                out[1 * RJ_NL + l] = R0[11 * RJ_NL + l] * rp[0] + R0[21 * RJ_NL + l] * rp[1] + R0[22 * RJ_NL + l] * rp[2] + R0[26 * RJ_NL + l] * rp[3];
+                out[2 * RJ_NL + l] = R0[12 * RJ_NL + l] * rp[0] + R0[22 * RJ_NL + l] * rp[1] + R0[23 * RJ_NL + l] * rp[2] + R0[27 * RJ_NL + l] * rp[3];
+                out[3 * RJ_NL + l] = R0[13 * RJ_NL + l] * rp[0] + R0[23 * RJ_NL + l] * rp[1] + R0[24 * RJ_NL + l] * rp[2] + R0[28 * RJ_NL + l] * rp[3];
+                out[4 * RJ_NL + l] = R0[14 * RJ_NL + l] * rp[0] + R0[25 * RJ_NL + l] * rp[1] + R0[26 * RJ_NL + l] * rp[2] + R0[29 * RJ_NL + l] * rp[3];
+                out[5 * RJ_NL + l] = R0[15 * RJ_NL + l] * rp[0] + R0[26 * RJ_NL + l] * rp[1] + R0[27 * RJ_NL + l] * rp[2] + R0[30 * RJ_NL + l] * rp[3];
+                out[6 * RJ_NL + l] = R0[16 * RJ_NL + l] * rp[0] + R0[27 * RJ_NL + l] * rp[1] + R0[28 * RJ_NL + l] * rp[2] + R0[31 * RJ_NL + l] * rp[3];
+                out[7 * RJ_NL + l] = R0[17 * RJ_NL + l] * rp[0] + R0[29 * RJ_NL + l] * rp[1] + R0[30 * RJ_NL + l] * rp[2] + R0[32 * RJ_NL + l] * rp[3];
+                out[8 * RJ_NL + l] = R0[18 * RJ_NL + l] * rp[0] + R0[30 * RJ_NL + l] * rp[1] + R0[31 * RJ_NL + l] * rp[2] + R0[33 * RJ_NL + l] * rp[3];
+                out[9 * RJ_NL + l] = R0[19 * RJ_NL + l] * rp[0] + R0[32 * RJ_NL + l] * rp[1] + R0[33 * RJ_NL + l] * rp[2] + R0[34 * RJ_NL + l] * rp[3];
+        }
+}
+
+static void rjyv_1_3(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[10 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[11 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[12 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[13 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[14 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[15 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[16 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[17 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[18 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[19 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[1 * RJ_NL + l] += R0[20 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[21 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[22 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[23 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[25 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[29 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[32 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[2 * RJ_NL + l] += R0[21 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[22 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[23 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[24 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[28 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[33 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[3 * RJ_NL + l] += R0[25 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[28 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[29 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[32 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[33 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[34 * RJ_NL + l] * hq[9 * RJ_NL + l];
+        }
+}
+
+static void rjxv_1_4(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[20 * RJ_NL + l] * rp[0] + R0[35 * RJ_NL + l] * rp[1] + R0[36 * RJ_NL + l] * rp[2] + R0[41 * RJ_NL + l] * rp[3];
+                out[1 * RJ_NL + l] = R0[21 * RJ_NL + l] * rp[0] + R0[36 * RJ_NL + l] * rp[1] + R0[37 * RJ_NL + l] * rp[2] + R0[42 * RJ_NL + l] * rp[3];
+                out[2 * RJ_NL + l] = R0[22 * RJ_NL + l] * rp[0] + R0[37 * RJ_NL + l] * rp[1] + R0[38 * RJ_NL + l] * rp[2] + R0[43 * RJ_NL + l] * rp[3];
+                out[3 * RJ_NL + l] = R0[23 * RJ_NL + l] * rp[0] + R0[38 * RJ_NL + l] * rp[1] + R0[39 * RJ_NL + l] * rp[2] + R0[44 * RJ_NL + l] * rp[3];
+                out[4 * RJ_NL + l] = R0[24 * RJ_NL + l] * rp[0] + R0[39 * RJ_NL + l] * rp[1] + R0[40 * RJ_NL + l] * rp[2] + R0[45 * RJ_NL + l] * rp[3];
+                out[5 * RJ_NL + l] = R0[25 * RJ_NL + l] * rp[0] + R0[41 * RJ_NL + l] * rp[1] + R0[42 * RJ_NL + l] * rp[2] + R0[46 * RJ_NL + l] * rp[3];
+                out[6 * RJ_NL + l] = R0[26 * RJ_NL + l] * rp[0] + R0[42 * RJ_NL + l] * rp[1] + R0[43 * RJ_NL + l] * rp[2] + R0[47 * RJ_NL + l] * rp[3];
+                out[7 * RJ_NL + l] = R0[27 * RJ_NL + l] * rp[0] + R0[43 * RJ_NL + l] * rp[1] + R0[44 * RJ_NL + l] * rp[2] + R0[48 * RJ_NL + l] * rp[3];
+                out[8 * RJ_NL + l] = R0[28 * RJ_NL + l] * rp[0] + R0[44 * RJ_NL + l] * rp[1] + R0[45 * RJ_NL + l] * rp[2] + R0[49 * RJ_NL + l] * rp[3];
+                out[9 * RJ_NL + l] = R0[29 * RJ_NL + l] * rp[0] + R0[46 * RJ_NL + l] * rp[1] + R0[47 * RJ_NL + l] * rp[2] + R0[50 * RJ_NL + l] * rp[3];
+                out[10 * RJ_NL + l] = R0[30 * RJ_NL + l] * rp[0] + R0[47 * RJ_NL + l] * rp[1] + R0[48 * RJ_NL + l] * rp[2] + R0[51 * RJ_NL + l] * rp[3];
+                out[11 * RJ_NL + l] = R0[31 * RJ_NL + l] * rp[0] + R0[48 * RJ_NL + l] * rp[1] + R0[49 * RJ_NL + l] * rp[2] + R0[52 * RJ_NL + l] * rp[3];
+                out[12 * RJ_NL + l] = R0[32 * RJ_NL + l] * rp[0] + R0[50 * RJ_NL + l] * rp[1] + R0[51 * RJ_NL + l] * rp[2] + R0[53 * RJ_NL + l] * rp[3];
+                out[13 * RJ_NL + l] = R0[33 * RJ_NL + l] * rp[0] + R0[51 * RJ_NL + l] * rp[1] + R0[52 * RJ_NL + l] * rp[2] + R0[54 * RJ_NL + l] * rp[3];
+                out[14 * RJ_NL + l] = R0[34 * RJ_NL + l] * rp[0] + R0[53 * RJ_NL + l] * rp[1] + R0[54 * RJ_NL + l] * rp[2] + R0[55 * RJ_NL + l] * rp[3];
+        }
+}
+
+static void rjyv_1_4(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[20 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[21 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[22 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[23 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[24 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[25 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[28 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[29 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[32 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[33 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[34 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[1 * RJ_NL + l] += R0[35 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[36 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[37 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[38 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[39 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[41 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[46 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[50 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[53 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[2 * RJ_NL + l] += R0[36 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[37 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[38 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[39 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[40 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[45 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[54 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[3 * RJ_NL + l] += R0[41 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[45 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[46 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[50 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[53 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[54 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[55 * RJ_NL + l] * hq[14 * RJ_NL + l];
+        }
+}
+
+static void rjxv_2_0(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[0 * RJ_NL + l] * rp[0] + R0[1 * RJ_NL + l] * rp[1] + R0[2 * RJ_NL + l] * rp[2] + R0[3 * RJ_NL + l] * rp[3] + R0[4 * RJ_NL + l] * rp[4] + R0[5 * RJ_NL + l] * rp[5] + R0[6 * RJ_NL + l] * rp[6] + R0[7 * RJ_NL + l] * rp[7] + R0[8 * RJ_NL + l] * rp[8] + R0[9 * RJ_NL + l] * rp[9];
+        }
+}
+
+static void rjyv_2_0(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[0 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[1 * RJ_NL + l] += R0[1 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[2 * RJ_NL + l] += R0[2 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[3 * RJ_NL + l] += R0[3 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[4 * RJ_NL + l] += R0[4 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[5 * RJ_NL + l] += R0[5 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[6 * RJ_NL + l] += R0[6 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[7 * RJ_NL + l] += R0[7 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[8 * RJ_NL + l] += R0[8 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[9 * RJ_NL + l] += R0[9 * RJ_NL + l] * hq[0 * RJ_NL + l];
+        }
+}
+
+static void rjxv_2_1(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[1 * RJ_NL + l] * rp[0] + R0[4 * RJ_NL + l] * rp[1] + R0[5 * RJ_NL + l] * rp[2] + R0[7 * RJ_NL + l] * rp[3] + R0[10 * RJ_NL + l] * rp[4] + R0[11 * RJ_NL + l] * rp[5] + R0[12 * RJ_NL + l] * rp[6] + R0[14 * RJ_NL + l] * rp[7] + R0[15 * RJ_NL + l] * rp[8] + R0[17 * RJ_NL + l] * rp[9];
+                out[1 * RJ_NL + l] = R0[2 * RJ_NL + l] * rp[0] + R0[5 * RJ_NL + l] * rp[1] + R0[6 * RJ_NL + l] * rp[2] + R0[8 * RJ_NL + l] * rp[3] + R0[11 * RJ_NL + l] * rp[4] + R0[12 * RJ_NL + l] * rp[5] + R0[13 * RJ_NL + l] * rp[6] + R0[15 * RJ_NL + l] * rp[7] + R0[16 * RJ_NL + l] * rp[8] + R0[18 * RJ_NL + l] * rp[9];
+                out[2 * RJ_NL + l] = R0[3 * RJ_NL + l] * rp[0] + R0[7 * RJ_NL + l] * rp[1] + R0[8 * RJ_NL + l] * rp[2] + R0[9 * RJ_NL + l] * rp[3] + R0[14 * RJ_NL + l] * rp[4] + R0[15 * RJ_NL + l] * rp[5] + R0[16 * RJ_NL + l] * rp[6] + R0[17 * RJ_NL + l] * rp[7] + R0[18 * RJ_NL + l] * rp[8] + R0[19 * RJ_NL + l] * rp[9];
+        }
+}
+
+static void rjyv_2_1(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[1 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[2 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[3 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[1 * RJ_NL + l] += R0[4 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[5 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[7 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[2 * RJ_NL + l] += R0[5 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[6 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[8 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[3 * RJ_NL + l] += R0[7 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[8 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[9 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[4 * RJ_NL + l] += R0[10 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[11 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[14 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[5 * RJ_NL + l] += R0[11 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[12 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[15 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[6 * RJ_NL + l] += R0[12 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[13 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[16 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[7 * RJ_NL + l] += R0[14 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[15 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[17 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[8 * RJ_NL + l] += R0[15 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[16 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[18 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[9 * RJ_NL + l] += R0[17 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[18 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[19 * RJ_NL + l] * hq[2 * RJ_NL + l];
+        }
+}
+
+static void rjxv_2_2(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[4 * RJ_NL + l] * rp[0] + R0[10 * RJ_NL + l] * rp[1] + R0[11 * RJ_NL + l] * rp[2] + R0[14 * RJ_NL + l] * rp[3] + R0[20 * RJ_NL + l] * rp[4] + R0[21 * RJ_NL + l] * rp[5] + R0[22 * RJ_NL + l] * rp[6] + R0[25 * RJ_NL + l] * rp[7] + R0[26 * RJ_NL + l] * rp[8] + R0[29 * RJ_NL + l] * rp[9];
+                out[1 * RJ_NL + l] = R0[5 * RJ_NL + l] * rp[0] + R0[11 * RJ_NL + l] * rp[1] + R0[12 * RJ_NL + l] * rp[2] + R0[15 * RJ_NL + l] * rp[3] + R0[21 * RJ_NL + l] * rp[4] + R0[22 * RJ_NL + l] * rp[5] + R0[23 * RJ_NL + l] * rp[6] + R0[26 * RJ_NL + l] * rp[7] + R0[27 * RJ_NL + l] * rp[8] + R0[30 * RJ_NL + l] * rp[9];
+                out[2 * RJ_NL + l] = R0[6 * RJ_NL + l] * rp[0] + R0[12 * RJ_NL + l] * rp[1] + R0[13 * RJ_NL + l] * rp[2] + R0[16 * RJ_NL + l] * rp[3] + R0[22 * RJ_NL + l] * rp[4] + R0[23 * RJ_NL + l] * rp[5] + R0[24 * RJ_NL + l] * rp[6] + R0[27 * RJ_NL + l] * rp[7] + R0[28 * RJ_NL + l] * rp[8] + R0[31 * RJ_NL + l] * rp[9];
+                out[3 * RJ_NL + l] = R0[7 * RJ_NL + l] * rp[0] + R0[14 * RJ_NL + l] * rp[1] + R0[15 * RJ_NL + l] * rp[2] + R0[17 * RJ_NL + l] * rp[3] + R0[25 * RJ_NL + l] * rp[4] + R0[26 * RJ_NL + l] * rp[5] + R0[27 * RJ_NL + l] * rp[6] + R0[29 * RJ_NL + l] * rp[7] + R0[30 * RJ_NL + l] * rp[8] + R0[32 * RJ_NL + l] * rp[9];
+                out[4 * RJ_NL + l] = R0[8 * RJ_NL + l] * rp[0] + R0[15 * RJ_NL + l] * rp[1] + R0[16 * RJ_NL + l] * rp[2] + R0[18 * RJ_NL + l] * rp[3] + R0[26 * RJ_NL + l] * rp[4] + R0[27 * RJ_NL + l] * rp[5] + R0[28 * RJ_NL + l] * rp[6] + R0[30 * RJ_NL + l] * rp[7] + R0[31 * RJ_NL + l] * rp[8] + R0[33 * RJ_NL + l] * rp[9];
+                out[5 * RJ_NL + l] = R0[9 * RJ_NL + l] * rp[0] + R0[17 * RJ_NL + l] * rp[1] + R0[18 * RJ_NL + l] * rp[2] + R0[19 * RJ_NL + l] * rp[3] + R0[29 * RJ_NL + l] * rp[4] + R0[30 * RJ_NL + l] * rp[5] + R0[31 * RJ_NL + l] * rp[6] + R0[32 * RJ_NL + l] * rp[7] + R0[33 * RJ_NL + l] * rp[8] + R0[34 * RJ_NL + l] * rp[9];
+        }
+}
+
+static void rjyv_2_2(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[4 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[5 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[6 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[7 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[8 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[9 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[1 * RJ_NL + l] += R0[10 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[11 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[12 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[14 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[15 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[17 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[2 * RJ_NL + l] += R0[11 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[12 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[13 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[15 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[16 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[18 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[3 * RJ_NL + l] += R0[14 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[15 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[16 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[17 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[18 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[19 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[4 * RJ_NL + l] += R0[20 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[21 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[22 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[25 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[29 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[5 * RJ_NL + l] += R0[21 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[22 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[23 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[6 * RJ_NL + l] += R0[22 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[23 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[24 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[28 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[7 * RJ_NL + l] += R0[25 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[29 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[32 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[8 * RJ_NL + l] += R0[26 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[28 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[33 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[9 * RJ_NL + l] += R0[29 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[32 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[33 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[34 * RJ_NL + l] * hq[5 * RJ_NL + l];
+        }
+}
+
+static void rjxv_2_3(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[10 * RJ_NL + l] * rp[0] + R0[20 * RJ_NL + l] * rp[1] + R0[21 * RJ_NL + l] * rp[2] + R0[25 * RJ_NL + l] * rp[3] + R0[35 * RJ_NL + l] * rp[4] + R0[36 * RJ_NL + l] * rp[5] + R0[37 * RJ_NL + l] * rp[6] + R0[41 * RJ_NL + l] * rp[7] + R0[42 * RJ_NL + l] * rp[8] + R0[46 * RJ_NL + l] * rp[9];
+                out[1 * RJ_NL + l] = R0[11 * RJ_NL + l] * rp[0] + R0[21 * RJ_NL + l] * rp[1] + R0[22 * RJ_NL + l] * rp[2] + R0[26 * RJ_NL + l] * rp[3] + R0[36 * RJ_NL + l] * rp[4] + R0[37 * RJ_NL + l] * rp[5] + R0[38 * RJ_NL + l] * rp[6] + R0[42 * RJ_NL + l] * rp[7] + R0[43 * RJ_NL + l] * rp[8] + R0[47 * RJ_NL + l] * rp[9];
+                out[2 * RJ_NL + l] = R0[12 * RJ_NL + l] * rp[0] + R0[22 * RJ_NL + l] * rp[1] + R0[23 * RJ_NL + l] * rp[2] + R0[27 * RJ_NL + l] * rp[3] + R0[37 * RJ_NL + l] * rp[4] + R0[38 * RJ_NL + l] * rp[5] + R0[39 * RJ_NL + l] * rp[6] + R0[43 * RJ_NL + l] * rp[7] + R0[44 * RJ_NL + l] * rp[8] + R0[48 * RJ_NL + l] * rp[9];
+                out[3 * RJ_NL + l] = R0[13 * RJ_NL + l] * rp[0] + R0[23 * RJ_NL + l] * rp[1] + R0[24 * RJ_NL + l] * rp[2] + R0[28 * RJ_NL + l] * rp[3] + R0[38 * RJ_NL + l] * rp[4] + R0[39 * RJ_NL + l] * rp[5] + R0[40 * RJ_NL + l] * rp[6] + R0[44 * RJ_NL + l] * rp[7] + R0[45 * RJ_NL + l] * rp[8] + R0[49 * RJ_NL + l] * rp[9];
+                out[4 * RJ_NL + l] = R0[14 * RJ_NL + l] * rp[0] + R0[25 * RJ_NL + l] * rp[1] + R0[26 * RJ_NL + l] * rp[2] + R0[29 * RJ_NL + l] * rp[3] + R0[41 * RJ_NL + l] * rp[4] + R0[42 * RJ_NL + l] * rp[5] + R0[43 * RJ_NL + l] * rp[6] + R0[46 * RJ_NL + l] * rp[7] + R0[47 * RJ_NL + l] * rp[8] + R0[50 * RJ_NL + l] * rp[9];
+                out[5 * RJ_NL + l] = R0[15 * RJ_NL + l] * rp[0] + R0[26 * RJ_NL + l] * rp[1] + R0[27 * RJ_NL + l] * rp[2] + R0[30 * RJ_NL + l] * rp[3] + R0[42 * RJ_NL + l] * rp[4] + R0[43 * RJ_NL + l] * rp[5] + R0[44 * RJ_NL + l] * rp[6] + R0[47 * RJ_NL + l] * rp[7] + R0[48 * RJ_NL + l] * rp[8] + R0[51 * RJ_NL + l] * rp[9];
+                out[6 * RJ_NL + l] = R0[16 * RJ_NL + l] * rp[0] + R0[27 * RJ_NL + l] * rp[1] + R0[28 * RJ_NL + l] * rp[2] + R0[31 * RJ_NL + l] * rp[3] + R0[43 * RJ_NL + l] * rp[4] + R0[44 * RJ_NL + l] * rp[5] + R0[45 * RJ_NL + l] * rp[6] + R0[48 * RJ_NL + l] * rp[7] + R0[49 * RJ_NL + l] * rp[8] + R0[52 * RJ_NL + l] * rp[9];
+                out[7 * RJ_NL + l] = R0[17 * RJ_NL + l] * rp[0] + R0[29 * RJ_NL + l] * rp[1] + R0[30 * RJ_NL + l] * rp[2] + R0[32 * RJ_NL + l] * rp[3] + R0[46 * RJ_NL + l] * rp[4] + R0[47 * RJ_NL + l] * rp[5] + R0[48 * RJ_NL + l] * rp[6] + R0[50 * RJ_NL + l] * rp[7] + R0[51 * RJ_NL + l] * rp[8] + R0[53 * RJ_NL + l] * rp[9];
+                out[8 * RJ_NL + l] = R0[18 * RJ_NL + l] * rp[0] + R0[30 * RJ_NL + l] * rp[1] + R0[31 * RJ_NL + l] * rp[2] + R0[33 * RJ_NL + l] * rp[3] + R0[47 * RJ_NL + l] * rp[4] + R0[48 * RJ_NL + l] * rp[5] + R0[49 * RJ_NL + l] * rp[6] + R0[51 * RJ_NL + l] * rp[7] + R0[52 * RJ_NL + l] * rp[8] + R0[54 * RJ_NL + l] * rp[9];
+                out[9 * RJ_NL + l] = R0[19 * RJ_NL + l] * rp[0] + R0[32 * RJ_NL + l] * rp[1] + R0[33 * RJ_NL + l] * rp[2] + R0[34 * RJ_NL + l] * rp[3] + R0[50 * RJ_NL + l] * rp[4] + R0[51 * RJ_NL + l] * rp[5] + R0[52 * RJ_NL + l] * rp[6] + R0[53 * RJ_NL + l] * rp[7] + R0[54 * RJ_NL + l] * rp[8] + R0[55 * RJ_NL + l] * rp[9];
+        }
+}
+
+static void rjyv_2_3(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[10 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[11 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[12 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[13 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[14 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[15 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[16 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[17 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[18 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[19 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[1 * RJ_NL + l] += R0[20 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[21 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[22 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[23 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[25 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[29 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[32 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[2 * RJ_NL + l] += R0[21 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[22 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[23 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[24 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[28 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[33 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[3 * RJ_NL + l] += R0[25 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[28 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[29 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[32 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[33 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[34 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[4 * RJ_NL + l] += R0[35 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[36 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[37 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[38 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[41 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[46 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[50 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[5 * RJ_NL + l] += R0[36 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[37 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[38 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[39 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[6 * RJ_NL + l] += R0[37 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[38 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[39 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[40 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[45 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[7 * RJ_NL + l] += R0[41 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[46 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[50 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[53 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[8 * RJ_NL + l] += R0[42 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[45 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[54 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[9 * RJ_NL + l] += R0[46 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[50 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[53 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[54 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[55 * RJ_NL + l] * hq[9 * RJ_NL + l];
+        }
+}
+
+static void rjxv_2_4(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[20 * RJ_NL + l] * rp[0] + R0[35 * RJ_NL + l] * rp[1] + R0[36 * RJ_NL + l] * rp[2] + R0[41 * RJ_NL + l] * rp[3] + R0[56 * RJ_NL + l] * rp[4] + R0[57 * RJ_NL + l] * rp[5] + R0[58 * RJ_NL + l] * rp[6] + R0[63 * RJ_NL + l] * rp[7] + R0[64 * RJ_NL + l] * rp[8] + R0[69 * RJ_NL + l] * rp[9];
+                out[1 * RJ_NL + l] = R0[21 * RJ_NL + l] * rp[0] + R0[36 * RJ_NL + l] * rp[1] + R0[37 * RJ_NL + l] * rp[2] + R0[42 * RJ_NL + l] * rp[3] + R0[57 * RJ_NL + l] * rp[4] + R0[58 * RJ_NL + l] * rp[5] + R0[59 * RJ_NL + l] * rp[6] + R0[64 * RJ_NL + l] * rp[7] + R0[65 * RJ_NL + l] * rp[8] + R0[70 * RJ_NL + l] * rp[9];
+                out[2 * RJ_NL + l] = R0[22 * RJ_NL + l] * rp[0] + R0[37 * RJ_NL + l] * rp[1] + R0[38 * RJ_NL + l] * rp[2] + R0[43 * RJ_NL + l] * rp[3] + R0[58 * RJ_NL + l] * rp[4] + R0[59 * RJ_NL + l] * rp[5] + R0[60 * RJ_NL + l] * rp[6] + R0[65 * RJ_NL + l] * rp[7] + R0[66 * RJ_NL + l] * rp[8] + R0[71 * RJ_NL + l] * rp[9];
+                out[3 * RJ_NL + l] = R0[23 * RJ_NL + l] * rp[0] + R0[38 * RJ_NL + l] * rp[1] + R0[39 * RJ_NL + l] * rp[2] + R0[44 * RJ_NL + l] * rp[3] + R0[59 * RJ_NL + l] * rp[4] + R0[60 * RJ_NL + l] * rp[5] + R0[61 * RJ_NL + l] * rp[6] + R0[66 * RJ_NL + l] * rp[7] + R0[67 * RJ_NL + l] * rp[8] + R0[72 * RJ_NL + l] * rp[9];
+                out[4 * RJ_NL + l] = R0[24 * RJ_NL + l] * rp[0] + R0[39 * RJ_NL + l] * rp[1] + R0[40 * RJ_NL + l] * rp[2] + R0[45 * RJ_NL + l] * rp[3] + R0[60 * RJ_NL + l] * rp[4] + R0[61 * RJ_NL + l] * rp[5] + R0[62 * RJ_NL + l] * rp[6] + R0[67 * RJ_NL + l] * rp[7] + R0[68 * RJ_NL + l] * rp[8] + R0[73 * RJ_NL + l] * rp[9];
+                out[5 * RJ_NL + l] = R0[25 * RJ_NL + l] * rp[0] + R0[41 * RJ_NL + l] * rp[1] + R0[42 * RJ_NL + l] * rp[2] + R0[46 * RJ_NL + l] * rp[3] + R0[63 * RJ_NL + l] * rp[4] + R0[64 * RJ_NL + l] * rp[5] + R0[65 * RJ_NL + l] * rp[6] + R0[69 * RJ_NL + l] * rp[7] + R0[70 * RJ_NL + l] * rp[8] + R0[74 * RJ_NL + l] * rp[9];
+                out[6 * RJ_NL + l] = R0[26 * RJ_NL + l] * rp[0] + R0[42 * RJ_NL + l] * rp[1] + R0[43 * RJ_NL + l] * rp[2] + R0[47 * RJ_NL + l] * rp[3] + R0[64 * RJ_NL + l] * rp[4] + R0[65 * RJ_NL + l] * rp[5] + R0[66 * RJ_NL + l] * rp[6] + R0[70 * RJ_NL + l] * rp[7] + R0[71 * RJ_NL + l] * rp[8] + R0[75 * RJ_NL + l] * rp[9];
+                out[7 * RJ_NL + l] = R0[27 * RJ_NL + l] * rp[0] + R0[43 * RJ_NL + l] * rp[1] + R0[44 * RJ_NL + l] * rp[2] + R0[48 * RJ_NL + l] * rp[3] + R0[65 * RJ_NL + l] * rp[4] + R0[66 * RJ_NL + l] * rp[5] + R0[67 * RJ_NL + l] * rp[6] + R0[71 * RJ_NL + l] * rp[7] + R0[72 * RJ_NL + l] * rp[8] + R0[76 * RJ_NL + l] * rp[9];
+                out[8 * RJ_NL + l] = R0[28 * RJ_NL + l] * rp[0] + R0[44 * RJ_NL + l] * rp[1] + R0[45 * RJ_NL + l] * rp[2] + R0[49 * RJ_NL + l] * rp[3] + R0[66 * RJ_NL + l] * rp[4] + R0[67 * RJ_NL + l] * rp[5] + R0[68 * RJ_NL + l] * rp[6] + R0[72 * RJ_NL + l] * rp[7] + R0[73 * RJ_NL + l] * rp[8] + R0[77 * RJ_NL + l] * rp[9];
+                out[9 * RJ_NL + l] = R0[29 * RJ_NL + l] * rp[0] + R0[46 * RJ_NL + l] * rp[1] + R0[47 * RJ_NL + l] * rp[2] + R0[50 * RJ_NL + l] * rp[3] + R0[69 * RJ_NL + l] * rp[4] + R0[70 * RJ_NL + l] * rp[5] + R0[71 * RJ_NL + l] * rp[6] + R0[74 * RJ_NL + l] * rp[7] + R0[75 * RJ_NL + l] * rp[8] + R0[78 * RJ_NL + l] * rp[9];
+                out[10 * RJ_NL + l] = R0[30 * RJ_NL + l] * rp[0] + R0[47 * RJ_NL + l] * rp[1] + R0[48 * RJ_NL + l] * rp[2] + R0[51 * RJ_NL + l] * rp[3] + R0[70 * RJ_NL + l] * rp[4] + R0[71 * RJ_NL + l] * rp[5] + R0[72 * RJ_NL + l] * rp[6] + R0[75 * RJ_NL + l] * rp[7] + R0[76 * RJ_NL + l] * rp[8] + R0[79 * RJ_NL + l] * rp[9];
+                out[11 * RJ_NL + l] = R0[31 * RJ_NL + l] * rp[0] + R0[48 * RJ_NL + l] * rp[1] + R0[49 * RJ_NL + l] * rp[2] + R0[52 * RJ_NL + l] * rp[3] + R0[71 * RJ_NL + l] * rp[4] + R0[72 * RJ_NL + l] * rp[5] + R0[73 * RJ_NL + l] * rp[6] + R0[76 * RJ_NL + l] * rp[7] + R0[77 * RJ_NL + l] * rp[8] + R0[80 * RJ_NL + l] * rp[9];
+                out[12 * RJ_NL + l] = R0[32 * RJ_NL + l] * rp[0] + R0[50 * RJ_NL + l] * rp[1] + R0[51 * RJ_NL + l] * rp[2] + R0[53 * RJ_NL + l] * rp[3] + R0[74 * RJ_NL + l] * rp[4] + R0[75 * RJ_NL + l] * rp[5] + R0[76 * RJ_NL + l] * rp[6] + R0[78 * RJ_NL + l] * rp[7] + R0[79 * RJ_NL + l] * rp[8] + R0[81 * RJ_NL + l] * rp[9];
+                out[13 * RJ_NL + l] = R0[33 * RJ_NL + l] * rp[0] + R0[51 * RJ_NL + l] * rp[1] + R0[52 * RJ_NL + l] * rp[2] + R0[54 * RJ_NL + l] * rp[3] + R0[75 * RJ_NL + l] * rp[4] + R0[76 * RJ_NL + l] * rp[5] + R0[77 * RJ_NL + l] * rp[6] + R0[79 * RJ_NL + l] * rp[7] + R0[80 * RJ_NL + l] * rp[8] + R0[82 * RJ_NL + l] * rp[9];
+                out[14 * RJ_NL + l] = R0[34 * RJ_NL + l] * rp[0] + R0[53 * RJ_NL + l] * rp[1] + R0[54 * RJ_NL + l] * rp[2] + R0[55 * RJ_NL + l] * rp[3] + R0[78 * RJ_NL + l] * rp[4] + R0[79 * RJ_NL + l] * rp[5] + R0[80 * RJ_NL + l] * rp[6] + R0[81 * RJ_NL + l] * rp[7] + R0[82 * RJ_NL + l] * rp[8] + R0[83 * RJ_NL + l] * rp[9];
+        }
+}
+
+static void rjyv_2_4(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[20 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[21 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[22 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[23 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[24 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[25 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[28 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[29 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[32 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[33 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[34 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[1 * RJ_NL + l] += R0[35 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[36 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[37 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[38 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[39 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[41 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[46 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[50 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[53 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[2 * RJ_NL + l] += R0[36 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[37 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[38 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[39 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[40 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[45 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[54 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[3 * RJ_NL + l] += R0[41 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[45 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[46 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[50 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[53 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[54 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[55 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[4 * RJ_NL + l] += R0[56 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[57 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[58 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[59 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[60 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[63 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[64 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[69 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[74 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[78 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[5 * RJ_NL + l] += R0[57 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[58 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[59 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[60 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[61 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[64 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[67 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[79 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[6 * RJ_NL + l] += R0[58 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[59 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[60 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[61 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[62 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[67 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[68 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[73 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[77 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[80 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[7 * RJ_NL + l] += R0[63 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[64 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[67 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[69 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[74 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[78 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[79 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[81 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[8 * RJ_NL + l] += R0[64 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[67 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[68 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[73 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[77 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[79 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[80 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[82 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[9 * RJ_NL + l] += R0[69 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[73 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[74 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[77 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[78 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[79 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[80 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[81 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[82 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[83 * RJ_NL + l] * hq[14 * RJ_NL + l];
+        }
+}
+
+static void rjxv_3_0(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[0 * RJ_NL + l] * rp[0] + R0[1 * RJ_NL + l] * rp[1] + R0[2 * RJ_NL + l] * rp[2] + R0[3 * RJ_NL + l] * rp[3] + R0[4 * RJ_NL + l] * rp[4] + R0[5 * RJ_NL + l] * rp[5] + R0[6 * RJ_NL + l] * rp[6] + R0[7 * RJ_NL + l] * rp[7] + R0[8 * RJ_NL + l] * rp[8] + R0[9 * RJ_NL + l] * rp[9] + R0[10 * RJ_NL + l] * rp[10] + R0[11 * RJ_NL + l] * rp[11] + R0[12 * RJ_NL + l] * rp[12] + R0[13 * RJ_NL + l] * rp[13] + R0[14 * RJ_NL + l] * rp[14] + R0[15 * RJ_NL + l] * rp[15] + R0[16 * RJ_NL + l] * rp[16] + R0[17 * RJ_NL + l] * rp[17] + R0[18 * RJ_NL + l] * rp[18] + R0[19 * RJ_NL + l] * rp[19];
+        }
+}
+
+static void rjyv_3_0(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[0 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[1 * RJ_NL + l] += R0[1 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[2 * RJ_NL + l] += R0[2 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[3 * RJ_NL + l] += R0[3 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[4 * RJ_NL + l] += R0[4 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[5 * RJ_NL + l] += R0[5 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[6 * RJ_NL + l] += R0[6 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[7 * RJ_NL + l] += R0[7 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[8 * RJ_NL + l] += R0[8 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[9 * RJ_NL + l] += R0[9 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[10 * RJ_NL + l] += R0[10 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[11 * RJ_NL + l] += R0[11 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[12 * RJ_NL + l] += R0[12 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[13 * RJ_NL + l] += R0[13 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[14 * RJ_NL + l] += R0[14 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[15 * RJ_NL + l] += R0[15 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[16 * RJ_NL + l] += R0[16 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[17 * RJ_NL + l] += R0[17 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[18 * RJ_NL + l] += R0[18 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[19 * RJ_NL + l] += R0[19 * RJ_NL + l] * hq[0 * RJ_NL + l];
+        }
+}
+
+static void rjxv_3_1(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[1 * RJ_NL + l] * rp[0] + R0[4 * RJ_NL + l] * rp[1] + R0[5 * RJ_NL + l] * rp[2] + R0[7 * RJ_NL + l] * rp[3] + R0[10 * RJ_NL + l] * rp[4] + R0[11 * RJ_NL + l] * rp[5] + R0[12 * RJ_NL + l] * rp[6] + R0[14 * RJ_NL + l] * rp[7] + R0[15 * RJ_NL + l] * rp[8] + R0[17 * RJ_NL + l] * rp[9] + R0[20 * RJ_NL + l] * rp[10] + R0[21 * RJ_NL + l] * rp[11] + R0[22 * RJ_NL + l] * rp[12] + R0[23 * RJ_NL + l] * rp[13] + R0[25 * RJ_NL + l] * rp[14] + R0[26 * RJ_NL + l] * rp[15] + R0[27 * RJ_NL + l] * rp[16] + R0[29 * RJ_NL + l] * rp[17] + R0[30 * RJ_NL + l] * rp[18] + R0[32 * RJ_NL + l] * rp[19];
+                out[1 * RJ_NL + l] = R0[2 * RJ_NL + l] * rp[0] + R0[5 * RJ_NL + l] * rp[1] + R0[6 * RJ_NL + l] * rp[2] + R0[8 * RJ_NL + l] * rp[3] + R0[11 * RJ_NL + l] * rp[4] + R0[12 * RJ_NL + l] * rp[5] + R0[13 * RJ_NL + l] * rp[6] + R0[15 * RJ_NL + l] * rp[7] + R0[16 * RJ_NL + l] * rp[8] + R0[18 * RJ_NL + l] * rp[9] + R0[21 * RJ_NL + l] * rp[10] + R0[22 * RJ_NL + l] * rp[11] + R0[23 * RJ_NL + l] * rp[12] + R0[24 * RJ_NL + l] * rp[13] + R0[26 * RJ_NL + l] * rp[14] + R0[27 * RJ_NL + l] * rp[15] + R0[28 * RJ_NL + l] * rp[16] + R0[30 * RJ_NL + l] * rp[17] + R0[31 * RJ_NL + l] * rp[18] + R0[33 * RJ_NL + l] * rp[19];
+                out[2 * RJ_NL + l] = R0[3 * RJ_NL + l] * rp[0] + R0[7 * RJ_NL + l] * rp[1] + R0[8 * RJ_NL + l] * rp[2] + R0[9 * RJ_NL + l] * rp[3] + R0[14 * RJ_NL + l] * rp[4] + R0[15 * RJ_NL + l] * rp[5] + R0[16 * RJ_NL + l] * rp[6] + R0[17 * RJ_NL + l] * rp[7] + R0[18 * RJ_NL + l] * rp[8] + R0[19 * RJ_NL + l] * rp[9] + R0[25 * RJ_NL + l] * rp[10] + R0[26 * RJ_NL + l] * rp[11] + R0[27 * RJ_NL + l] * rp[12] + R0[28 * RJ_NL + l] * rp[13] + R0[29 * RJ_NL + l] * rp[14] + R0[30 * RJ_NL + l] * rp[15] + R0[31 * RJ_NL + l] * rp[16] + R0[32 * RJ_NL + l] * rp[17] + R0[33 * RJ_NL + l] * rp[18] + R0[34 * RJ_NL + l] * rp[19];
+        }
+}
+
+static void rjyv_3_1(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[1 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[2 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[3 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[1 * RJ_NL + l] += R0[4 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[5 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[7 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[2 * RJ_NL + l] += R0[5 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[6 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[8 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[3 * RJ_NL + l] += R0[7 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[8 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[9 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[4 * RJ_NL + l] += R0[10 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[11 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[14 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[5 * RJ_NL + l] += R0[11 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[12 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[15 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[6 * RJ_NL + l] += R0[12 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[13 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[16 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[7 * RJ_NL + l] += R0[14 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[15 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[17 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[8 * RJ_NL + l] += R0[15 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[16 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[18 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[9 * RJ_NL + l] += R0[17 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[18 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[19 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[10 * RJ_NL + l] += R0[20 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[21 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[25 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[11 * RJ_NL + l] += R0[21 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[22 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[12 * RJ_NL + l] += R0[22 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[23 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[13 * RJ_NL + l] += R0[23 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[24 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[28 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[14 * RJ_NL + l] += R0[25 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[29 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[15 * RJ_NL + l] += R0[26 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[16 * RJ_NL + l] += R0[27 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[28 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[17 * RJ_NL + l] += R0[29 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[32 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[18 * RJ_NL + l] += R0[30 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[33 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[19 * RJ_NL + l] += R0[32 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[33 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[34 * RJ_NL + l] * hq[2 * RJ_NL + l];
+        }
+}
+
+static void rjxv_3_2(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[4 * RJ_NL + l] * rp[0] + R0[10 * RJ_NL + l] * rp[1] + R0[11 * RJ_NL + l] * rp[2] + R0[14 * RJ_NL + l] * rp[3] + R0[20 * RJ_NL + l] * rp[4] + R0[21 * RJ_NL + l] * rp[5] + R0[22 * RJ_NL + l] * rp[6] + R0[25 * RJ_NL + l] * rp[7] + R0[26 * RJ_NL + l] * rp[8] + R0[29 * RJ_NL + l] * rp[9] + R0[35 * RJ_NL + l] * rp[10] + R0[36 * RJ_NL + l] * rp[11] + R0[37 * RJ_NL + l] * rp[12] + R0[38 * RJ_NL + l] * rp[13] + R0[41 * RJ_NL + l] * rp[14] + R0[42 * RJ_NL + l] * rp[15] + R0[43 * RJ_NL + l] * rp[16] + R0[46 * RJ_NL + l] * rp[17] + R0[47 * RJ_NL + l] * rp[18] + R0[50 * RJ_NL + l] * rp[19];
+                out[1 * RJ_NL + l] = R0[5 * RJ_NL + l] * rp[0] + R0[11 * RJ_NL + l] * rp[1] + R0[12 * RJ_NL + l] * rp[2] + R0[15 * RJ_NL + l] * rp[3] + R0[21 * RJ_NL + l] * rp[4] + R0[22 * RJ_NL + l] * rp[5] + R0[23 * RJ_NL + l] * rp[6] + R0[26 * RJ_NL + l] * rp[7] + R0[27 * RJ_NL + l] * rp[8] + R0[30 * RJ_NL + l] * rp[9] + R0[36 * RJ_NL + l] * rp[10] + R0[37 * RJ_NL + l] * rp[11] + R0[38 * RJ_NL + l] * rp[12] + R0[39 * RJ_NL + l] * rp[13] + R0[42 * RJ_NL + l] * rp[14] + R0[43 * RJ_NL + l] * rp[15] + R0[44 * RJ_NL + l] * rp[16] + R0[47 * RJ_NL + l] * rp[17] + R0[48 * RJ_NL + l] * rp[18] + R0[51 * RJ_NL + l] * rp[19];
+                out[2 * RJ_NL + l] = R0[6 * RJ_NL + l] * rp[0] + R0[12 * RJ_NL + l] * rp[1] + R0[13 * RJ_NL + l] * rp[2] + R0[16 * RJ_NL + l] * rp[3] + R0[22 * RJ_NL + l] * rp[4] + R0[23 * RJ_NL + l] * rp[5] + R0[24 * RJ_NL + l] * rp[6] + R0[27 * RJ_NL + l] * rp[7] + R0[28 * RJ_NL + l] * rp[8] + R0[31 * RJ_NL + l] * rp[9] + R0[37 * RJ_NL + l] * rp[10] + R0[38 * RJ_NL + l] * rp[11] + R0[39 * RJ_NL + l] * rp[12] + R0[40 * RJ_NL + l] * rp[13] + R0[43 * RJ_NL + l] * rp[14] + R0[44 * RJ_NL + l] * rp[15] + R0[45 * RJ_NL + l] * rp[16] + R0[48 * RJ_NL + l] * rp[17] + R0[49 * RJ_NL + l] * rp[18] + R0[52 * RJ_NL + l] * rp[19];
+                out[3 * RJ_NL + l] = R0[7 * RJ_NL + l] * rp[0] + R0[14 * RJ_NL + l] * rp[1] + R0[15 * RJ_NL + l] * rp[2] + R0[17 * RJ_NL + l] * rp[3] + R0[25 * RJ_NL + l] * rp[4] + R0[26 * RJ_NL + l] * rp[5] + R0[27 * RJ_NL + l] * rp[6] + R0[29 * RJ_NL + l] * rp[7] + R0[30 * RJ_NL + l] * rp[8] + R0[32 * RJ_NL + l] * rp[9] + R0[41 * RJ_NL + l] * rp[10] + R0[42 * RJ_NL + l] * rp[11] + R0[43 * RJ_NL + l] * rp[12] + R0[44 * RJ_NL + l] * rp[13] + R0[46 * RJ_NL + l] * rp[14] + R0[47 * RJ_NL + l] * rp[15] + R0[48 * RJ_NL + l] * rp[16] + R0[50 * RJ_NL + l] * rp[17] + R0[51 * RJ_NL + l] * rp[18] + R0[53 * RJ_NL + l] * rp[19];
+                out[4 * RJ_NL + l] = R0[8 * RJ_NL + l] * rp[0] + R0[15 * RJ_NL + l] * rp[1] + R0[16 * RJ_NL + l] * rp[2] + R0[18 * RJ_NL + l] * rp[3] + R0[26 * RJ_NL + l] * rp[4] + R0[27 * RJ_NL + l] * rp[5] + R0[28 * RJ_NL + l] * rp[6] + R0[30 * RJ_NL + l] * rp[7] + R0[31 * RJ_NL + l] * rp[8] + R0[33 * RJ_NL + l] * rp[9] + R0[42 * RJ_NL + l] * rp[10] + R0[43 * RJ_NL + l] * rp[11] + R0[44 * RJ_NL + l] * rp[12] + R0[45 * RJ_NL + l] * rp[13] + R0[47 * RJ_NL + l] * rp[14] + R0[48 * RJ_NL + l] * rp[15] + R0[49 * RJ_NL + l] * rp[16] + R0[51 * RJ_NL + l] * rp[17] + R0[52 * RJ_NL + l] * rp[18] + R0[54 * RJ_NL + l] * rp[19];
+                out[5 * RJ_NL + l] = R0[9 * RJ_NL + l] * rp[0] + R0[17 * RJ_NL + l] * rp[1] + R0[18 * RJ_NL + l] * rp[2] + R0[19 * RJ_NL + l] * rp[3] + R0[29 * RJ_NL + l] * rp[4] + R0[30 * RJ_NL + l] * rp[5] + R0[31 * RJ_NL + l] * rp[6] + R0[32 * RJ_NL + l] * rp[7] + R0[33 * RJ_NL + l] * rp[8] + R0[34 * RJ_NL + l] * rp[9] + R0[46 * RJ_NL + l] * rp[10] + R0[47 * RJ_NL + l] * rp[11] + R0[48 * RJ_NL + l] * rp[12] + R0[49 * RJ_NL + l] * rp[13] + R0[50 * RJ_NL + l] * rp[14] + R0[51 * RJ_NL + l] * rp[15] + R0[52 * RJ_NL + l] * rp[16] + R0[53 * RJ_NL + l] * rp[17] + R0[54 * RJ_NL + l] * rp[18] + R0[55 * RJ_NL + l] * rp[19];
+        }
+}
+
+static void rjyv_3_2(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[4 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[5 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[6 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[7 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[8 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[9 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[1 * RJ_NL + l] += R0[10 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[11 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[12 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[14 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[15 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[17 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[2 * RJ_NL + l] += R0[11 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[12 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[13 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[15 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[16 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[18 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[3 * RJ_NL + l] += R0[14 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[15 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[16 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[17 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[18 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[19 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[4 * RJ_NL + l] += R0[20 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[21 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[22 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[25 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[29 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[5 * RJ_NL + l] += R0[21 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[22 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[23 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[6 * RJ_NL + l] += R0[22 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[23 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[24 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[28 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[7 * RJ_NL + l] += R0[25 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[29 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[32 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[8 * RJ_NL + l] += R0[26 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[28 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[33 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[9 * RJ_NL + l] += R0[29 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[32 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[33 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[34 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[10 * RJ_NL + l] += R0[35 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[36 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[37 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[41 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[46 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[11 * RJ_NL + l] += R0[36 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[37 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[38 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[12 * RJ_NL + l] += R0[37 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[38 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[39 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[13 * RJ_NL + l] += R0[38 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[39 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[40 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[45 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[14 * RJ_NL + l] += R0[41 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[46 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[50 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[15 * RJ_NL + l] += R0[42 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[16 * RJ_NL + l] += R0[43 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[45 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[17 * RJ_NL + l] += R0[46 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[50 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[53 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[18 * RJ_NL + l] += R0[47 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[54 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[19 * RJ_NL + l] += R0[50 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[53 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[54 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[55 * RJ_NL + l] * hq[5 * RJ_NL + l];
+        }
+}
+
+static void rjxv_3_3(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[10 * RJ_NL + l] * rp[0] + R0[20 * RJ_NL + l] * rp[1] + R0[21 * RJ_NL + l] * rp[2] + R0[25 * RJ_NL + l] * rp[3] + R0[35 * RJ_NL + l] * rp[4] + R0[36 * RJ_NL + l] * rp[5] + R0[37 * RJ_NL + l] * rp[6] + R0[41 * RJ_NL + l] * rp[7] + R0[42 * RJ_NL + l] * rp[8] + R0[46 * RJ_NL + l] * rp[9] + R0[56 * RJ_NL + l] * rp[10] + R0[57 * RJ_NL + l] * rp[11] + R0[58 * RJ_NL + l] * rp[12] + R0[59 * RJ_NL + l] * rp[13] + R0[63 * RJ_NL + l] * rp[14] + R0[64 * RJ_NL + l] * rp[15] + R0[65 * RJ_NL + l] * rp[16] + R0[69 * RJ_NL + l] * rp[17] + R0[70 * RJ_NL + l] * rp[18] + R0[74 * RJ_NL + l] * rp[19];
+                out[1 * RJ_NL + l] = R0[11 * RJ_NL + l] * rp[0] + R0[21 * RJ_NL + l] * rp[1] + R0[22 * RJ_NL + l] * rp[2] + R0[26 * RJ_NL + l] * rp[3] + R0[36 * RJ_NL + l] * rp[4] + R0[37 * RJ_NL + l] * rp[5] + R0[38 * RJ_NL + l] * rp[6] + R0[42 * RJ_NL + l] * rp[7] + R0[43 * RJ_NL + l] * rp[8] + R0[47 * RJ_NL + l] * rp[9] + R0[57 * RJ_NL + l] * rp[10] + R0[58 * RJ_NL + l] * rp[11] + R0[59 * RJ_NL + l] * rp[12] + R0[60 * RJ_NL + l] * rp[13] + R0[64 * RJ_NL + l] * rp[14] + R0[65 * RJ_NL + l] * rp[15] + R0[66 * RJ_NL + l] * rp[16] + R0[70 * RJ_NL + l] * rp[17] + R0[71 * RJ_NL + l] * rp[18] + R0[75 * RJ_NL + l] * rp[19];
+                out[2 * RJ_NL + l] = R0[12 * RJ_NL + l] * rp[0] + R0[22 * RJ_NL + l] * rp[1] + R0[23 * RJ_NL + l] * rp[2] + R0[27 * RJ_NL + l] * rp[3] + R0[37 * RJ_NL + l] * rp[4] + R0[38 * RJ_NL + l] * rp[5] + R0[39 * RJ_NL + l] * rp[6] + R0[43 * RJ_NL + l] * rp[7] + R0[44 * RJ_NL + l] * rp[8] + R0[48 * RJ_NL + l] * rp[9] + R0[58 * RJ_NL + l] * rp[10] + R0[59 * RJ_NL + l] * rp[11] + R0[60 * RJ_NL + l] * rp[12] + R0[61 * RJ_NL + l] * rp[13] + R0[65 * RJ_NL + l] * rp[14] + R0[66 * RJ_NL + l] * rp[15] + R0[67 * RJ_NL + l] * rp[16] + R0[71 * RJ_NL + l] * rp[17] + R0[72 * RJ_NL + l] * rp[18] + R0[76 * RJ_NL + l] * rp[19];
+                out[3 * RJ_NL + l] = R0[13 * RJ_NL + l] * rp[0] + R0[23 * RJ_NL + l] * rp[1] + R0[24 * RJ_NL + l] * rp[2] + R0[28 * RJ_NL + l] * rp[3] + R0[38 * RJ_NL + l] * rp[4] + R0[39 * RJ_NL + l] * rp[5] + R0[40 * RJ_NL + l] * rp[6] + R0[44 * RJ_NL + l] * rp[7] + R0[45 * RJ_NL + l] * rp[8] + R0[49 * RJ_NL + l] * rp[9] + R0[59 * RJ_NL + l] * rp[10] + R0[60 * RJ_NL + l] * rp[11] + R0[61 * RJ_NL + l] * rp[12] + R0[62 * RJ_NL + l] * rp[13] + R0[66 * RJ_NL + l] * rp[14] + R0[67 * RJ_NL + l] * rp[15] + R0[68 * RJ_NL + l] * rp[16] + R0[72 * RJ_NL + l] * rp[17] + R0[73 * RJ_NL + l] * rp[18] + R0[77 * RJ_NL + l] * rp[19];
+                out[4 * RJ_NL + l] = R0[14 * RJ_NL + l] * rp[0] + R0[25 * RJ_NL + l] * rp[1] + R0[26 * RJ_NL + l] * rp[2] + R0[29 * RJ_NL + l] * rp[3] + R0[41 * RJ_NL + l] * rp[4] + R0[42 * RJ_NL + l] * rp[5] + R0[43 * RJ_NL + l] * rp[6] + R0[46 * RJ_NL + l] * rp[7] + R0[47 * RJ_NL + l] * rp[8] + R0[50 * RJ_NL + l] * rp[9] + R0[63 * RJ_NL + l] * rp[10] + R0[64 * RJ_NL + l] * rp[11] + R0[65 * RJ_NL + l] * rp[12] + R0[66 * RJ_NL + l] * rp[13] + R0[69 * RJ_NL + l] * rp[14] + R0[70 * RJ_NL + l] * rp[15] + R0[71 * RJ_NL + l] * rp[16] + R0[74 * RJ_NL + l] * rp[17] + R0[75 * RJ_NL + l] * rp[18] + R0[78 * RJ_NL + l] * rp[19];
+                out[5 * RJ_NL + l] = R0[15 * RJ_NL + l] * rp[0] + R0[26 * RJ_NL + l] * rp[1] + R0[27 * RJ_NL + l] * rp[2] + R0[30 * RJ_NL + l] * rp[3] + R0[42 * RJ_NL + l] * rp[4] + R0[43 * RJ_NL + l] * rp[5] + R0[44 * RJ_NL + l] * rp[6] + R0[47 * RJ_NL + l] * rp[7] + R0[48 * RJ_NL + l] * rp[8] + R0[51 * RJ_NL + l] * rp[9] + R0[64 * RJ_NL + l] * rp[10] + R0[65 * RJ_NL + l] * rp[11] + R0[66 * RJ_NL + l] * rp[12] + R0[67 * RJ_NL + l] * rp[13] + R0[70 * RJ_NL + l] * rp[14] + R0[71 * RJ_NL + l] * rp[15] + R0[72 * RJ_NL + l] * rp[16] + R0[75 * RJ_NL + l] * rp[17] + R0[76 * RJ_NL + l] * rp[18] + R0[79 * RJ_NL + l] * rp[19];
+                out[6 * RJ_NL + l] = R0[16 * RJ_NL + l] * rp[0] + R0[27 * RJ_NL + l] * rp[1] + R0[28 * RJ_NL + l] * rp[2] + R0[31 * RJ_NL + l] * rp[3] + R0[43 * RJ_NL + l] * rp[4] + R0[44 * RJ_NL + l] * rp[5] + R0[45 * RJ_NL + l] * rp[6] + R0[48 * RJ_NL + l] * rp[7] + R0[49 * RJ_NL + l] * rp[8] + R0[52 * RJ_NL + l] * rp[9] + R0[65 * RJ_NL + l] * rp[10] + R0[66 * RJ_NL + l] * rp[11] + R0[67 * RJ_NL + l] * rp[12] + R0[68 * RJ_NL + l] * rp[13] + R0[71 * RJ_NL + l] * rp[14] + R0[72 * RJ_NL + l] * rp[15] + R0[73 * RJ_NL + l] * rp[16] + R0[76 * RJ_NL + l] * rp[17] + R0[77 * RJ_NL + l] * rp[18] + R0[80 * RJ_NL + l] * rp[19];
+                out[7 * RJ_NL + l] = R0[17 * RJ_NL + l] * rp[0] + R0[29 * RJ_NL + l] * rp[1] + R0[30 * RJ_NL + l] * rp[2] + R0[32 * RJ_NL + l] * rp[3] + R0[46 * RJ_NL + l] * rp[4] + R0[47 * RJ_NL + l] * rp[5] + R0[48 * RJ_NL + l] * rp[6] + R0[50 * RJ_NL + l] * rp[7] + R0[51 * RJ_NL + l] * rp[8] + R0[53 * RJ_NL + l] * rp[9] + R0[69 * RJ_NL + l] * rp[10] + R0[70 * RJ_NL + l] * rp[11] + R0[71 * RJ_NL + l] * rp[12] + R0[72 * RJ_NL + l] * rp[13] + R0[74 * RJ_NL + l] * rp[14] + R0[75 * RJ_NL + l] * rp[15] + R0[76 * RJ_NL + l] * rp[16] + R0[78 * RJ_NL + l] * rp[17] + R0[79 * RJ_NL + l] * rp[18] + R0[81 * RJ_NL + l] * rp[19];
+                out[8 * RJ_NL + l] = R0[18 * RJ_NL + l] * rp[0] + R0[30 * RJ_NL + l] * rp[1] + R0[31 * RJ_NL + l] * rp[2] + R0[33 * RJ_NL + l] * rp[3] + R0[47 * RJ_NL + l] * rp[4] + R0[48 * RJ_NL + l] * rp[5] + R0[49 * RJ_NL + l] * rp[6] + R0[51 * RJ_NL + l] * rp[7] + R0[52 * RJ_NL + l] * rp[8] + R0[54 * RJ_NL + l] * rp[9] + R0[70 * RJ_NL + l] * rp[10] + R0[71 * RJ_NL + l] * rp[11] + R0[72 * RJ_NL + l] * rp[12] + R0[73 * RJ_NL + l] * rp[13] + R0[75 * RJ_NL + l] * rp[14] + R0[76 * RJ_NL + l] * rp[15] + R0[77 * RJ_NL + l] * rp[16] + R0[79 * RJ_NL + l] * rp[17] + R0[80 * RJ_NL + l] * rp[18] + R0[82 * RJ_NL + l] * rp[19];
+                out[9 * RJ_NL + l] = R0[19 * RJ_NL + l] * rp[0] + R0[32 * RJ_NL + l] * rp[1] + R0[33 * RJ_NL + l] * rp[2] + R0[34 * RJ_NL + l] * rp[3] + R0[50 * RJ_NL + l] * rp[4] + R0[51 * RJ_NL + l] * rp[5] + R0[52 * RJ_NL + l] * rp[6] + R0[53 * RJ_NL + l] * rp[7] + R0[54 * RJ_NL + l] * rp[8] + R0[55 * RJ_NL + l] * rp[9] + R0[74 * RJ_NL + l] * rp[10] + R0[75 * RJ_NL + l] * rp[11] + R0[76 * RJ_NL + l] * rp[12] + R0[77 * RJ_NL + l] * rp[13] + R0[78 * RJ_NL + l] * rp[14] + R0[79 * RJ_NL + l] * rp[15] + R0[80 * RJ_NL + l] * rp[16] + R0[81 * RJ_NL + l] * rp[17] + R0[82 * RJ_NL + l] * rp[18] + R0[83 * RJ_NL + l] * rp[19];
+        }
+}
+
+static void rjyv_3_3(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[10 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[11 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[12 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[13 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[14 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[15 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[16 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[17 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[18 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[19 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[1 * RJ_NL + l] += R0[20 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[21 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[22 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[23 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[25 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[29 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[32 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[2 * RJ_NL + l] += R0[21 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[22 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[23 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[24 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[28 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[33 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[3 * RJ_NL + l] += R0[25 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[28 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[29 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[32 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[33 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[34 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[4 * RJ_NL + l] += R0[35 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[36 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[37 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[38 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[41 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[46 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[50 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[5 * RJ_NL + l] += R0[36 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[37 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[38 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[39 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[6 * RJ_NL + l] += R0[37 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[38 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[39 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[40 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[45 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[7 * RJ_NL + l] += R0[41 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[46 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[50 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[53 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[8 * RJ_NL + l] += R0[42 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[45 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[54 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[9 * RJ_NL + l] += R0[46 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[50 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[53 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[54 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[55 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[10 * RJ_NL + l] += R0[56 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[57 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[58 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[59 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[63 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[64 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[69 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[74 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[11 * RJ_NL + l] += R0[57 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[58 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[59 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[60 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[64 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[12 * RJ_NL + l] += R0[58 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[59 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[60 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[61 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[67 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[13 * RJ_NL + l] += R0[59 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[60 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[61 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[62 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[67 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[68 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[73 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[77 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[14 * RJ_NL + l] += R0[63 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[64 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[69 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[74 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[78 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[15 * RJ_NL + l] += R0[64 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[67 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[79 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[16 * RJ_NL + l] += R0[65 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[67 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[68 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[73 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[77 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[80 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[17 * RJ_NL + l] += R0[69 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[74 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[78 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[79 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[81 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[18 * RJ_NL + l] += R0[70 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[73 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[77 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[79 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[80 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[82 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[19 * RJ_NL + l] += R0[74 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[77 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[78 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[79 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[80 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[81 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[82 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[83 * RJ_NL + l] * hq[9 * RJ_NL + l];
+        }
+}
+
+static void rjxv_3_4(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[20 * RJ_NL + l] * rp[0] + R0[35 * RJ_NL + l] * rp[1] + R0[36 * RJ_NL + l] * rp[2] + R0[41 * RJ_NL + l] * rp[3] + R0[56 * RJ_NL + l] * rp[4] + R0[57 * RJ_NL + l] * rp[5] + R0[58 * RJ_NL + l] * rp[6] + R0[63 * RJ_NL + l] * rp[7] + R0[64 * RJ_NL + l] * rp[8] + R0[69 * RJ_NL + l] * rp[9] + R0[84 * RJ_NL + l] * rp[10] + R0[85 * RJ_NL + l] * rp[11] + R0[86 * RJ_NL + l] * rp[12] + R0[87 * RJ_NL + l] * rp[13] + R0[92 * RJ_NL + l] * rp[14] + R0[93 * RJ_NL + l] * rp[15] + R0[94 * RJ_NL + l] * rp[16] + R0[99 * RJ_NL + l] * rp[17] + R0[100 * RJ_NL + l] * rp[18] + R0[105 * RJ_NL + l] * rp[19];
+                out[1 * RJ_NL + l] = R0[21 * RJ_NL + l] * rp[0] + R0[36 * RJ_NL + l] * rp[1] + R0[37 * RJ_NL + l] * rp[2] + R0[42 * RJ_NL + l] * rp[3] + R0[57 * RJ_NL + l] * rp[4] + R0[58 * RJ_NL + l] * rp[5] + R0[59 * RJ_NL + l] * rp[6] + R0[64 * RJ_NL + l] * rp[7] + R0[65 * RJ_NL + l] * rp[8] + R0[70 * RJ_NL + l] * rp[9] + R0[85 * RJ_NL + l] * rp[10] + R0[86 * RJ_NL + l] * rp[11] + R0[87 * RJ_NL + l] * rp[12] + R0[88 * RJ_NL + l] * rp[13] + R0[93 * RJ_NL + l] * rp[14] + R0[94 * RJ_NL + l] * rp[15] + R0[95 * RJ_NL + l] * rp[16] + R0[100 * RJ_NL + l] * rp[17] + R0[101 * RJ_NL + l] * rp[18] + R0[106 * RJ_NL + l] * rp[19];
+                out[2 * RJ_NL + l] = R0[22 * RJ_NL + l] * rp[0] + R0[37 * RJ_NL + l] * rp[1] + R0[38 * RJ_NL + l] * rp[2] + R0[43 * RJ_NL + l] * rp[3] + R0[58 * RJ_NL + l] * rp[4] + R0[59 * RJ_NL + l] * rp[5] + R0[60 * RJ_NL + l] * rp[6] + R0[65 * RJ_NL + l] * rp[7] + R0[66 * RJ_NL + l] * rp[8] + R0[71 * RJ_NL + l] * rp[9] + R0[86 * RJ_NL + l] * rp[10] + R0[87 * RJ_NL + l] * rp[11] + R0[88 * RJ_NL + l] * rp[12] + R0[89 * RJ_NL + l] * rp[13] + R0[94 * RJ_NL + l] * rp[14] + R0[95 * RJ_NL + l] * rp[15] + R0[96 * RJ_NL + l] * rp[16] + R0[101 * RJ_NL + l] * rp[17] + R0[102 * RJ_NL + l] * rp[18] + R0[107 * RJ_NL + l] * rp[19];
+                out[3 * RJ_NL + l] = R0[23 * RJ_NL + l] * rp[0] + R0[38 * RJ_NL + l] * rp[1] + R0[39 * RJ_NL + l] * rp[2] + R0[44 * RJ_NL + l] * rp[3] + R0[59 * RJ_NL + l] * rp[4] + R0[60 * RJ_NL + l] * rp[5] + R0[61 * RJ_NL + l] * rp[6] + R0[66 * RJ_NL + l] * rp[7] + R0[67 * RJ_NL + l] * rp[8] + R0[72 * RJ_NL + l] * rp[9] + R0[87 * RJ_NL + l] * rp[10] + R0[88 * RJ_NL + l] * rp[11] + R0[89 * RJ_NL + l] * rp[12] + R0[90 * RJ_NL + l] * rp[13] + R0[95 * RJ_NL + l] * rp[14] + R0[96 * RJ_NL + l] * rp[15] + R0[97 * RJ_NL + l] * rp[16] + R0[102 * RJ_NL + l] * rp[17] + R0[103 * RJ_NL + l] * rp[18] + R0[108 * RJ_NL + l] * rp[19];
+                out[4 * RJ_NL + l] = R0[24 * RJ_NL + l] * rp[0] + R0[39 * RJ_NL + l] * rp[1] + R0[40 * RJ_NL + l] * rp[2] + R0[45 * RJ_NL + l] * rp[3] + R0[60 * RJ_NL + l] * rp[4] + R0[61 * RJ_NL + l] * rp[5] + R0[62 * RJ_NL + l] * rp[6] + R0[67 * RJ_NL + l] * rp[7] + R0[68 * RJ_NL + l] * rp[8] + R0[73 * RJ_NL + l] * rp[9] + R0[88 * RJ_NL + l] * rp[10] + R0[89 * RJ_NL + l] * rp[11] + R0[90 * RJ_NL + l] * rp[12] + R0[91 * RJ_NL + l] * rp[13] + R0[96 * RJ_NL + l] * rp[14] + R0[97 * RJ_NL + l] * rp[15] + R0[98 * RJ_NL + l] * rp[16] + R0[103 * RJ_NL + l] * rp[17] + R0[104 * RJ_NL + l] * rp[18] + R0[109 * RJ_NL + l] * rp[19];
+                out[5 * RJ_NL + l] = R0[25 * RJ_NL + l] * rp[0] + R0[41 * RJ_NL + l] * rp[1] + R0[42 * RJ_NL + l] * rp[2] + R0[46 * RJ_NL + l] * rp[3] + R0[63 * RJ_NL + l] * rp[4] + R0[64 * RJ_NL + l] * rp[5] + R0[65 * RJ_NL + l] * rp[6] + R0[69 * RJ_NL + l] * rp[7] + R0[70 * RJ_NL + l] * rp[8] + R0[74 * RJ_NL + l] * rp[9] + R0[92 * RJ_NL + l] * rp[10] + R0[93 * RJ_NL + l] * rp[11] + R0[94 * RJ_NL + l] * rp[12] + R0[95 * RJ_NL + l] * rp[13] + R0[99 * RJ_NL + l] * rp[14] + R0[100 * RJ_NL + l] * rp[15] + R0[101 * RJ_NL + l] * rp[16] + R0[105 * RJ_NL + l] * rp[17] + R0[106 * RJ_NL + l] * rp[18] + R0[110 * RJ_NL + l] * rp[19];
+                out[6 * RJ_NL + l] = R0[26 * RJ_NL + l] * rp[0] + R0[42 * RJ_NL + l] * rp[1] + R0[43 * RJ_NL + l] * rp[2] + R0[47 * RJ_NL + l] * rp[3] + R0[64 * RJ_NL + l] * rp[4] + R0[65 * RJ_NL + l] * rp[5] + R0[66 * RJ_NL + l] * rp[6] + R0[70 * RJ_NL + l] * rp[7] + R0[71 * RJ_NL + l] * rp[8] + R0[75 * RJ_NL + l] * rp[9] + R0[93 * RJ_NL + l] * rp[10] + R0[94 * RJ_NL + l] * rp[11] + R0[95 * RJ_NL + l] * rp[12] + R0[96 * RJ_NL + l] * rp[13] + R0[100 * RJ_NL + l] * rp[14] + R0[101 * RJ_NL + l] * rp[15] + R0[102 * RJ_NL + l] * rp[16] + R0[106 * RJ_NL + l] * rp[17] + R0[107 * RJ_NL + l] * rp[18] + R0[111 * RJ_NL + l] * rp[19];
+                out[7 * RJ_NL + l] = R0[27 * RJ_NL + l] * rp[0] + R0[43 * RJ_NL + l] * rp[1] + R0[44 * RJ_NL + l] * rp[2] + R0[48 * RJ_NL + l] * rp[3] + R0[65 * RJ_NL + l] * rp[4] + R0[66 * RJ_NL + l] * rp[5] + R0[67 * RJ_NL + l] * rp[6] + R0[71 * RJ_NL + l] * rp[7] + R0[72 * RJ_NL + l] * rp[8] + R0[76 * RJ_NL + l] * rp[9] + R0[94 * RJ_NL + l] * rp[10] + R0[95 * RJ_NL + l] * rp[11] + R0[96 * RJ_NL + l] * rp[12] + R0[97 * RJ_NL + l] * rp[13] + R0[101 * RJ_NL + l] * rp[14] + R0[102 * RJ_NL + l] * rp[15] + R0[103 * RJ_NL + l] * rp[16] + R0[107 * RJ_NL + l] * rp[17] + R0[108 * RJ_NL + l] * rp[18] + R0[112 * RJ_NL + l] * rp[19];
+                out[8 * RJ_NL + l] = R0[28 * RJ_NL + l] * rp[0] + R0[44 * RJ_NL + l] * rp[1] + R0[45 * RJ_NL + l] * rp[2] + R0[49 * RJ_NL + l] * rp[3] + R0[66 * RJ_NL + l] * rp[4] + R0[67 * RJ_NL + l] * rp[5] + R0[68 * RJ_NL + l] * rp[6] + R0[72 * RJ_NL + l] * rp[7] + R0[73 * RJ_NL + l] * rp[8] + R0[77 * RJ_NL + l] * rp[9] + R0[95 * RJ_NL + l] * rp[10] + R0[96 * RJ_NL + l] * rp[11] + R0[97 * RJ_NL + l] * rp[12] + R0[98 * RJ_NL + l] * rp[13] + R0[102 * RJ_NL + l] * rp[14] + R0[103 * RJ_NL + l] * rp[15] + R0[104 * RJ_NL + l] * rp[16] + R0[108 * RJ_NL + l] * rp[17] + R0[109 * RJ_NL + l] * rp[18] + R0[113 * RJ_NL + l] * rp[19];
+                out[9 * RJ_NL + l] = R0[29 * RJ_NL + l] * rp[0] + R0[46 * RJ_NL + l] * rp[1] + R0[47 * RJ_NL + l] * rp[2] + R0[50 * RJ_NL + l] * rp[3] + R0[69 * RJ_NL + l] * rp[4] + R0[70 * RJ_NL + l] * rp[5] + R0[71 * RJ_NL + l] * rp[6] + R0[74 * RJ_NL + l] * rp[7] + R0[75 * RJ_NL + l] * rp[8] + R0[78 * RJ_NL + l] * rp[9] + R0[99 * RJ_NL + l] * rp[10] + R0[100 * RJ_NL + l] * rp[11] + R0[101 * RJ_NL + l] * rp[12] + R0[102 * RJ_NL + l] * rp[13] + R0[105 * RJ_NL + l] * rp[14] + R0[106 * RJ_NL + l] * rp[15] + R0[107 * RJ_NL + l] * rp[16] + R0[110 * RJ_NL + l] * rp[17] + R0[111 * RJ_NL + l] * rp[18] + R0[114 * RJ_NL + l] * rp[19];
+                out[10 * RJ_NL + l] = R0[30 * RJ_NL + l] * rp[0] + R0[47 * RJ_NL + l] * rp[1] + R0[48 * RJ_NL + l] * rp[2] + R0[51 * RJ_NL + l] * rp[3] + R0[70 * RJ_NL + l] * rp[4] + R0[71 * RJ_NL + l] * rp[5] + R0[72 * RJ_NL + l] * rp[6] + R0[75 * RJ_NL + l] * rp[7] + R0[76 * RJ_NL + l] * rp[8] + R0[79 * RJ_NL + l] * rp[9] + R0[100 * RJ_NL + l] * rp[10] + R0[101 * RJ_NL + l] * rp[11] + R0[102 * RJ_NL + l] * rp[12] + R0[103 * RJ_NL + l] * rp[13] + R0[106 * RJ_NL + l] * rp[14] + R0[107 * RJ_NL + l] * rp[15] + R0[108 * RJ_NL + l] * rp[16] + R0[111 * RJ_NL + l] * rp[17] + R0[112 * RJ_NL + l] * rp[18] + R0[115 * RJ_NL + l] * rp[19];
+                out[11 * RJ_NL + l] = R0[31 * RJ_NL + l] * rp[0] + R0[48 * RJ_NL + l] * rp[1] + R0[49 * RJ_NL + l] * rp[2] + R0[52 * RJ_NL + l] * rp[3] + R0[71 * RJ_NL + l] * rp[4] + R0[72 * RJ_NL + l] * rp[5] + R0[73 * RJ_NL + l] * rp[6] + R0[76 * RJ_NL + l] * rp[7] + R0[77 * RJ_NL + l] * rp[8] + R0[80 * RJ_NL + l] * rp[9] + R0[101 * RJ_NL + l] * rp[10] + R0[102 * RJ_NL + l] * rp[11] + R0[103 * RJ_NL + l] * rp[12] + R0[104 * RJ_NL + l] * rp[13] + R0[107 * RJ_NL + l] * rp[14] + R0[108 * RJ_NL + l] * rp[15] + R0[109 * RJ_NL + l] * rp[16] + R0[112 * RJ_NL + l] * rp[17] + R0[113 * RJ_NL + l] * rp[18] + R0[116 * RJ_NL + l] * rp[19];
+                out[12 * RJ_NL + l] = R0[32 * RJ_NL + l] * rp[0] + R0[50 * RJ_NL + l] * rp[1] + R0[51 * RJ_NL + l] * rp[2] + R0[53 * RJ_NL + l] * rp[3] + R0[74 * RJ_NL + l] * rp[4] + R0[75 * RJ_NL + l] * rp[5] + R0[76 * RJ_NL + l] * rp[6] + R0[78 * RJ_NL + l] * rp[7] + R0[79 * RJ_NL + l] * rp[8] + R0[81 * RJ_NL + l] * rp[9] + R0[105 * RJ_NL + l] * rp[10] + R0[106 * RJ_NL + l] * rp[11] + R0[107 * RJ_NL + l] * rp[12] + R0[108 * RJ_NL + l] * rp[13] + R0[110 * RJ_NL + l] * rp[14] + R0[111 * RJ_NL + l] * rp[15] + R0[112 * RJ_NL + l] * rp[16] + R0[114 * RJ_NL + l] * rp[17] + R0[115 * RJ_NL + l] * rp[18] + R0[117 * RJ_NL + l] * rp[19];
+                out[13 * RJ_NL + l] = R0[33 * RJ_NL + l] * rp[0] + R0[51 * RJ_NL + l] * rp[1] + R0[52 * RJ_NL + l] * rp[2] + R0[54 * RJ_NL + l] * rp[3] + R0[75 * RJ_NL + l] * rp[4] + R0[76 * RJ_NL + l] * rp[5] + R0[77 * RJ_NL + l] * rp[6] + R0[79 * RJ_NL + l] * rp[7] + R0[80 * RJ_NL + l] * rp[8] + R0[82 * RJ_NL + l] * rp[9] + R0[106 * RJ_NL + l] * rp[10] + R0[107 * RJ_NL + l] * rp[11] + R0[108 * RJ_NL + l] * rp[12] + R0[109 * RJ_NL + l] * rp[13] + R0[111 * RJ_NL + l] * rp[14] + R0[112 * RJ_NL + l] * rp[15] + R0[113 * RJ_NL + l] * rp[16] + R0[115 * RJ_NL + l] * rp[17] + R0[116 * RJ_NL + l] * rp[18] + R0[118 * RJ_NL + l] * rp[19];
+                out[14 * RJ_NL + l] = R0[34 * RJ_NL + l] * rp[0] + R0[53 * RJ_NL + l] * rp[1] + R0[54 * RJ_NL + l] * rp[2] + R0[55 * RJ_NL + l] * rp[3] + R0[78 * RJ_NL + l] * rp[4] + R0[79 * RJ_NL + l] * rp[5] + R0[80 * RJ_NL + l] * rp[6] + R0[81 * RJ_NL + l] * rp[7] + R0[82 * RJ_NL + l] * rp[8] + R0[83 * RJ_NL + l] * rp[9] + R0[110 * RJ_NL + l] * rp[10] + R0[111 * RJ_NL + l] * rp[11] + R0[112 * RJ_NL + l] * rp[12] + R0[113 * RJ_NL + l] * rp[13] + R0[114 * RJ_NL + l] * rp[14] + R0[115 * RJ_NL + l] * rp[15] + R0[116 * RJ_NL + l] * rp[16] + R0[117 * RJ_NL + l] * rp[17] + R0[118 * RJ_NL + l] * rp[18] + R0[119 * RJ_NL + l] * rp[19];
+        }
+}
+
+static void rjyv_3_4(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[20 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[21 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[22 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[23 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[24 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[25 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[28 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[29 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[32 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[33 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[34 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[1 * RJ_NL + l] += R0[35 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[36 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[37 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[38 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[39 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[41 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[46 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[50 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[53 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[2 * RJ_NL + l] += R0[36 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[37 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[38 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[39 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[40 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[45 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[54 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[3 * RJ_NL + l] += R0[41 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[45 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[46 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[50 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[53 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[54 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[55 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[4 * RJ_NL + l] += R0[56 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[57 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[58 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[59 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[60 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[63 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[64 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[69 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[74 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[78 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[5 * RJ_NL + l] += R0[57 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[58 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[59 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[60 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[61 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[64 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[67 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[79 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[6 * RJ_NL + l] += R0[58 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[59 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[60 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[61 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[62 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[67 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[68 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[73 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[77 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[80 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[7 * RJ_NL + l] += R0[63 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[64 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[67 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[69 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[74 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[78 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[79 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[81 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[8 * RJ_NL + l] += R0[64 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[67 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[68 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[73 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[77 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[79 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[80 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[82 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[9 * RJ_NL + l] += R0[69 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[73 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[74 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[77 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[78 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[79 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[80 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[81 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[82 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[83 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[10 * RJ_NL + l] += R0[84 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[85 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[86 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[87 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[88 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[92 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[93 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[94 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[95 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[99 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[100 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[101 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[105 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[106 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[110 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[11 * RJ_NL + l] += R0[85 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[86 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[87 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[88 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[89 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[93 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[94 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[95 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[96 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[100 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[101 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[102 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[106 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[107 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[111 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[12 * RJ_NL + l] += R0[86 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[87 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[88 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[89 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[90 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[94 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[95 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[96 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[97 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[101 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[102 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[103 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[107 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[108 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[112 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[13 * RJ_NL + l] += R0[87 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[88 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[89 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[90 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[91 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[95 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[96 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[97 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[98 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[102 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[103 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[104 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[108 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[109 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[113 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[14 * RJ_NL + l] += R0[92 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[93 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[94 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[95 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[96 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[99 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[100 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[101 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[102 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[105 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[106 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[107 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[110 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[111 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[114 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[15 * RJ_NL + l] += R0[93 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[94 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[95 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[96 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[97 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[100 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[101 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[102 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[103 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[106 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[107 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[108 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[111 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[112 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[115 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[16 * RJ_NL + l] += R0[94 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[95 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[96 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[97 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[98 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[101 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[102 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[103 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[104 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[107 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[108 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[109 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[112 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[113 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[116 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[17 * RJ_NL + l] += R0[99 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[100 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[101 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[102 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[103 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[105 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[106 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[107 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[108 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[110 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[111 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[112 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[114 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[115 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[117 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[18 * RJ_NL + l] += R0[100 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[101 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[102 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[103 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[104 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[106 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[107 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[108 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[109 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[111 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[112 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[113 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[115 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[116 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[118 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[19 * RJ_NL + l] += R0[105 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[106 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[107 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[108 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[109 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[110 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[111 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[112 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[113 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[114 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[115 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[116 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[117 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[118 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[119 * RJ_NL + l] * hq[14 * RJ_NL + l];
+        }
+}
+
+static void rjxv_4_0(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[0 * RJ_NL + l] * rp[0] + R0[1 * RJ_NL + l] * rp[1] + R0[2 * RJ_NL + l] * rp[2] + R0[3 * RJ_NL + l] * rp[3] + R0[4 * RJ_NL + l] * rp[4] + R0[5 * RJ_NL + l] * rp[5] + R0[6 * RJ_NL + l] * rp[6] + R0[7 * RJ_NL + l] * rp[7] + R0[8 * RJ_NL + l] * rp[8] + R0[9 * RJ_NL + l] * rp[9] + R0[10 * RJ_NL + l] * rp[10] + R0[11 * RJ_NL + l] * rp[11] + R0[12 * RJ_NL + l] * rp[12] + R0[13 * RJ_NL + l] * rp[13] + R0[14 * RJ_NL + l] * rp[14] + R0[15 * RJ_NL + l] * rp[15] + R0[16 * RJ_NL + l] * rp[16] + R0[17 * RJ_NL + l] * rp[17] + R0[18 * RJ_NL + l] * rp[18] + R0[19 * RJ_NL + l] * rp[19] + R0[20 * RJ_NL + l] * rp[20] + R0[21 * RJ_NL + l] * rp[21] + R0[22 * RJ_NL + l] * rp[22] + R0[23 * RJ_NL + l] * rp[23] + R0[24 * RJ_NL + l] * rp[24] + R0[25 * RJ_NL + l] * rp[25] + R0[26 * RJ_NL + l] * rp[26] + R0[27 * RJ_NL + l] * rp[27] + R0[28 * RJ_NL + l] * rp[28] + R0[29 * RJ_NL + l] * rp[29] + R0[30 * RJ_NL + l] * rp[30] + R0[31 * RJ_NL + l] * rp[31] + R0[32 * RJ_NL + l] * rp[32] + R0[33 * RJ_NL + l] * rp[33] + R0[34 * RJ_NL + l] * rp[34];
+        }
+}
+
+static void rjyv_4_0(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[0 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[1 * RJ_NL + l] += R0[1 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[2 * RJ_NL + l] += R0[2 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[3 * RJ_NL + l] += R0[3 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[4 * RJ_NL + l] += R0[4 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[5 * RJ_NL + l] += R0[5 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[6 * RJ_NL + l] += R0[6 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[7 * RJ_NL + l] += R0[7 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[8 * RJ_NL + l] += R0[8 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[9 * RJ_NL + l] += R0[9 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[10 * RJ_NL + l] += R0[10 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[11 * RJ_NL + l] += R0[11 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[12 * RJ_NL + l] += R0[12 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[13 * RJ_NL + l] += R0[13 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[14 * RJ_NL + l] += R0[14 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[15 * RJ_NL + l] += R0[15 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[16 * RJ_NL + l] += R0[16 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[17 * RJ_NL + l] += R0[17 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[18 * RJ_NL + l] += R0[18 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[19 * RJ_NL + l] += R0[19 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[20 * RJ_NL + l] += R0[20 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[21 * RJ_NL + l] += R0[21 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[22 * RJ_NL + l] += R0[22 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[23 * RJ_NL + l] += R0[23 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[24 * RJ_NL + l] += R0[24 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[25 * RJ_NL + l] += R0[25 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[26 * RJ_NL + l] += R0[26 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[27 * RJ_NL + l] += R0[27 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[28 * RJ_NL + l] += R0[28 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[29 * RJ_NL + l] += R0[29 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[30 * RJ_NL + l] += R0[30 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[31 * RJ_NL + l] += R0[31 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[32 * RJ_NL + l] += R0[32 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[33 * RJ_NL + l] += R0[33 * RJ_NL + l] * hq[0 * RJ_NL + l];
+                vl[34 * RJ_NL + l] += R0[34 * RJ_NL + l] * hq[0 * RJ_NL + l];
+        }
+}
+
+static void rjxv_4_1(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[1 * RJ_NL + l] * rp[0] + R0[4 * RJ_NL + l] * rp[1] + R0[5 * RJ_NL + l] * rp[2] + R0[7 * RJ_NL + l] * rp[3] + R0[10 * RJ_NL + l] * rp[4] + R0[11 * RJ_NL + l] * rp[5] + R0[12 * RJ_NL + l] * rp[6] + R0[14 * RJ_NL + l] * rp[7] + R0[15 * RJ_NL + l] * rp[8] + R0[17 * RJ_NL + l] * rp[9] + R0[20 * RJ_NL + l] * rp[10] + R0[21 * RJ_NL + l] * rp[11] + R0[22 * RJ_NL + l] * rp[12] + R0[23 * RJ_NL + l] * rp[13] + R0[25 * RJ_NL + l] * rp[14] + R0[26 * RJ_NL + l] * rp[15] + R0[27 * RJ_NL + l] * rp[16] + R0[29 * RJ_NL + l] * rp[17] + R0[30 * RJ_NL + l] * rp[18] + R0[32 * RJ_NL + l] * rp[19] + R0[35 * RJ_NL + l] * rp[20] + R0[36 * RJ_NL + l] * rp[21] + R0[37 * RJ_NL + l] * rp[22] + R0[38 * RJ_NL + l] * rp[23] + R0[39 * RJ_NL + l] * rp[24] + R0[41 * RJ_NL + l] * rp[25] + R0[42 * RJ_NL + l] * rp[26] + R0[43 * RJ_NL + l] * rp[27] + R0[44 * RJ_NL + l] * rp[28] + R0[46 * RJ_NL + l] * rp[29] + R0[47 * RJ_NL + l] * rp[30] + R0[48 * RJ_NL + l] * rp[31] + R0[50 * RJ_NL + l] * rp[32] + R0[51 * RJ_NL + l] * rp[33] + R0[53 * RJ_NL + l] * rp[34];
+                out[1 * RJ_NL + l] = R0[2 * RJ_NL + l] * rp[0] + R0[5 * RJ_NL + l] * rp[1] + R0[6 * RJ_NL + l] * rp[2] + R0[8 * RJ_NL + l] * rp[3] + R0[11 * RJ_NL + l] * rp[4] + R0[12 * RJ_NL + l] * rp[5] + R0[13 * RJ_NL + l] * rp[6] + R0[15 * RJ_NL + l] * rp[7] + R0[16 * RJ_NL + l] * rp[8] + R0[18 * RJ_NL + l] * rp[9] + R0[21 * RJ_NL + l] * rp[10] + R0[22 * RJ_NL + l] * rp[11] + R0[23 * RJ_NL + l] * rp[12] + R0[24 * RJ_NL + l] * rp[13] + R0[26 * RJ_NL + l] * rp[14] + R0[27 * RJ_NL + l] * rp[15] + R0[28 * RJ_NL + l] * rp[16] + R0[30 * RJ_NL + l] * rp[17] + R0[31 * RJ_NL + l] * rp[18] + R0[33 * RJ_NL + l] * rp[19] + R0[36 * RJ_NL + l] * rp[20] + R0[37 * RJ_NL + l] * rp[21] + R0[38 * RJ_NL + l] * rp[22] + R0[39 * RJ_NL + l] * rp[23] + R0[40 * RJ_NL + l] * rp[24] + R0[42 * RJ_NL + l] * rp[25] + R0[43 * RJ_NL + l] * rp[26] + R0[44 * RJ_NL + l] * rp[27] + R0[45 * RJ_NL + l] * rp[28] + R0[47 * RJ_NL + l] * rp[29] + R0[48 * RJ_NL + l] * rp[30] + R0[49 * RJ_NL + l] * rp[31] + R0[51 * RJ_NL + l] * rp[32] + R0[52 * RJ_NL + l] * rp[33] + R0[54 * RJ_NL + l] * rp[34];
+                out[2 * RJ_NL + l] = R0[3 * RJ_NL + l] * rp[0] + R0[7 * RJ_NL + l] * rp[1] + R0[8 * RJ_NL + l] * rp[2] + R0[9 * RJ_NL + l] * rp[3] + R0[14 * RJ_NL + l] * rp[4] + R0[15 * RJ_NL + l] * rp[5] + R0[16 * RJ_NL + l] * rp[6] + R0[17 * RJ_NL + l] * rp[7] + R0[18 * RJ_NL + l] * rp[8] + R0[19 * RJ_NL + l] * rp[9] + R0[25 * RJ_NL + l] * rp[10] + R0[26 * RJ_NL + l] * rp[11] + R0[27 * RJ_NL + l] * rp[12] + R0[28 * RJ_NL + l] * rp[13] + R0[29 * RJ_NL + l] * rp[14] + R0[30 * RJ_NL + l] * rp[15] + R0[31 * RJ_NL + l] * rp[16] + R0[32 * RJ_NL + l] * rp[17] + R0[33 * RJ_NL + l] * rp[18] + R0[34 * RJ_NL + l] * rp[19] + R0[41 * RJ_NL + l] * rp[20] + R0[42 * RJ_NL + l] * rp[21] + R0[43 * RJ_NL + l] * rp[22] + R0[44 * RJ_NL + l] * rp[23] + R0[45 * RJ_NL + l] * rp[24] + R0[46 * RJ_NL + l] * rp[25] + R0[47 * RJ_NL + l] * rp[26] + R0[48 * RJ_NL + l] * rp[27] + R0[49 * RJ_NL + l] * rp[28] + R0[50 * RJ_NL + l] * rp[29] + R0[51 * RJ_NL + l] * rp[30] + R0[52 * RJ_NL + l] * rp[31] + R0[53 * RJ_NL + l] * rp[32] + R0[54 * RJ_NL + l] * rp[33] + R0[55 * RJ_NL + l] * rp[34];
+        }
+}
+
+static void rjyv_4_1(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[1 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[2 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[3 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[1 * RJ_NL + l] += R0[4 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[5 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[7 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[2 * RJ_NL + l] += R0[5 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[6 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[8 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[3 * RJ_NL + l] += R0[7 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[8 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[9 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[4 * RJ_NL + l] += R0[10 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[11 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[14 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[5 * RJ_NL + l] += R0[11 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[12 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[15 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[6 * RJ_NL + l] += R0[12 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[13 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[16 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[7 * RJ_NL + l] += R0[14 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[15 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[17 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[8 * RJ_NL + l] += R0[15 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[16 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[18 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[9 * RJ_NL + l] += R0[17 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[18 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[19 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[10 * RJ_NL + l] += R0[20 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[21 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[25 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[11 * RJ_NL + l] += R0[21 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[22 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[12 * RJ_NL + l] += R0[22 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[23 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[13 * RJ_NL + l] += R0[23 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[24 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[28 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[14 * RJ_NL + l] += R0[25 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[29 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[15 * RJ_NL + l] += R0[26 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[16 * RJ_NL + l] += R0[27 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[28 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[17 * RJ_NL + l] += R0[29 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[32 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[18 * RJ_NL + l] += R0[30 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[33 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[19 * RJ_NL + l] += R0[32 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[33 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[34 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[20 * RJ_NL + l] += R0[35 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[36 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[41 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[21 * RJ_NL + l] += R0[36 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[37 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[22 * RJ_NL + l] += R0[37 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[38 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[23 * RJ_NL + l] += R0[38 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[39 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[24 * RJ_NL + l] += R0[39 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[40 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[45 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[25 * RJ_NL + l] += R0[41 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[46 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[26 * RJ_NL + l] += R0[42 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[27 * RJ_NL + l] += R0[43 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[28 * RJ_NL + l] += R0[44 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[45 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[29 * RJ_NL + l] += R0[46 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[50 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[30 * RJ_NL + l] += R0[47 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[31 * RJ_NL + l] += R0[48 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[32 * RJ_NL + l] += R0[50 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[53 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[33 * RJ_NL + l] += R0[51 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[54 * RJ_NL + l] * hq[2 * RJ_NL + l];
+                vl[34 * RJ_NL + l] += R0[53 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[54 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[55 * RJ_NL + l] * hq[2 * RJ_NL + l];
+        }
+}
+
+static void rjxv_4_2(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[4 * RJ_NL + l] * rp[0] + R0[10 * RJ_NL + l] * rp[1] + R0[11 * RJ_NL + l] * rp[2] + R0[14 * RJ_NL + l] * rp[3] + R0[20 * RJ_NL + l] * rp[4] + R0[21 * RJ_NL + l] * rp[5] + R0[22 * RJ_NL + l] * rp[6] + R0[25 * RJ_NL + l] * rp[7] + R0[26 * RJ_NL + l] * rp[8] + R0[29 * RJ_NL + l] * rp[9] + R0[35 * RJ_NL + l] * rp[10] + R0[36 * RJ_NL + l] * rp[11] + R0[37 * RJ_NL + l] * rp[12] + R0[38 * RJ_NL + l] * rp[13] + R0[41 * RJ_NL + l] * rp[14] + R0[42 * RJ_NL + l] * rp[15] + R0[43 * RJ_NL + l] * rp[16] + R0[46 * RJ_NL + l] * rp[17] + R0[47 * RJ_NL + l] * rp[18] + R0[50 * RJ_NL + l] * rp[19] + R0[56 * RJ_NL + l] * rp[20] + R0[57 * RJ_NL + l] * rp[21] + R0[58 * RJ_NL + l] * rp[22] + R0[59 * RJ_NL + l] * rp[23] + R0[60 * RJ_NL + l] * rp[24] + R0[63 * RJ_NL + l] * rp[25] + R0[64 * RJ_NL + l] * rp[26] + R0[65 * RJ_NL + l] * rp[27] + R0[66 * RJ_NL + l] * rp[28] + R0[69 * RJ_NL + l] * rp[29] + R0[70 * RJ_NL + l] * rp[30] + R0[71 * RJ_NL + l] * rp[31] + R0[74 * RJ_NL + l] * rp[32] + R0[75 * RJ_NL + l] * rp[33] + R0[78 * RJ_NL + l] * rp[34];
+                out[1 * RJ_NL + l] = R0[5 * RJ_NL + l] * rp[0] + R0[11 * RJ_NL + l] * rp[1] + R0[12 * RJ_NL + l] * rp[2] + R0[15 * RJ_NL + l] * rp[3] + R0[21 * RJ_NL + l] * rp[4] + R0[22 * RJ_NL + l] * rp[5] + R0[23 * RJ_NL + l] * rp[6] + R0[26 * RJ_NL + l] * rp[7] + R0[27 * RJ_NL + l] * rp[8] + R0[30 * RJ_NL + l] * rp[9] + R0[36 * RJ_NL + l] * rp[10] + R0[37 * RJ_NL + l] * rp[11] + R0[38 * RJ_NL + l] * rp[12] + R0[39 * RJ_NL + l] * rp[13] + R0[42 * RJ_NL + l] * rp[14] + R0[43 * RJ_NL + l] * rp[15] + R0[44 * RJ_NL + l] * rp[16] + R0[47 * RJ_NL + l] * rp[17] + R0[48 * RJ_NL + l] * rp[18] + R0[51 * RJ_NL + l] * rp[19] + R0[57 * RJ_NL + l] * rp[20] + R0[58 * RJ_NL + l] * rp[21] + R0[59 * RJ_NL + l] * rp[22] + R0[60 * RJ_NL + l] * rp[23] + R0[61 * RJ_NL + l] * rp[24] + R0[64 * RJ_NL + l] * rp[25] + R0[65 * RJ_NL + l] * rp[26] + R0[66 * RJ_NL + l] * rp[27] + R0[67 * RJ_NL + l] * rp[28] + R0[70 * RJ_NL + l] * rp[29] + R0[71 * RJ_NL + l] * rp[30] + R0[72 * RJ_NL + l] * rp[31] + R0[75 * RJ_NL + l] * rp[32] + R0[76 * RJ_NL + l] * rp[33] + R0[79 * RJ_NL + l] * rp[34];
+                out[2 * RJ_NL + l] = R0[6 * RJ_NL + l] * rp[0] + R0[12 * RJ_NL + l] * rp[1] + R0[13 * RJ_NL + l] * rp[2] + R0[16 * RJ_NL + l] * rp[3] + R0[22 * RJ_NL + l] * rp[4] + R0[23 * RJ_NL + l] * rp[5] + R0[24 * RJ_NL + l] * rp[6] + R0[27 * RJ_NL + l] * rp[7] + R0[28 * RJ_NL + l] * rp[8] + R0[31 * RJ_NL + l] * rp[9] + R0[37 * RJ_NL + l] * rp[10] + R0[38 * RJ_NL + l] * rp[11] + R0[39 * RJ_NL + l] * rp[12] + R0[40 * RJ_NL + l] * rp[13] + R0[43 * RJ_NL + l] * rp[14] + R0[44 * RJ_NL + l] * rp[15] + R0[45 * RJ_NL + l] * rp[16] + R0[48 * RJ_NL + l] * rp[17] + R0[49 * RJ_NL + l] * rp[18] + R0[52 * RJ_NL + l] * rp[19] + R0[58 * RJ_NL + l] * rp[20] + R0[59 * RJ_NL + l] * rp[21] + R0[60 * RJ_NL + l] * rp[22] + R0[61 * RJ_NL + l] * rp[23] + R0[62 * RJ_NL + l] * rp[24] + R0[65 * RJ_NL + l] * rp[25] + R0[66 * RJ_NL + l] * rp[26] + R0[67 * RJ_NL + l] * rp[27] + R0[68 * RJ_NL + l] * rp[28] + R0[71 * RJ_NL + l] * rp[29] + R0[72 * RJ_NL + l] * rp[30] + R0[73 * RJ_NL + l] * rp[31] + R0[76 * RJ_NL + l] * rp[32] + R0[77 * RJ_NL + l] * rp[33] + R0[80 * RJ_NL + l] * rp[34];
+                out[3 * RJ_NL + l] = R0[7 * RJ_NL + l] * rp[0] + R0[14 * RJ_NL + l] * rp[1] + R0[15 * RJ_NL + l] * rp[2] + R0[17 * RJ_NL + l] * rp[3] + R0[25 * RJ_NL + l] * rp[4] + R0[26 * RJ_NL + l] * rp[5] + R0[27 * RJ_NL + l] * rp[6] + R0[29 * RJ_NL + l] * rp[7] + R0[30 * RJ_NL + l] * rp[8] + R0[32 * RJ_NL + l] * rp[9] + R0[41 * RJ_NL + l] * rp[10] + R0[42 * RJ_NL + l] * rp[11] + R0[43 * RJ_NL + l] * rp[12] + R0[44 * RJ_NL + l] * rp[13] + R0[46 * RJ_NL + l] * rp[14] + R0[47 * RJ_NL + l] * rp[15] + R0[48 * RJ_NL + l] * rp[16] + R0[50 * RJ_NL + l] * rp[17] + R0[51 * RJ_NL + l] * rp[18] + R0[53 * RJ_NL + l] * rp[19] + R0[63 * RJ_NL + l] * rp[20] + R0[64 * RJ_NL + l] * rp[21] + R0[65 * RJ_NL + l] * rp[22] + R0[66 * RJ_NL + l] * rp[23] + R0[67 * RJ_NL + l] * rp[24] + R0[69 * RJ_NL + l] * rp[25] + R0[70 * RJ_NL + l] * rp[26] + R0[71 * RJ_NL + l] * rp[27] + R0[72 * RJ_NL + l] * rp[28] + R0[74 * RJ_NL + l] * rp[29] + R0[75 * RJ_NL + l] * rp[30] + R0[76 * RJ_NL + l] * rp[31] + R0[78 * RJ_NL + l] * rp[32] + R0[79 * RJ_NL + l] * rp[33] + R0[81 * RJ_NL + l] * rp[34];
+                out[4 * RJ_NL + l] = R0[8 * RJ_NL + l] * rp[0] + R0[15 * RJ_NL + l] * rp[1] + R0[16 * RJ_NL + l] * rp[2] + R0[18 * RJ_NL + l] * rp[3] + R0[26 * RJ_NL + l] * rp[4] + R0[27 * RJ_NL + l] * rp[5] + R0[28 * RJ_NL + l] * rp[6] + R0[30 * RJ_NL + l] * rp[7] + R0[31 * RJ_NL + l] * rp[8] + R0[33 * RJ_NL + l] * rp[9] + R0[42 * RJ_NL + l] * rp[10] + R0[43 * RJ_NL + l] * rp[11] + R0[44 * RJ_NL + l] * rp[12] + R0[45 * RJ_NL + l] * rp[13] + R0[47 * RJ_NL + l] * rp[14] + R0[48 * RJ_NL + l] * rp[15] + R0[49 * RJ_NL + l] * rp[16] + R0[51 * RJ_NL + l] * rp[17] + R0[52 * RJ_NL + l] * rp[18] + R0[54 * RJ_NL + l] * rp[19] + R0[64 * RJ_NL + l] * rp[20] + R0[65 * RJ_NL + l] * rp[21] + R0[66 * RJ_NL + l] * rp[22] + R0[67 * RJ_NL + l] * rp[23] + R0[68 * RJ_NL + l] * rp[24] + R0[70 * RJ_NL + l] * rp[25] + R0[71 * RJ_NL + l] * rp[26] + R0[72 * RJ_NL + l] * rp[27] + R0[73 * RJ_NL + l] * rp[28] + R0[75 * RJ_NL + l] * rp[29] + R0[76 * RJ_NL + l] * rp[30] + R0[77 * RJ_NL + l] * rp[31] + R0[79 * RJ_NL + l] * rp[32] + R0[80 * RJ_NL + l] * rp[33] + R0[82 * RJ_NL + l] * rp[34];
+                out[5 * RJ_NL + l] = R0[9 * RJ_NL + l] * rp[0] + R0[17 * RJ_NL + l] * rp[1] + R0[18 * RJ_NL + l] * rp[2] + R0[19 * RJ_NL + l] * rp[3] + R0[29 * RJ_NL + l] * rp[4] + R0[30 * RJ_NL + l] * rp[5] + R0[31 * RJ_NL + l] * rp[6] + R0[32 * RJ_NL + l] * rp[7] + R0[33 * RJ_NL + l] * rp[8] + R0[34 * RJ_NL + l] * rp[9] + R0[46 * RJ_NL + l] * rp[10] + R0[47 * RJ_NL + l] * rp[11] + R0[48 * RJ_NL + l] * rp[12] + R0[49 * RJ_NL + l] * rp[13] + R0[50 * RJ_NL + l] * rp[14] + R0[51 * RJ_NL + l] * rp[15] + R0[52 * RJ_NL + l] * rp[16] + R0[53 * RJ_NL + l] * rp[17] + R0[54 * RJ_NL + l] * rp[18] + R0[55 * RJ_NL + l] * rp[19] + R0[69 * RJ_NL + l] * rp[20] + R0[70 * RJ_NL + l] * rp[21] + R0[71 * RJ_NL + l] * rp[22] + R0[72 * RJ_NL + l] * rp[23] + R0[73 * RJ_NL + l] * rp[24] + R0[74 * RJ_NL + l] * rp[25] + R0[75 * RJ_NL + l] * rp[26] + R0[76 * RJ_NL + l] * rp[27] + R0[77 * RJ_NL + l] * rp[28] + R0[78 * RJ_NL + l] * rp[29] + R0[79 * RJ_NL + l] * rp[30] + R0[80 * RJ_NL + l] * rp[31] + R0[81 * RJ_NL + l] * rp[32] + R0[82 * RJ_NL + l] * rp[33] + R0[83 * RJ_NL + l] * rp[34];
+        }
+}
+
+static void rjyv_4_2(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[4 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[5 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[6 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[7 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[8 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[9 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[1 * RJ_NL + l] += R0[10 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[11 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[12 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[14 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[15 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[17 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[2 * RJ_NL + l] += R0[11 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[12 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[13 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[15 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[16 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[18 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[3 * RJ_NL + l] += R0[14 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[15 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[16 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[17 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[18 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[19 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[4 * RJ_NL + l] += R0[20 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[21 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[22 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[25 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[29 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[5 * RJ_NL + l] += R0[21 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[22 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[23 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[6 * RJ_NL + l] += R0[22 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[23 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[24 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[28 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[7 * RJ_NL + l] += R0[25 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[29 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[32 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[8 * RJ_NL + l] += R0[26 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[28 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[33 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[9 * RJ_NL + l] += R0[29 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[32 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[33 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[34 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[10 * RJ_NL + l] += R0[35 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[36 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[37 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[41 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[46 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[11 * RJ_NL + l] += R0[36 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[37 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[38 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[12 * RJ_NL + l] += R0[37 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[38 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[39 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[13 * RJ_NL + l] += R0[38 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[39 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[40 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[45 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[14 * RJ_NL + l] += R0[41 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[46 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[50 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[15 * RJ_NL + l] += R0[42 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[16 * RJ_NL + l] += R0[43 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[45 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[17 * RJ_NL + l] += R0[46 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[50 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[53 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[18 * RJ_NL + l] += R0[47 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[54 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[19 * RJ_NL + l] += R0[50 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[53 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[54 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[55 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[20 * RJ_NL + l] += R0[56 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[57 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[58 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[63 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[64 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[69 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[21 * RJ_NL + l] += R0[57 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[58 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[59 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[64 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[22 * RJ_NL + l] += R0[58 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[59 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[60 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[23 * RJ_NL + l] += R0[59 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[60 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[61 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[67 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[24 * RJ_NL + l] += R0[60 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[61 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[62 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[67 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[68 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[73 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[25 * RJ_NL + l] += R0[63 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[64 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[69 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[74 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[26 * RJ_NL + l] += R0[64 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[27 * RJ_NL + l] += R0[65 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[67 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[28 * RJ_NL + l] += R0[66 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[67 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[68 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[73 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[77 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[29 * RJ_NL + l] += R0[69 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[74 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[78 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[30 * RJ_NL + l] += R0[70 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[79 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[31 * RJ_NL + l] += R0[71 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[73 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[77 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[80 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[32 * RJ_NL + l] += R0[74 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[78 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[79 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[81 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[33 * RJ_NL + l] += R0[75 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[77 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[79 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[80 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[82 * RJ_NL + l] * hq[5 * RJ_NL + l];
+                vl[34 * RJ_NL + l] += R0[78 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[79 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[80 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[81 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[82 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[83 * RJ_NL + l] * hq[5 * RJ_NL + l];
+        }
+}
+
+static void rjxv_4_3(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[10 * RJ_NL + l] * rp[0] + R0[20 * RJ_NL + l] * rp[1] + R0[21 * RJ_NL + l] * rp[2] + R0[25 * RJ_NL + l] * rp[3] + R0[35 * RJ_NL + l] * rp[4] + R0[36 * RJ_NL + l] * rp[5] + R0[37 * RJ_NL + l] * rp[6] + R0[41 * RJ_NL + l] * rp[7] + R0[42 * RJ_NL + l] * rp[8] + R0[46 * RJ_NL + l] * rp[9] + R0[56 * RJ_NL + l] * rp[10] + R0[57 * RJ_NL + l] * rp[11] + R0[58 * RJ_NL + l] * rp[12] + R0[59 * RJ_NL + l] * rp[13] + R0[63 * RJ_NL + l] * rp[14] + R0[64 * RJ_NL + l] * rp[15] + R0[65 * RJ_NL + l] * rp[16] + R0[69 * RJ_NL + l] * rp[17] + R0[70 * RJ_NL + l] * rp[18] + R0[74 * RJ_NL + l] * rp[19] + R0[84 * RJ_NL + l] * rp[20] + R0[85 * RJ_NL + l] * rp[21] + R0[86 * RJ_NL + l] * rp[22] + R0[87 * RJ_NL + l] * rp[23] + R0[88 * RJ_NL + l] * rp[24] + R0[92 * RJ_NL + l] * rp[25] + R0[93 * RJ_NL + l] * rp[26] + R0[94 * RJ_NL + l] * rp[27] + R0[95 * RJ_NL + l] * rp[28] + R0[99 * RJ_NL + l] * rp[29] + R0[100 * RJ_NL + l] * rp[30] + R0[101 * RJ_NL + l] * rp[31] + R0[105 * RJ_NL + l] * rp[32] + R0[106 * RJ_NL + l] * rp[33] + R0[110 * RJ_NL + l] * rp[34];
+                out[1 * RJ_NL + l] = R0[11 * RJ_NL + l] * rp[0] + R0[21 * RJ_NL + l] * rp[1] + R0[22 * RJ_NL + l] * rp[2] + R0[26 * RJ_NL + l] * rp[3] + R0[36 * RJ_NL + l] * rp[4] + R0[37 * RJ_NL + l] * rp[5] + R0[38 * RJ_NL + l] * rp[6] + R0[42 * RJ_NL + l] * rp[7] + R0[43 * RJ_NL + l] * rp[8] + R0[47 * RJ_NL + l] * rp[9] + R0[57 * RJ_NL + l] * rp[10] + R0[58 * RJ_NL + l] * rp[11] + R0[59 * RJ_NL + l] * rp[12] + R0[60 * RJ_NL + l] * rp[13] + R0[64 * RJ_NL + l] * rp[14] + R0[65 * RJ_NL + l] * rp[15] + R0[66 * RJ_NL + l] * rp[16] + R0[70 * RJ_NL + l] * rp[17] + R0[71 * RJ_NL + l] * rp[18] + R0[75 * RJ_NL + l] * rp[19] + R0[85 * RJ_NL + l] * rp[20] + R0[86 * RJ_NL + l] * rp[21] + R0[87 * RJ_NL + l] * rp[22] + R0[88 * RJ_NL + l] * rp[23] + R0[89 * RJ_NL + l] * rp[24] + R0[93 * RJ_NL + l] * rp[25] + R0[94 * RJ_NL + l] * rp[26] + R0[95 * RJ_NL + l] * rp[27] + R0[96 * RJ_NL + l] * rp[28] + R0[100 * RJ_NL + l] * rp[29] + R0[101 * RJ_NL + l] * rp[30] + R0[102 * RJ_NL + l] * rp[31] + R0[106 * RJ_NL + l] * rp[32] + R0[107 * RJ_NL + l] * rp[33] + R0[111 * RJ_NL + l] * rp[34];
+                out[2 * RJ_NL + l] = R0[12 * RJ_NL + l] * rp[0] + R0[22 * RJ_NL + l] * rp[1] + R0[23 * RJ_NL + l] * rp[2] + R0[27 * RJ_NL + l] * rp[3] + R0[37 * RJ_NL + l] * rp[4] + R0[38 * RJ_NL + l] * rp[5] + R0[39 * RJ_NL + l] * rp[6] + R0[43 * RJ_NL + l] * rp[7] + R0[44 * RJ_NL + l] * rp[8] + R0[48 * RJ_NL + l] * rp[9] + R0[58 * RJ_NL + l] * rp[10] + R0[59 * RJ_NL + l] * rp[11] + R0[60 * RJ_NL + l] * rp[12] + R0[61 * RJ_NL + l] * rp[13] + R0[65 * RJ_NL + l] * rp[14] + R0[66 * RJ_NL + l] * rp[15] + R0[67 * RJ_NL + l] * rp[16] + R0[71 * RJ_NL + l] * rp[17] + R0[72 * RJ_NL + l] * rp[18] + R0[76 * RJ_NL + l] * rp[19] + R0[86 * RJ_NL + l] * rp[20] + R0[87 * RJ_NL + l] * rp[21] + R0[88 * RJ_NL + l] * rp[22] + R0[89 * RJ_NL + l] * rp[23] + R0[90 * RJ_NL + l] * rp[24] + R0[94 * RJ_NL + l] * rp[25] + R0[95 * RJ_NL + l] * rp[26] + R0[96 * RJ_NL + l] * rp[27] + R0[97 * RJ_NL + l] * rp[28] + R0[101 * RJ_NL + l] * rp[29] + R0[102 * RJ_NL + l] * rp[30] + R0[103 * RJ_NL + l] * rp[31] + R0[107 * RJ_NL + l] * rp[32] + R0[108 * RJ_NL + l] * rp[33] + R0[112 * RJ_NL + l] * rp[34];
+                out[3 * RJ_NL + l] = R0[13 * RJ_NL + l] * rp[0] + R0[23 * RJ_NL + l] * rp[1] + R0[24 * RJ_NL + l] * rp[2] + R0[28 * RJ_NL + l] * rp[3] + R0[38 * RJ_NL + l] * rp[4] + R0[39 * RJ_NL + l] * rp[5] + R0[40 * RJ_NL + l] * rp[6] + R0[44 * RJ_NL + l] * rp[7] + R0[45 * RJ_NL + l] * rp[8] + R0[49 * RJ_NL + l] * rp[9] + R0[59 * RJ_NL + l] * rp[10] + R0[60 * RJ_NL + l] * rp[11] + R0[61 * RJ_NL + l] * rp[12] + R0[62 * RJ_NL + l] * rp[13] + R0[66 * RJ_NL + l] * rp[14] + R0[67 * RJ_NL + l] * rp[15] + R0[68 * RJ_NL + l] * rp[16] + R0[72 * RJ_NL + l] * rp[17] + R0[73 * RJ_NL + l] * rp[18] + R0[77 * RJ_NL + l] * rp[19] + R0[87 * RJ_NL + l] * rp[20] + R0[88 * RJ_NL + l] * rp[21] + R0[89 * RJ_NL + l] * rp[22] + R0[90 * RJ_NL + l] * rp[23] + R0[91 * RJ_NL + l] * rp[24] + R0[95 * RJ_NL + l] * rp[25] + R0[96 * RJ_NL + l] * rp[26] + R0[97 * RJ_NL + l] * rp[27] + R0[98 * RJ_NL + l] * rp[28] + R0[102 * RJ_NL + l] * rp[29] + R0[103 * RJ_NL + l] * rp[30] + R0[104 * RJ_NL + l] * rp[31] + R0[108 * RJ_NL + l] * rp[32] + R0[109 * RJ_NL + l] * rp[33] + R0[113 * RJ_NL + l] * rp[34];
+                out[4 * RJ_NL + l] = R0[14 * RJ_NL + l] * rp[0] + R0[25 * RJ_NL + l] * rp[1] + R0[26 * RJ_NL + l] * rp[2] + R0[29 * RJ_NL + l] * rp[3] + R0[41 * RJ_NL + l] * rp[4] + R0[42 * RJ_NL + l] * rp[5] + R0[43 * RJ_NL + l] * rp[6] + R0[46 * RJ_NL + l] * rp[7] + R0[47 * RJ_NL + l] * rp[8] + R0[50 * RJ_NL + l] * rp[9] + R0[63 * RJ_NL + l] * rp[10] + R0[64 * RJ_NL + l] * rp[11] + R0[65 * RJ_NL + l] * rp[12] + R0[66 * RJ_NL + l] * rp[13] + R0[69 * RJ_NL + l] * rp[14] + R0[70 * RJ_NL + l] * rp[15] + R0[71 * RJ_NL + l] * rp[16] + R0[74 * RJ_NL + l] * rp[17] + R0[75 * RJ_NL + l] * rp[18] + R0[78 * RJ_NL + l] * rp[19] + R0[92 * RJ_NL + l] * rp[20] + R0[93 * RJ_NL + l] * rp[21] + R0[94 * RJ_NL + l] * rp[22] + R0[95 * RJ_NL + l] * rp[23] + R0[96 * RJ_NL + l] * rp[24] + R0[99 * RJ_NL + l] * rp[25] + R0[100 * RJ_NL + l] * rp[26] + R0[101 * RJ_NL + l] * rp[27] + R0[102 * RJ_NL + l] * rp[28] + R0[105 * RJ_NL + l] * rp[29] + R0[106 * RJ_NL + l] * rp[30] + R0[107 * RJ_NL + l] * rp[31] + R0[110 * RJ_NL + l] * rp[32] + R0[111 * RJ_NL + l] * rp[33] + R0[114 * RJ_NL + l] * rp[34];
+                out[5 * RJ_NL + l] = R0[15 * RJ_NL + l] * rp[0] + R0[26 * RJ_NL + l] * rp[1] + R0[27 * RJ_NL + l] * rp[2] + R0[30 * RJ_NL + l] * rp[3] + R0[42 * RJ_NL + l] * rp[4] + R0[43 * RJ_NL + l] * rp[5] + R0[44 * RJ_NL + l] * rp[6] + R0[47 * RJ_NL + l] * rp[7] + R0[48 * RJ_NL + l] * rp[8] + R0[51 * RJ_NL + l] * rp[9] + R0[64 * RJ_NL + l] * rp[10] + R0[65 * RJ_NL + l] * rp[11] + R0[66 * RJ_NL + l] * rp[12] + R0[67 * RJ_NL + l] * rp[13] + R0[70 * RJ_NL + l] * rp[14] + R0[71 * RJ_NL + l] * rp[15] + R0[72 * RJ_NL + l] * rp[16] + R0[75 * RJ_NL + l] * rp[17] + R0[76 * RJ_NL + l] * rp[18] + R0[79 * RJ_NL + l] * rp[19] + R0[93 * RJ_NL + l] * rp[20] + R0[94 * RJ_NL + l] * rp[21] + R0[95 * RJ_NL + l] * rp[22] + R0[96 * RJ_NL + l] * rp[23] + R0[97 * RJ_NL + l] * rp[24] + R0[100 * RJ_NL + l] * rp[25] + R0[101 * RJ_NL + l] * rp[26] + R0[102 * RJ_NL + l] * rp[27] + R0[103 * RJ_NL + l] * rp[28] + R0[106 * RJ_NL + l] * rp[29] + R0[107 * RJ_NL + l] * rp[30] + R0[108 * RJ_NL + l] * rp[31] + R0[111 * RJ_NL + l] * rp[32] + R0[112 * RJ_NL + l] * rp[33] + R0[115 * RJ_NL + l] * rp[34];
+                out[6 * RJ_NL + l] = R0[16 * RJ_NL + l] * rp[0] + R0[27 * RJ_NL + l] * rp[1] + R0[28 * RJ_NL + l] * rp[2] + R0[31 * RJ_NL + l] * rp[3] + R0[43 * RJ_NL + l] * rp[4] + R0[44 * RJ_NL + l] * rp[5] + R0[45 * RJ_NL + l] * rp[6] + R0[48 * RJ_NL + l] * rp[7] + R0[49 * RJ_NL + l] * rp[8] + R0[52 * RJ_NL + l] * rp[9] + R0[65 * RJ_NL + l] * rp[10] + R0[66 * RJ_NL + l] * rp[11] + R0[67 * RJ_NL + l] * rp[12] + R0[68 * RJ_NL + l] * rp[13] + R0[71 * RJ_NL + l] * rp[14] + R0[72 * RJ_NL + l] * rp[15] + R0[73 * RJ_NL + l] * rp[16] + R0[76 * RJ_NL + l] * rp[17] + R0[77 * RJ_NL + l] * rp[18] + R0[80 * RJ_NL + l] * rp[19] + R0[94 * RJ_NL + l] * rp[20] + R0[95 * RJ_NL + l] * rp[21] + R0[96 * RJ_NL + l] * rp[22] + R0[97 * RJ_NL + l] * rp[23] + R0[98 * RJ_NL + l] * rp[24] + R0[101 * RJ_NL + l] * rp[25] + R0[102 * RJ_NL + l] * rp[26] + R0[103 * RJ_NL + l] * rp[27] + R0[104 * RJ_NL + l] * rp[28] + R0[107 * RJ_NL + l] * rp[29] + R0[108 * RJ_NL + l] * rp[30] + R0[109 * RJ_NL + l] * rp[31] + R0[112 * RJ_NL + l] * rp[32] + R0[113 * RJ_NL + l] * rp[33] + R0[116 * RJ_NL + l] * rp[34];
+                out[7 * RJ_NL + l] = R0[17 * RJ_NL + l] * rp[0] + R0[29 * RJ_NL + l] * rp[1] + R0[30 * RJ_NL + l] * rp[2] + R0[32 * RJ_NL + l] * rp[3] + R0[46 * RJ_NL + l] * rp[4] + R0[47 * RJ_NL + l] * rp[5] + R0[48 * RJ_NL + l] * rp[6] + R0[50 * RJ_NL + l] * rp[7] + R0[51 * RJ_NL + l] * rp[8] + R0[53 * RJ_NL + l] * rp[9] + R0[69 * RJ_NL + l] * rp[10] + R0[70 * RJ_NL + l] * rp[11] + R0[71 * RJ_NL + l] * rp[12] + R0[72 * RJ_NL + l] * rp[13] + R0[74 * RJ_NL + l] * rp[14] + R0[75 * RJ_NL + l] * rp[15] + R0[76 * RJ_NL + l] * rp[16] + R0[78 * RJ_NL + l] * rp[17] + R0[79 * RJ_NL + l] * rp[18] + R0[81 * RJ_NL + l] * rp[19] + R0[99 * RJ_NL + l] * rp[20] + R0[100 * RJ_NL + l] * rp[21] + R0[101 * RJ_NL + l] * rp[22] + R0[102 * RJ_NL + l] * rp[23] + R0[103 * RJ_NL + l] * rp[24] + R0[105 * RJ_NL + l] * rp[25] + R0[106 * RJ_NL + l] * rp[26] + R0[107 * RJ_NL + l] * rp[27] + R0[108 * RJ_NL + l] * rp[28] + R0[110 * RJ_NL + l] * rp[29] + R0[111 * RJ_NL + l] * rp[30] + R0[112 * RJ_NL + l] * rp[31] + R0[114 * RJ_NL + l] * rp[32] + R0[115 * RJ_NL + l] * rp[33] + R0[117 * RJ_NL + l] * rp[34];
+                out[8 * RJ_NL + l] = R0[18 * RJ_NL + l] * rp[0] + R0[30 * RJ_NL + l] * rp[1] + R0[31 * RJ_NL + l] * rp[2] + R0[33 * RJ_NL + l] * rp[3] + R0[47 * RJ_NL + l] * rp[4] + R0[48 * RJ_NL + l] * rp[5] + R0[49 * RJ_NL + l] * rp[6] + R0[51 * RJ_NL + l] * rp[7] + R0[52 * RJ_NL + l] * rp[8] + R0[54 * RJ_NL + l] * rp[9] + R0[70 * RJ_NL + l] * rp[10] + R0[71 * RJ_NL + l] * rp[11] + R0[72 * RJ_NL + l] * rp[12] + R0[73 * RJ_NL + l] * rp[13] + R0[75 * RJ_NL + l] * rp[14] + R0[76 * RJ_NL + l] * rp[15] + R0[77 * RJ_NL + l] * rp[16] + R0[79 * RJ_NL + l] * rp[17] + R0[80 * RJ_NL + l] * rp[18] + R0[82 * RJ_NL + l] * rp[19] + R0[100 * RJ_NL + l] * rp[20] + R0[101 * RJ_NL + l] * rp[21] + R0[102 * RJ_NL + l] * rp[22] + R0[103 * RJ_NL + l] * rp[23] + R0[104 * RJ_NL + l] * rp[24] + R0[106 * RJ_NL + l] * rp[25] + R0[107 * RJ_NL + l] * rp[26] + R0[108 * RJ_NL + l] * rp[27] + R0[109 * RJ_NL + l] * rp[28] + R0[111 * RJ_NL + l] * rp[29] + R0[112 * RJ_NL + l] * rp[30] + R0[113 * RJ_NL + l] * rp[31] + R0[115 * RJ_NL + l] * rp[32] + R0[116 * RJ_NL + l] * rp[33] + R0[118 * RJ_NL + l] * rp[34];
+                out[9 * RJ_NL + l] = R0[19 * RJ_NL + l] * rp[0] + R0[32 * RJ_NL + l] * rp[1] + R0[33 * RJ_NL + l] * rp[2] + R0[34 * RJ_NL + l] * rp[3] + R0[50 * RJ_NL + l] * rp[4] + R0[51 * RJ_NL + l] * rp[5] + R0[52 * RJ_NL + l] * rp[6] + R0[53 * RJ_NL + l] * rp[7] + R0[54 * RJ_NL + l] * rp[8] + R0[55 * RJ_NL + l] * rp[9] + R0[74 * RJ_NL + l] * rp[10] + R0[75 * RJ_NL + l] * rp[11] + R0[76 * RJ_NL + l] * rp[12] + R0[77 * RJ_NL + l] * rp[13] + R0[78 * RJ_NL + l] * rp[14] + R0[79 * RJ_NL + l] * rp[15] + R0[80 * RJ_NL + l] * rp[16] + R0[81 * RJ_NL + l] * rp[17] + R0[82 * RJ_NL + l] * rp[18] + R0[83 * RJ_NL + l] * rp[19] + R0[105 * RJ_NL + l] * rp[20] + R0[106 * RJ_NL + l] * rp[21] + R0[107 * RJ_NL + l] * rp[22] + R0[108 * RJ_NL + l] * rp[23] + R0[109 * RJ_NL + l] * rp[24] + R0[110 * RJ_NL + l] * rp[25] + R0[111 * RJ_NL + l] * rp[26] + R0[112 * RJ_NL + l] * rp[27] + R0[113 * RJ_NL + l] * rp[28] + R0[114 * RJ_NL + l] * rp[29] + R0[115 * RJ_NL + l] * rp[30] + R0[116 * RJ_NL + l] * rp[31] + R0[117 * RJ_NL + l] * rp[32] + R0[118 * RJ_NL + l] * rp[33] + R0[119 * RJ_NL + l] * rp[34];
+        }
+}
+
+static void rjyv_4_3(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[10 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[11 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[12 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[13 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[14 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[15 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[16 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[17 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[18 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[19 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[1 * RJ_NL + l] += R0[20 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[21 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[22 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[23 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[25 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[29 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[32 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[2 * RJ_NL + l] += R0[21 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[22 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[23 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[24 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[28 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[33 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[3 * RJ_NL + l] += R0[25 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[28 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[29 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[32 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[33 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[34 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[4 * RJ_NL + l] += R0[35 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[36 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[37 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[38 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[41 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[46 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[50 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[5 * RJ_NL + l] += R0[36 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[37 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[38 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[39 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[6 * RJ_NL + l] += R0[37 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[38 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[39 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[40 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[45 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[7 * RJ_NL + l] += R0[41 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[46 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[50 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[53 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[8 * RJ_NL + l] += R0[42 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[45 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[54 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[9 * RJ_NL + l] += R0[46 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[50 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[53 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[54 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[55 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[10 * RJ_NL + l] += R0[56 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[57 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[58 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[59 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[63 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[64 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[69 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[74 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[11 * RJ_NL + l] += R0[57 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[58 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[59 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[60 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[64 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[12 * RJ_NL + l] += R0[58 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[59 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[60 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[61 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[67 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[13 * RJ_NL + l] += R0[59 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[60 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[61 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[62 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[67 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[68 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[73 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[77 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[14 * RJ_NL + l] += R0[63 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[64 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[69 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[74 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[78 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[15 * RJ_NL + l] += R0[64 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[67 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[79 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[16 * RJ_NL + l] += R0[65 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[67 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[68 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[73 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[77 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[80 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[17 * RJ_NL + l] += R0[69 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[74 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[78 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[79 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[81 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[18 * RJ_NL + l] += R0[70 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[73 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[77 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[79 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[80 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[82 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[19 * RJ_NL + l] += R0[74 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[77 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[78 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[79 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[80 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[81 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[82 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[83 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[20 * RJ_NL + l] += R0[84 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[85 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[86 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[87 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[92 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[93 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[94 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[99 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[100 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[105 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[21 * RJ_NL + l] += R0[85 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[86 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[87 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[88 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[93 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[94 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[95 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[100 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[101 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[106 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[22 * RJ_NL + l] += R0[86 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[87 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[88 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[89 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[94 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[95 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[96 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[101 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[102 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[107 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[23 * RJ_NL + l] += R0[87 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[88 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[89 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[90 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[95 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[96 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[97 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[102 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[103 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[108 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[24 * RJ_NL + l] += R0[88 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[89 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[90 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[91 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[96 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[97 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[98 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[103 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[104 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[109 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[25 * RJ_NL + l] += R0[92 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[93 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[94 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[95 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[99 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[100 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[101 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[105 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[106 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[110 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[26 * RJ_NL + l] += R0[93 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[94 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[95 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[96 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[100 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[101 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[102 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[106 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[107 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[111 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[27 * RJ_NL + l] += R0[94 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[95 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[96 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[97 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[101 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[102 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[103 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[107 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[108 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[112 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[28 * RJ_NL + l] += R0[95 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[96 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[97 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[98 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[102 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[103 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[104 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[108 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[109 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[113 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[29 * RJ_NL + l] += R0[99 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[100 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[101 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[102 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[105 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[106 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[107 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[110 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[111 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[114 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[30 * RJ_NL + l] += R0[100 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[101 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[102 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[103 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[106 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[107 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[108 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[111 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[112 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[115 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[31 * RJ_NL + l] += R0[101 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[102 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[103 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[104 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[107 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[108 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[109 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[112 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[113 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[116 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[32 * RJ_NL + l] += R0[105 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[106 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[107 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[108 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[110 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[111 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[112 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[114 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[115 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[117 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[33 * RJ_NL + l] += R0[106 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[107 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[108 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[109 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[111 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[112 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[113 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[115 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[116 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[118 * RJ_NL + l] * hq[9 * RJ_NL + l];
+                vl[34 * RJ_NL + l] += R0[110 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[111 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[112 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[113 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[114 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[115 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[116 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[117 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[118 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[119 * RJ_NL + l] * hq[9 * RJ_NL + l];
+        }
+}
+
+static void rjxv_4_4(const double *restrict R0, const double *restrict rp, double *restrict out)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                out[0 * RJ_NL + l] = R0[20 * RJ_NL + l] * rp[0] + R0[35 * RJ_NL + l] * rp[1] + R0[36 * RJ_NL + l] * rp[2] + R0[41 * RJ_NL + l] * rp[3] + R0[56 * RJ_NL + l] * rp[4] + R0[57 * RJ_NL + l] * rp[5] + R0[58 * RJ_NL + l] * rp[6] + R0[63 * RJ_NL + l] * rp[7] + R0[64 * RJ_NL + l] * rp[8] + R0[69 * RJ_NL + l] * rp[9] + R0[84 * RJ_NL + l] * rp[10] + R0[85 * RJ_NL + l] * rp[11] + R0[86 * RJ_NL + l] * rp[12] + R0[87 * RJ_NL + l] * rp[13] + R0[92 * RJ_NL + l] * rp[14] + R0[93 * RJ_NL + l] * rp[15] + R0[94 * RJ_NL + l] * rp[16] + R0[99 * RJ_NL + l] * rp[17] + R0[100 * RJ_NL + l] * rp[18] + R0[105 * RJ_NL + l] * rp[19] + R0[120 * RJ_NL + l] * rp[20] + R0[121 * RJ_NL + l] * rp[21] + R0[122 * RJ_NL + l] * rp[22] + R0[123 * RJ_NL + l] * rp[23] + R0[124 * RJ_NL + l] * rp[24] + R0[129 * RJ_NL + l] * rp[25] + R0[130 * RJ_NL + l] * rp[26] + R0[131 * RJ_NL + l] * rp[27] + R0[132 * RJ_NL + l] * rp[28] + R0[137 * RJ_NL + l] * rp[29] + R0[138 * RJ_NL + l] * rp[30] + R0[139 * RJ_NL + l] * rp[31] + R0[144 * RJ_NL + l] * rp[32] + R0[145 * RJ_NL + l] * rp[33] + R0[150 * RJ_NL + l] * rp[34];
+                out[1 * RJ_NL + l] = R0[21 * RJ_NL + l] * rp[0] + R0[36 * RJ_NL + l] * rp[1] + R0[37 * RJ_NL + l] * rp[2] + R0[42 * RJ_NL + l] * rp[3] + R0[57 * RJ_NL + l] * rp[4] + R0[58 * RJ_NL + l] * rp[5] + R0[59 * RJ_NL + l] * rp[6] + R0[64 * RJ_NL + l] * rp[7] + R0[65 * RJ_NL + l] * rp[8] + R0[70 * RJ_NL + l] * rp[9] + R0[85 * RJ_NL + l] * rp[10] + R0[86 * RJ_NL + l] * rp[11] + R0[87 * RJ_NL + l] * rp[12] + R0[88 * RJ_NL + l] * rp[13] + R0[93 * RJ_NL + l] * rp[14] + R0[94 * RJ_NL + l] * rp[15] + R0[95 * RJ_NL + l] * rp[16] + R0[100 * RJ_NL + l] * rp[17] + R0[101 * RJ_NL + l] * rp[18] + R0[106 * RJ_NL + l] * rp[19] + R0[121 * RJ_NL + l] * rp[20] + R0[122 * RJ_NL + l] * rp[21] + R0[123 * RJ_NL + l] * rp[22] + R0[124 * RJ_NL + l] * rp[23] + R0[125 * RJ_NL + l] * rp[24] + R0[130 * RJ_NL + l] * rp[25] + R0[131 * RJ_NL + l] * rp[26] + R0[132 * RJ_NL + l] * rp[27] + R0[133 * RJ_NL + l] * rp[28] + R0[138 * RJ_NL + l] * rp[29] + R0[139 * RJ_NL + l] * rp[30] + R0[140 * RJ_NL + l] * rp[31] + R0[145 * RJ_NL + l] * rp[32] + R0[146 * RJ_NL + l] * rp[33] + R0[151 * RJ_NL + l] * rp[34];
+                out[2 * RJ_NL + l] = R0[22 * RJ_NL + l] * rp[0] + R0[37 * RJ_NL + l] * rp[1] + R0[38 * RJ_NL + l] * rp[2] + R0[43 * RJ_NL + l] * rp[3] + R0[58 * RJ_NL + l] * rp[4] + R0[59 * RJ_NL + l] * rp[5] + R0[60 * RJ_NL + l] * rp[6] + R0[65 * RJ_NL + l] * rp[7] + R0[66 * RJ_NL + l] * rp[8] + R0[71 * RJ_NL + l] * rp[9] + R0[86 * RJ_NL + l] * rp[10] + R0[87 * RJ_NL + l] * rp[11] + R0[88 * RJ_NL + l] * rp[12] + R0[89 * RJ_NL + l] * rp[13] + R0[94 * RJ_NL + l] * rp[14] + R0[95 * RJ_NL + l] * rp[15] + R0[96 * RJ_NL + l] * rp[16] + R0[101 * RJ_NL + l] * rp[17] + R0[102 * RJ_NL + l] * rp[18] + R0[107 * RJ_NL + l] * rp[19] + R0[122 * RJ_NL + l] * rp[20] + R0[123 * RJ_NL + l] * rp[21] + R0[124 * RJ_NL + l] * rp[22] + R0[125 * RJ_NL + l] * rp[23] + R0[126 * RJ_NL + l] * rp[24] + R0[131 * RJ_NL + l] * rp[25] + R0[132 * RJ_NL + l] * rp[26] + R0[133 * RJ_NL + l] * rp[27] + R0[134 * RJ_NL + l] * rp[28] + R0[139 * RJ_NL + l] * rp[29] + R0[140 * RJ_NL + l] * rp[30] + R0[141 * RJ_NL + l] * rp[31] + R0[146 * RJ_NL + l] * rp[32] + R0[147 * RJ_NL + l] * rp[33] + R0[152 * RJ_NL + l] * rp[34];
+                out[3 * RJ_NL + l] = R0[23 * RJ_NL + l] * rp[0] + R0[38 * RJ_NL + l] * rp[1] + R0[39 * RJ_NL + l] * rp[2] + R0[44 * RJ_NL + l] * rp[3] + R0[59 * RJ_NL + l] * rp[4] + R0[60 * RJ_NL + l] * rp[5] + R0[61 * RJ_NL + l] * rp[6] + R0[66 * RJ_NL + l] * rp[7] + R0[67 * RJ_NL + l] * rp[8] + R0[72 * RJ_NL + l] * rp[9] + R0[87 * RJ_NL + l] * rp[10] + R0[88 * RJ_NL + l] * rp[11] + R0[89 * RJ_NL + l] * rp[12] + R0[90 * RJ_NL + l] * rp[13] + R0[95 * RJ_NL + l] * rp[14] + R0[96 * RJ_NL + l] * rp[15] + R0[97 * RJ_NL + l] * rp[16] + R0[102 * RJ_NL + l] * rp[17] + R0[103 * RJ_NL + l] * rp[18] + R0[108 * RJ_NL + l] * rp[19] + R0[123 * RJ_NL + l] * rp[20] + R0[124 * RJ_NL + l] * rp[21] + R0[125 * RJ_NL + l] * rp[22] + R0[126 * RJ_NL + l] * rp[23] + R0[127 * RJ_NL + l] * rp[24] + R0[132 * RJ_NL + l] * rp[25] + R0[133 * RJ_NL + l] * rp[26] + R0[134 * RJ_NL + l] * rp[27] + R0[135 * RJ_NL + l] * rp[28] + R0[140 * RJ_NL + l] * rp[29] + R0[141 * RJ_NL + l] * rp[30] + R0[142 * RJ_NL + l] * rp[31] + R0[147 * RJ_NL + l] * rp[32] + R0[148 * RJ_NL + l] * rp[33] + R0[153 * RJ_NL + l] * rp[34];
+                out[4 * RJ_NL + l] = R0[24 * RJ_NL + l] * rp[0] + R0[39 * RJ_NL + l] * rp[1] + R0[40 * RJ_NL + l] * rp[2] + R0[45 * RJ_NL + l] * rp[3] + R0[60 * RJ_NL + l] * rp[4] + R0[61 * RJ_NL + l] * rp[5] + R0[62 * RJ_NL + l] * rp[6] + R0[67 * RJ_NL + l] * rp[7] + R0[68 * RJ_NL + l] * rp[8] + R0[73 * RJ_NL + l] * rp[9] + R0[88 * RJ_NL + l] * rp[10] + R0[89 * RJ_NL + l] * rp[11] + R0[90 * RJ_NL + l] * rp[12] + R0[91 * RJ_NL + l] * rp[13] + R0[96 * RJ_NL + l] * rp[14] + R0[97 * RJ_NL + l] * rp[15] + R0[98 * RJ_NL + l] * rp[16] + R0[103 * RJ_NL + l] * rp[17] + R0[104 * RJ_NL + l] * rp[18] + R0[109 * RJ_NL + l] * rp[19] + R0[124 * RJ_NL + l] * rp[20] + R0[125 * RJ_NL + l] * rp[21] + R0[126 * RJ_NL + l] * rp[22] + R0[127 * RJ_NL + l] * rp[23] + R0[128 * RJ_NL + l] * rp[24] + R0[133 * RJ_NL + l] * rp[25] + R0[134 * RJ_NL + l] * rp[26] + R0[135 * RJ_NL + l] * rp[27] + R0[136 * RJ_NL + l] * rp[28] + R0[141 * RJ_NL + l] * rp[29] + R0[142 * RJ_NL + l] * rp[30] + R0[143 * RJ_NL + l] * rp[31] + R0[148 * RJ_NL + l] * rp[32] + R0[149 * RJ_NL + l] * rp[33] + R0[154 * RJ_NL + l] * rp[34];
+                out[5 * RJ_NL + l] = R0[25 * RJ_NL + l] * rp[0] + R0[41 * RJ_NL + l] * rp[1] + R0[42 * RJ_NL + l] * rp[2] + R0[46 * RJ_NL + l] * rp[3] + R0[63 * RJ_NL + l] * rp[4] + R0[64 * RJ_NL + l] * rp[5] + R0[65 * RJ_NL + l] * rp[6] + R0[69 * RJ_NL + l] * rp[7] + R0[70 * RJ_NL + l] * rp[8] + R0[74 * RJ_NL + l] * rp[9] + R0[92 * RJ_NL + l] * rp[10] + R0[93 * RJ_NL + l] * rp[11] + R0[94 * RJ_NL + l] * rp[12] + R0[95 * RJ_NL + l] * rp[13] + R0[99 * RJ_NL + l] * rp[14] + R0[100 * RJ_NL + l] * rp[15] + R0[101 * RJ_NL + l] * rp[16] + R0[105 * RJ_NL + l] * rp[17] + R0[106 * RJ_NL + l] * rp[18] + R0[110 * RJ_NL + l] * rp[19] + R0[129 * RJ_NL + l] * rp[20] + R0[130 * RJ_NL + l] * rp[21] + R0[131 * RJ_NL + l] * rp[22] + R0[132 * RJ_NL + l] * rp[23] + R0[133 * RJ_NL + l] * rp[24] + R0[137 * RJ_NL + l] * rp[25] + R0[138 * RJ_NL + l] * rp[26] + R0[139 * RJ_NL + l] * rp[27] + R0[140 * RJ_NL + l] * rp[28] + R0[144 * RJ_NL + l] * rp[29] + R0[145 * RJ_NL + l] * rp[30] + R0[146 * RJ_NL + l] * rp[31] + R0[150 * RJ_NL + l] * rp[32] + R0[151 * RJ_NL + l] * rp[33] + R0[155 * RJ_NL + l] * rp[34];
+                out[6 * RJ_NL + l] = R0[26 * RJ_NL + l] * rp[0] + R0[42 * RJ_NL + l] * rp[1] + R0[43 * RJ_NL + l] * rp[2] + R0[47 * RJ_NL + l] * rp[3] + R0[64 * RJ_NL + l] * rp[4] + R0[65 * RJ_NL + l] * rp[5] + R0[66 * RJ_NL + l] * rp[6] + R0[70 * RJ_NL + l] * rp[7] + R0[71 * RJ_NL + l] * rp[8] + R0[75 * RJ_NL + l] * rp[9] + R0[93 * RJ_NL + l] * rp[10] + R0[94 * RJ_NL + l] * rp[11] + R0[95 * RJ_NL + l] * rp[12] + R0[96 * RJ_NL + l] * rp[13] + R0[100 * RJ_NL + l] * rp[14] + R0[101 * RJ_NL + l] * rp[15] + R0[102 * RJ_NL + l] * rp[16] + R0[106 * RJ_NL + l] * rp[17] + R0[107 * RJ_NL + l] * rp[18] + R0[111 * RJ_NL + l] * rp[19] + R0[130 * RJ_NL + l] * rp[20] + R0[131 * RJ_NL + l] * rp[21] + R0[132 * RJ_NL + l] * rp[22] + R0[133 * RJ_NL + l] * rp[23] + R0[134 * RJ_NL + l] * rp[24] + R0[138 * RJ_NL + l] * rp[25] + R0[139 * RJ_NL + l] * rp[26] + R0[140 * RJ_NL + l] * rp[27] + R0[141 * RJ_NL + l] * rp[28] + R0[145 * RJ_NL + l] * rp[29] + R0[146 * RJ_NL + l] * rp[30] + R0[147 * RJ_NL + l] * rp[31] + R0[151 * RJ_NL + l] * rp[32] + R0[152 * RJ_NL + l] * rp[33] + R0[156 * RJ_NL + l] * rp[34];
+                out[7 * RJ_NL + l] = R0[27 * RJ_NL + l] * rp[0] + R0[43 * RJ_NL + l] * rp[1] + R0[44 * RJ_NL + l] * rp[2] + R0[48 * RJ_NL + l] * rp[3] + R0[65 * RJ_NL + l] * rp[4] + R0[66 * RJ_NL + l] * rp[5] + R0[67 * RJ_NL + l] * rp[6] + R0[71 * RJ_NL + l] * rp[7] + R0[72 * RJ_NL + l] * rp[8] + R0[76 * RJ_NL + l] * rp[9] + R0[94 * RJ_NL + l] * rp[10] + R0[95 * RJ_NL + l] * rp[11] + R0[96 * RJ_NL + l] * rp[12] + R0[97 * RJ_NL + l] * rp[13] + R0[101 * RJ_NL + l] * rp[14] + R0[102 * RJ_NL + l] * rp[15] + R0[103 * RJ_NL + l] * rp[16] + R0[107 * RJ_NL + l] * rp[17] + R0[108 * RJ_NL + l] * rp[18] + R0[112 * RJ_NL + l] * rp[19] + R0[131 * RJ_NL + l] * rp[20] + R0[132 * RJ_NL + l] * rp[21] + R0[133 * RJ_NL + l] * rp[22] + R0[134 * RJ_NL + l] * rp[23] + R0[135 * RJ_NL + l] * rp[24] + R0[139 * RJ_NL + l] * rp[25] + R0[140 * RJ_NL + l] * rp[26] + R0[141 * RJ_NL + l] * rp[27] + R0[142 * RJ_NL + l] * rp[28] + R0[146 * RJ_NL + l] * rp[29] + R0[147 * RJ_NL + l] * rp[30] + R0[148 * RJ_NL + l] * rp[31] + R0[152 * RJ_NL + l] * rp[32] + R0[153 * RJ_NL + l] * rp[33] + R0[157 * RJ_NL + l] * rp[34];
+                out[8 * RJ_NL + l] = R0[28 * RJ_NL + l] * rp[0] + R0[44 * RJ_NL + l] * rp[1] + R0[45 * RJ_NL + l] * rp[2] + R0[49 * RJ_NL + l] * rp[3] + R0[66 * RJ_NL + l] * rp[4] + R0[67 * RJ_NL + l] * rp[5] + R0[68 * RJ_NL + l] * rp[6] + R0[72 * RJ_NL + l] * rp[7] + R0[73 * RJ_NL + l] * rp[8] + R0[77 * RJ_NL + l] * rp[9] + R0[95 * RJ_NL + l] * rp[10] + R0[96 * RJ_NL + l] * rp[11] + R0[97 * RJ_NL + l] * rp[12] + R0[98 * RJ_NL + l] * rp[13] + R0[102 * RJ_NL + l] * rp[14] + R0[103 * RJ_NL + l] * rp[15] + R0[104 * RJ_NL + l] * rp[16] + R0[108 * RJ_NL + l] * rp[17] + R0[109 * RJ_NL + l] * rp[18] + R0[113 * RJ_NL + l] * rp[19] + R0[132 * RJ_NL + l] * rp[20] + R0[133 * RJ_NL + l] * rp[21] + R0[134 * RJ_NL + l] * rp[22] + R0[135 * RJ_NL + l] * rp[23] + R0[136 * RJ_NL + l] * rp[24] + R0[140 * RJ_NL + l] * rp[25] + R0[141 * RJ_NL + l] * rp[26] + R0[142 * RJ_NL + l] * rp[27] + R0[143 * RJ_NL + l] * rp[28] + R0[147 * RJ_NL + l] * rp[29] + R0[148 * RJ_NL + l] * rp[30] + R0[149 * RJ_NL + l] * rp[31] + R0[153 * RJ_NL + l] * rp[32] + R0[154 * RJ_NL + l] * rp[33] + R0[158 * RJ_NL + l] * rp[34];
+                out[9 * RJ_NL + l] = R0[29 * RJ_NL + l] * rp[0] + R0[46 * RJ_NL + l] * rp[1] + R0[47 * RJ_NL + l] * rp[2] + R0[50 * RJ_NL + l] * rp[3] + R0[69 * RJ_NL + l] * rp[4] + R0[70 * RJ_NL + l] * rp[5] + R0[71 * RJ_NL + l] * rp[6] + R0[74 * RJ_NL + l] * rp[7] + R0[75 * RJ_NL + l] * rp[8] + R0[78 * RJ_NL + l] * rp[9] + R0[99 * RJ_NL + l] * rp[10] + R0[100 * RJ_NL + l] * rp[11] + R0[101 * RJ_NL + l] * rp[12] + R0[102 * RJ_NL + l] * rp[13] + R0[105 * RJ_NL + l] * rp[14] + R0[106 * RJ_NL + l] * rp[15] + R0[107 * RJ_NL + l] * rp[16] + R0[110 * RJ_NL + l] * rp[17] + R0[111 * RJ_NL + l] * rp[18] + R0[114 * RJ_NL + l] * rp[19] + R0[137 * RJ_NL + l] * rp[20] + R0[138 * RJ_NL + l] * rp[21] + R0[139 * RJ_NL + l] * rp[22] + R0[140 * RJ_NL + l] * rp[23] + R0[141 * RJ_NL + l] * rp[24] + R0[144 * RJ_NL + l] * rp[25] + R0[145 * RJ_NL + l] * rp[26] + R0[146 * RJ_NL + l] * rp[27] + R0[147 * RJ_NL + l] * rp[28] + R0[150 * RJ_NL + l] * rp[29] + R0[151 * RJ_NL + l] * rp[30] + R0[152 * RJ_NL + l] * rp[31] + R0[155 * RJ_NL + l] * rp[32] + R0[156 * RJ_NL + l] * rp[33] + R0[159 * RJ_NL + l] * rp[34];
+                out[10 * RJ_NL + l] = R0[30 * RJ_NL + l] * rp[0] + R0[47 * RJ_NL + l] * rp[1] + R0[48 * RJ_NL + l] * rp[2] + R0[51 * RJ_NL + l] * rp[3] + R0[70 * RJ_NL + l] * rp[4] + R0[71 * RJ_NL + l] * rp[5] + R0[72 * RJ_NL + l] * rp[6] + R0[75 * RJ_NL + l] * rp[7] + R0[76 * RJ_NL + l] * rp[8] + R0[79 * RJ_NL + l] * rp[9] + R0[100 * RJ_NL + l] * rp[10] + R0[101 * RJ_NL + l] * rp[11] + R0[102 * RJ_NL + l] * rp[12] + R0[103 * RJ_NL + l] * rp[13] + R0[106 * RJ_NL + l] * rp[14] + R0[107 * RJ_NL + l] * rp[15] + R0[108 * RJ_NL + l] * rp[16] + R0[111 * RJ_NL + l] * rp[17] + R0[112 * RJ_NL + l] * rp[18] + R0[115 * RJ_NL + l] * rp[19] + R0[138 * RJ_NL + l] * rp[20] + R0[139 * RJ_NL + l] * rp[21] + R0[140 * RJ_NL + l] * rp[22] + R0[141 * RJ_NL + l] * rp[23] + R0[142 * RJ_NL + l] * rp[24] + R0[145 * RJ_NL + l] * rp[25] + R0[146 * RJ_NL + l] * rp[26] + R0[147 * RJ_NL + l] * rp[27] + R0[148 * RJ_NL + l] * rp[28] + R0[151 * RJ_NL + l] * rp[29] + R0[152 * RJ_NL + l] * rp[30] + R0[153 * RJ_NL + l] * rp[31] + R0[156 * RJ_NL + l] * rp[32] + R0[157 * RJ_NL + l] * rp[33] + R0[160 * RJ_NL + l] * rp[34];
+                out[11 * RJ_NL + l] = R0[31 * RJ_NL + l] * rp[0] + R0[48 * RJ_NL + l] * rp[1] + R0[49 * RJ_NL + l] * rp[2] + R0[52 * RJ_NL + l] * rp[3] + R0[71 * RJ_NL + l] * rp[4] + R0[72 * RJ_NL + l] * rp[5] + R0[73 * RJ_NL + l] * rp[6] + R0[76 * RJ_NL + l] * rp[7] + R0[77 * RJ_NL + l] * rp[8] + R0[80 * RJ_NL + l] * rp[9] + R0[101 * RJ_NL + l] * rp[10] + R0[102 * RJ_NL + l] * rp[11] + R0[103 * RJ_NL + l] * rp[12] + R0[104 * RJ_NL + l] * rp[13] + R0[107 * RJ_NL + l] * rp[14] + R0[108 * RJ_NL + l] * rp[15] + R0[109 * RJ_NL + l] * rp[16] + R0[112 * RJ_NL + l] * rp[17] + R0[113 * RJ_NL + l] * rp[18] + R0[116 * RJ_NL + l] * rp[19] + R0[139 * RJ_NL + l] * rp[20] + R0[140 * RJ_NL + l] * rp[21] + R0[141 * RJ_NL + l] * rp[22] + R0[142 * RJ_NL + l] * rp[23] + R0[143 * RJ_NL + l] * rp[24] + R0[146 * RJ_NL + l] * rp[25] + R0[147 * RJ_NL + l] * rp[26] + R0[148 * RJ_NL + l] * rp[27] + R0[149 * RJ_NL + l] * rp[28] + R0[152 * RJ_NL + l] * rp[29] + R0[153 * RJ_NL + l] * rp[30] + R0[154 * RJ_NL + l] * rp[31] + R0[157 * RJ_NL + l] * rp[32] + R0[158 * RJ_NL + l] * rp[33] + R0[161 * RJ_NL + l] * rp[34];
+                out[12 * RJ_NL + l] = R0[32 * RJ_NL + l] * rp[0] + R0[50 * RJ_NL + l] * rp[1] + R0[51 * RJ_NL + l] * rp[2] + R0[53 * RJ_NL + l] * rp[3] + R0[74 * RJ_NL + l] * rp[4] + R0[75 * RJ_NL + l] * rp[5] + R0[76 * RJ_NL + l] * rp[6] + R0[78 * RJ_NL + l] * rp[7] + R0[79 * RJ_NL + l] * rp[8] + R0[81 * RJ_NL + l] * rp[9] + R0[105 * RJ_NL + l] * rp[10] + R0[106 * RJ_NL + l] * rp[11] + R0[107 * RJ_NL + l] * rp[12] + R0[108 * RJ_NL + l] * rp[13] + R0[110 * RJ_NL + l] * rp[14] + R0[111 * RJ_NL + l] * rp[15] + R0[112 * RJ_NL + l] * rp[16] + R0[114 * RJ_NL + l] * rp[17] + R0[115 * RJ_NL + l] * rp[18] + R0[117 * RJ_NL + l] * rp[19] + R0[144 * RJ_NL + l] * rp[20] + R0[145 * RJ_NL + l] * rp[21] + R0[146 * RJ_NL + l] * rp[22] + R0[147 * RJ_NL + l] * rp[23] + R0[148 * RJ_NL + l] * rp[24] + R0[150 * RJ_NL + l] * rp[25] + R0[151 * RJ_NL + l] * rp[26] + R0[152 * RJ_NL + l] * rp[27] + R0[153 * RJ_NL + l] * rp[28] + R0[155 * RJ_NL + l] * rp[29] + R0[156 * RJ_NL + l] * rp[30] + R0[157 * RJ_NL + l] * rp[31] + R0[159 * RJ_NL + l] * rp[32] + R0[160 * RJ_NL + l] * rp[33] + R0[162 * RJ_NL + l] * rp[34];
+                out[13 * RJ_NL + l] = R0[33 * RJ_NL + l] * rp[0] + R0[51 * RJ_NL + l] * rp[1] + R0[52 * RJ_NL + l] * rp[2] + R0[54 * RJ_NL + l] * rp[3] + R0[75 * RJ_NL + l] * rp[4] + R0[76 * RJ_NL + l] * rp[5] + R0[77 * RJ_NL + l] * rp[6] + R0[79 * RJ_NL + l] * rp[7] + R0[80 * RJ_NL + l] * rp[8] + R0[82 * RJ_NL + l] * rp[9] + R0[106 * RJ_NL + l] * rp[10] + R0[107 * RJ_NL + l] * rp[11] + R0[108 * RJ_NL + l] * rp[12] + R0[109 * RJ_NL + l] * rp[13] + R0[111 * RJ_NL + l] * rp[14] + R0[112 * RJ_NL + l] * rp[15] + R0[113 * RJ_NL + l] * rp[16] + R0[115 * RJ_NL + l] * rp[17] + R0[116 * RJ_NL + l] * rp[18] + R0[118 * RJ_NL + l] * rp[19] + R0[145 * RJ_NL + l] * rp[20] + R0[146 * RJ_NL + l] * rp[21] + R0[147 * RJ_NL + l] * rp[22] + R0[148 * RJ_NL + l] * rp[23] + R0[149 * RJ_NL + l] * rp[24] + R0[151 * RJ_NL + l] * rp[25] + R0[152 * RJ_NL + l] * rp[26] + R0[153 * RJ_NL + l] * rp[27] + R0[154 * RJ_NL + l] * rp[28] + R0[156 * RJ_NL + l] * rp[29] + R0[157 * RJ_NL + l] * rp[30] + R0[158 * RJ_NL + l] * rp[31] + R0[160 * RJ_NL + l] * rp[32] + R0[161 * RJ_NL + l] * rp[33] + R0[163 * RJ_NL + l] * rp[34];
+                out[14 * RJ_NL + l] = R0[34 * RJ_NL + l] * rp[0] + R0[53 * RJ_NL + l] * rp[1] + R0[54 * RJ_NL + l] * rp[2] + R0[55 * RJ_NL + l] * rp[3] + R0[78 * RJ_NL + l] * rp[4] + R0[79 * RJ_NL + l] * rp[5] + R0[80 * RJ_NL + l] * rp[6] + R0[81 * RJ_NL + l] * rp[7] + R0[82 * RJ_NL + l] * rp[8] + R0[83 * RJ_NL + l] * rp[9] + R0[110 * RJ_NL + l] * rp[10] + R0[111 * RJ_NL + l] * rp[11] + R0[112 * RJ_NL + l] * rp[12] + R0[113 * RJ_NL + l] * rp[13] + R0[114 * RJ_NL + l] * rp[14] + R0[115 * RJ_NL + l] * rp[15] + R0[116 * RJ_NL + l] * rp[16] + R0[117 * RJ_NL + l] * rp[17] + R0[118 * RJ_NL + l] * rp[18] + R0[119 * RJ_NL + l] * rp[19] + R0[150 * RJ_NL + l] * rp[20] + R0[151 * RJ_NL + l] * rp[21] + R0[152 * RJ_NL + l] * rp[22] + R0[153 * RJ_NL + l] * rp[23] + R0[154 * RJ_NL + l] * rp[24] + R0[155 * RJ_NL + l] * rp[25] + R0[156 * RJ_NL + l] * rp[26] + R0[157 * RJ_NL + l] * rp[27] + R0[158 * RJ_NL + l] * rp[28] + R0[159 * RJ_NL + l] * rp[29] + R0[160 * RJ_NL + l] * rp[30] + R0[161 * RJ_NL + l] * rp[31] + R0[162 * RJ_NL + l] * rp[32] + R0[163 * RJ_NL + l] * rp[33] + R0[164 * RJ_NL + l] * rp[34];
+        }
+}
+
+static void rjyv_4_4(const double *restrict R0, const double *restrict hq, double *restrict vl)
+{
+        int l;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                vl[0 * RJ_NL + l] += R0[20 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[21 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[22 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[23 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[24 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[25 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[26 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[27 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[28 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[29 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[30 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[31 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[32 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[33 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[34 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[1 * RJ_NL + l] += R0[35 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[36 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[37 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[38 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[39 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[41 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[46 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[50 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[53 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[2 * RJ_NL + l] += R0[36 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[37 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[38 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[39 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[40 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[45 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[54 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[3 * RJ_NL + l] += R0[41 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[42 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[43 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[44 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[45 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[46 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[47 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[48 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[49 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[50 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[51 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[52 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[53 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[54 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[55 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[4 * RJ_NL + l] += R0[56 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[57 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[58 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[59 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[60 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[63 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[64 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[69 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[74 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[78 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[5 * RJ_NL + l] += R0[57 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[58 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[59 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[60 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[61 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[64 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[67 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[79 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[6 * RJ_NL + l] += R0[58 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[59 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[60 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[61 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[62 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[67 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[68 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[73 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[77 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[80 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[7 * RJ_NL + l] += R0[63 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[64 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[67 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[69 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[74 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[78 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[79 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[81 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[8 * RJ_NL + l] += R0[64 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[65 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[66 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[67 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[68 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[73 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[77 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[79 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[80 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[82 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[9 * RJ_NL + l] += R0[69 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[70 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[71 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[72 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[73 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[74 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[75 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[76 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[77 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[78 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[79 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[80 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[81 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[82 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[83 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[10 * RJ_NL + l] += R0[84 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[85 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[86 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[87 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[88 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[92 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[93 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[94 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[95 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[99 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[100 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[101 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[105 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[106 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[110 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[11 * RJ_NL + l] += R0[85 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[86 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[87 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[88 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[89 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[93 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[94 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[95 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[96 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[100 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[101 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[102 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[106 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[107 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[111 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[12 * RJ_NL + l] += R0[86 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[87 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[88 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[89 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[90 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[94 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[95 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[96 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[97 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[101 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[102 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[103 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[107 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[108 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[112 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[13 * RJ_NL + l] += R0[87 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[88 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[89 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[90 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[91 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[95 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[96 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[97 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[98 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[102 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[103 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[104 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[108 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[109 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[113 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[14 * RJ_NL + l] += R0[92 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[93 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[94 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[95 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[96 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[99 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[100 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[101 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[102 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[105 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[106 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[107 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[110 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[111 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[114 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[15 * RJ_NL + l] += R0[93 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[94 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[95 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[96 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[97 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[100 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[101 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[102 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[103 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[106 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[107 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[108 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[111 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[112 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[115 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[16 * RJ_NL + l] += R0[94 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[95 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[96 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[97 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[98 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[101 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[102 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[103 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[104 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[107 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[108 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[109 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[112 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[113 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[116 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[17 * RJ_NL + l] += R0[99 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[100 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[101 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[102 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[103 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[105 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[106 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[107 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[108 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[110 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[111 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[112 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[114 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[115 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[117 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[18 * RJ_NL + l] += R0[100 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[101 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[102 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[103 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[104 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[106 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[107 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[108 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[109 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[111 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[112 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[113 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[115 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[116 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[118 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[19 * RJ_NL + l] += R0[105 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[106 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[107 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[108 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[109 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[110 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[111 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[112 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[113 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[114 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[115 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[116 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[117 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[118 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[119 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[20 * RJ_NL + l] += R0[120 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[121 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[122 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[123 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[124 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[129 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[130 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[131 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[132 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[137 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[138 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[139 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[144 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[145 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[150 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[21 * RJ_NL + l] += R0[121 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[122 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[123 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[124 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[125 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[130 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[131 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[132 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[133 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[138 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[139 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[140 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[145 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[146 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[151 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[22 * RJ_NL + l] += R0[122 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[123 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[124 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[125 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[126 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[131 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[132 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[133 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[134 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[139 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[140 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[141 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[146 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[147 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[152 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[23 * RJ_NL + l] += R0[123 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[124 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[125 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[126 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[127 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[132 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[133 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[134 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[135 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[140 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[141 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[142 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[147 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[148 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[153 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[24 * RJ_NL + l] += R0[124 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[125 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[126 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[127 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[128 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[133 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[134 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[135 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[136 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[141 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[142 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[143 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[148 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[149 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[154 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[25 * RJ_NL + l] += R0[129 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[130 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[131 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[132 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[133 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[137 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[138 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[139 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[140 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[144 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[145 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[146 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[150 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[151 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[155 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[26 * RJ_NL + l] += R0[130 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[131 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[132 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[133 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[134 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[138 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[139 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[140 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[141 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[145 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[146 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[147 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[151 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[152 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[156 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[27 * RJ_NL + l] += R0[131 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[132 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[133 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[134 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[135 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[139 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[140 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[141 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[142 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[146 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[147 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[148 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[152 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[153 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[157 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[28 * RJ_NL + l] += R0[132 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[133 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[134 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[135 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[136 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[140 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[141 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[142 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[143 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[147 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[148 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[149 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[153 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[154 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[158 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[29 * RJ_NL + l] += R0[137 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[138 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[139 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[140 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[141 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[144 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[145 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[146 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[147 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[150 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[151 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[152 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[155 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[156 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[159 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[30 * RJ_NL + l] += R0[138 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[139 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[140 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[141 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[142 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[145 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[146 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[147 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[148 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[151 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[152 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[153 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[156 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[157 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[160 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[31 * RJ_NL + l] += R0[139 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[140 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[141 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[142 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[143 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[146 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[147 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[148 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[149 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[152 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[153 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[154 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[157 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[158 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[161 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[32 * RJ_NL + l] += R0[144 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[145 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[146 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[147 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[148 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[150 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[151 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[152 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[153 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[155 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[156 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[157 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[159 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[160 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[162 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[33 * RJ_NL + l] += R0[145 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[146 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[147 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[148 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[149 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[151 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[152 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[153 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[154 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[156 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[157 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[158 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[160 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[161 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[163 * RJ_NL + l] * hq[14 * RJ_NL + l];
+                vl[34 * RJ_NL + l] += R0[150 * RJ_NL + l] * hq[0 * RJ_NL + l] + R0[151 * RJ_NL + l] * hq[1 * RJ_NL + l] + R0[152 * RJ_NL + l] * hq[2 * RJ_NL + l] + R0[153 * RJ_NL + l] * hq[3 * RJ_NL + l] + R0[154 * RJ_NL + l] * hq[4 * RJ_NL + l] + R0[155 * RJ_NL + l] * hq[5 * RJ_NL + l] + R0[156 * RJ_NL + l] * hq[6 * RJ_NL + l] + R0[157 * RJ_NL + l] * hq[7 * RJ_NL + l] + R0[158 * RJ_NL + l] * hq[8 * RJ_NL + l] + R0[159 * RJ_NL + l] * hq[9 * RJ_NL + l] + R0[160 * RJ_NL + l] * hq[10 * RJ_NL + l] + R0[161 * RJ_NL + l] * hq[11 * RJ_NL + l] + R0[162 * RJ_NL + l] * hq[12 * RJ_NL + l] + R0[163 * RJ_NL + l] * hq[13 * RJ_NL + l] + R0[164 * RJ_NL + l] * hq[14 * RJ_NL + l];
+        }
+}
+
 #define RJ_LMAXP 4
 #define RJ_LMAXQ 4
 #define RJ_NH 165
@@ -2552,6 +5600,10 @@ static const int rj_v[165] = {0, 1, 0, 0, 2, 1, 0, 1, 0, 0, 3, 2, 1, 0, 2, 1, 0,
 typedef void (*rjr_fn)(double *, const double *, double, double, double);
 static const rjr_fn rjr_table[9] = {rjr_0, rjr_1, rjr_2, rjr_3, rjr_4, rjr_5, rjr_6, rjr_7, rjr_8};
 typedef void (*rjc_fn)(const double *, const double *, double *);
+typedef void (*nearv_fn)(double *, double, const double *, const double *);
+static const nearv_fn nearv_table[9] = {nearv_0, nearv_1, nearv_2, nearv_3, nearv_4, nearv_5, nearv_6, nearv_7, nearv_8};
+typedef void (*rjrv_fn)(double *, const double *, const double *, const double *, const double *);
+static const rjrv_fn rjrv_table[9] = {rjrv_0, rjrv_1, rjrv_2, rjrv_3, rjrv_4, rjrv_5, rjrv_6, rjrv_7, rjrv_8};
 static const rjc_fn rjx_table[5][5] = {
         {rjx_0_0, rjx_0_1, rjx_0_2, rjx_0_3, rjx_0_4},
         {rjx_1_0, rjx_1_1, rjx_1_2, rjx_1_3, rjx_1_4},
@@ -2565,4 +5617,18 @@ static const rjc_fn rjy_table[5][5] = {
         {rjy_2_0, rjy_2_1, rjy_2_2, rjy_2_3, rjy_2_4},
         {rjy_3_0, rjy_3_1, rjy_3_2, rjy_3_3, rjy_3_4},
         {rjy_4_0, rjy_4_1, rjy_4_2, rjy_4_3, rjy_4_4},
+};
+static const rjc_fn rjxv_table[5][5] = {
+        {rjxv_0_0, rjxv_0_1, rjxv_0_2, rjxv_0_3, rjxv_0_4},
+        {rjxv_1_0, rjxv_1_1, rjxv_1_2, rjxv_1_3, rjxv_1_4},
+        {rjxv_2_0, rjxv_2_1, rjxv_2_2, rjxv_2_3, rjxv_2_4},
+        {rjxv_3_0, rjxv_3_1, rjxv_3_2, rjxv_3_3, rjxv_3_4},
+        {rjxv_4_0, rjxv_4_1, rjxv_4_2, rjxv_4_3, rjxv_4_4},
+};
+static const rjc_fn rjyv_table[5][5] = {
+        {rjyv_0_0, rjyv_0_1, rjyv_0_2, rjyv_0_3, rjyv_0_4},
+        {rjyv_1_0, rjyv_1_1, rjyv_1_2, rjyv_1_3, rjyv_1_4},
+        {rjyv_2_0, rjyv_2_1, rjyv_2_2, rjyv_2_3, rjyv_2_4},
+        {rjyv_3_0, rjyv_3_1, rjyv_3_2, rjyv_3_3, rjyv_3_4},
+        {rjyv_4_0, rjyv_4_1, rjyv_4_2, rjyv_4_3, rjyv_4_4},
 };

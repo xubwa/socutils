@@ -34,6 +34,10 @@ LMAX_AUX = 4
 
 
 def _load():
+    import os
+    path = os.environ.get('SOCUTILS_RIJ_LIBRARY')     # a separately built rij_direct.c (development)
+    if path:
+        return numpy.ctypeslib.load_library(path, '.')
     from socutils.hessian import ghf as ghf_hess
     libv = ghf_hess._load_socvhf()
     if not libv or not hasattr(libv, 'SOCVHFrij_direct_rho'):
@@ -118,7 +122,8 @@ class RIJDirect:
         t0 = (logger.process_clock(), logger.perf_counter())
         pmol, c = mol.decontract_basis(to_cart=True, aggregate=True)
         self.pmol = pmol
-        self.c = numpy.ascontiguousarray(c)                       # (nprim, nao)
+        self.c = scipy.sparse.csr_matrix(c)                       # (nprim, nao), block-sparse by shell
+        self.cT = self.c.T.tocsr()
         self.qcond = numpy.ascontiguousarray(jk_multi._q_cond(pmol))
         self.aexp, self.al, self.hoff, self.cen_off, self.cxyz, self.A = aux_primitives(auxmol)
         self.AT = self.A.T.tocsr()
@@ -140,7 +145,7 @@ class RIJDirect:
 
     def get_rho(self, dm):
         '''rho_P = sum_ij (P|ij) D_ij of a symmetric dm (nao, nao)'''
-        dmp = numpy.ascontiguousarray(lib.dot(self.c, lib.dot(dm, self.c.T)))
+        dmp = numpy.ascontiguousarray(self.c.dot(self.c.dot(dm).T))      # c D c^T, D symmetric
         X = numpy.empty(self.hoff[-1])
         self.npair_rho = self.libv.SOCVHFrij_direct_rho(
             X.ctypes.data_as(ctypes.c_void_p), dmp.ctypes.data_as(ctypes.c_void_p),
@@ -158,7 +163,7 @@ class RIJDirect:
             vjp.ctypes.data_as(ctypes.c_void_p), h.ctypes.data_as(ctypes.c_void_p),
             self.qcond.ctypes.data_as(ctypes.c_void_p), ctypes.c_double(self.tol), ctypes.c_double(hmax),
             ctypes.c_double(self.far_eps), *self._args())
-        return lib.dot(self.c.T, lib.dot(vjp, self.c))
+        return self.cT.dot(self.cT.dot(vjp).T)                    # c^T J c, J symmetric
 
     def fit(self, rho):
         return scipy.linalg.cho_solve(self.low, rho)

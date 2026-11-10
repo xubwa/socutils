@@ -52,6 +52,12 @@ class KnownValues(unittest.TestCase):
         md_j.RIJ_DIRECT = True
         try:
             md_j.apply(mf)
+            # the first build already from the direct engine
+            dm = mf.get_init_guess()
+            vj = mf.get_j(mol, dm)
+            self.assertTrue(mf._rij_cache['last'] is not None)
+            self.assertAlmostEqual(abs(vj - ref.get_j(mol, dm)).max(), 0, 9)
+            mf._rij_cache['last'] = None
             e = mf.kernel()
             self.assertTrue(mf.converged and mf._rij_cache['direct'] is not None)
         finally:
