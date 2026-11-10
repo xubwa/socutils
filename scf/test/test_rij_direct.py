@@ -41,6 +41,22 @@ class KnownValues(unittest.TestCase):
         ref = numpy.einsum('ijP,P->ij', int3c, numpy.linalg.solve(j2c, numpy.einsum('ijP,ij->P', int3c, dm)))
         self.assertAlmostEqual(abs(eng.get_j(dm) - ref).max(), 0, 9)
 
+    def test_tz(self):
+        # f functions in the bra (f f pairs, degree 6) and g on the auxiliary side
+        mol = gto.M(atom='O 0 0 0; H .757 0 .586; H -.757 0 .586; Br 6 0 1; H 7.4 0 1', basis='cc-pvtz', verbose=0)
+        aux = df.addons.make_auxmol(mol, 'def2-universal-jfit')
+        self.assertTrue(rij_direct.available(mol, aux))
+        eng = rij_direct.RIJDirect(mol, aux)
+        int3c = df.incore.aux_e2(mol, aux, 'int3c2e', aosym='s1')
+        rng = numpy.random.default_rng(5)
+        c = rng.standard_normal((mol.nao, 8))
+        dm = c.dot(c.T)
+        ref = numpy.einsum('ijP,ij->P', int3c, dm)
+        self.assertAlmostEqual(abs(eng.get_rho(dm) - ref).max() / abs(ref).max(), 0, 12)
+        d = rng.standard_normal(aux.nao)
+        ref = numpy.einsum('ijP,P->ij', int3c, d)
+        self.assertAlmostEqual(abs(eng.get_vj_fit(d) - ref).max() / abs(ref).max(), 0, 12)
+
     def test_rij_scf(self):
         mol = gto.M(atom=CHAIN, basis='cc-pvdz', verbose=0)
         ref = dft.RKS(mol, xc='pbe').density_fit(auxbasis='def2-universal-jfit', only_dfj=True)

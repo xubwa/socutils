@@ -42,8 +42,8 @@
 #include <omp.h>
 #include "cint.h"
 
-#define LP 4                    /* bra pair degree (d d) */
-#define LQ 4                    /* auxiliary angular momentum */
+#define LP 6                    /* bra pair degree (f f) */
+#define LQ 6                    /* auxiliary angular momentum */
 #define LT (LP + LQ)
 #define NH(d) ((d) < 0 ? 0 : ((d) + 1) * ((d) + 2) * ((d) + 3) / 6)
 #define NHQ NH(LQ)              /* the multipole slots of a centre, degrees 0..LQ */

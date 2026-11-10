@@ -29,8 +29,8 @@ from pyscf.lib import logger
 
 TOL = 1e-13             # screening of the bra pairs (sqrt((ab|ab)) x the other side's bound)
 FAR_EPS = 1e-14         # relative accuracy of the asymptotic Boys functions in the far field
-LMAX_BRA = 2
-LMAX_AUX = 4
+LMAX_BRA = 3
+LMAX_AUX = 6
 
 
 def _load():
