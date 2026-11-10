@@ -168,6 +168,40 @@ class RIJDirect:
     def fit(self, rho):
         return scipy.linalg.cho_solve(self.low, rho)
 
+    def grad_3c(self, dm, dfit):
+        '''the three-centre part of the RIJ gradient, sum_P dfit_P sum_ij D_ij d(ij|P)/dR, of a symmetric
+        dm: (bra atoms (natm, 3), auxiliary centres (auxmol.natm, 3))'''
+        dmp = numpy.ascontiguousarray(self.c.dot(self.c.dot(dm).T))
+        h = numpy.ascontiguousarray(self.A.dot(dfit))
+        gbra = numpy.zeros((self.pmol.natm, 3))
+        gaux = numpy.zeros((self.auxmol.natm, 3))
+        bound = float(abs(dmp).max() * abs(self.qaux * dfit).max())
+        self.npair_grad = self.libv.SOCVHFrij_direct_grad(
+            gbra.ctypes.data_as(ctypes.c_void_p), gaux.ctypes.data_as(ctypes.c_void_p),
+            dmp.ctypes.data_as(ctypes.c_void_p), h.ctypes.data_as(ctypes.c_void_p),
+            self.qcond.ctypes.data_as(ctypes.c_void_p), ctypes.c_double(self.tol), ctypes.c_double(bound),
+            ctypes.c_double(self.far_eps), *self._args())
+        return gbra, gaux
+
+    def grad(self, dm, dfit=None):
+        '''the RIJ Coulomb gradient d/dR 1/2 rho^T M^-1 rho (natm, 3), auxiliary-basis response included
+        (pyscf's auxbasis_response): g = d . rho^xi - 1/2 d M^xi d, d = M^-1 rho; auxmol's atoms
+        those of mol.  dfit: d if known (else one rho pass).'''
+        dm = numpy.asarray(dm, dtype=numpy.double)
+        dm = (dm + dm.T) * .5
+        tol, self.tol = self.tol, min(self.tol, TOL)       # (an SCF's engine may hold a loose cutoff)
+        try:
+            if dfit is None:
+                dfit = self.fit(self.get_rho(dm))
+            gbra, gaux = self.grad_3c(dm, dfit)
+        finally:
+            self.tol = tol
+        auxmol = self.auxmol
+        v = numpy.einsum('xpq,q->xp', auxmol.intor('int2c2e_ip1', aosym='s1'), dfit)
+        for ia, (p0, p1) in enumerate(auxmol.aoslice_by_atom()[:, 2:]):
+            gaux[ia] += v[:, p0:p1].dot(dfit[p0:p1])
+        return gbra + gaux
+
     def get_j(self, dm, hermi=1):
         dm = numpy.asarray(dm, dtype=numpy.double)
         shape = dm.shape

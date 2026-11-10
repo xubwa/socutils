@@ -57,6 +57,37 @@ class KnownValues(unittest.TestCase):
         ref = numpy.einsum('ijP,P->ij', int3c, d)
         self.assertAlmostEqual(abs(eng.get_vj_fit(d) - ref).max() / abs(ref).max(), 0, 12)
 
+    def test_grad(self):
+        # the RIJ gradient against the libcint three-centre pass of hessian.rhf_fast.ri_j_grad and FD
+        from socutils.hessian import rhf_fast as hess_fast
+        mol = gto.M(atom=CHAIN, basis='cc-pvdz', verbose=0)
+        aux = df.addons.make_auxmol(mol, 'def2-universal-jfit')
+        rng = numpy.random.default_rng(7)
+        c = rng.standard_normal((mol.nao, 10))
+        dm = c.dot(c.T) * .1
+        g = rij_direct.RIJDirect(mol, aux).grad(dm)
+        old = hess_fast.RIJ_GRAD_DIRECT
+        hess_fast.RIJ_GRAD_DIRECT = False
+        try:
+            ref = hess_fast.ri_j_grad(mol, aux, dm)
+        finally:
+            hess_fast.RIJ_GRAD_DIRECT = old
+        if ref is not None:
+            self.assertAlmostEqual(abs(g - ref).max(), 0, 9)
+
+        def ej(m):
+            e = rij_direct.RIJDirect(m, df.addons.make_auxmol(m, 'def2-universal-jfit'))
+            rho = e.get_rho(dm)
+            return .5 * rho.dot(e.fit(rho))
+        h = 1e-4
+        for ia, x in ((0, 2), (8, 0), (13, 1)):
+            co = mol.atom_coords().copy()
+            co[ia, x] += h
+            ep = ej(mol.set_geom_(co, unit='bohr', inplace=False))
+            co[ia, x] -= 2 * h
+            em = ej(mol.set_geom_(co, unit='bohr', inplace=False))
+            self.assertAlmostEqual((ep - em) / (2 * h), g[ia, x], 6)
+
     def test_rij_scf(self):
         mol = gto.M(atom=CHAIN, basis='cc-pvdz', verbose=0)
         ref = dft.RKS(mol, xc='pbe').density_fit(auxbasis='def2-universal-jfit', only_dfj=True)

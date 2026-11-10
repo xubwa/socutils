@@ -1160,6 +1160,7 @@ def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS
     return hess, vj1
 
 
+RIJ_GRAD_DIRECT = True  # ri_j_grad by socutils.scf.rij_direct (no three-centre integrals) when available
 RIJ_GRAD_MD = True      # ri_j_grad's three-centre part by the McMurchie-Davidson J engine (lib/vhf/md_j.c)
 
 
@@ -1243,7 +1244,7 @@ def _md_rij_hess(libv, mol, auxmol, dm, dfit, tol):
     return hess[:natm, :natm] + hess[:natm, natm:] + hess[natm:, :natm] + hess[natm:, natm:]
 
 
-def ri_j_grad(mol, auxmol, dm, tol=None, max_memory=None, cderi=None, dfit=None):
+def ri_j_grad(mol, auxmol, dm, tol=None, max_memory=None, cderi=None, dfit=None, engine=None):
     '''Gradient of the density-fitted Coulomb energy E_J = 1/2 rho^T M^{-1} rho
     at a symmetric D, auxiliary-basis response included (pyscf's
     auxbasis_response): g^xi = d . rho^xi - 1/2 d M^xi d, d = M^{-1} rho, the
@@ -1270,6 +1271,15 @@ def ri_j_grad(mol, auxmol, dm, tol=None, max_memory=None, cderi=None, dfit=None)
     npair = nao * (nao + 1) // 2
     blk = max(16, min(naux, int(max_memory * .2e6 / 8 / npair)))
     dm_tril = lib.pack_tril(dm + dm.T - numpy.diag(numpy.diag(dm)))
+    direct = None
+    if RIJ_GRAD_DIRECT and auxmol.natm == mol.natm:
+        # the direct RI-J engine (socutils.scf.rij_direct): d without the three-centre integrals
+        # (when no factor is given) and the three-centre derivatives by its gradient pass
+        from socutils.scf import rij_direct
+        if engine is not None and engine.mol is mol and engine.auxmol is auxmol:
+            direct = engine
+        elif rij_direct.available(mol, auxmol):
+            direct = rij_direct.RIJDirect(mol, auxmol)
     if dfit is None and cderi is not None and getattr(cderi, 'shape', None) == (naux, npair):
         import scipy.linalg
         try:
@@ -1279,6 +1289,8 @@ def ri_j_grad(mol, auxmol, dm, tol=None, max_memory=None, cderi=None, dfit=None)
         if low is not None:
             c = lib.dot(cderi, dm_tril[:, None])[:, 0]          # L^{-1} rho
             dfit = scipy.linalg.solve_triangular(low, c, lower=True, trans='T')
+    if direct is not None:
+        return direct.grad(dm, dfit)
     if dfit is None:
         rho = numpy.empty(naux)
         for k0, k1, _ in balance_partition(auxmol.ao_loc, blk):

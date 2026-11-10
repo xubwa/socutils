@@ -23,7 +23,7 @@ the degree-l block of an array of degree <= L starts at NH(l - 1).
 '''
 import sys
 
-LMAXP = 6       # bra pair degree (f f)
+LMAXP = 7       # bra pair degree (f f) + 1 of the gradient
 LMAXQ = 6       # auxiliary angular momentum (i)
 RLMAX = LMAXP + LMAXQ
 

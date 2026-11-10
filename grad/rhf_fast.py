@@ -212,7 +212,9 @@ def _fast_terms(grad, mol, dm):
         cache = getattr(mf, '_rij_cache', None) or {}
         key = (mol._atm.tobytes(), mol._bas.tobytes(), mol._env.tobytes())
         cderi = cache.get('B') if cache.get('key') == key else None
-        r = hess_fast.ri_j_grad(mol, hess_fast._df_auxmol(mf), dm, tol=GRAD2E_TOL, cderi=cderi, dfit=dfit,
+        engine = cache.get('direct') if cache.get('key') == key else None
+        r = hess_fast.ri_j_grad(mol, engine.auxmol if engine is not None else hess_fast._df_auxmol(mf), dm,
+                                tol=GRAD2E_TOL, cderi=cderi, dfit=dfit, engine=engine,
                                 max_memory=max(1000, mf.max_memory - lib.current_memory()[0]))
         if r is not None:
             de += r
