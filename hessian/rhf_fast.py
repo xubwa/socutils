@@ -1365,13 +1365,14 @@ def _fock1(hessobj, dm0, with_k, occ=None):
     vk = None
     if with_k:
         # K only: the density-fitted J comes from ri_j_deriv
-        v = fock1_jk(mol, dm0, with_k=True, max_memory=max_memory, with_j=False)
+        v = fock1_jk(mol, dm0, with_k=True, max_memory=max_memory, with_j=not FOCK1_K_ONLY)
         if v is None:
             return None
         vk = v[1]
     return r[1], vk
 
 
+FOCK1_K_ONLY = True     # _fock1 with density-fitted J: fock1_jk for K only (else J + K, J dropped)
 XCD1_LOCAL_VIP = True   # xc_deriv1_batched: the vxc term per sub-block on its significant AOs (else pyscf's)
 XCD1_OCC_LOCAL = True   # xc_deriv1_batched(occ=True): D phi, rho, the functional, d_A rho per sub-block too
 
@@ -2107,6 +2108,9 @@ class _MultiJKCPHF:
     _keys = {'sum_rule', 'cpscf_grids', '_cpscf_auto', 'auxbasis_response'}
 
     def kernel(self, *args, **kwargs):
+        # the SCF's semi-direct integral store (scf.md_j) serves no Hessian build: its memory to the Hessian
+        if getattr(self.base, '_jk_store', None) is not None:
+            self.base._jk_store = None
         de = super().kernel(*args, **kwargs)
         if self.sum_rule:
             from socutils.dft.grids import translational_sum_rule
