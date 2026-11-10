@@ -122,7 +122,7 @@ PAIR_TOL = 1e-13      # cholesky_eri: shell pairs with sqrt((ij|ij)) max sqrt((P
 def _load_socvhf():
     from socutils.hessian import ghf as ghf_hess
     libv = ghf_hess._load_socvhf()
-    return libv if libv and hasattr(libv, 'SOCVHFint3c2e_s2_pairs') else None
+    return libv if libv and hasattr(libv, 'SOCVHFscatter_cols') else None
 
 
 class _Int3c:
@@ -199,6 +199,18 @@ class _Int3c:
         return X, cols
 
 
+def _scatter_cols(B, Y, cols):
+    '''B[:, cols] = Y for B (naux, ncol) C-ordered and Y (naux, nrow) F-ordered (the solve's output)'''
+    Yc = Y.T
+    assert Yc.flags.c_contiguous and B.flags.c_contiguous
+    cols = numpy.ascontiguousarray(cols, dtype=numpy.int64)
+    _load_socvhf().SOCVHFscatter_cols(
+        B.ctypes.data_as(ctypes.c_void_p), Yc.ctypes.data_as(ctypes.c_void_p),
+        cols.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(B.shape[0]), ctypes.c_long(Yc.shape[0]),
+        ctypes.c_long(B.shape[1]))
+    return B
+
+
 def _metric_cholesky(auxmol):
     j2c = auxmol.intor('int2c2e', hermi=1)
     try:
@@ -230,11 +242,8 @@ def cholesky_eri(mol, auxmol, pair_tol=PAIR_TOL, verbose=None):
     Y = scipy.linalg.solve_triangular(low, X.T, lower=True, overwrite_b=True, check_finite=False)
     X = None
     t0 = log.timer_debug1('rik.cholesky_eri: L^-1', *t0)
-    if nrow == npair and (numpy.diff(cols) == 1).all():
-        B = numpy.ascontiguousarray(Y)
-    else:
-        B = numpy.zeros((auxmol.nao, npair))
-        B[:, cols] = Y
+    B = numpy.zeros((auxmol.nao, npair))
+    _scatter_cols(B, Y, cols)
     log.timer_debug1('rik.cholesky_eri: scatter', *t0)
     return B
 
@@ -271,7 +280,7 @@ def cholesky_eri_h5(mol, auxmol, filename, dataname='j3c', pair_tol=PAIR_TOL, ma
             Y = scipy.linalg.solve_triangular(low, X.T, lower=True, overwrite_b=True, check_finite=False)
             X = None
             blk = numpy.zeros((naux, c1 - c0))
-            blk[:, cols - c0] = Y
+            _scatter_cols(blk, Y, cols - c0)
             Y = None
             g[str(k)] = blk
             blk = None
@@ -333,28 +342,40 @@ def get_jk(with_df, dm, hermi=1, with_j=True, with_k=True, max_memory=None, verb
     buf2 = numpy.empty((blksize, nao, nao)) if with_k and any(f is None for f in facs) else None
     dmsF = [None if f is not None else numpy.asarray(dms[k], order='F') for k, f in enumerate(facs)] \
         if with_k else None
+    tw = [0.] * 4          # wall: waiting for the factor, J, half transformation, rank-k update
+    tl = logger.perf_counter()
     for eri1 in with_df.loop(blksize):
+        t1 = logger.perf_counter()
+        tw[0] += t1 - tl
         nb = eri1.shape[0]
         assert eri1.shape[1] == npair
         if with_j:
             rho = lib.dot(dmtril, eri1.T)                       # (nset, nb)
             vj += lib.dot(rho, eri1)
-        if not with_k:
-            continue
-        for k in range(nset):
-            f = facs[k]
-            if f is None:
-                # density route: (B^P D)^T B^P summed over P as one GEMM
-                bd = _half_trans(eri1, dmsF[k], buf)            # (nb, nao, nao): (D^T B^P)_{m i}
-                b2 = lib.unpack_tril(eri1, out=buf2[:nb])
-                lib.dot(bd.reshape(-1, nao).T, b2.reshape(-1, nao), 1., vk[k], 1.)
-                continue
-            for sgn, c in ((1., f[0]), (-1., f[1])):
-                if c is None or c.shape[1] == 0:
+        t2 = logger.perf_counter()
+        tw[1] += t2 - t1
+        if with_k:
+            for k in range(nset):
+                f = facs[k]
+                if f is None:
+                    # density route: (B^P D)^T B^P summed over P as one GEMM
+                    bd = _half_trans(eri1, dmsF[k], buf)            # (nb, nao, nao): (D^T B^P)_{m i}
+                    b2 = lib.unpack_tril(eri1, out=buf2[:nb])
+                    lib.dot(bd.reshape(-1, nao).T, b2.reshape(-1, nao), 1., vk[k], 1.)
                     continue
-                x = _half_trans(eri1, c, buf)                     # (nb, ncol, nao)
-                vkF[k] = _dsyrk_acc(x.reshape(-1, nao), vkF[k], sgn)
-        t0 = log.timer_debug1('rik.get_jk block', *t0)
+                for sgn, c in ((1., f[0]), (-1., f[1])):
+                    if c is None or c.shape[1] == 0:
+                        continue
+                    t3 = logger.perf_counter()
+                    x = _half_trans(eri1, c, buf)                     # (nb, ncol, nao)
+                    t4 = logger.perf_counter()
+                    vkF[k] = _dsyrk_acc(x.reshape(-1, nao), vkF[k], sgn)
+                    tw[2] += t4 - t3
+                    tw[3] += logger.perf_counter() - t4
+        eri1 = None
+        tl = logger.perf_counter()
+    log.debug1('rik.get_jk wall: factor read %.2f s, J %.2f s, half transformation %.2f s, '
+               'rank-k update %.2f s', *tw)
 
     if with_j:
         vj = lib.unpack_tril(vj, 1).reshape(shape)
