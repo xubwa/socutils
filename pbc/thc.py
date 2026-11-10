@@ -607,7 +607,7 @@ class THCExchange:
         if getattr(self, '_phi_rows', None) != (r0, r1):              # (the grid-split build has them already)
             self.phi = np.ascontiguousarray(self.phi_at(slice(r0, r1)))
         self._phi_rows = (r0, r1)
-        if getattr(self, 'Llr_cx', None) is not None:
+        if getattr(self, 'Llr_cx', None) is not None and getattr(self, '_lr_range', None) is None:
             nlr = self.Llr_cx.shape[0]
             g0, g1 = nlr * rank // size, nlr * (rank + 1) // size
             self.Llr_cx = np.ascontiguousarray(self.Llr_cx[g0:g1])
@@ -688,12 +688,18 @@ class THCExchange:
             r.sr_fit = False
             r.lr_columns = cxc
             r.verbose = 0
+            comm_ = getattr(self, 'comm', None)
+            if comm_ is not None and comm_.Get_size() > 1:           # MPI: this rank's LR G vectors only
+                rk_, sz_ = comm_.Get_rank(), comm_.Get_size()
+                r.lr_g_range = lambda nG: (nG * rk_ // sz_, nG * (rk_ + 1) // sz_)
             if getattr(self, 'exx_trunc', None):                      # LR rows: K only (J by GAPW)
                 rc_ = self.exx_trunc
                 r.lr_row_factor = lambda G: stc_factor(G, rc_)
             self.r = r.build()
             self.J = None
-            self.Llr_cx, self.lr_cols = r.cderi, cxc                   # (nlr, nCX)
+            self.Llr_cx, self.lr_cols = r.cderi, cxc                   # (nlr, nCX), or this rank's rows (MPI)
+            if getattr(r, 'lr_g_range', None) is not None:
+                self._lr_range = (2 * r.lr_g_kept[0], 2 * r.lr_g_kept[1])
             self.nkept = 0
             auxcell = df_addons.make_auxmol(cell, self.aux)
             with auxcell.with_range_coulomb(-self.omega):

@@ -534,8 +534,14 @@ class RSDF(lib.StreamObject):
         lr_cols = None if self.lr_columns is None else np.asarray(self.lr_columns, dtype=np.int64)
         if lr_cols is not None and (self.sr_fit or not gspace or _active is not None):
             raise ValueError('RSDF.lr_columns needs lr=gspace and sr_fit=False')
+        # lr_g_range (lr_columns only; (lo, hi) or a callable of the number of LR G vectors): the rows of the LR
+        # G vectors [lo, hi) only (MPI: each rank its own range; the nuclear LR terms still use every G)
+        glr = getattr(self, 'lr_g_range', None)
+        glr = glr(len(G)) if callable(glr) else glr
+        glo, ghi = (0, len(G)) if glr is None else (int(glr[0]), int(glr[1]))
+        self.lr_g_kept = (glo, ghi)
         if lr_cols is not None:
-            cderi = np.empty((nlr, len(lr_cols)))
+            cderi = np.empty((2 * (ghi - glo), len(lr_cols)))
         elif _active is not None:
             cderi = None
             act_sr = np.zeros((naux, _active['dsym_dim']), dtype=complex)
@@ -634,8 +640,10 @@ class RSDF(lib.StreamObject):
                     else:
                         if lr_cols is not None:
                             c0_, c1_ = np.searchsorted(lr_cols, (p0, p1))
-                            if c1_ > c0_:
-                                cderi[2 * g0:2 * g1, c0_:c1_] = rows.reshape(-1, p1 - p0)[:, lr_cols[c0_:c1_] - p0]
+                            h0, h1 = max(g0, glo), min(g1, ghi)              # within the kept G range
+                            if c1_ > c0_ and h1 > h0:
+                                cderi[2 * (h0 - glo):2 * (h1 - glo), c0_:c1_] = \
+                                    rows[h0 - g0:h1 - g0].reshape(-1, p1 - p0)[:, lr_cols[c0_:c1_] - p0]
                         else:
                             cderi[nkept + 2 * g0:nkept + 2 * g1, p0:p1] = rows.reshape(-1, p1 - p0)
                     rows = None
