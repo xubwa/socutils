@@ -86,7 +86,14 @@ static double cx_damp[CX_DMAX + 1];
 static int cx_full = 1;     /* the all-in-register primitive kernels for L <= cx_full (c16 / def2-TZVP:
                              * L = 0, 1 2.9 / 5.6 cycles per point against 3.7 / 6.1, L = 2 12.5 against 10.4) */
 static int cx_pairdamp = 1;  /* the pair-level distance damping */
-static int cx_mfloat = 0;    /* the multi-density contraction in single precision (AVX-512 builds) */
+static int cx_mfloat = 0;
+static int cx_err = 0;       /* set by a kernel that ran out of memory; SOCDFTcosx_error reads and clears it */
+int SOCDFTcosx_error(void)
+{
+        const int e = cx_err;
+        cx_err = 0;
+        return e;
+}    /* the multi-density contraction in single precision (AVX-512 builds) */
 int SOCDFTcosx_mfloat(void)
 {
 #ifdef __AVX512F__
@@ -978,8 +985,16 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                 if (opt->atm_lmax[at] >= 0) farR[at] = malloc(sizeof(double) * NH(opt->atm_lmax[at]) * blk);
         }
         int b;
+        /* out of memory: flagged (SOCDFTcosx_error), the blocks skipped */
+        const int oom = (!eonly && !Kt) || !a || !wx || !F || !G || !dr || !ktmp
+                        || (multi && (!Bm || !Abuf || !rec)) || (mfl && (!Ff || !Gf)) || (eonly && !H);
+        if (oom) {
+#pragma omp atomic write
+                cx_err = 1;
+        }
 #pragma omp for schedule(dynamic, 1)
         for (b = 0; b < nblk; b++) {
+                if (oom) continue;
                 const int g0 = b * blk, n = g0 + blk <= ngrid ? blk : ngrid - g0;
                 uint8_t *msk = non0tab + (size_t)(g0 / MASK_BLK) * nbas;
                 int k, g, d, ip;
@@ -1372,6 +1387,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                 int t;
                 for (t = 0; t < nthreads; t++) {
                         const double *kb = kbufs[t];
+                        if (!kb) continue;
                         for (q = s0; q < s1; q++) vk[q] += kb[q];
                 }
         }
