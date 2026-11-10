@@ -1813,10 +1813,13 @@ def rks_make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=No
 
 
 CPHF_COSX = None        # K of the CPHF densities by COSX (socutils.scf.cosx): None -> auto (SCF ran COSX, large basis)
-CPHF_COSX_GRID = 2      # its grid: a cosx.GRIDX level or a dict of cosx.make_grids arguments.  The CP-SCF
+CPHF_COSX_GRID = 0      # its grid: a cosx.GRIDX level or a dict of cosx.make_grids arguments.  The CP-SCF
                         # operator alone tolerates a coarse grid (C16H34 def2-TZVP, GRIDX1 for the CPHF only: freq
                         # max 0.13 / rms 0.03 cm-1 against GRIDX2; the 5 cm-1 seen before came from Fock1 and the
-                        # explicit K on the same coarse grid, now HESS_COSX_GRID)
+                        # explicit K on the same coarse grid, now HESS_COSX_GRID).  Default GRIDX0 (11.9k points on
+                        # C16H34, ORCA's CP-SCF COSX grid ~14k) with the last response on GRIDX2
+                        # (CPHF_COSX_GRID_FINAL): freq max 0.145 / rms 0.029 cm-1 (C16H34 def2-TZVP), 0.027-0.038
+                        # (caffeine cc-pVDZ) against all-GRIDX2, Hessian ~80 s faster at 16 cores (C16H34 TZVP)
 CPHF_COSX_OCC = False   # the CPHF K as K C_occ (cosx.COSX.get_k_occ, one-sided fitted K, no K matrix)
 CPHF_COSX_NAO_PER_ATOM = 12     # auto mode: AOs per atom from which the CPHF K goes to COSX
 CPHF_COSX_FLOAT = True  # the many-density COSX contraction in single precision (False: double); K within ~1e-6
@@ -1828,7 +1831,7 @@ CPHF_COSX_FLOAT = True  # the many-density COSX contraction in single precision 
 HESS_COSX_FOCK1 = None  # the first-order K (make_h1) by COSX: None -> with the CPHF's auto mode (CPHF_COSX)
 HESS_COSX_EXPLICIT = None   # the K second derivatives of the explicit part by COSX: None -> likewise
 HESS_COSX_GRID = 2      # the grid of those two (Fock1, explicit K), as for CPHF_COSX_GRID; None -> CPHF_COSX_GRID
-CPHF_COSX_GRID_FINAL = None     # the grid of the CPHF's last response (after the Krylov solve, from which the
+CPHF_COSX_GRID_FINAL = 2        # the grid of the CPHF's last response (after the Krylov solve, from which the
                                 # final U_vir and the occupied e1 follow): None -> CPHF_COSX_GRID
 _CPHF_STAGE = {'final': False}
 
