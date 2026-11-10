@@ -25,8 +25,8 @@ Drop-in classes (same results as pyscf's):
                                             # density_fit() (RI-J; RI-J + exact K
                                             # with only_dfj=True)
 
-Range-separated functionals, NLC, grid response and fitted K (RI-JK) keep
-pyscf's code.
+fitted K (RI-JK, density_fit() without only_dfj): socutils.grad.rik_grad.
+Range-separated functionals, NLC and grid response keep pyscf's code.
 '''
 
 import ctypes
@@ -45,6 +45,7 @@ from socutils.hessian import rhf_fast as hess_fast
 # than 1e-11 / 1e-13
 GRAD2E_TOL = 1e-10
 RIJ_GRAD_FAST = True    # RIJ (only_dfj): the DF-J gradient by hessian.rhf_fast.ri_j_grad, else pyscf's
+RIK_GRAD_FAST = True    # RI-JK: the fitted K gradient by socutils.grad.rik_grad (and J as for RIJ), else pyscf's
 GRAD2E_PRIM_TOL = 1e-11
 GRAD_SUBBLOCK = 112     # grid points per sub-block of the fused XC gradient (10 AO components per AO)
 
@@ -187,24 +188,38 @@ def _fast_terms(grad, mol, dm):
         hybrid = ni.libxc.is_hybrid_xc(mf.xc)
     else:
         hyb, hybrid = 1., True
-    if dfm == 'jk' and hybrid:
-        return None
     t0 = (logger.process_clock(), logger.perf_counter())
     jf = 1. if dfm is None else 0.
     kf = -hyb if hybrid else 0.
     de = numpy.zeros((mol.natm, 3))
     grad._rij_fast = False
-    if dfm == 'j' and RIJ_GRAD_FAST and grad.auxbasis_response:
+    dfit = None
+    if dfm == 'jk' and hybrid:
+        if not (RIK_GRAD_FAST and grad.auxbasis_response):
+            return None
+        # RI-JK: the fitted K gradient (socutils.grad.rik_grad) and, from the same pass over the
+        # factor, the fitted Coulomb coefficients of the RI-J gradient below
+        from socutils.grad import rik_grad
+        r = rik_grad.jk_grad_terms(mf, mol, dm, hyb, max_memory=max(1000, mf.max_memory - lib.current_memory()[0]))
+        if r is None:
+            return None
+        dfit, dk = r
+        de += dk
+        kf = 0.
+        t0 = logger.timer(grad, 'RI-K gradient', *t0)
+    if dfm is not None and RIJ_GRAD_FAST and grad.auxbasis_response:
         # RIJ: the density-fitted J gradient (with its auxiliary-basis response) from the C pass
         cache = getattr(mf, '_rij_cache', None) or {}
         key = (mol._atm.tobytes(), mol._bas.tobytes(), mol._env.tobytes())
         cderi = cache.get('B') if cache.get('key') == key else None
-        r = hess_fast.ri_j_grad(mol, hess_fast._df_auxmol(mf), dm, tol=GRAD2E_TOL, cderi=cderi,
+        r = hess_fast.ri_j_grad(mol, hess_fast._df_auxmol(mf), dm, tol=GRAD2E_TOL, cderi=cderi, dfit=dfit,
                                 max_memory=max(1000, mf.max_memory - lib.current_memory()[0]))
         if r is not None:
             de += r
             grad._rij_fast = True
             t0 = logger.timer(grad, 'RIJ gradient (three-centre C pass)', *t0)
+    if dfm == 'jk' and not grad._rij_fast:
+        return None
     if jf != 0 and kf != 0 and _gen_grad_usable(mol):
         # hybrids: J and K in one pass of the generated kernels (J costs little more
         # there than the separate MD J pass)
