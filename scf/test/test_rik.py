@@ -85,6 +85,12 @@ class KnownValues(unittest.TestCase):
             e1 = rik.apply(mk().density_fit(auxbasis='cc-pvdz-jkfit')).run(conv_tol=1e-11).e_tot
             self.assertAlmostEqual(e1, e0, 9)
 
+    def test_ghf_falls_back(self):
+        mol = gto.M(atom='O 0 0 0; H 0 .757 .587', basis='cc-pvdz', spin=1, verbose=0)
+        e0 = scf.GHF(mol).density_fit(auxbasis='cc-pvdz-jkfit').run(conv_tol=1e-10).e_tot
+        e1 = rik.apply(scf.GHF(mol).density_fit(auxbasis='cc-pvdz-jkfit')).run(conv_tol=1e-10).e_tot
+        self.assertAlmostEqual(e1, e0, 8)
+
     def test_cd(self):
         from socutils.cd import cd
         mol = gto.M(atom='O 0 0 0; H 0 .757 .587; H 0 -.757 .587', basis='cc-pvdz', verbose=0)
