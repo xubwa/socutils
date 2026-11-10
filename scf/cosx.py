@@ -54,6 +54,7 @@ MULTI_FLOAT = False     # its contraction in single precision (set_multi_float)
 HESS_FLOAT = False      # the Hessian passes' A C contraction (Fock1 / K second derivatives) in single precision
 PROFILE = {}            # wall seconds of get_k's phases (accumulated)
 MULTI_MAXSET = 512      # densities per pass (every pass computes the integrals again)
+DENSE_MIN = 0.          # a grid block contracts densely when its kept pairs are >= this fraction of nao^2/2
 PRIM_TOL = 1e-14
 PAIR_TOL = 1e-13
 
@@ -196,12 +197,14 @@ class COSX(lib.StreamObject):
             # the memory allows (every pass evaluates the integrals again).  Per density: the threads' F, G
             # (float: in float only), 2 blk nao each; here two nao^2 arrays alive at a time (the transposed
             # input and output, then the output and the result).  Fixed: the threads' stored pair integrals
-            # of a block (dense contraction), at most nao^2/2 blk each
+            # of a block, (kept fraction) nao^2/2 blk each (the largest kept fraction of the previous call,
+            # 1/2 before the first) and the dense A(g), nao^2
             nt = lib.num_threads()
             per = ((4 if libdft.SOCDFTcosx_mfloat() else 12) * 2 * self.blk * nao * nt + 8 * 2.5 * nao * nao) / 1e6
             if getattr(libdft, 'SOCDFTcosx_kpriv', None) is not None and libdft.SOCDFTcosx_kpriv():
                 per += 8 * nao * nao * nt / 1e6         # the threads' private K
-            fixed = (4 if libdft.SOCDFTcosx_mfloat() else 8) * (nao * nao / 2 * self.blk + nao * nao) * nt / 1e6
+            kept = getattr(self, '_kept', .5)
+            fixed = (4 if libdft.SOCDFTcosx_mfloat() else 8) * (kept * nao * nao / 2 * self.blk + nao * nao) * nt / 1e6
             # (at least 2 GB: a pass costs the integrals of the whole grid, ~25 densities' worth on c16 TZVP)
             avail = max(2000, mol.max_memory - lib.current_memory()[0] - fixed)
             nb = max(MULTI_MIN, min(nset, MULTI_MAXSET, int(.8 * avail / per)))
@@ -219,6 +222,8 @@ class COSX(lib.StreamObject):
             libdft.SOCDFTcosx_transpose_in(dtm.ctypes.data_as(ctypes.c_void_p), dms.ctypes.data_as(ctypes.c_void_p),
                                            ctypes.c_int(nao), ctypes.c_int(nset), ctypes.c_int(nset8))
             vkt = numpy.empty((nao, nao, nset8))
+            if hasattr(libdft, 'SOCDFTcosx_set_dense_min'):
+                libdft.SOCDFTcosx_set_dense_min(ctypes.c_double(DENSE_MIN))
             PROFILE['prep'] = PROFILE.get('prep', 0) + logger.perf_counter() - tp_
         tk_ = logger.perf_counter()
         vk = None if multi else numpy.empty_like(dms)
@@ -234,6 +239,9 @@ class COSX(lib.StreamObject):
             *_blas_ptrs(), None, None, dtm.ctypes.data_as(ctypes.c_void_p) if multi else None)
         if libdft.SOCDFTcosx_error():
             raise MemoryError('COSX: a kernel buffer could not be allocated (%d densities, nao %d)' % (nset, nao))
+        if multi and getattr(libdft, 'SOCDFTcosx_kept', None) is not None:
+            libdft.SOCDFTcosx_kept.restype = ctypes.c_double
+            self._kept = max(.05, libdft.SOCDFTcosx_kept())
         tp_ = logger.perf_counter()
         PROFILE['kernel'] = PROFILE.get('kernel', 0) + tp_ - tk_
         if multi:

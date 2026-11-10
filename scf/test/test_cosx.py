@@ -79,6 +79,12 @@ class KnownValues(unittest.TestCase):
             self.assertLess(abs(k.get_k(dms) - vk).max(), 1e-14 * abs(vk).max() + 1e-15)
         finally:
             k._libdft.SOCDFTcosx_set_dense(1)
+        # every block record-wise after the counting pass (kept fraction below the dense threshold)
+        dmin, cosx.DENSE_MIN = cosx.DENSE_MIN, 2.
+        try:
+            self.assertLess(abs(k.get_k(dms) - vk).max(), 1e-14 * abs(vk).max() + 1e-15)
+        finally:
+            cosx.DENSE_MIN = dmin
         k.tol = 0.
         if k._libdft.SOCDFTcosx_mfloat is not None:
             cosx.set_multi_float(True)
