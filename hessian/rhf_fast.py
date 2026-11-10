@@ -60,7 +60,7 @@ def _partial_hess_ejk(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     ej = None
     combine = False
     # the K second derivatives by COSX (with the first-order K of make_h1 from the same pass, cached)
-    cx = _hess_cosx(mf, HESS_COSX_EXPLICIT) if with_k else None
+    cx = _hess_cosx(mf, HESS_COSX_EXPLICIT, HESS_COSX_EXPLICIT_NAO_PER_ATOM) if with_k else None
     ek_cx = None
     if cx is not None:
         t0 = (logger.process_clock(), logger.perf_counter())
@@ -1821,7 +1821,17 @@ CPHF_COSX_GRID = 0      # its grid: a cosx.GRIDX level or a dict of cosx.make_gr
                         # (CPHF_COSX_GRID_FINAL): freq max 0.145 / rms 0.029 cm-1 (C16H34 def2-TZVP), 0.027-0.038
                         # (caffeine cc-pVDZ) against all-GRIDX2, Hessian ~80 s faster at 16 cores (C16H34 TZVP)
 CPHF_COSX_OCC = False   # the CPHF K as K C_occ (cosx.COSX.get_k_occ, one-sided fitted K, no K matrix)
-CPHF_COSX_NAO_PER_ATOM = 12     # auto mode: AOs per atom from which the CPHF K goes to COSX
+CPHF_COSX_NAO_PER_ATOM = 0      # auto mode: AOs per atom from which the CPHF K (and Fock1 K) go to COSX.  0: whenever
+                                # the SCF ran COSX (C16H34 cc-pVDZ / def2-SVP, 7.9 AOs per atom, 16 cores: CPHF
+                                # 36.7 / 29.2 s against exact 67.7 / 50.2 s, Fock1 10.3 / 7.4 against 16.0 / 14.1;
+                                # trpn_1_5 def2-SVP 24 cores: CPHF 1282 against 1968 s, Fock1 87 against 294 s)
+HESS_COSX_EXPLICIT_NAO_PER_ATOM = 0     # auto mode of the explicit K second derivatives: by COSX from this many AOs
+                                # per atom.  0: whenever the SCF ran COSX.  The explicit pass also yields Fock1 almost
+                                # for free; an exact explicit K leaves Fock1 to a separate COSX pass, which costs more
+                                # than the explicit COSX saves (C16H34 cc-pVDZ 16 cores, one node: all COSX 74.3 s =
+                                # explicit 28.0 + Fock1 9.4 + CPHF 36.8; exact explicit 86-99 s = 28-32 + 23-27 + 36-40;
+                                # all exact 118.0 s).  Small bases can still have the exact explicit K faster
+                                # on its own (trpn_1_5 def2-SVP 188 against 369 s)
 CPHF_COSX_FLOAT = True  # the many-density COSX contraction in single precision (False: double); K within ~1e-6
                         # relative (the COSX grid error ~1e-3), Hessians within 2e-9, harmonic frequencies within
                         # 1e-4 cm-1 and the same CPHF iterations (caffeine / C16H34 cc-pVDZ, C16H34 def2-TZVP);
@@ -1829,19 +1839,24 @@ CPHF_COSX_FLOAT = True  # the many-density COSX contraction in single precision 
 
 
 HESS_COSX_FOCK1 = None  # the first-order K (make_h1) by COSX: None -> with the CPHF's auto mode (CPHF_COSX)
-HESS_COSX_EXPLICIT = None   # the K second derivatives of the explicit part by COSX: None -> likewise
+HESS_COSX_EXPLICIT = None   # the K second derivatives of the explicit part by COSX: None -> auto (SCF ran COSX,
+                            # HESS_COSX_EXPLICIT_NAO_PER_ATOM)
 HESS_COSX_GRID = 2      # the grid of those two (Fock1, explicit K), as for CPHF_COSX_GRID; None -> CPHF_COSX_GRID
 CPHF_COSX_GRID_FINAL = 2        # the grid of the CPHF's last response (after the Krylov solve, from which the
                                 # final U_vir and the occupied e1 follow): None -> CPHF_COSX_GRID
 _CPHF_STAGE = {'final': False}
 
 
-def _hess_cosx(mf, switch):
-    '''the COSX object for a K term of the Hessian (switch None: as the CPHF), or None'''
+def _hess_cosx(mf, switch, nao_per_atom=None):
+    '''the COSX object for a K term of the Hessian (switch None: auto as the CPHF, with nao_per_atom in place
+    of CPHF_COSX_NAO_PER_ATOM when given), or None'''
     if switch is False:
         return None
     grid = CPHF_COSX_GRID if HESS_COSX_GRID is None else HESS_COSX_GRID
-    with lib.temporary_env(sys.modules[__name__], CPHF_COSX_GRID=grid):
+    env = {'CPHF_COSX_GRID': grid}
+    if nao_per_atom is not None:
+        env['CPHF_COSX_NAO_PER_ATOM'] = nao_per_atom
+    with lib.temporary_env(sys.modules[__name__], **env):
         if switch is None:
             return _cphf_cosx(mf)
         with lib.temporary_env(sys.modules[__name__], CPHF_COSX=True):
@@ -1853,8 +1868,7 @@ def _cphf_cosx(mf):
     use = CPHF_COSX
     st = getattr(mf, '_cosx', None)
     if use is None:
-        # auto: when the SCF ran COSX and the basis is large enough for COSX to beat jk_multi on many
-        # densities (cc-pVDZ c16 / caffeine: exact faster; def2-TZVP c16: COSX 1.2 against 2.1 s per density)
+        # auto: when the SCF ran COSX (and the basis has CPHF_COSX_NAO_PER_ATOM AOs per atom, 0 by default)
         use = bool(st) and mf.mol.nao_nr() >= CPHF_COSX_NAO_PER_ATOM * mf.mol.natm
     if not use:
         return None
