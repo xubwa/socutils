@@ -31,7 +31,7 @@ Range-separated functionals, NLC and grid response keep pyscf's code.
 
 import ctypes
 import numpy
-from pyscf import lib
+from pyscf import gto, lib
 from pyscf.lib import logger
 from pyscf.scf import hf
 from pyscf.grad import rhf as rhf_grad
@@ -261,10 +261,82 @@ def _fast_terms(grad, mol, dm):
     return de
 
 
+HCORE_FAST = True       # grad_elec: the hcore gradient of all atoms at once (kinetic + point-charge RI-J engine)
+
+
+def _hcore_grad(mf_grad, mol, dm):
+    '''sum_ij D_ij d h_ij / dR_A (natm, 3) for a symmetric dm: the kinetic part from one int1e_ipkin, the
+    nuclear attraction -sum_C Z_C (ij|C) of unit point charges (gto.fakemol_for_charges) by the direct
+    RI-J engine's three-centre gradient (bra and charge centres, socutils.scf.rij_direct) -- instead of
+    pyscf's hcore_generator, which evaluates the (3, nao, nao) rinv derivatives once per atom (30 s of
+    a 43 s gradient on a 176-atom peptide).  None (pyscf's path) with ECPs, finite nuclei, X2C.'''
+    mf = mf_grad.base
+    if (not HCORE_FAST or mol.has_ecp() or getattr(mol, '_pseudo', None) or mol.cart
+            or getattr(mf, 'with_x2c', None) or any(mol.nucmod.values() if isinstance(mol.nucmod, dict)
+                                                    else [mol.nucmod])):
+        return None
+    try:
+        from socutils.scf import rij_direct
+        fake = gto.fakemol_for_charges(mol.atom_coords())
+        if not rij_direct.available(mol, fake):
+            return None
+        eng = rij_direct.RIJDirect(mol, fake)
+        dm = numpy.asarray(dm, dtype=numpy.double)
+        dm = (dm + dm.T) * .5
+        gb, ga = eng.grad_3c(dm, -mol.atom_charges().astype(numpy.double))
+    except Exception:
+        return None
+    ipk = mol.intor('int1e_ipkin', comp=3)
+    de = gb + ga
+    for ia, (p0, p1) in enumerate(mol.aoslice_by_atom()[:, 2:]):
+        de[ia] -= 2 * numpy.einsum('xij,ij->x', ipk[:, p0:p1], dm[p0:p1])
+    return de
+
+
 class _FastGradMixin:
     '''get_veff returns only what pyscf's grad_elec still needs as a matrix (the
     density-fitted J with its auxiliary-basis response, else zero); the exact
-    2e and XC parts enter through extra_force as energy derivatives.'''
+    2e and XC parts enter through extra_force as energy derivatives; the hcore
+    part of all atoms at once (_hcore_grad).'''
+
+    def grad_elec(self, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
+        '''pyscf.grad.rhf.grad_elec with the hcore term from _hcore_grad (pyscf's per-atom loop over
+        hcore_generator otherwise)'''
+        mf = self.base
+        mol = self.mol
+        if mo_energy is None:
+            mo_energy = mf.mo_energy
+        if mo_occ is None:
+            mo_occ = mf.mo_occ
+        if mo_coeff is None:
+            mo_coeff = mf.mo_coeff
+        if atmlst is not None and list(atmlst) != list(range(mol.natm)):
+            return super().grad_elec(mo_energy, mo_coeff, mo_occ, atmlst)
+        log = logger.Logger(self.stdout, self.verbose)
+        dm0 = mf.make_rdm1(mo_coeff, mo_occ)
+        dm0 = self._tag_rdm1(dm0, mo_coeff, mo_occ)
+        t0 = (logger.process_clock(), logger.perf_counter())
+        dh = _hcore_grad(self, mol, dm0)
+        if dh is None:
+            return super().grad_elec(mo_energy, mo_coeff, mo_occ, atmlst)
+        t0 = log.timer('hcore gradient (kinetic + point-charge engine)', *t0)
+        s1 = self.get_ovlp(mol)
+        vhf = self.get_veff(mol, dm0)
+        log.timer('gradients of 2e part', *t0)
+        dme0 = self.make_rdm1e(mo_energy, mo_coeff, mo_occ)
+        aoslices = mol.aoslice_by_atom()
+        atmlst = range(mol.natm)
+        de = numpy.zeros((mol.natm, 3))
+        for k, ia in enumerate(atmlst):
+            p0, p1 = aoslices[ia, 2:]
+            de[k] += dh[ia]
+            de[k] += numpy.einsum('xij,ij->x', vhf[:, p0:p1], dm0[p0:p1]) * 2
+            de[k] -= numpy.einsum('xij,ij->x', s1[:, p0:p1], dme0[p0:p1]) * 2
+            de[k] += self.extra_force(ia, locals())
+        if log.verbose >= logger.DEBUG:
+            log.debug('gradients of electronic part')
+            rhf_grad._write(log, mol, de, atmlst)
+        return de
 
     def get_veff(self, mol=None, dm=None):
         mf = self.base
