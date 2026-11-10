@@ -332,21 +332,35 @@ def use_fast_grid_sort():
     return orig
 
 
-FAST_PARTITION = True   # get_partition_fast: the Becke weights by lib/dft/becke.c (else pyscf's VXCgen_grid)
+FAST_PARTITION = True   # get_partition_fast: the Becke / SSF weights by lib/dft/becke.c (else pyscf's)
+PARTITION = 'auto'      # 'becke': the scheme the grid asks for (Becke by default); 'ssf': Stratmann-Scuseria-Frisch
+                        # always; 'auto': SSF from SSF_MIN_ATOMS atoms on (Becke cells cost natm^2 / 2 per point,
+                        # SSF's compact support ~ natm), Becke below
+SSF_MIN_ATOMS = 100
 
 
 def get_partition_fast(mol, atom_grids_tab, radii_adjust=None, atomic_radii=radi.BRAGG_RADII,
                        becke_scheme=gen_grid.original_becke, concat=True):
-    '''pyscf.dft.gen_grid.get_partition for Becke's scheme (with the Treutler / Becke size
-    adjustment or none): the owner atom's normalised weight P_A / sum_i P_i per point from
-    lib/dft/becke.c (SOCDFTbecke_owner: the same cell functions, OpenMP over point blocks, the
-    pair loop vectorised; no natm x ngrid array); other schemes go to pyscf.'''
+    '''pyscf.dft.gen_grid.get_partition for Becke's and the Stratmann-Scuseria-Frisch scheme (with
+    the Treutler / Becke size adjustment or none): the owner atom's normalised weight P_A / sum_i P_i
+    per point from lib/dft/becke.c (SOCDFTbecke_owner: the same cell functions, OpenMP over point
+    blocks, the pair loop vectorised; SOCDFTssf_owner: SSF's compact support used exactly, ~natm per
+    point); no natm x ngrid array.  PARTITION / SSF_MIN_ATOMS choose SSF for large molecules.
+    Other schemes go to pyscf.'''
     import ctypes
     from socutils.hessian.rhf_fast import _load_socdft
     libdft = _load_socdft()
     adjust_ok = radii_adjust in (None, radi.treutler_atomic_radii_adjust, radi.becke_atomic_radii_adjust)
-    if (not FAST_PARTITION or libdft is None or not hasattr(libdft, 'SOCDFTbecke_owner')
-            or becke_scheme is not gen_grid.original_becke or not adjust_ok):
+    if becke_scheme is gen_grid.original_becke and (
+            PARTITION == 'ssf' or (PARTITION == 'auto' and mol.natm >= SSF_MIN_ATOMS)):
+        becke_scheme = gen_grid.stratmann
+    if becke_scheme is gen_grid.original_becke:
+        fn = getattr(libdft, 'SOCDFTbecke_owner', None) if libdft is not None else None
+    elif becke_scheme is gen_grid.stratmann:
+        fn = getattr(libdft, 'SOCDFTssf_owner', None) if libdft is not None else None
+    else:
+        fn = None
+    if not FAST_PARTITION or fn is None or not adjust_ok:
         return _pyscf_get_partition(mol, atom_grids_tab, radii_adjust, atomic_radii, becke_scheme, concat)
     natm = mol.natm
     atm = numpy.asarray(mol.atom_coords(), order='C')
@@ -362,7 +376,7 @@ def get_partition_fast(mol, atom_grids_tab, radii_adjust=None, atomic_radii=radi
         c = c + atm[ia]
         cf = numpy.asarray(c, order='F')
         w = numpy.empty(c.shape[0])
-        libdft.SOCDFTbecke_owner(w.ctypes.data_as(ctypes.c_void_p), cf.ctypes.data_as(ctypes.c_void_p),
+        fn(w.ctypes.data_as(ctypes.c_void_p), cf.ctypes.data_as(ctypes.c_void_p),
                                  ctypes.c_int(c.shape[0]), ctypes.c_int(ia),
                                  atm.ctypes.data_as(ctypes.c_void_p), pr, ctypes.c_int(natm))
         coords_all.append(c)

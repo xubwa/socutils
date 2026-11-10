@@ -85,3 +85,76 @@ void SOCDFTbecke_owner(double *w, const double *coords, int n, int owner,
 }
         free(inv);
 }
+
+/*
+ * Stratmann-Scuseria-Frisch partition (CPL 257, 213 (1996); pyscf.dft.gen_grid.stratmann):
+ * s(nu) = (1 - g(nu / a)) / 2 with g(z) = (35 z - 35 z^3 + 21 z^5 - 5 z^7) / 16 for |nu| < a,
+ * exactly 1 for nu <= -a and 0 for nu >= a (a = 0.64), nu = mu + a_ij (1 - mu^2) with the
+ * same size adjustment as pyscf applies before the scheme.  The compact support is used
+ * exactly: an atom i with nu_ik >= a against the atom k nearest to the point has P_i = 0, a
+ * factor with nu_ij <= -a is 1 and one with nu_ij >= a ends the product -- so per point the
+ * cost is natm distances plus a few candidate atoms times natm, not natm^2 / 2.  Same weights
+ * as pyscf's stratmann scheme (no further approximation).
+ */
+#define SSF_A .64
+
+static inline double ssf_s(double nu)
+{
+        if (nu <= -SSF_A) return 1;
+        if (nu >= SSF_A) return 0;
+        const double z = nu / SSF_A, z2 = z * z;
+        const double g = (1. / 16.) * (z * (35 + z2 * (-35 + z2 * (21 - 5 * z2))));
+        return .5 * (1 - g);
+}
+
+void SOCDFTssf_owner(double *w, const double *coords, int n, int owner,
+                     const double *atm, const double *radii, int natm)
+{
+        double *inv = malloc(sizeof(double) * natm * natm);
+        int i, j;
+        for (i = 0; i < natm; i++) {
+                inv[i * natm + i] = 0;
+                for (j = 0; j < i; j++) {
+                        const double dx = atm[i * 3] - atm[j * 3], dy = atm[i * 3 + 1] - atm[j * 3 + 1],
+                                     dz = atm[i * 3 + 2] - atm[j * 3 + 2];
+                        inv[i * natm + j] = inv[j * natm + i] = 1 / sqrt(dx * dx + dy * dy + dz * dz);
+                }
+        }
+        const size_t N = n;
+#pragma omp parallel
+{
+        double *r = malloc(sizeof(double) * natm);
+        int g;
+#pragma omp for schedule(dynamic, 64)
+        for (g = 0; g < n; g++) {
+                const double x = coords[g], y = coords[N + g], z = coords[2 * N + g];
+                int ii, jj, k = 0;
+                for (ii = 0; ii < natm; ii++) {
+                        const double dx = x - atm[ii * 3], dy = y - atm[ii * 3 + 1], dz = z - atm[ii * 3 + 2];
+                        r[ii] = sqrt(dx * dx + dy * dy + dz * dz);
+                        if (r[ii] < r[k]) k = ii;
+                }
+                double sum = 0, pown = 0;
+                for (ii = 0; ii < natm; ii++) {
+                        if (ii != k) {
+                                const double mu = (r[ii] - r[k]) * inv[ii * natm + k];
+                                const double nu = radii != NULL ? mu + radii[ii * natm + k] * (1 - mu * mu) : mu;
+                                if (nu >= SSF_A) continue;      /* P_i = 0 exactly */
+                        }
+                        double P = 1;
+                        for (jj = 0; jj < natm && P != 0; jj++) {
+                                if (jj == ii) continue;
+                                const double mu = (r[ii] - r[jj]) * inv[ii * natm + jj];
+                                const double nu = radii != NULL ? mu + radii[ii * natm + jj] * (1 - mu * mu) : mu;
+                                if (nu <= -SSF_A) continue;
+                                P *= ssf_s(nu);
+                        }
+                        sum += P;
+                        if (ii == owner) pown = P;
+                }
+                w[g] = sum > 0 ? pown / sum : 0;
+        }
+        free(r);
+}
+        free(inv);
+}
