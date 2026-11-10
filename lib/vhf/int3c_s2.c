@@ -92,3 +92,24 @@ void SOCVHFint3c2e_s2_pairs(double *out, int *pairs, long *pair_row, int npairs,
         free(cache);
 }
 }
+
+/* B[p, cols[r]] = Y[r, p] (B (naux, ncolB) C-ordered, Y (nrow, naux) C-ordered,
+ * i.e. the F-ordered (naux, nrow) triangular solve), tiled transpose-scatter */
+void SOCVHFscatter_cols(double *B, double *Y, long *cols, int naux, long nrow, long ncolB)
+{
+        const int T = 64;
+        const long nrt = (nrow + T - 1) / T, npt = ((long)naux + T - 1) / T;
+        long t;
+#pragma omp parallel for schedule(dynamic, 4)
+        for (t = 0; t < nrt * npt; t++) {
+                const long r0 = (t / npt) * T, p0 = (t % npt) * T;
+                const long r1 = r0 + T < nrow ? r0 + T : nrow;
+                const long p1 = p0 + T < naux ? p0 + T : naux;
+                long r, p;
+                for (p = p0; p < p1; p++) {
+                        double *b = B + p * ncolB;
+                        for (r = r0; r < r1; r++)
+                                b[cols[r]] = Y[r * naux + p];
+                }
+        }
+}
