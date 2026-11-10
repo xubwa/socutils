@@ -106,6 +106,9 @@ STORE_MIN_MB = 200      # no store below this budget
 
 RIJ_RESIDENT = True     # RIJ: L^{-1} (P|ij) built once and kept in memory when it fits, J = B^T (B d)
 RIJ_RIK_BUILD = True    # RIJ factor by socutils.scf.rik (screened builder; HDF5 + resident rows + fast reader when large)
+RIJ_DIRECT = 'auto'     # RIJ J by socutils.scf.rij_direct (no three-centre tensor): True, False, or 'auto' =
+                        # when the resident L^{-1} (P|ij) does not fit in memory (instead of the HDF5 factor)
+RIJ_DIRECT_REBUILD = 10  # incremental direct RI-J builds between two full builds
 INCORE_RESERVE = 500    # MB of mf.max_memory kept for the other arrays of the SCF
 
 
@@ -131,6 +134,42 @@ SCF_TOL_LOOSE = 1e-9    # two-pass: the cutoff while the density still moves (1e
                         # HF / PBE0 SCF 5 - 11 % faster, same cycles, |dE| < 1e-9; 1e-8 costs cycles)
 LOOSE_PER_CONV = 10     # ... and at most LOOSE_PER_CONV * mf.conv_tol (tight SCFs keep 1e-10)
 LOOSE_UNTIL = 1e-4      # two-pass: max |D - D_prev| below which the builds are tight
+
+
+def _rij_direct_wanted(mf, mol, auxmol):
+    '''whether the RIJ J comes from socutils.scf.rij_direct (RIJ_DIRECT)'''
+    if not RIJ_DIRECT:
+        return False
+    from socutils.scf import rij_direct
+    if not rij_direct.available(mol, auxmol):
+        return False
+    if RIJ_DIRECT == 'auto':
+        # rik._prebuild's criterion of the in-memory factor (B and its integrals)
+        nao = mol.nao
+        need = 2 * auxmol.nao * nao * (nao + 1) // 2 * 8 / 1e6
+        return need >= .8 * (mf.max_memory - lib.current_memory()[0])
+    return True
+
+
+def _rij_direct_j(mf, cache, dm):
+    '''J of the direct RI-J engine; a single density incrementally, J[D] = J[D_prev] + J[D - D_prev]
+    (linear in D; the screening of the change makes the late cycles cheap), a full build every
+    RIJ_DIRECT_REBUILD calls'''
+    eng = cache['direct']
+    dm = numpy.asarray(dm, dtype=numpy.double)
+    t0 = (logger.process_clock(), logger.perf_counter())
+    last = cache.get('last')
+    if dm.ndim != 2:
+        vj = eng.get_j(dm)
+    elif last is not None and last['n'] < RIJ_DIRECT_REBUILD and last['dm'].shape == dm.shape:
+        vj = last['vj'] + eng.get_j(dm - last['dm'])
+        last.update(dm=dm.copy(), vj=vj.copy(), n=last['n'] + 1)
+        logger.debug1(mf, 'RIJ direct: incremental build %d', last['n'])
+    else:
+        vj = eng.get_j(dm)
+        cache['last'] = {'dm': dm.copy(), 'vj': vj.copy(), 'n': 0}
+    logger.timer_debug1(mf, 'vj (rij_direct)', *t0)
+    return vj
 
 
 def apply(mf, incremental=True, two_pass=True):
@@ -291,8 +330,12 @@ def apply(mf, incremental=True, two_pass=True):
                 nao = mol.nao
                 npair = nao * (nao + 1) // 2
                 t0 = (logger.process_clock(), logger.perf_counter())
-                cache.update(key=key, B=None, h5=False)
-                if RIJ_RIK_BUILD and type(mf.with_df) is df.DF and mol is mf.with_df.mol:
+                cache.update(key=key, B=None, h5=False, direct=None, last=None)
+                if _rij_direct_wanted(mf, mol, auxmol):
+                    from socutils.scf import rij_direct
+                    cache['direct'] = rij_direct.RIJDirect(mol, auxmol, verbose=mf.verbose)
+                    logger.timer(mf, 'RIJ: direct RI-J setup (rij_direct)', *t0)
+                elif RIJ_RIK_BUILD and type(mf.with_df) is df.DF and mol is mf.with_df.mol:
                     # rik's builders: screened pairs, in memory when it fits, else an HDF5
                     # file with its first rows resident, read by os.preadv (rik.iter_factor)
                     from socutils.scf import rik
@@ -312,6 +355,8 @@ def apply(mf, incremental=True, two_pass=True):
                     cache['B'] = df.incore.cholesky_eri(mol, auxmol=auxmol, int3c='int3c2e', aosym='s2ij',
                                                         max_memory=mf.max_memory)
                     logger.timer(mf, 'RIJ: resident L^-1 (P|ij)', *t0)
+            if cache.get('direct') is not None:
+                return _rij_direct_j(mf, cache, dm)
             if cache.get('h5'):
                 from socutils.scf import rik
                 return rik.get_jk(mf.with_df, dm, hermi, True, False, max_memory=mf.max_memory)[0]
