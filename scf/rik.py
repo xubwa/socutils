@@ -149,7 +149,7 @@ class _Int3c:
             j2c = auxmol.intor('int2c2e', hermi=1)
         q = ghf_hess._q_cond(mol, 'int2e_ip1')[1]                # sqrt((ij|ij)) per shell pair
         qP = numpy.sqrt(abs(numpy.diag(j2c)).max())
-        self.ao_loc = mol.ao_loc_nr()
+        self.ao_loc = mol.ao_loc_nr().astype(numpy.int64)
         ii, jj = numpy.tril_indices(nbas)
         sig = q[ii, jj] * qP >= pair_tol
         self.ii, self.jj = ii[sig], jj[sig]
@@ -279,7 +279,7 @@ def cholesky_eri_h5(mol, auxmol, filename, dataname='j3c', pair_tol=PAIR_TOL, ma
     # per column: X (and its solve in place), the dense block, the previous block being written
     if max_cols is None:
         max_cols = max(1, int(mem * .4e6 / 8 / naux / 3))
-    ao_loc = mol.ao_loc_nr()
+    ao_loc = mol.ao_loc_nr().astype(numpy.int64)
     nao = mol.nao
     npair = nao * (nao + 1) // 2
     # one contiguous (naux, npair) dataset, allocated at creation: a block of auxiliary rows is
@@ -300,21 +300,30 @@ def cholesky_eri_h5(mol, auxmol, filename, dataname='j3c', pair_tol=PAIR_TOL, ma
     fd = os.open(filename, os.O_WRONLY)
     tw = [0.] * 4      # wall: integrals, solve, scatter, waiting for the writer
 
+    err = []
+
     def write(blk, c0):
-        ncol = blk.shape[1]
-        rows = memoryview(blk.reshape(-1)).cast('B')
-        rb = ncol * 8
-        for p in range(naux):
-            v = rows[p * rb:(p + 1) * rb]
-            pos = off + (p * npair + c0) * 8
-            n = 0
-            while n < rb:
-                n += os.pwritev(fd, [v[n:]], pos + n)
+        try:
+            # Python ints throughout: c0 from the int32 ao_loc would overflow p * npair + c0
+            c0 = int(c0)
+            rb = int(blk.shape[1]) * 8
+            rows = memoryview(blk.reshape(-1)).cast('B')
+            for p in range(naux):
+                v = rows[p * rb:(p + 1) * rb]
+                pos = off + (p * npair + c0) * 8
+                n = 0
+                while n < rb:
+                    r = os.pwritev(fd, [v[n:]], pos + n)
+                    if r <= 0:
+                        raise IOError('short write to %s' % filename)
+                    n += r
+        except BaseException as e:      # re-raised by the main thread
+            err.append(e)
     th = None
     try:
         for k, (s0, s1) in enumerate(eng.ish_ranges(max_cols)):
-            c0 = ao_loc[s0] * (ao_loc[s0] + 1) // 2
-            c1 = ao_loc[s1] * (ao_loc[s1] + 1) // 2
+            c0 = int(ao_loc[s0]) * (int(ao_loc[s0]) + 1) // 2
+            c1 = int(ao_loc[s1]) * (int(ao_loc[s1]) + 1) // 2
             t1 = logger.perf_counter()
             X, cols = eng.rows(s0, s1)
             t2 = logger.perf_counter()
@@ -329,6 +338,8 @@ def cholesky_eri_h5(mol, auxmol, filename, dataname='j3c', pair_tol=PAIR_TOL, ma
             t4 = logger.perf_counter()
             if th is not None:
                 th.join()
+                if err:
+                    raise err[0]
             t5 = logger.perf_counter()
             th = threading.Thread(target=write, args=(blk, c0))
             th.start()
@@ -342,6 +353,8 @@ def cholesky_eri_h5(mol, auxmol, filename, dataname='j3c', pair_tol=PAIR_TOL, ma
             t5 = logger.perf_counter()
             th.join()
             tw[3] += logger.perf_counter() - t5
+            if err:
+                raise err[0]
     finally:
         if th is not None:
             th.join()
