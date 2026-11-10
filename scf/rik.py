@@ -250,9 +250,9 @@ def cholesky_eri(mol, auxmol, pair_tol=PAIR_TOL, verbose=None):
 
 def cholesky_eri_h5(mol, auxmol, filename, dataname='j3c', pair_tol=PAIR_TOL, max_memory=4000,
                     verbose=None, max_cols=None):
-    '''cholesky_eri written to the HDF5 file filename in pyscf's block layout (group dataname with
-    datasets '0', '1', ... of contiguous pack_tril column ranges, all auxiliary rows; read by
-    df.DF.loop), one i-shell range in memory at a time.  False if not applicable.'''
+    '''cholesky_eri written to the HDF5 file filename as one contiguous (naux, npair) dataset
+    (pyscf's layout, read by df.DF.loop; rik.iter_factor reads it directly), one i-shell range of
+    pack_tril columns in memory at a time.  False if not applicable.'''
     import h5py
     if _load_socvhf() is None or mol.cart or auxmol.cart:
         return False
@@ -269,10 +269,14 @@ def cholesky_eri_h5(mol, auxmol, filename, dataname='j3c', pair_tol=PAIR_TOL, ma
     if max_cols is None:
         max_cols = max(1, int(mem * .4e6 / 8 / naux / 2))
     ao_loc = mol.ao_loc_nr()
+    nao = mol.nao
+    npair = nao * (nao + 1) // 2
     with h5py.File(filename, 'a') as f:
         if dataname in f:
             del f[dataname]
-        g = f.create_group(dataname)
+        # one contiguous (naux, npair) dataset: a block of auxiliary rows is one contiguous read
+        # (iter_factor reads it with os.preadv, outside the GIL, prefetched)
+        dset = f.create_dataset(dataname, (naux, npair), 'f8')
         for k, (s0, s1) in enumerate(eng.ish_ranges(max_cols)):
             c0 = ao_loc[s0] * (ao_loc[s0] + 1) // 2
             c1 = ao_loc[s1] * (ao_loc[s1] + 1) // 2
@@ -282,10 +286,83 @@ def cholesky_eri_h5(mol, auxmol, filename, dataname='j3c', pair_tol=PAIR_TOL, ma
             blk = numpy.zeros((naux, c1 - c0))
             _scatter_cols(blk, Y, cols - c0)
             Y = None
-            g[str(k)] = blk
+            dset[:, c0:c1] = blk
             blk = None
             t0 = log.timer_debug1('rik.cholesky_eri_h5: block %d (shells %d:%d)' % (k, s0, s1), *t0)
     return True
+
+
+def _h5_contiguous(with_df):
+    '''(path, byte offset, naux, npair) of with_df's factor when it is a contiguous, unfiltered
+    float64 HDF5 dataset (raw-readable), else None'''
+    import h5py
+    cderi = getattr(with_df, '_cderi', None)
+    if not isinstance(cderi, str):
+        return None
+    try:
+        with h5py.File(cderi, 'r') as f:
+            d = f[getattr(with_df, '_dataname', 'j3c')]
+            if (not isinstance(d, h5py.Dataset) or d.chunks is not None or d.compression is not None
+                    or d.dtype != numpy.float64 or d.ndim != 2):
+                return None
+            off = d.id.get_offset()
+            if off is None:
+                return None
+            return cderi, off, d.shape[0], d.shape[1]
+    except (OSError, KeyError):
+        return None
+
+
+def iter_factor(with_df, blksize):
+    '''blocks (nb, npair) of the factor, as with_df.loop(blksize); a contiguous HDF5 dataset is read
+    with os.preadv in a background thread (the GIL released during the read, so the next block is
+    read while this one is used; h5py holds it), double-buffered'''
+    src = _h5_contiguous(with_df) if RAW_READ else None
+    if src is None:
+        for blk in with_df.loop(blksize):
+            yield blk
+        return
+    import os
+    import threading
+    path, off, naux, npair = src
+    ranges = [(p0, min(naux, p0 + blksize)) for p0 in range(0, naux, blksize)]
+    bufs = [numpy.empty((blksize, npair)), numpy.empty((blksize, npair))]
+    fd = os.open(path, os.O_RDONLY)
+
+    def read(k):
+        p0, p1 = ranges[k]
+        b = bufs[k % 2][:p1 - p0]
+        view = memoryview(b.reshape(-1)).cast('B')
+        pos = off + p0 * npair * 8
+        n = 0
+        while n < view.nbytes:
+            r = os.preadv(fd, [view[n:]], pos + n)
+            if r <= 0:
+                raise IOError('short read of %s' % path)
+            n += r
+        return b
+    th = None
+    try:
+        res = {}
+
+        def job(k):
+            res[k] = read(k)
+        th = threading.Thread(target=job, args=(0,))
+        th.start()
+        for k in range(len(ranges)):
+            th.join()
+            blk = res.pop(k)
+            if k + 1 < len(ranges):
+                th = threading.Thread(target=job, args=(k + 1,))
+                th.start()
+            yield blk
+    finally:
+        if th is not None:
+            th.join()
+        os.close(fd)
+
+
+RAW_READ = True       # iter_factor: contiguous HDF5 factors by os.preadv (else with_df.loop)
 
 
 def get_jk(with_df, dm, hermi=1, with_j=True, with_k=True, max_memory=None, verbose=None):
@@ -344,7 +421,7 @@ def get_jk(with_df, dm, hermi=1, with_j=True, with_k=True, max_memory=None, verb
         if with_k else None
     tw = [0.] * 4          # wall: waiting for the factor, J, half transformation, rank-k update
     tl = logger.perf_counter()
-    for eri1 in with_df.loop(blksize):
+    for eri1 in iter_factor(with_df, blksize):
         t1 = logger.perf_counter()
         tw[0] += t1 - tl
         nb = eri1.shape[0]

@@ -108,7 +108,7 @@ def fitted_coefficients(mol, auxmol, dm, c, with_df=None, max_memory=4000, verbo
         p0 = 0
         cols = _check_cols(mol)
         got = numpy.empty((naux, cols.size))
-        for eri1 in with_df.loop(blk):
+        for eri1 in rik.iter_factor(with_df, blk):
             nb = eri1.shape[0]
             got[p0:p0 + nb] = eri1[:, cols]
             rho[p0:p0 + nb] = lib.dot(eri1, dmtril[:, None])[:, 0]
