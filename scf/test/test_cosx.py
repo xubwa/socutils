@@ -71,6 +71,15 @@ class KnownValues(unittest.TestCase):
         vk = k.get_k(dms)
         ref = numpy.array([k.get_k(d) for d in dms])
         self.assertLess(abs(vk - ref).max(), 1e-12 * abs(ref).max())
+        # the record-wise contraction (fallback without dsymm) and the dense one, at the default tol
+        k.tol = cosx.TOL
+        vk = k.get_k(dms)
+        k._libdft.SOCDFTcosx_set_dense(0)
+        try:
+            self.assertLess(abs(k.get_k(dms) - vk).max(), 1e-14 * abs(vk).max() + 1e-15)
+        finally:
+            k._libdft.SOCDFTcosx_set_dense(1)
+        k.tol = 0.
         if k._libdft.SOCDFTcosx_mfloat is not None:
             cosx.set_multi_float(True)
             try:
