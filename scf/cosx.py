@@ -361,6 +361,156 @@ class COSX(lib.StreamObject):
                 out[ia, x] = .5 * (dxc + dxtc)
         return out
 
+    def _sg2(self):
+        """sum_g w d_x d_y phi_mu phi_nu (6, nao, nao: xx xy xz yy yz zz) and sum_g w d_x phi_mu d_y phi_nu
+        (3, 3, nao, nao) on the grid, cached per geometry"""
+        if getattr(self, '_sg2_key', None) != self._key:
+            from socutils.dft.vxc_fast import eval_ao
+            from pyscf.dft import numint
+            mol = self.mol
+            ni = numint.NumInt()
+            nao = mol.nao
+            gaa = numpy.zeros((6, nao, nao))
+            gab = numpy.zeros((3, 3, nao, nao))
+            coords, w = self.grids.coords, self.grids.weights
+            blk = 56 * 16
+            for g0 in range(0, w.size, blk):
+                g1 = min(w.size, g0 + blk)
+                ao = eval_ao(ni, mol, coords[g0:g1], 2, non0tab=self.grids.non0tab[g0 // 56:])
+                wao = ao[0] * w[g0:g1, None]
+                for c in range(6):
+                    lib.dot(ao[4 + c].T, wao, beta=1, c=gaa[c])
+                for x in range(3):
+                    wx = ao[1 + x] * w[g0:g1, None]
+                    for y in range(3):
+                        lib.dot(wx.T, ao[1 + y], beta=1, c=gab[x, y])
+            self._sg2_v = (gaa, gab)
+            self._sg2_key = self._key
+        return self._sg2_v
+
+    @staticmethod
+    def _d2_contract(mol, aa, ab, xs):
+        """sum_mu nu d^2 M_mu nu / dR_a dR_b xs_mu nu for a symmetric xs and a matrix M of AO pairs whose
+        second derivatives are <d d mu|nu> (aa, (3, 3) or (6) packed) and <d mu|d nu> (ab (3, 3)) as pyscf's
+        overlap: 2 [delta_ab sum_{mu in a} aa xs + sum_{mu in a, nu in b} ab xs], (natm, natm, 3, 3)"""
+        natm = mol.natm
+        out = numpy.zeros((natm, natm, 3, 3))
+        aoslices = mol.aoslice_by_atom()
+        if aa.ndim == 3:
+            idx = {(0, 0): 0, (0, 1): 1, (0, 2): 2, (1, 1): 3, (1, 2): 4, (2, 2): 5}
+            full = numpy.empty((3, 3) + aa.shape[1:])
+            for (x, y), c in idx.items():
+                full[x, y] = full[y, x] = aa[c]
+            aa = full
+        for ia in range(natm):
+            p0, p1 = aoslices[ia, 2:]
+            out[ia, ia] += 2 * numpy.einsum('xypq,pq->xy', aa[:, :, p0:p1], xs[p0:p1])
+            for ja in range(natm):
+                q0, q1 = aoslices[ja, 2:]
+                out[ia, ja] += 2 * numpy.einsum('xypq,pq->xy', ab[:, :, p0:p1, q0:q1], xs[p0:p1, q0:q1])
+        return out
+
+    def _hess_plain(self, mocc, yocc, with_fock1=False, tol=None):
+        """T1 = d^2 / dR dR' sum_g w H^T A F at fixed M = 2 Y C^T, D = 2 C C^T ((3 natm, 3 natm)), and with
+        with_fock1 the plain V, VT of _fock1_plain from the same pass"""
+        self.build()
+        libdft = self._libdft
+        mol = self.mol
+        from socutils.dft.vxc_fast import _blas_ptrs
+        atm, bas, env, ao_loc = self._env
+        if not libdft.SOCDFTcosx_build_hess(ctypes.c_void_p(self._opt), atm.ctypes.data_as(ctypes.c_void_p),
+                                           bas.ctypes.data_as(ctypes.c_void_p), env.ctypes.data_as(ctypes.c_void_p)):
+            raise MemoryError('COSX Hessian tables')
+        nao, nocc = mocc.shape
+        n8 = (nocc + 7) // 8 * 8
+        co = numpy.zeros((nao, n8))
+        co[:, :nocc] = mocc
+        yo = numpy.zeros((nao, n8))
+        yo[:, :nocc] = yocc
+        hs = numpy.empty((3 * mol.natm, 3 * mol.natm))
+        v = vt = None
+        if with_fock1:
+            v = numpy.empty((mol.natm, 3, nao, n8))
+            vt = numpy.empty((mol.natm, 3, nao, n8))
+        ptr = lambda x: lib.c_null_ptr() if x is None else x.ctypes.data_as(ctypes.c_void_p)  # noqa: E731
+        err = libdft.SOCDFTcosx_hess(
+            hs.ctypes.data_as(ctypes.c_void_p), ptr(v), ptr(vt), co.ctypes.data_as(ctypes.c_void_p),
+            yo.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(n8), ctypes.c_void_p(self._opt),
+            self._coords.ctypes.data_as(ctypes.c_void_p), self._weights.ctypes.data_as(ctypes.c_void_p),
+            self._non0.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(self._weights.size), ctypes.c_int(self.blk),
+            ctypes.c_double(self.ao_cutoff), ctypes.c_double(self.tol if tol is None else tol),
+            ctypes.c_double(self.tcut), ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_int(mol.natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas),
+            env.ctypes.data_as(ctypes.c_void_p), *_blas_ptrs())
+        if err:
+            raise MemoryError('COSX Hessian: a kernel buffer could not be allocated')
+        if with_fock1:
+            v, vt = v[..., :nocc], vt[..., :nocc]
+        return hs, v, vt
+
+    def hess(self, mocc, with_fock1=False, tol=None):
+        """d^2 tr(D P K_plain[D]) / dR dR' (natm, natm, 3, 3) at fixed D = 2 C C^T on the fixed grid (no grid
+        response), the derivatives of S and S_g in the fit P = S S_g^-1 included (fit=False: of
+        tr(D K_plain[D])); with with_fock1 also fock1(mocc) from the same kernel pass, (hess, fock1)"""
+        mocc = numpy.ascontiguousarray(mocc)
+        mol = self.mol
+        natm = mol.natm
+        self.build()
+        if self._proj is None:
+            hs, v, vt = self._hess_plain(mocc, mocc, with_fock1, tol)
+            h = hs.reshape(natm, 3, natm, 3).transpose(0, 2, 1, 3)
+            return (h, .5 * (v + vt)) if with_fock1 else h
+        P = self._proj
+        Q = numpy.linalg.inv(self._sg)
+        Q = (Q + Q.T) * .5
+        y = numpy.ascontiguousarray(P.T @ mocc)
+        hs, v, vt = self._hess_plain(mocc, y, True, tol)
+        h = hs.reshape(natm, 3, natm, 3).transpose(0, 2, 1, 3).copy()
+        dm = 2 * mocc @ mocc.T
+        kp = self._plain_k(dm)
+        u = Q @ (kp @ mocc)
+        kq = kp.T @ Q
+        ip = mol.intor('int1e_ipovlp', comp=3)
+        ipsg = self._ipsg()
+        aoslices = mol.aoslice_by_atom()
+        n3 = 3 * natm
+        nao, nocc = mocc.shape
+        lam = numpy.empty((n3, nao, nocc))      # Q dS C
+        kap = numpy.empty((n3, nao, nocc))      # Q dS_g Y
+        sig = numpy.empty((n3, nao, nocc))      # dS_g u
+        f1 = numpy.empty((natm, 3, nao, nocc)) if with_fock1 else None
+        for ia in range(natm):
+            for x in range(3):
+                ds, dsg = self._dproj(ia, x, ip, ipsg, aoslices)
+                r = 3 * ia + x
+                dsc = ds @ mocc
+                dsgy = dsg @ y
+                lam[r] = Q @ dsc
+                kap[r] = Q @ dsgy
+                sig[r] = dsg @ u
+                if with_fock1:
+                    dxc = ds @ u - P @ sig[r] + P @ v[ia, x]
+                    dxtc = vt[ia, x] + kq @ (dsc - dsgy)
+                    f1[ia, x] = .5 * (dxc + dxtc)
+        def outer(a_, b_):
+            m = lib.dot(a_.reshape(n3, -1), b_.reshape(n3, -1).T)
+            return m.reshape(natm, 3, natm, 3).transpose(0, 2, 1, 3)
+        # T2 + T2^T: 2 sum Lambda_R . V^{R'}, Lambda = Q (dS C - dS_g Y)
+        t2 = outer(2 * (lam - kap), v.reshape(n3, nao, nocc))
+        h += t2 + t2.transpose(1, 0, 3, 2)
+        # T3: (ii) -2 lam_a . sig_b, (iii-a) 2 kap_a . sig_b, both orders
+        t3 = outer(-2 * lam + 2 * kap, sig)
+        h += t3 + t3.transpose(1, 0, 3, 2)
+        # (i): tr(d2S Q Z0), Q Z0 = 2 u C^T;  (iii-b): -2 tr(d2S_g u Y^T)
+        from pyscf.hessian import rhf as rhf_hess
+        s1aa, s1ab, _ = rhf_hess.get_ovlp(mol)
+        x1 = 2 * u @ mocc.T
+        h += self._d2_contract(mol, s1aa, s1ab, (x1 + x1.T) * .5)
+        gaa, gab = self._sg2()
+        x2 = u @ y.T
+        h -= 2 * self._d2_contract(mol, gaa, gab, (x2 + x2.T) * .5)
+        return (h, f1) if with_fock1 else h
+
     def grad(self, dm, tol=None):
         """d/dR of tr(D P K_plain[D]) (fit) or tr(D K_plain[D]) at fixed D (symmetric) on the fixed grid
         (no grid response), (natm, 3); with the fit the derivatives of S and of S_g in P = S S_g^-1"""

@@ -338,6 +338,8 @@ typedef struct {
         int *pp_id;             /* ip * nprim_J + jp of every primitive pair */
         double *eddata;         /* gradient: d E / dA of the two-centre pairs (SOCDFTcosx_build_grad) */
         size_t *edo;
+        double *eedata;         /* Hessian: d^2 E / dA^2 of the two-centre pairs (SOCDFTcosx_build_hess) */
+        size_t *eeo;
         double *edata, *mdata;
         double *shl_bound;      /* max over the pairs of a shell of the pair bound */
         int *atm_lmax;          /* 2 lmax of the one-centre pairs of each atom (-1: none) */
@@ -567,6 +569,8 @@ void *SOCDFTcosx_build(double prim_tol, double pair_tol, int *ao_loc, int *atm, 
         opt->pp_id = malloc(sizeof(int) * (po + 1));
         opt->eddata = NULL;
         opt->edo = NULL;
+        opt->eedata = NULL;
+        opt->eeo = NULL;
         opt->edata = malloc(sizeof(double) * (eo + 1));
         opt->mdata = malloc(sizeof(double) * (mo + 1));
         /* pass 2: E, bounds, the one-centre ordering and prefix moments */
@@ -673,7 +677,7 @@ void SOCDFTcosx_free(void *p)
         CXOpt *opt = p;
         if (!opt) return;
         free(opt->pairs); free(opt->pp_p); free(opt->pp_P); free(opt->pp_b);
-        free(opt->edata); free(opt->mdata); free(opt->pp_id); free(opt->eddata); free(opt->edo); free(opt->shl_bound); free(opt->atm_lmax);
+        free(opt->edata); free(opt->mdata); free(opt->pp_id); free(opt->eddata); free(opt->edo); free(opt->eedata); free(opt->eeo); free(opt->shl_bound); free(opt->atm_lmax);
         free(opt);
 }
 
