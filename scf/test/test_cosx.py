@@ -129,6 +129,43 @@ class KnownValues(unittest.TestCase):
                 em = numpy.einsum('ij,ij', dm, kobj(mol.set_geom_(c, unit='Bohr', inplace=False)).get_k(dm, hermi=0))
                 self.assertAlmostEqual(ga[ia, x], (ep - em) / (2 * h), 6)
 
+    def test_hessian_pieces(self):
+        '''Fock1 (d K / dR C) and the K second derivatives against finite differences on a frozen grid, and
+        the sum-ruled second derivatives against the exact K ones'''
+        from pyscf import lib
+        from pyscf.dft import gen_grid
+        from socutils.hessian import rhf_fast
+        mol = gto.M(atom=WATER2, basis='cc-pvdz', verbose=0)
+        mf = scf.RHF(mol).run()
+        mocc = mf.mo_coeff[:, mf.mo_occ > 0]
+        dm = 2 * mocc @ mocc.T
+        g0 = cosx.make_grids(mol, **cosx.GRIDX[1])
+
+        class Frozen(lib.StreamObject):
+            def __init__(self, m):
+                self.coords, self.weights = g0.coords, g0.weights
+                self.non0tab = numpy.ones_like(gen_grid.make_mask(m, g0.coords))
+
+        def kobj(m):
+            k = cosx.COSX(m, Frozen(m))
+            k.tol = k.ao_cutoff = 0.
+            return k
+        h, f1 = kobj(mol).hess(mocc, with_fock1=True, sum_rule=False)
+        dh = 1e-5
+        for ia, x in ((0, 2), (4, 0)):
+            c = mol.atom_coords().copy()
+            c[ia, x] += dh
+            mp = mol.set_geom_(c, unit='Bohr', inplace=False)
+            kp, gp = kobj(mp).get_k(dm) @ mocc, kobj(mp).grad(dm)
+            c[ia, x] -= 2 * dh
+            mm = mol.set_geom_(c, unit='Bohr', inplace=False)
+            km, gm = kobj(mm).get_k(dm) @ mocc, kobj(mm).grad(dm)
+            self.assertLess(abs(f1[ia, x] - (kp - km) / (2 * dh)).max(), 1e-6)
+            self.assertLess(abs(h[ia, :, x] - (gp - gm) / (2 * dh)).max(), 1e-5)
+        k = cosx.COSX(mol, cosx.make_grids(mol, **cosx.GRIDX[3]))
+        ek = rhf_fast.hess2e_jk_cart(mol, dm, [(0, 1)])[0]
+        self.assertLess(abs(k.hess(mocc) / 4 - ek).max(), 1e-4)
+
     def test_scf(self):
         mol = gto.M(atom=WATER2, basis='cc-pvdz', verbose=0)
         mf0 = dft.RKS(mol, xc='pbe0').density_fit(only_dfj=True)

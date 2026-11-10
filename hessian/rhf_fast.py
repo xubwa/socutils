@@ -18,6 +18,7 @@ the 1e terms, XC and the CPHF solver are pyscf's.
 '''
 
 import ctypes
+import sys
 import numpy
 import scipy.linalg
 from pyscf import gto, lib
@@ -58,6 +59,21 @@ def _partial_hess_ejk(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     natm = len(atmlst)
     ej = None
     combine = False
+    # the K second derivatives by COSX (with the first-order K of make_h1 from the same pass, cached)
+    cx = _hess_cosx(mf, HESS_COSX_EXPLICIT) if with_k else None
+    ek_cx = None
+    if cx is not None:
+        t0 = (logger.process_clock(), logger.perf_counter())
+        want_f1 = HESS_COSX_FOCK1 is not False and getattr(hessobj, '_h1_occ', H1_OCC)
+        r = cx.hess(mocc, with_fock1=bool(want_f1))
+        if want_f1:
+            ek_cx, f1 = r
+            hessobj._cosx_fock1 = (mocc.tobytes(), f1)
+        else:
+            ek_cx = r
+        ek_cx = ek_cx * .25
+        with_k = False
+        log.timer('K second derivatives (COSX)', *t0)
     if dfm is not None:
         # density-fitted J (exact derivatives of the DF energy), exact K below
         r = ri_j_deriv(mol, _df_auxmol(mf), dm0, with_vj1=False,
@@ -87,6 +103,8 @@ def _partial_hess_ejk(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
         ek = out[1] if with_k and not combine else numpy.zeros_like(ej)
     else:
         ek = out[0] if with_k else numpy.zeros_like(ej)
+    if ek_cx is not None:
+        ek = ek_cx
     log.timer_debug1('two-electron second derivatives (unique quartets)', *time0)
 
     eh = _hcore_e1(hessobj, dm0)
@@ -1693,7 +1711,19 @@ def rks_make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=No
     mocc = mo_coeff[:, mo_occ > 0]
     dm0 = numpy.dot(mocc, mocc.T) * 2
     occ = getattr(hessobj, '_h1_occ', False)
-    v = _fock1(hessobj, dm0, hybrid, occ=mocc if occ else None)
+    # the first-order K by COSX (occupied form only): d K / dR C on the SCF's COSX grid
+    cx = _hess_cosx(mf, HESS_COSX_FOCK1) if hybrid and occ else None
+    vk_cx = None
+    if cx is not None:
+        cached = getattr(hessobj, '_cosx_fock1', None)
+        if cached is not None and cached[0] == mocc.tobytes():
+            vk_cx = cached[1]
+            hessobj._cosx_fock1 = None
+        else:
+            t0 = (logger.process_clock(), logger.perf_counter())
+            vk_cx = cx.fock1(mocc)
+            logger.timer(hessobj, 'Fock1 K (COSX)', *t0)
+    v = _fock1(hessobj, dm0, hybrid and vk_cx is None, occ=mocc if occ else None)
     if v is None:
         if dfm is not None:
             from pyscf.df.hessian import rks as df_rks_hess
@@ -1707,12 +1737,14 @@ def rks_make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=No
     hcore_deriv = hessobj.base.nuc_grad_method().hcore_generator(mol)
     for ia in range(mol.natm):
         h = hcore_deriv(ia) if vj_occ else vj[ia] + hcore_deriv(ia)
-        if hybrid:
+        if hybrid and vk_cx is None:
             h -= .5 * hyb * vk[ia]
         if occ:
             h1ao[ia] += lib.dot(h.reshape(-1, h.shape[-1]), mocc).reshape(3, -1, mocc.shape[1])
             if vj_occ:
                 h1ao[ia] += vj[ia]
+            if vk_cx is not None:
+                h1ao[ia] -= .5 * hyb * vk_cx[ia]
         else:
             h1ao[ia] += h
     return h1ao
@@ -1725,6 +1757,20 @@ CPHF_COSX_FLOAT = True  # the many-density COSX contraction in single precision 
                         # relative (the COSX grid error ~1e-3), Hessians within 2e-9, harmonic frequencies within
                         # 1e-4 cm-1 and the same CPHF iterations (caffeine / C16H34 cc-pVDZ, C16H34 def2-TZVP);
                         # CPHF 12 - 20 % faster
+
+
+HESS_COSX_FOCK1 = None  # the first-order K (make_h1) by COSX: None -> with the CPHF's auto mode (CPHF_COSX)
+HESS_COSX_EXPLICIT = None   # the K second derivatives of the explicit part by COSX: None -> likewise
+
+
+def _hess_cosx(mf, switch):
+    '''the COSX object for a K term of the Hessian (switch None: as the CPHF), or None'''
+    if switch is False:
+        return None
+    if switch is None:
+        return _cphf_cosx(mf)
+    with lib.temporary_env(sys.modules[__name__], CPHF_COSX=True):
+        return _cphf_cosx(mf)
 
 
 def _cphf_cosx(mf):
