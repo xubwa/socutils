@@ -192,11 +192,13 @@ class COSX(lib.StreamObject):
         if multi:
             # many densities: the densities as the vector dimension of the contraction, in as few passes as
             # the memory allows (every pass evaluates the integrals again).  Per density: the threads' F, G
-            # (float: in float only), 2 blk nao each; the shared K, the transposed input and output and the
-            # copies here, ~5 nao^2.  Fixed: the threads' stored pair integrals of a block (dense
-            # contraction), at most nao^2/2 blk each
+            # (float: in float only), 2 blk nao each; here two nao^2 arrays alive at a time (the transposed
+            # input and output, then the output and the result).  Fixed: the threads' stored pair integrals
+            # of a block (dense contraction), at most nao^2/2 blk each
             nt = lib.num_threads()
-            per = ((4 if libdft.SOCDFTcosx_mfloat() else 12) * 2 * self.blk * nao * nt + 8 * 5 * nao * nao) / 1e6
+            per = ((4 if libdft.SOCDFTcosx_mfloat() else 12) * 2 * self.blk * nao * nt + 8 * 2.5 * nao * nao) / 1e6
+            if getattr(libdft, 'SOCDFTcosx_kpriv', None) is not None and libdft.SOCDFTcosx_kpriv():
+                per += 8 * nao * nao * nt / 1e6         # the threads' private K
             fixed = (4 if libdft.SOCDFTcosx_mfloat() else 8) * (nao * nao / 2 * self.blk + nao * nao) * nt / 1e6
             # (at least 2 GB: a pass costs the integrals of the whole grid, ~25 densities' worth on c16 TZVP)
             avail = max(2000, mol.max_memory - lib.current_memory()[0] - fixed)
@@ -216,7 +218,7 @@ class COSX(lib.StreamObject):
             vkt = numpy.empty((nao, nao, nset8))
             PROFILE['prep'] = PROFILE.get('prep', 0) + logger.perf_counter() - tp_
         tk_ = logger.perf_counter()
-        vk = numpy.empty_like(dms)
+        vk = None if multi else numpy.empty_like(dms)
         libdft.SOCDFTcosx_k(
             (vkt if multi else vk).ctypes.data_as(ctypes.c_void_p), dms.ctypes.data_as(ctypes.c_void_p),
             ctypes.c_int(nset8 if multi else nset),
@@ -232,6 +234,7 @@ class COSX(lib.StreamObject):
         tp_ = logger.perf_counter()
         PROFILE['kernel'] = PROFILE.get('kernel', 0) + tp_ - tk_
         if multi:
+            dtm = None
             vk = numpy.empty((nset, nao, nao))
             libdft.SOCDFTcosx_untranspose(vk.ctypes.data_as(ctypes.c_void_p), vkt.ctypes.data_as(ctypes.c_void_p),
                                           ctypes.c_int(nao), ctypes.c_int(nset), ctypes.c_int(nset8))
