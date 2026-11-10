@@ -1965,3 +1965,5 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
         free(shl_of);
         free(atm_of);
 }
+
+#include "cosx_hess.c"
