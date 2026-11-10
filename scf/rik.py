@@ -125,62 +125,107 @@ def _load_socvhf():
     return libv if libv and hasattr(libv, 'SOCVHFint3c2e_s2_pairs') else None
 
 
+class _Int3c:
+    '''(ij|P) of the Schwarz-significant shell pairs of mol (ish >= jsh) against all shells of
+    auxmol (lib/vhf/int3c_s2.c), by ranges of the i shell (contiguous pack_tril columns)'''
+
+    def __init__(self, mol, auxmol, pair_tol=PAIR_TOL, j2c=None):
+        from pyscf import gto
+        from pyscf.gto import moleintor
+        from socutils.hessian import ghf as ghf_hess
+        self.libv = _load_socvhf()
+        self.mol, self.auxmol = mol, auxmol
+        nbas = mol.nbas
+        if j2c is None:
+            j2c = auxmol.intor('int2c2e', hermi=1)
+        q = ghf_hess._q_cond(mol, 'int2e_ip1')[1]                # sqrt((ij|ij)) per shell pair
+        qP = numpy.sqrt(abs(numpy.diag(j2c)).max())
+        ao_loc = self.ao_loc = mol.ao_loc_nr()
+        ii, jj = numpy.tril_indices(nbas)
+        sig = q[ii, jj] * qP >= pair_tol
+        self.ii, self.jj = ii[sig], jj[sig]
+        self.atm, self.bas, self.env = gto.conc_env(mol._atm, mol._bas, mol._env,
+                                                    auxmol._atm, auxmol._bas, auxmol._env)
+        self.loc = moleintor.make_loc(self.bas, 'int3c2e_sph').astype(numpy.int32)
+        self.opt = moleintor.make_cintopt(self.atm, self.bas, self.env, 'int3c2e_sph')
+        self.nrow_sig = 0
+
+    def ish_ranges(self, max_cols):
+        '''[(s0, s1)] i-shell ranges with at most max_cols pack_tril columns each (>= one shell)'''
+        ao_loc = self.ao_loc
+        out = []
+        s0 = 0
+        nbas = self.mol.nbas
+        while s0 < nbas:
+            s1 = s0 + 1
+            c0 = ao_loc[s0] * (ao_loc[s0] + 1) // 2
+            while s1 < nbas and ao_loc[s1 + 1] * (ao_loc[s1 + 1] + 1) // 2 - c0 <= max_cols:
+                s1 += 1
+            out.append((s0, s1))
+            s0 = s1
+        return out
+
+    def rows(self, s0, s1):
+        '''(X (nrow, naux) of the significant pairs with s0 <= ish < s1, their pack_tril columns)'''
+        ao_loc = self.ao_loc
+        sel = (self.ii >= s0) & (self.ii < s1)
+        ii, jj = self.ii[sel], self.jj[sel]
+        di = ao_loc[ii + 1] - ao_loc[ii]
+        dj = ao_loc[jj + 1] - ao_loc[jj]
+        nf = numpy.where(ii == jj, di * (di + 1) // 2, di * dj)
+        pair_row = numpy.zeros(len(ii), dtype=numpy.int64)
+        pair_row[1:] = numpy.cumsum(nf)[:-1]
+        nrow = int(nf.sum())
+        cols = numpy.empty(nrow, dtype=numpy.int64)
+        for k in range(len(ii)):
+            i0, j0 = ao_loc[ii[k]], ao_loc[jj[k]]
+            if ii[k] == jj[k]:
+                a, b = numpy.tril_indices(di[k])
+            else:
+                a, b = numpy.divmod(numpy.arange(di[k] * dj[k]), dj[k])
+            i = i0 + a
+            cols[pair_row[k]:pair_row[k] + nf[k]] = i * (i + 1) // 2 + j0 + b
+        pairs = numpy.ascontiguousarray(numpy.stack([ii, jj], axis=1), dtype=numpy.int32)
+        X = numpy.empty((nrow, self.auxmol.nao))
+        if nrow:
+            self.libv.SOCVHFint3c2e_s2_pairs(
+                X.ctypes.data_as(ctypes.c_void_p), pairs.ctypes.data_as(ctypes.c_void_p),
+                pair_row.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(len(ii)), self.opt,
+                self.loc.ctypes.data_as(ctypes.c_void_p), self.atm.ctypes.data_as(ctypes.c_void_p),
+                ctypes.c_int(self.mol.natm + self.auxmol.natm), self.bas.ctypes.data_as(ctypes.c_void_p),
+                ctypes.c_int(self.mol.nbas), ctypes.c_int(self.auxmol.nbas),
+                self.env.ctypes.data_as(ctypes.c_void_p))
+        self.nrow_sig += nrow
+        return X, cols
+
+
+def _metric_cholesky(auxmol):
+    j2c = auxmol.intor('int2c2e', hermi=1)
+    try:
+        return j2c, scipy.linalg.cholesky(j2c, lower=True)
+    except scipy.linalg.LinAlgError:
+        return j2c, None
+
+
 def cholesky_eri(mol, auxmol, pair_tol=PAIR_TOL, verbose=None):
     '''B = L^{-1} (P|ij) (naux, npair), M = (P|Q) = L L^T, as pyscf's df.incore.cholesky_eri
     (aosym s2ij) for any molecule / auxiliary basis (a sub-molecule's shells included), the
     three-centre integrals of the Schwarz-significant shell pairs only
     (lib/vhf/int3c_s2.c) and the triangular solve over those pair columns.  None if the
     library is unavailable or M is not positive definite (pyscf's eigh route then).'''
-    from pyscf import gto
-    from pyscf.gto import moleintor
-    from socutils.hessian import ghf as ghf_hess
-    libv = _load_socvhf()
-    if libv is None or mol.cart or auxmol.cart:
+    if _load_socvhf() is None or mol.cart or auxmol.cart:
         return None
     log = logger.new_logger(mol, verbose)
     t0 = (logger.process_clock(), logger.perf_counter())
-    j2c = auxmol.intor('int2c2e', hermi=1)
-    try:
-        low = scipy.linalg.cholesky(j2c, lower=True)
-    except scipy.linalg.LinAlgError:
+    j2c, low = _metric_cholesky(auxmol)
+    if low is None:
         return None
-    nao, nbas = mol.nao, mol.nbas
-    naux = auxmol.nao
-    npair = nao * (nao + 1) // 2
-    q = ghf_hess._q_cond(mol, 'int2e_ip1')[1]                    # sqrt((ij|ij)) per shell pair
-    qP = numpy.sqrt(abs(numpy.diag(j2c)).max())
+    eng = _Int3c(mol, auxmol, pair_tol, j2c)
     j2c = None
-    ao_loc = mol.ao_loc_nr()
-    ii, jj = numpy.tril_indices(nbas)
-    sig = q[ii, jj] * qP >= pair_tol
-    ii, jj = ii[sig], jj[sig]
-    di = ao_loc[ii + 1] - ao_loc[ii]
-    dj = ao_loc[jj + 1] - ao_loc[jj]
-    nf = numpy.where(ii == jj, di * (di + 1) // 2, di * dj)
-    pair_row = numpy.zeros(len(ii), dtype=numpy.int64)
-    pair_row[1:] = numpy.cumsum(nf)[:-1]
-    nrow = int(nf.sum())
-    # pack_tril column of every row
-    cols = numpy.empty(nrow, dtype=numpy.int64)
-    for k in range(len(ii)):
-        i0, j0 = ao_loc[ii[k]], ao_loc[jj[k]]
-        if ii[k] == jj[k]:
-            a, b = numpy.tril_indices(di[k])
-        else:
-            a, b = numpy.divmod(numpy.arange(di[k] * dj[k]), dj[k])
-        i = i0 + a
-        cols[pair_row[k]:pair_row[k] + nf[k]] = i * (i + 1) // 2 + j0 + b
-    pairs = numpy.ascontiguousarray(numpy.stack([ii, jj], axis=1), dtype=numpy.int32)
-    atm, bas, env = gto.conc_env(mol._atm, mol._bas, mol._env, auxmol._atm, auxmol._bas, auxmol._env)
-    loc = moleintor.make_loc(bas, 'int3c2e_sph').astype(numpy.int32)
-    opt = moleintor.make_cintopt(atm, bas, env, 'int3c2e_sph')
-    X = numpy.empty((nrow, naux))
-    libv.SOCVHFint3c2e_s2_pairs(
-        X.ctypes.data_as(ctypes.c_void_p), pairs.ctypes.data_as(ctypes.c_void_p),
-        pair_row.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(len(ii)), opt,
-        loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
-        ctypes.c_int(mol.natm + auxmol.natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nbas),
-        ctypes.c_int(auxmol.nbas), env.ctypes.data_as(ctypes.c_void_p))
+    nao = mol.nao
+    npair = nao * (nao + 1) // 2
+    X, cols = eng.rows(0, mol.nbas)
+    nrow = X.shape[0]
     t0 = log.timer_debug1('rik.cholesky_eri: (ij|P) of %d / %d pairs' % (nrow, npair), *t0)
     Y = scipy.linalg.solve_triangular(low, X.T, lower=True, overwrite_b=True, check_finite=False)
     X = None
@@ -188,10 +233,50 @@ def cholesky_eri(mol, auxmol, pair_tol=PAIR_TOL, verbose=None):
     if nrow == npair and (numpy.diff(cols) == 1).all():
         B = numpy.ascontiguousarray(Y)
     else:
-        B = numpy.zeros((naux, npair))
+        B = numpy.zeros((auxmol.nao, npair))
         B[:, cols] = Y
     log.timer_debug1('rik.cholesky_eri: scatter', *t0)
     return B
+
+
+def cholesky_eri_h5(mol, auxmol, filename, dataname='j3c', pair_tol=PAIR_TOL, max_memory=4000,
+                    verbose=None, max_cols=None):
+    '''cholesky_eri written to the HDF5 file filename in pyscf's block layout (group dataname with
+    datasets '0', '1', ... of contiguous pack_tril column ranges, all auxiliary rows; read by
+    df.DF.loop), one i-shell range in memory at a time.  False if not applicable.'''
+    import h5py
+    if _load_socvhf() is None or mol.cart or auxmol.cart:
+        return False
+    log = logger.new_logger(mol, verbose)
+    t0 = (logger.process_clock(), logger.perf_counter())
+    j2c, low = _metric_cholesky(auxmol)
+    if low is None:
+        return False
+    eng = _Int3c(mol, auxmol, pair_tol, j2c)
+    j2c = None
+    naux = auxmol.nao
+    mem = max(500., max_memory - lib.current_memory()[0])
+    # per column: X (and its solve in place) and the dense block written
+    if max_cols is None:
+        max_cols = max(1, int(mem * .4e6 / 8 / naux / 2))
+    ao_loc = mol.ao_loc_nr()
+    with h5py.File(filename, 'a') as f:
+        if dataname in f:
+            del f[dataname]
+        g = f.create_group(dataname)
+        for k, (s0, s1) in enumerate(eng.ish_ranges(max_cols)):
+            c0 = ao_loc[s0] * (ao_loc[s0] + 1) // 2
+            c1 = ao_loc[s1] * (ao_loc[s1] + 1) // 2
+            X, cols = eng.rows(s0, s1)
+            Y = scipy.linalg.solve_triangular(low, X.T, lower=True, overwrite_b=True, check_finite=False)
+            X = None
+            blk = numpy.zeros((naux, c1 - c0))
+            blk[:, cols - c0] = Y
+            Y = None
+            g[str(k)] = blk
+            blk = None
+            t0 = log.timer_debug1('rik.cholesky_eri_h5: block %d (shells %d:%d)' % (k, s0, s1), *t0)
+    return True
 
 
 def get_jk(with_df, dm, hermi=1, with_j=True, with_k=True, max_memory=None, verbose=None):
@@ -283,6 +368,7 @@ def get_jk(with_df, dm, hermi=1, with_j=True, with_k=True, max_memory=None, verb
 
 
 FAST_BUILD = True     # pyscf df.DF factors built by rik.cholesky_eri when they fit in memory
+FAST_BUILD_H5 = True  # ... and by rik.cholesky_eri_h5 into a temporary HDF5 file when they do not
 
 
 def _prebuild(mf):
@@ -301,13 +387,21 @@ def _prebuild(mf):
     nao = mol.nao
     npair = nao * (nao + 1) // 2
     need = 2 * auxmol.nao * npair * 8 / 1e6
-    if need > .8 * (mf.max_memory - lib.current_memory()[0]):
-        return
     t0 = (logger.process_clock(), logger.perf_counter())
-    B = cholesky_eri(mol, auxmol, verbose=mf.verbose)
-    if B is not None:
-        with_df._cderi = B
-        logger.timer(mf, 'rik: L^-1 (P|ij) (screened pairs)', *t0)
+    if need < .8 * (mf.max_memory - lib.current_memory()[0]):
+        B = cholesky_eri(mol, auxmol, verbose=mf.verbose)
+        if B is not None:
+            with_df._cderi = B
+            logger.timer(mf, 'rik: L^-1 (P|ij) (screened pairs)', *t0)
+        return
+    if not FAST_BUILD_H5:
+        return
+    # out of core: an HDF5 temporary file in pyscf's TMPDIR, as pyscf's own DF.build
+    tmp = lib.NamedTemporaryFile(dir=lib.param.TMPDIR)
+    if cholesky_eri_h5(mol, auxmol, tmp.name, with_df._dataname, max_memory=mf.max_memory, verbose=mf.verbose):
+        with_df._cderi_to_save = tmp        # keeps the temporary file alive with the DF object
+        with_df._cderi = tmp.name
+        logger.timer(mf, 'rik: L^-1 (P|ij) (screened pairs) to %s' % tmp.name, *t0)
 
 
 def apply(mf):

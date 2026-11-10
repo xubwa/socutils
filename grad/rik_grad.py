@@ -36,6 +36,7 @@ from pyscf.gto import moleintor
 
 TOL = 1e-11          # triplet cutoff: Schwarz bound x max |Gamma| (Eh / Bohr scale)
 BLK_MEMORY = .3      # fraction of the free memory for Gamma of one auxiliary block
+GAMMA_BLK_MB = 2000  # ... and at most this (larger blocks gain nothing: the triplet pass costs the same)
 
 
 def _load():
@@ -164,7 +165,8 @@ def k_grad(mol, auxmol, c, dK, tol=TOL, max_memory=4000, verbose=None):
     qP = numpy.ascontiguousarray(numpy.sqrt(numpy.maximum.reduceat(abs(numpy.diag(m2)), aux_loc[:-1])))
     gout = numpy.zeros((natm + auxmol.natm, 3))
     mem_free = max(400., max_memory - lib.current_memory()[0])
-    blk = int(max(16, min(naux, mem_free * BLK_MEMORY * 1e6 / 8 / (nao * nao + nocc * nao + nbas * nbas / 3))))
+    blk = int(max(16, min(naux, mem_free * BLK_MEMORY * 1e6 / 8 / (nao * nao + nocc * nao + nbas * nbas / 3),
+                          GAMMA_BLK_MB * 1e6 / 8 / (nao * nao))))
     from pyscf.ao2mo.outcore import balance_partition
     for k0, k1, _ in balance_partition(auxmol.ao_loc, blk):
         p0, p1 = aux_loc[k0], aux_loc[k1]
