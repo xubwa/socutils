@@ -233,7 +233,8 @@ if args.jk == 'thc':
         aux = {}
         for lab in sorted(set(cell.atom_symbol(i) for i in range(cell.natm))):
             el = gto.mole._std_symbol(lab)
-            aux[lab] = auxgen_from_basis({el: basis[lab]}, contract=False, prune_lmax=False, threshold=1e-8)[el]
+            aux[lab] = auxgen_from_basis({el: basis[lab]}, comm=comm, contract=False, prune_lmax=False,
+                                          threshold=1e-8)[el]
     else:
         aux = auxgen(cell, contract=False, prune_lmax=False, threshold=1e-8)
     r = RSDF(cell, aux, omega=args.omega, precision=args.precision,
@@ -278,7 +279,8 @@ else:
         aux = {}
         for lab in sorted(set(cell.atom_symbol(i) for i in range(cell.natm))):
             el = gto.mole._std_symbol(lab)
-            aux[lab] = auxgen_from_basis({el: basis[lab]}, contract=False, prune_lmax=False, threshold=1e-8)[el]
+            aux[lab] = auxgen_from_basis({el: basis[lab]}, comm=comm, contract=False, prune_lmax=False,
+                                          threshold=1e-8)[el]
     else:
         aux = auxgen(cell, contract=False, prune_lmax=False, threshold=1e-8)
     r = RSDF(cell, aux, omega=args.omega, precision=args.precision,

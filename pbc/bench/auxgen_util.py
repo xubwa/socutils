@@ -78,7 +78,37 @@ def pyscf_to_bse(basis):
     return {'elements': elements}
 
 
-def auxgen_from_basis(basis, **kwargs):
-    '''auxgen from an explicit pyscf basis dict (e.g. GENBAS entries) instead of a BSE name.'''
-    from basis_set_exchange.auxgen import generate_auxiliary_basis
-    return bse_to_pyscf(generate_auxiliary_basis(pyscf_to_bse(basis), **kwargs))
+def auxgen_from_basis(basis, comm=None, cache=True, **kwargs):
+    '''auxgen from an explicit pyscf basis dict (e.g. GENBAS entries) instead of a BSE name.
+
+    The generation is expensive for heavy elements (Eu, x2c-type basis, l up to 5: 32 GB and 200 s in
+    basis_set_exchange) and deterministic, so the result is cached on disk (cache: True for
+    ~/.cache/socutils/auxgen, or a directory; key: the basis and the options), and with an MPI comm only rank 0
+    generates (or reads) it and broadcasts -- every rank of a node generating it at once multiplied the 32 GB.'''
+    import os, json, hashlib
+    rank = comm.Get_rank() if comm is not None else 0
+    out = None
+    if rank == 0:
+        path = None
+        if cache:
+            d = os.path.expanduser('~/.cache/socutils/auxgen') if cache is True else cache
+            key = hashlib.sha256(json.dumps([sorted((k, repr(v)) for k, v in basis.items()),
+                                             sorted((k, repr(v)) for k, v in kwargs.items())]).encode()).hexdigest()
+            path = os.path.join(d, key[:32] + '.json')
+            if os.path.exists(path):
+                with open(path) as f:
+                    out = {k: v for k, v in json.load(f).items()}
+        if out is None:
+            from basis_set_exchange.auxgen import generate_auxiliary_basis
+            out = bse_to_pyscf(generate_auxiliary_basis(pyscf_to_bse(basis), **kwargs))
+            if path is not None:
+                try:
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path + '.tmp', 'w') as f:
+                        json.dump(out, f)
+                    os.replace(path + '.tmp', path)
+                except OSError:
+                    pass
+    if comm is not None:
+        out = comm.bcast(out, root=0)
+    return out

@@ -31,7 +31,8 @@ cell = cells.make_cell(sysm, 1e-10, nucmod='G', basis=B, max_memory=int(os.envir
 aux = {}
 for l_ in sorted(set(cell.atom_symbol(i) for i in range(cell.natm))):
     el = gto.mole._std_symbol(l_)
-    aux[l_] = auxgen_from_basis({el: B[l_]}, contract=False, prune_lmax=False, threshold=1e-8)[el]
+    aux[l_] = auxgen_from_basis({el: B[l_]}, comm=comm if size > 1 else None, contract=False, prune_lmax=False,
+                                threshold=1e-8)[el]
 jk = THCJK(cell, aux, alpha_c=4., nmu_factor=16., nuc_zeta=spinor_scf.nuclear_zeta(cell), local_rcut=6.)
 jk.stream = True
 jk.verbose = rank == 0
