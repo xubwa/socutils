@@ -86,11 +86,21 @@ static double cx_damp[CX_DMAX + 1];
 static int cx_full = 1;     /* the all-in-register primitive kernels for L <= cx_full (c16 / def2-TZVP:
                              * L = 0, 1 2.9 / 5.6 cycles per point against 3.7 / 6.1, L = 2 12.5 against 10.4) */
 static int cx_pairdamp = 1;  /* the pair-level distance damping */
+static int cx_mfloat = 0;    /* the multi-density contraction in single precision (AVX-512 builds) */
+int SOCDFTcosx_mfloat(void)
+{
+#ifdef __AVX512F__
+        return cx_mfloat;
+#else
+        return 0;
+#endif
+}
 void SOCDFTcosx_set_full(int f) { cx_full = f; }
 void SOCDFTcosx_set_opt(int which, int v)
 {
         if (which == 0) cx_full = v;
         if (which == 1) cx_pairdamp = v;
+        if (which == 2) cx_mfloat = v;
 }
 static int h_t[CX_NHMAX], h_u[CX_NHMAX], h_v[CX_NHMAX], h_deg[CX_NHMAX];
 static int h_dir[CX_NHMAX], h_m1[CX_NHMAX], h_m2[CX_NHMAX], h_c[CX_NHMAX];
@@ -820,6 +830,65 @@ static void multi_contract(double *Ga, const double *Fa, const double *Abuf, con
         }
 }
 
+#ifdef CX_FUSED
+/* the same in single precision, 16 densities per vector (SOCDFTcosx_set_opt(2, 1)): the CPHF K only
+ * needs the COSX accuracy (~1e-3), the float sums keep ~1e-6 */
+static void multi_contract_f(float *Ga, const float *Fa, const float *Abuf, const CXRec *rec, int nrec,
+                             int nao, int n, int nset)
+{
+        const size_t NQ = (size_t)nao * nset;
+        int g, r, r1, rr;
+        for (g = 0; g < n; g++) {
+                const float *Fg = Fa + g * NQ;
+                float *Gg = Ga + g * NQ;
+                for (r = 0; r < nrec; r = r1) {
+                        const int I0 = rec[r].I0, nI = rec[r].nI;
+                        int anyI = 0;
+                        for (r1 = r; r1 < nrec && rec[r1].I0 == I0; r1++) anyI |= rec[r1].cI;
+                        const float *FI = Fg + (size_t)I0 * nset;
+                        float *GI = Gg + (size_t)I0 * nset;
+                        int ia, jb, c;
+                        if (anyI) {
+                                for (c = 0; c < nset; c += 16) {
+                                        for (ia = 0; ia < nI; ia++) {
+                                                float *ga = GI + (size_t)ia * nset + c;
+                                                __m512 acc = _mm512_loadu_ps(ga);
+                                                for (rr = r; rr < r1; rr++) {
+                                                        const CXRec *rc = rec + rr;
+                                                        if (!rc->cI) continue;
+                                                        const int nJ = rc->nJ;
+                                                        const float *ar = Abuf + rc->off + (size_t)g * nI * nJ + ia * nJ;
+                                                        const float *FJ = Fg + (size_t)rc->J0 * nset + c;
+                                                        for (jb = 0; jb < nJ; jb++)
+                                                                acc = _mm512_fmadd_ps(_mm512_set1_ps(ar[jb]),
+                                                                                      _mm512_loadu_ps(FJ + (size_t)jb * nset), acc);
+                                                }
+                                                _mm512_storeu_ps(ga, acc);
+                                        }
+                                }
+                        }
+                        for (rr = r; rr < r1; rr++) {
+                                const CXRec *rc = rec + rr;
+                                if (!rc->cJ) continue;
+                                const int nJ = rc->nJ;
+                                const float *Ar = Abuf + rc->off + (size_t)g * nI * nJ;
+                                float *GJ = Gg + (size_t)rc->J0 * nset;
+                                for (c = 0; c < nset; c += 16) {
+                                        for (jb = 0; jb < nJ; jb++) {
+                                                float *gb = GJ + (size_t)jb * nset + c;
+                                                __m512 acc = _mm512_loadu_ps(gb);
+                                                for (ia = 0; ia < nI; ia++)
+                                                        acc = _mm512_fmadd_ps(_mm512_set1_ps(Ar[ia * nJ + jb]),
+                                                                              _mm512_loadu_ps(FI + (size_t)ia * nset + c), acc);
+                                                _mm512_storeu_ps(gb, acc);
+                                        }
+                                }
+                        }
+                }
+        }
+}
+#endif
+
 #define CX_ABUF (2 << 20)
 #define CX_KROWS 64             /* rows of K per GEMM in the multi-density mode */       /* doubles of stored pair integrals per thread in the multi-density mode */
 
@@ -839,6 +908,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
          * vk (nao, nao, nset); the integrals of a block's pairs stored, then contracted point by point
          * with the densities as the vector dimension (multi_contract), F and K by one GEMM each */
         const int multi = dtm != NULL;
+        const int mfl = multi && SOCDFTcosx_mfloat();
         /* energy mode (dmh != NULL): eout[d] = sum_g w sum_ab H_a A_ab F_b, H = Dh_d^T phi, vk untouched;
          * the screening then weighs each pair by the densities on both sides */
         const int eonly = dmh != NULL;
@@ -870,6 +940,10 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
         double *Bm = multi ? malloc(sizeof(double) * NQ * (nao > CX_KROWS ? nao : CX_KROWS)) : NULL;
         double *Abuf = multi ? malloc(sizeof(double) * CX_ABUF) : NULL;
         CXRec *rec = multi ? malloc(sizeof(CXRec) * (opt->npair + 1)) : NULL;
+        float *Ff = mfl ? malloc(sizeof(float) * NQ * blk) : NULL;
+        float *Gf = mfl ? malloc(sizeof(float) * NQ * blk) : NULL;
+        float *Abf = (float *)Abuf;
+        const size_t abcap = mfl ? 2 * (size_t)CX_ABUF : (size_t)CX_ABUF;
         int nrec = 0;
         size_t aoff = 0;
         double *H = eonly ? malloc(sizeof(double) * (size_t)nset * nao * blk) : NULL;
@@ -931,6 +1005,11 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         const int nq = (int)NQ;
                         for (i = 0; i < nl; i++) memcpy(Bm + (size_t)i * NQ, dtm + (size_t)ix[i] * NQ, sizeof(double) * NQ);
                         dgemm_("N", "T", &nq, &n, &nl, &one, Bm, &nq, a, &n, &zero, F, &nq);
+                        if (mfl) {
+                                size_t q;
+                                for (q = 0; q < NQ * n; q++) Ff[q] = (float)F[q];
+                                memset(Gf, 0, sizeof(float) * NQ * n);
+                        }
                         int mu;
                         for (g = 0; g < n; g++)
                                 for (mu = 0; mu < nao; mu++) {
@@ -1052,7 +1131,11 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         const size_t sz = (size_t)nab * nh;
                         int k0 = 0;
                         PROF(const unsigned long long cp0 = __rdtsc());
-                        if (multi && aoff + (size_t)nab * n > CX_ABUF) {
+                        if (multi && aoff + (size_t)nab * n > abcap) {
+#ifdef CX_FUSED
+                                if (mfl) multi_contract_f(Gf, Ff, Abf, rec, nrec, nao, n, nset);
+                                else
+#endif
                                 multi_contract(G, F, Abuf, rec, nrec, nao, n, nset);
                                 nrec = 0;
                                 aoff = 0;
@@ -1148,11 +1231,19 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         const int I0 = ao_loc[pp->I], J0 = ao_loc[pp->J];
                         if (multi) {
                                 /* point-major copy */
-                                double *at = Abuf + aoff;
                                 int ab;
-                                for (ab = 0; ab < nab; ab++) {
-                                        const double *ar = A + (size_t)ab * n;
-                                        for (g = 0; g < n; g++) at[(size_t)g * nab + ab] = ar[g];
+                                if (mfl) {
+                                        float *at = Abf + aoff;
+                                        for (ab = 0; ab < nab; ab++) {
+                                                const double *ar = A + (size_t)ab * n;
+                                                for (g = 0; g < n; g++) at[(size_t)g * nab + ab] = (float)ar[g];
+                                        }
+                                } else {
+                                        double *at = Abuf + aoff;
+                                        for (ab = 0; ab < nab; ab++) {
+                                                const double *ar = A + (size_t)ab * n;
+                                                for (g = 0; g < n; g++) at[(size_t)g * nab + ab] = ar[g];
+                                        }
                                 }
                                 rec[nrec].I0 = I0;
                                 rec[nrec].J0 = J0;
@@ -1220,7 +1311,17 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         }
                         PROF(st[26] += __rdtsc() - cc0);
                 }
-                if (multi && nrec) multi_contract(G, F, Abuf, rec, nrec, nao, n, nset);
+                if (multi && nrec) {
+#ifdef CX_FUSED
+                        if (mfl) multi_contract_f(Gf, Ff, Abf, rec, nrec, nao, n, nset);
+                        else
+#endif
+                        multi_contract(G, F, Abuf, rec, nrec, nao, n, nset);
+                }
+                if (mfl) {
+                        size_t q;
+                        for (q = 0; q < NQ * n; q++) G[q] = Gf[q];
+                }
                 tt1 = omp_get_wtime(); st[1] += tt1 - tt0; tt0 = tt1;
                 if (eonly) continue;
                 if (multi) {
@@ -1276,7 +1377,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
         }
 #pragma omp barrier
         free(Kt); free(H); free(xs); free(a); free(wx); free(rmx); free(ix); free(runs); free(dr); free(F); free(G); free(ktmp);
-        free(fmax); free(A0); free(bk); free(Bm); free(Abuf); free(rec); free(R); free(Rwk); free(S); free(X); free(xyz);
+        free(fmax); free(A0); free(bk); free(Bm); free(Abuf); free(rec); free(Ff); free(Gf); free(R); free(Rwk); free(S); free(X); free(xyz);
         for (at = 0; at < natm; at++) free(farR[at]);
         free(farR); free(stamp); free(armin);
         if (mkl_set_num_threads_local) mkl_set_num_threads_local(mkl0);
