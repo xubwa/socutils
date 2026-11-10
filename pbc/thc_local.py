@@ -48,7 +48,7 @@ def _atom_mol(cell, atoms, coords, basis):
 
 
 def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep=1e-12, verbose=True, sparse=False,
-                 far=False, far_grid=(300, 302), comm=None):
+                 far=False, far_grid=(300, 302), comm=None, rows_to_owner=False):
     '''Gamma-point local fit coefficients of the CX pairs (dense (naux, npair) packed, for validation).
 
     Args:
@@ -61,7 +61,9 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
         far : also fit the images beyond the explicit (r_cut) clusters, on A's aux functions only (far_cx_fit):
             c (compact, on A) times the lattice sum of the remaining images of x, which is smooth where c lives
         comm : MPI (mpi4py, sparse only): the compact atoms split over the ranks (greedy by size), the partial
-            CSR matrices summed on every rank
+            CSR matrices summed on every rank, or with rows_to_owner only the rows of the aux atoms a rank owns
+            (owner: greedy by the global nonzeros of an aux atom's rows; stats['row_owner'], per aux atom) summed
+            on that rank -- the other rows empty, C distributed
     Returns C (naux, nao (nao+1) / 2) (dense, or scipy.sparse CSR with sparse=True), stats dict.'''
     from pyscf.df import addons as df_addons
     t0 = time.time()
@@ -230,7 +232,13 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
         if Cacc is None:
             import scipy.sparse
             Cacc = scipy.sparse.csr_matrix((naux, len(ti)))
-        if comm is not None:                                          # sum of the ranks' partial matrices
+        if comm is not None and rows_to_owner:                        # rows summed on their owner only
+            tg = time.time()
+            Cacc, stats['row_owner'] = _reduce_rows_to_owner(comm, Cacc, aux_loc)
+            if verbose:
+                print('local CX fit: partial C of %d ranks summed by aux-atom owner (%.0f s)'
+                      % (comm.Get_size(), time.time() - tg), flush=True)
+        elif comm is not None:                                        # sum of the ranks' partial matrices
             tg = time.time()
             Cacc = _allsum_csr(comm, Cacc)
             if verbose:
@@ -257,6 +265,65 @@ def _my_compact_atoms(cell, compact, comm):
         own[A] = k
         load[k] += w[A]
     return {A for A, k in own.items() if k == rank}
+
+
+def send_array(comm, a, dest, chunk=1 << 28):
+    '''Send of a numpy array of any size (chunks below the 2^31-element MPI limit).'''
+    comm.send((a.shape, a.dtype.str), dest=dest, tag=71)
+    flat = np.ascontiguousarray(a).reshape(-1)
+    for i in range(0, flat.size, chunk):
+        comm.Send(flat[i:i + chunk], dest=dest, tag=72)
+
+
+def recv_array(comm, source, chunk=1 << 28):
+    shape, dt = comm.recv(source=source, tag=71)
+    a = np.empty(shape, dtype=np.dtype(dt))
+    flat = a.reshape(-1)
+    for i in range(0, flat.size, chunk):
+        comm.Recv(flat[i:i + chunk], source=source, tag=72)
+    return a
+
+
+def _reduce_rows_to_owner(comm, C, aux_loc):
+    '''Partial CSR matrices (naux, ncol) of the ranks -> on every rank the sum of the rows of the aux atoms it
+    owns (others empty), and the owner of every aux atom (greedy by its rows' global nonzeros).  Pieces go to
+    their owner one sender at a time: the peak is the owned sum plus one piece.'''
+    import scipy.sparse
+    from mpi4py import MPI
+    rank, size = comm.Get_rank(), comm.Get_size()
+    C = C.tocsr()
+    nat = len(aux_loc)
+    w = np.array([float(C.indptr[a1] - C.indptr[a0]) for a0, a1 in aux_loc])
+    comm.Allreduce(MPI.IN_PLACE, w, op=MPI.SUM)
+    load = np.zeros(size)
+    owner = [0] * nat
+    for a in np.argsort(-w, kind='stable'):
+        k = int(np.argmin(load))
+        owner[a] = k
+        load[k] += w[a]
+    out = None
+    for r in range(size):
+        rows_r = np.concatenate([np.arange(*aux_loc[a]) for a in range(nat) if owner[a] == r] or
+                                [np.zeros(0, dtype=int)])
+        piece = C[rows_r]
+        if rank == r:
+            acc = piece
+            for p in range(size):
+                if p != r:
+                    d, ix, ip = recv_array(comm, p), recv_array(comm, p), recv_array(comm, p)
+                    acc = acc + scipy.sparse.csr_matrix((d, ix, ip), shape=piece.shape)
+            acc = acc.tocsr()
+            acc.sort_indices()
+            counts = np.zeros(C.shape[0], dtype=np.int64)
+            counts[rows_r] = np.diff(acc.indptr)
+            out = scipy.sparse.csr_matrix((acc.data, acc.indices, np.concatenate([[0], np.cumsum(counts)])),
+                                          shape=C.shape)
+        else:
+            send_array(comm, piece.data, r)
+            send_array(comm, piece.indices, r)
+            send_array(comm, piece.indptr, r)
+        piece = None
+    return out, owner
 
 
 def bcast_array(comm, a, root, chunk=1 << 28):

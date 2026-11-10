@@ -637,8 +637,13 @@ class THCExchange:
     def _mem_mark(self, stage):
         '''Peak resident size (getrusage) and current size after a build stage, max over the ranks, logged with the
         budget (cell.max_memory) -- where the build exceeds it.'''
-        import resource
-        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e3          # MB (Linux: kB)
+        peak = 0.                                                     # VmHWM: this process's high-water mark
+        try:                                                          # (getrusage's ru_maxrss survives exec:
+            for line in open('/proc/self/status'):                    # it showed the launcher's 32 GB)
+                if line.startswith('VmHWM:'):
+                    peak = float(line.split()[1]) / 1e3                   # MB
+        except OSError:
+            pass
         before = lib.current_memory()[0]
         _malloc_trim()                                                # freed C buffers back to the system
         cur = lib.current_memory()[0]
@@ -716,9 +721,13 @@ class THCExchange:
         t = time.time()
         if local:
             from socutils.pbc.thc_local import local_cx_fit
-            self.Cs = local_cx_fit(cell, self.aux, aohard, omega=self.omega, r_cut=local, verbose=self.verbose,
-                                   sparse=True, far=getattr(self, 'far_fit', True),   # far: r_cut-converged
-                                   comm=getattr(self, 'comm', None))[0]
+            comm_ = getattr(self, 'comm', None)
+            dist_c = comm_ is not None and comm_.Get_size() > 1 and getattr(self, 'distribute_c', True)
+            self.Cs, st_ = local_cx_fit(cell, self.aux, aohard, omega=self.omega, r_cut=local, verbose=self.verbose,
+                                        sparse=True, far=getattr(self, 'far_fit', True),   # far: r_cut-converged
+                                        comm=comm_, rows_to_owner=dist_c)
+            # MPI: C held by aux-atom owner (its rows only on a rank); the (M C) of CX-CX by broadcast blocks
+            self._row_owner = st_.get('row_owner') if dist_c else None
             self.C = self.Cs.toarray() if getattr(self, 'dense_c', True) else None
             self.nonrobust = True
         else:
@@ -1088,7 +1097,10 @@ class THCExchange:
             ta_comm += time.time() - ta
             # FFT of the own mu rows; A_lr, Xi (small G) from them
             ta = time.time()
-            Xh = scipy.fft.rfftn(xi.reshape(m1 - m0, *mesh), axes=(1, 2, 3), workers=-1).reshape(m1 - m0, -1)
+            if m1 > m0:
+                Xh = scipy.fft.rfftn(xi.reshape(m1 - m0, *mesh), axes=(1, 2, 3), workers=-1).reshape(m1 - m0, -1)
+            else:                                                     # no mu row here (a short last block)
+                Xh = np.zeros((0, nG), dtype=complex)
             xi = None
             Xh *= vol / ng
             tt['FFT'] += time.time() - ta
@@ -1148,8 +1160,11 @@ class THCExchange:
             # potential of the own mu rows on the full grid
             ta = time.time()
             Xh *= self.w_k[None]
-            vxi = scipy.fft.irfftn(Xh.reshape((m1 - m0,) + hshape), s=tuple(mesh), axes=(1, 2, 3),
-                                   workers=-1, overwrite_x=True).reshape(m1 - m0, -1)
+            if m1 > m0:
+                vxi = scipy.fft.irfftn(Xh.reshape((m1 - m0,) + hshape), s=tuple(mesh), axes=(1, 2, 3),
+                                       workers=-1, overwrite_x=True).reshape(m1 - m0, -1)
+            else:
+                vxi = np.zeros((0, ng))
             Xh = None
             tt['V'] += time.time() - ta
             # back: to rank p the (m1 - m0, n_p) columns of its rows; from rank q its mu rows on the own grid rows
@@ -1562,7 +1577,13 @@ class THCExchange:
         Bsr, Blr, Lcx = self.A, self.Xi_lr, self.Llr_cx
         xown = self._x_owner(blocks, size)                            # aux atom -> rank (greedy by work)
 
+        dist_c = getattr(self, '_row_owner', None) is not None and comm is not None
+        if dist_c and getattr(self, 'Cs', None) is not None:          # the own dense blocks hold it now
+            self.Cs = None
+
         def mine_x(part, X):
+            if dist_c and part in ('cs', 'cc'):                       # distributed C: only its owner has the block
+                return xown[X] == rank
             return (xown[X] == rank) if part in split else rank == 0
         # CX-SS: cross(D) = H(D) Pm with H[a] = sum_{p=(a,c)} B_p E_c, E = D[:, SS] Pm^T; for each density the
         # direct term and (unless sym) the transposed one
@@ -1605,15 +1626,49 @@ class THCExchange:
         # (M C)_P is density independent: kept across calls when naux nCX doubles fit in k_cache_gb (GB)
         if getattr(self, '_mc_cache', None) is None:
             budget = getattr(self, 'k_cache_gb', None)               # GB; default: half of what is left
-            nbytes = self.auxmol.nao * nCX * 8
+            nrows_mc = (sum(len(blocks[X][0]) for X in range(len(blocks)) if mine_x('cc', X)) if dist_c
+                        else self.auxmol.nao)                         # distributed C: the own aux rows only
+            nbytes = nrows_mc * nCX * 8
             fits = nbytes <= budget * 1e9 if budget is not None else self.fits(nbytes)
             self._mc_cache = {} if fits else False
         mc_cache = self._mc_cache if self._mc_cache is not False else None
         tc = dict.fromkeys(('MC', 'unpack', 'CD', 'swap', 'GEMM', 'add'), 0.)
         aoat = self.aoat
-        for X, (rows, cols, Cd) in enumerate(blocks):
-            if not mine_x('cc', X):
-                continue
+        # distributed C: the (M C)_P of the own aux atoms from every atom's C block broadcast by its owner, for
+        # groups of own atoms whose (M C) fit the budget (all at once, and kept, when they fit k_cache_gb);
+        # collective: every rank takes as many groups as the busiest one
+        own_cc = [X for X in range(len(blocks)) if mine_x('cc', X)]
+        groups, mc_group, done = [own_cc], {}, [0]
+        if dist_c:
+            keys_of = lambda X: [(X, c0, min(c0 + kblk, len(blocks[X][0]))) for c0 in range(0, len(blocks[X][0]), kblk)]
+            if mc_cache is None:
+                per = max(1., 0.3 * self.avail_bytes() / 8. / max(nCX, 1))      # (M C) rows per group
+                groups, cur, nr = [], [], 0
+                for X in own_cc:
+                    if cur and nr + len(blocks[X][0]) > per:
+                        groups.append(cur); cur, nr = [], 0
+                    cur.append(X); nr += len(blocks[X][0])
+                groups.append(cur)
+            ngroups = comm.allreduce(len(groups), op=MPI.MAX)
+            groups += [[] for _ in range(ngroups - len(groups))]
+        first_of = {g[0]: gi for gi, g in enumerate(groups) if g}
+
+        def mc_pass(gX):
+            keys = [k for X in gX for k in keys_of(X) if mc_cache is None or k not in mc_cache]
+            if comm.allreduce(len(keys), op=MPI.MAX):
+                ta = time.time()
+                got = self._mc_broadcast(blocks, keys, nCX, xown)
+                if mc_cache is not None:
+                    mc_cache.update(got)
+                    got = {}
+                tc['MC'] += time.time() - ta
+                return got
+            return {}
+        for X in [X for g in groups for X in g]:
+            rows, cols, Cd = blocks[X]
+            if dist_c and first_of.get(X) == done[0]:
+                mc_group = mc_pass(groups[done[0]])
+                done[0] += 1
             S = np.unique(np.concatenate([ii[cols], jj[cols]]))
             # local fit: the pairs fitted on X's aux have an AO on atom X (cluster (X, B)), so C_P = [[C_xx, C_xn],
             # [C_nx, 0]] with x the AOs of X: S ordered x first
@@ -1632,6 +1687,8 @@ class THCExchange:
                 nb = c1 - c0
                 ta = time.time()
                 MC = mc_cache.get((X, c0, c1)) if mc_cache is not None else None
+                if MC is None and dist_c:
+                    MC = mc_group.pop((X, c0, c1))
                 if MC is None:
                     MC = np.zeros((nb, nCX))
                     for rows2, cols2, Cd2 in blocks:
@@ -1669,6 +1726,9 @@ class THCExchange:
                     add_rows(Ks[n], R[n], S)                          # C kernel
                 tc['add'] += time.time() - ta
                 W = CD = Cf = R = None
+        while dist_c and done[0] < len(groups):                       # the collective passes of the busier ranks
+            mc_pass(groups[done[0]])
+            done[0] += 1
         self.cc_timings = tc
         # MPI: with this rank's (M C)_P cached, the C blocks of the other aux atoms are not needed any more
         if comm is not None and mc_cache is not None and not getattr(self, '_cx_dropped', False):
@@ -1788,9 +1848,30 @@ class THCExchange:
         self.log('   cached LR rows of the SS pairs: %s (%.1f GB)' % (out.shape, out.nbytes / 1e9))
         return self._lrss
 
+    def _mc_broadcast(self, blocks, keys, nCX, xown):
+        '''(M C)_P rows for the keys (X, c0, c1) of this rank, distributed C: every aux atom's block (columns, C)
+        broadcast by its owner in turn (one remote block held at a time), M[rows of X][:, rows of Y] C_Y added.'''
+        from socutils.pbc.thc_local import bcast_array
+        comm = self.comm
+        rank = comm.Get_rank()
+        out = {k: np.zeros((k[2] - k[1], nCX)) for k in keys}
+        for Y, (rowsY, colsY, CdY) in enumerate(blocks):
+            root = xown[Y]
+            colsY = bcast_array(comm, colsY if rank == root else None, root)
+            CdY = bcast_array(comm, CdY if rank == root else None, root)
+            if len(colsY) == 0:
+                continue
+            for (X, c0, c1) in keys:
+                rX = blocks[X][0][c0:c1]
+                add_cols(out[X, c0, c1], self.M[rX][:, rowsY] @ CdY, colsY)
+        return out
+
     def _x_owner(self, blocks, size):
         '''Aux atom (block index) -> rank, greedy by the block size (the work of CX-SS and CX-CX), cached.'''
         if getattr(self, '_xown', None) is not None and len(self._xown) == len(blocks) and self._xown_size == size:
+            return self._xown
+        if getattr(self, '_row_owner', None) is not None:              # distributed C: its aux-atom owner
+            self._xown, self._xown_size = [self._row_owner[X] for X in self._cxb_atoms], size
             return self._xown
         w = [len(r) * len(c) for r, c, _ in blocks]
         load = np.zeros(size)
@@ -1809,19 +1890,26 @@ class THCExchange:
             return self._cxb
         Cr = Ccx.tocsr()
         pat = np.repeat([self.auxmol.bas_atom(i) for i in range(self.auxmol.nbas)], np.diff(self.auxmol.ao_loc_nr()))
-        out = []
+        owner = getattr(self, '_row_owner', None)                      # distributed C: own aux atoms' rows only
+        rank = self.comm.Get_rank() if owner is not None else 0
+        out, atoms = [], []
         for X in range(self.auxmol.natm):
             rows = np.where(pat == X)[0]
             if len(rows) == 0:
                 continue
             assert rows[-1] - rows[0] + 1 == len(rows)                 # the aux functions of an atom are a range
+            if owner is not None and owner[X] != rank:
+                out.append((rows, None, None))                         # held by its owner (same block index)
+                atoms.append(X)
+                continue
             sub = Cr[rows]
             cols = np.unique(sub.indices)
-            if len(cols):
+            if len(cols) or owner is not None:
                 out.append((rows, cols, np.ascontiguousarray(sub[:, cols].toarray())))
-        self._cxb = out
+                atoms.append(X)
+        self._cxb, self._cxb_atoms = out, atoms
         self.log('   CX atom blocks: %d, %.2e dense entries for %.2e nonzeros of C'
-                 % (len(out), sum(c.size for _, _, c in out), Cr.nnz))
+                 % (len(out), sum(c.size for _, _, c in out if c is not None), Cr.nnz))
         return out
 
     def j_thc_ss(self):
@@ -2089,7 +2177,7 @@ class THCJK:
         self.th.stream_max_blocks = getattr(self, 'stream_max_blocks', 1 << 30)
         self.th.piv_file = getattr(self, 'piv_file', None)
         for k in ('coarsen', 'blocked_pivots', 'far_fit', 'phi_ondemand', 'symm_grid', 'symm_pivots',
-                  'ke_precision', 'mesh_override', 'drop_nyquist', 'g_sphere'):   # options, if set
+                  'ke_precision', 'mesh_override', 'drop_nyquist', 'g_sphere', 'distribute_c'):   # if set
             if hasattr(self, k):
                 setattr(self.th, k, getattr(self, k))
         rc = getattr(self, 'exx_trunc', None)                         # smoothed truncated Coulomb exchange
