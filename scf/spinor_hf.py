@@ -555,9 +555,17 @@ class SCF(hf.SCF):
         if mol is None: mol = self.mol
         if dm is None: dm = self.make_rdm1()
         t0 = (logger.process_clock(), logger.perf_counter())
+        from socutils.scf import spinor_jk
+        dm_sph = spinor2sph(mol, dm)
+        if omega is None and spinor_jk.ENABLE and spinor_jk.available(mol):
+            # real scalar-AO builds through md_j / jk_multi (spinor_jk)
+            j_sph, k_sph = spinor_jk.get_jk_ghf(self, mol, dm_sph, hermi, with_j, with_k)
+            j_spinor = None if j_sph is None else sph2spinor(mol, j_sph)
+            k_spinor = None if k_sph is None else sph2spinor(mol, k_sph)
+            logger.timer(self, 'vj and vk', *t0)
+            return j_spinor, k_spinor
         if self.direct_scf and self.opt is None:
             self.opt = self.init_direct_scf(mol)
-        dm_sph = spinor2sph(mol, dm)
         j_sph, k_sph = ghf.GHF.get_jk(self, mol, dm_sph)
         j_spinor = sph2spinor(mol, j_sph)
         k_spinor = sph2spinor(mol, k_sph)
