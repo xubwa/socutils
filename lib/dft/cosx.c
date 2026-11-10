@@ -943,6 +943,12 @@ typedef void (*ssymm_t)(const char *side, const char *uplo, const int *m, const 
 static dsymm_t cx_dsymm = NULL;
 static ssymm_t cx_ssymm = NULL;
 static int cx_dense = 1;
+/* a block runs the dense contraction when its stored pairs' nI nJ sum is at least this fraction of
+ * nao (nao + 1) / 2, else the record-wise one (both from the same counting pass) */
+static double cx_dense_min = 0;
+void SOCDFTcosx_set_dense_min(double v) { cx_dense_min = v; }
+static double cx_kept_run = 0;          /* the largest kept fraction of a block in the last call */
+double SOCDFTcosx_kept() { return cx_kept_run; }
 void SOCDFTcosx_set_symm(void *d, void *s) { cx_dsymm = (dsymm_t)d; cx_ssymm = (ssymm_t)s; }
 void SOCDFTcosx_set_dense(int v) { cx_dense = v; }
 
@@ -984,21 +990,36 @@ void SOCDFTcosx_untranspose(double *out, const double *vt, int nao, int nset, in
 
 /* G[g] (nao, nset) += A(g) F[g], one symmetric GEMM per point: the records that act both ways (and the
  * diagonal shell pairs, I >= J) placed in the upper triangle of the column-major A(g) (rows I, columns J of
- * the row-major buffer), the one-way records (cI xor cJ) added record by record as multi_contract */
+ * the row-major buffer), the one-way records (cI xor cJ) added record by record as multi_contract.  The
+ * integrals are stored record-wise (At[off + g nab + ab], written sequentially); CX_DTILE points at a time
+ * are transposed into Tt (point-contiguous, stride Sg = sum nab) before their A(g) are built. */
+#define CX_DTILE 16
 #define CX_DENSE_BODY(T, SYMM)                                                                          \
         const size_t NQ = (size_t)nao * nset;                                                          \
         const T one = 1, zero = 0;                                                                     \
-        int g, r, ia, jb, c;                                                                           \
+        int g, g0, r, ia, jb, c;                                                                       \
+        size_t o_ = 0;                                                                                 \
+        for (r = 0; r < nrec; r++) { roff[r] = o_; o_ += (size_t)rec[r].nI * rec[r].nJ; }               \
         /* the records (so the entries written) are those of the block: A(g) zeroed once per block */ \
         memset(Ad, 0, sizeof(T) * nao * nao);                                                          \
-        for (g = 0; g < n; g++) {                                                                      \
+        for (g0 = 0; g0 < n; g0 += CX_DTILE) {                                                         \
+        const int tn = n - g0 < CX_DTILE ? n - g0 : CX_DTILE;                                          \
+        for (r = 0; r < nrec; r++) {                                                                   \
+                const int nab = rec[r].nI * rec[r].nJ;                                                 \
+                const T *src = Abuf + rec[r].off + (size_t)g0 * nab;                                   \
+                int gg;                                                                                \
+                for (gg = 0; gg < tn; gg++)                                                            \
+                        memcpy(Tt + (size_t)gg * Sg + roff[r], src + (size_t)gg * nab, sizeof(T) * nab); \
+        }                                                                                              \
+        for (g = g0; g < g0 + tn; g++) {                                                               \
                 const T *Fg = F + g * NQ;                                                              \
                 T *Gg = G + g * NQ;                                                                    \
+                const T *Tg = Tt + (size_t)(g - g0) * Sg;                                              \
                 for (r = 0; r < nrec; r++) {                                                           \
                         const CXRec *rc = rec + r;                                                     \
                         if (rc->I0 != rc->J0 && !(rc->cI && rc->cJ)) continue;                         \
                         const int nI = rc->nI, nJ = rc->nJ;                                            \
-                        const T *ar = Abuf + rc->off + (size_t)g * Sg;                                 \
+                        const T *ar = Tg + roff[r];                                                    \
                         for (ia = 0; ia < nI; ia++)                                                    \
                                 memcpy(Ad + (size_t)(rc->I0 + ia) * nao + rc->J0, ar + ia * nJ, sizeof(T) * nJ); \
                 }                                                                                      \
@@ -1009,7 +1030,7 @@ void SOCDFTcosx_untranspose(double *out, const double *vt, int nao, int nset, in
                         const CXRec *rc = rec + r;                                                     \
                         if (rc->I0 == rc->J0 || (rc->cI && rc->cJ)) continue;                          \
                         const int nI = rc->nI, nJ = rc->nJ;                                            \
-                        const T *ar = Abuf + rc->off + (size_t)g * Sg;                                 \
+                        const T *ar = Tg + roff[r];                                                    \
                         const T *FI = Fg + (size_t)rc->I0 * nset, *FJ = Fg + (size_t)rc->J0 * nset;    \
                         T *GI = Gg + (size_t)rc->I0 * nset, *GJ = Gg + (size_t)rc->J0 * nset;          \
                         if (rc->cI)                                                                    \
@@ -1029,16 +1050,17 @@ void SOCDFTcosx_untranspose(double *out, const double *vt, int nao, int nset, in
                                                         GJ[(size_t)jb * nset + c] += v * FI[(size_t)ia * nset + c]; \
                                         }                                                              \
                 }                                                                                      \
+        }                                                                                              \
         }
 
 static void dense_contract(double *G, const double *F, const double *Abuf, const CXRec *rec, int nrec, int nao,
-                           int n, int nset, double *Ad, double *tg, size_t Sg)
+                           int n, int nset, double *Ad, double *tg, size_t Sg, double *Tt, size_t *roff)
 {
         CX_DENSE_BODY(double, cx_dsymm)
 }
 
 static void dense_contract_f(float *G, const float *F, const float *Abuf, const CXRec *rec, int nrec, int nao,
-                             int n, int nset, float *Ad, double *tg, size_t Sg)
+                             int n, int nset, float *Ad, double *tg, size_t Sg, float *Tt, size_t *roff)
 {
         CX_DENSE_BODY(float, cx_ssymm)
 }
@@ -1073,17 +1095,9 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
         const int occm = multi && cx_occ_co != NULL;
         /* dense: all pairs of a block kept (no flush), the contraction one GEMM per point */
         const int dense = multi && !occm && cx_dense && (mfl ? cx_ssymm != NULL : cx_dsymm != NULL);
-        size_t abtot = 0;
-        if (dense) {
-                int q_;
-                const CXOpt *op_ = optp;
-                for (q_ = 0; q_ < op_->npair; q_++) abtot += (size_t)op_->pairs[q_].nI * op_->pairs[q_].nJ;
-                abtot *= blk;
-        }
-        /* dense: the stored integrals point-contiguous, At[g S + off + ab], S the stride of a point */
-        const size_t Sg = dense ? abtot / blk : 0;
-        {
-        }
+        /* dense: a counting pass over the pairs of each block first (the screening only), which sizes the
+         * thread's store and picks the block's layout: dense, the integrals point-contiguous At[g S + off + ab]
+         * (S the block's sum of nI nJ), or record-wise At[off + g nab + ab]; no flush */
         const int nocc = occm ? cx_occ_n : 0;
         const double *co = cx_occ_co;
         /* energy mode (dmh != NULL): eout[d] = sum_g w sum_ab H_a A_ab F_b, H = Dh_d^T phi, vk untouched;
@@ -1122,6 +1136,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
         omp_lock_t *klock = kshared && !kpriv ? malloc(sizeof(omp_lock_t) * nlock) : NULL;
         size_t l_;
         if (klock) for (l_ = 0; l_ < nlock; l_++) omp_init_lock(klock + l_);
+        cx_kept_run = 0;
 #pragma omp parallel
 {
         const int tid = omp_get_thread_num();
@@ -1152,15 +1167,18 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
         int *rr = malloc(sizeof(int) * 2 * nao);
         /* the float contraction of kshared keeps F and G in float only */
         const size_t nfg = kshared && mfl ? 1 : (size_t)nset * nao * blk;
-        double *Abuf = multi ? malloc(dense ? (mfl ? sizeof(float) : sizeof(double)) * abtot : sizeof(double) * CX_ABUF)
-                             : NULL;
+        double *Abuf = multi ? malloc(sizeof(double) * CX_ABUF) : NULL;
+        const size_t esz = mfl ? sizeof(float) : sizeof(double);
+        double *Tt = NULL;              /* dense: CX_DTILE points of the block's integrals, point-contiguous */
+        size_t ttcap = 0;
+        size_t *roff = multi ? malloc(sizeof(size_t) * (opt->npair + 1)) : NULL;
         char *mark = multi ? malloc(nao) : NULL;
         double *Ad = dense ? malloc((mfl ? sizeof(float) : sizeof(double)) * (size_t)nao * nao) : NULL;
         CXRec *rec = multi ? malloc(sizeof(CXRec) * (opt->npair + 1)) : NULL;
         float *Ff = mfl ? malloc(sizeof(float) * NQ * blk) : NULL;
         float *Gf = mfl ? malloc(sizeof(float) * NQ * blk) : NULL;
         float *Abf = (float *)Abuf;
-        const size_t abcap = dense ? abtot + 1 : (mfl ? 2 * (size_t)CX_ABUF : (size_t)CX_ABUF);
+        size_t abcap = mfl ? 2 * (size_t)CX_ABUF : (size_t)CX_ABUF;     /* elements */
         int nrec = 0;
         size_t aoff = 0;
         double *H = eonly ? malloc(sizeof(double) * (size_t)nset * nao * blk) : NULL;
@@ -1189,6 +1207,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
         int *stamp = malloc(sizeof(int) * natm);
         double *armin = malloc(sizeof(double) * natm);
         int at, i;
+        double kmax_ = 0;
         double st[32] = {0};
         for (at = 0; at < natm; at++) {
                 stamp[at] = -1;
@@ -1351,6 +1370,38 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         }
                 }
                 if (!eonly && !(kshared && (mfl || dense))) memset(G, 0, sizeof(double) * nset * nao * n);
+                int dnb = 0, pass_;
+                size_t Sgb = 0;
+                for (pass_ = dense ? 0 : 1; pass_ < 2; pass_++) {
+                if (pass_ == 1 && dense) {
+                        const double kept = (double)Sgb / ((double)nao * (nao + 1) / 2);
+                        dnb = kept >= cx_dense_min;
+                        st[11] += dnb;
+                        st[10] += kept;
+                        if (kept > kmax_) kmax_ = kept;
+                        const size_t need = Sgb * n + 1;
+                        if (dnb && Sgb * CX_DTILE > ttcap) {
+                                double *nt_ = realloc(Tt, esz * Sgb * CX_DTILE);
+                                if (!nt_) {
+#pragma omp atomic write
+                                        cx_err = 1;
+                                        break;
+                                }
+                                Tt = nt_;
+                                ttcap = Sgb * CX_DTILE;
+                        }
+                        if (need > abcap) {
+                                double *nb_ = realloc(Abuf, esz * need);
+                                if (!nb_) {
+#pragma omp atomic write
+                                        cx_err = 1;
+                                        break;
+                                }
+                                Abuf = nb_;
+                                Abf = (float *)Abuf;
+                                abcap = need;
+                        }
+                }
                 /* the weights of the shells on the grid side: max_mu sum_g |w phi| (K), max_a sum_g |H_a| (energy) */
                 for (i = 0; i < nbas; i++) xs[i] = xsum;
                 if (eonly) {
@@ -1442,12 +1493,16 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         const int cI2 = cI && bsum * wI >= tol;
                         const int cJ2 = cJ && bsum * wJ >= tol;
                         if (!cI2 && !cJ2) continue;
+                        if (pass_ == 0) {
+                                Sgb += (size_t)nab;
+                                continue;
+                        }
                         const double fm = cI2 && cJ2 ? (wI > wJ ? wI : wJ) : (cI2 ? wI : wJ);
                         PROF(st[4] += 1);
                         const size_t sz = (size_t)nab * nh;
                         int k0 = 0;
                         PROF(const unsigned long long cp0 = __rdtsc());
-                        if (multi && aoff + (size_t)nab * n > abcap) {
+                        if (multi && !dense && aoff + (size_t)nab * n > abcap) {
 #ifdef CX_FUSED
                                 if (occm && mfl) { const double tq_ = omp_get_wtime(); multi_contract_const_f(Aocf, cof, Abf, rec, nrec, nao, n, nocc); st[27] += omp_get_wtime() - tq_; }
                                 else if (mfl) { const double tq_ = omp_get_wtime(); multi_contract_f(Gf, Ff, Abf, rec, nrec, nao, n, nset); st[27] += omp_get_wtime() - tq_; }
@@ -1554,15 +1609,13 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                                         float *at = Abf + aoff;
                                         for (ab = 0; ab < nab; ab++) {
                                                 const double *ar = A + (size_t)ab * n;
-                                                if (dense) for (g = 0; g < n; g++) at[(size_t)g * Sg + ab] = (float)ar[g];
-                                        else for (g = 0; g < n; g++) at[(size_t)g * nab + ab] = (float)ar[g];
+                                                for (g = 0; g < n; g++) at[(size_t)g * nab + ab] = (float)ar[g];
                                         }
                                 } else {
                                         double *at = Abuf + aoff;
                                         for (ab = 0; ab < nab; ab++) {
                                                 const double *ar = A + (size_t)ab * n;
-                                                if (dense) for (g = 0; g < n; g++) at[(size_t)g * Sg + ab] = ar[g];
-                                                else for (g = 0; g < n; g++) at[(size_t)g * nab + ab] = ar[g];
+                                                for (g = 0; g < n; g++) at[(size_t)g * nab + ab] = ar[g];
                                         }
                                 }
                                 st[2] += 1;
@@ -1575,7 +1628,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                                 rec[nrec].cJ = cJ2;
                                 rec[nrec].off = aoff;
                                 nrec++;
-                                aoff += dense ? (size_t)nab : (size_t)nab * n;
+                                aoff += (size_t)nab * n;
                                 continue;
                         }
                         if (eonly) {
@@ -1633,11 +1686,17 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         }
                         PROF(st[26] += __rdtsc() - cc0);
                 }
+                }
+                if (dense && pass_ < 2) continue;       /* out of memory */
                 if (dense && !nrec) {
                         if (mfl) memset(Gf, 0, sizeof(float) * NQ * n);
                         else memset(G, 0, sizeof(double) * NQ * n);
                 }
                 if (multi && nrec) {
+                        if (dense && !dnb) {    /* record-wise on this block: it accumulates */
+                                if (mfl) memset(Gf, 0, sizeof(float) * NQ * n);
+                                else memset(G, 0, sizeof(double) * NQ * n);
+                        }
                         {
                                 int r_, nnu_ = 0;
                                 double nab_ = 0;
@@ -1671,12 +1730,12 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         }
 #ifdef CX_FUSED
                         if (occm && mfl) { const double tq_ = omp_get_wtime(); multi_contract_const_f(Aocf, cof, Abf, rec, nrec, nao, n, nocc); st[27] += omp_get_wtime() - tq_; }
-                        else if (mfl && dense) { const double tq_ = omp_get_wtime(); dense_contract_f(Gf, Ff, Abf, rec, nrec, nao, n, nset, (float *)Ad, st + 31, Sg); st[27] += omp_get_wtime() - tq_; }
+                        else if (mfl && dnb) { const double tq_ = omp_get_wtime(); dense_contract_f(Gf, Ff, Abf, rec, nrec, nao, n, nset, (float *)Ad, st + 31, Sgb, (float *)Tt, roff); st[27] += omp_get_wtime() - tq_; }
                         else if (mfl) { const double tq_ = omp_get_wtime(); multi_contract_f(Gf, Ff, Abf, rec, nrec, nao, n, nset); st[27] += omp_get_wtime() - tq_; }
                         else
 #endif
                         if (occm) { const double tq_ = omp_get_wtime(); multi_contract_const(Aoc, co, Abuf, rec, nrec, nao, n, nocc); st[27] += omp_get_wtime() - tq_; }
-                        else if (dense) { const double tq_ = omp_get_wtime(); dense_contract(G, F, Abuf, rec, nrec, nao, n, nset, Ad, st + 31, Sg); st[27] += omp_get_wtime() - tq_; }
+                        else if (dnb) { const double tq_ = omp_get_wtime(); dense_contract(G, F, Abuf, rec, nrec, nao, n, nset, Ad, st + 31, Sgb, Tt, roff); st[27] += omp_get_wtime() - tq_; }
                         else { const double tq_ = omp_get_wtime(); multi_contract(G, F, Abuf, rec, nrec, nao, n, nset); st[27] += omp_get_wtime() - tq_; }
                 }
                 if (occm) {
@@ -1804,6 +1863,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
         st[29] += tz1_;
         for (i = 0; i < 32; i++) {
                 if (multi && (i == 18 || i == 19)) { if (st[i] > cx_stat[i]) cx_stat[i] = st[i]; }
+                if (i == 0 && kmax_ > cx_kept_run) cx_kept_run = kmax_;
                 else cx_stat[i] += st[i];
         }
 }
@@ -1825,7 +1885,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
 #pragma omp critical(socdft_cosx_stat2)
         cx_stat[28] += omp_get_wtime() - tr_;
         free(Kt); free(H); free(xs); free(a); free(wx); free(rmx); free(ix); free(runs); free(dr); free(F); free(G); free(ktmp);
-        free(fmax); free(A0); free(bk); free(Bm); free(Abuf); free(rec); free(Ff); free(Gf); free(Fc); free(pend); free(rr); free(Bf); free(af); free(wxf); free(Ad); free(mark); free(Aoc); free(Uo); free(Aocf); free(cof); free(R); free(Rwk); free(S); free(X); free(xyz);
+        free(fmax); free(A0); free(bk); free(Bm); free(Abuf); free(rec); free(Ff); free(Gf); free(Tt); free(roff); free(Fc); free(pend); free(rr); free(Bf); free(af); free(wxf); free(Ad); free(mark); free(Aoc); free(Uo); free(Aocf); free(cof); free(R); free(Rwk); free(S); free(X); free(xyz);
         for (at = 0; at < natm; at++) free(farR[at]);
         free(farR); free(stamp); free(armin);
         if (mkl_set_num_threads_local) mkl_set_num_threads_local(mkl0);
