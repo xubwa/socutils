@@ -40,6 +40,17 @@ class KnownValues(unittest.TestCase):
         B2 = rik.cholesky_eri(self.mol, aux2)
         self.assertAlmostEqual(abs(B2 - df.incore.cholesky_eri(self.mol, auxmol=aux2)).max(), 0, 9)
 
+    def test_mo_transform(self):
+        nao = self.mol.nao
+        numpy.random.seed(3)
+        c1 = numpy.random.rand(nao, 4) + 1j * numpy.random.rand(nao, 4)
+        c2 = numpy.random.rand(nao, 3)
+        B = lib.unpack_tril(self.ref[:20])
+        ref = numpy.einsum('pij,ia,jb->pab', B, c1.conj(), c2)
+        self.assertAlmostEqual(abs(rik.mo_transform(self.ref[:20], c1, c2) - ref).max(), 0, 11)
+        ref = numpy.einsum('pij,ia,jb->pab', B, c2, c2)
+        self.assertAlmostEqual(abs(rik.mo_transform(self.ref[:20], c2) - ref).max(), 0, 11)
+
     def test_cholesky_eri_h5(self):
         with tempfile.NamedTemporaryFile(dir=lib.param.TMPDIR) as f:
             # a tiny memory budget: several column blocks
