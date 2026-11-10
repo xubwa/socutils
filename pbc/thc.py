@@ -1054,10 +1054,36 @@ class THCExchange:
         # G chunks of every rank: contiguous ranges balanced by the cost of the A GEMM / aux FT of a chunk
         # (aux functions kept at its |G| x its G points); contiguous columns pack by memcpy (round-robin chunks
         # needed a fancy-index gather of the spectra: EuOCl np4 37 of 56 s per block)
-        cost = np.empty(nch)
-        for c in range(nch):
-            sub_, nk_ = self._aux_upto(g2c[c])
-            cost[c] = max(nk_, 1) * (min((c + 1) * gchunk, nG) - c * gchunk)
+        # A: the per-chunk aux FT cached when all of it fits its budget share (computed once); otherwise per
+        # label times atom phases (8x smaller for Eu:YSO, cached), each block then pays the phase products only.
+        # Per label pays a phase product of nb x nG per atom, a gain only where the plain FT of an atom (nk x nG,
+        # nk its kept aux functions) is larger: nb below the aux functions per atom (Eu:YSO nb 216 vs ~2800;
+        # quartz, nb ~ nk: no gain, 122 vs 85 s)
+        p2_left = 0.2 * self.avail_bytes()                            # its share of the budget (blocks: 0.65)
+        p2_left = comm.allreduce(p2_left, op=MPI.MIN)
+        nkc = np.array([self._aux_upto(g2c[c])[1] for c in range(nch)], dtype=float)
+        npts = np.array([min((c + 1) * gchunk, nG) - c * gchunk for c in range(nch)], dtype=float)
+        need = 16. * (nkc * npts).sum() / size                       # plain FT cache, per rank
+        by_el = getattr(self, 'a_by_element', None)
+        if by_el is None:
+            by_el = need > p2_left and nb < self.auxmol.nao / max(1, self.auxmol.natm)
+        self.log('   aux FT for A: %s (cache of the plain FT %.1f GB per rank, budget %.1f GB)'
+                 % ('per label x atom phase' if by_el else 'cached per chunk', need / 1e9, p2_left / 1e9))
+        # G chunks of every rank: contiguous ranges balanced by the work of a chunk per block, for the mode:
+        # plain: the A GEMM (nk x points) plus the FT of the chunks the cache misses (~13x the GEMM, Eu:YSO);
+        # per label: the GEMM plus the phase product of every atom with kept shells (~1.5 points each)
+        if by_el:
+            elems, atoms_ = self._elem_setup()
+            nlab = {}
+            for _, lab, _, _ in atoms_:
+                nlab[lab] = nlab.get(lab, 0) + 1
+            nact = np.array([sum(n for lab, n in nlab.items()
+                                 if np.searchsorted(-elems[lab]['cut'], -g2c[c], side='right') > 0)
+                             for c in range(nch)], dtype=float)
+            cost = npts * (nkc + 1.5 * nact)
+        else:
+            miss = max(0., 1. - p2_left / max(need, 1.))               # the uncached share of the plain FT
+            cost = npts * np.maximum(nkc, 1) * (1. + 13. * miss)
         cum = np.concatenate([[0.], np.cumsum(cost)])
         cuts = np.searchsorted(cum, cum[-1] * np.arange(1, size) / size)
         cuts = np.concatenate([[0], np.clip(cuts, 0, nch), [nch]]).astype(int)
@@ -1066,20 +1092,7 @@ class THCExchange:
         gsl = [(cuts[q] * gchunk, min(cuts[q + 1] * gchunk, nG)) for q in range(size)]   # G columns of rank q
         ncol = [b_ - a_ for a_, b_ in gsl]
         p2cache = {}                                                  # aux FT of the own G chunks, kept if it fits
-        p2_left = 0.2 * self.avail_bytes()                            # its share of the budget (blocks: 0.65)
         ecaches = ({}, {}, [p2_left])                                 # per-label FT, atom phases, bytes left
-        # A: the per-chunk aux FT cached when all of it fits its budget share (computed once); otherwise per
-        # label times atom phases (8x smaller for Eu:YSO, cached), each block then pays the phase products only
-        need = sum(16. * self._aux_upto(g2c[c])[1] * (min((c + 1) * gchunk, nG) - c * gchunk) for c in own)
-        # per label pays a phase product of nb x nG per atom, a gain only where the plain FT of an atom (nk x nG,
-        # nk its kept aux functions) is larger: nb below the aux functions per atom (Eu:YSO nb 216 vs ~2800;
-        # quartz, nb ~ nk: no gain, 122 vs 85 s)
-        by_el = getattr(self, 'a_by_element', None)
-        if by_el is None:
-            by_el = need > p2_left and nb < self.auxmol.nao / max(1, self.auxmol.natm)
-            by_el = bool(comm.allreduce(int(by_el), op=MPI.MAX))
-        self.log('   aux FT for A: %s (cache of the plain FT %.1f GB, budget %.1f GB)'
-                 % ('per label x atom phase' if by_el else 'cached per chunk', need / 1e9, p2_left / 1e9))
         ta_comm = 0.
         tw = dict(wait=0., a2a=0., bytes=0.)                          # transpose: waiting, Alltoallv, bytes moved
         prev = None                                                   # (b0, b1, potential rows) awaiting V
