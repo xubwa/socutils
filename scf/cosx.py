@@ -291,7 +291,9 @@ def stats(reset=True):
 
 
 TOL_ENERGY = 1e-9       # screening of the final-grid exchange energy
-VARIATIONAL = True      # the SCF's Fock K the derivative of the COSX energy (for analytic gradients)
+VARIATIONAL = False     # the SCF's Fock K the derivative of the COSX energy: analytic gradients exact to
+                        # ~1e-7 (else ~5e-5, ORCA's situation); +15-25 % per K build (c16 / def2-TZVP SCF
+                        # 68 s against 55-60 s), so on for geometry optimisations, off for energies
 REBUILD_NSTEPS = 30     # incremental K builds between two full builds (a late full build is a whole K for nothing)
 TOL_FULL = 1e-7         # screening of the full builds: their error is a fixed offset the increments do not
                         # touch (c16 / cc-pVDZ: E_x changes by 1e-6 against 1e-9; the increments keep tol)
@@ -299,7 +301,7 @@ SCF_GRID_SWITCH = 0     # max |D - D_prev| below which the SCF goes from GRIDX1 
                         # c16 / cc-pVDZ PBE0 with 1e-3: 18 cycles instead of 12, the grid switch upsets DIIS)
 
 
-def apply(mf, grids=None, final_grid=3, incremental=True, fit=True, tol=None, variational=VARIATIONAL):
+def apply(mf, grids=None, final_grid=3, incremental=True, fit=True, tol=None, variational=None):
     """mf (RHF / RKS, hybrid or HF) with K from COSX: J as before (RIJ through
     socutils.scf.md_j for density_fit(only_dfj=True), else mf's own), K by
     cosx on GRIDX1 / GRIDX2 (``grids``: one grid, or None for the switch at
@@ -322,6 +324,8 @@ def apply(mf, grids=None, final_grid=3, incremental=True, fit=True, tol=None, va
         mf = md_j.apply(mf)
     orig_jk = mf.get_jk
     mf.direct_scf = False
+    if variational is None:
+        variational = VARIATIONAL
     if tol is None:
         # the skipped contributions of the incremental builds put a floor under the SCF gradient
         # (c16 / def2-TZVP PBE0 at 1e-7: |g| stalls at 7e-5); tol <= conv_tol / 10
