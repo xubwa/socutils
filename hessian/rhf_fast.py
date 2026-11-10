@@ -1237,7 +1237,7 @@ def _md_rij_hess(libv, mol, auxmol, dm, dfit, tol):
     return hess[:natm, :natm] + hess[:natm, natm:] + hess[natm:, :natm] + hess[natm:, natm:]
 
 
-def ri_j_grad(mol, auxmol, dm, tol=None, max_memory=None, cderi=None):
+def ri_j_grad(mol, auxmol, dm, tol=None, max_memory=None, cderi=None, dfit=None):
     '''Gradient of the density-fitted Coulomb energy E_J = 1/2 rho^T M^{-1} rho
     at a symmetric D, auxiliary-basis response included (pyscf's
     auxbasis_response): g^xi = d . rho^xi - 1/2 d M^xi d, d = M^{-1} rho, the
@@ -1264,8 +1264,7 @@ def ri_j_grad(mol, auxmol, dm, tol=None, max_memory=None, cderi=None):
     npair = nao * (nao + 1) // 2
     blk = max(16, min(naux, int(max_memory * .2e6 / 8 / npair)))
     dm_tril = lib.pack_tril(dm + dm.T - numpy.diag(numpy.diag(dm)))
-    dfit = None
-    if cderi is not None and getattr(cderi, 'shape', None) == (naux, npair):
+    if dfit is None and cderi is not None and getattr(cderi, 'shape', None) == (naux, npair):
         import scipy.linalg
         try:
             low = scipy.linalg.cholesky(auxmol.intor('int2c2e', hermi=1), lower=True)
