@@ -746,8 +746,11 @@ static void e_times_r(double *A, const double *E, const double *R, int nab, int 
 void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords, double *weights,
                   uint8_t *non0tab, int ngrid, int blk, double cutoff, double tol, double tcut,
                   int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
-                  dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local)
+                  dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local, double *dmh, double *eout)
 {
+        /* energy mode (dmh != NULL): eout[d] = sum_g w sum_ab H_a A_ab F_b, H = Dh_d^T phi, vk untouched;
+         * the screening then weighs each pair by the densities on both sides */
+        const int eonly = dmh != NULL;
         CXOpt *opt = optp;
         cx_tables();
         const int nao = ao_loc[nbas];
@@ -764,13 +767,18 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                 int mu;
                 for (mu = ao_loc[i0]; mu < ao_loc[i0 + 1]; mu++) shl_of[mu] = i0;
         }
-        memset(vk, 0, sizeof(double) * nn * nset);
+        if (eonly) memset(eout, 0, sizeof(double) * nset);
+        else memset(vk, 0, sizeof(double) * nn * nset);
 #pragma omp parallel
 {
         const int tid = omp_get_thread_num();
         const int mkl0 = mkl_set_num_threads_local ? mkl_set_num_threads_local(1) : 0;
         const double one = 1, zero = 0;
-        double *Kt = kbufs[tid] = calloc(nn * nset, sizeof(double));
+        double *Kt = kbufs[tid] = eonly ? NULL : calloc(nn * nset, sizeof(double));
+        double *H = eonly ? malloc(sizeof(double) * (size_t)nset * nao * blk) : NULL;
+        double *xs = malloc(sizeof(double) * nbas);
+        double esum[nset > 0 ? nset : 1];
+        memset(esum, 0, sizeof(esum));
         double *a = malloc(sizeof(double) * (size_t)nao * blk);
         double *wx = malloc(sizeof(double) * (size_t)nao * blk);
         double *rmx = malloc(sizeof(double) * nao);
@@ -833,7 +841,26 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                                 if (m > fmax[shl_of[mu]]) fmax[shl_of[mu]] = m;
                         }
                 }
-                memset(G, 0, sizeof(double) * nset * nao * n);
+                if (!eonly) memset(G, 0, sizeof(double) * nset * nao * n);
+                /* the weights of the shells on the grid side: max_mu sum_g |w phi| (K), max_a sum_g |H_a| (energy) */
+                for (i = 0; i < nbas; i++) xs[i] = xsum;
+                if (eonly) {
+                        for (i = 0; i < nbas; i++) xs[i] = 0;
+                        for (d = 0; d < nset; d++) {
+                                const double *D = dmh + nn * d;
+                                double *Hd = H + (size_t)d * nao * n;
+                                for (i = 0; i < nl; i++)
+                                        memcpy(dr + (size_t)i * nao, D + (size_t)ix[i] * nao, sizeof(double) * nao);
+                                dgemm_("N", "T", &n, &nao, &nl, &one, wx, &n, dr, &nao, &zero, Hd, &n);
+                                int mu;
+                                for (mu = 0; mu < nao; mu++) {
+                                        double m = 0;
+                                        const double *h = Hd + (size_t)mu * n;
+                                        for (g = 0; g < n; g++) m += fabs(h[g]);
+                                        if (m > xs[shl_of[mu]]) xs[shl_of[mu]] = m;
+                                }
+                        }
+                }
                 /* the block's bounding sphere, for the distance-damped primitive bounds */
                 double cb[3] = {0, 0, 0}, rb = 0;
                 for (g = 0; g < n; g++) {
@@ -849,9 +876,10 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                 tt1 = omp_get_wtime(); st[0] += tt1 - tt0; tt0 = tt1;
                 for (ip = 0; ip < opt->npair; ip++) {
                         const CXPair *pp = opt->pairs + ip;
-                        const double bx = pp->bound * xsum;
-                        const int cI = bx * fmax[pp->J] >= tol;
-                        const int cJ = pp->I != pp->J && bx * fmax[pp->I] >= tol;
+                        /* contributions to G_I (A F_J, weighed by the grid side of I) and to G_J */
+                        const double wI = fmax[pp->J] * xs[pp->I], wJ = pp->I != pp->J ? fmax[pp->I] * xs[pp->J] : 0;
+                        const int cI = pp->bound * wI >= tol;
+                        const int cJ = pp->I != pp->J && pp->bound * wJ >= tol;
                         if (!cI && !cJ) continue;
                         const int L = pp->L, nh = NH(L), nI = pp->nI, nJ = pp->nJ, nab = nI * nJ;
                         {
@@ -870,8 +898,8 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                                                         if (v > mx) mx = v;
                                                         rp *= ir;
                                                 }
-                                                if (mx < 1 && !((bx * mx * fmax[pp->J] >= tol && cI)
-                                                                || (bx * mx * fmax[pp->I] >= tol && cJ)))
+                                                if (mx < 1 && !((pp->bound * mx * wI >= tol && cI)
+                                                                || (pp->bound * mx * wJ >= tol && cJ)))
                                                         continue;
                                         }
                                 }
@@ -901,11 +929,10 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                                 bk[k] = f * opt->pp_b[pp->po + k];
                                 bsum += bk[k];
                         }
-                        const int cI2 = cI && bsum * xsum * fmax[pp->J] >= tol;
-                        const int cJ2 = cJ && bsum * xsum * fmax[pp->I] >= tol;
+                        const int cI2 = cI && bsum * wI >= tol;
+                        const int cJ2 = cJ && bsum * wJ >= tol;
                         if (!cI2 && !cJ2) continue;
-                        const double fm = cI2 && cJ2 ? (fmax[pp->J] > fmax[pp->I] ? fmax[pp->J] : fmax[pp->I])
-                                        : (cI2 ? fmax[pp->J] : fmax[pp->I]);
+                        const double fm = cI2 && cJ2 ? (wI > wJ ? wI : wJ) : (cI2 ? wI : wJ);
                         PROF(st[4] += 1);
                         const size_t sz = (size_t)nab * nh;
                         int k0 = 0;
@@ -954,7 +981,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         }
                         PROF(st[24] += __rdtsc() - cp0);
                         for (k = k0; k < pp->np; k++) {
-                                if (bk[k] * xsum * fm < tol) continue;
+                                if (bk[k] * fm < tol) continue;
                                 PROF(st[5] += 1; st[8 + L] += n; const unsigned long long c0 = __rdtsc());
                                 const double p = opt->pp_p[pp->po + k];
                                 const double *P = opt->pp_P + 3 * (pp->po + k);
@@ -999,6 +1026,32 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         PROF(st[25] += __rdtsc() - cp0; const unsigned long long cc0 = __rdtsc());
                         /* G_I += A F_J, G_J += A^T F_I */
                         const int I0 = ao_loc[pp->I], J0 = ao_loc[pp->J];
+                        if (eonly) {
+                                for (d = 0; d < nset; d++) {
+                                        const double *Fd = F + (size_t)d * nao * n, *Hd = H + (size_t)d * nao * n;
+                                        const int both = pp->I != pp->J;
+                                        int ia, jb;
+                                        double e = 0;
+                                        for (ia = 0; ia < nI; ia++) {
+                                                const double *hi = Hd + (size_t)(I0 + ia) * n, *fi = Fd + (size_t)(I0 + ia) * n;
+                                                for (jb = 0; jb < nJ; jb++) {
+                                                        const double *ar = A + (size_t)(ia * nJ + jb) * n;
+                                                        const double *fj = Fd + (size_t)(J0 + jb) * n;
+                                                        const double *hj = Hd + (size_t)(J0 + jb) * n;
+                                                        if (both) {
+#pragma omp simd reduction(+:e)
+                                                                for (g = 0; g < n; g++) e += ar[g] * (hi[g] * fj[g] + hj[g] * fi[g]);
+                                                        } else {
+#pragma omp simd reduction(+:e)
+                                                                for (g = 0; g < n; g++) e += ar[g] * hi[g] * fj[g];
+                                                        }
+                                                }
+                                        }
+                                        esum[d] += e;
+                                }
+                                PROF(st[26] += __rdtsc() - cc0);
+                                continue;
+                        }
                         for (d = 0; d < nset; d++) {
                                 const double *Fd = F + (size_t)d * nao * n;
                                 double *Gd = G + (size_t)d * nao * n;
@@ -1029,6 +1082,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         PROF(st[26] += __rdtsc() - cc0);
                 }
                 tt1 = omp_get_wtime(); st[1] += tt1 - tt0; tt0 = tt1;
+                if (eonly) continue;
                 /* K[ix, :] += wx G^T */
                 for (d = 0; d < nset; d++) {
                         const double *Gd = G + (size_t)d * nao * n;
@@ -1045,10 +1099,14 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                 st[7] += nl;
         }
 #pragma omp critical(socdft_cosx_stat)
+{
+        if (eonly)
+                for (i = 0; i < nset; i++) eout[i] += esum[i];
         for (i = 0; i < 32; i++) cx_stat[i] += st[i];
+}
 #pragma omp barrier
         /* reduce the thread buffers, each thread a slice */
-        {
+        if (!eonly) {
                 const size_t tot = nn * nset, chunk = (tot + nthreads - 1) / nthreads;
                 const size_t s0 = chunk * tid < tot ? chunk * tid : tot, s1 = s0 + chunk < tot ? s0 + chunk : tot;
                 size_t q;
@@ -1059,7 +1117,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                 }
         }
 #pragma omp barrier
-        free(Kt); free(a); free(wx); free(rmx); free(ix); free(runs); free(dr); free(F); free(G); free(ktmp);
+        free(Kt); free(H); free(xs); free(a); free(wx); free(rmx); free(ix); free(runs); free(dr); free(F); free(G); free(ktmp);
         free(fmax); free(A); free(bk); free(R); free(Rwk); free(S); free(X); free(xyz);
         for (at = 0; at < natm; at++) free(farR[at]);
         free(farR); free(stamp); free(armin);

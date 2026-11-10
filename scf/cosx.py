@@ -167,13 +167,44 @@ class COSX(lib.StreamObject):
             ctypes.c_double(self.tol), ctypes.c_double(self.tcut),
             ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.natm),
             bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p),
-            *_blas_ptrs())
+            *_blas_ptrs(), None, None)
         if self._proj is not None:
             vk = lib.einsum('ij,xjk->xik', self._proj, vk)
         if hermi == 1:
             vk = (vk + vk.transpose(0, 2, 1)) * .5
         logger.timer_debug1(self, 'COSX K (%d densities)' % nset, *t0)
         return vk.reshape(shape)
+
+
+    def energy(self, dm, tol=None):
+        '''sum_mu nu D_mu nu K[D]_mu nu (= -4 E_x / hyb for a closed-shell density) of real densities
+        ((nset,) nao, nao), without K: the pairs screened by the densities on both sides (tol, default
+        self.tol)'''
+        self.build()
+        libdft = self._libdft
+        mol = self.mol
+        from socutils.dft.vxc_fast import _blas_ptrs
+        dm = numpy.asarray(dm, dtype=numpy.double)
+        nao = dm.shape[-1]
+        dms = numpy.ascontiguousarray(dm.reshape(-1, nao, nao))
+        dmt = dms.transpose(0, 2, 1)
+        if self._proj is not None:
+            # tr(D P K) = tr((P^T D) K): the fit on the grid side
+            dmh = numpy.ascontiguousarray(lib.einsum('ki,xkj->xij', self._proj, dmt))
+        else:
+            dmh = numpy.ascontiguousarray(dmt)
+        out = numpy.zeros(dms.shape[0])
+        atm, bas, env, ao_loc = self._env
+        libdft.SOCDFTcosx_k(
+            lib.c_null_ptr(), dms.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(len(dms)),
+            ctypes.c_void_p(self._opt), self._coords.ctypes.data_as(ctypes.c_void_p),
+            self._weights.ctypes.data_as(ctypes.c_void_p), self._non0.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_int(self._weights.size), ctypes.c_int(self.blk), ctypes.c_double(self.ao_cutoff),
+            ctypes.c_double(self.tol if tol is None else tol), ctypes.c_double(self.tcut),
+            ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.natm),
+            bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p),
+            *_blas_ptrs(), dmh.ctypes.data_as(ctypes.c_void_p), out.ctypes.data_as(ctypes.c_void_p))
+        return out[0] if dm.ndim == 2 else out
 
 
 def get_k(mol, dm, hermi=1, grids=None, fit=True):
@@ -188,6 +219,7 @@ def stats(reset=True):
     return out
 
 
+TOL_ENERGY = 1e-9       # screening of the final-grid exchange energy
 REBUILD_NSTEPS = 30     # incremental K builds between two full builds (a late full build is a whole K for nothing)
 TOL_FULL = 1e-7         # screening of the full builds: their error is a fixed offset the increments do not
                         # touch (c16 / cc-pVDZ: E_x changes by 1e-6 against 1e-9; the increments keep tol)
@@ -291,11 +323,13 @@ def apply(mf, grids=None, final_grid=3, incremental=True, fit=True, tol=None):
             t0 = (logger.process_clock(), logger.perf_counter())
             # e_tot is that of the density of the last Fock build, whose K st['last'] holds
             dm, k_scf = last['dm'], last['vk']
-            k_fin = kobj(final_grid).get_k(dm)
+            # energy only, the pairs screened by the density on both sides (c16 / def2-TZVP GRIDX3:
+            # 4.5 s against 8.5 s for K, tr(DK) within 1e-5)
+            e_fin = kobj(final_grid).energy(dm, tol=TOL_ENERGY)
             hyb = 1.
             if hasattr(mf, 'xc'):
                 hyb = mf._numint.rsh_and_hybrid_coeff(mf.xc, spin=mf.mol.spin)[2]
-            de = -.25 * hyb * numpy.einsum('ij,ji', dm, k_fin - k_scf)
+            de = -.25 * hyb * (e_fin - numpy.einsum('ij,ji', dm, k_scf))
             mf._cosx_de = de
             logger.info(mf, 'COSX: exchange energy recomputed on GRIDX%d: change %.9f, E = %.12f',
                         final_grid, de, mf.e_tot + de)
