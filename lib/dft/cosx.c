@@ -913,7 +913,18 @@ static int cx_fruns = 0;
 void SOCDFTcosx_set_fruns(int v) { cx_fruns = v; }
 void SOCDFTcosx_set_kpriv(int v) { cx_kpriv = v; }
 int SOCDFTcosx_kpriv() { return cx_kpriv; }
+/* K GEMM column chunk (and lock granularity): cx_mcols; F GEMM: cx_mcols_f */
+static int cx_mcols_f = CX_MCOLS / 2;        /* F GEMM column chunk */
 void SOCDFTcosx_set_mcols(int v) { cx_mcols = v > 0 ? v : CX_MCOLS; }
+void SOCDFTcosx_set_mcols_f(int v) { cx_mcols_f = v > 0 ? v : CX_MCOLS / 2; }
+/* float contraction: also the F and K GEMMs in single precision (opt-in; sgemm_ set from Python) */
+typedef void (*sgemm_t)(const char *ta, const char *tb, const int *m, const int *n, const int *k,
+                        const float *alpha, const float *a, const int *lda, const float *b,
+                        const int *ldb, const float *beta, float *c, const int *ldc);
+static sgemm_t cx_sgemm = NULL;
+static int cx_fkfloat = 0;
+void SOCDFTcosx_set_sgemm(void *f) { cx_sgemm = (sgemm_t)f; }
+void SOCDFTcosx_set_fkfloat(int v) { cx_fkfloat = v; }
 
 /*
  * vk (nset, nao, nao) = the plain K of dms (nset, nao, nao), K_mu nu =
@@ -959,10 +970,11 @@ void SOCDFTcosx_untranspose(double *out, const double *vt, int nao, int nset, in
         const size_t NQ = (size_t)nao * nset;                                                          \
         const T one = 1, zero = 0;                                                                     \
         int g, r, ia, jb, c;                                                                           \
+        /* the records (so the entries written) are those of the block: A(g) zeroed once per block */ \
+        memset(Ad, 0, sizeof(T) * nao * nao);                                                          \
         for (g = 0; g < n; g++) {                                                                      \
                 const T *Fg = F + g * NQ;                                                              \
                 T *Gg = G + g * NQ;                                                                    \
-                memset(Ad, 0, sizeof(T) * nao * nao);                                                  \
                 for (r = 0; r < nrec; r++) {                                                           \
                         const CXRec *rc = rec + r;                                                     \
                         if (rc->I0 != rc->J0 && !(rc->cI && rc->cJ)) continue;                         \
@@ -1083,6 +1095,9 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
         const int kpriv = kshared && cx_kpriv;
         /* the column chunks of the F and K GEMMs: MC columns (nu, d) = whole nu, a lock per (row, chunk) */
         const int MC = nset * (cx_mcols / nset > 1 ? cx_mcols / nset : 1);
+        const int MCF = nset * (cx_mcols_f / nset > 1 ? cx_mcols_f / nset : 1);
+        const int MCX = MC > MCF ? MC : MCF;
+        const int fkf = kshared && mfl && cx_fkfloat && cx_sgemm != NULL;
         const int nqc = kshared ? (int)(((size_t)nao * nset + MC - 1) / MC) : 0;
         const size_t nlock = (size_t)nao * nqc;
         omp_lock_t *klock = kshared && !kpriv ? malloc(sizeof(omp_lock_t) * nlock) : NULL;
@@ -1107,9 +1122,13 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                 for (q = 0; q < (size_t)nao * nocc; q++) cof[q] = (float)co[q];
         }
         /* kshared: the gathered density rows / the K rows of a column chunk (nl x MC), F / G of a chunk */
-        const size_t nbm = occm ? NQ * CX_KROWS : (size_t)nao * MC;   /* occ: the F gather (and its K rows) */
+        const size_t nbm = occm ? NQ * CX_KROWS : (size_t)nao * MCX;  /* occ: the F gather (and its K rows) */
         double *Bm = multi ? malloc(sizeof(double) * nbm) : NULL;
-        double *Fc = kshared && mfl ? malloc(sizeof(double) * (size_t)MC * blk) : NULL;
+        double *Fc = kshared && mfl ? malloc(sizeof(double) * (size_t)MCX * blk) : NULL;
+        /* fkf: the gathered rows / K rows of a chunk, phi and w phi of the block in float */
+        float *Bf = fkf ? malloc(sizeof(float) * (size_t)nao * MCX) : NULL;
+        float *af = fkf ? malloc(sizeof(float) * (size_t)nao * blk) : NULL;
+        float *wxf = fkf ? malloc(sizeof(float) * (size_t)nao * blk) : NULL;
         int *pend = malloc(sizeof(int) * nao);
         int *rr = malloc(sizeof(int) * 2 * nao);
         /* the float contraction of kshared keeps F and G in float only */
@@ -1159,7 +1178,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
         int b;
         /* out of memory: flagged (SOCDFTcosx_error), the blocks skipped */
         const int oom = (!eonly && (!kshared || kpriv) && !Kt) || !a || !wx || !F || !G || !dr || !ktmp
-                        || (multi && (!Bm || !Abuf || !rec)) || (mfl && (!Ff || !Gf)) || (kshared && mfl && !Fc) || (eonly && !H);
+                        || (multi && (!Bm || !Abuf || !rec)) || (mfl && (!Ff || !Gf)) || (kshared && mfl && !Fc) || (fkf && (!Bf || !af || !wxf)) || (eonly && !H);
         if (oom) {
 #pragma omp atomic write
                 cx_err = 1;
@@ -1207,8 +1226,38 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                                 /* by column chunks: the chunk of the gathered rows (nl x mc) in cache, F
                                  * written once (float: through Fc, the max taken on the way) */
                                 size_t q0;
-                                for (q0 = 0; q0 < NQ; q0 += MC) {
-                                        const int mc = NQ - q0 < (size_t)MC ? (int)(NQ - q0) : MC;
+                                if (fkf) {
+                                        size_t q;
+                                        for (q = 0; q < (size_t)nl * n; q++) { af[q] = (float)a[q]; wxf[q] = (float)wx[q]; }
+                                }
+                                for (q0 = 0; q0 < NQ && fkf; q0 += MCF) {
+                                        const int mc = NQ - q0 < (size_t)MCF ? (int)(NQ - q0) : MCF;
+                                        const float onef = 1, zerof = 0;
+                                        int q;
+                                        for (i = 0; i < nl; i++) {
+                                                const double *src = dtm + (size_t)ix[i] * NQ + q0;
+                                                float *dst = Bf + (size_t)i * mc;
+                                                for (q = 0; q < mc; q++) dst[q] = (float)src[q];
+                                        }
+                                        { const double tg_ = omp_get_wtime();
+                                        cx_sgemm("N", "T", &mc, &n, &nl, &onef, Bf, &mc, af, &n, &zerof, Ff + q0, &nq);
+                                        st[16] += omp_get_wtime() - tg_; st[14] += 2. * mc * n * nl; }
+                                        int nu;
+                                        for (g = 0; g < n; g++) {
+                                                const float *ff = Ff + (size_t)g * NQ + q0;
+                                                for (nu = 0; nu < mc / nset; nu++) {
+                                                        const int sh = shl_of[q0 / nset + nu];
+                                                        float m = (float)fmax[sh];
+                                                        for (d = 0; d < nset; d++) {
+                                                                const float v = fabsf(ff[nu * nset + d]);
+                                                                m = v > m ? v : m;
+                                                        }
+                                                        fmax[sh] = m;
+                                                }
+                                        }
+                                }
+                                for (q0 = 0; q0 < NQ && !fkf; q0 += MCF) {
+                                        const int mc = NQ - q0 < (size_t)MCF ? (int)(NQ - q0) : MCF;
                                         if (!cx_fruns)
                                                 for (i = 0; i < nl; i++)
                                                         memcpy(Bm + (size_t)i * mc, dtm + (size_t)ix[i] * NQ + q0, sizeof(double) * mc);
@@ -1646,7 +1695,14 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         int qc;
                         for (q0 = 0, qc = 0; q0 < NQ; q0 += MC, qc++) {
                                 const int mc = NQ - q0 < (size_t)MC ? (int)(NQ - q0) : MC;
-                                if (mfl) {
+                                if (fkf) {
+                                        const float onef = 1, zerof = 0;
+                                        const double tg_ = omp_get_wtime();
+                                        cx_sgemm("N", "N", &mc, &nl, &n, &onef, Gf + q0, &nq, wxf, &n, &zerof, Bf, &mc);
+                                        st[15] += omp_get_wtime() - tg_; st[13] += 2. * mc * n * nl;
+                                        size_t q;
+                                        for (q = 0; q < (size_t)nl * mc; q++) Bm[q] = Bf[q];
+                                } else if (mfl) {
                                         int q;
                                         for (g = 0; g < n; g++) {
                                                 const float *gf = Gf + (size_t)g * NQ + q0;
@@ -1656,7 +1712,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                                 }
                                 const double *gs = mfl ? Fc : G + q0;
                                 const int ldg = mfl ? mc : nq;
-                                if (kpriv && cx_fruns) {
+                                if (kpriv && cx_fruns && !fkf) {
                                         /* straight into the thread's K rows, a GEMM per run */
                                         const double tg_ = omp_get_wtime();
                                         int r_;
@@ -1668,9 +1724,11 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                                         st[15] += omp_get_wtime() - tg_; st[13] += 2. * mc * n * nl;
                                         continue;
                                 }
-                                { const double tg_ = omp_get_wtime();
-                                dgemm_("N", "N", &mc, &nl, &n, &one, gs, &ldg, wx, &n, &zero, Bm, &mc);
-                                st[15] += omp_get_wtime() - tg_; st[13] += 2. * mc * n * nl; }
+                                if (!fkf) {
+                                        const double tg_ = omp_get_wtime();
+                                        dgemm_("N", "N", &mc, &nl, &n, &one, gs, &ldg, wx, &n, &zero, Bm, &mc);
+                                        st[15] += omp_get_wtime() - tg_; st[13] += 2. * mc * n * nl;
+                                }
                                 if (kpriv) {
                                         for (i = 0; i < nl; i++) {
                                                 double *row = Kt + (size_t)ix[i] * NQ + q0;
@@ -1748,7 +1806,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
 #pragma omp critical(socdft_cosx_stat2)
         cx_stat[28] += omp_get_wtime() - tr_;
         free(Kt); free(H); free(xs); free(a); free(wx); free(rmx); free(ix); free(runs); free(dr); free(F); free(G); free(ktmp);
-        free(fmax); free(A0); free(bk); free(Bm); free(Abuf); free(rec); free(Ff); free(Gf); free(Fc); free(pend); free(rr); free(Ad); free(mark); free(Aoc); free(Uo); free(Aocf); free(cof); free(R); free(Rwk); free(S); free(X); free(xyz);
+        free(fmax); free(A0); free(bk); free(Bm); free(Abuf); free(rec); free(Ff); free(Gf); free(Fc); free(pend); free(rr); free(Bf); free(af); free(wxf); free(Ad); free(mark); free(Aoc); free(Uo); free(Aocf); free(cof); free(R); free(Rwk); free(S); free(X); free(xyz);
         for (at = 0; at < natm; at++) free(farR[at]);
         free(farR); free(stamp); free(armin);
         if (mkl_set_num_threads_local) mkl_set_num_threads_local(mkl0);

@@ -73,6 +73,8 @@ def _lib():
                     blas = ctypes.CDLL(name)
                     libdft.SOCDFTcosx_set_symm(ctypes.cast(blas.dsymm_, ctypes.c_void_p),
                                                ctypes.cast(blas.ssymm_, ctypes.c_void_p))
+                    if hasattr(libdft, 'SOCDFTcosx_set_sgemm'):
+                        libdft.SOCDFTcosx_set_sgemm(ctypes.cast(blas.sgemm_, ctypes.c_void_p))
                     break
                 except (OSError, AttributeError):
                     continue
