@@ -421,6 +421,34 @@ void SOCVHFjk_store_free(JKStore *st)
 int SOCVHFjk_store_state(JKStore *st) { return st->state; }
 double SOCVHFjk_store_mb(JKStore *st) { return st->ndata * 8e-6; }
 double SOCVHFjk_store_nquartets(JKStore *st) { return (double)st->nq; }
+int SOCVHFjk_store_ntype(JKStore *st) { return st->ntype; }
+
+/* the engine SOCVHFjk_multi_sym gives the quartet shls (bra pair i >= j first): 3 lanes, 1 jk_ssss,
+ * 2 generated kernels, 0 libcint (profiling) */
+int SOCVHFjk_engine(int *shls, int *bas)
+{
+        const int *b0 = bas + shls[0] * BAS_SLOTS, *b1 = bas + shls[1] * BAS_SLOTS;
+        const int *b2 = bas + shls[2] * BAS_SLOTS, *b3 = bas + shls[3] * BAS_SLOTS;
+        const int lq = b0[ANG_OF] + b1[ANG_OF] + b2[ANG_OF] + b3[ANG_OF];
+        const int hasf = b0[ANG_OF] == 3 || b1[ANG_OF] == 3 || b2[ANG_OF] == 3 || b3[ANG_OF] == 3;
+        const int row_lanes = jk_use_gen && jk_use_lanes && b0[ANG_OF] <= 2 && b1[ANG_OF] <= 2
+                            && b0[NCTR_OF] <= 4 && b1[NCTR_OF] <= 4;
+        if (row_lanes && lq >= jk_lane_lmin && lq <= jk_gen_lmax
+            && b0[NPRIM_OF] * b1[NPRIM_OF] * b2[NPRIM_OF] * b3[NPRIM_OF] <= jk_lane_np
+            && SOCVHFgen_lane_ok(shls[2], shls[3], bas))
+                return 3;
+        if (jk_use_ssss && lq <= 1 && SOCVHFss_takes(shls, bas)) return 1;
+        if (jk_use_gen && (hasf ? lq <= jk_gen_f_lmax : lq <= jk_gen_lmax) && SOCVHFgen_takes(shls, bas)) return 2;
+        return 0;
+}
+
+/* the measured class table (ntype^4 entries: ticks, quartets) and the shell type of every shell */
+void SOCVHFjk_store_classes(JKStore *st, double *ctime, double *ccount, int *stype)
+{
+        memcpy(ctime, st->ctime, sizeof(double) * st->ncls);
+        memcpy(ccount, st->ccount, sizeof(double) * st->ncls);
+        memcpy(stype, st->stype, sizeof(int) * st->nbas);
+}
 
 typedef struct { double v; size_t c; } StoreCls;
 static int cmp_store_cls(const void *x, const void *y)
