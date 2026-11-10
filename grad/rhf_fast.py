@@ -205,6 +205,14 @@ def _fast_terms(grad, mol, dm):
             de += r
             grad._rij_fast = True
             t0 = logger.timer(grad, 'RIJ gradient (three-centre C pass)', *t0)
+    if kf != 0 and getattr(mf, '_cosx', None):
+        # K from COSX (socutils.scf.cosx.apply): the gradient of its energy on the SCF's grid
+        from socutils.scf import cosx
+        r = cosx.grad_k(mf, dm)
+        if r is not None:
+            de += r
+            kf = 0.
+            t0 = logger.timer(grad, 'COSX exchange gradient', *t0)
     if jf != 0 and kf != 0 and _gen_grad_usable(mol):
         # hybrids: J and K in one pass of the generated kernels (J costs little more
         # there than the separate MD J pass)

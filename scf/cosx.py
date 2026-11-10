@@ -143,6 +143,7 @@ class COSX(lib.StreamObject):
             ao = eval_ao(ni, mol, coords[g0:g1], 0, non0tab=self.grids.non0tab[g0 // 56:])
             lib.dot(ao.T * w[g0:g1], ao, beta=1, c=sg)
         s = mol.intor_symmetric('int1e_ovlp')
+        self._sg = sg
         return numpy.linalg.solve(sg.T, s.T).T          # s sg^-1 (sg symmetric)
 
     def get_k(self, dm, hermi=1):
@@ -207,6 +208,76 @@ class COSX(lib.StreamObject):
         return out[0] if dm.ndim == 2 else out
 
 
+    def _plain_k(self, dms):
+        """the plain K_plain[X] (unsymmetrised, no fit) of real matrices X ((nset,) nao, nao)"""
+        proj, self._proj = self._proj, None
+        try:
+            return self.get_k(dms, hermi=0)
+        finally:
+            self._proj = proj
+
+    def get_k_var(self, dm):
+        """the Fock K of the variational COSX: the derivative of the energy tr(D P K_plain[D]) / 2,
+        1/2 sym(P K_plain[D] + K_plain[P^T D]) (one pass, the integrals shared by both densities);
+        the one-sided fitted K alone is not the derivative of its energy (fit=False: the two agree)"""
+        self.build()
+        dm = numpy.asarray(dm, dtype=numpy.double)
+        if self._proj is None:
+            return self.get_k(dm)
+        nao = dm.shape[-1]
+        dms = dm.reshape(-1, nao, nao)
+        n = len(dms)
+        m = lib.einsum('ki,xkj->xij', self._proj, dms)                  # P^T D
+        kp = self._plain_k(numpy.concatenate([dms, m]))
+        vk = .5 * (lib.einsum('ij,xjk->xik', self._proj, kp[:n]) + kp[n:])
+        vk = (vk + vk.transpose(0, 2, 1)) * .5
+        return vk.reshape(dm.shape)
+
+    def grad(self, dm, tol=None):
+        """d/dR of tr(D P K_plain[D]) (fit) or tr(D K_plain[D]) at fixed D (symmetric) on the fixed grid
+        (no grid response), (natm, 3); with the fit the derivatives of S and of S_g in P = S S_g^-1"""
+        self.build()
+        libdft = self._libdft
+        mol = self.mol
+        from socutils.dft.vxc_fast import _blas_ptrs
+        atm, bas, env, ao_loc = self._env
+        if not libdft.SOCDFTcosx_build_grad(ctypes.c_void_p(self._opt), atm.ctypes.data_as(ctypes.c_void_p),
+                                           bas.ctypes.data_as(ctypes.c_void_p), env.ctypes.data_as(ctypes.c_void_p)):
+            raise MemoryError('COSX gradient tables')
+        dm = numpy.ascontiguousarray(dm, dtype=numpy.double)
+        de = numpy.zeros((mol.natm, 3))
+        yg = None
+        if self._proj is not None:
+            P = self._proj
+            m = numpy.ascontiguousarray(P.T @ dm)
+            kp = self._plain_k(dm)
+            z = dm @ kp.T
+            y1 = numpy.linalg.solve(self._sg, z.T).T                    # Z S_g^-1
+            y2 = P.T @ y1
+            # the overlap: dS_mu nu / dR_X = -<d mu|nu> (mu on X) - <mu|d nu> (nu on X)
+            ip = mol.intor('int1e_ipovlp', comp=3)
+            y1s = y1 + y1.T
+            aoslices = mol.aoslice_by_atom()
+            for ia in range(mol.natm):
+                p0, p1 = aoslices[ia, 2:]
+                de[ia] -= numpy.einsum('xij,ij->x', ip[:, p0:p1], y1s[p0:p1])
+            yg = numpy.ascontiguousarray(-(y2 + y2.T))
+        else:
+            m = dm
+        g = numpy.zeros((mol.natm, 3))
+        libdft.SOCDFTcosx_grad(
+            g.ctypes.data_as(ctypes.c_void_p), dm.ctypes.data_as(ctypes.c_void_p), m.ctypes.data_as(ctypes.c_void_p),
+            lib.c_null_ptr() if yg is None else yg.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_void_p(self._opt), self._coords.ctypes.data_as(ctypes.c_void_p),
+            self._weights.ctypes.data_as(ctypes.c_void_p), self._non0.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_int(self._weights.size), ctypes.c_int(self.blk), ctypes.c_double(self.ao_cutoff),
+            ctypes.c_double(self.tol if tol is None else tol), ctypes.c_double(self.tcut),
+            ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.natm),
+            bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p),
+            *_blas_ptrs())
+        return de + g
+
+
 def get_k(mol, dm, hermi=1, grids=None, fit=True):
     return COSX(mol, grids, fit).get_k(dm, hermi)
 
@@ -220,6 +291,7 @@ def stats(reset=True):
 
 
 TOL_ENERGY = 1e-9       # screening of the final-grid exchange energy
+VARIATIONAL = True      # the SCF's Fock K the derivative of the COSX energy (for analytic gradients)
 REBUILD_NSTEPS = 30     # incremental K builds between two full builds (a late full build is a whole K for nothing)
 TOL_FULL = 1e-7         # screening of the full builds: their error is a fixed offset the increments do not
                         # touch (c16 / cc-pVDZ: E_x changes by 1e-6 against 1e-9; the increments keep tol)
@@ -227,7 +299,7 @@ SCF_GRID_SWITCH = 0     # max |D - D_prev| below which the SCF goes from GRIDX1 
                         # c16 / cc-pVDZ PBE0 with 1e-3: 18 cycles instead of 12, the grid switch upsets DIIS)
 
 
-def apply(mf, grids=None, final_grid=3, incremental=True, fit=True, tol=None):
+def apply(mf, grids=None, final_grid=3, incremental=True, fit=True, tol=None, variational=VARIATIONAL):
     """mf (RHF / RKS, hybrid or HF) with K from COSX: J as before (RIJ through
     socutils.scf.md_j for density_fit(only_dfj=True), else mf's own), K by
     cosx on GRIDX1 / GRIDX2 (``grids``: one grid, or None for the switch at
@@ -236,7 +308,10 @@ def apply(mf, grids=None, final_grid=3, incremental=True, fit=True, tol=None):
     with a full build every REBUILD_NSTEPS and at the grid switch;
     final_grid: after the SCF the exchange energy is recomputed on that
     grid (ORCA's GRIDX3) and mf.e_tot corrected (None: not).  Range-separated
-    calls, complex densities and other molecules keep mf's get_jk.  Modifies
+    calls, complex densities and other molecules keep mf's get_jk.
+    variational: the Fock K is the derivative of the COSX energy (COSX.get_k_var,
+    +~20 % per build), so that the SCF is stationary for the energy whose analytic
+    gradient grad_k computes; otherwise the one-sided fitted K (ORCA's).  Modifies
     and returns mf."""
     from pyscf.df import df_jk
     from socutils.scf import md_j
@@ -266,7 +341,8 @@ def apply(mf, grids=None, final_grid=3, incremental=True, fit=True, tol=None):
         dm = numpy.asarray(dm)
         if not incremental or dm.ndim != 2 or hermi != 1:
             lev = 2 if grids is None else 0
-            return kobj(lev).get_k(dm, hermi)
+            k = kobj(lev)
+            return k.get_k_var(dm) if variational and hermi == 1 else k.get_k(dm, hermi)
         last = st['last']
         if grids is not None and not isinstance(grids, lib.StreamObject):
             lev = int(grids)
@@ -280,14 +356,15 @@ def apply(mf, grids=None, final_grid=3, incremental=True, fit=True, tol=None):
                 lev = 2
         k = kobj(lev)
         if last is not None and last['lev'] == lev and last['n'] < REBUILD_NSTEPS:
-            vk = last['vk'] + k.get_k(dm - last['dm'], hermi)
+            ddm = dm - last['dm']
+            vk = last['vk'] + (k.get_k_var(ddm) if variational else k.get_k(ddm, hermi))
             n = last['n'] + 1
             logger.debug(mf, 'COSX: incremental K (%d since the full build), grid %d', n, lev)
         else:
             tol0 = k.tol
             k.tol = max(tol0, TOL_FULL)
             try:
-                vk = k.get_k(dm, hermi)
+                vk = k.get_k_var(dm) if variational else k.get_k(dm, hermi)
             finally:
                 k.tol = tol0
             n = 0
@@ -310,6 +387,7 @@ def apply(mf, grids=None, final_grid=3, incremental=True, fit=True, tol=None):
         return vj, vk
 
     mf.get_jk = get_jk
+    st['variational'] = variational
     mf._cosx = st
     if final_grid is not None:
         kernel0 = mf.kernel
@@ -338,3 +416,23 @@ def apply(mf, grids=None, final_grid=3, incremental=True, fit=True, tol=None):
             return mf.e_tot
         mf.kernel = kernel
     return mf
+
+
+def grad_k(mf, dm=None):
+    """the exchange part of the nuclear gradient, (natm, 3), of an SCF run through apply():
+    d/dR of -(hyb / 4) tr(D P K_plain[D]) on the SCF's COSX grid (no grid response), the
+    derivatives of the integrals, of the AOs on the grid and of the overlap fit; None if mf
+    did not run COSX.  Exact for the variational SCF (apply(variational=True))."""
+    st = getattr(mf, '_cosx', None)
+    if not st or st.get('last') is None:
+        return None
+    k = st['k'][st['last']['lev']]
+    if dm is None:
+        dm = mf.make_rdm1()
+    hyb = 1.
+    if hasattr(mf, 'xc'):
+        hyb = mf._numint.rsh_and_hybrid_coeff(mf.xc, spin=mf.mol.spin)[2]
+    if not st.get('variational', False):
+        logger.warn(mf, 'COSX gradient of a non-variational SCF (apply(variational=False)): '
+                    'the orbital response is not exact')
+    return -.25 * hyb * k.grad(numpy.asarray(dm))

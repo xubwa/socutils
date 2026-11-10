@@ -81,6 +81,34 @@ class KnownValues(unittest.TestCase):
             self.assertAlmostEqual(k.energy(dm, tol=1e-13), e0, 9)
             self.assertAlmostEqual(k.energy(dm, tol=1e-9), e0, 6)
 
+    def test_grad_fixed_density(self):
+        '''d/dR tr(D P K_plain[D]) on a frozen grid against finite differences (plain and fitted)'''
+        from pyscf import lib
+        from pyscf.dft import gen_grid
+        mol = gto.M(atom=MOL, basis='def2-svp', charge=-1, verbose=0)
+        dm = scf.RHF(mol).run().make_rdm1()
+        g0 = cosx.make_grids(mol, **cosx.GRIDX[1])
+
+        class Frozen(lib.StreamObject):
+            def __init__(self, m):
+                self.coords, self.weights = g0.coords, g0.weights
+                self.non0tab = numpy.ones_like(gen_grid.make_mask(m, g0.coords))
+
+        for fit in (False, True):
+            def kobj(m):
+                k = cosx.COSX(m, Frozen(m), fit=fit)
+                k.tol = k.ao_cutoff = 0.
+                return k
+            ga = kobj(mol).grad(dm)
+            h = 1e-4
+            for ia, x in ((0, 2), (3, 0), (4, 1)):
+                c = mol.atom_coords().copy()
+                c[ia, x] += h
+                ep = numpy.einsum('ij,ij', dm, kobj(mol.set_geom_(c, unit='Bohr', inplace=False)).get_k(dm, hermi=0))
+                c[ia, x] -= 2 * h
+                em = numpy.einsum('ij,ij', dm, kobj(mol.set_geom_(c, unit='Bohr', inplace=False)).get_k(dm, hermi=0))
+                self.assertAlmostEqual(ga[ia, x], (ep - em) / (2 * h), 6)
+
     def test_scf(self):
         mol = gto.M(atom=WATER2, basis='cc-pvdz', verbose=0)
         mf0 = dft.RKS(mol, xc='pbe0').density_fit(only_dfj=True)
