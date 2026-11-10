@@ -71,6 +71,16 @@ class KnownValues(unittest.TestCase):
             self.assertLess(abs(-.25 * numpy.einsum('ij,ij', dm, vk) - e0), thr)
             self.assertLess(abs(vk - vk.T).max(), 1e-14)
 
+    def test_energy(self):
+        mol = gto.M(atom=WATER2, basis='def2-tzvp', verbose=0)
+        dm = scf.RHF(mol).run().make_rdm1()
+        for fit in (False, True):
+            k = cosx.COSX(mol, cosx.make_grids(mol, **cosx.GRIDX[2]), fit=fit)
+            k.tol = 1e-13
+            e0 = numpy.einsum('ij,ij', dm, k.get_k(dm))
+            self.assertAlmostEqual(k.energy(dm, tol=1e-13), e0, 9)
+            self.assertAlmostEqual(k.energy(dm, tol=1e-9), e0, 6)
+
     def test_scf(self):
         mol = gto.M(atom=WATER2, basis='cc-pvdz', verbose=0)
         mf0 = dft.RKS(mol, xc='pbe0').density_fit(only_dfj=True)
