@@ -573,23 +573,27 @@ def _xc_hess_explicit_local(ni, xc_code, xctype, gga, nvar, ao, weight, p0, dm0,
         w = weight[s0:s1]
         wf = numpy.ascontiguousarray(w * fxc.reshape(nvar, nvar, gs))
         wv = numpy.ascontiguousarray(w * vxc.reshape(nvar, gs))
-        atl = numpy.ascontiguousarray(atom_of[idx])
-        R = numpy.empty((3, nvar, natm, gs))
+        # d_A rho, the on-atom sums and the R f R block only for the sub-block's atoms (local numbering):
+        # R of the other atoms vanishes there, and the full-natm GEMM costs (3 natm)^2 per point
+        atoms, atl = numpy.unique(atom_of[idx], return_inverse=True)
+        atl = numpy.ascontiguousarray(atl, dtype=numpy.int32)
+        na = atoms.size
+        R = numpy.empty((3, nvar, na, gs))
         ab = numpy.empty((6 if gga else 3, nl, gs))
-        dg = numpy.zeros((3, 3, natm))
+        dg = numpy.zeros((3, 3, na))
         libdft.SOCDFTrks_xc_hess_elem(
             R.ctypes, dg.ctypes, ab.ctypes, aol.ctypes, dT.ctypes, wv.ctypes, ctypes.c_int(int(gga)),
-            ctypes.c_int(nvar), ctypes.c_int(gs), ctypes.c_int(nl), atl.ctypes, ctypes.c_int(natm),
+            ctypes.c_int(nvar), ctypes.c_int(gs), ctypes.c_int(nl), atl.ctypes, ctypes.c_int(na),
             ctypes.c_long(nl * gs))
         R *= -2
-        diag += dg
-        wR = numpy.empty((3 * natm, nvar, gs))
-        libdft.SOCDFTfxc_contract_R(wR.ctypes, wf.ctypes, R.ctypes, ctypes.c_int(natm), ctypes.c_int(nvar),
+        diag[:, :, atoms] += dg
+        wR = numpy.empty((3 * na, nvar, gs))
+        libdft.SOCDFTfxc_contract_R(wR.ctypes, wf.ctypes, R.ctypes, ctypes.c_int(na), ctypes.c_int(nvar),
                                     ctypes.c_int(gs), ctypes.c_double(1.), ctypes.c_int(0))
-        Rr = numpy.empty((3 * natm, nvar, gs))
-        libdft.SOCDFTreorder_R(Rr.ctypes, R.ctypes, ctypes.c_int(natm), ctypes.c_int(nvar), ctypes.c_int(gs))
-        t1 = lib.dot(Rr.reshape(3 * natm, -1), wR.reshape(3 * natm, -1).T)
-        term1 += t1.reshape(natm, 3, natm, 3).transpose(1, 0, 3, 2)
+        Rr = numpy.empty((3 * na, nvar, gs))
+        libdft.SOCDFTreorder_R(Rr.ctypes, R.ctypes, ctypes.c_int(na), ctypes.c_int(nvar), ctypes.c_int(gs))
+        t1 = lib.dot(Rr.reshape(3 * na, -1), wR.reshape(3 * na, -1).T)
+        term1[numpy.ix_(range(3), atoms, range(3), atoms)] += t1.reshape(na, 3, na, 3).transpose(1, 0, 3, 2)
         # atom-pair part over the local AOs: [a_x | dphi_x] . [dphi_y | b_y]^T
         L = numpy.empty((3, nl, K * gs))
         Rm = numpy.empty((3, nl, K * gs))
