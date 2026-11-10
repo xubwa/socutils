@@ -1706,8 +1706,9 @@ def rks_make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=No
     return h1ao
 
 
-CPHF_COSX = None        # K of the CPHF densities by COSX (socutils.scf.cosx): None -> when the SCF ran COSX
+CPHF_COSX = None        # K of the CPHF densities by COSX (socutils.scf.cosx): None -> auto (SCF ran COSX, large basis)
 CPHF_COSX_GRID = 2      # its grid (cosx.GRIDX level)
+CPHF_COSX_NAO_PER_ATOM = 12     # auto mode: AOs per atom from which the CPHF K goes to COSX
 CPHF_COSX_FLOAT = False # opt-in: the many-density contraction in single precision (K within ~1e-6 relative, against
                         # the COSX grid error ~1e-3; c16 / cc-pVDZ 64 densities 0.36 -> 0.25 s per density)
 
@@ -1717,7 +1718,9 @@ def _cphf_cosx(mf):
     use = CPHF_COSX
     st = getattr(mf, '_cosx', None)
     if use is None:
-        use = bool(st)
+        # auto: when the SCF ran COSX and the basis is large enough for COSX to beat jk_multi on many
+        # densities (cc-pVDZ c16 / caffeine: exact faster; def2-TZVP c16: COSX 1.2 against 2.1 s per density)
+        use = bool(st) and mf.mol.nao_nr() >= CPHF_COSX_NAO_PER_ATOM * mf.mol.natm
     if not use:
         return None
     from socutils.scf import cosx
