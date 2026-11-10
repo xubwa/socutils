@@ -103,6 +103,16 @@ def pivots_blocked(phi, kmax, b=64, over=4, tol=1e-14):
     return np.array(piv), L[:k]
 
 
+def _malloc_trim():
+    '''glibc malloc_trim(0): return the free heap of every arena (C code allocating in OpenMP threads leaves
+    freed buffers in per-thread arenas, counted as resident) to the system.'''
+    try:
+        import ctypes
+        ctypes.CDLL('libc.so.6').malloc_trim(0)
+    except Exception:
+        pass
+
+
 def space_group_ops(cell, symprec=1e-3):
     '''Space group of the cell (spglib): rotations (n, 3, 3) on fractional coordinates, translations (n, 3).'''
     try:
@@ -616,13 +626,37 @@ class THCExchange:
         if isinstance(idx, slice):
             g0, g1, _ = idx.indices(ng)
             a0, a1 = g0 // B * B, min(-(-g1 // B) * B, ng)
-            v = self.cell.pbc_eval_gto('GTOval_sph', self.coords[a0:a1])
-            return np.ascontiguousarray(v[g0 - a0:g1 - a0][:, self.smooth])
+            v = self._smooth_eval(self.coords[a0:a1])
+            return np.ascontiguousarray(v[g0 - a0:g1 - a0])
         idx = np.asarray(idx)
         rows = (np.unique(idx // B)[:, None] * B + np.arange(B)).ravel()
         rows = rows[rows < ng]                     # whole blocks (sorted; only the last one can be short)
-        v = self.cell.pbc_eval_gto('GTOval_sph', self.coords[rows])
-        return np.ascontiguousarray(v[np.searchsorted(rows, idx)][:, self.smooth])
+        v = self._smooth_eval(self.coords[rows])
+        return np.ascontiguousarray(v[np.searchsorted(rows, idx)])
+
+    def _mem_mark(self, stage):
+        '''Peak resident size (getrusage) and current size after a build stage, max over the ranks, logged with the
+        budget (cell.max_memory) -- where the build exceeds it.'''
+        import resource
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e3          # MB (Linux: kB)
+        before = lib.current_memory()[0]
+        _malloc_trim()                                                # freed C buffers back to the system
+        cur = lib.current_memory()[0]
+        self.log('   (%s: %.1f GB resident before malloc_trim, %.1f GB after)' % (stage, before / 1e3, cur / 1e3))
+        comm = getattr(self, 'comm', None)
+        if comm is not None:
+            from mpi4py import MPI
+            peak, cur = comm.allreduce(peak, op=MPI.MAX), comm.allreduce(cur, op=MPI.MAX)
+        self.log('   memory after %s: peak %.1f GB, now %.1f GB (max over ranks; budget %.1f GB)'
+                 % (stage, peak / 1e3, cur / 1e3, self.cell.max_memory / 1e3))
+
+    def _smooth_eval(self, coords):
+        '''The smooth functions at coords, (n, nao_s): evaluated on a cell of the smooth shells only (all AOs, then
+        the smooth columns, held 2.4x the memory: EuOCl +6.8 GB on its uniform grid); same values per shell.'''
+        if getattr(self, '_sm_cell', None) is None:
+            self._sm_cell = _subcell(self.cell, self.smooth)
+            assert self._sm_cell.nao == len(self.smooth)
+        return self._sm_cell.pbc_eval_gto('GTOval_sph', coords)
 
     def avail_bytes(self):
         '''Memory left in the budget (cell.max_memory, MB) beyond the current resident size of the process.'''
@@ -670,6 +704,7 @@ class THCExchange:
             self.nkept = r.cderi.shape[0] - r.nlr
             self.Llr = r.cderi[self.nkept:]
         self.timings['rsdf'] = time.time() - t
+        self._mem_mark('rsdf')
         self.aoat = np.repeat([cell.bas_atom(i) for i in range(cell.nbas)], np.diff(cell.ao_loc_nr()))
         self.smooth = np.where(~aohard)[0]
         ti, tj = np.tril_indices(nao)
@@ -692,6 +727,7 @@ class THCExchange:
             ew, U = scipy.linalg.eigh(self.M)
             self.Y = ((U * np.sqrt(np.maximum(ew, 0))) @ U.T) @ self.C
         self.timings['local fit'] = time.time() - t
+        self._mem_mark('local fit')
         self._grid_and_points(kmax_factor)
         return self
 
@@ -781,8 +817,9 @@ class THCExchange:
             self.phi = None
             self.log('   phi on demand (%.1f GB not stored)' % (self.ng * len(self.smooth) * 8 / 1e9))
         else:
-            self.phi = cell.pbc_eval_gto('GTOval_sph', coords)[:, self.smooth]  # (ng, nao_s)
+            self.phi = self._smooth_eval(coords)                      # (ng, nao_s)
         self.timings['grid'] = time.time() - t
+        self._mem_mark('grid')
         t = time.time()
         if self.selector == 'coarse':
             # pivoted Cholesky on a grid coarsened by coarsen per direction, pivots snapped to the nearest point of
@@ -794,7 +831,7 @@ class THCExchange:
             orbit_sel = getattr(self, 'symm_grid', False) and getattr(self, 'symm_pivots', True)
             dist = comm is not None and comm.Get_size() > 1 and self.blocked_pivots and not orbit_sel
             # serial selection: phi on the whole coarse grid on rank 0 only; distributed: per rank below
-            phic = cell.pbc_eval_gto('GTOval_sph', cc)[:, self.smooth] if (not dist and rank == 0) else None
+            phic = self._smooth_eval(cc) if (not dist and rank == 0) else None
             f = pivots_blocked if self.blocked_pivots else pivots
             if getattr(self, 'symm_grid', False) and getattr(self, 'symm_pivots', True):
                 orb, mem = grid_orbits(mc, self._ops[:2])
@@ -809,7 +846,7 @@ class THCExchange:
                 ncg = len(cc)
                 q0, q1 = ncg * rank // comm.Get_size(), ncg * (rank + 1) // comm.Get_size()
                 phic = None
-                ph_loc = cell.pbc_eval_gto('GTOval_sph', cc[q0:q1])[:, self.smooth]
+                ph_loc = self._smooth_eval(cc[q0:q1])
                 pc = pivots_blocked_dist(ph_loc, q0, ncg, kmax, comm)
                 ph_loc = None
                 if pf and rank == 0:
@@ -832,6 +869,7 @@ class THCExchange:
             f = pivots_blocked if self.selector == 'cholesky_blocked' else pivots
             self.piv, self.L = f(self.phi, min(self.ng, kmax_factor * len(self.smooth)))
         self.timings['pivots'] = time.time() - t
+        self._mem_mark('pivots')
         self.Gv, self.fG = half_gv(cell, self.mesh)
         self.w_vec, self.w_sr = kernels(self.Gv, self.omega)
         # exchange kernel w_k (V, A_lr, the LR rows): Coulomb (w_vec), or with exx_trunc = R_c (bohr) the smoothed
@@ -907,9 +945,13 @@ class THCExchange:
             if getattr(self, 'stream_gb', None):
                 nb = int(self.stream_gb * 1e9 / (8 * ng * 3))
             elif grid_split:
-                nb = int((0.6 * avail - 8 * nmu * rchunk * 2 - 32 * gchunk * naux) * size / (8 * ng * 8))
+                # live at once per rank: 3 arrays of nb x (ng / size) doubles (xl / rbuf / xi, then Xh / sbuf / Xq,
+                # then vxi / sbuf / vl), 4 with margin; the aux FT cache takes 0.2 of the budget apart
+                nb = int((0.65 * avail - 8 * nmu * rchunk * 2 - 32 * gchunk * naux) * size / (8 * ng * 4))
             else:
-                nb = int((0.75 * avail - 8 * nmu * rchunk * 2 - 32 * gchunk * naux) / (8 * ng * 2.2))
+                # serial stream: xi, its spectrum and the potential with the FFT work space, measured ~3.3
+                # (nb, ng) doubles at once (EuOCl: 16.7 GB above the start for a planned 11.3 GB at 2.2)
+                nb = int((0.7 * avail - 8 * nmu * rchunk * 2 - 32 * gchunk * naux) / (8 * ng * 3.3))
             if grid_split:                                            # Alltoallv counts / displacements < 2^31
                 nb = min(nb, size * ((2 ** 31 - 1) // ng))
             nb = max(32, min(nmu, nb))
@@ -1008,7 +1050,7 @@ class THCExchange:
         gsl = [(cuts[q] * gchunk, min(cuts[q + 1] * gchunk, nG)) for q in range(size)]   # G columns of rank q
         ncol = [b_ - a_ for a_, b_ in gsl]
         p2cache = {}                                                  # aux FT of the own G chunks, kept if it fits
-        p2_left = 0.25 * self.avail_bytes()                           # its share of the budget (blocks: 0.6)
+        p2_left = 0.2 * self.avail_bytes()                            # its share of the budget (blocks: 0.65)
         ta_comm = 0.
         tw = dict(wait=0., a2a=0., bytes=0.)                          # transpose: waiting, Alltoallv, bytes moved
         for b0 in range(0, nmu, nb):
@@ -1143,6 +1185,7 @@ class THCExchange:
                      % (b0, b1, nmu, time.time() - t0, ', '.join('%s %.0f' % kv for kv in tt.items()), ta_comm,
                         tw['wait'], tw['a2a'], tw['bytes'] / max(tw['a2a'], 1e-9) / 1e9, len(p2cache), len(own)))
         self._log_rank_spread(tt, tw)
+        self._mem_mark('V, A stream')
 
     def _log_rank_spread(self, tt, tw):
         '''min / max over the ranks of the stream timings (load balance: the transpose waits for the slowest).'''

@@ -91,7 +91,11 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
                      for at in range(cell.natm)])
     alpha_c = min(cell.bas_exp(i).min() for i in range(cell.nbas)
                   if compact[cell.ao_loc_nr()[i]])
-    metric_cache = {}
+    # inverse SR metrics of the fit domains, by domain geometry: an LRU cache bounded in bytes (15% of the budget;
+    # an Eu-Eu domain's eigenvectors are ~0.26 GB, and an entry-count bound let EuOCl grow it to ~20 GB)
+    from collections import OrderedDict
+    metric_cache = OrderedDict()
+    mc_bytes, mc_max = [0], 0.15 * max(0., cell.max_memory - _lib.current_memory()[0]) * 1e6
     nskip = 0
     near = {A: [] for A in range(cell.natm)}                          # explicit (B, translation) per compact atom
     my_atoms = _my_compact_atoms(cell, compact, comm)
@@ -140,35 +144,67 @@ def local_cx_fit(cell, auxbasis, compact, omega=0.5, r_cut=6.0, r_dom=0., lindep
                 datoms = [datoms[k] for k in order]
                 dcoords = [dcoords[k] for k in order]
                 amol = _atom_mol(auxcell, datoms, dcoords, abasis)
-                with mol.with_range_coulomb(-omega), amol.with_range_coulomb(-omega):
-                    jsl = (0, nbA) if same else (nbA, mol.nbas)
-                    j3 = df_incore.aux_e2(mol, amol, intor='int3c2e', aosym='s1',
-                                          shls_slice=(0, nbA) + jsl + (0, amol.nbas))
-                    if key not in metric_cache:
-                        m2 = amol.intor('int2c2e')
-                        metric_cache[key] = _inv_metric(.5 * (m2 + m2.T), lindep)
-                v, e = metric_cache[key]
-                blk = j3[cA - a0]                                  # (n_c, n_x, naux_m)
-                coef = ((v / e) @ (v.T @ blk.reshape(-1, blk.shape[2]).T)).T.reshape(blk.shape)
-                pa = np.concatenate([np.arange(*aux_loc[at]) for at in datoms])
-                cols = pidx[cA[:, None], xs_all[None, :]]
-                kk = np.where(keep)
-                if sparse:
-                    vals = coef[kk[0], kk[1]].T                         # (naux_m, nk)
-                    coo[0].append(np.repeat(pa.astype(np.int32), vals.shape[1]))
-                    coo[1].append(np.tile(cols[kk].astype(np.int32), len(pa)))
-                    coo[2].append(vals.ravel())
-                    ncoo += vals.size
-                    if ncoo > coo_max:                                 # fold into CSR within the memory budget
-                        Cacc = _coo_add(Cacc, coo, naux, len(ti))
-                        ncoo = 0
+                jsl = (0, nbA) if same else (nbA, mol.nbas)
+                if key in metric_cache:
+                    metric_cache.move_to_end(key)
                 else:
-                    Cblk = np.zeros((naux, len(kk[0])))
-                    np.add.at(Cblk, pa, coef[kk[0], kk[1]].T)
-                    C[:, cols[kk]] += Cblk
+                    with amol.with_range_coulomb(-omega):
+                        m2 = amol.intor('int2c2e')
+                    metric_cache[key] = _inv_metric(.5 * (m2 + m2.T), lindep)
+                    mc_bytes[0] += metric_cache[key][0].nbytes + metric_cache[key][1].nbytes
+                    while mc_bytes[0] > mc_max and len(metric_cache) > 1:     # least recently used out
+                        _, (v_, e_) = metric_cache.popitem(last=False)
+                        mc_bytes[0] -= v_.nbytes + e_.nbytes
+                v, e = metric_cache[key]
+                ve = v / e
+                pa = np.concatenate([np.arange(*aux_loc[at]) for at in datoms])
+                # (c x | P)_SR only for the compact shells of A (all of A's shells gave (297, 297, 4818) = 3.4 GB
+                # per Eu cluster), in batches of rows within ~15% of the budget (j3, its fit and the kept values)
+                naux_m, nx_ = amol.nao, jsl[1] - jsl[0]
+                nx_ = mol.ao_loc_nr()[jsl[1]] - mol.ao_loc_nr()[jsl[0]]
+                avail_ = max(0., cell.max_memory - _lib.current_memory()[0]) * 1e6
+                rows_max = int(max(1, 0.15 * avail_ / (24. * nx_ * naux_m)))
+                mloc = mol.ao_loc_nr()
+                cshells = [i for i in range(nbA) if compact[a0 + mloc[i]]]
+                batches, cur, nrow = [], [], 0
+                for i in cshells:                                      # runs of consecutive compact shells
+                    di = mloc[i + 1] - mloc[i]
+                    if cur and (i != cur[-1] + 1 or nrow + di > rows_max):
+                        batches.append(cur); cur, nrow = [], 0
+                    cur.append(i); nrow += di
+                if cur:
+                    batches.append(cur)
+                nk_cluster = 0
+                for sh in batches:
+                    s0, s1 = sh[0], sh[-1] + 1
+                    with mol.with_range_coulomb(-omega), amol.with_range_coulomb(-omega):
+                        j3 = df_incore.aux_e2(mol, amol, intor='int3c2e', aosym='s1',
+                                              shls_slice=(s0, s1) + jsl + (0, amol.nbas))   # (n_cb, n_x, naux_m)
+                    crow = a0 + np.arange(mloc[s0], mloc[s1])                 # these rows' AOs (compact, on A)
+                    ic = np.searchsorted(cA, crow)                             # their positions in cA
+                    coef = (ve @ (v.T @ j3.reshape(-1, naux_m).T)).T.reshape(j3.shape)
+                    j3 = None
+                    kp = keep[ic]
+                    kk = np.where(kp)
+                    cols = pidx[crow[:, None], xs_all[None, :]]
+                    if sparse:
+                        vals = coef[kk[0], kk[1]].T                     # (naux_m, nk)
+                        coo[0].append(np.repeat(pa.astype(np.int32), vals.shape[1]))
+                        coo[1].append(np.tile(cols[kk].astype(np.int32), len(pa)))
+                        coo[2].append(vals.ravel())
+                        ncoo += vals.size
+                        if ncoo > coo_max:                             # fold into CSR within the memory budget
+                            Cacc = _coo_add(Cacc, coo, naux, len(ti))
+                            ncoo = 0
+                    else:
+                        Cblk = np.zeros((naux, len(kk[0])))
+                        np.add.at(Cblk, pa, coef[kk[0], kk[1]].T)
+                        C[:, cols[kk]] += Cblk
+                    coef = vals = None
+                    nk_cluster += len(kk[0])
+                kk = (np.zeros(nk_cluster),)
                 ncluster += 1
                 nimgpair += len(kk[0])
-        metric_cache.clear() if len(metric_cache) > 2000 else None
         if sparse and coo[0]:                                          # fold this atom's triplets into CSR (memory)
             Cacc = _coo_add(Cacc, coo, naux, len(ti))
             ncoo = 0
@@ -299,6 +335,8 @@ def far_cx_fit(cell, auxcell, compact, omega, near, pidx, lindep=1e-12, grid=(30
     xyz_ang, w_ang = _lebedev(nang)
     xs_ok = ~compact                                                     # far partners: the non-compact functions
     rows, cols, vals = [], [], []
+    pa_of = lambda A: np.arange(*aux_loc[A])
+    from pyscf import lib
     for A in range(cell.natm):
         if atoms is not None and A not in atoms:
             continue
@@ -309,36 +347,46 @@ def far_cx_fit(cell, auxcell, compact, omega, near, pidx, lindep=1e-12, grid=(30
         r, dr = radi.mura_knowles(nrad, cell.atom_charge(A))
         sel = r < r_max
         r, wr = r[sel], (dr * r ** 2)[sel]
-        pts = (r[:, None, None] * xyz_ang[None]).reshape(-1, 3) + X[A]
-        w = (wr[:, None] * w_ang[None]).ravel()
-        # c on A (home cell only)
+        pts_all = (r[:, None, None] * xyz_ang[None]).reshape(-1, 3) + X[A]
+        w_all = (wr[:, None] * w_ang[None]).ravel()
         molA = _atom_mol(cell, [A], [X[A]], cell._basis)
-        cv = molA.eval_gto('GTOval_sph', pts)[:, cA - a0]               # (npts, n_c)
-        # x_far: lattice sum minus the explicit images
-        xf = cell.pbc_eval_gto('GTOval_sph', pts)                       # (npts, nao)
-        for B, t in near[A]:
-            mB = _atom_mol(cell, [B], [X[B] + t], cell._basis)
-            xf[:, ao_loc[B][0]:ao_loc[B][1]] -= mB.eval_gto('GTOval_sph', pts)
-        xf[:, ~xs_ok] = 0.
+        nearA = [(_atom_mol(cell, [B], [X[B] + t], cell._basis), B) for B, t in near[A]]
         xcols = np.where(xs_ok)[0]
-        xf = np.ascontiguousarray(xf[:, xcols])
-        # SR potentials of A's aux functions and the one-centre SR metric
         amol = _atom_mol(auxcell, [A], [X[A]], auxcell._basis)
-        u = _sr_potential_at(amol, pts, omega)                           # (npts, nQ)
         with amol.with_range_coulomb(-omega):
             m2 = amol.intor('int2c2e')
         v, e = _inv_metric(.5 * (m2 + m2.T), lindep)
         Minv = (v / e) @ v.T
-        uw = u * w[:, None]
-        pa = np.arange(*aux_loc[A])
-        for k, c in enumerate(cA):
-            J = (uw * cv[:, k:k + 1]).T @ xf                             # (nQ, n_x) = (Q | c x_far)_SR
-            coef = Minv @ J
-            big = np.abs(coef) > 1e-14
-            qq, xx = np.nonzero(big)
-            rows.append(pa[qq])
-            cols.append(pidx[c, xcols[xx]])
-            vals.append(coef[qq, xx])
+        nQ, nx, nc = amol.nao, len(xcols), len(cA)
+        # within the memory budget (cell.max_memory): J accumulators (n_c batch x nQ x n_x) and per point chunk
+        # c, x_far (all AOs while the explicit images are subtracted), u, u w (~ 8 (2 nQ + nao + n_c) bytes a
+        # point, x2 for the evaluation buffers)
+        avail = max(0., cell.max_memory - lib.current_memory()[0]) * 1e6
+        kb = int(max(1, min(nc, 0.3 * avail / (8 * nQ * nx))))
+        npc = int(max(500, min(len(pts_all), 0.3 * avail / (16 * (2 * nQ + cell.nao + nc)))))
+        for k0 in range(0, nc, kb):
+            k1 = min(k0 + kb, nc)
+            J = np.zeros((k1 - k0, nQ, nx))
+            for p0 in range(0, len(pts_all), npc):
+                p1 = min(p0 + npc, len(pts_all))
+                pts, w = pts_all[p0:p1], w_all[p0:p1]
+                cv = molA.eval_gto('GTOval_sph', pts)[:, cA[k0:k1] - a0]          # c on A (home cell only)
+                xf = cell.pbc_eval_gto('GTOval_sph', pts)                         # x_far: lattice sum minus the
+                for mB, B in nearA:                                               # explicit images
+                    xf[:, ao_loc[B][0]:ao_loc[B][1]] -= mB.eval_gto('GTOval_sph', pts)
+                xf = np.ascontiguousarray(xf[:, xcols])
+                uw = _sr_potential_at(amol, pts, omega) * w[:, None]              # SR potentials of A's aux
+                for k in range(k1 - k0):
+                    J[k] += (uw * cv[:, k:k + 1]).T @ xf                          # (Q | c x_far)_SR
+                cv = xf = uw = None
+            for k in range(k1 - k0):
+                coef = Minv @ J[k]
+                big = np.abs(coef) > 1e-14
+                qq, xx = np.nonzero(big)
+                rows.append(pa_of(A)[qq])
+                cols.append(pidx[cA[k0 + k], xcols[xx]])
+                vals.append(coef[qq, xx])
+            J = None
     if not rows:
         return np.zeros(0, int), np.zeros(0, int), np.zeros(0)
     return np.concatenate(rows), np.concatenate(cols), np.concatenate(vals)
