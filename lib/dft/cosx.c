@@ -909,6 +909,22 @@ static void multi_contract_f(float *Ga, const float *Fa, const float *Abuf, cons
  * coords (3, ngrid), weights, non0tab (ngrid / 56, nbas); blk points per task (multiple of 56);
  * cutoff: AO values; tol: the screening of the pair contributions; tcut: the far-field T.
  */
+/* occupied-output mode of the multi-density K (SOCDFTcosx_set_occ): vk (nao, nocc, nset) = K_plain[D_d] C,
+ * through Aoc = A C per point (shared by the densities) and u = Aoc^T F per density; no K matrix */
+static double *cx_occ_co = NULL;
+static int cx_occ_n = 0;
+void SOCDFTcosx_set_occ(double *co, int nocc)
+{
+        cx_occ_co = co;
+        cx_occ_n = nocc;
+}
+static void multi_contract_const(double *Ga, const double *Cm, const double *Abuf, const CXRec *rec, int nrec,
+                                 int nao, int n, int nset);
+#ifdef CX_FUSED
+static void multi_contract_const_f(float *Ga, const float *Cm, const float *Abuf, const CXRec *rec, int nrec,
+                                   int nao, int n, int nset);
+#endif
+
 void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords, double *weights,
                   uint8_t *non0tab, int ngrid, int blk, double cutoff, double tol, double tcut,
                   int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
@@ -920,6 +936,9 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
          * with the densities as the vector dimension (multi_contract), F and K by one GEMM each */
         const int multi = dtm != NULL;
         const int mfl = multi && SOCDFTcosx_mfloat();
+        const int occm = multi && cx_occ_co != NULL;
+        const int nocc = occm ? cx_occ_n : 0;
+        const double *co = cx_occ_co;
         /* energy mode (dmh != NULL): eout[d] = sum_g w sum_ab H_a A_ab F_b, H = Dh_d^T phi, vk untouched;
          * the screening then weighs each pair by the densities on both sides */
         const int eonly = dmh != NULL;
@@ -939,15 +958,24 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                 int mu;
                 for (mu = ao_loc[i0]; mu < ao_loc[i0 + 1]; mu++) shl_of[mu] = i0;
         }
+        const size_t ktot = occm ? (size_t)nao * nocc * nset : nn * nset;
         if (eonly) memset(eout, 0, sizeof(double) * nset);
-        else memset(vk, 0, sizeof(double) * nn * nset);
+        else memset(vk, 0, sizeof(double) * ktot);
 #pragma omp parallel
 {
         const int tid = omp_get_thread_num();
         const int mkl0 = mkl_set_num_threads_local ? mkl_set_num_threads_local(1) : 0;
         const double one = 1, zero = 0;
-        double *Kt = kbufs[tid] = eonly ? NULL : calloc(nn * nset, sizeof(double));
-        const size_t NQ = (size_t)nao * nset;
+        double *Kt = kbufs[tid] = eonly ? NULL : calloc(ktot, sizeof(double));
+        const size_t NQ = (size_t)nao * nset, NQO = (size_t)nocc * nset;
+        double *Aoc = occm ? malloc(sizeof(double) * (size_t)nao * nocc * blk) : NULL;
+        double *Uo = occm ? malloc(sizeof(double) * NQO * blk) : NULL;
+        float *Aocf = occm && mfl ? malloc(sizeof(float) * (size_t)nao * nocc * blk) : NULL;
+        float *cof = occm && mfl ? malloc(sizeof(float) * (size_t)nao * nocc) : NULL;
+        if (cof) {
+                size_t q;
+                for (q = 0; q < (size_t)nao * nocc; q++) cof[q] = (float)co[q];
+        }
         double *Bm = multi ? malloc(sizeof(double) * NQ * (nao > CX_KROWS ? nao : CX_KROWS)) : NULL;
         double *Abuf = multi ? malloc(sizeof(double) * CX_ABUF) : NULL;
         CXRec *rec = multi ? malloc(sizeof(CXRec) * (opt->npair + 1)) : NULL;
@@ -1024,10 +1052,14 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         const int nq = (int)NQ;
                         for (i = 0; i < nl; i++) memcpy(Bm + (size_t)i * NQ, dtm + (size_t)ix[i] * NQ, sizeof(double) * NQ);
                         dgemm_("N", "T", &nq, &n, &nl, &one, Bm, &nq, a, &n, &zero, F, &nq);
-                        if (mfl) {
+                        if (mfl && !occm) {
                                 size_t q;
                                 for (q = 0; q < NQ * n; q++) Ff[q] = (float)F[q];
                                 memset(Gf, 0, sizeof(float) * NQ * n);
+                        }
+                        if (occm) {
+                                if (mfl) memset(Aocf, 0, sizeof(float) * (size_t)nao * nocc * n);
+                                else memset(Aoc, 0, sizeof(double) * (size_t)nao * nocc * n);
                         }
                         int mu;
                         for (g = 0; g < n; g++)
@@ -1152,10 +1184,12 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         PROF(const unsigned long long cp0 = __rdtsc());
                         if (multi && aoff + (size_t)nab * n > abcap) {
 #ifdef CX_FUSED
-                                if (mfl) multi_contract_f(Gf, Ff, Abf, rec, nrec, nao, n, nset);
+                                if (occm && mfl) multi_contract_const_f(Aocf, cof, Abf, rec, nrec, nao, n, nocc);
+                                else if (mfl) multi_contract_f(Gf, Ff, Abf, rec, nrec, nao, n, nset);
                                 else
 #endif
-                                multi_contract(G, F, Abuf, rec, nrec, nao, n, nset);
+                                if (occm) multi_contract_const(Aoc, co, Abuf, rec, nrec, nao, n, nocc);
+                                else multi_contract(G, F, Abuf, rec, nrec, nao, n, nset);
                                 nrec = 0;
                                 aoff = 0;
                         }
@@ -1332,14 +1366,40 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                 }
                 if (multi && nrec) {
 #ifdef CX_FUSED
-                        if (mfl) multi_contract_f(Gf, Ff, Abf, rec, nrec, nao, n, nset);
+                        if (occm && mfl) multi_contract_const_f(Aocf, cof, Abf, rec, nrec, nao, n, nocc);
+                        else if (mfl) multi_contract_f(Gf, Ff, Abf, rec, nrec, nao, n, nset);
                         else
 #endif
-                        multi_contract(G, F, Abuf, rec, nrec, nao, n, nset);
+                        if (occm) multi_contract_const(Aoc, co, Abuf, rec, nrec, nao, n, nocc);
+                        else multi_contract(G, F, Abuf, rec, nrec, nao, n, nset);
                 }
-                if (mfl) {
+                if (mfl && !occm) {
                         size_t q;
                         for (q = 0; q < NQ * n; q++) G[q] = Gf[q];
+                }
+                if (occm) {
+                        /* u[g] (nocc, nset) = Aoc[g]^T F[g]; K C[ix_i][i][d] += sum_g wx_i(g) u[g][i][d] */
+                        if (mfl) {
+                                size_t q;
+                                for (q = 0; q < (size_t)nao * nocc * n; q++) Aoc[q] = Aocf[q];
+                        }
+                        for (g = 0; g < n; g++)
+                                dgemm_("N", "T", &nset, &nocc, &nao, &one, F + (size_t)g * NQ, &nset,
+                                       Aoc + (size_t)g * nao * nocc, &nocc, &zero, Uo + (size_t)g * NQO, &nset);
+                        const int nq = (int)NQO;
+                        int r0;
+                        for (r0 = 0; r0 < nl; r0 += CX_KROWS) {
+                                const int nr = nl - r0 < CX_KROWS ? nl - r0 : CX_KROWS;
+                                dgemm_("N", "N", &nq, &nr, &n, &one, Uo, &nq, wx + (size_t)r0 * n, &n, &zero, Bm, &nq);
+                                for (i = 0; i < nr; i++) {
+                                        double *row = Kt + (size_t)ix[r0 + i] * NQO;
+                                        const double *src = Bm + (size_t)i * NQO;
+                                        size_t q;
+                                        for (q = 0; q < NQO; q++) row[q] += src[q];
+                                }
+                        }
+                        tt1 = omp_get_wtime(); st[1] += tt1 - tt0; tt0 = tt1;
+                        continue;
                 }
                 tt1 = omp_get_wtime(); st[1] += tt1 - tt0; tt0 = tt1;
                 if (eonly) continue;
@@ -1385,7 +1445,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
 #pragma omp barrier
         /* reduce the thread buffers, each thread a slice */
         if (!eonly) {
-                const size_t tot = nn * nset, chunk = (tot + nthreads - 1) / nthreads;
+                const size_t tot = ktot, chunk = (tot + nthreads - 1) / nthreads;
                 const size_t s0 = chunk * tid < tot ? chunk * tid : tot, s1 = s0 + chunk < tot ? s0 + chunk : tot;
                 size_t q;
                 int t;
@@ -1397,7 +1457,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
         }
 #pragma omp barrier
         free(Kt); free(H); free(xs); free(a); free(wx); free(rmx); free(ix); free(runs); free(dr); free(F); free(G); free(ktmp);
-        free(fmax); free(A0); free(bk); free(Bm); free(Abuf); free(rec); free(Ff); free(Gf); free(R); free(Rwk); free(S); free(X); free(xyz);
+        free(fmax); free(A0); free(bk); free(Bm); free(Abuf); free(rec); free(Ff); free(Gf); free(Aoc); free(Uo); free(Aocf); free(cof); free(R); free(Rwk); free(S); free(X); free(xyz);
         for (at = 0; at < natm; at++) free(farR[at]);
         free(farR); free(stamp); free(armin);
         if (mkl_set_num_threads_local) mkl_set_num_threads_local(mkl0);
