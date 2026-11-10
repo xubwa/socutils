@@ -318,6 +318,9 @@ typedef struct {
         int nbas, nao, npair, natm, lmax;
         CXPair *pairs;
         double *pp_p, *pp_P, *pp_b;
+        int *pp_id;             /* ip * nprim_J + jp of every primitive pair */
+        double *eddata;         /* gradient: d E / dA of the two-centre pairs (SOCDFTcosx_build_grad) */
+        size_t *edo;
         double *edata, *mdata;
         double *shl_bound;      /* max over the pairs of a shell of the pair bound */
         int *atm_lmax;          /* 2 lmax of the one-centre pairs of each atom (-1: none) */
@@ -544,6 +547,9 @@ void *SOCDFTcosx_build(double prim_tol, double pair_tol, int *ao_loc, int *atm, 
         opt->pp_p = malloc(sizeof(double) * (po + 1));
         opt->pp_P = malloc(sizeof(double) * 3 * (po + 1));
         opt->pp_b = malloc(sizeof(double) * (po + 1));
+        opt->pp_id = malloc(sizeof(int) * (po + 1));
+        opt->eddata = NULL;
+        opt->edo = NULL;
         opt->edata = malloc(sizeof(double) * (eo + 1));
         opt->mdata = malloc(sizeof(double) * (mo + 1));
         /* pass 2: E, bounds, the one-centre ordering and prefix moments */
@@ -592,6 +598,7 @@ void *SOCDFTcosx_build(double prim_tol, double pair_tol, int *ao_loc, int *atm, 
                         double *E = opt->edata + pp->eo + sz * k;
                         const double b = prim_E(E, I, J, ip, jp, atm, bas, env, wk);
                         opt->pp_p[pp->po + k] = p;
+                        opt->pp_id[pp->po + k] = id;
                         opt->pp_b[pp->po + k] = b;
                         for (c = 0; c < 3; c++) opt->pp_P[3 * (pp->po + k) + c] = (ai * Ra[c] + aj * Rb[c]) / p;
                         btot += b;
@@ -649,7 +656,7 @@ void SOCDFTcosx_free(void *p)
         CXOpt *opt = p;
         if (!opt) return;
         free(opt->pairs); free(opt->pp_p); free(opt->pp_P); free(opt->pp_b);
-        free(opt->edata); free(opt->mdata); free(opt->shl_bound); free(opt->atm_lmax);
+        free(opt->edata); free(opt->mdata); free(opt->pp_id); free(opt->eddata); free(opt->edo); free(opt->shl_bound); free(opt->atm_lmax);
         free(opt);
 }
 
@@ -878,6 +885,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         const CXPair *pp = opt->pairs + ip;
                         /* contributions to G_I (A F_J, weighed by the grid side of I) and to G_J */
                         const double wI = fmax[pp->J] * xs[pp->I], wJ = pp->I != pp->J ? fmax[pp->I] * xs[pp->J] : 0;
+                        if (pp->bound == 0) continue;           /* below PAIR_TOL */
                         const int cI = pp->bound * wI >= tol;
                         const int cJ = pp->I != pp->J && pp->bound * wJ >= tol;
                         if (!cI && !cJ) continue;
@@ -1125,4 +1133,541 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
 }
         free(kbufs);
         free(shl_of);
+}
+
+/* ---------------------------------------------------------------- nuclear gradient */
+
+/* the derivative of the spherical E of primitive pair (ip, jp) of shells I, J with respect to the
+ * centre of I: out[x][ab][t] (3, nI nJ, NH(L + 1)), d phi_a / dA_x = 2 alpha phi_{a+1x} - a_x phi_{a-1x},
+ * coefficients and 2 pi / p folded in as prim_E */
+static void prim_Ed(double *out, int I, int J, int ip, int jp, int *atm, int *bas, double *env, double *wk)
+{
+        const int *bi = bas + I * BAS_SLOTS, *bj = bas + J * BAS_SLOTS;
+        const int li = bi[ANG_OF], lj = bj[ANG_OF], L = li + lj, nh1 = NH(L + 1);
+        const int npi = bi[NPRIM_OF], npj = bj[NPRIM_OF], nci = bi[NCTR_OF], ncj = bj[NCTR_OF];
+        const int di = 2 * li + 1, dj = 2 * lj + 1, nJ = ncj * dj, nI = nci * di;
+        const int nfi = (li + 1) * (li + 2) / 2, nfj = (lj + 1) * (lj + 2) / 2;
+        const double ai = env[bi[PTR_EXP] + ip], aj = env[bj[PTR_EXP] + jp];
+        const double *Ra = env + atm[bi[ATOM_OF] * ATM_SLOTS + PTR_COORD];
+        const double *Rb = env + atm[bj[ATOM_OF] * ATM_SLOTS + PTR_COORD];
+        const double p = ai + aj;
+        const double r2 = (Ra[0] - Rb[0]) * (Ra[0] - Rb[0]) + (Ra[1] - Rb[1]) * (Ra[1] - Rb[1])
+                        + (Ra[2] - Rb[2]) * (Ra[2] - Rb[2]);
+        const double e0 = 2 * M_PI / p * exp(-ai * aj / p * r2) * common_fac_sp(li) * common_fac_sp(lj);
+        const int Li = li + 1, s2 = Li + lj + 1, s1 = (lj + 1) * s2, sz = (Li + 1) * s1;
+        double *Ex = wk, *Ey = Ex + sz, *Ez = Ey + sz;
+        double *Ec = Ez + sz;                                   /* (3, nfi, nfj, nh1) */
+        double *Eh = Ec + (size_t)3 * nfi * nfj * nh1;          /* (3, di, nfj, nh1) */
+        double *Es = Eh + (size_t)3 * di * nfj * nh1;           /* (3, di, dj, nh1) */
+        hermite_E(Ex, Li, lj, ai, aj, Ra[0], Rb[0], 1.);
+        hermite_E(Ey, Li, lj, ai, aj, Ra[1], Rb[1], 1.);
+        hermite_E(Ez, Li, lj, ai, aj, Ra[2], Rb[2], e0);
+        int ix, iy, jx, jy, n, fa = 0, x;
+        for (ix = li; ix >= 0; ix--)
+        for (iy = li - ix; iy >= 0; iy--, fa++) {
+                const int iz = li - ix - iy, ia[3] = {ix, iy, iz};
+                int fb = 0;
+                for (jx = lj; jx >= 0; jx--)
+                for (jy = lj - jx; jy >= 0; jy--, fb++) {
+                        const int jz = lj - jx - jy;
+                        const double *ex = Ex + ix * s1 + jx * s2, *ey = Ey + iy * s1 + jy * s2;
+                        const double *ez = Ez + iz * s1 + jz * s2;
+                        const double *exp_[3] = {Ex + (ix + 1) * s1 + jx * s2, Ey + (iy + 1) * s1 + jy * s2,
+                                                 Ez + (iz + 1) * s1 + jz * s2};
+                        const double *exm[3] = {ix ? Ex + (ix - 1) * s1 + jx * s2 : NULL,
+                                                iy ? Ey + (iy - 1) * s1 + jy * s2 : NULL,
+                                                iz ? Ez + (iz - 1) * s1 + jz * s2 : NULL};
+                        for (x = 0; x < 3; x++) {
+                                double *e = Ec + (((size_t)x * nfi + fa) * nfj + fb) * nh1;
+                                for (n = 0; n < nh1; n++) {
+                                        const int t = h_t[n], u = h_u[n], v = h_v[n];
+                                        const int tt[3] = {t, u, v};
+                                        const double base[3] = {ex[t], ey[u], ez[v]};
+                                        /* the factor of direction x differentiated */
+                                        double dfx = 2 * ai * exp_[x][tt[x]];
+                                        if (ia[x]) dfx -= ia[x] * exm[x][tt[x]];
+                                        double val = dfx;
+                                        int y;
+                                        for (y = 0; y < 3; y++)
+                                                if (y != x) val *= base[y];
+                                        e[n] = val;
+                                }
+                        }
+                }
+        }
+        /* note: the E^{ij}_t of the undifferentiated directions vanish for t > i + j; the tables
+         * from hermite_E (memset) hold zeros there up to the raised length s2 */
+        int m, f, k, nc;
+        for (x = 0; x < 3; x++) {
+                const double *Ecx = Ec + (size_t)x * nfi * nfj * nh1;
+                double *Ehx = Eh + (size_t)x * di * nfj * nh1, *Esx = Es + (size_t)x * di * dj * nh1;
+                if (li <= 1) {
+                        memcpy(Ehx, Ecx, sizeof(double) * nfi * nfj * nh1);
+                } else {
+                        for (m = 0; m < di; m++) {
+                                const double *c = c2s_row(li, m, &nc);
+                                double *o = Ehx + (size_t)m * nfj * nh1;
+                                memset(o, 0, sizeof(double) * nfj * nh1);
+                                for (f = 0; f < nfi; f++) {
+                                        if (c[f] == 0) continue;
+                                        const double *s_ = Ecx + (size_t)f * nfj * nh1;
+                                        for (k = 0; k < nfj * nh1; k++) o[k] += c[f] * s_[k];
+                                }
+                        }
+                }
+                if (lj <= 1) {
+                        memcpy(Esx, Ehx, sizeof(double) * di * nfj * nh1);
+                } else {
+                        for (fa = 0; fa < di; fa++)
+                                for (m = 0; m < dj; m++) {
+                                        const double *c = c2s_row(lj, m, &nc);
+                                        double *o = Esx + ((size_t)fa * dj + m) * nh1;
+                                        memset(o, 0, sizeof(double) * nh1);
+                                        for (f = 0; f < nfj; f++) {
+                                                if (c[f] == 0) continue;
+                                                const double *s_ = Ehx + ((size_t)fa * nfj + f) * nh1;
+                                                for (k = 0; k < nh1; k++) o[k] += c[f] * s_[k];
+                                        }
+                                }
+                }
+        }
+        const double *cfi = env + bi[PTR_COEFF], *cfj = env + bj[PTR_COEFF];
+        int ci, cj, mi, mj;
+        for (x = 0; x < 3; x++)
+        for (ci = 0; ci < nci; ci++)
+        for (mi = 0; mi < di; mi++)
+        for (cj = 0; cj < ncj; cj++)
+        for (mj = 0; mj < dj; mj++) {
+                const double cc = cfi[ci * npi + ip] * cfj[cj * npj + jp];
+                const double *s_ = Es + (((size_t)x * di + mi) * dj + mj) * nh1;
+                double *o = out + (((size_t)x * nI + ci * di + mi) * nJ + cj * dj + mj) * nh1;
+                for (k = 0; k < nh1; k++) o[k] = cc * s_[k];
+        }
+}
+
+static size_t prim_wk_size_d(void)
+{
+        const int sE = (CX_LMAX + 2) * (CX_LMAX + 1) * (2 * CX_LMAX + 2);
+        const int nc = (CX_LMAX + 1) * (CX_LMAX + 2) / 2, nh = NH(2 * CX_LMAX + 1);
+        return 3 * sE + 9 * (size_t)nc * nc * nh;
+}
+
+/* the derivative tables of the two-centre pairs (one-centre pairs need none: the sum of the two
+ * centre derivatives is minus the point derivative); returns 0 on failure */
+int SOCDFTcosx_build_grad(void *p, int *atm, int *bas, double *env)
+{
+        CXOpt *opt = p;
+        if (opt->eddata) return 1;
+        cx_tables();
+        size_t eo = 0;
+        int ip_;
+        opt->edo = malloc(sizeof(size_t) * (opt->npair + 1));
+        for (ip_ = 0; ip_ < opt->npair; ip_++) {
+                const CXPair *pp = opt->pairs + ip_;
+                opt->edo[ip_] = eo;
+                if (!pp->onec && pp->bound > 0) eo += (size_t)3 * pp->nI * pp->nJ * NH(pp->L + 1) * pp->np;
+        }
+        opt->eddata = malloc(sizeof(double) * (eo + 1));
+        if (!opt->eddata) return 0;
+#pragma omp parallel
+{
+        double *wk = malloc(sizeof(double) * prim_wk_size_d());
+#pragma omp for schedule(dynamic, 8)
+        for (ip_ = 0; ip_ < opt->npair; ip_++) {
+                const CXPair *pp = opt->pairs + ip_;
+                if (pp->onec || pp->bound == 0) continue;
+                const int *bi = bas + pp->I * BAS_SLOTS, *bj = bas + pp->J * BAS_SLOTS;
+                const size_t sz = (size_t)3 * pp->nI * pp->nJ * NH(pp->L + 1);
+                const int npj = bj[NPRIM_OF];
+                int k;
+                for (k = 0; k < pp->np; k++) {
+                        const int id = opt->pp_id[pp->po + k];
+                        prim_Ed(opt->eddata + opt->edo[ip_] + sz * k, pp->I, pp->J, id / npj, id % npj, atm, bas, env, wk);
+                }
+                (void)bi;
+        }
+        free(wk);
+}
+        return 1;
+}
+
+/* AO values and gradients (4, nl, n) of the significant AOs of a block (max_g |phi| > cutoff) */
+static int eval_select1(double *a, int *ix, int *runs, int n, double *xyz, uint8_t *msk, double cutoff,
+                        int *ao_loc, int *atm, int *bas, int nbas, double *env, double *rmx, double *full)
+{
+        const int nrow = (n + MASK_BLK - 1) / MASK_BLK;
+        int sh = 0, nrun = 0, r, i, c;
+        size_t ntot = 0;
+        while (sh < nbas) {
+                int on = 0;
+                for (r = 0; r < nrow && !on; r++) on = msk[(size_t)r * nbas + sh] != 0;
+                if (!on) { sh++; continue; }
+                const int s0 = sh;
+                for (sh++; sh < nbas; sh++) {
+                        on = 0;
+                        for (r = 0; r < nrow && !on; r++) on = msk[(size_t)r * nbas + sh] != 0;
+                        if (!on) break;
+                }
+                runs[2 * nrun] = s0;
+                runs[2 * nrun + 1] = sh;
+                nrun++;
+                ntot += ao_loc[sh] - ao_loc[s0];
+        }
+        if (ntot == 0) return 0;
+        size_t row = 0;
+        memset(rmx, 0, sizeof(double) * ntot);
+        for (i = 0; i < nrun; i++) {
+                SOCDFTgtoval_ld(1, n, runs[2 * i], runs[2 * i + 1], ao_loc, full, ntot, row, xyz, msk, atm, bas,
+                                nbas, env, rmx);
+                row += ao_loc[runs[2 * i + 1]] - ao_loc[runs[2 * i]];
+        }
+        int nl = 0;
+        row = 0;
+        int *src = runs + 2 * nbas;
+        for (i = 0; i < nrun; i++) {
+                int mu;
+                for (mu = ao_loc[runs[2 * i]]; mu < ao_loc[runs[2 * i + 1]]; mu++, row++) {
+                        if (rmx[row] > cutoff) {
+                                src[nl] = (int)row;
+                                ix[nl++] = mu;
+                        }
+                }
+        }
+        for (c = 0; c < 4; c++)
+                for (i = 0; i < nl; i++)
+                        memcpy(a + ((size_t)c * nl + i) * n, full + ((size_t)c * ntot + src[i]) * n, sizeof(double) * n);
+        return nl;
+}
+
+/*
+ * grad (natm, 3) = d/dR of E = sum_g w_g sum_ab H_a(g) A_ab(g) F_b(g) at fixed densities, on the
+ * fixed grid: H = M^T phi (grid side), F = D^T phi (D symmetric), plus, with Yg != NULL, the
+ * derivative of sum_mu nu Yg_mu nu S_g,mu nu (S_g = sum_g w phi phi^T):
+ *   (i)   -sum_{rho in X} sum_g w grad phi_rho (sum_nu M_rho nu (A F)_nu + D_rho nu (A H)_nu + Yg_rho nu phi_nu)
+ *   (ii)  sum_pairs (d A_ab / dR) W_ab, W_ab = w (H_a F_b + H_b F_a), the centre-of-I derivative from
+ *         the derivative E tables, the point derivative from R_{t+1x}, the centre of J by
+ *         translational invariance (one-centre pairs: minus the point derivative).
+ */
+void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *optp, double *coords,
+                     double *weights, uint8_t *non0tab, int ngrid, int blk, double cutoff, double tol,
+                     double tcut, int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
+                     dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local)
+{
+        CXOpt *opt = optp;
+        cx_tables();
+        const int nao = ao_loc[nbas];
+        const int nblk = (ngrid + blk - 1) / blk;
+        const int Lmax = opt->lmax + 1, nhmax = NH(Lmax);
+        int nab_max = 1, i0;
+        for (i0 = 0; i0 < opt->npair; i0++)
+                if (opt->pairs[i0].nI * opt->pairs[i0].nJ > nab_max) nab_max = opt->pairs[i0].nI * opt->pairs[i0].nJ;
+        int *shl_of = malloc(sizeof(int) * nao);
+        for (i0 = 0; i0 < nbas; i0++) {
+                int mu;
+                for (mu = ao_loc[i0]; mu < ao_loc[i0 + 1]; mu++) shl_of[mu] = i0;
+        }
+        int *atm_of = malloc(sizeof(int) * nbas);
+        for (i0 = 0; i0 < nbas; i0++) atm_of[i0] = bas[i0 * BAS_SLOTS + ATOM_OF];
+        memset(grad, 0, sizeof(double) * natm * 3);
+#pragma omp parallel
+{
+        const int mkl0 = mkl_set_num_threads_local ? mkl_set_num_threads_local(1) : 0;
+        const double one = 1, zero = 0;
+        double *gr = calloc(natm * 3, sizeof(double));
+        double *a = malloc(sizeof(double) * 4 * (size_t)nao * blk);
+        double *full = malloc(sizeof(double) * 4 * (size_t)nao * blk);
+        double *rmx = malloc(sizeof(double) * nao);
+        int *ix = malloc(sizeof(int) * nao);
+        int *runs = malloc(sizeof(int) * (2 * (nbas + 1) + nao));
+        double *dr = malloc(sizeof(double) * (size_t)nao * nao);
+        double *F = malloc(sizeof(double) * (size_t)nao * blk);
+        double *H = malloc(sizeof(double) * (size_t)nao * blk);
+        double *GF = malloc(sizeof(double) * (size_t)nao * blk);
+        double *GH = malloc(sizeof(double) * (size_t)nao * blk);
+        double *Q = malloc(sizeof(double) * (size_t)nao * blk);
+        double *fm = malloc(sizeof(double) * nbas), *ws = malloc(sizeof(double) * nbas);
+        double *A = malloc(sizeof(double) * (size_t)nab_max * blk);
+        double *W = malloc(sizeof(double) * (size_t)nab_max * blk);
+        double *Mm = malloc(sizeof(double) * (size_t)nab_max * nhmax);
+        double *bk = malloc(sizeof(double) * 4096);
+        double *R = malloc(sizeof(double) * (size_t)nhmax * blk);
+        double *Rwk = malloc(sizeof(double) * 2 * (size_t)nhmax * blk);
+        double *S = malloc(sizeof(double) * (size_t)(Lmax + 1) * blk);
+        double *X = malloc(sizeof(double) * 4 * blk), *Y = X + blk, *Z = Y + blk, *T = Z + blk;
+        double *xyz = malloc(sizeof(double) * 3 * blk);
+        double **farR = calloc(natm, sizeof(double *));
+        int *stamp = malloc(sizeof(int) * natm);
+        double *armin = malloc(sizeof(double) * natm);
+        int at, i;
+        for (at = 0; at < natm; at++) {
+                stamp[at] = -1;
+                if (opt->atm_lmax[at] >= 0) farR[at] = malloc(sizeof(double) * NH(opt->atm_lmax[at] + 1) * blk);
+        }
+        int b;
+#pragma omp for schedule(dynamic, 1)
+        for (b = 0; b < nblk; b++) {
+                const int g0 = b * blk, n = g0 + blk <= ngrid ? blk : ngrid - g0;
+                uint8_t *msk = non0tab + (size_t)(g0 / MASK_BLK) * nbas;
+                int k, g, ip, x;
+                for (k = 0; k < 3; k++) memcpy(xyz + k * n, coords + (size_t)k * ngrid + g0, sizeof(double) * n);
+                const int nl = eval_select1(a, ix, runs, n, xyz, msk, cutoff, ao_loc, atm, bas, nbas, env, rmx, full);
+                if (nl == 0) continue;
+                const double *w = weights + g0;
+                /* F = D[ix, :]^T phi, H = M[ix, :]^T phi (nao, n) */
+                for (i = 0; i < nl; i++) memcpy(dr + (size_t)i * nao, dm + (size_t)ix[i] * nao, sizeof(double) * nao);
+                dgemm_("N", "T", &n, &nao, &nl, &one, a, &n, dr, &nao, &zero, F, &n);
+                for (i = 0; i < nl; i++) memcpy(dr + (size_t)i * nao, dmm + (size_t)ix[i] * nao, sizeof(double) * nao);
+                dgemm_("N", "T", &n, &nao, &nl, &one, a, &n, dr, &nao, &zero, H, &n);
+                for (i = 0; i < nbas; i++) fm[i] = ws[i] = 0;
+                {
+                        int mu;
+                        for (mu = 0; mu < nao; mu++) {
+                                const double *f = F + (size_t)mu * n, *h = H + (size_t)mu * n;
+                                double m = 0, s = 0;
+                                for (g = 0; g < n; g++) {
+                                        const double v = fabs(f[g]) + fabs(h[g]);
+                                        m = v > m ? v : m;
+                                        s += w[g] * v;
+                                }
+                                const int sh = shl_of[mu];
+                                if (m > fm[sh]) fm[sh] = m;
+                                if (s > ws[sh]) ws[sh] = s;
+                        }
+                }
+                memset(GF, 0, sizeof(double) * nao * n);
+                memset(GH, 0, sizeof(double) * nao * n);
+                double cb[3] = {0, 0, 0}, rb = 0;
+                for (g = 0; g < n; g++) {
+                        cb[0] += xyz[g]; cb[1] += xyz[n + g]; cb[2] += xyz[2 * n + g];
+                }
+                cb[0] /= n; cb[1] /= n; cb[2] /= n;
+                for (g = 0; g < n; g++) {
+                        const double dx = xyz[g] - cb[0], dy = xyz[n + g] - cb[1], dz = xyz[2 * n + g] - cb[2];
+                        const double r2 = dx * dx + dy * dy + dz * dz;
+                        if (r2 > rb) rb = r2;
+                }
+                rb = sqrt(rb);
+                for (ip = 0; ip < opt->npair; ip++) {
+                        const CXPair *pp = opt->pairs + ip;
+                        const int I = pp->I, J = pp->J, both = I != J;
+                        const double wgt = fm[J] * ws[I] + (both ? fm[I] * ws[J] : 0);
+                        if (pp->bound == 0 || pp->bound * wgt < tol) continue;      /* bound 0: below PAIR_TOL */
+                        const int L = pp->L, nh = NH(L), nh1 = NH(L + 1), nI = pp->nI, nJ = pp->nJ, nab = nI * nJ;
+                        double bsum = 0;
+                        for (k = 0; k < pp->np; k++) {
+                                const double *P = opt->pp_P + 3 * (pp->po + k);
+                                const double dx = P[0] - cb[0], dy = P[1] - cb[1], dz = P[2] - cb[2];
+                                const double dmin = sqrt(dx * dx + dy * dy + dz * dz) - rb;
+                                double f = 1;
+                                if (dmin > 0) {
+                                        const double T0 = opt->pp_p[pp->po + k] * dmin * dmin;
+                                        if (T0 > 1) {
+                                                const double ir = 1 / sqrt(T0);
+                                                double rp = ir, mx = 0;
+                                                int dd;
+                                                for (dd = 0; dd <= L + 1; dd++) {
+                                                        const double v = cx_damp[dd] * rp;
+                                                        if (v > mx) mx = v;
+                                                        rp *= ir;
+                                                }
+                                                f = mx < 1 ? mx : 1;
+                                        }
+                                }
+                                /* the derivative brings sqrt(2p) */
+                                bk[k] = f * opt->pp_b[pp->po + k] * sqrt(2 * opt->pp_p[pp->po + k]);
+                                bsum += bk[k];
+                        }
+                        if (bsum * wgt < tol) continue;
+                        const size_t sz = (size_t)nab * nh, szd = (size_t)3 * nab * nh1;
+                        const int I0 = ao_loc[I], J0 = ao_loc[J];
+                        /* W_ab = w (H_a F_b + H_b F_a) */
+                        {
+                                int ia, jb;
+                                for (ia = 0; ia < nI; ia++)
+                                        for (jb = 0; jb < nJ; jb++) {
+                                                double *wr = W + (size_t)(ia * nJ + jb) * n;
+                                                const double *ha = H + (size_t)(I0 + ia) * n, *fb = F + (size_t)(J0 + jb) * n;
+                                                const double *hb = H + (size_t)(J0 + jb) * n, *fa = F + (size_t)(I0 + ia) * n;
+                                                if (both) {
+#pragma omp simd
+                                                        for (g = 0; g < n; g++) wr[g] = w[g] * (ha[g] * fb[g] + hb[g] * fa[g]);
+                                                } else {
+#pragma omp simd
+                                                        for (g = 0; g < n; g++) wr[g] = w[g] * ha[g] * fb[g];
+                                                }
+                                        }
+                        }
+                        double gA[3] = {0, 0, 0}, gC[3] = {0, 0, 0};
+                        memset(A, 0, sizeof(double) * nab * n);
+                        int k0 = 0;
+                        if (pp->onec) {
+                                at = pp->atom;
+                                const double *Ra = env + atm[at * ATM_SLOTS + PTR_COORD];
+                                const int La = opt->atm_lmax[at] + 1;
+                                if (stamp[at] != b) {
+                                        double rmin = 1e300;
+                                        for (g = 0; g < n; g++) {
+                                                X[g] = Ra[0] - xyz[g];
+                                                Y[g] = Ra[1] - xyz[n + g];
+                                                Z[g] = Ra[2] - xyz[2 * n + g];
+                                                T[g] = X[g] * X[g] + Y[g] * Y[g] + Z[g] * Z[g];
+                                                if (T[g] < rmin) rmin = T[g];
+                                        }
+                                        armin[at] = rmin;
+                                        stamp[at] = b;
+                                        if (rmin > 1e-12) {
+                                                int m;
+                                                rsqrt_vec(S + (size_t)La * n, T, n);
+                                                for (g = 0; g < n; g++) {
+                                                        const double ir = S[(size_t)La * n + g], ir2 = ir * ir;
+                                                        double s = ir;
+                                                        for (m = 0; m <= La; m++) {
+                                                                S[m * n + g] = s;
+                                                                s *= -(2 * m + 1) * ir2;
+                                                        }
+                                                }
+                                                hermite_R_vec(farR[at], S, X, Y, Z, La, n, Rwk);
+                                        } else {
+                                                armin[at] = 0;
+                                        }
+                                }
+                                const double rmin = armin[at];
+                                if (rmin > 0) {
+                                        const double *pv = opt->pp_p + pp->po;
+                                        while (k0 < pp->np && pv[k0] * rmin >= tcut) k0++;
+                                }
+                                if (k0 > 0) {
+                                        const double *Mo = opt->mdata + pp->mo + sz * (k0 - 1);
+                                        e_times_r(A, Mo, farR[at], nab, nh, n);
+                                        /* Mm (nab, nh1) = W R^T */
+                                        dgemm_("T", "N", &nh1, &nab, &n, &one, farR[at], &n, W, &n, &zero, Mm, &nh1);
+                                        int ab, t;
+                                        for (ab = 0; ab < nab; ab++)
+                                                for (t = 0; t < nh; t++) {
+                                                        const double e = Mo[(size_t)ab * nh + t];
+                                                        const int tx = h_t[t], ty = h_u[t], tz = h_v[t];
+                                                        gC[0] -= e * Mm[(size_t)ab * nh1 + h_idx[tx + 1][ty][tz]];
+                                                        gC[1] -= e * Mm[(size_t)ab * nh1 + h_idx[tx][ty + 1][tz]];
+                                                        gC[2] -= e * Mm[(size_t)ab * nh1 + h_idx[tx][ty][tz + 1]];
+                                                }
+                                }
+                        }
+                        for (k = k0; k < pp->np; k++) {
+                                if (bk[k] * wgt < tol) continue;
+                                const double p = opt->pp_p[pp->po + k];
+                                const double *P = opt->pp_P + 3 * (pp->po + k);
+                                double tmin = 1e300, tmax = 0;
+                                for (g = 0; g < n; g++) {
+                                        X[g] = P[0] - xyz[g];
+                                        Y[g] = P[1] - xyz[n + g];
+                                        Z[g] = P[2] - xyz[2 * n + g];
+                                        T[g] = p * (X[g] * X[g] + Y[g] * Y[g] + Z[g] * Z[g]);
+                                        tmin = T[g] < tmin ? T[g] : tmin;
+                                        tmax = T[g] > tmax ? T[g] : tmax;
+                                }
+                                boys_vec(S, n, T, L + 1, n, tmin, tmax);
+                                double sc = 1;
+                                int m;
+                                for (m = 1; m <= L + 1; m++) {
+                                        sc *= -2 * p;
+                                        double *sm = S + (size_t)m * n;
+                                        for (g = 0; g < n; g++) sm[g] *= sc;
+                                }
+                                hermite_R_vec(R, S, X, Y, Z, L + 1, n, Rwk);
+                                const double *E = opt->edata + pp->eo + sz * k;
+                                e_times_r(A, E, R, nab, nh, n);
+                                dgemm_("T", "N", &nh1, &nab, &n, &one, R, &n, W, &n, &zero, Mm, &nh1);
+                                int ab, t;
+                                for (ab = 0; ab < nab; ab++)
+                                        for (t = 0; t < nh; t++) {
+                                                const double e = E[(size_t)ab * nh + t];
+                                                const int tx = h_t[t], ty = h_u[t], tz = h_v[t];
+                                                gC[0] -= e * Mm[(size_t)ab * nh1 + h_idx[tx + 1][ty][tz]];
+                                                gC[1] -= e * Mm[(size_t)ab * nh1 + h_idx[tx][ty + 1][tz]];
+                                                gC[2] -= e * Mm[(size_t)ab * nh1 + h_idx[tx][ty][tz + 1]];
+                                        }
+                                if (!pp->onec) {
+                                        const double *Ed = opt->eddata + opt->edo[ip] + szd * k;
+                                        for (x = 0; x < 3; x++) {
+                                                const double *e = Ed + (size_t)x * nab * nh1;
+                                                double s = 0;
+                                                size_t q;
+                                                for (q = 0; q < (size_t)nab * nh1; q++) s += e[q] * Mm[q];
+                                                gA[x] += s;
+                                        }
+                                }
+                        }
+                        const int aI = atm_of[I], aJ = atm_of[J];
+                        for (x = 0; x < 3; x++) {
+                                if (pp->onec) {
+                                        gr[aI * 3 + x] -= gC[x];
+                                } else {
+                                        gr[aI * 3 + x] += gA[x];
+                                        gr[aJ * 3 + x] += -gA[x] - gC[x];
+                                }
+                        }
+                        /* G^F = A F, G^H = A H (both directions) */
+                        {
+                                int ia, jb;
+                                for (ia = 0; ia < nI; ia++) {
+                                        double *gfi = GF + (size_t)(I0 + ia) * n, *ghi = GH + (size_t)(I0 + ia) * n;
+                                        for (jb = 0; jb < nJ; jb++) {
+                                                const double *ar = A + (size_t)(ia * nJ + jb) * n;
+                                                const double *fj = F + (size_t)(J0 + jb) * n, *hj = H + (size_t)(J0 + jb) * n;
+#pragma omp simd
+                                                for (g = 0; g < n; g++) {
+                                                        gfi[g] += ar[g] * fj[g];
+                                                        ghi[g] += ar[g] * hj[g];
+                                                }
+                                        }
+                                }
+                                if (both) {
+                                        for (jb = 0; jb < nJ; jb++) {
+                                                double *gfj = GF + (size_t)(J0 + jb) * n, *ghj = GH + (size_t)(J0 + jb) * n;
+                                                for (ia = 0; ia < nI; ia++) {
+                                                        const double *ar = A + (size_t)(ia * nJ + jb) * n;
+                                                        const double *fi = F + (size_t)(I0 + ia) * n, *hi = H + (size_t)(I0 + ia) * n;
+#pragma omp simd
+                                                        for (g = 0; g < n; g++) {
+                                                                gfj[g] += ar[g] * fi[g];
+                                                                ghj[g] += ar[g] * hi[g];
+                                                        }
+                                                }
+                                        }
+                                }
+                        }
+                }
+                /* (i): Q (nl, n) = M[ix, :] G^F + D[ix, :] G^H (+ Yg[ix, ix] phi) */
+                for (i = 0; i < nl; i++) memcpy(dr + (size_t)i * nao, dmm + (size_t)ix[i] * nao, sizeof(double) * nao);
+                dgemm_("N", "N", &n, &nl, &nao, &one, GF, &n, dr, &nao, &zero, Q, &n);
+                for (i = 0; i < nl; i++) memcpy(dr + (size_t)i * nao, dm + (size_t)ix[i] * nao, sizeof(double) * nao);
+                dgemm_("N", "N", &n, &nl, &nao, &one, GH, &n, dr, &nao, &one, Q, &n);
+                if (yg) {
+                        int j;
+                        for (i = 0; i < nl; i++)
+                                for (j = 0; j < nl; j++) dr[(size_t)i * nl + j] = yg[(size_t)ix[i] * nao + ix[j]];
+                        dgemm_("N", "N", &n, &nl, &nl, &one, a, &n, dr, &nl, &one, Q, &n);
+                }
+                for (i = 0; i < nl; i++) {
+                        const double *q = Q + (size_t)i * n;
+                        const int aa = atm_of[shl_of[ix[i]]];
+                        for (x = 0; x < 3; x++) {
+                                const double *d = a + ((size_t)(1 + x) * nl + i) * n;
+                                double s = 0;
+                                for (g = 0; g < n; g++) s += w[g] * d[g] * q[g];
+                                gr[aa * 3 + x] -= s;
+                        }
+                }
+        }
+#pragma omp critical(socdft_cosx_grad)
+        for (i = 0; i < natm * 3; i++) grad[i] += gr[i];
+        free(gr); free(a); free(full); free(rmx); free(ix); free(runs); free(dr); free(F); free(H); free(GF); free(GH);
+        free(Q); free(fm); free(ws); free(A); free(W); free(Mm); free(bk); free(R); free(Rwk); free(S); free(X);
+        free(xyz);
+        for (at = 0; at < natm; at++) free(farR[at]);
+        free(farR); free(stamp); free(armin);
+        if (mkl_set_num_threads_local) mkl_set_num_threads_local(mkl0);
+}
+        free(shl_of);
+        free(atm_of);
 }
