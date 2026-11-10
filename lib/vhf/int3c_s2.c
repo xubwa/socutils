@@ -113,3 +113,16 @@ void SOCVHFscatter_cols(double *B, double *Y, long *cols, int naux, long nrow, l
                 }
         }
 }
+
+/* a[0:n] = 0, threaded (reused block buffers, no page faults of fresh zero pages) */
+void SOCVHFzero_fill(double *a, size_t n)
+{
+        const size_t chunk = 1 << 16;
+        const size_t nchunk = (n + chunk - 1) / chunk;
+        size_t c;
+#pragma omp parallel for schedule(static)
+        for (c = 0; c < nchunk; c++) {
+                const size_t s = c * chunk, e = s + chunk < n ? s + chunk : n;
+                memset(a + s, 0, sizeof(double) * (e - s));
+        }
+}
