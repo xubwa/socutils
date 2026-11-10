@@ -924,6 +924,23 @@ static int cx_dense = 1;
 void SOCDFTcosx_set_symm(void *d, void *s) { cx_dsymm = (dsymm_t)d; cx_ssymm = (ssymm_t)s; }
 void SOCDFTcosx_set_dense(int v) { cx_dense = v; }
 
+/* out[d][i][j] = vt[i][j][d] (d < nset of the ld columns), threaded, in tiles of 8 j */
+void SOCDFTcosx_untranspose(double *out, const double *vt, int nao, int nset, int ld)
+{
+        const size_t nn = (size_t)nao * nao;
+        int i;
+#pragma omp parallel for schedule(static)
+        for (i = 0; i < nao; i++) {
+                int j0, j, d;
+                for (j0 = 0; j0 < nao; j0 += 8) {
+                        const int j1 = j0 + 8 < nao ? j0 + 8 : nao;
+                        for (d = 0; d < nset; d++)
+                                for (j = j0; j < j1; j++)
+                                        out[d * nn + (size_t)i * nao + j] = vt[((size_t)i * nao + j) * ld + d];
+                }
+        }
+}
+
 /* G[g] (nao, nset) += A(g) F[g], one symmetric GEMM per point: the records that act both ways (and the
  * diagonal shell pairs, I >= J) placed in the upper triangle of the column-major A(g) (rows I, columns J of
  * the row-major buffer), the one-way records (cI xor cJ) added record by record as multi_contract */
