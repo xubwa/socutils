@@ -42,7 +42,7 @@
 #include <omp.h>
 #include "cint.h"
 
-#define LP 6                    /* bra pair degree (f f) */
+#define LP 7                    /* bra pair degree (f f) + 1 of the gradient */
 #define LQ 6                    /* auxiliary angular momentum */
 #define LT (LP + LQ)
 #define NH(d) ((d) < 0 ? 0 : ((d) + 1) * ((d) + 2) * ((d) + 3) / 6)
@@ -335,6 +335,7 @@ typedef struct {
         int n;
         double X[RJ_NL], Y[RJ_NL], Z[RJ_NL], r2[RJ_NL], q[RJ_NL];
         int k[RJ_NL];           /* near: the primitive; far: the bucket / prefix index */
+        int c[RJ_NL];           /* the auxiliary centre (gradient) */
 } RJBatch;
 
 static inline void batch_pad(RJBatch *b)
@@ -693,6 +694,278 @@ int SOCVHFrij_direct_vj(double *vj, double *h, double *qcond, double tol, double
 }
         SOCVHFrij_direct_stats[2] = cnt_near;
         SOCVHFrij_direct_stats[3] = cnt_far;
+        free(M);
+        free(pairs);
+        free(ax.lpre);
+        return npair;
+}
+
+/* Hermite density rho (NH(lp)) of a pair and its derivative densities d/dA_x (dA[x * NH(lp + 1)])
+ * and d/dB_x, from d phi_a / dA_x = 2 alpha_a phi_{a+1x} - a_x phi_{a-1x} (md_j.c pair_densities,
+ * in the order of rij_direct_gen.c) */
+static void pair_rho_der(double *rho, double *dA, double *dB, const RJPair *pp, const double *dm, size_t nao,
+                         const int *ao_loc, int *atm, int *bas, double *env, double *wk)
+{
+        const int ish = pp->ish, jsh = pp->jsh;
+        const int li = bas[ish * BAS_SLOTS + ANG_OF], lj = bas[jsh * BAS_SLOTS + ANG_OF], lij = li + lj;
+        const double *Ra = env + atm[bas[ish * BAS_SLOTS + ATOM_OF] * ATM_SLOTS + PTR_COORD];
+        const double *Rb = env + atm[bas[jsh * BAS_SLOTS + ATOM_OF] * ATM_SLOTS + PTR_COORD];
+        const double ai = env[bas[ish * BAS_SLOTS + PTR_EXP]], aj = env[bas[jsh * BAS_SLOTS + PTR_EXP]];
+        const double w = (ish == jsh ? 1. : 2.) * env[bas[ish * BAS_SLOTS + PTR_COEFF]] * common_fac_sp(li)
+                       * env[bas[jsh * BAS_SLOTS + PTR_COEFF]] * common_fac_sp(lj);
+        const int Li = li + 1, Lj = lj + 1, s2 = Li + Lj + 1, s1 = (Lj + 1) * s2, sz = (Li + 1) * s1;
+        double *Ex = wk, *Ey = Ex + sz, *Ez = Ey + sz;
+        const double r2 = (Ra[0] - Rb[0]) * (Ra[0] - Rb[0]) + (Ra[1] - Rb[1]) * (Ra[1] - Rb[1])
+                        + (Ra[2] - Rb[2]) * (Ra[2] - Rb[2]);
+        hermite_E(Ex, Li, Lj, ai, aj, Ra[0], Rb[0], 1.);
+        hermite_E(Ey, Li, Lj, ai, aj, Ra[1], Rb[1], 1.);
+        hermite_E(Ez, Li, Lj, ai, aj, Ra[2], Rb[2], exp(-ai * aj / (ai + aj) * r2));
+        const int nh0 = NH(lij), nh1 = NH(lij + 1);
+        memset(rho, 0, sizeof(double) * nh0);
+        memset(dA, 0, sizeof(double) * 3 * nh1);
+        memset(dB, 0, sizeof(double) * 3 * nh1);
+        const size_t a0 = ao_loc[ish], b0 = ao_loc[jsh];
+        int ix, iy, jx, jy, n, x, fa = 0;
+        for (ix = li; ix >= 0; ix--)
+        for (iy = li - ix; iy >= 0; iy--, fa++) {
+                const int iz = li - ix - iy;
+                int fb = 0;
+                for (jx = lj; jx >= 0; jx--)
+                for (jy = lj - jx; jy >= 0; jy--, fb++) {
+                        const int jz = lj - jx - jy;
+                        const double d = w * dm[(a0 + fa) * nao + b0 + fb];
+                        if (d == 0) continue;
+                        const int ia[3] = {ix, iy, iz}, ja[3] = {jx, jy, jz};
+                        const double *Es[3] = {Ex, Ey, Ez};
+                        double e[3][3][2 * LP + 4];
+                        int k, t;
+                        for (k = 0; k < 3; k++) {
+                                const double *E = Es[k];
+                                const int i = ia[k], j = ja[k];
+                                for (t = 0; t < s2; t++) {
+                                        e[k][0][t] = E[i * s1 + j * s2 + t];
+                                        e[k][1][t] = 2 * ai * E[(i + 1) * s1 + j * s2 + t]
+                                                   - (i ? i * E[(i - 1) * s1 + j * s2 + t] : 0);
+                                        e[k][2][t] = 2 * aj * E[i * s1 + (j + 1) * s2 + t]
+                                                   - (j ? j * E[i * s1 + (j - 1) * s2 + t] : 0);
+                                }
+                        }
+                        for (n = 0; n < nh1; n++) {
+                                const int t = rj_t[n], u = rj_u[n], v = rj_v[n];
+                                const double ex = e[0][0][t], ey = e[1][0][u], ez = e[2][0][v];
+                                if (n < nh0) rho[n] += d * ex * ey * ez;
+                                for (x = 0; x < 3; x++) {
+                                        const double fA = (x == 0 ? e[0][1][t] : ex) * (x == 1 ? e[1][1][u] : ey)
+                                                        * (x == 2 ? e[2][1][v] : ez);
+                                        const double fB = (x == 0 ? e[0][2][t] : ex) * (x == 1 ? e[1][2][u] : ey)
+                                                        * (x == 2 ? e[2][2][v] : ez);
+                                        dA[x * nh1 + n] += d * fA;
+                                        dB[x * nh1 + n] += d * fB;
+                                }
+                        }
+                }
+        }
+}
+
+/* rj_up[x][n]: the index of the Hermite term n raised by one along x */
+static int rj_up[3][NH(LP)];
+static int rj_up_ready = 0;
+
+static void up_tables(void)
+{
+#pragma omp critical(rij_direct_up)
+{
+        if (!rj_up_ready) {
+                int n, m, x;
+                for (n = 0; n < NH(LP - 1); n++)
+                        for (x = 0; x < 3; x++) {
+                                const int t = rj_t[n] + (x == 0), u = rj_u[n] + (x == 1), v = rj_v[n] + (x == 2);
+                                for (m = 0; m < NH(LP); m++)
+                                        if (rj_t[m] == t && rj_u[m] == u && rj_v[m] == v) break;
+                                rj_up[x][n] = m;
+                        }
+                rj_up_ready = 1;
+        }
+}
+}
+
+/* the potential of one batch (degree lp + 1) into Vl and the forces on the auxiliary centres,
+ * g_C -= sum_t rho_t V^{PC}_{t+x} (translational invariance of each pair-centre interaction) */
+static void grad_flush_tail(RJBatch *b, int lp, const double *rho, const double *tmp, double *Vl, double *gc)
+{
+        const int nh1 = NH(lp + 1), nh0 = NH(lp);
+        int i, n;
+        for (i = 0; i < b->n; i++) {
+                double f0 = 0, f1 = 0, f2 = 0;
+                for (n = 0; n < nh0; n++) {
+                        f0 += rho[n] * tmp[rj_up[0][n] * RJ_NL + i];
+                        f1 += rho[n] * tmp[rj_up[1][n] * RJ_NL + i];
+                        f2 += rho[n] * tmp[rj_up[2][n] * RJ_NL + i];
+                }
+                double *g = gc + 3 * b->c[i];
+                g[0] -= f0;
+                g[1] -= f1;
+                g[2] -= f2;
+        }
+        for (n = 0; n < nh1 * RJ_NL; n++) Vl[n] += tmp[n];
+        b->n = 0;
+}
+
+static void flush_near_grad(RJBatch *b, int lp, int lq, double p, const double *rho, const double *h,
+                            const int *hoff, double *Vl, double *gc, double *R0, double *r, double *hl, double *tmp)
+{
+        const int L = lp + 1 + lq, nt = (lq + 1) * (lq + 2) / 2;
+        int i, s;
+        for (i = 0; i < b->n; i++) {
+                const double *hk = h + hoff[b->k[i]];
+                for (s = 0; s < nt; s++) hl[s * RJ_NL + i] = hk[s];
+        }
+        for (i = b->n; i < RJ_NL; i++)
+                for (s = 0; s < nt; s++) hl[s * RJ_NL + i] = 0;
+        batch_pad(b);
+        nearv_table[L](r, p, b->q, b->r2);
+        rjrv_table[L](R0, r, b->X, b->Y, b->Z);
+        memset(tmp, 0, sizeof(double) * NH(lp + 1) * RJ_NL);
+        rjyv_table[lp + 1][lq](R0, hl, tmp);
+        grad_flush_tail(b, lp, rho, tmp, Vl, gc);
+}
+
+static void flush_far_grad(RJBatch *b, int lp, int lm, double fp, const double *rho, const double *M,
+                           double *Vl, double *gc, double *R0, double *r, double *hl, double *tmp)
+{
+        const int L = lp + 1 + lm, ns = NH(lm);
+        int i, s, l;
+        for (i = 0; i < b->n; i++) {
+                const double *m = M + (size_t)b->k[i] * NHQ;
+                for (s = 0; s < ns; s++) hl[s * RJ_NL + i] = m[s];
+        }
+        for (i = b->n; i < RJ_NL; i++)
+                for (s = 0; s < ns; s++) hl[s * RJ_NL + i] = 0;
+        batch_pad(b);
+        farv(r, L, fp, b->r2);
+        rjrv_table[L](R0, r, b->X, b->Y, b->Z);
+        memset(tmp, 0, sizeof(double) * NH(lp + 1) * RJ_NL);
+        for (l = 0; l <= lm; l++) rjyv_table[lp + 1][l](R0, hl + NH(l - 1) * RJ_NL, tmp);
+        grad_flush_tail(b, lp, rho, tmp, Vl, gc);
+}
+
+/*
+ * The three-centre part of the RIJ gradient, sum_P h_P sum_ab D_ab d(ab|P)/dR, without the
+ * three-centre integrals: the derivative densities of the bra pairs (degree + 1) against the
+ * potential of the auxiliary Hermite coefficients h (pass 2 at degree + 1, far field included),
+ * the auxiliary centres by translational invariance of each pair-centre interaction.
+ * gbra (natm, 3) += the part of the bra atoms (atoms of bas), gaux (ncen, 3) += the auxiliary
+ * centres'.  dm: symmetric, decontracted Cartesian basis.  bound: max |D| x max sqrt((mu|mu)) |d_mu|
+ * (the bra-pair screening).  Returns the number of pairs.
+ */
+int SOCVHFrij_direct_grad(double *gbra, double *gaux, double *dm, double *h, double *qcond, double tol,
+                          double bound, double far_eps,
+                          int naux, int ncen, double *aexp, int *al, int *hoff, int *cen_off, double *cxyz,
+                          int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env)
+{
+        rj_init(far_eps);
+        up_tables();
+        RJAux ax = {naux, ncen, aexp, cxyz, al, hoff, cen_off, NULL};
+        aux_prefix_l(&ax);
+        const size_t nao = ao_loc[nbas];
+        int npair;
+        RJPair *pairs = make_pairs(&npair, qcond, bound, tol, atm, bas, nbas, env);
+        double *M = calloc((size_t)(naux + ncen) * NHQ, sizeof(double));
+        {
+                int c;
+                for (c = 0; c < ncen; c++) {
+                        const int k0 = cen_off[c], k1 = cen_off[c + 1];
+                        int k, s;
+                        for (k = k0; k < k1; k++) {
+                                const double *m0 = M + (size_t)(k + c) * NHQ;
+                                double *m1 = M + (size_t)(k + c + 1) * NHQ;
+                                for (s = 0; s < NHQ; s++) m1[s] = m0[s];
+                                const int l = al[k], nt = (l + 1) * (l + 2) / 2;
+                                const double q = aexp[k], fq = PI32 / (q * sqrt(q));
+                                for (s = 0; s < nt; s++) m1[NH(l - 1) + s] += fq * h[hoff[k] + s];
+                        }
+                }
+        }
+#pragma omp parallel
+{
+        double *gb = calloc((size_t)natm * 3, sizeof(double));
+        double *gc = calloc((size_t)ncen * 3, sizeof(double));
+        double *wk = malloc(sizeof(double) * 3 * (LP + 2) * (LP + 2) * (2 * LP + 4));
+        double rho[NH(LP)], dA[3 * NH(LP)], dB[3 * NH(LP)], V[NH(LP)];
+        double *R0 = malloc(sizeof(double) * (NH(LT) + (LT + 1) + NHQ + 2 * NH(LP)) * RJ_NL);
+        double *r = R0 + NH(LT) * RJ_NL, *hl = r + (LT + 1) * RJ_NL, *Vl = hl + NHQ * RJ_NL;
+        double *tmp = Vl + NH(LP) * RJ_NL;
+        RJBatch bn[LQ + 1], bf[LQ + 1];
+        int ip;
+#pragma omp for schedule(dynamic, 32)
+        for (ip = 0; ip < npair; ip++) {
+                const RJPair *pp = pairs + ip;
+                const int lp = pp->lp, nh1 = NH(lp + 1);
+                const double p = pp->p, fp = PI32 / (p * sqrt(p));
+                int c, k, l, x;
+                pair_rho_der(rho, dA, dB, pp, dm, nao, ao_loc, atm, bas, env, wk);
+                for (k = 0; k < nh1 * RJ_NL; k++) Vl[k] = 0;
+                for (l = 0; l <= LQ; l++) bn[l].n = bf[l].n = 0;
+                for (c = 0; c < ncen; c++) {
+                        const double X0 = pp->P[0] - cxyz[3 * c], Y0 = pp->P[1] - cxyz[3 * c + 1];
+                        const double Z0 = pp->P[2] - cxyz[3 * c + 2];
+                        const double r2 = X0 * X0 + Y0 * Y0 + Z0 * Z0;
+                        double tf;
+                        const int nfar = far_count(&ax, c, p, r2, lp + 1, &tf);
+                        const int k0 = cen_off[c], k1 = cen_off[c + 1];
+                        if (nfar > 0) {
+                                const int lm = ax.lpre[k0 + c + nfar];
+                                RJBatch *b = bf + lm;
+                                const int i = b->n++;
+                                b->X[i] = X0; b->Y[i] = Y0; b->Z[i] = Z0; b->r2[i] = r2;
+                                b->k[i] = k0 + c + nfar;
+                                b->c[i] = c;
+                                if (b->n == RJ_NL) flush_far_grad(b, lp, lm, fp, rho, M, Vl, gc, R0, r, hl, tmp);
+                        }
+                        for (k = k0 + nfar; k < k1; k++) {
+                                const int lq = al[k];
+                                RJBatch *b = bn + lq;
+                                const int i = b->n++;
+                                b->X[i] = X0; b->Y[i] = Y0; b->Z[i] = Z0; b->r2[i] = r2;
+                                b->q[i] = aexp[k];
+                                b->k[i] = k;
+                                b->c[i] = c;
+                                if (b->n == RJ_NL)
+                                        flush_near_grad(b, lp, lq, p, rho, h, hoff, Vl, gc, R0, r, hl, tmp);
+                        }
+                }
+                for (l = 0; l <= LQ; l++) {
+                        if (bn[l].n) flush_near_grad(bn + l, lp, l, p, rho, h, hoff, Vl, gc, R0, r, hl, tmp);
+                        if (bf[l].n) flush_far_grad(bf + l, lp, l, fp, rho, M, Vl, gc, R0, r, hl, tmp);
+                }
+                for (k = 0; k < nh1; k++) {
+                        double s = 0;
+                        int i;
+                        for (i = 0; i < RJ_NL; i++) s += Vl[k * RJ_NL + i];
+                        V[k] = s;
+                }
+                const int ia = bas[pp->ish * BAS_SLOTS + ATOM_OF], ja = bas[pp->jsh * BAS_SLOTS + ATOM_OF];
+                for (x = 0; x < 3; x++) {
+                        double sA = 0, sB = 0;
+                        for (k = 0; k < nh1; k++) {
+                                sA += dA[x * nh1 + k] * V[k];
+                                sB += dB[x * nh1 + k] * V[k];
+                        }
+                        gb[ia * 3 + x] += sA;
+                        gb[ja * 3 + x] += sB;
+                }
+        }
+#pragma omp critical(rij_direct_grad_sum)
+        {
+                int n;
+                for (n = 0; n < natm * 3; n++) gbra[n] += gb[n];
+                for (n = 0; n < ncen * 3; n++) gaux[n] += gc[n];
+        }
+        free(gb);
+        free(gc);
+        free(wk);
+        free(R0);
+}
         free(M);
         free(pairs);
         free(ax.lpre);
