@@ -267,6 +267,100 @@ class COSX(lib.StreamObject):
         vk = (vk + vk.transpose(0, 2, 1)) * .5
         return vk.reshape(dm.shape)
 
+    def _ipsg(self):
+        """sum_g w d_x phi_mu phi_nu on the grid (3, nao, nao), cached per geometry"""
+        if getattr(self, '_ipsg_key', None) != self._key:
+            from socutils.dft.vxc_fast import eval_ao
+            from pyscf.dft import numint
+            mol = self.mol
+            ni = numint.NumInt()
+            out = numpy.zeros((3, mol.nao, mol.nao))
+            coords, w = self.grids.coords, self.grids.weights
+            blk = 56 * 32
+            for g0 in range(0, w.size, blk):
+                g1 = min(w.size, g0 + blk)
+                ao = eval_ao(ni, mol, coords[g0:g1], 1, non0tab=self.grids.non0tab[g0 // 56:])
+                wao = ao[0] * w[g0:g1, None]
+                for x in range(3):
+                    lib.dot(ao[1 + x].T, wao, beta=1, c=out[x])
+            self._ipsg_v = out
+            self._ipsg_key = self._key
+        return self._ipsg_v
+
+    def _fock1_plain(self, mocc, yocc, tol=None):
+        """V = d K_plain[D] / dR C, VT = (d K_plain[D] / dR)^T Y (natm, 3, nao, nocc), D = 2 C C^T, at
+        fixed D on the fixed grid"""
+        self.build()
+        libdft = self._libdft
+        mol = self.mol
+        from socutils.dft.vxc_fast import _blas_ptrs
+        atm, bas, env, ao_loc = self._env
+        if not libdft.SOCDFTcosx_build_grad(ctypes.c_void_p(self._opt), atm.ctypes.data_as(ctypes.c_void_p),
+                                           bas.ctypes.data_as(ctypes.c_void_p), env.ctypes.data_as(ctypes.c_void_p)):
+            raise MemoryError('COSX gradient tables')
+        nao, nocc = mocc.shape
+        n8 = (nocc + 7) // 8 * 8
+        co = numpy.zeros((nao, n8))
+        co[:, :nocc] = mocc
+        yo = numpy.zeros((nao, n8))
+        yo[:, :nocc] = yocc
+        v = numpy.empty((mol.natm, 3, nao, n8))
+        vt = numpy.empty((mol.natm, 3, nao, n8))
+        err = libdft.SOCDFTcosx_fock1(
+            v.ctypes.data_as(ctypes.c_void_p), vt.ctypes.data_as(ctypes.c_void_p), co.ctypes.data_as(ctypes.c_void_p),
+            yo.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(n8), ctypes.c_void_p(self._opt),
+            self._coords.ctypes.data_as(ctypes.c_void_p), self._weights.ctypes.data_as(ctypes.c_void_p),
+            self._non0.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(self._weights.size), ctypes.c_int(self.blk),
+            ctypes.c_double(self.ao_cutoff), ctypes.c_double(self.tol if tol is None else tol),
+            ctypes.c_double(self.tcut), ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_int(mol.natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas),
+            env.ctypes.data_as(ctypes.c_void_p), *_blas_ptrs())
+        if err:
+            raise MemoryError('COSX Fock1: a kernel buffer could not be allocated')
+        return v[..., :nocc], vt[..., :nocc]
+
+    def _dproj(self, ia, x, ip, ipsg, aoslices):
+        """dS and dS_g with respect to R_{ia,x} (nao, nao)"""
+        p0, p1 = aoslices[ia, 2:]
+        ds = numpy.zeros_like(ip[0])
+        ds[p0:p1] -= ip[x, p0:p1]
+        ds[:, p0:p1] -= ip[x, p0:p1].T
+        dsg = numpy.zeros_like(ip[0])
+        dsg[p0:p1] -= ipsg[x, p0:p1]
+        dsg[:, p0:p1] -= ipsg[x, p0:p1].T
+        return ds, dsg
+
+    def fock1(self, mocc, tol=None):
+        """d K / dR_{A,x} C (natm, 3, nao, nocc) of the K get_k returns (sym(P K_plain[D]), D = 2 C C^T)
+        at fixed D on the fixed grid (no grid response), the derivatives of S and S_g in P included"""
+        mocc = numpy.ascontiguousarray(mocc)
+        mol = self.mol
+        self.build()
+        if self._proj is None:
+            v, vt = self._fock1_plain(mocc, mocc, tol)
+            return .5 * (v + vt)
+        P = self._proj
+        Q = numpy.linalg.inv(self._sg)
+        Q = (Q + Q.T) * .5
+        y = numpy.ascontiguousarray(P.T @ mocc)
+        v, vt = self._fock1_plain(mocc, y, tol)
+        dm = 2 * mocc @ mocc.T
+        kp = self._plain_k(dm)
+        u = Q @ (kp @ mocc)
+        kq = kp.T @ Q
+        ip = mol.intor('int1e_ipovlp', comp=3)
+        ipsg = self._ipsg()
+        aoslices = mol.aoslice_by_atom()
+        out = numpy.empty_like(v)
+        for ia in range(mol.natm):
+            for x in range(3):
+                ds, dsg = self._dproj(ia, x, ip, ipsg, aoslices)
+                # dX C = dP (K C) + P V, dX^T C = VT + K^T dP^T C;  dP = dS Q - P dS_g Q
+                dxc = ds @ u - P @ (dsg @ u) + P @ v[ia, x]
+                dxtc = vt[ia, x] + kq @ (ds @ mocc - dsg @ y)
+                out[ia, x] = .5 * (dxc + dxtc)
+        return out
+
     def grad(self, dm, tol=None):
         """d/dR of tr(D P K_plain[D]) (fit) or tr(D K_plain[D]) at fixed D (symmetric) on the fixed grid
         (no grid response), (natm, 3); with the fit the derivatives of S and of S_g in P = S S_g^-1"""
