@@ -405,18 +405,34 @@ void zmr_w_aavv(const double complex *bva, int64_t ldva, int64_t naux, int64_t n
  * two products per task, so that a thread holds 2 * seg * nv * na elements instead of
  * nv^2 na (the products of all segments together cost one nv x nv na product). */
 #define CAVV_SEG 48
+void zmr_w_cavv_idx(const double complex *bvc, int64_t ldvc, const double complex *bva,
+                    int64_t ldva, int64_t naux,
+                    int64_t nv, int64_t na, int64_t nc, const double *ev, const double *ec,
+                    const double *d, int64_t nd, int64_t ni, const int64_t *cidx, int mode,
+                    double complex *w);
+
 void zmr_w_cavv(const double complex *bvc, int64_t ldvc, const double complex *bva,
                 int64_t ldva, int64_t naux,
                 int64_t nv, int64_t na, int64_t nc, const double *ev, const double *ec,
                 const double *d, int64_t nd, int mode, double complex *w)
 {
+        zmr_w_cavv_idx(bvc, ldvc, bva, ldva, naux, nv, na, nc, ev, ec, d, nd, nc, NULL, mode, w);
+}
+
+/* the core orbitals cidx[0 .. ni-1] of bvc only (all nc of them with cidx NULL) */
+void zmr_w_cavv_idx(const double complex *bvc, int64_t ldvc, const double complex *bva,
+                    int64_t ldva, int64_t naux,
+                    int64_t nv, int64_t na, int64_t nc, const double *ev, const double *ec,
+                    const double *d, int64_t nd, int64_t ni, const int64_t *cidx, int mode,
+                    double complex *w)
+{
         int64_t nw = nd * na * na;
         memset(w, 0, sizeof(double complex) * nw);
-        if (nc < 1 || nv < 2 || na < 1 || nd == 0) {
+        if (ni < 1 || nv < 2 || na < 1 || nd == 0) {
                 return;
         }
         int64_t nseg = (nv - 1 + CAVV_SEG - 1) / CAVV_SEG;
-        int64_t ntask = nc * nseg;
+        int64_t ntask = ni * nseg;
         int outer = outer_tasks(ntask, mode);
         const double complex one = 1.0, zero = 0.0;
 #pragma omp parallel if(outer)
@@ -428,7 +444,7 @@ void zmr_w_cavv(const double complex *bvc, int64_t ldvc, const double complex *b
                 int64_t icur = -1;
 #pragma omp for schedule(dynamic, 1)
                 for (int64_t task = 0; task < ntask; task++) {
-                        int64_t i = task / nseg;
+                        int64_t i = cidx != NULL ? cidx[task / nseg] : task / nseg;
                         int64_t a0 = (task % nseg) * CAVV_SEG;
                         int64_t a1 = a0 + CAVV_SEG < nv - 1 ? a0 + CAVV_SEG : nv - 1;
                         int64_t na0 = a1 - a0, nb = nv - a0;

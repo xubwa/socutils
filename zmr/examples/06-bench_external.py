@@ -35,6 +35,8 @@ parser.add_argument('--nstate', type=int, default=3)
 parser.add_argument('--naux', type=int, default=0, help='vectors (default 2.5 x orbitals)')
 parser.add_argument('--e0', default='state')
 parser.add_argument('--seed', type=int, default=0)
+parser.add_argument('--amplitudes', default='spectral', choices=('spectral', 'rdm'),
+                    help='active part of PC-NEVPT2 from CI vectors or from RDMs')
 parser.add_argument('--max-memory', type=float, default=0,
                     help='MB for the calculation (default: pyscf.lib.param.MAX_MEMORY)')
 parser.add_argument('--kramers', action='store_true',
@@ -104,7 +106,8 @@ print('BENCH %d core + %d active + %d virtual spin-orbitals, %d vectors, %d stat
       'setup and CASCI %.1f s' % (args.ncore, args.nact, args.nvirt, naux, args.nstate,
                                   time.time() - t0), flush=True)
 t0 = time.time()
-pt = PCNEVPT2(eris, args.nelec, civecs=civecs, e0=args.e0, contraction='union')
+pt = PCNEVPT2(eris, args.nelec, civecs=civecs, e0=args.e0, contraction='union',
+              amplitudes=args.amplitudes)
 if args.max_memory:
     pt.max_memory = args.max_memory
 e = pt.kernel()

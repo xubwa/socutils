@@ -76,6 +76,11 @@ void zmr_w_ccav(const double complex *bvc, int64_t ldvc, const double complex *b
                 int64_t ldac, int64_t naux, int64_t nv, int64_t na, int64_t nc,
                 const double *ev, const double *ec, const double *d, int64_t nd,
                 const signed char *sel, int mode, double complex *w, double complex *w2);
+void zmr_w_cavv_idx(const double complex *bvc, int64_t ldvc, const double complex *bva,
+                    int64_t ldva, int64_t naux,
+                    int64_t nv, int64_t na, int64_t nc, const double *ev, const double *ec,
+                    const double *d, int64_t nd, int64_t ni, const int64_t *cidx, int mode,
+                    double complex *w);
 void zmr_w_cavv(const double complex *bvc, int64_t ldvc, const double complex *bva,
                 int64_t ldva, int64_t naux,
                 int64_t nv, int64_t na, int64_t nc, const double *ev, const double *ec,

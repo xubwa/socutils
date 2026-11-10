@@ -181,9 +181,10 @@ def w_ccav(bvc, bac, ev, ec, d, sel=None, mode=-1):
     return w, w2
 
 
-def w_cavv(bvc, bva, ev, ec, d, mode=-1):
+def w_cavv(bvc, bva, ev, ec, d, mode=-1, core=None):
     '''W[m, t, u] = sum_{i, a<b} conj(v[ab, t]) v[ab, u] / (d[m] + e_a + e_b - e_i),
-    v[ab, t] = -((ai|bt) - (at|bi)), from bvc[L, a, i] and bva[L, b, t].'''
+    v[ab, t] = -((ai|bt) - (at|bi)), from bvc[L, a, i] and bva[L, b, t]; core: the
+    core orbitals i to sum over (default all), read from bvc in place.'''
     z = _lib.zmr()
     if z is None or not hasattr(z, 'zmr_w_cavv'):
         return None
@@ -193,6 +194,17 @@ def w_cavv(bvc, bva, ev, ec, d, mode=-1):
     bva, ldva = _rows(bva)
     ev, ec, d = _w_args(ev, ec, d)
     w = numpy.empty((len(d), na, na), dtype=_c16)
+    if core is not None:
+        if not hasattr(z, 'zmr_w_cavv_idx'):
+            return None
+        idx = numpy.ascontiguousarray(core, dtype=numpy.int64)
+        if idx.size and (idx.min() < 0 or idx.max() >= nc):
+            raise ValueError('w_cavv: core orbitals out of range')
+        z.zmr_w_cavv_idx(_p(bvc), ctypes.c_int64(ldvc), _p(bva), ctypes.c_int64(ldva),
+                         ctypes.c_int64(naux), ctypes.c_int64(nv), ctypes.c_int64(na),
+                         ctypes.c_int64(nc), _p(ev), _p(ec), _p(d), ctypes.c_int64(len(d)),
+                         ctypes.c_int64(idx.size), _p(idx), ctypes.c_int(mode), _p(w))
+        return w
     z.zmr_w_cavv(_p(bvc), ctypes.c_int64(ldvc), _p(bva), ctypes.c_int64(ldva),
                  ctypes.c_int64(naux), ctypes.c_int64(nv), ctypes.c_int64(na),
                  ctypes.c_int64(nc), _p(ev), _p(ec), _p(d), ctypes.c_int64(len(d)),

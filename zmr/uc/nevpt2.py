@@ -140,8 +140,6 @@ class NEVPT2Base:
         if getattr(eris, 'factorized', False):
             naux = _naux(eris)
             ints = mb * naux * nmo * (nc + na)
-            # cavv with Kramers pairs: a copy of the core half of cd_vc
-            ints += mb * naux * nv * nc / 2
             per_thread = max(mb * (2 * naux * nv + nv * nv),                       # ccvv
                              mb * (naux * nv + 2 * 48 * nv * na),                    # cavv
                              mb * (naux * (nv + na) + 2 * nv * na * nc))             # ccav
@@ -151,6 +149,7 @@ class NEVPT2Base:
             work = 0.0
         blocks = 3 * mb * max(nc * nc * na * na, nv * nc * na * na, nc * na ** 3, nv * na ** 3)
         nstate = self.civecs.shape[1]
+        rdm_route = getattr(self, 'amplitudes', None) == 'rdm'
         functions = 0.0
         for pclass in self.perturber_classes():
             # spinor classes (an integer dn and the strings O_X); the spin-free classes
@@ -159,8 +158,22 @@ class NEVPT2Base:
                     and hasattr(pclass, 'operators')):
                 continue
             dim = act.dim(act.target(self.nelec, pclass.dn))
-            nx = sum(len(idx) for _, idx in pclass.operators(na))
+            ops = pclass.operators(na)
+            if rdm_route:
+                # zmr.pc.rdm_terms: for three active operators the functions and the
+                # intermediate states over all n^3 strings (two sets) and several
+                # (nstate, nstate, n^3, n^3) tensors (the intermediate terms, their sum,
+                # transposed copies, the temporaries of the generated terms); fitted to
+                # 18 and 20 active spinors
+                if max(len(dag) for dag, _ in ops) == 3:
+                    functions = max(functions, 2 * mb * nstate * na ** 3 * dim
+                                    + 8 * mb * nstate ** 2 * na ** 6)
+                continue
+            nx = sum(len(idx) for _, idx in ops)
             functions = max(functions, 2 * mb * nstate * nx * dim)
+        if rdm_route:
+            # the transition RDMs up to rank three of all pairs of model states
+            functions += mb * nstate ** 2 * (na ** 6 + na ** 4 + na ** 2)
         return 1.2 * (ints + work + blocks + functions)
 
     def check_memory(self, eris, act, log=None):

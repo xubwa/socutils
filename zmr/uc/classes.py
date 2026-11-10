@@ -388,8 +388,8 @@ class CAVV(PerturberClass):
             # the core orbitals of one member of every Kramers pair; their partners give
             # Theta conj(W) Theta^+ (Theta: time reversal of the active orbitals)
             idx, th = half
-            bvc = numpy.ascontiguousarray(ctx.eris.cd_block('vc')[:, :, idx])
-            w = kernels.w_cavv(bvc, ctx.eris.cd_block('va'), ctx.eps_v, ctx.eps_c[idx], d)
+            w = kernels.w_cavv(ctx.eris.cd_block('vc'), ctx.eris.cd_block('va'), ctx.eps_v,
+                               ctx.eps_c, d, core=idx)
             if w is None:
                 return None
             return w + numpy.einsum('tx,mxy,uy->mtu', th, w.conj(), th.conj())
