@@ -149,7 +149,7 @@ class _Int3c:
             j2c = auxmol.intor('int2c2e', hermi=1)
         q = ghf_hess._q_cond(mol, 'int2e_ip1')[1]                # sqrt((ij|ij)) per shell pair
         qP = numpy.sqrt(abs(numpy.diag(j2c)).max())
-        ao_loc = self.ao_loc = mol.ao_loc_nr()
+        self.ao_loc = mol.ao_loc_nr()
         ii, jj = numpy.tril_indices(nbas)
         sig = q[ii, jj] * qP >= pair_tol
         self.ii, self.jj = ii[sig], jj[sig]
@@ -404,7 +404,6 @@ def get_jk(with_df, dm, hermi=1, with_j=True, with_k=True, max_memory=None, verb
     One pass over the factor for J and K together.'''
     assert with_j or with_k
     log = logger.new_logger(with_df, verbose)
-    t0 = (logger.process_clock(), logger.perf_counter())
     dms = numpy.asarray(dm)
     shape = dms.shape
     nao = shape[-1]
