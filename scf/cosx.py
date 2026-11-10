@@ -215,8 +215,9 @@ class COSX(lib.StreamObject):
             tp_ = logger.perf_counter()
             vl = 16 if libdft.SOCDFTcosx_mfloat() else 8
             nset8 = (nset + vl - 1) // vl * vl          # the kernel takes the densities 8 (16) at a time
-            dtm = numpy.zeros((nao, nao, nset8))
-            dtm[:, :, :nset] = dms.transpose(1, 2, 0)
+            dtm = numpy.empty((nao, nao, nset8))
+            libdft.SOCDFTcosx_transpose_in(dtm.ctypes.data_as(ctypes.c_void_p), dms.ctypes.data_as(ctypes.c_void_p),
+                                           ctypes.c_int(nao), ctypes.c_int(nset), ctypes.c_int(nset8))
             vkt = numpy.empty((nao, nao, nset8))
             PROFILE['prep'] = PROFILE.get('prep', 0) + logger.perf_counter() - tp_
         tk_ = logger.perf_counter()
