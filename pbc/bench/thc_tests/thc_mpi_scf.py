@@ -15,7 +15,7 @@ comm = MPI.COMM_WORLD
 rank, size = comm.Get_rank(), comm.Get_size()
 cif, sc, basis_py = sys.argv[1], [int(x) for x in sys.argv[2].split(',')], sys.argv[3]
 lab = sys.argv[4] if len(sys.argv) > 4 else None
-sysm = cells.from_cif(cif)
+sysm = cells.from_cif(cif) if cif.lower().endswith(".cif") else cells.SYSTEMS[cif]   # a CIF or a cells.SYSTEMS name
 if sc != [1, 1, 1]:
     sysm = cells.supercell(sysm, sc)
 if lab:
