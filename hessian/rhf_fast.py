@@ -1721,8 +1721,10 @@ def rks_make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=No
 CPHF_COSX = None        # K of the CPHF densities by COSX (socutils.scf.cosx): None -> auto (SCF ran COSX, large basis)
 CPHF_COSX_GRID = 2      # its grid (cosx.GRIDX level)
 CPHF_COSX_NAO_PER_ATOM = 12     # auto mode: AOs per atom from which the CPHF K goes to COSX
-CPHF_COSX_FLOAT = False # opt-in: the many-density contraction in single precision (K within ~1e-6 relative, against
-                        # the COSX grid error ~1e-3; c16 / cc-pVDZ 64 densities 0.36 -> 0.25 s per density)
+CPHF_COSX_FLOAT = True  # the many-density COSX contraction in single precision (False: double); K within ~1e-6
+                        # relative (the COSX grid error ~1e-3), Hessians within 2e-9, harmonic frequencies within
+                        # 1e-4 cm-1 and the same CPHF iterations (caffeine / C16H34 cc-pVDZ, C16H34 def2-TZVP);
+                        # CPHF 12 - 20 % faster
 
 
 def _cphf_cosx(mf):
