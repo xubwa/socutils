@@ -19,6 +19,7 @@ the 1e terms, XC and the CPHF solver are pyscf's.
 
 import ctypes
 import numpy
+import scipy.linalg
 from pyscf import gto, lib
 from pyscf.lib import logger
 from pyscf.hessian import rhf as rhf_hess
@@ -1759,6 +1760,42 @@ def _df_get_j(with_df, dm):
     return lib.unpack_tril(vj, 1).reshape(shape)
 
 
+KRYLOV_FAST_QR = True   # _krylov: Cholesky QR twice (GEMMs) instead of pyscf's Python-loop Gram-Schmidt
+
+
+def _qr_fast(xs, dot, lindep=1e-14):
+    '''pyscf.lib.linalg_helper._qr (xs = r^T qs, qs orthonormal rows, r upper triangular with the
+    Gram-Schmidt residual norms on its diagonal) by Cholesky QR applied twice (CholQR2): all GEMMs
+    over the stacked vectors, instead of pyscf's modified Gram-Schmidt with a Python loop over the
+    vector pairs (half of a large CP-SCF).  Exact-arithmetic identical; pyscf's _qr is used when a
+    vector is (nearly) linearly dependent, the only case it drops vectors.'''
+    from pyscf.lib import linalg_helper
+    X = numpy.asarray(xs)
+    if not KRYLOV_FAST_QR or X.ndim != 2 or X.shape[0] < 2:
+        return linalg_helper._qr(xs, dot, lindep)
+    # rows scaled to unit norm first: CholQR's accuracy then depends on the vectors' (near) linear
+    # dependence only, not on their very different lengths (converging and fresh directions)
+    nrm = numpy.sqrt(numpy.einsum('ij,ij->i', X.conj(), X).real)
+    if nrm.min() ** 2 <= lindep:
+        return linalg_helper._qr(xs, dot, lindep)
+    X = X / nrm[:, None]
+    try:
+        G = lib.dot(X, X.conj().T)
+        L1 = scipy.linalg.cholesky(G, lower=True)
+        Q1 = scipy.linalg.solve_triangular(L1, X, lower=True, check_finite=False)
+        G = lib.dot(Q1, Q1.conj().T)
+        L2 = scipy.linalg.cholesky(G, lower=True)
+        Q = scipy.linalg.solve_triangular(L2, Q1, lower=True, check_finite=False)
+    except (scipy.linalg.LinAlgError, ValueError):
+        return linalg_helper._qr(xs, dot, lindep)
+    rn = lib.dot(L1, L2)                                  # X / nrm = rn Q
+    dn = rn.diagonal().real                               # relative Gram-Schmidt residuals
+    if not numpy.all(numpy.isfinite(dn)) or dn.min() ** 2 <= 1e-10 or ((nrm * dn) ** 2).min() <= lindep:
+        return linalg_helper._qr(xs, dot, lindep)
+    rT = rn * nrm[:, None]                                # xs = r^T qs, r^T = diag(nrm) rn
+    return Q, rT.conj().T
+
+
 def _krylov(aop, b, x0=None, tol=1e-10, max_cycle=30, dot=numpy.dot, lindep=None, callback=None,
             hermi=False, max_memory=None, verbose=logger.WARN):
     '''pyscf.lib.krylov (Pople's method for (1 + a) x = b, all right-hand sides
@@ -1779,7 +1816,7 @@ def _krylov(aop, b, x0=None, tol=1e-10, max_cycle=30, dot=numpy.dot, lindep=None
     b1d = b.ndim == 1
     x1 = b.reshape(1, -1) if b1d else b
     nroots, ndim = x1.shape
-    x1, rmat = linalg_helper._qr(x1, dot)
+    x1, rmat = _qr_fast(x1, dot)
     x1 *= rmat.diagonal()[:, None]
     innerprod = list(rmat.diagonal().real ** 2)
     if not innerprod or max(innerprod) < lindep or max(innerprod) < tol ** 2:
@@ -1799,7 +1836,7 @@ def _krylov(aop, b, x0=None, tol=1e-10, max_cycle=30, dot=numpy.dot, lindep=None
         w = lib.dot(axt, XS.conj().T) / numpy.asarray(innerprod)[None, :]
         x1 = axt - lib.dot(w, XS)
         axt = None
-        x1, rmat = linalg_helper._qr(x1, dot)
+        x1, rmat = _qr_fast(x1, dot)
         x1 *= rmat.diagonal()[:, None]
         innerprod1 = rmat.diagonal().real ** 2
         max_innerprod = max(innerprod1, default=0.)
