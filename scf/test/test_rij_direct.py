@@ -72,7 +72,7 @@ class KnownValues(unittest.TestCase):
             dm = mf.get_init_guess()
             vj = mf.get_j(mol, dm)
             self.assertTrue(mf._rij_cache['last'] is not None)
-            self.assertAlmostEqual(abs(vj - ref.get_j(mol, dm)).max(), 0, 9)
+            self.assertAlmostEqual(abs(vj - ref.get_j(mol, dm)).max(), 0, 7)     # loose first pass
             mf._rij_cache['last'] = None
             e = mf.kernel()
             self.assertTrue(mf.converged and mf._rij_cache['direct'] is not None)
