@@ -349,7 +349,7 @@ def apply(mf, incremental=True, two_pass=True):
                     elif isinstance(wdf._cderi, str):
                         cache['h5'] = True
                         logger.timer(mf, 'RIJ: L^-1 (P|ij) to HDF5 (rik)', *t0)
-                if cache['B'] is None and not cache['h5']:
+                if cache['B'] is None and not cache['h5'] and cache['direct'] is None:
                     if auxmol.nao * npair * 8 / 1e6 > mf.max_memory - lib.current_memory()[0] - INCORE_RESERVE:
                         return None
                     cache['B'] = df.incore.cholesky_eri(mol, auxmol=auxmol, int3c='int3c2e', aosym='s2ij',

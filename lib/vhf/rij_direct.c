@@ -27,6 +27,11 @@
  * accumulates the bra side d(1/R) rho^P into buckets by the prefix length,
  * resolved by suffix sums at the end.  The near primitives go one by one.
  *
+ * Vectorisation: per bra pair the near primitives (by l) and the far centres (by the largest l of
+ * their far prefix) are collected into batches of RJ_NL lanes, each batch one call of the
+ * generated lane kernels (Boys functions from the table, R recursion, contraction; omp simd
+ * over the lanes).
+ *
  * Screening: bra pairs by sqrt((ab|ab)) (qcond of the primitive shell pairs)
  * times the caller's bound of the other side; pass 1 also by the density-
  * weighted sqrt((Omega_P|Omega_P)).
@@ -44,8 +49,6 @@
 #define NHQ NH(LQ)              /* the multipole slots of a centre, degrees 0..LQ */
 #define PI_FAC 34.986836655249725               /* 2 pi^(5/2) */
 #define PI32 5.568327996831708                  /* pi^(3/2) */
-
-#include "rij_direct_gen.c"
 
 static void boys_exact(double *f, double t, int m)
 {
@@ -71,28 +74,34 @@ static void boys_exact(double *f, double t, int m)
 
 /* Boys functions from a table (F_m by a 6th-order Taylor step on t_k = k / 20,
  * downward recursion); t >= BOYS_TMAX: the asymptotic F_0 and upward recursion */
-#define BOYS_TMAX 40.
-#define BOYS_NT 801
+#define BOYS_TMAX 64.           /* > every T_far: the near field always from the table */
+#define BOYS_NT 1281
 #define BOYS_MT (LT + 8)
 static double boys_tab[BOYS_NT][BOYS_MT];
 static double boys_inv[BOYS_MT];
+static double boys_exp[BOYS_NT];
 static double t_far[LT + 1];            /* T_far by degree, for far_eps */
 static double t_far_eps = -1;
 static int rj_ready = 0;
 long SOCVHFrij_direct_stats[4];          /* near, far evaluations of the last rho, vj passes */
 
+#include "rij_direct_gen.c"
+
 static inline void boys_fn(double *f, double t, int m)
 {
         int n;
-        const double et = exp(-t);
         if (t < BOYS_TMAX) {
                 const int k = (int)(t * 20 + .5);
                 const double dl = k * .05 - t;
                 const double *b = boys_tab[k] + m;
+                /* e^-t = e^-t_k e^dl, |dl| <= 1/40 */
+                const double et = boys_exp[k] * (1 + dl * (1 + dl * .5 * (1 + dl * (1. / 3) * (1 + dl * .25
+                                * (1 + dl * .2 * (1 + dl * (1. / 6)))))));
                 f[m] = b[0] + dl * (b[1] + dl * .5 * (b[2] + dl * (1. / 3) * (b[3] + dl * .25 * (b[4]
                      + dl * .2 * (b[5] + dl * (1. / 6) * b[6])))));
                 for (n = m; n > 0; n--) f[n - 1] = (2 * t * f[n] + et) * boys_inv[n];
         } else {
+                const double et = exp(-t);
                 f[0] = .886226925452758014 / sqrt(t);
                 const double h = .5 / t;
                 for (n = 0; n < m; n++) f[n + 1] = h * ((2 * n + 1) * f[n] - et);
@@ -107,6 +116,7 @@ static void rj_init(double far_eps)
                 int n;
                 for (n = 0; n < BOYS_NT; n++) boys_exact(boys_tab[n], n * .05, BOYS_MT - 1);
                 for (n = 1; n < BOYS_MT; n++) boys_inv[n] = 1. / (2 * n - 1);
+                for (n = 0; n < BOYS_NT; n++) boys_exp[n] = exp(-n * .05);
                 rj_ready = 1;
         }
         if (far_eps != t_far_eps) {
@@ -128,7 +138,7 @@ static void rj_init(double far_eps)
                                 if (e >= far_eps) break;
                                 T = t;
                         }
-                        t_far[L] = T;
+                        t_far[L] = T < BOYS_TMAX - 1 ? T : BOYS_TMAX - 1;
                 }
                 t_far_eps = far_eps;
         }
@@ -269,25 +279,20 @@ static inline int far_count(const RJAux *ax, int c, double p, double r2, int lp,
 {
         const int k0 = ax->cen_off[c], k1 = ax->cen_off[c + 1];
         const double tf = t_far[lp + ax->lpre[k1 + c]];
-        int k;
-        for (k = k0; k < k1; k++) {
-                const double q = ax->aexp[k];
-                if (p * q / (p + q) * r2 < tf) break;
-        }
         *tf_out = tf;
-        return k - k0;
-}
-
-/* r[n] = (pi/p)^(3/2) (-1)^n (2n-1)!! / R^(2n+1), n = 0..L */
-static inline void far_r(double *r, int L, double fp, double r2)
-{
-        const double ir2 = 1. / r2;
-        double f = fp * sqrt(ir2);
-        int n;
-        for (n = 0; n <= L; n++) {
-                r[n] = f;
-                f *= -(2 * n + 1) * ir2;
+        /* theta r2 >= tf  <=>  q >= qmin = tf p / (p r2 - tf) (p r2 > tf; else none) */
+        const double den = p * r2 - tf;
+        if (den <= 0) return 0;
+        const double qmin = tf * p / den;
+        const double *q = ax->aexp;
+        if (q[k1 - 1] >= qmin) return k1 - k0;
+        if (q[k0] < qmin) return 0;
+        int lo = k0, hi = k1 - 1;       /* q[lo] >= qmin > q[hi] */
+        while (hi - lo > 1) {
+                const int mid = (lo + hi) / 2;
+                if (q[mid] >= qmin) lo = mid; else hi = mid;
         }
+        return hi - k0;
 }
 
 /* r[n] = pref (-2 theta)^n F_n(theta r2) */
@@ -322,6 +327,111 @@ static double self_bound(const double *rho, int lp, double p)
                 s += (l % 2 ? -t : t);
         }
         return sqrt(fabs(s));
+}
+
+/* the lane batches of one bra pair: near-field primitives by l, far-field centres by the
+ * largest l of their far prefix */
+typedef struct {
+        int n;
+        double X[RJ_NL], Y[RJ_NL], Z[RJ_NL], r2[RJ_NL], q[RJ_NL];
+        int k[RJ_NL];           /* near: the primitive; far: the bucket / prefix index */
+} RJBatch;
+
+static inline void batch_pad(RJBatch *b)
+{
+        int i;
+        for (i = b->n; i < RJ_NL; i++) {
+                b->X[i] = b->Y[i] = b->Z[i] = 0;
+                b->r2[i] = 1.;
+                b->q[i] = 1.;
+                b->k[i] = -1;
+        }
+}
+
+/* r[n * NL + lane] = fp (-1)^n (2n-1)!! / R^(2n+1) */
+static inline void farv(double *restrict r, int L, double fp, const double *restrict r2)
+{
+        int l, n;
+#pragma omp simd
+        for (l = 0; l < RJ_NL; l++) {
+                const double ir2 = 1. / r2[l];
+                double f = fp * sqrt(ir2);
+                for (n = 0; n <= L; n++) {
+                        r[n * RJ_NL + l] = f;
+                        f *= -(2 * n + 1) * ir2;
+                }
+        }
+}
+
+/* pass 1 flushes: Xl[hoff[k] + s] += (P|k)_s rho; Yl[k * NHQ + s] += the far tensor contracted with rho */
+static void flush_near_rho(RJBatch *b, int lp, int lq, double p, const double *rho, const int *hoff, double *Xl,
+                           double *R0, double *r, double *tmp)
+{
+        const int L = lp + lq, nt = (lq + 1) * (lq + 2) / 2;
+        batch_pad(b);
+        nearv_table[L](r, p, b->q, b->r2);
+        rjrv_table[L](R0, r, b->X, b->Y, b->Z);
+        rjxv_table[lp][lq](R0, rho, tmp);
+        int i, s;
+        for (i = 0; i < b->n; i++) {
+                double *x = Xl + hoff[b->k[i]];
+                for (s = 0; s < nt; s++) x[s] += tmp[s * RJ_NL + i];
+        }
+        b->n = 0;
+}
+
+static void flush_far_rho(RJBatch *b, int lp, int lm, double fp, const double *rho, double *Yl,
+                          double *R0, double *r, double *tmp)
+{
+        const int L = lp + lm;
+        batch_pad(b);
+        farv(r, L, fp, b->r2);
+        rjrv_table[L](R0, r, b->X, b->Y, b->Z);
+        int l, i, s;
+        for (l = 0; l <= lm; l++) rjxv_table[lp][l](R0, rho, tmp + NH(l - 1) * RJ_NL);
+        const int ns = NH(lm);
+        for (i = 0; i < b->n; i++) {
+                double *y = Yl + (size_t)b->k[i] * NHQ;
+                for (s = 0; s < ns; s++) y[s] += tmp[s * RJ_NL + i];
+        }
+        b->n = 0;
+}
+
+/* pass 2 flushes: Vl[t * NL + lane] += sum_s R_{t+s} h_s */
+static void flush_near_vj(RJBatch *b, int lp, int lq, double p, const double *h, const int *hoff, double *Vl,
+                          double *R0, double *r, double *hl)
+{
+        const int L = lp + lq, nt = (lq + 1) * (lq + 2) / 2;
+        int i, s;
+        for (i = 0; i < b->n; i++) {
+                const double *hk = h + hoff[b->k[i]];
+                for (s = 0; s < nt; s++) hl[s * RJ_NL + i] = hk[s];
+        }
+        for (i = b->n; i < RJ_NL; i++)
+                for (s = 0; s < nt; s++) hl[s * RJ_NL + i] = 0;
+        batch_pad(b);
+        nearv_table[L](r, p, b->q, b->r2);
+        rjrv_table[L](R0, r, b->X, b->Y, b->Z);
+        rjyv_table[lp][lq](R0, hl, Vl);
+        b->n = 0;
+}
+
+static void flush_far_vj(RJBatch *b, int lp, int lm, double fp, const double *M, double *Vl,
+                         double *R0, double *r, double *hl)
+{
+        const int L = lp + lm, ns = NH(lm);
+        int i, s, l;
+        for (i = 0; i < b->n; i++) {
+                const double *m = M + (size_t)b->k[i] * NHQ;
+                for (s = 0; s < ns; s++) hl[s * RJ_NL + i] = m[s];
+        }
+        for (i = b->n; i < RJ_NL; i++)
+                for (s = 0; s < ns; s++) hl[s * RJ_NL + i] = 0;
+        batch_pad(b);
+        farv(r, L, fp, b->r2);
+        rjrv_table[L](R0, r, b->X, b->Y, b->Z);
+        for (l = 0; l <= lm; l++) rjyv_table[lp][l](R0, hl + NH(l - 1) * RJ_NL, Vl);
+        b->n = 0;
 }
 
 /*
@@ -360,7 +470,10 @@ int SOCVHFrij_direct_rho(double *X, double *dm, double *qcond, double tol, doubl
         const int ncmax = (LP / 2 + 1) * (LP / 2 + 2) / 2;
         double *Et = malloc(sizeof(double) * ncmax * ncmax * NH(LP));
         double wk[3 * (LP + 1) * (LP + 1) * (LP + 1)];
-        double rho[NH(LP)], r[LT + 1], R0[NH(LT)];
+        double rho[NH(LP)];
+        double *R0 = malloc(sizeof(double) * (NH(LT) + (LT + 1) + NHQ) * RJ_NL);
+        double *r = R0 + NH(LT) * RJ_NL, *tmp = r + (LT + 1) * RJ_NL;
+        RJBatch bn[LQ + 1], bf[LQ + 1];
         int ip;
 #pragma omp for schedule(dynamic, 32)
         for (ip = 0; ip < npair; ip++) {
@@ -372,7 +485,7 @@ int SOCVHFrij_direct_rho(double *X, double *dm, double *qcond, double tol, doubl
                 const double w = ish == jsh ? 1. : 2.;
                 pair_Et(Et, pp, atm, bas, env, wk);
                 const size_t a0 = ao_loc[ish], b0 = ao_loc[jsh];
-                int fa, fb, k, c;
+                int fa, fb, k, c, l;
                 for (k = 0; k < nh; k++) rho[k] = 0;
                 for (fa = 0; fa < nfa; fa++)
                         for (fb = 0; fb < nfb; fb++) {
@@ -383,6 +496,7 @@ int SOCVHFrij_direct_rho(double *X, double *dm, double *qcond, double tol, doubl
                 if (self_bound(rho, lp, pp->p) * qaux < tol) continue;
                 nkept++;
                 const double p = pp->p, fp = PI32 / (p * sqrt(p));
+                for (l = 0; l <= LQ; l++) bn[l].n = bf[l].n = 0;
                 for (c = 0; c < ncen; c++) {
                         const double X0 = pp->P[0] - cxyz[3 * c], Y0 = pp->P[1] - cxyz[3 * c + 1];
                         const double Z0 = pp->P[2] - cxyz[3 * c + 2];
@@ -394,21 +508,29 @@ int SOCVHFrij_direct_rho(double *X, double *dm, double *qcond, double tol, doubl
                         if (nfar > 0) {
                                 cnt_far++;
                                 const int lm = ax.lpre[k0 + c + nfar];
-                                far_r(r, lp + lm, fp, r2);
-                                rjr_table[lp + lm](R0, r, X0, Y0, Z0);
-                                double *y = Yl + (size_t)(k0 + c + nfar) * NHQ;
-                                int l;
-                                for (l = 0; l <= lm; l++) rjx_table[lp][l](R0, rho, y + NH(l - 1));
+                                RJBatch *b = bf + lm;
+                                const int i = b->n++;
+                                b->X[i] = X0; b->Y[i] = Y0; b->Z[i] = Z0; b->r2[i] = r2;
+                                b->k[i] = k0 + c + nfar;
+                                if (b->n == RJ_NL) flush_far_rho(b, lp, lm, fp, rho, Yl, R0, r, tmp);
                         }
                         for (k = k0 + nfar; k < k1; k++) {
                                 const int lq = al[k];
-                                near_r(r, lp + lq, p, aexp[k], r2);
-                                rjr_table[lp + lq](R0, r, X0, Y0, Z0);
-                                rjx_table[lp][lq](R0, rho, Xl + hoff[k]);
+                                RJBatch *b = bn + lq;
+                                const int i = b->n++;
+                                b->X[i] = X0; b->Y[i] = Y0; b->Z[i] = Z0; b->r2[i] = r2;
+                                b->q[i] = aexp[k];
+                                b->k[i] = k;
+                                if (b->n == RJ_NL) flush_near_rho(b, lp, lq, p, rho, hoff, Xl, R0, r, tmp);
                         }
+                }
+                for (l = 0; l <= LQ; l++) {
+                        if (bn[l].n) flush_near_rho(bn + l, lp, l, p, rho, hoff, Xl, R0, r, tmp);
+                        if (bf[l].n) flush_far_rho(bf + l, lp, l, fp, rho, Yl, R0, r, tmp);
                 }
         }
         free(Et);
+        free(R0);
 #pragma omp barrier
         /* sum the thread buffers, each thread a slice */
         {
@@ -501,15 +623,19 @@ int SOCVHFrij_direct_vj(double *vj, double *h, double *qcond, double tol, double
         const int ncmax = (LP / 2 + 1) * (LP / 2 + 2) / 2;
         double *Et = malloc(sizeof(double) * ncmax * ncmax * NH(LP));
         double wk[3 * (LP + 1) * (LP + 1) * (LP + 1)];
-        double V[NH(LP)], r[LT + 1], R0[NH(LT)];
+        double V[NH(LP)];
+        double *R0 = malloc(sizeof(double) * (NH(LT) + (LT + 1) + NHQ + NH(LP)) * RJ_NL);
+        double *r = R0 + NH(LT) * RJ_NL, *hl = r + (LT + 1) * RJ_NL, *Vl = hl + NHQ * RJ_NL;
+        RJBatch bn[LQ + 1], bf[LQ + 1];
         int ip;
 #pragma omp for schedule(dynamic, 32)
         for (ip = 0; ip < npair; ip++) {
                 const RJPair *pp = pairs + ip;
                 const int lp = pp->lp, nh = NH(lp);
                 const double p = pp->p, fp = PI32 / (p * sqrt(p));
-                int c, k;
-                for (k = 0; k < nh; k++) V[k] = 0;
+                int c, k, l;
+                for (k = 0; k < nh * RJ_NL; k++) Vl[k] = 0;
+                for (l = 0; l <= LQ; l++) bn[l].n = bf[l].n = 0;
                 for (c = 0; c < ncen; c++) {
                         const double X0 = pp->P[0] - cxyz[3 * c], Y0 = pp->P[1] - cxyz[3 * c + 1];
                         const double Z0 = pp->P[2] - cxyz[3 * c + 2];
@@ -521,18 +647,31 @@ int SOCVHFrij_direct_vj(double *vj, double *h, double *qcond, double tol, double
                         if (nfar > 0) {
                                 cnt_far++;
                                 const int lm = ax.lpre[k0 + c + nfar];
-                                far_r(r, lp + lm, fp, r2);
-                                rjr_table[lp + lm](R0, r, X0, Y0, Z0);
-                                const double *m = M + (size_t)(k0 + c + nfar) * NHQ;
-                                int l;
-                                for (l = 0; l <= lm; l++) rjy_table[lp][l](R0, m + NH(l - 1), V);
+                                RJBatch *b = bf + lm;
+                                const int i = b->n++;
+                                b->X[i] = X0; b->Y[i] = Y0; b->Z[i] = Z0; b->r2[i] = r2;
+                                b->k[i] = k0 + c + nfar;
+                                if (b->n == RJ_NL) flush_far_vj(b, lp, lm, fp, M, Vl, R0, r, hl);
                         }
                         for (k = k0 + nfar; k < k1; k++) {
                                 const int lq = al[k];
-                                near_r(r, lp + lq, p, aexp[k], r2);
-                                rjr_table[lp + lq](R0, r, X0, Y0, Z0);
-                                rjy_table[lp][lq](R0, h + hoff[k], V);
+                                RJBatch *b = bn + lq;
+                                const int i = b->n++;
+                                b->X[i] = X0; b->Y[i] = Y0; b->Z[i] = Z0; b->r2[i] = r2;
+                                b->q[i] = aexp[k];
+                                b->k[i] = k;
+                                if (b->n == RJ_NL) flush_near_vj(b, lp, lq, p, h, hoff, Vl, R0, r, hl);
                         }
+                }
+                for (l = 0; l <= LQ; l++) {
+                        if (bn[l].n) flush_near_vj(bn + l, lp, l, p, h, hoff, Vl, R0, r, hl);
+                        if (bf[l].n) flush_far_vj(bf + l, lp, l, fp, M, Vl, R0, r, hl);
+                }
+                for (k = 0; k < nh; k++) {
+                        double s = 0;
+                        int i;
+                        for (i = 0; i < RJ_NL; i++) s += Vl[k * RJ_NL + i];
+                        V[k] = s;
                 }
                 const int ish = pp->ish, jsh = pp->jsh;
                 const int li = bas[ish * BAS_SLOTS + ANG_OF], lj = bas[jsh * BAS_SLOTS + ANG_OF];
@@ -550,6 +689,7 @@ int SOCVHFrij_direct_vj(double *vj, double *h, double *qcond, double tol, double
                         }
         }
         free(Et);
+        free(R0);
 }
         SOCVHFrij_direct_stats[2] = cnt_near;
         SOCVHFrij_direct_stats[3] = cnt_far;
