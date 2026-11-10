@@ -249,10 +249,12 @@ def cholesky_eri(mol, auxmol, pair_tol=PAIR_TOL, verbose=None):
 
 
 def cholesky_eri_h5(mol, auxmol, filename, dataname='j3c', pair_tol=PAIR_TOL, max_memory=4000,
-                    verbose=None, max_cols=None):
+                    verbose=None, max_cols=None, resident=None):
     '''cholesky_eri written to the HDF5 file filename as one contiguous (naux, npair) dataset
     (pyscf's layout, read by df.DF.loop; rik.iter_factor reads it directly), one i-shell range of
-    pack_tril columns in memory at a time.  False if not applicable.'''
+    pack_tril columns in memory at a time.  resident: an optional (nres, npair) array that receives
+    the first nres rows too (kept in memory by the caller: iter_factor reads only the rest).
+    False if not applicable.'''
     import h5py
     if _load_socvhf() is None or mol.cart or auxmol.cart:
         return False
@@ -287,6 +289,8 @@ def cholesky_eri_h5(mol, auxmol, filename, dataname='j3c', pair_tol=PAIR_TOL, ma
             _scatter_cols(blk, Y, cols - c0)
             Y = None
             dset[:, c0:c1] = blk
+            if resident is not None and len(resident):
+                resident[:, c0:c1] = blk[:len(resident)]
             blk = None
             t0 = log.timer_debug1('rik.cholesky_eri_h5: block %d (shells %d:%d)' % (k, s0, s1), *t0)
     return True
@@ -315,8 +319,10 @@ def _h5_contiguous(with_df):
 
 def iter_factor(with_df, blksize):
     '''blocks (nb, npair) of the factor, as with_df.loop(blksize); a contiguous HDF5 dataset is read
-    with os.preadv in a background thread (the GIL released during the read, so the next block is
-    read while this one is used; h5py holds it), double-buffered'''
+    with os.preadv (READ_THREADS parallel requests) in a background thread (the GIL released
+    during the read, so the next block is read while this one is used; h5py holds it),
+    double-buffered.  The rows kept in memory by rik's builder (with_df._rik_resident) come first,
+    read meanwhile the first disk block.'''
     src = _h5_contiguous(with_df) if RAW_READ else None
     if src is None:
         for blk in with_df.loop(blksize):
@@ -325,21 +331,35 @@ def iter_factor(with_df, blksize):
     import os
     import threading
     path, off, naux, npair = src
-    ranges = [(p0, min(naux, p0 + blksize)) for p0 in range(0, naux, blksize)]
-    bufs = [numpy.empty((blksize, npair)), numpy.empty((blksize, npair))]
+    res_rows = getattr(with_df, '_rik_resident', None)
+    if res_rows is None or getattr(with_df, '_rik_resident_src', None) != path or res_rows.shape[1] != npair:
+        res_rows = numpy.empty((0, npair))
+    nres = len(res_rows)
+    ranges = [(p0, min(naux, p0 + blksize)) for p0 in range(nres, naux, blksize)]
+    bufs = [numpy.empty((min(blksize, naux - nres), npair)) for _ in range(min(2, len(ranges)))]
     fd = os.open(path, os.O_RDONLY)
 
-    def read(k):
-        p0, p1 = ranges[k]
-        b = bufs[k % 2][:p1 - p0]
-        view = memoryview(b.reshape(-1)).cast('B')
-        pos = off + p0 * npair * 8
+    def read_part(view, pos):
         n = 0
         while n < view.nbytes:
             r = os.preadv(fd, [view[n:]], pos + n)
             if r <= 0:
                 raise IOError('short read of %s' % path)
             n += r
+
+    def read(k):
+        p0, p1 = ranges[k]
+        b = bufs[k % 2][:p1 - p0]
+        view = memoryview(b.reshape(-1)).cast('B')
+        pos = off + p0 * npair * 8
+        nt = max(1, READ_THREADS)
+        step = -(-view.nbytes // nt)
+        ths = [threading.Thread(target=read_part, args=(view[i:i + step], pos + i))
+               for i in range(0, view.nbytes, step)]
+        for t in ths:
+            t.start()
+        for t in ths:
+            t.join()
         return b
     th = None
     try:
@@ -347,8 +367,11 @@ def iter_factor(with_df, blksize):
 
         def job(k):
             res[k] = read(k)
-        th = threading.Thread(target=job, args=(0,))
-        th.start()
+        if ranges:
+            th = threading.Thread(target=job, args=(0,))
+            th.start()
+        for p0 in range(0, nres, blksize):
+            yield res_rows[p0:p0 + blksize]
         for k in range(len(ranges)):
             th.join()
             blk = res.pop(k)
@@ -362,6 +385,7 @@ def iter_factor(with_df, blksize):
         os.close(fd)
 
 
+READ_THREADS = 4      # parallel os.preadv requests per factor block (NVMe queue depth)
 RAW_READ = True       # iter_factor: contiguous HDF5 factors by os.preadv (else with_df.loop)
 
 
@@ -467,6 +491,7 @@ def get_jk(with_df, dm, hermi=1, with_j=True, with_k=True, max_memory=None, verb
 
 FAST_BUILD = True     # pyscf df.DF factors built by rik.cholesky_eri when they fit in memory
 FAST_BUILD_H5 = True  # ... and by rik.cholesky_eri_h5 into a temporary HDF5 file when they do not
+RESIDENT_FRAC = .4    # ... with the first rows of the out-of-core factor kept in memory up to this * max_memory
 
 
 def _prebuild(mf):
@@ -496,9 +521,17 @@ def _prebuild(mf):
         return
     # out of core: an HDF5 temporary file in pyscf's TMPDIR, as pyscf's own DF.build
     tmp = lib.NamedTemporaryFile(dir=lib.param.TMPDIR)
-    if cholesky_eri_h5(mol, auxmol, tmp.name, with_df._dataname, max_memory=mf.max_memory, verbose=mf.verbose):
+    # the first rows stay in memory too (RESIDENT_FRAC of max_memory): fewer bytes read per pass
+    nres = int(max(0, min(auxmol.nao, (RESIDENT_FRAC * mf.max_memory - lib.current_memory()[0]) * 1e6 / 8 / npair)))
+    resident = numpy.empty((nres, npair))
+    if cholesky_eri_h5(mol, auxmol, tmp.name, with_df._dataname, max_memory=mf.max_memory - nres * npair * 8e-6,
+                       verbose=mf.verbose, resident=resident):
         with_df._cderi_to_save = tmp        # keeps the temporary file alive with the DF object
         with_df._cderi = tmp.name
+        with_df._rik_resident = resident
+        with_df._rik_resident_src = tmp.name
+        logger.info(mf, 'rik: %d of %d factor rows resident (%.1f GB), the rest read from %s', nres, auxmol.nao,
+                    resident.nbytes / 1e9, tmp.name)
         logger.timer(mf, 'rik: L^-1 (P|ij) (screened pairs) to %s' % tmp.name, *t0)
 
 
