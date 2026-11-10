@@ -83,7 +83,10 @@ def _orbital_factors(dm, hermi):
 def half_transform(eri1, c, out=None):
     '''(nb, ncol, nao) X^P_{m i} = sum_j c_jm B^P_ij from the packed lower triangle eri1
     (nb, npair) of any three-index factor block (DF, CD, a sub-molecule's); c (nao, ncol) real
-    (taken F-ordered); out: an optional buffer of >= nb ncol nao doubles'''
+    (taken F-ordered) or complex (real and imaginary parts separately: the real symmetric B^P);
+    out: an optional buffer of >= nb ncol nao doubles (real c only)'''
+    if numpy.iscomplexobj(c):
+        return half_transform(eri1, c.real) + 1j * half_transform(eri1, c.imag)
     eri1 = numpy.asarray(eri1, order='C')
     c = numpy.asarray(c, dtype=numpy.double, order='F')
     nb = eri1.shape[0]
@@ -103,11 +106,17 @@ _half_trans = half_transform
 
 
 def mo_transform(eri1, c1, c2=None, out=None):
-    '''(nb, n1, n2) (P|pq) = sum_ij c1_ip B^P_ij c2_jq of a packed factor block (nb, npair)'''
+    '''(nb, n1, n2) (P|pq) = sum_ij c1_ip^* B^P_ij c2_jq of a packed factor block (nb, npair); c1, c2
+    real or complex (spinor coefficients of one spin component at a time)'''
     if c2 is None:
         c2 = c1
     nb = eri1.shape[0]
-    x = half_transform(eri1, c1)                                  # (nb, n1, nao)
+    x = half_transform(eri1, numpy.conj(c1))                      # (nb, n1, nao)
+    if numpy.iscomplexobj(x) or numpy.iscomplexobj(c2):
+        r = numpy.dot(x.reshape(-1, x.shape[2]), c2)
+        if out is not None:
+            raise ValueError('out: real coefficients only')
+        return r.reshape(nb, c1.shape[1], c2.shape[1])
     r = lib.dot(x.reshape(-1, x.shape[2]), numpy.asarray(c2, order='C'))
     if out is not None:
         out = numpy.ndarray((nb, c1.shape[1], c2.shape[1]), buffer=out)
