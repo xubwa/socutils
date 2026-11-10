@@ -109,6 +109,8 @@ RIJ_RIK_BUILD = True    # RIJ factor by socutils.scf.rik (screened builder; HDF5
 RIJ_DIRECT = 'auto'     # RIJ J by socutils.scf.rij_direct (no three-centre tensor): True, False, or 'auto' =
                         # when the resident L^{-1} (P|ij) does not fit in memory (instead of the HDF5 factor)
 RIJ_DIRECT_REBUILD = 10  # incremental direct RI-J builds between two full builds
+RIJ_DIRECT_TOL = 1e-13  # bra-pair cutoff of the direct RI-J builds (at most TOL_PER_CONV * conv_tol)
+RIJ_DIRECT_TWO_PASS = True  # ... SCF_TOL_LOOSE while the density still moves (as apply's two_pass)
 INCORE_RESERVE = 500    # MB of mf.max_memory kept for the other arrays of the SCF
 
 
@@ -154,20 +156,36 @@ def _rij_direct_wanted(mf, mol, auxmol):
 def _rij_direct_j(mf, cache, dm):
     '''J of the direct RI-J engine; a single density incrementally, J[D] = J[D_prev] + J[D - D_prev]
     (linear in D; the screening of the change makes the late cycles cheap), a full build every
-    RIJ_DIRECT_REBUILD calls'''
+    RIJ_DIRECT_REBUILD calls.  RIJ_DIRECT_TWO_PASS: the bra-pair cutoff SCF_TOL_LOOSE (at most
+    LOOSE_PER_CONV * conv_tol) until max |D - D_prev| < LOOSE_UNTIL, then a full build and
+    min(RIJ_DIRECT_TOL, TOL_PER_CONV * conv_tol) from there on, as apply's two-pass builds.'''
     eng = cache['direct']
     dm = numpy.asarray(dm, dtype=numpy.double)
     t0 = (logger.process_clock(), logger.perf_counter())
     last = cache.get('last')
+    conv_tol = getattr(mf, 'conv_tol', 1e-9)
+    tight = min(RIJ_DIRECT_TOL, TOL_PER_CONV * conv_tol)
+    loose = max(tight, min(SCF_TOL_LOOSE, LOOSE_PER_CONV * conv_tol))
     if dm.ndim != 2:
+        eng.tol = tight
         vj = eng.get_j(dm)
-    elif last is not None and last['n'] < RIJ_DIRECT_REBUILD and last['dm'].shape == dm.shape:
-        vj = last['vj'] + eng.get_j(dm - last['dm'])
+        logger.timer_debug1(mf, 'vj (rij_direct)', *t0)
+        return vj
+    same = last is not None and last['dm'].shape == dm.shape
+    ddm = dm - last['dm'] if same else None
+    if not same:
+        is_tight = not RIJ_DIRECT_TWO_PASS
+    else:
+        is_tight = last['tight'] or abs(ddm).max() < LOOSE_UNTIL
+    eng.tol = tight if is_tight else loose
+    if same and last['n'] < RIJ_DIRECT_REBUILD and last['tight'] == is_tight:
+        vj = last['vj'] + eng.get_j(ddm)
         last.update(dm=dm.copy(), vj=vj.copy(), n=last['n'] + 1)
-        logger.debug1(mf, 'RIJ direct: incremental build %d', last['n'])
+        logger.debug1(mf, 'RIJ direct: incremental build %d, cutoff %.0e', last['n'], eng.tol)
     else:
         vj = eng.get_j(dm)
-        cache['last'] = {'dm': dm.copy(), 'vj': vj.copy(), 'n': 0}
+        cache['last'] = {'dm': dm.copy(), 'vj': vj.copy(), 'n': 0, 'tight': is_tight}
+        logger.debug1(mf, 'RIJ direct: full build, cutoff %.0e', eng.tol)
     logger.timer_debug1(mf, 'vj (rij_direct)', *t0)
     return vj
 
