@@ -37,7 +37,7 @@ GRIDX = {1: {'intacc': 3.816, 'angular_grid': 1},
 GRID = GRIDX[2]
 BLK = 112               # grid points per task of the kernel (a multiple of 56)
 AO_CUTOFF = 1e-10       # AO values below which an AO is dropped from a block
-TOL = 1e-7              # screening of the shell-pair contributions, B_IJ max|F_J| sum_g |w phi| < TOL
+TOL = 1e-9              # screening of the shell-pair contributions, B_IJ max|F_J| sum_g |w phi| < TOL
 TCUT = 36.              # p r^2 beyond which a one-centre primitive pair is in its far field
 PRIM_TOL = 1e-14
 PAIR_TOL = 1e-13
@@ -183,7 +183,7 @@ def get_k(mol, dm, hermi=1, grids=None, fit=True):
 def stats(reset=True):
     '''the kernel's profiling counters: thread-summed seconds of [AO + F, integrals, contraction, K GEMM],
     counts [pairs, primitive pairs, far-field terms, sum of nl]'''
-    out = numpy.zeros(16)
+    out = numpy.zeros(32)
     _lib().SOCDFTcosx_stats(out.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(int(reset)))
     return out
 
@@ -213,7 +213,10 @@ def apply(mf, grids=None, final_grid=3, incremental=True, fit=True, tol=None):
         mf = md_j.apply(mf)
     orig_jk = mf.get_jk
     mf.direct_scf = False
-    tol = TOL if tol is None else tol
+    if tol is None:
+        # the skipped contributions of the incremental builds put a floor under the SCF gradient
+        # (c16 / def2-TZVP PBE0 at 1e-7: |g| stalls at 7e-5); tol <= conv_tol / 10
+        tol = min(TOL, .1 * getattr(mf, 'conv_tol', 1e-9))
     st = {'k': {}, 'last': None}
 
     def kobj(level):

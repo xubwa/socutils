@@ -34,6 +34,7 @@
 #include <string.h>
 #include <math.h>
 #include <omp.h>
+#include <x86intrin.h>
 #include "gtoval_c2s.h"
 
 #define ATM_SLOTS 6
@@ -65,7 +66,7 @@ void SOCDFTgtoval_ld(int deriv, int ngrids, int sh0, int sh1, int *ao_loc, doubl
 int SOCDFTcosx_lmax() { return CX_LMAX; }
 
 /* profiling counters (SOCDFTcosx_stats): times of the phases summed over threads, counts */
-static double cx_stat[16];
+static double cx_stat[32];
 void SOCDFTcosx_stats(double *out, int reset)
 {
         memcpy(out, cx_stat, sizeof(cx_stat));
@@ -75,6 +76,7 @@ void SOCDFTcosx_stats(double *out, int reset)
 /* ---------------------------------------------------------------- Hermite tables, Boys */
 
 static int cx_ready = 0;
+static double cx_damp[CX_DMAX + 1];
 static int h_t[CX_NHMAX], h_u[CX_NHMAX], h_v[CX_NHMAX], h_deg[CX_NHMAX];
 static int h_dir[CX_NHMAX], h_m1[CX_NHMAX], h_m2[CX_NHMAX], h_c[CX_NHMAX];
 static int h_idx[CX_DMAX + 1][CX_DMAX + 1][CX_DMAX + 1];
@@ -133,6 +135,13 @@ static void cx_tables(void)
                 }
                 for (n = 0; n < BOYS_NT; n++) boys_exact(boys_tab[n], n * .05, BOYS_MT - 1);
                 for (n = 1; n < BOYS_MT; n++) boys_inv[n] = 1. / (2 * n - 1);
+                {
+                        double df = 1;
+                        for (n = 0; n <= CX_DMAX; n++) {
+                                cx_damp[n] = .886226925452758014 * df / pow(2., .5 * n);
+                                df *= 2 * n + 1;
+                        }
+                }
                 cx_ready = 1;
         }
 }
@@ -154,6 +163,9 @@ static void rsqrt_vec(double *out, const double *x, int n)
         }
         for (; g < n; g++) out[g] = 1 / sqrt(x[g]);
 }
+/* the fused R / E R kernels per Hermite degree */
+#define CX_FUSED
+#include "cosx_r_gen.h"
 #else
 static void rsqrt_vec(double *out, const double *x, int n)
 {
@@ -736,6 +748,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
         double *ktmp = malloc(sizeof(double) * (size_t)nao * nao);
         double *fmax = malloc(sizeof(double) * nbas);
         double *A = malloc(sizeof(double) * (size_t)nab_max * blk);
+        double *bk = malloc(sizeof(double) * 4096);
         double *R = malloc(sizeof(double) * (size_t)nhmax * blk);
         double *Rwk = malloc(sizeof(double) * 2 * (size_t)nhmax * blk);
         double *S = malloc(sizeof(double) * (size_t)(Lmax + 1) * blk);
@@ -746,7 +759,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
         int *stamp = malloc(sizeof(int) * natm);
         double *armin = malloc(sizeof(double) * natm);
         int at, i;
-        double st[16] = {0};
+        double st[32] = {0};
         for (at = 0; at < natm; at++) {
                 stamp[at] = -1;
                 if (opt->atm_lmax[at] >= 0) farR[at] = malloc(sizeof(double) * NH(opt->atm_lmax[at]) * blk);
@@ -787,6 +800,18 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         }
                 }
                 memset(G, 0, sizeof(double) * nset * nao * n);
+                /* the block's bounding sphere, for the distance-damped primitive bounds */
+                double cb[3] = {0, 0, 0}, rb = 0;
+                for (g = 0; g < n; g++) {
+                        cb[0] += xyz[g]; cb[1] += xyz[n + g]; cb[2] += xyz[2 * n + g];
+                }
+                cb[0] /= n; cb[1] /= n; cb[2] /= n;
+                for (g = 0; g < n; g++) {
+                        const double dx = xyz[g] - cb[0], dy = xyz[n + g] - cb[1], dz = xyz[2 * n + g] - cb[2];
+                        const double r2 = dx * dx + dy * dy + dz * dz;
+                        if (r2 > rb) rb = r2;
+                }
+                rb = sqrt(rb);
                 tt1 = omp_get_wtime(); st[0] += tt1 - tt0; tt0 = tt1;
                 for (ip = 0; ip < opt->npair; ip++) {
                         const CXPair *pp = opt->pairs + ip;
@@ -794,11 +819,41 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         const int cI = bx * fmax[pp->J] >= tol;
                         const int cJ = pp->I != pp->J && bx * fmax[pp->I] >= tol;
                         if (!cI && !cJ) continue;
-                        const double fm = fmax[pp->J] > fmax[pp->I] ? fmax[pp->J] : fmax[pp->I];
-                        st[4] += 1;
                         const int L = pp->L, nh = NH(L), nI = pp->nI, nJ = pp->nJ, nab = nI * nJ;
+                        /* the bounds of the primitive pairs damped by their distance to the block:
+                         * |(2 pi / p) R_t| <= (2p)^{d/2} min(1, c_d T^{-(d+1)/2}) (the far-field form) */
+                        double bsum = 0;
+                        for (k = 0; k < pp->np; k++) {
+                                const double *P = opt->pp_P + 3 * (pp->po + k);
+                                const double dx = P[0] - cb[0], dy = P[1] - cb[1], dz = P[2] - cb[2];
+                                double dmin = sqrt(dx * dx + dy * dy + dz * dz) - rb;
+                                double f = 1;
+                                if (dmin > 0) {
+                                        const double T0 = opt->pp_p[pp->po + k] * dmin * dmin;
+                                        if (T0 > 1) {
+                                                const double ir = 1 / sqrt(T0);
+                                                double rp = ir, mx = 0;
+                                                int dd;
+                                                for (dd = 0; dd <= L; dd++) {
+                                                        const double v = cx_damp[dd] * rp;
+                                                        if (v > mx) mx = v;
+                                                        rp *= ir;
+                                                }
+                                                f = mx < 1 ? mx : 1;
+                                        }
+                                }
+                                bk[k] = f * opt->pp_b[pp->po + k];
+                                bsum += bk[k];
+                        }
+                        const int cI2 = cI && bsum * xsum * fmax[pp->J] >= tol;
+                        const int cJ2 = cJ && bsum * xsum * fmax[pp->I] >= tol;
+                        if (!cI2 && !cJ2) continue;
+                        const double fm = cI2 && cJ2 ? (fmax[pp->J] > fmax[pp->I] ? fmax[pp->J] : fmax[pp->I])
+                                        : (cI2 ? fmax[pp->J] : fmax[pp->I]);
+                        st[4] += 1;
                         const size_t sz = (size_t)nab * nh;
                         int k0 = 0;
+                        const unsigned long long cp0 = __rdtsc();
                         memset(A, 0, sizeof(double) * nab * n);
                         if (pp->onec) {
                                 at = pp->atom;
@@ -841,10 +896,12 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                                 if (k0 > 0)
                                         e_times_r(A, opt->mdata + pp->mo + sz * (k0 - 1), farR[at], nab, nh, n);
                         }
+                        st[24] += __rdtsc() - cp0;
                         for (k = k0; k < pp->np; k++) {
-                                if (opt->pp_b[pp->po + k] * xsum * fm < tol) continue;
+                                if (bk[k] * xsum * fm < tol) continue;
                                 st[5] += 1;
                                 st[8 + L] += n;
+                                const unsigned long long c0 = __rdtsc();
                                 const double p = opt->pp_p[pp->po + k];
                                 const double *P = opt->pp_P + 3 * (pp->po + k);
                                 double tmin = 1e300, tmax = 0;
@@ -858,12 +915,16 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                                         tmax = T[g] > tmax ? T[g] : tmax;
                                 }
                                 boys_vec(S, n, T, L, n, tmin, tmax);
-                                double s = 1;
+                                double sc[CX_DMAX + 1];
                                 int m;
+                                sc[0] = 1;
+                                for (m = 1; m <= L; m++) sc[m] = sc[m - 1] * (-2 * p);
+#ifdef CX_FUSED
+                                cxr_table[L](A, nab, opt->edata + pp->eo + sz * k, S, sc, X, Y, Z, n);
+#else
                                 for (m = 1; m <= L; m++) {
-                                        s *= -2 * p;
                                         double *sm = S + (size_t)m * n;
-                                        for (g = 0; g < n; g++) sm[g] *= s;
+                                        for (g = 0; g < n; g++) sm[g] *= sc[m];
                                 }
                                 hermite_R_vec(R, S, X, Y, Z, L, n, Rwk);
                                 if (nab * nh >= CX_GEMM_MIN)
@@ -871,7 +932,10 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                                                &one, A, &n);
                                 else
                                         e_times_r(A, opt->edata + pp->eo + sz * k, R, nab, nh, n);
+#endif
+                                st[16 + L] += __rdtsc() - c0;
                         }
+                        st[25] += __rdtsc() - cp0;
                         tt1 = omp_get_wtime(); st[1] += tt1 - tt0; tt0 = tt1;
                         /* G_I += A F_J, G_J += A^T F_I */
                         const int I0 = ao_loc[pp->I], J0 = ao_loc[pp->J];
@@ -879,7 +943,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                                 const double *Fd = F + (size_t)d * nao * n;
                                 double *Gd = G + (size_t)d * nao * n;
                                 int ia, jb;
-                                if (cI) {
+                                if (cI2) {
                                         for (ia = 0; ia < nI; ia++) {
                                                 double *gi = Gd + (size_t)(I0 + ia) * n;
                                                 for (jb = 0; jb < nJ; jb++) {
@@ -890,7 +954,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                                                 }
                                         }
                                 }
-                                if (cJ) {
+                                if (cJ2) {
                                         for (jb = 0; jb < nJ; jb++) {
                                                 double *gj = Gd + (size_t)(J0 + jb) * n;
                                                 for (ia = 0; ia < nI; ia++) {
@@ -921,7 +985,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                 st[7] += nl;
         }
 #pragma omp critical(socdft_cosx_stat)
-        for (i = 0; i < 16; i++) cx_stat[i] += st[i];
+        for (i = 0; i < 32; i++) cx_stat[i] += st[i];
 #pragma omp barrier
         /* reduce the thread buffers, each thread a slice */
         {
@@ -936,7 +1000,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
         }
 #pragma omp barrier
         free(Kt); free(a); free(wx); free(rmx); free(ix); free(runs); free(dr); free(F); free(G); free(ktmp);
-        free(fmax); free(A); free(R); free(Rwk); free(S); free(X); free(xyz);
+        free(fmax); free(A); free(bk); free(R); free(Rwk); free(S); free(X); free(xyz);
         for (at = 0; at < natm; at++) free(farR[at]);
         free(farR); free(stamp); free(armin);
         if (mkl_set_num_threads_local) mkl_set_num_threads_local(mkl0);
