@@ -51,6 +51,7 @@ TOL = 1e-9              # screening of the shell-pair contributions, B_IJ max|F_
 TCUT = 36.              # p r^2 beyond which a one-centre primitive pair is in its far field
 MULTI_MIN = 4           # densities from which the multi-density contraction runs
 MULTI_FLOAT = False     # its contraction in single precision (set_multi_float)
+MULTI_MAXSET = 64       # densities per pass (beyond, the buffers grow with no gain)
 PRIM_TOL = 1e-14
 PAIR_TOL = 1e-13
 
@@ -175,8 +176,10 @@ class COSX(lib.StreamObject):
         if multi:
             # many densities: the densities as the vector dimension of the contraction, in batches whose
             # per-thread buffers (K, the gathered density rows, F, G: ~2 nao^2 + 3 nao blk per density) fit
-            per = 8 * (2 * nao * nao + 3 * nao * self.blk) * lib.num_threads() / 1e6
-            nb = max(1, min(nset, int(.5 * max(1000, mol.max_memory - lib.current_memory()[0]) / per)))
+            # per density: the threads' K and gathered rows (2 nao^2 each), F, G (and their float copies),
+            # plus the transposed input and output here (2 nao^2)
+            per = 8 * ((2 * nao * nao + 4 * nao * self.blk) * lib.num_threads() + 3 * nao * nao) / 1e6
+            nb = max(1, min(nset, MULTI_MAXSET, int(.4 * max(500, mol.max_memory - lib.current_memory()[0]) / per)))
             if nb < nset:
                 vk = numpy.concatenate([self.get_k(dms[i:i + nb], hermi) for i in range(0, nset, nb)])
                 return vk.reshape(shape)
@@ -196,6 +199,8 @@ class COSX(lib.StreamObject):
             ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.natm),
             bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p),
             *_blas_ptrs(), None, None, dtm.ctypes.data_as(ctypes.c_void_p) if multi else None)
+        if libdft.SOCDFTcosx_error():
+            raise MemoryError('COSX: a kernel buffer could not be allocated (%d densities, nao %d)' % (nset, nao))
         if multi:
             vk = numpy.ascontiguousarray(vkt[:, :, :nset].transpose(2, 0, 1))
         if self._proj is not None:
