@@ -961,12 +961,13 @@ class THCExchange:
                 nb = int(self.stream_gb * 1e9 / (8 * ng * 3))
             elif grid_split:
                 # live at once per rank: 3 arrays of nb x (ng / size) doubles (xl / rbuf / xi, then Xh / sbuf / Xq,
-                # then vxi / sbuf / vl), 4 with margin; the aux FT cache takes 0.2 of the budget apart
-                nb = int((0.65 * avail - 8 * nmu * rchunk * 2 - 32 * gchunk * naux) * size / (8 * ng * 4))
+                # then vxi / sbuf / vl) plus the previous block's potential awaiting its V (pipelined Gram pass),
+                # 5 with margin; the aux FT cache takes 0.2 of the budget apart
+                nb = int((0.65 * avail - 8 * nmu * rchunk * 2 - 32 * gchunk * naux) * size / (8 * ng * 5))
             else:
                 # serial stream: xi, its spectrum and the potential with the FFT work space, measured ~3.3
                 # (nb, ng) doubles at once (EuOCl: 16.7 GB above the start for a planned 11.3 GB at 2.2)
-                nb = int((0.7 * avail - 8 * nmu * rchunk * 2 - 32 * gchunk * naux) / (8 * ng * 3.3))
+                nb = int((0.55 * avail - 8 * nmu * rchunk * 2 - 32 * gchunk * naux) / (8 * ng * 3.3))   # 0.2: aux FT
             if grid_split:                                            # Alltoallv counts / displacements < 2^31
                 nb = min(nb, size * ((2 ** 31 - 1) // ng))
             nb = max(32, min(nmu, nb))
@@ -1066,18 +1067,42 @@ class THCExchange:
         ncol = [b_ - a_ for a_, b_ in gsl]
         p2cache = {}                                                  # aux FT of the own G chunks, kept if it fits
         p2_left = 0.2 * self.avail_bytes()                            # its share of the budget (blocks: 0.65)
+        ecaches = ({}, {}, [p2_left])                                 # per-label FT, atom phases, bytes left
+        # A: the per-chunk aux FT cached when all of it fits its budget share (computed once); otherwise per
+        # label times atom phases (8x smaller for Eu:YSO, cached), each block then pays the phase products only
+        need = sum(16. * self._aux_upto(g2c[c])[1] * (min((c + 1) * gchunk, nG) - c * gchunk) for c in own)
+        # per label pays a phase product of nb x nG per atom, a gain only where the plain FT of an atom (nk x nG,
+        # nk its kept aux functions) is larger: nb below the aux functions per atom (Eu:YSO nb 216 vs ~2800;
+        # quartz, nb ~ nk: no gain, 122 vs 85 s)
+        by_el = getattr(self, 'a_by_element', None)
+        if by_el is None:
+            by_el = need > p2_left and nb < self.auxmol.nao / max(1, self.auxmol.natm)
+            by_el = bool(comm.allreduce(int(by_el), op=MPI.MAX))
+        self.log('   aux FT for A: %s (cache of the plain FT %.1f GB, budget %.1f GB)'
+                 % ('per label x atom phase' if by_el else 'cached per chunk', need / 1e9, p2_left / 1e9))
         ta_comm = 0.
         tw = dict(wait=0., a2a=0., bytes=0.)                          # transpose: waiting, Alltoallv, bytes moved
+        prev = None                                                   # (b0, b1, potential rows) awaiting V
         for b0 in range(0, nmu, nb):
             b1 = min(b0 + nb, nmu)
             nbk = b1 - b0
             ms = [nbk * q // size for q in range(size + 1)]           # mu rows (within the block) of every rank
             m0, m1 = ms[rank], ms[rank + 1]
+            # one pass over the own grid rows for the Gram columns: xi of this block and, pipelined, V of the
+            # previous one (its potential vl came back last block) -- the Gram columns once per block, not twice
             ta = time.time()
             xl = np.empty((nbk, nr))
+            Vp = np.zeros((prev[1] - prev[0], nmu)) if prev is not None else None
             for g0 in range(0, nr, rchunk):
                 g1 = min(g0 + rchunk, nr)
-                xl[:, g0:g1] = Ginv[b0:b1] @ gram_cols(PP, phi[g0:g1])
+                Gc = gram_cols(PP, phi[g0:g1])
+                xl[:, g0:g1] = Ginv[b0:b1] @ Gc
+                if prev is not None:
+                    Vp += prev[2][:, g0:g1] @ Gc.T
+                Gc = None
+            if prev is not None:
+                V[prev[0]:prev[1]] += Vp @ Ginv                       # own-row part of int (v * xi_b) xi^T
+                prev = Vp = None
             tt['xi'] += time.time() - ta
             # forward: to rank q the rows ms[q]:ms[q+1] of xl (contiguous); from rank p its (m1 - m0, n_p) piece
             ta = time.time()
@@ -1137,9 +1162,20 @@ class THCExchange:
             tw['bytes'] += 8. * (sg.sum() + rg.sum())
             sbuf = None
             ta_comm += time.time() - ta
-            As = np.zeros((self.auxmol.nao, nbk))                     # aux-cutoff order
+            if by_el:                                                 # P_A = phase x B_label (no FT per block)
+                As = np.zeros((self.auxmol.nao, nbk))
+                off = 0
+                for c in own:
+                    g0, g1 = c * gchunk, min((c + 1) * gchunk, nG)
+                    self._a_by_element(Xq[:, off:off + g1 - g0], g0, g1, g2c[c], sw[g0:g1], As, ecaches, tt, c)
+                    off += g1 - g0
+                A[:, b0:b1] += As
+                own_ = []
+            else:
+                own_ = own
+                As = np.zeros((self.auxmol.nao, nbk))                 # aux-cutoff order
             off = 0
-            for c in own:
+            for c in own_:
                 g0, g1 = c * gchunk, min((c + 1) * gchunk, nG)
                 ta = time.time()
                 sub, nk = self._aux_upto(g2c[c])
@@ -1161,7 +1197,8 @@ class THCExchange:
                     As[:nk] = r.T
                 off += g1 - g0
                 tt['A GEMM'] += time.time() - ta
-            A[self._aux_perm, b0:b1] += As
+            if own_:
+                A[self._aux_perm, b0:b1] += As
             As = Xq = X2 = P2 = None
             # potential of the own mu rows on the full grid
             ta = time.time()
@@ -1193,18 +1230,21 @@ class THCExchange:
             tw['bytes'] += 8. * (sc.sum() + rc.sum())
             sbuf = None
             ta_comm += time.time() - ta
-            ta = time.time()
-            Vb = np.zeros((nbk, nmu))
-            for g0 in range(0, nr, rchunk):
-                g1 = min(g0 + rchunk, nr)
-                Vb += vl[:, g0:g1] @ gram_cols(PP, phi[g0:g1]).T
-            V[b0:b1] += Vb @ Ginv                                       # own-row part of int (v * xi_b) xi^T
-            vl = Vb = None
-            tt['V'] += time.time() - ta
+            prev = (b0, b1, vl)                                       # its V in the next block's Gram pass
+            vl = None
             self.log('   streamed THC (grid split): mu block %d-%d of %d, %.0f s (%s, transpose %.0f = wait %.0f + '
                      'Alltoallv %.0f (%.2f GB/s) + pack; aux FT cached for %d of %d own G chunks)'
                      % (b0, b1, nmu, time.time() - t0, ', '.join('%s %.0f' % kv for kv in tt.items()), ta_comm,
                         tw['wait'], tw['a2a'], tw['bytes'] / max(tw['a2a'], 1e-9) / 1e9, len(p2cache), len(own)))
+        if prev is not None:                                          # V of the last block: one more Gram pass
+            ta = time.time()
+            Vp = np.zeros((prev[1] - prev[0], nmu))
+            for g0 in range(0, nr, rchunk):
+                g1 = min(g0 + rchunk, nr)
+                Vp += prev[2][:, g0:g1] @ gram_cols(PP, phi[g0:g1]).T
+            V[prev[0]:prev[1]] += Vp @ Ginv
+            prev = Vp = None
+            tt['V'] += time.time() - ta
         self._log_rank_spread(tt, tw)
         self._mem_mark('V, A stream')
 
@@ -1236,7 +1276,26 @@ class THCExchange:
         xi = None
         Xh *= vol / ng                                                  # xi(G) = int_cell xi(r) e^{-iGr}
         tt['FFT'] += time.time() - ta
-        for g0 in range(0, len(self.Gv), gchunk):
+        if getattr(self, '_ecaches', None) is None:                   # once: the aux FT mode and its caches
+            budget = 0.2 * self.avail_bytes()
+            nG_ = len(self.Gv)
+            need = sum(16. * self._aux_upto(g2c[c])[1] * (min((c + 1) * gchunk, nG_) - c * gchunk)
+                       for c in range(len(g2c)))
+            by_el = getattr(self, 'a_by_element', None)
+            self._a_by_el = ((need > budget and n < self.auxmol.nao / max(1, self.auxmol.natm)) if by_el is None
+                             else by_el)
+            self._ecaches = ({}, {}, [budget])
+            self._p2plain = {}
+            self.log('   aux FT for A: %s (cache of the plain FT %.1f GB, budget %.1f GB)'
+                     % ('per label x atom phase' if self._a_by_el else 'cached per chunk', need / 1e9, budget / 1e9))
+        by_el = self._a_by_el
+        if by_el:                                                     # P_A = phase x B_label (no FT per block)
+            for g0 in range(0, len(self.Gv), gchunk):
+                g1 = min(g0 + gchunk, len(self.Gv))
+                self._a_by_element(Xh[:, g0:g1], g0, g1, g2c[g0 // gchunk], sw[g0:g1], As, self._ecaches, tt,
+                                   g0 // gchunk)
+            A[:, b0:b1] = As
+        for g0 in range(0, len(self.Gv) if not by_el else 0, gchunk):
             g1 = min(g0 + gchunk, len(self.Gv))
             ta = time.time()
             sub, nk = self._aux_upto(g2c[g0 // gchunk])                   # the first nk aux functions (cutoff order)
@@ -1245,7 +1304,12 @@ class THCExchange:
             # Re(P^* X) = Pr Xr + Pi Xi as one real GEMM over (G, re/im), accumulated in place (beta = 1) into
             # the aux-cutoff-ordered A[:, b] (naux, nb), C order: its first nk rows are contiguous; the weighted
             # re/im layout of the F-order ft_ao block in one pass (C kernel)
-            P2 = ft_post(ft_ao(sub, self.Gv[g0:g1]), sw[g0:g1])              # (2 nG, nk)
+            P2 = self._p2plain.get(g0)
+            if P2 is None:
+                P2 = ft_post(ft_ao(sub, self.Gv[g0:g1]), sw[g0:g1])          # (2 nG, nk)
+                if P2.nbytes < self._ecaches[2][0]:                         # the plain FT: cached when it fits
+                    self._p2plain[g0] = P2
+                    self._ecaches[2][0] -= P2.nbytes
             tt['ft_ao'] += time.time() - ta
             ta = time.time()
             X2 = np.ascontiguousarray(Xh[:, g0:g1]).view(float)         # (nb, 2 nG), contiguous copy of the chunk
@@ -1254,7 +1318,8 @@ class THCExchange:
             if not np.shares_memory(r, As):
                 As[:nk] = r.T
             tt['A GEMM'] += time.time() - ta
-        A[self._aux_perm, b0:b1] = As
+        if not by_el:
+            A[self._aux_perm, b0:b1] = As
         As = None
         Xc = Xh[:, lrg]
         A_lr[:, b0:b1] = Plr @ Xc.real.T + Pli @ Xc.imag.T
@@ -1268,6 +1333,84 @@ class THCExchange:
                                workers=-1, overwrite_x=True).reshape(n, -1)
         tt['V'] += time.time() - ta
         return vxi
+
+    def _elem_setup(self, eps=1e-15):
+        '''Per aux basis label: the label's shells on one atom at the origin (P_A(G) = exp(-i G.R_A) B(G), B the
+        FT of that atom), its shells sorted by the |G|^2 cutoff of _aux_upto, and the AO offsets; per aux atom its
+        label and first aux AO.'''
+        if getattr(self, '_elems', None) is not None:
+            return self._elems
+        from pyscf import gto as _gto
+        am = self.auxmol
+        loc = am.ao_loc_nr()
+        elems, atoms = {}, []
+        for a in range(am.natm):
+            lab = am.atom_symbol(a)
+            sh = [i for i in range(am.nbas) if am.bas_atom(i) == a]
+            if not sh:
+                continue
+            atoms.append((a, lab, loc[sh[0]], am.atom_coord(a)))
+            if lab in elems:
+                continue
+            e0 = am.copy(deep=True)
+            e0._atm = am._atm[[a]].copy()
+            env = am._env.copy()
+            pc = e0._atm[0, _gto.PTR_COORD]
+            env[pc:pc + 3] = 0.
+            e0._env = env
+            e0._bas = am._bas[sh].copy()
+            e0._bas[:, _gto.ATOM_OF] = 0
+            el = e0.ao_loc_nr()
+            cut = np.array([4 * e0.bas_exp(i).min() * np.log(1 / eps) for i in range(e0.nbas)])
+            order = np.argsort(-cut, kind='stable')
+            perm = np.concatenate([np.arange(el[i], el[i + 1]) for i in order])
+            elems[lab] = dict(mol=e0, cut=cut[order], order=order, perm=perm)
+        self._elems = (elems, atoms)
+        return self._elems
+
+    def _a_by_element(self, Xc, g0, g1, g2min, swc, Arows, caches, tt, ckey):
+        '''A[:, cols] += Re(P^* X) over the G range [g0, g1) with P_A = exp(-i G.R_A) B_label: B per label (FT of
+        one atom at the origin, pruned at g2min) once per G chunk and cached, the phase of each atom cached, one
+        GEMM per atom on its phased spectra.  Xc (nb, g1 - g0) complex; Arows (naux, nb) accumulated.'''
+        elems, atoms = self._elem_setup()
+        pcache, phcache, left = caches
+        G = self.Gv[g0:g1]
+        ta = time.time()
+        P2s = {}
+        for lab, e in elems.items():
+            k = int(np.searchsorted(-e['cut'], -g2min, side='right'))
+            if k == 0:
+                continue
+            P2 = pcache.get((ckey, lab))
+            if P2 is None:
+                sub = e['mol'].copy(deep=False)
+                sub._bas = e['mol']._bas[e['order'][:k]]
+                P2 = ft_post(ft_ao(sub, G), swc)                       # (2 nG, nk_label)
+                if P2.nbytes < left[0]:
+                    pcache[ckey, lab] = P2
+                    left[0] -= P2.nbytes
+            P2s[lab] = P2
+        tt['ft_ao'] += time.time() - ta
+        if not P2s:
+            return
+        for a, lab, a0, R in atoms:
+            P2 = P2s.get(lab)
+            if P2 is None:
+                continue
+            ta = time.time()
+            ph = phcache.get((ckey, a))
+            if ph is None:
+                ph = np.exp(1j * (G @ R))                              # exp(+i G.R_A): P_A^* = exp(i G.R_A) B^*
+                if ph.nbytes < left[0]:
+                    phcache[ckey, a] = ph
+                    left[0] -= ph.nbytes
+            nk = P2.shape[1]
+            P2a = P2
+            X2 = (Xc * ph[None, :]).view(float)                        # the phase on the spectra (nb, 2 nG)
+            tt['ft_ao'] += time.time() - ta
+            ta = time.time()
+            Arows[a0 + elems[lab]['perm'][:nk]] += (X2 @ P2a).T
+            tt['A GEMM'] += time.time() - ta
 
     def _aux_upto(self, g2min, eps=1e-15):
         '''The aux shells whose FT is not negligible at |G|^2 >= g2min (exp(-G^2 / 4 alpha) > eps for the smallest
@@ -2183,7 +2326,8 @@ class THCJK:
         self.th.stream_max_blocks = getattr(self, 'stream_max_blocks', 1 << 30)
         self.th.piv_file = getattr(self, 'piv_file', None)
         for k in ('coarsen', 'blocked_pivots', 'far_fit', 'phi_ondemand', 'symm_grid', 'symm_pivots',
-                  'ke_precision', 'mesh_override', 'drop_nyquist', 'g_sphere', 'distribute_c'):   # if set
+                  'ke_precision', 'mesh_override', 'drop_nyquist', 'g_sphere', 'distribute_c',
+                  'a_by_element'):                                    # options, if set
             if hasattr(self, k):
                 setattr(self.th, k, getattr(self, k))
         rc = getattr(self, 'exx_trunc', None)                         # smoothed truncated Coulomb exchange
