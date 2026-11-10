@@ -949,7 +949,7 @@ def _rij_cderi(mf):
 
 
 def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS2E_TOL, max_memory=None,
-               cderi=None):
+               cderi=None, occ=None):
     '''Nuclear derivatives of the density-fitted Coulomb energy
     E_J = 1/2 rho^T M^{-1} rho at a fixed symmetric D (rho_P = (P|ij) D_ij,
     M = (P|Q), d = M^{-1} rho), auxiliary-basis response included (the exact
@@ -965,7 +965,9 @@ def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS
     (hess (natm, natm, 3, 3) or None, vj1 (natm, 3, nao, nao) or None), or None
     if the library is unavailable.  cderi: the SCF's L^{-1} (P|ij) (naux, npair)
     (ri_j_grad): d = L^{-T} (cderi D) and (ij|P) M^{-1} Y = cderi^T L^{-1} Y
-    without the three-centre integrals.'''
+    without the three-centre integrals.  occ (with with_vj1, without with_hess): return
+    vj1 C_occ (natm, 3, nao, nocc) instead, the auxiliary-centre part of W blocked over the
+    auxiliary atoms (SOCVHFri_j_deriv_blk), no (natm, 3, nao, nao) array.'''
     import ctypes
     from pyscf import df
     from pyscf.gto import moleintor
@@ -1024,18 +1026,61 @@ def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS
     if with_hess and RIJ_HESS_MD and auxmol.natm == natm:
         hess_md = _md_rij_hess(libv, mol, auxmol, dm, dfit, tol)
     Y = numpy.zeros((natm * 3, naux))
-    W = numpy.zeros((natm, 3, nao, nao)) if with_vj1 else None
+    aux_atom = auxmol._bas[:, gto.ATOM_OF]
+    blocked = (occ is not None and with_vj1 and not with_hess and hasattr(libv, 'SOCVHFri_j_deriv_blk')
+               and auxmol.natm == natm and bool(numpy.all(numpy.diff(aux_atom) >= 0)))
+    W = numpy.zeros((natm, 3, nao, nao)) if with_vj1 and not blocked else None
     null = lib.c_null_ptr()
-    libv.SOCVHFri_j_deriv(
-        hess.ctypes.data_as(ctypes.c_void_p) if with_hess and hess_md is None else null,
-        Y.ctypes.data_as(ctypes.c_void_p),
-        W.ctypes.data_as(ctypes.c_void_p) if with_vj1 else null,
-        dm.ctypes.data_as(ctypes.c_void_p), dfit.ctypes.data_as(ctypes.c_void_p),
-        q.ctypes.data_as(ctypes.c_void_p), qP.ctypes.data_as(ctypes.c_void_p),
-        dcond.ctypes.data_as(ctypes.c_void_p), dPcond.ctypes.data_as(ctypes.c_void_p), ctypes.c_double(tol),
-        opts[0], opts[1], opts[2], ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
-        ctypes.c_int(natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nbas),
-        ctypes.c_int(auxmol.nbas), env.ctypes.data_as(ctypes.c_void_p))
+    if blocked:
+        occ = numpy.ascontiguousarray(occ)
+        nocc = occ.shape[1]
+        vj1c = numpy.zeros((natm, 3, nao, nocc))
+        Wrows = numpy.zeros((3, nao, nao))
+        first = numpy.searchsorted(aux_atom, numpy.arange(natm + 1))
+        nc = max(1, min(natm, int(max_memory * .25e6 / (3 * nao * nao * 8))))
+        Waux = numpy.empty((nc, 3, nao, nao))
+        Yc = numpy.empty_like(Y)
+        for c0 in range(0, natm, nc):
+            c1 = min(natm, c0 + nc)
+            ksh0, ksh1 = nbas + int(first[c0]), nbas + int(first[c1])
+            if ksh1 == ksh0:
+                continue
+            libv.SOCVHFri_j_deriv_blk(
+                Yc.ctypes.data_as(ctypes.c_void_p), Wrows.ctypes.data_as(ctypes.c_void_p),
+                Waux.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(c0), ctypes.c_int(c1 - c0),
+                ctypes.c_int(ksh0), ctypes.c_int(ksh1),
+                dm.ctypes.data_as(ctypes.c_void_p), dfit.ctypes.data_as(ctypes.c_void_p),
+                q.ctypes.data_as(ctypes.c_void_p), qP.ctypes.data_as(ctypes.c_void_p),
+                dcond.ctypes.data_as(ctypes.c_void_p), dPcond.ctypes.data_as(ctypes.c_void_p),
+                ctypes.c_double(tol), opts[0], opts[1], opts[2], ao_loc.ctypes.data_as(ctypes.c_void_p),
+                atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(natm), bas.ctypes.data_as(ctypes.c_void_p),
+                ctypes.c_int(nbas), ctypes.c_int(auxmol.nbas), env.ctypes.data_as(ctypes.c_void_p))
+            Y += Yc
+            for C in range(c0, c1):
+                V = Waux[C - c0]                                   # (V + V^T) C_occ
+                vj1c[C] += lib.dot(V.reshape(3 * nao, nao), occ).reshape(3, nao, nocc)
+                for x in range(3):
+                    vj1c[C, x] += lib.dot(V[x].T, occ)
+        Waux = Yc = None
+        aoslices = mol.aoslice_by_atom()
+        for ia in range(natm):                                     # the i-derivative rows of atom A
+            p0, p1 = aoslices[ia][2:]
+            R = numpy.ascontiguousarray(Wrows[:, p0:p1])
+            vj1c[ia, :, p0:p1] += lib.dot(R.reshape(-1, nao), occ).reshape(3, p1 - p0, nocc)
+            for x in range(3):
+                vj1c[ia, x] += lib.dot(R[x].T, occ[p0:p1])
+        Wrows = None
+    else:
+        libv.SOCVHFri_j_deriv(
+            hess.ctypes.data_as(ctypes.c_void_p) if with_hess and hess_md is None else null,
+            Y.ctypes.data_as(ctypes.c_void_p),
+            W.ctypes.data_as(ctypes.c_void_p) if with_vj1 else null,
+            dm.ctypes.data_as(ctypes.c_void_p), dfit.ctypes.data_as(ctypes.c_void_p),
+            q.ctypes.data_as(ctypes.c_void_p), qP.ctypes.data_as(ctypes.c_void_p),
+            dcond.ctypes.data_as(ctypes.c_void_p), dPcond.ctypes.data_as(ctypes.c_void_p), ctypes.c_double(tol),
+            opts[0], opts[1], opts[2], ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_int(natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nbas),
+            ctypes.c_int(auxmol.nbas), env.ctypes.data_as(ctypes.c_void_p))
 
     # Y^{A,x} -= M^{A,x} d with M^{A,x}_PQ = d/dR_{A,x} (P|Q), int2c2e_ip1 = (nabla P|Q)
     auxslices = auxmol.aoslice_by_atom()[:, 2:]
@@ -1067,6 +1112,30 @@ def ri_j_deriv(mol, auxmol, dm, with_hess=True, with_vj1=True, tol=ghf_hess.HESS
             S[ia, ia] = -S[ia].sum(axis=0)
         hess += S
     vj1 = None
+    if blocked:
+        # + (ij|P) M^{-1} Y, column blocks straight to the occupied form
+        kc = max(1, int(max_memory * .1e6 / (nao * nao * 8)))
+        vf = vj1c.reshape(natm * 3, nao, nocc)
+        if low is not None:
+            U = scipy.linalg.solve_triangular(low, Y.T, lower=True)      # L^{-1} Y, (naux, 3 natm)
+            for k0 in range(0, natm * 3, kc):
+                k1 = min(natm * 3, k0 + kc)
+                T = lib.unpack_tril(numpy.ascontiguousarray(lib.dot(cderi.T, U[:, k0:k1]).T))
+                vf[k0:k1] += lib.dot(T.reshape(-1, nao), occ).reshape(k1 - k0, nao, nocc)
+        else:
+            T = numpy.zeros((npair, natm * 3))
+            for k0_, k1_, _ in aux_ranges:
+                p0, p1 = auxmol.ao_loc[k0_], auxmol.ao_loc[k1_]
+                int3c = df.incore.aux_e2(mol, auxmol, 'int3c2e', aosym='s2ij',
+                                         shls_slice=(0, nbas, 0, nbas, k0_, k1_))
+                T += lib.dot(int3c, Z[p0:p1])
+            int3c = None
+            for k0 in range(0, natm * 3, kc):
+                k1 = min(natm * 3, k0 + kc)
+                M = lib.unpack_tril(numpy.ascontiguousarray(T[:, k0:k1].T))
+                vf[k0:k1] += lib.dot(M.reshape(-1, nao), occ).reshape(k1 - k0, nao, nocc)
+            T = None
+        return hess, vj1c
     if with_vj1:
         vj1 = W + W.transpose(0, 1, 3, 2)
         W = None
@@ -1275,15 +1344,17 @@ def rhf_make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=No
     return [vj[ia] - .5 * vk[ia] + hcore_deriv(ia) for ia in range(mol.natm)]
 
 
-def _fock1(hessobj, dm0, with_k):
+def _fock1(hessobj, dm0, with_k, occ=None):
     '''(vj1, vk1) of all atoms: fock1_jk, or with density-fitted J ri_j_deriv
-    for J and fock1_jk for the exact K; None if a library is missing.'''
+    for J and fock1_jk for the exact K; None if a library is missing.  occ:
+    the density-fitted vj1 may come as vj1 C_occ (natm, 3, nao, nocc).'''
     mol = hessobj.mol
     mf = hessobj.base
     max_memory = max(1000, mf.max_memory - lib.current_memory()[0])
     if _df_mode(mf) is None:
         return fock1_jk(mol, dm0, with_k=with_k, max_memory=max_memory)
-    r = ri_j_deriv(mol, _df_auxmol(mf), dm0, with_hess=False, max_memory=max_memory, cderi=_rij_cderi(mf))
+    r = ri_j_deriv(mol, _df_auxmol(mf), dm0, with_hess=False, max_memory=max_memory, cderi=_rij_cderi(mf),
+                   occ=occ)
     if r is None:
         return None
     vk = None
@@ -1602,24 +1673,27 @@ def rks_make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=No
         return rks_hess.make_h1(hessobj, mo_coeff, mo_occ, chkfile, atmlst, verbose)
     mocc = mo_coeff[:, mo_occ > 0]
     dm0 = numpy.dot(mocc, mocc.T) * 2
-    v = _fock1(hessobj, dm0, hybrid)
+    occ = getattr(hessobj, '_h1_occ', False)
+    v = _fock1(hessobj, dm0, hybrid, occ=mocc if occ else None)
     if v is None:
         if dfm is not None:
             from pyscf.df.hessian import rks as df_rks_hess
             return df_rks_hess.make_h1(hessobj, mo_coeff, mo_occ, chkfile, atmlst, verbose)
         return rks_hess.make_h1(hessobj, mo_coeff, mo_occ, chkfile, atmlst, verbose)
     vj, vk = v
+    vj_occ = occ and vj.shape[-1] == mocc.shape[1] != vj.shape[-2]
     ni.libxc.test_deriv_order(mf.xc, 2, raise_error=True)
     max_memory = max(2000, mf.max_memory * .9 - lib.current_memory()[0])
-    occ = getattr(hessobj, '_h1_occ', False)
     h1ao = xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory, occ=occ)
     hcore_deriv = hessobj.base.nuc_grad_method().hcore_generator(mol)
     for ia in range(mol.natm):
-        h = vj[ia] + hcore_deriv(ia)
+        h = hcore_deriv(ia) if vj_occ else vj[ia] + hcore_deriv(ia)
         if hybrid:
             h -= .5 * hyb * vk[ia]
         if occ:
             h1ao[ia] += lib.dot(h.reshape(-1, h.shape[-1]), mocc).reshape(3, -1, mocc.shape[1])
+            if vj_occ:
+                h1ao[ia] += vj[ia]
         else:
             h1ao[ia] += h
     return h1ao

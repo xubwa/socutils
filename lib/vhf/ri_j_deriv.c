@@ -66,12 +66,17 @@ static void reduce_thread_buffers(double *out, double **bufs, int nbuf, size_t n
         }
 }
 
-void SOCVHFri_j_deriv(double *hess, double *Y, double *W, double *dm, double *dfit,
-                      double *qij, double *qP, double *dcond, double *dPcond, double tol,
-                      CINTOpt *opt_ip1, CINTOpt *opt_ipip1, CINTOpt *opt_ipvip1,
-                      int *ao_loc, int *atm, int natm, int *bas, int nbas, int nauxbas,
-                      double *env)
+/* the pass over the auxiliary shells [ksh0, ksh1) (absolute shell indices); W writes:
+ * the i-derivative rows of atom A at Wa + A * sa + x * nn, the auxiliary-centre part of
+ * atom C at Wc + (C - c0) * sc + x * nn (both may be NULL together with W) */
+static void ri_j_deriv_pass(double *hess, double *Y, double *Wa, size_t sa, double *Wc, size_t sc, int c0,
+                            double *dm, double *dfit,
+                            double *qij, double *qP, double *dcond, double *dPcond, double tol,
+                            CINTOpt *opt_ip1, CINTOpt *opt_ipip1, CINTOpt *opt_ipvip1,
+                            int *ao_loc, int *atm, int natm, int *bas, int nbas, int nauxbas,
+                            double *env, int ksh0, int ksh1)
 {
+        double *W = Wa;
         const int nbtot = nbas + nauxbas;
         const int natm_tot = natm * 2;
         const size_t nao = ao_loc[nbas];
@@ -100,7 +105,6 @@ void SOCVHFri_j_deriv(double *hess, double *Y, double *W, double *dm, double *df
         const int nthreads = omp_get_max_threads();
         double **hbufs = malloc(sizeof(double *) * nthreads);
         double **ybufs = malloc(sizeof(double *) * nthreads);
-        if (W != NULL) memset(W, 0, sizeof(double) * natm * 3 * nn);
 
 #pragma omp parallel
 {
@@ -130,7 +134,7 @@ void SOCVHFri_j_deriv(double *hess, double *Y, double *W, double *dm, double *df
                 const int B = bas[jsh * BAS_SLOTS + ATOM_OF];
                 const int dij_n = di * dj;
                 int ksh;
-                for (ksh = nbas; ksh < nbtot; ksh++) {
+                for (ksh = ksh0; ksh < ksh1; ksh++) {
                         const int kq = ksh - nbas;
                         const double q3 = q2 * qP[kq];
                         const double dk = dPcond[kq];
@@ -165,8 +169,8 @@ void SOCVHFri_j_deriv(double *hess, double *Y, double *W, double *dm, double *df
                                                 }
                                         }
                                         if (do_w) {
-                                                double *wa = W + ((size_t)A * 3 + x) * nn;
-                                                double *wc = W + ((size_t)C * 3 + x) * nn;
+                                                double *wa = Wa + (size_t)A * sa + (size_t)x * nn;
+                                                double *wc = Wc + (size_t)(C - c0) * sc + (size_t)x * nn;
                                                 for (b = 0; b < dj; b++) {
                                                         for (a = 0; a < di; a++) {
                                                                 double s = 0;
@@ -236,4 +240,39 @@ void SOCVHFri_j_deriv(double *hess, double *Y, double *W, double *dm, double *df
 }
         free(hbufs);
         free(ybufs);
+}
+
+void SOCVHFri_j_deriv(double *hess, double *Y, double *W, double *dm, double *dfit,
+                      double *qij, double *qP, double *dcond, double *dPcond, double tol,
+                      CINTOpt *opt_ip1, CINTOpt *opt_ipip1, CINTOpt *opt_ipvip1,
+                      int *ao_loc, int *atm, int natm, int *bas, int nbas, int nauxbas,
+                      double *env)
+{
+        const size_t nn = (size_t)ao_loc[nbas] * ao_loc[nbas];
+        if (W != NULL) memset(W, 0, sizeof(double) * natm * 3 * nn);
+        ri_j_deriv_pass(hess, Y, W, 3 * nn, W, 3 * nn, 0, dm, dfit, qij, qP, dcond, dPcond, tol,
+                        opt_ip1, opt_ipip1, opt_ipvip1, ao_loc, atm, natm, bas, nbas, nauxbas, env,
+                        nbas, nbas + nauxbas);
+}
+
+/*
+ * Blocked over the auxiliary atoms (memory): the auxiliary shells [ksh0, ksh1) only,
+ * which must be those of the auxiliary atoms [c0, c0 + nc); the i-derivative rows of
+ * all atoms accumulate into Wrows (3, nao, nao) (the rows of atom A belong to A; the
+ * caller zeroes it once), the auxiliary-centre parts into Waux (nc, 3, nao, nao)
+ * (zeroed here), Y (natm, 3, naux) accumulates the triplets of this block (zeroed
+ * here: the caller sums the blocks).  hess must be NULL.
+ */
+void SOCVHFri_j_deriv_blk(double *Y, double *Wrows, double *Waux, int c0, int nc, int ksh0, int ksh1,
+                          double *dm, double *dfit,
+                          double *qij, double *qP, double *dcond, double *dPcond, double tol,
+                          CINTOpt *opt_ip1, CINTOpt *opt_ipip1, CINTOpt *opt_ipvip1,
+                          int *ao_loc, int *atm, int natm, int *bas, int nbas, int nauxbas,
+                          double *env)
+{
+        const size_t nn = (size_t)ao_loc[nbas] * ao_loc[nbas];
+        if (Waux != NULL) memset(Waux, 0, sizeof(double) * nc * 3 * nn);
+        ri_j_deriv_pass(NULL, Y, Wrows, 0, Waux, 3 * nn, c0, dm, dfit, qij, qP, dcond, dPcond, tol,
+                        opt_ip1, opt_ipip1, opt_ipvip1, ao_loc, atm, natm, bas, nbas, nauxbas, env,
+                        ksh0, ksh1);
 }
