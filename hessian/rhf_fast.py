@@ -2060,7 +2060,8 @@ class _MultiJKCPHF:
             object: that grid.  None: the SCF grid (the result equals pyscf's).'''
     sum_rule = False
     cpscf_grids = 'auto'
-    _keys = {'sum_rule', 'cpscf_grids', '_cpscf_auto'}
+    auxbasis_response = 2   # the fitted-K (RI-JK) fallbacks to pyscf.df.hessian read it, as its DF Hessian
+    _keys = {'sum_rule', 'cpscf_grids', '_cpscf_auto', 'auxbasis_response'}
 
     def kernel(self, *args, **kwargs):
         de = super().kernel(*args, **kwargs)
