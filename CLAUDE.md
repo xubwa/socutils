@@ -37,12 +37,12 @@ installed pyscf's `libcvhf` the same way (without it `.x2cmp()` falls back to
 the full molecular J/K build). These `.so` are emitted **flat into `lib/`**.
 
 The **x2camf C library** (C99 translation of the C++ X2CAMF, Apache-2.0,
-repo github.com/xubwa/x2camf-c) and **zquatev** (BSD-2, sunqm/zquatev; pinned to the
-user's fork xubwa/zquatev master (sunqm 0.2.1 + 2 commits), which adds BLAS_LIBRARIES and
-install() to its CMake) are separate repositories, built with `ExternalProject`
-(like pyscf's libcint/libxc) with the same BLAS into `lib/deps/lib/`
-(`libx2camf_c.so`, `libzquatev.so`); the fork also computes zdotc in
-C++ instead of cblas_zdotc_sub, so no CBLAS/cblas.h is needed. Cache variables `X2CAMF_GIT`/`X2CAMF_VERSION`,
+repo github.com/xubwa/x2camf-c) and **zquatev** (BSD-2, sunqm/zquatev; pinned to
+upstream commit 4b397dd = PR #2, merged 2026-11-09, which adds BLAS_LIBRARIES and
+install() to its CMake and computes zdotc in C++, so no CBLAS/cblas.h is needed)
+are separate repositories, built with `ExternalProject` (like pyscf's
+libcint/libxc) with the same BLAS into `lib/deps/lib/` (`libx2camf_c.so`,
+`libzquatev.so`). Cache variables `X2CAMF_GIT`/`X2CAMF_VERSION`,
 `ZQUATEV_GIT`/`ZQUATEV_VERSION`, or `X2CAMF_SOURCE_DIR`/`ZQUATEV_SOURCE_DIR`
 for a local checkout; `BUILD_X2CAMF`/`BUILD_ZQUATEV=OFF` to skip.
 All libraries are optional — two-component code that doesn't call them runs

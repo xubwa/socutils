@@ -276,6 +276,105 @@ def get_hfw1(C4c0, X0, ST, S4c0, h4c0, mo_ene, R0, L0, h4c1, S4c1=None):
 
     return hfw1
 
+# ---------------------------------------------------------------------------
+# Effective 4c densities: the adjoint of get_hfw1.
+#
+# get_hfw1 is (real-)linear in (h4c1, S4c1).  For a fixed 2c density D the
+# property tr(D hfw1(h4c1, S4c1)) is therefore tr(Gh h4c1) + tr(GS S4c1) with
+# Hermitian 4c matrices Gh, GS that depend on D only: the derivatives of X and
+# R are transformed away (cf. Zou, Guo, Suo, Liu, JCTC 16, 1541 (2020) for the
+# nuclear gradients).  One evaluation per density, then every one-electron
+# perturbation is a contraction.  hfw1_adjoint applies the adjoints of the
+# steps of get_hfw1 (C1, X1, ST1, R1, L1) in reverse order, with the inner
+# product <A, B> = Re tr(A^+ B).
+# ---------------------------------------------------------------------------
+
+def _herm(a):
+    return (a + a.conj().T) * .5
+
+
+def _sqrt_deriv(aeig, avec, a1):
+    '''B^lambda for B = A^1/2 (get_Asq1): self-adjoint.'''
+    s = numpy.sqrt(aeig)
+    den = s[:, None] + s[None, :]
+    y = avec.conj().T @ a1 @ avec
+    y = numpy.where(abs(den) < 1e-10, 0, y / numpy.where(abs(den) < 1e-10, 1, den))
+    return avec @ y @ avec.conj().T
+
+
+def _invsqrt_deriv(aeig, avec, a1):
+    '''(B^-1)^lambda (get_Asqi1): -B^-1 B^lambda B^-1, self-adjoint.'''
+    binv = (avec / numpy.sqrt(aeig)) @ avec.conj().T
+    return -binv @ _sqrt_deriv(aeig, avec, a1) @ binv
+
+
+def hfw1_adjoint(C4c0, X0, ST, S4c0, h4c0, mo_ene, R0, L0, D):
+    '''Effective 4c densities (Gh, GS) of the 2c density D (Hermitian, in the
+    basis of X0/R0): tr(D get_hfw1(..., h4c1, S4c1)) = tr(Gh h4c1) + tr(GS S4c1)
+    for all Hermitian h4c1, S4c1.'''
+    N = C4c0.shape[0]
+    n = N // 2
+    S2c0 = S4c0[:n, :n]
+    hSL = h4c0[n:, :n]
+    hSS = h4c0[n:, n:]
+    sSS = S4c0[n:, n:]
+    Gh = numpy.zeros((N, N), dtype=complex)
+    GS = numpy.zeros((N, N), dtype=complex)
+
+    # hfw1 = R0^+ L1 R0 + (R1^+ L0 R0 + h.c.)
+    DL = R0 @ D @ R0.conj().T
+    GR1 = 2 * L0 @ R0 @ D
+
+    # L1 = hLL1 + (hLS X1 + h.c.) + (hLS1 X0 + h.c.) + (X1^+ hSS X0 + h.c.) + X0^+ hSS1 X0
+    Gh[:n, :n] += DL
+    Gh[:n, n:] += 2 * DL @ X0.conj().T
+    Gh[n:, n:] += X0 @ DL @ X0.conj().T
+    GX1 = 2 * hSL @ DL + 2 * hSS @ X0 @ DL
+
+    # R1 (get_R1): A = Si ST Si; A1 = Si ST1 Si + Si1 ST Si + Si ST Si1;
+    # R1 = Si Asqi1(A, A1) Sq + Si1 Ai Sq + Si Ai Sq1
+    seig, svec = scipy.linalg.eigh(S2c0)
+    Sq = (svec * numpy.sqrt(seig)) @ svec.conj().T
+    Si = (svec / numpy.sqrt(seig)) @ svec.conj().T
+    A = Si @ ST @ Si
+    aeig, avec = scipy.linalg.eigh(A)
+    Ai = (avec / numpy.sqrt(aeig)) @ avec.conj().T
+    GZ = Si @ GR1 @ Sq
+    GA1 = _invsqrt_deriv(aeig, avec, GZ)
+    GST1 = Si @ GA1 @ Si
+    GSi1 = GA1 @ Si @ ST + ST @ Si @ GA1 + GR1 @ Sq @ Ai
+    GSq1 = Ai @ Si @ GR1
+    GS[:n, :n] += _invsqrt_deriv(seig, svec, GSi1) + _sqrt_deriv(seig, svec, GSq1)
+
+    # ST1 = S1LL + (X1^+ sSS X0 + h.c.) + X0^+ S1SS X0
+    H = _herm(GST1)
+    GS[:n, :n] += H
+    GS[n:, n:] += X0 @ H @ X0.conj().T
+    GX1 += 2 * sSS @ X0 @ H
+
+    # X1 = [-X0, I] C0 U1[:, n:] P,  P = CL^+ (CL CL^+)^-1
+    CL = C4c0[:n, n:]
+    P = CL.conj().T @ numpy.linalg.inv(CL @ CL.conj().T)
+    B = numpy.hstack((-X0, numpy.eye(n)))
+    GU1p = C4c0.conj().T @ B.conj().T @ GX1 @ P.conj().T          # (N, n)
+
+    # U1[i, j] = (D1mo - S1mo e_j)/(e_j - e_i), U1[j, j] = -S1mo[j, j]/2, j >= n
+    e = mo_ene
+    den = e[None, n:] - e[:, None]                                # (N, n)
+    mask = abs(den) >= 1e-5
+    offdiag = numpy.ones((N, n), dtype=bool)
+    offdiag[numpy.arange(n, N), numpy.arange(n)] = False
+    fac = numpy.where(mask & offdiag, 1 / numpy.where(mask, den, 1), 0)
+    GD1mo = numpy.zeros((N, N), dtype=complex)
+    GS1mo = numpy.zeros((N, N), dtype=complex)
+    GD1mo[:, n:] = GU1p * fac
+    GS1mo[:, n:] = -GU1p * fac * e[None, n:]
+    GS1mo[numpy.arange(n, N), numpy.arange(n, N)] = -.5 * GU1p[numpy.arange(n, N), numpy.arange(n)]
+    Gh += C4c0 @ GD1mo @ C4c0.conj().T
+    GS += C4c0 @ GS1mo @ C4c0.conj().T
+    return _herm(Gh), _herm(GS)
+
+
 def x2c1e_hfw0(t, v, w, s):
     c = LIGHT_SPEED
     return x2c1e_hfw0_block(v, t, t, w * (.25 / c**2) - t, s, t * (.5 / c**2))

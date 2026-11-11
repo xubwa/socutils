@@ -45,6 +45,7 @@ from pyscf.scf import chkfile
 
 from socutils.symm import double_group as dg
 from socutils.symm import spinor_basis
+from socutils.prop.mixin import FourComponentPropertyMixin
 from socutils.scf import spinor_hf
 
 
@@ -512,11 +513,11 @@ class _DiracSymm(DoubleGroupSymm):
         return mo_energy > -1.999 * lib.param.LIGHT_SPEED**2
 
 
-class SymAdaptedDHF(_DiracSymm, dhf.DHF):
+class SymAdaptedDHF(FourComponentPropertyMixin, _DiracSymm, dhf.DHF):
     '''Dirac-Hartree-Fock with double-group symmetry.'''
 
 
-class SymAdaptedRDHF(_DiracSymm, dhf.RDHF):
+class SymAdaptedRDHF(FourComponentPropertyMixin, _DiracSymm, dhf.RDHF):
     '''Kramers-restricted Dirac-Hartree-Fock with double-group symmetry.'''
     _kramers_restricted = True
 
