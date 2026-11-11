@@ -2138,13 +2138,16 @@ static int eval_select1(double *a, int *ix, int *runs, int n, double *xyz, uint8
 void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *optp, double *coords,
                      double *weights, uint8_t *non0tab, int ngrid, int blk, double cutoff, double tol,
                      double tcut, int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
-                     dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local)
+                     dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local, double *kout)
 {
+        /* kout != NULL: also K_plain[D] (nao, nao), K[mu][nu] = sum_g w phi_mu (A F)_nu, from the A F of this
+         * pass (the pairs this pass keeps) */
         CXOpt *opt = optp;
         cx_tables();
         const int nao = ao_loc[nbas];
         const int nblk = (ngrid + blk - 1) / blk;
         const int Lmax = opt->lmax + 1, nhmax = NH(Lmax);
+        if (kout) memset(kout, 0, sizeof(double) * nao * nao);
         int nab_max = 1, i0;
         for (i0 = 0; i0 < opt->npair; i0++)
                 if (opt->pairs[i0].nI * opt->pairs[i0].nJ > nab_max) nab_max = opt->pairs[i0].nI * opt->pairs[i0].nJ;
@@ -2161,6 +2164,8 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
         const int mkl0 = mkl_set_num_threads_local ? mkl_set_num_threads_local(1) : 0;
         const double one = 1, zero = 0;
         double *gr = calloc(natm * 3, sizeof(double));
+        double *Kt = kout ? calloc((size_t)nao * nao, sizeof(double)) : NULL;
+        double *wa = kout ? malloc(sizeof(double) * (size_t)nao * blk) : NULL;
         double *a = malloc(sizeof(double) * 4 * (size_t)nao * blk);
         double *full = malloc(sizeof(double) * 4 * (size_t)nao * blk);
         double *rmx = malloc(sizeof(double) * nao);
@@ -2429,6 +2434,18 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
                                 }
                         }
                 }
+                if (Kt) {
+                        /* K[ix_i][nu] += sum_g w phi_i G^F_nu */
+                        for (i = 0; i < nl; i++)
+                                for (g = 0; g < n; g++) wa[(size_t)i * n + g] = w[g] * a[(size_t)i * n + g];
+                        dgemm_("T", "N", &nao, &nl, &n, &one, GF, &n, wa, &n, &zero, dr, &nao);
+                        for (i = 0; i < nl; i++) {
+                                double *row = Kt + (size_t)ix[i] * nao;
+                                const double *src = dr + (size_t)i * nao;
+                                int q;
+                                for (q = 0; q < nao; q++) row[q] += src[q];
+                        }
+                }
                 /* (i): Q (nl, n) = M[ix, :] G^F + D[ix, :] G^H (+ Yg[ix, ix] phi) */
                 for (i = 0; i < nl; i++) memcpy(dr + (size_t)i * nao, dmm + (size_t)ix[i] * nao, sizeof(double) * nao);
                 dgemm_("N", "N", &n, &nl, &nao, &one, GF, &n, dr, &nao, &zero, Q, &n);
@@ -2452,7 +2469,14 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
                 }
         }
 #pragma omp critical(socdft_cosx_grad)
-        for (i = 0; i < natm * 3; i++) grad[i] += gr[i];
+        {
+                for (i = 0; i < natm * 3; i++) grad[i] += gr[i];
+                if (Kt) {
+                        size_t q;
+                        for (q = 0; q < (size_t)nao * nao; q++) kout[q] += Kt[q];
+                }
+        }
+        free(Kt); free(wa);
         free(gr); free(a); free(full); free(rmx); free(ix); free(runs); free(dr); free(F); free(H); free(GF); free(GH);
         free(Q); free(fm); free(ws); free(A); free(W); free(Mm); free(bk); free(R); free(Rwk); free(S); free(X);
         free(xyz);
@@ -2465,3 +2489,196 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
 }
 
 #include "cosx_hess.c"
+
+/*
+ * The grid Gram matrices from the AOs local to each block (the shells of non0tab, no value cutoff):
+ *   kind 0: out (nao, nao)      = S_g = sum_g w phi_mu phi_nu
+ *   kind 1: out (3, nao, nao)   = sum_g w d_x phi_mu phi_nu
+ *   kind 2: out (15, nao, nao)  = sum_g w d_x d_y phi_mu phi_nu (6: xx xy xz yy yz zz), then
+ *                                 sum_g w d_x phi_mu d_y phi_nu (9: x, y)
+ * One GEMM (nl, nl) per block and component; the rows are added into the shared output under a lock per
+ * AO row (a row whose lock is taken is retried after the others).
+ */
+int SOCDFTcosx_gram(double *out, int kind, double *coords, double *weights, uint8_t *non0tab, int ngrid, int blk,
+                    int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
+                    dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local)
+{
+        const int nao = ao_loc[nbas];
+        const int nblk = (ngrid + blk - 1) / blk;
+        const int deriv = kind, ncomp = kind == 0 ? 1 : (kind == 1 ? 4 : 10), nout = kind == 0 ? 1 : (kind == 1 ? 3 : 15);
+        const size_t nn = (size_t)nao * nao;
+        int err = 0, i0;
+        memset(out, 0, sizeof(double) * nn * nout);
+        omp_lock_t *lk = malloc(sizeof(omp_lock_t) * nao);
+        for (i0 = 0; i0 < nao; i0++) omp_init_lock(lk + i0);
+#pragma omp parallel
+{
+        const int mkl0 = mkl_set_num_threads_local ? mkl_set_num_threads_local(1) : 0;
+        const double one = 1, zero = 0;
+        double *a = malloc(sizeof(double) * ncomp * (size_t)nao * blk);
+        double *full = malloc(sizeof(double) * ncomp * (size_t)nao * blk);
+        double *wa = malloc(sizeof(double) * (size_t)nao * blk);
+        double *rmx = malloc(sizeof(double) * nao);
+        int *ix = malloc(sizeof(int) * nao), *pend = malloc(sizeof(int) * nao);
+        int *runs = malloc(sizeof(int) * (2 * (nbas + 1) + nao));
+        double *xyz = malloc(sizeof(double) * 3 * blk);
+        double *T = NULL;
+        size_t tcap = 0;
+        int oom = !a || !full || !wa || !rmx || !ix || !pend || !runs || !xyz;
+        int b, i, j, c, g, k;
+#pragma omp for schedule(dynamic, 1)
+        for (b = 0; b < nblk; b++) {
+                if (oom) continue;
+                const int g0 = b * blk, n = g0 + blk <= ngrid ? blk : ngrid - g0;
+                uint8_t *msk = non0tab + (size_t)(g0 / MASK_BLK) * nbas;
+                for (k = 0; k < 3; k++) memcpy(xyz + k * n, coords + (size_t)k * ngrid + g0, sizeof(double) * n);
+                const int nl = eval_selectd(deriv, a, ix, runs, n, xyz, msk, -1., ao_loc, atm, bas, nbas, env, rmx, full);
+                if (nl == 0) continue;
+                const size_t nl2 = (size_t)nl * nl;
+                if (nl2 * nout > tcap) {
+                        free(T);
+                        tcap = nl2 * nout;
+                        T = malloc(sizeof(double) * tcap);
+                        if (!T) {
+                                tcap = 0;
+                                oom = 1;
+                                continue;
+                        }
+                }
+                const double *w = weights + g0;
+                for (i = 0; i < nl; i++)
+                        for (g = 0; g < n; g++) wa[(size_t)i * n + g] = w[g] * a[(size_t)i * n + g];
+                /* T[c][i][j] = sum_g (row side)_i (column side)_j: dgemm (column side)^T (row side) */
+                if (kind == 0) {
+                        dgemm_("T", "N", &nl, &nl, &n, &one, wa, &n, a, &n, &zero, T, &nl);
+                } else if (kind == 1) {
+                        for (c = 0; c < 3; c++)
+                                dgemm_("T", "N", &nl, &nl, &n, &one, wa, &n, a + (size_t)(1 + c) * nl * n, &n, &zero, T + c * nl2, &nl);
+                } else {
+                        for (c = 0; c < 6; c++)
+                                dgemm_("T", "N", &nl, &nl, &n, &one, wa, &n, a + (size_t)(4 + c) * nl * n, &n, &zero, T + c * nl2, &nl);
+                        int x, y;
+                        for (x = 0; x < 3; x++) {
+                                const double *ax = a + (size_t)(1 + x) * nl * n;
+                                for (i = 0; i < nl; i++)
+                                        for (g = 0; g < n; g++) wa[(size_t)i * n + g] = w[g] * ax[(size_t)i * n + g];
+                                for (y = 0; y < 3; y++)
+                                        dgemm_("T", "N", &nl, &nl, &n, &one, a + (size_t)(1 + y) * nl * n, &n, wa, &n, &zero,
+                                               T + (6 + 3 * x + y) * nl2, &nl);
+                        }
+                }
+                int np = nl, round = 0;
+                for (i = 0; i < nl; i++) pend[i] = i;
+                while (np) {
+                        int np2 = 0, q;
+                        for (q = 0; q < np; q++) {
+                                const int ii = pend[q], mu = ix[ii];
+                                if (round < 4) {
+                                        if (!omp_test_lock(lk + mu)) {
+                                                pend[np2++] = ii;
+                                                continue;
+                                        }
+                                } else {
+                                        omp_set_lock(lk + mu);
+                                }
+                                for (c = 0; c < nout; c++) {
+                                        double *orow = out + c * nn + (size_t)mu * nao;
+                                        const double *trow = T + c * nl2 + (size_t)ii * nl;
+                                        for (j = 0; j < nl; j++) orow[ix[j]] += trow[j];
+                                }
+                                omp_unset_lock(lk + mu);
+                        }
+                        np = np2;
+                        round++;
+                }
+        }
+        if (oom) {
+#pragma omp atomic write
+                err = 1;
+        }
+        free(a); free(full); free(wa); free(rmx); free(ix); free(pend); free(runs); free(xyz); free(T);
+        if (mkl_set_num_threads_local) mkl_set_num_threads_local(mkl0);
+}
+        for (i0 = 0; i0 < nao; i0++) omp_destroy_lock(lk + i0);
+        free(lk);
+        return err;
+}
+
+/*
+ * grad (natm, 3) = d/dR of sum_mu nu Yg_mu nu S_g,mu nu on the fixed grid (S_g = sum_g w phi phi^T; no
+ * integrals): -sum_{rho in X} sum_g w grad phi_rho (Yg phi)_rho with the AOs of each block (as the term
+ * (i) of SOCDFTcosx_grad).  Yg symmetric.
+ */
+int SOCDFTcosx_grad_gram(double *grad, double *yg, double *coords, double *weights, uint8_t *non0tab, int ngrid,
+                         int blk, double cutoff, int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
+                         dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local)
+{
+        const int nao = ao_loc[nbas];
+        const int nblk = (ngrid + blk - 1) / blk;
+        int err = 0, i0;
+        int *atm_of_ao = malloc(sizeof(int) * nao);
+        for (i0 = 0; i0 < nbas; i0++) {
+                int mu;
+                for (mu = ao_loc[i0]; mu < ao_loc[i0 + 1]; mu++) atm_of_ao[mu] = bas[i0 * BAS_SLOTS + ATOM_OF];
+        }
+        memset(grad, 0, sizeof(double) * natm * 3);
+#pragma omp parallel
+{
+        const int mkl0 = mkl_set_num_threads_local ? mkl_set_num_threads_local(1) : 0;
+        const double one = 1, zero = 0;
+        double *gr = calloc(natm * 3, sizeof(double));
+        double *a = malloc(sizeof(double) * 4 * (size_t)nao * blk);
+        double *full = malloc(sizeof(double) * 4 * (size_t)nao * blk);
+        double *Q = malloc(sizeof(double) * (size_t)nao * blk);
+        double *rmx = malloc(sizeof(double) * nao);
+        int *ix = malloc(sizeof(int) * nao);
+        int *runs = malloc(sizeof(int) * (2 * (nbas + 1) + nao));
+        double *xyz = malloc(sizeof(double) * 3 * blk);
+        double *dr = NULL;
+        size_t dcap = 0;
+        int oom = !gr || !a || !full || !Q || !rmx || !ix || !runs || !xyz;
+        int b, i, j, g, k, x;
+#pragma omp for schedule(dynamic, 1)
+        for (b = 0; b < nblk; b++) {
+                if (oom) continue;
+                const int g0 = b * blk, n = g0 + blk <= ngrid ? blk : ngrid - g0;
+                uint8_t *msk = non0tab + (size_t)(g0 / MASK_BLK) * nbas;
+                for (k = 0; k < 3; k++) memcpy(xyz + k * n, coords + (size_t)k * ngrid + g0, sizeof(double) * n);
+                const int nl = eval_select1(a, ix, runs, n, xyz, msk, cutoff, ao_loc, atm, bas, nbas, env, rmx, full);
+                if (nl == 0) continue;
+                if ((size_t)nl * nl > dcap) {
+                        free(dr);
+                        dcap = (size_t)nl * nl;
+                        dr = malloc(sizeof(double) * dcap);
+                        if (!dr) {
+                                dcap = 0;
+                                oom = 1;
+                                continue;
+                        }
+                }
+                const double *w = weights + g0;
+                for (i = 0; i < nl; i++)
+                        for (j = 0; j < nl; j++) dr[(size_t)i * nl + j] = yg[(size_t)ix[i] * nao + ix[j]];
+                dgemm_("N", "N", &n, &nl, &nl, &one, a, &n, dr, &nl, &zero, Q, &n);
+                for (i = 0; i < nl; i++) {
+                        const double *q = Q + (size_t)i * n;
+                        const int aa = atm_of_ao[ix[i]];
+                        for (x = 0; x < 3; x++) {
+                                const double *d = a + ((size_t)(1 + x) * nl + i) * n;
+                                double s_ = 0;
+                                for (g = 0; g < n; g++) s_ += w[g] * d[g] * q[g];
+                                gr[aa * 3 + x] -= s_;
+                        }
+                }
+        }
+#pragma omp critical(socdft_cosx_grad)
+        {
+                for (i = 0; i < natm * 3 && gr; i++) grad[i] += gr[i];
+                if (oom) err = 1;
+        }
+        free(gr); free(a); free(full); free(Q); free(rmx); free(ix); free(runs); free(xyz); free(dr);
+        if (mkl_set_num_threads_local) mkl_set_num_threads_local(mkl0);
+}
+        free(atm_of_ao);
+        return err;
+}
