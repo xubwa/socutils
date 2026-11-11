@@ -1012,7 +1012,7 @@ void SOCDFTcosx_untranspose(double *out, const double *vt, int nao, int nset, in
                         memcpy(Tt + (size_t)gg * Sg + roff[r], src + (size_t)gg * nab, sizeof(T) * nab); \
         }                                                                                              \
         for (g = g0; g < g0 + tn; g++) {                                                               \
-                const T *Fg = F + g * NQ;                                                              \
+                const T *Fg = F + (fs ? g * NQ : 0);                                                   \
                 T *Gg = G + g * NQ;                                                                    \
                 const T *Tg = Tt + (size_t)(g - g0) * Sg;                                              \
                 for (r = 0; r < nrec; r++) {                                                           \
@@ -1054,13 +1054,13 @@ void SOCDFTcosx_untranspose(double *out, const double *vt, int nao, int nset, in
         }
 
 static void dense_contract(double *G, const double *F, const double *Abuf, const CXRec *rec, int nrec, int nao,
-                           int n, int nset, double *Ad, double *tg, size_t Sg, double *Tt, size_t *roff)
+                           int n, int nset, double *Ad, double *tg, size_t Sg, double *Tt, size_t *roff, int fs)
 {
         CX_DENSE_BODY(double, cx_dsymm)
 }
 
 static void dense_contract_f(float *G, const float *F, const float *Abuf, const CXRec *rec, int nrec, int nao,
-                             int n, int nset, float *Ad, double *tg, size_t Sg, float *Tt, size_t *roff)
+                             int n, int nset, float *Ad, double *tg, size_t Sg, float *Tt, size_t *roff, int fs)
 {
         CX_DENSE_BODY(float, cx_ssymm)
 }
@@ -1730,12 +1730,12 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         }
 #ifdef CX_FUSED
                         if (occm && mfl) { const double tq_ = omp_get_wtime(); multi_contract_const_f(Aocf, cof, Abf, rec, nrec, nao, n, nocc); st[27] += omp_get_wtime() - tq_; }
-                        else if (mfl && dnb) { const double tq_ = omp_get_wtime(); dense_contract_f(Gf, Ff, Abf, rec, nrec, nao, n, nset, (float *)Ad, st + 31, Sgb, (float *)Tt, roff); st[27] += omp_get_wtime() - tq_; }
+                        else if (mfl && dnb) { const double tq_ = omp_get_wtime(); dense_contract_f(Gf, Ff, Abf, rec, nrec, nao, n, nset, (float *)Ad, st + 31, Sgb, (float *)Tt, roff, 1); st[27] += omp_get_wtime() - tq_; }
                         else if (mfl) { const double tq_ = omp_get_wtime(); multi_contract_f(Gf, Ff, Abf, rec, nrec, nao, n, nset); st[27] += omp_get_wtime() - tq_; }
                         else
 #endif
                         if (occm) { const double tq_ = omp_get_wtime(); multi_contract_const(Aoc, co, Abuf, rec, nrec, nao, n, nocc); st[27] += omp_get_wtime() - tq_; }
-                        else if (dnb) { const double tq_ = omp_get_wtime(); dense_contract(G, F, Abuf, rec, nrec, nao, n, nset, Ad, st + 31, Sgb, Tt, roff); st[27] += omp_get_wtime() - tq_; }
+                        else if (dnb) { const double tq_ = omp_get_wtime(); dense_contract(G, F, Abuf, rec, nrec, nao, n, nset, Ad, st + 31, Sgb, Tt, roff, 1); st[27] += omp_get_wtime() - tq_; }
                         else { const double tq_ = omp_get_wtime(); multi_contract(G, F, Abuf, rec, nrec, nao, n, nset); st[27] += omp_get_wtime() - tq_; }
                 }
                 if (occm) {

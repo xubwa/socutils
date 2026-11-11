@@ -568,8 +568,13 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
         double *Ub = malloc(sizeof(double) * (size_t)nocc * blk), *Upb = malloc(sizeof(double) * (size_t)nocc * blk);
         double *psid = NULL, *wpsid = NULL, *wetad = NULL;
         int *la = malloc(sizeof(int) * (natm + 1) * 3);
-        double *U = malloc(sizeof(double) * (size_t)3 * nocc * blk);
-        double *Up = malloc(sizeof(double) * (size_t)3 * nocc * blk);
+        /* U3, U3' of a chunk of CA atoms (~32 MB each) */
+        int CA = (int)(((size_t)1 << 25) / (sizeof(double) * 3 * nocc * blk));
+        if (CA < 1) CA = 1;
+        if (CA > natm) CA = natm;
+        double *U = malloc(sizeof(double) * (size_t)3 * CA * nocc * blk);
+        double *Up = malloc(sizeof(double) * (size_t)3 * CA * nocc * blk);
+        int *cat = malloc(sizeof(int) * 2 * (CA + 1));
         double *fmax = malloc(sizeof(double) * nbas);
         double *A = malloc(sizeof(double) * (size_t)nab_max * blk);
         double *W = malloc(sizeof(double) * (size_t)nab_max * blk);
@@ -589,7 +594,15 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
         float *Aocf = hfl ? malloc(sizeof(float) * NQ * blk) : NULL;
         float *cof = hfl ? malloc(sizeof(float) * NQ) : NULL;
         float *Abf = (float *)Abuf;
-        const size_t abcap = hfl ? 2 * (size_t)CX_ABUF : (size_t)CX_ABUF;
+        size_t abcap = hfl ? 2 * (size_t)CX_ABUF : (size_t)CX_ABUF;     /* elements */
+        /* dense: all the pairs of a block stored (Abuf grown on demand), A C by one symmetric GEMM per point
+         * (dense_contract with the constant C) when the block keeps >= cx_dense_min of the pairs */
+        const int densek = cx_dense && (hfl ? cx_ssymm != NULL : cx_dsymm != NULL);
+        const size_t esz = hfl ? sizeof(float) : sizeof(double);
+        double *Ad = densek ? malloc(esz * (size_t)nao * nao) : NULL;
+        double *Tt = NULL;
+        size_t ttcap = 0;
+        size_t *roff = densek ? malloc(sizeof(size_t) * (opt->npair + 1)) : NULL;
         if (hfl) {
                 size_t q;
                 for (q = 0; q < NQ; q++) cof[q] = (float)co[q];
@@ -609,7 +622,7 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
         }
         for (at = 0; at < natm && lidx; at++) lidx[at] = -1;
         int oom = (do_f1 && (!alock || !Bd || !tv)) || (do_h && (!Ht || !GHb)) || !sl.slot || !Gb || !cg || !rows || !lidx
-                  || !pend || !adone || !a || !full || !U || !Up
+                  || !pend || !adone || !a || !full || !U || !Up || !cat || (densek && (!Ad || !roff))
                   || !Abuf || !rec || !Aoc || !Out || !dA || !rs || !cs || !ys || !W || !Mm;
         if (oom) {
 #pragma omp atomic write
@@ -708,8 +721,10 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                         sl.nkeys = 0;
                         sl.used = 0;
                 }
-                if (hfl) memset(Aocf, 0, sizeof(float) * NQ * n);
-                else memset(Aoc, 0, sizeof(double) * NQ * n);
+                if (!densek) {
+                        if (hfl) memset(Aocf, 0, sizeof(float) * NQ * n);
+                        else memset(Aoc, 0, sizeof(double) * NQ * n);
+                }
                 double cb[3] = {0, 0, 0}, rb = 0;
                 for (g = 0; g < n; g++) {
                         cb[0] += xyz[g]; cb[1] += xyz[n + g]; cb[2] += xyz[2 * n + g];
@@ -937,6 +952,17 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                         }
                         /* the integrals, point-major, for Aoc */
                         PTICK(7)
+                        if (densek && aoff + (size_t)nab * n > abcap) {
+                                const size_t ncap = 2 * abcap > aoff + (size_t)nab * n ? 2 * abcap : aoff + (size_t)nab * n;
+                                double *nb_ = realloc(Abuf, esz * ncap);
+                                if (!nb_) {
+                                        sl.fail = 1;
+                                        break;
+                                }
+                                Abuf = nb_;
+                                Abf = (float *)Abuf;
+                                abcap = ncap;
+                        }
                         if (aoff + (size_t)nab * n > abcap) {
 #ifdef CX_FUSED
                                 if (hfl) multi_contract_const_f(Aocf, cof, Abf, rec, nrec, nao, n, nocc);
@@ -1018,7 +1044,38 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                         PTICK(13)
                 }
                 TICK(1)
-                if (nrec) {
+                int dnb = 0;
+                if (densek && nrec && !sl.fail) {
+                        size_t Sg = 0;
+                        int r_;
+                        for (r_ = 0; r_ < nrec; r_++) Sg += (size_t)rec[r_].nI * rec[r_].nJ;
+                        const double kept = (double)Sg / ((double)nao * (nao + 1) / 2);
+                        st[19] += kept;
+                        dnb = kept >= cx_dense_min;
+                        if (dnb && Sg * CX_DTILE > ttcap) {
+                                free(Tt);
+                                ttcap = Sg * CX_DTILE;
+                                Tt = malloc(esz * ttcap);
+                                if (!Tt) {
+                                        ttcap = 0;
+                                        dnb = 0;
+                                }
+                        }
+                        if (dnb) {
+                                st[20] += 1;
+#ifdef CX_FUSED
+                                if (hfl) dense_contract_f(Aocf, cof, Abf, rec, nrec, nao, n, nocc, (float *)Ad, st + 21, Sg, (float *)Tt,
+                                                          roff, 0);
+                                else
+#endif
+                                dense_contract(Aoc, co, Abuf, rec, nrec, nao, n, nocc, Ad, st + 21, Sg, Tt, roff, 0);
+                        }
+                }
+                if (densek && !dnb) {
+                        if (hfl) memset(Aocf, 0, sizeof(float) * NQ * n);
+                        else memset(Aoc, 0, sizeof(double) * NQ * n);
+                }
+                if (nrec && !dnb) {
 #ifdef CX_FUSED
                         if (hfl) multi_contract_const_f(Aocf, cof, Abf, rec, nrec, nao, n, nocc);
                         else
@@ -1105,9 +1162,12 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                 qsort(ord, sl.nkeys, sizeof(int), cmp_int);
                 for (k = 0; k < nla; k++) lidx[la[3 * k]] = k;
                 memset(adone, 0, natm);
-                int pk = 0, kl = 0;
-                while (pk < sl.nkeys || kl < nla) {
-                        int nr = 0;
+                int pk = 0, kl = 0, cc = 0, fin = 0;
+                const int nk = nocc * n;
+                while (!fin) {
+                        int nr = 0, have = 0;
+                        double ta0 = omp_get_wtime(), ta1;
+#define ATICK(slot_) { ta1 = omp_get_wtime(); st[slot_] += ta1 - ta0; ta0 = ta1; }
                         if (pk < sl.nkeys) {
                                 at = ord[pk] / nbas;
                                 while (pk < sl.nkeys && ord[pk] / nbas == at) {
@@ -1127,70 +1187,101 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                                         pk++;
                                 }
                                 adone[at] = 1;
+                                have = 1;
                         } else {
                                 /* the local atoms without a slab */
                                 while (kl < nla && adone[la[3 * kl]]) kl++;
-                                if (kl == nla) break;
-                                at = la[3 * kl++];
-                        }
-                        const int kloc = lidx[at];
-                        for (x = 0; x < 3; x++) {
-                                double *Uy = U + (size_t)x * nocc * n;
-                                if (nr) {
-                                        dgemm_("N", "T", &n, &nocc, &nr, &one, Gb + (size_t)x * nao * n, &n, cg, &nocc, &zero, Uy, &n);
-                                        if (do_h)
-                                                dgemm_("N", "T", &n, &nocc, &nr, &one, GHb + (size_t)x * nao * n, &n, cg, &nocc, &zero,
-                                                       Up + (size_t)x * nocc * n, &n);
-                                        if (do_f1)
-                                                dgemm_("T", "N", &nocc, &nr, &n, &one, weta, &n, Gb + (size_t)x * nao * n, &n, &zero,
-                                                       tv + (size_t)x * nr * nocc, &nocc);
-                                } else {
-                                        memset(Uy, 0, sizeof(double) * nocc * n);
+                                if (kl < nla) {
+                                        at = la[3 * kl++];
+                                        have = 1;
                                 }
                         }
-                        /* (2): 2 sum_g (w eta^d U3^{Y} + w psi^d U3'^{Y}), both orders (before the (f2) part enters U) */
-                        if (do_h && nr) {
-                                const int ny = 3, nk = nocc * n, nd_ = nd;
-                                /* tmp (3 at, nd) = U3^T wetad + U3'^T wpsid over (i, g) */
+                        if (have) {
+                                for (x = 0; x < 3; x++) {
+                                        double *Uy = U + (size_t)(3 * cc + x) * nk, *Upy = Up + (size_t)(3 * cc + x) * nk;
+                                        if (nr) {
+                                                dgemm_("N", "T", &n, &nocc, &nr, &one, Gb + (size_t)x * nao * n, &n, cg, &nocc, &zero, Uy, &n);
+                                                if (do_h)
+                                                        dgemm_("N", "T", &n, &nocc, &nr, &one, GHb + (size_t)x * nao * n, &n, cg, &nocc,
+                                                               &zero, Upy, &n);
+                                        } else {
+                                                memset(Uy, 0, sizeof(double) * nk);
+                                                if (do_h) memset(Upy, 0, sizeof(double) * nk);
+                                        }
+                                }
+                                ATICK(15)
+                                if (do_f1 && nr) {
+                                        /* VT (t3): rows of the atom's slabs */
+                                        for (x = 0; x < 3; x++)
+                                                dgemm_("T", "N", &nocc, &nr, &n, &one, weta, &n, Gb + (size_t)x * nao * n, &n, &zero,
+                                                       tv + (size_t)x * nr * nocc, &nocc);
+                                        omp_set_lock(alock + at);
+                                        for (x = 0; x < 3; x++) {
+                                                double *vt = VT + (((size_t)at * 3 + x) * nao) * nocc;
+                                                int r_, j;
+                                                for (r_ = 0; r_ < nr; r_++) {
+                                                        double *row = vt + (size_t)rows[r_] * nocc;
+                                                        const double *src = tv + ((size_t)x * nr + r_) * nocc;
+                                                        for (j = 0; j < nocc; j++) row[j] += src[j];
+                                                }
+                                        }
+                                        omp_unset_lock(alock + at);
+                                }
+                                ATICK(16)
+                                cat[cc++] = at;
+                        } else {
+                                fin = 1;
+                        }
+                        if (cc < CA && !(fin && cc)) continue;
+                        /* (2): 2 sum_g (w eta^d U3^{Y} + w psi^d U3'^{Y}), both orders (before the (f2) part enters U):
+                         * tmp (3 atoms of the chunk, nd) = U3^T wetad + U3'^T wpsid over (i, g) */
+                        if (do_h) {
+                                const int ny = 3 * cc, nd_ = nd;
+                                int c_;
                                 dgemm_("T", "N", &ny, &nd_, &nk, &two, U, &nk, wetad, &nk, &zero, tmp, &ny);
                                 dgemm_("T", "N", &ny, &nd_, &nk, &two, Up, &nk, wpsid, &nk, &one, tmp, &ny);
                                 for (d = 0; d < nd; d++) {
                                         const int ra = la[3 * (d / 3)], rx = d % 3;
-                                        for (y = 0; y < 3; y++) {
-                                                const double v = tmp[(size_t)d * 3 + y];
-                                                HS(3 * ra + rx, 3 * at + y) += v;
-                                                HS(3 * at + y, 3 * ra + rx) += v;
+                                        for (c_ = 0; c_ < cc; c_++)
+                                                for (y = 0; y < 3; y++) {
+                                                        const double v = tmp[(size_t)d * ny + 3 * c_ + y];
+                                                        HS(3 * ra + rx, 3 * cat[c_] + y) += v;
+                                                        HS(3 * cat[c_] + y, 3 * ra + rx) += v;
+                                                }
+                                }
+                        }
+                        ATICK(17)
+                        if (do_f1) {
+                                int c_;
+                                for (c_ = 0; c_ < cc; c_++) {
+                                        const int ca = cat[c_], kloc = lidx[ca];
+                                        for (x = 0; x < 3; x++) {
+                                                double *Uy = U + (size_t)(3 * c_ + x) * nk;
+                                                if (kloc >= 0) {
+                                                        const double *p2 = P2 + (size_t)(3 * kloc + x) * nk;
+                                                        int q;
+                                                        for (q = 0; q < nk; q++) Uy[q] += p2[q];
+                                                }
+                                                dgemm_("T", "N", &nocc, &nl, &n, &one, Uy, &n, wphi, &n, &zero, tv2 + (size_t)x * nl * nocc,
+                                                       &nocc);
                                         }
+                                        omp_set_lock(alock + ca);
+                                        for (x = 0; x < 3; x++) {
+                                                double *v = V + (((size_t)ca * 3 + x) * nao) * nocc;
+                                                int j;
+                                                for (i = 0; i < nl; i++) {
+                                                        double *row = v + (size_t)ix[i] * nocc;
+                                                        const double *src = tv2 + ((size_t)x * nl + i) * nocc;
+                                                        for (j = 0; j < nocc; j++) row[j] += src[j];
+                                                }
+                                        }
+                                        omp_unset_lock(alock + ca);
                                 }
                         }
-                        if (!do_f1) continue;
-                        for (x = 0; x < 3; x++) {
-                                double *Uy = U + (size_t)x * nocc * n;
-                                if (kloc >= 0) {
-                                        const double *p2 = P2 + (size_t)(3 * kloc + x) * nocc * n;
-                                        size_t q;
-                                        for (q = 0; q < (size_t)nocc * n; q++) Uy[q] += p2[q];
-                                }
-                                dgemm_("T", "N", &nocc, &nl, &n, &one, Uy, &n, wphi, &n, &zero, tv2 + (size_t)x * nl * nocc, &nocc);
-                        }
-                        omp_set_lock(alock + at);
-                        for (x = 0; x < 3; x++) {
-                                double *vt = VT + (((size_t)at * 3 + x) * nao) * nocc;
-                                double *v = V + (((size_t)at * 3 + x) * nao) * nocc;
-                                int r_, j;
-                                for (r_ = 0; r_ < nr; r_++) {
-                                        double *row = vt + (size_t)rows[r_] * nocc;
-                                        const double *src = tv + ((size_t)x * nr + r_) * nocc;
-                                        for (j = 0; j < nocc; j++) row[j] += src[j];
-                                }
-                                for (i = 0; i < nl; i++) {
-                                        double *row = v + (size_t)ix[i] * nocc;
-                                        const double *src = tv2 + ((size_t)x * nl + i) * nocc;
-                                        for (j = 0; j < nocc; j++) row[j] += src[j];
-                                }
-                        }
-                        omp_unset_lock(alock + at);
+                        ATICK(18)
+                        cc = 0;
                 }
+#undef ATICK
                 for (k = 0; k < nla; k++) lidx[la[3 * k]] = -1;
                 TICK(4)
                 /* (1ab): Q_rho = 2 (Y_rho U + C_rho U'), sum_g w d_x d_y phi_rho Q_rho per atom */
@@ -1309,7 +1400,7 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
         free(Ht); free(sl.g); free(sl.gh); free(sl.slot); free(sl.keys); free(sl.koff); free(ord); free(Gb); free(GHb);
         free(cg); free(rows); free(tv); free(lidx); free(pend); free(adone); free(Bd); free(P2); free(a); free(full); free(rmx); free(ix); free(runs); free(cs); free(ys);
         free(F); free(H); free(GFb); free(psi); free(eta); free(weta); free(Ub); free(Upb); free(psid); free(wpsid);
-        free(wetad); free(la); free(U); free(Up); free(fmax); free(A); free(W); free(dA); free(rs);
+        free(wetad); free(la); free(U); free(Up); free(cat); free(Ad); free(Tt); free(roff); free(fmax); free(A); free(W); free(dA); free(rs);
         free(Mm); free(bk); free(R); free(Rwk); free(S); free(X); free(xyz); free(Abuf); free(rec); free(Aoc);
         free(Aoo); free(Aocf); free(cof); free(Psi); free(Out); free(Out2); free(tmp); free(Qm);
         for (at = 0; at < natm; at++) free(farR[at]);
