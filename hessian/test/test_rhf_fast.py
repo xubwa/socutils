@@ -204,6 +204,40 @@ class KnownValues(unittest.TestCase):
         self.assertGreater(mol.nao, 8 * mol.nelectron // 2)
         self._check(mol, 'b3lyp')
 
+    def test_large_system_paths(self):
+        # the paths large molecules take: the SCF without the three-index tensor (md_j RIJ_DIRECT), the CPHF J by
+        # the direct engine and by the semi-direct blocks, the CPHF response in density chunks; against the
+        # default (resident tensor, one chunk) and pyscf's density-fitted J
+        from pyscf import lib
+        from socutils.scf import md_j
+        mol = self.mol
+
+        def hess(direct, semi_min, chunk):
+            with lib.temporary_env(md_j, RIJ_DIRECT=True if direct else 'auto'), \
+                    lib.temporary_env(rhf_fast, RIJ_SEMIDIRECT_MIN=semi_min, CPHF_FX_CHUNK=chunk):
+                mf = dft.RKS(mol, xc='pbe').density_fit(auxbasis='def2-universal-jfit', only_dfj=True)
+                mf.grids.level = 2
+                mf.conv_tol = 1e-12
+                mf = md_j.apply(mf)
+                mf.kernel()
+                return mf, rhf_fast.RKSHessian(mf).kernel()
+        mf0, h0 = hess(False, 10**9, None)
+        mf1, h1 = hess(True, 10**9, None)
+        if rhf_fast._rij_engine(mf1) is None:
+            self.skipTest('no direct RI-J engine')
+        self.assertIsNone(rhf_fast._rij_cderi(mf1))
+        self.assertAlmostEqual(abs(h1 - h0).max(), 0, 7)
+        self.assertAlmostEqual(abs(hess(True, 1, None)[1] - h0).max(), 0, 7)
+        self.assertAlmostEqual(abs(hess(True, 1, 5)[1] - h0).max(), 0, 7)
+        self.assertAlmostEqual(abs(hess(False, 10**9, 4)[1] - h0).max(), 0, 7)
+        # the semi-direct J itself against pyscf's fitted J
+        rng = numpy.random.default_rng(2)
+        dms = rng.standard_normal((3, mol.nao, mol.nao))
+        dms = dms + dms.transpose(0, 2, 1)
+        vj = rhf_fast._rij_semidirect_j(mf1, rhf_fast._rij_engine(mf1).auxmol, dms)
+        ref = dft.RKS(mol).density_fit(auxbasis='def2-universal-jfit').get_j(mol, dms)
+        self.assertAlmostEqual(abs(vj - ref).max(), 0, 8)
+
 
 if __name__ == '__main__':
     unittest.main()

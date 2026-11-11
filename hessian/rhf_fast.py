@@ -1953,8 +1953,70 @@ def _rij_get_j(mf, dm):
     without the three-index tensor (socutils.scf.md_j RIJ_DIRECT: B does not fit), else _df_get_j'''
     eng = _rij_engine(mf)
     if eng is not None and _rij_cderi(mf) is None and getattr(mf.with_df, '_cderi', None) is None:
-        return eng.get_j_multi(dm, max_memory=max(2000, .3 * (mf.max_memory - lib.current_memory()[0])))
+        max_memory = max(2000, .3 * (mf.max_memory - lib.current_memory()[0]))
+        nset = numpy.asarray(dm).reshape(-1, dm.shape[-1], dm.shape[-1]).shape[0]
+        if nset >= RIJ_SEMIDIRECT_MIN:
+            vj = _rij_semidirect_j(mf, eng.auxmol, dm, max_memory)
+            if vj is not None:
+                return vj
+        return eng.get_j_multi(dm, max_memory=max_memory)
     return _df_get_j(mf.with_df, dm)
+
+
+RIJ_SEMIDIRECT_MIN = 32     # densities from which the CPHF J without the three-index tensor is semi-direct: the
+                            # Schwarz-screened (ij|P) built block by block, twice (rho, then J), each block
+                            # contracted with all densities by one GEMM.  Trp-cage def2-SVP (nao 2901, 16 cores):
+                            # 58.6 s + 0.135 s per density against the direct engine's 2.07 s per density;
+                            # trpn_1_10 (nao 1672): 18.3 s + 0.044 against 0.66 s per density
+
+
+def _rij_semidirect_j(mf, auxmol, dm, max_memory=4000):
+    '''J of many densities, J = (ij|P) M^{-1} (P|kl) D_kl, with the screened three-centre integrals of
+    socutils.scf.rik._Int3c computed block by block (i-shell ranges) in two passes and never stored;
+    None if the library or the metric's Cholesky factor is unavailable.  The symmetric part of each D.'''
+    from socutils.scf import rik
+    import scipy.linalg
+    mol = mf.mol
+    if rik._load_socvhf() is None or mol.cart or auxmol.cart:
+        return None
+    cache = getattr(mf, '_rij_cache', None)
+    st = cache.get('int3c') if cache else None
+    if st is None or st[0].mol is not mol:
+        j2c, low = rik._metric_cholesky(auxmol)
+        if low is None:
+            return None
+        st = (rik._Int3c(mol, auxmol, j2c=j2c), low)
+        if cache is not None:
+            cache['int3c'] = st
+    eng, low = st
+    t0 = (logger.process_clock(), logger.perf_counter())
+    dm = numpy.asarray(dm)
+    shape = dm.shape
+    nao = shape[-1]
+    naux = auxmol.nao
+    dms = dm.reshape(-1, nao, nao)
+    nset = dms.shape[0]
+    dmtril = lib.pack_tril(dms + dms.transpose(0, 2, 1))
+    diag = numpy.arange(nao) * (numpy.arange(nao) + 3) // 2      # diagonal of the packed triangle
+    dmtril[:, diag] *= .5
+    # a block of integrals (nrow, naux) and the gathered densities / J columns (nset, nrow)
+    max_cols = max(nao, int(max_memory * 1e6 / 8 / (naux + 2 * nset)))
+    ranges = eng.ish_ranges(max_cols)
+    rho = numpy.zeros((nset, naux))
+    for s0, s1 in ranges:
+        X, cols = eng.rows(s0, s1)
+        if X.shape[0]:
+            lib.dot(numpy.ascontiguousarray(dmtril[:, cols]), X, 1, rho, 1)
+    t0 = logger.timer_debug1(mf, 'semi-direct RI-J: rho of %d densities' % nset, *t0)
+    dfit = numpy.ascontiguousarray(scipy.linalg.cho_solve((low, True), rho.T).T)
+    vj = dmtril
+    vj[:] = 0
+    for s0, s1 in ranges:
+        X, cols = eng.rows(s0, s1)
+        if X.shape[0]:
+            vj[:, cols] = lib.dot(dfit, X.T)
+    logger.timer_debug1(mf, 'semi-direct RI-J: J of %d densities' % nset, *t0)
+    return lib.unpack_tril(vj, 1).reshape(shape)
 
 
 CPHF_FX_CHUNK = None    # densities per call of the CPHF's response (fx): None -> from the memory, so that the
