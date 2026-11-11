@@ -830,10 +830,12 @@ class COSX(lib.StreamObject):
             h = _sum_rule(h)
         return (h, f1) if with_fock1 else h
 
-    def grad(self, dm, tol=None):
+    def grad(self, dm, tol=None, grid_response=False):
         """d/dR of tr(D P K_plain[D]) (fit) or tr(D K_plain[D]) at fixed D (symmetric) on the fixed grid
-        (no grid response), (natm, 3); with the fit the derivatives of S and of S_g in P = S S_g^-1"""
+        (no grid response), (natm, 3); with the fit the derivatives of S and of S_g in P = S S_g^-1.
+        grid_response: the grid moving with the atoms (socutils.grad.grid_response.cosx_response)"""
         self.build()
+        yg = None
         libdft = self._libdft
         mol = self.mol
         from socutils.dft.vxc_fast import _blas_ptrs
@@ -892,6 +894,9 @@ class COSX(lib.StreamObject):
             if err:
                 raise MemoryError('COSX gradient: the grid overlap term')
             g += gy
+        if grid_response:
+            from socutils.grad import grid_response as gresp
+            g += gresp.cosx_response(self, dm, m, yg, tol)
         return de + g
 
 
@@ -1103,7 +1108,7 @@ def grad_grid(mf, accuracy=None):
     return gridx_args(mf.mol, spec), spec, acc
 
 
-def grad_k(mf, dm=None, accuracy=None):
+def grad_k(mf, dm=None, accuracy=None, grid_response=False):
     """the exchange part of the nuclear gradient, (natm, 3), of an SCF run through apply():
     d/dR of -(hyb / 4) tr(D P K_plain[D]) (no grid response), the derivatives of the integrals, of the AOs
     on the grid and of the overlap fit; None if mf did not run COSX.  Exact for the variational SCF
@@ -1132,4 +1137,4 @@ def grad_k(mf, dm=None, accuracy=None):
     if not st.get('variational', False):
         logger.warn(mf, 'COSX gradient of a non-variational SCF (apply(variational=False)): '
                     'the orbital response is not exact')
-    return -.25 * hyb * k.grad(numpy.asarray(dm))
+    return -.25 * hyb * k.grad(numpy.asarray(dm), grid_response=grid_response)
