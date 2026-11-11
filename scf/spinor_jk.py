@@ -54,8 +54,9 @@ FINAL_GRID = 3      # COSX level of the final exchange energy (None: not recompu
 # error on GRIDX2 / GRIDX3 (Eh): x2c-SVPall -1.1e-3 / +3.5e-4, ano-rcc-vdzp +7.8e-4 / -4.8e-4, dyall-v2z +1.3e3
 # (an s primitive of exponent 5.9e7 the grid does not see, S_g singular, the fit explodes); with Au at intacc 8
 # (110 shells, +70 % points on AuH): +2.6e-6 / +5.2e-6, +9.1e-5 / +5.9e-5, +2.1e-6 / +2.9e-6.  HgCl2 x2c-SVPall
-# -1.7e-3 -> -2.0e-4 (the rest angular: -0.6e-4 with Lebedev table 4).  HI (Z = 53) is fine as is (1.9e-5).
-COSX_HEAVY_Z = 54           # atoms beyond this get the radial grid of COSX_HEAVY_INTACC on every COSX level
+# -1.7e-3 -> -2.0e-4 (the rest angular: -0.6e-4 with Lebedev table 4).  Fifth row: HI x2c-SVPall 1.9e-5 as is,
+# but I2 ano-rcc-vdzp -3.7e-4 / +3.6e-4 on GRIDX2 / GRIDX3 -> +5.9e-5 on both (intacc >= 6 converged).
+COSX_HEAVY_Z = 36           # atoms beyond this get the radial grid of COSX_HEAVY_INTACC on every COSX level
 COSX_HEAVY_INTACC = 8.0
 COSX_FIT_RANGE = (.5, 2.)   # fit_quality bounds of a usable grid; else +2 intacc on the atoms beyond Z = 18,
 COSX_GRID_RETRIES = 2       # ... at most this many times, then exact K
