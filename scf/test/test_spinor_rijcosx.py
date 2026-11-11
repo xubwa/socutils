@@ -91,6 +91,16 @@ class KnowValues(unittest.TestCase):
         e2 = numpy.einsum('ij,ji', dm, vk).real
         self.assertAlmostEqual(spinor_jk.exchange_energy(mf, mol_hi, dm, 2), e2, 6)
 
+    def test_heavy_radial_grid(self):
+        # dyall-v2z Au: the plain GRIDX2 radial grid misses the tight s primitives (S_g singular); the
+        # spinor COSX grid (COSX_HEAVY_INTACC on Au) represents the basis
+        m = gto.M(atom='Au 0 0 0; H 0 0 1.524', basis='dyall-v2z', verbose=0)
+        k = cosx.COSX(m, cosx.make_grids(m, **cosx.gridx_args(m, 2))).build()
+        self.assertLess(spinor_jk.fit_quality(k)[0], 1e-6)
+        k = cosx.COSX(m, cosx.make_grids(m, **spinor_jk.grid_args(m, 2))).build()
+        lo, hi = spinor_jk.fit_quality(k)
+        self.assertTrue(spinor_jk.COSX_FIT_RANGE[0] < lo and hi < spinor_jk.COSX_FIT_RANGE[1])
+
     def test_get_jk_ghf_fast_vs_exact(self):
         # Kramers-unrestricted (complex, not time-even) densities, hermi=1 and 0
         mf = spinor_hf.SCF(mol_hi)
