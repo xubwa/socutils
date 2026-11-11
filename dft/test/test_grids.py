@@ -117,6 +117,27 @@ class KnownValues(unittest.TestCase):
         g3.alpha_scale = {'K': .5}
         self.assertEqual(g3.gen_atomic_grids(m2)['K1'][0].shape, t1['K'][0].shape)
 
+    def test_polar_pair_adjust(self):
+        # the electronegativity rule: C-Br keeps Treutler's adjustment (as for all pairs), Li-F and S-O lose it
+        # (as the H-pair rule); the C partition takes the rule's pair table
+        from pyscf.dft import radi
+
+        def weights(m, adj):
+            g = sgrids.Grids(m)
+            return sgrids.get_partition_fast(m, g.gen_atomic_grids(m), adj)[1]
+
+        m = gto.M(atom='C 0 0 0; Br 0 0 1.94; H 1.03 0 -.36; H -.51 .89 -.36; H -.51 -.89 -.36', basis='sto-3g', verbose=0)
+        w = weights(m, sgrids.polar_pair_atomic_radii_adjust)
+        self.assertAlmostEqual(abs(w - weights(m, radi.treutler_atomic_radii_adjust)).max(), 0, 12)
+        self.assertGreater(abs(w - weights(m, sgrids.h_pair_atomic_radii_adjust)).max(), 1e-3)
+        for atom in ('Li 0 0 0; F 0 0 1.57', 'S 0 0 0; O 0 1.24 .72; O 0 -1.24 .72'):
+            m = gto.M(atom=atom, basis='sto-3g', verbose=0)
+            w = weights(m, sgrids.polar_pair_atomic_radii_adjust)
+            self.assertAlmostEqual(abs(w - weights(m, sgrids.h_pair_atomic_radii_adjust)).max(), 0, 12)
+            self.assertGreater(abs(w - weights(m, radi.treutler_atomic_radii_adjust)).max(), 1e-3)
+        f = sgrids.polar_pair_atomic_radii_adjust(m, radi.BRAGG_RADII)
+        self.assertEqual(f(0, 1, .3), .3)
+
     def test_element_intacc(self):
         m = gto.M(atom='Li 0 0 0; F 0 0 1.57', basis='sto-3g', verbose=0)
         g = sgrids.Grids(m)
