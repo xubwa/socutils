@@ -221,24 +221,45 @@ def assemble(sp, blocks):
     return out
 
 
-def make_rdm1(pt, state=0):
+def context(pt):
+    '''The Context of the quasi-canonical orbitals of a finished NEVPT2 (with the core
+    Fock matrix, as the driver builds it).'''
+    from socutils.zmr import fock
+    qc = pt.quasi_canonical
+    na = qc.eris.spaces.nact
+    fcore = fock.generalized_fock(qc.eris, numpy.zeros((na, na), dtype=numpy.complex128))
+    return classes.Context(qc.eris, qc.eps_core, qc.eps_virt, fcore)
+
+
+def make_rdm1(pt, state=0, max_memory=4000, timings=None):
     '''(D_ref, D_pt2) of one model state of a finished single-state PC-NEVPT2, in the
     correlated orbitals of the input integrals (pt.eris0), gamma convention
     D[p, q] = <p^+ q>: for h -> h + lambda O, dE_ref = sum O[p, q] D_ref[p, q] (the
     reference: core occupied, the active 1-RDM of the model state) and
     dE2 = sum O[p, q] D_pt2[p, q] at fixed orbitals and CI vector (unrelaxed).
-    Python reference for the classes with active operators: small systems.'''
-    from socutils.zmr import fock
+    ccvv from the native kernel, cavv and ccav in segments within max_memory (MB), the
+    other classes with their amplitudes in memory.  timings: dict that receives the
+    seconds per class.'''
+    import time
     from socutils.zmr.active import rdm as active_rdm
     qc = pt.quasi_canonical
     sp = qc.eris.spaces
-    na = sp.nact
-    fcore = fock.generalized_fock(qc.eris, numpy.zeros((na, na), dtype=numpy.complex128))
-    ctx = classes.Context(qc.eris, qc.eps_core, qc.eps_virt, fcore)
-    _, dcc, dvv = ccvv(ctx)
-    d2 = assemble(sp, {'cc': dcc, 'vv': dvv})
-    for name in _LABELS:
-        d2 += assemble(sp, class_reference(pt, ctx, name, state)[1])
+    ctx = context(pt)
+    d2 = numpy.zeros((sp.nmo, sp.nmo), dtype=numpy.complex128)
+    for name in ('ccvv',) + tuple(_LABELS):
+        t0 = time.time()
+        if name == 'ccvv':
+            _, dcc, dvv = ccvv(ctx)
+            blocks = {'cc': dcc, 'vv': dvv}
+        elif name == 'cavv':
+            blocks = cavv(pt, ctx, state, max_memory)[1]
+        elif name == 'ccav':
+            blocks = ccav(pt, ctx, state, max_memory)[1]
+        else:
+            blocks = class_reference(pt, ctx, name, state)[1]
+        d2 += assemble(sp, blocks)
+        if timings is not None:
+            timings[name] = time.time() - t0
     # quasi-canonical orbitals phi' = phi u: sum O' D' = sum O D with D = conj(u) D' u^T
     u = numpy.asarray(qc.u)
     d2 = u.conj() @ d2 @ u.T
@@ -247,3 +268,112 @@ def make_rdm1(pt, state=0):
     ref[c, c] = numpy.eye(sp.ncore)
     ref[a, a] = active_rdm.make_rdm(pt.active_space, pt.civecs[:, [state]], pt.nelec, 1)[0, 0]
     return ref, d2
+
+
+# ----------------------------------------------------------------------
+# cavv and ccav for large external spaces: the amplitudes of one segment of an external
+# index at a time, from the three-index integrals (matrix products only)
+
+def _segments(n, per_index, max_memory):
+    '''Ranges of an external index such that six arrays of per_index complex numbers
+    per index fit max_memory (MB).'''
+    step = max(1, min(n, int(max_memory * 1e6 / (6 * 16.0 * max(per_index, 1)))))
+    return [(p, min(p + step, n)) for p in range(0, n, step)]
+
+
+def cavv(pt, ctx, state=0, max_memory=4000):
+    '''(E, D) of cavv as class_reference, for one model state, in segments of the second
+    virtual index b: C[a, i, b, k] for all a, i and the b of a segment, antisymmetric in
+    (a, b),
+
+        V[a, i, b, t] = -((ai|bt) - (bi|at)),   C = (V t^T) / (e_a + e_b - e_i + mu_k - s),
+
+    two matrix products with the three-index integrals per segment (twice those of the
+    energy, which needs a < b only) and the Gram matrices of C over its other indices.'''
+    pclass = classes.CLASS_BY_NAME['cavv']
+    b, mu, t, s = first_order_space(pt, pclass, state)
+    sp = ctx.sp
+    nc, na, nv = sp.ncore, sp.nact, sp.nvirt
+    nk = len(mu)
+    ev, ec = numpy.asarray(ctx.eps_v), numpy.asarray(ctx.eps_c)
+    bvc = numpy.ascontiguousarray(ctx.eris.cd_block('vc'))        # (L, a, i)
+    bva = numpy.ascontiguousarray(ctx.eris.cd_block('va'))        # (L, a, t)
+    naux = bvc.shape[0]
+    left = bvc.reshape(naux, nv * nc)
+    right = bva.reshape(naux, nv * na)
+    tt = numpy.ascontiguousarray(t.T)                              # (t, k)
+    e = 0.0
+    g = numpy.zeros((nk, nk), dtype=numpy.complex128)
+    dcc = numpy.zeros((nc, nc), dtype=numpy.complex128)
+    dvv = numpy.zeros((nv, nv), dtype=numpy.complex128)
+    for b0, b1 in _segments(nv, nv * nc * max(na, nk), max_memory):
+        nb = b1 - b0
+        # m1[a, i, b, t] = (ai|bt), m2[b, i, a, t] = (bi|at)
+        m1 = la.gemm(left, numpy.ascontiguousarray(bva[:, b0:b1]).reshape(naux, nb * na),
+                     'T', 'N').reshape(nv, nc, nb, na)
+        m2 = la.gemm(numpy.ascontiguousarray(bvc[:, b0:b1]).reshape(naux, nb * nc), right,
+                     'T', 'N').reshape(nb, nc, nv, na)
+        v = m2.transpose(2, 1, 0, 3) - m1
+        del m1, m2
+        u = la.gemm(numpy.ascontiguousarray(v).reshape(-1, na), tt).reshape(nv, nc, nb, nk)
+        del v
+        den = (ev[:, None, None, None] - ec[None, :, None, None]
+               + ev[None, None, b0:b1, None] + (mu - s)[None, None, None, :])
+        c = u / den
+        e -= 0.5 * float(numpy.vdot(u, c).real)
+        del u, den
+        flat = c.reshape(-1, nk)
+        g += 0.5 * la.gemm(flat, flat.conj(), 'T', 'N')
+        rows = c.reshape(nv, -1)
+        dvv += la.gemm(rows.conj(), rows, 'N', 'T')
+        rows = numpy.ascontiguousarray(c.transpose(1, 0, 2, 3)).reshape(nc, -1)
+        dcc -= 0.5 * la.gemm(rows.conj(), rows, 'N', 'T')
+        del c, rows, flat
+    return e, {'cc': dcc, 'vv': dvv, 'aa': _active_block(pt, pclass, b, g)}
+
+
+def ccav(pt, ctx, state=0, max_memory=4000):
+    '''(E, D) of ccav as class_reference, for one model state, in segments of the second
+    core index j: C[a, i, j, k], antisymmetric in (i, j),
+
+        V[a, i, j, t] = (ai|tj) - (aj|ti),   C = (V t^T) / (e_a - e_i - e_j + mu_k - s).'''
+    pclass = classes.CLASS_BY_NAME['ccav']
+    b, mu, t, s = first_order_space(pt, pclass, state)
+    sp = ctx.sp
+    nc, na, nv = sp.ncore, sp.nact, sp.nvirt
+    nk = len(mu)
+    ev, ec = numpy.asarray(ctx.eps_v), numpy.asarray(ctx.eps_c)
+    bvc = numpy.ascontiguousarray(ctx.eris.cd_block('vc'))        # (L, a, i)
+    bac = numpy.ascontiguousarray(ctx.eris.cd_block('ac'))        # (L, t, i)
+    naux = bvc.shape[0]
+    left = bvc.reshape(naux, nv * nc)
+    right = bac.reshape(naux, na * nc)
+    tt = numpy.ascontiguousarray(t.T)
+    e = 0.0
+    g = numpy.zeros((nk, nk), dtype=numpy.complex128)
+    dcc = numpy.zeros((nc, nc), dtype=numpy.complex128)
+    dvv = numpy.zeros((nv, nv), dtype=numpy.complex128)
+    for j0, j1 in _segments(nc, nv * nc * max(na, nk), max_memory):
+        nj = j1 - j0
+        # m1[a, i, t, j] = (ai|tj), m2[a, j, t, i] = (aj|ti)
+        m1 = la.gemm(left, numpy.ascontiguousarray(bac[:, :, j0:j1]).reshape(naux, na * nj),
+                     'T', 'N').reshape(nv, nc, na, nj)
+        m2 = la.gemm(numpy.ascontiguousarray(bvc[:, :, j0:j1]).reshape(naux, nv * nj), right,
+                     'T', 'N').reshape(nv, nj, na, nc)
+        v = m1.transpose(0, 1, 3, 2) - m2.transpose(0, 3, 1, 2)          # (a, i, j, t)
+        del m1, m2
+        u = la.gemm(numpy.ascontiguousarray(v).reshape(-1, na), tt).reshape(nv, nc, nj, nk)
+        del v
+        den = (ev[:, None, None, None] - ec[None, :, None, None]
+               - ec[None, None, j0:j1, None] + (mu - s)[None, None, None, :])
+        c = u / den
+        e -= 0.5 * float(numpy.vdot(u, c).real)
+        del u, den
+        flat = c.reshape(-1, nk)
+        g += 0.5 * la.gemm(flat, flat.conj(), 'T', 'N')
+        rows = c.reshape(nv, -1)
+        dvv += 0.5 * la.gemm(rows.conj(), rows, 'N', 'T')
+        rows = numpy.ascontiguousarray(c.transpose(1, 0, 2, 3)).reshape(nc, -1)
+        dcc -= la.gemm(rows.conj(), rows, 'N', 'T')
+        del c, rows, flat
+    return e, {'cc': dcc, 'vv': dvv, 'aa': _active_block(pt, pclass, b, g)}

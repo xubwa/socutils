@@ -139,3 +139,52 @@ def test_active_classes_finite_field(hbr, name):
         fd = (4 * fd[1] - fd[0]) / 3
         analytic = float(numpy.sum(o * d).real)
         assert abs(fd - analytic) < 1e-6 * max(1.0, abs(analytic)) + 1e-9, (lab, fd, analytic)
+
+
+@pytest.mark.parametrize('name', ['cavv', 'ccav'])
+def test_segmented_classes(hbr, name):
+    '''cavv and ccav in segments of an external index (several segments forced)
+    against the reference with all amplitudes in memory.'''
+    from socutils.zmr.uc import density
+    _, pt = hbr
+    ctx = _ctx(pt)
+    e_ref, d_ref = density.class_reference(pt, ctx, name)
+    e, d = getattr(density, name)(pt, ctx, max_memory=0.5)
+    assert abs(e - e_ref) < 1e-11
+    assert set(d) == set(d_ref)
+    for lab in d:
+        assert abs(d[lab] - d_ref[lab]).max() < 1e-11, lab
+
+
+def test_make_rdm1(hbr):
+    '''The total unrelaxed density: Hermitian, traceless second-order part, and the
+    finite-field derivative of the total second-order energy for a perturbation in the
+    input orbitals.'''
+    from socutils.zmr.pc.nevpt2 import PCNEVPT2
+    from socutils.zmr.uc import density
+    mol, pt = hbr
+    ref, d2 = density.make_rdm1(pt, max_memory=1)
+    sp = pt.eris0.spaces
+    assert abs(numpy.trace(ref) - (sp.ncore + pt.nelec)) < 1e-10
+    assert abs(numpy.trace(d2)) < 1e-10
+    assert abs(d2 - d2.conj().T).max() < 1e-11
+    c = pt.eris0.mo_coeff
+    x = mol.intor('int1e_ovlp_spinor') @ c
+    rng = numpy.random.default_rng(5)
+    y = rng.normal(size=(sp.nmo, sp.nmo)) + 1j * rng.normal(size=(sp.nmo, sp.nmo))
+    o = 0.5 * (y + y.conj().T)
+
+    def e2(lam):
+        e = copy.copy(pt.eris0)
+        e.hcore_ao = pt.eris0.hcore_ao + lam * (x @ o @ x.conj().T)
+        e.h1 = c.conj().T @ e.hcore_ao @ c
+        p = PCNEVPT2(e, 2, civecs=pt.civecs)
+        p.verbose = 0
+        p.max_memory = 8000
+        p.kernel()
+        return sum(v[0, 0].real for v in p.h2_by_class.values())
+
+    fd = [(e2(h) - e2(-h)) / (2 * h) for h in (2e-4, 1e-4)]
+    fd = (4 * fd[1] - fd[0]) / 3
+    analytic = float(numpy.sum(o * d2).real)
+    assert abs(fd - analytic) < 1e-6 * max(1.0, abs(analytic)) + 1e-9, (fd, analytic)
