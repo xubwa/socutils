@@ -53,9 +53,11 @@ GRAD_SUBBLOCK = 112     # grid points per sub-block of the fused XC gradient (10
 USE_FUSED_XC = True     # LDA / GGA XC gradient by the fused one-pass kernel (_xc_grad_fused)
 
 
-def xc_grad(ks_grad, mol, dm, max_memory=2000):
+def xc_grad(ks_grad, mol, dm, max_memory=2000, grid_response=False):
     '''XC contribution to the RKS gradient on the fixed grid (pyscf's
-    get_vxc contracted as in grad_elec), (natm, 3); None if not applicable.'''
+    get_vxc contracted as in grad_elec), (natm, 3); None if not applicable.
+    grid_response: the grid moving with the atoms (socutils.grad.grid_response:
+    the point term of the owner atom and the partition-weight derivatives).'''
     mf = ks_grad.base
     ni = mf._numint
     libdft = hess_fast._load_socdft()
@@ -65,11 +67,20 @@ def xc_grad(ks_grad, mol, dm, max_memory=2000):
     if xctype not in ('LDA', 'GGA', 'MGGA'):
         return None
     grids, _ = rks_grad._initialize_grids(ks_grad)
+    if grid_response:
+        from socutils.grad import grid_response as gresp
+        if not gresp.available(grids):
+            return None
     if xctype != 'MGGA' and USE_FUSED_XC and hasattr(libdft, 'SOCDFTxc_grad_fused'):
-        de = _xc_grad_fused(libdft, ni, mol, grids, mf.xc, dm, xctype)
+        de = _xc_grad_fused(libdft, ni, mol, grids, mf.xc, dm, xctype, grid_response)
         if de is not None:
             return de
     make_rho, nset, nao = ni._gen_rho_evaluator(mol, dm, 1, False, grids)
+    if grid_response:
+        ngrid = grids.weights.size
+        pgrid = numpy.zeros((3, ngrid))
+        egrid = numpy.zeros(ngrid)
+        p0 = 0
     D = numpy.ascontiguousarray(dm)
     ao_deriv = 1 if xctype == 'LDA' else 2
     nw = 1 if xctype == 'LDA' else 4
@@ -84,7 +95,9 @@ def xc_grad(ks_grad, mol, dm, max_memory=2000):
             rho = make_rho(0, ao[:4], mask, xctype)
         else:
             rho = make_rho(0, ao[:10], mask, xctype)
-        vxc = ni.eval_xc_eff(mf.xc, rho, 1, xctype=xctype)[1]
+        exc, vxc = ni.eval_xc_eff(mf.xc, rho, 1, xctype=xctype)[:2]
+        if grid_response:
+            egrid[p0:p0 + ng] = exc.ravel() * (rho if rho.ndim == 1 else rho[0])
         wv = numpy.ascontiguousarray(vxc.reshape(-1, ng) * weight)
         if xctype != 'LDA':
             wv[0] *= .5
@@ -108,16 +121,42 @@ def xc_grad(ks_grad, mol, dm, max_memory=2000):
                                  wv.ctypes.data_as(ctypes.c_void_p),
                                  null if T is None else T.ctypes.data_as(ctypes.c_void_p),
                                  ctypes.c_int(itype), ctypes.c_int(ng), ctypes.c_int(nao), ctypes.c_long(cs))
+        if grid_response:
+            # the integrand of SOCDFTrks_xc_grad summed over the AOs point by point
+            pb = pgrid[:, p0:p0 + ng]
+            for x in range(3):
+                pb[x] = numpy.einsum('ig,ig->g', aoT[1 + x], U)
+                if xctype != 'LDA':
+                    pb[x] += numpy.einsum('ig,ig->g', aoT[1 + x], V) * wv[0]
+                    for k in range(3):
+                        pb[x] += numpy.einsum('ig,ig->g', aoT[hess_fast._D2[x][k]], V) * wv[1 + k]
+                if xctype == 'MGGA':
+                    for k in range(3):
+                        pb[x] += numpy.einsum('ig,ig->g', aoT[hess_fast._D2[x][k]], T[k])
+            p0 += ng
     de = numpy.zeros((mol.natm, 3))
     for ia, (p0, p1) in enumerate(mol.aoslice_by_atom()[:, 2:]):
         de[ia] = -2 * out[:, p0:p1].sum(axis=1)
+    if grid_response:
+        de += _xc_grid_response(mol, grids, pgrid, egrid)
     return de
 
 
-def _xc_grad_fused(libdft, ni, mol, grids, xc_code, dm, xctype):
+def _xc_grid_response(mol, grids, pgrid, egrid):
+    '''the grid response of the XC energy from the per-point sums pgrid (3, ngrid) of the fixed-grid
+    integrand (whose AO sums give -de / 2) and the energy density egrid = exc rho'''
+    from socutils.grad import grid_response as gresp
+    return 2 * gresp.owner_sum(grids, pgrid, mol.natm) + gresp.partition_grad(grids, egrid, mol)
+
+
+def _xc_grad_fused(libdft, ni, mol, grids, xc_code, dm, xctype, grid_response=False):
     '''LDA / GGA XC gradient in one pass over the grid (lib/dft/vxc_rks.c
     SOCDFTxc_grad_fused: the AOs to the second derivatives, rho, the functional
-    and the contraction per sub-block in cache); None if not applicable.'''
+    and the contraction per sub-block in cache); None if not applicable.
+    grid_response: SOCDFTxc_grad_fused_gr, the per-point sums and exc rho of the
+    same pass for the grid response.'''
+    if grid_response and not hasattr(libdft, 'SOCDFTxc_grad_fused_gr'):
+        return None
     from pyscf.gto import moleintor
     from socutils.dft import vxc_fast
     if grids.non0tab is None:
@@ -148,18 +187,26 @@ def _xc_grad_fused(libdft, ni, mol, grids, xc_code, dm, xctype):
     ao_loc = mol.ao_loc_nr().astype(numpy.int32)
     D = numpy.ascontiguousarray(dm)
     out = numpy.zeros((nthreads, 3, nao))
-    libdft.SOCDFTxc_grad_fused(
-        out.ctypes.data_as(ctypes.c_void_p), D.ctypes.data_as(ctypes.c_void_p),
-        coords.ctypes.data_as(ctypes.c_void_p), weights.ctypes.data_as(ctypes.c_void_p),
-        non0tab.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(ngrid), ctypes.c_int(GRAD_SUBBLOCK),
-        ctypes.c_double(vxc_fast.AO_CUTOFF), ctypes.c_int(0 if xctype == 'LDA' else 1), feval,
-        ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.natm),
-        bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p),
-        fxc, ctypes.c_int(xc.nfunc), ctypes.cast(xc.xc_arr, ctypes.c_void_p), facs, *vxc_fast._blas_ptrs())
+    args = (out.ctypes.data_as(ctypes.c_void_p), D.ctypes.data_as(ctypes.c_void_p),
+            coords.ctypes.data_as(ctypes.c_void_p), weights.ctypes.data_as(ctypes.c_void_p),
+            non0tab.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(ngrid), ctypes.c_int(GRAD_SUBBLOCK),
+            ctypes.c_double(vxc_fast.AO_CUTOFF), ctypes.c_int(0 if xctype == 'LDA' else 1), feval,
+            ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.natm),
+            bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p),
+            fxc, ctypes.c_int(xc.nfunc), ctypes.cast(xc.xc_arr, ctypes.c_void_p), facs, *vxc_fast._blas_ptrs())
+    if grid_response:
+        pgrid = numpy.empty((3, ngrid))
+        egrid = numpy.empty(ngrid)
+        libdft.SOCDFTxc_grad_fused_gr(*args, pgrid.ctypes.data_as(ctypes.c_void_p),
+                                      egrid.ctypes.data_as(ctypes.c_void_p))
+    else:
+        libdft.SOCDFTxc_grad_fused(*args)
     out = out.sum(axis=0)
     de = numpy.zeros((mol.natm, 3))
     for ia, (p0, p1) in enumerate(mol.aoslice_by_atom()[:, 2:]):
         de[ia] = -2 * out[:, p0:p1].sum(axis=1)
+    if grid_response:
+        de += _xc_grid_response(mol, grids, pgrid, egrid)
     return de
 
 
@@ -183,11 +230,16 @@ def _fast_terms(grad, mol, dm):
     if is_ks:
         ni = mf._numint
         omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, spin=mol.spin)
-        if omega != 0 or mf.do_nlc() or grad.grid_response:
-            if grad.grid_response and getattr(mf, '_cosx', None):
-                logger.warn(grad, 'grid_response: the whole gradient by pyscf, the exchange exact '
-                            '(the COSX K gradient of the SCF is not used)')
+        if omega != 0 or mf.do_nlc():
             return None
+        if grad.grid_response:
+            from socutils.grad import grid_response as gresp
+            grids = grad.grids if grad.grids is not None else mf.grids
+            if grids.coords is None or not gresp.available(grids):
+                logger.warn(grad, 'grid_response: partition %s not supported here, the whole gradient by '
+                            'pyscf (its own Becke weight derivatives; the COSX K gradient of the SCF not used)',
+                            getattr(grids, 'becke_scheme', None))
+                return None
         hybrid = ni.libxc.is_hybrid_xc(mf.xc)
     else:
         hyb, hybrid = 1., True
@@ -228,7 +280,9 @@ def _fast_terms(grad, mol, dm):
     if kf != 0 and getattr(mf, '_cosx', None):
         # K from COSX (socutils.scf.cosx.apply): the gradient of its energy on the SCF's grid
         from socutils.scf import cosx
-        r = cosx.grad_k(mf, dm, accuracy=getattr(grad, 'cosx_grad_accuracy', None))
+        cgr = getattr(grad, 'cosx_grid_response', None)
+        r = cosx.grad_k(mf, dm, accuracy=getattr(grad, 'cosx_grad_accuracy', None),
+                        grid_response=bool(getattr(grad, 'grid_response', False) if cgr is None else cgr))
         if r is not None:
             de += r
             kf = 0.
@@ -256,7 +310,7 @@ def _fast_terms(grad, mol, dm):
         t0 = logger.timer(grad, 'exact 2e gradient (unique quartets)', *t0)
     if is_ks:
         max_memory = max(2000, grad.max_memory * .9 - lib.current_memory()[0])
-        dx = xc_grad(grad, mol, dm, max_memory)
+        dx = xc_grad(grad, mol, dm, max_memory, grid_response=grad.grid_response)
         if dx is None:
             return None
         de += dx
@@ -371,14 +425,15 @@ class _FastGradMixin:
             return super().get_veff(mol, dm)
         if hess_fast._df_mode(mf) is None:
             nao = dm.shape[-1]
-            return lib.tag_array(numpy.zeros((3, nao, nao)), exc1_grid=None)
+            return lib.tag_array(numpy.zeros((3, nao, nao)), exc1_grid=numpy.zeros((mol.natm, 3)))
         if getattr(self, '_rij_fast', False):
             nao = dm.shape[-1]
-            return lib.tag_array(numpy.zeros((3, nao, nao)), exc1_grid=None, aux=numpy.zeros((mol.natm, 3)))
+            return lib.tag_array(numpy.zeros((3, nao, nao)), exc1_grid=numpy.zeros((mol.natm, 3)),
+                                 aux=numpy.zeros((mol.natm, 3)))
         vj = self.get_j(mol, dm)
         if self.auxbasis_response:
-            return lib.tag_array(numpy.asarray(vj), exc1_grid=None, aux=vj.aux.sum((0, 1)))
-        return lib.tag_array(numpy.asarray(vj), exc1_grid=None)
+            return lib.tag_array(numpy.asarray(vj), exc1_grid=numpy.zeros((mol.natm, 3)), aux=vj.aux.sum((0, 1)))
+        return lib.tag_array(numpy.asarray(vj), exc1_grid=numpy.zeros((mol.natm, 3)))
 
     def extra_force(self, atom_id, envs):
         f = super().extra_force(atom_id, envs)

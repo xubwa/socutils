@@ -472,11 +472,40 @@ void SOCDFTvxc_fused(double *vbuf, double *ex, double *ne, double *dm, double *c
  */
 static const int D2C[3][3] = {{4, 5, 6}, {5, 7, 8}, {6, 8, 9}};   /* pyscf's d_x d_k component */
 
+/* pg != NULL (grid response, socutils.grad.grid_response): also pg (3, ngrid) = the per-point sums over
+ * all AOs of the integrand of out (the gradient's point term of the owner atom is +2 sum_{g of A} pg), and
+ * eg (ngrid) = exc rho, the energy density for the derivative of the partition weights */
+static void xc_grad_fused_impl(double *outb, double *dm, double *coords, double *weights,
+                               uint8_t *non0tab, int ngrid, int gs, double cutoff, int xctype, gtoval_t eval,
+                               int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
+                               libxc_t xcf, int nfn, void *xc_arr, double *facs,
+                               dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local, double *pg, double *eg);
+
 void SOCDFTxc_grad_fused(double *outb, double *dm, double *coords, double *weights,
                          uint8_t *non0tab, int ngrid, int gs, double cutoff, int xctype, gtoval_t eval,
                          int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
                          libxc_t xcf, int nfn, void *xc_arr, double *facs,
                          dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local)
+{
+        xc_grad_fused_impl(outb, dm, coords, weights, non0tab, ngrid, gs, cutoff, xctype, eval, ao_loc, atm, natm,
+                           bas, nbas, env, xcf, nfn, xc_arr, facs, dgemm_, mkl_set_num_threads_local, NULL, NULL);
+}
+
+void SOCDFTxc_grad_fused_gr(double *outb, double *dm, double *coords, double *weights,
+                            uint8_t *non0tab, int ngrid, int gs, double cutoff, int xctype, gtoval_t eval,
+                            int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
+                            libxc_t xcf, int nfn, void *xc_arr, double *facs,
+                            dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local, double *pg, double *eg)
+{
+        xc_grad_fused_impl(outb, dm, coords, weights, non0tab, ngrid, gs, cutoff, xctype, eval, ao_loc, atm, natm,
+                           bas, nbas, env, xcf, nfn, xc_arr, facs, dgemm_, mkl_set_num_threads_local, pg, eg);
+}
+
+static void xc_grad_fused_impl(double *outb, double *dm, double *coords, double *weights,
+                               uint8_t *non0tab, int ngrid, int gs, double cutoff, int xctype, gtoval_t eval,
+                               int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
+                               libxc_t xcf, int nfn, void *xc_arr, double *facs,
+                               dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local, double *pg, double *eg)
 {
         const int nao = ao_loc[nbas];
         const int nvar = xctype == 0 ? 1 : 4;           /* rho (, nabla rho) */
@@ -510,6 +539,10 @@ void SOCDFTxc_grad_fused(double *outb, double *dm, double *coords, double *weigh
                 for (k = 0; k < 3; k++) memcpy(xyz + k * n, coords + (size_t)k * ngrid + g0, sizeof(double) * n);
                 const int nl = eval_select(a, ix, src, full, n, xyz, (uint8_t *)msk, ncomp, cutoff, eval,
                                            ao_loc, atm, natm, bas, nbas, env);
+                if (pg) {
+                        for (x = 0; x < 3; x++) memset(pg + (size_t)x * ngrid + g0, 0, sizeof(double) * n);
+                        memset(eg + g0, 0, sizeof(double) * n);
+                }
                 if (nl == 0) continue;
                 for (i = 0; i < nl; i++)
                         for (j = 0; j < nl; j++) d[i * nl + j] = dm[(size_t)ix[i] * nao + ix[j]];
@@ -530,6 +563,8 @@ void SOCDFTxc_grad_fused(double *outb, double *dm, double *coords, double *weigh
                 xcf(nfn, xc_arr, facs, 0, 1, nvar, n, outlen, rho, xo);
                 const double *w = weights + g0;
                 for (g = 0; g < n; g++) wv[g] = w[g] * xo[n + g];
+                if (eg)
+                        for (g = 0; g < n; g++) eg[g0 + g] = xo[g] * rho[g];
                 if (nvar == 4) {
                         for (g = 0; g < n; g++) wv[g] *= .5;
                         for (k = 1; k < 4; k++)
@@ -551,7 +586,28 @@ void SOCDFTxc_grad_fused(double *outb, double *dm, double *coords, double *weigh
                         for (x = 0; x < 3; x++) {
                                 const double *ax = a + ((size_t)(1 + x) * nl + i) * n;
                                 double sm = 0;
-                                if (nvar == 1) {
+                                if (pg) {
+                                        /* the same sums, also point by point */
+                                        double *px = pg + (size_t)x * ngrid + g0;
+                                        if (nvar == 1) {
+                                                for (g = 0; g < n; g++) {
+                                                        const double t = ax[g] * ui[g];
+                                                        sm += t;
+                                                        px[g] += t;
+                                                }
+                                        } else {
+                                                const double *a0 = a + ((size_t)D2C[x][0] * nl + i) * n;
+                                                const double *a1 = a + ((size_t)D2C[x][1] * nl + i) * n;
+                                                const double *a2 = a + ((size_t)D2C[x][2] * nl + i) * n;
+                                                const double *w1 = wv + n, *w2 = wv + 2 * n, *w3 = wv + 3 * n;
+                                                for (g = 0; g < n; g++) {
+                                                        const double t = ax[g] * (ui[g] + wv[g] * vi[g])
+                                                                       + (a0[g] * w1[g] + a1[g] * w2[g] + a2[g] * w3[g]) * vi[g];
+                                                        sm += t;
+                                                        px[g] += t;
+                                                }
+                                        }
+                                } else if (nvar == 1) {
                                         for (g = 0; g < n; g++) sm += ax[g] * ui[g];
                                 } else {
                                         const double *a0 = a + ((size_t)D2C[x][0] * nl + i) * n;
