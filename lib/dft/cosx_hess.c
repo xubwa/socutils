@@ -965,10 +965,10 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                         }
                         if (aoff + (size_t)nab * n > abcap) {
 #ifdef CX_FUSED
-                                if (hfl) multi_contract_const_f(Aocf, cof, Abf, rec, nrec, nao, n, nocc);
+                                if (hfl) { if (cx_sparse2) sparse_contract_f(Aocf, cof, Abf, rec, nrec, nao, n, nocc, 0); else multi_contract_const_f(Aocf, cof, Abf, rec, nrec, nao, n, nocc); }
                                 else
 #endif
-                                multi_contract_const(Aoc, co, Abuf, rec, nrec, nao, n, nocc);
+                                { if (cx_sparse2) sparse_contract(Aoc, co, Abuf, rec, nrec, nao, n, nocc, 0); else multi_contract_const(Aoc, co, Abuf, rec, nrec, nao, n, nocc); }
                                 nrec = 0;
                                 aoff = 0;
                         }
@@ -1045,14 +1045,16 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                 }
                 TICK(1)
                 int dnb = 0;
+                size_t Sgc = 0;
                 if (densek && nrec && !sl.fail) {
                         size_t Sg = 0;
                         int r_;
                         for (r_ = 0; r_ < nrec; r_++) Sg += (size_t)rec[r_].nI * rec[r_].nJ;
+                        Sgc = Sg;
                         const double kept = (double)Sg / ((double)nao * (nao + 1) / 2);
                         st[19] += kept;
                         dnb = kept >= cx_dense_min;
-                        if (dnb && Sg * CX_DTILE > ttcap) {
+                        if ((dnb || cx_sparse2) && Sg * CX_DTILE > ttcap) {
                                 free(Tt);
                                 ttcap = Sg * CX_DTILE;
                                 Tt = malloc(esz * ttcap);
@@ -1069,6 +1071,7 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                                 else
 #endif
                                 dense_contract(Aoc, co, Abuf, rec, nrec, nao, n, nocc, Ad, st + 21, Sg, Tt, roff, 0);
+                                st[22] += 2. * nao * nao * nocc * n;
                         }
                 }
                 if (densek && !dnb) {
@@ -1077,10 +1080,10 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                 }
                 if (nrec && !dnb) {
 #ifdef CX_FUSED
-                        if (hfl) multi_contract_const_f(Aocf, cof, Abf, rec, nrec, nao, n, nocc);
+                        if (hfl) { if (cx_sparse2 && densek && Tt && ttcap >= Sgc * CX_DTILE) sparse_contract_tf(Aocf, cof, Abf, rec, nrec, nao, n, nocc, 0, (float *)Tt, roff, Sgc); else if (cx_sparse2) sparse_contract_f(Aocf, cof, Abf, rec, nrec, nao, n, nocc, 0); else multi_contract_const_f(Aocf, cof, Abf, rec, nrec, nao, n, nocc); }
                         else
 #endif
-                        multi_contract_const(Aoc, co, Abuf, rec, nrec, nao, n, nocc);
+                        { if (cx_sparse2 && densek && Tt && ttcap >= Sgc * CX_DTILE) sparse_contract_t(Aoc, co, Abuf, rec, nrec, nao, n, nocc, 0, Tt, roff, Sgc); else if (cx_sparse2) sparse_contract(Aoc, co, Abuf, rec, nrec, nao, n, nocc, 0); else multi_contract_const(Aoc, co, Abuf, rec, nrec, nao, n, nocc); }
                 }
                 if (hfl) {
                         size_t q;
@@ -1107,8 +1110,11 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                                 Psi[i * ncol + 1] = psi[(size_t)i * n + g];
                                 for (d = 0; d < nd; d++) Psi[i * ncol + 2 + d] = psid[((size_t)d * nocc + i) * n + g];
                         }
+                        const double tA_ = omp_get_wtime();
                         dgemm_("N", "T", &nocc, &nocc, &nao, &one, Ag, &nocc, co, &nocc, &zero, Aoo, &nocc);
                         dgemm_("N", "N", &ncol, &nocc, &nocc, &two, Psi, &ncol, Aoo, &nocc, &zero, Out2, &ncol);
+                        st[31] += omp_get_wtime() - tA_;
+                        st[23] += 2. * nao * nocc * nocc + 2. * ncol * nocc * nocc;
                         for (i = 0; i < nocc; i++) {
                                 Upb[(size_t)i * n + g] = Out2[(size_t)i * ncol];
                                 Ub[(size_t)i * n + g] = Out2[(size_t)i * ncol + 1];
@@ -1121,6 +1127,7 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                         if (do_f1) {
                                 /* Out (nc0, nao) row-major: the columns of each AO contiguous per point */
                                 dgemm_("T", "T", &nao, &nc0, &nocc, &two, Ag, &nocc, Psi + 1, &ncol, &zero, Out, &nao);
+                                st[24] += 2. * nao * nocc * nc0;
                                 memcpy(GFb + (size_t)g * nao, Out, sizeof(double) * nao);        /* GFb (n, nao) */
                                 for (d = 0; d < dc0; d++)            /* Bd (dc, n, nao) */
                                         memcpy(Bd + ((size_t)d * n + g) * nao, Out + (size_t)(1 + d) * nao, sizeof(double) * nao);
@@ -1130,6 +1137,7 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                         /* (1c): 4 sum_g w eta^{d1} Aoo psi^{d2} = 2 (w eta^{d1}) . P2[d2], plus the transpose */
                         const int nk = nocc * n;
                         dgemm_("T", "N", &nd, &nd, &nk, &two, P2, &nk, wetad, &nk, &zero, tmp, &nd);
+                        st[30] += 2. * nd * nd * nk;
                         int d2;
                         for (d = 0; d < nd; d++)
                                 for (d2 = 0; d2 < nd; d2++) {
@@ -1318,6 +1326,7 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                                                 for (d = 0; d < dc; d++)
                                                         Psi[i * dc + d] = psid[((size_t)(d0 + d) * nocc + i) * n + g];
                                         dgemm_("T", "T", &nao, &dc, &nocc, &two, Ag, &nocc, Psi, &dc, &zero, Out, &nao);
+                                        st[24] += 2. * nao * nocc * dc;
                                         for (d = 0; d < dc; d++)
                                                 memcpy(Bd + ((size_t)d * n + g) * nao, Out + (size_t)d * nao, sizeof(double) * nao);
                                 }
