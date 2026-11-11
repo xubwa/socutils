@@ -138,6 +138,7 @@ class KnownValues(unittest.TestCase):
         cls = rhf_fast.RHFHessian if xc == 'hf' else rhf_fast.RKSHessian
         h = cls(mf)
         h.cpscf_grids = None            # the SCF grid in the CP-SCF too, as pyscf
+        h.sum_rule = False              # pyscf's Hessian: no translational sum rule
         h = h.kernel()
         self.assertAlmostEqual(abs(h - ref).max(), 0, 9)
 
@@ -186,6 +187,7 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(abs(vj1 - ref).max(), 0, 11)
         hf_ = rhf_fast.RKSHessian(mf)
         hf_.cpscf_grids = None
+        hf_.sum_rule = False            # as pyscf
         self.assertAlmostEqual(abs(hf_.kernel() - h.kernel()).max(), 0, 9)
 
     def test_cpscf_grids_default(self):

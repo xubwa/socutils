@@ -24,7 +24,7 @@ cases (third-row atoms, a cation, a soft torsion) fail if
 import unittest
 import numpy
 import socutils  # noqa: F401
-from pyscf import gto, dft, lib
+from pyscf import gto, scf, dft, lib
 from pyscf.hessian import thermo
 from socutils.hessian import rhf_fast
 from socutils.grad import rhf_fast as grad_fast
@@ -92,7 +92,8 @@ def _default_scf(name):
 
 class KnownValues(unittest.TestCase):
     def test_sum_rule_auto(self):
-        '''sum_rule 'auto': imposed on socutils grids, pyscf-grid results left equal to pyscf's Hessian'''
+        '''sum_rule 'auto': imposed on every DFT grid (socutils and pyscf), not for Hartree-Fock; False gives
+        pyscf's Hessian'''
         mol = gto.M(atom='O 0 0 0.1173; H 0 0.7572 -0.4692; H 0 -0.7572 -0.4692', basis='def2-svp', verbose=0)
         # socutils grid
         mf = dft.RKS(mol, xc='pbe0')
@@ -109,25 +110,28 @@ class KnownValues(unittest.TestCase):
         self.assertLess(_sum_rule_max(h), 1e-4)
         self.assertAlmostEqual(abs(h - sgrids.translational_sum_rule(raw)).max(), 0, 9)
         self.assertGreater(abs(_freq(mol, h) - _freq(mol, raw)).max(), 5.)
-        # pyscf grid: not imposed, and the result is pyscf's
+        # pyscf grid: imposed too; sum_rule = False is pyscf's Hessian
         mf = dft.RKS(mol, xc='pbe0')
         mf.grids.level = 3
         mf.conv_tol = 1e-11
         mf.kernel()
+        ref = mf.Hessian().kernel()
         hobj = rhf_fast.RKSHessian(mf)
         hobj.cpscf_grids = None
         h = hobj.kernel()
-        self.assertAlmostEqual(abs(h - mf.Hessian().kernel()).max(), 0, 7)
-        self.assertGreater(abs(h - sgrids.translational_sum_rule(h)).max(), 1e-6)    # i.e. it was not applied
-        # with the default CP-SCF grid as well
-        h1 = rhf_fast.RKSHessian(mf).kernel()
+        self.assertLess(_sum_rule_max(h), 1e-6)
+        self.assertAlmostEqual(abs(h - sgrids.translational_sum_rule(ref)).max(), 0, 7)
+        self.assertGreater(abs(h - ref).max(), 1e-6)     # pyscf's own Hessian breaks the invariance
         h2 = rhf_fast.RKSHessian(mf)
+        h2.cpscf_grids = None
         h2.sum_rule = False
-        self.assertAlmostEqual(abs(h1 - h2.kernel()).max(), 0, 10)
-        # the options still force it either way
-        h3 = rhf_fast.RKSHessian(mf)
-        h3.sum_rule = True
-        self.assertAlmostEqual(abs(h3.kernel() - sgrids.translational_sum_rule(h1)).max(), 0, 9)
+        self.assertAlmostEqual(abs(h2.kernel() - ref).max(), 0, 7)
+        # Hartree-Fock: no grid, nothing imposed
+        mf = scf.RHF(mol).run(conv_tol=1e-11)
+        h = rhf_fast.RHFHessian(mf)
+        h3 = rhf_fast.RHFHessian(mf)
+        h3.sum_rule = False
+        self.assertAlmostEqual(abs(h.kernel() - h3.kernel()).max(), 0, 12)
 
     def _check_default(self, name, coarse_fock1=4., final_grid=None, gridx2=None):
         mol, mf, e_ref, f_ref = _default_scf(name)

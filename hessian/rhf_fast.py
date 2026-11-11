@@ -2483,12 +2483,14 @@ class _MultiJKCPHF:
         sum_rule : impose translational invariance on the final Hessian,
             H_AA = -sum_{B!=A} H_AB (socutils.dft.grids.translational_sum_rule);
             pyscf's RKS Hessian has no grid response, and on finite grids its
-            error sits almost entirely in H_AA.  'auto' (default): on when the
-            SCF grid is a socutils.dft.grids.Grids (built for use with the sum
-            rule: without it every O of trpn_1_5 def2-SVP had |sum_B H_AB| =
-            0.136, frequencies 59 cm-1 off ORCA's above 500 cm-1; with it the
-            Hessian is within 5e-4 of ORCA's and the frequencies within 0.8
-            cm-1), off on pyscf grids (results unchanged there).  True / False:
+            error sits almost entirely in H_AA.  'auto' (default): on for every
+            DFT grid, off for Hartree-Fock (no grid, exactly invariant).  Without
+            it: every O of trpn_1_5 def2-SVP on a socutils grid had |sum_B H_AB|
+            = 0.136 (frequencies 59 cm-1 off ORCA's above 500 cm-1; with it the
+            Hessian is within 5e-4 of ORCA's, the frequencies within 0.8 cm-1);
+            on pyscf's level 4 DMSO / def2-TZVP is off by 1.6, caffeine 1.8,
+            Ni(CO)4 3.6, Fe(CO)5 6.5 cm-1, and level 5 still by 0.6 - 1.0 on the
+            3d complexes.  False reproduces pyscf's Hessian on its grids.  True / False:
             always / never.  Needs the Hessian of all atoms.
         cpscf_grids : the grid of the XC response inside the CP-SCF equations
             only; the explicit terms and the right-hand sides keep the SCF grid.
@@ -2509,8 +2511,7 @@ class _MultiJKCPHF:
         de = super().kernel(*args, **kwargs)
         use = self.sum_rule
         if use == 'auto':
-            from socutils.dft import grids as sgrids
-            use = isinstance(getattr(self.base, 'grids', None), sgrids.Grids)
+            use = getattr(self.base, 'grids', None) is not None
         if use:
             natm = self.mol.natm
             if numpy.shape(de)[:2] != (natm, natm):
