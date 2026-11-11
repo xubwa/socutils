@@ -78,8 +78,29 @@ ALPHA_SCALE = {}
 GRAD_ONEPASS = True     # COSX.grad: K_plain[D] of the fit terms from the gradient's own integral pass
 GRAM_BLOCKS = 16        # 56-point grid blocks per GEMM of the grid Gram matrices (S_g, its derivatives): small
                         # enough that a block sees only the AOs near it (_local_ao_blocks)
-GRAD_GRID = {'intacc': 4.338, 'angular_grid': 4}     # the grid of the K gradient (grad_k): a GRIDX level, a dict
-                        # of Grids attributes, or None (the SCF's grid).  On the SCF's GRIDX2 the K gradient is the
+GRAD_GRID = 'auto'      # the grid of the K gradient (grad_k): 'auto' (by the accuracy asked for, GRAD_GRIDS), a
+                        # GRIDX level, a dict of Grids attributes, or None (the SCF's grid)
+GRAD_GRID_DENSE = {'intacc': 4.338, 'angular_grid': 4}  # the dense tier (1.64 x the points of GRIDX3)
+# the tiers of GRAD_GRID 'auto': (nominal error of the exchange part of the gradient, max component, Eh/bohr; grid),
+# cheapest first; grad_k takes the cheapest tier whose nominal error is <= the accuracy asked for
+GRAD_GRIDS = ((3e-4, 2), (1e-5, 3), (1e-6, GRAD_GRID_DENSE))
+# Calibration, 87 molecules of the periodic-table set (PBE0 / def2-SVP, displaced geometries), error of the
+# exchange part of the gradient against the (6.0, 7) grid, median / max over the molecules, Eh/bohr:
+#                 GRIDX2              GRIDX3              dense
+#   Z <= 10  (12) 1.0e-4 / 4.8e-4     0.8e-5 / 3.3e-5     1.2e-6 / 4.9e-6
+#   Z 11-18  (14) 4.8e-5 / 3.2e-4     1.0e-5 / 4.8e-5     1.5e-6 / 1.8e-5
+#   Z 19-36  (27) 2.5e-5 / 1.3e-4     1.6e-5 / 1.2e-4     1.2e-5 / 3.5e-5
+#   Z 37-54  (23) 1.5e-5 / 1.1e-4     1.5e-5 / 1.0e-4     3.8e-6 / 2.1e-5
+#   Z > 54   (11) 1.4e-5 / 8.5e-5     0.9e-5 / 8.1e-5     7.2e-6 / 1.7e-5
+# Beyond Z = 18 GRIDX2 and GRIDX3 carry the same Lebedev table (HEAVY_ANGULAR) and differ by 13 % of the points:
+# GRIDX3 gains nothing there (oxides and fluorides up to 1e-4), so for those molecules the GRIDX3 tier is the
+# dense grid (GRAD_HEAVY_DENSE), as before.
+GRAD_HEAVY_DENSE = True
+GRAD_ACCURACY = 1e-5    # the accuracy of a plain gradient: GRIDX3 (ORCA 6 differentiates on its third grid too)
+GRAD_CONV_FRACTION = .1 # an optimiser's max-force threshold times this is the accuracy asked for
+                        # (set_grad_accuracy(conv=...)), and with auto=True the last gradient's max force times this
+                        # while the forces are large
+                        # On the SCF's GRIDX2 the K gradient is the
                         # largest error of covalent molecules (HF 2.5e-4, H2O 1.1e-4, CH4 1.0e-4 Eh/bohr; median /
                         # max over 28 hydrides 1.3e-5 / 2.5e-4, 10 ionic MX 3.8e-4 / 2.9e-3); GRIDX3: 0.3e-5 /
                         # 2.5e-5 and 1.5e-4 / 6.3e-4; this grid (1.64 x the points of GRIDX3): 0.1e-5 / 0.4e-5
@@ -1037,26 +1058,72 @@ def apply(mf, grids=None, final_grid=3, incremental=True, fit=True, tol=None, va
     return mf
 
 
-def grad_k(mf, dm=None):
+def set_grad_accuracy(mf, accuracy=None, conv=None, auto=None):
+    """the accuracy the K gradient of mf (an SCF run through apply()) is needed at, for GRAD_GRID 'auto':
+    accuracy  the error allowed in the exchange part of the gradient (Eh/bohr; None: GRAD_ACCURACY);
+    conv      an optimiser's max-force convergence threshold: accuracy = GRAD_CONV_FRACTION conv;
+    auto      True: while the forces are large the grid follows them, accuracy = max(the above,
+              GRAD_CONV_FRACTION x the max force of the previous gradient of this mf) - coarse grid far from
+              convergence, the grid of the threshold near it."""
+    st = getattr(mf, '_cosx', None)
+    if st is None:
+        raise RuntimeError('set_grad_accuracy: mf did not go through cosx.apply')
+    if conv is not None:
+        accuracy = GRAD_CONV_FRACTION * conv if accuracy is None else min(accuracy, GRAD_CONV_FRACTION * conv)
+    st['grad_accuracy'] = accuracy
+    if auto is not None:
+        st['grad_auto'] = bool(auto)
+    return mf
+
+
+def grad_grid(mf, accuracy=None):
+    """(Grids arguments, key in mf._cosx['k'], accuracy asked for) of the K-gradient grid of mf; (None, None, None):
+    the SCF's grid"""
+    st = mf._cosx
+    spec = GRAD_GRID
+    acc = None
+    if isinstance(spec, str):       # 'auto'
+        acc = accuracy if accuracy is not None else st.get('grad_accuracy')
+        if acc is None:
+            acc = GRAD_ACCURACY
+        if st.get('grad_auto') and st.get('last_gmax') is not None:
+            acc = max(acc, GRAD_CONV_FRACTION * st['last_gmax'])
+        spec = GRAD_GRIDS[-1][1]
+        for err, sp in GRAD_GRIDS:
+            if err <= acc * (1 + 1e-9):
+                spec = sp
+                break
+        if (GRAD_HEAVY_DENSE and spec == 3 and mf.mol.natm
+                and max(gto.charge(mf.mol.atom_pure_symbol(i)) for i in range(mf.mol.natm)) > HEAVY_Z):
+            spec = GRAD_GRID_DENSE
+    if spec is None:
+        return None, None, acc
+    if isinstance(spec, dict):
+        return dict(spec), 'grad' + repr(sorted(spec.items())), acc
+    return gridx_args(mf.mol, spec), spec, acc
+
+
+def grad_k(mf, dm=None, accuracy=None):
     """the exchange part of the nuclear gradient, (natm, 3), of an SCF run through apply():
-    d/dR of -(hyb / 4) tr(D P K_plain[D]) on the grid GRAD_GRID (no grid response), the
-    derivatives of the integrals, of the AOs on the grid and of the overlap fit; None if mf
-    did not run COSX.  Exact for the variational SCF (apply(variational=True))."""
+    d/dR of -(hyb / 4) tr(D P K_plain[D]) (no grid response), the derivatives of the integrals, of the AOs
+    on the grid and of the overlap fit; None if mf did not run COSX.  Exact for the variational SCF
+    (apply(variational=True)).  The grid: GRAD_GRID; 'auto' (default): the cheapest tier of GRAD_GRIDS for
+    the accuracy asked for (the argument, else set_grad_accuracy, else GRAD_ACCURACY -> GRIDX3)."""
     st = getattr(mf, '_cosx', None)
     if not st or st.get('last') is None:
         return None
     k = st['k'][st['last']['lev']]
-    if GRAD_GRID is not None:
-        # the same energy expression differentiated on a finer grid (the SCF density, its own overlap fit)
-        if isinstance(GRAD_GRID, dict):
-            args, key = dict(GRAD_GRID), 'grad' + repr(sorted(GRAD_GRID.items()))
-        else:
-            args, key = gridx_args(mf.mol, GRAD_GRID), GRAD_GRID
+    args, key, acc = grad_grid(mf, accuracy)
+    if args is not None:
+        # the same energy expression differentiated on its own grid (the SCF density, its own overlap fit)
         if key not in st['k']:
             kg = COSX(mf.mol, make_grids(mf.mol, **args), fit=k.fit, tol=k.tol)
             kg.verbose, kg.stdout = k.verbose, k.stdout
             st['k'][key] = kg.build()
         k = st['k'][key]
+    st['grad_key'] = key
+    logger.info(mf, 'COSX gradient grid: %s, %d points%s', 'the SCF grid' if args is None else key, k._weights.size,
+                '' if acc is None else ' (accuracy asked for %.1e Eh/bohr)' % acc)
     if dm is None:
         dm = mf.make_rdm1()
     hyb = 1.
