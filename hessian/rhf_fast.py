@@ -401,6 +401,9 @@ def _is_h1_occ(h1, mo_coeff, mo_occ):
     return h1.ndim == 4 and h1.shape[-1] == nocc and h1.shape[-2] == mo_coeff.shape[0] != nocc
 
 
+SOLVE_MO1_ARRAYS = 20
+
+
 def _solve_mo1_occ(mf, mo_energy, mo_coeff, mo_occ, h1c, fx, atmlst=None, max_memory=4000,
                    max_cycle=50, level_shift=0):
     '''pyscf.hessian.rhf.solve_mo1 for h1 given as h1 C_occ (natm, 3, nao, nocc)'''
@@ -414,7 +417,10 @@ def _solve_mo1_occ(mf, mo_energy, mo_coeff, mo_occ, h1c, fx, atmlst=None, max_me
     s1a = -mol.intor('int1e_ipovlp', comp=3)
     mem_now = lib.current_memory()[0]
     max_memory = max(2000, max_memory * .9 - mem_now)
-    blksize = max(2, int(max_memory * 1e6 / 8 / (nmo * nocc * 3 * 6)))
+    # per perturbation: the Krylov subspace (trial vectors and their images, ~8 cycles) and the solver's
+    # work arrays, nmo nocc each (SOLVE_MO1_ARRAYS; 6 as pyscf's estimate put all 303 atoms of Trp-cage in
+    # one batch, a subspace of ~140 GB)
+    blksize = max(2, int(max_memory * 1e6 / 8 / (nmo * nocc * 3 * SOLVE_MO1_ARRAYS)))
     mo1s = [None] * mol.natm
     e1s = [None] * mol.natm
     aoslices = mol.aoslice_by_atom()
@@ -2175,20 +2181,25 @@ def _krylov(aop, b, x0=None, tol=1e-10, max_cycle=30, dot=numpy.dot, lindep=None
     innerprod = list(rmat.diagonal().real ** 2)
     if not innerprod or max(innerprod) < lindep or max(innerprod) < tol ** 2:
         return numpy.zeros_like(b) if x0 is None else x0
+    # the trial vectors and their images once each, as the per-cycle blocks (no stacked copies: 3 natm
+    # right-hand sides of nvir nocc each, 69 GB per copy for Trp-cage / def2-SVP)
     xs = []
     ax = []
-    XS = numpy.empty((0, ndim), dtype=x1.dtype)
     max_cycle = min(max_cycle, ndim)
     for cycle in range(max_cycle):
         axt = aop(x1).reshape(-1, ndim)
         xs.append(x1)
         ax.append(axt)
-        XS = numpy.vstack([XS, x1])
         if callable(callback):
-            callback(cycle, list(XS), list(numpy.vstack(ax)))
-        # x1 = axt - sum_i <axt, xs_i> / <xs_i, xs_i> xs_i (classical Gram-Schmidt)
-        w = lib.dot(axt, XS.conj().T) / numpy.asarray(innerprod)[None, :]
-        x1 = axt - lib.dot(w, XS)
+            callback(cycle, list(numpy.vstack(xs)), list(numpy.vstack(ax)))
+        # x1 = axt - sum_i <axt, xs_i> / <xs_i, xs_i> xs_i (classical Gram-Schmidt), block by block
+        x1 = axt.copy()
+        k0 = 0
+        for xb in xs:
+            k1 = k0 + xb.shape[0]
+            w = lib.dot(axt, xb.conj().T) / numpy.asarray(innerprod[k0:k1])[None, :]
+            lib.dot(w, xb, -1, x1, 1)
+            k0 = k1
         axt = None
         x1, rmat = _qr_fast(x1, dot)
         x1 *= rmat.diagonal()[:, None]
@@ -2202,14 +2213,23 @@ def _krylov(aop, b, x0=None, tol=1e-10, max_cycle=30, dot=numpy.dot, lindep=None
         innerprod.extend(innerprod1[mask])
     else:
         raise RuntimeError("Krylov solver failed to converge.")
-    AX = numpy.vstack(ax)
-    h = lib.dot(XS.conj(), AX.T)
+    off = numpy.cumsum([0] + [xb.shape[0] for xb in xs])
+    nx = off[-1]
+    h = numpy.empty((nx, nx), dtype=xs[0].dtype)
+    for i, xb in enumerate(xs):
+        for j, ab in enumerate(ax):
+            h[off[i]:off[i + 1], off[j]:off[j + 1]] = lib.dot(xb.conj(), ab.T)
+    ax = None
     if hermi:
         h = numpy.tril(h) + numpy.tril(h, -1).conj().T
     h[numpy.diag_indices_from(h)] += innerprod
-    g = lib.dot(XS.conj(), numpy.ascontiguousarray(b.reshape(-1, ndim).T))
+    bT = numpy.ascontiguousarray(b.reshape(-1, ndim).T)
+    g = numpy.vstack([lib.dot(xb.conj(), bT) for xb in xs])
+    bT = None
     c = numpy.linalg.solve(h, g)
-    x = lib.dot(c.T, XS)
+    x = numpy.zeros((c.shape[1], ndim), dtype=numpy.result_type(c, xs[0]))
+    for i, xb in enumerate(xs):
+        lib.dot(numpy.ascontiguousarray(c[off[i]:off[i + 1]].T), xb, 1, x, 1)
     if b1d:
         x = x[0]
     if x0 is not None:
