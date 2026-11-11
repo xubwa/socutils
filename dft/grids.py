@@ -71,6 +71,7 @@ import numpy
 from pyscf import lib, gto
 from pyscf.lib import logger
 from pyscf.dft import gen_grid, radi
+from pyscf.data import elements
 from pyscf.dft.LebedevGrid import MakeAngularGrid, LEBEDEV_NGRID
 
 # Five-region Lebedev tables (number of points), regions ordered from the
@@ -158,6 +159,11 @@ def region_prune(chg, rads, angular_grid, alphas=NWCHEM_ALPHAS, radii=radi.BRAGG
     return table[place]
 
 
+def _pure_symbol(symb):
+    '''the element of an atom label ("Fe1", "GHOST-O", "X-C" -> "Fe", "O", "C")'''
+    return elements._std_symbol_without_ghost(symb)
+
+
 def h_pair_atomic_radii_adjust(mol, atomic_radii):
     '''The Treutler-Ahlrichs size adjustment of the Becke cells for atom pairs with a hydrogen only, plain
     Becke cells for all other pairs (a radii_adjust function as pyscf.dft.radi's).
@@ -194,6 +200,18 @@ class Grids(gen_grid.Grids):
             Region boundaries in units of the Bragg radius; default 1.15 x
             the NWChem values (2.5% fewer points than the NWChem boundaries
             at equal measured Hessian / energy accuracy).
+        alpha_scale : dict {symbol: factor}
+            Element-specific factor on the region boundaries (default empty:
+            1 for every element).  The boundaries scale with the Bragg
+            radius, which for the alkali / alkaline-earth metals and Sc is
+            so large that the coarse inner tables cover the semicore shell
+            and the bonding region: 0.5 gives the K gradient of the unpruned
+            table for 5 - 16 % more points (RbF on table 3: 6.3e-4 -> 6.6e-5
+            Eh/bohr, KF 3.4e-4 -> 4.4e-5).  It hurts Ga, Ge, As, In (GaCl3
+            4.9e-5 -> 2.5e-4), so it is not a global scale of ``alphas``.
+        element_intacc : dict {symbol: intacc}
+            Element-specific accuracy parameter of the radial grid (default
+            empty: ``intacc`` for every element).
         weight_cutoff : float
             Drop points with |w| below this value after partitioning.
         element_radi : dict {symbol: radial function}
@@ -219,6 +237,8 @@ class Grids(gen_grid.Grids):
     angular_grid = 4
     h_reduced = True
     alphas = NWCHEM_ALPHAS * 1.15
+    alpha_scale = {}
+    element_intacc = {}
     weight_cutoff = 1e-14
     xi = {}
     xi_scale = 1.
@@ -231,11 +251,12 @@ class Grids(gen_grid.Grids):
     radii_adjust = staticmethod(h_pair_atomic_radii_adjust)
 
     _keys = {'intacc', 'radial_b', 'angular_grid', 'h_reduced', 'alphas', 'weight_cutoff', 'xi', 'xi_scale',
-             'element_radi', 'alpha', 'radial_b_heavy', 'heavy_radi_method'}
+             'element_radi', 'alpha', 'radial_b_heavy', 'heavy_radi_method', 'alpha_scale', 'element_intacc'}
 
     def __setattr__(self, key, val):
         if key in ('intacc', 'radial_b', 'angular_grid', 'h_reduced', 'alphas', 'weight_cutoff',
-                   'xi', 'xi_scale', 'element_radi', 'alpha', 'radial_b_heavy', 'heavy_radi_method'):
+                   'xi', 'xi_scale', 'element_radi', 'alpha', 'radial_b_heavy', 'heavy_radi_method',
+                   'alpha_scale', 'element_intacc'):
             self.reset()
         super().__setattr__(key, val)
 
@@ -263,7 +284,8 @@ class Grids(gen_grid.Grids):
             table[table.argmax()] = n_ang
             return n_rad, table
         b = self.radial_b if chg <= 10 else self.radial_b_heavy
-        return krack_koster_nrad(chg, self.intacc, b), ag
+        intacc = self.element_intacc.get(_pure_symbol(symb), self.intacc)
+        return krack_koster_nrad(chg, intacc, b), ag
 
     def gen_atomic_grids(self, mol, atom_grid=None, radi_method=None, level=None, prune=None, **kwargs):
         if radi_method is None:
@@ -293,7 +315,8 @@ class Grids(gen_grid.Grids):
                 n_ang = max(ANGULAR_TABLES[ag]) if isinstance(ag, (int, numpy.integer)) else max(ag)
                 angs = numpy.full(n_rad, n_ang)
             else:
-                angs = region_prune(chg, rad, ag, self.alphas)
+                scale = self.alpha_scale.get(_pure_symbol(symb), 1.)
+                angs = region_prune(chg, rad, ag, self.alphas if scale == 1. else numpy.asarray(self.alphas) * scale)
             logger.debug(mol, 'atom %s rad-grids = %d, ang-grids = %s', symb, n_rad, angs)
             coords = []
             vol = []

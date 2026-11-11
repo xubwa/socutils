@@ -58,6 +58,15 @@ HEAVY_ANGULAR = 3       # every GRIDX level (gridx_args): the tables below 3 lea
 
 
 COSX_RADII_ADJUST = radi.treutler_atomic_radii_adjust   # the size adjustment of the COSX grids' Becke cells (make_grids)
+# the pruning boundaries of the COSX grids by element (dft.grids.Grids.alpha_scale): halved for the alkali and
+# alkaline-earth metals and Sc, whose Bragg radii put the coarse inner Lebedev tables over the semicore shell and
+# the bonding region.  K gradient at a fixed density, 1e-5 Eh/bohr, pruned -> halved, on (4.338, table 3): LiF 7.7
+# -> 5.4, KF 34 -> 4.4, RbF 63 -> 6.6, BeF2 11 -> 6.2, MgF2 18 -> 5.4, CaF2 39 -> 17, SrF2 62 -> 19, ScF3 16 -> 10
+# (CaO 2.6 -> 5.1, SrO 1.7 -> 4.0, NaCl 9.8 -> 9.2, the hydrides unchanged); on the SCF grid (4.02, table 2) LiF 285
+# -> 18, BeF2 38 -> 12, MgF2 51 -> 21, NaCl 33 -> 22; on the K gradient grid (4.338, table 4) LiF 3.9 -> 1.2, RbF 9.1
+# -> 3.4, KF 5.1 -> 3.9, MgF2 3.8 -> 3.1.  5 - 16 % more points on these atoms.  Not for Ga, Ge, As, In, Sn, Ti
+# (halved, table 3: GaCl3 4.9 -> 25, GeH4 1.6 -> 6.3, AsF3 3.5 -> 18, InCl3 9.9 -> 13, TiCl4 7.2 -> 13).
+ALPHA_SCALE = {s: .5 for s in ('Li', 'Na', 'K', 'Rb', 'Cs', 'Be', 'Mg', 'Ca', 'Sr', 'Ba', 'Sc')}
 GRAD_GRID = {'intacc': 4.338, 'angular_grid': 4}     # the grid of the K gradient (grad_k): a GRIDX level, a dict
                         # of Grids attributes, or None (the SCF's grid).  On the SCF's GRIDX2 the K gradient is the
                         # largest error of covalent molecules (HF 2.5e-4, H2O 1.1e-4, CH4 1.0e-4 Eh/bohr; median /
@@ -133,6 +142,7 @@ def make_grids(mol, **kwargs):
     # the cells of the COSX grids as before (Treutler adjustment for all pairs): the hydrogen-only
     # adjustment of the XC grids has not been measured on the COSX grids yet
     g.radii_adjust = COSX_RADII_ADJUST
+    g.alpha_scale = ALPHA_SCALE
     for k, v in dict(GRID, **kwargs).items():
         setattr(g, k, v)
     g.build(with_non0tab=True)
