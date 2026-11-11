@@ -141,10 +141,20 @@ class KnownValues(unittest.TestCase):
     def test_element_intacc(self):
         m = gto.M(atom='Li 0 0 0; F 0 0 1.57', basis='sto-3g', verbose=0)
         g = sgrids.Grids(m)
-        self.assertEqual(g._atom_setting(3, 'Li')[0], sgrids.krack_koster_nrad(3, g.intacc, g.radial_b))
-        g.element_intacc = {'Li': 5.0}
+        # default: Li, Be, Na, Mg on intacc 5.0, where that exceeds the grid's intacc
+        self.assertEqual(g.element_intacc, {'Li': 5.0, 'Be': 5.0, 'Na': 5.0, 'Mg': 5.0})
         self.assertEqual(g._atom_setting(3, 'Li')[0], sgrids.krack_koster_nrad(3, 5.0, g.radial_b))
         self.assertEqual(g._atom_setting(9, 'F')[0], sgrids.krack_koster_nrad(9, g.intacc, g.radial_b))
+        g.intacc = 6.0
+        self.assertEqual(g._atom_setting(3, 'Li')[0], sgrids.krack_koster_nrad(3, 6.0, g.radial_b))
+        g.intacc = 4.388
+        g.element_intacc = {}
+        self.assertEqual(g._atom_setting(3, 'Li')[0], sgrids.krack_koster_nrad(3, g.intacc, g.radial_b))
+        g.element_intacc = {'F': 5.5}
+        self.assertEqual(g._atom_setting(9, 'F')[0], sgrids.krack_koster_nrad(9, 5.5, g.radial_b))
+        # the COSX grids do not take the rule
+        from socutils.scf import cosx
+        self.assertEqual(cosx.make_grids(m).element_intacc, {})
 
     def test_sum_rule(self):
         h = numpy.random.RandomState(1).rand(3, 3, 3, 3)

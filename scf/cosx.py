@@ -143,6 +143,7 @@ def make_grids(mol, **kwargs):
     # adjustment of the XC grids has not been measured on the COSX grids yet
     g.radii_adjust = COSX_RADII_ADJUST
     g.alpha_scale = ALPHA_SCALE
+    g.element_intacc = {}       # the XC grids' radial rule for Li, Be, Na, Mg is not for the COSX grids
     for k, v in dict(GRID, **kwargs).items():
         setattr(g, k, v)
     g.build(with_non0tab=True)
