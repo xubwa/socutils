@@ -75,6 +75,7 @@ COSX_RADII_ADJUST = None        # the size adjustment of the COSX grids' Becke c
 # 3.4 / 15.9 -> 3.3 / 15.8) for its 5 - 16 % of points: off by default, ALPHA_SCALE = ALPHA_SCALE_SBLOCK turns it on.
 ALPHA_SCALE_SBLOCK = {s: .5 for s in ('Li', 'Na', 'K', 'Rb', 'Cs', 'Be', 'Mg', 'Ca', 'Sr', 'Ba', 'Sc')}
 ALPHA_SCALE = {}
+GRAD_ONEPASS = True     # COSX.grad: K_plain[D] of the fit terms from the gradient's own integral pass
 GRAM_BLOCKS = 16        # 56-point grid blocks per GEMM of the grid Gram matrices (S_g, its derivatives): small
                         # enough that a block sees only the AOs near it (_local_ao_blocks)
 GRAD_GRID = {'intacc': 4.338, 'angular_grid': 4}     # the grid of the K gradient (grad_k): a GRIDX level, a dict
@@ -257,16 +258,45 @@ class COSX(lib.StreamObject):
             yield g0, g1, idx, numpy.ascontiguousarray(ao[..., idx])
         assert nao == ao_loc[-1]
 
+    def _gram(self, kind):
+        '''the grid Gram matrices by the C kernel (SOCDFTcosx_gram, the local AOs of each block): kind 0 S_g
+        (nao, nao), 1 sum_g w d_x phi phi (3, nao, nao), 2 the second-derivative ones (15, nao, nao); None
+        without the kernel'''
+        libdft = self._libdft if self._libdft is not None else _lib()
+        if libdft is None or not hasattr(libdft, 'SOCDFTcosx_gram'):
+            return None
+        from socutils.dft.vxc_fast import _blas_ptrs
+        mol = self.mol
+        nao = mol.nao
+        atm, bas, env, ao_loc = self._env
+        out = numpy.empty(((1, 3, 15)[kind], nao, nao))
+        # points per GEMM: the block's AO buffers are (1, 4, 10) nao blk per thread
+        blk = 56 * (GRAM_BLOCKS if kind < 2 else max(1, GRAM_BLOCKS // 4))
+        err = libdft.SOCDFTcosx_gram(
+            out.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(kind), self._coords.ctypes.data_as(ctypes.c_void_p),
+            self._weights.ctypes.data_as(ctypes.c_void_p), self._non0.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_int(self._weights.size), ctypes.c_int(blk), ao_loc.ctypes.data_as(ctypes.c_void_p),
+            atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.natm), bas.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p), *_blas_ptrs())
+        if err:
+            raise MemoryError('COSX grid Gram matrices')
+        return out
+
     def _overlap_fit(self):
         '''S S_g^-1, S_g the overlap on the grid'''
         mol = self.mol
-        sg = numpy.zeros((mol.nao, mol.nao))
-        w = self.grids.weights
-        for g0, g1, idx, ao in self._local_ao_blocks(0):
-            if idx is None:
-                lib.dot(ao.T * w[g0:g1], ao, beta=1, c=sg)
-            else:
-                sg[idx[:, None], idx] += lib.dot(ao.T * w[g0:g1], ao)
+        sg = self._gram(0)
+        if sg is not None:
+            sg = lib.hermi_sum(sg[0], inplace=True)
+            sg *= .5
+        else:
+            sg = numpy.zeros((mol.nao, mol.nao))
+            w = self.grids.weights
+            for g0, g1, idx, ao in self._local_ao_blocks(0):
+                if idx is None:
+                    lib.dot(ao.T * w[g0:g1], ao, beta=1, c=sg)
+                else:
+                    sg[idx[:, None], idx] += lib.dot(ao.T * w[g0:g1], ao)
         s = mol.intor_symmetric('int1e_ovlp')
         self._sg = sg
         return numpy.linalg.solve(sg.T, s.T).T          # s sg^-1 (sg symmetric)
@@ -466,15 +496,17 @@ class COSX(lib.StreamObject):
         """sum_g w d_x phi_mu phi_nu on the grid (3, nao, nao), cached per geometry"""
         if getattr(self, '_ipsg_key', None) != self._key:
             mol = self.mol
-            out = numpy.zeros((3, mol.nao, mol.nao))
-            w = self.grids.weights
-            for g0, g1, idx, ao in self._local_ao_blocks(1):
-                wao = ao[0] * w[g0:g1, None]
-                for x in range(3):
-                    if idx is None:
-                        lib.dot(ao[1 + x].T, wao, beta=1, c=out[x])
-                    else:
-                        out[x][idx[:, None], idx] += lib.dot(ao[1 + x].T, wao)
+            out = self._gram(1)
+            if out is None:
+                out = numpy.zeros((3, mol.nao, mol.nao))
+                w = self.grids.weights
+                for g0, g1, idx, ao in self._local_ao_blocks(1):
+                    wao = ao[0] * w[g0:g1, None]
+                    for x in range(3):
+                        if idx is None:
+                            lib.dot(ao[1 + x].T, wao, beta=1, c=out[x])
+                        else:
+                            out[x][idx[:, None], idx] += lib.dot(ao[1 + x].T, wao)
             self._ipsg_v = out
             self._ipsg_key = self._key
         return self._ipsg_v
@@ -564,20 +596,24 @@ class COSX(lib.StreamObject):
             mol = self.mol
             ni = numint.NumInt()
             nao = mol.nao
-            gaa = numpy.zeros((6, nao, nao))
-            gab = numpy.zeros((3, 3, nao, nao))
-            coords, w = self.grids.coords, self.grids.weights
-            blk = 56 * 16
-            for g0 in range(0, w.size, blk):
-                g1 = min(w.size, g0 + blk)
-                ao = eval_ao(ni, mol, coords[g0:g1], 2, non0tab=self.grids.non0tab[g0 // 56:])
-                wao = ao[0] * w[g0:g1, None]
-                for c in range(6):
-                    lib.dot(ao[4 + c].T, wao, beta=1, c=gaa[c])
-                for x in range(3):
-                    wx = ao[1 + x] * w[g0:g1, None]
-                    for y in range(3):
-                        lib.dot(wx.T, ao[1 + y], beta=1, c=gab[x, y])
+            out = self._gram(2)
+            if out is not None:
+                gaa, gab = out[:6], out[6:].reshape(3, 3, nao, nao)
+            else:
+                gaa = numpy.zeros((6, nao, nao))
+                gab = numpy.zeros((3, 3, nao, nao))
+                coords, w = self.grids.coords, self.grids.weights
+                blk = 56 * 16
+                for g0 in range(0, w.size, blk):
+                    g1 = min(w.size, g0 + blk)
+                    ao = eval_ao(ni, mol, coords[g0:g1], 2, non0tab=self.grids.non0tab[g0 // 56:])
+                    wao = ao[0] * w[g0:g1, None]
+                    for c in range(6):
+                        lib.dot(ao[4 + c].T, wao, beta=1, c=gaa[c])
+                    for x in range(3):
+                        wx = ao[1 + x] * w[g0:g1, None]
+                        for y in range(3):
+                            lib.dot(wx.T, ao[1 + y], beta=1, c=gab[x, y])
             self._sg2_v = (gaa, gab)
             self._sg2_key = self._key
         return self._sg2_v
@@ -785,15 +821,36 @@ class COSX(lib.StreamObject):
                                            bas.ctypes.data_as(ctypes.c_void_p), env.ctypes.data_as(ctypes.c_void_p)):
             raise MemoryError('COSX gradient tables')
         dm = numpy.ascontiguousarray(dm, dtype=numpy.double)
+        nao = dm.shape[-1]
         de = numpy.zeros((mol.natm, 3))
-        yg = None
-        if self._proj is not None:
+        fit = self._proj is not None
+        # one integral pass: the derivative of sum_g w H^T A F and, with the fit, K_plain[D] from its A F
+        # (GRAD_ONEPASS False: K_plain[D] by a K build of its own, as the SCF's)
+        kp = None
+        if fit:
             P = self._proj
-            m = numpy.ascontiguousarray(P.T @ dm)
-            kp = self._plain_k(dm)
-            z = dm @ kp.T
+            m = numpy.ascontiguousarray(lib.dot(P.T, dm))
+            if GRAD_ONEPASS:
+                kp = numpy.empty((nao, nao))
+        else:
+            m = dm
+        g = numpy.zeros((mol.natm, 3))
+        libdft.SOCDFTcosx_grad(
+            g.ctypes.data_as(ctypes.c_void_p), dm.ctypes.data_as(ctypes.c_void_p), m.ctypes.data_as(ctypes.c_void_p),
+            lib.c_null_ptr(),
+            ctypes.c_void_p(self._opt), self._coords.ctypes.data_as(ctypes.c_void_p),
+            self._weights.ctypes.data_as(ctypes.c_void_p), self._non0.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_int(self._weights.size), ctypes.c_int(self.blk), ctypes.c_double(self.ao_cutoff),
+            ctypes.c_double(self.tol if tol is None else tol), ctypes.c_double(self.tcut),
+            ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.natm),
+            bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p),
+            *_blas_ptrs(), lib.c_null_ptr() if kp is None else kp.ctypes.data_as(ctypes.c_void_p))
+        if fit:
+            if kp is None:
+                kp = self._plain_k(dm)
+            z = lib.dot(dm, kp.T)
             y1 = numpy.linalg.solve(self._sg, z.T).T                    # Z S_g^-1
-            y2 = P.T @ y1
+            y2 = lib.dot(P.T, y1)
             # the overlap: dS_mu nu / dR_X = -<d mu|nu> (mu on X) - <mu|d nu> (nu on X)
             ip = mol.intor('int1e_ipovlp', comp=3)
             y1s = y1 + y1.T
@@ -801,20 +858,19 @@ class COSX(lib.StreamObject):
             for ia in range(mol.natm):
                 p0, p1 = aoslices[ia, 2:]
                 de[ia] -= numpy.einsum('xij,ij->x', ip[:, p0:p1], y1s[p0:p1])
+            # the grid overlap: d/dR of sum Yg S_g, an AO-only pass
             yg = numpy.ascontiguousarray(-(y2 + y2.T))
-        else:
-            m = dm
-        g = numpy.zeros((mol.natm, 3))
-        libdft.SOCDFTcosx_grad(
-            g.ctypes.data_as(ctypes.c_void_p), dm.ctypes.data_as(ctypes.c_void_p), m.ctypes.data_as(ctypes.c_void_p),
-            lib.c_null_ptr() if yg is None else yg.ctypes.data_as(ctypes.c_void_p),
-            ctypes.c_void_p(self._opt), self._coords.ctypes.data_as(ctypes.c_void_p),
-            self._weights.ctypes.data_as(ctypes.c_void_p), self._non0.ctypes.data_as(ctypes.c_void_p),
-            ctypes.c_int(self._weights.size), ctypes.c_int(self.blk), ctypes.c_double(self.ao_cutoff),
-            ctypes.c_double(self.tol if tol is None else tol), ctypes.c_double(self.tcut),
-            ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.natm),
-            bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p),
-            *_blas_ptrs())
+            gy = numpy.zeros((mol.natm, 3))
+            err = libdft.SOCDFTcosx_grad_gram(
+                gy.ctypes.data_as(ctypes.c_void_p), yg.ctypes.data_as(ctypes.c_void_p),
+                self._coords.ctypes.data_as(ctypes.c_void_p), self._weights.ctypes.data_as(ctypes.c_void_p),
+                self._non0.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(self._weights.size), ctypes.c_int(self.blk),
+                ctypes.c_double(self.ao_cutoff), ao_loc.ctypes.data_as(ctypes.c_void_p),
+                atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.natm), bas.ctypes.data_as(ctypes.c_void_p),
+                ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p), *_blas_ptrs())
+            if err:
+                raise MemoryError('COSX gradient: the grid overlap term')
+            g += gy
         return de + g
 
 
