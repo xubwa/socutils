@@ -129,9 +129,11 @@ HESS_FLOAT = False      # the Hessian passes' A C contraction (Fock1 / K second 
 PROFILE = {}            # wall seconds of get_k's phases (accumulated)
 MULTI_MAXSET = 512      # densities per pass (every pass computes the integrals again)
 MULTI_MEM_FLOOR = .3    # fraction of max_memory a pass of the multi-density K may always use
-DENSE_MIN = .2          # a grid block contracts densely when its kept pairs are >= this fraction of nao^2/2
-                        # (else record-wise; crossover measured ~0.19: Trp-cage SVP kept 0.14 record-wise 427 s
-                        # vs dense 508 s, trpn_1_5 SVP kept 0.24 dense 31.8 vs 35.7 s; same results)
+DENSE_MIN = .4          # a grid block contracts densely when its kept pairs are >= this fraction of nao^2/2,
+                        # else record-wise (the register-blocked sparse_contract on 16-point tiles); same results.
+                        # Crossover ~0.42-0.47 (24 threads, float / double): trpn_1_5 def2-SVP kept 0.42 sparse 15.0 /
+                        # 29.5 s vs dense 14.9 / 27.5 s, C16H34 def2-TZVP kept 0.47 6.4 / 12.8 vs 5.5 / 10.2 s, the
+                        # Hessian's A C 28.7 vs 28.3 s (trpn_1_5); with the old record-wise loops it was ~0.2
 PRIM_TOL = 1e-14
 PAIR_TOL = 1e-13
 
@@ -723,6 +725,8 @@ class COSX(lib.StreamObject):
             v = numpy.empty((mol.natm, 3, nao, n8))
             vt = numpy.empty((mol.natm, 3, nao, n8))
         ptr = lambda x: lib.c_null_ptr() if x is None else x.ctypes.data_as(ctypes.c_void_p)  # noqa: E731
+        if hasattr(libdft, 'SOCDFTcosx_set_dense_min'):
+            libdft.SOCDFTcosx_set_dense_min(ctypes.c_double(DENSE_MIN))
         if not dense:
             libdft.SOCDFTcosx_set_dense(0)
         try:
