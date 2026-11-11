@@ -184,6 +184,50 @@ def h_pair_atomic_radii_adjust(mol, atomic_radii):
     return fadjust
 
 
+# Pauling electronegativities, H - Rn (None: no value)
+PAULING_EN = dict(zip(
+    'H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr '
+    'Rb Sr Y Zr Nb Mo Tc Ru Rh Pd Ag Cd In Sn Sb Te I Xe Cs Ba La Ce Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb Lu '
+    'Hf Ta W Re Os Ir Pt Au Hg Tl Pb Bi Po At Rn'.split(),
+    (2.20, None, 0.98, 1.57, 2.04, 2.55, 3.04, 3.44, 3.98, None, 0.93, 1.31, 1.61, 1.90, 2.19, 2.58, 3.16, None,
+     0.82, 1.00, 1.36, 1.54, 1.63, 1.66, 1.55, 1.83, 1.88, 1.91, 1.90, 1.65, 1.81, 2.01, 2.18, 2.55, 2.96, 3.00,
+     0.82, 0.95, 1.22, 1.33, 1.6, 2.16, 1.9, 2.2, 2.28, 2.20, 1.93, 1.69, 1.78, 1.96, 2.05, 2.1, 2.66, 2.6,
+     0.79, 0.89, 1.10, 1.12, 1.13, 1.14, 1.13, 1.17, 1.2, 1.2, 1.1, 1.22, 1.23, 1.24, 1.25, 1.1, 1.27,
+     1.3, 1.5, 2.36, 1.9, 2.2, 2.20, 2.28, 2.54, 2.00, 1.62, 2.33, 2.02, 2.0, 2.2, 2.2)))
+
+
+def polar_pair_atomic_radii_adjust(mol, atomic_radii):
+    '''The Treutler-Ahlrichs size adjustment of the Becke cells for the pairs with a hydrogen atom and for the
+    pairs whose larger atom (Bragg radius) is at least as electronegative (Pauling) as the smaller one; plain
+    Becke cells where the larger atom is the electropositive one (a radii_adjust function as pyscf.dft.radi's).
+
+    h_pair_atomic_radii_adjust drops the adjustment for every pair of heavy atoms, which is right for Li-F,
+    Si-F, S-O, M-Cl (the larger neutral atom is the cation there) but not for C-Br, C-I, where the larger atom
+    does hold the larger share: fixed-grid XC gradient on the default grid, 1e-5 Eh/bohr, all pairs / pairs
+    with H / this rule: CH3Br 2.2 / 10.6 / 2.2, CH3I 0.7 / 3.7 / 0.7; identical to the H-pair rule on the 62
+    other molecules of the s / p / 3d validation set (LiF 49 / 3.8 / 3.8, SiF4 56 / 9.9 / 9.9).  Elements
+    without an electronegativity are treated as by the H-pair rule.'''
+    f0 = radi.treutler_atomic_radii_adjust(mol, atomic_radii)
+    sym = [_pure_symbol(mol.atom_symbol(i)) for i in range(mol.natm)]
+    chg = [gto.charge(s) for s in sym]
+    en = [PAULING_EN.get(s) for s in sym]
+    natm = mol.natm
+    keep = numpy.zeros((natm, natm), dtype=bool)
+    for i in range(natm):
+        for j in range(natm):
+            if chg[i] == 1 or chg[j] == 1:
+                keep[i, j] = True
+            elif en[i] is not None and en[j] is not None:
+                big, small = (i, j) if atomic_radii[chg[i]] >= atomic_radii[chg[j]] else (j, i)
+                keep[i, j] = en[big] >= en[small]
+
+    def fadjust(i, j, g):
+        if keep[i, j]:
+            return f0(i, j, g)
+        return g
+    return fadjust
+
+
 class Grids(gen_grid.Grids):
     '''Compact DFT grid (see module docstring).
 
@@ -403,7 +447,7 @@ def get_partition_fast(mol, atom_grids_tab, radii_adjust=None, atomic_radii=radi
     from socutils.hessian.rhf_fast import _load_socdft
     libdft = _load_socdft()
     adjust_ok = radii_adjust in (None, radi.treutler_atomic_radii_adjust, radi.becke_atomic_radii_adjust,
-                                 h_pair_atomic_radii_adjust)
+                                 h_pair_atomic_radii_adjust, polar_pair_atomic_radii_adjust)
     if becke_scheme is gen_grid.original_becke and (
             PARTITION == 'ssf' or (PARTITION == 'auto' and mol.natm >= SSF_MIN_ATOMS)):
         becke_scheme = gen_grid.stratmann
