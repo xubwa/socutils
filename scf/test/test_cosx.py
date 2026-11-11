@@ -190,6 +190,30 @@ class KnownValues(unittest.TestCase):
         self.assertTrue(mf.converged)
         self.assertAlmostEqual(e, e0, 4)
 
+    def test_grid_kept_after_gradient(self):
+        '''a gradient / Hessian leaves an atom index in mol._env (with_rinv_at_nucleus): the COSX objects must
+        not take that for another molecule and rebuild on the default grid (the final GRIDX3 energy of a
+        second kernel() was a GRIDX2 one), and another geometry keeps the object's grid level'''
+        mol = gto.M(atom=WATER2, basis='def2-svp', verbose=0)
+        mf = cosx.apply(dft.RKS(mol, xc='pbe0').density_fit(auxbasis='def2-universal-jfit', only_dfj=True))
+        mf.conv_tol = 1e-10
+        e = mf.kernel()
+        npts = {lev: k.grids.weights.size for lev, k in mf._cosx['k'].items()}
+        self.assertGreater(npts[3], npts[2])
+        with mol.with_rinv_at_nucleus(mol.natm - 1):
+            pass
+        self.assertAlmostEqual(mf.kernel(), e, 8)
+        self.assertEqual({lev: k.grids.weights.size for lev, k in mf._cosx['k'].items()}, npts)
+        # another geometry: the same level
+        k = mf._cosx['k'][3]
+        c = mol.atom_coords()
+        c[0, 0] += .05
+        k.mol = mol.set_geom_(c, unit='Bohr', inplace=False)
+        k.build()
+        ref = cosx.make_grids(k.mol, **cosx.GRIDX[3])
+        self.assertEqual(k.grids.weights.size, ref.weights.size)
+        self.assertAlmostEqual(abs(k.grids.coords - ref.coords).max(), 0, 12)
+
 
 if __name__ == '__main__':
     unittest.main()
