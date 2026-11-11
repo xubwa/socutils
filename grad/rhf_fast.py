@@ -26,7 +26,12 @@ Drop-in classes (same results as pyscf's):
                                             # with only_dfj=True)
 
 fitted K (RI-JK, density_fit() without only_dfj): socutils.grad.rik_grad.
-Range-separated functionals, NLC and grid response keep pyscf's code.
+grid_response = True: the grids move with the atoms (socutils.grad.grid_response:
+the point term of the owner atom and the Becke / SSF partition-weight derivatives)
+for the XC part and, through cosx.grad_k, the COSX exchange (grad.cosx_grid_response
+overrides it for COSX alone); the gradient is then the exact derivative of the
+discretised energy and translationally invariant.  Default False.
+Range-separated functionals and NLC keep pyscf's code.
 '''
 
 import ctypes
