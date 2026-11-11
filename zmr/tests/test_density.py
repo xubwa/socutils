@@ -37,8 +37,12 @@ def hbr():
 
 def _ctx(pt):
     from socutils.zmr.uc import classes
+    from socutils.zmr import fock
     qc = pt.quasi_canonical
-    return classes.Context(qc.eris, qc.eps_core, qc.eps_virt, None)
+    na = qc.eris.spaces.nact
+    # the core Fock matrix, as the NEVPT2 driver builds it
+    fcore = fock.generalized_fock(qc.eris, numpy.zeros((na, na), dtype=complex))
+    return classes.Context(qc.eris, qc.eps_core, qc.eps_virt, fcore)
 
 
 def test_ccvv_kernels_and_kramers(hbr):
@@ -93,17 +97,20 @@ def test_ccvv_finite_field(hbr):
         assert abs(fd - analytic) < 1e-7 * max(1.0, abs(analytic)) + 1e-10, label
 
 
-@pytest.mark.parametrize('name', ['cavv', 'ccav'])
+@pytest.mark.parametrize('name', ['ccav', 'cavv', 'ccaa', 'aavv', 'cava', 'caaa', 'aaav'])
 def test_active_classes_finite_field(hbr, name):
-    '''cavv and ccav (Python reference): energy against NEVPT2, and the core-core,
-    active-active and virtual-virtual blocks of the density against finite fields.'''
+    '''The classes with active operators (Python reference): energy against NEVPT2,
+    and the density against finite fields, block by block and for a Hermitian
+    perturbation over all orbitals.'''
     from socutils.zmr.pc.nevpt2 import PCNEVPT2
     from socutils.zmr.uc import density
     mol, pt = hbr
     qc = pt.quasi_canonical
     sp = qc.eris.spaces
-    e, dcc, daa, dvv = getattr(density, name + '_reference')(pt, _ctx(pt))
+    e, blocks = density.class_reference(pt, _ctx(pt), name)
     assert abs(e - pt.h2_by_class[name][0, 0].real) < 1e-10
+    d = density.assemble(sp, blocks)
+    assert abs(d - d.conj().T).max() < 1e-12
     c = qc.eris.mo_coeff
     x = mol.intor('int1e_ovlp_spinor') @ c
     rng = numpy.random.default_rng(11)
@@ -118,13 +125,17 @@ def test_active_classes_finite_field(hbr, name):
         p.kernel()
         return p.h2_by_class[name][0, 0].real
 
-    for label, d in (('c', dcc), ('a', daa), ('v', dvv)):
-        sl = sp.slice(label)
-        n = sl.stop - sl.start
-        y = rng.normal(size=(n, n)) + 1j * rng.normal(size=(n, n))
-        o = numpy.zeros((sp.nmo, sp.nmo), dtype=complex)
-        o[sl, sl] = 0.5 * (y + y.conj().T)
+    y = rng.normal(size=(sp.nmo, sp.nmo)) + 1j * rng.normal(size=(sp.nmo, sp.nmo))
+    full = 0.5 * (y + y.conj().T)
+    cases = [('all', full)]
+    for lab in ('cc', 'aa', 'vv', 'vc', 'ac', 'va'):
+        o = numpy.zeros_like(full)
+        p_, q_ = sp.slice(lab[0]), sp.slice(lab[1])
+        o[p_, q_] = full[p_, q_]
+        o[q_, p_] = full[q_, p_]
+        cases.append((lab, o))
+    for lab, o in cases:
         fd = [(energy(o, h) - energy(o, -h)) / (2 * h) for h in (2e-4, 1e-4)]
         fd = (4 * fd[1] - fd[0]) / 3
-        analytic = float(numpy.sum(o[sl, sl] * d).real)
-        assert abs(fd - analytic) < 1e-6 * max(1.0, abs(analytic)) + 1e-9, (label, fd, analytic)
+        analytic = float(numpy.sum(o * d).real)
+        assert abs(fd - analytic) < 1e-6 * max(1.0, abs(analytic)) + 1e-9, (lab, fd, analytic)

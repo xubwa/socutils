@@ -122,46 +122,92 @@ def _active_block(pt, pclass, b, g):
     return d - numpy.trace(g) * gamma
 
 
-def cavv_reference(pt, ctx, state=0):
-    '''(E, D_cc, D_aa, D_vv) of cavv for one model state, gamma convention
-    (dE = sum O[p, q] D[p, q] for Hermitian O): amplitudes
-    c[i, ab, k] = sum_t v[i ab, t] t[k, t] / (mu_k + delta - s).'''
-    pclass = [p for p in pt.perturber_classes() if p.name == 'cavv'][0]
+# external labels of the classes: (core indices, virtual indices), the layout of the
+# labels within a block of PerturberClass.blocks, and the Fock elements in v:
+# (block of the density, sign, number of leading operators X they multiply)
+_LABELS = {'ccav': (2, 1), 'cavv': (1, 2), 'ccaa': (2, 0), 'aavv': (0, 2),
+           'cava': (1, 1), 'caaa': (1, 0), 'aaav': (0, 1)}
+
+
+def _amplitudes(pt, ctx, pclass, state):
+    '''(E, C, b, t): the amplitudes c[e, k] = u[e, k] / (mu_k + delta_e - s) of a class
+    as C[i, j, a, b, k], antisymmetric in the core and in the virtual indices (axes of
+    length 1 for the indices the class does not have), the basis b of the first-order
+    space and the projected functions t[k, X].'''
     b, mu, t, s = first_order_space(pt, pclass, state)
     nc, nv = ctx.sp.ncore, ctx.sp.nvirt
-    aa, bb = numpy.triu_indices(nv, 1)
+    ncore, nvirt = _LABELS[pclass.name]
     nk = len(mu)
-    c = numpy.zeros((nc, nv, nv, nk), dtype=numpy.complex128)
-    e = 0.0
-    for i, (delta, v) in enumerate(pclass.blocks(ctx)):
-        u = v @ t.T                                           # (ab, k)
-        ci = u / (delta[:, None] + mu[None, :] - s)
-        e -= float(numpy.vdot(u, ci).real)
-        c[i, aa, bb] = ci
-        c[i, bb, aa] = -ci
-    g = 0.5 * numpy.einsum('iabk,iabl->kl', c, c.conj())
-    dcc = -0.5 * numpy.einsum('iabk,jabk->ij', c.conj(), c)
-    dvv = numpy.einsum('iabk,idbk->ad', c.conj(), c)
-    return e, dcc, _active_block(pt, pclass, b, g), dvv
-
-
-def ccav_reference(pt, ctx, state=0):
-    '''(E, D_cc, D_aa, D_vv) of ccav for one model state:
-    c[ij, a, k] = sum_t v[ij a, t] t[k, t] / (mu_k + delta - s).'''
-    pclass = [p for p in pt.perturber_classes() if p.name == 'ccav'][0]
-    b, mu, t, s = first_order_space(pt, pclass, state)
-    nc, nv = ctx.sp.ncore, ctx.sp.nvirt
+    shape = [nc if ncore > 0 else 1, nc if ncore > 1 else 1,
+             nv if nvirt > 0 else 1, nv if nvirt > 1 else 1, nk]
+    c = numpy.zeros(shape, dtype=numpy.complex128)
     ii, jj = numpy.triu_indices(nc, 1)
-    nk = len(mu)
-    c = numpy.zeros((nc, nc, nv, nk), dtype=numpy.complex128)
+    aa, bb = numpy.triu_indices(nv, 1)
     e = 0.0
-    for (i, j), (delta, v) in zip(zip(ii, jj), pclass.blocks(ctx)):
-        u = v @ t.T                                           # (a, k)
-        cij = u / (delta[:, None] + mu[None, :] - s)
-        e -= float(numpy.vdot(u, cij).real)
-        c[i, j] = cij
-        c[j, i] = -cij
-    g = 0.5 * numpy.einsum('ijak,ijal->kl', c, c.conj())
-    dcc = -numpy.einsum('ijak,ljak->il', c.conj(), c)
-    dvv = 0.5 * numpy.einsum('ijak,ijdk->ad', c.conj(), c)
-    return e, dcc, _active_block(pt, pclass, b, g), dvv
+    for n, (delta, v) in enumerate(pclass.blocks(ctx)):
+        u = v @ t.T
+        x = u / (delta[:, None] + mu[None, :] - s)
+        e -= float(numpy.vdot(u, x).real)
+        name = pclass.name
+        if name == 'ccav':                       # block: pair (i < j), labels a
+            c[ii[n], jj[n], :, 0] = x
+            c[jj[n], ii[n], :, 0] = -x
+        elif name == 'cavv':                     # block: i, labels a < b
+            c[n, 0, aa, bb] = x
+            c[n, 0, bb, aa] = -x
+        elif name == 'ccaa':                     # one block, labels i < j
+            c[ii, jj, 0, 0] = x
+            c[jj, ii, 0, 0] = -x
+        elif name == 'aavv':                     # one block, labels a < b
+            c[0, 0, aa, bb] = x
+            c[0, 0, bb, aa] = -x
+        elif name == 'cava':                     # block: i, labels a
+            c[n, 0, :, 0] = x
+        elif name == 'caaa':                     # one block, labels i
+            c[:, 0, 0, 0] = x
+        elif name == 'aaav':                     # one block, labels a
+            c[0, 0, :, 0] = x
+    return e, c, b, t
+
+
+def class_reference(pt, ctx, name, state=0):
+    '''(E, D) of one class with active operators for one model state: D the blocks
+    {'cc', 'aa', 'vv', 'vc', 'ac', 'va'} of the unrelaxed density that the class has,
+    dE = sum_pq O[p, q] D[p, q] for h -> h + lambda O with Hermitian O (the block 'vc'
+    is D[a, i]; D[i, a] is its conjugate, likewise 'ac' and 'va').  Python reference:
+    all amplitudes of the class in memory.
+
+    The energy depends on h through the denominators (core-core and virtual-virtual
+    blocks of the Fock matrix), through H_act in the first-order space and the
+    zeroth-order energy of the model state (active block), and through the Fock
+    elements in the perturbation (cava: f_ai, caaa: f_ti, aaav: f_at).'''
+    pclass = [p for p in pt.perturber_classes() if p.name == name][0]
+    e, c, b, t = _amplitudes(pt, ctx, pclass, state)
+    ncore, nvirt = _LABELS[name]
+    fc = 0.5 if ncore == 2 else 1.0
+    fv = 0.5 if nvirt == 2 else 1.0
+    na = ctx.sp.nact
+    d = {'aa': _active_block(pt, pclass, b, fc * fv * numpy.einsum('ijabk,ijabl->kl', c, c.conj()))}
+    if ncore:
+        d['cc'] = -fv * numpy.einsum('ijabk,ljabk->il', c.conj(), c)
+    if nvirt:
+        d['vv'] = fc * numpy.einsum('ijabk,ijdbk->ad', c.conj(), c)
+    if name == 'cava':                           # v[(i, a), 0] = f_ai
+        d['vc'] = -numpy.einsum('iak,k->ai', c[:, 0, :, 0].conj(), t[:, 0])
+    elif name == 'caaa':                         # v[i, t] = -f_ti
+        d['ac'] = numpy.einsum('ik,kt->ti', c[:, 0, 0, 0].conj(), t[:, :na])
+    elif name == 'aaav':                         # v[a, t] = f_at
+        d['va'] = -numpy.einsum('ak,kt->at', c[0, 0, :, 0].conj(), t[:, :na])
+    return e, d
+
+
+def assemble(sp, blocks):
+    '''The (nmo, nmo) density from blocks {'cc': ..., 'vc': ..., ...} (the off-diagonal
+    blocks with their conjugates).'''
+    out = numpy.zeros((sp.nmo, sp.nmo), dtype=numpy.complex128)
+    for lab, x in blocks.items():
+        p, q = sp.slice(lab[0]), sp.slice(lab[1])
+        out[p, q] += x
+        if lab[0] != lab[1]:
+            out[q, p] += x.conj().T
+    return out
