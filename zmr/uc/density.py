@@ -211,3 +211,31 @@ def assemble(sp, blocks):
         if lab[0] != lab[1]:
             out[q, p] += x.conj().T
     return out
+
+
+def make_rdm1(pt, state=0):
+    '''(D_ref, D_pt2) of one model state of a finished single-state PC-NEVPT2, in the
+    correlated orbitals of the input integrals (pt.eris0), gamma convention
+    D[p, q] = <p^+ q>: for h -> h + lambda O, dE_ref = sum O[p, q] D_ref[p, q] (the
+    reference: core occupied, the active 1-RDM of the model state) and
+    dE2 = sum O[p, q] D_pt2[p, q] at fixed orbitals and CI vector (unrelaxed).
+    Python reference for the classes with active operators: small systems.'''
+    from socutils.zmr import fock
+    from socutils.zmr.active import rdm as active_rdm
+    qc = pt.quasi_canonical
+    sp = qc.eris.spaces
+    na = sp.nact
+    fcore = fock.generalized_fock(qc.eris, numpy.zeros((na, na), dtype=numpy.complex128))
+    ctx = classes.Context(qc.eris, qc.eps_core, qc.eps_virt, fcore)
+    _, dcc, dvv = ccvv(ctx)
+    d2 = assemble(sp, {'cc': dcc, 'vv': dvv})
+    for name in _LABELS:
+        d2 += assemble(sp, class_reference(pt, ctx, name, state)[1])
+    # quasi-canonical orbitals phi' = phi u: sum O' D' = sum O D with D = conj(u) D' u^T
+    u = numpy.asarray(qc.u)
+    d2 = u.conj() @ d2 @ u.T
+    ref = numpy.zeros((sp.nmo, sp.nmo), dtype=numpy.complex128)
+    c, a = sp.slice('c'), sp.slice('a')
+    ref[c, c] = numpy.eye(sp.ncore)
+    ref[a, a] = active_rdm.make_rdm(pt.active_space, pt.civecs[:, [state]], pt.nelec, 1)[0, 0]
+    return ref, d2
