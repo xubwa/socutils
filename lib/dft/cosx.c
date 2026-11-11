@@ -2206,7 +2206,21 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
         double *rmx = malloc(sizeof(double) * nao);
         int *ix = malloc(sizeof(int) * nao);
         int *runs = malloc(sizeof(int) * (2 * (nbas + 1) + nao));
+        /* the rows ix of D and of M, gathered once per block (F, H and Q), and the K rows of the block */
         double *dr = malloc(sizeof(double) * (size_t)nao * nao);
+        double *dr2 = malloc(sizeof(double) * (size_t)nao * nao);
+        double *kr = kout ? malloc(sizeof(double) * (size_t)nao * nao) : NULL;
+        /* the Hermite index raised by one in x, y, z (the point derivative of R_t is R_{t + 1x}) */
+        const int nhl = NH(opt->lmax);
+        int *sh = malloc(sizeof(int) * 3 * nhl);
+        {
+                int t_;
+                for (t_ = 0; t_ < nhl; t_++) {
+                        sh[t_] = h_idx[h_t[t_] + 1][h_u[t_]][h_v[t_]];
+                        sh[nhl + t_] = h_idx[h_t[t_]][h_u[t_] + 1][h_v[t_]];
+                        sh[2 * nhl + t_] = h_idx[h_t[t_]][h_u[t_]][h_v[t_] + 1];
+                }
+        }
         double *F = malloc(sizeof(double) * (size_t)nao * blk);
         double *H = malloc(sizeof(double) * (size_t)nao * blk);
         double *GF = malloc(sizeof(double) * (size_t)nao * blk);
@@ -2245,8 +2259,12 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
                 /* F = D[ix, :]^T phi, H = M[ix, :]^T phi (nao, n) */
                 for (i = 0; i < nl; i++) memcpy(dr + (size_t)i * nao, dm + (size_t)ix[i] * nao, sizeof(double) * nao);
                 dgemm_("N", "T", &n, &nao, &nl, &one, a, &n, dr, &nao, &zero, F, &n);
-                for (i = 0; i < nl; i++) memcpy(dr + (size_t)i * nao, dmm + (size_t)ix[i] * nao, sizeof(double) * nao);
-                dgemm_("N", "T", &n, &nao, &nl, &one, a, &n, dr, &nao, &zero, H, &n);
+                if (dmm == dm) {
+                        memcpy(H, F, sizeof(double) * nao * n);
+                } else {
+                        for (i = 0; i < nl; i++) memcpy(dr2 + (size_t)i * nao, dmm + (size_t)ix[i] * nao, sizeof(double) * nao);
+                        dgemm_("N", "T", &n, &nao, &nl, &one, a, &n, dr2, &nao, &zero, H, &n);
+                }
                 for (i = 0; i < nbas; i++) fm[i] = ws[i] = 0;
                 {
                         int mu;
@@ -2378,14 +2396,15 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
                                         /* Mm (nab, nh1) = W R^T */
                                         w_dot_r(Mm, W, farR[at], nab, nh1, n, dgemm_);
                                         int ab, t;
-                                        for (ab = 0; ab < nab; ab++)
+                                        for (ab = 0; ab < nab; ab++) {
+                                                const double *er = Mo + (size_t)ab * nh, *mr = Mm + (size_t)ab * nh1;
                                                 for (t = 0; t < nh; t++) {
-                                                        const double e = Mo[(size_t)ab * nh + t];
-                                                        const int tx = h_t[t], ty = h_u[t], tz = h_v[t];
-                                                        gC[0] -= e * Mm[(size_t)ab * nh1 + h_idx[tx + 1][ty][tz]];
-                                                        gC[1] -= e * Mm[(size_t)ab * nh1 + h_idx[tx][ty + 1][tz]];
-                                                        gC[2] -= e * Mm[(size_t)ab * nh1 + h_idx[tx][ty][tz + 1]];
+                                                        const double e = er[t];
+                                                        gC[0] -= e * mr[sh[t]];
+                                                        gC[1] -= e * mr[sh[nhl + t]];
+                                                        gC[2] -= e * mr[sh[2 * nhl + t]];
                                                 }
+                                        }
                                 }
                         }
                         for (k = k0; k < pp->np; k++) {
@@ -2425,21 +2444,23 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
                                 st[12] += 2. * nab * nh1 * n;           /* flops of W.R; of E R: */
                                 st[13] += 2. * nab * nh * n;
                                 int ab, t;
-                                for (ab = 0; ab < nab; ab++)
+                                for (ab = 0; ab < nab; ab++) {
+                                        const double *er = E + (size_t)ab * nh, *mr = Mm + (size_t)ab * nh1;
                                         for (t = 0; t < nh; t++) {
-                                                const double e = E[(size_t)ab * nh + t];
-                                                const int tx = h_t[t], ty = h_u[t], tz = h_v[t];
-                                                gC[0] -= e * Mm[(size_t)ab * nh1 + h_idx[tx + 1][ty][tz]];
-                                                gC[1] -= e * Mm[(size_t)ab * nh1 + h_idx[tx][ty + 1][tz]];
-                                                gC[2] -= e * Mm[(size_t)ab * nh1 + h_idx[tx][ty][tz + 1]];
+                                                const double e = er[t];
+                                                gC[0] -= e * mr[sh[t]];
+                                                gC[1] -= e * mr[sh[nhl + t]];
+                                                gC[2] -= e * mr[sh[2 * nhl + t]];
                                         }
+                                }
                                 if (!pp->onec) {
                                         const double *Ed = opt->eddata + opt->edo[ip] + szd * k;
                                         for (x = 0; x < 3; x++) {
                                                 const double *e = Ed + (size_t)x * nab * nh1;
                                                 double s = 0;
-                                                size_t q;
-                                                for (q = 0; q < (size_t)nab * nh1; q++) s += e[q] * Mm[q];
+                                                int q;
+#pragma omp simd reduction(+:s)
+                                                for (q = 0; q < nab * nh1; q++) s += e[q] * Mm[q];
                                                 gA[x] += s;
                                         }
                                 }
@@ -2491,19 +2512,17 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
                         /* K[ix_i][nu] += sum_g w phi_i G^F_nu */
                         for (i = 0; i < nl; i++)
                                 for (g = 0; g < n; g++) wa[(size_t)i * n + g] = w[g] * a[(size_t)i * n + g];
-                        dgemm_("T", "N", &nao, &nl, &n, &one, GF, &n, wa, &n, &zero, dr, &nao);
+                        dgemm_("T", "N", &nao, &nl, &n, &one, GF, &n, wa, &n, &zero, kr, &nao);
                         for (i = 0; i < nl; i++) {
                                 double *row = Kt + (size_t)ix[i] * nao;
-                                const double *src = dr + (size_t)i * nao;
+                                const double *src = kr + (size_t)i * nao;
                                 int q;
                                 for (q = 0; q < nao; q++) row[q] += src[q];
                         }
                 }
                 GTICK(6)
                 /* (i): Q (nl, n) = M[ix, :] G^F + D[ix, :] G^H (+ Yg[ix, ix] phi) */
-                for (i = 0; i < nl; i++) memcpy(dr + (size_t)i * nao, dmm + (size_t)ix[i] * nao, sizeof(double) * nao);
-                dgemm_("N", "N", &n, &nl, &nao, &one, GF, &n, dr, &nao, &zero, Q, &n);
-                for (i = 0; i < nl; i++) memcpy(dr + (size_t)i * nao, dm + (size_t)ix[i] * nao, sizeof(double) * nao);
+                dgemm_("N", "N", &n, &nl, &nao, &one, GF, &n, dmm == dm ? dr : dr2, &nao, &zero, Q, &n);
                 dgemm_("N", "N", &n, &nl, &nao, &one, GH, &n, dr, &nao, &one, Q, &n);
                 if (yg) {
                         int j;
@@ -2542,7 +2561,7 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
                 }
         }
         free(Kt); free(wa);
-        free(gr); free(a); free(full); free(rmx); free(ix); free(runs); free(dr); free(F); free(H); free(GF); free(GH);
+        free(gr); free(a); free(full); free(rmx); free(ix); free(runs); free(dr); free(dr2); free(kr); free(sh); free(F); free(H); free(GF); free(GH);
         free(Q); free(fm); free(ws); free(A); free(W); free(Mm); free(bk); free(R); free(Rwk); free(S); free(X);
         free(xyz);
         for (at = 0; at < natm; at++) free(farR[at]);
