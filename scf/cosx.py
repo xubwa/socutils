@@ -534,9 +534,10 @@ class COSX(lib.StreamObject):
             self._ipsg_key = self._key
         return self._ipsg_v
 
-    def _fock1_plain(self, mocc, yocc, tol=None):
+    def _fock1_plain(self, mocc, yocc, tol=None, padded=False):
         """V = d K_plain[D] / dR C, VT = (d K_plain[D] / dR)^T Y (natm, 3, nao, nocc), D = 2 C C^T, at
-        fixed D on the fixed grid"""
+        fixed D on the fixed grid (padded: with the kernel's padded occupied dimension, contiguous); the
+        kernel's blk / A C form / threads from max_memory as for _hess_plain"""
         self.build()
         libdft = self._libdft
         mol = self.mol
@@ -553,19 +554,35 @@ class COSX(lib.StreamObject):
         co[:, :nocc] = mocc
         yo = numpy.zeros((nao, n8))
         yo[:, :nocc] = yocc
+        blk, dense, nt, (shared, per) = self._hess_config(nao, n8, True)
+        logger.info(self, 'COSX Fock1 kernel: blk %d, %s A C, %d threads; memory estimate %.0f MB shared + '
+                    '%.0f MB x %d threads = %.0f MB (max_memory %d, in use %.0f)', blk, 'dense' if dense else 'record-wise',
+                    nt, shared, per, nt, shared + per * nt, mol.max_memory, lib.current_memory()[0])
         v = numpy.empty((mol.natm, 3, nao, n8))
         vt = numpy.empty((mol.natm, 3, nao, n8))
-        err = libdft.SOCDFTcosx_fock1(
-            v.ctypes.data_as(ctypes.c_void_p), vt.ctypes.data_as(ctypes.c_void_p), co.ctypes.data_as(ctypes.c_void_p),
-            yo.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(n8), ctypes.c_void_p(self._opt),
-            self._coords.ctypes.data_as(ctypes.c_void_p), self._weights.ctypes.data_as(ctypes.c_void_p),
-            self._non0.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(self._weights.size), ctypes.c_int(self.blk),
-            ctypes.c_double(self.ao_cutoff), ctypes.c_double(self.tol if tol is None else tol),
-            ctypes.c_double(self.tcut), ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
-            ctypes.c_int(mol.natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas),
-            env.ctypes.data_as(ctypes.c_void_p), *_blas_ptrs())
+        if hasattr(libdft, 'SOCDFTcosx_set_dense_min'):
+            libdft.SOCDFTcosx_set_dense_min(ctypes.c_double(DENSE_MIN))
+        if not dense:
+            libdft.SOCDFTcosx_set_dense(0)
+        try:
+            with lib.with_omp_threads(nt):
+                err = libdft.SOCDFTcosx_fock1(
+                    v.ctypes.data_as(ctypes.c_void_p), vt.ctypes.data_as(ctypes.c_void_p),
+                    co.ctypes.data_as(ctypes.c_void_p), yo.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(n8),
+                    ctypes.c_void_p(self._opt), self._coords.ctypes.data_as(ctypes.c_void_p),
+                    self._weights.ctypes.data_as(ctypes.c_void_p), self._non0.ctypes.data_as(ctypes.c_void_p),
+                    ctypes.c_int(self._weights.size), ctypes.c_int(blk), ctypes.c_double(self.ao_cutoff),
+                    ctypes.c_double(self.tol if tol is None else tol), ctypes.c_double(self.tcut),
+                    ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.natm),
+                    bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p),
+                    *_blas_ptrs())
+        finally:
+            if not dense:
+                libdft.SOCDFTcosx_set_dense(1)
         if err:
             raise MemoryError('COSX Fock1: a kernel buffer could not be allocated')
+        if padded:
+            return v, vt
         return v[..., :nocc], vt[..., :nocc]
 
     def _dproj(self, ia, x, ip, ipsg, aoslices):
@@ -592,7 +609,9 @@ class COSX(lib.StreamObject):
         Q = numpy.linalg.inv(self._sg)
         Q = (Q + Q.T) * .5
         y = numpy.ascontiguousarray(P.T @ mocc)
-        v, vt = self._fock1_plain(mocc, y, tol)
+        # v, vt padded and contiguous; the result formed in place of vt (no third natm 3 nao nocc array)
+        v, vt = self._fock1_plain(mocc, y, tol, padded=True)
+        nocc = mocc.shape[1]
         dm = 2 * mocc @ mocc.T
         kp = self._plain_k(dm)
         u = Q @ (kp @ mocc)
@@ -600,15 +619,15 @@ class COSX(lib.StreamObject):
         ip = mol.intor('int1e_ipovlp', comp=3)
         ipsg = self._ipsg()
         aoslices = mol.aoslice_by_atom()
-        out = numpy.empty_like(v)
         for ia in range(mol.natm):
             for x in range(3):
                 ds, dsg = self._dproj(ia, x, ip, ipsg, aoslices)
                 # dX C = dP (K C) + P V, dX^T C = VT + K^T dP^T C;  dP = dS Q - P dS_g Q
-                dxc = ds @ u - P @ (dsg @ u) + P @ v[ia, x]
-                dxtc = vt[ia, x] + kq @ (ds @ mocc - dsg @ y)
-                out[ia, x] = .5 * (dxc + dxtc)
-        return out
+                dxc = ds @ u - P @ (dsg @ u) + P @ v[ia, x, :, :nocc]
+                dxtc = vt[ia, x, :, :nocc] + kq @ (ds @ mocc - dsg @ y)
+                vt[ia, x, :, :nocc] = .5 * (dxc + dxtc)
+        v = None
+        return vt[..., :nocc]
 
     def _sg2(self):
         """sum_g w d_x d_y phi_mu phi_nu (6, nao, nao: xx xy xz yy yz zz) and sum_g w d_x phi_mu d_y phi_nu
