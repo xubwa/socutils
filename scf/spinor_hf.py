@@ -407,7 +407,9 @@ class SCF(hf.SCF):
     Kramers-restricted variant.
     '''
 
-    _keys = {'with_soc', 'with_x2c'}
+    _keys = {'with_soc', 'with_x2c', 'rijcosx', 'rijcosx_auxbasis'}
+    rijcosx = None              # RIJ / COSX J, K (spinor_jk.mode): None -> spinor_jk.RIJCOSX
+    rijcosx_auxbasis = None     # the RIJ auxiliary basis: None -> spinor_jk.AUXBASIS (AutoAux)
 
     def __init__(self, mol):
         hf.SCF.__init__(self, mol)
@@ -482,6 +484,17 @@ class SCF(hf.SCF):
 
     def eig(self, h, s=None, *args, **kwargs):
         return hf.SCF.eig(self, h, s)
+
+    def scf(self, dm0=None, **kwargs):
+        '''hf.SCF.scf; with the RIJ / COSX fast path (self.rijcosx, spinor_jk.RIJCOSX) the COSX exchange
+        energy is recomputed on the final grid afterwards (spinor_jk.finalize)'''
+        from socutils.scf import spinor_jk
+        spinor_jk.reset(self)
+        hf.SCF.scf(self, dm0, **kwargs)
+        if spinor_jk.mode(self):
+            spinor_jk.finalize(self)
+        return self.e_tot
+    kernel = lib.alias(scf, alias_name='kernel')
 
     def build(self, mol=None):
         if self.verbose >= logger.WARN:
