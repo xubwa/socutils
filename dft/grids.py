@@ -254,8 +254,17 @@ class Grids(gen_grid.Grids):
             Eh/bohr, KF 3.4e-4 -> 4.4e-5).  It hurts Ga, Ge, As, In (GaCl3
             4.9e-5 -> 2.5e-4), so it is not a global scale of ``alphas``.
         element_intacc : dict {symbol: intacc}
-            Element-specific accuracy parameter of the radial grid (default
-            empty: ``intacc`` for every element).
+            Element-specific accuracy parameter of the radial grid, used
+            where it exceeds ``intacc``.  Default 5.0 for Li, Be, Na, Mg
+            (9 more shells at intacc 4.388): the radial grid of these metals
+            costs the frequencies, PBE0 / def2-SVP against the Hessian by
+            finite differences of grid-response gradients, default ->
+            intacc 5.0 on the metal only (a finer grid on the partner atom
+            does nothing): LiH 0.60 -> 0.12, LiF 1.57 -> 0.34, NaH 0.78 ->
+            0.04, NaCl 0.49 -> 0.07, BeH2 0.32 -> 0.04, BeF2 1.13 -> 0.18,
+            MgH2 0.62 -> 0.06 cm-1 (MgF2 0.6 -> 1.1, within the noise of its
+            reference); gradients BeF2 1.2e-4 -> 3.0e-5, MgF2 1.0e-4 ->
+            2.2e-5 Eh/bohr.  K, Ca, Rb, Sr, Sc, Al do not need it (<= 0.16).
         weight_cutoff : float
             Drop points with |w| below this value after partitioning.
         element_radi : dict {symbol: radial function}
@@ -282,7 +291,7 @@ class Grids(gen_grid.Grids):
     h_reduced = True
     alphas = NWCHEM_ALPHAS * 1.15
     alpha_scale = {}
-    element_intacc = {}
+    element_intacc = {'Li': 5.0, 'Be': 5.0, 'Na': 5.0, 'Mg': 5.0}
     weight_cutoff = 1e-14
     xi = {}
     xi_scale = 1.
@@ -328,7 +337,7 @@ class Grids(gen_grid.Grids):
             table[table.argmax()] = n_ang
             return n_rad, table
         b = self.radial_b if chg <= 10 else self.radial_b_heavy
-        intacc = self.element_intacc.get(_pure_symbol(symb), self.intacc)
+        intacc = max(self.intacc, self.element_intacc.get(_pure_symbol(symb), self.intacc))
         return krack_koster_nrad(chg, intacc, b), ag
 
     def gen_atomic_grids(self, mol, atom_grid=None, radi_method=None, level=None, prune=None, **kwargs):
