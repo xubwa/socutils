@@ -1723,6 +1723,8 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                                         if (mark[r_] & 1) nlam_ += ns_;
                                         if (mark[r_] & 2) nnv_ += ns_;
                                 }
+                                st[24] += 1;            /* blocks with stored pairs, their points */
+                                st[25] += n;
                                 st[20] += (double)nlam_ * n;
                                 st[21] += (double)nnv_ * n;
                                 if (nlam_ > st[18]) st[18] = nlam_;
