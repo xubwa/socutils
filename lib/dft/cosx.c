@@ -2573,6 +2573,7 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
 }
 
 #include "cosx_hess.c"
+#include "cosx_gridresp.c"
 
 /*
  * The grid Gram matrices from the AOs local to each block (the shells of non0tab, no value cutoff):
