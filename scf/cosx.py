@@ -101,6 +101,8 @@ TOL = 1e-9              # screening of the shell-pair contributions, B_IJ max|F_
 TCUT = 36.              # p r^2 beyond which a one-centre primitive pair is in its far field
 MULTI_MIN = 4           # densities from which the multi-density contraction runs
 MULTI_FLOAT = False     # its contraction in single precision (set_multi_float)
+HESS_BLK = None         # grid points per task of the Hessian kernel: None -> self.blk, or 56 when the threads'
+                        # buffers (~ nao nocc blk each) do not fit max_memory; an int forces it (multiple of 56)
 HESS_FLOAT = False      # the Hessian passes' A C contraction (Fock1 / K second derivatives) in single precision
 PROFILE = {}            # wall seconds of get_k's phases (accumulated)
 MULTI_MAXSET = 512      # densities per pass (every pass computes the integrals again)
@@ -602,9 +604,42 @@ class COSX(lib.StreamObject):
                 out[ia, ja] += 2 * numpy.einsum('xypq,pq->xy', ab[:, :, p0:p1, q0:q1], xs[p0:p1, q0:q1])
         return out
 
-    def _hess_plain(self, mocc, yocc, with_fock1=False, tol=None):
+    def _hess_config(self, nao, n8, with_fock1):
+        """(blk, dense, threads, estimate in MB) of the Hessian kernel within max_memory: the threads' buffers
+        scale with nao nocc blk (A C of a block), so blk 112 -> 56, then the record-wise A C contraction
+        (no stored pairs), then fewer threads.  The estimate: (shared V + VT, per thread)."""
+        mol = self.mol
+        natm = mol.natm
+        nt0 = lib.num_threads()
+        fl = 1.5 if HESS_FLOAT else 1.
+        shared = (2 * natm * 3 * nao * n8 * 8 / 1e6) if with_fock1 else 0.
+
+        def per(blk, dense):
+            nd = min(3 * natm, 300)                             # local directions of a block
+            dcb = max(3, min(nd, (1 << 27) // (8 * nao * blk)))
+            m = nao * n8 * blk * fl                             # A C
+            m += 4 * nd * n8 * blk                              # psi^d, w psi^d, w eta^d, P2
+            m += dcb * nao * blk                                # Bd
+            m += 2 * min(3 * natm, 300) * nao * blk             # d_Y G slabs (F and H)
+            m += (.35 * nao * nao / 2 * (blk + 16) + nao * nao) * (fl - .5 if HESS_FLOAT else 1.) if dense else (2 << 20)
+            m += 26 * nao * blk + 8 * nao * n8 + 2 * (1 << 22)  # AOs, gathers, U3 chunks
+            return m * 8 / 1e6
+        avail = mol.max_memory - lib.current_memory()[0] - shared
+        if HESS_BLK is not None:
+            cands = [(int(HESS_BLK), True)]
+        else:
+            cands = [(self.blk, True)] + ([(56, True), (56, False)] if self.blk > 56 else [(self.blk, False)])
+        for blk, dense in cands:
+            if nt0 * per(blk, dense) <= avail:
+                return blk, dense, nt0, (shared, per(blk, dense))
+        blk, dense = cands[-1]
+        nt = int(max(1, min(nt0, avail // per(blk, dense))))
+        return blk, dense, nt, (shared, per(blk, dense))
+
+    def _hess_plain(self, mocc, yocc, with_fock1=False, tol=None, padded=False):
         """T1 = d^2 / dR dR' sum_g w H^T A F at fixed M = 2 Y C^T, D = 2 C C^T ((3 natm, 3 natm)), and with
-        with_fock1 the plain V, VT of _fock1_plain from the same pass"""
+        with_fock1 the plain V, VT of _fock1_plain from the same pass (padded: with the kernel's padded
+        occupied dimension, contiguous)"""
         self.build()
         libdft = self._libdft
         mol = self.mol
@@ -623,22 +658,33 @@ class COSX(lib.StreamObject):
         yo[:, :nocc] = yocc
         hs = numpy.empty((3 * mol.natm, 3 * mol.natm))
         v = vt = None
+        blk, dense, nt, (shared, per) = self._hess_config(nao, n8, with_fock1)
+        logger.info(self, 'COSX Hessian kernel: blk %d, %s A C, %d threads; memory estimate %.0f MB shared + '
+                    '%.0f MB x %d threads = %.0f MB (max_memory %d, in use %.0f)', blk, 'dense' if dense else 'record-wise',
+                    nt, shared, per, nt, shared + per * nt, mol.max_memory, lib.current_memory()[0])
         if with_fock1:
             v = numpy.empty((mol.natm, 3, nao, n8))
             vt = numpy.empty((mol.natm, 3, nao, n8))
         ptr = lambda x: lib.c_null_ptr() if x is None else x.ctypes.data_as(ctypes.c_void_p)  # noqa: E731
-        err = libdft.SOCDFTcosx_hess(
-            hs.ctypes.data_as(ctypes.c_void_p), ptr(v), ptr(vt), co.ctypes.data_as(ctypes.c_void_p),
-            yo.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(n8), ctypes.c_void_p(self._opt),
-            self._coords.ctypes.data_as(ctypes.c_void_p), self._weights.ctypes.data_as(ctypes.c_void_p),
-            self._non0.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(self._weights.size), ctypes.c_int(self.blk),
-            ctypes.c_double(self.ao_cutoff), ctypes.c_double(self.tol if tol is None else tol),
-            ctypes.c_double(self.tcut), ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
-            ctypes.c_int(mol.natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas),
-            env.ctypes.data_as(ctypes.c_void_p), *_blas_ptrs())
+        if not dense:
+            libdft.SOCDFTcosx_set_dense(0)
+        try:
+            with lib.with_omp_threads(nt):
+                err = libdft.SOCDFTcosx_hess(
+                    hs.ctypes.data_as(ctypes.c_void_p), ptr(v), ptr(vt), co.ctypes.data_as(ctypes.c_void_p),
+                    yo.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(n8), ctypes.c_void_p(self._opt),
+                    self._coords.ctypes.data_as(ctypes.c_void_p), self._weights.ctypes.data_as(ctypes.c_void_p),
+                    self._non0.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(self._weights.size), ctypes.c_int(blk),
+                    ctypes.c_double(self.ao_cutoff), ctypes.c_double(self.tol if tol is None else tol),
+                    ctypes.c_double(self.tcut), ao_loc.ctypes.data_as(ctypes.c_void_p),
+                    atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.natm), bas.ctypes.data_as(ctypes.c_void_p),
+                    ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p), *_blas_ptrs())
+        finally:
+            if not dense:
+                libdft.SOCDFTcosx_set_dense(1)
         if err:
             raise MemoryError('COSX Hessian: a kernel buffer could not be allocated')
-        if with_fock1:
+        if with_fock1 and not padded:
             v, vt = v[..., :nocc], vt[..., :nocc]
         return hs, v, vt
 
@@ -660,7 +706,9 @@ class COSX(lib.StreamObject):
         Q = numpy.linalg.inv(self._sg)
         Q = (Q + Q.T) * .5
         y = numpy.ascontiguousarray(P.T @ mocc)
-        hs, v, vt = self._hess_plain(mocc, y, True, tol)
+        # v, vt with the kernel's padded occupied dimension (contiguous); the Fock1 is formed in place of vt and
+        # the work arrays over the 3 natm perturbations are (chunk, nao, nocc): no further natm 3 nao nocc arrays
+        hs, v, vt = self._hess_plain(mocc, y, True, tol, padded=True)
         h = hs.reshape(natm, 3, natm, 3).transpose(0, 2, 1, 3).copy()
         dm = 2 * mocc @ mocc.T
         kp = self._plain_k(dm)
@@ -671,31 +719,47 @@ class COSX(lib.StreamObject):
         aoslices = mol.aoslice_by_atom()
         n3 = 3 * natm
         nao, nocc = mocc.shape
-        lam = numpy.empty((n3, nao, nocc))      # Q dS C
-        kap = numpy.empty((n3, nao, nocc))      # Q dS_g Y
-        sig = numpy.empty((n3, nao, nocc))      # dS_g u
-        f1 = numpy.empty((natm, 3, nao, nocc)) if with_fock1 else None
+        n8 = v.shape[-1]
+        v2 = v.reshape(n3, nao * n8)
+        # per perturbation R: a_R = 2 Q (dS C - dS_g Y) (2 Lambda);  T2 = a_R . V^{R'};
+        # T3 = -a_R . (dS_g^{R'} u) = sum_{mu in R', nu} <d mu|nu>_g (M + M^T)_{mu nu}, M = a_R u^T
+        nchunk = max(1, min(n3, int(2e8 / (nao * n8))))
+        abuf = numpy.zeros((nchunk, nao, n8))
+        t2 = numpy.empty((n3, n3))
+        t3 = numpy.empty((n3, n3))
+        ao_atom = numpy.repeat(numpy.arange(natm), aoslices[:, 3] - aoslices[:, 2])
+        r0 = 0
         for ia in range(natm):
             for x in range(3):
                 ds, dsg = self._dproj(ia, x, ip, ipsg, aoslices)
                 r = 3 * ia + x
                 dsc = ds @ mocc
                 dsgy = dsg @ y
-                lam[r] = Q @ dsc
-                kap[r] = Q @ dsgy
-                sig[r] = dsg @ u
+                a_r = 2 * (Q @ (dsc - dsgy))
+                abuf[r - r0, :, :nocc] = a_r
+                ms = a_r @ u.T
+                ms = ms + ms.T
+                for xx in range(3):
+                    rowsum = numpy.einsum('pq,pq->p', ipsg[xx], ms)
+                    t3[r, xx::3] = numpy.bincount(ao_atom, weights=rowsum, minlength=natm)
                 if with_fock1:
-                    dxc = ds @ u - P @ sig[r] + P @ v[ia, x]
-                    dxtc = vt[ia, x] + kq @ (dsc - dsgy)
-                    f1[ia, x] = .5 * (dxc + dxtc)
-        def outer(a_, b_):
-            m = lib.dot(a_.reshape(n3, -1), b_.reshape(n3, -1).T)
+                    dxc = ds @ u - P @ (dsg @ u) + P @ v[ia, x, :, :nocc]
+                    dxtc = vt[ia, x, :, :nocc] + kq @ (dsc - dsgy)
+                    vt[ia, x, :, :nocc] = .5 * (dxc + dxtc)
+                if r - r0 + 1 == nchunk or r == n3 - 1:
+                    nr = r - r0 + 1
+                    t2[r0:r + 1] = lib.dot(abuf[:nr].reshape(nr, -1), v2.T)
+                    r0 = r + 1
+        v = v2 = abuf = None
+        f1 = vt[..., :nocc] if with_fock1 else None
+
+        def blocks(m):
             return m.reshape(natm, 3, natm, 3).transpose(0, 2, 1, 3)
         # T2 + T2^T: 2 sum Lambda_R . V^{R'}, Lambda = Q (dS C - dS_g Y)
-        t2 = outer(2 * (lam - kap), v.reshape(n3, nao, nocc))
+        t2 = blocks(t2)
         h += t2 + t2.transpose(1, 0, 3, 2)
         # T3: (ii) -2 lam_a . sig_b, (iii-a) 2 kap_a . sig_b, both orders
-        t3 = outer(-2 * lam + 2 * kap, sig)
+        t3 = blocks(t3)
         h += t3 + t3.transpose(1, 0, 3, 2)
         # (i): tr(d2S Q Z0), Q Z0 = 2 u C^T;  (iii-b): -2 tr(d2S_g u Y^T)
         from pyscf.hessian import rhf as rhf_hess
