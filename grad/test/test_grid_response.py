@@ -119,20 +119,53 @@ class KnownValues(unittest.TestCase):
             for (a, x), v in _fd(mol, energy).items():
                 self.assertAlmostEqual(ana[a, x], v, delta=1e-7)
 
-    def test_default_unchanged(self):
+    def test_default_auto(self):
         mol = self.mol
         mf = dft.RKS(mol, xc='pbe')
         mf.grids = _grids(mol, 'becke')
         mf.conv_tol = 1e-11
         mf.kernel()
         g = rhf_fast.Gradients(mf)
-        self.assertFalse(g.grid_response)
+        self.assertEqual(g.grid_response, 'auto')
         ref = mf.Gradients().kernel()                   # pyscf, fixed grid
+        g.grid_response = False
         self.assertLess(abs(g.kernel() - ref).max(), 1e-7)
+        # 'auto': the XC grid response (a pure functional: the whole gradient) equals True
+        g.grid_response = 'auto'
+        ga = g.kernel()
+        g.grid_response = True
+        self.assertLess(abs(ga - g.kernel()).max(), 1e-10)
+        g.grid_response = 'auto'
         g.grid_response = True
         g1 = g.kernel()
         self.assertLess(abs(g1.sum(axis=0)).max(), 1e-7)
         self.assertLess(abs(g1 - ref).max(), 5e-3)     # coarse grid
+
+    def test_auto_cosx_near_convergence(self):
+        # 'auto' with COSX: the COSX grid response only once the previous gradient's max |g| fell below
+        # COSX_GRID_RESPONSE_GMAX; the XC response always
+        mol = self.mol
+        mf = dft.RKS(mol, xc='pbe0').density_fit(auxbasis='def2-universal-jfit', only_dfj=True)
+        mf.grids = _grids(mol, 'becke')
+        mf.conv_tol = 1e-11
+        mf = cosx.apply(mf)
+        mf.kernel()
+
+        def grad(mode, cgr=None):
+            g = rhf_fast.Gradients(mf)
+            g.grid_response = mode
+            if cgr is not None:
+                g.cosx_grid_response = cgr
+            return g.kernel()
+        xc_only = grad(True, cgr=False)
+        full = grad(True)
+        mf._cosx['last_gmax'] = 1.                      # far from convergence
+        self.assertLess(abs(grad('auto') - xc_only).max(), 1e-10)
+        mf._cosx['last_gmax'] = .1 * rhf_fast.COSX_GRID_RESPONSE_GMAX
+        self.assertLess(abs(grad('auto') - full).max(), 1e-10)
+        mf._cosx['last_gmax'] = None                    # no previous gradient: XC only
+        self.assertLess(abs(grad('auto') - xc_only).max(), 1e-10)
+        self.assertGreater(abs(full - xc_only).max(), 1e-8)
 
 
 if __name__ == '__main__':

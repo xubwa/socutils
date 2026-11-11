@@ -45,6 +45,7 @@ class KnownValues(unittest.TestCase):
         mf = _mf(self.mol, xc, df)
         ref = mf.nuc_grad_method().kernel()
         g = rhf_fast.Gradients(mf)
+        g.grid_response = False  # fixed grid (pyscf reference)
         # tight cutoffs: the comparison with pyscf to 1e-9 (the defaults are looser)
         with lib.temporary_env(rhf_fast, GRAD2E_TOL=1e-13, GRAD2E_PRIM_TOL=1e-15):
             de = g.kernel()
@@ -119,6 +120,7 @@ class KnownValues(unittest.TestCase):
                 mf.conv_tol = 1e-10
                 mf.kernel()
                 g = rhf_fast.Gradients(mf)
+                g.grid_response = False  # fixed grid (pyscf reference)
                 g.kernel()
                 return g.net_force
         if not cosx.available(gto.M(atom='H 0 0 0; F 0 0 .96', basis='def2-svp', verbose=0)):
@@ -147,13 +149,16 @@ class KnownValues(unittest.TestCase):
         mf.kernel()
         self.assertEqual(cosx.grad_grid(mf)[1], 3)
         g = rhf_fast.Gradients(mf)
+        g.grid_response = False  # fixed grid (pyscf reference)
         g3 = g.kernel()
         self.assertEqual(mf._cosx['grad_key'], 3)
         self.assertAlmostEqual(mf._cosx['last_gmax'], abs(g3).max(), 12)
         # a tight threshold: the dense tier; its gradient differs from GRIDX3's at the 1e-5 level
         cosx.set_grad_accuracy(mf, conv=3e-5)
         self.assertIsInstance(cosx.grad_grid(mf)[1], str)
-        gd = rhf_fast.Gradients(mf).kernel()
+        gfix = rhf_fast.Gradients(mf)
+        gfix.grid_response = False
+        gd = gfix.kernel()
         self.assertLess(abs(gd - g3).max(), 6e-5)
         self.assertGreater(abs(gd - g3).max(), 1e-7)
         # a loose one, and the argument of a single call
@@ -167,6 +172,7 @@ class KnownValues(unittest.TestCase):
         mf._cosx['last_gmax'] = 5e-4
         self.assertEqual(cosx.grad_grid(mf)[1], 3)
         g2 = rhf_fast.Gradients(mf)
+        g2.grid_response = False  # fixed grid (pyscf reference)
         g2.cosx_grad_accuracy = 3e-4
         g2.kernel()
         self.assertEqual(mf._cosx['grad_key'], 2)
@@ -194,6 +200,7 @@ class KnownValues(unittest.TestCase):
             mf.conv_tol = 1e-10
             mf.kernel()
             g = rhf_fast.Gradients(mf)
+            g.grid_response = False  # fixed grid (pyscf reference)
             g.kernel()
             return g.net_force
         allp, hp, polar = (radi.treutler_atomic_radii_adjust, sgrids.h_pair_atomic_radii_adjust,

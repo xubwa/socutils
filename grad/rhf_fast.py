@@ -30,7 +30,9 @@ grid_response = True: the grids move with the atoms (socutils.grad.grid_response
 the point term of the owner atom and the Becke / SSF partition-weight derivatives)
 for the XC part and, through cosx.grad_k, the COSX exchange (grad.cosx_grid_response
 overrides it for COSX alone); the gradient is then the exact derivative of the
-discretised energy and translationally invariant.  Default False.
+discretised energy and translationally invariant.  Default 'auto': the XC response always
+(supported partitions), the COSX response once the forces of the previous gradient fell below
+COSX_GRID_RESPONSE_GMAX (_grid_response_mode).
 Range-separated functionals and NLC keep pyscf's code.
 '''
 
@@ -237,7 +239,8 @@ def _fast_terms(grad, mol, dm):
         omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, spin=mol.spin)
         if omega != 0 or mf.do_nlc():
             return None
-        if grad.grid_response:
+        xc_gr, cosx_gr = _grid_response_mode(grad)
+        if grad.grid_response is True:
             from socutils.grad import grid_response as gresp
             grids = grad.grids if grad.grids is not None else mf.grids
             if grids.coords is None or not gresp.available(grids):
@@ -248,6 +251,7 @@ def _fast_terms(grad, mol, dm):
         hybrid = ni.libxc.is_hybrid_xc(mf.xc)
     else:
         hyb, hybrid = 1., True
+        xc_gr, cosx_gr = _grid_response_mode(grad)
     t0 = (logger.process_clock(), logger.perf_counter())
     jf = 1. if dfm is None else 0.
     kf = -hyb if hybrid else 0.
@@ -285,9 +289,9 @@ def _fast_terms(grad, mol, dm):
     if kf != 0 and getattr(mf, '_cosx', None):
         # K from COSX (socutils.scf.cosx.apply): the gradient of its energy on the SCF's grid
         from socutils.scf import cosx
-        cgr = getattr(grad, 'cosx_grid_response', None)
-        r = cosx.grad_k(mf, dm, accuracy=getattr(grad, 'cosx_grad_accuracy', None),
-                        grid_response=bool(getattr(grad, 'grid_response', False) if cgr is None else cgr))
+        r = cosx.grad_k(mf, dm, accuracy=getattr(grad, 'cosx_grad_accuracy', None), grid_response=cosx_gr)
+        if cosx_gr:
+            logger.info(grad, 'COSX gradient with grid response')
         if r is not None:
             de += r
             kf = 0.
@@ -315,7 +319,7 @@ def _fast_terms(grad, mol, dm):
         t0 = logger.timer(grad, 'exact 2e gradient (unique quartets)', *t0)
     if is_ks:
         max_memory = max(2000, grad.max_memory * .9 - lib.current_memory()[0])
-        dx = xc_grad(grad, mol, dm, max_memory, grid_response=grad.grid_response)
+        dx = xc_grad(grad, mol, dm, max_memory, grid_response=xc_gr)
         if dx is None:
             return None
         de += dx
@@ -356,13 +360,42 @@ def _hcore_grad(mf_grad, mol, dm):
 
 
 NET_FORCE_WARN = 2e-4   # Eh/bohr: the net force above which grad_elec warns
+COSX_GRID_RESPONSE_GMAX = 2e-4  # grid_response 'auto': the COSX grid response from the gradient after one whose max
+                        # |g| fell below this (Eh/bohr): it costs +33-84 % of the gradient (Trp-cage 56.5 -> 75.3 s,
+                        # trpn_1_10 21.9 -> 40.3 s, 24 cores) and matters where the forces approach its error
+
+
+def _grid_response_mode(grad):
+    '''(xc, cosx) grid-response switches of a gradient object.  grid_response True / False: both on / off;
+    'auto' (the default of the fast classes): the XC response always (it costs nothing: Trp-cage 56.5 -> 55.6
+    s, and removes most of the net force there, 3.8e-4 -> 6.9e-5 Eh/bohr, the SSF partition of large
+    molecules having the largest fixed-grid error) where the partition is supported, else the fixed grid;
+    the COSX response once the previous gradient of the same mean field had max |g| < COSX_GRID_RESPONSE_GMAX
+    (an optimisation near convergence).  grad.cosx_grid_response (True / False) overrides the COSX part.'''
+    g = getattr(grad, 'grid_response', False)
+    cgr = getattr(grad, 'cosx_grid_response', None)
+    if isinstance(g, str) and g == 'auto':
+        mf = grad.base
+        xc = False
+        if isinstance(mf, hf.KohnShamDFT):
+            from socutils.grad import grid_response as gresp
+            grids = grad.grids if getattr(grad, 'grids', None) is not None else mf.grids
+            xc = grids.coords is not None and gresp.available(grids)
+        if cgr is None:
+            st = getattr(mf, '_cosx', None) or {}
+            gmax = st.get('last_gmax')
+            cgr = gmax is not None and gmax < COSX_GRID_RESPONSE_GMAX
+        return xc, bool(cgr)
+    return bool(g), bool(g) if cgr is None else bool(cgr)
 
 
 class _FastGradMixin:
     '''get_veff returns only what pyscf's grad_elec still needs as a matrix (the
     density-fitted J with its auxiliary-basis response, else zero); the exact
     2e and XC parts enter through extra_force as energy derivatives; the hcore
-    part of all atoms at once (_hcore_grad).'''
+    part of all atoms at once (_hcore_grad).  grid_response: 'auto' by default
+    (_grid_response_mode: XC always, COSX near convergence), True / False.'''
+    grid_response = 'auto'
 
     def grad_elec(self, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
         '''pyscf.grad.rhf.grad_elec with the hcore term from _hcore_grad (pyscf's per-atom loop over
@@ -427,6 +460,10 @@ class _FastGradMixin:
         de = _fast_terms(self, mol, dm)
         self._de_fast = de
         if de is None:
+            if isinstance(self.grid_response, str):
+                # 'auto' is this module's default: pyscf's fallback (range-separated, NLC) keeps its fixed grid
+                with lib.temporary_env(self, grid_response=False):
+                    return super().get_veff(mol, dm)
             return super().get_veff(mol, dm)
         if hess_fast._df_mode(mf) is None:
             nao = dm.shape[-1]
