@@ -154,6 +154,33 @@ def w_ccvv(bvc, ev, ec, d, mode=-1, pairs=None):
     return w
 
 
+def d_ccvv(bvc, ev, ec, jlist=None):
+    '''(E, D_cc, D_vv) of ccvv over the ordered core pairs (i, j), i != j, j in jlist
+    (default all): E = -1/4 sum conj(v) t, D_vv = 1/2 sum conj(t[ij, ab]) t[ij, a'b],
+    D_cc = -1/2 sum conj(t[ij, ab]) t[i'j, ab], t = ((ai|bj) - (aj|bi)) / Delta, from
+    bvc[L, a, i] (zmr.uc.density).  None without libzmr.'''
+    z = _lib.zmr()
+    if z is None or not hasattr(z, 'zmr_d_ccvv'):
+        return None
+    naux, nv, nc = bvc.shape
+    bvc, ld = _rows(bvc)
+    ev, ec = (numpy.ascontiguousarray(x, dtype=float) for x in (ev, ec))
+    if jlist is None:
+        jl, nj = None, nc
+    else:
+        jl = numpy.ascontiguousarray(jlist, dtype=numpy.int64)
+        nj = jl.size
+        if nj and (jl.min() < 0 or jl.max() >= nc):
+            raise ValueError('d_ccvv: core orbitals out of range')
+    e = numpy.zeros(1)
+    dcc = numpy.empty((nc, nc), dtype=_c16)
+    dvv = numpy.empty((nv, nv), dtype=_c16)
+    z.zmr_d_ccvv(_p(bvc), ctypes.c_int64(ld), ctypes.c_int64(naux), ctypes.c_int64(nv),
+                 ctypes.c_int64(nc), _p(ev), _p(ec), ctypes.c_int64(nj),
+                 None if jl is None else _p(jl), _p(e), _p(dcc), _p(dvv))
+    return float(e[0]), dcc, dvv
+
+
 def w_ccav(bvc, bac, ev, ec, d, sel=None, mode=-1):
     '''(W, W2), W[m, t, u] = sum_{i<j, a} conj(v[a, t]) v[a, u] / (d[m] + e_a - e_i - e_j),
     v[a, t] = (ai|tj) - (aj|ti), from bvc[L, a, i] and bac[L, t, j]; the pairs with

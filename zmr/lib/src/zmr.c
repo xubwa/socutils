@@ -197,6 +197,84 @@ void zmr_w_ccvv_pairs(const double complex *bvc, int64_t ldvc, int64_t naux, int
         }
 }
 
+/* ccvv energy and unrelaxed density (zmr.uc.density): for the core orbitals j in
+ * jlist[0 .. nj-1] (all nc with jlist NULL) and all i != j, with
+ * t[ij, ab] = ((ai|bj) - (aj|bi)) / (e_a + e_b - e_i - e_j),
+ *     e   += -1/4 sum_ab conj(v) t
+ *     dvv += 1/2 sum_b conj(t[ij, ab]) t[ij, a'b]       (nv, nv)
+ *     dcc += -1/2 sum_ab conj(t[ij, ab]) t[i'j, ab]     (nc, nc)
+ * The amplitudes t[ij] of all i for one j are kept (nc nv^2 elements) for dcc; the
+ * products of one j run in parallel over i. */
+void zmr_d_ccvv(const double complex *bvc, int64_t ldvc, int64_t naux, int64_t nv, int64_t nc,
+                const double *ev, const double *ec, int64_t nj, const int64_t *jlist,
+                double *e, double complex *dcc, double complex *dvv)
+{
+        *e = 0.0;
+        memset(dcc, 0, sizeof(double complex) * nc * nc);
+        memset(dvv, 0, sizeof(double complex) * nv * nv);
+        if (nc < 2 || nv < 2 || nj < 1) {
+                return;
+        }
+        int64_t nn = nv * nv;
+        double complex *t = malloc(sizeof(double complex) * nc * nn);
+        double complex *bj = malloc(sizeof(double complex) * naux * nv);
+        double complex *gcc = malloc(sizeof(double complex) * nc * nc);
+        const double complex one = 1.0, zero = 0.0, half = 0.5;
+        double etot = 0.0;
+        int nthread = zmr_get_max_threads();
+        double complex *gvv_all = calloc((size_t)nthread * nn, sizeof(double complex));
+        for (int64_t jj = 0; jj < nj; jj++) {
+                int64_t j = jlist != NULL ? jlist[jj] : jj;
+                core_slice(bvc, ldvc, naux, nv, nc, j, bj);
+                double ej = 0.0;
+#pragma omp parallel reduction(+:ej)
+                {
+                        int me = omp_get_thread_num();
+                        double complex *gvv = gvv_all + (size_t)me * nn;
+                        double complex *bi = malloc(sizeof(double complex) * naux * nv);
+                        double complex *m = malloc(sizeof(double complex) * nn);
+#pragma omp for schedule(dynamic, 1)
+                        for (int64_t i = 0; i < nc; i++) {
+                                double complex *ti = t + i * nn;
+                                if (i == j) {
+                                        memset(ti, 0, sizeof(double complex) * nn);
+                                        continue;
+                                }
+                                core_slice(bvc, ldvc, naux, nv, nc, i, bi);
+                                product_t(naux, bi, nv, bj, nv, nv, m);       /* m[a, b] = (ai|bj) */
+                                double e0 = -ec[i] - ec[j];
+                                for (int64_t a = 0; a < nv; a++) {
+                                        for (int64_t b = 0; b < nv; b++) {
+                                                double complex v = m[a * nv + b] - m[b * nv + a];
+                                                double complex x = (a == b) ? 0.0 : v / (ev[a] + ev[b] + e0);
+                                                ti[a * nv + b] = x;
+                                                ej -= 0.25 * creal(conj(v) * x);
+                                        }
+                                }
+                                /* gvv += 1/2 t t^H, conj at the end: dvv = conj(sum t t^H) / 2 */
+                                cblas_zgemm(101, 111, 113, (int)nv, (int)nv, (int)nv, &half, ti, (int)nv,
+                                            ti, (int)nv, &one, gvv, (int)nv);
+                        }
+                        free(bi);
+                        free(m);
+                }
+                etot += ej;
+                /* gcc = T T^H over all i (threads in BLAS): dcc -= conj(gcc) / 2 */
+                cblas_zgemm(101, 111, 113, (int)nc, (int)nc, (int)nn, &one, t, (int)nn, t, (int)nn,
+                            &zero, gcc, (int)nc);
+                for (int64_t k = 0; k < nc * nc; k++) dcc[k] -= 0.5 * conj(gcc[k]);
+        }
+        for (int th = 0; th < nthread; th++) {
+                double complex *g = gvv_all + (size_t)th * nn;
+                for (int64_t k = 0; k < nn; k++) dvv[k] += conj(g[k]);
+        }
+        *e = etot;
+        free(gvv_all);
+        free(t);
+        free(bj);
+        free(gcc);
+}
+
 /* one external label with the active vector x[t]: w[m][t, u] += conj(x_t) x_u / (d_m + del) */
 static inline void add_outer(int64_t na, const double complex *x, double del,
                              const double *d, int64_t nd, double complex *w)

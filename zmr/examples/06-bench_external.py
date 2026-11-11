@@ -37,6 +37,9 @@ parser.add_argument('--e0', default='state')
 parser.add_argument('--seed', type=int, default=0)
 parser.add_argument('--amplitudes', default='spectral', choices=('spectral', 'rdm'),
                     help='active part of PC-NEVPT2 from CI vectors or from RDMs')
+parser.add_argument('--density', action='store_true',
+                    help='also the unrelaxed ccvv density (zmr.uc.density), timed against '
+                    'the ccvv energy')
 parser.add_argument('--max-memory', type=float, default=0,
                     help='MB for the calculation (default: pyscf.lib.param.MAX_MEMORY)')
 parser.add_argument('--kramers', action='store_true',
@@ -117,3 +120,13 @@ print('BENCH E(CASCI) ' + ' '.join('%.10f' % x for x in e_cas))
 print('BENCH E(NEVPT2) ' + ' '.join('%.10f' % x for x in e))
 print('BENCH E2 by class (state 0): ' + ' '.join(
     '%s %.8f' % (k, v[0, 0].real) for k, v in pt.h2_by_class.items()))
+if args.density:
+    from socutils.zmr.uc import classes, density
+    qc = pt.quasi_canonical
+    ctx = classes.Context(qc.eris, qc.eps_core, qc.eps_virt, None)
+    t0 = time.time()
+    e_d, dcc, dvv = density.ccvv(ctx)
+    t_d = time.time() - t0
+    t_e = dict(pt.timings).get('ccvv', float('nan'))
+    print('BENCH ccvv density %.1f s (energy %.1f s, ratio %.2f); E_ccvv %.10f (NEVPT2 %.10f)'
+          % (t_d, t_e, t_d / t_e, e_d, pt.h2_by_class['ccvv'][0, 0].real), flush=True)
