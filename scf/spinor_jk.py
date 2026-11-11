@@ -49,6 +49,16 @@ KRAMERS_TOL = 1e-10
 RIJCOSX = False     # False | True / 'rijcosx' | 'rij' | 'cosx': default of mf.rijcosx (None -> this)
 AUXBASIS = None     # the RIJ auxiliary basis: None -> pyscf AutoAux of the molecule, a basis spec, or mol -> basis
 FINAL_GRID = 3      # COSX level of the final exchange energy (None: not recomputed)
+# The COSX grids' radial rule (Krack-Koster, n = 15 intacc - 40 + 5 ROW: 50 shells for Au at GRIDX2) does not
+# reach the tight core of the all-electron bases of the sixth-row atoms: AuH scalar X2C RHF, exchange energy
+# error on GRIDX2 / GRIDX3 (Eh): x2c-SVPall -1.1e-3 / +3.5e-4, ano-rcc-vdzp +7.8e-4 / -4.8e-4, dyall-v2z +1.3e3
+# (an s primitive of exponent 5.9e7 the grid does not see, S_g singular, the fit explodes); with Au at intacc 8
+# (110 shells, +70 % points on AuH): +2.6e-6 / +5.2e-6, +9.1e-5 / +5.9e-5, +2.1e-6 / +2.9e-6.  HgCl2 x2c-SVPall
+# -1.7e-3 -> -2.0e-4 (the rest angular: -0.6e-4 with Lebedev table 4).  HI (Z = 53) is fine as is (1.9e-5).
+COSX_HEAVY_Z = 54           # atoms beyond this get the radial grid of COSX_HEAVY_INTACC on every COSX level
+COSX_HEAVY_INTACC = 8.0
+COSX_FIT_RANGE = (.5, 2.)   # fit_quality bounds of a usable grid; else +2 intacc on the atoms beyond Z = 18,
+COSX_GRID_RETRIES = 2       # ... at most this many times, then exact K
 
 
 def mode(mf):
@@ -193,15 +203,57 @@ def _state(mf, mol):
     return st
 
 
+def grid_args(mol, level, extra=0.):
+    '''the COSX grid of level for the all-electron heavy-element bases of the two-component SCF:
+    cosx.gridx_args, with the radial grid of the atoms beyond Z = COSX_HEAVY_Z at intacc
+    COSX_HEAVY_INTACC (+ extra; also for the atoms beyond Z = 18 when extra > 0)'''
+    from pyscf import gto
+    from socutils.scf import cosx
+    args = cosx.gridx_args(mol, level)
+    ei = {}
+    for i in range(mol.natm):
+        s = mol.atom_pure_symbol(i)
+        z = gto.charge(s)
+        if z > COSX_HEAVY_Z or (extra > 0 and z > 18):
+            ei[s] = max(args.get('intacc', 0), COSX_HEAVY_INTACC) + extra
+    if ei:
+        args['element_intacc'] = ei
+    return args
+
+
+def fit_quality(k):
+    '''the eigenvalue range of X^T S_g X (X^T S X = 1): 1 where the grid integrates the basis exactly;
+    near 0 for a function the grid does not see (a tight core primitive between the inner radial shells)'''
+    s = k.mol.intor_symmetric('int1e_ovlp')
+    e, v = numpy.linalg.eigh(s)
+    keep = e > 1e-10 * e.max()
+    x = v[:, keep] / numpy.sqrt(e[keep])
+    mu = numpy.linalg.eigvalsh(x.T @ k._sg @ x)
+    return mu.min(), mu.max()
+
+
 def _kobj(mf, st, level):
+    '''the COSX object of grid level (cached), None if no grid up to COSX_GRID_RETRIES refinements
+    represents the basis (fit_quality outside COSX_FIT_RANGE)'''
     from socutils.scf import cosx
     if level not in st['k']:
         mol = st['mol']
-        g = cosx.make_grids(mol, **cosx.gridx_args(mol, level))
-        k = cosx.COSX(mol, g, fit=True, tol=min(cosx.TOL, .1 * getattr(mf, 'conv_tol', 1e-9)))
-        k.verbose = mf.verbose
-        k.stdout = mf.stdout
-        st['k'][level] = k.build()
+        k = None
+        for it in range(COSX_GRID_RETRIES + 1):
+            g = cosx.make_grids(mol, **grid_args(mol, level, 2. * it))
+            k = cosx.COSX(mol, g, fit=True, tol=min(cosx.TOL, .1 * getattr(mf, 'conv_tol', 1e-9)))
+            k.verbose = mf.verbose
+            k.stdout = mf.stdout
+            k.build()
+            lo, hi = fit_quality(k)
+            logger.info(mf, 'spinor COSX: GRIDX%d %d points, fit eigenvalues [%.3g, %.3g]',
+                        level, k._weights.size, lo, hi)
+            if COSX_FIT_RANGE[0] < lo and hi < COSX_FIT_RANGE[1]:
+                break
+            k = None
+        if k is None:
+            logger.warn(mf, 'spinor COSX: GRIDX%d does not represent the basis (tight primitives): exact K', level)
+        st['k'][level] = k
     return st['k'][level]
 
 
@@ -247,7 +299,10 @@ def get_k_cosx(mf, mol, dm, hermi, aa, ab, ba, bb, cplx, kramers):
     st = _state(mf, mol)
     pieces = _pieces(aa, ab, ba, bb, cplx, kramers, hermi)
     if n != 1 or hermi != 1:
-        return _cosx_k(_kobj(mf, st, 2), pieces, n, nao, dm.dtype, kramers, hermi)
+        k = _kobj(mf, st, 2)
+        if k is None:
+            return _exact_k(_proxy(mf, mol), mol, pieces, n, nao, dm.dtype, kramers, hermi)
+        return _cosx_k(k, pieces, n, nao, dm.dtype, kramers, hermi)
     last = st['last']
     if last is None:
         lev = 1 if cosx.SCF_GRID_SWITCH > 0 else 2
@@ -256,6 +311,9 @@ def get_k_cosx(mf, mol, dm, hermi, aa, ab, ba, bb, cplx, kramers):
         if lev == 1 and abs(dm - last['dm']).max() < cosx.SCF_GRID_SWITCH:
             lev = 2
     k = _kobj(mf, st, lev)
+    if k is None:
+        st['last'] = None
+        return _exact_k(_proxy(mf, mol), mol, pieces, n, nao, dm.dtype, kramers, hermi)
     if (last is not None and last['lev'] == lev and last['n'] < cosx.REBUILD_NSTEPS
             and last['dm'].shape == dm.shape):
         ddm = dm - last['dm']
@@ -298,6 +356,9 @@ def finalize(mf):
     nao = mol.nao_nr()
     dm, k_scf = st['last']['dm'], st['last']['vk']
     e_fin = exchange_energy(mf, mol, dm[0], FINAL_GRID)
+    if e_fin is None:
+        logger.warn(mf, 'spinor COSX: no usable GRIDX%d, the SCF grid energy kept', FINAL_GRID)
+        return mf.e_tot
     hyb = 1.
     if hasattr(mf, 'xc'):
         hyb = mf._numint.rsh_and_hybrid_coeff(mf.xc, spin=mol.spin)[2]
@@ -334,6 +395,8 @@ def exchange_energy(mf, mol, dm, level):
             xs.append(x if kind == 'A' else (x - x.transpose(0, 2, 1)) * .5)
             w.append(-wb)
     k = _kobj(mf, _state(mf, mol), level)
+    if k is None:
+        return None
     e = k.energy(numpy.ascontiguousarray(numpy.concatenate(xs)), tol=cosx.TOL_ENERGY)
     return float(numpy.dot(w, e))
 
