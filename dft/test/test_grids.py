@@ -81,6 +81,50 @@ class KnownValues(unittest.TestCase):
         r = numpy.linalg.norm(tab['Cl'][0], axis=1)
         self.assertEqual(len(numpy.unique(numpy.round(r, 10))), 48)
 
+    def test_alpha_scale(self):
+        # element-specific pruning boundaries: K only, nothing else changes; the scaled atom's coarse tables end
+        # earlier (more points), exactly as a global scale of alphas for that atom
+        m = gto.M(atom='K 0 0 0; F 0 0 2.17', basis='sto-3g', verbose=0)
+        g0 = sgrids.Grids(m)
+        self.assertEqual(g0.alpha_scale, {})
+        t0 = g0.gen_atomic_grids(m)
+        g1 = sgrids.Grids(m)
+        g1.alpha_scale = {'K': .5}
+        t1 = g1.gen_atomic_grids(m)
+        self.assertEqual(t1['F'][0].shape, t0['F'][0].shape)
+        self.assertAlmostEqual(abs(t1['F'][0] - t0['F'][0]).max(), 0, 12)
+        self.assertGreater(t1['K'][0].shape[0], t0['K'][0].shape[0])
+        g2 = sgrids.Grids(m)
+        g2.alphas = g0.alphas * .5
+        t2 = g2.gen_atomic_grids(m)
+        self.assertEqual(t1['K'][0].shape, t2['K'][0].shape)
+        self.assertAlmostEqual(abs(t1['K'][1] - t2['K'][1]).max(), 0, 12)
+        self.assertNotEqual(t2['F'][0].shape, t0['F'][0].shape)
+        # the same radial shells: the number of points changes through the angular tables only
+        r0 = numpy.unique(numpy.round(numpy.linalg.norm(t0['K'][0], axis=1), 9))
+        r1 = numpy.unique(numpy.round(numpy.linalg.norm(t1['K'][0], axis=1), 9))
+        self.assertAlmostEqual(abs(r0 - r1).max(), 0, 9)
+        # setting it after a build resets the grid; the quadrature still integrates the density
+        g0.build()
+        n0 = g0.weights.size
+        g0.alpha_scale = {'K': .5}
+        self.assertIsNone(g0.coords)
+        g0.build()
+        self.assertGreater(g0.weights.size, n0)
+        # atom labels: "K1" is K
+        m2 = gto.M(atom='K1 0 0 0; F 0 0 2.17', basis={'K1': 'sto-3g', 'F': 'sto-3g'}, verbose=0)
+        g3 = sgrids.Grids(m2)
+        g3.alpha_scale = {'K': .5}
+        self.assertEqual(g3.gen_atomic_grids(m2)['K1'][0].shape, t1['K'][0].shape)
+
+    def test_element_intacc(self):
+        m = gto.M(atom='Li 0 0 0; F 0 0 1.57', basis='sto-3g', verbose=0)
+        g = sgrids.Grids(m)
+        self.assertEqual(g._atom_setting(3, 'Li')[0], sgrids.krack_koster_nrad(3, g.intacc, g.radial_b))
+        g.element_intacc = {'Li': 5.0}
+        self.assertEqual(g._atom_setting(3, 'Li')[0], sgrids.krack_koster_nrad(3, 5.0, g.radial_b))
+        self.assertEqual(g._atom_setting(9, 'F')[0], sgrids.krack_koster_nrad(9, g.intacc, g.radial_b))
+
     def test_sum_rule(self):
         h = numpy.random.RandomState(1).rand(3, 3, 3, 3)
         h = h + h.transpose(1, 0, 3, 2)
