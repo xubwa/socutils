@@ -63,9 +63,10 @@ CASES = {
                 (306.14, 913.98, 914.01, 990.12, 1266.14, 1266.14, 1444.84, 1476.13, 1476.13, 1516.86, 1635.43,
                  1635.44, 3105.38, 3233.46, 3233.47, 3423.85, 3510.65, 3510.69)),
 }
-# max |freq - freq(R1)| of the default path: 0.24 (CH3Cl), 0.79 (CH3SH, the 254 cm-1 torsion: the Fock1 / explicit
-# K on GRIDX2; 0.14 with HESS_COSX_GRID = 3), 0.48 (CH3NH3+).  Tighten to 0.5 if HESS_COSX_GRID becomes 3.
-FREQ_TOL = 1.0
+# max |freq - freq(R1)| of the default path: 0.16 (CH3Cl), 0.15 (CH3SH), 0.34 (CH3NH3+).  With the Fock1 / explicit K
+# on GRIDX2 (the default before HESS_COSX_GRID = 3): 0.22 / 0.78 (the 254 cm-1 torsion) / 0.47; without the final
+# response grid: 0.44 / 0.93 / 0.39.
+FREQ_TOL = 0.5
 E_TOL = 2e-5            # E - E(R1): 3.4e-6, 2.9e-6, 1.7e-6
 G_TOL = 3e-4            # the gradient at the R1 minimum: 1.2e-4, 9.4e-5, 1.5e-4 (the COSX K gradient on GRIDX2)
 
@@ -128,7 +129,7 @@ class KnownValues(unittest.TestCase):
         h3.sum_rule = True
         self.assertAlmostEqual(abs(h3.kernel() - sgrids.translational_sum_rule(h1)).max(), 0, 9)
 
-    def _check_default(self, name, coarse_fock1=4., final_grid=None):
+    def _check_default(self, name, coarse_fock1=4., final_grid=None, gridx2=None):
         mol, mf, e_ref, f_ref = _default_scf(name)
         self.assertTrue(mf.converged)
         self.assertLess(abs(mf.e_tot - e_ref), E_TOL)
@@ -148,6 +149,10 @@ class KnownValues(unittest.TestCase):
             with lib.temporary_env(rhf_fast, CPHF_COSX_GRID_FINAL=None):
                 h0 = rhf_fast.RKSHessian(mf).kernel()
             self.assertGreater(abs(_freq(mol, h0) - f_ref).max(), final_grid)
+        if gridx2 is not None:
+            with lib.temporary_env(rhf_fast, HESS_COSX_GRID=2):
+                h0 = rhf_fast.RKSHessian(mf).kernel()
+            self.assertGreater(abs(_freq(mol, h0) - f_ref).max(), gridx2)
         # the COSX objects kept their grids over the gradient and the Hessians (cosx.COSX.build)
         npts = {lev: k.grids.weights.size for lev, k in mf._cosx['k'].items()}
         for lev, n in npts.items():
@@ -163,7 +168,7 @@ class KnownValues(unittest.TestCase):
 
     def test_ch3sh(self):
         # third row, a soft torsion (254 cm-1): the mode most sensitive to the COSX grids of the Hessian
-        self._check_default('ch3sh', final_grid=1.5)
+        self._check_default('ch3sh', final_grid=0.7, gridx2=0.6)       # 0.93, 0.78 (> FREQ_TOL)
 
     def test_cation(self):
         self._check_default('ch3nh3+')

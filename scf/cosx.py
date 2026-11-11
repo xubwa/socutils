@@ -48,6 +48,23 @@ GRIDX = {0: {'intacc': 3.0, 'angular_grid': (14, 14, 26, 26, 14)},
          2: {'intacc': 4.020, 'angular_grid': 2},
          3: {'intacc': 4.338, 'angular_grid': 3}}
 GRID = GRIDX[2]
+HEAVY_Z = 18            # molecules with an atom beyond Z = HEAVY_Z get at least the Lebedev table HEAVY_ANGULAR on
+HEAVY_ANGULAR = 3       # every GRIDX level (gridx_args): the tables below 3 leave 26 points in the region of a
+                        # 3d shell.  Fe(CO)5 def2-SVP PBE0 frequencies against exact K on a fine grid: 16.6 cm-1
+                        # with the plain levels (SCF COSX on GRIDX2 +2.8, CP-SCF operator on level 0 +3.2,
+                        # Fock1 / explicit K on GRIDX2 +2.8, the rest the CP-SCF XC grid), 0.01 each with table
+                        # 3 at the same intacc; the GRIDX2 exchange energy of Fe is 8.3e-4 Eh off
+
+
+def gridx_args(mol, level):
+    '''the Grids attributes of the COSX grid level for mol: GRIDX[level], with the Lebedev table raised to
+    HEAVY_ANGULAR when mol has an atom beyond Z = HEAVY_Z'''
+    args = dict(GRIDX[level])
+    if mol.natm and mol.atom_charges().max() > HEAVY_Z:
+        ang = args['angular_grid']
+        if not isinstance(ang, (int, numpy.integer)) or ang < HEAVY_ANGULAR:
+            args['angular_grid'] = HEAVY_ANGULAR
+    return args
 BLK = 112               # grid points per task of the kernel (a multiple of 56)
 AO_CUTOFF = 1e-10       # AO values below which an AO is dropped from a block
 TOL = 1e-9              # screening of the shell-pair contributions, B_IJ max|F_J| sum_g |w phi| < TOL
@@ -753,7 +770,7 @@ def apply(mf, grids=None, final_grid=3, incremental=True, fit=True, tol=None, va
 
     def kobj(level):
         if level not in st['k']:
-            g = grids if isinstance(grids, lib.StreamObject) else make_grids(mol0, **GRIDX[level])
+            g = grids if isinstance(grids, lib.StreamObject) else make_grids(mol0, **gridx_args(mol0, level))
             k = COSX(mol0, g, fit=fit, tol=tol)
             k.verbose = mf.verbose
             k.stdout = mf.stdout

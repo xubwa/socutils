@@ -76,13 +76,12 @@ class KnownValues(unittest.TestCase):
     def setUpClass(cls):
         cls.mol = gto.M(atom=FECO5, unit='bohr', basis='def2-svp', verbose=0)
 
-    @unittest.expectedFailure
     def test_defaults(self):
         mol = self.mol
         mf = _scf(mol)
         self.assertTrue(mf.converged)
         h = rhf_fast.RKSHessian(mf).kernel()
-        self.assertLess(abs(_freq(mol, h) - F_REF)[HI].max(), 1.5)      # 16.6
+        self.assertLess(abs(_freq(mol, h) - F_REF)[HI].max(), 1.5)      # 16.6 before cosx.gridx_args (table 3 for Z > 18)
 
     def test_gridx3(self):
         '''conservative settings: SCF COSX and Fock1 / explicit K on GRIDX3, the CP-SCF grids (COSX operator, XC

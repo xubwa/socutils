@@ -1847,7 +1847,10 @@ CPHF_COSX_FLOAT = True  # the many-density COSX contraction in single precision 
 HESS_COSX_FOCK1 = None  # the first-order K (make_h1) by COSX: None -> with the CPHF's auto mode (CPHF_COSX)
 HESS_COSX_EXPLICIT = None   # the K second derivatives of the explicit part by COSX: None -> auto (SCF ran COSX,
                             # HESS_COSX_EXPLICIT_NAO_PER_ATOM)
-HESS_COSX_GRID = 2      # the grid of those two (Fock1, explicit K), as for CPHF_COSX_GRID; None -> CPHF_COSX_GRID
+HESS_COSX_GRID = 3      # the grid of those two (Fock1, explicit K), as for CPHF_COSX_GRID; None -> CPHF_COSX_GRID.
+                        # GRIDX3 as ORCA's Hessian (hess_gridx3): on GRIDX2 the soft modes above 100 cm-1 are off
+                        # by 0.79 (CH3SH), 1.03 ((H2O)6), 1.48 cm-1 (caffeine) against exact K, on GRIDX3 by
+                        # 0.14 / 0.35 / 0.59; caffeine cc-pVDZ Hessian 22.4 -> 27.4 s (16 cores)
 CPHF_COSX_GRID_FINAL = 2        # the grid of the CPHF's last response (after the Krylov solve, from which the
                                 # final U_vir and the occupied e1 follow): None -> CPHF_COSX_GRID
 _CPHF_STAGE = {'final': False}
@@ -1885,7 +1888,7 @@ def _cphf_cosx(mf):
     if isinstance(grid, dict):
         args, key = grid, repr(sorted(grid.items()))
     else:
-        args, key = cosx.GRIDX[grid], grid
+        args, key = cosx.gridx_args(mf.mol, grid), grid
     if st and key in st.get('k', {}):
         return st['k'][key]
     k = cosx.COSX(mf.mol, cosx.make_grids(mf.mol, **args))
@@ -2466,7 +2469,9 @@ XCD1_LOCAL_ATOMS = True     # xc_deriv1_batched: per sub-block only the atoms wi
 
 
 # the default ('auto') grid of the CP-SCF XC response: socutils.dft.grids.hessian_grids arguments
-CPSCF_GRID_ARGS = dict(angular_grid=2, intacc=3.467)
+# Lebedev table 3: table 2 moves (H2O)6 by 0.46 cm-1 and Fe(CO)5 by 9 cm-1 (26 points in the region of the 3d
+# shell), table 3 agrees with the SCF grid within 0.04 cm-1 on the molecules of the validation set
+CPSCF_GRID_ARGS = dict(angular_grid=3, intacc=3.467)
 
 
 class _MultiJKCPHF:
