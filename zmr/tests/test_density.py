@@ -91,3 +91,40 @@ def test_ccvv_finite_field(hbr):
         fd = (4 * fd[1] - fd[0]) / 3
         analytic = float(numpy.sum(o[sl, sl] * d).real)
         assert abs(fd - analytic) < 1e-7 * max(1.0, abs(analytic)) + 1e-10, label
+
+
+@pytest.mark.parametrize('name', ['cavv', 'ccav'])
+def test_active_classes_finite_field(hbr, name):
+    '''cavv and ccav (Python reference): energy against NEVPT2, and the core-core,
+    active-active and virtual-virtual blocks of the density against finite fields.'''
+    from socutils.zmr.pc.nevpt2 import PCNEVPT2
+    from socutils.zmr.uc import density
+    mol, pt = hbr
+    qc = pt.quasi_canonical
+    sp = qc.eris.spaces
+    e, dcc, daa, dvv = getattr(density, name + '_reference')(pt, _ctx(pt))
+    assert abs(e - pt.h2_by_class[name][0, 0].real) < 1e-10
+    c = qc.eris.mo_coeff
+    x = mol.intor('int1e_ovlp_spinor') @ c
+    rng = numpy.random.default_rng(11)
+
+    def energy(o, lam):
+        e2 = copy.copy(qc.eris)
+        e2.hcore_ao = qc.eris.hcore_ao + lam * (x @ o @ x.conj().T)
+        e2.h1 = c.conj().T @ e2.hcore_ao @ c
+        p = PCNEVPT2(e2, 2, civecs=pt.civecs)
+        p.verbose = 0
+        p.max_memory = 8000
+        p.kernel()
+        return p.h2_by_class[name][0, 0].real
+
+    for label, d in (('c', dcc), ('a', daa), ('v', dvv)):
+        sl = sp.slice(label)
+        n = sl.stop - sl.start
+        y = rng.normal(size=(n, n)) + 1j * rng.normal(size=(n, n))
+        o = numpy.zeros((sp.nmo, sp.nmo), dtype=complex)
+        o[sl, sl] = 0.5 * (y + y.conj().T)
+        fd = [(energy(o, h) - energy(o, -h)) / (2 * h) for h in (2e-4, 1e-4)]
+        fd = (4 * fd[1] - fd[0]) / 3
+        analytic = float(numpy.sum(o[sl, sl] * d).real)
+        assert abs(fd - analytic) < 1e-6 * max(1.0, abs(analytic)) + 1e-9, (label, fd, analytic)

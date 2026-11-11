@@ -87,3 +87,81 @@ def ccvv_reference(ctx):
             if i != j:
                 dvv += 0.5 * la.gemm(t[i].conj(), t[i], 'N', 'T')
     return e, dcc, dvv
+
+
+# ----------------------------------------------------------------------
+# classes with active operators (Python reference: all amplitudes of a class in memory)
+
+def first_order_space(pt, pclass, state=0):
+    '''(b, mu, t, s) of the class for one model state of a finished PC-NEVPT2 pt: the
+    orthonormal basis b (D, nk) of the first-order space in the determinants of the
+    target sector, its H_act energies mu, the projected functions
+    t[k, X] = <b_k|O_X|Psi>, and the shift s = E0 - E_core of the state.'''
+    from socutils.zmr.pc import spectral
+    from socutils.zmr.uc import engine
+    act, civecs = pt.active_space, pt.civecs
+    ntarget = act.target(pt.nelec, pclass.dn)
+    phi = engine.class_functions(pclass, act, civecs[:, [state]], pt.nelec)
+    b, mu = spectral.contracted_space(phi.reshape(-1, phi.shape[2]),
+                                      lambda q: act.apply_h(ntarget, q), lambda: None, pt.lindep)
+    t = engine.project_functions(b, phi)[0]
+    return b, mu, t, float(pt.shifts[state])
+
+
+def _active_block(pt, pclass, b, g):
+    '''D_aa[t, u] = sum_kk' g[k, k'] <b_k'|t^+ u|b_k> - tr(g) <Psi|t^+ u|Psi>: the
+    derivative of the class energy with respect to the active block of h through
+    H_act in the first-order space and the zeroth-order energy of the model state
+    (g[k, k'] = sum_e c[e, k] conj(c[e, k'])).'''
+    from socutils.zmr.active import rdm as active_rdm
+    act = pt.active_space
+    ntarget = act.target(pt.nelec, pclass.dn)
+    dm = active_rdm.make_rdm(act, b, ntarget, 1)              # [k', k, t, u]
+    d = numpy.einsum('kl,lktu->tu', g, dm)
+    gamma = active_rdm.make_rdm(act, pt.civecs[:, [0]], pt.nelec, 1)[0, 0]
+    return d - numpy.trace(g) * gamma
+
+
+def cavv_reference(pt, ctx, state=0):
+    '''(E, D_cc, D_aa, D_vv) of cavv for one model state, gamma convention
+    (dE = sum O[p, q] D[p, q] for Hermitian O): amplitudes
+    c[i, ab, k] = sum_t v[i ab, t] t[k, t] / (mu_k + delta - s).'''
+    pclass = [p for p in pt.perturber_classes() if p.name == 'cavv'][0]
+    b, mu, t, s = first_order_space(pt, pclass, state)
+    nc, nv = ctx.sp.ncore, ctx.sp.nvirt
+    aa, bb = numpy.triu_indices(nv, 1)
+    nk = len(mu)
+    c = numpy.zeros((nc, nv, nv, nk), dtype=numpy.complex128)
+    e = 0.0
+    for i, (delta, v) in enumerate(pclass.blocks(ctx)):
+        u = v @ t.T                                           # (ab, k)
+        ci = u / (delta[:, None] + mu[None, :] - s)
+        e -= float(numpy.vdot(u, ci).real)
+        c[i, aa, bb] = ci
+        c[i, bb, aa] = -ci
+    g = 0.5 * numpy.einsum('iabk,iabl->kl', c, c.conj())
+    dcc = -0.5 * numpy.einsum('iabk,jabk->ij', c.conj(), c)
+    dvv = numpy.einsum('iabk,idbk->ad', c.conj(), c)
+    return e, dcc, _active_block(pt, pclass, b, g), dvv
+
+
+def ccav_reference(pt, ctx, state=0):
+    '''(E, D_cc, D_aa, D_vv) of ccav for one model state:
+    c[ij, a, k] = sum_t v[ij a, t] t[k, t] / (mu_k + delta - s).'''
+    pclass = [p for p in pt.perturber_classes() if p.name == 'ccav'][0]
+    b, mu, t, s = first_order_space(pt, pclass, state)
+    nc, nv = ctx.sp.ncore, ctx.sp.nvirt
+    ii, jj = numpy.triu_indices(nc, 1)
+    nk = len(mu)
+    c = numpy.zeros((nc, nc, nv, nk), dtype=numpy.complex128)
+    e = 0.0
+    for (i, j), (delta, v) in zip(zip(ii, jj), pclass.blocks(ctx)):
+        u = v @ t.T                                           # (a, k)
+        cij = u / (delta[:, None] + mu[None, :] - s)
+        e -= float(numpy.vdot(u, cij).real)
+        c[i, j] = cij
+        c[j, i] = -cij
+    g = 0.5 * numpy.einsum('ijak,ijal->kl', c, c.conj())
+    dcc = -numpy.einsum('ijak,ljak->il', c.conj(), c)
+    dvv = 0.5 * numpy.einsum('ijak,ijdk->ad', c.conj(), c)
+    return e, dcc, _active_block(pt, pclass, b, g), dvv
