@@ -445,6 +445,56 @@ PARTITION = 'auto'      # 'becke': the scheme the grid asks for (Becke by defaul
 SSF_MIN_ATOMS = 100
 
 
+def _fast_scheme(mol, becke_scheme):
+    '''the scheme get_partition_fast runs for becke_scheme (PARTITION / SSF_MIN_ATOMS)'''
+    if becke_scheme is gen_grid.original_becke and (
+            PARTITION == 'ssf' or (PARTITION == 'auto' and mol.natm >= SSF_MIN_ATOMS)):
+        return gen_grid.stratmann
+    return becke_scheme
+
+
+def _radii_table(mol, radii_adjust, atomic_radii):
+    '''the size adjustments a_ij = f(i, j, 0) (natm * natm) of a radii_adjust function, None for none'''
+    if callable(radii_adjust) and atomic_radii is not None:
+        f = radii_adjust(mol, atomic_radii)
+        return numpy.asarray([f(i, j, 0) for i in range(mol.natm) for j in range(mol.natm)])
+    return None
+
+
+def partition_params(grids, mol=None):
+    '''(scheme, radii) of the partition a built grid was made with: scheme 'becke' (Becke's cell
+    function, three iterations) or 'ssf' (Stratmann-Scuseria-Frisch), radii the size adjustments a_ij
+    (natm * natm, nu = mu + a_ij (1 - mu^2)) or None; (None, None) for other schemes.  The same
+    decisions as get_partition_fast (socutils Grids, or pyscf Grids after use_fast_partition) and
+    pyscf's get_partition otherwise -- for the grid response of the gradients (lib/dft/becke_deriv.c).'''
+    if mol is None:
+        mol = grids.mol
+    becke_scheme = getattr(grids, 'becke_scheme', gen_grid.original_becke)
+    radii_adjust = getattr(grids, 'radii_adjust', None)
+    atomic_radii = getattr(grids, 'atomic_radii', radi.BRAGG_RADII)
+    fast = (isinstance(grids, Grids) and type(grids).get_partition is Grids.get_partition) \
+        or gen_grid.get_partition is get_partition_fast
+    if fast:
+        adjust_ok = radii_adjust in (None, radi.treutler_atomic_radii_adjust, radi.becke_atomic_radii_adjust,
+                                     h_pair_atomic_radii_adjust, polar_pair_atomic_radii_adjust)
+        from socutils.hessian.rhf_fast import _load_socdft
+        libdft = _load_socdft()
+        scheme = _fast_scheme(mol, becke_scheme)
+        name = {gen_grid.original_becke: 'SOCDFTbecke_owner', gen_grid.stratmann: 'SOCDFTssf_owner'}.get(scheme)
+        if not (FAST_PARTITION and adjust_ok and name and libdft is not None and hasattr(libdft, name)):
+            # get_partition_fast hands these to pyscf's partition (the scheme asked for)
+            scheme = becke_scheme
+    else:
+        scheme = becke_scheme
+    if scheme is gen_grid.original_becke or scheme is _becke_py:
+        kind = 'becke'
+    elif scheme is gen_grid.stratmann:
+        kind = 'ssf'
+    else:
+        return None, None
+    return kind, _radii_table(mol, radii_adjust, atomic_radii)
+
+
 def get_partition_fast(mol, atom_grids_tab, radii_adjust=None, atomic_radii=radi.BRAGG_RADII,
                        becke_scheme=gen_grid.original_becke, concat=True):
     '''pyscf.dft.gen_grid.get_partition for Becke's and the Stratmann-Scuseria-Frisch scheme (with
@@ -458,9 +508,7 @@ def get_partition_fast(mol, atom_grids_tab, radii_adjust=None, atomic_radii=radi
     libdft = _load_socdft()
     adjust_ok = radii_adjust in (None, radi.treutler_atomic_radii_adjust, radi.becke_atomic_radii_adjust,
                                  h_pair_atomic_radii_adjust, polar_pair_atomic_radii_adjust)
-    if becke_scheme is gen_grid.original_becke and (
-            PARTITION == 'ssf' or (PARTITION == 'auto' and mol.natm >= SSF_MIN_ATOMS)):
-        becke_scheme = gen_grid.stratmann
+    becke_scheme = _fast_scheme(mol, becke_scheme)
     if becke_scheme is gen_grid.original_becke:
         fn = getattr(libdft, 'SOCDFTbecke_owner', None) if libdft is not None else None
     elif becke_scheme is gen_grid.stratmann:
@@ -476,11 +524,8 @@ def get_partition_fast(mol, atom_grids_tab, radii_adjust=None, atomic_radii=radi
         return _pyscf_get_partition(mol, atom_grids_tab, radii_adjust, atomic_radii, becke_scheme, concat)
     natm = mol.natm
     atm = numpy.asarray(mol.atom_coords(), order='C')
-    radii = None
-    if callable(radii_adjust) and atomic_radii is not None:
-        f = radii_adjust(mol, atomic_radii)
-        radii = numpy.asarray([f(i, j, 0) for i in range(natm) for j in range(natm)])
-    pr = lib.c_null_ptr() if radii is None else radii.ctypes.data_as(ctypes.c_void_p)
+    radii = _radii_table(mol, radii_adjust, atomic_radii)
+    pr =lib.c_null_ptr() if radii is None else radii.ctypes.data_as(ctypes.c_void_p)
     coords_all = []
     weights_all = []
     for ia in range(natm):
