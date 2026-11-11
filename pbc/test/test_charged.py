@@ -43,6 +43,25 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(err1, err0, 5)
         self.assertGreater(mf.charge_correction, .09)
 
+    def test_he_cation_spinor_rsdf(self):
+        # socutils' own periodic spinor SCF (cell kept as mf.mol); RSDF fit errors cancel between q = 1 and q = 0
+        from pyscf import df
+        from socutils.scf import spinor_hf
+        from socutils.pbc import coulomb_reference as cr, spinor_scf
+        from socutils.pbc.rsdf import RSDF
+        err = []
+        for q in (1, 0):
+            mol = mgto.M(atom='He 0 0 0', unit='B', basis='sto-3g', charge=q, spin=q, verbose=0)
+            aux = df.addons.aug_etb(mol, beta=2.0)
+            m = spinor_hf.SpinorSCF(mol).x2camf().density_fit(auxbasis=aux)
+            m.verbose = 0
+            cell = cr.molecule_in_box(mol, 15.)
+            mf = spinor_scf.SpinorRSDF(cell, RSDF(cell, aux, precision=1e-11, nuc_zeta=1e14).build()).x2camf()
+            mf.verbose = 0
+            charged.correct(mf)
+            err.append(mf.kernel() - m.kernel())
+        self.assertAlmostEqual(err[0], err[1], 6)
+
 
 if __name__ == '__main__':
     unittest.main()

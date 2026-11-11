@@ -16,7 +16,7 @@ density is periodic with the cell.
 Orbital energies of a charged cell are shifted by a constant (the G = 0 potential is dropped); take ionization or
 attachment energies from total energies.
 
-Usage (any pyscf.pbc SCF object, e.g. a GHF / GKS with the X2CAMF helper of socutils.pbc.amf):
+Usage (any pyscf.pbc SCF object, or socutils' own periodic SCF, spinor_scf.periodic / SpinorRSDF):
 
     mf = charged.correct(mf)       # mf.energy_nuc() and mf.e_tot then include q^2 nu_M / 2
 '''
@@ -44,7 +44,9 @@ def charge_correction(cell):
 def correct(mf):
     '''Add the charged-cell correction to mf.energy_nuc (so to e_tot); returns mf.  A no-op for a neutral cell.
     The correction is stored as mf.charge_correction.'''
-    cell = mf.cell
+    cell = getattr(mf, 'cell', None)
+    if cell is None:  # socutils' periodic SCF (spinor_scf.periodic) keeps the cell as mf.mol
+        cell = mf.mol
     corr = charge_correction(cell)
     mf.charge_correction = corr
     if corr == 0:
