@@ -101,7 +101,7 @@ class KnownValues(unittest.TestCase):
 
     def test_cosx_fixed_grid_terms(self):
         '''the fixed-grid terms of the default RIJCOSX gradient, by the net force (zero for the exact
-        derivative; it tracks the largest error): the K gradient on cosx.GRAD_GRID rather than the SCF's
+        derivative; it tracks the largest error): the K gradient on cosx.GRAD_GRID_DENSE rather than the SCF's
         GRIDX2 (HF: 1.6e-5 against 2.7e-4 Eh/bohr from a grid-response reference), and the Becke cells'
         size adjustment by the electronegativity rule (LiF: 4.3e-5 against all pairs on the XC grid, net 4.0e-4)'''
         from pyscf.dft import radi
@@ -125,11 +125,51 @@ class KnownValues(unittest.TestCase):
             self.skipTest('no COSX kernel')
         self.assertEqual(sgrids.Grids.radii_adjust, sgrids.polar_pair_atomic_radii_adjust)
         hf = 'H 0 0 0; F 0 0 .96'
-        self.assertLess(net(hf, cosx.GRAD_GRID, None), 3e-5)                    # 0.8e-5
+        self.assertLess(net(hf, cosx.GRAD_GRID_DENSE, None), 3e-5)              # 0.8e-5
+        self.assertLess(net(hf, 'auto', None), 6e-5)                            # the default, GRIDX3
         self.assertGreater(net(hf, None, None), 1.5e-4)                         # 2.7e-4: K gradient on GRIDX2
         lif = 'Li 0 0 0; F 0 0 1.62'
-        self.assertLess(net(lif, cosx.GRAD_GRID, None), 1e-4)                   # 3.2e-5
-        self.assertGreater(net(lif, cosx.GRAD_GRID, radi.treutler_atomic_radii_adjust), 2.5e-4)  # 4.0e-4
+        self.assertLess(net(lif, cosx.GRAD_GRID_DENSE, None), 1e-4)             # 3.2e-5
+        self.assertGreater(net(lif, cosx.GRAD_GRID_DENSE, radi.treutler_atomic_radii_adjust), 2.5e-4)  # 4.0e-4
+
+    def test_cosx_grad_grid_by_accuracy(self):
+        '''the K-gradient grid follows the accuracy asked for (cosx.GRAD_GRIDS): GRIDX3 for a plain gradient,
+        the dense tier for a tight max-force threshold, GRIDX2 while the forces of an optimisation are large'''
+        from socutils.scf import cosx
+        from socutils.dft import vxc_fast, grids as sgrids
+        mol = gto.M(atom='H 0 0 0; F 0 0 .96', basis='def2-svp', verbose=0)
+        if not cosx.available(mol):
+            self.skipTest('no COSX kernel')
+        mf = dft.RKS(mol, xc='pbe0').density_fit(auxbasis='def2-universal-jfit', only_dfj=True)
+        mf.grids = sgrids.Grids(mol)
+        mf = cosx.apply(vxc_fast.apply(mf))
+        mf.conv_tol = 1e-10
+        mf.kernel()
+        self.assertEqual(cosx.grad_grid(mf)[1], 3)
+        g = rhf_fast.Gradients(mf)
+        g3 = g.kernel()
+        self.assertEqual(mf._cosx['grad_key'], 3)
+        self.assertAlmostEqual(mf._cosx['last_gmax'], abs(g3).max(), 12)
+        # a tight threshold: the dense tier; its gradient differs from GRIDX3's at the 1e-5 level
+        cosx.set_grad_accuracy(mf, conv=3e-5)
+        self.assertIsInstance(cosx.grad_grid(mf)[1], str)
+        gd = rhf_fast.Gradients(mf).kernel()
+        self.assertLess(abs(gd - g3).max(), 6e-5)
+        self.assertGreater(abs(gd - g3).max(), 1e-7)
+        # a loose one, and the argument of a single call
+        cosx.set_grad_accuracy(mf, conv=4.5e-3)
+        self.assertEqual(cosx.grad_grid(mf)[1], 2)
+        self.assertEqual(cosx.grad_grid(mf, accuracy=1e-5)[1], 3)
+        # auto: the grid of the threshold near convergence, a coarser one while the last max force is large
+        cosx.set_grad_accuracy(mf, conv=3e-4, auto=True)
+        mf._cosx['last_gmax'] = 2e-2
+        self.assertEqual(cosx.grad_grid(mf)[1], 2)
+        mf._cosx['last_gmax'] = 5e-4
+        self.assertEqual(cosx.grad_grid(mf)[1], 3)
+        g2 = rhf_fast.Gradients(mf)
+        g2.cosx_grad_accuracy = 3e-4
+        g2.kernel()
+        self.assertEqual(mf._cosx['grad_key'], 2)
 
     def test_size_adjustment_rules(self):
         '''the Becke cells' size adjustment on the XC grid, by the net force of the fixed-grid gradient (RIJ +

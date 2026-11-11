@@ -228,7 +228,7 @@ def _fast_terms(grad, mol, dm):
     if kf != 0 and getattr(mf, '_cosx', None):
         # K from COSX (socutils.scf.cosx.apply): the gradient of its energy on the SCF's grid
         from socutils.scf import cosx
-        r = cosx.grad_k(mf, dm)
+        r = cosx.grad_k(mf, dm, accuracy=getattr(grad, 'cosx_grad_accuracy', None))
         if r is not None:
             de += r
             kf = 0.
@@ -343,6 +343,13 @@ class _FastGradMixin:
         # the largest error of the gradient (median over 67 molecules: net force 0.9 x the max error)
         net = float(abs(de.sum(axis=0)).max())
         self.net_force = net
+        if getattr(mf, '_cosx', None):
+            # the max force of this gradient, for the K-gradient grid of the next one (cosx.set_grad_accuracy
+            # with auto=True: the grid follows the forces of an optimisation)
+            try:
+                mf._cosx['last_gmax'] = float(abs(de + self.grad_nuc(atmlst=atmlst)).max())
+            except Exception:       # noqa: a gradient method without a plain nuclear term
+                mf._cosx['last_gmax'] = None
         log.info('net force |sum_A g_A| %.2e Eh/bohr', net)
         if net > NET_FORCE_WARN:
             log.warn('net force %.1e Eh/bohr: the fixed-grid terms of the gradient (XC, COSX) are '
