@@ -11,6 +11,7 @@ import unittest
 import numpy
 import socutils  # noqa: F401
 from pyscf import gto, df, dft
+from pyscf.lib import temporary_env as lib_env
 from socutils.scf import rij_direct, md_j
 
 # a chain spread over ~20 Angstrom: most auxiliary primitives in the far field of most pairs
@@ -40,6 +41,29 @@ class KnownValues(unittest.TestCase):
         j2c = aux.intor('int2c2e')
         ref = numpy.einsum('ijP,P->ij', int3c, numpy.linalg.solve(j2c, numpy.einsum('ijP,ij->P', int3c, dm)))
         self.assertAlmostEqual(abs(eng.get_j(dm) - ref).max(), 0, 9)
+
+    def test_multi(self):
+        # J of several densities: rho of all of them in one pass (and the per-density fallback), one fit,
+        # the J of all fitted vectors in one pass; AO and occupied-contracted outputs; batches
+        mol = gto.M(atom=CHAIN, basis='cc-pvdz', verbose=0)
+        aux = df.addons.make_auxmol(mol, 'def2-universal-jfit')
+        eng = rij_direct.RIJDirect(mol, aux)
+        int3c = df.incore.aux_e2(mol, aux, 'int3c2e', aosym='s1')
+        j2c = aux.intor('int2c2e')
+        rng = numpy.random.default_rng(7)
+        dms = rng.standard_normal((5, mol.nao, mol.nao)) * .1
+        dms = dms + dms.transpose(0, 2, 1)
+        rho = numpy.einsum('ijP,xij->xP', int3c, dms)
+        self.assertAlmostEqual(abs(eng.get_rho_multi(dms) - rho).max(), 0, 9)
+        ref = numpy.einsum('ijP,xP->xij', int3c, numpy.linalg.solve(j2c, rho.T).T)
+        occ = rng.standard_normal((mol.nao, 6))
+        for multi in (True, False):
+            with lib_env(rij_direct, RHO_MULTI=multi):
+                self.assertAlmostEqual(abs(eng.get_j_multi(dms) - ref).max(), 0, 9)
+        # tiny max_memory: one density per batch of both passes
+        self.assertAlmostEqual(abs(eng.get_j_multi(dms, max_memory=1e-3) - ref).max(), 0, 9)
+        self.assertAlmostEqual(abs(eng.get_j_multi(dms, occ=occ) - ref.dot(occ)).max(), 0, 9)
+        self.assertAlmostEqual(abs(eng.get_j_multi(dms[0]) - ref[0]).max(), 0, 9)
 
     def test_tz(self):
         # f functions in the bra (f f pairs, degree 6) and g on the auxiliary side

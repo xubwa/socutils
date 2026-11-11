@@ -1614,3 +1614,232 @@ int SOCVHFrij_direct_vj_multi(double *vj, double *h, int nset, double *qcond, do
         free(ax.lpre);
         return npair;
 }
+
+/* Xs[(row_i + s - NH(l0 - 1)) * nset + d] += sum_t R_{t+s}[lane i] rho[t * nset + d], s over the degrees
+ * l0..l1 of the auxiliary side: contract_sets transposed (pass 1 of nset densities) */
+static void contract_sets_rho(const double *R0, int n, int lp, int l0, int l1, const double *rhoS,
+                              const size_t *row, int nset, double *Xs)
+{
+        const int nh0 = NH(lp);
+        int i, t, s, d;
+        for (i = 0; i < n; i++) {
+                for (s = NH(l0 - 1); s < NH(l1); s++) {
+                        double *x = Xs + (row[i] + s - NH(l0 - 1)) * nset;
+                        for (t = 0; t < nh0; t++) {
+                                const double rr = R0[rj_add[t][s] * RJ_NL + i];
+                                const double *v = rhoS + t * nset;
+#pragma omp simd
+                                for (d = 0; d < nset; d++) x[d] += rr * v[d];
+                        }
+                }
+        }
+}
+
+static void flush_far_rm(RJBatch *b, int lp, int l, double fp, const double *rhoS, int nset, double *Ys,
+                         double *R0, double *r)
+{
+        size_t row[RJ_NL];
+        const int n = b->n;
+        int i;
+        batch_pad(b);
+        farv(r, lp + l, fp, b->r2);
+        rjrv_table[lp + l](R0, r, b->X, b->Y, b->Z);
+        for (i = 0; i < n; i++) row[i] = (size_t)b->k[i] * NHQ;
+        contract_sets_rho(R0, n, lp, 0, l, rhoS, row, nset, Ys);
+        b->n = 0;
+}
+
+static void flush_near_rm(RJBatch *b, int lp, int l, double p, const double *rhoS, const int *hoff, int nset,
+                          double *Xs, double *R0, double *r)
+{
+        size_t row[RJ_NL];
+        const int n = b->n;
+        int i;
+        batch_pad(b);
+        nearv_table[lp + l](r, p, b->q, b->r2);
+        rjrv_table[lp + l](R0, r, b->X, b->Y, b->Z);
+        for (i = 0; i < n; i++) row[i] = hoff[b->k[i]];
+        contract_sets_rho(R0, n, lp, l, l, rhoS, row, nset, Xs);
+        b->n = 0;
+}
+
+/*
+ * Pass 1 of nset densities in one pass (the R tensors shared, the contraction vectorised over the sets):
+ * X (nset, hoff[naux]) of dmT (nao, nao, nset) = the symmetric densities with the sets innermost,
+ * decontracted Cartesian basis.  A bra pair is kept when the largest of its densities passes the bound.
+ * Per thread (hoff[naux] + (naux + ncen) NHQ) nset doubles.  Returns the pairs kept, -1 without memory.
+ */
+int SOCVHFrij_direct_rho_multi(double *X, double *dmT, int nset, double *qcond, double tol, double qaux,
+                               double far_eps,
+                               int naux, int ncen, double *aexp, int *al, int *hoff, int *cen_off, double *cxyz,
+                               int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env)
+{
+        rj_init(far_eps);
+        add_tables();
+        RJAux ax = {naux, ncen, aexp, cxyz, al, hoff, cen_off, NULL};
+        aux_prefix_l(&ax);
+        const size_t nao = ao_loc[nbas];
+        const size_t nx = hoff[naux];
+        const size_t nyb = (size_t)(naux + ncen) * NHQ;
+        int npair;
+        double dmax = 0;
+        {
+                size_t k;
+                const size_t n = nao * nao * nset;
+                for (k = 0; k < n; k++) if (fabs(dmT[k]) > dmax) dmax = fabs(dmT[k]);
+        }
+        RJPair *pairs = make_pairs(&npair, qcond, qaux * dmax, tol, atm, bas, nbas, env);
+        const int nthreads = omp_get_max_threads();
+        double **xbufs = calloc(nthreads, sizeof(double *));
+        double **ybufs = calloc(nthreads, sizeof(double *));
+        double *Xt = malloc(sizeof(double) * nx * nset);
+        int nkept = 0, fail = 0;
+#pragma omp parallel num_threads(nthreads) reduction(+:nkept)
+{
+        const int tid = omp_get_thread_num();
+        double *Xl = xbufs[tid] = calloc(nx * nset, sizeof(double));
+        double *Yl = ybufs[tid] = calloc(nyb * nset, sizeof(double));
+        const int ncmax = (LP / 2 + 1) * (LP / 2 + 2) / 2;
+        double *Et = malloc(sizeof(double) * ncmax * ncmax * NH(LP));
+        double wk[3 * (LP + 1) * (LP + 1) * (LP + 1)];
+        double rmax[NH(LP)];
+        double *rhoS = malloc(sizeof(double) * NH(LP) * nset);
+        double *R0 = malloc(sizeof(double) * (NH(LT) + (LT + 1)) * RJ_NL);
+        double *r = R0 ? R0 + NH(LT) * RJ_NL : NULL;
+        RJBatch bn[LQ + 1], bf[LQ + 1];
+        int ip;
+        if (!Xl || !Yl || !Et || !rhoS || !R0 || !Xt) {
+#pragma omp atomic write
+                fail = 1;
+        }
+#pragma omp barrier
+#pragma omp for schedule(dynamic, 8)
+        for (ip = 0; ip < npair; ip++) {
+                if (fail) continue;
+                const RJPair *pp = pairs + ip;
+                const int lp = pp->lp, nh = NH(lp);
+                const int ish = pp->ish, jsh = pp->jsh;
+                const int li = bas[ish * BAS_SLOTS + ANG_OF], lj = bas[jsh * BAS_SLOTS + ANG_OF];
+                const int nfa = (li + 1) * (li + 2) / 2, nfb = (lj + 1) * (lj + 2) / 2;
+                const double w = ish == jsh ? 1. : 2.;
+                pair_Et(Et, pp, atm, bas, env, wk);
+                const size_t a0 = ao_loc[ish], b0 = ao_loc[jsh];
+                int fa, fb, k, c, l, d;
+                memset(rhoS, 0, sizeof(double) * nh * nset);
+                for (fa = 0; fa < nfa; fa++)
+                        for (fb = 0; fb < nfb; fb++) {
+                                const double *v = dmT + ((a0 + fa) * nao + b0 + fb) * nset;
+                                const double *e = Et + (size_t)(fa * nfb + fb) * nh;
+                                for (k = 0; k < nh; k++) {
+                                        const double ek = w * e[k];
+                                        double *rk = rhoS + (size_t)k * nset;
+#pragma omp simd
+                                        for (d = 0; d < nset; d++) rk[d] += ek * v[d];
+                                }
+                        }
+                for (k = 0; k < nh; k++) {
+                        const double *rk = rhoS + (size_t)k * nset;
+                        double m = 0;
+                        for (d = 0; d < nset; d++) if (fabs(rk[d]) > m) m = fabs(rk[d]);
+                        rmax[k] = m;
+                }
+                if (self_bound(rmax, lp, pp->p) * qaux < tol) continue;
+                nkept++;
+                const double p = pp->p, fp = PI32 / (p * sqrt(p));
+                for (l = 0; l <= LQ; l++) bn[l].n = bf[l].n = 0;
+                for (c = 0; c < ncen; c++) {
+                        const double X0 = pp->P[0] - cxyz[3 * c], Y0 = pp->P[1] - cxyz[3 * c + 1];
+                        const double Z0 = pp->P[2] - cxyz[3 * c + 2];
+                        const double r2 = X0 * X0 + Y0 * Y0 + Z0 * Z0;
+                        double tf;
+                        const int nfar = far_count(&ax, c, p, r2, lp, &tf);
+                        const int k0 = cen_off[c], k1 = cen_off[c + 1];
+                        if (nfar > 0) {
+                                const int lm = ax.lpre[k0 + c + nfar];
+                                RJBatch *b = bf + lm;
+                                const int i = b->n++;
+                                b->X[i] = X0; b->Y[i] = Y0; b->Z[i] = Z0; b->r2[i] = r2;
+                                b->k[i] = k0 + c + nfar;
+                                if (b->n == RJ_NL) flush_far_rm(b, lp, lm, fp, rhoS, nset, Yl, R0, r);
+                        }
+                        for (k = k0 + nfar; k < k1; k++) {
+                                const int lq = al[k];
+                                RJBatch *b = bn + lq;
+                                const int i = b->n++;
+                                b->X[i] = X0; b->Y[i] = Y0; b->Z[i] = Z0; b->r2[i] = r2;
+                                b->q[i] = aexp[k];
+                                b->k[i] = k;
+                                if (b->n == RJ_NL) flush_near_rm(b, lp, lq, p, rhoS, hoff, nset, Xl, R0, r);
+                        }
+                }
+                for (l = 0; l <= LQ; l++) {
+                        if (bn[l].n) flush_near_rm(bn + l, lp, l, p, rhoS, hoff, nset, Xl, R0, r);
+                        if (bf[l].n) flush_far_rm(bf + l, lp, l, fp, rhoS, nset, Yl, R0, r);
+                }
+        }
+        free(Et);
+        free(R0);
+        free(rhoS);
+#pragma omp barrier
+        /* sum the thread buffers, each thread a slice */
+        if (!fail) {
+                const size_t n1 = nx * nset, n2 = nyb * nset;
+                size_t chunk = (n1 + nthreads - 1) / nthreads, s0 = chunk * tid < n1 ? chunk * tid : n1;
+                size_t s1 = s0 + chunk < n1 ? s0 + chunk : n1, k;
+                int t;
+                for (k = s0; k < s1; k++) {
+                        double s = 0;
+                        for (t = 0; t < nthreads; t++) s += xbufs[t][k];
+                        Xt[k] = s;
+                }
+                chunk = (n2 + nthreads - 1) / nthreads;
+                s0 = chunk * tid < n2 ? chunk * tid : n2;
+                s1 = s0 + chunk < n2 ? s0 + chunk : n2;
+                for (k = s0; k < s1; k++) {
+                        double s = 0;
+                        for (t = 1; t < nthreads; t++) s += ybufs[t][k];
+                        ybufs[0][k] += s;
+                }
+        }
+#pragma omp barrier
+        if (tid != 0) free(Yl);
+        free(Xl);
+}
+        if (!fail) {
+                /* far buckets -> primitives: X^i += (pi/q_i)^(3/2) sum_{k > i} Yb[k] (degree l_i block) */
+                const double *Y0 = ybufs[0];
+                double *acc = malloc(sizeof(double) * NHQ * nset);
+                int c;
+                for (c = 0; c < ncen; c++) {
+                        const int k0 = cen_off[c], k1 = cen_off[c + 1], n = k1 - k0;
+                        int i, s, d;
+                        memset(acc, 0, sizeof(double) * NHQ * nset);
+                        for (i = n - 1; i >= 0; i--) {
+                                const double *y = Y0 + (size_t)(k0 + c + i + 1) * NHQ * nset;
+                                size_t q0;
+                                for (q0 = 0; q0 < (size_t)NHQ * nset; q0++) acc[q0] += y[q0];
+                                const int k = k0 + i, l = al[k];
+                                const double q = aexp[k], fq = PI32 / (q * sqrt(q));
+                                const int nt = (l + 1) * (l + 2) / 2;
+                                for (s = 0; s < nt; s++) {
+                                        double *x = Xt + (size_t)(hoff[k] + s) * nset;
+                                        const double *a = acc + (size_t)(NH(l - 1) + s) * nset;
+                                        for (d = 0; d < nset; d++) x[d] += fq * a[d];
+                                }
+                        }
+                }
+                free(acc);
+                size_t k;
+                int d;
+#pragma omp parallel for private(d)
+                for (k = 0; k < nx; k++)
+                        for (d = 0; d < nset; d++) X[d * nx + k] = Xt[k * nset + d];
+        }
+        free(ybufs[0]);
+        free(xbufs);
+        free(ybufs);
+        free(Xt);
+        free(pairs);
+        free(ax.lpre);
+        return fail ? -1 : nkept;
+}

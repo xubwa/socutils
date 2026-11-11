@@ -32,6 +32,8 @@ TOL = 1e-13             # screening of the bra pairs (sqrt((ab|ab)) x the other 
 FAR_EPS = 1e-14         # relative accuracy of the asymptotic Boys functions in the far field
 LMAX_BRA = 3
 LMAX_AUX = 6
+NHQ = (LMAX_AUX + 1) * (LMAX_AUX + 2) * (LMAX_AUX + 3) // 6     # Hermite terms up to LMAX_AUX (the kernel's NHQ)
+RHO_MULTI = True        # get_j_multi: rho of all densities in one pass (SOCVHFrij_direct_rho_multi)
 
 
 def _load():
@@ -153,6 +155,25 @@ class RIJDirect:
             self.qcond.ctypes.data_as(ctypes.c_void_p), ctypes.c_double(self.tol),
             ctypes.c_double(self.qaux.max()), ctypes.c_double(self.far_eps), *self._args())
         return self.AT.dot(X)
+
+    def get_rho_multi(self, dms):
+        '''rho (nset, naux) of symmetric densities (nset, nao, nao) in one pass (the R tensors shared, the
+        contraction vectorised over the densities)'''
+        dms = numpy.asarray(dms, dtype=numpy.double)
+        nset = dms.shape[0]
+        npao = self.c.shape[0]
+        dmt = numpy.empty((npao, npao, nset))                     # the densities innermost
+        for i, d in enumerate(dms):
+            dmt[:, :, i] = self.c.dot(self.c.dot(d).T)            # c D c^T, D symmetric
+        X = numpy.empty((nset, self.hoff[-1]))
+        n = self.libv.SOCVHFrij_direct_rho_multi(
+            X.ctypes.data_as(ctypes.c_void_p), dmt.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nset),
+            self.qcond.ctypes.data_as(ctypes.c_void_p), ctypes.c_double(self.tol),
+            ctypes.c_double(self.qaux.max()), ctypes.c_double(self.far_eps), *self._args())
+        if n < 0:
+            raise MemoryError('rij_direct: rho of %d densities' % nset)
+        self.npair_rho = n
+        return numpy.asarray(self.AT.dot(X.T)).T
 
     def get_vj_fit(self, dfit):
         '''J_ij = sum_P (ij|P) dfit_P'''
@@ -292,13 +313,20 @@ class RIJDirect:
             dms = (dms + dms.transpose(0, 2, 1)) * .5
         nset = dms.shape[0]
         t0 = (logger.process_clock(), logger.perf_counter())
-        rho = numpy.empty((nset, self.auxmol.nao))
-        for i, d in enumerate(dms):
-            rho[i] = self.get_rho(d)
-        t0 = self.log.timer_debug1('rij_direct rho of %d densities' % nset, *t0)
-        dfit = numpy.ascontiguousarray(self.fit(rho.T).T)
         npao = self.c.shape[0]
         nb = max(1, int(max_memory * 1e6 / (8. * npao * npao * 1.5)))
+        if RHO_MULTI and nset > 1 and hasattr(self.libv, 'SOCVHFrij_direct_rho_multi'):
+            # the kernel's thread buffers: (hoff[naux] + (naux + ncen) NHQ) doubles per density and thread
+            nyb = (len(self.aexp) + len(self.cen_off) - 1) * NHQ
+            nbr = int(max_memory * 1e6 / (8. * (npao * npao + (self.hoff[-1] + nyb) * lib.num_threads())))
+            nbr = max(1, min(nb, nbr))
+            rho = numpy.concatenate([self.get_rho_multi(dms[i:i + nbr]) for i in range(0, nset, nbr)])
+        else:
+            rho = numpy.empty((nset, self.auxmol.nao))
+            for i, d in enumerate(dms):
+                rho[i] = self.get_rho(d)
+        t0 = self.log.timer_debug1('rij_direct rho of %d densities' % nset, *t0)
+        dfit = numpy.ascontiguousarray(self.fit(rho.T).T)
         out = [self.get_vj_fit_multi(dfit[i:i + nb], occ) for i in range(0, nset, nb)]
         self.log.timer_debug1('rij_direct vj of %d fitted vectors' % nset, *t0)
         vj = out[0] if len(out) == 1 else numpy.concatenate(out)
