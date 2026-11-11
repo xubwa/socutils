@@ -402,6 +402,7 @@ def _is_h1_occ(h1, mo_coeff, mo_occ):
 
 
 SOLVE_MO1_ARRAYS = 20
+SOLVE_MO1_MEM = .5      # the share of mf.max_memory the CPHF solver may always use for its atom batches
 
 
 def _solve_mo1_occ(mf, mo_energy, mo_coeff, mo_occ, h1c, fx, atmlst=None, max_memory=4000,
@@ -416,11 +417,17 @@ def _solve_mo1_occ(mf, mo_energy, mo_coeff, mo_occ, h1c, fx, atmlst=None, max_me
     nocc = mocc.shape[1]
     s1a = -mol.intor('int1e_ipovlp', comp=3)
     mem_now = lib.current_memory()[0]
-    max_memory = max(2000, max_memory * .9 - mem_now)
-    # per perturbation: the Krylov subspace (trial vectors and their images, ~8 cycles) and the solver's
-    # work arrays, nmo nocc each (SOLVE_MO1_ARRAYS; 6 as pyscf's estimate put all 303 atoms of Trp-cage in
-    # one batch, a subspace of ~140 GB)
-    blksize = max(2, int(max_memory * 1e6 / 8 / (nmo * nocc * 3 * SOLVE_MO1_ARRAYS)))
+    # the budget of the mean field, not the max_memory argument (pyscf's hess_elec passes its default of
+    # 4000 MB): with it the subspace estimate below cut trpn_1_10 into 25 batches of 7 atoms, each with its own
+    # Krylov solve and per-call overheads (CP-SCF 5812 -> 13945 s).  At least SOLVE_MO1_MEM of the budget.
+    budget = max(max_memory, mf.max_memory)
+    max_memory = max(2000, budget * .9 - mem_now, SOLVE_MO1_MEM * budget)
+    # per perturbation: the Krylov subspace (trial vectors and their images, ~8 cycles, nvir nocc each) and
+    # the solver's work arrays (nmo nocc each); pyscf's estimate of 6 arrays put all 303 atoms of Trp-cage in
+    # one batch, a subspace of ~140 GB
+    per = 8. * nocc * ((SOLVE_MO1_ARRAYS - 4) * (nmo - nocc) + 4 * nmo)
+    blksize = max(2, int(max_memory * 1e6 / (3 * per)))
+    logger.info(mf, 'CPHF: %d atoms in batches of %d (%.0f MB for the solver)', len(atmlst), blksize, max_memory)
     mo1s = [None] * mol.natm
     e1s = [None] * mol.natm
     aoslices = mol.aoslice_by_atom()

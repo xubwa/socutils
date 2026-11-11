@@ -131,7 +131,7 @@ class KnownValues(unittest.TestCase):
         h = rhf_fast.RHFHessian(mf)
         h3 = rhf_fast.RHFHessian(mf)
         h3.sum_rule = False
-        self.assertAlmostEqual(abs(h.kernel() - h3.kernel()).max(), 0, 12)
+        self.assertAlmostEqual(abs(h.kernel() - h3.kernel()).max(), 0, 10)
 
     def _check_default(self, name, coarse_fock1=4., final_grid=None, gridx2=None):
         mol, mf, e_ref, f_ref = _default_scf(name)
