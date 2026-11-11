@@ -189,6 +189,12 @@ ISDF grid / greedy points, not MPI, omega or the far fit, `euocl/wabl_A..D`).  A
 error: on the finer default grid the forbidden W_y of EuOCl is still -35 (`euocl/wabl_I`), so take
 ~1% of |W| as the THC error of W at a site without symmetry (Eu:YSO).
 
+Eu:YSO 32 atoms (`SYSTEMS['eu_yso']`, basis_T10), THC + MPI on 4 nodes x 2 ranks (50 GB per rank), 9 h for the
+whole pipeline (run `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/eu_yso_thcmpi4/`, rank logs
+`eu_yso_thcmpi4_ranks/out.*`, script `run_yso_thcmpi4.sbatch`) vs RSDF `eu_yso_T10`: SCF / CAHF / CASCI E0 all
+-2.6e-4 Eh (a constant shift), 7F1 186.6 / 403.0 / 478.0 cm-1 (identical), W (-845.47, 1944.98, -3514.67) |W| 4105.0
+vs (-844.76, 1944.28, -3514.77) |W| 4104.6, d00 (rc 2.9 A) |d| 4.003e-4 vs 4.00e-4.
+
 Caveats: BLAS thread count alone moves E_K by ~1e-6 Eh (ISDF cut 1e-10), so compare runs at equal
 thread counts.  The uniform-grid cutoff decides ~1e-4 Eh in Eu cells (smooth h shells; EuOCl +4.6e-4 at
 precision 1e-10, mesh 85x85x143); a mesh scan (`euocl/wabl_M88..M93`) was running at the hand-off.
@@ -197,8 +203,8 @@ Validation scripts: `pbc/bench/thc_tests/` (`quartz_scf_mpi.py`, `fixed_density_
 
 ## Open items
 
-1. Eu:YSO 32 atoms with THC + MPI vs RSDF `eu_yso_T10` (queued: `run_yso_thcmpi.sbatch`, 4 nodes x 2
-   ranks), then the 64-atom supercell; EuOCl 2x2x1 / 2x2x2 with THC.
+1. Eu:YSO 64-atom supercell with THC + MPI (the 32-atom cell agrees with RSDF, above); EuOCl 2x2x1 / 2x2x2 with
+   THC.  Run MPI jobs with MKL_DYNAMIC=FALSE (else ~1e-6 Eh run-to-run noise through the ISDF cut).
 2. EuOCl cell convergence beyond 2x2x2 (3x3x2 or larger, now feasible with THC), and the same
    cell-size check for EuCl3 / EuBr3 / Eu(NO3)3 (only primitive cells so far).
 3. Express W in a common frame (crystal-field axes of the Eu site) to compare compounds.
