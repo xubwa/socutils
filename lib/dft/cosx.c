@@ -34,6 +34,7 @@
 #include <string.h>
 #include <math.h>
 #include <omp.h>
+#include <x86intrin.h>
 /* -DCX_PROFILE: per-pair counters and cycle counts in SOCDFTcosx_stats */
 #ifdef CX_PROFILE
 #include <x86intrin.h>
@@ -2058,22 +2059,52 @@ int SOCDFTcosx_build_grad(void *p, int *atm, int *bas, double *env)
 
 /* Mm (nab, nh) = W (nab, n) R (nh, n)^T: dot products for the small cases (a GEMM call costs more
  * there), GEMM beyond */
+static int cx_wdr = 1;     /* w_dot_r: 1 the eight-accumulator loops, 0 dgemm for the larger blocks */
+void SOCDFTcosx_set_wdr(int v) { cx_wdr = v; }
 static void w_dot_r(double *Mm, const double *W, const double *R, int nab, int nh, int n, dgemm_t dgemm_)
 {
-        if ((size_t)nab * nh >= 256) {
+        if (!cx_wdr && (size_t)nab * nh >= 256) {
                 const double one = 1, zero = 0;
                 dgemm_("T", "N", &nh, &nab, &n, &one, R, &n, W, &n, &zero, Mm, &nh);
                 return;
         }
+        /* Mm[ab][t] = sum_g W_ab R_t: the row of W shared by eight R rows at a time (eight vector
+         * accumulators).  The blocks are small (nab nh ~ 70 on average): ~1 us per primitive pair whatever
+         * the form - a library GEMM, this, or W transposed with the pair index as the vector dimension
+         * (measured, C16H34 cc-pVDZ) */
         int ab, t, g;
         for (ab = 0; ab < nab; ab++) {
                 const double *w = W + (size_t)ab * n;
-                for (t = 0; t < nh; t++) {
+                double *m = Mm + (size_t)ab * nh;
+                for (t = 0; t + 8 <= nh; t += 8) {
+                        const double *r0 = R + (size_t)t * n, *r1 = r0 + n, *r2 = r1 + n, *r3 = r2 + n;
+                        const double *r4 = r3 + n, *r5 = r4 + n, *r6 = r5 + n, *r7 = r6 + n;
+                        double s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, s5 = 0, s6 = 0, s7 = 0;
+#pragma omp simd reduction(+:s0, s1, s2, s3, s4, s5, s6, s7)
+                        for (g = 0; g < n; g++) {
+                                const double wg = w[g];
+                                s0 += wg * r0[g]; s1 += wg * r1[g]; s2 += wg * r2[g]; s3 += wg * r3[g];
+                                s4 += wg * r4[g]; s5 += wg * r5[g]; s6 += wg * r6[g]; s7 += wg * r7[g];
+                        }
+                        m[t] = s0; m[t + 1] = s1; m[t + 2] = s2; m[t + 3] = s3;
+                        m[t + 4] = s4; m[t + 5] = s5; m[t + 6] = s6; m[t + 7] = s7;
+                }
+                for (; t + 4 <= nh; t += 4) {
+                        const double *r0 = R + (size_t)t * n, *r1 = r0 + n, *r2 = r1 + n, *r3 = r2 + n;
+                        double s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+#pragma omp simd reduction(+:s0, s1, s2, s3)
+                        for (g = 0; g < n; g++) {
+                                const double wg = w[g];
+                                s0 += wg * r0[g]; s1 += wg * r1[g]; s2 += wg * r2[g]; s3 += wg * r3[g];
+                        }
+                        m[t] = s0; m[t + 1] = s1; m[t + 2] = s2; m[t + 3] = s3;
+                }
+                for (; t < nh; t++) {
                         const double *r = R + (size_t)t * n;
                         double s = 0;
 #pragma omp simd reduction(+:s)
                         for (g = 0; g < n; g++) s += w[g] * r[g];
-                        Mm[(size_t)ab * nh + t] = s;
+                        m[t] = s;
                 }
         }
 }
@@ -2164,6 +2195,10 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
         const int mkl0 = mkl_set_num_threads_local ? mkl_set_num_threads_local(1) : 0;
         const double one = 1, zero = 0;
         double *gr = calloc(natm * 3, sizeof(double));
+        double st[32] = {0};
+        unsigned long long tc[8] = {0};
+        const unsigned long long tsc0 = __rdtsc();
+        const double tw0 = omp_get_wtime();
         double *Kt = kout ? calloc((size_t)nao * nao, sizeof(double)) : NULL;
         double *wa = kout ? malloc(sizeof(double) * (size_t)nao * blk) : NULL;
         double *a = malloc(sizeof(double) * 4 * (size_t)nao * blk);
@@ -2201,6 +2236,8 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
                 const int g0 = b * blk, n = g0 + blk <= ngrid ? blk : ngrid - g0;
                 uint8_t *msk = non0tab + (size_t)(g0 / MASK_BLK) * nbas;
                 int k, g, ip, x;
+                double tq0 = omp_get_wtime(), tq1;
+#define GTICK(slot_) { tq1 = omp_get_wtime(); st[slot_] += tq1 - tq0; tq0 = tq1; }
                 for (k = 0; k < 3; k++) memcpy(xyz + k * n, coords + (size_t)k * ngrid + g0, sizeof(double) * n);
                 const int nl = eval_select1(a, ix, runs, n, xyz, msk, cutoff, ao_loc, atm, bas, nbas, env, rmx, full);
                 if (nl == 0) continue;
@@ -2239,6 +2276,7 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
                         if (r2 > rb) rb = r2;
                 }
                 rb = sqrt(rb);
+                GTICK(0)
                 for (ip = 0; ip < opt->npair; ip++) {
                         const CXPair *pp = opt->pairs + ip;
                         const int I = pp->I, J = pp->J, both = I != J;
@@ -2270,6 +2308,10 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
                                 bsum += bk[k];
                         }
                         if (bsum * wgt < tol) continue;
+                        st[8] += 1;
+                        st[9] += (double)nab * n;
+                        unsigned long long c0 = __rdtsc(), c1;
+#define CTICK(slot_) { c1 = __rdtsc(); tc[slot_] += c1 - c0; c0 = c1; }
                         const size_t sz = (size_t)nab * nh, szd = (size_t)3 * nab * nh1;
                         const int I0 = ao_loc[I], J0 = ao_loc[J];
                         /* W_ab = w (H_a F_b + H_b F_a) */
@@ -2289,6 +2331,7 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
                                                 }
                                         }
                         }
+                        CTICK(2)
                         double gA[3] = {0, 0, 0}, gC[3] = {0, 0, 0};
                         memset(A, 0, sizeof(double) * nab * n);
                         int k0 = 0;
@@ -2331,6 +2374,7 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
                                 if (k0 > 0) {
                                         const double *Mo = opt->mdata + pp->mo + sz * (k0 - 1);
                                         e_times_r(A, Mo, farR[at], nab, nh, n);
+                                        CTICK(3)
                                         /* Mm (nab, nh1) = W R^T */
                                         w_dot_r(Mm, W, farR[at], nab, nh1, n, dgemm_);
                                         int ab, t;
@@ -2346,6 +2390,8 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
                         }
                         for (k = k0; k < pp->np; k++) {
                                 if (bk[k] * wgt < tol) continue;
+                                st[10] += 1;
+                                CTICK(4)
                                 const double p = opt->pp_p[pp->po + k];
                                 const double *P = opt->pp_P + 3 * (pp->po + k);
                                 const double *E = opt->edata + pp->eo + sz * k;
@@ -2373,7 +2419,11 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
                                 hermite_R_vec(R, S, X, Y, Z, L + 1, n, Rwk);
                                 e_times_r(A, E, R, nab, nh, n);
 #endif
+                                CTICK(3)
                                 w_dot_r(Mm, W, R, nab, nh1, n, dgemm_);
+                                CTICK(6)
+                                st[12] += 2. * nab * nh1 * n;           /* flops of W.R; of E R: */
+                                st[13] += 2. * nab * nh * n;
                                 int ab, t;
                                 for (ab = 0; ab < nab; ab++)
                                         for (t = 0; t < nh; t++) {
@@ -2394,6 +2444,7 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
                                         }
                                 }
                         }
+                        CTICK(4)
                         const int aI = atm_of[I], aJ = atm_of[J];
                         for (x = 0; x < 3; x++) {
                                 if (pp->onec) {
@@ -2433,7 +2484,9 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
                                         }
                                 }
                         }
+                        CTICK(5)
                 }
+                GTICK(1)
                 if (Kt) {
                         /* K[ix_i][nu] += sum_g w phi_i G^F_nu */
                         for (i = 0; i < nl; i++)
@@ -2446,6 +2499,7 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
                                 for (q = 0; q < nao; q++) row[q] += src[q];
                         }
                 }
+                GTICK(6)
                 /* (i): Q (nl, n) = M[ix, :] G^F + D[ix, :] G^H (+ Yg[ix, ix] phi) */
                 for (i = 0; i < nl; i++) memcpy(dr + (size_t)i * nao, dmm + (size_t)ix[i] * nao, sizeof(double) * nao);
                 dgemm_("N", "N", &n, &nl, &nao, &one, GF, &n, dr, &nao, &zero, Q, &n);
@@ -2467,9 +2521,20 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
                                 gr[aa * 3 + x] -= s;
                         }
                 }
+                GTICK(7)
+        }
+#undef GTICK
+#undef CTICK
+        {
+                /* the pair timers from the cycle counter */
+                const double spc = (omp_get_wtime() - tw0) / (double)(__rdtsc() - tsc0 + 1);
+                int q_;
+                for (q_ = 2; q_ <= 5; q_++) st[q_] = tc[q_] * spc;
+                st[11] = tc[6] * spc;           /* W.R alone (slot 4: the derivative sums) */
         }
 #pragma omp critical(socdft_cosx_grad)
         {
+                for (i = 0; i < 32; i++) cx_stat[i] += st[i];
                 for (i = 0; i < natm * 3; i++) grad[i] += gr[i];
                 if (Kt) {
                         size_t q;
