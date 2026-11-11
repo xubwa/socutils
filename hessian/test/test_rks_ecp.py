@@ -9,9 +9,9 @@ every piece against pyscf's own code in the same model, on HI and AgH.
   * hessian.rhf_fast: pyscf's Hessian (no density fitting; pyscf's DF Hessian
     has no only_dfj)
   * cosx: K against the exact K on a fine grid
-  * cosx.gridx_args: the heavy-atom rule must see the nuclear charge, not the
-    ECP valence charge mol.atom_charges() returns (Rb 9, Sr 10, Zr 12, Mo 14,
-    Ru 16, Pd 18, Hf 12, W 14, Os 16, Pt 18, La 11 all fall under HEAVY_Z = 18)
+  * cosx.gridx_args: the heavy-atom rule sees the element, not the ECP valence
+    charge mol.atom_charges() returns (Rb 9, Sr 10, Zr 12, Mo 14, Ru 16, Pd 18,
+    Hf 12, W 14, Os 16, Pt 18, La 11 would all fall under HEAVY_Z = 18)
 
     python hessian/test/test_rks_ecp.py
 '''
@@ -78,10 +78,8 @@ class KnownValues(unittest.TestCase):
     def test_agh(self):
         self._check(_mol('Ag 0 0 0; H 0 0.04 1.62', 'Ag'))
 
-    @unittest.expectedFailure
     def test_heavy_rule_with_ecp(self):
-        '''cosx.gridx_args tests mol.atom_charges() (the ECP valence charge): the Z > HEAVY_Z rule does not fire for
-        Rb, Sr, Zr ... (remove the decorator once it tests the nuclear charge)'''
+        '''cosx.gridx_args must test the element: mol.atom_charges() is the ECP valence charge (Rb 9, Zr 12, Pt 18)'''
         for atom, heavy in (('Rb 0 0 0; F 0 0 2.27', 'Rb'), ('Zr 0 0 0; H 0 0 1.85', 'Zr'), ('Pt 0 0 0; H 0 0 1.53', 'Pt')):
             mol = gto.M(atom=atom, basis='def2-svp', ecp={heavy: 'def2-svp'}, spin=None, verbose=0)
             self.assertGreater(gto.charge(heavy), cosx.HEAVY_Z)
