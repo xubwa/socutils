@@ -74,6 +74,7 @@ MULTI_FLOAT = False     # its contraction in single precision (set_multi_float)
 HESS_FLOAT = False      # the Hessian passes' A C contraction (Fock1 / K second derivatives) in single precision
 PROFILE = {}            # wall seconds of get_k's phases (accumulated)
 MULTI_MAXSET = 512      # densities per pass (every pass computes the integrals again)
+MULTI_MEM_FLOOR = .3    # fraction of max_memory a pass of the multi-density K may always use
 DENSE_MIN = .2          # a grid block contracts densely when its kept pairs are >= this fraction of nao^2/2
                         # (else record-wise; crossover measured ~0.19: Trp-cage SVP kept 0.14 record-wise 427 s
                         # vs dense 508 s, trpn_1_5 SVP kept 0.24 dense 31.8 vs 35.7 s; same results)
@@ -236,8 +237,10 @@ class COSX(lib.StreamObject):
                 per += 8 * nao * nao * nt / 1e6         # the threads' private K
             kept = getattr(self, '_kept', .5)
             fixed = (4 if libdft.SOCDFTcosx_mfloat() else 8) * (kept * nao * nao / 2 * self.blk + nao * nao) * nt / 1e6
-            # (at least 2 GB: a pass costs the integrals of the whole grid, ~25 densities' worth on c16 TZVP)
-            avail = max(2000, mol.max_memory - lib.current_memory()[0] - fixed)
+            # At least 2 GB and MULTI_MEM_FLOOR of max_memory, whatever the caller already holds: in a Hessian
+            # the process is near max_memory during the CP-SCF, and the 2 GB floor alone gave ~47 densities
+            # per pass (trpn_1_5 def2-SVP, 276 densities, 24 threads: 6 passes 27 s, 2 passes 19 s, 1 pass 16 s)
+            avail = max(2000, MULTI_MEM_FLOOR * mol.max_memory, mol.max_memory - lib.current_memory()[0] - fixed)
             nb = max(MULTI_MIN, min(nset, MULTI_MAXSET, int(.8 * avail / per)))
             if nb < nset and not _onepass:
                 npass = (nset + nb - 1) // nb
