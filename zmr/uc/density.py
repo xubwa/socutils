@@ -116,8 +116,16 @@ def _active_block(pt, pclass, b, g):
     from socutils.zmr.active import rdm as active_rdm
     act = pt.active_space
     ntarget = act.target(pt.nelec, pclass.dn)
-    dm = active_rdm.make_rdm(act, b, ntarget, 1)              # [k', k, t, u]
-    d = numpy.einsum('kl,lktu->tu', g, dm)
+    # g = sum_m w_m y_m y_m^+ (rank at most the number of external labels): the 1-RDMs
+    # of the vectors b y_m only, not the transition RDMs of all pairs of basis functions
+    w, y = numpy.linalg.eigh(0.5 * (g + g.conj().T))
+    keep = w > 1e-14 * max(1.0, float(w.max()) if len(w) else 1.0)
+    d = numpy.zeros((act.norb, act.norb), dtype=numpy.complex128)
+    if keep.any() and ntarget >= 1:
+        vecs = numpy.ascontiguousarray(b @ y[:, keep])
+        amp = active_rdm.annihilation_amplitudes(act, vecs, ntarget, 1)
+        amp = amp.reshape(vecs.shape[1], act.norb, -1)
+        d = numpy.einsum('m,mpk,mqk->pq', w[keep], amp.conj(), amp, optimize=True)
     gamma = active_rdm.make_rdm(act, pt.civecs[:, [0]], pt.nelec, 1)[0, 0]
     return d - numpy.trace(g) * gamma
 
