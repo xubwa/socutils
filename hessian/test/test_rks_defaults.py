@@ -160,6 +160,9 @@ class KnownValues(unittest.TestCase):
         # the COSX objects kept their grids over the gradient and the Hessians (cosx.COSX.build)
         npts = {lev: k.grids.weights.size for lev, k in mf._cosx['k'].items()}
         for lev, n in npts.items():
+            if isinstance(lev, str):        # the K-gradient grid (cosx.GRAD_GRID)
+                self.assertEqual(n, cosx.make_grids(mol, **cosx.GRAD_GRID).weights.size)
+                continue
             self.assertEqual(n, cosx.make_grids(mol, **cosx.GRIDX[lev]).weights.size)
         return mf
 

@@ -99,5 +99,37 @@ class KnownValues(unittest.TestCase):
         self._check('pbe0', 'onx')
 
 
+    def test_cosx_fixed_grid_terms(self):
+        '''the fixed-grid terms of the default RIJCOSX gradient, by the net force (zero for the exact
+        derivative; it tracks the largest error): the K gradient on cosx.GRAD_GRID rather than the SCF's
+        GRIDX2 (HF: 1.6e-5 against 2.7e-4 Eh/bohr from a grid-response reference), and the Becke cells'
+        size adjustment for pairs with hydrogen only (LiF: 1.2e-4 against 6.0e-4)'''
+        from pyscf.dft import radi
+        from socutils.scf import cosx
+        from socutils.dft import vxc_fast, grids as sgrids
+
+        def net(atom, grad_grid, adjust):
+            mol = gto.M(atom=atom, basis='def2-svp', verbose=0)
+            with lib.temporary_env(cosx, GRAD_GRID=grad_grid):
+                mf = dft.RKS(mol, xc='pbe0').density_fit(auxbasis='def2-universal-jfit', only_dfj=True)
+                mf.grids = sgrids.Grids(mol)
+                if adjust is not None:
+                    mf.grids.radii_adjust = adjust
+                mf = cosx.apply(vxc_fast.apply(mf))
+                mf.conv_tol = 1e-10
+                mf.kernel()
+                g = rhf_fast.Gradients(mf)
+                g.kernel()
+                return g.net_force
+        if not cosx.available(gto.M(atom='H 0 0 0; F 0 0 .96', basis='def2-svp', verbose=0)):
+            self.skipTest('no COSX kernel')
+        self.assertEqual(sgrids.Grids.radii_adjust, sgrids.h_pair_atomic_radii_adjust)
+        hf = 'H 0 0 0; F 0 0 .96'
+        self.assertLess(net(hf, cosx.GRAD_GRID, None), 3e-5)                    # 0.8e-5
+        self.assertGreater(net(hf, None, None), 1.5e-4)                         # 2.7e-4: K gradient on GRIDX2
+        lif = 'Li 0 0 0; F 0 0 1.62'
+        self.assertLess(net(lif, cosx.GRAD_GRID, None), 2e-4)                   # 0.9e-4
+        self.assertGreater(net(lif, cosx.GRAD_GRID, radi.treutler_atomic_radii_adjust), 4e-4)   # 5.9e-4
+
 if __name__ == '__main__':
     unittest.main()

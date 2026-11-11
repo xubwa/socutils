@@ -158,6 +158,26 @@ def region_prune(chg, rads, angular_grid, alphas=NWCHEM_ALPHAS, radii=radi.BRAGG
     return table[place]
 
 
+def h_pair_atomic_radii_adjust(mol, atomic_radii):
+    '''The Treutler-Ahlrichs size adjustment of the Becke cells for atom pairs with a hydrogen only, plain
+    Becke cells for all other pairs (a radii_adjust function as pyscf.dft.radi's).
+
+    The adjustment moves the cell boundary by the ratio of the neutral atoms' Bragg radii; across an ionic
+    or polar bond between heavy atoms that pushes it into the anion (Li 1.45 / F 0.50 Angstrom) and the
+    fixed-grid energy surface itself is off: XC gradient error on the default grid, 1e-5 Eh/bohr, with the
+    adjustment for all pairs / for pairs with H only: LiF 49 / 3.8, KF 40 / 2.3, RbF 57 / 6.2, SiF4 56 /
+    9.9, GeF4 81 / 22; max |dE| over 67 main-group and 3d molecules 2.6e-4 / 7.7e-5 Eh.  Hydrides need
+    it (no adjustment at all: GeH4 51, HBr 61) and are unchanged.  Same number of points.'''
+    f0 = radi.treutler_atomic_radii_adjust(mol, atomic_radii)
+    is_h = [gto.charge(mol.atom_pure_symbol(i)) == 1 for i in range(mol.natm)]
+
+    def fadjust(i, j, g):
+        if is_h[i] or is_h[j]:
+            return f0(i, j, g)
+        return g
+    return fadjust
+
+
 class Grids(gen_grid.Grids):
     '''Compact DFT grid (see module docstring).
 
@@ -186,8 +206,9 @@ class Grids(gen_grid.Grids):
             default (None: use ``radi_method`` for all elements).
         radial_b_heavy : b of the radial-shell formula for Z > 10.
         alpha : exponent of the M4 mapping (``treutler_m4``).
-        becke_scheme, radii_adjust : PySCF's Becke partition with the
-            Treutler size adjustment by default.
+        becke_scheme, radii_adjust : PySCF's Becke partition; the Treutler size
+            adjustment for atom pairs with a hydrogen only (h_pair_atomic_radii_adjust)
+            by default, radi.treutler_atomic_radii_adjust for all pairs as pyscf.
 
     ``atom_grid`` still overrides the radial / angular sizes element by
     element (then the five-region pruning is applied with the given maximum
@@ -207,7 +228,7 @@ class Grids(gen_grid.Grids):
     radi_method = staticmethod(treutler_m3)
     heavy_radi_method = staticmethod(radi.mura_knowles)
     becke_scheme = staticmethod(gen_grid.original_becke)
-    radii_adjust = staticmethod(radi.treutler_atomic_radii_adjust)
+    radii_adjust = staticmethod(h_pair_atomic_radii_adjust)
 
     _keys = {'intacc', 'radial_b', 'angular_grid', 'h_reduced', 'alphas', 'weight_cutoff', 'xi', 'xi_scale',
              'element_radi', 'alpha', 'radial_b_heavy', 'heavy_radi_method'}
@@ -284,6 +305,14 @@ class Grids(gen_grid.Grids):
             atom_grids_tab[symb] = (numpy.vstack(coords), numpy.hstack(vol))
         return atom_grids_tab
 
+    def get_partition(self, mol, atom_grids_tab=None, radii_adjust=None, atomic_radii=radi.BRAGG_RADII,
+                      becke_scheme=gen_grid.original_becke, concat=True):
+        '''the partition by get_partition_fast (which also handles h_pair_atomic_radii_adjust; pyscf's own
+        get_partition accepts only its two size adjustments with Becke's cell function)'''
+        if atom_grids_tab is None:
+            atom_grids_tab = self.gen_atomic_grids(mol)
+        return get_partition_fast(mol, atom_grids_tab, radii_adjust, atomic_radii, becke_scheme, concat)
+
     def build(self, mol=None, with_non0tab=False, sort_grids=True, **kwargs):
         if mol is None:
             mol = self.mol
@@ -350,7 +379,8 @@ def get_partition_fast(mol, atom_grids_tab, radii_adjust=None, atomic_radii=radi
     import ctypes
     from socutils.hessian.rhf_fast import _load_socdft
     libdft = _load_socdft()
-    adjust_ok = radii_adjust in (None, radi.treutler_atomic_radii_adjust, radi.becke_atomic_radii_adjust)
+    adjust_ok = radii_adjust in (None, radi.treutler_atomic_radii_adjust, radi.becke_atomic_radii_adjust,
+                                 h_pair_atomic_radii_adjust)
     if becke_scheme is gen_grid.original_becke and (
             PARTITION == 'ssf' or (PARTITION == 'auto' and mol.natm >= SSF_MIN_ATOMS)):
         becke_scheme = gen_grid.stratmann
@@ -361,6 +391,11 @@ def get_partition_fast(mol, atom_grids_tab, radii_adjust=None, atomic_radii=radi
     else:
         fn = None
     if not FAST_PARTITION or fn is None or not adjust_ok:
+        if (becke_scheme is gen_grid.original_becke and radii_adjust not in (
+                None, radi.treutler_atomic_radii_adjust, radi.becke_atomic_radii_adjust)):
+            # pyscf's Python partition has no Becke cell function of its own (it is a stub for the C code,
+            # which takes only pyscf's two size adjustments)
+            becke_scheme = _becke_py
         return _pyscf_get_partition(mol, atom_grids_tab, radii_adjust, atomic_radii, becke_scheme, concat)
     natm = mol.natm
     atm = numpy.asarray(mol.atom_coords(), order='C')
@@ -388,6 +423,13 @@ def get_partition_fast(mol, atom_grids_tab, radii_adjust=None, atomic_radii=radi
 
 
 _pyscf_get_partition = gen_grid.get_partition
+
+
+def _becke_py(g):
+    '''Becke's cell function (three iterations of (3 - g^2) g / 2), for pyscf's Python partition'''
+    for _ in range(3):
+        g = (3 - g * g) * g * .5
+    return g
 
 
 def use_fast_partition():

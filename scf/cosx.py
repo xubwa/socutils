@@ -36,6 +36,7 @@ energy on the grid.
 import ctypes
 import numpy
 from pyscf import gto, lib
+from pyscf.dft import radi
 from pyscf.lib import logger
 
 # the COSX grids, dft.grids.Grids attributes (intacc, angular_grid): ORCA 6's GRIDX1-3 (IntAcc 3.816 /
@@ -54,6 +55,15 @@ HEAVY_ANGULAR = 3       # every GRIDX level (gridx_args): the tables below 3 lea
                         # with the plain levels (SCF COSX on GRIDX2 +2.8, CP-SCF operator on level 0 +3.2,
                         # Fock1 / explicit K on GRIDX2 +2.8, the rest the CP-SCF XC grid), 0.01 each with table
                         # 3 at the same intacc; the GRIDX2 exchange energy of Fe is 8.3e-4 Eh off
+
+
+COSX_RADII_ADJUST = radi.treutler_atomic_radii_adjust   # the size adjustment of the COSX grids' Becke cells (make_grids)
+GRAD_GRID = {'intacc': 4.338, 'angular_grid': 4}     # the grid of the K gradient (grad_k): a GRIDX level, a dict
+                        # of Grids attributes, or None (the SCF's grid).  On the SCF's GRIDX2 the K gradient is the
+                        # largest error of covalent molecules (HF 2.5e-4, H2O 1.1e-4, CH4 1.0e-4 Eh/bohr; median /
+                        # max over 28 hydrides 1.3e-5 / 2.5e-4, 10 ionic MX 3.8e-4 / 2.9e-3); GRIDX3: 0.3e-5 /
+                        # 2.5e-5 and 1.5e-4 / 6.3e-4; this grid (1.64 x the points of GRIDX3): 0.1e-5 / 0.4e-5
+                        # and 3.9e-5 / 9.1e-5 (ORCA 6 DefGrid3 total: 0.2e-5 / 1.8e-5 and 7.1e-5 / 2.0e-4)
 
 
 def gridx_args(mol, level):
@@ -120,6 +130,9 @@ def make_grids(mol, **kwargs):
     sgrids.use_fast_grid_sort()
     g = sgrids.Grids(mol)
     g.verbose = mol.verbose
+    # the cells of the COSX grids as before (Treutler adjustment for all pairs): the hydrogen-only
+    # adjustment of the XC grids has not been measured on the COSX grids yet
+    g.radii_adjust = COSX_RADII_ADJUST
     for k, v in dict(GRID, **kwargs).items():
         setattr(g, k, v)
     g.build(with_non0tab=True)
@@ -864,13 +877,24 @@ def apply(mf, grids=None, final_grid=3, incremental=True, fit=True, tol=None, va
 
 def grad_k(mf, dm=None):
     """the exchange part of the nuclear gradient, (natm, 3), of an SCF run through apply():
-    d/dR of -(hyb / 4) tr(D P K_plain[D]) on the SCF's COSX grid (no grid response), the
+    d/dR of -(hyb / 4) tr(D P K_plain[D]) on the grid GRAD_GRID (no grid response), the
     derivatives of the integrals, of the AOs on the grid and of the overlap fit; None if mf
     did not run COSX.  Exact for the variational SCF (apply(variational=True))."""
     st = getattr(mf, '_cosx', None)
     if not st or st.get('last') is None:
         return None
     k = st['k'][st['last']['lev']]
+    if GRAD_GRID is not None:
+        # the same energy expression differentiated on a finer grid (the SCF density, its own overlap fit)
+        if isinstance(GRAD_GRID, dict):
+            args, key = dict(GRAD_GRID), 'grad' + repr(sorted(GRAD_GRID.items()))
+        else:
+            args, key = gridx_args(mf.mol, GRAD_GRID), GRAD_GRID
+        if key not in st['k']:
+            kg = COSX(mf.mol, make_grids(mf.mol, **args), fit=k.fit, tol=k.tol)
+            kg.verbose, kg.stdout = k.verbose, k.stdout
+            st['k'][key] = kg.build()
+        k = st['k'][key]
     if dm is None:
         dm = mf.make_rdm1()
     hyb = 1.

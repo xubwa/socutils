@@ -184,6 +184,9 @@ def _fast_terms(grad, mol, dm):
         ni = mf._numint
         omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, spin=mol.spin)
         if omega != 0 or mf.do_nlc() or grad.grid_response:
+            if grad.grid_response and getattr(mf, '_cosx', None):
+                logger.warn(grad, 'grid_response: the whole gradient by pyscf, the exchange exact '
+                            '(the COSX K gradient of the SCF is not used)')
             return None
         hybrid = ni.libxc.is_hybrid_xc(mf.xc)
     else:
@@ -293,6 +296,9 @@ def _hcore_grad(mf_grad, mol, dm):
     return de
 
 
+NET_FORCE_WARN = 2e-4   # Eh/bohr: the net force above which grad_elec warns
+
+
 class _FastGradMixin:
     '''get_veff returns only what pyscf's grad_elec still needs as a matrix (the
     density-fitted J with its auxiliary-basis response, else zero); the exact
@@ -333,6 +339,14 @@ class _FastGradMixin:
             de[k] += numpy.einsum('xij,ij->x', vhf[:, p0:p1], dm0[p0:p1]) * 2
             de[k] -= numpy.einsum('xij,ij->x', s1[:, p0:p1], dme0[p0:p1]) * 2
             de[k] += self.extra_force(ia, locals())
+        # the net force: zero for the exact derivative; fixed-grid XC / COSX terms break it, and it tracks
+        # the largest error of the gradient (median over 67 molecules: net force 0.9 x the max error)
+        net = float(abs(de.sum(axis=0)).max())
+        self.net_force = net
+        log.info('net force |sum_A g_A| %.2e Eh/bohr', net)
+        if net > NET_FORCE_WARN:
+            log.warn('net force %.1e Eh/bohr: the fixed-grid terms of the gradient (XC, COSX) are '
+                     'not converged with their grids', net)
         if log.verbose >= logger.DEBUG:
             log.debug('gradients of electronic part')
             rhf_grad._write(log, mol, de, atmlst)
