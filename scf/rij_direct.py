@@ -280,6 +280,30 @@ class RIJDirect:
             gaux[ia] += v[:, p0:p1].dot(dfit[p0:p1])
         return gbra + gaux
 
+    def get_j_multi(self, dm, hermi=1, occ=None, max_memory=4000):
+        '''J of many densities ((nset,) nao, nao) without the three-centre tensor: rho of each density
+        (pass 1, one density at a time), one fit of all of them, then the J of all fitted vectors in one
+        pass (get_vj_fit_multi) in batches whose primitive-basis J (npao^2 per density) fit max_memory (MB).
+        (nset, nao, nao), or J C_occ (nset, nao, nocc) with occ.'''
+        dm = numpy.asarray(dm, dtype=numpy.double)
+        nao = dm.shape[-1]
+        dms = dm.reshape(-1, nao, nao)
+        if hermi != 1:
+            dms = (dms + dms.transpose(0, 2, 1)) * .5
+        nset = dms.shape[0]
+        t0 = (logger.process_clock(), logger.perf_counter())
+        rho = numpy.empty((nset, self.auxmol.nao))
+        for i, d in enumerate(dms):
+            rho[i] = self.get_rho(d)
+        t0 = self.log.timer_debug1('rij_direct rho of %d densities' % nset, *t0)
+        dfit = numpy.ascontiguousarray(self.fit(rho.T).T)
+        npao = self.c.shape[0]
+        nb = max(1, int(max_memory * 1e6 / (8. * npao * npao * 1.5)))
+        out = [self.get_vj_fit_multi(dfit[i:i + nb], occ) for i in range(0, nset, nb)]
+        self.log.timer_debug1('rij_direct vj of %d fitted vectors' % nset, *t0)
+        vj = out[0] if len(out) == 1 else numpy.concatenate(out)
+        return vj if occ is not None else vj.reshape(dm.shape)
+
     def get_j(self, dm, hermi=1):
         dm = numpy.asarray(dm, dtype=numpy.double)
         shape = dm.shape

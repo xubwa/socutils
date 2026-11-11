@@ -1920,7 +1920,7 @@ def _multi_jk_env(mf):
             if dfm is None:
                 vj = jk_multi.get_jk(mol, dm, True, False, hermi=hermi, max_memory=max_memory)[0] if with_j else None
             else:
-                vj = _df_get_j(mf.with_df, dm) if with_j else None
+                vj = _rij_get_j(mf, dm) if with_j else None
             from socutils.scf import cosx
             fl = cosx.MULTI_FLOAT
             cosx.set_multi_float(CPHF_COSX_FLOAT)
@@ -1931,7 +1931,7 @@ def _multi_jk_env(mf):
             return vj, vk
         if dfm is None:
             return jk_multi.get_jk(mol, dm, with_j, with_k, hermi=hermi, max_memory=max_memory)
-        vj = _df_get_j(mf.with_df, dm) if with_j else None
+        vj = _rij_get_j(mf, dm) if with_j else None
         vk = None
         if with_k:
             if multi_k:
@@ -1946,6 +1946,42 @@ def _multi_jk_env(mf):
     def get_k(mol_=None, dm=None, hermi=1, omega=None):
         return get_jk(mol_, dm, hermi, False, True, omega)[1]
     return dict(get_jk=get_jk, get_j=get_j, get_k=get_k)
+
+
+def _rij_get_j(mf, dm):
+    '''the density-fitted J of many densities for the CPHF: from the direct RI-J engine when the SCF ran
+    without the three-index tensor (socutils.scf.md_j RIJ_DIRECT: B does not fit), else _df_get_j'''
+    eng = _rij_engine(mf)
+    if eng is not None and _rij_cderi(mf) is None and getattr(mf.with_df, '_cderi', None) is None:
+        return eng.get_j_multi(dm, max_memory=max(2000, .3 * (mf.max_memory - lib.current_memory()[0])))
+    return _df_get_j(mf.with_df, dm)
+
+
+CPHF_FX_CHUNK = None    # densities per call of the CPHF's response (fx): None -> from the memory, so that the
+                        # AO-size arrays of a call (first-order densities, J, K, the response matrices and the
+                        # kernels' copies, FX_AO_ARRAYS nao^2 each per density) fit; an int forces it
+FX_AO_ARRAYS = 8
+
+
+def _fx_chunked(fx, mf, nao, nmo, nocc):
+    '''fx over chunks of its trial vectors: the Krylov solver hands all perturbations of an atom batch to
+    fx at once, whose AO matrices (nset nao^2 each) outgrow the memory for large molecules (Trp-cage,
+    nao 2901: 67 MB per density and array).  Small systems: one chunk, nothing changes.'''
+    def fxc(mo1):
+        mo1 = mo1.reshape(-1, nmo, nocc)
+        nset = mo1.shape[0]
+        nb = CPHF_FX_CHUNK
+        if nb is None:
+            avail = max(.5 * mf.max_memory, mf.max_memory - lib.current_memory()[0])
+            nb = max(1, int(avail * 1e6 / (FX_AO_ARRAYS * 8. * nao * nao)))
+        if nb >= nset:
+            return fx(mo1)
+        out = numpy.empty((nset, nmo, nocc))
+        for i in range(0, nset, nb):
+            out[i:i + nb] = numpy.asarray(fx(mo1[i:i + nb])).reshape(-1, nmo, nocc)
+        logger.debug1(mf, 'CPHF response of %d densities in chunks of %d', nset, nb)
+        return out
+    return fxc
 
 
 def _df_get_j(with_df, dm):
@@ -2422,6 +2458,7 @@ class _MultiJKCPHF:
             with lib.temporary_env(ni, **env_xc) if env_xc else _nullcontext():
                 if fx is None:
                     fx = gen_vind(self.base, mo_coeff, mo_occ)
+                fx = _fx_chunked(fx, self.base, mo_coeff.shape[0], mo_coeff.shape[1], int((mo_occ > 0).sum()))
                 _CPHF_STAGE['final'] = False
                 if (isinstance(h1ao_or_chkfile, numpy.ndarray)
                         and _is_h1_occ(h1ao_or_chkfile, mo_coeff, mo_occ)):
