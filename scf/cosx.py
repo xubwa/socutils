@@ -75,6 +75,8 @@ COSX_RADII_ADJUST = None        # the size adjustment of the COSX grids' Becke c
 # 3.4 / 15.9 -> 3.3 / 15.8) for its 5 - 16 % of points: off by default, ALPHA_SCALE = ALPHA_SCALE_SBLOCK turns it on.
 ALPHA_SCALE_SBLOCK = {s: .5 for s in ('Li', 'Na', 'K', 'Rb', 'Cs', 'Be', 'Mg', 'Ca', 'Sr', 'Ba', 'Sc')}
 ALPHA_SCALE = {}
+GRAM_BLOCKS = 16        # 56-point grid blocks per GEMM of the grid Gram matrices (S_g, its derivatives): small
+                        # enough that a block sees only the AOs near it (_local_ao_blocks)
 GRAD_GRID = {'intacc': 4.338, 'angular_grid': 4}     # the grid of the K gradient (grad_k): a GRIDX level, a dict
                         # of Grids attributes, or None (the SCF's grid).  On the SCF's GRIDX2 the K gradient is the
                         # largest error of covalent molecules (HF 2.5e-4, H2O 1.1e-4, CH4 1.0e-4 Eh/bohr; median /
@@ -227,19 +229,44 @@ class COSX(lib.StreamObject):
         logger.timer(self, 'COSX build', *t0)
         return self
 
-    def _overlap_fit(self):
-        '''S S_g^-1, S_g the overlap on the grid'''
+    def _local_ao_blocks(self, deriv, nblk=None):
+        '''(g0, g1, idx, ao) over the grid in blocks of nblk x 56 points: idx the AOs of the shells that are
+        nonzero on the block (grids.non0tab; None: all), ao ((ncomp,) ng, len(idx)) their values.  The
+        grid-side Gram matrices (S_g and its derivatives) then cost the local AO count squared per block
+        instead of nao^2 (Trp-cage def2-SVP, nao 2901: a few hundred AOs per block).'''
         from socutils.dft.vxc_fast import eval_ao
         from pyscf.dft import numint
         mol = self.mol
         ni = numint.NumInt()
-        sg = numpy.zeros((mol.nao, mol.nao))
         coords, w = self.grids.coords, self.grids.weights
-        blk = 56 * 64
+        non0 = self.grids.non0tab
+        ao_loc = mol.ao_loc_nr()
+        nf = ao_loc[1:] - ao_loc[:-1]
+        nao = mol.nao
+        blk = 56 * (GRAM_BLOCKS if nblk is None else nblk)
         for g0 in range(0, w.size, blk):
             g1 = min(w.size, g0 + blk)
-            ao = eval_ao(ni, mol, coords[g0:g1], 0, non0tab=self.grids.non0tab[g0 // 56:])
-            lib.dot(ao.T * w[g0:g1], ao, beta=1, c=sg)
+            ao = eval_ao(ni, mol, coords[g0:g1], deriv, non0tab=non0[g0 // 56:])
+            shm = non0[g0 // 56:(g1 + 55) // 56].any(axis=0)
+            if shm.all():
+                yield g0, g1, None, ao
+                continue
+            idx = numpy.nonzero(numpy.repeat(shm, nf))[0]
+            if idx.size == 0:
+                continue
+            yield g0, g1, idx, numpy.ascontiguousarray(ao[..., idx])
+        assert nao == ao_loc[-1]
+
+    def _overlap_fit(self):
+        '''S S_g^-1, S_g the overlap on the grid'''
+        mol = self.mol
+        sg = numpy.zeros((mol.nao, mol.nao))
+        w = self.grids.weights
+        for g0, g1, idx, ao in self._local_ao_blocks(0):
+            if idx is None:
+                lib.dot(ao.T * w[g0:g1], ao, beta=1, c=sg)
+            else:
+                sg[idx[:, None], idx] += lib.dot(ao.T * w[g0:g1], ao)
         s = mol.intor_symmetric('int1e_ovlp')
         self._sg = sg
         return numpy.linalg.solve(sg.T, s.T).T          # s sg^-1 (sg symmetric)
@@ -438,19 +465,16 @@ class COSX(lib.StreamObject):
     def _ipsg(self):
         """sum_g w d_x phi_mu phi_nu on the grid (3, nao, nao), cached per geometry"""
         if getattr(self, '_ipsg_key', None) != self._key:
-            from socutils.dft.vxc_fast import eval_ao
-            from pyscf.dft import numint
             mol = self.mol
-            ni = numint.NumInt()
             out = numpy.zeros((3, mol.nao, mol.nao))
-            coords, w = self.grids.coords, self.grids.weights
-            blk = 56 * 32
-            for g0 in range(0, w.size, blk):
-                g1 = min(w.size, g0 + blk)
-                ao = eval_ao(ni, mol, coords[g0:g1], 1, non0tab=self.grids.non0tab[g0 // 56:])
+            w = self.grids.weights
+            for g0, g1, idx, ao in self._local_ao_blocks(1):
                 wao = ao[0] * w[g0:g1, None]
                 for x in range(3):
-                    lib.dot(ao[1 + x].T, wao, beta=1, c=out[x])
+                    if idx is None:
+                        lib.dot(ao[1 + x].T, wao, beta=1, c=out[x])
+                    else:
+                        out[x][idx[:, None], idx] += lib.dot(ao[1 + x].T, wao)
             self._ipsg_v = out
             self._ipsg_key = self._key
         return self._ipsg_v
