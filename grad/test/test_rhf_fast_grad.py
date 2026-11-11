@@ -131,5 +131,40 @@ class KnownValues(unittest.TestCase):
         self.assertLess(net(lif, cosx.GRAD_GRID, None), 2e-4)                   # 0.9e-4
         self.assertGreater(net(lif, cosx.GRAD_GRID, radi.treutler_atomic_radii_adjust), 4e-4)   # 5.9e-4
 
+    def test_size_adjustment_rules(self):
+        '''the Becke cells' size adjustment on the XC grid, by the net force of the fixed-grid gradient (RIJ +
+        exact K, so the XC grid alone): pairs with hydrogen only (the default) is right for Li-F but loses the
+        adjustment the C-Br bond needs; the electronegativity rule (grids.polar_pair_atomic_radii_adjust)
+        keeps both.  Net force / error against pyscf's grid-response gradient, 1e-5 Eh/bohr, all pairs / H
+        pairs / polar rule: CH3Br 2.6 / 10.9 / 2.6 (error 2.2 / 10.6 / 2.2), LiF 50 / 7.2 / 7.2 (49 / 3.8 / 3.8)'''
+        from pyscf.dft import radi
+        from socutils.scf import md_j
+        from socutils.dft import vxc_fast, grids as sgrids
+        ch3br = '''C -0.05234690 -0.09282871 -0.01095316; Br 3.69644722 0.02334271 -0.00337690
+                   H -0.74076981 -0.03988177 2.04294994; H -0.59904116 1.74909446 -1.03617690
+                   H -0.55310689 -1.62853108 -1.07434140'''
+        lif = 'Li -0.03606235 -0.05829594 -0.01354086; F 2.96231605 0.03834494 0.00121771'
+
+        def net(atom, adjust):
+            mol = gto.M(atom=atom, unit='bohr', basis='def2-svp', verbose=0)
+            mf = dft.RKS(mol, xc='pbe0').density_fit(auxbasis='def2-universal-jfit', only_dfj=True)
+            mf.grids = sgrids.Grids(mol)
+            mf.grids.radii_adjust = adjust
+            mf = md_j.apply(vxc_fast.apply(mf))
+            mf.conv_tol = 1e-10
+            mf.kernel()
+            g = rhf_fast.Gradients(mf)
+            g.kernel()
+            return g.net_force
+        allp, hp, polar = (radi.treutler_atomic_radii_adjust, sgrids.h_pair_atomic_radii_adjust,
+                           sgrids.polar_pair_atomic_radii_adjust)
+        self.assertLess(net(ch3br, polar), 5e-5)
+        self.assertGreater(net(ch3br, hp), 8e-5)
+        self.assertAlmostEqual(net(ch3br, polar), net(ch3br, allp), 9)
+        self.assertLess(net(lif, polar), 1.5e-4)
+        self.assertGreater(net(lif, allp), 3e-4)
+        self.assertAlmostEqual(net(lif, polar), net(lif, hp), 9)
+
+
 if __name__ == '__main__':
     unittest.main()
