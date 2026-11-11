@@ -35,7 +35,7 @@ energy on the grid.
 
 import ctypes
 import numpy
-from pyscf import lib
+from pyscf import gto, lib
 from pyscf.lib import logger
 
 # the COSX grids, dft.grids.Grids attributes (intacc, angular_grid): ORCA 6's GRIDX1-3 (IntAcc 3.816 /
@@ -133,14 +133,23 @@ class COSX(lib.StreamObject):
 
     def build(self):
         mol = self.mol
-        key = (mol._atm.tobytes(), mol._bas.tobytes(), mol._env.tobytes())
+        # the molecule's own data only: the header slots of _env are scratch (pyscf's with_rinv_at_nucleus
+        # leaves the atom index in AS_RINV_ORIG_ATOM, so every gradient / Hessian changes them)
+        key = (mol._atm.tobytes(), mol._bas.tobytes(), mol._env[gto.PTR_ENV_START:].tobytes())
         if self._key == key and self._opt is not None:
             return self
         t0 = (logger.process_clock(), logger.perf_counter())
         self._free()
         libdft = _lib()
-        if self.grids is None or self._key is not None:
+        if self.grids is None:
             self.grids = make_grids(mol)
+        elif self._key is not None:
+            # another geometry: this object's grid (its level, not the default GRID) on the new molecule
+            if hasattr(self.grids, 'reset'):
+                self.grids.reset(mol)
+                self.grids.build(with_non0tab=True)
+            else:
+                self.grids = make_grids(mol)
         elif self.grids.coords is None or self.grids.non0tab is None:
             self.grids.build(with_non0tab=True)
         ao_loc = mol.ao_loc_nr().astype(numpy.int32)
