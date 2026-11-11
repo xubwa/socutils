@@ -79,6 +79,14 @@ void SOCDFTcosx_stats(double *out, int reset)
         memcpy(out, cx_stat, sizeof(cx_stat));
         if (reset) memset(cx_stat, 0, sizeof(cx_stat));
 }
+/* the multi-density K's grid blocks by kept fraction of the pairs (nI nJ / (nao (nao + 1) / 2)): 20 bins of 0.05,
+ * counts and points */
+static double cx_khist[40];
+void SOCDFTcosx_khist(double *out, int reset)
+{
+        memcpy(out, cx_khist, sizeof(cx_khist));
+        if (reset) memset(cx_khist, 0, sizeof(cx_khist));
+}
 
 /* ---------------------------------------------------------------- Hermite tables, Boys */
 
@@ -901,6 +909,246 @@ static void multi_contract_f(float *Ga, const float *Fa, const float *Abuf, cons
 }
 #endif
 
+
+/*
+ * Record-wise (sparse) contraction, register-blocked: G[g][a][c] += A_ab(g) F[g][b][c] (cI) and the mirror
+ * G[g][b][c] += A_ab(g) F[g][a][c] (cJ) over the stored pair records (At[off + g nab + ab]); F at every point
+ * (fs = 1) or the same F for all points (fs = 0, the Hessian's A C).  Per point and chunk of V vectors of the
+ * column index c: the rows F_I of a run of records of shell I and their accumulators G_I stay in registers,
+ * F_J[b] is loaded once per record row and feeds nI FMAs (cI) and the G_J[b] sum (cJ) - against one FMA per
+ * load in multi_contract.  Shells of more than CX_SP_NI functions: the plain loops.
+ */
+#ifdef __AVX512F__
+#define CX_SP_NI 5
+#define CX_SPARSE_KERNEL(NAME, T, VT, LANES, LOAD, STORE, FMA, SET1, ZERO, ADD, NI, V, AR)              \
+static inline void NAME(T *Gg, const T *Fg, const T *Abuf, const CXRec *rec, int r, int r1, int g, int c,     \
+                        int nset, const size_t *roff)                                                 \
+{                                                                                                     \
+        VT fi[NI][V], ai[NI][V];                                                                      \
+        int ia, v, rr, jb;                                                                            \
+        const int nI_ = NI;                                                                           \
+        (void)nI_; (void)roff;                                                                        \
+        const int I0 = rec[r].I0;                                                                     \
+        for (ia = 0; ia < NI; ia++)                                                                   \
+                for (v = 0; v < V; v++) {                                                             \
+                        fi[ia][v] = LOAD(Fg + (size_t)(I0 + ia) * nset + c + LANES * v);              \
+                        ai[ia][v] = ZERO;                                                             \
+                }                                                                                     \
+        for (rr = r; rr < r1; rr++) {                                                                 \
+                const CXRec *rc = rec + rr;                                                           \
+                const int nJ = rc->nJ, cI = rc->cI, cJ = rc->cJ;                                      \
+                const T *ar = AR;                                                                     \
+                const T *FJ = Fg + (size_t)rc->J0 * nset + c;                                         \
+                T *GJ = Gg + (size_t)rc->J0 * nset + c;                                               \
+                if (cI && cJ) {                                                                       \
+                        for (jb = 0; jb < nJ; jb++) {                                                 \
+                                VT fj[V], gj[V];                                                      \
+                                for (v = 0; v < V; v++) {                                             \
+                                        fj[v] = LOAD(FJ + (size_t)jb * nset + LANES * v);             \
+                                        gj[v] = LOAD(GJ + (size_t)jb * nset + LANES * v);             \
+                                }                                                                     \
+                                for (ia = 0; ia < NI; ia++) {                                         \
+                                        const VT a = SET1(ar[ia * nJ + jb]);                          \
+                                        for (v = 0; v < V; v++) {                                     \
+                                                ai[ia][v] = FMA(a, fj[v], ai[ia][v]);                 \
+                                                gj[v] = FMA(a, fi[ia][v], gj[v]);                     \
+                                        }                                                             \
+                                }                                                                     \
+                                for (v = 0; v < V; v++) STORE(GJ + (size_t)jb * nset + LANES * v, gj[v]); \
+                        }                                                                             \
+                } else if (cI) {                                                                      \
+                        for (jb = 0; jb < nJ; jb++) {                                                 \
+                                VT fj[V];                                                             \
+                                for (v = 0; v < V; v++) fj[v] = LOAD(FJ + (size_t)jb * nset + LANES * v); \
+                                for (ia = 0; ia < NI; ia++) {                                         \
+                                        const VT a = SET1(ar[ia * nJ + jb]);                          \
+                                        for (v = 0; v < V; v++) ai[ia][v] = FMA(a, fj[v], ai[ia][v]); \
+                                }                                                                     \
+                        }                                                                             \
+                } else if (cJ) {                                                                      \
+                        for (jb = 0; jb < nJ; jb++) {                                                 \
+                                VT gj[V];                                                             \
+                                for (v = 0; v < V; v++) gj[v] = LOAD(GJ + (size_t)jb * nset + LANES * v); \
+                                for (ia = 0; ia < NI; ia++) {                                         \
+                                        const VT a = SET1(ar[ia * nJ + jb]);                          \
+                                        for (v = 0; v < V; v++) gj[v] = FMA(a, fi[ia][v], gj[v]);     \
+                                }                                                                     \
+                                for (v = 0; v < V; v++) STORE(GJ + (size_t)jb * nset + LANES * v, gj[v]); \
+                        }                                                                             \
+                }                                                                                     \
+        }                                                                                             \
+        for (ia = 0; ia < NI; ia++)                                                                   \
+                for (v = 0; v < V; v++) {                                                             \
+                        T *gp = Gg + (size_t)(I0 + ia) * nset + c + LANES * v;                        \
+                        STORE(gp, ADD(LOAD(gp), ai[ia][v]));                                          \
+                }                                                                                     \
+}
+/* AR: the record layout (At[off + g nab + ab]) or the point-contiguous tile (Abuf = the point's row of Tt) */
+#define CX_AR_REC (Abuf + rc->off + (size_t)g * nI_ * nJ)
+#define CX_AR_TILE (Abuf + roff[rr])
+#define CX_SPD(NI, V, S, AR) CX_SPARSE_KERNEL(cx_spd##S##_##NI##_##V, double, __m512d, 8, _mm512_loadu_pd, _mm512_storeu_pd, \
+                                       _mm512_fmadd_pd, _mm512_set1_pd, _mm512_setzero_pd(), _mm512_add_pd, NI, V, AR)
+#define CX_SPF(NI, V, S, AR) CX_SPARSE_KERNEL(cx_spf##S##_##NI##_##V, float, __m512, 16, _mm512_loadu_ps, _mm512_storeu_ps, \
+                                       _mm512_fmadd_ps, _mm512_set1_ps, _mm512_setzero_ps(), _mm512_add_ps, NI, V, AR)
+#define CX_SP_ALL(S, AR) \
+CX_SPD(1, 2, S, AR) CX_SPD(1, 1, S, AR) CX_SPD(2, 2, S, AR) CX_SPD(2, 1, S, AR) CX_SPD(3, 2, S, AR) CX_SPD(3, 1, S, AR) \
+CX_SPD(4, 2, S, AR) CX_SPD(4, 1, S, AR) CX_SPD(5, 2, S, AR) CX_SPD(5, 1, S, AR) \
+CX_SPF(1, 2, S, AR) CX_SPF(1, 1, S, AR) CX_SPF(2, 2, S, AR) CX_SPF(2, 1, S, AR) CX_SPF(3, 2, S, AR) CX_SPF(3, 1, S, AR) \
+CX_SPF(4, 2, S, AR) CX_SPF(4, 1, S, AR) CX_SPF(5, 2, S, AR) CX_SPF(5, 1, S, AR)
+CX_SP_ALL(, CX_AR_REC)
+CX_SP_ALL(t, CX_AR_TILE)
+
+typedef void (*cx_spd_t)(double *, const double *, const double *, const CXRec *, int, int, int, int, int, const size_t *);
+typedef void (*cx_spf_t)(float *, const float *, const float *, const CXRec *, int, int, int, int, int, const size_t *);
+#define CX_SP_TAB(P) {{NULL, NULL, NULL}, {NULL, P##_1_1, P##_1_2}, {NULL, P##_2_1, P##_2_2}, {NULL, P##_3_1, P##_3_2}, \
+                      {NULL, P##_4_1, P##_4_2}, {NULL, P##_5_1, P##_5_2}}
+static const cx_spd_t cx_spd_tab[6][3] = CX_SP_TAB(cx_spd);
+static const cx_spf_t cx_spf_tab[6][3] = CX_SP_TAB(cx_spf);
+static const cx_spd_t cx_spdt_tab[6][3] = CX_SP_TAB(cx_spdt);
+static const cx_spf_t cx_spft_tab[6][3] = CX_SP_TAB(cx_spft);
+#endif
+
+static int cx_sparse2 = 1;      /* 1: sparse_contract (register-blocked), 0: multi_contract */
+void SOCDFTcosx_set_sparse2(int v) { cx_sparse2 = v; }
+
+/* the plain loops of one run of records of shell I (any nI), columns c .. c + w */
+#define CX_SPARSE_PLAIN(T)                                                                            \
+        {                                                                                             \
+                int rr, ia, jb, q;                                                                    \
+                const int I0 = rec[r].I0, nI = rec[r].nI;                                             \
+                for (rr = r; rr < r1; rr++) {                                                         \
+                        const CXRec *rc = rec + rr;                                                   \
+                        const int nJ = rc->nJ;                                                        \
+                        const T *ar = Abuf + rc->off + (size_t)g * nI * nJ;                           \
+                        for (ia = 0; ia < nI; ia++)                                                   \
+                                for (jb = 0; jb < nJ; jb++) {                                         \
+                                        const T a = ar[ia * nJ + jb];                                 \
+                                        T *gi = Gg + (size_t)(I0 + ia) * nset + c;                    \
+                                        T *gj = Gg + (size_t)(rc->J0 + jb) * nset + c;                \
+                                        const T *fi = Fg + (size_t)(I0 + ia) * nset + c;              \
+                                        const T *fj = Fg + (size_t)(rc->J0 + jb) * nset + c;          \
+                                        if (rc->cI)                                                   \
+                                                for (q = 0; q < w; q++) gi[q] += a * fj[q];           \
+                                        if (rc->cJ)                                                   \
+                                                for (q = 0; q < w; q++) gj[q] += a * fi[q];           \
+                                }                                                                     \
+                }                                                                                     \
+        }
+
+static void sparse_contract(double *Ga, const double *Fa, const double *Abuf, const CXRec *rec, int nrec, int nao,
+                            int n, int nset, int fs)
+{
+        const size_t NQ = (size_t)nao * nset;
+        int g, r, r1, c;
+        for (g = 0; g < n; g++) {
+                const double *Fg = Fa + (fs ? g * NQ : 0);
+                double *Gg = Ga + g * NQ;
+                for (c = 0; c < nset; c += 16) {
+                        const int w = nset - c < 16 ? nset - c : 16;
+                        for (r = 0; r < nrec; r = r1) {
+                                const int I0 = rec[r].I0, nI = rec[r].nI;
+                                for (r1 = r; r1 < nrec && rec[r1].I0 == I0; r1++);
+#ifdef __AVX512F__
+                                if (nI <= CX_SP_NI && (w == 16 || w == 8)) {
+                                        cx_spd_tab[nI][w / 8](Gg, Fg, Abuf, rec, r, r1, g, c, nset, NULL);
+                                        continue;
+                                }
+#endif
+                                CX_SPARSE_PLAIN(double)
+                        }
+                }
+        }
+}
+
+static void sparse_contract_f(float *Ga, const float *Fa, const float *Abuf, const CXRec *rec, int nrec, int nao,
+                              int n, int nset, int fs)
+{
+        const size_t NQ = (size_t)nao * nset;
+        int g, r, r1, c;
+        for (g = 0; g < n; g++) {
+                const float *Fg = Fa + (fs ? g * NQ : 0);
+                float *Gg = Ga + g * NQ;
+                for (c = 0; c < nset; c += 32) {
+                        const int w = nset - c < 32 ? nset - c : 32;
+                        for (r = 0; r < nrec; r = r1) {
+                                const int I0 = rec[r].I0, nI = rec[r].nI;
+                                for (r1 = r; r1 < nrec && rec[r1].I0 == I0; r1++);
+#ifdef __AVX512F__
+                                if (nI <= CX_SP_NI && (w == 32 || w == 16)) {
+                                        cx_spf_tab[nI][w / 16](Gg, Fg, Abuf, rec, r, r1, g, c, nset, NULL);
+                                        continue;
+                                }
+#endif
+                                CX_SPARSE_PLAIN(float)
+                        }
+                }
+        }
+}
+
+#ifndef CX_DTILE
+#define CX_DTILE 16
+#endif
+/* sparse_contract with the integrals of CX_DTILE points transposed first into Tt (point-contiguous, stride Sg,
+ * record offsets roff): per point the records' rows are read sequentially (the record layout scatters a point's
+ * integrals over the whole block) */
+#define CX_SPARSE_TILED(NAME, T, TAB, CW, LANES)                                                       \
+static void NAME(T *Ga, const T *Fa, const T *Abuf, const CXRec *rec, int nrec, int nao, int n, int nset, int fs, \
+                 T *Tt, size_t *roff, size_t Sg)                                                       \
+{                                                                                                     \
+        const size_t NQ = (size_t)nao * nset;                                                         \
+        int g, g0, r, r1, c;                                                                          \
+        size_t o_ = 0;                                                                                \
+        for (r = 0; r < nrec; r++) { roff[r] = o_; o_ += (size_t)rec[r].nI * rec[r].nJ; }             \
+        for (g0 = 0; g0 < n; g0 += CX_DTILE) {                                                        \
+                const int tn = n - g0 < CX_DTILE ? n - g0 : CX_DTILE;                                 \
+                for (r = 0; r < nrec; r++) {                                                          \
+                        const int nab = rec[r].nI * rec[r].nJ;                                        \
+                        const T *src = Abuf + rec[r].off + (size_t)g0 * nab;                          \
+                        int gg;                                                                       \
+                        for (gg = 0; gg < tn; gg++)                                                   \
+                                memcpy(Tt + (size_t)gg * Sg + roff[r], src + (size_t)gg * nab, sizeof(T) * nab); \
+                }                                                                                     \
+                for (g = g0; g < g0 + tn; g++) {                                                      \
+                        const T *Fg = Fa + (fs ? g * NQ : 0);                                         \
+                        T *Gg = Ga + g * NQ;                                                          \
+                        const T *Tg = Tt + (size_t)(g - g0) * Sg;                                     \
+                        for (c = 0; c < nset; c += CW) {                                              \
+                                const int w = nset - c < CW ? nset - c : CW;                          \
+                                for (r = 0; r < nrec; r = r1) {                                       \
+                                        const int I0 = rec[r].I0, nI = rec[r].nI;                     \
+                                        for (r1 = r; r1 < nrec && rec[r1].I0 == I0; r1++);            \
+                                        if (nI <= CX_SP_NI && (w == CW || w == CW / 2)) {             \
+                                                TAB[nI][w / LANES](Gg, Fg, Tg, rec, r, r1, g, c, nset, roff); \
+                                                continue;                                             \
+                                        }                                                             \
+                                        {                                                             \
+                                                int rr, ia, jb, q;                                    \
+                                                for (rr = r; rr < r1; rr++) {                         \
+                                                        const CXRec *rc = rec + rr;                   \
+                                                        const int nJ = rc->nJ;                        \
+                                                        const T *ar = Tg + roff[rr];                  \
+                                                        for (ia = 0; ia < nI; ia++)                   \
+                                                                for (jb = 0; jb < nJ; jb++) {         \
+                                                                        const T a = ar[ia * nJ + jb]; \
+                                                                        T *gi = Gg + (size_t)(I0 + ia) * nset + c;  \
+                                                                        T *gj = Gg + (size_t)(rc->J0 + jb) * nset + c; \
+                                                                        const T *fi = Fg + (size_t)(I0 + ia) * nset + c; \
+                                                                        const T *fj = Fg + (size_t)(rc->J0 + jb) * nset + c; \
+                                                                        if (rc->cI) for (q = 0; q < w; q++) gi[q] += a * fj[q]; \
+                                                                        if (rc->cJ) for (q = 0; q < w; q++) gj[q] += a * fi[q]; \
+                                                                }                                     \
+                                                }                                                     \
+                                        }                                                             \
+                                }                                                                     \
+                        }                                                                             \
+                }                                                                                     \
+        }                                                                                             \
+}
+#ifdef __AVX512F__
+CX_SPARSE_TILED(sparse_contract_t, double, cx_spdt_tab, 16, 8)
+CX_SPARSE_TILED(sparse_contract_tf, float, cx_spft_tab, 32, 16)
+#endif
+
 #define CX_ABUF (2 << 20)
 #define CX_KROWS 64             /* rows of K per GEMM in the occupied-output multi-density mode */
 #define CX_MCOLS 512            /* the multi-density F and K GEMMs over columns (nu, d) of ~ this many */
@@ -994,7 +1242,9 @@ void SOCDFTcosx_untranspose(double *out, const double *vt, int nao, int nset, in
  * the row-major buffer), the one-way records (cI xor cJ) added record by record as multi_contract.  The
  * integrals are stored record-wise (At[off + g nab + ab], written sequentially); CX_DTILE points at a time
  * are transposed into Tt (point-contiguous, stride Sg = sum nab) before their A(g) are built. */
+#ifndef CX_DTILE
 #define CX_DTILE 16
+#endif
 #define CX_DENSE_BODY(T, SYMM)                                                                          \
         const size_t NQ = (size_t)nao * nset;                                                          \
         const T one = 1, zero = 0;                                                                     \
@@ -1380,6 +1630,14 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         st[11] += dnb;
                         st[10] += kept;
                         if (kept > kmax_) kmax_ = kept;
+                        {
+                                int hb_ = (int)(kept * 20);
+                                hb_ = hb_ < 0 ? 0 : (hb_ > 19 ? 19 : hb_);
+#pragma omp atomic
+                                cx_khist[hb_] += 1;
+#pragma omp atomic
+                                cx_khist[20 + hb_] += n;
+                        }
                         const size_t need = Sgb * n + 1;
                         if (dnb && Sgb * CX_DTILE > ttcap) {
                                 double *nt_ = realloc(Tt, esz * Sgb * CX_DTILE);
@@ -1506,11 +1764,11 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         if (multi && !dense && aoff + (size_t)nab * n > abcap) {
 #ifdef CX_FUSED
                                 if (occm && mfl) { const double tq_ = omp_get_wtime(); multi_contract_const_f(Aocf, cof, Abf, rec, nrec, nao, n, nocc); st[27] += omp_get_wtime() - tq_; }
-                                else if (mfl) { const double tq_ = omp_get_wtime(); multi_contract_f(Gf, Ff, Abf, rec, nrec, nao, n, nset); st[27] += omp_get_wtime() - tq_; }
+                                else if (mfl) { const double tq_ = omp_get_wtime(); if (cx_sparse2) sparse_contract_f(Gf, Ff, Abf, rec, nrec, nao, n, nset, 1); else multi_contract_f(Gf, Ff, Abf, rec, nrec, nao, n, nset); st[27] += omp_get_wtime() - tq_; }
                                 else
 #endif
                                 if (occm) { const double tq_ = omp_get_wtime(); multi_contract_const(Aoc, co, Abuf, rec, nrec, nao, n, nocc); st[27] += omp_get_wtime() - tq_; }
-                                else { const double tq_ = omp_get_wtime(); multi_contract(G, F, Abuf, rec, nrec, nao, n, nset); st[27] += omp_get_wtime() - tq_; }
+                                else { const double tq_ = omp_get_wtime(); if (cx_sparse2) sparse_contract(G, F, Abuf, rec, nrec, nao, n, nset, 1); else multi_contract(G, F, Abuf, rec, nrec, nao, n, nset); st[27] += omp_get_wtime() - tq_; }
                                 nrec = 0;
                                 aoff = 0;
                         }
@@ -1694,6 +1952,13 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                         else memset(G, 0, sizeof(double) * NQ * n);
                 }
                 if (multi && nrec) {
+                        if (dense && !dnb && cx_sparse2 && Sgb * CX_DTILE > ttcap) {
+                                double *nt_ = realloc(Tt, esz * Sgb * CX_DTILE);
+                                if (nt_) {
+                                        Tt = nt_;
+                                        ttcap = Sgb * CX_DTILE;
+                                }
+                        }
                         if (dense && !dnb) {    /* record-wise on this block: it accumulates */
                                 if (mfl) memset(Gf, 0, sizeof(float) * NQ * n);
                                 else memset(G, 0, sizeof(double) * NQ * n);
@@ -1734,12 +1999,12 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
 #ifdef CX_FUSED
                         if (occm && mfl) { const double tq_ = omp_get_wtime(); multi_contract_const_f(Aocf, cof, Abf, rec, nrec, nao, n, nocc); st[27] += omp_get_wtime() - tq_; }
                         else if (mfl && dnb) { const double tq_ = omp_get_wtime(); dense_contract_f(Gf, Ff, Abf, rec, nrec, nao, n, nset, (float *)Ad, st + 31, Sgb, (float *)Tt, roff, 1); st[27] += omp_get_wtime() - tq_; }
-                        else if (mfl) { const double tq_ = omp_get_wtime(); multi_contract_f(Gf, Ff, Abf, rec, nrec, nao, n, nset); st[27] += omp_get_wtime() - tq_; }
+                        else if (mfl) { const double tq_ = omp_get_wtime(); if (cx_sparse2 && dense && Tt && ttcap >= Sgb * CX_DTILE) sparse_contract_tf(Gf, Ff, Abf, rec, nrec, nao, n, nset, 1, (float *)Tt, roff, Sgb); else if (cx_sparse2) sparse_contract_f(Gf, Ff, Abf, rec, nrec, nao, n, nset, 1); else multi_contract_f(Gf, Ff, Abf, rec, nrec, nao, n, nset); st[27] += omp_get_wtime() - tq_; }
                         else
 #endif
                         if (occm) { const double tq_ = omp_get_wtime(); multi_contract_const(Aoc, co, Abuf, rec, nrec, nao, n, nocc); st[27] += omp_get_wtime() - tq_; }
                         else if (dnb) { const double tq_ = omp_get_wtime(); dense_contract(G, F, Abuf, rec, nrec, nao, n, nset, Ad, st + 31, Sgb, Tt, roff, 1); st[27] += omp_get_wtime() - tq_; }
-                        else { const double tq_ = omp_get_wtime(); multi_contract(G, F, Abuf, rec, nrec, nao, n, nset); st[27] += omp_get_wtime() - tq_; }
+                        else { const double tq_ = omp_get_wtime(); if (cx_sparse2 && dense && Tt && ttcap >= Sgb * CX_DTILE) sparse_contract_t(G, F, Abuf, rec, nrec, nao, n, nset, 1, Tt, roff, Sgb); else if (cx_sparse2) sparse_contract(G, F, Abuf, rec, nrec, nao, n, nset, 1); else multi_contract(G, F, Abuf, rec, nrec, nao, n, nset); st[27] += omp_get_wtime() - tq_; }
                 }
                 if (occm) {
                         /* u[g] (nocc, nset) = Aoc[g]^T F[g]; K C[ix_i][i][d] += sum_g wx_i(g) u[g][i][d] */
