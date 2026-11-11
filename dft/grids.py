@@ -278,8 +278,9 @@ class Grids(gen_grid.Grids):
         radial_b_heavy : b of the radial-shell formula for Z > 10.
         alpha : exponent of the M4 mapping (``treutler_m4``).
         becke_scheme, radii_adjust : PySCF's Becke partition; the Treutler size
-            adjustment for atom pairs with a hydrogen only (h_pair_atomic_radii_adjust)
-            by default, radi.treutler_atomic_radii_adjust for all pairs as pyscf.
+            adjustment by the electronegativity rule polar_pair_atomic_radii_adjust
+            by default (h_pair_atomic_radii_adjust: pairs with a hydrogen only;
+            radi.treutler_atomic_radii_adjust: all pairs, as pyscf).
 
     ``atom_grid`` still overrides the radial / angular sizes element by
     element (then the five-region pruning is applied with the given maximum
@@ -301,7 +302,7 @@ class Grids(gen_grid.Grids):
     radi_method = staticmethod(treutler_m3)
     heavy_radi_method = staticmethod(radi.mura_knowles)
     becke_scheme = staticmethod(gen_grid.original_becke)
-    radii_adjust = staticmethod(h_pair_atomic_radii_adjust)
+    radii_adjust = staticmethod(polar_pair_atomic_radii_adjust)
 
     _keys = {'intacc', 'radial_b', 'angular_grid', 'h_reduced', 'alphas', 'weight_cutoff', 'xi', 'xi_scale',
              'element_radi', 'alpha', 'radial_b_heavy', 'heavy_radi_method', 'alpha_scale', 'element_intacc'}

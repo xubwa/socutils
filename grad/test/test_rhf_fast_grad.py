@@ -103,7 +103,7 @@ class KnownValues(unittest.TestCase):
         '''the fixed-grid terms of the default RIJCOSX gradient, by the net force (zero for the exact
         derivative; it tracks the largest error): the K gradient on cosx.GRAD_GRID rather than the SCF's
         GRIDX2 (HF: 1.6e-5 against 2.7e-4 Eh/bohr from a grid-response reference), and the Becke cells'
-        size adjustment for pairs with hydrogen only (LiF: 1.2e-4 against 6.0e-4)'''
+        size adjustment by the electronegativity rule (LiF: 4.3e-5 against all pairs on the XC grid, net 4.0e-4)'''
         from pyscf.dft import radi
         from socutils.scf import cosx
         from socutils.dft import vxc_fast, grids as sgrids
@@ -123,13 +123,13 @@ class KnownValues(unittest.TestCase):
                 return g.net_force
         if not cosx.available(gto.M(atom='H 0 0 0; F 0 0 .96', basis='def2-svp', verbose=0)):
             self.skipTest('no COSX kernel')
-        self.assertEqual(sgrids.Grids.radii_adjust, sgrids.h_pair_atomic_radii_adjust)
+        self.assertEqual(sgrids.Grids.radii_adjust, sgrids.polar_pair_atomic_radii_adjust)
         hf = 'H 0 0 0; F 0 0 .96'
         self.assertLess(net(hf, cosx.GRAD_GRID, None), 3e-5)                    # 0.8e-5
         self.assertGreater(net(hf, None, None), 1.5e-4)                         # 2.7e-4: K gradient on GRIDX2
         lif = 'Li 0 0 0; F 0 0 1.62'
-        self.assertLess(net(lif, cosx.GRAD_GRID, None), 2e-4)                   # 0.9e-4
-        self.assertGreater(net(lif, cosx.GRAD_GRID, radi.treutler_atomic_radii_adjust), 4e-4)   # 5.9e-4
+        self.assertLess(net(lif, cosx.GRAD_GRID, None), 1e-4)                   # 3.2e-5
+        self.assertGreater(net(lif, cosx.GRAD_GRID, radi.treutler_atomic_radii_adjust), 2.5e-4)  # 4.0e-4
 
 if __name__ == '__main__':
     unittest.main()

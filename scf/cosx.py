@@ -57,7 +57,12 @@ HEAVY_ANGULAR = 3       # every GRIDX level (gridx_args): the tables below 3 lea
                         # 3 at the same intacc; the GRIDX2 exchange energy of Fe is 8.3e-4 Eh off
 
 
-COSX_RADII_ADJUST = radi.treutler_atomic_radii_adjust   # the size adjustment of the COSX grids' Becke cells (make_grids)
+COSX_RADII_ADJUST = None        # the size adjustment of the COSX grids' Becke cells (make_grids): None -> that of
+                                # socutils Grids (dft.grids.polar_pair_atomic_radii_adjust).  Against the Treutler
+                                # adjustment for all pairs: K gradient on GRAD_GRID, 1e-5 Eh/bohr median / max,
+                                # ionic MX 3.9 / 9.1 -> 0.4 / 2.0, p-block halides and oxides 2.6 / 10.3 -> 1.5 /
+                                # 3.3, 3d d0 5.8 / 12 -> 1.9 / 2.7 (carbonyls 1.0 / 1.1 -> 1.5 / 2.3); |dE| of the
+                                # default path, ionic 5.6e-5 / 2.3e-4 -> 0.8e-5 / 1.2e-5 Eh; frequencies unchanged
 # the pruning boundaries of the COSX grids by element (dft.grids.Grids.alpha_scale): halved for the alkali and
 # alkaline-earth metals and Sc, whose Bragg radii put the coarse inner Lebedev tables over the semicore shell and
 # the bonding region.  K gradient at a fixed density, 1e-5 Eh/bohr, pruned -> halved, on (4.338, table 3): LiF 7.7
@@ -66,7 +71,10 @@ COSX_RADII_ADJUST = radi.treutler_atomic_radii_adjust   # the size adjustment of
 # -> 18, BeF2 38 -> 12, MgF2 51 -> 21, NaCl 33 -> 22; on the K gradient grid (4.338, table 4) LiF 3.9 -> 1.2, RbF 9.1
 # -> 3.4, KF 5.1 -> 3.9, MgF2 3.8 -> 3.1.  5 - 16 % more points on these atoms.  Not for Ga, Ge, As, In, Sn, Ti
 # (halved, table 3: GaCl3 4.9 -> 25, GeH4 1.6 -> 6.3, AsF3 3.5 -> 18, InCl3 9.9 -> 13, TiCl4 7.2 -> 13).
-ALPHA_SCALE = {s: .5 for s in ('Li', 'Na', 'K', 'Rb', 'Cs', 'Be', 'Mg', 'Ca', 'Sr', 'Ba', 'Sc')}
+# With the polar-pair size adjustment on the COSX grids the scaling adds almost nothing (default path, ionic MX:
+# 3.4 / 15.9 -> 3.3 / 15.8) for its 5 - 16 % of points: off by default, ALPHA_SCALE = ALPHA_SCALE_SBLOCK turns it on.
+ALPHA_SCALE_SBLOCK = {s: .5 for s in ('Li', 'Na', 'K', 'Rb', 'Cs', 'Be', 'Mg', 'Ca', 'Sr', 'Ba', 'Sc')}
+ALPHA_SCALE = {}
 GRAD_GRID = {'intacc': 4.338, 'angular_grid': 4}     # the grid of the K gradient (grad_k): a GRIDX level, a dict
                         # of Grids attributes, or None (the SCF's grid).  On the SCF's GRIDX2 the K gradient is the
                         # largest error of covalent molecules (HF 2.5e-4, H2O 1.1e-4, CH4 1.0e-4 Eh/bohr; median /
@@ -139,9 +147,8 @@ def make_grids(mol, **kwargs):
     sgrids.use_fast_grid_sort()
     g = sgrids.Grids(mol)
     g.verbose = mol.verbose
-    # the cells of the COSX grids as before (Treutler adjustment for all pairs): the hydrogen-only
-    # adjustment of the XC grids has not been measured on the COSX grids yet
-    g.radii_adjust = COSX_RADII_ADJUST
+    if COSX_RADII_ADJUST is not None:
+        g.radii_adjust = COSX_RADII_ADJUST
     g.alpha_scale = ALPHA_SCALE
     g.element_intacc = {}       # the XC grids' radial rule for Li, Be, Na, Mg is not for the COSX grids
     for k, v in dict(GRID, **kwargs).items():

@@ -208,19 +208,24 @@ class KnownValues(unittest.TestCase):
             self.assertEqual(cosx.gridx_args(mol, 3), cosx.GRIDX[3])
 
     def test_alpha_scale(self):
-        '''the COSX grids halve the pruning boundaries of the alkali / alkaline-earth metals and Sc
-        (cosx.ALPHA_SCALE): KF, the K gradient at a fixed density on GRIDX3 against a fine grid'''
+        '''the option of halved pruning boundaries for the alkali / alkaline-earth metals and Sc
+        (cosx.ALPHA_SCALE = cosx.ALPHA_SCALE_SBLOCK; off by default): KF with the all-pair size adjustment, the K
+        gradient at a fixed density on GRIDX3 against a fine grid'''
         from pyscf import lib
+        from pyscf.dft import radi
         mol = gto.M(atom='K 0 0 0; F 0.03 0.02 2.20', basis='def2-svp', verbose=0)
-        self.assertEqual(cosx.ALPHA_SCALE.get('K'), .5)
+        self.assertEqual(cosx.ALPHA_SCALE, {})
+        self.assertEqual(cosx.ALPHA_SCALE_SBLOCK.get('K'), .5)
         for s in ('Ga', 'Ge', 'As', 'In', 'Sn', 'Ti', 'Fe'):
-            self.assertNotIn(s, cosx.ALPHA_SCALE)
+            self.assertNotIn(s, cosx.ALPHA_SCALE_SBLOCK)
         dm = scf.RHF(mol).density_fit().run().make_rdm1()
-        ref = cosx.COSX(mol, cosx.make_grids(mol, intacc=6.0, angular_grid=7)).grad(dm)
         args = cosx.gridx_args(mol, 3)
-        g1 = cosx.make_grids(mol, **args)
-        with lib.temporary_env(cosx, ALPHA_SCALE={}):
+        with lib.temporary_env(cosx, COSX_RADII_ADJUST=radi.treutler_atomic_radii_adjust):
+            ref = cosx.COSX(mol, cosx.make_grids(mol, intacc=6.0, angular_grid=7)).grad(dm)
             g0 = cosx.make_grids(mol, **args)
+            with lib.temporary_env(cosx, ALPHA_SCALE=cosx.ALPHA_SCALE_SBLOCK):
+                g1 = cosx.make_grids(mol, **args)
+        self.assertGreater(g1.weights.size, g0.weights.size)
         self.assertLess(g1.weights.size, 1.2 * g0.weights.size)
         e0 = abs(cosx.COSX(mol, g0).grad(dm) - ref).max()
         e1 = abs(cosx.COSX(mol, g1).grad(dm) - ref).max()
