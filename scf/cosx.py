@@ -60,7 +60,8 @@ def gridx_args(mol, level):
     '''the Grids attributes of the COSX grid level for mol: GRIDX[level], with the Lebedev table raised to
     HEAVY_ANGULAR when mol has an atom beyond Z = HEAVY_Z'''
     args = dict(GRIDX[level])
-    if mol.natm and mol.atom_charges().max() > HEAVY_Z:
+    # the element, not mol.atom_charges(): that is the valence charge of an ECP atom (Rb: 9, W: 14)
+    if mol.natm and max(gto.charge(mol.atom_pure_symbol(i)) for i in range(mol.natm)) > HEAVY_Z:
         ang = args['angular_grid']
         if not isinstance(ang, (int, numpy.integer)) or ang < HEAVY_ANGULAR:
             args['angular_grid'] = HEAVY_ANGULAR

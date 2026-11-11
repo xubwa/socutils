@@ -190,6 +190,23 @@ class KnownValues(unittest.TestCase):
         self.assertTrue(mf.converged)
         self.assertAlmostEqual(e, e0, 4)
 
+    def test_gridx_args_heavy(self):
+        '''the Lebedev table of the GRIDX levels is raised for elements beyond Z = 18, by the element and not
+        by the (ECP valence) charge'''
+        light = gto.M(atom='S 0 0 0; H 0 .96 .92; H 0 -.96 .92', basis='def2-svp', verbose=0)
+        for lev in (0, 1, 2, 3):
+            self.assertEqual(cosx.gridx_args(light, lev), cosx.GRIDX[lev])
+        for atom, ecp in (('Fe 0 0 0', None), ('Br 0 0 0; H 0 0 1.41', None), ('Rb 0 0 0; F 0 0 2.27', 'def2-svp')):
+            spin = 4 if atom.startswith('Fe') else 0
+            mol = gto.M(atom=atom, basis='def2-svp', ecp=ecp, spin=spin, verbose=0)
+            if ecp:
+                self.assertLess(mol.atom_charges().max(), 18)       # Rb: 9 valence electrons
+            for lev in (0, 1, 2):
+                args = cosx.gridx_args(mol, lev)
+                self.assertEqual(args['angular_grid'], cosx.HEAVY_ANGULAR)
+                self.assertEqual(args['intacc'], cosx.GRIDX[lev]['intacc'])
+            self.assertEqual(cosx.gridx_args(mol, 3), cosx.GRIDX[3])
+
     def test_grid_kept_after_gradient(self):
         '''a gradient / Hessian leaves an atom index in mol._env (with_rinv_at_nucleus): the COSX objects must
         not take that for another molecule and rebuild on the default grid (the final GRIDX3 energy of a
