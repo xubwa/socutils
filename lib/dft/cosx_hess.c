@@ -136,6 +136,9 @@ static void multi_contract_const_f(float *Ga, const float *Cm, const float *Abuf
 #endif
 
 static int cx_hfloat = 0;   /* the Hessian passes' A C contraction in single precision */
+static int cx_hess_oa = 1;  /* the point loop: 1 per block the cheaper of C^T (2 Aoc Psi) and (C^T Aoc) Psi,
+                             * 2 always the former, 0 always the latter */
+void SOCDFTcosx_set_hess_oa(int v) { cx_hess_oa = v; }
 int SOCDFTcosx_hfloat(void)
 {
 #ifdef __AVX512F__
@@ -566,7 +569,7 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
         double *psi = malloc(sizeof(double) * (size_t)nocc * blk), *eta = malloc(sizeof(double) * (size_t)nocc * blk);
         double *weta = malloc(sizeof(double) * (size_t)nocc * blk);
         double *Ub = malloc(sizeof(double) * (size_t)nocc * blk), *Upb = malloc(sizeof(double) * (size_t)nocc * blk);
-        double *psid = NULL, *wpsid = NULL, *wetad = NULL;
+        double *psid = NULL, *wpsid = NULL, *wetad = NULL, *OutA = NULL;
         int *la = malloc(sizeof(int) * (natm + 1) * 3);
         /* U3, U3' of a chunk of CA atoms (~32 MB each) */
         int CA = (int)(((size_t)1 << 25) / (sizeof(double) * 3 * nocc * blk));
@@ -687,12 +690,13 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                 const int nd = 3 * nla;
                 if (nd > ndcap) {
                         const size_t sz_ = sizeof(double) * (size_t)nd * nocc * blk;
-                        free(psid); free(wpsid); free(wetad); free(P2); free(Psi); free(Out2);
+                        free(psid); free(wpsid); free(wetad); free(P2); free(Psi); free(Out2); free(OutA);
                         psid = malloc(sz_); wpsid = malloc(sz_); wetad = malloc(sz_); P2 = malloc(sz_);
                         Psi = malloc(sizeof(double) * (size_t)nocc * (nd + 2));
                         Out2 = malloc(sizeof(double) * (size_t)nocc * (nd + 2));
+                        OutA = malloc(sizeof(double) * (size_t)nao * (nd + 2));
                         ndcap = nd;
-                        if (!psid || !wpsid || !wetad || !P2 || !Psi || !Out2) {
+                        if (!psid || !wpsid || !wetad || !P2 || !Psi || !Out2 || !OutA) {
                                 ndcap = 0;
                                 oom = 1;
 #pragma omp atomic write
@@ -1103,6 +1107,10 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                 /* per point: Out = 2 Aoc [psi, psi^d (first chunk)]; Out2 = 2 Aoo [eta, psi, psi^d] */
                 const int ncol = 2 + nd;
                 const int dc0 = do_f1 ? (nd < DCB ? nd : DCB) : 0, nc0 = 1 + dc0;
+                /* the cheaper form of the block (flops / nocc per point): C^T (2 Aoc Psi), 2 nao ncol, against
+                 * (C^T Aoc) Psi plus 2 Aoc Psi for Fock1, nao nocc + ncol nocc + nao nc0 */
+                const int oa = cx_hess_oa == 1 ? (2. * nao * ncol < (double)nao * nocc + (double)ncol * nocc + (do_f1 ? (double)nao * nc0 : 0))
+                                               : cx_hess_oa == 2;
                 for (g = 0; g < n; g++) {
                         const double *Ag = Aoc + g * NQ;
                         for (i = 0; i < nocc; i++) {
@@ -1111,10 +1119,16 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                                 for (d = 0; d < nd; d++) Psi[i * ncol + 2 + d] = psid[((size_t)d * nocc + i) * n + g];
                         }
                         const double tA_ = omp_get_wtime();
-                        dgemm_("N", "T", &nocc, &nocc, &nao, &one, Ag, &nocc, co, &nocc, &zero, Aoo, &nocc);
-                        dgemm_("N", "N", &ncol, &nocc, &nocc, &two, Psi, &ncol, Aoo, &nocc, &zero, Out2, &ncol);
+                        if (oa) {
+                                dgemm_("T", "T", &nao, &ncol, &nocc, &two, Ag, &nocc, Psi, &ncol, &zero, OutA, &nao);
+                                dgemm_("T", "T", &ncol, &nocc, &nao, &one, OutA, &nao, co, &nocc, &zero, Out2, &ncol);
+                                st[23] += 4. * nao * nocc * ncol;
+                        } else {
+                                dgemm_("N", "T", &nocc, &nocc, &nao, &one, Ag, &nocc, co, &nocc, &zero, Aoo, &nocc);
+                                dgemm_("N", "N", &ncol, &nocc, &nocc, &two, Psi, &ncol, Aoo, &nocc, &zero, Out2, &ncol);
+                                st[23] += 2. * nao * nocc * nocc + 2. * ncol * nocc * nocc;
+                        }
                         st[31] += omp_get_wtime() - tA_;
-                        st[23] += 2. * nao * nocc * nocc + 2. * ncol * nocc * nocc;
                         for (i = 0; i < nocc; i++) {
                                 Upb[(size_t)i * n + g] = Out2[(size_t)i * ncol];
                                 Ub[(size_t)i * n + g] = Out2[(size_t)i * ncol + 1];
@@ -1126,11 +1140,16 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                         }
                         if (do_f1) {
                                 /* Out (nc0, nao) row-major: the columns of each AO contiguous per point */
-                                dgemm_("T", "T", &nao, &nc0, &nocc, &two, Ag, &nocc, Psi + 1, &ncol, &zero, Out, &nao);
-                                st[24] += 2. * nao * nocc * nc0;
-                                memcpy(GFb + (size_t)g * nao, Out, sizeof(double) * nao);        /* GFb (n, nao) */
+                                const double *Op = Out;
+                                if (oa) {
+                                        Op = OutA + nao;        /* the rows psi, psi^d of OutA */
+                                } else {
+                                        dgemm_("T", "T", &nao, &nc0, &nocc, &two, Ag, &nocc, Psi + 1, &ncol, &zero, Out, &nao);
+                                        st[24] += 2. * nao * nocc * nc0;
+                                }
+                                memcpy(GFb + (size_t)g * nao, Op, sizeof(double) * nao);         /* GFb (n, nao) */
                                 for (d = 0; d < dc0; d++)            /* Bd (dc, n, nao) */
-                                        memcpy(Bd + ((size_t)d * n + g) * nao, Out + (size_t)(1 + d) * nao, sizeof(double) * nao);
+                                        memcpy(Bd + ((size_t)d * n + g) * nao, Op + (size_t)(1 + d) * nao, sizeof(double) * nao);
                         }
                 }
                 if (do_h) {
@@ -1411,7 +1430,7 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
         free(F); free(H); free(GFb); free(psi); free(eta); free(weta); free(Ub); free(Upb); free(psid); free(wpsid);
         free(wetad); free(la); free(U); free(Up); free(cat); free(Ad); free(Tt); free(roff); free(fmax); free(A); free(W); free(dA); free(rs);
         free(Mm); free(bk); free(R); free(Rwk); free(S); free(X); free(xyz); free(Abuf); free(rec); free(Aoc);
-        free(Aoo); free(Aocf); free(cof); free(Psi); free(Out); free(Out2); free(tmp); free(Qm);
+        free(Aoo); free(Aocf); free(cof); free(Psi); free(Out); free(Out2); free(OutA); free(tmp); free(Qm);
         for (at = 0; at < natm; at++) free(farR[at]);
         free(farR); free(stamp); free(armin);
         if (mkl_set_num_threads_local) mkl_set_num_threads_local(mkl0);
