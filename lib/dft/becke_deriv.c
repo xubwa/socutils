@@ -130,9 +130,20 @@ void SOCDFTpartition_grad(double *grad, const double *coords, const double *weig
                         double Z = 0;
                         for (ii = 0; ii < natm; ii++) Z += P[ii];
                         const double iZ = 1 / Z;
+                        /* the pairs where both atoms have P_i / Z below 1e-16 (and are not the owner)
+                         * contribute nothing */
+                        int nc = 0;
+                        for (ii = 0; ii < natm; ii++)
+                                if (ii == A || P[ii] * iZ > 1e-16) cand[nc++] = ii;
                         for (ii = 0; ii < natm; ii++) {
                                 const double ci = (ii == A) - P[ii] * iZ;      /* c_i P_i / (e w) */
-                                for (jj = 0; jj < ii; jj++) {
+                                const int bigi = ii == A || P[ii] * iZ > 1e-16;
+                                /* jj < ii: all of them when ii is a candidate, else the candidates */
+                                const int nj = bigi ? ii : nc;
+                                int q;
+                                for (q = 0; q < nj; q++) {
+                                        jj = bigi ? q : cand[q];
+                                        if (jj >= ii) break;
                                         const double cj = (jj == A) - P[jj] * iZ;
                                         const double sv = s[ii * natm + jj], sj = 1 - sv;
                                         /* P_i holds s_ij, P_j holds s_ji = 1 - s_ij (d s_ji / d mu_ij = -ds) */

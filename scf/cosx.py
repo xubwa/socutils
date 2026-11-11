@@ -858,7 +858,12 @@ class COSX(lib.StreamObject):
         else:
             m = dm
         g = numpy.zeros((mol.natm, 3))
-        libdft.SOCDFTcosx_grad(
+        # grid response: the per-point terms from the same pass (grad.grid_response.fused_kernel)
+        fn, extra, pts = libdft.SOCDFTcosx_grad, (), None
+        if grid_response:
+            from socutils.grad import grid_response as gresp
+            fn, extra, pts = gresp.fused_kernel(libdft, self)
+        fn(
             g.ctypes.data_as(ctypes.c_void_p), dm.ctypes.data_as(ctypes.c_void_p), m.ctypes.data_as(ctypes.c_void_p),
             lib.c_null_ptr(),
             ctypes.c_void_p(self._opt), self._coords.ctypes.data_as(ctypes.c_void_p),
@@ -867,7 +872,7 @@ class COSX(lib.StreamObject):
             ctypes.c_double(self.tol if tol is None else tol), ctypes.c_double(self.tcut),
             ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.natm),
             bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p),
-            *_blas_ptrs(), lib.c_null_ptr() if kp is None else kp.ctypes.data_as(ctypes.c_void_p))
+            *_blas_ptrs(), lib.c_null_ptr() if kp is None else kp.ctypes.data_as(ctypes.c_void_p), *extra)
         if fit:
             if kp is None:
                 kp = self._plain_k(dm)
@@ -896,7 +901,7 @@ class COSX(lib.StreamObject):
             g += gy
         if grid_response:
             from socutils.grad import grid_response as gresp
-            g += gresp.cosx_response(self, dm, m, yg, tol)
+            g += gresp.cosx_response(self, dm, m, yg, tol, pts)
         return de + g
 
 

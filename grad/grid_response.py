@@ -110,11 +110,51 @@ def cosx_point_terms(k, dm, m, yg=None, tol=None):
     return eg, pg
 
 
-def cosx_response(k, dm, m, yg=None, tol=None):
+COSX_FUSED = True       # the COSX point terms from the fixed-grid gradient's own pass (SOCDFTcosx_grad_gr), else
+                        # a pass of their own (SOCDFTcosx_grid_resp)
+
+
+def fused_kernel(libdft, k):
+    '''(kernel, extra ctypes args, (eg, pg) buffers or None) for COSX.grad of k with grid response:
+    SOCDFTcosx_grad_gr (lib/dft/cosx_grad_gr.h) gives the point terms from the gradient's own pass'''
+    fn = getattr(libdft, 'SOCDFTcosx_grad_gr', None) if COSX_FUSED else None
+    if fn is None:
+        return libdft.SOCDFTcosx_grad, (), None
+    ngrid = k._weights.size
+    pg = numpy.empty((3, ngrid))
+    eg = numpy.empty(ngrid)
+    return fn, (pg.ctypes.data_as(ctypes.c_void_p), eg.ctypes.data_as(ctypes.c_void_p)), (eg, pg)
+
+
+def _gram_terms(k, eg, pg, yg):
+    '''add the grid-overlap term 1/2 phi^T Yg phi and its point derivative (SOCDFTcosx_gram_gr)'''
+    from socutils.dft.vxc_fast import _blas_ptrs
+    libdft = k._libdft
+    mol = k.mol
+    atm, bas, env, ao_loc = k._env
+    yg = numpy.ascontiguousarray(yg, dtype=numpy.double)
+    err = libdft.SOCDFTcosx_gram_gr(
+        pg.ctypes.data_as(ctypes.c_void_p), eg.ctypes.data_as(ctypes.c_void_p), yg.ctypes.data_as(ctypes.c_void_p),
+        k._coords.ctypes.data_as(ctypes.c_void_p), k._weights.ctypes.data_as(ctypes.c_void_p),
+        k._non0.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(k._weights.size), ctypes.c_int(k.blk),
+        ctypes.c_double(k.ao_cutoff), ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
+        ctypes.c_int(mol.natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas),
+        env.ctypes.data_as(ctypes.c_void_p), *_blas_ptrs())
+    if err:
+        raise MemoryError('COSX grid response: the grid-overlap term')
+
+
+def cosx_response(k, dm, m, yg=None, tol=None, points=None):
     '''the grid response of COSX.grad (natm, 3): d/dR of tr(D P K_plain[D]) from the motion of the grid
     points with their atoms and the derivatives of the partition weights, in the integrals, the AOs on the
-    grid and the grid overlap S_g of the fit (yg: the matrix COSX.grad contracts with d S_g)'''
-    eg, pg = cosx_point_terms(k, dm, m, yg, tol)
+    grid and the grid overlap S_g of the fit (yg: the matrix COSX.grad contracts with d S_g).  points: (eg, pg)
+    of the integral part from the gradient's own pass (fused_kernel), else a pass of their own'''
+    if points is None:
+        eg, pg = cosx_point_terms(k, dm, m, yg, tol)
+    else:
+        eg, pg = points
+        if yg is not None:
+            _gram_terms(k, eg, pg, yg)
     return response(k.grids, eg, pg, k.mol)
 
 
