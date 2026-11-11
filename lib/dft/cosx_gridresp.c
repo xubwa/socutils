@@ -15,8 +15,70 @@
  * H_b F_a) and d A_ab / d r = -sum_t E_ab,t R_{t+1x} (the point derivative of the Hermite R) as its term
  * (ii).  The point moves with its owner atom, so the gradient gains + sum_{g of A} pg[g] on A (and the
  * weight term).  By translational invariance sum_g pg[g] = -(the sum over the atoms of the fixed-grid
- * gradient), a check.  Same screening as SOCDFTcosx_grad.  Returns nonzero when a buffer failed.
+ * gradient), a check.  Same screening as SOCDFTcosx_grad.
+ *
+ * Entry points: SOCDFTcosx_grad_gr (cosx_grad_gr.h, generated from SOCDFTcosx_grad by gen_cosx_grad_gr.py):
+ * the fixed-grid gradient and, from the same pass, eg / pg without the Yg term; SOCDFTcosx_gram_gr adds the
+ * Yg term (Yg is known only after that pass: it needs K_plain[D]); SOCDFTcosx_grid_resp: all of it in a pass of
+ * its own (reference).  On trpn_1_5 / def2-SVP, GRIDX3, 8 threads: fixed-grid gradient 11.5 s, with the fused
+ * point terms 16.6-17.2 s, separate pass 28 s.
  */
+/* V (nh, n) = E^T W row by row, then p -= V . R_{t+1} */
+static void gr_point2(double *px, double *py, double *pz, const double *E, const double *R, const double *W,
+                      double *V, int nab, int nh, int n, const int *sh, int nhl)
+{
+        int ab, t, g;
+        memset(V, 0, sizeof(double) * nh * n);
+        for (ab = 0; ab < nab; ab++) {
+                const double *e = E + (size_t)ab * nh, *wr = W + (size_t)ab * n;
+                for (t = 0; t < nh; t++) {
+                        const double ee = e[t];
+                        double *v = V + (size_t)t * n;
+#pragma omp simd
+                        for (g = 0; g < n; g++) v[g] += ee * wr[g];
+                }
+        }
+        for (t = 0; t < nh; t++) {
+                const double *v = V + (size_t)t * n;
+                const double *rx = R + (size_t)sh[t] * n, *ry = R + (size_t)sh[nhl + t] * n;
+                const double *rz = R + (size_t)sh[2 * nhl + t] * n;
+#pragma omp simd
+                for (g = 0; g < n; g++) {
+                        px[g] -= v[g] * rx[g];
+                        py[g] -= v[g] * ry[g];
+                        pz[g] -= v[g] * rz[g];
+                }
+        }
+}
+
+/* gr_point2 with V = W^T E by dgemm for the larger pairs */
+static void gr_point4(double *px, double *py, double *pz, const double *E, const double *R, const double *W,
+                      double *V, int nab, int nh, int n, const int *sh, int nhl, dgemm_t dgemm_)
+{
+        if (nab * nh < 32) {
+                gr_point2(px, py, pz, E, R, W, V, nab, nh, n, sh, nhl);
+                return;
+        }
+        const double one = 1, zero = 0;
+        int t, g;
+        dgemm_("N", "T", &n, &nh, &nab, &one, W, &n, E, &nh, &zero, V, &n);
+        for (t = 0; t < nh; t++) {
+                const double *v = V + (size_t)t * n;
+                const double *rx = R + (size_t)sh[t] * n, *ry = R + (size_t)sh[nhl + t] * n;
+                const double *rz = R + (size_t)sh[2 * nhl + t] * n;
+#pragma omp simd
+                for (g = 0; g < n; g++) {
+                        px[g] -= v[g] * rx[g];
+                        py[g] -= v[g] * ry[g];
+                        pz[g] -= v[g] * rz[g];
+                }
+        }
+}
+
+static int cx_gr_mode = 4;      /* the point contraction: 4 V by dgemm (2 for the small pairs), 2 row loops,
+                                 * 0 off (timing only) */
+void SOCDFTcosx_set_gr_mode(int v) { cx_gr_mode = v; }
+
 int SOCDFTcosx_grid_resp(double *pg, double *eg, double *dm, double *dmm, double *yg, void *optp, double *coords,
                          double *weights, uint8_t *non0tab, int ngrid, int blk, double cutoff, double tol,
                          double tcut, int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
@@ -188,32 +250,9 @@ int SOCDFTcosx_grid_resp(double *pg, double *eg, double *dm, double *dmm, double
                         memset(A, 0, sizeof(double) * nab * n);
                         int k0 = 0;
                         /* the point derivative of one E R term: pg[x] -= sum_t (E^T W)_t R_{t+1x} */
-#define GR_POINT(E_, R_) {                                                                              \
-                        int ab_, t_;                                                                    \
-                        memset(V, 0, sizeof(double) * nh * n);                                          \
-                        for (ab_ = 0; ab_ < nab; ab_++) {                                               \
-                                const double *e_ = (E_) + (size_t)ab_ * nh, *wr_ = W + (size_t)ab_ * n; \
-                                for (t_ = 0; t_ < nh; t_++) {                                           \
-                                        const double ee_ = e_[t_];                                      \
-                                        double *v_ = V + (size_t)t_ * n;                                \
-                                        if (ee_ == 0) continue;                                         \
-                                        _Pragma("omp simd")                                             \
-                                        for (g = 0; g < n; g++) v_[g] += ee_ * wr_[g];                  \
-                                }                                                                       \
-                        }                                                                               \
-                        for (t_ = 0; t_ < nh; t_++) {                                                   \
-                                const double *v_ = V + (size_t)t_ * n;                                  \
-                                const double *rx_ = (R_) + (size_t)sh[t_] * n;                          \
-                                const double *ry_ = (R_) + (size_t)sh[nhl + t_] * n;                    \
-                                const double *rz_ = (R_) + (size_t)sh[2 * nhl + t_] * n;                \
-                                _Pragma("omp simd")                                                     \
-                                for (g = 0; g < n; g++) {                                               \
-                                        px[g] -= v_[g] * rx_[g];                                        \
-                                        py[g] -= v_[g] * ry_[g];                                        \
-                                        pz[g] -= v_[g] * rz_[g];                                        \
-                                }                                                                       \
-                        }                                                                               \
-                }
+#define GR_POINT(E_, R_) \
+        if (cx_gr_mode == 4) gr_point4(px, py, pz, (E_), (R_), W, V, nab, nh, n, sh, nhl, dgemm_); \
+        else if (cx_gr_mode) gr_point2(px, py, pz, (E_), (R_), W, V, nab, nh, n, sh, nhl);
                         if (pr->onec) {
                                 at = pr->atom;
                                 const double *Ra = env + atm[at * ATM_SLOTS + PTR_COORD];
@@ -369,5 +408,68 @@ int SOCDFTcosx_grid_resp(double *pg, double *eg, double *dm, double *dmm, double
         if (mkl_set_num_threads_local) mkl_set_num_threads_local(mkl0);
 }
         free(shl_of);
+        return err;
+}
+
+#include "cosx_grad_gr.h"
+
+/*
+ * The grid-overlap term of the fit point by point (added): eg[g] += 1/2 phi^T Yg phi,
+ * pg[x][g] += w_g d_x phi^T Yg phi (Yg symmetric), with the AOs of each block; no integrals.
+ */
+int SOCDFTcosx_gram_gr(double *pg, double *eg, double *yg, double *coords, double *weights, uint8_t *non0tab,
+                       int ngrid, int blk, double cutoff, int *ao_loc, int *atm, int natm, int *bas, int nbas,
+                       double *env, dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local)
+{
+        const int nao = ao_loc[nbas];
+        const int nblk = (ngrid + blk - 1) / blk;
+        int err = 0;
+        (void)natm;
+#pragma omp parallel
+{
+        const int mkl0 = mkl_set_num_threads_local ? mkl_set_num_threads_local(1) : 0;
+        const double one = 1, zero = 0;
+        double *a = malloc(sizeof(double) * 4 * (size_t)nao * blk);
+        double *full = malloc(sizeof(double) * 4 * (size_t)nao * blk);
+        double *rmx = malloc(sizeof(double) * nao);
+        int *ix = malloc(sizeof(int) * nao);
+        int *runs = malloc(sizeof(int) * (2 * (nbas + 1) + nao));
+        double *yr = malloc(sizeof(double) * (size_t)nao * nao);
+        double *YP = malloc(sizeof(double) * (size_t)nao * blk);
+        double *xyz = malloc(sizeof(double) * 3 * blk);
+        const int oom = !a || !full || !rmx || !ix || !runs || !yr || !YP || !xyz;
+        int b;
+#pragma omp for schedule(dynamic, 1)
+        for (b = 0; b < nblk; b++) {
+                if (oom) continue;
+                const int g0 = b * blk, n = g0 + blk <= ngrid ? blk : ngrid - g0;
+                uint8_t *msk = non0tab + (size_t)(g0 / MASK_BLK) * nbas;
+                int i, j, g, k, x;
+                for (k = 0; k < 3; k++) memcpy(xyz + k * n, coords + (size_t)k * ngrid + g0, sizeof(double) * n);
+                const int nl = eval_select1(a, ix, runs, n, xyz, msk, cutoff, ao_loc, atm, bas, nbas, env, rmx, full);
+                if (nl == 0) continue;
+                const double *w = weights + g0;
+                for (i = 0; i < nl; i++)
+                        for (j = 0; j < nl; j++) yr[(size_t)i * nl + j] = yg[(size_t)ix[i] * nao + ix[j]];
+                dgemm_("N", "N", &n, &nl, &nl, &one, a, &n, yr, &nl, &zero, YP, &n);
+                double *e = eg + g0;
+                for (i = 0; i < nl; i++) {
+                        const double *ph = a + (size_t)i * n, *yp = YP + (size_t)i * n;
+                        for (g = 0; g < n; g++) e[g] += .5 * ph[g] * yp[g];
+                        for (x = 0; x < 3; x++) {
+                                const double *d = a + ((size_t)(1 + x) * nl + i) * n;
+                                double *o = pg + (size_t)x * ngrid + g0;
+#pragma omp simd
+                                for (g = 0; g < n; g++) o[g] += w[g] * d[g] * yp[g];
+                        }
+                }
+        }
+        if (oom) {
+#pragma omp atomic write
+                err = 1;
+        }
+        free(a); free(full); free(rmx); free(ix); free(runs); free(yr); free(YP); free(xyz);
+        if (mkl_set_num_threads_local) mkl_set_num_threads_local(mkl0);
+}
         return err;
 }
