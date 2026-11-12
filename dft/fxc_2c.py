@@ -34,8 +34,10 @@ from pyscf import lib
 from pyscf.lib import logger
 
 MODE = 'auto'
-MO_RATIO = .5           # 'auto': the MO form when nocc < MO_RATIO nao (flops: MO ~ 64 nl nocc ng, AO ~ 32 nl^2 ng per
-                        # trial vector, nl the AOs of a sub-block <= nao)
+MO_RATIO = .2           # 'auto': the MO form when nocc < MO_RATIO nao (flops: MO ~ 64 nl nocc ng, AO ~ 32 nl^2 ng per
+                        # trial vector, nl the AOs of a sub-block <= nao: equal at nl = 2 nocc).  BiPh3 DYVTZ-SF (nao
+                        # 818, nocc 206, 424688 points), s per trial vector at 4 / 16 / 32 / 64 vectors: AO 6.6 / 5.6 /
+                        # 5.5 / 7.2, MO 5.5 / 5.5 / 5.9 / 6.9 (old path 19.2) -- even at nocc / nao = 0.25
 
 
 def use_mo(nao, nocc, nvir):
