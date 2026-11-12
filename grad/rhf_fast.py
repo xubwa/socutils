@@ -57,7 +57,7 @@ GRAD2E_PRIM_TOL = 1e-11
 GRAD_SUBBLOCK = 112     # grid points per sub-block of the fused XC gradient (10 AO components per AO)
 
 
-USE_FUSED_XC = True     # LDA / GGA XC gradient by the fused one-pass kernel (_xc_grad_fused)
+USE_FUSED_XC = True     # LDA / GGA / MGGA XC gradient by the fused one-pass kernel (_xc_grad_fused)
 
 
 def xc_grad(ks_grad, mol, dm, max_memory=2000, grid_response=False):
@@ -78,7 +78,9 @@ def xc_grad(ks_grad, mol, dm, max_memory=2000, grid_response=False):
         from socutils.grad import grid_response as gresp
         if not gresp.available(grids):
             return None
-    if xctype != 'MGGA' and USE_FUSED_XC and hasattr(libdft, 'SOCDFTxc_grad_fused'):
+    from socutils.dft import vxc_fast
+    if (USE_FUSED_XC and hasattr(libdft, 'SOCDFTxc_grad_fused')
+            and (xctype != 'MGGA' or (hasattr(libdft, 'SOCDFTvxc_fused_mgga') and vxc_fast._mgga_fusable(mf.xc)))):
         de = _xc_grad_fused(libdft, ni, mol, grids, mf.xc, dm, xctype, grid_response)
         if de is not None:
             return de
@@ -157,7 +159,7 @@ def _xc_grid_response(mol, grids, pgrid, egrid):
 
 
 def _xc_grad_fused(libdft, ni, mol, grids, xc_code, dm, xctype, grid_response=False):
-    '''LDA / GGA XC gradient in one pass over the grid (lib/dft/vxc_rks.c
+    '''LDA / GGA / meta-GGA XC gradient in one pass over the grid (lib/dft/vxc_rks.c
     SOCDFTxc_grad_fused: the AOs to the second derivatives, rho, the functional
     and the contraction per sub-block in cache); None if not applicable.
     grid_response: SOCDFTxc_grad_fused_gr, the per-point sums and exc rho of the
@@ -197,7 +199,7 @@ def _xc_grad_fused(libdft, ni, mol, grids, xc_code, dm, xctype, grid_response=Fa
     args = (out.ctypes.data_as(ctypes.c_void_p), D.ctypes.data_as(ctypes.c_void_p),
             coords.ctypes.data_as(ctypes.c_void_p), weights.ctypes.data_as(ctypes.c_void_p),
             non0tab.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(ngrid), ctypes.c_int(GRAD_SUBBLOCK),
-            ctypes.c_double(vxc_fast.AO_CUTOFF), ctypes.c_int(0 if xctype == 'LDA' else 1), feval,
+            ctypes.c_double(vxc_fast.AO_CUTOFF), ctypes.c_int({'LDA': 0, 'GGA': 1, 'MGGA': 2}[xctype]), feval,
             ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.natm),
             bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p),
             fxc, ctypes.c_int(xc.nfunc), ctypes.cast(xc.xc_arr, ctypes.c_void_p), facs, *vxc_fast._blas_ptrs())

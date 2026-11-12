@@ -73,6 +73,17 @@ class KnownValues(unittest.TestCase):
     def test_xc_pbe_ssf(self):
         self._xc('pbe', 'ssf')
 
+    def test_xc_r2scan_ssf(self):
+        self._xc('r2scan', 'ssf')
+
+    def test_xc_tpss_block_path(self):
+        fused = rhf_fast.USE_FUSED_XC
+        rhf_fast.USE_FUSED_XC = False
+        try:
+            self._xc('tpss', 'becke')
+        finally:
+            rhf_fast.USE_FUSED_XC = fused
+
     def test_xc_pbe_block_path(self):
         fused = rhf_fast.USE_FUSED_XC
         rhf_fast.USE_FUSED_XC = False
