@@ -74,3 +74,23 @@ def test_ccvv_explicit_native():
     bmo = og.mo_vectors(eris).real
     g_ref = numpy.einsum('Prs,Psq->rq', bmo, gam + gam.transpose(0, 2, 1))
     assert abs(g_fast - g_ref).max() < 1e-11, abs(g_fast - g_ref).max()
+
+
+def test_gradient_fast_vs_reference():
+    '''The orbital gradient without MO four-index arrays (zmr.uc.gradient) against the
+    reference (all classes; segments forced for cavv and ccav).'''
+    from socutils.zmr.nr import density as nr_density
+    from socutils.zmr.reference import orbital_gradient as og
+    from socutils.zmr.uc import gradient
+    mol = gto.M(atom='O 0 0 0.1173; H 0 0.7572 -0.4692; H 0 -0.7572 -0.4692',
+                basis='6-31g', verbose=0)
+    cderi = incore.cholesky_eri(mol, auxbasis='weigend')
+    mf = scf.RHF(mol).density_fit(auxbasis='weigend')
+    mf.kernel()
+    mc = mcscf.CASSCF(mf, 4, 4)
+    mc.kernel()
+    route = nr_density.spin_orbital_route(mc, cderi)
+    pt = route.pt()
+    g_ref, u = og.gradient(pt)
+    g_fast, _ = gradient.gradient(pt, max_memory=0.5)
+    assert abs(g_fast - g_ref).max() < 1e-10, abs(g_fast - g_ref).max()
