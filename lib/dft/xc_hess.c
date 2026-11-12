@@ -144,7 +144,8 @@ void SOCDFTrks_xc_hess_elem(double *R, double *diag, double *ab,
  * Only the per-atom grid vectors R[x,k,A,g] = sum_{mu in A} d_x (...)_k (D ...)_mu
  * of SOCDFTrks_xc_hess_elem (unscaled; d_A rho_k = -2 R), for the first-order
  * XC matrices of the CPHF right-hand sides.  Needs the AO derivatives up to 2
- * (GGA) / 1 (LDA) only.  OpenMP over grid sub-blocks.
+ * (GGA, MGGA) / 1 (LDA) only; xctype 2 (MGGA) also the tau row k = 4 (d holds
+ * D d_j phi, j = 0..3).  OpenMP over grid sub-blocks.
  */
 void SOCDFTrks_dR_rho(double *R, double *ao, double *d, int xctype, int nvar,
                       int ngrid, int nao, int *atom_of, int natm, long cs)
@@ -182,6 +183,15 @@ void SOCDFTrks_dR_rho(double *R, double *ao, double *d, int xctype, int nvar,
                                                 const double *dj = d + ((size_t)(1 + j) * nao + mu) * G + p0;
                                                 r = R + (((size_t)x * nvar + 1 + j) * natm + A) * G + p0;
                                                 for (p = 0; p < np; p++) r[p] += a2[p] * d0[p] + ax[p] * dj[p];
+                                        }
+                                }
+                                if (xctype == 2) {
+                                        /* tau: 1/2 sum_j d_xj phi (D d_j phi) */
+                                        r = R + (((size_t)x * nvar + 4) * natm + A) * G + p0;
+                                        for (j = 0; j < 3; j++) {
+                                                const double *a2 = ao + (size_t)D2[x][j] * cs + (size_t)mu * G + p0;
+                                                const double *dj = d + ((size_t)(1 + j) * nao + mu) * G + p0;
+                                                for (p = 0; p < np; p++) r[p] += .5 * a2[p] * dj[p];
                                         }
                                 }
                         }

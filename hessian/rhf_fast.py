@@ -662,7 +662,7 @@ XCHE_LOCAL_MIN_NAO = 200   # below this every AO is significant on most sub-bloc
 
 def _xc_hess_explicit_local(ni, xc_code, xctype, gga, nvar, ao, weight, p0, dm0, atom_of, natm, non0tab,
                             nf_shell, nsub, libdft, term1, diag, M9):
-    '''one pyscf grid block of xc_hess_explicit (LDA / GGA) sub-block by sub-block, each on the AOs the
+    '''one pyscf grid block of xc_hess_explicit (LDA / GGA / MGGA) sub-block by sub-block, each on the AOs the
     grid's non0tab flags on it: D phi_k, rho and the functional, R / the on-atom sums / the M operands
     (SOCDFTrks_xc_hess_elem), the R f R GEMM and the atom-pair GEMM over the local AOs only'''
     from pyscf.dft.numint import BLKSIZE
@@ -671,7 +671,8 @@ def _xc_hess_explicit_local(ni, xc_code, xctype, gga, nvar, ao, weight, p0, dm0,
     ncomp = aoT.shape[0]
     nao = aoT.shape[1]
     nd_ = 4 if gga else 1
-    K = 2 if gga else 1
+    mgga = nvar == 5
+    K = 5 if mgga else (2 if gga else 1)
     for s0 in range(0, ngrid, nsub):
         s1 = min(ngrid, s0 + nsub)
         gs = s1 - s0
@@ -693,6 +694,8 @@ def _xc_hess_explicit_local(ni, xc_code, xctype, gga, nvar, ao, weight, p0, dm0,
         if gga:
             for j in range(3):
                 rho[1 + j] = 2 * numpy.einsum('ig,ig->g', aol[1 + j], dT[0])
+        if mgga:
+            rho[4] = .5 * sum(numpy.einsum('ig,ig->g', aol[1 + j], dT[1 + j]) for j in range(3))
         vxc, fxc = ni.eval_xc_eff(xc_code, rho if gga else rho[0], 2, xctype=xctype)[1:3]
         w = weight[s0:s1]
         wf = numpy.ascontiguousarray(w * fxc.reshape(nvar, nvar, gs))
@@ -706,7 +709,7 @@ def _xc_hess_explicit_local(ni, xc_code, xctype, gga, nvar, ao, weight, p0, dm0,
         ab = numpy.empty((6 if gga else 3, nl, gs))
         dg = numpy.zeros((3, 3, na))
         libdft.SOCDFTrks_xc_hess_elem(
-            R.ctypes, dg.ctypes, ab.ctypes, aol.ctypes, dT.ctypes, wv.ctypes, ctypes.c_int(int(gga)),
+            R.ctypes, dg.ctypes, ab.ctypes, aol.ctypes, dT.ctypes, wv.ctypes, ctypes.c_int(2 if mgga else int(gga)),
             ctypes.c_int(nvar), ctypes.c_int(gs), ctypes.c_int(nl), atl.ctypes, ctypes.c_int(na),
             ctypes.c_long(nl * gs))
         R *= -2
@@ -722,7 +725,17 @@ def _xc_hess_explicit_local(ni, xc_code, xctype, gga, nvar, ao, weight, p0, dm0,
         L = numpy.empty((3, nl, K * gs))
         Rm = numpy.empty((3, nl, K * gs))
         ca = nl * gs
-        if gga:
+        if mgga:
+            # + the tau pair term sum_j (w v_tau d_xj phi) d_yj phi^T: three more column blocks
+            for x in range(3):
+                L[x, :, :gs] = ab[x]
+                L[x, :, gs:2 * gs] = aol[1 + x]
+                Rm[x, :, :gs] = aol[1 + x]
+                Rm[x, :, gs:2 * gs] = ab[3 + x]
+                for j in range(3):
+                    numpy.multiply(aol[_D2[x, j]], wv[4], out=L[x, :, (2 + j) * gs:(3 + j) * gs])
+                    Rm[x, :, (2 + j) * gs:(3 + j) * gs] = aol[_D2[x, j]]
+        elif gga:
             libdft.SOCDFTgather_rows2(L.ctypes, ab.ctypes, ctypes.c_long(ca), aol[1:].ctypes, ctypes.c_long(ca),
                                       None, ctypes.c_int(nl), ctypes.c_int(nl), ctypes.c_int(gs),
                                       ctypes.c_int(0), ctypes.c_int(gs))
@@ -782,7 +795,7 @@ def xc_hess_explicit(hessobj, mo_coeff, mo_occ, max_memory=4000):
     nsub = max(1, FXC_SUBBLOCK // BLKSIZE) * BLKSIZE
     M9 = M.reshape(9, nao, nao)
     p1 = 0
-    local = (XCHE_LOCAL and libdft is not None and not mgga and non0tab is not None
+    local = (XCHE_LOCAL and libdft is not None and non0tab is not None
              and nao >= XCHE_LOCAL_MIN_NAO)
     for ao, mask, weight, coords in ni.block_loop(mol, grids, nao, ao_deriv, max_memory):
         ngrid = weight.size
@@ -1598,35 +1611,49 @@ def _xc_deriv1_occ_local(ni, xc_code, xctype, gga, nvar, ao, weight, p0, dm0, at
                                ctypes.c_int(nl), ctypes.c_int(ngrid), ctypes.c_int(s0), ctypes.c_int(gs),
                                ctypes.c_long(cs))
         dl = numpy.ascontiguousarray(dm0[idx[:, None], idx])
-        dT = numpy.empty((nvar, nl, gs))
-        for k in range(nvar):
+        mgga = nvar == 5
+        nk = 4 if mgga else nvar                    # AO components of rho (phi_0, nabla phi)
+        dT = numpy.empty((nk, nl, gs))
+        for k in range(nk):
             lib.dot(dl, aos[k], c=dT[k])
         rho = numpy.empty((nvar, gs))
         rho[0] = numpy.einsum('ig,ig->g', aos[0], dT[0])
-        for j in range(1, nvar):
+        for j in range(1, nk):
             rho[j] = 2 * numpy.einsum('ig,ig->g', aos[j], dT[0])
+        if mgga:
+            rho[4] = .5 * sum(numpy.einsum('ig,ig->g', aos[j], dT[j]) for j in range(1, 4))
         vxc, fxc = ni.eval_xc_eff(xc_code, rho if gga else rho[0], 2, xctype=xctype)[1:3]
         w = weight[s0:s1]
         wv = w * vxc.reshape(nvar, gs)
         if gga:
             wv[0] *= .5
+        if mgga:
+            wv[4] *= .5                             # the 1/2 in tau
         # v_ip[x] += sum_g dphi_x (sum_k wv_k phi_k)^T + (wv_0 dphi_x + sum_j wv_j d_xj phi) phi^T (GGA)
         wv = numpy.ascontiguousarray(wv)
         a0 = numpy.empty((nl, gs))
-        libdft.SOCDFTaow_multi(a0.ctypes, wv.ctypes, aos.ctypes, ctypes.c_int(1), ctypes.c_int(nvar),
+        libdft.SOCDFTaow_multi(a0.ctypes, wv.ctypes, aos.ctypes, ctypes.c_int(1), ctypes.c_int(nk),
                                ctypes.c_int(nl), ctypes.c_int(gs))
         if gga:
-            Lv = numpy.empty((3, nl, 2 * gs))
-            Rv = numpy.empty((nl, 2 * gs))
+            # MGGA: + sum_j d_xj phi (w_tau d_j phi)^T, three more column blocks
+            nb = 5 if mgga else 2
+            Lv = numpy.empty((3, nl, nb * gs))
+            Rv = numpy.empty((nl, nb * gs))
             Lv[:, :, :gs] = aos[1:4]
             for x in range(3):
-                t = Lv[x, :, gs:]
+                t = Lv[x, :, gs:2 * gs]
                 numpy.multiply(aos[1 + x], wv[0], out=t)
                 t += aos[_D2[x, 0]] * wv[1]
                 t += aos[_D2[x, 1]] * wv[2]
                 t += aos[_D2[x, 2]] * wv[3]
+                if mgga:
+                    for j in range(3):
+                        Lv[x, :, (2 + j) * gs:(3 + j) * gs] = aos[_D2[x, j]]
             Rv[:, :gs] = a0
-            Rv[:, gs:] = aos[0]
+            Rv[:, gs:2 * gs] = aos[0]
+            if mgga:
+                for j in range(3):
+                    numpy.multiply(aos[1 + j], wv[4], out=Rv[:, (2 + j) * gs:(3 + j) * gs])
         else:
             Lv, Rv = aos[1:4], a0
         vl = lib.dot(Lv.reshape(3 * nl, -1), Rv.T)
@@ -1637,17 +1664,19 @@ def _xc_deriv1_occ_local(ni, xc_code, xctype, gga, nvar, ao, weight, p0, dm0, at
         atl = numpy.ascontiguousarray(atl, dtype=numpy.int32)
         na_l = atoms.size
         R = numpy.empty((3, nvar, na_l, gs))
-        libdft.SOCDFTrks_dR_rho(R.ctypes, aos.ctypes, dT.ctypes, ctypes.c_int(int(gga)), ctypes.c_int(nvar),
-                                ctypes.c_int(gs), ctypes.c_int(nl), atl.ctypes, ctypes.c_int(na_l),
-                                ctypes.c_long(ca))
+        libdft.SOCDFTrks_dR_rho(R.ctypes, aos.ctypes, dT.ctypes, ctypes.c_int(2 if mgga else int(gga)),
+                                ctypes.c_int(nvar), ctypes.c_int(gs), ctypes.c_int(nl), atl.ctypes,
+                                ctypes.c_int(na_l), ctypes.c_long(ca))
         wf = numpy.ascontiguousarray(w * fxc.reshape(nvar, nvar, gs))
         wv1 = numpy.empty((3 * na_l, nvar, gs))
         libdft.SOCDFTfxc_contract_R(wv1.ctypes, wf.ctypes, R.ctypes, ctypes.c_int(na_l), ctypes.c_int(nvar),
                                     ctypes.c_int(gs), ctypes.c_double(2. if gga else 1.), ctypes.c_int(int(gga)))
+        if mgga:
+            wv1[:, 4] *= .25                        # as pyscf: 1/2 in tau, V + V^T
         rows = numpy.asarray((3 * atoms[:, None] + numpy.arange(3)).ravel(), dtype=numpy.int32)
         cl = numpy.ascontiguousarray(mocc[idx])
-        psi = numpy.empty((nvar, gs, nocc))
-        for k in range(nvar):
+        psi = numpy.empty((nk, gs, nocc))
+        for k in range(nk):
             lib.dot(aos[k].T, cl, c=psi[k])
         libdft.SOCDFTxcd1_occ(vmat.ctypes, wv1.ctypes, aos.ctypes, psi.ctypes, idx.ctypes, rows.ctypes,
                               ctypes.c_int(rows.size), ctypes.c_int(nvar), ctypes.c_int(nl), ctypes.c_int(gs),
@@ -1655,7 +1684,7 @@ def _xc_deriv1_occ_local(ni, xc_code, xctype, gga, nvar, ao, weight, p0, dm0, at
 
 
 def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000, occ=False):
-    """pyscf.hessian.rks._get_vxc_deriv1 (LDA / GGA): the first-order XC
+    """pyscf.hessian.rks._get_vxc_deriv1 (LDA / GGA; MGGA occ only): the first-order XC
     matrices d V_xc / dR_{A,x} of all atoms at fixed density.  The 3 natm
     first-order potentials f_xc d_A rho of a grid sub-block go through one
     batched aow pass (lib/dft/fxc_multi.c) and one GEMM, restricted to the AOs
@@ -1676,12 +1705,15 @@ def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000, occ=False):
     xctype = ni._xc_type(mf.xc)
     libdft = _load_socdft()
     mocc = numpy.ascontiguousarray(mo_coeff[:, mo_occ > 0])
-    if (xctype not in ('LDA', 'GGA') or libdft is None or not hasattr(libdft, 'SOCDFTrks_dR_rho')
-            or mol.cart):
+    # meta-GGA: the occupied form only (SOCDFTxcd1_occ with the tau columns)
+    if (xctype not in ('LDA', 'GGA', 'MGGA') or libdft is None or not hasattr(libdft, 'SOCDFTrks_dR_rho')
+            or mol.cart or (xctype == 'MGGA' and not (occ and hasattr(libdft, 'SOCDFTfxc_fused_mgga')))):
         v = rks_hess._get_vxc_deriv1(hessobj, mo_coeff, mo_occ, max_memory)
         return lib.einsum('axpq,qi->axpi', v, mocc) if occ else v
-    gga = xctype == 'GGA'
-    nvar = 4 if gga else 1
+    gga = xctype in ('GGA', 'MGGA')
+    mgga = xctype == 'MGGA'
+    nvar = 5 if mgga else (4 if gga else 1)
+    nk = 4 if mgga else nvar                            # AO components of rho
     ao_deriv = 2 if gga else 1
     nao = mo_coeff.shape[0]
     natm = mol.natm
@@ -1701,7 +1733,7 @@ def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000, occ=False):
         from socutils.dft.vxc_fast import _blas_ptrs
         dgemm, mkl_local = _blas_ptrs()
         vmat = numpy.zeros((nd, nao, nocc))
-        psi_buf = numpy.empty(nvar * (max(1, FXC_SUBBLOCK // BLKSIZE) * BLKSIZE) * nocc)
+        psi_buf = numpy.empty(nk * (max(1, FXC_SUBBLOCK // BLKSIZE) * BLKSIZE) * nocc)
     else:
         vmat = numpy.zeros((nd, nao, nao))              # index 3 * atom + x
     nsub = max(1, FXC_SUBBLOCK // BLKSIZE) * BLKSIZE
@@ -1712,7 +1744,7 @@ def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000, occ=False):
     blk_mem = ng_blk * (ncomp_ao + 1) * nao * 8 / 1e6
     aow_buf = numpy.empty(nd * nao * nsub)
     local_vip = XCD1_LOCAL_VIP and nao >= XCHE_LOCAL_MIN_NAO
-    nga = ncomp_ao if local_vip else nvar               # AO components gathered per sub-block
+    nga = ncomp_ao if local_vip else nk                 # AO components gathered per sub-block
     aos_buf = numpy.empty(nga * nao * nsub)
     ws_buf = numpy.empty(nd * nvar * nsub)
     p1 = 0
@@ -1725,33 +1757,41 @@ def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000, occ=False):
                                  nsub, libdft, mocc, vmat, v_ip, dgemm, mkl_local)
             continue
         aoT, cs = _ao_stack(ao)
-        dT = numpy.empty((nvar, nao, ng))                  # D phi_k^T (dm0 symmetric)
-        for k in range(nvar):
+        dT = numpy.empty((nk, nao, ng))                    # D phi_k^T (dm0 symmetric)
+        for k in range(nk):
             lib.dot(dm0, aoT[k], c=dT[k])
         rho = numpy.empty((nvar, ng))
         rho[0] = numint._contract_rho(ao[0], dT[0].T)
-        for j in range(1, nvar):
+        for j in range(1, nk):
             rho[j] = 2 * numint._contract_rho(ao[j], dT[0].T)
+        if mgga:
+            rho[4] = .5 * sum(numint._contract_rho(ao[j], dT[j].T) for j in range(1, 4))
         vxc, fxc = ni.eval_xc_eff(mf.xc, rho if gga else rho[0], 2, xctype=xctype)[1:3]
         wv = weight * vxc.reshape(nvar, ng)
         if gga:
             wv[0] *= .5
+        if mgga:
+            wv[4] *= .5                                    # the 1/2 in tau
         if not local_vip:
             if gga:
                 rks_grad._gga_grad_sum_(v_ip, mol, ao, wv, mask, ao_loc)
+                if mgga:
+                    rks_grad._tau_grad_dot_(v_ip, mol, ao, wv[4], mask, ao_loc, True)
             else:
                 aow = numint._scale_ao(ao[0], wv[0])
                 rks_grad._d1_dot_(v_ip, mol, ao[1:4], aow, mask, ao_loc, True)
         R = numpy.empty((3, nvar, natm, ng))
-        libdft.SOCDFTrks_dR_rho(R.ctypes, aoT.ctypes, dT.ctypes, ctypes.c_int(int(gga)), ctypes.c_int(nvar),
-                                ctypes.c_int(ng), ctypes.c_int(nao), atom_of.ctypes, ctypes.c_int(natm),
-                                ctypes.c_long(cs))
+        libdft.SOCDFTrks_dR_rho(R.ctypes, aoT.ctypes, dT.ctypes, ctypes.c_int(2 if mgga else int(gga)),
+                                ctypes.c_int(nvar), ctypes.c_int(ng), ctypes.c_int(nao), atom_of.ctypes,
+                                ctypes.c_int(natm), ctypes.c_long(cs))
         wf = numpy.ascontiguousarray(weight * fxc.reshape(nvar, nvar, ng))
         # first-order potentials of all (atom, x), as pyscf: LDA f R (the *2 of
         # d rho comes with the + c.c. at the end), GGA f (2 R) with row 0 halved
         wv1 = numpy.empty((nd, nvar, ng))
         libdft.SOCDFTfxc_contract_R(wv1.ctypes, wf.ctypes, R.ctypes, ctypes.c_int(natm), ctypes.c_int(nvar),
                                     ctypes.c_int(ng), ctypes.c_double(2. if gga else 1.), ctypes.c_int(int(gga)))
+        if mgga:
+            wv1[:, 4] *= .25                               # as pyscf: 1/2 in tau, V + V^T
         for s0 in range(0, ng, nsub):
             s1 = min(ng, s0 + nsub)
             gs = s1 - s0
@@ -1774,20 +1814,27 @@ def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000, occ=False):
                 # v_ip[x] += sum_g dphi_x (sum_k wv_k phi_k)^T + (wv_0 dphi_x + sum_j wv_j d_xj phi) phi^T (GGA, wv_0 halved)
                 wvs = numpy.ascontiguousarray(wv[:, s0:s1])
                 a0 = numpy.empty((nl, gs))
-                libdft.SOCDFTaow_multi(a0.ctypes, wvs.ctypes, aos.ctypes, ctypes.c_int(1), ctypes.c_int(nvar),
+                libdft.SOCDFTaow_multi(a0.ctypes, wvs.ctypes, aos.ctypes, ctypes.c_int(1), ctypes.c_int(nk),
                                        ctypes.c_int(nl), ctypes.c_int(gs))
                 if gga:
-                    Lv = numpy.empty((3, nl, 2 * gs))
-                    Rv = numpy.empty((nl, 2 * gs))
+                    nb = 5 if mgga else 2              # MGGA: + sum_j d_xj phi (w_tau d_j phi)^T
+                    Lv = numpy.empty((3, nl, nb * gs))
+                    Rv = numpy.empty((nl, nb * gs))
                     Lv[:, :, :gs] = aos[1:4]
                     for x in range(3):
-                        t = Lv[x, :, gs:]
+                        t = Lv[x, :, gs:2 * gs]
                         numpy.multiply(aos[1 + x], wvs[0], out=t)
                         t += aos[_D2[x, 0]] * wvs[1]
                         t += aos[_D2[x, 1]] * wvs[2]
                         t += aos[_D2[x, 2]] * wvs[3]
+                        if mgga:
+                            for j in range(3):
+                                Lv[x, :, (2 + j) * gs:(3 + j) * gs] = aos[_D2[x, j]]
                     Rv[:, :gs] = a0
-                    Rv[:, gs:] = aos[0]
+                    Rv[:, gs:2 * gs] = aos[0]
+                    if mgga:
+                        for j in range(3):
+                            numpy.multiply(aos[1 + j], wvs[4], out=Rv[:, (2 + j) * gs:(3 + j) * gs])
                 else:
                     Lv, Rv = aos[1:4], a0
                 vl = lib.dot(Lv.reshape(3 * nl, -1), Rv.T)
@@ -1803,8 +1850,8 @@ def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000, occ=False):
                 rows = numpy.asarray((3 * atoms[:, None] + numpy.arange(3)).ravel(), dtype=numpy.int32)
                 ws = numpy.ascontiguousarray(wv1[rows, :, s0:s1])
                 cl = numpy.ascontiguousarray(mocc[idx])
-                psi = psi_buf[:nvar * gs * nocc].reshape(nvar, gs, nocc)
-                for k in range(nvar):
+                psi = psi_buf[:nk * gs * nocc].reshape(nk, gs, nocc)
+                for k in range(nk):
                     lib.dot(aos[k].T, cl, c=psi[k])
                 libdft.SOCDFTxcd1_occ(vmat.ctypes, ws.ctypes, aos.ctypes, psi.ctypes, idx.ctypes, rows.ctypes,
                                       ctypes.c_int(rows.size), ctypes.c_int(nvar), ctypes.c_int(nl),
@@ -2401,24 +2448,53 @@ def _xc_response_mo(ni, mol, grids, xctype, fxc, P, Q, max_memory):
             numpy.dot(Ql.T, aoT[k], out=qT[k])
             numpy.dot(PlT.reshape(nset * nocc, nl), aoT[k], out=XT[k].reshape(nset * nocc, ng))
         R = numpy.empty((4, nset, nocc, ng))
+        mgga = xctype == 'MGGA'
         for m in range(nset):
-            rho1 = numpy.empty((4, ng))
+            rho1 = numpy.empty((5 if mgga else 4, ng))
             rho1[0] = numint._contract_rho(XT[0, m].T, qT[0].T)
             for j in range(1, 4):
                 rho1[j] = (numint._contract_rho(XT[j, m].T, qT[0].T)
                            + numint._contract_rho(XT[0, m].T, qT[j].T))
+            if mgga:
+                # tau1 = 1/2 sum_j d_j phi dm1 d_j phi = sum_j X_j q_j
+                rho1[4] = .5 * sum(numint._contract_rho(XT[j, m].T, qT[j].T) for j in range(1, 4))
             rho1 *= 2
             u = numpy.einsum('yg,xyg->xg', rho1, wf)
-            R[0, m] = numint._scale_ao(qT.transpose(0, 2, 1), u).T
+            R[0, m] = numint._scale_ao(qT.transpose(0, 2, 1), u[:4]).T
             for j in range(1, 4):
                 numpy.multiply(qT[0], u[j], out=R[j, m])
+                if mgga:
+                    # V_tau Q = sum_j d_j phi (u_tau / 2) (d_j phi^T Q)
+                    R[j, m] += .5 * u[4] * qT[j]
         v = sum(aoT[k].dot(R[k].reshape(nset * nocc, ng).T) for k in range(4))   # (nl, nset*nocc)
         vq[:, idx] += v.reshape(nl, nset, nocc).transpose(1, 0, 2)
     return vq
 
 
+CPHF_MGGA_MO = None     # MGGA CPHF response in the MO form (_xc_response_mo): None -> auto (4 nocc < the mean sub-block nl)
+
+
+def _fxc_local_nao(mol, grids):
+    '''the mean number of AOs of the shells grids.non0tab flags on a sub-block of FXC_SUBBLOCK points
+    (that _FxcBatched works on), nao without the mask'''
+    from pyscf.dft.numint import BLKSIZE
+    non0tab = getattr(grids, 'non0tab', None)
+    if non0tab is None:
+        if grids.coords is None:
+            return mol.nao
+        grids.build(with_non0tab=True)
+        non0tab = grids.non0tab
+    nb = max(1, FXC_SUBBLOCK // BLKSIZE)
+    nf = mol.ao_loc_nr()[1:] - mol.ao_loc_nr()[:-1]
+    nrow = non0tab.shape[0] // nb * nb
+    if nrow == 0:
+        return mol.nao
+    m = non0tab[:nrow].reshape(-1, nb, non0tab.shape[1]).any(axis=1)
+    return float((m.astype(numpy.int64) @ nf).mean())
+
+
 def gen_vind(mf, mo_coeff, mo_occ):
-    '''pyscf.hessian.rhf.gen_vind, for RKS (LDA / GGA, no range separation /
+    '''pyscf.hessian.rhf.gen_vind, for RKS (LDA / GGA / MGGA, no range separation /
     NLC) with the XC response of _xc_response_mo; otherwise pyscf's.'''
     from pyscf.scf import hf
     mol = mf.mol
@@ -2427,7 +2503,7 @@ def gen_vind(mf, mo_coeff, mo_occ):
     ni = mf._numint
     xctype = ni._xc_type(mf.xc)
     omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, spin=mol.spin)
-    if xctype not in ('LDA', 'GGA') or omega != 0 or mf.do_nlc():
+    if xctype not in ('LDA', 'GGA', 'MGGA') or omega != 0 or mf.do_nlc():
         return rhf_hess.gen_vind(mf, mo_coeff, mo_occ)
     ni.libxc.test_deriv_order(mf.xc, 2, raise_error=True)
     hybrid = ni.libxc.is_hybrid_xc(mf.xc)
@@ -2436,7 +2512,12 @@ def gen_vind(mf, mo_coeff, mo_occ):
     nocc = mocc.shape[1]
     rho0, vxc, fxc = ni.cache_xc_kernel(mol, mf.grids, mf.xc, mo_coeff, mo_occ, 0)
     max_memory = max(2000, mf.max_memory * .8 - lib.current_memory()[0])
-    if xctype == 'GGA' and 8 * nocc > nao:
+    if xctype == 'MGGA':
+        mo_form = CPHF_MGGA_MO if CPHF_MGGA_MO is not None else 4 * nocc < _fxc_local_nao(mol, mf.grids)
+    if (xctype == 'GGA' and 8 * nocc > nao) or (xctype == 'MGGA' and not mo_form):
+        # MGGA: the MO form costs 16 g nl nocc per density, the AO form (_FxcBatched) 16 g nl^2 on the
+        # sub-blocks' nl AOs, but runs in C at ~3x the rate of the MO form's numpy passes: the AO form
+        # unless 4 nocc < the mean nl (caffeine def2-SVP r2SCAN, 16 cores: CPHF XC 13.4 s AO, 42.2 MO).
         # GGA in the MO form costs 8 g nao nocc per density against pyscf's
         # 2 g nao^2 (which runs at the GEMM bound): only for nao > 8 nocc.  pyscf's response (the AO-basis
         # nr_rks_fxc), with J and K added in place one after the other: two nao^2 arrays per density alive
@@ -2521,8 +2602,11 @@ class _FxcBatched:
     nao.  The fused pass (lib/dft/fxc_multi.c) evaluates rho1, contracts it
     with fxc and overwrites c with aow chunk by chunk while the chunk is in
     cache.  The GEMMs go through pyscf's lib.dot (MKL): numpy's own OpenBLAS
-    runs the small-K product D phi^T at a third of the speed.  LDA / GGA with
-    hermi=1 and a cached fxc; other calls go to pyscf.'''
+    runs the small-K product D phi^T at a third of the speed.  LDA / GGA / MGGA
+    with hermi=1 and a cached fxc; other calls go to pyscf.  MGGA: the operand
+    b = [phi_0 | nabla phi] per AO (4 gs columns), c = D b, the fused pass
+    (SOCDFTfxc_fused_mgga) turns c into [aow | w_tau nabla phi] and V += c b^T
+    carries the value, gradient and tau terms in one GEMM.'''
 
     def __init__(self, ni, max_memory=4000):
         self.ni = ni
@@ -2535,15 +2619,18 @@ class _FxcBatched:
         xctype = ni._xc_type(xc_code)
         libdft = _load_socdft()
         dms_a = numpy.asarray(dms)
-        if (hermi != 1 or fxc is None or xctype not in ('LDA', 'GGA') or libdft is None
-                or not hasattr(libdft, 'SOCDFTfxc_fused') or numpy.iscomplexobj(dms_a) or mol.cart):
+        if (hermi != 1 or fxc is None or xctype not in ('LDA', 'GGA', 'MGGA') or libdft is None
+                or not hasattr(libdft, 'SOCDFTfxc_fused') or numpy.iscomplexobj(dms_a) or mol.cart
+                or (xctype == 'MGGA' and not hasattr(libdft, 'SOCDFTfxc_fused_mgga'))):
             return self.orig(mol, grids, xc_code, dm0, dms, relativity, hermi, rho0, vxc, fxc,
                              max_memory, verbose)
         nao = dms_a.shape[-1]
         d = numpy.ascontiguousarray(dms_a.reshape(-1, nao, nao))
         n = d.shape[0]
         ncomp = 1 if xctype == 'LDA' else 4
-        fxc = numpy.asarray(fxc).reshape(ncomp, ncomp, -1)
+        mgga = xctype == 'MGGA'
+        nvar = 5 if mgga else ncomp
+        fxc = numpy.asarray(fxc).reshape(nvar, nvar, -1)
         from pyscf.dft.numint import BLKSIZE
         ao_loc = mol.ao_loc_nr()
         nf_shell = ao_loc[1:] - ao_loc[:-1]
@@ -2554,9 +2641,9 @@ class _FxcBatched:
         xc_mem = _CPHF_MEM.get('xc', self.max_memory)
         ng_blk = max(nsub, int(xc_mem * .2e6 / (8 * (ncomp + 1) * nao)) // nsub * nsub)
         blk_mem = ng_blk * (ncomp + 1) * nao * 8 / 1e6
-        cbuf = numpy.empty(n * nao * nsub)
+        cbuf = numpy.empty(n * nao * nsub * (4 if mgga else 1))
         aos_buf = numpy.empty(ncomp * nao * nsub)
-        fws_buf = numpy.empty(ncomp * ncomp * nsub)
+        fws_buf = numpy.empty(nvar * nvar * nsub)
         p1 = 0
         for ao, mask, weight, coords in ni.block_loop(mol, grids, nao, ncomp // 4, blk_mem):
             ng = weight.size
@@ -2565,6 +2652,8 @@ class _FxcBatched:
             fwb = numpy.ascontiguousarray(fxc[:, :, p0:p1] * weight)
             if xctype != 'LDA':
                 fwb[0] *= .5                                           # *.5 for V + V^T
+            if mgga:
+                fwb[4] *= .25                                          # 1/2 in tau, V + V^T
             for s0 in range(0, ng, nsub):
                 s1 = min(ng, s0 + nsub)
                 gs = s1 - s0
@@ -2580,6 +2669,33 @@ class _FxcBatched:
                         idx = numpy.nonzero(aom)[0].astype(numpy.int32)
                 if idx is None:
                     nl = nao
+                if mgga:
+                    # [phi_0 | nabla phi] as GEMM rows: c = D b, V += c b^T over 4 gs columns
+                    b = aos_buf[:4 * nl * gs].reshape(nl, 4 * gs)
+                    libdft.SOCDFTgather_ao_rows(b.ctypes, aoT.ctypes, None if idx is None else idx.ctypes,
+                                                ctypes.c_int(4), ctypes.c_int(nao), ctypes.c_int(nl),
+                                                ctypes.c_int(ng), ctypes.c_int(s0), ctypes.c_int(gs),
+                                                ctypes.c_long(cs))
+                    if idx is None:
+                        dl = d.reshape(n * nao, nao)
+                    else:
+                        dl = numpy.empty((n * nl, nl))
+                        libdft.SOCDFTgather_dm(dl.ctypes, d.ctypes, idx.ctypes, ctypes.c_int(nl), ctypes.c_int(n),
+                                               ctypes.c_int(nao))
+                    c = cbuf[:n * nl * 4 * gs].reshape(n * nl, 4 * gs)
+                    lib.dot(dl, b, c=c)
+                    fws = fws_buf[:25 * gs].reshape(5, 5, gs)
+                    libdft.SOCDFTslice_grid(fws.ctypes, fwb.ctypes, ctypes.c_long(25), ctypes.c_int(ng),
+                                            ctypes.c_int(s0), ctypes.c_int(gs))
+                    libdft.SOCDFTfxc_fused_mgga(c.ctypes, b.ctypes, fws.ctypes, ctypes.c_int(n), ctypes.c_int(nl),
+                                                ctypes.c_int(gs))
+                    if idx is None:
+                        lib.dot(c, b.T, beta=1, c=vmat.reshape(n * nao, nao))
+                    else:
+                        vl = lib.dot(c, b.T)
+                        libdft.SOCDFTscatter_add_dm(vmat.ctypes, vl.ctypes, idx.ctypes, ctypes.c_int(nl),
+                                                    ctypes.c_int(n), ctypes.c_int(nao))
+                    continue
                 aos = aos_buf[:ncomp * nl * gs].reshape(ncomp, nl, gs)
                 libdft.SOCDFTgather_ao(aos.ctypes, aoT.ctypes, None if idx is None else idx.ctypes,
                                        ctypes.c_int(ncomp), ctypes.c_int(nao), ctypes.c_int(nl), ctypes.c_int(ng),

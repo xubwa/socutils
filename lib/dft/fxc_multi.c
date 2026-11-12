@@ -116,6 +116,92 @@ void SOCDFTfxc_fused(double *c, double *ao, double *fw, int ndm, int ncomp, int 
         }
 }
 
+/*
+ * SOCDFTfxc_fused for meta-GGA: the AOs as rows of one GEMM operand, b (nao, 4, ngrid) =
+ * [phi_0 | d_x phi | d_y phi | d_z phi] per AO, and c (ndm, nao, 4, ngrid) = D b (in) /
+ * the left operand of V += c b^T (out), so that the value, gradient and tau terms of V are
+ * one GEMM over 4 ngrid columns:
+ *
+ *   rho1 = (sum_mu c_0 b_0, 2 sum_mu c_0 b_k, 1/2 sum_k sum_mu c_k b_k),
+ *   wv[x] = sum_y fw[x,y] rho1[y]          (fw (5, 5, ngrid); the caller halves row 0
+ *                                           and quarters row 4 for V + V^T),
+ *   c_0 <- sum_{k<4} wv[k] b_k,  c_k <- wv[4] b_k (k = 1..3).
+ */
+void SOCDFTfxc_fused_mgga(double *c, double *b, double *fw, int ndm, int nao, int ngrid)
+{
+        const size_t G = ngrid;
+        const int GCHUNK = grid_chunk(4, nao);
+        const int nchunk = (ngrid + GCHUNK - 1) / GCHUNK;
+        const long ntask = (long)nchunk * ndm;
+        long it;
+#pragma omp parallel for schedule(dynamic, 2)
+        for (it = 0; it < ntask; it++) {
+                const int ic = it / ndm, m = it % ndm;
+                const int g0 = ic * GCHUNK;
+                const int ng = (g0 + GCHUNK < ngrid ? g0 + GCHUNK : ngrid) - g0;
+                double r[5][GCHUNK_MAX], w[5][GCHUNK_MAX];
+                int k, x, mu, g;
+                for (k = 0; k < 5; k++)
+                        for (g = 0; g < ng; g++) r[k][g] = 0;
+                for (mu = 0; mu < nao; mu++) {
+                        const double *cm = c + ((size_t)m * nao + mu) * 4 * G + g0;
+                        const double *a = b + (size_t)mu * 4 * G + g0;
+#pragma omp simd
+                        for (g = 0; g < ng; g++) {
+                                r[0][g] += cm[g] * a[g];
+                                r[1][g] += cm[g] * a[G + g];
+                                r[2][g] += cm[g] * a[2 * G + g];
+                                r[3][g] += cm[g] * a[3 * G + g];
+                                r[4][g] += cm[G + g] * a[G + g] + cm[2 * G + g] * a[2 * G + g]
+                                         + cm[3 * G + g] * a[3 * G + g];
+                        }
+                }
+                for (g = 0; g < ng; g++) {
+                        r[1][g] *= 2;
+                        r[2][g] *= 2;
+                        r[3][g] *= 2;
+                        r[4][g] *= .5;
+                }
+                for (x = 0; x < 5; x++) {
+                        for (g = 0; g < ng; g++) w[x][g] = 0;
+                        for (k = 0; k < 5; k++) {
+                                const double *f = fw + ((size_t)x * 5 + k) * G + g0;
+#pragma omp simd
+                                for (g = 0; g < ng; g++) w[x][g] += f[g] * r[k][g];
+                        }
+                }
+                for (mu = 0; mu < nao; mu++) {
+                        double *o = c + ((size_t)m * nao + mu) * 4 * G + g0;
+                        const double *a = b + (size_t)mu * 4 * G + g0;
+#pragma omp simd
+                        for (g = 0; g < ng; g++) {
+                                o[g] = w[0][g] * a[g] + w[1][g] * a[G + g] + w[2][g] * a[2 * G + g]
+                                     + w[3][g] * a[3 * G + g];
+                                o[G + g] = w[4][g] * a[G + g];
+                                o[2 * G + g] = w[4][g] * a[2 * G + g];
+                                o[3 * G + g] = w[4][g] * a[3 * G + g];
+                        }
+                }
+        }
+}
+
+/* b[i][k][g] = ao[k][idx_i][s0 + g] (idx NULL: all AOs), (nl, ncomp, gs): the AO
+ * components of a sub-block as the rows of one GEMM operand (ao as in SOCDFTgather_ao) */
+void SOCDFTgather_ao_rows(double *b, double *ao, int *idx, int ncomp, int nao, int nl,
+                          int ngrid, int s0, int gs, long cs)
+{
+        int i;
+        (void)nao;
+#pragma omp parallel for schedule(static)
+        for (i = 0; i < nl; i++) {
+                const size_t mu = idx ? (size_t)idx[i] : (size_t)i;
+                int k;
+                for (k = 0; k < ncomp; k++)
+                        memcpy(b + ((size_t)i * ncomp + k) * gs, ao + k * cs + mu * ngrid + s0,
+                               sizeof(double) * gs);
+        }
+}
+
 void SOCDFTgather_dm(double *out, double *d, int *idx, int nl, int ndm, int nao)
 {
         const size_t nn = (size_t)nao * nao, ll = (size_t)nl * nl;
@@ -272,6 +358,12 @@ void SOCDFTgather_rows2(double *out, double *A, long ca, double *B, long cb, int
  * dgemm), aow_r and Y_r built in the thread's buffers.  psi (nvar, gs, nocc) =
  * phi_k^T C on the sub-block's AOs, ao (nvar, nl, gs), ws (nr, nvar, gs).
  * out (*, nao, nocc): out[orow[r]][idx[mu]] += T_r[mu].
+ *
+ * nvar 5 (meta-GGA; ws row 4 the tau weight u_r, psi and ao then of the 4 components
+ * phi_0, nabla phi only): V_r also has the symmetric sum_j (u_r d_j phi) d_j phi^T,
+ * whose share of (V_r + V_r^T) C, 2 sum_j d_j phi u_r psi_j, comes from 3 gs more columns:
+ *
+ *      T_r = [aow_r | phi_0 | d_1 phi | d_2 phi | d_3 phi] . [psi_0 ; Y_r ; 2 u_r psi_1 ; ..]
  */
 typedef void (*xcd1_dgemm_t)(const char *ta, const char *tb, const int *m, const int *n, const int *k,
                              const double *alpha, const double *a, const int *lda, const double *b,
@@ -283,17 +375,25 @@ void SOCDFTxcd1_occ(double *out, double *ws, double *ao, double *psi, int *idx, 
                     xcd1_mkl_local_t mkl_set_num_threads_local)
 {
         const size_t G = gs;
-        const int k2 = 2 * gs;
+        const int mg = nvar == 5;
+        const int nk = mg ? 4 : nvar;                           /* AO components in ao / psi */
+        const int nb = mg ? 5 : 2;                              /* column blocks of the GEMM */
+        const int k2 = nb * gs;
         const double one = 1, zero = 0;
 #pragma omp parallel
 {
         const int mkl0 = mkl_set_num_threads_local ? mkl_set_num_threads_local(1) : 0;
-        double *A = malloc(sizeof(double) * nl * 2 * G);        /* rows mu: [aow_r | phi_0] */
-        double *B = malloc(sizeof(double) * 2 * G * nocc);      /* [psi_0 ; Y_r] */
+        double *A = malloc(sizeof(double) * nl * nb * G);       /* rows mu: [aow_r | phi_0 (| nabla phi)] */
+        double *B = malloc(sizeof(double) * nb * G * nocc);     /* [psi_0 ; Y_r (; 2 u psi_j)] */
         double *T = malloc(sizeof(double) * nl * nocc);
         int mu, g, k, i, r;
-        for (mu = 0; mu < nl; mu++)
+        for (mu = 0; mu < nl; mu++) {
                 memcpy(A + (size_t)mu * k2 + G, ao + (size_t)mu * G, sizeof(double) * G);
+                if (mg)
+                        for (k = 1; k < 4; k++)
+                                memcpy(A + (size_t)mu * k2 + (size_t)(k + 1) * G, ao + ((size_t)k * nl + mu) * G,
+                                       sizeof(double) * G);
+        }
         memcpy(B, psi, sizeof(double) * G * nocc);
 #pragma omp for schedule(dynamic, 1)
         for (r = 0; r < nr; r++) {
@@ -303,7 +403,7 @@ void SOCDFTxcd1_occ(double *out, double *ws, double *ao, double *psi, int *idx, 
                         const double *a0 = ao + (size_t)mu * G;
 #pragma omp simd
                         for (g = 0; g < gs; g++) o[g] = w[g] * a0[g];
-                        for (k = 1; k < nvar; k++) {
+                        for (k = 1; k < nk; k++) {
                                 const double *a = ao + ((size_t)k * nl + mu) * G;
                                 const double *wk = w + (size_t)k * G;
 #pragma omp simd
@@ -317,14 +417,23 @@ void SOCDFTxcd1_occ(double *out, double *ws, double *ao, double *psi, int *idx, 
                         const double w0 = w[g];
 #pragma omp simd
                         for (i = 0; i < nocc; i++) y[i] = w0 * p0[i];
-                        for (k = 1; k < nvar; k++) {
+                        for (k = 1; k < nk; k++) {
                                 const double *pk = psi + ((size_t)k * G + g) * nocc;
                                 const double wk = w[(size_t)k * G + g];
 #pragma omp simd
                                 for (i = 0; i < nocc; i++) y[i] += wk * pk[i];
                         }
+                        if (mg) {
+                                const double u2 = 2 * w[4 * G + g];
+                                for (k = 1; k < 4; k++) {
+                                        double *z = B + ((size_t)(k + 1) * G + g) * nocc;
+                                        const double *pk = psi + ((size_t)k * G + g) * nocc;
+#pragma omp simd
+                                        for (i = 0; i < nocc; i++) z[i] = u2 * pk[i];
+                                }
+                        }
                 }
-                /* row-major T (nl, nocc) = A (nl, 2gs) . B (2gs, nocc) */
+                /* row-major T (nl, nocc) = A (nl, nb gs) . B (nb gs, nocc) */
                 dgemm_("N", "N", &nocc, &nl, &k2, &one, B, &nocc, A, &k2, &zero, T, &nocc);
                 double *dst = out + (size_t)orow[r] * nao * nocc;
                 for (mu = 0; mu < nl; mu++) {
