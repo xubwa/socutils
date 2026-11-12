@@ -85,6 +85,9 @@ def _rho(aoT, xctype, dm, orb):
 
 def nr_rks(ni, mol, grids, xc_code, dms, relativity=0, hermi=1, max_memory=2000, verbose=None):
     from socutils.hessian.rhf_fast import _load_socdft, _ao_stack
+    from socutils.dft import grids as sgrids
+    # the radial floor of the SCAN-family / Minnesota meta-GGAs on socutils grids (rebuilds the grid once)
+    sgrids.adapt_to_xc(grids, xc_code)
     libdft = _load_socdft()
     xctype = ni._xc_type(xc_code)
     # meta-GGA: the fused pass (SOCDFTvxc_fused_mgga); the whole-block MGGA branch below
@@ -381,6 +384,8 @@ def apply(mf):
     from socutils.dft import grids as sgrids
     sgrids.use_fast_grid_sort()
     sgrids.use_fast_partition()
+    if isinstance(getattr(mf, 'xc', None), str):
+        sgrids.adapt_to_xc(getattr(mf, 'grids', None), mf.xc)
     ni = mf._numint
     if isinstance(ni, numint.NumInt):
         ni.nr_rks = lambda *a, **k: nr_rks(ni, *a, **k)

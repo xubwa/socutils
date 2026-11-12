@@ -74,6 +74,13 @@ def xc_grad(ks_grad, mol, dm, max_memory=2000, grid_response=False):
     if xctype not in ('LDA', 'GGA', 'MGGA'):
         return None
     grids, _ = rks_grad._initialize_grids(ks_grad)
+    from socutils.dft import grids as sgrids
+    if grids is not mf.grids:
+        sgrids.adapt_to_xc(grids, mf.xc)
+    elif sgrids.needs_fine_radial(mf.xc) and isinstance(grids, sgrids.Grids) and grids.xc_intacc is None \
+            and 'intacc' not in grids.__dict__:
+        logger.warn(ks_grad, 'the SCF grid has no meta-GGA radial floor (socutils.dft.grids.adapt_to_xc); '
+                    'not changed here, it must match the SCF density')
     if grid_response:
         from socutils.grad import grid_response as gresp
         if not gresp.available(grids):

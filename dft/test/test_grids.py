@@ -156,6 +156,40 @@ class KnownValues(unittest.TestCase):
         from socutils.scf import cosx
         self.assertEqual(cosx.make_grids(m).element_intacc, {})
 
+    def test_mgga_radial_floor(self):
+        # the SCAN family and the Minnesota meta-GGAs (also in mixtures) get the radial floor; TPSS / GGAs do not
+        for xc in ('r2scan', 'scan', 'rscan', 'MGGA_X_R2SCAN,MGGA_C_R2SCAN', '.25*HF + .75*MGGA_X_R2SCAN, MGGA_C_R2SCAN',
+                   'm06l', 'm062x', 'm06', 'mn15', 'mn15l', 'MGGA_X_REVM06_L,MGGA_C_REVM06_L', '.5*MGGA_X_M06_L + .5*GGA_X_PBE, GGA_C_PBE'):
+            self.assertTrue(sgrids.needs_fine_radial(xc), xc)
+        for xc in ('tpss', 'tpssh', 'revtpss', 'pbe', 'b3lyp', 'lda,vwn', 'pbe0', 'hf'):
+            self.assertFalse(sgrids.needs_fine_radial(xc), xc)
+        g = sgrids.Grids(mol).build()
+        n0 = g.weights.size
+        self.assertTrue(sgrids.adapt_to_xc(g, 'r2scan'))
+        self.assertEqual(g.xc_intacc, sgrids.MGGA_RADIAL_INTACC)
+        self.assertGreater(g.weights.size, n0)                  # rebuilt with more radial shells
+        g6 = sgrids.Grids(mol)
+        g6.intacc = sgrids.MGGA_RADIAL_INTACC
+        self.assertEqual(g.weights.size, g6.build().weights.size)
+        self.assertFalse(sgrids.adapt_to_xc(g, 'r2scan'))       # once
+        self.assertTrue(sgrids.adapt_to_xc(g, 'pbe'))           # back to the defaults for another functional
+        self.assertEqual(g.weights.size, n0)
+        ge = sgrids.Grids(mol)
+        ge.intacc = 5.0                                         # an explicit setting wins
+        self.assertFalse(sgrids.adapt_to_xc(ge, 'r2scan'))
+        # the SCF through vxc_fast and the CP-SCF auto grid of the Hessian
+        from socutils.dft import vxc_fast
+        from socutils.hessian import rhf_fast
+        mf = dft.RKS(mol, xc='r2scan')
+        mf.grids = sgrids.Grids(mol)
+        vxc_fast.apply(mf)
+        mf.kernel()
+        self.assertEqual(mf.grids.xc_intacc, sgrids.MGGA_RADIAL_INTACC)
+        self.assertEqual(mf.grids.weights.size, g6.weights.size)
+        h = rhf_fast.RKSHessian(mf)
+        h.kernel()
+        self.assertEqual(h._cpscf_auto.intacc, sgrids.MGGA_RADIAL_INTACC)
+
     def test_sum_rule(self):
         h = numpy.random.RandomState(1).rand(3, 3, 3, 3)
         h = h + h.transpose(1, 0, 3, 2)

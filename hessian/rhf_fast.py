@@ -764,6 +764,9 @@ def xc_hess_explicit(hessobj, mo_coeff, mo_occ, max_memory=4000):
     mol = hessobj.mol
     mf = hessobj.base
     grids = hessobj.grids if hessobj.grids is not None else mf.grids
+    if hessobj.grids is not None:
+        from socutils.dft.grids import adapt_to_xc
+        adapt_to_xc(grids, mf.xc)               # the meta-GGA radial floor on a separate Hessian grid
     if grids.coords is None:
         grids.build(with_non0tab=True)
     ni = mf._numint
@@ -1699,6 +1702,9 @@ def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000, occ=False):
     mol = hessobj.mol
     mf = hessobj.base
     grids = hessobj.grids if hessobj.grids is not None else mf.grids
+    if hessobj.grids is not None:
+        from socutils.dft.grids import adapt_to_xc
+        adapt_to_xc(grids, mf.xc)               # the meta-GGA radial floor on a separate Hessian grid
     if grids.coords is None:
         grids.build(with_non0tab=True)
     ni = mf._numint
@@ -2799,9 +2805,15 @@ class _MultiJKCPHF:
             cg = None
             if hasattr(self.base, 'grids'):
                 cg = getattr(self, '_cpscf_auto', None)
-                if cg is None or cg.mol is not self.mol:
-                    from socutils.dft.grids import hessian_grids
-                    cg = self._cpscf_auto = hessian_grids(self.mol, **CPSCF_GRID_ARGS)
+                from socutils.dft import grids as sgrids
+                args = dict(CPSCF_GRID_ARGS)
+                if sgrids.needs_fine_radial(getattr(self.base, 'xc', None)):
+                    # the SCAN-family / Minnesota meta-GGAs: the radial density of their SCF grid floor
+                    args['intacc'] = max(args.get('intacc', sgrids.Grids.intacc), sgrids.MGGA_RADIAL_INTACC)
+                    logger.info(self, 'CP-SCF grid intacc %s (MGGA_RADIAL_INTACC) for %s', args['intacc'],
+                                self.base.xc)
+                if cg is None or cg.mol is not self.mol or cg.intacc != args.get('intacc', cg.intacc):
+                    cg = self._cpscf_auto = sgrids.hessian_grids(self.mol, **args)
         if cg is not None and hasattr(self.base, 'grids'):
             if cg.coords is None:
                 cg.build(with_non0tab=True)
