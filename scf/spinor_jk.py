@@ -124,7 +124,10 @@ def _rij_proxy(mf, mol):
         p.stdout = mf.stdout
         p.max_memory = mf.max_memory
         p.with_df.verbose = 0
-        p.with_df.build()
+        # the auxiliary molecule only: md_j builds the factor it needs (resident / HDF5 by rik, or none for the
+        # direct RI-J engine); with_df.build() would compute the whole three-centre tensor here
+        from pyscf.df import addons
+        p.with_df.auxmol = addons.make_auxmol(mol, p.with_df.auxbasis)
         p._aux_spec = aux
         logger.info(mf, 'spinor RIJ: auxiliary basis %d functions, lmax %d',
                     p.with_df.auxmol.nao, p.with_df.auxmol._bas[:, 1].max())
