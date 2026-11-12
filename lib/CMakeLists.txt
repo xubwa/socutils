@@ -11,6 +11,7 @@
 #   ccsdt   ->  lib/libccsdt_clib.so  (socutils.cc CCSDT kernels)
 #   ao2mo   ->  lib/libnrr_opt.so     (socutils.lib.ao2mo.nrr_fast spinor AO2MO)
 #   vhf     ->  lib/libsocvhf.so      (socutils.somf.x2cmp multi-centre J/K prescreen)
+#   dft     ->  lib/libsocdft.so      (socutils.dft.noncollinear multi-collinear XC kernel)
 #   pbcdf   ->  lib/libsocpbcdf.so    (socutils.pbc.rsdf screened SR integrals over images)
 #   qdhf    ->  lib/libqdhf.so        (socutils.qdhf, quad precision HF; needs libquadmath)
 #
@@ -34,7 +35,12 @@ if(CMAKE_COMPILER_IS_GNUCC)
     set(CMAKE_SHARED_LINKER_FLAGS "-Wl,--no-as-needed ${CMAKE_SHARED_LINKER_FLAGS}")
   endif()
 endif()
-set(CMAKE_C_FLAGS "-Wall ${CMAKE_C_FLAGS}")
+# -fno-math-errno: sqrt / exp without the errno branch, which keeps GCC from
+# vectorising the `omp simd` loops calling them (the vertical recursions of the
+# vhf/ integral kernels); results unchanged, J + K 3 - 8 % faster.
+# (-fno-trapping-math vectorises the F_m table loops too, with gathers: no
+# faster on Cascade Lake, same-node A/B.)
+set(CMAKE_C_FLAGS "-Wall -fno-math-errno ${CMAKE_C_FLAGS}")
 set(CMAKE_C_FLAGS_RELEASE "-O3 -funroll-loops")
 set(CMAKE_C_FLAGS_RELWITHDEBINFO "-O3 -funroll-loops -g")
 set(CMAKE_C_STANDARD 99)
@@ -45,6 +51,15 @@ set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
+
+# Target instruction set, e.g. -DSOCUTILS_MARCH=cascadelake (AVX-512; runs on
+# that and newer Intel CPUs, so a build on any Rockfish CPU node runs on all of
+# them) or native.  Empty (default): the compiler's generic target.
+set(SOCUTILS_MARCH "" CACHE STRING "-march= of the C / C++ libraries (empty: generic)")
+if(SOCUTILS_MARCH)
+  add_compile_options(-march=${SOCUTILS_MARCH})
+  message(STATUS "socutils: -march=${SOCUTILS_MARCH}")
+endif()
 
 # Architecture-specific overrides (optional), as in pyscf.
 if(EXISTS "${PROJECT_SOURCE_DIR}/cmake.arch.inc")
@@ -100,6 +115,7 @@ add_subdirectory(ccsdt)
 add_subdirectory(zccsd)
 add_subdirectory(ao2mo)
 add_subdirectory(vhf)
+add_subdirectory(dft)
 add_subdirectory(pbcdf)
 add_subdirectory(thc)
 

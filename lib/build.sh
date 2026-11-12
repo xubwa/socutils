@@ -12,5 +12,5 @@ build="$here/build"; mkdir -p "$build"; cd "$build"
 cmake "$here" -DCMAKE_BUILD_TYPE=Release "$@" >/dev/null
 cmake --build . -- -j"$(nproc 2>/dev/null || echo 2)" >/dev/null
 echo "Built into $here :"
-echo "  libccsdt_clib.so  libnrr_opt.so  libsocvhf.so  libqdhf.so"
+echo "  libccsdt_clib.so  libnrr_opt.so  libsocvhf.so  libsocdft.so  libqdhf.so  libsocpbcdf.so  libsocthc.so"
 echo "  deps/lib/libx2camf_c.so  deps/lib/libzquatev.so"

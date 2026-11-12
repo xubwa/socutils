@@ -1,0 +1,293 @@
+#!/usr/bin/env python
+'''
+socutils.hessian.rhf_fast (unique-quartet 2e terms, contracted XC Hessian,
+first-order Fock matrices in one pass, multi-density CPHF J / K, MO-basis
+XC response) against pyscf's RHF / RKS Hessians, which compute the same
+quantities, and the C drivers against explicit integral contractions.
+
+    python hessian/test/test_rhf_fast.py
+'''
+
+import unittest
+import numpy
+import socutils  # noqa: F401
+from pyscf import gto, scf, dft
+from socutils.hessian import rhf_fast
+from socutils.scf import jk_multi
+
+WATER2 = '''
+O  0.000000  0.000000  0.000000
+H  0.756950  0.000000  0.585882
+H -0.756950  0.000000  0.585882
+O  0.000000  0.000000  3.000000
+H  0.876934  0.133858  3.359583
+H -0.280961 -0.841423  3.359583
+'''
+
+
+def _mf(mol, xc):
+    if xc == 'hf':
+        mf = scf.RHF(mol)
+    else:
+        mf = dft.RKS(mol, xc=xc)
+        mf.grids.level = 2
+    mf.conv_tol = 1e-12
+    return mf.run()
+
+
+class KnownValues(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.mol = gto.M(atom=WATER2, basis='6-31g*', verbose=0)
+
+    def test_fock1_jk(self):
+        mol = gto.M(atom='O 0 0 0; H .757 0 .586; H -.757 0 .586', basis='6-31g', verbose=0)
+        nao = mol.nao
+        dm = numpy.random.RandomState(1).randn(nao, nao)
+        dm = dm + dm.T
+        vj, vk = rhf_fast.fock1_jk(mol, dm)
+        # a tiny budget: one atom per batch
+        vj1, vk1 = rhf_fast.fock1_jk(mol, dm, max_memory=1)
+        self.assertAlmostEqual(abs(vj1 - vj).max(), 0, 13)
+        self.assertAlmostEqual(abs(vk1 - vk).max(), 0, 13)
+        eri1 = mol.intor('int2e_ip1', comp=3)
+        for ia, (_, _, p0, p1) in enumerate(mol.aoslice_by_atom()):
+            g = numpy.zeros((3, nao, nao, nao, nao))
+            g[:, p0:p1] -= eri1[:, p0:p1]
+            g = g + g.transpose(0, 2, 1, 3, 4)
+            g = g + g.transpose(0, 3, 4, 1, 2)
+            self.assertAlmostEqual(abs(vj[ia] - numpy.einsum('xabcd,cd->xab', g, dm)).max(), 0, 11)
+            self.assertAlmostEqual(abs(vk[ia] - numpy.einsum('xabcd,bc->xad', g, dm)).max(), 0, 11)
+
+    def test_hess2e_cart(self):
+        # combined Cartesian kernel vs the libcint-based unique-quartet driver
+        from socutils.hessian import ghf as ghf_hess
+        for basis in ('cc-pvdz', 'cc-pvtz'):
+            mol = gto.M(atom='O 0 0 0; H .757 .1 .586; H -.757 0 .586', basis=basis, verbose=0)
+            mf = _mf(mol, 'hf')
+            dm = mf.make_rdm1()
+            e = rhf_fast.hess2e_jk_cart(mol, dm, [(1, 0), (0, 1)], mode=1)
+            vj, vk = mf.get_jk(mol, dm)
+            self.assertAlmostEqual(e[0], .5 * numpy.einsum('ij,ji', dm, vj), 9)
+            self.assertAlmostEqual(e[1], .25 * numpy.einsum('ij,ji', dm, vk), 9)
+            h = rhf_fast.hess2e_jk_cart(mol, dm, [(1, 0), (0, 1)])
+            ref = ghf_hess.deriv2_energies_direct(
+                mol, [(dm, 'ba', dm, 'dc', .5, 0), (dm, 'bc', dm, 'da', .25, 1)])
+            self.assertAlmostEqual(abs(h - ref).max(), 0, 9)
+
+    def test_fxc_batched(self):
+        mol = self.mol
+        rs = numpy.random.RandomState(2)
+        for xc in ('lda,vwn', 'pbe'):
+            mf = _mf(mol, xc)
+            ni = mf._numint
+            rho0, vxc, fxc = ni.cache_xc_kernel(mol, mf.grids, mf.xc, mf.mo_coeff, mf.mo_occ, 0)
+            dms = rs.randn(5, mol.nao, mol.nao) * 1e-2
+            dms = dms + dms.transpose(0, 2, 1)
+            ref = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms, 0, 1, rho0, vxc, fxc)
+            v = rhf_fast._FxcBatched(ni)(mol, mf.grids, mf.xc, None, dms, 0, 1, rho0, vxc, fxc)
+            self.assertAlmostEqual(abs(v - ref).max(), 0, 12)
+
+    def test_fxc_batched_subsets(self):
+        # a water chain: most grid blocks see a fraction of the AOs (block-local subsets)
+        atom = '; '.join('O %g 0 0; H %g .757 .586; H %g -.757 .586' % (3. * i, 3. * i, 3. * i) for i in range(4))
+        mol = gto.M(atom=atom, basis='6-31g', verbose=0)
+        mf = _mf(mol, 'pbe')
+        ni = mf._numint
+        nt = mf.grids.non0tab
+        w = mol.ao_loc_nr()[1:] - mol.ao_loc_nr()[:-1]
+        self.assertLess(((nt > 0) * w).sum(axis=1).mean(), .7 * mol.nao)
+        rho0, vxc, fxc = ni.cache_xc_kernel(mol, mf.grids, mf.xc, mf.mo_coeff, mf.mo_occ, 0)
+        dms = numpy.random.RandomState(3).randn(6, mol.nao, mol.nao) * 1e-2
+        dms = dms + dms.transpose(0, 2, 1)
+        ref = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms, 0, 1, rho0, vxc, fxc)
+        v = rhf_fast._FxcBatched(ni)(mol, mf.grids, mf.xc, None, dms, 0, 1, rho0, vxc, fxc)
+        self.assertAlmostEqual(abs(v - ref).max(), 0, 12)
+
+    def test_xc_deriv1_batched(self):
+        from pyscf.hessian import rks as rks_hess
+        for xc in ('lda,vwn', 'pbe'):
+            mf = _mf(self.mol, xc)
+            h = rhf_fast.RKSHessian(mf)
+            ref = rks_hess._get_vxc_deriv1(h, mf.mo_coeff, mf.mo_occ, 4000)
+            v = rhf_fast.xc_deriv1_batched(h, mf.mo_coeff, mf.mo_occ, 4000)
+            self.assertAlmostEqual(abs(v - ref).max(), 0, 11)
+
+    def test_jk_multi(self):
+        mol = self.mol
+        rs = numpy.random.RandomState(0)
+        d = rs.randn(5, mol.nao, mol.nao)
+        rj, rk = scf.hf.get_jk(mol, d, hermi=0)
+        vj, vk = jk_multi.get_jk(mol, d)
+        self.assertAlmostEqual(abs(vj - rj).max(), 0, 10)
+        self.assertAlmostEqual(abs(vk - rk).max(), 0, 10)
+        d = d + d.transpose(0, 2, 1)
+        rj, rk = scf.hf.get_jk(mol, d, hermi=1)
+        vj, vk = jk_multi.get_jk(mol, d, hermi=1)
+        self.assertAlmostEqual(abs(vj - rj).max(), 0, 10)
+        self.assertAlmostEqual(abs(vk - rk).max(), 0, 10)
+        # a tiny budget: one density per batch (each batch screened by its own
+        # densities: differences at the screening threshold)
+        vj1, vk1 = jk_multi.get_jk(mol, d, hermi=1, max_memory=1)
+        self.assertAlmostEqual(abs(vj1 - vj).max(), 0, 11)
+        self.assertAlmostEqual(abs(vk1 - vk).max(), 0, 11)
+
+    def _check(self, mol, xc):
+        mf = _mf(mol, xc)
+        ref = mf.Hessian().kernel()
+        cls = rhf_fast.RHFHessian if xc == 'hf' else rhf_fast.RKSHessian
+        h = cls(mf)
+        h.cpscf_grids = None            # the SCF grid in the CP-SCF too, as pyscf
+        h.sum_rule = False              # pyscf's Hessian: no translational sum rule
+        h = h.kernel()
+        self.assertAlmostEqual(abs(h - ref).max(), 0, 9)
+
+    def test_rhf(self):
+        self._check(self.mol, 'hf')
+
+    def test_lda(self):
+        self._check(self.mol, 'lda,vwn')
+
+    def test_pbe(self):
+        self._check(self.mol, 'pbe')
+
+    def test_pbe0(self):
+        self._check(self.mol, 'pbe0')
+
+    def test_tpss(self):
+        self._check(self.mol, 'tpss')
+
+    # meta-GGA: the batched response, the MO-form response, the first-order XC and the local explicit
+    # second derivatives against pyscf
+    def test_mgga_fxc(self):
+        from pyscf import lib
+        atom = '; '.join('O %g 0 0; H %g .757 .586; H %g -.757 .586' % (3. * i, 3. * i, 3. * i) for i in range(3))
+        rs = numpy.random.RandomState(4)
+        for mol in (self.mol, gto.M(atom=atom, basis='6-31g', verbose=0)):
+            for xc in ('r2scan', 'm06l'):
+                mf = _mf(mol, xc)
+                ni = mf._numint
+                rho0, vxc, fxc = ni.cache_xc_kernel(mol, mf.grids, mf.xc, mf.mo_coeff, mf.mo_occ, 0)
+                dms = rs.randn(4, mol.nao, mol.nao) * 1e-2
+                dms = dms + dms.transpose(0, 2, 1)
+                ref = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms, 0, 1, rho0, vxc, fxc)
+                v = rhf_fast._FxcBatched(ni)(mol, mf.grids, mf.xc, None, dms, 0, 1, rho0, vxc, fxc)
+                self.assertAlmostEqual(abs(v - ref).max(), 0, 11)
+                # the MO form: dm1 = P Q^T + Q P^T, V Q
+                mocc = mf.mo_coeff[:, mf.mo_occ > 0]
+                P = rs.randn(3, mol.nao, mocc.shape[1]) * 1e-2
+                dm1 = lib.einsum('mpi,qi->mpq', P, mocc)
+                dm1 = dm1 + dm1.transpose(0, 2, 1)
+                ref = lib.einsum('mpq,qi->mpi', ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dm1, 0, 1, rho0, vxc, fxc),
+                                 mocc)
+                vq = rhf_fast._xc_response_mo(ni, mol, mf.grids, 'MGGA', fxc, P, mocc, 4000)
+                self.assertAlmostEqual(abs(vq - ref).max(), 0, 11)
+
+    def test_mgga_deriv1_explicit(self):
+        from pyscf import lib
+        from pyscf.hessian import rks as rks_hess
+        for xc in ('r2scan', 'tpssh'):
+            mf = _mf(self.mol, xc)
+            h = rhf_fast.RKSHessian(mf)
+            mocc = mf.mo_coeff[:, mf.mo_occ > 0]
+            ref = lib.einsum('axpq,qi->axpi', rks_hess._get_vxc_deriv1(h, mf.mo_coeff, mf.mo_occ, 4000), mocc)
+            e0 = rhf_fast.xc_hess_explicit(h, mf.mo_coeff, mf.mo_occ)
+            for local in (200, 0):          # the whole-block and the sub-block (local) paths
+                with lib.temporary_env(rhf_fast, XCHE_LOCAL_MIN_NAO=local):
+                    v = rhf_fast.xc_deriv1_batched(h, mf.mo_coeff, mf.mo_occ, 4000, occ=True)
+                    self.assertAlmostEqual(abs(v - ref).max(), 0, 11)
+                    e = rhf_fast.xc_hess_explicit(h, mf.mo_coeff, mf.mo_occ)
+                    self.assertAlmostEqual(abs(e - e0).max(), 0, 11)
+
+    def test_r2scan(self):
+        self._check(self.mol, 'r2scan')
+
+    def test_m06l(self):
+        self._check(self.mol, 'm06l')
+
+    def test_sum_rule_cpscf_grids(self):
+        # the options of socutils.dft.grids.hessian, on the fast classes
+        from socutils.dft import grids as sgrids
+        mol = self.mol
+        mf = dft.RKS(mol, xc='pbe')
+        mf.grids = sgrids.Grids(mol)
+        mf.conv_tol = 1e-12
+        mf.kernel()
+        ref = sgrids.hessian(mf, sum_rule=True, cpscf_grids=sgrids.hessian_grids(mol, angular_grid=2, intacc=3.467))
+        h = rhf_fast.RKSHessian(mf)
+        h.sum_rule = True
+        h.cpscf_grids = sgrids.hessian_grids(mol, angular_grid=2, intacc=3.467)
+        self.assertAlmostEqual(abs(h.kernel() - ref).max(), 0, 9)
+
+    def test_ri_j_deriv(self):
+        # explicit DF-J second derivatives and first-order J against pyscf.df.hessian
+        # (auxbasis_response = 2)
+        from pyscf.df.hessian import rhf as df_rhf_hess
+        mf = dft.RKS(self.mol, xc='pbe').density_fit(auxbasis='def2-universal-jfit')
+        mf.grids.level = 2
+        mf.conv_tol = 1e-12
+        mf.kernel()
+        h = mf.Hessian()
+        hess, vj1 = rhf_fast.ri_j_deriv(self.mol, rhf_fast._df_auxmol(mf), mf.make_rdm1())
+        ej = df_rhf_hess._partial_hess_ejk(h, with_k=False)[1]
+        self.assertAlmostEqual(abs(hess - ej).max(), 0, 9)
+        ref = numpy.array([v for _, _, v, _ in df_rhf_hess._gen_jk(h, mf.mo_coeff, mf.mo_occ, with_k=False)])
+        self.assertAlmostEqual(abs(vj1 - ref).max(), 0, 11)
+        hf_ = rhf_fast.RKSHessian(mf)
+        hf_.cpscf_grids = None
+        hf_.sum_rule = False            # as pyscf
+        self.assertAlmostEqual(abs(hf_.kernel() - h.kernel()).max(), 0, 9)
+
+    def test_cpscf_grids_default(self):
+        # the default coarse CP-SCF grid: close to the SCF-grid Hessian, the RHF one unchanged
+        mf = _mf(self.mol, 'pbe')
+        h0 = rhf_fast.RKSHessian(mf)
+        h0.cpscf_grids = None
+        h1 = rhf_fast.RKSHessian(mf)
+        self.assertEqual(h1.cpscf_grids, 'auto')
+        self.assertAlmostEqual(abs(h1.kernel() - h0.kernel()).max(), 0, 4)
+        self.assertIsNotNone(h1._cpscf_auto)
+
+    def test_mo_xc_response(self):
+        # nao > 8 nocc: the MO-basis GGA response of gen_vind is active
+        mol = gto.M(atom='O 0 0 0; H .757 0 .586; H -.757 0 .586', basis='cc-pvtz', verbose=0)
+        self.assertGreater(mol.nao, 8 * mol.nelectron // 2)
+        self._check(mol, 'b3lyp')
+
+    def test_large_system_paths(self):
+        # the paths large molecules take: the SCF without the three-index tensor (md_j RIJ_DIRECT), the CPHF J by
+        # the direct engine and by the semi-direct blocks, the CPHF response in density chunks; against the
+        # default (resident tensor, one chunk) and pyscf's density-fitted J
+        from pyscf import lib
+        from socutils.scf import md_j
+        mol = self.mol
+
+        def hess(direct, semi_min, chunk):
+            with lib.temporary_env(md_j, RIJ_DIRECT=True if direct else 'auto'), \
+                    lib.temporary_env(rhf_fast, RIJ_SEMIDIRECT_MIN=semi_min, CPHF_FX_CHUNK=chunk):
+                mf = dft.RKS(mol, xc='pbe').density_fit(auxbasis='def2-universal-jfit', only_dfj=True)
+                mf.grids.level = 2
+                mf.conv_tol = 1e-12
+                mf = md_j.apply(mf)
+                mf.kernel()
+                return mf, rhf_fast.RKSHessian(mf).kernel()
+        mf0, h0 = hess(False, 10**9, None)
+        mf1, h1 = hess(True, 10**9, None)
+        if rhf_fast._rij_engine(mf1) is None:
+            self.skipTest('no direct RI-J engine')
+        self.assertIsNone(rhf_fast._rij_cderi(mf1))
+        self.assertAlmostEqual(abs(h1 - h0).max(), 0, 7)
+        self.assertAlmostEqual(abs(hess(True, 1, None)[1] - h0).max(), 0, 7)
+        self.assertAlmostEqual(abs(hess(True, 1, 5)[1] - h0).max(), 0, 7)
+        self.assertAlmostEqual(abs(hess(False, 10**9, 4)[1] - h0).max(), 0, 7)
+        # the semi-direct J itself against pyscf's fitted J
+        rng = numpy.random.default_rng(2)
+        dms = rng.standard_normal((3, mol.nao, mol.nao))
+        dms = dms + dms.transpose(0, 2, 1)
+        vj = rhf_fast._rij_semidirect_j(mf1, rhf_fast._rij_engine(mf1).auxmol, dms)
+        ref = dft.RKS(mol).density_fit(auxbasis='def2-universal-jfit').get_j(mol, dms)
+        self.assertAlmostEqual(abs(vj - ref).max(), 0, 8)
+
+
+if __name__ == '__main__':
+    unittest.main()

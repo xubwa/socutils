@@ -1,0 +1,131 @@
+#!/usr/bin/env python
+'''The fused two-component Vxc (socutils.dft.vxc_2c) against the reference paths
+(pyscf's collinear NumInt2C.nr_vxc, socutils.dft.noncollinear ncol / mcol).'''
+import unittest
+import numpy
+from pyscf import gto, lib
+from socutils.dft import dft, vxc_2c, noncollinear
+from socutils.scf import spinor_hf
+
+
+def setUpModule():
+    global mol, dm_kr, dm_ku
+    mol = gto.M(atom='Au 0 0 0; H 0 0 1.524', basis='x2c-svpall', verbose=0)
+    mf = dft.RKS(mol, xc='pbe')
+    dm = mf.get_init_guess()
+    ni = mf._numint
+    dm_kr = ni._dm_to_ghf(dm)                      # Kramers-even GHF density
+    rng = numpy.random.default_rng(5)
+    n2 = dm_kr.shape[0]
+    x = rng.standard_normal((n2, n2)) + 1j * rng.standard_normal((n2, n2))
+    s = mol.intor('int1e_ovlp')
+    # a Hermitian, spin-polarised, non-collinear perturbation that decays like a density
+    nao = mol.nao
+    p = numpy.zeros((n2, n2), dtype=complex)
+    p[:nao, :nao] = s @ (x[:nao, :nao] + x[:nao, :nao].conj().T) @ s * 2e-3
+    p[nao:, nao:] = -s @ (x[nao:, nao:] + x[nao:, nao:].conj().T) @ s * 1e-3
+    p[:nao, nao:] = s @ x[:nao, nao:] @ s * 2e-3
+    p[nao:, :nao] = p[:nao, nao:].conj().T
+    dm_ku = dm_kr + p
+
+
+def tearDownModule():
+    global mol, dm_kr, dm_ku
+    del mol, dm_kr, dm_ku
+
+
+def _both(ni, grids, xc, dm):
+    vxc_2c.ENABLE = False
+    try:
+        ref = noncollinear.NumInt2C.nr_vxc(ni, mol, grids, xc, dm)     # the GHF-form entry
+    finally:
+        vxc_2c.ENABLE = True
+    out = vxc_2c.nr_vxc(ni, mol, grids, xc, dm)
+    return ref, out
+
+
+class KnowValues(unittest.TestCase):
+    def _check(self, collinear, xc, dm, tol=1e-11):
+        mf = dft.RKS(mol, xc=xc)
+        ni = mf._numint
+        ni.collinear = collinear
+        mf.grids.atom_grid = (60, 194)
+        mf.grids.build(with_non0tab=True)
+        ref, out = _both(ni, mf.grids, xc, dm)
+        self.assertIsNotNone(out)
+        self.assertAlmostEqual(out[0], ref[0], 9)
+        self.assertAlmostEqual(out[1], ref[1], 10)
+        err = abs(out[2] - ref[2]).max() / abs(ref[2]).max()
+        self.assertLess(err, tol, (collinear, xc))
+
+    def test_col_kramers_restricted(self):
+        for xc in ('lda,vwn', 'pbe'):
+            self._check('col', xc, dm_kr)
+
+    def test_col_unrestricted(self):
+        for xc in ('lda,vwn', 'pbe'):
+            self._check('col', xc, dm_ku)
+
+    def test_ncol(self):
+        for xc in ('lda,vwn', 'pbe'):
+            self._check('ncol', xc, dm_ku)
+            self._check('ncol', xc, dm_kr)
+
+    def test_mcol_lda(self):
+        self._check('mcol', 'lda,vwn', dm_ku)
+
+    def test_mcol_gga(self):
+        # the half-sphere points (small |m|) and, in dm_pol (fully polarised where only D_aa is left),
+        # the principal-axis points
+        nao = mol.nao
+        dm_pol = dm_ku.copy()
+        dm_pol[nao:, nao:] *= 1e-3          # |m| / rho = 0.998 > collinear_thrd
+        dm_pol[:nao, nao:] *= 0
+        dm_pol[nao:, :nao] *= 0
+        for d in (dm_ku, dm_pol):
+            self._check('mcol', 'pbe', d)
+        vxc_2c.MCOL_GGA = False
+        try:
+            mf = dft.RKS(mol, xc='pbe')
+            mf._numint.collinear = 'mcol'
+            mf.grids.build(with_non0tab=True)
+            self.assertIsNone(vxc_2c.nr_vxc(mf._numint, mol, mf.grids, 'pbe', dm_ku))
+        finally:
+            vxc_2c.MCOL_GGA = True
+
+    def test_mgga(self):
+        # meta-GGA: col (restricted and spin-polarised), ncol, mcol (half sphere and principal axis).  dm_ku
+        # is not positive semidefinite (tau_b < 0 at some points), where r2SCAN / SCAN are ill-conditioned
+        # (pyscf against itself with D perturbed by 1e-14: 1e-3 relative in V): a positive semidefinite
+        # spin-polarised, non-collinear density instead, dm_kr + v v^H of one spinor
+        nao = mol.nao
+        rng = numpy.random.default_rng(7)
+        s = mol.intor('int1e_ovlp')
+        c = numpy.linalg.solve(s, rng.standard_normal((nao, 2)))
+        v = numpy.concatenate([c[:, 0] * .8, c[:, 1] * .6 * numpy.exp(.7j)])
+        dm_mg = dm_kr + .3 * numpy.outer(v, v.conj()) / abs(v).max() ** 2
+        dm_pol = dm_mg.copy()
+        dm_pol[nao:, nao:] *= 1e-3
+        dm_pol[:nao, nao:] *= 0
+        dm_pol[nao:, :nao] *= 0
+        for xc in ('r2scan', 'tpss', 'm06l'):
+            self._check('col', xc, dm_kr, 1e-10)
+            self._check('col', xc, dm_mg, 1e-10)
+            self._check('ncol', xc, dm_mg, 1e-10)
+            self._check('ncol', xc, dm_kr, 1e-10)
+        for d in (dm_mg, dm_pol):
+            self._check('mcol', 'r2scan', d, 1e-10)
+
+    def test_spinor_scf_unchanged(self):
+        es = []
+        for on in (False, True):
+            vxc_2c.ENABLE = on
+            mf = dft.RKS(mol, xc='pbe0').x2camf()
+            mf.conv_tol = 1e-10
+            es.append(mf.kernel())
+        vxc_2c.ENABLE = True
+        self.assertAlmostEqual(es[0], es[1], 9)
+
+
+if __name__ == '__main__':
+    unittest.main()

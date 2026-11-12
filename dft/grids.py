@@ -1,0 +1,736 @@
+'''
+Compact molecular integration grids for DFT energies, gradients and analytic
+Hessians, and the translational sum rule that makes coarse grids usable for
+Hessians in PySCF.
+
+Why
+---
+PySCF's RKS/UKS Hessians (``pyscf.hessian.rks``) treat the grid as fixed in
+space (no grid-point / Becke-weight derivatives).  On a finite grid this
+breaks translational invariance, and the error lands almost entirely in the
+one-centre diagonal blocks H_AA: second derivatives of the tight core basis
+functions of atom A integrated on a grid that does not move with A.  With
+the default level-2 grid this alone gives frequency errors of ~2-30 cm-1 for
+second-row atoms (CH3Cl, H2S) and ~4 cm-1 in the soft modes of (H2O)2; with
+an ORCA-sized grid (M3 radial mapping) hundreds of cm-1.  Imposing the
+invariance, H_AA = -sum_{B!=A} H_AB (:func:`translational_sum_rule`),
+removes this error at no cost and is what allows grids of ~4000-5000
+points/atom (comparable to ORCA's DefGrid2) for frequencies.  References:
+B. G. Johnson, M. J. Frisch, J. Chem. Phys. 100, 7429 (1994) (quadrature
+weight derivatives in DFT second derivatives); H. Shang, arXiv:1801.00166
+(the moving-grid effect acts mainly on the diagonal force constants and can
+be bypassed through translational symmetry).
+
+Grid ingredients (all from published formulas)
+---------------------------------------------
+* **Radial grid**: Gauss-Chebyshev (second kind) quadrature with the
+  Treutler-Ahlrichs M3 (or M4) mapping,
+
+      M3:  r = xi / ln2 * ln(2 / (1 - x))
+      M4:  r = xi / ln2 * (1 + x)^alpha * ln(2 / (1 - x)),  alpha = 0.6
+
+  O. Treutler and R. Ahlrichs, J. Chem. Phys. 102, 346 (1995),
+  DOI:10.1063/1.469408, with their element parameters ``xi`` (Table I, as
+  tabulated in ``pyscf.dft.radi``).  M3 is used for H-Ne: it keeps more
+  shells in the bonding region than M4 / Mura-Knowles and gives the most
+  accurate (sum-rule) Hessians per point.  For Z > 10 the M3 core is too
+  coarse for the energy, so the Mura-Knowles log3 grid (M. E. Mura,
+  P. J. Knowles, J. Chem. Phys. 104, 9848 (1996)) is used there.
+
+* **Number of radial shells** from an accuracy parameter ``intacc``
+  (M. Krack, A. M. Koester, J. Chem. Phys. 108, 3226 (1998)):
+
+      n_rad = round(15 * intacc - 40 + b * ROW)
+
+  ROW is the period; ``b`` = 5 (the original value) for H-Ne and
+  ``radial_b_heavy`` = 7.5 for Z > 10 (fitted here to H2S / CH3Cl energies).
+  With intacc = 4.388: H 31, C/O 36, S/Cl 48 shells.
+
+* **Angular pruning**: five radial regions with different Lebedev grids
+  (SG-1 / NWChem style: P. M. W. Gill, B. G. Johnson, J. A. Pople,
+  Chem. Phys. Lett. 209, 506 (1993)).  ``angular_grid = 1..7`` selects one
+  of the five-region tables of the ORCA 6.0 manual (Table 7.1, e.g. 4 =
+  26/110/194/302/194); the region boundaries (``alphas``) are 1.15 x the
+  NWChem multiples of the Bragg radius.  ``h_reduced`` uses the next smaller table
+  for H and He.
+
+* **Partition**: Becke cells with the Treutler size adjustment (PySCF's
+  default).  Stratmann-Scuseria-Frisch (``gen_grid.stratmann``) and LKO
+  (``gen_grid.becke_lko``) are available but were measured to be no better
+  for Hessians (LKO and Becke without size adjustment converge to a
+  frequency limit ~0.5 cm-1 off for O-H stretches on very fine grids).
+
+* **Weight cutoff**: points with |w| < ``weight_cutoff`` are dropped.
+
+Defaults (``Grids(mol)``, also :func:`hessian_grids`): intacc 4.388,
+angular_grid 4, h_reduced.  See dft/test/test_grids.py.  Nothing was taken
+from closed-source code.
+'''
+
+import numpy
+from pyscf import lib, gto
+from pyscf.lib import logger
+from pyscf.dft import gen_grid, radi
+from pyscf.data import elements
+from pyscf.dft.LebedevGrid import MakeAngularGrid, LEBEDEV_NGRID
+
+# Five-region Lebedev tables (number of points), regions ordered from the
+# nucleus outward.  ORCA 6.0 manual, Table 7.1 ("AngularGrid" 1-7).
+ANGULAR_TABLES = {
+    1: (14, 26, 50, 50, 26),
+    2: (14, 26, 50, 110, 50),
+    3: (26, 50, 110, 194, 110),
+    4: (26, 110, 194, 302, 194),
+    5: (26, 194, 302, 434, 302),
+    6: (50, 302, 434, 590, 434),
+    7: (110, 434, 590, 770, 590),
+}
+
+# Region boundaries in units of the Bragg-Slater radius (rows: H-He, Li-Ne,
+# Na and beyond).  NWChem / SG-1 values, as in pyscf.dft.gen_grid.nwchem_prune.
+NWCHEM_ALPHAS = numpy.array((
+    (0.25, 0.5, 1.0, 4.5),
+    (0.1667, 0.5, 0.9, 3.5),
+    (0.1, 0.4, 0.8, 2.5)))
+
+
+def _period(chg):
+    return int((chg > numpy.array((2, 10, 18, 36, 54, 86, 118))).sum()) + 1
+
+
+def _xi(chg):
+    if chg < len(radi._treutler_ahlrichs_xi):
+        return radi._treutler_ahlrichs_xi[chg]
+    return 1.5
+
+
+def treutler_m3(n, chg, *args, **kwargs):
+    '''Treutler-Ahlrichs M3 mapping on Gauss-Chebyshev (2nd kind) nodes.
+    JCP 102, 346 (1995); DOI:10.1063/1.469408, eq. (18).'''
+    xi = kwargs.get('xi', None)
+    if xi is None:
+        xi = _xi(chg)
+    step = numpy.pi / (n + 1)
+    t = numpy.arange(1, n + 1) * step
+    x = numpy.cos(t)
+    c = xi / numpy.log(2)
+    r = c * numpy.log(2 / (1 - x))
+    # dx = sin^2(t) * step / sqrt(1-x^2) = sin(t) * step
+    dr = step * numpy.sin(t) * c / (1 - x)
+    return r[::-1].copy(), dr[::-1].copy()
+
+
+def treutler_m4(n, chg, *args, **kwargs):
+    '''Treutler-Ahlrichs M4 mapping (alpha=0.6) on Gauss-Chebyshev (2nd kind)
+    nodes.  JCP 102, 346 (1995); DOI:10.1063/1.469408, eq. (19).'''
+    xi = kwargs.get('xi', None)
+    if xi is None:
+        xi = _xi(chg)
+    alpha = kwargs.get('alpha', 0.6)
+    step = numpy.pi / (n + 1)
+    t = numpy.arange(1, n + 1) * step
+    x = numpy.cos(t)
+    c = xi / numpy.log(2)
+    lg = numpy.log(2 / (1 - x))
+    r = c * (1 + x)**alpha * lg
+    dr = step * numpy.sin(t) * c * (1 + x)**alpha * (alpha / (1 + x) * lg + 1 / (1 - x))
+    return r[::-1].copy(), dr[::-1].copy()
+
+
+def krack_koster_nrad(chg, intacc, b=5.):
+    '''Number of radial shells, n = 15*intacc - 40 + b*ROW
+    (Krack, Koester, JCP 108, 3226 (1998))'''
+    return int(round(15 * intacc - 40 + b * _period(chg)))
+
+
+def region_prune(chg, rads, angular_grid, alphas=NWCHEM_ALPHAS, radii=radi.BRAGG_RADII):
+    '''Five-region angular pruning.  ``angular_grid`` is a key of
+    ANGULAR_TABLES (or a 5-tuple of Lebedev sizes).'''
+    if isinstance(angular_grid, (int, numpy.integer)):
+        table = numpy.asarray(ANGULAR_TABLES[int(angular_grid)])
+    else:
+        table = numpy.asarray(angular_grid)
+    alphas = numpy.asarray(alphas)
+    if alphas.ndim == 2:
+        row = 0 if chg <= 2 else (1 if chg <= 10 else 2)
+        alphas = alphas[row]
+    r_atom = radii[chg] + 1e-200
+    place = ((rads / r_atom).reshape(-1, 1) > alphas).sum(axis=1)
+    return table[place]
+
+
+def _pure_symbol(symb):
+    '''the element of an atom label ("Fe1", "GHOST-O", "X-C" -> "Fe", "O", "C")'''
+    return elements._std_symbol_without_ghost(symb)
+
+
+def h_pair_atomic_radii_adjust(mol, atomic_radii):
+    '''The Treutler-Ahlrichs size adjustment of the Becke cells for atom pairs with a hydrogen only, plain
+    Becke cells for all other pairs (a radii_adjust function as pyscf.dft.radi's).
+
+    The adjustment moves the cell boundary by the ratio of the neutral atoms' Bragg radii; across an ionic
+    or polar bond between heavy atoms that pushes it into the anion (Li 1.45 / F 0.50 Angstrom) and the
+    fixed-grid energy surface itself is off: XC gradient error on the default grid, 1e-5 Eh/bohr, with the
+    adjustment for all pairs / for pairs with H only: LiF 49 / 3.8, KF 40 / 2.3, RbF 57 / 6.2, SiF4 56 /
+    9.9, GeF4 81 / 22; max |dE| over 67 main-group and 3d molecules 2.6e-4 / 7.7e-5 Eh.  Hydrides need
+    it (no adjustment at all: GeH4 51, HBr 61) and are unchanged.  Same number of points.'''
+    f0 = radi.treutler_atomic_radii_adjust(mol, atomic_radii)
+    is_h = [gto.charge(mol.atom_pure_symbol(i)) == 1 for i in range(mol.natm)]
+
+    def fadjust(i, j, g):
+        if is_h[i] or is_h[j]:
+            return f0(i, j, g)
+        return g
+    return fadjust
+
+
+# Pauling electronegativities, H - Rn (None: no value)
+PAULING_EN = dict(zip(
+    'H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr '
+    'Rb Sr Y Zr Nb Mo Tc Ru Rh Pd Ag Cd In Sn Sb Te I Xe Cs Ba La Ce Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb Lu '
+    'Hf Ta W Re Os Ir Pt Au Hg Tl Pb Bi Po At Rn'.split(),
+    (2.20, None, 0.98, 1.57, 2.04, 2.55, 3.04, 3.44, 3.98, None, 0.93, 1.31, 1.61, 1.90, 2.19, 2.58, 3.16, None,
+     0.82, 1.00, 1.36, 1.54, 1.63, 1.66, 1.55, 1.83, 1.88, 1.91, 1.90, 1.65, 1.81, 2.01, 2.18, 2.55, 2.96, 3.00,
+     0.82, 0.95, 1.22, 1.33, 1.6, 2.16, 1.9, 2.2, 2.28, 2.20, 1.93, 1.69, 1.78, 1.96, 2.05, 2.1, 2.66, 2.6,
+     0.79, 0.89, 1.10, 1.12, 1.13, 1.14, 1.13, 1.17, 1.2, 1.2, 1.1, 1.22, 1.23, 1.24, 1.25, 1.1, 1.27,
+     1.3, 1.5, 2.36, 1.9, 2.2, 2.20, 2.28, 2.54, 2.00, 1.62, 2.33, 2.02, 2.0, 2.2, 2.2)))
+
+
+def polar_pair_atomic_radii_adjust(mol, atomic_radii):
+    '''The Treutler-Ahlrichs size adjustment of the Becke cells for the pairs with a hydrogen atom and for the
+    pairs whose larger atom (Bragg radius) is at least as electronegative (Pauling) as the smaller one; plain
+    Becke cells where the larger atom is the electropositive one (a radii_adjust function as pyscf.dft.radi's).
+
+    h_pair_atomic_radii_adjust drops the adjustment for every pair of heavy atoms, which is right for Li-F,
+    Si-F, S-O, M-Cl (the larger neutral atom is the cation there) but not for C-Br, C-I, where the larger atom
+    does hold the larger share: fixed-grid XC gradient on the default grid, 1e-5 Eh/bohr, all pairs / pairs
+    with H / this rule: CH3Br 2.2 / 10.6 / 2.2, CH3I 0.7 / 3.7 / 0.7; identical to the H-pair rule on the 62
+    other molecules of the s / p / 3d validation set (LiF 49 / 3.8 / 3.8, SiF4 56 / 9.9 / 9.9).  Elements
+    without an electronegativity are treated as by the H-pair rule.'''
+    f0 = radi.treutler_atomic_radii_adjust(mol, atomic_radii)
+    sym = [_pure_symbol(mol.atom_symbol(i)) for i in range(mol.natm)]
+    chg = [gto.charge(s) for s in sym]
+    en = [PAULING_EN.get(s) for s in sym]
+    natm = mol.natm
+    keep = numpy.zeros((natm, natm), dtype=bool)
+    for i in range(natm):
+        for j in range(natm):
+            if chg[i] == 1 or chg[j] == 1:
+                keep[i, j] = True
+            elif en[i] is not None and en[j] is not None:
+                big, small = (i, j) if atomic_radii[chg[i]] >= atomic_radii[chg[j]] else (j, i)
+                keep[i, j] = en[big] >= en[small]
+
+    def fadjust(i, j, g):
+        if keep[i, j]:
+            return f0(i, j, g)
+        return g
+    return fadjust
+
+
+class Grids(gen_grid.Grids):
+    '''Compact DFT grid (see module docstring).
+
+    Attributes (beyond pyscf's Grids):
+        intacc : float
+            Accuracy parameter of the radial grid, n_rad = 15*intacc-40+b*ROW.
+        radial_b : float
+            b in the radial-shell formula (H-Ne).
+        angular_grid : int (1-7)
+            Five-region Lebedev table (ANGULAR_TABLES).
+        h_reduced : bool
+            Use angular_grid-1 for H and He.
+        alphas : array (3,4) or (4,)
+            Region boundaries in units of the Bragg radius; default 1.15 x
+            the NWChem values (2.5% fewer points than the NWChem boundaries
+            at equal measured Hessian / energy accuracy).
+        alpha_scale : dict {symbol: factor}
+            Element-specific factor on the region boundaries (default empty:
+            1 for every element).  The boundaries scale with the Bragg
+            radius, which for the alkali / alkaline-earth metals and Sc is
+            so large that the coarse inner tables cover the semicore shell
+            and the bonding region: 0.5 gives the K gradient of the unpruned
+            table for 5 - 16 % more points (RbF on table 3: 6.3e-4 -> 6.6e-5
+            Eh/bohr, KF 3.4e-4 -> 4.4e-5).  It hurts Ga, Ge, As, In (GaCl3
+            4.9e-5 -> 2.5e-4), so it is not a global scale of ``alphas``.
+        element_intacc : dict {symbol: intacc}
+            Element-specific accuracy parameter of the radial grid, used
+            where it exceeds ``intacc``.  Default 5.0 for Li, Be, Na, Mg
+            (9 more shells at intacc 4.388): the radial grid of these metals
+            costs the frequencies, PBE0 / def2-SVP against the Hessian by
+            finite differences of grid-response gradients, default ->
+            intacc 5.0 on the metal only (a finer grid on the partner atom
+            does nothing): LiH 0.60 -> 0.12, LiF 1.57 -> 0.34, NaH 0.78 ->
+            0.04, NaCl 0.49 -> 0.07, BeH2 0.32 -> 0.04, BeF2 1.13 -> 0.18,
+            MgH2 0.62 -> 0.06 cm-1 (MgF2 0.6 -> 1.1, within the noise of its
+            reference); gradients BeF2 1.2e-4 -> 3.0e-5, MgF2 1.0e-4 ->
+            2.2e-5 Eh/bohr.  K, Ca, Rb, Sr, Sc, Al do not need it (<= 0.16).
+        weight_cutoff : float
+            Drop points with |w| below this value after partitioning.
+        element_radi : dict {symbol: radial function}
+            Element-specific radial grid (default ``radi_method``).
+        xi : dict {symbol: xi}
+            Overrides the Treutler-Ahlrichs scaling parameters of the M3/M4
+            mappings; ``xi_scale`` multiplies all of them.
+        radi_method : radial grid for H-Ne, M3 (``treutler_m3``) by default.
+        heavy_radi_method : radial grid for Z > 10, ``radi.mura_knowles`` by
+            default (None: use ``radi_method`` for all elements).
+        radial_b_heavy : b of the radial-shell formula for Z > 10.
+        alpha : exponent of the M4 mapping (``treutler_m4``).
+        becke_scheme, radii_adjust : PySCF's Becke partition; the Treutler size
+            adjustment by the electronegativity rule polar_pair_atomic_radii_adjust
+            by default (h_pair_atomic_radii_adjust: pairs with a hydrogen only;
+            radi.treutler_atomic_radii_adjust: all pairs, as pyscf).
+
+    ``atom_grid`` still overrides the radial / angular sizes element by
+    element (then the five-region pruning is applied with the given maximum
+    angular size).
+    '''
+    intacc = 4.388
+    radial_b = 5.
+    angular_grid = 4
+    h_reduced = True
+    alphas = NWCHEM_ALPHAS * 1.15
+    alpha_scale = {}
+    element_intacc = {'Li': 5.0, 'Be': 5.0, 'Na': 5.0, 'Mg': 5.0}
+    weight_cutoff = 1e-14
+    xi = {}
+    xi_scale = 1.
+    element_radi = {}
+    alpha = 0.6
+    radial_b_heavy = 7.5
+    radi_method = staticmethod(treutler_m3)
+    heavy_radi_method = staticmethod(radi.mura_knowles)
+    becke_scheme = staticmethod(gen_grid.original_becke)
+    radii_adjust = staticmethod(polar_pair_atomic_radii_adjust)
+    xc_intacc = None        # radial floor set by adapt_to_xc for the functional (MGGA_RADIAL_INTACC)
+
+    _keys = {'intacc', 'radial_b', 'angular_grid', 'h_reduced', 'alphas', 'weight_cutoff', 'xi', 'xi_scale',
+             'element_radi', 'alpha', 'radial_b_heavy', 'heavy_radi_method', 'alpha_scale', 'element_intacc',
+             'xc_intacc'}
+
+    def __setattr__(self, key, val):
+        if key in ('intacc', 'radial_b', 'angular_grid', 'h_reduced', 'alphas', 'weight_cutoff',
+                   'xi', 'xi_scale', 'element_radi', 'alpha', 'radial_b_heavy', 'heavy_radi_method',
+                   'alpha_scale', 'element_intacc', 'xc_intacc'):
+            self.reset()
+        super().__setattr__(key, val)
+
+    def dump_flags(self, verbose=None):
+        gen_grid.Grids.dump_flags(self, verbose)
+        logger.info(self, 'intacc %s  radial_b %s  angular_grid %s  h_reduced %s  weight_cutoff %g',
+                    self.intacc, self.radial_b, self.angular_grid, self.h_reduced, self.weight_cutoff)
+        return self
+
+    def _atom_setting(self, chg, symb):
+        ag = self.angular_grid
+        if self.h_reduced and chg <= 2 and isinstance(ag, (int, numpy.integer)):
+            ag = max(1, ag - 1)
+        atom_grid = self.atom_grid
+        if isinstance(atom_grid, (list, tuple)):
+            atom_grid = {symb: atom_grid}
+        conf = atom_grid.get(symb, atom_grid.get('default', None)) if atom_grid else None
+        if conf is not None:
+            n_rad, n_ang = conf
+            if n_ang not in LEBEDEV_NGRID:
+                raise ValueError('Unsupported angular grid %d' % n_ang)
+            table = numpy.asarray(ANGULAR_TABLES[ag] if isinstance(ag, (int, numpy.integer)) else ag)
+            # scale the five-region table to the requested maximum
+            table = numpy.array([min(n, n_ang) for n in table])
+            table[table.argmax()] = n_ang
+            return n_rad, table
+        b = self.radial_b if chg <= 10 else self.radial_b_heavy
+        intacc = max(self.intacc, self.element_intacc.get(_pure_symbol(symb), self.intacc))
+        if self.xc_intacc is not None:
+            intacc = max(intacc, self.xc_intacc)
+        return krack_koster_nrad(chg, intacc, b), ag
+
+    def gen_atomic_grids(self, mol, atom_grid=None, radi_method=None, level=None, prune=None, **kwargs):
+        if radi_method is None:
+            radi_method = self.radi_method
+        default_radi = radi_method
+        atom_grids_tab = {}
+        for ia in range(mol.natm):
+            symb = mol.atom_symbol(ia)
+            if symb in atom_grids_tab:
+                continue
+            chg = gto.charge(symb)
+            n_rad, ag = self._atom_setting(chg, symb)
+            if symb in self.element_radi:
+                radi_method = self.element_radi[symb]
+            elif chg > 10 and self.heavy_radi_method is not None:
+                radi_method = self.heavy_radi_method
+            else:
+                radi_method = default_radi
+            kw = dict(kwargs)
+            if radi_method in (treutler_m3, treutler_m4):
+                kw['xi'] = self.xi.get(symb, _xi(chg)) * self.xi_scale
+            if radi_method is treutler_m4:
+                kw['alpha'] = self.alpha
+            rad, dr = radi_method(n_rad, chg, ia, **kw)
+            rad_weight = 4 * numpy.pi * rad**2 * dr
+            if self.prune is None:
+                n_ang = max(ANGULAR_TABLES[ag]) if isinstance(ag, (int, numpy.integer)) else max(ag)
+                angs = numpy.full(n_rad, n_ang)
+            else:
+                scale = self.alpha_scale.get(_pure_symbol(symb), 1.)
+                angs = region_prune(chg, rad, ag, self.alphas if scale == 1. else numpy.asarray(self.alphas) * scale)
+            logger.debug(mol, 'atom %s rad-grids = %d, ang-grids = %s', symb, n_rad, angs)
+            coords = []
+            vol = []
+            for n in sorted(set(angs)):
+                grid = MakeAngularGrid(n)
+                idx = numpy.where(angs == n)[0]
+                coords.append(numpy.einsum('i,jk->jik', rad[idx], grid[:, :3]).reshape(-1, 3))
+                vol.append(numpy.einsum('i,j->ji', rad_weight[idx], grid[:, 3]).ravel())
+            atom_grids_tab[symb] = (numpy.vstack(coords), numpy.hstack(vol))
+        return atom_grids_tab
+
+    def get_partition(self, mol, atom_grids_tab=None, radii_adjust=None, atomic_radii=radi.BRAGG_RADII,
+                      becke_scheme=gen_grid.original_becke, concat=True):
+        '''the partition by get_partition_fast (which also handles h_pair_atomic_radii_adjust; pyscf's own
+        get_partition accepts only its two size adjustments with Becke's cell function)'''
+        if atom_grids_tab is None:
+            atom_grids_tab = self.gen_atomic_grids(mol)
+        return get_partition_fast(mol, atom_grids_tab, radii_adjust, atomic_radii, becke_scheme, concat)
+
+    def build(self, mol=None, with_non0tab=False, sort_grids=True, **kwargs):
+        if mol is None:
+            mol = self.mol
+        gen_grid.Grids.build(self, mol, with_non0tab=False, sort_grids=sort_grids, **kwargs)
+        # drop the padding and the points of negligible weight, then re-pad
+        idx = numpy.abs(self.weights) > self.weight_cutoff
+        idx &= self.atm_idx >= 0
+        self._select_grids(idx)
+        self._add_padding()
+        if with_non0tab:
+            self.non0tab = self.make_mask(mol, self.coords)
+            self.screen_index = self.non0tab
+        else:
+            self.screen_index = self.non0tab = None
+        logger.info(self, 'tot grids after weight cutoff = %d', len(self.weights))
+        return self
+
+
+def arg_group_grids(mol, coords, box_size=gen_grid.GROUP_BOX_SIZE):
+    '''pyscf.dft.gen_grid.arg_group_grids with the same result (the stable order
+    of the grid points by box, the boxes in lexicographic order) from one
+    stable sort of the linearised box index instead of numpy.unique(axis=0)
+    over the (N, 3) box indices (1.7 s of the 2.1 s build of ~1M points).'''
+    atom_coords = mol.atom_coords()
+    boundary = [atom_coords.min(axis=0) - gen_grid.GROUP_BOUNDARY_PENALTY,
+                atom_coords.max(axis=0) + gen_grid.GROUP_BOUNDARY_PENALTY]
+    boxes = ((boundary[1] - boundary[0]) * (1. / box_size)).round().astype(int)
+    box_size = (boundary[1] - boundary[0]) / boxes
+    frac_coords = (coords - boundary[0]) * (1. / box_size)
+    box_ids = numpy.floor(frac_coords).astype(numpy.int64)
+    box_ids[box_ids < -1] = -1
+    for k in range(3):
+        box_ids[box_ids[:, k] > boxes[k], k] = boxes[k]
+    # ids in -1 .. boxes[k]: shift by one, x-major linear index (= the lexicographic row order)
+    n = boxes.astype(numpy.int64) + 2
+    key = ((box_ids[:, 0] + 1) * n[1] + box_ids[:, 1] + 1) * n[2] + box_ids[:, 2] + 1
+    return key.argsort(kind='stable')
+
+
+def use_fast_grid_sort():
+    '''pyscf's Grids.build sorting the points with arg_group_grids above (same
+    permutation, ~30x faster); returns pyscf's original.'''
+    orig = gen_grid.arg_group_grids
+    if orig is not arg_group_grids:
+        gen_grid.arg_group_grids = arg_group_grids
+    return orig
+
+
+FAST_PARTITION = True   # get_partition_fast: the Becke / SSF weights by lib/dft/becke.c (else pyscf's)
+PARTITION = 'auto'      # 'becke': the scheme the grid asks for (Becke by default); 'ssf': Stratmann-Scuseria-Frisch
+                        # always; 'auto': SSF from SSF_MIN_ATOMS atoms on (Becke cells cost natm^2 / 2 per point,
+                        # SSF's compact support ~ natm), Becke below
+SSF_MIN_ATOMS = 100
+
+
+def _fast_scheme(mol, becke_scheme):
+    '''the scheme get_partition_fast runs for becke_scheme (PARTITION / SSF_MIN_ATOMS)'''
+    if becke_scheme is gen_grid.original_becke and (
+            PARTITION == 'ssf' or (PARTITION == 'auto' and mol.natm >= SSF_MIN_ATOMS)):
+        return gen_grid.stratmann
+    return becke_scheme
+
+
+def _radii_table(mol, radii_adjust, atomic_radii):
+    '''the size adjustments a_ij = f(i, j, 0) (natm * natm) of a radii_adjust function, None for none'''
+    if callable(radii_adjust) and atomic_radii is not None:
+        f = radii_adjust(mol, atomic_radii)
+        return numpy.asarray([f(i, j, 0) for i in range(mol.natm) for j in range(mol.natm)])
+    return None
+
+
+def partition_params(grids, mol=None):
+    '''(scheme, radii) of the partition a built grid was made with: scheme 'becke' (Becke's cell
+    function, three iterations) or 'ssf' (Stratmann-Scuseria-Frisch), radii the size adjustments a_ij
+    (natm * natm, nu = mu + a_ij (1 - mu^2)) or None; (None, None) for other schemes.  The same
+    decisions as get_partition_fast (socutils Grids, or pyscf Grids after use_fast_partition) and
+    pyscf's get_partition otherwise -- for the grid response of the gradients (lib/dft/becke_deriv.c).'''
+    if mol is None:
+        mol = grids.mol
+    becke_scheme = getattr(grids, 'becke_scheme', gen_grid.original_becke)
+    radii_adjust = getattr(grids, 'radii_adjust', None)
+    atomic_radii = getattr(grids, 'atomic_radii', radi.BRAGG_RADII)
+    fast = (isinstance(grids, Grids) and type(grids).get_partition is Grids.get_partition) \
+        or gen_grid.get_partition is get_partition_fast
+    if fast:
+        adjust_ok = radii_adjust in (None, radi.treutler_atomic_radii_adjust, radi.becke_atomic_radii_adjust,
+                                     h_pair_atomic_radii_adjust, polar_pair_atomic_radii_adjust)
+        from socutils.hessian.rhf_fast import _load_socdft
+        libdft = _load_socdft()
+        scheme = _fast_scheme(mol, becke_scheme)
+        name = {gen_grid.original_becke: 'SOCDFTbecke_owner', gen_grid.stratmann: 'SOCDFTssf_owner'}.get(scheme)
+        if not (FAST_PARTITION and adjust_ok and name and libdft is not None and hasattr(libdft, name)):
+            # get_partition_fast hands these to pyscf's partition (the scheme asked for)
+            scheme = becke_scheme
+    else:
+        scheme = becke_scheme
+    if scheme is gen_grid.original_becke or scheme is _becke_py:
+        kind = 'becke'
+    elif scheme is gen_grid.stratmann:
+        kind = 'ssf'
+    else:
+        return None, None
+    return kind, _radii_table(mol, radii_adjust, atomic_radii)
+
+
+def get_partition_fast(mol, atom_grids_tab, radii_adjust=None, atomic_radii=radi.BRAGG_RADII,
+                       becke_scheme=gen_grid.original_becke, concat=True):
+    '''pyscf.dft.gen_grid.get_partition for Becke's and the Stratmann-Scuseria-Frisch scheme (with
+    the Treutler / Becke size adjustment or none): the owner atom's normalised weight P_A / sum_i P_i
+    per point from lib/dft/becke.c (SOCDFTbecke_owner: the same cell functions, OpenMP over point
+    blocks, the pair loop vectorised; SOCDFTssf_owner: SSF's compact support used exactly, ~natm per
+    point); no natm x ngrid array.  PARTITION / SSF_MIN_ATOMS choose SSF for large molecules.
+    Other schemes go to pyscf.'''
+    import ctypes
+    from socutils.hessian.rhf_fast import _load_socdft
+    libdft = _load_socdft()
+    adjust_ok = radii_adjust in (None, radi.treutler_atomic_radii_adjust, radi.becke_atomic_radii_adjust,
+                                 h_pair_atomic_radii_adjust, polar_pair_atomic_radii_adjust)
+    becke_scheme = _fast_scheme(mol, becke_scheme)
+    if becke_scheme is gen_grid.original_becke:
+        fn = getattr(libdft, 'SOCDFTbecke_owner', None) if libdft is not None else None
+    elif becke_scheme is gen_grid.stratmann:
+        fn = getattr(libdft, 'SOCDFTssf_owner', None) if libdft is not None else None
+    else:
+        fn = None
+    if not FAST_PARTITION or fn is None or not adjust_ok:
+        if (becke_scheme is gen_grid.original_becke and radii_adjust not in (
+                None, radi.treutler_atomic_radii_adjust, radi.becke_atomic_radii_adjust)):
+            # pyscf's Python partition has no Becke cell function of its own (it is a stub for the C code,
+            # which takes only pyscf's two size adjustments)
+            becke_scheme = _becke_py
+        return _pyscf_get_partition(mol, atom_grids_tab, radii_adjust, atomic_radii, becke_scheme, concat)
+    natm = mol.natm
+    atm = numpy.asarray(mol.atom_coords(), order='C')
+    radii = _radii_table(mol, radii_adjust, atomic_radii)
+    pr =lib.c_null_ptr() if radii is None else radii.ctypes.data_as(ctypes.c_void_p)
+    coords_all = []
+    weights_all = []
+    for ia in range(natm):
+        c, vol = atom_grids_tab[mol.atom_symbol(ia)]
+        c = c + atm[ia]
+        cf = numpy.asarray(c, order='F')
+        w = numpy.empty(c.shape[0])
+        fn(w.ctypes.data_as(ctypes.c_void_p), cf.ctypes.data_as(ctypes.c_void_p),
+                                 ctypes.c_int(c.shape[0]), ctypes.c_int(ia),
+                                 atm.ctypes.data_as(ctypes.c_void_p), pr, ctypes.c_int(natm))
+        coords_all.append(c)
+        weights_all.append(vol * w)
+    if concat:
+        coords_all = numpy.vstack(coords_all)
+        weights_all = numpy.hstack(weights_all)
+    return coords_all, weights_all
+
+
+_pyscf_get_partition = gen_grid.get_partition
+
+
+def _becke_py(g):
+    '''Becke's cell function (three iterations of (3 - g^2) g / 2), for pyscf's Python partition'''
+    for _ in range(3):
+        g = (3 - g * g) * g * .5
+    return g
+
+
+def use_fast_partition():
+    '''pyscf's (and socutils') Grids.build partitioning with get_partition_fast above;
+    returns pyscf's original.'''
+    orig = gen_grid.get_partition
+    if orig is not get_partition_fast:
+        gen_grid.get_partition = get_partition_fast
+        gen_grid.gen_partition = get_partition_fast
+    return orig
+
+
+# The radial grid of the meta-GGAs whose integrand oscillates in the core region: the SCAN family (SCAN, rSCAN,
+# r2SCAN, r++SCAN and their hybrids, r2SCAN0, ...) and the Minnesota meta-GGAs (M05, M06(-L / -2X / -HF), revM06,
+# M08, M11(-L), MN12, MN15(-L)).  On the defaults (intacc 4.388) their energies are off by 3e-4 - 2e-3 Eh
+# (PBE / TPSS: 2e-6 - 1e-5), oscillating with intacc and insensitive to the angular grid, and the analytic
+# frequencies by up to 107 cm-1 ((H2O)6; CH3SH 26, caffeine 8.7) against finite differences of grid-response
+# gradients on a dense grid; with intacc 6.0 for the SCF and the CP-SCF grid 1.7 / 3.8 / 2.3 cm-1.
+# adapt_to_xc raises (never lowers) the radial accuracy of a socutils Grids to MGGA_RADIAL_INTACC for these
+# functionals, unless intacc was set on the grid explicitly.
+MGGA_RADIAL_INTACC = 6.0
+# The unregularised SCAN (SCAN, revSCAN, their hybrids SCAN0 / revSCAN0, SCAN-rVV10): at intacc 6.0 still ~3e-3 Eh
+# off (CH3Cl; r2SCAN / M06-L 6e-5), converged only from intacc 7.5 -> that floor plus a warning recommending
+# r2SCAN, the regularisation made for exactly this grid problem.
+SCAN_RADIAL_INTACC = 7.5
+_FINE_RADIAL_PATTERNS = (r'(^|_)(R2|R|RPP|REG)?SCAN', r'_(REV)?M0[5-8]($|_)', r'_M11($|_)', r'_MN1[25]($|_)')
+_SCAN_PATTERN = r'_(REV)?SCAN0?($|_)'
+_fine_cache = {}
+
+
+def radial_floor(xc_code):
+    '''the radial intacc floor of xc_code: SCAN_RADIAL_INTACC if any libxc component (also within mixtures) is
+    an unregularised SCAN, MGGA_RADIAL_INTACC for the other SCAN-family and the Minnesota meta-GGAs
+    (_FINE_RADIAL_PATTERNS on the libxc names of the parsed components), else None'''
+    if not isinstance(xc_code, str):
+        return None
+    key = xc_code.upper()
+    if key in _fine_cache:
+        return _fine_cache[key]
+    import re
+    from pyscf.dft import libxc
+    try:
+        fn_facs = libxc.parse_xc(xc_code)[1]
+    except Exception:
+        _fine_cache[key] = None
+        return None
+    names = {}
+    for k, v in libxc.XC_CODES.items():
+        if isinstance(v, (int, numpy.integer)):
+            names.setdefault(int(v), []).append(k.upper())
+    floor = None
+    for fid, fac in fn_facs:
+        if fac == 0:
+            continue
+        for nm in names.get(int(fid), ()):
+            if 'MGGA' not in nm:
+                continue
+            if re.search(_SCAN_PATTERN, nm):
+                floor = SCAN_RADIAL_INTACC
+            elif floor is None and any(re.search(p, nm) for p in _FINE_RADIAL_PATTERNS):
+                floor = MGGA_RADIAL_INTACC
+    _fine_cache[key] = floor
+    return floor
+
+
+def needs_fine_radial(xc_code):
+    '''True if xc_code has a radial floor (radial_floor)'''
+    return radial_floor(xc_code) is not None
+
+
+_scan_warned = set()
+
+
+def _warn_scan(obj, xc_code):
+    if radial_floor(xc_code) == SCAN_RADIAL_INTACC and xc_code.upper() not in _scan_warned:
+        _scan_warned.add(xc_code.upper())
+        logger.warn(obj, '%s: the unregularised SCAN needs a very fine radial grid (intacc %s, ~2x the default '
+                    'points) and is ill-conditioned in its response; r2SCAN is the regularised replacement made '
+                    'for this', xc_code, SCAN_RADIAL_INTACC)
+
+
+def adapt_to_xc(grids, xc_code, rebuild=True):
+    '''the radial floor MGGA_RADIAL_INTACC on a socutils Grids for the functionals of needs_fine_radial (none
+    for the others, nor when intacc was set on this grid explicitly); a built grid is rebuilt if the floor
+    changed (with its non0tab when it had one).  Returns True if the grid changed.'''
+    if not isinstance(grids, Grids):
+        return False
+    want = None
+    floor = radial_floor(xc_code)
+    if floor is not None:
+        _warn_scan(grids, xc_code)
+    if floor is not None and 'intacc' not in grids.__dict__ and grids.intacc < floor:
+        want = floor
+    if grids.xc_intacc == want:
+        return False
+    built = grids.coords is not None
+    mask = getattr(grids, 'non0tab', None) is not None
+    grids.xc_intacc = want
+    if want is not None:
+        logger.info(grids, '%s: radial grid intacc %s (radial_floor) for the SCAN-family / Minnesota '
+                    'meta-GGA', xc_code, want)
+    if built and rebuild:
+        grids.build(with_non0tab=mask)
+    return True
+
+
+def hessian_grids(mol, **kwargs):
+    '''The grid recommended for analytic Hessians (see the module docstring
+    and dft/test/test_grids.py).  Keyword arguments override attributes.'''
+    g = Grids(mol)
+    for k, v in kwargs.items():
+        setattr(g, k, v)
+    return g
+
+
+def translational_sum_rule(hess):
+    '''Impose translational invariance on a nuclear Hessian (natm,natm,3,3):
+    H_AA = -sum_{B!=A} H_AB, symmetrised.
+
+    A molecular grid made of atom-centred grids moves with the nuclei, so the
+    exact derivative of the quadrature energy (including the grid-point and
+    Becke-weight derivatives) is translationally invariant.  PySCF's RKS/UKS
+    Hessians omit those "grid response" terms; on a coarse grid the omission
+    shows up almost entirely in the one-centre diagonal blocks H_AA (second
+    derivatives of the tight core basis functions on a fixed grid), which can
+    be replaced through the invariance condition.  See H. Shang,
+    arXiv:1801.00166 ("The moving-grid effect in density functional
+    calculations of harmonic vibration frequencies using numeric atom-centered
+    grids"), and B. G. Johnson, M. J. Frisch, J. Chem. Phys. 100, 7429 (1994)
+    for the weight-derivative terms.  In the converged-grid limit the
+    correction vanishes.
+    '''
+    h = numpy.array(hess, copy=True)
+    natm = h.shape[0]
+    for a in range(natm):
+        h[a, a] = 0
+        haa = -h[a].sum(axis=0)
+        h[a, a] = (haa + haa.T) * .5
+    return h
+
+
+def hessian(mf, sum_rule=True, cpscf_grids=None, hess_grids=None):
+    '''Analytic RKS/UKS Hessian of ``mf`` with the grid options studied here.
+
+    Args:
+        sum_rule : apply :func:`translational_sum_rule` (recommended whenever
+            the SCF grid is coarser than PySCF level ~4; it costs nothing).
+        cpscf_grids : a (coarser) Grids object used only for the XC response
+            kernel inside the CP-SCF equations; the SCF grid is used for the
+            explicit second-derivative terms and the right-hand sides.
+        hess_grids : Grids for the explicit second-derivative terms
+            (``partial_hess_elec`` / ``make_h1``); default: the SCF grid.
+
+    Returns:
+        Hessian array (natm, natm, 3, 3).
+    '''
+    hobj = mf.Hessian()
+    if hess_grids is not None:
+        hobj.grids = hess_grids
+    if cpscf_grids is not None:
+        if hobj.grids is None:
+            hobj.grids = mf.grids
+        if cpscf_grids.coords is None:
+            cpscf_grids.build(with_non0tab=True)
+        solve_mo1 = hobj.solve_mo1
+        grids0 = mf.grids
+
+        def solve_mo1_cpscf_grid(*args, **kwargs):
+            mf.grids = cpscf_grids
+            try:
+                return solve_mo1(*args, **kwargs)
+            finally:
+                mf.grids = grids0
+        hobj.solve_mo1 = solve_mo1_cpscf_grid
+    h = hobj.kernel()
+    if sum_rule:
+        h = translational_sum_rule(h)
+    return h

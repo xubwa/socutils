@@ -408,7 +408,9 @@ class SCF(SpinorPropertyMixin, hf.SCF):
     Kramers-restricted variant.
     '''
 
-    _keys = {'with_soc', 'with_x2c'}
+    _keys = {'with_soc', 'with_x2c', 'rijcosx', 'rijcosx_auxbasis'}
+    rijcosx = None              # RIJ / COSX J, K (spinor_jk.mode): None -> spinor_jk.RIJCOSX
+    rijcosx_auxbasis = None     # the RIJ auxiliary basis: None -> spinor_jk.AUXBASIS (AutoAux)
 
     def __init__(self, mol):
         hf.SCF.__init__(self, mol)
@@ -500,6 +502,17 @@ class SCF(SpinorPropertyMixin, hf.SCF):
     def eig(self, h, s=None, *args, **kwargs):
         return hf.SCF.eig(self, h, s)
 
+    def scf(self, dm0=None, **kwargs):
+        '''hf.SCF.scf; with the RIJ / COSX fast path (self.rijcosx, spinor_jk.RIJCOSX) the COSX exchange
+        energy is recomputed on the final grid afterwards (spinor_jk.finalize)'''
+        from socutils.scf import spinor_jk
+        spinor_jk.reset(self)
+        hf.SCF.scf(self, dm0, **kwargs)
+        if spinor_jk.mode(self):
+            spinor_jk.finalize(self)
+        return self.e_tot
+    kernel = lib.alias(scf, alias_name='kernel')
+
     def build(self, mol=None):
         if self.verbose >= logger.WARN:
             self.check_sanity()
@@ -572,9 +585,17 @@ class SCF(SpinorPropertyMixin, hf.SCF):
         if mol is None: mol = self.mol
         if dm is None: dm = self.make_rdm1()
         t0 = (logger.process_clock(), logger.perf_counter())
+        from socutils.scf import spinor_jk
+        dm_sph = spinor2sph(mol, dm)
+        if omega is None and spinor_jk.ENABLE and spinor_jk.available(mol):
+            # real scalar-AO builds through md_j / jk_multi (spinor_jk)
+            j_sph, k_sph = spinor_jk.get_jk_ghf(self, mol, dm_sph, hermi, with_j, with_k)
+            j_spinor = None if j_sph is None else sph2spinor(mol, j_sph)
+            k_spinor = None if k_sph is None else sph2spinor(mol, k_sph)
+            logger.timer(self, 'vj and vk', *t0)
+            return j_spinor, k_spinor
         if self.direct_scf and self.opt is None:
             self.opt = self.init_direct_scf(mol)
-        dm_sph = spinor2sph(mol, dm)
         j_sph, k_sph = ghf.GHF.get_jk(self, mol, dm_sph)
         j_spinor = sph2spinor(mol, j_sph)
         k_spinor = sph2spinor(mol, k_sph)
@@ -635,7 +656,17 @@ class SCF(SpinorPropertyMixin, hf.SCF):
         return spin_square_ghf(mo_coeff_ghf, s_ghf)
 
     def nuc_grad_method(self):
-        raise NotImplementedError
+        '''Nuclear gradient through the equivalent GHF / GKS object
+        (socutils.scf.spinor_ghf).'''
+        from socutils.scf import spinor_ghf
+        return spinor_ghf._gradients(self)
+    Gradients = nuc_grad_method
+
+    def Hessian(self):
+        '''Nuclear Hessian through the equivalent GHF / GKS object
+        (socutils.scf.spinor_ghf, socutils.hessian).'''
+        from socutils.scf import spinor_ghf
+        return spinor_ghf._hessian(self)
 
 
 class UHF(SCF):
