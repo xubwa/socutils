@@ -12,6 +12,7 @@ from pyscf import lib
 from pyscf.gto import mole
 from pyscf.lib import logger
 from pyscf.scf import hf, dhf, ghf, _vhf
+from socutils.prop.mixin import SpinorPropertyMixin
 import re
 try:
     from socutils.lib import zquatev
@@ -398,7 +399,7 @@ def get_hcore(mol, with_soc=None):
             h += -1.j*mat_spinor
     return h
 
-class SCF(hf.SCF):
+class SCF(SpinorPropertyMixin, hf.SCF):
     '''SCF in the j-adapted spinor basis (two-component).
 
     Without a relativistic Hamiltonian this is the nonrelativistic spinor SCF;
@@ -419,7 +420,7 @@ class SCF(hf.SCF):
     def density_fit(self, auxbasis=None, with_df=None, only_dfj=False):
         return density_fit(self, auxbasis, with_df, only_dfj)
 
-    def cholesky(self, tau=1e-4, sigma=1e-2, method='threeloop',
+    def cholesky(self, tau=1e-4, sigma=1e-2, method='twostep',
                  cderi=None, cderi_to_save=None, with_df=None, only_dfj=False):
         from socutils.cd.cd import cholesky
         return cholesky(self, tau=tau, sigma=sigma, method=method,
@@ -481,6 +482,22 @@ class SCF(hf.SCF):
     def TDA(self):
         from socutils.tdscf import gks
         return gks.TDA(self)
+
+    def prop_int1e(self, op, x_response=True, origin=None):
+        '''One-electron property integrals in the picture this reference
+        lives in: bare spinor integrals for a nonrelativistic spinor mean
+        field (exact there), picture-change transformed for an X2C one
+        (``self.with_x2c``).  Correlated/excited-state methods should take
+        their property operators from here, never from a bare ``mol.intor``.
+
+        See :mod:`socutils.prop.int1e` for the operator specs and for the
+        ``x_response`` semantics: True (default) gives the energy-derivative
+        operator dh_X2C/dlambda (EFG/HFC-style kernels); False gives the
+        plain picture-change operator [U+ O U]_++, the right object for
+        expectation values of fixed external operators and for transition
+        moments.'''
+        from socutils.prop.int1e import prop_int1e
+        return prop_int1e(self, op, x_response=x_response, origin=origin)
 
     def eig(self, h, s=None, *args, **kwargs):
         return hf.SCF.eig(self, h, s)

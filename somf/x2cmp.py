@@ -90,6 +90,28 @@ def to_2c(x, r, h4c):
     h2c = reduce(np.dot, (r.T.conj(), l, r))
     return h2c
 
+def to_2c_adjoint(x, r, dm2c):
+    '''Adjoint of to_2c: the 4c matrix G with tr(dm2c to_2c(x, r, h4c)) =
+    tr(G h4c) for every h4c.'''
+    n2c = x.shape[0]
+    dl = reduce(np.dot, (r, dm2c, r.T.conj()))
+    g = np.empty((2 * n2c, 2 * n2c), dtype=np.result_type(dl, x))
+    g[:n2c, :n2c] = dl
+    g[:n2c, n2c:] = np.dot(dl, x.T.conj())
+    g[n2c:, :n2c] = np.dot(x, dl)
+    g[n2c:, n2c:] = reduce(np.dot, (x, dl, x.T.conj()))
+    return g
+
+
+def _hfw1_adjoint(helper, blocks, dm2c, x_response):
+    '''Effective 4c densities of the helper's X2C Hamiltonian, see
+    get_hfw1_adjoint.'''
+    a, e, x, st, r, l, h4c, m4c = blocks
+    if x_response:
+        return x2c_grad.hfw1_adjoint(a, x, st, m4c, h4c, e, r, l, dm2c)
+    return to_2c_adjoint(x, r, dm2c), None
+
+
 def extract_ith_integral(atm_integrals, idx):
     out = {}
     for key, value in atm_integrals.items():
@@ -1071,7 +1093,32 @@ class SpinorX2CMPHelper(x2c.x2c.SpinorX2CHelper):
         else:
             hfw1 = to_2c(x, r, h4c1)
         return hfw1
-    
+
+    def _x2c_blocks(self):
+        '''(a, e, x, st, r, l, h4c, m4c) of the decoupling, cached.'''
+        if self.h4c is None:
+            self.get_hcore(self.mol)
+        if self.x2c_intermediate is None:
+            n2c = self.h4c.shape[0] // 2
+            h, m = self.h4c, self.m4c
+            a, e, x, st, r, l, h4c, m4c = x2c_grad.x2c1e_hfw0_block(
+                h[:n2c, :n2c], h[n2c:, :n2c], h[:n2c, n2c:], h[n2c:, n2c:],
+                m[:n2c, :n2c], m[n2c:, n2c:])
+            self.x2c_intermediate = {'a': a, 'e': e, 'x': x, 'st': st, 'r': r, 'l': l}
+        d = self.x2c_intermediate
+        return d['a'], d['e'], d['x'], d['st'], d['r'], d['l'], self.h4c, self.m4c
+
+    def get_hfw1_adjoint(self, dm2c, x_response=True):
+        '''Effective 4c densities (Gh, GS) of the 2c density dm2c (Hermitian, in
+        the decontracted spinor basis of h4c):
+
+            tr(dm2c get_hfw1(h4c1, s4c1, x_response)) = tr(Gh h4c1) + tr(GS s4c1)
+
+        for every Hermitian h4c1, s4c1.  One evaluation per density, then each
+        one-electron perturbation is a contraction.  GS is None for
+        x_response=False (the plain picture change has no metric term).'''
+        return _hfw1_adjoint(self, self._x2c_blocks(), dm2c, x_response)
+
     def get_xr(self):
         if self.h4c is None:
             self.get_hcore(self.mol)
@@ -1161,6 +1208,30 @@ class SpinOrbitalX2CMPHelper(x2c.x2c.SpinOrbitalX2CHelper):
         else:
             hfw1 = to_2c(x, r, h4c1)
         return hfw1
+
+    def _x2c_blocks(self):
+        '''(a, e, x, st, r, l, h4c, m4c) of the decoupling (in the spinor
+        basis, as get_hfw1), cached.'''
+        if self.h4c is None:
+            self.get_hcore(self.mol)
+        if self.x2c_intermediate is None:
+            n2c = self.h4c.shape[0] // 2
+            h, m = self.h4c, self.m4c
+            self.x2c_intermediate = x2c_grad.x2c1e_hfw0_block(
+                h[:n2c, :n2c], h[n2c:, :n2c], h[:n2c, n2c:], h[n2c:, n2c:],
+                m[:n2c, :n2c], m[n2c:, n2c:])
+        return self.x2c_intermediate
+
+    def get_hfw1_adjoint(self, dm2c, x_response=True):
+        '''Effective 4c densities (Gh, GS) of the 2c density dm2c (Hermitian, in
+        the decontracted spinor basis of h4c):
+
+            tr(dm2c get_hfw1(h4c1, s4c1, x_response)) = tr(Gh h4c1) + tr(GS s4c1)
+
+        for every Hermitian h4c1, s4c1.  One evaluation per density, then each
+        one-electron perturbation is a contraction.  GS is None for
+        x_response=False (the plain picture change has no metric term).'''
+        return _hfw1_adjoint(self, self._x2c_blocks(), dm2c, x_response)
 
 X2CMP = SpinorX2CMPHelper
 

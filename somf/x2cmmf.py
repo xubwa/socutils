@@ -58,8 +58,9 @@ def x2cmmf(mf):
     fock4c = mf.get_fock(vhf=vhf, dm=dm)
     e_elec, e_coul = mf.energy_elec(dm, vhf=vhf)
     s4c = mf.get_ovlp()
-    r, l = x2c1e_hfw0_block(fock4c[:n2c, :n2c], fock4c[n2c:, :n2c], fock4c[:n2c, n2c:],
-                            fock4c[n2c:, n2c:], s4c[:n2c, :n2c], s4c[n2c:, n2c:])[4:6]
+    blocks = x2c1e_hfw0_block(fock4c[:n2c, :n2c], fock4c[n2c:, :n2c], fock4c[:n2c, n2c:],
+                              fock4c[n2c:, n2c:], s4c[:n2c, :n2c], s4c[n2c:, n2c:])
+    x, r, l = blocks[2], blocks[4], blocks[5]
     fock2c = reduce(numpy.dot, (r.T.conj(), l, r))
     mo_coeff = numpy.linalg.solve(r, mf.mo_coeff[:n2c, n2c:])
 
@@ -79,6 +80,9 @@ def x2cmmf(mf):
     mf2c.with_breit = getattr(mf, 'with_breit', False)
 
     mf2c.fock_x2cmmf = fock2c
+    # the decoupling of the DHF Fock matrix, for the picture change of
+    # one-electron operators (socutils.prop.mixin)
+    mf2c._x2cmmf_xr = (x, r)
     mf2c._e_elec_4c = (e_elec, e_coul)
     mf2c.mo_coeff = mo_coeff
     mf2c.mo_occ = numpy.asarray(mf.mo_occ[n2c:])
@@ -109,6 +113,7 @@ class _X2CMMF:
     with_breit = False
     _e_elec_4c = None
     _dm_ref = None
+    _x2cmmf_xr = None
 
     def dump_flags(self, verbose=None):
         super().dump_flags(verbose)

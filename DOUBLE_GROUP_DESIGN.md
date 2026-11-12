@@ -1,6 +1,6 @@
 # Double-group symmetry for spinor (2c) and Dirac (4c) SCF — design note
 
-Status: draft for discussion (2026-10-16). Nothing implemented yet. Target: prototype in socutils,
+Status: phase 1 implemented (symm/, scf/double_group_symm.py; spinor CASSCF/CASCI/CAHF in mcscf/, §5a). Target: prototype in socutils,
 written so it can move into PySCF mainline (`pyscf/symm`, `pyscf/scf`) with little change.
 
 ## 0. Decisions already made
@@ -205,6 +205,23 @@ above once validated; their `occup` dict format is translated to `irrep_nelec`.
    reproduces the C1 ground state; labels compared with CFOUR `dgcosym` on one case.
 4. Runs on the interactive node or Slurm, not the login node.
 
+## 5a. Spinor CASSCF / CASCI / CAHF (mcscf/, 2026-10-17)
+
+- On a double-group SCF the CAS object labels its orbitals from the SALCs (`orbital_purity`) and keeps the ids in
+  `mc.orbsym`; `mc.symmetry = False` switches this off, `mc.orbsym = [...]` overrides, the old `mc.irrep` still wins.
+  CASSCF refuses input orbitals that mix irreps by more than `mc.symm_tol` (1e-6); a CASCI just runs without labels.
+- Rotations: `uniq_var_indices` drops the cross-irrep pairs, so gradient, super-CI / SO-SCI / exact Hessian, metric
+  and preconditioners (all through `pack_uniq_var` / `unpack_uniq_var`) live inside the irreps. `ensure_kramers`
+  maps the irrep blocks onto themselves when pair (2k, 2k+1) sits in (Γ, conj Γ); `screen_irrep` removes roundoff.
+- cahf_diis diagonalizes the AO Fock matrix with the SCF's block `eig`, then restores the energy order (stable, pairs
+  stay interleaved). Natural orbitals / canonicalization use `eig_mo` (within irreps, pairs kept).
+- After convergence `check_orbsym` warns when an orbital left its irrep (> `mc.symm_check_tol`); `mc.mo_coeff` is
+  tagged with `orbsym`.
+- CI solvers that have an `orbsym` attribute get the active ids; FCIDUMP ORBSYM only with `mc.fcidump_orbsym = True`
+  (the ids 2n+p are not additive labels: ZSHCI's label filter needs 2m_j, parity separately).
+- `double_group_symm.kramers_pairs(mol, mo, s)` / `mc.kramers_pairs`: partner index and bar flag from time reversal
+  (unbarred u has T u = +b).
+
 ## 5. Later (not phase 1)
 
 - Spinor DFT (user 2026-10-16: current state is enough for now): align with pyscf when moving to
@@ -216,12 +233,12 @@ above once validated; their `occup` dict format is translated to `irrep_nelec`.
 
 - D^j(R) = C^† [D^l_real(R) ⊗ U_SU(2)(R)] C per shell (C = `sph2spinor`, D^l from `pyscf.symm.Dmatrix`), for
   rotating orbitals / density matrices between frames (interop only; lab-frame SALCs are not planned).
-- Realification: done (2026-10-17), see section 5a.
+- Realification: done (2026-10-17), see section 5b.
 - κ blocking for atoms (current `symmetry='sph'` mode).
-- Double-group direct product consumers: CASCI/FCI/CC (zccsdt export), ao2mo with symmetry.
+- Double-group direct product consumers: FCI/CC (zccsdt export), ao2mo with symmetry.
 - PySCF issue: `GHF(mol).x2c()` with `mol.symmetry=True` (warn + fall back to C1).
 
-## 5a. Realification (implemented 2026-10-17)
+## 5b. Realification (implemented 2026-10-17)
 
 For D2h, D2 (double group C2h* / C2*), C2v (C2*) and linear molecules there is an operation G outside the
 double group with G C2z G^-1 = C2z^-1: C2y for D2h/D2, σ_xz for C2v/C∞v/D∞h. G and T both map 1E ↔ 2E
@@ -236,6 +253,11 @@ K u = λ u, u ← √λ u, partner ← T u; accidentally degenerate u (same ener
 U ← U √(U^†SKU) (symmetric unitary).  4c: the same K on the L and S coefficients.
 C2*/Cs*/C2h*/Ci*/C1* molecules without such a G (point group C2, Cs, C2h, Ci, C1) stay complex.
 Downstream orbital rotations (CASSCF, localization) must be real orthogonal to keep the realness.
+In exact arithmetic they are: with K-invariant orbitals the integrals and (complete-degenerate-set) RDMs are
+real, so the gradient, Hessian and rotation are real.  CASSCF/CAHF accumulate roundoff (H2O CAS(4,6):
+|Ku - u| 3e-9), so `CASBase.realify_mo` is called at the end (phase, K projection, real Löwdin; then 3e-15).
+Upstream (user 2026-11-03): realification is NOT in the big PR (no consumer there); the SCF part (`_finalize`,
+`spinor_basis.realify_mo/apply_k/realification_op`) goes with the CC PR, the CASSCF hook with the MCSCF PR.
 (A first version realified the SALCs and solved real eigenproblems; dropped as not worth the complexity.)
 Tests (`scf/test/test_realification.py`): C2H4, H2O, HBr, Cl2 — X2CAMF RHF MO Fock, hcore and MO ERIs real
 to 1e-10, orbitals K invariant, energies equal C1; RDHF MO Fock real; UHF energy unchanged.

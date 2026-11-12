@@ -8,13 +8,16 @@
 # flat into this directory (socutils/lib/) and loaded from there by
 # ``socutils.lib.load_library``:
 #
-#   x2camf  ->  lib/libx2camf_c.so    (import x2camf, the SOC integral backend)
 #   ccsdt   ->  lib/libccsdt_clib.so  (socutils.cc CCSDT kernels)
-#   zquatev ->  lib/libzquatev.so     (Kramers-restricted spinor SCF)
 #   ao2mo   ->  lib/libnrr_opt.so     (socutils.lib.ao2mo.nrr_fast spinor AO2MO)
 #   vhf     ->  lib/libsocvhf.so      (socutils.somf.x2cmp multi-centre J/K prescreen)
 #   dft     ->  lib/libsocdft.so      (socutils.dft.noncollinear multi-collinear XC kernel)
+#   pbcdf   ->  lib/libsocpbcdf.so    (socutils.pbc.rsdf screened SR integrals over images)
 #   qdhf    ->  lib/libqdhf.so        (socutils.qdhf, quad precision HF; needs libquadmath)
+#
+# x2camf (the C implementation, import x2camf) and zquatev (Kramers-restricted
+# spinor SCF) are separate repositories, built with ExternalProject into
+# lib/deps/lib (libx2camf_c.so, libzquatev.so); see the end of this file.
 #
 # The subdirectory CMakeLists.txt files are thin (just the target plus its
 # link/output), exactly as in pyscf/lib, so they slot into pyscf/lib unchanged
@@ -108,12 +111,60 @@ else()
   set(CMAKE_INSTALL_RPATH "\$ORIGIN:\$ORIGIN/deps/lib")
 endif()
 
-add_subdirectory(x2camf)
 add_subdirectory(ccsdt)
-add_subdirectory(zquatev)
+add_subdirectory(zccsd)
 add_subdirectory(ao2mo)
 add_subdirectory(vhf)
 add_subdirectory(dft)
+add_subdirectory(pbcdf)
+add_subdirectory(thc)
+
+# --- external libraries: x2camf (C implementation) and zquatev ----------------
+# Built from their own repositories with ExternalProject, as pyscf/lib does for
+# libcint and libxc, with the BLAS/LAPACK found above, and installed into
+# lib/deps/lib.  X2CAMF_SOURCE_DIR / ZQUATEV_SOURCE_DIR use a local checkout
+# instead of cloning.
+include(ExternalProject)
+string(REPLACE ";" "|" _blas_pipe "${BLAS_LIBRARIES}")
+string(REPLACE ";" "|" _lapack_pipe "${LAPACK_LIBRARIES}")
+set(_ext_cmake_args
+  -DCMAKE_BUILD_TYPE=Release
+  -DCMAKE_C_COMPILER:STRING=${CMAKE_C_COMPILER}
+  -DCMAKE_CXX_COMPILER:STRING=${CMAKE_CXX_COMPILER}
+  "-DCMAKE_CXX_FLAGS:STRING=${CMAKE_CXX_FLAGS}"
+  -DCMAKE_INSTALL_PREFIX:PATH=<INSTALL_DIR>
+  -DCMAKE_INSTALL_LIBDIR:PATH=lib
+  -DBLAS_LIBRARIES=${_blas_pipe})
+if(LAPACK_LIBRARIES)
+  list(APPEND _ext_cmake_args -DLAPACK_LIBRARIES=${_lapack_pipe})
+endif()
+
+option(BUILD_X2CAMF "Download and build the x2camf C library" ON)
+set(X2CAMF_GIT "https://github.com/xubwa/x2camf-c.git" CACHE STRING "x2camf (C) repository")
+set(X2CAMF_VERSION "v1.0.0" CACHE STRING "x2camf (C) git tag or commit")
+set(X2CAMF_SOURCE_DIR "" CACHE PATH "local x2camf (C) source tree instead of cloning")
+option(BUILD_ZQUATEV "Download and build zquatev" ON)
+# sunqm/zquatev master after PR #2 (BLAS_LIBRARIES, install, zdotc without CBLAS)
+set(ZQUATEV_GIT "https://github.com/sunqm/zquatev.git" CACHE STRING "zquatev repository")
+set(ZQUATEV_VERSION "4b397dd9a2347f654fb369bbb75938e8713afe08" CACHE STRING "zquatev git tag or commit")
+set(ZQUATEV_SOURCE_DIR "" CACHE PATH "local zquatev source tree instead of cloning")
+
+foreach(_ext X2CAMF ZQUATEV)
+  if(BUILD_${_ext})
+    string(TOLOWER ${_ext} _name)
+    if(${_ext}_SOURCE_DIR)
+      set(_src SOURCE_DIR ${${_ext}_SOURCE_DIR})
+    else()
+      set(_src GIT_REPOSITORY ${${_ext}_GIT} GIT_TAG ${${_ext}_VERSION})
+    endif()
+    ExternalProject_Add(${_name}_ext
+      ${_src}
+      PREFIX ${PROJECT_BINARY_DIR}/deps
+      INSTALL_DIR ${PROJECT_SOURCE_DIR}/deps
+      LIST_SEPARATOR |
+      CMAKE_ARGS ${_ext_cmake_args})
+  endif()
+endforeach()
 
 option(ENABLE_QDHF "Quadruple precision HF kernels (requires libquadmath)" ON)
 if(ENABLE_QDHF)

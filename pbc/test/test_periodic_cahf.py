@@ -1,0 +1,80 @@
+'''Periodic CAHF (mcscf.cahf_fock; cahf_diis / super-CI with zcahf.CAHF) and the
+fractional-occupation SCF that seeds it: O atom, 2p^4 over the six 2p
+spinors, in a box.  Both extrapolate (A/L^3) to the molecular results with
+the same auxiliary basis; the fractional SCF only does so with the exchange
+G = 0 term in the form -nu tr(DSDS)/2 (with -nu N/2 it was 5e-2 Eh off).
+'''
+import io
+import contextlib
+import unittest
+from pyscf import gto, df
+from socutils.scf import spinor_hf, addons
+from socutils.mcscf import zmcscf, zcahf, cahf_diis, cahf_fock
+from socutils.pbc import coulomb_reference as cr
+
+try:
+    from socutils.pbc.rsdf import RSDF, _libpbcdf
+    from socutils.pbc import spinor_scf
+    _libpbcdf()
+    HAVE_LIB = True
+except OSError:
+    HAVE_LIB = False
+
+
+def _cahf(mf, mol, driver='diis'):
+    mf.verbose = 0
+    mf.conv_tol = 1e-11
+    addons.projected_frac_occ(mf, addons.spinor_ao_indices(mol, 0, l=1), 6, 4)
+    e_frac = mf.kernel()
+    mo, ncore = addons.cas_order(mf)
+    if driver == 'fock':
+        mc = cahf_fock.CAHF(mf, 6, 4, ncore=ncore)
+        mc.verbose = 0
+        mc.conv_tol, mc.conv_tol_grad = 1e-12, 1e-7
+        mc.kernel(mo)
+        assert mc.converged
+        return mc.e_tot, e_frac
+    mc = zmcscf.CASSCF(mf, 6, 4, ncore=ncore)
+    mc.verbose = 0
+    mc.max_cycle_macro = 50
+    mc.fcisolver = zcahf.CAHF(mol)
+    mc.conv_tol = 1e-12
+    with contextlib.redirect_stdout(io.StringIO()):
+        if driver == 'superci':
+            mc.kernel(mo)
+        else:
+            cahf_diis.mc_diis(mc, mo, verbose=0, conv_tol=1e-12, conv_tol_grad=1e-7)
+    return mc.e_tot, e_frac
+
+
+@unittest.skipUnless(HAVE_LIB, 'libsocpbcdf.so not built (make)')
+class KnownValues(unittest.TestCase):
+    def test_box_limit_is_the_molecule(self):
+        self._box_limit('diis')
+
+    def test_box_limit_superci(self):
+        '''The second-order driver (zmcscf.CASSCF.kernel) on the periodic SCF.'''
+        self._box_limit('superci')
+
+    def test_box_limit_fock(self):
+        '''The integral-free driver (cahf_fock: J/K of the core and open-shell
+        densities only) gives the same energies.'''
+        self._box_limit('fock')
+
+    def _box_limit(self, driver):
+        mol = gto.M(atom='O 0 0 0', unit='B', basis='cc-pvdz', verbose=0, spin=2)
+        aux = df.addons.aug_etb(mol, beta=2.0)
+        ref = _cahf(spinor_hf.KRHF(mol).density_fit(auxbasis=aux), mol, driver)
+        res = {}
+        for L in (20., 26.):
+            cell = cr.molecule_in_box(mol, L)
+            r = RSDF(cell, aux, precision=1e-11, nuc_zeta=1e14).build()
+            res[L] = _cahf(spinor_scf.periodic(spinor_hf.KRHF(cell), r), cell, driver)
+        (a, ea), (b, eb) = sorted(res.items())
+        for k in (0, 1):     # CAHF, fractional SCF
+            e_inf = (eb[k] * b**3 - ea[k] * a**3) / (b**3 - a**3)
+            self.assertLess(abs(e_inf - ref[k]), 5e-5)
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -24,21 +24,20 @@ here; it has been removed.)
 
 ## Building native libraries
 
-Six bundled C/C++ libraries must be compiled before the features that use
-them. All six are built together by **one** top-level CMake under `lib/`
-(`lib/CMakeLists.txt`), modelled on `pyscf/lib`: it centralises the common
-config (BLAS/LAPACK, OpenMP, flags, `$ORIGIN` RPATH) and `add_subdirectory`s
-each library. The subdir CMakeLists for `lib/x2camf`, `lib/ccsdt`, `lib/zquatev`
-are thin (target + link only) and rely on the parent scope, exactly like
-`pyscf/lib/vhf` — so they drop into `pyscf/lib` unchanged if upstreamed.
-`lib/ao2mo` (spinor AO2MO e1/e2 kernels, `nrr_fast.py`) is the odd one out: it
-reuses C already compiled into an *installed* pyscf (`libao2mo`/`libnp_helper`/
-`libcvhf`/`libcint`) rather than standing alone, so its CMakeLists locates that
-pyscf via the configuring Python interpreter at configure time — if upstreamed
-*into* pyscf it would simplify to an ordinary in-tree `target_link_libraries`.
-`lib/dft` (`libsocdft.so`) is the standalone OpenMP multi-collinear XC kernel
-of `dft/noncollinear.py` plus the elementwise grid pass of the RKS XC Hessian
-(`xc_hess.c`, `hessian/rhf_fast.py`); both fall back to numpy when not built.
+The C/C++ libraries must be compiled before the features that use them, by
+**one** top-level CMake under `lib/` (`lib/CMakeLists.txt`), modelled on
+`pyscf/lib`: it centralises the common config (BLAS/LAPACK, OpenMP, flags,
+`$ORIGIN` RPATH) and `add_subdirectory`s the in-tree libraries `lib/ccsdt`,
+`lib/ao2mo`, `lib/vhf`, `lib/dft`, `lib/pbcdf`, `lib/thc`, `lib/qdhf` (thin
+subdir CMakeLists, like `pyscf/lib/vhf`).
+`lib/ao2mo` (spinor AO2MO e1/e2 kernels, `nrr_fast.py`) reuses C already
+compiled into an *installed* pyscf (`libao2mo`/`libnp_helper`/`libcvhf`/
+`libcint`), located via the configuring Python interpreter.
+`lib/dft` (`libsocdft.so`) holds the OpenMP XC kernels: the multi-collinear
+kernel of `dft/noncollinear.py`, the fused scalar / two-component Vxc, f_xc and
+XC-gradient passes (`vxc_fast.py`, `vxc_2c.py`, LDA/GGA/meta-GGA), the RKS XC
+Hessian grid pass (`xc_hess.c`, `hessian/rhf_fast.py`), COSX (`scf/cosx.py`) and
+the grid response; they fall back to numpy / pyscf when not built.
 `lib/vhf` (`libsocvhf.so`: prescreen functions that skip one-centre shell
 quartets, used by `somf/x2cmp.py`; the unique-quartet Hessian drivers
 `hess2e.c` (2e second derivatives), `fock1.c` (first-order J/K of all atoms),
@@ -49,14 +48,25 @@ matrices, `scf/md_j.py`, whose `apply(mf)` also routes J + K to `jk_multi` with
 incremental Fock builds), `rij_direct.c` (direct RI-J without the three-centre
 tensor: MD on primitive Hermite pair densities, auxiliary primitives as pure Hermite
 Gaussians, far-field auxiliary multipoles, SIMD lane batches; `scf/rij_direct.py`,
-used by `md_j`'s RIJ when L^-1 (P|ij) does not fit, `md_j.RIJ_DIRECT`)) links against
-the installed pyscf's `libcvhf` the same way; without it `.x2cmp()` falls back
-to the full molecular J/K build and the Hessians to pyscf's integral passes.
-Each `.so` is emitted **flat into `lib/`**, next to its ctypes loader. They're
-optional — two-component code that doesn't call them runs without.
+used by `md_j`'s RIJ when L^-1 (P|ij) does not fit, `md_j.RIJ_DIRECT`)) links the
+installed pyscf's `libcvhf` the same way; without it `.x2cmp()` falls back to
+the full molecular J/K build and the Hessians to pyscf's integral passes.
+These `.so` are emitted **flat into `lib/`**.
+
+The **x2camf C library** (C99 translation of the C++ X2CAMF, Apache-2.0,
+repo github.com/xubwa/x2camf-c) and **zquatev** (BSD-2, sunqm/zquatev; pinned to
+upstream commit 4b397dd = PR #2, merged 2026-11-09, which adds BLAS_LIBRARIES and
+install() to its CMake and computes zdotc in C++, so no CBLAS/cblas.h is needed)
+are separate repositories, built with `ExternalProject` (like pyscf's
+libcint/libxc) with the same BLAS into `lib/deps/lib/` (`libx2camf_c.so`,
+`libzquatev.so`). Cache variables `X2CAMF_GIT`/`X2CAMF_VERSION`,
+`ZQUATEV_GIT`/`ZQUATEV_VERSION`, or `X2CAMF_SOURCE_DIR`/`ZQUATEV_SOURCE_DIR`
+for a local checkout; `BUILD_X2CAMF`/`BUILD_ZQUATEV=OFF` to skip.
+All libraries are optional — two-component code that doesn't call them runs
+without.
 
 ```bash
-make            # build all -> lib/libx2camf_c.so, libccsdt_clib.so, libzquatev.so, libnrr_opt.so, libsocvhf.so, libsocdft.so
+make            # build all -> lib/lib{ccsdt_clib,nrr_opt,socvhf,socdft,socpbcdf,socthc,qdhf}.so, lib/deps/lib/lib{x2camf_c,zquatev}.so
 make test       # build + no-dependency x2camf smoke test
 make compare    # build + A/B compare C backend vs C++ reference
                 #   (needs X2CAMF_CPP_LIBRARY=/path/to/libx2camf*.so)
@@ -69,7 +79,7 @@ make CMAKE_ARGS=-DSOCUTILS_MARCH=cascadelake
 # equivalently, drive the lib/ CMake directly: cd lib && ./build.sh [-D...]
 ```
 
-The ctypes loaders find their library in `lib/` (and honour a
+The ctypes loaders find their library in `lib/` or `lib/deps/lib/` (and honour a
 `SOCUTILS_*_LIBRARY` env override): `lib/__init__.py:load_library`,
 `x2camf_c/x2camf/_c_backend.py`, `cc/_ccsdt_clib.py`, `lib/zquatev/__init__.py`,
 `lib/ao2mo/nrr_fast.py`.
@@ -122,13 +132,14 @@ two-electron corrections on) and only then require the `x2camf` integral backend
 
 - **`x2camf_c/x2camf/`** — the bundled `x2camf` Python package: a dispatcher
   with **two interchangeable backends** behind one API (`amfi`/`atm_integrals`/
-  `pcc_K`) — the pure-C reimplementation (ctypes onto `lib/libx2camf_c.so`) and
+  `pcc_K`) — the pure-C reimplementation (ctypes onto `lib/deps/lib/libx2camf_c.so`) and
   the upstream pybind11 C++ reference. `backend.py` selects: env
   `X2CAMF_BACKEND=c|cpp`, `backend.set_backend()`, or `with backend.using('cpp'):`.
-  Default `c` if built, else falls back to `cpp`. The **C sources** now live in
-  `lib/x2camf/{csrc,c_api}` (a 1:1 translation of the upstream C++:
-  `x2c_int_sph*.c` ↔ integrals, `x2c_dhf_sph*.c` ↔ Dirac-HF SCF — see
-  `x2camf_c/README.md` and `lib/x2camf/csrc/TRANSLATION_CONVENTIONS.md`).
+  Default `c` if built, else falls back to `cpp`. The **C sources** live in
+  their own repository (github.com/xubwa/x2camf-c, built into `lib/deps/lib` by
+  ExternalProject): a 1:1 translation of the upstream C++ (`x2c_int_sph*.c` ↔
+  integrals, `x2c_dhf_sph*.c` ↔ Dirac-HF SCF; see its
+  `csrc/TRANSLATION_CONVENTIONS.md`).
 
 - **The root `__init__.py`** decides whether the bundled `x2camf` dispatcher
   (`x2camf_c/`) is put on `sys.path` as the top-level `x2camf`. Controlled by
@@ -147,6 +158,13 @@ two-electron corrections on) and only then require the `x2camf` integral backend
   the `collinear` schemes beyond pyscf: `'ncol'` (locally collinear, LDA/GGA/MGGA
   Vxc + fxc) and `'mcol'` (native multi-collinear, no mcfun; LDA in closed form,
   GGA/MGGA on a half Lebedev sphere via `lib/libsocdft.so`).
+- **`pbc/`** — Gamma-point periodic two-component SCF on cells: `spinor_scf.py`
+  (`periodic(mf, rsdf)`, exxdiv / G = 0 conventions), `rsdf.py` (range-separated
+  density fitting, `lr='gspace'`, C kernels `lib/pbcdf`), and the cderi-free THC
+  route-1 J/K `thc.py` (`THCJK`; with `thc_gapw.py` GAPW J, `thc_local.py` local CX
+  fit, OpenMP kernels `lib/thc` -> `libsocthc.so`), MPI SPMD via mpi4py
+  (`jk.comm`; `examples/14-periodic_dopant_casci.py --jk thc` under
+  `mpirun ... python -m mpi4py`). Status, results and run paths: `pbc/HANDOFF_WNSM.md`.
 
 - **`cc/`** — relativistic coupled cluster on a spinor reference: `zccsd.py`,
   `zccsd_direct.py`, `zccsdt.py` (triples), `gccsd_t.py`, `eom_zccsd_direct.py`,
@@ -162,11 +180,11 @@ two-electron corrections on) and only then require the `x2camf` integral backend
   **`lo/`**, **`tools/`** (`spinor2sph`, `fragmo_guess`) — all built on the
   spinor/GHF SCF objects above.
 
-- **`lib/`** — the pyscf-style home for all bundled C/C++ libraries: thin
-  subdirs `lib/x2camf`, `lib/ccsdt`, `lib/zquatev` driven by `lib/CMakeLists.txt`,
-  with `.so` output flat into `lib/` and `lib/__init__.py:load_library` to load
-  them. `lib/zquatev/` is Toru Shiozaki's quaternion eigensolver (BSD-2-Clause),
-  ctypes-loaded for Kramers-restricted SCF.
+- **`lib/`** — the pyscf-style home for the C/C++ libraries: thin in-tree
+  subdirs driven by `lib/CMakeLists.txt` (`.so` flat into `lib/`,
+  `lib/__init__.py:load_library`), plus x2camf (C) and zquatev built by
+  ExternalProject into `lib/deps/lib`. `lib/zquatev/__init__.py` is the ctypes
+  loader of Toru Shiozaki's quaternion eigensolver for Kramers-restricted SCF.
 
 ## Environment variables
 

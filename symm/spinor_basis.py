@@ -148,6 +148,8 @@ def realify_mo(mol, mo_coeff, s, op, mo_energy=None, degen_tol=1e-8):
         or 4c (n = 2 nao_2c, [L; S]).  s is the metric of the same dimension.
     With an orbital energy degenerate within the same K-invariant block
     (accidental), the degenerate u are rotated together, U -> U sqrt(U^+ S K U).
+    What remains of the K-odd part is projected out, u -> (u + K u) / 2, and
+    the orbitals are orthonormalized symmetrically (real S^-1/2).
     Returns the new coefficients (same layout).
     """
     n2c = mol.nao_2c()
@@ -188,9 +190,14 @@ def realify_mo(mol, mo_coeff, s, op, mo_energy=None, degen_tol=1e-8):
             raise RuntimeError('degenerate orbitals %s do not span a K-invariant space' % (2 * grp))
         u[:, grp] = ug.dot(scipy.linalg.sqrtm(m))
         done[grp] = True
+    # remove the K-odd remainder (roundoff accumulated in an orbital
+    # optimization) and orthonormalize again; the overlap of K-invariant
+    # orbitals is real, so S^-1/2 keeps them K invariant and the pairs intact
+    u = .5 * (u + k(u))
     c[:, 0::2] = u
     c[:, 1::2] = tr(u)
-    return c
+    w, v = numpy.linalg.eigh(c.conj().T.dot(s).dot(c).real)
+    return c.dot((v * w**-.5).dot(v.T))
 
 
 def _atom_permutation(mol, op, orig, tol):

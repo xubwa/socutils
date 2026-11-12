@@ -18,6 +18,7 @@ precision; the GHF style stays close to PySCF's native GHF toolchain.
 import numpy
 from pyscf.scf import ghf, hf
 from pyscf.lib import logger
+from socutils.prop.mixin import SpinOrbitalPropertyMixin
 
 
 def _is_kramers_even(dms, nao, tol=1e-10):
@@ -74,7 +75,7 @@ def get_jk_kramers(mf, mol, dms, with_j=True, with_k=True, omega=None):
     return vj, vk
 
 
-class GHF(ghf.GHF):
+class GHF(SpinOrbitalPropertyMixin, ghf.GHF):
     '''GHF with an X2C spin-orbit Hamiltonian attached through ``with_x2c``.'''
 
     _keys = {'with_x2c'}
@@ -83,7 +84,7 @@ class GHF(ghf.GHF):
         ghf.GHF.__init__(self, mol)
         self.with_x2c = None
 
-    def cholesky(self, tau=1e-4, sigma=1e-2, method='threeloop',
+    def cholesky(self, tau=1e-4, sigma=1e-2, method='twostep',
                  cderi=None, cderi_to_save=None, with_df=None, **kwargs):
         '''Cholesky-decomposed ERIs -- the CD analogue of ``mf.density_fit()``.'''
         from socutils.cd.cd import cholesky

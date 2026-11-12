@@ -370,8 +370,8 @@ def gen_g_hop(casscf, mo, casdm1, casdm2, eris):
         fock_eff = h1e_mo + vhf_ca
         fock_core = fock_eff[:ncore, :ncore]
         fock_vir = fock_eff[nocc:, nocc:]
-        e_core, c_core = casscf._scf.eig(fock_core, mo=mo[:, :ncore])
-        e_vir, c_vir = casscf._scf.eig(fock_vir, mo=mo[:, nocc:])
+        e_core, c_core = zmcscf.eig_sub(casscf, fock_core, np.arange(ncore))
+        e_vir, c_vir = zmcscf.eig_sub(casscf, fock_vir, np.arange(nocc, nmo))
         mo[:,:ncore] = np.dot(mo[:,:ncore], c_core)
         mo[:,nocc:] = np.dot(mo[:,nocc:], c_vir)
         h1e_mo = reduce(np.dot, (mo.T.conj(), casscf.get_hcore(), mo))
@@ -747,7 +747,9 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
     # silently have most of each step projected away.
     if kramers_check:
         from socutils.tools import kramers
-        s_ovlp = mol.intor('int1e_ovlp_spinor')
+        # the SCF's overlap: for a periodic cell (pbc.spinor_scf) the lattice
+        # sum, which the molecular integral of the cell is not
+        s_ovlp = mc._scf.get_ovlp()
         dev = kramers.pairing_deviation(mol, mo, s_ovlp)
         log.info('Kramers pairing of the starting orbitals: max deviation %.2e', dev)
         if dev > 1e-6:
@@ -756,6 +758,11 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
                 '(max deviation %.2e); phase-clean them (e.g. a CAHF pass with '
                 'trace_orbital=False) or use socutils.tools.kramers.symmetrize, '
                 'or pass kramers_check=False' % dev)
+
+    # double-group irreps of the orbitals (mc.orbsym): the rotations are
+    # restricted to one irrep by mc.pack_uniq_var / unpack_uniq_var, which
+    # every gradient, Hessian, metric and preconditioner below goes through
+    mc._setup_orbsym(mo, strict=True)
 
     # Rotating the orbital basis between iterations is not a harmless option:
     # natorb costs a second integral half-transform and a second CI solve per
@@ -812,8 +819,10 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
         dr = mc.unpack_uniq_var(x)
         if kramers_project:
             # assumes interleaved, phase +1 Kramers pairs (checked at entry;
-            # exp(dr) with a time-reversal even dr keeps the pairing)
-            dr = ensure_kramers(dr)
+            # exp(dr) with a time-reversal even dr keeps the pairing).  With
+            # pairs in conjugate irreps the projection keeps the irrep blocks;
+            # screen_irrep removes the roundoff
+            dr = mc.screen_irrep(ensure_kramers(dr))
         if norm(dr) > trust_radius:
             print('step rescaled')
             dr = dr * (trust_radius / norm(dr))
@@ -826,7 +835,7 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
             # transforms as c^T D c^* under mo -> mo c, so the natural orbitals
             # are the eigenvectors of its transpose.
             moa = mo[:, ncore:nocc]
-            natocc, c = mc._scf.eig(-casdm1.T, mo=moa)
+            natocc, c = zmcscf.eig_sub(mc, -casdm1.T, np.arange(ncore, nocc))
             mo[:, ncore:nocc] = np.dot(moa, c)
             eris = zmc_ao2mo._CDERIS(mc, mo, cderi=cderi, level=2)
             t2m = log.timer('update eris', *t2m)
@@ -854,8 +863,8 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
             for j in range(i):
                 if abs(g_unpack[i,j])>1e-2:
                     print(f'{i}, {j}, {g_unpack[i,j]}')
-        if mc.irrep is not None:
-            print(f'{row}, {col}, {g_unpack[row,col].real:8.6f} {mc.irrep[row]}, {mc.irrep[col]}')
+        if mc._rot_irrep() is not None:
+            print(f'{row}, {col}, {g_unpack[row,col].real:8.6f} {mc._rot_irrep()[row]}, {mc._rot_irrep()[col]}')
         else:
             print(f'{row}, {col}, {g_unpack[row,col].real:8.6f}')
         if abs(de) < conv_tol and norm_gorb < conv_tol_grad:
