@@ -139,6 +139,19 @@ static int cx_hfloat = 0;   /* the Hessian passes' A C contraction in single pre
 static int cx_hess_oa = 1;  /* the point loop: 1 per block the cheaper of C^T (2 Aoc Psi) and (C^T Aoc) Psi,
                              * 2 always the former, 0 always the latter */
 void SOCDFTcosx_set_hess_oa(int v) { cx_hess_oa = v; }
+/* the atom loop's derivative slabs by their own bound q = max|d_Y G| max(max|C rows|, 1) max_i sum_g w (|psi_i| +
+ * |eta_i|), relative to tol: 12 bins of log10(q / tol) from < -8 by 2 up to >= 12 (bin 0: < -8); rows, then rows x n
+ * (SOCDFTcosx_slabhist) */
+static double cx_slabhist[24];
+void SOCDFTcosx_slabhist(double *out, int reset)
+{
+        memcpy(out, cx_slabhist, sizeof(cx_slabhist));
+        if (reset) memset(cx_slabhist, 0, sizeof(cx_slabhist));
+}
+static int cx_slabcount = 0;    /* collect cx_slabhist (one more pass over the slabs) */
+void SOCDFTcosx_set_slabcount(int v) { cx_slabcount = v; }
+static int cx_tail_fused = 1;   /* the Fock1 tail's two VT GEMMs of a direction as one over 2n points */
+void SOCDFTcosx_set_tail_fused(int v) { cx_tail_fused = v; }
 int SOCDFTcosx_hfloat(void)
 {
 #ifdef __AVX512F__
@@ -649,6 +662,8 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
         double *Out = malloc(sizeof(double) * (size_t)nao * (DCB + 1));
         double *tmp = malloc(sizeof(double) * ((size_t)nao * (nocc > 3 * natm ? nocc : 3 * natm) + (size_t)9 * natm * natm));
         double *Qm = malloc(sizeof(double) * (size_t)nao * blk);
+        double *A2 = do_f1 && cx_tail_fused ? malloc(sizeof(double) * (size_t)2 * blk * nocc) : NULL;
+        double *B2 = do_f1 && cx_tail_fused ? malloc(sizeof(double) * (size_t)2 * blk * nao) : NULL;
         double **farR = calloc(natm, sizeof(double *));
         int *stamp = malloc(sizeof(int) * natm);
         double *armin = malloc(sizeof(double) * natm);
@@ -1261,6 +1276,39 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                 }
                 memcpy(ord, sl.keys, sizeof(int) * sl.nkeys);
                 qsort(ord, sl.nkeys, sizeof(int), cmp_int);
+                if (cx_slabcount) {
+                        double wmax = 0, hl[24] = {0};
+                        for (i = 0; i < nocc; i++) {
+                                double s_ = 0;
+                                for (g = 0; g < n; g++)
+                                        s_ += w[g] * (fabs(psi[(size_t)i * n + g]) + fabs(eta[(size_t)i * n + g]));
+                                if (s_ > wmax) wmax = s_;
+                        }
+                        int q_;
+                        for (q_ = 0; q_ < sl.nkeys; q_++) {
+                                const int S_ = sl.keys[q_] % nbas, nS = ao_loc[S_ + 1] - ao_loc[S_];
+                                const size_t off = sl.koff[q_], m3 = (size_t)3 * nS * n;
+                                double mg = 0, mc = 1;
+                                size_t e_;
+                                for (e_ = 0; e_ < m3; e_++) {
+                                        double v_ = fabs(sl.g[off + e_]);
+                                        if (do_h && fabs(sl.gh[off + e_]) > v_) v_ = fabs(sl.gh[off + e_]);
+                                        if (v_ > mg) mg = v_;
+                                }
+                                for (e_ = 0; e_ < (size_t)nS * nocc; e_++) {
+                                        const double v_ = fabs(co[(size_t)ao_loc[S_] * nocc + e_]);
+                                        if (v_ > mc) mc = v_;
+                                }
+                                const double qq = mg * mc * wmax / tol;
+                                int bin = qq > 0 ? (int)floor((log10(qq) + 8) / 2) + 1 : 0;
+                                if (bin < 0) bin = 0;
+                                if (bin > 11) bin = 11;
+                                hl[bin] += nS;
+                                hl[12 + bin] += (double)nS * n;
+                        }
+#pragma omp critical(socdft_cosx_slabhist)
+                        for (q_ = 0; q_ < 24; q_++) cx_slabhist[q_] += hl[q_];
+                }
                 for (k = 0; k < nla; k++) lidx[la[3 * k]] = k;
                 memset(adone, 0, natm);
                 int pk = 0, kl = 0, cc = 0, fin = 0;
@@ -1409,6 +1457,12 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                 /* (t2): VT[A, x] += sum_g Bd (w eta)^T + sum_g GFb (w eta^d)^T, the directions in chunks of DCB (the
                  * first chunk of Bd from the point loop above); an atom whose lock is taken is retried after the
                  * others */
+                /* the fused tail: A2 = [w eta | w eta^d] (nocc rows of 2n), B2 = [Bd of a direction; GFb] */
+                const int n2 = 2 * n;
+                if (cx_tail_fused && A2 && B2) {
+                        for (i = 0; i < nocc; i++) memcpy(A2 + (size_t)i * n2, weta + (size_t)i * n, sizeof(double) * n);
+                        memcpy(B2 + (size_t)nao * n, GFb, sizeof(double) * nao * n);
+                }
                 int d0;
                 for (d0 = 0; d0 < nd; d0 += DCB) {
                         const int dc = nd - d0 < DCB ? nd - d0 : DCB;
@@ -1442,10 +1496,20 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                                         for (yy = 0; yy < 3; yy++) {
                                                 const int dd = 3 * k_ + yy;
                                                 double *vt = VT + (((size_t)ya * 3 + yy) * nao) * nocc;
-                                                dgemm_("T", "T", &nocc, &nao, &n, &one, weta, &n, Bd + (size_t)(dd - d0) * nao * n, &nao,
-                                                       &one, vt, &nocc);
-                                                dgemm_("T", "T", &nocc, &nao, &n, &one, wetad + (size_t)dd * nocc * n, &n, GFb, &nao,
-                                                       &one, vt, &nocc);
+                                                if (cx_tail_fused && A2 && B2) {
+                                                        /* one GEMM over 2n: [w eta | w eta^d] [Bd; GFb] (VT read and
+                                                         * written once per direction instead of twice) */
+                                                        for (i = 0; i < nocc; i++)
+                                                                memcpy(A2 + (size_t)i * n2 + n, wetad + ((size_t)dd * nocc + i) * n,
+                                                                       sizeof(double) * n);
+                                                        memcpy(B2, Bd + (size_t)(dd - d0) * nao * n, sizeof(double) * nao * n);
+                                                        dgemm_("T", "T", &nocc, &nao, &n2, &one, A2, &n2, B2, &nao, &one, vt, &nocc);
+                                                } else {
+                                                        dgemm_("T", "T", &nocc, &nao, &n, &one, weta, &n, Bd + (size_t)(dd - d0) * nao * n,
+                                                               &nao, &one, vt, &nocc);
+                                                        dgemm_("T", "T", &nocc, &nao, &n, &one, wetad + (size_t)dd * nocc * n, &n, GFb,
+                                                               &nao, &one, vt, &nocc);
+                                                }
                                         }
                                         omp_unset_lock(alock + ya);
                                 }
@@ -1504,7 +1568,7 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
         free(F); free(H); free(GFb); free(psi); free(eta); free(weta); free(Ub); free(Upb); free(psid); free(wpsid);
         free(wetad); free(la); free(U); free(Up); free(cat); free(Ad); free(Tt); free(roff); free(fmax); free(A); free(W); free(dA); free(rs);
         free(Mm); free(Eg); free(bk); free(R); free(Rwk); free(S); free(X); free(xyz); free(Abuf); free(rec); free(Aoc);
-        free(Aoo); free(Aocf); free(cof); free(Psi); free(Out); free(Out2); free(OutA); free(tmp); free(Qm);
+        free(Aoo); free(Aocf); free(cof); free(Psi); free(Out); free(Out2); free(OutA); free(tmp); free(Qm); free(A2); free(B2);
         for (at = 0; at < natm; at++) free(farR[at]);
         free(farR); free(stamp); free(armin);
         if (mkl_set_num_threads_local) mkl_set_num_threads_local(mkl0);
