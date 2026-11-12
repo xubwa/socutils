@@ -44,6 +44,103 @@ from socutils.scf import rik
 
 BLK_MEMORY = .4       # fraction of the free memory for the block buffers
 MAX_ROWS = 1 << 16    # rows (P, i) of the Gram update per block: enough for the dsyrk efficiency
+QUAT = True           # Kramers sets by the four-product scheme (libsocvhf), else the Gram matrix
+TILE = 64             # orbitals per dgemm tile of the libsocvhf half transformation
+
+# Kramers exchange from four products M_r = Y_{a_r}^T Y_{b_r} of combinations Y_v = sum_x v_x X_x of
+# the half-transformed components X_x (x = aR, aI, bR, bI) instead of the 16 blocks G_xy = X_x^T X_y
+# (10 of them distinct): with G's coefficient matrices, M_r = sum_xy a_rx b_ry G_xy, and
+#     K0 = Re K_aa = sum_x G_xx                         = sum_r d_r (M_r + M_r^T)
+#     Im K_aa = G10 - G01 - G32 + G23                    = sum_r c_1r (M_r - M_r^T)
+#     Re K_ab = G02 + G13 - G20 - G31                    = sum_r c_2r (M_r - M_r^T)
+#     Im K_ab = G12 - G03 - G21 + G30                    = sum_r c_3r (M_r - M_r^T)
+# (K_bb = K_aa^*).  The quaternion structure of a Kramers-symmetric K (one symmetric, three
+# antisymmetric real n x n parts) makes four full products of +-1 two-term combinations enough
+# (an integer solution; at least four are needed since the three antisymmetric targets span an
+# anti-self-dual subspace of the bivectors, which holds no decomposable a ^ b), i.e. 8 nao^2 per
+# (P, orbital) instead of the Gram matrix's 16.
+_QA = numpy.array([[0, 0, 1, -1], [0, 0, 1, 1], [0, 1, -1, 0], [1, -1, 0, 0]], dtype=float)
+_QB = numpy.array([[0, 1, 1, 0], [1, 0, 0, 1], [1, 1, 0, 0], [1, 0, 0, -1]], dtype=float)
+
+
+def _quat_coefficients():
+    e = numpy.eye(4)
+    E = lambda a, b: numpy.outer(e[a], e[b])
+    targets = [E(1, 0) - E(0, 1) - E(3, 2) + E(2, 3),
+               E(0, 2) + E(1, 3) - E(2, 0) - E(3, 1),
+               E(1, 2) - E(0, 3) - E(2, 1) + E(3, 0)]
+    w = [numpy.outer(a, b) for a, b in zip(_QA, _QB)]
+    A = numpy.array([(x - x.T).ravel() for x in w]).T
+    S = numpy.array([(x + x.T).ravel() for x in w]).T
+    c = numpy.array([numpy.linalg.lstsq(A, t.ravel(), rcond=None)[0] for t in targets])
+    d = numpy.linalg.lstsq(S, e.ravel(), rcond=None)[0]
+    assert abs(A @ c.T - numpy.array([t.ravel() for t in targets]).T).max() < 1e-12
+    assert abs(S @ d - e.ravel()).max() < 1e-12
+    return c.round(12), d.round(12)
+
+
+_QC, _QD = _quat_coefficients()
+
+
+def _comb_spec():
+    '''(ia, ib, sb) of the eight two-term combinations a_1, b_1, a_2, b_2, ... for SOCVHFrik2c_half'''
+    ia, ib, sb = [], [], []
+    for r in range(4):
+        for v in (_QA[r], _QB[r]):
+            nz = numpy.flatnonzero(v)
+            assert v[nz[0]] == 1
+            ia.append(nz[0])
+            ib.append(nz[1] if len(nz) > 1 else -1)
+            sb.append(v[nz[1]] if len(nz) > 1 else 0.)
+    return (numpy.array(ia, dtype=numpy.int32), numpy.array(ib, dtype=numpy.int32),
+            numpy.array(sb, dtype=float))
+
+
+_libv = None
+
+
+def _load_lib():
+    global _libv
+    if _libv is None:
+        try:
+            from socutils.lib import load_library
+            lv = load_library('libsocvhf', 'SOCUTILS_SOCVHF_LIBRARY')
+            _libv = lv if hasattr(lv, 'SOCVHFrik2c_half') else False
+        except OSError:
+            _libv = False
+    return _libv
+
+
+def half_combinations(eri1, c4, ncomb_spec, out=None, tile=None):
+    '''(ncomb, nb ncol, nao) two-term combinations of the half-transformed components (libsocvhf)'''
+    import ctypes
+    ia, ib, sb = ncomb_spec
+    eri1 = numpy.asarray(eri1, order='C')
+    nb = eri1.shape[0]
+    nao = c4.shape[0]
+    ncol = c4.shape[1] // 4
+    ncomb = len(ia)
+    out = numpy.ndarray((ncomb, nb * ncol, nao), buffer=out)
+    _load_lib().SOCVHFrik2c_half(
+        out.ctypes.data_as(ctypes.c_void_p), eri1.ctypes.data_as(ctypes.c_void_p),
+        c4.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nb), ctypes.c_int(nao), ctypes.c_int(ncol),
+        ctypes.c_int(ncomb), ia.ctypes.data_as(ctypes.c_void_p), ib.ctypes.data_as(ctypes.c_void_p),
+        sb.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(TILE if tile is None else tile))
+    return out
+
+
+def _assemble_quat(ms, nao):
+    '''the sph GHF exchange matrix of a Kramers set from the four products ms (4, nao, nao)'''
+    s = [m + m.T for m in ms]
+    a = [m - m.T for m in ms]
+    k0 = sum(_QD[r] * s[r] for r in range(4))
+    t = [sum(_QC[q, r] * a[r] for r in range(4)) for q in range(3)]
+    k = numpy.empty((2 * nao, 2 * nao), dtype=complex)
+    k[:nao, :nao] = k0 + 1j * t[0]
+    k[nao:, nao:] = k[:nao, :nao].conj()
+    k[:nao, nao:] = t[1] + 1j * t[2]
+    k[nao:, :nao] = k[:nao, nao:].conj().T
+    return k
 
 
 def _real_columns(c, nao):
@@ -107,8 +204,12 @@ def get_jk(with_df, orbs=(), dms_j=(), kramers=None, signs=None, max_memory=None
     nset = len(orbs)
     kramers = [False] * nset if kramers is None else list(kramers)
     signs = [1.] * nset if signs is None else [float(s) for s in signs]
+    quat = [bool(kr) and QUAT and bool(_load_lib()) for kr in kramers]
     cols = [_real_columns(c, nao) if c.shape[1] > 0 else None for c in orbs]
-    ncol_max = max([0] + [c.shape[1] for c in cols if c is not None])
+    # doubles per auxiliary function and AO of the half-transformed rows: 4 components per orbital
+    # (Gram matrix) or the 8 combinations (four-product scheme)
+    width = max([0] + [(8 if q else 4) * (c.shape[1] // 4) for c, q in zip(cols, quat) if c is not None])
+    ncol_max = max([0] + [c.shape[1] // 4 for c in cols if c is not None])
     dms_j = [numpy.asarray(d, dtype=float) for d in dms_j]
     ndj = len(dms_j)
 
@@ -116,15 +217,16 @@ def get_jk(with_df, orbs=(), dms_j=(), kramers=None, signs=None, max_memory=None
         max_memory = getattr(with_df, 'max_memory', 4000)
     mem_free = max(400., max_memory - lib.current_memory()[0] - 8 * nset * (4 * nao) ** 2 / 1e6)
     # per auxiliary function: the factor block and its prefetch (2 npair), the half-transformed rows
-    per_p = 8 * (2 * npair + ncol_max * nao) / 1e6
+    per_p = 8 * (2 * npair + width * nao) / 1e6
     blksize = int(max(1, min(naux, mem_free * BLK_MEMORY / per_p)))
     if ncol_max:
-        blksize = min(blksize, max(1, MAX_ROWS * 4 // ncol_max))
+        blksize = min(blksize, max(1, MAX_ROWS // ncol_max))
     nthreads = lib.num_threads()
     if blksize > nthreads:
         blksize -= blksize % nthreads      # the half transformation is parallel over P
-    log.debug1('rik_2c.get_jk: naux %d, blksize %d, orbital sets %s (Kramers %s), %d J densities',
-               naux, blksize, [0 if c is None else c.shape[1] // 4 for c in cols], kramers, ndj)
+    log.debug1('rik_2c.get_jk: naux %d, blksize %d, orbital sets %s (Kramers %s, four-product %s), '
+               '%d J densities', naux, blksize, [0 if c is None else c.shape[1] // 4 for c in cols],
+               kramers, quat, ndj)
 
     if ndj:
         d = numpy.array(dms_j)
@@ -133,9 +235,10 @@ def get_jk(with_df, orbs=(), dms_j=(), kramers=None, signs=None, max_memory=None
         d[:, idx, idx] *= .5
         dtril = lib.pack_tril(d)                     # sum over packed pairs k >= l of B_kl (D + D^T)_kl
         vj = numpy.zeros((ndj, npair))
-    gs = [numpy.zeros((4 * nao, 4 * nao), order='F') for _ in range(nset)]
-    buf = numpy.empty(blksize * ncol_max * nao) if ncol_max else None
-    tw = [0.] * 4          # wall: factor read, J, half transformation, Gram update
+    acc = [numpy.zeros((4, nao, nao)) if q else numpy.zeros((4 * nao, 4 * nao), order='F') for q in quat]
+    buf = numpy.empty(blksize * width * nao) if width else None
+    spec = _comb_spec()
+    tw = [0.] * 4          # wall: factor read, J, half transformation, Gram update / products
     tl = logger.perf_counter()
     for eri1 in rik.iter_factor(with_df, blksize):
         t1 = logger.perf_counter()
@@ -150,17 +253,23 @@ def get_jk(with_df, orbs=(), dms_j=(), kramers=None, signs=None, max_memory=None
             if cols[k] is None:
                 continue
             t3 = logger.perf_counter()
-            x = rik.half_transform(eri1, cols[k], buf)     # (nb, 4 ncol, nao) = (nb ncol, 4 nao)
-            t4 = logger.perf_counter()
-            gs[k] = rik._dsyrk_acc(x.reshape(-1, 4 * nao), gs[k], signs[k])
+            if quat[k]:
+                y = half_combinations(eri1, cols[k], spec, buf)     # (8, nb ncol, nao)
+                t4 = logger.perf_counter()
+                for r in range(4):
+                    lib.dot(y[2 * r].T, y[2 * r + 1], signs[k], acc[k][r], 1.)
+            else:
+                x = rik.half_transform(eri1, cols[k], buf)     # (nb, 4 ncol, nao) = (nb ncol, 4 nao)
+                t4 = logger.perf_counter()
+                acc[k] = rik._dsyrk_acc(x.reshape(-1, 4 * nao), acc[k], signs[k])
             tw[2] += t4 - t3
             tw[3] += logger.perf_counter() - t4
         eri1 = None
         tl = logger.perf_counter()
     log.debug1('rik_2c.get_jk wall: factor read %.2f s, J %.2f s, half transformation %.2f s, '
-               'Gram update %.2f s', *tw)
+               'Gram update / products %.2f s', *tw)
     get_jk.last_timing = tw
-    vks = [_assemble(g, nao, kr) for g, kr in zip(gs, kramers)]
+    vks = [_assemble_quat(a, nao) if q else _assemble(a, nao, kr) for a, q, kr in zip(acc, quat, kramers)]
     vjs = [lib.unpack_tril(v) for v in vj] if ndj else []
     log.timer_debug1('rik_2c.get_jk', *t0)
     return vjs, vks

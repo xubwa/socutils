@@ -52,6 +52,24 @@ class KnownValues(unittest.TestCase):
         vj, vk2 = rik_2c.get_jk(self.mf.with_df, [self.cocc])
         self.assertLess(abs(vk[0] - vk2[0]).max(), 1e-12)
 
+    def test_quat_vs_gram(self):
+        '''Kramers set: the four-product scheme (libsocvhf) equals the Gram matrix, also with
+        orbital tiles smaller than the set and several factor blocks'''
+        self.assertTrue(rik_2c._load_lib())
+        u = spinor_hf._kramers_unbarred(self.cocc, self.nao)
+        ref = rik_2c.get_jk(self.mf.with_df, [u], kramers=[True])[1][0]
+        rows, tile, rik_2c.MAX_ROWS, rik_2c.TILE = rik_2c.MAX_ROWS, rik_2c.TILE, 16, 3
+        try:
+            rik_2c.QUAT = False
+            gram = rik_2c.get_jk(self.mf.with_df, [u], kramers=[True])[1][0]
+        finally:
+            rik_2c.QUAT = True
+        quat = rik_2c.get_jk(self.mf.with_df, [u], kramers=[True])[1][0]
+        rik_2c.MAX_ROWS, rik_2c.TILE = rows, tile
+        self.assertLess(abs(gram - ref).max(), 1e-12)
+        self.assertLess(abs(quat - ref).max(), 1e-12)
+        self.assertLess(abs(ref - _ref_k(self.mf.with_df, self.cocc, self.nao)).max(), 1e-12)
+
     def test_vs_old_loop(self):
         mf = self.mf
         dmt = lib.tag_array(mf.make_rdm1(), mo_coeff=mf.mo_coeff, mo_occ=mf.mo_occ)

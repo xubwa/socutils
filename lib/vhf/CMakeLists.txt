@@ -39,11 +39,11 @@ file(GLOB SOCVHF_JKF_GEN ${CMAKE_CURRENT_SOURCE_DIR}/jk_vrr_f_*.c)
 # hess_vrr_gen_*.c: the generated second-derivative kernels (gen_hess_vrr.py)
 file(GLOB SOCVHF_HESS_GEN ${CMAKE_CURRENT_SOURCE_DIR}/hess_vrr_gen_*.c)
 add_library(socvhf SHARED mc_screen.c hess_screen.c hess2e.c hess2e_cart.c jk_multi.c onx.c jk_ssss.c jk_gen.c jk_bench.c
-            fock1.c ri_j_deriv.c ri_k_grad.c int3c_s2.c md_j.c rij_direct.c hgp.c ${SOCVHF_GRAD_GEN} ${SOCVHF_JKF_GEN} ${SOCVHF_HESS_GEN})
+            fock1.c ri_j_deriv.c ri_k_grad.c int3c_s2.c md_j.c rij_direct.c hgp.c rik2c.c ${SOCVHF_GRAD_GEN} ${SOCVHF_JKF_GEN} ${SOCVHF_HESS_GEN})
 target_include_directories(socvhf PRIVATE
   ${PYSCF_LIB_DIR} ${PYSCF_LIB_DIR}/deps/include)
 target_link_libraries(socvhf PRIVATE ${PYSCF_CVHF_LIB} ${PYSCF_CGTO_LIB} ${PYSCF_CINT_LIB}
-                      ${OPENMP_C_PROPERTIES} m)
+                      ${BLAS_LIBRARIES} ${OPENMP_C_PROPERTIES} m)
 set_target_properties(socvhf PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}
   INSTALL_RPATH "$ORIGIN:${PYSCF_LIB_DIR}:${PYSCF_LIB_DIR}/deps/lib")
