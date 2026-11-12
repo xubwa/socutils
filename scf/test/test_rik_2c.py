@@ -109,6 +109,18 @@ class KnownValues(unittest.TestCase):
             self.assertLess(abs(vj[0] - vj0).max(), 1e-11)
             self.assertLess(abs(vk[0] - vk0).max(), 1e-11)
 
+    def test_kquat_slots(self):
+        '''the fused kernel with fewer accumulator slots than threads and several tiles'''
+        u = spinor_hf._kramers_unbarred(self.cocc, self.nao)
+        c4 = rik_2c._real_columns(u, self.nao)
+        spec = rik_2c._comb_spec()
+        ref = rik_2c.get_jk(self.mf.with_df, [u], kramers=[True])[1][0]
+        acc = numpy.zeros((2, 4, self.nao, self.nao))
+        for eri1 in self.mf.with_df.loop(7):
+            rik_2c.kquat(acc, eri1, c4, spec, tile=2)
+        k = rik_2c._assemble_quat(acc.sum(axis=0), self.nao)
+        self.assertLess(abs(k - ref).max(), 1e-12)
+
     def test_vs_old_loop(self):
         mf = self.mf
         dmt = lib.tag_array(mf.make_rdm1(), mo_coeff=mf.mo_coeff, mo_occ=mf.mo_occ)

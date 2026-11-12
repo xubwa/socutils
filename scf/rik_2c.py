@@ -166,7 +166,7 @@ def kquat(acc_thr, eri1, c4, ncomb_spec, sign=1., dtril=None, vj=None, tile=None
     nb = eri1.shape[0]
     nao = c4.shape[0]
     ncol = c4.shape[1] // 4
-    assert acc_thr.flags.c_contiguous and acc_thr.shape[0] >= lib.num_threads()
+    assert acc_thr.flags.c_contiguous and acc_thr.shape[1:] == (4, nao, nao)
     if dtril is None:
         ndj, dptr, vptr = 0, None, None
     else:
@@ -177,7 +177,8 @@ def kquat(acc_thr, eri1, c4, ncomb_spec, sign=1., dtril=None, vj=None, tile=None
         acc_thr.ctypes.data_as(ctypes.c_void_p), eri1.ctypes.data_as(ctypes.c_void_p),
         c4.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nb), ctypes.c_int(nao), ctypes.c_int(ncol),
         ia.ctypes.data_as(ctypes.c_void_p), ib.ctypes.data_as(ctypes.c_void_p), sb.ctypes.data_as(ctypes.c_void_p),
-        ctypes.c_int(tile), ctypes.c_double(sign), dptr, ctypes.c_int(ndj), vptr)
+        ctypes.c_int(tile), ctypes.c_double(sign), dptr, ctypes.c_int(ndj), vptr,
+        ctypes.c_int(acc_thr.shape[0]))
     return acc_thr
 
 

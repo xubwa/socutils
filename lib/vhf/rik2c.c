@@ -212,11 +212,11 @@ void SOCVHFrik2c_half(double *out, const double *eri, const double *c, int nb, i
  *
  * (the combinations in the order a_0, b_0, a_1, b_1, ...), so no combination is written to a
  * shared buffer and the products need no threaded GEMM of a small nao x nao output.  acc has
- * omp_get_max_threads() slots; the caller sums them.  J as in SOCVHFrik2c_half.
+ * nslot slots (at most nslot threads run); the caller sums them.  J as in SOCVHFrik2c_half.
  */
 void SOCVHFrik2c_kquat(double *acc, const double *eri, const double *c, int nb, int nao, int ncol,
                        const int *ia, const int *ib, const double *sb, int tile, double sign,
-                       const double *dtril, int ndj, double *vj)
+                       const double *dtril, int ndj, double *vj, int nslot)
 {
         const size_t npair = (size_t)nao * (nao + 1) / 2;
         const size_t nn = (size_t)nao * nao;
@@ -228,9 +228,10 @@ void SOCVHFrik2c_kquat(double *acc, const double *eri, const double *c, int nb, 
         }
         const int ntile = (ncol + tile - 1) / tile;
         const double D1 = 1., D0 = 0.;
-        const int nthreads = omp_get_max_threads();
+        /* at most nslot threads: one accumulator slot each */
+        const int nthreads = omp_get_max_threads() < nslot ? omp_get_max_threads() : nslot;
         double **vjts = calloc(nthreads, sizeof(double *));
-#pragma omp parallel
+#pragma omp parallel num_threads(nthreads)
 {
         const int it = omp_get_thread_num();
         double *b = malloc(sizeof(double) * nn);
