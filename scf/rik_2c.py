@@ -28,12 +28,21 @@ is a single rank-k update (dsyrk, 4 nao x 4 nao).  All exchange blocks follow
 from G (K_aa = G_RR + G_II + i (G_IR - G_RI), etc.).  For an occupied set made
 of Kramers pairs (u, Theta u) only the unbarred half is transformed and
 K_aa = A + B^*, K_bb = B + A^*, K_ab = C - C^T from the unbarred sums A, B, C
-(scf.spinor_hf._kramers_unbarred).
+(scf.spinor_hf._kramers_unbarred, kramers_reduce for natural orbitals).
 
-Flops per P, ncol transformed orbitals: half transformation 8 nao^2 ncol, Gram
-matrix 16 nao^2 ncol (the 4 nao x 4 nao dsyrk); the exchange matrix of a
-two-component set is the quaternion/complex analogue of a real K with 4 ncol
-orbitals.
+A Kramers-symmetric K is quaternion (one symmetric and three antisymmetric real
+nao x nao parts), and for such sets the 16 Gram blocks are replaced by four
+products of +-1 two-term combinations of the components (_QA, _QB below): the
+half transformation, the combinations and the products run fused per thread in
+lib/vhf/rik2c.c (SOCVHFrik2c_kquat), J from the same rows.
+
+Flops per P and transformed orbital: half transformation 8 nao^2, exchange
+16 nao^2 (Gram, general sets) or 8 nao^2 (Kramers sets, four products).  An SCF
+with nocc spinors: (8 + 8) nao^2 (nocc / 2) naux per Fock build, against
+(8 + 20) for the previous four-buffer loop of _DFJHF._get_k_mo.
+
+    from socutils.scf import rik_2c
+    vj, vk = rik_2c.get_jk_spinor(mol, mf.with_df, [c_core, c_act * numpy.sqrt(n_act)])
 '''
 
 import numpy
