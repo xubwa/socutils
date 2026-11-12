@@ -55,7 +55,7 @@ void zmr_sigma_det(int norb, int nelec, int64_t dim, const double complex *h1,
                    double complex *out);
 void zmr_d_ccvv(const double complex *bvc, int64_t ldvc, int64_t naux, int64_t nv, int64_t nc,
                 const double *ev, const double *ec, int64_t nj, const int64_t *jlist,
-                double *e, double complex *dcc, double complex *dvv);
+                double *e, double complex *dcc, double complex *dvv, double complex *gam);
 void zmr_w_ccvv(const double complex *bvc, int64_t ldvc, int64_t naux, int64_t nv, int64_t nc,
                 const double *ev, const double *ec, const double *d, int64_t nd,
                 int mode, double *w);

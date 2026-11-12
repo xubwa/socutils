@@ -203,19 +203,26 @@ void zmr_w_ccvv_pairs(const double complex *bvc, int64_t ldvc, int64_t naux, int
  *     e   += -1/4 sum_ab conj(v) t
  *     dvv += 1/2 sum_b conj(t[ij, ab]) t[ij, a'b]       (nv, nv)
  *     dcc += -1/2 sum_ab conj(t[ij, ab]) t[i'j, ab]     (nc, nc)
+ * With gam (not NULL, (nc, naux, nv), zeroed here) also the derivative of e with respect
+ * to the three-index integrals of real orbitals,
+ *     gam[i, L, a] = -2 sum_{j b} t[ij, ab] B[L, b, j]       (one product per pair)
  * The amplitudes t[ij] of all i for one j are kept (nc nv^2 elements) for dcc; the
  * products of one j run in parallel over i. */
 void zmr_d_ccvv(const double complex *bvc, int64_t ldvc, int64_t naux, int64_t nv, int64_t nc,
                 const double *ev, const double *ec, int64_t nj, const int64_t *jlist,
-                double *e, double complex *dcc, double complex *dvv)
+                double *e, double complex *dcc, double complex *dvv, double complex *gam)
 {
         *e = 0.0;
         memset(dcc, 0, sizeof(double complex) * nc * nc);
         memset(dvv, 0, sizeof(double complex) * nv * nv);
+        if (gam != NULL) {
+                memset(gam, 0, sizeof(double complex) * nc * naux * nv);
+        }
         if (nc < 2 || nv < 2 || nj < 1) {
                 return;
         }
         int64_t nn = nv * nv;
+        const double complex mtwo = -2.0;
         double complex *t = malloc(sizeof(double complex) * nc * nn);
         double complex *bj = malloc(sizeof(double complex) * naux * nv);
         double complex *gcc = malloc(sizeof(double complex) * nc * nc);
@@ -254,6 +261,12 @@ void zmr_d_ccvv(const double complex *bvc, int64_t ldvc, int64_t naux, int64_t n
                                 /* gvv += 1/2 t t^H, conj at the end: dvv = conj(sum t t^H) / 2 */
                                 cblas_zgemm(101, 111, 113, (int)nv, (int)nv, (int)nv, &half, ti, (int)nv,
                                             ti, (int)nv, &one, gvv, (int)nv);
+                                if (gam != NULL) {
+                                        /* gam[i] (naux, nv) += -2 B_j t_i^T */
+                                        cblas_zgemm(101, 111, 112, (int)naux, (int)nv, (int)nv, &mtwo,
+                                                    bj, (int)nv, ti, (int)nv, &one,
+                                                    gam + i * naux * nv, (int)nv);
+                                }
                         }
                         free(bi);
                         free(m);

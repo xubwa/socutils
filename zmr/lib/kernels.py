@@ -154,11 +154,13 @@ def w_ccvv(bvc, ev, ec, d, mode=-1, pairs=None):
     return w
 
 
-def d_ccvv(bvc, ev, ec, jlist=None):
+def d_ccvv(bvc, ev, ec, jlist=None, gamma=False):
     '''(E, D_cc, D_vv) of ccvv over the ordered core pairs (i, j), i != j, j in jlist
     (default all): E = -1/4 sum conj(v) t, D_vv = 1/2 sum conj(t[ij, ab]) t[ij, a'b],
     D_cc = -1/2 sum conj(t[ij, ab]) t[i'j, ab], t = ((ai|bj) - (aj|bi)) / Delta, from
-    bvc[L, a, i] (zmr.uc.density).  None without libzmr.'''
+    bvc[L, a, i] (zmr.uc.density).  gamma: also G[L, a, i] = dE/dB[L, a, i] =
+    -2 sum_jb t[ij, ab] B[L, b, j] (real orbitals), returned fourth.  None without
+    libzmr.'''
     z = _lib.zmr()
     if z is None or not hasattr(z, 'zmr_d_ccvv'):
         return None
@@ -175,9 +177,13 @@ def d_ccvv(bvc, ev, ec, jlist=None):
     e = numpy.zeros(1)
     dcc = numpy.empty((nc, nc), dtype=_c16)
     dvv = numpy.empty((nv, nv), dtype=_c16)
+    gam = numpy.empty((nc, naux, nv), dtype=_c16) if gamma else None
     z.zmr_d_ccvv(_p(bvc), ctypes.c_int64(ld), ctypes.c_int64(naux), ctypes.c_int64(nv),
                  ctypes.c_int64(nc), _p(ev), _p(ec), ctypes.c_int64(nj),
-                 None if jl is None else _p(jl), _p(e), _p(dcc), _p(dvv))
+                 None if jl is None else _p(jl), _p(e), _p(dcc), _p(dvv),
+                 None if gam is None else _p(gam))
+    if gamma:
+        return float(e[0]), dcc, dvv, gam.transpose(1, 2, 0)
     return float(e[0]), dcc, dvv
 
 

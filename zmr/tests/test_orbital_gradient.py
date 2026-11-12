@@ -44,3 +44,33 @@ def test_orbital_gradient_all_classes():
     an = mc.pack_uniq_var(g - g.T)
     n = len(an)
     assert abs(fd[:n] - an).max() < 1e-7, abs(fd[:n] - an).max()
+
+
+def test_ccvv_explicit_native():
+    '''The explicit (integrals in v) part of the ccvv orbital gradient from the native
+    kernel and the AO back-transformation against the reference with all amplitudes and
+    MO three-index integrals.'''
+    from socutils.zmr.nr import density as nr_density
+    from socutils.zmr.reference import orbital_gradient as og
+    from socutils.zmr.uc import density, gradient
+    mol = gto.M(atom='O 0 0 0.1173; H 0 0.7572 -0.4692; H 0 -0.7572 -0.4692',
+                basis='6-31g', verbose=0)
+    cderi = incore.cholesky_eri(mol, auxbasis='weigend')
+    mf = scf.RHF(mol).density_fit(auxbasis='weigend')
+    mf.kernel()
+    mc = mcscf.CASSCF(mf, 4, 4)
+    mc.kernel()
+    route = nr_density.spin_orbital_route(mc, cderi)
+    pt = route.pt()
+    ctx = density.context(pt)
+    e, dcc, dvv, g_fast = gradient.ccvv(ctx)
+    e_ref, dcc_ref, dvv_ref = density.ccvv(ctx, kramers=False)
+    assert abs(e - e_ref) < 1e-12
+    assert abs(dcc - dcc_ref).max() < 1e-12 and abs(dvv - dvv_ref).max() < 1e-12
+    eris = ctx.eris
+    sp = eris.spaces
+    gam = numpy.zeros((ctx.eris.cd_block('vc').shape[0], sp.nmo, sp.nmo))
+    gam[:, sp.slice('v'), sp.slice('c')] = og.ccvv_explicit(ctx)
+    bmo = og.mo_vectors(eris).real
+    g_ref = numpy.einsum('Prs,Psq->rq', bmo, gam + gam.transpose(0, 2, 1))
+    assert abs(g_fast - g_ref).max() < 1e-11, abs(g_fast - g_ref).max()
