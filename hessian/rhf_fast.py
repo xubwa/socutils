@@ -2807,10 +2807,11 @@ class _MultiJKCPHF:
                 cg = getattr(self, '_cpscf_auto', None)
                 from socutils.dft import grids as sgrids
                 args = dict(CPSCF_GRID_ARGS)
-                if sgrids.needs_fine_radial(getattr(self.base, 'xc', None)):
+                floor = sgrids.radial_floor(getattr(self.base, 'xc', None))
+                if floor is not None:
                     # the SCAN-family / Minnesota meta-GGAs: the radial density of their SCF grid floor
-                    args['intacc'] = max(args.get('intacc', sgrids.Grids.intacc), sgrids.MGGA_RADIAL_INTACC)
-                    logger.info(self, 'CP-SCF grid intacc %s (MGGA_RADIAL_INTACC) for %s', args['intacc'],
+                    args['intacc'] = max(args.get('intacc', sgrids.Grids.intacc), floor)
+                    logger.info(self, 'CP-SCF grid intacc %s (radial_floor) for %s', args['intacc'],
                                 self.base.xc)
                 if cg is None or cg.mol is not self.mol or cg.intacc != args.get('intacc', cg.intacc):
                     cg = self._cpscf_auto = sgrids.hessian_grids(self.mol, **args)

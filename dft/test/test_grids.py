@@ -163,6 +163,14 @@ class KnownValues(unittest.TestCase):
             self.assertTrue(sgrids.needs_fine_radial(xc), xc)
         for xc in ('tpss', 'tpssh', 'revtpss', 'pbe', 'b3lyp', 'lda,vwn', 'pbe0', 'hf'):
             self.assertFalse(sgrids.needs_fine_radial(xc), xc)
+        # the unregularised SCAN (also revSCAN, SCAN0, in mixtures) gets the finer floor; r2SCAN / rSCAN do not
+        for xc in ('scan', 'revscan', 'scan0', 'MGGA_X_SCAN,MGGA_C_R2SCAN', '.5*MGGA_X_SCAN + .5*MGGA_X_M06_L, GGA_C_PBE'):
+            self.assertEqual(sgrids.radial_floor(xc), sgrids.SCAN_RADIAL_INTACC, xc)
+        for xc in ('r2scan', 'rscan', 'm06l', 'MGGA_X_R2SCAN,MGGA_C_R2SCAN'):
+            self.assertEqual(sgrids.radial_floor(xc), sgrids.MGGA_RADIAL_INTACC, xc)
+        gs = sgrids.Grids(mol)
+        self.assertTrue(sgrids.adapt_to_xc(gs, 'scan', rebuild=False))
+        self.assertEqual(gs.xc_intacc, sgrids.SCAN_RADIAL_INTACC)
         g = sgrids.Grids(mol).build()
         n0 = g.weights.size
         self.assertTrue(sgrids.adapt_to_xc(g, 'r2scan'))

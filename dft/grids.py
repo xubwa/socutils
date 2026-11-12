@@ -577,15 +577,21 @@ def use_fast_partition():
 # adapt_to_xc raises (never lowers) the radial accuracy of a socutils Grids to MGGA_RADIAL_INTACC for these
 # functionals, unless intacc was set on the grid explicitly.
 MGGA_RADIAL_INTACC = 6.0
+# The unregularised SCAN (SCAN, revSCAN, their hybrids SCAN0 / revSCAN0, SCAN-rVV10): at intacc 6.0 still ~3e-3 Eh
+# off (CH3Cl; r2SCAN / M06-L 6e-5), converged only from intacc 7.5 -> that floor plus a warning recommending
+# r2SCAN, the regularisation made for exactly this grid problem.
+SCAN_RADIAL_INTACC = 7.5
 _FINE_RADIAL_PATTERNS = (r'(^|_)(R2|R|RPP|REG)?SCAN', r'_(REV)?M0[5-8]($|_)', r'_M11($|_)', r'_MN1[25]($|_)')
+_SCAN_PATTERN = r'_(REV)?SCAN0?($|_)'
 _fine_cache = {}
 
 
-def needs_fine_radial(xc_code):
-    '''True if any libxc component of xc_code (also within mixtures) is of the SCAN family or a Minnesota
-    meta-GGA (_FINE_RADIAL_PATTERNS on the libxc names of the parsed components)'''
+def radial_floor(xc_code):
+    '''the radial intacc floor of xc_code: SCAN_RADIAL_INTACC if any libxc component (also within mixtures) is
+    an unregularised SCAN, MGGA_RADIAL_INTACC for the other SCAN-family and the Minnesota meta-GGAs
+    (_FINE_RADIAL_PATTERNS on the libxc names of the parsed components), else None'''
     if not isinstance(xc_code, str):
-        return False
+        return None
     key = xc_code.upper()
     if key in _fine_cache:
         return _fine_cache[key]
@@ -594,21 +600,41 @@ def needs_fine_radial(xc_code):
     try:
         fn_facs = libxc.parse_xc(xc_code)[1]
     except Exception:
-        _fine_cache[key] = False
-        return False
+        _fine_cache[key] = None
+        return None
     names = {}
     for k, v in libxc.XC_CODES.items():
         if isinstance(v, (int, numpy.integer)):
             names.setdefault(int(v), []).append(k.upper())
-    hit = False
+    floor = None
     for fid, fac in fn_facs:
         if fac == 0:
             continue
         for nm in names.get(int(fid), ()):
-            if 'MGGA' in nm and any(re.search(p, nm) for p in _FINE_RADIAL_PATTERNS):
-                hit = True
-    _fine_cache[key] = hit
-    return hit
+            if 'MGGA' not in nm:
+                continue
+            if re.search(_SCAN_PATTERN, nm):
+                floor = SCAN_RADIAL_INTACC
+            elif floor is None and any(re.search(p, nm) for p in _FINE_RADIAL_PATTERNS):
+                floor = MGGA_RADIAL_INTACC
+    _fine_cache[key] = floor
+    return floor
+
+
+def needs_fine_radial(xc_code):
+    '''True if xc_code has a radial floor (radial_floor)'''
+    return radial_floor(xc_code) is not None
+
+
+_scan_warned = set()
+
+
+def _warn_scan(obj, xc_code):
+    if radial_floor(xc_code) == SCAN_RADIAL_INTACC and xc_code.upper() not in _scan_warned:
+        _scan_warned.add(xc_code.upper())
+        logger.warn(obj, '%s: the unregularised SCAN needs a very fine radial grid (intacc %s, ~2x the default '
+                    'points) and is ill-conditioned in its response; r2SCAN is the regularised replacement made '
+                    'for this', xc_code, SCAN_RADIAL_INTACC)
 
 
 def adapt_to_xc(grids, xc_code, rebuild=True):
@@ -618,15 +644,18 @@ def adapt_to_xc(grids, xc_code, rebuild=True):
     if not isinstance(grids, Grids):
         return False
     want = None
-    if needs_fine_radial(xc_code) and 'intacc' not in grids.__dict__ and grids.intacc < MGGA_RADIAL_INTACC:
-        want = MGGA_RADIAL_INTACC
+    floor = radial_floor(xc_code)
+    if floor is not None:
+        _warn_scan(grids, xc_code)
+    if floor is not None and 'intacc' not in grids.__dict__ and grids.intacc < floor:
+        want = floor
     if grids.xc_intacc == want:
         return False
     built = grids.coords is not None
     mask = getattr(grids, 'non0tab', None) is not None
     grids.xc_intacc = want
     if want is not None:
-        logger.info(grids, '%s: radial grid intacc %s (MGGA_RADIAL_INTACC) for the SCAN-family / Minnesota '
+        logger.info(grids, '%s: radial grid intacc %s (radial_floor) for the SCAN-family / Minnesota '
                     'meta-GGA', xc_code, want)
     if built and rebuild:
         grids.build(with_non0tab=mask)
