@@ -66,7 +66,7 @@ class KnowValues(unittest.TestCase):
             mf.rijcosx = m
             mf.conv_tol = 1e-9
             es[m] = mf.kernel()
-        # the AutoAux RIJ error of HI (scalar X2C RHF: -2.84e-4)
+        # the RIJ error of HI (scalar X2C RHF, AutoAux: -2.84e-4; acCD smaller)
         self.assertLess(abs(es['rij'] - es['']), 5e-4)
         self.assertLess(abs(es['cosx'] - es['']), 2e-4)
         self.assertLess(abs(es['rijcosx'] - es['']), 6e-4)
@@ -90,6 +90,23 @@ class KnowValues(unittest.TestCase):
             self.assertLess(abs(e - e_ref), 5e-4)
         e2 = numpy.einsum('ij,ji', dm, vk).real
         self.assertAlmostEqual(spinor_jk.exchange_energy(mf, mol_hi, dm, 2), e2, 6)
+
+    def test_auxbasis_choice(self):
+        mf = spinor_hf.RHF(mol_hi)
+        self.assertEqual(spinor_jk.AUXBASIS, 'accd')
+        b, label = spinor_jk.auxbasis(mf, mol_hi, name=True)
+        try:
+            from socutils.cd import accd
+            self.assertEqual(label, 'acCD')
+        except ImportError:
+            self.assertEqual(label, 'AutoAux')
+        mf.rijcosx_auxbasis = 'autoaux'
+        self.assertEqual(spinor_jk.auxbasis(mf, mol_hi, name=True)[1], 'AutoAux')
+        mf.rijcosx_auxbasis = 'def2-universal-jfit'
+        self.assertEqual(spinor_jk.auxbasis(mf, mol_hi, name=True), ('def2-universal-jfit', 'def2-universal-jfit'))
+        from pyscf.df.autoaux import autoaux
+        mf.rijcosx_auxbasis = autoaux
+        self.assertEqual(spinor_jk.auxbasis(mf, mol_hi, name=True)[1], 'callable')
 
     def test_heavy_radial_grid(self):
         # dyall-v2z Au: the plain GRIDX2 radial grid misses the tight s primitives (S_g singular); the
