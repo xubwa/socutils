@@ -7,7 +7,8 @@ The SCF Vxc of two-component (GKS / spinor) DFT in one pass over the grid
 (lib/dft/vxc_2c.h SOCDFTvxc_fused_2c; the scalar analogue is
 socutils.dft.vxc_fast._nr_rks_fused): per sub-block of vxc_fast.SUBBLOCK points
 the AOs of the flagged shells once, the rows of every real density matrix, the
-functional (libxc inside the OpenMP region), and the Vxc channels; LDA / GGA.
+functional (libxc inside the OpenMP region), and the Vxc channels; LDA / GGA /
+meta-GGA (tau row per density, tau term of V by DSYRK).
 
     collinear 'col'   D_a = Re D_aa, D_b = Re D_bb, spin-polarised libxc (pyscf's
                       NumInt2C.nr_vxc -> nr_uks).  A time-reversal-even (Kramers
@@ -18,7 +19,7 @@ functional (libxc inside the OpenMP region), and the Vxc channels; LDA / GGA.
                       collinear chain rule in C; V_aa = V_n + V_z, V_bb = V_n - V_z,
                       V_ab = V_x - i V_y.
 
-Everything else (mcol GGA / MGGA, meta-GGA, range separation, hermi != 1, many
+Everything else (laplacian meta-GGAs, range separation, hermi != 1, many
 densities, no non0tab, too little memory for the per-thread V) returns None and
 the caller keeps its own path.  The AOs come from the SIMD evaluator of
 lib/dft/gtoval.c for l <= SOCDFTgtoval_lmax(), else from pyscf's GTOval
@@ -34,7 +35,8 @@ from pyscf import lib
 from pyscf.lib import logger
 
 ENABLE = True
-MCOL_GGA = True         # multi-collinear GGA fused too (the sphere average per sub-block)
+MCOL_GGA = True         # multi-collinear GGA (and MGGA) fused too (the sphere average per sub-block)
+MGGA = True             # meta-GGA (col / ncol / mcol) fused too (SOCDFTvxc_fused_2c_mgga)
 KRAMERS_TOL = 1e-12     # max |Re D_aa - Re D_bb| / max |Re D_aa| below which 'col' runs the restricted pass
 MEM_FRAC = .5           # of the free max_memory the per-thread V buffers may take
 
@@ -51,7 +53,8 @@ def _common(ni, mol, grids, xc_code):
     if ni.libxc is not libxc or ni.rsh_and_hybrid_coeff(xc_code)[0] != 0:
         return None
     xctype = ni._xc_type(xc_code)
-    if xctype not in ('LDA', 'GGA'):
+    if xctype not in ('LDA', 'GGA', 'MGGA') or (xctype == 'MGGA' and not (
+            MGGA and hasattr(libdft, 'SOCDFTvxc_fused_2c_mgga') and vxc_fast._mgga_fusable(xc_code))):
         return None
     if grids.coords is None or grids.non0tab is None:
         grids.build(with_non0tab=True)
@@ -91,7 +94,10 @@ def _run(c, mol, grids, dms, scheme, s_thrd, mcol=None):
         col_thrd, u, wu, xcmap, xclen = 1., numpy.zeros(3), numpy.zeros(1), numpy.zeros(1, numpy.int32), 0
     else:
         col_thrd, u, wu, xcmap, xclen = mcol
-    libdft.SOCDFTvxc_fused_2c(
+    mgga = c['xctype'] == 'MGGA'
+    fn = libdft.SOCDFTvxc_fused_2c_mgga if mgga else libdft.SOCDFTvxc_fused_2c
+    extra = (vxc_fast._dsyrk_ptr(),) if mgga else ()
+    fn(
         vbuf.ctypes.data_as(ctypes.c_void_p), ex.ctypes.data_as(ctypes.c_void_p),
         ne.ctypes.data_as(ctypes.c_void_p), dms.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nd),
         ctypes.c_int(scheme), ctypes.c_double(s_thrd), ctypes.c_double(col_thrd),
@@ -99,11 +105,11 @@ def _run(c, mol, grids, dms, scheme, s_thrd, mcol=None):
         xcmap.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(xclen),
         coords.ctypes.data_as(ctypes.c_void_p), weights.ctypes.data_as(ctypes.c_void_p),
         non0tab.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(weights.size), ctypes.c_int(vxc_fast.SUBBLOCK),
-        ctypes.c_double(vxc_fast.AO_CUTOFF), ctypes.c_int(0 if c['xctype'] == 'LDA' else 1), c['feval'],
+        ctypes.c_double(vxc_fast.AO_CUTOFF), ctypes.c_int({'LDA': 0, 'GGA': 1, 'MGGA': 2}[c['xctype']]), c['feval'],
         ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.natm),
         bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p),
         ctypes.cast(libxc._itrf.LIBXC_eval_xc, ctypes.c_void_p), ctypes.c_int(xc.nfunc),
-        ctypes.cast(xc.xc_arr, ctypes.c_void_p), facs, *vxc_fast._blas_ptrs())
+        ctypes.cast(xc.xc_arr, ctypes.c_void_p), facs, *vxc_fast._blas_ptrs(), *extra)
     v = vbuf.sum(axis=0)
     vbuf = None
     if c['xctype'] != 'LDA':
@@ -158,12 +164,12 @@ def nr_vxc(ni, mol, grids, xc_code, dm, hermi=1, max_memory=2000):
             return None
         from socutils.dft.noncollinear import _rho_mag_dms
         ds = _rho_mag_dms(dm)[0::2]             # the real symmetric parts of D_n, D_mx, D_my, D_mz
-        if scheme == 'm' and c['xctype'] == 'GGA':
-            # multi-collinear GGA: the half-sphere average of lib/dft/mcol.c per sub-block
+        if scheme == 'm' and c['xctype'] in ('GGA', 'MGGA'):
+            # multi-collinear GGA / MGGA: the half-sphere average of lib/dft/mcol.c per sub-block
             from pyscf.dft import libxc
             from socutils.dft.noncollinear import _half_sphere
             u, wu = _half_sphere(ni.spin_samples)
-            idx = libxc._libxc_to_xcfun_indices('GGA', 1, 2)
+            idx = libxc._libxc_to_xcfun_indices(c['xctype'], 1, 2)
             xclen = len(idx)
             xcmap = numpy.asarray(numpy.arange(xclen)[idx], dtype=numpy.int32)
             thrd = ni.collinear_thrd

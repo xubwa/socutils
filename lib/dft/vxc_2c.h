@@ -18,7 +18,9 @@
  * Per sub-block of gs points: the AOs once (eval_select), for every density c = phi D_sub and its rows, the
  * functional, wv_k = w dE/d(rows of density k) and phi_0 aow_k^T into the thread's V_k (2 nd GEMMs).  vbuf
  * (nthreads, nd, nao, nao) (GGA: the caller adds V + V^T), ex / ne (nthreads).  The caller assembles the spin
- * blocks.  xctype 0 LDA, 1 GGA.
+ * blocks.  xctype 0 LDA, 1 GGA, 2 meta-GGA (SOCDFTvxc_fused_2c_mgga): every density also has the tau row
+ * (nvar 5: value, gradient, tau; tau_s of ncol is the projection n . tau_m like the gradient rows), libxc's
+ * spin-polarised MGGA (v_tau_a, v_tau_b) and the tau term of V_k by DSYRK (sub_tau_v of vxc_rks.c).
  */
 void SOCmcol_project(double *rho_ud, const double *rho_tm, const double *u, int nvar, int ng, int nu);
 void SOCmcol_sphere(double *exc, double *vxc, double *fxc, const double *rho_tm, const double *u,
@@ -48,14 +50,19 @@ static void ts_rows(double *rud, size_t ld, int ncomp, const double *r, size_t l
         }
 }
 
-/* dE/d (t, s rows) from libxc's spin-polarised output (outlen rows of ld): vt, vs (ncomp) */
+/* dE/d (t, s rows) from libxc's spin-polarised output (outlen rows of ld): vt, vs (ncomp; 5: + the tau row
+ * from v_tau_a, v_tau_b, output rows 6, 7) */
 static void ts_derivs(double *vt, double *vs, const double *out, size_t ld, const double *rud, size_t lrd,
                       int ncomp)
 {
         vt[0] = .5 * (out[ld] + out[2 * ld]);
         vs[0] = .5 * (out[ld] - out[2 * ld]);
         int k;
-        for (k = 1; k < ncomp; k++) {
+        if (ncomp == 5) {
+                vt[4] = .5 * (out[6 * ld] + out[7 * ld]);
+                vs[4] = .5 * (out[6 * ld] - out[7 * ld]);
+        }
+        for (k = 1; k < (ncomp < 4 ? ncomp : 4); k++) {
                 const double ga = rud[k * lrd], gb = rud[(ncomp + k) * lrd];
                 const double saa = out[3 * ld], sab = out[4 * ld], sbb = out[5 * ld];
                 const double da = 2 * saa * ga + sab * gb, db = 2 * sbb * gb + sab * ga;
@@ -64,15 +71,16 @@ static void ts_derivs(double *vt, double *vs, const double *out, size_t ld, cons
         }
 }
 
-void SOCDFTvxc_fused_2c(double *vbuf, double *ex, double *ne, double *dms, int nd, int scheme, double s_thrd,
-                        double col_thrd, double *u, double *wu, int nu, int *xcmap, int xclen,
-                        double *coords, double *weights, uint8_t *non0tab, int ngrid, int gs, double cutoff,
-                        int xctype, gtoval_t eval, int *ao_loc, int *atm, int natm, int *bas, int nbas,
-                        double *env, libxc_t xcf, int nfn, void *xc_arr, double *facs,
-                        dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local)
+static void vxc_fused_2c_impl(double *vbuf, double *ex, double *ne, double *dms, int nd, int scheme,
+                              double s_thrd, double col_thrd, double *u, double *wu, int nu, int *xcmap, int xclen,
+                              double *coords, double *weights, uint8_t *non0tab, int ngrid, int gs, double cutoff,
+                              int xctype, gtoval_t eval, int *ao_loc, int *atm, int natm, int *bas, int nbas,
+                              double *env, libxc_t xcf, int nfn, void *xc_arr, double *facs,
+                              dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local, dsyrk_t dsyrk_)
 {
-        const int nao = ao_loc[nbas], ncomp = xctype == 0 ? 1 : 4;
-        const int nsub = (ngrid + gs - 1) / gs, outlen = xctype == 0 ? 3 : 6;
+        /* nc AO components (value (, gradient)), ncomp rows per density (+ tau for MGGA) */
+        const int nao = ao_loc[nbas], nc = xctype == 0 ? 1 : 4, ncomp = xctype == 2 ? 5 : nc;
+        const int nsub = (ngrid + gs - 1) / gs, outlen = xctype == 0 ? 3 : (xctype == 1 ? 6 : 8);
         const double one = 1, zero = 0;
         const size_t nn = (size_t)nao * nao;
         const int nus = scheme == 2 ? nu : 1;
@@ -81,9 +89,10 @@ void SOCDFTvxc_fused_2c(double *vbuf, double *ex, double *ne, double *dms, int n
         const int tid = omp_get_thread_num();
         const int mkl0 = mkl_set_num_threads_local ? mkl_set_num_threads_local(1) : 0;
         double *V = vbuf + (size_t)tid * nd * nn;
-        double *full = malloc(sizeof(double) * ncomp * nao * gs);
-        double *a = malloc(sizeof(double) * ncomp * nao * gs);
-        double *c = malloc(sizeof(double) * nao * gs);
+        double *full = malloc(sizeof(double) * nc * nao * gs);
+        double *a = malloc(sizeof(double) * nc * nao * gs);
+        double *c = malloc(sizeof(double) * (xctype == 2 ? 4 : 1) * nao * gs);
+        double *sw = malloc(sizeof(double) * gs);
         double *d = malloc(sizeof(double) * nn);
         double *xyz = malloc(sizeof(double) * 3 * gs);
         double *rho = malloc(sizeof(double) * nd * ncomp * gs);        /* (nd, ncomp, n) */
@@ -107,29 +116,13 @@ void SOCDFTvxc_fused_2c(double *vbuf, double *ex, double *ne, double *dms, int n
                 const size_t rn = (size_t)ncomp * n;
                 int i, j, g, k, x, v;
                 for (k = 0; k < 3; k++) memcpy(xyz + k * n, coords + (size_t)k * ngrid + g0, sizeof(double) * n);
-                const int nl = eval_select(a, ix, src, full, n, xyz, (uint8_t *)msk, ncomp, cutoff, eval,
+                const int nl = eval_select(a, ix, src, full, n, xyz, (uint8_t *)msk, nc, cutoff, eval,
                                            ao_loc, atm, natm, bas, nbas, env);
                 if (nl == 0) continue;
-                /* the rows of every density: x = sum phi D phi, d x = 2 sum d phi D phi */
-                for (x = 0; x < nd; x++) {
-                        const double *dmx = dms + (size_t)x * nn;
-                        double *rx = rho + (size_t)x * rn;
-                        for (i = 0; i < nl; i++)
-                                for (j = 0; j < nl; j++) d[i * nl + j] = dmx[(size_t)ix[i] * nao + ix[j]];
-                        dgemm_("N", "N", &n, &nl, &nl, &one, a, &n, d, &nl, &zero, c, &n);
-                        memset(rx, 0, sizeof(double) * rn);
-                        for (i = 0; i < nl; i++) {
-                                const double *p = a + (size_t)i * n, *q = c + (size_t)i * n;
-                                for (g = 0; g < n; g++) rx[g] += p[g] * q[g];
-                        }
-                        for (k = 1; k < ncomp; k++) {
-                                double *rk = rx + (size_t)k * n;
-                                for (i = 0; i < nl; i++) {
-                                        const double *p = a + ((size_t)k * nl + i) * n, *q = c + (size_t)i * n;
-                                        for (g = 0; g < n; g++) rk[g] += 2 * p[g] * q[g];
-                                }
-                        }
-                }
+                /* the rows of every density: x = sum phi D phi, d x = 2 sum d phi D phi (, tau) */
+                for (x = 0; x < nd; x++)
+                        sub_rho(rho + (size_t)x * rn, c, d, a, ix, nl, n, ncomp, nc, dms + (size_t)x * nn, nao,
+                                NULL, 0, dgemm_);
                 const double *w = weights + g0;
                 if (scheme == 0) {
                         memset(out, 0, sizeof(double) * outlen * n);
@@ -139,7 +132,12 @@ void SOCDFTvxc_fused_2c(double *vbuf, double *ex, double *ne, double *dms, int n
                                 vf[g] = out[n + g];
                                 vf[rn + g] = out[2 * n + g];
                         }
-                        if (ncomp == 4)
+                        if (ncomp == 5)
+                                for (g = 0; g < n; g++) {
+                                        vf[4 * n + g] = out[6 * n + g];
+                                        vf[rn + 4 * n + g] = out[7 * n + g];
+                                }
+                        if (ncomp >= 4)
                                 for (k = 1; k < 4; k++)
                                         for (g = 0; g < n; g++) {
                                                 const double ga = rho[k * n + g], gb = rho[rn + k * n + g];
@@ -167,7 +165,7 @@ void SOCDFTvxc_fused_2c(double *vbuf, double *ex, double *ne, double *dms, int n
                                 for (j = 0; j < np; j++) {
                                         g = pts[j];
                                         const double *nh = nhs + 3 * j;
-                                        double vt[4], vs[4];
+                                        double vt[5], vs[5];
                                         ts_derivs(vt, vs, out + j, np, rud + j, np, ncomp);
                                         eg[g] = out[j];
                                         for (v = 0; v < ncomp; v++) vf[v * n + g] = vt[v];
@@ -229,13 +227,13 @@ void SOCDFTvxc_fused_2c(double *vbuf, double *ex, double *ne, double *dms, int n
                         double *wx = vf + (size_t)x * rn;
                         for (k = 0; k < ncomp; k++)
                                 for (g = 0; g < n; g++) wx[k * n + g] *= w[g];
-                        if (ncomp == 4)
+                        if (ncomp >= 4)
                                 for (g = 0; g < n; g++) wx[g] *= .5;
                         for (i = 0; i < nl; i++) {
                                 double *o = c + (size_t)i * n;
                                 const double *p = a + (size_t)i * n;
                                 for (g = 0; g < n; g++) o[g] = wx[g] * p[g];
-                                for (k = 1; k < ncomp; k++) {
+                                for (k = 1; k < nc; k++) {
                                         const double *pk = a + ((size_t)k * nl + i) * n, *wk = wx + (size_t)k * n;
                                         for (g = 0; g < n; g++) o[g] += wk[g] * pk[g];
                                 }
@@ -246,12 +244,43 @@ void SOCDFTvxc_fused_2c(double *vbuf, double *ex, double *ne, double *dms, int n
                                 double *row = Vx + (size_t)ix[i] * nao;
                                 for (j = 0; j < nl; j++) row[ix[j]] += d[i * nl + j];
                         }
+                        if (ncomp == 5) {
+                                /* the tau term, wt = w v_tau / 2 (the 1/2 in tau) */
+                                double *wt = wx + 4 * n;
+                                for (g = 0; g < n; g++) wt[g] *= .5;
+                                sub_tau_v(Vx, c, d, a, wt, sw, ix, nl, n, nao, dsyrk_);
+                        }
                 }
         }
         ex[tid] = exs;
         ne[tid] = nes;
         free(full); free(a); free(c); free(d); free(xyz); free(rho); free(vf); free(eg); free(rud); free(out);
-        free(tm); free(vt2); free(et2); free(nhs); free(pts); free(ix); free(src);
+        free(tm); free(vt2); free(et2); free(nhs); free(pts); free(ix); free(src); free(sw);
         if (mkl_set_num_threads_local) mkl_set_num_threads_local(mkl0);
 }
+}
+
+void SOCDFTvxc_fused_2c(double *vbuf, double *ex, double *ne, double *dms, int nd, int scheme, double s_thrd,
+                        double col_thrd, double *u, double *wu, int nu, int *xcmap, int xclen,
+                        double *coords, double *weights, uint8_t *non0tab, int ngrid, int gs, double cutoff,
+                        int xctype, gtoval_t eval, int *ao_loc, int *atm, int natm, int *bas, int nbas,
+                        double *env, libxc_t xcf, int nfn, void *xc_arr, double *facs,
+                        dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local)
+{
+        vxc_fused_2c_impl(vbuf, ex, ne, dms, nd, scheme, s_thrd, col_thrd, u, wu, nu, xcmap, xclen, coords,
+                          weights, non0tab, ngrid, gs, cutoff, xctype, eval, ao_loc, atm, natm, bas, nbas, env,
+                          xcf, nfn, xc_arr, facs, dgemm_, mkl_set_num_threads_local, NULL);
+}
+
+/* SOCDFTvxc_fused_2c for LDA / GGA / meta-GGA (xctype 2), dsyrk_ of the process' BLAS for the tau term */
+void SOCDFTvxc_fused_2c_mgga(double *vbuf, double *ex, double *ne, double *dms, int nd, int scheme,
+                             double s_thrd, double col_thrd, double *u, double *wu, int nu, int *xcmap,
+                             int xclen, double *coords, double *weights, uint8_t *non0tab, int ngrid, int gs,
+                             double cutoff, int xctype, gtoval_t eval, int *ao_loc, int *atm, int natm, int *bas,
+                             int nbas, double *env, libxc_t xcf, int nfn, void *xc_arr, double *facs,
+                             dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local, dsyrk_t dsyrk_)
+{
+        vxc_fused_2c_impl(vbuf, ex, ne, dms, nd, scheme, s_thrd, col_thrd, u, wu, nu, xcmap, xclen, coords,
+                          weights, non0tab, ngrid, gs, cutoff, xctype, eval, ao_loc, atm, natm, bas, nbas, env,
+                          xcf, nfn, xc_arr, facs, dgemm_, mkl_set_num_threads_local, dsyrk_);
 }

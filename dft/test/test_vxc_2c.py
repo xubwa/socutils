@@ -93,6 +93,29 @@ class KnowValues(unittest.TestCase):
         finally:
             vxc_2c.MCOL_GGA = True
 
+    def test_mgga(self):
+        # meta-GGA: col (restricted and spin-polarised), ncol, mcol (half sphere and principal axis).  dm_ku
+        # is not positive semidefinite (tau_b < 0 at some points), where r2SCAN / SCAN are ill-conditioned
+        # (pyscf against itself with D perturbed by 1e-14: 1e-3 relative in V): a positive semidefinite
+        # spin-polarised, non-collinear density instead, dm_kr + v v^H of one spinor
+        nao = mol.nao
+        rng = numpy.random.default_rng(7)
+        s = mol.intor('int1e_ovlp')
+        c = numpy.linalg.solve(s, rng.standard_normal((nao, 2)))
+        v = numpy.concatenate([c[:, 0] * .8, c[:, 1] * .6 * numpy.exp(.7j)])
+        dm_mg = dm_kr + .3 * numpy.outer(v, v.conj()) / abs(v).max() ** 2
+        dm_pol = dm_mg.copy()
+        dm_pol[nao:, nao:] *= 1e-3
+        dm_pol[:nao, nao:] *= 0
+        dm_pol[nao:, :nao] *= 0
+        for xc in ('r2scan', 'tpss', 'm06l'):
+            self._check('col', xc, dm_kr, 1e-10)
+            self._check('col', xc, dm_mg, 1e-10)
+            self._check('ncol', xc, dm_mg, 1e-10)
+            self._check('ncol', xc, dm_kr, 1e-10)
+        for d in (dm_mg, dm_pol):
+            self._check('mcol', 'r2scan', d, 1e-10)
+
     def test_spinor_scf_unchanged(self):
         es = []
         for on in (False, True):
