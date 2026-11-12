@@ -45,7 +45,8 @@ from socutils.scf import rik
 BLK_MEMORY = .4       # fraction of the free memory for the block buffers
 MAX_ROWS = 1 << 16    # rows (P, i) of the Gram update per block: enough for the dsyrk efficiency
 QUAT = True           # Kramers sets by the four-product scheme (libsocvhf), else the Gram matrix
-TILE = 64             # orbitals per dgemm tile of the libsocvhf half transformation
+TILE = None           # orbitals per dgemm tile of the libsocvhf half transformation (None: all, up to
+                      # a 64 MB tile per thread; one dgemm per P is the fastest)
 
 # Kramers exchange from four products M_r = Y_{a_r}^T Y_{b_r} of combinations Y_v = sum_x v_x X_x of
 # the half-transformed components X_x (x = aR, aI, bR, bI) instead of the 16 blocks G_xy = X_x^T X_y
@@ -96,6 +97,12 @@ def _comb_spec():
             numpy.array(sb, dtype=float))
 
 
+def _tile(nao, ncol):
+    if TILE:
+        return TILE
+    return int(min(ncol, max(128, (1 << 23) // (4 * nao))))
+
+
 _libv = None
 
 
@@ -132,7 +139,7 @@ def half_combinations(eri1, c4, ncomb_spec, out=None, tile=None, dtril=None, vj=
         out.ctypes.data_as(ctypes.c_void_p), eri1.ctypes.data_as(ctypes.c_void_p),
         c4.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nb), ctypes.c_int(nao), ctypes.c_int(ncol),
         ctypes.c_int(ncomb), ia.ctypes.data_as(ctypes.c_void_p), ib.ctypes.data_as(ctypes.c_void_p),
-        sb.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(TILE if tile is None else tile),
+        sb.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(_tile(nao, ncol) if tile is None else tile),
         dptr, ctypes.c_int(ndj), vptr)
     return out
 
@@ -269,7 +276,7 @@ def get_jk(with_df, orbs=(), dms_j=(), kramers=None, signs=None, max_memory=None
                                       dtril=dtril if k == jset else None, vj=vj if k == jset else None)
                 t4 = logger.perf_counter()
                 for r in range(4):
-                    lib.dot(y[2 * r].T, y[2 * r + 1], signs[k], acc[k][r], 1.)
+                    acc[k][r] += signs[k] * (y[2 * r].T @ y[2 * r + 1])   # (numpy: lib.dot is slow here)
             else:
                 x = rik.half_transform(eri1, cols[k], buf)     # (nb, 4 ncol, nao) = (nb ncol, 4 nao)
                 t4 = logger.perf_counter()

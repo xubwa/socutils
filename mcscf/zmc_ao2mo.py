@@ -339,7 +339,7 @@ class _CDERIS(lib.StreamObject):
 
             if quat_core:
                 for r in range(4):
-                    lib.dot(y[2 * r].T, y[2 * r + 1], 1., qacc[r], 1.)
+                    qacc[r] += y[2 * r].T @ y[2 * r + 1]
                 y = None
             # --- Core J: rho_P = sum_i C_i^dagger L_P C_i (real), J += rho_P L_P ---
             elif eri1.ndim == 2 and vj_tril is not None:

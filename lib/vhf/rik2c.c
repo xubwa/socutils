@@ -23,7 +23,11 @@
  */
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <omp.h>
+#ifdef __AVX512F__
+#include <immintrin.h>
+#endif
 
 void dgemm_(const char *, const char *, const int *, const int *, const int *,
             const double *, const double *, const int *, const double *, const int *,
@@ -40,26 +44,49 @@ static void unpack_tril(double *out, const double *tril, int n)
         }
 }
 
+/* o[mu] = xa[mu] + s xb[mu] (xb NULL: a copy), streamed past the caches: every output row is
+ * written once here and read back only by the GEMMs of the next phase */
+static void comb_row(double *o, const double *xa, const double *xb, double s, int n)
+{
+        int mu = 0;
+#ifdef __AVX512F__
+        while (mu < n && ((uintptr_t)(o + mu) & 63)) {
+                o[mu] = xb ? xa[mu] + s * xb[mu] : xa[mu];
+                mu++;
+        }
+        if (xb) {
+                const __m512d vs = _mm512_set1_pd(s);
+                for (; mu + 8 <= n; mu += 8) {
+                        _mm512_stream_pd(o + mu, _mm512_fmadd_pd(vs, _mm512_loadu_pd(xb + mu),
+                                                                 _mm512_loadu_pd(xa + mu)));
+                }
+        } else {
+                for (; mu + 8 <= n; mu += 8) {
+                        _mm512_stream_pd(o + mu, _mm512_loadu_pd(xa + mu));
+                }
+        }
+#endif
+        for (; mu < n; mu++) {
+                o[mu] = xb ? xa[mu] + s * xb[mu] : xa[mu];
+        }
+}
+
 static void tile_comb(double **out, const double *x, int nao, int ncol, int p, int i0, int ni,
                       int ncomb, const int *ia, const int *ib, const double *sb)
 {
-        int r, i, mu;
-        for (r = 0; r < ncomb; r++) {
-                for (i = 0; i < ni; i++) {
+        int r, i;
+        /* orbital-major: the four component rows of an orbital stay in L1/L2 for all combinations */
+        for (i = 0; i < ni; i++) {
+                const double *xi = x + (size_t)i * 4 * nao;
+                for (r = 0; r < ncomb; r++) {
                         double *o = out[r] + ((size_t)p * ncol + i0 + i) * nao;
-                        const double *xa = x + ((size_t)i * 4 + ia[r]) * nao;
-                        if (ib[r] < 0) {
-                                memcpy(o, xa, sizeof(double) * nao);
-                        } else {
-                                const double *xb = x + ((size_t)i * 4 + ib[r]) * nao;
-                                const double s = sb[r];
-#pragma omp simd
-                                for (mu = 0; mu < nao; mu++) {
-                                        o[mu] = xa[mu] + s * xb[mu];
-                                }
-                        }
+                        comb_row(o, xi + (size_t)ia[r] * nao, ib[r] < 0 ? NULL : xi + (size_t)ib[r] * nao,
+                                 sb[r], nao);
                 }
         }
+#ifdef __AVX512F__
+        _mm_sfence();
+#endif
 }
 
 /* J of ndj densities from the same rows: rho_d = sum_ij B^P_ij dtril[d, ij] (dtril: the packed
