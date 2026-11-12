@@ -526,8 +526,8 @@ def _solve_mo1_occ(mf, mo_energy, mo_coeff, mo_occ, h1c, fx, atmlst=None, max_me
                 e1s[ia] = e1[k].reshape(3, nocc, nocc)
             mo1 = e1 = None
             ib += 1
-            logger.timer(mf, 'CPHF batch %d (atoms %d-%d of %d), peak RSS %.0f MB' % (ib, ia0, ia1 - 1, natm,
-                                                                                    _peak_rss()), *t0)
+            logger.info(mf, 'CPHF batch %d (atoms %d-%d of %d): %.1f s, peak RSS %.0f MB', ib, ia0, ia1 - 1, natm,
+                        logger.perf_counter() - t0[1], _peak_rss())
             # in use for the next plan: as at the start plus the solutions written so far
             mem_now += 3 * (ia1 - ia0) * 8. * (nao * nocc + nocc * nocc) / 1e6
             ia0 = ia1
