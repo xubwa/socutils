@@ -439,7 +439,9 @@ def _cphf_budget(mf, nao, nmo, nocc, natm, fx, budget, mem_now, nout=None):
                     cosx.set_multi_float(fl)
                 k_per, k_fix = max(k_per, per), max(k_fix, fix)
     fxd = getattr(fx, 'ao_arrays', FX_AO_ARRAYS - 2.5) * a2 + max(k_per, 2.5 * a2 + 8. * nao * FXC_SUBBLOCK / 1e6)
-    j_mem = CPHF_J_MEM if _rij_engine(mf) is not None else 0
+    # the semi-direct RI-J's blocks only when _rij_get_j takes that path (no resident three-index tensor)
+    j_mem = CPHF_J_MEM if (_rij_engine(mf) is not None and _rij_cderi(mf) is None
+                           and getattr(getattr(mf, 'with_df', None), '_cderi', None) is None) else 0
     xc_mem = CPHF_XC_MEM if isinstance(mf, hf.KohnShamDFT) else 0
     fixed = k_fix + j_mem + .4 * xc_mem
     margin = CPHF_MEM_MARGIN * budget
