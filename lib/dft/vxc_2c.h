@@ -64,6 +64,28 @@ static void ts_derivs(double *vt, double *vs, const double *out, size_t ld, cons
         }
 }
 
+/* per-thread profile of SOCDFTvxc_fused_2c (wall seconds, SOCDFTvxc2c_stats): 0 AOs, 1 density rows (GEMMs),
+ * 2 the functional on the local axis (collinear / ncol / mcol principal-axis points), 3 mcol projection, 4 libxc
+ * on the sampled directions, 5 sphere contraction, 6 V (GEMMs, scatter); counts: 0 points, 1 sphere points,
+ * 2 axis points, 3 libxc evaluations on the sampled directions (points x directions) */
+#define VX2C_MAXT 256
+static double vx2c_t[VX2C_MAXT][8];
+static double vx2c_n[VX2C_MAXT][4];
+
+void SOCDFTvxc2c_stats(double *out, int reset)
+{
+        int t, k;
+        for (k = 0; k < 12; k++) out[k] = 0;
+        for (t = 0; t < VX2C_MAXT; t++) {
+                for (k = 0; k < 8; k++) out[k] += vx2c_t[t][k];
+                for (k = 0; k < 4; k++) out[8 + k] += vx2c_n[t][k];
+        }
+        if (reset) {
+                memset(vx2c_t, 0, sizeof(vx2c_t));
+                memset(vx2c_n, 0, sizeof(vx2c_n));
+        }
+}
+
 void SOCDFTvxc_fused_2c(double *vbuf, double *ex, double *ne, double *dms, int nd, int scheme, double s_thrd,
                         double col_thrd, double *u, double *wu, int nu, int *xcmap, int xclen,
                         double *coords, double *weights, uint8_t *non0tab, int ngrid, int gs, double cutoff,
@@ -99,6 +121,8 @@ void SOCDFTvxc_fused_2c(double *vbuf, double *ex, double *ne, double *dms, int n
         int *ix = malloc(sizeof(int) * nao);
         size_t *src = malloc(sizeof(size_t) * 2 * nao);
         double exs = 0, nes = 0;
+        double *tp = vx2c_t[tid < VX2C_MAXT ? tid : VX2C_MAXT - 1];
+        double *cp = vx2c_n[tid < VX2C_MAXT ? tid : VX2C_MAXT - 1];
         int s;
 #pragma omp for schedule(dynamic, 4)
         for (s = 0; s < nsub; s++) {
@@ -106,9 +130,12 @@ void SOCDFTvxc_fused_2c(double *vbuf, double *ex, double *ne, double *dms, int n
                 const uint8_t *msk = non0tab + (size_t)(g0 / MASK_BLK) * nbas;
                 const size_t rn = (size_t)ncomp * n;
                 int i, j, g, k, x, v;
+                double tw = omp_get_wtime(), tw1;
+                cp[0] += n;
                 for (k = 0; k < 3; k++) memcpy(xyz + k * n, coords + (size_t)k * ngrid + g0, sizeof(double) * n);
                 const int nl = eval_select(a, ix, src, full, n, xyz, (uint8_t *)msk, ncomp, cutoff, eval,
                                            ao_loc, atm, natm, bas, nbas, env);
+                tw1 = omp_get_wtime(); tp[0] += tw1 - tw; tw = tw1;
                 if (nl == 0) continue;
                 /* the rows of every density: x = sum phi D phi, d x = 2 sum d phi D phi */
                 for (x = 0; x < nd; x++) {
@@ -130,6 +157,7 @@ void SOCDFTvxc_fused_2c(double *vbuf, double *ex, double *ne, double *dms, int n
                                 }
                         }
                 }
+                tw1 = omp_get_wtime(); tp[1] += tw1 - tw; tw = tw1;
                 const double *w = weights + g0;
                 if (scheme == 0) {
                         memset(out, 0, sizeof(double) * outlen * n);
@@ -194,6 +222,9 @@ void SOCDFTvxc_fused_2c(double *vbuf, double *ex, double *ne, double *dms, int n
                                         }
                                 }
                         }
+                        cp[1] += nsph;
+                        cp[2] += np;
+                        tw1 = omp_get_wtime(); tp[2] += tw1 - tw; tw = tw1;
                         if (nsph > 0) {
                                 /* the sphere average (mcol.c) on the compact points */
                                 const int *ps = pts + n - nsph;
@@ -204,8 +235,11 @@ void SOCDFTvxc_fused_2c(double *vbuf, double *ex, double *ne, double *dms, int n
                                                                 rho[(size_t)x * rn + v * n + ps[j]];
                                 SOCmcol_project(rud, tm, u, ncomp, nsph, nu);
                                 const size_t npt = (size_t)nsph * nu;
+                                tw1 = omp_get_wtime(); tp[3] += tw1 - tw; tw = tw1;
                                 memset(out, 0, sizeof(double) * xclen * npt);
                                 xcf(nfn, xc_arr, facs, 1, 2, ncomp, (int)npt, xclen, rud, out);
+                                cp[3] += npt;
+                                tw1 = omp_get_wtime(); tp[4] += tw1 - tw; tw = tw1;
                                 SOCmcol_sphere(et2, vt2, NULL, tm, u, wu, out, xcmap, ncomp, nsph, nu, 1);
                                 for (j = 0; j < nsph; j++) {
                                         g = ps[j];
@@ -224,6 +258,7 @@ void SOCDFTvxc_fused_2c(double *vbuf, double *ex, double *ne, double *dms, int n
                         nes += den;
                         exs += den * eg[g];
                 }
+                tw1 = omp_get_wtime(); tp[5] += tw1 - tw; tw = tw1;
                 /* V_k += phi_0 (sum_c w vf_k,c d_c phi)^T (GGA: the value row halved for V + V^T) */
                 for (x = 0; x < nd; x++) {
                         double *wx = vf + (size_t)x * rn;
@@ -247,6 +282,7 @@ void SOCDFTvxc_fused_2c(double *vbuf, double *ex, double *ne, double *dms, int n
                                 for (j = 0; j < nl; j++) row[ix[j]] += d[i * nl + j];
                         }
                 }
+                tp[6] += omp_get_wtime() - tw;
         }
         ex[tid] = exs;
         ne[tid] = nes;

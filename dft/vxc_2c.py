@@ -179,3 +179,18 @@ def nr_vxc(ni, mol, grids, xc_code, dm, hermi=1, max_memory=2000):
         vmat[nao:, :nao] = vx + 1j * vy
     logger.timer_debug1(ni, 'two-component Vxc (fused, %s)' % ni.collinear, *t0)
     return n, exc, vmat
+
+
+STAT_KEYS = ('ao', 'rho', 'axis', 'project', 'libxc_sphere', 'sphere/functional', 'vmat')
+
+
+def stats(reset=True):
+    '''the fused pass's thread-summed wall seconds by phase (STAT_KEYS; 'sphere/functional' is the mcol
+    sphere contraction, or the whole functional of the collinear scheme) and the point counts
+    (points, sphere points, axis points, libxc evaluations on the sampled directions)'''
+    from socutils.hessian.rhf_fast import _load_socdft
+    libdft = _load_socdft()
+    out = numpy.zeros(12)
+    if libdft is not None and hasattr(libdft, 'SOCDFTvxc2c_stats'):
+        libdft.SOCDFTvxc2c_stats(out.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(int(reset)))
+    return dict(zip(STAT_KEYS, out[:7])), dict(zip(('points', 'sphere', 'axis', 'libxc_dirs'), out[8:12]))
