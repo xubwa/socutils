@@ -147,6 +147,31 @@ class _KernelXCMixin:
     # structure of spin-orbit-coupled excitations; set 'col' only to compare.
     collinear = 'auto'
 
+    # The grid of the response xc kernel (f_xc): None keeps the SCF grid; 'cpscf' the coarse CP-SCF grid of
+    # the analytic Hessian (socutils.hessian.rhf_fast.CPSCF_GRID_ARGS, socutils.dft.grids); or a Grids object.
+    fxc_grids = None
+
+    def _fxc_grids(self):
+        g = self.fxc_grids
+        if g is None:
+            return None
+        if isinstance(g, str):
+            if g != 'cpscf':
+                raise ValueError('fxc_grids %r' % g)
+            cache = getattr(self, '_fxc_grids_cache', None)
+            if cache is None or cache.mol is not self._scf.mol:
+                from socutils.dft.grids import hessian_grids
+                from socutils.hessian.rhf_fast import CPSCF_GRID_ARGS
+                cache = hessian_grids(self._scf.mol, **CPSCF_GRID_ARGS)
+                cache.build(with_non0tab=True)
+                lib.logger.info(self, 'response xc kernel on the CP-SCF grid: %d points (SCF grid %d)',
+                                cache.weights.size, getattr(self._scf.grids.weights, 'size', 0))
+                self._fxc_grids_cache = cache
+            return cache
+        if g.coords is None:
+            g.build(with_non0tab=True)
+        return g
+
     def response_collinear(self):
         ni = getattr(self._scf, '_numint', None)
         if ni is None or not hasattr(ni, 'collinear'):
@@ -170,6 +195,9 @@ class _KernelXCMixin:
             if col is not None:
                 lib.logger.info(self, 'response xc kernel: collinear = %s', col)
                 stack.enter_context(lib.temporary_env(self._scf._numint, collinear=col))
+            g = self._fxc_grids() if hasattr(self._scf, 'grids') else None
+            if g is not None:
+                stack.enter_context(lib.temporary_env(self._scf, grids=g))
             yield
 
     def kernel(self, *args, **kwargs):
@@ -566,7 +594,8 @@ class TDA(_KernelXCMixin, _ghf.TDA):
 
     def gen_vind(self, mf=None):
         if not self.mo_driven:
-            return super().gen_vind(mf)
+            out = self._gen_vind_fxc_mo(mf)
+            return out if out is not None else super().gen_vind(mf)
         if mf is None:
             mf = self._scf
         from pyscf.scf import hf
@@ -629,6 +658,68 @@ class TDA(_KernelXCMixin, _ghf.TDA):
                               'this matvec)' % (counter[0], min(s + chunk, nvec),
                                                 nvec), *t0)
             return v.reshape(-1, nov)
+
+        return vind, hdiag
+
+
+    def _gen_vind_fxc_mo(self, mf=None):
+        '''the TDA matvec with the response J / K AO-driven (mf.get_jk: RIJ + multi-density COSX) and the f_xc
+        in the MO form fused on the grid (socutils.dft.fxc_2c.mo_response: no transition density matrices for
+        the xc part); None where it does not apply (fxc_2c.use_mo) and pyscf's operation runs'''
+        from pyscf.scf import hf
+        from pyscf.lib import logger
+        from socutils.dft import fxc_2c
+        if mf is None:
+            mf = self._scf
+        if not isinstance(mf, hf.KohnShamDFT) or getattr(self, 'wfnsym', None) is not None:
+            return None
+        ni = mf._numint
+        if not hasattr(ni, 'U') or ni.collinear[0] not in ('n', 'm') or mf.do_nlc():
+            return None
+        omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, mf.mol.spin)
+        xctype = ni._xc_type(mf.xc)
+        if omega != 0 or xctype not in ('LDA', 'GGA'):
+            return None
+        mol = mf.mol
+        mask = self.get_frozen_mask()
+        mo_coeff = mf.mo_coeff[:, mask]
+        mo_energy = mf.mo_energy[mask]
+        mo_occ = mf.mo_occ[mask]
+        occidx = numpy.where(mo_occ == 1)[0]
+        viridx = numpy.where(mo_occ == 0)[0]
+        nocc, nvir = len(occidx), len(viridx)
+        if not fxc_2c.use_mo(mol.nao, nocc, nvir):
+            return None
+        orbo, orbv = mo_coeff[:, occidx], mo_coeff[:, viridx]
+        t0 = (logger.process_clock(), logger.perf_counter())
+        rho0, vxc, fxc = ni.cache_xc_kernel(mol, mf.grids, mf.xc, mf.mo_coeff, mf.mo_occ, 1)
+        iso = fxc_2c.isotropic_kernel(fxc, xctype)
+        if iso is None:
+            return None
+        rho0 = vxc = fxc = None
+        logger.timer(self, 'response xc kernel (isotropic, MO form)', *t0)
+        # the GHF (scalar AO x spin) orbitals of the grid work
+        orbo_g = numpy.ascontiguousarray(ni.U @ orbo)
+        orbv_g = numpy.ascontiguousarray(ni.U @ orbv)
+        e_ia = mo_energy[viridx] - mo_energy[occidx, None]
+        hdiag = e_ia.ravel().real
+        hybrid = ni.libxc.is_hybrid_xc(mf.xc)
+        log = logger.new_logger(self)
+
+        def vind(zs):
+            zs = numpy.asarray(zs).reshape(-1, nocc, nvir)
+            dms = lib.einsum('xov,pv,qo->xpq', zs, orbv, orbo.conj())
+            if hybrid:
+                vj, vk = mf.get_jk(mol, dms, hermi=0)
+                v1ao = vj - hyb * vk
+            else:
+                v1ao = mf.get_j(mol, dms, hermi=0)
+            v1mo = lib.einsum('xpq,qo,pv->xov', v1ao, orbo, orbv.conj())
+            t1 = (logger.process_clock(), logger.perf_counter())
+            v1mo += fxc_2c.mo_response(ni, mol, mf.grids, iso, orbo_g, orbv_g, zs, xctype, mf.max_memory)
+            log.timer_debug1('f_xc (MO form, %d vectors)' % zs.shape[0], *t1)
+            v1mo += zs * e_ia
+            return v1mo.reshape(v1mo.shape[0], -1)
 
         return vind, hdiag
 
