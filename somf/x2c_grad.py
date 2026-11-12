@@ -685,6 +685,9 @@ def x2c1e_hfw0_block(hLL, hSL, hLS, hSS, sLL, sSS):
         sb = x2c._invsqrt(reduce(numpy.dot, (sa, st, sa)))
         r = reduce(numpy.dot, (sa, sb, sa, sLL))
     else:
+        # R = S^-1/2 (S^-1/2 St S^-1/2)^-1/2 S^1/2 in the eigenbasis of S
+        # (pyscf.x2c.x2c._get_r); S^-1/2 ... S^-1/2 S loses accuracy for the
+        # ill-conditioned overlap of decontracted heavy-element bases
         r = x2c._get_r(sLL, st)
     # hfw = reduce(numpy.dot, (r.T.conj(), l, r))
     return a, e, x, st, r, l, h4c, m4c
