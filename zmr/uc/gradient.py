@@ -42,7 +42,7 @@ def explicit_vc(eris, gam):
     an (nmo, nmo) matrix with T1 in the core columns and T2 in the virtual columns.'''
     sp = eris.spaces
     n = sp.nmo
-    out = numpy.zeros((n, n), dtype=numpy.result_type(gam, float))
+    out = numpy.zeros((n, n), dtype=numpy.complex128)
     out[:, sp.slice('c')] += ao_back(eris, gam, 'v')
     out[:, sp.slice('v')] += numpy.einsum('Pri,Pai->ra', eris.cd_pc, gam, optimize=True)
     return out
@@ -73,7 +73,7 @@ def explicit_block(eris, gam, x, y):
     B[P, all, c / a] from the source, B[P, all, v] through the AO vectors.'''
     sp = eris.spaces
     n = sp.nmo
-    out = numpy.zeros((n, n), dtype=numpy.result_type(gam, float))
+    out = numpy.zeros((n, n), dtype=numpy.complex128)
     # (B G)[r, q in y] = sum_s B[P, r, s in x] G[P, s, q]
     if x == 'v':
         out[:, sp.slice(y)] += ao_back(eris, gam, 'v')

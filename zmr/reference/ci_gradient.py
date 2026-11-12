@@ -35,10 +35,17 @@ def _adjoint(ops):
 
 
 def _sum_adjoint(act, pclass, w, ntarget):
-    '''sum_X O_X^+ w_X for vectors w[X, :] of the target sector.'''
-    adj = _adjoint(pclass.operators(act.norb))
-    y = act.apply_strings(numpy.ascontiguousarray(w), ntarget, adj)     # (X, X', D_N)
-    return numpy.einsum('xxd->d', y)
+    '''sum_X O_X^+ w_X for vectors w[X, :] of the target sector: every string applied to
+    its own vector only.'''
+    out = None
+    x0 = 0
+    for dag, idx in _adjoint(pclass.operators(act.norb)):
+        for k in range(len(idx)):
+            y = act.apply_strings(numpy.ascontiguousarray(w[x0 + k][None]), ntarget,
+                                  [(dag, idx[k:k + 1])])[0, 0]
+            out = y if out is None else out + y
+        x0 += len(idx)
+    return out
 
 
 def class_g(pt, ctx, name, state=0):

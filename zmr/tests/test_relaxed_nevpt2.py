@@ -123,3 +123,40 @@ def test_relaxed_dipole_sa_casscf():
         relaxed = numpy.einsum('ij,ji', op, dm)
         ff = (e_state(m_p, h0 + 1e-3 * op, k) - e_state(m_m, h0 - 1e-3 * op, k)) / 2e-3
         assert abs(relaxed - ff) < 5e-6, (k, relaxed, ff)
+
+
+@pytest.mark.slow
+def test_relaxed_rdm1_interface():
+    '''zmr.nr.relaxed.relaxed_rdm1 (iterative Z-vector, the gradients for large external
+    spaces) against the dense Z-vector and the reference gradients, SA-CASSCF states.'''
+    from socutils.zmr.nr import density as nr_density
+    from socutils.zmr.nr import relaxed
+    from socutils.zmr.reference import ci_gradient as cg, orbital_gradient as og
+    from socutils.zmr.reference import relaxed_fd as rf
+    mol = gto.M(atom='O 0 0 0.1173; H 0 0.7572 -0.4692; H 0 -0.7572 -0.4692',
+                basis='6-31g', verbose=0)
+    cderi = incore.cholesky_eri(mol, auxbasis=AUX)
+    mf = scf.RHF(mol).density_fit(auxbasis=AUX)
+    mf.conv_tol = 1e-12
+    mf.kernel()
+    mc = mcscf.CASSCF(mf, 4, 4)
+    mc.fix_spin_(ss=0)
+    mc = mc.state_average_([0.5, 0.5])
+    mc.conv_tol = 1e-12
+    mc.kernel()
+    mc = rf.polish(mc)
+    for k in range(2):
+        dm = relaxed.relaxed_rdm1(mc, cderi, state=k, max_memory=0.5)
+        route = nr_density.spin_orbital_route(mc, cderi, ci=mc.ci[k])
+        pt = route.pt()
+        g_qc, u = og.gradient(pt)
+        g = route.spin_sum(numpy.conj(u) @ g_qc @ u.T).real
+        rhs = rf.state_gradient(mc, k)
+        rhs[:rf.ngorb(mc)] += mc.pack_uniq_var(g - g.T)
+        rhs += rf.ci_block(mc, k, cg.ci_gradient(pt, route))
+        z = rf.zvector(mc, rhs)
+        from socutils.zmr.uc import density as uc_density
+        d2 = route.spin_sum(uc_density.make_rdm1(pt)[1]).real
+        c = mc.mo_coeff
+        ref = rf.state_density(mc, k) + c @ d2.T @ c.T + rf.lagrangian_density(mc, z)
+        assert abs(dm - ref).max() < 1e-8, abs(dm - ref).max()
