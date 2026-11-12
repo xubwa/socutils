@@ -244,6 +244,10 @@ class _CDERIS(lib.StreamObject):
             moo_sph = moo_sph.copy()
             moo_sph[:, :nck] = kr_core
             log.info('CDERIS: Kramers-paired core, %d of %d core spinors transformed', nck, ncore)
+        # Kramers core by scf.rik_2c's four-product scheme (libsocvhf): half the K flops of the
+        # real/imag GEMMs below, core J from the same rows
+        from socutils.scf import rik_2c
+        quat_core = kr_core is not False and rik_2c.QUAT and bool(rik_2c._load_lib())
 
         # Split occ MOs (sph GHF) into alpha/beta, real/imag
         C_aR = numpy.asfortranarray(moo_sph[:nao_nr].real)
@@ -287,8 +291,19 @@ class _CDERIS(lib.StreamObject):
         # slicing the core rows out of a (P, nocc, mu) buffer is not contiguous
         # and the copy it forces costs more than the matrix products of K
         nbuf = min(blksize, naux)
-        cbuf = [numpy.empty((nbuf * nck, nao_nr)) for _ in range(4)]
+        cbuf = [numpy.empty((0 if quat_core else nbuf * nck, nao_nr)) for _ in range(4)]
         abuf = [numpy.empty((nbuf * ncas, nao_nr)) for _ in range(4)]
+        if quat_core:
+            c4core = rik_2c._real_columns(kr_core, nao_nr)
+            qspec = rik_2c._comb_spec()
+            qacc = numpy.zeros((4, nao_nr, nao_nr))
+            qbuf = numpy.empty(nbuf * nck * 8 * nao_nr)
+            ua, ub = kr_core[:nao_nr], kr_core[nao_nr:]
+            dc = 2 * (lib.dot(ua, ua.conj().T) + lib.dot(ub, ub.conj().T)).real     # D_aa + D_bb of the core
+            dc = dc + dc.T
+            dc[numpy.diag_indices(nao_nr)] *= .5
+            qdtril = numpy.ascontiguousarray(lib.pack_tril(dc)[None])
+            qvj = numpy.zeros_like(qdtril)
 
         log.info('CDERIS before loop: current memory %.1f MB, blksize=%d',
                  lib.current_memory()[0], blksize)
@@ -312,14 +327,22 @@ class _CDERIS(lib.StreamObject):
             LaR_a, LaI_a, LbR_a, LbI_a = [x[:naux_blk * ncas] for x in abuf]
             for C_real, core, act in ((C_aR, LaR_c, LaR_a), (C_aI, LaI_c, LaI_a),
                                       (C_bR, LbR_c, LbR_a), (C_bI, LbI_c, LbI_a)):
-                if ncore > 0:
+                if ncore > 0 and not quat_core:
                     _half(eri1, C_real, core, 0, nck)
                 _half(eri1, C_real, act, ncore, nocc)
+            if quat_core:
+                if eri1.ndim != 2:
+                    raise NotImplementedError('CDERIS needs the packed (s2) AO vectors')
+                y = rik_2c.half_combinations(eri1, c4core, qspec, qbuf, dtril=qdtril, vj=qvj)
             tb1 = (logger.process_clock(), logger.perf_counter())
             t_half += (tb1[0] - tb0[0], tb1[1] - tb0[1])
 
+            if quat_core:
+                for r in range(4):
+                    lib.dot(y[2 * r].T, y[2 * r + 1], 1., qacc[r], 1.)
+                y = None
             # --- Core J: rho_P = sum_i C_i^dagger L_P C_i (real), J += rho_P L_P ---
-            if eri1.ndim == 2 and vj_tril is not None:
+            elif eri1.ndim == 2 and vj_tril is not None:
                 if ncore > 0:
                     rho = (lib.dot(LaR_c.reshape(naux_blk, -1), CcaR[:, None])
                            + lib.dot(LaI_c.reshape(naux_blk, -1), CcaI[:, None])
@@ -336,7 +359,7 @@ class _CDERIS(lib.StreamObject):
             # into a real symmetric part (LR.T@LR + LI.T@LI) and an imaginary
             # antisymmetric part (LI.T@LR - (LI.T@LR).T); this never forms the
             # complex L itself for the (naux_blk, ncore, nao_nr) core block.
-            if ncore > 0:
+            if ncore > 0 and not quat_core:
                 IRa = lib.dot(LaI_c.T, LaR_c)
                 vk_sph[:nao_nr, :nao_nr] += (lib.dot(LaR_c.T, LaR_c) + lib.dot(LaI_c.T, LaI_c)
                                               + 1j * (IRa - IRa.T))
@@ -374,7 +397,10 @@ class _CDERIS(lib.StreamObject):
 
         import gc
         gc.collect()
-        if kr_core is not False:
+        if quat_core:
+            vk_sph = rik_2c._assemble_quat(qacc, nao_nr)
+            vj_tril = qvj[0]
+        elif kr_core is not False:
             A = vk_sph[:nao_nr, :nao_nr].copy()
             B = vk_sph[nao_nr:, nao_nr:].copy()
             C = vk_sph[:nao_nr, nao_nr:].copy()
