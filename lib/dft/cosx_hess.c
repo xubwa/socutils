@@ -1442,3 +1442,168 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
         free(hb); free(shl_of); free(atm_of_ao);
         return err;
 }
+
+/*
+ * The work counts of the Hessian kernel per grid block, without the integrals: the same AO selection, F / H and
+ * pair screening as SOCDFTcosx_hess.  out (nblk, 8): n, nl, nla (atoms with AOs on the block), nrec (kept pair
+ * records), Sg (their sum of nI nJ), slab rows (sum over the atoms of the pairs of the rows of their shells),
+ * slab atoms, sum over the kept pairs of nh2 (Hermite functions to L + 2, the integral work).
+ */
+int SOCDFTcosx_hess_count(double *out, double *co, double *yo, int nocc, void *optp, double *coords, double *weights,
+                          uint8_t *non0tab, int ngrid, int blk, double cutoff, double tol, int *ao_loc, int *atm, int natm,
+                          int *bas, int nbas, double *env, dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local)
+{
+        CXOpt *opt = optp;
+        cx_tables();
+        const int nao = ao_loc[nbas];
+        const int nblk = (ngrid + blk - 1) / blk;
+        int i0, err = 0;
+        int *shl_of = malloc(sizeof(int) * nao);
+        for (i0 = 0; i0 < nbas; i0++) {
+                int mu;
+                for (mu = ao_loc[i0]; mu < ao_loc[i0 + 1]; mu++) shl_of[mu] = i0;
+        }
+        int *atm_of_ao = malloc(sizeof(int) * nao);
+        for (i0 = 0; i0 < nao; i0++) atm_of_ao[i0] = bas[shl_of[i0] * BAS_SLOTS + ATOM_OF];
+#pragma omp parallel
+{
+        const int mkl0 = mkl_set_num_threads_local ? mkl_set_num_threads_local(1) : 0;
+        const double one = 1, zero = 0, two = 2;
+        double *a = malloc(sizeof(double) * 10 * (size_t)nao * blk);
+        double *full = malloc(sizeof(double) * 10 * (size_t)nao * blk);
+        double *rmx = malloc(sizeof(double) * nao);
+        int *ix = malloc(sizeof(int) * nao);
+        int *runs = malloc(sizeof(int) * (2 * (nbas + 1) + nao));
+        double *cs = malloc(sizeof(double) * (size_t)nao * nocc), *ys = malloc(sizeof(double) * (size_t)nao * nocc);
+        double *F = malloc(sizeof(double) * (size_t)nao * blk), *H = malloc(sizeof(double) * (size_t)nao * blk);
+        double *psi = malloc(sizeof(double) * (size_t)nocc * blk), *eta = malloc(sizeof(double) * (size_t)nocc * blk);
+        double *fmax = malloc(sizeof(double) * nbas);
+        char *seen = calloc((size_t)natm * nbas, 1);
+        char *aseen = calloc(natm, 1);
+        int *keys = malloc(sizeof(int) * 2 * (size_t)opt->npair * 2 + 16);
+        int b;
+#pragma omp for schedule(dynamic, 1)
+        for (b = 0; b < nblk; b++) {
+                const int g0 = b * blk, n = g0 + blk <= ngrid ? blk : ngrid - g0;
+                uint8_t *msk = non0tab + (size_t)(g0 / MASK_BLK) * nbas;
+                double *o = out + (size_t)b * 8;
+                double xyz[3 * 512];
+                int k, g, ip, i;
+                memset(o, 0, sizeof(double) * 8);
+                o[0] = n;
+                for (k = 0; k < 3; k++) memcpy(xyz + k * n, coords + (size_t)k * ngrid + g0, sizeof(double) * n);
+                const int nl = eval_selectd(2, a, ix, runs, n, xyz, msk, cutoff, ao_loc, atm, bas, nbas, env, rmx, full);
+                o[1] = nl;
+                if (nl == 0) continue;
+                const double *w = weights + g0;
+                double xsum = 0;
+                for (i = 0; i < nl; i++) {
+                        double s = 0;
+                        for (g = 0; g < n; g++) s += fabs(w[g] * a[(size_t)i * n + g]);
+                        if (s > xsum) xsum = s;
+                }
+                for (i = 0; i < nl; i++) {
+                        memcpy(cs + (size_t)i * nocc, co + (size_t)ix[i] * nocc, sizeof(double) * nocc);
+                        memcpy(ys + (size_t)i * nocc, yo + (size_t)ix[i] * nocc, sizeof(double) * nocc);
+                }
+                dgemm_("N", "T", &n, &nocc, &nl, &one, a, &n, cs, &nocc, &zero, psi, &n);
+                dgemm_("N", "T", &n, &nocc, &nl, &one, a, &n, ys, &nocc, &zero, eta, &n);
+                dgemm_("N", "N", &n, &nao, &nocc, &two, psi, &n, co, &nocc, &zero, F, &n);
+                dgemm_("N", "N", &n, &nao, &nocc, &two, eta, &n, co, &nocc, &zero, H, &n);
+                for (i = 0; i < nbas; i++) fmax[i] = 0;
+                {
+                        int mu;
+                        for (mu = 0; mu < nao; mu++) {
+                                double m = 0;
+                                const double *f = F + (size_t)mu * n, *h = H + (size_t)mu * n;
+                                for (g = 0; g < n; g++) {
+                                        const double v = fabs(f[g]) + fabs(h[g]);
+                                        m = v > m ? v : m;
+                                }
+                                if (m > fmax[shl_of[mu]]) fmax[shl_of[mu]] = m;
+                        }
+                }
+                int nla = 0, last = -1;
+                for (i = 0; i < nl; i++) {
+                        const int aa = atm_of_ao[ix[i]];
+                        if (aa != last) { nla++; last = aa; }
+                }
+                o[2] = nla;
+                double cb[3] = {0, 0, 0}, rb = 0;
+                for (g = 0; g < n; g++) {
+                        cb[0] += xyz[g]; cb[1] += xyz[n + g]; cb[2] += xyz[2 * n + g];
+                }
+                cb[0] /= n; cb[1] /= n; cb[2] /= n;
+                for (g = 0; g < n; g++) {
+                        const double dx = xyz[g] - cb[0], dy = xyz[n + g] - cb[1], dz = xyz[2 * n + g] - cb[2];
+                        const double r2 = dx * dx + dy * dy + dz * dz;
+                        if (r2 > rb) rb = r2;
+                }
+                rb = sqrt(rb);
+                int nkeys = 0, natom_s = 0;
+                double nrec = 0, Sg = 0, rows = 0, nh2s = 0;
+                for (ip = 0; ip < opt->npair; ip++) {
+                        const CXPair *pp = opt->pairs + ip;
+                        if (pp->bound == 0) continue;
+                        const int I = pp->I, J = pp->J, both = I != J;
+                        const double wgt = xsum * (fmax[I] + fmax[J]);
+                        if (pp->bound * wgt < tol) continue;
+                        const int L = pp->L;
+                        double bsum = 0;
+                        for (k = 0; k < pp->np; k++) {
+                                const double *P = opt->pp_P + 3 * (pp->po + k);
+                                const double dx = P[0] - cb[0], dy = P[1] - cb[1], dz = P[2] - cb[2];
+                                const double dmin = sqrt(dx * dx + dy * dy + dz * dz) - rb;
+                                double f = 1;
+                                if (dmin > 0) {
+                                        const double T0 = opt->pp_p[pp->po + k] * dmin * dmin;
+                                        if (T0 > 1) {
+                                                const double ir = 1 / sqrt(T0);
+                                                double rp = ir, mx = 0;
+                                                int dd;
+                                                for (dd = 0; dd <= L + 2; dd++) {
+                                                        const double v = cx_damp[dd] * rp;
+                                                        if (v > mx) mx = v;
+                                                        rp *= ir;
+                                                }
+                                                f = mx < 1 ? mx : 1;
+                                        }
+                                }
+                                const double sp = sqrt(2 * opt->pp_p[pp->po + k]);
+                                bsum += f * opt->pp_b[pp->po + k] * (1 + sp + 2 * sp * sp);
+                        }
+                        if (bsum * wgt < tol) continue;
+                        nrec += 1;
+                        Sg += (double)pp->nI * pp->nJ;
+                        nh2s += (double)pp->nI * pp->nJ * NH(L + 2) * pp->np;
+                        const int aI = bas[I * BAS_SLOTS + ATOM_OF], aJ = bas[J * BAS_SLOTS + ATOM_OF];
+                        int ats[2] = {aI, aJ}, q, na_ = pp->onec ? 1 : 2;
+                        int shs[2] = {I, J}, ns_ = both ? 2 : 1, t;
+                        for (q = 0; q < na_; q++)
+                                for (t = 0; t < ns_; t++) {
+                                        const size_t key = (size_t)ats[q] * nbas + shs[t];
+                                        if (!seen[key]) {
+                                                seen[key] = 1;
+                                                keys[nkeys++] = (int)key;
+                                                rows += ao_loc[shs[t] + 1] - ao_loc[shs[t]];
+                                                if (!aseen[ats[q]]) { aseen[ats[q]] = 1; natom_s++; }
+                                        }
+                                }
+                }
+                for (k = 0; k < nkeys; k++) {
+                        aseen[keys[k] / nbas] = 0;
+                        seen[keys[k]] = 0;
+                }
+                o[3] = nrec; o[4] = Sg; o[5] = rows; o[6] = natom_s; o[7] = nh2s;
+        }
+        if (!a || !full || !F || !H || !seen || !keys) {
+#pragma omp atomic write
+                err = 1;
+        }
+        free(a); free(full); free(rmx); free(ix); free(runs); free(cs); free(ys); free(F); free(H); free(psi); free(eta);
+        free(fmax); free(seen); free(aseen); free(keys);
+        if (mkl_set_num_threads_local) mkl_set_num_threads_local(mkl0);
+}
+        free(shl_of); free(atm_of_ao);
+        return err;
+}
