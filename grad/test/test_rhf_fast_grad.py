@@ -93,6 +93,26 @@ class KnownValues(unittest.TestCase):
     def test_tpss(self):
         self._check('tpss')
 
+    def test_mgga_fused(self):
+        # the fused MGGA kernel against the block path, also with the grid response
+        mf = dft.RKS(self.mol, xc='r2scan')
+        mf.grids.level = 2
+        dm = scf.RHF(self.mol).run().make_rdm1()
+        g = rhf_fast.Gradients(mf)
+        for xc in ('r2scan', 'm06l', 'tpssh'):
+            mf.xc = xc
+            for gr in (False, True):
+                a = rhf_fast.xc_grad(g, self.mol, dm, grid_response=gr)
+                with lib.temporary_env(rhf_fast, USE_FUSED_XC=False):
+                    b = rhf_fast.xc_grad(g, self.mol, dm, grid_response=gr)
+                self.assertAlmostEqual(abs(a - b).max(), 0, 11)
+
+    def test_r2scan(self):
+        self._check('r2scan')
+
+    def test_m06l(self):
+        self._check('m06l')
+
     def test_rij_pbe(self):
         self._check('pbe', 'rij')
 
