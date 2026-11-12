@@ -786,3 +786,4 @@ static void xc_grad_fused_impl(double *outb, double *dm, double *coords, double 
 }
 
 #include "vxc_2c.h"     /* SOCDFTvxc_fused_2c: the two-component (GKS / spinor) pass */
+#include "fxc_2c_mo.h"  /* SOCDFTfxc2c_mo: the closed-shell two-component f_xc response, MO form */
