@@ -401,8 +401,10 @@ def _is_h1_occ(h1, mo_coeff, mo_occ):
     return h1.ndim == 4 and h1.shape[-1] == nocc and h1.shape[-2] == mo_coeff.shape[0] != nocc
 
 
-SOLVE_MO1_ARRAYS = 22  # nmo nocc arrays per perturbation of a Krylov batch: h1, s1, hs, mo1base, the trial vectors and
-                       # their images (two per cycle, ~8 cycles), transient copies of the Gram-Schmidt
+SOLVE_MO1_ARRAYS = None  # nmo nocc arrays per perturbation of a Krylov batch: None -> 6 (h1, s1, hs, mo1base, transient
+                         # copies of the Gram-Schmidt) + CPHF_KRYLOV_CYCLES trial vectors (and as many images unless
+                         # KRYLOV_IMPLICIT_H); an int forces it
+CPHF_KRYLOV_CYCLES = 8
 CPHF_MEM_MARGIN = .05  # the share of the budget (mf.max_memory) the CPHF holds back for the allocator's slack
 CPHF_J_MEM = 2000      # MB of the semi-direct RI-J's integral blocks under the CPHF budget
 CPHF_XC_MEM = 2000     # max_memory of the batched XC response under the CPHF budget (its AO blocks ~ .2 of it)
@@ -423,7 +425,10 @@ def _cphf_budget(mf, nao, nmo, nocc, natm, fx, budget, mem_now, nout=None):
     if nout is None:
         nout = natm
     a2 = 8. * nao * nao / 1e6
-    kry = SOLVE_MO1_ARRAYS * 8. * nmo * nocc / 1e6
+    narr = SOLVE_MO1_ARRAYS
+    if narr is None:
+        narr = 6 + CPHF_KRYLOV_CYCLES * (1 if KRYLOV_IMPLICIT_H else 2) + (2 if KRYLOV_IMPLICIT_H else 0)
+    kry = narr * 8. * nmo * nocc / 1e6
     out = 3 * nout * 8. * (nao * nocc + nocc * nocc) / 1e6
     with_k = not isinstance(mf, hf.KohnShamDFT) or mf._numint.libxc.is_hybrid_xc(mf.xc)
     k_per = k_fix = 0
@@ -502,6 +507,7 @@ def _solve_mo1_occ(mf, mo_energy, mo_coeff, mo_occ, h1c, fx, atmlst=None, max_me
             _CPHF_MEM.update(mem)
             ia1 = min(natm, ia0 + blksize)
             t0 = (logger.process_clock(), logger.perf_counter())
+            _KRYLOV_STATS.clear()
             s1vo = numpy.empty((ia1 - ia0, 3, nmo, nocc))
             h1vo = numpy.empty((ia1 - ia0, 3, nmo, nocc))
             for i0 in range(ia0, ia1):
@@ -528,8 +534,9 @@ def _solve_mo1_occ(mf, mo_energy, mo_coeff, mo_occ, h1c, fx, atmlst=None, max_me
                 e1s[ia] = e1[k].reshape(3, nocc, nocc)
             mo1 = e1 = None
             ib += 1
-            logger.info(mf, 'CPHF batch %d (atoms %d-%d of %d): %.1f s, peak RSS %.0f MB', ib, ia0, ia1 - 1, natm,
-                        logger.perf_counter() - t0[1], _peak_rss())
+            logger.info(mf, 'CPHF batch %d (atoms %d-%d of %d): %.1f s, %d Krylov cycles, %d trial vectors, peak RSS '
+                        '%.0f MB', ib, ia0, ia1 - 1, natm, logger.perf_counter() - t0[1],
+                        _KRYLOV_STATS.get('cycles', 0), _KRYLOV_STATS.get('vectors', 0), _peak_rss())
             # in use for the next plan: as at the start plus the solutions written so far
             mem_now += 3 * (ia1 - ia0) * 8. * (nao * nocc + nocc * nocc) / 1e6
             ia0 = ia1
@@ -2242,6 +2249,8 @@ def _df_get_j(with_df, dm):
     return lib.unpack_tril(vj, 1).reshape(shape)
 
 
+KRYLOV_IMPLICIT_H = True   # _krylov: the subspace matrix from the Gram-Schmidt projections (no A x kept)
+_KRYLOV_STATS = {}          # cycles / trial vectors of the _krylov calls (reset by _solve_mo1_occ per batch)
 KRYLOV_FAST_QR = True   # _krylov: Cholesky QR twice (GEMMs) instead of pyscf's Python-loop Gram-Schmidt
 
 
@@ -2349,45 +2358,105 @@ def _krylov(aop, b, x0=None, tol=1e-10, max_cycle=30, dot=numpy.dot, lindep=None
     innerprod = list(rmat.diagonal().real ** 2)
     if not innerprod or max(innerprod) < lindep or max(innerprod) < tol ** 2:
         return numpy.zeros_like(b) if x0 is None else x0
-    # the trial vectors and their images once each, as the per-cycle blocks (no stacked copies: 3 natm
-    # right-hand sides of nvir nocc each, 69 GB per copy for Trp-cage / def2-SVP)
+    # the trial vectors once each, as the per-cycle blocks (no stacked copies: 3 natm right-hand sides of
+    # nmo nocc each, 69 GB per copy for Trp-cage / def2-SVP).  KRYLOV_IMPLICIT_H: their images A x are not
+    # kept; the subspace matrix h_kj = <x_k, A x_j> is filled as the cycles go: for k <= j it is the
+    # Gram-Schmidt projection <A x_j, x_k> computed anyway, for the next block k = j + 1 one more product
+    # while A x_j is at hand, and for k > j + 1 only the dropped part reaches it (A x_j lies in the span of
+    # x_0 .. x_j+1 and of the
+    # directions the trial vectors drop (converged rows, linear dependence), whose contributions to the later
+    # x_k are added from an orthonormal basis of them, at most one vector per right-hand side in all).
+    # pyscf's explicit h differs from it at the round-off / orthogonality level only.  Halves the subspace.
+    implicit = KRYLOV_IMPLICIT_H and not callable(callback)
     xs = []
     ax = []
+    hblk = {}       # (k, j) -> <x_k, A x_j> blocks (implicit)
     max_cycle = min(max_cycle, ndim)
+    drops = []      # (cycle j, orthonormal basis of the dropped part of A x_j's residual, its coefficients)
     for cycle in range(max_cycle):
         axt = aop(x1).reshape(-1, ndim)
         xs.append(x1)
-        ax.append(axt)
+        if implicit and drops:
+            # <x_k, A x_j> for k >= j + 2: only the dropped directions of A x_j's residual reach x_k
+            k = len(xs) - 1
+            for jd, basis, coef in drops:
+                if jd <= k - 2:
+                    blk_ = lib.dot(lib.dot(x1.conj(), basis.T), coef.T)
+                    hblk[k, jd] = hblk[k, jd] + blk_ if (k, jd) in hblk else blk_
+        if not implicit:
+            ax.append(axt)
         if callable(callback):
             callback(cycle, list(numpy.vstack(xs)), list(numpy.vstack(ax)))
         # x1 = axt - sum_i <axt, xs_i> / <xs_i, xs_i> xs_i (classical Gram-Schmidt), block by block
+        j = len(xs) - 1
         x1 = axt.copy()
         k0 = 0
-        for xb in xs:
+        for k, xb in enumerate(xs):
             k1 = k0 + xb.shape[0]
-            w = lib.dot(axt, xb.conj().T) / numpy.asarray(innerprod[k0:k1])[None, :]
+            w = lib.dot(axt, xb.conj().T)
+            if implicit:
+                hblk[k, j] = w.T.copy()          # = x_k^* (A x_j)^T, as pyscf's h
+            w /= numpy.asarray(innerprod[k0:k1])[None, :]
             lib.dot(w, xb, -1, x1, 1)
             k0 = k1
-        axt = None
+        if implicit:
+            # the second Gram-Schmidt pass: the implicit h assumes trial vectors orthogonal to working
+            # precision (one classical pass leaves the residuals of nearly converged directions,
+            # norms down to ~1e-6 of the images, measurably out of the earlier space)
+            k0 = 0
+            for xb in xs:
+                k1 = k0 + xb.shape[0]
+                w = lib.dot(x1, xb.conj().T)
+                w /= numpy.asarray(innerprod[k0:k1])[None, :]
+                lib.dot(w, xb, -1, x1, 1)
+                k0 = k1
+        res = x1 if implicit else None
         x1, rmat = _qr_fast(x1, dot)
         x1 *= rmat.diagonal()[:, None]
         innerprod1 = rmat.diagonal().real ** 2
         max_innerprod = max(innerprod1, default=0.)
         log.debug('krylov cycle %d  r = %g', cycle, max_innerprod ** .5)
         if max_innerprod < lindep or max_innerprod < tol ** 2:
+            axt = None
             break
         mask = (innerprod1 > lindep) & (innerprod1 > tol ** 2)
         x1 = x1[mask]
-        innerprod.extend(innerprod1[mask])
+        innerprod1 = innerprod1[mask]
+        innerprod.extend(innerprod1)
+        if implicit:
+            hblk[j + 1, j] = lib.dot(x1.conj(), axt.T)
+            # the part of the residual the next trial vectors drop (converged rows, linear dependence):
+            # D = res - its projection on x1, kept as an orthonormal basis and the coefficients
+            dres = res - lib.dot(lib.dot(res, x1.conj().T) / innerprod1[None, :], x1)
+            dg = lib.dot(dres.conj(), dres.T)
+            ev, u = scipy.linalg.eigh(dg)
+            # above the round-off of the projection (1e-13 of the largest residual)
+            rmax2 = numpy.einsum('ij,ij->i', res.conj(), res).real.max()
+            keep = ev > 1e-26 * rmax2
+            if keep.any():
+                sv = numpy.sqrt(ev[keep])
+                basis = lib.dot(u[:, keep].T.conj(), dres) / sv[:, None]   # (m, ndim), orthonormal rows
+                drops.append((j, basis, u[:, keep] * sv[None, :]))         # dres = coef @ basis
+            dres = dg = None
+        res = None
+        axt = None
     else:
         raise RuntimeError("Krylov solver failed to converge.")
+    _KRYLOV_STATS['cycles'] = _KRYLOV_STATS.get('cycles', 0) + cycle + 1
+    _KRYLOV_STATS['vectors'] = _KRYLOV_STATS.get('vectors', 0) + sum(xb.shape[0] for xb in xs)
     off = numpy.cumsum([0] + [xb.shape[0] for xb in xs])
     nx = off[-1]
-    h = numpy.empty((nx, nx), dtype=xs[0].dtype)
-    for i, xb in enumerate(xs):
-        for j, ab in enumerate(ax):
-            h[off[i]:off[i + 1], off[j]:off[j + 1]] = lib.dot(xb.conj(), ab.T)
-    ax = None
+    h = numpy.zeros((nx, nx), dtype=xs[0].dtype)
+    if implicit:
+        for (k, j), blk_ in hblk.items():
+            if k < len(xs):
+                h[off[k]:off[k + 1], off[j]:off[j + 1]] = blk_
+        hblk = None
+    else:
+        for i, xb in enumerate(xs):
+            for j, ab in enumerate(ax):
+                h[off[i]:off[i + 1], off[j]:off[j + 1]] = lib.dot(xb.conj(), ab.T)
+        ax = None
     if hermi:
         h = numpy.tril(h) + numpy.tril(h, -1).conj().T
     h[numpy.diag_indices_from(h)] += innerprod
