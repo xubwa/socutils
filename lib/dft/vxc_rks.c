@@ -232,7 +232,7 @@ void SOCDFTvxc_mat(double *vbuf, double *ao, long cs, double *wv, int *idx, int 
  * phi_0 aow^T into its V; no AO array is stored and the AOs are evaluated
  * once.  vbuf (nthreads, nao, nao) (GGA: the caller adds V + V^T), ex / ne
  * (nthreads) the per-thread E_xc and electron counts.  coords (3, ngrid),
- * non0tab (ngrid / 56, nbas).  xctype 0 LDA, 1 GGA.
+ * non0tab (ngrid / 56, nbas).  xctype 0 LDA, 1 GGA, 2 meta-GGA (SOCDFTvxc_fused_mgga).
  */
 #include <stdint.h>
 typedef void (*gtoval_t)(int ngrids, int *shls_slice, int *ao_loc, double *ao, double *coord,
@@ -367,16 +367,131 @@ static int eval_select(double *a, int *ix, size_t *src, double *full, int n, dou
         return nl;
 }
 
-void SOCDFTvxc_fused(double *vbuf, double *ex, double *ne, double *dm, double *coords, double *weights,
-                     uint8_t *non0tab, int ngrid, int gs, double cutoff, int xctype, gtoval_t eval,
-                     int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
-                     libxc_t xcf, int nfn, void *xc_arr, double *facs,
-                     dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local)
+typedef void (*dsyrk_t)(const char *uplo, const char *trans, const int *n, const int *k, const double *alpha,
+                        const double *a, const int *lda, const double *beta, double *c, const int *ldc);
+
+/*
+ * rho (nvar, n) of a sub-block from its AOs a (ncomp, nl, n) (ncomp 1 LDA, 4 GGA / MGGA): rho, nabla rho
+ * (GGA, MGGA) and tau = 1/2 sum_k nabla_k phi D nabla_k phi (MGGA).  With the occupied orbitals (orb
+ * (nao, nocc) = C sqrt(occ), row-major) and nocc < nl (MGGA), by c_k = C_sub^T d_k phi (nocc rows
+ * instead of nl): rho = sum_i c_0 c_0, d_k rho = 2 sum_i c_0 c_k, tau = 1/2 sum_k sum_i c_k c_k;
+ * else by c_k = D_sub d_k phi (c (ncomp, nl, n) the first row c_0 = D_sub phi_0 kept, it is the
+ * gradient's V).  d (nl, nl) D_sub or (orbital route) C_sub, c scratch of ncomp nao n.
+ */
+static void sub_rho(double *rho, double *c, double *d, const double *a, const int *ix, int nl, int n, int nvar,
+                    int ncomp, const double *dm, int nao, const double *orb, int nocc, dgemm_t dgemm_)
+{
+        const double one = 1, zero = 0;
+        int i, j, g, k;
+        if (orb && nvar == 5 && nocc < nl) {
+                for (i = 0; i < nl; i++)
+                        memcpy(d + (size_t)i * nocc, orb + (size_t)ix[i] * nocc, sizeof(double) * nocc);
+                /* c_k (n, nocc) column-major = a_k (n, nl) C_sub (nl, nocc) */
+                for (k = 0; k < 4; k++)
+                        dgemm_("N", "T", &n, &nocc, &nl, &one, a + (size_t)k * nl * n, &n, d, &nocc, &zero,
+                               c + (size_t)k * nocc * n, &n);
+                memset(rho, 0, sizeof(double) * 5 * n);
+                double *r4 = rho + 4 * n;
+                for (i = 0; i < nocc; i++) {
+                        const double *c0 = c + (size_t)i * n;
+                        const double *c1 = c + ((size_t)nocc + i) * n;
+                        const double *c2 = c + ((size_t)2 * nocc + i) * n;
+                        const double *c3 = c + ((size_t)3 * nocc + i) * n;
+                        for (g = 0; g < n; g++) {
+                                rho[g] += c0[g] * c0[g];
+                                rho[n + g] += 2 * c0[g] * c1[g];
+                                rho[2 * n + g] += 2 * c0[g] * c2[g];
+                                rho[3 * n + g] += 2 * c0[g] * c3[g];
+                                r4[g] += .5 * (c1[g] * c1[g] + c2[g] * c2[g] + c3[g] * c3[g]);
+                        }
+                }
+                return;
+        }
+        for (i = 0; i < nl; i++)
+                for (j = 0; j < nl; j++) d[i * nl + j] = dm[(size_t)ix[i] * nao + ix[j]];
+        /* c (nl, n) = D_sub phi_0; rho, nabla rho */
+        dgemm_("N", "N", &n, &nl, &nl, &one, a, &n, d, &nl, &zero, c, &n);
+        memset(rho, 0, sizeof(double) * nvar * n);
+        for (i = 0; i < nl; i++) {
+                const double *p = a + (size_t)i * n, *q = c + (size_t)i * n;
+                for (g = 0; g < n; g++) rho[g] += p[g] * q[g];
+        }
+        for (k = 1; k < (nvar < 4 ? nvar : 4); k++) {
+                double *rk = rho + (size_t)k * n;
+                for (i = 0; i < nl; i++) {
+                        const double *p = a + ((size_t)k * nl + i) * n, *q = c + (size_t)i * n;
+                        for (g = 0; g < n; g++) rk[g] += 2 * p[g] * q[g];
+                }
+        }
+        if (nvar == 5) {
+                /* c_k = D_sub d_k phi, k = 1..3 */
+                double *ck = c + (size_t)nl * n;
+                for (k = 1; k < 4; k++)
+                        dgemm_("N", "N", &n, &nl, &nl, &one, a + (size_t)k * nl * n, &n, d, &nl, &zero,
+                               ck + (size_t)(k - 1) * nl * n, &n);
+                double *r4 = rho + 4 * n;
+                for (k = 1; k < 4; k++)
+                        for (i = 0; i < nl; i++) {
+                                const double *p = a + ((size_t)k * nl + i) * n;
+                                const double *q = ck + ((size_t)(k - 1) * nl + i) * n;
+                                for (g = 0; g < n; g++) r4[g] += .5 * p[g] * q[g];
+                        }
+        }
+        (void)ncomp;
+}
+
+/*
+ * The tau term of a sub-block's V (MGGA): T = sum_k d_k phi diag(wt) d_k phi^T (wt = w v_tau / 2 for
+ * the 1/2 in tau), symmetric, by DSYRK on b = sqrt(+-wt) d_k phi stacked over k (3n, nl) column-major
+ * (half the flops of a GEMM), the points of either sign separately; added to V as T_ij (i < j) at
+ * (ix_i, ix_j) and T_ii / 2 (the caller's V + V^T completes it).  b scratch (3 n nl), t (nl, nl).
+ */
+static void sub_tau_v(double *V, double *b, double *t, const double *a, const double *wt, double *sw,
+                      const int *ix, int nl, int n, int nao, dsyrk_t dsyrk_)
+{
+        const int n3 = 3 * n;
+        const double one = 1, mone = -1, zero = 0;
+        int i, j, g, k, sgn, done = 0;
+        for (sgn = 0; sgn < 2; sgn++) {
+                int any = 0;
+                for (g = 0; g < n; g++) {
+                        const double x = sgn == 0 ? wt[g] : -wt[g];
+                        sw[g] = x > 0 ? sqrt(x) : 0;
+                        any |= x > 0;
+                }
+                if (!any) continue;
+                for (i = 0; i < nl; i++)
+                        for (k = 0; k < 3; k++) {
+                                const double *p = a + ((size_t)(k + 1) * nl + i) * n;
+                                double *o = b + (size_t)i * n3 + (size_t)k * n;
+                                for (g = 0; g < n; g++) o[g] = sw[g] * p[g];
+                        }
+                /* t (nl, nl) column-major upper += +- b^T b */
+                dsyrk_("U", "T", &nl, &n3, sgn == 0 ? &one : &mone, b, &n3, done ? &one : &zero, t, &nl);
+                done = 1;
+        }
+        if (!done) return;
+        for (j = 0; j < nl; j++) {
+                const double *tj = t + (size_t)j * nl;
+                for (i = 0; i < j; i++) V[(size_t)ix[i] * nao + ix[j]] += tj[i];
+                V[(size_t)ix[j] * nao + ix[j]] += .5 * tj[j];
+        }
+}
+
+static void vxc_fused_impl(double *vbuf, double *ex, double *ne, double *dm, double *coords, double *weights,
+                           uint8_t *non0tab, int ngrid, int gs, double cutoff, int xctype, gtoval_t eval,
+                           int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
+                           libxc_t xcf, int nfn, void *xc_arr, double *facs,
+                           dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local,
+                           dsyrk_t dsyrk_, double *orb, int nocc)
 {
         const int nao = ao_loc[nbas], ncomp = xctype == 0 ? 1 : 4;
-        const int nsub = (ngrid + gs - 1) / gs, outlen = xctype == 0 ? 2 : 3;
+        const int nvar = xctype == 0 ? 1 : (xctype == 1 ? 4 : 5);
+        const int nsub = (ngrid + gs - 1) / gs, outlen = xctype == 0 ? 2 : (xctype == 1 ? 3 : 4);
         const double one = 1, zero = 0;
         const size_t nn = (size_t)nao * nao;
+        /* c holds D_sub d_k phi (MGGA: 4 rows of AOs) or the orbital products (4 nocc rows) */
+        const size_t nc = (size_t)(xctype == 2 ? 4 : 1) * (nao > nocc ? nao : nocc) * gs;
 #pragma omp parallel
 {
         const int tid = omp_get_thread_num();
@@ -384,12 +499,13 @@ void SOCDFTvxc_fused(double *vbuf, double *ex, double *ne, double *dm, double *c
         double *V = vbuf + tid * nn;
         double *full = malloc(sizeof(double) * ncomp * nao * gs);
         double *a = malloc(sizeof(double) * ncomp * nao * gs);
-        double *c = malloc(sizeof(double) * nao * gs);
-        double *d = malloc(sizeof(double) * nn);
+        double *c = malloc(sizeof(double) * nc);
+        double *d = malloc(sizeof(double) * (nn > (size_t)nao * nocc ? nn : (size_t)nao * nocc));
         double *xyz = malloc(sizeof(double) * 3 * gs);
-        double *rho = malloc(sizeof(double) * ncomp * gs);
+        double *rho = malloc(sizeof(double) * nvar * gs);
         double *out = malloc(sizeof(double) * outlen * gs);
-        double *wv = malloc(sizeof(double) * ncomp * gs);
+        double *wv = malloc(sizeof(double) * nvar * gs);
+        double *sw = malloc(sizeof(double) * gs);
         int *ix = malloc(sizeof(int) * nao);
         size_t *src = malloc(sizeof(size_t) * 2 * nao);
         double exs = 0, nes = 0;
@@ -403,26 +519,11 @@ void SOCDFTvxc_fused(double *vbuf, double *ex, double *ne, double *dm, double *c
                 const int nl = eval_select(a, ix, src, full, n, xyz, (uint8_t *)msk, ncomp, cutoff, eval,
                                            ao_loc, atm, natm, bas, nbas, env);
                 if (nl == 0) continue;
-                for (i = 0; i < nl; i++)
-                        for (j = 0; j < nl; j++) d[i * nl + j] = dm[(size_t)ix[i] * nao + ix[j]];
-                /* c (nl, n) = D_sub phi_0; rho, nabla rho */
-                dgemm_("N", "N", &n, &nl, &nl, &one, a, &n, d, &nl, &zero, c, &n);
-                memset(rho, 0, sizeof(double) * ncomp * n);
-                for (i = 0; i < nl; i++) {
-                        const double *p = a + (size_t)i * n, *q = c + (size_t)i * n;
-                        for (g = 0; g < n; g++) rho[g] += p[g] * q[g];
-                }
-                for (k = 1; k < ncomp; k++) {
-                        double *rk = rho + (size_t)k * n;
-                        for (i = 0; i < nl; i++) {
-                                const double *p = a + ((size_t)k * nl + i) * n, *q = c + (size_t)i * n;
-                                for (g = 0; g < n; g++) rk[g] += 2 * p[g] * q[g];
-                        }
-                }
-                /* the functional: out (outlen, n) = exc, v_rho (, v_sigma); LIBXC_eval_xc
+                sub_rho(rho, c, d, a, ix, nl, n, nvar, ncomp, dm, nao, orb, nocc, dgemm_);
+                /* the functional: out (outlen, n) = exc, v_rho (, v_sigma (, v_tau)); LIBXC_eval_xc
                  * accumulates the functionals of the mixture into out */
                 memset(out, 0, sizeof(double) * outlen * n);
-                xcf(nfn, xc_arr, facs, 0, 1, ncomp, n, outlen, rho, out);
+                xcf(nfn, xc_arr, facs, 0, 1, nvar, n, outlen, rho, out);
                 const double *w = weights + g0;
                 for (g = 0; g < n; g++) {
                         const double den = w[g] * rho[g];
@@ -451,12 +552,48 @@ void SOCDFTvxc_fused(double *vbuf, double *ex, double *ne, double *dm, double *c
                         double *row = V + (size_t)ix[i] * nao;
                         for (j = 0; j < nl; j++) row[ix[j]] += d[i * nl + j];
                 }
+                if (nvar == 5) {
+                        double *wt = wv + 4 * n;
+                        for (g = 0; g < n; g++) wt[g] = .5 * w[g] * out[3 * n + g];
+                        /* b (3 n nl) in c (>= 4 nl n), t in d */
+                        sub_tau_v(V, c, d, a, wt, sw, ix, nl, n, nao, dsyrk_);
+                }
         }
         ex[tid] = exs;
         ne[tid] = nes;
-        free(full); free(a); free(c); free(d); free(xyz); free(rho); free(out); free(wv); free(ix); free(src);
+        free(full); free(a); free(c); free(d); free(xyz); free(rho); free(out); free(wv); free(sw); free(ix);
+        free(src);
         if (mkl_set_num_threads_local) mkl_set_num_threads_local(mkl0);
 }
+}
+
+void SOCDFTvxc_fused(double *vbuf, double *ex, double *ne, double *dm, double *coords, double *weights,
+                     uint8_t *non0tab, int ngrid, int gs, double cutoff, int xctype, gtoval_t eval,
+                     int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
+                     libxc_t xcf, int nfn, void *xc_arr, double *facs,
+                     dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local)
+{
+        vxc_fused_impl(vbuf, ex, ne, dm, coords, weights, non0tab, ngrid, gs, cutoff, xctype, eval, ao_loc, atm,
+                       natm, bas, nbas, env, xcf, nfn, xc_arr, facs, dgemm_, mkl_set_num_threads_local, NULL, NULL,
+                       0);
+}
+
+/*
+ * SOCDFTvxc_fused for LDA / GGA / meta-GGA (xctype 2: rho (5, n) = rho, nabla rho, tau; out exc, v_rho,
+ * v_sigma, v_tau): the tau term of V by DSYRK (dsyrk_ of the process' BLAS); orb (nao, nocc) row-major
+ * C sqrt(occ) of the occupied orbitals or NULL (then rho from D), used for the meta-GGA rho on the
+ * sub-blocks with nocc < nl.
+ */
+void SOCDFTvxc_fused_mgga(double *vbuf, double *ex, double *ne, double *dm, double *coords, double *weights,
+                          uint8_t *non0tab, int ngrid, int gs, double cutoff, int xctype, gtoval_t eval,
+                          int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
+                          libxc_t xcf, int nfn, void *xc_arr, double *facs,
+                          dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local,
+                          dsyrk_t dsyrk_, double *orb, int nocc)
+{
+        vxc_fused_impl(vbuf, ex, ne, dm, coords, weights, non0tab, ngrid, gs, cutoff, xctype, eval, ao_loc, atm,
+                       natm, bas, nbas, env, xcf, nfn, xc_arr, facs, dgemm_, mkl_set_num_threads_local, dsyrk_,
+                       orb, orb ? nocc : 0);
 }
 
 /*
@@ -468,6 +605,7 @@ void SOCDFTvxc_fused(double *vbuf, double *ex, double *ne, double *dm, double *c
  *     out[x][mu] += sum_g d_x phi_mu U_mu + (w0 d_x phi_mu + sum_k w_k d_x d_k phi_mu) V_mu
  *
  * with V = D_sub phi_0, U = D_sub aow, aow = sum_k w_k d_k phi (GGA w0 halved);
+ * meta-GGA (xctype 2) also + sum_k d_x d_k phi_mu T_k,mu, T_k = (w v_tau / 2) D_sub d_k phi;
  * out (nthreads, 3, nao), the gradient -2 sum_{mu in A} out[x][mu].
  */
 static const int D2C[3][3] = {{4, 5, 6}, {5, 7, 8}, {6, 8, 9}};   /* pyscf's d_x d_k component */
@@ -508,9 +646,9 @@ static void xc_grad_fused_impl(double *outb, double *dm, double *coords, double 
                                dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local, double *pg, double *eg)
 {
         const int nao = ao_loc[nbas];
-        const int nvar = xctype == 0 ? 1 : 4;           /* rho (, nabla rho) */
+        const int nvar = xctype == 0 ? 1 : (xctype == 1 ? 4 : 5);  /* rho (, nabla rho (, tau)) */
         const int ncomp = xctype == 0 ? 4 : 10;         /* AO components evaluated */
-        const int nsub = (ngrid + gs - 1) / gs, outlen = xctype == 0 ? 2 : 3;
+        const int nsub = (ngrid + gs - 1) / gs, outlen = xctype == 0 ? 2 : (xctype == 1 ? 3 : 4);
         const double one = 1, zero = 0;
         const size_t nn = (size_t)nao * nao;
 #pragma omp parallel
@@ -520,7 +658,8 @@ static void xc_grad_fused_impl(double *outb, double *dm, double *coords, double 
         double *out = outb + (size_t)tid * 3 * nao;
         double *full = malloc(sizeof(double) * ncomp * nao * gs);
         double *a = malloc(sizeof(double) * ncomp * nao * gs);
-        double *c = malloc(sizeof(double) * nao * gs);          /* V = D phi_0 */
+        /* V = D phi_0 (MGGA: then D d_k phi, k = 1..3, for tau and its term) */
+        double *c = malloc(sizeof(double) * (xctype == 2 ? 4 : 1) * nao * gs);
         double *aw = malloc(sizeof(double) * nao * gs);
         double *u = malloc(sizeof(double) * nao * gs);          /* U = D aow */
         double *d = malloc(sizeof(double) * nn);
@@ -544,38 +683,35 @@ static void xc_grad_fused_impl(double *outb, double *dm, double *coords, double 
                         memset(eg + g0, 0, sizeof(double) * n);
                 }
                 if (nl == 0) continue;
-                for (i = 0; i < nl; i++)
-                        for (j = 0; j < nl; j++) d[i * nl + j] = dm[(size_t)ix[i] * nao + ix[j]];
-                dgemm_("N", "N", &n, &nl, &nl, &one, a, &n, d, &nl, &zero, c, &n);
-                memset(rho, 0, sizeof(double) * nvar * n);
-                for (i = 0; i < nl; i++) {
-                        const double *p = a + (size_t)i * n, *q = c + (size_t)i * n;
-                        for (g = 0; g < n; g++) rho[g] += p[g] * q[g];
-                }
-                for (k = 1; k < nvar; k++) {
-                        double *rk = rho + (size_t)k * n;
-                        for (i = 0; i < nl; i++) {
-                                const double *p = a + ((size_t)k * nl + i) * n, *q = c + (size_t)i * n;
-                                for (g = 0; g < n; g++) rk[g] += 2 * p[g] * q[g];
-                        }
-                }
+                /* rho from D (d = D_sub, c = D_sub d_k phi) */
+                sub_rho(rho, c, d, a, ix, nl, n, nvar, ncomp, dm, nao, NULL, 0, dgemm_);
                 memset(xo, 0, sizeof(double) * outlen * n);
                 xcf(nfn, xc_arr, facs, 0, 1, nvar, n, outlen, rho, xo);
                 const double *w = weights + g0;
                 for (g = 0; g < n; g++) wv[g] = w[g] * xo[n + g];
                 if (eg)
                         for (g = 0; g < n; g++) eg[g0 + g] = xo[g] * rho[g];
-                if (nvar == 4) {
+                if (nvar >= 4) {
                         for (g = 0; g < n; g++) wv[g] *= .5;
                         for (k = 1; k < 4; k++)
                                 for (g = 0; g < n; g++) wv[k * n + g] = 2 * w[g] * xo[2 * n + g] * rho[k * n + g];
+                }
+                if (nvar == 5) {
+                        /* T_k = wt D d_k phi (wt = w v_tau / 2) in place of D d_k phi */
+                        for (g = 0; g < n; g++) wv[4 * n + g] = .5 * w[g] * xo[3 * n + g];
+                        const double *wt = wv + 4 * n;
+                        double *ck = c + (size_t)nl * n;
+                        for (i = 0; i < 3 * nl; i++) {
+                                double *t = ck + (size_t)i * n;
+                                for (g = 0; g < n; g++) t[g] *= wt[g];
+                        }
                 }
                 /* aow = sum_k wv_k d_k phi; U = D_sub aow */
                 for (i = 0; i < nl; i++) {
                         double *o = aw + (size_t)i * n;
                         const double *p = a + (size_t)i * n;
                         for (g = 0; g < n; g++) o[g] = wv[g] * p[g];
-                        for (k = 1; k < nvar; k++) {
+                        for (k = 1; k < (nvar < 4 ? nvar : 4); k++) {
                                 const double *pk = a + ((size_t)k * nl + i) * n, *wk = wv + (size_t)k * n;
                                 for (g = 0; g < n; g++) o[g] += wk[g] * pk[g];
                         }
@@ -617,6 +753,27 @@ static void xc_grad_fused_impl(double *outb, double *dm, double *coords, double 
                                         for (g = 0; g < n; g++)
                                                 sm += ax[g] * (ui[g] + wv[g] * vi[g])
                                                     + (a0[g] * w1[g] + a1[g] * w2[g] + a2[g] * w3[g]) * vi[g];
+                                }
+                                if (nvar == 5) {
+                                        /* + sum_k d_x d_k phi T_k */
+                                        const double *a0 = a + ((size_t)D2C[x][0] * nl + i) * n;
+                                        const double *a1 = a + ((size_t)D2C[x][1] * nl + i) * n;
+                                        const double *a2 = a + ((size_t)D2C[x][2] * nl + i) * n;
+                                        const double *t0 = c + ((size_t)nl + i) * n;
+                                        const double *t1 = c + ((size_t)2 * nl + i) * n;
+                                        const double *t2 = c + ((size_t)3 * nl + i) * n;
+                                        double st = 0;
+                                        if (pg) {
+                                                double *px = pg + (size_t)x * ngrid + g0;
+                                                for (g = 0; g < n; g++) {
+                                                        const double t = a0[g] * t0[g] + a1[g] * t1[g] + a2[g] * t2[g];
+                                                        st += t;
+                                                        px[g] += t;
+                                                }
+                                        } else {
+                                                for (g = 0; g < n; g++) st += a0[g] * t0[g] + a1[g] * t1[g] + a2[g] * t2[g];
+                                        }
+                                        sm += st;
                                 }
                                 out[(size_t)x * nao + ix[i]] += sm;
                         }

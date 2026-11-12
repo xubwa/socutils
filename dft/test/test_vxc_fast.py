@@ -32,7 +32,7 @@ class KnownValues(unittest.TestCase):
 
     def test_nr_rks(self):
         mol = self.mol
-        for xc in ('lda,vwn', 'pbe', 'b3lyp', 'tpss'):
+        for xc in ('lda,vwn', 'pbe', 'b3lyp', 'tpss', 'r2scan', 'm06l', 'scan', 'tpssh'):
             mf = dft.RKS(mol, xc=xc)
             mf.grids.level = 2
             mf.grids.build(with_non0tab=True)
@@ -44,8 +44,27 @@ class KnownValues(unittest.TestCase):
                 self.assertAlmostEqual(e1, e0, 10)
                 self.assertAlmostEqual(abs(v1 - v0).max(), 0, 11)
 
+    def test_mgga_large_basis(self):
+        # def2-TZVP: both meta-GGA rho routes (orbitals on sub-blocks with nl > nocc, else D)
+        mol = gto.M(atom=WATER2, basis='def2-tzvp', verbose=0)
+        mf = scf.RHF(mol).run()
+        dm = lib.tag_array(mf.make_rdm1(), mo_coeff=mf.mo_coeff, mo_occ=mf.mo_occ)
+        g = dft.Grids(mol)
+        g.build(with_non0tab=True)
+        ni = dft.numint.NumInt()
+        n0, e0, v0 = ni.nr_rks(mol, g, 'r2scan', dm)
+        for d in (dm, numpy.asarray(dm)):
+            n1, e1, v1 = vxc_fast.nr_rks(ni, mol, g, 'r2scan', d)
+            self.assertAlmostEqual(e1, e0, 11)
+            self.assertAlmostEqual(abs(v1 - v0).max(), 0, 12)
+        # tags that do not describe the density: rho from D
+        bad = lib.tag_array(numpy.asarray(dm) * .9, mo_coeff=mf.mo_coeff, mo_occ=mf.mo_occ)
+        n0, e0, v0 = ni.nr_rks(mol, g, 'r2scan', numpy.asarray(bad))
+        n1, e1, v1 = vxc_fast.nr_rks(ni, mol, g, 'r2scan', bad)
+        self.assertAlmostEqual(abs(v1 - v0).max(), 0, 12)
+
     def test_scf(self):
-        for xc in ('pbe', 'pbe0'):
+        for xc in ('pbe', 'pbe0', 'r2scan'):
             e = []
             for fast in (False, True):
                 mf = dft.RKS(self.mol, xc=xc)
