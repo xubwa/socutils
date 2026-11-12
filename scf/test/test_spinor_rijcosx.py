@@ -114,6 +114,9 @@ class KnowValues(unittest.TestCase):
         for d, h in ((dh, 1), (x * .05, 0)):
             mf.rijcosx = ''
             vj0, vk0 = spinor_jk.get_jk_ghf(mf, mol_hi, d, hermi=h)
+            # the J-only build (one real density) equals the J of the J + K builds
+            vjj = spinor_jk.get_jk_ghf(mf, mol_hi, d, hermi=h, with_k=False)[0]
+            self.assertLess(abs(vjj - vj0).max() / abs(vj0).max(), 1e-10)
             mf.rijcosx = 'rijcosx'
             mf._spinor_cosx = None
             vj1, vk1 = spinor_jk.get_jk_ghf(mf, mol_hi, d, hermi=h)
