@@ -126,6 +126,8 @@ def nr_vxc(ni, mol, grids, xc_code, dm, hermi=1, max_memory=2000):
     '''(n, exc, vmat) of one Hermitian GHF density dm (2 nao, 2 nao) by the fused pass, or None'''
     if not ENABLE or hermi != 1:
         return None
+    from socutils.dft import grids as sgrids
+    sgrids.adapt_to_xc(grids, xc_code)          # the meta-GGA radial floor (socutils grids)
     dm = numpy.asarray(dm)
     if dm.ndim != 2:
         return None

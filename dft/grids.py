@@ -303,14 +303,16 @@ class Grids(gen_grid.Grids):
     heavy_radi_method = staticmethod(radi.mura_knowles)
     becke_scheme = staticmethod(gen_grid.original_becke)
     radii_adjust = staticmethod(polar_pair_atomic_radii_adjust)
+    xc_intacc = None        # radial floor set by adapt_to_xc for the functional (MGGA_RADIAL_INTACC)
 
     _keys = {'intacc', 'radial_b', 'angular_grid', 'h_reduced', 'alphas', 'weight_cutoff', 'xi', 'xi_scale',
-             'element_radi', 'alpha', 'radial_b_heavy', 'heavy_radi_method', 'alpha_scale', 'element_intacc'}
+             'element_radi', 'alpha', 'radial_b_heavy', 'heavy_radi_method', 'alpha_scale', 'element_intacc',
+             'xc_intacc'}
 
     def __setattr__(self, key, val):
         if key in ('intacc', 'radial_b', 'angular_grid', 'h_reduced', 'alphas', 'weight_cutoff',
                    'xi', 'xi_scale', 'element_radi', 'alpha', 'radial_b_heavy', 'heavy_radi_method',
-                   'alpha_scale', 'element_intacc'):
+                   'alpha_scale', 'element_intacc', 'xc_intacc'):
             self.reset()
         super().__setattr__(key, val)
 
@@ -339,6 +341,8 @@ class Grids(gen_grid.Grids):
             return n_rad, table
         b = self.radial_b if chg <= 10 else self.radial_b_heavy
         intacc = max(self.intacc, self.element_intacc.get(_pure_symbol(symb), self.intacc))
+        if self.xc_intacc is not None:
+            intacc = max(intacc, self.xc_intacc)
         return krack_koster_nrad(chg, intacc, b), ag
 
     def gen_atomic_grids(self, mol, atom_grid=None, radi_method=None, level=None, prune=None, **kwargs):
@@ -562,6 +566,71 @@ def use_fast_partition():
         gen_grid.get_partition = get_partition_fast
         gen_grid.gen_partition = get_partition_fast
     return orig
+
+
+# The radial grid of the meta-GGAs whose integrand oscillates in the core region: the SCAN family (SCAN, rSCAN,
+# r2SCAN, r++SCAN and their hybrids, r2SCAN0, ...) and the Minnesota meta-GGAs (M05, M06(-L / -2X / -HF), revM06,
+# M08, M11(-L), MN12, MN15(-L)).  On the defaults (intacc 4.388) their energies are off by 3e-4 - 2e-3 Eh
+# (PBE / TPSS: 2e-6 - 1e-5), oscillating with intacc and insensitive to the angular grid, and the analytic
+# frequencies by up to 107 cm-1 ((H2O)6; CH3SH 26, caffeine 8.7) against finite differences of grid-response
+# gradients on a dense grid; with intacc 6.0 for the SCF and the CP-SCF grid 1.7 / 3.8 / 2.3 cm-1.
+# adapt_to_xc raises (never lowers) the radial accuracy of a socutils Grids to MGGA_RADIAL_INTACC for these
+# functionals, unless intacc was set on the grid explicitly.
+MGGA_RADIAL_INTACC = 6.0
+_FINE_RADIAL_PATTERNS = (r'(^|_)(R2|R|RPP|REG)?SCAN', r'_(REV)?M0[5-8]($|_)', r'_M11($|_)', r'_MN1[25]($|_)')
+_fine_cache = {}
+
+
+def needs_fine_radial(xc_code):
+    '''True if any libxc component of xc_code (also within mixtures) is of the SCAN family or a Minnesota
+    meta-GGA (_FINE_RADIAL_PATTERNS on the libxc names of the parsed components)'''
+    if not isinstance(xc_code, str):
+        return False
+    key = xc_code.upper()
+    if key in _fine_cache:
+        return _fine_cache[key]
+    import re
+    from pyscf.dft import libxc
+    try:
+        fn_facs = libxc.parse_xc(xc_code)[1]
+    except Exception:
+        _fine_cache[key] = False
+        return False
+    names = {}
+    for k, v in libxc.XC_CODES.items():
+        if isinstance(v, (int, numpy.integer)):
+            names.setdefault(int(v), []).append(k.upper())
+    hit = False
+    for fid, fac in fn_facs:
+        if fac == 0:
+            continue
+        for nm in names.get(int(fid), ()):
+            if 'MGGA' in nm and any(re.search(p, nm) for p in _FINE_RADIAL_PATTERNS):
+                hit = True
+    _fine_cache[key] = hit
+    return hit
+
+
+def adapt_to_xc(grids, xc_code, rebuild=True):
+    '''the radial floor MGGA_RADIAL_INTACC on a socutils Grids for the functionals of needs_fine_radial (none
+    for the others, nor when intacc was set on this grid explicitly); a built grid is rebuilt if the floor
+    changed (with its non0tab when it had one).  Returns True if the grid changed.'''
+    if not isinstance(grids, Grids):
+        return False
+    want = None
+    if needs_fine_radial(xc_code) and 'intacc' not in grids.__dict__ and grids.intacc < MGGA_RADIAL_INTACC:
+        want = MGGA_RADIAL_INTACC
+    if grids.xc_intacc == want:
+        return False
+    built = grids.coords is not None
+    mask = getattr(grids, 'non0tab', None) is not None
+    grids.xc_intacc = want
+    if want is not None:
+        logger.info(grids, '%s: radial grid intacc %s (MGGA_RADIAL_INTACC) for the SCAN-family / Minnesota '
+                    'meta-GGA', xc_code, want)
+    if built and rebuild:
+        grids.build(with_non0tab=mask)
+    return True
 
 
 def hessian_grids(mol, **kwargs):
