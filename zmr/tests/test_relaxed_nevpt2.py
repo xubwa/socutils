@@ -63,3 +63,63 @@ def test_relaxed_dipole():
     assert abs(relaxed - ff) < 5e-6, (relaxed, ff)
     # the unrelaxed density is off by much more
     assert abs(numpy.einsum('ij,ji', op, mc.make_rdm1() + c @ d2.real.T @ c.T) - ff) > 1e-3
+
+
+@pytest.mark.slow
+def test_relaxed_dipole_sa_casscf():
+    '''State-specific PC-NEVPT2 of the states of an SA-CASSCF (two singlets, equal
+    weights): the right-hand side has the gradient of the CASSCF energy of the state.'''
+    from socutils.zmr.interface import pyscf_nr
+    from socutils.zmr.nr import PCNEVPT2 as NRPC
+    from socutils.zmr.nr import density as nr_density
+    from socutils.zmr.reference import ci_gradient as cg, orbital_gradient as og
+    from socutils.zmr.reference import relaxed_fd as rf
+    from socutils.zmr.uc import density as uc_density
+    mol = gto.M(atom='O 0 0 0.1173; H 0 0.7572 -0.4692; H 0 -0.7572 -0.4692',
+                basis='6-31g', verbose=0)
+    cderi = incore.cholesky_eri(mol, auxbasis=AUX)
+    q = mol.atom_charges()
+    with mol.with_common_orig((q[:, None] * mol.atom_coords()).sum(0) / q.sum()):
+        op = mol.intor('int1e_r')[2]
+    h0 = scf.RHF(mol).get_hcore()
+
+    def casscf(h, mo0=None):
+        mf = scf.RHF(mol).density_fit(auxbasis=AUX)
+        mf.get_hcore = lambda *a: h
+        mf.conv_tol = 1e-13
+        mf.kernel()
+        mc = mcscf.CASSCF(mf, 4, 4)
+        mc.fix_spin_(ss=0)
+        mc = mc.state_average_([0.5, 0.5])
+        mc.conv_tol = 1e-12
+        mc.conv_tol_grad = 1e-6
+        mc.max_cycle_macro = 300
+        mc.kernel(mo0)
+        return rf.polish(mc)
+
+    def e_state(mc, h, k):
+        eris = pyscf_nr.nr_eris(mol, h, mc.mo_coeff, 0, mc.ncore, mc.ncas, cderi=cderi)
+        pt = NRPC(eris, (2, 2), civecs=numpy.asarray(mc.ci[k]).reshape(-1, 1))
+        pt.verbose = 0
+        pt.kernel()
+        return (rf.state_energies(mc, mc.mo_coeff, list(mc.ci))[k]
+                + float(sum(v[0, 0].real for v in pt.h2_by_class.values())))
+
+    mc = casscf(h0)
+    c = mc.mo_coeff
+    m_p = casscf(h0 + 1e-3 * op, c)
+    m_m = casscf(h0 - 1e-3 * op, c)
+    for k in range(2):
+        route = nr_density.spin_orbital_route(mc, cderi, ci=mc.ci[k])
+        pt = route.pt()
+        g_qc, u = og.gradient(pt)
+        g = route.spin_sum(numpy.conj(u) @ g_qc @ u.T).real
+        rhs = rf.state_gradient(mc, k)
+        rhs[:rf.ngorb(mc)] += mc.pack_uniq_var(g - g.T)
+        rhs += rf.ci_block(mc, k, cg.ci_gradient(pt, route))
+        z = rf.zvector(mc, rhs)
+        d2 = route.spin_sum(uc_density.make_rdm1(pt)[1]).real
+        dm = rf.state_density(mc, k) + c @ d2.T @ c.T + rf.lagrangian_density(mc, z)
+        relaxed = numpy.einsum('ij,ji', op, dm)
+        ff = (e_state(m_p, h0 + 1e-3 * op, k) - e_state(m_m, h0 - 1e-3 * op, k)) / 2e-3
+        assert abs(relaxed - ff) < 5e-6, (k, relaxed, ff)

@@ -143,3 +143,41 @@ def lagrangian_density(mc, z):
     # D(t) = mo (1 + tK) gamma (1 + tK)^T mo^T + mo t dgam mo^T
     d_mo = kmat @ gam + gam @ kmat.T + dgam
     return mo @ d_mo @ mo.T
+
+
+def state_gradient(mc, state):
+    '''Gradient of the energy of one state of a state-averaged CASSCF in the parameters
+    of the averaged one (gen_g_hop with the weight 1 on that state).'''
+    weights = _weights(mc)
+    if len(weights) == 1:
+        return gradient_hessian(mc)[0]
+    one = [1.0 if k == state else 0.0 for k in range(len(weights))]
+    saved = mc.weights
+    try:
+        mc.weights = one
+        ci = _ci_list(mc)
+        g = newton_casscf.gen_g_hop(mc, mc.mo_coeff, ci, mc.ao2mo(mc.mo_coeff))[0]
+    finally:
+        mc.weights = saved
+    return numpy.asarray(g)
+
+
+def state_density(mc, state):
+    '''AO density of one state of a (state-averaged) CASSCF.'''
+    mo, ci = mc.mo_coeff, _ci_list(mc)
+    nmo = mo.shape[1]
+    g = numpy.zeros((nmo, nmo))
+    g[:mc.ncore, :mc.ncore] = 2 * numpy.eye(mc.ncore)
+    a = slice(mc.ncore, mc.ncore + mc.ncas)
+    g[a, a] = direct_spin1.make_rdm1(ci[state], mc.ncas, mc.nelecas)
+    return mo @ g @ mo.T
+
+
+def ci_block(mc, state, vec):
+    '''A vector of the parameters with vec in the CI block of one state (zero elsewhere).'''
+    ci = _ci_list(mc)
+    n = ngorb(mc)
+    out = numpy.zeros(n + sum(c.size for c in ci))
+    p = n + sum(c.size for c in ci[:state])
+    out[p:p + ci[state].size] = vec
+    return out
