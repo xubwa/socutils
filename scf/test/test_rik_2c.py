@@ -121,6 +121,28 @@ class KnownValues(unittest.TestCase):
         k = rik_2c._assemble_quat(acc.sum(axis=0), self.nao)
         self.assertLess(abs(k - ref).max(), 1e-12)
 
+    def test_factored_dm(self):
+        '''K of an untagged density (initial guess, a non-idempotent mixture) from its eigenvectors
+        equals the DM-based K'''
+        mf = self.mf
+        dm = mf.make_rdm1()
+        dm = .7 * dm + .3 * mf.get_init_guess()
+        try:
+            spinor_hf.FACTOR_DM = False
+            vj0, vk0 = mf.get_jk(self.mol, dm)
+        finally:
+            spinor_hf.FACTOR_DM = True
+        vj1, vk1 = mf.get_jk(self.mol, dm)
+        self.assertLess(abs(vj1 - vj0).max(), 1e-12)
+        self.assertLess(abs(vk1 - vk0).max(), 1e-11)
+        # an indefinite (difference) density: positive and negative parts
+        dd = mf.make_rdm1() - mf.get_init_guess()
+        spinor_hf.FACTOR_DM = False
+        vk0 = mf.get_jk(self.mol, dd, with_j=False)[1]
+        spinor_hf.FACTOR_DM = True
+        vk1 = mf.get_jk(self.mol, dd, with_j=False)[1]
+        self.assertLess(abs(vk1 - vk0).max(), 1e-11)
+
     def test_vs_old_loop(self):
         mf = self.mf
         dmt = lib.tag_array(mf.make_rdm1(), mo_coeff=mf.mo_coeff, mo_occ=mf.mo_occ)
