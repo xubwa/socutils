@@ -38,10 +38,9 @@ class SpinorNumInt2C(noncollinear.NumInt2C):
 
     # Multi-collinear GGA/MGGA integrate the XC over `spin_samples` spin-
     # projection directions per grid point (Lebedev; half of them are
-    # evaluated) -- the dominant cost of the mcol path.  Default to a coarse
-    # angular quadrature here; raise it (e.g. 50-110) for production-quality
-    # results.  Multi-collinear LDA is exact and does not sample.
-    spin_samples = 14
+    # evaluated) -- the dominant cost of the mcol path.  The default is
+    # noncollinear.SPIN_SAMPLES (110); an instance setting wins.  Multi-
+    # collinear LDA is exact and does not sample.
 
     def __init__(self, mol):
         numint2c.NumInt2C.__init__(self)

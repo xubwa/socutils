@@ -217,6 +217,12 @@ def _half_sphere(spin_samples):
     return np.ascontiguousarray(u), w
 
 
+# the default number of Lebedev spin-sampling directions of the multi-collinear GGA / MGGA (the half sphere, 55
+# directions, is evaluated): pyscf / mcfun use 770.  [BiPh3]+ doublet, Kramers-unrestricted X2CAMF PBE / DYVTZ-SF,
+# converged energies for 50, 110, 266, 1202 samples agree to 1e-10 Eh; the mcol XC per cycle 3.7 s at 110 against
+# 9.9 s at 770 (collinear 1.6 s).  NumInt2C.spin_samples reads it unless set on the instance.
+SPIN_SAMPLES = 110
+
 _libsocdft = False
 
 
@@ -694,6 +700,15 @@ class NumInt2C(numint2c.NumInt2C):
         spherical l <= 3, deriv <= 2; else pyscf's)'''
         from socutils.dft import vxc_fast
         return vxc_fast.eval_ao(self, mol, coords, deriv, shls_slice, non0tab, cutoff, out, verbose)
+
+    @property
+    def spin_samples(self):
+        '''Lebedev spin-sampling directions of mcol GGA / MGGA: the instance's setting, else SPIN_SAMPLES'''
+        return self.__dict__.get('_spin_samples', SPIN_SAMPLES)
+
+    @spin_samples.setter
+    def spin_samples(self, n):
+        self.__dict__['_spin_samples'] = n
 
     mcol_backend = 'native'
     # native mcol GGA/MGGA sphere kernel: 'c' (lib/libsocdft.so, falls back to
