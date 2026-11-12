@@ -402,19 +402,20 @@ def _is_h1_occ(h1, mo_coeff, mo_occ):
 
 
 SOLVE_MO1_ARRAYS = None  # nmo nocc arrays per perturbation of a Krylov batch: None -> 6 (h1, s1, hs, mo1base, transient
-                         # copies of the Gram-Schmidt) + CPHF_KRYLOV_CYCLES trial vectors (and as many images unless
-                         # KRYLOV_IMPLICIT_H); an int forces it
-CPHF_KRYLOV_CYCLES = 8
+                         # copies of the Gram-Schmidt) + CPHF_KRYLOV_VECTORS trial vectors (and as many images unless
+                         # KRYLOV_IMPLICIT_H, else 2 for the dropped directions); an int forces it
+CPHF_KRYLOV_VECTORS = 10  # trial vectors per perturbation over the Krylov solve (the converged directions dropped on the
+                          # way): trpn_1_10 def2-SVP batches of 14 atoms 12 cycles, ~10.1 vectors per perturbation
 CPHF_MEM_MARGIN = .05  # the share of the budget (mf.max_memory) the CPHF holds back for the allocator's slack
 CPHF_J_MEM = 2000      # MB of the semi-direct RI-J's integral blocks under the CPHF budget
 CPHF_XC_MEM = 2000     # max_memory of the batched XC response under the CPHF budget (its AO blocks ~ .2 of it)
 CPHF_KEPT_PRIOR = .5   # the kept pair fraction of the COSX pass assumed until a pass has measured it
 
 
-def _cphf_budget(mf, nao, nmo, nocc, natm, fx, budget, mem_now, nout=None):
+def _cphf_budget(mf, nao, nmo, nocc, natm, fx, budget, mem_now):
     '''one memory budget for the CPHF of natm atoms: (atoms per Krylov batch, settings for _CPHF_MEM).  Set
-    aside first: what is in use (mem_now, the right-hand sides among it), the solutions still to come (nout
-    atoms, default natm: mo1 nao nocc, e1 nocc^2 per perturbation), the fixed buffers of a response call (the
+    aside first: what is in use (mem_now: the right-hand sides and the solutions written so far among it; a
+    batch's own solutions are written after its Krylov arrays are freed), the fixed buffers of a response call (the
     COSX pass's stored pair integrals at the largest kept fraction seen, CPHF_KEPT_PRIOR before the first
     pass, its work arrays, the RI-J blocks, the XC blocks) and CPHF_MEM_MARGIN of the budget.  The rest is
     shared by the Krylov subspace (SOLVE_MO1_ARRAYS nmo nocc per perturbation) and one response call over
@@ -422,14 +423,11 @@ def _cphf_budget(mf, nao, nmo, nocc, natm, fx, budget, mem_now, nout=None):
     transient term: the COSX pass's per-density buffers, cosx.COSX.multi_mem, or 2.5 nao^2 of J / XC), so
     that every Krylov cycle is one response call.  The fewest equal batches that fit.'''
     from pyscf.scf import hf
-    if nout is None:
-        nout = natm
     a2 = 8. * nao * nao / 1e6
     narr = SOLVE_MO1_ARRAYS
     if narr is None:
-        narr = 6 + CPHF_KRYLOV_CYCLES * (1 if KRYLOV_IMPLICIT_H else 2) + (2 if KRYLOV_IMPLICIT_H else 0)
+        narr = 6 + CPHF_KRYLOV_VECTORS * (1 if KRYLOV_IMPLICIT_H else 2) + (2 if KRYLOV_IMPLICIT_H else 0)
     kry = narr * 8. * nmo * nocc / 1e6
-    out = 3 * nout * 8. * (nao * nocc + nocc * nocc) / 1e6
     with_k = not isinstance(mf, hf.KohnShamDFT) or mf._numint.libxc.is_hybrid_xc(mf.xc)
     k_per = k_fix = 0
     if with_k:
@@ -450,7 +448,7 @@ def _cphf_budget(mf, nao, nmo, nocc, natm, fx, budget, mem_now, nout=None):
     xc_mem = CPHF_XC_MEM if isinstance(mf, hf.KohnShamDFT) else 0
     fixed = k_fix + j_mem + .4 * xc_mem
     margin = CPHF_MEM_MARGIN * budget
-    avail = budget - margin - mem_now - out - fixed
+    avail = budget - margin - mem_now - fixed
     nper = int(avail / (kry + fxd))
     if 3 * natm <= nper:
         blk = natm
@@ -458,10 +456,10 @@ def _cphf_budget(mf, nao, nmo, nocc, natm, fx, budget, mem_now, nout=None):
         nb = -(-natm // max(1, nper // 3))
         blk = -(-natm // nb)
     nf = max(1, min(3 * blk, int((avail - 3 * blk * kry) / fxd)))
-    logger.info(mf, 'CPHF memory budget %.0f MB for %d atoms: in use %.0f, solutions %.0f, fixed buffers %.0f '
+    logger.info(mf, 'CPHF memory budget %.0f MB for %d atoms: in use %.0f, fixed buffers %.0f '
                 '(COSX %.0f, RI-J %.0f, XC %.0f), margin %.0f; per perturbation Krylov %.0f + response %.0f MB '
                 '-> %d atoms per batch (%d batches), response calls of %d densities (Krylov %.0f + response '
-                '%.0f MB)', budget, natm, mem_now, out, fixed, k_fix, j_mem, .4 * xc_mem, margin, kry, fxd, blk,
+                '%.0f MB)', budget, natm, mem_now, fixed, k_fix, j_mem, .4 * xc_mem, margin, kry, fxd, blk,
                 -(-natm // blk), nf, 3 * blk * kry, nf * fxd)
     if avail < 3 * (kry + fxd):
         logger.warn(mf, 'CPHF: the memory budget (%.0f MB) is short by %.0f MB of one atom per batch', budget,
