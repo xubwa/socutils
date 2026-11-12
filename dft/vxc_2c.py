@@ -34,6 +34,7 @@ from pyscf import lib
 from pyscf.lib import logger
 
 ENABLE = True
+MCOL_GGA = True         # multi-collinear GGA fused too (the sphere average per sub-block)
 KRAMERS_TOL = 1e-12     # max |Re D_aa - Re D_bb| / max |Re D_aa| below which 'col' runs the restricted pass
 MEM_FRAC = .5           # of the free max_memory the per-thread V buffers may take
 
@@ -66,8 +67,9 @@ def _common(ni, mol, grids, xc_code):
     return dict(libdft=libdft, xctype=xctype, xc=xc, feval=feval, own=own)
 
 
-def _run(c, mol, grids, dms, scheme, s_thrd):
-    '''SOCDFTvxc_fused_2c on the real symmetric matrices dms (nd, nao, nao): (n, exc, V (nd, nao, nao))'''
+def _run(c, mol, grids, dms, scheme, s_thrd, mcol=None):
+    '''SOCDFTvxc_fused_2c on the real symmetric matrices dms (nd, nao, nao): (n, exc, V (nd, nao, nao));
+    mcol (scheme 2) = (collinear_thrd, u, wu, xcmap, xclen)'''
     from pyscf.dft import libxc
     from socutils.dft import vxc_fast
     libdft, xc = c['libdft'], c['xc']
@@ -85,10 +87,16 @@ def _run(c, mol, grids, dms, scheme, s_thrd):
     ex = numpy.zeros(nthreads)
     ne = numpy.zeros(nthreads)
     facs = (ctypes.c_double * max(1, xc.nfunc))(*xc.facs)
+    if mcol is None:
+        col_thrd, u, wu, xcmap, xclen = 1., numpy.zeros(3), numpy.zeros(1), numpy.zeros(1, numpy.int32), 0
+    else:
+        col_thrd, u, wu, xcmap, xclen = mcol
     libdft.SOCDFTvxc_fused_2c(
         vbuf.ctypes.data_as(ctypes.c_void_p), ex.ctypes.data_as(ctypes.c_void_p),
         ne.ctypes.data_as(ctypes.c_void_p), dms.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nd),
-        ctypes.c_int(scheme), ctypes.c_double(s_thrd),
+        ctypes.c_int(scheme), ctypes.c_double(s_thrd), ctypes.c_double(col_thrd),
+        u.ctypes.data_as(ctypes.c_void_p), wu.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(wu.size),
+        xcmap.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(xclen),
         coords.ctypes.data_as(ctypes.c_void_p), weights.ctypes.data_as(ctypes.c_void_p),
         non0tab.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(weights.size), ctypes.c_int(vxc_fast.SUBBLOCK),
         ctypes.c_double(vxc_fast.AO_CUTOFF), ctypes.c_int(0 if c['xctype'] == 'LDA' else 1), c['feval'],
@@ -117,7 +125,10 @@ def nr_vxc(ni, mol, grids, xc_code, dm, hermi=1, max_memory=2000):
         return None
     scheme = ni.collinear[0]
     c = _common(ni, mol, grids, xc_code)
-    if c is None or (scheme == 'm' and c['xctype'] != 'LDA') or scheme not in ('c', 'n', 'm'):
+    if c is None or scheme not in ('c', 'n', 'm'):
+        return None
+    if scheme == 'm' and c['xctype'] != 'LDA' and (getattr(ni, 'mcol_backend', 'native') != 'native'
+                                                  or not MCOL_GGA):
         return None
     t0 = (logger.process_clock(), logger.perf_counter())
     nao = mol.nao
@@ -147,7 +158,20 @@ def nr_vxc(ni, mol, grids, xc_code, dm, hermi=1, max_memory=2000):
             return None
         from socutils.dft.noncollinear import _rho_mag_dms
         ds = _rho_mag_dms(dm)[0::2]             # the real symmetric parts of D_n, D_mx, D_my, D_mz
-        n, exc, v = _run(c, mol, grids, numpy.stack(ds), 1, ni.ncol_s_thrd)
+        if scheme == 'm' and c['xctype'] == 'GGA':
+            # multi-collinear GGA: the half-sphere average of lib/dft/mcol.c per sub-block
+            from pyscf.dft import libxc
+            from socutils.dft.noncollinear import _half_sphere
+            u, wu = _half_sphere(ni.spin_samples)
+            idx = libxc._libxc_to_xcfun_indices('GGA', 1, 2)
+            xclen = len(idx)
+            xcmap = numpy.asarray(numpy.arange(xclen)[idx], dtype=numpy.int32)
+            thrd = ni.collinear_thrd
+            mc = (1e300 if thrd is None else thrd, numpy.ascontiguousarray(u), numpy.ascontiguousarray(wu),
+                  xcmap, xclen)
+            n, exc, v = _run(c, mol, grids, numpy.stack(ds), 2, 0., mc)
+        else:
+            n, exc, v = _run(c, mol, grids, numpy.stack(ds), 1, ni.ncol_s_thrd)
         vr, vx, vy, vz = v
         vmat[:nao, :nao] = vr + vz
         vmat[nao:, nao:] = vr - vz
