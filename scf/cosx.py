@@ -220,6 +220,8 @@ class COSX(lib.StreamObject):
         self._key = None
         self._proj = None
         self._libdft = _lib()
+        self.mem_cap = None     # MB a multi-density pass of get_k may use (set by the CPHF's memory budget);
+                                # None: what max_memory leaves, at least MULTI_MEM_FLOOR of it
 
     def __del__(self):
         self._free()
@@ -344,6 +346,26 @@ class COSX(lib.StreamObject):
         self._sg = sg
         return numpy.linalg.solve(sg.T, s.T).T          # s sg^-1 (sg symmetric)
 
+    def multi_mem(self, nao=None, kept=None):
+        '''(per density, fixed) MB of a multi-density pass of get_k.  Per density: the threads' F, G (float:
+        in float only), 2 blk nao each; here two nao^2 arrays alive at a time (the transposed input and output,
+        then the output and the result) and half of one for the rounding of the densities to the kernel's
+        vector length.  Fixed: the threads' stored pair integrals of a block, (kept fraction) nao^2/2 blk each
+        (kept: default the largest kept fraction of the previous call, 1/2 before the first), the dense A(g),
+        nao^2, and two nao^2 work arrays (double)'''
+        libdft = _lib()
+        if nao is None:
+            nao = self.mol.nao_nr()
+        nt = lib.num_threads()
+        per = ((4 if libdft.SOCDFTcosx_mfloat() else 12) * 2 * self.blk * nao * nt + 8 * 2.5 * nao * nao) / 1e6
+        if getattr(libdft, 'SOCDFTcosx_kpriv', None) is not None and libdft.SOCDFTcosx_kpriv():
+            per += 8 * nao * nao * nt / 1e6         # the threads' private K
+        if kept is None:
+            kept = getattr(self, '_kept', .5)
+        esz = 4 if libdft.SOCDFTcosx_mfloat() else 8
+        fixed = (esz * (kept * nao * nao / 2 * self.blk + nao * nao) + 16 * nao * nao) * nt / 1e6
+        return per, fixed
+
     def get_k(self, dm, hermi=1, _onepass=False):
         '''K of real densities dm ((nset,) nao, nao); hermi=1: symmetrised'''
         self.build()
@@ -360,22 +382,17 @@ class COSX(lib.StreamObject):
         multi = nset >= MULTI_MIN
         if multi:
             # many densities: the densities as the vector dimension of the contraction, in as few passes as
-            # the memory allows (every pass evaluates the integrals again).  Per density: the threads' F, G
-            # (float: in float only), 2 blk nao each; here two nao^2 arrays alive at a time (the transposed
-            # input and output, then the output and the result).  Fixed: the threads' stored pair integrals
-            # of a block, (kept fraction) nao^2/2 blk each (the largest kept fraction of the previous call,
-            # 1/2 before the first) and the dense A(g), nao^2
-            nt = lib.num_threads()
-            per = ((4 if libdft.SOCDFTcosx_mfloat() else 12) * 2 * self.blk * nao * nt + 8 * 2.5 * nao * nao) / 1e6
-            if getattr(libdft, 'SOCDFTcosx_kpriv', None) is not None and libdft.SOCDFTcosx_kpriv():
-                per += 8 * nao * nao * nt / 1e6         # the threads' private K
-            kept = getattr(self, '_kept', .5)
-            fixed = (4 if libdft.SOCDFTcosx_mfloat() else 8) * (kept * nao * nao / 2 * self.blk + nao * nao) * nt / 1e6
-            # At least 2 GB and MULTI_MEM_FLOOR of max_memory, whatever the caller already holds: in a Hessian
-            # the process is near max_memory during the CP-SCF, and the 2 GB floor alone gave ~47 densities
-            # per pass (trpn_1_5 def2-SVP, 276 densities, 24 threads: 6 passes 27 s, 2 passes 19 s, 1 pass 16 s)
-            avail = max(2000, MULTI_MEM_FLOOR * mol.max_memory, mol.max_memory - lib.current_memory()[0] - fixed)
-            nb = max(MULTI_MIN, min(nset, MULTI_MAXSET, int(.8 * avail / per)))
+            # the memory allows (every pass evaluates the integrals again); memory per density and fixed as
+            # multi_mem.  At least 2 GB and MULTI_MEM_FLOOR of max_memory, whatever the caller already holds: in
+            # a Hessian the process is near max_memory during the CP-SCF, and the 2 GB floor alone gave ~47
+            # densities per pass (trpn_1_5 def2-SVP, 276 densities, 24 threads: 6 passes 27 s, 2 passes 19 s,
+            # 1 pass 16 s).  Under the CPHF's memory budget (mem_cap) exactly the memory it set aside.
+            per, fixed = self.multi_mem(nao)
+            if self.mem_cap is not None:
+                nb = max(MULTI_MIN, min(nset, MULTI_MAXSET, int((self.mem_cap - fixed) / per)))
+            else:
+                avail = max(2000, MULTI_MEM_FLOOR * mol.max_memory, mol.max_memory - lib.current_memory()[0] - fixed)
+                nb = max(MULTI_MIN, min(nset, MULTI_MAXSET, int(.8 * avail / per)))
             if nb < nset and not _onepass:
                 npass = (nset + nb - 1) // nb
                 nb = (nset + npass - 1) // npass        # equal passes
@@ -410,6 +427,7 @@ class COSX(lib.StreamObject):
         if multi and getattr(libdft, 'SOCDFTcosx_kept', None) is not None:
             libdft.SOCDFTcosx_kept.restype = ctypes.c_double
             self._kept = max(.05, libdft.SOCDFTcosx_kept())
+            self._kept_max = max(self._kept, getattr(self, '_kept_max', 0))
         tp_ = logger.perf_counter()
         PROFILE['kernel'] = PROFILE.get('kernel', 0) + tp_ - tk_
         if multi:

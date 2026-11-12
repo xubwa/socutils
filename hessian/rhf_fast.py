@@ -401,13 +401,79 @@ def _is_h1_occ(h1, mo_coeff, mo_occ):
     return h1.ndim == 4 and h1.shape[-1] == nocc and h1.shape[-2] == mo_coeff.shape[0] != nocc
 
 
-SOLVE_MO1_ARRAYS = 20
-SOLVE_MO1_MEM = .5      # the share of mf.max_memory the CPHF solver may always use for its atom batches
+SOLVE_MO1_ARRAYS = 22  # nmo nocc arrays per perturbation of a Krylov batch: h1, s1, hs, mo1base, the trial vectors and
+                       # their images (two per cycle, ~8 cycles), transient copies of the Gram-Schmidt
+CPHF_MEM_MARGIN = .05  # the share of the budget (mf.max_memory) the CPHF holds back for the allocator's slack
+CPHF_J_MEM = 2000      # MB of the semi-direct RI-J's integral blocks under the CPHF budget
+CPHF_XC_MEM = 2000     # max_memory of the batched XC response under the CPHF budget (its AO blocks ~ .2 of it)
+CPHF_KEPT_PRIOR = .5   # the kept pair fraction of the COSX pass assumed until a pass has measured it
+
+
+def _cphf_budget(mf, nao, nmo, nocc, natm, fx, budget, mem_now, nout=None):
+    '''one memory budget for the CPHF of natm atoms: (atoms per Krylov batch, settings for _CPHF_MEM).  Set
+    aside first: what is in use (mem_now, the right-hand sides among it), the solutions still to come (nout
+    atoms, default natm: mo1 nao nocc, e1 nocc^2 per perturbation), the fixed buffers of a response call (the
+    COSX pass's stored pair integrals at the largest kept fraction seen, CPHF_KEPT_PRIOR before the first
+    pass, its work arrays, the RI-J blocks, the XC blocks) and CPHF_MEM_MARGIN of the budget.  The rest is
+    shared by the Krylov subspace (SOLVE_MO1_ARRAYS nmo nocc per perturbation) and one response call over
+    all perturbations of the batch (fx.ao_arrays nao^2 per density alive throughout, plus the largest
+    transient term: the COSX pass's per-density buffers, cosx.COSX.multi_mem, or 2.5 nao^2 of J / XC), so
+    that every Krylov cycle is one response call.  The fewest equal batches that fit.'''
+    from pyscf.scf import hf
+    if nout is None:
+        nout = natm
+    a2 = 8. * nao * nao / 1e6
+    kry = SOLVE_MO1_ARRAYS * 8. * nmo * nocc / 1e6
+    out = 3 * nout * 8. * (nao * nocc + nocc * nocc) / 1e6
+    with_k = not isinstance(mf, hf.KohnShamDFT) or mf._numint.libxc.is_hybrid_xc(mf.xc)
+    k_per = k_fix = 0
+    if with_k:
+        from socutils.scf import cosx
+        for c in _cphf_cosx_pair(mf):
+            if c is not None:
+                fl = cosx.MULTI_FLOAT
+                cosx.set_multi_float(CPHF_COSX_FLOAT)
+                try:
+                    per, fix = c.multi_mem(nao, getattr(c, '_kept_max', CPHF_KEPT_PRIOR))
+                finally:
+                    cosx.set_multi_float(fl)
+                k_per, k_fix = max(k_per, per), max(k_fix, fix)
+    fxd = getattr(fx, 'ao_arrays', FX_AO_ARRAYS - 2.5) * a2 + max(k_per, 2.5 * a2 + 8. * nao * FXC_SUBBLOCK / 1e6)
+    j_mem = CPHF_J_MEM if _rij_engine(mf) is not None else 0
+    xc_mem = CPHF_XC_MEM if isinstance(mf, hf.KohnShamDFT) else 0
+    fixed = k_fix + j_mem + .4 * xc_mem
+    margin = CPHF_MEM_MARGIN * budget
+    avail = budget - margin - mem_now - out - fixed
+    nper = int(avail / (kry + fxd))
+    if 3 * natm <= nper:
+        blk = natm
+    else:
+        nb = -(-natm // max(1, nper // 3))
+        blk = -(-natm // nb)
+    nf = max(1, min(3 * blk, int((avail - 3 * blk * kry) / fxd)))
+    logger.info(mf, 'CPHF memory budget %.0f MB for %d atoms: in use %.0f, solutions %.0f, fixed buffers %.0f '
+                '(COSX %.0f, RI-J %.0f, XC %.0f), margin %.0f; per perturbation Krylov %.0f + response %.0f MB '
+                '-> %d atoms per batch (%d batches), response calls of %d densities (Krylov %.0f + response '
+                '%.0f MB)', budget, natm, mem_now, out, fixed, k_fix, j_mem, .4 * xc_mem, margin, kry, fxd, blk,
+                -(-natm // blk), nf, 3 * blk * kry, nf * fxd)
+    if avail < 3 * (kry + fxd):
+        logger.warn(mf, 'CPHF: the memory budget (%.0f MB) is short by %.0f MB of one atom per batch', budget,
+                    3 * (kry + fxd) - avail)
+    mem = {'fx': nf}
+    if xc_mem:
+        mem['xc'] = xc_mem
+    if k_per:
+        mem['k'] = k_fix + nf * k_per
+    if j_mem:
+        mem['j'] = j_mem
+    return blk, mem
 
 
 def _solve_mo1_occ(mf, mo_energy, mo_coeff, mo_occ, h1c, fx, atmlst=None, max_memory=4000,
                    max_cycle=50, level_shift=0):
-    '''pyscf.hessian.rhf.solve_mo1 for h1 given as h1 C_occ (natm, 3, nao, nocc)'''
+    '''pyscf.hessian.rhf.solve_mo1 for h1 given as h1 C_occ (natm, 3, nao, nocc), within one memory budget
+    (_cphf_budget, planned again for the remaining atoms after every batch: the first plan assumes
+    CPHF_KEPT_PRIOR for the COSX pass, the next ones what the passes measured)'''
     from pyscf.scf import cphf
     mol = mf.mol
     if atmlst is None:
@@ -416,47 +482,70 @@ def _solve_mo1_occ(mf, mo_energy, mo_coeff, mo_occ, h1c, fx, atmlst=None, max_me
     mocc = mo_coeff[:, mo_occ > 0]
     nocc = mocc.shape[1]
     s1a = -mol.intor('int1e_ipovlp', comp=3)
-    mem_now = lib.current_memory()[0]
     # the budget of the mean field, not the max_memory argument (pyscf's hess_elec passes its default of
-    # 4000 MB): with it the subspace estimate below cut trpn_1_10 into 25 batches of 7 atoms, each with its own
-    # Krylov solve and per-call overheads (CP-SCF 5812 -> 13945 s).  At least SOLVE_MO1_MEM of the budget.
+    # 4000 MB): with it trpn_1_10 was cut into 25 batches of 7 atoms, each with its own Krylov solve and
+    # per-call overheads (CP-SCF 5812 -> 13945 s)
     budget = max(max_memory, mf.max_memory)
-    max_memory = max(2000, budget * .9 - mem_now, SOLVE_MO1_MEM * budget)
-    # per perturbation: the Krylov subspace (trial vectors and their images, ~8 cycles, nvir nocc each) and
-    # the solver's work arrays (nmo nocc each); pyscf's estimate of 6 arrays put all 303 atoms of Trp-cage in
-    # one batch, a subspace of ~140 GB
-    per = 8. * nocc * ((SOLVE_MO1_ARRAYS - 4) * (nmo - nocc) + 4 * nmo)
-    blksize = max(2, int(max_memory * 1e6 / (3 * per)))
-    logger.info(mf, 'CPHF: %d atoms in batches of %d (%.0f MB for the solver)', len(atmlst), blksize, max_memory)
-    mo1s = [None] * mol.natm
-    e1s = [None] * mol.natm
+    mem_now = lib.current_memory()[0]
+    # the solutions in place (hess_elec stacks them: no second copy); their pages are touched batch by batch
+    mo1s = numpy.zeros((mol.natm, 3, nao, nocc))
+    e1s = numpy.zeros((mol.natm, 3, nocc, nocc))
     aoslices = mol.aoslice_by_atom()
-    for ia0, ia1 in lib.prange(0, len(atmlst), blksize):
-        s1vo = []
-        h1vo = []
-        for i0 in range(ia0, ia1):
-            ia = atmlst[i0]
-            p0, p1 = aoslices[ia][2:]
-            # s1 C_occ: rows of A (s1a C) plus (s1a^T restricted to A's columns)
-            s1c = numpy.zeros((3, nao, nocc))
-            s1c[:, p0:p1] += lib.dot(s1a[:, p0:p1].reshape(-1, nao), mocc).reshape(3, p1 - p0, nocc)
-            for x in range(3):
-                s1c[x] += lib.dot(s1a[x, p0:p1].T, mocc[p0:p1])
-            s1vo.append([lib.dot(mo_coeff.T, s1c[x]) for x in range(3)])
-            h1vo.append([lib.dot(mo_coeff.T, h1c[ia, x]) for x in range(3)])
-        h1vo = numpy.vstack(h1vo)
-        s1vo = numpy.vstack(s1vo)
-        tol = mf.conv_tol_cpscf * (ia1 - ia0)
-        mo1, e1 = cphf.solve(fx, mo_energy, mo_occ, h1vo, s1vo, max_cycle=max_cycle, level_shift=level_shift,
-                             tol=tol)
-        mo1 = numpy.einsum('pq,xqi->xpi', mo_coeff, mo1).reshape(-1, 3, nao, nocc)
-        e1 = e1.reshape(-1, 3, nocc, nocc)
-        for k in range(ia1 - ia0):
-            ia = atmlst[k + ia0]
-            mo1s[ia] = mo1[k]
-            e1s[ia] = e1[k].reshape(3, nocc, nocc)
-        mo1 = e1 = None
+    natm = len(atmlst)
+    ia0 = ib = 0
+    try:
+        while ia0 < natm:
+            blksize, mem = _cphf_budget(mf, nao, nmo, nocc, natm - ia0, fx, budget, mem_now)
+            _CPHF_MEM.clear()
+            _CPHF_MEM.update(mem)
+            ia1 = min(natm, ia0 + blksize)
+            t0 = (logger.process_clock(), logger.perf_counter())
+            s1vo = numpy.empty((ia1 - ia0, 3, nmo, nocc))
+            h1vo = numpy.empty((ia1 - ia0, 3, nmo, nocc))
+            for i0 in range(ia0, ia1):
+                ia = atmlst[i0]
+                p0, p1 = aoslices[ia][2:]
+                # s1 C_occ: rows of A (s1a C) plus (s1a^T restricted to A's columns)
+                s1c = numpy.zeros((3, nao, nocc))
+                s1c[:, p0:p1] += lib.dot(s1a[:, p0:p1].reshape(-1, nao), mocc).reshape(3, p1 - p0, nocc)
+                for x in range(3):
+                    s1c[x] += lib.dot(s1a[x, p0:p1].T, mocc[p0:p1])
+                    lib.dot(mo_coeff.T, s1c[x], c=s1vo[i0 - ia0, x])
+                    lib.dot(mo_coeff.T, h1c[ia, x], c=h1vo[i0 - ia0, x])
+            h1vo = h1vo.reshape(-1, nmo, nocc)
+            s1vo = s1vo.reshape(-1, nmo, nocc)
+            tol = mf.conv_tol_cpscf * (ia1 - ia0)
+            mo1, e1 = cphf.solve(fx, mo_energy, mo_occ, h1vo, s1vo, max_cycle=max_cycle, level_shift=level_shift,
+                                 tol=tol)
+            h1vo = s1vo = None
+            mo1 = lib.einsum('pq,xqi->xpi', mo_coeff, mo1).reshape(-1, 3, nao, nocc)
+            e1 = e1.reshape(-1, 3, nocc, nocc)
+            for k in range(ia1 - ia0):
+                ia = atmlst[k + ia0]
+                mo1s[ia] = mo1[k]
+                e1s[ia] = e1[k].reshape(3, nocc, nocc)
+            mo1 = e1 = None
+            ib += 1
+            logger.timer(mf, 'CPHF batch %d (atoms %d-%d of %d), peak RSS %.0f MB' % (ib, ia0, ia1 - 1, natm,
+                                                                                    _peak_rss()), *t0)
+            # in use for the next plan: as at the start plus the solutions written so far
+            mem_now += 3 * (ia1 - ia0) * 8. * (nao * nocc + nocc * nocc) / 1e6
+            ia0 = ia1
+    finally:
+        _CPHF_MEM.clear()
     return mo1s, e1s
+
+
+def _peak_rss():
+    '''the process's peak resident memory (MB, VmHWM), 0 if unknown'''
+    try:
+        with open('/proc/self/status') as f:
+            for line in f:
+                if line.startswith('VmHWM:'):
+                    return int(line.split()[1]) / 1e3
+    except OSError:
+        pass
+    return 0.
 
 
 def hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None, mo1=None, mo_e1=None, h1ao=None,
@@ -1861,6 +1950,9 @@ HESS_COSX_GRID = 3      # the grid of those two (Fock1, explicit K), as for CPHF
 CPHF_COSX_GRID_FINAL = 2        # the grid of the CPHF's last response (after the Krylov solve, from which the
                                 # final U_vir and the occupied e1 follow): None -> CPHF_COSX_GRID
 _CPHF_STAGE = {'final': False}
+_CPHF_MEM = {}      # the CPHF's memory budget while _solve_mo1_occ runs (_cphf_budget): 'fx' densities per response
+                    # call, 'k' MB of a COSX pass, 'j' MB of the semi-direct RI-J blocks, 'xc' max_memory of the
+                    # batched XC response
 
 
 def _hess_cosx(mf, switch, nao_per_atom=None):
@@ -1906,6 +1998,16 @@ def _cphf_cosx(mf):
     return k.build()
 
 
+def _cphf_cosx_pair(mf):
+    '''the COSX objects of the CPHF K: (Krylov iterations, final response) or (cx, None) or (None, None)'''
+    cx = _cphf_cosx(mf)
+    cx_final = None
+    if cx is not None and CPHF_COSX_GRID_FINAL is not None and repr(CPHF_COSX_GRID_FINAL) != repr(CPHF_COSX_GRID):
+        with lib.temporary_env(sys.modules[__name__], CPHF_COSX_GRID=CPHF_COSX_GRID_FINAL):
+            cx_final = _cphf_cosx(mf)
+    return cx, cx_final
+
+
 def _multi_jk_env(mf):
     '''mf.get_jk / get_j through socutils.scf.jk_multi (all CPHF densities in
     one direct pass); with density fitting J from the stored three-index
@@ -1916,11 +2018,7 @@ def _multi_jk_env(mf):
     mol = mf.mol
     dfm = _df_mode(mf)
     multi_k = jk_multi.available(mol)
-    cx = _cphf_cosx(mf)
-    cx_final = None
-    if cx is not None and CPHF_COSX_GRID_FINAL is not None and repr(CPHF_COSX_GRID_FINAL) != repr(CPHF_COSX_GRID):
-        with lib.temporary_env(sys.modules[__name__], CPHF_COSX_GRID=CPHF_COSX_GRID_FINAL):
-            cx_final = _cphf_cosx(mf)
+    cx, cx_final = _cphf_cosx_pair(mf)
     if dfm is None and not multi_k and cx is None:
         return {}
     orig_jk = mf.get_jk
@@ -1940,10 +2038,13 @@ def _multi_jk_env(mf):
             from socutils.scf import cosx
             fl = cosx.MULTI_FLOAT
             cosx.set_multi_float(CPHF_COSX_FLOAT)
+            ck = cx_final if cx_final is not None and _CPHF_STAGE['final'] else cx
+            cap, ck.mem_cap = ck.mem_cap, _CPHF_MEM.get('k', ck.mem_cap)
             try:
-                vk = (cx_final if cx_final is not None and _CPHF_STAGE['final'] else cx).get_k(dm, hermi=hermi)
+                vk = ck.get_k(dm, hermi=hermi)
             finally:
                 cosx.set_multi_float(fl)
+                ck.mem_cap = cap
             return vj, vk
         if dfm is None:
             return jk_multi.get_jk(mol, dm, with_j, with_k, hermi=hermi, max_memory=max_memory)
@@ -1969,7 +2070,7 @@ def _rij_get_j(mf, dm):
     without the three-index tensor (socutils.scf.md_j RIJ_DIRECT: B does not fit), else _df_get_j'''
     eng = _rij_engine(mf)
     if eng is not None and _rij_cderi(mf) is None and getattr(mf.with_df, '_cderi', None) is None:
-        max_memory = max(2000, .3 * (mf.max_memory - lib.current_memory()[0]))
+        max_memory = _CPHF_MEM.get('j') or max(2000, .3 * (mf.max_memory - lib.current_memory()[0]))
         nset = numpy.asarray(dm).reshape(-1, dm.shape[-1], dm.shape[-1]).shape[0]
         if nset >= RIJ_SEMIDIRECT_MIN:
             vj = _rij_semidirect_j(mf, eng.auxmol, dm, max_memory)
@@ -2049,6 +2150,8 @@ def _fx_chunked(fx, mf, nao, nmo, nocc):
         mo1 = mo1.reshape(-1, nmo, nocc)
         nset = mo1.shape[0]
         nb = CPHF_FX_CHUNK
+        if nb is None:
+            nb = _CPHF_MEM.get('fx')
         if nb is None:
             avail = max(.5 * mf.max_memory, mf.max_memory - lib.current_memory()[0])
             nb = max(1, int(avail * 1e6 / (FX_AO_ARRAYS * 8. * nao * nao)))
@@ -2329,12 +2432,29 @@ def gen_vind(mf, mo_coeff, mo_occ):
     nao, nmo = mo_coeff.shape
     mocc = mo_coeff[:, mo_occ > 0]
     nocc = mocc.shape[1]
-    if xctype == 'GGA' and 8 * nocc > nao:
-        # GGA in the MO form costs 8 g nao nocc per density against pyscf's
-        # 2 g nao^2 (which runs at the GEMM bound): only for nao > 8 nocc
-        return rhf_hess.gen_vind(mf, mo_coeff, mo_occ)
     rho0, vxc, fxc = ni.cache_xc_kernel(mol, mf.grids, mf.xc, mo_coeff, mo_occ, 0)
     max_memory = max(2000, mf.max_memory * .8 - lib.current_memory()[0])
+    if xctype == 'GGA' and 8 * nocc > nao:
+        # GGA in the MO form costs 8 g nao nocc per density against pyscf's
+        # 2 g nao^2 (which runs at the GEMM bound): only for nao > 8 nocc.  pyscf's response (the AO-basis
+        # nr_rks_fxc), with J and K added in place one after the other: two nao^2 arrays per density alive
+        # throughout (dm1, V) besides the transient ones of each term, where pyscf holds dm1, V, J, K and
+        # two temporaries
+        def fx(mo1):
+            mo1 = mo1.reshape(-1, nmo, nocc)
+            nset = mo1.shape[0]
+            P = numpy.ascontiguousarray(lib.einsum('pq,mqi->mpi', mo_coeff, mo1 * 2))   # *2: double occupancy
+            dm1 = lib.dot(P.reshape(-1, nocc), mocc.T).reshape(nset, nao, nao)
+            P = None
+            dm1 = lib.hermi_sum(dm1, axes=(0, 2, 1), inplace=True)
+            v1 = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dm1, 0, 1, rho0, vxc, fxc, max_memory=max_memory)
+            _add_jk_response(mf, mol, dm1, v1, hyb if hybrid else None)
+            dm1 = None
+            vq = lib.dot(v1.reshape(-1, nao), mocc).reshape(nset, nao, nocc)
+            v1 = None
+            return lib.einsum('pq,mpi->mqi', mo_coeff, vq)
+        fx.ao_arrays = 2
+        return fx
     # K C_occ directly from COSX (CPHF_COSX_OCC): A C_occ per grid point shared by all densities
     cx = _cphf_cosx(mf) if hybrid and CPHF_COSX_OCC else None
 
@@ -2358,14 +2478,33 @@ def gen_vind(mf, mo_coeff, mo_occ):
                 cosx.set_multi_float(fl)
             vq += numpy.matmul(vj, mocc) - .5 * hyb * vkc
         else:
-            if hybrid:
-                vj, vk = mf.get_jk(mol, dm1, hermi=1)
-                v = vj - .5 * hyb * vk
-            else:
-                v = mf.get_j(mol, dm1, hermi=1)
+            v = _add_jk_response(mf, mol, dm1, None, hyb if hybrid else None)
+            dm1 = None
             vq += lib.dot(v.reshape(-1, nao), mocc).reshape(nset, nao, nocc)
         return lib.einsum('pq,mpi->mqi', mo_coeff, vq)
+    fx.ao_arrays = 2
     return fx
+
+
+def _add_jk_response(mf, mol, dm1, v1, hyb):
+    '''v1 + J[dm1] - hyb / 2 K[dm1] (hyb None: J only; v1 None: from zero), in place into v1, J and K one after
+    the other when J is density-fitted or K by COSX (separate passes anyway); else one get_jk (the direct J
+    and K share a pass)'''
+    if hyb is not None and _df_mode(mf) is None and _cphf_cosx(mf) is None:
+        vj, vk = mf.get_jk(mol, dm1, hermi=1)
+    else:
+        vj, vk = mf.get_j(mol, dm1, hermi=1), None
+    if v1 is None:
+        v1 = vj
+    else:
+        v1 += vj
+    vj = None
+    if hyb is not None:
+        if vk is None:
+            vk = mf.get_k(mol, dm1, hermi=1)
+        vk *= .5 * hyb
+        v1 -= vk
+    return v1
 
 
 class _FxcBatched:
@@ -2409,8 +2548,9 @@ class _FxcBatched:
         non0tab = getattr(grids, 'non0tab', None)
         vmat = numpy.zeros((n, nao, nao))
         nsub = max(1, FXC_SUBBLOCK // BLKSIZE) * BLKSIZE              # grid points per sub-block
-        # pyscf blocks (AO evaluation) of ~20% of max_memory; c / aow per sub-block
-        ng_blk = max(nsub, int(self.max_memory * .2e6 / (8 * (ncomp + 1) * nao)) // nsub * nsub)
+        # pyscf blocks (AO evaluation) of ~20% of max_memory (the CPHF budget's share); c / aow per sub-block
+        xc_mem = _CPHF_MEM.get('xc', self.max_memory)
+        ng_blk = max(nsub, int(xc_mem * .2e6 / (8 * (ncomp + 1) * nao)) // nsub * nsub)
         blk_mem = ng_blk * (ncomp + 1) * nao * 8 / 1e6
         cbuf = numpy.empty(n * nao * nsub)
         aos_buf = numpy.empty(ncomp * nao * nsub)
