@@ -51,6 +51,27 @@ class KnowValues(unittest.TestCase):
     def test_mcol(self):
         self._check('pbe0', 'mcol')
 
+    def test_mo_form(self):
+        from pyscf import lib
+        for xc in ('lda,vwn', 'pbe0'):
+            mf = mfs[xc]
+            ni = mf._numint
+            ni.collinear = 'ncol'
+            mo = ni.U @ mf.mo_coeff
+            occ = mf.mo_occ > 0
+            orbo, orbv = mo[:, occ], mo[:, ~occ]
+            rho0, vxc, fxc = noncollinear.NumInt2C.cache_xc_kernel(ni, mol, mf.grids, mf.xc, mo, mf.mo_occ, 1)
+            xctype = ni._xc_type(mf.xc)
+            iso = fxc_2c.isotropic_kernel(fxc, xctype)
+            rng = numpy.random.default_rng(4)
+            z = rng.standard_normal((3, orbo.shape[1], orbv.shape[1])) \
+                + 1j * rng.standard_normal((3, orbo.shape[1], orbv.shape[1]))
+            dms = lib.einsum('xov,pv,qo->xpq', z, orbv, orbo.conj())
+            v = fxc_2c.nr_fxc(ni, mol, mf.grids, mf.xc, None, dms, 0, rho0, vxc, fxc)
+            ref = lib.einsum('xpq,qo,pv->xov', v, orbo, orbv.conj())
+            out = fxc_2c.mo_response(ni, mol, mf.grids, iso, orbo, orbv, z, xctype)
+            self.assertLess(abs(out - ref).max() / abs(ref).max(), 1e-11, xc)
+
     def test_tda(self):
         es = []
         for mode in ('old', 'auto'):

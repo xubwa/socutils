@@ -191,3 +191,63 @@ def nr_fxc(ni, mol, grids, xc_code, dm0, dms, hermi=0, rho0=None, vxc=None, fxc=
     v = assemble(vn.reshape(nset, 2, nao, nao), vm.reshape(nset, 3, 2, nao, nao), nao)
     logger.timer_debug1(ni, 'two-component f_xc (batched, %d densities)' % nset, *t0)
     return v.reshape(shape[:-2] + v.shape[-2:])
+
+
+def mo_response(ni, mol, grids, iso, orbo, orbv, zs, xctype, max_memory=2000):
+    '''the f_xc part of the TDA matvec in the MO form (nvec, nocc, nvir), without transition density matrices:
+    per AO block the occupied spinors psi_i and, for all trial vectors at once, psi~_i = sum_a z_ia psi_a =
+    phi^T (C_v z^T) by GEMMs; the channels n1, m1 from P_st = sum_i psi~_i,s psi_i,t^*; the isotropic kernel
+    iso = (f_tt, f_ss); the potential W_st = v_n 1 + v_m . sigma applied to psi_i and projected on the AOs
+    (R = sum_g phi (W psi)), then v_ia = sum C_v^* R.  orbo, orbv: GHF MO coefficients (2 nao, nocc / nvir).'''
+    nao = mol.nao
+    ncomp = 1 if xctype == 'LDA' else 4
+    zs = numpy.asarray(zs).reshape(-1, orbo.shape[1], orbv.shape[1])
+    nvec, nocc, nvir = zs.shape
+    f_tt, f_ss = iso
+    co = [numpy.ascontiguousarray(orbo[:nao]), numpy.ascontiguousarray(orbo[nao:])]
+    cv = [orbv[:nao], orbv[nao:]]
+    # Z_s = C_v,s z^T: (nao, nvec * nocc)
+    zt = numpy.ascontiguousarray(zs.transpose(2, 0, 1).reshape(nvir, nvec * nocc))
+    Z = [numpy.ascontiguousarray(numpy.dot(c, zt)) for c in cv]
+    R = [numpy.zeros((nao, nvec * nocc), dtype=numpy.complex128) for _ in range(2)]
+    p1 = 0
+    blk_mem = max(200, max_memory * .2)
+    for ao, mask, weight, coords in ni.block_loop(mol, grids, nao, ncomp // 4, blk_mem):
+        ng = weight.size
+        p0, p1 = p1, p1 + ng
+        ao = numpy.ascontiguousarray(ao.reshape(ncomp, ng, nao))
+        # psi[c][s] (ng, nocc), psit[c][s] (ng, nvec, nocc)
+        psi = [[numpy.dot(ao[c], co[s]) for s in range(2)] for c in range(ncomp)]
+        psit = [[numpy.dot(ao[c], Z[s]).reshape(ng, nvec, nocc) for s in range(2)] for c in range(ncomp)]
+        # P_st rows (ncomp, ng, nvec) complex
+        P = numpy.empty((2, 2, ncomp, ng, nvec), dtype=numpy.complex128)
+        for s in range(2):
+            for t in range(2):
+                pc = psi[0][t].conj()
+                P[s, t, 0] = numpy.einsum('gxi,gi->gx', psit[0][s], pc)
+                for c in range(1, ncomp):
+                    P[s, t, c] = (numpy.einsum('gxi,gi->gx', psit[c][s], pc)
+                                  + numpy.einsum('gxi,gi->gx', psit[0][s], psi[c][t].conj()))
+        rn = P[0, 0] + P[1, 1]
+        rm = [P[0, 1] + P[1, 0], 1j * (P[0, 1] - P[1, 0]), P[0, 0] - P[1, 1]]
+        w = weight[None, :, None]
+        ftt = f_tt[:, :, p0:p1]
+        fss = f_ss[:, :, p0:p1]
+        vn = numpy.einsum('xyg,ygv->xgv', ftt, rn) * w
+        vm = [numpy.einsum('xyg,ygv->xgv', fss, r) * w for r in rm]
+        # W_st rows: [[vn + vz, vx - i vy], [vx + i vy, vn - vz]]
+        W = [[vn + vm[2], vm[0] - 1j * vm[1]], [vm[0] + 1j * vm[1], vn - vm[2]]]
+        for s in range(2):
+            # A_i,s = sum_t W0_st psi_i,t + sum_c Wc_st d_c psi_i,t ;  B^c_i,s = sum_t Wc_st psi_i,t
+            A = numpy.zeros((ng, nvec, nocc), dtype=numpy.complex128)
+            for t in range(2):
+                A += W[s][t][0][:, :, None] * psi[0][t][:, None, :]
+                for c in range(1, ncomp):
+                    A += W[s][t][c][:, :, None] * psi[c][t][:, None, :]
+            R[s] += numpy.dot(ao[0].T, A.reshape(ng, nvec * nocc))
+            for c in range(1, ncomp):
+                B = sum(W[s][t][c][:, :, None] * psi[0][t][:, None, :] for t in range(2))
+                R[s] += numpy.dot(ao[c].T, B.reshape(ng, nvec * nocc))
+    # v_ia = sum_s C_v,s^H R_s
+    v = sum(numpy.dot(cv[s].conj().T, R[s]) for s in range(2))            # (nvir, nvec * nocc)
+    return v.reshape(nvir, nvec, nocc).transpose(1, 2, 0)
