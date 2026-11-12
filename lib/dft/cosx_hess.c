@@ -150,6 +150,9 @@ void SOCDFTcosx_slabhist(double *out, int reset)
 }
 static int cx_slabcount = 0;    /* collect cx_slabhist (one more pass over the slabs) */
 void SOCDFTcosx_set_slabcount(int v) { cx_slabcount = v; }
+static double cx_slab_screen = 0;    /* the atom loop skips a derivative slab whose own bound q (cx_slabhist) is below
+                                     * cx_slab_screen tol; 0: all slabs (A's screening only) */
+void SOCDFTcosx_set_slab_screen(double v) { cx_slab_screen = v; }
 static int cx_tail_fused = 1;   /* the Fock1 tail's two VT GEMMs of a direction as one over 2n points */
 void SOCDFTcosx_set_tail_fused(int v) { cx_tail_fused = v; }
 int SOCDFTcosx_hfloat(void)
@@ -1276,14 +1279,16 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                 }
                 memcpy(ord, sl.keys, sizeof(int) * sl.nkeys);
                 qsort(ord, sl.nkeys, sizeof(int), cmp_int);
-                if (cx_slabcount) {
-                        double wmax = 0, hl[24] = {0};
+                double wmax = 0;
+                if (cx_slabcount || cx_slab_screen > 0)
                         for (i = 0; i < nocc; i++) {
                                 double s_ = 0;
                                 for (g = 0; g < n; g++)
                                         s_ += w[g] * (fabs(psi[(size_t)i * n + g]) + fabs(eta[(size_t)i * n + g]));
                                 if (s_ > wmax) wmax = s_;
                         }
+                if (cx_slabcount) {
+                        double hl[24] = {0};
                         int q_;
                         for (q_ = 0; q_ < sl.nkeys; q_++) {
                                 const int S_ = sl.keys[q_] % nbas, nS = ao_loc[S_ + 1] - ao_loc[S_];
@@ -1323,6 +1328,27 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                                         const int S_ = ord[pk] % nbas, nS = ao_loc[S_ + 1] - ao_loc[S_];
                                         const size_t off = sl.koff[sl.slot[ord[pk]]];
                                         int r_;
+                                        if (cx_slab_screen > 0) {
+                                                /* the slab's own bound: max|d_Y G| (and d_Y G^H) max(max|C|, 1) wmax */
+                                                const size_t m3 = (size_t)3 * nS * n;
+                                                double mg = 0, mc = 1;
+                                                size_t e_;
+                                                for (e_ = 0; e_ < m3; e_++) {
+                                                        double v_ = fabs(sl.g[off + e_]);
+                                                        if (do_h && fabs(sl.gh[off + e_]) > v_) v_ = fabs(sl.gh[off + e_]);
+                                                        if (v_ > mg) mg = v_;
+                                                }
+                                                for (e_ = 0; e_ < (size_t)nS * nocc; e_++) {
+                                                        const double v_ = fabs(co[(size_t)ao_loc[S_] * nocc + e_]);
+                                                        if (v_ > mc) mc = v_;
+                                                }
+                                                if (mg * mc * wmax < cx_slab_screen * tol) {
+                                                        st[25] += nS;           /* slab rows skipped */
+                                                        pk++;
+                                                        continue;
+                                                }
+                                        }
+                                        st[26] += nS;                           /* slab rows kept */
                                         for (x = 0; x < 3; x++) {
                                                 memcpy(Gb + ((size_t)x * nao + nr) * n, sl.g + off + (size_t)x * nS * n,
                                                        sizeof(double) * nS * n);
