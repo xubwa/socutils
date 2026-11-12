@@ -734,6 +734,18 @@ class NumInt2C(numint2c.NumInt2C):
         return numint2c._eval_xc_eff(self, xc_code, rho, deriv, omega, xctype,
                                      verbose)
 
+    def nr_vxc(self, mol, grids, xc_code, dms, spin=0, relativity=0, hermi=1,
+               max_memory=2000, verbose=None):
+        '''LDA / GGA of one Hermitian density by the fused pass of socutils.dft.vxc_2c
+        (collinear, ncol, mcol LDA), else pyscf's / the noncollinear path'''
+        from socutils.dft import vxc_2c
+        r = vxc_2c.nr_vxc(self, mol, grids, xc_code, dms, hermi, max_memory)
+        if r is not None:
+            return r
+        return numint2c.NumInt2C.nr_vxc(self, mol, grids, xc_code, dms, spin, relativity,
+                                        hermi, max_memory, verbose)
+    get_vxc = nr_gks_vxc = nr_vxc
+
     def _gks_mcol_vxc(self, mol, grids, xc_code, dms, relativity=0, hermi=0,
                       max_memory=2000, verbose=None):
         return _gks_noncol_vxc(self, mol, grids, xc_code, dms, relativity, hermi,

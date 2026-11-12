@@ -627,3 +627,5 @@ static void xc_grad_fused_impl(double *outb, double *dm, double *coords, double 
         if (mkl_set_num_threads_local) mkl_set_num_threads_local(mkl0);
 }
 }
+
+#include "vxc_2c.h"     /* SOCDFTvxc_fused_2c: the two-component (GKS / spinor) pass */
