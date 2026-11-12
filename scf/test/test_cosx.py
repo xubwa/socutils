@@ -255,6 +255,21 @@ class KnownValues(unittest.TestCase):
         self.assertEqual(k.grids.weights.size, ref.weights.size)
         self.assertAlmostEqual(abs(k.grids.coords - ref.coords).max(), 0, 12)
 
+    def test_heavy_all_electron_radial(self):
+        # all-electron heavy atoms (no ECP) get the dense radial grid on every COSX level: without it the tight
+        # core primitives of x2c / dyall bases fall between the radial shells (S_g singular, the fit explodes)
+        mol = gto.M(atom='Au 0 0 0; H 0 0 1.52', basis='x2c-svpall', verbose=0)
+        dm = scf.RHF(mol).x2c().run(conv_tol=1e-9).make_rdm1()
+        ex = numpy.einsum('ij,ji', dm, scf.hf.get_jk(mol, dm)[1])
+        for lev in (1, 2, 3):
+            g = cosx.make_grids(mol, **cosx.gridx_args(mol, lev))
+            self.assertEqual(g.element_intacc.get('Au'), cosx.HEAVY_RADIAL_INTACC)
+            e = cosx.COSX(mol, g, tol=1e-12).energy(dm)
+            self.assertLess(abs(e - ex), 4e-5 * 4)          # tr(D K): 4 E_x / hyb units; ~1e-5 Eh in E_x
+        # an ECP atom keeps the plain rule
+        mol = gto.M(atom='Au 0 0 0; H 0 0 1.52', basis='def2-svp', ecp='def2-svp', verbose=0)
+        self.assertNotIn('Au', cosx.make_grids(mol, **cosx.gridx_args(mol, 2)).element_intacc)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -169,8 +169,27 @@ def available(mol):
             and mol._bas[:, 1].max() <= libdft.SOCDFTcosx_lmax())
 
 
+HEAVY_RADIAL_Z = 36     # all-electron atoms beyond this Z (no ECP on the atom) get the radial grid of at least
+HEAVY_RADIAL_INTACC = 8.0   # this intacc on every COSX grid (make_grids).  The Krack-Koster count (50 radial shells
+                        # for Au on GRIDX2) misses the tight core of all-electron bases: AuH dyall-v2z, an s primitive
+                        # of exponent 5.9e7 between the inner shells, S_g singular, the fitted exchange energy 1.3e3 Eh
+                        # off; x2c-SVPall -1.1e-3 Eh, ano-rcc-vdzp 7.8e-4 -> 2.1e-6 / 2.6e-6 / 9e-5 with intacc 8
+                        # (+38-70 % points on HgCl2 / AuH; found and calibrated in scf.spinor_jk, same rule there)
+
+
+def _heavy_radial(mol, intacc):
+    '''{element: intacc} of the all-electron atoms beyond HEAVY_RADIAL_Z (HEAVY_RADIAL_INTACC at least)'''
+    out = {}
+    for i in range(mol.natm):
+        s = mol.atom_pure_symbol(i)
+        if gto.charge(s) > HEAVY_RADIAL_Z and mol.atom_nelec_core(i) == 0:
+            out[s] = max(intacc, HEAVY_RADIAL_INTACC)
+    return out
+
+
 def make_grids(mol, **kwargs):
-    '''the COSX grid (socutils.dft.grids.Grids with GRID, kwargs override), built with non0tab'''
+    '''the COSX grid (socutils.dft.grids.Grids with GRID, kwargs override), built with non0tab; all-electron heavy
+    atoms on the radial grid of HEAVY_RADIAL_INTACC (unless kwargs give element_intacc)'''
     from socutils.dft import grids as sgrids
     sgrids.use_fast_grid_sort()
     g = sgrids.Grids(mol)
@@ -178,7 +197,8 @@ def make_grids(mol, **kwargs):
     if COSX_RADII_ADJUST is not None:
         g.radii_adjust = COSX_RADII_ADJUST
     g.alpha_scale = ALPHA_SCALE
-    g.element_intacc = {}       # the XC grids' radial rule for Li, Be, Na, Mg is not for the COSX grids
+    # the XC grids' radial rule for Li, Be, Na, Mg is not for the COSX grids; the heavy all-electron rule is
+    g.element_intacc = _heavy_radial(mol, dict(GRID, **kwargs).get('intacc', 0.))
     for k, v in dict(GRID, **kwargs).items():
         setattr(g, k, v)
     g.build(with_non0tab=True)
