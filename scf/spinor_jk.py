@@ -428,6 +428,12 @@ def get_jk_ghf(mf, mol, dm, hermi=1, with_j=True, with_k=True):
         out = _get_jk_fast(mf, mol, dms, hermi, with_j, with_k, m, aa, ab, ba, bb, cplx, kramers)
         logger.timer_debug1(mf, 'two-component J/K (%s)' % m, *t0)
         return tuple(None if v is None else v.reshape(shape) for v in out)
+    if with_j and not with_k:
+        # J only (pure functionals): one build of Re (D_aa + D_bb) (incremental for one SCF density), not one per
+        # spin block ([BiPh3]+ Kramers-unrestricted PBE: 41.7 -> ~10 s per cycle)
+        vj = _get_jk_fast(mf, mol, dms, hermi, True, False, 'cosx', aa, ab, ba, bb, cplx, kramers)[0]
+        logger.timer_debug1(mf, 'two-component J (one real build)', *t0)
+        return vj.reshape(shape), None
     p = _proxy(mf, mol)
 
     # symmetric real parts: J and K in one hermi=1 build (hermi=0 densities: general builds)
@@ -491,7 +497,7 @@ def get_jk_ghf(mf, mol, dm, hermi=1, with_j=True, with_k=True):
 
 def _get_jk_fast(mf, mol, dms, hermi, with_j, with_k, m, aa, ab, ba, bb, cplx, kramers):
     '''J (RIJ for 'rij*', else exact) and K (COSX for '*cosx' when available, else exact) of GHF densities'''
-    if mf.direct_scf:
+    if mf.direct_scf and mode(mf):
         # the incremental builds are this module's (on the spinor density), pyscf's Fock increments off
         mf.direct_scf = False
     n, nao = dms.shape[0], mol.nao_nr()
