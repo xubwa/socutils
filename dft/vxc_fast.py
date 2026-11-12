@@ -7,8 +7,12 @@ The SCF XC potential of RKS, pyscf.dft.numint.nr_rks (same conventions and
 results).  LDA / GGA: cache-blocked C passes (lib/dft/vxc_rks.c) over
 sub-blocks of SUBBLOCK grid points, each on the AOs with max |phi_k| >
 AO_CUTOFF on it (cc-pVDZ (H2O)_16: ~160 of 384 per box), one read of the AO
-block per pass; pass 1 rho, libxc, pass 2 V.  Meta-GGA (and without the
-library) the whole-block path below:
+block per pass; pass 1 rho, libxc, pass 2 V.  The default is the fused
+one-pass kernel (SOCDFTvxc_fused / SOCDFTvxc_fused_mgga: AOs, rho, libxc and
+V per sub-block in cache); meta-GGA with the tau term of V by DSYRK and rho
+from the occupied orbitals on the sub-blocks with more AOs than nocc.  The
+whole-block path below (USE_MGGA; slower than pyscf for meta-GGA) is kept
+for completeness:
 
     rho       from the occupied orbitals when the density carries them
               (c_k = C^T d_k phi, nocc instead of nao: rho = sum_i c_0 c_0,
@@ -45,7 +49,13 @@ def _orbitals(dm):
     if mo_coeff.ndim != 2 or mo_occ.ndim != 1 or numpy.iscomplexobj(mo_coeff):
         return None
     occ = mo_occ > 0
-    return numpy.ascontiguousarray(mo_coeff[:, occ] * numpy.sqrt(mo_occ[occ]))
+    orb = numpy.ascontiguousarray(mo_coeff[:, occ] * numpy.sqrt(mo_occ[occ]))
+    # the tags must describe dm (the diagonal, O(nao nocc))
+    d = numpy.asarray(dm)
+    if d.shape != (orb.shape[0],) * 2 or not numpy.allclose(numpy.einsum('ij,ij->i', orb, orb), d.diagonal(),
+                                                            rtol=1e-10, atol=1e-12):
+        return None
+    return orb
 
 
 def _rho(aoT, xctype, dm, orb):
@@ -77,10 +87,12 @@ def nr_rks(ni, mol, grids, xc_code, dms, relativity=0, hermi=1, max_memory=2000,
     from socutils.hessian.rhf_fast import _load_socdft, _ao_stack
     libdft = _load_socdft()
     xctype = ni._xc_type(xc_code)
-    # meta-GGA keeps pyscf's (the tau products are slower here, 2.5 vs 2.1 s for
-    # (H2O)_16 TPSS); the MGGA branches below are kept for completeness
+    # meta-GGA: the fused pass (SOCDFTvxc_fused_mgga); the whole-block MGGA branch below
+    # (USE_MGGA, its tau products slower than pyscf's) is kept for completeness
+    mgga_fused = (xctype == 'MGGA' and USE_FUSED and libdft is not None
+                  and hasattr(libdft, 'SOCDFTvxc_fused_mgga') and _mgga_fusable(xc_code))
     if (libdft is None or not hasattr(libdft, 'SOCDFTxc_grad_aow') or hermi != 1 or mol.cart
-            or xctype not in ('LDA', 'GGA', 'MGGA') or (xctype == 'MGGA' and not USE_MGGA)
+            or xctype not in ('LDA', 'GGA', 'MGGA') or (xctype == 'MGGA' and not (USE_MGGA or mgga_fused))
             or (xctype == 'MGGA' and any(x in xc_code.upper() for x in ('CC06', 'CS', 'BR89', 'MK00')))):
         return numint.nr_rks(ni, mol, grids, xc_code, dms, relativity, hermi, max_memory, verbose)
     dms_a = numpy.asarray(dms)
@@ -100,6 +112,10 @@ def nr_rks(ni, mol, grids, xc_code, dms, relativity=0, hermi=1, max_memory=2000,
         grids.build(with_non0tab=True)
     if xctype != 'MGGA' and USE_FUSED and hasattr(libdft, 'SOCDFTvxc_fused') and _fusable(ni, xc_code, grids):
         return _nr_rks_fused(libdft, ni, mol, grids, xc_code, dms_a, d, xctype)
+    if mgga_fused and _fusable(ni, xc_code, grids):
+        return _nr_rks_fused(libdft, ni, mol, grids, xc_code, dms_a, d, xctype, orb)
+    if xctype == 'MGGA' and not USE_MGGA:
+        return numint.nr_rks(ni, mol, grids, xc_code, dms, relativity, hermi, max_memory, verbose)
     if xctype != 'MGGA' and hasattr(libdft, 'SOCDFTvxc_mat'):
         return _nr_rks_blocked(libdft, ni, mol, grids, xc_code, dms_a, d, xctype, max_memory)
     aow = None
@@ -230,16 +246,27 @@ def _fusable(ni, xc_code, grids):
     return omega == 0 and grids.non0tab is not None and grids.coords is not None
 
 
-def _nr_rks_fused(libdft, ni, mol, grids, xc_code, dms_a, d, xctype):
-    '''LDA / GGA in one pass over the grid (lib/dft/vxc_rks.c SOCDFTvxc_fused):
-    per sub-block of SUBBLOCK points the AOs (pyscf's GTOval with the grid's
-    non0tab), rho, the functional (pyscf's LIBXC_eval_xc) and V, in cache; no AO
-    array is stored and every AO is evaluated once'''
+def _mgga_fusable(xc_code):
+    '''meta-GGAs without the laplacian (rho, nabla rho, tau)'''
+    from pyscf.dft import libxc
+    try:
+        return not libxc._get_xc(xc_code, 0).needs_laplacian
+    except Exception:
+        return False
+
+
+def _nr_rks_fused(libdft, ni, mol, grids, xc_code, dms_a, d, xctype, orb=None):
+    '''LDA / GGA / meta-GGA in one pass over the grid (lib/dft/vxc_rks.c
+    SOCDFTvxc_fused, SOCDFTvxc_fused_mgga): per sub-block of SUBBLOCK points the
+    AOs (pyscf's GTOval with the grid's non0tab), rho, the functional (pyscf's
+    LIBXC_eval_xc) and V, in cache; no AO array is stored and every AO is
+    evaluated once.  Meta-GGA: the tau term of V by DSYRK; rho from the
+    occupied orbitals orb (nao, nocc) on the sub-blocks with more AOs than nocc.'''
     from pyscf.gto import moleintor
     from pyscf.dft import libxc
     nao = d.shape[-1]
     nset = d.shape[0]
-    itype = 0 if xctype == 'LDA' else 1
+    itype = {'LDA': 0, 'GGA': 1, 'MGGA': 2}[xctype]
     nthreads = lib.num_threads()
     xc = libxc._get_xc(xc_code, 0)
     ngrid = grids.weights.size
@@ -270,7 +297,20 @@ def _nr_rks_fused(libdft, ni, mol, grids, xc_code, dms_a, d, xctype):
         vbuf[:] = 0
         ex[:] = 0
         ne[:] = 0
-        if xc.nfunc > 0:
+        if xc.nfunc > 0 and xctype == 'MGGA':
+            o = orb if (orb is not None and nset == 1) else None
+            libdft.SOCDFTvxc_fused_mgga(
+                vbuf.ctypes.data_as(ctypes.c_void_p), ex.ctypes.data_as(ctypes.c_void_p),
+                ne.ctypes.data_as(ctypes.c_void_p), dm.ctypes.data_as(ctypes.c_void_p),
+                coords.ctypes.data_as(ctypes.c_void_p), weights.ctypes.data_as(ctypes.c_void_p),
+                non0tab.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(ngrid), ctypes.c_int(SUBBLOCK),
+                ctypes.c_double(AO_CUTOFF), ctypes.c_int(itype), feval,
+                ao_loc.ctypes.data_as(ctypes.c_void_p), atm.ctypes.data_as(ctypes.c_void_p),
+                ctypes.c_int(mol.natm), bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.nbas),
+                env.ctypes.data_as(ctypes.c_void_p), fxc, ctypes.c_int(xc.nfunc), ctypes.cast(xc.xc_arr, ctypes.c_void_p),
+                facs, *_blas_ptrs(), _dsyrk_ptr(),
+                None if o is None else o.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(0 if o is None else o.shape[1]))
+        elif xc.nfunc > 0:
             libdft.SOCDFTvxc_fused(
                 vbuf.ctypes.data_as(ctypes.c_void_p), ex.ctypes.data_as(ctypes.c_void_p),
                 ne.ctypes.data_as(ctypes.c_void_p), dm.ctypes.data_as(ctypes.c_void_p),
@@ -288,6 +328,18 @@ def _nr_rks_fused(libdft, ni, mol, grids, xc_code, dms_a, d, xctype):
     if dms_a.ndim == 2:
         return nelec[0], excsum[0], vmat[0]
     return nelec, excsum, vmat.reshape(dms_a.shape)
+
+
+_dsyrk = None
+
+
+def _dsyrk_ptr():
+    '''dsyrk_ of the BLAS pyscf has loaded'''
+    global _dsyrk
+    if _dsyrk is None:
+        from pyscf.lib import numpy_helper
+        _dsyrk = ctypes.cast(numpy_helper._np_helper.dsyrk_, ctypes.c_void_p)
+    return _dsyrk
 
 
 def eval_ao(ni, mol, coords, deriv=0, shls_slice=None, non0tab=None, cutoff=None, out=None, verbose=None):
