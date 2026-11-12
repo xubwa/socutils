@@ -111,9 +111,16 @@ def _load_lib():
     return _libv
 
 
-def half_combinations(eri1, c4, ncomb_spec, out=None, tile=None):
-    '''(ncomb, nb ncol, nao) two-term combinations of the half-transformed components (libsocvhf)'''
+def half_combinations(eri1, c4, ncomb_spec, out=None, tile=None, dtril=None, vj=None):
+    '''(ncomb, nb ncol, nao) two-term combinations of the half-transformed components (libsocvhf);
+    with dtril (ndj, npair) (packed D + D^T, diagonal once), vj (ndj, npair) += the Coulomb
+    matrices of these rows'''
     import ctypes
+    if dtril is None:
+        ndj, dptr, vptr = 0, None, None
+    else:
+        assert dtril.flags.c_contiguous and vj.flags.c_contiguous and vj.shape == dtril.shape
+        ndj, dptr, vptr = dtril.shape[0], dtril.ctypes.data_as(ctypes.c_void_p), vj.ctypes.data_as(ctypes.c_void_p)
     ia, ib, sb = ncomb_spec
     eri1 = numpy.asarray(eri1, order='C')
     nb = eri1.shape[0]
@@ -125,7 +132,8 @@ def half_combinations(eri1, c4, ncomb_spec, out=None, tile=None):
         out.ctypes.data_as(ctypes.c_void_p), eri1.ctypes.data_as(ctypes.c_void_p),
         c4.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nb), ctypes.c_int(nao), ctypes.c_int(ncol),
         ctypes.c_int(ncomb), ia.ctypes.data_as(ctypes.c_void_p), ib.ctypes.data_as(ctypes.c_void_p),
-        sb.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(TILE if tile is None else tile))
+        sb.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(TILE if tile is None else tile),
+        dptr, ctypes.c_int(ndj), vptr)
     return out
 
 
@@ -233,8 +241,10 @@ def get_jk(with_df, orbs=(), dms_j=(), kramers=None, signs=None, max_memory=None
         d = d + d.transpose(0, 2, 1)
         idx = numpy.arange(nao)
         d[:, idx, idx] *= .5
-        dtril = lib.pack_tril(d)                     # sum over packed pairs k >= l of B_kl (D + D^T)_kl
+        dtril = numpy.ascontiguousarray(lib.pack_tril(d))  # sum over packed pairs k >= l of B_kl (D + D^T)_kl
         vj = numpy.zeros((ndj, npair))
+    # the set whose libsocvhf half transformation also accumulates J (None: J by two GEMVs per block)
+    jset = next((k for k in range(nset) if quat[k] and cols[k] is not None), None) if ndj else None
     acc = [numpy.zeros((4, nao, nao)) if q else numpy.zeros((4 * nao, 4 * nao), order='F') for q in quat]
     buf = numpy.empty(blksize * width * nao) if width else None
     spec = _comb_spec()
@@ -244,7 +254,7 @@ def get_jk(with_df, orbs=(), dms_j=(), kramers=None, signs=None, max_memory=None
         t1 = logger.perf_counter()
         tw[0] += t1 - tl
         assert eri1.shape[1] == npair
-        if ndj:
+        if ndj and jset is None:
             rho = lib.dot(dtril, eri1.T)
             vj += lib.dot(rho, eri1)
         t2 = logger.perf_counter()
@@ -254,7 +264,9 @@ def get_jk(with_df, orbs=(), dms_j=(), kramers=None, signs=None, max_memory=None
                 continue
             t3 = logger.perf_counter()
             if quat[k]:
-                y = half_combinations(eri1, cols[k], spec, buf)     # (8, nb ncol, nao)
+                # (8, nb ncol, nao); J of the densities with the first such set, from the same rows
+                y = half_combinations(eri1, cols[k], spec, buf,
+                                      dtril=dtril if k == jset else None, vj=vj if k == jset else None)
                 t4 = logger.perf_counter()
                 for r in range(4):
                     lib.dot(y[2 * r].T, y[2 * r + 1], signs[k], acc[k][r], 1.)
