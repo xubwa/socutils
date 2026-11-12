@@ -157,6 +157,54 @@ class KnownValues(unittest.TestCase):
     def test_tpss(self):
         self._check(self.mol, 'tpss')
 
+    # meta-GGA: the batched response, the MO-form response, the first-order XC and the local explicit
+    # second derivatives against pyscf
+    def test_mgga_fxc(self):
+        from pyscf import lib
+        atom = '; '.join('O %g 0 0; H %g .757 .586; H %g -.757 .586' % (3. * i, 3. * i, 3. * i) for i in range(3))
+        rs = numpy.random.RandomState(4)
+        for mol in (self.mol, gto.M(atom=atom, basis='6-31g', verbose=0)):
+            for xc in ('r2scan', 'm06l'):
+                mf = _mf(mol, xc)
+                ni = mf._numint
+                rho0, vxc, fxc = ni.cache_xc_kernel(mol, mf.grids, mf.xc, mf.mo_coeff, mf.mo_occ, 0)
+                dms = rs.randn(4, mol.nao, mol.nao) * 1e-2
+                dms = dms + dms.transpose(0, 2, 1)
+                ref = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms, 0, 1, rho0, vxc, fxc)
+                v = rhf_fast._FxcBatched(ni)(mol, mf.grids, mf.xc, None, dms, 0, 1, rho0, vxc, fxc)
+                self.assertAlmostEqual(abs(v - ref).max(), 0, 11)
+                # the MO form: dm1 = P Q^T + Q P^T, V Q
+                mocc = mf.mo_coeff[:, mf.mo_occ > 0]
+                P = rs.randn(3, mol.nao, mocc.shape[1]) * 1e-2
+                dm1 = lib.einsum('mpi,qi->mpq', P, mocc)
+                dm1 = dm1 + dm1.transpose(0, 2, 1)
+                ref = lib.einsum('mpq,qi->mpi', ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dm1, 0, 1, rho0, vxc, fxc),
+                                 mocc)
+                vq = rhf_fast._xc_response_mo(ni, mol, mf.grids, 'MGGA', fxc, P, mocc, 4000)
+                self.assertAlmostEqual(abs(vq - ref).max(), 0, 11)
+
+    def test_mgga_deriv1_explicit(self):
+        from pyscf import lib
+        from pyscf.hessian import rks as rks_hess
+        for xc in ('r2scan', 'tpssh'):
+            mf = _mf(self.mol, xc)
+            h = rhf_fast.RKSHessian(mf)
+            mocc = mf.mo_coeff[:, mf.mo_occ > 0]
+            ref = lib.einsum('axpq,qi->axpi', rks_hess._get_vxc_deriv1(h, mf.mo_coeff, mf.mo_occ, 4000), mocc)
+            e0 = rhf_fast.xc_hess_explicit(h, mf.mo_coeff, mf.mo_occ)
+            for local in (200, 0):          # the whole-block and the sub-block (local) paths
+                with lib.temporary_env(rhf_fast, XCHE_LOCAL_MIN_NAO=local):
+                    v = rhf_fast.xc_deriv1_batched(h, mf.mo_coeff, mf.mo_occ, 4000, occ=True)
+                    self.assertAlmostEqual(abs(v - ref).max(), 0, 11)
+                    e = rhf_fast.xc_hess_explicit(h, mf.mo_coeff, mf.mo_occ)
+                    self.assertAlmostEqual(abs(e - e0).max(), 0, 11)
+
+    def test_r2scan(self):
+        self._check(self.mol, 'r2scan')
+
+    def test_m06l(self):
+        self._check(self.mol, 'm06l')
+
     def test_sum_rule_cpscf_grids(self):
         # the options of socutils.dft.grids.hessian, on the fast classes
         from socutils.dft import grids as sgrids
