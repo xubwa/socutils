@@ -77,6 +77,7 @@ class KnownValues(unittest.TestCase):
         for xc in ('hf', 'pbe0', 'b3lyp'):
             mf = _mf(self.mol, xc)
             g = rhf_fast.Gradients(mf)
+            g.grid_response = False      # fixed grid, as pyscf's reference
             g1 = g.kernel()
             self.assertTrue(g._rij_fast)
             g0 = mf.nuc_grad_method().kernel()

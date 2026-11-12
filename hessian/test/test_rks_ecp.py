@@ -41,6 +41,13 @@ def _rks(mol, rij=True):
     return mf
 
 
+def _fixed_grid_grad(mf):
+    # the fast gradient on the fixed grid, as pyscf's reference (the fast default adds the XC grid response)
+    g = grad_fast.Gradients(mf)
+    g.grid_response = False
+    return g.kernel()
+
+
 class KnownValues(unittest.TestCase):
     def _check(self, mol):
         self.assertTrue(mol.has_ecp())
@@ -55,9 +62,9 @@ class KnownValues(unittest.TestCase):
             mf2 = md_j.apply(_rks(mol))
             self.assertAlmostEqual(mf2.kernel(), e0, 9)
             self.assertIsNotNone((getattr(mf2, '_rij_cache', None) or {}).get('direct'))
-            self.assertAlmostEqual(abs(grad_fast.Gradients(mf2).kernel() - g0).max(), 0, 6)
+            self.assertAlmostEqual(abs(_fixed_grid_grad(mf2) - g0).max(), 0, 6)
         # gradient
-        self.assertAlmostEqual(abs(grad_fast.Gradients(mf1).kernel() - g0).max(), 0, 6)
+        self.assertAlmostEqual(abs(_fixed_grid_grad(mf1) - g0).max(), 0, 6)
         # Hessian without density fitting
         mfn = _rks(mol, rij=False)
         mfn.kernel()
