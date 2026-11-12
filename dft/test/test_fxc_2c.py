@@ -72,6 +72,15 @@ class KnowValues(unittest.TestCase):
             out = fxc_2c.mo_response(ni, mol, mf.grids, iso, orbo, orbv, z, xctype)
             self.assertLess(abs(out - ref).max() / abs(ref).max(), 1e-11, xc)
 
+    def test_spin_samples_default(self):
+        mf = dft.UKS(mol, xc='pbe')
+        ni = mf._numint
+        self.assertEqual(ni.spin_samples, noncollinear.SPIN_SAMPLES)
+        self.assertEqual(noncollinear.SPIN_SAMPLES, 110)
+        ni.spin_samples = 266               # the user's setting wins
+        self.assertEqual(ni.spin_samples, 266)
+        self.assertEqual(dft.UKS(mol, xc='pbe')._numint.spin_samples, 110)
+
     def test_tda(self):
         es = []
         for mode in ('old', 'auto'):
