@@ -37,6 +37,9 @@ def test_orbital_gradient_all_classes():
     route = nr_density.spin_orbital_route(mc, cderi)
     pt = route.pt()
     g_qc, u = og.gradient(pt)
+    # the Fock part through AO J/K builds against the one through MO three-index integrals
+    g_b, _ = og.gradient(pt, fock='b')
+    assert abs(g_qc - g_b).max() < 1e-11
     g = route.spin_sum(numpy.conj(u) @ g_qc @ u.T).real
     an = mc.pack_uniq_var(g - g.T)
     n = len(an)

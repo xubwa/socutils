@@ -191,7 +191,20 @@ def _active_two_body(pt, pclass, b, g, x4, sp):
     x4[a, a, a, a] += 0.5 * d2.real
 
 
-def gradient(pt, state=0, classes_=None):
+def fock_part(eris, d_f, gamma):
+    '''The orbital gradient of sum_pq d_f[p, q] F[p, q] for F = h + (J - K)[gamma] (MO,
+    gamma fixed in the MO basis): F (d_f + d_f^T) + 2 (J - K)[d_f] gamma, with the AO
+    Coulomb and exchange builds of the integral source (density fitting): no MO
+    three-index integrals.'''
+    c = eris.mo_coeff
+    sp = eris.spaces
+    dm_gamma = c @ numpy.asarray(gamma).T @ c.conj().T
+    f = c.conj().T @ (eris.hcore_ao + eris.veff_fn(dm_gamma)) @ c
+    w = c.conj().T @ eris.veff_fn(c @ numpy.asarray(d_f).T @ c.conj().T) @ c
+    return (f @ (d_f + d_f.T) + 2 * w @ gamma).real
+
+
+def gradient(pt, state=0, classes_=None, fock='jk'):
     '''(dE2/dK in the quasi-canonical orbitals of pt, u): the orbital gradient of the
     classes named in classes_ (default all eight) at fixed CI vector.'''
     from socutils.zmr.uc import classes as uc_classes
@@ -229,8 +242,12 @@ def gradient(pt, state=0, classes_=None):
     gam_core = numpy.zeros((n, n))
     gam_core[sp.slice('c'), sp.slice('c')] = numpy.eye(sp.ncore)
     gmat = numpy.einsum('pqrs,Prs->Ppq', x4 + x4.transpose(2, 3, 0, 1), bmo)
-    gmat += fock_chain(bmo, d_gen.real, gam_gen) + fock_chain(bmo, d_core.real, gam_core)
-    d = (d_gen + d_core).real
-    h = eris.h1.real
-    grad = h @ (d + d.T) + numpy.einsum('Prs,Psq->rq', bmo, gmat + gmat.transpose(0, 2, 1))
+    if fock == 'jk':
+        # the Fock matrices through AO Coulomb and exchange builds (h included)
+        grad = (fock_part(eris, d_gen.real, gam_gen) + fock_part(eris, d_core.real, gam_core))
+    else:
+        gmat += fock_chain(bmo, d_gen.real, gam_gen) + fock_chain(bmo, d_core.real, gam_core)
+        d = (d_gen + d_core).real
+        grad = eris.h1.real @ (d + d.T)
+    grad = grad + numpy.einsum('Prs,Psq->rq', bmo, gmat + gmat.transpose(0, 2, 1))
     return grad, numpy.asarray(qc.u)
