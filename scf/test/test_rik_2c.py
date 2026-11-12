@@ -65,9 +65,15 @@ class KnownValues(unittest.TestCase):
         finally:
             rik_2c.QUAT = True
         quat = rik_2c.get_jk(self.mf.with_df, [u], kramers=[True])[1][0]
+        try:
+            rik_2c.FUSED = False
+            quat2 = rik_2c.get_jk(self.mf.with_df, [u], kramers=[True])[1][0]
+        finally:
+            rik_2c.FUSED = True
         rik_2c.MAX_ROWS, rik_2c.TILE = rows, tile
         self.assertLess(abs(gram - ref).max(), 1e-12)
         self.assertLess(abs(quat - ref).max(), 1e-12)
+        self.assertLess(abs(quat2 - ref).max(), 1e-12)
         self.assertLess(abs(ref - _ref_k(self.mf.with_df, self.cocc, self.nao)).max(), 1e-12)
 
     def test_kramers_reduce(self):

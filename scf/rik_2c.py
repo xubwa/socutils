@@ -144,6 +144,34 @@ def half_combinations(eri1, c4, ncomb_spec, out=None, tile=None, dtril=None, vj=
     return out
 
 
+FUSED = True          # Kramers sets: half transformation + products per thread (SOCVHFrik2c_kquat)
+FUSED_MEMORY = .25    # ... while the thread-private accumulators take at most this * the free memory
+
+
+def kquat(acc_thr, eri1, c4, ncomb_spec, sign=1., dtril=None, vj=None, tile=None):
+    '''acc_thr (nthreads, 4, nao, nao) += the four products of this factor block (libsocvhf,
+    fused half transformation); with dtril, vj += its Coulomb matrices'''
+    import ctypes
+    ia, ib, sb = ncomb_spec
+    eri1 = numpy.asarray(eri1, order='C')
+    nb = eri1.shape[0]
+    nao = c4.shape[0]
+    ncol = c4.shape[1] // 4
+    assert acc_thr.flags.c_contiguous and acc_thr.shape[0] >= lib.num_threads()
+    if dtril is None:
+        ndj, dptr, vptr = 0, None, None
+    else:
+        ndj, dptr, vptr = dtril.shape[0], dtril.ctypes.data_as(ctypes.c_void_p), vj.ctypes.data_as(ctypes.c_void_p)
+    if tile is None:
+        tile = TILE or int(min(ncol, max(256, (1 << 24) // (12 * nao))))
+    _load_lib().SOCVHFrik2c_kquat(
+        acc_thr.ctypes.data_as(ctypes.c_void_p), eri1.ctypes.data_as(ctypes.c_void_p),
+        c4.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nb), ctypes.c_int(nao), ctypes.c_int(ncol),
+        ia.ctypes.data_as(ctypes.c_void_p), ib.ctypes.data_as(ctypes.c_void_p), sb.ctypes.data_as(ctypes.c_void_p),
+        ctypes.c_int(tile), ctypes.c_double(sign), dptr, ctypes.c_int(ndj), vptr)
+    return acc_thr
+
+
 def _assemble_quat(ms, nao):
     '''the sph GHF exchange matrix of a Kramers set from the four products ms (4, nao, nao)'''
     s = [m + m.T for m in ms]
@@ -221,22 +249,31 @@ def get_jk(with_df, orbs=(), dms_j=(), kramers=None, signs=None, max_memory=None
     signs = [1.] * nset if signs is None else [float(s) for s in signs]
     quat = [bool(kr) and QUAT and bool(_load_lib()) for kr in kramers]
     cols = [_real_columns(c, nao) if c.shape[1] > 0 else None for c in orbs]
-    # doubles per auxiliary function and AO of the half-transformed rows: 4 components per orbital
-    # (Gram matrix) or the 8 combinations (four-product scheme)
-    width = max([0] + [(8 if q else 4) * (c.shape[1] // 4) for c, q in zip(cols, quat) if c is not None])
-    ncol_max = max([0] + [c.shape[1] // 4 for c in cols if c is not None])
-    dms_j = [numpy.asarray(d, dtype=float) for d in dms_j]
-    ndj = len(dms_j)
-
+    nthreads = lib.num_threads()
     if max_memory is None:
         max_memory = getattr(with_df, 'max_memory', 4000)
     mem_free = max(400., max_memory - lib.current_memory()[0] - 8 * nset * (4 * nao) ** 2 / 1e6)
+    # fused Kramers sets: per-thread accumulators (and buffers), no shared half-transformed rows
+    nq = sum(1 for c, q in zip(cols, quat) if q and c is not None)
+    fused = FUSED and nq > 0 and 8 * nq * nthreads * 4 * nao * nao / 1e6 < FUSED_MEMORY * mem_free
+    if fused:
+        mem_free -= 8 * nq * nthreads * 4 * nao * nao / 1e6
+    # doubles per auxiliary function and AO of the half-transformed rows: 4 components per orbital
+    # (Gram matrix) or the 8 combinations (four-product scheme; none when fused)
+    width = max([0] + [(0 if fused else 8 if q else 4) * (c.shape[1] // 4)
+                       for c, q in zip(cols, quat) if c is not None])
+    ncol_max = max([0] + [c.shape[1] // 4 for c, q in zip(cols, quat)
+                          if c is not None and not (fused and q)])
+    dms_j = [numpy.asarray(d, dtype=float) for d in dms_j]
+    ndj = len(dms_j)
+
     # per auxiliary function: the factor block and its prefetch (2 npair), the half-transformed rows
     per_p = 8 * (2 * npair + width * nao) / 1e6
     blksize = int(max(1, min(naux, mem_free * BLK_MEMORY / per_p)))
     if ncol_max:
         blksize = min(blksize, max(1, MAX_ROWS // ncol_max))
-    nthreads = lib.num_threads()
+    elif fused:
+        blksize = min(blksize, 8 * nthreads)
     if blksize > nthreads:
         blksize -= blksize % nthreads      # the half transformation is parallel over P
     log.debug1('rik_2c.get_jk: naux %d, blksize %d, orbital sets %s (Kramers %s, four-product %s), '
@@ -252,7 +289,8 @@ def get_jk(with_df, orbs=(), dms_j=(), kramers=None, signs=None, max_memory=None
         vj = numpy.zeros((ndj, npair))
     # the set whose libsocvhf half transformation also accumulates J (None: J by two GEMVs per block)
     jset = next((k for k in range(nset) if quat[k] and cols[k] is not None), None) if ndj else None
-    acc = [numpy.zeros((4, nao, nao)) if q else numpy.zeros((4 * nao, 4 * nao), order='F') for q in quat]
+    acc = [(numpy.zeros((nthreads, 4, nao, nao)) if fused else numpy.zeros((4, nao, nao))) if q
+           else numpy.zeros((4 * nao, 4 * nao), order='F') for q in quat]
     buf = numpy.empty(blksize * width * nao) if width else None
     spec = _comb_spec()
     tw = [0.] * 4          # wall: factor read, J, half transformation, Gram update / products
@@ -270,7 +308,11 @@ def get_jk(with_df, orbs=(), dms_j=(), kramers=None, signs=None, max_memory=None
             if cols[k] is None:
                 continue
             t3 = logger.perf_counter()
-            if quat[k]:
+            if quat[k] and fused:
+                kquat(acc[k], eri1, cols[k], spec, signs[k],
+                      dtril=dtril if k == jset else None, vj=vj if k == jset else None)
+                t4 = logger.perf_counter()
+            elif quat[k]:
                 # (8, nb ncol, nao); J of the densities with the first such set, from the same rows
                 y = half_combinations(eri1, cols[k], spec, buf,
                                       dtril=dtril if k == jset else None, vj=vj if k == jset else None)
@@ -288,6 +330,8 @@ def get_jk(with_df, orbs=(), dms_j=(), kramers=None, signs=None, max_memory=None
     log.debug1('rik_2c.get_jk wall: factor read %.2f s, J %.2f s, half transformation %.2f s, '
                'Gram update / products %.2f s', *tw)
     get_jk.last_timing = tw
+    if fused:
+        acc = [a.sum(axis=0) if q else a for a, q in zip(acc, quat)]
     vks = [_assemble_quat(a, nao) if q else _assemble(a, nao, kr) for a, q, kr in zip(acc, quat, kramers)]
     vjs = [lib.unpack_tril(v) for v in vj] if ndj else []
     log.timer_debug1('rik_2c.get_jk', *t0)

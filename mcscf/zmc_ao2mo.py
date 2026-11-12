@@ -296,8 +296,13 @@ class _CDERIS(lib.StreamObject):
         if quat_core:
             c4core = rik_2c._real_columns(kr_core, nao_nr)
             qspec = rik_2c._comb_spec()
-            qacc = numpy.zeros((4, nao_nr, nao_nr))
-            qbuf = numpy.empty(nbuf * nck * 8 * nao_nr)
+            nthr = lib.num_threads()
+            # fused kernel (per-thread accumulators) when they fit, else the shared buffer of the
+            # eight combinations and four threaded GEMMs per block
+            mem_free = getattr(cache_owner, 'max_memory', 4000) - lib.current_memory()[0]
+            qfused = rik_2c.FUSED and 8 * nthr * 4 * nao_nr ** 2 / 1e6 < rik_2c.FUSED_MEMORY * mem_free
+            qacc = numpy.zeros((nthr, 4, nao_nr, nao_nr) if qfused else (4, nao_nr, nao_nr))
+            qbuf = None if qfused else numpy.empty(nbuf * nck * 8 * nao_nr)
             ua, ub = kr_core[:nao_nr], kr_core[nao_nr:]
             dc = 2 * (lib.dot(ua, ua.conj().T) + lib.dot(ub, ub.conj().T)).real     # D_aa + D_bb of the core
             dc = dc + dc.T
@@ -333,13 +338,18 @@ class _CDERIS(lib.StreamObject):
             if quat_core:
                 if eri1.ndim != 2:
                     raise NotImplementedError('CDERIS needs the packed (s2) AO vectors')
-                y = rik_2c.half_combinations(eri1, c4core, qspec, qbuf, dtril=qdtril, vj=qvj)
+                if qfused:
+                    rik_2c.kquat(qacc, eri1, c4core, qspec, 1., dtril=qdtril, vj=qvj)
+                    y = None
+                else:
+                    y = rik_2c.half_combinations(eri1, c4core, qspec, qbuf, dtril=qdtril, vj=qvj)
             tb1 = (logger.process_clock(), logger.perf_counter())
             t_half += (tb1[0] - tb0[0], tb1[1] - tb0[1])
 
             if quat_core:
-                for r in range(4):
-                    qacc[r] += y[2 * r].T @ y[2 * r + 1]
+                if y is not None:
+                    for r in range(4):
+                        qacc[r] += y[2 * r].T @ y[2 * r + 1]
                 y = None
             # --- Core J: rho_P = sum_i C_i^dagger L_P C_i (real), J += rho_P L_P ---
             elif eri1.ndim == 2 and vj_tril is not None:
@@ -398,7 +408,7 @@ class _CDERIS(lib.StreamObject):
         import gc
         gc.collect()
         if quat_core:
-            vk_sph = rik_2c._assemble_quat(qacc, nao_nr)
+            vk_sph = rik_2c._assemble_quat(qacc.sum(axis=0) if qfused else qacc, nao_nr)
             vj_tril = qvj[0]
         elif kr_core is not False:
             A = vk_sph[:nao_nr, :nao_nr].copy()

@@ -202,3 +202,107 @@ void SOCVHFrik2c_half(double *out, const double *eri, const double *c, int nb, i
 }
         free(vjts);
 }
+
+/*
+ * The whole Kramers exchange step of a block, fused: per (P, tile of orbitals) the dgemm X^P,
+ * the eight combinations into a thread-local buffer (normal stores: read back at once) and the
+ * four products accumulated with single-threaded dgemms into thread-private accumulators
+ *
+ *     acc[t][r] += sign Y_{a_r}^T Y_{b_r}       (row-major nao x nao, r = 0..3)
+ *
+ * (the combinations in the order a_0, b_0, a_1, b_1, ...), so no combination is written to a
+ * shared buffer and the products need no threaded GEMM of a small nao x nao output.  acc has
+ * omp_get_max_threads() slots; the caller sums them.  J as in SOCVHFrik2c_half.
+ */
+void SOCVHFrik2c_kquat(double *acc, const double *eri, const double *c, int nb, int nao, int ncol,
+                       const int *ia, const int *ib, const double *sb, int tile, double sign,
+                       const double *dtril, int ndj, double *vj)
+{
+        const size_t npair = (size_t)nao * (nao + 1) / 2;
+        const size_t nn = (size_t)nao * nao;
+        if (ncol == 0 || nb == 0) {
+                return;
+        }
+        if (tile <= 0 || tile > ncol) {
+                tile = ncol;
+        }
+        const int ntile = (ncol + tile - 1) / tile;
+        const double D1 = 1., D0 = 0.;
+        const int nthreads = omp_get_max_threads();
+        double **vjts = calloc(nthreads, sizeof(double *));
+#pragma omp parallel
+{
+        const int it = omp_get_thread_num();
+        double *b = malloc(sizeof(double) * nn);
+        double *x = malloc(sizeof(double) * nao * 4 * tile);
+        double *y = malloc(sizeof(double) * nao * 8 * tile);
+        double *acct = acc + (size_t)it * 4 * nn;
+        double *vjt = NULL;
+        int last = -1;
+        int k, r;
+        if (ndj > 0) {
+                vjt = calloc((size_t)ndj * npair, sizeof(double));
+                vjts[it] = vjt;
+        }
+#pragma omp for schedule(dynamic, 1)
+        for (k = 0; k < nb * ntile; k++) {
+                const int p = k / ntile, t = k % ntile;
+                if (p != last) {
+                        unpack_tril(b, eri + p * npair, nao);
+                        last = p;
+                }
+                if (ndj > 0 && t == 0) {
+                        j_row(vjt, eri + p * npair, dtril, ndj, npair);
+                }
+                const int i0 = t * tile;
+                const int ni = (ncol - i0 < tile) ? ncol - i0 : tile;
+                const int m4 = ni * 4;
+                dgemm_("N", "N", &nao, &m4, &nao, &D1, b, &nao,
+                       c + (size_t)i0 * 4 * nao, &nao, &D0, x, &nao);
+                int i;
+                for (i = 0; i < ni; i++) {
+                        const double *xi = x + (size_t)i * 4 * nao;
+                        for (r = 0; r < 8; r++) {
+                                double *o = y + ((size_t)r * ni + i) * nao;
+                                const double *xa = xi + (size_t)ia[r] * nao;
+                                int mu;
+                                if (ib[r] < 0) {
+                                        memcpy(o, xa, sizeof(double) * nao);
+                                } else {
+                                        const double *xb = xi + (size_t)ib[r] * nao;
+                                        const double s = sb[r];
+#pragma omp simd
+                                        for (mu = 0; mu < nao; mu++) {
+                                                o[mu] = xa[mu] + s * xb[mu];
+                                        }
+                                }
+                        }
+                }
+                /* row-major acc_r += Ya^T Yb: col-major acc_r^T += Yb Ya^T, Y col-major (nao, ni) */
+                for (r = 0; r < 4; r++) {
+                        dgemm_("N", "T", &nao, &nao, &ni, &sign, y + (size_t)(2 * r + 1) * ni * nao, &nao,
+                               y + (size_t)(2 * r) * ni * nao, &nao, &D1, acct + r * nn, &nao);
+                }
+        }
+        free(y);
+        free(x);
+        free(b);
+        if (ndj > 0) {
+#pragma omp barrier
+                size_t ij, n = (size_t)ndj * npair;
+                int jt;
+#pragma omp for schedule(static)
+                for (ij = 0; ij < n; ij++) {
+                        double v = 0;
+                        for (jt = 0; jt < nthreads; jt++) {
+                                if (vjts[jt] != NULL) {
+                                        v += vjts[jt][ij];
+                                }
+                        }
+                        vj[ij] += v;
+                }
+                free(vjt);
+        }
+}
+        free(vjts);
+}
