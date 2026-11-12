@@ -498,12 +498,20 @@ def _get_jk_fast(mf, mol, dms, hermi, with_j, with_k, m, aa, ab, ba, bb, cplx, k
     vj = vk = None
     if with_j:
         p = _rij_proxy(mf, mol) if m.startswith('rij') else _proxy(mf, mol)
-        dj = numpy.ascontiguousarray(aa.real + bb.real)
-        J = numpy.asarray(p.get_jk(mol, dj[0] if n == 1 else dj, 1 if hermi == 1 else 0, True, False)[0])
-        J = J.reshape(n, nao, nao)
+        # J of the symmetric part only (J[D] = J[(D + D^T) / 2]): the hermi=1 builds (resident / direct RI-J,
+        # MD J) also for the non-Hermitian transition densities of a response
+        dj = aa.real + bb.real
+        if hermi != 1:
+            dj = (dj + dj.transpose(0, 2, 1)) * .5
         if cplx and hermi != 1:
-            ji = p.get_jk(mol, numpy.ascontiguousarray(aa.imag + bb.imag), 0, True, False)[0]
-            J = J + 1j * numpy.asarray(ji).reshape(n, nao, nao)
+            di = aa.imag + bb.imag
+            dj = numpy.concatenate([dj, (di + di.transpose(0, 2, 1)) * .5])
+        dj = numpy.ascontiguousarray(dj)
+        # one SCF density: 2-D (the incremental builds); response densities: the multi-density builds
+        J = numpy.asarray(p.get_jk(mol, dj[0] if hermi == 1 and dj.shape[0] == 1 else dj, 1, True, False)[0])
+        J = J.reshape(-1, nao, nao)
+        if J.shape[0] == 2 * n:
+            J = J[:n] + 1j * J[n:]
         vj = numpy.zeros((n, 2 * nao, 2 * nao), dtype=dms.dtype)
         vj[:, :nao, :nao] = vj[:, nao:, nao:] = J
     if with_k:

@@ -759,6 +759,11 @@ class NumInt2C(numint2c.NumInt2C):
     def nr_fxc(self, mol, grids, xc_code, dm0, dms, spin=0, relativity=0, hermi=0,
                rho0=None, vxc=None, fxc=None, max_memory=2000, verbose=None):
         if self.collinear[0] in ('m', 'n'):
+            from socutils.dft import fxc_2c
+            v = fxc_2c.nr_fxc(self, mol, grids, xc_code, dm0, dms, hermi, rho0, vxc, fxc,
+                              max_memory)
+            if v is not None:
+                return v
             return self._gks_mcol_fxc(mol, grids, xc_code, dm0, dms, relativity,
                                       hermi, rho0, vxc, fxc, max_memory, verbose)
         return _col_fxc(self, mol, grids, xc_code, dm0, dms, relativity, hermi,
