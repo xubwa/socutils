@@ -74,11 +74,24 @@ class KnowValues(unittest.TestCase):
     def test_mcol_lda(self):
         self._check('mcol', 'lda,vwn', dm_ku)
 
-    def test_mcol_gga_not_fused(self):
-        mf = dft.RKS(mol, xc='pbe')
-        mf._numint.collinear = 'mcol'
-        mf.grids.build(with_non0tab=True)
-        self.assertIsNone(vxc_2c.nr_vxc(mf._numint, mol, mf.grids, 'pbe', dm_ku))
+    def test_mcol_gga(self):
+        # the half-sphere points (small |m|) and, in dm_pol (fully polarised where only D_aa is left),
+        # the principal-axis points
+        nao = mol.nao
+        dm_pol = dm_ku.copy()
+        dm_pol[nao:, nao:] *= 1e-3          # |m| / rho = 0.998 > collinear_thrd
+        dm_pol[:nao, nao:] *= 0
+        dm_pol[nao:, :nao] *= 0
+        for d in (dm_ku, dm_pol):
+            self._check('mcol', 'pbe', d)
+        vxc_2c.MCOL_GGA = False
+        try:
+            mf = dft.RKS(mol, xc='pbe')
+            mf._numint.collinear = 'mcol'
+            mf.grids.build(with_non0tab=True)
+            self.assertIsNone(vxc_2c.nr_vxc(mf._numint, mol, mf.grids, 'pbe', dm_ku))
+        finally:
+            vxc_2c.MCOL_GGA = True
 
     def test_spinor_scf_unchanged(self):
         es = []
