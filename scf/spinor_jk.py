@@ -31,8 +31,8 @@ recomputed on GRIDX3 after the SCF (finalize, the spinor SCF's scf()):
 
     mf = spinor_hf.RHF(mol).x2camf()
     mf.rijcosx = True                   # or 'rij' (RIJ, exact K), 'cosx' (exact J, COSX K)
-    mf.rijcosx_auxbasis = None          # None: AutoAux of mol (AUXBASIS); any pyscf basis spec,
-                                        # or a callable mol -> basis (e.g. an acCD generator)
+    mf.rijcosx_auxbasis = None          # None: AUXBASIS = 'accd' (socutils.cd.accd; AutoAux where that is
+                                        # missing), 'autoaux', any pyscf basis spec, or a callable mol -> basis
     mf.kernel()
 
 COSX needs cosx.available(mol) (bra l <= the kernel's CX_LMAX); otherwise K is
@@ -47,7 +47,10 @@ from pyscf.lib import logger
 ENABLE = True       # spinor_hf.SCF / socutils GHF route their J / K here (else pyscf's GHF get_jk)
 KRAMERS_TOL = 1e-10
 RIJCOSX = False     # False | True / 'rijcosx' | 'rij' | 'cosx': default of mf.rijcosx (None -> this)
-AUXBASIS = None     # the RIJ auxiliary basis: None -> pyscf AutoAux of the molecule, a basis spec, or mol -> basis
+# the RIJ auxiliary basis: 'accd' (socutils.cd.accd; AutoAux where it is not available), 'autoaux' (pyscf), a basis
+# spec, or mol -> basis.  [BiPh3]+ doublet, Kramers-unrestricted X2CAMF PBE / DYVTZ-SF + cc-pVTZ H: RIJ error
+# against exact J -4.5e-5 Eh with acCD (tau 1e-3), -7.9e-3 Eh with AutoAux, the same J time
+AUXBASIS = 'accd'
 FINAL_GRID = 3      # COSX level of the final exchange energy (None: not recomputed)
 # The COSX grids' radial rule (Krack-Koster, n = 15 intacc - 40 + 5 ROW: 50 shells for Au at GRIDX2) does not
 # reach the tight core of the all-electron bases of the sixth-row atoms: AuH scalar X2C RHF, exchange energy
@@ -77,17 +80,33 @@ def mode(mf):
     return m
 
 
-def auxbasis(mf, mol):
-    '''the RIJ auxiliary basis of mf for mol (mf.rijcosx_auxbasis, else AUXBASIS; None: AutoAux)'''
+def auxbasis(mf, mol, name=False):
+    '''the RIJ auxiliary basis of mf for mol: mf.rijcosx_auxbasis, else AUXBASIS; 'accd' (the default): the acCD
+    basis of socutils.cd.accd (AutoAux, logged, where this socutils has no cd/accd.py), 'autoaux' / None: pyscf's
+    AutoAux, else any pyscf basis spec or a callable mol -> basis.  name=True: (basis, its label).'''
     aux = getattr(mf, 'rijcosx_auxbasis', None)
     if aux is None:
         aux = AUXBASIS
-    if aux is None:
+    label = 'user'
+    if isinstance(aux, str) and aux.lower() == 'accd':
+        try:
+            from socutils.cd import accd
+        except ImportError:
+            logger.warn(mf, 'spinor RIJ: socutils.cd.accd not available here: AutoAux auxiliary basis')
+            aux = None
+        else:
+            out = accd.accd_basis(mol)
+            return (out, 'acCD') if name else out
+    if aux is None or (isinstance(aux, str) and aux.lower() == 'autoaux'):
         from pyscf.df.autoaux import autoaux
-        return autoaux(mol)
+        out = autoaux(mol)
+        return (out, 'AutoAux') if name else out
     if callable(aux):
-        return aux(mol)
-    return aux
+        aux = aux(mol)
+        label = 'callable'
+    elif isinstance(aux, str):
+        label = aux
+    return (aux, label) if name else aux
 
 
 def available(mol):
@@ -119,7 +138,8 @@ def _rij_proxy(mf, mol):
         aux = AUXBASIS
     if p is None or p.mol is not mol or p._aux_spec is not aux:
         from socutils.scf import md_j
-        p = scf.RHF(mol).density_fit(auxbasis=auxbasis(mf, mol), only_dfj=True)
+        aux_b, aux_name = auxbasis(mf, mol, name=True)
+        p = scf.RHF(mol).density_fit(auxbasis=aux_b, only_dfj=True)
         p.verbose = mf.verbose
         p.stdout = mf.stdout
         p.max_memory = mf.max_memory
@@ -129,8 +149,9 @@ def _rij_proxy(mf, mol):
         from pyscf.df import addons
         p.with_df.auxmol = addons.make_auxmol(mol, p.with_df.auxbasis)
         p._aux_spec = aux
-        logger.info(mf, 'spinor RIJ: auxiliary basis %d functions, lmax %d',
+        logger.info(mf, 'spinor RIJ: auxiliary basis %s, %d functions, lmax %d', aux_name,
                     p.with_df.auxmol.nao, p.with_df.auxmol._bas[:, 1].max())
+        p._aux_name = aux_name
         p.verbose = 0
         md_j.apply(p)
         mf._spinor_rij_proxy = p
