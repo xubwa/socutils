@@ -20,6 +20,11 @@ def water():
     return mol, mc, cderi
 
 
+def pyscf_nr_civecs(mc):
+    from socutils.zmr.interface import pyscf_nr
+    return pyscf_nr.nr_civecs(mc)
+
+
 def _nr_e2(mol, mc, cderi, hcore, civecs=None):
     '''(E2 of the spin-free PC-NEVPT2 on the orbitals of mc, CI vectors): civecs None
     solves the CASCI of these integrals (zmr's solver, converged tightly).'''
@@ -42,9 +47,10 @@ def test_spin_orbital_route(water):
     ref, d2, pt = density.make_rdm1(mc, cderi)
     e2_so = float(sum(v[0, 0].real for v in pt.h2_by_class.values()))
     h0 = mc.get_hcore()
-    # both routes with the exact CASCI vector of these orbitals
-    e2_nr, c0 = _nr_e2(mol, mc, cderi, h0)
-    assert abs(e2_so - e2_nr) < 1e-10
+    # both routes with the CI vector of the CASSCF
+    c0 = pyscf_nr_civecs(mc)
+    e2_nr, _ = _nr_e2(mol, mc, cderi, h0, c0)
+    assert abs(e2_so - e2_nr) < 1e-11
     c = mc.mo_coeff
     dm_cas = c.T @ mol.intor('int1e_ovlp') @ mc.make_rdm1() @ mol.intor('int1e_ovlp') @ c
     assert abs(ref - dm_cas).max() < 1e-5

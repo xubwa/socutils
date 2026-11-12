@@ -24,9 +24,6 @@ def test_orbital_gradient_all_classes():
     mc.conv_tol = 1e-12
     mc.kernel()
     h = mc.get_hcore()
-    eris0 = pyscf_nr.nr_eris(mol, h, mc.mo_coeff, 0, mc.ncore, mc.ncas, cderi=cderi)
-    c0 = ActiveSpace.from_eris(eris0).solve((2, 2), 1)[1][:, 0]
-    mc.ci = c0.reshape(numpy.asarray(mc.ci).shape)
 
     def e2(m, c):
         eris = pyscf_nr.nr_eris(mol, h, m, 0, mc.ncore, mc.ncas, cderi=cderi)
@@ -36,13 +33,11 @@ def test_orbital_gradient_all_classes():
         return float(sum(v[0, 0].real for v in pt.h2_by_class.values()))
 
     fd = rf.fd_gradient(e2, mc)
-    eris, nelec = pyscf_nr.from_casci(mc, cderi=cderi)
-    pt = PCNEVPT2(eris, nelec, nstate=1)
-    pt.verbose = 0
-    pt.kernel()
+    from socutils.zmr.nr import density as nr_density
+    route = nr_density.spin_orbital_route(mc, cderi)
+    pt = route.pt()
     g_qc, u = og.gradient(pt)
-    g_so = numpy.conj(u) @ g_qc @ u.T
-    g = (g_so[0::2, 0::2] + g_so[1::2, 1::2]).real
+    g = route.spin_sum(numpy.conj(u) @ g_qc @ u.T).real
     an = mc.pack_uniq_var(g - g.T)
     n = len(an)
     assert abs(fd[:n] - an).max() < 1e-7, abs(fd[:n] - an).max()
