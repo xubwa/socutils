@@ -285,3 +285,90 @@ def get_jk(with_df, orbs=(), dms_j=(), kramers=None, signs=None, max_memory=None
     vjs = [lib.unpack_tril(v) for v in vj] if ndj else []
     log.timer_debug1('rik_2c.get_jk', *t0)
     return vjs, vks
+
+
+def kramers_reduce(c, nao, tol=1e-8):
+    '''Unbarred half u (2 nao, ncol / 2) of a weighted two-component orbital set c (2 nao, ncol) in
+    the sph GHF basis whose density D = c c^H is time-reversal symmetric (Theta D Theta^-1 = D):
+    u u^H + (Theta u) (Theta u)^H = D, the columns of c in any order or unitary mixture (natural
+    orbitals of a Kramers-symmetric active 1-RDM weighted by the square root of their occupation,
+    degenerate pairs mixed arbitrarily).  False when D is not time-reversal symmetric.
+
+    Theta (c x) = c U x^* with the antisymmetric unitary U = c^+ Theta c; a symplectic Gram-Schmidt
+    in the coefficient space C^ncol ({x_k, U x_k^*} orthonormal) gives u = c [x_1, x_2, ...].'''
+    c = numpy.asarray(c)
+    ncol = c.shape[1]
+    if ncol == 0:
+        return c
+    if ncol % 2:
+        return False
+    tc = numpy.vstack((-c[nao:].conj(), c[:nao].conj()))
+    u_mat = numpy.linalg.lstsq(c, tc, rcond=None)[0]
+    scale = max(abs(c).max(), 1e-300)
+    if abs(c @ u_mat - tc).max() > tol * scale or abs(u_mat + u_mat.T).max() > tol:
+        return False
+    xs = []
+    basis = numpy.zeros((ncol, 0), dtype=complex)
+    while basis.shape[1] < ncol:
+        # the unit vector with the largest component outside the current span
+        j = numpy.argmax(1 - numpy.einsum('jk,jk->j', basis.conj(), basis).real)
+        x = numpy.zeros(ncol, dtype=complex)
+        x[j] = 1
+        x -= basis @ (basis.conj().T @ x)
+        x -= basis @ (basis.conj().T @ x)
+        x /= numpy.linalg.norm(x)
+        xs.append(x)
+        basis = numpy.hstack((basis, x[:, None], (u_mat @ x.conj())[:, None]))
+    if basis.shape[1] != ncol:
+        return False
+    return c @ numpy.array(xs).T
+
+
+def kramers_half(c, nao):
+    '''unbarred half of c (2 nao, ncol) by the adjacent-pair check (scf.spinor_hf._kramers_unbarred,
+    cheap) or else kramers_reduce; False when the set is not Kramers symmetric'''
+    from socutils.scf.spinor_hf import _kramers_unbarred
+    u = _kramers_unbarred(c, nao)
+    if u is False:
+        u = kramers_reduce(c, nao)
+    return u
+
+
+def get_jk_spinor(mol, with_df, mo_sets, with_j=True, kramers='auto', signs=None, max_memory=None,
+                  verbose=None):
+    '''J and K (spinor AO basis, (n2c, n2c)) of the densities D_s = C_s C_s^H of weighted spinor
+    orbital sets C_s (n2c, ncol_s), one pass over with_df's factor (DF or CD):
+
+        core Fock:    C = the frozen-core spinors                     (weights 1)
+        active Fock:  C = active natural spinors * sqrt(occupation)   (diagonalised active 1-RDM)
+        SCF:          C = occupied spinors * sqrt(mo_occ)
+
+    kramers: 'auto' (a time-reversal symmetric set is reduced to its unbarred half: half the
+    transformation, the four-product exchange), True (required) or False (general set).
+    Returns (vj list or None, vk list).'''
+    nao = mol.nao_nr()
+    c2 = numpy.vstack(mol.sph2spinor_coeff())
+    from socutils.scf.spinor_hf import sph2spinor
+    orbs, krs = [], []
+    for c in mo_sets:
+        cs = c2 @ numpy.asarray(c)
+        u = kramers_half(cs, nao) if kramers else False
+        if kramers is True and u is False:
+            raise ValueError('orbital set is not time-reversal symmetric')
+        orbs.append(cs if u is False else u)
+        krs.append(u is not False)
+    dms = []
+    if with_j:
+        for c, kr in zip(orbs, krs):
+            d = (lib.dot(c[:nao], c[:nao].conj().T) + lib.dot(c[nao:], c[nao:].conj().T)).real
+            dms.append(2 * d if kr else d)
+    vjs, vks = get_jk(with_df, orbs, dms, kramers=krs, signs=signs, max_memory=max_memory, verbose=verbose)
+    vk = [sph2spinor(mol, k) for k in vks]
+    if not with_j:
+        return None, vk
+    vj = []
+    for j in vjs:
+        js = numpy.zeros((2 * nao, 2 * nao), dtype=complex)
+        js[:nao, :nao] = js[nao:, nao:] = j
+        vj.append(sph2spinor(mol, js))
+    return vj, vk

@@ -70,6 +70,39 @@ class KnownValues(unittest.TestCase):
         self.assertLess(abs(quat - ref).max(), 1e-12)
         self.assertLess(abs(ref - _ref_k(self.mf.with_df, self.cocc, self.nao)).max(), 1e-12)
 
+    def test_kramers_reduce(self):
+        '''weighted natural spinors with mixed degenerate pairs (an active-space density) reduce to
+        an unbarred half; a non-Kramers set does not'''
+        nao = self.nao
+        c2 = numpy.vstack(self.mol.sph2spinor_coeff())
+        mo = c2 @ self.mf.mo_coeff[:, 6:14]                # 4 Kramers pairs
+        w = numpy.repeat([.9, .6, .3, .1], 2)
+        c = mo * numpy.sqrt(w)
+        rng = numpy.random.default_rng(5)
+        for k in range(4):
+            q = numpy.linalg.qr(rng.normal(size=(2, 2)) + 1j * rng.normal(size=(2, 2)))[0]
+            c[:, 2 * k:2 * k + 2] = c[:, 2 * k:2 * k + 2] @ q
+        c = c[:, rng.permutation(8)]
+        self.assertIs(spinor_hf._kramers_unbarred(c, nao), False)
+        u = rik_2c.kramers_reduce(c, nao)
+        self.assertIsNot(u, False)
+        tu = numpy.vstack((-u[nao:].conj(), u[:nao].conj()))
+        self.assertLess(abs(u @ u.conj().T + tu @ tu.conj().T - c @ c.conj().T).max(), 1e-12)
+        k1 = rik_2c.get_jk(self.mf.with_df, [u], kramers=[True])[1][0]
+        self.assertLess(abs(k1 - _ref_k(self.mf.with_df, c, nao)).max(), 1e-12)
+        self.assertIs(rik_2c.kramers_reduce(self.cgen, nao), False)
+
+    def test_spinor_api_vs_dm(self):
+        '''get_jk_spinor of a weighted set equals the DM-based J/K of _DFJHF.get_jk'''
+        mf = self.mf
+        mo = mf.mo_coeff[:, 2:12] * numpy.sqrt(numpy.repeat([1., .8, .5, .2, .05], 2))
+        dm = mo @ mo.conj().T
+        vj0, vk0 = mf.get_jk(self.mol, dm)                 # untagged: DM-based K
+        for kr in ('auto', False):
+            vj, vk = rik_2c.get_jk_spinor(self.mol, mf.with_df, [mo], kramers=kr)
+            self.assertLess(abs(vj[0] - vj0).max(), 1e-11)
+            self.assertLess(abs(vk[0] - vk0).max(), 1e-11)
+
     def test_vs_old_loop(self):
         mf = self.mf
         dmt = lib.tag_array(mf.make_rdm1(), mo_coeff=mf.mo_coeff, mo_occ=mf.mo_occ)
