@@ -178,6 +178,17 @@ class _DFJHF(df.df_jk._DFHF):
             nocc = C_occ_sph.shape[1]
             logger.debug(self, 'DF-K: Kramers-paired occupied spinors, %d unbarred', nocc)
 
+        if DFK_GRAM:
+            # one real half transformation of all four components and one 4 nao x 4 nao
+            # rank-k update per factor block (scf.rik_2c)
+            from socutils.scf import rik_2c
+            vjs, vks = rik_2c.get_jk(self.with_df, [C_occ_sph], [] if dm_j is None else [dm_j],
+                                     kramers=[kramers is not False], max_memory=self.max_memory,
+                                     verbose=self.verbose)
+            if dm_j is not None:
+                return sph2spinor(mol, vks[0]), vjs[0]
+            return sph2spinor(mol, vks[0])
+
         # Four real Fortran-order arrays for the C half-transform library
         # Each has shape (nao, nocc), matching the DF integral AO index
         C_aR = numpy.asfortranarray(C_occ_sph[:nao].real)
@@ -256,6 +267,9 @@ class _DFJHF(df.df_jk._DFHF):
         if dm_j is not None:
             return sph2spinor(mol, vk_sph), lib.unpack_tril(vj_tril)
         return sph2spinor(mol, vk_sph)
+
+
+DFK_GRAM = True   # _DFJHF._get_k_mo by scf.rik_2c (else the four-buffer AO2MO / GEMM loop below)
 
 
 def _kramers_unbarred(C, nao, tol=1e-8):
