@@ -52,6 +52,16 @@ class KnownValues(unittest.TestCase):
         self.assertEqual(x1.shape, b[0].shape)
         self.assertLess(abs(x1 - x0).max(), 1e-12)
 
+    def test_disk(self):
+        # the trial vectors in a temporary file, read back in chunks of a few rows
+        a, b = _system(seed=9)
+        b[:3] *= 1e-6
+        x0, s0 = _solve(True, a, b)
+        with lib.temporary_env(rhf_fast, KRYLOV_DISK=True, CPHF_DISK_CHUNK=.02):
+            x1, s1 = _solve(True, a, b)
+        self.assertEqual(s0, s1)
+        self.assertLess(abs(x1 - x0).max(), 1e-10)      # chunked Gram-Schmidt: the order of the sums
+
     def test_tiny_rhs(self):
         # right-hand sides 1e-6 of the others: Pople's method (pyscf's too, lindep absolute) stops at a
         # larger error there; the implicit h is no worse than the explicit one
