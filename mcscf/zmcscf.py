@@ -190,6 +190,11 @@ class CASSCF(zcasci.CASCI):
         # the plain-eigh fallback, can scramble the Kramers pairing.
         self.canonicalize_ = False
         self.natorb = False
+        # core-core exchange: 'cd' (the Cholesky / DF factor, as every other term) or 'cosx' (COSX, the terms
+        # with an active index from the factor; mcscf.core_cosx); None: core_cosx.CORE_EXCHANGE.
+        # core_exchange_grid: the COSX grid level (None: core_cosx.GRID_LEVEL)
+        self.core_exchange = None
+        self.core_exchange_grid = None
 
     def get_fock(self, mo_coeff=None, ci=None, eris=None, casdm1=None, verbose=None):
         return get_fock(self, mo_coeff, ci, eris, casdm1, verbose)

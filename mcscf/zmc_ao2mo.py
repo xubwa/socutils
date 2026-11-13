@@ -45,6 +45,7 @@ class _CDERIS(lib.StreamObject):
         moo_sph = numpy.dot(c2, mo[:, :nocc])        # (2*nao_nr, nocc)
         mop_sph = numpy.dot(c2, mo)                   # (2*nao_nr, nmo)
 
+        self._mo_spinor = mo
         if level is 2:
             if with_df is not None:
                 self.vj_core = None
@@ -236,9 +237,14 @@ class _CDERIS(lib.StreamObject):
         # half is half-transformed; core J doubles, core K is completed after
         # the loop (as in scf.spinor_hf._DFJHF._get_k_mo)
         from socutils.scf.spinor_hf import _kramers_unbarred
+        # mc.core_exchange = 'cosx': the core-core exchange from COSX (mcscf.core_cosx), K[D_c] C_act from the
+        # active vectors of this pass, core J from the density: no core half transformation
+        from socutils.mcscf import core_cosx
+        cosx_core = ncore > 0 and core_cosx.use_cosx(cache_owner)
         kr_core = (_kramers_unbarred(moo_sph[:, :ncore], nao_nr)
-                   if ncore > 0 and getattr(self._owner_scf_kramers(cache_owner), 'kramers_k', True) else False)
-        nck = ncore
+                   if ncore > 0 and not cosx_core
+                   and getattr(self._owner_scf_kramers(cache_owner), 'kramers_k', True) else False)
+        nck = 0 if cosx_core else ncore
         if kr_core is not False:
             nck = ncore // 2
             moo_sph = moo_sph.copy()
@@ -309,6 +315,13 @@ class _CDERIS(lib.StreamObject):
             dc[numpy.diag_indices(nao_nr)] *= .5
             qdtril = numpy.ascontiguousarray(lib.pack_tril(dc)[None])
             qvj = numpy.zeros_like(qdtril)
+        if cosx_core:
+            from socutils.mcscf import core_cosx
+            cc_sph = numpy.ascontiguousarray(moo_sph[:, :ncore])
+            dc_sph = lib.dot(cc_sph, cc_sph.conj().T)
+            cdtril = core_cosx.j_density_tril(dc_sph, nao_nr)
+            cc_sph_t = numpy.ascontiguousarray(cc_sph.T)
+            klc_a = numpy.zeros((2 * nao_nr, ncas), dtype=complex)     # K^L[D_c] C_act (AO)
 
         log.info('CDERIS before loop: current memory %.1f MB, blksize=%d',
                  lib.current_memory()[0], blksize)
@@ -332,7 +345,7 @@ class _CDERIS(lib.StreamObject):
             LaR_a, LaI_a, LbR_a, LbI_a = [x[:naux_blk * ncas] for x in abuf]
             for C_real, core, act in ((C_aR, LaR_c, LaR_a), (C_aI, LaI_c, LaI_a),
                                       (C_bR, LbR_c, LbR_a), (C_bI, LbI_c, LbI_a)):
-                if ncore > 0 and not quat_core:
+                if nck > 0 and not quat_core:
                     _half(eri1, C_real, core, 0, nck)
                 _half(eri1, C_real, act, ncore, nocc)
             if quat_core:
@@ -351,6 +364,10 @@ class _CDERIS(lib.StreamObject):
                     for r in range(4):
                         qacc[r] += y[2 * r].T @ y[2 * r + 1]
                 y = None
+            elif cosx_core:
+                if eri1.ndim != 2:
+                    raise NotImplementedError('CDERIS core_exchange=cosx needs the packed (s2) AO vectors')
+                vj_tril += lib.dot(lib.dot(eri1, cdtril[:, None]).T, eri1).ravel()
             # --- Core J: rho_P = sum_i C_i^dagger L_P C_i (real), J += rho_P L_P ---
             elif eri1.ndim == 2 and vj_tril is not None:
                 if ncore > 0:
@@ -369,7 +386,7 @@ class _CDERIS(lib.StreamObject):
             # into a real symmetric part (LR.T@LR + LI.T@LI) and an imaginary
             # antisymmetric part (LI.T@LR - (LI.T@LR).T); this never forms the
             # complex L itself for the (naux_blk, ncore, nao_nr) core block.
-            if ncore > 0 and not quat_core:
+            if nck > 0 and not quat_core:
                 IRa = lib.dot(LaI_c.T, LaR_c)
                 vk_sph[:nao_nr, :nao_nr] += (lib.dot(LaR_c.T, LaR_c) + lib.dot(LaI_c.T, LaI_c)
                                               + 1j * (IRa - IRa.T))
@@ -397,6 +414,11 @@ class _CDERIS(lib.StreamObject):
                 laa = numpy.ascontiguousarray(x_up[:, :, ncore:nocc].transpose(0, 2, 1)).reshape(naux_blk, ncas * ncas)
                 e1 = numpy.asarray(eri1)
                 jtu_tril += lib.dot(e1.T, laa.real) + 1j * lib.dot(e1.T, laa.imag)
+            if cosx_core:
+                # K[D_c] C_u = sum_P L_P C_c (C_c^+ L_P C_u): (iu|P) are the core rows of x_up
+                wt = numpy.matmul(x_up[:, :, :ncore], cc_sph_t)          # (P, u, mu) = (D_c L_P C_u)^T
+                klc_a += core_cosx.contract_lw(eri1, wt, nao_nr)
+                wt = None
             tb3 = (logger.process_clock(), logger.perf_counter())
             t_cdpa += (tb3[0] - tb2[0], tb3[1] - tb2[1])
 
@@ -407,7 +429,9 @@ class _CDERIS(lib.StreamObject):
 
         import gc
         gc.collect()
-        if quat_core:
+        if cosx_core:
+            vk_sph = None
+        elif quat_core:
             vk_sph = rik_2c._assemble_quat(qacc.sum(axis=0) if qfused else qacc, nao_nr)
             vj_tril = qvj[0]
         elif kr_core is not False:
@@ -418,7 +442,10 @@ class _CDERIS(lib.StreamObject):
             vk_sph[nao_nr:, nao_nr:] = B + A.conj()
             vk_sph[:nao_nr, nao_nr:] = C - C.T
             vk_sph[nao_nr:, :nao_nr] = vk_sph[:nao_nr, nao_nr:].conj().T
-        vk_core = sph2spinor(mol, vk_sph)
+        if cosx_core:
+            vk_core = self._mixed_core_k(cache_owner, mol, nao_nr, ncore, ncas, dc_sph, klc_a, mop_sph, log)
+        else:
+            vk_core = sph2spinor(mol, vk_sph)
         if vj_tril is not None:
             vj_ao = lib.unpack_tril(vj_tril)
             vj_sph = numpy.zeros((2 * nao_nr, 2 * nao_nr), dtype=complex)
@@ -432,6 +459,30 @@ class _CDERIS(lib.StreamObject):
                  'core-K CPU %.1f wall %.1f sec, cd_pa CPU %.1f wall %.1f sec',
                  t_half[0], t_half[1], t_corek[0], t_corek[1], t_cdpa[0], t_cdpa[1])
         return cd_pa, vk_core
+
+    def _mixed_core_k(self, owner, mol, nao_nr, ncore, ncas, dc_sph, klc_a, mop_sph, log):
+        '''the core exchange operator of the mixed CD / COSX functional (mcscf.core_cosx), spinor AO basis;
+        keeps its pieces: vkx_mo (COSX K[D_c], MO), vkl_pa (K^L[D_c][:, act], MO), vk_core_mo (mixed)'''
+        from socutils.mcscf import core_cosx
+        t0 = (logger.process_clock(), logger.perf_counter())
+        kobj = core_cosx.cosx_object(owner)
+        kx_sph = core_cosx.kvar_ghf(kobj, mol, dc_sph)
+        t1 = log.timer('CDERIS core_exchange=cosx: COSX K[D_c] (%d points)' % kobj._weights.size, *t0)
+        self._t_cosx = t1[1] - t0[1]
+        mo_h = mop_sph.conj().T
+        kx_mo = lib.dot(mo_h, lib.dot(kx_sph, mop_sph))
+        kl_pa = lib.dot(mo_h, klc_a)
+        m = core_cosx.mixed_exchange_mo(kx_mo, kl_pa, ncore, ncas)
+        nocc = ncore + ncas
+        log.info('CDERIS core_exchange=cosx: COSX - CD core exchange on the active block %.3e (max |dK_tu|), '
+                 'core energy from COSX %.10f', abs(kx_mo[ncore:nocc, ncore:nocc] - kl_pa[ncore:nocc]).max(),
+                 -.5 * numpy.trace(kx_mo[:ncore, :ncore]).real)
+        self.vkx_mo, self.vkl_pa, self.vk_core_mo = kx_mo, kl_pa, m
+        self._core_kobj = kobj
+        # spinor AO representation S C M C^+ S (C^+ S C = 1: exact on the MO space)
+        mo = self._mo_spinor
+        sc = lib.dot(owner._scf.get_ovlp(), mo)
+        return lib.dot(sc, lib.dot(m, sc.conj().T))
 
     def rotated_pass(self, kappa, dm_act):
         """The part of the exact orbital Hessian-vector product that needs the AO vectors.
@@ -484,6 +535,20 @@ class _CDERIS(lib.StreamObject):
             return out
 
         Cc, Ca = mo_sph[:, :ncore], mo_sph[:, ncore:nocc]
+        # mixed CD / COSX functional (mcscf.core_cosx): no core half transformation; the core columns of jkc
+        # from the COSX K of the first-order core density, its active columns from the factor
+        mixed = ncore > 0 and getattr(self, 'vk_core_mo', None) is not None
+        nch = 0 if mixed else ncore
+        if mixed:
+            from socutils.mcscf import core_cosx
+            xc_ao = lib.dot(mo_sph, numpy.ascontiguousarray(kappa[:, :ncore]))
+            xa_ao = lib.dot(mo_sph, numpy.ascontiguousarray(kappa[:, ncore:nocc]))
+            dc1 = lib.dot(xc_ao, Cc.conj().T)
+            dc1 = dc1 + dc1.conj().T                                   # C (kappa P_c - P_c kappa) C^+
+            dc1_tril = core_cosx.j_density_tril(dc1, nao)
+            cc_conj, xc_conj = numpy.ascontiguousarray(Cc.conj()), numpy.ascontiguousarray(xc_ao.conj())
+            cc_t, xc_t = numpy.ascontiguousarray(Cc.T), numpy.ascontiguousarray(xc_ao.T)
+            zmix = numpy.zeros((2 * nao, 2 * ncas), dtype=complex)
         yc_orb, xc_orb = _split(Cc), _split(lib.dot(mo_sph, numpy.ascontiguousarray(kappa[:, :ncore])))
         ya_orb, xa_orb = _split(Ca), _split(lib.dot(mo_sph, numpy.ascontiguousarray(kappa[:, ncore:nocc])))
         # rho_P = 2 Re sum_i <C_i| L_P |X_i>: flattened conj(C) in the (i, mu) layout of the buffers
@@ -500,24 +565,24 @@ class _CDERIS(lib.StreamObject):
         if cache is None:
             # work buffers, allocated once per set of orbitals
             cache = self._rotated_cache = {
-                'x': [numpy.empty((nbuf * ncore, nao)) for _ in range(4)],
+                'x': [numpy.empty((nbuf * nch, nao)) for _ in range(4)],
                 'xa': [numpy.empty((nbuf * ncas, nao)) for _ in range(4)],
                 'ya_tmp': [numpy.empty((nbuf * ncas, nao)) for _ in range(4)],
                 'y': None, 'ya': None, 'filled': False}
-            y_mb = (4 * naux * ncore * nao * 8 + naux * ncas * 2 * nao * 16) / 1e6
-            work_mb = (4 * nbuf * ncore * nao * 8 + 8 * nbuf * ncas * nao * 8 + 3 * nbuf * ncas * 2 * nao * 16
+            y_mb = (4 * naux * nch * nao * 8 + naux * ncas * 2 * nao * 16) / 1e6
+            work_mb = (4 * nbuf * nch * nao * 8 + 8 * nbuf * ncas * nao * 8 + 3 * nbuf * ncas * 2 * nao * 16
                        + naux * nmo * ncas * 16) / 1e6
             avail_mb = self._owner.max_memory * .9 - lib.current_memory()[0] - work_mb
             if y_mb < avail_mb:
-                cache['y'] = [numpy.empty((naux * ncore, nao)) for _ in range(4)]
+                cache['y'] = [numpy.empty((naux * nch, nao)) for _ in range(4)]
                 cache['ya'] = numpy.empty((naux * ncas, 2 * nao), dtype=complex)
             else:
                 log.info('rotated_pass: the half-transformed unrotated vectors (%.0f MB) are recomputed in every '
                          'H x: %.0f MB left under max_memory = %.0f MB', y_mb, max(avail_mb, 0), self._owner.max_memory)
-                cache['y_tmp'] = [numpy.empty((nbuf * ncore, nao)) for _ in range(4)]
+                cache['y_tmp'] = [numpy.empty((nbuf * nch, nao)) for _ in range(4)]
         keep = cache['y'] is not None
         xbuf, xabuf = cache['x'], cache['xa']
-        work_mb = 0. if keep else 4 * nbuf * ncore * nao * 8 / 1e6
+        work_mb = 0. if keep else 4 * nbuf * nch * nao * 8 / 1e6
         jc, ja = numpy.zeros(npair), numpy.zeros(npair)
         kc = numpy.zeros((2 * nao, 2 * nao), dtype=complex)
         ka = numpy.zeros((2 * nao, 2 * nao), dtype=complex)
@@ -527,7 +592,9 @@ class _CDERIS(lib.StreamObject):
             if eri1.ndim != 2:
                 raise NotImplementedError('rotated_pass needs the packed (s2) AO vectors')
             n = eri1.shape[0]
-            if ncore > 0:
+            if mixed:
+                jc += lib.dot(lib.dot(eri1, dc1_tril[:, None]).T, eri1).ravel()
+            elif ncore > 0:
                 if keep:
                     Y = [b[b0 * ncore:(b0 + n) * ncore] for b in cache['y']]
                 else:
@@ -562,6 +629,16 @@ class _CDERIS(lib.StreamObject):
             ja += lib.dot(rho.T, eri1).ravel()
             ka += lib.dot(XaD.T, Ya.conj())
             cd1[b0:b0 + n] = lib.dot(Xa.reshape(n * ncas, 2 * nao), mo_sph_conj).reshape(n, ncas, nmo)
+            if mixed:
+                # K^L[D_c1] C_a = sum_P L_P (X_c C_c^+ + C_c X_c^+) L_P C_a and K^L[D_c] (C kappa)_a =
+                # sum_P L_P C_c C_c^+ L_P (C kappa)_a, as (P, u, mu) = W_P^T
+                ya3 = Ya.reshape(n, ncas, 2 * nao)
+                wt = numpy.empty((n, 2 * ncas, 2 * nao), dtype=complex)
+                wt[:, :ncas] = numpy.matmul(numpy.matmul(ya3, cc_conj), xc_t)
+                wt[:, :ncas] += numpy.matmul(numpy.matmul(ya3, xc_conj), cc_t)
+                wt[:, ncas:] = numpy.matmul(numpy.matmul(Xa, cc_conj), cc_t)
+                zmix += core_cosx.contract_lw(eri1, wt, nao)
+                wt = None
             b0 += n
         cache['filled'] = True
 
@@ -571,6 +648,25 @@ class _CDERIS(lib.StreamObject):
             v[:nao, :nao] += j
             v[nao:, nao:] += j
             return lib.dot(mo_sph_conj.T, lib.dot(v, mo_sph))
+        if mixed:
+            # jkc in the columns the generalised Fock matrix uses (core, active), with the corrections that
+            # turn the caller's [vc, kappa] of the mixed operator M into the derivative of the mixed functional:
+            #   core:   J1 - K^X[D_c1] + (M - K^X) kappa[:, core]
+            #   active: J1 - K^L[D_c1] C_a + M kappa[:, act] - C^+ K^L[D_c] C kappa[:, act]
+            j = lib.unpack_tril(jc)
+            v = numpy.zeros((2 * nao, 2 * nao), dtype=complex)
+            v[:nao, :nao] = v[nao:, nao:] = j
+            jkc = lib.dot(mo_sph_conj.T, lib.dot(v, mo_sph))
+            kx1 = core_cosx.kvar_ghf(self._core_kobj, mol, dc1)
+            m = self.vk_core_mo
+            kc_ = numpy.ascontiguousarray(kappa[:, :ncore])
+            ka_ = numpy.ascontiguousarray(kappa[:, ncore:nocc])
+            jkc[:, :ncore] += (-lib.dot(mo_sph_conj.T, lib.dot(kx1, numpy.ascontiguousarray(Cc)))
+                               + lib.dot(m - self.vkx_mo, kc_))
+            zmo = lib.dot(mo_sph_conj.T, zmix)
+            jkc[:, ncore:nocc] += -zmo[:, :ncas] + lib.dot(m, ka_) - zmo[:, ncas:]
+            jkc[:, nocc:] = 0
+            return jkc, _to_mo(ja, ka), cd1
         return _to_mo(jc, kc), _to_mo(ja, ka), cd1
 
     def _build_cd_pa(self, with_df, cderi, mol, nao_nr, nmo, ncas,
