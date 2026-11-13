@@ -150,8 +150,10 @@ void SOCDFTcosx_slabhist(double *out, int reset)
 }
 static int cx_slabcount = 0;    /* collect cx_slabhist (one more pass over the slabs) */
 void SOCDFTcosx_set_slabcount(int v) { cx_slabcount = v; }
-static double cx_slab_screen = 0;    /* the atom loop skips a derivative slab whose own bound q (cx_slabhist) is below
-                                     * cx_slab_screen tol; 0: all slabs (A's screening only) */
+static double cx_slab_screen = 1;    /* the atom loop skips a derivative slab whose own bound q (cx_slabhist) is below
+                                     * cx_slab_screen tol; 0: all slabs (A's screening only).  1: trpn_1_5 / trpn_1_10
+                                     * def2-SVP skip 17.5 / 23.6 % of the slab rows, de2 2.5e-10 / 3.0e-10,
+                                     * partial_hess_elec -3.1 / -4.5 % */
 void SOCDFTcosx_set_slab_screen(double v) { cx_slab_screen = v; }
 static int cx_tail_fused = 1;   /* the Fock1 tail's two VT GEMMs of a direction as one over 2n points */
 void SOCDFTcosx_set_tail_fused(int v) { cx_tail_fused = v; }
