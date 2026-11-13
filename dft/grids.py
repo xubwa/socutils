@@ -265,6 +265,10 @@ class Grids(gen_grid.Grids):
             MgH2 0.62 -> 0.06 cm-1 (MgF2 0.6 -> 1.1, within the noise of its
             reference); gradients BeF2 1.2e-4 -> 3.0e-5, MgF2 1.0e-4 ->
             2.2e-5 Eh/bohr.  K, Ca, Rb, Sr, Sc, Al do not need it (<= 0.16).
+        element_angular : dict {symbol: table}
+            Element-specific angular table (an ANGULAR_TABLES key or a 5-tuple), used instead of
+            ``angular_grid`` for that element (default none; the COSX grids give it to the atoms with shells
+            of high l, socutils.scf.cosx.make_grids).
         weight_cutoff : float
             Drop points with |w| below this value after partitioning.
         element_radi : dict {symbol: radial function}
@@ -293,6 +297,7 @@ class Grids(gen_grid.Grids):
     alphas = NWCHEM_ALPHAS * 1.15
     alpha_scale = {}
     element_intacc = {'Li': 5.0, 'Be': 5.0, 'Na': 5.0, 'Mg': 5.0}
+    element_angular = {}
     weight_cutoff = 1e-14
     xi = {}
     xi_scale = 1.
@@ -307,12 +312,12 @@ class Grids(gen_grid.Grids):
 
     _keys = {'intacc', 'radial_b', 'angular_grid', 'h_reduced', 'alphas', 'weight_cutoff', 'xi', 'xi_scale',
              'element_radi', 'alpha', 'radial_b_heavy', 'heavy_radi_method', 'alpha_scale', 'element_intacc',
-             'xc_intacc'}
+             'xc_intacc', 'element_angular'}
 
     def __setattr__(self, key, val):
         if key in ('intacc', 'radial_b', 'angular_grid', 'h_reduced', 'alphas', 'weight_cutoff',
                    'xi', 'xi_scale', 'element_radi', 'alpha', 'radial_b_heavy', 'heavy_radi_method',
-                   'alpha_scale', 'element_intacc', 'xc_intacc'):
+                   'alpha_scale', 'element_intacc', 'xc_intacc', 'element_angular'):
             self.reset()
         super().__setattr__(key, val)
 
@@ -326,6 +331,7 @@ class Grids(gen_grid.Grids):
         ag = self.angular_grid
         if self.h_reduced and chg <= 2 and isinstance(ag, (int, numpy.integer)):
             ag = max(1, ag - 1)
+        ag = self.element_angular.get(_pure_symbol(symb), ag)
         atom_grid = self.atom_grid
         if isinstance(atom_grid, (list, tuple)):
             atom_grid = {symb: atom_grid}

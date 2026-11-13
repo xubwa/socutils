@@ -6,8 +6,8 @@
  * point (cc-pVDZ C: 9 s primitives); here the radial parts run as SIMD loops
  * over the points (this file is compiled with -ffast-math so that exp maps to
  * glibc's vector libmvec variants), the angular parts and the cart -> sph
- * transform as well.  Shells of l <= GV_LMAX (the caller keeps pyscf's
- * evaluator otherwise).
+ * transform as well (any l <= GV_LMAX = C2S_LMAX; the caller keeps pyscf's
+ * evaluator beyond).
  *
  *   ao (ncomp, nao, ngrids), nao = ao_loc[sh1] - ao_loc[sh0]; coord (3, ngrids);
  *   non0table[(g / 56) * nbas + sh]: 0 -> the shell's values are zero on those
@@ -29,7 +29,7 @@
 #define PTR_EXP 5
 #define PTR_COEFF 6
 #define GV_BLK 56
-#define GV_LMAX 3
+#define GV_LMAX C2S_LMAX
 #define GV_NCMAX 16
 #define GV_EXPCUT 50.        /* exp(-50) = 2e-22: primitives below on a whole 56-point block are skipped */
 
@@ -66,8 +66,8 @@ static void eval_shells_s(int deriv, int ngrids, size_t ostride, size_t cstride,
         const int nblk = (ngrids + GV_BLK - 1) / GV_BLK;
         const double *gx = coord, *gy = coord + cstride, *gz = coord + 2 * cstride;
         double rad[GV_NCMAX][GV_BLK], rad1[GV_NCMAX][GV_BLK], rad2[GV_NCMAX][GV_BLK], rad3[GV_NCMAX][GV_BLK];
-        double cart[20][10][GV_BLK];
         int sh, b;
+        c2s_init();
         for (sh = sh0; sh < sh1; sh++) {
                 const int *bs = bas + sh * BAS_SLOTS;
                 const int l = bs[ANG_OF], np = bs[NPRIM_OF], nc = bs[NCTR_OF];
@@ -76,6 +76,8 @@ static void eval_shells_s(int deriv, int ngrids, size_t ostride, size_t cstride,
                 const double *R = env + atm[bs[ATOM_OF] * ATM_SLOTS + PTR_COORD];
                 const double fac = common_fac_sp(l);
                 const size_t aoid = row0 + ao_loc[sh] - ao_loc[sh0];
+                double cartbuf[(size_t)ncomp * ncart * GV_BLK];
+#define cart(k_, ic_) (cartbuf + ((size_t)(k_) * ncart + (ic_)) * GV_BLK)
                 for (b = 0; b < nblk; b++) {
                         const int g0 = b * GV_BLK, bg = g0 + GV_BLK <= ngrids ? GV_BLK : ngrids - g0;
                         int c, k, m, g, p;
@@ -189,12 +191,12 @@ static void eval_shells_s(int deriv, int ngrids, size_t ostride, size_t cstride,
 #define PD3(a, b, c_) Pd[((a) == 0) + ((b) == 0) + ((c_) == 0)][((a) == 1) + ((b) == 1) + ((c_) == 1)][((a) == 2) + ((b) == 2) + ((c_) == 2)]
                                                 const double *P0 = Pd[0][0][0];
 #pragma omp simd
-                                                for (g = 0; g < bg; g++) cart[0][ic][g] = P0[g] * f[g];
+                                                for (g = 0; g < bg; g++) cart(0, ic)[g] = P0[g] * f[g];
                                                 int q;
                                                 for (q = 0; q < 3; q++) {
                                                         const double *Pa = PD1(q), *Xa = X[q];
 #pragma omp simd
-                                                        for (g = 0; g < bg; g++) cart[1 + q][ic][g] = Pa[g] * f[g] + Xa[g] * P0[g] * f1[g];
+                                                        for (g = 0; g < bg; g++) cart(1 + q, ic)[g] = Pa[g] * f[g] + Xa[g] * P0[g] * f1[g];
                                                 }
                                                 for (q = 0; q < 6; q++) {
                                                         const int a = ax2[q][0], b2 = ax2[q][1];
@@ -203,7 +205,7 @@ static void eval_shells_s(int deriv, int ngrids, size_t ostride, size_t cstride,
                                                         const double dab = a == b2;
 #pragma omp simd
                                                         for (g = 0; g < bg; g++)
-                                                                cart[4 + q][ic][g] = Pab[g] * f[g] + (Xa[g] * Pb[g] + Xb[g] * Pa[g] + dab * P0[g]) * f1[g]
+                                                                cart(4 + q, ic)[g] = Pab[g] * f[g] + (Xa[g] * Pb[g] + Xb[g] * Pa[g] + dab * P0[g]) * f1[g]
                                                                                    + Xa[g] * Xb[g] * P0[g] * f2[g];
                                                 }
                                                 for (q = 0; q < 10; q++) {
@@ -214,7 +216,7 @@ static void eval_shells_s(int deriv, int ngrids, size_t ostride, size_t cstride,
                                                         const double dab = a == b2, dac = a == c3, dbc = b2 == c3;
 #pragma omp simd
                                                         for (g = 0; g < bg; g++)
-                                                                cart[10 + q][ic][g] = Pabc[g] * f[g]
+                                                                cart(10 + q, ic)[g] = Pabc[g] * f[g]
                                                                         + (Pab[g] * Xc[g] + Pac[g] * Xb[g] + Pbc[g] * Xa[g]
                                                                            + dbc * Pa[g] + dac * Pb[g] + dab * Pc[g]) * f1[g]
                                                                         + (Pa[g] * Xb[g] * Xc[g] + Pb[g] * Xa[g] * Xc[g] + Pc[g] * Xa[g] * Xb[g]
@@ -246,28 +248,28 @@ static void eval_shells_s(int deriv, int ngrids, size_t ostride, size_t cstride,
                                                         const double Pxy = fij * xm[g] * ym[g] * zk[g];
                                                         const double Pxz = fik * xm[g] * yj[g] * zm[g];
                                                         const double Pyz = fjk * xi[g] * ym[g] * zm[g];
-                                                        cart[0][ic][g] = P * F;
-                                                        cart[1][ic][g] = Px * F + X * P * F1;
-                                                        cart[2][ic][g] = Py * F + Y * P * F1;
-                                                        cart[3][ic][g] = Pz * F + Z * P * F1;
-                                                        cart[4][ic][g] = Pxx * F + (2 * X * Px + P) * F1 + X * X * P * F2;
-                                                        cart[5][ic][g] = Pxy * F + (Y * Px + X * Py) * F1 + X * Y * P * F2;
-                                                        cart[6][ic][g] = Pxz * F + (Z * Px + X * Pz) * F1 + X * Z * P * F2;
-                                                        cart[7][ic][g] = Pyy * F + (2 * Y * Py + P) * F1 + Y * Y * P * F2;
-                                                        cart[8][ic][g] = Pyz * F + (Z * Py + Y * Pz) * F1 + Y * Z * P * F2;
-                                                        cart[9][ic][g] = Pzz * F + (2 * Z * Pz + P) * F1 + Z * Z * P * F2;
+                                                        cart(0, ic)[g] = P * F;
+                                                        cart(1, ic)[g] = Px * F + X * P * F1;
+                                                        cart(2, ic)[g] = Py * F + Y * P * F1;
+                                                        cart(3, ic)[g] = Pz * F + Z * P * F1;
+                                                        cart(4, ic)[g] = Pxx * F + (2 * X * Px + P) * F1 + X * X * P * F2;
+                                                        cart(5, ic)[g] = Pxy * F + (Y * Px + X * Py) * F1 + X * Y * P * F2;
+                                                        cart(6, ic)[g] = Pxz * F + (Z * Px + X * Pz) * F1 + X * Z * P * F2;
+                                                        cart(7, ic)[g] = Pyy * F + (2 * Y * Py + P) * F1 + Y * Y * P * F2;
+                                                        cart(8, ic)[g] = Pyz * F + (Z * Py + Y * Pz) * F1 + Y * Z * P * F2;
+                                                        cart(9, ic)[g] = Pzz * F + (2 * Z * Pz + P) * F1 + Z * Z * P * F2;
                                                 }
                                                 continue;
                                         }
 #pragma omp simd
                                         for (g = 0; g < bg; g++) {
                                                 const double yz = yj[g] * zk[g], P = xi[g] * yz;
-                                                cart[0][ic][g] = P * f[g];
+                                                cart(0, ic)[g] = P * f[g];
                                                 if (deriv) {
                                                         const double Pf1 = P * f1[g];
-                                                        cart[1][ic][g] = fi * xm[g] * yz * f[g] + dx[g] * Pf1;
-                                                        cart[2][ic][g] = fj * xi[g] * ym[g] * zk[g] * f[g] + dy[g] * Pf1;
-                                                        cart[3][ic][g] = fk * xi[g] * yj[g] * zm[g] * f[g] + dz[g] * Pf1;
+                                                        cart(1, ic)[g] = fi * xm[g] * yz * f[g] + dx[g] * Pf1;
+                                                        cart(2, ic)[g] = fj * xi[g] * ym[g] * zk[g] * f[g] + dy[g] * Pf1;
+                                                        cart(3, ic)[g] = fk * xi[g] * yj[g] * zm[g] * f[g] + dz[g] * Pf1;
                                                 }
                                         }
                                 }
@@ -276,28 +278,30 @@ static void eval_shells_s(int deriv, int ngrids, size_t ostride, size_t cstride,
                                         for (m = 0; m < deg; m++) {
                                                 double *om = o + (size_t)m * ostride, mx = 0;
                                                 if (l <= 1) {
+                                                        const double *cv = cart(k, m);
 #pragma omp simd reduction(max:mx)
                                                         for (g = 0; g < bg; g++) {
-                                                                const double v = cart[k][m][g];
-                                                                om[g] = v;
-                                                                mx = fabs(v) > mx ? fabs(v) : mx;
-                                                        }
-                                                } else if (l == 2) {
-#pragma omp simd reduction(max:mx)
-                                                        for (g = 0; g < bg; g++) {
-                                                                double v = 0;
-                                                                for (ic = 0; ic < 6; ic++) v += C2S_L2[m][ic] * cart[k][ic][g];
+                                                                const double v = cv[g];
                                                                 om[g] = v;
                                                                 mx = fabs(v) > mx ? fabs(v) : mx;
                                                         }
                                                 } else {
-#pragma omp simd reduction(max:mx)
-                                                        for (g = 0; g < bg; g++) {
-                                                                double v = 0;
-                                                                for (ic = 0; ic < 10; ic++) v += C2S_L3[m][ic] * cart[k][ic][g];
-                                                                om[g] = v;
-                                                                mx = fabs(v) > mx ? fabs(v) : mx;
+                                                        /* the nonzero cartesians of row m */
+                                                        const int nz = c2s_nz[l][m], *cix = c2s_ix[l][m];
+                                                        const double *ccf = c2s_cf[l][m];
+                                                        int q;
+                                                        {
+                                                                const double c0 = ccf[0], *cv = cart(k, cix[0]);
+#pragma omp simd
+                                                                for (g = 0; g < bg; g++) om[g] = c0 * cv[g];
                                                         }
+                                                        for (q = 1; q < nz; q++) {
+                                                                const double cq = ccf[q], *cv = cart(k, cix[q]);
+#pragma omp simd
+                                                                for (g = 0; g < bg; g++) om[g] += cq * cv[g];
+                                                        }
+#pragma omp simd reduction(max:mx)
+                                                        for (g = 0; g < bg; g++) mx = fabs(om[g]) > mx ? fabs(om[g]) : mx;
                                                 }
                                                 if (rowmax) {
                                                         double *rm = rowmax + aoid + (size_t)c * deg + m;
@@ -305,9 +309,9 @@ static void eval_shells_s(int deriv, int ngrids, size_t ostride, size_t cstride,
                                                 }
                                         }
                                 }
-                                (void)ncart;
                         }
                 }
+#undef cart
         }
 }
 

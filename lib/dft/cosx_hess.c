@@ -150,6 +150,36 @@ int SOCDFTcosx_hfloat(void)
 void SOCDFTcosx_set_hfloat(int v) { cx_hfloat = v; }
 
 /* dAC[x] (nab, n) -= sum_t E_t R_{t+1x}: the derivative of A with respect to the grid point */
+/* a one-centre pair by class (E or the moments Ec of the class layout, R of degree >= L + 1, + 2 with W): A +=
+ * E R, dAC[x] -= E R_{t + 1x}, and with W the point-point sums SCC[x][y] += sum W . E R_{t + 1x + 1y} */
+static void cls_hess(double *A, double *dAC, double SCC[3][3], const double *W, const int *perm, const int *ncls,
+                     const double *Ec, const double *R, int L, int n, int nab)
+{
+        int x;
+        er_class(A, perm, ncls, Ec, R, L, n, 0);
+        /* dAC[x] += E R_{t + 1x} (the caller negates it after the pair's last primitive) */
+        for (x = 0; x < 3; x++) {
+                double *d = dAC + (size_t)x * nab * n;
+                er_class_t(d, perm, ncls, Ec, R, L, n, 0, hc_sh[x]);
+        }
+        if (W) {
+                static const int xy_[6][2] = {{0, 0}, {0, 1}, {0, 2}, {1, 1}, {1, 2}, {2, 2}};
+                const int (*const tabs[6])[CX_NHMAX] = {hc_sh2[0], hc_sh2[1], hc_sh2[2], hc_sh2[3], hc_sh2[4], hc_sh2[5]};
+                double o[6] = {0, 0, 0, 0, 0, 0};
+                wr_class(o, 6, tabs, W, perm, ncls, Ec, R, L, n);
+                for (x = 0; x < 6; x++) SCC[xy_[x][0]][xy_[x][1]] += o[x];
+        }
+}
+
+/* the index of Hermite component t raised by one in direction x */
+static inline int hc_shx(int x, int t)
+{
+        return h_idx[h_t[t] + (x == 0)][h_u[t] + (x == 1)][h_v[t] + (x == 2)];
+}
+#ifndef CX_HGEMM
+#define CX_HGEMM 1024           /* nab NH(L + 1) from which a two-centre pair's integrals are GEMMs */
+#endif
+
 static void point_deriv(double *dAC, const double *E, const double *R, int nab, int nh, int n)
 {
         int ab, t, x, g;
@@ -270,6 +300,7 @@ int SOCDFTcosx_fock1(double *V, double *VT, double *co, double *yo, int nocc, vo
                      double tcut, int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
                      dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local)
 {
+        cx_dgemm = dgemm_;
         return SOCDFTcosx_hess(NULL, V, VT, co, yo, nocc, optp, coords, weights, non0tab, ngrid, blk, cutoff, tol,
                                tcut, ao_loc, atm, natm, bas, nbas, env, dgemm_, mkl_set_num_threads_local);
 }
@@ -386,10 +417,10 @@ static void prim_Edd(double *out, int I, int J, int ip, int jp, int *atm, int *b
         }
 }
 
-static size_t prim_wk_size_dd(void)
+static size_t prim_wk_size_dd(int lm)
 {
-        const int sE = (CX_LMAX + 3) * (CX_LMAX + 1) * (2 * CX_LMAX + 3);
-        const int nc = (CX_LMAX + 1) * (CX_LMAX + 2) / 2, nh = NH(2 * CX_LMAX + 2);
+        const int sE = (lm + 3) * (lm + 1) * (2 * lm + 3);
+        const int nc = (lm + 1) * (lm + 2) / 2, nh = NH(2 * lm + 2);
         return 3 * sE + 18 * (size_t)nc * nc * nh;
 }
 
@@ -410,7 +441,7 @@ int SOCDFTcosx_build_hess(void *p, int *atm, int *bas, double *env)
         if (!opt->eedata) return 0;
 #pragma omp parallel
 {
-        double *wk = malloc(sizeof(double) * prim_wk_size_dd());
+        double *wk = malloc(sizeof(double) * prim_wk_size_dd(opt->lbas));
 #pragma omp for schedule(dynamic, 8)
         for (ip_ = 0; ip_ < opt->npair; ip_++) {
                 const CXPair *pp = opt->pairs + ip_;
@@ -493,6 +524,7 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                     double tcut, int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
                     dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local)
 {
+        cx_dgemm = dgemm_;
         CXOpt *opt = optp;
         cx_tables();
         const int do_f1 = V != NULL, do_h = hs != NULL;
@@ -584,6 +616,8 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
         double *dA = malloc(sizeof(double) * (size_t)6 * nab_max * blk);
         double *rs = malloc(sizeof(double) * (size_t)8 * nI_max * blk);
         double *Mm = malloc(sizeof(double) * (size_t)nab_max * nhmax);
+        /* the large two-centre pairs: [d_I E; E shifted] (6 nab, NH(L + 1)) for one GEMM */
+        double *Eg = malloc(sizeof(double) * 6 * (size_t)nab_max * nhmax);
         double *bk = malloc(sizeof(double) * 4096);
         double *R = malloc(sizeof(double) * (size_t)nhmax * blk);
         double *Rwk = malloc(sizeof(double) * 2 * (size_t)nhmax * blk);
@@ -798,6 +832,8 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                         }
                         PTICK(7)
                         double SAA[3][3] = {{0}}, SAC[3][3] = {{0}}, SCC[3][3] = {{0}};
+                        const int clsp = pp->onec && cx_hcls;
+                        const int *perm = clsp ? opt->cperm + pp->cpo : NULL;
                         memset(A, 0, sizeof(double) * nab * n);
                         memset(dA, 0, sizeof(double) * 6 * nab * n);
                         double *dAI = dA, *dAC = dA + (size_t)3 * nab * n;
@@ -836,9 +872,14 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                                 const double rmin = armin[at];
                                 if (rmin > 0) {
                                         const double *pv = opt->pp_p + pp->po;
-                                        while (k0 < pp->np && pv[k0] * rmin >= tcut) k0++;
+                                        const double tc_ = tcut + CX_TCUT_ADD(L + Lext);
+                                        while (k0 < pp->np && pv[k0] * rmin >= tc_) k0++;
                                 }
-                                if (k0 > 0) {
+                                if (k0 > 0 && clsp) {
+                                        const double *Mc = opt->cmdata + pp->ceo + pp->csz * (k0 - 1);
+                                        cls_hess(A, dAC, SCC, do_h ? W : NULL, perm, pp->ncls, Mc, farR[at], L, n, nab);
+                                        PTICK(14)
+                                } else if (k0 > 0) {
                                         const double *Mo = opt->mdata + pp->mo + sz * (k0 - 1);
                                         e_times_r(A, Mo, farR[at], nab, nh, n);
                                         point_deriv(dAC, Mo, farR[at], nab, nh, n);
@@ -883,8 +924,35 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                                         for (g = 0; g < n; g++) sm[g] *= sc;
                                 }
                                 hermite_R_vec(R, S, X, Yv, Z, L + Lext, n, Rwk);
+                                if (clsp) {
+                                        cls_hess(A, dAC, SCC, do_h ? W : NULL, perm, pp->ncls,
+                                                 opt->cdata + pp->ceo + pp->csz * k, R, L, n, nab);
+                                        PTICK(14)
+                                        continue;
+                                }
+                                /* two-centre, large: A += E R, [d_I A; d_r A] += [Ed; -E shifted] R by two GEMMs (the
+                                 * loops below run at ~1/4 of a GEMM's rate for these sizes) */
+                                const int big = !pp->onec && Eg && (size_t)nab * nh1 >= CX_HGEMM;
+                                if (big) {
+                                        const double one = 1, mone = -1;
+                                        const double *Ed = opt->eddata + opt->edo[ip] + szd * k;
+                                        int x_, ab_, t_, m3 = 3 * nab;
+                                        dgemm_("N", "N", &n, &nab, &nh, &one, R, &n, E, &nh, &one, A, &n);
+                                        memcpy(Eg, Ed, sizeof(double) * 3 * nab * nh1);
+                                        double *Es = Eg + (size_t)3 * nab * nh1;
+                                        memset(Es, 0, sizeof(double) * 3 * nab * nh1);
+                                        for (x_ = 0; x_ < 3; x_++)
+                                                for (ab_ = 0; ab_ < nab; ab_++) {
+                                                        const double *e_ = E + (size_t)ab_ * nh;
+                                                        double *o_ = Es + ((size_t)x_ * nab + ab_) * nh1;
+                                                        for (t_ = 0; t_ < nh; t_++) o_[hc_shx(x_, t_)] = e_[t_];
+                                                }
+                                        dgemm_("N", "N", &n, &m3, &nh1, &one, R, &n, Eg, &nh1, &one, dAI, &n);
+                                        dgemm_("N", "N", &n, &m3, &nh1, &mone, R, &n, Es, &nh1, &one, dAC, &n);
+                                } else {
                                 e_times_r(A, E, R, nab, nh, n);
                                 point_deriv(dAC, E, R, nab, nh, n);
+                                }
                                 int ab, t;
                                 PTICK(14)
                                 if (do_h) w_dot_r(Mm, W, R, nab, nh2, n, dgemm_);
@@ -905,6 +973,7 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                                 if (!pp->onec) {
                                         const double *Ed = opt->eddata + opt->edo[ip] + szd * k;
                                         const double *Edd = do_h ? opt->eedata + opt->eeo[ip] + szdd * k : NULL;
+                                        if (!big)
                                         for (x = 0; x < 3; x++)
                                                 e_times_r(dAI + (size_t)x * nab * n, Ed + (size_t)x * nab * nh1, R, nab, nh1, n);
                                         PTICK(14)
@@ -931,6 +1000,11 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                                         }
                                         }
                                 }
+                        }
+                        if (clsp) {
+                                /* cls_hess accumulated + E R_{t + 1x} */
+                                size_t q_;
+                                for (q_ = 0; q_ < (size_t)3 * nab * n; q_++) dAC[q_] = -dAC[q_];
                         }
                         /* (3) */
                         PTICK(7)
@@ -1429,7 +1503,7 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
         free(cg); free(rows); free(tv); free(lidx); free(pend); free(adone); free(Bd); free(P2); free(a); free(full); free(rmx); free(ix); free(runs); free(cs); free(ys);
         free(F); free(H); free(GFb); free(psi); free(eta); free(weta); free(Ub); free(Upb); free(psid); free(wpsid);
         free(wetad); free(la); free(U); free(Up); free(cat); free(Ad); free(Tt); free(roff); free(fmax); free(A); free(W); free(dA); free(rs);
-        free(Mm); free(bk); free(R); free(Rwk); free(S); free(X); free(xyz); free(Abuf); free(rec); free(Aoc);
+        free(Mm); free(Eg); free(bk); free(R); free(Rwk); free(S); free(X); free(xyz); free(Abuf); free(rec); free(Aoc);
         free(Aoo); free(Aocf); free(cof); free(Psi); free(Out); free(Out2); free(OutA); free(tmp); free(Qm);
         for (at = 0; at < natm; at++) free(farR[at]);
         free(farR); free(stamp); free(armin);

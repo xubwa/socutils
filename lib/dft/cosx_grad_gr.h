@@ -9,6 +9,7 @@ void SOCDFTcosx_grad_gr(double *grad, double *dm, double *dmm, double *yg, void 
                      dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local, double *kout,
                         double *pg, double *eg)
 {
+        cx_dgemm = dgemm_;
         /* kout != NULL: also K_plain[D] (nao, nao), K[mu][nu] = sum_g w phi_mu (A F)_nu, from the A F of this
          * pass (the pairs this pass keeps) */
         CXOpt *opt = optp;
@@ -194,7 +195,8 @@ void SOCDFTcosx_grad_gr(double *grad, double *dm, double *dmm, double *yg, void 
                         }
                         CTICK(2)
                         double gA[3] = {0, 0, 0}, gC[3] = {0, 0, 0};
-                        memset(A, 0, sizeof(double) * nab * n);
+                        const int clsp = 0;     /* GR_POINT needs the dense E, R */
+                        if (!clsp) memset(A, 0, sizeof(double) * nab * n);
                         int k0 = 0;
                         if (pp->onec) {
                                 at = pp->atom;
@@ -230,9 +232,21 @@ void SOCDFTcosx_grad_gr(double *grad, double *dm, double *dmm, double *yg, void 
                                 const double rmin = armin[at];
                                 if (rmin > 0) {
                                         const double *pv = opt->pp_p + pp->po;
-                                        while (k0 < pp->np && pv[k0] * rmin >= tcut) k0++;
+                                        const double tc_ = tcut + CX_TCUT_ADD(L + 1);
+                                        while (k0 < pp->np && pv[k0] * rmin >= tc_) k0++;
                                 }
-                                if (k0 > 0) {
+                                if (clsp) {
+                                        const int *perm = opt->cperm + pp->cpo;
+                                        if (k0 > 0) {
+                                                const double *Mc = opt->cmdata + pp->ceo + pp->csz * (k0 - 1);
+                                                er_class(A, perm, pp->ncls, Mc, farR[at], L, n, 1);
+                                                CTICK(3)
+                                                gc_class(gC, W, perm, pp->ncls, Mc, farR[at], L, n);
+                                                CTICK(6)
+                                        } else {
+                                                memset(A, 0, sizeof(double) * nab * n);
+                                        }
+                                } else if (k0 > 0) {
                                         const double *Mo = opt->mdata + pp->mo + sz * (k0 - 1);
                                         e_times_r(A, Mo, farR[at], nab, nh, n);
                                         CTICK(3)
@@ -258,10 +272,39 @@ void SOCDFTcosx_grad_gr(double *grad, double *dm, double *dmm, double *yg, void 
                                 const double p = opt->pp_p[pp->po + k];
                                 const double *P = opt->pp_P + 3 * (pp->po + k);
                                 const double *E = opt->edata + pp->eo + sz * k;
+                                if (clsp) {
+                                        double tmin = 1e300, tmax = 0;
+                                        for (g = 0; g < n; g++) {
+                                                X[g] = P[0] - xyz[g];
+                                                Y[g] = P[1] - xyz[n + g];
+                                                Z[g] = P[2] - xyz[2 * n + g];
+                                                T[g] = p * (X[g] * X[g] + Y[g] * Y[g] + Z[g] * Z[g]);
+                                                tmin = T[g] < tmin ? T[g] : tmin;
+                                                tmax = T[g] > tmax ? T[g] : tmax;
+                                        }
+                                        boys_vec(S, n, T, L + 1, n, tmin, tmax);
+                                        double sc = 1;
+                                        int m;
+                                        for (m = 1; m <= L + 1; m++) {
+                                                sc *= -2 * p;
+                                                double *sm = S + (size_t)m * n;
+                                                for (g = 0; g < n; g++) sm[g] *= sc;
+                                        }
+                                        hermite_R_vec(R, S, X, Y, Z, L + 1, n, Rwk);
+                                        const int *perm = opt->cperm + pp->cpo;
+                                        const double *Ec = opt->cdata + pp->ceo + pp->csz * k;
+                                        er_class(A, perm, pp->ncls, Ec, R, L, n, 0);
+                                        CTICK(3)
+                                        gc_class(gC, W, perm, pp->ncls, Ec, R, L, n);
+                                        CTICK(6)
+                                        continue;
+                                }
 #ifdef CX_FUSED
                                 /* R to L + 1 stored, A += E R, in one register pass */
-                                cxs_table[L](A, nab, E, p, P, xyz, n, R);
-#else
+                                if (L < CXR_LMAX) cxs_table[L](A, nab, E, p, P, xyz, n, R);
+                                else
+#endif
+                                {
                                 double tmin = 1e300, tmax = 0;
                                 for (g = 0; g < n; g++) {
                                         X[g] = P[0] - xyz[g];
@@ -281,7 +324,7 @@ void SOCDFTcosx_grad_gr(double *grad, double *dm, double *dmm, double *yg, void 
                                 }
                                 hermite_R_vec(R, S, X, Y, Z, L + 1, n, Rwk);
                                 e_times_r(A, E, R, nab, nh, n);
-#endif
+                                }
                                 CTICK(3)
                                 w_dot_r(Mm, W, R, nab, nh1, n, dgemm_);
                                 GR_POINT(E, R)

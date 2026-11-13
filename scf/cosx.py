@@ -177,6 +177,68 @@ HEAVY_RADIAL_INTACC = 8.0   # this intacc on every COSX grid (make_grids).  The 
                         # (+38-70 % points on HgCl2 / AuH; found and calibrated in scf.spinor_jk, same rule there)
 
 
+RADIAL_NORM_TOL = .2    # the tight shells (a primitive exponent beyond RADIAL_CHECK_EXP) of each all-electron atom:
+RADIAL_CHECK_EXP = 1e5  # their overlap on the COSX grid against the exact one, S^-1/2 S_g S^-1/2 of the block, must
+RADIAL_INTACC_MAX = 14. # have its eigenvalues within this of 1, else the element's radial intacc is raised
+                        # (HEAVY_RADIAL_INTACC, then + 2 up to RADIAL_INTACC_MAX; the best one tried).  The relativistic
+                        # sets keep tight s primitives as AOs of their own (dyall-v4z: Cl 6.6e7, O 2.8e6, C 1.3e6):
+                        # on GRIDX2 the Cl 1s integrates to 0.12, O / C 1s to 0, S_g is singular (HgCl2: min eigenvalue
+                        # of S^-1/2 S_g S^-1/2 -4e-16; on GRIDX3 the norms pass but the tight s are linearly dependent
+                        # on the grid, 1.5e-15), the fitted K 3.9 off, its gradient 2e6.  Contracted cores pass at
+                        # once (cc-pVDZ Fe).  0 / None: off
+
+
+HIGHL_ANGULAR_L = 6       # atoms with shells of l >= this get every region of their Lebedev table raised to at least
+HIGHL_ANGULAR_MIN = 110   # this (degree 17): the inner regions' 26 / 50 points do not integrate i x i products (degree
+                          # 12).  UO2(2+) dyall-v4z (U 2 i shells), GRIDX2, against exact K: U i AO grid norms 0.22 -
+                          # 1.76 -> 0.98 - 1.02, min eigenvalue of S^-1/2 S_g S^-1/2 0.21 -> 0.68, tr D dK -2.0e-4 ->
+                          # -7.2e-5, max |dK| 9.7e-2 -> 1.3e-3, +21 % points (tables 4 / 5, inner regions still 26:
+                          # max |dK| 5.5e-2).  h (l = 5) does not need it: HgCl2 dyall-v4z max |dK| 4.2e-3 -> 1.4e-3,
+                          # tr D dK 2.1e-5 -> 2.7e-5 for +29 % points.  None: off
+
+
+def _highl_angular(mol, ang):
+    '''{element: 5-tuple} for the elements with shells of l >= HIGHL_ANGULAR_L: the table ang (an
+    ANGULAR_TABLES key or a 5-tuple) with every region at least HIGHL_ANGULAR_MIN'''
+    from socutils.dft import grids as sgrids
+    if HIGHL_ANGULAR_L is None:
+        return {}
+    table = sgrids.ANGULAR_TABLES[int(ang)] if isinstance(ang, (int, numpy.integer)) else tuple(ang)
+    out = {}
+    for j in range(mol.nbas):
+        if mol.bas_angular(j) >= HIGHL_ANGULAR_L:
+            out[mol.atom_pure_symbol(mol.bas_atom(j))] = tuple(max(int(n), HIGHL_ANGULAR_MIN) for n in table)
+    return out
+
+
+def _tight_shells(mol):
+    '''{element: {atom: AO indices}} of the all-electron atoms' shells with a primitive exponent beyond
+    RADIAL_CHECK_EXP'''
+    out = {}
+    ao_loc = mol.ao_loc_nr()
+    for j in range(mol.nbas):
+        ia = mol.bas_atom(j)
+        if mol.atom_nelec_core(ia) == 0 and mol.bas_exp(j).max() > RADIAL_CHECK_EXP:
+            out.setdefault(mol.atom_pure_symbol(ia), {}).setdefault(ia, []).extend(range(ao_loc[j], ao_loc[j + 1]))
+    return out
+
+
+def _tight_error(mol, g, atoms, s):
+    '''max over the atoms of the deviation from 1 of the eigenvalues of S^-1/2 S_g S^-1/2 of the atom's tight AOs'''
+    import scipy.linalg
+    from pyscf.dft import numint
+    err = 0.
+    for ia, idx in atoms.items():
+        r = numpy.linalg.norm(g.coords - mol.atom_coord(ia), axis=1)
+        sel = numpy.nonzero(r < 3.)[0]            # the tight shells live within a fraction of a bohr
+        ao = numint.eval_ao(mol, g.coords[sel])[:, idx]
+        sg = lib.dot(ao.T * g.weights[sel], ao)
+        si = s[numpy.ix_(idx, idx)]
+        w = scipy.linalg.eigh(sg, si, eigvals_only=True)
+        err = max(err, abs(w - 1).max())
+    return err
+
+
 def _heavy_radial(mol, intacc):
     '''{element: intacc} of the all-electron atoms beyond HEAVY_RADIAL_Z (HEAVY_RADIAL_INTACC at least)'''
     out = {}
@@ -189,7 +251,9 @@ def _heavy_radial(mol, intacc):
 
 def make_grids(mol, **kwargs):
     '''the COSX grid (socutils.dft.grids.Grids with GRID, kwargs override), built with non0tab; all-electron heavy
-    atoms on the radial grid of HEAVY_RADIAL_INTACC (unless kwargs give element_intacc)'''
+    atoms on the radial grid of HEAVY_RADIAL_INTACC, and the elements whose tight shells the grid does not
+    integrate (RADIAL_NORM_TOL) on a finer one (unless kwargs give element_intacc); atoms with shells of
+    l >= HIGHL_ANGULAR_L on a finer angular table (unless kwargs give element_angular)'''
     from socutils.dft import grids as sgrids
     sgrids.use_fast_grid_sort()
     g = sgrids.Grids(mol)
@@ -201,7 +265,52 @@ def make_grids(mol, **kwargs):
     g.element_intacc = _heavy_radial(mol, dict(GRID, **kwargs).get('intacc', 0.))
     for k, v in dict(GRID, **kwargs).items():
         setattr(g, k, v)
+    if 'element_angular' not in kwargs:
+        g.element_angular = _highl_angular(mol, g.angular_grid)
     g.build(with_non0tab=True)
+    if RADIAL_NORM_TOL and 'element_intacc' not in kwargs:
+        tight = _tight_shells(mol)
+        if tight:
+            base = dict(GRID, **kwargs).get('intacc', g.intacc)
+            s_ = mol.intor_symmetric('int1e_ovlp')
+            ei0 = dict(g.element_intacc)
+            errs = {el: _tight_error(mol, g, at, s_) for el, at in tight.items()}
+            # per element the intacc of the smallest error tried (the radial convergence of a tight primitive
+            # oscillates: O dyall-v4z 1s norm 1.51 / 0.75 / 1.06 on intacc 8 / 10 / 12)
+            best = {el: (e, ei0.get(el)) for el, e in errs.items()}
+            todo = [el for el, e in errs.items() if e > RADIAL_NORM_TOL]
+            ei = dict(ei0)
+            while todo:
+                for el in list(todo):
+                    cur = max(ei.get(el, 0.), base)
+                    new = cur + 2. if cur >= HEAVY_RADIAL_INTACC else HEAVY_RADIAL_INTACC
+                    if new > RADIAL_INTACC_MAX:
+                        todo.remove(el)
+                    else:
+                        ei[el] = new
+                if not todo:
+                    break
+                g.element_intacc = dict(ei)
+                g.build(with_non0tab=True)
+                for el in list(todo):
+                    e = _tight_error(mol, g, tight[el], s_)
+                    if e < .9 * best[el][0]:
+                        best[el] = (e, ei[el])
+                    if e <= RADIAL_NORM_TOL:
+                        todo.remove(el)
+            final = dict(ei0)
+            for el, (e, ia) in best.items():
+                if ia is None:
+                    final.pop(el, None)
+                else:
+                    final[el] = ia
+            if final != g.element_intacc:
+                g.element_intacc = final
+                g.build(with_non0tab=True)
+            bad = {el: '%.2g' % e for el, (e, ia) in best.items() if e > RADIAL_NORM_TOL}
+            if bad:
+                logger.info(mol, 'COSX grid: tight shells not integrated to %g: %s (element_intacc %s)',
+                            RADIAL_NORM_TOL, bad, g.element_intacc)
     return g
 
 
@@ -262,7 +371,7 @@ class COSX(lib.StreamObject):
             atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.natm), bas.ctypes.data_as(ctypes.c_void_p),
             ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p))
         if not self._opt:
-            raise RuntimeError('COSX: l > %d or a shell of too many functions' % libdft.SOCDFTcosx_lmax())
+            raise RuntimeError('COSX: a shell of l > %d' % libdft.SOCDFTcosx_lmax())
         info = numpy.zeros(3)
         libdft.SOCDFTcosx_info(ctypes.c_void_p(self._opt), info.ctypes.data_as(ctypes.c_void_p))
         self._coords = numpy.ascontiguousarray(self.grids.coords.T)

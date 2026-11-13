@@ -347,7 +347,7 @@ def _dsyrk_ptr():
 
 def eval_ao(ni, mol, coords, deriv=0, shls_slice=None, non0tab=None, cutoff=None, out=None, verbose=None):
     '''NumInt.eval_ao by the SIMD evaluator (lib/dft/gtoval.c SOCDFTeval_ao) for spherical AOs of
-    l <= 3, deriv <= 3, all shells; else pyscf's.  The same values and layout ((ncomp,) ngrids, nao
+    l <= SOCDFTgtoval_lmax() (7), deriv <= 3, all shells; else pyscf's.  The same values and layout ((ncomp,) ngrids, nao
     views of (ncomp, nao, ngrids)).'''
     from socutils.hessian.rhf_fast import _load_socdft
     libdft = _load_socdft()

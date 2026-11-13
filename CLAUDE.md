@@ -36,7 +36,7 @@ compiled into an *installed* pyscf (`libao2mo`/`libnp_helper`/`libcvhf`/
 `lib/dft` (`libsocdft.so`) holds the OpenMP XC kernels: the multi-collinear
 kernel of `dft/noncollinear.py`, the fused scalar / two-component Vxc, f_xc and
 XC-gradient passes (`vxc_fast.py`, `vxc_2c.py`, LDA/GGA/meta-GGA), the RKS XC
-Hessian grid pass (`xc_hess.c`, `hessian/rhf_fast.py`), COSX (`scf/cosx.py`) and
+Hessian grid pass (`xc_hess.c`, `hessian/rhf_fast.py`), COSX (`scf/cosx.py`; any l <= 7, `gen_cosx_r.py` kernels, one-centre pairs by parity class) and
 the grid response; they fall back to numpy / pyscf when not built.
 `lib/vhf` (`libsocvhf.so`: prescreen functions that skip one-centre shell
 quartets, used by `somf/x2cmp.py`; the unique-quartet Hessian drivers
