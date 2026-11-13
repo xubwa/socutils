@@ -105,9 +105,19 @@ def gammas_from_antisym(eris, labels, a, gams):
     _add(gams, (lr, lq), -numpy.einsum('prqs,Pps->Prq', a, b(lp + ls), optimize=True))
 
 
-def cavv_gammas(pt, ctx, gams, state=0, max_memory=4000):
-    '''dE/dB of cavv in segments of b: dE/d(ai|bt) = -W[a, i, b, t], W = -2 c t (all
-    a != b), into the blocks (v, c) and (v, a); returns (b, g) of the active part.'''
+def _q_update(q, y, v, delta, f):
+    '''Q_S += f (y^T v + v^T y - y^T diag(delta) y), Q_K += f y^T y over labels e (rows).'''
+    q_s, q_k = q
+    yv = y.T @ v
+    q_s += f * (yv + yv.T - (y.T * delta[None, :]) @ y)
+    q_k += f * (y.T @ y)
+
+
+def cavv_pass(pt, ctx, gams, state=0, max_memory=4000):
+    '''One pass over cavv in segments of b: the density blocks, dE/dB (dE/d(ai|bt) =
+    -W[a, i, b, t], W = -2 c t, all a != b) into the blocks (v, c) and (v, a), the active
+    part (b, g) and the matrices (Q_S, Q_K) of the CI gradient.  Returns
+    (blocks, b, g, q).'''
     from socutils.zmr.lib import linalg as la
     from socutils.zmr.uc import classes, density
     pclass = classes.CLASS_BY_NAME['cavv']
@@ -122,40 +132,48 @@ def cavv_gammas(pt, ctx, gams, state=0, max_memory=4000):
     left = bvc.reshape(naux, nv * nc)
     right = bva.reshape(naux, nv * na)
     tt = numpy.ascontiguousarray(t.T)
-    g = numpy.zeros((nk, nk), dtype=numpy.complex128)
-    g_vc = numpy.zeros((naux, nv, nc), dtype=numpy.complex128)
-    g_va = numpy.zeros((naux, nv, na), dtype=numpy.complex128)
+    tp = numpy.ascontiguousarray(numpy.linalg.pinv(t).T)            # (k, X)
+    c16 = numpy.complex128
+    g = numpy.zeros((nk, nk), dtype=c16)
+    g_vc = numpy.zeros((naux, nv, nc), dtype=c16)
+    g_va = numpy.zeros((naux, nv, na), dtype=c16)
+    dcc = numpy.zeros((nc, nc), dtype=c16)
+    dvv = numpy.zeros((nv, nv), dtype=c16)
+    q = (numpy.zeros((na, na), dtype=c16), numpy.zeros((na, na), dtype=c16))
     for b0, b1 in density._segments(nv, nv * nc * max(na, nk), max_memory):
         nb = b1 - b0
         bseg = numpy.ascontiguousarray(bva[:, b0:b1]).reshape(naux, nb * na)
         m1 = la.gemm(left, bseg, 'T', 'N').reshape(nv, nc, nb, na)
         m2 = la.gemm(numpy.ascontiguousarray(bvc[:, b0:b1]).reshape(naux, nb * nc), right,
                      'T', 'N').reshape(nb, nc, nv, na)
-        v = m2.transpose(2, 1, 0, 3) - m1                       # (a, i, b, t)
+        v = numpy.ascontiguousarray(m2.transpose(2, 1, 0, 3) - m1).reshape(-1, na)   # (aib, t)
         del m1, m2
-        u = la.gemm(numpy.ascontiguousarray(v).reshape(-1, na), tt).reshape(nv, nc, nb, nk)
-        del v
-        den = (ev[:, None, None, None] - ec[None, :, None, None]
-               + ev[None, None, b0:b1, None] + (mu - s)[None, None, None, :])
-        c = u / den
-        del u, den
-        flat = c.reshape(-1, nk)
-        g += 0.5 * la.gemm(flat, flat.conj(), 'T', 'N')
-        w = -2 * la.gemm(numpy.ascontiguousarray(flat), t).reshape(nv, nc, nb, na)   # W[a, i, b, t]
-        x = -w                                                   # dE/d(ai|bt)
-        g_vc += la.gemm(bseg, numpy.ascontiguousarray(x.reshape(nv * nc, nb * na)), 'N', 'T'
-                        ).reshape(naux, nv, nc)
-        g_va[:, b0:b1] += la.gemm(left, numpy.ascontiguousarray(x.reshape(nv * nc, nb * na))
-                                  ).reshape(naux, nb, na)
-        del c, flat, w, x
+        u = la.gemm(v, tt)
+        delta = (ev[:, None, None] - ec[None, :, None] + ev[None, None, b0:b1]).reshape(-1)
+        c = u / (delta[:, None] + (mu - s)[None, :])
+        del u
+        g += 0.5 * la.gemm(c, c.conj(), 'T', 'N')
+        c4 = c.reshape(nv, nc, nb, nk)
+        rows = c4.reshape(nv, -1)
+        dvv += la.gemm(rows.conj(), rows, 'N', 'T')
+        rows = numpy.ascontiguousarray(c4.transpose(1, 0, 2, 3)).reshape(nc, -1)
+        dcc -= 0.5 * la.gemm(rows.conj(), rows, 'N', 'T')
+        # every unordered (a, b) twice: 1/2
+        _q_update(q, la.gemm(c, tp), v, delta, 0.5)
+        x = 2 * la.gemm(c, t)                                       # dE/d(ai|bt) = -W
+        xm = x.reshape(nv * nc, nb * na)
+        g_vc += la.gemm(bseg, xm, 'N', 'T').reshape(naux, nv, nc)
+        g_va[:, b0:b1] += la.gemm(left, xm).reshape(naux, nb, na)
+        del c, c4, rows, x, xm, v
     _add(gams, ('v', 'c'), g_vc)
     _add(gams, ('v', 'a'), g_va)
-    return b, g
+    blocks = {'cc': dcc, 'vv': dvv, 'aa': density._active_block(pt, pclass, b, g)}
+    return blocks, b, g, q
 
 
-def ccav_gammas(pt, ctx, gams, state=0, max_memory=4000):
-    '''dE/dB of ccav in segments of j: dE/d(ai|tj) = W[a, i, j, t], W = -2 c t (all
-    i != j), into the blocks (v, c) and (a, c); returns (b, g) of the active part.'''
+def ccav_pass(pt, ctx, gams, state=0, max_memory=4000):
+    '''One pass over ccav in segments of j (dE/d(ai|tj) = W[a, i, j, t], all i != j, into
+    the blocks (v, c) and (a, c)); returns (blocks, b, g, q) as cavv_pass.'''
     from socutils.zmr.lib import linalg as la
     from socutils.zmr.uc import classes, density
     pclass = classes.CLASS_BY_NAME['ccav']
@@ -170,37 +188,44 @@ def ccav_gammas(pt, ctx, gams, state=0, max_memory=4000):
     left = bvc.reshape(naux, nv * nc)
     right = bac.reshape(naux, na * nc)
     tt = numpy.ascontiguousarray(t.T)
-    g = numpy.zeros((nk, nk), dtype=numpy.complex128)
-    g_vc = numpy.zeros((naux, nv, nc), dtype=numpy.complex128)
-    g_ac = numpy.zeros((naux, na, nc), dtype=numpy.complex128)
+    tp = numpy.ascontiguousarray(numpy.linalg.pinv(t).T)
+    c16 = numpy.complex128
+    g = numpy.zeros((nk, nk), dtype=c16)
+    g_vc = numpy.zeros((naux, nv, nc), dtype=c16)
+    g_ac = numpy.zeros((naux, na, nc), dtype=c16)
+    dcc = numpy.zeros((nc, nc), dtype=c16)
+    dvv = numpy.zeros((nv, nv), dtype=c16)
+    q = (numpy.zeros((na, na), dtype=c16), numpy.zeros((na, na), dtype=c16))
     for j0, j1 in density._segments(nc, nv * nc * max(na, nk), max_memory):
         nj = j1 - j0
         bseg = numpy.ascontiguousarray(bac[:, :, j0:j1])            # (P, t, j)
         m1 = la.gemm(left, bseg.reshape(naux, na * nj), 'T', 'N').reshape(nv, nc, na, nj)
         m2 = la.gemm(numpy.ascontiguousarray(bvc[:, :, j0:j1]).reshape(naux, nv * nj), right,
                      'T', 'N').reshape(nv, nj, na, nc)
-        v = m1.transpose(0, 1, 3, 2) - m2.transpose(0, 3, 1, 2)      # (a, i, j, t)
+        v = numpy.ascontiguousarray(m1.transpose(0, 1, 3, 2) - m2.transpose(0, 3, 1, 2)
+                                    ).reshape(-1, na)                # (a i j, t)
         del m1, m2
-        u = la.gemm(numpy.ascontiguousarray(v).reshape(-1, na), tt).reshape(nv, nc, nj, nk)
-        del v
-        den = (ev[:, None, None, None] - ec[None, :, None, None]
-               - ec[None, None, j0:j1, None] + (mu - s)[None, None, None, :])
-        c = u / den
-        del u, den
-        flat = c.reshape(-1, nk)
-        g += 0.5 * la.gemm(flat, flat.conj(), 'T', 'N')
-        x = -2 * la.gemm(numpy.ascontiguousarray(flat), t).reshape(nv, nc, nj, na)   # dE/d(ai|tj)
-        # G[P, a, i] += sum_{j t} x[a, i, j, t] B[P, t, j]
+        u = la.gemm(v, tt)
+        delta = (ev[:, None, None] - ec[None, :, None] - ec[None, None, j0:j1]).reshape(-1)
+        c = u / (delta[:, None] + (mu - s)[None, :])
+        del u
+        g += 0.5 * la.gemm(c, c.conj(), 'T', 'N')
+        c4 = c.reshape(nv, nc, nj, nk)
+        rows = c4.reshape(nv, -1)
+        dvv += 0.5 * la.gemm(rows.conj(), rows, 'N', 'T')
+        rows = numpy.ascontiguousarray(c4.transpose(1, 0, 2, 3)).reshape(nc, -1)
+        dcc -= la.gemm(rows.conj(), rows, 'N', 'T')
+        _q_update(q, la.gemm(c, tp), v, delta, 0.5)
+        x = -2 * la.gemm(c, t)                                      # dE/d(ai|tj)
+        xm = x.reshape(nv * nc, nj * na)
         bjt = numpy.ascontiguousarray(bseg.transpose(0, 2, 1)).reshape(naux, nj * na)
-        g_vc += la.gemm(bjt, numpy.ascontiguousarray(x.reshape(nv * nc, nj * na)), 'N', 'T'
-                        ).reshape(naux, nv, nc)
-        # G[P, t, j] += sum_{a i} x[a, i, j, t] B[P, a, i]
-        gj = la.gemm(left, numpy.ascontiguousarray(x.reshape(nv * nc, nj * na))).reshape(naux, nj, na)
-        g_ac[:, :, j0:j1] += gj.transpose(0, 2, 1)
-        del c, flat, x
+        g_vc += la.gemm(bjt, xm, 'N', 'T').reshape(naux, nv, nc)
+        g_ac[:, :, j0:j1] += la.gemm(left, xm).reshape(naux, nj, na).transpose(0, 2, 1)
+        del c, c4, rows, x, xm, v
     _add(gams, ('v', 'c'), g_vc)
     _add(gams, ('a', 'c'), g_ac)
-    return b, g
+    blocks = {'cc': dcc, 'vv': dvv, 'aa': density._active_block(pt, pclass, b, g)}
+    return blocks, b, g, q
 
 
 def active_two_body(pt, pclass, b, g):
@@ -213,11 +238,13 @@ def active_two_body(pt, pclass, b, g):
     return x4[a, a, a, a]
 
 
-def gradient(pt, state=0, max_memory=4000):
-    '''(dE2/dK in the quasi-canonical orbitals of pt, u) at fixed CI vector, all classes,
-    without MO four-index arrays or virtual-virtual three-index blocks: the Fock part by
-    AO Coulomb/exchange builds, the explicit parts by the native ccvv kernel, cavv and
-    ccav in segments, the other classes from their (small) integral blocks.'''
+def derivatives(pt, state=0, max_memory=4000):
+    '''One pass over the classes of a finished PC-NEVPT2 of one model state: the
+    unrelaxed density (quasi-canonical orbitals), the orbital gradient at fixed CI vector
+    (quasi-canonical orbitals), and the vector g of the CI gradient, dE2 = 2 <dPsi|g>
+    (determinants of the spinor sector; zmr.reference.ci_gradient).  Real orbitals.
+    Returns {'d', 'grad', 'g_ci', 'u'}.'''
+    from socutils.zmr.reference import ci_gradient as cg
     from socutils.zmr.reference import orbital_gradient as og
     from socutils.zmr.uc import classes, density
     qc = pt.quasi_canonical
@@ -225,31 +252,30 @@ def gradient(pt, state=0, max_memory=4000):
     sp = eris.spaces
     ctx = density.context(pt)
     n = sp.nmo
-    d_gen = numpy.zeros((n, n), dtype=numpy.complex128)
-    d_core = numpy.zeros((n, n), dtype=numpy.complex128)
+    c16 = numpy.complex128
+    d_gen = numpy.zeros((n, n), dtype=c16)
+    d_core = numpy.zeros((n, n), dtype=c16)
     gams = {}
     x_aa = numpy.zeros((sp.nact,) * 4)
-    # ccvv
+    g_ci = numpy.zeros(pt.civecs.shape[0], dtype=c16)
     _, dcc, dvv, g_ccvv = ccvv(ctx)
     d_gen += density.assemble(sp, {'cc': dcc, 'vv': dvv})
     grad = g_ccvv.real.copy()
     for name in density._LABELS:
         pclass = classes.CLASS_BY_NAME[name]
-        if name == 'cavv':
-            _, dblk = density.cavv(pt, ctx, state, max_memory)
-            b, g = cavv_gammas(pt, ctx, gams, state, max_memory)
-        elif name == 'ccav':
-            _, dblk = density.ccav(pt, ctx, state, max_memory)
-            b, g = ccav_gammas(pt, ctx, gams, state, max_memory)
+        if name in ('cavv', 'ccav'):
+            run = cavv_pass if name == 'cavv' else ccav_pass
+            dblk, b, g, q = run(pt, ctx, gams, state, max_memory)
+            g_ci += cg.g_from_q(pt, pclass, q[0], q[1], state)
         else:
             _, dblk = density.class_reference(pt, ctx, name, state)
             blocks, b, g = og._w_blocks(pt, ctx, pclass, state)
             gammas_from_antisym(eris, *og._scatter(name, ctx, blocks), gams)
+            g_ci += cg.class_g(pt, ctx, name, state)
         for lab, x in dblk.items():
             target = d_gen if lab in ('cc', 'vv') else d_core
             target += density.assemble(sp, {lab: x})
         x_aa += active_two_body(pt, pclass, b, g)
-    # H_act: dE/d(tu|vw) -> G[P, t, u] = sum (X + X^T)[t, u, v, w] B[P, v, w]
     baa = eris.cd_block('aa')
     _add(gams, ('a', 'a'), numpy.einsum('tuvw,Pvw->Ptu', x_aa + x_aa.transpose(2, 3, 0, 1), baa))
     for (x, y), gam in gams.items():
@@ -260,4 +286,12 @@ def gradient(pt, state=0, max_memory=4000):
     gam_core = numpy.zeros((n, n))
     gam_core[sp.slice('c'), sp.slice('c')] = numpy.eye(sp.ncore)
     grad += og.fock_part(eris, d_gen.real, gam_gen) + og.fock_part(eris, d_core.real, gam_core)
-    return grad, numpy.asarray(qc.u)
+    g_ci += cg.fock_g(pt, ctx, d_gen.real, state)
+    return {'d': d_gen + d_core, 'grad': grad, 'g_ci': g_ci, 'u': numpy.asarray(qc.u)}
+
+
+def gradient(pt, state=0, max_memory=4000):
+    '''(dE2/dK in the quasi-canonical orbitals of pt, u) at fixed CI vector, all classes,
+    without MO four-index arrays or virtual-virtual three-index blocks (derivatives).'''
+    out = derivatives(pt, state, max_memory)
+    return out['grad'], out['u']

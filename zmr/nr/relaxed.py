@@ -70,29 +70,41 @@ def zvector(mc, rhs, tol=1e-10, maxiter=500):
     return proj(z)
 
 
-def relaxed_rdm1(mc, cderi, state=0, max_memory=4000, return_parts=False):
+def relaxed_rdm1(mc, cderi, state=0, max_memory=4000, return_parts=False, timings=None):
     '''AO density of the state `state` of mc whose expectation values are the derivatives
     of E_state(CASSCF) + E2(state-specific PC-NEVPT2) (all orbitals correlated).
-    return_parts: also (D_state, D_unrelaxed, D_z).'''
+    return_parts: also (D_state, D_unrelaxed, D_z).  timings: dict that receives the
+    seconds of every step.'''
+    import time
+    tim = {} if timings is None else timings
+    t0 = time.time()
+
+    def lap(name):
+        nonlocal t0
+        tim[name] = tim.get(name, 0.0) + time.time() - t0
+        t0 = time.time()
     ci = rf._ci_list(mc)
     route = nr_density.spin_orbital_route(mc, cderi, ci=ci[state])
     pt = route.pt(max_memory)
-    # unrelaxed density
-    _, d2so = uc_density.make_rdm1(pt, max_memory=max_memory)
-    d2 = route.spin_sum(d2so).real
-    # dE/dx
-    g_qc, u = uc_gradient.gradient(pt, max_memory=max_memory)
-    g_orb = route.spin_sum(numpy.conj(u) @ g_qc @ u.T).real
+    lap('spin-orbital NEVPT2 energy')
+    # unrelaxed density, orbital gradient and CI gradient of E2 in one pass
+    out = uc_gradient.derivatives(pt, state=0, max_memory=max_memory)
+    u = out['u']
+    d2 = route.spin_sum(u.conj() @ out['d'] @ u.T).real
+    g_orb = route.spin_sum(numpy.conj(u) @ out['grad'] @ u.T).real
+    lap('E2 derivatives')
     rhs = rf.state_gradient(mc, state) if len(ci) > 1 else numpy.zeros(
         rf.ngorb(mc) + sum(c.size for c in ci))
     rhs[:rf.ngorb(mc)] += mc.pack_uniq_var(g_orb - g_orb.T)
-    rhs += rf.ci_block(mc, state, cg.ci_gradient(pt, route))
+    rhs += rf.ci_block(mc, state, cg.project(out['g_ci'], pt, route))
     z = zvector(mc, rhs)
+    lap('Z-vector')
     c = mc.mo_coeff
     d_state = rf.state_density(mc, state)
     d_unrel = c @ d2.T @ c.T
     d_z = rf.lagrangian_density(mc, z)
     dm = d_state + d_unrel + d_z
+    lap('Lagrangian density')
     if return_parts:
         return dm, (d_state, d_unrel, d_z)
     return dm

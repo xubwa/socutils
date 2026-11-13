@@ -94,3 +94,26 @@ def test_gradient_fast_vs_reference():
     g_ref, u = og.gradient(pt)
     g_fast, _ = gradient.gradient(pt, max_memory=0.5)
     assert abs(g_fast - g_ref).max() < 1e-10, abs(g_fast - g_ref).max()
+
+
+def test_one_pass_ci_gradient_and_density():
+    '''The one pass of zmr.uc.gradient.derivatives (segments forced): its CI gradient and
+    unrelaxed density against the reference ones.'''
+    from socutils.zmr.nr import density as nr_density
+    from socutils.zmr.reference import ci_gradient as cg
+    from socutils.zmr.uc import density, gradient
+    mol = gto.M(atom='O 0 0 0.1173; H 0 0.7572 -0.4692; H 0 -0.7572 -0.4692',
+                basis='6-31g', verbose=0)
+    cderi = incore.cholesky_eri(mol, auxbasis='weigend')
+    mf = scf.RHF(mol).density_fit(auxbasis='weigend')
+    mf.kernel()
+    mc = mcscf.CASSCF(mf, 4, 4)
+    mc.kernel()
+    route = nr_density.spin_orbital_route(mc, cderi)
+    pt = route.pt()
+    out = gradient.derivatives(pt, max_memory=0.5)
+    ref = cg.ci_gradient(pt, route)
+    assert abs(cg.project(out['g_ci'], pt, route) - ref).max() < 1e-11
+    _, d2 = density.make_rdm1(pt)
+    u = out['u']
+    assert abs(u.conj() @ out['d'] @ u.T - d2).max() < 1e-11

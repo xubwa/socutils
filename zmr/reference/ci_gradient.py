@@ -66,6 +66,18 @@ def class_g(pt, ctx, name, state=0):
         y = c @ tp.T                                                        # (e, X)
         q_s += y.T @ v + v.T @ y - (y.T * delta[None, :]) @ y
         q_k += y.T @ y
+    return g_from_q(pt, pclass, q_s, q_k, state, phi=phi, s=s)
+
+
+def g_from_q(pt, pclass, q_s, q_k, state=0, phi=None, s=None):
+    '''g of a class from its matrices Q_S, Q_K over the strings X.'''
+    act = pt.active_space
+    psi = pt.civecs[:, state]
+    ntarget = act.target(pt.nelec, pclass.dn)
+    if phi is None:
+        phi = engine.class_functions(pclass, act, psi[:, None], pt.nelec)[0]
+    if s is None:
+        s = float(pt.shifts[state])
     w_s = q_s.T @ phi
     w_k = q_k.T @ phi
     hw_k = act.apply_h(ntarget, w_k.T).T - s * w_k
@@ -114,5 +126,13 @@ def ci_gradient(pt, route, state=0, names=None):
     g += fock_g(pt, ctx, d_gen.real, state)
     idx = sector_index(pt.active_space.norb // 2, route.nelec_ab)
     gx = g[idx].real
+    c = route.ci
+    return 2 * (gx - numpy.dot(c, gx) * c)
+
+
+def project(g, pt, route):
+    '''dE/dx on the CI vector of the PySCF sector from g (dE = 2 <dPsi|g>).'''
+    idx = sector_index(pt.active_space.norb // 2, route.nelec_ab)
+    gx = numpy.asarray(g)[idx].real
     c = route.ci
     return 2 * (gx - numpy.dot(c, gx) * c)
