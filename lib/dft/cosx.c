@@ -123,6 +123,9 @@ int SOCDFTcosx_mfloat(void)
 void SOCDFTcosx_set_full(int f) { cx_full = f; }
 static int cx_cls = 1;       /* one-centre pairs by parity class in the K kernel (SOCDFTcosx_set_opt(4, .)) */
 static int cx_gcls = 1;      /* and in the gradient kernel (SOCDFTcosx_set_opt(6, .)) */
+static int cx_hcls = 1;      /* and in the Hessian / Fock1 kernel (SOCDFTcosx_set_opt(7, .)) */
+static int cx_wdr_gemm = 512;   /* w_dot_r by dgemm from nab nh >= this (SOCDFTcosx_set_opt(8, .)); K gradient, 16 threads
+                                 * Gold 6448Y: HgCl2 dyall-v4z 1.07 -> 0.87 s, c6h6 def2-TZVP 0.31 -> 0.26 s */
 static int cx_rmax = 6;      /* the fused cxr kernels of the two-centre pairs up to this degree (SOCDFTcosx_set_opt(5, .));
                               * beyond, R and one GEMM (HgCl2 dyall-v4z, cycles per point L = 7 / 8: 1516 / 2727 fused,
                               * 1047 / 1767 GEMM; L = 6 525 / 571) */
@@ -134,6 +137,8 @@ void SOCDFTcosx_set_opt(int which, int v)
         if (which == 4) cx_cls = v;
         if (which == 5) cx_rmax = v;
         if (which == 6) cx_gcls = v;
+        if (which == 7) cx_hcls = v;
+        if (which == 8) cx_wdr_gemm = v;
 }
 static int h_t[CX_NHMAX], h_u[CX_NHMAX], h_v[CX_NHMAX], h_deg[CX_NHMAX];
 static int h_dir[CX_NHMAX], h_m1[CX_NHMAX], h_m2[CX_NHMAX], h_c[CX_NHMAX];
@@ -143,6 +148,8 @@ static int h_idx[CX_DMAX + 1][CX_DMAX + 1][CX_DMAX + 1];
 static int hc_list[8][CX_NHMAX], hc_cnt[CX_DMAX + 1][8];
 /* hc_sh[x][c][j]: the index of hc_list[c][j] raised by one in direction x (-1 beyond CX_DMAX) */
 static int hc_sh[3][8][CX_NHMAX];
+/* hc_sh2[q][c][j]: raised by one in x and one in y, (x, y) = xx xy xz yy yz zz (-1 beyond CX_DMAX) */
+static int hc_sh2[6][8][CX_NHMAX];
 
 #define BOYS_TMAX 40.
 #define BOYS_NT 1281                     /* grid t_k = k / 32 */
@@ -216,6 +223,13 @@ static void cx_tables(void)
                                         for (x = 0; x < 3; x++)
                                                 hc_sh[x][c][q] = h_deg[i] < CX_DMAX ?
                                                         h_idx[h_t[i] + (x == 0)][h_u[i] + (x == 1)][h_v[i] + (x == 2)] : -1;
+                                        static const int xy_[6][2] = {{0, 0}, {0, 1}, {0, 2}, {1, 1}, {1, 2}, {2, 2}};
+                                        for (x = 0; x < 6; x++) {
+                                                const int a_ = xy_[x][0], b_ = xy_[x][1];
+                                                hc_sh2[x][c][q] = h_deg[i] + 1 < CX_DMAX ?
+                                                        h_idx[h_t[i] + (a_ == 0) + (b_ == 0)][h_u[i] + (a_ == 1) + (b_ == 1)]
+                                                             [h_v[i] + (a_ == 2) + (b_ == 2)] : -1;
+                                        }
                                 }
                         }
                 }
@@ -924,14 +938,15 @@ typedef double CXV __attribute__((vector_size(64)));
 static inline CXV cxv_load(const double *p) { CXV v; memcpy(&v, p, sizeof(v)); return v; }
 static inline void cxv_store(double *p, CXV v) { memcpy(p, &v, sizeof(v)); }
 #ifdef CX_FUSED
-/* AVX-512: 4 rows x 16 points (two masked vectors) in registers, one R row load per 8 FMAs */
-static void er_class(double *A, const int *perm, const int *ncls, const double *Ec, const double *R, int L, int n,
-                     int init)
+/* AVX-512: 4 rows x 16 points (two masked vectors) in registers, one R row load per 8 FMAs; tab the column
+ * lists (hc_list, or a shifted hc_sh[x] / hc_sh2[q]: then the derivatives sum_t E_t R_{t + 1x}) */
+static void er_class_t(double *A, const int *perm, const int *ncls, const double *Ec, const double *R, int L, int n,
+                       int init, const int (*tab)[CX_NHMAX])
 {
         int c, r, j, g0;
         for (c = 0; c < 8; c++) {
                 const int nr = ncls[c], nk = hc_cnt[L][c];
-                const int *idx = hc_list[c];
+                const int *idx = tab[c];
                 if (nr == 0) continue;
                 for (g0 = 0; g0 < n; g0 += 16) {
                         const int rem = n - g0;
@@ -982,14 +997,14 @@ static void er_class(double *A, const int *perm, const int *ncls, const double *
         }
 }
 #else
-static void er_class(double *A, const int *perm, const int *ncls, const double *Ec, const double *R, int L, int n,
-                     int init)
+static void er_class_t(double *A, const int *perm, const int *ncls, const double *Ec, const double *R, int L, int n,
+                       int init, const int (*tab)[CX_NHMAX])
 {
         int c, r, j, g, q;
         const int n16 = n & ~15;
         for (c = 0; c < 8; c++) {
                 const int nr = ncls[c], nk = hc_cnt[L][c];
-                const int *idx = hc_list[c];
+                const int *idx = tab[c];
                 if (nr == 0) continue;
                 for (r = 0; r < nr; r += 4) {
                         const int nq = nr - r < 4 ? nr - r : 4;
@@ -1047,6 +1062,11 @@ static void er_class(double *A, const int *perm, const int *ncls, const double *
         }
 }
 #endif
+static void er_class(double *A, const int *perm, const int *ncls, const double *Ec, const double *R, int L, int n,
+                     int init)
+{
+        er_class_t(A, perm, ncls, Ec, R, L, n, init, hc_list);
+}
 
 #ifdef CX_FUSED
 #define V8 __m512d
@@ -1280,22 +1300,23 @@ static const cx_spd_t cx_spdt_tab[6][3] = CX_SP_TAB(cx_spdt);
 static const cx_spf_t cx_spft_tab[6][3] = CX_SP_TAB(cx_spft);
 #endif
 
-/* gC[x] -= sum_r sum_g W[perm[r]](g) sum_j E_c[r][j] R[hc_sh[x][c][j]](g): the point-derivative sum of a
- * one-centre pair by class (the rows as er_class, R of degree >= L + 1) */
-static void gc_class(double *gC, const double *W, const int *perm, const int *ncls, const double *Ec, const double *R,
-                     int L, int n)
+/* out[q] += sum_r sum_g W[perm[r]](g) sum_j E_c[r][j] R[tabs[q][c][j]](g) (q < nq <= 6): the point-derivative
+ * sums of a one-centre pair by class (the rows as er_class, R of the degree the tables reach) */
+static void wr_class(double *out, int nq, const int (*const *tabs)[CX_NHMAX], const double *W, const int *perm,
+                     const int *ncls, const double *Ec, const double *R, int L, int n)
 {
         int c, r, j, x, g0;
 #ifdef CX_FUSED
-        __m512d s[3] = {_mm512_setzero_pd(), _mm512_setzero_pd(), _mm512_setzero_pd()};
+        __m512d s[6];
+        for (x = 0; x < nq; x++) s[x] = _mm512_setzero_pd();
 #else
-        double sx[3] = {0, 0, 0};
+        double sx[6] = {0, 0, 0, 0, 0, 0};
 #endif
         for (c = 0; c < 8; c++) {
                 const int nr = ncls[c], nk = hc_cnt[L][c];
                 if (nr == 0) continue;
-                for (x = 0; x < 3; x++) {
-                        const int *idx = hc_sh[x][c];
+                for (x = 0; x < nq; x++) {
+                        const int *idx = tabs[x][c];
 #ifdef CX_FUSED
                         for (g0 = 0; g0 < n; g0 += 8) {
                                 const int rem = n - g0;
@@ -1347,10 +1368,20 @@ static void gc_class(double *gC, const double *W, const int *perm, const int *nc
                 Ec += (size_t)nr * nk;
         }
 #ifdef CX_FUSED
-        for (x = 0; x < 3; x++) gC[x] -= _mm512_reduce_add_pd(s[x]);
+        for (x = 0; x < nq; x++) out[x] += _mm512_reduce_add_pd(s[x]);
 #else
-        for (x = 0; x < 3; x++) gC[x] -= sx[x];
+        for (x = 0; x < nq; x++) out[x] += sx[x];
 #endif
+}
+
+/* gC[x] -= sum_r sum_g W[perm[r]](g) sum_j E_c[r][j] R[hc_sh[x][c][j]](g) */
+static void gc_class(double *gC, const double *W, const int *perm, const int *ncls, const double *Ec, const double *R,
+                     int L, int n)
+{
+        const int (*const tabs[3])[CX_NHMAX] = {hc_sh[0], hc_sh[1], hc_sh[2]};
+        double o[3] = {0, 0, 0};
+        wr_class(o, 3, tabs, W, perm, ncls, Ec, R, L, n);
+        gC[0] -= o[0]; gC[1] -= o[1]; gC[2] -= o[2];
 }
 
 static int cx_sparse2 = 1;      /* 1: sparse_contract (register-blocked), 0: multi_contract */
@@ -2710,7 +2741,7 @@ static int cx_wdr = 1;     /* w_dot_r: 1 the eight-accumulator loops, 0 dgemm fo
 void SOCDFTcosx_set_wdr(int v) { cx_wdr = v; }
 static void w_dot_r(double *Mm, const double *W, const double *R, int nab, int nh, int n, dgemm_t dgemm_)
 {
-        if (!cx_wdr && (size_t)nab * nh >= 256) {
+        if ((!cx_wdr && (size_t)nab * nh >= 256) || (size_t)nab * nh >= (size_t)cx_wdr_gemm) {
                 const double one = 1, zero = 0;
                 dgemm_("T", "N", &nh, &nab, &n, &one, R, &n, W, &n, &zero, Mm, &nh);
                 return;
