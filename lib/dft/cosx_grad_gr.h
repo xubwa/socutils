@@ -9,6 +9,7 @@ void SOCDFTcosx_grad_gr(double *grad, double *dm, double *dmm, double *yg, void 
                      dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local, double *kout,
                         double *pg, double *eg)
 {
+        cx_dgemm = dgemm_;
         /* kout != NULL: also K_plain[D] (nao, nao), K[mu][nu] = sum_g w phi_mu (A F)_nu, from the A F of this
          * pass (the pairs this pass keeps) */
         CXOpt *opt = optp;
@@ -230,7 +231,8 @@ void SOCDFTcosx_grad_gr(double *grad, double *dm, double *dmm, double *yg, void 
                                 const double rmin = armin[at];
                                 if (rmin > 0) {
                                         const double *pv = opt->pp_p + pp->po;
-                                        while (k0 < pp->np && pv[k0] * rmin >= tcut) k0++;
+                                        const double tc_ = tcut + CX_TCUT_ADD(L + 1);
+                                        while (k0 < pp->np && pv[k0] * rmin >= tc_) k0++;
                                 }
                                 if (k0 > 0) {
                                         const double *Mo = opt->mdata + pp->mo + sz * (k0 - 1);
@@ -260,8 +262,10 @@ void SOCDFTcosx_grad_gr(double *grad, double *dm, double *dmm, double *yg, void 
                                 const double *E = opt->edata + pp->eo + sz * k;
 #ifdef CX_FUSED
                                 /* R to L + 1 stored, A += E R, in one register pass */
-                                cxs_table[L](A, nab, E, p, P, xyz, n, R);
-#else
+                                if (L < CXR_LMAX) cxs_table[L](A, nab, E, p, P, xyz, n, R);
+                                else
+#endif
+                                {
                                 double tmin = 1e300, tmax = 0;
                                 for (g = 0; g < n; g++) {
                                         X[g] = P[0] - xyz[g];
@@ -281,7 +285,7 @@ void SOCDFTcosx_grad_gr(double *grad, double *dm, double *dmm, double *yg, void 
                                 }
                                 hermite_R_vec(R, S, X, Y, Z, L + 1, n, Rwk);
                                 e_times_r(A, E, R, nab, nh, n);
-#endif
+                                }
                                 CTICK(3)
                                 w_dot_r(Mm, W, R, nab, nh1, n, dgemm_);
                                 GR_POINT(E, R)

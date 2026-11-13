@@ -270,6 +270,7 @@ int SOCDFTcosx_fock1(double *V, double *VT, double *co, double *yo, int nocc, vo
                      double tcut, int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
                      dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local)
 {
+        cx_dgemm = dgemm_;
         return SOCDFTcosx_hess(NULL, V, VT, co, yo, nocc, optp, coords, weights, non0tab, ngrid, blk, cutoff, tol,
                                tcut, ao_loc, atm, natm, bas, nbas, env, dgemm_, mkl_set_num_threads_local);
 }
@@ -493,6 +494,7 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                     double tcut, int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
                     dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local)
 {
+        cx_dgemm = dgemm_;
         CXOpt *opt = optp;
         cx_tables();
         const int do_f1 = V != NULL, do_h = hs != NULL;
@@ -836,7 +838,8 @@ int SOCDFTcosx_hess(double *hs, double *V, double *VT, double *co, double *yo, i
                                 const double rmin = armin[at];
                                 if (rmin > 0) {
                                         const double *pv = opt->pp_p + pp->po;
-                                        while (k0 < pp->np && pv[k0] * rmin >= tcut) k0++;
+                                        const double tc_ = tcut + CX_TCUT_ADD(L + Lext);
+                                        while (k0 < pp->np && pv[k0] * rmin >= tc_) k0++;
                                 }
                                 if (k0 > 0) {
                                         const double *Mo = opt->mdata + pp->mo + sz * (k0 - 1);

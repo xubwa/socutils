@@ -84,6 +84,7 @@ int SOCDFTcosx_grid_resp(double *pg, double *eg, double *dm, double *dmm, double
                          double tcut, int *ao_loc, int *atm, int natm, int *bas, int nbas, double *env,
                          dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local)
 {
+        cx_dgemm = dgemm_;
         CXOpt *opt = optp;
         cx_tables();
         const int nao = ao_loc[nbas];
@@ -287,7 +288,8 @@ int SOCDFTcosx_grid_resp(double *pg, double *eg, double *dm, double *dmm, double
                                 const double rmin = armin[at];
                                 if (rmin > 0) {
                                         const double *pv = opt->pp_p + pr->po;
-                                        while (k0 < pr->np && pv[k0] * rmin >= tcut) k0++;
+                                        const double tc_ = tcut + CX_TCUT_ADD(L + 1);
+                                        while (k0 < pr->np && pv[k0] * rmin >= tc_) k0++;
                                 }
                                 if (k0 > 0) {
                                         const double *Mo = opt->mdata + pr->mo + sz * (k0 - 1);
@@ -301,8 +303,10 @@ int SOCDFTcosx_grid_resp(double *pg, double *eg, double *dm, double *dmm, double
                                 const double *P = opt->pp_P + 3 * (pr->po + k);
                                 const double *E = opt->edata + pr->eo + sz * k;
 #ifdef CX_FUSED
-                                cxs_table[L](A, nab, E, p, P, xyz, n, R);
-#else
+                                if (L < CXR_LMAX) cxs_table[L](A, nab, E, p, P, xyz, n, R);
+                                else
+#endif
+                                {
                                 double tmin = 1e300, tmax = 0;
                                 for (g = 0; g < n; g++) {
                                         X[g] = P[0] - xyz[g];
@@ -322,7 +326,7 @@ int SOCDFTcosx_grid_resp(double *pg, double *eg, double *dm, double *dmm, double
                                 }
                                 hermite_R_vec(R, S, X, Y, Z, L + 1, n, Rwk);
                                 e_times_r(A, E, R, nab, nh, n);
-#endif
+                                }
                                 GR_POINT(E, R)
                         }
 #undef GR_POINT
@@ -421,6 +425,7 @@ int SOCDFTcosx_gram_gr(double *pg, double *eg, double *yg, double *coords, doubl
                        int ngrid, int blk, double cutoff, int *ao_loc, int *atm, int natm, int *bas, int nbas,
                        double *env, dgemm_t dgemm_, mkl_local_t mkl_set_num_threads_local)
 {
+        cx_dgemm = dgemm_;
         const int nao = ao_loc[nbas];
         const int nblk = (ngrid + blk - 1) / blk;
         int err = 0;

@@ -262,7 +262,7 @@ class COSX(lib.StreamObject):
             atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.natm), bas.ctypes.data_as(ctypes.c_void_p),
             ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p))
         if not self._opt:
-            raise RuntimeError('COSX: l > %d or a shell of too many functions' % libdft.SOCDFTcosx_lmax())
+            raise RuntimeError('COSX: a shell of l > %d' % libdft.SOCDFTcosx_lmax())
         info = numpy.zeros(3)
         libdft.SOCDFTcosx_info(ctypes.c_void_p(self._opt), info.ctypes.data_as(ctypes.c_void_p))
         self._coords = numpy.ascontiguousarray(self.grids.coords.T)
