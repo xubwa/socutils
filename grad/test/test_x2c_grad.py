@@ -32,7 +32,10 @@ def _grad(atom, flavor, **kw):
 
 class KnownValues(unittest.TestCase):
     def check(self, de, z):
-        self.assertAlmostEqual(abs(de[:, :2]).max(), 0, 12)
+        # x / y vanish by symmetry; the Kramers fast path (grad/kr_fast.py) screens the 2e derivative
+        # integrals at 1e-10 (as rhf_fast), which leaves ~3e-9 there (HF x2cmp: 3.2e-9; 5e-16 with
+        # kr_fast.ENABLE = False); the X2C hcore part itself is exact to 1e-15
+        self.assertAlmostEqual(abs(de[:, :2]).max(), 0, 8)
         self.assertAlmostEqual(abs(de.sum(axis=0)).max(), 0, 12)
         for a, b in zip(de[:, 2], z):
             self.assertAlmostEqual(a, b, 8)
