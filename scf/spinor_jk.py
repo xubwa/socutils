@@ -282,13 +282,28 @@ def _kobj(mf, st, level):
     return st['k'][level]
 
 
-def _cosx_k(k, pieces, n, nao, dtype, kramers, hermi, tol=None):
-    '''K of the GHF density by one (multi-density) COSX call on the real pieces'''
+# the response K (hermi != 1: the transition densities of TDA / TDDFT, CPHF) with the symmetric bilinear form
+# K_s[X] = 1/2 (P K_plain[X] + K_plain[P^T X]) (cosx.COSX.get_k_var without the final symmetrisation): the
+# one-sided fitted K = P K_plain makes tr(X^T K[Y]) unsymmetric, so the response matrix A is not Hermitian and the
+# Davidson residual stalls (AuH x2c-SVPall PBE0 TDA: |r| ~ 4e-6).  Both densities in one multi-density pass.
+RESPONSE_SYMMETRIC = True
+
+
+def _cosx_k(k, pieces, n, nao, dtype, kramers, hermi, tol=None, symmetric=False):
+    '''K of the GHF density by one (multi-density) COSX call on the real pieces; symmetric: the symmetric
+    bilinear form of the overlap fit (RESPONSE_SYMMETRIC)'''
     tol0 = k.tol
     if tol is not None:
         k.tol = tol
     try:
-        ks = k.get_k(_stack(pieces), hermi=0)
+        x = _stack(pieces)
+        if symmetric and k._proj is not None:
+            m = len(x)
+            px = lib.einsum('ki,xkj->xij', k._proj, x)                       # P^T X
+            kp = k._plain_k(numpy.concatenate([x, px]))
+            ks = .5 * (lib.einsum('ij,xjk->xik', k._proj, kp[:m]) + kp[m:])
+        else:
+            ks = k.get_k(x, hermi=0)
     finally:
         k.tol = tol0
     ks = _project(pieces, list(ks.reshape(len(pieces), n, nao, nao)))
@@ -327,7 +342,7 @@ def get_k_cosx(mf, mol, dm, hermi, aa, ab, ba, bb, cplx, kramers):
         k = _kobj(mf, st, 2)
         if k is None:
             return _exact_k(_proxy(mf, mol), mol, pieces, n, nao, dm.dtype, kramers, hermi)
-        return _cosx_k(k, pieces, n, nao, dm.dtype, kramers, hermi)
+        return _cosx_k(k, pieces, n, nao, dm.dtype, kramers, hermi, symmetric=RESPONSE_SYMMETRIC and hermi != 1)
     last = st['last']
     if last is None:
         lev = 1 if cosx.SCF_GRID_SWITCH > 0 else 2

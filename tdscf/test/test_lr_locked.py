@@ -37,14 +37,18 @@ class KnowValues(unittest.TestCase):
         mf.conv_tol = 1e-10
         mf.kernel()
         es = {}
-        for solver in ('pyscf', 'locked'):
+        # the reference: pyscf's solver for 12 roots, the lowest 6 (with nstates = 4 it misses the 3.803 eV
+        # pair, with 6 the locked solver without buffer roots missed the 3.826 eV root)
+        for solver, ns in (('pyscf', 12), ('locked', 6), ('locked', 4)):
             td = gks.TDA(mf)
-            td.nstates = 4
+            td.nstates = ns
             td.conv_tol = 1e-7
             td.davidson = solver
-            es[solver] = td.kernel()[0]
+            es[(solver, ns)] = td.kernel()[0]
             self.assertTrue(all(td.converged))
-        self.assertLess(abs(es['pyscf'] - es['locked']).max(), 1e-9)
+        ref = es[('pyscf', 12)]
+        self.assertLess(abs(es[('locked', 6)] - ref[:6]).max(), 1e-9)
+        self.assertLess(abs(es[('locked', 4)] - ref[:4]).max(), 1e-9)
 
 
 if __name__ == '__main__':

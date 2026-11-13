@@ -589,6 +589,7 @@ class TDA(_KernelXCMixin, _ghf.TDA):
     # (pyscf.tdscf._lr_eig.eigh: MAX_SPACE_INC vectors every iteration, residuals of up to max_space Ritz vectors).
     davidson = 'locked'
     max_space = None            # lr_locked's subspace bound (None: max(8 nroots, 40))
+    nbuffer = None              # extra roots of the locked solve (None: max(2, nstates // 2))
 
     def kernel(self, x0=None, nstates=None):
         if not (self.direct or self.couple_reference):
@@ -629,9 +630,15 @@ class TDA(_KernelXCMixin, _ghf.TDA):
             return w[idx], v[:, idx]
 
         if x0 is None:
-            x0 = self.get_init_guess(mf, nstates)
-        conv, e, x1 = lr_locked.eigh(vind, x0, precond, nstates, tol=self.conv_tol, lindep=self.lindep,
+            # a wider guess than nstates: a minimal one can miss roots
+            x0 = self.get_init_guess(mf, 2 * nstates + 4)
+        # buffer roots, converged too and dropped: with locking a root missing from the subspace would stay
+        # missing once the lowest nstates Ritz roots converge (AuH x2c-SVPall PBE0: the 3.826 eV root under
+        # the 3.877 eV pair at nstates = 6; pyscf's lr_eigh misses the 3.803 eV pair at nstates = 4)
+        nbuf = self.nbuffer if self.nbuffer is not None else max(2, nstates // 2)
+        conv, e, x1 = lr_locked.eigh(vind, x0, precond, nstates + nbuf, tol=self.conv_tol, lindep=self.lindep,
                                      max_cycle=self.max_cycle, max_space=self.max_space, pick=pick, log=log)
+        conv, e, x1 = conv[:nstates], e[:nstates], x1[:nstates]
         self.converged, self.e = conv, e
         mo_occ = mf.mo_occ[self.get_frozen_mask()]
         nocc = int((mo_occ > 0).sum())
