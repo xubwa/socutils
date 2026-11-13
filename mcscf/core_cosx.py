@@ -50,6 +50,14 @@ from pyscf.lib import logger
 
 CORE_EXCHANGE = 'cd'    # default of mc.core_exchange: 'cd' (all from the factor) or 'cosx' (core-core exchange by COSX)
 GRID_LEVEL = 2      # COSX grid of the core-core exchange (spinor_jk.grid_args: heavy-atom radial rule)
+# Lebedev sizes of the two inner pruning regions (r < 0.4 R_Bragg) at least these.  The SCF grids' tables (26 / 50
+# points there on GRIDX2) integrate the spherical closed core shells of an SCF density, not the anisotropic core
+# densities that a fully relaxed CASSCF explores: rotations of core spinors into a fully occupied active pair are
+# (nearly) free in the exact functional, and the mixed functional's minimiser walked into a density whose COSX
+# core exchange was 0.159 Eh too low on every radial grid (HgCl2 x2c-SVPall CAS(4,6) SO-SCI, Hg 3d partly in the
+# active space).  Same density, inner tables (26, 50) -> (50, 110) (+25 % points): error -1.6e-1 -> -1.9e-4 Eh,
+# the HF core density's -2.0e-4 unchanged.
+INNER_ANGULAR = (50, 110)
 SUB_ROWS = 400      # MB of the unpacked AO vectors in the in-pass contraction sum_P L_P W_P
 
 
@@ -64,16 +72,54 @@ def use_cosx(mc):
     return m == 'cosx'
 
 
-def cosx_object(mc, level=None):
-    '''the COSX object of the core exchange (cached on the SCF object, shared with its spinor COSX)'''
+def grid_args(mol, level):
+    '''the COSX grid of the core exchange: spinor_jk.grid_args(mol, level) with the inner two pruning regions
+    raised to INNER_ANGULAR'''
     from socutils.scf import spinor_jk
+    from socutils.dft import grids as sgrids
+    args = spinor_jk.grid_args(mol, level)
+    ang = args.get('angular_grid', sgrids.Grids.angular_grid)
+    table = list(sgrids.ANGULAR_TABLES[int(ang)] if isinstance(ang, (int, numpy.integer)) else ang)
+    for i, n in enumerate(INNER_ANGULAR or ()):
+        table[i] = max(table[i], n)
+    args['angular_grid'] = tuple(table)
+    return args
+
+
+def cosx_object(mc, level=None):
+    '''the COSX object of the core exchange (cached on the SCF object): grid of grid_args, overlap fit, the
+    basis-representation check of spinor_jk (fit_quality, up to COSX_GRID_RETRIES radial refinements)'''
+    from socutils.scf import spinor_jk, cosx
     mf = mc._scf
+    mol = mf.mol
     if level is None:
         level = getattr(mc, 'core_exchange_grid', None) or GRID_LEVEL
-    st = spinor_jk._state(mf, mf.mol)
-    k = spinor_jk._kobj(mf, st, level)
+    cache = getattr(mf, '_core_cosx', None)
+    if cache is None or cache[0] is not mol:
+        cache = mf._core_cosx = (mol, {})
+    key = (level, INNER_ANGULAR)
+    if key in cache[1]:
+        return cache[1][key]
+    k = None
+    for it in range(spinor_jk.COSX_GRID_RETRIES + 1):
+        args = grid_args(mol, level)
+        if it:
+            args = dict(args, **spinor_jk.grid_args(mol, level, 2. * it))
+            args['angular_grid'] = grid_args(mol, level)['angular_grid']
+        k = cosx.COSX(mol, cosx.make_grids(mol, **args), fit=True,
+                      tol=min(cosx.TOL, .1 * getattr(mf, 'conv_tol', 1e-9)))
+        k.verbose = mf.verbose
+        k.stdout = mf.stdout
+        k.build()
+        lo, hi = spinor_jk.fit_quality(k)
+        logger.info(mf, 'core COSX: level %d, angular %s, %d points, fit eigenvalues [%.3g, %.3g]',
+                    level, args['angular_grid'], k._weights.size, lo, hi)
+        if spinor_jk.COSX_FIT_RANGE[0] < lo and hi < spinor_jk.COSX_FIT_RANGE[1]:
+            break
+        k = None
     if k is None:
         raise RuntimeError('core_exchange = cosx: no COSX grid of level %d represents the basis' % level)
+    cache[1][key] = k
     return k
 
 
