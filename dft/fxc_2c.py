@@ -34,6 +34,19 @@ from pyscf import lib
 from pyscf.lib import logger
 
 MODE = 'auto'
+MO_RATIO = .2           # 'auto': the MO form when nocc < MO_RATIO nao (flops: MO ~ 64 nl nocc ng, AO ~ 32 nl^2 ng per
+                        # trial vector, nl the AOs of a sub-block <= nao: equal at nl = 2 nocc).  BiPh3 DYVTZ-SF (nao
+                        # 818, nocc 206, 424688 points), s per trial vector at 4 / 16 / 32 / 64 vectors: AO 6.6 / 5.6 /
+                        # 5.5 / 7.2, MO 5.5 / 5.5 / 5.9 / 6.9 (old path 19.2) -- even at nocc / nao = 0.25
+
+
+def use_mo(nao, nocc, nvir):
+    '''whether the TDA f_xc runs in the MO form (MODE: 'mo' always, 'ao' / 'old' never, 'auto' by MO_RATIO)'''
+    if MODE == 'mo':
+        return True
+    if MODE == 'auto':
+        return nocc < MO_RATIO * nao
+    return False
 ISO_TOL = 1e-12         # relative size of the non-isotropic blocks of the cached kernel accepted as zero
 
 
@@ -193,7 +206,7 @@ def nr_fxc(ni, mol, grids, xc_code, dm0, dms, hermi=0, rho0=None, vxc=None, fxc=
     return v.reshape(shape[:-2] + v.shape[-2:])
 
 
-def mo_response(ni, mol, grids, iso, orbo, orbv, zs, xctype, max_memory=2000):
+def _mo_response_numpy(ni, mol, grids, iso, orbo, orbv, zs, xctype, max_memory=2000):
     '''the f_xc part of the TDA matvec in the MO form (nvec, nocc, nvir), without transition density matrices:
     per AO block the occupied spinors psi_i and, for all trial vectors at once, psi~_i = sum_a z_ia psi_a =
     phi^T (C_v z^T) by GEMMs; the channels n1, m1 from P_st = sum_i psi~_i,s psi_i,t^*; the isotropic kernel
@@ -251,3 +264,64 @@ def mo_response(ni, mol, grids, iso, orbo, orbv, zs, xctype, max_memory=2000):
     # v_ia = sum_s C_v,s^H R_s
     v = sum(numpy.dot(cv[s].conj().T, R[s]) for s in range(2))            # (nvir, nvec * nocc)
     return v.reshape(nvir, nvec, nocc).transpose(1, 2, 0)
+
+
+MO_GS = 56              # grid points per sub-block of the MO form (the kernel's buffers grow with it)
+MO_MEM_FRAC = .5        # of the free max_memory for the MO form's buffers (trial vectors in chunks)
+
+
+def mo_response(ni, mol, grids, iso, orbo, orbv, zs, xctype, max_memory=2000):
+    '''the f_xc part of the matvec in the MO form (nvec, nocc, nvir) (SOCDFTfxc2c_mo, fused per sub-block; the
+    numpy prototype without the kernel)'''
+    from socutils.hessian.rhf_fast import _load_socdft
+    from socutils.dft import vxc_fast
+    from pyscf.gto import moleintor
+    libdft = _load_socdft()
+    if libdft is None or not hasattr(libdft, 'SOCDFTfxc2c_mo'):
+        return _mo_response_numpy(ni, mol, grids, iso, orbo, orbv, zs, xctype, max_memory)
+    nao = mol.nao
+    ncomp = 1 if xctype == 'LDA' else 4
+    zs = numpy.asarray(zs).reshape(-1, orbo.shape[1], orbv.shape[1])
+    nvec, nocc, nvir = zs.shape
+    if grids.non0tab is None:
+        grids.build(with_non0tab=True)
+    co = numpy.ascontiguousarray(numpy.stack([orbo[:nao], orbo[nao:]]), dtype=numpy.complex128)
+    cv = [orbv[:nao], orbv[nao:]]
+    nthreads = lib.num_threads()
+    # per vector: the threads' psi~ / Z / R blocks and the shared R, in doubles
+    per = nocc * (nthreads * (2 * ncomp * 2 * MO_GS * 2 + 2 * nao * 2 * 2) + 2 * nao * 2) * 8e-6
+    free = max(500, max_memory - lib.current_memory()[0])
+    nb = max(1, min(nvec, int(MO_MEM_FRAC * free / max(per, 1e-9))))
+    f_tt = numpy.ascontiguousarray(iso[0])
+    f_ss = numpy.ascontiguousarray(iso[1])
+    coords = numpy.ascontiguousarray(grids.coords.T)
+    weights = numpy.ascontiguousarray(grids.weights)
+    non0tab = numpy.ascontiguousarray(grids.non0tab, dtype=numpy.uint8)
+    atm = numpy.asarray(mol._atm, dtype=numpy.int32, order='C')
+    bas = numpy.asarray(mol._bas, dtype=numpy.int32, order='C')
+    env = numpy.asarray(mol._env, dtype=numpy.double, order='C')
+    ao_loc = mol.ao_loc_nr().astype(numpy.int32)
+    lcg = moleintor.libcgto
+    feval = ctypes.cast(lcg.GTOval_sph if xctype == 'LDA' else lcg.GTOval_sph_deriv1, ctypes.c_void_p)
+    if vxc_fast.OWN_GTOVAL and mol._bas[:, 1].max() <= libdft.SOCDFTgtoval_lmax():
+        feval = ctypes.cast(libdft.SOCDFTgtoval_sph if xctype == 'LDA' else libdft.SOCDFTgtoval_sph_deriv1,
+                            ctypes.c_void_p)
+    out = numpy.empty((nvec, nocc, nvir), dtype=numpy.complex128)
+    for x0 in range(0, nvec, nb):
+        z = zs[x0:x0 + nb]
+        n = z.shape[0]
+        zt = numpy.ascontiguousarray(z.transpose(2, 0, 1).reshape(nvir, n * nocc))
+        Z = numpy.ascontiguousarray(numpy.stack([numpy.dot(c, zt) for c in cv]))        # (2, nao, n nocc)
+        R = numpy.zeros_like(Z)
+        libdft.SOCDFTfxc2c_mo(
+            R.ctypes.data_as(ctypes.c_void_p), co.ctypes.data_as(ctypes.c_void_p), Z.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_int(nocc), ctypes.c_int(n), f_tt.ctypes.data_as(ctypes.c_void_p),
+            f_ss.ctypes.data_as(ctypes.c_void_p), coords.ctypes.data_as(ctypes.c_void_p),
+            weights.ctypes.data_as(ctypes.c_void_p), non0tab.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_int(weights.size), ctypes.c_int(MO_GS), ctypes.c_double(vxc_fast.AO_CUTOFF),
+            ctypes.c_int(0 if xctype == 'LDA' else 1), feval, ao_loc.ctypes.data_as(ctypes.c_void_p),
+            atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(mol.natm), bas.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_int(mol.nbas), env.ctypes.data_as(ctypes.c_void_p), *vxc_fast._blas_ptrs())
+        v = sum(numpy.dot(cv[s].conj().T, R[s]) for s in range(2))                  # (nvir, n nocc)
+        out[x0:x0 + nb] = v.reshape(nvir, n, nocc).transpose(1, 2, 0)
+    return out

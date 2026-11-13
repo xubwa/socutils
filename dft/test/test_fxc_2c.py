@@ -83,13 +83,14 @@ class KnowValues(unittest.TestCase):
 
     def test_tda(self):
         es = []
-        for mode in ('old', 'auto'):
+        for mode in ('old', 'ao', 'mo'):
             fxc_2c.MODE = mode
             td = gks.TDA(mfs['pbe0'])
             td.nstates = 4
             es.append(td.kernel()[0])
         fxc_2c.MODE = 'auto'
         self.assertLess(abs(es[0] - es[1]).max(), 1e-9)
+        self.assertLess(abs(es[0] - es[2]).max(), 1e-9)
 
 
 if __name__ == '__main__':
