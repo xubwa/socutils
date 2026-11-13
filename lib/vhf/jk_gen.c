@@ -24,6 +24,8 @@ static double GEN_KCUT = 1e-24;
 void SOCVHFgen_set_kcut(double c) { GEN_KCUT = c; }
 #include "jk_gen.h"
 
+extern size_t SOCVHFderiv2e_dm_stride;   /* hess2e_cart.c: one density per group (deriv2e) */
+
 /* F[m] = F_m(t), m <= M */
 static inline void boys_n(const double *tab, double t, int M, double *F)
 {
@@ -538,13 +540,14 @@ void SOCVHFgen_grad2e(double *grad, int mode, int ngroup, double *jfac, double *
                         for (g = 0; g < ngroup; g++) {
                                 double *ddg = dd + g * nd;
                                 const double jf = 4 * jfac[g] * fac, kf = kfac[g] * fac;
+                                const double *dmg = dm + (size_t)g * SOCVHFderiv2e_dm_stride;
                                 for (a = 0; a < NI; a++)
                                 for (b = 0; b < NJ; b++) {
-                                        const double dab = jf * dm[(a0 + a) * nao + b0 + b];
-                                        const double *dA = dm + (a0 + a) * nao, *dB = dm + (b0 + b) * nao;
+                                        const double dab = jf * dmg[(a0 + a) * nao + b0 + b];
+                                        const double *dA = dmg + (a0 + a) * nao, *dB = dmg + (b0 + b) * nao;
                                         for (c = 0; c < NK; c++) {
                                                 const double dbc = dB[c0 + c], dac = dA[c0 + c];
-                                                const double *dC = dm + (c0 + c) * nao;
+                                                const double *dC = dmg + (c0 + c) * nao;
                                                 double *o = ddg + ((a * NJ + b) * NK + c) * NL;
                                                 for (d = 0; d < NL; d++) {
                                                         o[d] = dab * dC[e0 + d] + kf * (dac * dB[e0 + d] + dA[e0 + d] * dbc);
@@ -686,13 +689,14 @@ void SOCVHFgen_hess2e(double *hess, int mode, int ngroup, double *jfac, double *
                         for (g = 0; g < ngroup; g++) {
                                 double *ddg = dd + g * nd;
                                 const double jf = 4 * jfac[g] * fac, kf = kfac[g] * fac;
+                                const double *dmg = dm + (size_t)g * SOCVHFderiv2e_dm_stride;
                                 for (a = 0; a < NI; a++)
                                 for (b = 0; b < NJ; b++) {
-                                        const double dab = jf * dm[(a0 + a) * nao + b0 + b];
-                                        const double *dA = dm + (a0 + a) * nao, *dB = dm + (b0 + b) * nao;
+                                        const double dab = jf * dmg[(a0 + a) * nao + b0 + b];
+                                        const double *dA = dmg + (a0 + a) * nao, *dB = dmg + (b0 + b) * nao;
                                         for (c = 0; c < NK; c++) {
                                                 const double dbc = dB[c0 + c], dac = dA[c0 + c];
-                                                const double *dC = dm + (c0 + c) * nao;
+                                                const double *dC = dmg + (c0 + c) * nao;
                                                 double *o = ddg + ((a * NJ + b) * NK + c) * NL;
                                                 for (d = 0; d < NL; d++) {
                                                         o[d] = dab * dC[e0 + d] + kf * (dac * dB[e0 + d] + dA[e0 + d] * dbc);
