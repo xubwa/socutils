@@ -101,13 +101,15 @@ class QAccumulator:
             yl = l[j] @ self.tp
             ylh = yl.T.conj()
             # L^J_e[A] = conj(rho_{J_A J}) v[e, X_A], R^J_e[A] = delta_{J_A J} v[e, X_A]
-            lv = numpy.einsum('i,ex->ixe', self.rho[:, j].conj(), v).reshape(nj * nx, ne)
-            lr = lv.conj() @ yr
+            # sum_e conj(L_A) Y_R[e, B] with L_A = conj(rho_{J_A J}) v[e, X_A]
+            lr = (self.rho[:, j][:, None, None] * (v.T.conj() @ yr)[None]).reshape(nj * nx, -1)
             rr = numpy.zeros((nj * nx, ne), dtype=numpy.result_type(yl, v))
             rr[j * nx:(j + 1) * nx] = v.T
+            m = ylh @ yr
             self.q_s += f * (lr + ylh @ rr.T - (ylh * (delta - self.s[j])[None, :]) @ yr)
-            self.q_k += f * (ylh @ yr)
-            self.tau[j] += f * numpy.einsum('ea,ab,eb->', yl.conj(), self.smat, yr)
+            self.q_k += f * m
+            # tau_J = sum_e Y_L^+ S Y_R = sum_ab S_ab M_ab
+            self.tau[j] += f * numpy.vdot(self.smat.conj(), m)
 
     def g(self):
         pt, pclass, act = self.pt, self.pclass, self.pt.active_space

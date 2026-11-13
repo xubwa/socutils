@@ -158,11 +158,13 @@ def pair_amplitudes(delta, v, mu, t, s, rho):
         dT = -Re sum_J du^J . conj(l^J + r^J).
 
     One state (rho = [[1]]): l = r = c.'''
-    u = numpy.einsum('ex,jkx->jek', v, t)
+    u = numpy.array([v @ tj.T for tj in t])
     d = delta[None, :, None] + mu[None, None, :] - s[:, None, None]
     c = u / d
-    l = numpy.einsum('ij,iek->jek', rho.conj(), u) / d
-    r = numpy.einsum('ij,jek->iek', rho, c)
+    if len(t) == 1:
+        return u, c, u * (numpy.conj(rho[0, 0]) / d), rho[0, 0] * c
+    l = numpy.tensordot(rho.conj(), u, axes=(0, 0)) / d
+    r = numpy.tensordot(rho, c, axes=(1, 0))
     return u, c, l, r
 
 
@@ -178,7 +180,8 @@ def ccvv_active(pt, ctx, rho):
     gj = numpy.zeros((len(states), len(mu), len(mu)), dtype=numpy.complex128)
     for delta, v in pclass.blocks(ctx):
         _, c, l, _ = pair_amplitudes(delta, v, mu, t, s, rho)
-        gj += numpy.einsum('jek,jel->jkl', c, l.conj())
+        for j in range(len(states)):
+            gj[j] += c[j].T @ l[j].conj()
     g = gj.sum(axis=0)
     traces = [(numpy.trace(x), j) for x, j in zip(gj, states)]
     return _active_block(pt, pclass, b, g, traces), b, g, traces

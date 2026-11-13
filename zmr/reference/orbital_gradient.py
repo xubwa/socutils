@@ -106,8 +106,9 @@ def _w_blocks(pt, ctx, pclass, state=0, rho=None):
     gj = numpy.zeros((len(states), len(mu), len(mu)), dtype=numpy.complex128)
     for n, (delta, v) in enumerate(pclass.blocks(ctx)):
         _, c, l, r = density.pair_amplitudes(delta, v, mu, t, s, rho)
-        out.append((n, -numpy.einsum('jek,jkx->ex', l + r, t).real))
-        gj += numpy.einsum('jek,jel->jkl', c, l.conj())
+        out.append((n, -sum((l[j] + r[j]) @ t[j] for j in range(len(states))).real))
+        for j in range(len(states)):
+            gj[j] += c[j].T @ l[j].conj()
     return out, b, gj.sum(axis=0), [(numpy.trace(g), j) for g, j in zip(gj, states)]
 
 
