@@ -1029,7 +1029,31 @@ class TDRPA(_KernelXCMixin, _PairedRPA):
     instability = 'tda'         # A +- B not positive definite: 'tda' (warn, TDA roots) | 'raise'
     unstable = None
 
+    # The RPA structure (B^T = B, A^H = A; the paired solver's free partner matvec, this solver's one response
+    # per (p, q) pair) needs a response with V(D^H) = V(D)^H.  Exact J / K, RIJ and f_xc have it; the COSX
+    # response K (the symmetric bilinear form of the overlap fit, spinor_jk.RESPONSE_SYMMETRIC) does not, to
+    # 5e-5 of |V| (AuH x2c-SVPall), so with COSX the paired and the TR-adapted solves differ by ~1e-8 Eh.
+    # hsym_response = True takes 1/2 (V(D) + V(D^H)^H) (twice the response cost; for validation): both solvers
+    # then solve the same RPA.
+    hsym_response = False
+
     _tr_operator = TDA._tr_operator
+
+    def gen_vind(self, mf=None):
+        vind, hdiag = super().gen_vind(mf)
+        if not self.hsym_response:
+            return vind, hdiag
+        nov = hdiag.size // 2
+
+        def pair(z):
+            return numpy.hstack([z[:, nov:].conj(), z[:, :nov].conj()])
+
+        def vind_h(xys):
+            # K p(b) = -p(K b) for the RPA matrix K = [[A, B], [-B^*, -A^*]], p(x, y) = (y^*, x^*)
+            z = numpy.asarray(xys).reshape(-1, 2 * nov)
+            return (numpy.asarray(vind(z)).reshape(-1, 2 * nov) - pair(numpy.asarray(vind(pair(z)))
+                                                                         .reshape(-1, 2 * nov))) * .5
+        return vind_h, hdiag
 
     def kernel(self, x0=None, nstates=None):
         with self._response_env():
