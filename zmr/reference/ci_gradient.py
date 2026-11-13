@@ -88,14 +88,14 @@ def g_from_q(pt, pclass, q_s, q_k, state=0, phi=None, s=None):
 
 
 def fock_g(pt, ctx, d_gen, state=0):
-    '''sum_rs f_rs r^+ s Psi, f = dE/dgamma_act through the generalized Fock matrix.'''
+    '''sum_rs f_rs r^+ s Psi, f = dE/dgamma_act through the generalized Fock matrix:
+    f = (J - K)[D_gen] in the active block (an AO Coulomb/exchange build).'''
     sp = ctx.sp
-    bmo = og.mo_vectors(pt.quasi_canonical.eris)
-    bmo = bmo.real if numpy.iscomplexobj(bmo) else bmo
+    eris = pt.quasi_canonical.eris
+    c = eris.mo_coeff
     a = sp.slice('a')
-    tr = numpy.einsum('pq,Ppq->P', d_gen, bmo)
-    f = (numpy.einsum('P,Prs->rs', tr, bmo[:, a, a])
-         - numpy.einsum('Prq,pq,Pps->rs', bmo[:, a, :], d_gen, bmo[:, :, a]))
+    ca = c[:, a]
+    f = ca.conj().T @ eris.veff_fn(c @ numpy.asarray(d_gen).T @ c.conj().T) @ ca
     act = pt.active_space
     na = act.norb
     psi = pt.civecs[:, state]

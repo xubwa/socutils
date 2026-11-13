@@ -99,13 +99,19 @@ def first_order_space(pt, pclass, state=0):
     t[k, X] = <b_k|O_X|Psi>, and the shift s = E0 - E_core of the state.'''
     from socutils.zmr.pc import spectral
     from socutils.zmr.uc import engine
+    # kept on pt: the density, the orbital and the CI gradients ask for the same space
+    cache = pt.__dict__.setdefault('_first_order_spaces', {})
+    key = (pclass.name, state)
+    if key in cache:
+        return cache[key]
     act, civecs = pt.active_space, pt.civecs
     ntarget = act.target(pt.nelec, pclass.dn)
     phi = engine.class_functions(pclass, act, civecs[:, [state]], pt.nelec)
     b, mu = spectral.contracted_space(phi.reshape(-1, phi.shape[2]),
                                       lambda q: act.apply_h(ntarget, q), lambda: None, pt.lindep)
     t = engine.project_functions(b, phi)[0]
-    return b, mu, t, float(pt.shifts[state])
+    cache[key] = (b, mu, t, float(pt.shifts[state]))
+    return cache[key]
 
 
 def _active_block(pt, pclass, b, g):
@@ -195,11 +201,11 @@ def class_reference(pt, ctx, name, state=0):
     fc = 0.5 if ncore == 2 else 1.0
     fv = 0.5 if nvirt == 2 else 1.0
     na = ctx.sp.nact
-    d = {'aa': _active_block(pt, pclass, b, fc * fv * numpy.einsum('ijabk,ijabl->kl', c, c.conj()))}
+    d = {'aa': _active_block(pt, pclass, b, fc * fv * numpy.einsum('ijabk,ijabl->kl', c, c.conj(), optimize=True))}
     if ncore:
-        d['cc'] = -fv * numpy.einsum('ijabk,ljabk->il', c.conj(), c)
+        d['cc'] = -fv * numpy.einsum('ijabk,ljabk->il', c.conj(), c, optimize=True)
     if nvirt:
-        d['vv'] = fc * numpy.einsum('ijabk,ijdbk->ad', c.conj(), c)
+        d['vv'] = fc * numpy.einsum('ijabk,ijdbk->ad', c.conj(), c, optimize=True)
     if name == 'cava':                           # v[(i, a), 0] = f_ai
         d['vc'] = -numpy.einsum('iak,k->ai', c[:, 0, :, 0].conj(), t[:, 0])
     elif name == 'caaa':                         # v[i, t] = -f_ti
