@@ -45,11 +45,12 @@ from pyscf.scf import hf
 
 ENABLE = True       # ghf_grad / gks_grad: the KR fast path (else the 8-density GHF J/K derivative)
 KRAMERS_TOL = 1e-9
-# exact K: 'kernel' (the unique-quartet kernels, the pieces as groups of one pass: their cost grows ~ linearly
-# with the groups, the contraction dominates), 'deriv' (pyscf's int2e_ip1 K derivative matrices of the four
-# pieces in one libcvhf pass, contracted per atom), 'auto': 'kernel' where the generated kernels take every
-# quartet (l <= 2, <= 4 contractions), else 'deriv'.  (HgCl2)2 x2c-SVPall (nao 210, 16 cores): kernel 103 s,
-# deriv (4 pieces, J + K) 40 s, the 8-density GHF J/K 28-61 s.
+# exact K: 'kernel' (the unique-quartet kernels, the weights of the four pieces summed per quartet,
+# hessian.rhf_fast.grad2e_jk_cart_summed: the cost of the scalar density), 'deriv' (pyscf's int2e_ip1 K
+# derivative matrices of the four pieces in one libcvhf pass, contracted per atom), 'auto': 'kernel' where the
+# library sums the weights, else 'kernel' (one group per piece, ~4 scalar passes) only for the bases the
+# generated kernels take entirely (l <= 2, <= 4 contractions), 'deriv' otherwise.  (HgCl2)2 x2c-SVPall (nao 210,
+# 16 cores): summed 32 s (the scalar J+K 31 s), one group per piece 103 s, deriv 40 s, the 8-density GHF J/K 28-61 s.
 EXACT_K = 'auto'
 
 
@@ -132,6 +133,10 @@ def _anti_k_grad(mol, mats, hyb, tol, prim_tol, j_first=True):
 def _exact_k_route(mol):
     if EXACT_K != 'auto':
         return EXACT_K
+    from socutils.hessian import ghf as ghf_hess
+    libv = ghf_hess._load_socvhf()
+    if libv and hasattr(libv, 'SOCVHFderiv2e_set_dm_sum'):
+        return 'kernel'
     return 'kernel' if mol._bas[:, 1].max() <= 2 and mol._bas[:, 3].max() <= 4 else 'deriv'
 
 

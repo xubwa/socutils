@@ -309,12 +309,12 @@ def _deriv2e_cart_run(mol, dm, groups, order, mode, tol, prim_tol, multi=False):
         molc = mol.copy(deep=False)
         molc.cart = True
         c = mol.cart2sph_coeff()
-        dmc = lib.einsum('pi,...ij,qj->...pq', c, dm, c) if multi else c.dot(dm).dot(c.T)
+        dmc = numpy.asarray([c.dot(x).dot(c.T) for x in dm]) if multi else c.dot(dm).dot(c.T)
     if not hgp and not gen and SPLIT_GENERAL and order == 1 and (molc._bas[:, gto.NCTR_OF] > 1).any():
         # generally contracted shells as primitive shells: every quartet on the
         # single-contraction path, no primitive is evaluated twice
         molc, cg = _split_general(molc)
-        dmc = lib.einsum('pi,...ij,qj->...pq', cg, dmc, cg) if multi else cg.dot(dmc).dot(cg.T)
+        dmc = numpy.asarray([cg.dot(x).dot(cg.T) for x in dmc]) if multi else cg.dot(dmc).dot(cg.T)
     dmc = numpy.ascontiguousarray(dmc)
     # integral estimate per shell pair, bounding every derivative type
     intors = ('int2e_ipip1', 'int2e_ipvip1', 'int2e_ip1ip2') if order == 2 else ('int2e_ip1',)

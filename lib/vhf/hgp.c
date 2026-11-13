@@ -387,9 +387,16 @@ void SOCVHFhgp_grad2e(double *grad, int mode, int ngroup, double *jfac, double *
                                                 const double dbc = dB[c0 + c], dac = dA[c0 + c];
                                                 const double *dC = dmg + (c0 + c) * nao;
                                                 double *o = ddg + ((a * NJ + b) * NK + c) * NL;
+                                                if (m_) {
                                                 for (d = 0; d < NL; d++) {
-                                                        o[d] = (m_ ? o[d] : 0.) + dab * dC[e0 + d] + kf * (dac * dB[e0 + d] + dA[e0 + d] * dbc);
+                                                        o[d] += dab * dC[e0 + d] + kf * (dac * dB[e0 + d] + dA[e0 + d] * dbc);
                                                         ddmax = dmax2(ddmax, fabs(o[d]));
+                                                }
+                                                } else {
+                                                for (d = 0; d < NL; d++) {
+                                                        o[d] = dab * dC[e0 + d] + kf * (dac * dB[e0 + d] + dA[e0 + d] * dbc);
+                                                        ddmax = dmax2(ddmax, fabs(o[d]));
+                                                }
                                                 }
                                         }
                                 }
