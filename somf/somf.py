@@ -61,9 +61,7 @@ def _x2c1e_hxrmat(t, v, w, s, c):
     h1 = (h[:nao, :nao] + h[:nao, nao:].dot(x) + x.T.conj().dot(h[nao:, :nao]) +
           reduce(numpy.dot, (x.T.conj(), h[nao:, nao:], x)))
 
-    sa = x2c._invsqrt(s)
-    sb = x2c._invsqrt(reduce(numpy.dot, (sa, s1, sa)))
-    r = reduce(numpy.dot, (sa, sb, sa, s))
+    r = x2c._get_r(s, s1)
     h1out = reduce(numpy.dot, (r.T.conj(), h1, r))
     return h1out, x, r
 

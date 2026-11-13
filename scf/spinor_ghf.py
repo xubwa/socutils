@@ -29,9 +29,12 @@ from pyscf.scf import hf
 def _spin_orbital_x2c(mol, x2c_spinor):
     '''The spin-orbital X2C helper with the settings of a spinor one.'''
     from socutils.somf.x2cmp import SpinOrbitalX2CMPHelper
-    return SpinOrbitalX2CMPHelper(mol, x2cmp=x2c_spinor.amf_type,
-                                  with_gaunt=x2c_spinor.gaunt, with_breit=x2c_spinor.breit,
-                                  with_pcc=x2c_spinor.pcc, with_aoc=x2c_spinor.aoc)
+    h = SpinOrbitalX2CMPHelper(mol, x2cmp=x2c_spinor.amf_type,
+                               with_gaunt=x2c_spinor.gaunt, with_breit=x2c_spinor.breit,
+                               with_pcc=x2c_spinor.pcc, with_aoc=x2c_spinor.aoc)
+    # the 4c matrices of the spinor SCF's hcore for the X2C gradient (somf.x2c_grad.flavour_4c)
+    h._grad_src = x2c_spinor
+    return h
 
 
 def spinor2ghf_coeff(mol, c):
