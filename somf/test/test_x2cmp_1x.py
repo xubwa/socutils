@@ -80,6 +80,46 @@ class KnownValues(unittest.TestCase):
         e_1xp = _run(mol, 'x2cmp_1x_proj')[2]
         self.assertLess(abs(e_1xp - e_mp), 1e-5)
 
+    def test_cache(self):
+        for proj in (False, True):
+            h, x, _ = _run(self.mol, 'x2cmp_1x', scf=False, proj_1x=proj)
+            mp = x.mp_1x
+            self.assertEqual(mp['proj'], proj)
+            self.assertAlmostEqual(abs(x.veff_4c - (mp['vj_4c'] - mp['vk_4c'])).max(), 0, 12)
+            self.assertAlmostEqual(abs(x.veff_2c - (mp['vj_2c'] - mp['vk_2c'])).max(), 0, 12)
+            # cached decoupling == the one _x2c_blocks would build from (h4c, m4c)
+            cached = dict(x.x2c_intermediate)
+            x.x2c_intermediate = None
+            fresh = x._x2c_blocks()
+            for i, key in enumerate(('a', 'e', 'x', 'st', 'r', 'l')):
+                if key not in ('a',):     # eigenvectors: phase-free quantities only
+                    self.assertAlmostEqual(abs(cached[key] - fresh[i]).max(), 0, 9)
+            # adjoint of the cached picture change
+            rng = np.random.default_rng(1)
+            n4 = x.h4c.shape[0]
+            h1 = rng.standard_normal((n4, n4)) + 1j * rng.standard_normal((n4, n4))
+            h1 = h1 + h1.conj().T
+            d2 = x.density_2c
+            gh, gs = x.get_hfw1_adjoint(d2)
+            self.assertAlmostEqual(abs(np.trace(d2 @ x.get_hfw1(h1)) - np.trace(gh @ h1)), 0, 7)
+
+    def test_kernels_geometry_independent(self):
+        from pyscf import scf
+        mol2 = gto.M(atom='H 0 0 0; Cl 0.05 -0.02 1.31', basis='cc-pvdz', verbose=0)
+        for proj in (False, True):
+            x1 = _run(self.mol, 'x2cmp_1x', scf=False, proj_1x=proj)[1]
+            x2 = _run(mol2, 'x2cmp_1x', scf=False, proj_1x=proj)[1]
+            for a1, a2 in zip(x1.mp_1x['atoms'], x2.mp_1x['atoms']):
+                for key in a1:
+                    if key[0] in 'km':
+                        self.assertAlmostEqual(abs(a1[key] - a2[key]).max(), 0, 9)
+            if proj:
+                # vk at the new geometry = cached M_K with the new overlap
+                xmol2 = x2.get_xmol()[0]
+                s4 = scf.DHF(xmol2).get_ovlp()
+                vk = sum(s4[:, a['idx4']] @ a['m4'] @ s4[a['idx4'], :] for a in x1.mp_1x['atoms'])
+                self.assertAlmostEqual(abs(vk - x2.mp_1x["vk_4c"]).max(), 0, 9)
+
 
 if __name__ == '__main__':
     print('Tests for the x2cmp_1x flavor')

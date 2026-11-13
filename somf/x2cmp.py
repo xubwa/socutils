@@ -513,27 +513,25 @@ def _mc_prescreen_pointers():
     return {key: ctypes.c_void_p(_ctypes.dlsym(libsocvhf._handle, name))
             for key, name in _MC_PRESCREEN.items()}
 
-def _projector_form(blocks, s, slices):
-    '''sum_K S_.K S_KK^-1 A_K S_KK^-1 S_K.  for atom blocks A_K on the AO indices slices[K]'''
-    out = np.zeros(s.shape, dtype=np.result_type(s, *blocks))
-    for a, idx in zip(blocks, slices):
-        sk = s[np.ix_(idx, idx)]
-        m = scipy.linalg.solve(sk, scipy.linalg.solve(sk, a).conj().T).conj().T
-        sxk = s[:, idx]
-        out += sxk @ m @ sxk.conj().T
-    return out
-
 def _onecenter_k(xmol, density_4c, density_2c, s4c, gaunt=False, breit=False, proj=False):
     '''Atom-only exchange matrices sum_K K_K[D_K] of the atom-block densities
     (4c: Coulomb + Gaunt/Breit exchange; 2c: Coulomb), as atom blocks or, with
-    proj, in projector form.  Atoms sharing a label share one atomic build.'''
+    proj, in projector form.  Atoms sharing a label share one atomic build.
+
+    Returns (vk_4c, vk_2c, atoms); atoms[K] is a dict with the AO indices
+    'idx4' / 'idx2' of atom K and its geometry-independent kernels:
+      block form    : 'k4', 'k2' = K_K (vk = K_K on the atom block);
+      projector form: also 'm4', 'm2' = S_KK^-1 K_K S_KK^-1
+                      (vk = sum_K S_.K M_K S_K., so d vk = sum_K dS_.K M_K S_K. + h.c.).
+    '''
     from socutils.somf import onecenter_j
     n2c = xmol.nao_2c()
     sl = xmol.aoslice_2c_by_atom()
-    idx2 = [np.arange(p0, p1) for p0, p1 in sl[:, 2:4]]
-    idx4 = [np.concatenate([i, i + n2c]) for i in idx2]
-    cache, k4, k2 = {}, [], []
-    for ia, (i2, i4) in enumerate(zip(idx2, idx4)):
+    s2c = s4c[:n2c, :n2c]
+    cache, atoms = {}, []
+    for ia, (p0, p1) in enumerate(sl[:, 2:4]):
+        i2 = np.arange(p0, p1)
+        i4 = np.concatenate([i2, i2 + n2c])
         label = xmol._atom[ia][0]
         if label not in cache:
             am = onecenter_j.atom_mol(xmol, ia)
@@ -541,19 +539,26 @@ def _onecenter_k(xmol, density_4c, density_2c, s4c, gaunt=False, breit=False, pr
             ma4.verbose = 0
             ma4.with_gaunt = gaunt
             ma4.with_breit = breit
-            ka4 = ma4.get_jk(am, density_4c[np.ix_(i4, i4)])[1]
-            ka2 = spinor_hf.SCF(am).get_jk(am, density_2c[np.ix_(i2, i2)])[1]
-            cache[label] = (ka4, ka2)
-        k4.append(cache[label][0])
-        k2.append(cache[label][1])
-    if proj:
-        return (_projector_form(k4, s4c, idx4), _projector_form(k2, s4c[:n2c, :n2c], idx2))
-    vk_4c = np.zeros_like(s4c, dtype=complex)
+            ka = {'k4': ma4.get_jk(am, density_4c[np.ix_(i4, i4)])[1],
+                  'k2': spinor_hf.SCF(am).get_jk(am, density_2c[np.ix_(i2, i2)])[1]}
+            if proj:
+                # S_KK is the atom's own overlap: the same for all atoms of this label
+                for key, s, idx in (('4', s4c, i4), ('2', s2c, i2)):
+                    sk = s[np.ix_(idx, idx)]
+                    ka['m' + key] = scipy.linalg.solve(sk, scipy.linalg.solve(sk, ka['k' + key]).conj().T).conj().T
+            cache[label] = ka
+        atoms.append(dict(cache[label], idx4=i4, idx2=i2))
+    vk_4c = np.zeros(s4c.shape, dtype=complex)
     vk_2c = np.zeros((n2c, n2c), dtype=complex)
-    for a4, a2, i2, i4 in zip(k4, k2, idx2, idx4):
-        vk_4c[np.ix_(i4, i4)] = a4
-        vk_2c[np.ix_(i2, i2)] = a2
-    return vk_4c, vk_2c
+    for at in atoms:
+        i4, i2 = at['idx4'], at['idx2']
+        if proj:
+            vk_4c += s4c[:, i4] @ at['m4'] @ s4c[i4, :]
+            vk_2c += s2c[:, i2] @ at['m2'] @ s2c[i2, :]
+        else:
+            vk_4c[np.ix_(i4, i4)] = at['k4']
+            vk_2c[np.ix_(i2, i2)] = at['k2']
+    return vk_4c, vk_2c, atoms
 
 def get_veff_mc(mf_4c, xmol, density_4c, density_2c):
     '''Multi-centre part of J-K for a superposition of atomic densities.
@@ -775,14 +780,32 @@ def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, n
             vj_2c = spinor_hf.SCF(xmol).get_j(xmol, density_2c)
         else:
             raise ValueError('j_1x = %s; expected analytic or direct' % j_method)
-        vk_4c, vk_2c = _onecenter_k(xmol, density_4c, density_2c, s4c, gaunt, breit, proj)
+        vk_4c, vk_2c, k_atoms = _onecenter_k(xmol, density_4c, density_2c, s4c, gaunt, breit, proj)
         veff_4c = vj_4c - vk_4c
         veff_2c = vj_2c - vk_2c
         fock_4c = x2cobj.h4c + veff_4c
-        x, st, r, h2c = x2c1e_hfw0_4cmat(fock_4c, s4c, xmol)
-        x2cobj.veff_2c = veff_2c
+        blocks = x2c_grad.x2c1e_hfw0_block(fock_4c[:n2c, :n2c], fock_4c[n2c:, :n2c], fock_4c[:n2c, n2c:],
+                                           fock_4c[n2c:, n2c:], s4c[:n2c, :n2c], s4c[n2c:, n2c:])
+        a, e, x, st, r, l = blocks[:6]
         h_x2c = to_2c(x, r, fock_4c) - veff_2c
-        x2cobj.h4c = h1e_4c + veff_4c
+        # Cached for properties and analytic gradients (all in the decontracted
+        # spinor basis of xmol; 4c in pyscf DHF convention):
+        #   h4c, m4c        the decoupled 4c Fock matrix F4 = h4 (+ h4c_ext) + veff_4c, and S4
+        #   x2c_intermediate decoupling of (h4c, m4c), as get_hfw1 / get_hfw1_adjoint use it
+        #   density_4c, density_2c   superposed atomic densities (J of these moves with the atoms)
+        #   veff_4c, veff_2c          J - K_1c entering F4, and the subtracted 2c counterpart
+        #   mp_1x           the pieces: vj_4c/vj_2c, vk_4c/vk_2c, proj, j_method, and
+        #                   'atoms' with the geometry-independent one-centre kernels
+        #                   (_onecenter_k): in block form d vk = 0, in projector form
+        #                   d vk = sum_K dS_.K M_K S_K. + h.c.
+        #   soc_matrix      h_x2c - X2C-1e of h4 with the same decoupling
+        x2cobj.h4c = fock_4c
+        x2cobj.x2c_intermediate = {'a': a, 'e': e, 'x': x, 'st': st, 'r': r, 'l': l}
+        x2cobj.density_4c = density_4c
+        x2cobj.veff_4c = veff_4c
+        x2cobj.veff_2c = veff_2c
+        x2cobj.mp_1x = {'proj': proj, 'j_method': j_method, 'vj_4c': vj_4c, 'vj_2c': vj_2c,
+                        'vk_4c': vk_4c, 'vk_2c': vk_2c, 'atoms': k_atoms}
         x2cobj.soc_matrix = h_x2c - to_2c(x, r, h1e_4c)
     elif x2cobj.amf_type == 'sfmp':
         # Spin-free model potential: contract atomic SF density with the
@@ -1067,6 +1090,9 @@ class SpinorX2CMPHelper(x2c.x2c.SpinorX2CHelper):
         # 'x2cmp_1x' switches: one-centre K in projector form; J 'analytic' or 'direct'
         self.proj_1x = False
         self.j_1x = 'analytic'
+        self.density_4c = None
+        self.veff_4c = None
+        self.mp_1x = None
         # take the one-centre part of J-K from the atomic calculations ('x2cmp' flavor)
         self.atomic_1c = True
         self.nucmod = mol.nucmod
@@ -1243,6 +1269,9 @@ class SpinOrbitalX2CMPHelper(x2c.x2c.SpinOrbitalX2CHelper):
         # 'x2cmp_1x' switches: one-centre K in projector form; J 'analytic' or 'direct'
         self.proj_1x = False
         self.j_1x = 'analytic'
+        self.density_4c = None
+        self.veff_4c = None
+        self.mp_1x = None
         # take the one-centre part of J-K from the atomic calculations ('x2cmp' flavor)
         self.atomic_1c = True
         self.nucmod = mol.nucmod
