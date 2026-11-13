@@ -12,12 +12,13 @@
 # 2-component SpinorNumInt2C (which also makes the collinear f_xc work with
 # complex transition densities).
 #
-# Only TDA is exposed here.  TDA sets B=0, so its response matrix A is genuinely
-# Hermitian and the Davidson solve (lr_eig.eigh) is robust.  The full RPA/TDDFT
-# (Casida) problem is k-Hermitian (non-Hermitian) on a Krein space with an
-# indefinite metric [Furche & Chen, J. Chem. Phys. 163, 174104 (2025)]; its
-# iterative solution is delicate near eta-neutral roots and is left aside for
-# now.
+# TDA sets B=0, so its response matrix A is genuinely Hermitian and the Davidson
+# solve is robust.  The full RPA/TDDFT (Casida) problem is k-Hermitian
+# (non-Hermitian) on a Krein space with an indefinite metric [Furche & Chen,
+# J. Chem. Phys. 163, 174104 (2025)]; on a general complex reference TDRPA uses
+# the paired Davidson (lr_davidson).  On a Kramers-restricted closed shell the
+# time-reversal adaptation makes A +- B real symmetric and TDRPA solves
+# (A+B)P = wQ, (A-B)Q = wP in real arithmetic (lr_locked.rpa_eig; see TDRPA).
 #
 # Validated vs pyscf's 2-component GKS-TDA (non-relativistic integrals, no SOC)
 # to machine precision (LDA / GGA / hybrid), and vs ReSpect (1e-X2C PBE TDA of
@@ -995,4 +996,145 @@ class _PairedRPA(_ghf.TDHF):
 
 
 class TDRPA(_KernelXCMixin, _PairedRPA):
-    pass
+    '''Full RPA / TDDFT.  On a Kramers-restricted closed-shell reference (kramers = 'auto' / True) it is solved in
+    real arithmetic on the time-reversal even amplitudes (davidson = 'ssf', socutils.tdscf.lr_locked.rpa_eig);
+    otherwise (or davidson = 'paired') with the paired complex Davidson of socutils.tdscf.lr_davidson.
+
+    Time-reversal structure.  With the antilinear B^(z) = B z^* the complex RPA equations A X + B Y = w X,
+    B^* X + A^* Y = -w Y read (A + B^) P = w Q, (A - B^) Q = w P for P = X + Y^*, Q = X - Y^*; A +- B^ are
+    real-linear and symmetric in Re <u, v>.  Both commute with the time reversal K z = T_o^* z^* T_v^T (K^2 = +1),
+    so P and Q can be taken TR even, a real space of dimension nocc nvir on which A +- B^ are real symmetric
+    matrices (the TR-odd half i P gives the same roots again).  The transition density of (X, Y) is
+    D(X) + D(Y^*)^H, D(z) = C_v z^T C_o^H, TR even for TR-even P, Q:
+
+        A + B^ acts on the Hermitian part D(P) + D(P)^H:        TR even and Hermitian: the charge density n
+                                                                (real), m = 0 -> J, exact exchange, f_nn
+        A - B^ acts on the anti-Hermitian part D(Q) - D(Q)^H:   n = 0, the magnetisation i m (m real) ->
+                                                                no J, exact exchange, f_mm
+
+    so, unlike the nonrelativistic singlet case, A - B is not the orbital-energy difference for a pure functional
+    (the spin-orbit-mixed magnetisation response f_mm enters), and exact exchange enters both.  One response of the
+    density D(u) + D(v)^H (u = (p + q) / 2, v = (p - q) / 2) gives (A + B^) p and (A - B^) q at once (the top and
+    the conjugated bottom block of the complex RPA matvec, top +- bottom^*): a TR-even density with Im n = 0, Re m = 0,
+    the half channels / K pieces of the TR-adapted TDA, one TDA-sized response per (p, q) pair.  The same response
+    operator as the complex path (exact, RIJ, RIJ + COSX), so both give the same roots.
+
+    A +- B^ positive definite <=> the reference is stable; otherwise (lr_locked.RPAInstability) a warning and,
+    with instability = 'tda', the TR-adapted TDA roots instead (self.unstable = True), 'raise' re-raises.'''
+    davidson = 'ssf'            # 'ssf' (TR-adapted real solve where kramers applies) | 'paired'
+    kramers = 'auto'
+    KRAMERS_TOL = 1e-6
+    nbuffer = None              # extra roots of the locked solve (None: max(2, nstates // 2))
+    max_space = None            # lr_locked's subspace bound (None: max(8 nroots, 40))
+    instability = 'tda'         # A +- B not positive definite: 'tda' (warn, TDA roots) | 'raise'
+    unstable = None
+
+    _tr_operator = TDA._tr_operator
+
+    def kernel(self, x0=None, nstates=None):
+        with self._response_env():
+            if self.davidson == 'ssf' and self.kramers:
+                tr = self._tr_operator()
+                if tr is None and self.kramers is True:
+                    raise RuntimeError('kramers=True: the reference orbitals are not Kramers paired')
+                if tr is not None:
+                    return self._ssf_solve(tr, x0, nstates)
+            return _PairedRPA.kernel(self, x0=x0, nstates=nstates)
+
+    def gen_vind_pm(self, mf=None):
+        '''(aop, hdiag): aop(ps, qs) -> ((A + B^) ps, (A - B^) qs) for rows of amplitudes (n, nocc nvir), one
+        response density D(u) + D(v)^H per pair through the complex RPA matvec; hdiag = e_a - e_i'''
+        vind, hdiag = self.gen_vind(mf if mf is not None else self._scf)
+        nov = hdiag.size // 2
+        hdiag = numpy.asarray(hdiag[:nov]).real
+
+        def aop(ps, qs):
+            ps = numpy.asarray(ps).reshape(-1, nov)
+            qs = numpy.asarray(qs).reshape(-1, nov)
+            u = (ps + qs) * .5
+            v = (ps - qs) * .5
+            hx = numpy.asarray(vind(numpy.hstack([u, v.conj()]))).reshape(-1, 2 * nov)
+            top = hx[:, :nov]                   # A X + B Y
+            bot = -hx[:, nov:].conj()           # (B^* X + A^* Y)^* = B X^* + A Y^*
+            return top + bot, top - bot
+        return aop, hdiag
+
+    def _ssf_solve(self, tr, x0=None, nstates=None):
+        from pyscf.lib import logger
+        from socutils.tdscf import lr_locked
+        cpu0 = (logger.process_clock(), logger.perf_counter())
+        mf = self._scf
+        if mf.mo_energy is None:
+            mf.run()
+        self.check_sanity()
+        self.dump_flags()
+        if nstates is None:
+            nstates = self.nstates
+        else:
+            self.nstates = nstates
+        log = logger.Logger(self.stdout, self.verbose)
+        log.info('TDRPA: time-reversal adapted (TR-even P = X + Y*, Q = X - Y*, real A +- B, SSF Davidson)')
+        aop, hdiag = self.gen_vind_pm(mf)
+        k, (nocc, nvir) = tr
+
+        def project(xs):
+            z = numpy.asarray(xs).reshape(-1, nocc, nvir)
+            return ((z + k(z)) * .5).reshape(len(z), -1)
+
+        def precond(r, e):
+            d = hdiag - (e - self.level_shift)
+            d[abs(d) < 1e-8] = 1e-8
+            return r / d
+
+        thr = self.positive_eig_threshold
+
+        def pick(w):
+            return numpy.where(w > thr)[0]
+
+        if x0 is None:
+            ng = min(hdiag.size, 2 * nstates + 4)
+            idx = numpy.argsort(hdiag, kind='stable')[:ng]
+            g = numpy.zeros((ng, hdiag.size), dtype=numpy.complex128)
+            g[numpy.arange(ng), idx] = 1
+            x0 = numpy.vstack([g, 1j * g])
+        else:
+            x0 = numpy.asarray(x0)
+            x0 = x0.reshape(-1, x0.shape[-1])[:, :hdiag.size]
+        nbuf = self.nbuffer if self.nbuffer is not None else max(2, nstates // 2)
+        nroots = min(nstates + nbuf, hdiag.size)
+        try:
+            conv, e, P, Q = lr_locked.rpa_eig(aop, x0, precond, nroots, tol=self.conv_tol, lindep=self.lindep,
+                                              max_cycle=self.max_cycle, max_space=self.max_space, pick=pick,
+                                              log=log, project=project)
+        except lr_locked.RPAInstability as err:
+            self.unstable = True
+            log.warn('TDRPA: reference instability (%s): the RPA has imaginary / non-positive roots here', err)
+            if self.instability == 'raise':
+                raise
+            log.warn('TDRPA: returning the time-reversal adapted TDA roots instead (td.instability = "raise" '
+                     'to stop)')
+            return self._tda_fallback(nstates)
+        self.unstable = False
+        conv, e, P, Q = conv[:nstates], e[:nstates], P[:nstates], Q[:nstates]
+        self.converged, self.e = conv, e
+        X = (P + Q) * .5
+        Y = ((P - Q) * .5).conj()
+        self.xy = [(x.reshape(nocc, nvir), y.reshape(nocc, nvir)) for x, y in zip(X, Y)]
+        if self.chkfile:
+            lib.chkfile.save(self.chkfile, 'tddft/e', self.e)
+            lib.chkfile.save(self.chkfile, 'tddft/xy', self.xy)
+        log.timer('TDRPA (TR-adapted SSF Davidson)', *cpu0)
+        self._finalize()
+        return self.e, self.xy
+
+    def _tda_fallback(self, nstates):
+        td = TDA(self._scf)
+        for key in ('frozen', 'conv_tol', 'max_cycle', 'lindep', 'level_shift', 'positive_eig_threshold',
+                    'xc_kernel', 'collinear', 'picture_change', 'kramers', 'KRAMERS_TOL', 'nbuffer', 'max_space',
+                    'verbose', 'stdout', 'chkfile'):
+            if hasattr(self, key):
+                setattr(td, key, getattr(self, key))
+        e, xy = td.kernel(nstates=nstates)
+        self.converged, self.e = td.converged, e
+        self.xy = [(x, numpy.zeros_like(x)) for x, _ in xy]
+        return self.e, self.xy
