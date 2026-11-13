@@ -156,6 +156,7 @@ static void cx_tables(void)
 {
         if (!cx_ready) {
                 int d, t, u, v, n = 0;
+                c2s_init();
                 for (d = 0; d <= CX_DMAX; d++)
                         for (t = d; t >= 0; t--)
                                 for (u = d - t; u >= 0; u--) {
@@ -381,12 +382,6 @@ static void hermite_E(double *E, int li, int lj, double ai, double aj, double xa
                         }
                 }
         }
-}
-
-static const double *c2s_row(int l, int m, int *ncart)
-{
-        *ncart = (l + 1) * (l + 2) / 2;
-        return l == 2 ? C2S_L2[m] : C2S_L3[m];
 }
 
 /* the spherical E (degI nI... rows (ci deg_i + mi), cols (cj deg_j + mj), NH(L)) of primitive pair (ip, jp) of
