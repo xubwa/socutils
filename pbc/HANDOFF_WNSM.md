@@ -195,6 +195,15 @@ whole pipeline (run `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/eu_yso_thcmp
 -2.6e-4 Eh (a constant shift), 7F1 186.6 / 403.0 / 478.0 cm-1 (identical), W (-845.47, 1944.98, -3514.67) |W| 4105.0
 vs (-844.76, 1944.28, -3514.77) |W| 4104.6, d00 (rc 2.9 A) |d| 4.003e-4 vs 4.00e-4.
 
+Build time of Eu:YSO 32 atoms (4 nodes x 2 ranks x 24 threads, 50 GB per rank; `thc_tests/thc_mpi_scf.py`, script
+`/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/run_yso_buildtest.sbatch`, rank logs `yso_buildtest_ranks*/out.*`):
+streamed V, A 9909 s (12543 s before the cached separable per-label aux FT; the first analytic version, numpy
+regenerated per chunk and block, took 14440 s).  Per rank: xi 4000-4400 s, V 1650-1830, FFT 1600-1750, A GEMM
+560-1210, aux FT 260-490 (was 2400-3200), wait 180-1150, Alltoallv 160-200.  xi is mostly the Gram columns of
+all N_mu recomputed per mu block (74 blocks of 173, set by the memory per rank); per rank it falls as 1 / ranks^2
+(fewer grid rows and larger blocks), so use more ranks rather than larger blocks.  One SCF cycle ~150-175 s
+(first 340 s).
+
 Caveats: BLAS thread count alone moves E_K by ~1e-6 Eh (ISDF cut 1e-10), so compare runs at equal
 thread counts.  The uniform-grid cutoff decides ~1e-4 Eh in Eu cells (smooth h shells; EuOCl +4.6e-4 at
 precision 1e-10, mesh 85x85x143); a mesh scan (`euocl/wabl_M88..M93`) was running at the hand-off.
