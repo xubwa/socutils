@@ -51,7 +51,10 @@ def grad_elec(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
 
     t0 = (logger.process_clock(), logger.perf_counter())
     log.debug('Computing Gradients of NR-GHF Coulomb repulsion')
-    vhf = mf_grad.get_veff(mol, dm0)
+    # Kramers-restricted density: the 2e and XC parts as energy derivatives from the scalar
+    # fast engines (socutils.grad.kr_fast); None -> the GHF derivative matrices
+    de_fast = _kr_fast_terms(mf_grad, mol, dm0)
+    vhf = mf_grad.get_veff(mol, dm0) if de_fast is None else None
     log.timer('gradients of 2e part', *t0)
 
     dme0 = mf_grad.make_rdm1e(mo_energy, mo_coeff, mo_occ)
@@ -69,20 +72,36 @@ def grad_elec(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
 
         # Be careful with the contraction order when h1, vhf1, and dm0 are complex
         de[k] += numpy.einsum('xij,ji->x', h1ao, dm0)
-        de[k] += numpy.einsum('xij,ji->x', vhf[:,p0:p1], dm0[:,p0:p1]) * 2
-        de[k] += numpy.einsum('xij,ji->x', vhf[:,p0+nao:p1+nao], dm0[:,p0+nao:p1+nao]) * 2
+        if de_fast is None:
+            de[k] += numpy.einsum('xij,ji->x', vhf[:,p0:p1], dm0[:,p0:p1]) * 2
+            de[k] += numpy.einsum('xij,ji->x', vhf[:,p0+nao:p1+nao], dm0[:,p0+nao:p1+nao]) * 2
+        else:
+            de[k] += de_fast[ia]
         # s1 is real for ghf
         de[k] -= numpy.einsum('xij,ji->x', s1[:,p0:p1], dme0[:nao,p0:p1]) * 2
         de[k] -= numpy.einsum('xij,ji->x', s1[:,p0:p1], dme0[nao:,p0+nao:p1+nao]) * 2
 
         # for density-fitting and dft
-        de[k] += mf_grad.extra_force(ia, locals())
+        if de_fast is None:
+            de[k] += mf_grad.extra_force(ia, locals())
     if log.verbose >= logger.DEBUG:
         log.debug('gradients of electronic part')
         rhf_grad._write(log, mol, de, atmlst)
 
     mf_grad.de_elec = de.real
     return de.real
+
+def _kr_fast_terms(mf_grad, mol, dm0):
+    '''socutils.grad.kr_fast.terms for a Kramers-restricted density of a mean field whose gradient class
+    keeps this grad_elec (not density fitted), else None'''
+    from socutils.grad import kr_fast
+    if not getattr(mf_grad, 'kr_fast', True) or not kr_fast.ENABLE:
+        return None
+    de = kr_fast.terms(mf_grad, mol, dm0)
+    if de is None:
+        logger.debug(mf_grad, 'KR fast gradient not applicable: GHF J/K derivatives')
+    return de
+
 
 def get_jk(mf_grad, mol = None, dm = None):
     '''

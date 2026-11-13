@@ -64,6 +64,29 @@ static inline double dmax2(double a, double b) { return a > b ? a : b; }
 /* quartets with l_i + l_j + l_k + l_l in [cart_lmin, cart_lmax] only (default all) */
 static int cart_lmin = 0, cart_lmax = 1000;
 void SOCVHFcart_set_lrange(int lo, int hi) { cart_lmin = lo; cart_lmax = hi; }
+/* one density per group (the four real pieces of a Kramers-restricted two-component density,
+ * socutils.grad.kr_fast): group g contracts dm + g * stride; 0 (default): every group the same dm.
+ * Shared by the Rys (this file), the generated (jk_gen.c) and the HGP (hgp.c) kernels. */
+size_t SOCVHFderiv2e_dm_stride = 0;
+void SOCVHFderiv2e_set_dm_stride(long stride) { SOCVHFderiv2e_dm_stride = stride > 0 ? (size_t)stride : 0; }
+/* the weights of nsum densities (g * nsum + m, m < nsum, at the stride) summed into group g, density m scaled
+ * by jsc[m] (Coulomb) and ksc[m] (exchange): the energy gradient is linear in the weights, so the four KR pieces
+ * cost one group (one contraction) instead of four.  Default nsum 1, scales 1. */
+#define DERIV2E_MAXSUM 8
+int SOCVHFderiv2e_nsum = 1;
+double SOCVHFderiv2e_jsc[DERIV2E_MAXSUM] = {1, 1, 1, 1, 1, 1, 1, 1};
+double SOCVHFderiv2e_ksc[DERIV2E_MAXSUM] = {1, 1, 1, 1, 1, 1, 1, 1};
+int SOCVHFderiv2e_set_dm_sum(int nsum, double *jsc, double *ksc)
+{
+        int m;
+        if (nsum < 1 || nsum > DERIV2E_MAXSUM) return -1;
+        SOCVHFderiv2e_nsum = nsum;
+        for (m = 0; m < DERIV2E_MAXSUM; m++) {
+                SOCVHFderiv2e_jsc[m] = (jsc && m < nsum) ? jsc[m] : 1;
+                SOCVHFderiv2e_ksc[m] = (ksc && m < nsum) ? ksc[m] : 1;
+        }
+        return 0;
+}
 /* skip the quartets the generated gradient kernels take (jk_gen.c SOCVHFgen_grad2e: every l <= 2,
  * contractions <= 4, total l <= skip_lmax); -1: none.  Bases with a few f shells then run the
  * generated kernels on all other quartets. */
@@ -733,18 +756,31 @@ static void deriv2e_drv(int order, double *hess, int mode, int ngroup, double *j
                         int a, b, c, d;
                         for (g = 0; g < ngroup; g++) {
                                 double *ddg = dd + g * nd;
-                                double jf = 4 * jfac[g] * fac, kf = kfac[g] * fac;
+                                double jf0 = 4 * jfac[g] * fac, kf0 = kfac[g] * fac;
+                                int m_;
+                                /* the weights of SOCVHFderiv2e_nsum densities summed into the group */
+                                for (m_ = 0; m_ < SOCVHFderiv2e_nsum; m_++) {
+                                const double *dmg = dm + (size_t)(g * SOCVHFderiv2e_nsum + m_) * SOCVHFderiv2e_dm_stride;
+                                const double jf = jf0 * SOCVHFderiv2e_jsc[m_], kf = kf0 * SOCVHFderiv2e_ksc[m_];
                                 for (a = 0; a < NI; a++)
                                 for (b = 0; b < NJ; b++) {
-                                        const double dab = jf * dm[(a0 + a) * nao + b0 + b];
-                                        const double *dA = dm + (a0 + a) * nao, *dB = dm + (b0 + b) * nao;
+                                        const double dab = jf * dmg[(a0 + a) * nao + b0 + b];
+                                        const double *dA = dmg + (a0 + a) * nao, *dB = dmg + (b0 + b) * nao;
                                         for (c = 0; c < NK; c++) {
                                                 const double dbc = dB[c0 + c], dac = dA[c0 + c];
-                                                const double *dC = dm + (c0 + c) * nao;
+                                                const double *dC = dmg + (c0 + c) * nao;
                                                 double *o = ddg + ((a * NJ + b) * NK + c) * NL;
-                                                for (d = 0; d < NL; d++)
+                                                if (m_) {
+                                                for (d = 0; d < NL; d++) {
+                                                        o[d] += dab * dC[e0 + d] + kf * (dac * dB[e0 + d] + dA[e0 + d] * dbc);
+                                                }
+                                                } else {
+                                                for (d = 0; d < NL; d++) {
                                                         o[d] = dab * dC[e0 + d] + kf * (dac * dB[e0 + d] + dA[e0 + d] * dbc);
+                                                }
+                                                }
                                         }
+                                }
                                 }
                         }
                         /* a free slot of the class buffer: every pending quartet

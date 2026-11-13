@@ -70,6 +70,9 @@ def to_ghf(mf):
     g.mo_occ = mf.mo_occ
     g.e_tot = mf.e_tot
     g.converged = mf.converged
+    # the J / K mode of the SCF (rijcosx) and its RIJ / COSX objects, for the Kramers-restricted fast
+    # gradient (socutils.grad.kr_fast)
+    g._spinor_src = mf
     return g
 
 

@@ -234,7 +234,54 @@ def _split_general(mol):
     return pmol, scipy.linalg.block_diag(*blocks)
 
 
+def grad2e_jk_cart_multi(mol, dms, groups, tol=None, prim_tol=None):
+    '''grad2e_jk_cart with one density per group: group g is jfac_g E_J[dms[g]] + kfac_g E_K[dms[g]], the
+    integrals of a quartet computed once for all groups (lib/vhf SOCVHFderiv2e_set_dm_stride).  dms
+    symmetric or anti-symmetric (the kernels' weights D_ac D_bd + D_ad D_bc are the eight-permutation sum
+    for both; E_J of an anti-symmetric matrix is zero).  Returns (ngroup, natm, 3), or None if the library
+    lacks the per-group densities.'''
+    libv = ghf_hess._load_socvhf()
+    if not libv or not hasattr(libv, 'SOCVHFderiv2e_set_dm_stride'):
+        return None
+    dms = numpy.asarray(dms, dtype=numpy.double)
+    assert dms.ndim == 3 and dms.shape[0] == len(groups)
+    return _deriv2e_cart(mol, dms, groups, 1, 0, tol, prim_tol)
+
+
+def grad2e_jk_cart_summed(mol, dms, group, jscale=None, kscale=None, tol=None, prim_tol=None):
+    '''d/dR of sum_m [jfac jscale_m E_J[dms[m]] + kfac kscale_m E_K[dms[m]]], group = (jfac, kfac): the
+    weights of the densities summed per quartet into one group (SOCVHFderiv2e_set_dm_sum), so the cost is
+    that of one density.  dms symmetric or anti-symmetric.  Returns (natm, 3), or None if the library lacks
+    it.'''
+    import ctypes
+    libv = ghf_hess._load_socvhf()
+    if not libv or not hasattr(libv, 'SOCVHFderiv2e_set_dm_sum'):
+        return None
+    dms = numpy.asarray(dms, dtype=numpy.double)
+    n = dms.shape[0]
+    assert dms.ndim == 3 and n <= 8
+    js = numpy.ones(n) if jscale is None else numpy.asarray(jscale, dtype=numpy.double)
+    ks = numpy.ones(n) if kscale is None else numpy.asarray(kscale, dtype=numpy.double)
+    libv.SOCVHFderiv2e_set_dm_sum(ctypes.c_int(n), js.ctypes.data_as(ctypes.c_void_p),
+                                  ks.ctypes.data_as(ctypes.c_void_p))
+    try:
+        g = _deriv2e_cart(mol, dms, [group], 1, 0, tol, prim_tol)
+    finally:
+        libv.SOCVHFderiv2e_set_dm_sum(ctypes.c_int(1), lib.c_null_ptr(), lib.c_null_ptr())
+    return None if g is None else g[0]
+
+
 def _deriv2e_cart(mol, dm, groups, order, mode, tol, prim_tol):
+    multi = numpy.ndim(dm) == 3
+    try:
+        return _deriv2e_cart_run(mol, dm, groups, order, mode, tol, prim_tol, multi)
+    finally:
+        if multi:
+            import ctypes
+            ghf_hess._load_socvhf().SOCVHFderiv2e_set_dm_stride(ctypes.c_long(0))
+
+
+def _deriv2e_cart_run(mol, dm, groups, order, mode, tol, prim_tol, multi=False):
     import ctypes
     libv = ghf_hess._load_socvhf()
     fname = 'SOCVHFhess2e_jk_cart' if order == 2 else 'SOCVHFgrad2e_jk_cart'
@@ -262,18 +309,21 @@ def _deriv2e_cart(mol, dm, groups, order, mode, tol, prim_tol):
         molc = mol.copy(deep=False)
         molc.cart = True
         c = mol.cart2sph_coeff()
-        dmc = c.dot(dm).dot(c.T)
+        dmc = numpy.asarray([c.dot(x).dot(c.T) for x in dm]) if multi else c.dot(dm).dot(c.T)
     if not hgp and not gen and SPLIT_GENERAL and order == 1 and (molc._bas[:, gto.NCTR_OF] > 1).any():
         # generally contracted shells as primitive shells: every quartet on the
         # single-contraction path, no primitive is evaluated twice
         molc, cg = _split_general(molc)
-        dmc = cg.dot(dmc).dot(cg.T)
+        dmc = numpy.asarray([cg.dot(x).dot(cg.T) for x in dmc]) if multi else cg.dot(dmc).dot(cg.T)
     dmc = numpy.ascontiguousarray(dmc)
     # integral estimate per shell pair, bounding every derivative type
     intors = ('int2e_ipip1', 'int2e_ipvip1', 'int2e_ip1ip2') if order == 2 else ('int2e_ip1',)
     q = numpy.max([ghf_hess._q_cond(molc, intor)[k] for intor in intors for k in (0, 1)], axis=0)
     q = numpy.ascontiguousarray(numpy.maximum(q, q.T))
-    dcond = ghf_hess._dm_cond(molc, [dmc])
+    dcond = ghf_hess._dm_cond(molc, list(dmc) if multi else [dmc])
+    if multi:
+        # group g contracts dmc[g] (reset by _deriv2e_cart)
+        libv.SOCVHFderiv2e_set_dm_stride(ctypes.c_long(dmc.shape[-1] ** 2))
     jfac = numpy.asarray([g[0] for g in groups], dtype=numpy.double)
     kfac = numpy.asarray([g[1] for g in groups], dtype=numpy.double)
     natm = mol.natm
