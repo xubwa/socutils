@@ -248,6 +248,29 @@ def grad2e_jk_cart_multi(mol, dms, groups, tol=None, prim_tol=None):
     return _deriv2e_cart(mol, dms, groups, 1, 0, tol, prim_tol)
 
 
+def grad2e_jk_cart_summed(mol, dms, group, jscale=None, kscale=None, tol=None, prim_tol=None):
+    '''d/dR of sum_m [jfac jscale_m E_J[dms[m]] + kfac kscale_m E_K[dms[m]]], group = (jfac, kfac): the
+    weights of the densities summed per quartet into one group (SOCVHFderiv2e_set_dm_sum), so the cost is
+    that of one density.  dms symmetric or anti-symmetric.  Returns (natm, 3), or None if the library lacks
+    it.'''
+    import ctypes
+    libv = ghf_hess._load_socvhf()
+    if not libv or not hasattr(libv, 'SOCVHFderiv2e_set_dm_sum'):
+        return None
+    dms = numpy.asarray(dms, dtype=numpy.double)
+    n = dms.shape[0]
+    assert dms.ndim == 3 and n <= 8
+    js = numpy.ones(n) if jscale is None else numpy.asarray(jscale, dtype=numpy.double)
+    ks = numpy.ones(n) if kscale is None else numpy.asarray(kscale, dtype=numpy.double)
+    libv.SOCVHFderiv2e_set_dm_sum(ctypes.c_int(n), js.ctypes.data_as(ctypes.c_void_p),
+                                  ks.ctypes.data_as(ctypes.c_void_p))
+    try:
+        g = _deriv2e_cart(mol, dms, [group], 1, 0, tol, prim_tol)
+    finally:
+        libv.SOCVHFderiv2e_set_dm_sum(ctypes.c_int(1), lib.c_null_ptr(), lib.c_null_ptr())
+    return None if g is None else g[0]
+
+
 def _deriv2e_cart(mol, dm, groups, order, mode, tol, prim_tol):
     multi = numpy.ndim(dm) == 3
     try:

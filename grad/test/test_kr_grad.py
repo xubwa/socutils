@@ -84,6 +84,10 @@ class KnownValues(unittest.TestCase):
         for d, grp, gi in zip(dms, groups, g):
             ref = hess_fast.grad2e_jk_cart(mol, d, [grp], tol=1e-14)[0]
             self.assertAlmostEqual(abs(gi - ref).max(), 0, 11)
+        summed = getattr(hess_fast, 'grad2e_jk_cart_summed', None)
+        if summed is not None:
+            gs = summed(mol, dms, (1., -.7), jscale=[1, 0, 0, 0], tol=1e-14)
+            self.assertAlmostEqual(abs(gs - g.sum(axis=0)).max(), 0, 11)
 
     def test_vs_ghf(self):
         mol = _mol()

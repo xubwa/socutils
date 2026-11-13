@@ -107,6 +107,13 @@ def _anti_k_grad(mol, mats, hyb, tol, prim_tol, j_first=True):
     '''sum_i grad of [jf_i E_J - hyb E_K](mats[i]) with jf = 1 for the first matrix (if j_first), else 0,
     by the unique-quartet kernels; mats symmetric or anti-symmetric (natm, 3) or None'''
     from socutils.hessian import rhf_fast as hess_fast
+    summed = getattr(hess_fast, 'grad2e_jk_cart_summed', None)
+    if summed is not None and len(mats) > 1:
+        # the weights of the pieces summed per quartet: the cost of one density
+        js = [1. if (i == 0 and j_first) else 0. for i in range(len(mats))]
+        g = summed(mol, mats, (1., -hyb), jscale=js, tol=tol, prim_tol=prim_tol)
+        if g is not None:
+            return g
     groups = [((1. if (i == 0 and j_first) else 0.), -hyb) for i in range(len(mats))]
     multi = getattr(hess_fast, 'grad2e_jk_cart_multi', None)
     if multi is not None and len(mats) > 1:

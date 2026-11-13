@@ -25,6 +25,8 @@ void SOCVHFgen_set_kcut(double c) { GEN_KCUT = c; }
 #include "jk_gen.h"
 
 extern size_t SOCVHFderiv2e_dm_stride;   /* hess2e_cart.c: one density per group (deriv2e) */
+extern int SOCVHFderiv2e_nsum;           /* hess2e_cart.c: densities summed into a group */
+extern double SOCVHFderiv2e_jsc[], SOCVHFderiv2e_ksc[];
 
 /* F[m] = F_m(t), m <= M */
 static inline void boys_n(const double *tab, double t, int M, double *F)
@@ -539,8 +541,12 @@ void SOCVHFgen_grad2e(double *grad, int mode, int ngroup, double *jfac, double *
                         double ddmax = 0;
                         for (g = 0; g < ngroup; g++) {
                                 double *ddg = dd + g * nd;
-                                const double jf = 4 * jfac[g] * fac, kf = kfac[g] * fac;
-                                const double *dmg = dm + (size_t)g * SOCVHFderiv2e_dm_stride;
+                                const double jf0 = 4 * jfac[g] * fac, kf0 = kfac[g] * fac;
+                                int m_;
+                                /* the weights of SOCVHFderiv2e_nsum densities summed into the group */
+                                for (m_ = 0; m_ < SOCVHFderiv2e_nsum; m_++) {
+                                const double *dmg = dm + (size_t)(g * SOCVHFderiv2e_nsum + m_) * SOCVHFderiv2e_dm_stride;
+                                const double jf = jf0 * SOCVHFderiv2e_jsc[m_], kf = kf0 * SOCVHFderiv2e_ksc[m_];
                                 for (a = 0; a < NI; a++)
                                 for (b = 0; b < NJ; b++) {
                                         const double dab = jf * dmg[(a0 + a) * nao + b0 + b];
@@ -550,10 +556,11 @@ void SOCVHFgen_grad2e(double *grad, int mode, int ngroup, double *jfac, double *
                                                 const double *dC = dmg + (c0 + c) * nao;
                                                 double *o = ddg + ((a * NJ + b) * NK + c) * NL;
                                                 for (d = 0; d < NL; d++) {
-                                                        o[d] = dab * dC[e0 + d] + kf * (dac * dB[e0 + d] + dA[e0 + d] * dbc);
+                                                        o[d] = (m_ ? o[d] : 0.) + dab * dC[e0 + d] + kf * (dac * dB[e0 + d] + dA[e0 + d] * dbc);
                                                         ddmax = dmax2g(ddmax, fabs(o[d]));
                                                 }
                                         }
+                                }
                                 }
                         }
                         if (ddmax == 0) continue;
@@ -688,8 +695,12 @@ void SOCVHFgen_hess2e(double *hess, int mode, int ngroup, double *jfac, double *
                         double ddmax = 0;
                         for (g = 0; g < ngroup; g++) {
                                 double *ddg = dd + g * nd;
-                                const double jf = 4 * jfac[g] * fac, kf = kfac[g] * fac;
-                                const double *dmg = dm + (size_t)g * SOCVHFderiv2e_dm_stride;
+                                const double jf0 = 4 * jfac[g] * fac, kf0 = kfac[g] * fac;
+                                int m_;
+                                /* the weights of SOCVHFderiv2e_nsum densities summed into the group */
+                                for (m_ = 0; m_ < SOCVHFderiv2e_nsum; m_++) {
+                                const double *dmg = dm + (size_t)(g * SOCVHFderiv2e_nsum + m_) * SOCVHFderiv2e_dm_stride;
+                                const double jf = jf0 * SOCVHFderiv2e_jsc[m_], kf = kf0 * SOCVHFderiv2e_ksc[m_];
                                 for (a = 0; a < NI; a++)
                                 for (b = 0; b < NJ; b++) {
                                         const double dab = jf * dmg[(a0 + a) * nao + b0 + b];
@@ -699,10 +710,11 @@ void SOCVHFgen_hess2e(double *hess, int mode, int ngroup, double *jfac, double *
                                                 const double *dC = dmg + (c0 + c) * nao;
                                                 double *o = ddg + ((a * NJ + b) * NK + c) * NL;
                                                 for (d = 0; d < NL; d++) {
-                                                        o[d] = dab * dC[e0 + d] + kf * (dac * dB[e0 + d] + dA[e0 + d] * dbc);
+                                                        o[d] = (m_ ? o[d] : 0.) + dab * dC[e0 + d] + kf * (dac * dB[e0 + d] + dA[e0 + d] * dbc);
                                                         ddmax = dmax2g(ddmax, fabs(o[d]));
                                                 }
                                         }
+                                }
                                 }
                         }
                         if (ddmax == 0) continue;
