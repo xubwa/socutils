@@ -204,6 +204,26 @@ all N_mu recomputed per mu block (74 blocks of 173, set by the memory per rank);
 (fewer grid rows and larger blocks), so use more ranks rather than larger blocks.  One SCF cycle ~150-175 s
 (first 340 s).
 
+Tried and dropped for the Gram-column recompute (Eu:YSO, 4 nodes): Gram "superblocks" decoupled from the FFT
+blocks fit only ~2x larger blocks in the 25 GB left per rank (xi -1300 s, ~15% of the build, and more aux FT
+passes); screening the smooth AOs per grid-row chunk gives nothing (92-95% of them nonzero on every chunk of
+500-9655 rows).  An 8-node build test (`run_yso_buildtest8.sbatch`, `yso_buildtest8_ranks/`) was queued at the
+hand-off to check the 1 / ranks^2 fall of xi.
+
+quartz primitive cell (9 atoms, nao 186, mesh 102x102x117; one node, 24 cores, symmetric THC): build 102 s on
+4 ranks (261 s on 1 rank x 24 threads); per SCF cycle K 0.5 s, GAPW J 2.35 s (first cycle 8 s: atomic-grid
+set-up), so the build costs ~35 cycles.  J is the atomic-grid side (smooth potential splined onto the atomic
+grids 1.45 s of 3.05 s on one rank, local Poisson 0.44 s, multipoles 0.4 s; the dense uniform-grid part 0.33 s);
+these terms are ~linear in the atoms, so J's share falls with size (EuOCl 2x2x1: J 57 s vs K ~330 s per cycle).
+np1 vs np4 energies agree to 4e-7 with the symmetric grid; with symm_grid off they differ by 1.5e-5 (tied
+residuals of equivalent points are broken by rounding, another equally valid point set).
+
+Charged cells: `pbc/charged.py` (`charged.correct(mf)`, q^2 nu_M / 2 added to energy_nuc; pyscf.pbc SCF objects
+and spinor_scf.periodic / SpinorRSDF), test `pbc/test/test_charged.py`.  pyscf's gamma-point GHF + GDF fails
+with UFuncOutputCastingError when the density's spin blocks are low rank with an imaginary part below
+cell.precision (df_jk.get_jk: real vk, complex exxdiv correction); one-line fix prepared in
+`~/apps/pyscf-upstream-fix` (branch `fix-exxdiv-g0-complex-dm`), not yet sent upstream.
+
 Caveats: BLAS thread count alone moves E_K by ~1e-6 Eh (ISDF cut 1e-10), so compare runs at equal
 thread counts.  The uniform-grid cutoff decides ~1e-4 Eh in Eu cells (smooth h shells; EuOCl +4.6e-4 at
 precision 1e-10, mesh 85x85x143); a mesh scan (`euocl/wabl_M88..M93`) was running at the hand-off.
