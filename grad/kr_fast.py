@@ -45,6 +45,12 @@ from pyscf.scf import hf
 
 ENABLE = True       # ghf_grad / gks_grad: the KR fast path (else the 8-density GHF J/K derivative)
 KRAMERS_TOL = 1e-9
+# exact K: 'kernel' (the unique-quartet kernels, the pieces as groups of one pass: their cost grows ~ linearly
+# with the groups, the contraction dominates), 'deriv' (pyscf's int2e_ip1 K derivative matrices of the four
+# pieces in one libcvhf pass, contracted per atom), 'auto': 'kernel' where the generated kernels take every
+# quartet (l <= 2, <= 4 contractions), else 'deriv'.  (HgCl2)2 x2c-SVPall (nao 210, 16 cores): kernel 103 s,
+# deriv (4 pieces, J + K) 40 s, the 8-density GHF J/K 28-61 s.
+EXACT_K = 'auto'
 
 
 def pieces(dm, nao, tol=KRAMERS_TOL):
@@ -113,6 +119,26 @@ def _anti_k_grad(mol, mats, hyb, tol, prim_tol, j_first=True):
         if g is None:
             return None
         de += g[0]
+    return de
+
+
+def _exact_k_route(mol):
+    if EXACT_K != 'auto':
+        return EXACT_K
+    return 'kernel' if mol._bas[:, 1].max() <= 2 and mol._bas[:, 3].max() <= 4 else 'deriv'
+
+
+def _deriv_k_grad(mol, mats, hyb):
+    '''-hyb sum_X grad E_K[X] (natm, 3) from pyscf's K derivative matrices of the (symmetric or
+    anti-symmetric) mats = 2X in one integral pass: d E_K[2X] / dR_A = 4 sum_{i in A} sum_j vk[X]_ij X_ij,
+    vk[X] = ((-nabla i) j | k l) X_jk (pyscf.grad.rhf.get_k)'''
+    from pyscf.grad import rhf as rhf_grad
+    x = numpy.ascontiguousarray(numpy.asarray(mats) * .5)
+    vk = rhf_grad.get_k(mol, x)
+    de = numpy.zeros((mol.natm, 3))
+    for ia, (p0, p1) in enumerate(mol.aoslice_by_atom()[:, 2:]):
+        for n in range(len(mats)):
+            de[ia] -= hyb * 4 * numpy.einsum('xij,ij->x', vk[n][:, p0:p1], x[n][p0:p1])
     return de
 
 
@@ -206,7 +232,8 @@ def terms(grad, mol, dm):
                 1 + len(anti), k._weights.size, ', grid response' if cosx_gr else ''), *t0)
         else:
             logger.info(grad, 'KR gradient: no COSX grid of the SCF, exact K')
-    if not kdone and not jdone and rhf_fast._gen_grad_usable(mol):
+    kroute = _exact_k_route(mol)
+    if not kdone and not jdone and kroute == 'kernel' and rhf_fast._gen_grad_usable(mol):
         r = _anti_k_grad(mol, [rho] + anti, hyb, tol, prim_tol, j_first=True)
         if r is None:
             return None
@@ -225,10 +252,13 @@ def terms(grad, mol, dm):
         jdone = True
         t0 = logger.timer(grad, 'KR gradient: exact J', *t0)
     if not kdone:
-        r = _anti_k_grad(mol, [rho] + anti, hyb, tol, prim_tol, j_first=False)
-        if r is None:
-            return None
-        de += r
+        if kroute == 'deriv':
+            de += _deriv_k_grad(mol, [rho] + anti, hyb)
+        else:
+            r = _anti_k_grad(mol, [rho] + anti, hyb, tol, prim_tol, j_first=False)
+            if r is None:
+                return None
+            de += r
         t0 = logger.timer(grad, 'KR gradient: exact K (%d pieces)' % (1 + len(anti)), *t0)
     if is_ks:
         max_memory = max(2000, grad.max_memory * .9 - lib.current_memory()[0])

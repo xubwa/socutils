@@ -93,6 +93,20 @@ class KnownValues(unittest.TestCase):
                 gf, gg = _both(mf, gr)
                 self.assertAlmostEqual(abs(gf - gg).max(), 0, 9, msg='%s grid_response %s' % (xc, gr))
 
+    def test_exact_k_routes(self):
+        '''exact K by the unique-quartet kernels and by pyscf's derivative matrices of the pieces'''
+        mf = _scf(_mol(), 'pbe0')
+        gs = []
+        for route in ('kernel', 'deriv'):
+            kr_fast.EXACT_K = route
+            try:
+                g = mf.Gradients()
+                g.grid_response = False
+                gs.append(g.kernel())
+            finally:
+                kr_fast.EXACT_K = 'auto'
+        self.assertAlmostEqual(abs(gs[0] - gs[1]).max(), 0, 8)
+
     def test_finite_difference(self):
         h = 1e-3
         for xc in (None, 'pbe0'):
