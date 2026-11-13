@@ -129,6 +129,10 @@ two-electron corrections on) and only then require the `x2camf` integral backend
     `iter_factor`: pyscf DF in core or HDF5, socutils CD); `rik.apply(mf)` (also via
     `md_j.apply` for full DF-JK), screened `cholesky_eri` / `cholesky_eri_h5` builders
     (`lib/vhf/int3c_s2.c`), reusable `half_transform` / `mo_transform`.
+  - `rik_2c.py`: two-component J / K from the same factors (spinor `_DFJHF._get_k_mo`,
+    CASSCF `_CDERIS` core): weighted orbital sets (SCF occupied, frozen core, active
+    natural spinors x sqrt(n)), Kramers sets by four products of combinations instead of
+    the 4 nao x 4 nao Gram matrix (fused kernel `lib/vhf/rik2c.c`), `get_jk_spinor`.
 
 - **`x2camf_c/x2camf/`** — the bundled `x2camf` Python package: a dispatcher
   with **two interchangeable backends** behind one API (`amfi`/`atm_integrals`/

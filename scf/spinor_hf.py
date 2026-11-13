@@ -88,7 +88,10 @@ class _DFJHF(df.df_jk._DFHF):
             mo_occ   = getattr(dm, 'mo_occ',   None)
             if mo_coeff is not None and mo_occ is not None:
                 vk = self._get_k_mo(mol, mo_coeff, mo_occ, omega)
-            else:
+            elif FACTOR_DM and hermi == 1 and numpy.ndim(dm) == 2:
+                # an untagged density (the initial guess): K from its eigenvectors
+                vk = _get_k_factored(self, mol, dm)
+            if vk is None and not (mo_coeff is not None and mo_occ is not None):
                 # Fallback: DM-based K via ghf.get_jk (first iteration etc.)
                 logger.warn(self, 'mo_coeff not tagged on dm, using DM-based K')
                 if not with_j:
@@ -178,6 +181,17 @@ class _DFJHF(df.df_jk._DFHF):
             nocc = C_occ_sph.shape[1]
             logger.debug(self, 'DF-K: Kramers-paired occupied spinors, %d unbarred', nocc)
 
+        if DFK_GRAM:
+            # one real half transformation of all four components and one 4 nao x 4 nao
+            # rank-k update per factor block (scf.rik_2c)
+            from socutils.scf import rik_2c
+            vjs, vks = rik_2c.get_jk(self.with_df, [C_occ_sph], [] if dm_j is None else [dm_j],
+                                     kramers=[kramers is not False], max_memory=self.max_memory,
+                                     verbose=self.verbose)
+            if dm_j is not None:
+                return sph2spinor(mol, vks[0]), vjs[0]
+            return sph2spinor(mol, vks[0])
+
         # Four real Fortran-order arrays for the C half-transform library
         # Each has shape (nao, nocc), matching the DF integral AO index
         C_aR = numpy.asfortranarray(C_occ_sph[:nao].real)
@@ -256,6 +270,41 @@ class _DFJHF(df.df_jk._DFHF):
         if dm_j is not None:
             return sph2spinor(mol, vk_sph), lib.unpack_tril(vj_tril)
         return sph2spinor(mol, vk_sph)
+
+
+DFK_GRAM = True   # _DFJHF._get_k_mo by scf.rik_2c (else the four-buffer AO2MO / GEMM loop below)
+FACTOR_DM = True  # _DFJHF.get_jk: K of an untagged Hermitian density from its eigenvectors (scf.rik_2c)
+FACTOR_DM_RANK = .75   # ... while its rank is at most this * 2 nao (else the DM-based K)
+
+
+def _get_k_factored(mf, mol, dm, tol=1e-13):
+    '''K (spinor basis) of a Hermitian spinor density from D_sph = V w V^H: the positive and the
+    negative parts as two weighted orbital sets (eigenvalues below tol * max |w| dropped), each
+    reduced to its Kramers half when time-reversal symmetric; None when the rank is too high.'''
+    from socutils.scf import rik_2c
+    nao = mol.nao_nr()
+    dm_sph = spinor2sph(mol, dm)
+    dm_sph = (dm_sph + dm_sph.conj().T) * .5
+    w, v = scipy.linalg.eigh(dm_sph)
+    cut = tol * max(abs(w).max(), 1e-300)
+    pos, neg = w > cut, w < -cut
+    if pos.sum() + neg.sum() > FACTOR_DM_RANK * 2 * nao:
+        return None
+    orbs, krs, signs = [], [], []
+    for sel, sgn in ((pos, 1.), (neg, -1.)):
+        if not sel.any():
+            continue
+        c = v[:, sel] * numpy.sqrt(abs(w[sel]))
+        u = rik_2c.kramers_half(c, nao) if getattr(mf, 'kramers_k', True) else False
+        orbs.append(c if u is False else u)
+        krs.append(u is not False)
+        signs.append(sgn)
+    logger.debug(mf, 'DF-K of an untagged density: rank %d + %d, Kramers %s', pos.sum(), neg.sum(), krs)
+    if not orbs:
+        return numpy.zeros_like(dm, dtype=complex)
+    _, vks = rik_2c.get_jk(mf.with_df, orbs, [], kramers=krs, signs=signs, max_memory=mf.max_memory,
+                           verbose=mf.verbose)
+    return sph2spinor(mol, sum(vks))
 
 
 def _kramers_unbarred(C, nao, tol=1e-8):
