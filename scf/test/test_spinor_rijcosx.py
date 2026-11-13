@@ -113,7 +113,7 @@ class KnowValues(unittest.TestCase):
         # spinor COSX grid (COSX_HEAVY_INTACC on Au) represents the basis
         from pyscf import lib
         m = gto.M(atom='Au 0 0 0; H 0 0 1.524', basis='dyall-v2z', verbose=0)
-        with lib.temporary_env(cosx, HEAVY_RADIAL_Z=200):        # the plain radial rule
+        with lib.temporary_env(cosx, HEAVY_RADIAL_Z=200, RADIAL_NORM_TOL=0):    # the plain radial rule
             k = cosx.COSX(m, cosx.make_grids(m, **cosx.gridx_args(m, 2))).build()
         self.assertLess(spinor_jk.fit_quality(k)[0], 1e-6)
         for args in (spinor_jk.grid_args(m, 2), cosx.gridx_args(m, 2)):    # spinor rule; scalar default
