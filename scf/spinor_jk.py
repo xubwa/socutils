@@ -290,6 +290,7 @@ def _kobj(mf, st, level):
 # one-sided fitted K = P K_plain makes tr(X^T K[Y]) unsymmetric, so the response matrix A is not Hermitian and the
 # Davidson residual stalls (AuH x2c-SVPall PBE0 TDA: |r| ~ 4e-6).  Both densities in one multi-density pass.
 RESPONSE_SYMMETRIC = True
+RESPONSE_GRID = 2       # COSX grid level of the response K (GRIDX2, the SCF's)
 RESPONSE_MEM_FRAC = .4  # of the free max_memory for the chunks of response densities (the COSX passes take more)
 
 
@@ -343,7 +344,7 @@ def get_k_cosx(mf, mol, dm, hermi, aa, ab, ba, bb, cplx, kramers):
     st = _state(mf, mol)
     pieces = _pieces(aa, ab, ba, bb, cplx, kramers, hermi)
     if n != 1 or hermi != 1:
-        k = _kobj(mf, st, 2)
+        k = _kobj(mf, st, RESPONSE_GRID)
         if k is None:
             return _exact_k(_proxy(mf, mol), mol, pieces, n, nao, dm.dtype, kramers, hermi)
         sym = RESPONSE_SYMMETRIC and hermi != 1
