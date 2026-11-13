@@ -321,7 +321,8 @@ class _KernelXCMixin:
         ints = lib.einsum('xpq,pi,qj->xij', ints, orbo.conj(), orbv)
         pol = numpy.array([numpy.einsum('xij,ij->x', ints, x) for x, y in xy])
         if isinstance(xy[0][1], numpy.ndarray):    # TDHF/RPA has de-excitations
-            ymo = numpy.array([numpy.einsum('xij,ij->x', ints, y) for x, y in xy])
+            # the Y part of the transition density is C_o Y C_v^H (pyscf's TDHF vind): <a|r|i> = <i|r|a>^*
+            ymo = numpy.array([numpy.einsum('xij,ij->x', ints.conj(), y) for x, y in xy])
             pol = pol + ymo if hermi else pol - ymo
         return pol.reshape((nstates,) + pol_shape)
 
@@ -955,6 +956,8 @@ class _PairedRPA(_ghf.TDHF):
     recommended default.'''
 
     conv_tol = 1e-6
+    reference_weight = None     # read by _KernelXCMixin._finalize (the reference-coupled TDA only)
+    c0 = None
 
     def kernel(self, x0=None, nstates=None):
         import numpy as np
