@@ -507,6 +507,37 @@ def ft_post(Pg, w):
     return out
 
 
+def ft_label(parts, w):
+    '''(2 nG, n) real, the layout of ft_post, of the per-label FT B[:, c] = (-i)^lq[c] S[:, cs[c]] R[:, cr[c]]
+    from its separable parts (THCExchange._label_parts); OpenMP kernel, else numpy.'''
+    S, R, cs, cr, lq = parts
+    lib_ = _libthc()
+    if lib_ is None or not hasattr(lib_, 'SOCTHCft_label'):
+        return ft_post(np.asfortranarray(((-1j) ** lq)[None, :] * S[:, cs] * R[:, cr]), w)
+    import ctypes
+    g, n = len(S), len(cs)
+    out = np.empty((2 * g, n))
+    w = np.ascontiguousarray(w, dtype=float)
+    lib_.SOCTHCft_label(_ptr(out), _ptr(S), _ptr(R), _ptr(w), _ptr(cs), _ptr(cr), _ptr(lq), ctypes.c_int(g),
+                        ctypes.c_int(S.shape[1]), ctypes.c_int(R.shape[1]), ctypes.c_int(n))
+    return out
+
+
+def phase_mul(X, ph):
+    '''(X * ph[None, :]) as (nb, 2 nG) real for X (nb, nG) complex (possibly a column slice of a C-order array)
+    and ph (nG) complex; OpenMP kernel, else numpy.'''
+    lib_ = _libthc()
+    nb, g = X.shape
+    if (lib_ is None or not hasattr(lib_, 'SOCTHCphase_mul') or X.dtype != complex or X.strides[1] != 16
+            or X.strides[0] % 16 or X.strides[0] <= 0 or ph.dtype != complex or not ph.flags['C_CONTIGUOUS']):
+        return (X * ph[None, :]).view(float)
+    import ctypes
+    out = np.empty((nb, 2 * g))
+    lib_.SOCTHCphase_mul(_ptr(out), _ptr(X), _ptr(ph), ctypes.c_int(nb), ctypes.c_int(g),
+                         ctypes.c_size_t(X.strides[0] // 16))
+    return out
+
+
 def gram_cols(PP, phi_blk):
     '''(PP phi_blk^T)^2 elementwise (the Gram columns of the ISDF points), squared in place by the C kernel.'''
     G = PP @ phi_blk.T
@@ -1257,7 +1288,8 @@ class THCExchange:
             self.log('   streamed THC (grid split): mu block %d-%d of %d, %.0f s (%s, transpose %.0f = wait %.0f + '
                      'Alltoallv %.0f (%.2f GB/s) + pack; aux FT cached for %d of %d own G chunks)'
                      % (b0, b1, nmu, time.time() - t0, ', '.join('%s %.0f' % kv for kv in tt.items()), ta_comm,
-                        tw['wait'], tw['a2a'], tw['bytes'] / max(tw['a2a'], 1e-9) / 1e9, len(p2cache), len(own)))
+                        tw['wait'], tw['a2a'], tw['bytes'] / max(tw['a2a'], 1e-9) / 1e9,
+                        sum(1 for k_ in ecaches[0] if k_[1] == 'S') if by_el else len(p2cache), len(own)))
         if prev is not None:                                          # V of the last block: one more Gram pass
             ta = time.time()
             Vp = np.zeros((prev[1] - prev[0], nmu))
@@ -1390,51 +1422,73 @@ class THCExchange:
         self._elems = (elems, atoms)
         return self._elems
 
-    def _label_ft(self, lab, G, k):
-        '''FT of the first k shells (cutoff order) of label lab on one atom at the origin, (nG, nk) F order as ft_ao
-        returns: kappa_l (-i)^l S_lm(G) sum_p c_p a_p^-(l+3/2) exp(-G^2 / 4 a_p), S_lm the real solid harmonics of
-        pyscf (monomials x cart2sph), kappa_l from ft_ao of one primitive at moderate |G| (calibrated once).  Agrees
-        with ft_ao to 2e-14 of the largest value up to l = 10 (Eu aux), at a fraction of its cost.'''
+    def _ft_kappa_l(self, l):
+        '''kappa_l of the analytic FT of a shell of angular momentum l: ft_ao of one primitive at moderate |G|
+        over (-i)^l S_lm(G) c exp(-G^2 / 4) (calibrated once per l).'''
         from pyscf import gto as _gto
-        e = self._elems[0][lab]
-        mol = e['mol']
         kap = getattr(self, '_ft_kappa', None)
         if kap is None:
             kap = self._ft_kappa = {}
+        if l not in kap:
+            rg = np.random.default_rng(1)
+            u = rg.normal(size=(64, 3))
+            u /= np.linalg.norm(u, axis=1)[:, None]
+            Gc = u * rg.uniform(0.5, 2.5, 64)[:, None]
+            pm = _gto.M(atom='X 0 0 0', basis={'X': [[l, [1., 1.]]]}, unit='B', verbose=0)
+            f = ft_ao(pm, Gc)
+            g = _solid_harmonics(l, Gc) * (pm._libcint_ctr_coeff(0)[0, 0]
+                                           * np.exp(-np.einsum('gx,gx->g', Gc, Gc) / 4.))[:, None]
+            sel = abs(g) > 1e-3 * abs(g).max()
+            kap[l] = (f[sel] / ((-1j) ** l * g[sel])).real.mean()
+        return kap[l]
+
+    def _solid_all(self, G):
+        '''kappa_l S_lm(G) for l = 0 .. the largest l of the aux basis, (nG, sum_l 2l+1), and the column offset of
+        each l: the angular part of every label's FT at G (shared by the labels).'''
+        lmax = getattr(self, '_ft_lmax', None)
+        if lmax is None:
+            lmax = self._ft_lmax = max(e['mol'].bas_angular(i) for e in self._elems[0].values()
+                                       for i in range(e['mol'].nbas))
+        soff = np.concatenate([[0], np.cumsum([2 * l + 1 for l in range(lmax + 1)])])
+        S = np.empty((len(G), soff[-1]))
+        for l in range(lmax + 1):
+            S[:, soff[l]:soff[l + 1]] = self._ft_kappa_l(l) * _solid_harmonics(l, G)
+        return S, soff
+
+    def _label_parts(self, lab, G, k, soff):
+        '''The radial part of the FT of the first k shells (cutoff order) of label lab on one atom at the origin:
+        B[:, c] = (-i)^l S[:, cs[c]] R[:, cr[c]] with S, soff = _solid_all(G) (real solid harmonics of pyscf:
+        monomials x cart2sph, times kappa_l) and R (nG, contracted shells) = sum_p c_p a_p^-(l+3/2)
+        exp(-G^2 / 4 a_p).  S and R are ~4x smaller than B (Eu:YSO: 0.5 vs 1.8 thousand columns), so they are what
+        is cached.  Returns R, cs, cr, lq (l mod 4 per column).'''
+        e = self._elems[0][lab]
+        mol = e['mol']
         G2 = np.einsum('gx,gx->g', G, G)
-        shells = e['order'][:k]
-        el = mol.ao_loc_nr()
-        nk = int(sum(el[i + 1] - el[i] for i in shells))
-        out = np.empty((len(G), nk), dtype=complex, order='F')
-        solid, expo = {}, {}
-        off = 0
-        for i in shells:
+        expo = {}
+        rads, cs, cr, lq = [], [], [], []
+        for i in e['order'][:k]:
             l = mol.bas_angular(i)
-            if l not in solid:
-                if l not in kap:                                      # kappa_l: one primitive, moderate |G|
-                    rg = np.random.default_rng(1)
-                    u = rg.normal(size=(64, 3))
-                    u /= np.linalg.norm(u, axis=1)[:, None]
-                    Gc = u * rg.uniform(0.5, 2.5, 64)[:, None]
-                    pm = _gto.M(atom='X 0 0 0', basis={'X': [[l, [1., 1.]]]}, unit='B', verbose=0)
-                    f = ft_ao(pm, Gc)
-                    g = _solid_harmonics(l, Gc) * (pm._libcint_ctr_coeff(0)[0, 0]
-                                                   * np.exp(-np.einsum('gx,gx->g', Gc, Gc) / 4.))[:, None]
-                    sel = abs(g) > 1e-3 * abs(g).max()
-                    kap[l] = (f[sel] / ((-1j) ** l * g[sel])).real.mean()
-                solid[l] = (kap[l] * (-1j) ** l) * _solid_harmonics(l, G)
-            S = solid[l]
             ex, cf = mol.bas_exp(i), mol._libcint_ctr_coeff(i)
-            nf = 2 * l + 1
             for j in range(cf.shape[1]):
                 rad = np.zeros(len(G))
                 for pexp, c in zip(ex, cf[:, j]):
                     if pexp not in expo:                              # shared by the shells of one exponent
                         expo[pexp] = np.exp(-G2 / (4 * pexp))
                     rad += (c * pexp ** -(l + 1.5)) * expo[pexp]
-                out[:, off:off + nf] = S * rad[:, None]
-                off += nf
-        return out
+                cs.extend(range(soff[l], soff[l + 1]))
+                cr.extend([len(rads)] * (2 * l + 1))
+                lq.extend([l % 4] * (2 * l + 1))
+                rads.append(rad)
+        R = np.ascontiguousarray(np.stack(rads, axis=1))
+        return R, np.array(cs, dtype=np.int32), np.array(cr, dtype=np.int32), np.array(lq, dtype=np.int32)
+
+    def _label_ft(self, lab, G, k):
+        '''FT of the first k shells (cutoff order) of label lab on one atom at the origin, (nG, nk) F order as ft_ao
+        returns: kappa_l (-i)^l S_lm(G) sum_p c_p a_p^-(l+3/2) exp(-G^2 / 4 a_p) (_label_parts).  Agrees with ft_ao
+        to 2e-14 of the largest value up to l = 10 (Eu aux).'''
+        S, soff = self._solid_all(G)
+        R, cs, cr, lq = self._label_parts(lab, G, k, soff)
+        return np.asfortranarray(((-1j) ** lq)[None, :] * S[:, cs] * R[:, cr])
 
     def _a_by_element(self, Xc, g0, g1, g2min, swc, Arows, caches, tt, ckey):
         '''A[:, cols] += Re(P^* X) over the G range [g0, g1) with P_A = exp(-i G.R_A) B_label: B per label (FT of
@@ -1445,17 +1499,25 @@ class THCExchange:
         G = self.Gv[g0:g1]
         ta = time.time()
         P2s = {}
+        Ssoff = None
         for lab, e in elems.items():
             k = int(np.searchsorted(-e['cut'], -g2min, side='right'))
             if k == 0:
                 continue
-            P2 = pcache.get((ckey, lab))
-            if P2 is None:
-                P2 = ft_post(self._label_ft(lab, G, k), swc)           # (2 nG, nk_label), analytic FT
-                if P2.nbytes < left[0]:
-                    pcache[ckey, lab] = P2
-                    left[0] -= P2.nbytes
-            P2s[lab] = P2
+            if Ssoff is None:                                          # angular part: once per chunk, all labels
+                Ssoff = pcache.get((ckey, 'S'))
+                if Ssoff is None:
+                    Ssoff = self._solid_all(G)
+                    if Ssoff[0].nbytes < left[0]:
+                        pcache[ckey, 'S'] = Ssoff
+                        left[0] -= Ssoff[0].nbytes
+            parts = pcache.get((ckey, lab))
+            if parts is None:
+                parts = self._label_parts(lab, G, k, Ssoff[1])         # radial part: ~4x smaller than the FT
+                if parts[0].nbytes < left[0]:
+                    pcache[ckey, lab] = parts
+                    left[0] -= parts[0].nbytes
+            P2s[lab] = ft_label((Ssoff[0],) + parts, swc)              # (2 nG, nk_label), per block
         tt['ft_ao'] += time.time() - ta
         if not P2s:
             return
@@ -1472,7 +1534,7 @@ class THCExchange:
                     left[0] -= ph.nbytes
             nk = P2.shape[1]
             P2a = P2
-            X2 = (Xc * ph[None, :]).view(float)                        # the phase on the spectra (nb, 2 nG)
+            X2 = phase_mul(Xc, ph)                                     # the phase on the spectra (nb, 2 nG)
             tt['ft_ao'] += time.time() - ta
             ta = time.time()
             Arows[a0 + elems[lab]['perm'][:nk]] += (X2 @ P2a).T
