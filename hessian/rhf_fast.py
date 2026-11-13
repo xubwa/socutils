@@ -444,6 +444,9 @@ def _hcore_e1(hessobj, dm0):
 
 
 H1_OCC = True     # hess_elec: the RKS first-order Fock matrices as h1 C_occ (rks_make_h1 / xc_deriv1_batched)
+H1_DISK_MIN = .1  # hess_elec keeps h1 C_occ in a temporary file during the CPHF (read per atom by the batches, back
+                  # for the assembly) when it takes more than this share of mf.max_memory (Trp-cage 12.3 GB); None:
+                  # never
 
 
 def _is_h1_occ(h1, mo_coeff, mo_occ):
@@ -461,7 +464,7 @@ CPHF_DISK = True       # a CPHF that does not fit one in-memory Krylov block kee
                        # 6 batches 2166 densities)
 CPHF_DISK_ARRAYS = 4   # nmo nocc arrays per perturbation in memory then (A x, the residual, the new trial vectors,
                        # the dropped directions)
-CPHF_RESP_MIN = 16     # densities per response call the batch must leave room for at its first Krylov cycle when
+CPHF_RESP_MIN = 10     # densities per response call the batch must leave room for at its first Krylov cycle when
                        # the trial vectors are on disk; the calls then take what the cycle's arrays leave (the
                        # directions still active), see _fx_chunked
 CPHF_MEM_MARGIN = .05  # the share of the budget (mf.max_memory) the CPHF holds back for the allocator's slack
@@ -758,6 +761,12 @@ def hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None, mo1=None, mo_
         # inside the Hessian only h1 C_occ is needed (the CP-SCF right-hand sides, h1 . dm1)
         with lib.temporary_env(hessobj, _h1_occ=H1_OCC):
             h1ao = hessobj.make_h1(mo_coeff, mo_occ, None, None, log)
+    h1file = None
+    if (H1_DISK_MIN is not None and isinstance(h1ao, numpy.ndarray) and _is_h1_occ(h1ao, mo_coeff, mo_occ)
+            and h1ao.nbytes > H1_DISK_MIN * mf.max_memory * 1e6 and (mo1 is None or mo_e1 is None)):
+        h1file = lib.H5TmpFile()
+        h1file['h1'] = h1ao
+        h1ao = h1file['h1']
     if mo1 is None or mo_e1 is None:
         mo1, mo_e1 = hessobj.solve_mo1(mo_energy, mo_coeff, mo_occ, h1ao, None, None, max_memory, log)
     nao = mo_coeff.shape[0]
@@ -778,6 +787,8 @@ def hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None, mo1=None, mo_
     S1C = None
     mo1 = numpy.asarray(mo1).reshape(natm * 3, nao * nocc)
     h1 = numpy.asarray(h1ao)
+    if h1file is not None:
+        h1file.close()
     if not _is_h1_occ(h1, mo_coeff, mo_occ):
         h1 = lib.dot(h1.reshape(-1, nao), mocc)               # AO h1 (symmetric) -> h1 C_occ
     h1 = h1.reshape(natm * 3, nao * nocc)
@@ -3171,7 +3182,7 @@ class _MultiJKCPHF:
                     fx = gen_vind(self.base, mo_coeff, mo_occ)
                 fx = _fx_chunked(fx, self.base, mo_coeff.shape[0], mo_coeff.shape[1], int((mo_occ > 0).sum()))
                 _CPHF_STAGE['final'] = False
-                if (isinstance(h1ao_or_chkfile, numpy.ndarray)
+                if ((isinstance(h1ao_or_chkfile, numpy.ndarray) or hasattr(h1ao_or_chkfile, 'id'))
                         and _is_h1_occ(h1ao_or_chkfile, mo_coeff, mo_occ)):
                     return _solve_mo1_occ(self.base, mo_energy, mo_coeff, mo_occ, h1ao_or_chkfile, fx, atmlst,
                                           max_memory, max_cycle=self.max_cycle, level_shift=self.level_shift)
