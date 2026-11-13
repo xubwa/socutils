@@ -188,6 +188,29 @@ RADIAL_INTACC_MAX = 14. # have its eigenvalues within this of 1, else the elemen
                         # once (cc-pVDZ Fe).  0 / None: off
 
 
+HIGHL_ANGULAR_L = 6       # atoms with shells of l >= this get every region of their Lebedev table raised to at least
+HIGHL_ANGULAR_MIN = 110   # this (degree 17): the inner regions' 26 / 50 points do not integrate i x i products (degree
+                          # 12).  UO2(2+) dyall-v4z (U 2 i shells), GRIDX2, against exact K: U i AO grid norms 0.22 -
+                          # 1.76 -> 0.98 - 1.02, min eigenvalue of S^-1/2 S_g S^-1/2 0.21 -> 0.68, tr D dK -2.0e-4 ->
+                          # -7.2e-5, max |dK| 9.7e-2 -> 1.3e-3, +21 % points (tables 4 / 5, inner regions still 26:
+                          # max |dK| 5.5e-2).  h (l = 5) does not need it: HgCl2 dyall-v4z max |dK| 4.2e-3 -> 1.4e-3,
+                          # tr D dK 2.1e-5 -> 2.7e-5 for +29 % points.  None: off
+
+
+def _highl_angular(mol, ang):
+    '''{element: 5-tuple} for the elements with shells of l >= HIGHL_ANGULAR_L: the table ang (an
+    ANGULAR_TABLES key or a 5-tuple) with every region at least HIGHL_ANGULAR_MIN'''
+    from socutils.dft import grids as sgrids
+    if HIGHL_ANGULAR_L is None:
+        return {}
+    table = sgrids.ANGULAR_TABLES[int(ang)] if isinstance(ang, (int, numpy.integer)) else tuple(ang)
+    out = {}
+    for j in range(mol.nbas):
+        if mol.bas_angular(j) >= HIGHL_ANGULAR_L:
+            out[mol.atom_pure_symbol(mol.bas_atom(j))] = tuple(max(int(n), HIGHL_ANGULAR_MIN) for n in table)
+    return out
+
+
 def _tight_shells(mol):
     '''{element: {atom: AO indices}} of the all-electron atoms' shells with a primitive exponent beyond
     RADIAL_CHECK_EXP'''
@@ -229,7 +252,8 @@ def _heavy_radial(mol, intacc):
 def make_grids(mol, **kwargs):
     '''the COSX grid (socutils.dft.grids.Grids with GRID, kwargs override), built with non0tab; all-electron heavy
     atoms on the radial grid of HEAVY_RADIAL_INTACC, and the elements whose tight shells the grid does not
-    integrate (RADIAL_NORM_TOL) on a finer one (unless kwargs give element_intacc)'''
+    integrate (RADIAL_NORM_TOL) on a finer one (unless kwargs give element_intacc); atoms with shells of
+    l >= HIGHL_ANGULAR_L on a finer angular table (unless kwargs give element_angular)'''
     from socutils.dft import grids as sgrids
     sgrids.use_fast_grid_sort()
     g = sgrids.Grids(mol)
@@ -241,6 +265,8 @@ def make_grids(mol, **kwargs):
     g.element_intacc = _heavy_radial(mol, dict(GRID, **kwargs).get('intacc', 0.))
     for k, v in dict(GRID, **kwargs).items():
         setattr(g, k, v)
+    if 'element_angular' not in kwargs:
+        g.element_angular = _highl_angular(mol, g.angular_grid)
     g.build(with_non0tab=True)
     if RADIAL_NORM_TOL and 'element_intacc' not in kwargs:
         tight = _tight_shells(mol)
