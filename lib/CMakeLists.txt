@@ -40,7 +40,9 @@ endif()
 # vhf/ integral kernels); results unchanged, J + K 3 - 8 % faster.
 # (-fno-trapping-math vectorises the F_m table loops too, with gathers: no
 # faster on Cascade Lake, same-node A/B.)
-set(CMAKE_C_FLAGS "-Wall -fno-math-errno ${CMAKE_C_FLAGS}")
+# implicit function declarations are errors: a call to a function compiled out by an #ifdef (e.g. an AVX-512
+# only kernel) otherwise links into a .so with an undefined symbol that fails to load at runtime
+set(CMAKE_C_FLAGS "-Wall -fno-math-errno -Werror=implicit-function-declaration ${CMAKE_C_FLAGS}")
 set(CMAKE_C_FLAGS_RELEASE "-O3 -funroll-loops")
 set(CMAKE_C_FLAGS_RELWITHDEBINFO "-O3 -funroll-loops -g")
 set(CMAKE_C_STANDARD 99)
