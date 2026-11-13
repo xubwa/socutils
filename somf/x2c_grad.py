@@ -127,7 +127,92 @@ def get_h1nuc_s1(mol):
         return h1, m1
     return get_h1_s1
 
-def get_Asq1(A, A1):
+# ---------------------------------------------------------------------------
+# The per-perturbation derivative of the X2C Hamiltonian (get_hfw1), JCP 135,
+# 084114 (2011).  Matrix square roots and inverse square roots from one eigh
+# each, eigenvalues below EIG_TOL dropped (pyscf.x2c.x2c._get_r): S^-1/2,
+# S^1/2 from the same eigenpairs, (S^-1/2 S~ S^-1/2)^-1/2; their derivatives
+# in the eigenbasis (vectorised); X1 = (CS1 - X0 CL1) CL^-1 by a solve.
+# HFW1_IMPL = 'sqrtm' runs the original steps (scipy sqrtm / inv, Python loops;
+# the _*_sqrtm functions below) as the reference.
+# ---------------------------------------------------------------------------
+EIG_TOL = 1e-14
+HFW1_IMPL = 'eigh'      # 'eigh' | 'sqrtm' (the original implementation)
+
+
+def _eigh_pos(a, tol=None):
+    '''eigenpairs of the Hermitian a with eigenvalues above tol (EIG_TOL)'''
+    e, v = numpy.linalg.eigh(a)
+    idx = e > (EIG_TOL if tol is None else tol)
+    return e[idx], v[:, idx]
+
+
+def _from_eig(e, v, f):
+    return (v * f(e)) @ v.conj().T
+
+
+def get_Asq1(A, A1, eig=None):
+    '''(A^1/2)^lambda, eig: the eigenpairs of A (_eigh_pos)'''
+    e, v = _eigh_pos(A) if eig is None else eig
+    return _sqrt_deriv(e, v, A1)
+
+
+def get_Asqi1(A, A1, eig=None):
+    '''(A^-1/2)^lambda = -A^-1/2 (A^1/2)^lambda A^-1/2'''
+    e, v = _eigh_pos(A) if eig is None else eig
+    return _invsqrt_deriv(e, v, A1)
+
+
+def get_C1(C0, mo_ene, D1, S4c1=None, cols=None):
+    '''C1 = C0 U1 (Ref. (32)-(33)); cols: the columns of C1 wanted (default all).  U1_ij = (D1_ij - S1_ij e_j) /
+    (e_j - e_i), 0 for |e_j - e_i| < 1e-5, U1_jj = -S1_jj / 2'''
+    N = C0.shape[1]
+    cols = numpy.arange(N) if cols is None else numpy.arange(N)[cols]
+    Cc = C0[:, cols]
+    D1mo = C0.conj().T @ D1 @ Cc
+    S1mo = None if S4c1 is None else C0.conj().T @ S4c1 @ Cc
+    e = mo_ene
+    den = e[None, cols] - e[:, None]
+    fac = numpy.where(abs(den) < 1e-5, 0, 1 / numpy.where(abs(den) < 1e-5, 1, den))
+    rows = cols
+    fac[rows, numpy.arange(len(cols))] = 0
+    U1 = D1mo * fac if S1mo is None else (D1mo - S1mo * e[None, cols]) * fac
+    if S1mo is not None:
+        U1[rows, numpy.arange(len(cols))] = -.5 * S1mo[rows, numpy.arange(len(cols))]
+    return C0 @ U1
+
+
+def get_X1(C0, C1, X0):
+    '''X1 = (CS1 - X0 CL1) CL^-1 (Ref. (31)); C1: all columns or the positive-energy ones'''
+    size = C0.shape[0] // 2
+    CL = C0[:size, size:]
+    if C1.shape[1] != size:
+        C1 = C1[:, size:]
+    m = C1[size:] - X0 @ C1[:size]
+    return numpy.linalg.solve(CL.T, m.T).T
+
+
+def get_R1(S0, ST, ST1, S1=None, seig=None, aeig=None):
+    '''R1 for R = S^-1/2 (S^-1/2 ST S^-1/2)^-1/2 S^1/2 (Ref. (34)), from the eigenpairs of S (seig) and
+    A = S^-1/2 ST S^-1/2 (aeig)'''
+    se, sv = _eigh_pos(S0) if seig is None else seig
+    Sq = _from_eig(se, sv, numpy.sqrt)
+    Si = _from_eig(se, sv, lambda x: 1 / numpy.sqrt(x))
+    if aeig is None:
+        aeig = _eigh_pos(Si @ ST @ Si)
+    ae, av = aeig
+    A1 = Si @ ST1 @ Si
+    if S1 is not None:
+        Si1 = _invsqrt_deriv(se, sv, S1)
+        A1 = A1 + Si1 @ ST @ Si + Si @ ST @ Si1
+    R1 = Si @ _invsqrt_deriv(ae, av, A1) @ Sq
+    if S1 is not None:
+        Ai = _from_eig(ae, av, lambda x: 1 / numpy.sqrt(x))
+        R1 = R1 + Si1 @ Ai @ Sq + Si @ Ai @ _sqrt_deriv(se, sv, S1)
+    return R1
+
+
+def _get_Asq1_sqrtm(A, A1):
     # A = B^2
     # B = A^{1/2}
     # return B^lambda
@@ -145,7 +230,7 @@ def get_Asq1(A, A1):
                 YB1Y[ii,jj] = YA1Y[ii,jj] / dominator
     return reduce(numpy.dot, (Avec, YB1Y, Avec.T.conj()))
 
-def get_Asqi1(A, A1):
+def _get_Asqi1_sqrtm(A, A1):
     # A = B^2
     # B = A^{1/2}
     # return (B^{-1})^lambda
@@ -169,7 +254,7 @@ def get_Asqi1(A, A1):
     # Ref (A1)
     return -1.0 * reduce(numpy.dot, (Binv, B1, Binv))
 
-def get_C1(C0, mo_ene, D1, S4c1=None):
+def _get_C1_sqrtm(C0, mo_ene, D1, S4c1=None):
     # Ref (32)-(33)
     D1_mo = reduce(numpy.dot,(C0.T.conj(), D1, C0))
     size = D1_mo.shape[0]
@@ -190,7 +275,7 @@ def get_C1(C0, mo_ene, D1, S4c1=None):
                     U1[ii,jj] = (D1_mo[ii,jj] - S1_mo[ii,jj]*mo_ene[jj])/denominator
     return numpy.dot(C0,U1)
 
-def get_X1(C0, C1, X0):
+def _get_X1_sqrtm(C0, C1, X0):
     # Ref (31)
     size = C0.shape[0]//2
     CL = C0[:size, size:]
@@ -215,7 +300,7 @@ def get_ST1(S4c0, X0, X1=None, S4c1=None):
         ST1 = ST1 + reduce(numpy.dot, (X0.T.conj(), S4c1[size:, size:], X0))
     return ST1
 
-def get_R1(S0, ST, ST1, S1=None):
+def _get_R1_sqrtm(S0, ST, ST1, S1=None):
     # Ref (34)
     # A = S^{-1/2}*ST*S^{-1/2}
     Ssq0 = scipy.linalg.sqrtm(S0)
@@ -226,12 +311,12 @@ def get_R1(S0, ST, ST1, S1=None):
     if S1 is None:
         A1 = reduce(numpy.dot, (Ssqinv0, ST1, Ssqinv0))
     else:
-        Ssqinv1 = get_Asqi1(S0, S1)
-        Ssq1 = get_Asq1(S0, S1)
+        Ssqinv1 = _get_Asqi1_sqrtm(S0, S1)
+        Ssq1 = _get_Asq1_sqrtm(S0, S1)
         A1 = reduce(numpy.dot, (Ssqinv0, ST1, Ssqinv0))\
            + reduce(numpy.dot, (Ssqinv1, ST, Ssqinv0))\
            + reduce(numpy.dot, (Ssqinv0, ST, Ssqinv1))
-    R1 = reduce(numpy.dot, (Ssqinv0, get_Asqi1(A, A1), Ssq0))
+    R1 = reduce(numpy.dot, (Ssqinv0, _get_Asqi1_sqrtm(A, A1), Ssq0))
     if(S1 is not None):
         Asqinv = scipy.linalg.inv(scipy.linalg.sqrtm(A))
         R1 = R1 + reduce(numpy.dot, (Ssqinv1, Asqinv, Ssq0))\
@@ -265,10 +350,16 @@ def get_hfw1(C4c0, X0, ST, S4c0, h4c0, mo_ene, R0, L0, h4c1, S4c1=None):
         S2c1 = None
     else:
         S2c1 = S4c1[:size2c,:size2c]
-    C4c1 = get_C1(C4c0, mo_ene, h4c1, S4c1)
-    X1 = get_X1(C4c0, C4c1, X0)
-    ST1 = get_ST1(S4c0, X0, X1, S4c1)
-    R1 = get_R1(S2c0, ST, ST1, S2c1)
+    if HFW1_IMPL == 'sqrtm':
+        C4c1 = _get_C1_sqrtm(C4c0, mo_ene, h4c1, S4c1)
+        X1 = _get_X1_sqrtm(C4c0, C4c1, X0)
+        ST1 = get_ST1(S4c0, X0, X1, S4c1)
+        R1 = _get_R1_sqrtm(S2c0, ST, ST1, S2c1)
+    else:
+        C4c1 = get_C1(C4c0, mo_ene, h4c1, S4c1, cols=slice(size2c, None))
+        X1 = get_X1(C4c0, C4c1, X0)
+        ST1 = get_ST1(S4c0, X0, X1, S4c1)
+        R1 = get_R1(S2c0, ST, ST1, S2c1)
     L1 = get_L1(h4c0, h4c1, X0, X1)
     R1LR = reduce(numpy.dot, (R1.T.conj(), L0, R0))
     RL1R = reduce(numpy.dot, (R0.T.conj(), L1, R0))
@@ -333,11 +424,11 @@ def hfw1_adjoint(C4c0, X0, ST, S4c0, h4c0, mo_ene, R0, L0, D):
 
     # R1 (get_R1): A = Si ST Si; A1 = Si ST1 Si + Si1 ST Si + Si ST Si1;
     # R1 = Si Asqi1(A, A1) Sq + Si1 Ai Sq + Si Ai Sq1
-    seig, svec = scipy.linalg.eigh(S2c0)
+    seig, svec = _eigh_pos(S2c0)
     Sq = (svec * numpy.sqrt(seig)) @ svec.conj().T
     Si = (svec / numpy.sqrt(seig)) @ svec.conj().T
     A = Si @ ST @ Si
-    aeig, avec = scipy.linalg.eigh(A)
+    aeig, avec = _eigh_pos(A)
     Ai = (avec / numpy.sqrt(aeig)) @ avec.conj().T
     GZ = Si @ GR1 @ Sq
     GA1 = _invsqrt_deriv(aeig, avec, GZ)
@@ -354,7 +445,7 @@ def hfw1_adjoint(C4c0, X0, ST, S4c0, h4c0, mo_ene, R0, L0, D):
 
     # X1 = [-X0, I] C0 U1[:, n:] P,  P = CL^+ (CL CL^+)^-1
     CL = C4c0[:n, n:]
-    P = CL.conj().T @ numpy.linalg.inv(CL @ CL.conj().T)
+    P = numpy.linalg.inv(CL)          # = CL^+ (CL CL^+)^-1, without squaring the condition number
     B = numpy.hstack((-X0, numpy.eye(n)))
     GU1p = C4c0.conj().T @ B.conj().T @ GX1 @ P.conj().T          # (N, n)
 
@@ -404,15 +495,17 @@ def x2c1e_hfw0_block(hLL, hSL, hLS, hSS, sLL, sSS):
     tx = reduce(numpy.dot, (hLS, x))
     l = h4c[:nao, :nao] + tx + tx.T.conj() + reduce(numpy.dot, (x.T.conj(), h4c[nao:, nao:], x))
 
-    sa = x2c._invsqrt(sLL)
-    sb = x2c._invsqrt(reduce(numpy.dot, (sa, st, sa)))
-    r = reduce(numpy.dot, (sa, sb, sa, sLL))
+    if HFW1_IMPL == 'sqrtm':
+        sa = x2c._invsqrt(sLL)
+        sb = x2c._invsqrt(reduce(numpy.dot, (sa, st, sa)))
+        r = reduce(numpy.dot, (sa, sb, sa, sLL))
+    else:
+        r = x2c._get_r(sLL, st)
     # hfw = reduce(numpy.dot, (r.T.conj(), l, r))
     return a, e, x, st, r, l, h4c, m4c
 
 def x2c1e_hfw1(mol, h4c1, s4c1=None, t=None, v=None, s=None, w=None):
     #assert (h4c1.shape[0] == 2*t.shape[0]), "The size of h4c1 does match the size of two-component integrals."
-    print('general x2c gradient driver')
     if(t is None):
         t = mol.intor('int1e_spsp_spinor') * .5
     if(v is None):
