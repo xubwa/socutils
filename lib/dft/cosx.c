@@ -2735,6 +2735,76 @@ int SOCDFTcosx_build_grad(void *p, int *atm, int *bas, double *env)
         return 1;
 }
 
+/*
+ * Testing: the potential integrals of the stored shell pair (I, J) (I >= J, the build's order) on n points,
+ * A (nab, n), and their derivatives with respect to the centre of shell I, dA (3, nab, n) (two-centre: from the
+ * gradient tables d E / d A_I, SOCDFTcosx_build_grad first; one-centre: of the atom, = minus the point
+ * derivative), by the plain path (boys_vec, hermite_R_vec, all primitive pairs, no far-field form); rows ab =
+ * a nJ + b.  Returns 0, or -1 if the pair is not stored (screened) or its tables are missing.
+ */
+int SOCDFTcosx_pair_ints(void *optp, int I, int J, const double *coords, int n, double *A, double *dA)
+{
+        CXOpt *opt = optp;
+        int ip, k, g, x, t, ab;
+        cx_tables();
+        for (ip = 0; ip < opt->npair; ip++)
+                if (opt->pairs[ip].I == I && opt->pairs[ip].J == J) break;
+        if (ip == opt->npair) return -1;
+        const CXPair *pp = opt->pairs + ip;
+        if (!pp->onec && !opt->eddata) return -1;
+        const int L = pp->L, nh = NH(L), nh1 = NH(L + 1), nab = pp->nI * pp->nJ;
+        const size_t sz = (size_t)nab * nh, szd = (size_t)3 * nab * nh1;
+        double *R = malloc(sizeof(double) * (size_t)nh1 * n), *Rwk = malloc(sizeof(double) * 2 * (size_t)nh1 * n);
+        double *S = malloc(sizeof(double) * (L + 2) * (size_t)n), *X = malloc(sizeof(double) * 4 * (size_t)n);
+        double *Y = X + n, *Z = Y + n, *T = Z + n;
+        memset(A, 0, sizeof(double) * nab * n);
+        memset(dA, 0, sizeof(double) * 3 * nab * n);
+        for (k = 0; k < pp->np; k++) {
+                const double p = opt->pp_p[pp->po + k], *P = opt->pp_P + 3 * (pp->po + k);
+                const double *E = opt->edata + pp->eo + sz * k;
+                double tmin = 1e300, tmax = 0, sc = 1;
+                for (g = 0; g < n; g++) {
+                        X[g] = P[0] - coords[g];
+                        Y[g] = P[1] - coords[n + g];
+                        Z[g] = P[2] - coords[2 * n + g];
+                        T[g] = p * (X[g] * X[g] + Y[g] * Y[g] + Z[g] * Z[g]);
+                        tmin = T[g] < tmin ? T[g] : tmin;
+                        tmax = T[g] > tmax ? T[g] : tmax;
+                }
+                boys_vec(S, n, T, L + 1, n, tmin, tmax);
+                int m;
+                for (m = 1; m <= L + 1; m++) {
+                        sc *= -2 * p;
+                        for (g = 0; g < n; g++) S[(size_t)m * n + g] *= sc;
+                }
+                hermite_R_vec(R, S, X, Y, Z, L + 1, n, Rwk);
+                for (ab = 0; ab < nab; ab++)
+                        for (t = 0; t < nh; t++) {
+                                const double e = E[(size_t)ab * nh + t], *r = R + (size_t)t * n;
+                                double *o = A + (size_t)ab * n;
+                                for (g = 0; g < n; g++) o[g] += e * r[g];
+                                if (pp->onec)
+                                        for (x = 0; x < 3; x++) {
+                                                const double *r1 = R + (size_t)h_idx[h_t[t] + (x == 0)][h_u[t] + (x == 1)][h_v[t] + (x == 2)] * n;
+                                                double *d = dA + ((size_t)x * nab + ab) * n;
+                                                for (g = 0; g < n; g++) d[g] += e * r1[g];
+                                        }
+                        }
+                if (!pp->onec) {
+                        const double *Ed = opt->eddata + opt->edo[ip] + szd * k;
+                        for (x = 0; x < 3; x++)
+                                for (ab = 0; ab < nab; ab++)
+                                        for (t = 0; t < nh1; t++) {
+                                                const double e = Ed[((size_t)x * nab + ab) * nh1 + t], *r = R + (size_t)t * n;
+                                                double *d = dA + ((size_t)x * nab + ab) * n;
+                                                for (g = 0; g < n; g++) d[g] += e * r[g];
+                                        }
+                }
+        }
+        free(R); free(Rwk); free(S); free(X);
+        return 0;
+}
+
 /* Mm (nab, nh) = W (nab, n) R (nh, n)^T: dot products for the small cases (a GEMM call costs more
  * there), GEMM beyond */
 static int cx_wdr = 1;     /* w_dot_r: 1 the eight-accumulator loops, 0 dgemm for the larger blocks */
