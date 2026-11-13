@@ -166,7 +166,8 @@ def _rij_proxy(mf, mol):
 def _pieces(aa, ab, ba, bb, cplx, kramers, hermi):
     '''the real matrices whose K make up K of the GHF density: [(block, part, kind, (n, nao, nao))], kind
     'S' symmetric, 'A' anti-symmetric, 'G' general.  Hermitian: Re D_aa, Re D_bb symmetric, Im antisymmetric;
-    time-reversal even (D_bb = D_aa^*, D_ba = -D_ab^*, Hermitian) also D_ab^T = -D_ab.'''
+    time-reversal even (D_bb = D_aa^*, D_ba = -D_ab^*): D_aa and D_ab only (Hermitian: also D_ab^T = -D_ab), any
+    hermi -- the TR-adapted trial densities of a Kramers-restricted response carry half the pieces.'''
     out = []
     g = hermi != 1
     out.append(('aa', 're', 'G' if g else 'S', aa.real))
@@ -176,11 +177,11 @@ def _pieces(aa, ab, ba, bb, cplx, kramers, hermi):
         out.append(('aa', 'im', 'G' if g else 'A', aa.imag))
         if not kramers:
             out.append(('bb', 'im', 'G' if g else 'A', bb.imag))
-    kab = 'A' if kramers else ('G')
+    kab = 'A' if kramers and not g else 'G'
     out.append(('ab', 're', kab, ab.real))
     if cplx:
         out.append(('ab', 'im', kab, ab.imag))
-    if g:
+    if g and not kramers:
         out.append(('ba', 're', 'G', ba.real))
         if cplx:
             out.append(('ba', 'im', 'G', ba.imag))
@@ -196,7 +197,9 @@ def _assemble(pieces, ks, n, nao, dtype, kramers, hermi):
         else:
             blk[b] = 1j * k + blk.get(b, 0)
     if kramers:
+        # K is real-linear: K[D^*] = K[D]^*, so a time-reversal even density has K_bb = K_aa^*, K_ba = -K_ab^*
         blk['bb'] = blk['aa'].conj()
+        blk['ba'] = -blk['ab'].conj()
     if 'ba' not in blk:
         blk['ba'] = blk['ab'].conj().transpose(0, 2, 1)
     vk = numpy.zeros((n, 2 * nao, 2 * nao), dtype=dtype)
@@ -287,6 +290,8 @@ def _kobj(mf, st, level):
 # one-sided fitted K = P K_plain makes tr(X^T K[Y]) unsymmetric, so the response matrix A is not Hermitian and the
 # Davidson residual stalls (AuH x2c-SVPall PBE0 TDA: |r| ~ 4e-6).  Both densities in one multi-density pass.
 RESPONSE_SYMMETRIC = True
+RESPONSE_GRID = 2       # COSX grid level of the response K (GRIDX2, the SCF's)
+RESPONSE_MEM_FRAC = .4  # of the free max_memory for the chunks of response densities (the COSX passes take more)
 
 
 def _cosx_k(k, pieces, n, nao, dtype, kramers, hermi, tol=None, symmetric=False):
@@ -339,10 +344,26 @@ def get_k_cosx(mf, mol, dm, hermi, aa, ab, ba, bb, cplx, kramers):
     st = _state(mf, mol)
     pieces = _pieces(aa, ab, ba, bb, cplx, kramers, hermi)
     if n != 1 or hermi != 1:
-        k = _kobj(mf, st, 2)
+        k = _kobj(mf, st, RESPONSE_GRID)
         if k is None:
             return _exact_k(_proxy(mf, mol), mol, pieces, n, nao, dm.dtype, kramers, hermi)
-        return _cosx_k(k, pieces, n, nao, dm.dtype, kramers, hermi, symmetric=RESPONSE_SYMMETRIC and hermi != 1)
+        sym = RESPONSE_SYMMETRIC and hermi != 1
+        # the densities in chunks within RESPONSE_MEM_FRAC of the free max_memory: per density its real pieces
+        # (the stack, P^T X and the doubled plain K of the symmetric form, the fitted K) and the assembled K
+        npc = len(pieces)
+        per = ((6 if sym else 3) * npc + 16) * nao * nao * 8e-6
+        free = max(200, mf.max_memory - lib.current_memory()[0])
+        nb = max(1, min(n, int(RESPONSE_MEM_FRAC * free / per)))
+        if nb >= n:
+            return _cosx_k(k, pieces, n, nao, dm.dtype, kramers, hermi, symmetric=sym)
+        logger.info(mf, 'spinor COSX: %d response densities (%d real pieces each) in chunks of %d '
+                    '(%.0f MB each, %.0f MB free)', n, npc, nb, nb * per, free)
+        vk = numpy.empty((n, 2 * nao, 2 * nao), dtype=numpy.result_type(dm.dtype, numpy.double))
+        for i0 in range(0, n, nb):
+            sl = slice(i0, i0 + nb)
+            pc = _pieces(aa[sl], ab[sl], ba[sl], bb[sl], cplx, kramers, hermi)
+            vk[sl] = _cosx_k(k, pc, len(range(n)[sl]), nao, dm.dtype, kramers, hermi, symmetric=sym)
+        return vk
     last = st['last']
     if last is None:
         lev = 1 if cosx.SCF_GRID_SWITCH > 0 else 2
@@ -458,7 +479,8 @@ def get_jk_ghf(mf, mol, dm, hermi=1, with_j=True, with_k=True):
     aa, ab = dms[:, :nao, :nao], dms[:, :nao, nao:]
     ba, bb = dms[:, nao:, :nao], dms[:, nao:, nao:]
     cplx = numpy.iscomplexobj(dms)
-    kramers = hermi == 1 and _is_kramers_even(aa, ab, ba, bb)
+    # time-reversal even (any hermi: also the TR-adapted transition densities of a Kramers-restricted response)
+    kramers = _is_kramers_even(aa, ab, ba, bb)
     m = mode(mf)
     if m:
         out = _get_jk_fast(mf, mol, dms, hermi, with_j, with_k, m, aa, ab, ba, bb, cplx, kramers)
@@ -470,6 +492,18 @@ def get_jk_ghf(mf, mol, dm, hermi=1, with_j=True, with_k=True):
         vj = _get_jk_fast(mf, mol, dms, hermi, True, False, 'cosx', aa, ab, ba, bb, cplx, kramers)[0]
         logger.timer_debug1(mf, 'two-component J (one real build)', *t0)
         return vj.reshape(shape), None
+    if kramers and hermi != 1:
+        # TR-even non-Hermitian densities (Kramers-adapted response): J of one real density, K of the D_aa, D_ab
+        # pieces (half of the general case)
+        vj = vk = None
+        if with_j:
+            vj = _get_jk_fast(mf, mol, dms, hermi, True, False, 'cosx', aa, ab, ba, bb, cplx, kramers)[0]
+        if with_k:
+            vk = _exact_k(_proxy(mf, mol), mol, _pieces(aa, ab, ba, bb, cplx, True, hermi), n, nao, dms.dtype,
+                          True, hermi)
+        logger.timer_debug1(mf, 'two-component J/K (TR-even, exact)', *t0)
+        return tuple(None if v is None else v.reshape(shape) for v in (vj, vk))
+    kramers = kramers and hermi == 1
     p = _proxy(mf, mol)
 
     # symmetric real parts: J and K in one hermi=1 build (hermi=0 densities: general builds)
@@ -545,7 +579,7 @@ def _get_jk_fast(mf, mol, dms, hermi, with_j, with_k, m, aa, ab, ba, bb, cplx, k
         dj = aa.real + bb.real
         if hermi != 1:
             dj = (dj + dj.transpose(0, 2, 1)) * .5
-        if cplx and hermi != 1:
+        if cplx and hermi != 1 and not kramers:
             di = aa.imag + bb.imag
             dj = numpy.concatenate([dj, (di + di.transpose(0, 2, 1)) * .5])
         dj = numpy.ascontiguousarray(dj)

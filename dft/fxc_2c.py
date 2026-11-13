@@ -48,6 +48,9 @@ def use_mo(nao, nocc, nvir):
         return nocc < MO_RATIO * nao
     return False
 ISO_TOL = 1e-12         # relative size of the non-isotropic blocks of the cached kernel accepted as zero
+MEM_FRAC = .5           # of the free max_memory for the chunks of trial densities (nr_fxc)
+ZERO_TOL = 1e-10        # relative size below which a channel part of all trial densities counts as zero (skipped;
+                        # as spinor_jk.KRAMERS_TOL: TR-even BiPh3 trial densities carry ~1e-12 of the vanishing parts)
 
 
 def isotropic_kernel(fxc, xctype):
@@ -196,14 +199,51 @@ def nr_fxc(ni, mol, grids, xc_code, dm0, dms, hermi=0, rho0=None, vxc=None, fxc=
     nao = mol.nao
     if grids.non0tab is None:
         grids.build(with_non0tab=True)
-    dn, dmg = channels(d)
-    dn = numpy.ascontiguousarray(dn.reshape(nset * 2, nao, nao))
-    dmg = numpy.ascontiguousarray(dmg.reshape(nset * 6, nao, nao))
-    vn, vm = _batched_v(ni, mol, grids, [(dn, iso[0]), (dmg, iso[1])], xctype,
-                        max(1000, max_memory))
-    v = assemble(vn.reshape(nset, 2, nao, nao), vm.reshape(nset, 3, 2, nao, nao), nao)
+    # trial densities in chunks within MEM_FRAC of the free max_memory: per density the channels, their group
+    # copies, the channel potentials and the assembled GHF matrix (~48 nao^2 doubles)
+    per = 48 * nao * nao * 8e-6
+    free = max(200, max_memory - lib.current_memory()[0] - nset * 8 * nao * nao * 8e-6)
+    nb = max(1, min(nset, int(MEM_FRAC * free / per)))
+    if nb < nset:
+        logger.info(ni, 'two-component f_xc: %d densities in chunks of %d (%.0f MB each, %.0f MB free)',
+                    nset, nb, nb * per, free)
+    v = numpy.empty((nset, 2 * nao, 2 * nao), dtype=numpy.complex128)
+    for i0 in range(0, nset, nb):
+        v[i0:i0 + nb] = _nr_fxc_chunk(ni, mol, grids, d[i0:i0 + nb], iso, xctype, max_memory)
     logger.timer_debug1(ni, 'two-component f_xc (batched, %d densities)' % nset, *t0)
     return v.reshape(shape[:-2] + v.shape[-2:])
+
+
+def _nr_fxc_chunk(ni, mol, grids, d, iso, xctype, max_memory):
+    '''the response of the GHF densities d (n, 2 nao, 2 nao): one batched AO pass'''
+    nset = d.shape[0]
+    nao = mol.nao
+    dn, dmg = channels(d)
+    # the Re / Im parts of the density and of the magnetisation channels that vanish for every density are
+    # skipped: a time-reversal even transition density (Kramers-adapted response) has Im n = 0 and Re m = 0, half
+    # the channels
+    scale = max(abs(dn).max(), abs(dmg).max(), 1e-300)
+    tol = ZERO_TOL * scale
+    groups, slots = [], []
+    for part in range(2):
+        x = dn[:, part]
+        if abs(x).max() > tol:
+            groups.append((numpy.ascontiguousarray(x), iso[0]))
+            slots.append(('n', part))
+        x = dmg[:, :, part]
+        if abs(x).max() > tol:
+            groups.append((numpy.ascontiguousarray(x.reshape(nset * 3, nao, nao)), iso[1]))
+            slots.append(('m', part))
+    vn = numpy.zeros((nset, 2, nao, nao))
+    vm = numpy.zeros((nset, 3, 2, nao, nao))
+    if groups:
+        vs = _batched_v(ni, mol, grids, groups, xctype, max(1000, max_memory))
+        for (kind, part), v in zip(slots, vs):
+            if kind == 'n':
+                vn[:, part] = v
+            else:
+                vm[:, :, part] = v.reshape(nset, 3, nao, nao)
+    return assemble(vn, vm, nao)
 
 
 def _mo_response_numpy(ni, mol, grids, iso, orbo, orbv, zs, xctype, max_memory=2000):
