@@ -617,6 +617,13 @@ class TDA(_KernelXCMixin, _ghf.TDA):
     # (pyscf.tdscf._lr_eig.eigh: MAX_SPACE_INC vectors every iteration, residuals of up to max_space Ritz vectors).
     davidson = 'locked'
     max_space = None            # lr_locked's subspace bound (None: max(8 nroots, 40))
+    # Time-reversal adaptation of a Kramers-restricted closed-shell reference: A commutes with the antiunitary
+    # time reversal K (K^2 = +1 on particle-hole excitations), so every root has a TR-even eigenvector z = K z and
+    # the solve runs in the real space of TR-even vectors.  Their transition densities are TR-even (D_bb = D_aa^*,
+    # D_ba = -D_ab^*: n real, m imaginary): half the f_xc channels, J densities and K pieces (socutils.dft.fxc_2c,
+    # scf.spinor_jk).  'auto': where the reference's orbitals are Kramers paired (checked); True / False force.
+    kramers = 'auto'
+    KRAMERS_TOL = 1e-6
     nbuffer = None              # extra roots of the locked solve (None: max(2, nstates // 2))
 
     def kernel(self, x0=None, nstates=None):
@@ -628,6 +635,43 @@ class TDA(_KernelXCMixin, _ghf.TDA):
         # response xc / collinear scheme, as in _KernelXCMixin.kernel
         with self._response_env():
             return self._direct_solve(nstates)
+
+    def _tr_operator(self):
+        '''(K, (nocc, nvir)): time reversal on TDA amplitudes z (..., nocc, nvir), K z = T_o^* z^* T_v^T with
+        K phi_q = sum_p phi_p T_pq on the reference orbitals; None when the orbitals are not Kramers paired (T
+        not block diagonal / unitary in the occupied and virtual spaces) or the reference is not a spinor one'''
+        mf = self._scf
+        mol = mf.mol
+        if not hasattr(mol, 'sph2spinor_coeff') or mf.mo_coeff is None or mol.spin != 0:
+            return None
+        mask = self.get_frozen_mask()
+        C = numpy.asarray(mf.mo_coeff)[:, mask]
+        occ = numpy.asarray(mf.mo_occ)[mask]
+        nao = mol.nao_nr()
+        try:
+            U = numpy.vstack(mol.sph2spinor_coeff())
+        except Exception:
+            return None
+        if C.shape[0] != U.shape[1]:
+            return None
+        Cg = U @ C
+        KCg = numpy.vstack([-Cg[nao:].conj(), Cg[:nao].conj()])
+        s = mol.intor_symmetric('int1e_ovlp')
+        SKC = numpy.vstack([s @ KCg[:nao], s @ KCg[nao:]])
+        T = Cg.conj().T @ SKC
+        o, v = occ > 0, occ == 0
+        To, Tv = T[o][:, o], T[v][:, v]
+        tol = self.KRAMERS_TOL
+        if (abs(T[o][:, v]).max(initial=0) > tol or abs(T[v][:, o]).max(initial=0) > tol
+                or abs(To @ To.conj().T - numpy.eye(len(To))).max() > tol
+                or abs(Tv @ Tv.conj().T - numpy.eye(len(Tv))).max() > tol):
+            return None
+        Toc = numpy.ascontiguousarray(To.conj())
+        TvT = numpy.ascontiguousarray(Tv.T)
+
+        def k(z):
+            return lib.einsum('ji,xia,ab->xjb', Toc, numpy.asarray(z).conj(), TvT)
+        return k, (int(o.sum()), int(v.sum()))
 
     def _locked_solve(self, x0=None, nstates=None):
         '''pyscf's TDA.kernel with the locking Davidson of socutils.tdscf.lr_locked'''
@@ -657,15 +701,32 @@ class TDA(_KernelXCMixin, _ghf.TDA):
             idx = numpy.where(w > thr)[0]
             return w[idx], v[:, idx]
 
+        tr = self._tr_operator() if self.kramers else None
+        if self.kramers is True and tr is None:
+            raise RuntimeError('kramers=True: the reference orbitals are not Kramers paired')
+        project = None
+        if tr is not None:
+            log.info('TDA: time-reversal adapted (TR-even trial vectors, real subspace)')
+            nocc_, nvir_ = tr[1]
+
+            def project(xs):
+                z = numpy.asarray(xs).reshape(-1, nocc_, nvir_)
+                return ((z + tr[0](z)) * .5).reshape(len(z), -1)
         if x0 is None:
-            # a wider guess than nstates: a minimal one can miss roots
-            x0 = self.get_init_guess(mf, 2 * nstates + 4)
+            if tr is not None:
+                # P(e) and P(i e) span the TR-even space of the unit vectors e of the guess
+                g = numpy.asarray(self.get_init_guess(mf, 2 * nstates + 4), dtype=numpy.complex128)
+                x0 = numpy.vstack([g, 1j * g])
+            else:
+                # a wider guess than nstates: a minimal one can miss roots (AuH x2c-SVPall: the 6th root)
+                x0 = self.get_init_guess(mf, 2 * nstates + 4)
         # buffer roots, converged too and dropped: with locking a root missing from the subspace would stay
         # missing once the lowest nstates Ritz roots converge (AuH x2c-SVPall PBE0: the 3.826 eV root under
         # the 3.877 eV pair at nstates = 6; pyscf's lr_eigh misses the 3.803 eV pair at nstates = 4)
         nbuf = self.nbuffer if self.nbuffer is not None else max(2, nstates // 2)
         conv, e, x1 = lr_locked.eigh(vind, x0, precond, nstates + nbuf, tol=self.conv_tol, lindep=self.lindep,
-                                     max_cycle=self.max_cycle, max_space=self.max_space, pick=pick, log=log)
+                                     max_cycle=self.max_cycle, max_space=self.max_space, pick=pick, log=log,
+                                     project=project, real=tr is not None)
         conv, e, x1 = conv[:nstates], e[:nstates], x1[:nstates]
         self.converged, self.e = conv, e
         mo_occ = mf.mo_occ[self.get_frozen_mask()]

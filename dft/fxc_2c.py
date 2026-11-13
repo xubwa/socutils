@@ -48,6 +48,7 @@ def use_mo(nao, nocc, nvir):
         return nocc < MO_RATIO * nao
     return False
 ISO_TOL = 1e-12         # relative size of the non-isotropic blocks of the cached kernel accepted as zero
+ZERO_TOL = 1e-13        # relative size below which a channel part of all trial densities counts as zero (skipped)
 
 
 def isotropic_kernel(fxc, xctype):
@@ -197,11 +198,31 @@ def nr_fxc(ni, mol, grids, xc_code, dm0, dms, hermi=0, rho0=None, vxc=None, fxc=
     if grids.non0tab is None:
         grids.build(with_non0tab=True)
     dn, dmg = channels(d)
-    dn = numpy.ascontiguousarray(dn.reshape(nset * 2, nao, nao))
-    dmg = numpy.ascontiguousarray(dmg.reshape(nset * 6, nao, nao))
-    vn, vm = _batched_v(ni, mol, grids, [(dn, iso[0]), (dmg, iso[1])], xctype,
-                        max(1000, max_memory))
-    v = assemble(vn.reshape(nset, 2, nao, nao), vm.reshape(nset, 3, 2, nao, nao), nao)
+    # the Re / Im parts of the density and of the magnetisation channels that vanish for every density are
+    # skipped: a time-reversal even transition density (Kramers-adapted response) has Im n = 0 and Re m = 0, half
+    # the channels
+    scale = max(abs(dn).max(), abs(dmg).max(), 1e-300)
+    tol = ZERO_TOL * scale
+    groups, slots = [], []
+    for part in range(2):
+        x = dn[:, part]
+        if abs(x).max() > tol:
+            groups.append((numpy.ascontiguousarray(x), iso[0]))
+            slots.append(('n', part))
+        x = dmg[:, :, part]
+        if abs(x).max() > tol:
+            groups.append((numpy.ascontiguousarray(x.reshape(nset * 3, nao, nao)), iso[1]))
+            slots.append(('m', part))
+    vn = numpy.zeros((nset, 2, nao, nao))
+    vm = numpy.zeros((nset, 3, 2, nao, nao))
+    if groups:
+        vs = _batched_v(ni, mol, grids, groups, xctype, max(1000, max_memory))
+        for (kind, part), v in zip(slots, vs):
+            if kind == 'n':
+                vn[:, part] = v
+            else:
+                vm[:, :, part] = v.reshape(nset, 3, nao, nao)
+    v = assemble(vn, vm, nao)
     logger.timer_debug1(ni, 'two-component f_xc (batched, %d densities)' % nset, *t0)
     return v.reshape(shape[:-2] + v.shape[-2:])
 
