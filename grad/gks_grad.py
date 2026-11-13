@@ -70,9 +70,16 @@ def get_veff(ks_grad, mol=None, dm=None):
     return _add_jk(ks_grad, mol, dm, vxc, exc, omega, alpha, hyb)
 
 
+def _full_response(ks_grad):
+    '''grid_response of the GHF path: True / False; 'auto' (the fast classes' default, socutils.grad.kr_fast /
+    rhf_fast) is the fixed grid here'''
+    g = ks_grad.grid_response
+    return False if isinstance(g, str) else bool(g)
+
+
 def _vxc_terms(ks_grad, ni, mol, grids, xc, dm, max_memory):
     mf = ks_grad.base
-    if ks_grad.grid_response:
+    if _full_response(ks_grad):
         exc, vxc = get_vxc_full_response(ni, mol, grids, mf.xc, dm,
                                          max_memory=max_memory,
                                          verbose=ks_grad.verbose)
@@ -311,12 +318,14 @@ def get_vxc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
 
 class Gradients(ghf_grad.Gradients):
 
-    grid_response = getattr(__config__, 'grad_uks_Gradients_grid_response', False)
+    # 'auto': the Kramers-restricted fast path (socutils.grad.kr_fast) as rhf_fast (the XC grid response where
+    # the partition is supported, COSX's near convergence); the GHF path keeps the fixed grid for 'auto'
+    grid_response = 'auto'
 
     def __init__(self, mf):
         ghf_grad.Gradients.__init__(self, mf)
         self.grids = None
-        self.grid_response = False
+        self.grid_response = 'auto'
         self._keys = self._keys.union(['grid_response', 'grids'])
 
     def dump_flags(self, verbose=None):
@@ -333,7 +342,7 @@ class Gradients(ghf_grad.Gradients):
         method, the grid response in DFT numerical integration can be put in
         this function.
         '''
-        if self.grid_response:
+        if _full_response(self):
             vhf = envs['vhf']
             log = envs['log']
             log.debug('grids response for atom %d %s',
