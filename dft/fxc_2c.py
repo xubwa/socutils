@@ -48,7 +48,8 @@ def use_mo(nao, nocc, nvir):
         return nocc < MO_RATIO * nao
     return False
 ISO_TOL = 1e-12         # relative size of the non-isotropic blocks of the cached kernel accepted as zero
-ZERO_TOL = 1e-13        # relative size below which a channel part of all trial densities counts as zero (skipped)
+ZERO_TOL = 1e-10        # relative size below which a channel part of all trial densities counts as zero (skipped;
+                        # as spinor_jk.KRAMERS_TOL: TR-even BiPh3 trial densities carry ~1e-12 of the vanishing parts)
 
 
 def isotropic_kernel(fxc, xctype):

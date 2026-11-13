@@ -69,8 +69,8 @@ class KnowValues(unittest.TestCase):
         self.assertTrue(spinor_jk._is_kramers_even(aa, ab, ba, bb))
         self.assertEqual(len(spinor_jk._pieces(aa, ab, ba, bb, True, True, 0)), 4)
         dn, dm_ = fxc_2c.channels(dmg)
-        self.assertLess(abs(dn[:, 1]).max(), 1e-13 * abs(dn).max())        # Im n = 0
-        self.assertLess(abs(dm_[:, :, 0]).max(), 1e-13 * abs(dm_).max())   # Re m = 0
+        self.assertLess(abs(dn[:, 1]).max(), 1e-10 * abs(dn).max())        # Im n = 0
+        self.assertLess(abs(dm_[:, :, 0]).max(), 1e-10 * abs(dm_).max())   # Re m = 0
 
 
 if __name__ == '__main__':
