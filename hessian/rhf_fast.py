@@ -467,6 +467,10 @@ CPHF_DISK_ARRAYS = 4   # nmo nocc arrays per perturbation in memory then (A x, t
 CPHF_RESP_MIN = 10     # densities per response call the batch must leave room for at its first Krylov cycle when
                        # the trial vectors are on disk; the calls then take what the cycle's arrays leave (the
                        # directions still active), see _fx_chunked
+CPHF_COSX_FIXED_SCALE = .55  # the COSX pass's fixed buffers against cosx.COSX.multi_mem (measured peaks of one response
+                             # call, fixed + N per density, def2-SVP 16 threads: trpn_1_5 0.62 GB / 27 MB against the
+                             # model's 1.6 GB / 39 MB, trpn_1_10 2.8 GB / 103 MB against 5.9 GB / 125 MB; 0.47 at
+                             # most, + 15 %; the per-density model is kept, 21-46 % above)
 CPHF_MEM_MARGIN = .05  # the share of the budget (mf.max_memory) the CPHF holds back for the allocator's slack
 CPHF_J_MEM = 2000      # MB of the semi-direct RI-J's integral blocks under the CPHF budget
 CPHF_XC_MEM = 2000     # max_memory of the batched XC response under the CPHF budget (its AO blocks ~ .2 of it)
@@ -501,7 +505,7 @@ def _cphf_budget(mf, nao, nmo, nocc, natm, fx, budget, mem_now):
                     per, fix = c.multi_mem(nao, getattr(c, '_kept_max', CPHF_KEPT_PRIOR))
                 finally:
                     cosx.set_multi_float(fl)
-                k_per, k_fix = max(k_per, per), max(k_fix, fix)
+                k_per, k_fix = max(k_per, per), max(k_fix, CPHF_COSX_FIXED_SCALE * fix)
     fxd = getattr(fx, 'ao_arrays', FX_AO_ARRAYS - 2.5) * a2 + max(k_per, 2.5 * a2 + 8. * nao * FXC_SUBBLOCK / 1e6)
     # the semi-direct RI-J's blocks only when _rij_get_j takes that path (no resident three-index tensor)
     j_mem = CPHF_J_MEM if (_rij_engine(mf) is not None and _rij_cderi(mf) is None
@@ -539,7 +543,7 @@ def _cphf_budget(mf, nao, nmo, nocc, natm, fx, budget, mem_now):
     if avail < 3 * (kry + fxd):
         logger.warn(mf, 'CPHF: the memory budget (%.0f MB) is short by %.0f MB of one atom per batch', budget,
                     3 * (kry + fxd) - avail)
-    mem = {'fx': nf, 'disk': disk}
+    mem = {'fx': nf, 'disk': disk, 'plan': mem_now + fixed + 3 * blk * kry + nf * fxd}
     if disk:
         # for _fx_chunked: the memory, per active direction, per density; the COSX pass's fixed / per density
         mem['free'] = (avail, kry, fxd, k_fix, k_per)
@@ -624,10 +628,11 @@ def _solve_mo1_occ(mf, mo_energy, mo_coeff, mo_occ, h1c, fx, atmlst=None, max_me
                 e1s[ia] = e1[k].reshape(3, nocc, nocc)
             mo1 = e1 = None
             ib += 1
-            logger.info(mf, 'CPHF batch %d (atoms %d-%d of %d%s): %.1f s, %d Krylov cycles, %d trial vectors, peak '
-                        'RSS %.0f MB', ib, ia0, ia1 - 1, natm, ', trial vectors on disk' if mem.get('disk') else '',
-                        logger.perf_counter() - t0[1],
-                        _KRYLOV_STATS.get('cycles', 0), _KRYLOV_STATS.get('vectors', 0), _peak_rss())
+            logger.info(mf, 'CPHF batch %d (atoms %d-%d of %d%s): %.1f s, %d Krylov cycles, %d trial vectors; memory '
+                        'planned %.0f MB, sampled after the response calls %.0f MB (process peak %.0f MB)', ib, ia0,
+                        ia1 - 1, natm, ', trial vectors on disk' if mem.get('disk') else '',
+                        logger.perf_counter() - t0[1], _KRYLOV_STATS.get('cycles', 0),
+                        _KRYLOV_STATS.get('vectors', 0), mem.get('plan', 0), _CPHF_MEM.get('rss', 0), _peak_rss())
             # in use for the next plan: as at the start plus the solutions written so far
             mem_now += 3 * (ia1 - ia0) * 8. * (nao * nocc + nocc * nocc) / 1e6
             ia0 = ia1
@@ -2404,7 +2409,7 @@ def _fx_chunked(fx, mf, nao, nmo, nocc):
         nb = CPHF_FX_CHUNK
         if nb is None:
             nb = _CPHF_MEM.get('fx')
-            if 'free' in _CPHF_MEM:
+            if 'free' in _CPHF_MEM and _CPHF_MEM['free'] is not None:
                 # the trial vectors on disk: what the cycle's arrays of these nset directions leave
                 avail_, per_dir, per_dm, kf_, kp_ = _CPHF_MEM['free']
                 nb = max(nb, int((avail_ - per_dir * nset) / per_dm))
@@ -2414,13 +2419,24 @@ def _fx_chunked(fx, mf, nao, nmo, nocc):
             avail = max(.5 * mf.max_memory, mf.max_memory - lib.current_memory()[0])
             nb = max(1, int(avail * 1e6 / (FX_AO_ARRAYS * 8. * nao * nao)))
         if nb >= nset:
-            return fx(mo1)
+            out = fx(mo1)
+            _sample_rss()
+            return out
         out = numpy.empty((nset, nmo, nocc))
         for i in range(0, nset, nb):
             out[i:i + nb] = numpy.asarray(fx(mo1[i:i + nb])).reshape(-1, nmo, nocc)
+            _sample_rss()
         logger.debug1(mf, 'CPHF response of %d densities in chunks of %d', nset, nb)
         return out
+    if hasattr(fx, "ao_arrays"):
+        fxc.ao_arrays = fx.ao_arrays      # the planner reads it (the lean response holds dm1 and V only)
     return fxc
+
+
+def _sample_rss():
+    '''the largest RSS seen after a response call of the CPHF batch (for the plan-vs-measured line)'''
+    if 'plan' in _CPHF_MEM:
+        _CPHF_MEM['rss'] = max(_CPHF_MEM.get('rss', 0), lib.current_memory()[0])
 
 
 def _df_get_j(with_df, dm):
