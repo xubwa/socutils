@@ -82,7 +82,7 @@ void SOCDFTcosx_stats(double *out, int reset)
 /* -DCX_PROFILE: per pair degree L of the K kernel, [0] rdtsc cycles of the near-field primitive pairs, [1] their
  * points, [2] cycles of the pairs' integrals in all (near + far field), [3] cycles of their contraction (summed
  * over threads) */
-static double cx_lprof[4][2 * C2S_LMAX + 3];
+static double cx_lprof[12][2 * C2S_LMAX + 3];
 void SOCDFTcosx_lprof(double *out, int reset)
 {
         memcpy(out, cx_lprof, sizeof(cx_lprof));
@@ -121,15 +121,28 @@ int SOCDFTcosx_mfloat(void)
 #endif
 }
 void SOCDFTcosx_set_full(int f) { cx_full = f; }
+static int cx_cls = 1;       /* one-centre pairs by parity class in the K kernel (SOCDFTcosx_set_opt(4, .)) */
+static int cx_gcls = 1;      /* and in the gradient kernel (SOCDFTcosx_set_opt(6, .)) */
+static int cx_rmax = 6;      /* the fused cxr kernels of the two-centre pairs up to this degree (SOCDFTcosx_set_opt(5, .));
+                              * beyond, R and one GEMM (HgCl2 dyall-v4z, cycles per point L = 7 / 8: 1516 / 2727 fused,
+                              * 1047 / 1767 GEMM; L = 6 525 / 571) */
 void SOCDFTcosx_set_opt(int which, int v)
 {
         if (which == 0) cx_full = v;
         if (which == 1) cx_pairdamp = v;
         if (which == 2) cx_mfloat = v;
+        if (which == 4) cx_cls = v;
+        if (which == 5) cx_rmax = v;
+        if (which == 6) cx_gcls = v;
 }
 static int h_t[CX_NHMAX], h_u[CX_NHMAX], h_v[CX_NHMAX], h_deg[CX_NHMAX];
 static int h_dir[CX_NHMAX], h_m1[CX_NHMAX], h_m2[CX_NHMAX], h_c[CX_NHMAX];
 static int h_idx[CX_DMAX + 1][CX_DMAX + 1][CX_DMAX + 1];
+/* the Hermite components by parity class c = (t & 1) | (u & 1) << 1 | (v & 1) << 2: hc_list[c] their indices
+ * (ascending, so by degree), hc_cnt[L][c] how many of degree <= L */
+static int hc_list[8][CX_NHMAX], hc_cnt[CX_DMAX + 1][8];
+/* hc_sh[x][c][j]: the index of hc_list[c][j] raised by one in direction x (-1 beyond CX_DMAX) */
+static int hc_sh[3][8][CX_NHMAX];
 
 #define BOYS_TMAX 40.
 #define BOYS_NT 1281                     /* grid t_k = k / 32 */
@@ -183,6 +196,28 @@ static void cx_tables(void)
                         h_m1[n] = h_idx[m1[0]][m1[1]][m1[2]];
                         h_c[n] = c[k] - 1;
                         h_m2[n] = c[k] >= 2 ? h_idx[m2[0]][m2[1]][m2[2]] : 0;
+                }
+                {
+                        int cnt[8] = {0}, c, L_;
+                        for (n = 0; n < CX_NHMAX; n++) {
+                                c = (h_t[n] & 1) | (h_u[n] & 1) << 1 | (h_v[n] & 1) << 2;
+                                hc_list[c][cnt[c]++] = n;
+                        }
+                        for (L_ = 0; L_ <= CX_DMAX; L_++)
+                                for (c = 0; c < 8; c++) {
+                                        int q = 0;
+                                        while (q < cnt[c] && h_deg[hc_list[c][q]] <= L_) q++;
+                                        hc_cnt[L_][c] = q;
+                                }
+                        for (c = 0; c < 8; c++) {
+                                int q, x;
+                                for (q = 0; q < cnt[c]; q++) {
+                                        const int i = hc_list[c][q];
+                                        for (x = 0; x < 3; x++)
+                                                hc_sh[x][c][q] = h_deg[i] < CX_DMAX ?
+                                                        h_idx[h_t[i] + (x == 0)][h_u[i] + (x == 1)][h_v[i] + (x == 2)] : -1;
+                                }
+                        }
                 }
                 for (n = 0; n < BOYS_NT; n++) boys_exact(boys_tab[n], n * (1. / 32), BOYS_MT - 1);
                 for (n = 1; n < BOYS_MT; n++) boys_inv[n] = 1. / (2 * n - 1);
@@ -384,10 +419,17 @@ typedef struct {
         size_t po;      /* first primitive pair in pp_* */
         size_t eo;      /* E of primitive pair k at edata + eo + k nI nJ NH(L) */
         size_t mo;      /* one-centre: prefix moments at mdata + mo + k nI nJ NH(L) (after k + 1 pairs) */
+        /* one-centre: the rows ab by parity class of the pair function (a product of two real solid harmonics
+         * on one centre has one parity per axis, so E_ab,t vanishes unless t is of that class: 1/8 of the
+         * Hermite components); ncls[c] rows of class c, their ab at cperm + cpo, E of primitive pair k at
+         * cdata + ceo + k csz (class by class, rows of hc_cnt[L][c]), the prefix moments likewise at cmdata */
+        int ncls[8];
+        size_t cpo, ceo, csz;
 } CXPair;
 
 typedef struct {
         int nbas, nao, npair, natm, lmax;
+        int lbas;               /* the largest l of the shells */
         CXPair *pairs;
         double *pp_p, *pp_P, *pp_b;
         int *pp_id;             /* ip * nprim_J + jp of every primitive pair */
@@ -396,9 +438,21 @@ typedef struct {
         double *eedata;         /* Hessian: d^2 E / dA^2 of the two-centre pairs (SOCDFTcosx_build_hess) */
         size_t *eeo;
         double *edata, *mdata;
+        double *cdata, *cmdata; /* one-centre E / moments by class (CXPair.ceo) */
+        int *cperm;
         double *shl_bound;      /* max over the pairs of a shell of the pair bound */
         int *atm_lmax;          /* 2 lmax of the one-centre pairs of each atom (-1: none) */
 } CXOpt;
+
+/* the parity class (x | y << 1 | z << 2) of real solid harmonic k (pyscf's order) of l */
+static int sph_cls(int l, int k)
+{
+        if (l == 0) return 0;
+        if (l == 1) return 1 << k;              /* px py pz */
+        const int m = k - l, am = m < 0 ? -m : m;
+        const int px = m >= 0 ? am & 1 : (am - 1) & 1, py = m < 0, pz = (l - am) & 1;
+        return px | py << 1 | pz << 2;
+}
 
 static double common_fac_sp(int l)
 {
@@ -525,10 +579,10 @@ static double prim_E(double *out, int I, int J, int ip, int jp, int *atm, int *b
         return bnd;
 }
 
-static size_t prim_wk_size(void)
+static size_t prim_wk_size(int lm)
 {
-        const int sE = (CX_LMAX + 1) * (CX_LMAX + 1) * (2 * CX_LMAX + 1);
-        const int nc = (CX_LMAX + 1) * (CX_LMAX + 2) / 2, nh = NH(2 * CX_LMAX);
+        const int sE = (lm + 1) * (lm + 1) * (2 * lm + 1);
+        const int nc = (lm + 1) * (lm + 2) / 2, nh = NH(2 * lm);
         return 3 * sE + 3 * (size_t)nc * nc * nh;
 }
 
@@ -552,6 +606,8 @@ void *SOCDFTcosx_build(double prim_tol, double pair_tol, int *ao_loc, int *atm, 
                 if (bas[I * BAS_SLOTS + ANG_OF] > CX_LMAX)
                         return NULL;
         CXOpt *opt = calloc(1, sizeof(CXOpt));
+        for (I = 0; I < nbas; I++)
+                if (bas[I * BAS_SLOTS + ANG_OF] > opt->lbas) opt->lbas = bas[I * BAS_SLOTS + ANG_OF];
         opt->nbas = nbas;
         opt->nao = ao_loc[nbas];
         opt->natm = natm;
@@ -585,7 +641,7 @@ void *SOCDFTcosx_build(double prim_tol, double pair_tol, int *ao_loc, int *atm, 
                         npk[n] = cnt;
                 }
         /* offsets */
-        size_t po = 0, eo = 0, mo = 0;
+        size_t po = 0, eo = 0, mo = 0, cpo = 0, ceo = 0;
         int np_ = 0;
         n = 0;
         for (I = 0; I < nbas; I++)
@@ -603,6 +659,20 @@ void *SOCDFTcosx_build(double prim_tol, double pair_tol, int *ao_loc, int *atm, 
                         pp->po = po;
                         pp->eo = eo;
                         pp->mo = mo;
+                        memset(pp->ncls, 0, sizeof(pp->ncls));
+                        pp->cpo = pp->ceo = pp->csz = 0;
+                        if (pp->onec) {
+                                const int li = bi[ANG_OF], lj = bj[ANG_OF], di = 2 * li + 1, dj = 2 * lj + 1;
+                                int a_, b_, c;
+                                for (a_ = 0; a_ < pp->nI; a_++)
+                                        for (b_ = 0; b_ < pp->nJ; b_++)
+                                                pp->ncls[sph_cls(li, a_ % di) ^ sph_cls(lj, b_ % dj)]++;
+                                for (c = 0; c < 8; c++) pp->csz += (size_t)pp->ncls[c] * hc_cnt[pp->L][c];
+                                pp->cpo = cpo;
+                                pp->ceo = ceo;
+                                cpo += (size_t)pp->nI * pp->nJ;
+                                ceo += pp->csz * pp->np;
+                        }
                         const size_t sz = (size_t)pp->nI * pp->nJ * NH(pp->L);
                         po += pp->np;
                         eo += sz * pp->np;
@@ -622,11 +692,14 @@ void *SOCDFTcosx_build(double prim_tol, double pair_tol, int *ao_loc, int *atm, 
         opt->eeo = NULL;
         opt->edata = malloc(sizeof(double) * (eo + 1));
         opt->mdata = malloc(sizeof(double) * (mo + 1));
+        opt->cdata = malloc(sizeof(double) * (ceo + 1));
+        opt->cmdata = malloc(sizeof(double) * (ceo + 1));
+        opt->cperm = malloc(sizeof(int) * (cpo + 1));
         /* pass 2: E, bounds, the one-centre ordering and prefix moments */
         int ip_;
 #pragma omp parallel
 {
-        double *wk = malloc(sizeof(double) * prim_wk_size());
+        double *wk = malloc(sizeof(double) * prim_wk_size(opt->lbas));
         double *key = malloc(sizeof(double) * 2 * 4096);
 #pragma omp for schedule(dynamic, 8)
         for (ip_ = 0; ip_ < np_; ip_++) {
@@ -677,6 +750,23 @@ void *SOCDFTcosx_build(double prim_tol, double pair_tol, int *ao_loc, int *atm, 
                                 const double f = .886226925452758014 / sqrt(p);
                                 size_t q;
                                 for (q = 0; q < sz; q++) M[q] = (k ? M[q - sz] : 0) + f * E[q];
+                                /* by class */
+                                const int li = bi[ANG_OF], lj = bj[ANG_OF], di = 2 * li + 1, dj = 2 * lj + 1;
+                                const int nab = pp->nI * pp->nJ, nh = NH(pp->L);
+                                int *perm = opt->cperm + pp->cpo, c, ab, r = 0, j;
+                                double *Ec = opt->cdata + pp->ceo + pp->csz * k;
+                                double *Mc = opt->cmdata + pp->ceo + pp->csz * k;
+                                for (c = 0; c < 8; c++)
+                                        for (ab = 0; ab < nab; ab++) {
+                                                if ((sph_cls(li, (ab / pp->nJ) % di) ^ sph_cls(lj, (ab % pp->nJ) % dj)) != c)
+                                                        continue;
+                                                perm[r++] = ab;
+                                                const int nk = hc_cnt[pp->L][c];
+                                                for (j = 0; j < nk; j++) {
+                                                        *Ec++ = E[(size_t)ab * nh + hc_list[c][j]];
+                                                        *Mc++ = M[(size_t)ab * nh + hc_list[c][j]];
+                                                }
+                                        }
                         }
                 }
                 pp->bound = btot;
@@ -724,7 +814,7 @@ void SOCDFTcosx_free(void *p)
         CXOpt *opt = p;
         if (!opt) return;
         free(opt->pairs); free(opt->pp_p); free(opt->pp_P); free(opt->pp_b);
-        free(opt->edata); free(opt->mdata); free(opt->pp_id); free(opt->eddata); free(opt->edo); free(opt->eedata); free(opt->eeo); free(opt->shl_bound); free(opt->atm_lmax);
+        free(opt->edata); free(opt->mdata); free(opt->cdata); free(opt->cmdata); free(opt->cperm); free(opt->pp_id); free(opt->eddata); free(opt->edo); free(opt->eedata); free(opt->eeo); free(opt->shl_bound); free(opt->atm_lmax);
         free(opt);
 }
 
@@ -795,13 +885,14 @@ static dgemm_t cx_dgemm = NULL;
 
 /* A (nab, n) += E (nab, nh) R (nh, n): a GEMM from nab nh >= CX_ER_GEMM (the high-l pairs), else the
  * loops */
+#define CXR_LMAX_ER 8           /* the loops to this degree (a GEMM of f-f, nh 84, was slower: c6h6 def2-TZVP gradient +14 %) */
 #ifndef CX_ER_GEMM
 #define CX_ER_GEMM 4096
 #endif
 static void e_times_r(double *A, const double *E, const double *R, int nab, int nh, int n)
 {
         int ab, i, g;
-        if (cx_dgemm && nab * nh >= CX_ER_GEMM && n >= 16) {
+        if (cx_dgemm && nh > NH(CXR_LMAX_ER) && nab * nh >= CX_ER_GEMM && n >= 16) {
                 const double one = 1;
                 cx_dgemm("N", "N", &n, &nab, &nh, &one, R, &n, E, &nh, &one, A, &n);
                 return;
@@ -825,6 +916,137 @@ static void e_times_r(double *A, const double *E, const double *R, int nab, int 
 }
 
 typedef struct { int I0, J0, nI, nJ, cI, cJ; size_t off; } CXRec;
+
+/* A[perm[r]] (+)= E_c R_c (init: =): the rows of the classes in turn, class c ncls[c] rows of hc_cnt[L][c]
+ * coefficients against the rows R[hc_list[c][j] n ..] (R in the natural Hermite order, of degree >= L); 4 rows x
+ * 16 points in registers */
+typedef double CXV __attribute__((vector_size(64)));
+static inline CXV cxv_load(const double *p) { CXV v; memcpy(&v, p, sizeof(v)); return v; }
+static inline void cxv_store(double *p, CXV v) { memcpy(p, &v, sizeof(v)); }
+#ifdef CX_FUSED
+/* AVX-512: 4 rows x 16 points (two masked vectors) in registers, one R row load per 8 FMAs */
+static void er_class(double *A, const int *perm, const int *ncls, const double *Ec, const double *R, int L, int n,
+                     int init)
+{
+        int c, r, j, g0;
+        for (c = 0; c < 8; c++) {
+                const int nr = ncls[c], nk = hc_cnt[L][c];
+                const int *idx = hc_list[c];
+                if (nr == 0) continue;
+                for (g0 = 0; g0 < n; g0 += 16) {
+                        const int rem = n - g0;
+                        const __mmask8 m0 = rem >= 8 ? 0xff : (__mmask8)((1u << rem) - 1);
+                        const __mmask8 m1 = rem >= 16 ? 0xff : (rem > 8 ? (__mmask8)((1u << (rem - 8)) - 1) : 0);
+                        const double *Rg = R + g0;
+                        for (r = 0; r + 4 <= nr; r += 4) {
+                                const double *e0 = Ec + (size_t)r * nk, *e1 = e0 + nk, *e2 = e1 + nk, *e3 = e2 + nk;
+                                double *a0 = A + (size_t)perm[r] * n + g0, *a1 = A + (size_t)perm[r + 1] * n + g0;
+                                double *a2 = A + (size_t)perm[r + 2] * n + g0, *a3 = A + (size_t)perm[r + 3] * n + g0;
+                                const __mmask8 l0 = init ? 0 : m0, l1 = init ? 0 : m1;
+                                __m512d p0 = _mm512_maskz_loadu_pd(l0, a0), q0 = _mm512_maskz_loadu_pd(l1, a0 + 8);
+                                __m512d p1 = _mm512_maskz_loadu_pd(l0, a1), q1 = _mm512_maskz_loadu_pd(l1, a1 + 8);
+                                __m512d p2 = _mm512_maskz_loadu_pd(l0, a2), q2 = _mm512_maskz_loadu_pd(l1, a2 + 8);
+                                __m512d p3 = _mm512_maskz_loadu_pd(l0, a3), q3 = _mm512_maskz_loadu_pd(l1, a3 + 8);
+                                for (j = 0; j < nk; j++) {
+                                        const double *rj = Rg + (size_t)idx[j] * n;
+                                        const __m512d r0 = _mm512_maskz_loadu_pd(m0, rj), r1 = _mm512_maskz_loadu_pd(m1, rj + 8);
+                                        __m512d e = _mm512_set1_pd(e0[j]);
+                                        p0 = _mm512_fmadd_pd(e, r0, p0); q0 = _mm512_fmadd_pd(e, r1, q0);
+                                        e = _mm512_set1_pd(e1[j]);
+                                        p1 = _mm512_fmadd_pd(e, r0, p1); q1 = _mm512_fmadd_pd(e, r1, q1);
+                                        e = _mm512_set1_pd(e2[j]);
+                                        p2 = _mm512_fmadd_pd(e, r0, p2); q2 = _mm512_fmadd_pd(e, r1, q2);
+                                        e = _mm512_set1_pd(e3[j]);
+                                        p3 = _mm512_fmadd_pd(e, r0, p3); q3 = _mm512_fmadd_pd(e, r1, q3);
+                                }
+                                _mm512_mask_storeu_pd(a0, m0, p0); _mm512_mask_storeu_pd(a0 + 8, m1, q0);
+                                _mm512_mask_storeu_pd(a1, m0, p1); _mm512_mask_storeu_pd(a1 + 8, m1, q1);
+                                _mm512_mask_storeu_pd(a2, m0, p2); _mm512_mask_storeu_pd(a2 + 8, m1, q2);
+                                _mm512_mask_storeu_pd(a3, m0, p3); _mm512_mask_storeu_pd(a3 + 8, m1, q3);
+                        }
+                        for (; r < nr; r++) {
+                                const double *e0 = Ec + (size_t)r * nk;
+                                double *a = A + (size_t)perm[r] * n + g0;
+                                __m512d p0 = _mm512_maskz_loadu_pd(init ? 0 : m0, a), q0 = _mm512_maskz_loadu_pd(init ? 0 : m1, a + 8);
+                                for (j = 0; j < nk; j++) {
+                                        const double *rj = Rg + (size_t)idx[j] * n;
+                                        const __m512d e = _mm512_set1_pd(e0[j]);
+                                        p0 = _mm512_fmadd_pd(e, _mm512_maskz_loadu_pd(m0, rj), p0);
+                                        q0 = _mm512_fmadd_pd(e, _mm512_maskz_loadu_pd(m1, rj + 8), q0);
+                                }
+                                _mm512_mask_storeu_pd(a, m0, p0); _mm512_mask_storeu_pd(a + 8, m1, q0);
+                        }
+                }
+                perm += nr;
+                Ec += (size_t)nr * nk;
+        }
+}
+#else
+static void er_class(double *A, const int *perm, const int *ncls, const double *Ec, const double *R, int L, int n,
+                     int init)
+{
+        int c, r, j, g, q;
+        const int n16 = n & ~15;
+        for (c = 0; c < 8; c++) {
+                const int nr = ncls[c], nk = hc_cnt[L][c];
+                const int *idx = hc_list[c];
+                if (nr == 0) continue;
+                for (r = 0; r < nr; r += 4) {
+                        const int nq = nr - r < 4 ? nr - r : 4;
+                        const double *e = Ec + (size_t)r * nk;
+                        double *ar[4];
+                        for (q = 0; q < nq; q++) {
+                                ar[q] = A + (size_t)perm[r + q] * n;
+                                if (init) memset(ar[q], 0, sizeof(double) * n);
+                        }
+                        for (g = 0; g < n16; g += 16) {
+                                CXV acc[4][2];
+                                for (q = 0; q < nq; q++) {
+                                        acc[q][0] = cxv_load(ar[q] + g);
+                                        acc[q][1] = cxv_load(ar[q] + g + 8);
+                                }
+                                if (nq == 4) {
+                                        for (j = 0; j < nk; j++) {
+                                                const double *rj = R + (size_t)idx[j] * n + g;
+                                                const CXV r0 = cxv_load(rj), r1 = cxv_load(rj + 8);
+                                                for (q = 0; q < 4; q++) {
+                                                        const double eq = e[(size_t)q * nk + j];
+                                                        acc[q][0] += eq * r0;
+                                                        acc[q][1] += eq * r1;
+                                                }
+                                        }
+                                } else {
+                                        for (j = 0; j < nk; j++) {
+                                                const double *rj = R + (size_t)idx[j] * n + g;
+                                                const CXV r0 = cxv_load(rj), r1 = cxv_load(rj + 8);
+                                                for (q = 0; q < nq; q++) {
+                                                        const double eq = e[(size_t)q * nk + j];
+                                                        acc[q][0] += eq * r0;
+                                                        acc[q][1] += eq * r1;
+                                                }
+                                        }
+                                }
+                                for (q = 0; q < nq; q++) {
+                                        cxv_store(ar[q] + g, acc[q][0]);
+                                        cxv_store(ar[q] + g + 8, acc[q][1]);
+                                }
+                        }
+                        if (n16 < n) {
+                                for (q = 0; q < nq; q++) {
+                                        double *aq = ar[q];
+                                        const double *eq = e + (size_t)q * nk;
+                                        for (j = 0; j < nk; j++) {
+                                                const double ej = eq[j], *rj = R + (size_t)idx[j] * n;
+                                                for (g = n16; g < n; g++) aq[g] += ej * rj[g];
+                                        }
+                                }
+                        }
+                }
+                perm += nr;
+                Ec += (size_t)nr * nk;
+        }
+}
+#endif
 
 #ifdef CX_FUSED
 #define V8 __m512d
@@ -1057,6 +1279,79 @@ static const cx_spf_t cx_spf_tab[6][3] = CX_SP_TAB(cx_spf);
 static const cx_spd_t cx_spdt_tab[6][3] = CX_SP_TAB(cx_spdt);
 static const cx_spf_t cx_spft_tab[6][3] = CX_SP_TAB(cx_spft);
 #endif
+
+/* gC[x] -= sum_r sum_g W[perm[r]](g) sum_j E_c[r][j] R[hc_sh[x][c][j]](g): the point-derivative sum of a
+ * one-centre pair by class (the rows as er_class, R of degree >= L + 1) */
+static void gc_class(double *gC, const double *W, const int *perm, const int *ncls, const double *Ec, const double *R,
+                     int L, int n)
+{
+        int c, r, j, x, g0;
+#ifdef CX_FUSED
+        __m512d s[3] = {_mm512_setzero_pd(), _mm512_setzero_pd(), _mm512_setzero_pd()};
+#else
+        double sx[3] = {0, 0, 0};
+#endif
+        for (c = 0; c < 8; c++) {
+                const int nr = ncls[c], nk = hc_cnt[L][c];
+                if (nr == 0) continue;
+                for (x = 0; x < 3; x++) {
+                        const int *idx = hc_sh[x][c];
+#ifdef CX_FUSED
+                        for (g0 = 0; g0 < n; g0 += 8) {
+                                const int rem = n - g0;
+                                const __mmask8 m0 = rem >= 8 ? 0xff : (__mmask8)((1u << rem) - 1);
+                                const double *Rg = R + g0;
+                                for (r = 0; r + 4 <= nr; r += 4) {
+                                        const double *e0 = Ec + (size_t)r * nk, *e1 = e0 + nk, *e2 = e1 + nk, *e3 = e2 + nk;
+                                        __m512d p0 = _mm512_setzero_pd(), p1 = p0, p2 = p0, p3 = p0;
+                                        for (j = 0; j < nk; j++) {
+                                                const __m512d rv = _mm512_maskz_loadu_pd(m0, Rg + (size_t)idx[j] * n);
+                                                p0 = _mm512_fmadd_pd(_mm512_set1_pd(e0[j]), rv, p0);
+                                                p1 = _mm512_fmadd_pd(_mm512_set1_pd(e1[j]), rv, p1);
+                                                p2 = _mm512_fmadd_pd(_mm512_set1_pd(e2[j]), rv, p2);
+                                                p3 = _mm512_fmadd_pd(_mm512_set1_pd(e3[j]), rv, p3);
+                                        }
+                                        __m512d t = _mm512_mul_pd(p0, _mm512_maskz_loadu_pd(m0, W + (size_t)perm[r] * n + g0));
+                                        t = _mm512_fmadd_pd(p1, _mm512_maskz_loadu_pd(m0, W + (size_t)perm[r + 1] * n + g0), t);
+                                        t = _mm512_fmadd_pd(p2, _mm512_maskz_loadu_pd(m0, W + (size_t)perm[r + 2] * n + g0), t);
+                                        t = _mm512_fmadd_pd(p3, _mm512_maskz_loadu_pd(m0, W + (size_t)perm[r + 3] * n + g0), t);
+                                        s[x] = _mm512_add_pd(s[x], t);
+                                }
+                                for (; r < nr; r++) {
+                                        const double *e0 = Ec + (size_t)r * nk;
+                                        __m512d p0 = _mm512_setzero_pd();
+                                        for (j = 0; j < nk; j++)
+                                                p0 = _mm512_fmadd_pd(_mm512_set1_pd(e0[j]),
+                                                                     _mm512_maskz_loadu_pd(m0, Rg + (size_t)idx[j] * n), p0);
+                                        s[x] = _mm512_fmadd_pd(p0, _mm512_maskz_loadu_pd(m0, W + (size_t)perm[r] * n + g0), s[x]);
+                                }
+                        }
+#else
+                        for (r = 0; r < nr; r++) {
+                                const double *e0 = Ec + (size_t)r * nk, *w = W + (size_t)perm[r] * n;
+                                double acc = 0;
+                                for (j = 0; j < nk; j++) {
+                                        const double *rj = R + (size_t)idx[j] * n;
+                                        double d = 0;
+                                        int g;
+#pragma omp simd reduction(+:d)
+                                        for (g = 0; g < n; g++) d += w[g] * rj[g];
+                                        acc += e0[j] * d;
+                                }
+                                sx[x] += acc;
+                        }
+                        (void)g0;
+#endif
+                }
+                perm += nr;
+                Ec += (size_t)nr * nk;
+        }
+#ifdef CX_FUSED
+        for (x = 0; x < 3; x++) gC[x] -= _mm512_reduce_add_pd(s[x]);
+#else
+        for (x = 0; x < 3; x++) gC[x] -= sx[x];
+#endif
+}
 
 static int cx_sparse2 = 1;      /* 1: sparse_contract (register-blocked), 0: multi_contract */
 void SOCDFTcosx_set_sparse2(int v) { cx_sparse2 = v; }
@@ -1526,7 +1821,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
         int at, i;
         double kmax_ = 0;
         double st[32] = {0};
-        PROF(double lp[4][2 * C2S_LMAX + 3]; memset(lp, 0, sizeof(lp));)
+        PROF(double lp[12][2 * C2S_LMAX + 3]; memset(lp, 0, sizeof(lp));)
         for (at = 0; at < natm; at++) {
                 stamp[at] = -1;
                 if (opt->atm_lmax[at] >= 0) farR[at] = malloc(sizeof(double) * NH(opt->atm_lmax[at]) * blk);
@@ -1839,7 +2134,8 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                                 nrec = 0;
                                 aoff = 0;
                         }
-                        memset(A, 0, sizeof(double) * nab * n);
+                        const int clsp = pp->onec && cx_cls;
+                        if (!clsp) memset(A, 0, sizeof(double) * nab * n);
                         if (pp->onec) {
                                 at = pp->atom;
                                 const double *Ra = env + atm[at * ATM_SLOTS + PTR_COORD];
@@ -1879,19 +2175,25 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                                         while (k0 < pp->np && pv[k0] * rmin >= tc_) k0++;
                                 }
                                 PROF(st[6] += k0 > 0);
-                                if (k0 > 0)
+                                PROF(const unsigned long long cf0 = __rdtsc());
+                                if (clsp) {
+                                        if (k0 > 0) er_class(A, opt->cperm + pp->cpo, pp->ncls, opt->cmdata + pp->ceo + pp->csz * (k0 - 1),
+                                                             farR[at], L, n, 1);
+                                        else memset(A, 0, sizeof(double) * nab * n);
+                                        PROF(lp[8][L] += __rdtsc() - cf0; if (k0 > 0) lp[10][L] += (double)pp->csz * n);
+                                } else if (k0 > 0)
                                         e_times_r(A, opt->mdata + pp->mo + sz * (k0 - 1), farR[at], nab, nh, n);
                         }
                         PROF(st[24] += __rdtsc() - cp0);
                         for (k = k0; k < pp->np; k++) {
                                 if (bk[k] * fm < tol) continue;
-                                PROF(st[5] += 1; st[8 + (L < 7 ? L : 7)] += n; lp[1][L] += n; const unsigned long long c0 = __rdtsc());
+                                PROF(st[5] += 1; st[8 + (L < 7 ? L : 7)] += n; lp[1 + 4 * pp->onec][L] += n; const unsigned long long c0 = __rdtsc());
                                 const double p = opt->pp_p[pp->po + k];
                                 const double *P = opt->pp_P + 3 * (pp->po + k);
 #ifdef CX_FUSED
-                                if (L <= cx_full && L <= CXR_LMAX) {
+                                if (!clsp && L <= cx_full && L <= CXR_LMAX) {
                                         cxp_table[L](A, nab, opt->edata + pp->eo + sz * k, p, P, xyz, n);
-                                        PROF(st[16 + (L < 15 ? L : 15)] += __rdtsc() - c0; lp[0][L] += __rdtsc() - c0);
+                                        PROF(st[16 + (L < 15 ? L : 15)] += __rdtsc() - c0; lp[4 * pp->onec][L] += __rdtsc() - c0);
                                         continue;
                                 }
 #endif
@@ -1911,9 +2213,15 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                                 sc[0] = 1;
                                 for (m = 1; m <= L; m++) sc[m] = sc[m - 1] * (-2 * p);
 #ifdef CX_FUSED
-                                if (L <= CXR_LMAX) {
+                                if (clsp && L <= CXO_LMAX) {
+                                        cxo_table[L](A, opt->cperm + pp->cpo, pp->ncls, opt->cdata + pp->ceo + pp->csz * k, S, sc, X, Y, Z, n);
+                                        PROF(lp[11][L] += (double)pp->csz * n);
+                                        PROF(st[16 + (L < 15 ? L : 15)] += __rdtsc() - c0; lp[4 * pp->onec][L] += __rdtsc() - c0);
+                                        continue;
+                                }
+                                if (!clsp && L <= CXR_LMAX && L <= cx_rmax) {
                                         cxr_table[L](A, nab, opt->edata + pp->eo + sz * k, S, sc, X, Y, Z, n);
-                                        PROF(st[16 + (L < 15 ? L : 15)] += __rdtsc() - c0; lp[0][L] += __rdtsc() - c0);
+                                        PROF(st[16 + (L < 15 ? L : 15)] += __rdtsc() - c0; lp[4 * pp->onec][L] += __rdtsc() - c0);
                                         continue;
                                 }
 #endif
@@ -1922,14 +2230,16 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                                         for (g = 0; g < n; g++) sm[g] *= sc[m];
                                 }
                                 hermite_R_vec(R, S, X, Y, Z, L, n, Rwk);
-                                if (nab * nh >= CX_GEMM_MIN)
+                                if (clsp)
+                                        er_class(A, opt->cperm + pp->cpo, pp->ncls, opt->cdata + pp->ceo + pp->csz * k, R, L, n, 0);
+                                else if (nab * nh >= CX_GEMM_MIN)
                                         dgemm_("N", "N", &n, &nab, &nh, &one, R, &n, opt->edata + pp->eo + sz * k, &nh,
                                                &one, A, &n);
                                 else
                                         e_times_r(A, opt->edata + pp->eo + sz * k, R, nab, nh, n);
-                                PROF(st[16 + (L < 15 ? L : 15)] += __rdtsc() - c0; lp[0][L] += __rdtsc() - c0);
+                                PROF(st[16 + (L < 15 ? L : 15)] += __rdtsc() - c0; lp[4 * pp->onec][L] += __rdtsc() - c0);
                         }
-                        PROF(st[25] += __rdtsc() - cp0; lp[2][L] += __rdtsc() - cp0; const unsigned long long cc0 = __rdtsc());
+                        PROF(st[25] += __rdtsc() - cp0; lp[2 + 4 * pp->onec][L] += __rdtsc() - cp0; const unsigned long long cc0 = __rdtsc());
                         /* G_I += A F_J, G_J += A^T F_I */
                         const int I0 = ao_loc[pp->I], J0 = ao_loc[pp->J];
                         if (multi) {
@@ -1984,7 +2294,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                                         }
                                         esum[d] += e;
                                 }
-                                PROF(st[26] += __rdtsc() - cc0; lp[3][L] += __rdtsc() - cc0);
+                                PROF(st[26] += __rdtsc() - cc0; lp[3 + 4 * pp->onec][L] += __rdtsc() - cc0);
                                 continue;
                         }
                         for (d = 0; d < nset; d++) {
@@ -2014,7 +2324,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
                                         }
                                 }
                         }
-                        PROF(st[26] += __rdtsc() - cc0; lp[3][L] += __rdtsc() - cc0);
+                        PROF(st[26] += __rdtsc() - cc0; lp[3 + 4 * pp->onec][L] += __rdtsc() - cc0);
                 }
                 }
                 if (dense && pass_ < 2) continue;       /* out of memory */
@@ -2197,7 +2507,7 @@ void SOCDFTcosx_k(double *vk, double *dms, int nset, void *optp, double *coords,
         }
 #pragma omp critical(socdft_cosx_stat)
 {
-        PROF(for (i = 0; i < 4 * (2 * C2S_LMAX + 3); i++) cx_lprof[0][i] += lp[0][i];)
+        PROF(for (i = 0; i < 12 * (2 * C2S_LMAX + 3); i++) cx_lprof[0][i] += lp[0][i];)
         if (eonly)
                 for (i = 0; i < nset; i++) eout[i] += esum[i];
         st[29] += tz1_;
@@ -2348,10 +2658,10 @@ static void prim_Ed(double *out, int I, int J, int ip, int jp, int *atm, int *ba
         }
 }
 
-static size_t prim_wk_size_d(void)
+static size_t prim_wk_size_d(int lm)
 {
-        const int sE = (CX_LMAX + 2) * (CX_LMAX + 1) * (2 * CX_LMAX + 2);
-        const int nc = (CX_LMAX + 1) * (CX_LMAX + 2) / 2, nh = NH(2 * CX_LMAX + 1);
+        const int sE = (lm + 2) * (lm + 1) * (2 * lm + 2);
+        const int nc = (lm + 1) * (lm + 2) / 2, nh = NH(2 * lm + 1);
         return 3 * sE + 9 * (size_t)nc * nc * nh;
 }
 
@@ -2374,7 +2684,7 @@ int SOCDFTcosx_build_grad(void *p, int *atm, int *bas, double *env)
         if (!opt->eddata) return 0;
 #pragma omp parallel
 {
-        double *wk = malloc(sizeof(double) * prim_wk_size_d());
+        double *wk = malloc(sizeof(double) * prim_wk_size_d(opt->lbas));
 #pragma omp for schedule(dynamic, 8)
         for (ip_ = 0; ip_ < opt->npair; ip_++) {
                 const CXPair *pp = opt->pairs + ip_;
@@ -2689,7 +2999,8 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
                         }
                         CTICK(2)
                         double gA[3] = {0, 0, 0}, gC[3] = {0, 0, 0};
-                        memset(A, 0, sizeof(double) * nab * n);
+                        const int clsp = pp->onec && cx_gcls;
+                        if (!clsp) memset(A, 0, sizeof(double) * nab * n);
                         int k0 = 0;
                         if (pp->onec) {
                                 at = pp->atom;
@@ -2728,7 +3039,18 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
                                         const double tc_ = tcut + CX_TCUT_ADD(L + 1);
                                         while (k0 < pp->np && pv[k0] * rmin >= tc_) k0++;
                                 }
-                                if (k0 > 0) {
+                                if (clsp) {
+                                        const int *perm = opt->cperm + pp->cpo;
+                                        if (k0 > 0) {
+                                                const double *Mc = opt->cmdata + pp->ceo + pp->csz * (k0 - 1);
+                                                er_class(A, perm, pp->ncls, Mc, farR[at], L, n, 1);
+                                                CTICK(3)
+                                                gc_class(gC, W, perm, pp->ncls, Mc, farR[at], L, n);
+                                                CTICK(6)
+                                        } else {
+                                                memset(A, 0, sizeof(double) * nab * n);
+                                        }
+                                } else if (k0 > 0) {
                                         const double *Mo = opt->mdata + pp->mo + sz * (k0 - 1);
                                         e_times_r(A, Mo, farR[at], nab, nh, n);
                                         CTICK(3)
@@ -2753,6 +3075,33 @@ void SOCDFTcosx_grad(double *grad, double *dm, double *dmm, double *yg, void *op
                                 const double p = opt->pp_p[pp->po + k];
                                 const double *P = opt->pp_P + 3 * (pp->po + k);
                                 const double *E = opt->edata + pp->eo + sz * k;
+                                if (clsp) {
+                                        double tmin = 1e300, tmax = 0;
+                                        for (g = 0; g < n; g++) {
+                                                X[g] = P[0] - xyz[g];
+                                                Y[g] = P[1] - xyz[n + g];
+                                                Z[g] = P[2] - xyz[2 * n + g];
+                                                T[g] = p * (X[g] * X[g] + Y[g] * Y[g] + Z[g] * Z[g]);
+                                                tmin = T[g] < tmin ? T[g] : tmin;
+                                                tmax = T[g] > tmax ? T[g] : tmax;
+                                        }
+                                        boys_vec(S, n, T, L + 1, n, tmin, tmax);
+                                        double sc = 1;
+                                        int m;
+                                        for (m = 1; m <= L + 1; m++) {
+                                                sc *= -2 * p;
+                                                double *sm = S + (size_t)m * n;
+                                                for (g = 0; g < n; g++) sm[g] *= sc;
+                                        }
+                                        hermite_R_vec(R, S, X, Y, Z, L + 1, n, Rwk);
+                                        const int *perm = opt->cperm + pp->cpo;
+                                        const double *Ec = opt->cdata + pp->ceo + pp->csz * k;
+                                        er_class(A, perm, pp->ncls, Ec, R, L, n, 0);
+                                        CTICK(3)
+                                        gc_class(gC, W, perm, pp->ncls, Ec, R, L, n);
+                                        CTICK(6)
+                                        continue;
+                                }
 #ifdef CX_FUSED
                                 /* R to L + 1 stored, A += E R, in one register pass */
                                 if (L < CXR_LMAX) cxs_table[L](A, nab, E, p, P, xyz, n, R);

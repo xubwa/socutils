@@ -387,10 +387,10 @@ static void prim_Edd(double *out, int I, int J, int ip, int jp, int *atm, int *b
         }
 }
 
-static size_t prim_wk_size_dd(void)
+static size_t prim_wk_size_dd(int lm)
 {
-        const int sE = (CX_LMAX + 3) * (CX_LMAX + 1) * (2 * CX_LMAX + 3);
-        const int nc = (CX_LMAX + 1) * (CX_LMAX + 2) / 2, nh = NH(2 * CX_LMAX + 2);
+        const int sE = (lm + 3) * (lm + 1) * (2 * lm + 3);
+        const int nc = (lm + 1) * (lm + 2) / 2, nh = NH(2 * lm + 2);
         return 3 * sE + 18 * (size_t)nc * nc * nh;
 }
 
@@ -411,7 +411,7 @@ int SOCDFTcosx_build_hess(void *p, int *atm, int *bas, double *env)
         if (!opt->eedata) return 0;
 #pragma omp parallel
 {
-        double *wk = malloc(sizeof(double) * prim_wk_size_dd());
+        double *wk = malloc(sizeof(double) * prim_wk_size_dd(opt->lbas));
 #pragma omp for schedule(dynamic, 8)
         for (ip_ = 0; ip_ < opt->npair; ip_++) {
                 const CXPair *pp = opt->pairs + ip_;
