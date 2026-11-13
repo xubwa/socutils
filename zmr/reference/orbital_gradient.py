@@ -191,17 +191,18 @@ def _active_two_body(pt, pclass, b, g, x4, sp):
     x4[a, a, a, a] += 0.5 * d2.real
 
 
-def fock_part(eris, d_f, gamma):
+def fock_part(eris, d_f, gamma, fock=None, return_w=False):
     '''The orbital gradient of sum_pq d_f[p, q] F[p, q] for F = h + (J - K)[gamma] (MO,
     gamma fixed in the MO basis): F (d_f + d_f^T) + 2 (J - K)[d_f] gamma, with the AO
     Coulomb and exchange builds of the integral source (density fitting): no MO
-    three-index integrals.'''
+    three-index integrals.  fock: F itself if known (MO); return_w: also (J - K)[d_f].'''
     c = eris.mo_coeff
-    sp = eris.spaces
-    dm_gamma = c @ numpy.asarray(gamma).T @ c.conj().T
-    f = c.conj().T @ (eris.hcore_ao + eris.veff_fn(dm_gamma)) @ c
+    if fock is None:
+        dm_gamma = c @ numpy.asarray(gamma).T @ c.conj().T
+        fock = c.conj().T @ (eris.hcore_ao + eris.veff_fn(dm_gamma)) @ c
     w = c.conj().T @ eris.veff_fn(c @ numpy.asarray(d_f).T @ c.conj().T) @ c
-    return (f @ (d_f + d_f.T) + 2 * w @ gamma).real
+    grad = (fock @ (d_f + d_f.T) + 2 * w @ gamma).real
+    return (grad, w) if return_w else grad
 
 
 def gradient(pt, state=0, classes_=None, fock='jk'):

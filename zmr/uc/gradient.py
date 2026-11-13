@@ -228,14 +228,25 @@ def ccav_pass(pt, ctx, gams, state=0, max_memory=4000):
     return blocks, b, g, q
 
 
-def active_two_body(pt, pclass, b, g):
-    '''dE/d(tu|vw) of a class through H_act (zmr.reference.orbital_gradient), (na,) * 4.'''
-    from socutils.zmr.reference import orbital_gradient as og
-    sp = pt.quasi_canonical.eris.spaces
-    x4 = numpy.zeros((sp.nmo,) * 4)
-    og._active_two_body(pt, pclass, b, g, x4, sp)
-    a = sp.slice('a')
-    return x4[a, a, a, a]
+def active_two_body(pt, pclass, b, g, state=0):
+    '''dE/d(tu|vw) of a class through H_act = ... + 1/2 sum (tu|vw) t^+ v^+ w u in the
+    first-order space and in the zeroth-order energy, (na,) * 4: 1/2 [sum_m w_m
+    Gamma(b y_m) - tr(g) Gamma(Psi)] with g = sum_m w_m y_m y_m^+.'''
+    from socutils.zmr.active import rdm as active_rdm
+    act = pt.active_space
+    ntarget = act.target(pt.nelec, pclass.dn)
+    na = act.norb
+    w, y = numpy.linalg.eigh(0.5 * (g + g.conj().T))
+    keep = w > 1e-14 * max(1.0, float(abs(w).max()) if len(w) else 1.0)
+    d2 = numpy.zeros((na,) * 4, dtype=numpy.complex128)
+    if keep.any() and ntarget >= 2:
+        vecs = numpy.ascontiguousarray(b @ y[:, keep])
+        for m, wm in enumerate(w[keep]):
+            d2 += wm * active_rdm.make_rdm(act, vecs[:, m], ntarget, 2, bra=0, ket=0)
+    if pt.nelec >= 2:
+        d2 -= numpy.trace(g) * active_rdm.make_rdm(act, pt.civecs[:, [state]], pt.nelec, 2,
+                                                   bra=0, ket=0)
+    return 0.5 * d2.real
 
 
 def derivatives(pt, state=0, max_memory=4000):
@@ -275,7 +286,7 @@ def derivatives(pt, state=0, max_memory=4000):
         for lab, x in dblk.items():
             target = d_gen if lab in ('cc', 'vv') else d_core
             target += density.assemble(sp, {lab: x})
-        x_aa += active_two_body(pt, pclass, b, g)
+        x_aa += active_two_body(pt, pclass, b, g, state)
     baa = eris.cd_block('aa')
     _add(gams, ('a', 'a'), numpy.einsum('tuvw,Pvw->Ptu', x_aa + x_aa.transpose(2, 3, 0, 1), baa))
     for (x, y), gam in gams.items():
@@ -285,8 +296,10 @@ def derivatives(pt, state=0, max_memory=4000):
     gam_gen[sp.slice('a'), sp.slice('a')] = numpy.asarray(pt.gamma).real
     gam_core = numpy.zeros((n, n))
     gam_core[sp.slice('c'), sp.slice('c')] = numpy.eye(sp.ncore)
-    grad += og.fock_part(eris, d_gen.real, gam_gen) + og.fock_part(eris, d_core.real, gam_core)
-    g_ci += cg.fock_g(pt, ctx, d_gen.real, state)
+    # the generalized Fock matrix of the denominators and the core Fock matrix are known
+    g_f, w_gen = og.fock_part(eris, d_gen.real, gam_gen, fock=qc.fock, return_w=True)
+    grad += g_f + og.fock_part(eris, d_core.real, gam_core, fock=ctx.fcore)
+    g_ci += cg.fock_g(pt, ctx, d_gen.real, state, w=w_gen)
     return {'d': d_gen + d_core, 'grad': grad, 'g_ci': g_ci, 'u': numpy.asarray(qc.u)}
 
 
