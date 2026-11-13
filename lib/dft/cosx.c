@@ -1147,6 +1147,21 @@ static void NAME(T *Ga, const T *Fa, const T *Abuf, const CXRec *rec, int nrec, 
 #ifdef __AVX512F__
 CX_SPARSE_TILED(sparse_contract_t, double, cx_spdt_tab, 16, 8)
 CX_SPARSE_TILED(sparse_contract_tf, float, cx_spft_tab, 32, 16)
+#else
+/* without AVX-512 there are no register-blocked tile tables: the tiled entry points are the untiled contraction
+ * (same result; the callers' tile buffer Tt / roff / Sg is unused) */
+static void sparse_contract_t(double *Ga, const double *Fa, const double *Abuf, const CXRec *rec, int nrec, int nao,
+                              int n, int nset, int fs, double *Tt, size_t *roff, size_t Sg)
+{
+        (void)Tt; (void)roff; (void)Sg;
+        sparse_contract(Ga, Fa, Abuf, rec, nrec, nao, n, nset, fs);
+}
+static void sparse_contract_tf(float *Ga, const float *Fa, const float *Abuf, const CXRec *rec, int nrec, int nao,
+                               int n, int nset, int fs, float *Tt, size_t *roff, size_t Sg)
+{
+        (void)Tt; (void)roff; (void)Sg;
+        sparse_contract_f(Ga, Fa, Abuf, rec, nrec, nao, n, nset, fs);
+}
 #endif
 
 #define CX_ABUF (2 << 20)

@@ -58,6 +58,8 @@ build:
 	           deps/lib/libx2camf_c.so deps/lib/libzquatev.so; do \
 	    test -f $(LIBDIR)/$$so && echo "built $(LIBDIR)/$$so" \
 	        || { echo "ERROR: $$so not produced"; exit 1; }; \
+	    $(PYTHON) -c "import ctypes, sys; ctypes.CDLL(sys.argv[1])" $(LIBDIR)/$$so \
+	        || { echo "ERROR: $$so does not load (undefined symbol?)"; exit 1; }; \
 	done
 
 test: build
