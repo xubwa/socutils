@@ -119,6 +119,15 @@ def cosx_object(mc, level=None):
         k = None
     if k is None:
         raise RuntimeError('core_exchange = cosx: no COSX grid of level %d represents the basis' % level)
+    # the kernel's per-thread buffers (the pair integrals of a grid block, cosx.COSX.multi_mem) grow as nao^2 blk:
+    # nao 3360 (HgCl2)32 on 24 threads needed ~100 GB at blk 112 and failed to allocate with 134 GB free.  Halve
+    # the block when the 8 densities of the core K would not fit in half the free memory
+    free = max(mol.max_memory - lib.current_memory()[0], 1.)
+    per, fixed = k.multi_mem()
+    if k.blk > 56 and fixed + 12 * per > .5 * free:
+        k.blk = 56
+        logger.info(mf, 'core COSX: %.0f MB of kernel buffers at %d points per block, %.0f MB free: 56 points per '
+                    'block', fixed + 12 * per, cosx.BLK, free)
     cache[1][key] = k
     return k
 
