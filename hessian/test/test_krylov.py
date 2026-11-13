@@ -61,6 +61,14 @@ class KnownValues(unittest.TestCase):
             x1, s1 = _solve(True, a, b)
         self.assertEqual(s0, s1)
         self.assertLess(abs(x1 - x0).max(), 1e-10)      # chunked Gram-Schmidt: the order of the sums
+        # the right-hand sides from a file too (x . b as the trial blocks come)
+        f = lib.H5TmpFile()
+        f['b'] = b
+        with lib.temporary_env(rhf_fast, KRYLOV_DISK=True, CPHF_DISK_CHUNK=.02):
+            x2, s2 = _solve(True, a, f['b'])
+        f.close()
+        self.assertEqual(s0, s2)
+        self.assertLess(abs(x2 - x0).max(), 1e-10)
 
     def test_tiny_rhs(self):
         # right-hand sides 1e-6 of the others: Pople's method (pyscf's too, lindep absolute) stops at a
