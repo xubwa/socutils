@@ -56,8 +56,19 @@ class Route:
         self.nelec_ab = (int(nelecas[0]), int(nelecas[1]))
         self.nelec = sum(self.nelec_ab)
         ci = mc.ci if ci is None else ci
-        self.ci = numpy.asarray(ci).ravel()
-        self.civecs = embed(self.ci, ncas, self.nelec_ab)
+        if isinstance(ci, (list, tuple)):
+            # several model states (the multi-state NEVPT2 of a state-averaged CASSCF)
+            self.cis = [numpy.asarray(c).ravel() for c in ci]
+            self.ci = self.cis[0] if len(self.cis) == 1 else None
+        else:
+            self.ci = numpy.asarray(ci).ravel()
+            self.cis = [self.ci]
+        self.civecs = embed(numpy.array(self.cis).T, ncas, self.nelec_ab)
+        self.weights = None
+        if len(self.cis) > 1:
+            w = getattr(mc, 'weights', None)
+            self.weights = (numpy.full(len(self.cis), 1.0 / len(self.cis)) if w is None
+                            else numpy.asarray(w, dtype=float))
 
     def spin_sum(self, d):
         '''Spatial matrix sum_sigma d[(P sigma), (Q sigma)] of a spin-orbital one.'''
@@ -68,8 +79,11 @@ class Route:
         return out
 
     def pt(self, max_memory=4000):
-        '''The PC-NEVPT2 of the spinor code for the model state.'''
-        pt = PCNEVPT2(self.eris, self.nelec, civecs=self.civecs)
+        '''The PC-NEVPT2 of the spinor code for the model state (several: the multi-state
+        PC-NEVPT2, union contraction, the zeroth-order energy of every state, the averaged
+        density of the CASSCF weights).'''
+        pt = PCNEVPT2(self.eris, self.nelec, civecs=self.civecs, weights=self.weights,
+                      e0='state')
         pt.verbose = 0
         pt.max_memory = max(pt.max_memory, max_memory)
         pt.kernel()

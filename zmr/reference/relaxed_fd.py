@@ -72,12 +72,35 @@ def gradient_hessian(mc, mo=None, ci=None):
     return g, jac
 
 
+def model_eigenvectors(mc, mo, ci):
+    '''The CI vectors replaced by the eigenvectors of H_act in their span (Loewdin
+    orthonormalized; each new vector with the sign of the old one it is closest to): the
+    rotations and the symmetric mixings among the states, which the steps on the positive
+    part of the Hessian do not reach.'''
+    if len(ci) < 2:
+        return ci
+    h1, _ = mc.get_h1eff(mo)
+    h2e = direct_spin1.absorb_h1e(h1, mc.get_h2eff(mo), mc.ncas, mc.nelecas, .5)
+    c = numpy.array([x.ravel() for x in ci])
+    w, v = numpy.linalg.eigh(c @ c.T)
+    c = (v / numpy.sqrt(w)) @ v.T @ c
+    hc = numpy.array([direct_spin1.contract_2e(h2e, x.reshape(ci[0].shape), mc.ncas,
+                                               mc.nelecas).ravel() for x in c])
+    e, u = numpy.linalg.eigh(0.5 * (c @ hc.T + hc @ c.T))
+    new = u.T @ c
+    out = []
+    for x in new:
+        k = int(numpy.argmax([abs(numpy.dot(x, y.ravel())) for y in ci]))
+        out.append((x * numpy.sign(numpy.dot(x, ci[k].ravel()))).reshape(ci[0].shape))
+    return out
+
+
 def polish(mc, tol=1e-11, max_cycle=12):
     '''Newton steps on the positive part of the exact Hessian after the PySCF solution
-    (step length bounded, averaged energy decreasing); sets mc.mo_coeff, mc.ci and
-    mc.gnorm.'''
+    (step length bounded, averaged energy decreasing), the CI vectors kept eigenvectors of
+    H_act in their span (model_eigenvectors); sets mc.mo_coeff, mc.ci and mc.gnorm.'''
     w = _weights(mc)
-    mo, ci = mc.mo_coeff, _ci_list(mc)
+    mo, ci = mc.mo_coeff, model_eigenvectors(mc, mc.mo_coeff, _ci_list(mc))
     e_old = numpy.dot(w, state_energies(mc, mo, ci))
     for _ in range(max_cycle):
         g, jac = gradient_hessian(mc, mo, ci)
@@ -90,11 +113,14 @@ def polish(mc, tol=1e-11, max_cycle=12):
             x *= 0.05 / numpy.linalg.norm(x)
         for _ in range(10):
             mo1, ci1 = move(mc, mo, ci, x)
+            ci1 = model_eigenvectors(mc, mo1, ci1)
             e1 = numpy.dot(w, state_energies(mc, mo1, ci1))
             if e1 <= e_old + 1e-12:
                 break
             x *= 0.5
         mo, ci, e_old = mo1, ci1, e1
+    else:
+        g = gradient_hessian(mc, mo, ci)[0]
     mc.mo_coeff = mo
     mc.ci = ci if len(ci) > 1 else ci[0]
     mc.gnorm = float(numpy.linalg.norm(g))

@@ -114,26 +114,101 @@ def first_order_space(pt, pclass, state=0):
     return cache[key]
 
 
-def _active_block(pt, pclass, b, g):
-    '''D_aa[t, u] = sum_kk' g[k, k'] <b_k'|t^+ u|b_k> - tr(g) <Psi|t^+ u|Psi>: the
-    derivative of the class energy with respect to the active block of h through
-    H_act in the first-order space and the zeroth-order energy of the model state
-    (g[k, k'] = sum_e c[e, k] conj(c[e, k'])).'''
+def union_space(pt, pclass):
+    '''(b, mu, t, s) of the union contraction: the basis b of the span of the functions
+    O_X |Psi_J> of all model states, its H_act energies mu, t[J, k, X] = <b_k|O_X|Psi_J>
+    and the shifts s[J] of the states (kept on pt).'''
+    from socutils.zmr.pc import spectral
+    from socutils.zmr.uc import engine
+    cache = pt.__dict__.setdefault('_first_order_spaces', {})
+    key = (pclass.name, 'union')
+    if key in cache:
+        return cache[key]
+    act, civecs = pt.active_space, pt.civecs
+    ntarget = act.target(pt.nelec, pclass.dn)
+    phi = engine.class_functions(pclass, act, civecs, pt.nelec)
+    b, mu = spectral.contracted_space(phi.reshape(-1, phi.shape[2]),
+                                      lambda q: act.apply_h(ntarget, q), lambda: None, pt.lindep)
+    t = engine.project_functions(b, phi)
+    cache[key] = (b, mu, t, numpy.asarray(pt.shifts, dtype=float))
+    return cache[key]
+
+
+def model_spaces(pt, pclass, state=0, rho=None):
+    '''(b, mu, t, s, rho, states) for the target energy of a class: one model state
+    (rho None; its own first-order space, t[None], s[None], rho = [[1]]) or the sum
+    sum_IJ rho_IJ h2_IJ over all model states of the union contraction (a level of the
+    multi-state NEVPT2: rho_IJ = conj(c_I) c_J of an eigenvector c of heff).'''
+    if rho is None:
+        b, mu, t, s = first_order_space(pt, pclass, state)
+        return b, mu, t[None], numpy.array([s]), numpy.ones((1, 1)), [state]
+    b, mu, t, s = union_space(pt, pclass)
+    return b, mu, t, s, numpy.asarray(rho), list(range(pt.civecs.shape[1]))
+
+
+def pair_amplitudes(delta, v, mu, t, s, rho):
+    '''(u, c, l, r) of one block of external labels, all (J, e, k), for the target
+
+        T = Re sum_IJ rho_IJ a_IJ,   a_IJ = -sum_ek conj(u^I_ek) u^J_ek / D^J_ek
+
+    (u^J = v t^J^T, D^J_ek = delta_e + mu_k - s_J): the amplitudes c^J = u^J / D^J, the
+    left amplitudes l^J = sum_I conj(rho_IJ) u^I / D^J and r^I = sum_J rho_IJ c^J, so that
+
+        T = -Re sum conj(l) u,   dT/ddelta_e = Re sum_Jk conj(l^J_ek) c^J_ek,
+        dT = -Re sum_J du^J . conj(l^J + r^J).
+
+    One state (rho = [[1]]): l = r = c.'''
+    u = numpy.einsum('ex,jkx->jek', v, t)
+    d = delta[None, :, None] + mu[None, None, :] - s[:, None, None]
+    c = u / d
+    l = numpy.einsum('ij,iek->jek', rho.conj(), u) / d
+    r = numpy.einsum('ij,jek->iek', rho, c)
+    return u, c, l, r
+
+
+def ccvv_active(pt, ctx, rho):
+    '''(D_aa, b, g, traces) of ccvv for the target sum_IJ rho_IJ h2_IJ of several model
+    states: the first-order space of ccvv is the model space, and H_act enters through the
+    divided differences of the energies of the states (rho_IJ, I != J); its derivatives
+    with respect to the Fock matrix and the integrals are those of E_ccvv (tr(rho) = 1).
+    Python, all pairs of core orbitals.'''
+    from socutils.zmr.uc import classes as uc_classes
+    pclass = uc_classes.CLASS_BY_NAME['ccvv']
+    b, mu, t, s, rho, states = model_spaces(pt, pclass, rho=rho)
+    gj = numpy.zeros((len(states), len(mu), len(mu)), dtype=numpy.complex128)
+    for delta, v in pclass.blocks(ctx):
+        _, c, l, _ = pair_amplitudes(delta, v, mu, t, s, rho)
+        gj += numpy.einsum('jek,jel->jkl', c, l.conj())
+    g = gj.sum(axis=0)
+    traces = [(numpy.trace(x), j) for x, j in zip(gj, states)]
+    return _active_block(pt, pclass, b, g, traces), b, g, traces
+
+
+def _active_block(pt, pclass, b, g, traces=None):
+    '''D_aa[t, u] = sum_kk' g[k, k'] <b_k'|t^+ u|b_k> - sum_J tr(g^J) <Psi_J|t^+ u|Psi_J>:
+    the derivative of the class energy with respect to the active block of h through
+    H_act in the first-order space and the zeroth-order energies of the model states
+    (g[k, k'] = sum_J sum_e c^J[e, k] conj(l^J[e, k']), pair_amplitudes; traces: the
+    pairs (tr(g^J), J), default [(tr(g), 0)]).'''
     from socutils.zmr.active import rdm as active_rdm
     act = pt.active_space
     ntarget = act.target(pt.nelec, pclass.dn)
     # g = sum_m w_m y_m y_m^+ (rank at most the number of external labels): the 1-RDMs
     # of the vectors b y_m only, not the transition RDMs of all pairs of basis functions
     w, y = numpy.linalg.eigh(0.5 * (g + g.conj().T))
-    keep = w > 1e-14 * max(1.0, float(w.max()) if len(w) else 1.0)
+    keep = abs(w) > 1e-14 * max(1.0, float(abs(w).max()) if len(w) else 1.0)
     d = numpy.zeros((act.norb, act.norb), dtype=numpy.complex128)
     if keep.any() and ntarget >= 1:
         vecs = numpy.ascontiguousarray(b @ y[:, keep])
         amp = active_rdm.annihilation_amplitudes(act, vecs, ntarget, 1)
         amp = amp.reshape(vecs.shape[1], act.norb, -1)
         d = numpy.einsum('m,mpk,mqk->pq', w[keep], amp.conj(), amp, optimize=True)
-    gamma = active_rdm.make_rdm(act, pt.civecs[:, [0]], pt.nelec, 1)[0, 0]
-    return d - numpy.trace(g) * gamma
+    if traces is None:
+        traces = [(numpy.trace(g), 0)]
+    for tr, j in traces:
+        gamma = active_rdm.make_rdm(act, pt.civecs[:, [j]], pt.nelec, 1)[0, 0]
+        d = d - tr * gamma
+    return d
 
 
 # external labels of the classes: (core indices, virtual indices), the layout of the
@@ -143,75 +218,84 @@ _LABELS = {'ccav': (2, 1), 'cavv': (1, 2), 'ccaa': (2, 0), 'aavv': (0, 2),
            'cava': (1, 1), 'caaa': (1, 0), 'aaav': (0, 1)}
 
 
-def _amplitudes(pt, ctx, pclass, state):
-    '''(E, C, b, t): the amplitudes c[e, k] = u[e, k] / (mu_k + delta_e - s) of a class
-    as C[i, j, a, b, k], antisymmetric in the core and in the virtual indices (axes of
-    length 1 for the indices the class does not have), the basis b of the first-order
-    space and the projected functions t[k, X].'''
-    b, mu, t, s = first_order_space(pt, pclass, state)
+def _amplitudes(pt, ctx, pclass, state=0, rho=None):
+    '''(E, C, L, R, b, t, traces): the amplitudes of pair_amplitudes of a class as
+    C[J, i, j, a, b, k] (likewise L, R), antisymmetric in the core and in the virtual
+    indices (axes of length 1 for the indices the class does not have), the basis b of
+    the first-order space, the projected functions t[J, k, X] and the states J of the
+    leading axis (model_spaces).'''
+    b, mu, t, s, rho, states = model_spaces(pt, pclass, state, rho)
     nc, nv = ctx.sp.ncore, ctx.sp.nvirt
     ncore, nvirt = _LABELS[pclass.name]
-    nk = len(mu)
-    shape = [nc if ncore > 0 else 1, nc if ncore > 1 else 1,
+    nk, nj = len(mu), len(states)
+    shape = [nj, nc if ncore > 0 else 1, nc if ncore > 1 else 1,
              nv if nvirt > 0 else 1, nv if nvirt > 1 else 1, nk]
-    c = numpy.zeros(shape, dtype=numpy.complex128)
+    out = [numpy.zeros(shape, dtype=numpy.complex128) for _ in range(3)]
     ii, jj = numpy.triu_indices(nc, 1)
     aa, bb = numpy.triu_indices(nv, 1)
     e = 0.0
+    name = pclass.name
     for n, (delta, v) in enumerate(pclass.blocks(ctx)):
-        u = v @ t.T
-        x = u / (delta[:, None] + mu[None, :] - s)
-        e -= float(numpy.vdot(u, x).real)
-        name = pclass.name
-        if name == 'ccav':                       # block: pair (i < j), labels a
-            c[ii[n], jj[n], :, 0] = x
-            c[jj[n], ii[n], :, 0] = -x
-        elif name == 'cavv':                     # block: i, labels a < b
-            c[n, 0, aa, bb] = x
-            c[n, 0, bb, aa] = -x
-        elif name == 'ccaa':                     # one block, labels i < j
-            c[ii, jj, 0, 0] = x
-            c[jj, ii, 0, 0] = -x
-        elif name == 'aavv':                     # one block, labels a < b
-            c[0, 0, aa, bb] = x
-            c[0, 0, bb, aa] = -x
-        elif name == 'cava':                     # block: i, labels a
-            c[n, 0, :, 0] = x
-        elif name == 'caaa':                     # one block, labels i
-            c[:, 0, 0, 0] = x
-        elif name == 'aaav':                     # one block, labels a
-            c[0, 0, :, 0] = x
-    return e, c, b, t
+        u, *amps = pair_amplitudes(delta, v, mu, t, s, rho)
+        e -= float(numpy.vdot(amps[1], u).real)
+        for c, x in zip(out, amps):
+            if name == 'ccav':                       # block: pair (i < j), labels a
+                c[:, ii[n], jj[n], :, 0] = x
+                c[:, jj[n], ii[n], :, 0] = -x
+            elif name == 'cavv':                     # block: i, labels a < b
+                c[:, n, 0, aa, bb] = x
+                c[:, n, 0, bb, aa] = -x
+            elif name == 'ccaa':                     # one block, labels i < j
+                c[:, ii, jj, 0, 0] = x
+                c[:, jj, ii, 0, 0] = -x
+            elif name == 'aavv':                     # one block, labels a < b
+                c[:, 0, 0, aa, bb] = x
+                c[:, 0, 0, bb, aa] = -x
+            elif name == 'cava':                     # block: i, labels a
+                c[:, n, 0, :, 0] = x
+            elif name == 'caaa':                     # one block, labels i
+                c[:, :, 0, 0, 0] = x
+            elif name == 'aaav':                     # one block, labels a
+                c[:, 0, 0, :, 0] = x
+    return (e,) + tuple(out) + (b, t, states)
 
 
-def class_reference(pt, ctx, name, state=0):
+def _herm(x):
+    return 0.5 * (x + x.conj().T)
+
+
+def class_reference(pt, ctx, name, state=0, rho=None):
     '''(E, D) of one class with active operators for one model state: D the blocks
     {'cc', 'aa', 'vv', 'vc', 'ac', 'va'} of the unrelaxed density that the class has,
     dE = sum_pq O[p, q] D[p, q] for h -> h + lambda O with Hermitian O (the block 'vc'
     is D[a, i]; D[i, a] is its conjugate, likewise 'ac' and 'va').  Python reference:
-    all amplitudes of the class in memory.
+    all amplitudes of the class in memory.  rho: instead the target sum_IJ rho_IJ h2_IJ
+    of the union contraction (model_spaces).
 
     The energy depends on h through the denominators (core-core and virtual-virtual
     blocks of the Fock matrix), through H_act in the first-order space and the
     zeroth-order energy of the model state (active block), and through the Fock
     elements in the perturbation (cava: f_ai, caaa: f_ti, aaav: f_at).'''
     pclass = [p for p in pt.perturber_classes() if p.name == name][0]
-    e, c, b, t = _amplitudes(pt, ctx, pclass, state)
+    e, c, l, r, b, t, states = _amplitudes(pt, ctx, pclass, state, rho)
     ncore, nvirt = _LABELS[name]
     fc = 0.5 if ncore == 2 else 1.0
     fv = 0.5 if nvirt == 2 else 1.0
     na = ctx.sp.nact
-    d = {'aa': _active_block(pt, pclass, b, fc * fv * numpy.einsum('ijabk,ijabl->kl', c, c.conj(), optimize=True))}
+    gj = fc * fv * numpy.einsum('xijabk,xijabl->xkl', c, l.conj(), optimize=True)
+    d = {'aa': _active_block(pt, pclass, b, gj.sum(axis=0),
+                             [(numpy.trace(g), j) for g, j in zip(gj, states)])}
     if ncore:
-        d['cc'] = -fv * numpy.einsum('ijabk,ljabk->il', c.conj(), c, optimize=True)
+        d['cc'] = _herm(-fv * numpy.einsum('xijabk,xljabk->il', l.conj(), c, optimize=True))
     if nvirt:
-        d['vv'] = fc * numpy.einsum('ijabk,ijdbk->ad', c.conj(), c, optimize=True)
+        d['vv'] = _herm(fc * numpy.einsum('xijabk,xijdbk->ad', l.conj(), c, optimize=True))
+    h = 0.5 * (l + r)
     if name == 'cava':                           # v[(i, a), 0] = f_ai
-        d['vc'] = -numpy.einsum('iak,k->ai', c[:, 0, :, 0].conj(), t[:, 0])
+        d['vc'] = -numpy.einsum('xiak,xk->ai', h[:, :, 0, :, 0].conj(), t[:, :, 0])
     elif name == 'caaa':                         # v[i, t] = -f_ti
-        d['ac'] = numpy.einsum('ik,kt->ti', c[:, 0, 0, 0].conj(), t[:, :na])
+        d['ac'] = numpy.einsum('xik,xkt->ti', h[:, :, 0, 0, 0].conj(), t[:, :, :na])
     elif name == 'aaav':                         # v[a, t] = f_at
-        d['va'] = -numpy.einsum('ak,kt->at', c[0, 0, :, 0].conj(), t[:, :na])
+        d['va'] = -numpy.einsum('xak,xkt->at', h[:, 0, 0, :, 0].conj(), t[:, :, :na])
     return e, d
 
 

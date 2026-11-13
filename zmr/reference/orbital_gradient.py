@@ -95,19 +95,20 @@ def ccvv_gradient(pt):
 # ----------------------------------------------------------------------
 # all classes: the derivative X = dE2/d(pq|rs) collected over the full orbital space
 
-def _w_blocks(pt, ctx, pclass, state=0):
-    '''[(block index, W[e, X])] with W = dE/dv[e, X] = -2 sum_k c[e, k] t[k, X] for the
-    blocks of pclass.blocks(ctx) (real integrals), and the first-order basis b, the
-    Gram matrix g of the amplitudes over the external labels.'''
-    b, mu, t, s = density.first_order_space(pt, pclass, state)
+def _w_blocks(pt, ctx, pclass, state=0, rho=None):
+    '''([(block index, W[e, X])], b, g, traces) with W = dE/dv[e, X] =
+    -sum_J sum_k (l^J + r^J)[e, k] t^J[k, X] (zmr.uc.density.pair_amplitudes; one state:
+    -2 sum_k c[e, k] t[k, X]) for the blocks of pclass.blocks(ctx) (real integrals), the
+    first-order basis b, the matrix g = sum_J sum_e c^J[e, k] conj(l^J[e, k']) and the
+    pairs (tr(g^J), J) of the zeroth-order energies (rho: model_spaces).'''
+    b, mu, t, s, rho, states = density.model_spaces(pt, pclass, state, rho)
     out = []
-    g = numpy.zeros((len(mu), len(mu)), dtype=numpy.complex128)
+    gj = numpy.zeros((len(states), len(mu), len(mu)), dtype=numpy.complex128)
     for n, (delta, v) in enumerate(pclass.blocks(ctx)):
-        u = v @ t.T
-        c = u / (delta[:, None] + mu[None, :] - s)
-        out.append((n, (-2 * c @ t).real))
-        g += c.T @ c.conj()
-    return out, b, g
+        _, c, l, r = density.pair_amplitudes(delta, v, mu, t, s, rho)
+        out.append((n, -numpy.einsum('jek,jkx->ex', l + r, t).real))
+        gj += numpy.einsum('jek,jel->jkl', c, l.conj())
+    return out, b, gj.sum(axis=0), [(numpy.trace(g), j) for g, j in zip(gj, states)]
 
 
 def _scatter(name, ctx, blocks):
@@ -170,23 +171,25 @@ def _add_antisym(x4, sp, labels, a):
     x4[p, s, r, q] -= a.transpose(0, 3, 1, 2)
 
 
-def _active_two_body(pt, pclass, b, g, x4, sp):
+def _active_two_body(pt, pclass, b, g, x4, sp, traces=None):
     '''dE/d(tu|vw) through H_act = ... + 1/2 sum (tu|vw) t^+ v^+ w u in the first-order
-    space and in the zeroth-order energy (as _active_block for the one-body part).'''
+    space and in the zeroth-order energies (as _active_block for the one-body part).'''
     from socutils.zmr.active import rdm as active_rdm
     act = pt.active_space
     ntarget = act.target(pt.nelec, pclass.dn)
     w, y = numpy.linalg.eigh(0.5 * (g + g.conj().T))
-    keep = w > 1e-14 * max(1.0, float(abs(w).max()) if len(w) else 1.0)
+    keep = abs(w) > 1e-14 * max(1.0, float(abs(w).max()) if len(w) else 1.0)
     na = act.norb
     d2 = numpy.zeros((na,) * 4, dtype=numpy.complex128)
     if keep.any() and ntarget >= 2:
         vecs = numpy.ascontiguousarray(b @ y[:, keep])
         for m, wm in enumerate(w[keep]):
             d2 += wm * active_rdm.make_rdm(act, vecs[:, m], ntarget, 2, bra=0, ket=0)
+    if traces is None:
+        traces = [(numpy.trace(g), 0)]
     if pt.nelec >= 2:
-        gam2 = active_rdm.make_rdm(act, pt.civecs[:, [0]], pt.nelec, 2, bra=0, ket=0)
-        d2 -= numpy.trace(g) * gam2
+        for tr, j in traces:
+            d2 -= tr * active_rdm.make_rdm(act, pt.civecs[:, [j]], pt.nelec, 2, bra=0, ket=0)
     a = sp.slice('a')
     x4[a, a, a, a] += 0.5 * d2.real
 
@@ -205,9 +208,11 @@ def fock_part(eris, d_f, gamma, fock=None, return_w=False):
     return (grad, w) if return_w else grad
 
 
-def gradient(pt, state=0, classes_=None, fock='jk'):
+def gradient(pt, state=0, classes_=None, fock='jk', rho=None):
     '''(dE2/dK in the quasi-canonical orbitals of pt, u): the orbital gradient of the
-    classes named in classes_ (default all eight) at fixed CI vector.'''
+    classes named in classes_ (default all eight) at fixed CI vectors; rho: of the
+    target sum_IJ rho_IJ h2_IJ (zmr.uc.density.model_spaces; ccvv contributes its energy
+    times tr(rho) = 1, and its active part, zmr.uc.density.ccvv_active).'''
     from socutils.zmr.uc import classes as uc_classes
     qc = pt.quasi_canonical
     eris = qc.eris
@@ -227,14 +232,18 @@ def gradient(pt, state=0, classes_=None, fock='jk'):
             blocks = [(k, (-2 * v / delta[:, None]).real)
                       for k, (delta, v) in enumerate(pclass.blocks(ctx))]
             _add_antisym(x4, sp, *_scatter(name, ctx, blocks))
+            if rho is not None:
+                d_aa, b, g, traces = density.ccvv_active(pt, ctx, rho)
+                d_core += density.assemble(sp, {'aa': d_aa})
+                _active_two_body(pt, pclass, b, g, x4, sp, traces)
             continue
-        _, dblk = density.class_reference(pt, ctx, name, state)
+        _, dblk = density.class_reference(pt, ctx, name, state, rho)
         for lab, x in dblk.items():
             target = d_gen if lab in ('cc', 'vv') else d_core
             target += density.assemble(sp, {lab: x})
-        blocks, b, g = _w_blocks(pt, ctx, pclass, state)
+        blocks, b, g, traces = _w_blocks(pt, ctx, pclass, state, rho)
         _add_antisym(x4, sp, *_scatter(name, ctx, blocks))
-        _active_two_body(pt, pclass, b, g, x4, sp)
+        _active_two_body(pt, pclass, b, g, x4, sp, traces)
     bmo = mo_vectors(eris)
     bmo = bmo.real if numpy.iscomplexobj(bmo) else bmo
     gam_gen = numpy.zeros((n, n))
