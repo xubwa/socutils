@@ -290,6 +290,7 @@ def _kobj(mf, st, level):
 # one-sided fitted K = P K_plain makes tr(X^T K[Y]) unsymmetric, so the response matrix A is not Hermitian and the
 # Davidson residual stalls (AuH x2c-SVPall PBE0 TDA: |r| ~ 4e-6).  Both densities in one multi-density pass.
 RESPONSE_SYMMETRIC = True
+RESPONSE_MEM_FRAC = .4  # of the free max_memory for the chunks of response densities (the COSX passes take more)
 
 
 def _cosx_k(k, pieces, n, nao, dtype, kramers, hermi, tol=None, symmetric=False):
@@ -345,7 +346,23 @@ def get_k_cosx(mf, mol, dm, hermi, aa, ab, ba, bb, cplx, kramers):
         k = _kobj(mf, st, 2)
         if k is None:
             return _exact_k(_proxy(mf, mol), mol, pieces, n, nao, dm.dtype, kramers, hermi)
-        return _cosx_k(k, pieces, n, nao, dm.dtype, kramers, hermi, symmetric=RESPONSE_SYMMETRIC and hermi != 1)
+        sym = RESPONSE_SYMMETRIC and hermi != 1
+        # the densities in chunks within RESPONSE_MEM_FRAC of the free max_memory: per density its real pieces
+        # (the stack, P^T X and the doubled plain K of the symmetric form, the fitted K) and the assembled K
+        npc = len(pieces)
+        per = ((6 if sym else 3) * npc + 16) * nao * nao * 8e-6
+        free = max(200, mf.max_memory - lib.current_memory()[0])
+        nb = max(1, min(n, int(RESPONSE_MEM_FRAC * free / per)))
+        if nb >= n:
+            return _cosx_k(k, pieces, n, nao, dm.dtype, kramers, hermi, symmetric=sym)
+        logger.info(mf, 'spinor COSX: %d response densities (%d real pieces each) in chunks of %d '
+                    '(%.0f MB each, %.0f MB free)', n, npc, nb, nb * per, free)
+        vk = numpy.empty((n, 2 * nao, 2 * nao), dtype=numpy.result_type(dm.dtype, numpy.double))
+        for i0 in range(0, n, nb):
+            sl = slice(i0, i0 + nb)
+            pc = _pieces(aa[sl], ab[sl], ba[sl], bb[sl], cplx, kramers, hermi)
+            vk[sl] = _cosx_k(k, pc, len(range(n)[sl]), nao, dm.dtype, kramers, hermi, symmetric=sym)
+        return vk
     last = st['last']
     if last is None:
         lev = 1 if cosx.SCF_GRID_SWITCH > 0 else 2
