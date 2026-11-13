@@ -612,12 +612,72 @@ class TDA(_KernelXCMixin, _ghf.TDA):
     reference_weight = None        # |c0|^2 (reference character) per state
     c0 = None                      # reference amplitude per state (complex)
 
+    # The Davidson solver: 'locked' (socutils.tdscf.lr_locked: residuals of the nroots Ritz vectors only, converged
+    # roots locked, one new vector per unconverged root, per-root preconditioning) or 'pyscf'
+    # (pyscf.tdscf._lr_eig.eigh: MAX_SPACE_INC vectors every iteration, residuals of up to max_space Ritz vectors).
+    davidson = 'locked'
+    max_space = None            # lr_locked's subspace bound (None: max(8 nroots, 40))
+    nbuffer = None              # extra roots of the locked solve (None: max(2, nstates // 2))
+
     def kernel(self, x0=None, nstates=None):
         if not (self.direct or self.couple_reference):
+            if self.davidson == 'locked':
+                with self._response_env():
+                    return self._locked_solve(x0, nstates)
             return super().kernel(x0=x0, nstates=nstates)
         # response xc / collinear scheme, as in _KernelXCMixin.kernel
         with self._response_env():
             return self._direct_solve(nstates)
+
+    def _locked_solve(self, x0=None, nstates=None):
+        '''pyscf's TDA.kernel with the locking Davidson of socutils.tdscf.lr_locked'''
+        from pyscf.lib import logger
+        from socutils.tdscf import lr_locked
+        cpu0 = (logger.process_clock(), logger.perf_counter())
+        mf = self._scf
+        if mf.mo_energy is None:
+            mf.run()
+        self.check_sanity()
+        self.dump_flags()
+        if nstates is None:
+            nstates = self.nstates
+        else:
+            self.nstates = nstates
+        log = logger.Logger(self.stdout, self.verbose)
+        vind, hdiag = self.gen_vind(mf)
+
+        def precond(r, e):
+            d = hdiag - (e - self.level_shift)
+            d[abs(d) < 1e-8] = 1e-8
+            return r / d
+
+        thr = self.positive_eig_threshold
+
+        def pick(w, v):
+            idx = numpy.where(w > thr)[0]
+            return w[idx], v[:, idx]
+
+        if x0 is None:
+            # a wider guess than nstates: a minimal one can miss roots
+            x0 = self.get_init_guess(mf, 2 * nstates + 4)
+        # buffer roots, converged too and dropped: with locking a root missing from the subspace would stay
+        # missing once the lowest nstates Ritz roots converge (AuH x2c-SVPall PBE0: the 3.826 eV root under
+        # the 3.877 eV pair at nstates = 6; pyscf's lr_eigh misses the 3.803 eV pair at nstates = 4)
+        nbuf = self.nbuffer if self.nbuffer is not None else max(2, nstates // 2)
+        conv, e, x1 = lr_locked.eigh(vind, x0, precond, nstates + nbuf, tol=self.conv_tol, lindep=self.lindep,
+                                     max_cycle=self.max_cycle, max_space=self.max_space, pick=pick, log=log)
+        conv, e, x1 = conv[:nstates], e[:nstates], x1[:nstates]
+        self.converged, self.e = conv, e
+        mo_occ = mf.mo_occ[self.get_frozen_mask()]
+        nocc = int((mo_occ > 0).sum())
+        nvir = mo_occ.size - nocc
+        self.xy = [(xi.reshape(nocc, nvir), 0) for xi in x1]
+        if self.chkfile:
+            lib.chkfile.save(self.chkfile, 'tddft/e', self.e)
+            lib.chkfile.save(self.chkfile, 'tddft/xy', self.xy)
+        log.timer('TDA (locked Davidson)', *cpu0)
+        self._finalize()
+        return self.e, self.xy
 
     def _coupling_vector(self):
         '''g_ia = <Phi_i^a|H-E0|Phi_0> in this module's amplitude convention.
