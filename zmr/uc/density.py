@@ -146,26 +146,40 @@ def model_spaces(pt, pclass, state=0, rho=None):
     return b, mu, t, s, numpy.asarray(rho), list(range(pt.civecs.shape[1]))
 
 
+def stack_levels(rho):
+    '''(rhos (L, J, J), single): the weights of one target (rho (J, J)) or of several
+    (rho (L, J, J), e.g. all levels of the multi-state NEVPT2 at once).'''
+    rho = numpy.asarray(rho)
+    return (rho[None], True) if rho.ndim == 2 else (rho, False)
+
+
 def pair_amplitudes(delta, v, mu, t, s, rho):
     '''(u, c, l, r) of one block of external labels, all (J, e, k), for the target
 
         T = Re sum_IJ rho_IJ a_IJ,   a_IJ = -sum_ek conj(u^I_ek) u^J_ek / D^J_ek
 
-    (u^J = v t^J^T, D^J_ek = delta_e + mu_k - s_J): the amplitudes c^J = u^J / D^J, the
-    left amplitudes l^J = sum_I conj(rho_IJ) u^I / D^J and r^I = sum_J rho_IJ c^J, so that
+    (u^J = v t^J^T, D^J_ek = delta_e + mu_k - s_J): the amplitudes c^J = u^J / D^J of the
+    states, the left amplitudes l^J = sum_I conj(rho_IJ) u^I / D^J and r^I = sum_J rho_IJ c^J
+    of the target, so that
 
         T = -Re sum conj(l) u,   dT/ddelta_e = Re sum_Jk conj(l^J_ek) c^J_ek,
         dT = -Re sum_J du^J . conj(l^J + r^J).
 
-    One state (rho = [[1]]): l = r = c.'''
+    One state (rho = [[1]]): l = r = c.  rho (L, J, J): l and r of every target, (L, J, e,
+    k), u and c once.'''
     u = numpy.array([v @ tj.T for tj in t])
     d = delta[None, :, None] + mu[None, None, :] - s[:, None, None]
     c = u / d
+    if rho.ndim == 2:
+        if len(t) == 1:
+            return u, c, u * (numpy.conj(rho[0, 0]) / d), rho[0, 0] * c
+        l = numpy.tensordot(rho.conj(), u, axes=(0, 0)) / d
+        return u, c, l, numpy.tensordot(rho, c, axes=(1, 0))
     if len(t) == 1:
-        return u, c, u * (numpy.conj(rho[0, 0]) / d), rho[0, 0] * c
-    l = numpy.tensordot(rho.conj(), u, axes=(0, 0)) / d
-    r = numpy.tensordot(rho, c, axes=(1, 0))
-    return u, c, l, r
+        w = rho[:, 0, 0][:, None, None, None]
+        return u, c, u[None] * (w.conj() / d[None]), w * c[None]
+    l = numpy.tensordot(rho.conj(), u, axes=(1, 0)) / d[None]
+    return u, c, l, numpy.tensordot(rho, c, axes=(2, 0))
 
 
 def ccvv_active(pt, ctx, rho):
@@ -173,18 +187,23 @@ def ccvv_active(pt, ctx, rho):
     states: the first-order space of ccvv is the model space, and H_act enters through the
     divided differences of the energies of the states (rho_IJ, I != J); its derivatives
     with respect to the Fock matrix and the integrals are those of E_ccvv (tr(rho) = 1).
-    Python, all pairs of core orbitals.'''
+    rho (L, J, J): a list, one entry per target.  Python, all pairs of core orbitals.'''
     from socutils.zmr.uc import classes as uc_classes
     pclass = uc_classes.CLASS_BY_NAME['ccvv']
     b, mu, t, s, rho, states = model_spaces(pt, pclass, rho=rho)
-    gj = numpy.zeros((len(states), len(mu), len(mu)), dtype=numpy.complex128)
+    rhos, single = stack_levels(rho)
+    gj = numpy.zeros((len(rhos), len(states), len(mu), len(mu)), dtype=numpy.complex128)
     for delta, v in pclass.blocks(ctx):
-        _, c, l, _ = pair_amplitudes(delta, v, mu, t, s, rho)
-        for j in range(len(states)):
-            gj[j] += c[j].T @ l[j].conj()
-    g = gj.sum(axis=0)
-    traces = [(numpy.trace(x), j) for x, j in zip(gj, states)]
-    return _active_block(pt, pclass, b, g, traces), b, g, traces
+        _, c, l, _ = pair_amplitudes(delta, v, mu, t, s, rhos)
+        for lv in range(len(rhos)):
+            for j in range(len(states)):
+                gj[lv, j] += c[j].T @ l[lv, j].conj()
+    out = []
+    for x in gj:
+        g = x.sum(axis=0)
+        traces = [(numpy.trace(y), j) for y, j in zip(x, states)]
+        out.append((_active_block(pt, pclass, b, g, traces), b, g, traces))
+    return out[0] if single else out
 
 
 def _active_block(pt, pclass, b, g, traces=None):
@@ -222,45 +241,50 @@ _LABELS = {'ccav': (2, 1), 'cavv': (1, 2), 'ccaa': (2, 0), 'aavv': (0, 2),
 
 
 def _amplitudes(pt, ctx, pclass, state=0, rho=None):
-    '''(E, C, L, R, b, t, traces): the amplitudes of pair_amplitudes of a class as
-    C[J, i, j, a, b, k] (likewise L, R), antisymmetric in the core and in the virtual
-    indices (axes of length 1 for the indices the class does not have), the basis b of
-    the first-order space, the projected functions t[J, k, X] and the states J of the
-    leading axis (model_spaces).'''
+    '''(E, C, L, R, b, t, states): the amplitudes of pair_amplitudes of a class as
+    C[J, i, j, a, b, k], L[n, J, i, j, a, b, k], R likewise (n: the targets of
+    stack_levels), antisymmetric in the core and in the virtual indices (axes of length 1
+    for the indices the class does not have), the energies E[n], the basis b of the
+    first-order space, the projected functions t[J, k, X] and the states J of the leading
+    axis (model_spaces).'''
     b, mu, t, s, rho, states = model_spaces(pt, pclass, state, rho)
+    rhos, _ = stack_levels(rho)
     nc, nv = ctx.sp.ncore, ctx.sp.nvirt
     ncore, nvirt = _LABELS[pclass.name]
-    nk, nj = len(mu), len(states)
+    nk, nj, nl = len(mu), len(states), len(rhos)
     shape = [nj, nc if ncore > 0 else 1, nc if ncore > 1 else 1,
              nv if nvirt > 0 else 1, nv if nvirt > 1 else 1, nk]
-    out = [numpy.zeros(shape, dtype=numpy.complex128) for _ in range(3)]
+    cc = numpy.zeros(shape, dtype=numpy.complex128)
+    ll = numpy.zeros([nl] + shape, dtype=numpy.complex128)
+    rr = numpy.zeros([nl] + shape, dtype=numpy.complex128)
     ii, jj = numpy.triu_indices(nc, 1)
     aa, bb = numpy.triu_indices(nv, 1)
-    e = 0.0
+    e = numpy.zeros(nl)
     name = pclass.name
     for n, (delta, v) in enumerate(pclass.blocks(ctx)):
-        u, *amps = pair_amplitudes(delta, v, mu, t, s, rho)
-        e -= float(numpy.vdot(amps[1], u).real)
-        for c, x in zip(out, amps):
+        u, c, l, r = pair_amplitudes(delta, v, mu, t, s, rhos)
+        for lv in range(nl):
+            e[lv] -= float(numpy.vdot(l[lv], u).real)
+        for y, x in ((cc, c), (ll, l), (rr, r)):
             if name == 'ccav':                       # block: pair (i < j), labels a
-                c[:, ii[n], jj[n], :, 0] = x
-                c[:, jj[n], ii[n], :, 0] = -x
+                y[..., ii[n], jj[n], :, 0, :] = x
+                y[..., jj[n], ii[n], :, 0, :] = -x
             elif name == 'cavv':                     # block: i, labels a < b
-                c[:, n, 0, aa, bb] = x
-                c[:, n, 0, bb, aa] = -x
+                y[..., n, 0, aa, bb, :] = x
+                y[..., n, 0, bb, aa, :] = -x
             elif name == 'ccaa':                     # one block, labels i < j
-                c[:, ii, jj, 0, 0] = x
-                c[:, jj, ii, 0, 0] = -x
+                y[..., ii, jj, 0, 0, :] = x
+                y[..., jj, ii, 0, 0, :] = -x
             elif name == 'aavv':                     # one block, labels a < b
-                c[:, 0, 0, aa, bb] = x
-                c[:, 0, 0, bb, aa] = -x
+                y[..., 0, 0, aa, bb, :] = x
+                y[..., 0, 0, bb, aa, :] = -x
             elif name == 'cava':                     # block: i, labels a
-                c[:, n, 0, :, 0] = x
+                y[..., n, 0, :, 0, :] = x
             elif name == 'caaa':                     # one block, labels i
-                c[:, :, 0, 0, 0] = x
+                y[..., :, 0, 0, 0, :] = x
             elif name == 'aaav':                     # one block, labels a
-                c[:, 0, 0, :, 0] = x
-    return (e,) + tuple(out) + (b, t, states)
+                y[..., 0, 0, :, 0, :] = x
+    return e, cc, ll, rr, b, t, states
 
 
 def _herm(x):
@@ -273,33 +297,38 @@ def class_reference(pt, ctx, name, state=0, rho=None):
     dE = sum_pq O[p, q] D[p, q] for h -> h + lambda O with Hermitian O (the block 'vc'
     is D[a, i]; D[i, a] is its conjugate, likewise 'ac' and 'va').  Python reference:
     all amplitudes of the class in memory.  rho: instead the target sum_IJ rho_IJ h2_IJ
-    of the union contraction (model_spaces).
+    of the union contraction (model_spaces); rho (L, J, J): lists (E, D) of every target.
 
     The energy depends on h through the denominators (core-core and virtual-virtual
     blocks of the Fock matrix), through H_act in the first-order space and the
     zeroth-order energy of the model state (active block), and through the Fock
     elements in the perturbation (cava: f_ai, caaa: f_ti, aaav: f_at).'''
     pclass = [p for p in pt.perturber_classes() if p.name == name][0]
-    e, c, l, r, b, t, states = _amplitudes(pt, ctx, pclass, state, rho)
+    e, c, ls, rs, b, t, states = _amplitudes(pt, ctx, pclass, state, rho)
     ncore, nvirt = _LABELS[name]
     fc = 0.5 if ncore == 2 else 1.0
     fv = 0.5 if nvirt == 2 else 1.0
     na = ctx.sp.nact
-    gj = fc * fv * numpy.einsum('xijabk,xijabl->xkl', c, l.conj(), optimize=True)
-    d = {'aa': _active_block(pt, pclass, b, gj.sum(axis=0),
-                             [(numpy.trace(g), j) for g, j in zip(gj, states)])}
-    if ncore:
-        d['cc'] = _herm(-fv * numpy.einsum('xijabk,xljabk->il', l.conj(), c, optimize=True))
-    if nvirt:
-        d['vv'] = _herm(fc * numpy.einsum('xijabk,xijdbk->ad', l.conj(), c, optimize=True))
-    h = 0.5 * (l + r)
-    if name == 'cava':                           # v[(i, a), 0] = f_ai
-        d['vc'] = -numpy.einsum('xiak,xk->ai', h[:, :, 0, :, 0].conj(), t[:, :, 0])
-    elif name == 'caaa':                         # v[i, t] = -f_ti
-        d['ac'] = numpy.einsum('xik,xkt->ti', h[:, :, 0, 0, 0].conj(), t[:, :, :na])
-    elif name == 'aaav':                         # v[a, t] = f_at
-        d['va'] = -numpy.einsum('xak,xkt->at', h[:, 0, 0, :, 0].conj(), t[:, :, :na])
-    return e, d
+    out = []
+    for l, r in zip(ls, rs):
+        gj = fc * fv * numpy.einsum('xijabk,xijabl->xkl', c, l.conj(), optimize=True)
+        d = {'aa': _active_block(pt, pclass, b, gj.sum(axis=0),
+                                 [(numpy.trace(g), j) for g, j in zip(gj, states)])}
+        if ncore:
+            d['cc'] = _herm(-fv * numpy.einsum('xijabk,xljabk->il', l.conj(), c, optimize=True))
+        if nvirt:
+            d['vv'] = _herm(fc * numpy.einsum('xijabk,xijdbk->ad', l.conj(), c, optimize=True))
+        h = 0.5 * (l + r)
+        if name == 'cava':                           # v[(i, a), 0] = f_ai
+            d['vc'] = -numpy.einsum('xiak,xk->ai', h[:, :, 0, :, 0].conj(), t[:, :, 0])
+        elif name == 'caaa':                         # v[i, t] = -f_ti
+            d['ac'] = numpy.einsum('xik,xkt->ti', h[:, :, 0, 0, 0].conj(), t[:, :, :na])
+        elif name == 'aaav':                         # v[a, t] = f_at
+            d['va'] = -numpy.einsum('xak,xkt->at', h[:, 0, 0, :, 0].conj(), t[:, :, :na])
+        out.append(d)
+    if rho is not None and numpy.ndim(rho) == 3:
+        return list(e), out
+    return e[0], out[0]
 
 
 def assemble(sp, blocks):

@@ -247,3 +247,35 @@ def test_qd_derivatives_scalable_vs_reference():
         assert abs(out['d'] - ref['d']).max() < 1e-10
         assert abs(out['grad'] - ref['grad']).max() < 1e-10
         assert abs(out['g_ci'] - ref['g']).max() < 1e-10
+
+
+def test_qd_levels_in_one_pass():
+    '''zmr.uc.gradient.derivatives with the weights of all levels at once against one
+    level at a time (three states, asymmetric water), and relaxed_rdm1_levels against
+    relaxed_rdm1_level.'''
+    from socutils.zmr.nr import density as nr_density
+    from socutils.zmr.nr import relaxed
+    from socutils.zmr.uc import gradient as uc_gradient
+    mol = gto.M(atom='O 0 0 0.1173; H 0 0.7172 -0.4892; H 0 -0.8072 -0.4492',
+                basis='6-31g', verbose=0)
+    cderi = incore.cholesky_eri(mol, auxbasis=AUX)
+    mf = scf.RHF(mol).density_fit(auxbasis=AUX)
+    mf.kernel()
+    mc = mcscf.CASSCF(mf, 4, 4)
+    mc.fix_spin_(ss=0)
+    mc = mc.state_average_([1 / 3.] * 3)
+    mc.kernel()
+    route = nr_density.spin_orbital_route(mc, cderi, ci=list(mc.ci))
+    pt = route.pt()
+    _, vec = numpy.linalg.eigh(pt.heff)
+    rhos = numpy.array([numpy.outer(vec[:, k].real, vec[:, k].real) for k in range(3)])
+    together = uc_gradient.derivatives(pt, max_memory=0.05, rho=rhos)
+    for k in range(3):
+        one = uc_gradient.derivatives(pt, max_memory=0.05, rho=rhos[k])
+        for key in ('d', 'grad', 'g_ci'):
+            assert abs(together[k][key] - one[key]).max() < 1e-11, (k, key)
+    dms = relaxed.relaxed_rdm1_levels(mc, cderi)
+    for k in range(3):
+        # the derivatives agree to round-off (above); the densities to the iterative
+        # Z-vector (rtol 1e-10), whose condition is poor here (near-dependent ccav functions)
+        assert abs(dms[k] - relaxed.relaxed_rdm1_level(mc, cderi, k)).max() < 1e-6

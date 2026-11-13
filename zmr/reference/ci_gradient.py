@@ -35,17 +35,21 @@ def _adjoint(ops):
 
 
 def _sum_adjoint(act, pclass, w, ntarget):
-    '''sum_X O_X^+ w_X for vectors w[X, :] of the target sector: every string applied to
-    its own vector only.'''
+    '''sum_X O_X^+ w_X for vectors w[X, :] of the target sector (or w[n, X, :]: every n):
+    every string applied to its own vector only.'''
+    w = numpy.asarray(w)
+    batch = w.ndim == 3
+    if not batch:
+        w = w[None]
     out = None
     x0 = 0
     for dag, idx in _adjoint(pclass.operators(act.norb)):
         for k in range(len(idx)):
-            y = act.apply_strings(numpy.ascontiguousarray(w[x0 + k][None]), ntarget,
-                                  [(dag, idx[k:k + 1])])[0, 0]
+            y = act.apply_strings(numpy.ascontiguousarray(w[:, x0 + k]), ntarget,
+                                  [(dag, idx[k:k + 1])])[:, 0]
             out = y if out is None else out + y
         x0 += len(idx)
-    return out
+    return out if batch else out[0]
 
 
 def class_g(pt, ctx, name, state=0, rho=None):
@@ -74,10 +78,14 @@ def class_g(pt, ctx, name, state=0, rho=None):
 class QAccumulator:
     '''The matrices Q_S, Q_K over the functions A = (J, X) of the states and the numbers
     tau_J of class_g, accumulated block by block of external labels (add), and the
-    vectors g[J] from them (g).'''
+    vectors g[J] from them (g); for every target of rho (L, J, J) at once (the pseudo-
+    inverse, the functions and their metric once).'''
 
     def __init__(self, pt, pclass, t, s, rho, states):
-        self.pt, self.pclass, self.s, self.rho, self.states = pt, pclass, s, rho, states
+        from socutils.zmr.uc import density as uc_density
+        self.pt, self.pclass, self.s, self.states = pt, pclass, s, states
+        self.rhos, self.single = uc_density.stack_levels(rho)
+        nl = len(self.rhos)
         nj, nk, nx = t.shape
         self.nj, self.nx = nj, nx
         na_ = nj * nx
@@ -87,46 +95,52 @@ class QAccumulator:
         self.phi = engine.class_functions(pclass, pt.active_space, psi, pt.nelec)
         pf = self.phi.reshape(na_, -1)
         self.smat = pf.conj() @ pf.T
-        self.q_s = numpy.zeros((na_, na_), dtype=numpy.complex128)
-        self.q_k = numpy.zeros((na_, na_), dtype=numpy.complex128)
-        self.tau = numpy.zeros(nj, dtype=numpy.complex128)
+        self.q_s = numpy.zeros((nl, na_, na_), dtype=numpy.complex128)
+        self.q_k = numpy.zeros((nl, na_, na_), dtype=numpy.complex128)
+        self.tau = numpy.zeros((nl, nj), dtype=numpy.complex128)
 
     def add(self, c, l, v, delta, f=1.0):
-        '''Labels e of one block: amplitudes c, l (J, e, k) of pair_amplitudes, v[e, X],
-        delta[e]; weight f (labels counted twice: 1/2).'''
+        '''Labels e of one block: amplitudes c (J, e, k), l (L, J, e, k) (or (J, e, k) for
+        one target) of pair_amplitudes, v[e, X], delta[e]; weight f (labels counted twice:
+        1/2).'''
         nj, nx = self.nj, self.nx
-        ne = len(delta)
+        if l.ndim == 3:
+            l = l[None]
         for j in range(nj):
             yr = c[j] @ self.tp                                         # (e, A)
-            yl = l[j] @ self.tp
-            ylh = yl.T.conj()
             # L^J_e[A] = conj(rho_{J_A J}) v[e, X_A], R^J_e[A] = delta_{J_A J} v[e, X_A]
-            # sum_e conj(L_A) Y_R[e, B] with L_A = conj(rho_{J_A J}) v[e, X_A]
-            lr = (self.rho[:, j][:, None, None] * (v.T.conj() @ yr)[None]).reshape(nj * nx, -1)
-            rr = numpy.zeros((nj * nx, ne), dtype=numpy.result_type(yl, v))
-            rr[j * nx:(j + 1) * nx] = v.T
-            m = ylh @ yr
-            self.q_s += f * (lr + ylh @ rr.T - (ylh * (delta - self.s[j])[None, :]) @ yr)
-            self.q_k += f * m
-            # tau_J = sum_e Y_L^+ S Y_R = sum_ab S_ab M_ab
-            self.tau[j] += f * numpy.vdot(self.smat.conj(), m)
+            vy = v.T.conj() @ yr                                        # (X, A)
+            dj = (delta - self.s[j])[None, :]
+            for lv, rho in enumerate(self.rhos):
+                ylh = (l[lv, j] @ self.tp).T.conj()                     # (A, e)
+                m = ylh @ yr
+                # sum_e conj(L_A) Y_R[e, B] and sum_e conj(Y_L[e, A]) R_B
+                self.q_s[lv] += f * ((rho[:, j][:, None, None] * vy[None]).reshape(nj * nx, -1)
+                                     - (ylh * dj) @ yr)
+                self.q_s[lv][:, j * nx:(j + 1) * nx] += f * (ylh @ v)
+                self.q_k[lv] += f * m
+                # tau_J = sum_e Y_L^+ S Y_R = sum_ab S_ab M_ab
+                self.tau[lv, j] += f * numpy.vdot(self.smat.conj(), m)
 
     def g(self):
+        '''g[J] (one target) or g[n, J] (rho (L, J, J)).'''
         pt, pclass, act = self.pt, self.pclass, self.pt.active_space
         ntarget = act.target(pt.nelec, pclass.dn)
-        pf = self.phi.reshape(self.nj * self.nx, -1)
-        q_s = 0.5 * (self.q_s + self.q_s.T)
-        q_k = 0.5 * (self.q_k + self.q_k.T)
-        w_s = (q_s @ pf).reshape(self.nj, self.nx, -1)
-        w_k = (q_k @ pf).reshape(self.nj, self.nx, -1)
-        out = []
+        nl, nj, nx = len(self.rhos), self.nj, self.nx
+        pf = self.phi.reshape(nj * nx, -1)
+        q_s = 0.5 * (self.q_s + self.q_s.transpose(0, 2, 1))
+        q_k = 0.5 * (self.q_k + self.q_k.transpose(0, 2, 1))
+        w_s = (q_s @ pf).reshape(nl, nj, nx, -1)
+        w_k = (q_k @ pf).reshape(nl, nj, nx, -1)
+        out = numpy.zeros((nl, nj, pt.civecs.shape[0]), dtype=numpy.complex128)
         for j, jj in enumerate(self.states):
             psi = pt.civecs[:, jj]
-            hw = act.apply_h(ntarget, w_k[j].T).T
+            hw = act.apply_h(ntarget, w_k[:, j].reshape(nl * nx, -1).T).T.reshape(nl, nx, -1)
             hpsi = act.apply_h(pt.nelec, psi[:, None])[:, 0] - self.s[j] * psi
-            out.append(-_sum_adjoint(act, pclass, w_s[j], ntarget)
-                       + _sum_adjoint(act, pclass, hw, ntarget) - self.tau[j].real * hpsi)
-        return numpy.array(out)
+            out[:, j] = (-_sum_adjoint(act, pclass, w_s[:, j], ntarget)
+                         + _sum_adjoint(act, pclass, hw, ntarget)
+                         - self.tau[:, j].real[:, None] * hpsi[None])
+        return out[0] if self.single else out
 
 
 def fock_g(pt, ctx, d_gen, state=0, w=None, states=None):

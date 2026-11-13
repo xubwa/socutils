@@ -170,46 +170,57 @@ def qd_derivatives(pt, rho):
     return {'d': d, 'grad': grad, 'g': g, 'u': u}
 
 
-def relaxed_rdm1_level(mc, cderi, level=0, max_memory=4000, return_parts=False):
-    '''AO density of a level of the multi-state PC-NEVPT2 (union contraction, the
+def relaxed_rdm1_levels(mc, cderi, levels=None, max_memory=4000, return_parts=False):
+    '''AO densities of levels of the multi-state PC-NEVPT2 (union contraction, the
     zeroth-order energy of every state) on all states of the state-averaged CASSCF mc,
-    whose expectation values are the derivatives of the eigenvalue `level` (ascending) of
-    heff = hmodel + h2, through the Lagrangian of the averaged CASSCF.  return_parts: also (D_model, D_unrelaxed, D_z) and the
-    eigenvalue.'''
-    from pyscf.fci import direct_spin1
+    whose expectation values are the derivatives of the eigenvalues `levels` (ascending;
+    default all) of heff = hmodel + h2, through the Lagrangian of the averaged CASSCF.  The
+    derivatives of all levels come from one pass over the classes (the amplitudes of the
+    model states are those of every level; only the weights rho = c_k c_k^+ differ), one
+    Z-vector per level.  Returns a list; return_parts: also (D_model, D_unrelaxed, D_z) and
+    the eigenvalue of every level.'''
     from socutils.zmr.nr.active import sector_index
     ci = rf._ci_list(mc)
     route = nr_density.spin_orbital_route(mc, cderi, ci=ci)
     pt = route.pt(max_memory)
     e, vec = numpy.linalg.eigh(pt.heff)
-    ck = vec[:, level]
-    if abs(ck.imag).max() > 1e-10 * abs(ck).max():
+    levels = list(range(len(e))) if levels is None else list(levels)
+    rhos = []
+    for k in levels:
+        ck = vec[:, k]
         ck = ck * abs(ck[abs(ck).argmax()]) / ck[abs(ck).argmax()]
-    ck = ck.real
-    rho = numpy.outer(ck, ck)
-    out = uc_gradient.derivatives(pt, max_memory=max_memory, rho=rho)
-    u = out['u']
-    d2 = route.spin_sum(u.conj() @ out['d'] @ u.T).real
-    g_orb = route.spin_sum(numpy.conj(u) @ out['grad'] @ u.T).real
+        if abs(ck.imag).max() > 1e-10 * abs(ck).max():
+            raise NotImplementedError('real model states only')
+        rhos.append(numpy.outer(ck.real, ck.real))
+    outs = uc_gradient.derivatives(pt, max_memory=max_memory, rho=numpy.array(rhos))
     idx = sector_index(pt.active_space.norb // 2, route.nelec_ab)
-    rhs = numpy.zeros(rf.ngorb(mc) + sum(c.size for c in ci))
-    rhs[:rf.ngorb(mc)] = mc.pack_uniq_var(g_orb - g_orb.T)
-    for j, sl in enumerate(_ci_slices(mc)):
-        gx = out['g_ci'][j][idx].real
-        c = ci[j].ravel()
-        rhs[sl] = 2 * (gx - numpy.dot(c, gx) * c)
-    rhs += model_gradient(mc, rho)
-    z = zvector(mc, rhs)
     mo = mc.mo_coeff
     nmo = mo.shape[1]
-    gam = numpy.zeros((nmo, nmo))
-    gam[:mc.ncore, :mc.ncore] = 2 * numpy.eye(mc.ncore)
     a = slice(mc.ncore, mc.ncore + mc.ncas)
-    gam[a, a] = _transition_rdms(mc, rho)[0]
-    d_model = mo @ gam @ mo.T
-    d_unrel = mo @ d2.T @ mo.T
-    d_z = rf.lagrangian_density(mc, z)
-    dm = d_model + d_unrel + d_z
-    if return_parts:
-        return dm, (d_model, d_unrel, d_z), float(e[level])
-    return dm
+    res = []
+    for k, rho, out in zip(levels, rhos, outs):
+        u = out['u']
+        d2 = route.spin_sum(u.conj() @ out['d'] @ u.T).real
+        g_orb = route.spin_sum(numpy.conj(u) @ out['grad'] @ u.T).real
+        rhs = numpy.zeros(rf.ngorb(mc) + sum(c.size for c in ci))
+        rhs[:rf.ngorb(mc)] = mc.pack_uniq_var(g_orb - g_orb.T)
+        for j, sl in enumerate(_ci_slices(mc)):
+            gx = out['g_ci'][j][idx].real
+            c = ci[j].ravel()
+            rhs[sl] = 2 * (gx - numpy.dot(c, gx) * c)
+        rhs += model_gradient(mc, rho)
+        z = zvector(mc, rhs)
+        gam = numpy.zeros((nmo, nmo))
+        gam[:mc.ncore, :mc.ncore] = 2 * numpy.eye(mc.ncore)
+        gam[a, a] = _transition_rdms(mc, rho)[0]
+        d_model = mo @ gam @ mo.T
+        d_unrel = mo @ d2.T @ mo.T
+        d_z = rf.lagrangian_density(mc, z)
+        dm = d_model + d_unrel + d_z
+        res.append((dm, (d_model, d_unrel, d_z), float(e[k])) if return_parts else dm)
+    return res
+
+
+def relaxed_rdm1_level(mc, cderi, level=0, max_memory=4000, return_parts=False):
+    '''relaxed_rdm1_levels of one level.'''
+    return relaxed_rdm1_levels(mc, cderi, [level], max_memory, return_parts)[0]

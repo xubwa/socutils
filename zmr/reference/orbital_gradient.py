@@ -100,16 +100,22 @@ def _w_blocks(pt, ctx, pclass, state=0, rho=None):
     -sum_J sum_k (l^J + r^J)[e, k] t^J[k, X] (zmr.uc.density.pair_amplitudes; one state:
     -2 sum_k c[e, k] t[k, X]) for the blocks of pclass.blocks(ctx) (real integrals), the
     first-order basis b, the matrix g = sum_J sum_e c^J[e, k] conj(l^J[e, k']) and the
-    pairs (tr(g^J), J) of the zeroth-order energies (rho: model_spaces).'''
-    b, mu, t, s, rho, states = density.model_spaces(pt, pclass, state, rho)
-    out = []
-    gj = numpy.zeros((len(states), len(mu), len(mu)), dtype=numpy.complex128)
+    pairs (tr(g^J), J) of the zeroth-order energies (rho: model_spaces; rho (L, J, J): a
+    list, one entry per target).'''
+    b, mu, t, s, rho_, states = density.model_spaces(pt, pclass, state, rho)
+    rhos, single = density.stack_levels(rho_)
+    nl, nj = len(rhos), len(states)
+    outs = [[] for _ in range(nl)]
+    gj = numpy.zeros((nl, nj, len(mu), len(mu)), dtype=numpy.complex128)
     for n, (delta, v) in enumerate(pclass.blocks(ctx)):
-        _, c, l, r = density.pair_amplitudes(delta, v, mu, t, s, rho)
-        out.append((n, -sum((l[j] + r[j]) @ t[j] for j in range(len(states))).real))
-        for j in range(len(states)):
-            gj[j] += c[j].T @ l[j].conj()
-    return out, b, gj.sum(axis=0), [(numpy.trace(g), j) for g, j in zip(gj, states)]
+        _, c, l, r = density.pair_amplitudes(delta, v, mu, t, s, rhos)
+        for lv in range(nl):
+            outs[lv].append((n, -sum((l[lv, j] + r[lv, j]) @ t[j] for j in range(nj)).real))
+            for j in range(nj):
+                gj[lv, j] += c[j].T @ l[lv, j].conj()
+    res = [(o, b, x.sum(axis=0), [(numpy.trace(y), j) for y, j in zip(x, states)])
+           for o, x in zip(outs, gj)]
+    return res[0] if single else res
 
 
 def _scatter(name, ctx, blocks):

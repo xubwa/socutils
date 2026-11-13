@@ -105,146 +105,117 @@ def gammas_from_antisym(eris, labels, a, gams):
     _add(gams, (lr, lq), -numpy.einsum('prqs,Pps->Prq', a, b(lp + ls), optimize=True))
 
 
-def _pairs(v, delta, mu, tts, s, rho):
+def _pairs(v, delta, mu, tts, s, rhos):
     '''(c, l, r) of zmr.uc.density.pair_amplitudes with u^J = v t^J^T by BLAS (tts[J] =
-    t[J]^T).'''
+    t[J]^T), the targets rhos (L, J, J): c (J, e, k), l and r (L, J, e, k).'''
     from socutils.zmr.lib import linalg as la
     u = numpy.array([la.gemm(v, tj) for tj in tts])
     d = delta[None, :, None] + mu[None, None, :] - s[:, None, None]
     c = u / d
     if len(tts) == 1:
-        l = u * (numpy.conj(rho[0, 0]) / d)
-        return c, l, rho[0, 0] * c
-    l = numpy.einsum('ij,iek->jek', rho.conj(), u) / d
-    return c, l, numpy.einsum('ij,jek->iek', rho, c)
+        w = rhos[:, 0, 0][:, None, None, None]
+        return c, u[None] * (w.conj() / d[None]), w * c[None]
+    l = numpy.tensordot(rhos.conj(), u, axes=(1, 0)) / d[None]
+    return c, l, numpy.tensordot(rhos, c, axes=(2, 0))
 
 
 def _herm(x):
     return 0.5 * (x + x.conj().T)
 
 
-def cavv_pass(pt, ctx, gams, state=0, max_memory=4000, rho=None):
-    '''One pass over cavv in segments of b: the density blocks, dE/dB (dE/d(ai|bt) =
-    -W[a, i, b, t], W = -sum_J (l^J + r^J) t^J, all a != b) into the blocks (v, c) and
-    (v, a), the active part (b, g, traces) and the accumulated Q matrices of the CI
-    gradient (zmr.reference.ci_gradient.QAccumulator); rho: the target sum_IJ rho_IJ h2_IJ
-    (zmr.uc.density.model_spaces).  Returns (blocks, b, g, traces, acc).'''
+def _external_pass(name, pt, ctx, gams, state, max_memory, rho):
+    '''One pass over cavv (segments of b) or ccav (segments of j): the density blocks,
+    dE/dB into gams (cavv: dE/d(ai|bt) = -W[a, i, b, t], W = -sum_J (l^J + r^J) t^J, all
+    a != b, into (v, c) and (v, a); ccav: dE/d(ai|tj) = W[a, i, j, t], all i != j, into
+    (v, c) and (a, c)), the active part (b, g, traces) and the accumulated Q matrices of
+    the CI gradient (zmr.reference.ci_gradient.QAccumulator).  rho: the target
+    sum_IJ rho_IJ h2_IJ (zmr.uc.density.model_spaces); rho (L, J, J): every target at once
+    (the integrals and the amplitudes of the states once), gams a list of L dicts.
+    Returns ([(blocks, b, g, traces)] per target, acc).'''
     from socutils.zmr.lib import linalg as la
     from socutils.zmr.reference import ci_gradient as cg
     from socutils.zmr.uc import classes, density
-    pclass = classes.CLASS_BY_NAME['cavv']
+    pclass = classes.CLASS_BY_NAME[name]
     b, mu, t, s, rho_, states = density.model_spaces(pt, pclass, state, rho)
-    nj = len(states)
-    sp = ctx.sp
-    nc, na, nv = sp.ncore, sp.nact, sp.nvirt
-    nk = len(mu)
-    ev, ec = numpy.asarray(ctx.eps_v), numpy.asarray(ctx.eps_c)
-    bvc = numpy.ascontiguousarray(ctx.eris.cd_block('vc'))
-    bva = numpy.ascontiguousarray(ctx.eris.cd_block('va'))
-    naux = bvc.shape[0]
-    left = bvc.reshape(naux, nv * nc)
-    right = bva.reshape(naux, nv * na)
-    tts = [numpy.ascontiguousarray(tj.T) for tj in t]
-    acc = cg.QAccumulator(pt, pclass, t, s, rho_, states)
-    c16 = numpy.complex128
-    gj = numpy.zeros((nj, nk, nk), dtype=c16)
-    g_vc = numpy.zeros((naux, nv, nc), dtype=c16)
-    g_va = numpy.zeros((naux, nv, na), dtype=c16)
-    dcc = numpy.zeros((nc, nc), dtype=c16)
-    dvv = numpy.zeros((nv, nv), dtype=c16)
-    for b0, b1 in density._segments(nv, nv * nc * max(na, (3 * nj + 1) * nk), max_memory):
-        nb = b1 - b0
-        bseg = numpy.ascontiguousarray(bva[:, b0:b1]).reshape(naux, nb * na)
-        m1 = la.gemm(left, bseg, 'T', 'N').reshape(nv, nc, nb, na)
-        m2 = la.gemm(numpy.ascontiguousarray(bvc[:, b0:b1]).reshape(naux, nb * nc), right,
-                     'T', 'N').reshape(nb, nc, nv, na)
-        v = numpy.ascontiguousarray(m2.transpose(2, 1, 0, 3) - m1).reshape(-1, na)   # (aib, t)
-        del m1, m2
-        delta = (ev[:, None, None] - ec[None, :, None] + ev[None, None, b0:b1]).reshape(-1)
-        c, l, r = _pairs(v, delta, mu, tts, s, rho_)
-        x = 0
-        for j in range(nj):
-            gj[j] += 0.5 * la.gemm(c[j], l[j].conj(), 'T', 'N')
-            c4, l4 = c[j].reshape(nv, nc, nb, nk), l[j].reshape(nv, nc, nb, nk)
-            dvv += la.gemm(l4.reshape(nv, -1).conj(), c4.reshape(nv, -1), 'N', 'T')
-            dcc -= 0.5 * la.gemm(
-                numpy.ascontiguousarray(l4.transpose(1, 0, 2, 3)).reshape(nc, -1).conj(),
-                numpy.ascontiguousarray(c4.transpose(1, 0, 2, 3)).reshape(nc, -1), 'N', 'T')
-            x = x + la.gemm(l[j] + r[j], t[j])                       # dE/d(ai|bt) = -W
-        # every unordered (a, b) twice: 1/2
-        acc.add(c, l, v, delta, 0.5)
-        xm = x.reshape(nv * nc, nb * na)
-        g_vc += la.gemm(bseg, xm, 'N', 'T').reshape(naux, nv, nc)
-        g_va[:, b0:b1] += la.gemm(left, xm).reshape(naux, nb, na)
-        del c, l, r, x, xm, v
-    _add(gams, ('v', 'c'), g_vc)
-    _add(gams, ('v', 'a'), g_va)
-    g = gj.sum(axis=0)
-    traces = [(numpy.trace(x), j) for x, j in zip(gj, states)]
-    blocks = {'cc': _herm(dcc), 'vv': _herm(dvv),
-              'aa': density._active_block(pt, pclass, b, g, traces)}
-    return blocks, b, g, traces, acc
-
-
-def ccav_pass(pt, ctx, gams, state=0, max_memory=4000, rho=None):
-    '''One pass over ccav in segments of j (dE/d(ai|tj) = W[a, i, j, t], all i != j, into
-    the blocks (v, c) and (a, c)); returns (blocks, b, g, traces, acc) as cavv_pass.'''
-    from socutils.zmr.lib import linalg as la
-    from socutils.zmr.reference import ci_gradient as cg
-    from socutils.zmr.uc import classes, density
-    pclass = classes.CLASS_BY_NAME['ccav']
-    b, mu, t, s, rho_, states = density.model_spaces(pt, pclass, state, rho)
-    nj = len(states)
+    rhos, _ = density.stack_levels(rho_)
+    nl, nj = len(rhos), len(states)
     sp = ctx.sp
     nc, na, nv = sp.ncore, sp.nact, sp.nvirt
     nk = len(mu)
     ev, ec = numpy.asarray(ctx.eps_v), numpy.asarray(ctx.eps_c)
     bvc = numpy.ascontiguousarray(ctx.eris.cd_block('vc'))      # (P, a, i)
-    bac = numpy.ascontiguousarray(ctx.eris.cd_block('ac'))      # (P, t, j)
+    other = 'va' if name == 'cavv' else 'ac'
+    bx = numpy.ascontiguousarray(ctx.eris.cd_block(other))      # (P, b, t) or (P, t, j)
     naux = bvc.shape[0]
     left = bvc.reshape(naux, nv * nc)
-    right = bac.reshape(naux, na * nc)
+    right = bx.reshape(naux, -1)
     tts = [numpy.ascontiguousarray(tj.T) for tj in t]
     acc = cg.QAccumulator(pt, pclass, t, s, rho_, states)
     c16 = numpy.complex128
-    gj = numpy.zeros((nj, nk, nk), dtype=c16)
-    g_vc = numpy.zeros((naux, nv, nc), dtype=c16)
-    g_ac = numpy.zeros((naux, na, nc), dtype=c16)
-    dcc = numpy.zeros((nc, nc), dtype=c16)
-    dvv = numpy.zeros((nv, nv), dtype=c16)
-    for j0, j1 in density._segments(nc, nv * nc * max(na, (3 * nj + 1) * nk), max_memory):
-        nj_ = j1 - j0
-        bseg = numpy.ascontiguousarray(bac[:, :, j0:j1])            # (P, t, j)
-        m1 = la.gemm(left, bseg.reshape(naux, na * nj_), 'T', 'N').reshape(nv, nc, na, nj_)
-        m2 = la.gemm(numpy.ascontiguousarray(bvc[:, :, j0:j1]).reshape(naux, nv * nj_), right,
-                     'T', 'N').reshape(nv, nj_, na, nc)
-        v = numpy.ascontiguousarray(m1.transpose(0, 1, 3, 2) - m2.transpose(0, 3, 1, 2)
-                                    ).reshape(-1, na)                # (a i j, t)
+    gj = numpy.zeros((nl, nj, nk, nk), dtype=c16)
+    g_vc = numpy.zeros((nl, naux, nv, nc), dtype=c16)
+    g_x = numpy.zeros((nl,) + bx.shape, dtype=c16)
+    dcc = numpy.zeros((nl, nc, nc), dtype=c16)
+    dvv = numpy.zeros((nl, nv, nv), dtype=c16)
+    nseg = nv if name == 'cavv' else nc
+    # the cavv labels (a, i, b) with all a != b (1/2 each), ccav (a, i, j) all i != j
+    fvv, fcc = (1.0, 0.5) if name == 'cavv' else (0.5, 1.0)
+    for p0, p1 in density._segments(nseg, nv * nc * max(na, (2 * nl * nj + nj + 1) * nk),
+                                    max_memory):
+        npart = p1 - p0
+        if name == 'cavv':
+            bseg = numpy.ascontiguousarray(bx[:, p0:p1]).reshape(naux, npart * na)
+            m1 = la.gemm(left, bseg, 'T', 'N').reshape(nv, nc, npart, na)
+            m2 = la.gemm(numpy.ascontiguousarray(bvc[:, p0:p1]).reshape(naux, npart * nc),
+                         right, 'T', 'N').reshape(npart, nc, nv, na)
+            v = numpy.ascontiguousarray(m2.transpose(2, 1, 0, 3) - m1).reshape(-1, na)
+            delta = (ev[:, None, None] - ec[None, :, None] + ev[None, None, p0:p1]).reshape(-1)
+            sign = 1.0                                               # dE/d(ai|bt) = -W
+        else:
+            bseg = numpy.ascontiguousarray(bx[:, :, p0:p1])         # (P, t, j)
+            m1 = la.gemm(left, bseg.reshape(naux, na * npart), 'T', 'N').reshape(nv, nc, na, npart)
+            m2 = la.gemm(numpy.ascontiguousarray(bvc[:, :, p0:p1]).reshape(naux, nv * npart),
+                         right, 'T', 'N').reshape(nv, npart, na, nc)
+            v = numpy.ascontiguousarray(m1.transpose(0, 1, 3, 2) - m2.transpose(0, 3, 1, 2)
+                                        ).reshape(-1, na)            # (a i j, t)
+            delta = (ev[:, None, None] - ec[None, :, None] - ec[None, None, p0:p1]).reshape(-1)
+            sign = -1.0                                              # dE/d(ai|tj) = W
         del m1, m2
-        delta = (ev[:, None, None] - ec[None, :, None] - ec[None, None, j0:j1]).reshape(-1)
-        c, l, r = _pairs(v, delta, mu, tts, s, rho_)
-        x = 0
-        for j in range(nj):
-            gj[j] += 0.5 * la.gemm(c[j], l[j].conj(), 'T', 'N')
-            c4, l4 = c[j].reshape(nv, nc, nj_, nk), l[j].reshape(nv, nc, nj_, nk)
-            dvv += 0.5 * la.gemm(l4.reshape(nv, -1).conj(), c4.reshape(nv, -1), 'N', 'T')
-            dcc -= la.gemm(
-                numpy.ascontiguousarray(l4.transpose(1, 0, 2, 3)).reshape(nc, -1).conj(),
-                numpy.ascontiguousarray(c4.transpose(1, 0, 2, 3)).reshape(nc, -1), 'N', 'T')
-            x = x - la.gemm(l[j] + r[j], t[j])                       # dE/d(ai|tj)
+        c, l, r = _pairs(v, delta, mu, tts, s, rhos)
         acc.add(c, l, v, delta, 0.5)
-        xm = x.reshape(nv * nc, nj_ * na)
-        bjt = numpy.ascontiguousarray(bseg.transpose(0, 2, 1)).reshape(naux, nj_ * na)
-        g_vc += la.gemm(bjt, xm, 'N', 'T').reshape(naux, nv, nc)
-        g_ac[:, :, j0:j1] += la.gemm(left, xm).reshape(naux, nj_, na).transpose(0, 2, 1)
-        del c, l, r, x, xm, v
-    _add(gams, ('v', 'c'), g_vc)
-    _add(gams, ('a', 'c'), g_ac)
-    g = gj.sum(axis=0)
-    traces = [(numpy.trace(x), j) for x, j in zip(gj, states)]
-    blocks = {'cc': _herm(dcc), 'vv': _herm(dvv),
-              'aa': density._active_block(pt, pclass, b, g, traces)}
-    return blocks, b, g, traces, acc
+        if name == 'cavv':
+            bjt = None
+        else:
+            bjt = numpy.ascontiguousarray(bseg.transpose(0, 2, 1)).reshape(naux, npart * na)
+        for lv in range(nl):
+            x = 0
+            for j in range(nj):
+                gj[lv, j] += 0.5 * la.gemm(c[j], l[lv, j].conj(), 'T', 'N')
+                c4 = c[j].reshape(nv, nc, npart, nk)
+                l4 = l[lv, j].reshape(nv, nc, npart, nk)
+                dvv[lv] += fvv * la.gemm(l4.reshape(nv, -1).conj(), c4.reshape(nv, -1), 'N', 'T')
+                dcc[lv] -= fcc * la.gemm(
+                    numpy.ascontiguousarray(l4.transpose(1, 0, 2, 3)).reshape(nc, -1).conj(),
+                    numpy.ascontiguousarray(c4.transpose(1, 0, 2, 3)).reshape(nc, -1), 'N', 'T')
+                x = x + la.gemm(l[lv, j] + r[lv, j], t[j])
+            xm = (sign * x).reshape(nv * nc, npart * na)
+            if name == 'cavv':
+                g_vc[lv] += la.gemm(bseg, xm, 'N', 'T').reshape(naux, nv, nc)
+                g_x[lv][:, p0:p1] += la.gemm(left, xm).reshape(naux, npart, na)
+            else:
+                g_vc[lv] += la.gemm(bjt, xm, 'N', 'T').reshape(naux, nv, nc)
+                g_x[lv][:, :, p0:p1] += la.gemm(left, xm).reshape(naux, npart, na).transpose(0, 2, 1)
+        del c, l, r, v
+    res = []
+    for lv in range(nl):
+        _add(gams[lv], ('v', 'c'), g_vc[lv])
+        _add(gams[lv], ('v', 'a') if name == 'cavv' else ('a', 'c'), g_x[lv])
+        g = gj[lv].sum(axis=0)
+        traces = [(numpy.trace(y), j) for y, j in zip(gj[lv], states)]
+        blocks = {'cc': _herm(dcc[lv]), 'vv': _herm(dvv[lv]),
+                  'aa': density._active_block(pt, pclass, b, g, traces)}
+        res.append((blocks, b, g, traces))
+    return res, acc
 
 
 def active_two_body(pt, pclass, b, g, state=0, traces=None):
@@ -276,7 +247,8 @@ def derivatives(pt, state=0, max_memory=4000, rho=None):
     (quasi-canonical orbitals), and the vector g of the CI gradient, dE2 = 2 <dPsi|g>
     (determinants of the spinor sector; zmr.reference.ci_gradient).  rho: instead of one
     state the target sum_IJ rho_IJ h2_IJ of a multi-state PC-NEVPT2 (union contraction;
-    a level: rho_IJ = conj(c_I) c_J), g the vectors g[J] of all states.  Real orbitals.
+    a level: rho_IJ = conj(c_I) c_J), g the vectors g[J] of all states; rho (L, J, J):
+    several targets (all levels) in the same pass, a list of the results.  Real orbitals.
     Returns {'d', 'grad', 'g_ci', 'u'}.'''
     from socutils.zmr.reference import ci_gradient as cg
     from socutils.zmr.reference import orbital_gradient as og
@@ -287,55 +259,70 @@ def derivatives(pt, state=0, max_memory=4000, rho=None):
     ctx = density.context(pt)
     n = sp.nmo
     c16 = numpy.complex128
-    d_gen = numpy.zeros((n, n), dtype=c16)
-    d_core = numpy.zeros((n, n), dtype=c16)
-    gams = {}
-    x_aa = numpy.zeros((sp.nact,) * 4)
+    levels = rho is not None and numpy.ndim(rho) == 3
+    nl = len(rho) if levels else 1
+
+    def per_level(x):
+        return list(x) if levels else [x]
+    d_gen = [numpy.zeros((n, n), dtype=c16) for _ in range(nl)]
+    d_core = [numpy.zeros((n, n), dtype=c16) for _ in range(nl)]
+    gams = [{} for _ in range(nl)]
+    x_aa = [numpy.zeros((sp.nact,) * 4) for _ in range(nl)]
     nstate = 1 if rho is None else pt.civecs.shape[1]
-    g_ci = numpy.zeros((nstate, pt.civecs.shape[0]), dtype=c16)
+    g_ci = numpy.zeros((nl, nstate, pt.civecs.shape[0]), dtype=c16)
     _, dcc, dvv, g_ccvv = ccvv(ctx)
-    d_gen += density.assemble(sp, {'cc': dcc, 'vv': dvv})
-    grad = g_ccvv.real.copy()
+    for lv in range(nl):
+        d_gen[lv] += density.assemble(sp, {'cc': dcc, 'vv': dvv})
+    grad = [g_ccvv.real.copy() for _ in range(nl)]
     if rho is not None:
         # several model states: ccvv also through H_act and the CI vectors
-        d_aa, b, g, traces = density.ccvv_active(pt, ctx, rho)
-        d_core += density.assemble(sp, {'aa': d_aa})
-        x_aa += active_two_body(pt, classes.CLASS_BY_NAME['ccvv'], b, g, traces=traces)
-        g_ci += cg.class_g(pt, ctx, 'ccvv', rho=rho)
+        pclass = classes.CLASS_BY_NAME['ccvv']
+        for lv, (d_aa, b, g, traces) in enumerate(per_level(density.ccvv_active(pt, ctx, rho))):
+            d_core[lv] += density.assemble(sp, {'aa': d_aa})
+            x_aa[lv] += active_two_body(pt, pclass, b, g, traces=traces)
+        g_ci += numpy.reshape(cg.class_g(pt, ctx, 'ccvv', rho=rho), g_ci.shape)
     for name in density._LABELS:
         pclass = classes.CLASS_BY_NAME[name]
         if name in ('cavv', 'ccav'):
-            run = cavv_pass if name == 'cavv' else ccav_pass
-            dblk, b, g, traces, acc = run(pt, ctx, gams, state, max_memory, rho)
-            g_ci += acc.g()
+            res, acc = _external_pass(name, pt, ctx, gams, state, max_memory, rho)
+            g_ci += numpy.reshape(acc.g(), g_ci.shape)
+            dblks = [x[0] for x in res]
+            act = [x[1:] for x in res]
         else:
-            _, dblk = density.class_reference(pt, ctx, name, state, rho)
-            blocks, b, g, traces = og._w_blocks(pt, ctx, pclass, state, rho)
-            gammas_from_antisym(eris, *og._scatter(name, ctx, blocks), gams)
-            gc = cg.class_g(pt, ctx, name, state, rho)
-            g_ci += gc if rho is not None else gc[None]
-        for lab, x in dblk.items():
-            target = d_gen if lab in ('cc', 'vv') else d_core
-            target += density.assemble(sp, {lab: x})
-        x_aa += active_two_body(pt, pclass, b, g, state, traces)
+            dblks = per_level(density.class_reference(pt, ctx, name, state, rho)[1])
+            wb = per_level(og._w_blocks(pt, ctx, pclass, state, rho))
+            for lv, (blocks, _, _, _) in enumerate(wb):
+                gammas_from_antisym(eris, *og._scatter(name, ctx, blocks), gams[lv])
+            act = [x[1:] for x in wb]
+            g_ci += numpy.reshape(cg.class_g(pt, ctx, name, state, rho), g_ci.shape)
+        for lv in range(nl):
+            for lab, x in dblks[lv].items():
+                target = d_gen[lv] if lab in ('cc', 'vv') else d_core[lv]
+                target += density.assemble(sp, {lab: x})
+            b, g, traces = act[lv]
+            x_aa[lv] += active_two_body(pt, pclass, b, g, state, traces)
     baa = eris.cd_block('aa')
-    _add(gams, ('a', 'a'), numpy.einsum('tuvw,Pvw->Ptu', x_aa + x_aa.transpose(2, 3, 0, 1), baa))
-    for (x, y), gam in gams.items():
-        grad += explicit_block(eris, numpy.asarray(gam).real, x, y).real
     gam_gen = numpy.zeros((n, n))
     gam_gen[sp.slice('c'), sp.slice('c')] = numpy.eye(sp.ncore)
     gam_gen[sp.slice('a'), sp.slice('a')] = numpy.asarray(pt.gamma).real
     gam_core = numpy.zeros((n, n))
     gam_core[sp.slice('c'), sp.slice('c')] = numpy.eye(sp.ncore)
-    # the generalized Fock matrix of the denominators and the core Fock matrix are known
-    g_f, w_gen = og.fock_part(eris, d_gen.real, gam_gen, fock=qc.fock, return_w=True)
-    grad += g_f + og.fock_part(eris, d_core.real, gam_core, fock=ctx.fcore)
-    if rho is None:
-        g_ci[0] += cg.fock_g(pt, ctx, d_gen.real, state, w=w_gen)
-    else:
-        g_ci += cg.fock_g(pt, ctx, d_gen.real, w=w_gen, states=range(nstate))
-    return {'d': d_gen + d_core, 'grad': grad, 'g_ci': g_ci[0] if rho is None else g_ci,
-            'u': numpy.asarray(qc.u)}
+    out = []
+    for lv in range(nl):
+        _add(gams[lv], ('a', 'a'), numpy.einsum('tuvw,Pvw->Ptu',
+                                                x_aa[lv] + x_aa[lv].transpose(2, 3, 0, 1), baa))
+        for (x, y), gam in gams[lv].items():
+            grad[lv] += explicit_block(eris, numpy.asarray(gam).real, x, y).real
+        # the generalized Fock matrix of the denominators and the core Fock matrix are known
+        g_f, w_gen = og.fock_part(eris, d_gen[lv].real, gam_gen, fock=qc.fock, return_w=True)
+        grad[lv] += g_f + og.fock_part(eris, d_core[lv].real, gam_core, fock=ctx.fcore)
+        if rho is None:
+            g_ci[lv, 0] += cg.fock_g(pt, ctx, d_gen[lv].real, state, w=w_gen)
+        else:
+            g_ci[lv] += cg.fock_g(pt, ctx, d_gen[lv].real, w=w_gen, states=range(nstate))
+        out.append({'d': d_gen[lv] + d_core[lv], 'grad': grad[lv],
+                    'g_ci': g_ci[lv, 0] if rho is None else g_ci[lv], 'u': numpy.asarray(qc.u)})
+    return out if levels else out[0]
 
 
 def gradient(pt, state=0, max_memory=4000):
