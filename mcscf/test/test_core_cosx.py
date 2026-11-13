@@ -5,9 +5,10 @@
 2. finite-difference check of the gradient and of the exact Hessian (zmc_twostep) of the mixed functional,
    away from a stationary point (randomly rotated orbitals): the analytic quantities are the derivatives of
    the mixed energy, not of the all-CD one
-3. optionally (argv 'scf'): converged super-CI CASSCF energies, all-CD vs mixed
+3. optionally (argv 'scf' / 'twostep'): converged SO-SCI / two-step CASSCF energies, all-CD vs mixed, and the
+   core-core exchange energy of CD and COSX against the exact four-index value at the mixed orbitals
 
-    python mcscf/test/test_core_cosx.py [scf]
+    python mcscf/test/test_core_cosx.py [HBr] [AuH] [HgCl2] [scf] [twostep] [nofd]
       (SOCUTILS_ENV selects the wrapper directory of the checkout under test)
 '''
 import os, sys, time
@@ -97,26 +98,31 @@ def run_check(mol, mf, mc, seed=4, kscale=0.05):
     return wg, wh, sym
 
 
-def run_scf(mol, mf, mc0, solver='superci'):
+def run_scf(mol, mf, mc0, solver='sosci'):
+    '''all-CD CASSCF from the HF orbitals, then the mixed one from the all-CD orbitals (from the same start the
+    two can end on different stationary points of these small active spaces)'''
+    from socutils.mcscf import zmc_sosci
+    kern = {'twostep': zmc_twostep.mcscf_twostep, 'sosci': zmc_sosci.mcscf_sosci}.get(solver)
     out = {}
+    mo = mf.mo_coeff
     for mode in ('cd', 'cosx'):
         mc = zmcscf.CASSCF(mf, mc0.ncas, mc0.nelecas)
         mc.fcisolver = zfci.FCISolver(mol)
         mc.core_exchange = mode
         mc.verbose = 0
         mc.conv_tol = 1e-10
-        mc.max_cycle_macro = 80
+        mc.max_cycle_macro = 200
         t0 = time.perf_counter()
-        if solver == 'twostep':
-            mc.superci(_kern=zmc_twostep.mcscf_twostep)
+        if kern is None:
+            mc.kernel(mo)
         else:
-            mc.kernel()
+            mc.superci(mo, _kern=kern)
+        mo = mc.mo_coeff
         out[mode] = mc.e_tot
         print('%s CASSCF %s: E = %.10f  converged %s  %.1f s' % (solver, mode, mc.e_tot, mc.converged,
                                                                time.perf_counter() - t0))
     print('%s CASSCF mixed - all-CD = %.3e' % (solver, out['cosx'] - out['cd']))
     # what the difference is made of, at the converged mixed orbitals
-    mo = mc.mo_coeff
     mc.core_exchange = 'cd'
     e_cd = zmc_ao2mo._CDERIS(mc, mo, level=2)
     mc.core_exchange = 'cosx'
@@ -143,6 +149,6 @@ if __name__ == '__main__':
             wg, wh, sym = run_check(mol, mf, mc)
             assert wg < 2e-6 and wh < 2e-5 and sym < 1e-9, 'mixed functional derivatives FAIL'
         if 'scf' in args:
-            run_scf(mol, mf, mc)
+            run_scf(mol, mf, mc, 'sosci')
         if 'twostep' in args:
             run_scf(mol, mf, mc, 'twostep')
