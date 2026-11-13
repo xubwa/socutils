@@ -88,12 +88,172 @@ def hcore_deriv_generator_spinor(self, mol=None, deriv=1):
 x2c.SpinorX2CHelper.hcore_deriv_generator = hcore_deriv_generator_spinor # type: ignore
 x2c.SpinOrbitalX2CHelper.hcore_deriv_generator = hcore_deriv_generator_spin_orbital # type: ignore
 
-def get_h1nuc_s1(mol):
+# ---------------------------------------------------------------------------
+# The X2C hcore term of the nuclear gradient from the flavour's own 4c matrices.
+#
+# Every X2C flavour here is hcore = C^+ [R^+ L(h4c) R + h2c_extra] C (decontracted spinor basis of xmol,
+# C its contraction), the decoupling (X, R) of the 4c pair (h4c0, s4c0) the energy used: the bare Dirac
+# one-electron matrices ('x2camf', '1e', 'x2camf_sd', pyscf's helpers), the spin-free ones ('sf1e'), the
+# molecular-mean-field 4c Fock h1e + J-K[D4c] ('x2cmp'), with -J-K[D2c] (2c) and the atomic spin-orbit
+# matrices (geometry independent) as h2c_extra.  For a density D' = C D C^+,
+#     d/dR tr(D' hfw) = tr(Gh dh4c/dR) + tr(GS ds4c/dR) + tr(D' dh2c_extra/dR),
+# (Gh, GS) of hfw1_adjoint from one decoupling, dh4c/dR, ds4c/dR per atom (get_h1nuc_s1, plus the 4c J-K
+# derivative at fixed D4c for 'x2cmp').  nuc_grad_hcore is the helpers' interface (attached to the pyscf /
+# socutils helper classes below); ghf_grad.grad_elec calls it.  HCORE_GRAD = 'perturb': the per-atom
+# generators above instead (get_hfw1 of the bare one-electron 4c matrices per atom and direction, the
+# reference; X2C1e of the bare integrals whatever the flavour).
+# ---------------------------------------------------------------------------
+HCORE_GRAD = 'adjoint'
+
+
+def _contraction(x2cobj, mol):
+    '''xmol of the helper and its contraction in the spinor basis (interleaved), or None'''
+    xmol, contr_coeff_nr = x2cobj.get_xmol(mol)
+    if contr_coeff_nr is None:
+        return xmol, None
+    np_, nc = contr_coeff_nr.shape
+    contr = numpy.zeros((np_ * 2, nc * 2))
+    contr[0::2, 0::2] = contr_coeff_nr
+    contr[1::2, 1::2] = contr_coeff_nr
+    return xmol, contr
+
+
+def _split4c(h4c0, s4c0):
+    n = h4c0.shape[0] // 2
+    return x2c1e_hfw0_block(h4c0[:n, :n], h4c0[n:, :n], h4c0[:n, n:], h4c0[n:, n:], s4c0[:n, :n], s4c0[n:, n:])
+
+
+def hfw_adjoint_4c(h4c0, s4c0, dm2c):
+    '''(Gh, GS): tr(dm2c hfw1) = tr(Gh h4c1) + tr(GS s4c1) for the X2C decoupling of (h4c0, s4c0)'''
+    a, e, x, st, r, l, h4c, m4c = _split4c(h4c0, s4c0)
+    return hfw1_adjoint(a, x, st, m4c, h4c, e, r, l, dm2c)
+
+
+def hfw1_4c(h4c0, s4c0, h4c1, s4c1=None):
+    '''hfw1 of one perturbation (h4c1, s4c1) of the decoupling of (h4c0, s4c0) (get_hfw1, the reference)'''
+    a, e, x, st, r, l, h4c, m4c = _split4c(h4c0, s4c0)
+    return get_hfw1(a, x, st, m4c, h4c, e, r, l, h4c1, s4c1)
+
+
+def _bare_4c(xmol, spin_free=False):
+    '''the bare Dirac one-electron 4c pair (h4c, s4c) of xmol (pyscf.scf.dhf / the 'sf1e' flavour)'''
+    c = LIGHT_SPEED
+    t = xmol.intor('int1e_spsp_spinor') * .5
+    v = xmol.intor('int1e_nuc_spinor')
+    w = xmol.intor('int1e_pnucp_spinor' if spin_free else 'int1e_spnucsp_spinor')
+    s = xmol.intor('int1e_ovlp_spinor')
+    n = s.shape[0]
+    h4c = numpy.zeros((2 * n, 2 * n), dtype=complex)
+    m4c = numpy.zeros((2 * n, 2 * n), dtype=complex)
+    h4c[:n, :n] = v
+    h4c[:n, n:] = h4c[n:, :n] = t
+    h4c[n:, n:] = w * (.25 / c**2) - t
+    m4c[:n, :n] = s
+    m4c[n:, n:] = t * (.5 / c**2)
+    return h4c, m4c
+
+
+def flavour_4c(x2cobj, mol=None):
+    '''(h4c0, s4c0, spin_free, extra) of the helper's X2C Hamiltonian, the 4c matrices its energy used; extra:
+    None or ('x2cmp', D4c, D2c) for the molecular mean field (h4c0 = h1e + J-K[D4c], h2c_extra = -J-K[D2c]).
+    Raises NotImplementedError for flavours without an analytic gradient here.'''
+    if mol is None:
+        mol = x2cobj.mol
+    src = getattr(x2cobj, '_grad_src', None) or x2cobj
+    flavour = getattr(src, 'amf_type', None)
+    if flavour is None:
+        # pyscf's X2C helpers: X2C1e of the bare integrals
+        if getattr(src, 'approx', '1e').lower() not in ('1e', 'x2c1e'):
+            raise NotImplementedError('X2C gradient for approx %s' % src.approx)
+        h4c, m4c = _bare_4c(x2cobj.get_xmol(mol)[0])
+        return h4c, m4c, False, None
+    if flavour not in ('x2camf', 'x2camf_sd', '1e', 'sf1e', 'x2cmp'):
+        raise NotImplementedError('analytic nuclear gradient of the X2C flavour %r' % flavour)
+    if src.h4c is None or (flavour == 'x2cmp' and getattr(src, 'density_4c', None) is None):
+        src.get_hcore(mol)
+    if flavour == 'x2cmp':
+        if src.gaunt or src.breit:
+            raise NotImplementedError('x2cmp gradient with Gaunt / Breit (the 4c Gaunt / Breit derivative '
+                                      'integrals of J-K[D4c])')
+        if getattr(src, 'h4c_ext', None) is not None:
+            raise NotImplementedError('x2cmp gradient with h4c_ext')
+        return src.h4c, src.m4c, False, ('x2cmp', src.density_4c, src.density_2c)
+    return src.h4c, src.m4c, flavour == 'sf1e', None
+
+
+def _vhf1_4c(xmol, dm4c, level='SSSS'):
+    from pyscf.grad import dhf as dhf_grad
+    return dhf_grad.get_coulomb_hf(xmol, numpy.ascontiguousarray(dm4c, dtype=complex), level=level)
+
+
+def nuc_grad_hcore(x2cobj, dm, mol=None, basis='spin_orbital'):
+    '''sum_ij dm_ji d hcore_ij / dR_A (natm, 3) of the helper's X2C hcore, dm a GHF density (2nao, 2nao) for
+    basis 'spin_orbital' or a j-adapted spinor density for 'spinor': one hfw1_adjoint of the flavour's 4c pair,
+    one contraction with dh4c/dR, ds4c/dR per atom (see above)'''
+    if mol is None:
+        mol = x2cobj.mol
+    h4c0, s4c0, spin_free, extra = flavour_4c(x2cobj, mol)
+    xmol, contr = _contraction(x2cobj, mol)
+    m = numpy.asarray(dm)
+    if basis == 'spin_orbital':
+        ca, cb = mol.sph2spinor_coeff()
+        c2 = numpy.vstack((ca, cb))
+        m = c2.conj().T @ m @ c2
+    if contr is not None:
+        m = contr @ m @ contr.T
+    m = _herm(m)
+    gh, gs = hfw_adjoint_4c(h4c0, s4c0, m)
+    get_h1_s1 = get_h1nuc_s1(xmol, spin_free=spin_free)
+    de = numpy.zeros((mol.natm, 3))
+    for ia in range(mol.natm):
+        h1, s1 = get_h1_s1(ia)
+        de[ia] = (numpy.einsum('pq,xqp->x', gh, h1) + numpy.einsum('pq,xqp->x', gs, s1)).real
+    if extra is not None and extra[0] == 'x2cmp':
+        # d/dR tr(Gh J-K[D4c]) at fixed Gh, D4c and -d/dR tr(D' J-K[D2c]) (2c, LL): for the bilinear
+        # B(X, Y) = tr(X G[Y]), dB/dR_A = 2 Re sum_{i on A} (G1[Y]_ij X_ji + G1[X]_ij Y_ji) (pyscf.grad.dhf)
+        d4c, d2c = extra[1], extra[2]
+        n2c = d2c.shape[0]
+        v_d = _vhf1_4c(xmol, d4c)
+        v_g = _vhf1_4c(xmol, gh)
+        pad = numpy.zeros((2 * n2c, 2 * n2c), dtype=complex)
+        pad[:n2c, :n2c] = d2c
+        w_d = _vhf1_4c(xmol, pad, 'LLLL')
+        pad[:n2c, :n2c] = m
+        w_m = _vhf1_4c(xmol, pad, 'LLLL')
+        for ia, (p0, p1) in enumerate(xmol.aoslice_2c_by_atom()[:, 2:]):
+            for q0, q1 in ((p0, p1), (p0 + n2c, p1 + n2c)):
+                de[ia] += 2 * (numpy.einsum('xij,ji->x', v_d[:, q0:q1], gh[:, q0:q1])
+                               + numpy.einsum('xij,ji->x', v_g[:, q0:q1], d4c[:, q0:q1])).real
+            de[ia] -= 2 * (numpy.einsum('xij,ji->x', w_d[:, p0:p1, :n2c], m[:, p0:p1])
+                           + numpy.einsum('xij,ji->x', w_m[:, p0:p1, :n2c], d2c[:, p0:p1])).real
+    return de
+
+
+def _nuc_grad_hcore_spin_orbital(self, dm, mol=None):
+    return nuc_grad_hcore(self, dm, mol, basis='spin_orbital')
+
+
+def _nuc_grad_hcore_spinor(self, dm, mol=None):
+    return nuc_grad_hcore(self, dm, mol, basis='spinor')
+
+
+x2c.SpinOrbitalX2CHelper.nuc_grad_hcore = _nuc_grad_hcore_spin_orbital    # type: ignore
+x2c.SpinorX2CHelper.nuc_grad_hcore = _nuc_grad_hcore_spinor                # type: ignore
+
+
+def hcore_grad(x2cobj, dm, mol=None, basis='spin_orbital'):
+    '''alias of nuc_grad_hcore'''
+    return nuc_grad_hcore(x2cobj, dm, mol, basis)
+
+def get_h1nuc_s1(mol, spin_free=False):
+    '''per atom the nuclear derivatives (3, n4c, n4c) of the bare Dirac one-electron h4c and s4c (spin_free:
+    with p.V p in place of sigma.p V sigma.p, the 'sf1e' flavour); the nuclear attraction of the atom by
+    with_rinv_at_nucleus (its nuclear model)'''
     c = LIGHT_SPEED
     s1 = mol.intor('int1e_ipovlp_spinor', comp=3)
     t1 = mol.intor('int1e_ipkin_spinor', comp=3)
     v1 = mol.intor('int1e_ipnuc_spinor', comp=3)
-    w1 = mol.intor('int1e_ipspnucsp_spinor', comp=3)
+    w1 = mol.intor('int1e_ippnucp_spinor' if spin_free else 'int1e_ipspnucsp_spinor', comp=3)
     aoslices = mol.aoslice_2c_by_atom()
     n2c = s1.shape[1]
     n4c = n2c * 2
@@ -102,10 +262,10 @@ def get_h1nuc_s1(mol):
         h1 = numpy.zeros((3,n4c,n4c), dtype=complex)
         m1 = numpy.zeros((3,n4c,n4c), dtype=complex)
         ish0, ish1, i0, i1 = aoslices[ia]
-        with mol.with_rinv_origin(mol.atom_coord(ia)):
+        with mol.with_rinv_at_nucleus(ia):
             z = mol.atom_charge(ia)
             rinv1 = -z*mol.intor('int1e_iprinv_spinor', comp=3)
-            sprinvsp1 = -z*mol.intor('int1e_ipsprinvsp_spinor', comp=3)
+            sprinvsp1 = -z*mol.intor('int1e_ipprinvp_spinor' if spin_free else 'int1e_ipsprinvsp_spinor', comp=3)
         rinv1[:,i0:i1,:] -= v1[:,i0:i1]
         sprinvsp1[:,i0:i1,:] -= w1[:,i0:i1]
         for i in range(3):

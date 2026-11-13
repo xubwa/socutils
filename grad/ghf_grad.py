@@ -44,10 +44,16 @@ def grad_elec(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
     if mo_coeff is None:  mo_coeff = mf.mo_coeff
     log = logger.Logger(mf_grad.stdout, mf_grad.verbose)
 
-    hcore_deriv = mf_grad.hcore_generator(mol)
     s1 = mf_grad.get_ovlp(mol)
     dm0 = mf.make_rdm1(mo_coeff, mo_occ)
     dm0 = mf_grad._tag_rdm1 (dm0, mo_coeff=mo_coeff, mo_occ=mo_occ)
+    t0 = (logger.process_clock(), logger.perf_counter())
+    # the X2C hcore term of all atoms from one adjoint evaluation (somf.x2c_grad.hcore_grad)
+    dh = _x2c_hcore_grad(mf_grad, mol, dm0)
+    if dh is None:
+        hcore_deriv = mf_grad.hcore_generator(mol)
+    else:
+        log.timer('X2C hcore gradient (adjoint)', *t0)
 
     t0 = (logger.process_clock(), logger.perf_counter())
     log.debug('Computing Gradients of NR-GHF Coulomb repulsion')
@@ -65,13 +71,16 @@ def grad_elec(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
     nao = mol.nao_nr()
     for k, ia in enumerate(atmlst):
         shl0, shl1, p0, p1 = aoslices[ia]
-        h1ao = hcore_deriv(ia)
+        if dh is None:
+            h1ao = hcore_deriv(ia)
 
-        if h1ao.shape[-1] == dm0.shape[-1]//2:
-            h1ao = numpy.asarray([scipy.linalg.block_diag(h1ao[i],h1ao[i]) for i in range(3)])
+            if h1ao.shape[-1] == dm0.shape[-1]//2:
+                h1ao = numpy.asarray([scipy.linalg.block_diag(h1ao[i],h1ao[i]) for i in range(3)])
 
-        # Be careful with the contraction order when h1, vhf1, and dm0 are complex
-        de[k] += numpy.einsum('xij,ji->x', h1ao, dm0)
+            # Be careful with the contraction order when h1, vhf1, and dm0 are complex
+            de[k] += numpy.einsum('xij,ji->x', h1ao, dm0)
+        else:
+            de[k] += dh[ia]
         if de_fast is None:
             de[k] += numpy.einsum('xij,ji->x', vhf[:,p0:p1], dm0[:,p0:p1]) * 2
             de[k] += numpy.einsum('xij,ji->x', vhf[:,p0+nao:p1+nao], dm0[:,p0+nao:p1+nao]) * 2
@@ -90,6 +99,18 @@ def grad_elec(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
 
     mf_grad.de_elec = de.real
     return de.real
+
+def _x2c_hcore_grad(mf_grad, mol, dm0):
+    '''(natm, 3) X2C hcore term from the helper's interface (with_x2c.nuc_grad_hcore: one adjoint evaluation
+    of the flavour's own 4c matrices, somf.x2c_grad) when x2c_grad.HCORE_GRAD is 'adjoint' and the gradient
+    class keeps this hcore_generator; None otherwise (the per-atom hcore_generator)'''
+    x2cobj = getattr(mf_grad.base, 'with_x2c', None)
+    if (x2cobj is None or x2c_grad.HCORE_GRAD != 'adjoint' or dm0.shape[-1] != 2 * mol.nao_nr()
+            or type(mf_grad).hcore_generator is not Gradients.hcore_generator
+            or not hasattr(x2cobj, 'nuc_grad_hcore')):
+        return None
+    return x2cobj.nuc_grad_hcore(dm0, mol)
+
 
 def _kr_fast_terms(mf_grad, mol, dm0):
     '''socutils.grad.kr_fast.terms for a Kramers-restricted density of a mean field whose gradient class

@@ -673,6 +673,7 @@ def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, n
         #         6 fock_2c_2e, 7 fock_4c_K, 8 fock_2c_K, 9 so_4c, 10 so_2c, 11 den_4c, 12 den_2c};
         density_4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 11), atom_slices, xmol, n2c, True)
         density_2c = construct_molecular_matrix(extract_ith_integral(atm_ints, 12), atom_slices, xmol, n2c, False)
+        x2cobj.density_4c = density_4c      # the nuclear gradient (x2c_grad.nuc_grad_hcore)
         atomic_h1e_4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 2), atom_slices, xmol, n2c, True)
         atomic_fock_4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 3), atom_slices, xmol, n2c, True)
         atomic_fock_4c_2e = construct_molecular_matrix(extract_ith_integral(atm_ints, 5), atom_slices, xmol, n2c, True)
