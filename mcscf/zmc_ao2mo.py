@@ -464,11 +464,11 @@ class _CDERIS(lib.StreamObject):
         '''the core exchange operator of the mixed CD / COSX functional (mcscf.core_cosx), spinor AO basis;
         keeps its pieces: vkx_mo (COSX K[D_c], MO), vkl_pa (K^L[D_c][:, act], MO), vk_core_mo (mixed)'''
         from socutils.mcscf import core_cosx
+        kobj = core_cosx.cosx_object(owner)          # built once, cached on the SCF object
         t0 = (logger.process_clock(), logger.perf_counter())
-        kobj = core_cosx.cosx_object(owner)
         kx_sph = core_cosx.kvar_ghf(kobj, mol, dc_sph)
-        t1 = log.timer('CDERIS core_exchange=cosx: COSX K[D_c] (%d points)' % kobj._weights.size, *t0)
-        self._t_cosx = t1[1] - t0[1]
+        self._t_cosx = logger.perf_counter() - t0[1]
+        log.info('CDERIS core_exchange=cosx: COSX K[D_c], %d points, %.1f s', kobj._weights.size, self._t_cosx)
         mo_h = mop_sph.conj().T
         kx_mo = lib.dot(mo_h, lib.dot(kx_sph, mop_sph))
         kl_pa = lib.dot(mo_h, klc_a)
