@@ -203,11 +203,7 @@ def nuc_grad_hcore(x2cobj, dm, mol=None, basis='spin_orbital'):
         m = contr @ m @ contr.T
     m = _herm(m)
     gh, gs = hfw_adjoint_4c(h4c0, s4c0, m)
-    get_h1_s1 = get_h1nuc_s1(xmol, spin_free=spin_free)
-    de = numpy.zeros((mol.natm, 3))
-    for ia in range(mol.natm):
-        h1, s1 = get_h1_s1(ia)
-        de[ia] = (numpy.einsum('pq,xqp->x', gh, h1) + numpy.einsum('pq,xqp->x', gs, s1)).real
+    de = _contract_h1s1(xmol, gh, gs, spin_free)
     if extra is not None and extra[0] == 'x2cmp':
         # d/dR tr(Gh J-K[D4c]) at fixed Gh, D4c and -d/dR tr(D' J-K[D2c]) (2c, LL): for the bilinear
         # B(X, Y) = tr(X G[Y]), dB/dR_A = 2 Re sum_{i on A} (G1[Y]_ij X_ji + G1[X]_ij Y_ji) (pyscf.grad.dhf)
@@ -226,6 +222,35 @@ def nuc_grad_hcore(x2cobj, dm, mol=None, basis='spin_orbital'):
                                + numpy.einsum('xij,ji->x', v_g[:, q0:q1], d4c[:, q0:q1])).real
             de[ia] -= 2 * (numpy.einsum('xij,ji->x', w_d[:, p0:p1, :n2c], m[:, p0:p1])
                            + numpy.einsum('xij,ji->x', w_m[:, p0:p1, :n2c], d2c[:, p0:p1])).real
+    return de
+
+
+def _contract_h1s1(mol, gh, gs, spin_free=False):
+    '''sum_x tr(Gh dh4c/dR_A) + tr(GS ds4c/dR_A) (natm, 3) of the bare Dirac one-electron 4c matrices
+    (get_h1nuc_s1) by blocks, without the (3, n4c, n4c) derivative matrices: with h4c1 = [[V1, T1], [T1,
+    W1 / 4c^2 - T1]], s4c1 = [[S1, 0], [0, T1 / 2c^2]], V1 = Y + Y^+ etc. (Y the derivative of the bra),
+    tr(G (Y + Y^+)) = 2 Re tr(G Y) for Hermitian G'''
+    c = LIGHT_SPEED
+    n = gh.shape[0] // 2
+    gll, gss = gh[:n, :n], gh[n:, n:]
+    gt = gh[:n, n:] + gh[n:, :n] - gss + gs[n:, n:] * (.5 / c**2)
+    sll = gs[:n, :n]
+    s1 = mol.intor('int1e_ipovlp_spinor', comp=3)
+    t1 = mol.intor('int1e_ipkin_spinor', comp=3)
+    v1 = mol.intor('int1e_ipnuc_spinor', comp=3)
+    w1 = mol.intor('int1e_ippnucp_spinor' if spin_free else 'int1e_ipspnucsp_spinor', comp=3)
+    de = numpy.zeros((mol.natm, 3))
+    for ia, (i0, i1) in enumerate(mol.aoslice_2c_by_atom()[:, 2:]):
+        with mol.with_rinv_at_nucleus(ia):
+            z = mol.atom_charge(ia)
+            rinv1 = -z * mol.intor('int1e_iprinv_spinor', comp=3)
+            sprinvsp1 = -z * mol.intor('int1e_ipprinvp_spinor' if spin_free else 'int1e_ipsprinvsp_spinor', comp=3)
+        rinv1[:, i0:i1] -= v1[:, i0:i1]
+        sprinvsp1[:, i0:i1] -= w1[:, i0:i1]
+        g = 2 * numpy.einsum('xij,ji->x', rinv1, gll) + 2 * numpy.einsum('xij,ji->x', sprinvsp1, gss) * (.25 / c**2)
+        g -= 2 * numpy.einsum('xij,ji->x', s1[:, i0:i1], sll[:, i0:i1])
+        g -= 2 * numpy.einsum('xij,ji->x', t1[:, i0:i1], gt[:, i0:i1])
+        de[ia] = g.real
     return de
 
 
