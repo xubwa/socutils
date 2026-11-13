@@ -42,7 +42,19 @@ The core-core exchange is where a three-index factor is least accurate: with the
 1e-3) at converged CASSCF orbitals, error of -1/2 tr(D_c K[D_c]) against the exact four-index value, CD / COSX
 (GRIDX2, heavy-atom radial rule): HBr cc-pVDZ CAS(2,4) +1.0e-5 / -1.5e-6, AuH x2c-SVPall CAS(2,4) +8.86e-4 /
 -3.6e-7 Eh; the converged mixed CASSCF energy minus the all-CD one is the difference of the two (HBr -1.15e-5,
-AuH -8.866e-4 Eh; super-CI, SO-SCI and two-step reach the same mixed energy to 1e-10).
+AuH -8.866e-4 Eh; super-CI, SO-SCI and two-step reach the same mixed energy to 1e-10).  HgCl2 x2c-SVPall
+CAS(4,6) (SO-SCI, mixed started from the all-CD orbitals): -1.129e-3 = -(CD +9.35e-4) + (COSX -1.95e-4).
+
+Cost per macro iteration (hgcl2_lattice, x2c-SVPall, acCD factor, CAS(4,6), 24 cores of a Gold 6248R socket;
+3360: c442 shared, factor terms from naux 722 times 32 = 23104, rough):
+    nao_nr (n2c, ncore)       all-CD _CDERIS    mixed: factor + COSX         exact H x (two-step): all-CD / mixed
+    1260 (2520, 1364)         190 s             61 + 211..231                 909 / 290 s
+    3360 (6720, 3644)         ~7400 s           ~2050 + 3000..4400            out of memory (~13 h) / ~3200 s
+(COSX of the core: 666160 points at 3360, 3000 s on c442, 4435 s on a dedicated node; the all-CD exact H x needs
+4 x 240 x n_core x nao x 8 B = 94 GB twice for the core half-transform buffers of rotated_pass at 3360.)  The
+all-CD core exchange grows as naux n^2 n_core ~ N^3.7 here, the COSX one as ~N^2.6: crossover near nao_nr ~
+2000 - 2500 for these lattices; below it core_exchange = 'cd' (the default) is the cheaper one per macro
+iteration, while the mixed exact H x is cheaper at every size measured.
 '''
 import numpy
 from pyscf import lib
