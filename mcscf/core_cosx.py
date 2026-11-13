@@ -30,6 +30,19 @@ P = S S_g^-1) the one-sided K = P K_plain[D] is not; the derivative of q(X) = <X
 (K_plain is self-adjoint for the Frobenius product), computed for the real pieces of the GHF density in one
 multi-density COSX call (twice the pieces of the one-sided K: 8 for a Kramers core), so that
 1/2 tr(D K^X[D]) is the energy whose gradient the solver uses.
+
+Solvers.  zmc_superci: gradient exact, the super-CI Hessian built from the Fock blocks of M.  zmc_twostep:
+exact Hessian of the mixed functional (_CDERIS.rotated_pass: J of the first-order core density from the factor,
+its exchange by one multi-density COSX call in the core columns and from the factor in the active columns, plus
+the commutator corrections of the non-Hermitian M); finite-difference exact (mcscf/test/test_core_cosx.py).
+zmc_sosci: gradient exact; its active-block Hessian keeps the factor-only response (no COSX call per H x), so
+the core-core exchange curvature there is the factor's (a difference of the order of the core exchange error).
+
+The core-core exchange is where a three-index factor is least accurate: with the acCD auxiliary basis (tau
+1e-3) at converged CASSCF orbitals, error of -1/2 tr(D_c K[D_c]) against the exact four-index value, CD / COSX
+(GRIDX2, heavy-atom radial rule): HBr cc-pVDZ CAS(2,4) +1.0e-5 / -1.5e-6, AuH x2c-SVPall CAS(2,4) +8.86e-4 /
+-3.6e-7 Eh; the converged mixed CASSCF energy minus the all-CD one is the difference of the two (HBr -1.15e-5,
+AuH -8.866e-4 Eh; super-CI, SO-SCI and two-step reach the same mixed energy to 1e-10).
 '''
 import numpy
 from pyscf import lib
