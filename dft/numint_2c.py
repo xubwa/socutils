@@ -14,29 +14,33 @@
 # real scalar AOs on the grid instead of complex spinor AOs, which is several
 # times faster.
 #
+# Non-collinear functionals: collinear='ncol' (locally collinear, LDA/GGA/MGGA
+# Vxc and fxc) and collinear='mcol' (multi-collinear, native, no mcfun needed)
+# come from socutils.dft.noncollinear.NumInt2C, which this class extends.
+#
 # Note on TDDFT (fxc): the default *collinear* kernel only couples the diagonal
 # (alpha-alpha, beta-beta) spin blocks and structurally drops the off-diagonal
 # (alpha-beta) spin-flip response, so it cannot describe spin-mixed (SOC)
 # excitations.  Complex orbitals / amplitudes themselves are fine.  For a
-# correct two-component response set ``collinear='mcol'`` (multi-collinear,
-# mcfun), which fills the full spin structure and handles complex transition
-# densities.
+# correct two-component response set ``collinear='mcol'`` (multi-collinear),
+# which fills the full spin structure and is well defined for closed shells,
+# or ``collinear='ncol'``.
 #
 
 import numpy as np
-from pyscf import lib
 from pyscf.dft import numint2c
+from socutils.dft import noncollinear
 
 
-class SpinorNumInt2C(numint2c.NumInt2C):
+class SpinorNumInt2C(noncollinear.NumInt2C):
     '''NumInt2C that runs on a j-adapted spinor reference by rotating to and
     from the scalar-AO x spin (GHF) representation.'''
 
-    # mcfun integrates the XC over `spin_samples` spin-quantization axes per
-    # grid point (default 770), all in pure Python -- the dominant cost of the
-    # multicollinear (mcol) path.  Default to a coarse angular quadrature here;
-    # raise it (e.g. 770) for production-quality non-collinear results.
-    spin_samples = 14
+    # Multi-collinear GGA/MGGA integrate the XC over `spin_samples` spin-
+    # projection directions per grid point (Lebedev; half of them are
+    # evaluated) -- the dominant cost of the mcol path.  The default is
+    # noncollinear.SPIN_SAMPLES (110); an instance setting wins.  Multi-
+    # collinear LDA is exact and does not sample.
 
     def __init__(self, mol):
         numint2c.NumInt2C.__init__(self)
@@ -51,19 +55,16 @@ class SpinorNumInt2C(numint2c.NumInt2C):
         return self._U
 
     # spinor DM -> GHF DM,  V(GHF) -> V(spinor)
+    # Two (batched) BLAS products, U D U^H: a three-operand einsum is not
+    # factorized by numpy and runs as an O(n^4) loop, which made every TDA
+    # matvec with many trial vectors spend almost all of its time here.
     def _dm_to_ghf(self, dm):
         U = self.U
-        dm = np.asarray(dm)
-        if dm.ndim == 2:
-            return U.dot(dm).dot(U.conj().T)
-        return lib.einsum('mp,...pq,nq->...mn', U, dm, U.conj())
+        return np.matmul(np.matmul(U, np.asarray(dm)), U.conj().T)
 
     def _mat_to_spinor(self, mat):
         U = self.U
-        mat = np.asarray(mat)
-        if mat.ndim == 2:
-            return U.conj().T.dot(mat).dot(U)
-        return lib.einsum('mp,...mn,nq->...pq', U.conj(), mat, U)
+        return np.matmul(np.matmul(U.conj().T, np.asarray(mat)), U)
 
     def get_vxc(self, mol, grids, xc_code, dms, spin=0, relativity=0, hermi=1,
                 max_memory=2000, verbose=None):

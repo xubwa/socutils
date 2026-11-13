@@ -11,6 +11,8 @@
 #   ccsdt   ->  lib/libccsdt_clib.so  (socutils.cc CCSDT kernels)
 #   ao2mo   ->  lib/libnrr_opt.so     (socutils.lib.ao2mo.nrr_fast spinor AO2MO)
 #   vhf     ->  lib/libsocvhf.so      (socutils.somf.x2cmp multi-centre J/K prescreen)
+#   dft     ->  lib/libsocdft.so      (socutils.dft.noncollinear multi-collinear XC kernel)
+#   pbcdf   ->  lib/libsocpbcdf.so    (socutils.pbc.rsdf screened SR integrals over images)
 #   qdhf    ->  lib/libqdhf.so        (socutils.qdhf, quad precision HF; needs libquadmath)
 #
 # x2camf (the C implementation, import x2camf) and zquatev (Kramers-restricted
@@ -33,7 +35,14 @@ if(CMAKE_COMPILER_IS_GNUCC)
     set(CMAKE_SHARED_LINKER_FLAGS "-Wl,--no-as-needed ${CMAKE_SHARED_LINKER_FLAGS}")
   endif()
 endif()
-set(CMAKE_C_FLAGS "-Wall ${CMAKE_C_FLAGS}")
+# -fno-math-errno: sqrt / exp without the errno branch, which keeps GCC from
+# vectorising the `omp simd` loops calling them (the vertical recursions of the
+# vhf/ integral kernels); results unchanged, J + K 3 - 8 % faster.
+# (-fno-trapping-math vectorises the F_m table loops too, with gathers: no
+# faster on Cascade Lake, same-node A/B.)
+# implicit function declarations are errors: a call to a function compiled out by an #ifdef (e.g. an AVX-512
+# only kernel) otherwise links into a .so with an undefined symbol that fails to load at runtime
+set(CMAKE_C_FLAGS "-Wall -fno-math-errno -Werror=implicit-function-declaration ${CMAKE_C_FLAGS}")
 set(CMAKE_C_FLAGS_RELEASE "-O3 -funroll-loops")
 set(CMAKE_C_FLAGS_RELWITHDEBINFO "-O3 -funroll-loops -g")
 set(CMAKE_C_STANDARD 99)
@@ -44,6 +53,15 @@ set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
+
+# Target instruction set, e.g. -DSOCUTILS_MARCH=cascadelake (AVX-512; runs on
+# that and newer Intel CPUs, so a build on any Rockfish CPU node runs on all of
+# them) or native.  Empty (default): the compiler's generic target.
+set(SOCUTILS_MARCH "" CACHE STRING "-march= of the C / C++ libraries (empty: generic)")
+if(SOCUTILS_MARCH)
+  add_compile_options(-march=${SOCUTILS_MARCH})
+  message(STATUS "socutils: -march=${SOCUTILS_MARCH}")
+endif()
 
 # Architecture-specific overrides (optional), as in pyscf.
 if(EXISTS "${PROJECT_SOURCE_DIR}/cmake.arch.inc")
@@ -96,8 +114,12 @@ else()
 endif()
 
 add_subdirectory(ccsdt)
+add_subdirectory(zccsd)
 add_subdirectory(ao2mo)
 add_subdirectory(vhf)
+add_subdirectory(dft)
+add_subdirectory(pbcdf)
+add_subdirectory(thc)
 
 # --- external libraries: x2camf (C implementation) and zquatev ----------------
 # Built from their own repositories with ExternalProject, as pyscf/lib does for
@@ -121,12 +143,12 @@ endif()
 
 option(BUILD_X2CAMF "Download and build the x2camf C library" ON)
 set(X2CAMF_GIT "https://github.com/xubwa/x2camf-c.git" CACHE STRING "x2camf (C) repository")
-set(X2CAMF_VERSION "a9b57cc8c03fe6a161b30b54af5fad56ea1150f4" CACHE STRING "x2camf (C) git tag or commit")
+set(X2CAMF_VERSION "v1.0.0" CACHE STRING "x2camf (C) git tag or commit")
 set(X2CAMF_SOURCE_DIR "" CACHE PATH "local x2camf (C) source tree instead of cloning")
 option(BUILD_ZQUATEV "Download and build zquatev" ON)
-# sunqm/zquatev with the CMake change of xubwa/zquatev cmake-blas-install (PR pending)
-set(ZQUATEV_GIT "https://github.com/xubwa/zquatev.git" CACHE STRING "zquatev repository")
-set(ZQUATEV_VERSION "f715cc3d7e11780291224a8f66ef067469318f7c" CACHE STRING "zquatev git tag or commit")
+# sunqm/zquatev master after PR #2 (BLAS_LIBRARIES, install, zdotc without CBLAS)
+set(ZQUATEV_GIT "https://github.com/sunqm/zquatev.git" CACHE STRING "zquatev repository")
+set(ZQUATEV_VERSION "4b397dd9a2347f654fb369bbb75938e8713afe08" CACHE STRING "zquatev git tag or commit")
 set(ZQUATEV_SOURCE_DIR "" CACHE PATH "local zquatev source tree instead of cloning")
 
 foreach(_ext X2CAMF ZQUATEV)

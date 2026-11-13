@@ -7,6 +7,8 @@ top-level CMake) and emitted flat into this directory:
   libccsdt_clib.so spinor CCSDT residual kernels  (socutils.cc)
   libnrr_opt.so    spinor AO2MO e1/e2 kernels      (socutils.lib.ao2mo.nrr_fast)
   libsocvhf.so     multi-centre J/K prescreen     (socutils.somf.x2cmp)
+  libsocdft.so     multi-collinear XC kernel      (socutils.dft.noncollinear)
+  libsocthc.so     route-1 THC exchange kernels   (socutils.pbc.thc)
 
 The x2camf C library and zquatev are separate repositories, built with
 ExternalProject into ``deps/lib`` (as pyscf/lib does for libcint, libxc):

@@ -25,6 +25,7 @@ from pyscf.grad import rks as rks_grad
 from pyscf.dft import numint, gen_grid
 from pyscf import __config__
 from socutils.grad import ghf_grad
+from socutils.grad import becke_deriv
 
 
 def get_veff(ks_grad, mol=None, dm=None):
@@ -54,7 +55,31 @@ def get_veff(ks_grad, mol=None, dm=None):
 
     mem_now = lib.current_memory()[0]
     max_memory = max(2000, ks_grad.max_memory*.9-mem_now)
-    if ks_grad.grid_response:
+    collinear = ni.collinear
+    if collinear[0] != 'c':
+        if mol.spin == 0 and mol.nelectron % 2 == 0:
+            # Kramers closed shell: m = 0, ncol/mcol reduce to the collinear functional
+            logger.info(ks_grad, 'collinear=%s: closed shell, XC gradient with the '
+                        'collinear functional (exact for m = 0)', collinear)
+            collinear = 'col'
+        else:
+            raise NotImplementedError('Noncollinear spin is not supported.')
+    with lib.temporary_env(ni, collinear=collinear):
+        exc, vxc = _vxc_terms(ks_grad, ni, mol, grids, mf.xc, dm, max_memory)
+    t0 = logger.timer(ks_grad, 'vxc', *t0)
+    return _add_jk(ks_grad, mol, dm, vxc, exc, omega, alpha, hyb)
+
+
+def _full_response(ks_grad):
+    '''grid_response of the GHF path: True / False; 'auto' (the fast classes' default, socutils.grad.kr_fast /
+    rhf_fast) is the fixed grid here'''
+    g = ks_grad.grid_response
+    return False if isinstance(g, str) else bool(g)
+
+
+def _vxc_terms(ks_grad, ni, mol, grids, xc, dm, max_memory):
+    mf = ks_grad.base
+    if _full_response(ks_grad):
         exc, vxc = get_vxc_full_response(ni, mol, grids, mf.xc, dm,
                                          max_memory=max_memory,
                                          verbose=ks_grad.verbose)
@@ -75,37 +100,30 @@ def get_veff(ks_grad, mol=None, dm=None):
         #                                  dm[0]+dm[1], max_memory=max_memory,
         #                                  verbose=ks_grad.verbose)
         #    vxc += vnlc
-    t0 = logger.timer(ks_grad, 'vxc', *t0)
+    return exc, vxc
+
+
+def _add_jk(ks_grad, mol, dm, vxc, exc, omega, alpha, hyb):
     if dm.dtype == complex:
         vxc = vxc * (1+0.j)
     nao = mol.nao_nr()
-    dmaa = dm[:nao, :nao]
-    dmbb = dm[nao:, nao:]
-    dmab = dm[:nao, nao:]
-    dmba = dm[nao:, :nao]
     if abs(hyb) < 1e-10:
-        dms = numpy.stack((dmaa, dmbb))
-        j1 = ks_grad.get_j(mol, dms)
+        # pyscf's get_j kernel takes real density matrices only.  The total
+        # density block is Hermitian, its imaginary part antisymmetric, which
+        # contracts to zero with the symmetric (lambda sigma| pair.
+        j1 = ks_grad.get_j(mol, (dm[:nao, :nao] + dm[nao:, nao:]).real.copy())
         vj = numpy.zeros((3, nao*2, nao*2), dm.dtype)
-        vj[:, :nao, :nao] = j1[0] + j1[1]
-        vj[:, nao:, nao:] = j1[0] + j1[1]
+        vj[:, :nao, :nao] = j1
+        vj[:, nao:, nao:] = j1
         vxc += vj
 
     else:
-        dms = numpy.stack((dmaa, dmbb, dmab, dmba))
-        j1, k1 = ks_grad.get_jk(mol, dms)
-        vj = numpy.zeros((3, nao*2, nao*2), dm.dtype)
-        vk = numpy.zeros((3, nao*2, nao*2), dm.dtype)
-        vj[:, :nao, :nao] = j1[0] + j1[1]
-        vj[:, nao:, nao:] = j1[0] + j1[1]
-        vk[:, :nao, :nao] = k1[0]
-        vk[:, nao:, nao:] = k1[1]
-        vk[:, :nao, nao:] = k1[2]
-        vk[:, nao:, :nao] = k1[3]
+        # the GHF J/K derivative handles complex, spin-off-diagonal dms
+        vj, vk = ghf_grad.get_jk(ks_grad, mol, dm)
         vk *= hyb
         if abs(omega) > 1e-10:  # For range separated Coulomb operator
             with mol.with_range_coulomb(omega):
-                vk += ks_grad.get_k(mol, dm) * (alpha - hyb)
+                vk += ghf_grad.get_jk(ks_grad, mol, dm)[1] * (alpha - hyb)
         vxc += vj - vk
 
     return lib.tag_array(vxc, exc1_grid=exc)
@@ -137,7 +155,7 @@ def get_vxc(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
     if xctype == 'LDA':
         ao_deriv = 1
         for atm_id, (coords, weight, weight1) \
-                in enumerate(rks_grad.grids_response_cc(grids)):
+                in enumerate(becke_deriv.grids_response_cc(grids)):
             sh0, sh1 = aoslices[atm_id][:2]
             mask = gen_grid.make_mask(mol, coords)
             ao = ni1c.eval_ao(mol, coords, deriv=ao_deriv, non0tab=mask,
@@ -196,7 +214,6 @@ def get_vxc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
     if ni.collinear[0] != 'c':
         raise NotImplementedError('Noncollinear spin is not supported.')
     xctype = ni._xc_type(xc_code)
-    make_rho, nset, nao = ni._gen_rho_evaluator(mol, dms, hermi, False, grids)
     ao_loc = mol.ao_loc_nr()
     aoslices = mol.aoslice_by_atom()
 
@@ -213,7 +230,7 @@ def get_vxc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
     if xctype == 'LDA':
         ao_deriv = 1
         for atm_id, (coords, weight, weight1) \
-                in enumerate(rks_grad.grids_response_cc(grids)):
+                in enumerate(becke_deriv.grids_response_cc(grids)):
             sh0, sh1 = aoslices[atm_id][:2]
             mask = gen_grid.make_mask(mol, coords)
             ao = ni1c.eval_ao(mol, coords, deriv=ao_deriv, non0tab=mask,
@@ -239,7 +256,7 @@ def get_vxc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
     elif xctype == 'GGA':
         ao_deriv = 2
         for atm_id, (coords, weight, weight1) \
-                in enumerate(rks_grad.grids_response_cc(grids)):
+                in enumerate(becke_deriv.grids_response_cc(grids)):
             sh0, sh1 = aoslices[atm_id][:2]
             mask = gen_grid.make_mask(mol, coords)
             ao = ni1c.eval_ao(mol, coords, deriv=ao_deriv, non0tab=mask,
@@ -267,7 +284,7 @@ def get_vxc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
     elif xctype == 'MGGA':
         ao_deriv = 2
         for atm_id, (coords, weight, weight1) \
-                in enumerate(rks_grad.grids_response_cc(grids)):
+                in enumerate(becke_deriv.grids_response_cc(grids)):
             sh0, sh1 = aoslices[atm_id][:2]
             mask = gen_grid.make_mask(mol, coords)
             ao = ni1c.eval_ao(mol, coords, deriv=ao_deriv, non0tab=mask,
@@ -301,12 +318,14 @@ def get_vxc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
 
 class Gradients(ghf_grad.Gradients):
 
-    grid_response = getattr(__config__, 'grad_uks_Gradients_grid_response', False)
+    # 'auto': the Kramers-restricted fast path (socutils.grad.kr_fast) as rhf_fast (the XC grid response where
+    # the partition is supported, COSX's near convergence); the GHF path keeps the fixed grid for 'auto'
+    grid_response = 'auto'
 
     def __init__(self, mf):
         ghf_grad.Gradients.__init__(self, mf)
         self.grids = None
-        self.grid_response = False
+        self.grid_response = 'auto'
         self._keys = self._keys.union(['grid_response', 'grids'])
 
     def dump_flags(self, verbose=None):
@@ -323,7 +342,7 @@ class Gradients(ghf_grad.Gradients):
         method, the grid response in DFT numerical integration can be put in
         this function.
         '''
-        if self.grid_response:
+        if _full_response(self):
             vhf = envs['vhf']
             log = envs['log']
             log.debug('grids response for atom %d %s',

@@ -10,6 +10,10 @@
 #               against whatever pyscf the configuring Python resolves)
 #   vhf     ->  lib/libsocvhf.so      (socutils.somf.x2cmp; links against
 #               the same pyscf)
+#   dft     ->  lib/libsocdft.so      (socutils.dft.noncollinear, mcol XC)
+#   thc     ->  lib/libsocthc.so      (socutils.pbc.thc; OpenMP, standalone)
+#   pbcdf   ->  lib/libsocpbcdf.so    (socutils.pbc.rsdf; links against
+#               the same pyscf's libcint)
 #
 # and, from their own repositories (ExternalProject, like pyscf's libcint):
 #
@@ -50,10 +54,12 @@ build:
 	@mkdir -p $(BUILDDIR)
 	cd $(BUILDDIR) && $(CMAKE) .. -DCMAKE_BUILD_TYPE=Release $(CMAKE_ARGS)
 	$(CMAKE) --build $(BUILDDIR) -- -j$(NPROC)
-	@for so in libccsdt_clib.so libnrr_opt.so libsocvhf.so libqdhf.so \
+	@for so in libccsdt_clib.so libnrr_opt.so libsocvhf.so libsocdft.so libqdhf.so libsocpbcdf.so libsocthc.so \
 	           deps/lib/libx2camf_c.so deps/lib/libzquatev.so; do \
 	    test -f $(LIBDIR)/$$so && echo "built $(LIBDIR)/$$so" \
 	        || { echo "ERROR: $$so not produced"; exit 1; }; \
+	    $(PYTHON) -c "import ctypes, sys; ctypes.CDLL(sys.argv[1])" $(LIBDIR)/$$so \
+	        || { echo "ERROR: $$so does not load (undefined symbol?)"; exit 1; }; \
 	done
 
 test: build
@@ -64,5 +70,5 @@ compare: build
 
 clean:
 	rm -rf $(BUILDDIR) \
-	    $(LIBDIR)/libccsdt_clib.so $(LIBDIR)/libnrr_opt.so $(LIBDIR)/libsocvhf.so \
-	    $(LIBDIR)/libqdhf.so $(LIBDIR)/deps
+	    $(LIBDIR)/libccsdt_clib.so $(LIBDIR)/libnrr_opt.so $(LIBDIR)/libsocvhf.so $(LIBDIR)/libsocdft.so \
+	    $(LIBDIR)/libqdhf.so $(LIBDIR)/libsocpbcdf.so $(LIBDIR)/libsocthc.so $(LIBDIR)/deps

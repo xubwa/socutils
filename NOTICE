@@ -1,0 +1,19 @@
+socutils
+Copyright (c) Xubo Wang and the socutils contributors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes code derived from PySCF (https://github.com/pyscf/pyscf),
+Copyright The PySCF Developers, Apache License 2.0; those files keep their
+original copyright headers (e.g. lib/ao2mo, cc/, grad/, dft/dft.py,
+hci/shci.py).
+
+x2camf_c/x2camf contains the Python layer of X2CAMF
+(https://github.com/Warlocat/x2camf), Copyright Chaoqun Zhang and the X2CAMF
+contributors, Apache License 2.0.
+
+The following libraries are not part of this repository; lib/CMakeLists.txt
+downloads and builds them:
+  - x2camf C library (https://github.com/xubwa/x2camf-c), Apache License 2.0
+  - zquatev (https://github.com/sunqm/zquatev), by Toru Shiozaki,
+    BSD 2-Clause (FreeBSD) License

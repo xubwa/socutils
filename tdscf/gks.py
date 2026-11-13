@@ -20,11 +20,14 @@
 # now.
 #
 # Validated vs pyscf's 2-component GKS-TDA (non-relativistic integrals, no SOC)
-# to machine precision (LDA / GGA / hybrid).  With SOC integrals the orbitals
-# are genuinely complex; set mf._numint.collinear='mcol' for the spin-flip
-# (non-collinear) response.
+# to machine precision (LDA / GGA / hybrid), and vs ReSpect (1e-X2C PBE TDA of
+# Zn: 3P0,1,2 and 1P1 within 3e-8 a.u.).  The response kernel defaults to the
+# non-collinear one (td.collinear = 'auto': 'ncol' for closed shells, 'mcol'
+# for open shells) even on a collinear ground state: the collinear kernel has
+# no spin-flip channel and scrambles spin-orbit fine structure.
 #
 
+import contextlib
 import numpy
 from pyscf import lib
 from pyscf.tdscf import ghf as _ghf
@@ -151,6 +154,66 @@ class _KernelXCMixin:
     '''
     xc_kernel = None
 
+    # Spin treatment of the response kernel (the ground state is unchanged).
+    # 'auto': a collinear ground state gets 'ncol' for a closed shell (m = 0 by
+    # Kramers symmetry; the isotropic kernel, identical to 'mcol' there) and
+    # 'mcol' for an open shell; an 'ncol'/'mcol' ground state keeps its scheme.
+    # The collinear kernel has no spin-flip channel and breaks the fine
+    # structure of spin-orbit-coupled excitations; set 'col' only to compare.
+    collinear = 'auto'
+
+    # The grid of the response xc kernel (f_xc): None keeps the SCF grid; 'cpscf' the coarse CP-SCF grid of
+    # the analytic Hessian (socutils.hessian.rhf_fast.CPSCF_GRID_ARGS, socutils.dft.grids); or a Grids object.
+    fxc_grids = None
+
+    def _fxc_grids(self):
+        g = self.fxc_grids
+        if g is None:
+            return None
+        if isinstance(g, str):
+            if g != 'cpscf':
+                raise ValueError('fxc_grids %r' % g)
+            cache = getattr(self, '_fxc_grids_cache', None)
+            if cache is None or cache.mol is not self._scf.mol:
+                from socutils.dft.grids import hessian_grids
+                from socutils.hessian.rhf_fast import CPSCF_GRID_ARGS
+                cache = hessian_grids(self._scf.mol, **CPSCF_GRID_ARGS)
+                cache.build(with_non0tab=True)
+                lib.logger.info(self, 'response xc kernel on the CP-SCF grid: %d points (SCF grid %d)',
+                                cache.weights.size, getattr(self._scf.grids.weights, 'size', 0))
+                self._fxc_grids_cache = cache
+            return cache
+        if g.coords is None:
+            g.build(with_non0tab=True)
+        return g
+
+    def response_collinear(self):
+        ni = getattr(self._scf, '_numint', None)
+        if ni is None or not hasattr(ni, 'collinear'):
+            return None
+        if self.collinear != 'auto':
+            return self.collinear
+        if ni.collinear[0] != 'c':
+            return ni.collinear
+        mol = self._scf.mol
+        return 'ncol' if mol.spin == 0 and mol.nelectron % 2 == 0 else 'mcol'
+
+    @contextlib.contextmanager
+    def _response_env(self):
+        # _gen_ghf_response returns a vind closure that reads mf.xc and the
+        # numint's collinear scheme lazily (at Davidson time), so both must
+        # stay set for the whole solve, not just while the response is built.
+        with contextlib.ExitStack() as stack:
+            if self.xc_kernel is not None:
+                stack.enter_context(lib.temporary_env(self._scf, xc=self.xc_kernel))
+            col = self.response_collinear()
+            if col is not None:
+                lib.logger.info(self, 'response xc kernel: collinear = %s', col)
+                stack.enter_context(lib.temporary_env(self._scf._numint, collinear=col))
+            g = self._fxc_grids() if hasattr(self._scf, 'grids') else None
+            if g is not None:
+                stack.enter_context(lib.temporary_env(self._scf, grids=g))
+            yield
     # For an X2C reference (mf.with_x2c present) compute transition dipoles
     # with the picture-change-corrected operator (picture_change_dipole).
     # The bare int1e_r_spinor is exact for a nonrelativistic spinor/GHF
@@ -161,12 +224,7 @@ class _KernelXCMixin:
     picture_change = True
 
     def kernel(self, *args, **kwargs):
-        # _gen_ghf_response returns a vind closure that reads mf.xc lazily (at
-        # Davidson time), so the kernel xc must stay set for the whole solve,
-        # not just while the response is generated.
-        if self.xc_kernel is None:
-            return super().kernel(*args, **kwargs)
-        with lib.temporary_env(self._scf, xc=self.xc_kernel):
+        with self._response_env():
             return super().kernel(*args, **kwargs)
 
     def cvs(self, core):
@@ -516,6 +574,16 @@ class _KernelXCMixin:
 
 
 class TDA(_KernelXCMixin, _ghf.TDA):
+    def Gradients(self):
+        '''Excited-state nuclear gradient (socutils.grad.tdghf_grad); a spinor
+        reference goes through its GHF / GKS representation.'''
+        from socutils.grad import tdghf_grad
+        from socutils.scf import spinor_hf, spinor_ghf
+        if isinstance(self._scf, spinor_hf.SCF):
+            return spinor_ghf._td_gradients(self)
+        return tdghf_grad.Gradients(self)
+    nuc_grad_method = Gradients
+
     # When True, gen_vind builds the response MO-driven: the Coulomb + exact
     # exchange come from a dense, precomputed A_JK block (cderi half-transformed
     # to the active occ/vir space once), and only the local f_xc is evaluated
@@ -544,14 +612,72 @@ class TDA(_KernelXCMixin, _ghf.TDA):
     reference_weight = None        # |c0|^2 (reference character) per state
     c0 = None                      # reference amplitude per state (complex)
 
+    # The Davidson solver: 'locked' (socutils.tdscf.lr_locked: residuals of the nroots Ritz vectors only, converged
+    # roots locked, one new vector per unconverged root, per-root preconditioning) or 'pyscf'
+    # (pyscf.tdscf._lr_eig.eigh: MAX_SPACE_INC vectors every iteration, residuals of up to max_space Ritz vectors).
+    davidson = 'locked'
+    max_space = None            # lr_locked's subspace bound (None: max(8 nroots, 40))
+    nbuffer = None              # extra roots of the locked solve (None: max(2, nstates // 2))
+
     def kernel(self, x0=None, nstates=None):
         if not (self.direct or self.couple_reference):
+            if self.davidson == 'locked':
+                with self._response_env():
+                    return self._locked_solve(x0, nstates)
             return super().kernel(x0=x0, nstates=nstates)
-        # honour xc_kernel for the response (same as _KernelXCMixin.kernel)
-        if self.xc_kernel is None:
+        # response xc / collinear scheme, as in _KernelXCMixin.kernel
+        with self._response_env():
             return self._direct_solve(nstates)
-        with lib.temporary_env(self._scf, xc=self.xc_kernel):
-            return self._direct_solve(nstates)
+
+    def _locked_solve(self, x0=None, nstates=None):
+        '''pyscf's TDA.kernel with the locking Davidson of socutils.tdscf.lr_locked'''
+        from pyscf.lib import logger
+        from socutils.tdscf import lr_locked
+        cpu0 = (logger.process_clock(), logger.perf_counter())
+        mf = self._scf
+        if mf.mo_energy is None:
+            mf.run()
+        self.check_sanity()
+        self.dump_flags()
+        if nstates is None:
+            nstates = self.nstates
+        else:
+            self.nstates = nstates
+        log = logger.Logger(self.stdout, self.verbose)
+        vind, hdiag = self.gen_vind(mf)
+
+        def precond(r, e):
+            d = hdiag - (e - self.level_shift)
+            d[abs(d) < 1e-8] = 1e-8
+            return r / d
+
+        thr = self.positive_eig_threshold
+
+        def pick(w, v):
+            idx = numpy.where(w > thr)[0]
+            return w[idx], v[:, idx]
+
+        if x0 is None:
+            # a wider guess than nstates: a minimal one can miss roots
+            x0 = self.get_init_guess(mf, 2 * nstates + 4)
+        # buffer roots, converged too and dropped: with locking a root missing from the subspace would stay
+        # missing once the lowest nstates Ritz roots converge (AuH x2c-SVPall PBE0: the 3.826 eV root under
+        # the 3.877 eV pair at nstates = 6; pyscf's lr_eigh misses the 3.803 eV pair at nstates = 4)
+        nbuf = self.nbuffer if self.nbuffer is not None else max(2, nstates // 2)
+        conv, e, x1 = lr_locked.eigh(vind, x0, precond, nstates + nbuf, tol=self.conv_tol, lindep=self.lindep,
+                                     max_cycle=self.max_cycle, max_space=self.max_space, pick=pick, log=log)
+        conv, e, x1 = conv[:nstates], e[:nstates], x1[:nstates]
+        self.converged, self.e = conv, e
+        mo_occ = mf.mo_occ[self.get_frozen_mask()]
+        nocc = int((mo_occ > 0).sum())
+        nvir = mo_occ.size - nocc
+        self.xy = [(xi.reshape(nocc, nvir), 0) for xi in x1]
+        if self.chkfile:
+            lib.chkfile.save(self.chkfile, 'tddft/e', self.e)
+            lib.chkfile.save(self.chkfile, 'tddft/xy', self.xy)
+        log.timer('TDA (locked Davidson)', *cpu0)
+        self._finalize()
+        return self.e, self.xy
 
     def _coupling_vector(self):
         '''g_ia = <Phi_i^a|H-E0|Phi_0> in this module's amplitude convention.
@@ -628,7 +754,8 @@ class TDA(_KernelXCMixin, _ghf.TDA):
 
     def gen_vind(self, mf=None):
         if not self.mo_driven:
-            return super().gen_vind(mf)
+            out = self._gen_vind_fxc_mo(mf)
+            return out if out is not None else super().gen_vind(mf)
         if mf is None:
             mf = self._scf
         from pyscf.scf import hf
@@ -691,6 +818,68 @@ class TDA(_KernelXCMixin, _ghf.TDA):
                               'this matvec)' % (counter[0], min(s + chunk, nvec),
                                                 nvec), *t0)
             return v.reshape(-1, nov)
+
+        return vind, hdiag
+
+
+    def _gen_vind_fxc_mo(self, mf=None):
+        '''the TDA matvec with the response J / K AO-driven (mf.get_jk: RIJ + multi-density COSX) and the f_xc
+        in the MO form fused on the grid (socutils.dft.fxc_2c.mo_response: no transition density matrices for
+        the xc part); None where it does not apply (fxc_2c.use_mo) and pyscf's operation runs'''
+        from pyscf.scf import hf
+        from pyscf.lib import logger
+        from socutils.dft import fxc_2c
+        if mf is None:
+            mf = self._scf
+        if not isinstance(mf, hf.KohnShamDFT) or getattr(self, 'wfnsym', None) is not None:
+            return None
+        ni = mf._numint
+        if not hasattr(ni, 'U') or ni.collinear[0] not in ('n', 'm') or mf.do_nlc():
+            return None
+        omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, mf.mol.spin)
+        xctype = ni._xc_type(mf.xc)
+        if omega != 0 or xctype not in ('LDA', 'GGA'):
+            return None
+        mol = mf.mol
+        mask = self.get_frozen_mask()
+        mo_coeff = mf.mo_coeff[:, mask]
+        mo_energy = mf.mo_energy[mask]
+        mo_occ = mf.mo_occ[mask]
+        occidx = numpy.where(mo_occ == 1)[0]
+        viridx = numpy.where(mo_occ == 0)[0]
+        nocc, nvir = len(occidx), len(viridx)
+        if not fxc_2c.use_mo(mol.nao, nocc, nvir):
+            return None
+        orbo, orbv = mo_coeff[:, occidx], mo_coeff[:, viridx]
+        t0 = (logger.process_clock(), logger.perf_counter())
+        rho0, vxc, fxc = ni.cache_xc_kernel(mol, mf.grids, mf.xc, mf.mo_coeff, mf.mo_occ, 1)
+        iso = fxc_2c.isotropic_kernel(fxc, xctype)
+        if iso is None:
+            return None
+        rho0 = vxc = fxc = None
+        logger.timer(self, 'response xc kernel (isotropic, MO form)', *t0)
+        # the GHF (scalar AO x spin) orbitals of the grid work
+        orbo_g = numpy.ascontiguousarray(ni.U @ orbo)
+        orbv_g = numpy.ascontiguousarray(ni.U @ orbv)
+        e_ia = mo_energy[viridx] - mo_energy[occidx, None]
+        hdiag = e_ia.ravel().real
+        hybrid = ni.libxc.is_hybrid_xc(mf.xc)
+        log = logger.new_logger(self)
+
+        def vind(zs):
+            zs = numpy.asarray(zs).reshape(-1, nocc, nvir)
+            dms = lib.einsum('xov,pv,qo->xpq', zs, orbv, orbo.conj())
+            if hybrid:
+                vj, vk = mf.get_jk(mol, dms, hermi=0)
+                v1ao = vj - hyb * vk
+            else:
+                v1ao = mf.get_j(mol, dms, hermi=0)
+            v1mo = lib.einsum('xpq,qo,pv->xov', v1ao, orbo, orbv.conj())
+            t1 = (logger.process_clock(), logger.perf_counter())
+            v1mo += fxc_2c.mo_response(ni, mol, mf.grids, iso, orbo_g, orbv_g, zs, xctype, mf.max_memory)
+            log.timer_debug1('f_xc (MO form, %d vectors)' % zs.shape[0], *t1)
+            v1mo += zs * e_ia
+            return v1mo.reshape(v1mo.shape[0], -1)
 
         return vind, hdiag
 

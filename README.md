@@ -51,3 +51,8 @@ mol = gto.M(atom=[["O", (0., 0., 0.)],
 gmf = ghf.GHF(mol).x2camf()               # Gaunt + Breit on by default
 e_ghf = gmf.kernel()
 ```
+
+## License
+
+socutils is distributed under the Apache License, Version 2.0 (see `LICENSE`
+and `NOTICE`).

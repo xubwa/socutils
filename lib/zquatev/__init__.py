@@ -2,12 +2,10 @@
 ctypes binding to libzquatev -- Toru Shiozaki's quaternionic eigensolver,
 built from its own repository into socutils/lib/deps/lib by lib/CMakeLists.txt.
 
-This is a drop-in replacement for the external ``zquatev`` Python package
-(github.com/xubwa/zquatev, a pybind11 wrapper): it exposes ``eigh``,
-``geigh``, ``check_kramers_structure`` and ``solve_KR_FCSCE`` with the same
-signatures, so downstream code works unchanged.  The numerical solver
-(``csrc/``) is unmodified BSD-2-Clause zquatev; only the C ABI shim
-(``capi/zquatev_capi.cc``) and this loader are new.
+Same functions as the Python package of sunqm/zquatev (``eigh``, ``geigh``,
+``check_kramers_structure``, ``solve_KR_FCSCE``), on its C entry point
+``eigh``.  The solver is zquatev (BSD-2-Clause, sunqm/zquatev); this loader
+is socutils code (Apache-2.0).
 
 The shared library is located in the following order:
   1. the path in the environment variable SOCUTILS_ZQUATEV_LIBRARY

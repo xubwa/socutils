@@ -64,6 +64,40 @@ class KnownValues(unittest.TestCase):
         self.assertLess(abs(vj1 - vj0).max(), 1e-12)
         self.assertLess(abs(vk1 - vk0).max(), 1e-12)
 
+    def test_casci_core_kramers(self):
+        '''_CDERIS (CASCI integral transformation): Kramers-paired core
+        exchange/Coulomb equal the full build.'''
+        from socutils.mcscf import zcasci, zmc_ao2mo
+        res = {}
+        for kr in (True, False):
+            self.mf.kramers_k = kr
+            mc = zcasci.CASCI(self.mf, 8, 4)
+            mc.verbose = 0
+            mc.kernel()
+            er = zmc_ao2mo._CDERIS(mc, mc.mo_coeff, level=2)
+            res[kr] = (mc.e_tot, er.vk_core, er.vj_core)
+        self.mf.kramers_k = True
+        self.assertAlmostEqual(res[True][0], res[False][0], 11)
+        self.assertLess(abs(res[True][1] - res[False][1]).max(), 1e-12)
+        self.assertLess(abs(res[True][2] - res[False][2]).max(), 1e-12)
+
+    def test_casci_core_quat(self):
+        '''_CDERIS core J/K: rik_2c's four-product scheme equals the real/imag GEMM loop'''
+        from socutils.mcscf import zcasci, zmc_ao2mo
+        from socutils.scf import rik_2c
+        mc = zcasci.CASCI(self.mf, 8, 4)
+        mc.verbose = 0
+        res = {}
+        for q in (True, False):
+            rik_2c.QUAT = q
+            try:
+                er = zmc_ao2mo._CDERIS(mc, self.mf.mo_coeff, level=2)
+            finally:
+                rik_2c.QUAT = True
+            res[q] = (er.vk_core, er.vj_core, er.cd_pa)
+        for a, b in zip(res[True], res[False]):
+            self.assertLess(abs(a - b).max(), 1e-12)
+
 
 if __name__ == '__main__':
     unittest.main()

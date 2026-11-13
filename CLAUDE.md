@@ -28,34 +28,54 @@ The C/C++ libraries must be compiled before the features that use them, by
 **one** top-level CMake under `lib/` (`lib/CMakeLists.txt`), modelled on
 `pyscf/lib`: it centralises the common config (BLAS/LAPACK, OpenMP, flags,
 `$ORIGIN` RPATH) and `add_subdirectory`s the in-tree libraries `lib/ccsdt`,
-`lib/ao2mo`, `lib/vhf`, `lib/qdhf` (thin subdir CMakeLists, like `pyscf/lib/vhf`).
+`lib/ao2mo`, `lib/vhf`, `lib/dft`, `lib/pbcdf`, `lib/thc`, `lib/qdhf` (thin
+subdir CMakeLists, like `pyscf/lib/vhf`).
 `lib/ao2mo` (spinor AO2MO e1/e2 kernels, `nrr_fast.py`) reuses C already
 compiled into an *installed* pyscf (`libao2mo`/`libnp_helper`/`libcvhf`/
-`libcint`), located via the configuring Python interpreter; `lib/vhf`
-(`libsocvhf.so`, one-centre-skipping prescreen for `somf/x2cmp.py`) links the
-installed pyscf's `libcvhf` the same way (without it `.x2cmp()` falls back to
-the full molecular J/K build). These `.so` are emitted **flat into `lib/`**.
+`libcint`), located via the configuring Python interpreter.
+`lib/dft` (`libsocdft.so`) holds the OpenMP XC kernels: the multi-collinear
+kernel of `dft/noncollinear.py`, the fused scalar / two-component Vxc, f_xc and
+XC-gradient passes (`vxc_fast.py`, `vxc_2c.py`, LDA/GGA/meta-GGA), the RKS XC
+Hessian grid pass (`xc_hess.c`, `hessian/rhf_fast.py`), COSX (`scf/cosx.py`; any l <= 7, `gen_cosx_r.py` kernels, one-centre pairs by parity class) and
+the grid response; they fall back to numpy / pyscf when not built.
+`lib/vhf` (`libsocvhf.so`: prescreen functions that skip one-centre shell
+quartets, used by `somf/x2cmp.py`; the unique-quartet Hessian drivers
+`hess2e.c` (2e second derivatives), `fock1.c` (first-order J/K of all atoms),
+`jk_multi.c` (direct J/K of many densities, `scf/jk_multi.py`), `ri_j_deriv.c`
+(three-centre derivative contractions of the density-fitted J Hessian), `md_j.c`
+(McMurchie-Davidson J engine on decontracted primitives: exact J gradient and J
+matrices, `scf/md_j.py`, whose `apply(mf)` also routes J + K to `jk_multi` with
+incremental Fock builds), `rij_direct.c` (direct RI-J without the three-centre
+tensor: MD on primitive Hermite pair densities, auxiliary primitives as pure Hermite
+Gaussians, far-field auxiliary multipoles, SIMD lane batches; `scf/rij_direct.py`,
+used by `md_j`'s RIJ when L^-1 (P|ij) does not fit, `md_j.RIJ_DIRECT`)) links the
+installed pyscf's `libcvhf` the same way; without it `.x2cmp()` falls back to
+the full molecular J/K build and the Hessians to pyscf's integral passes.
+These `.so` are emitted **flat into `lib/`**.
 
 The **x2camf C library** (C99 translation of the C++ X2CAMF, Apache-2.0,
-repo github.com/xubwa/x2camf-c) and **zquatev** (BSD-2, sunqm/zquatev; pinned to the
-user's fork xubwa/zquatev `cmake-blas-install`, which adds BLAS_LIBRARIES and
-install() to its CMake) are separate repositories, built with `ExternalProject`
-(like pyscf's libcint/libxc) with the same BLAS into `lib/deps/lib/`
-(`libx2camf_c.so`, `libzquatev.so`); the fork branch also computes zdotc in
-C++ instead of cblas_zdotc_sub, so no CBLAS/cblas.h is needed. Cache variables `X2CAMF_GIT`/`X2CAMF_VERSION`,
+repo github.com/xubwa/x2camf-c) and **zquatev** (BSD-2, sunqm/zquatev; pinned to
+upstream commit 4b397dd = PR #2, merged 2026-11-09, which adds BLAS_LIBRARIES and
+install() to its CMake and computes zdotc in C++, so no CBLAS/cblas.h is needed)
+are separate repositories, built with `ExternalProject` (like pyscf's
+libcint/libxc) with the same BLAS into `lib/deps/lib/` (`libx2camf_c.so`,
+`libzquatev.so`). Cache variables `X2CAMF_GIT`/`X2CAMF_VERSION`,
 `ZQUATEV_GIT`/`ZQUATEV_VERSION`, or `X2CAMF_SOURCE_DIR`/`ZQUATEV_SOURCE_DIR`
 for a local checkout; `BUILD_X2CAMF`/`BUILD_ZQUATEV=OFF` to skip.
 All libraries are optional — two-component code that doesn't call them runs
 without.
 
 ```bash
-make            # build all -> lib/lib{ccsdt_clib,nrr_opt,socvhf,qdhf}.so, lib/deps/lib/lib{x2camf_c,zquatev}.so
+make            # build all -> lib/lib{ccsdt_clib,nrr_opt,socvhf,socdft,socpbcdf,socthc,qdhf}.so, lib/deps/lib/lib{x2camf_c,zquatev}.so
 make test       # build + no-dependency x2camf smoke test
 make compare    # build + A/B compare C backend vs C++ reference
                 #   (needs X2CAMF_CPP_LIBRARY=/path/to/libx2camf*.so)
 make clean
 # pass BLAS/LAPACK choice through, e.g.:
 make CMAKE_ARGS=-DBLA_VENDOR=OpenBLAS      # or -DBLAS_LIBRARIES=mkl_rt
+# target instruction set (default: generic); on Rockfish cascadelake (AVX-512)
+# runs on every Intel CPU partition and is ~12 % faster on the J / K kernels:
+make CMAKE_ARGS=-DSOCUTILS_MARCH=cascadelake
 # equivalently, drive the lib/ CMake directly: cd lib && ./build.sh [-D...]
 ```
 
@@ -70,6 +90,7 @@ There is no central pytest config. Tests are standalone scripts/`unittest`:
 
 ```bash
 python gw/test/test_spinor_gw.py        # spinor G0W0 (unittest)
+python dft/test/test_noncollinear.py    # ncol / mcol DFT
 python gw/test/test_spinor_rpa.py
 python x2camf_c/tests/test_smoke.py     # also: make test
 python x2camf_c/tests/test_against_cpp.py
@@ -104,6 +125,14 @@ two-electron corrections on) and only then require the `x2camf` integral backend
     basis instead of spinor); spinor and GHF energies agree to numerical precision.
   - `x2camf_hf.py`: `X2CAMF_*` convenience classes + `x2camf_ghf(scf.GHF(mol))`.
   - `frac_dhf.py`: four-component Dirac-HF; `spinor_hf_df.py`: density fitting.
+  - `rik.py`: RI-JK (J and K from any three-index factor through `with_df.loop` /
+    `iter_factor`: pyscf DF in core or HDF5, socutils CD); `rik.apply(mf)` (also via
+    `md_j.apply` for full DF-JK), screened `cholesky_eri` / `cholesky_eri_h5` builders
+    (`lib/vhf/int3c_s2.c`), reusable `half_transform` / `mo_transform`.
+  - `rik_2c.py`: two-component J / K from the same factors (spinor `_DFJHF._get_k_mo`,
+    CASSCF `_CDERIS` core): weighted orbital sets (SCF occupied, frozen core, active
+    natural spinors x sqrt(n)), Kramers sets by four products of combinations instead of
+    the 4 nao x 4 nao Gram matrix (fused kernel `lib/vhf/rik2c.c`), `get_jk_spinor`.
 
 - **`x2camf_c/x2camf/`** — the bundled `x2camf` Python package: a dispatcher
   with **two interchangeable backends** behind one API (`amfi`/`atm_integrals`/
@@ -127,6 +156,20 @@ two-electron corrections on) and only then require the `x2camf` integral backend
 - **`somf/`** — spin-orbit mean-field machinery (`amf.py`, `snso.py`,
   `somf_pt.py`, `x2cmp.py`) underlying the `.x2camf()`/`.x2cmp()` shortcuts.
 
+- **`dft/`** — two-component Kohn-Sham: `dft.py` (`SpinorDFT`/`KRDFT`, spinor
+  basis; `numint_2c.SpinorNumInt2C` rotates to the scalar-AO x spin basis for the
+  grid work), `gks.py` (`GKS` on the socutils GHF).  `noncollinear.py` supplies
+  the `collinear` schemes beyond pyscf: `'ncol'` (locally collinear, LDA/GGA/MGGA
+  Vxc + fxc) and `'mcol'` (native multi-collinear, no mcfun; LDA in closed form,
+  GGA/MGGA on a half Lebedev sphere via `lib/libsocdft.so`).
+- **`pbc/`** — Gamma-point periodic two-component SCF on cells: `spinor_scf.py`
+  (`periodic(mf, rsdf)`, exxdiv / G = 0 conventions), `rsdf.py` (range-separated
+  density fitting, `lr='gspace'`, C kernels `lib/pbcdf`), and the cderi-free THC
+  route-1 J/K `thc.py` (`THCJK`; with `thc_gapw.py` GAPW J, `thc_local.py` local CX
+  fit, OpenMP kernels `lib/thc` -> `libsocthc.so`), MPI SPMD via mpi4py
+  (`jk.comm`; `examples/14-periodic_dopant_casci.py --jk thc` under
+  `mpirun ... python -m mpi4py`). Status, results and run paths: `pbc/HANDOFF_WNSM.md`.
+
 - **`cc/`** — relativistic coupled cluster on a spinor reference: `zccsd.py`,
   `zccsd_direct.py`, `zccsdt.py` (triples), `gccsd_t.py`, `eom_zccsd_direct.py`,
   `chol_zccsd*.py` (Cholesky-decomposed ERIs). C kernels live in `lib/ccsdt`
@@ -135,7 +178,9 @@ two-electron corrections on) and only then require the `x2camf` integral backend
 - **`mcscf/`** (`zcasbase`, `zcasci`-style CASCI/CASSCF, `zmcscf`, superCI),
   **`fci/`** (`zfci`), **`gw/`** (spinor G0W0 / RPA), **`tdscf/`**,
   **`prop/`** (properties: HFC, EFG, g-factor, contact density, effective field),
-  **`grad/`** (analytic gradients), **`cd/`** (Cholesky decomposition),
+  **`grad/`** (analytic gradients; `grad/rhf_fast.py`: fast RHF / RKS gradients, the
+  MD J engine `lib/vhf/md_j.c` for exact J, the order-1 `hess2e_cart` kernel for K, the contracted XC part; `grad/rik_grad.py`: the RI-K
+  gradient with auxiliary response, `lib/vhf/ri_k_grad.c`), **`cd/`** (Cholesky decomposition),
   **`lo/`**, **`tools/`** (`spinor2sph`, `fragmo_guess`) — all built on the
   spinor/GHF SCF objects above.
 
@@ -152,3 +197,4 @@ two-electron corrections on) and only then require the `x2camf` integral backend
 - `X2CAMF_BACKEND` = `c` (default if built) | `cpp` — which x2camf backend runs.
 - `X2CAMF_CPP_LIBRARY` — path to upstream `libx2camf*.so` for `make compare` / cpp backend.
 - `SOCUTILS_ZQUATEV_LIBRARY` — explicit path to `libzquatev.so`.
+- `SOCUTILS_SOCDFT_LIBRARY` — explicit path to `libsocdft.so`.

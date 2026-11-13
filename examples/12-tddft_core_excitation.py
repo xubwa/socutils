@@ -23,11 +23,13 @@ core is therefore  ... 2s,2s, 2p1/2,2p1/2, 2p3/2,2p3/2,2p3/2,2p3/2 -- so the
 L3 hole space is the four spinors just above the L2 pair (printed below).
 
 Note on the response kernel:
-  The default fxc is collinear (the diagonal, spin-conserving kernel).  For the
-  full non-collinear two-component response set mf._numint.collinear = 'mcol'
-  (and raise mf._numint.spin_samples, e.g. 770, for production accuracy) -- it
-  is much costlier but captures the spin-flip channel.  Alternatively, an ALDA
-  response kernel on top of a hybrid ground state is td.xc_kernel = 'LDA,VWN'.
+  The response kernel is non-collinear by default (td.collinear = 'auto':
+  'ncol' for this closed-shell reference -- m = 0 by Kramers symmetry, where it
+  equals the multi-collinear kernel -- and 'mcol' for open shells), so the
+  spin-flip channel that the L2/L3 fine structure needs is included even though
+  the ground state uses the collinear functional.  td.collinear = 'col' gives
+  the old diagonal, spin-conserving kernel for comparison.  An ALDA response
+  kernel on top of a hybrid ground state is td.xc_kernel = 'LDA,VWN'.
 
 ccpvdz here is only for a fast, self-contained demo; a core-excitation needs a
 core-decontracted / core-polarized basis on the absorbing atom for real numbers.

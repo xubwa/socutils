@@ -747,7 +747,9 @@ def mcscf_superci(mc, mo_coeff, max_stepsize=None, conv_tol=None, conv_tol_grad=
     # silently have most of each step projected away.
     if kramers_check:
         from socutils.tools import kramers
-        s_ovlp = mol.intor('int1e_ovlp_spinor')
+        # the SCF's overlap: for a periodic cell (pbc.spinor_scf) the lattice
+        # sum, which the molecular integral of the cell is not
+        s_ovlp = mc._scf.get_ovlp()
         dev = kramers.pairing_deviation(mol, mo, s_ovlp)
         log.info('Kramers pairing of the starting orbitals: max deviation %.2e', dev)
         if dev > 1e-6:
