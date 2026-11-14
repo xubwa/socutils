@@ -204,3 +204,149 @@ def move(mc, mo, ci, z):
         out.append(d / numpy.linalg.norm(d))
         p += len(c)
     return mo1, out
+
+
+# ----------------------------------------------------------------------
+# relaxed densities: target gradients, Z-vector, Lagrangian density
+
+def _orbital_gradient(resp, dm1, dm2):
+    return zmc_twostep.gen_g_hop_exact(resp.mc, resp.mo, dm1, dm2, resp.eris)[1]
+
+
+def state_gradient(resp, k):
+    '''G of the energy of state k alone (complex layout).'''
+    d1, d2 = resp.dms[k]
+    parts = [2 * _orbital_gradient(resp, d1, d2)]
+    for i, (r, n) in enumerate(zip(resp.r, resp.sizes)):
+        parts.append(2 * r if i == k else numpy.zeros(n, dtype=complex))
+    return resp.join(parts)
+
+
+def _projector(cols):
+    '''Orthonormal real columns spanning the realified complex columns.'''
+    if cols.shape[1] == 0:
+        return numpy.zeros((2 * cols.shape[0], 0))
+    q, _ = numpy.linalg.qr(numpy.array([realify(c) for c in cols.T]).T)
+    return q
+
+
+def zvector(resp, rhs, tol=1e-10, maxiter=1000, extra_null=None):
+    '''z with J z = -rhs on the complement of the zero modes (norm and phase of the CI
+    vectors; extra_null: more complex columns to project out), by MINRES in the real
+    variables.  Returns z in the complex layout.'''
+    import scipy.sparse.linalg
+    cols = resp.null_space()
+    if extra_null is not None:
+        cols = numpy.hstack([cols, extra_null])
+    q = _projector(cols)
+
+    def proj(v):
+        return v - q @ (q.T @ v)
+    n = 2 * len(rhs)
+    op = scipy.sparse.linalg.LinearOperator(
+        (n, n), matvec=lambda v: proj(realify(resp.hop(complexify(proj(v))))))
+    b = proj(-realify(rhs))
+    z, info = scipy.sparse.linalg.minres(op, b, rtol=tol, maxiter=maxiter)
+    if info != 0:
+        raise RuntimeError('Z-vector equations not converged (minres info %d)' % info)
+    return complexify(proj(z))
+
+
+def mo_density(resp, dm1):
+    '''MO density (core 1, active gamma^T) of an active 1-RDM gamma.'''
+    nmo = resp.mo.shape[1]
+    d = numpy.zeros((nmo, nmo), dtype=complex)
+    d[:resp.ncore, :resp.ncore] = numpy.eye(resp.ncore)
+    d[resp.act, resp.act] = numpy.asarray(dm1).T
+    return d
+
+
+def ao_density(resp, d_mo):
+    '''C D C^+: <O> = tr(O_AO D_AO) for a spinor AO operator O.'''
+    return resp.mo @ d_mo @ resp.mo.conj().T
+
+
+def state_density(resp, k):
+    '''AO density of state k.'''
+    return ao_density(resp, mo_density(resp, resp.dms[k][0]))
+
+
+def lagrangian_density(resp, z):
+    '''D_z (AO): the derivative of the averaged density along z, so that
+    Re<z, dG_SA/dlambda> = tr(O D_z) for h -> h + lambda O.'''
+    x, *ys = resp.split(numpy.asarray(z, dtype=complex))
+    k = resp.mc.unpack_uniq_var(x)
+    d = mo_density(resp, resp.dm1)
+    dd = k @ d - d @ k
+    for w, c, y, (d1, _) in zip(resp.weights, resp.ci, ys, resp.dms):
+        p1 = resp._rdm12(c + y)[0]
+        m1 = resp._rdm12(c - y)[0]
+        g = 0.5 * (p1 - m1) - 2 * numpy.vdot(c, y).real * d1
+        dd[resp.act, resp.act] += w * numpy.asarray(g).T
+    return ao_density(resp, dd)
+
+
+def interstate_directions(resp):
+    '''Rotations c_I -> c_I + t c_J, c_J -> c_J - t conj(t) c_I and the symmetric mixings
+    among the states (real and imaginary t): complex columns.'''
+    n = resp.n_orb + sum(resp.sizes)
+    offs = numpy.concatenate([[resp.n_orb], resp.n_orb + numpy.cumsum(resp.sizes)])
+    cols = []
+    for i in range(len(resp.ci)):
+        for j in range(i):
+            for f in (1.0, 1j):
+                for s in (1.0, -1.0):
+                    v = numpy.zeros(n, dtype=complex)
+                    v[offs[i]:offs[i + 1]] = f * resp.ci[j]
+                    v[offs[j]:offs[j + 1]] = s * numpy.conj(f) * resp.ci[i]
+                    cols.append(v)
+    return numpy.array(cols).T if cols else numpy.zeros((n, 0), dtype=complex)
+
+
+def model_eigenvectors(mc, mo, ci, cderi=None):
+    '''The CI vectors replaced by the eigenvectors of H_act in their span (Loewdin
+    orthonormalized; each with the phase of the old vector it is closest to).'''
+    if len(ci) < 2:
+        return ci
+    eris = zmc_ao2mo._CDERIS(mc, mo, cderi=cderi, level=2)
+    ncore, ncas = mc.ncore, mc.ncas
+    act = slice(ncore, ncore + ncas)
+    h = lib.dot(mo.conj().T, lib.dot(mc.get_hcore(), mo))
+    vc = lib.dot(mo.conj().T, lib.dot(eris.vj_core - eris.vk_core, mo))
+    eri = numpy.asarray(eris.aaaa).reshape((ncas,) * 4)
+    h2e = fci_dhf_slow.absorb_h1e((h + vc)[act, act], eri, ncas, mc.nelecas, .5)
+    c = numpy.array([numpy.asarray(x, dtype=complex).ravel() for x in ci])
+    w, v = numpy.linalg.eigh(c.conj() @ c.T)
+    c = (v / numpy.sqrt(w)) @ v.conj().T @ c
+    hc = numpy.array([fci_dhf_slow.contract_2e(h2e, x, ncas, mc.nelecas) for x in c])
+    hm = c.conj() @ hc.T
+    _, u = numpy.linalg.eigh(0.5 * (hm + hm.conj().T))
+    new = u.T @ c
+    out = []
+    for x in new:
+        ov = [numpy.vdot(numpy.asarray(y).ravel(), x) for y in ci]
+        kk = int(numpy.argmax(numpy.abs(ov)))
+        out.append(x * numpy.conj(ov[kk]) / abs(ov[kk]))
+    return out
+
+
+def polish(mc, mo, ci, weights, tol=1e-10, max_cycle=15, cderi=None, verbose=True):
+    '''Newton steps on the exact orbital + CI Hessian from a converged SA-CASSCF (step
+    length bounded), the CI vectors kept eigenvectors of H_act in their span; the
+    rotations among the states are left to that diagonalization.  Returns (mo, ci, |G|).'''
+    ci = model_eigenvectors(mc, mo, ci, cderi)
+    gnorm = None
+    for it in range(max_cycle):
+        resp = SAResponse(mc, mo, ci, weights, cderi=cderi)
+        g = resp.gradient()
+        gnorm = numpy.linalg.norm(g)
+        if verbose:
+            print('polish %d: |G| = %.2e, E_SA = %.12f' % (it, gnorm, resp.e_orb))
+        if gnorm < tol:
+            break
+        z = zvector(resp, g, tol=1e-6 * min(1.0, gnorm), extra_null=interstate_directions(resp))
+        if numpy.linalg.norm(z) > 0.1:
+            z *= 0.1 / numpy.linalg.norm(z)
+        mo, ci = move(mc, mo, ci, z)
+        ci = model_eigenvectors(mc, mo, ci, cderi)
+    return mo, ci, gnorm
