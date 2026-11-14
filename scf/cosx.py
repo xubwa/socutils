@@ -126,6 +126,9 @@ MULTI_FLOAT = False     # its contraction in single precision (set_multi_float)
 HESS_BLK = None         # grid points per task of the Hessian kernel: None -> self.blk, or 56 when the threads'
                         # buffers (~ nao nocc blk each) do not fit max_memory; an int forces it (multiple of 56)
 HESS_FLOAT = False      # the Hessian passes' A C contraction (Fock1 / K second derivatives) in single precision
+HESS_MEM_MARGIN = .85   # the Hessian / Fock1 kernel's estimate (shared + threads) within this share of what max_memory
+                        # leaves over the current RSS: Trp-cage def2-SVP at MAXMEM 85000 on a 96 GB socket was
+                        # killed in the kernel with the estimate (77.7 GB + 7.2 GB in use) taking all of it
 PROFILE = {}            # wall seconds of get_k's phases (accumulated)
 MULTI_MAXSET = 512      # densities per pass (every pass computes the integrals again)
 MULTI_MEM_FLOOR = .3    # fraction of max_memory a pass of the multi-density K may always use
@@ -312,6 +315,31 @@ def make_grids(mol, **kwargs):
                 logger.info(mol, 'COSX grid: tight shells not integrated to %g: %s (element_intacc %s)',
                             RADIAL_NORM_TOL, bad, g.element_intacc)
     return g
+
+
+class _RssSampler:
+    '''the largest RSS (MB) seen every `every` seconds while a block runs (a C kernel releases the GIL)'''
+    def __init__(self, every=1.):
+        self.every = every
+        self.peak = 0.
+
+    def __enter__(self):
+        import threading
+        self._stop = threading.Event()
+        self.peak = lib.current_memory()[0]
+
+        def run():
+            while not self._stop.wait(self.every):
+                self.peak = max(self.peak, lib.current_memory()[0])
+        self._t = threading.Thread(target=run, daemon=True)
+        self._t.start()
+        return self
+
+    def __exit__(self, *a):
+        self._stop.set()
+        self._t.join()
+        self.peak = max(self.peak, lib.current_memory()[0])
+        return False
 
 
 class COSX(lib.StreamObject):
@@ -711,8 +739,9 @@ class COSX(lib.StreamObject):
             libdft.SOCDFTcosx_set_dense_min(ctypes.c_double(DENSE_MIN))
         if not dense:
             libdft.SOCDFTcosx_set_dense(0)
+        mem0 = lib.current_memory()[0]
         try:
-            with lib.with_omp_threads(nt):
+            with lib.with_omp_threads(nt), _RssSampler() as smp:
                 err = libdft.SOCDFTcosx_fock1(
                     v.ctypes.data_as(ctypes.c_void_p), vt.ctypes.data_as(ctypes.c_void_p),
                     co.ctypes.data_as(ctypes.c_void_p), yo.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(n8),
@@ -726,6 +755,8 @@ class COSX(lib.StreamObject):
         finally:
             if not dense:
                 libdft.SOCDFTcosx_set_dense(1)
+        logger.info(self, 'COSX Fock1 kernel: planned peak %.0f MB, sampled peak %.0f MB', mem0 + shared + per * nt,
+                    smp.peak)
         if err:
             raise MemoryError('COSX Fock1: a kernel buffer could not be allocated')
         if padded:
@@ -849,7 +880,7 @@ class COSX(lib.StreamObject):
             m += (.35 * nao * nao / 2 * (blk + 16) + nao * nao) * (fl - .5 if HESS_FLOAT else 1.) if dense else (2 << 20)
             m += 26 * nao * blk + 8 * nao * n8 + 2 * (1 << 22)  # AOs, gathers, U3 chunks
             return m * 8 / 1e6
-        avail = mol.max_memory - lib.current_memory()[0] - shared
+        avail = HESS_MEM_MARGIN * (mol.max_memory - lib.current_memory()[0]) - shared
         if HESS_BLK is not None:
             cands = [(int(HESS_BLK), True)]
         else:
@@ -895,8 +926,9 @@ class COSX(lib.StreamObject):
             libdft.SOCDFTcosx_set_dense_min(ctypes.c_double(DENSE_MIN))
         if not dense:
             libdft.SOCDFTcosx_set_dense(0)
+        mem0 = lib.current_memory()[0]
         try:
-            with lib.with_omp_threads(nt):
+            with lib.with_omp_threads(nt), _RssSampler() as smp:
                 err = libdft.SOCDFTcosx_hess(
                     hs.ctypes.data_as(ctypes.c_void_p), ptr(v), ptr(vt), co.ctypes.data_as(ctypes.c_void_p),
                     yo.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(n8), ctypes.c_void_p(self._opt),
@@ -909,6 +941,8 @@ class COSX(lib.StreamObject):
         finally:
             if not dense:
                 libdft.SOCDFTcosx_set_dense(1)
+        logger.info(self, 'COSX Hessian kernel: planned peak %.0f MB, sampled peak %.0f MB', mem0 + shared + per * nt,
+                    smp.peak)
         if err:
             raise MemoryError('COSX Hessian: a kernel buffer could not be allocated')
         if with_fock1 and not padded:
