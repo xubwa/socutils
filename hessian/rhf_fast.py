@@ -444,6 +444,9 @@ def _hcore_e1(hessobj, dm0):
 
 
 H1_OCC = True     # hess_elec: the RKS first-order Fock matrices as h1 C_occ (rks_make_h1 / xc_deriv1_batched)
+H1_DISK_MIN = .1  # hess_elec keeps h1 C_occ in a temporary file during the CPHF (read per atom by the batches, back
+                  # for the assembly) when it takes more than this share of mf.max_memory (Trp-cage 12.3 GB); None:
+                  # never
 
 
 def _is_h1_occ(h1, mo_coeff, mo_occ):
@@ -451,18 +454,33 @@ def _is_h1_occ(h1, mo_coeff, mo_occ):
     return h1.ndim == 4 and h1.shape[-1] == nocc and h1.shape[-2] == mo_coeff.shape[0] != nocc
 
 
-SOLVE_MO1_ARRAYS = 22  # nmo nocc arrays per perturbation of a Krylov batch: h1, s1, hs, mo1base, the trial vectors and
-                       # their images (two per cycle, ~8 cycles), transient copies of the Gram-Schmidt
+SOLVE_MO1_ARRAYS = None  # nmo nocc arrays per perturbation of a Krylov batch: None -> 6 (h1, s1, hs, mo1base, transient
+                         # copies of the Gram-Schmidt) + CPHF_KRYLOV_VECTORS trial vectors (and as many images unless
+                         # KRYLOV_IMPLICIT_H, else 2 for the dropped directions); an int forces it
+CPHF_KRYLOV_VECTORS = 10  # trial vectors per perturbation over the Krylov solve (the converged directions dropped on the
+                          # way): trpn_1_10 def2-SVP batches of 14 atoms 12 cycles, ~10.1 vectors per perturbation
+CPHF_DISK = True       # a CPHF that does not fit one in-memory Krylov block keeps its trial vectors on disk (pyscf's
+                       # TMPDIR), for larger blocks: fewer response applications in all (trpn_1_5: one block 1384,
+                       # 6 batches 2166 densities)
+CPHF_DISK_ARRAYS = 4   # nmo nocc arrays per perturbation in memory then (A x, the residual, the new trial vectors,
+                       # the dropped directions)
+CPHF_RESP_MIN = 10     # densities per response call the batch must leave room for at its first Krylov cycle when
+                       # the trial vectors are on disk; the calls then take what the cycle's arrays leave (the
+                       # directions still active), see _fx_chunked
+CPHF_COSX_FIXED_SCALE = .55  # the COSX pass's fixed buffers against cosx.COSX.multi_mem (measured peaks of one response
+                             # call, fixed + N per density, def2-SVP 16 threads: trpn_1_5 0.62 GB / 27 MB against the
+                             # model's 1.6 GB / 39 MB, trpn_1_10 2.8 GB / 103 MB against 5.9 GB / 125 MB; 0.47 at
+                             # most, + 15 %; the per-density model is kept, 21-46 % above)
 CPHF_MEM_MARGIN = .05  # the share of the budget (mf.max_memory) the CPHF holds back for the allocator's slack
 CPHF_J_MEM = 2000      # MB of the semi-direct RI-J's integral blocks under the CPHF budget
 CPHF_XC_MEM = 2000     # max_memory of the batched XC response under the CPHF budget (its AO blocks ~ .2 of it)
 CPHF_KEPT_PRIOR = .5   # the kept pair fraction of the COSX pass assumed until a pass has measured it
 
 
-def _cphf_budget(mf, nao, nmo, nocc, natm, fx, budget, mem_now, nout=None):
+def _cphf_budget(mf, nao, nmo, nocc, natm, fx, budget, mem_now):
     '''one memory budget for the CPHF of natm atoms: (atoms per Krylov batch, settings for _CPHF_MEM).  Set
-    aside first: what is in use (mem_now, the right-hand sides among it), the solutions still to come (nout
-    atoms, default natm: mo1 nao nocc, e1 nocc^2 per perturbation), the fixed buffers of a response call (the
+    aside first: what is in use (mem_now: the right-hand sides and the solutions written so far among it; a
+    batch's own solutions are written after its Krylov arrays are freed), the fixed buffers of a response call (the
     COSX pass's stored pair integrals at the largest kept fraction seen, CPHF_KEPT_PRIOR before the first
     pass, its work arrays, the RI-J blocks, the XC blocks) and CPHF_MEM_MARGIN of the budget.  The rest is
     shared by the Krylov subspace (SOLVE_MO1_ARRAYS nmo nocc per perturbation) and one response call over
@@ -470,11 +488,11 @@ def _cphf_budget(mf, nao, nmo, nocc, natm, fx, budget, mem_now, nout=None):
     transient term: the COSX pass's per-density buffers, cosx.COSX.multi_mem, or 2.5 nao^2 of J / XC), so
     that every Krylov cycle is one response call.  The fewest equal batches that fit.'''
     from pyscf.scf import hf
-    if nout is None:
-        nout = natm
     a2 = 8. * nao * nao / 1e6
-    kry = SOLVE_MO1_ARRAYS * 8. * nmo * nocc / 1e6
-    out = 3 * nout * 8. * (nao * nocc + nocc * nocc) / 1e6
+    narr = SOLVE_MO1_ARRAYS
+    if narr is None:
+        narr = 6 + CPHF_KRYLOV_VECTORS * (1 if KRYLOV_IMPLICIT_H else 2) + (2 if KRYLOV_IMPLICIT_H else 0)
+    kry = narr * 8. * nmo * nocc / 1e6
     with_k = not isinstance(mf, hf.KohnShamDFT) or mf._numint.libxc.is_hybrid_xc(mf.xc)
     k_per = k_fix = 0
     if with_k:
@@ -487,31 +505,48 @@ def _cphf_budget(mf, nao, nmo, nocc, natm, fx, budget, mem_now, nout=None):
                     per, fix = c.multi_mem(nao, getattr(c, '_kept_max', CPHF_KEPT_PRIOR))
                 finally:
                     cosx.set_multi_float(fl)
-                k_per, k_fix = max(k_per, per), max(k_fix, fix)
+                k_per, k_fix = max(k_per, per), max(k_fix, CPHF_COSX_FIXED_SCALE * fix)
     fxd = getattr(fx, 'ao_arrays', FX_AO_ARRAYS - 2.5) * a2 + max(k_per, 2.5 * a2 + 8. * nao * FXC_SUBBLOCK / 1e6)
     # the semi-direct RI-J's blocks only when _rij_get_j takes that path (no resident three-index tensor)
     j_mem = CPHF_J_MEM if (_rij_engine(mf) is not None and _rij_cderi(mf) is None
                            and getattr(getattr(mf, 'with_df', None), '_cderi', None) is None) else 0
     xc_mem = CPHF_XC_MEM if isinstance(mf, hf.KohnShamDFT) else 0
-    fixed = k_fix + j_mem + .4 * xc_mem
+    # J, K and the XC response of a call run one after the other: their fixed buffers are never all alive
+    fixed = max(k_fix, j_mem, .4 * xc_mem)
     margin = CPHF_MEM_MARGIN * budget
-    avail = budget - margin - mem_now - out - fixed
+    avail = budget - margin - mem_now - fixed
     nper = int(avail / (kry + fxd))
+    disk = False
     if 3 * natm <= nper:
         blk = natm
+        nf = max(1, min(3 * blk, int((avail - 3 * blk * kry) / fxd)))
+    elif CPHF_DISK:
+        # the trial vectors, hs and b on disk: in memory per perturbation the cycle's arrays (A x, the residual,
+        # the new trial vectors) and the dropped directions (CPHF_DISK_ARRAYS); the response calls of at least
+        # CPHF_RESP_MIN densities at the first cycle, as many as fit later (_fx_chunked)
+        disk = True
+        kry = CPHF_DISK_ARRAYS * 8. * nmo * nocc / 1e6
+        nf = min(3 * natm, CPHF_RESP_MIN)
+        nper = max(3, int((avail - nf * fxd) / kry))
+        nb = -(-natm // max(1, nper // 3))
+        blk = -(-natm // nb)
+        nf = max(nf, min(3 * blk, int((avail - 3 * blk * kry) / fxd)))
     else:
         nb = -(-natm // max(1, nper // 3))
         blk = -(-natm // nb)
-    nf = max(1, min(3 * blk, int((avail - 3 * blk * kry) / fxd)))
-    logger.info(mf, 'CPHF memory budget %.0f MB for %d atoms: in use %.0f, solutions %.0f, fixed buffers %.0f '
+        nf = max(1, min(3 * blk, int((avail - 3 * blk * kry) / fxd)))
+    logger.info(mf, 'CPHF memory budget %.0f MB for %d atoms: in use %.0f, fixed buffers %.0f '
                 '(COSX %.0f, RI-J %.0f, XC %.0f), margin %.0f; per perturbation Krylov %.0f + response %.0f MB '
                 '-> %d atoms per batch (%d batches), response calls of %d densities (Krylov %.0f + response '
-                '%.0f MB)', budget, natm, mem_now, out, fixed, k_fix, j_mem, .4 * xc_mem, margin, kry, fxd, blk,
+                '%.0f MB)', budget, natm, mem_now, fixed, k_fix, j_mem, .4 * xc_mem, margin, kry, fxd, blk,
                 -(-natm // blk), nf, 3 * blk * kry, nf * fxd)
     if avail < 3 * (kry + fxd):
         logger.warn(mf, 'CPHF: the memory budget (%.0f MB) is short by %.0f MB of one atom per batch', budget,
                     3 * (kry + fxd) - avail)
-    mem = {'fx': nf}
+    mem = {'fx': nf, 'disk': disk, 'plan': mem_now + fixed + 3 * blk * kry + nf * fxd}
+    if disk:
+        # for _fx_chunked: the memory, per active direction, per density; the COSX pass's fixed / per density
+        mem['free'] = (avail, kry, fxd, k_fix, k_per)
     if xc_mem:
         mem['xc'] = xc_mem
     if k_per:
@@ -526,13 +561,14 @@ def _solve_mo1_occ(mf, mo_energy, mo_coeff, mo_occ, h1c, fx, atmlst=None, max_me
     '''pyscf.hessian.rhf.solve_mo1 for h1 given as h1 C_occ (natm, 3, nao, nocc), within one memory budget
     (_cphf_budget, planned again for the remaining atoms after every batch: the first plan assumes
     CPHF_KEPT_PRIOR for the COSX pass, the next ones what the passes measured)'''
-    from pyscf.scf import cphf
     mol = mf.mol
     if atmlst is None:
         atmlst = range(mol.natm)
     nao, nmo = mo_coeff.shape
-    mocc = mo_coeff[:, mo_occ > 0]
+    occidx = mo_occ > 0
+    mocc = mo_coeff[:, occidx]
     nocc = mocc.shape[1]
+    e_i = mo_energy[occidx]
     s1a = -mol.intor('int1e_ipovlp', comp=3)
     # the budget of the mean field, not the max_memory argument (pyscf's hess_elec passes its default of
     # 4000 MB): with it trpn_1_10 was cut into 25 batches of 7 atoms, each with its own Krylov solve and
@@ -552,8 +588,16 @@ def _solve_mo1_occ(mf, mo_energy, mo_coeff, mo_occ, h1c, fx, atmlst=None, max_me
             _CPHF_MEM.update(mem)
             ia1 = min(natm, ia0 + blksize)
             t0 = (logger.process_clock(), logger.perf_counter())
-            s1vo = numpy.empty((ia1 - ia0, 3, nmo, nocc))
-            h1vo = numpy.empty((ia1 - ia0, 3, nmo, nocc))
+            _KRYLOV_STATS.clear()
+            # the right-hand sides as hs = h1 - s1 e_i (MO) and the occupied rows of s1: all that
+            # pyscf's solve_withs1 uses of h1 and s1
+            disk = mem.get('disk', False)
+            ftmp = lib.H5TmpFile() if disk else None
+            hs = (ftmp.create_dataset('hs', ((ia1 - ia0) * 3, nmo, nocc), 'f8') if disk
+                  else numpy.empty(((ia1 - ia0) * 3, nmo, nocc)))
+            s1oo = numpy.empty((ia1 - ia0, 3, nocc, nocc))
+            h_ = numpy.empty((nmo, nocc))
+            sv = numpy.empty((nmo, nocc))
             for i0 in range(ia0, ia1):
                 ia = atmlst[i0]
                 p0, p1 = aoslices[ia][2:]
@@ -562,14 +606,20 @@ def _solve_mo1_occ(mf, mo_energy, mo_coeff, mo_occ, h1c, fx, atmlst=None, max_me
                 s1c[:, p0:p1] += lib.dot(s1a[:, p0:p1].reshape(-1, nao), mocc).reshape(3, p1 - p0, nocc)
                 for x in range(3):
                     s1c[x] += lib.dot(s1a[x, p0:p1].T, mocc[p0:p1])
-                    lib.dot(mo_coeff.T, s1c[x], c=s1vo[i0 - ia0, x])
-                    lib.dot(mo_coeff.T, h1c[ia, x], c=h1vo[i0 - ia0, x])
-            h1vo = h1vo.reshape(-1, nmo, nocc)
-            s1vo = s1vo.reshape(-1, nmo, nocc)
+                    lib.dot(mo_coeff.T, s1c[x], c=sv)
+                    lib.dot(mo_coeff.T, h1c[ia, x], c=h_)
+                    h_ -= sv * e_i
+                    hs[(i0 - ia0) * 3 + x] = h_
+                    s1oo[i0 - ia0, x] = sv[occidx]
+            sv = h_ = None
             tol = mf.conv_tol_cpscf * (ia1 - ia0)
-            mo1, e1 = cphf.solve(fx, mo_energy, mo_occ, h1vo, s1vo, max_cycle=max_cycle, level_shift=level_shift,
-                                 tol=tol)
-            h1vo = s1vo = None
+            try:
+                mo1, e1 = _cphf_solve_s1(fx, mo_energy, mo_occ, hs, s1oo.reshape(-1, nocc, nocc), tol, max_cycle,
+                                         level_shift, disk, ftmp)
+            finally:
+                hs = s1oo = None
+                if ftmp is not None:
+                    ftmp.close()
             mo1 = lib.einsum('pq,xqi->xpi', mo_coeff, mo1).reshape(-1, 3, nao, nocc)
             e1 = e1.reshape(-1, 3, nocc, nocc)
             for k in range(ia1 - ia0):
@@ -578,14 +628,108 @@ def _solve_mo1_occ(mf, mo_energy, mo_coeff, mo_occ, h1c, fx, atmlst=None, max_me
                 e1s[ia] = e1[k].reshape(3, nocc, nocc)
             mo1 = e1 = None
             ib += 1
-            logger.info(mf, 'CPHF batch %d (atoms %d-%d of %d): %.1f s, peak RSS %.0f MB', ib, ia0, ia1 - 1, natm,
-                        logger.perf_counter() - t0[1], _peak_rss())
+            logger.info(mf, 'CPHF batch %d (atoms %d-%d of %d%s): %.1f s, %d Krylov cycles, %d trial vectors; memory '
+                        'planned %.0f MB, sampled after the response calls %.0f MB (process peak %.0f MB)', ib, ia0,
+                        ia1 - 1, natm, ', trial vectors on disk' if mem.get('disk') else '',
+                        logger.perf_counter() - t0[1], _KRYLOV_STATS.get('cycles', 0),
+                        _KRYLOV_STATS.get('vectors', 0), mem.get('plan', 0), _CPHF_MEM.get('rss', 0), _peak_rss())
             # in use for the next plan: as at the start plus the solutions written so far
             mem_now += 3 * (ia1 - ia0) * 8. * (nao * nocc + nocc * nocc) / 1e6
             ia0 = ia1
     finally:
         _CPHF_MEM.clear()
     return mo1s, e1s
+
+
+def _cphf_solve_s1(fx, mo_energy, mo_occ, hs, s1oo, tol, max_cycle=50, level_shift=0, disk=False, ftmp=None):
+    '''pyscf.scf.cphf.solve_withs1 from hs = h1 - s1 e_i (nset, nmo, nocc, overwritten) and the occupied rows of
+    s1 (nset, nocc, nocc), the only parts of h1, s1 it uses; the Krylov solve by _krylov (disk: its trial vectors
+    in a temporary file, hs a dataset of the file ftmp, the right-hand sides b there too, the last steps chunk
+    by chunk: in memory only the cycle's arrays).  Same arithmetic.'''
+    occidx = mo_occ > 0
+    viridx = mo_occ == 0
+    e_a = mo_energy[viridx]
+    e_i = mo_energy[occidx]
+    e_ai = 1 / (e_a[:, None] + level_shift - e_i)
+    nset, nmo, nocc = hs.shape
+    if disk:
+        return _cphf_solve_s1_disk(fx, mo_occ, e_i, e_a, e_ai, hs, s1oo, tol, max_cycle, level_shift, ftmp)
+    mo1base = hs.copy()
+    mo1base[:, viridx] *= -e_ai
+    mo1base[:, occidx] = -s1oo * .5
+
+    def vind_vo(mo1):
+        mo1 = mo1.reshape(-1, nmo, nocc)
+        v = fx(mo1).reshape(-1, nmo, nocc)
+        if level_shift != 0:
+            v -= mo1 * level_shift
+        v[:, viridx, :] *= e_ai
+        v[:, occidx, :] = 0
+        return v.reshape(-1, nmo * nocc)
+    _CPHF_STAGE['final'] = False
+    try:
+        mo1 = _krylov(vind_vo, mo1base.reshape(-1, nmo * nocc), tol=tol, max_cycle=max_cycle, hermi=False,
+                      disk=disk)
+    finally:
+        _CPHF_STAGE['final'] = True
+    try:
+        mo1 = mo1.reshape(-1, nmo, nocc)
+        mo1[:, occidx] = mo1base[:, occidx]
+        mo1base = None
+        hs += fx(mo1).reshape(-1, nmo, nocc)
+    finally:
+        _CPHF_STAGE['final'] = False
+    mo1[:, viridx] = hs[:, viridx] / (e_i - e_a[:, None])
+    mo_e1 = hs[:, occidx, :]
+    mo_e1 += mo1[:, occidx] * (e_i[:, None] - e_i)
+    return mo1, mo_e1
+
+
+def _cphf_solve_s1_disk(fx, mo_occ, e_i, e_a, e_ai, hs, s1oo, tol, max_cycle, level_shift, ftmp):
+    '''_cphf_solve_s1 with hs (and b) in the temporary file ftmp, processed CPHF_DISK_CHUNK MB at a time'''
+    occidx = mo_occ > 0
+    viridx = mo_occ == 0
+    nset, nmo, nocc = hs.shape
+    step = max(1, int(CPHF_DISK_CHUNK * 1e6 / (8. * nmo * nocc)))
+    b = ftmp.create_dataset('b', (nset, nmo * nocc), 'f8')
+    for p0 in range(0, nset, step):
+        p1 = min(nset, p0 + step)
+        bb = numpy.asarray(hs[p0:p1])
+        bb[:, viridx] *= -e_ai
+        bb[:, occidx] = -s1oo[p0:p1] * .5
+        b[p0:p1] = bb.reshape(p1 - p0, -1)
+    bb = None
+
+    def vind_vo(mo1):
+        mo1 = mo1.reshape(-1, nmo, nocc)
+        v = fx(mo1).reshape(-1, nmo, nocc)
+        if level_shift != 0:
+            v -= mo1 * level_shift
+        v[:, viridx, :] *= e_ai
+        v[:, occidx, :] = 0
+        return v.reshape(-1, nmo * nocc)
+    _CPHF_STAGE['final'] = False
+    try:
+        mo1 = _krylov(vind_vo, b, tol=tol, max_cycle=max_cycle, hermi=False, disk=True)
+    finally:
+        _CPHF_STAGE['final'] = True
+    try:
+        mo1 = mo1.reshape(-1, nmo, nocc)
+        for p0 in range(0, nset, step):
+            p1 = min(nset, p0 + step)
+            mo1[p0:p1, occidx] = numpy.asarray(b[p0:p1]).reshape(-1, nmo, nocc)[:, occidx]
+        v = fx(mo1).reshape(-1, nmo, nocc)
+    finally:
+        _CPHF_STAGE['final'] = False
+    mo_e1 = numpy.empty((nset, nocc, nocc))
+    for p0 in range(0, nset, step):
+        p1 = min(nset, p0 + step)
+        hc = numpy.asarray(hs[p0:p1])
+        hc += v[p0:p1]
+        mo1[p0:p1, viridx] = hc[:, viridx] / (e_i - e_a[:, None])
+        mo_e1[p0:p1] = hc[:, occidx, :]
+        mo_e1[p0:p1] += mo1[p0:p1, occidx] * (e_i[:, None] - e_i)
+    return mo1, mo_e1
 
 
 def _peak_rss():
@@ -622,6 +766,12 @@ def hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None, mo1=None, mo_
         # inside the Hessian only h1 C_occ is needed (the CP-SCF right-hand sides, h1 . dm1)
         with lib.temporary_env(hessobj, _h1_occ=H1_OCC):
             h1ao = hessobj.make_h1(mo_coeff, mo_occ, None, None, log)
+    h1file = None
+    if (H1_DISK_MIN is not None and isinstance(h1ao, numpy.ndarray) and _is_h1_occ(h1ao, mo_coeff, mo_occ)
+            and h1ao.nbytes > H1_DISK_MIN * mf.max_memory * 1e6 and (mo1 is None or mo_e1 is None)):
+        h1file = lib.H5TmpFile()
+        h1file['h1'] = h1ao
+        h1ao = h1file['h1']
     if mo1 is None or mo_e1 is None:
         mo1, mo_e1 = hessobj.solve_mo1(mo_energy, mo_coeff, mo_occ, h1ao, None, None, max_memory, log)
     nao = mo_coeff.shape[0]
@@ -642,6 +792,8 @@ def hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None, mo1=None, mo_
     S1C = None
     mo1 = numpy.asarray(mo1).reshape(natm * 3, nao * nocc)
     h1 = numpy.asarray(h1ao)
+    if h1file is not None:
+        h1file.close()
     if not _is_h1_occ(h1, mo_coeff, mo_occ):
         h1 = lib.dot(h1.reshape(-1, nao), mocc)               # AO h1 (symmetric) -> h1 C_occ
     h1 = h1.reshape(natm * 3, nao * nocc)
@@ -2257,17 +2409,34 @@ def _fx_chunked(fx, mf, nao, nmo, nocc):
         nb = CPHF_FX_CHUNK
         if nb is None:
             nb = _CPHF_MEM.get('fx')
+            if 'free' in _CPHF_MEM and _CPHF_MEM['free'] is not None:
+                # the trial vectors on disk: what the cycle's arrays of these nset directions leave
+                avail_, per_dir, per_dm, kf_, kp_ = _CPHF_MEM['free']
+                nb = max(nb, int((avail_ - per_dir * nset) / per_dm))
+                if kp_:
+                    _CPHF_MEM['k'] = kf_ + min(nb, nset) * kp_
         if nb is None:
             avail = max(.5 * mf.max_memory, mf.max_memory - lib.current_memory()[0])
             nb = max(1, int(avail * 1e6 / (FX_AO_ARRAYS * 8. * nao * nao)))
         if nb >= nset:
-            return fx(mo1)
+            out = fx(mo1)
+            _sample_rss()
+            return out
         out = numpy.empty((nset, nmo, nocc))
         for i in range(0, nset, nb):
             out[i:i + nb] = numpy.asarray(fx(mo1[i:i + nb])).reshape(-1, nmo, nocc)
+            _sample_rss()
         logger.debug1(mf, 'CPHF response of %d densities in chunks of %d', nset, nb)
         return out
+    if hasattr(fx, "ao_arrays"):
+        fxc.ao_arrays = fx.ao_arrays      # the planner reads it (the lean response holds dm1 and V only)
     return fxc
+
+
+def _sample_rss():
+    '''the largest RSS seen after a response call of the CPHF batch (for the plan-vs-measured line)'''
+    if 'plan' in _CPHF_MEM:
+        _CPHF_MEM['rss'] = max(_CPHF_MEM.get('rss', 0), lib.current_memory()[0])
 
 
 def _df_get_j(with_df, dm):
@@ -2292,6 +2461,8 @@ def _df_get_j(with_df, dm):
     return lib.unpack_tril(vj, 1).reshape(shape)
 
 
+KRYLOV_IMPLICIT_H = True   # _krylov: the subspace matrix from the Gram-Schmidt projections (no A x kept)
+_KRYLOV_STATS = {}          # cycles / trial vectors of the _krylov calls (reset by _solve_mo1_occ per batch)
 KRYLOV_FAST_QR = True   # _krylov: Cholesky QR twice (GEMMs) instead of pyscf's Python-loop Gram-Schmidt
 
 
@@ -2374,8 +2545,53 @@ def _krylov_staged(*args, **kwargs):
         _CPHF_STAGE['final'] = True
 
 
+class _XStore:
+    '''the Krylov trial vectors, block (cycle) by block, in memory or in a temporary HDF5 file (KRYLOV_DISK;
+    read back CPHF_DISK_CHUNK MB of rows at a time)'''
+    def __init__(self, disk=False):
+        self.f = lib.H5TmpFile() if disk else None
+        self.mem = []
+        self.rows = []
+        self.dtype = None
+
+    def append(self, x):
+        if self.dtype is None:
+            self.dtype = x.dtype
+        k = len(self.rows)
+        self.rows.append(x.shape[0])
+        if self.f is None:
+            self.mem.append(x)
+        else:
+            self.f.create_dataset(str(k), data=x)
+
+    def __len__(self):
+        return len(self.rows)
+
+    def chunks(self, k):
+        '''(r0, r1, rows r0:r1 of block k): the whole block in memory, chunks of the file'''
+        n = self.rows[k]
+        if self.f is None:
+            yield 0, n, self.mem[k]
+            return
+        d = self.f[str(k)]
+        step = max(1, int(CPHF_DISK_CHUNK * 1e6 / (d.dtype.itemsize * max(1, d.shape[1]))))
+        for r0 in range(0, n, step):
+            r1 = min(n, r0 + step)
+            yield r0, r1, numpy.asarray(d[r0:r1])
+
+    def close(self):
+        if self.f is not None:
+            self.f.close()
+            self.f = None
+        self.mem = []
+
+
+KRYLOV_DISK = False     # _krylov's trial vectors in a temporary HDF5 file (pyscf's TMPDIR); set per call by the CPHF
+CPHF_DISK_CHUNK = 1000  # MB of trial vectors read back at a time
+
+
 def _krylov(aop, b, x0=None, tol=1e-10, max_cycle=30, dot=numpy.dot, lindep=None, callback=None,
-            hermi=False, max_memory=None, verbose=logger.WARN):
+            hermi=False, max_memory=None, verbose=logger.WARN, disk=None):
     '''pyscf.lib.krylov (Pople's method for (1 + a) x = b, all right-hand sides
     together, converged directions dropped) with the projections onto the trial
     space, the subspace matrix and the solution as GEMMs over the stacked trial
@@ -2388,6 +2604,10 @@ def _krylov(aop, b, x0=None, tol=1e-10, max_cycle=30, dot=numpy.dot, lindep=None
     if isinstance(aop, numpy.ndarray) and aop.ndim == 2:
         return numpy.linalg.solve(aop + numpy.eye(aop.shape[0]), b)
     log = logger.new_logger(verbose=verbose)
+    b_ds = None
+    if not isinstance(b, numpy.ndarray) and hasattr(b, 'shape') and len(b.shape) == 2:
+        b_ds = b            # the right-hand sides in a file: read for the first trial vectors and for x . b
+        b = numpy.asarray(b_ds)
     b = numpy.asarray(b)
     if x0 is not None:
         b = b - (x0 + aop(x0))
@@ -2399,55 +2619,157 @@ def _krylov(aop, b, x0=None, tol=1e-10, max_cycle=30, dot=numpy.dot, lindep=None
     innerprod = list(rmat.diagonal().real ** 2)
     if not innerprod or max(innerprod) < lindep or max(innerprod) < tol ** 2:
         return numpy.zeros_like(b) if x0 is None else x0
-    # the trial vectors and their images once each, as the per-cycle blocks (no stacked copies: 3 natm
-    # right-hand sides of nvir nocc each, 69 GB per copy for Trp-cage / def2-SVP)
-    xs = []
+    # the trial vectors once each, as the per-cycle blocks (no stacked copies: 3 natm right-hand sides of
+    # nmo nocc each, 69 GB per copy for Trp-cage / def2-SVP).  KRYLOV_IMPLICIT_H: their images A x are not
+    # kept; the subspace matrix h_kj = <x_k, A x_j> is filled as the cycles go: for k <= j it is the
+    # Gram-Schmidt projection <A x_j, x_k> computed anyway, for the next block k = j + 1 one more product
+    # while A x_j is at hand, and for k > j + 1 only the dropped part reaches it (A x_j lies in the span of
+    # x_0 .. x_j+1 and of the
+    # directions the trial vectors drop (converged rows, linear dependence), whose contributions to the later
+    # x_k are added from an orthonormal basis of them, at most one vector per right-hand side in all).
+    # pyscf's explicit h differs from it at the round-off / orthogonality level only.  Halves the subspace.
+    implicit = KRYLOV_IMPLICIT_H and not callable(callback)
+    if disk is None:
+        disk = KRYLOV_DISK
+    xs = _XStore(disk and implicit)
+    gb = [] if b_ds is not None else None     # x_k . b per block (b from the file, as the blocks come)
+    if gb is not None:
+        b = None
     ax = []
+    hblk = {}       # (k, j) -> <x_k, A x_j> blocks (implicit)
     max_cycle = min(max_cycle, ndim)
+    drops = []      # (cycle j, orthonormal basis of the dropped part of A x_j's residual, its coefficients)
     for cycle in range(max_cycle):
         axt = aop(x1).reshape(-1, ndim)
         xs.append(x1)
-        ax.append(axt)
+        if gb is not None:
+            nb_ = b_ds.shape[0]
+            step = max(1, int(CPHF_DISK_CHUNK * 1e6 / (8. * ndim)))
+            gk = numpy.empty((x1.shape[0], nb_))
+            for p0 in range(0, nb_, step):
+                gk[:, p0:p0 + step] = lib.dot(x1.conj(), numpy.asarray(b_ds[p0:p0 + step]).T)
+            gb.append(gk)
+        if implicit and drops:
+            # <x_k, A x_j> for k >= j + 2: only the dropped directions of A x_j's residual reach x_k
+            k = len(xs) - 1
+            for jd, basis, coef in drops:
+                if jd <= k - 2:
+                    blk_ = lib.dot(lib.dot(x1.conj(), basis.T), coef.T)
+                    hblk[k, jd] = hblk[k, jd] + blk_ if (k, jd) in hblk else blk_
+        if not implicit:
+            ax.append(axt)
         if callable(callback):
-            callback(cycle, list(numpy.vstack(xs)), list(numpy.vstack(ax)))
-        # x1 = axt - sum_i <axt, xs_i> / <xs_i, xs_i> xs_i (classical Gram-Schmidt), block by block
+            callback(cycle, list(numpy.vstack(xs.mem)), list(numpy.vstack(ax)))
+        # x1 = axt - sum_i <axt, xs_i> / <xs_i, xs_i> xs_i (classical Gram-Schmidt), block by block (on disk:
+        # chunk by chunk of rows, each read once per pass)
+        j = len(xs) - 1
         x1 = axt.copy()
         k0 = 0
-        for xb in xs:
-            k1 = k0 + xb.shape[0]
-            w = lib.dot(axt, xb.conj().T) / numpy.asarray(innerprod[k0:k1])[None, :]
-            lib.dot(w, xb, -1, x1, 1)
-            k0 = k1
-        axt = None
+        for k in range(len(xs)):
+            nk = xs.rows[k]
+            ip = numpy.asarray(innerprod[k0:k0 + nk])
+            wk = numpy.empty((axt.shape[0], nk), dtype=numpy.result_type(axt, xs.dtype)) if implicit else None
+            for r0, r1, xb in xs.chunks(k):
+                w = lib.dot(axt, xb.conj().T)
+                if implicit:
+                    wk[:, r0:r1] = w
+                w /= ip[None, r0:r1]
+                lib.dot(w, xb, -1, x1, 1)
+            if implicit:
+                hblk[k, j] = wk.T.copy()         # = x_k^* (A x_j)^T, as pyscf's h
+            wk = None
+            k0 += nk
+        if implicit:
+            # the second Gram-Schmidt pass: the implicit h assumes trial vectors orthogonal to working
+            # precision (one classical pass leaves the residuals of nearly converged directions,
+            # norms down to ~1e-6 of the images, measurably out of the earlier space)
+            k0 = 0
+            for k in range(len(xs)):
+                nk = xs.rows[k]
+                ip = numpy.asarray(innerprod[k0:k0 + nk])
+                for r0, r1, xb in xs.chunks(k):
+                    w = lib.dot(x1, xb.conj().T)
+                    w /= ip[None, r0:r1]
+                    lib.dot(w, xb, -1, x1, 1)
+                k0 += nk
+        res = x1 if implicit else None
         x1, rmat = _qr_fast(x1, dot)
         x1 *= rmat.diagonal()[:, None]
         innerprod1 = rmat.diagonal().real ** 2
         max_innerprod = max(innerprod1, default=0.)
         log.debug('krylov cycle %d  r = %g', cycle, max_innerprod ** .5)
         if max_innerprod < lindep or max_innerprod < tol ** 2:
+            axt = None
             break
         mask = (innerprod1 > lindep) & (innerprod1 > tol ** 2)
-        x1 = x1[mask]
-        innerprod.extend(innerprod1[mask])
+        if mask.all():
+            pass
+        elif xs.f is not None:
+            # compacted in place (no copy of the block)
+            kept = numpy.nonzero(mask)[0]
+            for t_, i_ in enumerate(kept):
+                if t_ != i_:
+                    x1[t_] = x1[i_]
+            x1 = x1[:kept.size]
+        else:
+            x1 = x1[mask]
+        innerprod1 = innerprod1[mask]
+        innerprod.extend(innerprod1)
+        if implicit:
+            hblk[j + 1, j] = lib.dot(x1.conj(), axt.T)
+            # the part of the residual the next trial vectors drop (converged rows, linear dependence):
+            # D = res - its projection on x1, kept as an orthonormal basis and the coefficients
+            rmax2 = numpy.einsum('ij,ij->i', res.conj(), res).real.max()
+            dres = res          # in place: res is not needed after
+            lib.dot(lib.dot(res, x1.conj().T) / innerprod1[None, :], x1, -1, dres, 1)
+            dg = lib.dot(dres.conj(), dres.T)
+            ev, u = scipy.linalg.eigh(dg)
+            # above the round-off of the projection (1e-13 of the largest residual)
+            keep = ev > 1e-26 * rmax2
+            if keep.any():
+                sv = numpy.sqrt(ev[keep])
+                basis = lib.dot(u[:, keep].T.conj(), dres) / sv[:, None]   # (m, ndim), orthonormal rows
+                drops.append((j, basis, u[:, keep] * sv[None, :]))         # dres = coef @ basis
+            dres = dg = None
+        res = None
+        axt = None
     else:
         raise RuntimeError("Krylov solver failed to converge.")
-    off = numpy.cumsum([0] + [xb.shape[0] for xb in xs])
+    _KRYLOV_STATS['cycles'] = _KRYLOV_STATS.get('cycles', 0) + cycle + 1
+    _KRYLOV_STATS['vectors'] = _KRYLOV_STATS.get('vectors', 0) + sum(xs.rows)
+    off = numpy.cumsum([0] + xs.rows)
     nx = off[-1]
-    h = numpy.empty((nx, nx), dtype=xs[0].dtype)
-    for i, xb in enumerate(xs):
-        for j, ab in enumerate(ax):
-            h[off[i]:off[i + 1], off[j]:off[j + 1]] = lib.dot(xb.conj(), ab.T)
-    ax = None
+    h = numpy.zeros((nx, nx), dtype=xs.dtype)
+    if implicit:
+        for (k, j), blk_ in hblk.items():
+            if k < len(xs):
+                h[off[k]:off[k + 1], off[j]:off[j + 1]] = blk_
+        hblk = None
+    else:
+        for i, xb in enumerate(xs.mem):
+            for j, ab in enumerate(ax):
+                h[off[i]:off[i + 1], off[j]:off[j + 1]] = lib.dot(xb.conj(), ab.T)
+        ax = None
     if hermi:
         h = numpy.tril(h) + numpy.tril(h, -1).conj().T
     h[numpy.diag_indices_from(h)] += innerprod
-    bT = numpy.ascontiguousarray(b.reshape(-1, ndim).T)
-    g = numpy.vstack([lib.dot(xb.conj(), bT) for xb in xs])
-    bT = None
+    if gb is not None:
+        g = numpy.vstack(gb)
+        gb = None
+    else:
+        b2 = b.reshape(-1, ndim)
+        bT = numpy.ascontiguousarray(b2.T) if xs.f is None else None
+        g = numpy.empty((nx, b2.shape[0]), dtype=numpy.result_type(xs.dtype, b2))
+        for k in range(len(xs)):
+            for r0, r1, xb in xs.chunks(k):
+                g[off[k] + r0:off[k] + r1] = lib.dot(xb.conj(), bT if bT is not None else b2.T)
+        bT = None
     c = numpy.linalg.solve(h, g)
-    x = numpy.zeros((c.shape[1], ndim), dtype=numpy.result_type(c, xs[0]))
-    for i, xb in enumerate(xs):
-        lib.dot(numpy.ascontiguousarray(c[off[i]:off[i + 1]].T), xb, 1, x, 1)
+    x = numpy.zeros((c.shape[1], ndim), dtype=numpy.result_type(c, xs.dtype))
+    for k in range(len(xs)):
+        for r0, r1, xb in xs.chunks(k):
+            lib.dot(numpy.ascontiguousarray(c[off[k] + r0:off[k] + r1].T), xb, 1, x, 1)
+    xs.close()
     if b1d:
         x = x[0]
     if x0 is not None:
@@ -2876,7 +3198,7 @@ class _MultiJKCPHF:
                     fx = gen_vind(self.base, mo_coeff, mo_occ)
                 fx = _fx_chunked(fx, self.base, mo_coeff.shape[0], mo_coeff.shape[1], int((mo_occ > 0).sum()))
                 _CPHF_STAGE['final'] = False
-                if (isinstance(h1ao_or_chkfile, numpy.ndarray)
+                if ((isinstance(h1ao_or_chkfile, numpy.ndarray) or hasattr(h1ao_or_chkfile, 'id'))
                         and _is_h1_occ(h1ao_or_chkfile, mo_coeff, mo_occ)):
                     return _solve_mo1_occ(self.base, mo_energy, mo_coeff, mo_occ, h1ao_or_chkfile, fx, atmlst,
                                           max_memory, max_cycle=self.max_cycle, level_shift=self.level_shift)
