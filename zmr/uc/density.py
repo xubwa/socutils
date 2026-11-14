@@ -56,7 +56,9 @@ def ccvv(ctx, kramers=True):
         e = 2 * e
         dcc = dcc + th_c @ dcc.conj() @ th_c.conj().T
         dvv = dvv + th_v @ dvv.conj() @ th_v.conj().T
-    return e, dcc, dvv
+    # the kernel's core block is sum conj(t_i) t_i'; dE/dF_ii' is its transpose (a hole
+    # index: [F, i] = -sum_j F_ij j), which matters for complex orbitals
+    return e, dcc.T, dvv
 
 
 def ccvv_reference(ctx):
@@ -86,7 +88,7 @@ def ccvv_reference(ctx):
         for i in range(nc):
             if i != j:
                 dvv += 0.5 * la.gemm(t[i].conj(), t[i], 'N', 'T')
-    return e, dcc, dvv
+    return e, dcc.T, dvv
 
 
 # ----------------------------------------------------------------------
@@ -315,7 +317,8 @@ def class_reference(pt, ctx, name, state=0, rho=None):
         d = {'aa': _active_block(pt, pclass, b, gj.sum(axis=0),
                                  [(numpy.trace(g), j) for g, j in zip(gj, states)])}
         if ncore:
-            d['cc'] = _herm(-fv * numpy.einsum('xijabk,xljabk->il', l.conj(), c, optimize=True))
+            # a hole index: dE/dF_il = -sum c_i conj(l_l)  ([F, i] = -sum_j F_ij j)
+            d['cc'] = _herm(-fv * numpy.einsum('xijabk,xljabk->li', l.conj(), c, optimize=True))
         if nvirt:
             d['vv'] = _herm(fc * numpy.einsum('xijabk,xijdbk->ad', l.conj(), c, optimize=True))
         h = 0.5 * (l + r)
@@ -451,7 +454,7 @@ def cavv(pt, ctx, state=0, max_memory=4000):
         rows = numpy.ascontiguousarray(c.transpose(1, 0, 2, 3)).reshape(nc, -1)
         dcc -= 0.5 * la.gemm(rows.conj(), rows, 'N', 'T')
         del c, rows, flat
-    return e, {'cc': dcc, 'vv': dvv, 'aa': _active_block(pt, pclass, b, g)}
+    return e, {'cc': dcc.T, 'vv': dvv, 'aa': _active_block(pt, pclass, b, g)}
 
 
 def ccav(pt, ctx, state=0, max_memory=4000):
@@ -498,4 +501,4 @@ def ccav(pt, ctx, state=0, max_memory=4000):
         rows = numpy.ascontiguousarray(c.transpose(1, 0, 2, 3)).reshape(nc, -1)
         dcc -= la.gemm(rows.conj(), rows, 'N', 'T')
         del c, rows, flat
-    return e, {'cc': dcc, 'vv': dvv, 'aa': _active_block(pt, pclass, b, g)}
+    return e, {'cc': dcc.T, 'vv': dvv, 'aa': _active_block(pt, pclass, b, g)}

@@ -57,7 +57,7 @@ def ccvv(ctx):
     if res is None:
         raise NotImplementedError('needs libzmr')
     e, dcc, dvv, gam = res
-    return e, dcc, dvv, explicit_vc(ctx.eris, gam)
+    return e, dcc.T, dvv, explicit_vc(ctx.eris, gam)      # dcc.T: zmr.uc.density.ccvv
 
 
 # ----------------------------------------------------------------------
@@ -212,7 +212,8 @@ def _external_pass(name, pt, ctx, gams, state, max_memory, rho):
         _add(gams[lv], ('v', 'a') if name == 'cavv' else ('a', 'c'), g_x[lv])
         g = gj[lv].sum(axis=0)
         traces = [(numpy.trace(y), j) for y, j in zip(gj[lv], states)]
-        blocks = {'cc': _herm(dcc[lv]), 'vv': _herm(dvv[lv]),
+        # a hole index: the transpose of sum conj(l_i) c_i' (see zmr.uc.density.ccvv)
+        blocks = {'cc': _herm(dcc[lv].T), 'vv': _herm(dvv[lv]),
                   'aa': density._active_block(pt, pclass, b, g, traces)}
         res.append((blocks, b, g, traces))
     return res, acc

@@ -268,3 +268,113 @@ def gradient(pt, state=0, classes_=None, fock='jk', rho=None):
         grad = eris.h1.real @ (d + d.T)
     grad = grad + numpy.einsum('Prs,Psq->rq', bmo, gmat + gmat.transpose(0, 2, 1))
     return grad, numpy.asarray(qc.u)
+
+
+# ----------------------------------------------------------------------
+# complex orbitals (spinors): the general form
+
+def _w_blocks_holo(pt, ctx, pclass, state=0, rho=None):
+    '''As _w_blocks with W the holomorphic derivative dE/dv[e, X] (E real, written with
+    v and conj(v)): -1/2 sum_J conj(l^J + r^J) t^J (half of the real-orbital W).'''
+    b, mu, t, s, rho_, states = density.model_spaces(pt, pclass, state, rho)
+    nj = len(states)
+    out = []
+    gj = numpy.zeros((nj, len(mu), len(mu)), dtype=numpy.complex128)
+    for n, (delta, v) in enumerate(pclass.blocks(ctx)):
+        _, c, l, r = density.pair_amplitudes(delta, v, mu, t, s, rho_)
+        out.append((n, -0.5 * sum((l[j] + r[j]).conj() @ t[j] for j in range(nj))))
+        for j in range(nj):
+            gj[j] += c[j].T @ l[j].conj()
+    return out, b, gj.sum(axis=0), [(numpy.trace(x), j) for x, j in zip(gj, states)]
+
+
+def _scatter_c(name, ctx, blocks):
+    '''_scatter for complex W (complex arrays A).'''
+    # the placement of _scatter for the real and the imaginary parts
+    labels, ar = _scatter(name, ctx, [(n, w.real) for n, w in blocks])
+    _, ai = _scatter(name, ctx, [(n, w.imag) for n, w in blocks])
+    return labels, ar + 1j * ai
+
+
+def _active_two_body_holo(pt, pclass, b, g, x4, sp, traces):
+    '''Holomorphic dE/d(tu|vw) of H_act in the first-order space and in the zeroth-order
+    energies: 1/4 [sum_m w_m Gamma(b y_m) - sum_J tr(g^J) Gamma(Psi_J)].'''
+    from socutils.zmr.active import rdm as active_rdm
+    act = pt.active_space
+    ntarget = act.target(pt.nelec, pclass.dn)
+    w, y = numpy.linalg.eigh(0.5 * (g + g.conj().T))
+    keep = abs(w) > 1e-14 * max(1.0, float(abs(w).max()) if len(w) else 1.0)
+    na = act.norb
+    d2 = numpy.zeros((na,) * 4, dtype=numpy.complex128)
+    if keep.any() and ntarget >= 2:
+        vecs = numpy.ascontiguousarray(b @ y[:, keep])
+        for m, wm in enumerate(w[keep]):
+            d2 += wm * active_rdm.make_rdm(act, vecs[:, m], ntarget, 2, bra=0, ket=0)
+    if pt.nelec >= 2:
+        for tr, j in traces:
+            d2 -= tr * active_rdm.make_rdm(act, pt.civecs[:, [j]], pt.nelec, 2, bra=0, ket=0)
+    a = sp.slice('a')
+    x4[a, a, a, a] += 0.25 * d2
+
+
+def _fock_m(eris, d_f, gamma, fock):
+    '''M of sum_pq d_f[p, q] F[p, q], F = h + W[gamma^T] (W[B] = C^+ V[C B C^+] C, gamma
+    fixed in the MO basis): F^T D - D F^T + (G Y - Y G)^T, G = gamma^T, Y = W[D^T].'''
+    c = eris.mo_coeff
+    big_g = numpy.asarray(gamma).T
+    y = c.conj().T @ eris.veff_fn(c @ numpy.asarray(d_f).T @ c.conj().T) @ c
+    return fock.T @ d_f - d_f @ fock.T + (big_g @ y - y @ big_g).T
+
+
+def gradient_general(pt, state=0, rho=None, names=None):
+    '''(M, u): dE2 = sum_rq M[r, q] K[r, q] for orbitals C (1 + K) (K anti-Hermitian, the
+    quasi-canonical orbitals of pt; u their rotation from the input orbitals), complex
+    orbitals allowed; at fixed CI vectors.  Python reference with four-index arrays.
+
+    dE = sum D dh + sum_P G_P dB_P with dh = [h, K], dB_P = [B_P, K]:
+    M = (one-body: through the generalized and the core Fock matrices) +
+        sum_P (B_P^T G_P - G_P B_P^T),  G_P,pq = sum_rs (X + X^swap)_pqrs B_P,rs,
+    X = X_h + X_h^dagger the derivative with respect to (pq|rs), X_h holomorphic and
+    X_h^dagger[q, p, s, r] = conj(X_h[p, q, r, s]) (the entries of conj(v)).
+    In the parameters of zmcscf (K[idx] = x, K -= K^+), dE = Re<conj(M_pq) - M_qp, x>.'''
+    from socutils.zmr.uc import classes as uc_classes
+    qc = pt.quasi_canonical
+    eris = qc.eris
+    sp = eris.spaces
+    ctx = density.context(pt)
+    n = sp.nmo
+    x4 = numpy.zeros((n,) * 4, dtype=numpy.complex128)
+    d_gen = numpy.zeros((n, n), dtype=numpy.complex128)
+    d_core = numpy.zeros((n, n), dtype=numpy.complex128)
+    for name in names or ('ccvv',) + tuple(density._LABELS):
+        pclass = uc_classes.CLASS_BY_NAME[name]
+        if name == 'ccvv':
+            _, dcc, dvv = density.ccvv(ctx, kramers=False)
+            d_gen += density.assemble(sp, {'cc': dcc, 'vv': dvv})
+            # E = -sum_{i<j, a<b} |v|^2 / Delta: holomorphic dE/dv = -conj(v) / Delta
+            blocks = [(k, -v.conj() / delta[:, None])
+                      for k, (delta, v) in enumerate(pclass.blocks(ctx))]
+            _add_antisym(x4, sp, *_scatter_c(name, ctx, blocks))
+            if rho is not None:
+                d_aa, b, g, traces = density.ccvv_active(pt, ctx, rho)
+                d_core += density.assemble(sp, {'aa': d_aa})
+                _active_two_body_holo(pt, pclass, b, g, x4, sp, traces)
+            continue
+        _, dblk = density.class_reference(pt, ctx, name, state, rho)
+        for lab, x in dblk.items():
+            target = d_gen if lab in ('cc', 'vv') else d_core
+            target += density.assemble(sp, {lab: x})
+        blocks, b, g, traces = _w_blocks_holo(pt, ctx, pclass, state, rho)
+        _add_antisym(x4, sp, *_scatter_c(name, ctx, blocks))
+        _active_two_body_holo(pt, pclass, b, g, x4, sp, traces)
+    x4 = x4 + x4.transpose(1, 0, 3, 2).conj()
+    bmo = mo_vectors(eris)
+    gam_gen = numpy.zeros((n, n), dtype=numpy.complex128)
+    gam_gen[sp.slice('c'), sp.slice('c')] = numpy.eye(sp.ncore)
+    gam_gen[sp.slice('a'), sp.slice('a')] = numpy.asarray(pt.gamma)
+    gam_core = numpy.zeros((n, n), dtype=numpy.complex128)
+    gam_core[sp.slice('c'), sp.slice('c')] = numpy.eye(sp.ncore)
+    m = _fock_m(eris, d_gen, gam_gen, qc.fock) + _fock_m(eris, d_core, gam_core, ctx.fcore)
+    gp = numpy.einsum('pqrs,Prs->Ppq', x4 + x4.transpose(2, 3, 0, 1), bmo)
+    m += (numpy.einsum('Pqp,Pqr->pr', bmo, gp) - numpy.einsum('Ppq,Prq->pr', gp, bmo))
+    return m, numpy.asarray(qc.u)
