@@ -220,10 +220,7 @@ np1 vs np4 energies agree to 4e-7 with the symmetric grid; with symm_grid off th
 residuals of equivalent points are broken by rounding, another equally valid point set).
 
 Charged cells: `pbc/charged.py` (`charged.correct(mf)`, q^2 nu_M / 2 added to energy_nuc; pyscf.pbc SCF objects
-and spinor_scf.periodic / SpinorRSDF), test `pbc/test/test_charged.py`.  pyscf's gamma-point GHF + GDF fails
-with UFuncOutputCastingError when the density's spin blocks are low rank with an imaginary part below
-cell.precision (df_jk.get_jk: real vk, complex exxdiv correction); one-line fix prepared in
-`~/apps/pyscf-upstream-fix` (branch `fix-exxdiv-g0-complex-dm`), sent upstream as pyscf/pyscf PR #3640.
+and spinor_scf.periodic / SpinorRSDF), test `pbc/test/test_charged.py`.
 
 Caveats: BLAS thread count alone moves E_K by ~1e-6 Eh (ISDF cut 1e-10), so compare runs at equal
 thread counts.  The uniform-grid cutoff decides ~1e-4 Eh in Eu cells (smooth h shells; EuOCl +4.6e-4 at
@@ -239,10 +236,6 @@ Branches and pull requests
 - PR #11 (`pbc-thc-label-ft`, 3 commits on master 995e077): the cached separable per-label aux FT with the OpenMP
   kernels `SOCTHCft_label` / `SOCTHCphase_mul`, and the 2026-11 notes of this file.  After merging: `git pull` in
   `~/apps/socutils-git` and `make` on a compute node (`lib/libsocthc.so` changes).
-- pyscf/pyscf PR #3640 (fork branch `xubwa:fix-exxdiv-g0-complex-dm`, clone `~/apps/pyscf-upstream-fix`): one
-  line in `pbc/df/df_jk.py:get_jk` and the test `test_k_gamma_low_rank_complex_dm`.  The local `~/apps/pyscf`
-  (2.13.1) is older than upstream's fix of the GHF alpha-beta exchange block (#3524) and still has a debug print in
-  `pbc/scf/ghf.py`; updating it is the owner's call.
 - Working tree of this work: `~/apps/socutils-merge-env/socutils` (import path `~/apps/socutils-merge-env`), on
   `pbc-thc-label-ft`; `~/apps/socutils-git` is master at 4e56f48 with its libraries built.  Worktrees
   `~/apps/socutils-charged-env` (`pbc-charged-cell`) and `~/apps/socutils-git-pbc-env` (`ccr-17f4d4cb-lw45cf`)
