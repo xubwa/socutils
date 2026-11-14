@@ -128,8 +128,9 @@ class QAccumulator:
         ntarget = act.target(pt.nelec, pclass.dn)
         nl, nj, nx = len(self.rhos), self.nj, self.nx
         pf = self.phi.reshape(nj * nx, -1)
-        q_s = 0.5 * (self.q_s + self.q_s.transpose(0, 2, 1))
-        q_k = 0.5 * (self.q_k + self.q_k.transpose(0, 2, 1))
+        # Re sum_AB Q_AB dS_AB = 2 Re sum_A <dPsi_J_A|O_A^+ (Q_h phi)_A>, Q_h = (Q + Q^+) / 2
+        q_s = 0.5 * (self.q_s + self.q_s.transpose(0, 2, 1).conj())
+        q_k = 0.5 * (self.q_k + self.q_k.transpose(0, 2, 1).conj())
         w_s = (q_s @ pf).reshape(nl, nj, nx, -1)
         w_k = (q_k @ pf).reshape(nl, nj, nx, -1)
         out = numpy.zeros((nl, nj, pt.civecs.shape[0]), dtype=numpy.complex128)
@@ -190,7 +191,7 @@ def ci_gradient_states(pt, rho, names=None):
                 if lab in dblk:
                     d_gen = d_gen + density.assemble(sp, {lab: dblk[lab]})
         g += class_g(pt, ctx, name, rho=rho)
-    g += fock_g(pt, ctx, d_gen.real, states=range(nstate))
+    g += fock_g(pt, ctx, d_gen, states=range(nstate))
     return g
 
 
@@ -213,7 +214,7 @@ def ci_gradient(pt, route, state=0, names=None):
             if lab in dblk:
                 d_gen = d_gen + density.assemble(sp, {lab: dblk[lab]})
         g += class_g(pt, ctx, name, state)
-    g += fock_g(pt, ctx, d_gen.real, state)
+    g += fock_g(pt, ctx, d_gen, state)
     idx = sector_index(pt.active_space.norb // 2, route.nelec_ab)
     gx = g[idx].real
     c = route.ci

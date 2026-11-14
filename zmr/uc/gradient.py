@@ -318,9 +318,9 @@ def derivatives(pt, state=0, max_memory=4000, rho=None):
         g_f, w_gen = og.fock_part(eris, d_gen[lv].real, gam_gen, fock=qc.fock, return_w=True)
         grad[lv] += g_f + og.fock_part(eris, d_core[lv].real, gam_core, fock=ctx.fcore)
         if rho is None:
-            g_ci[lv, 0] += cg.fock_g(pt, ctx, d_gen[lv].real, state, w=w_gen)
+            g_ci[lv, 0] += cg.fock_g(pt, ctx, d_gen[lv], state, w=w_gen)
         else:
-            g_ci[lv] += cg.fock_g(pt, ctx, d_gen[lv].real, w=w_gen, states=range(nstate))
+            g_ci[lv] += cg.fock_g(pt, ctx, d_gen[lv], w=w_gen, states=range(nstate))
         out.append({'d': d_gen[lv] + d_core[lv], 'grad': grad[lv],
                     'g_ci': g_ci[lv, 0] if rho is None else g_ci[lv], 'u': numpy.asarray(qc.u)})
     return out if levels else out[0]
