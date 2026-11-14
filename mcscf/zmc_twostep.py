@@ -77,7 +77,10 @@ def gen_g_hop_exact(mc, mo, casdm1, casdm2, eris):
          + numpy.einsum('tu,ut', (h + vc)[act, act], dm)
          + 0.5 * numpy.vdot(cd_aa.conj(), t0.reshape(naux, -1))).real
 
-    def hop(x):
+    def hop(x, parts=False):
+        '''H x; parts: also {'k', 'h1', 'vc1', 'l1_aa'}, the rotation and the first-order
+        change of h, of the core potential and of the active Cholesky vectors L_P,tu
+        (zmc_response: the derivative of the active Hamiltonian).'''
         _t = time.perf_counter()
         k = mc.unpack_uniq_var(x)
         jkc, jka, cd1 = eris.rotated_pass(k, dm)          # cd1[P, u, p] = sum_m L_P,pm k_mu
@@ -94,6 +97,8 @@ def gen_g_hop_exact(mc, mo, casdm1, casdm2, eris):
         a1[:, act] += half_fock(cd1, t0) + half_fock(cd_up2, t1)
         out = mc.pack_uniq_var(a1 - a1.conj().T - 0.5 * (lib.dot(g_mat, k) - lib.dot(k, g_mat)))
         _tick('exact H x: MO assembly', _t)
+        if parts:
+            return out, {'k': k, 'h1': h1, 'vc1': vc1, 'l1_aa': l1_aa}
         return out
 
     return e, mc.pack_uniq_var(g_mat), hop
