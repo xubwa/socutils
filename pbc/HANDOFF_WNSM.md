@@ -207,8 +207,9 @@ all N_mu recomputed per mu block (74 blocks of 173, set by the memory per rank);
 Tried and dropped for the Gram-column recompute (Eu:YSO, 4 nodes): Gram "superblocks" decoupled from the FFT
 blocks fit only ~2x larger blocks in the 25 GB left per rank (xi -1300 s, ~15% of the build, and more aux FT
 passes); screening the smooth AOs per grid-row chunk gives nothing (92-95% of them nonzero on every chunk of
-500-9655 rows).  An 8-node build test (`run_yso_buildtest8.sbatch`, `yso_buildtest8_ranks/`) was queued at the
-hand-off to check the 1 / ranks^2 fall of xi.
+500-9655 rows).  An 8-node build test (`run_yso_buildtest8.sbatch`) to check the 1 / ranks^2 fall of xi was
+cancelled before its V, A stream: one rank on node c514 ran ~10x slow and every other rank waited (point selection
+4359 s instead of ~200 s); rerun with `--exclude=c514`.
 
 quartz primitive cell (9 atoms, nao 186, mesh 102x102x117; one node, 24 cores, symmetric THC): build 102 s on
 4 ranks (261 s on 1 rank x 24 threads); per SCF cycle K 0.5 s, GAPW J 2.35 s (first cycle 8 s: atomic-grid
@@ -222,13 +223,62 @@ Charged cells: `pbc/charged.py` (`charged.correct(mf)`, q^2 nu_M / 2 added to en
 and spinor_scf.periodic / SpinorRSDF), test `pbc/test/test_charged.py`.  pyscf's gamma-point GHF + GDF fails
 with UFuncOutputCastingError when the density's spin blocks are low rank with an imaginary part below
 cell.precision (df_jk.get_jk: real vk, complex exxdiv correction); one-line fix prepared in
-`~/apps/pyscf-upstream-fix` (branch `fix-exxdiv-g0-complex-dm`), not yet sent upstream.
+`~/apps/pyscf-upstream-fix` (branch `fix-exxdiv-g0-complex-dm`), sent upstream as pyscf/pyscf PR #3640.
 
 Caveats: BLAS thread count alone moves E_K by ~1e-6 Eh (ISDF cut 1e-10), so compare runs at equal
 thread counts.  The uniform-grid cutoff decides ~1e-4 Eh in Eu cells (smooth h shells; EuOCl +4.6e-4 at
 precision 1e-10, mesh 85x85x143); a mesh scan (`euocl/wabl_M88..M93`) was running at the hand-off.
 Validation scripts: `pbc/bench/thc_tests/` (`quartz_scf_mpi.py`, `fixed_density_mpi.py`,
 `w_nsm_scf_density.py`, `symm_pivots_check.py`, `gram_conditioning.py`, `pivot_residual_curve.py`).
+
+## State at the hand-off of 2026-11-14
+
+Branches and pull requests
+- socutils master (github.com/xubwa/socutils) has the periodic THC + MPI work, charged cells and this file up to
+  4e56f48, with the first (slow) analytic per-label aux FT.
+- PR #11 (`pbc-thc-label-ft`, 3 commits on master 995e077): the cached separable per-label aux FT with the OpenMP
+  kernels `SOCTHCft_label` / `SOCTHCphase_mul`, and the 2026-11 notes of this file.  After merging: `git pull` in
+  `~/apps/socutils-git` and `make` on a compute node (`lib/libsocthc.so` changes).
+- pyscf/pyscf PR #3640 (fork branch `xubwa:fix-exxdiv-g0-complex-dm`, clone `~/apps/pyscf-upstream-fix`): one
+  line in `pbc/df/df_jk.py:get_jk` and the test `test_k_gamma_low_rank_complex_dm`.  The local `~/apps/pyscf`
+  (2.13.1) is older than upstream's fix of the GHF alpha-beta exchange block (#3524) and still has a debug print in
+  `pbc/scf/ghf.py`; updating it is the owner's call.
+- Working tree of this work: `~/apps/socutils-merge-env/socutils` (import path `~/apps/socutils-merge-env`), on
+  `pbc-thc-label-ft`; `~/apps/socutils-git` is master at 4e56f48 with its libraries built.  Worktrees
+  `~/apps/socutils-charged-env` (`pbc-charged-cell`) and `~/apps/socutils-git-pbc-env` (`ccr-17f4d4cb-lw45cf`)
+  are superseded by master and can be removed.
+
+Jobs queued (bigmem, account `lcheng24_bigmem`; scripts and rank logs in
+`/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/`)
+- 33136408 `run_yso_buildtest_bm170.sbatch` -> `yso_buildtest_bm170_ranks/out.*`: Eu:YSO build on 2 nodes x 4 ranks
+  x 12 threads with 170 GB per rank (mu blocks of 1232, the Alltoallv count limit `size * 154`, instead of 173).
+- 33136409 `run_yso_buildtest_bm50.sbatch` -> `yso_buildtest_bm50_ranks/out.*`: the same with 50 GB per rank,
+  55 min limit (first blocks only), the reference on the same hardware.
+- What to read off: xi per mu point (the cumulative `xi` of the `mu block` lines over the mu done).  Expected
+  ratio 170 GB / 50 GB ~0.4: the Gram columns are regenerated 11 instead of 74 times (~450 instead of ~3000 s
+  at 8 ranks x 24 threads), the Ginv and V GEMMs (~1300 s) stay.  If it holds, raise the budget per rank in
+  production (the 180 GB nodes take 80 GB per rank at 2 ranks per node: 74 -> ~33 blocks).
+
+Build, where the time goes now (Eu:YSO, 4 nodes x 2 ranks, V, A 9909 s; numbers above)
+- xi 4000-4400 s per rank, ~70% of it the Gram-column recompute: falls with the memory per rank (blocks) and as
+  1 / ranks^2; not with superblocks (~15%) or AO screening (none).  Above ~170 GB per rank at 8 ranks the block
+  is capped by the 2^31 Alltoallv count; lifting it (row datatypes, Alltoallw) is worth ~330 s more.
+- Waiting on other ranks, 180-1150 s per rank but only ~6% of the wall time (sum over the three barriers of
+  slowest minus mean): the A stage ~300 s (the G-chunk cost model still charges the atom phases at their old
+  numpy cost: ranks 0 and 7 take 1130-1210 s of A GEMM, the others 560-700), node speed in xi ~215 s (same rows
+  per rank, two nodes 7-8% faster), FFT ~75 s.
+- Not done: re-cut the G chunks from the measured time per chunk of the first mu block; log the wait per barrier;
+  Gram pseudo-inverse (eigh of N_mu x N_mu) on rank 0 only (now on every rank, only rank 0's is used).
+- Per cycle on small cells J dominates (quartz: J 2.35 s vs K 0.5 s); `GAPWJ._vgrid_at` filters the whole 2x
+  oversampled grid every cycle (0.55 s of 3.05 s on one rank) and could do it in the boxes around the atoms.
+
+Rules of thumb learnt
+- Time a kernel at the production thread count (wall), not by CPU time: the numpy analytic FT was "a fraction of
+  ft_ao" in CPU time and 2-3x slower in wall time at 24 threads.
+- A cache that does not fit is a recompute per G chunk and mu block (Eu:YSO: 136 x 74 per rank): check the cache
+  line of the log (`aux FT cached for n of m own G chunks`).
+- A step that is slow on all ranks at once: compare the CPU time of the ranks (`top` on the nodes); the others
+  spin in MPI while one slow rank computes.
 
 ## Open items
 
