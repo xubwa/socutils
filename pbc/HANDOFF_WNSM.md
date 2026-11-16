@@ -241,16 +241,24 @@ Branches and pull requests
   `~/apps/socutils-charged-env` (`pbc-charged-cell`) and `~/apps/socutils-git-pbc-env` (`ccr-17f4d4cb-lw45cf`)
   are superseded by master and can be removed.
 
-Jobs queued (bigmem, account `lcheng24_bigmem`; scripts and rank logs in
-`/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/`)
-- 33136408 `run_yso_buildtest_bm170.sbatch` -> `yso_buildtest_bm170_ranks/out.*`: Eu:YSO build on 2 nodes x 4 ranks
-  x 12 threads with 170 GB per rank (mu blocks of 1232, the Alltoallv count limit `size * 154`, instead of 173).
-- 33136409 `run_yso_buildtest_bm50.sbatch` -> `yso_buildtest_bm50_ranks/out.*`: the same with 50 GB per rank,
-  55 min limit (first blocks only), the reference on the same hardware.
-- What to read off: xi per mu point (the cumulative `xi` of the `mu block` lines over the mu done).  Expected
-  ratio 170 GB / 50 GB ~0.4: the Gram columns are regenerated 11 instead of 74 times (~450 instead of ~3000 s
-  at 8 ranks x 24 threads), the Ginv and V GEMMs (~1300 s) stay.  If it holds, raise the budget per rank in
-  production (the 180 GB nodes take 80 GB per rank at 2 ranks per node: 74 -> ~33 blocks).
+Memory per rank vs the Gram-column recompute, measured (Eu:YSO, 2 bigmem nodes x 4 ranks x 12 threads, the first
+blocks of each run; scripts `run_yso_buildtest_bm{170,50}.sbatch`, rank logs `yso_buildtest_bm{170,50}_ranks/out.*`
+in `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/`):
+
+| per mu point (s) | 50 GB per rank, blocks of 177 | 170 GB per rank, blocks of 1057 |
+|---|---|---|
+| xi | 0.535 | 0.192 (x0.36; predicted ~0.4) |
+| FFT | 0.129 | 0.131 |
+| V | 0.132 | 0.135 |
+| A GEMM | 0.128 | 0.042 |
+| aux FT | 0.032 (per label, cached) | 0.049 (plain ft_ao, 6 of 28 chunks cached) |
+| Alltoallv | 0.014 (5.65 GB/s) | 0.108 (0.73 GB/s) |
+| total | 1.05 | 0.70 |
+
+So the budget per rank is the lever for xi, as predicted.  Open: the Alltoallv rate fell 8x in the large-block
+run (other node pair, bigmem08/13 vs 16/18, or an effect of the larger buffers; not separated) and takes back
+part of the gain.  The first 170 GB run failed in the spectra transpose (count above 2^31), fixed by the
+transposes in pieces of mu rows (4d4b112); the block-size cap is gone.
 
 Build, where the time goes now (Eu:YSO, 4 nodes x 2 ranks, V, A 9909 s; numbers above)
 - xi 4000-4400 s per rank, ~70% of it the Gram-column recompute: falls with the memory per rank (blocks) and as
