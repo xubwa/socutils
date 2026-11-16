@@ -350,3 +350,71 @@ def polish(mc, mo, ci, weights, tol=1e-10, max_cycle=15, cderi=None, verbose=Tru
         mo, ci = move(mc, mo, ci, z)
         ci = model_eigenvectors(mc, mo, ci, cderi)
     return mo, ci, gnorm
+
+
+# ----------------------------------------------------------------------
+# targets in the model space of a multi-state method: sum_IJ rho_IJ hmodel_IJ
+
+def transition_rdm12(resp, bra, ket):
+    '''(dm1, dm2) of <bra|...|ket> (the layout of make_rdm12, conjugate-linear in bra), by
+    polarization: B(x, y) = 1/4 sum_k conj(i^k) D(x + i^k y).'''
+    out1, out2 = 0, 0
+    for k in range(4):
+        f = 1j ** k
+        d1, d2 = resp._rdm12(bra + f * ket)
+        out1 = out1 + 0.25 * numpy.conj(f) * d1
+        out2 = out2 + 0.25 * numpy.conj(f) * d2
+    return out1, out2
+
+
+def model_rdm12(resp, rho):
+    '''sum_IJ rho_IJ <c_I|...|c_J> (rho Hermitian, trace 1).'''
+    dm1 = numpy.zeros_like(resp.dm1)
+    dm2 = numpy.zeros_like(resp.dm2)
+    for i, ci in enumerate(resp.ci):
+        for j, cj in enumerate(resp.ci):
+            if abs(rho[i, j]) < 1e-15:
+                continue
+            if i == j:
+                d1, d2 = resp.dms[i]
+            else:
+                d1, d2 = transition_rdm12(resp, ci, cj)
+            dm1 = dm1 + rho[i, j] * d1
+            dm2 = dm2 + rho[i, j] * d2
+    return dm1, dm2
+
+
+def model_gradient(resp, rho):
+    '''G of T = sum_IJ rho_IJ hmodel_IJ, hmodel_IJ = <c_I|H_act|c_J> + E_core delta_IJ
+    (rho Hermitian with trace 1): orbitals 2 g(D_rho), CI 2 (g_I - Re<c_I, g_I> c_I) with
+    g_I = sum_J rho_IJ H_act c_J (dT = 2 Re sum_I <dc_I|g_I>).'''
+    dm1, dm2 = model_rdm12(resp, rho)
+    parts = [2 * _orbital_gradient(resp, dm1, dm2)]
+    for i, c in enumerate(resp.ci):
+        g = sum(rho[i, j] * resp.hc[j] for j in range(len(resp.ci)))
+        parts.append(2 * (g - numpy.vdot(c, g).real * c))
+    return resp.join(parts)
+
+
+def model_density(resp, rho):
+    '''AO density of sum_IJ rho_IJ hmodel_IJ (core occupied, sum rho_IJ gamma^IJ).'''
+    return ao_density(resp, mo_density(resp, model_rdm12(resp, rho)[0]))
+
+
+def degenerate_rotations(resp, tol=1e-9):
+    '''Complex columns of the rotations and symmetric mixings among averaged states of
+    equal energy and weight: zero modes of J (their coupling ~ w (E_J - E_I) vanishes).'''
+    n = resp.n_orb + sum(resp.sizes)
+    offs = numpy.concatenate([[resp.n_orb], resp.n_orb + numpy.cumsum(resp.sizes)])
+    cols = []
+    for i in range(len(resp.ci)):
+        for j in range(i):
+            if abs(resp.e[i] - resp.e[j]) > tol or abs(resp.weights[i] - resp.weights[j]) > 1e-12:
+                continue
+            for f in (1.0, 1j):
+                for s in (1.0, -1.0):
+                    v = numpy.zeros(n, dtype=complex)
+                    v[offs[i]:offs[i + 1]] = f * resp.ci[j]
+                    v[offs[j]:offs[j + 1]] = s * numpy.conj(f) * resp.ci[i]
+                    cols.append(v)
+    return numpy.array(cols).T if cols else numpy.zeros((n, 0), dtype=complex)

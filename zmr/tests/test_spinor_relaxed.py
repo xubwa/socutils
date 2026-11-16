@@ -96,3 +96,67 @@ def test_spinor_derivatives_scalable_vs_reference():
     assert abs(out['g_ci'] - g_ref).max() < 1e-10, abs(out['g_ci'] - g_ref).max()
     u = out['u']
     assert abs(u.conj() @ out['d'] @ u.T - density.make_rdm1(pt)[1]).max() < 1e-10
+
+
+@pytest.mark.slow
+def test_relaxed_spinor_qd_levels_kramers():
+    '''Levels of the multi-state spinor PC-NEVPT2 with Kramers pairs (OH radical, 5
+    electrons in 8 spinors on the Kramers-restricted orbitals of OH-, SA over the four
+    components of X 2Pi): relaxed_rdm1_levels (the pair averaged) against finite fields
+    of the levels for a time-even operator, which keeps every pair degenerate.'''
+    from pyscf import gto
+    from socutils.fci import zfci
+    from socutils.mcscf import zmcscf, zmc_response
+    from socutils.scf import spinor_hf
+    from socutils.zmr import spinor_relaxed
+    nroots = 4
+    weights = [1.0 / nroots] * nroots
+    mol = gto.M(atom='O 0 0 0; H 0 0 0.97', basis='6-31g', charge=-1, verbose=0)
+    # X2CAMF: spin-orbit coupling splits X 2Pi into the Kramers pairs 2Pi_3/2, 2Pi_1/2
+    mf = spinor_hf.KRHF(mol).x2camf().density_fit()
+    mf.kernel()
+    cderi = mf.with_df._cderi
+    h0 = mf.get_hcore()
+    r = mol.intor('int1e_r_spinor')
+    op = r[2] + 0.5 * r[0]
+
+    def casscf(h, mo0):
+        mc = zmcscf.CASSCF(mf, 8, 5, ncore=4)
+        mc.fcisolver = zfci.FCISolver(mol)
+        mc.fcisolver.nroots = nroots
+        mc = mc.state_average_(weights)
+        mc.get_hcore = lambda *a: h
+        mc.conv_tol = 1e-11
+        mc.conv_tol_grad = 1e-6
+        mc.verbose = 0
+        mc.kernel(mo0)
+        mo, ci, gn = zmc_response.polish(mc, mc.mo_coeff, list(mc.ci), weights, verbose=False)
+        assert gn < 1e-9, gn
+        return mc, mo, ci
+
+    def levels(h, mo0):
+        mc, mo, ci = casscf(h, mo0)
+        saved = mf.get_hcore
+        mf.get_hcore = lambda *a: h
+        try:
+            pt = spinor_relaxed.build_pt(mf, mc, mo, numpy.array(ci).T, cderi, weights=weights)
+        finally:
+            mf.get_hcore = saved
+        return numpy.linalg.eigvalsh(pt.heff)
+
+    mc, mo, ci = casscf(h0, mf.mo_coeff)
+    res = spinor_relaxed.relaxed_rdm1_levels(mc, mf, mo, ci, weights, cderi=cderi,
+                                             return_parts=True)
+    e = [x[2] for x in res]
+    print('QD levels', numpy.round(e, 8))
+    assert abs(e[0] - e[1]) < 1e-9 and abs(e[2] - e[3]) < 1e-9      # Kramers pairs
+    assert e[2] - e[1] > 1e-4                                       # split by spin-orbit
+    h = 2e-5
+    ff = (levels(h0 + h * op, mo) - levels(h0 - h * op, mo)) / (2 * h)
+    for k, (dm, parts, _) in enumerate(res):
+        relaxed = numpy.einsum('ij,ji', op, dm)
+        unrel = numpy.einsum('ij,ji', op, parts[0] + parts[1]).real
+        print('level %d: unrelaxed %.8f relaxed %.8f%+.1ei finite field %.8f'
+              % (k, unrel, relaxed.real, relaxed.imag, ff[k]))
+        assert abs(relaxed.imag) < 1e-9
+        assert abs(relaxed.real - ff[k]) < 1e-6, (k, relaxed, ff[k])
