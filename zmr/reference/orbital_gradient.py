@@ -95,13 +95,14 @@ def ccvv_gradient(pt):
 # ----------------------------------------------------------------------
 # all classes: the derivative X = dE2/d(pq|rs) collected over the full orbital space
 
-def _w_blocks(pt, ctx, pclass, state=0, rho=None):
+def _w_blocks(pt, ctx, pclass, state=0, rho=None, holo=False):
     '''([(block index, W[e, X])], b, g, traces) with W = dE/dv[e, X] =
     -sum_J sum_k (l^J + r^J)[e, k] t^J[k, X] (zmr.uc.density.pair_amplitudes; one state:
     -2 sum_k c[e, k] t[k, X]) for the blocks of pclass.blocks(ctx) (real integrals), the
     first-order basis b, the matrix g = sum_J sum_e c^J[e, k] conj(l^J[e, k']) and the
     pairs (tr(g^J), J) of the zeroth-order energies (rho: model_spaces; rho (L, J, J): a
-    list, one entry per target).'''
+    list, one entry per target).  holo: W the holomorphic derivative
+    -1/2 sum_J conj(l^J + r^J) t^J instead (complex orbitals; half of W for real ones).'''
     b, mu, t, s, rho_, states = density.model_spaces(pt, pclass, state, rho)
     rhos, single = density.stack_levels(rho_)
     nl, nj = len(rhos), len(states)
@@ -110,7 +111,11 @@ def _w_blocks(pt, ctx, pclass, state=0, rho=None):
     for n, (delta, v) in enumerate(pclass.blocks(ctx)):
         _, c, l, r = density.pair_amplitudes(delta, v, mu, t, s, rhos)
         for lv in range(nl):
-            outs[lv].append((n, -sum((l[lv, j] + r[lv, j]) @ t[j] for j in range(nj)).real))
+            if holo:
+                w = -0.5 * sum((l[lv, j] + r[lv, j]).conj() @ t[j] for j in range(nj))
+            else:
+                w = -sum((l[lv, j] + r[lv, j]) @ t[j] for j in range(nj)).real
+            outs[lv].append((n, w))
             for j in range(nj):
                 gj[lv, j] += c[j].T @ l[lv, j].conj()
     res = [(o, b, x.sum(axis=0), [(numpy.trace(y), j) for y, j in zip(x, states)])
@@ -317,13 +322,14 @@ def _active_two_body_holo(pt, pclass, b, g, x4, sp, traces):
     x4[a, a, a, a] += 0.25 * d2
 
 
-def _fock_m(eris, d_f, gamma, fock):
+def _fock_m(eris, d_f, gamma, fock, return_y=False):
     '''M of sum_pq d_f[p, q] F[p, q], F = h + W[gamma^T] (W[B] = C^+ V[C B C^+] C, gamma
     fixed in the MO basis): F^T D - D F^T + (G Y - Y G)^T, G = gamma^T, Y = W[D^T].'''
     c = eris.mo_coeff
     big_g = numpy.asarray(gamma).T
     y = c.conj().T @ eris.veff_fn(c @ numpy.asarray(d_f).T @ c.conj().T) @ c
-    return fock.T @ d_f - d_f @ fock.T + (big_g @ y - y @ big_g).T
+    m = fock.T @ d_f - d_f @ fock.T + (big_g @ y - y @ big_g).T
+    return (m, y) if return_y else m
 
 
 def gradient_general(pt, state=0, rho=None, names=None):

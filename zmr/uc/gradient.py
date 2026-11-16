@@ -1,7 +1,15 @@
 '''
 Orbital gradient of the PC-NEVPT2 second-order energy at fixed CI vectors for large
-external spaces (real orbitals; the derivation and the reference with all amplitudes in
-memory are in zmr.reference.orbital_gradient).
+external spaces, real or complex orbitals (the derivation and the references with all
+amplitudes in memory are in zmr.reference.orbital_gradient: gradient_general).
+
+The derivatives with respect to the three-index integrals are kept as holomorphic blocks
+G_h[P, x, y] (E real, written with v and conj(v); half of the real-orbital derivative);
+the full derivative has the block (y, x) = conj(G_h)^T as well, and
+
+    M = X - X^+ + (Fock chains),   X = sum_P conj(B_P) G_P,
+
+dE2 = sum_rq M[r, q] K[r, q] for orbitals C (1 + K), K anti-Hermitian.
 
 For a derivative G[P, a, i] = dE/dB[P, a, i] of the core-virtual block of the three-index
 integrals, its part of the gradient sum_P B[P] (G[P] + G[P]^T) is
@@ -37,27 +45,16 @@ def ao_back(eris, gam, space='v', out_space='c'):
     return sum(c.conj().T @ yk for c, yk in zip(c_all, y))
 
 
-def explicit_vc(eris, gam):
-    '''sum_P B[P] (G[P] + G[P]^T) for G nonzero only in the virtual-core block, G[P, a, i]:
-    an (nmo, nmo) matrix with T1 in the core columns and T2 in the virtual columns.'''
-    sp = eris.spaces
-    n = sp.nmo
-    out = numpy.zeros((n, n), dtype=numpy.complex128)
-    out[:, sp.slice('c')] += ao_back(eris, gam, 'v')
-    out[:, sp.slice('v')] += numpy.einsum('Pri,Pai->ra', eris.cd_pc, gam, optimize=True)
-    return out
-
-
 def ccvv(ctx):
-    '''(E, D_cc, D_vv, explicit part of the orbital gradient) of ccvv from the native
-    kernel: the explicit part is sum_P B[P] (G[P] + G[P]^T) with
-    G[P, a, i] = -2 sum_jb t[ij, ab] B[P, b, j].'''
+    '''(E, D_cc, D_vv, G_h) of ccvv from the native kernel: G_h[P, a, i] = holomorphic
+    dE/dB[P, a, i] = -sum_jb conj(t[ij, ab]) B[P, b, j].'''
     from socutils.zmr.lib import kernels
     res = kernels.d_ccvv(ctx.eris.cd_block('vc'), ctx.eps_v, ctx.eps_c, gamma=True)
     if res is None:
         raise NotImplementedError('needs libzmr')
     e, dcc, dvv, gam = res
-    return e, dcc.T, dvv, explicit_vc(ctx.eris, gam)      # dcc.T: zmr.uc.density.ccvv
+    # dcc.T: zmr.uc.density.ccvv; the kernel's gamma is twice the holomorphic derivative
+    return e, dcc.T, dvv, 0.5 * gam
 
 
 # ----------------------------------------------------------------------
@@ -68,23 +65,23 @@ def _b_all(eris, space):
     return eris.cd_pc if space == 'c' else eris.cd_pa
 
 
-def explicit_block(eris, gam, x, y):
-    '''sum_P B[P] (G[P] + G[P]^T) for G nonzero only in the block (x, y), G[P, x, y]:
-    B[P, all, c / a] from the source, B[P, all, v] through the AO vectors.'''
+def _t_block(eris, space, gm):
+    '''T[r, q] = sum_{P, s in space} B[P, r, s] gm[P, s, q] for all orbitals r.'''
+    if space == 'v':
+        return ao_back(eris, gm, 'v')
+    return numpy.einsum('Prs,Psq->rq', _b_all(eris, space), gm, optimize=True)
+
+
+def explicit_c(eris, gam, x, y):
+    '''X = sum_P conj(B_P) G_P for the holomorphic block G_h = gam[P, x, y] and its
+    conjugate block (y, x): X[:, y] = conj(T_x(conj(G_h))), X[:, x] = conj(T_y(G_h^T)).
+    For real orbitals explicit_block(gam).'''
     sp = eris.spaces
     n = sp.nmo
     out = numpy.zeros((n, n), dtype=numpy.complex128)
-    # (B G)[r, q in y] = sum_s B[P, r, s in x] G[P, s, q]
-    if x == 'v':
-        out[:, sp.slice(y)] += ao_back(eris, gam, 'v')
-    else:
-        out[:, sp.slice(y)] += numpy.einsum('Prs,Psq->rq', _b_all(eris, x), gam, optimize=True)
-    # (B G^T)[r, s in x] = sum_q B[P, r, q in y] G[P, s, q]
-    gt = numpy.ascontiguousarray(gam.transpose(0, 2, 1))
-    if y == 'v':
-        out[:, sp.slice(x)] += ao_back(eris, gt, 'v')
-    else:
-        out[:, sp.slice(x)] += numpy.einsum('Prq,Psq->rs', _b_all(eris, y), gam, optimize=True)
+    gam = numpy.asarray(gam)
+    out[:, sp.slice(y)] += _t_block(eris, x, numpy.ascontiguousarray(gam.conj())).conj()
+    out[:, sp.slice(x)] += _t_block(eris, y, numpy.ascontiguousarray(gam.transpose(0, 2, 1))).conj()
     return out
 
 
@@ -197,7 +194,8 @@ def _external_pass(name, pt, ctx, gams, state, max_memory, rho):
                 dcc[lv] -= fcc * la.gemm(
                     numpy.ascontiguousarray(l4.transpose(1, 0, 2, 3)).reshape(nc, -1).conj(),
                     numpy.ascontiguousarray(c4.transpose(1, 0, 2, 3)).reshape(nc, -1), 'N', 'T')
-                x = x + la.gemm(l[lv, j] + r[lv, j], t[j])
+                # holomorphic: 1/2 conj(l + r) t (half of the real-orbital (l + r) t)
+                x = x + la.gemm(0.5 * (l[lv, j] + r[lv, j]).conj(), t[j])
             xm = (sign * x).reshape(nv * nc, npart * na)
             if name == 'cavv':
                 g_vc[lv] += la.gemm(bseg, xm, 'N', 'T').reshape(naux, nv, nc)
@@ -221,8 +219,8 @@ def _external_pass(name, pt, ctx, gams, state, max_memory, rho):
 
 def active_two_body(pt, pclass, b, g, state=0, traces=None):
     '''dE/d(tu|vw) of a class through H_act = ... + 1/2 sum (tu|vw) t^+ v^+ w u in the
-    first-order space and in the zeroth-order energy, (na,) * 4: 1/2 [sum_m w_m
-    Gamma(b y_m) - tr(g) Gamma(Psi)] with g = sum_m w_m y_m y_m^+.'''
+    first-order space and in the zeroth-order energy, (na,) * 4, holomorphic: 1/4 [sum_m
+    w_m Gamma(b y_m) - sum_J tr(g^J) Gamma(Psi_J)] with g = sum_m w_m y_m y_m^+.'''
     from socutils.zmr.active import rdm as active_rdm
     act = pt.active_space
     ntarget = act.target(pt.nelec, pclass.dn)
@@ -239,7 +237,8 @@ def active_two_body(pt, pclass, b, g, state=0, traces=None):
     if pt.nelec >= 2:
         for tr, j in traces:
             d2 -= tr * active_rdm.make_rdm(act, pt.civecs[:, [j]], pt.nelec, 2, bra=0, ket=0)
-    return 0.5 * d2.real
+    # holomorphic: dE = Re sum 1/2 d2 d(tu|vw)
+    return 0.25 * d2
 
 
 def derivatives(pt, state=0, max_memory=4000, rho=None):
@@ -250,7 +249,9 @@ def derivatives(pt, state=0, max_memory=4000, rho=None):
     state the target sum_IJ rho_IJ h2_IJ of a multi-state PC-NEVPT2 (union contraction;
     a level: rho_IJ = conj(c_I) c_J), g the vectors g[J] of all states; rho (L, J, J):
     several targets (all levels) in the same pass, a list of the results.  Real orbitals.
-    Returns {'d', 'grad', 'g_ci', 'u'}.'''
+    Returns {'d', 'grad', 'g_ci', 'u'}: grad the anti-Hermitian M with dE2 = sum M K for
+    orbitals C (1 + K) in the quasi-canonical orbitals (zmr.reference.orbital_gradient.
+    gradient_general; for real orbitals pack(M - M^T) is the PySCF gradient).'''
     from socutils.zmr.reference import ci_gradient as cg
     from socutils.zmr.reference import orbital_gradient as og
     from socutils.zmr.uc import classes, density
@@ -268,13 +269,13 @@ def derivatives(pt, state=0, max_memory=4000, rho=None):
     d_gen = [numpy.zeros((n, n), dtype=c16) for _ in range(nl)]
     d_core = [numpy.zeros((n, n), dtype=c16) for _ in range(nl)]
     gams = [{} for _ in range(nl)]
-    x_aa = [numpy.zeros((sp.nact,) * 4) for _ in range(nl)]
+    x_aa = [numpy.zeros((sp.nact,) * 4, dtype=c16) for _ in range(nl)]
     nstate = 1 if rho is None else pt.civecs.shape[1]
     g_ci = numpy.zeros((nl, nstate, pt.civecs.shape[0]), dtype=c16)
     _, dcc, dvv, g_ccvv = ccvv(ctx)
     for lv in range(nl):
         d_gen[lv] += density.assemble(sp, {'cc': dcc, 'vv': dvv})
-    grad = [g_ccvv.real.copy() for _ in range(nl)]
+        _add(gams[lv], ('v', 'c'), g_ccvv)
     if rho is not None:
         # several model states: ccvv also through H_act and the CI vectors
         pclass = classes.CLASS_BY_NAME['ccvv']
@@ -291,9 +292,9 @@ def derivatives(pt, state=0, max_memory=4000, rho=None):
             act = [x[1:] for x in res]
         else:
             dblks = per_level(density.class_reference(pt, ctx, name, state, rho)[1])
-            wb = per_level(og._w_blocks(pt, ctx, pclass, state, rho))
+            wb = per_level(og._w_blocks(pt, ctx, pclass, state, rho, holo=True))
             for lv, (blocks, _, _, _) in enumerate(wb):
-                gammas_from_antisym(eris, *og._scatter(name, ctx, blocks), gams[lv])
+                gammas_from_antisym(eris, *og._scatter_c(name, ctx, blocks), gams[lv])
             act = [x[1:] for x in wb]
             g_ci += numpy.reshape(cg.class_g(pt, ctx, name, state, rho), g_ci.shape)
         for lv in range(nl):
@@ -303,25 +304,26 @@ def derivatives(pt, state=0, max_memory=4000, rho=None):
             b, g, traces = act[lv]
             x_aa[lv] += active_two_body(pt, pclass, b, g, state, traces)
     baa = eris.cd_block('aa')
-    gam_gen = numpy.zeros((n, n))
+    gam_gen = numpy.zeros((n, n), dtype=c16)
     gam_gen[sp.slice('c'), sp.slice('c')] = numpy.eye(sp.ncore)
-    gam_gen[sp.slice('a'), sp.slice('a')] = numpy.asarray(pt.gamma).real
-    gam_core = numpy.zeros((n, n))
+    gam_gen[sp.slice('a'), sp.slice('a')] = numpy.asarray(pt.gamma)
+    gam_core = numpy.zeros((n, n), dtype=c16)
     gam_core[sp.slice('c'), sp.slice('c')] = numpy.eye(sp.ncore)
     out = []
     for lv in range(nl):
         _add(gams[lv], ('a', 'a'), numpy.einsum('tuvw,Pvw->Ptu',
                                                 x_aa[lv] + x_aa[lv].transpose(2, 3, 0, 1), baa))
+        xm = numpy.zeros((n, n), dtype=c16)
         for (x, y), gam in gams[lv].items():
-            grad[lv] += explicit_block(eris, numpy.asarray(gam).real, x, y).real
+            xm += explicit_c(eris, gam, x, y)
         # the generalized Fock matrix of the denominators and the core Fock matrix are known
-        g_f, w_gen = og.fock_part(eris, d_gen[lv].real, gam_gen, fock=qc.fock, return_w=True)
-        grad[lv] += g_f + og.fock_part(eris, d_core[lv].real, gam_core, fock=ctx.fcore)
+        m_gen, w_gen = og._fock_m(eris, d_gen[lv], gam_gen, qc.fock, return_y=True)
+        grad = xm - xm.conj().T + m_gen + og._fock_m(eris, d_core[lv], gam_core, ctx.fcore)
         if rho is None:
             g_ci[lv, 0] += cg.fock_g(pt, ctx, d_gen[lv], state, w=w_gen)
         else:
             g_ci[lv] += cg.fock_g(pt, ctx, d_gen[lv], w=w_gen, states=range(nstate))
-        out.append({'d': d_gen[lv] + d_core[lv], 'grad': grad[lv],
+        out.append({'d': d_gen[lv] + d_core[lv], 'grad': grad,
                     'g_ci': g_ci[lv, 0] if rho is None else g_ci[lv], 'u': numpy.asarray(qc.u)})
     return out if levels else out[0]
 

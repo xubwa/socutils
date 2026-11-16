@@ -203,9 +203,10 @@ void zmr_w_ccvv_pairs(const double complex *bvc, int64_t ldvc, int64_t naux, int
  *     e   += -1/4 sum_ab conj(v) t
  *     dvv += 1/2 sum_b conj(t[ij, ab]) t[ij, a'b]       (nv, nv)
  *     dcc += -1/2 sum_ab conj(t[ij, ab]) t[i'j, ab]     (nc, nc)
- * With gam (not NULL, (nc, naux, nv), zeroed here) also the derivative of e with respect
- * to the three-index integrals of real orbitals,
- *     gam[i, L, a] = -2 sum_{j b} t[ij, ab] B[L, b, j]       (one product per pair)
+ * With gam (not NULL, (nc, naux, nv), zeroed here) also twice the holomorphic derivative
+ * of e with respect to the three-index integrals B[L, a, i],
+ *     gam[i, L, a] = -2 sum_{j b} conj(t[ij, ab]) B[L, b, j]   (one product per pair;
+ * for real orbitals the full derivative)
  * The amplitudes t[ij] of all i for one j are kept (nc nv^2 elements) for dcc; the
  * products of one j run in parallel over i. */
 void zmr_d_ccvv(const double complex *bvc, int64_t ldvc, int64_t naux, int64_t nv, int64_t nc,
@@ -262,8 +263,9 @@ void zmr_d_ccvv(const double complex *bvc, int64_t ldvc, int64_t naux, int64_t n
                                 cblas_zgemm(101, 111, 113, (int)nv, (int)nv, (int)nv, &half, ti, (int)nv,
                                             ti, (int)nv, &one, gvv, (int)nv);
                                 if (gam != NULL) {
-                                        /* gam[i] (naux, nv) += -2 B_j t_i^T */
-                                        cblas_zgemm(101, 111, 112, (int)naux, (int)nv, (int)nv, &mtwo,
+                                        /* gam[i] (naux, nv) += -2 B_j t_i^H (conj(t): the holomorphic
+                                         * derivative is half of it; for real orbitals the same) */
+                                        cblas_zgemm(101, 111, 113, (int)naux, (int)nv, (int)nv, &mtwo,
                                                     bj, (int)nv, ti, (int)nv, &one,
                                                     gam + i * naux * nv, (int)nv);
                                 }

@@ -63,7 +63,7 @@ def test_ccvv_explicit_native():
     route = nr_density.spin_orbital_route(mc, cderi)
     pt = route.pt()
     ctx = density.context(pt)
-    e, dcc, dvv, g_fast = gradient.ccvv(ctx)
+    e, dcc, dvv, g_h = gradient.ccvv(ctx)
     e_ref, dcc_ref, dvv_ref = density.ccvv(ctx, kramers=False)
     assert abs(e - e_ref) < 1e-12
     assert abs(dcc - dcc_ref).max() < 1e-12 and abs(dvv - dvv_ref).max() < 1e-12
@@ -73,7 +73,10 @@ def test_ccvv_explicit_native():
     gam[:, sp.slice('v'), sp.slice('c')] = og.ccvv_explicit(ctx)
     bmo = og.mo_vectors(eris).real
     g_ref = numpy.einsum('Prs,Psq->rq', bmo, gam + gam.transpose(0, 2, 1))
-    assert abs(g_fast - g_ref).max() < 1e-11, abs(g_fast - g_ref).max()
+    # M = X - X^+ from the holomorphic block against the antisymmetric part of the reference
+    x = gradient.explicit_c(eris, g_h, 'v', 'c')
+    m_ref = 0.5 * (g_ref - g_ref.T)
+    assert abs(x - x.conj().T - m_ref).max() < 1e-11, abs(x - x.conj().T - m_ref).max()
 
 
 def test_gradient_fast_vs_reference():
@@ -92,8 +95,10 @@ def test_gradient_fast_vs_reference():
     route = nr_density.spin_orbital_route(mc, cderi)
     pt = route.pt()
     g_ref, u = og.gradient(pt)
-    g_fast, _ = gradient.gradient(pt, max_memory=0.5)
-    assert abs(g_fast - g_ref).max() < 1e-10, abs(g_fast - g_ref).max()
+    m_fast, _ = gradient.gradient(pt, max_memory=0.5)
+    # M (anti-Hermitian) against the antisymmetric part of the reference dE/dK
+    m_ref = 0.5 * (g_ref - g_ref.T)
+    assert abs(m_fast - m_ref).max() < 1e-10, abs(m_fast - m_ref).max()
 
 
 def test_one_pass_ci_gradient_and_density():

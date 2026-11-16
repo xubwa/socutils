@@ -245,7 +245,8 @@ def test_qd_derivatives_scalable_vs_reference():
         ref = relaxed.qd_derivatives(pt, rho)
         out = uc_gradient.derivatives(pt, max_memory=0.05, rho=rho)
         assert abs(out['d'] - ref['d']).max() < 1e-10
-        assert abs(out['grad'] - ref['grad']).max() < 1e-10
+        # M (anti-Hermitian) against the antisymmetric part of the reference dE/dK
+        assert abs(out['grad'] - 0.5 * (ref['grad'] - ref['grad'].T)).max() < 1e-10
         assert abs(out['g_ci'] - ref['g']).max() < 1e-10
 
 

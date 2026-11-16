@@ -66,3 +66,33 @@ def test_relaxed_spinor_pc_nevpt2():
           % (relaxed.real, ff, numpy.einsum('ij,ji', op, d_k).real,
              numpy.einsum('ij,ji', op, d_k + d_un).real))
     assert abs(relaxed.real - ff) < 1e-6, (relaxed, ff)
+
+
+def test_spinor_derivatives_scalable_vs_reference():
+    '''zmr.uc.gradient.derivatives (segments forced) for a spinor PC-NEVPT2 against the
+    complex-orbital references: the orbital gradient M of gradient_general, the CI
+    gradient and the unrelaxed density.'''
+    from pyscf import gto
+    from socutils.fci import zfci
+    from socutils.mcscf import zmcscf
+    from socutils.scf import spinor_hf
+    from socutils.zmr import spinor_relaxed
+    from socutils.zmr.reference import orbital_gradient as og
+    from socutils.zmr.uc import density, gradient
+    mol = gto.M(atom='O 0 0 0.1173; H 0 0.7172 -0.4892; H 0 -0.8072 -0.4492',
+                basis='6-31g', verbose=0)
+    mf = spinor_hf.KRHF(mol).density_fit()
+    mf.kernel()
+    mc = zmcscf.CASSCF(mf, 8, 4)
+    mc.fcisolver = zfci.FCISolver(mol)
+    mc.verbose = 0
+    mc.kernel()
+    ci = numpy.asarray(mc.ci).ravel()
+    pt = spinor_relaxed.build_pt(mf, mc, mc.mo_coeff, ci[:, None], mf.with_df._cderi)
+    out = gradient.derivatives(pt, max_memory=0.05)
+    m_ref, _ = og.gradient_general(pt)
+    assert abs(out['grad'] - m_ref).max() < 1e-10, abs(out['grad'] - m_ref).max()
+    g_ref = spinor_relaxed.ci_gradient(pt)
+    assert abs(out['g_ci'] - g_ref).max() < 1e-10, abs(out['g_ci'] - g_ref).max()
+    u = out['u']
+    assert abs(u.conj() @ out['d'] @ u.T - density.make_rdm1(pt)[1]).max() < 1e-10

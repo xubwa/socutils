@@ -6,11 +6,11 @@ spinor (two-component) CASSCF of socutils, through the Lagrangian
 
 G the derivative of E_k(CASSCF) + E2(PC-NEVPT2 of state k) with respect to the orbital and
 CI parameters of socutils.mcscf.zmc_response (orbitals C exp(K), CI vectors (c + x)/|c + x|),
-J the exact orbital + CI Hessian of the averaged CASSCF energy there.  The orbital gradient
-of E2 is the general (complex-orbital) one of zmr.reference.orbital_gradient, its CI
-gradient that of zmr.reference.ci_gradient; the zmr Hamiltonian is built from the same
-three-index integrals as the CASSCF (cderi), in which the CI vectors of socutils are those
-of the zmr spinor sector.
+J the exact orbital + CI Hessian of the averaged CASSCF energy there.  The derivatives of
+E2 come from one pass of zmr.uc.gradient.derivatives (complex orbitals; orbital_gradient
+and ci_gradient here are the Python references); the zmr Hamiltonian is built from the
+same three-index integrals as the CASSCF (cderi), in which the CI vectors of socutils are
+those of the zmr spinor sector.
 
     dm = relaxed_rdm1(mc, mf, mo, ci, weights, state=0, cderi=mf.with_df._cderi)
     <O> = tr(O dm)  for a spinor AO operator O (dm in the j-spinor AO basis)
@@ -70,16 +70,21 @@ def relaxed_rdm1(mc, mf, mo, ci, weights, state=0, cderi=None, max_memory=4000,
     resp = zmc_response.SAResponse(mc, mo, ci, weights, cderi=cderi)
     pt = build_pt(mf, mc, mo, ci[state][:, None], cderi, max_memory=max_memory)
     rhs = zmc_response.state_gradient(resp, state)
-    rhs[:resp.n_orb] += orbital_gradient(mc, pt)
-    g = ci_gradient(pt)
+    # E2: unrelaxed density, orbital and CI gradients in one pass (zmr.uc.gradient)
+    from socutils.zmr.uc import gradient
+    out = gradient.derivatives(pt, max_memory=max_memory)
+    u = numpy.asarray(out['u'])
+    m = numpy.conj(u) @ out['grad'] @ u.T            # input orbitals: phi_qc = phi u
+    p, q = numpy.nonzero(mc.uniq_var_indices(m.shape[0], mc.ncore, mc.ncas, mc.frozen))
+    rhs[:resp.n_orb] += numpy.conj(m[p, q]) - m[q, p]
+    g = out['g_ci']
     c = ci[state]
     parts = resp.split(rhs)
     parts[1 + state] = parts[1 + state] + 2 * (g - numpy.vdot(c, g).real * c)
     rhs = resp.join(parts)
     z = zmc_response.zvector(resp, rhs)
     d_k = zmc_response.state_density(resp, state)
-    from socutils.zmr.uc import density
-    d2 = density.make_rdm1(pt)[1]                     # input orbitals, D[p, q] = dE2/dO[p, q]
+    d2 = numpy.conj(u) @ out['d'] @ u.T               # D[p, q] = dE2/dO[p, q], input orbitals
     d_unrel = mo @ d2.T @ mo.conj().T
     d_z = zmc_response.lagrangian_density(resp, z)
     dm = d_k + d_unrel + d_z
