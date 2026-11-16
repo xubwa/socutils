@@ -1008,8 +1008,6 @@ class THCExchange:
                 # serial stream: xi, its spectrum and the potential with the FFT work space, measured ~3.3
                 # (nb, ng) doubles at once (EuOCl: 16.7 GB above the start for a planned 11.3 GB at 2.2)
                 nb = int((0.55 * avail - 8 * nmu * rchunk * 2 - 32 * gchunk * naux) / (8 * ng * 3.3))   # 0.2: aux FT
-            if grid_split:                                            # Alltoallv counts / displacements < 2^31
-                nb = min(nb, size * ((2 ** 31 - 1) // ng))
             nb = max(32, min(nmu, nb))
         if comm is not None:                                          # the same blocks on every rank, >= 1 per rank
             nb, rchunk, gchunk = (comm.allreduce(x, op=__import__('mpi4py').MPI.MIN) for x in (nb, rchunk, gchunk))
@@ -1136,6 +1134,7 @@ class THCExchange:
         ta_comm = 0.
         tw = dict(wait=0., a2a=0., bytes=0.)                          # transpose: waiting, Alltoallv, bytes moved
         prev = None                                                   # (b0, b1, potential rows) awaiting V
+        prow = getattr(self, 'a2a_rows', None) or max(1, (2 ** 31 - 1) // max(ng, 2 * nG))   # rows per Alltoallv
         for b0 in range(0, nmu, nb):
             b1 = min(b0 + nb, nmu)
             nbk = b1 - b0
@@ -1162,22 +1161,31 @@ class THCExchange:
             comm.Barrier()                                            # wait for the slowest rank (timed apart)
             tw['wait'] += time.time() - ta
             ta = time.time()
-            sc = np.array([(ms[q + 1] - ms[q]) * nr for q in range(size)])
-            rc = np.array([(m1 - m0) * (gs[p + 1] - gs[p]) for p in range(size)])
-            rbuf = np.empty(rc.sum())
-            tb = time.time()
-            comm.Alltoallv([xl, (sc, np.r_[0, np.cumsum(sc)[:-1]]), MPI.DOUBLE],
-                           [rbuf, (rc, np.r_[0, np.cumsum(rc)[:-1]]), MPI.DOUBLE])
-            tw['a2a'] += time.time() - tb
-            tw['bytes'] += 8. * (sc.sum() + rc.sum())
-            xl = None
+            # the three transposes go in pieces of prow mu rows of the block: every Alltoallv count and displacement
+            # stays below 2^31 whatever the block size (a rank sends or receives at most prow rows of the full
+            # grid or of the full spectrum per piece)
+            npts_p = np.array([gs[p + 1] - gs[p] for p in range(size)])
             xi = np.empty((m1 - m0, ng))
-            off = 0
-            for p in range(size):
-                n_p = gs[p + 1] - gs[p]
-                xi[:, gs[p]:gs[p + 1]] = rbuf[off:off + (m1 - m0) * n_p].reshape(m1 - m0, n_p)
-                off += (m1 - m0) * n_p
-            rbuf = None
+            for a in range(0, nbk, prow):
+                b = min(a + prow, nbk)
+                lo = np.array([min(max(a, ms[q]), b) for q in range(size)])    # rows of the piece owned by q
+                hi = np.array([max(lo[q], min(b, ms[q + 1])) for q in range(size)])
+                nrow = hi - lo
+                nm = int(nrow[rank])
+                sc, rc = nrow * nr, nm * npts_p
+                rbuf = np.empty(rc.sum())
+                tb = time.time()
+                comm.Alltoallv([xl[a:b], (sc, (lo - a) * nr), MPI.DOUBLE],
+                               [rbuf, (rc, np.r_[0, np.cumsum(rc)[:-1]]), MPI.DOUBLE])
+                tw['a2a'] += time.time() - tb
+                tw['bytes'] += 8. * (sc.sum() + rc.sum())
+                off = 0
+                for p in range(size):
+                    xi[lo[rank] - m0:hi[rank] - m0, gs[p]:gs[p + 1]] = rbuf[off:off + nm * npts_p[p]].reshape(
+                        nm, npts_p[p])
+                    off += nm * npts_p[p]
+                rbuf = None
+            xl = None
             ta_comm += time.time() - ta
             # FFT of the own mu rows; A_lr, Xi (small G) from them
             ta = time.time()
@@ -1199,21 +1207,27 @@ class THCExchange:
             comm.Barrier()
             tw['wait'] += time.time() - ta
             ta = time.time()
-            sg = np.array([2 * (m1 - m0) * ncol[q] for q in range(size)])
-            rg = np.array([2 * (ms[p + 1] - ms[p]) * ncol[rank] for p in range(size)])
-            sbuf = np.empty(sg.sum())
-            o_ = 0
-            for q in range(size):                                     # contiguous column slices: memcpy
-                a_, b_ = gsl[q]
-                sbuf[o_:o_ + sg[q]].view(complex).reshape(m1 - m0, ncol[q])[:] = Xh[:, a_:b_]
-                o_ += sg[q]
+            ncol_ = np.array(ncol)
             Xq = np.empty((nbk, ncol[rank]), dtype=complex)
-            tb = time.time()
-            comm.Alltoallv([sbuf, (sg, np.r_[0, np.cumsum(sg)[:-1]]), MPI.DOUBLE],
-                           [Xq.view(float), (rg, np.r_[0, np.cumsum(rg)[:-1]]), MPI.DOUBLE])
-            tw['a2a'] += time.time() - tb
-            tw['bytes'] += 8. * (sg.sum() + rg.sum())
-            sbuf = None
+            for a in range(0, nbk, prow):
+                b = min(a + prow, nbk)
+                lo = np.array([min(max(a, ms[q]), b) for q in range(size)])
+                hi = np.array([max(lo[q], min(b, ms[q + 1])) for q in range(size)])
+                nrow = hi - lo
+                nm, l_ = int(nrow[rank]), int(lo[rank] - m0)
+                sg, rg = 2 * nm * ncol_, 2 * nrow * ncol[rank]
+                sbuf = np.empty(sg.sum())
+                o_ = 0
+                for q in range(size):                                 # contiguous column slices: memcpy
+                    a_, b_ = gsl[q]
+                    sbuf[o_:o_ + sg[q]].view(complex).reshape(nm, ncol[q])[:] = Xh[l_:l_ + nm, a_:b_]
+                    o_ += sg[q]
+                tb = time.time()
+                comm.Alltoallv([sbuf, (sg, np.r_[0, np.cumsum(sg)[:-1]]), MPI.DOUBLE],
+                               [Xq[a:b].view(float), (rg, 2 * (lo - a) * ncol[rank]), MPI.DOUBLE])
+                tw['a2a'] += time.time() - tb
+                tw['bytes'] += 8. * (sg.sum() + rg.sum())
+                sbuf = None
             ta_comm += time.time() - ta
             if by_el:                                                 # P_A = phase x B_label (no FT per block)
                 As = np.zeros((self.auxmol.nao, nbk))
@@ -1268,20 +1282,26 @@ class THCExchange:
             comm.Barrier()
             tw['wait'] += time.time() - ta
             ta = time.time()
-            sbuf = np.empty(rc.sum())
-            o_ = 0
-            for p in range(size):                                     # one copy into the send buffer
-                n_p = gs[p + 1] - gs[p]
-                sbuf[o_:o_ + rc[p]].reshape(m1 - m0, n_p)[:] = vxi[:, gs[p]:gs[p + 1]]
-                o_ += rc[p]
-            vxi = None
             vl = np.empty((nbk, nr))
-            tb = time.time()
-            comm.Alltoallv([sbuf, (rc, np.r_[0, np.cumsum(rc)[:-1]]), MPI.DOUBLE],
-                           [vl, (sc, np.r_[0, np.cumsum(sc)[:-1]]), MPI.DOUBLE])
-            tw['a2a'] += time.time() - tb
-            tw['bytes'] += 8. * (sc.sum() + rc.sum())
-            sbuf = None
+            for a in range(0, nbk, prow):
+                b = min(a + prow, nbk)
+                lo = np.array([min(max(a, ms[q]), b) for q in range(size)])
+                hi = np.array([max(lo[q], min(b, ms[q + 1])) for q in range(size)])
+                nrow = hi - lo
+                nm, l_ = int(nrow[rank]), int(lo[rank] - m0)
+                sc, rc = nrow * nr, nm * npts_p
+                sbuf = np.empty(rc.sum())
+                o_ = 0
+                for p in range(size):                                 # one copy into the send buffer
+                    sbuf[o_:o_ + rc[p]].reshape(nm, npts_p[p])[:] = vxi[l_:l_ + nm, gs[p]:gs[p + 1]]
+                    o_ += rc[p]
+                tb = time.time()
+                comm.Alltoallv([sbuf, (rc, np.r_[0, np.cumsum(rc)[:-1]]), MPI.DOUBLE],
+                               [vl[a:b], (sc, (lo - a) * nr), MPI.DOUBLE])
+                tw['a2a'] += time.time() - tb
+                tw['bytes'] += 8. * (sc.sum() + rc.sum())
+                sbuf = None
+            vxi = None
             ta_comm += time.time() - ta
             prev = (b0, b1, vl)                                       # its V in the next block's Gram pass
             vl = None
@@ -2455,7 +2475,7 @@ class THCJK:
         self.th.piv_file = getattr(self, 'piv_file', None)
         for k in ('coarsen', 'blocked_pivots', 'far_fit', 'phi_ondemand', 'symm_grid', 'symm_pivots',
                   'ke_precision', 'mesh_override', 'drop_nyquist', 'g_sphere', 'distribute_c',
-                  'a_by_element'):                                    # options, if set
+                  'a_by_element', 'a2a_rows'):                                    # options, if set
             if hasattr(self, k):
                 setattr(self.th, k, getattr(self, k))
         rc = getattr(self, 'exx_trunc', None)                         # smoothed truncated Coulomb exchange
