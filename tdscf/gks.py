@@ -719,7 +719,8 @@ class TDA(_KernelXCMixin, _ghf.TDA):
     # Grids, or None: the response grid) until every residual is below coarse_tol x conv_tol, then restarts from
     # the Ritz vectors on the full operator and converges to conv_tol there (coarse_relax_buffer: the buffer
     # roots, already found, to coarse_tol x conv_tol only).  BiPh3 PBE0 DYVTZ-SF, 10 roots: TDA 2194 -> 1340 s,
-    # RPA 2446 -> 1985 s, excitation energies within 2e-10 / 7e-9 Eh.  coarse_grid = None: off.
+    # RPA 2446 -> 1985 s, excitation energies within 2e-10 / 7e-9 Eh; with the default max_space as well (old
+    # default against both) TDA 2350 -> 1257 s, RPA 2655 -> 1962 s.  coarse_grid = None: off.
     coarse_grid = 0
     coarse_tol = 100.
     coarse_fxc_grids = 'auto'
@@ -1133,7 +1134,8 @@ class TDRPA(_KernelXCMixin, _PairedRPA):
     # Grids, or None: the response grid) until every residual is below coarse_tol x conv_tol, then restarts from
     # the Ritz vectors on the full operator and converges to conv_tol there (coarse_relax_buffer: the buffer
     # roots, already found, to coarse_tol x conv_tol only).  BiPh3 PBE0 DYVTZ-SF, 10 roots: TDA 2194 -> 1340 s,
-    # RPA 2446 -> 1985 s, excitation energies within 2e-10 / 7e-9 Eh.  coarse_grid = None: off.
+    # RPA 2446 -> 1985 s, excitation energies within 2e-10 / 7e-9 Eh; with the default max_space as well (old
+    # default against both) TDA 2350 -> 1257 s, RPA 2655 -> 1962 s.  coarse_grid = None: off.
     coarse_grid = 0
     coarse_tol = 100.
     coarse_fxc_grids = 'auto'
