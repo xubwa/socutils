@@ -21,7 +21,7 @@ from pyscf.x2c import x2c
 
 CHARGE = {'Au': 1}           # Au+ (5d10) for a closed-shell density
 syms = sys.argv[1:] or ['Ar', 'Kr', 'Xe', 'Au', 'Hg', 'Rn']
-Q = 1.0
+Q = float(__import__('os').environ.get('BGQ', 100.0))   # Q = 1 is round-off limited in the complex spin-orbital X2C
 zeta = 1e-3
 c = lib.param.LIGHT_SPEED
 
@@ -32,7 +32,7 @@ def sigma_dot(wso, wsf):
     return numpy.einsum('sxy,spq->xpyq', q, numpy.vstack([wso, wsf[None]])).reshape(n, n)
 
 
-print('ratio = (Tr D dh) / (-(pi/2c^2) rho0 N_e);  dyall-v2z (uncontracted), point nucleus, c = %.3f, zeta = %g' % (c, zeta))
+print('ratio = (Tr D dh) / (-(pi/2c^2) rho0 N_e);  dyall-v2z (uncontracted), point nucleus, c = %.3f, zeta = %g, Q = %g' % (c, zeta, Q))
 print('%-4s %4s %12s %12s' % ('atom', 'Z', 'SFX2C-1e', 'X2C-1e'))
 for symb in syms:
     basis = {symb: gto.uncontract(gto.load('dyall-v2z', symb))}
