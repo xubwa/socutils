@@ -1,0 +1,5 @@
+ratio = (Tr D dh) / (-(pi/2c^2) rho0 N_e);  dyall-v2z (uncontracted), point nucleus, c = 137.036, zeta = 0.001
+atom    Z     SFX2C-1e       X2C-1e
+Ar     18       0.9976       0.9946   (GHF converged True, E_SO - E_sf = -0.001095)
+Kr     36       0.9971       0.9928   (GHF converged True, E_SO - E_sf = -0.105182)
+Xe     54       0.9867       0.9924   (GHF converged True, E_SO - E_sf = -1.511475)
