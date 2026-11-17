@@ -223,3 +223,63 @@ def test_relaxed_level_matrix_time_odd():
     print('eig(W) %s, finite-field half splitting %.8f' % (w_eig, ff))
     assert abs(w_eig[0] + w_eig[1]) < 1e-7                     # +-w: a Kramers pair
     assert abs(w_eig[1] - ff) < 2e-6, (w_eig, ff)
+
+
+@pytest.mark.slow
+def test_relaxed_g_tensor_finite_field():
+    '''relaxed_g_tensor of the X 2Pi_3/2 doublet of OH (X2CAMF, X2C picture-changed
+    1/2 (L + g_e S)) against the finite-field Zeeman splitting along the bond: a field B
+    along z splits the doublet by B g_parallel / 2 (mu_B = 1/2), so half the splitting
+    over B is g_parallel / 4.  The pair shares its E0 in the field.'''
+    from pyscf import gto
+    from socutils.fci import zfci
+    from socutils.mcscf import zmcscf, zmc_response
+    from socutils.scf import spinor_hf
+    from socutils.zmr import spinor_relaxed
+    nroots = 4
+    weights = [1.0 / nroots] * nroots
+    mol = gto.M(atom='O 0 0 0; H 0 0 0.97', basis='6-31g', charge=-1, verbose=0)
+    mf = spinor_hf.KRHF(mol).x2camf().density_fit()
+    mf.kernel()
+    cderi = mf.with_df._cderi
+    h0 = mf.get_hcore()
+    ops = spinor_relaxed.magnetic_moment_ops(mf)
+
+    def casscf(h, mo0):
+        mc = zmcscf.CASSCF(mf, 8, 5, ncore=4)
+        mc.fcisolver = zfci.FCISolver(mol)
+        mc.fcisolver.nroots = nroots
+        mc = mc.state_average_(weights)
+        mc.get_hcore = lambda *a: h
+        mc.conv_tol = 1e-11
+        mc.conv_tol_grad = 1e-6
+        mc.verbose = 0
+        mc.kernel(mo0)
+        mo, ci, gn = zmc_response.polish(mc, mc.mo_coeff, list(mc.ci), weights, tol=1e-12,
+                                         max_cycle=25, verbose=False)
+        assert gn < 1e-11, gn
+        return mc, mo, ci
+
+    def pair(h, mo0):
+        mc, mo, ci = casscf(h, mo0)
+        saved = mf.get_hcore
+        mf.get_hcore = lambda *a: h
+        try:
+            pt = spinor_relaxed.build_pt(mf, mc, mo, numpy.array(ci).T, cderi, weights=weights,
+                                         degeneracy_tol=1e-4)
+        finally:
+            mf.get_hcore = saved
+        return numpy.linalg.eigvalsh(pt.heff)[:2]
+
+    mc, mo, ci = casscf(h0, mf.mo_coeff)
+    g = spinor_relaxed.relaxed_g_tensor(mc, mf, mo, ci, weights, level=0, cderi=cderi, ops=ops)
+    g_par = numpy.linalg.eigvalsh(g['relaxed'])[-1]
+    assert numpy.linalg.eigvalsh(g['relaxed'])[1] < 1e-4             # g_perp of 2Pi_3/2
+    half = {}
+    for b in (1e-5, 2e-5):
+        e = pair(h0 + b * ops[2], mo)
+        half[b] = (e[1] - e[0]) / (2 * b)
+    ff = (4 * half[1e-5] - half[2e-5]) / 3
+    print('g_parallel relaxed %.7f, model %.7f; finite field %.7f'
+          % (g_par, numpy.linalg.eigvalsh(g['model'])[-1], 4 * ff))
+    assert abs(g_par - 4 * ff) < 1e-5, (g_par, 4 * ff)

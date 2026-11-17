@@ -211,3 +211,64 @@ def relaxed_level_matrix(mc, mf, mo, ci, weights, level=0, cderi=None, max_memor
     if return_unrelaxed:
         return float(e[level]), matrix(dms), matrix([x[0] + x[1] for x in parts])
     return float(e[level]), matrix(dms)
+
+
+# ----------------------------------------------------------------------
+# magnetic properties of a Kramers doublet
+
+def magnetic_moment_ops(mf, origin=None, utm=True):
+    '''(3, n2c, n2c) the X2C picture-changed operator 1/2 (L + g_e S) of socutils.prop.gfac
+    (Zeeman term B . O in atomic units, mu_B = 1/2), gauge origin `origin` (default the
+    centre of nuclear charge).'''
+    from socutils.prop.gfac import spinor_hf as gfac
+    mol = mf.mol
+    if origin is None:
+        q = mol.atom_charges()
+        origin = (q[:, None] * mol.atom_coords()).sum(0) / q.sum()
+    with mol.with_common_orig(origin):
+        return gfac.int_gfac_2c(mf, utm=utm)
+
+
+def g_tensor_from_block(m):
+    '''g = 2 P of the polar decomposition of the pseudo-spin tensor of a (3, 2, 2) block
+    M_a[m, n] = <m|O_a|n> of a Kramers doublet (socutils.prop.observables): principal
+    values non-negative, the overall sign not claimed.'''
+    from socutils.prop import observables
+    p, _ = observables.pseudo_spin_frame(observables.pseudo_spin_tensor(m))
+    return 2 * p
+
+
+def relaxed_g_tensor(mc, mf, mo, ci, weights, level=0, cderi=None, max_memory=4000,
+                     origin=None, ops=None):
+    '''g tensors of the Kramers doublet of level `level` of the multi-state PC-NEVPT2:
+    {'model', 'unrelaxed', 'relaxed'}, from the matrices <m|O_a|n> of the CASSCF-model
+    part, the derivative at fixed orbitals and CI vectors, and the relaxed one
+    (relaxed_level_matrix).  ops: the magnetic-moment operators (default
+    magnetic_moment_ops).'''
+    if ops is None:
+        ops = magnetic_moment_ops(mf, origin)
+    cderi = mf.with_df._cderi if cderi is None else cderi
+    probe = build_pt(mf, mc, mo, numpy.array([numpy.asarray(c).ravel() for c in ci]).T, cderi,
+                     weights=weights, max_memory=max_memory)
+    e, vec = numpy.linalg.eigh(probe.heff)
+    group = numpy.nonzero(abs(e - e[level]) < 1e-8)[0]
+    if len(group) != 2:
+        raise ValueError('level %d is %d-fold degenerate, not a Kramers doublet'
+                         % (level, len(group)))
+    e_k, d_rel, d_un = relaxed_level_matrix(mc, mf, mo, ci, weights, level=level, cderi=cderi,
+                                            max_memory=max_memory, return_unrelaxed=True)
+    resp = zmc_response.SAResponse(mc, mo, ci, weights, cderi=cderi)
+    d_model = [[None, None], [None, None]]
+    for a, m in enumerate(group):
+        for b, n in enumerate(group):
+            r = numpy.outer(vec[:, m].conj(), vec[:, n])
+            d_model[a][b] = (zmc_response.model_density(resp, 0.5 * (r + r.conj().T))
+                             + 1j * zmc_response.model_density(resp, (r - r.conj().T) / 2j))
+
+    def block(d):
+        return numpy.array([[[numpy.einsum('ij,ji', o, d[a][b]) for b in range(2)]
+                             for a in range(2)] for o in ops])
+    return {'energy': e_k,
+            'model': g_tensor_from_block(block(d_model)),
+            'unrelaxed': g_tensor_from_block(block(d_un)),
+            'relaxed': g_tensor_from_block(block(d_rel))}
