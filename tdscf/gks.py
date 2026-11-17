@@ -56,9 +56,15 @@ def _coarse_response(td, log):
     fine = spinor_jk.RESPONSE_GRID
     if lvl == fine or spinor_jk.mode(mf) not in ('cosx', 'rijcosx'):
         lvl = None
-    gc = None
-    if getattr(td, 'coarse_fxc_grids', None) is not None and hasattr(mf, 'grids'):
-        gc = td._fxc_grids(td.coarse_fxc_grids)
+    gc = getattr(td, 'coarse_fxc_grids', None)
+    if isinstance(gc, str) and gc == 'auto':
+        gc = 'cpscf' if lvl is not None else None
+    if gc is not None and hasattr(mf, 'grids') and getattr(mf, '_numint', None) is not None:
+        gc = td._fxc_grids(gc)
+        if gc is td._fxc_grids():
+            gc = None           # the solve is on that grid already
+    else:
+        gc = None
     if lvl is None and gc is None:
         yield lambda aop, gen, nstates, nbuf: (aop, None)
         return
@@ -692,10 +698,16 @@ class TDA(_KernelXCMixin, _ghf.TDA):
     nbuffer = None              # extra roots of the locked solve (None: max(2, nstates // 2))
     buffer_tol = None           # residual tolerance of the buffer roots (None: conv_tol)
     min_batch = None            # lr_locked: batches topped up to this many vectors by further directions per root
-    coarse_grid = None          # COSX response K on this grid level (e.g. 0) until the residuals are below
-    coarse_tol = 10.            # coarse_tol x conv_tol, then on spinor_jk.RESPONSE_GRID (restart from the Ritz vectors)
-    coarse_fxc_grids = None     # f_xc of the coarse phase on this grid ('cpscf' or a Grids; None: fxc_grids)
-    coarse_relax_buffer = False  # after the coarse phase the buffer roots converged to coarse_tol x conv_tol only
+    # The coarse phase (RIJ / COSX references): the Davidson runs with the COSX response K on grid level
+    # coarse_grid and f_xc on coarse_fxc_grids ('auto': the CP-SCF grid when coarse_grid applies; 'cpscf', a
+    # Grids, or None: the response grid) until every residual is below coarse_tol x conv_tol, then restarts from
+    # the Ritz vectors on the full operator and converges to conv_tol there (coarse_relax_buffer: the buffer
+    # roots, already found, to coarse_tol x conv_tol only).  BiPh3 PBE0 DYVTZ-SF, 10 roots: TDA 2194 -> 1340 s,
+    # RPA 2446 -> 1985 s, excitation energies within 2e-10 / 7e-9 Eh.  coarse_grid = None: off.
+    coarse_grid = 0
+    coarse_tol = 100.
+    coarse_fxc_grids = 'auto'
+    coarse_relax_buffer = True
 
     def kernel(self, x0=None, nstates=None):
         if not (self.direct or self.couple_reference):
@@ -1099,10 +1111,16 @@ class TDRPA(_KernelXCMixin, _PairedRPA):
     nbuffer = None              # extra roots of the locked solve (None: max(2, nstates // 2))
     buffer_tol = None           # residual tolerance of the buffer roots (None: conv_tol)
     min_batch = None            # lr_locked: batches topped up to this many vectors by further directions per root
-    coarse_grid = None          # COSX response K on this grid level (e.g. 0) until the residuals are below
-    coarse_tol = 10.            # coarse_tol x conv_tol, then on spinor_jk.RESPONSE_GRID (restart from the Ritz vectors)
-    coarse_fxc_grids = None     # f_xc of the coarse phase on this grid ('cpscf' or a Grids; None: fxc_grids)
-    coarse_relax_buffer = False  # after the coarse phase the buffer roots converged to coarse_tol x conv_tol only
+    # The coarse phase (RIJ / COSX references): the Davidson runs with the COSX response K on grid level
+    # coarse_grid and f_xc on coarse_fxc_grids ('auto': the CP-SCF grid when coarse_grid applies; 'cpscf', a
+    # Grids, or None: the response grid) until every residual is below coarse_tol x conv_tol, then restarts from
+    # the Ritz vectors on the full operator and converges to conv_tol there (coarse_relax_buffer: the buffer
+    # roots, already found, to coarse_tol x conv_tol only).  BiPh3 PBE0 DYVTZ-SF, 10 roots: TDA 2194 -> 1340 s,
+    # RPA 2446 -> 1985 s, excitation energies within 2e-10 / 7e-9 Eh.  coarse_grid = None: off.
+    coarse_grid = 0
+    coarse_tol = 100.
+    coarse_fxc_grids = 'auto'
+    coarse_relax_buffer = True
     max_space = None            # lr_locked's subspace bound (None: max(8 nroots, 40))
     instability = 'tda'         # A +- B not positive definite: 'tda' (warn, TDA roots) | 'raise'
     unstable = None

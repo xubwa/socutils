@@ -87,6 +87,24 @@ class KnowValues(unittest.TestCase):
             self.assertLess(abs(numpy.bincount(g, f0) - numpy.bincount(g, f1)).max(), 1e-7, rc)
             self.assertLess(abs(numpy.bincount(g, y0) - numpy.bincount(g, y1)).max(), 1e-7, rc)
 
+    def test_coarse_phase(self):
+        # the coarse first phase (COSX K on GRIDX0, f_xc on the CP-SCF grid) against the solve on the full operator
+        # (the plain COSX response is not RPA-structured at 5e-5 of |V|: the roots depend on the path at ~1e-8 Eh, as
+        # for the paired solver; with hsym_response both solve the same RPA)
+        mf.rijcosx = 'rijcosx'
+        for hsym, tol in ((False, 3e-8), (True, 1e-9)):
+            es = []
+            for cg in (0, None):
+                td = gks.TDRPA(mf)
+                td.nstates = 6
+                td.conv_tol = 1e-7
+                td.coarse_grid = cg
+                td.hsym_response = hsym
+                es.append(td.kernel()[0])
+                self.assertTrue(all(td.converged))
+            self.assertLess(abs(es[0] - es[1]).max(), tol, hsym)
+        mf.rijcosx = ''
+
     def test_pbe_missed_root(self):
         '''AuH PBE: the paired solver with nstates = 8 misses the 3.687 eV root (found with nstates = 14); the
         TR-adapted solve with its buffer roots has it'''
