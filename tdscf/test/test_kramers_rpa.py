@@ -48,6 +48,14 @@ class KnowValues(unittest.TestCase):
             self.assertLess(abs(e - ref).max(), 1e-11)
             self.assertLess(abs(numpy.einsum('ki,ki->k', P.conj(), Q).real - 1).max(), 1e-12)
         self.assertLess(abs(e - numpy.linalg.eigvalsh(a)[:6]).max(), 1e-11)     # B = 0: the TDA roots
+        # min_batch and refine (a perturbed operator first): the same roots
+        ref = numpy.sort(numpy.sqrt(numpy.linalg.eigvals((a - b) @ (a + b)).real))[:6]
+        a1 = a + numpy.eye(n) * 1e-4
+        conv, e, P, Q = lr_locked.rpa_eig(lambda p, q: (p @ (a1 + b).T, q @ (a1 - b).T), numpy.eye(n)[:8],
+                                          precond, 6, tol=1e-9, max_cycle=200, min_batch=5,
+                                          refine=(1e-6, lambda: lambda p, q: (p @ (a + b).T, q @ (a - b).T)))
+        self.assertTrue(conv.all())
+        self.assertLess(abs(e - ref).max(), 1e-11)
         bb = numpy.diag(d) * 1.2
         with self.assertRaises(lr_locked.RPAInstability):
             lr_locked.rpa_eig(lambda p, q: (p @ (a + bb).T, q @ (a - bb).T), numpy.eye(n)[:8], precond, 6)

@@ -30,6 +30,18 @@ class KnowValues(unittest.TestCase):
         self.assertLess(abs(e - ref).max(), 1e-12)
         # the batches shrink as roots lock
         self.assertLess(min(nvec[1:]), 6)
+        # min_batch: the batches topped up, same roots; tol per root
+        nvec.clear()
+        conv, e, x = lr_locked.eigh(aop, x0, precond, 6, tol=numpy.array([1e-8] * 6), max_cycle=200, min_batch=5)
+        self.assertTrue(conv.all())
+        self.assertLess(abs(e - ref).max(), 1e-12)
+        self.assertGreaterEqual(min(nvec[1:-1]), 5)
+        # refine: a perturbed operator first, then the exact one
+        a1 = a + numpy.diag(numpy.full(n, 1e-4))
+        conv, e, x = lr_locked.eigh(lambda xs: xs @ a1.T, x0, precond, 6, tol=1e-8, max_cycle=200,
+                                    refine=(1e-6, lambda: aop))
+        self.assertTrue(conv.all())
+        self.assertLess(abs(e - ref).max(), 1e-12)
 
     def test_tda_vs_pyscf(self):
         mol = gto.M(atom='Au 0 0 0; H 0 0 1.524', basis='x2c-svpall', verbose=0)
