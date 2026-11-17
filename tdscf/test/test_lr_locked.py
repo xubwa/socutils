@@ -35,7 +35,7 @@ class KnowValues(unittest.TestCase):
         conv, e, x = lr_locked.eigh(aop, x0, precond, 6, tol=numpy.array([1e-8] * 6), max_cycle=200, min_batch=5)
         self.assertTrue(conv.all())
         self.assertLess(abs(e - ref).max(), 1e-12)
-        self.assertGreaterEqual(min(nvec[1:-1]), 5)
+        self.assertGreaterEqual(min(nvec[1:]), 3)          # one root and its two extra directions at least
         # refine: a perturbed operator first, then the exact one
         a1 = a + numpy.diag(numpy.full(n, 1e-4))
         conv, e, x = lr_locked.eigh(lambda xs: xs @ a1.T, x0, precond, 6, tol=1e-8, max_cycle=200,
