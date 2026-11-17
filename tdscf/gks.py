@@ -34,6 +34,41 @@ from pyscf import lib
 from pyscf.tdscf import ghf as _ghf
 
 
+def _root_tol(td, nstates, nbuf):
+    '''the residual tolerance per root of the locked solves: conv_tol, buffer_tol for the nbuf buffer roots'''
+    bt = getattr(td, 'buffer_tol', None)
+    if bt is None or nbuf <= 0:
+        return td.conv_tol
+    return numpy.array([td.conv_tol] * nstates + [max(bt, td.conv_tol)] * nbuf)
+
+
+@contextlib.contextmanager
+def _coarse_response(td, log):
+    '''refine argument of lr_locked (None, or (rtol, switch)) for td.coarse_grid: the COSX response K on that grid
+    level (spinor_jk.RESPONSE_GRID) until every residual is below td.coarse_tol x conv_tol, then on the
+    RESPONSE_GRID one; spinor_jk.RESPONSE_GRID restored on exit'''
+    from socutils.scf import spinor_jk
+    lvl = getattr(td, 'coarse_grid', None)
+    fine = spinor_jk.RESPONSE_GRID
+    if lvl is None or lvl == fine or spinor_jk.mode(td._scf) not in ('cosx', 'rijcosx'):
+        yield None
+        return
+
+    def switch(aop):
+        def f():
+            spinor_jk.RESPONSE_GRID = fine
+            log.info('response COSX K: GRIDX%s -> GRIDX%s (all residuals below %.1e)', lvl, fine,
+                     td.coarse_tol * td.conv_tol)
+            return aop
+        return f
+    spinor_jk.RESPONSE_GRID = lvl
+    log.info('response COSX K on GRIDX%s until the residuals are below %.1e', lvl, td.coarse_tol * td.conv_tol)
+    try:
+        yield lambda aop: (td.coarse_tol * td.conv_tol, switch(aop))
+    finally:
+        spinor_jk.RESPONSE_GRID = fine
+
+
 def _build_ab_jk_cderi(td, blksize=None):
     '''Dense Coulomb+exact-exchange block A_JK[ia,jb] of the spinor TDA matrix,
     built MO-driven from the density-fitted (Cholesky) ERIs:
@@ -627,6 +662,10 @@ class TDA(_KernelXCMixin, _ghf.TDA):
     kramers = 'auto'
     KRAMERS_TOL = 1e-6
     nbuffer = None              # extra roots of the locked solve (None: max(2, nstates // 2))
+    buffer_tol = None           # residual tolerance of the buffer roots (None: conv_tol)
+    min_batch = None            # lr_locked: batches topped up to this many vectors by further directions per root
+    coarse_grid = None          # COSX response K on this grid level (e.g. 0) until the residuals are below
+    coarse_tol = 10.            # coarse_tol x conv_tol, then on spinor_jk.RESPONSE_GRID (restart from the Ritz vectors)
 
     def kernel(self, x0=None, nstates=None):
         if not (self.direct or self.couple_reference):
@@ -726,9 +765,11 @@ class TDA(_KernelXCMixin, _ghf.TDA):
         # missing once the lowest nstates Ritz roots converge (AuH x2c-SVPall PBE0: the 3.826 eV root under
         # the 3.877 eV pair at nstates = 6; pyscf's lr_eigh misses the 3.803 eV pair at nstates = 4)
         nbuf = self.nbuffer if self.nbuffer is not None else max(2, nstates // 2)
-        conv, e, x1 = lr_locked.eigh(vind, x0, precond, nstates + nbuf, tol=self.conv_tol, lindep=self.lindep,
-                                     max_cycle=self.max_cycle, max_space=self.max_space, pick=pick, log=log,
-                                     project=project, real=tr is not None)
+        with _coarse_response(self, log) as refine:
+            conv, e, x1 = lr_locked.eigh(vind, x0, precond, nstates + nbuf, tol=_root_tol(self, nstates, nbuf),
+                                         lindep=self.lindep, max_cycle=self.max_cycle, max_space=self.max_space,
+                                         pick=pick, log=log, project=project, real=tr is not None,
+                                         min_batch=self.min_batch, refine=refine and refine(vind))
         conv, e, x1 = conv[:nstates], e[:nstates], x1[:nstates]
         self.converged, self.e = conv, e
         mo_occ = mf.mo_occ[self.get_frozen_mask()]
@@ -1025,6 +1066,10 @@ class TDRPA(_KernelXCMixin, _PairedRPA):
     kramers = 'auto'
     KRAMERS_TOL = 1e-6
     nbuffer = None              # extra roots of the locked solve (None: max(2, nstates // 2))
+    buffer_tol = None           # residual tolerance of the buffer roots (None: conv_tol)
+    min_batch = None            # lr_locked: batches topped up to this many vectors by further directions per root
+    coarse_grid = None          # COSX response K on this grid level (e.g. 0) until the residuals are below
+    coarse_tol = 10.            # coarse_tol x conv_tol, then on spinor_jk.RESPONSE_GRID (restart from the Ritz vectors)
     max_space = None            # lr_locked's subspace bound (None: max(8 nroots, 40))
     instability = 'tda'         # A +- B not positive definite: 'tda' (warn, TDA roots) | 'raise'
     unstable = None
@@ -1127,9 +1172,12 @@ class TDRPA(_KernelXCMixin, _PairedRPA):
         nbuf = self.nbuffer if self.nbuffer is not None else max(2, nstates // 2)
         nroots = min(nstates + nbuf, hdiag.size)
         try:
-            conv, e, P, Q = lr_locked.rpa_eig(aop, x0, precond, nroots, tol=self.conv_tol, lindep=self.lindep,
-                                              max_cycle=self.max_cycle, max_space=self.max_space, pick=pick,
-                                              log=log, project=project)
+            with _coarse_response(self, log) as refine:
+                conv, e, P, Q = lr_locked.rpa_eig(aop, x0, precond, nroots,
+                                                  tol=_root_tol(self, nstates, nroots - nstates), lindep=self.lindep,
+                                                  max_cycle=self.max_cycle, max_space=self.max_space, pick=pick,
+                                                  log=log, project=project, min_batch=self.min_batch,
+                                                  refine=refine and refine(aop))
         except lr_locked.RPAInstability as err:
             self.unstable = True
             log.warn('TDRPA: reference instability (%s): the RPA has imaginary / non-positive roots here', err)
@@ -1155,6 +1203,7 @@ class TDRPA(_KernelXCMixin, _PairedRPA):
         td = TDA(self._scf)
         for key in ('frozen', 'conv_tol', 'max_cycle', 'lindep', 'level_shift', 'positive_eig_threshold',
                     'xc_kernel', 'collinear', 'picture_change', 'kramers', 'KRAMERS_TOL', 'nbuffer', 'max_space',
+                    'min_batch', 'coarse_grid', 'coarse_tol', 'buffer_tol',
                     'verbose', 'stdout', 'chkfile'):
             if hasattr(self, key):
                 setattr(td, key, getattr(self, key))
