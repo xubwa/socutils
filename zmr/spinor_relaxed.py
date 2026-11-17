@@ -308,3 +308,30 @@ def relaxed_hyperfine_tensor(mc, mf, mo, ci, weights, atoms, level=0, cderi=None
         out['A'][kind] = numpy.array([observables.pseudo_spin_tensor(b[3 + 3 * k:6 + 3 * k]) @ r.T
                                       for k in range(len(atoms))])
     return out
+
+
+# ----------------------------------------------------------------------
+# electric properties at the nuclei (time-even; any level, a degenerate one averaged)
+
+def efg_ops(mf, atom, x_response=True):
+    '''(3, 3, n2c, n2c) the X2C picture-changed electronic EFG operator at nucleus `atom`
+    (socutils.prop.efg.spinor_hf.int_efg_2c): V = V_nuc - tr(int dm).'''
+    from socutils.prop.efg import spinor_hf as efg
+    return efg.int_efg_2c(mf, atom, x_response=x_response)
+
+
+def contact_density_ops(mf, atom, x_response=True):
+    '''(n2c, n2c) the X2C picture-changed contact-density operator at nucleus `atom`
+    (socutils.prop.contact_density.spinor_hf.int_cd_2c): rho(R) = tr(int dm).'''
+    from socutils.prop.contact_density import spinor_hf as cd
+    return cd.int_cd_2c(mf, atom, x_response=x_response)
+
+
+def efg_tensor(mf, dm, atom, ops=None):
+    '''Total EFG (3, 3) at nucleus `atom` for an AO density dm (relaxed or not): the
+    nuclear part minus the electronic one, as socutils.prop.efg.spinor_hf.kernel.'''
+    from socutils.prop.efg.rhf import _get_quad_nuc
+    if ops is None:
+        ops = efg_ops(mf, atom)
+    v_e = numpy.einsum('xyij,ji->xy', ops, dm).real
+    return _get_quad_nuc(mf.mol, atom) - v_e

@@ -12,9 +12,31 @@ import warnings
 from functools import reduce
 import numpy as np
 from pyscf import lib
-from pyscf.x2c.x2c import _decontract_spinior
+from pyscf.x2c.x2c import _decontract_spinor
 
 warnings.warn('Module contact density is under testing')
+
+
+def int_cd_2c(method, atm_id, x_response=True):
+    '''(n2c, n2c) the X2C picture-changed contact-density operator at nucleus atm_id (the
+    integral of kernel, without contracting it with a density); x_response: the response of
+    the decoupling (the helper's get_hfw1) or the plain picture change.'''
+    xmol, contr_coeff = _decontract_spinor(method.mol, method.with_x2c.xuncontract)
+    c = lib.param.LIGHT_SPEED
+    n2c = xmol.nao_2c()
+    coord = xmol.atom_coord(atm_id).reshape(1, 3)
+    aoLa, aoLb = xmol.eval_gto('GTOval_spinor', coord)
+    aoSa, aoSb = xmol.eval_gto('GTOval_sp_spinor', coord)
+    int_4c = np.zeros((n2c * 2, n2c * 2), dtype=complex)
+    int_4c[:n2c, :n2c] = np.einsum('p,q->pq', aoLa[0].conj(), aoLa[0])
+    int_4c[:n2c, :n2c] += np.einsum('p,q->pq', aoLb[0].conj(), aoLb[0])
+    int_4c[n2c:, n2c:] = np.einsum('p,q->pq', aoSa[0].conj(), aoSa[0]) / 4.0 / c**2
+    int_4c[n2c:, n2c:] += np.einsum('p,q->pq', aoSb[0].conj(), aoSb[0]) / 4.0 / c**2
+    if x_response:
+        int_2c = method.with_x2c.get_hfw1(int_4c, x_response=True)
+    else:
+        int_2c = method.with_x2c.get_hfw1(int_4c, x_response=False)
+    return reduce(np.dot, (contr_coeff.T.conj(), int_2c, contr_coeff))
 
 
 def kernel(method, cd_nuc=None, dm=None, Xresp=False):

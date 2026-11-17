@@ -344,3 +344,64 @@ def test_relaxed_hyperfine_finite_field():
     print('proton A (relaxed) principal', numpy.linalg.svd(a_rel)[1],
           'half splitting / m: analytic %.6e finite field %.6e' % (target, ff))
     assert abs(target - ff) < 1e-5 * abs(target), (target, ff)
+
+
+@pytest.mark.slow
+def test_relaxed_efg_contact_density_levels():
+    '''Relaxed X2C picture-changed EFG (zz at the proton) and contact density (oxygen) of the
+    X 2Pi_3/2 level of OH (multi-state PC-NEVPT2, the Kramers pair averaged) against finite
+    fields of the level with the operator added to h.'''
+    from pyscf import gto
+    from socutils.fci import zfci
+    from socutils.mcscf import zmcscf, zmc_response
+    from socutils.scf import spinor_hf
+    from socutils.zmr import spinor_relaxed
+    nroots = 4
+    weights = [1.0 / nroots] * nroots
+    mol = gto.M(atom='O 0 0 0; H 0 0 0.97', basis='6-31g', charge=-1, verbose=0)
+    mf = spinor_hf.KRHF(mol).x2camf().density_fit()
+    mf.kernel()
+    cderi = mf.with_df._cderi
+    h0 = mf.get_hcore()
+    ops = {'EFG_zz(H)': spinor_relaxed.efg_ops(mf, 1)[2, 2],
+           'rho(O)': spinor_relaxed.contact_density_ops(mf, 0)}
+    for o in ops.values():
+        assert abs(o - o.conj().T).max() < 1e-8 * abs(o).max()
+
+    def casscf(h, mo0):
+        mc = zmcscf.CASSCF(mf, 8, 5, ncore=4)
+        mc.fcisolver = zfci.FCISolver(mol)
+        mc.fcisolver.nroots = nroots
+        mc = mc.state_average_(weights)
+        mc.get_hcore = lambda *a: h
+        mc.conv_tol = 1e-11
+        mc.conv_tol_grad = 1e-6
+        mc.verbose = 0
+        mc.kernel(mo0)
+        mo, ci, gn = zmc_response.polish(mc, mc.mo_coeff, list(mc.ci), weights, tol=1e-12,
+                                         max_cycle=25, verbose=False)
+        assert gn < 1e-11, gn
+        return mc, mo, ci
+
+    def level0(h, mo0):
+        mc, mo, ci = casscf(h, mo0)
+        saved = mf.get_hcore
+        mf.get_hcore = lambda *a: h
+        try:
+            pt = spinor_relaxed.build_pt(mf, mc, mo, numpy.array(ci).T, cderi, weights=weights)
+        finally:
+            mf.get_hcore = saved
+        return numpy.linalg.eigvalsh(pt.heff)[0]
+
+    mc, mo, ci = casscf(h0, mf.mo_coeff)
+    dm, (d_model, d_un, _), _ = spinor_relaxed.relaxed_rdm1_levels(
+        mc, mf, mo, ci, weights, levels=[0], cderi=cderi, return_parts=True)[0]
+    for name, o in ops.items():
+        relaxed = numpy.einsum('ij,ji', o, dm)
+        assert abs(relaxed.imag) < 1e-8 * abs(relaxed)
+        h = 1e-5 / abs(relaxed.real)
+        ff = (level0(h0 + h * o, mo) - level0(h0 - h * o, mo)) / (2 * h)
+        print('%s: model %.8f unrelaxed %.8f relaxed %.8f finite field %.8f'
+              % (name, numpy.einsum('ij,ji', o, d_model).real,
+                 numpy.einsum('ij,ji', o, d_model + d_un).real, relaxed.real, ff))
+        assert abs(relaxed.real - ff) < 1e-6 * abs(relaxed.real), (name, relaxed, ff)

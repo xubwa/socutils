@@ -126,6 +126,23 @@ def _get_4cspinor_quadrupole_integrals(mol, atm_id):
                 int_4c[x,y,n2c:,n2c:] += 4*np.pi/3 * fcSS / 4.0 / c**2
     return int_4c
 
+def int_efg_2c(method, atm_id, x_response=True):
+    '''(3, 3, n2c, n2c) the X2C picture-changed electronic EFG operator at nucleus atm_id
+    in the contracted spinor basis of method (the integrals of kernel, without contracting
+    them with a density): the electronic EFG of a density dm is sum_ij int[x, y][i, j]
+    dm[j, i], the total one _get_quad_nuc(mol, atm_id) minus it.'''
+    xmol, contr_coeff = _decontract_spinor(method.mol, method.with_x2c.xuncontract)
+    int_4c = _get_4cspinor_quadrupole_integrals(xmol, atm_id)
+    n2c = method.mol.nao_2c()
+    out = np.zeros((3, 3, n2c, n2c), dtype=complex)
+    for x in range(3):
+        for y in range(x + 1):
+            int_2c = method.with_x2c.get_hfw1(int_4c[x, y], x_response=x_response)
+            out[x, y] = reduce(np.dot, (contr_coeff.T.conj(), int_2c, contr_coeff))
+            out[y, x] = out[x, y]
+    return out
+
+
 EFG = kernel
 
 from socutils.scf import spinor_hf
