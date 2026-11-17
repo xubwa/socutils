@@ -1,0 +1,8 @@
+Ar fcc a = 5.260 A, Omega = 245.52 bohr^3, k-mesh 2^3, unc-cc-pVDZ, c = 137.036
+background Darwin -(pi/2c^2) Z^2/Omega = -1.103829e-04
+sfx2c1e    E1 = -1.104129e-04 Eh/atom   E1/pred =  1.0003
+x2c1e      E1 = -1.105005e-04 Eh/atom   E1/pred =  1.0011
+rs1e (SO) hermiticity 8.2e-12
+rs1e (SO)  E1 = -8.614607e-09 Eh/atom   E1/pred =  0.0001
+molecular X2C-1e from sr_nuclear_kpts(omega=0) vs pyscf: 9.3e-08
+atom: Tr D (h_X2C - h_NR)  sf -1.58412727  so -1.58327734

@@ -60,9 +60,10 @@ def _nuclear_shells(coords, ids, zeta):
     return fm, q
 
 
-def sr_nuclear_kpts(cell, kpts, omega, nuc_zeta=1e16, precision=1e-11):
+def sr_nuclear_kpts(cell, kpts, omega, nuc_zeta=1e16, precision=1e-11, with_so=False):
     '''<m|V_sr|n>(k) and <grad m|V_sr|grad n>(k), spherical AO basis of cell
-    (which may be decontracted).  omega = 0: full Coulomb (molecule only).'''
+    (which may be decontracted).  omega = 0: full Coulomb (molecule only).
+    with_so: also <grad m| x V_sr |grad n>(k) (three components).'''
     kpts = numpy.reshape(kpts, (-1, 3))
     coords = cell.atom_coords()
     lnp = -numpy.log(precision)
@@ -84,6 +85,7 @@ def sr_nuclear_kpts(cell, kpts, omega, nuc_zeta=1e16, precision=1e-11):
     nk = len(kpts)
     v = numpy.zeros((nk, nao, nao), dtype=complex)
     pvp = numpy.zeros((nk, nao, nao), dtype=complex)
+    pvxp = numpy.zeros((nk, 3, nao, nao), dtype=complex)
     mol0 = _shifted(cell, numpy.zeros(3))
     nb = mol0.nbas
     for t in t_ao:
@@ -106,6 +108,11 @@ def sr_nuclear_kpts(cell, kpts, omega, nuc_zeta=1e16, precision=1e-11):
         phase = numpy.exp(1j * kpts @ t)
         v += phase[:, None, None] * vt
         pvp += phase[:, None, None] * wt
+        if with_so:
+            st = numpy.einsum('xijp,p->xij', pm.intor('int3c2e_pvxp1', comp=3, shls_slice=sl), chg)
+            pvxp += phase[:, None, None, None] * st
+    if with_so:
+        return v, pvp, pvxp
     return v, pvp
 
 
@@ -175,6 +182,92 @@ class SpinFreeRS1eHelper(pbc_sfx2c1e.SpinFreeX2CHelper):
         if kpts is None or numpy.shape(kpts) == (3,):
             return h1_kpts[0]
         return lib.asarray(h1_kpts)
+
+
+def _x2c_so(t, v, wsf, wso, s, c):
+    """Spin-orbital X2C-1e h for spatial t, v, s, scalar pVp and the three pVxp."""
+    from pyscf.pbc.x2c import x2c1e as pbc_x2c1e
+    bd = pbc_x2c1e._block_diag
+    w = pbc_x2c1e._sigma_dot(numpy.vstack([wso, wsf[None]]))
+    return x2c._x2c1e_get_hcore(bd(t), bd(v), w, bd(s), c)
+
+
+class SpinOrbitalRS1eHelper(SpinFreeRS1eHelper):
+    """rs1e with spin-orbit coupling in the spin-orbital basis (GHF / KGHF),
+    the counterpart of pyscf.pbc.x2c.x2c1e.SpinOrbitalX2C1EHelper."""
+
+    def _atomic_d(self, xcell):
+        from scipy.linalg import block_diag
+        c = lib.param.LIGHT_SPEED
+        nao = xcell.nao_nr()
+        d = numpy.zeros((2 * nao, 2 * nao), dtype=complex)
+        cache = {}
+        for ia, (_, _, p0, p1) in enumerate(xcell.aoslice_by_atom()):
+            key = xcell.atom_symbol(ia)
+            if key not in cache:
+                atom = gto.Mole()
+                atom.atom = [(key, (0., 0., 0.))]
+                atom.unit = 'Bohr'
+                atom.basis = {key: self.cell._basis[key]}
+                atom.cart = xcell.cart
+                atom.spin = gto.charge(key) % 2
+                atom.verbose = 0
+                atom.build(False, False)
+                if self.xuncontract:
+                    atom = atom.decontract_basis(aggregate=True)[0]
+                t = atom.intor('int1e_kin')
+                s = atom.intor('int1e_ovlp')
+                z = numpy.zeros(3)
+                vf, wf, sf = (x[0].real for x in sr_nuclear_kpts(atom, z, 0., self.nuc_zeta, with_so=True))
+                vs, ws, ss = (x[0].real for x in sr_nuclear_kpts(atom, z, self.omega, self.nuc_zeta, with_so=True))
+                cache[key] = (_x2c_so(t, vf, wf, sf, s, c) - _x2c_so(t, vs, ws, ss, s, c)
+                              - block_diag(vf - vs, vf - vs))
+            n = p1 - p0
+            blk = cache[key]
+            for i in (0, 1):
+                for j in (0, 1):
+                    d[i * nao + p0:i * nao + p1, j * nao + p0:j * nao + p1] = blk[i * n:(i + 1) * n, j * n:(j + 1) * n]
+        return d
+
+    def get_hcore(self, cell=None, kpts=None):
+        from scipy.linalg import block_diag
+        if cell is None:
+            cell = self.cell
+        if kpts is None:
+            kpts_lst = numpy.zeros((1, 3))
+        else:
+            kpts_lst = numpy.reshape(kpts, (-1, 3))
+        xcell, contr_coeff = self.get_xmol(cell)
+        if contr_coeff is not None:
+            contr_coeff = block_diag(contr_coeff, contr_coeff)
+        with_df = pbc_df.DF(xcell)
+        c = lib.param.LIGHT_SPEED
+        t = xcell.pbc_intor('int1e_kin', 1, lib.HERMITIAN, kpts_lst)
+        s = xcell.pbc_intor('int1e_ovlp', 1, lib.HERMITIAN, kpts_lst)
+        v = lib.asarray(with_df.get_nuc(kpts_lst))
+        v_sr, w_sr, so_sr = sr_nuclear_kpts(xcell, kpts_lst, self.omega, self.nuc_zeta, self.rs_precision,
+                                            with_so=True)
+        d = self._atomic_d(xcell) if self.self_lr else 0.
+        h1_kpts = []
+        for k in range(len(kpts_lst)):
+            dv = v[k] - v_sr[k]
+            h1 = _x2c_so(t[k], v_sr[k], w_sr[k], so_sr[k], s[k], c) + block_diag(dv, dv) + d
+            if self.xuncontract and contr_coeff is not None:
+                h1 = contr_coeff.T @ h1 @ contr_coeff
+            h1_kpts.append(h1)
+        if kpts is None or numpy.shape(kpts) == (3,):
+            return h1_kpts[0]
+        return lib.asarray(h1_kpts)
+
+
+def rs1e(mf, omega=1.0, self_lr=True):
+    """mf.x2c1e() (GHF / KGHF) with the spin-orbit rs1e helper."""
+    mf = mf.x2c1e()
+    hlp = SpinOrbitalRS1eHelper(mf.cell)
+    hlp.omega = omega
+    hlp.self_lr = self_lr
+    mf.with_x2c = hlp
+    return mf
 
 
 def sfrs1e(mf, omega=1.0, self_lr=True):
