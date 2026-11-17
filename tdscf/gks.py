@@ -44,27 +44,48 @@ def _root_tol(td, nstates, nbuf):
 
 @contextlib.contextmanager
 def _coarse_response(td, log):
-    '''refine argument of lr_locked (None, or (rtol, switch)) for td.coarse_grid: the COSX response K on that grid
-    level (spinor_jk.RESPONSE_GRID) until every residual is below td.coarse_tol x conv_tol, then on the
-    RESPONSE_GRID one; spinor_jk.RESPONSE_GRID restored on exit'''
+    '''the coarse first phase of the locked solves: yields setup(aop, gen) -> (aop0, refine) for lr_locked
+    (refine None: no coarse phase).  td.coarse_grid: the COSX response K on that grid level
+    (spinor_jk.RESPONSE_GRID; RIJ / COSX references); td.coarse_fxc_grids: f_xc on that grid ('cpscf' or a
+    Grids; the operator of gen(mf) built and applied with mf.grids set to it).  The phase ends when every
+    residual is below td.coarse_tol x conv_tol (lr_locked refine), the solve then converges on aop, the final
+    operator; spinor_jk.RESPONSE_GRID restored on exit'''
     from socutils.scf import spinor_jk
+    mf = td._scf
     lvl = getattr(td, 'coarse_grid', None)
     fine = spinor_jk.RESPONSE_GRID
-    if lvl is None or lvl == fine or spinor_jk.mode(td._scf) not in ('cosx', 'rijcosx'):
-        yield None
+    if lvl == fine or spinor_jk.mode(mf) not in ('cosx', 'rijcosx'):
+        lvl = None
+    gc = None
+    if getattr(td, 'coarse_fxc_grids', None) is not None and hasattr(mf, 'grids'):
+        gc = td._fxc_grids(td.coarse_fxc_grids)
+    if lvl is None and gc is None:
+        yield lambda aop, gen: (aop, None)
         return
+    rtol = td.coarse_tol * td.conv_tol
 
-    def switch(aop):
-        def f():
+    def setup(aop, gen):
+        aop0 = aop
+        if gc is not None:
+            with lib.temporary_env(mf, grids=gc):
+                vc = gen(mf)[0]
+
+            def coarse(*z):
+                with lib.temporary_env(mf, grids=gc):
+                    return vc(*z)
+            aop0 = coarse
+
+        def switch():
             spinor_jk.RESPONSE_GRID = fine
-            log.info('response COSX K: GRIDX%s -> GRIDX%s (all residuals below %.1e)', lvl, fine,
-                     td.coarse_tol * td.conv_tol)
+            log.info('response: coarse phase done (all residuals below %.1e or stalled), final operator', rtol)
             return aop
-        return f
-    spinor_jk.RESPONSE_GRID = lvl
-    log.info('response COSX K on GRIDX%s until the residuals are below %.1e', lvl, td.coarse_tol * td.conv_tol)
+        return aop0, (rtol, switch)
+    if lvl is not None:
+        spinor_jk.RESPONSE_GRID = lvl
+    log.info('response: coarse phase (COSX K on GRIDX%s, f_xc on %s) until the residuals are below %.1e',
+             lvl if lvl is not None else fine, '%d points' % gc.weights.size if gc is not None else 'its grid', rtol)
     try:
-        yield lambda aop: (td.coarse_tol * td.conv_tol, switch(aop))
+        yield setup
     finally:
         spinor_jk.RESPONSE_GRID = fine
 
@@ -202,8 +223,9 @@ class _KernelXCMixin:
     # the analytic Hessian (socutils.hessian.rhf_fast.CPSCF_GRID_ARGS, socutils.dft.grids); or a Grids object.
     fxc_grids = None
 
-    def _fxc_grids(self):
-        g = self.fxc_grids
+    def _fxc_grids(self, g=None):
+        if g is None:
+            g = self.fxc_grids
         if g is None:
             return None
         if isinstance(g, str):
@@ -666,6 +688,7 @@ class TDA(_KernelXCMixin, _ghf.TDA):
     min_batch = None            # lr_locked: batches topped up to this many vectors by further directions per root
     coarse_grid = None          # COSX response K on this grid level (e.g. 0) until the residuals are below
     coarse_tol = 10.            # coarse_tol x conv_tol, then on spinor_jk.RESPONSE_GRID (restart from the Ritz vectors)
+    coarse_fxc_grids = None     # f_xc of the coarse phase on this grid ('cpscf' or a Grids; None: fxc_grids)
 
     def kernel(self, x0=None, nstates=None):
         if not (self.direct or self.couple_reference):
@@ -765,11 +788,12 @@ class TDA(_KernelXCMixin, _ghf.TDA):
         # missing once the lowest nstates Ritz roots converge (AuH x2c-SVPall PBE0: the 3.826 eV root under
         # the 3.877 eV pair at nstates = 6; pyscf's lr_eigh misses the 3.803 eV pair at nstates = 4)
         nbuf = self.nbuffer if self.nbuffer is not None else max(2, nstates // 2)
-        with _coarse_response(self, log) as refine:
-            conv, e, x1 = lr_locked.eigh(vind, x0, precond, nstates + nbuf, tol=_root_tol(self, nstates, nbuf),
+        with _coarse_response(self, log) as setup:
+            vind0, refine = setup(vind, self.gen_vind)
+            conv, e, x1 = lr_locked.eigh(vind0, x0, precond, nstates + nbuf, tol=_root_tol(self, nstates, nbuf),
                                          lindep=self.lindep, max_cycle=self.max_cycle, max_space=self.max_space,
                                          pick=pick, log=log, project=project, real=tr is not None,
-                                         min_batch=self.min_batch, refine=refine and refine(vind))
+                                         min_batch=self.min_batch, refine=refine)
         conv, e, x1 = conv[:nstates], e[:nstates], x1[:nstates]
         self.converged, self.e = conv, e
         mo_occ = mf.mo_occ[self.get_frozen_mask()]
@@ -1070,6 +1094,7 @@ class TDRPA(_KernelXCMixin, _PairedRPA):
     min_batch = None            # lr_locked: batches topped up to this many vectors by further directions per root
     coarse_grid = None          # COSX response K on this grid level (e.g. 0) until the residuals are below
     coarse_tol = 10.            # coarse_tol x conv_tol, then on spinor_jk.RESPONSE_GRID (restart from the Ritz vectors)
+    coarse_fxc_grids = None     # f_xc of the coarse phase on this grid ('cpscf' or a Grids; None: fxc_grids)
     max_space = None            # lr_locked's subspace bound (None: max(8 nroots, 40))
     instability = 'tda'         # A +- B not positive definite: 'tda' (warn, TDA roots) | 'raise'
     unstable = None
@@ -1172,12 +1197,13 @@ class TDRPA(_KernelXCMixin, _PairedRPA):
         nbuf = self.nbuffer if self.nbuffer is not None else max(2, nstates // 2)
         nroots = min(nstates + nbuf, hdiag.size)
         try:
-            with _coarse_response(self, log) as refine:
-                conv, e, P, Q = lr_locked.rpa_eig(aop, x0, precond, nroots,
+            with _coarse_response(self, log) as setup:
+                aop0, refine = setup(aop, self.gen_vind_pm)
+                conv, e, P, Q = lr_locked.rpa_eig(aop0, x0, precond, nroots,
                                                   tol=_root_tol(self, nstates, nroots - nstates), lindep=self.lindep,
                                                   max_cycle=self.max_cycle, max_space=self.max_space, pick=pick,
                                                   log=log, project=project, min_batch=self.min_batch,
-                                                  refine=refine and refine(aop))
+                                                  refine=refine)
         except lr_locked.RPAInstability as err:
             self.unstable = True
             log.warn('TDRPA: reference instability (%s): the RPA has imaginary / non-positive roots here', err)
@@ -1204,6 +1230,7 @@ class TDRPA(_KernelXCMixin, _PairedRPA):
         for key in ('frozen', 'conv_tol', 'max_cycle', 'lindep', 'level_shift', 'positive_eig_threshold',
                     'xc_kernel', 'collinear', 'picture_change', 'kramers', 'KRAMERS_TOL', 'nbuffer', 'max_space',
                     'min_batch', 'coarse_grid', 'coarse_tol', 'buffer_tol',
+                    'coarse_fxc_grids', 'fxc_grids',
                     'verbose', 'stdout', 'chkfile'):
             if hasattr(self, key):
                 setattr(td, key, getattr(self, key))
