@@ -77,6 +77,11 @@ elif part == 'std2':
     run('He', 'Ne', 2, 10, 'unc-cc-pvtz', 'unc-cc-pvtz')
     for basis in ('unc-cc-pvdz', 'unc-cc-pvtz'):
         run('Ne', 'Ne', 10, 10, basis, basis)
+elif part == 'et2':
+    # smaller even-tempered set: the spin-orbit run with ET_HE needs more than 15 GB
+    et2 = [[0, [e, 1.]] for e in et(7, 0.08, 3.0)] + [[1, [e, 1.]] for e in et(4, 0.15, 3.0)] + \
+          [[2, [e, 1.]] for e in et(2, 0.4, 3.0)]
+    run('He', 'He', 2, 2, {'He': et2}, 'ET 7s4p2d', rs=(160,))
 elif part == 'et':
     run('He', 'He', 2, 2, {'He': ET_HE}, 'ET 10s6p3d')
 elif part == 'c':
