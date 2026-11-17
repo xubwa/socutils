@@ -200,7 +200,7 @@ def _active_two_body(pt, pclass, b, g, x4, sp, traces=None):
     if traces is None:
         traces = [(numpy.trace(g), 0)]
     if pt.nelec >= 2:
-        for tr, j in traces:
+        for tr, j in density.share_traces(pt, traces):
             d2 -= tr * active_rdm.make_rdm(act, pt.civecs[:, [j]], pt.nelec, 2, bra=0, ket=0)
     a = sp.slice('a')
     x4[a, a, a, a] += 0.5 * d2.real
@@ -316,7 +316,7 @@ def _active_two_body_holo(pt, pclass, b, g, x4, sp, traces):
         for m, wm in enumerate(w[keep]):
             d2 += wm * active_rdm.make_rdm(act, vecs[:, m], ntarget, 2, bra=0, ket=0)
     if pt.nelec >= 2:
-        for tr, j in traces:
+        for tr, j in density.share_traces(pt, traces):
             d2 -= tr * active_rdm.make_rdm(act, pt.civecs[:, [j]], pt.nelec, 2, bra=0, ket=0)
     a = sp.slice('a')
     x4[a, a, a, a] += 0.25 * d2
@@ -355,10 +355,12 @@ def gradient_general(pt, state=0, rho=None, names=None):
     for name in names or ('ccvv',) + tuple(density._LABELS):
         pclass = uc_classes.CLASS_BY_NAME[name]
         if name == 'ccvv':
+            # its energy times tr(rho) (model states that diagonalize H_act)
+            tr = 1.0 if rho is None else numpy.trace(rho)
             _, dcc, dvv = density.ccvv(ctx, kramers=False)
-            d_gen += density.assemble(sp, {'cc': dcc, 'vv': dvv})
+            d_gen += tr * density.assemble(sp, {'cc': dcc, 'vv': dvv})
             # E = -sum_{i<j, a<b} |v|^2 / Delta: holomorphic dE/dv = -conj(v) / Delta
-            blocks = [(k, -v.conj() / delta[:, None])
+            blocks = [(k, -tr * v.conj() / delta[:, None])
                       for k, (delta, v) in enumerate(pclass.blocks(ctx))]
             _add_antisym(x4, sp, *_scatter_c(name, ctx, blocks))
             if rho is not None:

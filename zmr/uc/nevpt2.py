@@ -55,6 +55,11 @@ class NEVPT2Base:
     # Hermitize a even with a common E0 (needed when the first-order space
     # depends on the ket state)
     hermitize_always = False
+    # e0='state': model states whose zeroth-order energies are chained by gaps up to this
+    # share their E0 (their mean): exactly degenerate states (a Kramers pair) by default; a
+    # larger value keeps a multiplet together when a perturbation splits it, so that heff
+    # stays covariant under rotations within it (finite fields of time-odd properties)
+    degeneracy_tol = 1e-10
     # CI vectors are complex unless a subclass works in real arithmetic and
     # the model states are real
     dtype = numpy.complex128
@@ -384,7 +389,7 @@ class NEVPT2Base:
         if self.e0 == 'state':
             # degenerate states share their E0 exactly (one set of
             # denominators per level instead of one per state)
-            shifts = _snap(e0_states, 1e-10)
+            shifts = _snap(e0_states, self.degeneracy_tol)
         else:
             shifts = numpy.full(nstate, numpy.dot(self.weights, e0_states))
 

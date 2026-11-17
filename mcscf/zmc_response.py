@@ -368,7 +368,7 @@ def transition_rdm12(resp, bra, ket):
 
 
 def model_rdm12(resp, rho):
-    '''sum_IJ rho_IJ <c_I|...|c_J> (rho Hermitian, trace 1).'''
+    '''sum_IJ rho_IJ <c_I|...|c_J> (rho Hermitian).'''
     dm1 = numpy.zeros_like(resp.dm1)
     dm2 = numpy.zeros_like(resp.dm2)
     for i, ci in enumerate(resp.ci):
@@ -386,10 +386,14 @@ def model_rdm12(resp, rho):
 
 def model_gradient(resp, rho):
     '''G of T = sum_IJ rho_IJ hmodel_IJ, hmodel_IJ = <c_I|H_act|c_J> + E_core delta_IJ
-    (rho Hermitian with trace 1): orbitals 2 g(D_rho), CI 2 (g_I - Re<c_I, g_I> c_I) with
+    (rho Hermitian): orbitals 2 g(D_rho) (its core part times tr(rho)), CI 2 (g_I - Re<c_I,
+    g_I> c_I) with
     g_I = sum_J rho_IJ H_act c_J (dT = 2 Re sum_I <dc_I|g_I>).'''
     dm1, dm2 = model_rdm12(resp, rho)
-    parts = [2 * _orbital_gradient(resp, dm1, dm2)]
+    # the core part of g(D) (the energy of the core) comes with tr(rho)
+    tr = numpy.trace(rho).real
+    g_core = _orbital_gradient(resp, numpy.zeros_like(dm1), numpy.zeros_like(dm2))
+    parts = [2 * (_orbital_gradient(resp, dm1, dm2) - (1 - tr) * g_core)]
     for i, c in enumerate(resp.ci):
         g = sum(rho[i, j] * resp.hc[j] for j in range(len(resp.ci)))
         parts.append(2 * (g - numpy.vdot(c, g).real * c))
@@ -397,8 +401,11 @@ def model_gradient(resp, rho):
 
 
 def model_density(resp, rho):
-    '''AO density of sum_IJ rho_IJ hmodel_IJ (core occupied, sum rho_IJ gamma^IJ).'''
-    return ao_density(resp, mo_density(resp, model_rdm12(resp, rho)[0]))
+    '''AO density of sum_IJ rho_IJ hmodel_IJ (core occupied times tr(rho), sum rho_IJ
+    gamma^IJ).'''
+    d = mo_density(resp, model_rdm12(resp, rho)[0])
+    d[:resp.ncore, :resp.ncore] *= numpy.trace(rho).real
+    return ao_density(resp, d)
 
 
 def degenerate_rotations(resp, tol=1e-9):

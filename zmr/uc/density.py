@@ -208,6 +208,18 @@ def ccvv_active(pt, ctx, rho):
     return out[0] if single else out
 
 
+def share_traces(pt, traces):
+    '''The pairs (tr(g^J), J) of the zeroth-order energies with the shift of every state
+    shared by the states whose E0 is the same (NEVPT2Base.degeneracy_tol): the shift s_G is
+    the mean of <Psi_K|H_act|Psi_K> over its group, so tr(g^J) is spread over the group.'''
+    shifts = numpy.asarray(pt.shifts, dtype=float)
+    out = []
+    for tr, j in traces:
+        group = numpy.nonzero(shifts == shifts[j])[0] if len(shifts) > 1 else [j]
+        out.extend((tr / len(group), int(k)) for k in group)
+    return out
+
+
 def _active_block(pt, pclass, b, g, traces=None):
     '''D_aa[t, u] = sum_kk' g[k, k'] <b_k'|t^+ u|b_k> - sum_J tr(g^J) <Psi_J|t^+ u|Psi_J>:
     the derivative of the class energy with respect to the active block of h through
@@ -229,7 +241,7 @@ def _active_block(pt, pclass, b, g, traces=None):
         d = numpy.einsum('m,mpk,mqk->pq', w[keep], amp.conj(), amp, optimize=True)
     if traces is None:
         traces = [(numpy.trace(g), 0)]
-    for tr, j in traces:
+    for tr, j in share_traces(pt, traces):
         gamma = active_rdm.make_rdm(act, pt.civecs[:, [j]], pt.nelec, 1)[0, 0]
         d = d - tr * gamma
     return d

@@ -160,3 +160,66 @@ def test_relaxed_spinor_qd_levels_kramers():
               % (k, unrel, relaxed.real, relaxed.imag, ff[k]))
         assert abs(relaxed.imag) < 1e-9
         assert abs(relaxed.real - ff[k]) < 1e-6, (k, relaxed, ff[k])
+
+
+@pytest.mark.slow
+def test_relaxed_level_matrix_time_odd():
+    '''The relaxed matrix of a Kramers pair (relaxed_level_matrix) for a time-odd operator
+    (spin): its eigenvalues against the finite-field splitting of the pair.  OH radical,
+    X2CAMF, SA over X 2Pi; the pair shares its E0 also in the field (degeneracy_tol), so
+    heff stays covariant within it.  The splitting is odd in the field: half of it over h,
+    Richardson in h.'''
+    from pyscf import gto
+    from socutils.fci import zfci
+    from socutils.mcscf import zmcscf, zmc_response
+    from socutils.scf import spinor_hf
+    from socutils.zmr import spinor_relaxed
+    nroots = 4
+    weights = [1.0 / nroots] * nroots
+    mol = gto.M(atom='O 0 0 0; H 0 0 0.97', basis='6-31g', charge=-1, verbose=0)
+    mf = spinor_hf.KRHF(mol).x2camf().density_fit()
+    mf.kernel()
+    cderi = mf.with_df._cderi
+    h0 = mf.get_hcore()
+    sig = mol.intor('int1e_sigma_spinor')
+    op = sig[2] + 0.3 * sig[0]
+
+    def casscf(h, mo0):
+        mc = zmcscf.CASSCF(mf, 8, 5, ncore=4)
+        mc.fcisolver = zfci.FCISolver(mol)
+        mc.fcisolver.nroots = nroots
+        mc = mc.state_average_(weights)
+        mc.get_hcore = lambda *a: h
+        mc.conv_tol = 1e-11
+        mc.conv_tol_grad = 1e-6
+        mc.verbose = 0
+        mc.kernel(mo0)
+        mo, ci, gn = zmc_response.polish(mc, mc.mo_coeff, list(mc.ci), weights, tol=1e-12,
+                                         max_cycle=25, verbose=False)
+        assert gn < 1e-11, gn
+        return mc, mo, ci
+
+    def pair(h, mo0):
+        mc, mo, ci = casscf(h, mo0)
+        saved = mf.get_hcore
+        mf.get_hcore = lambda *a: h
+        try:
+            pt = spinor_relaxed.build_pt(mf, mc, mo, numpy.array(ci).T, cderi, weights=weights,
+                                         degeneracy_tol=1e-4)
+        finally:
+            mf.get_hcore = saved
+        return numpy.linalg.eigvalsh(pt.heff)[:2]
+
+    mc, mo, ci = casscf(h0, mf.mo_coeff)
+    _, d = spinor_relaxed.relaxed_level_matrix(mc, mf, mo, ci, weights, level=0, cderi=cderi)
+    w = numpy.array([[numpy.einsum('ij,ji', op, d[a][b]) for b in range(2)] for a in range(2)])
+    assert abs(w - w.conj().T).max() < 1e-9
+    w_eig = numpy.linalg.eigvalsh(w)
+    half = {}
+    for h in (1e-5, 2e-5):
+        e = pair(h0 + h * op, mo)
+        half[h] = (e[1] - e[0]) / (2 * h)
+    ff = (4 * half[1e-5] - half[2e-5]) / 3
+    print('eig(W) %s, finite-field half splitting %.8f' % (w_eig, ff))
+    assert abs(w_eig[0] + w_eig[1]) < 1e-7                     # +-w: a Kramers pair
+    assert abs(w_eig[1] - ff) < 2e-6, (w_eig, ff)

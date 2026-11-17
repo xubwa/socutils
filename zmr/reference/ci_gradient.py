@@ -134,13 +134,20 @@ class QAccumulator:
         w_s = (q_s @ pf).reshape(nl, nj, nx, -1)
         w_k = (q_k @ pf).reshape(nl, nj, nx, -1)
         out = numpy.zeros((nl, nj, pt.civecs.shape[0]), dtype=numpy.complex128)
+        # a shift shared by states of the same E0 (zmr.uc.density.share_traces)
+        tau = self.tau.copy()
+        if nj > 1:
+            shifts = numpy.asarray(self.s)
+            for j in range(nj):
+                same = shifts == shifts[j]
+                tau[:, j] = self.tau[:, same].mean(axis=1)
         for j, jj in enumerate(self.states):
             psi = pt.civecs[:, jj]
             hw = act.apply_h(ntarget, w_k[:, j].reshape(nl * nx, -1).T).T.reshape(nl, nx, -1)
             hpsi = act.apply_h(pt.nelec, psi[:, None])[:, 0] - self.s[j] * psi
             out[:, j] = (-_sum_adjoint(act, pclass, w_s[:, j], ntarget)
                          + _sum_adjoint(act, pclass, hw, ntarget)
-                         - self.tau[:, j].real[:, None] * hpsi[None])
+                         - tau[:, j].real[:, None] * hpsi[None])
         return out[0] if self.single else out
 
 
@@ -184,7 +191,7 @@ def ci_gradient_states(pt, rho, names=None):
     for name in names:
         if name == 'ccvv':
             _, dcc, dvv = density.ccvv(ctx, kramers=False)
-            d_gen = d_gen + density.assemble(sp, {'cc': dcc, 'vv': dvv})
+            d_gen = d_gen + numpy.trace(rho) * density.assemble(sp, {'cc': dcc, 'vv': dvv})
         else:
             _, dblk = density.class_reference(pt, ctx, name, rho=rho)
             for lab in ('cc', 'vv'):

@@ -222,6 +222,7 @@ def active_two_body(pt, pclass, b, g, state=0, traces=None):
     first-order space and in the zeroth-order energy, (na,) * 4, holomorphic: 1/4 [sum_m
     w_m Gamma(b y_m) - sum_J tr(g^J) Gamma(Psi_J)] with g = sum_m w_m y_m y_m^+.'''
     from socutils.zmr.active import rdm as active_rdm
+    from socutils.zmr.uc import density
     act = pt.active_space
     ntarget = act.target(pt.nelec, pclass.dn)
     na = act.norb
@@ -235,7 +236,7 @@ def active_two_body(pt, pclass, b, g, state=0, traces=None):
     if traces is None:
         traces = [(numpy.trace(g), state)]
     if pt.nelec >= 2:
-        for tr, j in traces:
+        for tr, j in density.share_traces(pt, traces):
             d2 -= tr * active_rdm.make_rdm(act, pt.civecs[:, [j]], pt.nelec, 2, bra=0, ket=0)
     # holomorphic: dE = Re sum 1/2 d2 d(tu|vw)
     return 0.25 * d2
@@ -273,9 +274,12 @@ def derivatives(pt, state=0, max_memory=4000, rho=None):
     nstate = 1 if rho is None else pt.civecs.shape[1]
     g_ci = numpy.zeros((nl, nstate, pt.civecs.shape[0]), dtype=c16)
     _, dcc, dvv, g_ccvv = ccvv(ctx)
+    # ccvv: its energy times tr(rho) for model states that diagonalize H_act (tr(rho) = 1
+    # for a level, 0 for an off-diagonal element of the matrix of a multiplet)
+    traces = [1.0] * nl if rho is None else [numpy.trace(x) for x in per_level(rho)]
     for lv in range(nl):
-        d_gen[lv] += density.assemble(sp, {'cc': dcc, 'vv': dvv})
-        _add(gams[lv], ('v', 'c'), g_ccvv)
+        d_gen[lv] += traces[lv] * density.assemble(sp, {'cc': dcc, 'vv': dvv})
+        _add(gams[lv], ('v', 'c'), traces[lv] * g_ccvv)
     if rho is not None:
         # several model states: ccvv also through H_act and the CI vectors
         pclass = classes.CLASS_BY_NAME['ccvv']
