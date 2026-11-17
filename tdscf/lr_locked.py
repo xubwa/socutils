@@ -86,6 +86,7 @@ def _fill(new, todo, rn, extras, min_batch):
 
 REFINE_KEEP = 1.        # the restart on the final operator from REFINE_KEEP x nroots Ritz vectors
 REFINE_STALL = 3        # the cheaper operator is left also when max |r| has not halved for this many iterations
+REFINE_STALL_FROM = 10.  # (counted once max |r| is below REFINE_STALL_FROM x rtol)
 
 
 def _refine_due(st, rn, conv, rtol):
@@ -94,6 +95,10 @@ def _refine_due(st, rn, conv, rtol):
     if (conv | (rn < rtol)).all():
         return True
     r = rn[~conv].max()
+    if r > REFINE_STALL_FROM * rtol:
+        # still far (e.g. roots still being found, |r| flat for several iterations): no stall
+        st['best'], st['since'] = numpy.inf, 0
+        return False
     if r < .5 * st.get('best', numpy.inf):
         st['best'], st['since'] = r, 0
     else:
