@@ -238,15 +238,21 @@ def g_tensor_from_block(m):
     return 2 * p
 
 
-def relaxed_g_tensor(mc, mf, mo, ci, weights, level=0, cderi=None, max_memory=4000,
-                     origin=None, ops=None):
-    '''g tensors of the Kramers doublet of level `level` of the multi-state PC-NEVPT2:
-    {'model', 'unrelaxed', 'relaxed'}, from the matrices <m|O_a|n> of the CASSCF-model
-    part, the derivative at fixed orbitals and CI vectors, and the relaxed one
-    (relaxed_level_matrix).  ops: the magnetic-moment operators (default
-    magnetic_moment_ops).'''
-    if ops is None:
-        ops = magnetic_moment_ops(mf, origin)
+def hyperfine_ops(mf, atom, utm=True):
+    '''(3, n2c, n2c) the X2C picture-changed hyperfine operator at nucleus `atom` of
+    socutils.prop.hfc (the coupling to a unit nuclear spin, the isotope's g factor
+    included).'''
+    from socutils.prop.hfc import spinor_hf as hfc
+    return hfc.int_hfc_2c(mf, atom, utm=utm)
+
+
+def relaxed_doublet_blocks(mc, mf, mo, ci, weights, ops, level=0, cderi=None,
+                           max_memory=4000):
+    '''(energy, {'model', 'unrelaxed', 'relaxed'}: (ncomp, 2, 2)) the matrices
+    <m|O_c|n> over the Kramers doublet of level `level` of the multi-state PC-NEVPT2 for
+    the operators ops (ncomp, n2c, n2c): the CASSCF-model part, the derivative at fixed
+    orbitals and CI vectors, and the relaxed one (relaxed_level_matrix; one solution for
+    all operators).'''
     cderi = mf.with_df._cderi if cderi is None else cderi
     probe = build_pt(mf, mc, mo, numpy.array([numpy.asarray(c).ravel() for c in ci]).T, cderi,
                      weights=weights, max_memory=max_memory)
@@ -268,7 +274,37 @@ def relaxed_g_tensor(mc, mf, mo, ci, weights, level=0, cderi=None, max_memory=40
     def block(d):
         return numpy.array([[[numpy.einsum('ij,ji', o, d[a][b]) for b in range(2)]
                              for a in range(2)] for o in ops])
-    return {'energy': e_k,
-            'model': g_tensor_from_block(block(d_model)),
-            'unrelaxed': g_tensor_from_block(block(d_un)),
-            'relaxed': g_tensor_from_block(block(d_rel))}
+    return e_k, {'model': block(d_model), 'unrelaxed': block(d_un), 'relaxed': block(d_rel)}
+
+
+def relaxed_g_tensor(mc, mf, mo, ci, weights, level=0, cderi=None, max_memory=4000,
+                     origin=None, ops=None):
+    '''g tensors {'energy', 'model', 'unrelaxed', 'relaxed'} of the Kramers doublet of
+    level `level` (relaxed_doublet_blocks of the magnetic-moment operators,
+    g_tensor_from_block).'''
+    if ops is None:
+        ops = magnetic_moment_ops(mf, origin)
+    e_k, blocks = relaxed_doublet_blocks(mc, mf, mo, ci, weights, ops, level, cderi, max_memory)
+    out = {k: g_tensor_from_block(b) for k, b in blocks.items()}
+    out['energy'] = e_k
+    return out
+
+
+def relaxed_hyperfine_tensor(mc, mf, mo, ci, weights, atoms, level=0, cderi=None,
+                             max_memory=4000, origin=None):
+    '''g and hyperfine tensors of the Kramers doublet of level `level`:
+    {'energy', 'g': {kind: (3, 3)}, 'A': {kind: (natoms, 3, 3)}} for kind in model /
+    unrelaxed / relaxed.  A_ab = Tr(M_a sigma_b) in the pseudo-spin frame fixed by g of
+    the same kind (socutils.prop.observables.hyperfine_tensor): H = sum I_a A_ab S~_b,
+    a.u., the sign relative to the non-negative g.'''
+    from socutils.prop import observables
+    ops = [magnetic_moment_ops(mf, origin)] + [hyperfine_ops(mf, a) for a in atoms]
+    e_k, blocks = relaxed_doublet_blocks(mc, mf, mo, ci, weights, numpy.concatenate(ops),
+                                         level, cderi, max_memory)
+    out = {'energy': e_k, 'g': {}, 'A': {}}
+    for kind, b in blocks.items():
+        p, r = observables.pseudo_spin_frame(observables.pseudo_spin_tensor(b[:3]))
+        out['g'][kind] = 2 * p
+        out['A'][kind] = numpy.array([observables.pseudo_spin_tensor(b[3 + 3 * k:6 + 3 * k]) @ r.T
+                                      for k in range(len(atoms))])
+    return out

@@ -283,3 +283,64 @@ def test_relaxed_g_tensor_finite_field():
     print('g_parallel relaxed %.7f, model %.7f; finite field %.7f'
           % (g_par, numpy.linalg.eigvalsh(g['model'])[-1], 4 * ff))
     assert abs(g_par - 4 * ff) < 1e-5, (g_par, 4 * ff)
+
+
+@pytest.mark.slow
+def test_relaxed_hyperfine_finite_field():
+    '''relaxed_hyperfine_tensor at the proton of OH X 2Pi_3/2 against the finite-field
+    splitting of the doublet by a classical nuclear moment m along z (H += m h_z): half the
+    splitting over m is |T_A[z, :]| / 2 (M_z = 1/2 sum_b T_zb sigma_b), T_A the pseudo-spin
+    tensor before the frame rotation, whose row norms the rotation keeps.'''
+    from pyscf import gto
+    from socutils.fci import zfci
+    from socutils.mcscf import zmcscf, zmc_response
+    from socutils.scf import spinor_hf
+    from socutils.zmr import spinor_relaxed
+    nroots = 4
+    weights = [1.0 / nroots] * nroots
+    mol = gto.M(atom='O 0 0 0; H 0 0 0.97', basis='6-31g', charge=-1, verbose=0)
+    mf = spinor_hf.KRHF(mol).x2camf().density_fit()
+    mf.kernel()
+    cderi = mf.with_df._cderi
+    h0 = mf.get_hcore()
+    hz = spinor_relaxed.hyperfine_ops(mf, 1)[2]
+
+    def casscf(h, mo0):
+        mc = zmcscf.CASSCF(mf, 8, 5, ncore=4)
+        mc.fcisolver = zfci.FCISolver(mol)
+        mc.fcisolver.nroots = nroots
+        mc = mc.state_average_(weights)
+        mc.get_hcore = lambda *a: h
+        mc.conv_tol = 1e-11
+        mc.conv_tol_grad = 1e-6
+        mc.verbose = 0
+        mc.kernel(mo0)
+        mo, ci, gn = zmc_response.polish(mc, mc.mo_coeff, list(mc.ci), weights, tol=1e-12,
+                                         max_cycle=25, verbose=False)
+        assert gn < 1e-11, gn
+        return mc, mo, ci
+
+    def pair(h, mo0):
+        mc, mo, ci = casscf(h, mo0)
+        saved = mf.get_hcore
+        mf.get_hcore = lambda *a: h
+        try:
+            pt = spinor_relaxed.build_pt(mf, mc, mo, numpy.array(ci).T, cderi, weights=weights,
+                                         degeneracy_tol=1e-4)
+        finally:
+            mf.get_hcore = saved
+        return numpy.linalg.eigvalsh(pt.heff)[:2]
+
+    mc, mo, ci = casscf(h0, mf.mo_coeff)
+    res = spinor_relaxed.relaxed_hyperfine_tensor(mc, mf, mo, ci, weights, atoms=[1], cderi=cderi)
+    a_rel = res['A']['relaxed'][0]
+    target = 0.5 * numpy.linalg.norm(a_rel[2])                       # rows kept by the frame
+    m = 1e-5 / max(target, 1e-300)                                   # splitting ~ 1e-5 Eh
+    half = {}
+    for f in (1.0, 2.0):
+        e = pair(h0 + f * m * hz, mo)
+        half[f] = (e[1] - e[0]) / (2 * f * m)
+    ff = (4 * half[1.0] - half[2.0]) / 3
+    print('proton A (relaxed) principal', numpy.linalg.svd(a_rel)[1],
+          'half splitting / m: analytic %.6e finite field %.6e' % (target, ff))
+    assert abs(target - ff) < 1e-5 * abs(target), (target, ff)
