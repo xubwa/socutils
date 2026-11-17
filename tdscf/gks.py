@@ -34,6 +34,22 @@ from pyscf import lib
 from pyscf.tdscf import ghf as _ghf
 
 
+MAX_SPACE_PER_ROOT = 20     # the default subspace bound of the locked solves, per root (memory permitting)
+MAX_SPACE_MEM_FRAC = .3     # of the free max_memory for the subspace
+
+
+def _max_space(td, nroots, n, narr):
+    '''td.max_space, or the default bound of the subspace: MAX_SPACE_PER_ROOT x nroots within MAX_SPACE_MEM_FRAC of
+    the free memory (narr complex arrays of n per subspace vector: the vectors and their products), at least
+    max(8 nroots, 40).  A collapse to 2 nroots Ritz vectors costs iterations (BiPh3 TDA, 15 roots: 21 calls with
+    the bound 120, 16 with 300).'''
+    if td.max_space is not None:
+        return td.max_space
+    free = max(0., td.max_memory - lib.current_memory()[0])
+    cap = int(MAX_SPACE_MEM_FRAC * free / (narr * n * 16e-6))
+    return max(8 * nroots, 40, min(MAX_SPACE_PER_ROOT * nroots, cap))
+
+
 def _root_tol(td, nstates, nbuf):
     '''the residual tolerance per root of the locked solves: conv_tol, buffer_tol for the nbuf buffer roots'''
     bt = getattr(td, 'buffer_tol', None)
@@ -687,7 +703,7 @@ class TDA(_KernelXCMixin, _ghf.TDA):
     # roots locked, one new vector per unconverged root, per-root preconditioning) or 'pyscf'
     # (pyscf.tdscf._lr_eig.eigh: MAX_SPACE_INC vectors every iteration, residuals of up to max_space Ritz vectors).
     davidson = 'locked'
-    max_space = None            # lr_locked's subspace bound (None: max(8 nroots, 40))
+    max_space = None            # lr_locked's subspace bound (None: _max_space, 20 nroots within the memory)
     # Time-reversal adaptation of a Kramers-restricted closed-shell reference: A commutes with the antiunitary
     # time reversal K (K^2 = +1 on particle-hole excitations), so every root has a TR-even eigenvector z = K z and
     # the solve runs in the real space of TR-even vectors.  Their transition densities are TR-even (D_bb = D_aa^*,
@@ -807,10 +823,11 @@ class TDA(_KernelXCMixin, _ghf.TDA):
         # missing once the lowest nstates Ritz roots converge (AuH x2c-SVPall PBE0: the 3.826 eV root under
         # the 3.877 eV pair at nstates = 6; pyscf's lr_eigh misses the 3.803 eV pair at nstates = 4)
         nbuf = self.nbuffer if self.nbuffer is not None else max(2, nstates // 2)
+        ms = _max_space(self, nstates + nbuf, hdiag.size, 2)
         with _coarse_response(self, log) as setup:
             vind0, refine = setup(vind, self.gen_vind, nstates, nbuf)
             conv, e, x1 = lr_locked.eigh(vind0, x0, precond, nstates + nbuf, tol=_root_tol(self, nstates, nbuf),
-                                         lindep=self.lindep, max_cycle=self.max_cycle, max_space=self.max_space,
+                                         lindep=self.lindep, max_cycle=self.max_cycle, max_space=ms,
                                          pick=pick, log=log, project=project, real=tr is not None,
                                          min_batch=self.min_batch, refine=refine)
         conv, e, x1 = conv[:nstates], e[:nstates], x1[:nstates]
@@ -1121,7 +1138,7 @@ class TDRPA(_KernelXCMixin, _PairedRPA):
     coarse_tol = 100.
     coarse_fxc_grids = 'auto'
     coarse_relax_buffer = True
-    max_space = None            # lr_locked's subspace bound (None: max(8 nroots, 40))
+    max_space = None            # lr_locked's subspace bound (None: _max_space, 20 nroots within the memory)
     instability = 'tda'         # A +- B not positive definite: 'tda' (warn, TDA roots) | 'raise'
     unstable = None
 
@@ -1222,12 +1239,13 @@ class TDRPA(_KernelXCMixin, _PairedRPA):
             x0 = x0.reshape(-1, x0.shape[-1])[:, :hdiag.size]
         nbuf = self.nbuffer if self.nbuffer is not None else max(2, nstates // 2)
         nroots = min(nstates + nbuf, hdiag.size)
+        ms = _max_space(self, nroots, hdiag.size, 4)
         try:
             with _coarse_response(self, log) as setup:
                 aop0, refine = setup(aop, self.gen_vind_pm, nstates, nroots - nstates)
                 conv, e, P, Q = lr_locked.rpa_eig(aop0, x0, precond, nroots,
                                                   tol=_root_tol(self, nstates, nroots - nstates), lindep=self.lindep,
-                                                  max_cycle=self.max_cycle, max_space=self.max_space, pick=pick,
+                                                  max_cycle=self.max_cycle, max_space=ms, pick=pick,
                                                   log=log, project=project, min_batch=self.min_batch,
                                                   refine=refine)
         except lr_locked.RPAInstability as err:
