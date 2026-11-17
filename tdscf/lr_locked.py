@@ -109,9 +109,10 @@ def eigh(aop, x0, precond, nroots, tol=1e-5, lindep=1e-12, max_cycle=100, max_sp
 
     min_batch: when fewer roots are unconverged, each adds further directions ((D - e)^-1 x, (D - e)^-2 r) until
     the batch has min_batch vectors (the fixed cost of a response call spread over more vectors).
-    refine = (rtol, switch): a cheaper operator first (e.g. the COSX response K on a coarse grid); once every
+    refine = (rtol, switch[, tol2]): a cheaper operator first (e.g. the COSX response K on a coarse grid); once every
     residual is below rtol (or max |r| stalls, REFINE_STALL), switch() returns the final operator, the subspace
-    restarts from the Ritz vectors and the solve converges to tol on it.  tol may be an array (per root).'''
+    restarts from the Ritz vectors and the solve converges to tol (tol2 if given) on it.  tol may be an array
+    (per root).'''
     if log is None:
         log = logger.new_logger(None, verbose if verbose is not None else logger.WARN)
     x0 = numpy.asarray(x0)
@@ -166,6 +167,8 @@ def eigh(aop, x0, precond, nroots, tol=1e-5, lindep=1e-12, max_cycle=100, max_sp
         if refine is not None and _refine_due(rst, rn, conv, refine[0]):
             # the final operator: restart from the Ritz vectors
             aop = refine[1]()
+            if len(refine) > 2:
+                tol = refine[2]
             refine = None
             nk = min(len(w), int(round(REFINE_KEEP * nroots)))
             log.debug('lr_locked: operator switched, restart from %d Ritz vectors', nk)
@@ -333,6 +336,8 @@ def rpa_eig(aop, x0, precond, nroots, tol=1e-5, lindep=1e-12, max_cycle=100, max
                   len(bp), len(bq), rn.max(), conv.sum(), nroots, abs(de).max())
         if refine is not None and _refine_due(rst, rn, conv, refine[0]):
             aop = refine[1]()
+            if len(refine) > 2:
+                tol = refine[2]
             refine = None
             nk = min(len(w), int(round(REFINE_KEEP * nroots)))
             log.debug('lr_locked.rpa: operator switched, restart from %d Ritz vectors', nk)

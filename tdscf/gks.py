@@ -60,11 +60,11 @@ def _coarse_response(td, log):
     if getattr(td, 'coarse_fxc_grids', None) is not None and hasattr(mf, 'grids'):
         gc = td._fxc_grids(td.coarse_fxc_grids)
     if lvl is None and gc is None:
-        yield lambda aop, gen: (aop, None)
+        yield lambda aop, gen, nstates, nbuf: (aop, None)
         return
     rtol = td.coarse_tol * td.conv_tol
 
-    def setup(aop, gen):
+    def setup(aop, gen, nstates, nbuf):
         aop0 = aop
         if gc is not None:
             with lib.temporary_env(mf, grids=gc):
@@ -79,6 +79,12 @@ def _coarse_response(td, log):
             spinor_jk.RESPONSE_GRID = fine
             log.info('response: coarse phase done (all residuals below %.1e or stalled), final operator', rtol)
             return aop
+        if getattr(td, 'coarse_relax_buffer', False) and nbuf > 0:
+            # the roots were found in the coarse phase: the buffer roots only to rtol in the final one
+            tol0 = _root_tol(td, nstates, nbuf)
+            tol0 = numpy.broadcast_to(tol0, (nstates + nbuf,)).copy()
+            tol0[nstates:] = numpy.maximum(tol0[nstates:], rtol)
+            return aop0, (rtol, switch, tol0)
         return aop0, (rtol, switch)
     if lvl is not None:
         spinor_jk.RESPONSE_GRID = lvl
@@ -689,6 +695,7 @@ class TDA(_KernelXCMixin, _ghf.TDA):
     coarse_grid = None          # COSX response K on this grid level (e.g. 0) until the residuals are below
     coarse_tol = 10.            # coarse_tol x conv_tol, then on spinor_jk.RESPONSE_GRID (restart from the Ritz vectors)
     coarse_fxc_grids = None     # f_xc of the coarse phase on this grid ('cpscf' or a Grids; None: fxc_grids)
+    coarse_relax_buffer = False  # after the coarse phase the buffer roots converged to coarse_tol x conv_tol only
 
     def kernel(self, x0=None, nstates=None):
         if not (self.direct or self.couple_reference):
@@ -789,7 +796,7 @@ class TDA(_KernelXCMixin, _ghf.TDA):
         # the 3.877 eV pair at nstates = 6; pyscf's lr_eigh misses the 3.803 eV pair at nstates = 4)
         nbuf = self.nbuffer if self.nbuffer is not None else max(2, nstates // 2)
         with _coarse_response(self, log) as setup:
-            vind0, refine = setup(vind, self.gen_vind)
+            vind0, refine = setup(vind, self.gen_vind, nstates, nbuf)
             conv, e, x1 = lr_locked.eigh(vind0, x0, precond, nstates + nbuf, tol=_root_tol(self, nstates, nbuf),
                                          lindep=self.lindep, max_cycle=self.max_cycle, max_space=self.max_space,
                                          pick=pick, log=log, project=project, real=tr is not None,
@@ -1095,6 +1102,7 @@ class TDRPA(_KernelXCMixin, _PairedRPA):
     coarse_grid = None          # COSX response K on this grid level (e.g. 0) until the residuals are below
     coarse_tol = 10.            # coarse_tol x conv_tol, then on spinor_jk.RESPONSE_GRID (restart from the Ritz vectors)
     coarse_fxc_grids = None     # f_xc of the coarse phase on this grid ('cpscf' or a Grids; None: fxc_grids)
+    coarse_relax_buffer = False  # after the coarse phase the buffer roots converged to coarse_tol x conv_tol only
     max_space = None            # lr_locked's subspace bound (None: max(8 nroots, 40))
     instability = 'tda'         # A +- B not positive definite: 'tda' (warn, TDA roots) | 'raise'
     unstable = None
@@ -1198,7 +1206,7 @@ class TDRPA(_KernelXCMixin, _PairedRPA):
         nroots = min(nstates + nbuf, hdiag.size)
         try:
             with _coarse_response(self, log) as setup:
-                aop0, refine = setup(aop, self.gen_vind_pm)
+                aop0, refine = setup(aop, self.gen_vind_pm, nstates, nroots - nstates)
                 conv, e, P, Q = lr_locked.rpa_eig(aop0, x0, precond, nroots,
                                                   tol=_root_tol(self, nstates, nroots - nstates), lindep=self.lindep,
                                                   max_cycle=self.max_cycle, max_space=self.max_space, pick=pick,
@@ -1230,7 +1238,7 @@ class TDRPA(_KernelXCMixin, _PairedRPA):
         for key in ('frozen', 'conv_tol', 'max_cycle', 'lindep', 'level_shift', 'positive_eig_threshold',
                     'xc_kernel', 'collinear', 'picture_change', 'kramers', 'KRAMERS_TOL', 'nbuffer', 'max_space',
                     'min_batch', 'coarse_grid', 'coarse_tol', 'buffer_tol',
-                    'coarse_fxc_grids', 'fxc_grids',
+                    'coarse_fxc_grids', 'fxc_grids', 'coarse_relax_buffer',
                     'verbose', 'stdout', 'chkfile'):
             if hasattr(self, key):
                 setattr(td, key, getattr(self, key))
