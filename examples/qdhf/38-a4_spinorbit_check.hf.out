@@ -1,0 +1,12 @@
+zeroth-order <Sigma_O> = -1.34e-13
+prediction a4SO = 1.998235e+00  (term1 -4.827600e-01, term2 2.480995e+00)
+c=20    dM_SO= 6.764403e-05 dM_sf= 5.526896e-05  c^4(dM_SO-dM_sf)= 1.980012e+00
+c=40    dM_SO= 1.416906e-05 dM_sf= 1.338757e-05  c^4(dM_SO-dM_sf)= 2.000624e+00
+c=80    dM_SO= 3.364066e-06 dM_sf= 3.315258e-06  c^4(dM_SO-dM_sf)= 1.999191e+00
+c=160   dM_SO= 8.298271e-07 dM_sf= 8.267776e-07  c^4(dM_SO-dM_sf)= 1.998481e+00
+zeroth-order <Sigma_O> = 1.31e-13
+prediction a4SO = 3.716617e-01  (term1 -5.920301e-01, term2 9.636919e-01)
+c=20    dM_SO= 1.380549e-05 dM_sf= 1.131586e-05  c^4(dM_SO-dM_sf)= 3.983412e-01
+c=40    dM_SO= 2.165668e-06 dM_sf= 2.017940e-06  c^4(dM_SO-dM_sf)= 3.781836e-01
+c=80    dM_SO= 4.636792e-07 dM_sf= 4.545718e-07  c^4(dM_SO-dM_sf)= 3.730378e-01
+c=160   dM_SO= 1.111039e-07 dM_sf= 1.105367e-07  c^4(dM_SO-dM_sf)= 3.717616e-01

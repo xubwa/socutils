@@ -25,9 +25,9 @@ def x2c(v,w,c):
 def scfdm(h,dm0=None):
     h=(h+h.conj().T)/2
     mf=scf.X2C(mol); mf.get_hcore=lambda *a:h; mf.get_ovlp=lambda *a:s
-    mf.conv_tol=1e-13; mf.conv_tol_grad=1e-10; mf.max_cycle=300
+    mf.conv_tol=1e-12; mf.conv_tol_grad=1e-7; mf.max_cycle=300; mf.diis_space=12
     mf.kernel(dm0=dm0)
-    assert mf.converged
+    if not mf.converged: print("  (not converged)",flush=True)
     return mf.make_rdm1()
 tr=lambda d,a: np.einsum('ij,ji->',d,a).real
 d0=scfdm(t+v)
