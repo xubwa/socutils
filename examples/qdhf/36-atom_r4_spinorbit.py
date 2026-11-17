@@ -14,7 +14,7 @@ second-order response to the unscreened spin-orbit field of the bare nucleus,
 
 Printed: c^4 R^4 dE / (N_A Z_B^2 + N_B Z_A^2), i.e. -kappa.
 
-Usage:  python 36-atom_r4_spinorbit.py [part]     part: std | et | c
+Usage:  python 36-atom_r4_spinorbit.py [part]     part: std | std2 | et | c  (run one at a time: about 10 GB each)
 '''
 
 import sys
@@ -73,6 +73,10 @@ if part == 'std':
     for a, b, za, zb in (('He', 'He', 2, 2), ('He', 'Ne', 2, 10), ('Ne', 'Ne', 10, 10)):
         for basis in ('unc-cc-pvdz', 'unc-cc-pvtz'):
             run(a, b, za, zb, basis, basis)
+elif part == 'std2':
+    run('He', 'Ne', 2, 10, 'unc-cc-pvtz', 'unc-cc-pvtz')
+    for basis in ('unc-cc-pvdz', 'unc-cc-pvtz'):
+        run('Ne', 'Ne', 10, 10, basis, basis)
 elif part == 'et':
     run('He', 'He', 2, 2, {'He': ET_HE}, 'ET 10s6p3d')
 elif part == 'c':
