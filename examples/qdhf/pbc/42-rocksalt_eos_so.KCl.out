@@ -1,0 +1,6 @@
+/usr/local/lib/python3.13/site-packages/pyscf/gto/basis/__init__.py:732: UserWarning: Basis may be available in basis-set-exchange. It is recommended to install basis-set-exchange: pip install basis-set-exchange
+  warnings.warn(
+KCl rock salt, GHF with spin-orbit coupling, cc-pVDZ/dyall-v2z (exponents < 0.1 dropped), k-mesh 3^3, c = 137.036
+     a/A      Omega            E x2c1e             E rs1e             dE -(pi/2c^2)Zc^2/O     time
+  6.1000    382.936   -1062.3697641349   -1062.3694813606 -2.827743e-04 -2.830932e-04     1968
+  6.2000    402.079   -1062.3721603621   -1062.3718913312 -2.690309e-04 -2.696149e-04     3857

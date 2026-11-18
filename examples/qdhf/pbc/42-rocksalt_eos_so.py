@@ -47,12 +47,25 @@ print('%s%s rock salt, GHF with spin-orbit coupling, cc-pVDZ/dyall-v2z (exponent
 print('%8s %10s %18s %18s %14s %14s %8s' % ('a/A', 'Omega', 'E x2c1e', 'E rs1e', 'dE', '-(pi/2c^2)Zc^2/O', 'time'))
 zc = None
 rows = []
+# restart file: one finished volume per line (the container may be restarted)
+rowfile = '42-rocksalt_eos_so.%s%s.rows' % (A, B)
+done = {}
+if os.path.exists(rowfile):
+    for ln in open(rowfile):
+        x = [float(y) for y in ln.split()]
+        done[round(x[0], 6)] = x
 for a_ang in numpy.linspace(a0, a1, int(npt)):
     a = a_ang / 0.529177210903
     lat = 0.5 * a * numpy.array([[0, 1, 1], [1, 0, 1], [1, 1, 0]])
     cell = pgto.Cell(atom=[[A, (0, 0, 0)], [B, (a / 2, 0, 0)]], a=lat, basis=basis, unit='B',
                      verbose=0, precision=1e-10).build()
     zc = cell.atom_charges().sum()
+    if round(a_ang, 6) in done:
+        x = done[round(a_ang, 6)]
+        rows.append(tuple(x))
+        print('%8.4f %10.3f %18.10f %18.10f % .6e % .6e  (restart)' % (
+            x[0], x[1], x[2], x[3], x[2] - x[3], -numpy.pi / (2 * c**2) * zc**2 / x[1]), flush=True)
+        continue
     kpts = cell.make_kpts([nk] * 3)
     mydf = pdf.GDF(cell, kpts)
     mydf.build()
@@ -74,6 +87,8 @@ for a_ang in numpy.linspace(a0, a1, int(npt)):
     gc.collect()
     pred = -numpy.pi / (2 * c**2) * zc**2 / cell.vol
     rows.append((a_ang, cell.vol, e['sfx2c1e'], e['rs1e']))
+    with open(rowfile, 'a') as f:
+        f.write('%.6f %.8f %.12f %.12f\n' % rows[-1])
     print('%8.4f %10.3f %18.10f %18.10f % .6e % .6e %8.0f' % (
         a_ang, cell.vol, e['sfx2c1e'], e['rs1e'], e['sfx2c1e'] - e['rs1e'], pred, time.time() - t0), flush=True)
 
