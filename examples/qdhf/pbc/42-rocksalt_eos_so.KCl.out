@@ -2,5 +2,55 @@
   warnings.warn(
 KCl rock salt, GHF with spin-orbit coupling, cc-pVDZ/dyall-v2z (exponents < 0.1 dropped), k-mesh 3^3, c = 137.036
      a/A      Omega            E x2c1e             E rs1e             dE -(pi/2c^2)Zc^2/O     time
-  6.1000    382.936   -1062.3697641349   -1062.3694813606 -2.827743e-04 -2.830932e-04     1968
-  6.2000    402.079   -1062.3721603621   -1062.3718913312 -2.690309e-04 -2.696149e-04     3857
+  6.1000    382.936   -1062.3697641349   -1062.3694813606 -2.827743e-04 -2.830931e-04  (restart)
+  6.2000    402.079   -1062.3721603621   -1062.3718913312 -2.690309e-04 -2.696151e-04  (restart)
+Traceback (most recent call last):
+  File "/home/user/qd-env/socutils/examples/qdhf/pbc/42-rocksalt_eos_so.py", line 71, in <module>
+    mydf.build()
+    ~~~~~~~~~~^^
+  File "/usr/local/lib/python3.13/site-packages/pyscf/pbc/df/df.py", line 339, in build
+    dfbuilder.make_j3c(cderi, j_only=j_only, dataname=self._dataname,
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                       kptij_lst=None)
+                       ^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/pyscf/pbc/df/rsdf_builder.py", line 1013, in make_j3c
+    make_cderi(kpt, kpt_ij_idx, cd_j2c)
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/pyscf/pbc/df/rsdf_builder.py", line 1005, in make_cderi
+    feri[f'{dataname}/{idx}/{istep}'] = cderi
+    ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/h5py/_hl/group.py", line 580, in __setitem__
+    ds = self.create_dataset(None, data=obj)
+  File "/usr/local/lib/python3.13/site-packages/h5py/_hl/group.py", line 240, in create_dataset
+    dsid = dataset.make_new_dset(group, shape, dtype, data, name, **kwds)
+  File "/usr/local/lib/python3.13/site-packages/h5py/_hl/dataset.py", line 192, in make_new_dset
+    dset_id.write(h5s.ALL, h5s.ALL, data)
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "h5py/_objects.pyx", line 54, in h5py._objects.with_phil.wrapper
+  File "h5py/_objects.pyx", line 55, in h5py._objects.with_phil.wrapper
+  File "h5py/h5d.pyx", line 305, in h5py.h5d.DatasetID.write
+  File "h5py/_proxy.pyx", line 122, in h5py._proxy.dset_rw
+OSError: [Errno 28] Can't synchronously write data (file write failed: time = Wed Nov 18 01:06:35 2026
+, filename = '/tmp/tmpo3hhy21e', file descriptor = 4, errno = 28, error message = 'No space left on device', buf = 0x148467b8, total write size = 3056568, bytes this sub-write = 3056568, offset = 7434403840)
+Exception ignored in: <function H5FileWrap.__del__ at 0x7ff6be576a20>
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/site-packages/pyscf/lib/misc.py", line 1258, in __del__
+    self._finished()
+  File "/usr/local/lib/python3.13/site-packages/pyscf/lib/misc.py", line 1248, in _finished
+    super().flush()
+  File "/usr/local/lib/python3.13/site-packages/h5py/_hl/files.py", line 629, in flush
+    h5f.flush(self.id)
+  File "h5py/_objects.pyx", line 54, in h5py._objects.with_phil.wrapper
+  File "h5py/_objects.pyx", line 55, in h5py._objects.with_phil.wrapper
+  File "h5py/h5f.pyx", line 163, in h5py.h5f.flush
+RuntimeError: Unable to flush file (file write failed: time = Wed Nov 18 01:06:36 2026
+, filename = '/tmp/.outcore_auxe2_swap7as05b6h', file descriptor = 5, errno = 28, error message = 'No space left on device', buf = 0x1319ff90, total write size = 71256, bytes this sub-write = 71256, offset = 196608)
+Traceback (most recent call last):
+  File "h5py/_objects.pyx", line 210, in h5py._objects.ObjectID._dealloc
+  File "h5py/_objects.pyx", line 213, in h5py._objects.ObjectID._dealloc
+RuntimeError: Slist already enabled? (slist already enabled?)
+Exception ignored in: 'h5py._objects.ObjectID.__dealloc__'
+Traceback (most recent call last):
+  File "h5py/_objects.pyx", line 210, in h5py._objects.ObjectID._dealloc
+  File "h5py/_objects.pyx", line 213, in h5py._objects.ObjectID._dealloc
+RuntimeError: Slist already enabled? (slist already enabled?)
