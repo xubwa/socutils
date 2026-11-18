@@ -1,0 +1,14 @@
+/usr/local/lib/python3.13/site-packages/pyscf/gto/basis/__init__.py:732: UserWarning: Basis may be available in basis-set-exchange. It is recommended to install basis-set-exchange: pip install basis-set-exchange
+  warnings.warn(
+/home/user/qd-env/socutils/examples/qdhf/pbc/42-rocksalt_eos_so.py:106: RankWarning: Polyfit may be poorly conditioned
+  p = numpy.polyfit(rows[:, 0], e, 4)
+/home/user/qd-env/socutils/examples/qdhf/pbc/42-rocksalt_eos_so.py:106: RankWarning: Polyfit may be poorly conditioned
+  p = numpy.polyfit(rows[:, 0], e, 4)
+/usr/local/lib/python3.13/site-packages/pyscf/gto/basis/__init__.py:732: UserWarning: Basis may be available in basis-set-exchange. It is recommended to install basis-set-exchange: pip install basis-set-exchange
+  warnings.warn(
+/home/user/qd-env/socutils/examples/qdhf/pbc/42-rocksalt_eos_so.py:106: RankWarning: Polyfit may be poorly conditioned
+  p = numpy.polyfit(rows[:, 0], e, 4)
+/home/user/qd-env/socutils/examples/qdhf/pbc/42-rocksalt_eos_so.py:106: RankWarning: Polyfit may be poorly conditioned
+  p = numpy.polyfit(rows[:, 0], e, 4)
+/usr/local/lib/python3.13/site-packages/pyscf/gto/basis/__init__.py:732: UserWarning: Basis may be available in basis-set-exchange. It is recommended to install basis-set-exchange: pip install basis-set-exchange
+  warnings.warn(
