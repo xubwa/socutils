@@ -1,0 +1,5 @@
+F 0 0 0; H 0 0 0.917 + bare charge Z=2 at R on +z.  R^2 E_k (a.u.), E_k = Tr[D H_k]   nuclei of A: Gaussian, zeta = 10000
+basis        approx  c/c0  R/A  H1            H2            H3            H4            X-response    |resid|  
+cc-pvdz      1e         1  320   3.669192e-11  5.332054e-09  2.284999e-06  0.000000e+00 -8.976992e-10 8.2e-35
+cc-pvtz      1e         1  320  -1.636023e-10  4.235306e-09  2.894492e-07  0.000000e+00 -4.581297e-10 1.7e-34
+aug-cc-pvtz  1e         1  320  -6.876270e-11  4.350530e-09 -2.371621e-08  0.000000e+00 -3.892026e-10 9.7e-34
