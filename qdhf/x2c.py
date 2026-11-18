@@ -163,7 +163,7 @@ def sap_charges(mol, sap_basis='sapgrasplarge'):
 
 
 def get_xr(mol, light_speed=None, approx='1e', qi=None, omega=1.0,
-           sap_basis='sapgrasplarge'):
+           sap_basis='sapgrasplarge', self_lr=True):
     '''X and R matrices of sf-X2C-1e in the basis of mol (no decontraction).
 
     approx = '1e', 'atom1e', 'rs1e' or 'sap1e'.  'sap1e' is the SAP-X2C of
@@ -176,7 +176,9 @@ def get_xr(mol, light_speed=None, approx='1e', qi=None, omega=1.0,
     into V = V_sr + V_lr, V_lr = -Z erf(omega r)/r (the potential of a
     Gaussian countercharge exp(-omega^2 r^2)); X is built from V_sr only and
     V_lr is added untransformed, consistent with the untransformed
-    electron-electron interaction.
+    electron-electron interaction.  With self_lr (default) the one-centre term
+    d_A = h[V_A] - h[V_sr,A] - V_lr,A is added for every atom, so that an
+    isolated atom is exactly sf-X2C-1e (self_lr=False: the earlier variant).
 
     Returns a dict with x, r, the integrals t, v, w (pV.p), s and, for
     'rs1e', v_lr (v and w are then the short-range parts).
@@ -193,6 +195,7 @@ def get_xr(mol, light_speed=None, approx='1e', qi=None, omega=1.0,
     w = vy[0::3, 0::3] + vy[1::3, 1::3] + vy[2::3, 2::3]
 
     v_lr = None
+    d_atom = None
     if approx.upper() == 'SAP1E':
         v_scr, vy_scr = qi.charge_potential(*sap_charges(mol, sap_basis))
         v = v + v_scr
@@ -206,6 +209,31 @@ def get_xr(mol, light_speed=None, approx='1e', qi=None, omega=1.0,
         v = v - v_lr
         w = w - (vy_lr[0::3, 0::3] + vy_lr[1::3, 1::3] + vy_lr[2::3, 2::3])
         x = xmatrix(t, v, w, s, c)
+        if self_lr:
+            # one-centre term d_A = h[V_A] - h[V_sr,A] - V_lr,A in the basis of
+            # atom A: the picture change of each atom's own long-range part,
+            # so that an isolated atom is exactly sf-X2C-1e
+            d_atom = QArray.zeros((n, n))
+            aoslices = mol.aoslice_by_atom() if not mol.cart else mol.aoslice_nr_by_atom()
+            for ia in range(mol.natm):
+                p0, p1 = aoslices[ia][2:]
+                if p0 == p1:
+                    continue
+                sl = slice(p0, p1)
+                sl3 = slice(p0 * 3, p1 * 3)
+
+                def blocks(zt):
+                    v1 = qi.nuc_x(atoms=[ia], zeta=zt)[sl, sl]
+                    y1 = qi.nuc_y(atoms=[ia], zeta=zt)[sl3, sl3]
+                    return v1, y1[0::3, 0::3] + y1[1::3, 1::3] + y1[2::3, 2::3]
+                vf, wf = blocks(None)
+                vl, wl = blocks(zeta)
+
+                def h1c(va, wa):
+                    xa = xmatrix(t[sl, sl], va, wa, s[sl, sl], c)
+                    ra = _get_r(s[sl, sl], s[sl, sl] + xa.T @ t[sl, sl] @ xa * (1 / (2 * c**2)))
+                    return hcore_from_xr({'x': xa, 'r': ra, 't': t[sl, sl], 'v': va, 'w': wa, 'c': c})
+                d_atom[sl, sl] = h1c(vf, wf) - h1c(vf - vl, wf - wl) - vl
     elif approx.upper() == '1E':
         x = xmatrix(t, v, w, s, c)
     elif approx.upper() in ('ATOM1E', 'ATOM'):
@@ -226,7 +254,7 @@ def get_xr(mol, light_speed=None, approx='1e', qi=None, omega=1.0,
     s1 = s + x.T @ t @ x * (1 / (2 * c**2))
     r = _get_r(s, s1)
     return {'x': x, 'r': r, 't': t, 'v': v, 'w': w, 's': s, 'c': c, 'qi': qi,
-            'v_lr': v_lr}
+            'v_lr': v_lr, 'd_atom': d_atom}
 
 
 def hcore_from_xr(d):
@@ -237,6 +265,8 @@ def hcore_from_xr(d):
     h = r.T @ h1 @ r
     if d.get('v_lr') is not None:
         h = h + d['v_lr']
+    if d.get('d_atom') is not None:
+        h = h + d['d_atom']
     return h
 
 
@@ -247,13 +277,13 @@ def picture_change(d, v_op, w_op):
     return r.T @ (v_op + x.T @ w_op @ x * (1 / (4 * c**2))) @ r
 
 
-def get_hcore(mol, light_speed=None, approx='1e', qi=None, xuncontract=True, omega=1.0):
+def get_hcore(mol, light_speed=None, approx='1e', qi=None, xuncontract=True, omega=1.0, self_lr=True):
     '''sf-X2C-1e one-electron Hamiltonian in quad precision'''
     if xuncontract:
         xmol, contr = uncontract_mol(mol)
-        h = get_hcore(xmol, light_speed, approx, xuncontract=False, omega=omega)
+        h = get_hcore(xmol, light_speed, approx, xuncontract=False, omega=omega, self_lr=self_lr)
         return contr.T @ h @ contr
-    return hcore_from_xr(get_xr(mol, light_speed, approx, qi, omega))
+    return hcore_from_xr(get_xr(mol, light_speed, approx, qi, omega, self_lr=self_lr))
 
 
 class SFX2C1E_RHF(dhf.RHF):
@@ -268,6 +298,7 @@ class SFX2C1E_RHF(dhf.RHF):
     approx = '1e'
     xuncontract = True
     omega = 1.0
+    self_lr = True
 
     def __init__(self, mol, light_speed=None):
         dhf.RHF.__init__(self, mol)
@@ -286,7 +317,7 @@ class SFX2C1E_RHF(dhf.RHF):
         t0 = (logger.process_clock(), logger.perf_counter())
         mol = self.mol
         qi = qints.QuadIntegrals(mol)
-        h = get_hcore(mol, self.light_speed, self.approx, qi, self.xuncontract, self.omega)
+        h = get_hcore(mol, self.light_speed, self.approx, qi, self.xuncontract, self.omega, self.self_lr)
         t0 = log.timer('quad sf-X2C-1e hcore', *t0)
         if self.direct:
             self.ham = dhf.DirectRHFHamiltonian(mol, qi, h, qi.ovlp_x(),
