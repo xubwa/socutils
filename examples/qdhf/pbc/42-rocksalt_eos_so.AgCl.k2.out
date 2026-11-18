@@ -1,0 +1,15 @@
+/usr/local/lib/python3.13/site-packages/pyscf/gto/basis/__init__.py:732: UserWarning: Basis may be available in basis-set-exchange. It is recommended to install basis-set-exchange: pip install basis-set-exchange
+  warnings.warn(
+AgCl rock salt, GHF with spin-orbit coupling, cc-pVDZ/dyall-v2z (exponents < 0.1 dropped), k-mesh 2^3, c = 137.036
+     a/A      Omega            E x2c1e             E rs1e             dE -(pi/2c^2)Zc^2/O     time
+  5.4000    265.655   -5774.4288176318   -5774.4275274586 -1.290173e-03 -1.289712e-03  (restart)
+  5.5000    280.689   -5774.4364911193   -5774.4352718530 -1.219266e-03 -1.220635e-03  (restart)
+  5.6000    296.279   -5774.4419330662   -5774.4407794158 -1.153650e-03 -1.156405e-03  (restart)
+  5.7000    312.436   -5774.4455312590   -5774.4444384787 -1.092780e-03 -1.096603e-03  (restart)
+  5.8000    329.170   -5774.4476060777   -5774.4465698248 -1.036253e-03 -1.040854e-03  (restart)
+  5.9000    346.492   -5774.4484234350   -5774.4474397729 -9.836621e-04 -9.888214e-04  (restart)
+  6.0000    364.410   -5774.4482042094   -5774.4472695417 -9.346677e-04 -9.401997e-04  (restart)
+  6.1000    382.936   -5774.4471321446   -5774.4462431863 -8.889583e-04 -8.947143e-04  (restart)
+fit dE = const - A/Omega:  A = 3.479480e-01  (background Darwin: (pi/2c^2) Z^2 = 3.426182e-01, ratio 1.0156)  const = 2.034e-05
+x2c1e    a_eq = 5.92680 A   B = 31.94 GPa
+rs1e     a_eq = 5.93190 A   B = 31.73 GPa
