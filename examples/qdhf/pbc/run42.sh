@@ -17,4 +17,4 @@ run() {   # A B a_min a_max npts nk
 # are those of the spin-free runs (run35b.sh).
 # run K Cl 6.10 6.80 8 2   (done: *.KCl.k2.*)
 run Ag Cl 5.40 6.10 8 2
-run Rb I 7.10 7.90 8 2
+# run Rb I 7.10 7.90 8 2   (not needed for Table 8)
