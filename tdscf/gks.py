@@ -34,6 +34,90 @@ from pyscf import lib
 from pyscf.tdscf import ghf as _ghf
 
 
+MAX_SPACE_PER_ROOT = 20     # the default subspace bound of the locked solves, per root (memory permitting)
+MAX_SPACE_MEM_FRAC = .3     # of the free max_memory for the subspace
+
+
+def _max_space(td, nroots, n, narr):
+    '''td.max_space, or the default bound of the subspace: MAX_SPACE_PER_ROOT x nroots within MAX_SPACE_MEM_FRAC of
+    the free memory (narr complex arrays of n per subspace vector: the vectors and their products), at least
+    max(8 nroots, 40).  A collapse to 2 nroots Ritz vectors costs iterations (BiPh3 TDA, 15 roots: 21 calls with
+    the bound 120, 16 with 300).'''
+    if td.max_space is not None:
+        return td.max_space
+    free = max(0., td.max_memory - lib.current_memory()[0])
+    cap = int(MAX_SPACE_MEM_FRAC * free / (narr * n * 16e-6))
+    return max(8 * nroots, 40, min(MAX_SPACE_PER_ROOT * nroots, cap))
+
+
+def _root_tol(td, nstates, nbuf):
+    '''the residual tolerance per root of the locked solves: conv_tol, buffer_tol for the nbuf buffer roots'''
+    bt = getattr(td, 'buffer_tol', None)
+    if bt is None or nbuf <= 0:
+        return td.conv_tol
+    return numpy.array([td.conv_tol] * nstates + [max(bt, td.conv_tol)] * nbuf)
+
+
+@contextlib.contextmanager
+def _coarse_response(td, log):
+    '''the coarse first phase of the locked solves: yields setup(aop, gen) -> (aop0, refine) for lr_locked
+    (refine None: no coarse phase).  td.coarse_grid: the COSX response K on that grid level
+    (spinor_jk.RESPONSE_GRID; RIJ / COSX references); td.coarse_fxc_grids: f_xc on that grid ('cpscf' or a
+    Grids; the operator of gen(mf) built and applied with mf.grids set to it).  The phase ends when every
+    residual is below td.coarse_tol x conv_tol (lr_locked refine), the solve then converges on aop, the final
+    operator; spinor_jk.RESPONSE_GRID restored on exit'''
+    from socutils.scf import spinor_jk
+    mf = td._scf
+    lvl = getattr(td, 'coarse_grid', None)
+    fine = spinor_jk.RESPONSE_GRID
+    if lvl == fine or spinor_jk.mode(mf) not in ('cosx', 'rijcosx'):
+        lvl = None
+    gc = getattr(td, 'coarse_fxc_grids', None)
+    if isinstance(gc, str) and gc == 'auto':
+        gc = 'cpscf' if lvl is not None else None
+    if gc is not None and hasattr(mf, 'grids') and getattr(mf, '_numint', None) is not None:
+        gc = td._fxc_grids(gc)
+        if gc is td._fxc_grids():
+            gc = None           # the solve is on that grid already
+    else:
+        gc = None
+    if lvl is None and gc is None:
+        yield lambda aop, gen, nstates, nbuf: (aop, None)
+        return
+    rtol = td.coarse_tol * td.conv_tol
+
+    def setup(aop, gen, nstates, nbuf):
+        aop0 = aop
+        if gc is not None:
+            with lib.temporary_env(mf, grids=gc):
+                vc = gen(mf)[0]
+
+            def coarse(*z):
+                with lib.temporary_env(mf, grids=gc):
+                    return vc(*z)
+            aop0 = coarse
+
+        def switch():
+            spinor_jk.RESPONSE_GRID = fine
+            log.info('response: coarse phase done (all residuals below %.1e or stalled), final operator', rtol)
+            return aop
+        if getattr(td, 'coarse_relax_buffer', False) and nbuf > 0:
+            # the roots were found in the coarse phase: the buffer roots only to rtol in the final one
+            tol0 = _root_tol(td, nstates, nbuf)
+            tol0 = numpy.broadcast_to(tol0, (nstates + nbuf,)).copy()
+            tol0[nstates:] = numpy.maximum(tol0[nstates:], rtol)
+            return aop0, (rtol, switch, tol0)
+        return aop0, (rtol, switch)
+    if lvl is not None:
+        spinor_jk.RESPONSE_GRID = lvl
+    log.info('response: coarse phase (COSX K on GRIDX%s, f_xc on %s) until the residuals are below %.1e',
+             lvl if lvl is not None else fine, '%d points' % gc.weights.size if gc is not None else 'its grid', rtol)
+    try:
+        yield setup
+    finally:
+        spinor_jk.RESPONSE_GRID = fine
+
+
 def _build_ab_jk_cderi(td, blksize=None):
     '''Dense Coulomb+exact-exchange block A_JK[ia,jb] of the spinor TDA matrix,
     built MO-driven from the density-fitted (Cholesky) ERIs:
@@ -167,8 +251,9 @@ class _KernelXCMixin:
     # the analytic Hessian (socutils.hessian.rhf_fast.CPSCF_GRID_ARGS, socutils.dft.grids); or a Grids object.
     fxc_grids = None
 
-    def _fxc_grids(self):
-        g = self.fxc_grids
+    def _fxc_grids(self, g=None):
+        if g is None:
+            g = self.fxc_grids
         if g is None:
             return None
         if isinstance(g, str):
@@ -618,7 +703,7 @@ class TDA(_KernelXCMixin, _ghf.TDA):
     # roots locked, one new vector per unconverged root, per-root preconditioning) or 'pyscf'
     # (pyscf.tdscf._lr_eig.eigh: MAX_SPACE_INC vectors every iteration, residuals of up to max_space Ritz vectors).
     davidson = 'locked'
-    max_space = None            # lr_locked's subspace bound (None: max(8 nroots, 40))
+    max_space = None            # lr_locked's subspace bound (None: _max_space, 20 nroots within the memory)
     # Time-reversal adaptation of a Kramers-restricted closed-shell reference: A commutes with the antiunitary
     # time reversal K (K^2 = +1 on particle-hole excitations), so every root has a TR-even eigenvector z = K z and
     # the solve runs in the real space of TR-even vectors.  Their transition densities are TR-even (D_bb = D_aa^*,
@@ -627,6 +712,19 @@ class TDA(_KernelXCMixin, _ghf.TDA):
     kramers = 'auto'
     KRAMERS_TOL = 1e-6
     nbuffer = None              # extra roots of the locked solve (None: max(2, nstates // 2))
+    buffer_tol = None           # residual tolerance of the buffer roots (None: conv_tol)
+    min_batch = None            # lr_locked: batches topped up to this many vectors by further directions per root
+    # The coarse phase (RIJ / COSX references): the Davidson runs with the COSX response K on grid level
+    # coarse_grid and f_xc on coarse_fxc_grids ('auto': the CP-SCF grid when coarse_grid applies; 'cpscf', a
+    # Grids, or None: the response grid) until every residual is below coarse_tol x conv_tol, then restarts from
+    # the Ritz vectors on the full operator and converges to conv_tol there (coarse_relax_buffer: the buffer
+    # roots, already found, to coarse_tol x conv_tol only).  BiPh3 PBE0 DYVTZ-SF, 10 roots: TDA 2194 -> 1340 s,
+    # RPA 2446 -> 1985 s, excitation energies within 2e-10 / 7e-9 Eh; with the default max_space as well (old
+    # default against both) TDA 2350 -> 1257 s, RPA 2655 -> 1962 s.  coarse_grid = None: off.
+    coarse_grid = 0
+    coarse_tol = 100.
+    coarse_fxc_grids = 'auto'
+    coarse_relax_buffer = True
 
     def kernel(self, x0=None, nstates=None):
         if not (self.direct or self.couple_reference):
@@ -726,9 +824,13 @@ class TDA(_KernelXCMixin, _ghf.TDA):
         # missing once the lowest nstates Ritz roots converge (AuH x2c-SVPall PBE0: the 3.826 eV root under
         # the 3.877 eV pair at nstates = 6; pyscf's lr_eigh misses the 3.803 eV pair at nstates = 4)
         nbuf = self.nbuffer if self.nbuffer is not None else max(2, nstates // 2)
-        conv, e, x1 = lr_locked.eigh(vind, x0, precond, nstates + nbuf, tol=self.conv_tol, lindep=self.lindep,
-                                     max_cycle=self.max_cycle, max_space=self.max_space, pick=pick, log=log,
-                                     project=project, real=tr is not None)
+        ms = _max_space(self, nstates + nbuf, hdiag.size, 2)
+        with _coarse_response(self, log) as setup:
+            vind0, refine = setup(vind, self.gen_vind, nstates, nbuf)
+            conv, e, x1 = lr_locked.eigh(vind0, x0, precond, nstates + nbuf, tol=_root_tol(self, nstates, nbuf),
+                                         lindep=self.lindep, max_cycle=self.max_cycle, max_space=ms,
+                                         pick=pick, log=log, project=project, real=tr is not None,
+                                         min_batch=self.min_batch, refine=refine)
         conv, e, x1 = conv[:nstates], e[:nstates], x1[:nstates]
         self.converged, self.e = conv, e
         mo_occ = mf.mo_occ[self.get_frozen_mask()]
@@ -1025,7 +1127,20 @@ class TDRPA(_KernelXCMixin, _PairedRPA):
     kramers = 'auto'
     KRAMERS_TOL = 1e-6
     nbuffer = None              # extra roots of the locked solve (None: max(2, nstates // 2))
-    max_space = None            # lr_locked's subspace bound (None: max(8 nroots, 40))
+    buffer_tol = None           # residual tolerance of the buffer roots (None: conv_tol)
+    min_batch = None            # lr_locked: batches topped up to this many vectors by further directions per root
+    # The coarse phase (RIJ / COSX references): the Davidson runs with the COSX response K on grid level
+    # coarse_grid and f_xc on coarse_fxc_grids ('auto': the CP-SCF grid when coarse_grid applies; 'cpscf', a
+    # Grids, or None: the response grid) until every residual is below coarse_tol x conv_tol, then restarts from
+    # the Ritz vectors on the full operator and converges to conv_tol there (coarse_relax_buffer: the buffer
+    # roots, already found, to coarse_tol x conv_tol only).  BiPh3 PBE0 DYVTZ-SF, 10 roots: TDA 2194 -> 1340 s,
+    # RPA 2446 -> 1985 s, excitation energies within 2e-10 / 7e-9 Eh; with the default max_space as well (old
+    # default against both) TDA 2350 -> 1257 s, RPA 2655 -> 1962 s.  coarse_grid = None: off.
+    coarse_grid = 0
+    coarse_tol = 100.
+    coarse_fxc_grids = 'auto'
+    coarse_relax_buffer = True
+    max_space = None            # lr_locked's subspace bound (None: _max_space, 20 nroots within the memory)
     instability = 'tda'         # A +- B not positive definite: 'tda' (warn, TDA roots) | 'raise'
     unstable = None
 
@@ -1126,10 +1241,15 @@ class TDRPA(_KernelXCMixin, _PairedRPA):
             x0 = x0.reshape(-1, x0.shape[-1])[:, :hdiag.size]
         nbuf = self.nbuffer if self.nbuffer is not None else max(2, nstates // 2)
         nroots = min(nstates + nbuf, hdiag.size)
+        ms = _max_space(self, nroots, hdiag.size, 4)
         try:
-            conv, e, P, Q = lr_locked.rpa_eig(aop, x0, precond, nroots, tol=self.conv_tol, lindep=self.lindep,
-                                              max_cycle=self.max_cycle, max_space=self.max_space, pick=pick,
-                                              log=log, project=project)
+            with _coarse_response(self, log) as setup:
+                aop0, refine = setup(aop, self.gen_vind_pm, nstates, nroots - nstates)
+                conv, e, P, Q = lr_locked.rpa_eig(aop0, x0, precond, nroots,
+                                                  tol=_root_tol(self, nstates, nroots - nstates), lindep=self.lindep,
+                                                  max_cycle=self.max_cycle, max_space=ms, pick=pick,
+                                                  log=log, project=project, min_batch=self.min_batch,
+                                                  refine=refine)
         except lr_locked.RPAInstability as err:
             self.unstable = True
             log.warn('TDRPA: reference instability (%s): the RPA has imaginary / non-positive roots here', err)
@@ -1155,6 +1275,8 @@ class TDRPA(_KernelXCMixin, _PairedRPA):
         td = TDA(self._scf)
         for key in ('frozen', 'conv_tol', 'max_cycle', 'lindep', 'level_shift', 'positive_eig_threshold',
                     'xc_kernel', 'collinear', 'picture_change', 'kramers', 'KRAMERS_TOL', 'nbuffer', 'max_space',
+                    'min_batch', 'coarse_grid', 'coarse_tol', 'buffer_tol',
+                    'coarse_fxc_grids', 'fxc_grids', 'coarse_relax_buffer',
                     'verbose', 'stdout', 'chkfile'):
             if hasattr(self, key):
                 setattr(td, key, getattr(self, key))

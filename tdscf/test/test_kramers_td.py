@@ -54,6 +54,20 @@ class KnowValues(unittest.TestCase):
             self.assertLess(abs(e0 - e1).max(), 1e-9, rc)
         mf.rijcosx = ''
 
+    def test_coarse_phase(self):
+        # the coarse first phase (COSX K on GRIDX0, f_xc on the CP-SCF grid) against the solve on the full operator
+        mf.rijcosx = 'rijcosx'
+        es = []
+        for cg in (0, None):
+            td = gks.TDA(mf)
+            td.nstates = 6
+            td.conv_tol = 1e-7
+            td.coarse_grid = cg
+            es.append(td.kernel()[0])
+            self.assertTrue(all(td.converged))
+        mf.rijcosx = ''
+        self.assertLess(abs(es[0] - es[1]).max(), 1e-9)
+
     def test_halved_channels(self):
         td = gks.TDA(mf)
         k, (nocc, nvir) = td._tr_operator()

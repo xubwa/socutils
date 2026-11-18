@@ -59,11 +59,65 @@ def _orth_against(xt, xs, lindep, real=False):
 STALL_CYCLES = 4
 
 
+def _extra_tda(k, x, t, e, precond):
+    '''further directions of root k (Ritz vector x, correction t = (D - e)^-1 r): (D - e)^-1 x (with t it spans
+    the Olsen correction), then (D - e)^-1 t'''
+    yield precond(x, e)
+    yield precond(t, e)
+
+
+def _fill(new, todo, rn, extras, min_batch):
+    '''new extended to min_batch rows by the extra directions of the unconverged roots todo, round robin from
+    the largest residual'''
+    if min_batch is None or len(new) >= min_batch or len(todo) == 0:
+        return new
+    gens = [extras(k) for k in sorted(todo, key=lambda k: -rn[k])]
+    out = list(new)
+    while len(out) < min_batch and gens:
+        for g in list(gens):
+            if len(out) >= min_batch:
+                break
+            try:
+                out.append(next(g))
+            except StopIteration:
+                gens.remove(g)
+    return numpy.asarray(out)
+
+
+REFINE_KEEP = 1.        # the restart on the final operator from REFINE_KEEP x nroots Ritz vectors
+REFINE_STALL = 3        # the cheaper operator is left also when max |r| has not halved for this many iterations
+REFINE_STALL_FROM = 10.  # (counted once max |r| is below REFINE_STALL_FROM x rtol)
+
+
+def _refine_due(st, rn, conv, rtol):
+    '''whether to switch to the final operator: every residual below rtol, or the residual stalled (the cheaper
+    operator's own floor, e.g. the COSX K of a coarse grid is less symmetric)'''
+    if (conv | (rn < rtol)).all():
+        return True
+    r = rn[~conv].max()
+    if r > REFINE_STALL_FROM * rtol:
+        # still far (e.g. roots still being found, |r| flat for several iterations): no stall
+        st['best'], st['since'] = numpy.inf, 0
+        return False
+    if r < .5 * st.get('best', numpy.inf):
+        st['best'], st['since'] = r, 0
+    else:
+        st['since'] = st.get('since', 0) + 1
+    return st['since'] >= REFINE_STALL
+
+
 def eigh(aop, x0, precond, nroots, tol=1e-5, lindep=1e-12, max_cycle=100, max_space=None, pick=None,
-         verbose=None, log=None, project=None, real=False, stall_de=1e-11):
+         verbose=None, log=None, project=None, real=False, stall_de=1e-11, min_batch=None, refine=None):
     '''project(xs) maps new trial vectors into an invariant subspace (e.g. the time-reversal even one); real=True:
     the subspace is a real vector space (real coefficients, the subspace matrix taken real), as for the TR-even
-    vectors of a Kramers-restricted reference, whose overlaps and A matrix elements are real.'''
+    vectors of a Kramers-restricted reference, whose overlaps and A matrix elements are real.
+
+    min_batch: when fewer roots are unconverged, each adds further directions ((D - e)^-1 x, (D - e)^-2 r) until
+    the batch has min_batch vectors (the fixed cost of a response call spread over more vectors).
+    refine = (rtol, switch[, tol2]): a cheaper operator first (e.g. the COSX response K on a coarse grid); once every
+    residual is below rtol (or max |r| stalls, REFINE_STALL), switch() returns the final operator, the subspace
+    restarts from the Ritz vectors and the solve converges to tol (tol2 if given) on it.  tol may be an array
+    (per root).'''
     if log is None:
         log = logger.new_logger(None, verbose if verbose is not None else logger.WARN)
     x0 = numpy.asarray(x0)
@@ -82,6 +136,7 @@ def eigh(aop, x0, precond, nroots, tol=1e-5, lindep=1e-12, max_cycle=100, max_sp
     e = None
     xr = None
     nmatvec = len(xs)
+    rst = {}
     for icyc in range(max_cycle):
         heff = xs.conj() @ ax.T
         heff = (heff + heff.conj().T) * .5
@@ -114,9 +169,26 @@ def eigh(aop, x0, precond, nroots, tol=1e-5, lindep=1e-12, max_cycle=100, max_sp
             conv = conv | floor
         log.debug('lr_locked %d: subspace %d, |r| max %.3g, %d/%d converged, max|de| %.3g', icyc, len(xs),
                   rn.max(), conv.sum(), nroots, abs(de).max())
+        if refine is not None and _refine_due(rst, rn, conv, refine[0]):
+            # the final operator: restart from the Ritz vectors
+            aop = refine[1]()
+            if len(refine) > 2:
+                tol = refine[2]
+            refine = None
+            nk = min(len(w), int(round(REFINE_KEEP * nroots)))
+            log.debug('lr_locked: operator switched, restart from %d Ritz vectors', nk)
+            xs = _orth_against(v[:, :nk].T @ xs, numpy.zeros((0, xs.shape[1]), dtype), lindep, real)
+            ax = numpy.asarray(aop(xs), dtype=dtype)
+            nmatvec += len(xs)
+            e = stalled = None
+            continue
         if conv.all():
             break
-        new = numpy.asarray([precond(r[k], e[k]) for k in range(nroots) if not conv[k]])
+        todo = [k for k in range(nroots) if not conv[k]]
+        new = numpy.asarray([precond(r[k], e[k]) for k in todo])
+        if min_batch is not None and len(new) < min_batch:
+            tk = dict(zip(todo, new))
+            new = _fill(new, todo, rn, lambda k: _extra_tda(k, xr[k], tk[k], e[k], precond), min_batch)
         if project is not None:
             new = project(new)
         if len(xs) + len(new) > max_space:
@@ -171,8 +243,20 @@ def _sub(xs, ys, real):
     return m.real if real else m
 
 
+def _pair_aop(aop, ps, qs, dtype):
+    '''((A + B) ps, (A - B) qs, number of pairs) for possibly unequally many rows (padded with zeros)'''
+    npair = max(len(ps), len(qs))
+    n = ps.shape[1] if len(ps) else qs.shape[1]
+    zp = numpy.zeros((npair, n), dtype)
+    zq = numpy.zeros((npair, n), dtype)
+    zp[:len(ps)] = ps
+    zq[:len(qs)] = qs
+    hp, hq = aop(zp, zq)
+    return (numpy.asarray(hp, dtype=dtype)[:len(ps)], numpy.asarray(hq, dtype=dtype)[:len(qs)], npair)
+
+
 def rpa_eig(aop, x0, precond, nroots, tol=1e-5, lindep=1e-12, max_cycle=100, max_space=None, pick=None,
-            verbose=None, log=None, project=None, stall_de=1e-11):
+            verbose=None, log=None, project=None, stall_de=1e-11, min_batch=None, refine=None):
     '''Davidson for the real (time-reversal adapted) RPA with separate subspaces for P = X + Y and Q = X - Y
     (Bai & Li, SIAM J. Matrix Anal. Appl. 33, 1075 (2012); the subspace problem is the Stratmann-Scuseria-Frisch
     one, symmetric definite):
@@ -188,7 +272,8 @@ def rpa_eig(aop, x0, precond, nroots, tol=1e-5, lindep=1e-12, max_cycle=100, max
     for Y); locking, the residual floor, the collapse to 2 nroots and the degenerate top-up as in eigh.
     precond(r, e) -> r / (D - e).  The vectors may be complex (the TR-even amplitudes of a Kramers-restricted
     reference), the subspace is a real vector space: real coefficients, the real part of the overlaps.  Raises
-    RPAInstability when M+ or M- is not positive definite.
+    RPAInstability when M+ or M- is not positive definite.  min_batch, refine as in eigh (the extra pairs from
+    (D -+ w)^-1 applied to X, Y and to the corrections).
 
     Returns conv, w, P, Q (rows; X = (P + Q) / 2, Y = (P - Q) / 2).'''
     if log is None:
@@ -212,6 +297,7 @@ def rpa_eig(aop, x0, precond, nroots, tol=1e-5, lindep=1e-12, max_cycle=100, max
     stalled = None
     e = P = Q = None
     conv = numpy.zeros(nroots, dtype=bool)
+    rst = {}
     for icyc in range(max_cycle):
         mp = _sub(bp, hp, real)
         mm = _sub(bq, hq, real)
@@ -253,12 +339,35 @@ def rpa_eig(aop, x0, precond, nroots, tol=1e-5, lindep=1e-12, max_cycle=100, max
             conv = conv | floor
         log.debug('lr_locked.rpa %d: subspace %d + %d, |r| max %.3g, %d/%d converged, max|de| %.3g', icyc,
                   len(bp), len(bq), rn.max(), conv.sum(), nroots, abs(de).max())
+        if refine is not None and _refine_due(rst, rn, conv, refine[0]):
+            aop = refine[1]()
+            if len(refine) > 2:
+                tol = refine[2]
+            refine = None
+            nk = min(len(w), int(round(REFINE_KEEP * nroots)))
+            log.debug('lr_locked.rpa: operator switched, restart from %d Ritz vectors', nk)
+            z = numpy.zeros((0, P.shape[1]), dtype)
+            bp = _orth_against(cp[:, :nk].T @ bp, z, lindep, real)
+            bq = _orth_against(cq[:, :nk].T @ bq, z, lindep, real)
+            hp, hq, npair = _pair_aop(aop, bp, bq, dtype)
+            nmatvec += npair
+            e = stalled = None
+            continue
         if conv.all():
             break
         todo = numpy.where(~conv)[0]
         # X residual (rp + rq) / 2 with (D - w)^-1, Y residual (rp - rq) / 2 with (D + w)^-1
         dx = [precond((rp[k] + rq[k]) * .5, e[k]) for k in todo]
         dy = [precond((rp[k] - rq[k]) * .5, -e[k]) for k in todo]
+        if min_batch is not None and len(todo) < min_batch:
+            dd = {k: (a, b) for k, a, b in zip(todo, dx, dy)}
+
+            def extras(k):
+                x, y = (P[k] + Q[k]) * .5, (P[k] - Q[k]) * .5
+                yield precond(x, e[k]), precond(y, -e[k])
+                yield precond(dd[k][0], e[k]), precond(dd[k][1], -e[k])
+            pairs = _fill(list(zip(dx, dy)), todo, rn, extras, min_batch)
+            dx, dy = pairs[:, 0], pairs[:, 1]
         newp = numpy.asarray([a + b for a, b in zip(dx, dy)])
         newq = numpy.asarray([a - b for a, b in zip(dx, dy)])
         if project is not None:
@@ -289,17 +398,11 @@ def rpa_eig(aop, x0, precond, nroots, tol=1e-5, lindep=1e-12, max_cycle=100, max
         if len(newp) == 0 and len(newq) == 0:
             log.debug('lr_locked.rpa: no new trial vector (linear dependence)')
             break
-        npair = max(len(newp), len(newq))
-        n = bp.shape[1]
-        zp = numpy.zeros((npair, n), dtype)
-        zq = numpy.zeros((npair, n), dtype)
-        zp[:len(newp)] = newp
-        zq[:len(newq)] = newq
-        hpn, hqn = aop(zp, zq)
+        hpn, hqn, npair = _pair_aop(aop, newp, newq, dtype)
         nmatvec += npair
         bp = numpy.vstack([bp, newp])
-        hp = numpy.vstack([hp, numpy.asarray(hpn, dtype=dtype)[:len(newp)]])
+        hp = numpy.vstack([hp, hpn])
         bq = numpy.vstack([bq, newq])
-        hq = numpy.vstack([hq, numpy.asarray(hqn, dtype=dtype)[:len(newq)]])
+        hq = numpy.vstack([hq, hqn])
     log.debug('lr_locked.rpa: %d response densities', nmatvec)
     return conv, e, P, Q
