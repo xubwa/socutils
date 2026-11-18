@@ -14,7 +14,7 @@ from socutils import qdhf
 el = sys.argv[1] if len(sys.argv) > 1 else 'Cl'
 basis = sys.argv[2] if len(sys.argv) > 2 else 'cc-pvdz'
 r0 = float(sys.argv[3]) if len(sys.argv) > 3 else 1.275
-omegas = [0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0]
+omegas = [0.125, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 8.0, 16.0]
 
 
 def energy(approx, omega, r):
