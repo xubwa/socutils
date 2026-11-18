@@ -46,6 +46,11 @@ import os
 geom_a = os.environ.get('QDHF_GEOM', 'F 0 0 0; H 0 0 0.917')
 npow = int(os.environ.get('QDHF_NPOW', '2'))
 zc = 2
+# Gaussian nuclear charge distributions exp(-zeta r^2) on the nuclei of A
+# (QDHF_ZETA, as in the multiwavelet calculations); point nuclei if unset
+zeta_nuc = float(os.environ.get('QDHF_ZETA', '0'))
+# QDHF_TABLE=1: only approx='1e' at the physical c and R = 320 A
+table_only = os.environ.get('QDHF_TABLE', '0') == '1'
 c0 = qmp.mpf(lib.param.LIGHT_SPEED)
 
 
@@ -54,7 +59,10 @@ def trace(a, b):
 
 
 def decompose(basis, r_ang, approx, c):
-    mol = gto.M(atom=geom_a, basis=basis, verbose=0)
+    if zeta_nuc:
+        mol = gto.M(atom=geom_a, basis=basis, verbose=0, nucmod=lambda z, prop=None: zeta_nuc)
+    else:
+        mol = gto.M(atom=geom_a, basis=basis, verbose=0)
     mf = x2c.SFX2C1E_RHF(mol, light_speed=qmp.nstr(c, 34))
     mf.approx = approx
     mf.init_guess = 'double'
@@ -63,6 +71,9 @@ def decompose(basis, r_ang, approx, c):
     mf.verbose = 0
     mf.kernel()
     xmol, contr = x2c.uncontract_mol(mol)
+    if zeta_nuc:
+        from pyscf.gto import mole
+        assert all(xmol._env[xmol._atm[ia, mole.PTR_ZETA]] == zeta_nuc for ia in range(xmol.natm))
     dm = contr @ mf.make_rdm1() @ contr.T
 
     d_a = x2c.get_xr(xmol, light_speed=qmp.nstr(c, 34), approx=approx)
@@ -112,13 +123,14 @@ def decompose(basis, r_ang, approx, c):
 
 if __name__ == '__main__':
     bases = sys.argv[1:] if len(sys.argv) > 1 else ['cc-pvdz', 'cc-pvtz', 'aug-cc-pvtz']
-    print('%s + bare charge Z=2 at R on +z.  R^%d E_k (a.u.), E_k = Tr[D H_k]' % (geom_a, npow))
+    print('%s + bare charge Z=2 at R on +z.  R^%d E_k (a.u.), E_k = Tr[D H_k]   nuclei of A: %s' % (
+        geom_a, npow, 'Gaussian, zeta = %g' % zeta_nuc if zeta_nuc else 'point'))
     print('%-12s %-7s %4s %4s  %-13s %-13s %-13s %-13s %-13s %-9s' % (
         'basis', 'approx', 'c/c0', 'R/A', 'H1', 'H2', 'H3', 'H4', 'X-response', '|resid|'))
     for basis in bases:
-        for approx in ('atom1e', '1e'):
-            for kc in (1, 2, 4):
-                for r_ang in ((160, 320) if kc == 1 else (320,)):
+        for approx in (('1e',) if table_only else ('atom1e', '1e')):
+            for kc in ((1,) if table_only else (1, 2, 4)):
+                for r_ang in ((320,) if table_only else (160, 320) if kc == 1 else (320,)):
                     e, resid, ex = decompose(basis, r_ang, approx, c0 * kc)
                     exs = '% .6e' % float(ex) if ex is not None else '      --     '
                     print('%-12s %-7s %4d %4d  % .6e % .6e % .6e % .6e %s %.1e' % (

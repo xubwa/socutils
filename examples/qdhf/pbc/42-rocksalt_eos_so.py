@@ -48,7 +48,7 @@ print('%8s %10s %18s %18s %14s %14s %8s' % ('a/A', 'Omega', 'E x2c1e', 'E rs1e',
 zc = None
 rows = []
 # restart file: one finished volume per line (the container may be restarted)
-rowfile = '42-rocksalt_eos_so.%s%s.rows' % (A, B)
+rowfile = '42-rocksalt_eos_so.%s%s.k%d.rows' % (A, B, nk)
 done = {}
 if os.path.exists(rowfile):
     for ln in open(rowfile):
