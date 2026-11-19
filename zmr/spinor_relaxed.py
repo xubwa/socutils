@@ -30,6 +30,13 @@ def build_pt(mf, mc, mo, civecs, cderi, weights=None, max_memory=4000, degenerac
     NEVPT2Base.degeneracy_tol (states sharing their E0).'''
     eris = socutils_x2c.mo_eris(mf, mf.mol, mo, nfrozen, mc.ncore - nfrozen, mc.ncas,
                                 cderi=cderi)
+    # Kramers pairs of the correlated orbitals (time-reversal shortcuts of zmr: ccvv over
+    # half of the core orbitals), if every orbital has its partner
+    from socutils.zmr.kramers import TimeReversal
+    try:
+        eris.time_reversal = TimeReversal.from_orbitals(mf.mol, numpy.asarray(mo)[:, nfrozen:])
+    except ValueError:
+        eris.time_reversal = None
     pt = PCNEVPT2(eris, mc.nelecas, civecs=civecs, weights=weights, e0='state')
     if degeneracy_tol is not None:
         pt.degeneracy_tol = degeneracy_tol
@@ -84,7 +91,12 @@ def frozen_partition(mf, mc, mo, ci, weights, nfrozen, cderi=None):
     gamma = sum(w * d1[i, i] for i, w in enumerate(weights))
     eris0 = socutils_x2c.mo_eris(mf, mf.mol, mo, 0, ncore, mc.ncas, cderi=cderi)
     f = eris0.generalized_fock(gamma)
-    e, v = numpy.linalg.eigh(0.5 * (f[:ncore, :ncore] + f[:ncore, :ncore].conj().T))
+    fcc = 0.5 * (f[:ncore, :ncore] + f[:ncore, :ncore].conj().T)
+    # Kramers pairs kept as pairs (the time-reversal shortcuts of the NEVPT2 need them)
+    from socutils.zmr.kramers import TimeReversal, paired_eigh
+    tr = TimeReversal.from_orbitals(mf.mol, numpy.asarray(mo)[:, :ncore])
+    res = paired_eigh(fcc, tr) if tr is not None else None
+    e, v = res if res is not None else numpy.linalg.eigh(fcc)
     if nfrozen < ncore and e[nfrozen] - e[nfrozen - 1] < 1e-6:
         raise ValueError('frozen core: no gap after %d core orbitals (%.2e)'
                          % (nfrozen, e[nfrozen] - e[nfrozen - 1]))

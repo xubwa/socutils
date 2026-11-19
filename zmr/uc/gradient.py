@@ -45,14 +45,31 @@ def ao_back(eris, gam, space='v', out_space='c', rows=None):
     return sum(c.conj().T @ yk for c, yk in zip(c_all, y))
 
 
-def ccvv(ctx):
+def ccvv(ctx, kramers=True):
     '''(E, D_cc, D_vv, G_h) of ccvv from the native kernel: G_h[P, a, i] = holomorphic
-    dE/dB[P, a, i] = -sum_jb conj(t[ij, ab]) B[P, b, j].'''
+    dE/dB[P, a, i] = -sum_jb conj(t[ij, ab]) B[P, b, j].  With Kramers pairs
+    (eris.time_reversal, kramers) the core orbitals j of one member of every pair only, the
+    others from time reversal: E twice, D + Theta conj(D) Theta^+, and
+    G + Theta_v conj(G) Theta_c^+ (the relation of B itself).'''
     from socutils.zmr.lib import kernels
-    res = kernels.d_ccvv(ctx.eris.cd_block('vc'), ctx.eps_v, ctx.eps_c, gamma=True)
+    from socutils.zmr.uc import classes
+    jlist = None
+    if kramers and classes.kramers_pairs(ctx) is not None:
+        sp = ctx.sp
+        tr = ctx.eris.time_reversal
+        core = tr.subset(numpy.arange(sp.ncore))
+        th_c = core.matrix()
+        th_v = tr.subset(numpy.arange(sp.ncore + sp.nact, sp.nmo)).matrix()
+        jlist = core.representatives()
+    res = kernels.d_ccvv(ctx.eris.cd_block('vc'), ctx.eps_v, ctx.eps_c, jlist=jlist, gamma=True)
     if res is None:
         raise NotImplementedError('needs libzmr')
     e, dcc, dvv, gam = res
+    if jlist is not None:
+        e = 2 * e
+        dcc = dcc + th_c @ dcc.conj() @ th_c.conj().T
+        dvv = dvv + th_v @ dvv.conj() @ th_v.conj().T
+        gam = gam + numpy.einsum('ab,Lbj,ij->Lai', th_v, gam.conj(), th_c.conj(), optimize=True)
     # dcc.T: zmr.uc.density.ccvv; the kernel's gamma is twice the holomorphic derivative
     return e, dcc.T, dvv, 0.5 * gam
 

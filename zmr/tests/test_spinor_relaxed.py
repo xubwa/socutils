@@ -514,3 +514,34 @@ def test_relaxed_level_matrix_double_group():
             res[(symm, name)] = numpy.linalg.eigvalsh(0.5 * (w + w.conj().T))
     for name in ops:
         assert abs(res[(True, name)] - res[(False, name)]).max() < 1e-7, (name, res)
+
+
+def test_spinor_derivatives_kramers():
+    '''zmr.uc.gradient.derivatives with the Kramers shortcut of ccvv (eris.time_reversal set
+    by build_pt) equals the run without time reversal (spinor water, Kramers-restricted
+    CASSCF orbitals), also with a frozen core.'''
+    from pyscf import gto
+    from socutils.fci import zfci
+    from socutils.mcscf import zmcscf
+    from socutils.scf import spinor_hf
+    from socutils.zmr import spinor_relaxed
+    from socutils.zmr.uc import classes, density, gradient
+    mol = gto.M(atom='O 0 0 0.1173; H 0 0.7172 -0.4892; H 0 -0.8072 -0.4492',
+                basis='6-31g', verbose=0)
+    mf = spinor_hf.KRHF(mol).density_fit()
+    mf.kernel()
+    mc = zmcscf.CASSCF(mf, 8, 4)
+    mc.fcisolver = zfci.FCISolver(mol)
+    mc.verbose = 0
+    mc.kernel()
+    ci = numpy.asarray(mc.ci).ravel()
+    for nf in (0, 2):
+        mo, _ = spinor_relaxed.frozen_partition(mf, mc, mc.mo_coeff, [ci], [1.0], nf)
+        pt = spinor_relaxed.build_pt(mf, mc, mo, ci[:, None], mf.with_df._cderi, nfrozen=nf)
+        assert classes.kramers_pairs(density.context(pt)) is not None
+        fc = mo[:, :nf] if nf else None
+        with_tr = gradient.derivatives(pt, frozen_coeff=fc)
+        pt.quasi_canonical.eris.time_reversal = None
+        without = gradient.derivatives(pt, frozen_coeff=fc)
+        for key in ('d', 'grad', 'g_ci'):
+            assert abs(with_tr[key] - without[key]).max() < 1e-10, (nf, key)
