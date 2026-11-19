@@ -27,7 +27,12 @@ from socutils.pbc.bench.hybrid_k import _inv_metric
 
 def _translations(cell, r_cut):
     A = np.asarray(cell.lattice_vectors())
-    n = [int(np.ceil(r_cut / np.linalg.norm(A[i]))) + 1 for i in range(3)]
+    # T = n A within r_cut of an atom-atom difference: |n_i| <= (r_cut + |R_a - R_b|) |b_i| with b the dual vectors
+    # (b_i . A_j = delta_ij), i.e. r_cut |b_i| plus the fractional extent of the atoms.  (r_cut / |A_i| is the bound
+    # of an orthogonal cell only: fcc primitive vectors need 22% more.)
+    B = np.linalg.inv(A).T
+    ext = np.ptp(cell.atom_coords() @ B.T, axis=0) if cell.natm > 1 else np.zeros(3)
+    n = [int(np.ceil(r_cut * np.linalg.norm(B[i]) + ext[i])) + 1 for i in range(3)]
     T = np.array([[i, j, k] for i in range(-n[0], n[0] + 1) for j in range(-n[1], n[1] + 1)
                   for k in range(-n[2], n[2] + 1)]) @ A
     return T

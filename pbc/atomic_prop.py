@@ -64,7 +64,9 @@ def image_cluster(cell, iatm, rmax):
     AOs onto the cell's, and the distance of each spinor AO's atom from iatm.'''
     a = numpy.asarray(cell.lattice_vectors())
     x = cell.atom_coords()
-    n = int(numpy.ceil(rmax / min(numpy.linalg.norm(a, axis=1)))) + 1
+    b = numpy.linalg.inv(a).T                                      # dual vectors: |n_i| <= r |b_i| (any cell shape)
+    ext = numpy.ptp(x @ b.T, axis=0).max() if cell.natm > 1 else 0.
+    n = int(numpy.ceil(rmax * numpy.linalg.norm(b, axis=1).max() + ext)) + 1
     t = numpy.array([[i, j, k] for i in range(-n, n + 1) for j in range(-n, n + 1)
                      for k in range(-n, n + 1)]) @ a
     imgs = [(ia, x[ia] + tt - x[iatm]) for tt in t for ia in range(cell.natm)

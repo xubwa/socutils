@@ -284,7 +284,11 @@ class RSDF(lib.StreamObject):
         cell = self.cell
         a = cell.lattice_vectors()
         coords = cell.atom_coords()
-        span = np.ptp(coords, axis=0).max() if cell.natm > 1 else 0.
+        # largest distance between two atoms of the cell, bounded by the diagonal of their bounding box: an image T
+        # matters when |R_A - R_B - T| is within the cutoff, i.e. |T| up to the cutoff plus that distance.  (The
+        # largest extent along one Cartesian axis is not a bound: LiH 3x3x3 fcc, body diagonal 40 bohr against 20
+        # along an axis, lost the images +-(a1 + a2 + a3) and with them nearest-neighbour pairs, E_K off by 0.1 Eh.)
+        span = float(np.linalg.norm(np.ptp(coords, axis=0))) if cell.natm > 1 else 0.
         return a, cell_volume(a), coords, span
 
     def _ao_images(self):
