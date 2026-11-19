@@ -50,7 +50,7 @@ Decisions already taken with the user; do not reopen them:
 | CASCI on RSDF (`_CDERIS`, global cderi) | `mcscf/zcasci.py` | validated |
 | local-exchange prototype (SR-PARI + exact LR K) | `pbc/pari.py` | accuracy prototype (4e) |
 | dopant supercells (HNF search, Eu-Eu image distance) | `pbc/bench/cells.py` | done (4f) |
-| production driver with restartable stages | `examples/14-periodic_dopant_casci.py` | done |
+| production driver with restartable stages | `pbc/bench/dopant_casci.py` | done |
 
 ## Running on Rockfish
 
@@ -72,7 +72,7 @@ The auxiliary basis comes from auxgen, which needs extra packages:
 
 ```bash
 export OMP_NUM_THREADS=48
-python examples/14-periodic_dopant_casci.py eu_yso_x2 --workdir $SCRATCH/eu_yso_x2 \
+python pbc/bench/dopant_casci.py eu_yso_x2 --workdir $SCRATCH/eu_yso_x2 \
        --max-memory 160000            # MB; add --xc PBE0 for KS, --lr gspace --omega 0.3
 ```
 

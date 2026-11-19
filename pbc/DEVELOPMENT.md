@@ -527,7 +527,7 @@ explicit fit, is never formed.
 
 ## 4f. Production driver and dopant supercells
 
-`examples/14-periodic_dopant_casci.py` runs RSDF -> KRHF + one-centre
+`pbc/bench/dopant_casci.py` runs RSDF -> KRHF + one-centre
 X2CAMF (fractional dopant 4f) -> CASCI(4f) and keeps every stage in a work
 directory:
 * `cderi.h5`: `RSDF.cderi_file`, then `RSDF.load` on later runs.

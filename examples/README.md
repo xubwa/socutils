@@ -21,6 +21,18 @@ They use the canonical `.x2camf()` / `.x2cmp()` driver API.
 | `13-cis_mo_driven.py` | spinor CIS, MO-driven (`mf.TDA()` on HF) |
 | `14-avas.py` | AVAS automated active space selection (spinor) |
 
+The `pbc/` subfolder has examples for Gamma-point periodic calculations (`socutils.pbc`; they need the
+compiled `lib/libsocpbcdf.so`, and `lib/libsocthc.so` for THC):
+
+| File | Topic |
+| --- | --- |
+| `pbc/00-spinor_hf_rsdf.py` | spinor / Kramers-restricted HF of a crystal with `RSDF` (`spinor_scf.periodic`), X2CAMF, `exxdiv` |
+| `pbc/01-kramers_restricted_ks.py` | Kramers-restricted KS, GGA and hybrid (`spinor_ks.periodic_ks`) |
+| `pbc/02-charged_cell.py` | charged cells (`charged.correct`) |
+| `pbc/03-open_shell_cahf_casci.py` | open-shell ion: fractional-occupation SCF, CAHF, CASCI |
+| `pbc/04-thc_jk.py` | J/K by tensor hypercontraction (`thc.THCJK`), memory budget `cell.max_memory` |
+| `pbc/05-thc_mpi.py` | `THCJK` in parallel (mpi4py) |
+
 The `fci/` subfolder has examples for the spinor CI module (`socutils.fci`):
 
 | File | Topic |
