@@ -1435,7 +1435,7 @@ class THCExchange:
             e0._bas = am._bas[sh].copy()
             e0._bas[:, _gto.ATOM_OF] = 0
             el = e0.ao_loc_nr()
-            cut = np.array([4 * e0.bas_exp(i).min() * np.log(1 / eps) for i in range(e0.nbas)])
+            cut = np.array([4 * e0.bas_exp(i).max() * np.log(1 / eps) for i in range(e0.nbas)])   # tightest primitive
             order = np.argsort(-cut, kind='stable')
             perm = np.concatenate([np.arange(el[i], el[i + 1]) for i in order])
             elems[lab] = dict(mol=e0, cut=cut[order], order=order, perm=perm)
@@ -1561,14 +1561,16 @@ class THCExchange:
             tt['A GEMM'] += time.time() - ta
 
     def _aux_upto(self, g2min, eps=1e-15):
-        '''The aux shells whose FT is not negligible at |G|^2 >= g2min (exp(-G^2 / 4 alpha) > eps for the smallest
+        '''The aux shells whose FT is not negligible at |G|^2 >= g2min (exp(-G^2 / 4 alpha) > eps for the largest
         exponent of the shell): a prefix of the shells sorted by that cutoff.  Returns the sub-molecule of the prefix
         and its number of functions nk; the functions of the sorted shells are self._aux_perm (aux AO indices), so
         the sub-molecule's functions are aux AOs _aux_perm[:nk].'''
         am = self.auxmol
         if getattr(self, '_aux_cut', None) is None:
-            amin = np.array([am.bas_exp(i).min() for i in range(am.nbas)])
-            cut = 4 * amin * np.log(1 / eps)                            # |G|^2 beyond which shell i is negligible
+            # the FT of exp(-a r^2) falls off as exp(-G^2 / 4a): the tightest primitive of a (contracted) shell
+            # decides (the smallest exponent dropped contracted shells too early: acCD aux, A off by 4e-2)
+            amax = np.array([am.bas_exp(i).max() for i in range(am.nbas)])
+            cut = 4 * amax * np.log(1 / eps)                            # |G|^2 beyond which shell i is negligible
             order = np.argsort(-cut, kind='stable')
             loc = am.ao_loc_nr()
             self._aux_perm = np.concatenate([np.arange(loc[i], loc[i + 1]) for i in order])
