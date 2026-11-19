@@ -581,8 +581,13 @@ class Spinors(unittest.TestCase):
 # -- against SHCI ---------------------------------------------------------------
 
 def have_zshci():
-    from socutils.hci import shci
-    return os.path.isfile(shci.DEFAULT_EXE)
+    try:
+        from socutils.hci import shci
+    except ImportError:
+        return False
+    # On master socutils.hci.shci is the Dice driver, which has no DEFAULT_EXE.
+    exe = getattr(shci, 'DEFAULT_EXE', None)
+    return exe is not None and os.path.isfile(exe)
 
 
 @unittest.skipUnless(have_zshci(), 'zshci executable not found')
