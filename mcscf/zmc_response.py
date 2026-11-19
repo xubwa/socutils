@@ -197,6 +197,26 @@ class SAResponse:
             out_c.append(2 * w * v)
         return self.join([out_o] + out_c)
 
+    def ci_diagonal(self):
+        '''<D|H_act|D> over the determinants D of the CI space (string order of zfci).'''
+        from socutils.zmr.active import strings
+        strs = numpy.asarray(strings.gen_strings(self.ncas, self.nelec), dtype=numpy.uint64)
+        occ = ((strs[:, None] >> numpy.arange(self.ncas, dtype=numpy.uint64)[None, :]) & 1).astype(float)
+        eri = self.eri
+        jk = (numpy.einsum('iijj->ij', eri) - numpy.einsum('ijji->ij', eri)).real
+        return occ @ self.h1eff.diagonal().real + 0.5 * numpy.einsum('di,ij,dj->d', occ, jk, occ)
+
+    def precond_diagonal(self, floor=1e-3):
+        '''A positive diagonal approximation of J (complex layout, real values): twice the
+        super-CI orbital diagonal (zmc_superci) and 2 w_I |<D|H|D> - E_I| for the CI vectors,
+        floored.'''
+        from socutils.mcscf import zmc_superci
+        h_orb = numpy.asarray(zmc_superci.gen_g_hop(self.mc, numpy.array(self.mo, copy=True),
+                                                     self.dm1, self.dm2, self.eris)[1]).real
+        hdd = self.ci_diagonal()
+        parts = [2 * abs(h_orb)] + [2 * w * abs(hdd - e) for w, e in zip(self.weights, self.e)]
+        return numpy.maximum(numpy.concatenate(parts), floor)
+
     def null_space(self):
         '''Columns (complex layout) of the zero modes at a stationary point: norm and phase
         of every CI vector.'''
@@ -261,19 +281,25 @@ def state_gradient(resp, k):
 
 
 def _projector(cols):
-    '''Orthonormal real columns spanning the realified complex columns.'''
+    '''Orthonormal real columns spanning the realified complex columns (by SVD: dependent
+    columns, e.g. a direction given twice, count once).'''
     if cols.shape[1] == 0:
         return numpy.zeros((2 * cols.shape[0], 0))
-    q, _ = numpy.linalg.qr(numpy.array([realify(c) for c in cols.T]).T)
-    return q
+    u, sv, _ = numpy.linalg.svd(numpy.array([realify(c) for c in cols.T]).T, full_matrices=False)
+    return u[:, sv > 1e-10 * sv.max()]
 
 
-def zvector(resp, rhs, tol=1e-10, maxiter=1000, extra_null=None):
+def zvector(resp, rhs, tol=1e-10, maxiter=1000, extra_null=None, precond=True, info=None):
     '''z with J z = -rhs on the complement of the zero modes (norm and phase of the CI
-    vectors; extra_null: more complex columns to project out), by MINRES in the real
-    variables.  Returns z in the complex layout.'''
+    vectors, rotations among degenerate averaged states; extra_null: more complex columns
+    to project out), by MINRES in the real
+    variables, preconditioned with resp.precond_diagonal (precond=False: none).  info: a
+    dict that receives the number of iterations.  Returns z in the complex layout.'''
     import scipy.sparse.linalg
-    cols = resp.null_space()
+    # the norm and phase of every CI vector, and the rotations and mixings among degenerate
+    # averaged states of equal weight: zero modes of J that would change the averaged
+    # density (the targets do not depend on them, degenerate_rotations)
+    cols = numpy.hstack([resp.null_space(), degenerate_rotations(resp)])
     if extra_null is not None:
         cols = numpy.hstack([cols, extra_null])
     q = _projector(cols)
@@ -283,10 +309,22 @@ def zvector(resp, rhs, tol=1e-10, maxiter=1000, extra_null=None):
     n = 2 * len(rhs)
     op = scipy.sparse.linalg.LinearOperator(
         (n, n), matvec=lambda v: proj(realify(resp.hop(complexify(proj(v))))))
+    m = None
+    if precond:
+        d = resp.precond_diagonal()
+        dinv = 1.0 / numpy.concatenate([d, d])
+        m = scipy.sparse.linalg.LinearOperator((n, n), matvec=lambda v: proj(dinv * proj(v)))
     b = proj(-realify(rhs))
-    z, info = scipy.sparse.linalg.minres(op, b, rtol=tol, maxiter=maxiter)
-    if info != 0:
-        raise RuntimeError('Z-vector equations not converged (minres info %d)' % info)
+    count = [0]
+
+    def callback(xk):
+        count[0] += 1
+    z, status = scipy.sparse.linalg.minres(op, b, M=m, rtol=tol, maxiter=maxiter,
+                                           callback=callback)
+    if info is not None:
+        info['iterations'] = count[0]
+    if status != 0:
+        raise RuntimeError('Z-vector equations not converged (minres info %d)' % status)
     return complexify(proj(z))
 
 
