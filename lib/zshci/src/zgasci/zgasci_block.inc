@@ -45,6 +45,10 @@ static ZG_SCALAR *ZG_NAME(term_matrix)(const zg_plan *p, const zg_term *t,
 
 void ZG_NAME(zg_sigma_block)(const zg_plan *p, const ZG_SCALAR *v,
                              const ZG_SCALAR *c, ZG_SCALAR *sigma) {
+  if (p->product) {
+    ZG_NAME(zg_sigma_blas)(p, v, c, sigma);
+    return;
+  }
   const zg_side *sa = &p->s[0], *sb = &p->s[1];
   const int ncb = sb->nclass;
   ZG_SCALAR *w[9];

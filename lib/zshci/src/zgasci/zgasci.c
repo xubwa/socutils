@@ -169,6 +169,39 @@ static void build_filter(zg_plan *p, int h, zg_bkind *kd);
 static inline int64_t side_sid(const zg_plan *p, int side, const int *counts,
                                const uint32_t *masks);
 
+/* The sub-strings of every sub-group: ranks, lists, label sums (p->n and
+ * p->nsets set). */
+static void setup_substrings(zg_plan *p, int nsub, int nsub_a,
+                             const int *sub_size, const int *labels) {
+  const int nsets = p->nsets;
+  for (int g = 0, first = 0; g < nsub; first += sub_size[g], ++g) {
+    const int m = sub_size[g];
+    p->m[g] = m;
+    p->off[g] = first;
+    p->side_of[g] = g >= nsub_a;
+    p->rank[g] = malloc(sizeof(uint32_t) << m);
+    p->masks[g] = malloc(sizeof(uint32_t) << m);
+    p->sublabel[g] = malloc((sizeof(int32_t) * (nsets + 1)) << m);
+    p->mstart[g][0] = 0;
+    for (int k = 0; k <= m; ++k) {
+      p->mstart[g][k + 1] = p->mstart[g][k] + zg_binom(m, k);
+    }
+    int64_t seen[ZG_MAX_SUBSIZE + 1] = {0};
+    for (uint32_t mask = 0; mask < (1u << m); ++mask) {
+      const int k = __builtin_popcount(mask);
+      p->rank[g][mask] = (uint32_t)seen[k];
+      p->masks[g][p->mstart[g][k] + seen[k]++] = mask;
+      for (int set = 0; set < nsets; ++set) {
+        int sum = 0;
+        for (int j = 0; j < m; ++j) {
+          if (mask >> j & 1) sum += labels[set * p->n + first + j];
+        }
+        p->sublabel[g][((size_t)set << m) + mask] = sum;
+      }
+    }
+  }
+}
+
 /* Whether some A bucket of class ca pairs with B class cb. */
 static int classes_pair(const zg_plan *p, int ca, int cb) {
   const zg_side *sa = &p->s[0], *sb = &p->s[1];
@@ -236,33 +269,7 @@ zg_plan *zg_plan_new(int nspinor, int nelec, int nsub, int nsub_a,
     p->gas_max[c] = gas_max[c];
   }
 
-  /* Sub-strings. */
-  for (int g = 0, first = 0; g < nsub; first += sub_size[g], ++g) {
-    const int m = sub_size[g];
-    p->m[g] = m;
-    p->off[g] = first;
-    p->side_of[g] = g >= nsub_a;
-    p->rank[g] = malloc(sizeof(uint32_t) << m);
-    p->masks[g] = malloc(sizeof(uint32_t) << m);
-    p->sublabel[g] = malloc((sizeof(int32_t) * (nsets + 1)) << m);
-    p->mstart[g][0] = 0;
-    for (int k = 0; k <= m; ++k) {
-      p->mstart[g][k + 1] = p->mstart[g][k] + zg_binom(m, k);
-    }
-    int64_t seen[ZG_MAX_SUBSIZE + 1] = {0};
-    for (uint32_t mask = 0; mask < (1u << m); ++mask) {
-      const int k = __builtin_popcount(mask);
-      p->rank[g][mask] = (uint32_t)seen[k];
-      p->masks[g][p->mstart[g][k] + seen[k]++] = mask;
-      for (int set = 0; set < nsets; ++set) {
-        int sum = 0;
-        for (int j = 0; j < m; ++j) {
-          if (mask >> j & 1) sum += labels[set * nspinor + first + j];
-        }
-        p->sublabel[g][((size_t)set << m) + mask] = sum;
-      }
-    }
-  }
+  setup_substrings(p, nsub, nsub_a, sub_size, labels);
 
   /* The most electrons a sub-group can hold: its spinors, the electrons,
    * and the constraints without negative weights. */
@@ -590,6 +597,12 @@ void zg_plan_free(zg_plan *p) {
       free(p->bkinds[h][k].fkey);
       free(p->bkinds[h][k].fmask);
     }
+    free(p->pstr[h]);
+    for (int k = 0; k < p->npat[h]; ++k) {
+      free(p->pat[h][k].ptr);
+      free(p->pat[h][k].src);
+      free(p->pat[h][k].x);
+    }
   }
   free(p);
 }
@@ -812,6 +825,7 @@ static void setup_block(zg_plan *p) {
   }
   p->block_ok = 1;
   setup_terms(p);
+  if (p->product) return; /* its block kernel is the BLAS kernel */
   const zg_side *sa = &p->s[0], *sb = &p->s[1];
   /* Tile shape; ZGASCI_TILE="rows,columns" overrides it (experiments). */
   int64_t max_rows = 128, max_cols = 32;
@@ -1046,6 +1060,22 @@ int zg_asg_list(const zg_plan *p, int side, int k, const int *kind,
                 const int *rel, int from, const uint8_t *ok, zg_asg *out,
                 int cap) {
   const zg_side *s = &p->s[side];
+  if (p->product) {
+    /* One "placement": the class of the source strings, if there is one. */
+    int elec = s->tuple_elec[from];
+    for (int i = 0; i < k; ++i) elec += kind[i] ? -1 : 1;
+    for (int c = 0; c < s->nclass; ++c) {
+      if (s->tuple_elec[c] != elec) continue;
+      if (ok && !ok[c]) return 0;
+      if (cap > 0) {
+        memset(&out[0], 0, sizeof(zg_asg));
+        out[0].cls = c;
+        out[0].base = s->class_base[c];
+      }
+      return 1;
+    }
+    return 0;
+  }
   const int64_t ts = s->class_tuple[from];
   int counts[ZG_MAX_SUB];
   zg_counts(p, side, ts, counts);
@@ -1133,7 +1163,7 @@ static void build_filter(zg_plan *p, int h, zg_bkind *kd) {
   kd->fsize = 0;
   kd->fkey = NULL;
   kd->fmask = NULL;
-  if (p->nsets == 0 || kd->kc > 1 || kd->kr < 1) return;
+  if (p->product || p->nsets == 0 || kd->kc > 1 || kd->kr < 1) return;
   const int nd = p->ndlab[h], ndc = p->ndlab[1 - h];
   int64_t combos = 1;
   for (int i = 0; i + 1 < kd->kr; ++i) combos *= nd;
@@ -1425,6 +1455,17 @@ int zg_enum_ops(const zg_plan *p, int side, int k, const int *kind,
 /* The occupied spinors of string sid of a side; returns their number. */
 static int string_occ(const zg_plan *p, int side, int64_t sid, int *occ) {
   const zg_side *s = &p->s[side];
+  if (p->product) {
+    const int nw = p->pwords[side], first = p->off[s->first];
+    const uint64_t *w = p->pstr[side] + (size_t)sid * nw;
+    int n = 0;
+    for (int i = 0; i < nw; ++i) {
+      for (uint64_t bits = w[i]; bits; bits &= bits - 1) {
+        occ[n++] = first + 64 * i + __builtin_ctzll(bits);
+      }
+    }
+    return n;
+  }
   const int c = s->bucket_class[s->bucket[sid]];
   int counts[ZG_MAX_SUB];
   uint32_t masks[ZG_MAX_SUB];
@@ -1464,6 +1505,503 @@ void zg_dets(const zg_plan *p, uint64_t *words) {
         for (int64_t i = 0; i < sa->bucket_size[ba]; ++i) {
           uint64_t *det = words + (size_t)(p->blockoff[k] + i * nb + j) * nwords;
           for (int x = 0; x < n; ++x) det[occ[x] / 64] |= (uint64_t)1 << (occ[x] % 64);
+        }
+      }
+    }
+  }
+}
+
+/* -- product spaces (PRODUCT_SPACE.md) ------------------------------------ */
+
+int zg_is_product(const zg_plan *p) { return p->product; }
+int zg_is_mirror(const zg_plan *p) { return p->mirror; }
+
+int64_t zg_product_strings(const zg_plan *p, int side, uint64_t *words) {
+  if (!p->product) return 0;
+  const int64_t n = p->s[side].nsid;
+  if (words) memcpy(words, p->pstr[side], (size_t)n * p->pwords[side] * sizeof(uint64_t));
+  return n;
+}
+
+void zg_product_info(const zg_plan *p, int64_t *out) {
+  for (int side = 0; side < 2; ++side) {
+    out[side] = p->product ? p->pwords[side] : 0;
+    out[2 + side] = 0;
+    for (int k = 0; p->product && k < p->npat[side]; ++k) {
+      out[2 + side] += p->pat[side][k].ptr[p->s[side].nsid];
+    }
+  }
+}
+
+/* A string of a side to be sorted: electron count, labels, words. */
+typedef struct {
+  int elec;
+  int lab[ZG_MAX_SETS];
+  int nw;
+  const uint64_t *w;
+  int64_t orig;
+} pstr_rec;
+
+static int pstr_cmp(const void *x, const void *y) {
+  const pstr_rec *a = x, *b = y;
+  if (a->elec != b->elec) return a->elec < b->elec ? -1 : 1;
+  for (int s = 0; s < ZG_MAX_SETS; ++s) {
+    if (a->lab[s] != b->lab[s]) return a->lab[s] < b->lab[s] ? -1 : 1;
+  }
+  for (int i = a->nw - 1; i >= 0; --i) {
+    if (a->w[i] != b->w[i]) return a->w[i] < b->w[i] ? -1 : 1;
+  }
+  return 0;
+}
+
+static int same_bucket(const pstr_rec *a, const pstr_rec *b) {
+  return a->elec == b->elec && memcmp(a->lab, b->lab, sizeof(a->lab)) == 0;
+}
+
+/* Strings of a side looked up by their words: open addressing. */
+typedef struct {
+  int nw;
+  uint64_t mask;
+  int32_t *slot;
+  const uint64_t *str;
+} pstr_hash;
+
+static inline uint64_t pstr_hash_of(const uint64_t *w, int nw) {
+  uint64_t h = 0x9E3779B97F4A7C15ull;
+  for (int i = 0; i < nw; ++i) {
+    h ^= w[i];
+    h *= 0xBF58476D1CE4E5B9ull;
+    h ^= h >> 31;
+  }
+  return h;
+}
+
+static inline int32_t pstr_find(const pstr_hash *t, const uint64_t *w) {
+  for (uint64_t i = pstr_hash_of(w, t->nw) & t->mask;; i = (i + 1) & t->mask) {
+    const int32_t s = t->slot[i];
+    if (s < 0) return -1;
+    const uint64_t *u = t->str + (size_t)s * t->nw;
+    int same = 1;
+    for (int j = 0; j < t->nw && same; ++j) same = u[j] == w[j];
+    if (same) return s;
+  }
+}
+
+/* The operators of a pattern on one string (as enum_rec, on whole words):
+ * counts them, and stores them if src is not NULL. */
+typedef struct {
+  int k, nside, nw;
+  const int *kind, *rel;
+  uint64_t cur[ZG_MAX_PWORDS];
+  const pstr_hash *hash;
+  int32_t *src, *x;
+  int64_t n;
+} ptab_ctx;
+
+static void ptab_rec(ptab_ctx *c, int i, int prev, int sg, int64_t x, int64_t radix) {
+  if (i == c->k) {
+    const int32_t s = pstr_find(c->hash, c->cur);
+    if (s < 0) return;
+    if (c->src) {
+      c->src[c->n] = s;
+      c->x[c->n] = sg > 0 ? (int32_t)x : ~(int32_t)x;
+    }
+    c->n++;
+    return;
+  }
+  int lo = 0, hi = c->nside;
+  if (i > 0 && c->rel[i - 1] > 0) lo = prev + 1;
+  if (i > 0 && c->rel[i - 1] < 0) hi = prev;
+  int below = 0; /* electrons in the words below */
+  for (int wi = 0; wi < c->nw; ++wi) {
+    const uint64_t w = c->cur[wi];
+    const int at = 64 * wi;
+    if (at < hi && at + 64 > lo) {
+      /* creation in O: its adjoint removes an electron, and the other way. */
+      uint64_t bits = c->kind[i] ? w : ~w;
+      if (lo > at) bits &= ~0ull << (lo - at);
+      if (hi - at < 64) bits &= (1ull << (hi - at)) - 1;
+      while (bits) {
+        const int j = __builtin_ctzll(bits);
+        bits &= bits - 1;
+        const int s = ((below + __builtin_popcountll(w & ((1ull << j) - 1))) & 1) ? -sg : sg;
+        c->cur[wi] = w ^ (1ull << j);
+        ptab_rec(c, i + 1, at + j, s, x + radix * (at + j), radix * c->nside);
+      }
+      c->cur[wi] = w;
+    }
+    below += __builtin_popcountll(w);
+  }
+}
+
+/* The table of pattern t of a side: two passes over the strings, counting
+ * and filling. */
+static void build_ptable(zg_plan *p, int side, zg_ptable *t, const pstr_hash *hash) {
+  const zg_side *s = &p->s[side];
+  const int64_t nsid = s->nsid;
+  int add = 0;
+  for (int i = 0; i < t->k; ++i) add += t->kind[i] ? -1 : 1;
+  /* The classes whose strings can have sources. */
+  uint8_t *live = calloc((size_t)s->nclass + 1, 1);
+  for (int c = 0; c < s->nclass; ++c) {
+    for (int d = 0; d < s->nclass; ++d) live[c] |= s->tuple_elec[d] == s->tuple_elec[c] + add;
+  }
+  t->ptr = calloc((size_t)nsid + 1, sizeof(int64_t));
+  for (int pass = 0; pass < 2; ++pass) {
+#pragma omp parallel for schedule(dynamic, 64)
+    for (int64_t sid = 0; sid < nsid; ++sid) {
+      const int cls = s->bucket_class[s->bucket[sid]];
+      if (!live[cls]) continue;
+      ptab_ctx c;
+      c.k = t->k;
+      c.nside = p->nside[side];
+      c.nw = p->pwords[side];
+      c.kind = t->kind;
+      c.rel = t->rel;
+      memcpy(c.cur, p->pstr[side] + (size_t)sid * c.nw, c.nw * sizeof(uint64_t));
+      c.hash = hash;
+      c.src = pass ? t->src + t->ptr[sid] : NULL;
+      c.x = pass ? t->x + t->ptr[sid] : NULL;
+      c.n = 0;
+      ptab_rec(&c, 0, -1, 1, 0, 1);
+      if (pass == 0) t->ptr[sid + 1] = c.n;
+    }
+    if (pass == 0) {
+      for (int64_t sid = 0; sid < nsid; ++sid) t->ptr[sid + 1] += t->ptr[sid];
+      t->src = malloc((size_t)(t->ptr[nsid] + 1) * sizeof(int32_t));
+      t->x = malloc((size_t)(t->ptr[nsid] + 1) * sizeof(int32_t));
+    }
+  }
+  free(live);
+}
+
+/* The pattern of the operators (k, kind, rel) among those of a side: its
+ * number, a new one if needed. */
+static int pattern_id(zg_plan *p, int side, int k, const int *kind, const int *rel) {
+  for (int i = 0; i < p->npat[side]; ++i) {
+    const zg_ptable *t = &p->pat[side][i];
+    int same = t->k == k;
+    for (int j = 0; j < k && same; ++j) same = t->kind[j] == kind[j] && t->rel[j] == rel[j];
+    if (same) return i;
+  }
+  zg_ptable *t = &p->pat[side][p->npat[side]];
+  memset(t, 0, sizeof(*t));
+  t->k = k;
+  for (int j = 0; j < k; ++j) {
+    t->kind[j] = kind[j];
+    t->rel[j] = rel[j];
+  }
+  return p->npat[side]++;
+}
+
+zg_plan *zg_plan_product(int nspinor, int nelec, int nside_a, int64_t nstr_a,
+                         const uint64_t *str_a, int64_t nstr_b,
+                         const uint64_t *str_b, int nsets, const int *labels,
+                         const int *mods, const int *targets) {
+  init_binom();
+  zg_message[0] = '\0';
+  const int nside[2] = {nside_a, nspinor - nside_a};
+  if (nside_a < 1 || nside[1] < 1 || nside[0] > 215 || nside[1] > 215 || nelec < 2 ||
+      nelec > nspinor || nsets < 0 || nsets > ZG_MAX_SETS || nstr_a < 1 || nstr_b < 1 ||
+      nstr_a >= INT32_MAX || nstr_b >= INT32_MAX) {
+    snprintf(zg_message, sizeof(zg_message),
+             "bad arguments: 1 to 215 spinors on each side, 2 <= electrons <= "
+             "spinors, at most %d label sets, 1 to 2^31 - 1 strings a side",
+             ZG_MAX_SETS);
+    return NULL;
+  }
+  zg_plan *p = calloc(1, sizeof(zg_plan));
+  p->product = 1;
+  p->n = nspinor;
+  p->nelec = nelec;
+  p->nsets = nsets;
+  p->npair = nspinor * (nspinor - 1) / 2;
+  for (int set = 0; set < nsets; ++set) {
+    p->mods[set] = mods[set];
+    p->targets[set] = reduce_label(targets[set], mods[set]);
+  }
+  p->ngas = 0;
+  p->gas_w = calloc(ZG_MAX_SUB, sizeof(int));
+  p->gas_min = malloc(sizeof(int));
+  p->gas_max = malloc(sizeof(int));
+  /* Pseudo-sub-groups of at most 16 spinors, for the labels and the kinds
+   * of terms. */
+  int sub_size[ZG_MAX_SUB], nsub = 0, nsub_a = 0;
+  for (int side = 0; side < 2; ++side) {
+    const int pieces = (nside[side] + ZG_MAX_SUBSIZE - 1) / ZG_MAX_SUBSIZE;
+    for (int i = 0; i < pieces; ++i) {
+      sub_size[nsub++] = nside[side] * (i + 1) / pieces - nside[side] * i / pieces;
+    }
+    if (side == 0) nsub_a = nsub;
+  }
+  p->nsub = nsub;
+  setup_substrings(p, nsub, nsub_a, sub_size, labels);
+  for (int g = 0; g < nsub; ++g) p->kmax[g] = p->m[g];
+
+  /* The strings of each side: sorted, checked, and grouped in buckets. */
+  const int64_t nstr[2] = {nstr_a, nstr_b};
+  const uint64_t *str[2] = {str_a, str_b};
+  pstr_rec *rec[2];
+  int64_t nb[2];
+  int64_t *bstart[2]; /* the buckets: runs of rec */
+  for (int side = 0; side < 2; ++side) {
+    zg_side *s = &p->s[side];
+    s->first = side ? nsub_a : 0;
+    s->nsub = side ? nsub - nsub_a : nsub_a;
+    const int nw = (nside[side] + 63) / 64, first = side ? nside_a : 0;
+    p->pwords[side] = nw;
+    rec[side] = malloc((size_t)nstr[side] * sizeof(pstr_rec));
+    int bad = 0;
+#pragma omp parallel for schedule(static) reduction(| : bad)
+    for (int64_t i = 0; i < nstr[side]; ++i) {
+      pstr_rec *r = &rec[side][i];
+      r->nw = nw;
+      r->w = str[side] + (size_t)i * nw;
+      r->orig = i;
+      r->elec = 0;
+      int sum[ZG_MAX_SETS] = {0};
+      for (int j = 0; j < nw; ++j) {
+        const int top = nside[side] - 64 * j;
+        if (top < 64 && r->w[j] >> top) bad = 1;
+        r->elec += __builtin_popcountll(r->w[j]);
+        for (uint64_t bits = r->w[j]; bits; bits &= bits - 1) {
+          const int q = first + 64 * j + __builtin_ctzll(bits);
+          for (int set = 0; set < nsets; ++set) sum[set] += labels[set * nspinor + q];
+        }
+      }
+      for (int set = 0; set < ZG_MAX_SETS; ++set) {
+        r->lab[set] = set < nsets ? reduce_label(sum[set], mods[set]) : 0;
+      }
+    }
+    if (bad) {
+      snprintf(zg_message, sizeof(zg_message),
+               "a string of side %c has a bit beyond its %d spinors", "AB"[side],
+               nside[side]);
+    }
+    qsort(rec[side], (size_t)nstr[side], sizeof(pstr_rec), pstr_cmp);
+    for (int64_t i = 1; i < nstr[side] && !bad; ++i) {
+      if (pstr_cmp(&rec[side][i - 1], &rec[side][i]) == 0) {
+        snprintf(zg_message, sizeof(zg_message),
+                 "string %lld of side %c is listed twice", (long long)rec[side][i].orig,
+                 "AB"[side]);
+        bad = 1;
+      }
+    }
+    if (bad) {
+      free(rec[side]);
+      if (side) {
+        free(rec[0]);
+        free(bstart[0]);
+      }
+      zg_plan_free(p);
+      return NULL;
+    }
+    bstart[side] = malloc((size_t)(nstr[side] + 1) * sizeof(int64_t));
+    nb[side] = 0;
+    for (int64_t i = 0; i < nstr[side]; ++i) {
+      if (i == 0 || !same_bucket(&rec[side][i - 1], &rec[side][i])) bstart[side][nb[side]++] = i;
+    }
+    bstart[side][nb[side]] = nstr[side];
+  }
+  /* The buckets that pair (one partner each: the labels fix it). */
+  int64_t *partner = malloc((size_t)(nb[0] + 1) * sizeof(int64_t));
+  uint8_t *paired_b = calloc((size_t)nb[1] + 1, 1);
+  for (int64_t i = 0; i < nb[0]; ++i) {
+    const pstr_rec *a = &rec[0][bstart[0][i]];
+    partner[i] = -1;
+    for (int64_t j = 0; j < nb[1] && partner[i] < 0; ++j) {
+      const pstr_rec *b = &rec[1][bstart[1][j]];
+      int good = a->elec + b->elec == nelec;
+      for (int set = 0; set < nsets && good; ++set) {
+        good = reduce_label(a->lab[set] + b->lab[set], mods[set]) == p->targets[set];
+      }
+      if (good) {
+        partner[i] = j;
+        paired_b[j] = 1;
+      }
+    }
+  }
+  /* Numbering of the strings of the buckets that pair. */
+  int32_t *bucket_of[2]; /* new bucket of each old bucket, or -1 */
+  for (int side = 0; side < 2; ++side) {
+    zg_side *s = &p->s[side];
+    const int nw = p->pwords[side];
+    bucket_of[side] = malloc((size_t)(nb[side] + 1) * sizeof(int32_t));
+    s->nbucket = 0;
+    s->nsid = 0;
+    s->nclass = 0;
+    int last_elec = -1;
+    for (int64_t i = 0; i < nb[side]; ++i) {
+      const int keep = side ? paired_b[i] : partner[i] >= 0;
+      bucket_of[side][i] = keep ? s->nbucket++ : -1;
+      if (!keep) continue;
+      s->nsid += bstart[side][i + 1] - bstart[side][i];
+      const int e = rec[side][bstart[side][i]].elec;
+      if (e != last_elec) s->nclass++;
+      last_elec = e;
+    }
+    if (s->nbucket == 0) {
+      snprintf(zg_message, sizeof(zg_message),
+               "no string of side %c pairs with one of side %c", "AB"[side],
+               "BA"[side]);
+      for (int t = 0; t < 2; ++t) {
+        free(rec[t]);
+        free(bstart[t]);
+        if (t <= side) free(bucket_of[t]);
+      }
+      free(partner);
+      free(paired_b);
+      zg_plan_free(p);
+      return NULL;
+    }
+    s->ntuple = s->nclass;
+    s->tuple_elec = malloc((size_t)(s->nclass + 1) * sizeof(int));
+    s->tuple_size = calloc((size_t)s->nclass + 1, sizeof(int64_t));
+    s->class_of = malloc((size_t)(s->nclass + 1) * sizeof(int32_t));
+    s->class_tuple = malloc((size_t)(s->nclass + 1) * sizeof(int64_t));
+    s->class_base = malloc((size_t)(s->nclass + 1) * sizeof(int64_t));
+    s->class_bucket = malloc((size_t)(s->nclass + 1) * sizeof(int));
+    s->bucket_size = malloc((size_t)(s->nbucket + 1) * sizeof(int64_t));
+    s->bucket_label = calloc((size_t)(s->nbucket + 1) * (nsets + 1), sizeof(int));
+    s->bucket_class = malloc((size_t)(s->nbucket + 1) * sizeof(int));
+    s->bucket_start = malloc((size_t)(s->nbucket + 1) * sizeof(int64_t));
+    s->bucket = malloc((size_t)(s->nsid + 1) * sizeof(int32_t));
+    s->pos = malloc((size_t)(s->nsid + 1) * sizeof(uint32_t));
+    s->bucket_sid = malloc((size_t)(s->nsid + 1) * sizeof(int64_t));
+    p->pstr[side] = malloc((size_t)(s->nsid + 1) * nw * sizeof(uint64_t));
+    int c = -1;
+    last_elec = -1;
+    int64_t sid = 0;
+    for (int64_t i = 0; i < nb[side]; ++i) {
+      const int bk = bucket_of[side][i];
+      if (bk < 0) continue;
+      const int e = rec[side][bstart[side][i]].elec;
+      if (e != last_elec) {
+        ++c;
+        s->tuple_elec[c] = e;
+        s->class_of[c] = c;
+        s->class_tuple[c] = c;
+        s->class_base[c] = sid;
+        s->class_bucket[c] = bk;
+      }
+      last_elec = e;
+      s->bucket_class[bk] = c;
+      s->bucket_start[bk] = sid;
+      s->bucket_size[bk] = bstart[side][i + 1] - bstart[side][i];
+      s->tuple_size[c] += s->bucket_size[bk];
+      memcpy(s->bucket_label + (size_t)bk * nsets, rec[side][bstart[side][i]].lab,
+             nsets * sizeof(int));
+      for (int64_t j = bstart[side][i]; j < bstart[side][i + 1]; ++j, ++sid) {
+        s->bucket[sid] = bk;
+        s->pos[sid] = (uint32_t)(sid - s->bucket_start[bk]);
+        s->bucket_sid[sid] = sid;
+        memcpy(p->pstr[side] + (size_t)sid * nw, rec[side][j].w, nw * sizeof(uint64_t));
+      }
+    }
+    s->class_base[s->nclass] = s->nsid;
+    s->class_bucket[s->nclass] = s->nbucket;
+    s->bucket_start[s->nbucket] = s->nsid;
+  }
+  /* Blocks: each A bucket with its partner, if the partner is of class cb. */
+  zg_side *sa = &p->s[0], *sb = &p->s[1];
+  const size_t nmatch = (size_t)sa->nbucket * sb->nclass;
+  p->match = malloc((nmatch + 1) * sizeof(int32_t));
+  p->blockoff = malloc((nmatch + 1) * sizeof(int64_t));
+  for (size_t k = 0; k < nmatch; ++k) p->match[k] = -1;
+  for (int64_t i = 0; i < nb[0]; ++i) {
+    const int ba = bucket_of[0][i];
+    if (ba < 0) continue;
+    const int bb = bucket_of[1][partner[i]];
+    p->match[(size_t)ba * sb->nclass + sb->bucket_class[bb]] = bb;
+  }
+  p->dim = 0;
+  p->nblock = 0;
+  for (size_t k = 0; k < nmatch; ++k) {
+    p->blockoff[k] = 0;
+    if (p->match[k] < 0) continue;
+    p->blockoff[k] = p->dim;
+    p->dim += sa->bucket_size[k / sb->nclass] * sb->bucket_size[p->match[k]];
+    p->nblock++;
+  }
+  for (int side = 0; side < 2; ++side) {
+    free(rec[side]);
+    free(bstart[side]);
+    free(bucket_of[side]);
+  }
+  free(partner);
+  free(paired_b);
+  p->cpair = calloc((size_t)sa->nclass * sb->nclass + 1, 1);
+  for (int ca = 0; ca < sa->nclass; ++ca) {
+    for (int cb = 0; cb < sb->nclass; ++cb) {
+      p->cpair[(size_t)ca * sb->nclass + cb] = (uint8_t)classes_pair(p, ca, cb);
+    }
+  }
+  p->tasks = NULL;
+  p->ntask = 0;
+  /* Mirror image: the same strings and labels on both sides. */
+  p->mirror = nside[0] == nside[1] && sa->nsid == sb->nsid && sa->nbucket == sb->nbucket &&
+              memcmp(p->pstr[0], p->pstr[1], (size_t)sa->nsid * p->pwords[0] * 8) == 0;
+  for (int set = 0; set < nsets && p->mirror; ++set) {
+    for (int j = 0; j < nside[0] && p->mirror; ++j) {
+      p->mirror = labels[set * nspinor + j] == labels[set * nspinor + nside[0] + j];
+    }
+  }
+  setup_block(p);
+  setup_blas(p);
+  /* The operator tables of the kinds of the BLAS kernel: rows on side h,
+   * columns on the other. */
+  for (int h = 0; h < 2; ++h) {
+    for (int k = 0; k < p->nbkind[h]; ++k) {
+      zg_bkind *kd = &p->bkinds[h][k];
+      kd->pat_r = kd->kr ? pattern_id(p, h, kd->kr, kd->kind_r, kd->rel_r) : -1;
+      kd->pat_c = kd->kc ? pattern_id(p, 1 - h, kd->kc, kd->kind_c, kd->rel_c) : -1;
+    }
+  }
+  for (int side = 0; side < 2; ++side) {
+    const zg_side *s = &p->s[side];
+    for (int i = 0; i < p->npat[side]; ++i) {
+      double nx = 1.0;
+      for (int j = 0; j < p->pat[side][i].k; ++j) nx *= p->nside[side];
+      if (nx >= 2147483647.0) {
+        snprintf(zg_message, sizeof(zg_message),
+                 "%d spinors on side %c: too many operators to number", p->nside[side],
+                 "AB"[side]);
+        zg_plan_free(p);
+        return NULL;
+      }
+    }
+    pstr_hash hash;
+    hash.nw = p->pwords[side];
+    hash.str = p->pstr[side];
+    uint64_t size = 16;
+    while (size < 2 * (uint64_t)s->nsid) size *= 2;
+    hash.mask = size - 1;
+    hash.slot = malloc(size * sizeof(int32_t));
+    for (uint64_t i = 0; i < size; ++i) hash.slot[i] = -1;
+    for (int64_t sid = 0; sid < s->nsid; ++sid) {
+      uint64_t i = pstr_hash_of(p->pstr[side] + (size_t)sid * hash.nw, hash.nw) & hash.mask;
+      while (hash.slot[i] >= 0) i = (i + 1) & hash.mask;
+      hash.slot[i] = (int32_t)sid;
+    }
+    for (int i = 0; i < p->npat[side]; ++i) build_ptable(p, side, &p->pat[side][i], &hash);
+    free(hash.slot);
+  }
+  return p;
+}
+
+void zg_det_strings(const zg_plan *p, int64_t *ia, int64_t *ib) {
+  const zg_side *sa = &p->s[0], *sb = &p->s[1];
+#pragma omp parallel for schedule(dynamic)
+  for (int ba = 0; ba < sa->nbucket; ++ba) {
+    for (int cb = 0; cb < sb->nclass; ++cb) {
+      const size_t k = (size_t)ba * sb->nclass + cb;
+      const int bb = p->match[k];
+      if (bb < 0) continue;
+      const int64_t nb = sb->bucket_size[bb];
+      for (int64_t i = 0; i < sa->bucket_size[ba]; ++i) {
+        for (int64_t j = 0; j < nb; ++j) {
+          ia[p->blockoff[k] + i * nb + j] = sa->bucket_sid[sa->bucket_start[ba] + i];
+          ib[p->blockoff[k] + i * nb + j] = sb->bucket_sid[sb->bucket_start[bb] + j];
         }
       }
     }
@@ -1572,3 +2110,27 @@ static void zg_blas_restore(int before) {
 #include "zgasci_kernel.inc"
 #include "zgasci_block.inc"
 #include "zgasci_blas.inc"
+
+/* Dense helpers for vectors distributed by rows (socutils.hci.gasci_mpi):
+ * strided transposition and copy of a block, in parallel. */
+#define ZG_TILE 32
+void zg_transpose_d(int64_t nr, int64_t nc, const double *in, int64_t ldi, double *out,
+                    int64_t ldo) {
+#pragma omp parallel for collapse(2) schedule(static)
+  for (int64_t r0 = 0; r0 < nr; r0 += ZG_TILE) {
+    for (int64_t c0 = 0; c0 < nc; c0 += ZG_TILE) {
+      const int64_t r1 = r0 + ZG_TILE < nr ? r0 + ZG_TILE : nr;
+      const int64_t c1 = c0 + ZG_TILE < nc ? c0 + ZG_TILE : nc;
+      for (int64_t c = c0; c < c1; ++c) {
+        for (int64_t r = r0; r < r1; ++r) out[c * ldo + r] = in[r * ldi + c];
+      }
+    }
+  }
+}
+
+void zg_copy_block_d(int64_t nr, int64_t nc, const double *in, int64_t ldi, double *out,
+                     int64_t ldo) {
+#pragma omp parallel for schedule(static)
+  for (int64_t r = 0; r < nr; ++r) memcpy(out + r * ldo, in + r * ldi, (size_t)nc * sizeof(double));
+}
+#undef ZG_TILE

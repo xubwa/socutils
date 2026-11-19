@@ -99,7 +99,23 @@ typedef struct {
   int fsize, fnsub;
   uint64_t *fkey;
   uint32_t *fmask;
+  /* Product plans: the tables of the row and of the column operators. */
+  int pat_r, pat_c;
 } zg_bkind;
+
+#define ZG_MAX_PWORDS 4 /* words of a string of a product plan */
+#define ZG_MAX_PAT 8    /* operator patterns of a side */
+
+/* Product plans: the operators of one pattern (k operators of these kinds
+ * and orders, as in zg_term) on the strings of a side.  For target string
+ * w, entries ptr[w] .. ptr[w + 1]: the source string src with
+ * O(x)^dagger |w> = sign |src>, and x (~x if sign is -1). */
+typedef struct {
+  int k, kind[4], rel[4];
+  int64_t *ptr;
+  int32_t *src;
+  int32_t *x;
+} zg_ptable;
 
 /* A way of placing the operators of one side in its sub-groups (g, local
  * to the side), with the class of the source strings O^dagger |target>, and
@@ -175,7 +191,30 @@ struct zg_plan {
   uint16_t dof[2][ZG_MAX_SPINOR];
   /* (bucket << 32) + place in the bucket of each string of a side. */
   uint64_t *bp[2];
+  /* Product plans (zg_plan_product): the strings of each side in sid order
+   * (pwords words each) and the operator tables.  The sub-groups are only
+   * pseudo-sub-groups there, and a class is an electron count. */
+  int product, mirror;
+  int pwords[2];
+  uint64_t *pstr[2];
+  int npat[2];
+  zg_ptable pat[2][ZG_MAX_PAT];
 };
+
+/* Product plans: appends from n on the operators of table pat of side
+ * `side` on string sid (as zg_asg_enum); returns the new n. */
+static inline int zg_prod_ops(const zg_plan *p, int side, int pat, int64_t sid,
+                              int64_t *x, int64_t *src, int8_t *sign, int n) {
+  if (pat < 0) return n;
+  const zg_ptable *t = &p->pat[side][pat];
+  for (int64_t e = t->ptr[sid]; e < t->ptr[sid + 1]; ++e) {
+    const int32_t v = t->x[e];
+    x[n] = v >= 0 ? v : ~v;
+    sign[n] = v >= 0 ? 1 : -1;
+    src[n++] = t->src[e];
+  }
+  return n;
+}
 
 /* Strings as the kernels act on them: the sub-strings of the sub-groups of
  * their side, masks[g] (bit j: spinor j of sub-group g).  zg_side_masks:

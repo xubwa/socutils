@@ -1,5 +1,5 @@
-These files are an unchanged copy of socutils lib/zgasci at commit d700f86
-(branch zgasci): zgasci.c, zgasci.h, zgasci_plan.h, zgasci_kernel.inc,
+These files are an unchanged copy of socutils lib/zgasci at commit b0c0118
+(branch zgasci; earlier d700f86): zgasci.c, zgasci.h, zgasci_plan.h, zgasci_kernel.inc,
 zgasci_block.inc, zgasci_blas.inc. They are compiled as C99 into zshci; the
 adapter is src/gas_space.cc. To take up later changes of the kernel, copy the
 files again and update the commit here:
@@ -10,6 +10,11 @@ files again and update the commit here:
   done
 
 src/gas_dist_half.inc is derived from blas_half (zgasci_blas.inc) and
-term_matrix (zgasci_block.inc) of the same commit, for the MPI version: the
+term_matrix (zgasci_block.inc) of d700f86, for the MPI version: the
 changes are marked "dist:" there. After a re-sync, compare those functions
 with the new ones and carry the changes over.
+Re-sync d700f86 -> b0c0118: blas_half gained only the product-plan branches
+(p->product), the density mode (gacc != NULL) and the row range / source map
+(rng, smap); on a GAS plan with sigma, no range and no map it does the same
+arithmetic as before, and term_matrix is unchanged, so gas_dist_half.inc
+needs no change.
