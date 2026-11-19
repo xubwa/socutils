@@ -1,7 +1,7 @@
 # Handoff: periodic W_NSM results (Eu compounds, Gamma point, X2CAMF)
 
 Results of the periodic SCF -> CAHF -> CASCI(6e, 14 spinors) -> W_NSM runs done so far, collected
-2026-11-02 from the run logs.  Driver: `examples/14-periodic_dopant_casci.py`; general pipeline notes in
+2026-11-02 from the run logs.  Driver: `pbc/bench/dopant_casci.py`; general pipeline notes in
 `pbc/HANDOFF.md`.
 
 ## Definition and conventions
@@ -103,7 +103,7 @@ picture-change dipole, or a velocity-gauge (periodic) transition moment.
 |---|---|
 | W_NSM operator: read CFOUR, embed in the Eu block, trace | `pbc/atomic_prop.py`: `load_cfour_atom` (l. 19), `atomic_block_operator` (l. 45), `expectation` (l. 56) |
 | local dipole over an image cluster | `pbc/atomic_prop.py`: `image_cluster` (l. 61), `local_dipole` (l. 81), `real_axis` (l. 104) |
-| driver stages | `examples/14-periodic_dopant_casci.py`: W_NSM l. 397, d00 l. 413 |
+| driver stages | `pbc/bench/dopant_casci.py`: W_NSM l. 397, d00 l. 413 |
 | CFOUR atomic integrals | `/scratch4/lcheng24/xwang405/zmcscf/Eu/aimp/basis_test/cfour_eu/ETB0T10/SOSFMO2C` (with `config.py`, `GENBAS`) |
 | per-run results | `<workdir>/wnsm_hf.npz` (w, w_core, dm), `<workdir>/d00_hf.npz` (root, gamma, d, rc_A, e_rel) |
 | d00 for a finished workdir | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/d00_post.py WORKDIR SYSTEM [--basis-py ...]` |
@@ -145,7 +145,7 @@ Inputs:
 | atomic 4f reference (`--open-ref`) | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/ref4f_ETB0T10.npz` |
 | CFOUR NSM operator (`--nsm-dir`) | `/scratch4/lcheng24/xwang405/zmcscf/Eu/aimp/basis_test/cfour_eu/ETB0T10/SOSFMO2C` (dir also has `config.py`, `GENBAS`) |
 | d00 post-processing | `/scratch4/lcheng24/xwang405/zmcscf/Eu/periodic/d00_post.py` |
-| driver | `/home/xwang405/apps/socutils-git-pbc-env/socutils/examples/14-periodic_dopant_casci.py` |
+| driver | `pbc/bench/dopant_casci.py (in the socutils checkout)` |
 | operator code | `/home/xwang405/apps/socutils-git-pbc-env/socutils/pbc/atomic_prop.py` |
 
 ## Observations
@@ -165,14 +165,14 @@ Inputs:
 
 ## THC + MPI pipeline (2026-11)
 
-`examples/14-periodic_dopant_casci.py --jk thc` runs SCF -> CAHF -> CASCI -> W_NSM / d00 with the THC
+`pbc/bench/dopant_casci.py --jk thc` runs SCF -> CAHF -> CASCI -> W_NSM / d00 with the THC
 route-1 J/K (`pbc/thc.py` `THCJK`, `pbc/thc_gapw.py`, `pbc/thc_local.py`, `lib/thc` -> `lib/libsocthc.so`)
 and no cderi.  Under `mpirun` it is SPMD: every rank runs the script, the THC build and every J/K
 (SCF, CAHF, CASCI core) are split over the ranks, rank 0 broadcasts orbitals/densities and is the
 only one that prints and writes.  The active (tu|vw) come from the RSDF three-index route on rank 0.
 
     export OMP_NUM_THREADS=24 OMP_PLACES=cores OMP_PROC_BIND=close I_MPI_PIN=1 I_MPI_PIN_DOMAIN=socket
-    mpirun -np 2 python -u -m mpi4py examples/14-periodic_dopant_casci.py CIF --basis-py B.py \
+    mpirun -np 2 python -u -m mpi4py pbc/bench/dopant_casci.py CIF --basis-py B.py \
         --workdir W --jk thc --thc-local-rcut 6 --thc-alpha-c 4 --omega 0.35 --max-memory 80000 \
         --lr gspace --active-eri three-index --nroots 60 --open-ref REF.npz --nsm-dir CFOUR_DIR
 
@@ -273,11 +273,28 @@ Build, where the time goes now (Eu:YSO, 4 nodes x 2 ranks, V, A 9909 s; numbers 
 - Per cycle on small cells J dominates (quartz: J 2.35 s vs K 0.5 s); `GAPWJ._vgrid_at` filters the whole 2x
   oversampled grid every cycle (0.55 s of 3.05 s on one rank) and could do it in the boxes around the atoms.
 
+Bugs found while writing the small examples (`examples/pbc/`, LiH cells) and fixed on 2026-11-19
+- RSDF image range (`rsdf._geometry`, also `coulomb_reference`): the cutoff was extended by the largest extent of
+  the atoms along one Cartesian axis instead of their largest distance.  LiH 3x3x3 (fcc supercell) lost the
+  images +-(a1 + a2 + a3): E_K off by 0.1 Eh against pyscf's GDF, SCF collapse.  A large error needs a cell whose
+  longest atom-atom distance exceeds the axis extent by the pair cutoff (~19 bohr); the EuOCl cells up to 2x2x2
+  and Eu:YSO 32 atoms are far from that (8 and 10 bohr).  Larger or more skewed cells run before the fix should
+  be rechecked.
+- Streamed THC build, aux FT pruning (`_aux_upto`, `_elem_setup`): a shell was dropped beyond the |G| of its
+  smallest exponent instead of its largest, so contracted aux shells went too early (acCD aux on LiH 2x2x2: A off
+  by 4e-2, E_K by 0.056 Eh).  Uncontracted aux bases (auxgen, as in every production run) are not affected.
+- Translation ranges in `thc_local`, `thc_gapw`, `atomic_prop` assumed an orthogonal cell (r / |A_i|); now from
+  the dual vectors.  In-core THC build with fewer points than asked (small basis) failed in a reshape.
+- THC route 1 needs a large auxiliary basis for the local fit of the compact pairs: LiH 2x2x2, THC - RSDF
+  -2.5e-3 Eh with aug_etb(beta=2), -1.8e-4 with acCD (tau 1e-3), -3.9e-5 with auxgen (1e-8, uncontracted).
+
 Rules of thumb learnt
 - Time a kernel at the production thread count (wall), not by CPU time: the numpy analytic FT was "a fraction of
   ft_ao" in CPU time and 2-3x slower in wall time at 24 threads.
 - A cache that does not fit is a recompute per G chunk and mu block (Eu:YSO: 136 x 74 per rank): check the cache
   line of the log (`aux FT cached for n of m own G chunks`).
+- Validate on a small cell of another shape and with another kind of auxiliary basis than the production ones:
+  every bug above was invisible on the tetragonal / monoclinic Eu cells with uncontracted aux.
 - A step that is slow on all ranks at once: compare the CPU time of the ranks (`top` on the nodes); the others
   spin in MPI while one slow rank computes.
 
