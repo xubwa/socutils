@@ -209,6 +209,43 @@ Slurm: `~/scr4/zmr_runs/new_run.sh <name>` snapshots the working tree into
 `express`: at most 4 CPUs and `--mem=16000M` per job (16G counts as 5 CPUs),
 8 h.  `shared`: up to 32 CPUs, 4 GB per CPU, starts within a minute.
 
+## Relaxed densities and properties
+
+Relaxed one-particle densities of PC-NEVPT2 (the Lagrangian of the state-averaged CASSCF;
+derivation in `docs/derivations/relaxed-density.md`).  The NEVPT2 is built from the
+CASSCF's own three-index integrals (`cderi`), all states of the averaged CASSCF are the
+model space of the multi-state variants.
+
+Scalar (PySCF CASSCF, singlets, through the spin-orbital form of the spinor code):
+
+    from socutils.zmr.nr import relaxed
+    dm = relaxed.relaxed_rdm1(mc, cderi, state=0)        # state-specific PC-NEVPT2
+    dms = relaxed.relaxed_rdm1_levels(mc, cderi)          # every level of the QD-PC-NEVPT2
+
+Spinors (socutils `zmcscf.CASSCF`, X2C; `dm` in the j-spinor AO basis, `<O> = tr(O dm)`):
+
+    from socutils.zmr import spinor_relaxed as sr
+    mo, ci, g = zmc_response.polish(mc, mc.mo_coeff, list(mc.ci), weights)   # optional
+    dm = sr.relaxed_rdm1(mc, mf, mo, ci, weights, state=0, nfrozen=2)
+    dms = sr.relaxed_rdm1_levels(mc, mf, mo, ci, weights)  # time-even, Kramers pairs averaged
+    e, D = sr.relaxed_level_matrix(mc, mf, mo, ci, weights, level=0)   # D[m][n]: the
+                                     # matrix d<m|heff|n>/dlambda = tr(O D[m][n]) of a level
+    g = sr.relaxed_g_tensor(mc, mf, mo, ci, weights, level=0)          # model/unrelaxed/relaxed
+    hf = sr.relaxed_hyperfine_tensor(mc, mf, mo, ci, weights, atoms=[1], level=0)
+    v = sr.efg_tensor(mf, dm, atom=0)                                  # X2C picture change
+    rho0 = numpy.einsum('ij,ji', sr.contact_density_ops(mf, 0), dm).real
+
+`nfrozen` freezes the lowest core orbitals of the averaged generalized Fock matrix (Kramers
+pairs kept); the operators of `efg_ops`, `contact_density_ops`, `magnetic_moment_ops`
+(1/2 (L + g_e S), gauge origin at the centre of nuclear charge) and `hyperfine_ops` are
+the X2C picture-changed ones of `socutils.prop`.  Time-odd properties come from the matrix
+of a Kramers pair; its states share their E0 (`degeneracy_tol`).
+
+Limits: the CASSCF must use density fitting (`zmc_ao2mo._CDERIS`) and the NEVPT2 the same
+vectors; no GIAO (common gauge origin); the multi-state ccvv terms are a Python pass over
+all core pairs.  The CASSCF should be converged tightly for comparisons with finite fields
+(`polish`): E2 is not stationary in the CASSCF parameters.
+
 ## What the code cannot do yet
 
 * Large active spaces: sectors above `ActiveSpace.dense_limit` (20000)
