@@ -1618,6 +1618,10 @@ class THCExchange:
         else:
             pts = self.piv[:nmu]
             xi, rank = isdf_xi(self.L, self.piv, nmu)
+        if len(pts) < nmu:                                            # small basis: the smooth pair space is exhausted
+            self.log('   %d interpolation points (of %d asked): the point selection ran out of residual'
+                     % (len(pts), nmu))
+            nmu = len(pts)
         t_xi = time.time() - t
         # per-pair interpolation error |rho - sum_mu xi_mu rho(r_mu)| / |rho| on the grid, for all pairs of 16
         # sampled first functions, dropping pairs below 1e-3 of the largest pair sharing that first function
