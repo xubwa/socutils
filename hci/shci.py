@@ -14,12 +14,17 @@ can be exchanged::
     mc.fcisolver.schedule = [[0, 1e-4]]
     mc.kernel()
 
-This module replaces the earlier driver of Dice's ZFCI program.  Inputs
-written for it keep working as far as the names go (sweep_iter, sweep_epsilon,
-davidsonTol, dE, initialStates, scratchDirectory are still understood), with
-one difference in meaning: the old program ignored the epsilon schedule and
-always did a full CI, whereas the schedule now really selects determinants.
-Set ``occslst = 'all'`` for a full CI in a small active space.
+Two backends.  The default is the bundled zshci program, described below.
+``SHCI(mol, backend='dice')`` returns instead the earlier driver of Dice's
+ZFCI program (socutils.hci.dice, unchanged), with Dice's attribute names and
+files; only the spinor solver SHCI has that backend.
+
+The zshci backend also understands the names of the Dice driver as far as they
+go (sweep_iter, sweep_epsilon, davidsonTol, dE, initialStates,
+scratchDirectory), with one difference in meaning: Dice's ZFCI ignored the
+epsilon schedule and always did a full CI, whereas the schedule now really
+selects determinants.  Set ``occslst = 'all'`` for a full CI in a small active
+space.
 
 The program is run as a separate process: the integrals go to a FCIDUMP file
 and the settings to a JSON file in ``scratch``; energies and density matrices
@@ -50,6 +55,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_EXE = os.environ.get(
     'SOCUTILS_ZSHCI_EXE',
     os.path.join(_HERE, os.pardir, 'lib', 'zshci', 'bin', 'zshci'))
+BACKENDS = ('zshci', 'dice')
 
 
 def _state_index(fcivec):
@@ -61,6 +67,12 @@ def _state_index(fcivec):
 
 class SHCI(lib.StreamObject):
     '''Selected CI solver.
+
+    Args:
+        backend : 'zshci' (default) or 'dice'
+            'dice' returns a socutils.hci.dice.SHCI object instead, the
+            driver of Dice's ZFCI program; its further arguments are those of
+            that class.  The attributes below are those of the zshci backend.
 
     Attributes:
         executable : str
@@ -113,7 +125,22 @@ class SHCI(lib.StreamObject):
             Merged into the input as is, for options not listed here.
     '''
 
-    def __init__(self, mol=None):
+    def __new__(cls, *args, backend='zshci', **kwargs):
+        # Only an explicit backend='dice' switches: copy and pickle call
+        # cls.__new__(cls) without arguments and must get this class back.
+        if backend not in BACKENDS:
+            raise ValueError('backend must be one of %s, not %r'
+                             % (BACKENDS, backend))
+        if backend == 'dice':
+            if cls is not SHCI:
+                raise ValueError('the Dice backend has only the spinor solver '
+                                 'SHCI, not %s' % cls.__name__)
+            from socutils.hci import dice
+            # Not an instance of cls, so Python does not call __init__ again.
+            return dice.SHCI(*args, **kwargs)
+        return super().__new__(cls)
+
+    def __init__(self, mol=None, backend='zshci'):
         self.mol = mol
         if mol is None:
             self.stdout = sys.stdout
@@ -455,7 +482,7 @@ class SpatialSHCI(SHCI):
             orbsym unset for them.
     '''
 
-    def __init__(self, mol=None):
+    def __init__(self, mol=None, backend='zshci'):
         super().__init__(mol)
         self.spin = None
         self.wfnsym = None

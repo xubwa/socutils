@@ -403,6 +403,44 @@ class LabelSets(unittest.TestCase):
         self.assertGreater(abs(run_broken(None, 0) - e_both), 1e-4)
 
 
+class Backends(unittest.TestCase):
+    '''backend='dice' hands out the Dice driver; nothing is run.'''
+
+    def test_dispatch(self):
+        import copy
+        from socutils.hci import dice
+        self.assertIsInstance(shci.SHCI(), shci.SHCI)
+        self.assertIsInstance(shci.SHCI(backend='zshci'), shci.SHCI)
+        d = shci.SHCI(None, backend='dice')
+        self.assertIsInstance(d, dice.SHCI)
+        self.assertNotIsInstance(d, shci.SHCI)
+        self.assertTrue(hasattr(d, 'sweep_epsilon'))
+        z = shci.SpatialSHCI()
+        z.nroots = 3
+        for c in (copy.copy(z), z.copy()):
+            self.assertIs(type(c), shci.SpatialSHCI)
+            self.assertEqual(c.nroots, 3)
+        with self.assertRaises(ValueError):
+            shci.SpatialSHCI(backend='dice')
+        with self.assertRaises(ValueError):
+            shci.SHCI(backend='Dice')
+
+    def test_dice_input_file(self):
+        '''The Dice backend writes its input.dat as before.'''
+        import tempfile
+        d = shci.SHCI(backend='dice')
+        d.runtimeDir = d.scratchDirectory = tempfile.mkdtemp()
+        d.onlywriteIntegral = True
+        d.sweep_iter, d.sweep_epsilon = [0, 3], [1e-3, 1e-4]
+        e, roots = d.kernel(None, None, 4, 2)
+        self.assertEqual((e, roots), (0.0, 0))
+        with open(os.path.join(d.runtimeDir, d.configFile)) as f:
+            text = f.read()
+        self.assertIn('nocc 2', text)
+        self.assertIn('3\t0.0001', text)
+        self.assertIn('DoRDM', text)
+
+
 if __name__ == '__main__':
     print('Tests for hci.shci against zfci')
     unittest.main()
