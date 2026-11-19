@@ -22,7 +22,7 @@ rho = n Z / (a^2 Lz), calibrated here against the box at the same c and basis.
     effects) and the real-space T = 0 block of h from an in-plane k-mesh,
     E1 - E_jellium  vs  sum_j -N_e F_j^2 / (12 c^4)
 
-Usage:  python 31-slab_field.py [c]
+Usage:  [SLAB_BASIS=et] [SLAB_NK=4] python 31-slab_field.py [c]
 '''
 
 import sys
@@ -35,9 +35,15 @@ from pyscf.pbc.x2c import sfx2c1e as psfx
 c = float(sys.argv[1]) if len(sys.argv) > 1 else 10.
 lib.param.LIGHT_SPEED = c
 symb, Z, N = 'He', 2, 2
-basis = {symb: gto.uncontract(gto.load('cc-pvdz', symb))}
+import os
+if os.environ.get('SLAB_BASIS') == 'et':   # the even-tempered s12p6 basis of 48-slab_field_so.py
+    basis = {symb: [[0, [x, 1.]] for x in 0.1 * 2.5**numpy.arange(12)]
+             + [[1, [x, 1.]] for x in 0.1 * 2.5**numpy.arange(6)]}
+else:
+    basis = {symb: gto.uncontract(gto.load('cc-pvdz', symb))}
 a, d, vac = 5., 5., 30.
-kmesh = [4, 4, 1]
+nk = int(os.environ.get('SLAB_NK', 4))
+kmesh = [nk, nk, 1]
 sigma = Z / a**2
 
 
