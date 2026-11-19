@@ -39,8 +39,10 @@ import os
 if os.environ.get('SLAB_BASIS') == 'et':   # the even-tempered s12p6 basis of 48-slab_field_so.py
     basis = {symb: [[0, [x, 1.]] for x in 0.1 * 2.5**numpy.arange(12)]
              + [[1, [x, 1.]] for x in 0.1 * 2.5**numpy.arange(6)]}
+    bas_label = 'even-tempered s12p6'
 else:
     basis = {symb: gto.uncontract(gto.load('cc-pvdz', symb))}
+    bas_label = 'unc-cc-pVDZ'
 a, d, vac = 5., 5., 30.
 nk = int(os.environ.get('SLAB_NK', 4))
 kmesh = [nk, nk, 1]
@@ -80,7 +82,7 @@ m2 = gto.M(atom=[[symb, (0, 0, 0)], [symb, (0, 0, R)]], basis=basis, unit='B', v
 dh2 = scf.RHF(m2).sfx2c1e().get_hcore() - scf.RHF(m2).get_hcore()
 e2 = sum(numpy.einsum('ij,ji', dm_atom, dh2[i*na:(i+1)*na, i*na:(i+1)*na]) for i in range(2)) - 2 * e_atom
 kappa_pair = e2 / (-2 * N * Z**2 / (12 * c**4 * R**4))
-print('%s slab, a = %g, d = %g, vacuum %g bohr, c = %g, unc-cc-pVDZ, k-mesh %s' % (symb, a, d, vac, c, kmesh))
+print('%s slab, a = %g, d = %g, vacuum %g bohr, c = %g, %s, k-mesh %s' % (symb, a, d, vac, c, bas_label, kmesh))
 print('background Darwin per electron per unit rho: %.6e  (CBS -pi/2c^2 = %.6e)' % (f_jell, -numpy.pi / 2 / c**2))
 print('He2 pair: R^-4 coefficient / universal value = %.4f (this basis)' % kappa_pair)
 print('%3s %7s %12s %12s %12s %12s %8s %10s' % ('n', 'Lz', 'E1', 'E_jell', 'E1-E_jell', 'pred F^2', 'ratio', 'F_surf'))
