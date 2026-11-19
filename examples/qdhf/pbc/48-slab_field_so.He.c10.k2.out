@@ -1,0 +1,5 @@
+He slab, a = 5, d = 5, vacuum 30 bohr, c = 10, even-tempered s12p6, k-mesh [2, 2, 1]
+isolated atom: E_X2C-1e - E_SFX2C-1e =  7.327e-14
+pair R = 20: delta / [2 N F^2/(48 c^4)] = 0.8426 (this basis)
+  n      Lz   E_SF - E_SF0          delta           pred    ratio     F_surf
+  1    30.0 -2.88230224e+00 -4.662937e-14  0.000000e+00      nan     0.0000
