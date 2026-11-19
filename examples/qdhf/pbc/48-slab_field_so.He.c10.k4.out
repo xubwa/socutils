@@ -1,0 +1,36 @@
+He slab, a = 5, d = 5, vacuum 30 bohr, c = 10, even-tempered s12p6, k-mesh [4, 4, 1]
+isolated atom: E_X2C-1e - E_SFX2C-1e =  7.372e-14
+pair R = 20: delta / [2 N F^2/(48 c^4)] = 0.8426 (this basis)
+  n      Lz   E_SF - E_SF0          delta           pred    ratio     F_surf
+  1    30.0 -2.88143910e+00  1.700813e-08  0.000000e+00      nan     0.0000
+  2    35.0 -5.76276334e+00  1.064269e-06  1.074243e-06   0.9591     0.3590
+  3    40.0 -8.64409264e+00  3.165701e-06  3.289868e-06   0.9467     0.6283
+  4    45.0 -1.15254262e+01  6.195093e-06  6.498505e-06   0.9428     0.8378
+Traceback (most recent call last):
+  File "/home/user/qd-env/socutils/examples/qdhf/pbc/48-slab_field_so.py", line 73, in <module>
+    mydf.build()
+    ~~~~~~~~~~^^
+  File "/usr/local/lib/python3.13/site-packages/pyscf/pbc/df/df.py", line 339, in build
+    dfbuilder.make_j3c(cderi, j_only=j_only, dataname=self._dataname,
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                       kptij_lst=None)
+                       ^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/pyscf/pbc/df/rsdf_builder.py", line 1013, in make_j3c
+    make_cderi(kpt, kpt_ij_idx, cd_j2c)
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/pyscf/pbc/df/rsdf_builder.py", line 1005, in make_cderi
+    feri[f'{dataname}/{idx}/{istep}'] = cderi
+    ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/h5py/_hl/group.py", line 580, in __setitem__
+    ds = self.create_dataset(None, data=obj)
+  File "/usr/local/lib/python3.13/site-packages/h5py/_hl/group.py", line 240, in create_dataset
+    dsid = dataset.make_new_dset(group, shape, dtype, data, name, **kwds)
+  File "/usr/local/lib/python3.13/site-packages/h5py/_hl/dataset.py", line 192, in make_new_dset
+    dset_id.write(h5s.ALL, h5s.ALL, data)
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "h5py/_objects.pyx", line 54, in h5py._objects.with_phil.wrapper
+  File "h5py/_objects.pyx", line 55, in h5py._objects.with_phil.wrapper
+  File "h5py/h5d.pyx", line 305, in h5py.h5d.DatasetID.write
+  File "h5py/_proxy.pyx", line 122, in h5py._proxy.dset_rw
+OSError: [Errno 28] Can't synchronously write data (file write failed: time = Thu Nov 19 18:46:42 2026
+, filename = '/tmp/tmpo7hkqsi7', file descriptor = 4, errno = 28, error message = 'No space left on device', buf = 0x119d00f8, total write size = 14330984, bytes this sub-write = 14330984, offset = 11599347712)
