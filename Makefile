@@ -8,6 +8,7 @@
 #   x2camf  ->  lib/libx2camf_c.so    (import x2camf)
 #   ccsdt   ->  lib/libccsdt_clib.so  (socutils.cc)
 #   zquatev ->  lib/libzquatev.so     (spinor_hf.KRHF)
+#   zgasci  ->  lib/libzgasci.so      (socutils.hci.gasci)
 #   ao2mo   ->  lib/libnrr_opt.so     (socutils.lib.ao2mo.nrr_fast; links
 #               against whatever pyscf the configuring Python resolves)
 #
@@ -42,7 +43,7 @@ build:
 	@mkdir -p $(BUILDDIR)
 	cd $(BUILDDIR) && $(CMAKE) .. -DCMAKE_BUILD_TYPE=Release $(CMAKE_ARGS)
 	$(CMAKE) --build $(BUILDDIR) -- -j$(NPROC)
-	@for so in libx2camf_c.so libccsdt_clib.so libzquatev.so libnrr_opt.so; do \
+	@for so in libx2camf_c.so libccsdt_clib.so libzquatev.so libnrr_opt.so libzgasci.so; do \
 	    test -f $(LIBDIR)/$$so && echo "built $(LIBDIR)/$$so" \
 	        || { echo "ERROR: $$so not produced"; exit 1; }; \
 	done
@@ -56,4 +57,4 @@ compare: build
 clean:
 	rm -rf $(BUILDDIR) \
 	    $(LIBDIR)/libx2camf_c.so $(LIBDIR)/libccsdt_clib.so $(LIBDIR)/libzquatev.so \
-	    $(LIBDIR)/libnrr_opt.so
+	    $(LIBDIR)/libnrr_opt.so $(LIBDIR)/libzgasci.so
