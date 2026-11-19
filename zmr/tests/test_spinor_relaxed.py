@@ -467,3 +467,50 @@ def test_relaxed_spinor_frozen_core():
           % (relaxed.real, ff, numpy.einsum('ij,ji', op, dm_all).real))
     assert abs(relaxed.imag) < 1e-10
     assert abs(relaxed.real - ff) < 1e-6, (relaxed, ff)
+
+
+@pytest.mark.slow
+def test_relaxed_level_matrix_double_group():
+    '''relaxed_level_matrix of OH X 2Pi_3/2 with double-group symmetry in the CASSCF
+    (C_inf_v, rotations within one irrep there) equals the run without symmetry, for a
+    time-odd and a time-even operator: the response uses all rotations (unrestricted).'''
+    from pyscf import gto
+    from pyscf.x2c import x2c
+    from socutils.fci import zfci
+    from socutils.mcscf import zmcscf, zmc_response
+    from socutils.scf import double_group_symm, spinor_hf
+    from socutils.zmr import spinor_relaxed
+    nroots = 4
+    weights = [1.0 / nroots] * nroots
+    mol = gto.M(atom='O 0 0 0; H 0 0 0.97', basis='6-31g', charge=-1, symmetry=True,
+                verbose=0)
+    sig = mol.intor('int1e_sigma_spinor')
+    r = mol.intor('int1e_r_spinor')
+    ops = {'odd': sig[2] + 0.3 * sig[0], 'even': r[2] + 0.5 * r[0]}
+    res = {}
+    for symm in (True, False):
+        cls = double_group_symm.SymAdaptedRHF if symm else spinor_hf.RHF
+        mf = cls(mol).density_fit()
+        mf.with_x2c = x2c.SpinorX2CHelper(mol)
+        mf.conv_tol = 1e-11
+        mf.kernel()
+        h = mf.get_hcore()
+        mf.get_hcore = lambda *a, h=h, **k: h
+        mc = zmcscf.CASSCF(mf, 8, 5, ncore=4)
+        mc.fcisolver = zfci.FCISolver(mol)
+        mc.fcisolver.nroots = nroots
+        mc.symmetry = symm
+        mc = mc.state_average_(weights)
+        mc.conv_tol = 1e-11
+        mc.verbose = 0
+        mc.kernel()
+        assert (mc.orbsym is not None) == symm
+        mo, ci, gn = zmc_response.polish(mc, mc.mo_coeff, list(mc.ci), weights, tol=1e-12,
+                                         verbose=False)
+        _, d = spinor_relaxed.relaxed_level_matrix(mc, mf, mo, ci, weights, level=0)
+        for name, o in ops.items():
+            w = numpy.array([[numpy.einsum('ij,ji', o, d[a][b]) for b in range(2)]
+                             for a in range(2)])
+            res[(symm, name)] = numpy.linalg.eigvalsh(0.5 * (w + w.conj().T))
+    for name in ops:
+        assert abs(res[(True, name)] - res[(False, name)]).max() < 1e-7, (name, res)

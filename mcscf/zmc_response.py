@@ -76,12 +76,26 @@ def complexify(v):
     return v[:n] + 1j * v[n:]
 
 
+def unrestricted(mc):
+    '''A shallow copy of mc whose orbital rotations are not restricted to one irrep (no
+    .irrep / .orbsym): the response to a perturbation of lower symmetry needs the rotations
+    between irreps (a matrix element between Kramers partners in conjugate irreps).'''
+    import copy
+    m = copy.copy(mc)
+    m.irrep = None
+    m._orbsym = None
+    return m
+
+
 class SAResponse:
     '''The state-averaged spinor CASSCF at orbitals mo and CI vectors ci (list of complex
-    vectors, normalized) with weights.  Attributes: n_orb (complex orbital parameters),
-    sizes (CI vectors), gradient() (complex G), hop(z) (complex J z), split / join.'''
+    vectors, normalized) with weights.  Attributes: n_orb (complex orbital parameters, all
+    rotations of zmcscf whatever the symmetry: self.mc = unrestricted(mc)), sizes (CI
+    vectors), gradient() (complex G), hop(z) (complex J z), split / join.'''
 
     def __init__(self, mc, mo, ci, weights, eris=None, cderi=None):
+        # all orbital rotations, whatever the symmetry of the CASSCF (unrestricted)
+        mc = unrestricted(mc)
         self.mc = mc
         mc.mo_coeff = mo
         self.mo = mo
@@ -422,7 +436,7 @@ def polish(mc, mo, ci, weights, tol=1e-10, max_cycle=15, cderi=None, verbose=Tru
         z = zvector(resp, g, tol=1e-6 * min(1.0, gnorm), extra_null=interstate_directions(resp))
         if numpy.linalg.norm(z) > 0.1:
             z *= 0.1 / numpy.linalg.norm(z)
-        mo, ci = move(mc, mo, ci, z)
+        mo, ci = move(resp.mc, mo, ci, z)
         ci = model_eigenvectors(mc, mo, ci, cderi)
     return mo, ci, gnorm
 

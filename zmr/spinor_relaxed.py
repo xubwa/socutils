@@ -133,7 +133,7 @@ def _e2_terms(mc, mf, mo, resp, out, nfrozen, states):
         fc = resp.apply_h1(y[act, act], numpy.array(resp.ci).T).T
         for j, (w, gz) in enumerate(zip(resp.weights, fc)):
             g_states[j] = g_states.get(j, 0) + w * gz
-    p, q = numpy.nonzero(mc.uniq_var_indices(n_all, mc.ncore, mc.ncas, mc.frozen))
+    p, q = numpy.nonzero(resp.mc.uniq_var_indices(n_all, mc.ncore, mc.ncas, mc.frozen))
     g_orb = numpy.conj(m[p, q]) - m[q, p]
     g_parts = {j: 2 * (g - numpy.vdot(resp.ci[j], g).real * resp.ci[j]) for j, g in g_states.items()}
     return g_orb, g_parts, mo @ d.T @ mo.conj().T
