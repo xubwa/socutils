@@ -272,6 +272,32 @@ def active_two_body(pt, pclass, b, g, state=0, traces=None):
     return 0.25 * d2
 
 
+def ccvv_states(pt, ctx, rho):
+    '''ccvv of several model states in one pass over its labels: ([(D_aa, b, g, traces)]
+    per target (zmr.uc.density.ccvv_active), g[n, J] of the CI gradient
+    (zmr.reference.ci_gradient.class_g)); the amplitudes of every block once for both.'''
+    from socutils.zmr.reference import ci_gradient as cg
+    from socutils.zmr.uc import classes, density
+    pclass = classes.CLASS_BY_NAME['ccvv']
+    b, mu, t, s, rho_, states = density.model_spaces(pt, pclass, rho=rho)
+    rhos, single = density.stack_levels(rho_)
+    nl, nj, nk = len(rhos), len(states), len(mu)
+    acc = cg.QAccumulator(pt, pclass, t, s, rho_, states)
+    gj = numpy.zeros((nl, nj, nk, nk), dtype=numpy.complex128)
+    for delta, v in pclass.blocks(ctx):
+        _, c, l, _ = density.pair_amplitudes(delta, v, mu, t, s, rhos)
+        for lv in range(nl):
+            for j in range(nj):
+                gj[lv, j] += c[j].T @ l[lv, j].conj()
+        acc.add(c, l if not single else l[0], v, delta)
+    act = []
+    for x in gj:
+        g = x.sum(axis=0)
+        traces = [(numpy.trace(y), j) for y, j in zip(x, states)]
+        act.append((density._active_block(pt, pclass, b, g, traces), b, g, traces))
+    return act, acc.g()
+
+
 def derivatives(pt, state=0, max_memory=4000, rho=None, frozen_coeff=None):
     '''One pass over the classes of a finished PC-NEVPT2 of one model state: the
     unrelaxed density (quasi-canonical orbitals), the orbital gradient at fixed CI vector
@@ -317,10 +343,11 @@ def derivatives(pt, state=0, max_memory=4000, rho=None, frozen_coeff=None):
     if rho is not None:
         # several model states: ccvv also through H_act and the CI vectors
         pclass = classes.CLASS_BY_NAME['ccvv']
-        for lv, (d_aa, b, g, traces) in enumerate(per_level(density.ccvv_active(pt, ctx, rho))):
+        act_ccvv, g_ccvv_ci = ccvv_states(pt, ctx, rho)
+        for lv, (d_aa, b, g, traces) in enumerate(act_ccvv):
             d_core[lv] += density.assemble(sp, {'aa': d_aa})
             x_aa[lv] += active_two_body(pt, pclass, b, g, traces=traces)
-        g_ci += numpy.reshape(cg.class_g(pt, ctx, 'ccvv', rho=rho), g_ci.shape)
+        g_ci += numpy.reshape(g_ccvv_ci, g_ci.shape)
     for name in density._LABELS:
         pclass = classes.CLASS_BY_NAME[name]
         if name in ('cavv', 'ccav'):
